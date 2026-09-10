@@ -33,6 +33,7 @@ from .base import (
     ModelResolutionError,
     Provider,
     ResolvedModel,
+    Usage,
 )
 
 _ALIAS_RE = re.compile(r"'([a-z][a-z0-9.\-]*)'")
@@ -203,14 +204,13 @@ class ClaudeProvider(Provider):
             stderr = (stderr + "\n" + note).strip()
         return text, stderr
 
+    def parse_usage(self, outcome: ExecOutcome, mode: str) -> Optional[Usage]:
+        """The token counts the CLI puts on its own ``result`` event."""
+        return parse_stream_usage(outcome.stdout)
 
-def parse_stream_json(stdout: str) -> "tuple[Optional[str], str]":
-    """Extract the final answer from a stream-json run.
 
-    Returns ``(text, note)``, or ``(None, "")`` when this does not look like a
-    stream at all -- in which case the caller keeps the raw output rather than
-    discarding it, so an unrecognised format degrades instead of losing work.
-    """
+def _stream_events(stdout: str) -> List[Dict[str, Any]]:
+    """Every JSON object on its own line, skipping anything unparseable."""
     events: List[Dict[str, Any]] = []
     for line in stdout.splitlines():
         line = line.strip()
@@ -222,6 +222,17 @@ def parse_stream_json(stdout: str) -> "tuple[Optional[str], str]":
             continue
         if isinstance(event, dict):
             events.append(event)
+    return events
+
+
+def parse_stream_json(stdout: str) -> "tuple[Optional[str], str]":
+    """Extract the final answer from a stream-json run.
+
+    Returns ``(text, note)``, or ``(None, "")`` when this does not look like a
+    stream at all -- in which case the caller keeps the raw output rather than
+    discarding it, so an unrecognised format degrades instead of losing work.
+    """
+    events = _stream_events(stdout)
     if not events:
         return None, ""
 
@@ -251,6 +262,46 @@ def parse_stream_json(stdout: str) -> "tuple[Optional[str], str]":
     if collected:
         return "\n".join(collected), "no result event; reconstructed from assistant messages"
     return None, ""
+
+
+def parse_stream_usage(stdout: str) -> Optional[Usage]:
+    """Read the cost of a stream-json run from its ``result`` event.
+
+    The event carries four token counts, not one, and they are not
+    interchangeable: cached input is billed at a fraction of fresh input, and
+    writing the cache costs more than either. They are kept apart rather than
+    summed into a single "input" figure, which would misstate the cost in
+    whichever direction the cache happened to fall. For money, the CLI's own
+    ``total_cost_usd`` is the number to trust.
+
+    Returns None when this was not a stream, or was a stream carrying no usage
+    -- absent is reported as absent, never as zero.
+    """
+    for event in reversed(_stream_events(stdout)):
+        if event.get("type") != "result":
+            continue
+        usage = event.get("usage")
+        if not isinstance(usage, dict):
+            usage = {}
+        cost = event.get("total_cost_usd")
+        measured_cost = isinstance(cost, (int, float)) and not isinstance(cost, bool)
+        parsed = Usage(
+            input_tokens=_count(usage.get("input_tokens")),
+            output_tokens=_count(usage.get("output_tokens")),
+            cache_read_tokens=_count(usage.get("cache_read_input_tokens")),
+            cache_write_tokens=_count(usage.get("cache_creation_input_tokens")),
+            cost_usd=float(cost) if measured_cost else None,
+            source="claude result event",
+        )
+        return parsed if parsed.measured or parsed.cost_usd is not None else None
+    return None
+
+
+def _count(value: Any) -> Optional[int]:
+    """A token count, or None. A bool is not a count; neither is a string."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value if value >= 0 else None
 
 
 def _permission_args(mode: str, requested: Optional[str] = None) -> List[str]:

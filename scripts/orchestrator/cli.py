@@ -539,6 +539,8 @@ def cmd_run(args: argparse.Namespace) -> int:
     if result.orphans_possible:
         _err("warning: %s's process group may have left orphans; check for stray processes." % role)
 
+    # Recorded whatever the outcome: a failed run still spent what it spent.
+    book.record_usage(role, result.usage.to_dict())
     book.end(
         token,
         "ok" if result.ok else ("stalled" if result.stalled else "failed"),
@@ -551,6 +553,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             "timed_out": result.timed_out,
             "stalled": result.stalled,
             "output": args.output,
+            "billed_tokens": result.usage.billed_tokens,
         },
     )
     return 0 if result.ok else 1
@@ -681,6 +684,8 @@ def cmd_review_run(args: argparse.Namespace) -> int:
         _err(str(exc))
         return 2
 
+    for run in runs:
+        book.record_usage("review", run.usage.to_dict(), label=str(run.reviewer.get("id") or "reviewer"))
     run_dicts = [run.to_dict() for run in runs]
     # Consolidate from every configured reviewer's report, not only the ones
     # that just ran: with --only that would otherwise overwrite the report with
@@ -953,6 +958,66 @@ def cmd_budget_reset(args: argparse.Namespace) -> int:
     return 0
 
 
+_TOKEN_ROW = "  %-18s %5s %9s %9s %9s %9s %9s"
+
+
+def _token_row(name: str, account: Dict[str, Any]) -> str:
+    def num(field: str) -> str:
+        value = int(account.get(field) or 0)
+        return "{:,}".format(value) if value else "-"
+
+    runs = "%s/%s" % (account.get("measured_runs") or 0, account.get("runs") or 0)
+    cost = float(account.get("cost_usd") or 0.0)
+    return _TOKEN_ROW % (
+        name,
+        runs,
+        num("input_tokens"),
+        num("output_tokens"),
+        num("total_tokens"),
+        num("billed_tokens"),
+        ("$%.4f" % cost) if cost else "-",
+    )
+
+
+def cmd_tokens_show(args: argparse.Namespace) -> int:
+    """What the workflow has spent. Accounting only -- it refuses nothing."""
+    book = _ledger(args)
+    report = book.token_report()
+    if args.json:
+        _emit_json(report)
+        return 0
+
+    totals = report["totals"]
+    if not totals["runs"]:
+        _out("No delegated runs recorded yet.")
+        return 0
+
+    _out(_TOKEN_ROW % ("stage", "meas.", "input", "output", "total", "billed", "cost"))
+    for stage, account in sorted(report["by_stage"].items()):
+        _out(_token_row(stage, account))
+    _out(_token_row("ALL", totals))
+    if report["by_label"]:
+        _out("")
+        _out("Per reviewer:")
+        for label, account in sorted(report["by_label"].items()):
+            _out(_token_row(label, account))
+
+    _out("")
+    chars = int(totals.get("prompt_chars") or 0)
+    if chars:
+        _out(
+            "Prompt text this repo composed: %s chars over %d run(s). "
+            "That is the part it can shorten." % ("{:,}".format(chars), totals["runs"])
+        )
+    if not report["complete"]:
+        silent = int(totals["runs"]) - int(totals["measured_runs"])
+        _out(
+            "%d of %d run(s) reported no usage, so every total above is a floor, "
+            "not a total." % (silent, totals["runs"])
+        )
+    return 0
+
+
 def cmd_progress_record(args: argparse.Namespace) -> int:
     """Record a stage outcome so a loop that achieves nothing can be stopped."""
     book = _ledger(args)
@@ -1018,6 +1083,8 @@ def cmd_status(args: argparse.Namespace) -> int:
         "budgets": summary["budgets"],
         "total_delegated_runs": total,
         "runtime_remaining_seconds": summary["runtime_remaining_seconds"],
+        # Reported, never enforced: no verdict here turns on what a run cost.
+        "tokens": summary["tokens"],
     }
     if args.json:
         _emit_json(payload)
@@ -1047,6 +1114,16 @@ def cmd_status(args: argparse.Namespace) -> int:
         "Review: round %d/%d, %d accepted, %d blocking"
         % (iteration, max_iterations, payload["review"]["accepted"], len(blocking))
     )
+    tokens = summary["tokens"]["totals"]
+    if tokens["runs"]:
+        _out(
+            "Tokens: %s billed over %d run(s)%s (dev-orchestra tokens show)"
+            % (
+                "{:,}".format(int(tokens["billed_tokens"] or 0)) or "0",
+                tokens["runs"],
+                "" if summary["tokens"]["complete"] else ", partially reported",
+            )
+        )
     return 0
 
 
@@ -1121,8 +1198,27 @@ def cmd_summary(args: argparse.Namespace) -> int:
                 "" if reviewer.get("status", "ok") == "ok" else " (FAILED)",
             )
         )
+    book = _ledger(args, workspace)
+    report = book.token_report()
+    if report["totals"]["runs"]:
+        lines.append("")
+        lines.append("Tokens:")
+        for stage, account in sorted(report["by_stage"].items()):
+            lines.append("  %-14s %s billed" % (stage, "{:,}".format(int(account.get("billed_tokens") or 0))))
+        total = report["totals"]
+        cost = float(total.get("cost_usd") or 0.0)
+        lines.append(
+            "  %-14s %s billed over %d run(s)%s%s"
+            % (
+                "total",
+                "{:,}".format(int(total.get("billed_tokens") or 0)),
+                total["runs"],
+                (" -- $%.4f" % cost) if cost else "",
+                "" if report["complete"] else " (partially reported: a floor)",
+            )
+        )
     if args.json:
-        _emit_json({"stages": seen, "counts": counts})
+        _emit_json({"stages": seen, "counts": counts, "tokens": report})
         return 0
     _out("\n".join(lines))
     return 0
@@ -1346,6 +1442,15 @@ def build_parser() -> argparse.ArgumentParser:
     budget_consume.set_defaults(func=cmd_budget_consume)
     budget_reset = budget_sub.add_parser("reset", help="start a fresh workflow")
     budget_reset.set_defaults(func=cmd_budget_reset)
+
+    # Separate from `budget` on purpose: attempts are enforced, tokens are only
+    # counted, and putting them under one command invites reading one as the
+    # other.
+    tokens_parser = subparsers.add_parser("tokens", help="what the workflow has spent, per stage")
+    tokens_sub = tokens_parser.add_subparsers(dest="subcommand", required=True)
+    tokens_show = tokens_sub.add_parser("show", help="the token account (reported, never enforced)")
+    tokens_show.add_argument("--json", action="store_true")
+    tokens_show.set_defaults(func=cmd_tokens_show)
 
     progress_parser = subparsers.add_parser("progress", help="detect a loop that is going nowhere")
     progress_sub = progress_parser.add_subparsers(dest="subcommand", required=True)

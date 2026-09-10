@@ -20,6 +20,7 @@ from .base import (  # noqa: F401 - re-exported as the adapter interface
     Provider,
     ResolvedModel,
     RunResult,
+    Usage,
     redact,
 )
 

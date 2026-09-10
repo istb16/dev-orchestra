@@ -25,7 +25,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from . import workspace as ws
-from .providers import MODE_REVIEW, ModelResolutionError, get_provider
+from .providers import MODE_REVIEW, ModelResolutionError, Usage, get_provider
 
 SEVERITIES = ("critical", "high", "medium", "low")
 SEVERITY_RANK = {name: index for index, name in enumerate(SEVERITIES)}
@@ -267,6 +267,7 @@ class ReviewerRun:
         model_display: str = "",
         duration: float = 0.0,
         findings: int = 0,
+        usage: Optional[Usage] = None,
     ) -> None:
         self.reviewer = reviewer
         # ok | failed | stalled | unparsed. Only "ok" counts as a delivered
@@ -278,6 +279,10 @@ class ReviewerRun:
         self.model_display = model_display
         self.duration = duration
         self.findings = findings
+        #: What this reviewer cost. Reviewers are the most duplicated stage in
+        #: the pipeline -- the same diff, once per reviewer, once per round --
+        #: so their cost is recorded per reviewer, not just per round.
+        self.usage = usage or Usage()
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -290,6 +295,7 @@ class ReviewerRun:
             "duration_seconds": round(self.duration, 2),
             "findings": self.findings,
             "report": self.report_path,
+            "usage": self.usage.to_dict(),
         }
 
 
@@ -350,6 +356,9 @@ def run_reviews(
                 error=error,
                 model_display=model_display,
                 duration=result.duration,
+                # A failed review is not a free one: whatever it burned before
+                # falling over still has to appear in the account.
+                usage=result.usage,
             )
         body = result.stdout.strip() or "NO_FINDINGS"
         header = (
@@ -375,6 +384,7 @@ def run_reviews(
             model_display=model_display,
             duration=result.duration,
             findings=len(findings),
+            usage=result.usage,
         )
 
     if parallel and len(reviewers) > 1:

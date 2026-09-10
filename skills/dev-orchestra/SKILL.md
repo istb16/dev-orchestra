@@ -246,8 +246,11 @@ Changed: app/models/order.rb, app/services/pricing.rb, spec/services/pricing_spe
 Remaining: F4 (medium, deferred — see .ai/reviews/consolidated.md)
 ```
 
-`python "PLUGIN_ROOT/scripts/dev_orchestra.py" summary` prints the stage and
-model portion from the recorded run state. Always name what failed and what you
+`python "PLUGIN_ROOT/scripts/dev_orchestra.py" summary` prints the stage, model
+and token portion from the recorded run state; `tokens show` breaks the cost
+down per stage and per reviewer when you need to see where it went. Token counts
+come from the delegated CLIs, so report them as what they are: a floor when the
+output says some runs reported nothing. Always name what failed and what you
 skipped. Resolved model ids may appear in the run log; the saved config keeps
 family + version policy.
 

@@ -12,6 +12,21 @@ The public surface covered by that promise is: the configuration schema, the
 
 ### Added
 
+- **Token accounting per stage and per reviewer.** Delegated runs now record
+  what they cost, read from the CLI's own report -- Claude Code's `result`
+  event (input, output, cache-read, cache-write and a price) and whatever
+  `codex exec` prints. `dev-orchestra tokens show` breaks the total down by
+  stage and by reviewer, and `status` and `summary` carry it too.
+
+  Deliberately *not* a budget: nothing refuses a run over what it would cost,
+  and the command is separate from `budget` so neither reads as the other.
+  Nothing is ever estimated either -- an estimate from the prompt we sent would
+  ignore the child CLI's system prompt, tool schemas and file reads, which are
+  most of the input, so a silent CLI is reported as unmeasured and every total
+  it touches is labelled a floor rather than a total. Reviewers are counted
+  individually because they are the pipeline's most duplicated cost: the same
+  diff, once per reviewer, once per round.
+
 - **Codex model discovery from the CLI's own catalogue.** The adapter now reads
   `codex debug models` (0.154+) in addition to `$CODEX_HOME/config.toml`, so a
   named family such as `gpt-5.6-terra` resolves with `version: latest` instead

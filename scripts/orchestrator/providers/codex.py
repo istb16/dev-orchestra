@@ -28,9 +28,21 @@ from .base import (
     Provider,
     ResolvedModel,
     RunResult,
+    Usage,
 )
 
 RECOMMENDED_FAMILIES = ("recommended-coding", "recommended", "default", "auto", "latest", "")
+
+#: How the CLI states what a run cost. Unlike everything else in this adapter
+#: these are read off human-readable output rather than a documented schema, so
+#: they are patterns to *try*, in order, and a miss reports nothing rather than
+#: guessing. ``codex exec`` prints a single total, not an input/output split.
+_USAGE_TOTAL_RES = (
+    re.compile(r"tokens?\s+used\s*:?\s*([\d,_]+)", re.IGNORECASE),
+    re.compile(r"total\s+tokens?\s*:?\s*([\d,_]+)", re.IGNORECASE),
+)
+_USAGE_INPUT_RE = re.compile(r"input[\s_]tokens?\s*:?\s*([\d,_]+)", re.IGNORECASE)
+_USAGE_OUTPUT_RE = re.compile(r"output[\s_]tokens?\s*:?\s*([\d,_]+)", re.IGNORECASE)
 
 #: Sandbox policies `codex exec -s` accepts, per its own --help.
 SANDBOX_POLICIES = ("read-only", "workspace-write", "danger-full-access")
@@ -211,6 +223,17 @@ class CodexProvider(Provider):
         command += list(extra_args)
         return command
 
+    def parse_usage(self, outcome, mode: str) -> Optional[Usage]:
+        """Whatever the CLI said a run cost, if it said anything.
+
+        Best-effort by necessity: Codex reports usage in prose, so a wording
+        change turns this into "unreported" rather than into a wrong number.
+        The totals it prints cover the whole session, so they are recorded as
+        ``total_tokens`` and never split into an input/output pair we would be
+        inventing.
+        """
+        return parse_usage_text(outcome.stdout, outcome.stderr)
+
     def run(
         self,
         prompt: str,
@@ -244,6 +267,41 @@ class CodexProvider(Provider):
                 os.unlink(last_message_path)
             except OSError:
                 pass
+
+
+def parse_usage_text(*streams: str) -> Optional[Usage]:
+    """Scan the CLI's own output for a usage report. None when there is none.
+
+    The last match wins: the figure printed at the end of a run is the final
+    one, and an earlier line is a progress update on the way to it.
+    """
+    for text in streams:
+        if not text:
+            continue
+        found = Usage(source="codex output")
+        for pattern in _USAGE_TOTAL_RES:
+            matches = pattern.findall(text)
+            if matches:
+                found.total_tokens = _digits(matches[-1])
+                break
+        for pattern, attribute in ((_USAGE_INPUT_RE, "input_tokens"), (_USAGE_OUTPUT_RE, "output_tokens")):
+            matches = pattern.findall(text)
+            if matches:
+                setattr(found, attribute, _digits(matches[-1]))
+        if found.measured:
+            # A split makes the single total redundant, and keeping both would
+            # double-count it in every sum downstream.
+            if found.input_tokens is not None or found.output_tokens is not None:
+                found.total_tokens = None
+            return found
+    return None
+
+
+def _digits(raw: str) -> Optional[int]:
+    try:
+        return int(raw.replace(",", "").replace("_", ""))
+    except ValueError:
+        return None
 
 
 def _read_text(path: str) -> str:
