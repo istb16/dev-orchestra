@@ -12,6 +12,26 @@ The public surface covered by that promise is: the configuration schema, the
 
 ### Added
 
+- **Generated and vendored files are withheld from the review diff.**
+  `review.exclude` (lockfiles, `dist/`, `vendor/`, `node_modules/`, minified
+  output, source maps, `*.snap`) keeps the *body* of those diffs out of every
+  reviewer prompt. Measured on a 400-package lockfile bump alongside a two-line
+  source change, one round with two reviewers went from 44,783 to 1,711 input
+  tokens -- the diff is sent once per reviewer and once per round, so that
+  multiplies.
+
+  Withheld is not hidden: the file is still named to the reviewer with how many
+  lines changed, `review snapshot` prints what it withheld and which pattern
+  did it, the patterns are recorded in the snapshot metadata, and
+  `--no-exclude` sends everything. A change that is *entirely* generated
+  produces an empty snapshot that says so in those terms rather than reading as
+  "nothing changed". Anything ambiguous is deliberately not in the defaults:
+  `build/` is hand-written often enough that hiding it would sometimes drop
+  real work, which is a worse failure than paying for a lockfile.
+
+- **Renames are detected in the snapshot** (`git diff -M`), so a staged move
+  costs a header instead of twice the file's length.
+
 - **Token accounting per stage and per reviewer.** Delegated runs now record
   what they cost, read from the CLI's own report -- Claude Code's `result`
   event (input, output, cache-read, cache-write and a price) and whatever
