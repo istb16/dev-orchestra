@@ -113,7 +113,27 @@ def _describe_role(label: str, spec: Any, detections: Dict[str, Any], problems: 
     entry["status"] = "ok"
     entry["resolved"] = resolved.display
     entry["resolution_source"] = resolved.source
+
+    options = spec.get("options")
+    if isinstance(options, dict):
+        entry["options"] = {key: value for key, value in options.items() if key != "args"}
+        ignored = sorted(set(options) & READ_ONLY_IGNORED_OPTIONS)
+        if ignored and _is_read_only_role(label):
+            entry["ignored_options"] = ignored
+            problems.append(
+                "%s: %s ignored -- planning and review stages always run read-only"
+                % (label, ", ".join("options.%s" % key for key in ignored))
+            )
     return entry
+
+
+#: Options that would loosen a sandbox. Harmless on the implementer and fixer,
+#: silently overridden everywhere else -- so say so out loud instead.
+READ_ONLY_IGNORED_OPTIONS = {"permission_mode", "sandbox", "approve"}
+
+
+def _is_read_only_role(label: str) -> bool:
+    return label.startswith("Architect") or label.startswith("Reviewer")
 
 
 def render(report: Dict[str, Any]) -> str:
@@ -155,6 +175,10 @@ def render(report: Dict[str, Any]) -> str:
     for key, _label in ROLE_LABELS:
         entry = report["roles"].get(key, {})
         lines.append("  %-13s %s" % (entry.get("label", key) + ":", _role_line(entry)))
+    for key, _label in ROLE_LABELS:
+        entry = report["roles"].get(key, {})
+        if entry.get("options"):
+            lines.append("      %s options: %s" % (key, entry["options"]))
     reviewers = report["reviewers"]
     lines.append("  %-13s %d" % ("Reviewers:", len(reviewers)))
     for index, entry in enumerate(reviewers, 1):

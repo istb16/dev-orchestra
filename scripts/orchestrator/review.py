@@ -6,6 +6,13 @@ Design rules enforced here:
 * reviewers never see each other's output -- no cross-contamination
 * reviewers run read-only; a reviewer that edits files is a configuration bug
 * one reviewer failing does not fail the batch
+
+Deduplication is deliberately split in two. Auto-merge only collapses findings
+whose wording is near-identical, because collapsing two distinct bugs hides one.
+Cross-model duplicates almost never look alike in prose -- measured on real
+two-provider output, a confirmed duplicate pair scored 0.03 text similarity
+while an unrelated pair scored 0.29 -- so they are surfaced as *candidates*,
+matched on the code they quote, for the orchestrator to confirm during triage.
 """
 
 from __future__ import annotations
@@ -309,7 +316,14 @@ def run_reviews(
             return ReviewerRun(reviewer, "failed", error=str(exc))
         prompt = build_review_prompt(reviewer, workspace, diff_text, extra_context, template)
         try:
-            result = provider.run(prompt, MODE_REVIEW, workspace.root, reviewer.get("model"), timeout=timeout)
+            result = provider.run(
+                prompt,
+                MODE_REVIEW,
+                workspace.root,
+                reviewer.get("model"),
+                timeout=timeout,
+                options=reviewer.get("options"),
+            )
         except ModelResolutionError as exc:
             return ReviewerRun(reviewer, "failed", error=str(exc))
         except Exception as exc:
@@ -507,6 +521,75 @@ def are_duplicates(left: Dict[str, Any], right: Dict[str, Any], threshold: float
     return difflib.SequenceMatcher(None, left_text, right_text).ratio() >= threshold
 
 
+_BACKTICK_RE = re.compile(r"`([^`]{2,120})`")
+_CODEISH_RE = re.compile(
+    r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+|[A-Za-z_][A-Za-z0-9_]*_[A-Za-z0-9_]+"
+)
+_STOPWORDS = frozenset(
+    "the a an and or of to in on for with without any is are be it this that not no".split()
+)
+
+
+def code_tokens(finding: Dict[str, Any]) -> set:
+    """Identifier-ish tokens a finding points at.
+
+    Two reviewers describing the same bug rarely use the same prose, but they
+    almost always quote the same code. That makes the quoted code a much better
+    similarity signal than the wording -- good enough to *suggest* a duplicate,
+    not good enough to merge on, because distinct bugs in one expression quote
+    it identically too.
+    """
+    text = " ".join(str(finding.get(field, "")) for field in ("evidence", "problem", "recommended_fix"))
+    tokens = set()
+    for span in _BACKTICK_RE.findall(text):
+        for token in _CODEISH_RE.findall(span):
+            tokens.add(token.lower())
+        bare = span.strip().lower()
+        if bare and " " not in bare and len(bare) > 2:
+            tokens.add(bare)
+    for token in _CODEISH_RE.findall(text):
+        tokens.add(token.lower())
+    return {token for token in tokens if token not in _STOPWORDS}
+
+
+def duplicate_candidates(findings: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Cross-reviewer findings that may be the same issue, for the orchestrator.
+
+    Only pairs from *different* reviewers are considered: reviewers are told not
+    to report the same issue twice, so two findings from one reviewer are two
+    issues by construction.
+    """
+    token_sets = [code_tokens(finding) for finding in findings]
+    frequency: Dict[str, int] = {}
+    for tokens in token_sets:
+        for token in tokens:
+            frequency[token] = frequency.get(token, 0) + 1
+
+    pairs: List[Dict[str, Any]] = []
+    for index, left in enumerate(findings):
+        for offset, right in enumerate(findings[index + 1 :], start=index + 1):
+            if left.get("file") != right.get("file"):
+                continue
+            if set(left.get("reported_by", [])) & set(right.get("reported_by", [])):
+                continue
+            shared = token_sets[index] & token_sets[offset]
+            if not shared:
+                continue
+            # A token only these two findings mention is far stronger evidence
+            # than one every finding in the file quotes, so rank by the rarest
+            # match and let the orchestrator work down the list.
+            pairs.append(
+                {
+                    "ids": [left["id"], right["id"]],
+                    "file": left.get("file"),
+                    "shared_code": sorted(shared, key=lambda token: (frequency[token], token))[:6],
+                    "specificity": min(frequency[token] for token in shared),
+                }
+            )
+    pairs.sort(key=lambda pair: (pair["specificity"], pair["ids"]))
+    return pairs
+
+
 def consolidate_findings(findings: Sequence[Dict[str, Any]], threshold: float = 0.72) -> List[Dict[str, Any]]:
     """Merge duplicate findings across reviewers, keeping the strongest wording."""
     merged: List[Dict[str, Any]] = []
@@ -573,12 +656,21 @@ def build_consolidation(
         if old and _fingerprint(old.get("problem", "")) == _fingerprint(entry.get("problem", "")):
             entry["triage"] = old.get("triage", entry["triage"])
             entry["triage_note"] = old.get("triage_note", "")
+    candidates = duplicate_candidates(consolidated)
+    by_id = {entry["id"]: entry for entry in consolidated}
+    for pair in candidates:
+        for finding_id in pair["ids"]:
+            other = [other_id for other_id in pair["ids"] if other_id != finding_id]
+            by_id[finding_id].setdefault("possible_duplicates", []).extend(other)
+    counts = _counts(consolidated, runs)
+    counts["duplicate_candidates"] = len(candidates)
     return {
         "generated_at": ws.utcnow(),
         "iteration": iteration,
         "snapshot": {"sha256": meta.get("sha256"), "files": meta.get("files", [])},
         "reviewers": list(runs),
-        "counts": _counts(consolidated, runs),
+        "counts": counts,
+        "duplicate_candidates": candidates,
         "findings": consolidated,
     }
 
@@ -627,6 +719,26 @@ def render_consolidation(data: Dict[str, Any]) -> str:
                 (run.get("error") or "%s finding(s)" % run.get("findings", 0)),
             )
         )
+    candidates = data.get("duplicate_candidates") or []
+    if candidates:
+        lines += [
+            "",
+            "## Possible duplicates (confirm during triage)",
+            "",
+            "Different reviewers quoting the same code. Auto-merge stays conservative on",
+            "purpose -- collapsing two distinct bugs hides one -- so these are suggestions.",
+            "Mark a confirmed one with `review triage <id> --status duplicate`.",
+            "",
+        ]
+        for pair in candidates:
+            lines.append(
+                "- %s  (`%s`, shared: %s)"
+                % (
+                    " ~ ".join(pair["ids"]),
+                    pair.get("file", "?"),
+                    ", ".join("`%s`" % c for c in pair["shared_code"]),
+                )
+            )
     lines += ["", "## Findings", ""]
     if not data.get("findings"):
         lines.append("No findings were reported.")
@@ -637,6 +749,8 @@ def render_consolidation(data: Dict[str, Any]) -> str:
             "",
             "- Location: `%s`:%s" % (finding.get("file", "?"), finding.get("line", "n/a")),
             "- Reported by: %s" % ", ".join(finding.get("reported_by", [])),
+            "- Possible duplicate of: %s"
+            % (", ".join(dict.fromkeys(finding.get("possible_duplicates", []))) or "none"),
             "- Triage: %s%s"
             % (finding.get("triage", "needs-triage"), _note_suffix(finding.get("triage_note", ""))),
             "- Problem: %s" % finding.get("problem", ""),

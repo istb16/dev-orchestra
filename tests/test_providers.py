@@ -23,6 +23,11 @@ Options:
                                         model's full name (e.g.
                                         'claude-fable-5').
   -n, --name <name>                     Set a display name for this session
+  --permission-mode <mode>              Permission mode to use for the session
+                                        (choices: "acceptEdits", "auto",
+                                        "bypassPermissions", "manual",
+                                        "dontAsk", "plan")
+  -p, --print                           Print response and exit
 """
 
 
@@ -105,6 +110,86 @@ class TestClaudeAdapter(IsolatedCase):
         self.assertIn("not found", result.stderr)
 
 
+class TestClaudeRoleOptions(IsolatedCase):
+    def setUp(self):
+        super().setUp()
+        self.provider = ClaudeProvider()
+        self.provider._capture = lambda command, timeout=30: _FakeCompleted(CLAUDE_HELP)
+        self.resolved = self.provider.resolve_model({"family": "opus"})
+
+    def test_permission_modes_come_from_the_installed_cli(self):
+        self.assertEqual(
+            self.provider.permission_modes(),
+            ["acceptEdits", "auto", "bypassPermissions", "manual", "dontAsk", "plan"],
+        )
+
+    def test_implement_mode_honours_a_configured_permission_mode(self):
+        command = self.provider.build_command(
+            base.MODE_IMPLEMENT, self.resolved, self.project, options={"permission_mode": "bypassPermissions"}
+        )
+        self.assertEqual(command[command.index("--permission-mode") + 1], "bypassPermissions")
+
+    def test_read_only_modes_ignore_a_configured_permission_mode(self):
+        for mode in (base.MODE_PLAN, base.MODE_REVIEW):
+            command = self.provider.build_command(
+                mode, self.resolved, self.project, options={"permission_mode": "bypassPermissions"}
+            )
+            self.assertEqual(command[command.index("--permission-mode") + 1], "plan")
+            self.assertIn("--disallowed-tools", command)
+
+    def test_extra_args_from_options_are_appended(self):
+        command = self.provider.build_command(
+            base.MODE_IMPLEMENT, self.resolved, self.project, options={"args": ["--add-dir", "../shared"]}
+        )
+        self.assertEqual(command[-2:], ["--add-dir", "../shared"])
+
+    def test_unknown_permission_mode_is_rejected(self):
+        problems = self.provider.validate_options({"permission_mode": "yolo"})
+        self.assertTrue(any("not one of the modes" in p for p in problems))
+
+    def test_unknown_option_key_is_rejected(self):
+        problems = self.provider.validate_options({"sandbox": "workspace-write"})
+        self.assertTrue(any("not understood by the claude provider" in p for p in problems))
+
+    def test_non_list_args_is_rejected(self):
+        self.assertTrue(any("list of strings" in p for p in self.provider.validate_options({"args": "x"})))
+
+    def test_no_options_means_no_problems(self):
+        self.assertEqual(self.provider.validate_options(None), [])
+
+
+class TestCodexRoleOptions(IsolatedCase):
+    def setUp(self):
+        super().setUp()
+        self.provider = CodexProvider()
+        self.provider.configured_model = lambda: "gpt-example-1"
+        self.resolved = self.provider.resolve_model({"family": "recommended-coding"})
+
+    def test_implement_mode_honours_a_configured_sandbox(self):
+        command = self.provider.build_command(
+            base.MODE_IMPLEMENT, self.resolved, self.project, options={"sandbox": "danger-full-access"}
+        )
+        self.assertEqual(command[command.index("-s") + 1], "danger-full-access")
+
+    def test_approve_false_drops_the_approval_flag(self):
+        command = self.provider.build_command(
+            base.MODE_IMPLEMENT, self.resolved, self.project, options={"approve": False}
+        )
+        self.assertNotIn("--approve-for-me", command)
+
+    def test_read_only_modes_ignore_a_configured_sandbox(self):
+        command = self.provider.build_command(
+            base.MODE_REVIEW, self.resolved, self.project, options={"sandbox": "danger-full-access"}
+        )
+        self.assertEqual(command[command.index("-s") + 1], "read-only")
+
+    def test_invalid_sandbox_is_rejected(self):
+        self.assertTrue(any("not one of" in p for p in self.provider.validate_options({"sandbox": "nope"})))
+
+    def test_non_boolean_approve_is_rejected(self):
+        self.assertTrue(any("true or false" in p for p in self.provider.validate_options({"approve": "yes"})))
+
+
 class TestCodexAdapter(IsolatedCase):
     def setUp(self):
         super().setUp()
@@ -159,7 +244,7 @@ class TestMockAdapter(IsolatedCase):
     def test_targeted_failure(self):
         import os
 
-        os.environ["AI_ORCHESTRATOR_MOCK_FAIL"] = "reviewer-b"
+        os.environ["DEV_ORCHESTRA_MOCK_FAIL"] = "reviewer-b"
         provider = MockProvider()
         self.assertTrue(provider.run("Reviewer id: reviewer-a", base.MODE_REVIEW, self.project).ok)
         self.assertFalse(provider.run("Reviewer id: reviewer-b", base.MODE_REVIEW, self.project).ok)

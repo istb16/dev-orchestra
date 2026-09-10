@@ -70,15 +70,34 @@ contains aliases only — never dated snapshot ids.
 Prompts are sent on **stdin**, not as an argument, which avoids command-line
 length limits and quoting differences between shells.
 
-If you want fuller autonomy for the implement stage (for example a different
-permission mode), pass it explicitly rather than changing the default:
+The permission modes this adapter accepts are read from the CLI's own
+`--permission-mode` help text, exactly like the model aliases, so
+`options.permission_mode` is validated against what is actually installed.
+
+`acceptEdits` auto-approves file edits but not shell commands, so an Implementer
+asked to run the test suite may be unable to. Two ways out, in order of
+preference:
+
+1. Allow-list the commands in the project's own `.claude/settings.json`
+   (`permissions.allow`: `Bash(pytest:*)`). Narrow, and it lives with the project.
+2. Set a looser mode for that role only:
+
+```yaml
+implementer:
+  provider: claude
+  options:
+    permission_mode: bypassPermissions
+```
+
+Or ad hoc, for one run:
 
 ```bash
-ai-orchestrator run implementer --prompt-file plan.md --extra --permission-mode bypassPermissions
+dev-orchestra run implementer --prompt-file plan.md --extra --permission-mode bypassPermissions
 ```
 
 `--extra` forwards everything after it to the CLI verbatim, and later flags win.
-Only do this where the sandboxing situation makes it appropriate.
+Either way, `plan` and `review` modes stay read-only: the adapter ignores a
+loosening `permission_mode` there by design.
 
 ## Codex adapter
 
@@ -93,6 +112,10 @@ Verified against `codex` 0.154.x.
 | `implement` | `-s workspace-write --approve-for-me` |
 | Final answer | Captured with `-o <file>` rather than scraped from the event stream |
 | Auth | Inherited environment; presence detected via `OPENAI_API_KEY` or `$CODEX_HOME/auth.json` |
+
+Role options: `sandbox` (`read-only` / `workspace-write` / `danger-full-access`)
+and `approve` (`false` drops `--approve-for-me`). Both are ignored for `plan`
+and `review`, which always use `-s read-only`.
 
 The `recommended-coding` family deliberately resolves to *no* `-m` flag. That is
 the honest way to say "use the current recommended coding model" for a CLI that
@@ -113,9 +136,9 @@ An offline adapter for tests and dry runs. It never spawns a process.
 
 | Environment variable | Effect |
 | --- | --- |
-| `AI_ORCHESTRATOR_MOCK_DIR` | Directory of `<mode>.txt` canned responses (`review.txt`, `implement.txt`, `plan.txt`) |
-| `AI_ORCHESTRATOR_MOCK_RESPONSE` | Inline canned response |
-| `AI_ORCHESTRATOR_MOCK_FAIL` | `1` fails every run; any other value fails only runs whose prompt contains it (e.g. one reviewer id) |
+| `DEV_ORCHESTRA_MOCK_DIR` | Directory of `<mode>.txt` canned responses (`review.txt`, `implement.txt`, `plan.txt`) |
+| `DEV_ORCHESTRA_MOCK_RESPONSE` | Inline canned response |
+| `DEV_ORCHESTRA_MOCK_FAIL` | `1` fails every run; any other value fails only runs whose prompt contains it (e.g. one reviewer id) |
 
 Swapping a reviewer to `--provider mock` is the cheapest way to exercise the
 pipeline end to end without spending tokens.
@@ -144,7 +167,7 @@ def _bootstrap() -> None:
    pinned resolution, refusal to guess, read-only vs implement command shape,
    and missing-CLI handling. No test may invoke the real CLI.
 
-`ai-orchestrator model list --provider yourcli` and `ai-orchestrator doctor`
+`dev-orchestra model list --provider yourcli` and `dev-orchestra doctor`
 pick the new adapter up automatically.
 
 ## Failure semantics

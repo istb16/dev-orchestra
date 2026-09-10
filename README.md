@@ -66,7 +66,7 @@ flowchart LR
 | Piece | Where | Job |
 | --- | --- | --- |
 | Skill | `SKILL.md` | What to run, when, and what not to do |
-| CLI | `scripts/ai_orchestrator.py` | Deterministic operations the agent calls |
+| CLI | `scripts/dev_orchestra.py` | Deterministic operations the agent calls |
 | Providers | `scripts/orchestrator/providers/` | The only code that knows CLI flags and model names |
 | References | `references/` | The detail, loaded only when needed |
 
@@ -87,8 +87,8 @@ stores credentials, and never prints them.
 ## Installation
 
 ```bash
-git clone https://github.com/<owner>/ai-dev-orchestrator.git
-cd ai-dev-orchestrator
+git clone https://github.com/istb16/dev-orchestra.git
+cd dev-orchestra
 ```
 
 ### Claude Code
@@ -128,13 +128,13 @@ than duplicating it.
 ### Optional: put the CLI on PATH
 
 ```bash
-export PATH="$PWD/bin:$PATH"      # then `ai-orchestrator doctor` works anywhere
+export PATH="$PWD/bin:$PATH"      # then `dev-orchestra doctor` works anywhere
 ```
 
 ### Verify
 
 ```bash
-./bin/ai-orchestrator doctor
+./bin/dev-orchestra doctor
 ```
 
 ## Initial setup
@@ -179,7 +179,7 @@ Save configuration? [Y/n]
 Non-interactively:
 
 ```bash
-ai-orchestrator config setup --defaults
+dev-orchestra config setup --defaults
 ```
 
 ## Usage
@@ -196,12 +196,12 @@ Talk to your agent normally. The skill triggers on requests like:
 The plumbing is also usable directly:
 
 ```bash
-ai-orchestrator doctor
-ai-orchestrator review snapshot --base main
-ai-orchestrator review run
-ai-orchestrator review show
-ai-orchestrator review triage F1 --status accepted --note "confirmed"
-ai-orchestrator review fix-brief --output fix-brief.md
+dev-orchestra doctor
+dev-orchestra review snapshot --base main
+dev-orchestra review run
+dev-orchestra review show
+dev-orchestra review triage F1 --status accepted --note "confirmed"
+dev-orchestra review fix-brief --output fix-brief.md
 ```
 
 Full command list: `references/cli.md`.
@@ -212,9 +212,9 @@ Precedence: **project → global → built-in defaults**.
 
 | Layer | Path |
 | --- | --- |
-| Project | `<repo>/.ai-orchestrator.yaml` |
-| Global (Linux/macOS) | `~/.config/ai-dev-orchestrator/config.yaml` |
-| Global (Windows) | `%APPDATA%\ai-dev-orchestrator\config.yaml` |
+| Project | `<repo>/.dev-orchestra.yaml` |
+| Global (Linux/macOS) | `~/.config/dev-orchestra/config.yaml` |
+| Global (Windows) | `%APPDATA%\dev-orchestra\config.yaml` |
 
 ```yaml
 version: 1
@@ -233,10 +233,10 @@ review:
 (The real files use block style; see `examples/`.)
 
 ```bash
-ai-orchestrator config show
-ai-orchestrator config set implementer.model.family sonnet
-ai-orchestrator config set --scope project architect.provider codex
-ai-orchestrator config reset
+dev-orchestra config show
+dev-orchestra config set implementer.model.family sonnet
+dev-orchestra config set --scope project architect.provider codex
+dev-orchestra config reset
 ```
 
 Full schema: `references/configuration.md`.
@@ -263,7 +263,7 @@ If none of those can verify the family, the run stops with an explanation. It
 never guesses.
 
 ```bash
-ai-orchestrator model list
+dev-orchestra model list
 ```
 
 ```
@@ -284,19 +284,32 @@ Zero or more; two or more recommended. Each runs independently, read-only,
 against the same frozen diff.
 
 ```bash
-ai-orchestrator reviewer list
-ai-orchestrator reviewer add --provider codex --role security
-ai-orchestrator reviewer add --provider claude --role database
-ai-orchestrator reviewer set 2 --role performance
-ai-orchestrator reviewer remove codex-security
+dev-orchestra reviewer list
+dev-orchestra reviewer add --provider codex --role security
+dev-orchestra reviewer add --provider claude --role database
+dev-orchestra reviewer set 2 --role performance
+dev-orchestra reviewer remove codex-security
 ```
 
 Built-in roles: `general`, `security`, `performance`, `test`, `architecture`,
 `database`, `frontend`, `backend`. Custom roles are allowed.
 
-Findings from all reviewers are parsed, deduplicated (same locus + similar
-text), severity-ordered, and triaged before any fix happens. Details:
-`references/reviews.md`.
+Findings from all reviewers are parsed, deduplicated, severity-ordered, and
+triaged before any fix happens.
+
+Deduplication is split in two on purpose. Auto-merge only collapses
+near-identical restatements, because collapsing two distinct bugs hides one.
+Cross-model duplicates almost never look alike in prose — measured on real
+two-provider output, a confirmed duplicate pair scored 0.03 text similarity
+while an unrelated pair scored 0.29 — so findings from different reviewers that
+quote the same code are listed as **possible duplicates** for the orchestrator
+to confirm during triage. Details: `references/reviews.md`.
+
+Each role can also carry provider-specific `options` — notably
+`permission_mode` for Claude and `sandbox` / `approve` for Codex — validated
+against what the installed CLI actually accepts. Options that would loosen a
+read-only stage are ignored and reported by `doctor`: the architect and every
+reviewer stay read-only regardless.
 
 ## Example workflows
 
@@ -318,34 +331,36 @@ One edit, no design, no review. The orchestrator says so in the report.
 > "Review everything on this branch since main with all three reviewers."
 
 ```bash
-ai-orchestrator review snapshot --base main
-ai-orchestrator review run
-ai-orchestrator review show
+dev-orchestra review snapshot --base main
+dev-orchestra review run
+dev-orchestra review show
 ```
 
 **Cheap dry run** — swap a reviewer to the offline mock provider:
 
 ```bash
-ai-orchestrator reviewer add --provider mock --id dry --role general
-AI_ORCHESTRATOR_MOCK_RESPONSE=NO_FINDINGS ai-orchestrator review run --only dry
+dev-orchestra reviewer add --provider mock --id dry --role general
+DEV_ORCHESTRA_MOCK_RESPONSE=NO_FINDINGS dev-orchestra review run --only dry
 ```
 
 ## Troubleshooting
 
 | Symptom | Cause and fix |
 | --- | --- |
-| `Source: built-in defaults` | No config file yet. `ai-orchestrator config setup`. |
+| `Source: built-in defaults` | No config file yet. `dev-orchestra config setup`. |
 | `codex: … cannot be verified` | A family Codex does not publish. Use `recommended-coding`, or pin an exact id. |
-| `claude: cannot resolve model family 'x'` | Not an advertised alias. `ai-orchestrator model list`. |
+| `claude: cannot resolve model family 'x'` | Not an advertised alias. `dev-orchestra model list`. |
 | `Installed: no` | The CLI is not on PATH. Install it yourself; the skill will not. |
 | `Failed to authenticate` from a delegated CLI | Log in with that CLI directly (`claude`, `codex login`). `doctor` reports credential *presence*, not validity. |
 | `review snapshot` says empty | Nothing changed vs `HEAD`. Use `--base <rev>`, or check the implementation ran. |
 | `not a git repository` | Snapshots need git. `git init`, or review a committed repo. |
 | One reviewer failed | Expected to be survivable. Check `.ai/reviews/consolidated.md` for the reason. |
+| The implementer cannot run tests | `acceptEdits` auto-approves edits, not shell commands. Allow-list the command in the project's own CLI settings, or set `implementer.options.permission_mode`. |
+| Two findings are obviously the same | Auto-merge is conservative by design. Check the "Possible duplicates" list and triage one as `duplicate`. |
 | Reviews never finish | Lower `review.timeout_seconds`, or use `--sequential` to see which reviewer hangs. |
 | Config parse error | The built-in YAML parser rejects anchors, aliases and block scalars. Simplify, or install PyYAML. |
 
-`ai-orchestrator doctor --json` gives a machine-readable version of all of this.
+`dev-orchestra doctor --json` gives a machine-readable version of all of this.
 
 ## Security
 
@@ -367,7 +382,7 @@ Found a security problem? See `CONTRIBUTING.md`.
 | --- | --- |
 | Linux | Supported, CI-tested |
 | macOS | Supported, CI-tested |
-| Windows (native, PowerShell) | Supported, CI-tested. Use `bin\ai-orchestrator.ps1`. |
+| Windows (native, PowerShell) | Supported, CI-tested. Use `bin\dev-orchestra.ps1`. |
 | Windows (WSL) | Supported — treat as Linux |
 
 WSL is **not** required. Everything is pure Python plus `git`; the shell
@@ -376,9 +391,9 @@ wrappers exist only for convenience.
 ## Upgrading
 
 ```bash
-cd /path/to/ai-dev-orchestrator
+cd /path/to/dev-orchestra
 git pull
-./bin/ai-orchestrator doctor
+./bin/dev-orchestra doctor
 ```
 
 A symlink install picks the new version up immediately; with `--copy`, re-run
@@ -398,7 +413,7 @@ the installer. Configuration is forward-compatible within a major version, and
 Your configuration is left alone. To remove it too:
 
 ```bash
-ai-orchestrator config reset --scope global --delete
+dev-orchestra config reset --scope global --delete
 rm -rf .ai                        # per project, if you want the artifacts gone
 ```
 

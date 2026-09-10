@@ -171,6 +171,98 @@ class TestTriage(IsolatedCase):
         self.assertEqual([f["id"] for f in review_mod.unresolved_blocking(self._data())], ["F1"])
 
 
+class TestDuplicateCandidates(IsolatedCase):
+    """Cross-model duplicates are suggested, never silently merged.
+
+    Prose similarity was measured against real two-provider output and does not
+    separate true duplicates from unrelated findings, so the signal here is the
+    code each finding quotes.
+    """
+
+    def _finding(self, fid, reviewer, problem, evidence, file="cart.py", category="correctness"):
+        return {
+            "id": fid,
+            "file": file,
+            "line": "2",
+            "category": category,
+            "problem": problem,
+            "impact": "",
+            "evidence": evidence,
+            "recommended_fix": "",
+            "reported_by": [reviewer],
+        }
+
+    def test_two_reviewers_quoting_the_same_code_are_paired(self):
+        findings = [
+            self._finding("F1", "claude", "the split is unguarded", '`percent = int(code.split("-")[1])`'),
+            self._finding("F2", "codex", "coupon parsing assumes a component exists", '`code.split("-")[1]`'),
+        ]
+        pairs = review_mod.duplicate_candidates(findings)
+        self.assertEqual([p["ids"] for p in pairs], [["F1", "F2"]])
+        self.assertIn("code.split", pairs[0]["shared_code"])
+
+    def test_wording_alone_never_pairs_findings(self):
+        # Same words, no shared code: not enough to suggest a duplicate.
+        findings = [
+            self._finding("F1", "claude", "the discount is wrong", ""),
+            self._finding("F2", "codex", "the discount is wrong", ""),
+        ]
+        self.assertEqual(review_mod.duplicate_candidates(findings), [])
+
+    def test_findings_from_one_reviewer_are_never_paired(self):
+        findings = [
+            self._finding("F1", "claude", "unguarded split", '`code.split("-")`'),
+            self._finding("F2", "claude", "prefix ignored", '`code.split("-")`'),
+        ]
+        self.assertEqual(review_mod.duplicate_candidates(findings), [])
+
+    def test_different_files_are_never_paired(self):
+        findings = [
+            self._finding("F1", "claude", "a", "`code.split(x)`", file="a.py"),
+            self._finding("F2", "codex", "b", "`code.split(x)`", file="b.py"),
+        ]
+        self.assertEqual(review_mod.duplicate_candidates(findings), [])
+
+    def test_pairs_are_ranked_by_how_rare_the_shared_code_is(self):
+        findings = [
+            self._finding("F1", "claude", "a", "`cart.total` and `rare.token`"),
+            self._finding("F2", "claude", "b", "`cart.total`"),
+            self._finding("F3", "codex", "c", "`cart.total`"),
+            self._finding("F4", "codex", "d", "`rare.token`"),
+        ]
+        pairs = review_mod.duplicate_candidates(findings)
+        # rare.token is shared by two findings, cart.total by three.
+        self.assertEqual(pairs[0]["ids"], ["F1", "F4"])
+        self.assertLess(pairs[0]["specificity"], pairs[-1]["specificity"])
+
+    def test_consolidation_reports_candidates_without_merging_them(self):
+        findings = [
+            dict(
+                review_mod.parse_findings(FINDING_A, "r1")[0],
+                evidence="`user.profile.name`",
+                problem="the nil guard is missing",
+            ),
+            dict(
+                review_mod.parse_findings(FINDING_A, "r2")[0],
+                evidence="`user.profile.name`",
+                problem="a completely different wording for the same defect",
+            ),
+        ]
+        data = review_mod.build_consolidation(ws.Workspace(self.tmp), [], findings)
+        self.assertEqual(data["counts"]["findings_total"], 2)
+        self.assertEqual(data["counts"]["duplicate_candidates"], 1)
+        self.assertEqual(data["findings"][0]["possible_duplicates"], ["F2"])
+        rendered = review_mod.render_consolidation(data)
+        self.assertIn("Possible duplicates", rendered)
+        self.assertIn("F1 ~ F2", rendered)
+
+    def test_no_candidates_means_no_section(self):
+        findings = review_mod.parse_findings(FINDING_A, "r1")
+        data = review_mod.build_consolidation(ws.Workspace(self.tmp), [], findings)
+        self.assertEqual(data["duplicate_candidates"], [])
+        self.assertNotIn("Possible duplicates", review_mod.render_consolidation(data))
+
+
 @unittest.skipUnless(has_git(), "git is required")
 class TestSnapshot(IsolatedCase):
     def setUp(self):
@@ -194,11 +286,11 @@ class TestSnapshot(IsolatedCase):
 
     def test_orchestrator_config_is_not_part_of_the_snapshot(self):
         # The setup wizard writes this file; it is not the change under review.
-        self.write(".ai-orchestrator.yaml", "version: 1\n")
+        self.write(".dev-orchestra.yaml", "version: 1\n")
         self.write("app.py", "def add(a, b):\n    return a * b\n")
         meta = review_mod.create_snapshot(self.workspace)
-        self.assertNotIn(".ai-orchestrator.yaml", meta["untracked_included"])
-        self.assertNotIn(".ai-orchestrator.yaml", meta["files"])
+        self.assertNotIn(".dev-orchestra.yaml", meta["untracked_included"])
+        self.assertNotIn(".dev-orchestra.yaml", meta["files"])
         self.assertIn("app.py", meta["files"])
 
     def test_workspace_artifacts_are_not_part_of_the_snapshot(self):
@@ -244,7 +336,7 @@ class TestFanOut(IsolatedCase):
         os.makedirs(self.mock_dir)
         with open(os.path.join(self.mock_dir, "review.txt"), "w", encoding="utf-8") as handle:
             handle.write(FINDING_A)
-        os.environ["AI_ORCHESTRATOR_MOCK_DIR"] = self.mock_dir
+        os.environ["DEV_ORCHESTRA_MOCK_DIR"] = self.mock_dir
 
     def test_every_reviewer_writes_its_own_report(self):
         runs = review_mod.run_reviews([reviewer("r1"), reviewer("r2", role="security")], self.workspace)
@@ -258,7 +350,7 @@ class TestFanOut(IsolatedCase):
         self.assertNotIn("r1", report.split("---", 1)[1])
 
     def test_one_failure_does_not_fail_the_batch(self):
-        os.environ["AI_ORCHESTRATOR_MOCK_FAIL"] = "Reviewer id: r2"
+        os.environ["DEV_ORCHESTRA_MOCK_FAIL"] = "Reviewer id: r2"
         runs = review_mod.run_reviews([reviewer("r1"), reviewer("r2"), reviewer("r3")], self.workspace)
         ok, failed = review_mod.summarise_runs(runs)
         self.assertEqual((ok, failed), (2, 1))

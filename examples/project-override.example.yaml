@@ -1,4 +1,4 @@
-# Example project override: copy to <repo>/.ai-orchestrator.yaml
+# Example project override: copy to <repo>/.dev-orchestra.yaml
 #
 # Only the keys you set here override your global configuration. Mappings merge
 # key by key, so omitting `architect` keeps your personal architect.

@@ -30,7 +30,7 @@ jobs:
         run: ruff format --check .
       - name: Shell scripts parse cleanly
         run: |
-          for script in install/*.sh bin/ai-orchestrator; do
+          for script in install/*.sh bin/dev-orchestra; do
             sh -n "$script"
           done
       - name: PowerShell scripts parse cleanly
@@ -84,18 +84,18 @@ jobs:
         run: python scripts/validate_skill.py
       - name: CLI is runnable from a clean checkout
         run: |
-          python scripts/ai_orchestrator.py --version
-          python scripts/ai_orchestrator.py config show
-          python scripts/ai_orchestrator.py doctor --fast
+          python scripts/dev_orchestra.py --version
+          python scripts/dev_orchestra.py config show
+          python scripts/dev_orchestra.py doctor --fast
       - name: Installers are idempotent
         run: |
           ./install/install.sh --project "$RUNNER_TEMP/proj"
           ./install/install.sh --project "$RUNNER_TEMP/proj"
-          test -e "$RUNNER_TEMP/proj/.claude/skills/ai-dev-orchestrator/SKILL.md"
+          test -e "$RUNNER_TEMP/proj/.claude/skills/dev-orchestra/SKILL.md"
           ./install/install.sh --codex --project "$RUNNER_TEMP/proj"
           ./install/install.sh --codex --project "$RUNNER_TEMP/proj"
-          test "$(grep -c 'BEGIN ai-dev-orchestrator' "$RUNNER_TEMP/proj/AGENTS.md")" -eq 1
+          test "$(grep -c 'BEGIN dev-orchestra' "$RUNNER_TEMP/proj/AGENTS.md")" -eq 1
           ./install/uninstall.sh --project "$RUNNER_TEMP/proj"
           ./install/uninstall.sh --codex --project "$RUNNER_TEMP/proj"
-          test ! -e "$RUNNER_TEMP/proj/.claude/skills/ai-dev-orchestrator"
-          test "$(grep -c 'BEGIN ai-dev-orchestrator' "$RUNNER_TEMP/proj/AGENTS.md" || true)" -eq 0
+          test ! -e "$RUNNER_TEMP/proj/.claude/skills/dev-orchestra"
+          test "$(grep -c 'BEGIN dev-orchestra' "$RUNNER_TEMP/proj/AGENTS.md" || true)" -eq 0

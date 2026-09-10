@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import os
 import re
-from typing import List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence
 
 from .base import (
     MODE_IMPLEMENT,
@@ -26,6 +26,11 @@ from .base import (
 
 _ALIAS_RE = re.compile(r"'([a-z][a-z0-9.\-]*)'")
 _READ_ONLY_DENY = "Edit,Write,NotebookEdit"
+_CHOICES_RE = re.compile(r'"([A-Za-z]+)"')
+
+#: Used only when ``claude --help`` cannot be read. Same rule as models: this is
+#: a fallback, not a source of truth.
+FALLBACK_PERMISSION_MODES = ("acceptEdits", "bypassPermissions", "plan")
 
 
 class ClaudeProvider(Provider):
@@ -42,6 +47,7 @@ class ClaudeProvider(Provider):
         ModelCandidate("haiku", "haiku", "haiku (latest Haiku)", "builtin-fallback"),
     )
     fallback_updated = "2026-09-10"
+    option_keys = ("args", "permission_mode")
 
     def auth_status(self) -> "tuple[str, str]":
         for variable in ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_AUTH_TOKEN"):
@@ -51,6 +57,36 @@ class ClaudeProvider(Provider):
         if os.path.isfile(store):
             return "present", "CLI credential store found"
         return "unknown", "no credential file found; the CLI may use an OS keychain"
+
+    def permission_modes(self) -> List[str]:
+        """The modes the installed CLI advertises for ``--permission-mode``."""
+        return list(self._cached("permission_modes", self._discover_permission_modes))
+
+    def _discover_permission_modes(self) -> List[str]:
+        completed = self._capture([self.executable, "--help"], timeout=45)
+        if completed is None or completed.returncode != 0:
+            return list(FALLBACK_PERMISSION_MODES)
+        block = _help_block(completed.stdout or "", "--permission-mode <mode>")
+        modes = _CHOICES_RE.findall(block)
+        return modes or list(FALLBACK_PERMISSION_MODES)
+
+    def validate_options(self, options: Optional[Dict[str, Any]]) -> List[str]:
+        problems = super().validate_options(options)
+        if not isinstance(options, dict):
+            return problems
+        requested = options.get("permission_mode")
+        if requested is None:
+            return problems
+        if not isinstance(requested, str):
+            problems.append("options.permission_mode must be a string")
+            return problems
+        known = self.permission_modes()
+        if known and requested not in known:
+            problems.append(
+                "options.permission_mode %r is not one of the modes this CLI accepts (%s)"
+                % (requested, ", ".join(known))
+            )
+        return problems
 
     def _discover_models(self) -> List[ModelCandidate]:
         """Read the aliases the installed CLI advertises in its own help."""
@@ -105,45 +141,58 @@ class ClaudeProvider(Provider):
         )
 
     def build_command(
-        self, mode: str, resolved: ResolvedModel, cwd: str, extra_args: Sequence[str] = ()
+        self,
+        mode: str,
+        resolved: ResolvedModel,
+        cwd: str,
+        extra_args: Sequence[str] = (),
+        options: Optional[Dict[str, Any]] = None,
     ) -> List[str]:
         command = [self.executable, "-p", "--output-format", "text"]
         if resolved.argument:
             command += ["--model", resolved.argument]
-        command += _permission_args(mode)
-        # extra_args come from the role's `options.args` and win by position:
-        # a later --permission-mode overrides the default chosen above.
+        requested = (options or {}).get("permission_mode")
+        command += _permission_args(mode, requested if isinstance(requested, str) else None)
+        command += self.option_args(options)
+        # Anything passed at the call site wins by position: for repeated flags
+        # the CLI takes the last occurrence.
         command += list(extra_args)
         return command
 
 
-def _permission_args(mode: str) -> List[str]:
+def _permission_args(mode: str, requested: Optional[str] = None) -> List[str]:
     if mode in READ_ONLY_MODES:
+        # A configured permission_mode is deliberately ignored here: planning
+        # and review stages stay read-only whatever the config says. Loosening
+        # them is not a preference, it is a broken invariant.
         return ["--permission-mode", "plan", "--disallowed-tools", _READ_ONLY_DENY]
     if mode == MODE_IMPLEMENT:
-        return ["--permission-mode", "acceptEdits"]
+        return ["--permission-mode", requested or "acceptEdits"]
     return []
 
 
-def _parse_model_aliases(help_text: str) -> List[str]:
-    """Extract the aliases advertised by ``--model`` in ``claude --help``."""
-    lines = help_text.splitlines()
+def _help_block(help_text: str, option: str) -> str:
+    """The description block for one option in ``claude --help``."""
     block: List[str] = []
     capturing = False
-    for line in lines:
-        if "--model <model>" in line:
+    for line in help_text.splitlines():
+        if option in line:
             capturing = True
             block.append(line)
             continue
         if capturing:
-            # The option's description is the indented continuation block.
             if line.strip() and not re.match(r"^\s{0,4}(-{1,2}\w|[A-Z][a-z]+:)", line):
                 block.append(line)
                 continue
             break
-    if not block:
+    return " ".join(block)
+
+
+def _parse_model_aliases(help_text: str) -> List[str]:
+    """Extract the aliases advertised by ``--model`` in ``claude --help``."""
+    text = _help_block(help_text, "--model <model>")
+    if not text:
         return []
-    text = " ".join(block)
     aliases: List[str] = []
     for match in _ALIAS_RE.findall(text):
         if match.startswith("claude-"):

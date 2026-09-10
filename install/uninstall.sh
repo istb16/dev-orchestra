@@ -6,10 +6,10 @@
 #   ./install/uninstall.sh --codex           remove the AGENTS.md pointer block
 #
 # Your configuration is left alone. To remove it too:
-#   ai-orchestrator config reset --scope global --delete
+#   dev-orchestra config reset --scope global --delete
 set -eu
 
-SKILL_NAME=ai-dev-orchestrator
+SKILL_NAME=dev-orchestra
 here=$(cd -- "$(dirname -- "$0")" && pwd)
 root=$(dirname -- "$here")
 

@@ -62,7 +62,7 @@ flowchart LR
 | 要素 | 場所 | 役割 |
 | --- | --- | --- |
 | Skill | `SKILL.md` | 何をいつ実行するか、何をしてはいけないか |
-| CLI | `scripts/ai_orchestrator.py` | エージェントが呼ぶ決定的な操作 |
+| CLI | `scripts/dev_orchestra.py` | エージェントが呼ぶ決定的な操作 |
 | Provider | `scripts/orchestrator/providers/` | CLIのフラグとモデル名を知る唯一の場所 |
 | References | `references/` | 詳細。必要になったときだけ読む |
 
@@ -82,8 +82,8 @@ flowchart LR
 ## インストール
 
 ```bash
-git clone https://github.com/<owner>/ai-dev-orchestrator.git
-cd ai-dev-orchestrator
+git clone https://github.com/istb16/dev-orchestra.git
+cd dev-orchestra
 ```
 
 ### Claude Code の場合
@@ -121,13 +121,13 @@ Codex にはスキルディレクトリの仕組みがないため、インス�
 ### 任意: CLIをPATHに通す
 
 ```bash
-export PATH="$PWD/bin:$PATH"      # どこからでも `ai-orchestrator doctor` が使えます
+export PATH="$PWD/bin:$PATH"      # どこからでも `dev-orchestra doctor` が使えます
 ```
 
 ### 動作確認
 
 ```bash
-./bin/ai-orchestrator doctor
+./bin/dev-orchestra doctor
 ```
 
 ## 初期セットアップ
@@ -172,7 +172,7 @@ Save configuration? [Y/n]
 対話なしで推奨値を書き込む場合:
 
 ```bash
-ai-orchestrator config setup --defaults
+dev-orchestra config setup --defaults
 ```
 
 ## 使い方
@@ -189,12 +189,12 @@ ai-orchestrator config setup --defaults
 配管部分は直接叩くこともできます。
 
 ```bash
-ai-orchestrator doctor
-ai-orchestrator review snapshot --base main
-ai-orchestrator review run
-ai-orchestrator review show
-ai-orchestrator review triage F1 --status accepted --note "確認済み"
-ai-orchestrator review fix-brief --output fix-brief.md
+dev-orchestra doctor
+dev-orchestra review snapshot --base main
+dev-orchestra review run
+dev-orchestra review show
+dev-orchestra review triage F1 --status accepted --note "確認済み"
+dev-orchestra review fix-brief --output fix-brief.md
 ```
 
 全コマンドは `references/cli.md`（英語）を参照してください。
@@ -205,9 +205,9 @@ ai-orchestrator review fix-brief --output fix-brief.md
 
 | レイヤ | パス |
 | --- | --- |
-| プロジェクト | `<repo>/.ai-orchestrator.yaml` |
-| グローバル (Linux/macOS) | `~/.config/ai-dev-orchestrator/config.yaml` |
-| グローバル (Windows) | `%APPDATA%\ai-dev-orchestrator\config.yaml` |
+| プロジェクト | `<repo>/.dev-orchestra.yaml` |
+| グローバル (Linux/macOS) | `~/.config/dev-orchestra/config.yaml` |
+| グローバル (Windows) | `%APPDATA%\dev-orchestra\config.yaml` |
 
 ```yaml
 version: 1
@@ -226,10 +226,10 @@ review:
 （実ファイルはブロック形式です。`examples/` を参照。）
 
 ```bash
-ai-orchestrator config show
-ai-orchestrator config set implementer.model.family sonnet
-ai-orchestrator config set --scope project architect.provider codex
-ai-orchestrator config reset
+dev-orchestra config show
+dev-orchestra config set implementer.model.family sonnet
+dev-orchestra config set --scope project architect.provider codex
+dev-orchestra config reset
 ```
 
 マッピングはキー単位でマージされますが、**リストは丸ごと置き換わります**。プロジェクト設定で
@@ -257,7 +257,7 @@ model: {family: default, version: latest}                     # CLIに任せる
 どれでも検証できない場合、理由を示して停止します。推測は行いません。
 
 ```bash
-ai-orchestrator model list
+dev-orchestra model list
 ```
 
 ```
@@ -277,18 +277,28 @@ CLI自身の現行デフォルトが、定義上いちばん新しいからで�
 0個以上（2個以上を推奨）。それぞれが独立・read-only で、同一の凍結済みdiffをレビューします。
 
 ```bash
-ai-orchestrator reviewer list
-ai-orchestrator reviewer add --provider codex --role security
-ai-orchestrator reviewer add --provider claude --role database
-ai-orchestrator reviewer set 2 --role performance
-ai-orchestrator reviewer remove codex-security
+dev-orchestra reviewer list
+dev-orchestra reviewer add --provider codex --role security
+dev-orchestra reviewer add --provider claude --role database
+dev-orchestra reviewer set 2 --role performance
+dev-orchestra reviewer remove codex-security
 ```
 
 組み込みロール: `general`、`security`、`performance`、`test`、`architecture`、`database`、
 `frontend`、`backend`。任意のカスタムロールも指定できます。
 
-全レビュアーの findings はパースされ、重複統合され（同一箇所＋類似テキスト）、深刻度順に並べられ、
-修正前に必ずトリアージされます。詳細は `references/reviews.md`（英語）。
+全レビュアーの findings はパースされ、重複統合され、深刻度順に並べられ、修正前に必ずトリアージされます。
+
+重複判定は意図的に2段構えです。自動統合はほぼ同一の言い換えだけを潰します。異なるバグを1つに
+まとめてしまうと片方が消えるからです。**跨モデルの重複は散文がまったく似ません** — 実際の2社
+レビュー出力で測ったところ、真の重複ペアのテキスト類似度が 0.03、無関係なペアが 0.29 でした。
+そこで、異なるレビュアーが**同じコードを引用している** findings を「重複候補」として提示し、
+Orchestrator がトリアージ時に確定させます。詳細は `references/reviews.md`（英語）。
+
+各ロールには provider 固有の `options` も指定できます（Claude は `permission_mode`、Codex は
+`sandbox` / `approve`）。値はインストール済みCLIが実際に受け付けるものと照合されます。read-only
+工程を緩めようとする option は無視され、`doctor` がそれを報告します。architect と全レビュアーは
+設定に関わらず read-only を維持します。
 
 ## ワークフロー例
 
@@ -310,34 +320,36 @@ ai-orchestrator reviewer remove codex-security
 > 「このブランチの main 以降の変更を全レビュアーでレビューして」
 
 ```bash
-ai-orchestrator review snapshot --base main
-ai-orchestrator review run
-ai-orchestrator review show
+dev-orchestra review snapshot --base main
+dev-orchestra review run
+dev-orchestra review show
 ```
 
 **低コストな動作確認** — レビュアーをオフラインの mock provider に差し替えます。
 
 ```bash
-ai-orchestrator reviewer add --provider mock --id dry --role general
-AI_ORCHESTRATOR_MOCK_RESPONSE=NO_FINDINGS ai-orchestrator review run --only dry
+dev-orchestra reviewer add --provider mock --id dry --role general
+DEV_ORCHESTRA_MOCK_RESPONSE=NO_FINDINGS dev-orchestra review run --only dry
 ```
 
 ## トラブルシューティング
 
 | 症状 | 原因と対処 |
 | --- | --- |
-| `Source: built-in defaults` | 設定ファイルが未作成。`ai-orchestrator config setup`。 |
+| `Source: built-in defaults` | 設定ファイルが未作成。`dev-orchestra config setup`。 |
 | `codex: … cannot be verified` | Codex が公開していない family。`recommended-coding` を使うか、正確なIDをpinする。 |
-| `claude: cannot resolve model family 'x'` | 提示されていない alias。`ai-orchestrator model list` で確認。 |
+| `claude: cannot resolve model family 'x'` | 提示されていない alias。`dev-orchestra model list` で確認。 |
 | `Installed: no` | CLIがPATHにない。自分でインストールしてください（Skillは勝手に入れません）。 |
 | 委譲先CLIの `Failed to authenticate` | そのCLIで直接ログイン（`claude`、`codex login`）。`doctor` は認証情報の**存在**のみを見ており、有効性は検証しません。 |
 | `review snapshot` が empty | `HEAD` との差分がない。`--base <rev>` を使うか、実装工程が動いたか確認。 |
 | `not a git repository` | スナップショットにはgitが必要。`git init` するか、コミット済みリポジトリで実行。 |
 | レビュアーが1件失敗 | 想定内で継続します。理由は `.ai/reviews/consolidated.md` に記録されます。 |
+| Implementerがテストを実行できない | `acceptEdits` は編集のみ自動承認し、シェルコマンドは承認しません。プロジェクト側のCLI設定でコマンドを許可リストに入れるか、`implementer.options.permission_mode` を設定してください。 |
+| 明らかに同じ findings が2件ある | 自動統合は意図的に保守的です。「Possible duplicates」の一覧を確認し、片方を `duplicate` としてトリアージしてください。 |
 | レビューが終わらない | `review.timeout_seconds` を下げるか、`--sequential` でどのレビュアーが止まっているか特定。 |
 | 設定のパースエラー | 内蔵YAMLパーサは anchor、alias、ブロックスカラーを拒否します。簡素化するか PyYAML を入れてください。 |
 
-`ai-orchestrator doctor --json` で同じ情報を機械可読な形で取得できます。
+`dev-orchestra doctor --json` で同じ情報を機械可読な形で取得できます。
 
 ## セキュリティ
 
@@ -357,7 +369,7 @@ AI_ORCHESTRATOR_MOCK_RESPONSE=NO_FINDINGS ai-orchestrator review run --only dry
 | --- | --- |
 | Linux | 対応・CI検証済み |
 | macOS | 対応・CI検証済み |
-| Windows（ネイティブ / PowerShell） | 対応・CI検証済み。`bin\ai-orchestrator.ps1` を使用。 |
+| Windows（ネイティブ / PowerShell） | 対応・CI検証済み。`bin\dev-orchestra.ps1` を使用。 |
 | Windows（WSL） | 対応 — Linuxとして扱ってください |
 
 WSLは**必須ではありません**。中身は純粋なPythonと`git`だけで、シェルラッパーは利便性のためのものです。
@@ -365,9 +377,9 @@ WSLは**必須ではありません**。中身は純粋なPythonと`git`だけ�
 ## アップグレード
 
 ```bash
-cd /path/to/ai-dev-orchestrator
+cd /path/to/dev-orchestra
 git pull
-./bin/ai-orchestrator doctor
+./bin/dev-orchestra doctor
 ```
 
 シンボリックリンク導入なら即座に反映されます。`--copy` の場合はインストーラを再実行してください。
@@ -386,7 +398,7 @@ git pull
 設定は残ります。設定も消す場合:
 
 ```bash
-ai-orchestrator config reset --scope global --delete
+dev-orchestra config reset --scope global --delete
 rm -rf .ai                        # 成果物も消す場合、プロジェクトごとに
 ```
 

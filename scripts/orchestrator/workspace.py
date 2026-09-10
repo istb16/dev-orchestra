@@ -102,7 +102,7 @@ class Workspace:
         if not os.path.exists(gitignore):
             with open(gitignore, "w", encoding="utf-8", newline="\n") as handle:
                 handle.write(
-                    "# Working artifacts produced by ai-dev-orchestrator.\n"
+                    "# Working artifacts produced by dev-orchestra.\n"
                     "# Delete this file if you would rather commit them for team visibility.\n"
                     "*\n"
                 )

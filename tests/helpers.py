@@ -15,11 +15,11 @@ if SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, SCRIPTS_DIR)
 
 ENV_KEYS = (
-    "AI_ORCHESTRATOR_HOME",
-    "AI_ORCHESTRATOR_CONFIG",
-    "AI_ORCHESTRATOR_MOCK_DIR",
-    "AI_ORCHESTRATOR_MOCK_RESPONSE",
-    "AI_ORCHESTRATOR_MOCK_FAIL",
+    "DEV_ORCHESTRA_HOME",
+    "DEV_ORCHESTRA_CONFIG",
+    "DEV_ORCHESTRA_MOCK_DIR",
+    "DEV_ORCHESTRA_MOCK_RESPONSE",
+    "DEV_ORCHESTRA_MOCK_FAIL",
     "XDG_CONFIG_HOME",
     "APPDATA",
 )
@@ -31,14 +31,14 @@ class IsolatedCase(unittest.TestCase):
     def setUp(self) -> None:
         self._saved_env = {key: os.environ.get(key) for key in ENV_KEYS}
         self._saved_cwd = os.getcwd()
-        self.tmp = tempfile.mkdtemp(prefix="aidevorch-test-")
+        self.tmp = tempfile.mkdtemp(prefix="devorchestra-test-")
         self.config_home = os.path.join(self.tmp, "cfg")
         self.project = os.path.join(self.tmp, "project")
         os.makedirs(self.config_home)
         os.makedirs(self.project)
         for key in ENV_KEYS:
             os.environ.pop(key, None)
-        os.environ["AI_ORCHESTRATOR_HOME"] = self.config_home
+        os.environ["DEV_ORCHESTRA_HOME"] = self.config_home
         os.chdir(self.project)
         # Discovery is memoised per process; tests patch CLIs, so start clean.
         from orchestrator.providers import base as provider_base

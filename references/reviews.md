@@ -16,9 +16,9 @@
 ## Snapshot
 
 ```bash
-ai-orchestrator review snapshot                 # working tree vs HEAD
-ai-orchestrator review snapshot --base main     # everything since main
-ai-orchestrator review snapshot --no-untracked  # tracked changes only
+dev-orchestra review snapshot                 # working tree vs HEAD
+dev-orchestra review snapshot --base main     # everything since main
+dev-orchestra review snapshot --no-untracked  # tracked changes only
 ```
 
 Writes `.ai/reviews/review-target.diff` plus metadata:
@@ -41,7 +41,7 @@ usually the most important part of a change. The sha256 is stamped into every
 reviewer report so you can prove they judged the same thing.
 
 The skill's own files are never part of the snapshot: everything under the
-workspace directory (`.ai/`) and any `.ai-orchestrator.yaml|yml|json` are
+workspace directory (`.ai/`) and any `.dev-orchestra.yaml|yml|json` are
 skipped, so the config the setup wizard just wrote does not show up as a
 "change" in every review.
 
@@ -122,14 +122,48 @@ Findings are numbered `F1…Fn` in severity order, so `F1` is always the most
 serious. Two independent reviewers agreeing raises the prior that a finding is
 real — it does not make it true.
 
+### Why auto-merge stays conservative
+
+Auto-merge only catches near-identical restatements. **Cross-model duplicates
+almost never look alike in prose**, and the numbers are not close: measured on
+real two-provider output over the same diff, a confirmed duplicate pair scored
+**0.03** text similarity while an unrelated pair scored **0.29**. Any threshold
+that merged the former would merge plenty of the latter — and collapsing two
+distinct bugs hides one, which is a worse failure than listing one issue twice.
+
+So the loose signal is separated out. Findings from **different** reviewers, in
+the same file, that quote the same code are reported as **possible duplicates**:
+
+```markdown
+## Possible duplicates (confirm during triage)
+
+- F1 ~ F7  (`cart.py`, shared: `code.split`)
+- F3 ~ F8  (`cart.py`, shared: `i.price`)
+```
+
+Pairs are ranked by how rare the shared token is — code only those two findings
+mention is much stronger evidence than an expression every finding quotes.
+Findings from the *same* reviewer are never paired: reviewers are told not to
+report an issue twice, so two of theirs are two issues by construction.
+
+Confirm or dismiss each pair during triage:
+
+```bash
+dev-orchestra review triage F7 --status duplicate --note "same as F1"
+```
+
+On the sample above this caught every real duplicate (3 of 3) at the cost of
+3 suggestions that were not. That trade is deliberate: a missed duplicate costs
+the fixer redundant work, while a wrong merge costs a bug.
+
 ## Triage
 
 ```bash
-ai-orchestrator review show                       # the consolidated report
-ai-orchestrator review triage F1 F4 --status accepted --note "confirmed"
-ai-orchestrator review triage F2 --status rejected --note "guarded by caller"
-ai-orchestrator review triage F3 --status needs-investigation
-ai-orchestrator review show --accepted            # what the fixer will see
+dev-orchestra review show                       # the consolidated report
+dev-orchestra review triage F1 F4 --status accepted --note "confirmed"
+dev-orchestra review triage F2 --status rejected --note "guarded by caller"
+dev-orchestra review triage F3 --status needs-investigation
+dev-orchestra review show --accepted            # what the fixer will see
 ```
 
 | Status | Meaning |
@@ -151,7 +185,7 @@ are rejecting the claim, not just the tone.
 ## Re-review
 
 ```bash
-ai-orchestrator review status --json
+dev-orchestra review status --json
 ```
 
 `re_review_recommended` is true when unresolved findings at
@@ -169,9 +203,9 @@ this pipeline is going to catch; a third mostly re-litigates.
 The review pipeline is useful without the rest of the workflow:
 
 ```bash
-ai-orchestrator review snapshot --base main
-ai-orchestrator review run
-ai-orchestrator review show
+dev-orchestra review snapshot --base main
+dev-orchestra review run
+dev-orchestra review show
 ```
 
 Useful flags: `--only <id-or-role>` to run a subset, `--sequential` to run one

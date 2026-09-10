@@ -25,7 +25,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$SkillName = 'ai-dev-orchestrator'
+$SkillName = 'dev-orchestra'
 $root = Split-Path -Parent $PSScriptRoot
 
 function Add-ProjectGitExclude {
@@ -128,7 +128,7 @@ function Install-CodexPointer {
         ''
         'Its helper CLI is:'
         ''
-        "    python $root/scripts/ai_orchestrator.py <command>"
+        "    python $root/scripts/dev_orchestra.py <command>"
         ''
         'That file is the single source of truth; do not rely on a copy of it.'
         $end
@@ -142,4 +142,4 @@ if ($Codex) { Install-CodexPointer } else { Install-ClaudeSkill }
 
 Write-Host ''
 Write-Host 'Verify with:'
-Write-Host "    $root\bin\ai-orchestrator.ps1 doctor"
+Write-Host "    $root\bin\dev-orchestra.ps1 doctor"

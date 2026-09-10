@@ -38,7 +38,7 @@ the user's commits. Teams who want them reviewable can delete that file and
 commit the directory; teams who never want it can add `.ai/` to the repo's own
 `.gitignore`. Say which you did if you change it.
 
-Nothing in `.ai/`, and no `.ai-orchestrator.yaml`, ever enters a review
+Nothing in `.ai/`, and no `.dev-orchestra.yaml`, ever enters a review
 snapshot — the skill's own files are not the change under review.
 
 ## Design
@@ -72,7 +72,7 @@ Do not modify any file.
 ```
 
 ```bash
-ai-orchestrator run architect \
+dev-orchestra run architect \
   --prompt-file .ai/execution/design-request.md \
   --output .ai/plan.md
 ```
@@ -100,7 +100,7 @@ Report: files changed, tests added/updated, test output, anything you could not 
 ```
 
 ```bash
-ai-orchestrator run implementer --prompt-file .ai/execution/implement-request.md
+dev-orchestra run implementer --prompt-file .ai/execution/implement-request.md
 ```
 
 Implementer failure is fatal: stop, report what happened, leave the tree in a
@@ -119,8 +119,8 @@ tree.
 ## Reviews
 
 ```bash
-ai-orchestrator review snapshot            # freeze it
-ai-orchestrator review run --iteration 1   # fan out
+dev-orchestra review snapshot            # freeze it
+dev-orchestra review run --iteration 1   # fan out
 ```
 
 `review snapshot` diffs the working tree against `HEAD` by default and folds in
@@ -128,7 +128,7 @@ untracked files, so brand-new modules are reviewed too. Use `--base <rev>` to
 review everything since a branch point:
 
 ```bash
-ai-orchestrator review snapshot --base main
+dev-orchestra review snapshot --base main
 ```
 
 See `references/reviews.md` for the output schema, deduplication and triage.
@@ -136,8 +136,8 @@ See `references/reviews.md` for the output schema, deduplication and triage.
 ## Fix
 
 ```bash
-ai-orchestrator review fix-brief --output .ai/execution/fix-brief.md
-ai-orchestrator run review_fixer --prompt-file .ai/execution/fix-brief.md
+dev-orchestra review fix-brief --output .ai/execution/fix-brief.md
+dev-orchestra run review_fixer --prompt-file .ai/execution/fix-brief.md
 ```
 
 Prepend your instructions to the generated brief:
@@ -156,7 +156,7 @@ Do not fix anything that is not listed here.
 ## Re-test and re-review
 
 ```bash
-ai-orchestrator review status
+dev-orchestra review status
 ```
 
 ```json
@@ -180,9 +180,9 @@ Stages delegated through `run` are recorded automatically. Record the rest so
 the summary is complete:
 
 ```bash
-ai-orchestrator state record test ok --detail command="pytest -q" passed=128
-ai-orchestrator state record re-test ok
-ai-orchestrator summary
+dev-orchestra state record test ok --detail command="pytest -q" passed=128
+dev-orchestra state record re-test ok
+dev-orchestra summary
 ```
 
 The final report names: which stages ran, which were skipped and why, test

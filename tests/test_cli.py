@@ -1,4 +1,4 @@
-"""End-to-end behaviour of the ``ai-orchestrator`` command."""
+"""End-to-end behaviour of the ``dev-orchestra`` command."""
 
 from __future__ import annotations
 
@@ -78,7 +78,7 @@ class TestConfigCommands(IsolatedCase):
     def test_project_scope_writes_a_project_file(self):
         code, _, _ = run_cli("config", "set", "--scope", "project", "implementer.provider", "mock")
         self.assertEqual(code, 0)
-        self.assertTrue(os.path.isfile(os.path.join(self.project, ".ai-orchestrator.yaml")))
+        self.assertTrue(os.path.isfile(os.path.join(self.project, ".dev-orchestra.yaml")))
         self.assertEqual(config_mod.load(self.project).role("implementer")["provider"], "mock")
 
     def test_reset_restores_defaults(self):
@@ -211,6 +211,18 @@ class TestDoctor(IsolatedCase):
         self.assertIn("Installed: no", out)
         self.assertIn("CLI is not installed", out)
 
+    def test_doctor_flags_options_that_read_only_roles_ignore(self):
+        run_cli("config", "setup", "--defaults")
+        run_cli("config", "set", "architect.options.permission_mode", "bypassPermissions")
+        _, out, _ = run_cli("doctor", "--fast")
+        self.assertIn("always run read-only", out)
+
+    def test_doctor_does_not_flag_options_on_the_implementer(self):
+        run_cli("config", "setup", "--defaults")
+        run_cli("config", "set", "implementer.options.permission_mode", "bypassPermissions")
+        _, out, _ = run_cli("doctor", "--fast")
+        self.assertNotIn("always run read-only", out)
+
     def test_strict_mode_exits_non_zero_on_problems(self):
         run_cli("config", "setup", "--defaults")
         run_cli("reviewer", "remove", "claude-general")
@@ -242,7 +254,7 @@ class TestRunCommand(IsolatedCase):
         self.assertEqual(events[-1]["status"], "ok")
 
     def test_failing_role_returns_non_zero(self):
-        os.environ["AI_ORCHESTRATOR_MOCK_FAIL"] = "1"
+        os.environ["DEV_ORCHESTRA_MOCK_FAIL"] = "1"
         code, _, err = run_cli("run", "implementer", "--prompt", "go")
         self.assertEqual(code, 1)
         self.assertIn("implementer failed", err)
@@ -274,7 +286,7 @@ class TestReviewPipeline(IsolatedCase):
         os.makedirs(mock_dir)
         with open(os.path.join(mock_dir, "review.txt"), "w", encoding="utf-8") as handle:
             handle.write(FINDING)
-        os.environ["AI_ORCHESTRATOR_MOCK_DIR"] = mock_dir
+        os.environ["DEV_ORCHESTRA_MOCK_DIR"] = mock_dir
 
         run_cli("config", "setup", "--defaults")
         run_cli("reviewer", "remove", "claude-general")
@@ -318,7 +330,7 @@ class TestReviewPipeline(IsolatedCase):
         self.assertTrue(status["iteration_budget_exhausted"])
 
     def test_partial_reviewer_failure_still_produces_a_report(self):
-        os.environ["AI_ORCHESTRATOR_MOCK_FAIL"] = "Reviewer id: m2"
+        os.environ["DEV_ORCHESTRA_MOCK_FAIL"] = "Reviewer id: m2"
         run_cli("review", "snapshot")
         code, out, _ = run_cli("review", "run")
         self.assertEqual(code, 0)
@@ -328,7 +340,7 @@ class TestReviewPipeline(IsolatedCase):
         self.assertEqual(data["counts"]["findings_total"], 1)
 
     def test_every_reviewer_failing_returns_non_zero(self):
-        os.environ["AI_ORCHESTRATOR_MOCK_FAIL"] = "1"
+        os.environ["DEV_ORCHESTRA_MOCK_FAIL"] = "1"
         run_cli("review", "snapshot")
         code, _, _ = run_cli("review", "run")
         self.assertEqual(code, 1)

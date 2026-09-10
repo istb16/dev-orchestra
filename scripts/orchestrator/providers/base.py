@@ -257,9 +257,47 @@ class Provider:
     # -- execution ---------------------------------------------------------
 
     def build_command(
-        self, mode: str, resolved: ResolvedModel, cwd: str, extra_args: Sequence[str] = ()
+        self,
+        mode: str,
+        resolved: ResolvedModel,
+        cwd: str,
+        extra_args: Sequence[str] = (),
+        options: Optional[Dict[str, Any]] = None,
     ) -> List[str]:
         raise NotImplementedError
+
+    # -- role options ------------------------------------------------------
+
+    #: Provider-specific keys a role may set under ``options``. Subclasses add
+    #: their own; ``args`` is understood by every adapter.
+    option_keys: Sequence[str] = ("args",)
+
+    def validate_options(self, options: Optional[Dict[str, Any]]) -> List[str]:
+        """Return human-readable problems with a role's ``options`` mapping."""
+        if options is None:
+            return []
+        if not isinstance(options, dict):
+            return ["options must be a mapping"]
+        problems: List[str] = []
+        for key, value in options.items():
+            if key not in self.option_keys:
+                problems.append(
+                    "options.%s is not understood by the %s provider (known: %s)"
+                    % (key, self.name, ", ".join(self.option_keys))
+                )
+            elif key == "args" and not (
+                isinstance(value, list) and all(isinstance(item, str) for item in value)
+            ):
+                problems.append("options.args must be a list of strings")
+        return problems
+
+    @staticmethod
+    def option_args(options: Optional[Dict[str, Any]]) -> List[str]:
+        """The raw extra CLI arguments a role configured, if any."""
+        if not isinstance(options, dict):
+            return []
+        args = options.get("args")
+        return [str(item) for item in args] if isinstance(args, list) else []
 
     def run(
         self,
@@ -270,6 +308,7 @@ class Provider:
         timeout: int = 1800,
         extra_args: Sequence[str] = (),
         env: Optional[Dict[str, str]] = None,
+        options: Optional[Dict[str, Any]] = None,
     ) -> RunResult:
         if mode not in MODES:
             raise ValueError("unknown mode %r" % mode)
@@ -278,7 +317,7 @@ class Provider:
             return RunResult(False, 127, "", detection.error or "CLI not installed", [self.executable], 0.0)
 
         resolved = self.resolve_model(model_spec)
-        command = self.build_command(mode, resolved, cwd, extra_args)
+        command = self.build_command(mode, resolved, cwd, extra_args, options)
         started = time.time()
         try:
             completed = subprocess.run(

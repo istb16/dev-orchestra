@@ -1,10 +1,10 @@
-# Example global configuration for ai-dev-orchestrator.
+# Example global configuration for dev-orchestra.
 #
 # Copy to:
-#   Linux/macOS  ~/.config/ai-dev-orchestrator/config.yaml
-#   Windows      %APPDATA%\ai-dev-orchestrator\config.yaml
+#   Linux/macOS  ~/.config/dev-orchestra/config.yaml
+#   Windows      %APPDATA%\dev-orchestra\config.yaml
 #
-# or just run:  ai-orchestrator config setup
+# or just run:  dev-orchestra config setup
 #
 # Note what is NOT here: any dated model id. Roles declare a model *family* and
 # a version policy, and the provider adapter resolves that against the CLI you

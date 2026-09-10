@@ -45,7 +45,7 @@ class TestLayering(IsolatedCase):
     def test_project_override_wins_over_global(self):
         config_mod.write_config_file(config_mod.global_config_path(), config_mod.default_config())
         self.write(
-            ".ai-orchestrator.yaml",
+            ".dev-orchestra.yaml",
             "version: 1\nimplementer:\n  provider: codex\n"
             "  model:\n    family: recommended-coding\n    version: latest\n",
         )
@@ -57,27 +57,27 @@ class TestLayering(IsolatedCase):
 
     def test_project_override_replaces_the_whole_reviewer_list(self):
         self.write(
-            ".ai-orchestrator.yaml",
+            ".dev-orchestra.yaml",
             "version: 1\nreviewers:\n  - id: only-one\n    provider: mock\n    role: security\n",
         )
         loaded = config_mod.load(self.project)
         self.assertEqual([r["id"] for r in loaded.reviewers()], ["only-one"])
 
     def test_project_config_is_found_from_a_subdirectory(self):
-        self.write(".ai-orchestrator.yaml", "version: 1\n")
+        self.write(".dev-orchestra.yaml", "version: 1\n")
         nested = os.path.join(self.project, "a", "b")
         os.makedirs(nested)
         self.assertEqual(os.path.dirname(config_mod.find_project_config(nested)), self.project)
 
     def test_search_stops_at_the_git_root(self):
         self.init_git_repo()
-        outside = os.path.join(self.tmp, ".ai-orchestrator.yaml")
+        outside = os.path.join(self.tmp, ".dev-orchestra.yaml")
         with open(outside, "w", encoding="utf-8") as handle:
             handle.write("version: 1\n")
         self.assertIsNone(config_mod.find_project_config(self.project))
 
     def test_empty_config_file_is_tolerated(self):
-        self.write(".ai-orchestrator.yaml", "")
+        self.write(".dev-orchestra.yaml", "")
         loaded = config_mod.load(self.project)
         self.assertEqual(loaded.role("orchestrator")["provider"], "claude")
 
@@ -127,6 +127,40 @@ class TestValidation(IsolatedCase):
         config_mod.write_config_file(config_mod.global_config_path(), data)
         with self.assertRaises(config_mod.ConfigError):
             config_mod.load(self.project)
+
+
+class TestRoleOptions(IsolatedCase):
+    def test_valid_options_pass(self):
+        data = config_mod.default_config()
+        data["implementer"]["options"] = {"permission_mode": "bypassPermissions"}
+        problems = [p for p in config_mod.validate(data) if "options" in p]
+        self.assertEqual(problems, [])
+
+    def test_options_are_validated_against_the_provider(self):
+        data = config_mod.default_config()
+        data["implementer"]["options"] = {"sandbox": "workspace-write"}  # a codex key
+        self.assertTrue(any("not understood by the claude provider" in p for p in config_mod.validate(data)))
+
+    def test_non_mapping_options_are_rejected(self):
+        data = config_mod.default_config()
+        data["implementer"]["options"] = ["--permission-mode"]
+        self.assertTrue(any("options must be a mapping" in p for p in config_mod.validate(data)))
+
+    def test_reviewer_options_are_validated_too(self):
+        data = config_mod.default_config()
+        data["reviewers"][1]["options"] = {"sandbox": "nonsense"}
+        self.assertTrue(any("options.sandbox" in p for p in config_mod.validate(data)))
+
+    def test_absent_options_need_no_provider_lookup(self):
+        # The common case must not consult an adapter at all.
+        from orchestrator import providers
+
+        original = providers.get_provider
+        providers.get_provider = lambda *a, **k: self.fail("provider was consulted")
+        try:
+            self.assertEqual(config_mod.validate(config_mod.default_config()), [])
+        finally:
+            providers.get_provider = original
 
 
 class TestReviewerManagement(IsolatedCase):
@@ -199,11 +233,11 @@ class TestPathEditing(IsolatedCase):
 class TestPaths(IsolatedCase):
     def test_env_override_wins(self):
         explicit = os.path.join(self.tmp, "explicit.yaml")
-        os.environ["AI_ORCHESTRATOR_CONFIG"] = explicit
+        os.environ["DEV_ORCHESTRA_CONFIG"] = explicit
         self.assertEqual(config_mod.global_config_path(), explicit)
 
     def test_global_dir_is_platform_appropriate(self):
-        os.environ.pop("AI_ORCHESTRATOR_HOME")
+        os.environ.pop("DEV_ORCHESTRA_HOME")
         directory = config_mod.global_config_dir()
         self.assertTrue(directory.endswith(config_mod.APP_DIR_NAME))
         self.assertTrue(os.path.isabs(directory))

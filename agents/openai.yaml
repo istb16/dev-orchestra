@@ -6,7 +6,7 @@
 # Claude Code does not read this file; it reads SKILL.md directly.
 
 schema: agent-manifest/v1
-name: ai-dev-orchestrator
+name: dev-orchestra
 version: 0.1.0
 license: MIT
 summary: Multi-model software development orchestration across coding CLIs.
@@ -18,10 +18,10 @@ instructions:
 entrypoint:
   command: python
   args:
-    - ../scripts/ai_orchestrator.py
+    - ../scripts/dev_orchestra.py
   wrappers:
-    posix: ../bin/ai-orchestrator
-    windows: ../bin/ai-orchestrator.ps1
+    posix: ../bin/dev-orchestra
+    windows: ../bin/dev-orchestra.ps1
 
 requirements:
   python: ">=3.9"

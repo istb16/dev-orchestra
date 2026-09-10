@@ -3,9 +3,9 @@
 
 # Local configuration must never be committed: it is per-machine, and a
 # project override belongs to the project being worked on, not to this repo.
-.ai-orchestrator.yaml
-.ai-orchestrator.yml
-.ai-orchestrator.json
+.dev-orchestra.yaml
+.dev-orchestra.yml
+.dev-orchestra.json
 .tmpcfg/
 
 # Python

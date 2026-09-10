@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Entry point for the ``ai-orchestrator`` command.
+"""Entry point for the ``dev-orchestra`` command.
 
-Runnable directly (``python scripts/ai_orchestrator.py doctor``) without
+Runnable directly (``python scripts/dev_orchestra.py doctor``) without
 installing anything: it puts its own directory on ``sys.path`` first.
 """
 

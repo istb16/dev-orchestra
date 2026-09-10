@@ -1,4 +1,4 @@
-"""``ai-orchestrator`` command line interface.
+"""``dev-orchestra`` command line interface.
 
 Only the parts that benefit from being deterministic and reusable live here:
 configuration, environment diagnosis, provider invocation, and the mechanical
@@ -94,7 +94,7 @@ def _load_or_die(start: Optional[str] = None) -> config_mod.LoadedConfig:
         return config_mod.load(start)
     except config_mod.ConfigError as exc:
         _err(str(exc))
-        _err("Run `ai-orchestrator config setup` to rebuild the configuration.")
+        _err("Run `dev-orchestra config setup` to rebuild the configuration.")
         raise SystemExit(2) from exc
 
 
@@ -439,14 +439,24 @@ def cmd_run(args: argparse.Namespace) -> int:
         except ModelResolutionError as exc:
             _err(str(exc))
             return 2
-        _out(" ".join(provider.build_command(mode, resolved, workspace.root, args.extra or [])))
+        _out(
+            " ".join(
+                provider.build_command(mode, resolved, workspace.root, args.extra or [], spec.get("options"))
+            )
+        )
         return 0
 
     prompt = _read_prompt(args)
     timeout = args.timeout or int(loaded.review_settings().get("timeout_seconds", 1800))
     try:
         result = provider.run(
-            prompt, mode, workspace.root, spec.get("model"), timeout=timeout, extra_args=args.extra or []
+            prompt,
+            mode,
+            workspace.root,
+            spec.get("model"),
+            timeout=timeout,
+            extra_args=args.extra or [],
+            options=spec.get("options"),
         )
     except ModelResolutionError as exc:
         _err(str(exc))
@@ -752,11 +762,11 @@ def cmd_summary(args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="ai-orchestrator",
+        prog="dev-orchestra",
         description="Configuration, diagnostics and review plumbing for the"
         " AI Development Orchestrator skill.",
     )
-    parser.add_argument("--version", action="version", version="ai-orchestrator %s" % __version__)
+    parser.add_argument("--version", action="version", version="dev-orchestra %s" % __version__)
     parser.add_argument("--cwd", default=None, help="operate as if run from this directory")
     subparsers = parser.add_subparsers(dest="command", required=True)
 

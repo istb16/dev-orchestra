@@ -1,5 +1,5 @@
 ---
-name: ai-dev-orchestrator
+name: dev-orchestra
 description: Orchestrate a multi-model software development workflow across Claude Code and Codex CLIs - investigate, design, implement, test, run independent multi-model code reviews, triage the findings, fix them, and re-test. Use when asked to implement a feature or issue, investigate and fix a bug, run a multi-model or independent code review of current changes, orchestrate development across several AI CLIs, or to set up and change the development agent configuration (which CLI and model handle design, implementation, review fixing, and each reviewer). Not for answering one-off coding questions, explaining code, or single edits the user asked you to make directly.
 license: MIT
 version: 0.1.0
@@ -14,10 +14,10 @@ heavy implementation yourself when a stage is delegated.
 `SKILL_DIR` below means this skill's own directory. The helper CLI is:
 
 ```
-python "SKILL_DIR/scripts/ai_orchestrator.py" <command>
+python "SKILL_DIR/scripts/dev_orchestra.py" <command>
 ```
 
-`bin/ai-orchestrator` (POSIX) and `bin/ai-orchestrator.ps1` (Windows) are
+`bin/dev-orchestra` (POSIX) and `bin/dev-orchestra.ps1` (Windows) are
 equivalent wrappers. Run every command from the target project's root.
 
 ## 0. Before anything else
@@ -25,7 +25,7 @@ equivalent wrappers. Run every command from the target project's root.
 Run once per session:
 
 ```
-python "SKILL_DIR/scripts/ai_orchestrator.py" doctor
+python "SKILL_DIR/scripts/dev_orchestra.py" doctor
 ```
 
 - **No config file** (`Source: built-in defaults`) → this is a first run. Go to
@@ -82,7 +82,7 @@ default; see `references/workflow.md` if the team wants it committed.
 Delegate. The Architect **must not change code**.
 
 ```
-python "SKILL_DIR/scripts/ai_orchestrator.py" run architect \
+python "SKILL_DIR/scripts/dev_orchestra.py" run architect \
   --prompt-file .ai/execution/design-request.md --output .ai/plan.md
 ```
 
@@ -99,7 +99,7 @@ back once with specifics; do not paper over it during implementation.
 Delegate, passing the plan.
 
 ```
-python "SKILL_DIR/scripts/ai_orchestrator.py" run implementer \
+python "SKILL_DIR/scripts/dev_orchestra.py" run implementer \
   --prompt-file .ai/execution/implement-request.md
 ```
 
@@ -119,8 +119,8 @@ fix or report before reviewing.
 Freeze the change first so every reviewer judges the same thing:
 
 ```
-python "SKILL_DIR/scripts/ai_orchestrator.py" review snapshot
-python "SKILL_DIR/scripts/ai_orchestrator.py" review run --iteration 1
+python "SKILL_DIR/scripts/dev_orchestra.py" review snapshot
+python "SKILL_DIR/scripts/dev_orchestra.py" review run --iteration 1
 ```
 
 `review run` executes every configured reviewer **in parallel, in isolation,
@@ -144,21 +144,27 @@ For each finding in `consolidated.md`: read the cited code, decide whether it is
 actually true for this codebase, and record the decision:
 
 ```
-python "SKILL_DIR/scripts/ai_orchestrator.py" review triage F1 F3 --status accepted --note "confirmed in orders_controller"
-python "SKILL_DIR/scripts/ai_orchestrator.py" review triage F2 --status rejected --note "guarded by the caller"
+python "SKILL_DIR/scripts/dev_orchestra.py" review triage F1 F3 --status accepted --note "confirmed in orders_controller"
+python "SKILL_DIR/scripts/dev_orchestra.py" review triage F2 --status rejected --note "guarded by the caller"
 ```
 
 Statuses: `accepted`, `rejected`, `duplicate`, `needs-investigation`.
 Investigate a `needs-investigation` finding and then re-triage it; never leave one
 unresolved at the end of a run. Two reviewers agreeing is evidence, not proof.
 
+Resolve the **Possible duplicates** list first. Different models describe the
+same bug in completely different words, so auto-merge deliberately does not
+collapse them; the report pairs findings that quote the same code and you decide.
+Mark the redundant one `duplicate` before accepting anything, so the fixer is not
+handed the same defect twice.
+
 ### Fix (Review Fixer)
 
 Only accepted findings reach the fixer:
 
 ```
-python "SKILL_DIR/scripts/ai_orchestrator.py" review fix-brief --output .ai/execution/fix-brief.md
-python "SKILL_DIR/scripts/ai_orchestrator.py" run review_fixer --prompt-file .ai/execution/fix-brief.md
+python "SKILL_DIR/scripts/dev_orchestra.py" review fix-brief --output .ai/execution/fix-brief.md
+python "SKILL_DIR/scripts/dev_orchestra.py" run review_fixer --prompt-file .ai/execution/fix-brief.md
 ```
 
 Instruct the fixer to verify each finding against the current code before
@@ -171,7 +177,7 @@ failure is fatal: stop and report.
 Re-run the tests. Then:
 
 ```
-python "SKILL_DIR/scripts/ai_orchestrator.py" review status
+python "SKILL_DIR/scripts/dev_orchestra.py" review status
 ```
 
 Re-review only when it says so — that is, when critical/high findings remain and
@@ -212,7 +218,7 @@ Changed: app/models/order.rb, app/services/pricing.rb, spec/services/pricing_spe
 Remaining: F4 (medium, deferred — see .ai/reviews/consolidated.md)
 ```
 
-`python "SKILL_DIR/scripts/ai_orchestrator.py" summary` prints the stage and
+`python "SKILL_DIR/scripts/dev_orchestra.py" summary` prints the stage and
 model portion from the recorded run state. Always name what failed and what you
 skipped. Resolved model ids may appear in the run log; the saved config keeps
 family + version policy.
@@ -228,6 +234,7 @@ for what you genuinely cannot infer.
 | "set this up" / "redo setup" | `config setup` (interactive) or `config setup --defaults` |
 | "which models can I use?" | `model list` |
 | "use Claude Opus for implementation" | `config set implementer.model.family opus` |
+| "the implementer can't run the tests" | `config set implementer.options.permission_mode bypassPermissions` (or allow-list the command in the project's own CLI settings) |
 | "make the architect use Codex" | `config set architect.provider codex` **and** set a family that Codex accepts |
 | "add a Codex security reviewer" | `reviewer add --provider codex --role security` |
 | "make it three reviewers" | `reviewer add …` (repeat) then `reviewer list` |
@@ -284,4 +291,4 @@ Read these only when you need the detail.
 | `references/providers.md` | Adapter interface, Claude/Codex specifics, adding a CLI |
 | `references/reviews.md` | Snapshot, output schema, dedup, triage, re-review policy |
 | `references/architecture.md` | How the pieces fit together, and why |
-| `references/cli.md` | Every `ai-orchestrator` command and flag |
+| `references/cli.md` | Every `dev-orchestra` command and flag |

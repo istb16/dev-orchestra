@@ -2,7 +2,7 @@
 
 Precedence (highest first):
 
-1. project config   -- ``.ai-orchestrator.yaml`` found by walking up from cwd
+1. project config   -- ``.dev-orchestra.yaml`` found by walking up from cwd
 2. global config    -- OS-appropriate user config directory
 3. built-in defaults
 
@@ -22,11 +22,11 @@ from typing import Any, Dict, List, Optional, Tuple
 from . import miniyaml
 
 CONFIG_VERSION = 1
-APP_DIR_NAME = "ai-dev-orchestrator"
+APP_DIR_NAME = "dev-orchestra"
 PROJECT_CONFIG_NAMES = (
-    ".ai-orchestrator.yaml",
-    ".ai-orchestrator.yml",
-    ".ai-orchestrator.json",
+    ".dev-orchestra.yaml",
+    ".dev-orchestra.yml",
+    ".dev-orchestra.json",
 )
 
 KNOWN_ROLES = ("orchestrator", "architect", "implementer", "review_fixer")
@@ -99,7 +99,7 @@ class ConfigError(ValueError):
 
 
 def global_config_dir() -> str:
-    override = os.environ.get("AI_ORCHESTRATOR_HOME")
+    override = os.environ.get("DEV_ORCHESTRA_HOME")
     if override:
         return os.path.abspath(os.path.expanduser(override))
     if sys.platform.startswith("win"):
@@ -110,7 +110,7 @@ def global_config_dir() -> str:
 
 
 def global_config_path() -> str:
-    explicit = os.environ.get("AI_ORCHESTRATOR_CONFIG")
+    explicit = os.environ.get("DEV_ORCHESTRA_CONFIG")
     if explicit:
         return os.path.abspath(os.path.expanduser(explicit))
     return os.path.join(global_config_dir(), "config.yaml")
@@ -163,7 +163,7 @@ def write_config_file(path: str, data: Dict[str, Any]) -> None:
         os.makedirs(parent, exist_ok=True)
     text = miniyaml.dumps(data)
     header = (
-        "# ai-dev-orchestrator configuration\n"
+        "# dev-orchestra configuration\n"
         "# Model families + a version policy are stored here on purpose: concrete\n"
         "# model ids are resolved by the provider adapters at run time.\n"
     )
@@ -332,7 +332,26 @@ def _validate_role(spec: Dict[str, Any], providers: List[str]) -> List[str]:
         problems.append("model.version must be 'latest' or 'pinned' (got %r)" % (version,))
     if version == "pinned" and not model.get("id"):
         problems.append("model.version is 'pinned' but model.id is missing")
+    problems.extend(_validate_role_options(spec, provider, providers))
     return problems
+
+
+def _validate_role_options(spec: Dict[str, Any], provider: Any, providers: List[str]) -> List[str]:
+    """Options are provider-specific, so the adapter validates them.
+
+    Only consulted when a role actually sets ``options``: for the common case
+    this keeps configuration checks from shelling out to a CLI at all.
+    """
+    if "options" not in spec:
+        return []
+    if not isinstance(provider, str) or provider not in providers:
+        return []
+    from .providers import get_provider
+
+    try:
+        return get_provider(provider).validate_options(spec.get("options"))
+    except Exception as exc:  # a broken adapter must not hide the rest of the report
+        return ["options could not be validated: %s" % exc]
 
 
 # --------------------------------------------------------------------------- editing

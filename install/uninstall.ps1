@@ -5,7 +5,7 @@
 .DESCRIPTION
   Removes the skills-directory entry, or the marked AGENTS.md pointer block.
   Your configuration is left alone; to remove that too, run:
-      ai-orchestrator config reset --scope global --delete
+      dev-orchestra config reset --scope global --delete
 
 .EXAMPLE
   .\install\uninstall.ps1
@@ -19,7 +19,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$SkillName = 'ai-dev-orchestrator'
+$SkillName = 'dev-orchestra'
 $root = Split-Path -Parent $PSScriptRoot
 
 if (-not $Codex) {

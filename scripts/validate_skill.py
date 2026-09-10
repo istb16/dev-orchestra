@@ -29,7 +29,7 @@ REQUIRED_FILES = (
     "CONTRIBUTING.md",
     "CHANGELOG.md",
     ".gitignore",
-    "scripts/ai_orchestrator.py",
+    "scripts/dev_orchestra.py",
     "references/architecture.md",
     "references/configuration.md",
     "references/providers.md",
@@ -139,7 +139,7 @@ def check() -> List[str]:
     if english and japanese:
         if "README.ja.md" not in english or "README.md" not in japanese:
             problems.append("README.md and README.ja.md must link to each other")
-        for anchor in ("mermaid", "ai-orchestrator config setup", "MIT"):
+        for anchor in ("mermaid", "dev-orchestra config setup", "MIT"):
             if anchor not in japanese:
                 problems.append("README.ja.md is missing %r" % anchor)
 

@@ -34,7 +34,7 @@ flowchart TD
 | Layer | Lives in | Responsibility |
 | --- | --- | --- |
 | Skill | `SKILL.md`, `references/` | What the orchestrator decides and when |
-| CLI | `scripts/ai_orchestrator.py`, `scripts/orchestrator/cli.py` | Deterministic operations an agent can call |
+| CLI | `scripts/dev_orchestra.py`, `scripts/orchestrator/cli.py` | Deterministic operations an agent can call |
 | Domain | `config.py`, `review.py`, `workspace.py`, `wizard.py`, `doctor.py` | Config layering, snapshotting, parsing, dedupe, triage, diagnostics |
 | Providers | `scripts/orchestrator/providers/` | The only code that knows CLI syntax and model names |
 
@@ -67,7 +67,7 @@ and logins just work. The skill stores no credentials and reads none.
 
 ```
 project/
-├── .ai-orchestrator.yaml         # optional per-project override
+├── .dev-orchestra.yaml         # optional per-project override
 └── .ai/                          # working artifacts (self-ignoring)
     ├── plan.md                   # Architect output
     ├── execution/                # prompts you wrote, fix brief, role outputs

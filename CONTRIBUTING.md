@@ -6,15 +6,20 @@ most of them exist to keep it working as the underlying CLIs change.
 ## Getting set up
 
 ```bash
-git clone https://github.com/<owner>/ai-dev-orchestrator.git
-cd ai-dev-orchestrator
+git clone https://github.com/istb16/dev-orchestra.git
+cd dev-orchestra
 python -m unittest discover -s tests -t tests
 python scripts/validate_skill.py
 ```
 
 No dependencies to install. Python 3.9+ and `git` are enough. Linting uses
-[ruff](https://docs.astral.sh/ruff/) if you have it (`ruff check .`); CI runs it
-but will not block on its absence locally.
+[ruff](https://docs.astral.sh/ruff/) if you have it (`ruff check .`, then
+`ruff format .`); CI runs it but will not block on its absence locally.
+
+CI pins an exact ruff version so a formatter release cannot turn every PR red.
+Bumping it is a deliberate, manual change: update `.github/workflows/ci.yml`,
+run `ruff format .` locally with the new version, and commit the result
+separately from any behaviour change.
 
 ## The rules that matter
 

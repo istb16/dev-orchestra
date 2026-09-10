@@ -49,7 +49,7 @@ class TestSkillDocument(IsolatedCase):
         self.front, self.body = validate_skill.parse_frontmatter(self.text)
 
     def test_frontmatter_fields(self):
-        self.assertEqual(self.front["name"], "ai-dev-orchestrator")
+        self.assertEqual(self.front["name"], "dev-orchestra")
         self.assertEqual(self.front["license"], "MIT")
         self.assertTrue(self.front["description"])
 
@@ -128,7 +128,7 @@ class TestDocumentation(IsolatedCase):
 
     def test_agent_manifest_parses_and_points_at_skill_md(self):
         data = miniyaml.loads(read("agents/openai.yaml"))
-        self.assertEqual(data["name"], "ai-dev-orchestrator")
+        self.assertEqual(data["name"], "dev-orchestra")
         self.assertEqual(data["instructions"]["file"], "../SKILL.md")
 
     def test_changelog_documents_the_current_version(self):
@@ -168,8 +168,8 @@ class TestPortability(IsolatedCase):
             "install/install.ps1",
             "install/uninstall.sh",
             "install/uninstall.ps1",
-            "bin/ai-orchestrator",
-            "bin/ai-orchestrator.ps1",
+            "bin/dev-orchestra",
+            "bin/dev-orchestra.ps1",
         ):
             self.assertTrue(os.path.isfile(os.path.join(REPO_ROOT, relative)), relative)
 
@@ -199,7 +199,7 @@ class TestPortability(IsolatedCase):
 
     def test_gitignore_keeps_local_config_and_artifacts_out(self):
         ignore = read(".gitignore")
-        for pattern in (".ai/", ".ai-orchestrator.yaml", "__pycache__/"):
+        for pattern in (".ai/", ".dev-orchestra.yaml", "__pycache__/"):
             self.assertIn(pattern, ignore)
 
     def test_repository_contains_no_absolute_local_paths(self):

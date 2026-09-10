@@ -6,9 +6,36 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 The public surface covered by that promise is: the configuration schema, the
-`ai-orchestrator` commands and flags, and the `.ai/` artifact formats.
+`dev-orchestra` commands and flags, and the `.ai/` artifact formats.
 
 ## [Unreleased]
+
+### Changed
+
+- Renamed every user-visible identifier to `dev-orchestra`: the skill name, the
+  `dev-orchestra` command, the config directory, the `.dev-orchestra.yaml`
+  project override, and the `DEV_ORCHESTRA_*` environment variables. Three
+  competing names for one tool was one too many.
+
+### Added
+
+- **Role options.** Each role can carry provider-specific `options`:
+  `permission_mode` and `args` for Claude, `sandbox` / `approve` / `args` for
+  Codex. The adapter validates them against what the installed CLI actually
+  accepts, so `config validate` catches a typo instead of a run failing later.
+  This exists because the default `acceptEdits` auto-approves file edits but
+  not shell commands, which can stop an Implementer from running the tests it
+  was told to run. Options that would loosen a read-only stage are ignored and
+  reported by `doctor` — the architect and every reviewer stay read-only.
+- **Duplicate candidates.** Findings from different reviewers that quote the
+  same code are reported as possible duplicates, ranked by how rare the shared
+  code token is, for the orchestrator to confirm as `duplicate` during triage.
+  Auto-merge stays conservative: measured on real two-provider output over one
+  diff, a confirmed duplicate pair scored 0.03 text similarity while an
+  unrelated pair scored 0.29, so no threshold on wording can separate them —
+  and a wrong merge hides a bug, while a missed one only costs redundant work.
+- Japanese README (`README.ja.md`), linked from the English one and checked by
+  skill validation.
 
 ## [0.1.0] - 2026-09-10
 
@@ -27,16 +54,16 @@ First release.
   Claude aliases come from the CLI's own `--model` help; the Codex
   `recommended-coding` family resolves by omitting `-m`. Unverifiable families
   raise instead of being guessed.
-- **Layered configuration**: project `.ai-orchestrator.yaml` over an
-  OS-appropriate global file over built-in defaults, with `AI_ORCHESTRATOR_HOME`
-  and `AI_ORCHESTRATOR_CONFIG` overrides.
+- **Layered configuration**: project `.dev-orchestra.yaml` over an
+  OS-appropriate global file over built-in defaults, with `DEV_ORCHESTRA_HOME`
+  and `DEV_ORCHESTRA_CONFIG` overrides.
 - **Setup wizard**, interactive or `--defaults`, covering all four roles and an
   arbitrary reviewer panel.
 - **Independent review pipeline**: frozen git snapshot (including untracked
   files), parallel read-only reviewers, tolerant finding parser, locus+text
   deduplication, triage states, accepted-findings fix brief, and an iteration
   budget that stops review loops.
-- **`ai-orchestrator` CLI**: `config`, `model`, `reviewer`, `doctor`, `run`,
+- **`dev-orchestra` CLI**: `config`, `model`, `reviewer`, `doctor`, `run`,
   `review`, `state`, `summary`.
 - **Doctor** diagnostics for CLI presence, version, credential *presence*,
   model resolution per role, and configuration validity.
@@ -51,5 +78,5 @@ First release.
   none of which invoke a real CLI.
 - CI on Linux, macOS and Windows: lint, tests, skill validation.
 
-[Unreleased]: https://github.com/<owner>/ai-dev-orchestrator/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/<owner>/ai-dev-orchestrator/releases/tag/v0.1.0
+[Unreleased]: https://github.com/istb16/dev-orchestra/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/istb16/dev-orchestra/releases/tag/v0.1.0

@@ -11,7 +11,7 @@
 # checkout, and the Codex install writes a pointer to it.
 set -eu
 
-SKILL_NAME=ai-dev-orchestrator
+SKILL_NAME=dev-orchestra
 here=$(cd -- "$(dirname -- "$0")" && pwd)
 root=$(dirname -- "$here")
 
@@ -119,7 +119,7 @@ install_codex() {
     printf 'the development agent configuration, read and follow:\n\n'
     printf '    %s/SKILL.md\n\n' "$root"
     printf 'Its helper CLI is:\n\n'
-    printf '    python %s/scripts/ai_orchestrator.py <command>\n\n' "$root"
+    printf '    python %s/scripts/dev_orchestra.py <command>\n\n' "$root"
     printf 'That file is the single source of truth; do not rely on a copy of it.\n'
     printf '%s\n' "$end"
   } >> "$agents_file"
@@ -132,4 +132,4 @@ case $mode in
   codex) install_codex ;;
 esac
 
-printf '\nVerify with:\n    %s/bin/ai-orchestrator doctor\n' "$root"
+printf '\nVerify with:\n    %s/bin/dev-orchestra doctor\n' "$root"

@@ -15,7 +15,7 @@ from __future__ import annotations
 import os
 import re
 import tempfile
-from typing import Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence
 
 from .base import (
     MODE_IMPLEMENT,
@@ -28,6 +28,9 @@ from .base import (
 )
 
 RECOMMENDED_FAMILIES = ("recommended-coding", "recommended", "default", "auto", "latest", "")
+
+#: Sandbox policies `codex exec -s` accepts, per its own --help.
+SANDBOX_POLICIES = ("read-only", "workspace-write", "danger-full-access")
 
 _TOML_MODEL_RE = re.compile(r"^\s*model\s*=\s*[\"']([^\"']+)[\"']", re.MULTILINE)
 
@@ -47,6 +50,19 @@ class CodexProvider(Provider):
         ),
     )
     fallback_updated = "2026-09-10"
+    option_keys = ("args", "sandbox", "approve")
+
+    def validate_options(self, options: Optional[Dict[str, Any]]) -> List[str]:
+        problems = super().validate_options(options)
+        if not isinstance(options, dict):
+            return problems
+        sandbox = options.get("sandbox")
+        if sandbox is not None and sandbox not in SANDBOX_POLICIES:
+            problems.append("options.sandbox %r is not one of %s" % (sandbox, ", ".join(SANDBOX_POLICIES)))
+        approve = options.get("approve")
+        if approve is not None and not isinstance(approve, bool):
+            problems.append("options.approve must be true or false")
+        return problems
 
     def auth_status(self) -> "tuple[str, str]":
         if os.environ.get("OPENAI_API_KEY"):
@@ -106,9 +122,20 @@ class CodexProvider(Provider):
         )
 
     def build_command(
-        self, mode: str, resolved: ResolvedModel, cwd: str, extra_args: Sequence[str] = ()
+        self,
+        mode: str,
+        resolved: ResolvedModel,
+        cwd: str,
+        extra_args: Sequence[str] = (),
+        options: Optional[Dict[str, Any]] = None,
     ) -> List[str]:
-        sandbox = "read-only" if mode in READ_ONLY_MODES else "workspace-write"
+        options = options or {}
+        if mode in READ_ONLY_MODES:
+            # Configured sandbox/approval settings are deliberately ignored for
+            # planning and review: those stages stay read-only regardless.
+            sandbox = "read-only"
+        else:
+            sandbox = str(options.get("sandbox") or "workspace-write")
         command = [
             self.executable,
             "exec",
@@ -122,10 +149,11 @@ class CodexProvider(Provider):
         ]
         if resolved.argument:
             command += ["-m", resolved.argument]
-        if mode == MODE_IMPLEMENT:
+        if mode == MODE_IMPLEMENT and options.get("approve", True):
             # Route approvals through Codex's own automatic review instead of
             # blocking on a prompt that nobody can answer in a headless run.
             command += ["--approve-for-me"]
+        command += self.option_args(options)
         command += list(extra_args)
         return command
 
@@ -138,6 +166,7 @@ class CodexProvider(Provider):
         timeout: int = 1800,
         extra_args: Sequence[str] = (),
         env: Optional[Dict[str, str]] = None,
+        options: Optional[Dict[str, Any]] = None,
     ) -> RunResult:
         """Capture the agent's final message via ``-o`` instead of scraping logs."""
         handle, last_message_path = tempfile.mkstemp(prefix="codex-last-", suffix=".txt")

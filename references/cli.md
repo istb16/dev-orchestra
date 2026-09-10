@@ -1,9 +1,9 @@
 # CLI reference
 
 ```
-python scripts/ai_orchestrator.py <command> [options]
-bin/ai-orchestrator <command> [options]           # POSIX wrapper
-bin\ai-orchestrator.ps1 <command> [options]       # Windows wrapper
+python scripts/dev_orchestra.py <command> [options]
+bin/dev-orchestra <command> [options]           # POSIX wrapper
+bin\dev-orchestra.ps1 <command> [options]       # Windows wrapper
 ```
 
 Global options: `--cwd <dir>` (operate as if run from there), `--version`.
@@ -24,10 +24,10 @@ usage or configuration error, `130` interrupted.
 | `config validate [--json]` | Validate the effective configuration. Exit 1 if invalid. |
 
 ```bash
-ai-orchestrator config set implementer.model.family opus
-ai-orchestrator config set review.max_review_iterations 3
-ai-orchestrator config set --scope project workspace.dir .agent-work
-ai-orchestrator config set --raw review.note "3 reviewers"
+dev-orchestra config set implementer.model.family opus
+dev-orchestra config set review.max_review_iterations 3
+dev-orchestra config set --scope project workspace.dir .agent-work
+dev-orchestra config set --raw review.note "3 reviewers"
 ```
 
 ## model
@@ -46,10 +46,10 @@ ai-orchestrator config set --raw review.note "3 reviewers"
 | `reviewer set <selector> [--provider] [--model] [--role] [--id] [--pin] [--scope …]` | Change an existing reviewer. |
 
 ```bash
-ai-orchestrator reviewer add --provider codex --role security
-ai-orchestrator reviewer add --provider claude --role database --id db-review
-ai-orchestrator reviewer set 2 --role performance
-ai-orchestrator reviewer remove db-review
+dev-orchestra reviewer add --provider codex --role security
+dev-orchestra reviewer add --provider claude --role database --id db-review
+dev-orchestra reviewer set 2 --role performance
+dev-orchestra reviewer remove db-review
 ```
 
 ## doctor
@@ -73,9 +73,9 @@ CLI invocation without running it. `--extra` forwards every remaining argument
 to the provider CLI verbatim.
 
 ```bash
-ai-orchestrator run architect --prompt-file .ai/execution/design-request.md --output .ai/plan.md
-ai-orchestrator run implementer --print-command
-echo "explain the failure" | ai-orchestrator run orchestrator
+dev-orchestra run architect --prompt-file .ai/execution/design-request.md --output .ai/plan.md
+dev-orchestra run implementer --print-command
+echo "explain the failure" | dev-orchestra run orchestrator
 ```
 
 ## review
@@ -102,9 +102,9 @@ echo "explain the failure" | ai-orchestrator run orchestrator
 
 | Variable | Effect |
 | --- | --- |
-| `AI_ORCHESTRATOR_CONFIG` | Use this exact file as the global config layer |
-| `AI_ORCHESTRATOR_HOME` | Use this directory instead of the platform config directory |
-| `AI_ORCHESTRATOR_MOCK_DIR` | Canned responses for the mock provider |
-| `AI_ORCHESTRATOR_MOCK_RESPONSE` | Inline canned response for the mock provider |
-| `AI_ORCHESTRATOR_MOCK_FAIL` | Make mock runs fail (`1` = all, otherwise a prompt substring) |
+| `DEV_ORCHESTRA_CONFIG` | Use this exact file as the global config layer |
+| `DEV_ORCHESTRA_HOME` | Use this directory instead of the platform config directory |
+| `DEV_ORCHESTRA_MOCK_DIR` | Canned responses for the mock provider |
+| `DEV_ORCHESTRA_MOCK_RESPONSE` | Inline canned response for the mock provider |
+| `DEV_ORCHESTRA_MOCK_FAIL` | Make mock runs fail (`1` = all, otherwise a prompt substring) |
 | `CODEX_HOME` | Respected when locating the Codex CLI's config and credentials |
