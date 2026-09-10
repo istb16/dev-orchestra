@@ -17,6 +17,12 @@ next attempt instead of advising against it.
 something changed. A stage can register a signature — the set of findings, a
 test failure summary — and identical consecutive signatures stop the loop early,
 regardless of budget.
+
+It also keeps the token account. That is bookkeeping, not a budget: nothing
+here refuses a run because of what it would cost. The counts come from the
+delegated CLIs, and not all of them report any, so every total is paired with
+how many runs it actually covers -- an unqualified sum over partial data reads
+as authoritative when it is only a floor.
 """
 
 from __future__ import annotations
@@ -50,6 +56,55 @@ DEFAULT_BUDGETS: Dict[str, Any] = {
 }
 
 EXIT_BUDGET_EXHAUSTED = 3
+
+#: Countable fields on a usage report. Money is kept apart because it is a
+#: float, and because a CLI can price a run without breaking down its tokens.
+USAGE_COUNTS = (
+    "input_tokens",
+    "output_tokens",
+    "total_tokens",
+    "cache_read_tokens",
+    "cache_write_tokens",
+    "billed_tokens",
+    "prompt_chars",
+)
+
+
+def _blank_account() -> Dict[str, Any]:
+    account: Dict[str, Any] = {"runs": 0, "measured_runs": 0, "cost_usd": 0.0}
+    account.update(dict.fromkeys(USAGE_COUNTS, 0))
+    return account
+
+
+def _accumulate(account: Dict[str, Any], usage: Dict[str, Any]) -> Dict[str, Any]:
+    """Fold one run's usage into a running account.
+
+    A field the CLI did not report contributes nothing rather than zero, so a
+    silent CLI cannot make a stage look free.
+    """
+    account["runs"] = int(account.get("runs") or 0) + 1
+    if usage.get("measured"):
+        account["measured_runs"] = int(account.get("measured_runs") or 0) + 1
+    for field in USAGE_COUNTS:
+        value = usage.get(field)
+        if isinstance(value, bool) or not isinstance(value, int):
+            continue
+        account[field] = int(account.get(field) or 0) + value
+    cost = usage.get("cost_usd")
+    if isinstance(cost, (int, float)) and not isinstance(cost, bool):
+        account["cost_usd"] = round(float(account.get("cost_usd") or 0.0) + float(cost), 6)
+    return account
+
+
+def _merge_accounts(accounts: List[Dict[str, Any]]) -> Dict[str, Any]:
+    total = _blank_account()
+    for account in accounts:
+        total["runs"] += int(account.get("runs") or 0)
+        total["measured_runs"] += int(account.get("measured_runs") or 0)
+        for field in USAGE_COUNTS:
+            total[field] += int(account.get(field) or 0)
+        total["cost_usd"] = round(total["cost_usd"] + float(account.get("cost_usd") or 0.0), 6)
+    return total
 
 
 class BudgetExhausted(RuntimeError):
@@ -118,6 +173,7 @@ class Ledger:
             "in_flight": {},
             "signatures": {},
             "total_delegated_runs": 0,
+            "tokens": {"by_stage": {}, "by_label": {}},
         }
 
     def reset(self) -> Dict[str, Any]:
@@ -206,6 +262,51 @@ class Ledger:
             ledger["last_activity_monotonic"] = time.time()
             self._write(ledger)
             return int(entry["repeats"])
+
+    # -- token accounting --------------------------------------------------
+
+    def record_usage(self, stage: str, usage: Dict[str, Any], label: str = "") -> Dict[str, Any]:
+        """Add one delegated run's cost to the account.
+
+        Never refuses, and never raises on a malformed report: the run has
+        already been paid for, and this is the only record that it happened.
+        """
+        if not isinstance(usage, dict):
+            usage = {}
+        with self._locked():
+            ledger = self.load()
+            tokens = ledger.setdefault("tokens", {})
+            by_stage = tokens.setdefault("by_stage", {})
+            by_stage[stage] = _accumulate(by_stage.get(stage) or _blank_account(), usage)
+            if label:
+                by_label = tokens.setdefault("by_label", {})
+                by_label[label] = _accumulate(by_label.get(label) or _blank_account(), usage)
+            ledger["last_activity_monotonic"] = time.time()
+            self._write(ledger)
+            return tokens
+
+    def token_report(self) -> Dict[str, Any]:
+        """The account, plus how much of it is actually measured."""
+        tokens = self.load().get("tokens") or {}
+        by_stage = {
+            stage: account
+            for stage, account in (tokens.get("by_stage") or {}).items()
+            if isinstance(account, dict)
+        }
+        by_label = {
+            label: account
+            for label, account in (tokens.get("by_label") or {}).items()
+            if isinstance(account, dict)
+        }
+        totals = _merge_accounts(list(by_stage.values()))
+        return {
+            "by_stage": by_stage,
+            "by_label": by_label,
+            "totals": totals,
+            # False means the sums are a floor: at least one CLI ran without
+            # reporting what it spent.
+            "complete": totals["runs"] > 0 and totals["runs"] == totals["measured_runs"],
+        }
 
     def repeats(self, stage: str) -> int:
         return int((self.load().get("signatures") or {}).get(stage, {}).get("repeats", 0))
@@ -324,4 +425,5 @@ class Ledger:
             },
             "in_flight": ledger.get("in_flight") or {},
             "stalls": self.stalls(),
+            "tokens": self.token_report(),
         }

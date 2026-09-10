@@ -140,6 +140,80 @@ class ModelResolutionError(RuntimeError):
     """Raised when a configured model cannot be resolved without guessing."""
 
 
+class Usage:
+    """What one delegated run cost, as the CLI itself reported it.
+
+    Missing numbers stay missing. Estimating them from the prompt we sent would
+    ignore the child CLI's own system prompt, tool schemas and the files it
+    chose to read -- which is most of the input -- so the estimate would be
+    wrong by more than it is right, and it would be wrong in the direction that
+    makes a run look cheap. A number that cannot be trusted is worse than no
+    number when the point of measuring is to decide what to cut.
+
+    ``prompt_chars`` is the one figure this repository knows first-hand: the
+    size of the prompt it composed. That is also the only part of the input it
+    can shorten, so it is worth tracking separately from the total.
+    """
+
+    def __init__(
+        self,
+        input_tokens: Optional[int] = None,
+        output_tokens: Optional[int] = None,
+        total_tokens: Optional[int] = None,
+        cache_read_tokens: Optional[int] = None,
+        cache_write_tokens: Optional[int] = None,
+        cost_usd: Optional[float] = None,
+        source: str = "",
+        prompt_chars: Optional[int] = None,
+    ) -> None:
+        self.input_tokens = input_tokens
+        self.output_tokens = output_tokens
+        #: Set only by a CLI that reports one figure and does not split it.
+        #: Never derived by adding the two above: a CLI that reports both is
+        #: also the CLI whose definition of "total" we would be guessing at.
+        self.total_tokens = total_tokens
+        self.cache_read_tokens = cache_read_tokens
+        self.cache_write_tokens = cache_write_tokens
+        self.cost_usd = cost_usd
+        #: Where the numbers came from: the CLI's own name for its report, or
+        #: ``unreported`` when it told us nothing.
+        self.source = source or "unreported"
+        self.prompt_chars = prompt_chars
+
+    @property
+    def measured(self) -> bool:
+        """True when the CLI reported at least one token count."""
+        return any(value is not None for value in (self.input_tokens, self.output_tokens, self.total_tokens))
+
+    @property
+    def billed_tokens(self) -> Optional[int]:
+        """One comparable figure per run, for ranking stages by size.
+
+        Cache reads are deliberately left out: they are an order of magnitude
+        cheaper, and folding them in would rank a well-cached stage above an
+        expensive one. Use ``cost_usd`` when the question is money.
+        """
+        parts = [self.input_tokens, self.output_tokens, self.cache_write_tokens]
+        known = [value for value in parts if value is not None]
+        if known:
+            return sum(known)
+        return self.total_tokens
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "input_tokens": self.input_tokens,
+            "output_tokens": self.output_tokens,
+            "total_tokens": self.total_tokens,
+            "cache_read_tokens": self.cache_read_tokens,
+            "cache_write_tokens": self.cache_write_tokens,
+            "cost_usd": self.cost_usd,
+            "billed_tokens": self.billed_tokens,
+            "prompt_chars": self.prompt_chars,
+            "source": self.source,
+            "measured": self.measured,
+        }
+
+
 class RunResult:
     def __init__(
         self,
@@ -154,6 +228,7 @@ class RunResult:
         stalled: bool = False,
         idle_for: float = 0.0,
         orphans_possible: bool = False,
+        usage: Optional[Usage] = None,
     ) -> None:
         self.ok = ok
         self.exit_code = exit_code
@@ -169,6 +244,9 @@ class RunResult:
         self.stalled = stalled
         self.idle_for = idle_for
         self.orphans_possible = orphans_possible
+        #: What the run cost. Never None, so callers need not guard; the
+        #: numbers inside it are None when the CLI reported nothing.
+        self.usage = usage or Usage()
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -181,6 +259,7 @@ class RunResult:
             "duration_seconds": round(self.duration, 2),
             "command": self.command,
             "model": self.resolved.to_dict() if self.resolved else None,
+            "usage": self.usage.to_dict(),
         }
 
 
@@ -346,6 +425,10 @@ class Provider:
             env=self._child_env(env),
         )
         stdout, stderr = self.postprocess(outcome, mode)
+        # Read the cost from the raw output, before postprocess narrows it to
+        # the final answer: the accounting the CLI prints is not part of it.
+        usage = self.parse_usage(outcome, mode) or Usage()
+        usage.prompt_chars = len(prompt)
         return RunResult(
             outcome.ok,
             outcome.exit_code,
@@ -358,6 +441,7 @@ class Provider:
             stalled=outcome.stalled,
             idle_for=outcome.idle_for,
             orphans_possible=outcome.orphans_possible,
+            usage=usage,
         )
 
     def idle_timeout(
@@ -378,6 +462,14 @@ class Provider:
     def postprocess(self, outcome: "execution.ExecOutcome", mode: str) -> "tuple[str, str]":
         """Turn raw child output into (stdout, stderr) for the caller."""
         return outcome.stdout, outcome.stderr
+
+    def parse_usage(self, outcome: "execution.ExecOutcome", mode: str) -> Optional[Usage]:
+        """What the run cost, if this CLI says so. None means it does not.
+
+        Adapters must only return numbers the CLI actually printed. Inventing
+        one here would silently corrupt every total downstream.
+        """
+        return None
 
     def _child_env(self, overrides: Optional[Dict[str, str]]) -> Dict[str, str]:
         """Inherit the user's environment so existing CLI auth keeps working."""

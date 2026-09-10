@@ -160,6 +160,36 @@ forever.
 `run` and `review run` consume their own budgets, so `budget consume` is only
 needed for stages the orchestrator performs directly.
 
+## tokens
+
+| Command | Description |
+| --- | --- |
+| `tokens show [--json]` | What the workflow has spent, per stage and per reviewer. |
+
+Accounting, not a budget: nothing here refuses a run. Deliberately separate from
+`budget`, which is enforced -- reading one as the other is the mistake this
+split exists to prevent.
+
+The numbers come from the delegated CLIs, so they are only as complete as the
+CLIs are talkative. Claude Code reports input, output, cache-read and
+cache-write counts plus a cost on its `result` event. Codex prints one total, in
+prose, and a wording change makes it unreported rather than wrong. Every column
+is therefore paired with `meas.` -- how many of that stage's runs reported
+anything. When some did not, the output says the totals are a *floor*.
+
+`billed` sums input + output + cache-write. Cache reads are excluded on purpose:
+they cost about a tenth of fresh input, and folding them in would rank a
+well-cached stage above an expensive one. Use `cost` for money.
+
+`prompt_chars` is the size of the prompts dev-orchestra composed itself. It is
+the only part of the input this repository can shorten, which is why it is
+counted apart from the total.
+
+```bash
+dev-orchestra tokens show
+dev-orchestra tokens show --json
+```
+
 ## progress
 
 | Command | Description |
