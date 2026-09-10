@@ -23,6 +23,7 @@ import hashlib
 import os
 import posixpath
 import re
+import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -167,11 +168,18 @@ def create_snapshot(
     base: Optional[str] = None,
     include_untracked: bool = True,
     exclude: Optional[Sequence[str]] = None,
+    incremental: bool = True,
 ) -> Dict[str, Any]:
     """Freeze the change under review into ``.ai/reviews/review-target.diff``.
 
     ``exclude`` withholds the *body* of a generated or vendored file's diff
     while still recording that it changed; pass ``()`` to take everything.
+
+    ``incremental`` lets a second round diff against the previous round's
+    snapshot instead of against ``HEAD``, so re-review sees the fix rather than
+    the whole change again. It only applies when the previous snapshot was
+    actually reviewed and something has changed since; a plain re-snapshot is
+    always the full diff.
     """
     workspace.ensure()
     root = workspace.root
@@ -182,25 +190,28 @@ def create_snapshot(
         )
     patterns = list(DEFAULT_EXCLUDE if exclude is None else exclude)
 
-    revision = base or "HEAD"
+    tree = _write_tree(root)
+    previous_tree = _reviewed_tree(workspace) if incremental and not base else ""
+    if previous_tree and tree and previous_tree != tree:
+        revisions = [previous_tree, tree]
+        strategy = "git diff <previous round> <now>"
+    else:
+        revisions = [base or "HEAD"]
+        strategy = "git diff %s" % revisions[0]
+        previous_tree = ""
+
     # Which files changed, before asking for the diff itself: the exclusion is
     # decided from this cheap listing, so the expensive call is made once and
     # already filtered.
-    tracked, listed = _numstat(root, revision, patterns)
+    tracked, listed = _numstat(root, revisions, patterns)
     withheld = [entry for entry in tracked if entry.get("pattern")]
 
     if listed:
-        code, diff, err = ws.git(
-            ["diff", "--no-color", "-M", "--diff-algorithm=histogram", revision, "--", *_pathspecs(withheld)],
-            root,
-        )
-        strategy = "git diff %s" % revision
+        code, diff, err = _diff(root, revisions, _pathspecs(withheld))
         if code != 0 and withheld:
             # Old git, or pathspec magic it does not accept. Taking the whole
             # diff costs tokens; dropping the change silently costs a review.
-            code, diff, err = ws.git(
-                ["diff", "--no-color", "-M", "--diff-algorithm=histogram", revision, "--"], root
-            )
+            code, diff, err = _diff(root, revisions, [])
             strategy += " (exclusions unsupported by this git)"
             withheld = []
     else:
@@ -210,7 +221,9 @@ def create_snapshot(
         raise ReviewError("git diff failed: %s" % (err.strip() or code))
 
     untracked: List[str] = []
-    if include_untracked:
+    # An incremental diff is tree-to-tree, and both trees already contain the
+    # untracked files: adding them again would duplicate every hunk.
+    if include_untracked and not previous_tree:
         ucode, uout, _ = ws.git(["ls-files", "--others", "--exclude-standard"], root)
         if ucode == 0:
             for name in [line.strip() for line in uout.splitlines() if line.strip()]:
@@ -235,11 +248,24 @@ def create_snapshot(
         head = hout.strip()
 
     ws.write_text(workspace.snapshot_path, diff)
+    full_diff_path = ""
+    if previous_tree:
+        # Leave the whole change somewhere the reviewer can look. This costs a
+        # git call and no tokens: it is read only if a reviewer needs it.
+        fcode, full, _ = _diff(root, [base or "HEAD"], _pathspecs(withheld))
+        if fcode == 0 and full.strip():
+            ws.write_text(workspace.full_snapshot_path, full)
+            full_diff_path = workspace.relative(workspace.full_snapshot_path)
     meta = {
         "generated_at": ws.utcnow(),
         "strategy": strategy,
         "base": base,
         "head": head,
+        #: The working tree as a git tree object, so the next round can diff
+        #: against exactly what this round reviewed.
+        "tree": tree,
+        "incremental_from": previous_tree,
+        "full_diff": full_diff_path,
         "files": _changed_files(diff),
         "untracked_included": untracked,
         "withheld": sorted(withheld, key=lambda entry: str(entry.get("path"))),
@@ -250,6 +276,82 @@ def create_snapshot(
     }
     ws.write_json(workspace.snapshot_meta_path, meta)
     return meta
+
+
+def _diff(root: str, revisions: Sequence[str], pathspecs: Sequence[str]) -> "tuple[int, str, str]":
+    """One or two revisions, diffed the same way either time.
+
+    One revision compares it to the working tree; two compare them to each
+    other, which is how an incremental round diffs against the tree the
+    previous round reviewed.
+    """
+    return ws.git(
+        [
+            "diff",
+            "--no-color",
+            "-M",
+            "--diff-algorithm=histogram",
+            *revisions,
+            "--",
+            *pathspecs,
+        ],
+        root,
+    )
+
+
+def _write_tree(root: str) -> str:
+    """Record the working tree as a git tree object, or "" if git cannot.
+
+    Written through a throwaway index so the user's own index is untouched --
+    the same trick ``git stash create`` uses. Untracked-but-not-ignored files
+    are included, because a new module is usually the most important part of a
+    change and the next round has to be able to diff against it.
+
+    The objects this writes are unreferenced, which is fine for the lifetime of
+    a workflow: git does not prune loose objects that recent.
+    """
+    handle, index = tempfile.mkstemp(prefix="dev-orchestra-index-")
+    os.close(handle)
+    # git wants to create the index itself; an existing empty file is not one.
+    try:
+        os.unlink(index)
+    except OSError:
+        return ""
+    env = {"GIT_INDEX_FILE": index}
+    try:
+        code, _, _ = ws.git(["read-tree", "HEAD"], root, env=env)
+        if code != 0:
+            # No commits yet: an empty index is the right starting point.
+            code, _, _ = ws.git(["read-tree", "--empty"], root, env=env)
+            if code != 0:
+                return ""
+        code, _, _ = ws.git(["add", "-A", "--", "."], root, env=env)
+        if code != 0:
+            return ""
+        code, out, _ = ws.git(["write-tree"], root, env=env)
+        return out.strip() if code == 0 else ""
+    finally:
+        for leftover in (index, index + ".lock"):
+            try:
+                os.unlink(leftover)
+            except OSError:
+                pass
+
+
+def _reviewed_tree(workspace: ws.Workspace) -> str:
+    """The tree of the previous snapshot, but only once it has been reviewed.
+
+    Diffing against a snapshot nobody reviewed would answer a question no round
+    asked, and would turn an ordinary re-snapshot -- taken because a reviewer
+    failed, say -- into an empty diff.
+    """
+    meta = ws.read_json(workspace.snapshot_meta_path, {}) or {}
+    tree = str(meta.get("tree") or "")
+    if not tree:
+        return ""
+    consolidated = ws.read_json(workspace.consolidated_json_path, {}) or {}
+    reviewed = str((consolidated.get("snapshot") or {}).get("sha256") or "")
+    return tree if reviewed and reviewed == str(meta.get("sha256") or "") else ""
 
 
 def _is_orchestrator_artifact(name: str, workspace: ws.Workspace) -> bool:
@@ -309,6 +411,51 @@ def withheld_lines(withheld: Sequence[Dict[str, Any]]) -> str:
     return "{:,}".format(total) + ("" if exact else "+")
 
 
+def render_round_context(workspace: ws.Workspace, meta: Dict[str, Any]) -> str:
+    """What a re-review needs to know that the fix diff alone does not say.
+
+    A reviewer is stateless and sees no other reviewer's output, so handing it
+    only the fix would be handing it a change with no premise: "is this
+    correct" is unanswerable without knowing what it was correcting. The
+    premise is cheap to supply -- the findings were already structured during
+    triage, and cost a line each against the thousands a second full diff
+    costs.
+
+    What is deliberately left out is who reported what. The findings arrive as
+    the brief the fixer worked from, which is a fact about the change, rather
+    than as another reviewer's opinion still in play.
+    """
+    if not meta.get("incremental_from"):
+        return ""
+    consolidated = ws.read_json(workspace.consolidated_json_path, {}) or {}
+    lines = [
+        "This is a re-review. The diff above is only what changed since the previous "
+        "round -- the fix, not the whole change."
+    ]
+    if meta.get("full_diff"):
+        lines.append("The whole change is frozen at %s; read it if you need the context." % meta["full_diff"])
+    accepted = accepted_findings(consolidated)
+    if accepted:
+        lines.append("")
+        lines.append("The fix was meant to address:")
+        for finding in accepted:
+            lines.append(
+                "- [%s] %s:%s -- %s"
+                % (
+                    finding.get("severity", "?"),
+                    finding.get("file", "?"),
+                    finding.get("line", "n/a"),
+                    finding.get("problem", ""),
+                )
+            )
+        lines.append("")
+        lines.append(
+            "Say whether each is actually fixed, and report any new problem the fix "
+            "introduced. Do not assume a listed item was real."
+        )
+    return "\n".join(lines)
+
+
 def render_withheld(withheld: Sequence[Dict[str, Any]]) -> str:
     """The note that tells a reviewer what it is not being shown.
 
@@ -329,14 +476,16 @@ def render_withheld(withheld: Sequence[Dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-def _numstat(root: str, revision: str, patterns: Sequence[str]) -> "tuple[List[Dict[str, Any]], bool]":
+def _numstat(
+    root: str, revisions: Sequence[str], patterns: Sequence[str]
+) -> "tuple[List[Dict[str, Any]], bool]":
     """Every changed file with its line counts, and whether git could list them.
 
     The second value distinguishes "nothing changed" from "there is no such
     revision" -- a repository with no commits yet has no ``HEAD``, and that is
     a normal state, not a failure.
     """
-    code, out, _ = ws.git(["diff", "--numstat", "-z", "-M", revision, "--"], root)
+    code, out, _ = ws.git(["diff", "--numstat", "-z", "-M", *revisions, "--"], root)
     if code != 0:
         return [], False
     entries: List[Dict[str, Any]] = []
@@ -442,9 +591,9 @@ def build_review_prompt(
             % workspace.relative(workspace.snapshot_path)
         )
     meta = ws.read_json(workspace.snapshot_meta_path, {}) or {}
-    note = render_withheld(meta.get("withheld") or [])
-    if note:
-        diff_section += "\n\n" + note
+    for note in (render_withheld(meta.get("withheld") or []), render_round_context(workspace, meta)):
+        if note:
+            diff_section += "\n\n" + note
     prompt = (template or REVIEW_PROMPT_TEMPLATE).format(
         reviewer_id=reviewer.get("id", "reviewer"),
         role=role,

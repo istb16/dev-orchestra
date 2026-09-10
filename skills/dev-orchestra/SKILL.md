@@ -218,6 +218,11 @@ the iteration budget (`max_review_iterations`, default 2) is not spent. For a
 new round: `review snapshot` again, then `review run`. When the budget is
 exhausted, **stop and report the remaining findings**; do not loop.
 
+That second snapshot diffs only what the fix changed, and hands the reviewers
+the accepted findings plus the frozen whole change. So triage the first round
+**before** re-snapshotting, or there is no brief to hand them. `--full`
+re-sends the whole change if a round genuinely needs it.
+
 ## 3. Delegation rules
 
 Delegate to a separate CLI when the work is independent, parallelisable,

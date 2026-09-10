@@ -90,6 +90,11 @@ review:
     - "*.min.css"
     - "*.map"
     - "*.snap"
+  # A second round diffs against what the first round reviewed, so re-review
+  # sees the fix rather than the whole change again. The findings the fix was
+  # meant to address travel with it, and the whole change stays on disk for a
+  # reviewer that wants the context. false re-diffs everything every round.
+  incremental_rounds: true
 
 workspace:
   # Where plan.md, reviews/ and state.json go, relative to the repo root.

@@ -405,6 +405,36 @@ dev-orchestra review run
 仕様書レビューや依存関係の棚卸しでも同じ分担が使えます。1つのモデルが情報を消化し、
 別のモデルが設計し、さらに2つが結果について意見を戦わせます。
 
+## 2巡目は修正だけを見る
+
+毎ラウンド `HEAD` と全体を再 diff していたため、1行の修正を見るのに2巡目が1巡目と同じ
+コストを — レビュアーごとに — 要していた。snapshot が作業ツリーを git tree オブジェクトとして
+記録するようになったので、次のラウンドは「前のラウンドが実際にレビューしたツリー」との
+差分を取る。
+
+```
+$ dev-orchestra review snapshot
+Snapshot: .ai/reviews/review-target.diff
+  strategy: git diff <previous round> <now>
+  scope:    what changed since the last reviewed round, not the whole change
+            whole change kept at .ai/reviews/review-target-full.diff
+            reviewers also get the findings the fix was meant to address
+  files:    1
+  size:     199 bytes (sha256 17ac3ae8c8a2)
+```
+
+60関数の変更に1行の修正を加えたケースで、2巡目の diff は 8,617 → 199 bytes（レビュアー1人あたり）。
+
+**前提も一緒に渡す。** レビュアーはステートレスで、他のレビュアーの出力を見ない。つまり
+修正 diff だけを渡すのは「目的が書かれていない変更」を渡すことになる — 何を直そうと
+していたか分からなければ「これは正しいか」に答えられない。そこでラウンドには、修正が
+対処すべきだった accepted findings（1件1行）と、ディスク上に凍結された変更全体への
+ポインタも載せる。コストは数千トークンの代わりに約80トークンで、しかも2回目の全 diff
+より鋭い問いになる: **各 finding は実際に直ったか、修正が何かを壊していないか。**
+
+re-snapshot の前に triage すること。でないと渡すブリーフがない。`--full`
+（または `review.incremental_rounds: false`）で全体を再送できる。
+
 ## レビュアーに送らないもの
 
 レビュアーが diff を読むのは、誰かが書いたコードを判断するためだ。ロックファイル・

@@ -16,7 +16,18 @@ def utcnow() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def git(args: Sequence[str], cwd: str, timeout: int = 60) -> "tuple[int, str, str]":
+def git(
+    args: Sequence[str],
+    cwd: str,
+    timeout: int = 60,
+    env: Optional[Dict[str, str]] = None,
+) -> "tuple[int, str, str]":
+    """Run git and return (exit code, stdout, stderr).
+
+    ``env`` is merged over the caller's environment rather than replacing it,
+    so a caller can point ``GIT_INDEX_FILE`` at a scratch index without losing
+    the git configuration the user's environment supplies.
+    """
     try:
         completed = subprocess.run(
             ["git", *args],
@@ -27,6 +38,7 @@ def git(args: Sequence[str], cwd: str, timeout: int = 60) -> "tuple[int, str, st
             errors="replace",
             timeout=timeout,
             stdin=subprocess.DEVNULL,
+            env={**os.environ, **env} if env else None,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         return 127, "", str(exc)
@@ -70,6 +82,16 @@ class Workspace:
     @property
     def snapshot_path(self) -> str:
         return os.path.join(self.reviews_dir, "review-target.diff")
+
+    @property
+    def full_snapshot_path(self) -> str:
+        """The whole change, kept alongside an incremental round's diff.
+
+        A round that only sends the fix has to leave the reviewer somewhere to
+        look for the change the fix belongs to. Writing it costs a git call and
+        no tokens: it is read only if a reviewer decides it needs the context.
+        """
+        return os.path.join(self.reviews_dir, "review-target-full.diff")
 
     @property
     def snapshot_meta_path(self) -> str:
