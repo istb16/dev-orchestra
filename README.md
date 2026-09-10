@@ -421,6 +421,39 @@ dev-orchestra review run
 The same split works for a spec review or a dependency audit: one model digests,
 another designs, two more disagree about the result.
 
+## What reviewers are not shown
+
+A reviewer reads a diff to judge code somebody wrote. A lockfile, a bundle and
+a recorded snapshot were not written, and they cost the same tokens as real
+code -- once per reviewer, once per round. So the snapshot withholds the *body*
+of those diffs:
+
+```
+$ dev-orchestra review snapshot
+Snapshot: .ai/reviews/review-target.diff
+  strategy: git diff HEAD
+  files:    1
+  size:     153 bytes (sha256 bf2b71e951ea)
+  withheld: 2 file(s), 802 changed line(s) not sent to reviewers
+    dist/bundle.min.js (dist/*)
+    package-lock.json (package-lock.json)
+    reviewers are told these changed; --no-exclude sends them in full
+```
+
+That change -- a 400-package lockfile bump next to a two-line fix -- took one
+review round with two reviewers from **44,783 to 1,711 input tokens**.
+
+Withheld is not hidden, which is the whole design. The reviewer is told the
+file changed and by how many lines, so a review that genuinely turns on a
+dependency version can go and read it. `--no-exclude` sends everything.
+
+The list is `review.exclude`: lockfiles, `dist/`, `vendor/`, `node_modules/`,
+minified output, source maps and `*.snap`. Set it to `[]` to review everything,
+or replace it with your own. Anything ambiguous is deliberately left out of the
+defaults -- `build/` is conventionally output but hand-written often enough that
+hiding it would sometimes drop real work, and that is a worse failure than
+paying for a lockfile.
+
 ## What a run costs
 
 Every delegated run records what it spent, so the question "where did the

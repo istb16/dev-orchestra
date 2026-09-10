@@ -45,6 +45,17 @@ BUILTIN_ROLES = (
 _ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 
 
+def _default_exclude() -> Tuple[str, ...]:
+    """The review module owns the list; this module only persists it.
+
+    Imported late because :mod:`orchestrator.review` imports the provider
+    registry, and configuration must stay loadable without it.
+    """
+    from .review import DEFAULT_EXCLUDE
+
+    return DEFAULT_EXCLUDE
+
+
 def is_valid_reviewer_id(value: Any) -> bool:
     """The same rule ``validate`` applies, exposed for input-time checking."""
     return isinstance(value, str) and bool(_ID_RE.match(value))
@@ -93,6 +104,10 @@ def default_config() -> Dict[str, Any]:
             # ticking, so this catches a stall in minutes instead of half an
             # hour -- but only for providers that stream progress at all.
             "idle_timeout_seconds": 300,
+            # Generated and vendored files whose diff body is withheld from
+            # reviewers. A list replaces this wholesale, so [] reviews
+            # everything; see review.DEFAULT_EXCLUDE for why these.
+            "exclude": list(_default_exclude()),
         },
         "budgets": {
             "architect": 3,
@@ -328,6 +343,16 @@ def validate(data: Dict[str, Any], known_providers: Optional[List[str]] = None) 
             idle = review.get("idle_timeout_seconds")
             if idle is not None and (not isinstance(idle, int) or isinstance(idle, bool) or idle <= 0):
                 problems.append("review.idle_timeout_seconds: must be a positive integer or null")
+            exclude = review.get("exclude")
+            if exclude is not None:
+                if not isinstance(exclude, list):
+                    problems.append("review.exclude: must be a list of glob patterns (use [] for none)")
+                else:
+                    for index, pattern in enumerate(exclude):
+                        if not isinstance(pattern, str) or not pattern.strip():
+                            problems.append(
+                                "review.exclude[%d]: must be a non-empty string (got %r)" % (index, pattern)
+                            )
 
     budgets = data.get("budgets")
     if budgets is not None:
