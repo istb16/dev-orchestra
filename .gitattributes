@@ -1,0 +1,19 @@
+# Shell scripts and Python must keep LF endings: a CRLF `install.sh` fails on
+# Linux and macOS with "bad interpreter". PowerShell keeps CRLF by convention.
+* text=auto eol=lf
+
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+*.sh text eol=lf
+*.py text eol=lf
+*.md text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.toml text eol=lf
+bin/ai-orchestrator text eol=lf
+
+# Keep test fixtures and docs out of GitHub's language statistics.
+tests/** linguist-language=Python
+references/** linguist-documentation

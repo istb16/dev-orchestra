@@ -1,0 +1,44 @@
+# Example project override: copy to <repo>/.ai-orchestrator.yaml
+#
+# Only the keys you set here override your global configuration. Mappings merge
+# key by key, so omitting `architect` keeps your personal architect.
+#
+# One exception worth knowing: LISTS REPLACE WHOLESALE. Defining `reviewers`
+# here defines the entire review panel for this repository -- which is exactly
+# what you want when a repo needs a specific set of perspectives.
+#
+# Commit this file when the team should share the panel; leave it uncommitted
+# (it is gitignored by default in this repo) when it is just your preference.
+
+version: 1
+
+# This repository is a database-heavy Rails app, so the panel is weighted
+# towards migration safety and security rather than two general reviewers.
+reviewers:
+  - id: claude-general
+    provider: claude
+    model:
+      family: opus
+      version: latest
+    role: general
+
+  - id: codex-security
+    provider: codex
+    model:
+      family: recommended-coding
+      version: latest
+    role: security
+
+  - id: codex-database
+    provider: codex
+    model:
+      family: recommended-coding
+      version: latest
+    role: database
+
+review:
+  # Migrations are expensive to get wrong: allow one extra fix/re-review round.
+  max_review_iterations: 3
+
+# Everything else -- orchestrator, architect, implementer, review_fixer --
+# comes from the global configuration.

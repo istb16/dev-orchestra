@@ -1,0 +1,77 @@
+# Example global configuration for ai-dev-orchestrator.
+#
+# Copy to:
+#   Linux/macOS  ~/.config/ai-dev-orchestrator/config.yaml
+#   Windows      %APPDATA%\ai-dev-orchestrator\config.yaml
+#
+# or just run:  ai-orchestrator config setup
+#
+# Note what is NOT here: any dated model id. Roles declare a model *family* and
+# a version policy, and the provider adapter resolves that against the CLI you
+# have installed, so this file keeps working after a model release.
+
+version: 1
+
+# Decides which stages to run and writes the final report. A mid-tier model is
+# the right trade-off here: it makes routing decisions, not code.
+orchestrator:
+  provider: claude
+  model:
+    family: sonnet
+    version: latest
+
+# Investigation and design. Read-only: it writes .ai/plan.md and nothing else.
+architect:
+  provider: claude
+  model:
+    family: fable
+    version: latest
+
+# Writes the code and the tests.
+implementer:
+  provider: claude
+  model:
+    family: opus
+    version: latest
+
+# Fixes findings that survived triage.
+review_fixer:
+  provider: claude
+  model:
+    family: opus
+    version: latest
+
+# Independent reviewers. Each sees the same frozen diff, in isolation,
+# read-only. Two or more from different vendors is the point of the exercise.
+reviewers:
+  - id: claude-general
+    provider: claude
+    model:
+      family: opus
+      version: latest
+    role: general
+
+  - id: codex-general
+    provider: codex
+    model:
+      # Codex publishes no model list, so this resolves by letting the CLI
+      # choose its own current default rather than naming a model.
+      family: recommended-coding
+      version: latest
+    role: general
+
+review:
+  # Hard stop on review -> fix -> re-review loops. 0 disables re-review.
+  max_review_iterations: 2
+  # Run reviewers concurrently. Set false to debug one at a time.
+  parallel: true
+  # Severities that count as blocking when deciding whether to re-review.
+  re_review_severities:
+    - critical
+    - high
+  # Per delegated CLI run.
+  timeout_seconds: 1800
+
+workspace:
+  # Where plan.md, reviews/ and state.json go, relative to the repo root.
+  dir: .ai

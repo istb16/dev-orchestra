@@ -1,0 +1,25 @@
+#!/usr/bin/env sh
+# Thin wrapper so the CLI can be put on PATH.
+# Resolves the repository root relative to this script, then defers to Python.
+set -eu
+
+script_path=$0
+# Follow symlinks (POSIX-safe, no readlink -f dependency).
+while [ -L "$script_path" ]; do
+  link=$(ls -ld -- "$script_path" | sed 's/.*-> //')
+  case $link in
+    /*) script_path=$link ;;
+    *) script_path=$(dirname -- "$script_path")/$link ;;
+  esac
+done
+here=$(cd -- "$(dirname -- "$script_path")" && pwd)
+root=$(dirname -- "$here")
+
+for candidate in python3 python; do
+  if command -v "$candidate" >/dev/null 2>&1; then
+    exec "$candidate" "$root/scripts/ai_orchestrator.py" "$@"
+  fi
+done
+
+echo "ai-orchestrator: Python 3.9+ is required but was not found on PATH" >&2
+exit 127

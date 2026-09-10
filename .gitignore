@@ -1,0 +1,28 @@
+# Orchestration artifacts produced inside a target project.
+.ai/
+
+# Local configuration must never be committed: it is per-machine, and a
+# project override belongs to the project being worked on, not to this repo.
+.ai-orchestrator.yaml
+.ai-orchestrator.yml
+.ai-orchestrator.json
+.tmpcfg/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Editors / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db

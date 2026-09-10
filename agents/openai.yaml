@@ -1,0 +1,98 @@
+# Portable descriptor of this skill for hosts that consume YAML agent
+# manifests (Codex-family tooling, internal launchers, CI wrappers).
+#
+# This is METADATA ONLY. The behaviour lives in ../SKILL.md, which stays the
+# single source of truth -- this file points at it and never restates it.
+# Claude Code does not read this file; it reads SKILL.md directly.
+
+schema: agent-manifest/v1
+name: ai-dev-orchestrator
+version: 0.1.0
+license: MIT
+summary: Multi-model software development orchestration across coding CLIs.
+
+instructions:
+  # Read this, then follow it. Do not duplicate its content elsewhere.
+  file: ../SKILL.md
+
+entrypoint:
+  command: python
+  args:
+    - ../scripts/ai_orchestrator.py
+  wrappers:
+    posix: ../bin/ai-orchestrator
+    windows: ../bin/ai-orchestrator.ps1
+
+requirements:
+  python: ">=3.9"
+  tools:
+    - git
+  optional_clis:
+    - claude
+    - codex
+
+triggers:
+  - implement this feature
+  - fix this issue
+  - investigate and fix
+  - implement and review
+  - run a multi-model review
+  - review the current changes
+  - orchestrate development
+  - configure development agents
+  - change the coding model
+  - add a reviewer
+  - set up the AI development workflow
+
+roles:
+  - id: orchestrator
+    description: Classifies the request, selects stages, delegates, reports.
+    mode: plan
+  - id: architect
+    description: Investigation and design. Never edits code.
+    mode: plan
+    output: .ai/plan.md
+  - id: implementer
+    description: Writes code and tests from the plan.
+    mode: implement
+  - id: review_fixer
+    description: Fixes findings that survived triage.
+    mode: implement
+  - id: reviewers
+    description: Zero or more independent read-only reviewers.
+    mode: review
+    cardinality: 0..n
+
+commands:
+  - config show
+  - config setup
+  - config reset
+  - config set
+  - model list
+  - reviewer list
+  - reviewer add
+  - reviewer remove
+  - doctor
+  - run
+  - review snapshot
+  - review run
+  - review triage
+  - review fix-brief
+  - review status
+  - summary
+
+artifacts:
+  directory: .ai
+  files:
+    - plan.md
+    - execution/
+    - reviews/review-target.diff
+    - reviews/consolidated.md
+    - reviews/consolidated.json
+    - state.json
+
+safety:
+  reviewers_are_read_only: true
+  stores_credentials: false
+  requires_network: false
+  hardcodes_model_snapshots: false

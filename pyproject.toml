@@ -1,0 +1,28 @@
+# Tooling configuration only. This project is not a pip package: it runs
+# straight from the checkout with the standard library, so there is no
+# [project] table and nothing to build or install.
+
+[tool.ruff]
+line-length = 110
+target-version = "py39"
+extend-exclude = [".ai", ".tmpcfg"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes
+    "W",   # pycodestyle warnings
+    "I",   # import sorting
+    "B",   # bugbear
+    "C4",  # comprehensions
+    "RUF", # ruff-specific
+]
+ignore = [
+    # %-formatting is used deliberately and consistently across the codebase.
+    "UP031",
+    # Asserts in tests are the point.
+    "S101",
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["orchestrator"]

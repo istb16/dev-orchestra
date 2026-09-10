@@ -1,0 +1,101 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install ruff
+        run: pip install ruff==0.16.6
+      - name: ruff check
+        run: ruff check .
+      - name: ruff format --check
+        run: ruff format --check .
+      - name: Shell scripts parse cleanly
+        run: |
+          for script in install/*.sh bin/ai-orchestrator; do
+            sh -n "$script"
+          done
+      - name: PowerShell scripts parse cleanly
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Get-ChildItem -Recurse -Filter *.ps1 | ForEach-Object {
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$null, [ref]$errors) | Out-Null
+            if ($errors) { throw "$($_.Name): $($errors[0].Message)" }
+          }
+
+  test:
+    name: Tests (${{ matrix.os }}, Python ${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python-version: ["3.9", "3.12"]
+        exclude:
+          # One old-Python run is enough to catch syntax regressions.
+          - os: macos-latest
+            python-version: "3.9"
+          - os: windows-latest
+            python-version: "3.9"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Configure git for snapshot tests
+        run: |
+          git config --global user.email "ci@example.invalid"
+          git config --global user.name "CI"
+          git config --global init.defaultBranch main
+      - name: Run tests
+        # No AI CLI is installed here on purpose: the suite must pass without
+        # claude or codex on PATH, and must never invoke a real CLI.
+        run: python -m unittest discover -s tests -t tests -v
+
+  validate-skill:
+    name: Skill validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Validate SKILL.md and packaging
+        run: python scripts/validate_skill.py
+      - name: CLI is runnable from a clean checkout
+        run: |
+          python scripts/ai_orchestrator.py --version
+          python scripts/ai_orchestrator.py config show
+          python scripts/ai_orchestrator.py doctor --fast
+      - name: Installers are idempotent
+        run: |
+          ./install/install.sh --project "$RUNNER_TEMP/proj"
+          ./install/install.sh --project "$RUNNER_TEMP/proj"
+          test -e "$RUNNER_TEMP/proj/.claude/skills/ai-dev-orchestrator/SKILL.md"
+          ./install/install.sh --codex --project "$RUNNER_TEMP/proj"
+          ./install/install.sh --codex --project "$RUNNER_TEMP/proj"
+          test "$(grep -c 'BEGIN ai-dev-orchestrator' "$RUNNER_TEMP/proj/AGENTS.md")" -eq 1
+          ./install/uninstall.sh --project "$RUNNER_TEMP/proj"
+          ./install/uninstall.sh --codex --project "$RUNNER_TEMP/proj"
+          test ! -e "$RUNNER_TEMP/proj/.claude/skills/ai-dev-orchestrator"
+          test "$(grep -c 'BEGIN ai-dev-orchestrator' "$RUNNER_TEMP/proj/AGENTS.md" || true)" -eq 0
