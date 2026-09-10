@@ -7,7 +7,7 @@ Judgement stays in the model; mechanics stay in code.
 
 ```mermaid
 flowchart TD
-    U[User request] --> O[Orchestrator<br/>SKILL.md + configured CLI]
+    U[User request] --> O[Orchestrator<br/>the skill + configured CLI]
     O -->|classify| D{Design needed?}
     D -->|no| I
     D -->|yes| A[Architect<br/>read-only]
@@ -33,7 +33,7 @@ flowchart TD
 
 | Layer | Lives in | Responsibility |
 | --- | --- | --- |
-| Skill | `SKILL.md`, `references/` | What the orchestrator decides and when |
+| Skill | `skills/dev-orchestra/SKILL.md`, `references/` | What the orchestrator decides and when |
 | CLI | `scripts/dev_orchestra.py`, `scripts/orchestrator/cli.py` | Deterministic operations an agent can call |
 | Domain | `config.py`, `review.py`, `workspace.py`, `wizard.py`, `doctor.py` | Config layering, snapshotting, parsing, dedupe, triage, diagnostics |
 | Providers | `scripts/orchestrator/providers/` | The only code that knows CLI syntax and model names |

@@ -1,7 +1,7 @@
 # Portable descriptor of this skill for hosts that consume YAML agent
 # manifests (Codex-family tooling, internal launchers, CI wrappers).
 #
-# This is METADATA ONLY. The behaviour lives in ../SKILL.md, which stays the
+# This is METADATA ONLY. The behaviour lives in ../skills/dev-orchestra/SKILL.md, which stays the
 # single source of truth -- this file points at it and never restates it.
 # Claude Code does not read this file; it reads SKILL.md directly.
 
@@ -13,7 +13,7 @@ summary: Multi-model software development orchestration across coding CLIs.
 
 instructions:
   # Read this, then follow it. Do not duplicate its content elsewhere.
-  file: ../SKILL.md
+  file: ../skills/dev-orchestra/SKILL.md
 
 entrypoint:
   command: python

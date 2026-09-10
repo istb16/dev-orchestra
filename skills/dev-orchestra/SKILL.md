@@ -11,10 +11,14 @@ You are the **Orchestrator**. You decide which stages a request needs, delegate
 each stage to a configured CLI + model, and report the result. You do not do the
 heavy implementation yourself when a stage is delegated.
 
-`SKILL_DIR` below means this skill's own directory. The helper CLI is:
+`PLUGIN_ROOT` below means the dev-orchestra installation root: the directory
+holding `scripts/`, `references/` and `bin/`, two levels above this file. When
+this runs as an installed plugin, Claude Code and Codex both export it as
+`${CLAUDE_PLUGIN_ROOT}`; otherwise it is the checkout root. Every relative path
+below (`references/...`, `scripts/...`) is relative to it. The helper CLI is:
 
 ```
-python "SKILL_DIR/scripts/dev_orchestra.py" <command>
+python "PLUGIN_ROOT/scripts/dev_orchestra.py" <command>
 ```
 
 `bin/dev-orchestra` (POSIX) and `bin/dev-orchestra.ps1` (Windows) are
@@ -25,8 +29,8 @@ equivalent wrappers. Run every command from the target project's root.
 Run once per session:
 
 ```
-python "SKILL_DIR/scripts/dev_orchestra.py" doctor
-python "SKILL_DIR/scripts/dev_orchestra.py" status
+python "PLUGIN_ROOT/scripts/dev_orchestra.py" doctor
+python "PLUGIN_ROOT/scripts/dev_orchestra.py" status
 ```
 
 `status` is the one command that answers **continue or stop**. It reports
@@ -88,7 +92,7 @@ default; see `references/workflow.md` if the team wants it committed.
 Delegate. The Architect **must not change code**.
 
 ```
-python "SKILL_DIR/scripts/dev_orchestra.py" run architect \
+python "PLUGIN_ROOT/scripts/dev_orchestra.py" run architect \
   --prompt-file .ai/execution/design-request.md --output .ai/plan.md
 ```
 
@@ -105,7 +109,7 @@ back once with specifics; do not paper over it during implementation.
 Delegate, passing the plan.
 
 ```
-python "SKILL_DIR/scripts/dev_orchestra.py" run implementer \
+python "PLUGIN_ROOT/scripts/dev_orchestra.py" run implementer \
   --prompt-file .ai/execution/implement-request.md
 ```
 
@@ -123,8 +127,8 @@ fix or report before reviewing.
 Before each *retry* of the tests, claim the attempt and record what happened:
 
 ```
-python "SKILL_DIR/scripts/dev_orchestra.py" budget consume test
-python "SKILL_DIR/scripts/dev_orchestra.py" progress record test --signature "3 failed: test_a, test_b, test_c"
+python "PLUGIN_ROOT/scripts/dev_orchestra.py" budget consume test
+python "PLUGIN_ROOT/scripts/dev_orchestra.py" progress record test --signature "3 failed: test_a, test_b, test_c"
 ```
 
 `budget consume` exits 3 when the attempts are spent, and `progress record`
@@ -137,8 +141,8 @@ likely to run away, because nothing about it looks like a loop from inside.
 Freeze the change first so every reviewer judges the same thing:
 
 ```
-python "SKILL_DIR/scripts/dev_orchestra.py" review snapshot
-python "SKILL_DIR/scripts/dev_orchestra.py" review run
+python "PLUGIN_ROOT/scripts/dev_orchestra.py" review snapshot
+python "PLUGIN_ROOT/scripts/dev_orchestra.py" review run
 ```
 
 The review round is derived from the snapshot -- a new snapshot is a new round,
@@ -168,8 +172,8 @@ For each finding in `consolidated.md`: read the cited code, decide whether it is
 actually true for this codebase, and record the decision:
 
 ```
-python "SKILL_DIR/scripts/dev_orchestra.py" review triage F1 F3 --status accepted --note "confirmed in orders_controller"
-python "SKILL_DIR/scripts/dev_orchestra.py" review triage F2 --status rejected --note "guarded by the caller"
+python "PLUGIN_ROOT/scripts/dev_orchestra.py" review triage F1 F3 --status accepted --note "confirmed in orders_controller"
+python "PLUGIN_ROOT/scripts/dev_orchestra.py" review triage F2 --status rejected --note "guarded by the caller"
 ```
 
 Statuses: `accepted`, `rejected`, `duplicate`, `needs-investigation`.
@@ -187,8 +191,8 @@ handed the same defect twice.
 Only accepted findings reach the fixer:
 
 ```
-python "SKILL_DIR/scripts/dev_orchestra.py" review fix-brief --output .ai/execution/fix-brief.md
-python "SKILL_DIR/scripts/dev_orchestra.py" run review_fixer --prompt-file .ai/execution/fix-brief.md
+python "PLUGIN_ROOT/scripts/dev_orchestra.py" review fix-brief --output .ai/execution/fix-brief.md
+python "PLUGIN_ROOT/scripts/dev_orchestra.py" run review_fixer --prompt-file .ai/execution/fix-brief.md
 ```
 
 Instruct the fixer to verify each finding against the current code before
@@ -201,7 +205,7 @@ failure is fatal: stop and report.
 Re-run the tests. Then:
 
 ```
-python "SKILL_DIR/scripts/dev_orchestra.py" review status
+python "PLUGIN_ROOT/scripts/dev_orchestra.py" review status
 ```
 
 Re-review only when it says so — that is, when critical/high findings remain and
@@ -242,7 +246,7 @@ Changed: app/models/order.rb, app/services/pricing.rb, spec/services/pricing_spe
 Remaining: F4 (medium, deferred — see .ai/reviews/consolidated.md)
 ```
 
-`python "SKILL_DIR/scripts/dev_orchestra.py" summary` prints the stage and
+`python "PLUGIN_ROOT/scripts/dev_orchestra.py" summary` prints the stage and
 model portion from the recorded run state. Always name what failed and what you
 skipped. Resolved model ids may appear in the run log; the saved config keeps
 family + version policy.

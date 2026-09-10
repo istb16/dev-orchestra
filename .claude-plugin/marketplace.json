@@ -1,0 +1,27 @@
+{
+  "name": "dev-orchestra",
+  "owner": {
+    "name": "Takayuki Hirasawa",
+    "url": "https://github.com/istb16"
+  },
+  "metadata": {
+    "description": "Self-hosted marketplace for the AI Development Orchestrator. Not published to any official marketplace.",
+    "version": "0.1.0"
+  },
+  "plugins": [
+    {
+      "name": "dev-orchestra",
+      "source": "./",
+      "description": "Orchestrate a multi-model development workflow across Claude Code and Codex CLIs: design, implement, test, independent multi-model review, triage, fix, re-test.",
+      "version": "0.1.0",
+      "author": {
+        "name": "Takayuki Hirasawa",
+        "url": "https://github.com/istb16"
+      },
+      "homepage": "https://github.com/istb16/dev-orchestra",
+      "license": "MIT",
+      "category": "development",
+      "keywords": ["orchestration", "code-review", "multi-model", "workflow", "codex"]
+    }
+  ]
+}

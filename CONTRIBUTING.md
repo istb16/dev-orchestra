@@ -57,14 +57,24 @@ reason and a test proving the boundary still holds.
 
 | Change | Location |
 | --- | --- |
-| Orchestration policy (when to run a stage) | `SKILL.md` |
-| Long-form explanation | `references/` — keep `SKILL.md` under 500 lines |
+| Orchestration policy (when to run a stage) | `skills/dev-orchestra/SKILL.md` |
+| Long-form explanation | `references/` — keep the skill under 500 lines |
+| Plugin packaging | `.claude-plugin/`, `.codex-plugin/`, `.agents/plugins/` |
 | A new CLI | `scripts/orchestrator/providers/` + `register()` — see `references/providers.md` |
 | Config schema | `config.py` (defaults **and** `validate`) + `references/configuration.md` |
 | Review parsing/dedup | `review.py` |
 
-`SKILL.md` is the single source of truth for skill content. Installers point at
-it; they never copy it.
+`skills/dev-orchestra/SKILL.md` is the single source of truth for skill content.
+Installers point at it; they never copy it. It sits under `skills/` because
+that is the only place Codex looks — a `SKILL.md` at the repository root would
+be invisible there and a second copy of the skill for Claude Code.
+
+The repository is also the plugin *and* its marketplace: `.claude-plugin/` and
+`.codex-plugin/` describe the same package for the two hosts, and both
+marketplace manifests source it from `./`. `python scripts/validate_skill.py`
+checks that they agree with each other and with the skill; `claude plugin
+validate . --strict` checks the Claude manifests against the host's own
+schema.
 
 ## Pull requests
 
@@ -95,7 +105,8 @@ default, which is what "recommended-coding, latest" actually means.
 schema, the CLI commands and flags, and the `.ai/` artifact formats.
 
 1. Move `Unreleased` entries under a new version heading with a date.
-2. Bump `version:` in `SKILL.md` and `__version__` in
+2. Bump `version:` in `skills/dev-orchestra/SKILL.md`, the two plugin
+   manifests, the Claude marketplace entry, and `__version__` in
    `scripts/orchestrator/__init__.py` and `cli.py` (validation checks they match).
 3. Tag `vX.Y.Z`.
 

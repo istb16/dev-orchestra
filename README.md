@@ -65,7 +65,7 @@ flowchart LR
 
 | Piece | Where | Job |
 | --- | --- | --- |
-| Skill | `SKILL.md` | What to run, when, and what not to do |
+| Skill | `skills/dev-orchestra/SKILL.md` | What to run, when, and what not to do |
 | CLI | `scripts/dev_orchestra.py` | Deterministic operations the agent calls |
 | Providers | `scripts/orchestrator/providers/` | The only code that knows CLI flags and model names |
 | References | `references/` | The detail, loaded only when needed |
@@ -86,12 +86,79 @@ stores credentials, and never prints them.
 
 ## Installation
 
+Install it as a **plugin** (Claude Code and Codex both read the same package),
+or keep using the original **skill checkout**. Both are supported; the plugin is
+the shorter path and upgrades in place.
+
+Distribution is from this repository only — nothing here is published to
+Anthropic's or OpenAI's official marketplaces.
+
+### Claude Code plugin
+
+Inside Claude Code:
+
+```
+/plugin marketplace add istb16/dev-orchestra
+/plugin install dev-orchestra@dev-orchestra
+```
+
+Or from a shell:
+
+```bash
+claude plugin marketplace add istb16/dev-orchestra
+claude plugin install dev-orchestra@dev-orchestra
+```
+
+The skill is available in the next session. `/plugin marketplace update` pulls
+newer versions; `claude plugin uninstall dev-orchestra` removes it.
+
+### Codex plugin
+
+```bash
+codex plugin marketplace add istb16/dev-orchestra
+codex plugin add dev-orchestra@dev-orchestra
+```
+
+`codex plugin marketplace upgrade` re-fetches the snapshot (re-run
+`codex plugin add` afterwards to install it), `codex plugin list` shows what is
+installed, and `codex plugin remove dev-orchestra@dev-orchestra` uninstalls
+it. Codex discovers the bundled skill on the next session.
+
+Both hosts copy the plugin into their own cache
+(`~/.claude/plugins/cache/…`, `~/.codex/plugins/cache/…`) and run it from
+there. Everything the skill needs — `scripts/`, `references/`, `bin/` — ships
+inside that copy, so no path points back at a checkout.
+
+### Local plugin development
+
+Point either host at a clone instead of at GitHub:
+
+```bash
+git clone https://github.com/istb16/dev-orchestra.git
+cd dev-orchestra
+
+claude plugin validate .                    # manifest check, --strict in CI
+claude plugin marketplace add "$PWD"
+claude plugin install dev-orchestra@dev-orchestra
+
+codex plugin marketplace add "$PWD"
+codex plugin add dev-orchestra@dev-orchestra
+```
+
+`claude plugin details dev-orchestra` lists what was actually loaded. Re-run
+`python scripts/validate_skill.py` after touching a manifest: it checks both
+hosts' manifests against the skill they ship.
+
+### Legacy: skill checkout
+
+The pre-plugin installers still work and are unchanged.
+
 ```bash
 git clone https://github.com/istb16/dev-orchestra.git
 cd dev-orchestra
 ```
 
-### Claude Code
+#### Claude Code
 
 ```bash
 ./install/install.sh              # symlinks into ~/.claude/skills/
@@ -112,26 +179,26 @@ writes MSYS-style paths (`/c/...`) that native Python cannot open. Symlinks need
 Developer Mode or an elevated shell; the installer falls back to a copy on its
 own if it cannot link.
 
-### Codex CLI
+#### Codex CLI
 
-Codex has no skills directory, so the installer appends a short, marked pointer
-block to `AGENTS.md` referencing this checkout:
+Without the plugin, the installer appends a short, marked pointer block to
+`AGENTS.md` referencing this checkout:
 
 ```bash
 ./install/install.sh --codex                    # ~/.codex/AGENTS.md
 ./install/install.sh --codex --project /path    # <project>/AGENTS.md
 ```
 
-`SKILL.md` stays the single source of truth — the pointer references it rather
-than duplicating it.
+`skills/dev-orchestra/SKILL.md` stays the single source of truth — the pointer
+references it rather than duplicating it.
 
-### Optional: put the CLI on PATH
+#### Optional: put the CLI on PATH
 
 ```bash
 export PATH="$PWD/bin:$PATH"      # then `dev-orchestra doctor` works anywhere
 ```
 
-### Verify
+#### Verify
 
 ```bash
 ./bin/dev-orchestra doctor
@@ -432,6 +499,23 @@ wrappers exist only for convenience.
 
 ## Upgrading
 
+Claude Code refreshes its marketplaces and installs what is newer in one step:
+
+```bash
+/plugin marketplace update
+```
+
+Codex needs both halves: `marketplace upgrade` only re-fetches the Git
+snapshot, and the installed copy stays at the version already in its cache
+until you add it again.
+
+```bash
+codex plugin marketplace upgrade
+codex plugin add dev-orchestra@dev-orchestra
+```
+
+For a checkout install:
+
 ```bash
 cd /path/to/dev-orchestra
 git pull
@@ -443,6 +527,11 @@ the installer. Configuration is forward-compatible within a major version, and
 `CHANGELOG.md` calls out anything that needs action.
 
 ## Uninstalling
+
+```bash
+claude plugin uninstall dev-orchestra      # plugin install
+codex plugin remove dev-orchestra@dev-orchestra
+```
 
 ```bash
 ./install/uninstall.sh            # removes the skill link and the AGENTS.md block
@@ -484,7 +573,7 @@ python scripts/validate_skill.py
 
 ## Documentation language
 
-`SKILL.md` and `references/` are English only: those files are read by AI
+`skills/dev-orchestra/SKILL.md` and `references/` are English only: those files are read by AI
 models, where English gives better trigger accuracy and token efficiency. The
 README, which is the human entry point, is available in
 [English](README.md) and [日本語](README.ja.md).

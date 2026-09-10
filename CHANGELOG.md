@@ -12,6 +12,29 @@ The public surface covered by that promise is: the configuration schema, the
 
 ### Added
 
+- **Claude Code and Codex plugin packaging.** The repository is now installable
+  as a plugin on both hosts, and is its own marketplace -- nothing is published
+  to Anthropic's or OpenAI's official marketplaces.
+  - `.claude-plugin/plugin.json` + `.claude-plugin/marketplace.json` for Claude
+    Code, `.codex-plugin/plugin.json` + `.agents/plugins/marketplace.json` for
+    Codex. Both marketplaces source the plugin from `./`, so
+    `/plugin marketplace add istb16/dev-orchestra` and
+    `codex plugin marketplace add istb16/dev-orchestra` install the same
+    package.
+  - `SKILL.md` moved to `skills/dev-orchestra/SKILL.md`. Codex only discovers
+    skills at `skills/<name>/SKILL.md` -- a document at the plugin root is
+    ignored there (verified against codex-cli 0.154) and would be a second copy
+    of the skill for Claude Code, which discovers both.
+  - The skill's own path variable is now `PLUGIN_ROOT` (`${CLAUDE_PLUGIN_ROOT}`
+    when installed as a plugin, which Codex sets too). Both hosts run the
+    plugin from a copy in their cache, and `scripts/`, `references/` and `bin/`
+    all ship inside that copy, so nothing resolves back to a checkout.
+  - `scripts/validate_skill.py` now validates both hosts' manifests: names,
+    versions, marketplace entries and the declared skills path.
+  - The existing installers, the `AGENTS.md` pointer for Codex, and every CLI
+    entry point are unchanged; a checkout install keeps working, and Claude Code
+    loads it as a skills-directory plugin.
+
 - **Stall detection and loop budgets.** Two failure modes were effectively
   undefended: a delegated agent that stops responding without anyone noticing,
   and a loop (review→fix→re-review, or the quieter fix→test→fix) that never

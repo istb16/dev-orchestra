@@ -45,7 +45,7 @@ class TestValidator(IsolatedCase):
 class TestSkillDocument(IsolatedCase):
     def setUp(self):
         super().setUp()
-        self.text = read("SKILL.md")
+        self.text = read(validate_skill.SKILL_PATH)
         self.front, self.body = validate_skill.parse_frontmatter(self.text)
 
     def test_frontmatter_fields(self):
@@ -129,10 +129,10 @@ class TestDocumentation(IsolatedCase):
     def test_agent_manifest_parses_and_points_at_skill_md(self):
         data = miniyaml.loads(read("agents/openai.yaml"))
         self.assertEqual(data["name"], "dev-orchestra")
-        self.assertEqual(data["instructions"]["file"], "../SKILL.md")
+        self.assertEqual(data["instructions"]["file"], "../" + validate_skill.SKILL_PATH)
 
     def test_changelog_documents_the_current_version(self):
-        front, _ = validate_skill.parse_frontmatter(read("SKILL.md"))
+        front, _ = validate_skill.parse_frontmatter(read(validate_skill.SKILL_PATH))
         self.assertIn(str(front["version"]), read("CHANGELOG.md"))
 
     def test_cli_reference_documents_every_top_level_command(self):
@@ -160,7 +160,7 @@ class TestPortability(IsolatedCase):
                 with open(path, encoding="utf-8", errors="replace") as handle:
                     if marker in handle.read():
                         hits.append(os.path.relpath(path, REPO_ROOT))
-        self.assertEqual(hits, ["SKILL.md"])
+        self.assertEqual(hits, [validate_skill.SKILL_PATH.replace("/", os.sep)])
 
     def test_installers_exist_for_both_hosts_and_platforms(self):
         for relative in (

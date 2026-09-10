@@ -82,7 +82,7 @@ function Install-ClaudeSkill {
     }
 
     New-Item -ItemType Directory -Force -Path $dest | Out-Null
-    foreach ($item in 'SKILL.md', 'README.md', 'LICENSE', 'references', 'scripts', 'bin', 'agents', 'examples') {
+    foreach ($item in 'skills', '.claude-plugin', '.codex-plugin', 'README.md', 'LICENSE', 'references', 'scripts', 'bin', 'agents', 'examples') {
         $source = Join-Path $root $item
         if (Test-Path -LiteralPath $source) {
             Copy-Item -LiteralPath $source -Destination $dest -Recurse -Force
@@ -124,7 +124,7 @@ function Install-CodexPointer {
         'run a multi-model code review, orchestrate development across AI CLIs, or change'
         'the development agent configuration, read and follow:'
         ''
-        "    $root/SKILL.md"
+        "    $root/skills/dev-orchestra/SKILL.md"
         ''
         'Its helper CLI is:'
         ''

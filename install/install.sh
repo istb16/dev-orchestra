@@ -74,7 +74,7 @@ install_claude() {
   if [ "$use_copy" -eq 1 ]; then
     mkdir -p "$dest"
     # Copy the skill payload only -- not .git, tests, or CI config.
-    for item in SKILL.md README.md LICENSE references scripts bin agents examples; do
+    for item in skills .claude-plugin .codex-plugin README.md LICENSE references scripts bin agents examples; do
       [ -e "$root/$item" ] && cp -R "$root/$item" "$dest/"
     done
     printf 'Copied the skill to %s\n' "$dest"
@@ -117,7 +117,7 @@ install_codex() {
     printf 'When the request is to implement a feature or issue, investigate and fix a bug,\n'
     printf 'run a multi-model code review, orchestrate development across AI CLIs, or change\n'
     printf 'the development agent configuration, read and follow:\n\n'
-    printf '    %s/SKILL.md\n\n' "$root"
+    printf '    %s/skills/dev-orchestra/SKILL.md\n\n' "$root"
     printf 'Its helper CLI is:\n\n'
     printf '    python %s/scripts/dev_orchestra.py <command>\n\n' "$root"
     printf 'That file is the single source of truth; do not rely on a copy of it.\n'
