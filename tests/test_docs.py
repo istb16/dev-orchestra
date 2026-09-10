@@ -21,7 +21,13 @@ YAML_FENCE = re.compile(r"^```ya?ml\s*$(.*?)^```\s*$", re.MULTILINE | re.DOTALL)
 
 
 def documentation_files():
-    names = ["README.md", "README.ja.md", "SKILL.md", "CONTRIBUTING.md", "CHANGELOG.md"]
+    names = [
+        "README.md",
+        "README.ja.md",
+        "skills/dev-orchestra/SKILL.md",
+        "CONTRIBUTING.md",
+        "CHANGELOG.md",
+    ]
     paths = [pathlib.Path(REPO_ROOT) / name for name in names]
     paths += sorted((pathlib.Path(REPO_ROOT) / "references").glob("*.md"))
     return [path for path in paths if path.is_file()]

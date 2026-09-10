@@ -106,7 +106,7 @@ finished workflow, so the next request starts with full budgets without anyone
 remembering to reset.
 
 `--force` overrides a refusal. It is there for a human who has decided to
-override; `SKILL.md` tells the orchestrator not to reach for it.
+override; the skill tells the orchestrator not to reach for it.
 
 ## No progress
 

@@ -1,6 +1,6 @@
 # Workflow
 
-Full detail for each stage. `SKILL.md` has the short version; read this when a
+Full detail for each stage. The skill has the short version; read this when a
 stage needs more care than the summary gives.
 
 ## Stage selection

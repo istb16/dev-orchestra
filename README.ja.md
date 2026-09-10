@@ -61,7 +61,7 @@ flowchart LR
 
 | 要素 | 場所 | 役割 |
 | --- | --- | --- |
-| Skill | `SKILL.md` | 何をいつ実行するか、何をしてはいけないか |
+| Skill | `skills/dev-orchestra/SKILL.md` | 何をいつ実行するか、何をしてはいけないか |
 | CLI | `scripts/dev_orchestra.py` | エージェントが呼ぶ決定的な操作 |
 | Provider | `scripts/orchestrator/providers/` | CLIのフラグとモデル名を知る唯一の場所 |
 | References | `references/` | 詳細。必要になったときだけ読む |
@@ -81,12 +81,79 @@ flowchart LR
 
 ## インストール
 
+**Plugin として入れる**（Claude Code と Codex が同じパッケージを読みます）か、
+従来どおり **チェックアウトを Skill として入れる** かを選べます。どちらも
+サポート対象ですが、Plugin のほうが手順が短く、その場で更新できます。
+
+配布はこのリポジトリからのみです。Anthropic / OpenAI の公式Marketplaceには
+公開していません。
+
+### Claude Code Plugin
+
+Claude Code 内から:
+
+```
+/plugin marketplace add istb16/dev-orchestra
+/plugin install dev-orchestra@dev-orchestra
+```
+
+シェルから:
+
+```bash
+claude plugin marketplace add istb16/dev-orchestra
+claude plugin install dev-orchestra@dev-orchestra
+```
+
+Skill は次のセッションから使えます。`/plugin marketplace update` で更新、
+`claude plugin uninstall dev-orchestra` で削除します。
+
+### Codex Plugin
+
+```bash
+codex plugin marketplace add istb16/dev-orchestra
+codex plugin add dev-orchestra@dev-orchestra
+```
+
+`codex plugin marketplace upgrade` でスナップショットを取り直し（反映するには
+`codex plugin add` を再実行）、`codex plugin list` で状態を確認、
+`codex plugin remove dev-orchestra@dev-orchestra` で削除します。
+Codex も次のセッションから同梱Skillを認識します。
+
+どちらのホストも Plugin を自分のキャッシュ（`~/.claude/plugins/cache/…`、
+`~/.codex/plugins/cache/…`）にコピーして、そこから実行します。Skillが使う
+`scripts/`・`references/`・`bin/` はすべてそのコピーに含まれるので、
+チェックアウト先を指すパスは残りません。
+
+### ローカルでのPlugin開発
+
+GitHubではなくクローンを直接指定します。
+
+```bash
+git clone https://github.com/istb16/dev-orchestra.git
+cd dev-orchestra
+
+claude plugin validate .                    # manifest検証、CIでは --strict
+claude plugin marketplace add "$PWD"
+claude plugin install dev-orchestra@dev-orchestra
+
+codex plugin marketplace add "$PWD"
+codex plugin add dev-orchestra@dev-orchestra
+```
+
+実際に読み込まれた内容は `claude plugin details dev-orchestra` で確認できます。
+manifestを編集したら `python scripts/validate_skill.py` を再実行してください。
+両ホストのmanifestと同梱Skillの整合をチェックします。
+
+### 従来方式: チェックアウトをSkillとして導入
+
+Plugin以前のインストーラも従来どおり使えます（変更なし）。
+
 ```bash
 git clone https://github.com/istb16/dev-orchestra.git
 cd dev-orchestra
 ```
 
-### Claude Code の場合
+#### Claude Code の場合
 
 ```bash
 ./install/install.sh              # ~/.claude/skills/ にシンボリックリンク
@@ -106,25 +173,25 @@ Windows では Git Bash から `install.sh` を実行せず、`install.ps1` を�
 MSYS形式のパス（`/c/...`）を書き込みますが、ネイティブPythonはそれを開けません。シンボリックリンクには
 開発者モードか管理者権限が必要で、作れない場合はインストーラが自動でコピーにフォールバックします。
 
-### Codex CLI の場合
+#### Codex CLI の場合
 
-Codex にはスキルディレクトリの仕組みがないため、インストーラは `AGENTS.md` にマーカー付きの短い
-ポインタブロックを追記します。
+Pluginを使わない場合、インストーラは `AGENTS.md` にマーカー付きの短いポインタブロックを
+追記します。
 
 ```bash
 ./install/install.sh --codex                    # ~/.codex/AGENTS.md
 ./install/install.sh --codex --project /path    # <project>/AGENTS.md
 ```
 
-`SKILL.md` が単一の情報源であり続けます。ポインタは参照するだけで、内容を複製しません。
+`skills/dev-orchestra/SKILL.md` が単一の情報源であり続けます。ポインタは参照するだけで、内容を複製しません。
 
-### 任意: CLIをPATHに通す
+#### 任意: CLIをPATHに通す
 
 ```bash
 export PATH="$PWD/bin:$PATH"      # どこからでも `dev-orchestra doctor` が使えます
 ```
 
-### 動作確認
+#### 動作確認
 
 ```bash
 ./bin/dev-orchestra doctor
@@ -418,6 +485,22 @@ WSLは**必須ではありません**。中身は純粋なPythonと`git`だけ�
 
 ## アップグレード
 
+Claude Code は marketplace の更新と新バージョンの導入を1コマンドで行います。
+
+```bash
+/plugin marketplace update
+```
+
+Codex は2段階です。`marketplace upgrade` はGitスナップショットを取り直すだけで、
+インストール済みのコピーは `add` し直すまでキャッシュ内の古いバージョンのままです。
+
+```bash
+codex plugin marketplace upgrade
+codex plugin add dev-orchestra@dev-orchestra
+```
+
+チェックアウト導入の場合:
+
 ```bash
 cd /path/to/dev-orchestra
 git pull
@@ -428,6 +511,11 @@ git pull
 設定はメジャーバージョン内で前方互換です。対応が必要な変更は `CHANGELOG.md` に明記します。
 
 ## アンインストール
+
+```bash
+claude plugin uninstall dev-orchestra      # Plugin導入の場合
+codex plugin remove dev-orchestra@dev-orchestra
+```
 
 ```bash
 ./install/uninstall.sh            # スキルのリンクと AGENTS.md のブロックを削除
@@ -468,7 +556,7 @@ python scripts/validate_skill.py
 
 ## ドキュメントの言語方針
 
-`SKILL.md` と `references/` は英語のみです。これはAIモデルが読むファイルであり、英語のほうが
+`skills/dev-orchestra/SKILL.md` と `references/` は英語のみです。これはAIモデルが読むファイルであり、英語のほうが
 トリガ精度とトークン効率の面で有利なためです。人間向けの入口である README は日英両方を用意しています。
 
 ## ライセンス
