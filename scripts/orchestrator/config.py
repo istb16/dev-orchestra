@@ -108,6 +108,10 @@ def default_config() -> Dict[str, Any]:
             # reviewers. A list replaces this wholesale, so [] reviews
             # everything; see review.DEFAULT_EXCLUDE for why these.
             "exclude": list(_default_exclude()),
+            # A second round diffs against what the first round reviewed, so
+            # re-review sees the fix instead of the whole change again. The
+            # findings the fix was meant to address ride along with it.
+            "incremental_rounds": True,
         },
         "budgets": {
             "architect": 3,
@@ -343,6 +347,9 @@ def validate(data: Dict[str, Any], known_providers: Optional[List[str]] = None) 
             idle = review.get("idle_timeout_seconds")
             if idle is not None and (not isinstance(idle, int) or isinstance(idle, bool) or idle <= 0):
                 problems.append("review.idle_timeout_seconds: must be a positive integer or null")
+            incremental = review.get("incremental_rounds")
+            if incremental is not None and not isinstance(incremental, bool):
+                problems.append("review.incremental_rounds: must be true or false")
             exclude = review.get("exclude")
             if exclude is not None:
                 if not isinstance(exclude, list):

@@ -261,6 +261,56 @@ too) → `review run --iteration 2` → triage → fix. When the budget is exhau
 report what remains and stop. Two rounds catch the overwhelming majority of what
 this pipeline is going to catch; a third mostly re-litigates.
 
+### The second round only diffs the fix
+
+Re-diffing everything against `HEAD` made round 2 cost the same as round 1 --
+once per reviewer -- to look at a one-line fix. So a snapshot records the
+working tree as a git tree object, and the next round diffs against the tree
+the previous round actually reviewed:
+
+```
+$ dev-orchestra review snapshot
+  strategy: git diff <previous round> <now>
+  scope:    what changed since the last reviewed round, not the whole change
+            whole change kept at .ai/reviews/review-target-full.diff
+            reviewers also get the findings the fix was meant to address
+```
+
+The tree is written through a throwaway index -- the same trick `git stash
+create` uses -- so the user's own index is never touched, and untracked files
+are included because a new module is usually the most important part of a
+change.
+
+**The premise travels with it.** A reviewer is stateless and sees no other
+reviewer's output, so a fix diff on its own is a change with no stated purpose:
+"is this correct" cannot be answered without knowing what it was correcting. An
+incremental round therefore also carries
+
+- the accepted findings the fix was meant to address, one line each
+- a pointer to `review-target-full.diff`, the whole change, frozen
+- an instruction to say whether each finding is actually fixed, to report any
+  new problem the fix introduced, and *not* to assume a listed item was real
+
+Who reported what is deliberately left out. The findings arrive as the brief
+the fixer worked from -- a fact about the change -- rather than as another
+reviewer's opinion still in play, so reviewers still never see each other's
+output. Measured, the premise costs about 80 tokens and replaces a few thousand
+of re-sent diff.
+
+It narrows the scope only when there is a round to be incremental to:
+
+| Situation | Scope |
+| --- | --- |
+| First round | Whole change |
+| Previous snapshot was reviewed, and the tree changed since | The fix |
+| Previous snapshot was never reviewed (a reviewer failed, so you re-snapshot) | Whole change |
+| Nothing changed since the reviewed round | Whole change |
+| `--base` given | Whole change from that base |
+| `--full`, or `review.incremental_rounds: false` | Whole change |
+
+The third and fourth rows matter: without them an ordinary re-snapshot would
+quietly become an empty diff.
+
 ## Running reviews on their own
 
 The review pipeline is useful without the rest of the workflow:

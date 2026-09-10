@@ -606,13 +606,16 @@ def _merge_runs(workspace: ws.Workspace, run_dicts: List[Dict[str, Any]]) -> Lis
 def cmd_review_snapshot(args: argparse.Namespace) -> int:
     loaded = config_mod.load(args.cwd, validate_result=False)
     workspace = _workspace(args)
-    exclude = () if args.no_exclude else loaded.review_settings().get("exclude")
+    settings = loaded.review_settings()
+    exclude = () if args.no_exclude else settings.get("exclude")
+    incremental = bool(settings.get("incremental_rounds", True)) and not args.full
     try:
         meta = review_mod.create_snapshot(
             workspace,
             args.base,
             include_untracked=not args.no_untracked,
             exclude=exclude,
+            incremental=incremental,
         )
     except review_mod.ReviewError as exc:
         _err(str(exc))
@@ -622,6 +625,11 @@ def cmd_review_snapshot(args: argparse.Namespace) -> int:
         return 0
     _out("Snapshot: %s" % workspace.relative(workspace.snapshot_path))
     _out("  strategy: %s" % meta["strategy"])
+    if meta.get("incremental_from"):
+        _out("  scope:    what changed since the last reviewed round, not the whole change")
+        if meta.get("full_diff"):
+            _out("            whole change kept at %s" % meta["full_diff"])
+        _out("            reviewers also get the findings the fix was meant to address")
     _out("  files:    %d" % len(meta["files"]))
     _out("  size:     %d bytes (sha256 %s)" % (meta["bytes"], meta["sha256"][:12]))
     withheld = meta.get("withheld") or []
@@ -663,7 +671,12 @@ def cmd_review_run(args: argparse.Namespace) -> int:
     settings = loaded.review_settings()
     if not os.path.isfile(workspace.snapshot_path):
         try:
-            review_mod.create_snapshot(workspace, args.base, exclude=settings.get("exclude"))
+            review_mod.create_snapshot(
+                workspace,
+                args.base,
+                exclude=settings.get("exclude"),
+                incremental=bool(settings.get("incremental_rounds", True)),
+            )
         except review_mod.ReviewError as exc:
             _err(str(exc))
             return 2
@@ -1378,6 +1391,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-exclude",
         action="store_true",
         help="send every changed file, including generated and vendored ones",
+    )
+    snapshot.add_argument(
+        "--full",
+        action="store_true",
+        help="diff the whole change even on a re-review, not just what the fix changed",
     )
     snapshot.add_argument("--json", action="store_true")
     snapshot.set_defaults(func=cmd_review_snapshot)

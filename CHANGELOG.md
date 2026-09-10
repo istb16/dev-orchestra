@@ -12,6 +12,29 @@ The public surface covered by that promise is: the configuration schema, the
 
 ### Added
 
+- **Re-review diffs only the fix.** A snapshot now records the working tree as
+  a git tree object, and the next round diffs against the tree the previous
+  round actually reviewed instead of re-diffing everything against `HEAD`.
+  Measured on a 60-function change followed by a one-line fix, round 2's diff
+  went from 8,617 to 199 bytes -- and that is per reviewer.
+
+  The premise travels with it, because a reviewer is stateless and sees no
+  other reviewer's output: a fix diff on its own is a change with no stated
+  purpose. So an incremental round also carries the accepted findings the fix
+  was meant to address (one line each, about 80 tokens in total), a pointer to
+  the frozen whole change at `.ai/reviews/review-target-full.diff`, and an
+  instruction not to assume a listed finding was real. Who reported what is
+  left out, so reviewers still never see each other's output.
+
+  The scope only narrows when there is a round to be incremental to. A
+  re-snapshot of a round nobody reviewed, a working tree that has not changed
+  since, an explicit `--base`, `--full`, or
+  `review.incremental_rounds: false` all take the whole change -- without the
+  first two, an ordinary re-snapshot would quietly become an empty diff.
+
+  The tree is written through a throwaway index, the same trick `git stash
+  create` uses, so the user's own index is never touched.
+
 - **Generated and vendored files are withheld from the review diff.**
   `review.exclude` (lockfiles, `dist/`, `vendor/`, `node_modules/`, minified
   output, source maps, `*.snap`) keeps the *body* of those diffs out of every

@@ -421,6 +421,39 @@ dev-orchestra review run
 The same split works for a spec review or a dependency audit: one model digests,
 another designs, two more disagree about the result.
 
+## The second round only looks at the fix
+
+Re-diffing everything against `HEAD` made round 2 cost the same as round 1 --
+once per reviewer -- to look at a one-line fix. A snapshot records the working
+tree as a git tree object, so the next round diffs against what the previous
+round actually reviewed:
+
+```
+$ dev-orchestra review snapshot
+Snapshot: .ai/reviews/review-target.diff
+  strategy: git diff <previous round> <now>
+  scope:    what changed since the last reviewed round, not the whole change
+            whole change kept at .ai/reviews/review-target-full.diff
+            reviewers also get the findings the fix was meant to address
+  files:    1
+  size:     199 bytes (sha256 17ac3ae8c8a2)
+```
+
+A 60-function change followed by a one-line fix: round 2's diff went from 8,617
+to 199 bytes, per reviewer.
+
+The premise goes with it. A reviewer is stateless and never sees another
+reviewer's output, so a fix diff on its own is a change with no stated purpose
+-- "is this correct" cannot be answered without knowing what it was correcting.
+So the round also carries the accepted findings the fix was meant to address,
+one line each, and a pointer to the whole change, frozen on disk. That costs
+about 80 tokens in place of a few thousand, and it asks a sharper question than
+a second full diff does: *is each of these actually fixed, and did the fix
+break anything?*
+
+Triage before you re-snapshot, or there is no brief to hand them. `--full` (or
+`review.incremental_rounds: false`) re-sends the whole change.
+
 ## What reviewers are not shown
 
 A reviewer reads a diff to judge code somebody wrote. A lockfile, a bundle and
