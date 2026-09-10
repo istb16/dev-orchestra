@@ -12,6 +12,19 @@ The public surface covered by that promise is: the configuration schema, the
 
 ### Added
 
+- **Codex model discovery from the CLI's own catalogue.** The adapter now reads
+  `codex debug models` (0.154+) in addition to `$CODEX_HOME/config.toml`, so a
+  named family such as `gpt-5.6-terra` resolves with `version: latest` instead
+  of having to be pinned by hand. Models the CLI marks as hidden are skipped, a
+  CLI without the command is tolerated, and an unknown family is still refused
+  rather than guessed.
+- **READMEs restructured around using the thing.** Both languages now lead with
+  the orchestra itself -- who does what, a lineup mapped onto the families the
+  two CLIs currently offer, and the full configuration for it -- followed by
+  the workflow stage by stage, how to hand a large corpus (logs, a legacy
+  module, a long spec) to one model before designing from its summary, and a
+  worked example. The architecture section moved to the developer-facing tail.
+
 - **Claude Code and Codex plugin packaging.** The repository is now installable
   as a plugin on both hosts, and is its own marketplace -- nothing is published
   to Anthropic's or OpenAI's official marketplaces.

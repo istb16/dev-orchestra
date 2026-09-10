@@ -43,34 +43,91 @@ Two design constraints follow from wanting this to still work next year:
 - **No guessed model names, ever.** An adapter that cannot verify a model
   raises an error rather than sending a plausible-looking string to a CLI.
 
-## Architecture
+## The orchestra: who does what
 
-```mermaid
-flowchart LR
-    U[User] --> O[Orchestrator]
-    O --> A[Architect<br/>read-only]
-    A --> I[Implementer]
-    I --> T[Tests]
-    T --> S[[Frozen snapshot]]
-    S --> R1[Reviewer 1]
-    S --> R2[Reviewer 2]
-    S --> R3[Reviewer N]
-    R1 --> C[Consolidate + dedupe]
-    R2 --> C
-    R3 --> C
-    C --> TR[Triage]
-    TR -->|accepted only| F[Review Fixer]
-    F --> T2[Re-test] --> REP[Report]
+`dev-orchestra` is not "one AI writes the code". Each stage goes to a different
+model, and two of them are deliberately allowed to disagree.
+
+1. **Direction** — reads the request, decides which stages it needs, splits the
+   work up, and merges the results. This is also the stage that digests bulk
+   input (logs, a legacy module, a long spec).
+2. **Design** — investigates the codebase and writes the plan. Read-only.
+3. **Implementation** — writes the code and the tests from that plan.
+4. **Review** — reads the frozen diff and reports findings. Read-only.
+5. **Independent review** — the same diff, a different vendor's model, with no
+   knowledge of the first reviewer's opinion.
+6. **Triage, fix, re-test** — findings are deduplicated, the orchestrator
+   accepts or rejects each one, and only accepted findings reach the fixer.
+
+A lineup that maps onto what the two CLIs offer today:
+
+| Stage | Role in the config | CLI | Family |
+| --- | --- | --- | --- |
+| Direction, bulk input | `orchestrator` | Codex | `gpt-5.6-sol` |
+| Design | `architect` | Claude Code | `fable` |
+| Implementation | `implementer` | Claude Code | `opus` |
+| Review | reviewer | Claude Code | `opus` |
+| Independent review | reviewer | Codex | `gpt-5.6-terra` |
+| Fixing accepted findings | `review_fixer` | Claude Code | `opus` |
+
+As configuration:
+
+```yaml
+version: 1
+
+orchestrator:
+  provider: codex
+  model:
+    family: gpt-5.6-sol
+    version: latest
+
+architect:
+  provider: claude
+  model:
+    family: fable
+    version: latest
+
+implementer:
+  provider: claude
+  model:
+    family: opus
+    version: latest
+
+review_fixer:
+  provider: claude
+  model:
+    family: opus
+    version: latest
+
+reviewers:
+  - id: claude-review
+    provider: claude
+    model:
+      family: opus
+      version: latest
+    role: general
+  - id: codex-independent
+    provider: codex
+    model:
+      family: gpt-5.6-terra
+      version: latest
+    role: general
 ```
 
-| Piece | Where | Job |
-| --- | --- | --- |
-| Skill | `skills/dev-orchestra/SKILL.md` | What to run, when, and what not to do |
-| CLI | `scripts/dev_orchestra.py` | Deterministic operations the agent calls |
-| Providers | `scripts/orchestrator/providers/` | The only code that knows CLI flags and model names |
-| References | `references/` | The detail, loaded only when needed |
+**Check those families against your own machine before copying them.** Model
+names change, and the two CLIs offer different ones per version and account:
 
-`references/architecture.md` has the long version.
+```bash
+dev-orchestra model list
+```
+
+Use what it prints. Every adapter refuses a family the installed CLI does not
+vouch for instead of guessing, so a stale name fails loudly during setup rather
+than quietly running something else.
+
+The particular table matters less than its shape: **one vendor designs, another
+reviews.** Two models from the same family share the blind spot that produced
+the bug.
 
 ## Requirements
 
@@ -273,6 +330,97 @@ dev-orchestra review fix-brief --output fix-brief.md
 
 Full command list: `references/cli.md`.
 
+## The workflow in practice
+
+You do not type this stage by stage. Asking for the work in one sentence runs
+as much of the pipeline as the request needs. The commands below are what the
+orchestrator issues underneath — reach for them when you want to drive a single
+stage yourself.
+
+**1. Direction.** The orchestrator classifies the request and checks what is
+left of the budgets before every stage:
+
+```bash
+dev-orchestra status
+```
+
+**2. Design.** The architect investigates and writes the plan. It cannot edit
+files — the stage runs read-only:
+
+```bash
+dev-orchestra run architect --prompt-file .ai/request.md --output .ai/plan.md
+```
+
+**3. Implementation.** The implementer works from that plan, not from the
+original request:
+
+```bash
+dev-orchestra run implementer --prompt-file .ai/plan.md
+```
+
+**4. Review.** The diff is frozen first, so every reviewer sees byte-identical
+input, then all of them run — in parallel, independently, read-only:
+
+```bash
+dev-orchestra review snapshot --base main
+dev-orchestra review run
+dev-orchestra review show
+```
+
+**5. Triage.** Findings are deduplicated mechanically; deciding which ones are
+real is a judgement call and stays with the orchestrator:
+
+```bash
+dev-orchestra review triage F1 F3 --status accepted --note "confirmed"
+dev-orchestra review triage F2 --status rejected --note "guarded by the caller"
+```
+
+**6. Fix and re-test.** Only accepted findings reach the fixer:
+
+```bash
+dev-orchestra review fix-brief --output .ai/fix-brief.md
+dev-orchestra run review_fixer --prompt-file .ai/fix-brief.md
+```
+
+Then the tests run again, and `dev-orchestra review status` says whether another
+review round is worth it or the loop is done.
+
+## Feeding it a lot of text
+
+Logs, a legacy module, a long specification: hand the bulk to the model you
+configured for it, keep the *conclusions*, and let design and review work from
+those instead of from the raw pile. Context spent on a 40 MB log is context the
+reviewer no longer has for the diff.
+
+Write the analysis request to a file (pointing at paths in the repo rather than
+pasting their contents), and run it through the role you gave the
+large-context model:
+
+```bash
+dev-orchestra run orchestrator \
+  --prompt-file .ai/analysis-request.md \
+  --output .ai/analysis.md
+```
+
+A request that works well:
+
+> Read `log/production-2026-09-08.log` and `app/services/checkout/*.rb`. List
+> the distinct failure patterns, how often each occurs, and the code paths
+> involved. No fixes yet — findings only, grouped, with `file:line`
+> references.
+
+Then design from the summary, not from the log:
+
+```bash
+dev-orchestra run architect --prompt-file .ai/analysis.md --output .ai/plan.md
+dev-orchestra run implementer --prompt-file .ai/plan.md
+dev-orchestra review snapshot --base main
+dev-orchestra review run
+```
+
+The same split works for a spec review or a dependency audit: one model digests,
+another designs, two more disagree about the result.
+
 ## Configuration
 
 Precedence: **project → global → built-in defaults**.
@@ -363,7 +511,7 @@ review_fixer:           # let the CLI pick entirely
 Resolution order:
 
 1. What the installed CLI advertises — `claude --help` for aliases,
-   `$CODEX_HOME/config.toml` for the Codex default.
+   `codex debug models` plus `$CODEX_HOME/config.toml` for Codex.
 2. The provider's current aliases.
 3. A built-in fallback list of **families only**, carrying the date it was last
    checked.
@@ -382,10 +530,14 @@ claude: installed
   sonnet   family=sonnet   source=cli-help
 codex: installed
   CLI default (recommended coding model)  family=recommended-coding  source=cli-default
+  gpt-6-astra (this CLI's configured model) family=gpt-6-astra       source=cli-config
+  GPT-5.6-Terra                           family=gpt-5.6-terra       source=cli-catalog
 ```
 
-Codex publishes no model list, so `recommended-coding` resolves by *omitting*
-the `-m` flag — the CLI's own current default is, by definition, current.
+`recommended-coding` resolves by *omitting* the `-m` flag — the CLI's own
+current default is, by definition, current. Any other family has to appear in
+that listing: the Codex adapter accepts the model the CLI is configured with
+and the slugs its own catalogue publishes, and refuses everything else.
 
 ## Reviewers
 
@@ -422,6 +574,31 @@ reviewer stay read-only regardless.
 
 ## Example workflows
 
+**A feature in an existing Rails application**
+
+> "Add a per-customer spending cap to the checkout flow."
+
+```
+Codex gpt-5.6-sol      reads the existing checkout code and recent logs,
+                       breaks the request into stages
+        |
+Claude fable           designs: where the cap lives, what it touches, migrations
+        |
+Claude opus            implements the change and its tests
+        |
+Claude opus            reviews the frozen diff
+Codex gpt-5.6-terra    reviews the same diff, independently
+        |
+Codex gpt-5.6-sol      consolidates both reports, drops duplicates, triages
+        |
+Claude opus            fixes the accepted findings only
+        |
+                       tests re-run, report
+```
+
+From your side that is one sentence to the agent. The artifacts land in `.ai/`:
+the plan, each review, the consolidated finding list, and the triage decisions.
+
 **Feature with an API change**
 
 > "Add pagination to the orders endpoint."
@@ -457,7 +634,7 @@ DEV_ORCHESTRA_MOCK_RESPONSE=NO_FINDINGS dev-orchestra review run --only dry
 | Symptom | Cause and fix |
 | --- | --- |
 | `Source: built-in defaults` | No config file yet. `dev-orchestra config setup`. |
-| `codex: … cannot be verified` | A family Codex does not publish. Use `recommended-coding`, or pin an exact id. |
+| `codex: … does not vouch for …` | A family this Codex CLI does not offer. Check `dev-orchestra model list`, use `recommended-coding`, or pin an exact id. |
 | `claude: cannot resolve model family 'x'` | Not an advertised alias. `dev-orchestra model list`. |
 | `Installed: no` | The CLI is not on PATH. Install it yourself; the skill will not. |
 | `Failed to authenticate` from a delegated CLI | Log in with that CLI directly (`claude`, `codex login`). `doctor` reports credential *presence*, not validity. |
@@ -559,6 +736,35 @@ schema, the CLI commands and flags, and the `.ai/` artifact formats.
 
 Changes land in `CHANGELOG.md` under `Unreleased` and are stamped at release
 time ([Keep a Changelog](https://keepachangelog.com/)).
+
+## Architecture
+
+```mermaid
+flowchart LR
+    U[User] --> O[Orchestrator]
+    O --> A[Architect<br/>read-only]
+    A --> I[Implementer]
+    I --> T[Tests]
+    T --> S[[Frozen snapshot]]
+    S --> R1[Reviewer 1]
+    S --> R2[Reviewer 2]
+    S --> R3[Reviewer N]
+    R1 --> C[Consolidate + dedupe]
+    R2 --> C
+    R3 --> C
+    C --> TR[Triage]
+    TR -->|accepted only| F[Review Fixer]
+    F --> T2[Re-test] --> REP[Report]
+```
+
+| Piece | Where | Job |
+| --- | --- | --- |
+| Skill | `skills/dev-orchestra/SKILL.md` | What to run, when, and what not to do |
+| CLI | `scripts/dev_orchestra.py` | Deterministic operations the agent calls |
+| Providers | `scripts/orchestrator/providers/` | The only code that knows CLI flags and model names |
+| References | `references/` | The detail, loaded only when needed |
+
+`references/architecture.md` has the long version.
 
 ## Contributing
 

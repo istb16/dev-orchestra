@@ -2,16 +2,19 @@
 
 Verified against ``codex`` 0.154.x (``codex exec`` for non-interactive runs).
 
-Model handling: the Codex CLI does not expose a "list models" command, so this
-adapter never enumerates OpenAI model ids from memory. The ``recommended-coding``
-family resolves by *omitting* ``-m`` entirely, which makes the CLI use whatever
-model it currently recommends (its ``config.toml`` default). Anything else must
-either match the model the CLI is configured with, or be pinned explicitly by
-the user with ``model.version: pinned`` + ``model.id``.
+Model handling: this adapter never enumerates OpenAI model ids from memory. The
+``recommended-coding`` family resolves by *omitting* ``-m`` entirely, which
+makes the CLI use whatever model it currently recommends (its ``config.toml``
+default). A named family is accepted only when the *installed* CLI vouches for
+it -- either it is the model the CLI is configured with, or it appears in the
+catalogue ``codex debug models`` prints (0.154+). Older CLIs print nothing
+there, and then a named family must be pinned by the user with
+``model.version: pinned`` + ``model.id``.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import tempfile
@@ -85,6 +88,38 @@ class CodexProvider(Provider):
         match = _TOML_MODEL_RE.search(text)
         return match.group(1) if match else None
 
+    def _catalog_models(self) -> List[ModelCandidate]:
+        """Models the installed CLI publishes via ``codex debug models``.
+
+        The command renders the CLI's own catalogue as JSON, so the ids come
+        from the CLI rather than from this adapter's memory. Anything it does
+        not print -- an older CLI without the command, a hidden internal model
+        -- is simply not offered.
+        """
+        if not self.which():
+            return []
+        completed = self._capture([self.executable, "debug", "models"], timeout=45)
+        if completed is None or completed.returncode != 0:
+            return []
+        try:
+            payload = json.loads(completed.stdout or "")
+        except ValueError:
+            return []
+        entries = payload.get("models") if isinstance(payload, dict) else payload
+        if not isinstance(entries, list):
+            return []
+        candidates: List[ModelCandidate] = []
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            slug = str(entry.get("slug") or "").strip()
+            # "hide" marks models the CLI does not offer for selection.
+            if not slug or entry.get("visibility") not in (None, "list"):
+                continue
+            label = str(entry.get("display_name") or slug)
+            candidates.append(ModelCandidate(slug, slug, label, "cli-catalog"))
+        return candidates
+
     def _discover_models(self) -> List[ModelCandidate]:
         candidates = [
             ModelCandidate("", "recommended-coding", "CLI default (recommended coding model)", "cli-default")
@@ -96,6 +131,10 @@ class CodexProvider(Provider):
                     configured, configured, "%s (this CLI's configured model)" % configured, "cli-config"
                 )
             )
+        known = {candidate.value.lower() for candidate in candidates}
+        for candidate in self._catalog_models():
+            if candidate.value.lower() not in known:
+                candidates.append(candidate)
         return candidates
 
     def _resolve_latest(self, family: str) -> ResolvedModel:
@@ -115,10 +154,25 @@ class CodexProvider(Provider):
         configured = self.configured_model()
         if configured and configured.lower() == lowered:
             return ResolvedModel(self.name, family, "latest", configured, configured, "cli-config")
+        # list_models() is memoised for the process; calling _catalog_models()
+        # here would re-spawn the CLI for every role that has to be resolved,
+        # including on the `doctor --fast` path that skips model discovery.
+        for candidate in self.list_models():
+            if candidate.value and candidate.value.lower() == lowered:
+                return ResolvedModel(
+                    self.name,
+                    family,
+                    "latest",
+                    candidate.value,
+                    candidate.value,
+                    candidate.source,
+                    "listed by `codex debug models` on this machine",
+                )
         raise ModelResolutionError(
-            "codex: the Codex CLI does not publish a model list, so %r cannot be verified. "
-            "Use family 'recommended-coding' to let the CLI choose, or set "
-            "model.version: pinned with an explicit model.id." % family
+            "codex: the installed Codex CLI does not vouch for %r, so it cannot be verified. "
+            "Run `dev-orchestra model list` to see what it offers, use family "
+            "'recommended-coding' to let the CLI choose, or set model.version: pinned "
+            "with an explicit model.id." % family
         )
 
     def build_command(

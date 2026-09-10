@@ -112,6 +112,37 @@ class TestDocumentation(IsolatedCase):
         ):
             self.assertIn(heading, readme, heading)
 
+    def test_both_readmes_document_the_recommended_lineup(self):
+        """The point of the tool is several models with different jobs."""
+        for relative in ("README.md", "README.ja.md"):
+            text = read(relative)
+            for token in (
+                "orchestrator",
+                "architect",
+                "implementer",
+                "review_fixer",
+                "dev-orchestra model list",
+            ):
+                self.assertIn(token, text, "%s: %s" % (relative, token))
+
+    def test_both_readmes_explain_stage_by_stage_use(self):
+        for relative in ("README.md", "README.ja.md"):
+            text = read(relative)
+            for command in (
+                "dev-orchestra run architect",
+                "dev-orchestra run implementer",
+                "dev-orchestra review snapshot",
+                "dev-orchestra run review_fixer",
+            ):
+                self.assertIn(command, text, "%s: %s" % (relative, command))
+
+    def test_both_readmes_cover_bulk_input(self):
+        """Issue #2: show how to hand a large corpus to one model first."""
+        for relative in ("README.md", "README.ja.md"):
+            text = read(relative)
+            self.assertIn("dev-orchestra run orchestrator", text, relative)
+            self.assertIn("--output .ai/analysis.md", text, relative)
+
     def test_readme_has_an_architecture_diagram(self):
         self.assertIn("```mermaid", read("README.md"))
 

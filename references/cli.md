@@ -36,7 +36,7 @@ dev-orchestra config set --raw review.note "3 reviewers"
 
 | Command | Description |
 | --- | --- |
-| `model list [--provider <name>] [--json]` | Models the installed CLIs advertise, with the discovery source for each (`cli-help`, `cli-config`, `cli-default`, `builtin-fallback`). |
+| `model list [--provider <name>] [--json]` | Models the installed CLIs advertise, with the discovery source for each (`cli-help`, `cli-catalog`, `cli-config`, `cli-default`, `builtin-fallback`). |
 
 ## reviewer
 
