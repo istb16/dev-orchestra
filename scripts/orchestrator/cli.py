@@ -604,9 +604,16 @@ def _merge_runs(workspace: ws.Workspace, run_dicts: List[Dict[str, Any]]) -> Lis
 
 
 def cmd_review_snapshot(args: argparse.Namespace) -> int:
+    loaded = config_mod.load(args.cwd, validate_result=False)
     workspace = _workspace(args)
+    exclude = () if args.no_exclude else loaded.review_settings().get("exclude")
     try:
-        meta = review_mod.create_snapshot(workspace, args.base, include_untracked=not args.no_untracked)
+        meta = review_mod.create_snapshot(
+            workspace,
+            args.base,
+            include_untracked=not args.no_untracked,
+            exclude=exclude,
+        )
     except review_mod.ReviewError as exc:
         _err(str(exc))
         return 2
@@ -617,8 +624,20 @@ def cmd_review_snapshot(args: argparse.Namespace) -> int:
     _out("  strategy: %s" % meta["strategy"])
     _out("  files:    %d" % len(meta["files"]))
     _out("  size:     %d bytes (sha256 %s)" % (meta["bytes"], meta["sha256"][:12]))
+    withheld = meta.get("withheld") or []
+    if withheld:
+        # Named, not merely counted: an exclusion nobody can see is an
+        # exclusion nobody can correct.
+        lines = review_mod.withheld_lines(withheld)
+        _out("  withheld: %d file(s), %s changed line(s) not sent to reviewers" % (len(withheld), lines))
+        for entry in withheld:
+            _out("    %s (%s)" % (entry["path"], entry["pattern"]))
+        _out("    reviewers are told these changed; --no-exclude sends them in full")
     if meta["empty"]:
-        _out("  WARNING: the snapshot is empty -- there is nothing to review.")
+        if withheld:
+            _out("  WARNING: every changed file was withheld -- re-run with --no-exclude to review them.")
+        else:
+            _out("  WARNING: the snapshot is empty -- there is nothing to review.")
         return 1
     return 0
 
@@ -644,7 +663,7 @@ def cmd_review_run(args: argparse.Namespace) -> int:
     settings = loaded.review_settings()
     if not os.path.isfile(workspace.snapshot_path):
         try:
-            review_mod.create_snapshot(workspace, args.base)
+            review_mod.create_snapshot(workspace, args.base, exclude=settings.get("exclude"))
         except review_mod.ReviewError as exc:
             _err(str(exc))
             return 2
@@ -1355,6 +1374,11 @@ def build_parser() -> argparse.ArgumentParser:
     snapshot = review_sub.add_parser("snapshot", help="freeze the change under review")
     snapshot.add_argument("--base", default=None, help="revision to diff against (default: HEAD)")
     snapshot.add_argument("--no-untracked", action="store_true")
+    snapshot.add_argument(
+        "--no-exclude",
+        action="store_true",
+        help="send every changed file, including generated and vendored ones",
+    )
     snapshot.add_argument("--json", action="store_true")
     snapshot.set_defaults(func=cmd_review_snapshot)
 

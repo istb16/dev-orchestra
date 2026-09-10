@@ -148,6 +148,11 @@ python "PLUGIN_ROOT/scripts/dev_orchestra.py" review run
 The review round is derived from the snapshot -- a new snapshot is a new round,
 re-running the same one is not -- so you never track it by hand.
 
+`snapshot` withholds the diff body of generated and vendored files (lockfiles,
+`dist/`, bundles; `review.exclude`) and names them to the reviewers instead. It
+prints what it withheld: pass that on in your report, and re-snapshot with
+`--no-exclude` if the change genuinely turns on one of them.
+
 `review run` executes every configured reviewer **in parallel, in isolation,
 read-only** against the frozen snapshot, then writes one report per reviewer plus
 a deduplicated `consolidated.md` / `consolidated.json`.
