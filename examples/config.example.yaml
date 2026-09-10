@@ -71,6 +71,25 @@ review:
     - high
   # Per delegated CLI run.
   timeout_seconds: 1800
+  # Files whose diff body is withheld from reviewers: generated, vendored or
+  # recorded, so nobody wrote them and no reviewer has a useful thought about
+  # them. They are still named to the reviewer with their line counts. This
+  # list replaces the built-in one wholesale; [] reviews everything.
+  exclude:
+    - "*.lock"
+    - package-lock.json
+    - npm-shrinkwrap.json
+    - go.sum
+    - "dist/*"
+    - "*/dist/*"
+    - "vendor/*"
+    - "*/vendor/*"
+    - "node_modules/*"
+    - "*/node_modules/*"
+    - "*.min.js"
+    - "*.min.css"
+    - "*.map"
+    - "*.snap"
 
 workspace:
   # Where plan.md, reviews/ and state.json go, relative to the repo root.

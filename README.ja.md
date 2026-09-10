@@ -405,6 +405,38 @@ dev-orchestra review run
 仕様書レビューや依存関係の棚卸しでも同じ分担が使えます。1つのモデルが情報を消化し、
 別のモデルが設計し、さらに2つが結果について意見を戦わせます。
 
+## レビュアーに送らないもの
+
+レビュアーが diff を読むのは、誰かが書いたコードを判断するためだ。ロックファイル・
+バンドル・記録されたスナップショットは誰も書いていないが、実コードと同じだけトークンを
+消費する — レビュアーごとに1回、ラウンドごとに1回。そこで snapshot はこれらの diff の
+**本体**を送らない。
+
+```
+$ dev-orchestra review snapshot
+Snapshot: .ai/reviews/review-target.diff
+  strategy: git diff HEAD
+  files:    1
+  size:     153 bytes (sha256 bf2b71e951ea)
+  withheld: 2 file(s), 802 changed line(s) not sent to reviewers
+    dist/bundle.min.js (dist/*)
+    package-lock.json (package-lock.json)
+    reviewers are told these changed; --no-exclude sends them in full
+```
+
+この変更 — 400パッケージのロックファイル更新と2行の修正 — で、レビュアー2人の1ラウンドが
+**44,783 → 1,711 input tokens** になった。
+
+送らないことは隠すことではない。ここが設計の要点で、レビュアーには「そのファイルが
+何行変わったか」は伝わる。依存バージョンが本当に判断を左右するなら、自分で読みに行ける。
+`--no-exclude` で全部送る。
+
+対象は `review.exclude`: ロックファイル、`dist/`、`vendor/`、`node_modules/`、
+minify済みファイル、source map、`*.snap`。`[]` にすれば全部レビューする。独自のリストに
+差し替えてもよい。判断が曖昧なものは既定から意図的に外している — `build/` は慣習的には
+出力先だが手書きの場合も十分あり、隠すと本物の変更を落としうる。ロックファイルに課金
+されるより、そのほうが悪い失敗だ。
+
 ## 実行コストの確認
 
 委譲した実行ごとに消費量を記録するので、「トークンがどこで消えたか」は推測せずに答えられる。

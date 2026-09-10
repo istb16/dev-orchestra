@@ -19,6 +19,7 @@
 dev-orchestra review snapshot                 # working tree vs HEAD
 dev-orchestra review snapshot --base main     # everything since main
 dev-orchestra review snapshot --no-untracked  # tracked changes only
+dev-orchestra review snapshot --no-exclude    # generated files included too
 ```
 
 Writes `.ai/reviews/review-target.diff` plus metadata:
@@ -30,6 +31,10 @@ Writes `.ai/reviews/review-target.diff` plus metadata:
   "head": "9f2c…",
   "files": ["app/services/pricing.rb", "spec/services/pricing_spec.rb"],
   "untracked_included": ["app/services/pricing.rb"],
+  "withheld": [
+    {"path": "package-lock.json", "pattern": "package-lock.json", "added": 412, "deleted": 87}
+  ],
+  "exclude_patterns": ["*.lock", "package-lock.json", "dist/*", "..."],
   "bytes": 4213,
   "sha256": "…",
   "empty": false
@@ -47,6 +52,48 @@ skipped, so the config the setup wizard just wrote does not show up as a
 
 Snapshotting requires git. An empty snapshot exits non-zero: there is nothing to
 review, which usually means the implementation stage did not write anything.
+
+### Withheld files
+
+A reviewer reads a diff to judge code somebody wrote. A lockfile, a bundle and
+a recorded snapshot were not written, and they cost the same tokens as real
+code -- once per reviewer, once per round. A routine dependency bump therefore
+regularly costs more than the change it accompanies. `review.exclude` withholds
+the *body* of those diffs. Measured on a 400-package lockfile bump alongside a
+two-line source change, one review round with two reviewers went from 44,783 to
+1,711 input tokens.
+
+Withheld is not hidden, and the distinction is the whole design:
+
+- the file is still named to the reviewer, with how many lines changed, so a
+  review that genuinely turns on a dependency version can go and read it
+- `review snapshot` prints what it withheld and which pattern did it
+- `--no-exclude` sends everything, once
+- the patterns in force are recorded in the snapshot metadata, so a snapshot
+  can explain itself after the fact
+
+Matching is fnmatch, case-sensitive on every platform so a snapshot taken on
+Windows contains what Linux would produce, against two targets: the full
+repository-relative path, and -- for a pattern with no `/` in it -- the base
+name alone, so `*.lock` catches a lockfile at any depth. `*` crosses `/`, which
+is why the defaults spell out both `dist/*` and `*/dist/*` rather than relying
+on a `**` that is not implemented.
+
+The default list covers lockfiles, `dist/`, `vendor/`, `node_modules/`,
+minified output, source maps and `*.snap`. Anything ambiguous is deliberately
+left out: `build/` is conventionally output but is hand-written often enough
+that excluding it by default would sometimes hide real work. Quietly dropping a
+real change is a worse failure than paying for a lockfile.
+
+If *every* changed file is withheld, the snapshot is empty and says so in those
+terms -- that is a different situation from "nothing changed", and `review run`
+names the files and points at `--no-exclude` rather than reporting an empty
+diff.
+
+Renames are detected (`-M`), so a moved file costs a header instead of twice
+its length. This needs the move to be staged: an unstaged `mv` leaves git with
+a deletion and an untracked file, which are two unrelated facts as far as `git
+diff` is concerned.
 
 ## Roles
 

@@ -18,8 +18,10 @@ matched on the code they quote, for the orchestrator to confirm during triage.
 from __future__ import annotations
 
 import difflib
+import fnmatch
 import hashlib
 import os
+import posixpath
 import re
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -33,6 +35,40 @@ TRIAGE_STATUSES = ("accepted", "rejected", "duplicate", "needs-investigation", "
 
 #: Inline the diff up to this size; beyond it, reviewers read the file instead.
 MAX_INLINE_DIFF_CHARS = 120_000
+
+#: Files whose diff is withheld from reviewers by default.
+#:
+#: A reviewer reads a diff to judge code somebody wrote. None of these were
+#: written: they are generated, vendored, or recorded. Sending them costs the
+#: same tokens as real code, once per reviewer and once per round -- a lockfile
+#: touched by a routine dependency bump is regularly the largest single item in
+#: a review, and no reviewer has ever had a useful thought about one.
+#:
+#: Withheld is not hidden. The file is still named to the reviewer, with how
+#: many lines changed, so a review that genuinely turns on a dependency version
+#: can go and read it. Anything ambiguous is deliberately absent from this
+#: list: ``build/`` is conventionally output but is hand-written often enough
+#: that excluding it by default would sometimes hide real work, and quietly
+#: dropping a real change is a worse failure than paying for a lockfile.
+DEFAULT_EXCLUDE = (
+    # Lockfiles. The fact of the bump is in the manifest diff, which is kept.
+    "*.lock",
+    "package-lock.json",
+    "npm-shrinkwrap.json",
+    "go.sum",
+    # Vendored dependencies and build output.
+    "dist/*",
+    "*/dist/*",
+    "vendor/*",
+    "*/vendor/*",
+    "node_modules/*",
+    "*/node_modules/*",
+    "*.min.js",
+    "*.min.css",
+    "*.map",
+    # Recorded fixtures: regenerated, not authored.
+    "*.snap",
+)
 
 ROLE_GUIDANCE: Dict[str, str] = {
     "general": (
@@ -130,8 +166,13 @@ def create_snapshot(
     workspace: ws.Workspace,
     base: Optional[str] = None,
     include_untracked: bool = True,
+    exclude: Optional[Sequence[str]] = None,
 ) -> Dict[str, Any]:
-    """Freeze the change under review into ``.ai/reviews/review-target.diff``."""
+    """Freeze the change under review into ``.ai/reviews/review-target.diff``.
+
+    ``exclude`` withholds the *body* of a generated or vendored file's diff
+    while still recording that it changed; pass ``()`` to take everything.
+    """
     workspace.ensure()
     root = workspace.root
     if not ws.is_git_repo(root):
@@ -139,17 +180,32 @@ def create_snapshot(
             "%s is not a git repository; review snapshots need git. "
             "Initialise a repo or review a specific set of files manually." % root
         )
+    patterns = list(DEFAULT_EXCLUDE if exclude is None else exclude)
 
-    if base:
-        code, diff, err = ws.git(["diff", "--no-color", base, "--"], root)
-        strategy = "git diff %s" % base
+    revision = base or "HEAD"
+    # Which files changed, before asking for the diff itself: the exclusion is
+    # decided from this cheap listing, so the expensive call is made once and
+    # already filtered.
+    tracked, listed = _numstat(root, revision, patterns)
+    withheld = [entry for entry in tracked if entry.get("pattern")]
+
+    if listed:
+        code, diff, err = ws.git(
+            ["diff", "--no-color", "-M", "--diff-algorithm=histogram", revision, "--", *_pathspecs(withheld)],
+            root,
+        )
+        strategy = "git diff %s" % revision
+        if code != 0 and withheld:
+            # Old git, or pathspec magic it does not accept. Taking the whole
+            # diff costs tokens; dropping the change silently costs a review.
+            code, diff, err = ws.git(
+                ["diff", "--no-color", "-M", "--diff-algorithm=histogram", revision, "--"], root
+            )
+            strategy += " (exclusions unsupported by this git)"
+            withheld = []
     else:
-        code, diff, err = ws.git(["diff", "--no-color", "HEAD", "--"], root)
-        strategy = "git diff HEAD"
-        if code != 0:
-            # A repository with no commits yet: everything is untracked.
-            code, diff, err = 0, "", ""
-            strategy = "untracked-only (no HEAD commit)"
+        # A repository with no commits yet: everything is untracked.
+        code, diff, err, strategy = 0, "", "", "untracked-only (no HEAD commit)"
     if code != 0:
         raise ReviewError("git diff failed: %s" % (err.strip() or code))
 
@@ -162,6 +218,10 @@ def create_snapshot(
                 if not os.path.isfile(path) or os.path.getsize(path) > 512_000:
                     continue
                 if _is_orchestrator_artifact(name, workspace):
+                    continue
+                pattern = withholds(name, patterns)
+                if pattern:
+                    withheld.append(_withheld_entry(name, pattern, added=_count_lines(path)))
                     continue
                 dcode, dout, _ = ws.git(["diff", "--no-color", "--no-index", "--", os.devnull, name], root)
                 # --no-index exits 1 when files differ, which is the normal case.
@@ -182,6 +242,8 @@ def create_snapshot(
         "head": head,
         "files": _changed_files(diff),
         "untracked_included": untracked,
+        "withheld": sorted(withheld, key=lambda entry: str(entry.get("path"))),
+        "exclude_patterns": patterns,
         "bytes": len(diff.encode("utf-8")),
         "sha256": hashlib.sha256(diff.encode("utf-8")).hexdigest(),
         "empty": not diff.strip(),
@@ -205,6 +267,140 @@ def _is_orchestrator_artifact(name: str, workspace: ws.Workspace) -> bool:
     from .config import PROJECT_CONFIG_NAMES
 
     return os.path.basename(normalised) in PROJECT_CONFIG_NAMES
+
+
+def withholds(path: str, patterns: Sequence[str]) -> str:
+    """The first pattern that withholds ``path``, or ``""``.
+
+    Matching is fnmatch, case-sensitively on every platform so a snapshot taken
+    on Windows contains the same thing as one taken on Linux, against two
+    targets: the full repository-relative path, and -- for a pattern with no
+    ``/`` in it -- the base name alone, so ``*.lock`` catches a lockfile at any
+    depth. ``*`` crosses ``/``, which is why the defaults spell out both
+    ``dist/*`` and ``*/dist/*`` instead of relying on a ``**`` this does not
+    implement.
+    """
+    name = posixpath.basename(path)
+    for pattern in patterns:
+        if not isinstance(pattern, str) or not pattern:
+            continue
+        if fnmatch.fnmatchcase(path, pattern):
+            return pattern
+        if "/" not in pattern and fnmatch.fnmatchcase(name, pattern):
+            return pattern
+    return ""
+
+
+def _withheld_entry(path: str, pattern: str, added: Optional[int], deleted: Optional[int] = 0):
+    return {"path": path, "pattern": pattern, "added": added, "deleted": deleted}
+
+
+def withheld_lines(withheld: Sequence[Dict[str, Any]]) -> str:
+    """How many changed lines were withheld, or ``"?"`` where git said ``-``."""
+    total = 0
+    exact = True
+    for entry in withheld:
+        for key in ("added", "deleted"):
+            value = entry.get(key)
+            if isinstance(value, int) and not isinstance(value, bool):
+                total += value
+            elif value is None:
+                exact = False  # a binary file, which git does not count
+    return "{:,}".format(total) + ("" if exact else "+")
+
+
+def render_withheld(withheld: Sequence[Dict[str, Any]]) -> str:
+    """The note that tells a reviewer what it is not being shown.
+
+    Terse on purpose: this rides along on every reviewer prompt in every round,
+    so it is a list of names and sizes, not an explanation.
+    """
+    if not withheld:
+        return ""
+    lines = ["Changed but withheld as generated or vendored -- diffs not shown:"]
+    for entry in withheld:
+        added, deleted = entry.get("added"), entry.get("deleted")
+        if added is None and deleted is None:
+            size = "binary"
+        else:
+            size = "+%s -%s" % (added if added is not None else "?", deleted if deleted is not None else "?")
+        lines.append("- %s (%s)" % (entry.get("path"), size))
+    lines.append("Read one only if this change turns on its contents.")
+    return "\n".join(lines)
+
+
+def _numstat(root: str, revision: str, patterns: Sequence[str]) -> "tuple[List[Dict[str, Any]], bool]":
+    """Every changed file with its line counts, and whether git could list them.
+
+    The second value distinguishes "nothing changed" from "there is no such
+    revision" -- a repository with no commits yet has no ``HEAD``, and that is
+    a normal state, not a failure.
+    """
+    code, out, _ = ws.git(["diff", "--numstat", "-z", "-M", revision, "--"], root)
+    if code != 0:
+        return [], False
+    entries: List[Dict[str, Any]] = []
+    for added, deleted, path in _parse_numstat(out):
+        entries.append(_withheld_entry(path, withholds(path, patterns), added, deleted))
+    return entries, True
+
+
+def _parse_numstat(out: str) -> "List[tuple[Optional[int], Optional[int], str]]":
+    """Parse ``git diff --numstat -z``.
+
+    NUL-separated because a rename is reported as an empty path followed by the
+    old and new names as their own records, and the readable form spells the
+    same thing as ``src/{old => new}.txt`` -- which would have to be unpicked,
+    and unpicked wrongly for any path containing a brace. Binary files carry
+    ``-`` instead of a count, which is not zero and is not reported as zero.
+    """
+    fields = out.split("\0")
+    records: "List[tuple[Optional[int], Optional[int], str]]" = []
+    index = 0
+    while index < len(fields):
+        field = fields[index]
+        index += 1
+        if not field:
+            continue
+        parts = field.split("\t")
+        if len(parts) < 3:
+            continue
+        added, deleted, path = parts[0], parts[1], parts[2]
+        if not path:
+            # A rename or copy: the next two records are the old and new names.
+            old = fields[index] if index < len(fields) else ""
+            new = fields[index + 1] if index + 1 < len(fields) else ""
+            index += 2
+            path = new or old
+        if not path:
+            continue
+        records.append((_maybe_int(added), _maybe_int(deleted), path))
+    return records
+
+
+def _maybe_int(value: str) -> Optional[int]:
+    try:
+        return int(value)
+    except ValueError:
+        return None  # "-", which git uses for a binary file
+
+
+def _pathspecs(withheld: Sequence[Dict[str, Any]]) -> List[str]:
+    """Exclusions as pathspecs, by literal path rather than by our pattern.
+
+    The pattern already did its matching here, so git is handed the exact names
+    to leave out. ``literal`` keeps a path containing glob characters from
+    being read as a glob by git in turn.
+    """
+    return [":(exclude,literal)%s" % entry["path"] for entry in withheld]
+
+
+def _count_lines(path: str) -> Optional[int]:
+    try:
+        with open(path, "rb") as handle:
+            return handle.read().count(b"\n")
+    except OSError:
+        return None
 
 
 def _changed_files(diff: str) -> List[str]:
@@ -245,6 +441,10 @@ def build_review_prompt(
             "for the duration of this review:\n\n    %s\n\nReview only what that diff contains."
             % workspace.relative(workspace.snapshot_path)
         )
+    meta = ws.read_json(workspace.snapshot_meta_path, {}) or {}
+    note = render_withheld(meta.get("withheld") or [])
+    if note:
+        diff_section += "\n\n" + note
     prompt = (template or REVIEW_PROMPT_TEMPLATE).format(
         reviewer_id=reviewer.get("id", "reviewer"),
         role=role,
@@ -313,6 +513,13 @@ def run_reviews(
         return []
     diff_text = ws.read_text(workspace.snapshot_path)
     if not diff_text.strip():
+        meta = ws.read_json(workspace.snapshot_meta_path, {}) or {}
+        if meta.get("withheld"):
+            raise ReviewError(
+                "review snapshot is empty because every changed file was withheld as "
+                "generated or vendored (%s). Re-snapshot with --no-exclude to review them."
+                % ", ".join(str(entry.get("path")) for entry in meta["withheld"][:5])
+            )
         raise ReviewError(
             "review snapshot is empty -- run `review snapshot` after making changes, "
             "or pass --base to compare against a different revision"

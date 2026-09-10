@@ -107,6 +107,7 @@ workspace:
 | `review.parallel` | bool | `false` runs reviewers one at a time (easier to debug). |
 | `review.re_review_severities` | list | Severities that count as blocking. |
 | `review.timeout_seconds` | int > 0 | Per-run timeout; a timeout is reported, not raised. |
+| `review.exclude` | list | Glob patterns whose diff body is withheld from reviewers. Replaces the default list wholesale; `[]` reviews everything. |
 | `workspace.dir` | string | Where `.ai/` artifacts go. |
 | `<role>.options` | mapping | Provider-specific knobs; see below. |
 
