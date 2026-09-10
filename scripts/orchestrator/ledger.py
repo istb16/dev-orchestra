@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import os
 import time
+import uuid
 from typing import Any, Dict, List, Optional
 
 from . import execution
@@ -87,6 +88,14 @@ class Ledger:
         state["ledger"] = ledger
         state["updated_at"] = ws.utcnow()
         self.workspace.write_state(state)
+
+    def _locked(self):
+        """Hold the state lock across a read-modify-write.
+
+        A detached worker writes the same state file as its parent, so without
+        this one of the two edits is silently lost.
+        """
+        return ws.file_lock(self.workspace.state_path)
 
     def load(self) -> Dict[str, Any]:
         """The current ledger, starting a fresh one if the last is stale."""
@@ -163,16 +172,17 @@ class Ledger:
 
     def consume(self, stage: str, force: bool = False) -> Dict[str, Any]:
         """Record an attempt at ``stage``, refusing when a budget is spent."""
-        reasons = [] if force else self.check(stage)
-        if reasons:
-            raise BudgetExhausted("; ".join(reasons))
-        ledger = self.load()
-        attempts = ledger.setdefault("attempts", {})
-        attempts[stage] = int(attempts.get(stage, 0)) + 1
-        ledger["total_delegated_runs"] = int(ledger.get("total_delegated_runs") or 0) + 1
-        ledger["last_activity_monotonic"] = time.time()
-        self._write(ledger)
-        return ledger
+        with self._locked():
+            reasons = [] if force else self.check(stage)
+            if reasons:
+                raise BudgetExhausted("; ".join(reasons))
+            ledger = self.load()
+            attempts = ledger.setdefault("attempts", {})
+            attempts[stage] = int(attempts.get(stage, 0)) + 1
+            ledger["total_delegated_runs"] = int(ledger.get("total_delegated_runs") or 0) + 1
+            ledger["last_activity_monotonic"] = time.time()
+            self._write(ledger)
+            return ledger
 
     # -- progress ----------------------------------------------------------
 
@@ -183,18 +193,19 @@ class Ledger:
         same outcome comes back, because that is the evidence that the previous
         attempt changed nothing.
         """
-        ledger = self.load()
-        signatures = ledger.setdefault("signatures", {})
-        entry = signatures.get(stage) or {}
-        if entry.get("value") == signature:
-            entry["repeats"] = int(entry.get("repeats", 1)) + 1
-        else:
-            entry = {"value": signature, "repeats": 1}
-        entry["at"] = ws.utcnow()
-        signatures[stage] = entry
-        ledger["last_activity_monotonic"] = time.time()
-        self._write(ledger)
-        return int(entry["repeats"])
+        with self._locked():
+            ledger = self.load()
+            signatures = ledger.setdefault("signatures", {})
+            entry = signatures.get(stage) or {}
+            if entry.get("value") == signature:
+                entry["repeats"] = int(entry.get("repeats", 1)) + 1
+            else:
+                entry = {"value": signature, "repeats": 1}
+            entry["at"] = ws.utcnow()
+            signatures[stage] = entry
+            ledger["last_activity_monotonic"] = time.time()
+            self._write(ledger)
+            return int(entry["repeats"])
 
     def repeats(self, stage: str) -> int:
         return int((self.load().get("signatures") or {}).get(stage, {}).get("repeats", 0))
@@ -205,8 +216,14 @@ class Ledger:
         self, stage: str, detail: Optional[Dict[str, Any]] = None, deadline: Optional[float] = None
     ) -> str:
         """Write down that ``stage`` started, before it can block us."""
+        with self._locked():
+            return self._begin_locked(stage, detail, deadline)
+
+    def _begin_locked(self, stage: str, detail: Optional[Dict[str, Any]], deadline: Optional[float]) -> str:
         ledger = self.load()
-        token = "%s-%d" % (stage, int(time.time() * 1000) % 100_000_000)
+        # A timestamp alone collides when two stages start in the same
+        # millisecond, and two entries sharing a token lose one of them.
+        token = "%s-%s" % (stage, uuid.uuid4().hex[:8])
         entry = {
             "stage": stage,
             "started_at": ws.utcnow(),
@@ -222,10 +239,11 @@ class Ledger:
         return token
 
     def end(self, token: str, status: str, detail: Optional[Dict[str, Any]] = None) -> None:
-        ledger = self.load()
-        entry = (ledger.get("in_flight") or {}).pop(token, None)
-        ledger["last_activity_monotonic"] = time.time()
-        self._write(ledger)
+        with self._locked():
+            ledger = self.load()
+            entry = (ledger.get("in_flight") or {}).pop(token, None)
+            ledger["last_activity_monotonic"] = time.time()
+            self._write(ledger)
         event = {"status": status}
         if entry:
             event["stage"] = entry.get("stage")

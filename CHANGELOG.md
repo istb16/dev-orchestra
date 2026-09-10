@@ -56,6 +56,24 @@ The public surface covered by that promise is: the configuration schema, the
   bounded wait rather than an open-ended block. A job whose worker died without
   recording an outcome is reported as `abandoned`.
 
+- **Shared-file safety for detached workers.** CI found this on one platform
+  only: a `jobs wait` failed because the worker was rewriting the job file while
+  the parent read it. Three bugs, one after the other:
+  - Writes truncated before rewriting, so a reader could see a partial file. All
+    state, job and report writes now go through a temp file and one atomic
+    rename.
+  - `read_json` returned its default on a parse error, turning "unreadable" into
+    "absent" -- which is how a live job came to look like a missing one. It
+    retries first, and only then gives up.
+  - Read-modify-write on the run state could lose one of two concurrent edits,
+    so budget consumption and in-flight entries are now taken under a lock, and
+    in-flight tokens use a random suffix instead of a millisecond timestamp that
+    collided.
+  - On Windows a reader's handle blocked the rename, making a *reader* break a
+    *writer*. Reads now ask for `FILE_SHARE_DELETE`, so renames succeed while a
+    poller is reading -- which matters because polling `jobs` and `status` is
+    exactly what the detached path is for.
+
 
 
 ### Fixed
