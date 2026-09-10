@@ -31,9 +31,20 @@ and aliases only. `tests/test_config.py` enforces this for the defaults.
 When you touch an adapter, update the version you verified against in its module
 docstring, e.g. *"Verified against `codex` 0.154.x"*.
 
-**3. Tests must not invoke a real CLI.** Use the `mock` provider, or patch
-`_capture` / `which`. The suite has to pass on a machine with neither `claude`
-nor `codex` installed — that is what CI runs on.
+**3. Tests must not invoke a real CLI, or depend on one being installed.** Use
+the `mock` provider, or patch `_capture` / `which`. The suite has to pass on a
+machine with neither `claude` nor `codex` installed — that is what CI runs on.
+
+Your machine probably has them, so check before pushing:
+
+```bash
+DEV_ORCHESTRA_TEST_ASSUME_NO_CLI=1 python -m unittest discover -s tests -t tests
+```
+
+That hides both provider CLIs and is exactly what CI does. The `mock` provider
+has affordances for the awkward paths: always "installed",
+with `DEV_ORCHESTRA_MOCK_FAIL` for run failures and the `unresolvable` model
+family for resolution failures.
 
 **4. Reviewers stay read-only and independent.** If a change could let a
 reviewer edit files or see another reviewer's output, it needs a very good

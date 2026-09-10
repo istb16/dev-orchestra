@@ -260,11 +260,12 @@ class TestRunCommand(IsolatedCase):
         self.assertIn("implementer failed", err)
 
     def test_unresolvable_model_stops_before_running(self):
-        run_cli("config", "set", "implementer.provider", "codex")
-        run_cli("config", "set", "implementer.model.family", "definitely-not-a-real-family")
+        # The mock provider is always "installed", so this exercises the
+        # resolution-failure path even where no real CLI exists (as in CI).
+        run_cli("config", "set", "implementer.model.family", "unresolvable")
         code, _, err = run_cli("run", "implementer", "--prompt", "go")
         self.assertEqual(code, 2)
-        self.assertIn("cannot be verified", err)
+        self.assertIn("cannot be resolved", err)
 
     def test_a_reviewer_id_can_be_run_directly(self):
         run_cli("reviewer", "add", "--provider", "mock", "--id", "solo", "--role", "security")

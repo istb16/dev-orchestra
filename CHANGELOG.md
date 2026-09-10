@@ -17,6 +17,16 @@ The public surface covered by that promise is: the configuration schema, the
   project override, and the `DEV_ORCHESTRA_*` environment variables. Three
   competing names for one tool was one too many.
 
+### Fixed
+
+- Two tests silently depended on `claude` and `codex` being installed, so they
+  passed locally and failed on every CI platform. Both now drive the `mock`
+  provider instead, and `DEV_ORCHESTRA_TEST_ASSUME_NO_CLI=1` reproduces the CI
+  environment on a developer machine that has the real CLIs.
+- `doctor` now reports options that a read-only role will ignore even when the
+  provider CLI is missing: whether an option takes effect is a fact about the
+  configuration, not about what happens to be installed.
+
 ### Added
 
 - **Role options.** Each role can carry provider-specific `options`:

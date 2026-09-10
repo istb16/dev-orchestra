@@ -140,6 +140,10 @@ An offline adapter for tests and dry runs. It never spawns a process.
 | `DEV_ORCHESTRA_MOCK_RESPONSE` | Inline canned response |
 | `DEV_ORCHESTRA_MOCK_FAIL` | `1` fails every run; any other value fails only runs whose prompt contains it (e.g. one reviewer id) |
 
+It is also always "installed", and the model family `unresolvable` raises
+`ModelResolutionError` on purpose, so the failure paths are reachable on a
+machine with no provider CLI at all.
+
 Swapping a reviewer to `--provider mock` is the cheapest way to exercise the
 pipeline end to end without spending tokens.
 

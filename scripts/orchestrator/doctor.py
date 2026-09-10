@@ -93,6 +93,11 @@ def _describe_role(label: str, spec: Any, detections: Dict[str, Any], problems: 
     entry["family"] = model_spec.get("family", "")
     entry["version_policy"] = model_spec.get("version", "latest")
 
+    # Reported before the CLI checks below: whether an option is going to be
+    # ignored is a fact about the configuration, true whether or not the CLI
+    # that would have honoured it happens to be installed.
+    _describe_options(entry, spec, label, problems)
+
     detection = detections.get(provider_name)
     if detection is None:
         entry["status"] = "unknown-provider"
@@ -113,18 +118,21 @@ def _describe_role(label: str, spec: Any, detections: Dict[str, Any], problems: 
     entry["status"] = "ok"
     entry["resolved"] = resolved.display
     entry["resolution_source"] = resolved.source
-
-    options = spec.get("options")
-    if isinstance(options, dict):
-        entry["options"] = {key: value for key, value in options.items() if key != "args"}
-        ignored = sorted(set(options) & READ_ONLY_IGNORED_OPTIONS)
-        if ignored and _is_read_only_role(label):
-            entry["ignored_options"] = ignored
-            problems.append(
-                "%s: %s ignored -- planning and review stages always run read-only"
-                % (label, ", ".join("options.%s" % key for key in ignored))
-            )
     return entry
+
+
+def _describe_options(entry: Dict[str, Any], spec: Dict[str, Any], label: str, problems: List[str]) -> None:
+    options = spec.get("options")
+    if not isinstance(options, dict):
+        return
+    entry["options"] = {key: value for key, value in options.items() if key != "args"}
+    ignored = sorted(set(options) & READ_ONLY_IGNORED_OPTIONS)
+    if ignored and _is_read_only_role(label):
+        entry["ignored_options"] = ignored
+        problems.append(
+            "%s: %s ignored -- planning and review stages always run read-only"
+            % (label, ", ".join("options.%s" % key for key in ignored))
+        )
 
 
 #: Options that would loosen a sandbox. Harmless on the implementer and fixer,

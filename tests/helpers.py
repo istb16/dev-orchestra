@@ -24,6 +24,10 @@ ENV_KEYS = (
     "APPDATA",
 )
 
+#: CI runs with neither claude nor codex on PATH, and the suite must pass there.
+#: Set this locally to reproduce that without uninstalling anything.
+ASSUME_NO_CLI = "DEV_ORCHESTRA_TEST_ASSUME_NO_CLI"
+
 
 class IsolatedCase(unittest.TestCase):
     """Runs each test with its own config home and working directory."""
@@ -45,6 +49,17 @@ class IsolatedCase(unittest.TestCase):
 
         provider_base.clear_discovery_cache()
         self.addCleanup(provider_base.clear_discovery_cache)
+        if os.environ.get(ASSUME_NO_CLI):
+            self._hide_provider_clis()
+
+    def _hide_provider_clis(self) -> None:
+        from orchestrator.providers.claude import ClaudeProvider
+        from orchestrator.providers.codex import CodexProvider
+
+        for cls in (ClaudeProvider, CodexProvider):
+            original = cls.which
+            cls.which = lambda self: None
+            self.addCleanup(setattr, cls, "which", original)
 
     def tearDown(self) -> None:
         os.chdir(self._saved_cwd)

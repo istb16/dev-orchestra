@@ -13,7 +13,11 @@ import os
 import time
 from typing import Any, Dict, List, Optional, Sequence
 
-from .base import ModelCandidate, Provider, ResolvedModel, RunResult
+from .base import ModelCandidate, ModelResolutionError, Provider, ResolvedModel, RunResult
+
+#: Asking for this family raises, so tests can exercise the resolution-failure
+#: path on a machine with no provider CLI installed at all.
+UNRESOLVABLE_FAMILY = "unresolvable"
 
 
 class MockProvider(Provider):
@@ -43,6 +47,8 @@ class MockProvider(Provider):
         return list(self.fallback_models)
 
     def _resolve_latest(self, family: str) -> ResolvedModel:
+        if family == UNRESOLVABLE_FAMILY:
+            raise ModelResolutionError("mock: %r cannot be resolved (by design)" % family)
         value = family or "mock-small"
         return ResolvedModel(self.name, value, "latest", value, value, "builtin-fallback")
 

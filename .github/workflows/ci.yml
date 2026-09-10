@@ -69,7 +69,10 @@ jobs:
           git config --global init.defaultBranch main
       - name: Run tests
         # No AI CLI is installed here on purpose: the suite must pass without
-        # claude or codex on PATH, and must never invoke a real CLI.
+        # claude or codex on PATH, and must never invoke a real CLI. The flag
+        # asserts that rather than relying on the runner image to lack them.
+        env:
+          DEV_ORCHESTRA_TEST_ASSUME_NO_CLI: "1"
         run: python -m unittest discover -s tests -t tests -v
 
   validate-skill:
