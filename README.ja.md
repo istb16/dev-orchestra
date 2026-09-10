@@ -39,34 +39,89 @@ typo修正なら編集だけ、スキーマ変更ならフルパイプライン�
 - **モデル名を推測しない。** 検証できないモデルに対して adapter は「それらしい文字列」をCLIに渡さず、
   エラーで停止します。
 
-## アーキテクチャ
+## AIオーケストラ: 誰が何を担当するか
 
-```mermaid
-flowchart LR
-    U[ユーザー] --> O[Orchestrator]
-    O --> A[Architect<br/>read-only]
-    A --> I[Implementer]
-    I --> T[テスト]
-    T --> S[[スナップショット凍結]]
-    S --> R1[Reviewer 1]
-    S --> R2[Reviewer 2]
-    S --> R3[Reviewer N]
-    R1 --> C[統合 + 重複排除]
-    R2 --> C
-    R3 --> C
-    C --> TR[トリアージ]
-    TR -->|accepted のみ| F[Review Fixer]
-    F --> T2[再テスト] --> REP[最終報告]
+`dev-orchestra` は「1つのAIにコードを書かせる」ものではありません。工程ごとに
+別のモデルを割り当て、そのうち2つには**意図的に意見を食い違わせます**。
+
+1. **指揮** — 依頼を読み、必要な工程を判断し、タスクを分解して結果を統合します。
+   大量の入力（ログ、レガシーコード、長い仕様書）を消化するのもこの工程です。
+2. **設計** — コードベースを調査して計画を書きます。読み取り専用。
+3. **実装** — その計画からコードとテストを書きます。
+4. **レビュー** — 凍結した差分を読み、findings を報告します。読み取り専用。
+5. **独立レビュー** — 同じ差分を、別ベンダーのモデルが、1人目の意見を知らないまま
+   レビューします。
+6. **トリアージ・修正・再テスト** — findings を重複排除し、オーケストレータが採否を
+   判断し、accepted のものだけが修正担当に渡ります。
+
+現時点の両CLIが提供しているモデルに当てはめた構成例:
+
+| 工程 | 設定上のロール | CLI | family |
+| --- | --- | --- | --- |
+| 指揮・大量入力の処理 | `orchestrator` | Codex | `gpt-5.6-sol` |
+| 設計 | `architect` | Claude Code | `fable` |
+| 実装 | `implementer` | Claude Code | `opus` |
+| レビュー | reviewer | Claude Code | `opus` |
+| 独立レビュー | reviewer | Codex | `gpt-5.6-terra` |
+| accepted findings の修正 | `review_fixer` | Claude Code | `opus` |
+
+設定ファイルにすると次のようになります。
+
+```yaml
+version: 1
+
+orchestrator:
+  provider: codex
+  model:
+    family: gpt-5.6-sol
+    version: latest
+
+architect:
+  provider: claude
+  model:
+    family: fable
+    version: latest
+
+implementer:
+  provider: claude
+  model:
+    family: opus
+    version: latest
+
+review_fixer:
+  provider: claude
+  model:
+    family: opus
+    version: latest
+
+reviewers:
+  - id: claude-review
+    provider: claude
+    model:
+      family: opus
+      version: latest
+    role: general
+  - id: codex-independent
+    provider: codex
+    model:
+      family: gpt-5.6-terra
+      version: latest
+    role: general
 ```
 
-| 要素 | 場所 | 役割 |
-| --- | --- | --- |
-| Skill | `skills/dev-orchestra/SKILL.md` | 何をいつ実行するか、何をしてはいけないか |
-| CLI | `scripts/dev_orchestra.py` | エージェントが呼ぶ決定的な操作 |
-| Provider | `scripts/orchestrator/providers/` | CLIのフラグとモデル名を知る唯一の場所 |
-| References | `references/` | 詳細。必要になったときだけ読む |
+**コピーする前に、自分の環境で family を確認してください。** モデル名は変わりますし、
+CLIのバージョンやアカウントによって提供されるモデルも異なります。
 
-詳細版は `references/architecture.md`（英語）にあります。
+```bash
+dev-orchestra model list
+```
+
+ここに表示されたものを使ってください。各アダプタは、インストール済みCLIが認めない
+family を推測せずに拒否します。古い名前は実行時に黙って別モデルを使うのではなく、
+セットアップ時にはっきり失敗します。
+
+重要なのはこの表そのものではなく、**設計と独立レビューを別ベンダーに割り当てる**という
+形です。同じ系列のモデル同士は、バグを生んだ思い込みまで共有してしまいます。
 
 ## 必要なもの
 
@@ -266,6 +321,90 @@ dev-orchestra review fix-brief --output fix-brief.md
 
 全コマンドは `references/cli.md`（英語）を参照してください。
 
+## 実際のワークフロー
+
+工程ごとに手で叩く必要はありません。1文で依頼すれば、必要な工程だけが実行されます。
+以下のコマンドは、その裏でオーケストレータが実行しているものです。1工程だけを自分で
+回したいときに使ってください。
+
+**1. 指揮.** オーケストレータが依頼を分類し、各工程の前に残り予算を確認します。
+
+```bash
+dev-orchestra status
+```
+
+**2. 設計.** architect が調査して計画を書きます。ファイルは編集できません（読み取り専用）。
+
+```bash
+dev-orchestra run architect --prompt-file .ai/request.md --output .ai/plan.md
+```
+
+**3. 実装.** implementer は元の依頼ではなく、その計画から実装します。
+
+```bash
+dev-orchestra run implementer --prompt-file .ai/plan.md
+```
+
+**4. レビュー.** まず差分を凍結し、全レビュアーがバイト単位で同一の入力を見ます。
+その上で、並列・独立・読み取り専用で実行されます。
+
+```bash
+dev-orchestra review snapshot --base main
+dev-orchestra review run
+dev-orchestra review show
+```
+
+**5. トリアージ.** 重複排除は機械的に行いますが、どれが本物かの判断はオーケストレータが
+担当します。
+
+```bash
+dev-orchestra review triage F1 F3 --status accepted --note "confirmed"
+dev-orchestra review triage F2 --status rejected --note "guarded by the caller"
+```
+
+**6. 修正と再テスト.** 修正担当に渡るのは accepted の findings だけです。
+
+```bash
+dev-orchestra review fix-brief --output .ai/fix-brief.md
+dev-orchestra run review_fixer --prompt-file .ai/fix-brief.md
+```
+
+その後テストを再実行し、`dev-orchestra review status` がもう1周する価値があるか、
+ループを終えるべきかを判断します。
+
+## 大量のテキストを扱う場合
+
+ログ、レガシーモジュール、長い仕様書などは、そのために設定したモデルにまとめて渡し、
+**結論だけ**を残して設計・レビュー工程へ引き継ぎます。40MBのログに使ったコンテキストは、
+そのぶんレビュアーが差分に使えなくなるコンテキストです。
+
+解析依頼はファイルに書き（中身を貼り付けるのではなく、リポジトリ内のパスを指し示す）、
+大量入力担当に割り当てたロールで実行します。
+
+```bash
+dev-orchestra run orchestrator \
+  --prompt-file .ai/analysis-request.md \
+  --output .ai/analysis.md
+```
+
+依頼文の例:
+
+> `log/production-2026-09-08.log` と `app/services/checkout/*.rb` を読んで、
+> 失敗パターンの種類、それぞれの発生頻度、関係するコードパスを列挙してください。
+> 修正はまだ不要です。findings のみを、`file:line` 付きでグループ化して出力してください。
+
+そして、ログではなく**その要約から**設計します。
+
+```bash
+dev-orchestra run architect --prompt-file .ai/analysis.md --output .ai/plan.md
+dev-orchestra run implementer --prompt-file .ai/plan.md
+dev-orchestra review snapshot --base main
+dev-orchestra review run
+```
+
+仕様書レビューや依存関係の棚卸しでも同じ分担が使えます。1つのモデルが情報を消化し、
+別のモデルが設計し、さらに2つが結果について意見を戦わせます。
+
 ## 設定
 
 優先順位: **プロジェクト → グローバル → 内蔵デフォルト**。
@@ -359,7 +498,7 @@ review_fixer:           # let the CLI pick entirely
 解決の優先順位:
 
 1. インストール済みCLIが提示する情報 — Claude は `claude --help` の alias、Codex は
-   `$CODEX_HOME/config.toml` のデフォルト
+   `codex debug models` のカタログと `$CODEX_HOME/config.toml` のデフォルト
 2. provider の現行 alias
 3. **family のみ**を並べた内蔵フォールバック（最終確認日付き）
 
@@ -376,10 +515,14 @@ claude: installed
   sonnet   family=sonnet   source=cli-help
 codex: installed
   CLI default (recommended coding model)  family=recommended-coding  source=cli-default
+  gpt-6-astra (this CLI's configured model) family=gpt-6-astra       source=cli-config
+  GPT-5.6-Terra                           family=gpt-5.6-terra       source=cli-catalog
 ```
 
-Codex はモデル一覧を公開していないため、`recommended-coding` は **`-m` を付けない**ことで解決します。
-CLI自身の現行デフォルトが、定義上いちばん新しいからです。
+`recommended-coding` は **`-m` を付けない**ことで解決します。CLI自身の現行デフォルトが、
+定義上いちばん新しいからです。それ以外の family は、この一覧に出てくるものに限られます。
+Codexアダプタが受け付けるのは、CLIが設定しているモデルと、CLI自身のカタログが公開している
+slug だけで、それ以外は拒否します。
 
 ## レビュアー
 
@@ -410,6 +553,31 @@ Orchestrator がトリアージ時に確定させます。詳細は `references/
 設定に関わらず read-only を維持します。
 
 ## ワークフロー例
+
+**既存Railsアプリケーションへの機能追加**
+
+> 「チェックアウトに顧客ごとの上限金額を追加して」
+
+```
+Codex gpt-5.6-sol      既存のチェックアウト実装と直近のログを読み、
+                       依頼を工程に分解
+        |
+Claude fable           設計: 上限をどこに持たせるか、影響範囲、マイグレーション
+        |
+Claude opus            実装とテストの作成
+        |
+Claude opus            凍結された差分をレビュー
+Codex gpt-5.6-terra    同じ差分を独立にレビュー
+        |
+Codex gpt-5.6-sol      両方の結果を統合し、重複を落とし、トリアージ
+        |
+Claude opus            accepted の findings だけを修正
+        |
+                       テスト再実行、報告
+```
+
+利用者側の操作はエージェントへの1文だけです。成果物は `.ai/` に残ります（計画、
+各レビュー、統合済み findings、トリアージ結果）。
 
 **API変更を伴う機能追加**
 
@@ -446,7 +614,7 @@ DEV_ORCHESTRA_MOCK_RESPONSE=NO_FINDINGS dev-orchestra review run --only dry
 | 症状 | 原因と対処 |
 | --- | --- |
 | `Source: built-in defaults` | 設定ファイルが未作成。`dev-orchestra config setup`。 |
-| `codex: … cannot be verified` | Codex が公開していない family。`recommended-coding` を使うか、正確なIDをpinする。 |
+| `codex: … does not vouch for …` | この Codex CLI が提供していない family。`dev-orchestra model list` で確認し、`recommended-coding` を使うか、正確なIDをpinする。 |
 | `claude: cannot resolve model family 'x'` | 提示されていない alias。`dev-orchestra model list` で確認。 |
 | `Installed: no` | CLIがPATHにない。自分でインストールしてください（Skillは勝手に入れません）。 |
 | 委譲先CLIの `Failed to authenticate` | そのCLIで直接ログイン（`claude`、`codex login`）。`doctor` は認証情報の**存在**のみを見ており、有効性は検証しません。 |
@@ -543,6 +711,35 @@ rm -rf .ai                        # 成果物も消す場合、プロジェク�
 
 変更は `CHANGELOG.md` の `Unreleased` に追記し、リリース時に確定させます
 （[Keep a Changelog](https://keepachangelog.com/ja/1.1.0/)）。
+
+## アーキテクチャ
+
+```mermaid
+flowchart LR
+    U[ユーザー] --> O[Orchestrator]
+    O --> A[Architect<br/>read-only]
+    A --> I[Implementer]
+    I --> T[テスト]
+    T --> S[[スナップショット凍結]]
+    S --> R1[Reviewer 1]
+    S --> R2[Reviewer 2]
+    S --> R3[Reviewer N]
+    R1 --> C[統合 + 重複排除]
+    R2 --> C
+    R3 --> C
+    C --> TR[トリアージ]
+    TR -->|accepted のみ| F[Review Fixer]
+    F --> T2[再テスト] --> REP[最終報告]
+```
+
+| 要素 | 場所 | 役割 |
+| --- | --- | --- |
+| Skill | `skills/dev-orchestra/SKILL.md` | 何をいつ実行するか、何をしてはいけないか |
+| CLI | `scripts/dev_orchestra.py` | エージェントが呼ぶ決定的な操作 |
+| Provider | `scripts/orchestrator/providers/` | CLIのフラグとモデル名を知る唯一の場所 |
+| References | `references/` | 詳細。必要になったときだけ読む |
+
+詳細版は `references/architecture.md`（英語）にあります。
 
 ## コントリビュート
 

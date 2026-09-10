@@ -125,7 +125,7 @@ Verified against `codex` 0.154.x.
 | --- | --- |
 | Non-interactive run | `codex exec --skip-git-repo-check --color never -C <cwd>`, prompt on stdin |
 | Model | `-m <model>`, **omitted** for the `recommended-coding` family |
-| Model discovery | The CLI has no "list models" command, so the adapter reads the `model` key from `$CODEX_HOME/config.toml` |
+| Model discovery | `codex debug models` (the CLI's own catalogue, 0.154+) plus the `model` key from `$CODEX_HOME/config.toml`; models marked `hide` are skipped |
 | `plan` / `review` | `-s read-only` |
 | `implement` | `-s workspace-write --approve-for-me` |
 | Final answer | Captured with `-o <file>` rather than scraped from the event stream |
@@ -136,9 +136,27 @@ and `approve` (`false` drops `--approve-for-me`). Both are ignored for `plan`
 and `review`, which always use `-s read-only`.
 
 The `recommended-coding` family deliberately resolves to *no* `-m` flag. That is
-the honest way to say "use the current recommended coding model" for a CLI that
-does not publish a model list: the CLI's own default is, by definition, current.
-Any other family must match the CLI's configured model, or be pinned explicitly:
+the honest way to say "use the current recommended coding model": the CLI's own
+default is, by definition, current.
+
+Any other family has to be vouched for by the *installed* CLI -- it is either
+the model in its `config.toml`, or a slug from the catalogue `codex debug
+models` prints. `dev-orchestra model list` shows exactly what that machine
+offers (`source=cli-catalog` for the catalogue). A family the CLI does not
+know is refused rather than guessed:
+
+```yaml
+reviewers:
+  - id: codex-independent
+    provider: codex
+    model:
+      family: gpt-5.6-terra   # only if `dev-orchestra model list` shows it
+      version: latest
+    role: general
+```
+
+Older CLIs print no catalogue. There, a specific model must be pinned by hand,
+which also freezes it -- do that deliberately:
 
 ```yaml
 reviewers:

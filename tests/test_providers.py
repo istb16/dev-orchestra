@@ -189,11 +189,27 @@ class TestCodexRoleOptions(IsolatedCase):
         self.assertTrue(any("true or false" in p for p in self.provider.validate_options({"approve": "yes"})))
 
 
+CODEX_CATALOG = """{"models": [
+  {"slug": "gpt-example-1", "display_name": "GPT-Example-1", "visibility": "list"},
+  {"slug": "gpt-example-3", "display_name": "GPT-Example-3", "visibility": "list"},
+  {"slug": "gpt-internal", "display_name": "Internal", "visibility": "hide"},
+  {"display_name": "no slug", "visibility": "list"},
+  "not an object"
+]}"""
+
+
 class TestCodexAdapter(IsolatedCase):
     def setUp(self):
         super().setUp()
         self.provider = CodexProvider()
         self.provider.configured_model = lambda: "gpt-example-1"
+        # Default: behave like a CLI that publishes no catalogue. Tests that
+        # care about `codex debug models` opt in with catalogue().
+        self.provider.which = lambda: None
+
+    def catalogue(self, stdout=CODEX_CATALOG, returncode=0):
+        self.provider.which = lambda: "codex"
+        self.provider._capture = lambda command, timeout=30: _FakeCompleted(stdout, "", returncode)
 
     def test_recommended_family_omits_the_model_flag(self):
         resolved = self.provider.resolve_model({"family": "recommended-coding", "version": "latest"})
@@ -209,7 +225,62 @@ class TestCodexAdapter(IsolatedCase):
     def test_unverifiable_family_is_refused(self):
         with self.assertRaises(base.ModelResolutionError) as ctx:
             self.provider.resolve_model({"family": "some-model-i-made-up", "version": "latest"})
-        self.assertIn("does not publish a model list", str(ctx.exception))
+        self.assertIn("does not vouch for", str(ctx.exception))
+
+    def test_a_catalogued_family_resolves_to_that_model(self):
+        self.catalogue()
+        resolved = self.provider.resolve_model({"family": "gpt-example-3", "version": "latest"})
+        self.assertEqual(resolved.argument, "gpt-example-3")
+        self.assertEqual(resolved.source, "cli-catalog")
+        command = self.provider.build_command(base.MODE_REVIEW, resolved, self.project)
+        self.assertEqual(command[command.index("-m") + 1], "gpt-example-3")
+
+    def test_the_catalogue_is_fetched_once_per_process(self):
+        """Resolution must reuse the memoised list, not re-spawn the CLI.
+
+        `doctor --fast` skips model discovery but still resolves every role,
+        so a per-role spawn there would defeat the flag.
+        """
+        self.provider.which = lambda: "codex"
+        calls = []
+
+        def capture(command, timeout=30):
+            calls.append(list(command))
+            return _FakeCompleted(CODEX_CATALOG)
+
+        self.provider._capture = capture
+        for _ in range(3):
+            self.provider.resolve_model({"family": "gpt-example-3", "version": "latest"})
+        with self.assertRaises(base.ModelResolutionError):
+            self.provider.resolve_model({"family": "gpt-example-9", "version": "latest"})
+        self.assertEqual(len(calls), 1, calls)
+
+    def test_a_family_missing_from_the_catalogue_is_still_refused(self):
+        self.catalogue()
+        with self.assertRaises(base.ModelResolutionError):
+            self.provider.resolve_model({"family": "gpt-example-9", "version": "latest"})
+
+    def test_hidden_and_malformed_catalogue_entries_are_ignored(self):
+        self.catalogue()
+        families = [candidate.family for candidate in self.provider.list_models()]
+        self.assertIn("gpt-example-3", families)
+        self.assertNotIn("gpt-internal", families)
+        # The configured model is listed once, from the CLI's own config.
+        self.assertEqual(families.count("gpt-example-1"), 1)
+
+    def test_a_cli_without_the_catalogue_command_is_tolerated(self):
+        self.catalogue(stdout="unknown subcommand", returncode=2)
+        self.assertEqual(
+            [candidate.family for candidate in self.provider.list_models()],
+            ["recommended-coding", "gpt-example-1"],
+        )
+
+    def test_unparseable_catalogue_output_is_tolerated(self):
+        self.catalogue(stdout="not json at all")
+        self.assertEqual(
+            [candidate.family for candidate in self.provider.list_models()],
+            ["recommended-coding", "gpt-example-1"],
+        )
 
     def test_pinned_id_passes_through(self):
         resolved = self.provider.resolve_model(
@@ -232,6 +303,12 @@ class TestCodexAdapter(IsolatedCase):
         self.provider.configured_model = lambda: None
         candidates = self.provider.list_models()
         self.assertEqual([c.family for c in candidates], ["recommended-coding"])
+
+    def test_the_catalogue_is_never_consulted_without_the_cli(self):
+        """which() is None here: nothing may be spawned, nothing invented."""
+        self.provider.configured_model = lambda: None
+        self.provider._capture = lambda command, timeout=30: self.fail("spawned %s" % command)
+        self.assertEqual([c.family for c in self.provider.list_models()], ["recommended-coding"])
 
 
 class TestMockAdapter(IsolatedCase):
