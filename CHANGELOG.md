@@ -41,6 +41,22 @@ The public surface covered by that promise is: the configuration schema, the
   - New `dev-orchestra status`: one `continue` / `stop-and-report` verdict over
     budgets, stalls and open findings.
 
+- **Claude runs stream now.** Its adapter asks for `--output-format stream-json`
+  instead of `text`, so the idle deadline has something to watch: the text
+  format prints nothing until a run is nearly over (first output 8.1s into an
+  8.9s run), which made a wedged agent indistinguishable from a busy one. The
+  final answer comes from the `result` event, degrading to assistant text blocks
+  and then raw stdout so a schema change cannot lose the output.
+  `options.output_format: text` opts back out.
+- **Detached runs** (`run --detach`, `jobs list|show|wait|cancel`). Deadlines
+  bound how long an agent misbehaves, but while one runs the caller is inside
+  that call -- for an orchestrator that is itself an agent, a long block is
+  indistinguishable from a crash. A detached run returns a job id immediately
+  and `jobs wait` polls with a deadline of its own, so the worst case is a
+  bounded wait rather than an open-ended block. A job whose worker died without
+  recording an outcome is reported as `abandoned`.
+
+
 
 ### Fixed
 

@@ -120,9 +120,11 @@ by `config validate`, not at run time.
 | Provider | Key | Values |
 | --- | --- | --- |
 | any | `args` | List of extra CLI arguments, appended verbatim |
+| `claude` | `output_format` | `stream-json` (default), `text`, `json`. `text` disables stall detection |
 | `claude` | `permission_mode` | Whatever the installed CLI advertises for `--permission-mode` (`dev-orchestra model list` aside, run `claude --help` to see them) |
 | `codex` | `sandbox` | `read-only`, `workspace-write`, `danger-full-access` |
 | `codex` | `approve` | `true` (default) passes `--approve-for-me`; `false` omits it |
+| any | `idle_timeout` | Override the no-output deadline for this role |
 
 ```yaml
 implementer:

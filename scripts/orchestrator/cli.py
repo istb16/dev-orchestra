@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from . import config as config_mod
 from . import doctor as doctor_mod
+from . import jobs as jobs_mod
 from . import ledger as ledger_mod
 from . import review as review_mod
 from . import wizard as wizard_mod
@@ -465,16 +466,31 @@ def cmd_run(args: argparse.Namespace) -> int:
     if refusal is not None:
         return refusal
     try:
-        book.consume(role, force=args.force)
+        if not args.job_file:
+            book.consume(role, force=args.force)
     except ledger_mod.BudgetExhausted as exc:
         _err(str(exc))
         return ledger_mod.EXIT_BUDGET_EXHAUSTED
 
+    if args.detach:
+        # Hand the work to a detached worker so this call cannot block. The
+        # budget was already consumed above, so the worker must not do it again.
+        passthrough = _detached_argv(args, role)
+        job = jobs_mod.start(workspace, role, passthrough, prompt=prompt, timeout=timeout)
+        if args.json:
+            _emit_json(job)
+        else:
+            _out("started %s as job %s" % (role, job["id"]))
+            _out("follow it with: dev-orchestra jobs wait %s" % job["id"])
+        return 0 if job.get("status") != "failed" else 1
+
     # Written down before the call, so a stall is visible from outside this
     # process and survives it dying.
+    if args.job_file:
+        jobs_mod.claim(args.job_file)
     token = book.begin(
         role,
-        {"mode": mode, "provider": provider_name, "command": provider.executable},
+        {"mode": mode, "provider": provider_name, "command": provider.executable, "job": args.job_file},
         deadline=timeout,
     )
     try:
@@ -493,9 +509,23 @@ def cmd_run(args: argparse.Namespace) -> int:
         _err(str(exc))
         return 2
 
+    if args.job_file:
+        jobs_mod.finish(
+            args.job_file,
+            "succeeded" if result.ok else "failed",
+            output=result.stdout,
+            error="" if result.ok else (result.stderr or "").strip()[:2000],
+            detail={
+                "exit_code": result.exit_code,
+                "stalled": result.stalled,
+                "timed_out": result.timed_out,
+                "duration_seconds": round(result.duration, 2),
+                "model": result.resolved.display if result.resolved else None,
+            },
+        )
     if args.output:
         ws.write_text(args.output, result.stdout)
-    else:
+    elif not args.job_file:
         _out(result.stdout)
     if result.stalled:
         _err(
@@ -802,6 +832,85 @@ def cmd_review_status(args: argparse.Namespace) -> int:
 
 
 # --------------------------------------------------------------------------- state
+
+
+def _detached_argv(args: argparse.Namespace, role: str) -> List[str]:
+    """Rebuild this invocation for the worker, prompt now coming from a file."""
+    argv = ["run", role, "--prompt-file", "-", "--force"]
+    if args.mode:
+        argv += ["--mode", args.mode]
+    if args.output:
+        argv += ["--output", os.path.abspath(args.output)]
+    if args.timeout:
+        argv += ["--timeout", str(args.timeout)]
+    if args.idle_timeout is not None:
+        argv += ["--idle-timeout", str(args.idle_timeout)]
+    if args.extra:
+        argv += ["--extra", *args.extra]
+    return argv
+
+
+def cmd_jobs_list(args: argparse.Namespace) -> int:
+    workspace = _workspace(args)
+    found = jobs_mod.list_jobs(workspace)
+    if args.json:
+        _emit_json(found)
+        return 0
+    if not found:
+        _out("No jobs recorded.")
+        return 0
+    for job in found:
+        _out(
+            "%-34s %-10s %-14s %s"
+            % (job.get("id"), job.get("status"), job.get("stage"), job.get("started_at"))
+        )
+    return 0
+
+
+def cmd_jobs_show(args: argparse.Namespace) -> int:
+    workspace = _workspace(args)
+    job = jobs_mod.read_job(workspace, args.job_id)
+    if job is None:
+        _err("no such job: %s" % args.job_id)
+        return 2
+    if args.json:
+        _emit_json(job)
+        return 0
+    _out(jobs_mod.render(job))
+    if args.output and job.get("output_file"):
+        _out("")
+        _out(ws.read_text(str(job["output_file"])))
+    return 0
+
+
+def cmd_jobs_wait(args: argparse.Namespace) -> int:
+    """Bounded wait: returning while the job runs is an outcome, not an error."""
+    workspace = _workspace(args)
+    if jobs_mod.read_job(workspace, args.job_id) is None:
+        _err("no such job: %s" % args.job_id)
+        return 2
+    job = jobs_mod.wait(workspace, args.job_id, timeout=args.timeout, poll=args.poll)
+    if args.json:
+        _emit_json(job)
+    else:
+        _out(jobs_mod.render(job))
+        if job.get("status") == "succeeded" and job.get("output_file"):
+            _out("")
+            _out(ws.read_text(str(job["output_file"])))
+    if job.get("waited_out"):
+        return 4
+    return 0 if job.get("status") == "succeeded" else 1
+
+
+def cmd_jobs_cancel(args: argparse.Namespace) -> int:
+    workspace = _workspace(args)
+    try:
+        job = jobs_mod.cancel(workspace, args.job_id)
+    except KeyError:
+        _err("no such job: %s" % args.job_id)
+        return 2
+    _out(jobs_mod.render(job))
+    return 0
 
 
 def cmd_budget_show(args: argparse.Namespace) -> int:
@@ -1132,6 +1241,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="treat as stalled after this long with no output (streaming providers only)",
     )
     run_parser.add_argument("--force", action="store_true", help="run even though a budget is spent")
+    run_parser.add_argument(
+        "--detach",
+        action="store_true",
+        help="start the run in its own process and return a job id immediately",
+    )
+    run_parser.add_argument("--json", action="store_true", help="machine-readable output")
+    run_parser.add_argument("--job-file", default=None, help=argparse.SUPPRESS)
     run_parser.add_argument("--print-command", action="store_true", help="print the CLI invocation and exit")
     run_parser.add_argument("--extra", nargs=argparse.REMAINDER, help="extra args passed to the provider CLI")
     run_parser.set_defaults(func=cmd_run)
@@ -1198,6 +1314,26 @@ def build_parser() -> argparse.ArgumentParser:
     state_record.add_argument("status")
     state_record.add_argument("--detail", nargs="*", default=None, help="key=value pairs")
     state_record.set_defaults(func=cmd_state_record)
+
+    jobs_parser = subparsers.add_parser("jobs", help="detached runs, so no call blocks forever")
+    jobs_sub = jobs_parser.add_subparsers(dest="subcommand", required=True)
+    jobs_list = jobs_sub.add_parser("list", help="every recorded job, newest first")
+    jobs_list.add_argument("--json", action="store_true")
+    jobs_list.set_defaults(func=cmd_jobs_list)
+    jobs_show = jobs_sub.add_parser("show", help="one job")
+    jobs_show.add_argument("job_id")
+    jobs_show.add_argument("--output", action="store_true", help="also print its output")
+    jobs_show.add_argument("--json", action="store_true")
+    jobs_show.set_defaults(func=cmd_jobs_show)
+    jobs_wait = jobs_sub.add_parser("wait", help="wait for a job, with a deadline of your own")
+    jobs_wait.add_argument("job_id")
+    jobs_wait.add_argument("--timeout", type=float, default=60.0)
+    jobs_wait.add_argument("--poll", type=float, default=1.0)
+    jobs_wait.add_argument("--json", action="store_true")
+    jobs_wait.set_defaults(func=cmd_jobs_wait)
+    jobs_cancel = jobs_sub.add_parser("cancel", help="stop a running job")
+    jobs_cancel.add_argument("job_id")
+    jobs_cancel.set_defaults(func=cmd_jobs_cancel)
 
     budget_parser = subparsers.add_parser("budget", help="attempt budgets that stop runaway loops")
     budget_sub = budget_parser.add_subparsers(dest="subcommand", required=True)

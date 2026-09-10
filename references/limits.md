@@ -127,6 +127,26 @@ review→fix→review stops when the fixer stops achieving anything.
 
 `budgets.max_repeats_without_progress` (2) sets the threshold.
 
+## Not blocking in the first place
+
+Deadlines bound the damage; they do not stop the caller from waiting. While a
+delegated run is in progress the orchestrator is inside that call, so it cannot
+report the situation or act on it. Detaching fixes that structurally:
+
+```bash
+id=$(dev-orchestra run implementer --prompt-file plan.md --detach --json | jq -r .id)
+dev-orchestra jobs wait "$id" --timeout 120     # exit 4: still running
+dev-orchestra status                            # meanwhile, visible from anywhere
+```
+
+The worst case becomes a bounded wait and a clear status rather than an
+open-ended block. A job whose worker died without recording an outcome is
+reported as `abandoned`, the same reconciliation the in-flight ledger does — a
+dead worker must never look like one that is still working.
+
+Detaching is optional. It costs a round trip per poll and is worth it for the
+long stages (implementation, a big review) rather than every call.
+
 ## The verdict
 
 `dev-orchestra status` folds all of it into one answer:
@@ -149,13 +169,12 @@ the orchestrator having read this page.
 
 Honest limits of the above:
 
-* **Claude has no idle deadline yet.** Its adapter uses the text output format,
-  which is silent until the end, so only the total deadline applies. Moving it
-  to `stream-json` would fix that; the measurements are above.
-* **`status` observes, it does not interrupt.** While a call is blocked, the
-  orchestrator is blocked with it. Interruption comes from the deadlines; the
-  cure for the blocking itself is detached execution (`--detach`, `jobs wait`).
 * **A pid can be recycled**, so "the process is gone" is best-effort. It is used
   to flag and clear, never to kill.
 * **Budgets are per project workspace**, keyed on `.ai/state.json`. Two
   concurrent workflows in one checkout share them.
+* **Nothing here bounds a single reviewer's token spend**, only its wall clock.
+* **The stream-json parse depends on an event schema** that the CLI owns. It
+  degrades rather than failing — result event, then assistant text blocks, then
+  raw stdout — but a format change would still cost the structured extras
+  (`is_error`, `num_turns`).

@@ -11,7 +11,8 @@ Global options: `--cwd <dir>` (operate as if run from there), `--version`.
 Exit codes: `0` success, `1` the operation ran but the outcome is negative
 (invalid config, empty snapshot, every reviewer failed, role run failed), `2` a
 usage or configuration error, `3` a budget is exhausted and the command refused
-to run, `130` interrupted.
+to run, `4` a `jobs wait` returned while the job was still running, `130`
+interrupted.
 
 ## config
 
@@ -65,7 +66,7 @@ Never prints credential values — only whether credentials appear to be present
 
 | Command | Description |
 | --- | --- |
-| `run <role> [--prompt <text>\|--prompt-file <path>] [--mode plan\|implement\|review] [--output <path>] [--timeout <s>] [--idle-timeout <s>] [--force] [--print-command] [--extra …]` | Run one configured role. `<role>` is `orchestrator`, `architect`, `implementer`, `review_fixer`, or a reviewer id. Consumes an attempt from that stage's budget and refuses (exit 3) when it is spent, unless `--force`. |
+| `run <role> [--prompt <text>\|--prompt-file <path>] [--mode plan\|implement\|review] [--output <path>] [--timeout <s>] [--idle-timeout <s>] [--detach] [--force] [--json] [--print-command] [--extra …]` | Run one configured role. `<role>` is `orchestrator`, `architect`, `implementer`, `review_fixer`, or a reviewer id. Consumes an attempt from that stage's budget and refuses (exit 3) when it is spent, unless `--force`. |
 
 The prompt may also be piped on stdin (`--prompt-file -` reads stdin
 explicitly). Default modes: architect/orchestrator `plan`, implementer and
@@ -76,8 +77,11 @@ to the provider CLI verbatim.
 `--timeout` is the total deadline. `--idle-timeout` is the *no output* deadline:
 a wedged agent goes quiet while a slow one keeps producing, so this catches a
 stall in minutes rather than at the total deadline. It only applies to providers
-that stream progress (Codex does; see `references/providers.md`), and is ignored
-elsewhere rather than guessed at.
+that stream progress (both adapters do; see `references/providers.md`), and is
+ignored elsewhere rather than guessed at.
+
+`--detach` starts the run in its own process and returns a job id immediately,
+so the call cannot block. See `jobs` below.
 
 ```bash
 dev-orchestra run architect --prompt-file .ai/execution/design-request.md --output .ai/plan.md
@@ -119,6 +123,31 @@ dev-orchestra status --json
   "budgets": {"implementer": {"used": 2, "limit": 5, "remaining": 3}}
 }
 ```
+
+## jobs
+
+Detached runs. The deadlines bound how long an agent can misbehave, but while
+one runs the caller is *inside* that call — for an orchestrator that is itself
+an agent, a long block is indistinguishable from a crash. Detaching removes
+that: the work runs elsewhere and the wait has a deadline of your own.
+
+| Command | Description |
+| --- | --- |
+| `jobs list [--json]` | Every recorded job, newest first. |
+| `jobs show <id> [--output] [--json]` | One job, optionally with its output. |
+| `jobs wait <id> [--timeout <s>] [--poll <s>] [--json]` | Wait, but never longer than `--timeout` (60s default). Exits 4 if the job was still running when the wait ended — a normal outcome, not an error. |
+| `jobs cancel <id>` | Stop a running job and its process tree. |
+
+```bash
+id=$(dev-orchestra run implementer --prompt-file plan.md --detach --json | jq -r .id)
+dev-orchestra jobs wait "$id" --timeout 120   # exit 4 means "still going"
+dev-orchestra jobs show "$id" --output
+```
+
+A job's whole life is one JSON file under `.ai/jobs/`, written by the worker, so
+progress survives the parent dying. A job whose worker process is gone without
+recording an outcome is reported as `abandoned` rather than appearing to run
+forever.
 
 ## budget
 

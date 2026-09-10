@@ -7,14 +7,25 @@ Model handling: the CLI's own ``--model`` help text advertises the aliases that
 track the latest snapshot of each family (``opus``, ``sonnet``, ``fable``, ...),
 so ``version: latest`` simply passes the alias through and lets the CLI resolve
 it. No dated snapshot id is ever synthesised here.
+
+Output format: ``stream-json``, not ``text``. Measured, ``--output-format text``
+prints nothing until the run is nearly over (first output 8.1s into an 8.9s
+run), so there is no way to tell a wedged agent from a busy one. The streaming
+format emits ``system``/``thinking_tokens`` events throughout, which gives the
+idle deadline something real to watch. The final answer is read from the
+``result`` event, with fallbacks so a schema change degrades instead of losing
+the output: assistant text blocks, then raw stdout. ``options.output_format:
+text`` opts back out, at the cost of stall detection.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import re
 from typing import Any, Dict, List, Optional, Sequence
 
+from ..execution import ExecOutcome
 from .base import (
     MODE_IMPLEMENT,
     READ_ONLY_MODES,
@@ -47,7 +58,13 @@ class ClaudeProvider(Provider):
         ModelCandidate("haiku", "haiku", "haiku (latest Haiku)", "builtin-fallback"),
     )
     fallback_updated = "2026-09-10"
-    option_keys = ("args", "permission_mode")
+    option_keys = ("args", "permission_mode", "output_format", "idle_timeout")
+    # Measured: the streaming format emits thinking_tokens events while the
+    # model works, so a no-output deadline can tell wedged from busy. The text
+    # format cannot -- see the module docstring.
+    streams_progress = True
+    #: What the adapter asks for unless a role overrides it.
+    default_output_format = "stream-json"
 
     def auth_status(self) -> "tuple[str, str]":
         for variable in ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_AUTH_TOKEN"):
@@ -74,6 +91,9 @@ class ClaudeProvider(Provider):
         problems = super().validate_options(options)
         if not isinstance(options, dict):
             return problems
+        output_format = options.get("output_format")
+        if output_format is not None and output_format not in ("stream-json", "text", "json"):
+            problems.append("options.output_format %r is not one of stream-json, text, json" % output_format)
         requested = options.get("permission_mode")
         if requested is None:
             return problems
@@ -148,16 +168,89 @@ class ClaudeProvider(Provider):
         extra_args: Sequence[str] = (),
         options: Optional[Dict[str, Any]] = None,
     ) -> List[str]:
-        command = [self.executable, "-p", "--output-format", "text"]
+        options = options or {}
+        output_format = str(options.get("output_format") or self.default_output_format)
+        command = [self.executable, "-p", "--output-format", output_format]
+        if output_format == "stream-json":
+            # The CLI requires --verbose with the streaming format.
+            command.append("--verbose")
         if resolved.argument:
             command += ["--model", resolved.argument]
-        requested = (options or {}).get("permission_mode")
+        requested = options.get("permission_mode")
         command += _permission_args(mode, requested if isinstance(requested, str) else None)
         command += self.option_args(options)
         # Anything passed at the call site wins by position: for repeated flags
         # the CLI takes the last occurrence.
         command += list(extra_args)
         return command
+
+    def idle_timeout(
+        self, options: Optional[Dict[str, Any]] = None, requested: Optional[float] = None
+    ) -> Optional[float]:
+        """No idle deadline unless the format actually streams progress."""
+        output_format = str((options or {}).get("output_format") or self.default_output_format)
+        if output_format != "stream-json":
+            return None
+        return super().idle_timeout(options, requested)
+
+    def postprocess(self, outcome: ExecOutcome, mode: str) -> "tuple[str, str]":
+        """Reduce a stream-json run to its final answer."""
+        text, note = parse_stream_json(outcome.stdout)
+        if text is None:
+            return outcome.stdout, outcome.stderr
+        stderr = outcome.stderr
+        if note:
+            stderr = (stderr + "\n" + note).strip()
+        return text, stderr
+
+
+def parse_stream_json(stdout: str) -> "tuple[Optional[str], str]":
+    """Extract the final answer from a stream-json run.
+
+    Returns ``(text, note)``, or ``(None, "")`` when this does not look like a
+    stream at all -- in which case the caller keeps the raw output rather than
+    discarding it, so an unrecognised format degrades instead of losing work.
+    """
+    events: List[Dict[str, Any]] = []
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(event, dict):
+            events.append(event)
+    if not events:
+        return None, ""
+
+    for event in reversed(events):
+        if event.get("type") == "result":
+            result = event.get("result")
+            if isinstance(result, str) and result.strip():
+                note = ""
+                if event.get("is_error"):
+                    note = "the CLI reported is_error on its result event"
+                return result, note
+            break
+
+    # No usable result event: fall back to the assistant's own text blocks.
+    collected: List[str] = []
+    for event in events:
+        if event.get("type") != "assistant":
+            continue
+        message = event.get("message")
+        if not isinstance(message, dict):
+            continue
+        for block in message.get("content") or []:
+            if isinstance(block, dict) and block.get("type") == "text":
+                piece = block.get("text")
+                if isinstance(piece, str) and piece.strip():
+                    collected.append(piece)
+    if collected:
+        return "\n".join(collected), "no result event; reconstructed from assistant messages"
+    return None, ""
 
 
 def _permission_args(mode: str, requested: Optional[str] = None) -> List[str]:

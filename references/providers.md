@@ -37,6 +37,15 @@ Adapters translate the mode into whatever their CLI calls read-only. That
 mapping is the adapter's contract with the rest of the skill: a `review` run
 that can edit files is a bug in the adapter.
 
+### Progress and the idle deadline
+
+An adapter sets `streams_progress = True` only when a healthy run of the command
+it builds emits output *while working*. That must be measured, not assumed:
+claiming it falsely turns a slow but working agent into a killed one. Both
+shipped adapters stream, for different reasons -- Codex does so natively, Claude
+because its adapter asks for `stream-json`. A role can override the deadline
+with `options.idle_timeout`. See `references/limits.md` for the measurements.
+
 ### Model resolution contract
 
 `resolve_model` returns a `ResolvedModel` whose `argument` is either
@@ -54,7 +63,7 @@ Verified against `claude` 2.1.x.
 
 | Aspect | How |
 | --- | --- |
-| Non-interactive run | `claude -p --output-format text`, prompt on stdin |
+| Non-interactive run | `claude -p --output-format stream-json --verbose`, prompt on stdin |
 | Model | `--model <alias-or-name>`, omitted when the family is `default` |
 | Model discovery | Parses the aliases the CLI advertises in its own `--model` help text |
 | `plan` / `review` | `--permission-mode plan --disallowed-tools Edit,Write,NotebookEdit` |
@@ -69,6 +78,15 @@ contains aliases only — never dated snapshot ids.
 
 Prompts are sent on **stdin**, not as an argument, which avoids command-line
 length limits and quoting differences between shells.
+
+The output format is `stream-json`, not `text`, for one reason: measured,
+`text` prints nothing until a run is nearly over (first output 8.1s into an
+8.9s run), so there is no way to tell a wedged agent from a busy one. The
+streaming format emits `system`/`thinking_tokens` events throughout, which is
+what the idle deadline watches. The final answer comes from the `result` event,
+falling back to assistant text blocks and then to raw stdout, so a schema change
+degrades instead of losing the output. `options.output_format: text` opts back
+out — at the cost of stall detection, which is why it is not the default.
 
 The permission modes this adapter accepts are read from the CLI's own
 `--permission-mode` help text, exactly like the model aliases, so
