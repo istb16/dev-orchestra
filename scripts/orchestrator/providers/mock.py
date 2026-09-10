@@ -13,7 +13,7 @@ import os
 import time
 from typing import Any, Dict, List, Optional, Sequence
 
-from .base import ModelCandidate, ModelResolutionError, Provider, ResolvedModel, RunResult
+from .base import ModelCandidate, ModelResolutionError, Provider, ResolvedModel, RunResult, Usage
 
 #: Asking for this family raises, so tests can exercise the resolution-failure
 #: path on a machine with no provider CLI installed at all.
@@ -79,7 +79,34 @@ class MockProvider(Provider):
         command = self.build_command(mode, resolved, cwd, extra_args, options)
         if self.fail or _should_fail(prompt):
             return RunResult(False, 1, "", "mock failure", command, time.time() - started, resolved)
-        return RunResult(True, 0, _canned_response(mode), "", command, time.time() - started, resolved)
+        response = _canned_response(mode)
+        return RunResult(
+            True,
+            0,
+            response,
+            "",
+            command,
+            time.time() - started,
+            resolved,
+            usage=_mock_usage(prompt, response),
+        )
+
+
+def _mock_usage(prompt: str, response: str) -> Usage:
+    """Deterministic counts derived from the text, so totals are assertable.
+
+    Four characters per token is only a rule of thumb, which is exactly why no
+    real adapter estimates: here the number just has to be reproducible.
+    """
+    return Usage(
+        input_tokens=max(len(prompt) // 4, 1),
+        output_tokens=max(len(response) // 4, 1),
+        cache_read_tokens=0,
+        cache_write_tokens=0,
+        cost_usd=0.0,
+        source="mock",
+        prompt_chars=len(prompt),
+    )
 
 
 def _should_fail(prompt: str) -> bool:

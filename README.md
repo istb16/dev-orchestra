@@ -421,6 +421,47 @@ dev-orchestra review run
 The same split works for a spec review or a dependency audit: one model digests,
 another designs, two more disagree about the result.
 
+## What a run costs
+
+Every delegated run records what it spent, so the question "where did the
+tokens go" has an answer other than a guess:
+
+```bash
+dev-orchestra tokens show
+```
+
+```
+  stage              meas.     input    output     total    billed      cost
+  architect            1/1     8,200     2,100         -    11,500   $0.0421
+  implementer          1/1    21,300     8,400         -    31,900   $0.2140
+  review               4/4    58,000     6,400         -    64,400   $0.3900
+  ALL                  6/6    87,500    16,900         -   107,800   $0.6461
+
+Per reviewer:
+  claude-general       2/2    29,100     3,300         -    32,400   $0.1950
+  codex-general        2/2    28,900     3,100         -    32,000   $0.1950
+```
+
+`status` and `summary` show the total too. Read it with three things in mind:
+
+- **The numbers come from the CLIs, not from here.** Claude Code reports input,
+  output, cache-read and cache-write counts plus a price. Codex prints one
+  total. Nothing is estimated: an estimate from the prompt alone would miss the
+  child CLI's system prompt, tool schemas and the files it chose to read, which
+  are most of the input. `meas.` is how many of that stage's runs reported
+  anything, and when some did not, the output says the totals are a *floor*.
+- **`billed` leaves cache reads out.** They cost about a tenth of fresh input,
+  so including them would rank a well-cached stage above an expensive one. Use
+  `cost` for money.
+- **Reviewers are counted one by one** because review is the most duplicated
+  cost in the pipeline: the same diff, once per reviewer, once per round. The
+  per-reviewer rows are what tell you whether a third reviewer is earning its
+  keep.
+
+This is accounting, not a budget. Nothing refuses a run over what it would
+cost -- that is what the attempt budgets under `budget` are for, and the two are
+separate commands so neither is mistaken for the other.
+
 ## Configuration
 
 Precedence: **project → global → built-in defaults**.
