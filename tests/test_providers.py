@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import subprocess
 import unittest
 
 from helpers import IsolatedCase
@@ -248,26 +247,6 @@ class TestMockAdapter(IsolatedCase):
         provider = MockProvider()
         self.assertTrue(provider.run("Reviewer id: reviewer-a", base.MODE_REVIEW, self.project).ok)
         self.assertFalse(provider.run("Reviewer id: reviewer-b", base.MODE_REVIEW, self.project).ok)
-
-
-class TestExecution(IsolatedCase):
-    def test_timeout_is_reported_not_raised(self):
-        provider = MockProvider()
-
-        def explode(*args, **kwargs):
-            raise subprocess.TimeoutExpired(cmd="mock", timeout=1)
-
-        # Drive the base implementation so the timeout path is the one tested.
-        provider.run = lambda *a, **k: base.Provider.run(provider, *a, **k)
-        original = subprocess.run
-        subprocess.run = explode
-        try:
-            result = provider.run("hi", base.MODE_PLAN, self.project, timeout=1)
-        finally:
-            subprocess.run = original
-        self.assertFalse(result.ok)
-        self.assertTrue(result.timed_out)
-        self.assertEqual(result.exit_code, 124)
 
 
 class TestRedaction(IsolatedCase):

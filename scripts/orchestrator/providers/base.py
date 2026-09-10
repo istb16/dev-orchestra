@@ -11,8 +11,9 @@ import os
 import re
 import shutil
 import subprocess
-import time
 from typing import Any, Dict, List, Optional, Sequence
+
+from .. import execution
 
 # Execution modes shared by every adapter.
 MODE_PLAN = "plan"  # investigate / design, must not modify files
@@ -150,6 +151,9 @@ class RunResult:
         duration: float,
         resolved: Optional[ResolvedModel] = None,
         timed_out: bool = False,
+        stalled: bool = False,
+        idle_for: float = 0.0,
+        orphans_possible: bool = False,
     ) -> None:
         self.ok = ok
         self.exit_code = exit_code
@@ -158,13 +162,22 @@ class RunResult:
         self.command = list(command)
         self.duration = duration
         self.resolved = resolved
+        #: The total deadline was reached.
         self.timed_out = timed_out
+        #: No output for the idle deadline -- the agent looks wedged, which is
+        #: worth saying differently from "it took too long".
+        self.stalled = stalled
+        self.idle_for = idle_for
+        self.orphans_possible = orphans_possible
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "ok": self.ok,
             "exit_code": self.exit_code,
             "timed_out": self.timed_out,
+            "stalled": self.stalled,
+            "idle_for_seconds": round(self.idle_for, 2),
+            "orphans_possible": self.orphans_possible,
             "duration_seconds": round(self.duration, 2),
             "command": self.command,
             "model": self.resolved.to_dict() if self.resolved else None,
@@ -182,6 +195,11 @@ class Provider:
     #: as families/aliases -- never dated snapshot ids.
     fallback_models: Sequence[ModelCandidate] = ()
     fallback_updated = ""
+
+    #: True only when a healthy run of the command this adapter builds emits
+    #: output *while working*. Measured, not assumed: it decides whether an
+    #: idle-output deadline can distinguish a wedged agent from a busy one.
+    streams_progress = False
 
     def __init__(self, executable: Optional[str] = None) -> None:
         if executable:
@@ -309,6 +327,7 @@ class Provider:
         extra_args: Sequence[str] = (),
         env: Optional[Dict[str, str]] = None,
         options: Optional[Dict[str, Any]] = None,
+        idle_timeout: Optional[float] = None,
     ) -> RunResult:
         if mode not in MODES:
             raise ValueError("unknown mode %r" % mode)
@@ -318,41 +337,47 @@ class Provider:
 
         resolved = self.resolve_model(model_spec)
         command = self.build_command(mode, resolved, cwd, extra_args, options)
-        started = time.time()
-        try:
-            completed = subprocess.run(
-                command,
-                cwd=cwd,
-                input=prompt,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=timeout,
-                env=self._child_env(env),
-            )
-        except subprocess.TimeoutExpired:
-            return RunResult(
-                False,
-                124,
-                "",
-                "timed out after %ss" % timeout,
-                command,
-                time.time() - started,
-                resolved,
-                True,
-            )
-        except OSError as exc:
-            return RunResult(False, 126, "", str(exc), command, time.time() - started, resolved)
-        return RunResult(
-            completed.returncode == 0,
-            completed.returncode,
-            completed.stdout or "",
-            completed.stderr or "",
+        outcome = execution.execute(
             command,
-            time.time() - started,
-            resolved,
+            cwd=cwd,
+            prompt=prompt,
+            timeout=timeout,
+            idle_timeout=self.idle_timeout(options, idle_timeout),
+            env=self._child_env(env),
         )
+        stdout, stderr = self.postprocess(outcome, mode)
+        return RunResult(
+            outcome.ok,
+            outcome.exit_code,
+            stdout,
+            stderr,
+            command,
+            outcome.duration,
+            resolved,
+            timed_out=outcome.timed_out,
+            stalled=outcome.stalled,
+            idle_for=outcome.idle_for,
+            orphans_possible=outcome.orphans_possible,
+        )
+
+    def idle_timeout(
+        self, options: Optional[Dict[str, Any]] = None, requested: Optional[float] = None
+    ) -> Optional[float]:
+        """The no-output deadline, or None where this CLI cannot support one.
+
+        An adapter must only return a number when a healthy run of the command
+        it builds actually emits progress. Claiming otherwise turns a slow but
+        working agent into a killed one.
+        """
+        if not self.streams_progress:
+            return None
+        if isinstance(options, dict) and options.get("idle_timeout") is not None:
+            return float(options["idle_timeout"])
+        return requested
+
+    def postprocess(self, outcome: "execution.ExecOutcome", mode: str) -> "tuple[str, str]":
+        """Turn raw child output into (stdout, stderr) for the caller."""
+        return outcome.stdout, outcome.stderr
 
     def _child_env(self, overrides: Optional[Dict[str, str]]) -> Dict[str, str]:
         """Inherit the user's environment so existing CLI auth keeps working."""

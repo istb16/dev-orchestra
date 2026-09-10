@@ -72,6 +72,7 @@ class MockProvider(Provider):
         extra_args: Sequence[str] = (),
         env: Optional[Dict[str, str]] = None,
         options: Optional[Dict[str, Any]] = None,
+        idle_timeout: Optional[float] = None,
     ) -> RunResult:
         started = time.time()
         resolved = self.resolve_model(model_spec)
