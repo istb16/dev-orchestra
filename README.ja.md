@@ -1,0 +1,422 @@
+# AI Development Orchestrator
+
+[English](README.md) | **日本語**
+
+**複数のAIコーディングCLI** を組み合わせてソフトウェア開発フロー全体をオーケストレーションする、汎用の
+[Agent Skill](https://code.claude.com/docs/en/skills) です。あるモデルで設計し、別のモデルで実装し、
+完了とみなす前に複数のモデルが独立してレビューします。
+
+Rails、React、TypeScript、Python、Go など、任意のコードベースで動作します。プロジェクト固有の前提は
+一切含みません。
+
+```
+リクエスト → 調査/設計 → 実装 → テスト
+           → 独立レビュー → トリアージ → 修正 → 再テスト → 最終報告
+```
+
+全工程が必須ではありません。オーケストレーターがリクエストを判断し、**必要な工程だけ**を実行します。
+typo修正なら編集だけ、スキーマ変更ならフルパイプライン。
+
+---
+
+## なぜ作るのか
+
+単一モデルの開発ループには2つの盲点があります。
+
+**モデルは自分の成果物のレビューが苦手です。** バグを生んだ前提をそのまま共有しているからです。
+互いの意見を知らない状態で同じdiffを見た2〜3の**異なる**モデルは、有用な形で食い違います。
+その食い違いこそが本物のバグのありかです。
+
+**生のレビュー出力は修正リストではありません。** 複数のレビュアーは互いに重複し、一部はfalse positiveで、
+それを全部fixerに丸投げすると無駄な変更が量産されます。そこで findings は機械的に重複統合したうえで、
+オーケストレーターが**トリアージ**し、accepted になったものだけが fixer に届きます。
+
+来年も動き続けるために、2つの設計制約を置いています。
+
+- **設定ファイルに日付付きモデルIDを一切書かない。** 設定するのは *family*（`opus`、`fable`、
+  `recommended-coding`）と `version: latest` だけで、実際にインストールされているCLIに対して
+  provider adapter が実行時に解決します。
+- **モデル名を推測しない。** 検証できないモデルに対して adapter は「それらしい文字列」をCLIに渡さず、
+  エラーで停止します。
+
+## アーキテクチャ
+
+```mermaid
+flowchart LR
+    U[ユーザー] --> O[Orchestrator]
+    O --> A[Architect<br/>read-only]
+    A --> I[Implementer]
+    I --> T[テスト]
+    T --> S[[スナップショット凍結]]
+    S --> R1[Reviewer 1]
+    S --> R2[Reviewer 2]
+    S --> R3[Reviewer N]
+    R1 --> C[統合 + 重複排除]
+    R2 --> C
+    R3 --> C
+    C --> TR[トリアージ]
+    TR -->|accepted のみ| F[Review Fixer]
+    F --> T2[再テスト] --> REP[最終報告]
+```
+
+| 要素 | 場所 | 役割 |
+| --- | --- | --- |
+| Skill | `SKILL.md` | 何をいつ実行するか、何をしてはいけないか |
+| CLI | `scripts/ai_orchestrator.py` | エージェントが呼ぶ決定的な操作 |
+| Provider | `scripts/orchestrator/providers/` | CLIのフラグとモデル名を知る唯一の場所 |
+| References | `references/` | 詳細。必要になったときだけ読む |
+
+詳細版は `references/architecture.md`（英語）にあります。
+
+## 必要なもの
+
+- **Python 3.9以上** — 標準ライブラリのみ。pip install 不要。
+  （PyYAML があれば使いますが、設定形式は内蔵パーサでカバーしています。）
+- **git** — レビュースナップショットに必要です。
+- **サポート対象CLIのいずれか**（認証済みであること）:
+  - [Claude Code](https://claude.com/claude-code) (`claude`)
+  - [Codex CLI](https://developers.openai.com/codex/cli) (`codex`)
+
+このSkillは**既存のCLIログインをそのまま使います**。APIキーを要求せず、認証情報を保存せず、出力もしません。
+
+## インストール
+
+```bash
+git clone https://github.com/<owner>/ai-dev-orchestrator.git
+cd ai-dev-orchestrator
+```
+
+### Claude Code の場合
+
+```bash
+./install/install.sh              # ~/.claude/skills/ にシンボリックリンク
+```
+
+```powershell
+.\install\install.ps1             # Windows
+```
+
+インストーラはこのリポジトリをスキルディレクトリにリンク（`--copy` でコピー）するので、`git pull`
+だけでその場でアップグレードされます。`--project <path>` で特定リポジトリの `.claude/skills/` にだけ
+入れることもできます。その場合、対象リポジトリの `.git/info/exclude` にもパスを追記するので、
+**相手のリポジトリの `git status` を汚しません**（これがないと `git add -A` が
+"does not have a commit checked out" で失敗します）。
+
+Windows では Git Bash から `install.sh` を実行せず、`install.ps1` を使ってください。Git Bash は
+MSYS形式のパス（`/c/...`）を書き込みますが、ネイティブPythonはそれを開けません。シンボリックリンクには
+開発者モードか管理者権限が必要で、作れない場合はインストーラが自動でコピーにフォールバックします。
+
+### Codex CLI の場合
+
+Codex にはスキルディレクトリの仕組みがないため、インストーラは `AGENTS.md` にマーカー付きの短い
+ポインタブロックを追記します。
+
+```bash
+./install/install.sh --codex                    # ~/.codex/AGENTS.md
+./install/install.sh --codex --project /path    # <project>/AGENTS.md
+```
+
+`SKILL.md` が単一の情報源であり続けます。ポインタは参照するだけで、内容を複製しません。
+
+### 任意: CLIをPATHに通す
+
+```bash
+export PATH="$PWD/bin:$PATH"      # どこからでも `ai-orchestrator doctor` が使えます
+```
+
+### 動作確認
+
+```bash
+./bin/ai-orchestrator doctor
+```
+
+## 初期セットアップ
+
+初回実行時、設定が無いことを検知してウィザードが起動します。
+
+```
+AI Development Orchestrator setup
+
+Detected CLIs:
+  claude:  installed
+  codex:   installed
+
+1. Orchestrator
+   CLI:
+     1) Claude Code (2.1.x) (recommended)
+     2) Codex CLI (0.154.x)
+   Model:
+     1) sonnet [cli-help] (recommended)
+     2) opus [cli-help]
+     3) fable [cli-help]
+     4) custom (type a family or exact model id)
+...
+5. External Reviewers
+   How many reviewers? [2]
+   reviewer #1  CLI / Model / Review role / id
+   reviewer #2  CLI / Model / Review role / id
+   Add another reviewer? [y/N]
+
+Configuration
+  Orchestrator    claude / sonnet / latest
+  Architect       claude / fable  / latest
+  Implementer     claude / opus   / latest
+  Review Fixer    claude / opus   / latest
+  Reviews
+    1. claude / opus / latest / general / claude-general
+    2. codex / recommended-coding / latest / general / codex-general
+
+Save configuration? [Y/n]
+```
+
+対話なしで推奨値を書き込む場合:
+
+```bash
+ai-orchestrator config setup --defaults
+```
+
+## 使い方
+
+普段どおり自然言語でエージェントに話しかけてください。次のようなリクエストで起動します。
+
+- 「この issue を設定済みのワークフローで実装して」
+- 「チェックアウトのタイムアウトを調査して直して」
+- 「今の変更を全レビュアーでレビューして」
+- 「このブランチを main と比較してマルチモデルレビューして」
+- 「Codex の security reviewer を追加して」
+- 「実装は最新の Claude Opus を使って」
+
+配管部分は直接叩くこともできます。
+
+```bash
+ai-orchestrator doctor
+ai-orchestrator review snapshot --base main
+ai-orchestrator review run
+ai-orchestrator review show
+ai-orchestrator review triage F1 --status accepted --note "確認済み"
+ai-orchestrator review fix-brief --output fix-brief.md
+```
+
+全コマンドは `references/cli.md`（英語）を参照してください。
+
+## 設定
+
+優先順位: **プロジェクト → グローバル → 内蔵デフォルト**。
+
+| レイヤ | パス |
+| --- | --- |
+| プロジェクト | `<repo>/.ai-orchestrator.yaml` |
+| グローバル (Linux/macOS) | `~/.config/ai-dev-orchestrator/config.yaml` |
+| グローバル (Windows) | `%APPDATA%\ai-dev-orchestrator\config.yaml` |
+
+```yaml
+version: 1
+orchestrator:  {provider: claude, model: {family: sonnet, version: latest}}
+architect:     {provider: claude, model: {family: fable,  version: latest}}
+implementer:   {provider: claude, model: {family: opus,   version: latest}}
+review_fixer:  {provider: claude, model: {family: opus,   version: latest}}
+reviewers:
+  - {id: claude-general, provider: claude, model: {family: opus, version: latest}, role: general}
+  - {id: codex-general,  provider: codex,  model: {family: recommended-coding, version: latest}, role: general}
+review:
+  max_review_iterations: 2
+  parallel: true
+```
+
+（実ファイルはブロック形式です。`examples/` を参照。）
+
+```bash
+ai-orchestrator config show
+ai-orchestrator config set implementer.model.family sonnet
+ai-orchestrator config set --scope project architect.provider codex
+ai-orchestrator config reset
+```
+
+マッピングはキー単位でマージされますが、**リストは丸ごと置き換わります**。プロジェクト設定で
+`reviewers` を定義すると、そのリポジトリのレビュー体制を完全に上書きできます。
+
+スキーマ全体は `references/configuration.md`（英語）にあります。
+
+## モデル選択
+
+設定に保存するのは **family と方針** だけで、スナップショットは保存しません。
+
+```yaml
+model: {family: opus, version: latest}                        # 最新のOpusに追随
+model: {family: opus, version: pinned, id: claude-opus-5}     # 意図的に固定
+model: {family: default, version: latest}                     # CLIに任せる
+```
+
+解決の優先順位:
+
+1. インストール済みCLIが提示する情報 — Claude は `claude --help` の alias、Codex は
+   `$CODEX_HOME/config.toml` のデフォルト
+2. provider の現行 alias
+3. **family のみ**を並べた内蔵フォールバック（最終確認日付き）
+
+どれでも検証できない場合、理由を示して停止します。推測は行いません。
+
+```bash
+ai-orchestrator model list
+```
+
+```
+claude: installed
+  fable    family=fable    source=cli-help
+  opus     family=opus     source=cli-help
+  sonnet   family=sonnet   source=cli-help
+codex: installed
+  CLI default (recommended coding model)  family=recommended-coding  source=cli-default
+```
+
+Codex はモデル一覧を公開していないため、`recommended-coding` は **`-m` を付けない**ことで解決します。
+CLI自身の現行デフォルトが、定義上いちばん新しいからです。
+
+## レビュアー
+
+0個以上（2個以上を推奨）。それぞれが独立・read-only で、同一の凍結済みdiffをレビューします。
+
+```bash
+ai-orchestrator reviewer list
+ai-orchestrator reviewer add --provider codex --role security
+ai-orchestrator reviewer add --provider claude --role database
+ai-orchestrator reviewer set 2 --role performance
+ai-orchestrator reviewer remove codex-security
+```
+
+組み込みロール: `general`、`security`、`performance`、`test`、`architecture`、`database`、
+`frontend`、`backend`。任意のカスタムロールも指定できます。
+
+全レビュアーの findings はパースされ、重複統合され（同一箇所＋類似テキスト）、深刻度順に並べられ、
+修正前に必ずトリアージされます。詳細は `references/reviews.md`（英語）。
+
+## ワークフロー例
+
+**API変更を伴う機能追加**
+
+> 「orders エンドポイントにページネーションを追加して」
+
+設計 (Fable) → 実装 (Opus) → テスト → 独立レビュー2件 → トリアージ（2件accepted、1件rejected）
+→ 修正 (Opus) → 再テスト → 報告。
+
+**typo修正**
+
+> 「README の見出しの typo を直して」
+
+編集1回のみ。設計もレビューもしません。省略したことは報告に明記されます。
+
+**レビューのみ**
+
+> 「このブランチの main 以降の変更を全レビュアーでレビューして」
+
+```bash
+ai-orchestrator review snapshot --base main
+ai-orchestrator review run
+ai-orchestrator review show
+```
+
+**低コストな動作確認** — レビュアーをオフラインの mock provider に差し替えます。
+
+```bash
+ai-orchestrator reviewer add --provider mock --id dry --role general
+AI_ORCHESTRATOR_MOCK_RESPONSE=NO_FINDINGS ai-orchestrator review run --only dry
+```
+
+## トラブルシューティング
+
+| 症状 | 原因と対処 |
+| --- | --- |
+| `Source: built-in defaults` | 設定ファイルが未作成。`ai-orchestrator config setup`。 |
+| `codex: … cannot be verified` | Codex が公開していない family。`recommended-coding` を使うか、正確なIDをpinする。 |
+| `claude: cannot resolve model family 'x'` | 提示されていない alias。`ai-orchestrator model list` で確認。 |
+| `Installed: no` | CLIがPATHにない。自分でインストールしてください（Skillは勝手に入れません）。 |
+| 委譲先CLIの `Failed to authenticate` | そのCLIで直接ログイン（`claude`、`codex login`）。`doctor` は認証情報の**存在**のみを見ており、有効性は検証しません。 |
+| `review snapshot` が empty | `HEAD` との差分がない。`--base <rev>` を使うか、実装工程が動いたか確認。 |
+| `not a git repository` | スナップショットにはgitが必要。`git init` するか、コミット済みリポジトリで実行。 |
+| レビュアーが1件失敗 | 想定内で継続します。理由は `.ai/reviews/consolidated.md` に記録されます。 |
+| レビューが終わらない | `review.timeout_seconds` を下げるか、`--sequential` でどのレビュアーが止まっているか特定。 |
+| 設定のパースエラー | 内蔵YAMLパーサは anchor、alias、ブロックスカラーを拒否します。簡素化するか PyYAML を入れてください。 |
+
+`ai-orchestrator doctor --json` で同じ情報を機械可読な形で取得できます。
+
+## セキュリティ
+
+- **認証情報を要求も保存も出力もしません。** 環境を継承し、CLI側の既存認証に依存します。
+- `doctor` が報告するのは認証情報の**存在**（`present` / `unknown`）だけで、値ではありません。
+- 取得した stdout/stderr は、`.ai/` や画面に出る前に認証情報らしき文字列を除去するredactorを通ります。
+- レビュアーは read-only で動作します（Claude は `--permission-mode plan` + 編集ツール禁止、
+  Codex は `-s read-only`）。
+- 成果物は `.ai/` に隔離され、既定で自分自身をgit管理外にします。
+- Skill自身はネットワークにアクセスしません。通信するのはCLIです。
+
+セキュリティ上の問題を見つけた場合は `CONTRIBUTING.md` を参照してください（公開issueは立てないでください）。
+
+## 対応プラットフォーム
+
+| プラットフォーム | 状態 |
+| --- | --- |
+| Linux | 対応・CI検証済み |
+| macOS | 対応・CI検証済み |
+| Windows（ネイティブ / PowerShell） | 対応・CI検証済み。`bin\ai-orchestrator.ps1` を使用。 |
+| Windows（WSL） | 対応 — Linuxとして扱ってください |
+
+WSLは**必須ではありません**。中身は純粋なPythonと`git`だけで、シェルラッパーは利便性のためのものです。
+
+## アップグレード
+
+```bash
+cd /path/to/ai-dev-orchestrator
+git pull
+./bin/ai-orchestrator doctor
+```
+
+シンボリックリンク導入なら即座に反映されます。`--copy` の場合はインストーラを再実行してください。
+設定はメジャーバージョン内で前方互換です。対応が必要な変更は `CHANGELOG.md` に明記します。
+
+## アンインストール
+
+```bash
+./install/uninstall.sh            # スキルのリンクと AGENTS.md のブロックを削除
+```
+
+```powershell
+.\install\uninstall.ps1
+```
+
+設定は残ります。設定も消す場合:
+
+```bash
+ai-orchestrator config reset --scope global --delete
+rm -rf .ai                        # 成果物も消す場合、プロジェクトごとに
+```
+
+## バージョニングと変更履歴
+
+[セマンティックバージョニング](https://semver.org/lang/ja/)に従います。公開APIとみなすのは、
+設定スキーマ、CLIのコマンドとフラグ、`.ai/` の成果物フォーマットです。
+
+- **major** — 設定スキーマまたはCLIの破壊的変更
+- **minor** — コマンド、provider、ロール、フィールドの追加
+- **patch** — 修正とドキュメント
+
+変更は `CHANGELOG.md` の `Unreleased` に追記し、リリース時に確定させます
+（[Keep a Changelog](https://keepachangelog.com/ja/1.1.0/)）。
+
+## コントリビュート
+
+issue と pull request を歓迎します。詳細は `CONTRIBUTING.md`（英語）を参照してください。
+とくに、**CLIがフラグやモデル名を変更したときの adapter 修正**が最も価値の高い貢献です。
+
+```bash
+python -m unittest discover -s tests -t tests
+python scripts/validate_skill.py
+```
+
+## ドキュメントの言語方針
+
+`SKILL.md` と `references/` は英語のみです。これはAIモデルが読むファイルであり、英語のほうが
+トリガ精度とトークン効率の面で有利なためです。人間向けの入口である README は日英両方を用意しています。
+
+## ライセンス
+
+MIT — `LICENSE` を参照してください。

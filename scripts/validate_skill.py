@@ -24,6 +24,7 @@ REQUIRED_FRONTMATTER = ("name", "description")
 REQUIRED_FILES = (
     "SKILL.md",
     "README.md",
+    "README.ja.md",
     "LICENSE",
     "CONTRIBUTING.md",
     "CHANGELOG.md",
@@ -129,6 +130,18 @@ def check() -> List[str]:
                 )
         if declared not in _read("CHANGELOG.md"):
             problems.append("CHANGELOG.md has no entry for version %s" % declared)
+
+    # The translated README must not silently drift out of the doc set.
+    try:
+        english, japanese = _read("README.md"), _read("README.ja.md")
+    except OSError:
+        english = japanese = ""
+    if english and japanese:
+        if "README.ja.md" not in english or "README.md" not in japanese:
+            problems.append("README.md and README.ja.md must link to each other")
+        for anchor in ("mermaid", "ai-orchestrator config setup", "MIT"):
+            if anchor not in japanese:
+                problems.append("README.ja.md is missing %r" % anchor)
 
     # No dated model snapshots anywhere in the skill's own defaults.
     for relative in ("scripts/orchestrator/config.py", "examples/config.example.yaml"):

@@ -1,5 +1,7 @@
 # AI Development Orchestrator
 
+**English** | [日本語](README.ja.md)
+
 A general-purpose [Agent Skill](https://code.claude.com/docs/en/skills) that
 orchestrates a full software-development workflow across **multiple AI coding
 CLIs** — design with one model, implement with another, then have several
@@ -422,6 +424,13 @@ contribution.
 python -m unittest discover -s tests -t tests
 python scripts/validate_skill.py
 ```
+
+## Documentation language
+
+`SKILL.md` and `references/` are English only: those files are read by AI
+models, where English gives better trigger accuracy and token efficiency. The
+README, which is the human entry point, is available in
+[English](README.md) and [日本語](README.ja.md).
 
 ## License
 
