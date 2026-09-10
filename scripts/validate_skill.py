@@ -36,6 +36,7 @@ REQUIRED_FILES = (
     "references/workflow.md",
     "references/reviews.md",
     "references/cli.md",
+    "references/limits.md",
     "examples/config.example.yaml",
     "install/install.sh",
     "install/install.ps1",

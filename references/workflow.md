@@ -205,3 +205,6 @@ anything left unresolved.
 | Implementer or fixer fails | Stop the pipeline and report |
 | Snapshot is empty | There is nothing to review — check whether the implementation actually wrote anything |
 | Tests fail after a fix | Report the failure with output; do not keep fixing blindly |
+| A run comes back `stalled` | It produced no output until killed. Report it as a failure, and check for orphan processes if warned about them |
+| A command exits 3 | A budget is spent. Report what is unresolved; do not retry, and do not reach for `--force` |
+| `status` says `stop-and-report` | Stop. It has already weighed budgets, stalls and open findings |

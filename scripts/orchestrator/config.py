@@ -89,6 +89,19 @@ def default_config() -> Dict[str, Any]:
             "parallel": True,
             "re_review_severities": ["critical", "high"],
             "timeout_seconds": 1800,
+            # A wedged agent stops producing output while a slow one keeps
+            # ticking, so this catches a stall in minutes instead of half an
+            # hour -- but only for providers that stream progress at all.
+            "idle_timeout_seconds": 300,
+        },
+        "budgets": {
+            "architect": 3,
+            "implementer": 5,
+            "review_fixer": 4,
+            "test": 8,
+            "total_delegated_runs": 40,
+            "max_runtime_seconds": 7200,
+            "max_repeats_without_progress": 2,
         },
         "workspace": {
             "dir": ".ai",
@@ -312,6 +325,20 @@ def validate(data: Dict[str, Any], known_providers: Optional[List[str]] = None) 
             timeout = review.get("timeout_seconds", 1800)
             if not isinstance(timeout, int) or isinstance(timeout, bool) or timeout <= 0:
                 problems.append("review.timeout_seconds: must be a positive integer")
+            idle = review.get("idle_timeout_seconds")
+            if idle is not None and (not isinstance(idle, int) or isinstance(idle, bool) or idle <= 0):
+                problems.append("review.idle_timeout_seconds: must be a positive integer or null")
+
+    budgets = data.get("budgets")
+    if budgets is not None:
+        if not isinstance(budgets, dict):
+            problems.append("budgets: must be a mapping")
+        else:
+            for key, value in budgets.items():
+                if value is None:
+                    continue
+                if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                    problems.append("budgets.%s: must be a non-negative integer or null" % key)
     return problems
 
 

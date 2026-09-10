@@ -10,6 +10,38 @@ The public surface covered by that promise is: the configuration schema, the
 
 ## [Unreleased]
 
+### Added
+
+- **Stall detection and loop budgets.** Two failure modes were effectively
+  undefended: a delegated agent that stops responding without anyone noticing,
+  and a loop (review→fix→re-review, or the quieter fix→test→fix) that never
+  ends. See `references/limits.md`.
+  - Runs now go through a new execution layer that gives each child its own
+    process group and kills the whole group on a breach, so `claude`'s and
+    `codex`'s own children are not left as orphans -- and it can never block on
+    a pipe a survivor still holds, which `subprocess.run` could.
+  - A second, much shorter **idle deadline** (`review.idle_timeout_seconds`,
+    300s) treats a run that has produced no output as wedged rather than slow,
+    catching a stall in minutes instead of at the 1800s cap. It is applied only
+    to providers measured to stream progress: `codex exec` emits output 0.4s
+    into an 11.5s run, while `claude -p --output-format text` is silent until
+    8.1s of an 8.9s run, so an idle deadline there would kill healthy runs.
+  - Stages are recorded **before** they start, with a deadline and a pid, so a
+    stall is visible from outside the blocked process and a stage that died
+    without recording an outcome is detected and marked `abandoned` instead of
+    leaving no trace.
+  - New `budgets` config section, enforced by the actions themselves with exit
+    code 3: attempts per stage, total delegated runs, and wall-clock runtime.
+    `review run` now *refuses* a round past `review.max_review_iterations`
+    rather than having `review status` advise against it.
+  - **No-progress detection**: `progress record` (and reviews, automatically)
+    register a signature, and the same outcome twice in a row refuses the next
+    attempt -- the last fix changed nothing, which is a better stop signal than
+    a budget because it arrives sooner.
+  - New `dev-orchestra status`: one `continue` / `stop-and-report` verdict over
+    budgets, stalls and open findings.
+
+
 ### Fixed
 
 A self-review of the first release found eight issues; four of them were the

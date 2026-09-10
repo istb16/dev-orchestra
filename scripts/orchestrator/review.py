@@ -269,8 +269,9 @@ class ReviewerRun:
         findings: int = 0,
     ) -> None:
         self.reviewer = reviewer
-        # ok | failed | unparsed. "unparsed" means the CLI succeeded but its
-        # report could not be read, which is a failed review, never a clean one.
+        # ok | failed | stalled | unparsed. Only "ok" counts as a delivered
+        # review; "unparsed" means the CLI succeeded but its report could not
+        # be read, which is a failed review and never a clean one.
         self.status = status
         self.report_path = report_path
         self.error = error
@@ -299,6 +300,7 @@ def run_reviews(
     timeout: int = 1800,
     extra_context: str = "",
     template: Optional[str] = None,
+    idle_timeout: Optional[float] = None,
 ) -> List[ReviewerRun]:
     """Run every configured reviewer against the frozen snapshot."""
     if not reviewers:
@@ -325,6 +327,7 @@ def run_reviews(
                 reviewer.get("model"),
                 timeout=timeout,
                 options=reviewer.get("options"),
+                idle_timeout=idle_timeout,
             )
         except ModelResolutionError as exc:
             return ReviewerRun(reviewer, "failed", error=str(exc))
@@ -334,10 +337,17 @@ def run_reviews(
         model_display = result.resolved.display if result.resolved else ""
         if not result.ok:
             detail = (result.stderr or result.stdout or "").strip().splitlines()
+            if result.stalled:
+                status, error = "stalled", "no output for %.0fs; treated as wedged" % result.idle_for
+            elif result.timed_out:
+                status, error = "stalled", "hit its %.0fs deadline" % result.duration
+            else:
+                status = "failed"
+                error = detail[-1] if detail else "exit code %s" % result.exit_code
             return ReviewerRun(
                 reviewer,
-                "failed",
-                error=(detail[-1] if detail else "exit code %s" % result.exit_code),
+                status,
+                error=error,
                 model_display=model_display,
                 duration=result.duration,
             )
@@ -885,6 +895,23 @@ def render_consolidation(data: Dict[str, Any]) -> str:
 
 def _note_suffix(note: str) -> str:
     return " (%s)" % note if note else ""
+
+
+def findings_signature(data: Dict[str, Any]) -> str:
+    """A stable fingerprint of a round's outcome.
+
+    Two rounds with the same signature mean the fix changed nothing the
+    reviewers can see, which is a reason to stop that arrives sooner and more
+    accurately than an iteration budget.
+    """
+    keys = sorted(
+        finding.get("key") or finding_key(finding)
+        for finding in data.get("findings", [])
+        if finding.get("triage") not in ("rejected", "duplicate")
+    )
+    if not keys:
+        return "no-findings"
+    return hashlib.sha256("\n".join(keys).encode("utf-8")).hexdigest()[:16]
 
 
 def set_triage(data: Dict[str, Any], finding_id: str, status: str, note: str = "") -> Dict[str, Any]:

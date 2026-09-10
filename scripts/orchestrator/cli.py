@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from . import config as config_mod
 from . import doctor as doctor_mod
+from . import ledger as ledger_mod
 from . import review as review_mod
 from . import wizard as wizard_mod
 from . import workspace as ws
@@ -452,7 +453,30 @@ def cmd_run(args: argparse.Namespace) -> int:
         return 0
 
     prompt = _read_prompt(args)
-    timeout = args.timeout or int(loaded.review_settings().get("timeout_seconds", 1800))
+    settings = loaded.review_settings()
+    timeout = args.timeout or int(settings.get("timeout_seconds", 1800))
+    idle_timeout = args.idle_timeout
+    if idle_timeout is None:
+        idle_timeout = settings.get("idle_timeout_seconds")
+
+    book = _ledger(args, workspace)
+    book.clear_stalls()
+    refusal = _refuse_if_exhausted(book, role, args.force)
+    if refusal is not None:
+        return refusal
+    try:
+        book.consume(role, force=args.force)
+    except ledger_mod.BudgetExhausted as exc:
+        _err(str(exc))
+        return ledger_mod.EXIT_BUDGET_EXHAUSTED
+
+    # Written down before the call, so a stall is visible from outside this
+    # process and survives it dying.
+    token = book.begin(
+        role,
+        {"mode": mode, "provider": provider_name, "command": provider.executable},
+        deadline=timeout,
+    )
     try:
         result = provider.run(
             prompt,
@@ -462,8 +486,10 @@ def cmd_run(args: argparse.Namespace) -> int:
             timeout=timeout,
             extra_args=args.extra or [],
             options=spec.get("options"),
+            idle_timeout=idle_timeout,
         )
     except ModelResolutionError as exc:
+        book.end(token, "failed", {"error": str(exc)})
         _err(str(exc))
         return 2
 
@@ -471,18 +497,29 @@ def cmd_run(args: argparse.Namespace) -> int:
         ws.write_text(args.output, result.stdout)
     else:
         _out(result.stdout)
-    if not result.ok:
+    if result.stalled:
+        _err(
+            "%s produced no output for %.0fs and was treated as stalled (not merely slow)."
+            % (role, result.idle_for)
+        )
+    elif result.timed_out:
+        _err("%s hit its %ss deadline and was killed." % (role, timeout))
+    elif not result.ok:
         _err("%s failed (exit %s): %s" % (role, result.exit_code, result.stderr.strip()[:500]))
+    if result.orphans_possible:
+        _err("warning: %s's process group may have left orphans; check for stray processes." % role)
 
-    workspace.record_event(
-        role,
-        "ok" if result.ok else "failed",
+    book.end(
+        token,
+        "ok" if result.ok else ("stalled" if result.stalled else "failed"),
         {
             "mode": mode,
             "provider": provider_name,
             "model": result.resolved.display if result.resolved else None,
             "model_source": result.resolved.source if result.resolved else None,
             "duration_seconds": round(result.duration, 2),
+            "timed_out": result.timed_out,
+            "stalled": result.stalled,
             "output": args.output,
         },
     )
@@ -495,6 +532,26 @@ def _reviewer_spec(loaded: config_mod.LoadedConfig, selector: str) -> Dict[str, 
 
 
 # --------------------------------------------------------------------------- review
+
+
+def _ledger(args: argparse.Namespace, workspace: Optional[ws.Workspace] = None) -> ledger_mod.Ledger:
+    workspace = workspace or _workspace(args)
+    loaded = config_mod.load(getattr(args, "cwd", None), validate_result=False)
+    return ledger_mod.Ledger(workspace, ledger_mod.budget_settings(loaded.data))
+
+
+def _refuse_if_exhausted(book: ledger_mod.Ledger, stage: str, force: bool) -> Optional[int]:
+    """Stop a loop at the action, not with advice from a query command."""
+    if force:
+        return None
+    reasons = book.check(stage)
+    if not reasons:
+        return None
+    _err("refusing to run %s:" % stage)
+    for reason in reasons:
+        _err("  - %s" % reason)
+    _err("Report what is unresolved instead of retrying, or pass --force to override.")
+    return ledger_mod.EXIT_BUDGET_EXHAUSTED
 
 
 def _iteration(args: argparse.Namespace, workspace: ws.Workspace) -> int:
@@ -559,16 +616,38 @@ def cmd_review_run(args: argparse.Namespace) -> int:
             _err(str(exc))
             return 2
     iteration = _iteration(args, workspace)
+    max_iterations = int(settings.get("max_review_iterations", 2))
+    if iteration > max_iterations and not args.force:
+        _err(
+            "refusing to run review round %d: the budget is %d rounds "
+            "(review.max_review_iterations)." % (iteration, max_iterations)
+        )
+        _err("Report the remaining findings instead of looping, or pass --force to override.")
+        return ledger_mod.EXIT_BUDGET_EXHAUSTED
 
+    book = _ledger(args, workspace)
+    book.clear_stalls()
+    batch_timeout = args.timeout or int(settings.get("timeout_seconds", 1800))
+    token = book.begin(
+        "review",
+        {"iteration": iteration, "reviewers": [str(r.get("id")) for r in reviewers]},
+        deadline=batch_timeout,
+    )
+
+    idle_timeout = args.idle_timeout
+    if idle_timeout is None:
+        idle_timeout = settings.get("idle_timeout_seconds")
     try:
         runs = review_mod.run_reviews(
             reviewers,
             workspace,
             parallel=not args.sequential and bool(settings.get("parallel", True)),
-            timeout=args.timeout or int(settings.get("timeout_seconds", 1800)),
+            timeout=batch_timeout,
             extra_context=args.context or "",
+            idle_timeout=idle_timeout,
         )
     except review_mod.ReviewError as exc:
+        book.end(token, "failed", {"error": str(exc)})
         _err(str(exc))
         return 2
 
@@ -582,7 +661,22 @@ def cmd_review_run(args: argparse.Namespace) -> int:
     data = review_mod.build_consolidation(workspace, _merge_runs(workspace, run_dicts), findings, iteration)
     ws.write_json(workspace.consolidated_json_path, data)
     ws.write_text(workspace.consolidated_md_path, review_mod.render_consolidation(data))
-    workspace.record_event("review", "ok", {"iteration": iteration, "reviewers": run_dicts})
+    repeats = book.register_signature("review", review_mod.findings_signature(data))
+    book.end(
+        token,
+        "ok",
+        {
+            "iteration": iteration,
+            "reviewers": run_dicts,
+            "findings": data["counts"].get("findings_total"),
+            "identical_rounds": repeats,
+        },
+    )
+    if repeats > 1:
+        _err(
+            "note: round %d produced the same findings as the previous round -- "
+            "the last fix changed nothing that the reviewers can see." % iteration
+        )
     for reviewer_id in stale:
         _err("note: %s has no report for this snapshot; its earlier report was ignored" % reviewer_id)
 
@@ -708,6 +802,143 @@ def cmd_review_status(args: argparse.Namespace) -> int:
 
 
 # --------------------------------------------------------------------------- state
+
+
+def cmd_budget_show(args: argparse.Namespace) -> int:
+    book = _ledger(args)
+    summary = book.summary()
+    if args.json:
+        _emit_json(summary)
+        return 0
+    _out("Workflow started: %s" % summary["started_at"])
+    for stage, entry in summary["budgets"].items():
+        _out("  %-14s %d/%d used" % (stage, entry["used"], entry["limit"]))
+    total = summary["total_delegated_runs"]
+    _out("  %-14s %s/%s used" % ("delegated runs", total["used"], total["limit"]))
+    if summary["runtime_remaining_seconds"] is not None:
+        _out("  %-14s %ss left" % ("runtime", summary["runtime_remaining_seconds"]))
+    for stage, repeats in (summary["signatures"] or {}).items():
+        if repeats and int(repeats) > 1:
+            _out("  %-14s same outcome %s times in a row" % (stage, repeats))
+    return 0
+
+
+def cmd_budget_consume(args: argparse.Namespace) -> int:
+    """Claim an attempt at a stage the orchestrator runs itself, such as tests."""
+    book = _ledger(args)
+    try:
+        book.consume(args.stage, force=args.force)
+    except ledger_mod.BudgetExhausted as exc:
+        _err("refusing another %s attempt: %s" % (args.stage, exc))
+        _err("Report what is still failing instead of retrying.")
+        return ledger_mod.EXIT_BUDGET_EXHAUSTED
+    remaining = book.remaining(args.stage)
+    suffix = "" if remaining is None else " (%d left)" % remaining
+    _out("%s attempt recorded%s" % (args.stage, suffix))
+    return 0
+
+
+def cmd_budget_reset(args: argparse.Namespace) -> int:
+    _ledger(args).reset()
+    _out("Budgets reset; this is now a fresh workflow.")
+    return 0
+
+
+def cmd_progress_record(args: argparse.Namespace) -> int:
+    """Record a stage outcome so a loop that achieves nothing can be stopped."""
+    book = _ledger(args)
+    repeats = book.register_signature(args.stage, args.signature)
+    allowed = int(book.settings.get("max_repeats_without_progress") or 0)
+    stop = bool(allowed and repeats >= allowed)
+    if args.json:
+        _emit_json({"stage": args.stage, "repeats": repeats, "stop": stop})
+    elif stop:
+        _out(
+            "%s has produced the same outcome %d times: stop and report, since "
+            "retrying is not making progress." % (args.stage, repeats)
+        )
+    else:
+        _out("%s outcome recorded (seen %d time(s))." % (args.stage, repeats))
+    return 0
+
+
+def cmd_status(args: argparse.Namespace) -> int:
+    """One verdict the orchestrator can act on: continue, or stop and report."""
+    loaded = config_mod.load(args.cwd, validate_result=False)
+    workspace = _workspace(args)
+    book = _ledger(args, workspace)
+    abandoned = book.clear_stalls()
+
+    review_data = ws.read_json(workspace.consolidated_json_path, {}) or {}
+    settings = loaded.review_settings()
+    severities = tuple(settings.get("re_review_severities") or ("critical", "high"))
+    blocking = review_mod.unresolved_blocking(review_data, severities)
+    iteration = int(review_data.get("iteration", 0) or 0)
+    max_iterations = int(settings.get("max_review_iterations", 2))
+    summary = book.summary()
+
+    reasons: List[str] = []
+    if blocking and iteration >= max_iterations:
+        reasons.append(
+            "review budget spent (%d/%d rounds) with %d finding(s) still open"
+            % (iteration, max_iterations, len(blocking))
+        )
+    if int((summary["signatures"] or {}).get("review") or 0) > 1:
+        reasons.append("the last review round found exactly what the previous one found")
+    for stage, entry in summary["budgets"].items():
+        if entry["remaining"] == 0:
+            reasons.append("%s has no attempts left" % stage)
+    total = summary["total_delegated_runs"]
+    if total["limit"] and total["used"] >= int(total["limit"]):
+        reasons.append("no delegated runs left in this workflow")
+    if summary["runtime_remaining_seconds"] == 0:
+        reasons.append("the workflow runtime budget is spent")
+
+    payload = {
+        "verdict": "stop-and-report" if reasons else "continue",
+        "reasons": reasons,
+        "stalls": summary["stalls"],
+        "abandoned_stages": abandoned,
+        "in_flight": summary["in_flight"],
+        "review": {
+            "iteration": iteration,
+            "max_review_iterations": max_iterations,
+            "blocking": [f["id"] for f in blocking],
+            "accepted": len(review_mod.accepted_findings(review_data)),
+        },
+        "budgets": summary["budgets"],
+        "total_delegated_runs": total,
+        "runtime_remaining_seconds": summary["runtime_remaining_seconds"],
+    }
+    if args.json:
+        _emit_json(payload)
+        return 0
+
+    _out("Verdict: %s" % payload["verdict"].upper())
+    for reason in reasons:
+        _out("  - %s" % reason)
+    if summary["stalls"]:
+        _out("")
+        _out("Stalled stages:")
+        for stall in summary["stalls"]:
+            _out(
+                "  %s started %s (%.0fs ago) -- %s"
+                % (stall["stage"], stall["started_at"], stall["elapsed_seconds"], stall["reason"])
+            )
+    if abandoned:
+        _out("")
+        _out("Cleared %d stage(s) whose process is gone: %s" % (len(abandoned), ", ".join(abandoned)))
+    if summary["in_flight"]:
+        _out("")
+        _out("In flight:")
+        for token, entry in summary["in_flight"].items():
+            _out("  %s (%s) since %s" % (entry.get("stage"), token, entry.get("started_at")))
+    _out("")
+    _out(
+        "Review: round %d/%d, %d accepted, %d blocking"
+        % (iteration, max_iterations, payload["review"]["accepted"], len(blocking))
+    )
+    return 0
 
 
 def cmd_state_show(args: argparse.Namespace) -> int:
@@ -893,7 +1124,14 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--prompt-file", default=None, help="path, or - for stdin")
     run_parser.add_argument("--mode", choices=list(MODES), default=None)
     run_parser.add_argument("--output", default=None, help="write the response here instead of stdout")
-    run_parser.add_argument("--timeout", type=int, default=None)
+    run_parser.add_argument("--timeout", type=int, default=None, help="total deadline in seconds")
+    run_parser.add_argument(
+        "--idle-timeout",
+        type=float,
+        default=None,
+        help="treat as stalled after this long with no output (streaming providers only)",
+    )
+    run_parser.add_argument("--force", action="store_true", help="run even though a budget is spent")
     run_parser.add_argument("--print-command", action="store_true", help="print the CLI invocation and exit")
     run_parser.add_argument("--extra", nargs=argparse.REMAINDER, help="extra args passed to the provider CLI")
     run_parser.set_defaults(func=cmd_run)
@@ -920,6 +1158,8 @@ def build_parser() -> argparse.ArgumentParser:
     review_run.add_argument("--context", default=None, help="extra context for reviewers")
     review_run.add_argument("--base", default=None)
     review_run.add_argument("--timeout", type=int, default=None)
+    review_run.add_argument("--idle-timeout", type=float, default=None)
+    review_run.add_argument("--force", action="store_true", help="run even past the review iteration budget")
     review_run.add_argument("--json", action="store_true")
     review_run.set_defaults(func=cmd_review_run)
 
@@ -958,6 +1198,32 @@ def build_parser() -> argparse.ArgumentParser:
     state_record.add_argument("status")
     state_record.add_argument("--detail", nargs="*", default=None, help="key=value pairs")
     state_record.set_defaults(func=cmd_state_record)
+
+    budget_parser = subparsers.add_parser("budget", help="attempt budgets that stop runaway loops")
+    budget_sub = budget_parser.add_subparsers(dest="subcommand", required=True)
+    budget_show = budget_sub.add_parser("show", help="what has been spent")
+    budget_show.add_argument("--json", action="store_true")
+    budget_show.set_defaults(func=cmd_budget_show)
+    budget_consume = budget_sub.add_parser("consume", help="claim an attempt at a stage")
+    budget_consume.add_argument("stage", help="a stage the orchestrator runs itself, e.g. test")
+    budget_consume.add_argument("--force", action="store_true")
+    budget_consume.set_defaults(func=cmd_budget_consume)
+    budget_reset = budget_sub.add_parser("reset", help="start a fresh workflow")
+    budget_reset.set_defaults(func=cmd_budget_reset)
+
+    progress_parser = subparsers.add_parser("progress", help="detect a loop that is going nowhere")
+    progress_sub = progress_parser.add_subparsers(dest="subcommand", required=True)
+    progress_record = progress_sub.add_parser("record", help="record a stage outcome signature")
+    progress_record.add_argument("stage")
+    progress_record.add_argument("--signature", required=True, help="e.g. the failing test summary")
+    progress_record.add_argument("--json", action="store_true")
+    progress_record.set_defaults(func=cmd_progress_record)
+
+    status_parser = subparsers.add_parser(
+        "status", help="continue or stop: budgets, stalls and open findings in one verdict"
+    )
+    status_parser.add_argument("--json", action="store_true")
+    status_parser.set_defaults(func=cmd_status)
 
     summary = subparsers.add_parser("summary", help="print the end-of-run summary")
     summary.add_argument("--json", action="store_true")

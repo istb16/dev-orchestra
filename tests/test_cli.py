@@ -274,6 +274,136 @@ class TestRunCommand(IsolatedCase):
         self.assertIn("NO_FINDINGS", out)
 
 
+class TestBudgetsStopLoops(IsolatedCase):
+    """The guards must refuse, not advise: a query-only budget stops nothing."""
+
+    def setUp(self):
+        super().setUp()
+        run_cli("config", "setup", "--defaults")
+        run_cli("config", "set", "implementer.provider", "mock")
+        run_cli("config", "set", "budgets.test", "2")
+        run_cli("config", "set", "budgets.implementer", "2")
+
+    def test_budget_consume_refuses_once_spent(self):
+        self.assertEqual(run_cli("budget", "consume", "test")[0], 0)
+        self.assertEqual(run_cli("budget", "consume", "test")[0], 0)
+        code, _, err = run_cli("budget", "consume", "test")
+        self.assertEqual(code, 3)
+        self.assertIn("budget of 2", err)
+
+    def test_force_overrides_a_spent_budget(self):
+        run_cli("budget", "consume", "test")
+        run_cli("budget", "consume", "test")
+        self.assertEqual(run_cli("budget", "consume", "test", "--force")[0], 0)
+
+    def test_run_refuses_a_role_whose_budget_is_spent(self):
+        for _ in range(2):
+            self.assertEqual(run_cli("run", "implementer", "--prompt", "go")[0], 0)
+        code, _, err = run_cli("run", "implementer", "--prompt", "go")
+        self.assertEqual(code, 3)
+        self.assertIn("refusing to run implementer", err)
+
+    def test_run_records_its_attempt_in_the_budget(self):
+        run_cli("run", "implementer", "--prompt", "go")
+        payload = json.loads(run_cli("budget", "show", "--json")[1])
+        self.assertEqual(payload["budgets"]["implementer"]["used"], 1)
+
+    def test_budget_reset_starts_a_fresh_workflow(self):
+        run_cli("budget", "consume", "test")
+        run_cli("budget", "reset")
+        payload = json.loads(run_cli("budget", "show", "--json")[1])
+        self.assertEqual(payload["budgets"]["test"]["used"], 0)
+
+    def test_progress_record_reports_a_loop_going_nowhere(self):
+        first = json.loads(run_cli("progress", "record", "test", "--signature", "3 failed", "--json")[1])
+        self.assertFalse(first["stop"])
+        second = json.loads(run_cli("progress", "record", "test", "--signature", "3 failed", "--json")[1])
+        self.assertTrue(second["stop"])
+        self.assertEqual(second["repeats"], 2)
+
+    def test_a_repeated_outcome_then_refuses_the_next_attempt(self):
+        run_cli("progress", "record", "test", "--signature", "same")
+        run_cli("progress", "record", "test", "--signature", "same")
+        code, _, err = run_cli("budget", "consume", "test")
+        self.assertEqual(code, 3)
+        self.assertIn("without progress", err)
+
+    def test_a_changed_outcome_keeps_the_loop_open(self):
+        run_cli("progress", "record", "test", "--signature", "3 failed")
+        run_cli("progress", "record", "test", "--signature", "1 failed")
+        self.assertEqual(run_cli("budget", "consume", "test")[0], 0)
+
+
+class TestStatusVerdict(IsolatedCase):
+    def setUp(self):
+        super().setUp()
+        run_cli("config", "setup", "--defaults")
+
+    def test_a_fresh_workflow_says_continue(self):
+        payload = json.loads(run_cli("status", "--json")[1])
+        self.assertEqual(payload["verdict"], "continue")
+        self.assertEqual(payload["reasons"], [])
+
+    def test_a_spent_budget_says_stop_and_report(self):
+        run_cli("config", "set", "budgets.test", "1")
+        run_cli("budget", "consume", "test")
+        payload = json.loads(run_cli("status", "--json")[1])
+        self.assertEqual(payload["verdict"], "stop-and-report")
+        self.assertTrue(any("test" in reason for reason in payload["reasons"]))
+
+    def test_status_reports_and_clears_a_stage_whose_process_died(self):
+        from orchestrator import ledger as ledger_mod
+        from orchestrator import workspace as workspace_mod
+
+        workspace = workspace_mod.Workspace(self.project).ensure()
+        book = ledger_mod.Ledger(workspace, dict(ledger_mod.DEFAULT_BUDGETS))
+        token = book.begin("implementer", deadline=3600)
+        ledger = book.load()
+        ledger["in_flight"][token]["pid"] = 999_999
+        book._write(ledger)
+
+        payload = json.loads(run_cli("status", "--json")[1])
+        self.assertEqual(payload["abandoned_stages"], ["implementer"])
+        self.assertEqual(payload["in_flight"], {})
+
+    def test_status_is_human_readable_too(self):
+        code, out, _ = run_cli("status")
+        self.assertEqual(code, 0)
+        self.assertIn("Verdict:", out)
+        self.assertIn("Review:", out)
+
+
+class TestStallReporting(IsolatedCase):
+    def setUp(self):
+        super().setUp()
+        run_cli("config", "setup", "--defaults")
+        run_cli("config", "set", "implementer.provider", "mock")
+
+    def test_a_stalled_run_is_described_as_wedged_not_slow(self):
+        """ "Stalled" and "slow" are different diagnoses and must read that way."""
+        from orchestrator.providers import mock as mock_mod
+
+        original = mock_mod.MockProvider.run
+
+        def stalled_run(self, *args, **kwargs):
+            from orchestrator.providers.base import RunResult
+
+            resolved = self.resolve_model(kwargs.get("model_spec") or {"family": "small"})
+            return RunResult(
+                False, 125, "", "no output for 300s", ["mock"], 301.0, resolved, stalled=True, idle_for=300.0
+            )
+
+        mock_mod.MockProvider.run = stalled_run
+        try:
+            code, _, err = run_cli("run", "implementer", "--prompt", "go")
+        finally:
+            mock_mod.MockProvider.run = original
+        self.assertEqual(code, 1)
+        self.assertIn("stalled", err)
+        _, state, _ = run_cli("state", "show", "--json")
+        self.assertEqual(json.loads(state)["events"][-1]["status"], "stalled")
+
+
 @unittest.skipUnless(has_git(), "git is required")
 class TestReviewPipeline(IsolatedCase):
     def setUp(self):
@@ -313,6 +443,31 @@ class TestReviewPipeline(IsolatedCase):
         _, brief, _ = run_cli("review", "fix-brief")
         self.assertIn("F1", brief)
         self.assertIn("restore the addition", brief)
+
+    def test_review_run_refuses_a_round_past_the_budget(self):
+        run_cli("config", "set", "review.max_review_iterations", "1")
+        run_cli("review", "snapshot")
+        self.assertEqual(run_cli("review", "run")[0], 0)
+        self.write("app.py", "def add(a, b):\n    return a * b\n")
+        run_cli("review", "snapshot")
+        code, _, err = run_cli("review", "run")
+        self.assertEqual(code, 3)
+        self.assertIn("refusing to run review round", err)
+
+    def test_force_runs_a_round_past_the_budget(self):
+        run_cli("config", "set", "review.max_review_iterations", "1")
+        run_cli("review", "snapshot")
+        run_cli("review", "run")
+        self.write("app.py", "def add(a, b):\n    return a * b\n")
+        run_cli("review", "snapshot")
+        self.assertEqual(run_cli("review", "run", "--force")[0], 0)
+
+    def test_an_identical_round_is_called_out(self):
+        run_cli("review", "snapshot")
+        run_cli("review", "run")
+        code, _, err = run_cli("review", "run", "--force")
+        self.assertEqual(code, 0)
+        self.assertIn("changed nothing", err)
 
     def test_status_recommends_a_re_review_within_budget(self):
         run_cli("review", "snapshot")

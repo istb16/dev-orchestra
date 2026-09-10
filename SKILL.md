@@ -26,7 +26,13 @@ Run once per session:
 
 ```
 python "SKILL_DIR/scripts/dev_orchestra.py" doctor
+python "SKILL_DIR/scripts/dev_orchestra.py" status
 ```
+
+`status` is the one command that answers **continue or stop**. It reports
+remaining budgets, any stage that stalled or died, and whether the review loop
+has anything left to give. Consult it before each stage, and obey it: when it
+says `stop-and-report`, report — do not retry.
 
 - **No config file** (`Source: built-in defaults`) → this is a first run. Go to
   [First-time setup](#first-time-setup) before doing development work.
@@ -113,6 +119,18 @@ redesigning on its own. Implementer failure is fatal to the run: stop and report
 Run the project's own commands (test, lint, type check). Use the project's
 documented invocation; do not invent one. A red test suite stops the pipeline —
 fix or report before reviewing.
+
+Before each *retry* of the tests, claim the attempt and record what happened:
+
+```
+python "SKILL_DIR/scripts/dev_orchestra.py" budget consume test
+python "SKILL_DIR/scripts/dev_orchestra.py" progress record test --signature "3 failed: test_a, test_b, test_c"
+```
+
+`budget consume` exits 3 when the attempts are spent, and `progress record`
+says to stop when the same failures come back — which means the last fix
+changed nothing. Both are refusals, not suggestions. Fix→test is the loop most
+likely to run away, because nothing about it looks like a loop from inside.
 
 ### Independent reviews
 
@@ -283,8 +301,14 @@ general reviewers (Claude/opus and Codex/recommended-coding) — all tracking
    reports, or logs.
 6. **Never fail the whole run for one failed reviewer.** Implementer and Review
    Fixer failures *are* fatal.
-7. **Respect the iteration budget.** Report remaining findings instead of looping.
-8. Keep the user's source tree clean: orchestration artifacts belong in `.ai/`.
+7. **Respect the budgets, and never work around them.** `run`, `review run`
+   and `budget consume` refuse with exit code 3 when a budget is spent. That is
+   the answer: report what is unresolved. `--force` exists for a human who has
+   decided to override; it is not yours to reach for.
+8. **A stalled agent is not a clean result.** A run reported as `stalled`
+   produced no output until it was killed. Treat it as a failure and say so;
+   never let it pass as "nothing to report".
+9. Keep the user's source tree clean: orchestration artifacts belong in `.ai/`.
 
 ## References
 
@@ -297,4 +321,5 @@ Read these only when you need the detail.
 | `references/providers.md` | Adapter interface, Claude/Codex specifics, adding a CLI |
 | `references/reviews.md` | Snapshot, output schema, dedup, triage, re-review policy |
 | `references/architecture.md` | How the pieces fit together, and why |
+| `references/limits.md` | Stalls, timeouts, budgets: what stops a runaway loop |
 | `references/cli.md` | Every `dev-orchestra` command and flag |

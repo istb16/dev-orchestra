@@ -10,7 +10,8 @@ Global options: `--cwd <dir>` (operate as if run from there), `--version`.
 
 Exit codes: `0` success, `1` the operation ran but the outcome is negative
 (invalid config, empty snapshot, every reviewer failed, role run failed), `2` a
-usage or configuration error, `130` interrupted.
+usage or configuration error, `3` a budget is exhausted and the command refused
+to run, `130` interrupted.
 
 ## config
 
@@ -64,13 +65,19 @@ Never prints credential values — only whether credentials appear to be present
 
 | Command | Description |
 | --- | --- |
-| `run <role> [--prompt <text>\|--prompt-file <path>] [--mode plan\|implement\|review] [--output <path>] [--timeout <s>] [--print-command] [--extra …]` | Run one configured role. `<role>` is `orchestrator`, `architect`, `implementer`, `review_fixer`, or a reviewer id. |
+| `run <role> [--prompt <text>\|--prompt-file <path>] [--mode plan\|implement\|review] [--output <path>] [--timeout <s>] [--idle-timeout <s>] [--force] [--print-command] [--extra …]` | Run one configured role. `<role>` is `orchestrator`, `architect`, `implementer`, `review_fixer`, or a reviewer id. Consumes an attempt from that stage's budget and refuses (exit 3) when it is spent, unless `--force`. |
 
 The prompt may also be piped on stdin (`--prompt-file -` reads stdin
 explicitly). Default modes: architect/orchestrator `plan`, implementer and
 review_fixer `implement`, reviewers `review`. `--print-command` shows the exact
 CLI invocation without running it. `--extra` forwards every remaining argument
 to the provider CLI verbatim.
+
+`--timeout` is the total deadline. `--idle-timeout` is the *no output* deadline:
+a wedged agent goes quiet while a slow one keeps producing, so this catches a
+stall in minutes rather than at the total deadline. It only applies to providers
+that stream progress (Codex does; see `references/providers.md`), and is ignored
+elsewhere rather than guessed at.
 
 ```bash
 dev-orchestra run architect --prompt-file .ai/execution/design-request.md --output .ai/plan.md
@@ -83,12 +90,59 @@ echo "explain the failure" | dev-orchestra run orchestrator
 | Command | Description |
 | --- | --- |
 | `review snapshot [--base <rev>] [--no-untracked] [--json]` | Freeze the change under review. Exit 1 if empty. |
-| `review run [--iteration N] [--only <ids/roles>] [--sequential] [--context <text>] [--base <rev>] [--timeout <s>] [--json]` | Run every reviewer against the snapshot; write reports and the consolidated result. Exit 1 only if every reviewer failed. The round is derived from the snapshot unless `--iteration` is given. `--only` runs a subset but still consolidates every reviewer's current report, so nothing is lost. |
+| `review run [--iteration N] [--only <ids/roles>] [--sequential] [--context <text>] [--base <rev>] [--timeout <s>] [--idle-timeout <s>] [--force] [--json]` | Run every reviewer against the snapshot; write reports and the consolidated result. Exit 1 only if every reviewer failed. The round is derived from the snapshot unless `--iteration` is given, and a round past `review.max_review_iterations` is refused (exit 3) unless `--force`. `--only` runs a subset but still consolidates every reviewer's current report, so nothing is lost. |
 | `review consolidate [--iteration N] [--json]` | Re-parse the existing reports and rebuild the consolidated result. |
 | `review show [--accepted] [--json]` | Show the consolidated review. |
 | `review triage <ids…> --status <status> [--note <text>]` | Record triage decisions. |
 | `review fix-brief [--output <path>]` | Emit the accepted-findings brief for the fixer. |
 | `review status [--json]` | Whether a re-review is warranted, and the iteration budget. |
+
+## status
+
+| Command | Description |
+| --- | --- |
+| `status [--json]` | The one command that answers *continue or stop*. Reports a `continue` / `stop-and-report` verdict with reasons, stalled or abandoned stages, what is in flight, remaining budgets, and the open review findings. |
+
+Reading it also clears in-flight entries whose process is gone, so a stage that
+died without recording an outcome shows up as `abandoned` instead of appearing
+to run forever.
+
+```bash
+dev-orchestra status --json
+```
+
+```json
+{
+  "verdict": "stop-and-report",
+  "reasons": ["review budget spent (2/2 rounds) with 1 finding(s) still open"],
+  "stalls": [],
+  "budgets": {"implementer": {"used": 2, "limit": 5, "remaining": 3}}
+}
+```
+
+## budget
+
+| Command | Description |
+| --- | --- |
+| `budget show [--json]` | Attempts spent per stage, delegated-run total, runtime left. |
+| `budget consume <stage> [--force]` | Claim an attempt at a stage the orchestrator runs itself (notably `test`). Exits 3 when the budget is spent. |
+| `budget reset` | Start a fresh workflow. Also happens automatically once a ledger has been idle for `budgets.session_idle_reset_seconds`. |
+
+`run` and `review run` consume their own budgets, so `budget consume` is only
+needed for stages the orchestrator performs directly.
+
+## progress
+
+| Command | Description |
+| --- | --- |
+| `progress record <stage> --signature <text> [--json]` | Record what a stage produced. Identical consecutive signatures mean the last attempt changed nothing, and the command says to stop. |
+
+```bash
+dev-orchestra progress record test --signature "3 failed: test_totals, test_discount, test_coupon"
+```
+
+Reviews register their own signature automatically, from the set of open
+findings.
 
 ## state / summary
 
@@ -108,3 +162,4 @@ echo "explain the failure" | dev-orchestra run orchestrator
 | `DEV_ORCHESTRA_MOCK_RESPONSE` | Inline canned response for the mock provider |
 | `DEV_ORCHESTRA_MOCK_FAIL` | Make mock runs fail (`1` = all, otherwise a prompt substring) |
 | `CODEX_HOME` | Respected when locating the Codex CLI's config and credentials |
+| `DEV_ORCHESTRA_TEST_ASSUME_NO_CLI` | Test-only: hides both provider CLIs, reproducing CI |
