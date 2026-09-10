@@ -126,7 +126,10 @@ Any other family must match the CLI's configured model, or be pinned explicitly:
 reviewers:
   - id: codex-pinned
     provider: codex
-    model: {family: gpt-something, version: pinned, id: gpt-something}
+    model:
+      family: gpt-something
+      version: pinned
+      id: gpt-something
     role: general
 ```
 

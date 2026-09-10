@@ -10,6 +10,47 @@ The public surface covered by that promise is: the configuration schema, the
 
 ## [Unreleased]
 
+### Fixed
+
+A self-review of the first release found eight issues; four of them were the
+same blind spot, that the test suite only ever exercised a single review round.
+
+- **The re-review budget could never stop a loop.** `review run` defaulted
+  `--iteration` to 1, so an orchestrator that omitted the flag - as the default
+  invites - left the counter at 1 forever and `review status` kept recommending
+  another round. The round is now derived from the snapshot: a new snapshot is a
+  new round, re-running the same one is not, and `--iteration` only overrides.
+- **Triage decisions were silently lost between rounds.** They were restored by
+  the positional `F1..Fn` id, which is reassigned every consolidation, so fixing
+  a critical finding renumbered everything below it and reverted those decisions
+  to `needs-triage` - bringing rejected false positives back as blocking. They
+  are now keyed by content (file + normalised problem text).
+- **A report that could not be parsed was reported as a clean review.** Only
+  `#`-style "Finding" headings were recognised, so a reviewer emitting
+  `**Finding 1**` produced zero findings with no `NO_FINDINGS` sentinel and the
+  change looked clean. Headings in any emphasis are now accepted, a report that
+  lost its headings entirely is recovered from its `Severity:` lines, and
+  anything still unreadable is recorded as `unparsed` and counted as failed.
+- **`review run --only` discarded the other reviewers' findings and triage**,
+  because it rebuilt the consolidated report from the subset alone. It now
+  consolidates every configured reviewer's current report.
+- **Stale reviewer reports were consolidated as if current.** Reports are
+  stamped with their snapshot; one written against an earlier snapshot is now
+  skipped with a note instead of handing the fixer already-fixed issues.
+- **The setup wizard could save a config that broke every later command.** It
+  accepted duplicate reviewer ids and saved despite failed validation, after
+  which every `run` / `review run` exited 2. Duplicate and malformed ids are
+  now rejected while the user is still there, and an invalid config is never
+  written.
+- **A relative `--cwd` was applied twice** - once by `chdir`, then again as the
+  config search-start path - so `--cwd ..` missed the project override and could
+  target the wrong repository. It is resolved to an absolute path first.
+- **Documented YAML could not be pasted into a config file.** The examples in
+  both READMEs and `references/` used flow mappings, which the bundled parser
+  rejects, so they worked only where PyYAML happened to be installed. All
+  blocks are block-style now, and a test parses every documented YAML block
+  with the bundled parser.
+
 ### Changed
 
 - Renamed every user-visible identifier to `dev-orchestra`: the skill name, the

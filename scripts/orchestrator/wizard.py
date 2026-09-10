@@ -252,9 +252,22 @@ def _ask_reviewer(
         role = prompter.ask_text("     Custom role name", "general") or "general"
 
     suggested = config_mod.suggest_reviewer_id(scratch, provider_name, role)
-    reviewer_id = prompter.ask_text("     Reviewer id", str(template.get("id") or suggested))
-    reviewer: Dict[str, Any] = {"id": reviewer_id, "provider": provider_name, "model": model, "role": role}
-    return reviewer
+    default_id = str(template.get("id") or suggested)
+    if any(r.get("id") == default_id for r in scratch.get("reviewers") or []):
+        default_id = suggested
+    taken = {r.get("id") for r in scratch.get("reviewers") or []}
+    while True:
+        reviewer_id = prompter.ask_text("     Reviewer id", default_id)
+        if reviewer_id in taken:
+            # Saving a duplicate id produces a config that every later command
+            # rejects, so catch it while the user is still here to fix it.
+            prompter.say("     %r is already used by another reviewer." % reviewer_id)
+            continue
+        if not config_mod.is_valid_reviewer_id(reviewer_id):
+            prompter.say("     Ids must look like %s (lowercase, digits, . _ -)." % suggested)
+            continue
+        break
+    return {"id": reviewer_id, "provider": provider_name, "model": model, "role": role}
 
 
 def render_summary(data: Dict[str, Any]) -> str:

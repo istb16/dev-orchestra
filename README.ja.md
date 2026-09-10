@@ -211,19 +211,49 @@ dev-orchestra review fix-brief --output fix-brief.md
 
 ```yaml
 version: 1
-orchestrator:  {provider: claude, model: {family: sonnet, version: latest}}
-architect:     {provider: claude, model: {family: fable,  version: latest}}
-implementer:   {provider: claude, model: {family: opus,   version: latest}}
-review_fixer:  {provider: claude, model: {family: opus,   version: latest}}
+
+orchestrator:
+  provider: claude
+  model:
+    family: sonnet
+    version: latest
+
+architect:
+  provider: claude
+  model:
+    family: fable
+    version: latest
+
+implementer:
+  provider: claude
+  model:
+    family: opus
+    version: latest
+
+review_fixer:
+  provider: claude
+  model:
+    family: opus
+    version: latest
+
 reviewers:
-  - {id: claude-general, provider: claude, model: {family: opus, version: latest}, role: general}
-  - {id: codex-general,  provider: codex,  model: {family: recommended-coding, version: latest}, role: general}
+  - id: claude-general
+    provider: claude
+    model:
+      family: opus
+      version: latest
+    role: general
+  - id: codex-general
+    provider: codex
+    model:
+      family: recommended-coding
+      version: latest
+    role: general
+
 review:
   max_review_iterations: 2
   parallel: true
 ```
-
-（実ファイルはブロック形式です。`examples/` を参照。）
 
 ```bash
 dev-orchestra config show
@@ -242,9 +272,21 @@ dev-orchestra config reset
 設定に保存するのは **family と方針** だけで、スナップショットは保存しません。
 
 ```yaml
-model: {family: opus, version: latest}                        # 最新のOpusに追随
-model: {family: opus, version: pinned, id: claude-opus-5}     # 意図的に固定
-model: {family: default, version: latest}                     # CLIに任せる
+implementer:            # tracks the latest Opus, whatever that is today
+  model:
+    family: opus
+    version: latest
+
+architect:              # frozen to one snapshot - only do this deliberately
+  model:
+    family: opus
+    version: pinned
+    id: claude-opus-5
+
+review_fixer:           # let the CLI pick entirely
+  model:
+    family: default
+    version: latest
 ```
 
 解決の優先順位:

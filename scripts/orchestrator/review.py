@@ -269,7 +269,9 @@ class ReviewerRun:
         findings: int = 0,
     ) -> None:
         self.reviewer = reviewer
-        self.status = status  # ok | failed
+        # ok | failed | unparsed. "unparsed" means the CLI succeeded but its
+        # report could not be read, which is a failed review, never a clean one.
+        self.status = status
         self.report_path = report_path
         self.error = error
         self.model_display = model_display
@@ -354,10 +356,12 @@ def run_reviews(
         path = workspace.reviewer_report_path(reviewer_id)
         ws.write_text(path, header + body + "\n")
         findings = parse_findings(body, reviewer_id)
+        warning = unparsed_report_warning(body, findings)
         return ReviewerRun(
             reviewer,
-            "ok",
+            "unparsed" if warning else "ok",
             report_path=workspace.relative(path),
+            error=warning,
             model_display=model_display,
             duration=result.duration,
             findings=len(findings),
@@ -381,7 +385,13 @@ _FIELD_RE = re.compile(
     r"recommended fix|recommendation|fix)\*{0,2}\s*:\s*(.*)$",
     re.IGNORECASE,
 )
-_HEADER_RE = re.compile(r"^\s{0,3}#{1,6}\s*finding\b.*$", re.IGNORECASE)
+#: A finding header. Models reach for every emphasis style there is, so accept
+#: ``## Finding``, ``**Finding 2**``, ``Finding 3:`` and bare ``Finding``. Being
+#: strict here used to mean a report full of findings parsed as zero, which is
+#: indistinguishable from a clean review -- the worst way for this to fail.
+_HEADER_RE = re.compile(r"^\s{0,3}(?:#{1,6}\s*)?\*{0,2}finding\b[^:]{0,40}?\*{0,2}\s*:?\s*$", re.IGNORECASE)
+_SEVERITY_LINE_RE = re.compile(r"^\s*(?:[-*+]\s*)?\*{0,2}severity\*{0,2}\s*:", re.IGNORECASE)
+_NO_FINDINGS_RE = re.compile(r"^\s*\*{0,2}NO_FINDINGS\*{0,2}\s*$", re.MULTILINE)
 _FIELD_ALIASES = {
     "lines": "line",
     "recommendation": "recommended_fix",
@@ -395,19 +405,10 @@ def parse_findings(text: str, reviewer_id: str) -> List[Dict[str, Any]]:
     if not text:
         return []
     body = _strip_report_header(text)
-    if not _HEADER_RE.search(body) and re.search(r"^\s*NO_FINDINGS\s*$", body, re.MULTILINE):
+    if not _HEADER_RE.search(body) and _NO_FINDINGS_RE.search(body):
         return []
 
-    blocks: List[List[str]] = []
-    current: Optional[List[str]] = None
-    for line in body.splitlines():
-        if _HEADER_RE.match(line):
-            current = []
-            blocks.append(current)
-            continue
-        if current is not None:
-            current.append(line)
-
+    blocks = _split_blocks(body)
     findings: List[Dict[str, Any]] = []
     for block in blocks:
         finding = _parse_block(block)
@@ -418,9 +419,60 @@ def parse_findings(text: str, reviewer_id: str) -> List[Dict[str, Any]]:
     return findings
 
 
+def _split_blocks(body: str) -> List[List[str]]:
+    """Split a report body into per-finding line blocks.
+
+    Headers are preferred, but a report that lost its headers entirely is still
+    recoverable: each ``Severity:`` line starts a finding, since the required
+    schema puts exactly one at the top of every block.
+    """
+    blocks: List[List[str]] = []
+    current: Optional[List[str]] = None
+    for line in body.splitlines():
+        if _HEADER_RE.match(line):
+            current = []
+            blocks.append(current)
+            continue
+        if current is not None:
+            current.append(line)
+    if blocks:
+        return blocks
+
+    for line in body.splitlines():
+        if _SEVERITY_LINE_RE.match(line):
+            current = []
+            blocks.append(current)
+        if current is not None:
+            current.append(line)
+    return blocks
+
+
+def unparsed_report_warning(text: str, parsed: Sequence[Dict[str, Any]]) -> str:
+    """Describe a report that produced nothing but does not claim to be clean.
+
+    A reviewer must either report findings in the required shape or say
+    ``NO_FINDINGS``. Anything else means the report could not be read, and that
+    must never be reported to the orchestrator as "no problems found".
+    """
+    if parsed:
+        return ""
+    body = _strip_report_header(text or "")
+    if _NO_FINDINGS_RE.search(body):
+        return ""
+    if not body.strip():
+        return "report was empty (no findings and no NO_FINDINGS)"
+    return (
+        "report could not be parsed: no findings in the required format and no "
+        "NO_FINDINGS -- treat this reviewer as failed, not clean"
+    )
+
+
+#: Separates the header this skill writes from the reviewer's own body.
+_HEADER_MARKER = "\n---\n"
+
+
 def _strip_report_header(text: str) -> str:
-    marker = "\n---\n"
-    head, sep, tail = text.partition(marker)
+    head, sep, tail = text.partition(_HEADER_MARKER)
     if sep and head.lstrip().startswith("# Review"):
         return tail
     return text
@@ -492,6 +544,11 @@ _WORD_RE = re.compile(r"[a-z0-9]+")
 
 def _fingerprint(text: str) -> str:
     return " ".join(_WORD_RE.findall((text or "").lower()))
+
+
+def finding_key(finding: Dict[str, Any]) -> str:
+    """A stable identity for one finding, independent of its position."""
+    return "%s|%s" % (finding.get("file", ""), _fingerprint(finding.get("problem", ""))[:200])
 
 
 def _line_number(value: str) -> Optional[int]:
@@ -629,14 +686,73 @@ def _absorb(target: Dict[str, Any], other: Dict[str, Any]) -> None:
         target["line"] = other["line"]
 
 
-def collect_reports(workspace: ws.Workspace, reviewer_ids: Sequence[str]) -> List[Dict[str, Any]]:
+_REPORT_SNAPSHOT_RE = re.compile(r"^-\s*Snapshot:\s*(\S+)\s*$", re.MULTILINE | re.IGNORECASE)
+
+
+def report_snapshot(text: str) -> str:
+    """The snapshot stamp ``run_reviews`` wrote into a report header."""
+    match = _REPORT_SNAPSHOT_RE.search(text.partition(_HEADER_MARKER)[0])
+    return match.group(1) if match else ""
+
+
+def read_reports(
+    workspace: ws.Workspace,
+    reviewer_ids: Sequence[str],
+    expected_snapshot: Optional[str] = None,
+) -> Tuple[List[Dict[str, Any]], List[str]]:
+    """Parse reviewer reports, skipping any written against another snapshot.
+
+    Returns ``(findings, stale_reviewer_ids)``. Without the staleness check a
+    re-consolidation silently mixes a previous round's findings into the current
+    one, handing the fixer issues that were already fixed.
+    """
     findings: List[Dict[str, Any]] = []
+    stale: List[str] = []
     for reviewer_id in reviewer_ids:
         path = workspace.reviewer_report_path(reviewer_id)
         if not os.path.isfile(path):
             continue
-        findings.extend(parse_findings(ws.read_text(path), reviewer_id))
-    return findings
+        text = ws.read_text(path)
+        if expected_snapshot:
+            stamped = report_snapshot(text)
+            if stamped and stamped != expected_snapshot:
+                stale.append(reviewer_id)
+                continue
+        findings.extend(parse_findings(text, reviewer_id))
+    return findings, stale
+
+
+def collect_reports(
+    workspace: ws.Workspace,
+    reviewer_ids: Sequence[str],
+    expected_snapshot: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    return read_reports(workspace, reviewer_ids, expected_snapshot)[0]
+
+
+def current_snapshot_stamp(workspace: ws.Workspace) -> str:
+    """The stamp reports are compared against -- same form as the header."""
+    return _snapshot_sha(workspace)
+
+
+def next_iteration(workspace: ws.Workspace) -> int:
+    """Derive the review round from what is on disk.
+
+    The iteration budget only stops a review->fix->re-review loop if the counter
+    actually advances, so it must not depend on the caller passing a number: a
+    new snapshot is a new round, and re-running against the same snapshot (after
+    a reviewer failed, say) stays in the current one.
+    """
+    previous = ws.read_json(workspace.consolidated_json_path, {}) or {}
+    if not previous:
+        return 1
+    recorded = int(previous.get("iteration", 0) or 0)
+    previous_sha = str((previous.get("snapshot") or {}).get("sha256") or "")
+    meta = ws.read_json(workspace.snapshot_meta_path, {}) or {}
+    current_sha = str(meta.get("sha256") or "")
+    if previous_sha and current_sha and previous_sha == current_sha:
+        return max(recorded, 1)
+    return recorded + 1
 
 
 def build_consolidation(
@@ -646,14 +762,19 @@ def build_consolidation(
     iteration: int = 1,
 ) -> Dict[str, Any]:
     meta = ws.read_json(workspace.snapshot_meta_path, {}) or {}
+    # Keyed by content, never by id: ids are positional (F1..Fn, severity
+    # ordered) and get reassigned every round, so an id-keyed lookup silently
+    # drops a decision -- or applies it to a different finding -- as soon as the
+    # finding set changes, which is exactly what fixing things does.
     previous = {
-        entry.get("id"): entry
+        finding_key(entry): entry
         for entry in (ws.read_json(workspace.consolidated_json_path, {}) or {}).get("findings", [])
     }
     consolidated = consolidate_findings(findings)
     for entry in consolidated:
-        old = previous.get(entry["id"])
-        if old and _fingerprint(old.get("problem", "")) == _fingerprint(entry.get("problem", "")):
+        entry["key"] = finding_key(entry)
+        old = previous.get(entry["key"])
+        if old:
             entry["triage"] = old.get("triage", entry["triage"])
             entry["triage_note"] = old.get("triage_note", "")
     candidates = duplicate_candidates(consolidated)

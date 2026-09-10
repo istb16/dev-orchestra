@@ -218,19 +218,49 @@ Precedence: **project → global → built-in defaults**.
 
 ```yaml
 version: 1
-orchestrator:  {provider: claude, model: {family: sonnet, version: latest}}
-architect:     {provider: claude, model: {family: fable,  version: latest}}
-implementer:   {provider: claude, model: {family: opus,   version: latest}}
-review_fixer:  {provider: claude, model: {family: opus,   version: latest}}
+
+orchestrator:
+  provider: claude
+  model:
+    family: sonnet
+    version: latest
+
+architect:
+  provider: claude
+  model:
+    family: fable
+    version: latest
+
+implementer:
+  provider: claude
+  model:
+    family: opus
+    version: latest
+
+review_fixer:
+  provider: claude
+  model:
+    family: opus
+    version: latest
+
 reviewers:
-  - {id: claude-general, provider: claude, model: {family: opus, version: latest}, role: general}
-  - {id: codex-general,  provider: codex,  model: {family: recommended-coding, version: latest}, role: general}
+  - id: claude-general
+    provider: claude
+    model:
+      family: opus
+      version: latest
+    role: general
+  - id: codex-general
+    provider: codex
+    model:
+      family: recommended-coding
+      version: latest
+    role: general
+
 review:
   max_review_iterations: 2
   parallel: true
 ```
-
-(The real files use block style; see `examples/`.)
 
 ```bash
 dev-orchestra config show
@@ -246,9 +276,21 @@ Full schema: `references/configuration.md`.
 Configuration stores **a family and a policy**, never a snapshot:
 
 ```yaml
-model: {family: opus, version: latest}                        # tracks the latest Opus
-model: {family: opus, version: pinned, id: claude-opus-5}     # frozen, deliberately
-model: {family: default, version: latest}                     # let the CLI decide
+implementer:            # tracks the latest Opus, whatever that is today
+  model:
+    family: opus
+    version: latest
+
+architect:              # frozen to one snapshot - only do this deliberately
+  model:
+    family: opus
+    version: pinned
+    id: claude-opus-5
+
+review_fixer:           # let the CLI pick entirely
+  model:
+    family: default
+    version: latest
 ```
 
 Resolution order:

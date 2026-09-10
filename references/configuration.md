@@ -127,7 +127,9 @@ by `config validate`, not at run time.
 ```yaml
 implementer:
   provider: claude
-  model: {family: opus, version: latest}
+  model:
+    family: opus
+    version: latest
   options:
     # The default, acceptEdits, auto-approves file edits but not shell commands,
     # so an Implementer told to "run the tests" may be unable to. Loosen it here
@@ -158,14 +160,21 @@ got**. `family: opus` + `version: latest` means "the newest Opus the installed
 CLI offers", so the setup keeps working after a model release.
 
 ```yaml
-# tracks the latest Opus, whatever that is today
-model: {family: opus, version: latest}
+implementer:            # tracks the latest Opus, whatever that is today
+  model:
+    family: opus
+    version: latest
 
-# freezes an exact model - only do this deliberately
-model: {family: opus, version: pinned, id: claude-opus-5}
+architect:              # frozen to one snapshot - only do this deliberately
+  model:
+    family: opus
+    version: pinned
+    id: claude-opus-5
 
-# let the CLI pick entirely
-model: {family: default, version: latest}
+review_fixer:           # let the CLI pick entirely
+  model:
+    family: default
+    version: latest
 ```
 
 Resolution happens at run time in the provider adapter, and an adapter that
@@ -206,15 +215,21 @@ version: 1
 reviewers:
   - id: claude-general
     provider: claude
-    model: {family: opus, version: latest}
+    model:
+      family: opus
+      version: latest
     role: general
   - id: codex-security
     provider: codex
-    model: {family: recommended-coding, version: latest}
+    model:
+      family: recommended-coding
+      version: latest
     role: security
   - id: codex-database
     provider: codex
-    model: {family: recommended-coding, version: latest}
+    model:
+      family: recommended-coding
+      version: latest
     role: database
 ```
 

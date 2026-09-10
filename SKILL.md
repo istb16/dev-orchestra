@@ -120,8 +120,11 @@ Freeze the change first so every reviewer judges the same thing:
 
 ```
 python "SKILL_DIR/scripts/dev_orchestra.py" review snapshot
-python "SKILL_DIR/scripts/dev_orchestra.py" review run --iteration 1
+python "SKILL_DIR/scripts/dev_orchestra.py" review run
 ```
+
+The review round is derived from the snapshot -- a new snapshot is a new round,
+re-running the same one is not -- so you never track it by hand.
 
 `review run` executes every configured reviewer **in parallel, in isolation,
 read-only** against the frozen snapshot, then writes one report per reviewer plus
@@ -135,6 +138,9 @@ Non-negotiable:
 - A reviewer that fails does **not** fail the round. Report `N successful,
   M failed` and continue with what succeeded. All reviewers failing is a
   failed review stage.
+- A reviewer whose report could not be parsed is reported as `unparsed`, which
+  counts as failed. **Never read it as a clean review** -- it means the output
+  did not follow the contract, not that the code is fine.
 
 ### Triage
 
@@ -182,8 +188,8 @@ python "SKILL_DIR/scripts/dev_orchestra.py" review status
 
 Re-review only when it says so — that is, when critical/high findings remain and
 the iteration budget (`max_review_iterations`, default 2) is not spent. For a
-new round: `review snapshot` again, then `review run --iteration 2`. When the
-budget is exhausted, **stop and report the remaining findings**; do not loop.
+new round: `review snapshot` again, then `review run`. When the budget is
+exhausted, **stop and report the remaining findings**; do not loop.
 
 ## 3. Delegation rules
 

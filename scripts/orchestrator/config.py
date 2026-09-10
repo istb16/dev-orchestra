@@ -45,6 +45,11 @@ BUILTIN_ROLES = (
 _ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 
 
+def is_valid_reviewer_id(value: Any) -> bool:
+    """The same rule ``validate`` applies, exposed for input-time checking."""
+    return isinstance(value, str) and bool(_ID_RE.match(value))
+
+
 def default_config() -> Dict[str, Any]:
     """Recommended out-of-the-box configuration."""
     return {

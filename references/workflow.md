@@ -119,8 +119,8 @@ tree.
 ## Reviews
 
 ```bash
-dev-orchestra review snapshot            # freeze it
-dev-orchestra review run --iteration 1   # fan out
+dev-orchestra review snapshot   # freeze it
+dev-orchestra review run        # fan out
 ```
 
 `review snapshot` diffs the working tree against `HEAD` by default and folds in
@@ -168,6 +168,11 @@ dev-orchestra review status
   "iteration_budget_exhausted": false
 }
 ```
+
+The round advances automatically: `review run` derives it from the snapshot, so
+a new snapshot is a new round and re-running the same one (after a reviewer
+failed, say) stays in the current round. Pass `--iteration` only to override
+that deliberately.
 
 Re-review only when `re_review_recommended` is true, and only after a fresh
 `review snapshot`. When the budget is spent, report the remaining findings with

@@ -88,6 +88,11 @@ Reviewers are asked for this exact shape:
 
 A clean review returns exactly `NO_FINDINGS`.
 
+A reviewer that returns neither findings in a recognisable shape nor
+`NO_FINDINGS` is recorded with status `unparsed` and counted as **failed**. A
+report that cannot be read is not evidence that the code is fine, and treating
+it as such is the worst way for a review tool to fail.
+
 The parser is deliberately tolerant: it accepts `**Severity:** high`,
 `**Severity**: high`, `- Severity: high`, any heading level for `Finding`,
 `Recommendation`/`Fix` as synonyms for `Recommended fix`, multi-line values, and
@@ -174,8 +179,16 @@ dev-orchestra review show --accepted            # what the fixer will see
 | `duplicate` | Same as another finding the dedupe pass missed. |
 | `needs-investigation` | Cannot decide yet. Investigate, then re-triage. |
 
-Triage decisions survive re-consolidation as long as the finding's text is
-unchanged, so a second round does not lose the first round's judgement.
+Triage decisions are keyed by content (file + normalised problem text), not by
+the `F1..Fn` numbering, which is positional and gets reassigned every round. So
+a decision follows its finding even when a more severe finding is fixed and
+everything below it renumbers. Reword a finding and the decision is lost, which
+is the honest outcome: it is no longer the same claim.
+
+Reviewer reports are stamped with the snapshot they were written against, and a
+report from an earlier snapshot is skipped rather than folded into the current
+round -- otherwise re-consolidating would hand the fixer issues that were
+already fixed.
 
 Before accepting a finding: read the cited code as it is *now*, check the claim
 is true in this codebase (not in general), and check the recommended fix does
@@ -187,6 +200,9 @@ are rejecting the claim, not just the tone.
 ```bash
 dev-orchestra review status --json
 ```
+
+`iteration` is derived from the snapshot by `review run`, so the budget cannot
+be defeated by forgetting to increment a counter.
 
 `re_review_recommended` is true when unresolved findings at
 `review.re_review_severities` (default critical + high) remain **and**

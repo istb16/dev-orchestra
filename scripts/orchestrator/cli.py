@@ -13,7 +13,7 @@ import argparse
 import json
 import os
 import sys
-from typing import Any, Dict, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from . import config as config_mod
 from . import doctor as doctor_mod
@@ -168,10 +168,15 @@ def cmd_config_setup(args: argparse.Namespace) -> int:
         _out("Not saved.")
         return 1
     problems = config_mod.validate(data)
+    if problems:
+        # Writing this would leave every workflow command failing with
+        # "invalid configuration" straight after a successful-looking setup.
+        _err("not saved -- the configuration is invalid:")
+        for problem in problems:
+            _err("  - %s" % problem)
+        return 2
     config_mod.write_config_file(path, data)
     _out("Saved %s configuration to %s" % (scope, path))
-    for problem in problems:
-        _err("warning: %s" % problem)
     return 0
 
 
@@ -492,6 +497,22 @@ def _reviewer_spec(loaded: config_mod.LoadedConfig, selector: str) -> Dict[str, 
 # --------------------------------------------------------------------------- review
 
 
+def _iteration(args: argparse.Namespace, workspace: ws.Workspace) -> int:
+    """An explicit --iteration wins; otherwise derive it from what is on disk."""
+    given = getattr(args, "iteration", None)
+    return int(given) if given is not None else review_mod.next_iteration(workspace)
+
+
+def _merge_runs(workspace: ws.Workspace, run_dicts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Keep reviewers that did not run this time in the reviewer table."""
+    previous = (ws.read_json(workspace.consolidated_json_path, {}) or {}).get("reviewers", [])
+    fresh = {entry.get("id") for entry in run_dicts}
+    kept = [
+        dict(entry, status=entry.get("status", "ok")) for entry in previous if entry.get("id") not in fresh
+    ]
+    return run_dicts + kept
+
+
 def cmd_review_snapshot(args: argparse.Namespace) -> int:
     workspace = _workspace(args)
     try:
@@ -515,21 +536,20 @@ def cmd_review_snapshot(args: argparse.Namespace) -> int:
 def cmd_review_run(args: argparse.Namespace) -> int:
     loaded = _load_or_die(args.cwd)
     workspace = _workspace(args)
-    reviewers = loaded.reviewers()
+    configured = loaded.reviewers()
+    reviewers = configured
     if args.only:
         wanted = set(args.only)
-        reviewers = [r for r in reviewers if r.get("id") in wanted or r.get("role") in wanted]
-    if not reviewers:
+        reviewers = [r for r in configured if r.get("id") in wanted or r.get("role") in wanted]
+    if not reviewers and not args.only:
         _out("No reviewers configured -- skipping the independent-review stage.")
-        ws.write_json(
-            workspace.consolidated_json_path,
-            review_mod.build_consolidation(workspace, [], [], args.iteration),
-        )
-        ws.write_text(
-            workspace.consolidated_md_path,
-            review_mod.render_consolidation(ws.read_json(workspace.consolidated_json_path, {})),
-        )
+        data = review_mod.build_consolidation(workspace, [], [], _iteration(args, workspace))
+        ws.write_json(workspace.consolidated_json_path, data)
+        ws.write_text(workspace.consolidated_md_path, review_mod.render_consolidation(data))
         return 0
+    if not reviewers:
+        _err("--only %s matched no configured reviewer" % " ".join(args.only))
+        return 2
 
     settings = loaded.review_settings()
     if not os.path.isfile(workspace.snapshot_path):
@@ -538,6 +558,7 @@ def cmd_review_run(args: argparse.Namespace) -> int:
         except review_mod.ReviewError as exc:
             _err(str(exc))
             return 2
+    iteration = _iteration(args, workspace)
 
     try:
         runs = review_mod.run_reviews(
@@ -552,13 +573,18 @@ def cmd_review_run(args: argparse.Namespace) -> int:
         return 2
 
     run_dicts = [run.to_dict() for run in runs]
-    findings = review_mod.collect_reports(
-        workspace, [run.reviewer.get("id") for run in runs if run.status == "ok"]
-    )
-    data = review_mod.build_consolidation(workspace, run_dicts, findings, args.iteration)
+    # Consolidate from every configured reviewer's report, not only the ones
+    # that just ran: with --only that would otherwise overwrite the report with
+    # a subset and discard the other reviewers' findings and triage. Reports
+    # from an earlier snapshot are skipped rather than mixed in.
+    stamp = review_mod.current_snapshot_stamp(workspace)
+    findings, stale = review_mod.read_reports(workspace, [str(r.get("id")) for r in configured], stamp)
+    data = review_mod.build_consolidation(workspace, _merge_runs(workspace, run_dicts), findings, iteration)
     ws.write_json(workspace.consolidated_json_path, data)
     ws.write_text(workspace.consolidated_md_path, review_mod.render_consolidation(data))
-    workspace.record_event("review", "ok", {"iteration": args.iteration, "reviewers": run_dicts})
+    workspace.record_event("review", "ok", {"iteration": iteration, "reviewers": run_dicts})
+    for reviewer_id in stale:
+        _err("note: %s has no report for this snapshot; its earlier report was ignored" % reviewer_id)
 
     ok, failed = review_mod.summarise_runs(runs)
     if args.json:
@@ -588,9 +614,14 @@ def cmd_review_consolidate(args: argparse.Namespace) -> int:
     loaded = config_mod.load(args.cwd, validate_result=False)
     workspace = _workspace(args)
     reviewer_ids = [str(r.get("id")) for r in loaded.reviewers()]
-    findings = review_mod.collect_reports(workspace, reviewer_ids)
+    stamp = review_mod.current_snapshot_stamp(workspace)
+    findings, stale = review_mod.read_reports(workspace, reviewer_ids, stamp)
     previous = ws.read_json(workspace.consolidated_json_path, {}) or {}
-    data = review_mod.build_consolidation(workspace, previous.get("reviewers", []), findings, args.iteration)
+    data = review_mod.build_consolidation(
+        workspace, previous.get("reviewers", []), findings, _iteration(args, workspace)
+    )
+    for reviewer_id in stale:
+        _err("note: %s's report predates the current snapshot and was ignored" % reviewer_id)
     ws.write_json(workspace.consolidated_json_path, data)
     ws.write_text(workspace.consolidated_md_path, review_mod.render_consolidation(data))
     if args.json:
@@ -878,7 +909,12 @@ def build_parser() -> argparse.ArgumentParser:
     snapshot.set_defaults(func=cmd_review_snapshot)
 
     review_run = review_sub.add_parser("run", help="run every reviewer against the frozen snapshot")
-    review_run.add_argument("--iteration", type=int, default=1)
+    review_run.add_argument(
+        "--iteration",
+        type=int,
+        default=None,
+        help="review round; derived from the snapshot when omitted",
+    )
     review_run.add_argument("--sequential", action="store_true")
     review_run.add_argument("--only", nargs="*", default=None, help="reviewer ids or roles to run")
     review_run.add_argument("--context", default=None, help="extra context for reviewers")
@@ -888,7 +924,7 @@ def build_parser() -> argparse.ArgumentParser:
     review_run.set_defaults(func=cmd_review_run)
 
     consolidate = review_sub.add_parser("consolidate", help="re-parse reports and dedupe findings")
-    consolidate.add_argument("--iteration", type=int, default=1)
+    consolidate.add_argument("--iteration", type=int, default=None)
     consolidate.add_argument("--json", action="store_true")
     consolidate.set_defaults(func=cmd_review_consolidate)
 
@@ -934,6 +970,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(list(argv) if argv is not None else None)
     if args.cwd:
+        # Resolve before chdir and keep the absolute form: commands also use
+        # args.cwd as a search-start path, and a relative value would otherwise
+        # be applied a second time against the directory we just moved into.
+        args.cwd = os.path.abspath(args.cwd)
         os.chdir(args.cwd)
     try:
         return int(args.func(args) or 0)

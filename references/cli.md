@@ -83,7 +83,7 @@ echo "explain the failure" | dev-orchestra run orchestrator
 | Command | Description |
 | --- | --- |
 | `review snapshot [--base <rev>] [--no-untracked] [--json]` | Freeze the change under review. Exit 1 if empty. |
-| `review run [--iteration N] [--only <ids/roles>] [--sequential] [--context <text>] [--base <rev>] [--timeout <s>] [--json]` | Run every reviewer against the snapshot; write reports and the consolidated result. Exit 1 only if every reviewer failed. |
+| `review run [--iteration N] [--only <ids/roles>] [--sequential] [--context <text>] [--base <rev>] [--timeout <s>] [--json]` | Run every reviewer against the snapshot; write reports and the consolidated result. Exit 1 only if every reviewer failed. The round is derived from the snapshot unless `--iteration` is given. `--only` runs a subset but still consolidates every reviewer's current report, so nothing is lost. |
 | `review consolidate [--iteration N] [--json]` | Re-parse the existing reports and rebuild the consolidated result. |
 | `review show [--accepted] [--json]` | Show the consolidated review. |
 | `review triage <ids…> --status <status> [--note <text>]` | Record triage decisions. |
