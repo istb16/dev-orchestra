@@ -267,6 +267,12 @@ release's work to see what the output cap saves. It reported these instead.
   enough to be handed a reduced review panel. The list comes from `git diff
   --numstat` now, less what was withheld and what is not under review.
 
+  The mode-only case is tested one layer down rather than end to end:
+  `git update-index --chmod` stages a mode while `git diff HEAD` reads the
+  working tree, so whether those disagree depends on `core.filemode` -- false
+  on Windows, true elsewhere. A test that passed on one platform and failed on
+  the other would be testing git's configuration, not this.
+
 - **The uncapped limits block no longer drops its opening instruction.**
   `review.max_findings: 0` omitted the line naming findings as the output,
   leaving the block to open with a rule about evidence length. The one run
