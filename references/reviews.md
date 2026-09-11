@@ -95,6 +95,36 @@ its length. This needs the move to be staged: an unstaged `mv` leaves git with
 a deletion and an untracked file, which are two unrelated facts as far as `git
 diff` is concerned.
 
+## When a review does not run, or runs smaller
+
+`optimization.level` (default `balanced`) decides three things about a round
+before any reviewer starts. The full table is in
+`references/configuration.md`; what matters here is what it can and cannot do
+to a review.
+
+**It can refuse a round outright**, when the last `state record test ok|failed`
+recorded a failure. Reviewing a tree that does not pass its own tests spends a
+reviewer on a problem already known. `--force` overrides. A tree with no
+recorded test result is *not* refused -- it warns and runs, because "nobody
+wrote it down" is not "it failed".
+
+**It can cut the panel to one reviewer**, at `aggressive`, when the change is
+under `low_risk_max_files` and `low_risk_max_lines` and touches no high-risk
+path. That reduced panel keeps a `general` reviewer in preference to a
+specialist: a lone security reviewer reports no correctness bugs, because it
+was told not to look for them. `--only` overrides, and the reduction is
+printed with the counts that produced it.
+
+**It cannot make a high-risk change cheap.** Anything matching
+`optimization.high_risk_paths` -- auth, secrets, payments, migrations, SQL,
+crypto, deploy config -- escalates to `quality` whatever the level says: full
+panel, full findings budget, no gate. The patterns are yours to replace; the
+escalation is not yours to switch off.
+
+What it never does is drop findings, merge reviewers' reports, or hide that
+it acted. Every decision is printed, recorded in the run state, and returned
+by `review run --json` and `status --json` under `optimization`.
+
 ## Roles
 
 Built-in roles get sharper guidance in the prompt:

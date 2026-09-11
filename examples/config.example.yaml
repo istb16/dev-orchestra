@@ -95,11 +95,62 @@ review:
   # meant to address travel with it, and the whole change stays on disk for a
   # reviewer that wants the context. false re-diffs everything every round.
   incremental_rounds: true
-  # How many findings each reviewer is asked for. Output costs several times
-  # what input does, and a reviewer's output is billed again as the fixer's
-  # brief, so an uncapped reviewer is expensive twice over. 0 lifts the cap.
-  # Findings that arrive over the cap are kept, never trimmed.
-  max_findings: 6
+  # How many findings each reviewer is asked for. Leave unset (null) to let
+  # optimization.level decide: 4 aggressive, 6 balanced, 10 quality. A number
+  # here overrides the level; 0 lifts the cap. Nothing over the cap is dropped.
+  max_findings: null
+
+optimization:
+  # How hard to try to be cheap: aggressive | balanced | quality.
+  #
+  #                              aggressive  balanced  quality
+  #   tests recorded as failed   refuse      refuse    review anyway
+  #   no test result recorded    warn        warn      review
+  #   small low-risk change      1 reviewer  panel     panel
+  #   findings asked for         4           6         10
+  #
+  # The gate reads `state record test ok|failed`; this tool cannot run a
+  # project's tests itself. Never recorded warns and continues.
+  level: balanced
+  # A change touching one of these escalates to `quality` whatever level is
+  # set above -- the patterns are yours to replace, the escalation is not
+  # yours to switch off. They over-match on purpose: an extra reviewer is
+  # cheaper than a missed authorisation bug.
+  high_risk_paths:
+    - "*auth*"
+    - "*login*"
+    - "*session*"
+    - "*permission*"
+    - "*policy*"
+    - "*acl*"
+    - "*secret*"
+    - "*credential*"
+    - "*password*"
+    - ".env"
+    - ".env.*"
+    - "*payment*"
+    - "*billing*"
+    - "*checkout*"
+    - "*invoice*"
+    - "*.sql"
+    - "*migration*/*"
+    - "*/migration*/*"
+    - "*migrate*/*"
+    - "*/migrate*/*"
+    - "*schema*"
+    - "*crypto*"
+    - "*cipher*"
+    - Dockerfile
+    - "Dockerfile.*"
+    - "*.tf"
+    - "*/k8s/*"
+    - "*/deploy/*"
+    - "*/.github/workflows/*"
+    - ".github/workflows/*"
+  # At `aggressive`, a change under both of these and touching nothing
+  # high-risk gets one reviewer instead of the panel.
+  low_risk_max_files: 2
+  low_risk_max_lines: 50
 
 workspace:
   # Where plan.md, reviews/ and state.json go, relative to the repo root.

@@ -489,6 +489,64 @@ defaults -- `build/` is conventionally output but hand-written often enough that
 hiding it would sometimes drop real work, and that is a worse failure than
 paying for a lockfile.
 
+## How hard to try to be cheap
+
+One dial, `optimization.level`, decides three things about a review round
+before any reviewer starts. The default is `balanced`.
+
+| | `aggressive` | `balanced` | `quality` |
+| --- | --- | --- | --- |
+| Tests recorded as failing | refuse | refuse | review anyway |
+| No test result recorded | warn, review | warn, review | review |
+| Small, low-risk change | 1 reviewer | whole panel | whole panel |
+| Findings asked for | 4 | 6 | 10 |
+
+The gate reads a recorded result; it does not run anything. dev-orchestra has
+no way to know your test command -- the orchestrator discovers that from your
+repository and runs it directly -- so the gate reads whatever the last
+`dev-orchestra state record test ok|failed` wrote:
+
+```
+$ dev-orchestra review run
+refusing to review: the last recorded test run failed. Reviewing code that
+does not pass its own tests spends a reviewer on a problem you already know
+about. Fix the tests, record the result, and run again -- or pass --force.
+```
+
+That is three states, not two. A tree with **no** recorded result is not
+refused: it warns and reviews, because "nobody wrote it down" is not "it
+failed", and a workflow that has never called `state record` keeps working
+exactly as it did.
+
+A high-risk change escalates to `quality` whatever you configured:
+
+```
+$ dev-orchestra review run
+note: aggressive → quality: db/migrate/003_drop_orders.rb matches *migrate*/*
+```
+
+Auth, secrets, payments, migrations, SQL, crypto, deploy config. The patterns
+are `optimization.high_risk_paths` and you can replace them; the escalation is
+not something you can switch off. They over-match on purpose --
+`authors_controller.rb` matches `*auth*` and costs one extra reviewer, while
+missing `auth_controller.rb` costs an authorisation bug.
+
+Size alone is never the test. One line in an auth file is the exact shape an
+authorisation bug arrives in, so the reduced panel needs the change to be
+small *and* to touch nothing high-risk. When it does reduce, it keeps a
+`general` reviewer over a specialist -- a lone security reviewer reports no
+correctness bugs, because it was told not to look for them -- and it says so:
+
+```
+note: low-risk change (1 file(s), 12 line(s)): 1 reviewer instead of the full
+panel (claude-general). Cross-model disagreement is what a second reviewer
+buys; raise optimization.level or the low_risk thresholds to keep it.
+```
+
+Nothing here drops a finding, merges two reviewers' reports, or acts quietly.
+Every decision is printed, recorded in the run state, and returned by
+`review run --json` and `status --json`.
+
 ## What a run costs
 
 Every delegated run records what it spent, so the question "where did the

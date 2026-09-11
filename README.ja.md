@@ -468,6 +468,59 @@ minify済みファイル、source map、`*.snap`。`[]` にすれば全部レビ
 出力先だが手書きの場合も十分あり、隠すと本物の変更を落としうる。ロックファイルに課金
 されるより、そのほうが悪い失敗だ。
 
+## どこまでコストを削るか
+
+`optimization.level` ひとつで、レビュー開始前に3つのことが決まります。既定は
+`balanced` です。
+
+| | `aggressive` | `balanced` | `quality` |
+| --- | --- | --- | --- |
+| テスト失敗が記録済み | 拒否 | 拒否 | それでもレビュー |
+| テスト結果が未記録 | 警告してレビュー | 警告してレビュー | レビュー |
+| 小さい低リスク変更 | レビュアー1人 | 全員 | 全員 |
+| 要求する finding 数 | 4 | 6 | 10 |
+
+このゲートは**記録された結果を読むだけで、何も実行しません**。dev-orchestra は
+プロジェクトのテストコマンドを知る手段がなく（発見して実行するのは orchestrator
+側です）、直近の `dev-orchestra state record test ok|failed` が書いたものを読みます:
+
+```
+$ dev-orchestra review run
+refusing to review: the last recorded test run failed. ...
+```
+
+状態は2つではなく3つです。**未記録**のツリーは拒否されません。警告してレビュー
+します。「誰も書き留めなかった」は「失敗した」ではありませんし、`state record` を
+使っていないワークフローはこれまでどおり動きます。
+
+高リスク変更は、設定が何であれ `quality` へエスカレーションします:
+
+```
+$ dev-orchestra review run
+note: aggressive → quality: db/migrate/003_drop_orders.rb matches *migrate*/*
+```
+
+認証、秘密情報、決済、マイグレーション、SQL、暗号、デプロイ設定。パターンは
+`optimization.high_risk_paths` で差し替えられますが、エスカレーションそのものは
+無効化できません。パターンは意図的に広めです ── `authors_controller.rb` が
+`*auth*` に当たってもレビュアーが1人増えるだけですが、`auth_controller.rb` を
+取りこぼすと認可バグを1件見逃します。
+
+サイズだけを基準にはしません。認証ファイルの1行変更は、認可バグが現れる典型的な
+形だからです。レビュアーを減らすのは「小さい」かつ「高リスクパスに触れていない」
+場合だけで、減らすときは専門レビュアーより `general` を残します（security 専門
+1人だけでは、そう指示されていない正当性バグを誰も見ません）。そして必ず理由を
+出力します:
+
+```
+note: low-risk change (1 file(s), 12 line(s)): 1 reviewer instead of the full
+panel (claude-general). ...
+```
+
+finding を捨てることも、レビュアーのレポートを統合することも、黙って振る舞いを
+変えることもありません。決定はすべて出力され、run state に記録され、
+`review run --json` と `status --json` から取得できます。
+
 ## 実行コストの確認
 
 委譲した実行ごとに消費量を記録するので、「トークンがどこで消えたか」は推測せずに答えられる。
