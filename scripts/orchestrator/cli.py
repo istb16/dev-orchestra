@@ -706,6 +706,9 @@ def cmd_review_run(args: argparse.Namespace) -> int:
     idle_timeout = args.idle_timeout
     if idle_timeout is None:
         idle_timeout = settings.get("idle_timeout_seconds")
+    max_findings = settings.get("max_findings")
+    if not isinstance(max_findings, int) or isinstance(max_findings, bool) or max_findings < 0:
+        max_findings = review_mod.DEFAULT_MAX_FINDINGS
     try:
         runs = review_mod.run_reviews(
             reviewers,
@@ -714,6 +717,7 @@ def cmd_review_run(args: argparse.Namespace) -> int:
             timeout=batch_timeout,
             extra_context=args.context or "",
             idle_timeout=idle_timeout,
+            max_findings=max_findings,
         )
     except review_mod.ReviewError as exc:
         book.end(token, "failed", {"error": str(exc)})
@@ -751,6 +755,14 @@ def cmd_review_run(args: argparse.Namespace) -> int:
         )
     for reviewer_id in stale:
         _err("note: %s has no report for this snapshot; its earlier report was ignored" % reviewer_id)
+    if max_findings:
+        for run in runs:
+            if run.findings > max_findings:
+                _err(
+                    "note: %s returned %d findings against a cap of %d; all are kept, "
+                    "but its output cost more than it needed to"
+                    % (run.reviewer.get("id"), run.findings, max_findings)
+                )
 
     ok, failed = review_mod.summarise_runs(runs)
     if args.json:

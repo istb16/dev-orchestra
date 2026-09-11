@@ -486,7 +486,7 @@ class TestReviewPipeline(IsolatedCase):
         self.assertTrue(status["iteration_budget_exhausted"])
 
     def test_partial_reviewer_failure_still_produces_a_report(self):
-        os.environ["DEV_ORCHESTRA_MOCK_FAIL"] = "Reviewer id: m2"
+        os.environ["DEV_ORCHESTRA_MOCK_FAIL"] = "Reviewer: m2 |"
         run_cli("review", "snapshot")
         code, out, _ = run_cli("review", "run")
         self.assertEqual(code, 0)

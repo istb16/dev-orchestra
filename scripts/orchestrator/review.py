@@ -73,61 +73,71 @@ DEFAULT_EXCLUDE = (
 
 ROLE_GUIDANCE: Dict[str, str] = {
     "general": (
-        "Prioritise, in this order: correctness bugs, regressions, missing edge cases, "
-        "security problems, performance problems, data consistency, concurrency issues, "
-        "error handling, and insufficient tests. Also flag unnecessary complexity. "
-        "Style-only observations are low severity at most, and usually not worth reporting."
+        "Priority order: correctness bugs, regressions, missed edge cases, security, "
+        "performance, data consistency, concurrency, error handling, thin tests. "
+        "Flag needless complexity. Style-only: low severity at most, usually skip."
     ),
     "security": (
-        "Focus on authentication and authorisation gaps, injection (SQL/command/template), "
-        "unsafe deserialisation, SSRF, path traversal, secret handling and leakage, unsafe "
-        "defaults, missing input validation, and access-control regressions in changed code paths."
+        "Focus: authn/authz gaps, injection (SQL/command/template), unsafe deserialisation, "
+        "SSRF, path traversal, secret handling and leakage, unsafe defaults, missing input "
+        "validation, access-control regressions in changed paths."
     ),
     "performance": (
-        "Focus on algorithmic complexity, N+1 queries, missing indexes, unnecessary I/O, "
-        "unbounded memory growth, blocking calls on hot paths, and cache invalidation mistakes. "
-        "Quantify the cost where the diff gives you enough information."
+        "Focus: algorithmic complexity, N+1 queries, missing indexes, needless I/O, unbounded "
+        "memory, blocking calls on hot paths, cache invalidation. Quantify where the diff allows."
     ),
     "test": (
-        "Focus on test coverage of the changed behaviour: missing edge cases, tests that assert "
-        "nothing meaningful, flaky patterns (time, ordering, network), and untested error paths. "
-        "Name the specific case that is missing, not just 'add more tests'."
+        "Focus: coverage of the changed behaviour -- missed edge cases, assertions that assert "
+        "nothing, flaky patterns (time, ordering, network), untested error paths. "
+        "Name the missing case, not 'add more tests'."
     ),
     "architecture": (
-        "Focus on layering violations, misplaced responsibilities, leaky abstractions, coupling "
-        "introduced by the change, public API/contract shape, and whether the change fits the "
-        "conventions already present in this codebase."
+        "Focus: layering violations, misplaced responsibilities, leaky abstractions, coupling "
+        "added by the change, public API shape, fit with conventions already in this codebase."
     ),
     "database": (
-        "Focus on schema changes, migration safety (locking, backfills, reversibility), "
-        "nullability and constraint changes, index coverage for new queries, transaction "
-        "boundaries, and data-consistency risk during deploy."
+        "Focus: schema changes, migration safety (locking, backfills, reversibility), nullability "
+        "and constraints, index coverage for new queries, transaction boundaries, "
+        "data-consistency risk during deploy."
     ),
     "frontend": (
-        "Focus on component state handling, rendering performance, accessibility (roles, labels, "
-        "keyboard and focus behaviour), responsive layout, error and loading states, and "
-        "client-side validation that is not mirrored server-side."
+        "Focus: component state, rendering performance, accessibility (roles, labels, keyboard, "
+        "focus), responsive layout, error and loading states, client-side validation not mirrored "
+        "server-side."
     ),
     "backend": (
-        "Focus on API contracts and compatibility, validation, error responses and status codes, "
-        "idempotency, transactional integrity, background job semantics, and observability of "
-        "the changed paths."
+        "Focus: API contracts and compatibility, validation, error responses and status codes, "
+        "idempotency, transactional integrity, background job semantics, observability of the "
+        "changed paths."
     ),
 }
 
-REVIEW_PROMPT_TEMPLATE = """You are an independent code reviewer.
+#: Caps on what a reviewer writes back.
+#:
+#: Output is the expensive direction -- per token it costs several times what
+#: input does, and a reviewer's output is billed again as consolidation input
+#: and again as the fixer's brief. An uncapped template invites a reviewer to
+#: pad: twenty low findings, a screenful of quoted context per finding, a patch
+#: where a sentence would do.
+#:
+#: The cap is on volume, not on judgement: a reviewer over the limit is asked
+#: for its worst findings, not asked to stay quiet. Nothing is dropped on our
+#: side either -- every finding that comes back is parsed and kept, and a
+#: reviewer that overshoots is reported rather than trimmed, because deciding
+#: which of its findings to discard is triage, and triage is not this layer's.
+DEFAULT_MAX_FINDINGS = 6
+MAX_EVIDENCE_LINES = 3
+MAX_FIX_LINES = 2
 
-Reviewer id: {reviewer_id}
-Review role: {role}
-Repository root: {root}
+REVIEW_PROMPT_TEMPLATE = """Independent code reviewer. Read-only.
 
-## Your task
+Reviewer: {reviewer_id} | Role: {role} | Repo root: {root}
 
-Review ONLY the change described by the snapshot below. Judge it on its merits.
-You are read-only: do not modify, create, or delete any file. Do not run
+## Task
+
+Review only the change below, on its own merits.
+Read any file for context. Do not modify, create, or delete files. Do not run
 commands that mutate the repository or the network.
-
-You may read any file in the repository to understand context.
 
 {role_guidance}
 
@@ -135,28 +145,21 @@ You may read any file in the repository to understand context.
 
 {diff_section}
 
-## Required output format
+## Output
 
-Report every issue as a block in exactly this format:
+One block per issue, exactly this shape:
 
 ## Finding
-- Severity: critical | high | medium | low
-- File: <path relative to the repository root>
-- Line: <line number or range, or "n/a">
-- Category: <short category, e.g. correctness, security, performance, tests>
-- Problem: <what is wrong, one or two sentences>
-- Impact: <what breaks, and under what conditions>
-- Evidence: <the specific code or diff hunk that shows it>
-- Recommended fix: <concrete change you would make>
+- Severity: critical|high|medium|low
+- File: <path from repo root>
+- Line: <number, range, or n/a>
+- Category: <one word, e.g. correctness, security, performance, tests>
+- Problem: <what is wrong, 1-2 sentences>
+- Impact: <what breaks, under what conditions>
+- Evidence: <the code or hunk that shows it>
+- Fix: <the concrete change>
 
-Rules:
-- Report only issues you can point at in the code. Do not speculate.
-- Do not report the same issue twice.
-- If the change is sound and you find nothing worth fixing, reply with exactly:
-
-NO_FINDINGS
-
-Output nothing except findings (or NO_FINDINGS). No preamble, no summary.
+{limits}
 """
 
 
@@ -469,12 +472,9 @@ def render_round_context(workspace: ws.Workspace, meta: Dict[str, Any]) -> str:
     if not meta.get("incremental_from"):
         return ""
     consolidated = ws.read_json(workspace.consolidated_json_path, {}) or {}
-    lines = [
-        "This is a re-review. The diff above is only what changed since the previous "
-        "round -- the fix, not the whole change."
-    ]
+    lines = ["Re-review. The diff above is the fix only, not the whole change."]
     if meta.get("full_diff"):
-        lines.append("The whole change is frozen at %s; read it if you need the context." % meta["full_diff"])
+        lines.append("Whole change frozen at %s -- read it if you need the context." % meta["full_diff"])
     accepted = accepted_findings(consolidated)
     if accepted:
         lines.append("")
@@ -491,8 +491,8 @@ def render_round_context(workspace: ws.Workspace, meta: Dict[str, Any]) -> str:
             )
         lines.append("")
         lines.append(
-            "Say whether each is actually fixed, and report any new problem the fix "
-            "introduced. Do not assume a listed item was real."
+            "For each: fixed or not. Plus any new problem the fix introduced. "
+            "Do not assume a listed item was real."
         )
     return "\n".join(lines)
 
@@ -505,7 +505,7 @@ def render_withheld(withheld: Sequence[Dict[str, Any]]) -> str:
     """
     if not withheld:
         return ""
-    lines = ["Changed but withheld as generated or vendored -- diffs not shown:"]
+    lines = ["Changed, diff withheld (generated or vendored):"]
     for entry in withheld:
         added, deleted = entry.get("added"), entry.get("deleted")
         if added is None and deleted is None:
@@ -652,26 +652,48 @@ class ReviewError(RuntimeError):
 # --------------------------------------------------------------------------- fan-out
 
 
+def render_limits(max_findings: int = DEFAULT_MAX_FINDINGS) -> str:
+    """The block that caps what a reviewer writes back.
+
+    ``max_findings`` of 0 lifts the count cap; the rest of the block still
+    applies, because a reviewer allowed to report everything is not thereby
+    allowed to quote a whole file per finding or to open with a paragraph
+    about how thorough it intends to be.
+    """
+    lines = ["Limits:"]
+    if max_findings > 0:
+        lines.append(
+            "- Max %d findings. Over that, report the %d worst -- severity first, never padding."
+            % (max_findings, max_findings)
+        )
+    lines += [
+        "- Evidence: %d lines max. Fix: %d lines max." % (MAX_EVIDENCE_LINES, MAX_FIX_LINES),
+        "- Only what you can point at in the code. No speculation. No duplicates.",
+        "- Nothing worth fixing: reply with exactly NO_FINDINGS",
+        "- Findings or NO_FINDINGS only. No preamble, no summary, no sign-off.",
+    ]
+    return "\n".join(lines)
+
+
 def build_review_prompt(
     reviewer: Dict[str, Any],
     workspace: ws.Workspace,
     diff_text: str,
     extra_context: str = "",
     template: Optional[str] = None,
+    max_findings: int = DEFAULT_MAX_FINDINGS,
 ) -> str:
     role = str(reviewer.get("role") or "general")
     guidance = ROLE_GUIDANCE.get(
         role,
-        "Review the change from the perspective of a %s specialist. Report only concrete, "
-        "evidence-backed issues within that perspective." % role,
+        "Review as a %s specialist. Concrete, evidence-backed issues in that perspective only." % role,
     )
     if len(diff_text) <= MAX_INLINE_DIFF_CHARS:
         diff_section = "```diff\n%s\n```" % diff_text.rstrip()
     else:
         diff_section = (
-            "The diff is too large to inline. Read it from this file, which is frozen "
-            "for the duration of this review:\n\n    %s\n\nReview only what that diff contains."
-            % workspace.relative(workspace.snapshot_path)
+            "Diff too large to inline. Read it from this file, frozen for this review:\n\n"
+            "    %s\n\nReview only what that diff contains." % workspace.relative(workspace.snapshot_path)
         )
     meta = ws.read_json(workspace.snapshot_meta_path, {}) or {}
     for note in (render_withheld(meta.get("withheld") or []), render_round_context(workspace, meta)):
@@ -683,9 +705,10 @@ def build_review_prompt(
         role_guidance=guidance,
         root=workspace.root,
         diff_section=diff_section,
+        limits=render_limits(max_findings),
     )
     if extra_context.strip():
-        prompt += "\n## Additional context from the orchestrator\n\n%s\n" % extra_context.strip()
+        prompt += "\n## Additional context\n\n%s\n" % extra_context.strip()
     return prompt
 
 
@@ -745,6 +768,7 @@ def run_reviews(
     extra_context: str = "",
     template: Optional[str] = None,
     idle_timeout: Optional[float] = None,
+    max_findings: int = DEFAULT_MAX_FINDINGS,
 ) -> List[ReviewerRun]:
     """Run every configured reviewer against the frozen snapshot."""
     if not reviewers:
@@ -769,7 +793,7 @@ def run_reviews(
             provider = get_provider(str(reviewer.get("provider")))
         except Exception as exc:
             return ReviewerRun(reviewer, "failed", error=str(exc))
-        prompt = build_review_prompt(reviewer, workspace, diff_text, extra_context, template)
+        prompt = build_review_prompt(reviewer, workspace, diff_text, extra_context, template, max_findings)
         try:
             result = provider.run(
                 prompt,
@@ -1403,11 +1427,17 @@ def unresolved_blocking(
 
 
 def render_fix_brief(data: Dict[str, Any]) -> str:
-    """The prompt payload handed to the Review Fixer: accepted findings only."""
+    """The prompt payload handed to the Review Fixer: accepted findings only.
+
+    Every line here is billed twice: once as the reviewer's output and again
+    as the fixer's input. So a field that is empty is omitted rather than sent
+    as a label with nothing after it, and who reported a finding is dropped --
+    the fixer's job is the same whoever noticed.
+    """
     findings = accepted_findings(data)
     if not findings:
         return "No accepted findings. Nothing to fix.\n"
-    lines = ["# Accepted review findings to fix", ""]
+    lines = ["# Fix these accepted findings", ""]
     for finding in findings:
         lines += [
             "## %s [%s] %s:%s"
@@ -1418,14 +1448,18 @@ def render_fix_brief(data: Dict[str, Any]) -> str:
                 finding.get("line", "n/a"),
             ),
             "",
-            "- Category: %s" % finding.get("category", "general"),
-            "- Reported by: %s" % ", ".join(finding.get("reported_by", [])),
-            "- Problem: %s" % finding.get("problem", ""),
-            "- Impact: %s" % finding.get("impact", ""),
-            "- Evidence: %s" % finding.get("evidence", ""),
-            "- Recommended fix: %s" % finding.get("recommended_fix", ""),
-            "",
         ]
+        for label, key in (
+            ("Category", "category"),
+            ("Problem", "problem"),
+            ("Impact", "impact"),
+            ("Evidence", "evidence"),
+            ("Fix", "recommended_fix"),
+        ):
+            value = str(finding.get(key) or "").strip()
+            if value:
+                lines.append("- %s: %s" % (label, value))
+        lines.append("")
     return "\n".join(lines)
 
 

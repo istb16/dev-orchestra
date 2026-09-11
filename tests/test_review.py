@@ -350,7 +350,7 @@ class TestFanOut(IsolatedCase):
         self.assertNotIn("r1", report.split("---", 1)[1])
 
     def test_one_failure_does_not_fail_the_batch(self):
-        os.environ["DEV_ORCHESTRA_MOCK_FAIL"] = "Reviewer id: r2"
+        os.environ["DEV_ORCHESTRA_MOCK_FAIL"] = "Reviewer: r2 |"
         runs = review_mod.run_reviews([reviewer("r1"), reviewer("r2"), reviewer("r3")], self.workspace)
         ok, failed = review_mod.summarise_runs(runs)
         self.assertEqual((ok, failed), (2, 1))

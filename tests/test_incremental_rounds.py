@@ -401,7 +401,7 @@ class TestRereviewPremise(RoundCase):
         self.fix()
         review_mod.create_snapshot(self.workspace)
         prompt = self.prompt()
-        self.assertIn("only what changed since the previous round", prompt)
+        self.assertIn("the fix only, not the whole change", prompt)
         self.assertIn("review-target-full.diff", prompt)
 
     def test_a_re_review_is_told_what_the_fix_was_for(self):

@@ -12,6 +12,23 @@ The public surface covered by that promise is: the configuration schema, the
 
 ### Added
 
+- **Reviewer output is capped.** The review prompt now asks for at most
+  `review.max_findings` findings (6 by default, `0` lifts the cap), three lines
+  of evidence and two lines of fix per finding, and no preamble, summary or
+  sign-off.
+
+  Output is the expensive direction: per token it costs several times what
+  input does, and a reviewer's output is billed again when it is consolidated
+  and again as the fixer's brief. An uncapped prompt invites the padding that
+  costs most -- twenty low findings, a screenful of quoted context each, a
+  patch where a sentence would do.
+
+  The cap is on volume, not judgement. A reviewer over the limit is asked for
+  its worst findings, severity first, rather than told to stop looking, and
+  nothing that does come back is dropped: every finding is parsed and kept, and
+  a reviewer that overshoots is reported on stderr. Which findings to discard
+  is triage, and triage stays with the orchestrator.
+
 - **Re-review diffs only the fix.** A snapshot now records the working tree as
   a git tree object, and the next round diffs against the tree the previous
   round actually reviewed instead of re-diffing everything against `HEAD`.
@@ -223,6 +240,22 @@ same blind spot, that the test suite only ever exercised a single review round.
   with the bundled parser.
 
 ### Changed
+
+- **The review prompt is written as instructions, not prose.** The template
+  dropped from 1,247 to 752 characters and the role guidance from an average of
+  235 to 195, so the fixed part of every reviewer prompt went from 1,574 to
+  1,309 characters -- roughly 66 tokens saved per reviewer, per round, on top
+  of the output cap that replaced part of it.
+
+  Nothing the reviewer is held to was dropped, only shortened: read-only, judge
+  this change alone, read any file for context, and every field the parser
+  reads. The `Finding` block keeps its exact shape, because a renamed heading
+  would cost a whole delegated run to a parse failure. `- Recommended fix:`
+  became `- Fix:`, which the parser has always accepted, and still does.
+
+  The fixer's brief was trimmed the same way: an empty field is omitted rather
+  than sent as a bare label, and who reported a finding is left out -- the fix
+  is the same whoever noticed.
 
 - Renamed every user-visible identifier to `dev-orchestra`: the skill name, the
   `dev-orchestra` command, the config directory, the `.dev-orchestra.yaml`

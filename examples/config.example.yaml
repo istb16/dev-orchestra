@@ -95,6 +95,11 @@ review:
   # meant to address travel with it, and the whole change stays on disk for a
   # reviewer that wants the context. false re-diffs everything every round.
   incremental_rounds: true
+  # How many findings each reviewer is asked for. Output costs several times
+  # what input does, and a reviewer's output is billed again as the fixer's
+  # brief, so an uncapped reviewer is expensive twice over. 0 lifts the cap.
+  # Findings that arrive over the cap are kept, never trimmed.
+  max_findings: 6
 
 workspace:
   # Where plan.md, reviews/ and state.json go, relative to the repo root.
