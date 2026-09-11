@@ -64,6 +64,57 @@ class TestSkillDocument(IsolatedCase):
     def test_stays_under_the_size_budget(self):
         self.assertLess(len(self.text.splitlines()), validate_skill.MAX_SKILL_LINES)
 
+    def test_stays_under_the_token_budget(self):
+        """Lines are a poor proxy for cost -- a table row and a paragraph are
+        one line each and price very differently -- so the real ceiling is in
+        characters. This document is resident in every session."""
+        self.assertLess(len(self.text), validate_skill.MAX_SKILL_CHARS)
+
+    def test_the_pipeline_can_be_run_without_opening_a_reference(self):
+        """The document was compressed by cutting words, not steps. A reader
+        who has to open references/workflow.md to find the next command has
+        not saved anything: that file costs more than this one."""
+        for command in (
+            "run architect",
+            "run implementer",
+            "review snapshot",
+            "review run",
+            "review triage",
+            "review fix-brief",
+            "run review_fixer",
+            "review status",
+            "budget consume",
+            "progress record",
+            "doctor",
+            "config set",
+            "reviewer add",
+            "tokens show",
+        ):
+            self.assertIn(command, self.body, command)
+
+    def test_the_helper_invocation_is_spelled_out_once(self):
+        """Commands are written bare to avoid repeating a 46-character prefix
+        fourteen times, which only works if the expansion is stated."""
+        self.assertIn('python "PLUGIN_ROOT/scripts/dev_orchestra.py" <command>', self.body)
+        self.assertIn("Commands below are written bare", self.body)
+
+    def test_the_review_invariants_survive_compression(self):
+        """These are the rules that make a multi-model review worth running;
+        they are also the easiest sentences to lose while shortening prose."""
+        body = self.body.lower()
+        for rule in (
+            "no reviewer sees another",
+            "never re-snapshot mid-round",
+            "unparsed",
+            "triage before re-snapshotting",
+            "read-only",
+        ):
+            self.assertIn(rule, body)
+
+    def test_the_stage_order_is_still_stated_as_an_order(self):
+        self.assertIn("their **order is not**", self.body)
+        self.assertIn("Never review before tests, never", self.body)
+
     def test_states_the_non_negotiable_rules(self):
         body = self.body.lower()
         for rule in (
