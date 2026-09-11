@@ -302,14 +302,29 @@ It narrows the scope only when there is a round to be incremental to:
 | Situation | Scope |
 | --- | --- |
 | First round | Whole change |
-| Previous snapshot was reviewed, and the tree changed since | The fix |
+| Previous round was reviewed, produced accepted findings, and the tree changed since | The fix |
+| Previous round found nothing, or everything was rejected | Whole change |
 | Previous snapshot was never reviewed (a reviewer failed, so you re-snapshot) | Whole change |
 | Nothing changed since the reviewed round | Whole change |
 | `--base` given | Whole change from that base |
 | `--full`, or `review.incremental_rounds: false` | Whole change |
 
-The third and fourth rows matter: without them an ordinary re-snapshot would
-quietly become an empty diff.
+Every row after the second is a case where narrowing would cost more than it
+saves. Without the "never reviewed" and "nothing changed" rows an ordinary
+re-snapshot would quietly become an empty diff. And a round following a review
+that produced nothing to fix is reviewing *new work*, not checking a fix: there
+is no brief to hand the reviewer, so it gets the whole change instead of a
+fragment with nothing to judge it against.
+
+**Triage before you re-snapshot.** The scope narrows on the accepted findings
+existing, so re-snapshotting first gives you the whole change again.
+
+The tree is only recorded when the round might use one. `--base` and
+`review.incremental_rounds: false` both say it will not, and writing it means
+hashing every untracked-but-not-ignored file into the object database, which on
+a repository with a large directory nobody remembered to ignore is neither
+cheap nor invisible. The round after such a snapshot finds no tree and takes
+the whole change, which is the safe direction to fall back in.
 
 ## Running reviews on their own
 

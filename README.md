@@ -451,8 +451,10 @@ about 80 tokens in place of a few thousand, and it asks a sharper question than
 a second full diff does: *is each of these actually fixed, and did the fix
 break anything?*
 
-Triage before you re-snapshot, or there is no brief to hand them. `--full` (or
-`review.incremental_rounds: false`) re-sends the whole change.
+Triage before you re-snapshot. The scope only narrows when there are accepted
+findings for it to narrow against — a round following a review that found
+nothing is reviewing new work, not checking a fix, so it gets the whole change.
+`--full` (or `review.incremental_rounds: false`) re-sends everything.
 
 ## What reviewers are not shown
 

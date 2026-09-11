@@ -220,8 +220,9 @@ exhausted, **stop and report the remaining findings**; do not loop.
 
 That second snapshot diffs only what the fix changed, and hands the reviewers
 the accepted findings plus the frozen whole change. So triage the first round
-**before** re-snapshotting, or there is no brief to hand them. `--full`
-re-sends the whole change if a round genuinely needs it.
+**before** re-snapshotting: the scope narrows on those findings existing, and
+without them you get the whole change again. `--full` re-sends everything if a
+round genuinely needs it.
 
 ## 3. Delegation rules
 
