@@ -109,6 +109,7 @@ workspace:
 | `review.timeout_seconds` | int > 0 | Per-run timeout; a timeout is reported, not raised. |
 | `review.exclude` | list | Glob patterns whose diff body is withheld from reviewers. Replaces the default list wholesale; `[]` reviews everything. |
 | `review.incremental_rounds` | bool | `true` (default) makes a second round diff against what the first round reviewed, carrying the findings the fix was meant to address. `false` re-diffs the whole change every round. |
+| `review.max_findings` | int | How many findings each reviewer is asked for (default 6). `0` lifts the cap. Findings that come back over the cap are kept, never trimmed. |
 | `workspace.dir` | string | Where `.ai/` artifacts go. |
 | `<role>.options` | mapping | Provider-specific knobs; see below. |
 

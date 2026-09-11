@@ -56,6 +56,13 @@ def _default_exclude() -> Tuple[str, ...]:
     return DEFAULT_EXCLUDE
 
 
+def _default_max_findings() -> int:
+    """Also the review module's to own, and imported late for the same reason."""
+    from .review import DEFAULT_MAX_FINDINGS
+
+    return DEFAULT_MAX_FINDINGS
+
+
 def is_valid_reviewer_id(value: Any) -> bool:
     """The same rule ``validate`` applies, exposed for input-time checking."""
     return isinstance(value, str) and bool(_ID_RE.match(value))
@@ -112,6 +119,11 @@ def default_config() -> Dict[str, Any]:
             # re-review sees the fix instead of the whole change again. The
             # findings the fix was meant to address ride along with it.
             "incremental_rounds": True,
+            # How many findings a reviewer is asked for. Output is billed at
+            # several times the input rate, and a reviewer's output is billed
+            # again as the fixer's brief, so an uncapped reviewer costs twice
+            # over. 0 lifts the cap. Nothing that comes back is ever dropped.
+            "max_findings": _default_max_findings(),
         },
         "budgets": {
             "architect": 3,
@@ -350,6 +362,11 @@ def validate(data: Dict[str, Any], known_providers: Optional[List[str]] = None) 
             incremental = review.get("incremental_rounds")
             if incremental is not None and not isinstance(incremental, bool):
                 problems.append("review.incremental_rounds: must be true or false")
+            findings_cap = review.get("max_findings")
+            if findings_cap is not None and (
+                not isinstance(findings_cap, int) or isinstance(findings_cap, bool) or findings_cap < 0
+            ):
+                problems.append("review.max_findings: must be a non-negative integer (0 = no cap)")
             exclude = review.get("exclude")
             if exclude is not None:
                 if not isinstance(exclude, list):

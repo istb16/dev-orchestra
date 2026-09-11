@@ -127,13 +127,35 @@ Reviewers are asked for this exact shape:
 - File: <path relative to the repo root>
 - Line: <number, range, or n/a>
 - Category: <correctness | security | performance | tests | …>
-- Problem: <what is wrong>
+- Problem: <what is wrong, 1-2 sentences>
 - Impact: <what breaks, and when>
 - Evidence: <the code or hunk that shows it>
-- Recommended fix: <the concrete change>
+- Fix: <the concrete change>
 ```
 
 A clean review returns exactly `NO_FINDINGS`.
+
+### Output limits
+
+The prompt caps what comes back:
+
+| Limit | Default | Where |
+|---|---|---|
+| Findings per reviewer | 6 | `review.max_findings` (0 = no cap) |
+| Evidence lines per finding | 3 | `MAX_EVIDENCE_LINES` in `review.py` |
+| Fix lines per finding | 2 | `MAX_FIX_LINES` in `review.py` |
+| Preamble, summary, sign-off | none | fixed in the prompt |
+
+Output is the expensive direction: per token it costs several times what input
+does, and a reviewer's output is billed again when it is consolidated and again
+as the fixer's brief. An uncapped prompt invites twenty low findings and a
+screenful of quoted context each.
+
+The cap is on volume, not judgement. A reviewer over the limit is asked for its
+worst findings, not asked to keep quiet, and **nothing that does come back is
+dropped** — every finding is parsed and kept, and a reviewer that overshoots is
+reported on stderr. Deciding which findings to discard is triage, and triage is
+the orchestrator's, not the prompt's.
 
 A reviewer that returns neither findings in a recognisable shape nor
 `NO_FINDINGS` is recorded with status `unparsed` and counted as **failed**. A
@@ -142,7 +164,7 @@ it as such is the worst way for a review tool to fail.
 
 The parser is deliberately tolerant: it accepts `**Severity:** high`,
 `**Severity**: high`, `- Severity: high`, any heading level for `Finding`,
-`Recommendation`/`Fix` as synonyms for `Recommended fix`, multi-line values, and
+`Recommended fix`/`Recommendation` as synonyms for `Fix`, multi-line values, and
 normalises paths (`./a\b.py` → `a/b.py`). Unknown severities become `medium`;
 `nit`, `minor`, `style`, `info` become `low`; `blocker` becomes `critical`. A
 block with neither a problem nor evidence is discarded.
