@@ -241,6 +241,20 @@ same blind spot, that the test suite only ever exercised a single review round.
 
 ### Changed
 
+- **SKILL.md is a third smaller.** 15,877 characters down to 11,533, roughly
+  3,970 tokens to 2,880. That document is resident for the whole of every
+  session, so its size is a running cost rather than a one-off, and
+  `validate_skill.py` now enforces a character ceiling alongside the line one
+  -- a table row and a paragraph are one line each and cost very differently.
+
+  What went was words, not steps. Prose became tables and clauses, the
+  46-character helper-CLI prefix is stated once instead of fourteen times, and
+  the eighteen-row "the user says / you run" phrasebook moved to
+  `references/configuration.md`, replaced by the command grammar it was
+  examples of. Every command the pipeline needs is still in the document,
+  because a reader who has to open `references/workflow.md` to find the next
+  step has saved nothing: that file costs more than this one.
+
 - **The review prompt is written as instructions, not prose.** The template
   dropped from 1,247 to 752 characters and the role guidance from an average of
   235 to 195, so the fixed part of every reviewer prompt went from 1,574 to

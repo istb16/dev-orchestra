@@ -187,6 +187,28 @@ cannot verify a family raises `ModelResolutionError` rather than sending a
 guessed name to the CLI. The *resolved* id is recorded in `.ai/state.json` for
 traceability; the config file keeps the family.
 
+## What the user asks for, and what to run
+
+The skill carries the command grammar; this is the phrasebook.
+
+| The user says | Run |
+| --- | --- |
+| "show my configuration" | `config show` |
+| "set this up" / "redo setup" | `config setup`, or `config setup --defaults` |
+| "which models can I use?" | `model list` |
+| "use Claude Opus for implementation" | `config set implementer.model.family opus` |
+| "make the architect use Codex" | `config set architect.provider codex` **and** a family Codex accepts |
+| "the implementer can't run the tests" | `config set implementer.options.permission_mode bypassPermissions`, or allow-list the command in that CLI's own settings |
+| "add a Codex security reviewer" | `reviewer add --provider codex --role security` |
+| "make it three reviewers" | `reviewer add …` again, then `reviewer list` |
+| "remove the performance reviewer" | `reviewer remove performance` |
+| "change the second reviewer" | `reviewer set 2 --provider … --role …` |
+| "just this project" | add `--scope project` to any write |
+| "reset to defaults" | `config reset` |
+| "check my environment" | `doctor` |
+
+Show the resulting configuration after any write, so the user can confirm it.
+
 ## Editing
 
 ```bash

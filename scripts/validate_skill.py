@@ -30,6 +30,13 @@ CODEX_PLUGIN = ".codex-plugin/plugin.json"
 CODEX_MARKETPLACE = ".agents/plugins/marketplace.json"
 
 MAX_SKILL_LINES = 500
+
+#: SKILL.md is resident for the whole session, in every session, so its size
+#: is a running cost rather than a one-off. Lines are a poor proxy for that --
+#: a table row and a paragraph cost very differently -- so the budget is in
+#: characters, roughly four to a token. The ceiling has room above the current
+#: document for a rule worth adding; it is not a target to grow into.
+MAX_SKILL_CHARS = 12_500
 MAX_DESCRIPTION_CHARS = 1024
 REQUIRED_FRONTMATTER = ("name", "description")
 REQUIRED_FILES = (
@@ -250,6 +257,12 @@ def check() -> List[str]:
     line_count = len(text.splitlines())
     if line_count > MAX_SKILL_LINES:
         problems.append("%s is %d lines; keep it under %d" % (SKILL_PATH, line_count, MAX_SKILL_LINES))
+
+    if len(text) > MAX_SKILL_CHARS:
+        problems.append(
+            "%s is %d characters (about %d tokens); keep it under %d"
+            % (SKILL_PATH, len(text), len(text) // 4, MAX_SKILL_CHARS)
+        )
 
     # Every referenced reference file must exist.
     for match in re.findall(r"`(references/[a-z0-9_.-]+\.md)`", body):
