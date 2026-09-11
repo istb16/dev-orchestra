@@ -538,6 +538,42 @@ class TestWhatTheSnapshotReportsAsChanged(IsolatedCase):
         self.assertIn("app/helper.py", meta["changed_paths"])
         self.assertIn("app/auth.py", meta["changed_paths"])
 
+    def test_a_binary_file_is_counted(self):
+        """Git prints "Binary files a/x and b/x differ" and no `+++` header,
+        so reading the list out of the diff text missed it -- and a change to
+        three images and one source file counted as one file, small enough for
+        a reduced panel."""
+        with open(os.path.join(self.project, "logo.png"), "wb") as handle:
+            handle.write(b"\x00\x01original")
+        self.commit_all("image")
+        with open(os.path.join(self.project, "logo.png"), "wb") as handle:
+            handle.write(b"\x00\x09changed")
+        meta = self.snapshot()
+        self.assertIn("logo.png", meta["files"])
+        self.assertIn("logo.png", meta["changed_paths"])
+
+    def test_a_mode_only_change_is_counted(self):
+        """`old mode` / `new mode` and nothing else: no headers, no hunks."""
+        self.write("run.sh", "echo hi\n")
+        self.commit_all("script")
+        self.git("update-index", "--chmod=+x", "run.sh")
+        meta = self.snapshot()
+        self.assertIn("run.sh", meta["files"])
+
+    def test_an_untracked_file_is_still_counted(self):
+        """It is diffed separately, by name; git's listing of tracked changes
+        cannot know about it."""
+        self.write("brand_new.py", "x = 1\n")
+        meta = self.snapshot()
+        self.assertIn("brand_new.py", meta["files"])
+
+    def test_the_orchestrators_own_files_are_not_counted(self):
+        self.write(".dev-orchestra.yaml", "version: 1\n")
+        self.write("app/main.py", "x = 2\n")
+        meta = self.snapshot()
+        self.assertNotIn(".dev-orchestra.yaml", meta["files"])
+        self.assertIn("app/main.py", meta["files"])
+
     def test_a_withheld_file_is_in_the_paths_but_not_in_the_files(self):
         self.write("yarn.lock", "dep 1.0\n")
         self.commit_all("lock")

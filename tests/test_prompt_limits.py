@@ -78,10 +78,20 @@ class TestTheLimitsBlock(unittest.TestCase):
 
     def test_zero_lifts_the_count_cap_and_keeps_every_other_rule(self):
         block = review_mod.render_limits(0)
-        self.assertNotIn("Max", block)
+        self.assertIn("No maximum", block)
         self.assertIn("Evidence", block)
         self.assertIn("NO_FINDINGS", block)
         self.assertIn("No preamble", block)
+
+    def test_both_forms_open_by_asking_for_findings(self):
+        """Only the capped form used to, and the one run observed returning a
+        prose summary instead of finding blocks -- recorded `unparsed`, and so
+        counted as a failed review -- was the uncapped one. One run is not a
+        cause; an instruction weaker in one mode than the other is still worth
+        levelling."""
+        for cap in (0, 6):
+            first = review_mod.render_limits(cap).splitlines()[1]
+            self.assertIn("findings" if cap else "block", first, cap)
 
     def test_the_per_finding_caps_are_stated_in_lines(self):
         block = review_mod.render_limits()

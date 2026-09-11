@@ -146,6 +146,22 @@ class TestClaudeUsage(unittest.TestCase):
 
 
 class TestCodexUsage(unittest.TestCase):
+    """What the CLI prints is a single total, on its own two lines.
+
+    The text this is read from also contains the agent's answer, which is why
+    every test below is about what must *not* be mistaken for accounting. A
+    reviewer reading this repository writes about token counts: one real
+    review quoted ``input_tokens: 12`` as a finding's evidence, and the
+    parser recorded twelve billed tokens for that run and threw away the
+    total the CLI had printed.
+    """
+
+    def test_the_footer_the_cli_actually_prints(self):
+        """Label on its own line, number on the next."""
+        usage = parse_usage_text("codex\nOK\ntokens used\n3,877\nOK\n")
+        self.assertEqual(usage.total_tokens, 3877)
+        self.assertEqual(usage.billed_tokens, 3877)
+
     def test_a_printed_total_is_read_as_a_total(self):
         usage = parse_usage_text("working...\ntokens used: 12,345\n")
         self.assertEqual(usage.total_tokens, 12345)
@@ -153,14 +169,37 @@ class TestCodexUsage(unittest.TestCase):
         self.assertEqual(usage.billed_tokens, 12345)
 
     def test_the_final_figure_wins_over_progress_updates(self):
+        """Also what makes the footer win over an answer that quotes one: the
+        CLI prints its accounting after the answer it is accounting for."""
         self.assertEqual(parse_usage_text("tokens used: 5\ntokens used: 900\n").total_tokens, 900)
 
-    def test_a_split_replaces_the_total_instead_of_joining_it(self):
-        """Keeping both would double-count the same tokens in every sum."""
+    def test_prose_about_tokens_is_not_accounting(self):
+        """The exact string that broke a real run."""
+        self.assertIsNone(parse_usage_text("The fixture says input_tokens: 12"))
+
+    def test_an_answer_discussing_tokens_does_not_override_the_footer(self):
+        usage = parse_usage_text("an answer mentioning input_tokens: 12\ntokens used\n9,876\n")
+        self.assertEqual(usage.total_tokens, 9876)
+
+    def test_a_split_is_not_parsed_at_all(self):
+        """These patterns were speculative -- against a format this CLI has
+        never emitted -- and the only thing they ever matched was a reviewer
+        writing about token accounting. The total is what was actually said."""
         usage = parse_usage_text("tokens used: 125\ninput tokens: 100\noutput tokens: 25\n")
-        self.assertEqual((usage.input_tokens, usage.output_tokens), (100, 25))
-        self.assertIsNone(usage.total_tokens)
+        self.assertEqual(usage.total_tokens, 125)
+        self.assertIsNone(usage.input_tokens)
+        self.assertIsNone(usage.output_tokens)
         self.assertEqual(usage.billed_tokens, 125)
+
+    def test_a_label_with_no_number_is_not_a_measurement(self):
+        """The number group used to accept a bare comma, which is not one."""
+        self.assertIsNone(parse_usage_text('"input_tokens": self.input_tokens,'))
+        self.assertIsNone(parse_usage_text("tokens used\nunknown\n"))
+
+    def test_a_footer_indented_inside_an_answer_is_still_not_read(self):
+        """Anchored to the start of a line, so a quoted footer in a code block
+        does not become the report."""
+        self.assertIsNone(parse_usage_text("evidence: `tokens used: 1` appears in the test"))
 
     def test_prose_the_adapter_does_not_recognise_reports_nothing(self):
         """A wording change must produce no number, not a wrong one."""

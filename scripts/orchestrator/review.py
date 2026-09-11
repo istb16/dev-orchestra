@@ -293,7 +293,7 @@ def create_snapshot(
                 ws.write_text(workspace.full_snapshot_path, full)
                 full_diff_path = workspace.relative(workspace.full_snapshot_path)
     added_lines, deleted_lines = _diff_line_counts(diff)
-    reviewed = _changed_files(diff)
+    reviewed = _reviewed_files(tracked, withheld, suppressed, untracked)
     # Two different lists, for two different questions.
     #
     # ``files`` is what a reviewer is being shown, and is what the size
@@ -707,39 +707,38 @@ def _diff_line_counts(diff: str) -> "tuple[int, int]":
     return added, deleted
 
 
-def _changed_files(diff: str) -> List[str]:
-    """Every file this diff carries, deletions included.
+def _reviewed_files(
+    tracked: Sequence[Dict[str, Any]],
+    withheld: Sequence[Dict[str, Any]],
+    suppressed: Sequence[str],
+    untracked: Sequence[str],
+) -> List[str]:
+    """The files a reviewer is being shown, from git's list rather than ours.
 
-    A deletion's ``+++`` side is ``/dev/null``, so reading only that side
-    dropped deleted files from the list -- and this list is what the risk
-    check and the size threshold are computed from. Deleting an auth file is
-    not a smaller change than editing one.
+    This was read out of the diff text, by looking for ``+++ b/`` headers.
+    Git does not print those for every kind of change: a binary file gets
+    "Binary files a/x and b/x differ" and a mode-only change gets nothing but
+    ``old mode`` / ``new mode``, so both were missing from the list entirely
+    -- which meant a change to three images and one source file counted as
+    one file, and could be handed a reduced review panel for being small.
+
+    ``git diff --numstat`` reports all of them, so the list comes from there
+    now, less the two kinds of file a reviewer will not see: what was withheld
+    as generated, and what is not part of the change at all. Untracked files
+    are added back because they are diffed separately, by name, and git's
+    listing of tracked changes cannot know about them.
     """
+    hidden = {str(entry.get("path")) for entry in withheld}
+    hidden.update(str(path) for path in suppressed)
     files: List[str] = []
-    previous = ""
-    for line in diff.splitlines():
-        if line.startswith("--- "):
-            previous = _diff_path(line[4:])
-        elif line.startswith("+++ "):
-            name = _diff_path(line[4:]) or previous
-            if name and name not in files:
-                files.append(name)
-            previous = ""
+    for entry in tracked:
+        path = str(entry.get("path") or "")
+        if path and path not in hidden and path not in files:
+            files.append(path)
+    for path in untracked:
+        if path and path not in files:
+            files.append(path)
     return files
-
-
-def _diff_path(raw: str) -> str:
-    """One side of a diff header, without its ``a/``/``b/`` prefix.
-
-    ``/dev/null`` comes back empty: it names the absent side of an addition
-    or a deletion, not a file.
-    """
-    name = raw.strip()
-    if not name or name == "/dev/null":
-        return ""
-    if name.startswith(("a/", "b/")):
-        name = name[2:]
-    return name
 
 
 class ReviewError(RuntimeError):
@@ -756,6 +755,13 @@ def render_limits(max_findings: int = DEFAULT_MAX_FINDINGS) -> str:
     applies, because a reviewer allowed to report everything is not thereby
     allowed to quote a whole file per finding or to open with a paragraph
     about how thorough it intends to be.
+
+    Both forms open by saying that findings are what to produce. Only the
+    capped form used to, and the one run observed returning a prose summary
+    instead of finding blocks -- recorded ``unparsed``, and so counted as a
+    failed review -- was uncapped. One run is not a cause, and this is not
+    offered as the fix for it; but an instruction that is weaker in one mode
+    than the other is worth levelling either way.
     """
     lines = ["Limits:"]
     if max_findings > 0:
@@ -763,6 +769,8 @@ def render_limits(max_findings: int = DEFAULT_MAX_FINDINGS) -> str:
             "- Max %d findings. Over that, report the %d worst -- severity first, never padding."
             % (max_findings, max_findings)
         )
+    else:
+        lines.append("- Report every issue you can point at, one block each. No maximum.")
     lines += [
         "- Evidence: %d lines max. Fix: %d lines max." % (MAX_EVIDENCE_LINES, MAX_FIX_LINES),
         "- Only what you can point at in the code. No speculation. No duplicates.",

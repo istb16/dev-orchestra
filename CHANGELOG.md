@@ -240,6 +240,42 @@ The public surface covered by that promise is: the configuration schema, the
 
 ### Fixed
 
+Found by measuring: a two-model review was run against the whole of this
+release's work to see what the output cap saves. It reported these instead.
+
+- **A reviewer's own prose was being read as its token accounting.** The Codex
+  adapter scanned the CLI's output for a usage report, and that output
+  contains the agent's answer. A reviewer reading this repository writes about
+  token counts: one real review quoted `input_tokens: 12` as a finding's
+  evidence, and the adapter recorded twelve billed tokens for that run and
+  discarded the total the CLI had actually printed. The finding was about this
+  bug, and the text of it caused the bug to happen -- which is as direct a
+  reproduction as anyone is going to get.
+
+  The pattern is anchored to the start of a line now, the number has to start
+  with a digit (the old character class matched a bare comma), and the
+  speculative input/output patterns are gone. They were written against a
+  format this CLI has never emitted, and the only thing they ever matched was
+  prose. `tokens used` on its own line, followed by one number, is what Codex
+  prints and now all that is read.
+
+- **Binary and mode-only changes were not counted as files.** The
+  reviewed-file list was read out of the diff text by looking for `+++ b/`
+  headers, and git prints none for either: a binary file gets "Binary files
+  a/x and b/x differ" and a mode change gets `old mode` / `new mode`. So a
+  change to three images and one source file counted as one file -- small
+  enough to be handed a reduced review panel. The list comes from `git diff
+  --numstat` now, less what was withheld and what is not under review.
+
+- **The uncapped limits block no longer drops its opening instruction.**
+  `review.max_findings: 0` omitted the line naming findings as the output,
+  leaving the block to open with a rule about evidence length. The one run
+  observed returning a prose summary instead of finding blocks -- recorded
+  `unparsed`, and so counted as a failed review, which is the behaviour
+  working -- was the uncapped one. One run is not a cause and this is not
+  offered as the fix for it, but an instruction that is weaker in one mode
+  than the other is worth levelling either way.
+
 - **Every Codex run failed with a `TypeError`.** `CodexProvider.run`
   overrides the base method so the agent's final message can be captured to a
   file instead of scraped from a log. `idle_timeout` was added to
