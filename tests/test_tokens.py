@@ -53,6 +53,12 @@ def stream(*events):
     return "".join(json.dumps(event) + "\n" for event in events)
 
 
+def _uninstalled():
+    from orchestrator.providers import Detection
+
+    return Detection(installed=False, error="not installed")
+
+
 RESULT = {
     "type": "result",
     "subtype": "success",
@@ -162,6 +168,30 @@ class TestCodexUsage(unittest.TestCase):
 
     def test_stderr_is_searched_when_stdout_is_silent(self):
         self.assertEqual(parse_usage_text("", "tokens used: 42").total_tokens, 42)
+
+
+class TestNothingRanIsNotAFailureToReport(IsolatedCase):
+    def test_a_missing_cli_produces_a_run_that_was_never_invoked(self):
+        """The mock provider overrides run() wholesale, so this exercises the
+        real adapter path rather than the double."""
+        from orchestrator.providers.claude import ClaudeProvider
+
+        provider = ClaudeProvider()
+        original = ClaudeProvider.detect
+        ClaudeProvider.detect = lambda self: _uninstalled()
+        try:
+            result = provider.run("prompt", "review", self.project)
+        finally:
+            ClaudeProvider.detect = original
+        self.assertFalse(result.ok)
+        self.assertFalse(result.invoked)
+        self.assertFalse(result.usage.measured)
+
+    def test_a_run_that_reached_the_cli_is_marked_invoked(self):
+        from orchestrator.providers import get_provider
+
+        result = get_provider("mock").run("prompt", "review", self.project)
+        self.assertTrue(result.invoked)
 
 
 # --------------------------------------------------------------------------- ledger
@@ -292,6 +322,26 @@ class TestTokensCommand(IsolatedCase):
         run_cli("run", "implementer", "--prompt", "go")
         _, out, _ = run_cli("tokens", "show")
         self.assertIn("floor", out)
+
+    def test_a_run_that_never_started_a_cli_is_not_in_the_account(self):
+        """A failed run is recorded because it spent something. A run that
+        never started one spent nothing, and counting it as unreported would
+        make the account call itself a floor over a run with nothing to
+        report."""
+        run_cli("config", "set", "implementer.model.family", "unresolvable")
+        self.assertEqual(run_cli("run", "implementer", "--prompt", "go")[0], 2)
+        payload = json.loads(run_cli("tokens", "show", "--json")[1])
+        self.assertEqual(payload["totals"]["runs"], 0)
+
+    def test_a_real_run_alongside_one_that_never_started_stays_complete(self):
+        """The "totals are a floor" caveat must fire on missing data, not on
+        a run there was never any data for."""
+        run_cli("run", "implementer", "--prompt", "go")
+        run_cli("config", "set", "implementer.model.family", "unresolvable")
+        run_cli("run", "implementer", "--prompt", "go")
+        payload = json.loads(run_cli("tokens", "show", "--json")[1])
+        self.assertEqual(payload["totals"]["runs"], 1)
+        self.assertTrue(payload["complete"])
 
     def test_status_reports_the_account_without_acting_on_it(self):
         run_cli("run", "implementer", "--prompt", "go")

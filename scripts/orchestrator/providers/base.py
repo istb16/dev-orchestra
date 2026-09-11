@@ -229,6 +229,7 @@ class RunResult:
         idle_for: float = 0.0,
         orphans_possible: bool = False,
         usage: Optional[Usage] = None,
+        invoked: bool = True,
     ) -> None:
         self.ok = ok
         self.exit_code = exit_code
@@ -247,6 +248,11 @@ class RunResult:
         #: What the run cost. Never None, so callers need not guard; the
         #: numbers inside it are None when the CLI reported nothing.
         self.usage = usage or Usage()
+        #: False when no CLI was started at all -- it was not installed, or a
+        #: model could not be resolved. Such a run spent nothing, so counting
+        #: it as one that failed to report would make the token account
+        #: declare itself incomplete over a run that had nothing to report.
+        self.invoked = invoked
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -259,6 +265,7 @@ class RunResult:
             "duration_seconds": round(self.duration, 2),
             "command": self.command,
             "model": self.resolved.to_dict() if self.resolved else None,
+            "invoked": self.invoked,
             "usage": self.usage.to_dict(),
         }
 
@@ -412,7 +419,15 @@ class Provider:
             raise ValueError("unknown mode %r" % mode)
         detection = self.detect()
         if not detection.installed:
-            return RunResult(False, 127, "", detection.error or "CLI not installed", [self.executable], 0.0)
+            return RunResult(
+                False,
+                127,
+                "",
+                detection.error or "CLI not installed",
+                [self.executable],
+                0.0,
+                invoked=False,
+            )
 
         resolved = self.resolve_model(model_spec)
         command = self.build_command(mode, resolved, cwd, extra_args, options)

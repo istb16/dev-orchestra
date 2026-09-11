@@ -432,8 +432,9 @@ Snapshot: .ai/reviews/review-target.diff
 ポインタも載せる。コストは数千トークンの代わりに約80トークンで、しかも2回目の全 diff
 より鋭い問いになる: **各 finding は実際に直ったか、修正が何かを壊していないか。**
 
-re-snapshot の前に triage すること。でないと渡すブリーフがない。`--full`
-（または `review.incremental_rounds: false`）で全体を再送できる。
+re-snapshot の前に triage すること。スコープが狭まるのは accepted findings があるときだけで、
+finding が出なかったラウンドの次は「修正の検証」ではなく「新しい変更のレビュー」なので全体が渡る。
+`--full`（または `review.incremental_rounds: false`）で全体を再送できる。
 
 ## レビュアーに送らないもの
 

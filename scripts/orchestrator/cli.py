@@ -539,8 +539,12 @@ def cmd_run(args: argparse.Namespace) -> int:
     if result.orphans_possible:
         _err("warning: %s's process group may have left orphans; check for stray processes." % role)
 
-    # Recorded whatever the outcome: a failed run still spent what it spent.
-    book.record_usage(role, result.usage.to_dict())
+    # Recorded whatever the outcome -- a failed run still spent what it spent.
+    # A run that never started one is a different thing, and counting it as
+    # unreported would make the account call itself incomplete over a run with
+    # nothing to report.
+    if result.invoked:
+        book.record_usage(role, result.usage.to_dict())
     book.end(
         token,
         "ok" if result.ok else ("stalled" if result.stalled else "failed"),
@@ -717,7 +721,8 @@ def cmd_review_run(args: argparse.Namespace) -> int:
         return 2
 
     for run in runs:
-        book.record_usage("review", run.usage.to_dict(), label=str(run.reviewer.get("id") or "reviewer"))
+        if run.invoked:
+            book.record_usage("review", run.usage.to_dict(), label=str(run.reviewer.get("id") or "reviewer"))
     run_dicts = [run.to_dict() for run in runs]
     # Consolidate from every configured reviewer's report, not only the ones
     # that just ran: with --only that would otherwise overwrite the report with

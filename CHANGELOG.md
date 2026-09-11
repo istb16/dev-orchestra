@@ -26,14 +26,20 @@ The public surface covered by that promise is: the configuration schema, the
   instruction not to assume a listed finding was real. Who reported what is
   left out, so reviewers still never see each other's output.
 
-  The scope only narrows when there is a round to be incremental to. A
-  re-snapshot of a round nobody reviewed, a working tree that has not changed
-  since, an explicit `--base`, `--full`, or
-  `review.incremental_rounds: false` all take the whole change -- without the
-  first two, an ordinary re-snapshot would quietly become an empty diff.
+  The scope only narrows when narrowing is safe. A re-snapshot of a round
+  nobody reviewed, a working tree that has not changed since, an explicit
+  `--base`, `--full`, and `review.incremental_rounds: false` all take the whole
+  change -- without the first two, an ordinary re-snapshot would quietly become
+  an empty diff. So does a round following a review that produced nothing to
+  fix: with no accepted findings there is no brief to hand the reviewer, and
+  that round is reviewing new work rather than checking a fix.
 
   The tree is written through a throwaway index, the same trick `git stash
-  create` uses, so the user's own index is never touched.
+  create` uses, so the user's own index is never touched, and only when the
+  round might actually use one -- writing it hashes every
+  untracked-but-not-ignored file into the object database, which on a
+  repository with a large directory nobody remembered to ignore is neither
+  cheap nor invisible.
 
 - **Generated and vendored files are withheld from the review diff.**
   `review.exclude` (lockfiles, `dist/`, `vendor/`, `node_modules/`, minified
@@ -60,6 +66,11 @@ The public surface covered by that promise is: the configuration schema, the
   event (input, output, cache-read, cache-write and a price) and whatever
   `codex exec` prints. `dev-orchestra tokens show` breaks the total down by
   stage and by reviewer, and `status` and `summary` carry it too.
+
+  A run that never started a CLI -- an unresolvable model, a CLI that is not
+  installed -- is left out entirely rather than counted as one that failed to
+  report, so the "these totals are a floor" caveat fires on missing data and
+  not on a run there was never any data for.
 
   Deliberately *not* a budget: nothing refuses a run over what it would cost,
   and the command is separate from `budget` so neither reads as the other.

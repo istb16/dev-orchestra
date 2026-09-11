@@ -190,8 +190,16 @@ def create_snapshot(
         )
     patterns = list(DEFAULT_EXCLUDE if exclude is None else exclude)
 
-    tree = _write_tree(root)
-    previous_tree = _reviewed_tree(workspace) if incremental and not base else ""
+    head = _head(root)
+    # Writing the tree means hashing every untracked-but-not-ignored file into
+    # the object database, which on a repository with a large directory nobody
+    # remembered to ignore is neither cheap nor invisible. ``--base`` and
+    # ``incremental: False`` both say this round is not going to use it, so it
+    # is not written; the round after finds no tree and takes the whole change,
+    # which is the safe direction to fall back in.
+    wanted = incremental and not base
+    tree = _write_tree(root) if wanted else ""
+    previous_tree = _reviewed_tree(workspace) if wanted else ""
     if previous_tree and tree and previous_tree != tree:
         revisions = [previous_tree, tree]
         strategy = "git diff <previous round> <now>"
@@ -203,20 +211,34 @@ def create_snapshot(
     # Which files changed, before asking for the diff itself: the exclusion is
     # decided from this cheap listing, so the expensive call is made once and
     # already filtered.
-    tracked, listed = _numstat(root, revisions, patterns)
+    tracked, listed_code, listed_err = _numstat(root, revisions, patterns)
     withheld = [entry for entry in tracked if entry.get("pattern")]
+    # A tree-to-tree diff skips the untracked pass below, which is where the
+    # rules about what is not part of the change at all normally get applied.
+    # They have to be applied here instead, or they hold in round 1 and lapse
+    # in round 2.
+    suppressed = _not_under_review(tracked, workspace, root, include_untracked) if previous_tree else []
+    if suppressed:
+        withheld = [entry for entry in withheld if entry["path"] not in suppressed]
 
-    if listed:
-        code, diff, err = _diff(root, revisions, _pathspecs(withheld))
-        if code != 0 and withheld:
+    if listed_code == 0:
+        exclusions = _pathspecs(withheld) + [":(exclude,literal)%s" % path for path in suppressed]
+        code, diff, err = _diff(root, revisions, exclusions)
+        if code != 0 and exclusions:
             # Old git, or pathspec magic it does not accept. Taking the whole
             # diff costs tokens; dropping the change silently costs a review.
             code, diff, err = _diff(root, revisions, [])
             strategy += " (exclusions unsupported by this git)"
             withheld = []
-    else:
-        # A repository with no commits yet: everything is untracked.
+            suppressed = []
+    elif revisions == ["HEAD"] and not head:
+        # A repository with no commits yet: everything is untracked. Only this
+        # one case is benign -- any other failure is a revision git could not
+        # resolve, and reporting that as "nothing to review" sends someone
+        # hunting through their own change for something that was never there.
         code, diff, err, strategy = 0, "", "", "untracked-only (no HEAD commit)"
+    else:
+        raise ReviewError("git diff failed: %s" % (listed_err.strip() or listed_code))
     if code != 0:
         raise ReviewError("git diff failed: %s" % (err.strip() or code))
 
@@ -242,20 +264,28 @@ def create_snapshot(
                     diff += dout
                     untracked.append(name)
 
-    head = ""
-    hcode, hout, _ = ws.git(["rev-parse", "HEAD"], root)
-    if hcode == 0:
-        head = hout.strip()
-
     ws.write_text(workspace.snapshot_path, diff)
     full_diff_path = ""
     if previous_tree:
         # Leave the whole change somewhere the reviewer can look. This costs a
         # git call and no tokens: it is read only if a reviewer needs it.
-        fcode, full, _ = _diff(root, [base or "HEAD"], _pathspecs(withheld))
-        if fcode == 0 and full.strip():
-            ws.write_text(workspace.full_snapshot_path, full)
-            full_diff_path = workspace.relative(workspace.full_snapshot_path)
+        #
+        # The exclusions are recomputed against *this* range: the incremental
+        # round's withheld list only covers what the fix touched, and reusing
+        # it would write the very lockfile round 1 withheld into the file the
+        # prompt invites a reviewer to open.
+        full_tracked, full_code, _ = _numstat(root, [base or "HEAD"], patterns)
+        if full_code == 0:
+            full_withheld = [entry for entry in full_tracked if entry.get("pattern")]
+            full_suppressed = _not_under_review(full_tracked, workspace, root, include_untracked)
+            fcode, full, _ = _diff(
+                root,
+                [base or "HEAD"],
+                _pathspecs(full_withheld) + [":(exclude,literal)%s" % p for p in full_suppressed],
+            )
+            if fcode == 0 and full.strip():
+                ws.write_text(workspace.full_snapshot_path, full)
+                full_diff_path = workspace.relative(workspace.full_snapshot_path)
     meta = {
         "generated_at": ws.utcnow(),
         "strategy": strategy,
@@ -339,11 +369,20 @@ def _write_tree(root: str) -> str:
 
 
 def _reviewed_tree(workspace: ws.Workspace) -> str:
-    """The tree of the previous snapshot, but only once it has been reviewed.
+    """The tree of the previous round, if narrowing to it is safe.
 
-    Diffing against a snapshot nobody reviewed would answer a question no round
-    asked, and would turn an ordinary re-snapshot -- taken because a reviewer
-    failed, say -- into an empty diff.
+    Two conditions, and both are about the reviewer rather than the cost.
+
+    The previous snapshot has to have been reviewed. Diffing against one
+    nobody reviewed would answer a question no round asked, and would turn an
+    ordinary re-snapshot -- taken because a reviewer failed, say -- into an
+    empty diff.
+
+    And that review has to have produced something the fix was answering.
+    Scope is only narrowed together with the premise that explains it, so a
+    round following a clean review, or one whose findings were all rejected,
+    takes the whole change: there is no fix to check, and a fragment with
+    nothing to judge it against is the failure this feature exists to avoid.
     """
     meta = ws.read_json(workspace.snapshot_meta_path, {}) or {}
     tree = str(meta.get("tree") or "")
@@ -351,7 +390,9 @@ def _reviewed_tree(workspace: ws.Workspace) -> str:
         return ""
     consolidated = ws.read_json(workspace.consolidated_json_path, {}) or {}
     reviewed = str((consolidated.get("snapshot") or {}).get("sha256") or "")
-    return tree if reviewed and reviewed == str(meta.get("sha256") or "") else ""
+    if not reviewed or reviewed != str(meta.get("sha256") or ""):
+        return ""
+    return tree if accepted_findings(consolidated) else ""
 
 
 def _is_orchestrator_artifact(name: str, workspace: ws.Workspace) -> bool:
@@ -478,20 +519,62 @@ def render_withheld(withheld: Sequence[Dict[str, Any]]) -> str:
 
 def _numstat(
     root: str, revisions: Sequence[str], patterns: Sequence[str]
-) -> "tuple[List[Dict[str, Any]], bool]":
-    """Every changed file with its line counts, and whether git could list them.
+) -> "tuple[List[Dict[str, Any]], int, str]":
+    """Every changed file with its line counts, plus git's own exit and error.
 
-    The second value distinguishes "nothing changed" from "there is no such
-    revision" -- a repository with no commits yet has no ``HEAD``, and that is
-    a normal state, not a failure.
+    The exit code is handed back rather than reduced to a boolean because the
+    caller has to tell "there is no HEAD yet", which is an ordinary state, from
+    "that revision does not exist", which is a mistake worth reporting.
     """
-    code, out, _ = ws.git(["diff", "--numstat", "-z", "-M", *revisions, "--"], root)
+    code, out, err = ws.git(["diff", "--numstat", "-z", "-M", *revisions, "--"], root)
     if code != 0:
-        return [], False
+        return [], code, err
     entries: List[Dict[str, Any]] = []
     for added, deleted, path in _parse_numstat(out):
         entries.append(_withheld_entry(path, withholds(path, patterns), added, deleted))
-    return entries, True
+    return entries, 0, ""
+
+
+def _head(root: str) -> str:
+    code, out, _ = ws.git(["rev-parse", "HEAD"], root)
+    return out.strip() if code == 0 else ""
+
+
+def _untracked_paths(root: str) -> "set[str]":
+    code, out, _ = ws.git(["ls-files", "--others", "--exclude-standard"], root)
+    if code != 0:
+        return set()
+    return {line.strip() for line in out.splitlines() if line.strip()}
+
+
+def _not_under_review(
+    tracked: Sequence[Dict[str, Any]],
+    workspace: ws.Workspace,
+    root: str,
+    include_untracked: bool,
+) -> List[str]:
+    """Changed paths that are not part of the change under review at all.
+
+    Distinct from ``withheld``: a withheld file *is* part of the change and is
+    reported to the reviewer by name. These are not, and are simply absent --
+    the orchestrator's own configuration and workspace, and, when the caller
+    asked for tracked changes only, everything git does not track.
+
+    The other diff path applies both rules while walking untracked files. A
+    tree-to-tree diff never walks them, so without this the rules would hold
+    for a first round and lapse for a re-review.
+    """
+    untracked: "set[str]" = set()
+    if not include_untracked:
+        untracked = _untracked_paths(root)
+    suppressed: List[str] = []
+    for entry in tracked:
+        path = str(entry.get("path") or "")
+        if not path:
+            continue
+        if _is_orchestrator_artifact(path, workspace) or path in untracked:
+            suppressed.append(path)
+    return suppressed
 
 
 def _parse_numstat(out: str) -> "List[tuple[Optional[int], Optional[int], str]]":
@@ -617,6 +700,7 @@ class ReviewerRun:
         duration: float = 0.0,
         findings: int = 0,
         usage: Optional[Usage] = None,
+        invoked: bool = False,
     ) -> None:
         self.reviewer = reviewer
         # ok | failed | stalled | unparsed. Only "ok" counts as a delivered
@@ -632,6 +716,10 @@ class ReviewerRun:
         #: the pipeline -- the same diff, once per reviewer, once per round --
         #: so their cost is recorded per reviewer, not just per round.
         self.usage = usage or Usage()
+        #: Whether a CLI was started. Defaults to False because the paths that
+        #: construct a run without one -- an unknown provider, a model that
+        #: will not resolve -- are exactly the ones that spent nothing.
+        self.invoked = invoked
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -644,6 +732,7 @@ class ReviewerRun:
             "duration_seconds": round(self.duration, 2),
             "findings": self.findings,
             "report": self.report_path,
+            "invoked": self.invoked,
             "usage": self.usage.to_dict(),
         }
 
@@ -715,6 +804,7 @@ def run_reviews(
                 # A failed review is not a free one: whatever it burned before
                 # falling over still has to appear in the account.
                 usage=result.usage,
+                invoked=result.invoked,
             )
         body = result.stdout.strip() or "NO_FINDINGS"
         header = (
@@ -741,6 +831,7 @@ def run_reviews(
             duration=result.duration,
             findings=len(findings),
             usage=result.usage,
+            invoked=result.invoked,
         )
 
     if parallel and len(reviewers) > 1:

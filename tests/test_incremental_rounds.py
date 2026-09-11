@@ -210,6 +210,158 @@ class TestIncrementalScope(RoundCase):
         diff = ws.read_text(self.workspace.snapshot_path)
         self.assertEqual(diff.count("+print('two')"), 1)
 
+
+class TestRulesThatMustNotLapseInRoundTwo(RoundCase):
+    """Both trees are built with ``git add -A``, so anything the untracked pass
+    used to filter has to be filtered again for a tree-to-tree diff. Each of
+    these held in round 1 and silently stopped holding in round 2."""
+
+    def test_no_untracked_is_honoured_on_an_incremental_round(self):
+        self.first_round()
+        self.fix()
+        self.write("brand_new.py", "print('new')\n")
+        meta = review_mod.create_snapshot(self.workspace, include_untracked=False)
+        self.assertTrue(meta["incremental_from"])
+        self.assertNotIn("brand_new.py", meta["files"])
+        self.assertNotIn("brand_new.py", ws.read_text(self.workspace.snapshot_path))
+
+    def test_the_flag_actually_toggles_rather_than_always_excluding(self):
+        self.first_round()
+        self.fix()
+        self.write("brand_new.py", "print('new')\n")
+        meta = review_mod.create_snapshot(self.workspace)
+        self.assertIn("brand_new.py", meta["files"])
+
+    def test_a_suppressed_file_is_not_reported_as_withheld(self):
+        """Withheld means "part of the change, body not sent". These are not
+        part of the change at all, so claiming otherwise would be a lie."""
+        self.first_round()
+        self.fix()
+        self.write("extra.lock", "generated\n")
+        meta = review_mod.create_snapshot(self.workspace, include_untracked=False)
+        self.assertEqual([entry["path"] for entry in meta["withheld"]], [])
+
+    def test_the_orchestrators_own_config_stays_out_of_an_incremental_diff(self):
+        """SKILL.md tells the orchestrator to run `config set` mid-workflow, so
+        the config changing between rounds is a normal event, not an abuse."""
+        self.write(".dev-orchestra.yaml", "version: 1\n")
+        self.first_round()
+        self.fix()
+        self.write(".dev-orchestra.yaml", "version: 1\nreview:\n  timeout_seconds: 900\n")
+        meta = review_mod.create_snapshot(self.workspace)
+        self.assertTrue(meta["incremental_from"])
+        self.assertNotIn(".dev-orchestra.yaml", meta["files"])
+        self.assertNotIn("timeout_seconds", ws.read_text(self.workspace.snapshot_path))
+
+    def test_the_workspace_stays_out_of_an_incremental_diff(self):
+        """It is normally gitignored, but the invariant must not depend on that:
+        the docs invite a team to commit the workspace instead."""
+        self.first_round()
+        self.fix()
+        os.remove(os.path.join(self.project, ".ai", ".gitignore"))
+        meta = review_mod.create_snapshot(self.workspace)
+        self.assertFalse([name for name in meta["files"] if name.startswith(".ai/")])
+
+
+class TestNarrowingNeedsAPremise(RoundCase):
+    """Scope is only narrowed together with the brief that explains it. A round
+    that follows a review producing nothing to fix has no such brief, so it
+    takes the whole change -- it is reviewing new work, not checking a fix."""
+
+    def clean_round(self):
+        """A first round that finds nothing."""
+        os.environ["DEV_ORCHESTRA_MOCK_RESPONSE"] = "NO_FINDINGS\n"
+        os.environ.pop("DEV_ORCHESTRA_MOCK_DIR", None)
+        self.addCleanup(os.environ.pop, "DEV_ORCHESTRA_MOCK_RESPONSE", None)
+        self.implement()
+        review_mod.create_snapshot(self.workspace)
+        run_cli("review", "run")
+
+    def test_a_round_after_a_clean_review_takes_the_whole_change(self):
+        self.clean_round()
+        self.write("service.py", body("*") + "\ndef extra(x):\n    return x\n")
+        meta = review_mod.create_snapshot(self.workspace)
+        self.assertFalse(meta["incremental_from"])
+        self.assertIn("op59", ws.read_text(self.workspace.snapshot_path))
+
+    def test_a_round_after_an_accepted_finding_still_narrows(self):
+        """The guard must not have disabled the feature outright."""
+        self.first_round()
+        self.fix()
+        self.assertTrue(review_mod.create_snapshot(self.workspace)["incremental_from"])
+
+
+class TestTreeIsOnlyWrittenWhenItWillBeUsed(RoundCase):
+    """Writing the tree hashes every untracked-but-not-ignored file into the
+    object database. A round that has said it will not use one should not pay
+    for it, or leave the objects behind."""
+
+    def test_a_normal_round_records_one(self):
+        self.implement()
+        self.assertTrue(review_mod.create_snapshot(self.workspace)["tree"])
+
+    def test_an_explicit_base_does_not(self):
+        self.implement()
+        self.assertEqual(review_mod.create_snapshot(self.workspace, base="HEAD")["tree"], "")
+
+    def test_the_feature_being_off_does_not(self):
+        self.implement()
+        self.assertEqual(review_mod.create_snapshot(self.workspace, incremental=False)["tree"], "")
+
+    def test_the_round_after_one_falls_back_to_the_whole_change(self):
+        """No tree to compare against is the safe direction to fail in."""
+        self.implement()
+        review_mod.create_snapshot(self.workspace, incremental=False)
+        run_cli("review", "run")
+        run_cli("review", "triage", "F1", "--status", "accepted")
+        self.fix()
+        meta = review_mod.create_snapshot(self.workspace)
+        self.assertFalse(meta["incremental_from"])
+        self.assertIn("op59", ws.read_text(self.workspace.snapshot_path))
+
+
+class TestFullDiffCompanion(RoundCase):
+    def test_it_withholds_what_the_first_round_withheld(self):
+        """The prompt invites a reviewer to open this file. Recomputing the
+        exclusions against the incremental round's list -- which only covers
+        what the fix touched -- would put the lockfile back in it."""
+        self.write("package-lock.json", json.dumps({"v": list(range(100))}))
+        self.first_round()
+        self.write("package-lock.json", json.dumps({"v": list(range(300))}))
+        self.fix()
+        meta = review_mod.create_snapshot(self.workspace)
+        self.assertTrue(meta["full_diff"])
+        full = ws.read_text(os.path.join(self.project, meta["full_diff"]))
+        self.assertIn("op59", full)
+        self.assertNotIn("package-lock.json", full)
+
+
+class TestUnresolvableRevision(RoundCase):
+    def test_a_revision_git_cannot_resolve_is_reported_not_swallowed(self):
+        """Reporting it as "nothing to review" sends someone hunting through
+        their own change for something that was never missing."""
+        self.implement()
+        with self.assertRaises(review_mod.ReviewError) as ctx:
+            review_mod.create_snapshot(self.workspace, base="no-such-branch")
+        self.assertIn("no-such-branch", str(ctx.exception))
+
+    def test_the_command_exits_two_rather_than_claiming_an_empty_change(self):
+        self.implement()
+        code, out, err = run_cli("review", "snapshot", "--base", "no-such-branch")
+        self.assertEqual(code, 2)
+        self.assertNotIn("nothing to review", out)
+        self.assertIn("no-such-branch", err)
+
+    def test_a_repository_with_no_commits_is_still_the_benign_case(self):
+        fresh = os.path.join(self.tmp, "empty-repo")
+        os.makedirs(fresh)
+        subprocess.run(["git", "init", "-q"], cwd=fresh, check=True, capture_output=True)
+        with open(os.path.join(fresh, "a.py"), "w", encoding="utf-8") as handle:
+            handle.write("x = 1\n")
+        meta = review_mod.create_snapshot(ws.Workspace(fresh).ensure())
+        self.assertIn("no HEAD commit", meta["strategy"])
+        self.assertIn("a.py", meta["untracked_included"])
+
     def test_exclusions_still_apply_to_an_incremental_round(self):
         self.first_round()
         self.write("package-lock.json", json.dumps({"v": list(range(300))}))
@@ -262,12 +414,16 @@ class TestRereviewPremise(RoundCase):
         self.assertIn("Do not assume a listed item was real", prompt)
 
     def test_only_accepted_findings_are_carried_over(self):
-        """A rejected finding is not part of the brief the fixer worked from."""
+        """A rejected finding is not part of the brief the fixer worked from --
+        and with no brief at all, the round takes the whole change rather than
+        sending a fragment with nothing to judge it against."""
         self.first_round(triage=False)
         run_cli("review", "triage", "F1", "--status", "rejected")
         self.fix()
-        review_mod.create_snapshot(self.workspace)
+        meta = review_mod.create_snapshot(self.workspace)
+        self.assertFalse(meta["incremental_from"])
         self.assertNotIn("The fix was meant to address:", self.prompt())
+        self.assertIn("op59", ws.read_text(self.workspace.snapshot_path))
 
     def test_the_brief_does_not_say_who_reported_what(self):
         """Reviewers still do not see each other's output: the findings arrive
