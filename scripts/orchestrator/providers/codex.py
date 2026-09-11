@@ -37,12 +37,24 @@ RECOMMENDED_FAMILIES = ("recommended-coding", "recommended", "default", "auto", 
 #: these are read off human-readable output rather than a documented schema, so
 #: they are patterns to *try*, in order, and a miss reports nothing rather than
 #: guessing. ``codex exec`` prints a single total, not an input/output split.
+#: The accounting footer ``codex exec`` prints, which is a label on its own
+#: line followed by one number:
+#:
+#:     tokens used
+#:     3,877
+#:
+#: Anchored to the start of a line, and the number must start with a digit.
+#: Neither is fussiness. This is matched against the CLI's own output, and
+#: that output contains the agent's *answer* -- which, for a reviewer reading
+#: this repository, is liable to discuss token accounting in prose. An
+#: unanchored pattern read a finding's evidence as the report: a review that
+#: quoted ``input_tokens: 12`` recorded twelve billed tokens and threw the
+#: real total away. The number is what this exists to know; a sentence about
+#: a number is not it.
 _USAGE_TOTAL_RES = (
-    re.compile(r"tokens?\s+used\s*:?\s*([\d,_]+)", re.IGNORECASE),
-    re.compile(r"total\s+tokens?\s*:?\s*([\d,_]+)", re.IGNORECASE),
+    re.compile(r"^[ \t]*tokens?[ \t]+used[ \t]*:?[ \t]*\n?[ \t]*(\d[\d,_]*)", re.IGNORECASE | re.MULTILINE),
+    re.compile(r"^[ \t]*total[ \t]+tokens?[ \t]*:?[ \t]*\n?[ \t]*(\d[\d,_]*)", re.IGNORECASE | re.MULTILINE),
 )
-_USAGE_INPUT_RE = re.compile(r"input[\s_]tokens?\s*:?\s*([\d,_]+)", re.IGNORECASE)
-_USAGE_OUTPUT_RE = re.compile(r"output[\s_]tokens?\s*:?\s*([\d,_]+)", re.IGNORECASE)
 
 #: Sandbox policies `codex exec -s` accepts, per its own --help.
 SANDBOX_POLICIES = ("read-only", "workspace-write", "danger-full-access")
@@ -280,30 +292,27 @@ class CodexProvider(Provider):
 
 
 def parse_usage_text(*streams: str) -> Optional[Usage]:
-    """Scan the CLI's own output for a usage report. None when there is none.
+    """Scan the CLI's own output for its accounting footer. None if there is none.
 
-    The last match wins: the figure printed at the end of a run is the final
-    one, and an earlier line is a progress update on the way to it.
+    Only a total is read, because a total is all this CLI prints. Patterns for
+    an input/output split used to be here too, speculatively, against a format
+    the CLI has never emitted -- and since the text being scanned includes the
+    agent's answer, the only thing they ever matched was a reviewer writing
+    about token accounting. Splitting a number we were told into two we were
+    not is not worth a parser that can be fed by the code under review.
     """
     for text in streams:
         if not text:
             continue
-        found = Usage(source="codex output")
         for pattern in _USAGE_TOTAL_RES:
             matches = pattern.findall(text)
-            if matches:
-                found.total_tokens = _digits(matches[-1])
-                break
-        for pattern, attribute in ((_USAGE_INPUT_RE, "input_tokens"), (_USAGE_OUTPUT_RE, "output_tokens")):
-            matches = pattern.findall(text)
-            if matches:
-                setattr(found, attribute, _digits(matches[-1]))
-        if found.measured:
-            # A split makes the single total redundant, and keeping both would
-            # double-count it in every sum downstream.
-            if found.input_tokens is not None or found.output_tokens is not None:
-                found.total_tokens = None
-            return found
+            if not matches:
+                continue
+            # The last match, because the footer is printed after the answer:
+            # anything earlier that looks like one came from the answer.
+            total = _digits(matches[-1])
+            if total is not None:
+                return Usage(total_tokens=total, source="codex output")
     return None
 
 

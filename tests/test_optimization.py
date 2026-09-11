@@ -27,6 +27,7 @@ from orchestrator import cli
 from orchestrator import config as config_mod
 from orchestrator import ledger as ledger_mod
 from orchestrator import optimization as opt
+from orchestrator import review as review_mod
 from orchestrator import workspace as ws
 
 
@@ -129,6 +130,47 @@ class TestPatternsNeedBothForms(unittest.TestCase):
     def test_and_still_caught_when_nested(self):
         for path in ("infra/k8s/svc.yaml", "ops/deploy/prod.yaml", "sub/.github/workflows/ci.yml"):
             self.assertTrue(opt.high_risk_matches([path], opt.DEFAULT_HIGH_RISK_PATHS), path)
+
+
+class TestTheReviewedFileList(unittest.TestCase):
+    """Built from git's own listing rather than from the diff text.
+
+    A mode-only change is the clearest case and the one that cannot be
+    tested end to end: `git update-index --chmod` stages a mode, while
+    `git diff HEAD` reads the working tree, and whether the two disagree
+    depends on `core.filemode` -- which is false on Windows and true
+    elsewhere. So the rule is tested against the record git produces.
+    """
+
+    def reviewed(self, tracked, withheld=(), suppressed=(), untracked=()):
+        return review_mod._reviewed_files(tracked, withheld, suppressed, untracked)
+
+    def test_a_mode_only_change_is_counted(self):
+        """`0\t0\trun.sh`: git reports it, and the diff for it is `old mode` /
+        `new mode` with no `+++` header to find."""
+        self.assertEqual(self.reviewed([{"path": "run.sh", "added": 0, "deleted": 0}]), ["run.sh"])
+
+    def test_a_binary_change_is_counted(self):
+        """`-\t-\tlogo.png`: no counts, and "Binary files ... differ" for a body."""
+        entry = {"path": "logo.png", "added": None, "deleted": None}
+        self.assertEqual(self.reviewed([entry]), ["logo.png"])
+
+    def test_a_withheld_file_is_left_out(self):
+        tracked = [{"path": "app.py"}, {"path": "yarn.lock", "pattern": "*.lock"}]
+        self.assertEqual(self.reviewed(tracked, withheld=[{"path": "yarn.lock"}]), ["app.py"])
+
+    def test_something_not_under_review_is_left_out(self):
+        tracked = [{"path": "app.py"}, {"path": ".dev-orchestra.yaml"}]
+        self.assertEqual(self.reviewed(tracked, suppressed=[".dev-orchestra.yaml"]), ["app.py"])
+
+    def test_untracked_files_are_added_back(self):
+        """They are diffed separately, by name; git's listing of tracked
+        changes cannot know about them."""
+        self.assertEqual(self.reviewed([{"path": "app.py"}], untracked=["new.py"]), ["app.py", "new.py"])
+
+    def test_a_path_is_listed_once(self):
+        tracked = [{"path": "app.py"}, {"path": "app.py"}]
+        self.assertEqual(self.reviewed(tracked, untracked=["app.py"]), ["app.py"])
 
 
 class TestWhatIsJudgedAndWhatIsMeasured(unittest.TestCase):
@@ -537,6 +579,34 @@ class TestWhatTheSnapshotReportsAsChanged(IsolatedCase):
         meta = self.snapshot()
         self.assertIn("app/helper.py", meta["changed_paths"])
         self.assertIn("app/auth.py", meta["changed_paths"])
+
+    def test_a_binary_file_is_counted(self):
+        """Git prints "Binary files a/x and b/x differ" and no `+++` header,
+        so reading the list out of the diff text missed it -- and a change to
+        three images and one source file counted as one file, small enough for
+        a reduced panel."""
+        with open(os.path.join(self.project, "logo.png"), "wb") as handle:
+            handle.write(b"\x00\x01original")
+        self.commit_all("image")
+        with open(os.path.join(self.project, "logo.png"), "wb") as handle:
+            handle.write(b"\x00\x09changed")
+        meta = self.snapshot()
+        self.assertIn("logo.png", meta["files"])
+        self.assertIn("logo.png", meta["changed_paths"])
+
+    def test_an_untracked_file_is_still_counted(self):
+        """It is diffed separately, by name; git's listing of tracked changes
+        cannot know about it."""
+        self.write("brand_new.py", "x = 1\n")
+        meta = self.snapshot()
+        self.assertIn("brand_new.py", meta["files"])
+
+    def test_the_orchestrators_own_files_are_not_counted(self):
+        self.write(".dev-orchestra.yaml", "version: 1\n")
+        self.write("app/main.py", "x = 2\n")
+        meta = self.snapshot()
+        self.assertNotIn(".dev-orchestra.yaml", meta["files"])
+        self.assertIn("app/main.py", meta["files"])
 
     def test_a_withheld_file_is_in_the_paths_but_not_in_the_files(self):
         self.write("yarn.lock", "dep 1.0\n")
