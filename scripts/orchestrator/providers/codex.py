@@ -244,8 +244,16 @@ class CodexProvider(Provider):
         extra_args: Sequence[str] = (),
         env: Optional[Dict[str, str]] = None,
         options: Optional[Dict[str, Any]] = None,
+        idle_timeout: Optional[float] = None,
     ) -> RunResult:
-        """Capture the agent's final message via ``-o`` instead of scraping logs."""
+        """Capture the agent's final message via ``-o`` instead of scraping logs.
+
+        Every keyword the base method takes has to be named here *and* passed
+        on. An override that quietly drops one is worse than no override: the
+        caller's request disappears with nothing raised, or -- for a keyword
+        this signature never learned about -- the call fails with a TypeError
+        that looks like a bug in the caller.
+        """
         handle, last_message_path = tempfile.mkstemp(prefix="codex-last-", suffix=".txt")
         os.close(handle)
         try:
@@ -257,6 +265,8 @@ class CodexProvider(Provider):
                 timeout=timeout,
                 extra_args=[*list(extra_args), "-o", last_message_path],
                 env=env,
+                options=options,
+                idle_timeout=idle_timeout,
             )
             final = _read_text(last_message_path)
             if final.strip():
