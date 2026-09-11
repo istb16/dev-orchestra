@@ -143,10 +143,13 @@ optimization:
     - Dockerfile
     - "Dockerfile.*"
     - "*.tf"
+    # Both forms: fnmatch has no `**`, so `*/k8s/*` misses `k8s/` at the root.
+    - "k8s/*"
     - "*/k8s/*"
+    - "deploy/*"
     - "*/deploy/*"
-    - "*/.github/workflows/*"
     - ".github/workflows/*"
+    - "*/.github/workflows/*"
   # At `aggressive`, a change under both of these and touching nothing
   # high-risk gets one reviewer instead of the panel.
   low_risk_max_files: 2

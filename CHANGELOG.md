@@ -263,6 +263,40 @@ The public surface covered by that promise is: the configuration schema, the
   signature, without starting a process. Six of its eight tests fail on the
   code this entry describes.
 
+Four defects in the risk detection that decides whether a review can be made
+cheaper, all found by running a real multi-model review against the change
+that introduced them.
+
+- **A deleted file was not treated as a change.** The changed-file list was
+  read from the diff's `+++ b/` side, which is `/dev/null` for a deletion, so
+  deleting `app/auth.py` escalated nothing and counted for nothing. Deleting
+  an auth file is not a smaller change than editing one. Both sides of every
+  header are read now, and a rename records the name it came from as well --
+  the diff only carries where the file landed, and a file renamed away from
+  `auth.py` was an auth file until this commit.
+
+- **Diff content that looked like a diff header was not counted.** Line
+  counting skipped anything starting with `+++` or `---`, but a content line
+  carries its own `+`/`-` prefix with nothing between it and the text: a
+  deleted `---` (Markdown front matter, a YAML separator) arrives as `----`,
+  an added `++i` as `+++i`. Both were dropped, undercounting the change --
+  the one direction that matters, because the count decides whether a change
+  is small enough for a single reviewer. Counting now tracks hunk boundaries
+  instead of guessing from the first characters.
+
+- **Withheld files spent the file budget.** The size threshold counted every
+  path the change touched, including the lockfiles whose diffs are
+  deliberately not sent, so a one-line fix beside a dependency bump stopped
+  counting as small while the diff a reviewer saw was two lines long. The
+  line count had excluded them from the start; the file count now does too.
+  Risk is still judged from the whole set -- a withheld `.env` is still a
+  secret.
+
+- **`k8s/` and `deploy/` at the repository root were not high-risk.** Only
+  the nested forms (`*/k8s/*`) were listed, and `fnmatch` has no `**`, so the
+  directories were caught everywhere except where they usually live. Both
+  forms of each are listed now.
+
 ### Fixed
 
 A self-review of the first release found eight issues; four of them were the
