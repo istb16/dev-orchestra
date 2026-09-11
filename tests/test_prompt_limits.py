@@ -244,9 +244,12 @@ class TestTheFixBrief(unittest.TestCase):
 
 
 class TestConfiguringTheCap(IsolatedCase):
-    def test_the_default_config_carries_the_default_cap(self):
+    def test_the_config_ships_the_cap_unset_so_the_level_decides(self):
+        """Unset is not uncapped: the level supplies one. The effective
+        default is still 6, by a different route."""
         settings = config_mod.default_config()["review"]
-        self.assertEqual(settings["max_findings"], review_mod.DEFAULT_MAX_FINDINGS)
+        self.assertIsNone(settings["max_findings"])
+        self.assertEqual(review_mod.DEFAULT_MAX_FINDINGS, 6)
 
     def check(self, value):
         data = config_mod.default_config()

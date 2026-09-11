@@ -208,7 +208,7 @@ findings.
 | Command | Description |
 | --- | --- |
 | `state show [--json]` | The recorded stage events for this project. |
-| `state record <stage> <status> [--detail k=v …]` | Append a stage outcome (for stages not run through `run`). |
+| `state record <stage> <status> [--detail k=v …]` | Append a stage outcome (for stages not run through `run`). `state record test ok\|failed` is what the review gate reads. |
 | `summary [--json]` | The end-of-run stage + model summary. |
 
 ## Environment variables

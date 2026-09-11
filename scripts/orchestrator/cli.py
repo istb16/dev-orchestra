@@ -19,6 +19,7 @@ from . import config as config_mod
 from . import doctor as doctor_mod
 from . import jobs as jobs_mod
 from . import ledger as ledger_mod
+from . import optimization as opt_mod
 from . import review as review_mod
 from . import wizard as wizard_mod
 from . import workspace as ws
@@ -694,6 +695,30 @@ def cmd_review_run(args: argparse.Namespace) -> int:
         _err("Report the remaining findings instead of looping, or pass --force to override.")
         return ledger_mod.EXIT_BUDGET_EXHAUSTED
 
+    meta = ws.read_json(workspace.snapshot_meta_path, {}) or {}
+    plan = opt_mod.decide(
+        loaded.optimization_settings(),
+        settings,
+        list(meta.get("files") or []) + [str(e.get("path")) for e in (meta.get("withheld") or [])],
+        int(meta.get("lines_added") or 0) + int(meta.get("lines_deleted") or 0),
+        workspace.last_status("test"),
+        len(reviewers),
+    )
+    if plan.escalated:
+        _err("note: %s" % plan.escalation_note())
+    if plan.gate == opt_mod.GATE_REFUSE and not args.force:
+        _err(plan.gate_note())
+        return ledger_mod.EXIT_BUDGET_EXHAUSTED
+    if plan.gate == opt_mod.GATE_WARN:
+        _err(plan.gate_note())
+    if plan.reviewer_limit is not None and not args.only:
+        reviewers = opt_mod.choose_reviewers(reviewers, plan.reviewer_limit)
+        _err(
+            "note: %s (%s). Cross-model disagreement is what a second reviewer buys; "
+            "raise optimization.level or the low_risk thresholds to keep it."
+            % (plan.reviewer_note(), ", ".join(str(r.get("id")) for r in reviewers))
+        )
+
     book = _ledger(args, workspace)
     book.clear_stalls()
     batch_timeout = args.timeout or int(settings.get("timeout_seconds", 1800))
@@ -706,9 +731,7 @@ def cmd_review_run(args: argparse.Namespace) -> int:
     idle_timeout = args.idle_timeout
     if idle_timeout is None:
         idle_timeout = settings.get("idle_timeout_seconds")
-    max_findings = settings.get("max_findings")
-    if not isinstance(max_findings, int) or isinstance(max_findings, bool) or max_findings < 0:
-        max_findings = review_mod.DEFAULT_MAX_FINDINGS
+    max_findings = plan.max_findings
     try:
         runs = review_mod.run_reviews(
             reviewers,
@@ -746,6 +769,7 @@ def cmd_review_run(args: argparse.Namespace) -> int:
             "reviewers": run_dicts,
             "findings": data["counts"].get("findings_total"),
             "identical_rounds": repeats,
+            "optimization": plan.to_dict(),
         },
     )
     if repeats > 1:
@@ -766,7 +790,15 @@ def cmd_review_run(args: argparse.Namespace) -> int:
 
     ok, failed = review_mod.summarise_runs(runs)
     if args.json:
-        _emit_json({"ok": ok, "failed": failed, "reviewers": run_dicts, "counts": data["counts"]})
+        _emit_json(
+            {
+                "ok": ok,
+                "failed": failed,
+                "reviewers": run_dicts,
+                "counts": data["counts"],
+                "optimization": plan.to_dict(),
+            }
+        )
     else:
         for run in runs:
             status = "ok" if run.status == "ok" else "FAILED"
@@ -1117,6 +1149,21 @@ def cmd_status(args: argparse.Namespace) -> int:
     if summary["runtime_remaining_seconds"] == 0:
         reasons.append("the workflow runtime budget is spent")
 
+    # What the next `review run` would decide, so the orchestrator finds out
+    # here rather than by being refused. Cheap: the snapshot meta is already
+    # on disk, and nothing is delegated to work it out.
+    meta = ws.read_json(workspace.snapshot_meta_path, {}) or {}
+    plan = opt_mod.decide(
+        loaded.optimization_settings(),
+        settings,
+        list(meta.get("files") or []) + [str(e.get("path")) for e in (meta.get("withheld") or [])],
+        int(meta.get("lines_added") or 0) + int(meta.get("lines_deleted") or 0),
+        workspace.last_status("test"),
+        len(loaded.reviewers()),
+    )
+    if plan.gate == opt_mod.GATE_REFUSE:
+        reasons.append("the last recorded test run failed; fix it before reviewing")
+
     payload = {
         "verdict": "stop-and-report" if reasons else "continue",
         "reasons": reasons,
@@ -1134,6 +1181,7 @@ def cmd_status(args: argparse.Namespace) -> int:
         "runtime_remaining_seconds": summary["runtime_remaining_seconds"],
         # Reported, never enforced: no verdict here turns on what a run cost.
         "tokens": summary["tokens"],
+        "optimization": plan.to_dict(),
     }
     if args.json:
         _emit_json(payload)
@@ -1163,6 +1211,13 @@ def cmd_status(args: argparse.Namespace) -> int:
         "Review: round %d/%d, %d accepted, %d blocking"
         % (iteration, max_iterations, payload["review"]["accepted"], len(blocking))
     )
+    line = "Optimization: %s" % plan.level
+    if plan.escalated:
+        line += " (escalated from %s -- %s)" % (plan.requested, plan.escalation_note().split(": ", 1)[-1])
+    line += ", tests %s" % (plan.test_status or "not recorded")
+    if plan.reviewer_limit is not None:
+        line += ", %d reviewer" % plan.reviewer_limit
+    _out(line)
     tokens = summary["tokens"]["totals"]
     if tokens["runs"]:
         _out(
@@ -1430,7 +1485,11 @@ def build_parser() -> argparse.ArgumentParser:
     review_run.add_argument("--base", default=None)
     review_run.add_argument("--timeout", type=int, default=None)
     review_run.add_argument("--idle-timeout", type=float, default=None)
-    review_run.add_argument("--force", action="store_true", help="run even past the review iteration budget")
+    review_run.add_argument(
+        "--force",
+        action="store_true",
+        help="run past the review iteration budget, or with the tests recorded as failing",
+    )
     review_run.add_argument("--json", action="store_true")
     review_run.set_defaults(func=cmd_review_run)
 

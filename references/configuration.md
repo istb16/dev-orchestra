@@ -109,7 +109,11 @@ workspace:
 | `review.timeout_seconds` | int > 0 | Per-run timeout; a timeout is reported, not raised. |
 | `review.exclude` | list | Glob patterns whose diff body is withheld from reviewers. Replaces the default list wholesale; `[]` reviews everything. |
 | `review.incremental_rounds` | bool | `true` (default) makes a second round diff against what the first round reviewed, carrying the findings the fix was meant to address. `false` re-diffs the whole change every round. |
-| `review.max_findings` | int | How many findings each reviewer is asked for (default 6). `0` lifts the cap. Findings that come back over the cap are kept, never trimmed. |
+| `review.max_findings` | int \| null | How many findings each reviewer is asked for. `null` (default) lets `optimization.level` decide, `0` lifts the cap. Findings that come back over the cap are kept, never trimmed. |
+| `optimization.level` | `aggressive` \| `balanced` \| `quality` | How hard to try to be cheap. Default `balanced`. See below. |
+| `optimization.high_risk_paths` | list | Globs that force `quality` for a change touching them. Replaces the default list wholesale. |
+| `optimization.low_risk_max_files` | int | At `aggressive`, at most this many files still counts as a small change (default 2). |
+| `optimization.low_risk_max_lines` | int | And at most this many changed lines (default 50). |
 | `workspace.dir` | string | Where `.ai/` artifacts go. |
 | `<role>.options` | mapping | Provider-specific knobs; see below. |
 
@@ -157,6 +161,51 @@ lives with the project rather than with this skill.
 `mock` is a real, registered provider: an offline adapter used by the tests and
 useful for dry-running the pipeline without spending tokens. It is hidden from
 the setup wizard.
+
+## Optimization level
+
+One dial over three savings. Default `balanced`.
+
+| | `aggressive` | `balanced` | `quality` |
+| --- | --- | --- | --- |
+| Tests recorded as failing | refuse | refuse | review anyway |
+| No test result recorded | warn, review | warn, review | review |
+| Small, low-risk change | 1 reviewer | whole panel | whole panel |
+| Findings asked for | 4 | 6 | 10 |
+
+`--force` gets past the refusal. `--only` overrides the reduced panel, because
+that flag is someone naming the reviewers by hand.
+
+**The gate reads a recorded result, it does not run anything.** This tool has
+no way to know a project's test command -- the orchestrator discovers it from
+the repository and runs it directly -- so the gate reads whatever the last
+`dev-orchestra state record test ok|failed` wrote. That is three states, not
+two: passed, failed, and never recorded. Only a recorded failure refuses;
+never recorded warns and continues, so a workflow that has not adopted
+`state record` keeps working exactly as before.
+
+**A high-risk change escalates to `quality`, whatever is configured.** A
+change touching authentication, secrets, payments, migrations, SQL, crypto or
+deploy configuration gets the full panel and the full findings budget. The
+patterns are configurable (`optimization.high_risk_paths`, `[]` to clear
+them); the fact that a match escalates is not. The escalation is printed with
+the file and pattern that caused it, so it can be checked rather than only
+obeyed.
+
+The patterns over-match on purpose. `authors_controller.rb` matches `*auth*`
+and costs one extra reviewer; missing `auth_controller.rb` costs an
+authorisation bug.
+
+**Size is never the only test.** The reduced panel needs the change to be
+under both thresholds *and* to touch nothing high-risk, because one line in an
+auth file is the exact shape an authorisation bug arrives in.
+
+```yaml
+optimization:
+  level: aggressive
+  low_risk_max_files: 3
+  low_risk_max_lines: 80
+```
 
 ## Model families and version policy
 

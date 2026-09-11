@@ -28,6 +28,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from . import workspace as ws
+from .optimization import DEFAULT_LEVEL, MAX_FINDINGS_BY_LEVEL
 from .providers import MODE_REVIEW, ModelResolutionError, Usage, get_provider
 
 SEVERITIES = ("critical", "high", "medium", "low")
@@ -125,7 +126,9 @@ ROLE_GUIDANCE: Dict[str, str] = {
 #: side either -- every finding that comes back is parsed and kept, and a
 #: reviewer that overshoots is reported rather than trimmed, because deciding
 #: which of its findings to discard is triage, and triage is not this layer's.
-DEFAULT_MAX_FINDINGS = 6
+#: The library default, for a caller that does not pass one. The CLI always
+#: does, from the level, so this is the same number by the same route.
+DEFAULT_MAX_FINDINGS = MAX_FINDINGS_BY_LEVEL[DEFAULT_LEVEL]
 MAX_EVIDENCE_LINES = 3
 MAX_FIX_LINES = 2
 
@@ -289,6 +292,7 @@ def create_snapshot(
             if fcode == 0 and full.strip():
                 ws.write_text(workspace.full_snapshot_path, full)
                 full_diff_path = workspace.relative(workspace.full_snapshot_path)
+    added_lines, deleted_lines = _diff_line_counts(diff)
     meta = {
         "generated_at": ws.utcnow(),
         "strategy": strategy,
@@ -304,6 +308,8 @@ def create_snapshot(
         "withheld": sorted(withheld, key=lambda entry: str(entry.get("path"))),
         "exclude_patterns": patterns,
         "bytes": len(diff.encode("utf-8")),
+        "lines_added": added_lines,
+        "lines_deleted": deleted_lines,
         "sha256": hashlib.sha256(diff.encode("utf-8")).hexdigest(),
         "empty": not diff.strip(),
     }
@@ -633,6 +639,25 @@ def _count_lines(path: str) -> Optional[int]:
             return handle.read().count(b"\n")
     except OSError:
         return None
+
+
+def _diff_line_counts(diff: str) -> "tuple[int, int]":
+    """Added and deleted lines in a unified diff, headers excluded.
+
+    Counted from the diff rather than from ``--numstat`` so the number
+    describes exactly what a reviewer will see: a withheld lockfile changed
+    twelve thousand lines and contributes none of them, which is the point of
+    withholding it.
+    """
+    added = deleted = 0
+    for line in diff.splitlines():
+        if line.startswith(("+++", "---")):
+            continue
+        if line.startswith("+"):
+            added += 1
+        elif line.startswith("-"):
+            deleted += 1
+    return added, deleted
 
 
 def _changed_files(diff: str) -> List[str]:

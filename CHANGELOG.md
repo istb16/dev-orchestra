@@ -12,6 +12,46 @@ The public surface covered by that promise is: the configuration schema, the
 
 ### Added
 
+- **`optimization.level`: one dial over three savings.** `aggressive`,
+  `balanced` (default) or `quality` decides whether a round runs against a
+  tree whose tests are recorded as failing, whether a small change gets one
+  reviewer or the whole panel, and how many findings each reviewer is asked
+  for (4 / 6 / 10, unless `review.max_findings` names a number).
+
+  **The gate reads a recorded result; it runs nothing.** This tool has no way
+  to know a project's test command -- the orchestrator discovers that from the
+  repository and runs it directly -- so the gate reads whatever the last
+  `state record test ok|failed` wrote, which `references/workflow.md` has
+  always told the orchestrator to write. That is three states, not two: a
+  recorded failure refuses (`--force` overrides), and *no record at all* warns
+  and continues. Refusing on the third would have broken every existing
+  workflow the day it shipped, to punish people for not having written down
+  something that was previously optional.
+
+  **A high-risk change escalates to `quality` whatever is configured.** Auth,
+  secrets, payments, migrations, SQL, crypto, deploy config: full panel, full
+  findings budget, no gate. `optimization.high_risk_paths` replaces the
+  patterns; nothing switches the escalation off. They over-match on purpose --
+  `authors_controller.rb` matching `*auth*` costs one extra reviewer, and
+  missing `auth_controller.rb` costs an authorisation bug.
+
+  **Size is never the only test**, for the same reason: one line in an auth
+  file is the shape an authorisation bug arrives in. A reduced panel needs the
+  change to be under both thresholds *and* to touch nothing high-risk, keeps a
+  `general` reviewer over a specialist -- a lone security reviewer reports no
+  correctness bugs, having been told not to look for them -- and prints the
+  counts it decided from. `--only` overrides it, because that flag is someone
+  naming the reviewers by hand.
+
+  Nothing here drops a finding or acts quietly: every decision is printed,
+  recorded in the run state, and returned by `review run --json` and
+  `status --json` under `optimization`.
+
+- `state record` now has a reader: the review gate asks the workspace for the
+  last recorded status of a stage. Snapshot metadata gained `lines_added` and
+  `lines_deleted`, counted from the diff itself so a withheld lockfile
+  contributes none of its twelve thousand lines to the size of the change.
+
 - **Reviewer output is capped.** The review prompt now asks for at most
   `review.max_findings` findings (6 by default, `0` lifts the cap), three lines
   of evidence and two lines of fix per finding, and no preamble, summary or
@@ -240,6 +280,11 @@ same blind spot, that the test suite only ever exercised a single review round.
   with the bundled parser.
 
 ### Changed
+
+- `review.max_findings` now ships unset instead of `6`, which lets
+  `optimization.level` decide it. The effective default is unchanged: an unset
+  cap at `balanced` is still 6. A number set explicitly still wins over the
+  level, and `0` still lifts the cap.
 
 - **SKILL.md is a third smaller.** 15,877 characters down to 11,533, roughly
   3,970 tokens to 2,880. That document is resident for the whole of every

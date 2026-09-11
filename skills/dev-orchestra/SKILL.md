@@ -92,7 +92,9 @@ refactoring, tests added or updated and run, and — plan wrong — stop and
 report instead of redesigning. Implementer failure is fatal.
 
 **Test.** The project's documented commands only; never invent one. A red
-suite stops the pipeline. Before each *retry*: `budget consume test`, then
+suite stops the pipeline. Record the outcome — `state record test ok|failed` —
+because `review run` reads it and refuses to review a tree whose tests are
+recorded as failing. Before each *retry*: `budget consume test`, then
 `progress record test --signature "3 failed: test_a, test_b"`. Exit 3 =
 attempts spent; a repeated signature = the last fix changed nothing. Both are
 refusals, not suggestions — fix→test is the loop most likely to run away,
@@ -112,6 +114,9 @@ report each plus deduplicated `consolidated.md` / `.json`.
   and continue. All of them failing does.
 - `unparsed` counts as failed and is **never** a clean review: broken output
   says nothing about the code.
+- `review run` may cut the panel to one reviewer on a small, low-risk change
+  (`optimization.level: aggressive`) and prints why. Say so in the report:
+  one reviewer is one opinion, not an independent second one.
 
 **Triage.** **You** decide what is real; raw findings never reach the fixer.
 Per finding in `consolidated.md`: read the cited code, decide, record it.

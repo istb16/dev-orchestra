@@ -146,6 +146,21 @@ class Workspace:
         self.ensure()
         write_json(self.state_path, state)
 
+    def last_status(self, stage: str) -> str:
+        """The most recent recorded status for one stage, or "".
+
+        Read by the optimization gate, which has to tell "the tests failed"
+        from "nobody said". The empty string is the second of those and is
+        never treated as the first.
+        """
+        events = self.read_state().get("events") or []
+        if not isinstance(events, list):
+            return ""
+        for event in reversed(events):
+            if isinstance(event, dict) and event.get("stage") == stage:
+                return str(event.get("status") or "")
+        return ""
+
     def record_event(
         self, stage: str, status: str, detail: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:

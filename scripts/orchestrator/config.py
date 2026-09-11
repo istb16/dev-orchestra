@@ -56,11 +56,11 @@ def _default_exclude() -> Tuple[str, ...]:
     return DEFAULT_EXCLUDE
 
 
-def _default_max_findings() -> int:
-    """Also the review module's to own, and imported late for the same reason."""
-    from .review import DEFAULT_MAX_FINDINGS
+def _optimization():
+    """Late, for the same reason as ``_default_exclude``."""
+    from . import optimization
 
-    return DEFAULT_MAX_FINDINGS
+    return optimization
 
 
 def is_valid_reviewer_id(value: Any) -> bool:
@@ -122,8 +122,24 @@ def default_config() -> Dict[str, Any]:
             # How many findings a reviewer is asked for. Output is billed at
             # several times the input rate, and a reviewer's output is billed
             # again as the fixer's brief, so an uncapped reviewer costs twice
-            # over. 0 lifts the cap. Nothing that comes back is ever dropped.
-            "max_findings": _default_max_findings(),
+            # How many findings each reviewer is asked for. Output costs several
+            # times what input does, and a reviewer's output is billed again as
+            # the fixer's brief, so an uncapped reviewer costs twice over. 0
+            # lifts the cap, and null lets optimization.level decide. Nothing
+            # that comes back is ever dropped.
+            "max_findings": None,
+        },
+        # How hard to try to be cheap. See orchestrator/optimization.py: the
+        # level gates a review of a tree whose tests are recorded as failing,
+        # decides whether a small change gets one reviewer or the whole panel,
+        # and sets the findings cap when review.max_findings is unset. A
+        # change touching a high-risk path escalates to `quality` whatever is
+        # configured here -- that part is not negotiable, only its patterns.
+        "optimization": {
+            "level": _optimization().DEFAULT_LEVEL,
+            "high_risk_paths": list(_optimization().DEFAULT_HIGH_RISK_PATHS),
+            "low_risk_max_files": _optimization().DEFAULT_LOW_RISK_MAX_FILES,
+            "low_risk_max_lines": _optimization().DEFAULT_LOW_RISK_MAX_LINES,
         },
         "budgets": {
             "architect": 3,
@@ -273,6 +289,11 @@ class LoadedConfig:
         settings.update(self.data.get("review") or {})
         return settings
 
+    def optimization_settings(self) -> Dict[str, Any]:
+        settings = default_config()["optimization"]
+        settings.update(self.data.get("optimization") or {})
+        return settings
+
     def workspace_dir(self, root: str) -> str:
         workspace = (self.data.get("workspace") or {}).get("dir") or ".ai"
         if os.path.isabs(workspace):
@@ -378,6 +399,10 @@ def validate(data: Dict[str, Any], known_providers: Optional[List[str]] = None) 
                                 "review.exclude[%d]: must be a non-empty string (got %r)" % (index, pattern)
                             )
 
+    optimization = data.get("optimization")
+    if optimization is not None:
+        problems.extend(_validate_optimization(optimization))
+
     budgets = data.get("budgets")
     if budgets is not None:
         if not isinstance(budgets, dict):
@@ -388,6 +413,32 @@ def validate(data: Dict[str, Any], known_providers: Optional[List[str]] = None) 
                     continue
                 if not isinstance(value, int) or isinstance(value, bool) or value < 0:
                     problems.append("budgets.%s: must be a non-negative integer or null" % key)
+    return problems
+
+
+def _validate_optimization(data: Any) -> List[str]:
+    problems: List[str] = []
+    if not isinstance(data, dict):
+        return ["optimization: must be a mapping"]
+    levels = _optimization().LEVELS
+    level = data.get("level")
+    if level is not None and (not isinstance(level, str) or level.strip().lower() not in levels):
+        problems.append("optimization.level: must be one of %s" % ", ".join(sorted(levels)))
+    patterns = data.get("high_risk_paths")
+    if patterns is not None:
+        if not isinstance(patterns, list):
+            problems.append("optimization.high_risk_paths: must be a list of glob patterns (use [] for none)")
+        else:
+            for index, pattern in enumerate(patterns):
+                if not isinstance(pattern, str) or not pattern.strip():
+                    problems.append(
+                        "optimization.high_risk_paths[%d]: must be a non-empty string (got %r)"
+                        % (index, pattern)
+                    )
+    for key in ("low_risk_max_files", "low_risk_max_lines"):
+        value = data.get(key)
+        if value is not None and (not isinstance(value, int) or isinstance(value, bool) or value < 0):
+            problems.append("optimization.%s: must be a non-negative integer" % key)
     return problems
 
 
