@@ -240,6 +240,31 @@ The public surface covered by that promise is: the configuration schema, the
 
 ### Fixed
 
+- **Every Codex run failed with a `TypeError`.** `CodexProvider.run`
+  overrides the base method so the agent's final message can be captured to a
+  file instead of scraped from a log. `idle_timeout` was added to
+  `Provider.run` and never to that override, so the call raised
+  `TypeError: CodexProvider.run() got an unexpected keyword argument
+  'idle_timeout'` -- from `run architect`, `run implementer`, and every Codex
+  reviewer, because the CLI always passes it. A Codex reviewer had been
+  reporting `FAILED` for that reason alone.
+
+- **A configured Codex `sandbox`, `approve` or `args` was silently ignored.**
+  The same override accepted `options` and did not pass them on, so
+  `build_command` was always given `None` and always used its defaults. A role
+  pinned to `sandbox: read-only` ran `workspace-write` instead, and said
+  nothing about it.
+
+  The suite missed both for one reason: it reviews with `MockProvider`, which
+  overrides `run` outright and so exercises no adapter's signature but its
+  own. `tests/test_provider_contract.py` now tests the seam rather than a
+  provider -- every registered adapter, present and future, is called with
+  every keyword the orchestrator sends, and checked against the base
+  signature, without starting a process. Six of its eight tests fail on the
+  code this entry describes.
+
+### Fixed
+
 A self-review of the first release found eight issues; four of them were the
 same blind spot, that the test suite only ever exercised a single review round.
 
