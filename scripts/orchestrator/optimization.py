@@ -90,10 +90,16 @@ DEFAULT_HIGH_RISK_PATHS = (
     "Dockerfile",
     "Dockerfile.*",
     "*.tf",
+    # Both forms of every directory pattern. ``fnmatch`` has no ``**``, and a
+    # pattern containing a slash is matched against the whole path, so
+    # ``*/k8s/*`` needs something before the directory and misses it at the
+    # repository root -- which is where it usually lives.
+    "k8s/*",
     "*/k8s/*",
+    "deploy/*",
     "*/deploy/*",
-    "*/.github/workflows/*",
     ".github/workflows/*",
+    "*/.github/workflows/*",
 )
 
 #: What the gate does with each of the three recorded test states.
@@ -240,8 +246,19 @@ def decide(
     lines: int,
     test_status: str,
     reviewers: int,
+    reviewed_files: Optional[int] = None,
 ) -> Plan:
-    """Work out what this round should cost, from the change and the config."""
+    """Work out what this round should cost, from the change and the config.
+
+    ``paths`` is every path the change touches, and is what risk is judged
+    from -- a withheld ``.env`` is still a secret, a deleted auth file is
+    still an auth file. ``reviewed_files`` is how many files a reviewer will
+    actually be shown, and is what the size threshold is measured against,
+    for the same reason the line count already excludes withheld files:
+    otherwise a one-line fix next to a lockfile bump stops counting as small
+    while the diff a reviewer sees is two lines long. It defaults to
+    ``len(paths)`` for a caller that has only one number.
+    """
     requested = normalise_level(settings.get("level"))
     patterns = settings.get("high_risk_paths")
     if not isinstance(patterns, (list, tuple)):
@@ -263,11 +280,12 @@ def decide(
     else:
         max_findings = MAX_FINDINGS_BY_LEVEL[level]
 
+    files = len(paths) if reviewed_files is None else max(int(reviewed_files), 0)
     limit = None
     if level == "aggressive" and reviewers > 1:
         max_files = _positive(settings.get("low_risk_max_files"), DEFAULT_LOW_RISK_MAX_FILES)
         max_lines = _positive(settings.get("low_risk_max_lines"), DEFAULT_LOW_RISK_MAX_LINES)
-        if len(paths) <= max_files and lines <= max_lines:
+        if files <= max_files and lines <= max_lines:
             limit = 1
 
     return Plan(
@@ -278,7 +296,7 @@ def decide(
         max_findings,
         limit,
         hits,
-        files=len(paths),
+        files=files,
         lines=lines,
     )
 

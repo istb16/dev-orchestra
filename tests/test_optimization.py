@@ -49,12 +49,20 @@ FINDING = """## Finding
 """
 
 
-def decide(paths=("app.py",), lines=10, test_status="", reviewers=2, **overrides):
+def decide(paths=("app.py",), lines=10, test_status="", reviewers=2, reviewed_files=None, **overrides):
     settings = dict(config_mod.default_config()["optimization"])
     review = dict(config_mod.default_config()["review"])
     for key, value in overrides.items():
         (review if key in review else settings)[key] = value
-    return opt.decide(settings, review, list(paths), lines, test_status, reviewers)
+    return opt.decide(
+        settings,
+        review,
+        list(paths),
+        lines,
+        test_status,
+        reviewers,
+        reviewed_files=reviewed_files,
+    )
 
 
 # --------------------------------------------------------------------------- risk
@@ -108,6 +116,47 @@ class TestHighRiskPaths(unittest.TestCase):
 
     def test_an_empty_pattern_list_matches_nothing(self):
         self.assertFalse(opt.high_risk_matches(["db/migrate/1.rb"], []))
+
+
+class TestPatternsNeedBothForms(unittest.TestCase):
+    """``fnmatch`` has no ``**``, and a pattern containing a slash is matched
+    against the whole path, so a nested-only pattern misses the root."""
+
+    def test_deployment_directories_are_caught_at_the_repository_root(self):
+        for path in ("k8s/service.yaml", "deploy/production.yaml", ".github/workflows/ci.yml"):
+            self.assertTrue(opt.high_risk_matches([path], opt.DEFAULT_HIGH_RISK_PATHS), path)
+
+    def test_and_still_caught_when_nested(self):
+        for path in ("infra/k8s/svc.yaml", "ops/deploy/prod.yaml", "sub/.github/workflows/ci.yml"):
+            self.assertTrue(opt.high_risk_matches([path], opt.DEFAULT_HIGH_RISK_PATHS), path)
+
+
+class TestWhatIsJudgedAndWhatIsMeasured(unittest.TestCase):
+    """Risk is judged from every path the change touches. Size is measured
+    from the files a reviewer is actually shown. Using one list for both
+    made a small change look big, or a dangerous one look safe."""
+
+    def test_a_withheld_file_does_not_spend_the_file_budget(self):
+        """A one-line fix beside a lockfile bump is a two-line review. The
+        line count already excluded the lockfile; the file count did not."""
+        plan = decide(
+            paths=["app.py", "yarn.lock", "package-lock.json"],
+            lines=4,
+            level="aggressive",
+            reviewed_files=1,
+        )
+        self.assertEqual(plan.reviewer_limit, 1)
+        self.assertEqual(plan.files, 1)
+
+    def test_a_withheld_file_is_still_judged_for_risk(self):
+        """Withheld means its diff is not sent, not that it is harmless."""
+        plan = decide(paths=["app.py", ".env"], lines=4, level="aggressive", reviewed_files=1)
+        self.assertIsNone(plan.reviewer_limit)
+        self.assertEqual(plan.level, "quality")
+
+    def test_without_a_reviewed_count_the_path_list_is_used(self):
+        plan = decide(paths=["a.py", "b.py", "c.py"], lines=4, level="aggressive")
+        self.assertIsNone(plan.reviewer_limit)
 
 
 class TestLevels(unittest.TestCase):
@@ -451,6 +500,55 @@ class TestThePanelInThePipeline(TestTheGateInThePipeline):
 
 
 @unittest.skipUnless(has_git(), "git is required")
+class TestWhatTheSnapshotReportsAsChanged(IsolatedCase):
+    """The lists the risk check and the size threshold are computed from."""
+
+    def setUp(self):
+        super().setUp()
+        self.init_git_repo()
+        self.write("app/auth.py", "def check():\n    return True\n")
+        self.write("app/main.py", "x = 1\n")
+        self.commit_all("init")
+        self.workspace = ws.Workspace(self.project)
+
+    def snapshot(self):
+        from orchestrator import review as review_mod
+
+        return review_mod.create_snapshot(self.workspace)
+
+    def test_a_deleted_file_is_reported_as_changed(self):
+        """Its `+++` side is /dev/null, so reading only that side lost it --
+        and deleting an auth file is not a smaller change than editing one."""
+        os.unlink(os.path.join(self.project, "app/auth.py"))
+        meta = self.snapshot()
+        self.assertIn("app/auth.py", meta["files"])
+        self.assertIn("app/auth.py", meta["changed_paths"])
+
+    def test_deleting_a_high_risk_file_still_escalates(self):
+        os.unlink(os.path.join(self.project, "app/auth.py"))
+        meta = self.snapshot()
+        plan = decide(paths=meta["changed_paths"], lines=2, level="aggressive")
+        self.assertEqual(plan.level, "quality")
+
+    def test_a_rename_reports_both_names(self):
+        """The diff only carries where the file landed. A file renamed away
+        from `auth.py` was an auth file until this commit."""
+        self.git("mv", "app/auth.py", "app/helper.py")
+        meta = self.snapshot()
+        self.assertIn("app/helper.py", meta["changed_paths"])
+        self.assertIn("app/auth.py", meta["changed_paths"])
+
+    def test_a_withheld_file_is_in_the_paths_but_not_in_the_files(self):
+        self.write("yarn.lock", "dep 1.0\n")
+        self.commit_all("lock")
+        self.write("yarn.lock", "dep 2.0\n")
+        self.write("app/main.py", "x = 2\n")
+        meta = self.snapshot()
+        self.assertIn("yarn.lock", meta["changed_paths"])
+        self.assertNotIn("yarn.lock", meta["files"])
+
+
+@unittest.skipUnless(has_git(), "git is required")
 class TestSnapshotLineCounts(IsolatedCase):
     def setUp(self):
         super().setUp()
@@ -464,6 +562,18 @@ class TestSnapshotLineCounts(IsolatedCase):
         meta = __import__("orchestrator.review", fromlist=["x"]).create_snapshot(self.workspace)
         self.assertEqual(meta["lines_added"], 2)
         self.assertEqual(meta["lines_deleted"], 1)
+
+    def test_content_that_looks_like_a_header_is_still_counted(self):
+        """A deleted `---` arrives as `----` and an added `++x` as `+++x`.
+        Matching on those undercounts the change, and the count decides
+        whether it is small enough for a single reviewer."""
+        self.write("doc.md", "---\ntitle: x\n---\nbody\n")
+        self.commit_all("doc")
+        self.write("doc.md", "body\n")
+        self.write("counter.c", "++i;\n+++j;\n")
+        meta = __import__("orchestrator.review", fromlist=["x"]).create_snapshot(self.workspace)
+        self.assertEqual(meta["lines_deleted"], 3)
+        self.assertEqual(meta["lines_added"], 2)
 
     def test_a_withheld_file_contributes_no_lines(self):
         """A lockfile bump would otherwise make every dependency update look

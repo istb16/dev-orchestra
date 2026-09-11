@@ -293,6 +293,27 @@ def create_snapshot(
                 ws.write_text(workspace.full_snapshot_path, full)
                 full_diff_path = workspace.relative(workspace.full_snapshot_path)
     added_lines, deleted_lines = _diff_line_counts(diff)
+    reviewed = _changed_files(diff)
+    # Two different lists, for two different questions.
+    #
+    # ``files`` is what a reviewer is being shown, and is what the size
+    # threshold is measured against. ``changed_paths`` is everything git says
+    # this change touches -- withheld files, and the name a rename came from,
+    # neither of which appears in the diff. Risk is judged from the second:
+    # a withheld ``.env`` is still a secret, and a file renamed away from
+    # ``auth.py`` was still an auth file a moment ago.
+    changed_paths = list(reviewed)
+    for entry in tracked:
+        for name in (entry.get("path"), entry.get("previous")):
+            if name and name not in changed_paths:
+                changed_paths.append(str(name))
+    for entry in withheld:
+        name = entry.get("path")
+        if name and name not in changed_paths:
+            changed_paths.append(str(name))
+    for name in untracked:
+        if name not in changed_paths:
+            changed_paths.append(name)
     meta = {
         "generated_at": ws.utcnow(),
         "strategy": strategy,
@@ -303,7 +324,8 @@ def create_snapshot(
         "tree": tree,
         "incremental_from": previous_tree,
         "full_diff": full_diff_path,
-        "files": _changed_files(diff),
+        "files": reviewed,
+        "changed_paths": changed_paths,
         "untracked_included": untracked,
         "withheld": sorted(withheld, key=lambda entry: str(entry.get("path"))),
         "exclude_patterns": patterns,
@@ -536,8 +558,13 @@ def _numstat(
     if code != 0:
         return [], code, err
     entries: List[Dict[str, Any]] = []
-    for added, deleted, path in _parse_numstat(out):
-        entries.append(_withheld_entry(path, withholds(path, patterns), added, deleted))
+    for added, deleted, path, previous in _parse_numstat(out):
+        entry = _withheld_entry(path, withholds(path, patterns), added, deleted)
+        if previous and previous != path:
+            # Kept for the risk check, which has to see the name a file was
+            # renamed *from*: the diff only carries where it landed.
+            entry["previous"] = previous
+        entries.append(entry)
     return entries, 0, ""
 
 
@@ -583,7 +610,7 @@ def _not_under_review(
     return suppressed
 
 
-def _parse_numstat(out: str) -> "List[tuple[Optional[int], Optional[int], str]]":
+def _parse_numstat(out: str) -> "List[tuple[Optional[int], Optional[int], str, str]]":
     """Parse ``git diff --numstat -z``.
 
     NUL-separated because a rename is reported as an empty path followed by the
@@ -593,7 +620,7 @@ def _parse_numstat(out: str) -> "List[tuple[Optional[int], Optional[int], str]]"
     ``-`` instead of a count, which is not zero and is not reported as zero.
     """
     fields = out.split("\0")
-    records: "List[tuple[Optional[int], Optional[int], str]]" = []
+    records: "List[tuple[Optional[int], Optional[int], str, str]]" = []
     index = 0
     while index < len(fields):
         field = fields[index]
@@ -604,15 +631,17 @@ def _parse_numstat(out: str) -> "List[tuple[Optional[int], Optional[int], str]]"
         if len(parts) < 3:
             continue
         added, deleted, path = parts[0], parts[1], parts[2]
+        previous = ""
         if not path:
             # A rename or copy: the next two records are the old and new names.
             old = fields[index] if index < len(fields) else ""
             new = fields[index + 1] if index + 1 < len(fields) else ""
             index += 2
             path = new or old
+            previous = old if new else ""
         if not path:
             continue
-        records.append((_maybe_int(added), _maybe_int(deleted), path))
+        records.append((_maybe_int(added), _maybe_int(deleted), path, previous))
     return records
 
 
@@ -642,16 +671,34 @@ def _count_lines(path: str) -> Optional[int]:
 
 
 def _diff_line_counts(diff: str) -> "tuple[int, int]":
-    """Added and deleted lines in a unified diff, headers excluded.
+    """Added and deleted lines in a unified diff.
 
     Counted from the diff rather than from ``--numstat`` so the number
     describes exactly what a reviewer will see: a withheld lockfile changed
     twelve thousand lines and contributes none of them, which is the point of
     withholding it.
+
+    Counted by tracking hunk boundaries rather than by recognising headers,
+    because a header cannot be told from content by its first characters. A
+    content line carries its own ``+``/``-`` prefix and nothing between that
+    and the text, so a deleted ``---`` -- Markdown front matter, a YAML
+    document separator, an underline -- arrives as ``----``, and an added
+    ``++count`` as ``+++count``. Matching on those undercounts the change,
+    which is the one direction that matters: the count feeds the size
+    threshold that decides whether a change is small enough for one reviewer.
     """
     added = deleted = 0
+    in_hunk = False
     for line in diff.splitlines():
-        if line.startswith(("+++", "---")):
+        if line.startswith("@@"):
+            # Only a real hunk header can start here: every line inside a hunk
+            # carries a +, - or space first.
+            in_hunk = True
+            continue
+        if line.startswith("diff --"):
+            in_hunk = False
+            continue
+        if not in_hunk:
             continue
         if line.startswith("+"):
             added += 1
@@ -661,13 +708,38 @@ def _diff_line_counts(diff: str) -> "tuple[int, int]":
 
 
 def _changed_files(diff: str) -> List[str]:
+    """Every file this diff carries, deletions included.
+
+    A deletion's ``+++`` side is ``/dev/null``, so reading only that side
+    dropped deleted files from the list -- and this list is what the risk
+    check and the size threshold are computed from. Deleting an auth file is
+    not a smaller change than editing one.
+    """
     files: List[str] = []
+    previous = ""
     for line in diff.splitlines():
-        if line.startswith("+++ b/"):
-            name = line[6:].strip()
-            if name and name != "/dev/null" and name not in files:
+        if line.startswith("--- "):
+            previous = _diff_path(line[4:])
+        elif line.startswith("+++ "):
+            name = _diff_path(line[4:]) or previous
+            if name and name not in files:
                 files.append(name)
+            previous = ""
     return files
+
+
+def _diff_path(raw: str) -> str:
+    """One side of a diff header, without its ``a/``/``b/`` prefix.
+
+    ``/dev/null`` comes back empty: it names the absent side of an addition
+    or a deletion, not a file.
+    """
+    name = raw.strip()
+    if not name or name == "/dev/null":
+        return ""
+    if name.startswith(("a/", "b/")):
+        name = name[2:]
+    return name
 
 
 class ReviewError(RuntimeError):

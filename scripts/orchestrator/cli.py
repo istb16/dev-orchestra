@@ -608,6 +608,21 @@ def _merge_runs(workspace: ws.Workspace, run_dicts: List[Dict[str, Any]]) -> Lis
     return run_dicts + kept
 
 
+def _risk_paths(meta: Dict[str, Any]) -> List[str]:
+    """Every path a snapshot says the change touches.
+
+    ``changed_paths`` is the whole set, including withheld files and the name
+    a rename came from. A snapshot written by an earlier version does not have
+    it, so the old pair is reconstructed instead -- one round judged from a
+    slightly narrower set is better than a crash, and the next snapshot has
+    the key.
+    """
+    paths = meta.get("changed_paths")
+    if isinstance(paths, list) and paths:
+        return [str(path) for path in paths]
+    return list(meta.get("files") or []) + [str(entry.get("path")) for entry in (meta.get("withheld") or [])]
+
+
 def cmd_review_snapshot(args: argparse.Namespace) -> int:
     loaded = config_mod.load(args.cwd, validate_result=False)
     workspace = _workspace(args)
@@ -699,10 +714,11 @@ def cmd_review_run(args: argparse.Namespace) -> int:
     plan = opt_mod.decide(
         loaded.optimization_settings(),
         settings,
-        list(meta.get("files") or []) + [str(e.get("path")) for e in (meta.get("withheld") or [])],
+        _risk_paths(meta),
         int(meta.get("lines_added") or 0) + int(meta.get("lines_deleted") or 0),
         workspace.last_status("test"),
         len(reviewers),
+        reviewed_files=len(meta.get("files") or []),
     )
     if plan.escalated:
         _err("note: %s" % plan.escalation_note())
@@ -1156,10 +1172,11 @@ def cmd_status(args: argparse.Namespace) -> int:
     plan = opt_mod.decide(
         loaded.optimization_settings(),
         settings,
-        list(meta.get("files") or []) + [str(e.get("path")) for e in (meta.get("withheld") or [])],
+        _risk_paths(meta),
         int(meta.get("lines_added") or 0) + int(meta.get("lines_deleted") or 0),
         workspace.last_status("test"),
         len(loaded.reviewers()),
+        reviewed_files=len(meta.get("files") or []),
     )
     if plan.gate == opt_mod.GATE_REFUSE:
         reasons.append("the last recorded test run failed; fix it before reviewing")
