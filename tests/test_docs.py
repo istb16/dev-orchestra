@@ -79,8 +79,14 @@ class TestDocumentedYaml(IsolatedCase):
             self.assertEqual(data["version"], 1, name)
 
     def test_the_agent_manifest_parses_too(self):
+        """Checked against the version the skill declares, not a literal: this
+        is one of seven files a release has to bump, and a test pinned to a
+        number is one that fails on every release for no reason."""
+        from orchestrator import __version__
+
         path = pathlib.Path(REPO_ROOT) / "agents" / "openai.yaml"
-        self.assertEqual(parse_with_bundled_parser(path.read_text(encoding="utf-8"))["version"], "0.1.0")
+        parsed = parse_with_bundled_parser(path.read_text(encoding="utf-8"))
+        self.assertEqual(parsed["version"], __version__)
 
     def test_readme_config_example_is_a_valid_configuration(self):
         """The main README block is not just parseable, it is usable."""

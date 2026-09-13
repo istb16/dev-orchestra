@@ -10,6 +10,8 @@ The public surface covered by that promise is: the configuration schema, the
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-13
+
 ### Added
 
 - **`model_tiers`: one role, more than one model.** A role is a job, not a
@@ -280,7 +282,67 @@ The public surface covered by that promise is: the configuration schema, the
     poller is reading -- which matters because polling `jobs` and `status` is
     exactly what the detached path is for.
 
+- **Role options.** Each role can carry provider-specific `options`:
+  `permission_mode` and `args` for Claude, `sandbox` / `approve` / `args` for
+  Codex. The adapter validates them against what the installed CLI actually
+  accepts, so `config validate` catches a typo instead of a run failing later.
+  This exists because the default `acceptEdits` auto-approves file edits but
+  not shell commands, which can stop an Implementer from running the tests it
+  was told to run. Options that would loosen a read-only stage are ignored and
+  reported by `doctor` — the architect and every reviewer stay read-only.
+- **Duplicate candidates.** Findings from different reviewers that quote the
+  same code are reported as possible duplicates, ranked by how rare the shared
+  code token is, for the orchestrator to confirm as `duplicate` during triage.
+  Auto-merge stays conservative: measured on real two-provider output over one
+  diff, a confirmed duplicate pair scored 0.03 text similarity while an
+  unrelated pair scored 0.29, so no threshold on wording can separate them —
+  and a wrong merge hides a bug, while a missed one only costs redundant work.
+- Japanese README (`README.ja.md`), linked from the English one and checked by
+  skill validation.
 
+### Changed
+
+- `review.max_findings` now ships unset instead of `6`, which lets
+  `optimization.level` decide it. The effective default is unchanged: an unset
+  cap at `balanced` is still 6. A number set explicitly still wins over the
+  level, and `0` still lifts the cap.
+
+- **SKILL.md is a quarter smaller.** 15,877 characters down to 11,533 when it
+  was compressed, and 12,148 by the end of this release -- roughly 3,970
+  tokens to 3,040, with the difference spent on `optimization.level` and
+  `model_tiers`. That document is resident for the whole of every session, so
+  its size is a running cost rather than a one-off, and `validate_skill.py`
+  now enforces a character ceiling alongside the line one -- a table row and a
+  paragraph are one line each and cost very differently.
+
+  What went was words, not steps. Prose became tables and clauses, the
+  46-character helper-CLI prefix is stated once instead of fourteen times, and
+  the eighteen-row "the user says / you run" phrasebook moved to
+  `references/configuration.md`, replaced by the command grammar it was
+  examples of. Every command the pipeline needs is still in the document,
+  because a reader who has to open `references/workflow.md` to find the next
+  step has saved nothing: that file costs more than this one.
+
+- **The review prompt is written as instructions, not prose.** The template
+  dropped from 1,247 to 752 characters and the role guidance from an average of
+  235 to 195, so the fixed part of every reviewer prompt went from 1,574 to
+  1,309 characters -- roughly 66 tokens saved per reviewer, per round, on top
+  of the output cap that replaced part of it.
+
+  Nothing the reviewer is held to was dropped, only shortened: read-only, judge
+  this change alone, read any file for context, and every field the parser
+  reads. The `Finding` block keeps its exact shape, because a renamed heading
+  would cost a whole delegated run to a parse failure. `- Recommended fix:`
+  became `- Fix:`, which the parser has always accepted, and still does.
+
+  The fixer's brief was trimmed the same way: an empty field is omitted rather
+  than sent as a bare label, and who reported a finding is left out -- the fix
+  is the same whoever noticed.
+
+- Renamed every user-visible identifier to `dev-orchestra`: the skill name, the
+  `dev-orchestra` command, the config directory, the `.dev-orchestra.yaml`
+  project override, and the `DEV_ORCHESTRA_*` environment variables. Three
+  competing names for one tool was one too many.
 
 ### Fixed
 
@@ -390,8 +452,6 @@ that introduced them.
   directories were caught everywhere except where they usually live. Both
   forms of each are listed now.
 
-### Fixed
-
 A self-review of the first release found eight issues; four of them were the
 same blind spot, that the test suite only ever exercised a single review round.
 
@@ -431,50 +491,6 @@ same blind spot, that the test suite only ever exercised a single review round.
   blocks are block-style now, and a test parses every documented YAML block
   with the bundled parser.
 
-### Changed
-
-- `review.max_findings` now ships unset instead of `6`, which lets
-  `optimization.level` decide it. The effective default is unchanged: an unset
-  cap at `balanced` is still 6. A number set explicitly still wins over the
-  level, and `0` still lifts the cap.
-
-- **SKILL.md is a third smaller.** 15,877 characters down to 11,533, roughly
-  3,970 tokens to 2,880. That document is resident for the whole of every
-  session, so its size is a running cost rather than a one-off, and
-  `validate_skill.py` now enforces a character ceiling alongside the line one
-  -- a table row and a paragraph are one line each and cost very differently.
-
-  What went was words, not steps. Prose became tables and clauses, the
-  46-character helper-CLI prefix is stated once instead of fourteen times, and
-  the eighteen-row "the user says / you run" phrasebook moved to
-  `references/configuration.md`, replaced by the command grammar it was
-  examples of. Every command the pipeline needs is still in the document,
-  because a reader who has to open `references/workflow.md` to find the next
-  step has saved nothing: that file costs more than this one.
-
-- **The review prompt is written as instructions, not prose.** The template
-  dropped from 1,247 to 752 characters and the role guidance from an average of
-  235 to 195, so the fixed part of every reviewer prompt went from 1,574 to
-  1,309 characters -- roughly 66 tokens saved per reviewer, per round, on top
-  of the output cap that replaced part of it.
-
-  Nothing the reviewer is held to was dropped, only shortened: read-only, judge
-  this change alone, read any file for context, and every field the parser
-  reads. The `Finding` block keeps its exact shape, because a renamed heading
-  would cost a whole delegated run to a parse failure. `- Recommended fix:`
-  became `- Fix:`, which the parser has always accepted, and still does.
-
-  The fixer's brief was trimmed the same way: an empty field is omitted rather
-  than sent as a bare label, and who reported a finding is left out -- the fix
-  is the same whoever noticed.
-
-- Renamed every user-visible identifier to `dev-orchestra`: the skill name, the
-  `dev-orchestra` command, the config directory, the `.dev-orchestra.yaml`
-  project override, and the `DEV_ORCHESTRA_*` environment variables. Three
-  competing names for one tool was one too many.
-
-### Fixed
-
 - Two tests silently depended on `claude` and `codex` being installed, so they
   passed locally and failed on every CI platform. Both now drive the `mock`
   provider instead, and `DEV_ORCHESTRA_TEST_ASSUME_NO_CLI=1` reproduces the CI
@@ -482,26 +498,6 @@ same blind spot, that the test suite only ever exercised a single review round.
 - `doctor` now reports options that a read-only role will ignore even when the
   provider CLI is missing: whether an option takes effect is a fact about the
   configuration, not about what happens to be installed.
-
-### Added
-
-- **Role options.** Each role can carry provider-specific `options`:
-  `permission_mode` and `args` for Claude, `sandbox` / `approve` / `args` for
-  Codex. The adapter validates them against what the installed CLI actually
-  accepts, so `config validate` catches a typo instead of a run failing later.
-  This exists because the default `acceptEdits` auto-approves file edits but
-  not shell commands, which can stop an Implementer from running the tests it
-  was told to run. Options that would loosen a read-only stage are ignored and
-  reported by `doctor` — the architect and every reviewer stay read-only.
-- **Duplicate candidates.** Findings from different reviewers that quote the
-  same code are reported as possible duplicates, ranked by how rare the shared
-  code token is, for the orchestrator to confirm as `duplicate` during triage.
-  Auto-merge stays conservative: measured on real two-provider output over one
-  diff, a confirmed duplicate pair scored 0.03 text similarity while an
-  unrelated pair scored 0.29, so no threshold on wording can separate them —
-  and a wrong merge hides a bug, while a missed one only costs redundant work.
-- Japanese README (`README.ja.md`), linked from the English one and checked by
-  skill validation.
 
 ## [0.1.0] - 2026-09-10
 
