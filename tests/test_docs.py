@@ -79,14 +79,19 @@ class TestDocumentedYaml(IsolatedCase):
             self.assertEqual(data["version"], 1, name)
 
     def test_the_agent_manifest_parses_too(self):
-        """Checked against the version the skill declares, not a literal: this
-        is one of seven files a release has to bump, and a test pinned to a
-        number is one that fails on every release for no reason."""
-        from orchestrator import __version__
+        """Checked against SKILL.md's frontmatter -- the source of truth every
+        other version is compared to -- not a literal: this is one of seven
+        files a release has to bump, and a test pinned to a number is one that
+        fails on every release for no reason."""
+        import importlib
+
+        validate_skill = importlib.import_module("validate_skill")
+        skill = pathlib.Path(REPO_ROOT) / validate_skill.SKILL_PATH
+        front, _ = validate_skill.parse_frontmatter(skill.read_text(encoding="utf-8"))
 
         path = pathlib.Path(REPO_ROOT) / "agents" / "openai.yaml"
         parsed = parse_with_bundled_parser(path.read_text(encoding="utf-8"))
-        self.assertEqual(parsed["version"], __version__)
+        self.assertEqual(str(parsed["version"]), str(front["version"]))
 
     def test_readme_config_example_is_a_valid_configuration(self):
         """The main README block is not just parseable, it is usable."""
