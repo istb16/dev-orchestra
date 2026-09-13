@@ -105,7 +105,11 @@ attempts spent; a repeated signature = the last fix changed nothing. Both are
 refusals, not suggestions — fix→test is the loop most likely to run away,
 because from inside it never looks like a loop.
 
-**Reviews.** Snapshot first: every reviewer judges the same frozen diff. The
+**Reviews.** Record the test result before this stage even when you did not
+run one here (`state record test ok|failed`) -- `review run` reads it, and
+with nothing recorded it cannot stop a review of a red tree.
+
+Snapshot first: every reviewer judges the same frozen diff. The
 round comes from the snapshot — new snapshot, new round — so never track it by
 hand. `snapshot` withholds the diff body of generated and vendored files
 (lockfiles, `dist/`, bundles; `review.exclude`) and names them instead: pass

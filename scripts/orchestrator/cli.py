@@ -753,6 +753,15 @@ def cmd_review_run(args: argparse.Namespace) -> int:
     if plan.escalated:
         _err("note: %s" % plan.escalation_note())
     if plan.gate == opt_mod.GATE_REFUSE and not args.force:
+        # Written down even though nothing ran, and *because* nothing ran: a
+        # skipped round is the largest thing this level ever saves, and a
+        # saving that leaves no trace cannot be counted. No budget is consumed
+        # and no ledger entry opened -- there was no attempt to account for.
+        workspace.record_event(
+            "review",
+            opt_mod.REFUSED,
+            {"iteration": iteration, "optimization": plan.to_dict(), "reviewers": []},
+        )
         _err(plan.gate_note())
         return ledger_mod.EXIT_BUDGET_EXHAUSTED
     if plan.gate == opt_mod.GATE_WARN:
@@ -1143,6 +1152,65 @@ def cmd_tokens_show(args: argparse.Namespace) -> int:
             "not a total." % (silent, totals["runs"])
         )
     return 0
+
+
+_OPT_ROW = "  %-22s %s"
+
+
+def cmd_optimization_report(args: argparse.Namespace) -> int:
+    """What the level decided, over every round this project has recorded.
+
+    Reads the run log rather than the ledger. A level's effect is a rate --
+    how often it refused, how often it cut the panel -- and a rate needs more
+    than the one workflow a ledger covers.
+    """
+    workspace = _workspace(args)
+    report = opt_mod.summarise_rounds(workspace.read_state().get("events") or [])
+    if args.json:
+        _emit_json(report)
+        return 0
+
+    if not report["rounds"]:
+        _out("No review rounds recorded in %s." % workspace.relative(workspace.state_path))
+        _out("Run a review, then ask again -- this reads what happened, not what would.")
+        return 0
+
+    _out(
+        "Review rounds recorded: %d (%d ran, %d refused)"
+        % (report["rounds"], report["ran"], report["refused"])
+    )
+    _out(_OPT_ROW % ("levels in force", _counts(report["levels"])))
+    _out(_OPT_ROW % ("gate verdicts", _counts(report["gates"])))
+    _out(_OPT_ROW % ("panel reduced", report["panel_reduced"]))
+    _out(_OPT_ROW % ("escalated (high risk)", report["escalated"]))
+    _out("")
+    _out(
+        "Reviewer runs: %d (%d reported usage), %s billed"
+        % (report["reviewer_runs"], report["measured_runs"], "{:,}".format(report["billed_tokens"]))
+    )
+    if report["billed_per_round"]:
+        _out("  %s billed per round that ran" % "{:,}".format(report["billed_per_round"]))
+    if report["estimated_saving"]:
+        _out("")
+        _out(
+            "Estimated saving from %d refused round(s): ~%s billed tokens."
+            % (report["refused"], "{:,}".format(report["estimated_saving"]))
+        )
+        _out("An estimate: what a round that did not happen would have cost is")
+        _out("unknowable, so this is the mean of the %d that did." % report["ran"])
+    if report["rounds_without_a_test_result"]:
+        _out("")
+        _out(
+            "%d of %d round(s) ran with no test result recorded, so the gate had"
+            % (report["rounds_without_a_test_result"], report["rounds"])
+        )
+        _out("nothing to act on and cannot have fired. Record one before `review run`:")
+        _out("  dev-orchestra state record test ok|failed")
+    return 0
+
+
+def _counts(counter: Dict[str, int]) -> str:
+    return ", ".join("%s x%d" % item for item in sorted(counter.items())) or "-"
 
 
 def cmd_progress_record(args: argparse.Namespace) -> int:
@@ -1621,6 +1689,16 @@ def build_parser() -> argparse.ArgumentParser:
     tokens_show = tokens_sub.add_parser("show", help="the token account (reported, never enforced)")
     tokens_show.add_argument("--json", action="store_true")
     tokens_show.set_defaults(func=cmd_tokens_show)
+
+    optimization_parser = subparsers.add_parser(
+        "optimization", help="what optimization.level has decided, over time"
+    )
+    optimization_sub = optimization_parser.add_subparsers(dest="optimization_command", required=True)
+    optimization_report = optimization_sub.add_parser(
+        "report", help="rounds refused, panels cut, and what that came to"
+    )
+    optimization_report.add_argument("--json", action="store_true")
+    optimization_report.set_defaults(func=cmd_optimization_report)
 
     progress_parser = subparsers.add_parser("progress", help="detect a loop that is going nowhere")
     progress_sub = progress_parser.add_subparsers(dest="subcommand", required=True)

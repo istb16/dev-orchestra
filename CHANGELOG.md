@@ -10,6 +10,36 @@ The public surface covered by that promise is: the configuration schema, the
 
 ## [Unreleased]
 
+### Added
+
+- **`optimization report`: what the level actually did, over time.** The
+  effect of `optimization.level` is a rate -- how often it refused a round,
+  how often it cut the panel -- and nothing could report one. `tokens show`
+  covers a single workflow and `budget reset` clears it; the run log keeps
+  accumulating, so the report reads that instead.
+
+  Any saving is reported as an estimate and says so. What a refused round
+  *would* have cost cannot be known, so the figure is the mean of the rounds
+  that did run in the same repository, which is the closest honest stand-in.
+
+### Changed
+
+- **A round the gate refuses is now recorded**, as `refused`, even though
+  nothing ran -- and because nothing ran. Skipping a round is the largest
+  thing the level ever saves, and it was returning before anything was
+  written down, so the saving left no trace and could not be counted. It
+  still consumes no budget and opens no ledger entry: there was no attempt to
+  account for.
+
+- **SKILL.md asks for the test result at the review stage**, not only at the
+  test stage. The instruction was in a paragraph a review-only workflow never
+  reads, and the one round recorded in this repository proves the point: it
+  ran with `test_status: ""` and the test result was written down thirteen
+  minutes *after* the review. A gate with nothing to act on cannot fire, and
+  the totals cannot tell that apart from a level that had no effect -- so the
+  report counts those rounds separately too.
+
+
 ## [0.2.0] - 2026-09-13
 
 ### Added

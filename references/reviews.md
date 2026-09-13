@@ -103,7 +103,10 @@ before any reviewer starts. The full table is in
 to a review.
 
 **It can refuse a round outright**, when the last `state record test ok|failed`
-recorded a failure. Reviewing a tree that does not pass its own tests spends a
+recorded a failure. A refusal is recorded as a `refused` round even though
+nothing ran -- a skipped round is the largest thing the level ever saves, and a
+saving that leaves no trace cannot be counted. `optimization report` counts
+them. Reviewing a tree that does not pass its own tests spends a
 reviewer on a problem already known. `--force` overrides. A tree with no
 recorded test result is *not* refused -- it warns and runs, because "nobody
 wrote it down" is not "it failed".
