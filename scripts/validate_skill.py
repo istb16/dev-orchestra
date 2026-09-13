@@ -186,11 +186,23 @@ def check_manifests(version: str = "") -> List[str]:
             problems.append("%s: the entry must be sourced from this repository" % CLAUDE_MARKETPLACE)
         elif not os.path.isfile(os.path.join(_plugin_root(source), CLAUDE_PLUGIN)):
             problems.append("%s: source %r has no %s" % (CLAUDE_MARKETPLACE, source, CLAUDE_PLUGIN))
-        if version and str(entry.get("version", version)) != version:
+        # No default: a release that drops the key ships a manifest advertising
+        # nothing, which is as wrong as one advertising the previous version.
+        if version and str(entry.get("version")) != version:
             problems.append(
                 "version mismatch: %s says %s, %s entry says %s"
                 % (SKILL_PATH, version, CLAUDE_MARKETPLACE, entry.get("version"))
             )
+
+    # The marketplace carries its own version alongside the entry's, and a
+    # release that bumps one and forgets the other is the likely mistake.
+    metadata = claude_market.get("metadata")
+    metadata = metadata if isinstance(metadata, dict) else {}
+    if version and str(metadata.get("version")) != version:
+        problems.append(
+            "version mismatch: %s says %s, %s metadata says %s"
+            % (SKILL_PATH, version, CLAUDE_MARKETPLACE, metadata.get("version"))
+        )
 
     codex_market = manifests[CODEX_MARKETPLACE]
     if codex_market.get("name") != SKILL_NAME:

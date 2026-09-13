@@ -132,7 +132,10 @@ schema, the CLI commands and flags, and the `.ai/` artifact formats.
 
 1. Run `python scripts/smoke_live.py` against the installed CLIs. The suite
    cannot tell you an adapter has drifted; this can.
-2. Move `Unreleased` entries under a new version heading with a date.
+2. Move `Unreleased` entries under a new version heading with a date, and fix
+   the reference links at the foot of the file: point `[Unreleased]` at
+   `compare/vX.Y.Z...HEAD` and add `[X.Y.Z]: .../compare/vW...vX.Y.Z`. Without
+   the definition the new heading renders as literal `[X.Y.Z]` on GitHub.
 3. Bump the version everywhere it is written down:
    `skills/dev-orchestra/SKILL.md`, `agents/openai.yaml`, the two plugin
    manifests, both entries in the Claude marketplace file, and `__version__`
