@@ -46,6 +46,32 @@ has affordances for the awkward paths: always "installed",
 with `DEV_ORCHESTRA_MOCK_FAIL` for run failures and the `unresolvable` model
 family for resolution failures.
 
+Which leaves a gap, and it is worth naming: **nothing in the suite has ever run
+a real CLI.** That is not a hypothetical cost. `CodexProvider.run` raised
+`TypeError` on every call for weeks -- `idle_timeout` was added to
+`Provider.run` and not to the override -- while 654 tests stayed green, because
+the mock overrides `run` outright and exercises no adapter's signature but its
+own. A configured `sandbox: read-only` was being dropped just as quietly, which
+is worse: a crash gets fixed.
+
+So there is a second script, outside the suite, that does start the real
+things:
+
+```bash
+python scripts/smoke_live.py            # every installed CLI
+python scripts/smoke_live.py --provider codex
+```
+
+It spends a small number of real tokens on the questions only a real process
+can answer: does the command line still work, does the CLI still report what a
+run cost in a shape the parser reads, and does a read-only mode still actually
+refuse to write -- checked by asking for a file and then looking for it, not by
+believing what the agent said about itself.
+
+Run it before a release, after touching an adapter, and after bumping a CLI. A
+failure there is the adapter and the CLI having drifted apart: read the CLI's
+`--help` before changing anything.
+
 **4. Reviewers stay read-only and independent.** If a change could let a
 reviewer edit files or see another reviewer's output, it needs a very good
 reason and a test proving the boundary still holds.
@@ -104,11 +130,13 @@ default, which is what "recommended-coding, latest" actually means.
 [Semantic versioning](https://semver.org/). The public surface is the config
 schema, the CLI commands and flags, and the `.ai/` artifact formats.
 
-1. Move `Unreleased` entries under a new version heading with a date.
-2. Bump `version:` in `skills/dev-orchestra/SKILL.md`, the two plugin
+1. Run `python scripts/smoke_live.py` against the installed CLIs. The suite
+   cannot tell you an adapter has drifted; this can.
+2. Move `Unreleased` entries under a new version heading with a date.
+3. Bump `version:` in `skills/dev-orchestra/SKILL.md`, the two plugin
    manifests, the Claude marketplace entry, and `__version__` in
    `scripts/orchestrator/__init__.py` and `cli.py` (validation checks they match).
-3. Tag `vX.Y.Z`.
+4. Tag `vX.Y.Z`.
 
 ## Reporting a security issue
 
