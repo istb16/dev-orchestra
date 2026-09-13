@@ -31,6 +31,10 @@ PROJECT_CONFIG_NAMES = (
 
 KNOWN_ROLES = ("orchestrator", "architect", "implementer", "review_fixer")
 
+#: Tier names are typed on a command line and read in a report, so they are
+#: kept to the shape of a word rather than allowed to be a sentence.
+_TIER_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
+
 BUILTIN_ROLES = (
     "general",
     "security",
@@ -275,11 +279,33 @@ class LoadedConfig:
         """True when at least one config file was found on disk."""
         return bool(self.global_path or self.project_path)
 
-    def role(self, name: str) -> Dict[str, Any]:
+    def role(self, name: str, tier: Optional[str] = None) -> Dict[str, Any]:
+        """One role's spec, optionally as one of its tiers.
+
+        A tier is not a different role: same job, same prompt, different
+        model. Which is why it is a per-role override rather than a second
+        role -- routing a simple fix to a cheaper model should not mean
+        maintaining two definitions of what the implementer is.
+        """
         spec = self.data.get(name)
         if not isinstance(spec, dict):
             raise ConfigError("role %r is not configured" % name)
-        return spec
+        if not tier:
+            return spec
+        tiers = spec.get("model_tiers")
+        entry = tiers.get(tier) if isinstance(tiers, dict) else None
+        if not isinstance(entry, dict):
+            known = sorted(tiers) if isinstance(tiers, dict) else []
+            raise ConfigError(
+                "%s has no tier %r%s"
+                % (name, tier, " (known: %s)" % ", ".join(known) if known else " (none configured)")
+            )
+        return merge_tier(spec, entry)
+
+    def tiers(self, name: str) -> Dict[str, Any]:
+        spec = self.data.get(name)
+        tiers = spec.get("model_tiers") if isinstance(spec, dict) else None
+        return dict(tiers) if isinstance(tiers, dict) else {}
 
     def reviewers(self) -> List[Dict[str, Any]]:
         return list(self.data.get("reviewers") or [])
@@ -341,6 +367,7 @@ def validate(data: Dict[str, Any], known_providers: Optional[List[str]] = None) 
             problems.append("%s: missing role definition" % role)
             continue
         problems.extend("%s: %s" % (role, msg) for msg in _validate_role(spec, providers))
+        problems.extend(_validate_tiers(spec, role, providers))
 
     reviewers = data.get("reviewers")
     if reviewers is None:
@@ -442,6 +469,66 @@ def _validate_optimization(data: Any) -> List[str]:
     return problems
 
 
+def merge_tier(spec: Dict[str, Any], tier: Dict[str, Any]) -> Dict[str, Any]:
+    """A role spec with one tier applied.
+
+    Each key the tier sets replaces the role's, whole. It is not a deep
+    merge: a tier naming a family over a base pinned to an id would otherwise
+    inherit the pin and run a model nobody asked for, which is exactly the
+    mistake this feature exists to avoid making by hand.
+
+    Changing provider drops what belonged to the old one -- its options are
+    not portable, and its model family usually is not either. A tier that
+    wants a specific model on the new provider says so.
+    """
+    merged = {key: copy.deepcopy(value) for key, value in spec.items() if key != "model_tiers"}
+    switched = bool(tier.get("provider")) and tier.get("provider") != spec.get("provider")
+    if switched:
+        merged.pop("model", None)
+        merged.pop("options", None)
+    for key in ("provider", "model", "options"):
+        if key in tier:
+            merged[key] = copy.deepcopy(tier[key])
+    return merged
+
+
+def _validate_tiers(spec: Dict[str, Any], label: str, providers: List[str]) -> List[str]:
+    """Every tier is checked as the role it would become.
+
+    A tier is only ever used by name, so a broken one fails at the moment
+    somebody routes work to it -- which is the worst moment to find out. It
+    is validated here as a whole merged role, by the same rules.
+    """
+    tiers = spec.get("model_tiers")
+    if tiers is None:
+        return []
+    if not isinstance(tiers, dict):
+        return ["%s.model_tiers: must be a mapping of tier name to overrides" % label]
+    problems: List[str] = []
+    for name, entry in tiers.items():
+        if not isinstance(name, str) or not _TIER_NAME_RE.match(name):
+            problems.append("%s.model_tiers: %r is not a usable tier name" % (label, name))
+            continue
+        if not isinstance(entry, dict):
+            problems.append("%s.model_tiers.%s: must be a mapping" % (label, name))
+            continue
+        if not entry:
+            problems.append("%s.model_tiers.%s: sets nothing, so it is not a tier" % (label, name))
+            continue
+        unknown = sorted(set(entry) - {"provider", "model", "options"})
+        if unknown:
+            problems.append(
+                "%s.model_tiers.%s: only provider, model and options can be overridden (got %s)"
+                % (label, name, ", ".join(unknown))
+            )
+            continue
+        problems.extend(
+            "%s.model_tiers.%s: %s" % (label, name, message)
+            for message in _validate_role(merge_tier(spec, entry), providers)
+        )
+    return problems
+
+
 def _validate_role(spec: Dict[str, Any], providers: List[str]) -> List[str]:
     problems: List[str] = []
     provider = spec.get("provider")
@@ -449,6 +536,12 @@ def _validate_role(spec: Dict[str, Any], providers: List[str]) -> List[str]:
         problems.append("provider is required")
     elif provider not in providers:
         problems.append("unknown provider %r (known: %s)" % (provider, ", ".join(providers)))
+
+    # Options first, because the model checks below return early. A role may
+    # legitimately omit `model` -- that is how you let a CLI pick its own --
+    # and doing so used to skip option validation entirely, so a typo in a
+    # sandbox policy passed `config validate` and was discovered at run time.
+    problems.extend(_validate_role_options(spec, provider, providers))
 
     model = spec.get("model")
     if model is None:
@@ -464,7 +557,6 @@ def _validate_role(spec: Dict[str, Any], providers: List[str]) -> List[str]:
         problems.append("model.version must be 'latest' or 'pinned' (got %r)" % (version,))
     if version == "pinned" and not model.get("id"):
         problems.append("model.version is 'pinned' but model.id is missing")
-    problems.extend(_validate_role_options(spec, provider, providers))
     return problems
 
 

@@ -276,6 +276,13 @@ def render_summary(data: Dict[str, Any]) -> str:
         spec = data.get(key) or {}
         lines.append("  %s" % title)
         lines.append("    %s" % _describe(spec))
+        # Shown because a tier is invisible until somebody routes work to it,
+        # and an unused tier is usually one nobody remembered was there.
+        tiers = spec.get("model_tiers") if isinstance(spec, dict) else None
+        for name in sorted(tiers) if isinstance(tiers, dict) else []:
+            entry = tiers[name]
+            described = _describe(merged(spec, entry)) if isinstance(entry, dict) else "(invalid)"
+            lines.append("      --tier %-10s %s" % (name, described))
     reviewers = data.get("reviewers") or []
     lines.append("  Reviews")
     if not reviewers:
@@ -287,6 +294,13 @@ def render_summary(data: Dict[str, Any]) -> str:
         )
     lines.append("")
     return "\n".join(lines)
+
+
+def merged(spec: Dict[str, Any], tier: Dict[str, Any]) -> Dict[str, Any]:
+    """Late import: the config module imports this one for its prompts."""
+    from .config import merge_tier
+
+    return merge_tier(spec, tier)
 
 
 def _describe(spec: Dict[str, Any]) -> str:

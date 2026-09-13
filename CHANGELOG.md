@@ -12,6 +12,29 @@ The public surface covered by that promise is: the configuration schema, the
 
 ### Added
 
+- **`model_tiers`: one role, more than one model.** A role is a job, not a
+  model, and until now the two were the same setting. A role can now carry
+  named alternatives -- `run implementer --tier light` -- so a one-line fix
+  goes to something cheap and a second opinion goes to another vendor, without
+  maintaining two definitions of what the implementer is.
+
+  The caller picks. Nothing infers a tier from the size of a diff: the
+  orchestrator is the only thing that knows how hard the task is, and a wrong
+  guess spends exactly what tiers exist to control. An unknown tier is refused
+  rather than run on the default model, because a tier silently ignored hands
+  you the expensive model when you asked for cheap and the cheap one when you
+  asked for care.
+
+  Each key is replaced whole rather than merged, so a tier naming a family
+  cannot inherit a base `pinned` id and run a model nobody asked for, and
+  switching provider drops the old provider's model and options with it.
+  Every tier is validated as the whole role it would become, so a broken one
+  fails at `config validate` rather than at the moment work is routed to it.
+
+  `config show` lists them; `tokens show` gives a tiered run its own line, so
+  *did the cheaper one actually cost less* has an answer. Reviewers have no
+  tiers -- the panel is already one model per reviewer.
+
 - **`scripts/smoke_live.py`: the checks that need a real CLI.** The suite
   cannot make them. It has to pass on a machine with neither `claude` nor
   `codex` installed, so it reviews with the `mock` provider, which overrides
@@ -260,6 +283,13 @@ The public surface covered by that promise is: the configuration schema, the
 
 
 ### Fixed
+
+- **A role that named no model never had its options validated.** Omitting
+  `model` is how you let a CLI pick its own, and the model checks returned
+  early -- taking the option checks with them. A typo in a Codex `sandbox`
+  policy passed `config validate` and was discovered at run time. Found while
+  adding tiers, because a tier that only switches provider is exactly such a
+  role.
 
 Found by measuring: a two-model review was run against the whole of this
 release's work to see what the output cap saves. It reported these instead.

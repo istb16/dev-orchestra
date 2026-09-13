@@ -146,6 +146,15 @@ class TestRoleOptions(IsolatedCase):
         data["implementer"]["options"] = ["--permission-mode"]
         self.assertTrue(any("options must be a mapping" in p for p in config_mod.validate(data)))
 
+    def test_options_are_validated_on_a_role_that_names_no_model(self):
+        """Omitting `model` is how you let a CLI pick its own, and the model
+        checks return early -- which used to skip the option checks with them.
+        A typo in a sandbox policy passed `config validate` and was found at
+        run time instead."""
+        data = config_mod.default_config()
+        data["implementer"] = {"provider": "codex", "options": {"sandbox": "nonsense"}}
+        self.assertTrue(any("options.sandbox" in p for p in config_mod.validate(data)))
+
     def test_reviewer_options_are_validated_too(self):
         data = config_mod.default_config()
         data["reviewers"][1]["options"] = {"sandbox": "nonsense"}
