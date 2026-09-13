@@ -116,6 +116,7 @@ workspace:
 | `optimization.low_risk_max_lines` | int | And at most this many changed lines (default 50). |
 | `workspace.dir` | string | Where `.ai/` artifacts go. |
 | `<role>.options` | mapping | Provider-specific knobs; see below. |
+| `<role>.model_tiers` | mapping | Named alternatives for this role's model; see below. Optional. |
 
 ### Role options
 
@@ -206,6 +207,58 @@ optimization:
   low_risk_max_files: 3
   low_risk_max_lines: 80
 ```
+
+## Model tiers
+
+The same role, the same prompt, a different model behind it. A one-line fix
+handed to something cheap, a gnarly design handed to something expensive, a
+second opinion handed to another vendor:
+
+```yaml
+implementer:
+  provider: claude
+  model:
+    family: opus
+    version: latest
+  model_tiers:
+    light:
+      model:
+        family: sonnet
+        version: latest
+    second-opinion:
+      provider: codex
+```
+
+```bash
+dev-orchestra run implementer --tier light --prompt-file .ai/execution/fix.md
+```
+
+A tier is a per-role override rather than a second role, because keeping two
+definitions of what the implementer *is* would be the expensive part. Only
+`provider`, `model` and `options` can be overridden; anything else is a
+configuration error rather than a silently ignored key.
+
+**Who picks is the caller.** Nothing infers a tier from the size of a diff.
+The orchestrator is the only thing that knows how hard the task is, and a
+wrong guess spends exactly what tiers exist to control.
+
+**An unknown tier is an error, never a fallback.** A tier quietly ignored runs
+the work on the default model and says nothing -- the expensive one when you
+asked for cheap, or the cheap one when you asked for care.
+
+**Each key is replaced whole, not merged into.** A tier naming a family over a
+base pinned to an id would otherwise inherit the pin and run a model nobody
+asked for. Changing `provider` drops the previous provider's `model` and
+`options` with it: `opus` means nothing to Codex, and `permission_mode` is not
+a thing it has. A tier that wants something specific on the new provider says
+so.
+
+Tiers are shown by `config show`, and a tiered run is recorded against its own
+line in `tokens show`, so the question a tier raises -- did the cheaper one
+actually cost less -- has an answer.
+
+Reviewers have no tiers. The panel is already one model per reviewer, which is
+the same routing by another name.
 
 ## Model families and version policy
 

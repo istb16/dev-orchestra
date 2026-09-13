@@ -80,6 +80,11 @@ and stage detail: `references/workflow.md`.
 | Fix | `review fix-brief --output .ai/execution/fix-brief.md`, then `run review_fixer --prompt-file .ai/execution/fix-brief.md` |
 | Re-test | the same test commands, then `review status` |
 
+A role with `model_tiers` configured (see `config show`) can be run on one:
+`run implementer --tier light`. You pick, from the difficulty you judged in
+step 1 -- nothing infers it. An unknown tier is refused, not quietly run on
+the default model.
+
 **Design.** Architect must not change code. You write the request: goal, files
 and symbols you already located, constraints, what you ruled out. Plan
 sections: Goal, Current Behavior, Investigation, Root Cause, Proposed Change,
@@ -178,6 +183,7 @@ resulting configuration afterwards so the user can confirm it.
 | set up | `config setup` (interactive), or `config setup --defaults` |
 | available models | `model list` |
 | change a role | `config set <role>.provider codex`, `config set <role>.model.family opus` |
+| a cheaper/stronger model for one run | `run <role> --tier <name>`, if `model_tiers` is configured |
 | reviewers | `reviewer add --provider codex --role security`, `reviewer remove <id>`, `reviewer set 2 --provider … --role …`, `reviewer list` |
 | this project only | add `--scope project` to any write |
 | check the environment | `doctor` |

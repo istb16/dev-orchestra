@@ -628,6 +628,51 @@ dev-orchestra config reset
 
 スキーマ全体は `references/configuration.md`（英語）にあります。
 
+## 1つのロールに複数のモデル
+
+ロールは「仕事」であって「モデル」ではありません。`model_tiers` を使うと、
+仕事はそのままに動かすモデルだけを差し替えられます ── 1行修正は安いモデルへ、
+セカンドオピニオンは別ベンダーへ:
+
+```yaml
+implementer:
+  provider: claude
+  model:
+    family: opus
+    version: latest
+  model_tiers:
+    light:
+      model:
+        family: sonnet
+        version: latest
+    second-opinion:
+      provider: codex
+```
+
+```bash
+dev-orchestra run implementer --tier light --prompt-file .ai/execution/fix.md
+```
+
+**tier を選ぶのは呼び出し側です。** diff のサイズなどから自動推測はしません。
+タスクの難易度を知っているのは呼び出し側だけであり、推測を外すと tier が制御
+しようとしているコストか品質のどちらかを失うためです。
+
+**存在しない tier はエラーです。** 既定モデルへ黙って落ちることはありません。
+tier が黙殺されると、安く済ませたいときに高いモデルが、丁寧にやりたいときに
+安いモデルが動くことになります。
+
+各キーは**マージではなく丸ごと置換**されます。family だけを指定した tier が
+ベースの `pinned` + `id` を引き継いで、誰も指定していないモデルで動く事故を
+防ぐためです。provider を変えた場合は、前の provider の model と options も
+一緒に落とします（`opus` は Codex にとって無意味です）。
+
+tier は `config show` に一覧表示され、tier 付きの実行は `tokens show` で
+独立した行として記録されます。「安い方は本当に安かったのか」を推測ではなく
+数字で確認できます。
+
+レビュアーに tier はありません。パネルは既にレビュアーごとに1モデルで、それが
+同じ意味のルーティングだからです。
+
 ## モデル選択
 
 設定に保存するのは **family と方針** だけで、スナップショットは保存しません。

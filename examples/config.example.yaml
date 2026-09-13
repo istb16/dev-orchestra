@@ -33,6 +33,21 @@ implementer:
   model:
     family: opus
     version: latest
+  # Named alternatives for this role's model, used only when asked for by
+  # name: `dev-orchestra run implementer --tier light`. Optional, and the
+  # caller decides -- nothing infers a tier from the size of a change.
+  #
+  # Each key replaces the role's whole, and switching provider drops the old
+  # provider's model and options with it. An unknown tier is an error, never
+  # a quiet fall back to the default model.
+  #
+  # model_tiers:
+  #   light:
+  #     model:
+  #       family: sonnet
+  #       version: latest
+  #   second-opinion:
+  #     provider: codex
 
 # Fixes findings that survived triage.
 review_fixer:

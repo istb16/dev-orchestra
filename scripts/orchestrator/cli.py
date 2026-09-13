@@ -104,6 +104,14 @@ def _load_or_die(start: Optional[str] = None) -> config_mod.LoadedConfig:
 # --------------------------------------------------------------------------- config
 
 
+def _describe_spec(spec: Dict[str, Any]) -> str:
+    """provider / family / version, the way `config show` says it."""
+    model = spec.get("model") or {}
+    version = model.get("version", "latest")
+    family = model.get("id") if version == "pinned" else model.get("family", "default")
+    return "%s / %s / %s" % (spec.get("provider", "?"), family or "default", version)
+
+
 def cmd_config_show(args: argparse.Namespace) -> int:
     loaded = config_mod.load(args.cwd, validate_result=False)
     if args.scope == "global":
@@ -426,8 +434,16 @@ def _read_prompt(args: argparse.Namespace) -> str:
 def cmd_run(args: argparse.Namespace) -> int:
     loaded = _load_or_die(args.cwd)
     role = args.role
+    tier = args.tier
     try:
-        spec = loaded.role(role) if role in config_mod.KNOWN_ROLES else _reviewer_spec(loaded, role)
+        if role in config_mod.KNOWN_ROLES:
+            spec = loaded.role(role, tier)
+        elif tier:
+            # Reviewers are already one model each; the panel is the routing.
+            _err("--tier applies to %s, not to a reviewer" % ", ".join(config_mod.KNOWN_ROLES))
+            return 2
+        else:
+            spec = _reviewer_spec(loaded, role)
     except config_mod.ConfigError as exc:
         _err(str(exc))
         return 2
@@ -463,6 +479,8 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     book = _ledger(args, workspace)
     book.clear_stalls()
+    if tier:
+        _err("note: running %s on its %r tier (%s)" % (role, tier, _describe_spec(spec)))
     refusal = _refuse_if_exhausted(book, role, args.force)
     if refusal is not None:
         return refusal
@@ -491,7 +509,13 @@ def cmd_run(args: argparse.Namespace) -> int:
         jobs_mod.claim(args.job_file)
     token = book.begin(
         role,
-        {"mode": mode, "provider": provider_name, "command": provider.executable, "job": args.job_file},
+        {
+            "mode": mode,
+            "provider": provider_name,
+            "command": provider.executable,
+            "job": args.job_file,
+            "tier": tier or None,
+        },
         deadline=timeout,
     )
     try:
@@ -545,13 +569,19 @@ def cmd_run(args: argparse.Namespace) -> int:
     # unreported would make the account call itself incomplete over a run with
     # nothing to report.
     if result.invoked:
-        book.record_usage(role, result.usage.to_dict())
+        # Labelled by tier when there is one, so `tokens show` can answer the
+        # question a tier exists to raise: did the cheaper one cost less.
+        book.record_usage(role, result.usage.to_dict(), label="%s:%s" % (role, tier) if tier else "")
     book.end(
         token,
         "ok" if result.ok else ("stalled" if result.stalled else "failed"),
         {
             "mode": mode,
             "provider": provider_name,
+            # Recorded on the *end* event, not only on the start: the start
+            # entry is dropped from the ledger when the stage finishes, and
+            # the run log is what a report is written from.
+            "tier": tier or None,
             "model": result.resolved.display if result.resolved else None,
             "model_source": result.resolved.source if result.resolved else None,
             "duration_seconds": round(result.duration, 2),
@@ -1095,7 +1125,7 @@ def cmd_tokens_show(args: argparse.Namespace) -> int:
     _out(_token_row("ALL", totals))
     if report["by_label"]:
         _out("")
-        _out("Per reviewer:")
+        _out("Per reviewer and tier:")
         for label, account in sorted(report["by_label"].items()):
             _out(_token_row(label, account))
 
@@ -1445,6 +1475,11 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser = subparsers.add_parser("run", help="run one configured role against a prompt")
     run_parser.add_argument(
         "role", help="orchestrator | architect | implementer | review_fixer | <reviewer id>"
+    )
+    run_parser.add_argument(
+        "--tier",
+        default=None,
+        help="run this role on one of its configured model_tiers (e.g. light)",
     )
     run_parser.add_argument("--prompt", default=None)
     run_parser.add_argument("--prompt-file", default=None, help="path, or - for stdin")
