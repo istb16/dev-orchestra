@@ -12,6 +12,27 @@ The public surface covered by that promise is: the configuration schema, the
 
 ### Added
 
+- **`scripts/smoke_live.py`: the checks that need a real CLI.** The suite
+  cannot make them. It has to pass on a machine with neither `claude` nor
+  `codex` installed, so it reviews with the `mock` provider, which overrides
+  `run` outright and exercises no adapter's signature but its own. That is how
+  every Codex run came to raise `TypeError` for weeks with 654 tests green,
+  and how a configured `sandbox: read-only` was silently replaced by the
+  default.
+
+  The script starts the real things instead, on a handful of cheap prompts:
+  the command line still works, the CLI still reports what a run cost in a
+  shape the parser reads, and a read-only mode still refuses to write --
+  checked by asking for a file and then looking for it, rather than by
+  believing what the agent said about itself. That last one had never been
+  verified against a real CLI, despite being the invariant the review design
+  rests on.
+
+  It is not part of `unittest discover` and must not become part of it: it
+  spends real tokens. `CONTRIBUTING.md` puts it in the release checklist, and
+  `tests/test_smoke_script.py` covers everything around the calls -- a missing
+  CLI, a run that raises, unreported usage -- without making any.
+
 - **`optimization.level`: one dial over three savings.** `aggressive`,
   `balanced` (default) or `quality` decides whether a round runs against a
   tree whose tests are recorded as failing, whether a small change gets one
