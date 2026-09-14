@@ -1417,6 +1417,24 @@ def cmd_summary(args: argparse.Namespace) -> int:
                 "" if reviewer.get("status", "ok") == "ok" else " (FAILED)",
             )
         )
+    # A round the gate refused is recorded but ran nothing, so it appears in
+    # no other part of this report -- and "what you skipped" is exactly what
+    # the final report is required to name.
+    decided = opt_mod.summarise_rounds(state.get("events") or [])
+    if decided["refused"] or decided["panel_reduced"]:
+        lines.append("")
+        lines.append("Optimization:")
+        if decided["refused"]:
+            lines.append(
+                "  %-14s %d round(s) not run: tests recorded as failing" % ("gate", decided["refused"])
+            )
+        if decided["panel_reduced"]:
+            lines.append(
+                "  %-14s %d round(s) cut to one reviewer -- one opinion, not an independent second"
+                % ("panel", decided["panel_reduced"])
+            )
+        lines.append("  %-14s dev-orchestra optimization report" % "detail")
+
     book = _ledger(args, workspace)
     report = book.token_report()
     if report["totals"]["runs"]:

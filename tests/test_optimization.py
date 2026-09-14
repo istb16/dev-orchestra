@@ -696,6 +696,27 @@ class TestTheReportCommand(IsolatedCase):
         _, out, _ = run_cli("optimization", "report")
         self.assertNotIn("state record test", out)
 
+    def test_a_refused_round_shows_up_in_the_summary(self):
+        """It ran nothing, so it appears nowhere else in the final report --
+        and what was skipped is exactly what that report has to name."""
+        self.workspace.record_event("review", opt.REFUSED, round_event(status=opt.REFUSED, reviewers=0))
+        _, out, _ = run_cli("summary")
+        self.assertIn("Optimization:", out)
+        self.assertIn("1 round(s) not run", out)
+
+    def test_a_reduced_panel_shows_up_in_the_summary(self):
+        """One reviewer is one opinion. A report that does not say so reads
+        exactly like a report of two independent ones."""
+        self.workspace.record_event("review", "ok", round_event(reviewer_limit=1))
+        _, out, _ = run_cli("summary")
+        self.assertIn("cut to one reviewer", out)
+
+    def test_an_ordinary_run_gets_no_optimization_section(self):
+        """Nothing was skipped or cut, so there is nothing to report."""
+        self.workspace.record_event("review", "ok", round_event())
+        _, out, _ = run_cli("summary")
+        self.assertNotIn("Optimization:", out)
+
     def test_the_estimate_says_it_is_one(self):
         self.workspace.record_event("review", "ok", round_event(reviewers=1, billed=900))
         self.workspace.record_event("review", opt.REFUSED, round_event(status=opt.REFUSED, reviewers=0))

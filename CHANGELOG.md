@@ -24,6 +24,12 @@ The public surface covered by that promise is: the configuration schema, the
 
 ### Changed
 
+- **`summary` names what the level skipped.** A refused round runs nothing, so
+  it appears in no other part of the final report -- and what was skipped is
+  exactly what that report is required to name. A round cut to one reviewer
+  says so too: one opinion reads exactly like two independent ones once it is
+  in a summary.
+
 - **A round the gate refuses is now recorded**, as `refused`, even though
   nothing ran -- and because nothing ran. Skipping a round is the largest
   thing the level ever saves, and it was returning before anything was

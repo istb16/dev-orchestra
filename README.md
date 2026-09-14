@@ -547,6 +547,38 @@ Nothing here drops a finding, merges two reviewers' reports, or acts quietly.
 Every decision is printed, recorded in the run state, and returned by
 `review run --json` and `status --json`.
 
+
+### Did it work?
+
+```bash
+dev-orchestra optimization report
+```
+
+```
+Review rounds recorded: 14 (12 ran, 2 refused)
+  levels in force        aggressive x14
+  gate verdicts          allow x12, refuse x2
+  panel reduced          5
+  escalated (high risk)  3
+
+Reviewer runs: 19 (19 reported usage), 823,104 billed
+  68,592 billed per round that ran
+
+Estimated saving from 2 refused round(s): ~137,184 billed tokens.
+```
+
+A level's effect is a *rate* -- how often it refused, how often it cut the
+panel -- so this reads the run log rather than `tokens show`, which covers one
+workflow and is cleared by `budget reset`.
+
+The saving is an estimate and says so: what a round that did not happen would
+have cost is unknowable, so the figure is the mean of the rounds that did.
+
+If a round ran with no test result recorded, the report says that too. The gate
+reads what `state record test ok|failed` wrote, so a round where nothing was
+written had nothing to act on and cannot have fired -- which is a different
+finding from a level that had no effect, and the two look identical in a total.
+
 ## What a run costs
 
 Every delegated run records what it spent, so the question "where did the

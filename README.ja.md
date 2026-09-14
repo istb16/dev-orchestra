@@ -521,6 +521,38 @@ finding を捨てることも、レビュアーのレポートを統合するこ
 変えることもありません。決定はすべて出力され、run state に記録され、
 `review run --json` と `status --json` から取得できます。
 
+
+### 効いたのか
+
+```bash
+dev-orchestra optimization report
+```
+
+```
+Review rounds recorded: 14 (12 ran, 2 refused)
+  levels in force        aggressive x14
+  gate verdicts          allow x12, refuse x2
+  panel reduced          5
+  escalated (high risk)  3
+
+Reviewer runs: 19 (19 reported usage), 823,104 billed
+  68,592 billed per round that ran
+
+Estimated saving from 2 refused round(s): ~137,184 billed tokens.
+```
+
+レベルの効果は「率」です ── 何回拒否したか、何回パネルを削ったか。したがって
+`tokens show`（1ワークフロー分、`budget reset` で消える）ではなく run log を
+読みます。
+
+**削減額は推定値で、そう明示します。** 起きなかったラウンドのコストは知りよう
+がないので、実際に走ったラウンドの平均を代用しています。
+
+テスト結果が未記録のラウンドがあれば、それも報告します。ゲートが読むのは
+`state record test ok|failed` が書いたものなので、何も書かれていないラウンドは
+**判断材料を与えられておらず、発火し得ません**。これは「レベルに効果がなかった」
+とはまったく別の結論ですが、合計値の中では見分けがつきません。
+
 ## 実行コストの確認
 
 委譲した実行ごとに消費量を記録するので、「トークンがどこで消えたか」は推測せずに答えられる。
