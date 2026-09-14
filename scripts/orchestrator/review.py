@@ -199,13 +199,20 @@ def create_snapshot(
     head = _head(root)
     # Writing the tree means hashing every untracked-but-not-ignored file into
     # the object database, which on a repository with a large directory nobody
-    # remembered to ignore is neither cheap nor invisible. ``--base`` and
-    # ``incremental: False`` both say this round is not going to use it, so it
-    # is not written; the round after finds no tree and takes the whole change,
-    # which is the safe direction to fall back in.
-    wanted = incremental and not base
+    # remembered to ignore is neither cheap nor invisible. Only
+    # ``incremental: False`` says this round will not use one.
+    #
+    # ``--base`` used to switch this off too, and that was a mistake that cost
+    # real money. The base decides what the *first* round covers; whether a
+    # *later* round may narrow to the fix is a separate question. Reviewing a
+    # branch against master -- which is what --base is for, and the ordinary
+    # way to use this tool -- therefore re-sent the whole branch every round.
+    # Measured on one real three-round review: the diff grew 1,867 -> 2,472 ->
+    # 3,228 lines while the findings fell 11 -> 6 -> 5, and the cost per
+    # finding went from $0.20 to $1.00.
+    wanted = bool(incremental)
     tree = _write_tree(root) if wanted else ""
-    previous_tree = _reviewed_tree(workspace) if wanted else ""
+    previous_tree = _reviewed_tree(workspace, base) if wanted else ""
     if previous_tree and tree and previous_tree != tree:
         revisions = [previous_tree, tree]
         strategy = "git diff <previous round> <now>"
@@ -399,10 +406,11 @@ def _write_tree(root: str) -> str:
                 pass
 
 
-def _reviewed_tree(workspace: ws.Workspace) -> str:
+def _reviewed_tree(workspace: ws.Workspace, base: Optional[str] = None) -> str:
     """The tree of the previous round, if narrowing to it is safe.
 
-    Two conditions, and both are about the reviewer rather than the cost.
+    Three conditions, and all of them are about the reviewer rather than the
+    cost.
 
     The previous snapshot has to have been reviewed. Diffing against one
     nobody reviewed would answer a question no round asked, and would turn an
@@ -414,10 +422,17 @@ def _reviewed_tree(workspace: ws.Workspace) -> str:
     round following a clean review, or one whose findings were all rejected,
     takes the whole change: there is no fix to check, and a fragment with
     nothing to judge it against is the failure this feature exists to avoid.
+
+    And the change has to still be the same change. A round asking for a
+    different base is redefining what is under review, and narrowing to a fix
+    for the previous definition would answer the old question quietly. Same
+    base, including no base at all, means the same change.
     """
     meta = ws.read_json(workspace.snapshot_meta_path, {}) or {}
     tree = str(meta.get("tree") or "")
     if not tree:
+        return ""
+    if (meta.get("base") or None) != (base or None):
         return ""
     consolidated = ws.read_json(workspace.consolidated_json_path, {}) or {}
     reviewed = str((consolidated.get("snapshot") or {}).get("sha256") or "")

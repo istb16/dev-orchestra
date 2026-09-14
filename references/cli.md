@@ -94,7 +94,7 @@ echo "explain the failure" | dev-orchestra run orchestrator
 | Command | Description |
 | --- | --- |
 | `review snapshot [--base <rev>] [--no-untracked] [--json]` | Freeze the change under review. Exit 1 if empty. |
-| `review run [--iteration N] [--only <ids/roles>] [--sequential] [--context <text>] [--base <rev>] [--timeout <s>] [--idle-timeout <s>] [--force] [--json]` | Run every reviewer against the snapshot; write reports and the consolidated result. Exit 1 only if every reviewer failed. The round is derived from the snapshot unless `--iteration` is given, and a round past `review.max_review_iterations` is refused (exit 3) unless `--force`. `--only` runs a subset but still consolidates every reviewer's current report, so nothing is lost. |
+| `review run [--iteration N] [--only <ids/roles>] [--sequential] [--context <text>] [--base <rev>] [--timeout <s>] [--idle-timeout <s>] [--force] [--json]` | Run every reviewer against the snapshot; write reports and the consolidated result. Exit 1 only if every reviewer failed. The round is derived from the snapshot unless `--iteration` is given, and a round past `review.max_review_iterations` is refused (exit 3) unless `--force`. A round refused by the optimization gate (tests recorded as failing) also exits 3, and is recorded as `refused` so `optimization report` can count it. `--only` runs a subset but still consolidates every reviewer's current report, so nothing is lost. |
 | `review consolidate [--iteration N] [--json]` | Re-parse the existing reports and rebuild the consolidated result. |
 | `review show [--accepted] [--json]` | Show the consolidated review. |
 | `review triage <ids…> --status <status> [--note <text>]` | Record triage decisions. |
@@ -189,6 +189,48 @@ counted apart from the total.
 dev-orchestra tokens show
 dev-orchestra tokens show --json
 ```
+
+## optimization
+
+| Command | Description |
+| --- | --- |
+| `optimization report [--json]` | What `optimization.level` has decided, over every review round this project has recorded, and which high-risk patterns escalated it. |
+
+Read from the run log (`.ai/state.json`), not the ledger. A level's effect is a
+*rate* -- how often it refused a round, how often it cut the panel -- and a rate
+needs more than the one workflow a ledger covers; `budget reset` starts a fresh
+ledger, while the event log keeps accumulating.
+
+```
+Review rounds recorded: 14 (12 ran, 2 refused)
+  levels in force        aggressive x14
+  gate verdicts          allow x12, refuse x2
+  panel reduced          5
+  escalated (high risk)  3
+
+Reviewer runs: 19 (19 reported usage), 823,104 billed
+  68,592 billed per round that ran
+
+Estimated saving from 2 refused round(s): ~137,184 billed tokens.
+An estimate: what a round that did not happen would have cost is
+unknowable, so this is the mean of the 12 that did.
+```
+
+When every round escalated, the report says so outright: the level as
+configured never applied, and the patterns that did it are named. A dial
+escalated out of existence on every round and a dial that never fires look
+identical in a count, and only the pattern says which -- `*.tf` matches
+constantly in an infrastructure repository, and `optimization.high_risk_paths`
+is the setting to narrow.
+
+The saving is an estimate and says so. What a refused round *would* have cost
+cannot be known -- it did not happen -- so the figure is the mean of the rounds
+that did run in the same repository, which is the closest honest stand-in.
+
+A round recorded with no test result is reported too. The gate reads what
+`state record test ok|failed` wrote, so a round where nothing was written had
+nothing to act on and cannot have fired -- which is a different thing from a
+level that had no effect, and the two are easy to confuse from the totals alone.
 
 ## progress
 

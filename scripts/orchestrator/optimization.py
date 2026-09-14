@@ -307,6 +307,93 @@ def _positive(value: Any, fallback: int) -> int:
     return fallback
 
 
+#: The status a refused round is recorded under. It is not a failure: nothing
+#: was attempted. It is the one outcome that has to be written down even
+#: though nothing ran, because a saving that leaves no trace cannot be counted
+#: and a feature whose effect cannot be counted gets argued about instead.
+REFUSED = "refused"
+
+
+def summarise_rounds(events: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+    """What the level decided, over every review round in a run log.
+
+    Read from ``.ai/state.json`` rather than from the ledger, because the
+    ledger is one workflow and the question is about many: a level's effect is
+    a rate, not a number. ``budget reset`` starts a fresh ledger; the event log
+    keeps accumulating.
+
+    The saving is reported as an estimate and labelled as one. What a refused
+    round *would* have cost is unknowable -- it did not happen -- so the
+    figure is the mean of the rounds that did run, in the same repository,
+    which is the closest honest stand-in.
+    """
+    rounds = [
+        event
+        for event in events
+        if isinstance(event, dict)
+        and event.get("stage") == "review"
+        and isinstance(event.get("optimization"), dict)
+    ]
+    levels: Dict[str, int] = {}
+    gates: Dict[str, int] = {}
+    patterns: Dict[str, int] = {}
+    escalated = reduced = refused = unrecorded = 0
+    reviewer_runs = measured_runs = billed = 0
+
+    for event in rounds:
+        plan = event["optimization"]
+        _bump(levels, str(plan.get("level") or "?"))
+        _bump(gates, str(plan.get("gate") or "?"))
+        if plan.get("escalated"):
+            escalated += 1
+            # Which pattern, not just how many. A dial that is escalated out of
+            # existence on every round looks identical in a count to one that
+            # never fires, and only the pattern says which -- and whether it is
+            # the one to replace.
+            for hit in plan.get("high_risk") or []:
+                if isinstance(hit, dict) and hit.get("pattern"):
+                    _bump(patterns, str(hit["pattern"]))
+        if plan.get("reviewer_limit") is not None:
+            reduced += 1
+        if not str(plan.get("test_status") or ""):
+            unrecorded += 1
+        if event.get("status") == REFUSED:
+            refused += 1
+            continue
+        for run in event.get("reviewers") or []:
+            if not isinstance(run, dict):
+                continue
+            reviewer_runs += 1
+            spent = (run.get("usage") or {}).get("billed_tokens")
+            if spent:
+                measured_runs += 1
+                billed += int(spent)
+
+    ran = len(rounds) - refused
+    per_round = billed // ran if (ran and billed) else None
+    return {
+        "rounds": len(rounds),
+        "ran": ran,
+        "refused": refused,
+        "levels": levels,
+        "gates": gates,
+        "escalated": escalated,
+        "escalation_patterns": patterns,
+        "always_escalated": bool(rounds) and escalated == len(rounds),
+        "panel_reduced": reduced,
+        "rounds_without_a_test_result": unrecorded,
+        "reviewer_runs": reviewer_runs,
+        "measured_runs": measured_runs,
+        "billed_tokens": billed,
+        "billed_per_round": per_round,
+        "estimated_saving": (per_round * refused) if (per_round and refused) else 0,
+    }
+
+
+def _bump(counter: Dict[str, int], key: str) -> None:
+    counter[key] = counter.get(key, 0) + 1
+
+
 def choose_reviewers(reviewers: Sequence[Dict[str, Any]], limit: Optional[int]) -> List[Dict[str, Any]]:
     """Which reviewers survive a reduced panel.
 

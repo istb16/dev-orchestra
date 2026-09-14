@@ -291,6 +291,69 @@ class TestNarrowingNeedsAPremise(RoundCase):
         self.assertTrue(review_mod.create_snapshot(self.workspace)["incremental_from"])
 
 
+class TestReviewingABranchAgainstABase(RoundCase):
+    """`--base master` is how a branch is reviewed, and it used to switch
+    narrowing off entirely.
+
+    The base decides what the *first* round covers. Whether a *later* round
+    may narrow to the fix is a separate question, and conflating them meant
+    the ordinary way to use this tool re-sent the whole branch every round.
+    On one real three-round review the diff grew 1,867 -> 2,472 -> 3,228 lines
+    while the findings fell 11 -> 6 -> 5: $0.20 per finding became $1.00.
+    """
+
+    def base(self):
+        """A commit to review against, with the change left uncommitted."""
+        return self.git("rev-parse", "HEAD").stdout.strip()
+
+    def test_the_second_round_against_a_base_sees_only_the_fix(self):
+        head = self.base()
+        self.implement()
+        review_mod.create_snapshot(self.workspace, base=head)
+        run_cli("review", "run")
+        run_cli("review", "triage", "F1", "--status", "accepted")
+        self.fix()
+        meta = review_mod.create_snapshot(self.workspace, base=head)
+        self.assertTrue(meta["incremental_from"])
+        self.assertEqual(meta["files"], ["service.py"])
+        self.assertLess(meta["bytes"], 400)
+
+    def test_the_whole_branch_is_still_there_to_read(self):
+        """Narrowed, not hidden: the full diff against the base is frozen
+        beside it."""
+        head = self.base()
+        self.implement()
+        review_mod.create_snapshot(self.workspace, base=head)
+        run_cli("review", "run")
+        run_cli("review", "triage", "F1", "--status", "accepted")
+        self.fix()
+        meta = review_mod.create_snapshot(self.workspace, base=head)
+        self.assertTrue(meta["full_diff"])
+        full = ws.read_text(self.workspace.full_snapshot_path)
+        self.assertGreater(len(full), meta["bytes"])
+
+    def test_changing_the_base_takes_the_whole_change_again(self):
+        """A different base is a different definition of what is under review.
+        Narrowing to a fix for the old one would answer the old question."""
+        head = self.base()
+        self.implement()
+        review_mod.create_snapshot(self.workspace, base=head)
+        run_cli("review", "run")
+        run_cli("review", "triage", "F1", "--status", "accepted")
+        self.fix()
+        meta = review_mod.create_snapshot(self.workspace, base="HEAD")
+        self.assertFalse(meta["incremental_from"])
+
+    def test_dropping_the_base_takes_the_whole_change_again(self):
+        head = self.base()
+        self.implement()
+        review_mod.create_snapshot(self.workspace, base=head)
+        run_cli("review", "run")
+        run_cli("review", "triage", "F1", "--status", "accepted")
+        self.fix()
+        self.assertFalse(review_mod.create_snapshot(self.workspace)["incremental_from"])
+
+
 class TestTreeIsOnlyWrittenWhenItWillBeUsed(RoundCase):
     """Writing the tree hashes every untracked-but-not-ignored file into the
     object database. A round that has said it will not use one should not pay
@@ -300,9 +363,10 @@ class TestTreeIsOnlyWrittenWhenItWillBeUsed(RoundCase):
         self.implement()
         self.assertTrue(review_mod.create_snapshot(self.workspace)["tree"])
 
-    def test_an_explicit_base_does_not(self):
+    def test_an_explicit_base_records_one_too(self):
+        """It did not, and that was the bug: a branch review never narrowed."""
         self.implement()
-        self.assertEqual(review_mod.create_snapshot(self.workspace, base="HEAD")["tree"], "")
+        self.assertTrue(review_mod.create_snapshot(self.workspace, base="HEAD")["tree"])
 
     def test_the_feature_being_off_does_not(self):
         self.implement()

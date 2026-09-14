@@ -475,6 +475,33 @@ class TestTheGateInThePipeline(IsolatedCase):
         _, out, _ = run_cli("tokens", "show", "--json")
         self.assertEqual(json.loads(out)["totals"]["runs"], 0)
 
+    def test_a_refused_round_is_written_down(self):
+        """Nothing ran, which is exactly why it has to be recorded: a skipped
+        round is the largest thing the level ever saves, and a saving that
+        leaves no trace cannot be counted."""
+        run_cli("state", "record", "test", "failed")
+        run_cli("review", "snapshot")
+        run_cli("review", "run")
+        report = json.loads(run_cli("optimization", "report", "--json")[1])
+        self.assertEqual((report["rounds"], report["ran"], report["refused"]), (1, 0, 1))
+        self.assertEqual(report["gates"], {"refuse": 1})
+
+    def test_a_forced_round_is_recorded_as_having_run(self):
+        run_cli("state", "record", "test", "failed")
+        run_cli("review", "snapshot")
+        run_cli("review", "run", "--force")
+        report = json.loads(run_cli("optimization", "report", "--json")[1])
+        self.assertEqual((report["ran"], report["refused"]), (1, 0))
+
+    def test_a_refused_round_spends_no_review_budget(self):
+        """It is not an attempt. Charging for one would make the gate cost the
+        round it just declined to run."""
+        run_cli("state", "record", "test", "failed")
+        run_cli("review", "snapshot")
+        run_cli("review", "run")
+        tokens = json.loads(run_cli("tokens", "show", "--json")[1])
+        self.assertEqual(tokens["totals"]["runs"], 0)
+
     def test_status_reports_the_refusal_before_the_review_is_attempted(self):
         run_cli("state", "record", "test", "failed")
         run_cli("review", "snapshot")
@@ -539,6 +566,196 @@ class TestThePanelInThePipeline(TestTheGateInThePipeline):
         reviews = [e for e in events if e.get("stage") == "review" and "optimization" in e]
         self.assertTrue(reviews)
         self.assertEqual(reviews[-1]["optimization"]["reviewer_limit"], 1)
+
+
+# --------------------------------------------------------------------------- report
+
+
+def round_event(status="ok", reviewers=1, billed=1000, **plan):
+    settings = {
+        "requested_level": "balanced",
+        "level": "balanced",
+        "escalated": False,
+        "gate": "allow",
+        "test_status": "ok",
+        "reviewer_limit": None,
+    }
+    settings.update(plan)
+    return {
+        "stage": "review",
+        "status": status,
+        "optimization": settings,
+        "reviewers": [{"usage": {"billed_tokens": billed}} for _ in range(reviewers)],
+    }
+
+
+class TestTheReport(unittest.TestCase):
+    """A level's effect is a rate, not a number: how often it refused, how
+    often it cut the panel. Counting that is the whole point of recording a
+    round nobody ran."""
+
+    def test_nothing_recorded_reports_nothing_rather_than_zeroes(self):
+        report = opt.summarise_rounds([])
+        self.assertEqual(report["rounds"], 0)
+        self.assertEqual(report["billed_per_round"], None)
+
+    def test_events_from_other_stages_are_not_rounds(self):
+        events = [{"stage": "test", "status": "ok"}, {"stage": "implementer", "status": "ok"}]
+        self.assertEqual(opt.summarise_rounds(events)["rounds"], 0)
+
+    def test_a_review_without_a_plan_is_not_counted(self):
+        """Rounds recorded before the level existed have nothing to say about
+        it, and counting them would dilute every rate below."""
+        self.assertEqual(opt.summarise_rounds([{"stage": "review", "status": "ok"}])["rounds"], 0)
+
+    def test_a_refused_round_is_counted_but_spent_nothing(self):
+        report = opt.summarise_rounds([round_event(status=opt.REFUSED, reviewers=0, gate="refuse")])
+        self.assertEqual((report["rounds"], report["ran"], report["refused"]), (1, 0, 1))
+        self.assertEqual(report["billed_tokens"], 0)
+
+    def test_the_saving_is_the_mean_of_the_rounds_that_did_run(self):
+        """What a round that did not happen would have cost is unknowable, so
+        the estimate is the closest honest stand-in -- and is labelled one."""
+        events = [
+            round_event(reviewers=2, billed=1000),
+            round_event(reviewers=2, billed=1000),
+            round_event(status=opt.REFUSED, reviewers=0, gate="refuse"),
+        ]
+        report = opt.summarise_rounds(events)
+        self.assertEqual(report["billed_per_round"], 2000)
+        self.assertEqual(report["estimated_saving"], 2000)
+
+    def test_no_round_ever_ran_means_no_estimate_rather_than_zero(self):
+        """Two refusals and nothing to compare them against is not a saving of
+        zero; it is a saving nobody can size yet."""
+        report = opt.summarise_rounds([round_event(status=opt.REFUSED, reviewers=0)] * 2)
+        self.assertIsNone(report["billed_per_round"])
+        self.assertEqual(report["estimated_saving"], 0)
+
+    def test_levels_and_gates_are_counted_separately(self):
+        events = [
+            round_event(level="aggressive", gate="allow"),
+            round_event(level="aggressive", gate="warn"),
+            round_event(level="quality", gate="allow", escalated=True),
+        ]
+        report = opt.summarise_rounds(events)
+        self.assertEqual(report["levels"], {"aggressive": 2, "quality": 1})
+        self.assertEqual(report["gates"], {"allow": 2, "warn": 1})
+        self.assertEqual(report["escalated"], 1)
+
+    def test_the_patterns_that_forced_an_escalation_are_named(self):
+        """A dial escalated out of existence on every round looks identical in
+        a count to one that never fires. Only the pattern says which -- and
+        whether it is the one to replace."""
+        event = round_event(escalated=True, level="quality")
+        event["optimization"]["high_risk"] = [
+            {"path": "infra/main.tf", "pattern": "*.tf"},
+            {"path": "infra/dns.tf", "pattern": "*.tf"},
+            {"path": ".github/workflows/ci.yml", "pattern": ".github/workflows/*"},
+        ]
+        report = opt.summarise_rounds([event])
+        self.assertEqual(report["escalation_patterns"], {"*.tf": 2, ".github/workflows/*": 1})
+
+    def test_every_round_escalating_is_reported_as_such(self):
+        """Measured on a real repository: `aggressive` was configured and the
+        level never once applied, because terraform is touched constantly."""
+        report = opt.summarise_rounds([round_event(escalated=True)] * 3)
+        self.assertTrue(report["always_escalated"])
+
+    def test_one_round_escaping_escalation_is_not_always(self):
+        report = opt.summarise_rounds([round_event(escalated=True), round_event()])
+        self.assertFalse(report["always_escalated"])
+
+    def test_no_rounds_at_all_is_not_always_escalated(self):
+        self.assertFalse(opt.summarise_rounds([])["always_escalated"])
+
+    def test_a_reduced_panel_is_counted(self):
+        events = [round_event(reviewer_limit=1), round_event(reviewer_limit=None)]
+        self.assertEqual(opt.summarise_rounds(events)["panel_reduced"], 1)
+
+    def test_rounds_with_no_test_result_are_counted_apart(self):
+        """The difference between "the level had no effect" and "the gate was
+        never given anything to act on", which the totals alone hide."""
+        events = [round_event(test_status=""), round_event(test_status="ok")]
+        self.assertEqual(opt.summarise_rounds(events)["rounds_without_a_test_result"], 1)
+
+    def test_a_reviewer_that_reported_no_usage_is_counted_but_not_summed(self):
+        event = round_event(reviewers=0)
+        event["reviewers"] = [{"usage": {}}, {"usage": {"billed_tokens": 500}}]
+        report = opt.summarise_rounds([event])
+        self.assertEqual((report["reviewer_runs"], report["measured_runs"]), (2, 1))
+        self.assertEqual(report["billed_tokens"], 500)
+
+    def test_junk_in_the_log_does_not_stop_the_report(self):
+        """It is read from a file other processes append to; a report that
+        crashes on one bad entry is a report nobody trusts."""
+        events = ["not an event", None, {"stage": "review"}, round_event()]
+        self.assertEqual(opt.summarise_rounds(events)["rounds"], 1)
+
+
+@unittest.skipUnless(has_git(), "git is required")
+class TestTheReportCommand(IsolatedCase):
+    def setUp(self):
+        super().setUp()
+        self.workspace = ws.Workspace(self.project)
+        self.workspace.ensure()
+
+    def test_an_empty_log_says_so_instead_of_printing_a_table_of_zeroes(self):
+        code, out, _ = run_cli("optimization", "report")
+        self.assertEqual(code, 0)
+        self.assertIn("No review rounds recorded", out)
+
+    def test_it_reads_the_run_log_rather_than_the_ledger(self):
+        """`budget reset` clears the ledger; the question spans workflows."""
+        self.workspace.record_event("review", "ok", round_event(reviewers=2, billed=700))
+        run_cli("budget", "reset")
+        report = json.loads(run_cli("optimization", "report", "--json")[1])
+        self.assertEqual(report["billed_tokens"], 1400)
+
+    def test_the_refusal_notice_names_the_command_that_fixes_it(self):
+        self.workspace.record_event("review", "ok", round_event(test_status=""))
+        _, out, _ = run_cli("optimization", "report")
+        self.assertIn("state record test", out)
+
+    def test_a_round_with_a_test_result_gets_no_notice(self):
+        self.workspace.record_event("review", "ok", round_event(test_status="ok"))
+        _, out, _ = run_cli("optimization", "report")
+        self.assertNotIn("state record test", out)
+
+    def test_the_report_says_the_level_never_applied(self):
+        for _ in range(2):
+            self.workspace.record_event("review", "ok", round_event(escalated=True, level="quality"))
+        _, out, _ = run_cli("optimization", "report")
+        self.assertIn("every round escalated", out)
+        self.assertIn("never applied", out)
+
+    def test_a_refused_round_shows_up_in_the_summary(self):
+        """It ran nothing, so it appears nowhere else in the final report --
+        and what was skipped is exactly what that report has to name."""
+        self.workspace.record_event("review", opt.REFUSED, round_event(status=opt.REFUSED, reviewers=0))
+        _, out, _ = run_cli("summary")
+        self.assertIn("Optimization:", out)
+        self.assertIn("1 round(s) not run", out)
+
+    def test_a_reduced_panel_shows_up_in_the_summary(self):
+        """One reviewer is one opinion. A report that does not say so reads
+        exactly like a report of two independent ones."""
+        self.workspace.record_event("review", "ok", round_event(reviewer_limit=1))
+        _, out, _ = run_cli("summary")
+        self.assertIn("cut to one reviewer", out)
+
+    def test_an_ordinary_run_gets_no_optimization_section(self):
+        """Nothing was skipped or cut, so there is nothing to report."""
+        self.workspace.record_event("review", "ok", round_event())
+        _, out, _ = run_cli("summary")
+        self.assertNotIn("Optimization:", out)
+
+    def test_the_estimate_says_it_is_one(self):
+        self.workspace.record_event("review", "ok", round_event(reviewers=1, billed=900))
+        self.workspace.record_event("review", opt.REFUSED, round_event(status=opt.REFUSED, reviewers=0))
+        _, out, _ = run_cli("optimization", "report")
+        self.assertIn("Estimated saving", out)
+        self.assertIn("unknowable", out)
 
 
 @unittest.skipUnless(has_git(), "git is required")

@@ -2,7 +2,7 @@
 name: dev-orchestra
 description: Orchestrate a multi-model software development workflow across Claude Code and Codex CLIs - investigate, design, implement, test, run independent multi-model code reviews, triage the findings, fix them, and re-test. Use when asked to implement a feature or issue, investigate and fix a bug, run a multi-model or independent code review of current changes, orchestrate development across several AI CLIs, or to set up and change the development agent configuration (which CLI and model handle design, implementation, review fixing, and each reviewer). Not for answering one-off coding questions, explaining code, or single edits the user asked you to make directly.
 license: MIT
-version: 0.2.0
+version: 0.3.0
 ---
 
 # AI Development Orchestrator
@@ -105,7 +105,11 @@ attempts spent; a repeated signature = the last fix changed nothing. Both are
 refusals, not suggestions — fix→test is the loop most likely to run away,
 because from inside it never looks like a loop.
 
-**Reviews.** Snapshot first: every reviewer judges the same frozen diff. The
+**Reviews.** Record the test result before this stage even when you did not
+run one here (`state record test ok|failed`) -- `review run` reads it, and
+with nothing recorded it cannot stop a review of a red tree.
+
+Snapshot first: every reviewer judges the same frozen diff. The
 round comes from the snapshot — new snapshot, new round — so never track it by
 hand. `snapshot` withholds the diff body of generated and vendored files
 (lockfiles, `dist/`, bundles; `review.exclude`) and names them instead: pass

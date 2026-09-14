@@ -10,6 +10,66 @@ The public surface covered by that promise is: the configuration schema, the
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-14
+
+### Added
+
+- **`optimization report` names the patterns that escalated a round**, and
+  says outright when every round escalated -- at which point the level as
+  configured never applied at all. Measured on a real repository: `aggressive`
+  was set, `*.tf` and `.github/workflows/*` matched every round, and the only
+  thing the setting changed was raising the findings cap from 4 to 10. A dial
+  escalated out of existence and a dial that never fires are identical in a
+  count, and only the pattern tells them apart.
+
+- **`optimization report`: what the level actually did, over time.** The
+  effect of `optimization.level` is a rate -- how often it refused a round,
+  how often it cut the panel -- and nothing could report one. `tokens show`
+  covers a single workflow and `budget reset` clears it; the run log keeps
+  accumulating, so the report reads that instead.
+
+  Any saving is reported as an estimate and says so. What a refused round
+  *would* have cost cannot be known, so the figure is the mean of the rounds
+  that did run in the same repository, which is the closest honest stand-in.
+
+### Changed
+
+- **`summary` names what the level skipped.** A refused round runs nothing, so
+  it appears in no other part of the final report -- and what was skipped is
+  exactly what that report is required to name. A round cut to one reviewer
+  says so too: one opinion reads exactly like two independent ones once it is
+  in a summary.
+
+- **A round the gate refuses is now recorded**, as `refused`, even though
+  nothing ran -- and because nothing ran. Skipping a round is the largest
+  thing the level ever saves, and it was returning before anything was
+  written down, so the saving left no trace and could not be counted. It
+  still consumes no budget and opens no ledger entry: there was no attempt to
+  account for.
+
+- **SKILL.md asks for the test result at the review stage**, not only at the
+  test stage. The instruction was in a paragraph a review-only workflow never
+  reads, and the one round recorded in this repository proves the point: it
+  ran with `test_status: ""` and the test result was written down thirteen
+  minutes *after* the review. A gate with nothing to act on cannot fire, and
+  the totals cannot tell that apart from a level that had no effect -- so the
+  report counts those rounds separately too.
+
+### Fixed
+
+- **Reviewing a branch against a base never narrowed the second round.**
+  `--base main` switched incremental rounds off entirely, so the ordinary way
+  to review a branch re-sent the whole branch to every reviewer, every round.
+  The base decides what the *first* round covers; whether a later round may
+  narrow to the fix is a separate question, and conflating them cost real
+  money. Measured on one real three-round review: the diff grew 1,867 to
+  2,472 to 3,228 lines while the findings fell 11 to 6 to 5 -- $0.20 per
+  finding became $1.00, and the falling find rate was the reviewers being
+  shown the same diff three times rather than diminishing returns.
+
+  Changing the base between rounds still takes the whole change: a different
+  base is a different definition of what is under review.
+
 ## [0.2.0] - 2026-09-13
 
 ### Added
@@ -540,6 +600,7 @@ First release.
   none of which invoke a real CLI.
 - CI on Linux, macOS and Windows: lint, tests, skill validation.
 
-[Unreleased]: https://github.com/istb16/dev-orchestra/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/istb16/dev-orchestra/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/istb16/dev-orchestra/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/istb16/dev-orchestra/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/istb16/dev-orchestra/releases/tag/v0.1.0
