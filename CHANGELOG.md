@@ -12,6 +12,14 @@ The public surface covered by that promise is: the configuration schema, the
 
 ### Added
 
+- **`optimization report` names the patterns that escalated a round**, and
+  says outright when every round escalated -- at which point the level as
+  configured never applied at all. Measured on a real repository: `aggressive`
+  was set, `*.tf` and `.github/workflows/*` matched every round, and the only
+  thing the setting changed was raising the findings cap from 4 to 10. A dial
+  escalated out of existence and a dial that never fires are identical in a
+  count, and only the pattern tells them apart.
+
 - **`optimization report`: what the level actually did, over time.** The
   effect of `optimization.level` is a rate -- how often it refused a round,
   how often it cut the panel -- and nothing could report one. `tokens show`
@@ -21,6 +29,21 @@ The public surface covered by that promise is: the configuration schema, the
   Any saving is reported as an estimate and says so. What a refused round
   *would* have cost cannot be known, so the figure is the mean of the rounds
   that did run in the same repository, which is the closest honest stand-in.
+
+### Fixed
+
+- **Reviewing a branch against a base never narrowed the second round.**
+  `--base main` switched incremental rounds off entirely, so the ordinary way
+  to review a branch re-sent the whole branch to every reviewer, every round.
+  The base decides what the *first* round covers; whether a later round may
+  narrow to the fix is a separate question, and conflating them cost real
+  money. Measured on one real three-round review: the diff grew 1,867 to
+  2,472 to 3,228 lines while the findings fell 11 to 6 to 5 -- $0.20 per
+  finding became $1.00, and the falling find rate was the reviewers being
+  shown the same diff three times rather than diminishing returns.
+
+  Changing the base between rounds still takes the whole change: a different
+  base is a different definition of what is under review.
 
 ### Changed
 

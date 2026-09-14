@@ -643,6 +643,32 @@ class TestTheReport(unittest.TestCase):
         self.assertEqual(report["gates"], {"allow": 2, "warn": 1})
         self.assertEqual(report["escalated"], 1)
 
+    def test_the_patterns_that_forced_an_escalation_are_named(self):
+        """A dial escalated out of existence on every round looks identical in
+        a count to one that never fires. Only the pattern says which -- and
+        whether it is the one to replace."""
+        event = round_event(escalated=True, level="quality")
+        event["optimization"]["high_risk"] = [
+            {"path": "infra/main.tf", "pattern": "*.tf"},
+            {"path": "infra/dns.tf", "pattern": "*.tf"},
+            {"path": ".github/workflows/ci.yml", "pattern": ".github/workflows/*"},
+        ]
+        report = opt.summarise_rounds([event])
+        self.assertEqual(report["escalation_patterns"], {"*.tf": 2, ".github/workflows/*": 1})
+
+    def test_every_round_escalating_is_reported_as_such(self):
+        """Measured on a real repository: `aggressive` was configured and the
+        level never once applied, because terraform is touched constantly."""
+        report = opt.summarise_rounds([round_event(escalated=True)] * 3)
+        self.assertTrue(report["always_escalated"])
+
+    def test_one_round_escaping_escalation_is_not_always(self):
+        report = opt.summarise_rounds([round_event(escalated=True), round_event()])
+        self.assertFalse(report["always_escalated"])
+
+    def test_no_rounds_at_all_is_not_always_escalated(self):
+        self.assertFalse(opt.summarise_rounds([])["always_escalated"])
+
     def test_a_reduced_panel_is_counted(self):
         events = [round_event(reviewer_limit=1), round_event(reviewer_limit=None)]
         self.assertEqual(opt.summarise_rounds(events)["panel_reduced"], 1)
@@ -695,6 +721,13 @@ class TestTheReportCommand(IsolatedCase):
         self.workspace.record_event("review", "ok", round_event(test_status="ok"))
         _, out, _ = run_cli("optimization", "report")
         self.assertNotIn("state record test", out)
+
+    def test_the_report_says_the_level_never_applied(self):
+        for _ in range(2):
+            self.workspace.record_event("review", "ok", round_event(escalated=True, level="quality"))
+        _, out, _ = run_cli("optimization", "report")
+        self.assertIn("every round escalated", out)
+        self.assertIn("never applied", out)
 
     def test_a_refused_round_shows_up_in_the_summary(self):
         """It ran nothing, so it appears nowhere else in the final report --

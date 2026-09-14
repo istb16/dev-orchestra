@@ -194,7 +194,7 @@ dev-orchestra tokens show --json
 
 | Command | Description |
 | --- | --- |
-| `optimization report [--json]` | What `optimization.level` has decided, over every review round this project has recorded. |
+| `optimization report [--json]` | What `optimization.level` has decided, over every review round this project has recorded, and which high-risk patterns escalated it. |
 
 Read from the run log (`.ai/state.json`), not the ledger. A level's effect is a
 *rate* -- how often it refused a round, how often it cut the panel -- and a rate
@@ -215,6 +215,13 @@ Estimated saving from 2 refused round(s): ~137,184 billed tokens.
 An estimate: what a round that did not happen would have cost is
 unknowable, so this is the mean of the 12 that did.
 ```
+
+When every round escalated, the report says so outright: the level as
+configured never applied, and the patterns that did it are named. A dial
+escalated out of existence on every round and a dial that never fires look
+identical in a count, and only the pattern says which -- `*.tf` matches
+constantly in an infrastructure repository, and `optimization.high_risk_paths`
+is the setting to narrow.
 
 The saving is an estimate and says so. What a refused round *would* have cost
 cannot be known -- it did not happen -- so the figure is the mean of the rounds

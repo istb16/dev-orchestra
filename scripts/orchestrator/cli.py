@@ -1183,6 +1183,14 @@ def cmd_optimization_report(args: argparse.Namespace) -> int:
     _out(_OPT_ROW % ("gate verdicts", _counts(report["gates"])))
     _out(_OPT_ROW % ("panel reduced", report["panel_reduced"]))
     _out(_OPT_ROW % ("escalated (high risk)", report["escalated"]))
+    if report["escalation_patterns"]:
+        _out(_OPT_ROW % ("  caused by", _counts(report["escalation_patterns"])))
+    if report["always_escalated"]:
+        _out(
+            "  every round escalated, so the level you configured never applied. "
+            "Narrow optimization.high_risk_paths, or accept that this repository "
+            "reviews at quality."
+        )
     _out("")
     _out(
         "Reviewer runs: %d (%d reported usage), %s billed"

@@ -318,6 +318,17 @@ this pipeline is going to catch; a third mostly re-litigates.
 
 ### The second round only diffs the fix
 
+Including when the change is a branch. `--base main` says what the *first*
+round covers; whether a later round narrows to the fix is a separate question,
+and the two used to be conflated -- so the ordinary way to review a branch
+re-sent the whole branch every round. Measured on one real three-round review:
+the diff grew 1,867 to 3,228 lines while the findings fell 11 to 5, and the
+cost per finding went from $0.20 to $1.00.
+
+Changing the base between rounds does take the whole change again. A different
+base is a different definition of what is under review, and narrowing to a fix
+for the previous definition would answer the question nobody asked this time.
+
 Re-diffing everything against `HEAD` made round 2 cost the same as round 1 --
 once per reviewer -- to look at a one-line fix. So a snapshot records the
 working tree as a git tree object, and the next round diffs against the tree

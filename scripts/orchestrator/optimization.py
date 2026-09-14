@@ -336,6 +336,7 @@ def summarise_rounds(events: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
     ]
     levels: Dict[str, int] = {}
     gates: Dict[str, int] = {}
+    patterns: Dict[str, int] = {}
     escalated = reduced = refused = unrecorded = 0
     reviewer_runs = measured_runs = billed = 0
 
@@ -345,6 +346,13 @@ def summarise_rounds(events: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
         _bump(gates, str(plan.get("gate") or "?"))
         if plan.get("escalated"):
             escalated += 1
+            # Which pattern, not just how many. A dial that is escalated out of
+            # existence on every round looks identical in a count to one that
+            # never fires, and only the pattern says which -- and whether it is
+            # the one to replace.
+            for hit in plan.get("high_risk") or []:
+                if isinstance(hit, dict) and hit.get("pattern"):
+                    _bump(patterns, str(hit["pattern"]))
         if plan.get("reviewer_limit") is not None:
             reduced += 1
         if not str(plan.get("test_status") or ""):
@@ -370,6 +378,8 @@ def summarise_rounds(events: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
         "levels": levels,
         "gates": gates,
         "escalated": escalated,
+        "escalation_patterns": patterns,
+        "always_escalated": bool(rounds) and escalated == len(rounds),
         "panel_reduced": reduced,
         "rounds_without_a_test_result": unrecorded,
         "reviewer_runs": reviewer_runs,
