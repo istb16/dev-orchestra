@@ -10,6 +10,8 @@ The public surface covered by that promise is: the configuration schema, the
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-15
+
 ### Added
 
 - **One directory per workflow.** Artifacts move from `.ai/` to
@@ -684,7 +686,8 @@ First release.
   none of which invoke a real CLI.
 - CI on Linux, macOS and Windows: lint, tests, skill validation.
 
-[Unreleased]: https://github.com/istb16/dev-orchestra/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/istb16/dev-orchestra/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/istb16/dev-orchestra/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/istb16/dev-orchestra/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/istb16/dev-orchestra/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/istb16/dev-orchestra/compare/v0.1.0...v0.2.0
