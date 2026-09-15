@@ -10,6 +10,38 @@ The public surface covered by that promise is: the configuration schema, the
 
 ## [Unreleased]
 
+### Fixed
+
+- **The review round counter counted every snapshot ever taken in a project.**
+  Reported from real use: after two rounds on one branch, a second branch with
+  an unrelated change opened at round 3 and was refused. `budget reset` did
+  not help -- it says in so many words that this is now a fresh workflow, and
+  the one counter that was refusing the work lived in the consolidated report
+  rather than the ledger it resets. Deleting `.ai/reviews/consolidated.json`
+  by hand was the only way out.
+
+  The count now belongs to a review rather than to a directory, keyed on the
+  workflow, the branch and the base. A different branch, a different `--base`,
+  or a `budget reset` starts it again; the report itself, with its triage, is
+  kept. Coming back to a branch worked on earlier is a new review too --
+  nothing tracks a count per branch, only whether this round continues the
+  last one, and reviewing rather than refusing is the direction to fail in.
+
+  The loop the budget exists to stop is unchanged: review, fix, re-review on
+  one change, on one branch, still runs out.
+
+  A report written by an earlier version has no such key, so the first round
+  after upgrading starts at one. That is the fix arriving, not a surprise:
+  the alternative is honouring a number that was counting the wrong thing.
+
+- **`budget reset` twice within a second was one reset.** The workflow was
+  identified by its start time, and `utcnow` counts in seconds. It has an id
+  now. Found by the test written for the fix above -- and the same reading
+  turned up that the identity was being minted per read rather than recorded,
+  which would have reset the round counter continuously and quietly removed
+  the budget altogether.
+
+
 ## [0.3.0] - 2026-09-14
 
 ### Added

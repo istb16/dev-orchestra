@@ -103,7 +103,7 @@ workspace:
 | `<role>.model.id` | string | Exact model id, only with `version: pinned`. |
 | `reviewers[].id` | string | Unique, matching `[a-z0-9][a-z0-9._-]*`. Names the report file. |
 | `reviewers[].role` | string | Built-in or your own; see `references/reviews.md`. |
-| `review.max_review_iterations` | int ≥ 0 | `0` disables re-review entirely. |
+| `review.max_review_iterations` | int ≥ 0 | Rounds per review, not per project: the count restarts on a new branch, a new `--base`, or `budget reset`. `0` disables re-review entirely. |
 | `review.parallel` | bool | `false` runs reviewers one at a time (easier to debug). |
 | `review.re_review_severities` | list | Severities that count as blocking. |
 | `review.timeout_seconds` | int > 0 | Per-run timeout; a timeout is reported, not raised. |

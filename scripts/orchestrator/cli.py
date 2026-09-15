@@ -622,10 +622,23 @@ def _refuse_if_exhausted(book: ledger_mod.Ledger, stage: str, force: bool) -> Op
     return ledger_mod.EXIT_BUDGET_EXHAUSTED
 
 
-def _iteration(args: argparse.Namespace, workspace: ws.Workspace) -> int:
+def _lineage(args: argparse.Namespace, workspace: ws.Workspace) -> str:
+    """Which review the next round belongs to.
+
+    Keyed partly on the ledger's workflow, so ``budget reset`` clears the
+    round counter along with everything else it claims to clear. It used to
+    say "this is now a fresh workflow" and leave the one counter that refuses
+    work untouched.
+    """
+    return review_mod.review_lineage(workspace, _ledger(args, workspace).workflow_id())
+
+
+def _iteration(args: argparse.Namespace, workspace: ws.Workspace, lineage: str = "") -> int:
     """An explicit --iteration wins; otherwise derive it from what is on disk."""
     given = getattr(args, "iteration", None)
-    return int(given) if given is not None else review_mod.next_iteration(workspace)
+    if given is not None:
+        return int(given)
+    return review_mod.next_iteration(workspace, lineage or _lineage(args, workspace))
 
 
 def _merge_runs(workspace: ws.Workspace, run_dicts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -710,7 +723,10 @@ def cmd_review_run(args: argparse.Namespace) -> int:
         reviewers = [r for r in configured if r.get("id") in wanted or r.get("role") in wanted]
     if not reviewers and not args.only:
         _out("No reviewers configured -- skipping the independent-review stage.")
-        data = review_mod.build_consolidation(workspace, [], [], _iteration(args, workspace))
+        lineage = _lineage(args, workspace)
+        data = review_mod.build_consolidation(
+            workspace, [], [], _iteration(args, workspace, lineage), lineage
+        )
         ws.write_json(workspace.consolidated_json_path, data)
         ws.write_text(workspace.consolidated_md_path, review_mod.render_consolidation(data))
         return 0
@@ -730,7 +746,8 @@ def cmd_review_run(args: argparse.Namespace) -> int:
         except review_mod.ReviewError as exc:
             _err(str(exc))
             return 2
-    iteration = _iteration(args, workspace)
+    lineage = _lineage(args, workspace)
+    iteration = _iteration(args, workspace, lineage)
     max_iterations = int(settings.get("max_review_iterations", 2))
     if iteration > max_iterations and not args.force:
         _err(
@@ -812,7 +829,9 @@ def cmd_review_run(args: argparse.Namespace) -> int:
     # from an earlier snapshot are skipped rather than mixed in.
     stamp = review_mod.current_snapshot_stamp(workspace)
     findings, stale = review_mod.read_reports(workspace, [str(r.get("id")) for r in configured], stamp)
-    data = review_mod.build_consolidation(workspace, _merge_runs(workspace, run_dicts), findings, iteration)
+    data = review_mod.build_consolidation(
+        workspace, _merge_runs(workspace, run_dicts), findings, iteration, lineage
+    )
     ws.write_json(workspace.consolidated_json_path, data)
     ws.write_text(workspace.consolidated_md_path, review_mod.render_consolidation(data))
     repeats = book.register_signature("review", review_mod.findings_signature(data))
@@ -882,8 +901,9 @@ def cmd_review_consolidate(args: argparse.Namespace) -> int:
     stamp = review_mod.current_snapshot_stamp(workspace)
     findings, stale = review_mod.read_reports(workspace, reviewer_ids, stamp)
     previous = ws.read_json(workspace.consolidated_json_path, {}) or {}
+    lineage = _lineage(args, workspace)
     data = review_mod.build_consolidation(
-        workspace, previous.get("reviewers", []), findings, _iteration(args, workspace)
+        workspace, previous.get("reviewers", []), findings, _iteration(args, workspace, lineage), lineage
     )
     for reviewer_id in stale:
         _err("note: %s's report predates the current snapshot and was ignored" % reviewer_id)

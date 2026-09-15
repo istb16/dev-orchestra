@@ -1346,16 +1346,54 @@ def current_snapshot_stamp(workspace: ws.Workspace) -> str:
     return _snapshot_sha(workspace)
 
 
-def next_iteration(workspace: ws.Workspace) -> int:
+def review_lineage(workspace: ws.Workspace, workflow: str = "") -> str:
+    """What makes a round a continuation of the last one rather than a new one.
+
+    The round counter lives in the consolidated report, which is per project
+    and outlives any one change. On its own that made the counter count
+    *snapshots ever taken here*: a second branch, with an unrelated change,
+    opened at round 3 and was refused -- and ``budget reset``, which says in
+    so many words that this is now a fresh workflow, did not help, because the
+    one counter that stopped the work was not in the ledger it resets.
+
+    Three things identify the review, and a change in any of them starts the
+    count again:
+
+    * the workflow, so ``budget reset`` and the idle reset mean what they say
+    * the branch, because another branch is another change
+    * the base, because ``--base`` is the other way of saying which change
+    """
+    meta = ws.read_json(workspace.snapshot_meta_path, {}) or {}
+    return "|".join([workflow or "", _branch(workspace.root), str(meta.get("base") or "")])
+
+
+def _branch(root: str) -> str:
+    """The current branch, or "" when git cannot name one.
+
+    A detached HEAD has no name to key on, so it keys on nothing and the
+    counter behaves as it did before: carrying on is the cautious direction
+    for a loop guard to fail in.
+    """
+    code, out, _ = ws.git(["rev-parse", "--abbrev-ref", "HEAD"], root)
+    name = out.strip() if code == 0 else ""
+    return "" if name in ("", "HEAD") else name
+
+
+def next_iteration(workspace: ws.Workspace, lineage: str = "") -> int:
     """Derive the review round from what is on disk.
 
     The iteration budget only stops a review->fix->re-review loop if the counter
     actually advances, so it must not depend on the caller passing a number: a
     new snapshot is a new round, and re-running against the same snapshot (after
     a reviewer failed, say) stays in the current one.
+
+    A round belonging to a different review starts at one. See
+    ``review_lineage`` for what "different" means and why it has to.
     """
     previous = ws.read_json(workspace.consolidated_json_path, {}) or {}
     if not previous:
+        return 1
+    if lineage and str(previous.get("lineage") or "") != lineage:
         return 1
     recorded = int(previous.get("iteration", 0) or 0)
     previous_sha = str((previous.get("snapshot") or {}).get("sha256") or "")
@@ -1371,6 +1409,7 @@ def build_consolidation(
     runs: Sequence[Dict[str, Any]],
     findings: Sequence[Dict[str, Any]],
     iteration: int = 1,
+    lineage: str = "",
 ) -> Dict[str, Any]:
     meta = ws.read_json(workspace.snapshot_meta_path, {}) or {}
     # Keyed by content, never by id: ids are positional (F1..Fn, severity
@@ -1399,6 +1438,10 @@ def build_consolidation(
     return {
         "generated_at": ws.utcnow(),
         "iteration": iteration,
+        #: Which review this round belongs to. Recorded so the next round can
+        #: tell a re-review from an unrelated change that happens to share a
+        #: project directory.
+        "lineage": lineage,
         "snapshot": {"sha256": meta.get("sha256"), "files": meta.get("files", [])},
         "reviewers": list(runs),
         "counts": counts,

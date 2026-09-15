@@ -299,6 +299,21 @@ are rejecting the claim, not just the tone.
 
 ## Re-review
 
+The round counter belongs to *this* review, not to the project. It lives in
+the consolidated report, which outlives any one change, so it is keyed on the
+workflow, the branch and the base: a different branch, a different `--base`,
+or a `budget reset` starts the count again. Without that key it counted every
+snapshot ever taken in the directory, and a second branch with an unrelated
+change opened at round 3 and was refused -- with no supported way to clear it,
+because `budget reset` resets the ledger and the counter was not in it.
+
+Returning to a branch you worked on earlier is a new review too. Nothing keeps
+a count per branch; the question is only whether this round continues the last
+one. Reviewing rather than refusing is the direction to fail in.
+
+What has not changed is the loop the budget exists to stop: review, fix,
+re-review on one change, on one branch, still runs out.
+
 ```bash
 dev-orchestra review status --json
 ```

@@ -163,9 +163,39 @@ class Ledger:
             return self._fresh()
         return ledger
 
+    def workflow_id(self) -> str:
+        """A value that changes when this becomes a different workflow.
+
+        Which is what ``budget reset`` and the idle reset both do. Anything
+        counting *per workflow* has to be keyed on this, or the reset says it
+        happened without having happened.
+
+        An id rather than the start time: ``utcnow`` has second granularity,
+        so resetting within a second of the last reset produced the same
+        string and the reset silently did nothing. A ledger written before
+        this field existed falls back to the timestamp, which is what it has.
+
+        Settled on disk here when it has not been already. ``load`` mints a
+        fresh ledger for a workflow that has not started, or one that has gone
+        stale, and does not write it -- so reading the identity without
+        recording it returned a different answer every time, and a counter
+        keyed on it reset continuously. That turns a budget into no budget,
+        which is worse than the bug this field exists to fix.
+        """
+        with self._locked():
+            stored = self._read() or {}
+            ledger = self.load()
+            if str(ledger.get("workflow") or "") != str(stored.get("workflow") or ""):
+                self._write(ledger)
+            return str(ledger.get("workflow") or ledger.get("started_at") or "")
+
     def _fresh(self) -> Dict[str, Any]:
         now = time.time()
         return {
+            # Identity, not a timestamp: two workflows can start in the same
+            # second, and anything keyed on "which workflow is this" has to
+            # tell them apart.
+            "workflow": uuid.uuid4().hex[:12],
             "started_at": ws.utcnow(),
             "started_monotonic": now,
             "last_activity_monotonic": now,
