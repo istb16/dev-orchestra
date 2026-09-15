@@ -16,7 +16,16 @@ instructions:
   file: ../skills/dev-orchestra/SKILL.md
 
 entrypoint:
+  # `command` is what a host that understands nothing else will run;
+  # `command_candidates` is the real answer, tried in order until one is on
+  # PATH, because Python 3 is installed as `python3` only on many machines and
+  # a hardcoded `python` fails outright there. The wrappers below already do
+  # this resolution, and are the safer way in for anything that can call them.
   command: python
+  command_candidates:
+    - python3
+    - python
+    - py
   args:
     - ../scripts/dev_orchestra.py
   wrappers:

@@ -6,6 +6,11 @@ bin/dev-orchestra <command> [options]           # POSIX wrapper
 bin\dev-orchestra.ps1 <command> [options]       # Windows wrapper
 ```
 
+Read `python` as `python3` where that is the only name the interpreter has.
+The wrappers find it themselves: `python3` then `python` on POSIX, and
+`python`, `py`, `python3` on Windows, where a `python3` on PATH is usually the
+Microsoft Store alias rather than an interpreter.
+
 Global options: `--cwd <dir>` (operate as if run from there), `--version`.
 
 Exit codes: `0` success, `1` the operation ran but the outcome is negative

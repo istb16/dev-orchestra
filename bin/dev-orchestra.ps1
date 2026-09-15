@@ -15,8 +15,12 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $entry = Join-Path $root 'scripts/dev_orchestra.py'
 
+# `python` before `python3` here, which is the opposite of the POSIX
+# wrapper: on Windows a `python3` on PATH is usually the Store's app execution
+# alias, which opens the Microsoft Store instead of running anything. `py` is
+# the launcher a python.org install ships.
 $python = $null
-foreach ($candidate in @('python3', 'python', 'py')) {
+foreach ($candidate in @('python', 'py', 'python3')) {
     $found = Get-Command $candidate -ErrorAction SilentlyContinue
     if ($found) { $python = $found.Source; break }
 }

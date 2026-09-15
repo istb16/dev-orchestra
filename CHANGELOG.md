@@ -10,6 +10,23 @@ The public surface covered by that promise is: the configuration schema, the
 
 ## [Unreleased]
 
+### Fixed
+
+- **`python` is not a name every machine has.** Recent Linux distributions and
+  a Homebrew install put the interpreter on PATH as `python3` only, where
+  anything spelling it `python` is a command that is not found. The wrappers
+  in `bin/` already tried `python3` first; everything that *writes* or *prints*
+  an invocation did not. The installers now resolve the interpreter on the
+  machine they are running on and put that name in the pointer block they add
+  to `AGENTS.md`, and the skill, the agent manifest and both READMEs say which
+  names to try. `bin/dev-orchestra[.ps1]` remains the invocation that needs no
+  such note.
+
+- **The Windows wrapper tried `python3` first**, which on Windows is usually
+  the Store's app execution alias: it opens the Microsoft Store and runs
+  nothing. It now tries `python`, then the `py` launcher, then `python3`. The
+  POSIX wrapper is unchanged and still prefers `python3`.
+
 ## [0.3.1] - 2026-09-15
 
 ### Fixed

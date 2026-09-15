@@ -35,6 +35,18 @@ while [ $# -gt 0 ]; do
   shift
 done
 
+# The pointer block tells the host how to run the CLI, so it has to name an
+# interpreter this machine actually has. Distributions that ship Python 3 only
+# as `python3` are common enough that a hardcoded `python` sends the agent to a
+# command that is not there.
+python_cmd=python
+for candidate in python3 python; do
+  if command -v "$candidate" >/dev/null 2>&1; then
+    python_cmd=$candidate
+    break
+  fi
+done
+
 exclude_from_project_git() {
   dest=$1
   [ -n "$target_project" ] || return 0
@@ -119,7 +131,7 @@ install_codex() {
     printf 'the development agent configuration, read and follow:\n\n'
     printf '    %s/skills/dev-orchestra/SKILL.md\n\n' "$root"
     printf 'Its helper CLI is:\n\n'
-    printf '    python %s/scripts/dev_orchestra.py <command>\n\n' "$root"
+    printf '    %s %s/scripts/dev_orchestra.py <command>\n\n' "$python_cmd" "$root"
     printf 'That file is the single source of truth; do not rely on a copy of it.\n'
     printf '%s\n' "$end"
   } >> "$agents_file"
