@@ -58,12 +58,26 @@ def repo_root(start: Optional[str] = None) -> str:
     return start
 
 
-class Workspace:
-    """The ``.ai/`` directory for one project."""
+#: Subdirectory of the container holding one directory per workflow. Defined
+#: here rather than in ``workflow`` so that module can import this one without
+#: the import going both ways.
+WORKFLOWS = "workflows"
 
-    def __init__(self, root: str, directory: Optional[str] = None) -> None:
+
+class Workspace:
+    """Where one workflow's artifacts live, under a project's ``.ai/``.
+
+    ``container`` is the ``.ai/`` directory itself, shared by the project;
+    ``dir`` is this workflow's own directory inside it. Constructed without a
+    workflow the two are the same, which is the pre-0.4.0 layout and what a
+    caller that has no workflow to name still gets.
+    """
+
+    def __init__(self, root: str, directory: Optional[str] = None, workflow: str = "") -> None:
         self.root = os.path.abspath(root)
-        self.dir = os.path.abspath(directory or os.path.join(self.root, ".ai"))
+        self.container = os.path.abspath(directory or os.path.join(self.root, ".ai"))
+        self.workflow = (workflow or "").strip()
+        self.dir = os.path.join(self.container, WORKFLOWS, self.workflow) if self.workflow else self.container
 
     # -- paths -------------------------------------------------------------
 
@@ -121,9 +135,11 @@ class Workspace:
     # -- lifecycle ---------------------------------------------------------
 
     def ensure(self) -> "Workspace":
-        for directory in (self.dir, self.execution_dir, self.reviews_dir):
+        for directory in (self.container, self.dir, self.execution_dir, self.reviews_dir):
             os.makedirs(directory, exist_ok=True)
-        gitignore = os.path.join(self.dir, ".gitignore")
+        # One ignore file for the container, so every workflow under it is
+        # covered by the file the project has already seen.
+        gitignore = os.path.join(self.container, ".gitignore")
         if not os.path.exists(gitignore):
             with open(gitignore, "w", encoding="utf-8", newline="\n") as handle:
                 handle.write(

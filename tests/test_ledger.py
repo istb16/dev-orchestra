@@ -21,7 +21,7 @@ from orchestrator import workspace as ws
 class LedgerCase(IsolatedCase):
     def setUp(self):
         super().setUp()
-        self.workspace = ws.Workspace(self.project).ensure()
+        self.workspace = self.cli_workspace()
 
     def book(self, **overrides):
         settings = dict(ledger_mod.DEFAULT_BUDGETS)

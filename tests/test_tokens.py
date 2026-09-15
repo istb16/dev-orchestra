@@ -25,7 +25,6 @@ from helpers import IsolatedCase, has_git
 
 from orchestrator import cli
 from orchestrator import ledger as ledger_mod
-from orchestrator import workspace as ws
 from orchestrator.providers import Usage
 from orchestrator.providers.claude import parse_stream_usage
 from orchestrator.providers.codex import parse_usage_text
@@ -239,7 +238,7 @@ class TestNothingRanIsNotAFailureToReport(IsolatedCase):
 class TestLedgerAccount(IsolatedCase):
     def setUp(self):
         super().setUp()
-        self.book = ledger_mod.Ledger(ws.Workspace(self.project).ensure(), dict(ledger_mod.DEFAULT_BUDGETS))
+        self.book = ledger_mod.Ledger(self.cli_workspace(), dict(ledger_mod.DEFAULT_BUDGETS))
 
     def measured(self, **fields):
         return Usage(source="test", **fields).to_dict()
@@ -299,7 +298,7 @@ class TestLedgerAccount(IsolatedCase):
 
     def test_the_account_survives_a_reload(self):
         self.book.record_usage("test", self.measured(input_tokens=7))
-        fresh = ledger_mod.Ledger(ws.Workspace(self.project), dict(ledger_mod.DEFAULT_BUDGETS))
+        fresh = ledger_mod.Ledger(self.cli_workspace(), dict(ledger_mod.DEFAULT_BUDGETS))
         self.assertEqual(fresh.token_report()["by_stage"]["test"]["input_tokens"], 7)
 
     def test_a_reset_starts_a_new_account(self):

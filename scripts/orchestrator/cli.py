@@ -22,6 +22,7 @@ from . import ledger as ledger_mod
 from . import optimization as opt_mod
 from . import review as review_mod
 from . import wizard as wizard_mod
+from . import workflow as workflow_mod
 from . import workspace as ws
 from .providers import (
     MODE_IMPLEMENT,
@@ -33,7 +34,7 @@ from .providers import (
     get_provider,
 )
 
-__version__ = "0.3.1"
+__version__ = "0.4.0"
 
 DEFAULT_MODES = {
     "orchestrator": MODE_PLAN,
@@ -86,10 +87,53 @@ def _seed_reviewers(layer: Dict[str, Any], start: Optional[str] = None) -> None:
     layer["reviewers"] = [dict(reviewer) for reviewer in effective.reviewers()]
 
 
-def _workspace(args: argparse.Namespace) -> ws.Workspace:
+def _container(args: argparse.Namespace) -> "tuple[str, str]":
+    """The project root and its ``.ai/``, before a workflow is chosen."""
     root = ws.repo_root(getattr(args, "cwd", None) or os.getcwd())
     loaded = config_mod.load(root, validate_result=False)
-    return ws.Workspace(root, loaded.workspace_dir(root)).ensure()
+    return root, loaded.workspace_dir(root)
+
+
+def _workspace(args: argparse.Namespace) -> ws.Workspace:
+    """The workspace for the workflow this invocation belongs to.
+
+    Every command goes through here, which is why the layout change is one
+    function: resolve the id, adopt any pre-0.4.0 artifacts into it, and hand
+    back a workspace pointed at that workflow's directory.
+    """
+    root, container = _container(args)
+    workflow = workflow_mod.ensure(container, getattr(args, "workflow", "") or "")
+    moved = workflow_mod.migrate(container, workflow)
+    if moved:
+        _err(
+            "Adopted the previous %s into workflow %s: %s"
+            % (os.path.basename(container), workflow, ", ".join(moved))
+        )
+    return ws.Workspace(root, container, workflow).ensure()
+
+
+def _in_workflow(workspace: ws.Workspace, path: Optional[str]) -> Optional[str]:
+    """Resolve a path written as ``.ai/...`` inside this workflow's directory.
+
+    Every documented command names artifacts by their container-relative path
+    -- ``--output .ai/plan.md`` -- which was unambiguous while there was one
+    directory per project. It now means "the plan *of this workflow*", so the
+    container prefix is rewritten to the workflow's own directory.
+
+    Left exactly as written: anything outside the container, and anything that
+    already names a workflow. The second is what keeps a detached worker from
+    mapping a path its parent has already mapped.
+    """
+    if not path or path == "-" or not workspace.workflow:
+        return path
+    try:
+        relative = os.path.relpath(os.path.abspath(path), workspace.container)
+    except ValueError:  # pragma: no cover - different drives on Windows
+        return path
+    parts = relative.replace("\\", "/").split("/")
+    if parts[0] in ("..", ws.WORKFLOWS):
+        return path
+    return os.path.join(workspace.dir, *parts)
 
 
 def _load_or_die(start: Optional[str] = None) -> config_mod.LoadedConfig:
@@ -419,11 +463,12 @@ def cmd_doctor(args: argparse.Namespace) -> int:
 # --------------------------------------------------------------------------- run
 
 
-def _read_prompt(args: argparse.Namespace) -> str:
+def _read_prompt(args: argparse.Namespace, workspace: Optional[ws.Workspace] = None) -> str:
     if args.prompt_file:
         if args.prompt_file == "-":
             return sys.stdin.read()
-        return ws.read_text(args.prompt_file)
+        path = _in_workflow(workspace, args.prompt_file) if workspace else args.prompt_file
+        return ws.read_text(path)
     if args.prompt:
         return args.prompt
     if not sys.stdin.isatty():
@@ -470,7 +515,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         )
         return 0
 
-    prompt = _read_prompt(args)
+    prompt = _read_prompt(args, workspace)
     settings = loaded.review_settings()
     timeout = args.timeout or int(settings.get("timeout_seconds", 1800))
     idle_timeout = args.idle_timeout
@@ -549,7 +594,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             },
         )
     if args.output:
-        ws.write_text(args.output, result.stdout)
+        ws.write_text(_in_workflow(workspace, args.output), result.stdout)
     elif not args.job_file:
         _out(result.stdout)
     if result.stalled:
@@ -954,8 +999,9 @@ def cmd_review_fix_brief(args: argparse.Namespace) -> int:
     data = ws.read_json(workspace.consolidated_json_path, {}) or {}
     brief = review_mod.render_fix_brief(data)
     if args.output:
-        ws.write_text(args.output, brief)
-        _out("Wrote %s" % args.output)
+        path = _in_workflow(workspace, args.output)
+        ws.write_text(path, brief)
+        _out("Wrote %s" % workspace.relative(path))
     else:
         _out(brief)
     return 0
@@ -1259,6 +1305,130 @@ def cmd_progress_record(args: argparse.Namespace) -> int:
     return 0
 
 
+# --------------------------------------------------------------------------- workflow
+
+
+def _workflow_warning(workspace: ws.Workspace) -> List[str]:
+    """Other workflows that look live in this same working tree.
+
+    Separate directories separate the reports, not the files being reported
+    on: there is one working tree here and `git diff` reads all of it. Saying
+    so is the whole point -- the layout would otherwise suggest an isolation it
+    cannot provide.
+    """
+    if not workspace.workflow:
+        return []
+    others = workflow_mod.active_elsewhere(workspace.container, workspace.workflow)
+    if not others:
+        return []
+    return [
+        "Another workflow is active in this working tree: %s" % ", ".join(others),
+        "Artifacts are separate; the files under review are not. For work that"
+        " really runs in parallel, give each workflow its own worktree"
+        " (git worktree add ../name branch).",
+    ]
+
+
+def cmd_workflow_list(args: argparse.Namespace) -> int:
+    _, container = _container(args)
+    entries = workflow_mod.listing(container)
+    current, _ = workflow_mod.resolve(container, getattr(args, "workflow", "") or "")
+    if args.json:
+        _emit_json({"current": current, "workflows": entries})
+        return 0
+    if not entries:
+        _out("No workflows recorded yet in %s" % container)
+        return 0
+    for entry in entries:
+        marks = []
+        if entry["workflow"] == current:
+            marks.append("current")
+        if entry["in_flight"]:
+            marks.append("in flight: %s" % ", ".join(entry["in_flight"]))
+        _out(
+            "%s  %s  runs=%d  %s%s"
+            % (
+                entry["workflow"],
+                entry["updated_at"] or entry["started_at"] or "-",
+                entry["runs"],
+                ("%s/%s" % (entry["last_stage"], entry["last_status"])) if entry["last_stage"] else "-",
+                ("  [%s]" % "; ".join(marks)) if marks else "",
+            )
+        )
+    return 0
+
+
+def cmd_workflow_show(args: argparse.Namespace) -> int:
+    root, container = _container(args)
+    try:
+        workflow, origin = workflow_mod.resolve(container, getattr(args, "workflow", "") or "")
+    except workflow_mod.WorkflowError as exc:
+        _err(str(exc))
+        return 2
+    others = workflow_mod.active_elsewhere(container, workflow)
+    payload = {
+        "workflow": workflow,
+        "origin": origin,
+        "dir": workflow_mod.workflow_dir(container, workflow),
+        "container": container,
+        "root": root,
+        "also_active": others,
+    }
+    if args.json:
+        _emit_json(payload)
+        return 0
+    _out("Workflow: %s (from: %s)" % (workflow, origin))
+    _out("Artifacts: %s" % payload["dir"])
+    if others:
+        for line in _workflow_warning(ws.Workspace(root, container, workflow)):
+            _out(line)
+    return 0
+
+
+def cmd_workflow_use(args: argparse.Namespace) -> int:
+    """Pin an id for callers whose host exports no session of its own."""
+    _, container = _container(args)
+    try:
+        workflow = workflow_mod.normalise(args.id)
+    except workflow_mod.WorkflowError as exc:
+        _err(str(exc))
+        return 2
+    workflow_mod.write_pointer(container, workflow, "requested")
+    _out("This directory now defaults to workflow %s" % workflow)
+    if workflow_mod.session_id():
+        _err(
+            "Note: this session exports a session id, which wins over the"
+            " pointer. Pass --workflow %s, or set %s, to override it." % (workflow, workflow_mod.WORKFLOW_ENV)
+        )
+    return 0
+
+
+def cmd_workflow_remove(args: argparse.Namespace) -> int:
+    """Delete one workflow's artifacts. The reports are work; ask first."""
+    import shutil
+
+    _, container = _container(args)
+    try:
+        workflow = workflow_mod.normalise(args.id)
+    except workflow_mod.WorkflowError as exc:
+        _err(str(exc))
+        return 2
+    directory = workflow_mod.workflow_dir(container, workflow)
+    if not os.path.isdir(directory):
+        _err("No such workflow: %s" % workflow)
+        return 1
+    if not args.yes:
+        _err("Refusing to delete %s without --yes" % directory)
+        return 2
+    current, _ = workflow_mod.resolve(container, getattr(args, "workflow", "") or "")
+    if workflow == current:
+        _err("Refusing to delete the workflow this session is in (%s)" % workflow)
+        return 2
+    shutil.rmtree(directory)
+    _out("Removed %s" % directory)
+    return 0
+
+
 def cmd_status(args: argparse.Namespace) -> int:
     """One verdict the orchestrator can act on: continue, or stop and report."""
     loaded = config_mod.load(args.cwd, validate_result=False)
@@ -1325,6 +1495,14 @@ def cmd_status(args: argparse.Namespace) -> int:
         # Reported, never enforced: no verdict here turns on what a run cost.
         "tokens": summary["tokens"],
         "optimization": plan.to_dict(),
+        "workflow": workspace.workflow,
+        # Named here because status is the command the orchestrator consults
+        # before every stage: if another session is working in this tree, that
+        # is the moment to know, not after two reviews disagree about what the
+        # change even is.
+        "also_active": workflow_mod.active_elsewhere(workspace.container, workspace.workflow)
+        if workspace.workflow
+        else [],
     }
     if args.json:
         _emit_json(payload)
@@ -1333,6 +1511,8 @@ def cmd_status(args: argparse.Namespace) -> int:
     _out("Verdict: %s" % payload["verdict"].upper())
     for reason in reasons:
         _out("  - %s" % reason)
+    for line in _workflow_warning(workspace):
+        _out("  ! %s" % line)
     if summary["stalls"]:
         _out("")
         _out("Stalled stages:")
@@ -1500,6 +1680,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--version", action="version", version="dev-orchestra %s" % __version__)
     parser.add_argument("--cwd", default=None, help="operate as if run from this directory")
+    parser.add_argument(
+        "--workflow",
+        default="",
+        help="the workflow these artifacts belong to (default: this session's)",
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     # config -----------------------------------------------------------------
@@ -1754,6 +1939,24 @@ def build_parser() -> argparse.ArgumentParser:
     progress_record.add_argument("--json", action="store_true")
     progress_record.set_defaults(func=cmd_progress_record)
 
+    workflow_parser = subparsers.add_parser(
+        "workflow", help="the workflows in this project and which one is yours"
+    )
+    workflow_sub = workflow_parser.add_subparsers(dest="subcommand", required=True)
+    workflow_list = workflow_sub.add_parser("list", help="every workflow here, most recent first")
+    workflow_list.add_argument("--json", action="store_true")
+    workflow_list.set_defaults(func=cmd_workflow_list)
+    workflow_show = workflow_sub.add_parser("show", help="which workflow this command is in, and why")
+    workflow_show.add_argument("--json", action="store_true")
+    workflow_show.set_defaults(func=cmd_workflow_show)
+    workflow_use = workflow_sub.add_parser("use", help="remember an id for this directory")
+    workflow_use.add_argument("id")
+    workflow_use.set_defaults(func=cmd_workflow_use)
+    workflow_remove = workflow_sub.add_parser("remove", help="delete one finished workflow's artifacts")
+    workflow_remove.add_argument("id")
+    workflow_remove.add_argument("--yes", action="store_true", help="do not ask")
+    workflow_remove.set_defaults(func=cmd_workflow_remove)
+
     status_parser = subparsers.add_parser(
         "status", help="continue or stop: budgets, stalls and open findings in one verdict"
     )
@@ -1782,6 +1985,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         _err(str(exc))
         return 2
     except review_mod.ReviewError as exc:
+        _err(str(exc))
+        return 2
+    except workflow_mod.WorkflowError as exc:
         _err(str(exc))
         return 2
     except KeyboardInterrupt:  # pragma: no cover

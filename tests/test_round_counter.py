@@ -55,7 +55,7 @@ class TestTheLineageKey(IsolatedCase):
         self.init_git_repo()
         self.write("app.py", "a = 1\n")
         self.commit_all("init")
-        self.workspace = ws.Workspace(self.project).ensure()
+        self.workspace = self.cli_workspace()
 
     def lineage(self, workflow="w1"):
         return review_mod.review_lineage(self.workspace, workflow)
@@ -96,7 +96,7 @@ class TestTheWorkflowId(IsolatedCase):
     def book(self):
         from orchestrator import config as config_mod
 
-        return ledger_mod.Ledger(ws.Workspace(self.project).ensure(), config_mod.default_config()["budgets"])
+        return ledger_mod.Ledger(self.cli_workspace(), config_mod.default_config()["budgets"])
 
     def test_a_reset_within_the_same_second_still_changes_it(self):
         """It was the start time, and `utcnow` counts in seconds -- so a reset
@@ -125,7 +125,7 @@ class TestNextIteration(IsolatedCase):
 
     def setUp(self):
         super().setUp()
-        self.workspace = ws.Workspace(self.project).ensure()
+        self.workspace = self.cli_workspace()
 
     def record(self, iteration, lineage, sha="abc"):
         ws.write_json(
@@ -192,7 +192,7 @@ class TestTheCounterInThePipeline(IsolatedCase):
             self.round(value)
 
     def iteration(self):
-        data = ws.read_json(ws.Workspace(self.project).consolidated_json_path, {}) or {}
+        data = ws.read_json(self.cli_workspace().consolidated_json_path, {}) or {}
         return int(data.get("iteration") or 0)
 
     def test_the_same_branch_still_runs_out(self):
@@ -261,7 +261,7 @@ class TestTheCounterInThePipeline(IsolatedCase):
     def test_the_lineage_is_recorded_beside_the_count(self):
         """So the next round can tell whether it continues this one."""
         self.round(2)
-        data = ws.read_json(ws.Workspace(self.project).consolidated_json_path, {}) or {}
+        data = ws.read_json(self.cli_workspace().consolidated_json_path, {}) or {}
         self.assertTrue(data.get("lineage"))
 
 

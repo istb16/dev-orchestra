@@ -19,19 +19,52 @@ a doc comment" is a useful sentence; silently skipping is not.
 
 ```
 .ai/
-├── plan.md                     # Architect output
-├── execution/
-│   ├── design-request.md       # prompt you wrote for the Architect
-│   ├── implement-request.md    # prompt you wrote for the Implementer
-│   └── fix-brief.md            # generated from accepted findings
-├── reviews/
-│   ├── review-target.diff      # frozen snapshot
-│   ├── review-target.json      # strategy, files, sha256
-│   ├── <reviewer-id>.md        # one per reviewer
-│   ├── consolidated.md
-│   └── consolidated.json
-└── state.json                  # stage events + resolved model ids
+├── .gitignore                      # `*`, written once, covers every workflow
+├── current.json                    # the workflow this directory last resolved
+└── workflows/
+    └── <workflow-id>/
+        ├── plan.md                 # Architect output
+        ├── execution/
+        │   ├── design-request.md   # prompt you wrote for the Architect
+        │   ├── implement-request.md
+        │   └── fix-brief.md        # generated from accepted findings
+        ├── reviews/
+        │   ├── review-target.diff  # frozen snapshot
+        │   ├── review-target.json  # strategy, files, sha256
+        │   ├── <reviewer-id>.md    # one per reviewer
+        │   ├── consolidated.md
+        │   └── consolidated.json
+        └── state.json              # stage events + resolved model ids
 ```
+
+**One directory per workflow.** Two sessions working in the same checkout used
+to share `plan.md`, the review reports, the budgets and the round counter, and
+neither announced itself -- so the first session's plan was overwritten and its
+budget spent by the other. The id is resolved per command, in order, from
+`--workflow`, `DEV_ORCHESTRA_WORKFLOW`, the host's session id (hashed to twelve
+characters, so another tool's internal identifier stays out of our paths),
+`current.json`, and finally a new id.
+
+Because commands name artifacts by their container-relative path, `--output
+.ai/plan.md` means *the plan of this workflow* and lands in its directory. A
+path outside `.ai/`, or one that already names a workflow, is used as written.
+
+**This separates the bookkeeping, not the work.** The implementer edits the
+working tree and the reviewers read `git diff` of that same tree, and there is
+one of those per checkout. Two workflows running at the same time here still
+see each other's half-finished edits. For work that really runs in parallel,
+give each workflow its own worktree:
+
+```
+git worktree add ../feature-x feature-x
+```
+
+which is a different repository root, and therefore a different `.ai/`.
+`workflow list` names any other workflow that looks live here, and the
+commands say so rather than let the separate directories imply otherwise.
+
+An upgrade from a version before 0.4.0 adopts the flat `.ai/` into the first
+workflow that runs, so an interrupted workflow keeps its plan and its reports.
 
 `.ai/` gets a `.gitignore` containing `*` on first use, so artifacts stay out of
 the user's commits. Teams who want them reviewable can delete that file and

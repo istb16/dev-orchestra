@@ -274,7 +274,7 @@ class TestRunningOnATier(IsolatedCase):
         run_cli("run", "implementer", "--prompt", "hi", "--tier", "light")
         from orchestrator import workspace as ws
 
-        events = ws.read_json(ws.Workspace(self.project).state_path, {}).get("events") or []
+        events = ws.read_json(self.cli_workspace().state_path, {}).get("events") or []
         tiers = [e.get("tier") for e in events if e.get("stage") == "implementer"]
         self.assertIn("light", tiers)
 

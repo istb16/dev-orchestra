@@ -428,7 +428,7 @@ class TestReviewPipeline(IsolatedCase):
     def test_snapshot_then_review_then_triage_then_fix_brief(self):
         code, out, _ = run_cli("review", "snapshot")
         self.assertEqual(code, 0)
-        self.assertIn("app.py", read_file(".ai/reviews/review-target.diff"))
+        self.assertIn("app.py", read_file(self.cli_workspace().snapshot_path))
 
         code, out, _ = run_cli("review", "run")
         self.assertEqual(code, 0)

@@ -11,7 +11,9 @@ The wrappers find it themselves: `python3` then `python` on POSIX, and
 `python`, `py`, `python3` on Windows, where a `python3` on PATH is usually the
 Microsoft Store alias rather than an interpreter.
 
-Global options: `--cwd <dir>` (operate as if run from there), `--version`.
+Global options: `--cwd <dir>` (operate as if run from there),
+`--workflow <id>` (the workflow these artifacts belong to; see below),
+`--version`.
 
 Exit codes: `0` success, `1` the operation ran but the outcome is negative
 (invalid config, empty snapshot, every reviewer failed, role run failed), `2` a
@@ -250,6 +252,30 @@ dev-orchestra progress record test --signature "3 failed: test_totals, test_disc
 Reviews register their own signature automatically, from the set of open
 findings.
 
+## workflow
+
+Artifacts live in `.ai/workflows/<id>/`, one directory per workflow, so two
+sessions in the same checkout no longer share a plan, a report, a budget or a
+round counter. The id is resolved per command, in order, from `--workflow`,
+`DEV_ORCHESTRA_WORKFLOW`, the host's session id (hashed to twelve characters),
+`current.json`, and finally a new id. `workflow show` says which rule answered.
+
+A path written against the container is resolved inside the workflow:
+`--output .ai/plan.md` means the plan of *this* workflow. Paths outside `.ai/`,
+and paths that already name a workflow, are used as written.
+
+This separates the artifacts, not the working tree: one checkout has one set of
+files, and the reviewers read `git diff` of it. For work that really runs at
+the same time, give each workflow its own worktree (`git worktree add ../x x`),
+which is a different root and therefore a different `.ai/`.
+
+| Command | Description |
+| --- | --- |
+| `workflow list [--json]` | Every workflow here, most recently active first, marking the current one and any stage in flight. |
+| `workflow show [--json]` | Which workflow this command is in, where its artifacts are, and which rule chose it. |
+| `workflow use <id>` | Remember an id for this directory (`current.json`). For hosts that export no session id; a host that does export one still wins. |
+| `workflow remove <id> --yes` | Delete one workflow's artifacts. Refuses without `--yes`, and refuses the workflow you are in. |
+
 ## state / summary
 
 | Command | Description |
@@ -264,6 +290,8 @@ findings.
 | --- | --- |
 | `DEV_ORCHESTRA_CONFIG` | Use this exact file as the global config layer |
 | `DEV_ORCHESTRA_HOME` | Use this directory instead of the platform config directory |
+| `DEV_ORCHESTRA_WORKFLOW` | The workflow to use, ahead of any host session id |
+| `DEV_ORCHESTRA_SESSION` | A session id to derive the workflow from, for hosts that export none |
 | `DEV_ORCHESTRA_MOCK_DIR` | Canned responses for the mock provider |
 | `DEV_ORCHESTRA_MOCK_RESPONSE` | Inline canned response for the mock provider |
 | `DEV_ORCHESTRA_MOCK_FAIL` | Make mock runs fail (`1` = all, otherwise a prompt substring) |

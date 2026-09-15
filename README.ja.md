@@ -407,6 +407,52 @@ dev-orchestra review run
 仕様書レビューや依存関係の棚卸しでも同じ分担が使えます。1つのモデルが情報を消化し、
 別のモデルが設計し、さらに2つが結果について意見を戦わせます。
 
+## 同じチェックアウトで2つのセッション
+
+成果物は `.ai/workflows/<id>/` に置かれる — ワークフローごとに1ディレクトリ。以前は
+`.ai/` 直下だったため、同じチェックアウトで動く2つ目のセッションが1つ目の `plan.md` を
+上書きし、レビュー結果を混ぜ、予算を消費していた。どちらのセッションも名乗らない。
+
+```
+$ dev-orchestra workflow show
+Workflow: 5942d94f5248 (from: session)
+Artifacts: /code/app/.ai/workflows/5942d94f5248
+
+$ dev-orchestra workflow list
+5942d94f5248  2026-09-15T09:12:04Z  runs=6  review/ok  [current]
+9c1e07b3a880  2026-09-15T08:40:11Z  runs=2  implementer/ok
+```
+
+IDはコマンドごとに、この順で解決される:
+
+| | |
+| --- | --- |
+| `--workflow <id>` | 明示指定（例 `--workflow auth-fix`） |
+| `DEV_ORCHESTRA_WORKFLOW` | 同じものを環境変数から |
+| ホストのセッションID | 12文字にハッシュ化。決定的なので、同一セッションの全コマンドが、調整用ファイルなしで一致する |
+| `.ai/current.json` | このディレクトリが最後に解決した値。セッションIDを持たないホスト向け |
+| 新規ID | 初回 |
+
+コマンドの書き方は従来どおりでよい。`--output .ai/plan.md` は*このワークフローの*
+plan を指し、そのディレクトリに書かれる。`.ai/` の外のパスと、既にワークフローを
+含むパスは、書かれたとおりに使われる。
+
+**分離されるのは帳簿であって、作業対象ではない。** implementer は作業ツリーを書き換え、
+レビュアーは同じ作業ツリーの `git diff` を読む — そしてチェックアウトには作業ツリーが
+1つしかない。ここで*同時に*2つのワークフローを動かせば、レポートの置き場所が別でも、
+互いの書きかけを見てしまう。本当に並行させるなら、ワークフローごとに worktree を分ける:
+
+```
+git worktree add ../feature-x feature-x
+```
+
+リポジトリルートが変わるので、`.ai/` も自動的に別になる。同じツリーで他のワークフローが
+動いていそうなときは、コマンドがそう言う — ディレクトリが分かれていることが、
+提供できない安全性を暗示しないように。
+
+0.4.0 より前からのアップグレードでは、平置きの `.ai/` が最初に動いたワークフローに
+取り込まれる。アップグレードで中断されたワークフローも plan・レポート・予算を保つ。
+
 ## 2巡目は修正だけを見る
 
 毎ラウンド `HEAD` と全体を再 diff していたため、1行の修正を見るのに2巡目が1巡目と同じ
@@ -416,10 +462,10 @@ dev-orchestra review run
 
 ```
 $ dev-orchestra review snapshot
-Snapshot: .ai/reviews/review-target.diff
+Snapshot: .ai/workflows/5942d94f5248/reviews/review-target.diff
   strategy: git diff <previous round> <now>
   scope:    what changed since the last reviewed round, not the whole change
-            whole change kept at .ai/reviews/review-target-full.diff
+            whole change kept alongside it as review-target-full.diff
             reviewers also get the findings the fix was meant to address
   files:    1
   size:     199 bytes (sha256 17ac3ae8c8a2)
@@ -447,7 +493,7 @@ finding が出なかったラウンドの次は「修正の検証」ではなく
 
 ```
 $ dev-orchestra review snapshot
-Snapshot: .ai/reviews/review-target.diff
+Snapshot: .ai/workflows/5942d94f5248/reviews/review-target.diff
   strategy: git diff HEAD
   files:    1
   size:     153 bytes (sha256 bf2b71e951ea)

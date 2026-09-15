@@ -109,9 +109,7 @@ class TestWhatTheTemplateStillSays(IsolatedCase):
 
     def setUp(self):
         super().setUp()
-        from orchestrator import workspace as ws
-
-        self.workspace = ws.Workspace(self.project)
+        self.workspace = self.cli_workspace()
         self.workspace.ensure()
 
     def prompt(self, **kwargs):
@@ -163,9 +161,7 @@ class TestTheDiet(IsolatedCase):
 
     def setUp(self):
         super().setUp()
-        from orchestrator import workspace as ws
-
-        self.workspace = ws.Workspace(self.project)
+        self.workspace = self.cli_workspace()
         self.workspace.ensure()
 
     def test_the_fixed_part_of_the_prompt_stays_under_its_budget(self):

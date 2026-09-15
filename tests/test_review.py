@@ -270,7 +270,7 @@ class TestSnapshot(IsolatedCase):
         self.init_git_repo()
         self.write("app.py", "def add(a, b):\n    return a + b\n")
         self.commit_all("init")
-        self.workspace = ws.Workspace(self.project).ensure()
+        self.workspace = self.cli_workspace()
 
     def test_snapshot_captures_uncommitted_changes(self):
         self.write("app.py", "def add(a, b):\n    return a - b\n")
@@ -330,7 +330,7 @@ class TestFanOut(IsolatedCase):
         self.write("app.py", "def add(a, b):\n    return a + b\n")
         self.commit_all("init")
         self.write("app.py", "def add(a, b):\n    return a - b\n")
-        self.workspace = ws.Workspace(self.project).ensure()
+        self.workspace = self.cli_workspace()
         review_mod.create_snapshot(self.workspace)
         self.mock_dir = os.path.join(self.tmp, "mock")
         os.makedirs(self.mock_dir)

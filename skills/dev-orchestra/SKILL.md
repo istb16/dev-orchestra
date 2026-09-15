@@ -2,7 +2,7 @@
 name: dev-orchestra
 description: Orchestrate a multi-model software development workflow across Claude Code and Codex CLIs - investigate, design, implement, test, run independent multi-model code reviews, triage the findings, fix them, and re-test. Use when asked to implement a feature or issue, investigate and fix a bug, run a multi-model or independent code review of current changes, orchestrate development across several AI CLIs, or to set up and change the development agent configuration (which CLI and model handle design, implementation, review fixing, and each reviewer). Not for answering one-off coding questions, explaining code, or single edits the user asked you to make directly.
 license: MIT
-version: 0.3.1
+version: 0.4.0
 ---
 
 # AI Development Orchestrator
@@ -67,9 +67,10 @@ fix before triage.
 Request → Design → Implement → Test → Reviews → Triage → Fix → Re-test → Report
 ```
 
-Artifacts live in `.ai/` at the project root (`plan.md`, `execution/`,
-`reviews/`, `state.json`), which ignores itself by default. Prompt templates
-and stage detail: `references/workflow.md`.
+Artifacts live in `.ai/`, one directory per workflow (`plan.md`,
+`execution/`, `reviews/`, `state.json`), which ignores itself by default. Keep
+writing `.ai/plan.md`: paths resolve inside your workflow. Prompt templates and
+stage detail: `references/workflow.md`.
 
 | Stage | Command |
 | --- | --- |
