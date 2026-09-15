@@ -155,7 +155,7 @@ forever.
 | --- | --- |
 | `budget show [--json]` | Attempts spent per stage, delegated-run total, runtime left. |
 | `budget consume <stage> [--force]` | Claim an attempt at a stage the orchestrator runs itself (notably `test`). Exits 3 when the budget is spent. |
-| `budget reset` | Start a fresh workflow. Also happens automatically once a ledger has been idle for `budgets.session_idle_reset_seconds`. |
+| `budget reset` | Start a fresh workflow, including the review round counter. Also happens automatically once a ledger has been idle for `budgets.session_idle_reset_seconds`. |
 
 `run` and `review run` consume their own budgets, so `budget consume` is only
 needed for stages the orchestrator performs directly.
