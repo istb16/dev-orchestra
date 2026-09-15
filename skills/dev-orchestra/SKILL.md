@@ -17,10 +17,11 @@ Run every command from the target project's root, as:
 python "PLUGIN_ROOT/scripts/dev_orchestra.py" <command>
 ```
 
-`PLUGIN_ROOT` is the install root holding `scripts/`, `references/` and
-`bin/`, two levels above this file — `${CLAUDE_PLUGIN_ROOT}` when installed as
-a plugin, else the checkout root. `bin/dev-orchestra[.ps1]` are equivalent
-wrappers. **Commands below are written bare: `review run` means
+Use `python3` where there is no `python`. `PLUGIN_ROOT` is the install root
+holding `scripts/`, `references/` and `bin/`, two levels above this file —
+`${CLAUDE_PLUGIN_ROOT}` when installed as a plugin, else the checkout root.
+`bin/dev-orchestra[.ps1]` are wrappers that pick the interpreter themselves.
+**Commands below are written bare: `review run` means
 `python "PLUGIN_ROOT/scripts/dev_orchestra.py" review run`.**
 
 ## 0. Start of session

@@ -133,6 +133,8 @@ the bug.
 
 - **Python 3.9+** — standard library only, no pip install required.
   (PyYAML is used if present, but a built-in parser covers the config format.)
+  Where the interpreter is installed only as `python3`, run `python3` — or use
+  `bin/dev-orchestra[.ps1]`, which finds it for you.
 - **git** — required for review snapshots.
 - **At least one supported CLI**, already authenticated:
   - [Claude Code](https://claude.com/claude-code) (`claude`)

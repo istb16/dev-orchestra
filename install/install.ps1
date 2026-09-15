@@ -28,6 +28,18 @@ $ErrorActionPreference = 'Stop'
 $SkillName = 'dev-orchestra'
 $root = Split-Path -Parent $PSScriptRoot
 
+# The pointer block tells the host how to run the CLI, so it has to name an
+# interpreter this machine actually has. Same order as bin/dev-orchestra.ps1:
+# a `python3` on PATH here is usually the Store's alias, which opens the
+# Microsoft Store rather than running anything.
+$PythonCmd = 'python'
+foreach ($candidate in @('python', 'py', 'python3')) {
+    if (Get-Command $candidate -ErrorAction SilentlyContinue) {
+        $PythonCmd = $candidate
+        break
+    }
+}
+
 function Add-ProjectGitExclude {
     # A per-project install drops a directory (usually a link to this git
     # checkout) inside someone else's repository. Left alone, `git add -A`
@@ -128,7 +140,7 @@ function Install-CodexPointer {
         ''
         'Its helper CLI is:'
         ''
-        "    python $root/scripts/dev_orchestra.py <command>"
+        "    $PythonCmd $root/scripts/dev_orchestra.py <command>"
         ''
         'That file is the single source of truth; do not rely on a copy of it.'
         $end
