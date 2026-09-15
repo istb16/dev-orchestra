@@ -10,6 +10,8 @@ The public surface covered by that promise is: the configuration schema, the
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-09-15
+
 ### Fixed
 
 - **The review round counter counted every snapshot ever taken in a project.**
@@ -40,7 +42,6 @@ The public surface covered by that promise is: the configuration schema, the
   turned up that the identity was being minted per read rather than recorded,
   which would have reset the round counter continuously and quietly removed
   the budget altogether.
-
 
 ## [0.3.0] - 2026-09-14
 
@@ -632,7 +633,8 @@ First release.
   none of which invoke a real CLI.
 - CI on Linux, macOS and Windows: lint, tests, skill validation.
 
-[Unreleased]: https://github.com/istb16/dev-orchestra/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/istb16/dev-orchestra/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/istb16/dev-orchestra/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/istb16/dev-orchestra/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/istb16/dev-orchestra/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/istb16/dev-orchestra/releases/tag/v0.1.0
