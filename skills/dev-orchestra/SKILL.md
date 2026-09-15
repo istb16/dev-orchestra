@@ -67,9 +67,10 @@ fix before triage.
 Request → Design → Implement → Test → Reviews → Triage → Fix → Re-test → Report
 ```
 
-Artifacts live in `.ai/` at the project root (`plan.md`, `execution/`,
-`reviews/`, `state.json`), which ignores itself by default. Prompt templates
-and stage detail: `references/workflow.md`.
+Artifacts live in `.ai/`, one directory per workflow (`plan.md`,
+`execution/`, `reviews/`, `state.json`), which ignores itself by default. Keep
+writing `.ai/plan.md`: paths resolve inside your workflow. Prompt templates and
+stage detail: `references/workflow.md`.
 
 | Stage | Command |
 | --- | --- |

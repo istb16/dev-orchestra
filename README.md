@@ -423,6 +423,55 @@ dev-orchestra review run
 The same split works for a spec review or a dependency audit: one model digests,
 another designs, two more disagree about the result.
 
+## Two sessions, one checkout
+
+Artifacts live in `.ai/workflows/<id>/` -- one directory per workflow. They used
+to live directly in `.ai/`, so a second session working in the same checkout
+overwrote the first one's `plan.md`, mixed its review reports in with the
+other's, and spent its budget. Neither session announced itself.
+
+```
+$ dev-orchestra workflow show
+Workflow: 5942d94f5248 (from: session)
+Artifacts: /code/app/.ai/workflows/5942d94f5248
+
+$ dev-orchestra workflow list
+5942d94f5248  2026-09-15T09:12:04Z  runs=6  review/ok  [current]
+9c1e07b3a880  2026-09-15T08:40:11Z  runs=2  implementer/ok
+```
+
+The id is resolved per command, in this order:
+
+| | |
+| --- | --- |
+| `--workflow <id>` | An explicit name, e.g. `--workflow auth-fix` |
+| `DEV_ORCHESTRA_WORKFLOW` | The same, from the environment |
+| the host's session id | Hashed to twelve characters. Deterministic, so every command in one session agrees without a file to coordinate through |
+| `.ai/current.json` | What this directory last resolved, for hosts that export no session id |
+| a new id | First run |
+
+Commands keep naming artifacts the way they always did: `--output .ai/plan.md`
+means the plan *of this workflow* and lands in its directory. Paths outside
+`.ai/`, and paths that already name a workflow, are used as written.
+
+**This separates the bookkeeping, not the work.** The implementer edits the
+working tree and the reviewers read `git diff` of that same tree -- and a
+checkout has exactly one. Two workflows running *at the same time* here still
+see each other's half-finished edits, whatever directory their reports go to.
+For work that really runs in parallel, give each workflow its own worktree:
+
+```
+git worktree add ../feature-x feature-x
+```
+
+That is a different repository root, so it gets its own `.ai/` for free. When
+another workflow looks live in the same tree, the commands say so rather than
+let the separate directories imply a safety they cannot provide.
+
+Upgrading from a version before 0.4.0 adopts the flat `.ai/` into the first
+workflow that runs, so a workflow interrupted by the upgrade keeps its plan,
+its reports and its budget.
+
 ## The second round only looks at the fix
 
 Re-diffing everything against `HEAD` made round 2 cost the same as round 1 --
@@ -432,10 +481,10 @@ round actually reviewed:
 
 ```
 $ dev-orchestra review snapshot
-Snapshot: .ai/reviews/review-target.diff
+Snapshot: .ai/workflows/5942d94f5248/reviews/review-target.diff
   strategy: git diff <previous round> <now>
   scope:    what changed since the last reviewed round, not the whole change
-            whole change kept at .ai/reviews/review-target-full.diff
+            whole change kept alongside it as review-target-full.diff
             reviewers also get the findings the fix was meant to address
   files:    1
   size:     199 bytes (sha256 17ac3ae8c8a2)
@@ -467,7 +516,7 @@ of those diffs:
 
 ```
 $ dev-orchestra review snapshot
-Snapshot: .ai/reviews/review-target.diff
+Snapshot: .ai/workflows/5942d94f5248/reviews/review-target.diff
   strategy: git diff HEAD
   files:    1
   size:     153 bytes (sha256 bf2b71e951ea)

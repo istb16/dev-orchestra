@@ -138,7 +138,7 @@ class TestSnapshotExclusions(IsolatedCase):
         self.write("package-lock.json", LOCKFILE)
         self.write("dist/bundle.min.js", "var a=1;\n")
         self.commit_all("init")
-        self.workspace = ws.Workspace(self.project).ensure()
+        self.workspace = self.cli_workspace()
 
     def change_everything(self):
         self.write("app.py", "def add(a, b):\n    return a - b\n")
@@ -318,7 +318,7 @@ class TestSnapshotCommand(IsolatedCase):
         run_cli("reviewer", "remove", "codex-general")
         run_cli("reviewer", "add", "--provider", "mock", "--id", "m1", "--role", "general")
         run_cli("review", "run")
-        meta = ws.read_json(ws.Workspace(self.project).snapshot_meta_path, {})
+        meta = ws.read_json(self.cli_workspace().snapshot_meta_path, {})
         self.assertIn("package-lock.json", [entry["path"] for entry in meta["withheld"]])
 
 

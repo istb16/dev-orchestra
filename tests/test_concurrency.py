@@ -131,7 +131,7 @@ class TestFileLock(IsolatedCase):
 class TestConcurrentLedgerUpdates(IsolatedCase):
     def setUp(self):
         super().setUp()
-        self.workspace = ws.Workspace(self.project).ensure()
+        self.workspace = self.cli_workspace()
 
     def book(self, **overrides):
         settings = dict(ledger_mod.DEFAULT_BUDGETS)

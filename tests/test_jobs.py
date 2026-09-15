@@ -23,7 +23,7 @@ from orchestrator import workspace as ws
 class JobCase(IsolatedCase):
     def setUp(self):
         super().setUp()
-        self.workspace = ws.Workspace(self.project).ensure()
+        self.workspace = self.cli_workspace()
 
     def record(self, job_id="stage-1", **fields):
         job = {
@@ -223,7 +223,7 @@ class TestDetachedRun(IsolatedCase):
         self.assertEqual(code, 4)
 
     def record_running_job(self):
-        workspace = ws.Workspace(self.project).ensure()
+        workspace = self.cli_workspace()
         jobs_mod.write_job(
             workspace,
             {

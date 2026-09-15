@@ -68,7 +68,7 @@ class RoundCase(IsolatedCase):
         run_cli("reviewer", "remove", "claude-general")
         run_cli("reviewer", "remove", "codex-general")
         run_cli("reviewer", "add", "--provider", "mock", "--id", "m1", "--role", "general")
-        self.workspace = ws.Workspace(self.project).ensure()
+        self.workspace = self.cli_workspace()
 
     def implement(self):
         """A change that touches a lot, so a second full diff is expensive."""

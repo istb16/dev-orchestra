@@ -394,7 +394,7 @@ class TestConfiguration(IsolatedCase):
 class TestRecordedStages(IsolatedCase):
     def setUp(self):
         super().setUp()
-        self.workspace = ws.Workspace(self.project)
+        self.workspace = self.cli_workspace()
         self.workspace.ensure()
 
     def test_nothing_recorded_reads_as_the_empty_string(self):
@@ -562,7 +562,7 @@ class TestThePanelInThePipeline(TestTheGateInThePipeline):
         run_cli("state", "record", "test", "ok")
         run_cli("review", "snapshot")
         run_cli("review", "run")
-        events = ws.read_json(ws.Workspace(self.project).state_path, {}).get("events") or []
+        events = ws.read_json(self.cli_workspace().state_path, {}).get("events") or []
         reviews = [e for e in events if e.get("stage") == "review" and "optimization" in e]
         self.assertTrue(reviews)
         self.assertEqual(reviews[-1]["optimization"]["reviewer_limit"], 1)
@@ -697,7 +697,7 @@ class TestTheReport(unittest.TestCase):
 class TestTheReportCommand(IsolatedCase):
     def setUp(self):
         super().setUp()
-        self.workspace = ws.Workspace(self.project)
+        self.workspace = self.cli_workspace()
         self.workspace.ensure()
 
     def test_an_empty_log_says_so_instead_of_printing_a_table_of_zeroes(self):
@@ -768,7 +768,7 @@ class TestWhatTheSnapshotReportsAsChanged(IsolatedCase):
         self.write("app/auth.py", "def check():\n    return True\n")
         self.write("app/main.py", "x = 1\n")
         self.commit_all("init")
-        self.workspace = ws.Workspace(self.project)
+        self.workspace = self.cli_workspace()
 
     def snapshot(self):
         from orchestrator import review as review_mod
@@ -842,7 +842,7 @@ class TestSnapshotLineCounts(IsolatedCase):
         self.init_git_repo()
         self.write("app.py", "a = 1\nb = 2\nc = 3\n")
         self.commit_all("init")
-        self.workspace = ws.Workspace(self.project)
+        self.workspace = self.cli_workspace()
 
     def test_the_snapshot_counts_what_the_reviewer_will_see(self):
         self.write("app.py", "a = 1\nb = 9\nc = 3\nd = 4\n")

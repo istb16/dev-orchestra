@@ -102,7 +102,7 @@ class TestIterationDerivation(IsolatedCase):
         self.init_git_repo()
         self.write("app.py", "x = 1\n")
         self.commit_all("init")
-        self.workspace = ws.Workspace(self.project).ensure()
+        self.workspace = self.cli_workspace()
 
     def _snapshot(self, content):
         self.write("app.py", content)
@@ -149,7 +149,7 @@ class TestStaleReports(IsolatedCase):
         self.init_git_repo()
         self.write("app.py", "x = 1\n")
         self.commit_all("init")
-        self.workspace = ws.Workspace(self.project).ensure()
+        self.workspace = self.cli_workspace()
         self.write("app.py", "x = 2\n")
         review_mod.create_snapshot(self.workspace)
 
@@ -263,7 +263,7 @@ class TestUnparseableRunStatus(IsolatedCase):
         self.write("app.py", "x = 1\n")
         self.commit_all("init")
         self.write("app.py", "x = 2\n")
-        self.workspace = ws.Workspace(self.project).ensure()
+        self.workspace = self.cli_workspace()
         review_mod.create_snapshot(self.workspace)
 
     def _reviewer(self, reviewer_id="r1"):

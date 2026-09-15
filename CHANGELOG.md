@@ -10,6 +10,40 @@ The public surface covered by that promise is: the configuration schema, the
 
 ## [Unreleased]
 
+### Added
+
+- **One directory per workflow.** Artifacts move from `.ai/` to
+  `.ai/workflows/<id>/`. Two sessions working in the same checkout used to
+  share `plan.md`, the review reports, the budgets and the round counter, and
+  neither announced itself -- so the first session's plan was overwritten and
+  its budget spent by the other one. The id is resolved per command, in order,
+  from `--workflow`, `DEV_ORCHESTRA_WORKFLOW`, the host's session id (hashed to
+  twelve characters, so another tool's internal identifier stays out of our
+  paths, and deterministic, so every command in one session agrees without a
+  file to coordinate through), `.ai/current.json`, and finally a new id.
+
+  Commands keep naming artifacts the way they did: `--output .ai/plan.md` now
+  means the plan *of this workflow* and lands in its directory. Paths outside
+  `.ai/`, and paths that already name a workflow, are used as written.
+
+  This separates the bookkeeping, not the work: the implementer edits the
+  working tree and the reviewers read `git diff` of that same tree, of which a
+  checkout has one. Workflows that really run at the same time need a worktree
+  each (`git worktree add ../x x`), which is a different root and therefore a
+  different `.ai/`. When another workflow looks live in the same tree, the
+  commands say so rather than let the separate directories imply otherwise.
+
+- `workflow list`, `workflow show`, `workflow use` and `workflow remove`, and a
+  global `--workflow <id>`.
+
+### Changed
+
+- **`.ai/` layout (breaking).** Anything reading `.ai/plan.md` or
+  `.ai/reviews/consolidated.json` by path now finds them under
+  `.ai/workflows/<id>/`. An upgrade adopts the flat layout into the first
+  workflow that runs, so a workflow interrupted by the upgrade keeps its plan,
+  its reports and its budget; nothing is deleted.
+
 ### Fixed
 
 - **`python` is not a name every machine has.** Recent Linux distributions and
