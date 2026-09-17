@@ -34,7 +34,7 @@ from .providers import (
     get_provider,
 )
 
-__version__ = "0.4.3"
+__version__ = "0.4.4"
 
 DEFAULT_MODES = {
     "orchestrator": MODE_PLAN,

@@ -10,6 +10,24 @@ The public surface covered by that promise is: the configuration schema, the
 
 ## [Unreleased]
 
+## [0.4.4] - 2026-09-17
+
+### Added
+
+- **`doctor` lists settings pinned at a value the built-in default has moved
+  off**, with both numbers. `config setup --defaults` writes every default into
+  the file, so improving a default never reaches an existing installation: the
+  file goes on answering with the number that was current when it was written.
+  0.4.2 raised the low-risk thresholds from 2 files / 50 lines to 5 / 150 so
+  the panel reduction could fire at all, and every configuration written before
+  it kept reporting the old pair -- so that release did nothing for anyone who
+  had already run setup. Found by reading a report where `panel reduced` stayed
+  at 0 after the upgrade.
+
+  Reported, never corrected: "chose 2 deliberately" and "inherited 2 from an
+  older default" are the same two characters on disk. Not a problem either, so
+  `--strict` does not fail over a configuration that works.
+
 ### Fixed
 
 - **A queue of writers ran the file lock's deadline down and lost an edit.**
@@ -784,7 +802,8 @@ First release.
   none of which invoke a real CLI.
 - CI on Linux, macOS and Windows: lint, tests, skill validation.
 
-[Unreleased]: https://github.com/istb16/dev-orchestra/compare/v0.4.3...HEAD
+[Unreleased]: https://github.com/istb16/dev-orchestra/compare/v0.4.4...HEAD
+[0.4.4]: https://github.com/istb16/dev-orchestra/compare/v0.4.3...v0.4.4
 [0.4.3]: https://github.com/istb16/dev-orchestra/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/istb16/dev-orchestra/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/istb16/dev-orchestra/compare/v0.4.0...v0.4.1
