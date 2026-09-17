@@ -327,6 +327,57 @@ class LoadedConfig:
         return os.path.join(root, workspace)
 
 
+#: Settings whose value is a matter of taste rather than a recommendation, so
+#: a difference from the default says nothing worth reporting.
+_TASTE = ("version", "reviewers", "workspace")
+
+
+def pinned_differences(data: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Settings this configuration fixes at a value the defaults have moved off.
+
+    `config setup --defaults` writes every default into the file, so a default
+    that is later improved never reaches an existing installation: the file
+    keeps answering with the number that was current when it was written. That
+    happened -- the low-risk thresholds were raised in 0.4.2 and every config
+    written before it went on reporting the old pair, so the panel reduction
+    the release was for could not fire.
+
+    Reported, never corrected. "Chose 2 deliberately" and "inherited 2 from an
+    older default" are the same two characters on disk, and silently rewriting
+    the first would be worse than leaving the second to be noticed.
+
+    Lists are compared by length, not contents: `high_risk_paths` is thirty
+    entries and nobody reads a diff of it in a diagnostic.
+    """
+    differences: List[Dict[str, Any]] = []
+
+    def walk(current: Any, default: Any, path: str) -> None:
+        if isinstance(default, dict):
+            if not isinstance(current, dict):
+                return
+            for key, value in default.items():
+                if path == "" and key in _TASTE:
+                    continue
+                if key in current:
+                    walk(current[key], value, ("%s.%s" % (path, key)) if path else str(key))
+            return
+        if isinstance(default, list):
+            if isinstance(current, list) and len(current) != len(default):
+                differences.append(
+                    {
+                        "setting": path,
+                        "value": "%d entries" % len(current),
+                        "default": "%d entries" % len(default),
+                    }
+                )
+            return
+        if current != default:
+            differences.append({"setting": path, "value": current, "default": default})
+
+    walk(data, default_config(), "")
+    return sorted(differences, key=lambda entry: entry["setting"])
+
+
 def load(start: Optional[str] = None, validate_result: bool = True) -> LoadedConfig:
     """Load the layered configuration for the project rooted at ``start``."""
     data = default_config()

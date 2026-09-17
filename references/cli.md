@@ -67,7 +67,14 @@ dev-orchestra reviewer remove db-review
 | --- | --- |
 | `doctor [--json] [--fast] [--strict]` | Diagnose CLIs, authentication presence, configuration, and whether each role's model resolves. `--fast` skips model discovery. `--strict` exits 1 when problems are found. |
 
-Never prints credential values — only whether credentials appear to be present.
+Never prints credential values -- only whether credentials appear to be present.
+
+It also lists any setting fixed at a value the built-in default has since moved
+off. `config setup --defaults` writes every default into the file, so improving
+a default never reaches a configuration that already recorded the old one --
+which is how the low-risk thresholds raised in 0.4.2 failed to reach anyone who
+had run setup before it. Reported, never rewritten: a deliberate choice and an
+inherited default are the same characters on disk.
 
 ## run
 

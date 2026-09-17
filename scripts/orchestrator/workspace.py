@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -337,34 +338,87 @@ class file_lock:  # lowercase: it is used as a context manager, not a value
     Deliberately simple: an O_EXCL lock file, a bounded wait, and a stale-lock
     break. Failing to acquire is not fatal -- proceeding unlocked keeps the tool
     working at the cost of the guarantee, which beats deadlocking.
+
+    **The wait is bounded per holder, not per caller.** It used to be five
+    seconds in total, which silently made the guarantee depend on how many
+    writers were queued ahead: measured at twelve contenders holding for half a
+    second each, two of them gave up and clobbered each other's edit. A
+    deadline is there to survive a holder that died, and a queue moving along
+    is not that -- so every time the lock visibly changes hands the deadline is
+    pushed out again, and only a lock that sits unchanged runs it down.
+    ``max_wait`` is the backstop for the case that is neither: a holder alive
+    enough to keep the file fresh and stuck enough never to release it.
+
+    Each acquisition writes a token nobody else will repeat, because "the lock
+    changed hands" cannot be read from the pid when the contenders are threads
+    of one process -- which is the ordinary case here.
     """
 
-    def __init__(self, path: str, timeout: float = 5.0, stale_after: float = 30.0) -> None:
+    def __init__(
+        self,
+        path: str,
+        timeout: float = 5.0,
+        stale_after: float = 30.0,
+        max_wait: float = 60.0,
+    ) -> None:
         self.path = os.path.abspath(path) + ".lock"
         self.timeout = timeout
         self.stale_after = stale_after
+        self.max_wait = max_wait
         self.acquired = False
 
+    def _holder(self) -> str:
+        """Who holds the lock, or "" if nobody does.
+
+        Through ``_read_shared``, which is the whole reason that function
+        exists: a plain ``open`` on Windows does not grant delete sharing, so
+        reading the lock file to see whether it moved stopped its holder from
+        unlinking it. The holder then failed to release, every waiter ran its
+        deadline down against a lock that would never move, and a poll meant
+        to detect progress prevented it. Measured at twelve contenders: ten
+        proceeded unlocked.
+        """
+        try:
+            return _read_shared(self.path)[:64]
+        except (OSError, UnicodeDecodeError):
+            return ""
+
     def __enter__(self) -> "file_lock":
-        deadline = time.monotonic() + self.timeout
+        started = time.monotonic()
+        deadline = started + self.timeout
+        seen = ""
         parent = os.path.dirname(self.path)
         if parent:
             os.makedirs(parent, exist_ok=True)
+        token = "%d:%s" % (os.getpid(), uuid.uuid4().hex)
         while True:
             try:
                 handle = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-                os.write(handle, str(os.getpid()).encode("ascii"))
+                os.write(handle, token.encode("ascii"))
                 os.close(handle)
                 self.acquired = True
                 return self
             except FileExistsError:
                 if self._break_if_stale():
                     continue
-                if time.monotonic() >= deadline:
+                now = time.monotonic()
+                holder = self._holder()
+                if holder and holder != seen:
+                    # It changed hands, so waiting is getting somewhere.
+                    seen = holder
+                    deadline = now + self.timeout
+                if now >= deadline or now - started >= self.max_wait:
                     return self
                 time.sleep(0.05)
             except OSError:
-                return self
+                # On Windows an O_EXCL open can fail with a sharing or
+                # permission error while another thread is unlinking the same
+                # file. That is contention, not a broken filesystem, so it
+                # waits like contention rather than giving up the guarantee.
+                now = time.monotonic()
+                if now >= deadline or now - started >= self.max_wait:
+                    return self
+                time.sleep(0.05)
 
     def _break_if_stale(self) -> bool:
         try:

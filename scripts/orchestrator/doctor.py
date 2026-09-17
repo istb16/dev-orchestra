@@ -63,6 +63,9 @@ def collect(start: Optional[str] = None, probe_models: bool = True) -> Dict[str,
         "project_override": loaded.project_path or "none",
         "using_builtin_defaults": loaded.used_defaults,
         "problems": problems,
+        # Reported so a default that has since been improved is visible rather
+        # than silently overridden by the file that recorded the old one.
+        "pinned": config_mod.pinned_differences(loaded.data),
     }
     report["problems"].extend(problems)
 
@@ -177,6 +180,13 @@ def render(report: Dict[str, Any]) -> str:
     lines.append("  Project override: %s" % config_info.get("project_override"))
     if config_info.get("using_builtin_defaults"):
         lines.append("  Source: built-in defaults (run `config setup` to save your own)")
+    pinned = config_info.get("pinned") or []
+    if pinned:
+        lines.append("  Pinned at a value the built-in default has moved off:")
+        for entry in pinned:
+            lines.append("    %-40s %s (default %s)" % (entry["setting"], entry["value"], entry["default"]))
+        lines.append("    Deliberate choices look the same as values inherited from an")
+        lines.append("    older default, so these are reported and never rewritten.")
     lines.append("")
 
     lines.append("Roles")

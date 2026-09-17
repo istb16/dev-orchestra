@@ -337,6 +337,15 @@ dev-orchestra config reset --delete          # remove the file entirely
 dev-orchestra config validate
 ```
 
+**A saved config pins every value it holds.** `config setup --defaults` writes
+the whole recommended set into the file, so a default improved in a later
+release never reaches it: the file answers with the number that was current
+when it was written. That is how the low-risk thresholds raised in 0.4.2
+failed to reach anyone who had run setup before it. `doctor` lists any setting
+whose value the built-in default has moved off, with both numbers, so the file
+can be brought forward deliberately -- nothing is rewritten for you, because a
+choice and an inherited default look identical on disk.
+
 `config set` coerces values: `3` becomes an int, `true` a bool, `[a, b]` a list,
 anything else a string. Use `--raw` to force a string.
 
