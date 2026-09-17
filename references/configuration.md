@@ -87,6 +87,9 @@ review:
   parallel: true                      # run reviewers concurrently
   re_review_severities: [critical, high]
   timeout_seconds: 1800               # per delegated CLI run
+  design:
+    enabled: false                    # review .ai/plan.md before implementing
+    max_iterations: 2                 # design review -> revise -> re-review
 
 workspace:
   dir: .ai                            # relative to the repo root, or absolute
@@ -110,6 +113,8 @@ workspace:
 | `review.exclude` | list | Glob patterns whose diff body is withheld from reviewers. Replaces the default list wholesale; `[]` reviews everything. |
 | `review.incremental_rounds` | bool | `true` (default) makes a second round diff against what the first round reviewed, carrying the findings the fix was meant to address. `false` re-diffs the whole change every round. |
 | `review.max_findings` | int \| null | How many findings each reviewer is asked for. `null` (default) lets `optimization.level` decide, `0` lifts the cap. Findings that come back over the cap are kept, never trimmed. |
+| `review.design.enabled` | bool | `false` (default) skips the design review entirely. `true` puts `.ai/plan.md` in front of the same panel before implementation; the stage costs a reviewer run per panel member per round, which is why it is opt-in. |
+| `review.design.max_iterations` | int ≥ 0 | Design review → revise → re-review rounds, counted apart from `max_review_iterations` (default 2). `1` is the cheap setting: one round, then report what is still open. |
 | `optimization.level` | `aggressive` \| `balanced` \| `quality` | How hard to try to be cheap. Default `balanced`. See below. |
 | `optimization.high_risk_paths` | list | Globs that force `quality` for a change touching them. Replaces the default list wholesale. |
 | `optimization.low_risk_max_files` | int | Below `quality`, at most this many files still counts as a small change (default 5). |
@@ -312,6 +317,7 @@ The skill carries the command grammar; this is the phrasebook.
 | "use Claude Opus for implementation" | `config set implementer.model.family opus` |
 | "make the architect use Codex" | `config set architect.provider codex` **and** a family Codex accepts |
 | "the implementer can't run the tests" | `config set implementer.options.permission_mode bypassPermissions`, or allow-list the command in that CLI's own settings |
+| "review the design too" | `config set review.design.enabled true` |
 | "add a Codex security reviewer" | `reviewer add --provider codex --role security` |
 | "make it three reviewers" | `reviewer add …` again, then `reviewer list` |
 | "remove the performance reviewer" | `reviewer remove performance` |

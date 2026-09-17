@@ -170,6 +170,15 @@ class TestTriage(IsolatedCase):
     def test_blocking_includes_untriaged_high_severity(self):
         self.assertEqual([f["id"] for f in review_mod.unresolved_blocking(self._data())], ["F1"])
 
+    def test_the_brief_heading_can_ask_for_a_revision_instead_of_a_fix(self):
+        data = self._data()
+        review_mod.set_triage(data, "F1", "accepted")
+        brief = review_mod.render_fix_brief(data, "Revise the plan to address these accepted findings")
+        self.assertIn("# Revise the plan to address these accepted findings", brief)
+        self.assertNotIn("Fix these accepted findings", brief)
+        # The items below the heading are the same either way.
+        self.assertIn("F1", brief)
+
 
 class TestDuplicateCandidates(IsolatedCase):
     """Cross-model duplicates are suggested, never silently merged.
@@ -411,6 +420,139 @@ class TestFanOut(IsolatedCase):
         prompt = review_mod.build_review_prompt(reviewer("r1"), self.workspace, big)
         self.assertIn("review-target.diff", prompt)
         self.assertNotIn(big, prompt)
+
+
+PLAN = """# Plan
+
+## Proposed Change
+Add a NOT NULL column to orders.
+"""
+
+REQUEST = """# Design request
+
+## Goal
+Record which channel an order came from.
+"""
+
+
+class TestDesignSnapshot(IsolatedCase):
+    """Freezing the plan. No git: there is no diff to take."""
+
+    def setUp(self):
+        super().setUp()
+        self.workspace = self.cli_workspace().design_review().ensure()
+        self.plan = os.path.join(self.tmp, "plan.md")
+        self.request = os.path.join(self.tmp, "design-request.md")
+        ws.write_text(self.plan, PLAN)
+        ws.write_text(self.request, REQUEST)
+
+    def test_the_plan_is_frozen_as_markdown(self):
+        meta = review_mod.create_design_snapshot(self.workspace, self.plan, self.request)
+        self.assertEqual(meta["strategy"], "plan")
+        self.assertTrue(self.workspace.snapshot_path.endswith("review-target.md"))
+        self.assertEqual(ws.read_text(self.workspace.snapshot_path), PLAN)
+
+    def test_the_same_plan_and_request_hash_the_same(self):
+        first = review_mod.create_design_snapshot(self.workspace, self.plan, self.request)
+        second = review_mod.create_design_snapshot(self.workspace, self.plan, self.request)
+        self.assertEqual(first["sha256"], second["sha256"])
+
+    def test_rewriting_the_plan_changes_the_hash(self):
+        first = review_mod.create_design_snapshot(self.workspace, self.plan, self.request)
+        ws.write_text(self.plan, PLAN + "\nBackfill it first.\n")
+        second = review_mod.create_design_snapshot(self.workspace, self.plan, self.request)
+        self.assertNotEqual(first["sha256"], second["sha256"])
+
+    def test_a_different_request_is_a_different_review(self):
+        """The same plan answering a different question is not the same round."""
+        first = review_mod.create_design_snapshot(self.workspace, self.plan, self.request)
+        ws.write_text(self.request, REQUEST + "\nAnd keep the v1 API.\n")
+        second = review_mod.create_design_snapshot(self.workspace, self.plan, self.request)
+        self.assertNotEqual(first["sha256"], second["sha256"])
+
+    def test_previous_sha_is_only_set_once_the_plan_has_moved_on(self):
+        first = review_mod.create_design_snapshot(self.workspace, self.plan, self.request)
+        self.assertEqual(first["previous_sha"], "")
+        ws.write_json(
+            self.workspace.consolidated_json_path, {"snapshot": {"sha256": first["sha256"]}}
+        )
+        same = review_mod.create_design_snapshot(self.workspace, self.plan, self.request)
+        self.assertEqual(same["previous_sha"], "")
+        ws.write_text(self.plan, PLAN + "\nBackfill it first.\n")
+        revised = review_mod.create_design_snapshot(self.workspace, self.plan, self.request)
+        self.assertEqual(revised["previous_sha"], first["sha256"])
+
+    def test_no_plan_names_the_stage_that_writes_one(self):
+        with self.assertRaises(review_mod.ReviewError) as ctx:
+            review_mod.create_design_snapshot(self.workspace, os.path.join(self.tmp, "absent.md"))
+        self.assertIn("run the architect first", str(ctx.exception))
+
+    def test_an_empty_plan_is_the_same_failure(self):
+        ws.write_text(self.plan, "\n\n")
+        with self.assertRaises(review_mod.ReviewError):
+            review_mod.create_design_snapshot(self.workspace, self.plan, self.request)
+
+
+class TestDesignReviewPrompt(IsolatedCase):
+    def setUp(self):
+        super().setUp()
+        self.workspace = self.cli_workspace().design_review().ensure()
+
+    def test_it_carries_the_plan_the_request_and_the_read_only_rules(self):
+        prompt = review_mod.build_design_review_prompt(reviewer("r1"), self.workspace, PLAN, REQUEST)
+        self.assertIn("NOT NULL column", prompt)
+        self.assertIn("Record which channel", prompt)
+        self.assertIn("do not modify", prompt.lower())
+        self.assertIn("NO_FINDINGS", prompt)
+
+    def test_role_guidance_is_about_the_proposal_not_the_diff(self):
+        prompt = review_mod.build_design_review_prompt(
+            reviewer("r1", role="security"), self.workspace, PLAN
+        )
+        self.assertIn("authn/authz gaps it creates", prompt)
+
+    def test_a_custom_role_still_gets_a_usable_prompt(self):
+        prompt = review_mod.build_design_review_prompt(
+            reviewer("r1", role="accessibility"), self.workspace, PLAN
+        )
+        self.assertIn("accessibility specialist", prompt)
+
+    def test_a_missing_request_is_said_rather_than_left_blank(self):
+        prompt = review_mod.build_design_review_prompt(reviewer("r1"), self.workspace, PLAN)
+        self.assertIn("Not recorded", prompt)
+
+    def test_a_huge_plan_is_referenced_by_path_instead_of_inlined(self):
+        big = "x" * (review_mod.MAX_INLINE_DIFF_CHARS + 1)
+        prompt = review_mod.build_design_review_prompt(reviewer("r1"), self.workspace, big)
+        self.assertIn("review-target.md", prompt)
+        self.assertNotIn(big, prompt)
+
+    def test_a_revision_is_told_what_it_was_meant_to_address(self):
+        ws.write_json(
+            self.workspace.consolidated_json_path,
+            {
+                "findings": [
+                    {
+                        "id": "F1",
+                        "severity": "high",
+                        "file": "plan.md#Proposed Change",
+                        "problem": "no backfill is described",
+                        "triage": "accepted",
+                    }
+                ]
+            },
+        )
+        ws.write_json(self.workspace.snapshot_meta_path, {"previous_sha": "abc123"})
+        prompt = review_mod.build_design_review_prompt(reviewer("r1"), self.workspace, PLAN)
+        self.assertIn("This plan is a revision", prompt)
+        self.assertIn("no backfill is described", prompt)
+        self.assertIn("Do not assume a listed item was real", prompt)
+        # Who reported it stays out, as it does for a code re-review.
+        self.assertNotIn("reported by", prompt.lower())
+
+    def test_a_first_round_carries_no_revision_note(self):
+        prompt = review_mod.build_design_review_prompt(reviewer("r1"), self.workspace, PLAN)
+        self.assertNotIn("This plan is a revision", prompt)
 
 
 if __name__ == "__main__":

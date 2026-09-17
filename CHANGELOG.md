@@ -10,6 +10,40 @@ The public surface covered by that promise is: the configuration schema, the
 
 ## [Unreleased]
 
+### Added
+
+- **The plan can be reviewed before it is implemented.** `review run --design`
+  puts `.ai/plan.md` in front of the same panel, under the same rules --
+  parallel, independent, read-only -- with `review show`, `review triage`,
+  `review fix-brief` and `review status` all taking `--design` to match.
+  Accepted findings become a revision request and the Architect rewrites the
+  plan. A design mistake otherwise costs an implementation and a code review
+  to discover, which is the most expensive way to find one.
+
+  **Off by default** (`review.design.enabled`), because turning it on is a
+  reviewer run per panel member per round plus an Architect re-run, and no
+  existing workflow should start paying that without being asked. One command
+  enables it: `dev-orchestra config set review.design.enabled true`.
+  `review.design.max_iterations` (2) bounds the rounds; `1` is the cheap
+  setting.
+
+  Its artifacts live in `.ai/reviews/design/` -- its own reports, consolidated
+  report, round counter and triage -- so a design round can never advance, or
+  be refused by, the code review's count. No new `budgets` key: the rounds are
+  bounded by `review.design.max_iterations` and the rewrites by
+  `budgets.architect`. The optimization gate and panel reduction do not apply:
+  there is no test result that says anything about a plan and no diff to
+  measure, and a design decision is where cross-model disagreement earns its
+  cost.
+
+### Changed
+
+- **The SKILL.md character ceiling is 13,000, up from 12,500.** The document
+  was within twelve characters of the old one. Five paragraphs were compressed
+  to pay for most of the new stage before the ceiling moved for the rest; the
+  budget exists because the document is resident in every session, so it is
+  still not a target to grow into.
+
 ## [0.4.4] - 2026-09-17
 
 ### Added

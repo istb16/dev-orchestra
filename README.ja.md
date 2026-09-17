@@ -46,7 +46,8 @@ typo修正なら編集だけ、スキーマ変更ならフルパイプライン�
 
 1. **指揮** — 依頼を読み、必要な工程を判断し、タスクを分解して結果を統合します。
    大量の入力（ログ、レガシーコード、長い仕様書）を消化するのもこの工程です。
-2. **設計** — コードベースを調査して計画を書きます。読み取り専用。
+2. **設計** — コードベースを調査して計画を書きます。読み取り専用。実装前に、その計画
+   自体を同じレビューパネルにかけることもできます（`review.design.enabled`、既定は無効）。
 3. **実装** — その計画からコードとテストを書きます。
 4. **レビュー** — 凍結した差分を読み、findings を報告します。読み取り専用。
 5. **独立レビュー** — 同じ差分を、別ベンダーのモデルが、1人目の意見を知らないまま
@@ -340,6 +341,26 @@ dev-orchestra status
 ```bash
 dev-orchestra run architect --prompt-file .ai/request.md --output .ai/plan.md
 ```
+
+**2b. 設計レビュー（任意）.** 差分ではなく計画そのものを同じパネルに渡します。まだ間違える
+コードが存在しない段階なので、設計上の誤りを見つける場所としては最も安上がりです。ただし
+1ラウンドにつきパネル人数分の委譲実行が増えるため、明示的に有効化するまでは実行されません。
+
+```bash
+dev-orchestra config set review.design.enabled true
+dev-orchestra review run --design
+dev-orchestra review triage --design F1 --status accepted
+dev-orchestra review fix-brief --design --output .ai/execution/design-fix-brief.md
+dev-orchestra run architect --prompt-file .ai/execution/design-revise-request.md --output .ai/plan.md
+```
+
+最後の行で渡す修正依頼は、ブリーフをもとに自分で書きます。architect は文脈を持たない
+状態で再び始まるため、採用した指摘だけではプロンプトになりません。書き方は
+`references/workflow.md` にあります。
+
+レポート・ラウンド数・トリアージは `.ai/reviews/design/` に独立して置かれるので、設計の
+ラウンドがコードレビューのラウンド数を進めたり、その上限に引っかかったりすることはありません。
+設計工程を省いた場合は、設計レビューも省かれます。
 
 **3. 実装.** implementer は元の依頼ではなく、その計画から実装します。
 
@@ -701,6 +722,9 @@ reviewers:
 review:
   max_review_iterations: 2
   parallel: true
+  design:
+    enabled: false
+    max_iterations: 2
 ```
 
 ```bash

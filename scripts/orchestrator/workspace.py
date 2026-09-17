@@ -64,6 +64,12 @@ def repo_root(start: Optional[str] = None) -> str:
 #: the import going both ways.
 WORKFLOWS = "workflows"
 
+#: Sub-directory of ``reviews/`` that holds the design review. Its own
+#: directory rather than a prefix on the file names, so it gets its own
+#: consolidated report and therefore its own round counter -- a design round
+#: must never advance, or be refused by, the code review's count.
+DESIGN_REVIEW = "design"
+
 
 class Workspace:
     """Where one workflow's artifacts live, under a project's ``.ai/``.
@@ -72,13 +78,24 @@ class Workspace:
     ``dir`` is this workflow's own directory inside it. Constructed without a
     workflow the two are the same, which is the pre-0.4.0 layout and what a
     caller that has no workflow to name still gets.
+
+    ``review_scope`` narrows only the review artifacts to a sub-directory. The
+    plan, the execution prompts, the run state and the ledger stay where they
+    are: there is one of each per workflow whichever review is being run.
     """
 
-    def __init__(self, root: str, directory: Optional[str] = None, workflow: str = "") -> None:
+    def __init__(
+        self,
+        root: str,
+        directory: Optional[str] = None,
+        workflow: str = "",
+        review_scope: str = "",
+    ) -> None:
         self.root = os.path.abspath(root)
         self.container = os.path.abspath(directory or os.path.join(self.root, ".ai"))
         self.workflow = (workflow or "").strip()
         self.dir = os.path.join(self.container, WORKFLOWS, self.workflow) if self.workflow else self.container
+        self.review_scope = (review_scope or "").strip()
 
     # -- paths -------------------------------------------------------------
 
@@ -92,11 +109,14 @@ class Workspace:
 
     @property
     def reviews_dir(self) -> str:
-        return os.path.join(self.dir, "reviews")
+        base = os.path.join(self.dir, "reviews")
+        return os.path.join(base, self.review_scope) if self.review_scope else base
 
     @property
     def snapshot_path(self) -> str:
-        return os.path.join(self.reviews_dir, "review-target.diff")
+        # A frozen plan is markdown, not a diff, and is named as what it is.
+        name = "review-target.md" if self.review_scope == DESIGN_REVIEW else "review-target.diff"
+        return os.path.join(self.reviews_dir, name)
 
     @property
     def full_snapshot_path(self) -> str:
@@ -126,6 +146,10 @@ class Workspace:
 
     def reviewer_report_path(self, reviewer_id: str) -> str:
         return os.path.join(self.reviews_dir, "%s.md" % reviewer_id)
+
+    def design_review(self) -> "Workspace":
+        """The same workflow, with the review artifacts scoped to the design."""
+        return Workspace(self.root, self.container, self.workflow, review_scope=DESIGN_REVIEW)
 
     def relative(self, path: str) -> str:
         try:

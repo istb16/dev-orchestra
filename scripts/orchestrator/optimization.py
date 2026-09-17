@@ -276,11 +276,7 @@ def decide(
     else:
         gate = GATE_ALLOW if level == "quality" else GATE_WARN
 
-    configured_cap = review_settings.get("max_findings")
-    if isinstance(configured_cap, int) and not isinstance(configured_cap, bool) and configured_cap >= 0:
-        max_findings = configured_cap
-    else:
-        max_findings = MAX_FINDINGS_BY_LEVEL[level]
+    max_findings = findings_cap(settings, review_settings, level)
 
     files = len(paths) if reviewed_files is None else max(int(reviewed_files), 0)
     limit = None
@@ -309,6 +305,23 @@ def decide(
         files=files,
         lines=lines,
     )
+
+
+def findings_cap(
+    settings: Dict[str, Any], review_settings: Dict[str, Any], level: Optional[str] = None
+) -> int:
+    """How many findings a reviewer is asked for.
+
+    Apart from ``decide`` because a review with no diff to measure -- the
+    design review -- still needs the cap, and must not have to fabricate a
+    size and a test result to get one. ``level`` is passed in by ``decide``
+    after any escalation has been settled; a caller with no change to judge
+    leaves it out and gets the configured level.
+    """
+    configured = review_settings.get("max_findings")
+    if isinstance(configured, int) and not isinstance(configured, bool) and configured >= 0:
+        return configured
+    return MAX_FINDINGS_BY_LEVEL[normalise_level(level if level is not None else settings.get("level"))]
 
 
 def _positive(value: Any, fallback: int) -> int:

@@ -7,6 +7,9 @@ Design rules enforced here:
 * reviewers run read-only; a reviewer that edits files is a configuration bug
 * one reviewer failing does not fail the batch
 
+The same fan-out reviews a plan before implementation (``create_design_snapshot``),
+under those same rules and with its own artifacts and round counter.
+
 Deduplication is deliberately split in two. Auto-merge only collapses findings
 whose wording is near-identical, because collapsing two distinct bugs hides one.
 Cross-model duplicates almost never look alike in prose -- measured on real
@@ -25,7 +28,7 @@ import posixpath
 import re
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from . import workspace as ws
 from .optimization import DEFAULT_LEVEL, MAX_FINDINGS_BY_LEVEL
@@ -113,6 +116,58 @@ ROLE_GUIDANCE: Dict[str, str] = {
     ),
 }
 
+#: The same roles, pointed at a plan instead of a diff.
+#:
+#: A design reviewer is not reading code somebody wrote; it is checking a
+#: proposal against the codebase as it stands. So the question shifts from "is
+#: this correct" to "would following this produce something correct" -- which
+#: means checking that the files and symbols the plan names exist, that its
+#: account of the current behaviour is true, and that what it leaves out is
+#: not the hard part.
+DESIGN_ROLE_GUIDANCE: Dict[str, str] = {
+    "general": (
+        "Does the plan meet the stated goal? Is the root cause right, or is it treating a "
+        "symptom? Do the files and symbols it names exist, and does it cover every caller? "
+        "Is it the minimal change? Does it break an existing contract? Is the Test Strategy "
+        "enough to catch a regression? Name any assumption it leaves unstated."
+    ),
+    "security": (
+        "Focus: what the proposal would let through -- authn/authz gaps it creates or fails to "
+        "close, data exposed by a new path or payload, secret handling, unsafe defaults, "
+        "validation the design assumes happens elsewhere."
+    ),
+    "performance": (
+        "Focus: the cost of the proposed design at realistic scale -- added queries per request, "
+        "work moved onto a hot path, unbounded growth, an abstraction that forces N calls where "
+        "one would do. Say where the plan lacks the numbers to judge it."
+    ),
+    "test": (
+        "Focus: the Test Strategy. Which behaviour in the plan has no test named for it, which "
+        "regression would go unnoticed, which case is asserted so loosely it would pass either "
+        "way. Name the missing case, not 'add more tests'."
+    ),
+    "architecture": (
+        "Focus: where the plan puts each responsibility, the layers it crosses, the coupling it "
+        "adds, the shape of any new API or module boundary, and whether it fits the conventions "
+        "already in this codebase or invents a parallel one."
+    ),
+    "database": (
+        "Focus: any proposed schema change -- migration safety (locking, backfills, "
+        "reversibility), nullability and constraints, index coverage for the queries the plan "
+        "implies, and what the data looks like mid-deploy."
+    ),
+    "frontend": (
+        "Focus: the proposed component and state boundaries, rendering cost, accessibility, "
+        "error and loading states the plan does not mention, and client-side validation it "
+        "assumes without a server-side counterpart."
+    ),
+    "backend": (
+        "Focus: the proposed API contracts and their compatibility, validation and error "
+        "responses, idempotency, transaction boundaries, background job semantics, and whether "
+        "the changed paths would be observable when they misbehave."
+    ),
+}
+
 #: Caps on what a reviewer writes back.
 #:
 #: Output is the expensive direction -- per token it costs several times what
@@ -161,6 +216,48 @@ One block per issue, exactly this shape:
 - Impact: <what breaks, under what conditions>
 - Evidence: <the code or hunk that shows it>
 - Fix: <the concrete change>
+
+{limits}
+"""
+
+#: The field names are deliberately the code template's, so ``parse_findings``,
+#: the deduplication and the fix brief all work unchanged. ``File`` takes a
+#: plan section or the repository path the plan misjudges, which is what makes
+#: a design finding locatable at all.
+DESIGN_REVIEW_PROMPT_TEMPLATE = """Independent design reviewer. Read-only.
+
+Reviewer: {reviewer_id} | Role: {role} | Repo root: {root}
+
+## Task
+
+Review the implementation plan below before any code is written. Judge it
+against the codebase as it is now: read the files it names and check every
+claim it makes about them. Do not modify, create, or delete files. Do not run
+commands that mutate the repository or the network.
+
+{role_guidance}
+
+## Design request
+
+{request_section}
+
+## Plan under review
+
+{plan_section}
+
+## Output
+
+One block per issue, exactly this shape:
+
+## Finding
+- Severity: critical|high|medium|low
+- File: <plan section, e.g. plan.md#Proposed Change, or the repo path the plan misjudges>
+- Line: <line in that file, or n/a>
+- Category: <one word, e.g. correctness, completeness, compatibility, risk, tests>
+- Problem: <what is wrong or missing, 1-2 sentences>
+- Impact: <what the implementation would get wrong if the plan were followed>
+- Evidence: <the plan text, or the code that contradicts it>
+- Fix: <the concrete change to the plan>
 
 {limits}
 """
@@ -540,6 +637,35 @@ def render_round_context(workspace: ws.Workspace, meta: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def render_design_round_context(workspace: ws.Workspace, meta: Dict[str, Any]) -> str:
+    """What a re-reviewed plan needs to say that the plan itself does not.
+
+    The design version of ``render_round_context``, and the same reasoning:
+    the reviewer is stateless, so a revision handed over as a fresh plan
+    invites the same objections again. Who reported what is left out here too
+    -- the accepted findings arrive as the brief the revision worked from, not
+    as another reviewer's opinion still in play.
+    """
+    if not meta.get("previous_sha"):
+        return ""
+    consolidated = ws.read_json(workspace.consolidated_json_path, {}) or {}
+    accepted = accepted_findings(consolidated)
+    if not accepted:
+        return ""
+    lines = ["This plan is a revision. It was meant to address:"]
+    for finding in accepted:
+        lines.append(
+            "- [%s] %s -- %s"
+            % (finding.get("severity", "?"), finding.get("file", "?"), finding.get("problem", ""))
+        )
+    lines += [
+        "",
+        "For each: addressed or not, plus any new problem the revision introduced. "
+        "Do not assume a listed item was real.",
+    ]
+    return "\n".join(lines)
+
+
 def render_withheld(withheld: Sequence[Dict[str, Any]]) -> str:
     """The note that tells a reviewer what it is not being shown.
 
@@ -760,6 +886,83 @@ class ReviewError(RuntimeError):
     """Raised for review-flow problems that should stop the current stage."""
 
 
+def design_digest(
+    workspace: ws.Workspace,
+    plan_path: str,
+    request_path: str = "",
+) -> "tuple[str, str, str]":
+    """The plan, the request it answers, and the sha that identifies the round.
+
+    Reading and hashing are split from writing so a caller can derive the round
+    -- and refuse it -- before anything on disk is replaced. A refused round has
+    to leave the previous round's frozen plan and its sha exactly as they were:
+    the reports already on disk are stamped with that sha, and swapping the plan
+    out from under them makes every one of them stale, which discards the triage
+    the refusal just told the caller to report.
+    """
+    plan_text = ws.read_text(plan_path)
+    if not plan_text.strip():
+        raise ReviewError(
+            "no plan to review at %s -- run the architect first" % workspace.relative(plan_path)
+        )
+    request_text = ws.read_text(request_path) if request_path else ""
+    digest = hashlib.sha256(("%s\n\0%s" % (plan_text, request_text)).encode("utf-8")).hexdigest()
+    return plan_text, request_text, digest
+
+
+def write_design_snapshot(
+    workspace: ws.Workspace,
+    plan_path: str,
+    request_path: str,
+    plan_text: str,
+    digest: str,
+) -> Dict[str, Any]:
+    """Freeze the plan under review into the scoped ``review-target.md``.
+
+    The plan is an artifact rather than a change, so there is no diff to take
+    and git is not involved at all -- a design review works in a directory
+    that was never a repository. What replaces the diff's sha is ``digest``,
+    a hash of the plan *and* the request it answers: a plan rewritten to
+    address findings is a new round, and so is the same plan against a
+    different request.
+
+    ``previous_sha`` records what the last round reviewed, and only when this
+    round is reviewing something else. The re-review prompt is built from it,
+    and a re-run of the identical plan must not claim to be a revision.
+    """
+    workspace.ensure()
+    ws.write_text(workspace.snapshot_path, plan_text)
+    consolidated = ws.read_json(workspace.consolidated_json_path, {}) or {}
+    reviewed = str((consolidated.get("snapshot") or {}).get("sha256") or "")
+    meta = {
+        "generated_at": ws.utcnow(),
+        "strategy": "plan",
+        "plan": workspace.relative(plan_path),
+        "request": workspace.relative(request_path) if request_path else "",
+        # The same key a code snapshot uses, so everything downstream that
+        # reports "what was reviewed" needs no second shape to understand.
+        "files": [workspace.relative(plan_path)],
+        "bytes": len(plan_text.encode("utf-8")),
+        "sha256": digest,
+        "previous_sha": reviewed if reviewed and reviewed != digest else "",
+        # ``--base`` means nothing here, and the round counter keys on it.
+        "base": None,
+        "empty": False,
+    }
+    ws.write_json(workspace.snapshot_meta_path, meta)
+    return meta
+
+
+def create_design_snapshot(
+    workspace: ws.Workspace,
+    plan_path: str,
+    request_path: str = "",
+) -> Dict[str, Any]:
+    """Hash the plan and freeze it in one step, for a caller with no gate."""
+    plan_text, _, digest = design_digest(workspace, plan_path, request_path)
+    return write_design_snapshot(workspace, plan_path, request_path, plan_text, digest)
+
+
 # --------------------------------------------------------------------------- fan-out
 
 
@@ -832,6 +1035,51 @@ def build_review_prompt(
     return prompt
 
 
+def build_design_review_prompt(
+    reviewer: Dict[str, Any],
+    workspace: ws.Workspace,
+    plan_text: str,
+    request_text: str = "",
+    extra_context: str = "",
+    max_findings: int = DEFAULT_MAX_FINDINGS,
+) -> str:
+    """The reviewer prompt for a plan, built from the frozen design snapshot."""
+    role = str(reviewer.get("role") or "general")
+    guidance = DESIGN_ROLE_GUIDANCE.get(
+        role,
+        "Review the plan as a %s specialist. Concrete, evidence-backed issues in that "
+        "perspective only." % role,
+    )
+    if len(plan_text) <= MAX_INLINE_DIFF_CHARS:
+        plan_section = "```markdown\n%s\n```" % plan_text.rstrip()
+    else:
+        plan_section = (
+            "Plan too large to inline. Read it from this file, frozen for this review:\n\n"
+            "    %s\n\nReview only what that plan contains." % workspace.relative(workspace.snapshot_path)
+        )
+    meta = ws.read_json(workspace.snapshot_meta_path, {}) or {}
+    note = render_design_round_context(workspace, meta)
+    if note:
+        plan_section += "\n\n" + note
+    request_section = (
+        "```markdown\n%s\n```" % request_text.rstrip()
+        if request_text.strip()
+        else "Not recorded. Judge the plan against its own stated goal."
+    )
+    prompt = DESIGN_REVIEW_PROMPT_TEMPLATE.format(
+        reviewer_id=reviewer.get("id", "reviewer"),
+        role=role,
+        role_guidance=guidance,
+        root=workspace.root,
+        request_section=request_section,
+        plan_section=plan_section,
+        limits=render_limits(max_findings),
+    )
+    if extra_context.strip():
+        prompt += "\n## Additional context\n\n%s\n" % extra_context.strip()
+    return prompt
+
+
 class ReviewerRun:
     def __init__(
         self,
@@ -889,12 +1137,21 @@ def run_reviews(
     template: Optional[str] = None,
     idle_timeout: Optional[float] = None,
     max_findings: int = DEFAULT_MAX_FINDINGS,
+    prompt_for: Optional[Callable[[Dict[str, Any]], str]] = None,
 ) -> List[ReviewerRun]:
-    """Run every configured reviewer against the frozen snapshot."""
+    """Run every configured reviewer against the frozen snapshot.
+
+    ``prompt_for`` replaces the code-review prompt with one built per
+    reviewer, which is how the design review reuses this whole function --
+    the parallelism, the read-only mode, the tolerance of one failure and the
+    ``unparsed`` verdict are properties of the fan-out, not of the diff.
+    """
     if not reviewers:
         return []
     diff_text = ws.read_text(workspace.snapshot_path)
     if not diff_text.strip():
+        if prompt_for is not None:
+            raise ReviewError("nothing to review at %s" % workspace.relative(workspace.snapshot_path))
         meta = ws.read_json(workspace.snapshot_meta_path, {}) or {}
         if meta.get("withheld"):
             raise ReviewError(
@@ -913,7 +1170,12 @@ def run_reviews(
             provider = get_provider(str(reviewer.get("provider")))
         except Exception as exc:
             return ReviewerRun(reviewer, "failed", error=str(exc))
-        prompt = build_review_prompt(reviewer, workspace, diff_text, extra_context, template, max_findings)
+        if prompt_for is not None:
+            prompt = prompt_for(reviewer)
+        else:
+            prompt = build_review_prompt(
+                reviewer, workspace, diff_text, extra_context, template, max_findings
+            )
         try:
             result = provider.run(
                 prompt,
@@ -1379,13 +1641,17 @@ def _branch(root: str) -> str:
     return "" if name in ("", "HEAD") else name
 
 
-def next_iteration(workspace: ws.Workspace, lineage: str = "") -> int:
+def next_iteration(workspace: ws.Workspace, lineage: str = "", current_sha: Optional[str] = None) -> int:
     """Derive the review round from what is on disk.
 
     The iteration budget only stops a review->fix->re-review loop if the counter
     actually advances, so it must not depend on the caller passing a number: a
     new snapshot is a new round, and re-running against the same snapshot (after
     a reviewer failed, say) stays in the current one.
+
+    ``current_sha`` names the snapshot this round *would* take, for a caller
+    that has to know the round before it is allowed to write one. Left out, the
+    snapshot on disk is the one being asked about.
 
     A round belonging to a different review starts at one. See
     ``review_lineage`` for what "different" means and why it has to.
@@ -1397,8 +1663,8 @@ def next_iteration(workspace: ws.Workspace, lineage: str = "") -> int:
         return 1
     recorded = int(previous.get("iteration", 0) or 0)
     previous_sha = str((previous.get("snapshot") or {}).get("sha256") or "")
-    meta = ws.read_json(workspace.snapshot_meta_path, {}) or {}
-    current_sha = str(meta.get("sha256") or "")
+    if current_sha is None:
+        current_sha = str((ws.read_json(workspace.snapshot_meta_path, {}) or {}).get("sha256") or "")
     if previous_sha and current_sha and previous_sha == current_sha:
         return max(recorded, 1)
     return recorded + 1
@@ -1589,18 +1855,22 @@ def unresolved_blocking(
     return blocking
 
 
-def render_fix_brief(data: Dict[str, Any]) -> str:
+def render_fix_brief(data: Dict[str, Any], title: str = "Fix these accepted findings") -> str:
     """The prompt payload handed to the Review Fixer: accepted findings only.
 
     Every line here is billed twice: once as the reviewer's output and again
     as the fixer's input. So a field that is empty is omitted rather than sent
     as a label with nothing after it, and who reported a finding is dropped --
     the fixer's job is the same whoever noticed.
+
+    ``title`` is the one thing a design brief needs to say differently: the
+    findings are about a plan, so what is being asked for is a revision rather
+    than a fix, and every item below the heading reads the same either way.
     """
     findings = accepted_findings(data)
     if not findings:
         return "No accepted findings. Nothing to fix.\n"
-    lines = ["# Fix these accepted findings", ""]
+    lines = ["# %s" % title, ""]
     for finding in findings:
         lines += [
             "## %s [%s] %s:%s"

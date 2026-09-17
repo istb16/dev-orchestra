@@ -292,8 +292,25 @@ def render_summary(data: Dict[str, Any]) -> str:
             "    %d. %s / %s / %s"
             % (index, _describe(reviewer), reviewer.get("role", "general"), reviewer.get("id"))
         )
+    # Shown rather than asked: the wizard settles who does which job, and this
+    # is a behaviour knob like `max_review_iterations`. But it decides whether
+    # a whole stage runs, so leaving it out of the summary entirely would make
+    # it the one stage nobody can see the state of.
+    lines.append(
+        "    design review: %s  (review.design.enabled)"
+        % ("on" if _design_review_enabled(data) else "off")
+    )
     lines.append("")
     return "\n".join(lines)
+
+
+def _design_review_enabled(data: Dict[str, Any]) -> bool:
+    """Falls back to the built-in default: a layer may name no `review` at all."""
+    review = data.get("review")
+    design = review.get("design") if isinstance(review, dict) else None
+    if isinstance(design, dict) and "enabled" in design:
+        return bool(design["enabled"])
+    return bool(config_mod.default_config()["review"]["design"]["enabled"])
 
 
 def merged(spec: Dict[str, Any], tier: Dict[str, Any]) -> Dict[str, Any]:

@@ -30,6 +30,25 @@ class TestDefaults(IsolatedCase):
     def test_defaults_are_valid(self):
         self.assertEqual(config_mod.validate(config_mod.default_config()), [])
 
+    def test_the_design_review_is_off_by_default(self):
+        """Turning it on costs a reviewer run per panel member per round plus
+        an architect re-run, so existing workflows must not inherit it."""
+        design = config_mod.default_config()["review"]["design"]
+        self.assertEqual(design, {"enabled": False, "max_iterations": 2})
+
+    def test_design_settings_are_filled_in_for_a_config_that_omits_them(self):
+        self.write(".dev-orchestra.yaml", "version: 1\nreview:\n  max_review_iterations: 1\n")
+        loaded = config_mod.load(self.project)
+        self.assertEqual(loaded.design_review_settings(), {"enabled": False, "max_iterations": 2})
+
+    def test_naming_one_design_setting_keeps_the_other(self):
+        """`review_settings` updates shallowly, which would drop
+        `max_iterations` and refuse the first round."""
+        self.write(".dev-orchestra.yaml", "version: 1\nreview:\n  design:\n    enabled: true\n")
+        settings = config_mod.load(self.project).design_review_settings()
+        self.assertTrue(settings["enabled"])
+        self.assertEqual(settings["max_iterations"], 2)
+
 
 class TestLayering(IsolatedCase):
     def test_global_config_is_used(self):
@@ -120,6 +139,21 @@ class TestValidation(IsolatedCase):
         data = config_mod.default_config()
         data["review"]["max_review_iterations"] = -1
         self.assertTrue(any("max_review_iterations" in p for p in config_mod.validate(data)))
+
+    def test_a_non_boolean_design_switch_is_rejected(self):
+        data = config_mod.default_config()
+        data["review"]["design"]["enabled"] = "yes"
+        self.assertTrue(any("review.design.enabled" in p for p in config_mod.validate(data)))
+
+    def test_a_negative_design_round_budget_is_rejected(self):
+        data = config_mod.default_config()
+        data["review"]["design"]["max_iterations"] = -1
+        self.assertTrue(any("review.design.max_iterations" in p for p in config_mod.validate(data)))
+
+    def test_design_must_be_a_mapping(self):
+        data = config_mod.default_config()
+        data["review"]["design"] = []
+        self.assertTrue(any("review.design: must be a mapping" in p for p in config_mod.validate(data)))
 
     def test_load_raises_on_invalid_config(self):
         data = config_mod.default_config()

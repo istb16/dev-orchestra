@@ -36,7 +36,11 @@ MAX_SKILL_LINES = 500
 #: a table row and a paragraph cost very differently -- so the budget is in
 #: characters, roughly four to a token. The ceiling has room above the current
 #: document for a rule worth adding; it is not a target to grow into.
-MAX_SKILL_CHARS = 12_500
+#:
+#: Raised from 12,500, which the document was within twelve characters of: a
+#: new pipeline stage was the rule worth adding, and five paragraphs were
+#: compressed to pay for most of it before the ceiling moved for the rest.
+MAX_SKILL_CHARS = 13_000
 MAX_DESCRIPTION_CHARS = 1024
 REQUIRED_FRONTMATTER = ("name", "description")
 REQUIRED_FILES = (
