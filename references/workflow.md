@@ -26,6 +26,8 @@ a doc comment" is a useful sentence; silently skipping is not.
         ├── plan.md                 # Architect output
         ├── execution/
         │   ├── design-request.md   # prompt you wrote for the Architect
+        │   ├── design-fix-brief.md # generated from accepted design findings
+        │   ├── design-revise-request.md
         │   ├── implement-request.md
         │   └── fix-brief.md        # generated from accepted findings
         ├── reviews/
@@ -33,7 +35,13 @@ a doc comment" is a useful sentence; silently skipping is not.
         │   ├── review-target.json  # strategy, files, sha256
         │   ├── <reviewer-id>.md    # one per reviewer
         │   ├── consolidated.md
-        │   └── consolidated.json
+        │   ├── consolidated.json
+        │   └── design/             # the design review, counted separately
+        │       ├── review-target.md    # the frozen plan
+        │       ├── review-target.json  # plan, request, sha256
+        │       ├── <reviewer-id>.md
+        │       ├── consolidated.md
+        │       └── consolidated.json
         └── state.json              # stage events + resolved model ids
 ```
 
@@ -113,6 +121,53 @@ dev-orchestra run architect \
 Read the plan before passing it on. Send it back once if it is vague,
 contradicts the codebase, or skips the risky part. If the second attempt is
 still weak, say so in the report rather than quietly improvising.
+
+## Design review
+
+Off unless `review.design.enabled` is true; `status` reports which. The same
+panel judges `.ai/plan.md` against the codebase before any code is written.
+
+```bash
+dev-orchestra review run --design
+dev-orchestra review show --design
+dev-orchestra review triage --design F1 --status accepted --note "confirmed"
+dev-orchestra review fix-brief --design --output .ai/execution/design-fix-brief.md
+dev-orchestra review status --design
+```
+
+Triage exactly as for a code review: read what the plan claims, check it
+against the code, decide. Then write the revision request yourself — the
+Architect starts again with no context, so the brief alone is not a prompt:
+
+```markdown
+# Revise the plan
+
+<the original design request, unchanged>
+
+Read .ai/plan.md and rewrite it in place. Keep every section it already has.
+
+<paste .ai/execution/design-fix-brief.md here>
+
+For each finding: say whether you addressed it and how, or why it is not a
+problem. Do not widen the scope beyond the original request.
+```
+
+```bash
+dev-orchestra run architect \
+  --prompt-file .ai/execution/design-revise-request.md \
+  --output .ai/plan.md
+```
+
+That spends an attempt from `budgets.architect`, which is why the design review
+has no budget key of its own. Re-review with `review run --design` only when
+`review status --design` says so — the rewritten plan hashes differently, so
+the next round is derived, never passed in. When the round budget is spent,
+report the findings that are still open rather than looping; `status` says
+`stop-and-report` for exactly that, because implementing a plan whose known
+problems are unanswered is the mistake this stage exists to prevent.
+
+Only the previous plan survives, frozen in `reviews/design/review-target.md`.
+A rewrite overwrites everything older.
 
 ## Implementation
 
@@ -237,6 +292,7 @@ anything left unresolved.
 | Every reviewer fails | Treat the review stage as failed; do not claim the change is reviewed |
 | Implementer or fixer fails | Stop the pipeline and report |
 | Snapshot is empty | There is nothing to review — check whether the implementation actually wrote anything |
+| `review run --design` says there is no plan | You skipped the design stage, so skip the design review with it; otherwise run the Architect first |
 | Tests fail after a fix | Report the failure with output; do not keep fixing blindly |
 | A run comes back `stalled` | It produced no output until killed. Report it as a failure, and check for orphan processes if warned about them |
 | A command exits 3 | A budget is spent. Report what is unresolved; do not retry, and do not reach for `--force` |

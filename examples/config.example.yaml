@@ -114,6 +114,16 @@ review:
   # optimization.level decide: 4 aggressive, 6 balanced, 10 quality. A number
   # here overrides the level; 0 lifts the cap. Nothing over the cap is dropped.
   max_findings: null
+  # Review .ai/plan.md with the same panel before anything is implemented. A
+  # design mistake otherwise costs an implementation and a code review to
+  # find, so this is the cheapest place to catch one -- but it is a reviewer
+  # run per panel member per round, so it is off until you ask for it.
+  design:
+    enabled: false
+    # Design review -> revise the plan -> re-review. Counted apart from
+    # max_review_iterations. 1 is the cheap setting: one round, then report
+    # whatever is still open.
+    max_iterations: 2
 
 optimization:
   # How hard to try to be cheap: aggressive | balanced | quality.

@@ -12,7 +12,12 @@ flowchart TD
     D -->|no| I
     D -->|yes| A[Architect<br/>read-only]
     A --> P[(.ai/plan.md)]
-    P --> I[Implementer<br/>writes code + tests]
+    P --> DR{review.design.enabled?}
+    DR -->|yes| DP[[Design review<br/>same panel, read-only]]
+    DP --> DT[Triage + revise<br/>run architect again]
+    DT --> P
+    DR -->|no| I[Implementer<br/>writes code + tests]
+    DP --> I
     I --> T[Test<br/>project's own commands]
     T --> S[[review snapshot<br/>.ai/reviews/review-target.diff]]
     S --> R1[Reviewer 1<br/>read-only]
@@ -76,7 +81,9 @@ project/
     │   ├── review-target.json    # strategy, files, sha256
     │   ├── <reviewer-id>.md      # one report per reviewer
     │   ├── consolidated.md       # deduped findings, human readable
-    │   └── consolidated.json     # deduped findings + triage state
+    │   ├── consolidated.json     # deduped findings + triage state
+    │   └── design/               # the same files for the design review, so
+    │                             # its rounds and triage stay its own
     └── state.json                # stage events with resolved model ids
 ```
 

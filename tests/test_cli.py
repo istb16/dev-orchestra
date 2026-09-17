@@ -75,6 +75,19 @@ class TestConfigCommands(IsolatedCase):
         run_cli("config", "set", "review.max_review_iterations", "3")
         self.assertEqual(config_mod.load(self.project).review_settings()["max_review_iterations"], 3)
 
+    def test_set_turns_the_design_review_on(self):
+        run_cli("config", "setup", "--defaults")
+        run_cli("config", "set", "review.design.enabled", "true")
+        self.assertIs(config_mod.load(self.project).design_review_settings()["enabled"], True)
+        _, out, _ = run_cli("config", "show")
+        self.assertIn("design review: on", out)
+
+    def test_show_says_when_the_design_review_is_off(self):
+        """It decides whether a whole stage runs, so its state has to be
+        visible without reading the JSON."""
+        _, out, _ = run_cli("config", "show")
+        self.assertIn("design review: off", out)
+
     def test_project_scope_writes_a_project_file(self):
         code, _, _ = run_cli("config", "set", "--scope", "project", "implementer.provider", "mock")
         self.assertEqual(code, 0)

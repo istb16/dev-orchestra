@@ -108,12 +108,29 @@ echo "explain the failure" | dev-orchestra run orchestrator
 | Command | Description |
 | --- | --- |
 | `review snapshot [--base <rev>] [--no-untracked] [--json]` | Freeze the change under review. Exit 1 if empty. |
-| `review run [--iteration N] [--only <ids/roles>] [--sequential] [--context <text>] [--base <rev>] [--timeout <s>] [--idle-timeout <s>] [--force] [--json]` | Run every reviewer against the snapshot; write reports and the consolidated result. Exit 1 only if every reviewer failed. The round is derived from the snapshot unless `--iteration` is given, and a round past `review.max_review_iterations` is refused (exit 3) unless `--force`. A round refused by the optimization gate (tests recorded as failing) also exits 3, and is recorded as `refused` so `optimization report` can count it. `--only` runs a subset but still consolidates every reviewer's current report, so nothing is lost. |
-| `review consolidate [--iteration N] [--json]` | Re-parse the existing reports and rebuild the consolidated result. |
-| `review show [--accepted] [--json]` | Show the consolidated review. |
-| `review triage <ids…> --status <status> [--note <text>]` | Record triage decisions. |
-| `review fix-brief [--output <path>]` | Emit the accepted-findings brief for the fixer. |
-| `review status [--json]` | Whether a re-review is warranted, and the iteration budget. |
+| `review run [--design] [--request <path>] [--iteration N] [--only <ids/roles>] [--sequential] [--context <text>] [--base <rev>] [--timeout <s>] [--idle-timeout <s>] [--force] [--json]` | Run every reviewer against the snapshot; write reports and the consolidated result. Exit 1 only if every reviewer failed. The round is derived from the snapshot unless `--iteration` is given, and a round past `review.max_review_iterations` is refused (exit 3) unless `--force`. A round refused by the optimization gate (tests recorded as failing) also exits 3, and is recorded as `refused` so `optimization report` can count it. `--only` runs a subset but still consolidates every reviewer's current report, so nothing is lost. |
+| `review consolidate [--design] [--iteration N] [--json]` | Re-parse the existing reports and rebuild the consolidated result. |
+| `review show [--design] [--accepted] [--json]` | Show the consolidated review. |
+| `review triage [--design] <ids…> --status <status> [--note <text>]` | Record triage decisions. |
+| `review fix-brief [--design] [--output <path>]` | Emit the accepted-findings brief for the fixer. |
+| `review status [--design] [--json]` | Whether a re-review is warranted, and the iteration budget. |
+
+`--design` switches every one of those to the *design* review: `.ai/plan.md`
+judged by the same panel before implementation, with its own reports, round
+counter and triage under `.ai/reviews/design/`. `review run --design` freezes
+the plan itself instead of a diff — there is no `review snapshot --design`,
+and no git is needed — and hashes it with the request it answers
+(`--request <path>`, default `.ai/execution/design-request.md`; a missing one
+is noted, not fatal). No plan exits 2, a round past
+`review.design.max_iterations` exits 3 unless `--force`, and every reviewer
+failing exits 1. The optimization gate and panel reduction do not apply, and
+`--base` is ignored. Running it while `review.design.enabled` is false prints a
+note and proceeds: the setting says whether the orchestrator runs the stage,
+not whether you may. See `references/reviews.md`.
+
+`review status --json` reports the budget under the name of the setting it came
+from: `max_review_iterations` without `--design`, `max_iterations` with it. The
+rest of the payload is the same either way.
 
 ## status
 
@@ -134,6 +151,7 @@ dev-orchestra status --json
   "verdict": "stop-and-report",
   "reasons": ["review budget spent (2/2 rounds) with 1 finding(s) still open"],
   "stalls": [],
+  "design_review": {"enabled": false, "iteration": 0, "max_iterations": 2, "blocking": [], "accepted": 0},
   "budgets": {"implementer": {"used": 2, "limit": 5, "remaining": 3}}
 }
 ```

@@ -132,6 +132,13 @@ def default_config() -> Dict[str, Any]:
             # lifts the cap, and null lets optimization.level decide. Nothing
             # that comes back is ever dropped.
             "max_findings": None,
+            # Review the plan with the same panel before any code is written.
+            # Off by default: turning it on adds a reviewer run per panel
+            # member per round plus an architect re-run, which is a real cost
+            # to impose on every existing workflow, and nothing about the
+            # current behaviour changes while it stays off. Whoever wants it
+            # says so once -- `config set review.design.enabled true`.
+            "design": {"enabled": False, "max_iterations": 2},
         },
         # How hard to try to be cheap. See orchestrator/optimization.py: the
         # level gates a review of a tree whose tests are recorded as failing,
@@ -315,6 +322,19 @@ class LoadedConfig:
         settings.update(self.data.get("review") or {})
         return settings
 
+    def design_review_settings(self) -> Dict[str, Any]:
+        """The ``review.design`` block, with anything absent filled in.
+
+        Its own accessor rather than a lookup inside ``review_settings``: that
+        one updates shallowly, so a file naming only ``enabled`` would drop
+        ``max_iterations`` and refuse the first round.
+        """
+        settings = default_config()["review"]["design"]
+        configured = (self.data.get("review") or {}).get("design")
+        if isinstance(configured, dict):
+            settings.update(configured)
+        return settings
+
     def optimization_settings(self) -> Dict[str, Any]:
         settings = default_config()["optimization"]
         settings.update(self.data.get("optimization") or {})
@@ -466,6 +486,19 @@ def validate(data: Dict[str, Any], known_providers: Optional[List[str]] = None) 
                 not isinstance(findings_cap, int) or isinstance(findings_cap, bool) or findings_cap < 0
             ):
                 problems.append("review.max_findings: must be a non-negative integer (0 = no cap)")
+            design = review.get("design")
+            if design is not None:
+                if not isinstance(design, dict):
+                    problems.append("review.design: must be a mapping")
+                else:
+                    enabled = design.get("enabled")
+                    if enabled is not None and not isinstance(enabled, bool):
+                        problems.append("review.design.enabled: must be true or false")
+                    rounds = design.get("max_iterations")
+                    if rounds is not None and (
+                        not isinstance(rounds, int) or isinstance(rounds, bool) or rounds < 0
+                    ):
+                        problems.append("review.design.max_iterations: must be a non-negative integer")
             exclude = review.get("exclude")
             if exclude is not None:
                 if not isinstance(exclude, list):

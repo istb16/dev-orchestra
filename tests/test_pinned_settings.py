@@ -96,6 +96,16 @@ class TestWhatCountsAsPinned(unittest.TestCase):
         data["review"]["exclude"] = list(data["review"]["exclude"])
         self.assertEqual(pinned(data), [])
 
+    def test_a_nested_setting_is_reported_by_its_nested_path(self):
+        data = config_mod.default_config()
+        data["review"]["design"]["max_iterations"] = 1
+        self.assertEqual(settings(pinned(data)), ["review.design.max_iterations"])
+
+    def test_a_config_written_before_the_design_block_existed_is_quiet(self):
+        data = config_mod.default_config()
+        del data["review"]["design"]
+        self.assertEqual(pinned(data), [])
+
     def test_the_settings_are_named_by_their_full_path(self):
         """So the line can be pasted into `config set`."""
         data = config_mod.default_config()

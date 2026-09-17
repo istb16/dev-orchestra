@@ -79,6 +79,7 @@ class TestSkillDocument(IsolatedCase):
             "run implementer",
             "review snapshot",
             "review run",
+            "review run --design",
             "review triage",
             "review fix-brief",
             "run review_fixer",
