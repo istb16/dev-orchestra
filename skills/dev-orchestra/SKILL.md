@@ -64,7 +64,8 @@ Stages are skippable; their **order is not**. Never review before tests, never
 fix before triage.
 
 ```
-Request → Design → Implement → Test → Reviews → Triage → Fix → Re-test → Report
+Request → Design → (Design review → Triage → Revise) → Implement → Test →
+Reviews → Triage → Fix → Re-test → Report
 ```
 
 Artifacts live in `.ai/`, one directory per workflow (`plan.md`,
@@ -75,6 +76,7 @@ stage detail: `references/workflow.md`.
 | Stage | Command |
 | --- | --- |
 | Design | `run architect --prompt-file .ai/execution/design-request.md --output .ai/plan.md` |
+| Design review | if `review.design.enabled` (`status` shows it): `review run --design`, `review triage --design …`, `review fix-brief --design --output .ai/execution/design-fix-brief.md`, then `run architect` again over `.ai/plan.md` |
 | Implement | `run implementer --prompt-file .ai/execution/implement-request.md` |
 | Test | the project's own test / lint / type commands |
 | Reviews | `review snapshot`, then `review run` |
@@ -82,17 +84,20 @@ stage detail: `references/workflow.md`.
 | Fix | `review fix-brief --output .ai/execution/fix-brief.md`, then `run review_fixer --prompt-file .ai/execution/fix-brief.md` |
 | Re-test | the same test commands, then `review status` |
 
-A role with `model_tiers` configured (see `config show`) can be run on one:
-`run implementer --tier light`. You pick, from the difficulty you judged in
-step 1 -- nothing infers it. An unknown tier is refused, not quietly run on
-the default model.
+A role with `model_tiers` (see `config show`) can run on one: `run implementer
+--tier light`. You pick from the difficulty judged in step 1; an unknown tier
+is refused.
 
 **Design.** Architect must not change code. You write the request: goal, files
 and symbols you already located, constraints, what you ruled out. Plan
 sections: Goal, Current Behavior, Investigation, Root Cause, Proposed Change,
 Files to Modify, Data/API Impact, Compatibility, Test Strategy, Risks,
 Implementation Steps. Vague or contradicted by the codebase → send back once,
-do not paper over it later.
+do not paper over it later. **Design review** is the same panel, same rules --
+parallel, read-only, independent -- pointed at `.ai/plan.md` and the request
+instead of a diff. Triage as for code. Accepted findings go into a revision
+request; re-review only when `review status --design` says so. No design stage,
+no design review.
 
 **Implement.** Require: existing conventions, minimal change, no unrelated
 refactoring, tests added or updated and run, and — plan wrong — stop and
@@ -107,17 +112,15 @@ attempts spent; a repeated signature = the last fix changed nothing. Both are
 refusals, not suggestions — fix→test is the loop most likely to run away,
 because from inside it never looks like a loop.
 
-**Reviews.** Record the test result before this stage even when you did not
-run one here (`state record test ok|failed`) -- `review run` reads it, and
-with nothing recorded it cannot stop a review of a red tree.
+**Reviews.** Record the test result first (`state record test ok|failed`) even
+if you ran none here.
 
 Snapshot first: every reviewer judges the same frozen diff. The
 round comes from the snapshot — new snapshot, new round — so never track it by
-hand. `snapshot` withholds the diff body of generated and vendored files
-(lockfiles, `dist/`, bundles; `review.exclude`) and names them instead: pass
-that on, and re-snapshot `--no-exclude` if the change turns on one. `review
-run` runs every reviewer **in parallel, isolated, read-only**, then writes one
-report each plus deduplicated `consolidated.md` / `.json`.
+hand. `snapshot` withholds generated and vendored files (`review.exclude`) but
+names them: pass that on; re-snapshot `--no-exclude` if the change turns on
+one. `review run` runs every reviewer **in parallel, isolated, read-only**,
+then writes one report each plus deduplicated `consolidated.md` / `.json`.
 
 - No reviewer sees another's findings, or edits a file.
 - Never re-snapshot mid-round.
@@ -149,13 +152,11 @@ the narrowing depends on those findings existing. `--full` re-sends the lot.
 
 ## 3. Delegation rules
 
-Delegate work that is independent, parallelisable, better in an isolated
-context, or that must be an independent judgement (reviews). Do not spin up an
-agent for what you can finish correctly in one step — for a typo, fix it, test,
-say so.
-
-Delegated agents do not see this conversation. Every prompt carries: goal,
-file paths you already know, constraints, definition of done, output format.
+Delegate work that is independent, parallelisable, better isolated, or that
+must be independent judgement (reviews) — not what you can finish correctly in
+one step: for a typo, fix it, test, say so. Delegated agents do not see this
+conversation, so every prompt carries goal, known file paths, constraints,
+definition of done, output format.
 
 ## 4. Final report
 
@@ -203,10 +204,8 @@ allow-listed in that CLI's own settings. Schema and worked examples:
 
 **First run.** With a terminal, `config setup` and let the user answer the
 wizard; otherwise collect the same answers in conversation and apply them with
-`config setup --defaults` plus `config set` / `reviewer add`. Recommended:
-orchestrator Claude/sonnet, architect Claude/fable, implementer Claude/opus,
-review fixer Claude/opus, two general reviewers (Claude/opus,
-Codex/recommended-coding) — all `latest`. Show the result and confirm before
+`config setup --defaults` plus `config set` / `reviewer add`. The defaults are
+the recommended lineup (`config show`). Show the result and confirm before
 moving on.
 
 ## Rules that do not bend

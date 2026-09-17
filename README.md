@@ -51,7 +51,9 @@ model, and two of them are deliberately allowed to disagree.
 1. **Direction** — reads the request, decides which stages it needs, splits the
    work up, and merges the results. This is also the stage that digests bulk
    input (logs, a legacy module, a long spec).
-2. **Design** — investigates the codebase and writes the plan. Read-only.
+2. **Design** — investigates the codebase and writes the plan. Read-only. The
+   plan itself can go to the review panel before anything is implemented, which
+   is off by default: `review.design.enabled`.
 3. **Implementation** — writes the code and the tests from that plan.
 4. **Review** — reads the frozen diff and reports findings. Read-only.
 5. **Independent review** — the same diff, a different vendor's model, with no
@@ -352,6 +354,28 @@ files — the stage runs read-only:
 ```bash
 dev-orchestra run architect --prompt-file .ai/request.md --output .ai/plan.md
 ```
+
+**2b. Design review (optional).** The same panel, pointed at the plan instead
+of a diff, before any code exists to be wrong. A design mistake costs an
+implementation and a review to find otherwise, so this is the cheapest place to
+catch one — but it is a reviewer run per panel member per round, so it is off
+until you ask for it:
+
+```bash
+dev-orchestra config set review.design.enabled true
+dev-orchestra review run --design
+dev-orchestra review triage --design F1 --status accepted
+dev-orchestra review fix-brief --design --output .ai/execution/design-fix-brief.md
+dev-orchestra run architect --prompt-file .ai/execution/design-revise-request.md --output .ai/plan.md
+```
+
+The revision request on that last line is one you write by hand from the brief:
+the architect starts again with no context, so the accepted findings alone are
+not a prompt. `references/workflow.md` has the shape it expects.
+
+It keeps its own reports, round counter and triage under
+`.ai/reviews/design/`, so a design round never advances — or is refused by —
+the code review's count. Skipping the design stage skips this with it.
 
 **3. Implementation.** The implementer works from that plan, not from the
 original request:
@@ -734,6 +758,9 @@ reviewers:
 review:
   max_review_iterations: 2
   parallel: true
+  design:
+    enabled: false
+    max_iterations: 2
 ```
 
 ```bash

@@ -95,6 +95,67 @@ its length. This needs the move to be staged: an unstaged `mv` leaves git with
 a deletion and an untracked file, which are two unrelated facts as far as `git
 diff` is concerned.
 
+## Design review
+
+The same panel, before any code exists to be wrong. `review.design.enabled`
+(default `false`) turns it on:
+
+```bash
+dev-orchestra config set review.design.enabled true
+dev-orchestra review run --design
+dev-orchestra review show --design
+dev-orchestra review triage --design F1 --status accepted --note "confirmed"
+dev-orchestra review fix-brief --design --output .ai/execution/design-fix-brief.md
+```
+
+**The input is the plan, not a diff.** `review run --design` freezes
+`.ai/plan.md` into `.ai/reviews/design/review-target.md` and hashes it
+together with the design request it answers (`--request <path>`, default
+`.ai/execution/design-request.md`). Same plan and same request means the same
+round; a rewritten plan is the next one. No git is involved, so a design review
+works in a directory that was never a repository. With no plan on disk the
+command exits 2 and says to run the architect first — which is also what makes
+"no design stage, no design review" true mechanically rather than by
+convention.
+
+**The prompt asks a different question.** Not "is this code correct" but
+"would following this produce something correct": do the files and symbols the
+plan names exist, is its account of the current behaviour true, does it cover
+every caller, is the Test Strategy enough. Each built-in role is re-pointed the
+same way — `security` asks what the proposal would let through rather than what
+the diff does. `File:` therefore takes a plan section
+(`plan.md#Proposed Change`) or the repository path the plan misjudges, and
+`Line:` is usually `n/a`.
+
+**The artifacts are its own**, under `reviews/design/`: one report per
+reviewer, `consolidated.md` / `.json`, and the frozen plan. That is the whole
+reason it is a directory rather than a filename prefix — the round counter and
+the triage live in the consolidated report, and a design round must never
+advance, or be refused by, the code review's count. `review show`,
+`review triage`, `review fix-brief` and `review status` all take `--design` to
+read that copy instead; without the flag they never see a design finding.
+`--base` means nothing here and is ignored.
+
+**The optimization gate and panel reduction do not apply.** There is no test
+result that says anything about a plan and no diff to measure, and a design
+decision is precisely where cross-model disagreement earns its cost, so the
+whole panel runs every round. `review.max_findings` still applies, and
+`optimization.level` still sets the cap when it is unset. Design rounds are
+deliberately absent from `optimization report`, which counts what the level
+decided.
+
+**Reflecting the findings** is a re-run of the architect, not a new stage:
+write a revision request (the original request, plus the brief, plus "read
+`.ai/plan.md` and rewrite it keeping every section; say for each finding
+whether you addressed it or why not") and run `run architect` over it. That
+spends `budgets.architect`, which is why no new budget key exists. Only the
+immediately previous plan survives, frozen in `review-target.md`; a rewrite
+overwrites the rest.
+
+**Cost.** A round is about what a code review round costs: reviewers read the
+files the plan names. `review.design.max_iterations` (default 2) bounds it, and
+`1` is the cheap setting — one round, then report what is still open.
+
 ## When a review does not run, or runs smaller
 
 `optimization.level` (default `balanced`) decides three things about a round

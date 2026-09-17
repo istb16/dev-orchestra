@@ -84,6 +84,7 @@ Enforced by the action, refusing with **exit code 3**.
 | Limit | Config | Enforced by |
 | --- | --- | --- |
 | Review rounds | `review.max_review_iterations` (2) | `review run` |
+| Design review rounds | `review.design.max_iterations` (2) | `review run --design` |
 | Attempts per stage | `budgets.architect` (3), `.implementer` (5), `.review_fixer` (4), `.test` (8) | `run <role>`, `budget consume <stage>` |
 | Delegated runs in a workflow | `budgets.total_delegated_runs` (40) | every `run` |
 | Wall clock | `budgets.max_runtime_seconds` (7200) | every `run` |

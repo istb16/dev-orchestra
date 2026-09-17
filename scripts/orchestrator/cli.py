@@ -187,6 +187,19 @@ def _workspace(args: argparse.Namespace) -> ws.Workspace:
     return ws.Workspace(root, container, workflow).ensure()
 
 
+def _review_workspace(args: argparse.Namespace) -> ws.Workspace:
+    """The workspace a ``review`` subcommand reads and writes.
+
+    ``--design`` points it at ``reviews/design/``, which is the whole of what
+    makes the design review a separate review: its own reports, its own
+    consolidated file, and therefore its own round counter and triage.
+    """
+    workspace = _workspace(args)
+    if getattr(args, "design", False):
+        return workspace.design_review().ensure()
+    return workspace
+
+
 def _in_workflow(workspace: ws.Workspace, path: Optional[str]) -> Optional[str]:
     """Resolve a path written as ``.ai/...`` inside this workflow's directory.
 
@@ -758,12 +771,21 @@ def _lineage(args: argparse.Namespace, workspace: ws.Workspace) -> str:
     return review_mod.review_lineage(workspace, _ledger(args, workspace).workflow_id())
 
 
-def _iteration(args: argparse.Namespace, workspace: ws.Workspace, lineage: str = "") -> int:
-    """An explicit --iteration wins; otherwise derive it from what is on disk."""
+def _iteration(
+    args: argparse.Namespace,
+    workspace: ws.Workspace,
+    lineage: str = "",
+    current_sha: Optional[str] = None,
+) -> int:
+    """An explicit --iteration wins; otherwise derive it from what is on disk.
+
+    ``current_sha`` is the snapshot a round would take but has not written yet,
+    which is how a round can be costed before it is allowed to replace one.
+    """
     given = getattr(args, "iteration", None)
     if given is not None:
         return int(given)
-    return review_mod.next_iteration(workspace, lineage or _lineage(args, workspace))
+    return review_mod.next_iteration(workspace, lineage or _lineage(args, workspace), current_sha)
 
 
 def _merge_runs(workspace: ws.Workspace, run_dicts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -838,8 +860,184 @@ def cmd_review_snapshot(args: argparse.Namespace) -> int:
     return 0
 
 
+def _design_request_path(args: argparse.Namespace, workspace: ws.Workspace) -> str:
+    """Where the request the plan answers is expected to be."""
+    if getattr(args, "request", None):
+        return str(_in_workflow(workspace, args.request))
+    return os.path.join(workspace.execution_dir, "design-request.md")
+
+
+def _run_design_review(args: argparse.Namespace, loaded: config_mod.LoadedConfig) -> int:
+    """Run the panel against `.ai/plan.md` instead of against a diff.
+
+    Same reviewers, same fan-out, same read-only mode. What differs is the
+    input, the prompt, and where the results land -- and the last of those is
+    what keeps a design round from advancing or exhausting the code review's
+    counter.
+    """
+    workspace = _workspace(args).design_review().ensure()
+    settings = loaded.review_settings()
+    design = loaded.design_review_settings()
+    if not design.get("enabled"):
+        _err("note: review.design.enabled is false; running because you asked")
+
+    configured = loaded.reviewers()
+    reviewers = configured
+    if args.only:
+        wanted = set(args.only)
+        reviewers = [r for r in configured if r.get("id") in wanted or r.get("role") in wanted]
+        if not reviewers:
+            _err("--only %s matched no configured reviewer" % " ".join(args.only))
+            return 2
+
+    request_path = _design_request_path(args, workspace)
+    if not os.path.isfile(request_path):
+        _err(
+            "note: no design request at %s; reviewers judge the plan against its own "
+            "stated goal" % workspace.relative(request_path)
+        )
+        request_path = ""
+    # The plan is read and hashed here, and frozen only once this round is
+    # allowed to run. Writing the snapshot first would replace the plan the
+    # previous round's reports are stamped against, so a round refused for
+    # budget -- or skipped for having no panel -- would strand its own triage.
+    try:
+        plan_text, request_text, digest = review_mod.design_digest(
+            workspace, workspace.plan_path, request_path
+        )
+    except review_mod.ReviewError as exc:
+        _err(str(exc))
+        return 2
+
+    lineage = _lineage(args, workspace)
+    iteration = _iteration(args, workspace, lineage, digest)
+    max_iterations = int(design.get("max_iterations", 2))
+    if iteration > max_iterations and not args.force:
+        _err(
+            "refusing to run design review round %d: the budget is %d rounds "
+            "(review.design.max_iterations)." % (iteration, max_iterations)
+        )
+        _err("Report the remaining findings instead of looping, or pass --force to override.")
+        return ledger_mod.EXIT_BUDGET_EXHAUSTED
+
+    meta = review_mod.write_design_snapshot(workspace, workspace.plan_path, request_path, plan_text, digest)
+
+    if not reviewers:
+        # Recorded against the plan that was actually frozen, so the round this
+        # skip occupies is the one the next real round continues from rather
+        # than a phantom that quietly spends the budget.
+        _out("No reviewers configured -- skipping the independent-review stage.")
+        data = review_mod.build_consolidation(workspace, [], [], iteration, lineage)
+        ws.write_json(workspace.consolidated_json_path, data)
+        ws.write_text(workspace.consolidated_md_path, review_mod.render_consolidation(data))
+        return 0
+
+    # No gate and no panel reduction. There is no test result to judge a plan
+    # by and no diff to measure, and a design decision is precisely where
+    # cross-model disagreement earns its cost -- so the whole panel runs.
+    max_findings = opt_mod.findings_cap(loaded.optimization_settings(), settings)
+
+    book = _ledger(args, workspace)
+    book.clear_stalls()
+    batch_timeout = args.timeout or int(settings.get("timeout_seconds", 1800))
+    token = book.begin(
+        "design_review",
+        {"iteration": iteration, "reviewers": [str(r.get("id")) for r in reviewers]},
+        deadline=batch_timeout,
+    )
+    idle_timeout = args.idle_timeout
+    if idle_timeout is None:
+        idle_timeout = settings.get("idle_timeout_seconds")
+    try:
+        runs = review_mod.run_reviews(
+            reviewers,
+            workspace,
+            parallel=not args.sequential and bool(settings.get("parallel", True)),
+            timeout=batch_timeout,
+            idle_timeout=idle_timeout,
+            max_findings=max_findings,
+            prompt_for=lambda reviewer: review_mod.build_design_review_prompt(
+                reviewer,
+                workspace,
+                plan_text,
+                request_text,
+                args.context or "",
+                max_findings,
+            ),
+        )
+    except review_mod.ReviewError as exc:
+        book.end(token, "failed", {"error": str(exc)})
+        _err(str(exc))
+        return 2
+
+    for run in runs:
+        if run.invoked:
+            # Prefixed, so a reviewer's design cost never merges into its code
+            # cost in `tokens show` -- the same reasoning as `role:tier`.
+            label = "design:%s" % (run.reviewer.get("id") or "reviewer")
+            book.record_usage("design_review", run.usage.to_dict(), label=label)
+    run_dicts = [run.to_dict() for run in runs]
+    stamp = review_mod.current_snapshot_stamp(workspace)
+    findings, stale = review_mod.read_reports(workspace, [str(r.get("id")) for r in configured], stamp)
+    data = review_mod.build_consolidation(
+        workspace, _merge_runs(workspace, run_dicts), findings, iteration, lineage
+    )
+    ws.write_json(workspace.consolidated_json_path, data)
+    ws.write_text(workspace.consolidated_md_path, review_mod.render_consolidation(data))
+    repeats = book.register_signature("design_review", review_mod.findings_signature(data))
+    book.end(
+        token,
+        "ok",
+        {
+            "iteration": iteration,
+            "reviewers": run_dicts,
+            "findings": data["counts"].get("findings_total"),
+            "identical_rounds": repeats,
+        },
+    )
+    if repeats > 1:
+        _err(
+            "note: design round %d produced the same findings as the previous round -- "
+            "the last revision changed nothing that the reviewers can see." % iteration
+        )
+    for reviewer_id in stale:
+        _err("note: %s has no report for this plan; its earlier report was ignored" % reviewer_id)
+
+    ok, failed = review_mod.summarise_runs(runs)
+    if args.json:
+        _emit_json(
+            {
+                "ok": ok,
+                "failed": failed,
+                "reviewers": run_dicts,
+                "counts": data["counts"],
+                "plan": meta["plan"],
+            }
+        )
+    else:
+        for run in runs:
+            _out(
+                "%-6s %-18s %-8s %-18s %s"
+                % (
+                    "ok" if run.status == "ok" else "FAILED",
+                    run.reviewer.get("id"),
+                    run.reviewer.get("provider"),
+                    run.model_display or "?",
+                    run.error or "%d finding(s)" % run.findings,
+                )
+            )
+        _out("")
+        _out("%d successful, %d failed" % (ok, failed))
+        _out("Consolidated: %s" % workspace.relative(workspace.consolidated_md_path))
+    if ok == 0 and failed:
+        return 1
+    return 0
+
+
 def cmd_review_run(args: argparse.Namespace) -> int:
     loaded = _load_or_die(args.cwd)
+    if args.design:
+        return _run_design_review(args, loaded)
     workspace = _workspace(args)
     configured = loaded.reviewers()
     reviewers = configured
@@ -1021,7 +1219,7 @@ def cmd_review_run(args: argparse.Namespace) -> int:
 
 def cmd_review_consolidate(args: argparse.Namespace) -> int:
     loaded = config_mod.load(args.cwd, validate_result=False)
-    workspace = _workspace(args)
+    workspace = _review_workspace(args)
     reviewer_ids = [str(r.get("id")) for r in loaded.reviewers()]
     stamp = review_mod.current_snapshot_stamp(workspace)
     findings, stale = review_mod.read_reports(workspace, reviewer_ids, stamp)
@@ -1041,26 +1239,31 @@ def cmd_review_consolidate(args: argparse.Namespace) -> int:
     return 0
 
 
+def _no_review_yet(args: argparse.Namespace) -> None:
+    _err("no consolidated review found -- run `review run%s` first" % (" --design" if args.design else ""))
+
+
 def cmd_review_show(args: argparse.Namespace) -> int:
-    workspace = _workspace(args)
+    workspace = _review_workspace(args)
     data = ws.read_json(workspace.consolidated_json_path, {}) or {}
     if not data:
-        _err("no consolidated review found -- run `review run` first")
+        _no_review_yet(args)
         return 2
     if args.accepted:
         data = dict(data, findings=review_mod.accepted_findings(data))
     if args.json:
         _emit_json(data)
     else:
+        _out("Source: %s" % workspace.relative(workspace.consolidated_json_path))
         _out(review_mod.render_consolidation(data))
     return 0
 
 
 def cmd_review_triage(args: argparse.Namespace) -> int:
-    workspace = _workspace(args)
+    workspace = _review_workspace(args)
     data = ws.read_json(workspace.consolidated_json_path, {}) or {}
     if not data:
-        _err("no consolidated review found -- run `review run` first")
+        _no_review_yet(args)
         return 2
     try:
         for finding_id in args.ids:
@@ -1075,9 +1278,12 @@ def cmd_review_triage(args: argparse.Namespace) -> int:
 
 
 def cmd_review_fix_brief(args: argparse.Namespace) -> int:
-    workspace = _workspace(args)
+    workspace = _review_workspace(args)
     data = ws.read_json(workspace.consolidated_json_path, {}) or {}
-    brief = review_mod.render_fix_brief(data)
+    if args.design:
+        brief = review_mod.render_fix_brief(data, "Revise the plan to address these accepted findings")
+    else:
+        brief = review_mod.render_fix_brief(data)
     if args.output:
         path = _in_workflow(workspace, args.output)
         ws.write_text(path, brief)
@@ -1089,16 +1295,24 @@ def cmd_review_fix_brief(args: argparse.Namespace) -> int:
 
 def cmd_review_status(args: argparse.Namespace) -> int:
     loaded = config_mod.load(args.cwd, validate_result=False)
-    workspace = _workspace(args)
+    workspace = _review_workspace(args)
     data = ws.read_json(workspace.consolidated_json_path, {}) or {}
     settings = loaded.review_settings()
     severities = tuple(settings.get("re_review_severities") or ("critical", "high"))
     blocking = review_mod.unresolved_blocking(data, severities)
     iteration = int(data.get("iteration", 0) or 0)
-    max_iterations = int(settings.get("max_review_iterations", 2))
+    # Each budget is reported under the name of the setting it came from, so a
+    # consumer holding both payloads can tell which one it was handed. The code
+    # review's key is what it always was; only --design carries the other name.
+    if args.design:
+        budget_key = "max_iterations"
+        max_iterations = int(loaded.design_review_settings().get("max_iterations", 2))
+    else:
+        budget_key = "max_review_iterations"
+        max_iterations = int(settings.get("max_review_iterations", 2))
     payload = {
         "iteration": iteration,
-        "max_review_iterations": max_iterations,
+        budget_key: max_iterations,
         "blocking": [f["id"] for f in blocking],
         "blocking_count": len(blocking),
         "accepted_count": len(review_mod.accepted_findings(data)),
@@ -1558,6 +1772,15 @@ def cmd_status(args: argparse.Namespace) -> int:
     max_iterations = int(settings.get("max_review_iterations", 2))
     summary = book.summary()
 
+    # The design review is read whether or not it is enabled: a round that was
+    # run by hand, or left open when the setting was turned back off, is still
+    # an open finding about the plan the implementation would follow.
+    design_data = ws.read_json(workspace.design_review().consolidated_json_path, {}) or {}
+    design_settings = loaded.design_review_settings()
+    design_blocking = review_mod.unresolved_blocking(design_data, severities)
+    design_iteration = int(design_data.get("iteration", 0) or 0)
+    design_max = int(design_settings.get("max_iterations", 2))
+
     reasons: List[str] = []
     if blocking and iteration >= max_iterations:
         reasons.append(
@@ -1566,6 +1789,13 @@ def cmd_status(args: argparse.Namespace) -> int:
         )
     if int((summary["signatures"] or {}).get("review") or 0) > 1:
         reasons.append("the last review round found exactly what the previous one found")
+    if design_blocking and design_iteration >= design_max:
+        reasons.append(
+            "design review budget spent (%d/%d rounds) with %d finding(s) still open"
+            % (design_iteration, design_max, len(design_blocking))
+        )
+    if int((summary["signatures"] or {}).get("design_review") or 0) > 1:
+        reasons.append("the last design review round found exactly what the previous one found")
     for stage, entry in summary["budgets"].items():
         if entry["remaining"] == 0:
             reasons.append("%s has no attempts left" % stage)
@@ -1602,6 +1832,13 @@ def cmd_status(args: argparse.Namespace) -> int:
             "max_review_iterations": max_iterations,
             "blocking": [f["id"] for f in blocking],
             "accepted": len(review_mod.accepted_findings(review_data)),
+        },
+        "design_review": {
+            "enabled": bool(design_settings.get("enabled")),
+            "iteration": design_iteration,
+            "max_iterations": design_max,
+            "blocking": [f["id"] for f in design_blocking],
+            "accepted": len(review_mod.accepted_findings(design_data)),
         },
         "budgets": summary["budgets"],
         "total_delegated_runs": total,
@@ -1647,6 +1884,16 @@ def cmd_status(args: argparse.Namespace) -> int:
     _out(
         "Review: round %d/%d, %d accepted, %d blocking"
         % (iteration, max_iterations, payload["review"]["accepted"], len(blocking))
+    )
+    _out(
+        "Design review: %s, round %d/%d, %d accepted, %d blocking"
+        % (
+            "on" if payload["design_review"]["enabled"] else "off",
+            design_iteration,
+            design_max,
+            payload["design_review"]["accepted"],
+            len(design_blocking),
+        )
     )
     line = "Optimization: %s" % plan.level
     if plan.escalated:
@@ -1707,9 +1954,23 @@ def cmd_summary(args: argparse.Namespace) -> int:
     seen: Dict[str, str] = {}
     for event in state.get("events", []):
         seen[str(event.get("stage"))] = str(event.get("status"))
-    for stage in ("architect", "implementer", "test", "review", "review_fixer", "re-test"):
+    for stage in (
+        "architect",
+        "design_review",
+        "implementer",
+        "test",
+        "review",
+        "review_fixer",
+        "re-test",
+    ):
         if stage in seen:
             lines.append("  %-14s %s" % (stage, "OK" if seen[stage] == "ok" else seen[stage].upper()))
+    design_counts = (ws.read_json(workspace.design_review().consolidated_json_path, {}) or {}).get("counts")
+    if design_counts:
+        lines.append(
+            "  %-14s %s/%s ok"
+            % ("design reviews", design_counts.get("reviewers_ok"), design_counts.get("reviewers_total"))
+        )
     counts = review_data.get("counts", {})
     if counts:
         lines.append(
@@ -1937,7 +2198,19 @@ def build_parser() -> argparse.ArgumentParser:
     snapshot.add_argument("--json", action="store_true")
     snapshot.set_defaults(func=cmd_review_snapshot)
 
+    def _add_design_flag(parser: argparse.ArgumentParser) -> None:
+        parser.add_argument(
+            "--design",
+            action="store_true",
+            help="the design review of .ai/plan.md instead of the code review",
+        )
+
     review_run = review_sub.add_parser("run", help="run every reviewer against the frozen snapshot")
+    review_run.add_argument(
+        "--request",
+        default=None,
+        help="the design request the plan answers (--design; default .ai/execution/design-request.md)",
+    )
     review_run.add_argument(
         "--iteration",
         type=int,
@@ -1981,6 +2254,9 @@ def build_parser() -> argparse.ArgumentParser:
     status = review_sub.add_parser("status", help="report whether a re-review is warranted")
     status.add_argument("--json", action="store_true")
     status.set_defaults(func=cmd_review_status)
+
+    for parser_with_scope in (review_run, consolidate, review_show, triage, fix_brief, status):
+        _add_design_flag(parser_with_scope)
 
     # state ------------------------------------------------------------------
     state_parser = subparsers.add_parser("state", help="inspect or append run state")
