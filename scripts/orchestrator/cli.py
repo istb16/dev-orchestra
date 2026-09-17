@@ -121,7 +121,17 @@ def _err(text: str) -> None:
 
 
 def _emit_json(data: Any) -> None:
-    _out(json.dumps(data, indent=2, ensure_ascii=False))
+    """``--json`` promises machine-readable output, so it must stay parseable.
+
+    ``ensure_ascii=False`` reads better wherever the console can show the
+    character, and on a console that cannot it hands the character to
+    ``backslashreplace`` -- which spells it ``\\xe9``, an escape JSON does not
+    define. That turns a loud ``UnicodeEncodeError`` into output that parses as
+    nothing, or worse, parses wrong. Let JSON do the escaping instead: its own
+    ``\\uXXXX`` is ASCII, survives any console, and reads back as the same
+    string.
+    """
+    _out(json.dumps(data, indent=2, ensure_ascii=not _encodes_everything(sys.stdout)))
 
 
 def _resolve_scope(requested: Optional[str], start: Optional[str] = None) -> str:
