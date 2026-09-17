@@ -4,10 +4,17 @@ Also reachable non-interactively (``--defaults``) so CI and the skill's own
 tests never block on a prompt. Everything it writes is a family + version
 policy; concrete model ids stay out of the saved config unless the user
 explicitly pins one.
+
+What ``run`` returns is only what it asked about: a value nobody was asked for
+is not a decision, and writing it down would pin today's default forever. What
+it offers as the recommended answer comes from ``base``, which the caller
+supplies -- only the caller knows which layer is being edited and therefore
+what that layer would inherit.
 """
 
 from __future__ import annotations
 
+import copy
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from . import config as config_mod
@@ -127,11 +134,22 @@ def default_reviewer_config() -> List[Dict[str, Any]]:
 def run(
     prompter: Prompter,
     existing: Optional[Dict[str, Any]] = None,
+    base: Optional[Dict[str, Any]] = None,
 ) -> Tuple[Dict[str, Any], bool]:
-    """Drive the wizard. Returns (config, save?)."""
-    data = config_mod.default_config()
-    if existing:
-        data = config_mod.deep_merge(data, existing)
+    """Drive the wizard. Returns (layer, save?).
+
+    ``base`` is what would be in force without the layer being edited; it falls
+    back to the built-in defaults, which is what the global layer inherits.
+    Setting up a project layer over a global one that chose sonnet has to offer
+    sonnet, or pressing enter through the wizard would quietly overrule the
+    global choice with a built-in default nobody asked for.
+    """
+    base = base or config_mod.default_config()
+    effective = config_mod.deep_merge(base, existing or {})
+    data: Dict[str, Any] = copy.deepcopy(existing or {})
+    # Whatever else the layer keeps, it keeps its own version -- an invalid one
+    # included, for `validate` to report rather than for this to paper over.
+    data.setdefault("version", config_mod.CONFIG_VERSION)
 
     providers = selectable_providers()
     prompter.say("AI Development Orchestrator setup")
@@ -148,7 +166,7 @@ def run(
     step = 1
     for key, title in ROLE_TITLES:
         prompter.say("%d. %s" % (step, title))
-        current = data.get(key) or {}
+        current = effective.get(key) or {}
         rec_provider, rec_family = RECOMMENDED[key]
         spec = _ask_role(
             prompter,
@@ -161,10 +179,13 @@ def run(
         step += 1
 
     prompter.say("%d. External Reviewers" % step)
-    data["reviewers"] = _ask_reviewers(prompter, providers, data)
+    data["reviewers"] = _ask_reviewers(prompter, providers, effective)
     prompter.say("")
 
-    prompter.say(render_summary(data))
+    # Summarised over the base, so what is shown before saving is what `load()`
+    # will resolve afterwards -- the layer alone would report a design review
+    # as off while the global layer has it on.
+    prompter.say(render_summary(config_mod.deep_merge(base, data)))
     save = prompter.ask_yes_no("Save configuration?", True)
     return data, save
 
@@ -217,7 +238,13 @@ def _ask_reviewers(
     providers: Sequence[Tuple[str, str, bool]],
     data: Dict[str, Any],
 ) -> List[Dict[str, Any]]:
-    existing = data.get("reviewers") or default_reviewer_config()
+    # An empty panel is a decision -- somebody chose to run no independent
+    # review -- and only an absent one means nobody has chosen yet. Reading the
+    # two the same way turned a global `reviewers: []` back into two reviewers
+    # for anyone who pressed enter through project setup.
+    existing = data.get("reviewers")
+    if not isinstance(existing, list):
+        existing = default_reviewer_config()
     count = prompter.ask_int("   How many reviewers?", len(existing), 0, 10)
     reviewers: List[Dict[str, Any]] = []
     index = 0

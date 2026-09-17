@@ -233,15 +233,30 @@ def read_config_file(path: str) -> Dict[str, Any]:
     return data
 
 
-def write_config_file(path: str, data: Dict[str, Any]) -> None:
+def layer_below(scope: str = "") -> str:
+    """What a layer inherits from, named the way a message can use it.
+
+    A project file sits on the global one, not on the built-in defaults, and it
+    is the file that usually gets committed and read by the whole team -- so
+    the header it carries has to say which of the two it follows.
+    """
+    if scope == "global":
+        return "the built-in defaults"
+    if scope == "project":
+        return "the global layer"
+    return "the layer below"
+
+
+def write_config_file(path: str, data: Dict[str, Any], scope: str = "") -> None:
     parent = os.path.dirname(os.path.abspath(path))
     if parent:
         os.makedirs(parent, exist_ok=True)
     text = miniyaml.dumps(data)
     header = (
         "# dev-orchestra configuration\n"
+        "# Only what you set is stored; everything else follows %s.\n"
         "# Model families + a version policy are stored here on purpose: concrete\n"
-        "# model ids are resolved by the provider adapters at run time.\n"
+        "# model ids are resolved by the provider adapters at run time.\n" % layer_below(scope)
     )
     with open(path, "w", encoding="utf-8", newline="\n") as handle:
         handle.write(header + text)
@@ -355,19 +370,25 @@ _TASTE = ("version", "reviewers", "workspace")
 def pinned_differences(data: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Settings this configuration fixes at a value the defaults have moved off.
 
-    `config setup --defaults` writes every default into the file, so a default
-    that is later improved never reaches an existing installation: the file
-    keeps answering with the number that was current when it was written. That
-    happened -- the low-risk thresholds were raised in 0.4.2 and every config
-    written before it went on reporting the old pair, so the panel reduction
-    the release was for could not fire.
+    Before 0.6.0 every writer seeded the file with the whole of
+    `default_config()`, so a default that was later improved never reached an
+    existing installation: the file kept answering with the number that was
+    current when it was written. That happened -- the low-risk thresholds were
+    raised in 0.4.2 and every config written before it went on reporting the
+    old pair, so the panel reduction the release was for could not fire.
+    Writers are sparse now, but the files those releases wrote are still on
+    disk, so this report is still what finds them.
 
     Reported, never corrected. "Chose 2 deliberately" and "inherited 2 from an
     older default" are the same two characters on disk, and silently rewriting
     the first would be worse than leaving the second to be noticed.
+    `config prune` does it on request, which is a different thing.
 
     Lists are compared by length, not contents: `high_risk_paths` is thirty
-    entries and nobody reads a diff of it in a diagnostic.
+    entries and nobody reads a diff of it in a diagnostic. `reviewers` is not
+    compared at all (`_TASTE`): a panel is the user's own, and holding it
+    against the default one would report every installation that added a
+    reviewer.
     """
     differences: List[Dict[str, Any]] = []
 
@@ -396,6 +417,54 @@ def pinned_differences(data: Dict[str, Any]) -> List[Dict[str, Any]]:
 
     walk(data, default_config(), "")
     return sorted(differences, key=lambda entry: entry["setting"])
+
+
+def prune_layer(layer: Dict[str, Any], base: Dict[str, Any]) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
+    """``layer`` with everything ``base`` already says dropped from it.
+
+    For the files written before 0.6.0, which hold every default beside the
+    handful of values their owner actually chose. Nothing on disk distinguishes
+    the two, so "equal to what this layer inherits" is the only evidence there
+    is -- which is why this is a command a user runs rather than something a
+    writer does on its way past.
+
+    ``base`` is what would be in force without this layer, not the built-in
+    defaults: a project file may hold a value equal to a default precisely to
+    cancel a global one, and comparing it against the defaults would throw that
+    away. Lists are dropped only when equal whole, because that is the unit
+    ``deep_merge`` replaces. ``version`` identifies the file format rather than
+    configuring anything, so it survives -- and is supplied when the old file
+    never had one.
+    """
+    dropped: List[Dict[str, Any]] = []
+
+    def walk(current: Dict[str, Any], reference: Dict[str, Any], path: str) -> Dict[str, Any]:
+        kept: Dict[str, Any] = {}
+        for key, value in current.items():
+            name = ("%s.%s" % (path, key)) if path else str(key)
+            if not path and key == "version":
+                kept[key] = value
+                continue
+            if key not in reference:
+                kept[key] = value
+                continue
+            inherited = reference[key]
+            if isinstance(value, dict) and isinstance(inherited, dict):
+                remaining = walk(value, inherited, name)
+                # A mapping emptied by its children is itself inherited, and an
+                # empty one in the file would only read as "set to nothing".
+                if remaining:
+                    kept[key] = remaining
+                continue
+            if value == inherited:
+                dropped.append({"setting": name, "value": value})
+                continue
+            kept[key] = value
+        return kept
+
+    pruned = walk(layer, base if isinstance(base, dict) else {}, "")
+    pruned.setdefault("version", CONFIG_VERSION)
+    return pruned, dropped
 
 
 def load(start: Optional[str] = None, validate_result: bool = True) -> LoadedConfig:

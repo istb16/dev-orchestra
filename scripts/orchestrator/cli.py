@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import codecs
+import copy
 import json
 import os
 import sys
@@ -20,6 +21,7 @@ from . import config as config_mod
 from . import doctor as doctor_mod
 from . import jobs as jobs_mod
 from . import ledger as ledger_mod
+from . import miniyaml
 from . import optimization as opt_mod
 from . import review as review_mod
 from . import wizard as wizard_mod
@@ -145,21 +147,72 @@ def _layer_path(scope: str, start: Optional[str] = None) -> str:
 
 
 def _read_layer(scope: str, start: Optional[str] = None) -> Tuple[str, Dict[str, Any]]:
+    """The layer a writer is about to edit: what is on disk, and nothing else.
+
+    The global layer used to be seeded with the whole of ``default_config()``,
+    so the first ``config set`` froze every default beside the one value that
+    was asked for. ``version`` identifies the file format rather than
+    configuring anything, so it is the one key a writer supplies -- including
+    into a file that predates it, which is the only way an edit to such a file
+    can leave a file this loader's contract describes.
+    """
     path = _layer_path(scope, start)
-    if os.path.isfile(path):
-        return path, config_mod.read_config_file(path)
-    seed: Dict[str, Any] = (
-        config_mod.default_config() if scope == "global" else {"version": config_mod.CONFIG_VERSION}
-    )
-    return path, seed
+    layer = config_mod.read_config_file(path) if os.path.isfile(path) else {}
+    layer.setdefault("version", config_mod.CONFIG_VERSION)
+    return path, layer
 
 
-def _seed_reviewers(layer: Dict[str, Any], start: Optional[str] = None) -> None:
-    """A project layer editing reviewers must start from the effective list."""
-    if "reviewers" in layer:
+def _layer_base(scope: str, start: Optional[str] = None) -> Dict[str, Any]:
+    """What would be in force if this layer did not exist.
+
+    The global file is shared by every project on the machine, so no project's
+    values may flow into it: its base is the built-in defaults alone. A project
+    file sits on top of the global one, so its base is the defaults plus that.
+    ``load()`` is the wrong answer for either -- it includes the layer being
+    edited, and for the global layer it includes whichever project happens to
+    be the working directory.
+
+    This mirrors the layer order in ``config.load``; a third layer would have
+    to be added in both places.
+    """
+    defaults = config_mod.default_config()
+    if scope == "global":
+        return defaults
+    global_path = config_mod.global_config_path()
+    if not os.path.isfile(global_path):
+        return defaults
+    return config_mod.deep_merge(defaults, config_mod.read_config_file(global_path))
+
+
+#: Sentinel for "the layer holds nothing here at all", which ``get_path`` cannot
+#: otherwise distinguish from a value that happens to be falsy.
+_UNSET = object()
+
+
+def _seed_list(layer: Dict[str, Any], list_path: str, base: Dict[str, Any]) -> None:
+    """Give the layer the whole list before one entry of it is edited.
+
+    A list replaces the one below it wholesale (``deep_merge``), so changing
+    one entry is also a decision about the others: they have to be copied from
+    what this layer was inheriting, which is ``base`` and never the effective
+    configuration -- a global file must not end up holding the panel of
+    whichever project the command was run in.
+
+    A path neither side knows is left alone, for ``set_path`` to reject as it
+    always has -- and so is one this layer already holds something else at. A
+    scalar where a list is expected is the same kind of mistake, and seeding
+    over it would replace a value the user wrote instead of refusing.
+    """
+    if config_mod.get_path(layer, list_path, _UNSET) is not _UNSET:
         return
-    effective = config_mod.load(start, validate_result=False)
-    layer["reviewers"] = [dict(reviewer) for reviewer in effective.reviewers()]
+    inherited = config_mod.get_path(base, list_path)
+    if isinstance(inherited, list):
+        config_mod.set_path(layer, list_path, copy.deepcopy(inherited))
+
+
+def _effective_preview(scope: str, layer: Dict[str, Any], start: Optional[str] = None) -> Dict[str, Any]:
+    """What ``load()`` will resolve once this layer is saved."""
+    return config_mod.deep_merge(_layer_base(scope, start), layer)
 
 
 def _container(args: argparse.Namespace) -> "tuple[str, str]":
@@ -244,15 +297,43 @@ def _describe_spec(spec: Dict[str, Any]) -> str:
     return "%s / %s / %s" % (spec.get("provider", "?"), family or "default", version)
 
 
+def _render_layer(path: str, data: Dict[str, Any], exists: bool) -> str:
+    """One layer, as it is on disk rather than as a configuration.
+
+    Summarised through ``render_summary`` it would read as a whole setup,
+    filling in from the built-in defaults exactly the values this view exists
+    to tell apart from what the file overrides.
+
+    ``exists`` rather than emptiness decides which of the two "nothing is
+    overridden" sentences this is: an empty file reads as ``{}`` too, and
+    reporting it as missing would contradict the ``Source:`` line printed
+    directly above.
+    """
+    if not exists:
+        return "No file at %s -- nothing overridden." % path
+    if set(data) <= {"version"}:
+        return "Nothing overridden -- every value follows the layer below."
+    note = "Everything not listed is inherited (config show for the effective configuration)."
+    return "%s\n%s" % (miniyaml.dumps(data), note)
+
+
 def cmd_config_show(args: argparse.Namespace) -> int:
     loaded = config_mod.load(args.cwd, validate_result=False)
+    scoped = args.scope in ("global", "project")
+    exists = False
     if args.scope == "global":
-        path, data = _read_layer("global", args.cwd)
-        source = path if os.path.isfile(path) else "%s (not created yet)" % path
+        # Deliberately not `_read_layer`: that one supplies what a writer needs
+        # a saved file to hold, and reporting it here would show a `version`
+        # that is not on disk as though it were.
+        path = config_mod.global_config_path()
+        exists = os.path.isfile(path)
+        data = config_mod.read_config_file(path) if exists else {}
+        source = path if exists else "%s (not created yet)" % path
     elif args.scope == "project":
         path = config_mod.project_config_path(args.cwd)
-        data = config_mod.read_config_file(path) if os.path.isfile(path) else {}
-        source = path if os.path.isfile(path) else "no project override"
+        exists = os.path.isfile(path)
+        data = config_mod.read_config_file(path) if exists else {}
+        source = path if exists else "no project override"
     else:
         data = loaded.data
         source = "effective (project: %s, global: %s)" % (
@@ -264,10 +345,13 @@ def cmd_config_show(args: argparse.Namespace) -> int:
         _emit_json({"source": source, "config": data})
         return 0
     _out("Source: %s" % source)
-    if loaded.used_defaults and args.scope not in ("global", "project"):
+    if loaded.used_defaults and not scoped:
         _out("No config file found yet -- showing built-in defaults.")
     _out("")
-    _out(wizard_mod.render_summary(data) if "orchestrator" in data else "(empty layer)")
+    if scoped:
+        _out(_render_layer(path, data, exists))
+    else:
+        _out(wizard_mod.render_summary(data) if "orchestrator" in data else "(empty layer)")
     problems = config_mod.validate(loaded.data)
     if problems:
         _out("Problems:")
@@ -292,17 +376,18 @@ def cmd_config_setup(args: argparse.Namespace) -> int:
     existing = config_mod.read_config_file(path) if os.path.isfile(path) else None
 
     if args.defaults:
-        data = config_mod.default_config()
-        if scope == "project":
-            data = {"version": config_mod.CONFIG_VERSION, "reviewers": data["reviewers"]}
-            data.update({key: config_mod.default_config()[key] for key, _ in wizard_mod.ROLE_TITLES})
+        # The recommended configuration *is* the built-in defaults, so the
+        # honest way to record a choice of it is to override nothing. Writing
+        # the values out would freeze today's copy of them into the file and
+        # shadow every later improvement -- the whole of what this file is for.
+        data = {"version": config_mod.CONFIG_VERSION}
         save = True
     else:
         if not sys.stdin.isatty() and not args.force:
             _err("config setup needs an interactive terminal; use --defaults for the recommended setup.")
             return 2
         try:
-            data, save = wizard_mod.run(wizard_mod.Prompter(), existing)
+            data, save = wizard_mod.run(wizard_mod.Prompter(), existing, _layer_base(scope, args.cwd))
         except EOFError:
             _err("input ended before setup finished; nothing was saved. Try --defaults instead.")
             return 2
@@ -310,7 +395,9 @@ def cmd_config_setup(args: argparse.Namespace) -> int:
     if not save:
         _out("Not saved.")
         return 1
-    problems = config_mod.validate(data)
+    # The layer on its own names no roles at all, so it is the configuration it
+    # resolves to that has to be valid -- the same dict the wizard summarised.
+    problems = config_mod.validate(_effective_preview(scope, data, args.cwd))
     if problems:
         # Writing this would leave every workflow command failing with
         # "invalid configuration" straight after a successful-looking setup.
@@ -318,9 +405,15 @@ def cmd_config_setup(args: argparse.Namespace) -> int:
         for problem in problems:
             _err("  - %s" % problem)
         return 2
-    config_mod.write_config_file(path, data)
+    config_mod.write_config_file(path, data, scope)
     _out("Saved %s configuration to %s" % (scope, path))
+    _out("It records only what you chose; everything else follows %s (config show)." % _below(scope))
     return 0
+
+
+def _below(scope: str) -> str:
+    """What a layer inherits from, named the way a message can use it."""
+    return config_mod.layer_below(scope)
 
 
 def cmd_config_reset(args: argparse.Namespace) -> int:
@@ -333,32 +426,92 @@ def cmd_config_reset(args: argparse.Namespace) -> int:
         else:
             _out("Nothing to remove at %s" % path)
         return 0
-    data = config_mod.default_config()
-    if scope == "project":
-        _out("Note: resetting a project override writes the full recommended config to it.")
-    config_mod.write_config_file(path, data)
-    _out("Reset %s configuration to recommended defaults: %s" % (scope, path))
+    # Clearing the overrides, not restoring the defaults: for the global layer
+    # those are the same thing, and for a project layer the difference matters
+    # -- writing the defaults there would pin them over whatever the global
+    # layer says, in a file that is usually committed and read by the team.
+    config_mod.write_config_file(path, {"version": config_mod.CONFIG_VERSION}, scope)
+    if scope == "global":
+        following = "every value now follows the built-in defaults"
+    else:
+        following = "this project now follows the global layer"
+    _out("Reset %s configuration: overrides cleared, %s (%s)" % (scope, following, path))
     return 0
 
 
 def cmd_config_set(args: argparse.Namespace) -> int:
     scope = _resolve_scope(args.scope, args.cwd)
     path, layer = _read_layer(scope, args.cwd)
-    if args.path.startswith("reviewers"):
-        _seed_reviewers(layer, args.cwd)
+    if "[" in args.path:
+        _seed_list(layer, args.path.split("[", 1)[0], _layer_base(scope, args.cwd))
     value = args.value if args.raw else config_mod.coerce_scalar(args.value)
     try:
         config_mod.set_path(layer, args.path, value)
     except config_mod.ConfigError as exc:
         _err(str(exc))
         return 2
-    config_mod.write_config_file(path, layer)
+    except IndexError:
+        # `set_path` assigns straight into the list, so an index past its end
+        # arrives as a bare IndexError and `main` catches only the config
+        # errors. This is the one entry point that takes an index at all, so it
+        # is the one that owes the user a message instead of a traceback.
+        _err("%s: index out of range" % args.path)
+        return 2
+    config_mod.write_config_file(path, layer, scope)
     _out("%s = %r  (%s: %s)" % (args.path, value, scope, path))
     effective = config_mod.load(args.cwd, validate_result=False).data
     for problem in config_mod.validate(effective):
         _err("warning: %s" % problem)
     _warn_unresolvable(effective, args.path.split(".")[0])
     return 0
+
+
+def cmd_config_prune(args: argparse.Namespace) -> int:
+    scope = _resolve_scope(args.scope, args.cwd)
+    path = _layer_path(scope, args.cwd)
+    if not os.path.isfile(path):
+        _err("no %s configuration file at %s" % (scope, path))
+        return 2
+    layer = config_mod.read_config_file(path)
+    base = _layer_base(scope, args.cwd)
+    pruned, dropped = config_mod.prune_layer(layer, base)
+    if config_mod.deep_merge(base, pruned) != config_mod.deep_merge(base, layer):
+        # Nothing should be able to get here. It is checked anyway because the
+        # failure would be a configuration quietly changing underneath someone
+        # who asked for it not to.
+        _err("%s: pruning would change the effective configuration, so nothing was written." % path)
+        return 2
+
+    if not dropped:
+        _out("Nothing to drop from %s: it already holds only its own decisions." % path)
+        # Dropping values is not the only thing pruning does: `prune_layer` also
+        # supplies the format version a file written before it existed never
+        # had. Returning on an empty `dropped` left such a file unnormalised
+        # whenever it happened to hold nothing redundant.
+        if pruned == layer:
+            return 0
+        if args.dry_run:
+            _out("The configuration format version would be recorded (dry run, nothing written).")
+            return 0
+        config_mod.write_config_file(path, pruned, scope)
+        _out("Recorded the configuration format version in %s." % path)
+        return 0
+    for entry in dropped:
+        _out("  %-40s %s" % (entry["setting"], _prune_value(entry["value"])))
+    _out("Values equal to the current default were assumed to be inherited.")
+    if args.dry_run:
+        _out("%d would be dropped from %s (dry run, nothing written)." % (len(dropped), path))
+        return 0
+    config_mod.write_config_file(path, pruned, scope)
+    _out("Dropped %d from %s; they now follow %s." % (len(dropped), path, _below(scope)))
+    return 0
+
+
+def _prune_value(value: Any) -> str:
+    """A list is named by its length, for the reason ``pinned_differences`` gives."""
+    if isinstance(value, list):
+        return "%d entries" % len(value)
+    return repr(value)
 
 
 def _warn_unresolvable(effective: Dict[str, Any], role_key: str) -> None:
@@ -456,7 +609,7 @@ def cmd_reviewer_list(args: argparse.Namespace) -> int:
 def cmd_reviewer_add(args: argparse.Namespace) -> int:
     scope = _resolve_scope(args.scope, args.cwd)
     path, layer = _read_layer(scope, args.cwd)
-    _seed_reviewers(layer, args.cwd)
+    _seed_list(layer, "reviewers", _layer_base(scope, args.cwd))
     role = args.role or "general"
     reviewer_id = args.id or config_mod.suggest_reviewer_id(layer, args.provider, role)
     family = args.model
@@ -481,7 +634,7 @@ def cmd_reviewer_add(args: argparse.Namespace) -> int:
         for problem in blocking:
             _err(problem)
         return 2
-    config_mod.write_config_file(path, layer)
+    config_mod.write_config_file(path, layer, scope)
     _out("Added reviewer %s (%s / %s / %s) to %s" % (reviewer_id, args.provider, family, role, path))
     return 0
 
@@ -489,13 +642,13 @@ def cmd_reviewer_add(args: argparse.Namespace) -> int:
 def cmd_reviewer_remove(args: argparse.Namespace) -> int:
     scope = _resolve_scope(args.scope, args.cwd)
     path, layer = _read_layer(scope, args.cwd)
-    _seed_reviewers(layer, args.cwd)
+    _seed_list(layer, "reviewers", _layer_base(scope, args.cwd))
     try:
         _, removed = config_mod.remove_reviewer(layer, args.selector)
     except config_mod.ConfigError as exc:
         _err(str(exc))
         return 2
-    config_mod.write_config_file(path, layer)
+    config_mod.write_config_file(path, layer, scope)
     _out("Removed reviewer %s from %s" % (removed.get("id"), path))
     return 0
 
@@ -503,7 +656,7 @@ def cmd_reviewer_remove(args: argparse.Namespace) -> int:
 def cmd_reviewer_set(args: argparse.Namespace) -> int:
     scope = _resolve_scope(args.scope, args.cwd)
     path, layer = _read_layer(scope, args.cwd)
-    _seed_reviewers(layer, args.cwd)
+    _seed_list(layer, "reviewers", _layer_base(scope, args.cwd))
     try:
         index, reviewer = config_mod.find_reviewer(layer, args.selector)
     except config_mod.ConfigError as exc:
@@ -531,7 +684,7 @@ def cmd_reviewer_set(args: argparse.Namespace) -> int:
         for problem in problems:
             _err(problem)
         return 2
-    config_mod.write_config_file(path, layer)
+    config_mod.write_config_file(path, layer, scope)
     _out("Updated reviewer %s in %s" % (reviewer.get("id"), path))
     return 0
 
@@ -2082,10 +2235,17 @@ def build_parser() -> argparse.ArgumentParser:
     setup.add_argument("--force", action="store_true", help="prompt even without a TTY")
     setup.set_defaults(func=cmd_config_setup)
 
-    reset = config_sub.add_parser("reset", help="restore recommended defaults")
+    reset = config_sub.add_parser(
+        "reset", help="clear this layer's overrides (the file keeps only version); --delete removes it"
+    )
     reset.add_argument("--scope", choices=["global", "project"], default=None)
-    reset.add_argument("--delete", action="store_true", help="delete the config file instead of rewriting it")
+    reset.add_argument("--delete", action="store_true", help="delete the config file instead of clearing it")
     reset.set_defaults(func=cmd_config_reset)
+
+    prune = config_sub.add_parser("prune", help="drop values equal to what the layer inherits")
+    prune.add_argument("--scope", choices=["global", "project"], default=None)
+    prune.add_argument("--dry-run", action="store_true", help="list what would be dropped, write nothing")
+    prune.set_defaults(func=cmd_config_prune)
 
     set_parser = config_sub.add_parser("set", help="set one value, e.g. implementer.model.family opus")
     set_parser.add_argument("path")

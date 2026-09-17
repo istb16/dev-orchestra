@@ -310,6 +310,10 @@ Non-interactively:
 dev-orchestra config setup --defaults
 ```
 
+Either way the file keeps only what you chose; everything else follows the
+built-in defaults, so an improved default reaches your installation instead of
+being shadowed by a value written years ago.
+
 ## Usage
 
 Talk to your agent normally. The skill triggers on requests like:

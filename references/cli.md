@@ -25,11 +25,12 @@ interrupted.
 
 | Command | Description |
 | --- | --- |
-| `config show [--scope effective\|global\|project] [--json]` | Show the configuration. Default `effective` (merged). |
+| `config show [--scope effective\|global\|project] [--json]` | Show the configuration. Default `effective` (merged); a scope shows that layer exactly as it is on disk, which is usually much shorter. |
 | `config path` | Print both layer locations. |
-| `config setup [--scope global\|project] [--defaults] [--force]` | Setup wizard. `--defaults` writes the recommended config without prompting. `--force` prompts even without a TTY. |
-| `config reset [--scope …] [--delete]` | Restore recommended defaults, or delete the file. |
-| `config set <path> <value> [--scope …] [--raw]` | Set one value. Paths support `a.b.c` and `reviewers[0].role`. |
+| `config setup [--scope global\|project] [--defaults] [--force]` | Setup wizard. `--defaults` overrides nothing, so the file holds only `version: 1` and every value follows the built-in defaults. `--force` prompts even without a TTY. |
+| `config reset [--scope …] [--delete]` | Clear this layer's overrides (the file stays, holding only `version`), or delete the file with `--delete`. |
+| `config prune [--scope …] [--dry-run]` | Drop values a layer holds that are equal to what it inherits -- for files written before 0.6.0, which hold every default. `--dry-run` lists them without writing. |
+| `config set <path> <value> [--scope …] [--raw]` | Set one value. Paths support `a.b.c` and `reviewers[0].role`; an indexed edit copies the rest of the list from the layer below, and an index past the end exits 2. |
 | `config validate [--json]` | Validate the effective configuration. Exit 1 if invalid. |
 
 ```bash
@@ -38,6 +39,12 @@ dev-orchestra config set review.max_review_iterations 3
 dev-orchestra config set --scope project workspace.dir .agent-work
 dev-orchestra config set --raw review.note "3 reviewers"
 ```
+
+A saved file holds only what was set on it; everything else is resolved from
+the layer below, so an improved default reaches it. `config reset --delete` can
+uncover a second project file the deleted one was shadowing (`.dev-orchestra.yml`
+beside `.dev-orchestra.yaml`, or one in a parent directory); `config reset`
+leaves the file in place and goes on shadowing it.
 
 ## model
 
@@ -69,12 +76,11 @@ dev-orchestra reviewer remove db-review
 
 Never prints credential values -- only whether credentials appear to be present.
 
-It also lists any setting fixed at a value the built-in default has since moved
-off. `config setup --defaults` writes every default into the file, so improving
-a default never reaches a configuration that already recorded the old one --
-which is how the low-risk thresholds raised in 0.4.2 failed to reach anyone who
-had run setup before it. Reported, never rewritten: a deliberate choice and an
-inherited default are the same characters on disk.
+The "Pinned at a value the built-in default has moved off" section lists the
+settings a file fixes where the recommendation has since changed. It is a
+report, never a rewrite: a deliberate choice and an inherited default look
+identical on disk. `config prune` drops the ones equal to the current default,
+on request. It says nothing about `reviewers` -- a panel is nobody's default.
 
 ## run
 

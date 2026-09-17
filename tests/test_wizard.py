@@ -6,6 +6,7 @@ import unittest
 
 from helpers import IsolatedCase
 
+from orchestrator import cli
 from orchestrator import config as config_mod
 from orchestrator import wizard as wizard_mod
 
@@ -123,6 +124,75 @@ class TestWizard(IsolatedCase):
         data = config_mod.default_config()
         data["implementer"]["model"] = {"family": "opus", "version": "pinned", "id": "claude-opus-x"}
         self.assertIn("claude-opus-x / pinned", wizard_mod.render_summary(data))
+
+
+class TestWhatTheWizardReturns(IsolatedCase):
+    """Only what it asked about. A setting nobody was asked for is not a
+    decision, and writing it down would pin today's default forever."""
+
+    def test_nothing_it_never_asked_about_comes_back(self):
+        data, _ = wizard_mod.run(ScriptedPrompter(accept_all()))
+        self.assertEqual(
+            sorted(data),
+            ["architect", "implementer", "orchestrator", "review_fixer", "reviewers", "version"],
+        )
+
+    def test_what_the_layer_already_held_is_kept(self):
+        existing = {"version": 1, "review": {"max_review_iterations": 1}}
+        data, _ = wizard_mod.run(ScriptedPrompter(accept_all()), existing)
+        self.assertEqual(data["review"], {"max_review_iterations": 1})
+        self.assertEqual(data["implementer"]["model"]["family"], "opus")
+
+    def test_a_version_the_layer_states_is_left_alone(self):
+        data, _ = wizard_mod.run(ScriptedPrompter(accept_all()), {"version": 0})
+        self.assertEqual(data["version"], 0)
+
+
+class TestTheWizardsBase(IsolatedCase):
+    """`base` is what the layer being edited would inherit. Offering the
+    built-in defaults instead means pressing enter through a project setup
+    overrules the global layer with a value nobody chose."""
+
+    def test_the_recommended_answer_comes_from_the_base(self):
+        base = config_mod.deep_merge(
+            config_mod.default_config(),
+            {"implementer": {"provider": "claude", "model": {"family": "sonnet", "version": "latest"}}},
+        )
+        data, _ = wizard_mod.run(ScriptedPrompter(accept_all()), None, base)
+        self.assertEqual(data["implementer"]["model"]["family"], "sonnet")
+
+    def test_without_a_base_it_is_the_built_in_default(self):
+        data, _ = wizard_mod.run(ScriptedPrompter(accept_all()))
+        self.assertEqual(data["implementer"]["model"]["family"], "opus")
+
+    def test_the_summary_shows_what_will_be_in_force(self):
+        """The layer alone would report the design review as off while the
+        layer below has it on -- and the summary is what the user says yes to."""
+        base = config_mod.deep_merge(config_mod.default_config(), {"review": {"design": {"enabled": True}}})
+        prompter = ScriptedPrompter(accept_all())
+        data, _ = wizard_mod.run(prompter, None, base)
+        self.assertIn("design review: on", "\n".join(prompter.output))
+        self.assertNotIn("review", data)
+
+    def test_the_reviewer_template_comes_from_the_base_too(self):
+        panel = [config_mod.make_reviewer("only-one", "claude", "opus", "general")]
+        base = config_mod.deep_merge(config_mod.default_config(), {"reviewers": panel})
+        data, _ = wizard_mod.run(ScriptedPrompter(accept_all()), None, base)
+        self.assertEqual([r["id"] for r in data["reviewers"]], ["only-one"])
+
+    def test_an_inherited_empty_panel_is_not_refilled(self):
+        """`reviewers: []` is a decision -- run no independent review at all --
+        and it is only an *absent* panel that means nobody has chosen yet.
+        Reading the two the same way turned the global choice back into two
+        reviewers for anyone who pressed enter through project setup."""
+        config_mod.write_config_file(
+            config_mod.global_config_path(), {"version": 1, "reviewers": []}, "global"
+        )
+        base = cli._layer_base("project", self.project)
+        self.assertEqual(base["reviewers"], [])
+        prompter = ScriptedPrompter(accept_all())
+        data, _ = wizard_mod.run(prompter, None, base)
+        self.assertEqual(data["reviewers"], [])
 
 
 if __name__ == "__main__":
