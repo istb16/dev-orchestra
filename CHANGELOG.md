@@ -10,6 +10,26 @@ The public surface covered by that promise is: the configuration schema, the
 
 ## [Unreleased]
 
+### Fixed
+
+- **A queue of writers ran the file lock's deadline down and lost an edit.**
+  The wait was five seconds in total, which quietly made the guarantee depend
+  on how many writers were ahead: measured at twelve contenders holding for
+  half a second each, two gave up and clobbered each other's budget consume.
+  Caught by a Windows CI run where the whole suite was slow enough to reach
+  it. A deadline exists to survive a holder that died, and a queue moving
+  along is not that -- so every visible change of hands pushes it out again,
+  and `max_wait` backstops the case that is neither: a holder alive enough to
+  keep the file fresh and stuck enough never to release it.
+
+  Waiters read the lock file to tell a queue from a corpse, and that read goes
+  through the shared-delete path for the reason it exists: a plain `open` on
+  Windows does not grant delete sharing, so reading the file to detect
+  progress stopped the holder releasing it -- a poll meant to observe progress
+  preventing it. Each acquisition writes a token nobody else repeats, because
+  the pid cannot tell one holder from the next when the contenders are threads
+  of one process, which is the ordinary case here.
+
 ## [0.4.3] - 2026-09-17
 
 ### Fixed

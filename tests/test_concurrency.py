@@ -120,6 +120,65 @@ class TestFileLock(IsolatedCase):
         with ws.file_lock(path, timeout=0.5, stale_after=30) as lock:
             self.assertTrue(lock.acquired)
 
+    def test_a_queue_of_holders_does_not_run_the_deadline_down(self):
+        """The bound is there to survive a holder that died. A queue moving
+        along is not that, and treating it as that made the guarantee depend on
+        how many writers were ahead: measured at twelve contenders holding for
+        half a second each with a five-second bound, two gave up and clobbered
+        each other. Every visible change of hands pushes the deadline out.
+        """
+        path = os.path.join(self.project, "state.json")
+        acquired = []
+        hold = 0.2
+        contenders = 12  # 2.4s of serialised work against a 0.5s bound
+
+        def worker():
+            with ws.file_lock(path, timeout=0.5) as lock:
+                acquired.append(lock.acquired)
+                time.sleep(hold)
+
+        threads = [threading.Thread(target=worker) for _ in range(contenders)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=60)
+        self.assertEqual(acquired, [True] * contenders)
+
+    def test_reading_the_holder_does_not_stop_it_releasing(self):
+        """Waiters read the lock file to tell a queue from a corpse, and a
+        plain `open` on Windows does not grant delete sharing -- so the read
+        stopped the holder unlinking it, and a poll meant to detect progress
+        prevented it. Ten of twelve contenders proceeded unlocked.
+        """
+        path = os.path.join(self.project, "state.json")
+        with ws.file_lock(path) as first:
+            self.assertTrue(first.acquired)
+            lock_file = os.path.abspath(path) + ".lock"
+
+            def reader():
+                for _ in range(200):
+                    ws.file_lock(path)._holder()
+
+            watcher = threading.Thread(target=reader)
+            watcher.start()
+            time.sleep(0.05)
+        watcher.join(timeout=30)
+        self.assertFalse(os.path.exists(lock_file))
+
+    def test_a_lock_that_never_moves_is_still_given_up_on(self):
+        """The extension must not turn into waiting for ever. A holder alive
+        enough to keep the file fresh and stuck enough never to release it is
+        what `max_wait` is for."""
+        path = os.path.join(self.project, "state.json")
+        lock_file = os.path.abspath(path) + ".lock"
+        os.makedirs(os.path.dirname(lock_file), exist_ok=True)
+        with open(lock_file, "w", encoding="utf-8") as handle:
+            handle.write("1:neverreleases")
+        started = time.monotonic()
+        with ws.file_lock(path, timeout=0.2, stale_after=600, max_wait=1.0) as lock:
+            self.assertFalse(lock.acquired)
+        self.assertLess(time.monotonic() - started, 30)
+
     def test_failing_to_lock_does_not_raise(self):
         """Proceeding unlocked beats deadlocking the whole pipeline."""
         path = os.path.join(self.project, "state.json")
