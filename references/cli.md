@@ -203,10 +203,15 @@ dev-orchestra tokens show --json
 | --- | --- |
 | `optimization report [--json]` | What `optimization.level` has decided, over every review round this project has recorded, and which high-risk patterns escalated it. |
 
-Read from the run log (`.ai/state.json`), not the ledger. A level's effect is a
-*rate* -- how often it refused a round, how often it cut the panel -- and a rate
-needs more than the one workflow a ledger covers; `budget reset` starts a fresh
-ledger, while the event log keeps accumulating.
+Read from the run log, not the ledger. A level's effect is a *rate* -- how
+often it refused a round, how often it cut the panel -- and a rate needs
+rounds; `budget reset` starts a fresh ledger, while the event log keeps
+accumulating.
+
+For the same reason it reads **every workflow** in `.ai/`, not just the current
+one: one workflow is a handful of rounds, which is not a rate. `--workflow <id>`
+narrows it to one, which answers "what did the level do in this piece of work"
+rather than "in this repository".
 
 ```
 Review rounds recorded: 14 (12 ran, 2 refused)
