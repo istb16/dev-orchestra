@@ -32,6 +32,19 @@ ROLE_TITLES = (
 )
 
 
+def _say(text: str) -> None:
+    """Print through the CLI's writer rather than through ``print``.
+
+    ``cli._out`` degrades a character the console cannot encode instead of
+    letting it kill the message, and a console that cannot encode one is
+    exactly where the wizard is asked to echo config values and paths. Imported
+    late because ``cli`` imports this module.
+    """
+    from . import cli
+
+    cli._out(text)
+
+
 class Prompter:
     """Console I/O, isolated so tests can drive the wizard with scripted answers."""
 
@@ -41,7 +54,7 @@ class Prompter:
         writer: Optional[Callable[[str], None]] = None,
     ) -> None:
         self._read = reader or input
-        self._write = writer or (lambda text: print(text))
+        self._write = writer or _say
 
     def say(self, text: str = "") -> None:
         self._write(text)

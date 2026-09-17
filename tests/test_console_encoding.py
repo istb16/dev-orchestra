@@ -39,6 +39,9 @@ from orchestrator import ledger as ledger_mod
 EM_DASH = "—"
 #: What `backslashreplace` leaves behind, spelled without an escape of its own.
 ESCAPED_EM_DASH = chr(92) + "u2014"
+#: Prose cp932 cannot carry, past the em dash: an accent and an emoji, whose
+#: `backslashreplace` forms (`\xe9`, `\U0001f600`) are not JSON escapes.
+UNENCODABLE = "Fixed the café parser %s cleanly \U0001f600" % EM_DASH
 
 
 def cp932_stream(errors="surrogateescape"):
@@ -223,17 +226,24 @@ class TestEveryOutputPathOnACp932Console(IsolatedCase):
         self.assertIn(ESCAPED_EM_DASH, written)
 
     def test_the_json_form_survives_it_too(self):
-        """`--json` is dumped with `ensure_ascii=False`, so the em dash is
-        still a character by the time it reaches the console."""
-        code, written = self.on_a_cp932_console("run", "implementer", "--prompt", "go", "--json")
+        """`--json` promises machine-readable output, and degrading a character
+        must not cost it that: `backslashreplace` spells `é` as `\\xe9`, which
+        JSON does not define, so the output would parse as nothing. The em dash
+        alone hides this -- `\\u2014` happens to be a JSON escape too."""
+        run_cli("state", "record", "implementer", "ok", "--detail", "note=%s" % UNENCODABLE)
+        code, written = self.on_a_cp932_console("state", "show", "--json")
         self.assertEqual(code, 0)
-        self.assertIn("Fixed the parser", written)
+        payload = json.loads(written)
+        self.assertEqual(payload["events"][0]["note"], UNENCODABLE)
 
     def test_the_summary_survives_it_too(self):
+        """The end-of-run report, which is what the crash actually cost."""
         run_cli("run", "implementer", "--prompt", "go")
         code, written = self.on_a_cp932_console("summary")
         self.assertEqual(code, 0)
-        self.assertTrue(written)
+        self.assertIn("implementer", written)
+        self.assertIn("OK", written)
+        self.assertIn("Models:", written)
 
 
 class TestTheBooksAreClosedBeforeAnythingIsPrinted(IsolatedCase):

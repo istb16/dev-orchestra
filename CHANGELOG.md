@@ -21,7 +21,13 @@ The public surface covered by that promise is: the configuration schema, the
   finished and applied every edit. Any stream that cannot encode everything is
   now relaxed unless its handler is one that already cannot raise, and `_out`
   degrades the characters rather than dropping the message when the stream
-  cannot be reconfigured at all.
+  cannot be reconfigured at all. The wizard prints through the same writer, so
+  `config setup` cannot lose the console it is configuring.
+
+  `--json` escapes non-ASCII itself on such a console rather than leaving the
+  character to be degraded: `\xe9` is not an escape JSON defines, so tolerating
+  the console would otherwise have replaced a crash with output that parses as
+  nothing. Where the console can encode everything the output is unchanged.
 
   The test console was built with `strict`, so the suite agreed with the guard
   and both were wrong about the same thing. It is built the way Windows builds
