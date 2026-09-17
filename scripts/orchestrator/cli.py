@@ -52,9 +52,7 @@ DEFAULT_MODES = {
 #: is either strict or one of CPython's own stdio defaults, which sound
 #: forgiving and are not: ``surrogateescape`` and ``surrogatepass`` only rescue
 #: lone surrogates, so a plain em dash still kills a cp932 console.
-_TOLERANT_ERRORS = frozenset(
-    {"ignore", "replace", "backslashreplace", "xmlcharrefreplace", "namereplace"}
-)
+_TOLERANT_ERRORS = frozenset({"ignore", "replace", "backslashreplace", "xmlcharrefreplace", "namereplace"})
 
 
 def _encodes_everything(stream: Any) -> bool:
