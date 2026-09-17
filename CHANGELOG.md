@@ -10,6 +10,50 @@ The public surface covered by that promise is: the configuration schema, the
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-09-17
+
+Everything here came out of one real measurement: eleven review rounds across
+two workflows, 2,136,694 billed tokens, and an `optimization report` that had
+to be run three times by hand to see them.
+
+### Changed
+
+- **`balanced` reduces the panel for a small, low-risk change.** Restricting
+  that to `aggressive` made it unreachable in the repositories that most needed
+  it: a high-risk match escalates to `quality`, and `quality` is not
+  `aggressive`, so in an infrastructure repository where `*.tf` matches on most
+  rounds the dial could not fire at all. Measured over those eleven rounds at
+  `balanced`: the panel was reduced zero times. `quality` is now the only level
+  that always pays for the whole panel, which is what that level means. What
+  stops a reduction is still risk, not size -- a one-line change to an auth
+  file gets the full panel.
+
+- **The low-risk thresholds were raised to 5 files / 150 lines** (from 2 / 50).
+  No round in the measured set came close to the old pair, and a threshold that
+  never fires is not a conservative default, it is a dead one.
+
+- `ledger.workflow` is now `ledger.epoch`. A workflow is a directory under
+  `.ai/workflows/` as of 0.4.0, and two identifiers sharing one word cost a
+  real analysis an hour: a ledger whose `workflow` did not match the directory
+  holding it read as a ledger carried between directories, when it was only the
+  other namespace. A ledger written before the rename is read as it stands.
+
+### Fixed
+
+- **`tokens show` hid the account of any workflow idle for six hours.** It read
+  the ledger through the same call the budgets use, which hands back a blank
+  ledger once one has gone stale -- right for a budget, since the next request
+  should start with a full one, and wrong for an account that refuses nothing.
+  Reported from real use as "tokens show says no runs while state.json holds
+  446,430". It now reads what is on disk.
+
+- **The cost column read as authoritative while one provider never priced
+  anything.** Codex reports its tokens and no money, so a run counted as
+  measured and the "totals are a floor" caveat stayed quiet -- over a cost
+  total that omitted a provider entirely. Runs that reported tokens without a
+  cost are now counted separately and said out loud. An account written before
+  this release cannot answer the question and makes no claim either way.
+
 ## [0.4.1] - 2026-09-17
 
 ### Fixed
@@ -699,7 +743,8 @@ First release.
   none of which invoke a real CLI.
 - CI on Linux, macOS and Windows: lint, tests, skill validation.
 
-[Unreleased]: https://github.com/istb16/dev-orchestra/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/istb16/dev-orchestra/compare/v0.4.2...HEAD
+[0.4.2]: https://github.com/istb16/dev-orchestra/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/istb16/dev-orchestra/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/istb16/dev-orchestra/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/istb16/dev-orchestra/compare/v0.3.0...v0.3.1

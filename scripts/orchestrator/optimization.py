@@ -40,11 +40,13 @@ DEFAULT_LEVEL = "balanced"
 MAX_FINDINGS_BY_LEVEL = {"aggressive": 4, "balanced": 6, "quality": 10}
 
 #: Below both of these, and touching nothing high-risk, a change is small
-#: enough that one reviewer is a reasonable trade. Deliberately low: the
-#: saving is one delegated run, and the cost of being wrong is the
-#: cross-model disagreement that makes this tool worth running.
-DEFAULT_LOW_RISK_MAX_FILES = 2
-DEFAULT_LOW_RISK_MAX_LINES = 50
+#: enough that one reviewer is a reasonable trade. The saving is one delegated
+#: run and the cost of being wrong is the cross-model disagreement that makes
+#: this tool worth running, so the line is drawn low -- but not so low that it
+#: never applies. Measured over eleven real rounds at 2 files / 50 lines: the
+#: panel was reduced zero times, and no round came close.
+DEFAULT_LOW_RISK_MAX_FILES = 5
+DEFAULT_LOW_RISK_MAX_LINES = 150
 
 #: Paths where a small diff is not a small change.
 #:
@@ -282,7 +284,15 @@ def decide(
 
     files = len(paths) if reviewed_files is None else max(int(reviewed_files), 0)
     limit = None
-    if level == "aggressive" and reviewers > 1:
+    # Any level short of `quality`, which is the level that means "spend what
+    # it takes". Restricting this to `aggressive` made it unreachable in the
+    # repositories that most need it: a high-risk hit escalates to `quality`,
+    # and `quality` is not `aggressive`, so in an infrastructure repository
+    # where `*.tf` matches on most rounds the dial could not fire at all.
+    # `hits` is still what stops it -- a small change to an auth file gets the
+    # full panel -- but a small change to nothing risky no longer pays for two
+    # independent reviewers to agree it is small.
+    if level != "quality" and reviewers > 1:
         max_files = _positive(settings.get("low_risk_max_files"), DEFAULT_LOW_RISK_MAX_FILES)
         max_lines = _positive(settings.get("low_risk_max_lines"), DEFAULT_LOW_RISK_MAX_LINES)
         if files <= max_files and lines <= max_lines:

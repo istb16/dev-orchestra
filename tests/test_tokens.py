@@ -251,6 +251,52 @@ class TestLedgerAccount(IsolatedCase):
         self.assertEqual(account["output_tokens"], 15)
         self.assertEqual(account["runs"], 2)
 
+    def test_an_idle_workflow_still_has_an_account(self):
+        """`load` hands back a blank ledger once one has been idle past
+        `session_idle_reset_seconds`, which is right for a budget and wrong for
+        the account: the account refuses nothing, so resetting it only hides
+        what was spent. Reported from real use as "tokens show says no runs
+        while state.json holds 446,430"."""
+        import time
+
+        self.book.record_usage("review", self.measured(input_tokens=446430))
+        state = self.cli_workspace().read_state()
+        idle = float(state["ledger"]["last_activity_monotonic"])
+        limit = float(ledger_mod.DEFAULT_BUDGETS["session_idle_reset_seconds"])
+        state["ledger"]["last_activity_monotonic"] = idle - limit - 60
+        self.cli_workspace().write_state(state)
+
+        self.assertEqual(self.book.token_report()["totals"]["billed_tokens"], 446430)
+        # And the budget really has reset, which is the behaviour being kept.
+        self.assertGreater(time.time(), 0)
+        self.assertEqual(self.book.summary()["total_delegated_runs"]["used"], 0)
+
+    def test_a_run_that_priced_nothing_is_counted_apart(self):
+        """A CLI can report its tokens and no money -- Codex does, on every
+        run. Counting that as measured made a cost total that omits one
+        provider entirely look complete."""
+        self.book.record_usage("review", self.measured(input_tokens=100, cost_usd=1.5))
+        self.book.record_usage("review", self.measured(input_tokens=100))
+        report = self.book.token_report()
+        self.assertEqual(report["totals"]["runs"], 2)
+        self.assertEqual(report["totals"]["priced_runs"], 1)
+        self.assertTrue(report["complete"])
+        self.assertFalse(report["priced"])
+
+    def test_an_account_too_old_to_say_makes_no_claim(self):
+        """`priced_runs` did not exist before 0.4.2, and reading its absence as
+        zero made every older account report its own costs as unreported --
+        the caveat firing over data that never disagreed with it."""
+        self.book.record_usage("review", self.measured(input_tokens=100, cost_usd=1.5))
+        state = self.cli_workspace().read_state()
+        del state["ledger"]["tokens"]["by_stage"]["review"]["priced_runs"]
+        self.cli_workspace().write_state(state)
+        self.assertTrue(self.book.token_report()["priced"])
+
+    def test_every_run_pricing_itself_needs_no_caveat(self):
+        self.book.record_usage("review", self.measured(input_tokens=100, cost_usd=1.5))
+        self.assertTrue(self.book.token_report()["priced"])
+
     def test_reviewers_are_accounted_for_individually(self):
         """The review stage is the one that runs the same diff N times over."""
         self.book.record_usage("review", self.measured(input_tokens=400), label="claude-general")
@@ -337,6 +383,15 @@ class TestTokensCommand(IsolatedCase):
         self.assertEqual(payload["by_stage"]["implementer"]["runs"], 1)
         self.assertGreater(payload["totals"]["billed_tokens"], 0)
 
+    def test_the_cost_column_says_when_it_is_a_floor(self):
+        """The tokens can be complete while the money is not, and the two
+        caveats are different sentences."""
+        book = ledger_mod.Ledger(self.cli_workspace(), dict(ledger_mod.DEFAULT_BUDGETS))
+        book.record_usage("review", Usage(source="t", input_tokens=100).to_dict())
+        _, out, _ = run_cli("tokens", "show")
+        self.assertIn("no cost", out)
+        self.assertNotIn("reported no usage", out)
+
     def test_the_prompt_we_composed_is_counted_separately(self):
         """It is the only part of the input this repository can shorten."""
         run_cli("run", "implementer", "--prompt", "a prompt of a known length")
@@ -419,6 +474,10 @@ class TestReviewAccounting(IsolatedCase):
         run_cli("reviewer", "remove", "codex-general")
         run_cli("reviewer", "add", "--provider", "mock", "--id", "m1", "--role", "general")
         run_cli("reviewer", "add", "--provider", "mock", "--id", "m2", "--role", "security")
+        # The duplication is the subject here, so keep both reviewers: at
+        # `balanced` a change this small is reduced to one, which is the point
+        # of that setting and the end of this measurement.
+        run_cli("config", "set", "optimization.level", "quality")
 
     def test_every_reviewer_is_accounted_for_by_name(self):
         run_cli("review", "snapshot")

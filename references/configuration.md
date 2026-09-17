@@ -112,8 +112,8 @@ workspace:
 | `review.max_findings` | int \| null | How many findings each reviewer is asked for. `null` (default) lets `optimization.level` decide, `0` lifts the cap. Findings that come back over the cap are kept, never trimmed. |
 | `optimization.level` | `aggressive` \| `balanced` \| `quality` | How hard to try to be cheap. Default `balanced`. See below. |
 | `optimization.high_risk_paths` | list | Globs that force `quality` for a change touching them. Replaces the default list wholesale. |
-| `optimization.low_risk_max_files` | int | At `aggressive`, at most this many files still counts as a small change (default 2). |
-| `optimization.low_risk_max_lines` | int | And at most this many changed lines (default 50). |
+| `optimization.low_risk_max_files` | int | Below `quality`, at most this many files still counts as a small change (default 5). |
+| `optimization.low_risk_max_lines` | int | And at most this many changed lines (default 150). |
 | `workspace.dir` | string | Where `.ai/` artifacts go. |
 | `<role>.options` | mapping | Provider-specific knobs; see below. |
 | `<role>.model_tiers` | mapping | Named alternatives for this role's model; see below. Optional. |
@@ -171,7 +171,7 @@ One dial over three savings. Default `balanced`.
 | --- | --- | --- | --- |
 | Tests recorded as failing | refuse | refuse | review anyway |
 | No test result recorded | warn, review | warn, review | review |
-| Small, low-risk change | 1 reviewer | whole panel | whole panel |
+| Small, low-risk change | 1 reviewer | 1 reviewer | whole panel |
 | Findings asked for | 4 | 6 | 10 |
 
 `--force` gets past the refusal. `--only` overrides the reduced panel, because
@@ -196,6 +196,17 @@ obeyed.
 The patterns over-match on purpose. `authors_controller.rb` matches `*auth*`
 and costs one extra reviewer; missing `auth_controller.rb` costs an
 authorisation bug.
+
+**`balanced` reduces the panel too, as of 0.4.2.** Restricting that to
+`aggressive` made it unreachable in the repositories that most needed it: a
+high-risk match escalates to `quality`, and `quality` is not `aggressive`, so
+in an infrastructure repository where `*.tf` matches on most rounds the dial
+could not fire at all. Measured over eleven real rounds at `balanced`: the
+panel was reduced zero times, and no round came close to the old 2 file / 50
+line thresholds either. Both were raised at the same time.
+
+`quality` is now the only level that always pays for the whole panel, which is
+what that level means.
 
 **Size is never the only test.** The reduced panel needs the change to be
 under both thresholds *and* to touch nothing high-risk, because one line in an

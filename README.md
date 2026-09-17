@@ -549,8 +549,17 @@ before any reviewer starts. The default is `balanced`.
 | --- | --- | --- | --- |
 | Tests recorded as failing | refuse | refuse | review anyway |
 | No test result recorded | warn, review | warn, review | review |
-| Small, low-risk change | 1 reviewer | whole panel | whole panel |
+| Small, low-risk change | 1 reviewer | 1 reviewer | whole panel |
 | Findings asked for | 4 | 6 | 10 |
+
+**`balanced` reduces the panel too, as of 0.4.2.** Restricting that to
+`aggressive` made it unreachable exactly where it was needed: a high-risk match
+escalates to `quality`, and `quality` is not `aggressive`, so in an
+infrastructure repository where `*.tf` matches on most rounds the dial could
+not fire at all. Measured over eleven real rounds at `balanced`: the panel was
+reduced zero times, and no round came close to the old 2 file / 50 line
+thresholds either. Both were raised. `quality` is now the only level that
+always pays for the whole panel, which is what that level means.
 
 The gate reads a recorded result; it does not run anything. dev-orchestra has
 no way to know your test command -- the orchestrator discovers that from your

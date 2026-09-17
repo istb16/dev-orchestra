@@ -165,10 +165,10 @@ optimization:
     - "*/deploy/*"
     - ".github/workflows/*"
     - "*/.github/workflows/*"
-  # At `aggressive`, a change under both of these and touching nothing
+  # Below `quality`, a change under both of these and touching nothing
   # high-risk gets one reviewer instead of the panel.
-  low_risk_max_files: 2
-  low_risk_max_lines: 50
+  low_risk_max_files: 5
+  low_risk_max_lines: 150
 
 workspace:
   # Where plan.md, reviews/ and state.json go, relative to the repo root.

@@ -34,7 +34,7 @@ from .providers import (
     get_provider,
 )
 
-__version__ = "0.4.1"
+__version__ = "0.4.2"
 
 DEFAULT_MODES = {
     "orchestrator": MODE_PLAN,
@@ -1216,6 +1216,13 @@ def cmd_tokens_show(args: argparse.Namespace) -> int:
         _out(
             "%d of %d run(s) reported no usage, so every total above is a floor, "
             "not a total." % (silent, totals["runs"])
+        )
+    if not report.get("priced", True):
+        unpriced = int(totals["runs"]) - int(totals.get("priced_runs") or 0)
+        _out(
+            "%d of %d run(s) reported tokens but no cost, so the cost column is a "
+            "floor even where the token counts are not. Comparing providers on it "
+            "understates the ones that price nothing." % (unpriced, totals["runs"])
         )
     return 0
 
