@@ -10,6 +10,7 @@ agent, which drives these commands.
 from __future__ import annotations
 
 import argparse
+import codecs
 import json
 import os
 import sys
@@ -47,6 +48,23 @@ DEFAULT_MODES = {
 # --------------------------------------------------------------------------- helpers
 
 
+#: Error handlers that already guarantee ``write`` cannot raise. Anything else
+#: is either strict or one of CPython's own stdio defaults, which sound
+#: forgiving and are not: ``surrogateescape`` and ``surrogatepass`` only rescue
+#: lone surrogates, so a plain em dash still kills a cp932 console.
+_TOLERANT_ERRORS = frozenset(
+    {"ignore", "replace", "backslashreplace", "xmlcharrefreplace", "namereplace"}
+)
+
+
+def _encodes_everything(stream: Any) -> bool:
+    """True for a UTF stream, where no character can fail to encode."""
+    try:
+        return codecs.lookup(getattr(stream, "encoding", "") or "").name.startswith("utf")
+    except (LookupError, TypeError):
+        return False
+
+
 def tolerate_console_encoding() -> None:
     """Stop an unencodable character from killing a finished run.
 
@@ -55,16 +73,25 @@ def tolerate_console_encoding() -> None:
     ``UnicodeEncodeError``. Every edit had already been applied, so the work
     was done and only the report of it was lost -- reported from real use.
 
+    The first version of this only relaxed a ``strict`` stream, which is the
+    handler Windows never actually uses: CPython gives ``sys.stdout`` the
+    ``surrogateescape`` handler there. That is not a choice anybody made and it
+    does not help with an em dash, so the guard skipped the one console the
+    function existed for.
+
     ``backslashreplace`` rather than ``replace``: the output is read by the
-    orchestrating agent as well as by a person, and ``\\u2014`` says which
-    character could not be shown while ``?`` throws it away. A stream whose
-    error handler someone chose deliberately is left alone.
+    orchestrating agent as well as by a person, and ``\u2014`` says which
+    character could not be shown while ``?`` throws it away. A stream that can
+    encode anything is left as it is, and so is one whose handler someone chose
+    deliberately -- those already cannot raise.
     """
     for stream in (sys.stdout, sys.stderr):
         reconfigure = getattr(stream, "reconfigure", None)
         if reconfigure is None:  # a StringIO under test, or a plain wrapper
             continue
-        if (getattr(stream, "errors", "") or "") != "strict":
+        if _encodes_everything(stream):
+            continue
+        if (getattr(stream, "errors", "") or "") in _TOLERANT_ERRORS:
             continue
         try:
             reconfigure(errors="backslashreplace")
@@ -72,12 +99,27 @@ def tolerate_console_encoding() -> None:
             pass
 
 
+def _write(stream: Any, text: str) -> None:
+    """Write ``text``, degrading characters rather than dropping the message.
+
+    ``tolerate_console_encoding`` handles this for every stream that can be
+    reconfigured. This is for the ones that cannot -- a wrapper someone else
+    installed, a pipe already handed to us -- where the alternative is losing
+    a whole report to one character in it.
+    """
+    try:
+        stream.write(text)
+    except UnicodeEncodeError:
+        encoding = getattr(stream, "encoding", None) or "ascii"
+        stream.write(text.encode(encoding, "backslashreplace").decode(encoding))
+
+
 def _out(text: str = "") -> None:
-    sys.stdout.write(text + ("\n" if not text.endswith("\n") else ""))
+    _write(sys.stdout, text + ("\n" if not text.endswith("\n") else ""))
 
 
 def _err(text: str) -> None:
-    sys.stderr.write(text.rstrip() + "\n")
+    _write(sys.stderr, text.rstrip() + "\n")
 
 
 def _emit_json(data: Any) -> None:
