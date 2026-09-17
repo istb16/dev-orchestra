@@ -10,6 +10,27 @@ The public surface covered by that promise is: the configuration schema, the
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-09-17
+
+### Fixed
+
+- **A console that could not encode one character killed a finished run.** On
+  Japanese Windows the console is cp932, and a delegated agent writes prose: a
+  single em dash in a summary and `sys.stdout.write` raised
+  `UnicodeEncodeError`. Every edit had already been applied, so the work was
+  done and only the report of it was lost. Unencodable characters are now
+  escaped (`\u2014`) rather than dropped or fatal -- the output is read by the
+  orchestrating agent as well as by a person, and `?` throws away which
+  character it was. A stream whose error handler someone chose deliberately is
+  left alone.
+
+- **And the crash took the bookkeeping with it.** The output was printed
+  *before* the ledger was written, so the failure lost the run's token
+  accounting and left the stage marked in flight -- and the next command then
+  reported that finished run as abandoned. A success read as a stall. The
+  account is written and the stage closed before anything is printed: nothing
+  below that line decides whether the run happened.
+
 ## [0.4.2] - 2026-09-17
 
 Everything here came out of one real measurement: eleven review rounds across
@@ -743,7 +764,8 @@ First release.
   none of which invoke a real CLI.
 - CI on Linux, macOS and Windows: lint, tests, skill validation.
 
-[Unreleased]: https://github.com/istb16/dev-orchestra/compare/v0.4.2...HEAD
+[Unreleased]: https://github.com/istb16/dev-orchestra/compare/v0.4.3...HEAD
+[0.4.3]: https://github.com/istb16/dev-orchestra/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/istb16/dev-orchestra/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/istb16/dev-orchestra/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/istb16/dev-orchestra/compare/v0.3.1...v0.4.0

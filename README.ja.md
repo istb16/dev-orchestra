@@ -912,6 +912,7 @@ DEV_ORCHESTRA_MOCK_RESPONSE=NO_FINDINGS dev-orchestra review run --only dry
 | 明らかに同じ findings が2件ある | 自動統合は意図的に保守的です。「Possible duplicates」の一覧を確認し、片方を `duplicate` としてトリアージしてください。 |
 | レビューが終わらない | `review.timeout_seconds` を下げるか、`--sequential` でどのレビュアーが止まっているか特定。 |
 | 設定のパースエラー | 内蔵YAMLパーサは anchor、alias、ブロックスカラーを拒否します。簡素化するか PyYAML を入れてください。 |
+| `—` が `\u2014` と表示される | コンソールがその文字を表現できません（日本語 Windows の cp932 など）。落とさず落ちもせず、エスケープして表示します。`chcp 65001` か `PYTHONIOENCODING=utf-8` で正しく出ます。 |
 
 `dev-orchestra doctor --json` で同じ情報を機械可読な形で取得できます。
 

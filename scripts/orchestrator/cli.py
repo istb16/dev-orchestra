@@ -34,7 +34,7 @@ from .providers import (
     get_provider,
 )
 
-__version__ = "0.4.2"
+__version__ = "0.4.3"
 
 DEFAULT_MODES = {
     "orchestrator": MODE_PLAN,
@@ -45,6 +45,31 @@ DEFAULT_MODES = {
 
 
 # --------------------------------------------------------------------------- helpers
+
+
+def tolerate_console_encoding() -> None:
+    """Stop an unencodable character from killing a finished run.
+
+    A Japanese Windows console is cp932, and a delegated agent writes prose:
+    one em dash in a summary and ``sys.stdout.write`` raises
+    ``UnicodeEncodeError``. Every edit had already been applied, so the work
+    was done and only the report of it was lost -- reported from real use.
+
+    ``backslashreplace`` rather than ``replace``: the output is read by the
+    orchestrating agent as well as by a person, and ``\\u2014`` says which
+    character could not be shown while ``?`` throws it away. A stream whose
+    error handler someone chose deliberately is left alone.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:  # a StringIO under test, or a plain wrapper
+            continue
+        if (getattr(stream, "errors", "") or "") != "strict":
+            continue
+        try:
+            reconfigure(errors="backslashreplace")
+        except (OSError, ValueError):  # pragma: no cover - platform dependent
+            pass
 
 
 def _out(text: str = "") -> None:
@@ -593,22 +618,6 @@ def cmd_run(args: argparse.Namespace) -> int:
                 "model": result.resolved.display if result.resolved else None,
             },
         )
-    if args.output:
-        ws.write_text(_in_workflow(workspace, args.output), result.stdout)
-    elif not args.job_file:
-        _out(result.stdout)
-    if result.stalled:
-        _err(
-            "%s produced no output for %.0fs and was treated as stalled (not merely slow)."
-            % (role, result.idle_for)
-        )
-    elif result.timed_out:
-        _err("%s hit its %ss deadline and was killed." % (role, timeout))
-    elif not result.ok:
-        _err("%s failed (exit %s): %s" % (role, result.exit_code, result.stderr.strip()[:500]))
-    if result.orphans_possible:
-        _err("warning: %s's process group may have left orphans; check for stray processes." % role)
-
     # Recorded whatever the outcome -- a failed run still spent what it spent.
     # A run that never started one is a different thing, and counting it as
     # unreported would make the account call itself incomplete over a run with
@@ -636,6 +645,27 @@ def cmd_run(args: argparse.Namespace) -> int:
             "billed_tokens": result.usage.billed_tokens,
         },
     )
+
+    # Printed last, and after the books are closed. Showing the output used to
+    # come first, so a console that could not encode one character of it took
+    # the accounting and the in-flight entry down with it: the tokens went
+    # unrecorded and the next command reported this finished run as abandoned.
+    # Nothing below this line is allowed to decide whether the run happened.
+    if args.output:
+        ws.write_text(_in_workflow(workspace, args.output), result.stdout)
+    elif not args.job_file:
+        _out(result.stdout)
+    if result.stalled:
+        _err(
+            "%s produced no output for %.0fs and was treated as stalled (not merely slow)."
+            % (role, result.idle_for)
+        )
+    elif result.timed_out:
+        _err("%s hit its %ss deadline and was killed." % (role, timeout))
+    elif not result.ok:
+        _err("%s failed (exit %s): %s" % (role, result.exit_code, result.stderr.strip()[:500]))
+    if result.orphans_possible:
+        _err("warning: %s's process group may have left orphans; check for stray processes." % role)
     return 0 if result.ok else 1
 
 
@@ -2005,6 +2035,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
+    tolerate_console_encoding()
     parser = build_parser()
     args = parser.parse_args(list(argv) if argv is not None else None)
     if args.cwd:

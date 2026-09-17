@@ -946,6 +946,7 @@ DEV_ORCHESTRA_MOCK_RESPONSE=NO_FINDINGS dev-orchestra review run --only dry
 | Two findings are obviously the same | Auto-merge is conservative by design. Check the "Possible duplicates" list and triage one as `duplicate`. |
 | Reviews never finish | Lower `review.timeout_seconds`, or use `--sequential` to see which reviewer hangs. |
 | Config parse error | The built-in YAML parser rejects anchors, aliases and block scalars. Simplify, or install PyYAML. |
+| `—` appears as `\u2014` | The console cannot encode it -- cp932 on Japanese Windows, for instance. The character is escaped rather than dropped or fatal. `chcp 65001`, or `PYTHONIOENCODING=utf-8`, shows it properly. |
 
 `dev-orchestra doctor --json` gives a machine-readable version of all of this.
 
