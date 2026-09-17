@@ -44,6 +44,23 @@ The public surface covered by that promise is: the configuration schema, the
   budget exists because the document is resident in every session, so it is
   still not a target to grow into.
 
+### Fixed
+
+- **A cp932 console no longer loses a finished run to one em dash.** The
+  tolerance added for this only relaxed a `strict` stream, which is the one
+  handler Windows never supplies: CPython gives `sys.stdout` the
+  `surrogateescape` handler there, and that rescues lone surrogates and
+  nothing else. So the guard skipped the only console it existed for, and
+  `run implementer` went on crashing in `_out` after the delegated CLI had
+  finished and applied every edit. Any stream that cannot encode everything is
+  now relaxed unless its handler is one that already cannot raise, and `_out`
+  degrades the characters rather than dropping the message when the stream
+  cannot be reconfigured at all.
+
+  The test console was built with `strict`, so the suite agreed with the guard
+  and both were wrong about the same thing. It is built the way Windows builds
+  it now.
+
 ## [0.4.4] - 2026-09-17
 
 ### Added

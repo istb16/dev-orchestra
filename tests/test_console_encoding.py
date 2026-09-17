@@ -11,6 +11,13 @@ token accounting with it and left the stage marked in flight -- and the next
 command then reported that finished run as abandoned. A success read as a
 stall.
 
+Then it was reported again, with the tolerance already in place. The guard
+only relaxed a `strict` stream, and Windows never hands one over: CPython
+gives `sys.stdout` the `surrogateescape` handler there, which rescues lone
+surrogates and nothing else. An em dash walked through the guard into exactly
+the same crash, and this file passed the whole time because it built its
+console with `strict`. The console here now matches the real one.
+
 Two guarantees, one test class each: the console tolerates what it cannot
 encode, and nothing printed can decide whether the run happened.
 """
@@ -30,11 +37,19 @@ from orchestrator import cli
 from orchestrator import ledger as ledger_mod
 
 EM_DASH = "—"
+#: What `backslashreplace` leaves behind, spelled without an escape of its own.
+ESCAPED_EM_DASH = chr(92) + "u2014"
 
 
-def cp932_stream():
-    """A console like the one that reported this, as strict as Python makes it."""
-    return io.TextIOWrapper(io.BytesIO(), encoding="cp932", errors="strict", newline="")
+def cp932_stream(errors="surrogateescape"):
+    """A console like the one that reported this.
+
+    `surrogateescape` by default because that is what CPython gives
+    `sys.stdout` on Windows. Not `strict`, which is what this file used to
+    assume -- and why it passed while the console it was written for kept
+    crashing.
+    """
+    return io.TextIOWrapper(io.BytesIO(), encoding="cp932", errors=errors, newline="")
 
 
 def run_cli(*argv):
@@ -45,8 +60,25 @@ def run_cli(*argv):
 
 
 class TestTheConsoleTolerance(unittest.TestCase):
-    def test_a_strict_stream_is_relaxed(self):
+    def test_the_untouched_console_is_the_one_that_crashes(self):
+        """What the rest of this class is worth, stated as the failure."""
         stream = cp932_stream()
+        with self.assertRaises(UnicodeEncodeError):
+            stream.write(EM_DASH)
+            stream.flush()
+
+    def test_the_windows_default_is_relaxed(self):
+        """The regression: `surrogateescape` is nobody's deliberate choice."""
+        stream = cp932_stream()
+        saved, sys.stdout = sys.stdout, stream
+        try:
+            cli.tolerate_console_encoding()
+            self.assertEqual(stream.errors, "backslashreplace")
+        finally:
+            sys.stdout = saved
+
+    def test_a_strict_stream_is_relaxed(self):
+        stream = cp932_stream(errors="strict")
         saved, sys.stdout = sys.stdout, stream
         try:
             cli.tolerate_console_encoding()
@@ -66,8 +98,21 @@ class TestTheConsoleTolerance(unittest.TestCase):
             sys.stdout = saved
         stream.flush()
         written = stream.buffer.getvalue().decode("cp932")
-        self.assertIn("\\u2014", written)
+        self.assertIn(ESCAPED_EM_DASH, written)
         self.assertIn("Fixed the parser", written)
+
+    def test_stderr_is_relaxed_too(self):
+        """A failing run's last word goes through `_err`, and config paths and
+        provider messages carry non-ASCII just as readily as a summary does."""
+        stream = cp932_stream()
+        saved, sys.stderr = sys.stderr, stream
+        try:
+            cli.tolerate_console_encoding()
+            cli._err("config is broken %s check it" % EM_DASH)
+        finally:
+            sys.stderr = saved
+        stream.flush()
+        self.assertIn("config is broken", stream.buffer.getvalue().decode("cp932"))
 
     def test_an_error_handler_someone_chose_is_left_alone(self):
         stream = io.TextIOWrapper(io.BytesIO(), encoding="cp932", errors="ignore")
@@ -87,10 +132,11 @@ class TestTheConsoleTolerance(unittest.TestCase):
             sys.stdout = saved
 
     def test_utf8_is_left_as_it_is(self):
-        stream = io.TextIOWrapper(io.BytesIO(), encoding="utf-8", errors="strict")
+        stream = io.TextIOWrapper(io.BytesIO(), encoding="utf-8", errors="surrogateescape")
         saved, sys.stdout = sys.stdout, stream
         try:
             cli.tolerate_console_encoding()
+            self.assertEqual(stream.errors, "surrogateescape")
             cli._out(EM_DASH)
         finally:
             sys.stdout = saved
@@ -106,6 +152,88 @@ class TestTheConsoleTolerance(unittest.TestCase):
         finally:
             sys.stdout = saved
         self.assertEqual(stream.errors, "backslashreplace")
+
+
+class TestAStreamThatCannotBeReconfigured(unittest.TestCase):
+    """Reconfiguring covers every stream it can reach. `_out` covers the rest
+    -- a wrapper someone else installed, a pipe handed to us already open --
+    where the alternative is losing a whole report to one character in it."""
+
+    class Wrapper:
+        encoding = "cp932"
+
+        def __init__(self):
+            self.written = []
+
+        def write(self, text):
+            text.encode(self.encoding)  # strict, and no `reconfigure` to relax
+            self.written.append(text)
+
+    def write_through(self, attr, emit):
+        stream = self.Wrapper()
+        saved = getattr(sys, attr)
+        setattr(sys, attr, stream)
+        try:
+            cli.tolerate_console_encoding()  # reaches nothing here
+            emit("Fixed the parser %s cleanly" % EM_DASH)
+        finally:
+            setattr(sys, attr, saved)
+        return "".join(stream.written)
+
+    def test_stdout_keeps_the_message(self):
+        written = self.write_through("stdout", cli._out)
+        self.assertIn("Fixed the parser", written)
+        self.assertIn("cleanly", written)
+        self.assertIn(ESCAPED_EM_DASH, written)
+
+    def test_stderr_keeps_the_message(self):
+        self.assertIn("Fixed the parser", self.write_through("stderr", cli._err))
+
+
+class TestEveryOutputPathOnACp932Console(IsolatedCase):
+    """`cmd_run` is where it was reported, but every command prints through
+    `_out`, and non-ASCII reaches them from delegated agents and config files
+    alike. These drive `cli.main` end to end against the real console."""
+
+    def setUp(self):
+        super().setUp()
+        run_cli("config", "setup", "--defaults")
+        run_cli("config", "set", "implementer.provider", "mock")
+        os.environ["DEV_ORCHESTRA_MOCK_RESPONSE"] = "Fixed the parser %s cleanly" % EM_DASH
+
+    def on_a_cp932_console(self, *argv):
+        stream = cp932_stream()
+        saved, sys.stdout = sys.stdout, stream
+        try:
+            code = cli.main(list(argv))
+        finally:
+            sys.stdout = saved
+        stream.flush()
+        return code, stream.buffer.getvalue().decode("cp932")
+
+    def test_a_delegated_run_prints_instead_of_crashing(self):
+        """The report, verbatim: the run succeeded and printing it did not."""
+        code, written = self.on_a_cp932_console("run", "implementer", "--prompt", "go")
+        self.assertEqual(code, 0)
+        self.assertIn("Fixed the parser", written)
+        self.assertIn("cleanly", written)
+
+    def test_the_character_is_named_rather_than_dropped(self):
+        _, written = self.on_a_cp932_console("run", "implementer", "--prompt", "go")
+        self.assertIn(ESCAPED_EM_DASH, written)
+
+    def test_the_json_form_survives_it_too(self):
+        """`--json` is dumped with `ensure_ascii=False`, so the em dash is
+        still a character by the time it reaches the console."""
+        code, written = self.on_a_cp932_console("run", "implementer", "--prompt", "go", "--json")
+        self.assertEqual(code, 0)
+        self.assertIn("Fixed the parser", written)
+
+    def test_the_summary_survives_it_too(self):
+        run_cli("run", "implementer", "--prompt", "go")
+        code, written = self.on_a_cp932_console("summary")
+        self.assertEqual(code, 0)
+        self.assertTrue(written)
 
 
 class TestTheBooksAreClosedBeforeAnythingIsPrinted(IsolatedCase):
