@@ -197,7 +197,8 @@ class TestWhatIsJudgedAndWhatIsMeasured(unittest.TestCase):
         self.assertEqual(plan.level, "quality")
 
     def test_without_a_reviewed_count_the_path_list_is_used(self):
-        plan = decide(paths=["a.py", "b.py", "c.py"], lines=4, level="aggressive")
+        paths = ["f%d.py" % index for index in range(9)]
+        plan = decide(paths=paths, lines=4, level="aggressive")
         self.assertIsNone(plan.reviewer_limit)
 
 
@@ -259,11 +260,28 @@ class TestReducingThePanel(unittest.TestCase):
     def test_a_small_change_gets_one_reviewer_under_aggressive(self):
         self.assertEqual(decide(paths=["a.py"], lines=10, level="aggressive").reviewer_limit, 1)
 
-    def test_balanced_never_reduces_the_panel(self):
-        self.assertIsNone(decide(paths=["a.py"], lines=1, level="balanced").reviewer_limit)
+    def test_balanced_reduces_a_small_low_risk_change_too(self):
+        """Restricting this to `aggressive` made it unreachable exactly where
+        it was needed: a high-risk hit escalates to `quality`, and `quality` is
+        not `aggressive`, so in a repository where `*.tf` matches on most
+        rounds the dial could not fire at all. Measured over eleven real rounds
+        at `balanced`: reduced zero times."""
+        self.assertEqual(decide(paths=["a.py"], lines=1, level="balanced").reviewer_limit, 1)
+
+    def test_quality_never_reduces_the_panel(self):
+        """`quality` is the level that means "spend what it takes"."""
+        self.assertIsNone(decide(paths=["a.py"], lines=1, level="quality").reviewer_limit)
+
+    def test_a_small_high_risk_change_keeps_the_panel(self):
+        """What actually stops a reduction, and the reason it is safe to let
+        `balanced` reduce at all: risk, not size."""
+        plan = decide(paths=["app/auth.py"], lines=1, level="balanced")
+        self.assertIsNone(plan.reviewer_limit)
+        self.assertEqual(plan.level, "quality")
 
     def test_too_many_files_keeps_the_panel(self):
-        plan = decide(paths=["a.py", "b.py", "c.py"], lines=3, level="aggressive")
+        paths = ["f%d.py" % index for index in range(9)]
+        plan = decide(paths=paths, lines=9, level="aggressive")
         self.assertIsNone(plan.reviewer_limit)
 
     def test_too_many_lines_keeps_the_panel(self):
@@ -541,7 +559,15 @@ class TestThePanelInThePipeline(TestTheGateInThePipeline):
         self.assertIn("aggressive", err)
         self.assertIn("auth.py", err)
 
-    def test_balanced_keeps_both_reviewers(self):
+    def test_balanced_reduces_the_panel_for_a_small_low_risk_change(self):
+        """The default level, which is the one almost every run uses."""
+        run_cli("state", "record", "test", "ok")
+        run_cli("review", "snapshot")
+        _, out, _ = run_cli("review", "run")
+        self.assertIn("1 successful", out)
+
+    def test_a_high_risk_change_still_gets_the_whole_panel(self):
+        self.write("auth.py", "def login():\n    return True\n")
         run_cli("state", "record", "test", "ok")
         run_cli("review", "snapshot")
         _, out, _ = run_cli("review", "run")

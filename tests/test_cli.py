@@ -424,6 +424,11 @@ class TestReviewPipeline(IsolatedCase):
         run_cli("reviewer", "remove", "codex-general")
         run_cli("reviewer", "add", "--provider", "mock", "--id", "m1", "--role", "general")
         run_cli("reviewer", "add", "--provider", "mock", "--id", "m2", "--role", "security")
+        # These are about the fan-out: two reviewers, one of them failing, the
+        # report surviving it. Below `quality` a change this small is reduced
+        # to a single reviewer, which is the saving that level is for and
+        # leaves nothing to fan out. The panel logic has its own tests.
+        run_cli("config", "set", "optimization.level", "quality")
 
     def test_snapshot_then_review_then_triage_then_fix_brief(self):
         code, out, _ = run_cli("review", "snapshot")

@@ -71,7 +71,10 @@ USAGE_COUNTS = (
 
 
 def _blank_account() -> Dict[str, Any]:
-    account: Dict[str, Any] = {"runs": 0, "measured_runs": 0, "cost_usd": 0.0}
+    # ``priced_runs`` apart from ``measured_runs``: a CLI can report its tokens
+    # and no money, which Codex does on every run. Counting the two together
+    # made a cost total that omits one provider entirely look complete.
+    account: Dict[str, Any] = {"runs": 0, "measured_runs": 0, "priced_runs": 0, "cost_usd": 0.0}
     account.update(dict.fromkeys(USAGE_COUNTS, 0))
     return account
 
@@ -93,18 +96,30 @@ def _accumulate(account: Dict[str, Any], usage: Dict[str, Any]) -> Dict[str, Any
     cost = usage.get("cost_usd")
     if isinstance(cost, (int, float)) and not isinstance(cost, bool):
         account["cost_usd"] = round(float(account.get("cost_usd") or 0.0) + float(cost), 6)
+        if float(cost) > 0:
+            account["priced_runs"] = int(account.get("priced_runs") or 0) + 1
     return account
 
 
 def _merge_accounts(accounts: List[Dict[str, Any]]) -> Dict[str, Any]:
     total = _blank_account()
+    # An account written before ``priced_runs`` existed cannot answer "how many
+    # of these runs reported money", and reading its absence as zero made every
+    # pre-0.4.2 account claim its costs were unreported. Absent is unknown.
+    total["priced_known"] = all("priced_runs" in account for account in accounts)
     for account in accounts:
         total["runs"] += int(account.get("runs") or 0)
         total["measured_runs"] += int(account.get("measured_runs") or 0)
+        total["priced_runs"] += int(account.get("priced_runs") or 0)
         for field in USAGE_COUNTS:
             total[field] += int(account.get(field) or 0)
         total["cost_usd"] = round(total["cost_usd"] + float(account.get("cost_usd") or 0.0), 6)
     return total
+
+
+def _epoch(ledger: Dict[str, Any]) -> str:
+    """The budget epoch of a ledger, whichever key it was written with."""
+    return str(ledger.get("epoch") or ledger.get("workflow") or "")
 
 
 class BudgetExhausted(RuntimeError):
@@ -164,7 +179,14 @@ class Ledger:
         return ledger
 
     def workflow_id(self) -> str:
-        """A value that changes when this becomes a different workflow.
+        """The current budget epoch: a value that changes when the budgets do.
+
+        Named ``epoch`` on disk rather than ``workflow``, which it was called
+        until 0.4.2. A workflow is now a directory under `.ai/workflows/`, and
+        two identifiers sharing one word cost a real analysis an hour: a
+        ledger whose ``workflow`` did not match the directory holding it read
+        as a ledger carried between directories, when it was only the other
+        namespace. A ledger written before the rename is read as it stands.
 
         Which is what ``budget reset`` and the idle reset both do. Anything
         counting *per workflow* has to be keyed on this, or the reset says it
@@ -185,17 +207,17 @@ class Ledger:
         with self._locked():
             stored = self._read() or {}
             ledger = self.load()
-            if str(ledger.get("workflow") or "") != str(stored.get("workflow") or ""):
+            if _epoch(ledger) != _epoch(stored):
                 self._write(ledger)
-            return str(ledger.get("workflow") or ledger.get("started_at") or "")
+            return _epoch(ledger) or str(ledger.get("started_at") or "")
 
     def _fresh(self) -> Dict[str, Any]:
         now = time.time()
         return {
-            # Identity, not a timestamp: two workflows can start in the same
-            # second, and anything keyed on "which workflow is this" has to
-            # tell them apart.
-            "workflow": uuid.uuid4().hex[:12],
+            # Identity, not a timestamp: two epochs can start in the same
+            # second, and anything keyed on "are the budgets still the ones I
+            # was counting against" has to tell them apart.
+            "epoch": uuid.uuid4().hex[:12],
             "started_at": ws.utcnow(),
             "started_monotonic": now,
             "last_activity_monotonic": now,
@@ -316,8 +338,17 @@ class Ledger:
             return tokens
 
     def token_report(self) -> Dict[str, Any]:
-        """The account, plus how much of it is actually measured."""
-        tokens = self.load().get("tokens") or {}
+        """The account, plus how much of it is actually measured.
+
+        Read from the ledger *on disk*, not through ``load``. ``load`` hands
+        back a blank ledger once one has been idle past
+        ``session_idle_reset_seconds``, which is right for a budget -- the next
+        request should start with a full one -- and wrong for the account,
+        which refuses nothing. It only hid yesterday's numbers: reported from
+        real use as "tokens show says no runs while state.json holds 446,430".
+        """
+        stored = self._read() or {}
+        tokens = (stored.get("tokens") if stored else None) or {}
         by_stage = {
             stage: account
             for stage, account in (tokens.get("by_stage") or {}).items()
@@ -336,6 +367,14 @@ class Ledger:
             # False means the sums are a floor: at least one CLI ran without
             # reporting what it spent.
             "complete": totals["runs"] > 0 and totals["runs"] == totals["measured_runs"],
+            # And this means the *money* is a floor, which is a separate thing:
+            # a CLI can report its tokens and no cost, as Codex does on every
+            # run, so a complete token total can sit beside a cost that omits
+            # one provider entirely. An account too old to say counts as
+            # priced: claiming a caveat we cannot support is the worse error.
+            "priced": not totals.get("priced_known", True)
+            or totals["runs"] == 0
+            or totals["runs"] == totals["priced_runs"],
         }
 
     def repeats(self, stage: str) -> int:
