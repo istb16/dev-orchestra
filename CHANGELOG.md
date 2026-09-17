@@ -10,6 +10,19 @@ The public surface covered by that promise is: the configuration schema, the
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-09-17
+
+### Fixed
+
+- **`optimization report` only saw one workflow.** It reads the run log rather
+  than the ledger for a reason: a level's effect is a *rate* -- how often it
+  refused a round, how often it cut the panel -- and a rate needs rounds, which
+  the event log accumulates and `budget reset` does not clear. Splitting the run
+  log per workflow in 0.4.0 quietly took that away again: one workflow is a
+  handful of rounds. It now reads every workflow in `.ai/`, and `--workflow
+  <id>` narrows it to one -- "what did the level do in this piece of work"
+  rather than "in this repository".
+
 ## [0.4.0] - 2026-09-15
 
 ### Added
@@ -686,7 +699,8 @@ First release.
   none of which invoke a real CLI.
 - CI on Linux, macOS and Windows: lint, tests, skill validation.
 
-[Unreleased]: https://github.com/istb16/dev-orchestra/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/istb16/dev-orchestra/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/istb16/dev-orchestra/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/istb16/dev-orchestra/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/istb16/dev-orchestra/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/istb16/dev-orchestra/compare/v0.2.0...v0.3.0

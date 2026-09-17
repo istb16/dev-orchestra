@@ -34,7 +34,7 @@ from .providers import (
     get_provider,
 )
 
-__version__ = "0.4.0"
+__version__ = "0.4.1"
 
 DEFAULT_MODES = {
     "orchestrator": MODE_PLAN,
@@ -1223,21 +1223,48 @@ def cmd_tokens_show(args: argparse.Namespace) -> int:
 _OPT_ROW = "  %-22s %s"
 
 
-def cmd_optimization_report(args: argparse.Namespace) -> int:
-    """What the level decided, over every round this project has recorded.
+def _rounds_recorded(args: argparse.Namespace, workspace: ws.Workspace) -> "tuple[List[Dict[str, Any]], str]":
+    """Every review round recorded in this project, and what was read.
 
-    Reads the run log rather than the ledger. A level's effect is a rate --
-    how often it refused, how often it cut the panel -- and a rate needs more
-    than the one workflow a ledger covers.
+    A level's effect is a rate -- how often it refused a round, how often it
+    cut the panel -- and a rate needs rounds. Reading the run log rather than
+    the ledger was what supplied them, because `budget reset` starts a fresh
+    ledger while the event log keeps accumulating. Splitting the run log per
+    workflow took that away again: one workflow is a handful of rounds, which
+    is not a rate. So the default reads every workflow here.
+
+    `--workflow` narrows it to one, which is the question "what did the level
+    do *in this piece of work*" rather than "in this repository".
     """
+    if getattr(args, "workflow", ""):
+        return list(workspace.read_state().get("events") or []), workspace.relative(workspace.state_path)
+
+    events: List[Dict[str, Any]] = []
+    for entry in workflow_mod.listing(workspace.container):
+        state = ws.read_json(os.path.join(entry["dir"], "state.json"), {}) or {}
+        found = state.get("events")
+        if isinstance(found, list):
+            events.extend(item for item in found if isinstance(item, dict))
+    if not events:
+        # A flat `.ai/` that has not been adopted yet, or nothing recorded.
+        events = [item for item in (workspace.read_state().get("events") or []) if isinstance(item, dict)]
+    # One sequence out of several logs. The counts do not depend on the order,
+    # but "what happened over time" reads wrong when it is per directory.
+    events.sort(key=lambda item: str(item.get("at") or ""))
+    return events, workspace.relative(workspace.container)
+
+
+def cmd_optimization_report(args: argparse.Namespace) -> int:
+    """What the level decided, over every round this project has recorded."""
     workspace = _workspace(args)
-    report = opt_mod.summarise_rounds(workspace.read_state().get("events") or [])
+    events, source = _rounds_recorded(args, workspace)
+    report = opt_mod.summarise_rounds(events)
     if args.json:
         _emit_json(report)
         return 0
 
     if not report["rounds"]:
-        _out("No review rounds recorded in %s." % workspace.relative(workspace.state_path))
+        _out("No review rounds recorded in %s." % source)
         _out("Run a review, then ask again -- this reads what happened, not what would.")
         return 0
 

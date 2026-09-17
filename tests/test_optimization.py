@@ -712,6 +712,36 @@ class TestTheReportCommand(IsolatedCase):
         report = json.loads(run_cli("optimization", "report", "--json")[1])
         self.assertEqual(report["billed_tokens"], 1400)
 
+    def test_it_reads_every_workflow_rather_than_only_this_one(self):
+        """The reason it reads the run log at all is that a level's effect is a
+        rate, and a rate needs rounds. 0.4.0 split the run log per workflow,
+        which quietly narrowed this to a handful of rounds -- the very thing
+        reading the log instead of the ledger was meant to avoid."""
+        from orchestrator import workspace as ws_mod
+
+        self.workspace.record_event("review", "ok", round_event(reviewers=1, billed=500))
+        other = ws_mod.Workspace(self.project, workflow="elsewhere").ensure()
+        other.record_event("review", "ok", round_event(reviewers=1, billed=700))
+        report = json.loads(run_cli("optimization", "report", "--json")[1])
+        self.assertEqual(report["rounds"], 2)
+        self.assertEqual(report["billed_tokens"], 1200)
+
+    def test_one_workflow_can_still_be_asked_about_on_its_own(self):
+        """ "What did the level do in this piece of work" is a fair question
+        too; it is just not the one the bare command answers."""
+        from orchestrator import workspace as ws_mod
+
+        self.workspace.record_event("review", "ok", round_event(reviewers=1, billed=500))
+        other = ws_mod.Workspace(self.project, workflow="elsewhere").ensure()
+        other.record_event("review", "ok", round_event(reviewers=1, billed=700))
+        report = json.loads(run_cli("--workflow", "elsewhere", "optimization", "report", "--json")[1])
+        self.assertEqual(report["rounds"], 1)
+        self.assertEqual(report["billed_tokens"], 700)
+
+    def test_the_empty_message_names_where_it_looked(self):
+        _, out, _ = run_cli("optimization", "report")
+        self.assertIn(".ai", out)
+
     def test_the_refusal_notice_names_the_command_that_fixes_it(self):
         self.workspace.record_event("review", "ok", round_event(test_status=""))
         _, out, _ = run_cli("optimization", "report")
