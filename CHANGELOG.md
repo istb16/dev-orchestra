@@ -10,6 +10,8 @@ The public surface covered by that promise is: the configuration schema, the
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-17
+
 ### Added
 
 - **The plan can be reviewed before it is implemented.** `review run --design`
@@ -859,7 +861,8 @@ First release.
   none of which invoke a real CLI.
 - CI on Linux, macOS and Windows: lint, tests, skill validation.
 
-[Unreleased]: https://github.com/istb16/dev-orchestra/compare/v0.4.4...HEAD
+[Unreleased]: https://github.com/istb16/dev-orchestra/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/istb16/dev-orchestra/compare/v0.4.4...v0.5.0
 [0.4.4]: https://github.com/istb16/dev-orchestra/compare/v0.4.3...v0.4.4
 [0.4.3]: https://github.com/istb16/dev-orchestra/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/istb16/dev-orchestra/compare/v0.4.1...v0.4.2
