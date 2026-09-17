@@ -870,9 +870,7 @@ def _run_design_review(args: argparse.Namespace, loaded: config_mod.LoadedConfig
         _err("Report the remaining findings instead of looping, or pass --force to override.")
         return ledger_mod.EXIT_BUDGET_EXHAUSTED
 
-    meta = review_mod.write_design_snapshot(
-        workspace, workspace.plan_path, request_path, plan_text, digest
-    )
+    meta = review_mod.write_design_snapshot(workspace, workspace.plan_path, request_path, plan_text, digest)
 
     if not reviewers:
         # Recorded against the plan that was actually frozen, so the round this
@@ -2161,8 +2159,7 @@ def build_parser() -> argparse.ArgumentParser:
     review_run.add_argument(
         "--request",
         default=None,
-        help="the design request the plan answers (--design; default"
-        " .ai/execution/design-request.md)",
+        help="the design request the plan answers (--design; default .ai/execution/design-request.md)",
     )
     review_run.add_argument(
         "--iteration",

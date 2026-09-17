@@ -473,9 +473,7 @@ class TestDesignSnapshot(IsolatedCase):
     def test_previous_sha_is_only_set_once_the_plan_has_moved_on(self):
         first = review_mod.create_design_snapshot(self.workspace, self.plan, self.request)
         self.assertEqual(first["previous_sha"], "")
-        ws.write_json(
-            self.workspace.consolidated_json_path, {"snapshot": {"sha256": first["sha256"]}}
-        )
+        ws.write_json(self.workspace.consolidated_json_path, {"snapshot": {"sha256": first["sha256"]}})
         same = review_mod.create_design_snapshot(self.workspace, self.plan, self.request)
         self.assertEqual(same["previous_sha"], "")
         ws.write_text(self.plan, PLAN + "\nBackfill it first.\n")
@@ -506,9 +504,7 @@ class TestDesignReviewPrompt(IsolatedCase):
         self.assertIn("NO_FINDINGS", prompt)
 
     def test_role_guidance_is_about_the_proposal_not_the_diff(self):
-        prompt = review_mod.build_design_review_prompt(
-            reviewer("r1", role="security"), self.workspace, PLAN
-        )
+        prompt = review_mod.build_design_review_prompt(reviewer("r1", role="security"), self.workspace, PLAN)
         self.assertIn("authn/authz gaps it creates", prompt)
 
     def test_a_custom_role_still_gets_a_usable_prompt(self):

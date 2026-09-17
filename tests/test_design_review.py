@@ -327,9 +327,7 @@ class TestIndependenceFromTheCodeReview(DesignReviewCase):
         run_cli("review", "run", "--design")
         self.write_plan(REVISED_PLAN)
         run_cli("review", "run", "--design")
-        self.assertEqual(
-            json.loads(run_cli("review", "show", "--design", "--json")[1])["iteration"], 2
-        )
+        self.assertEqual(json.loads(run_cli("review", "show", "--design", "--json")[1])["iteration"], 2)
 
         self.write("app.py", "def add(a, b):\n    return a - b\n")
         run_cli("review", "snapshot")

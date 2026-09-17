@@ -297,8 +297,7 @@ def render_summary(data: Dict[str, Any]) -> str:
     # a whole stage runs, so leaving it out of the summary entirely would make
     # it the one stage nobody can see the state of.
     lines.append(
-        "    design review: %s  (review.design.enabled)"
-        % ("on" if _design_review_enabled(data) else "off")
+        "    design review: %s  (review.design.enabled)" % ("on" if _design_review_enabled(data) else "off")
     )
     lines.append("")
     return "\n".join(lines)
