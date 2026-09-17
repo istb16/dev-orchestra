@@ -1,17 +1,18 @@
 """Settings fixed at a value the built-in default has since moved off.
 
-`config setup --defaults` writes every default into the file, so improving a
-default never reaches an existing installation: the file goes on answering
+Before 0.6.0 every writer wrote every default into the file, so improving a
+default never reached an existing installation: the file went on answering
 with the number that was current when it was written. That is not theoretical.
 0.4.2 raised the low-risk thresholds from 2 files / 50 lines to 5 / 150 so the
 panel reduction could fire at all, and every configuration written before it
 kept reporting the old pair -- so the release did nothing for anyone who had
-already run `config setup`.
+already run `config setup`. Writers are sparse now; the files those releases
+wrote are still on disk, which is what this report is still for.
 
 `doctor` reports them. It does not fix them: "chose 2 deliberately" and
 "inherited 2 from an older default" are the same two characters on disk, and
 rewriting the first silently would be worse than leaving the second to be
-noticed.
+noticed. `config prune` does it on request, which is a different thing.
 """
 
 from __future__ import annotations

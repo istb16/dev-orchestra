@@ -273,6 +273,51 @@ class TestPathEditing(IsolatedCase):
         self.assertEqual(config_mod.coerce_scalar("[a, b]"), ["a", "b"])
 
 
+class TestPruneLayer(IsolatedCase):
+    """`prune_layer` reads "equal to what this layer inherits" as evidence that
+    the value was never chosen -- the only evidence a pre-0.6.0 file carries,
+    which is why it runs on request rather than on every write."""
+
+    def test_a_leaf_equal_to_the_base_is_dropped(self):
+        base = {"optimization": {"low_risk_max_files": 5, "low_risk_max_lines": 150}}
+        layer = {"version": 1, "optimization": {"low_risk_max_files": 5, "low_risk_max_lines": 50}}
+        pruned, dropped = config_mod.prune_layer(layer, base)
+        self.assertEqual(pruned, {"version": 1, "optimization": {"low_risk_max_lines": 50}})
+        self.assertEqual(dropped, [{"setting": "optimization.low_risk_max_files", "value": 5}])
+
+    def test_a_list_is_dropped_only_when_it_matches_whole(self):
+        base = {"review": {"exclude": ["a", "b"]}}
+        same, _ = config_mod.prune_layer({"version": 1, "review": {"exclude": ["a", "b"]}}, base)
+        self.assertEqual(same, {"version": 1})
+        edited, _ = config_mod.prune_layer({"version": 1, "review": {"exclude": ["a", "c"]}}, base)
+        self.assertEqual(edited, {"version": 1, "review": {"exclude": ["a", "c"]}})
+
+    def test_a_mapping_emptied_by_its_children_goes_with_them(self):
+        base = {"review": {"design": {"enabled": False}}}
+        pruned, _ = config_mod.prune_layer({"version": 1, "review": {"design": {"enabled": False}}}, base)
+        self.assertEqual(pruned, {"version": 1})
+
+    def test_a_key_the_base_does_not_mention_is_kept(self):
+        base = config_mod.default_config()
+        layer = dict(config_mod.default_config())
+        layer["implementer"] = dict(layer["implementer"], options={"permission_mode": "acceptEdits"})
+        pruned, _ = config_mod.prune_layer(layer, base)
+        self.assertEqual(pruned["implementer"], {"options": {"permission_mode": "acceptEdits"}})
+
+    def test_the_default_panel_is_dropped_like_any_other_list(self):
+        """The only way back for a panel the wizard wrote down: `doctor` never
+        reports one, because comparing a panel to the default one would flag
+        every installation that added a reviewer."""
+        pruned, _ = config_mod.prune_layer(config_mod.default_config(), config_mod.default_config())
+        self.assertEqual(pruned, {"version": 1})
+
+    def test_version_survives_and_is_supplied(self):
+        kept, _ = config_mod.prune_layer({"version": 0}, config_mod.default_config())
+        self.assertEqual(kept, {"version": 0})
+        supplied, _ = config_mod.prune_layer({}, config_mod.default_config())
+        self.assertEqual(supplied, {"version": 1})
+
+
 class TestPaths(IsolatedCase):
     def test_env_override_wins(self):
         explicit = os.path.join(self.tmp, "explicit.yaml")

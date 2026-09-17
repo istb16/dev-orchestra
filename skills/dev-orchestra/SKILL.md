@@ -186,7 +186,7 @@ resulting configuration afterwards so the user can confirm it.
 
 | Want | Command |
 | --- | --- |
-| show, reset | `config show`, `config reset` |
+| show, reset | `config show`, `config reset`, `config prune` |
 | set up | `config setup` (interactive), or `config setup --defaults` |
 | available models | `model list` |
 | change a role | `config set <role>.provider codex`, `config set <role>.model.family opus` |

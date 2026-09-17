@@ -6,6 +6,10 @@
 #
 # or just run:  dev-orchestra config setup
 #
+# This is a reference to every field, not the shape of a real file: the CLI
+# saves only the values you set, and resolves the rest from the built-in
+# defaults on every load.
+#
 # Note what is NOT here: any dated model id. Roles declare a model *family* and
 # a version policy, and the provider adapter resolves that against the CLI you
 # have installed, so this file keeps working after a model release.

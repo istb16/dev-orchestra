@@ -187,6 +187,7 @@ def render(report: Dict[str, Any]) -> str:
             lines.append("    %-40s %s (default %s)" % (entry["setting"], entry["value"], entry["default"]))
         lines.append("    Deliberate choices look the same as values inherited from an")
         lines.append("    older default, so these are reported and never rewritten.")
+        lines.append("    config prune drops the values equal to the current default, on request.")
     lines.append("")
 
     lines.append("Roles")

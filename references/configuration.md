@@ -323,7 +323,9 @@ The skill carries the command grammar; this is the phrasebook.
 | "remove the performance reviewer" | `reviewer remove performance` |
 | "change the second reviewer" | `reviewer set 2 --provider … --role …` |
 | "just this project" | add `--scope project` to any write |
-| "reset to defaults" | `config reset` |
+| "undo my own settings" | `config reset --scope global` (clears your overrides; the built-in defaults are what is left) |
+| "drop this project's overrides" | `config reset --scope project` (the project then follows the global layer) |
+| "my config is from an old version" | `config prune --dry-run`, then `config prune` |
 | "check my environment" | `doctor` |
 
 Show the resulting configuration after any write, so the user can confirm it.
@@ -338,27 +340,68 @@ dev-orchestra config setup --defaults        # non-interactive, recommended valu
 dev-orchestra config set implementer.model.family sonnet
 dev-orchestra config set --scope project architect.provider codex
 dev-orchestra config set reviewers[1].role security
-dev-orchestra config reset                   # back to recommended defaults
+dev-orchestra config reset                   # clear this layer's overrides
 dev-orchestra config reset --delete          # remove the file entirely
+dev-orchestra config prune                   # drop values equal to what is inherited
 dev-orchestra config validate
 ```
 
-**A saved config pins every value it holds.** `config setup --defaults` writes
-the whole recommended set into the file, so a default improved in a later
-release never reaches it: the file answers with the number that was current
-when it was written. That is how the low-risk thresholds raised in 0.4.2
-failed to reach anyone who had run setup before it. `doctor` lists any setting
-whose value the built-in default has moved off, with both numbers, so the file
-can be brought forward deliberately -- nothing is rewritten for you, because a
-choice and an inherited default look identical on disk.
+**A saved config holds only what you set.** Everything else is resolved from
+the layer below when the config is loaded, so a default improved in a later
+release reaches your installation instead of being shadowed by the copy that
+was current the day you ran setup. `config setup --defaults` therefore writes
+`version: 1` and nothing else: choosing the recommended configuration is
+choosing to override nothing. `config show --scope global|project` prints the
+layer exactly as it is on disk, and `config show` the configuration it resolves
+to.
+
+**Files written before 0.6.0 still hold every default**, which is how the
+low-risk thresholds raised in 0.4.2 failed to reach anyone who had run setup
+before them. `doctor` lists any setting whose value the built-in default has
+moved off, with both numbers. `config prune` drops the values equal to what the
+layer inherits, on request only -- a deliberate choice and an inherited default
+look identical on disk, so this reads equality as evidence and says so:
+
+```bash
+dev-orchestra config prune --dry-run         # list what would be dropped
+dev-orchestra config prune --scope project
+```
+
+A project file is pruned against *your* global layer, not against the built-in
+defaults, so a value placed there to cancel a global one survives. The other
+side of that: prune a `.dev-orchestra.yaml` the team shares only while your own
+global layer overrides nothing, or the result will be shaped by your machine.
 
 `config set` coerces values: `3` becomes an int, `true` a bool, `[a, b]` a list,
 anything else a string. Use `--raw` to force a string.
 
 Writes go to the project layer when one exists, otherwise the global layer;
-`--scope global|project` decides explicitly. Editing reviewers in a project layer
-that has none seeds it from the effective list first, so you edit the panel you
-actually see.
+`--scope global|project` decides explicitly. **Editing one entry of a list
+writes the whole list**, because a list replaces the one below it wholesale:
+`reviewers[1].role`, `review.exclude[0]` and `optimization.high_risk_paths[2]`
+all copy the rest of the list from the layer below first -- the built-in
+defaults for the global layer, the global layer for a project one. A project's
+panel therefore never ends up in your global file. An index past the end of the
+list is an error (exit 2), not a new entry.
+
+### The wizard
+
+`config setup` saves the answers you gave and nothing else. Its recommended
+answers, and the summary you approve, come from whatever the layer you are
+editing would inherit: setting up a project layer over a global one that chose
+sonnet offers sonnet, and the summary shows the design review as on if your
+global layer turned it on. So what you see before saving is what `config show`
+reports afterwards.
+
+An answer you accepted by pressing enter is still an answer, and is saved. For
+the four roles that is visible later -- `doctor` reports a role whose family the
+built-in default has moved off. **For `reviewers` it is not**: `doctor` never
+compares a panel to the default one, because that would flag every installation
+that added a reviewer. A panel written by the wizard therefore stays as it was
+that day, silently. The two ways back are `config show --scope global|project`,
+which shows the panel sitting in the layer, and `config prune`, which drops it
+when it still equals the current default panel. If you want to override nothing
+at all, `config setup --defaults`.
 
 ## Worked examples
 

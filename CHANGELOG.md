@@ -10,6 +10,72 @@ The public surface covered by that promise is: the configuration schema, the
 
 ## [Unreleased]
 
+### Changed
+
+- **A saved configuration holds only what you set.** Every writer used to seed
+  the file with the whole of `default_config()`, so one `config set` froze
+  every other default beside it and a default improved in a later release
+  never reached the installation -- that is how the low-risk thresholds raised
+  in 0.4.2 failed to reach anyone who had run setup before them. `config setup
+  --defaults`, the first `config set`, the wizard and `config reset` now write
+  only what was asked for, and everything else is resolved from the layer below
+  on every load. Existing files are read exactly as before and are not
+  rewritten; `config prune` converts one on request.
+
+- **`config reset` clears this layer's overrides** instead of writing the
+  recommended configuration into it. For the global layer that comes to the
+  same effective configuration; for a project layer it no longer pins the
+  built-in defaults on top of your global choices, which was the worst place to
+  freeze them -- a committed file the whole team reads. The subcommand's own
+  help says so now, and `config set --scope project` still pins a value
+  deliberately.
+
+- **`config show --scope global|project` prints the layer as it is on disk**,
+  raw, with a note that the rest is inherited, rather than summarising it as
+  though it were a whole configuration. With `--json` the `config` key is now
+  that layer and is `{}` when the file does not exist -- it used to answer with
+  the built-in defaults for a global file that was never created. `config show`
+  without a scope is unchanged.
+
+- **The interactive `config setup --scope project` takes the global layer as
+  its starting point**, so the values it recommends and the summary it asks you
+  to approve are what the project will actually resolve to. It used to offer
+  the built-in defaults, and pressing enter through it overruled the global
+  layer with values nobody chose.
+
+### Added
+
+- **`config prune [--scope …] [--dry-run]`** drops the values a layer holds
+  that are equal to what it inherits, for the files written before this release
+  -- the ones holding every default of their day. Opt-in, and it says what it
+  assumed: nothing on disk tells a deliberate choice from an inherited default,
+  so this reads equality as evidence. A project file is compared against your
+  global layer rather than the built-in defaults, so a value placed there to
+  cancel a global one survives.
+
+### Fixed
+
+- **Editing reviewers in the global layer no longer copies the current
+  project's panel into it.** The seed took the *effective* list, project layer
+  included, so `reviewer add|remove|set --scope global` run inside a repository
+  with its own panel wrote that panel into the machine-wide file. It was
+  visible only with a hand-written sparse global file until now; with sparse
+  writers it would have been the normal case.
+
+- **An index past the end of a list is an error rather than a traceback.**
+  `config set 'reviewers[99].role' …` exits 2 with `index out of range`.
+
+- **Indexed edits work in a layer that does not already hold the list.**
+  `config set 'review.exclude[0]' …` and
+  `config set 'optimization.high_risk_paths[2]' …` copy the rest of the list
+  from the layer below first; they used to fail with `not a list` anywhere the
+  file did not already contain it.
+
+- **Editing a file with no `version` writes one.** Empty and version-less files
+  are still accepted by the loader, but `config set` and the `reviewer`
+  commands no longer write them back without the key. A `version` the file
+  states is left alone for `config validate` to report.
+
 ## [0.5.0] - 2026-09-17
 
 ### Added
