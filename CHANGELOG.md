@@ -10,6 +10,18 @@ The public surface covered by that promise is: the configuration schema, the
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-18
+
+### Added
+
+- **`config prune [--scope …] [--dry-run]`** drops the values a layer holds
+  that are equal to what it inherits, for the files written before this release
+  -- the ones holding every default of their day. Opt-in, and it says what it
+  assumed: nothing on disk tells a deliberate choice from an inherited default,
+  so this reads equality as evidence. A project file is compared against your
+  global layer rather than the built-in defaults, so a value placed there to
+  cancel a global one survives.
+
 ### Changed
 
 - **A saved configuration holds only what you set.** Every writer used to seed
@@ -42,16 +54,6 @@ The public surface covered by that promise is: the configuration schema, the
   to approve are what the project will actually resolve to. It used to offer
   the built-in defaults, and pressing enter through it overruled the global
   layer with values nobody chose.
-
-### Added
-
-- **`config prune [--scope …] [--dry-run]`** drops the values a layer holds
-  that are equal to what it inherits, for the files written before this release
-  -- the ones holding every default of their day. Opt-in, and it says what it
-  assumed: nothing on disk tells a deliberate choice from an inherited default,
-  so this reads equality as evidence. A project file is compared against your
-  global layer rather than the built-in defaults, so a value placed there to
-  cancel a global one survives.
 
 ### Fixed
 
@@ -927,7 +929,8 @@ First release.
   none of which invoke a real CLI.
 - CI on Linux, macOS and Windows: lint, tests, skill validation.
 
-[Unreleased]: https://github.com/istb16/dev-orchestra/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/istb16/dev-orchestra/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/istb16/dev-orchestra/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/istb16/dev-orchestra/compare/v0.4.4...v0.5.0
 [0.4.4]: https://github.com/istb16/dev-orchestra/compare/v0.4.3...v0.4.4
 [0.4.3]: https://github.com/istb16/dev-orchestra/compare/v0.4.2...v0.4.3
