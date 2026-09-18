@@ -183,7 +183,10 @@ class TestPidLiveness(IsolatedCase):
         run stayed in flight until it passed 1.5x its deadline, three quarters
         of an hour later.
         """
-        proc = subprocess.Popen(python_code("import time\nwhile True: time.sleep(0.05)"))
+        # Its own process group, like every other terminate_tree test here:
+        # on POSIX terminate_tree signals the whole group, and a child sharing
+        # the runner's group kills the test run itself.
+        proc = subprocess.Popen(python_code(SILENT_HANG), **execution._spawn_kwargs())
         try:
             self.assertTrue(execution.pid_alive(proc.pid))
             execution.terminate_tree(proc)
