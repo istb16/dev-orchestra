@@ -107,6 +107,8 @@ class TestSkillDocument(IsolatedCase):
             "no reviewer sees another",
             "never re-snapshot mid-round",
             "unparsed",
+            "partial",
+            "not reviewed in full",
             "triage before re-snapshotting",
             "read-only",
         ):

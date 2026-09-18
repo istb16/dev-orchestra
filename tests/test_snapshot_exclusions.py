@@ -238,7 +238,7 @@ class TestSnapshotExclusions(IsolatedCase):
             {"id": "r1", "role": "general"},
             self.workspace,
             ws.read_text(self.workspace.snapshot_path),
-        )
+        ).text
         self.assertIn("package-lock.json", prompt)
         self.assertIn("withheld", prompt)
         # The note is a list of names, not an essay: it rides along on every
@@ -252,7 +252,7 @@ class TestSnapshotExclusions(IsolatedCase):
             {"id": "r1", "role": "general"},
             self.workspace,
             ws.read_text(self.workspace.snapshot_path),
-        )
+        ).text
         self.assertNotIn("withheld", prompt)
 
 

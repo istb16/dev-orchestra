@@ -13,6 +13,8 @@ from helpers import IsolatedCase, has_git
 
 from orchestrator import cli
 from orchestrator import config as config_mod
+from orchestrator import review as review_mod
+from orchestrator import workspace as ws
 
 FINDING = """## Finding
 - Severity: high
@@ -757,6 +759,15 @@ class TestReviewPipeline(IsolatedCase):
         # leaves nothing to fan out. The panel logic has its own tests.
         run_cli("config", "set", "optimization.level", "quality")
 
+    def oversize_snapshot(self):
+        """Replace the frozen diff with one too large to inline.
+
+        The mock provider never reads a prompt, so the snapshot's size is the
+        whole of what decides the round's coverage.
+        """
+        body = "x" * (review_mod.MAX_INLINE_DIFF_CHARS + 1)
+        ws.write_text(self.cli_workspace().snapshot_path, body)
+
     def test_snapshot_then_review_then_triage_then_fix_brief(self):
         code, out, _ = run_cli("review", "snapshot")
         self.assertEqual(code, 0)
@@ -832,6 +843,106 @@ class TestReviewPipeline(IsolatedCase):
         run_cli("review", "snapshot")
         code, _, _ = run_cli("review", "run")
         self.assertEqual(code, 1)
+
+    def test_a_round_that_could_not_inline_the_change_is_not_reported_clean(self):
+        """Exit 1 for the same reason every reviewer failing does: the round
+        produced no claim that the change is fine. The findings are still in
+        the report, and still have to be triaged."""
+        run_cli("review", "snapshot")
+        self.oversize_snapshot()
+        code, out, _ = run_cli("review", "run")
+        self.assertEqual(code, 1)
+        self.assertIn("PARTIAL", out)
+        self.assertIn("0 successful, 0 failed, 2 partial (change handed over as a file)", out)
+        data = json.loads(run_cli("review", "show", "--json")[1])
+        self.assertEqual(data["counts"]["reviewers_partial"], 2)
+        self.assertEqual(data["counts"]["reviewers_failed"], 0)
+        self.assertEqual(data["counts"]["reviewers_ok"], 0)
+        self.assertEqual(data["counts"]["findings_total"], 1)
+        self.assertEqual(data["coverage"]["round"], "unverified")
+        self.assertEqual(data["coverage"]["unverified_since"], 1)
+
+    def test_the_json_output_separates_partial_from_failed(self):
+        run_cli("review", "snapshot")
+        self.oversize_snapshot()
+        payload = json.loads(run_cli("review", "run", "--json")[1])
+        self.assertEqual(payload["partial"], 2)
+        self.assertEqual(payload["failed"], 0)
+        self.assertEqual(payload["ok"], 0)
+        self.assertEqual([r["delivery"] for r in payload["reviewers"]], ["file", "file"])
+
+    def test_an_ordinary_round_reports_its_coverage_and_says_nothing_new(self):
+        run_cli("review", "snapshot")
+        code, out, _ = run_cli("review", "run")
+        self.assertEqual(code, 0)
+        self.assertIn("2 successful, 0 failed", out)
+        self.assertNotIn("partial", out)
+        coverage = json.loads(run_cli("review", "show", "--json")[1])["coverage"]
+        self.assertEqual(coverage["round"], "complete")
+        self.assertEqual(coverage["change"], "complete")
+        self.assertIsNone(coverage["unverified_since"])
+        self.assertGreater(coverage["change_chars"], 0)
+
+    def test_status_reports_coverage_and_what_would_clear_it(self):
+        run_cli("review", "snapshot")
+        self.oversize_snapshot()
+        run_cli("review", "run")
+        _, out, _ = run_cli("review", "status")
+        self.assertIn("coverage: round unverified, change unverified", out)
+        self.assertIn("not a clean review: 2 reviewer(s) partial", out)
+        self.assertIn("split the change and review the parts", out)
+        # Narrowing the diff makes the round smaller, not the change reviewed:
+        # `--base` changes what is shown and nothing about what was read, so
+        # naming it here would be pointing at the way around the mark.
+        self.assertNotIn("--base", out)
+        status = json.loads(run_cli("review", "status", "--json")[1])
+        self.assertEqual(status["coverage"]["change"], "unverified")
+        self.assertEqual(status["reviewers_partial"], 2)
+
+    def test_status_and_the_report_agree_about_a_snapshot_nobody_has_run(self):
+        """`review snapshot --full` then `review consolidate` -- the state the
+        first fix to this created. What is missing is a reviewer, and both
+        readers of the report have to say so: telling the reader to re-snapshot
+        with --full sends them to redo the thing they just did."""
+        run_cli("review", "snapshot")
+        self.oversize_snapshot()
+        run_cli("review", "run")
+        self.write("app.py", "def add(a, b):\n    return a + b\n\n\ndef mul(a, b):\n    return a * b\n")
+        run_cli("review", "snapshot", "--full")
+        _, report, _ = run_cli("review", "consolidate")
+        _, status, _ = run_cli("review", "status")
+        for text in (report, status):
+            self.assertIn("change unverified since round 1", text)
+            self.assertIn("no reviewer has run against this snapshot", text)
+            self.assertIn("review run", text)
+            self.assertNotIn("--full", text)
+        # The tally beside it counts the snapshot the coverage line is about.
+        self.assertIn("- Reviewers: 0 ok / 2 total, 2 partial", report)
+        self.assertIn("- Reviewers of this snapshot: 0 ok / 0 total", report)
+
+    def test_status_before_any_review_reports_no_coverage_rather_than_a_clean_one(self):
+        status = json.loads(run_cli("review", "status", "--json")[1])
+        self.assertEqual(status["coverage"]["round"], "none")
+        self.assertEqual(status["coverage"]["change"], "none")
+        self.assertIsNone(status["coverage"]["unverified_since"])
+        self.assertEqual(status["reviewers_partial"], 0)
+
+    def test_status_does_not_report_an_unrecorded_coverage_as_none(self):
+        """A report from before coverage was recorded is a real round with real
+        findings. Calling it `round none, change none` claims it was measured
+        and found empty -- `render_consolidation` leaves the line out for that
+        reason, and the two commands read the same file."""
+        run_cli("review", "snapshot")
+        run_cli("review", "run")
+        path = self.cli_workspace().consolidated_json_path
+        data = json.loads(read_file(path))
+        data.pop("coverage")
+        ws.write_json(path, data)
+        status = json.loads(run_cli("review", "status", "--json")[1])
+        self.assertIsNone(status["coverage"])
+        _, out, _ = run_cli("review", "status")
+        self.assertIn("coverage: not recorded", out)
+        self.assertNotIn("round none", out)
 
     def test_a_round_charges_every_reviewer_it_ran(self):
         """Two reviewers in parallel for 0.2s each delegated 0.4s, not 0.2s."""

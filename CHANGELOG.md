@@ -10,6 +10,102 @@ The public surface covered by that promise is: the configuration schema, the
 
 ## [Unreleased]
 
+### Added
+
+- **A review whose change body was not fully inlined is no longer reported as
+  clean.** A change over `MAX_INLINE_DIFF_CHARS` (120,000) has always been
+  handed to reviewers as a path to the frozen snapshot rather than inlined,
+  and how much of that file gets read is not knowable from here -- Claude
+  Code's `Read` stops at 2,000 lines by default, so a reviewer could answer
+  `NO_FINDINGS` having seen a fifth of the change and be recorded `ok`. Such a
+  reviewer is now recorded `partial`: its findings are kept and triaged like
+  any others, and the round is not a clean one. Reviewer entries carry
+  `delivery` and `change_chars`, `counts` carries `reviewers_partial`, and
+  `consolidated.json` carries a top-level `coverage` block -- `round`,
+  `change`, `unverified_since`, `change_chars` -- which `consolidated.md` and
+  `review status` both print. `review status --json` gains `coverage` and
+  `reviewers_partial`; `review run --json` gains `partial`.
+
+  `coverage.round` and `coverage.change` are separate values and both are
+  needed. An incremental round inlines only the fix, so judging the whole
+  change by what *this* round inlined would let a fix-only round launder a
+  partial one: accept the finding, fix it, inline the fix, `NO_FINDINGS`,
+  clean -- with most of the change still unread by anybody. `coverage.change`
+  therefore carries across rounds, and is cleared only by a non-incremental
+  snapshot that was inlined whole and reviewed by at least one reviewer.
+
+  Both values are derived only from the reviewer entries stamped with the
+  snapshot the report is about. Reviewer entries gain `snapshot`, the same
+  short sha the reviewer reports carry -- an addition an older reader simply
+  does not see. The reviewer table is meant to outlive one round (`--only`
+  merges a fresh run into it, and a reviewer that did not run this time is
+  kept so the table stays complete), so without the stamp a fresh snapshot
+  nobody had opened could be reported as reviewed in full on the strength of
+  the previous round's entries.
+
+  The carry is keyed on the workflow and the branch -- the round counter's key
+  with the base dropped. `--base` is the other way of saying which change, so
+  a mark keyed on it would be cleared by narrowing the diff, which makes the
+  round smaller and the change no more read than it was. The cost is
+  deliberate: an unrelated second change on the same branch inherits the mark
+  until a full snapshot is reviewed inline. What carries across a lineage
+  change is the mark alone: the round counter restarts there, so
+  `unverified_since` is `null` on a carried mark whose round number belongs to
+  a count that no longer exists -- otherwise `review status` printed
+  `iteration 1/2` and "since round 3" in the same breath. Read the mark from
+  `coverage.change`; `unverified_since` is the round when there is one to give.
+
+  `counts` carries the four reviewer columns twice: `reviewers_*` over the
+  whole table, which deliberately outlives the round, and
+  `snapshot_reviewers_*` over the entries stamped with the snapshot the report
+  is about -- the set `coverage` is derived from. Counting only the first put
+  `Reviewers: 2 ok / 2 total` beside "no reviewer has run against this
+  snapshot", one report describing two snapshots. `consolidated.md` prints the
+  snapshot's tally on a second line whenever the two differ, and `review
+  status` reports the snapshot's (`reviewers_partial` in its payload is that
+  one; `counts` carries both).
+
+  `review status` names the one action that clears each and nothing else:
+  split the change for an unverified round, `review run` for a snapshot no
+  reviewer has run against, re-running the reviewers for a round none came
+  back `ok` from, `review snapshot --full` for a round that inlined the fix
+  alone, and -- on `--design`, where neither command can be aimed at the plan
+  -- shorten `.ai/plan.md` and run the design round again. Which of those it
+  is, is decided once, by `coverage_state`, and worded by both
+  `consolidated.md` and `review status`, so the two readers of one report
+  cannot describe it differently.
+
+  A consolidated report written before this version has no `coverage` block;
+  `consolidated.md` and `review status` both leave the value unstated rather
+  than call an unmeasured round `none` (`review status --json` reports
+  `"coverage": null` for it, and the `none` values only when there is no
+  report at all).
+
+  The reviewer is not asked to declare any of this. A self-report cannot be
+  checked for the case where it was not made, and both prompt templates end
+  with "Findings or `NO_FINDINGS` only", which overrides anything asked before
+  it. The prompt for a file handover states what the round is recorded as and
+  asks for nothing back. The inlined prompt is byte-identical to what it was.
+
+### Changed
+
+- **`review run` exits 1 when no reviewer came back `ok`**, which now includes
+  a round that was entirely `partial`, not only one where every reviewer
+  failed. Such a round made no claim that the change is fine.
+- **`counts.reviewers_failed` no longer includes partial reviewers.** It was
+  `status != "ok"`, which would have counted a partial round in both columns;
+  `reviewers_ok`, `reviewers_partial` and `reviewers_failed` now sum to
+  `reviewers_total`. An older reader of `consolidated.json` still sees
+  `partial` as a status it does not know and treats it as not-ok, so nothing
+  reads such a round as clean. No round recorded so far reached the inline
+  limit -- the largest measured 99,814 characters -- and entries written
+  before this version have neither `delivery` nor `snapshot`, so they are left
+  out of the coverage derivation rather than assumed.
+- `summarise_runs` returns `(ok, failed, partial)`, and `build_review_prompt` /
+  `build_design_review_prompt` return a `BuiltPrompt` -- the text plus what it
+  carried -- instead of a bare string. Both are internal to `review.py` and its
+  one caller in `cli.py`.
+
 ### Fixed
 
 - **`run --detach` never delivered its prompt.** The worker was started with

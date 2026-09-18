@@ -28,7 +28,7 @@ import posixpath
 import re
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple
 
 from . import workspace as ws
 from .optimization import DEFAULT_LEVEL, MAX_FINDINGS_BY_LEVEL
@@ -998,6 +998,58 @@ def render_limits(max_findings: int = DEFAULT_MAX_FINDINGS) -> str:
     return "\n".join(lines)
 
 
+class BuiltPrompt(NamedTuple):
+    """A reviewer's prompt, and how much of the change it was able to carry.
+
+    The delivery is decided here and recorded nowhere else. It depends on the
+    change's length *and* on the settings and flags that shape the round, and
+    none of those are known when ``review snapshot`` runs -- so writing it
+    into the snapshot's metadata would create a second source of truth that
+    disagrees with this one the moment anything changes between the snapshot
+    and the run. What the reviewer was actually handed is what this says.
+    """
+
+    text: str
+    #: "inline" -- the change body is in ``text``; "file" -- only its path is.
+    #: "" is reserved for a run that fell over before a prompt was built, and
+    #: is read as "not recorded" rather than as either answer.
+    delivery: str
+    change_chars: int
+
+
+def _delivery(change_text: str) -> str:
+    return "inline" if len(change_text) <= MAX_INLINE_DIFF_CHARS else "file"
+
+
+def _handover_note(change_chars: int) -> str:
+    """What a reviewer handed a path instead of a body is told.
+
+    It states a fact and asks for nothing back. An earlier design had the
+    prompt ask for a ``PARTIAL_REVIEW`` declaration, which fails three ways:
+    a declaration cannot be tested for the case where it was *not* made,
+    ``{limits}`` is the last thing in both templates and its "Findings or
+    NO_FINDINGS only" overrides anything asked before it, and a reviewer's
+    self-report is the one thing about a round this tool cannot check. The
+    verdict comes from this tool's own inputs instead; this only makes sure
+    the reviewer is not surprised by it.
+    """
+    return (
+        "The change body is {:,} chars and is handed over as a file because it exceeds "
+        "the {:,}-char inline limit. This review is recorded as coverage-unverified "
+        "whatever you answer. Read the whole file before judging; a paging tool needs "
+        "more than one call.".format(change_chars, MAX_INLINE_DIFF_CHARS)
+    )
+
+
+def coverage_unverified_error(change_chars: int) -> str:
+    """The reason a ``partial`` run carries. Its findings are still real."""
+    return (
+        "coverage unverified: the change body ({:,} chars) was handed over as a file, "
+        "not inlined (over {:,} chars). Findings kept; "
+        "not a clean review.".format(change_chars, MAX_INLINE_DIFF_CHARS)
+    )
+
+
 def build_review_prompt(
     reviewer: Dict[str, Any],
     workspace: ws.Workspace,
@@ -1005,19 +1057,21 @@ def build_review_prompt(
     extra_context: str = "",
     template: Optional[str] = None,
     max_findings: int = DEFAULT_MAX_FINDINGS,
-) -> str:
+) -> BuiltPrompt:
     role = str(reviewer.get("role") or "general")
     guidance = ROLE_GUIDANCE.get(
         role,
         "Review as a %s specialist. Concrete, evidence-backed issues in that perspective only." % role,
     )
-    if len(diff_text) <= MAX_INLINE_DIFF_CHARS:
+    delivery = _delivery(diff_text)
+    if delivery == "inline":
         diff_section = "```diff\n%s\n```" % diff_text.rstrip()
     else:
         diff_section = (
             "Diff too large to inline. Read it from this file, frozen for this review:\n\n"
             "    %s\n\nReview only what that diff contains." % workspace.relative(workspace.snapshot_path)
         )
+        diff_section += "\n\n" + _handover_note(len(diff_text))
     meta = ws.read_json(workspace.snapshot_meta_path, {}) or {}
     for note in (render_withheld(meta.get("withheld") or []), render_round_context(workspace, meta)):
         if note:
@@ -1032,7 +1086,7 @@ def build_review_prompt(
     )
     if extra_context.strip():
         prompt += "\n## Additional context\n\n%s\n" % extra_context.strip()
-    return prompt
+    return BuiltPrompt(prompt, delivery, len(diff_text))
 
 
 def build_design_review_prompt(
@@ -1042,21 +1096,28 @@ def build_design_review_prompt(
     request_text: str = "",
     extra_context: str = "",
     max_findings: int = DEFAULT_MAX_FINDINGS,
-) -> str:
-    """The reviewer prompt for a plan, built from the frozen design snapshot."""
+) -> BuiltPrompt:
+    """The reviewer prompt for a plan, built from the frozen design snapshot.
+
+    The change body here is the plan -- that is what the round is reviewing
+    and what ``review-target.md`` freezes. The request it answers is context
+    that rides along, and goes in whatever its size, exactly as it always has.
+    """
     role = str(reviewer.get("role") or "general")
     guidance = DESIGN_ROLE_GUIDANCE.get(
         role,
         "Review the plan as a %s specialist. Concrete, evidence-backed issues in that "
         "perspective only." % role,
     )
-    if len(plan_text) <= MAX_INLINE_DIFF_CHARS:
+    delivery = _delivery(plan_text)
+    if delivery == "inline":
         plan_section = "```markdown\n%s\n```" % plan_text.rstrip()
     else:
         plan_section = (
             "Plan too large to inline. Read it from this file, frozen for this review:\n\n"
             "    %s\n\nReview only what that plan contains." % workspace.relative(workspace.snapshot_path)
         )
+        plan_section += "\n\n" + _handover_note(len(plan_text))
     meta = ws.read_json(workspace.snapshot_meta_path, {}) or {}
     note = render_design_round_context(workspace, meta)
     if note:
@@ -1077,7 +1138,7 @@ def build_design_review_prompt(
     )
     if extra_context.strip():
         prompt += "\n## Additional context\n\n%s\n" % extra_context.strip()
-    return prompt
+    return BuiltPrompt(prompt, delivery, len(plan_text))
 
 
 class ReviewerRun:
@@ -1092,11 +1153,15 @@ class ReviewerRun:
         findings: int = 0,
         usage: Optional[Usage] = None,
         invoked: bool = False,
+        delivery: str = "",
+        change_chars: int = 0,
+        snapshot: str = "",
     ) -> None:
         self.reviewer = reviewer
-        # ok | failed | stalled | unparsed. Only "ok" counts as a delivered
-        # review; "unparsed" means the CLI succeeded but its report could not
-        # be read, which is a failed review and never a clean one.
+        # ok | partial | failed | stalled | unparsed. Only "ok" counts as a
+        # delivered review; "unparsed" means the CLI succeeded but its report
+        # could not be read, and "partial" that the change body went over as a
+        # file rather than in the prompt. Neither is ever a clean one.
         self.status = status
         self.report_path = report_path
         self.error = error
@@ -1111,6 +1176,15 @@ class ReviewerRun:
         #: construct a run without one -- an unknown provider, a model that
         #: will not resolve -- are exactly the ones that spent nothing.
         self.invoked = invoked
+        #: How much of the change this reviewer was handed: see ``BuiltPrompt``.
+        #: "" for a run that fell over before there was a prompt to build.
+        self.delivery = delivery
+        self.change_chars = change_chars
+        #: Which snapshot this run was handed, stamped the way the reports are
+        #: stamped and for the same reason: the reviewer table outlives the
+        #: round it was written in, so an entry has to say what it answers for.
+        #: "" for a run that fell over before there was a prompt to build.
+        self.snapshot = snapshot
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -1124,6 +1198,9 @@ class ReviewerRun:
             "findings": self.findings,
             "report": self.report_path,
             "invoked": self.invoked,
+            "delivery": self.delivery,
+            "change_chars": self.change_chars,
+            "snapshot": self.snapshot,
             "usage": self.usage.to_dict(),
         }
 
@@ -1137,14 +1214,16 @@ def run_reviews(
     template: Optional[str] = None,
     idle_timeout: Optional[float] = None,
     max_findings: int = DEFAULT_MAX_FINDINGS,
-    prompt_for: Optional[Callable[[Dict[str, Any]], str]] = None,
+    prompt_for: Optional[Callable[[Dict[str, Any]], BuiltPrompt]] = None,
 ) -> List[ReviewerRun]:
     """Run every configured reviewer against the frozen snapshot.
 
     ``prompt_for`` replaces the code-review prompt with one built per
     reviewer, which is how the design review reuses this whole function --
     the parallelism, the read-only mode, the tolerance of one failure and the
-    ``unparsed`` verdict are properties of the fan-out, not of the diff.
+    ``unparsed`` verdict are properties of the fan-out, not of the diff. It
+    returns a ``BuiltPrompt`` for the same reason the code path does: the
+    round's coverage is decided from what each prompt actually carried.
     """
     if not reviewers:
         return []
@@ -1164,6 +1243,10 @@ def run_reviews(
             "or pass --base to compare against a different revision"
         )
 
+    # Read once, before the fan-out: every run in this round answers for the
+    # same snapshot, and its entry and its report are stamped with it alike.
+    stamp = _snapshot_sha(workspace)
+
     def run_one(reviewer: Dict[str, Any]) -> ReviewerRun:
         reviewer_id = str(reviewer.get("id") or "reviewer")
         try:
@@ -1171,14 +1254,16 @@ def run_reviews(
         except Exception as exc:
             return ReviewerRun(reviewer, "failed", error=str(exc))
         if prompt_for is not None:
-            prompt = prompt_for(reviewer)
+            built = prompt_for(reviewer)
         else:
-            prompt = build_review_prompt(
-                reviewer, workspace, diff_text, extra_context, template, max_findings
-            )
+            built = build_review_prompt(reviewer, workspace, diff_text, extra_context, template, max_findings)
+        # Every run from here on knows what it was handed, and which snapshot it
+        # was handed, failures included: a round is judged on what it sent, not
+        # on what came back, and the entry has to say which round that was.
+        carried = {"delivery": built.delivery, "change_chars": built.change_chars, "snapshot": stamp}
         try:
             result = provider.run(
-                prompt,
+                built.text,
                 MODE_REVIEW,
                 workspace.root,
                 reviewer.get("model"),
@@ -1187,7 +1272,7 @@ def run_reviews(
                 idle_timeout=idle_timeout,
             )
         except ModelResolutionError as exc:
-            return ReviewerRun(reviewer, "failed", error=str(exc))
+            return ReviewerRun(reviewer, "failed", error=str(exc), **carried)
         except Exception as exc:
             # No duration, deliberately. Everything that reaches here was
             # raised before ``provider.run`` had a ``RunResult`` to hand back
@@ -1198,7 +1283,7 @@ def run_reviews(
             # while parsing returns a measured failure instead, which lands in
             # the ``not result.ok`` branch below with its duration intact. What
             # cannot be known is not billed, and ``invoked`` stays False.
-            return ReviewerRun(reviewer, "failed", error="%s: %s" % (type(exc).__name__, exc))
+            return ReviewerRun(reviewer, "failed", error="%s: %s" % (type(exc).__name__, exc), **carried)
 
         model_display = result.resolved.display if result.resolved else ""
         if not result.ok:
@@ -1220,6 +1305,7 @@ def run_reviews(
                 # falling over still has to appear in the account.
                 usage=result.usage,
                 invoked=result.invoked,
+                **carried,
             )
         body = result.stdout.strip() or "NO_FINDINGS"
         header = (
@@ -1230,23 +1316,33 @@ def run_reviews(
                 reviewer.get("provider"),
                 model_display or "unknown",
                 reviewer.get("role", "general"),
-                _snapshot_sha(workspace),
+                stamp,
             )
         )
         path = workspace.reviewer_report_path(reviewer_id)
         ws.write_text(path, header + body + "\n")
         findings = parse_findings(body, reviewer_id)
         warning = unparsed_report_warning(body, findings)
+        # "unparsed" wins: both are not-ok, but a report nobody can read is
+        # the more specific fact about this run, and the one that says the
+        # delegated cost bought nothing at all.
+        if warning:
+            status, error = "unparsed", warning
+        elif built.delivery == "file":
+            status, error = "partial", coverage_unverified_error(built.change_chars)
+        else:
+            status, error = "ok", ""
         return ReviewerRun(
             reviewer,
-            "unparsed" if warning else "ok",
+            status,
             report_path=workspace.relative(path),
-            error=warning,
+            error=error,
             model_display=model_display,
             duration=result.duration,
             findings=len(findings),
             usage=result.usage,
             invoked=result.invoked,
+            **carried,
         )
 
     if parallel and len(reviewers) > 1:
@@ -1256,7 +1352,16 @@ def run_reviews(
 
 
 def _snapshot_sha(workspace: ws.Workspace) -> str:
-    meta = ws.read_json(workspace.snapshot_meta_path, {}) or {}
+    return _stamp(ws.read_json(workspace.snapshot_meta_path, {}) or {})
+
+
+def _stamp(meta: Dict[str, Any]) -> str:
+    """A snapshot's stamp, in the one form everything that records one uses.
+
+    Report headers, ``current_snapshot_stamp`` and the reviewer entries all go
+    through here, so "this was written against that snapshot" is one comparison
+    and not three spellings of it.
+    """
     return str(meta.get("sha256", ""))[:12] or "unknown"
 
 
@@ -1633,9 +1738,34 @@ def review_lineage(workspace: ws.Workspace, workflow: str = "") -> str:
     * the workflow, so ``budget reset`` and the idle reset mean what they say
     * the branch, because another branch is another change
     * the base, because ``--base`` is the other way of saying which change
+
+    The coverage mark is carried on the first two alone -- the same key is not
+    right for both questions, and ``coverage_lineage`` says why.
     """
     meta = ws.read_json(workspace.snapshot_meta_path, {}) or {}
     return "|".join([workflow or "", _branch(workspace.root), str(meta.get("base") or "")])
+
+
+def coverage_lineage(lineage: str) -> str:
+    """The part of ``review_lineage`` the unverified mark carries on.
+
+    Everything but the base: the workflow and the branch. The base is "the
+    other way of saying which change", which is exactly why it cannot gate the
+    mark. Narrowing the diff with ``--base`` makes the *round* smaller; it does
+    not make the change reviewed, so keying the carry on it would let the mark
+    be dropped by the first thing a reader reaches for when they see one.
+
+    The round counter still keys on the base -- a review of a different base is
+    a different review to count -- so this takes the full key apart rather than
+    being built beside it: there is one construction of the key, and this is a
+    view of it.
+
+    What that costs, and is accepted: a second, unrelated change on the same
+    branch inherits the mark until a non-incremental snapshot is reviewed
+    inline. That is the cautious direction for this to fail in, and
+    ``review snapshot --full`` is the way out of it.
+    """
+    return "|".join(lineage.split("|")[:2])
 
 
 def _branch(root: str) -> str:
@@ -1686,15 +1816,22 @@ def build_consolidation(
     iteration: int = 1,
     lineage: str = "",
 ) -> Dict[str, Any]:
+    """The round's report: consolidated findings, counts, and its coverage.
+
+    ``runs`` is the reviewer table, which by design holds entries that did not
+    run this round -- see ``_merge_runs``. Coverage and the ``snapshot_``
+    reviewer counts are derived from the subset stamped with this snapshot, so
+    that one report describes one snapshot; see ``_coverage`` for what the two
+    coverage values mean, why one round's answer is not the whole change's, and
+    ``coverage_lineage`` for the key the whole change's answer carries on.
+    """
     meta = ws.read_json(workspace.snapshot_meta_path, {}) or {}
+    last = ws.read_json(workspace.consolidated_json_path, {}) or {}
     # Keyed by content, never by id: ids are positional (F1..Fn, severity
     # ordered) and get reassigned every round, so an id-keyed lookup silently
     # drops a decision -- or applies it to a different finding -- as soon as the
     # finding set changes, which is exactly what fixing things does.
-    previous = {
-        finding_key(entry): entry
-        for entry in (ws.read_json(workspace.consolidated_json_path, {}) or {}).get("findings", [])
-    }
+    previous = {finding_key(entry): entry for entry in last.get("findings", [])}
     consolidated = consolidate_findings(findings)
     for entry in consolidated:
         entry["key"] = finding_key(entry)
@@ -1708,7 +1845,7 @@ def build_consolidation(
         for finding_id in pair["ids"]:
             other = [other_id for other_id in pair["ids"] if other_id != finding_id]
             by_id[finding_id].setdefault("possible_duplicates", []).extend(other)
-    counts = _counts(consolidated, runs)
+    counts = _counts(consolidated, runs, _current_runs(runs, meta))
     counts["duplicate_candidates"] = len(candidates)
     return {
         "generated_at": ws.utcnow(),
@@ -1718,6 +1855,7 @@ def build_consolidation(
         #: project directory.
         "lineage": lineage,
         "snapshot": {"sha256": meta.get("sha256"), "files": meta.get("files", [])},
+        "coverage": _coverage(runs, meta, iteration, lineage, last),
         "reviewers": list(runs),
         "counts": counts,
         "duplicate_candidates": candidates,
@@ -1725,20 +1863,303 @@ def build_consolidation(
     }
 
 
-def _counts(findings: Sequence[Dict[str, Any]], runs: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+def _coverage(
+    runs: Sequence[Dict[str, Any]],
+    meta: Dict[str, Any],
+    iteration: int,
+    lineage: str,
+    last: Dict[str, Any],
+) -> Dict[str, Any]:
+    """What was actually put in front of a reviewer -- this round, and overall.
+
+    The definitions below are the ones in the Coverage section of
+    ``references/reviews.md``, in the same words, with the same keys and the
+    same values.
+
+    ``coverage.round`` -- whether **this round's change body**
+    (``review-target.diff``, or ``review-target.md`` for a design round; on an
+    incremental round that diff is the fix alone) was inlined whole into every
+    reviewer's prompt this round.
+
+    * ``complete``: inlined for every reviewer. **Says nothing about the whole
+      change.** On an incremental round it means "the fix was shown in full".
+    * ``unverified``: handed to one or more reviewers as a file.
+    * ``none``: no reviewer ran against this snapshot (none configured, none
+      run since it was taken, or every entry predates this version).
+
+    ``coverage.change`` -- **the whole change under review**.
+
+    * ``unverified``: this workflow and branch (``coverage_lineage``) has a
+      round whose ``round`` was ``unverified``, and since then no
+      non-incremental snapshot (empty ``incremental_from``) has been reviewed
+      with ``round: complete`` and at least one reviewer of *that* snapshot
+      ``ok``.
+    * ``complete``: that has happened, or no round was ever unverified.
+    * ``none``: nothing on this workflow and branch has been reviewed yet.
+
+    ``coverage.unverified_since`` -- the round number ``change: unverified``
+    started at, when that number is one of *this* count's. ``null`` otherwise,
+    which includes an ``unverified`` change whose mark was carried across a
+    lineage change: the mark is what the carry is for and it survives, the
+    number is not and does not. ``next_iteration`` restarts the count at 1 on a
+    lineage change, so a number from the previous lineage would name a round
+    the current count does not have -- ``iteration 1/2`` beside "since round
+    3". Read the mark from ``change``, never from this being set.
+
+    ``coverage.change_chars`` -- how many characters this round's change body
+    was, as the runs recorded it (``null`` when no run did).
+
+    The two are separate because an incremental round inlines only the fix.
+    Judging the whole change by what *this* round inlined would let a fix-only
+    round launder a partial one: accept the finding, fix it, inline the fix,
+    NO_FINDINGS, clean -- with four fifths of the change still unread by
+    anyone. So the unverified mark carries forward until a round shows the
+    whole change to somebody.
+
+    Every value above is derived from the entries stamped with *this*
+    snapshot. The reviewer table is not that set: ``_merge_runs`` keeps a
+    reviewer that did not run this time so the table stays complete, and
+    ``review consolidate`` starts from the previous round's table -- so
+    deriving coverage from all of it would answer for a snapshot nobody has
+    read. ``read_reports`` already discards a report by its stamp; this is the
+    same check on the entry that report came with.
+    """
+    current = _current_runs(runs, meta)
+    # Entries with no delivery are left out rather than guessed at: a run that
+    # fell over before its prompt was built, and every round recorded before
+    # this version, genuinely have no answer to give.
+    deliveries = [str(run.get("delivery") or "") for run in current if run.get("delivery")]
+    if "file" in deliveries:
+        this_round = "unverified"
+    elif deliveries:
+        this_round = "complete"
+    else:
+        this_round = "none"
+
+    # Carried on the lineage minus its base -- see ``coverage_lineage`` for why
+    # the base is the one part of the key that must not gate it. The mark and
+    # the round number it started at are carried separately: the mark is the
+    # safety property and survives a change of base, the round number belongs
+    # to a count that a lineage change restarts and is dropped with it.
+    carry_key = coverage_lineage(lineage)
+    carried_mark = False
+    carried_since = None
+    previous = last.get("coverage")
+    if isinstance(previous, dict) and (
+        not carry_key or coverage_lineage(str(last.get("lineage") or "")) == carry_key
+    ):
+        since = previous.get("unverified_since")
+        numbered = isinstance(since, int) and not isinstance(since, bool)
+        # Read from ``change``, so a mark already carried without a number
+        # carries on; ``unverified_since`` alone would drop it at the next
+        # round.
+        carried_mark = numbered or str(previous.get("change") or "") == "unverified"
+        # The condition ``next_iteration`` restarts the count on, and the only
+        # one under which the carried number still names a round of it. An
+        # empty lineage says nothing, there as here, and continues the count.
+        if numbered and not (lineage and str(last.get("lineage") or "") != lineage):
+            carried_since = since
+
+    # This snapshot's reviewers, not the table's: an entry from an earlier
+    # round coming back ``ok`` is not somebody reading this change.
+    reviewers_ok = sum(1 for run in current if run.get("status") == "ok")
+    if this_round == "unverified":
+        unverified = True
+        unverified_since = iteration if carried_since is None else carried_since
+    elif this_round == "complete" and not meta.get("incremental_from") and reviewers_ok >= 1:
+        # Somebody read the whole change in full. Nothing else clears this --
+        # an incremental round, a round every reviewer failed, and a round
+        # with no reviewers all leave the mark where it was.
+        unverified = False
+        unverified_since = None
+    else:
+        unverified = carried_mark
+        unverified_since = carried_since if carried_mark else None
+
+    if unverified:
+        change = "unverified"
+    elif this_round == "none" and not carried_mark:
+        change = "none"
+    else:
+        change = "complete"
+
+    measured = [run for run in current if run.get("delivery")]
+    return {
+        "round": this_round,
+        "change": change,
+        "unverified_since": unverified_since,
+        "change_chars": int(measured[0].get("change_chars") or 0) if measured else None,
+    }
+
+
+def _current_runs(runs: Sequence[Dict[str, Any]], meta: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """The entries stamped with this snapshot -- the only ones it is judged on.
+
+    The reviewer table is not that set: ``_merge_runs`` keeps a reviewer that
+    did not run this time so the table stays complete. Coverage and the
+    ``snapshot_`` counts both read this subset, so that the coverage line and
+    the tally printed beside it describe the same snapshot.
+    """
+    return [run for run in runs if str(run.get("snapshot") or "") == _stamp(meta)]
+
+
+def _counts(
+    findings: Sequence[Dict[str, Any]],
+    runs: Sequence[Dict[str, Any]],
+    current: Sequence[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Finding and reviewer tallies -- the reviewers counted twice, by design.
+
+    ``reviewers_*`` is the whole table, which deliberately outlives the round;
+    ``snapshot_reviewers_*`` is the subset stamped with the snapshot this
+    report is about, the set ``_coverage`` answers from. They differ after
+    ``--only``, and on a snapshot nobody has run against, and quoting one where
+    the other is meant makes one report describe two snapshots. Both are named
+    so neither can be read as the other; ``snapshot_reviewers`` reads the one
+    that goes with a coverage value.
+    """
     by_severity = dict.fromkeys(SEVERITIES, 0)
     for finding in findings:
         by_severity[finding.get("severity", "medium")] = (
             by_severity.get(finding.get("severity", "medium"), 0) + 1
         )
-    return {
-        "reviewers_total": len(runs),
-        "reviewers_ok": sum(1 for run in runs if run.get("status") == "ok"),
-        "reviewers_failed": sum(1 for run in runs if run.get("status") != "ok"),
+    counts = {
         "findings_total": len(findings),
         "by_severity": by_severity,
         "duplicates_merged": sum(max(0, f.get("duplicate_count", 1) - 1) for f in findings),
     }
+    for prefix, entries in (("", runs), ("snapshot_", current)):
+        counts[prefix + "reviewers_total"] = len(entries)
+        counts[prefix + "reviewers_ok"] = sum(1 for run in entries if run.get("status") == "ok")
+        # Each reviewer lands in exactly one of the three, so the columns still
+        # sum to the total. Counting "not ok" as failed would have put a
+        # partial reviewer in two of them at once.
+        counts[prefix + "reviewers_partial"] = sum(1 for run in entries if run.get("status") == "partial")
+        counts[prefix + "reviewers_failed"] = sum(
+            1 for run in entries if run.get("status") not in ("ok", "partial")
+        )
+    return counts
+
+
+def snapshot_reviewers(counts: Dict[str, Any], column: str) -> int:
+    """One reviewer column, counted over this snapshot's entries.
+
+    Falls back to the table's column for a report written before the scoped
+    counts existed: it is the better of the two answers available there, and
+    the alternative is reading every such report as a round nobody ran.
+    """
+    scoped = counts.get("snapshot_reviewers_%s" % column)
+    return int((counts.get("reviewers_%s" % column) if scoped is None else scoped) or 0)
+
+
+def coverage_state(coverage: Dict[str, Any], counts: Dict[str, Any]) -> str:
+    """Which unclean state a report's coverage is in, or ``""`` for none.
+
+    ``consolidated.md`` and ``review status`` word the answer differently --
+    one is a line in a report, the other names the action that changes it --
+    but they read the same file and must not disagree about which state it
+    describes. So the state is decided once, here, and each of them words the
+    answer it is given.
+
+    * ``round_unverified``: this round handed the change body over as a file.
+    * ``no_reviewer``: the mark is carried and no reviewer ran against this
+      snapshot. Nothing was inlined this round, because nothing ran.
+    * ``none_ok``: reviewers ran against this snapshot and none came back
+      ``ok``, so the round cleared nothing and neither would re-snapshotting.
+    * ``fix_only``: the round's body was inlined and read, and the mark is
+      still carried -- which, since ``_coverage`` clears it for exactly a
+      non-incremental round with a reviewer ``ok``, means the body was the fix
+      alone.
+    """
+    this_round = str(coverage.get("round") or "none")
+    if this_round == "unverified":
+        return "round_unverified"
+    if str(coverage.get("change") or "none") != "unverified":
+        return ""
+    if this_round == "none":
+        return "no_reviewer"
+    if snapshot_reviewers(counts, "ok") == 0:
+        return "none_ok"
+    return "fix_only"
+
+
+def unverified_phrase(coverage: Dict[str, Any]) -> str:
+    """The mark in words, with the round it started at when there is one.
+
+    The mark carries across a change of base and the round number cannot --
+    see ``coverage.unverified_since`` in ``_coverage``. Both readers state the
+    mark either way rather than print a round number that is not in the count
+    beside it.
+    """
+    since = coverage.get("unverified_since")
+    if isinstance(since, int) and not isinstance(since, bool):
+        return "change unverified since round %d" % since
+    return "change unverified"
+
+
+def _coverage_line(coverage: Dict[str, Any], counts: Dict[str, Any]) -> str:
+    """The headline form of the two coverage values.
+
+    An unverified round is the more urgent of the two and is stated on its
+    own; a clean round carrying an older mark says what is missing, because
+    the answer is not "run it again" -- the same snapshot gives the same
+    answer. Each state names the one thing that is missing and nothing else:
+    sending a reader to re-snapshot a snapshot that already holds the whole
+    change inline points them away from the reviewer they actually lack.
+    """
+    state = coverage_state(coverage, counts)
+    if state == "round_unverified":
+        chars = coverage.get("change_chars")
+        return (
+            "- Coverage: round unverified -- the change body (%s chars) was handed over "
+            "as a file; not a clean review" % ("{:,}".format(chars) if chars else "size unrecorded")
+        )
+    if state == "no_reviewer":
+        return (
+            "- Coverage: %s -- no reviewer has run against this snapshot; run the reviewers "
+            "against it with review run" % unverified_phrase(coverage)
+        )
+    if state == "none_ok":
+        return (
+            "- Coverage: %s -- no reviewer came back ok for this snapshot; re-run the reviewers "
+            "that did not" % unverified_phrase(coverage)
+        )
+    if state == "fix_only":
+        return (
+            "- Coverage: %s -- this round inlined the fix only; snapshot --full once the whole "
+            "change fits inline" % unverified_phrase(coverage)
+        )
+    return "- Coverage: round %s, change %s" % (
+        str(coverage.get("round") or "none"),
+        str(coverage.get("change") or "none"),
+    )
+
+
+def _reviewer_lines(counts: Dict[str, Any]) -> List[str]:
+    """The table's tally, and this snapshot's when the two differ.
+
+    A single unnamed "Reviewers: 2 ok / 2 total" beside a coverage line about
+    this snapshot is the report describing two snapshots at once -- the table
+    outlives the round on purpose (``_merge_runs``), so after ``--only``, or on
+    a snapshot nobody has run against, its tally is not this snapshot's. When
+    the totals match, so do the sets: the scoped entries are a subset of the
+    table, so one line says both. A report from before the scoped counts has
+    only the one tally, and gets the line it always had.
+    """
+    lines = ["- Reviewers: %s" % _tally(counts, "")]
+    scoped = counts.get("snapshot_reviewers_total")
+    if scoped is not None and scoped != counts.get("reviewers_total"):
+        lines.append("- Reviewers of this snapshot: %s" % _tally(counts, "snapshot_"))
+    return lines
+
+
+def _tally(counts: Dict[str, Any], prefix: str) -> str:
+    line = "%s ok / %s total" % (
+        counts.get(prefix + "reviewers_ok"),
+        counts.get(prefix + "reviewers_total"),
+    )
+    partial = int(counts.get(prefix + "reviewers_partial") or 0)
+    return line + (", %d partial" % partial if partial else "")
 
 
 def render_consolidation(data: Dict[str, Any]) -> str:
@@ -1749,7 +2170,15 @@ def render_consolidation(data: Dict[str, Any]) -> str:
         "- Generated: %s" % data.get("generated_at"),
         "- Iteration: %s" % data.get("iteration"),
         "- Snapshot: %s" % str(data.get("snapshot", {}).get("sha256", ""))[:12],
-        "- Reviewers: %s ok / %s total" % (counts.get("reviewers_ok"), counts.get("reviewers_total")),
+    ]
+    lines += _reviewer_lines(counts)
+    # Left out rather than reported as "none": a report written before this
+    # version recorded no coverage at all, and a line saying so would claim it
+    # had been measured and found empty.
+    coverage = data.get("coverage")
+    if isinstance(coverage, dict):
+        lines.append(_coverage_line(coverage, counts))
+    lines += [
         "- Findings: %s (%s duplicate report(s) merged)"
         % (counts.get("findings_total"), counts.get("duplicates_merged")),
         "",
@@ -1757,7 +2186,8 @@ def render_consolidation(data: Dict[str, Any]) -> str:
         "",
     ]
     for run in data.get("reviewers", []):
-        mark = "ok" if run.get("status") == "ok" else "FAILED"
+        status = run.get("status")
+        mark = "ok" if status == "ok" else ("PARTIAL" if status == "partial" else "FAILED")
         lines.append(
             "- %s [%s] %s / %s / %s -- %s"
             % (
@@ -1905,6 +2335,14 @@ def render_fix_brief(data: Dict[str, Any], title: str = "Fix these accepted find
     return "\n".join(lines)
 
 
-def summarise_runs(runs: Sequence[ReviewerRun]) -> Tuple[int, int]:
+def summarise_runs(runs: Sequence[ReviewerRun]) -> Tuple[int, int, int]:
+    """``(ok, failed, partial)`` -- three columns that sum to ``len(runs)``.
+
+    Partial is its own column rather than a kind of failure. The reviewer ran,
+    and its findings are real; what is missing is the guarantee that it saw
+    the whole change. Folding it into ``failed`` would have counted it twice
+    against a total that has not changed.
+    """
     ok = sum(1 for run in runs if run.status == "ok")
-    return ok, len(runs) - ok
+    partial = sum(1 for run in runs if run.status == "partial")
+    return ok, len(runs) - ok - partial, partial

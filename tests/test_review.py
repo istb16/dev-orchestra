@@ -361,14 +361,14 @@ class TestFanOut(IsolatedCase):
     def test_one_failure_does_not_fail_the_batch(self):
         os.environ["DEV_ORCHESTRA_MOCK_FAIL"] = "Reviewer: r2 |"
         runs = review_mod.run_reviews([reviewer("r1"), reviewer("r2"), reviewer("r3")], self.workspace)
-        ok, failed = review_mod.summarise_runs(runs)
-        self.assertEqual((ok, failed), (2, 1))
+        ok, failed, partial = review_mod.summarise_runs(runs)
+        self.assertEqual((ok, failed, partial), (2, 1, 0))
         self.assertEqual([r.reviewer["id"] for r in runs if r.status == "failed"], ["r2"])
 
     def test_a_reviewer_with_an_unknown_provider_fails_alone(self):
         broken = {"id": "bad", "provider": "nonexistent", "role": "general"}
         runs = review_mod.run_reviews([reviewer("r1"), broken], self.workspace)
-        self.assertEqual(review_mod.summarise_runs(runs), (1, 1))
+        self.assertEqual(review_mod.summarise_runs(runs), (1, 1, 0))
         failed = next(run for run in runs if run.status == "failed")
         # Nothing was started, so there is nothing to charge and nothing to
         # account for. This is the one shape of failure that is genuinely free.
@@ -422,21 +422,198 @@ class TestFanOut(IsolatedCase):
     def test_review_prompt_carries_role_guidance_and_read_only_rules(self):
         prompt = review_mod.build_review_prompt(
             reviewer("r1", role="security"), self.workspace, "diff --git a b"
-        )
+        ).text
         self.assertIn("security", prompt)
         self.assertIn("injection", prompt)
         self.assertIn("do not modify", prompt.lower())
         self.assertIn("NO_FINDINGS", prompt)
 
     def test_custom_role_still_gets_a_usable_prompt(self):
-        prompt = review_mod.build_review_prompt(reviewer("r1", role="accessibility"), self.workspace, "diff")
-        self.assertIn("accessibility specialist", prompt)
+        built = review_mod.build_review_prompt(reviewer("r1", role="accessibility"), self.workspace, "diff")
+        self.assertIn("accessibility specialist", built.text)
 
     def test_huge_diffs_are_referenced_by_path_instead_of_inlined(self):
         big = "x" * (review_mod.MAX_INLINE_DIFF_CHARS + 1)
-        prompt = review_mod.build_review_prompt(reviewer("r1"), self.workspace, big)
-        self.assertIn("review-target.diff", prompt)
-        self.assertNotIn(big, prompt)
+        built = review_mod.build_review_prompt(reviewer("r1"), self.workspace, big)
+        self.assertIn("review-target.diff", built.text)
+        self.assertNotIn(big, built.text)
+        self.assertEqual(built.delivery, "file")
+        self.assertEqual(built.change_chars, len(big))
+
+    def test_a_diff_exactly_on_the_limit_is_still_inlined(self):
+        """The boundary is inclusive, and it is the only place the two
+        deliveries meet -- an off-by-one here turns a clean round partial."""
+        exact = "x" * review_mod.MAX_INLINE_DIFF_CHARS
+        built = review_mod.build_review_prompt(reviewer("r1"), self.workspace, exact)
+        self.assertEqual(built.delivery, "inline")
+        self.assertIn(exact, built.text)
+
+
+@unittest.skipUnless(has_git(), "git is required")
+class TestCoverageOfTheChangeBody(IsolatedCase):
+    """A round whose change body went over as a file is never clean.
+
+    Nothing in a reviewer's output tells the two deliveries apart. A reviewer
+    handed a path reads what its own paging tool gives it -- Claude Code's
+    ``Read`` stops at 2,000 lines by default -- and can answer NO_FINDINGS
+    having seen a fifth of the change, which is indistinguishable from a
+    genuinely clean review. So the verdict is taken from the one fact this
+    tool holds with certainty: whether the body went into the prompt.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.init_git_repo()
+        self.write("app.py", "def add(a, b):\n    return a + b\n")
+        self.commit_all("init")
+        self.write("app.py", "def add(a, b):\n    return a - b\n")
+        self.workspace = self.cli_workspace()
+        review_mod.create_snapshot(self.workspace)
+        self.mock_dir = os.path.join(self.tmp, "mock")
+        os.makedirs(self.mock_dir)
+        with open(os.path.join(self.mock_dir, "review.txt"), "w", encoding="utf-8") as handle:
+            handle.write(FINDING_A)
+        os.environ["DEV_ORCHESTRA_MOCK_DIR"] = self.mock_dir
+
+    def oversize(self):
+        """Put a change too large to inline where the round will read it.
+
+        The mock provider never reads a prompt, so the snapshot's size is the
+        whole of what decides the round -- the same handle
+        ``test_empty_snapshot_refuses_to_run`` uses from the other end.
+        """
+        ws.write_text(self.workspace.snapshot_path, "x" * (review_mod.MAX_INLINE_DIFF_CHARS + 1))
+
+    def answers(self, text):
+        """What every reviewer replies. The mock reads its directory first, so
+        that has to go before the inline answer is seen."""
+        os.environ.pop("DEV_ORCHESTRA_MOCK_DIR", None)
+        os.environ["DEV_ORCHESTRA_MOCK_RESPONSE"] = text
+
+    def test_the_limit_is_inclusive_on_both_sides(self):
+        self.assertEqual(review_mod._delivery("x" * review_mod.MAX_INLINE_DIFF_CHARS), "inline")
+        self.assertEqual(review_mod._delivery("x" * (review_mod.MAX_INLINE_DIFF_CHARS + 1)), "file")
+
+    def test_the_inlined_prompt_is_byte_for_byte_what_it_always_was(self):
+        """The check that this change did not quietly alter what every
+        reviewer has been reading for every round so far.
+
+        Reassembled from the template rather than compared against a golden
+        copy: a deliberate edit to the template is still one edit, while a
+        stray change to the delivery branch -- a stripped newline, a note
+        appended in the wrong place -- fails here.
+        """
+        diff_text = ws.read_text(self.workspace.snapshot_path)
+        built = review_mod.build_review_prompt(reviewer("r1"), self.workspace, diff_text)
+        expected = review_mod.REVIEW_PROMPT_TEMPLATE.format(
+            reviewer_id="r1",
+            role="general",
+            role_guidance=review_mod.ROLE_GUIDANCE["general"],
+            root=self.workspace.root,
+            diff_section="```diff\n%s\n```" % diff_text.rstrip(),
+            limits=review_mod.render_limits(review_mod.DEFAULT_MAX_FINDINGS),
+        )
+        self.assertEqual(built.text, expected)
+        self.assertEqual(built.delivery, "inline")
+        self.assertEqual(built.change_chars, len(diff_text))
+
+    def test_a_handover_states_the_fact_and_asks_for_nothing_back(self):
+        """The reviewer is told what the round is recorded as; it is never
+        asked to declare it. A declaration cannot be tested for the case where
+        it was not made, and the templates end with "Findings or NO_FINDINGS
+        only", which overrides anything asked before it."""
+        big = "x" * (review_mod.MAX_INLINE_DIFF_CHARS + 1)
+        text = review_mod.build_review_prompt(reviewer("r1"), self.workspace, big).text
+        self.assertIn("coverage-unverified", text)
+        self.assertIn("120,001 chars", text)
+        self.assertIn("a paging tool needs more than one call", text)
+        self.assertNotIn("PARTIAL_REVIEW", text)
+
+    def test_findings_are_kept_but_the_round_is_not_clean(self):
+        self.oversize()
+        run = review_mod.run_reviews([reviewer("r1")], self.workspace)[0]
+        self.assertEqual(run.status, "partial")
+        self.assertEqual(run.findings, 1)
+        self.assertEqual(run.delivery, "file")
+        self.assertEqual(run.change_chars, review_mod.MAX_INLINE_DIFF_CHARS + 1)
+        self.assertIn("coverage unverified", run.error)
+
+    def test_no_findings_over_a_handover_is_not_a_clean_review(self):
+        """The hole this whole stage exists to close: a reviewer that saw a
+        fifth of the change and had nothing to say used to be recorded ok."""
+        self.answers("NO_FINDINGS\n")
+        self.oversize()
+        run = review_mod.run_reviews([reviewer("r1")], self.workspace)[0]
+        self.assertEqual(run.status, "partial")
+        self.assertEqual(run.findings, 0)
+
+    def test_an_unreadable_report_still_wins(self):
+        """Both are not-ok. "The report cannot be read" is the more specific
+        fact, and the one that says the delegated run was wasted."""
+        self.answers("Looks good to me.\n")
+        self.oversize()
+        run = review_mod.run_reviews([reviewer("r1")], self.workspace)[0]
+        self.assertEqual(run.status, "unparsed")
+        self.assertEqual(run.delivery, "file")
+        self.assertIn("could not be parsed", run.error)
+
+    def test_an_inlined_round_is_recorded_exactly_as_before(self):
+        run = review_mod.run_reviews([reviewer("r1")], self.workspace)[0]
+        self.assertEqual(run.status, "ok")
+        self.assertEqual(run.delivery, "inline")
+        self.assertEqual(run.error, "")
+
+    def test_a_run_that_never_reached_a_prompt_records_no_delivery(self):
+        """An unknown provider falls over before the prompt is built, so there
+        is no delivery to claim -- and a blank one is left out of the round's
+        coverage rather than read as either answer."""
+        broken = {"id": "bad", "provider": "nonexistent", "role": "general"}
+        run = review_mod.run_reviews([broken], self.workspace)[0]
+        self.assertEqual(run.status, "failed")
+        self.assertEqual(run.delivery, "")
+
+    def test_the_run_dict_carries_both(self):
+        self.oversize()
+        entry = review_mod.run_reviews([reviewer("r1")], self.workspace)[0].to_dict()
+        self.assertEqual(entry["delivery"], "file")
+        self.assertEqual(entry["change_chars"], review_mod.MAX_INLINE_DIFF_CHARS + 1)
+        self.assertEqual(entry["status"], "partial")
+
+    def test_the_run_dict_is_stamped_with_the_snapshot_it_answers_for(self):
+        """The same stamp the report carries. The reviewer table outlives the
+        round -- `--only` merges into it -- so coverage can only be derived
+        from entries that say which snapshot they were handed."""
+        entry = review_mod.run_reviews([reviewer("r1")], self.workspace)[0].to_dict()
+        stamp = review_mod.current_snapshot_stamp(self.workspace)
+        self.assertEqual(entry["snapshot"], stamp)
+        self.assertEqual(
+            review_mod.report_snapshot(ws.read_text(self.workspace.reviewer_report_path("r1"))), stamp
+        )
+
+    def test_partial_is_counted_once_and_not_as_a_failure(self):
+        """``_counts`` used to read every not-ok status as failed, so a partial
+        round would have been counted in both columns."""
+        runs = [
+            {"id": "r1", "status": "ok"},
+            {"id": "r2", "status": "partial"},
+            {"id": "r3", "status": "failed"},
+        ]
+        counts = review_mod._counts([], runs, runs)
+        self.assertEqual(counts["reviewers_ok"], 1)
+        self.assertEqual(counts["reviewers_partial"], 1)
+        self.assertEqual(counts["reviewers_failed"], 1)
+        self.assertEqual(
+            counts["reviewers_ok"] + counts["reviewers_partial"] + counts["reviewers_failed"],
+            counts["reviewers_total"],
+        )
+
+    def test_summarise_runs_separates_the_three(self):
+        runs = [
+            review_mod.ReviewerRun(reviewer("r1"), "ok"),
+            review_mod.ReviewerRun(reviewer("r2"), "partial"),
+            review_mod.ReviewerRun(reviewer("r3"), "failed"),
+        ]
+        self.assertEqual(review_mod.summarise_runs(runs), (1, 1, 1))
 
 
 PLAN = """# Plan
@@ -514,31 +691,50 @@ class TestDesignReviewPrompt(IsolatedCase):
         self.workspace = self.cli_workspace().design_review().ensure()
 
     def test_it_carries_the_plan_the_request_and_the_read_only_rules(self):
-        prompt = review_mod.build_design_review_prompt(reviewer("r1"), self.workspace, PLAN, REQUEST)
+        prompt = review_mod.build_design_review_prompt(reviewer("r1"), self.workspace, PLAN, REQUEST).text
         self.assertIn("NOT NULL column", prompt)
         self.assertIn("Record which channel", prompt)
         self.assertIn("do not modify", prompt.lower())
         self.assertIn("NO_FINDINGS", prompt)
 
     def test_role_guidance_is_about_the_proposal_not_the_diff(self):
-        prompt = review_mod.build_design_review_prompt(reviewer("r1", role="security"), self.workspace, PLAN)
-        self.assertIn("authn/authz gaps it creates", prompt)
+        built = review_mod.build_design_review_prompt(reviewer("r1", role="security"), self.workspace, PLAN)
+        self.assertIn("authn/authz gaps it creates", built.text)
 
     def test_a_custom_role_still_gets_a_usable_prompt(self):
-        prompt = review_mod.build_design_review_prompt(
+        built = review_mod.build_design_review_prompt(
             reviewer("r1", role="accessibility"), self.workspace, PLAN
         )
-        self.assertIn("accessibility specialist", prompt)
+        self.assertIn("accessibility specialist", built.text)
 
     def test_a_missing_request_is_said_rather_than_left_blank(self):
-        prompt = review_mod.build_design_review_prompt(reviewer("r1"), self.workspace, PLAN)
-        self.assertIn("Not recorded", prompt)
+        built = review_mod.build_design_review_prompt(reviewer("r1"), self.workspace, PLAN)
+        self.assertIn("Not recorded", built.text)
 
     def test_a_huge_plan_is_referenced_by_path_instead_of_inlined(self):
         big = "x" * (review_mod.MAX_INLINE_DIFF_CHARS + 1)
-        prompt = review_mod.build_design_review_prompt(reviewer("r1"), self.workspace, big)
-        self.assertIn("review-target.md", prompt)
-        self.assertNotIn(big, prompt)
+        built = review_mod.build_design_review_prompt(reviewer("r1"), self.workspace, big)
+        self.assertIn("review-target.md", built.text)
+        self.assertNotIn(big, built.text)
+        self.assertEqual(built.delivery, "file")
+        self.assertEqual(built.change_chars, len(big))
+
+    def test_a_plan_exactly_on_the_limit_is_still_inlined(self):
+        exact = "x" * review_mod.MAX_INLINE_DIFF_CHARS
+        built = review_mod.build_design_review_prompt(reviewer("r1"), self.workspace, exact)
+        self.assertEqual(built.delivery, "inline")
+        self.assertIn(exact, built.text)
+
+    def test_the_request_is_inlined_whatever_its_size(self):
+        """The change body under review is the plan; the request is context,
+        and goes in unmeasured exactly as it did before. Making the limit
+        apply to it too is a later stage, and until then this is what the
+        docs have to say."""
+        big = "y" * (review_mod.MAX_INLINE_DIFF_CHARS + 1)
+        built = review_mod.build_design_review_prompt(reviewer("r1"), self.workspace, PLAN, big)
+        self.assertIn(big, built.text)
+        self.assertEqual(built.delivery, "inline")
+        self.assertEqual(built.change_chars, len(PLAN))
 
     def test_a_revision_is_told_what_it_was_meant_to_address(self):
         ws.write_json(
@@ -556,7 +752,7 @@ class TestDesignReviewPrompt(IsolatedCase):
             },
         )
         ws.write_json(self.workspace.snapshot_meta_path, {"previous_sha": "abc123"})
-        prompt = review_mod.build_design_review_prompt(reviewer("r1"), self.workspace, PLAN)
+        prompt = review_mod.build_design_review_prompt(reviewer("r1"), self.workspace, PLAN).text
         self.assertIn("This plan is a revision", prompt)
         self.assertIn("no backfill is described", prompt)
         self.assertIn("Do not assume a listed item was real", prompt)
@@ -564,7 +760,7 @@ class TestDesignReviewPrompt(IsolatedCase):
         self.assertNotIn("reported by", prompt.lower())
 
     def test_a_first_round_carries_no_revision_note(self):
-        prompt = review_mod.build_design_review_prompt(reviewer("r1"), self.workspace, PLAN)
+        prompt = review_mod.build_design_review_prompt(reviewer("r1"), self.workspace, PLAN).text
         self.assertNotIn("This plan is a revision", prompt)
 
 

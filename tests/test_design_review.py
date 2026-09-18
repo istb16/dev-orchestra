@@ -18,6 +18,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from helpers import IsolatedCase, has_git
 
 from orchestrator import cli
+from orchestrator import review as review_mod
 from orchestrator import workspace as ws
 
 #: `File:` names a plan section, which is what a design finding has instead of
@@ -189,6 +190,44 @@ class TestRunningIt(DesignReviewCase):
         os.environ["DEV_ORCHESTRA_MOCK_FAIL"] = "1"
         self.write_plan()
         self.assertEqual(run_cli("review", "run", "--design")[0], 1)
+
+    def test_a_plan_too_large_to_inline_is_not_a_clean_round_either(self):
+        """The change body of a design round is the plan itself, and the same
+        rule applies to it: a reviewer handed a path is not a clean review."""
+        self.write_plan(PLAN + "x" * review_mod.MAX_INLINE_DIFF_CHARS)
+        code, out, _ = run_cli("review", "run", "--design")
+        self.assertEqual(code, 1)
+        self.assertIn("PARTIAL", out)
+        self.assertIn("2 partial (change handed over as a file)", out)
+        data = json.loads(run_cli("review", "show", "--design", "--json")[1])
+        self.assertEqual(data["coverage"]["round"], "unverified")
+        self.assertEqual(data["coverage"]["change"], "unverified")
+
+    def test_status_names_the_plan_side_action_for_an_oversize_plan(self):
+        """`review snapshot` writes the code snapshot -- there is no `--design`
+        form of it -- so `--base`, `review.exclude` and `--full` cannot be
+        aimed at a design round at all. The only thing that makes an oversize
+        plan reviewable is a shorter plan, and that is what has to be said."""
+        self.write_plan(PLAN + "x" * review_mod.MAX_INLINE_DIFF_CHARS)
+        run_cli("review", "run", "--design")
+        _, out, _ = run_cli("review", "status", "--design")
+        self.assertIn("shorten .ai/plan.md", out)
+        self.assertNotIn("snapshot", out)
+        self.assertNotIn("--base", out)
+        self.assertNotIn("review.exclude", out)
+
+    def test_a_revised_plan_that_fits_clears_the_whole_change(self):
+        """Every design round is the whole plan -- there is no incremental
+        design snapshot -- so a revision that fits inline really is the whole
+        change being reviewed again."""
+        self.write_plan(PLAN + "x" * review_mod.MAX_INLINE_DIFF_CHARS)
+        run_cli("review", "run", "--design")
+        self.write_plan(REVISED_PLAN)
+        code, _, _ = run_cli("review", "run", "--design")
+        self.assertEqual(code, 0)
+        coverage = json.loads(run_cli("review", "show", "--design", "--json")[1])["coverage"]
+        self.assertEqual(coverage["change"], "complete")
+        self.assertIsNone(coverage["unverified_since"])
 
 
 class TestTriageAndRevision(DesignReviewCase):
