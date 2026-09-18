@@ -106,11 +106,18 @@ this conversation.
 - <anything you have already ruled out, and why>
 
 ## Deliverable
-Write a plan to .ai/plan.md with these sections: Goal, Current Behavior,
-Investigation, Root Cause, Proposed Change, Files to Modify, Data/API Impact,
-Compatibility, Test Strategy, Risks, Implementation Steps.
-Do not modify any file.
+Print the complete plan to stdout as Markdown, with these sections: Goal,
+Current Behavior, Investigation, Root Cause, Proposed Change, Files to Modify,
+Data/API Impact, Compatibility, Test Strategy, Risks, Implementation Steps.
+The caller captures stdout. Do not write it to a file: this role runs in plan
+mode. Do not modify any file.
 ```
+
+Ask for the plan on stdout and nowhere else. `--output` saves what the role
+printed, and this role runs in plan mode, where it cannot write outside its own
+plans directory: told to write a file, it writes one you will never see and
+reports having done so -- and that *report* is what lands in `.ai/plan.md`,
+plausible enough that the design review then reviews it.
 
 ```bash
 dev-orchestra run architect \
@@ -144,12 +151,15 @@ Architect starts again with no context, so the brief alone is not a prompt:
 
 <the original design request, unchanged>
 
-Read .ai/plan.md and rewrite it in place. Keep every section it already has.
+Read .ai/plan.md and revise it. Keep every section it already has.
 
 <paste .ai/execution/design-fix-brief.md here>
 
 For each finding: say whether you addressed it and how, or why it is not a
 problem. Do not widen the scope beyond the original request.
+
+Print the complete revised plan to stdout as Markdown. The caller captures
+stdout. Do not write it to a file: this role runs in plan mode.
 ```
 
 ```bash
@@ -157,6 +167,13 @@ dev-orchestra run architect \
   --prompt-file .ai/execution/design-revise-request.md \
   --output .ai/plan.md
 ```
+
+A revision that stalls, times out or fails leaves `.ai/plan.md` as it was --
+the run is being asked to rewrite its own input, so a bad one must not consume
+it. Whatever it did print goes to `.ai/plan.md.rejected`; read that before
+spending the next attempt — it is this attempt's, one from an earlier attempt
+having been removed. The command exits non-zero whenever it refuses the write,
+so a chained `review run --design` does not review the old plan as the new one.
 
 That spends an attempt from `budgets.architect`, which is why the design review
 has no budget key of its own. Re-review with `review run --design` only when

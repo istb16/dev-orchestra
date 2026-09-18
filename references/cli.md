@@ -100,6 +100,19 @@ stall in minutes rather than at the total deadline. It only applies to providers
 that stream progress (both adapters do; see `references/providers.md`), and is
 ignored elsewhere rather than guessed at.
 
+`--output` writes the run's stdout only when the run succeeded and printed
+something; a stalled, timed-out or failed run leaves the existing file exactly
+as it was and says so on stderr. The target is usually the file the run was
+asked to revise, so overwriting it with a fragment destroys the input. Whatever
+the refused run did print is kept beside the target as `<output>.rejected`,
+named in the same message; a sidecar left by an earlier attempt is removed
+rather than left to be read as this one's. A refused write exits 1 even when the
+run itself succeeded: `--output` promises that the named file holds this run's
+result, so a chained command must not read the stale one as if it were new. A
+detached run says the same in its job record, where `jobs show` reports it — its
+stderr goes nowhere. Without `--output` the stdout is printed whatever the
+outcome, and the exit code is 1 on a failed run either way.
+
 `--detach` starts the run in its own process and returns a job id immediately,
 so the call cannot block. See `jobs` below.
 
@@ -173,7 +186,7 @@ that: the work runs elsewhere and the wait has a deadline of your own.
 | --- | --- |
 | `jobs list [--json]` | Every recorded job, newest first. |
 | `jobs show <id> [--output] [--json]` | One job, optionally with its output. |
-| `jobs wait <id> [--timeout <s>] [--poll <s>] [--json]` | Wait, but never longer than `--timeout` (60s default). Exits 4 if the job was still running when the wait ended — a normal outcome, not an error. |
+| `jobs wait <id> [--timeout <s>] [--poll <s>] [--json]` | Wait, but never longer than `--timeout` (60s default). Exits 4 if the job was still running when the wait ended — a normal outcome, not an error. Exits 1 if the job refused its `--output` write, as the foreground run would. |
 | `jobs cancel <id>` | Stop a running job and its process tree. |
 
 ```bash

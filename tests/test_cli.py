@@ -417,6 +417,126 @@ class TestStallReporting(IsolatedCase):
         self.assertEqual(json.loads(state)["events"][-1]["status"], "stalled")
 
 
+class TestOutputGuard(IsolatedCase):
+    """``--output`` usually names the file the run was asked to revise.
+
+    Writing it from a bad result destroys the input, which is how a stalled
+    Architect replaced a 50KB plan with the fragment it had emitted.
+    """
+
+    PLAN = "# Plan\n\nevery section, all of it\n"
+
+    def setUp(self):
+        super().setUp()
+        run_cli("config", "setup", "--defaults")
+        run_cli("config", "set", "implementer.provider", "mock")
+        self.target = os.path.join(self.project, "plan.md")
+        self.rejected = self.target + ".rejected"
+        with open(self.target, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(self.PLAN)
+
+    def patch_run(self, **fields):
+        """Make the provider return a RunResult the test dictates."""
+        from orchestrator.providers import mock as mock_mod
+        from orchestrator.providers.base import RunResult
+
+        def fake_run(provider, *args, **kwargs):
+            resolved = provider.resolve_model(kwargs.get("model_spec") or {"family": "small"})
+            return RunResult(
+                fields.get("ok", True),
+                fields.get("exit_code", 0),
+                fields.get("stdout", ""),
+                fields.get("stderr", ""),
+                ["mock"],
+                1.0,
+                resolved,
+                timed_out=fields.get("timed_out", False),
+                stalled=fields.get("stalled", False),
+                idle_for=fields.get("idle_for", 0.0),
+            )
+
+        original = mock_mod.MockProvider.run
+        mock_mod.MockProvider.run = fake_run
+        self.addCleanup(setattr, mock_mod.MockProvider, "run", original)
+
+    def run_returning(self, **fields):
+        """Run the implementer with ``--output`` over a dictated result."""
+        self.patch_run(**fields)
+        return run_cli("run", "implementer", "--prompt", "go", "--output", self.target)
+
+    def test_a_stalled_run_leaves_the_existing_file_alone(self):
+        code, _, err = self.run_returning(
+            ok=False, exit_code=125, stdout="I'll start by reading", stalled=True, idle_for=300.0
+        )
+        self.assertEqual(code, 1)
+        self.assertEqual(read_file(self.target), self.PLAN)
+        self.assertIn("stalled", err)
+        self.assertIn("unchanged", err)
+
+    def test_a_failed_run_leaves_the_existing_file_alone(self):
+        code, _, err = self.run_returning(ok=False, exit_code=1, stdout="half a plan", stderr="boom")
+        self.assertEqual(code, 1)
+        self.assertEqual(read_file(self.target), self.PLAN)
+        self.assertIn("unchanged", err)
+
+    def test_a_timed_out_run_leaves_the_existing_file_alone(self):
+        code, _, _ = self.run_returning(ok=False, exit_code=124, stdout="...", timed_out=True)
+        self.assertEqual(code, 1)
+        self.assertEqual(read_file(self.target), self.PLAN)
+
+    def test_an_ok_run_that_printed_only_whitespace_writes_nothing(self):
+        """A run exiting 0 is not the same as the artifact having been produced."""
+        code, _, err = self.run_returning(ok=True, stdout="   \n\n")
+        self.assertEqual(code, 1)
+        self.assertEqual(read_file(self.target), self.PLAN)
+        self.assertIn("unchanged", err)
+        self.assertFalse(os.path.exists(self.rejected))
+
+    def test_an_ok_run_with_real_output_writes_as_before(self):
+        code, _, err = self.run_returning(ok=True, stdout="# Revised plan\n")
+        self.assertEqual(code, 0)
+        self.assertEqual(read_file(self.target), "# Revised plan\n")
+        self.assertNotIn("unchanged", err)
+        self.assertFalse(os.path.exists(self.rejected))
+
+    def test_the_refused_output_is_kept_beside_the_target(self):
+        _, _, err = self.run_returning(ok=False, exit_code=1, stdout="I wrote the plan to C:\\...\n")
+        self.assertEqual(read_file(self.rejected), "I wrote the plan to C:\\...\n")
+        self.assertIn(self.rejected, err)
+
+    def test_a_run_that_printed_nothing_leaves_no_sidecar(self):
+        """Including one an earlier attempt left: it is not this run's account."""
+        self.write("plan.md.rejected", "what attempt one managed to print\n")
+        _, _, err = self.run_returning(ok=False, exit_code=125, stdout="", stalled=True, idle_for=300.0)
+        self.assertFalse(os.path.exists(self.rejected))
+        self.assertIn(self.target, err)
+        self.assertNotIn(".rejected", err)
+
+    def test_a_successful_write_takes_the_previous_attempts_sidecar_with_it(self):
+        """Read beside a fresh plan, a stale sidecar reads as a report on it."""
+        self.write("plan.md.rejected", "what attempt one managed to print\n")
+        code, _, _ = self.run_returning(ok=True, stdout="# Revised plan\n")
+        self.assertEqual(code, 0)
+        self.assertEqual(read_file(self.target), "# Revised plan\n")
+        self.assertFalse(os.path.exists(self.rejected))
+
+    def test_a_sidecar_that_cannot_be_written_costs_only_the_sidecar(self):
+        """Preserving the output is the convenience; the failure report is not."""
+        os.makedirs(self.rejected)
+        code, _, err = self.run_returning(ok=False, exit_code=1, stdout="half a plan\n", stderr="boom")
+        self.assertEqual(code, 1)
+        self.assertEqual(read_file(self.target), self.PLAN)
+        self.assertIn("boom", err)
+        self.assertIn("half a plan", err)
+
+    def test_a_run_without_output_still_prints_what_it_produced(self):
+        """The guard protects a file from a bad result; a bare run has none."""
+        self.patch_run(ok=False, exit_code=1, stdout="half a plan\n", stderr="boom")
+        code, out, _ = run_cli("run", "implementer", "--prompt", "go")
+        self.assertEqual(code, 1)
+        self.assertIn("half a plan", out)
+
+
 @unittest.skipUnless(has_git(), "git is required")
 class TestReviewPipeline(IsolatedCase):
     def setUp(self):

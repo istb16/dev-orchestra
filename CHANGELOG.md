@@ -10,6 +10,33 @@ The public surface covered by that promise is: the configuration schema, the
 
 ## [Unreleased]
 
+### Fixed
+
+- **`run --output` no longer overwrites the target with a bad result.** The
+  file was written from `result.stdout` before the outcome was so much as
+  looked at, so a stalled Architect replaced the 50,088-byte plan it had been
+  asked to revise with the 150 bytes it managed to emit. The write now happens
+  only when the run is `ok` and printed something; otherwise the existing file
+  is left untouched and stderr says so, beside the `stalled` / `timed out` /
+  `failed` line that explains it. The refused stdout is not thrown away either
+  -- it goes to `<output>.rejected`, named in the same message, because it is
+  usually the only account of what the run did instead of the work; a sidecar
+  from an earlier attempt is removed rather than left to be read as this
+  attempt's. A refused write exits 1 even when the run itself succeeded, so a
+  chained command cannot take an untouched file for a fresh one, and a detached
+  run records the refusal in its job, where `jobs show` reports it and `jobs
+  wait` exits 1 on it, because the worker's stderr goes nowhere. Runs without `--output` and detached jobs' recorded
+  output are unchanged.
+
+- **The design request template asks for the plan on stdout.** It told the
+  Architect to "write a plan to .ai/plan.md", which that role cannot do: it
+  runs in plan mode and cannot write outside its own plans directory. It wrote
+  the plan where nobody would look, exited 0, and printed a *report* of having
+  done so -- and `--output` saved that report as the plan, plausible enough
+  that the design review reviewed it and the implementer built from it. The
+  Design and revision templates in `references/workflow.md` now ask for the
+  plan on stdout and say why.
+
 ## [0.6.0] - 2026-09-18
 
 ### Added
