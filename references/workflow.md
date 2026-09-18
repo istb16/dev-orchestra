@@ -307,6 +307,7 @@ anything left unresolved.
 | A model will not resolve | Fix the config or ask the user; never substitute a guess |
 | One reviewer fails | Continue; report `N successful, M failed` |
 | Every reviewer fails | Treat the review stage as failed; do not claim the change is reviewed |
+| A round comes back `partial` | The change body was handed over as a file; the findings are real, the review is not clean. Triage them, then report the round as not reviewed in full. `review status` says how to clear it |
 | Implementer or fixer fails | Stop the pipeline and report |
 | Snapshot is empty | There is nothing to review — check whether the implementation actually wrote anything |
 | `review run --design` says there is no plan | You skipped the design stage, so skip the design review with it; otherwise run the Architect first |

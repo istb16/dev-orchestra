@@ -452,7 +452,7 @@ class TestRereviewPremise(RoundCase):
             {"id": "m1", "role": "general"},
             self.workspace,
             ws.read_text(self.workspace.snapshot_path),
-        )
+        ).text
 
     def test_a_first_round_says_nothing_about_re_review(self):
         self.implement()
@@ -547,6 +547,91 @@ class TestSnapshotCommandRounds(RoundCase):
         run_cli("review", "run")
         meta = ws.read_json(self.workspace.snapshot_meta_path, {})
         self.assertTrue(meta["incremental_from"])
+
+
+class TestCoverageSurvivesTheNarrowing(RoundCase):
+    """The narrowing is exactly what would launder an unread first round.
+
+    Round 1 goes over the inline limit and is handed to the reviewer as a
+    file. Its finding is real, gets accepted and gets fixed -- and round 2,
+    by design, shows the reviewer the fix and nothing else. So round 2 inlines
+    its whole change body, answers NO_FINDINGS and is a clean round, while
+    four fifths of the change has still never been read by anybody. Only the
+    whole change's own state, carried forward, says so.
+    """
+
+    def setUp(self):
+        super().setUp()
+        # Four rounds below, each from a new snapshot, so each advances the
+        # counter. The budget being spent is a different test.
+        run_cli("config", "set", "review.max_review_iterations", "9")
+
+    def bulk(self, lines):
+        return "".join('BULK_%04d = "%s"\n' % (index, "y" * 100) for index in range(lines))
+
+    def oversize(self):
+        """More change than fits in a prompt. 1,200 lines of ~115 characters
+        clears the 120,000-char limit with room to spare, and stays a diff git
+        can produce in the time a test has."""
+        self.write("bulk.py", self.bulk(1200))
+
+    def clean_answers(self):
+        os.environ["DEV_ORCHESTRA_MOCK_RESPONSE"] = "NO_FINDINGS\n"
+        os.environ.pop("DEV_ORCHESTRA_MOCK_DIR", None)
+
+    def coverage(self):
+        return json.loads(run_cli("review", "show", "--json")[1])["coverage"]
+
+    def test_a_fix_only_round_cannot_launder_a_first_round_nobody_read(self):
+        # 1. A change too large to inline. The reviewer is handed a path.
+        self.implement()
+        self.oversize()
+        review_mod.create_snapshot(self.workspace)
+        code, out, _ = run_cli("review", "run")
+        self.assertEqual(code, 1)
+        self.assertIn("PARTIAL", out)
+        first = self.coverage()
+        self.assertEqual(first["round"], "unverified")
+        self.assertEqual(first["change"], "unverified")
+        self.assertEqual(first["unverified_since"], 1)
+        self.assertGreater(first["change_chars"], review_mod.MAX_INLINE_DIFF_CHARS)
+
+        # 2. Its finding is real: triage it, fix it. The next snapshot narrows
+        #    to the fix, which is the whole point of an incremental round.
+        run_cli("review", "triage", "F1", "--status", "accepted")
+        self.fix()
+        meta = review_mod.create_snapshot(self.workspace)
+        self.assertTrue(meta["incremental_from"])
+        self.assertNotIn("BULK_0500", ws.read_text(self.workspace.snapshot_path))
+
+        # 3. The fix inlines, the reviewer finds nothing, the round is clean --
+        #    and the change is still unverified from round 1.
+        self.clean_answers()
+        code, _, _ = run_cli("review", "run")
+        self.assertEqual(code, 0)
+        second = self.coverage()
+        self.assertEqual(second["round"], "complete")
+        self.assertEqual(second["change"], "unverified")
+        self.assertEqual(second["unverified_since"], 1)
+        status = json.loads(run_cli("review", "status", "--json")[1])
+        self.assertEqual(status["coverage"]["change"], "unverified")
+        self.assertIn("--full", run_cli("review", "status")[1])
+
+        # 4. --full re-sends the whole change, which still does not fit. The
+        #    mark stays where it was rather than moving to this round.
+        run_cli("review", "snapshot", "--full")
+        self.assertEqual(run_cli("review", "run")[0], 1)
+        third = self.coverage()
+        self.assertEqual(third["round"], "unverified")
+        self.assertEqual(third["unverified_since"], 1)
+
+        # 5. Narrow the change until it fits, and one --full round clears it.
+        self.write("bulk.py", self.bulk(2))
+        run_cli("review", "snapshot", "--full")
+        self.assertEqual(run_cli("review", "run")[0], 0)
+        fourth = self.coverage()
+        self.assertEqual(fourth["change"], "complete")
+        self.assertIsNone(fourth["unverified_since"])
 
 
 class TestIncrementalConfiguration(IsolatedCase):

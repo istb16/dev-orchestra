@@ -128,6 +128,9 @@ then writes one report each plus deduplicated `consolidated.md` / `.json`.
   and continue. All of them failing does.
 - `unparsed` counts as failed and is **never** a clean review: broken output
   says nothing about the code.
+- `partial` = a round whose change body went over as a file. The findings are
+  real, the review is not clean: if `review status` says `coverage` is
+  `unverified`, report "not reviewed in full" and do not re-run that snapshot.
 - `review run` may cut the panel to one reviewer on a small, low-risk change
   (`optimization.level: aggressive`) and prints why. Say so in the report:
   one reviewer is one opinion, not an independent second one.

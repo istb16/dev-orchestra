@@ -1144,6 +1144,31 @@ def _merge_runs(workspace: ws.Workspace, run_dicts: List[Dict[str, Any]]) -> Lis
     return run_dicts + kept
 
 
+def _reviewer_line(run: review_mod.ReviewerRun) -> str:
+    mark = "ok" if run.status == "ok" else ("PARTIAL" if run.status == "partial" else "FAILED")
+    return "%-7s %-18s %-8s %-18s %s" % (
+        mark,
+        run.reviewer.get("id"),
+        run.reviewer.get("provider"),
+        run.model_display or "?",
+        run.error or "%d finding(s)" % run.findings,
+    )
+
+
+def _panel_summary(ok: int, failed: int, partial: int) -> str:
+    """The round's tally.
+
+    The first two counts keep their wording: the orchestrator is told to
+    report `N successful, M failed` verbatim, and SKILL.md and workflow.md
+    both say so. Partial is appended, and only when there is one, so a round
+    that never touched the inline limit reads exactly as it always did.
+    """
+    line = "%d successful, %d failed" % (ok, failed)
+    if partial:
+        line += ", %d partial (change handed over as a file)" % partial
+    return line
+
+
 def _risk_paths(meta: Dict[str, Any]) -> List[str]:
     """Every path a snapshot says the change touches.
 
@@ -1359,12 +1384,13 @@ def _run_design_review(args: argparse.Namespace, loaded: config_mod.LoadedConfig
     for reviewer_id in stale:
         _err("note: %s has no report for this plan; its earlier report was ignored" % reviewer_id)
 
-    ok, failed = review_mod.summarise_runs(runs)
+    ok, failed, partial = review_mod.summarise_runs(runs)
     if args.json:
         _emit_json(
             {
                 "ok": ok,
                 "failed": failed,
+                "partial": partial,
                 "reviewers": run_dicts,
                 "counts": data["counts"],
                 "plan": meta["plan"],
@@ -1372,20 +1398,11 @@ def _run_design_review(args: argparse.Namespace, loaded: config_mod.LoadedConfig
         )
     else:
         for run in runs:
-            _out(
-                "%-6s %-18s %-8s %-18s %s"
-                % (
-                    "ok" if run.status == "ok" else "FAILED",
-                    run.reviewer.get("id"),
-                    run.reviewer.get("provider"),
-                    run.model_display or "?",
-                    run.error or "%d finding(s)" % run.findings,
-                )
-            )
+            _out(_reviewer_line(run))
         _out("")
-        _out("%d successful, %d failed" % (ok, failed))
+        _out(_panel_summary(ok, failed, partial))
         _out("Consolidated: %s" % workspace.relative(workspace.consolidated_md_path))
-    if ok == 0 and failed:
+    if ok == 0 and (failed or partial):
         return 1
     return 0
 
@@ -1546,12 +1563,13 @@ def cmd_review_run(args: argparse.Namespace) -> int:
                     % (run.reviewer.get("id"), run.findings, max_findings)
                 )
 
-    ok, failed = review_mod.summarise_runs(runs)
+    ok, failed, partial = review_mod.summarise_runs(runs)
     if args.json:
         _emit_json(
             {
                 "ok": ok,
                 "failed": failed,
+                "partial": partial,
                 "reviewers": run_dicts,
                 "counts": data["counts"],
                 "optimization": plan.to_dict(),
@@ -1559,21 +1577,11 @@ def cmd_review_run(args: argparse.Namespace) -> int:
         )
     else:
         for run in runs:
-            status = "ok" if run.status == "ok" else "FAILED"
-            _out(
-                "%-6s %-18s %-8s %-18s %s"
-                % (
-                    status,
-                    run.reviewer.get("id"),
-                    run.reviewer.get("provider"),
-                    run.model_display or "?",
-                    run.error or "%d finding(s)" % run.findings,
-                )
-            )
+            _out(_reviewer_line(run))
         _out("")
-        _out("%d successful, %d failed" % (ok, failed))
+        _out(_panel_summary(ok, failed, partial))
         _out("Consolidated: %s" % workspace.relative(workspace.consolidated_md_path))
-    if ok == 0 and failed:
+    if ok == 0 and (failed or partial):
         return 1
     return 0
 
@@ -1671,6 +1679,18 @@ def cmd_review_status(args: argparse.Namespace) -> int:
     else:
         budget_key = "max_review_iterations"
         max_iterations = int(settings.get("max_review_iterations", 2))
+    counts = data.get("counts", {})
+    # No consolidated report at all is the only real "none": nothing has been
+    # reviewed. A report with no `coverage` block is a round that happened
+    # before coverage was recorded, and calling that `round none, change none`
+    # would claim it had been measured and found empty. `render_consolidation`
+    # leaves its line out for exactly that reason, and the two commands read
+    # the same file -- they must not describe it differently.
+    coverage = data.get("coverage")
+    if not data:
+        coverage = {"round": "none", "change": "none", "unverified_since": None, "change_chars": None}
+    elif not isinstance(coverage, dict):
+        coverage = None
     payload = {
         "iteration": iteration,
         budget_key: max_iterations,
@@ -1679,7 +1699,12 @@ def cmd_review_status(args: argparse.Namespace) -> int:
         "accepted_count": len(review_mod.accepted_findings(data)),
         "re_review_recommended": bool(blocking) and iteration < max_iterations,
         "iteration_budget_exhausted": iteration >= max_iterations,
-        "counts": data.get("counts", {}),
+        "coverage": coverage,
+        # Counted over the snapshot the `coverage` beside it describes, because
+        # this is the number printed in the same breath as that value. The
+        # table-wide column is still in `counts`, under its own name.
+        "reviewers_partial": review_mod.snapshot_reviewers(counts, "partial"),
+        "counts": counts,
     }
     if args.json:
         _emit_json(payload)
@@ -1688,9 +1713,97 @@ def cmd_review_status(args: argparse.Namespace) -> int:
         _out("accepted findings: %d" % payload["accepted_count"])
         _out("blocking (%s): %d %s" % ("/".join(severities), len(blocking), ", ".join(payload["blocking"])))
         _out("re-review recommended: %s" % ("yes" if payload["re_review_recommended"] else "no"))
+        if coverage is None:
+            _out("coverage: not recorded -- this report predates it")
+        else:
+            _out("coverage: round %s, change %s" % (coverage.get("round"), coverage.get("change")))
+        for line in _coverage_advice(
+            coverage or {},
+            counts,
+            payload["iteration_budget_exhausted"],
+            args.design,
+        ):
+            _out(line)
         if payload["iteration_budget_exhausted"] and blocking:
             _out("iteration budget exhausted -- report the remaining findings instead of looping")
     return 0
+
+
+def _coverage_advice(
+    coverage: Dict[str, Any], counts: Dict[str, Any], budget_spent: bool, design: bool = False
+) -> List[str]:
+    """What to do about an unverified coverage, if anything.
+
+    Each line names the one action that changes the answer. Another round is
+    never it: the snapshot is frozen, so re-running it sends the same prompt
+    and gets the same verdict. Narrowing what the round *shows* is never it
+    either, which is why ``--base`` is not named here: a smaller diff is a
+    smaller round, not a reviewed change, and pointing at the flag that moves
+    the mark without moving the change is pointing at the way around it.
+
+    The state is ``review_mod.coverage_state``, the same classification
+    ``consolidated.md`` words: the two commands read one file and must not
+    describe it differently -- an advice line telling the reader to re-snapshot
+    with ``--full`` when what is missing is a reviewer sends them to redo the
+    thing they just did.
+
+    A design round is judged on ``.ai/plan.md`` itself, and none of the
+    code-review remedies can be aimed at it -- ``review snapshot`` writes the
+    code snapshot and there is no ``--design`` form of it. The only thing that
+    makes an oversize plan reviewable is a shorter plan.
+    """
+    lines = []
+    chars = coverage.get("change_chars")
+    size = "{:,}".format(chars) if chars else "size unrecorded"
+    limit = "{:,}".format(review_mod.MAX_INLINE_DIFF_CHARS)
+    # Counted over this snapshot, like the coverage value it is quoted beside.
+    partial = review_mod.snapshot_reviewers(counts, "partial")
+    state = review_mod.coverage_state(coverage, counts)
+    mark = review_mod.unverified_phrase(coverage)
+    if state == "round_unverified":
+        if design:
+            lines.append(
+                "not a clean review: %d reviewer(s) partial, the plan (%s chars) was handed over "
+                "as a file. Re-running the same plan gives the same answer: shorten .ai/plan.md "
+                "to fit inline (<= %s chars), then run the design round again." % (partial, size, limit)
+            )
+        else:
+            lines.append(
+                "not a clean review: %d reviewer(s) partial, the change body (%s chars) was handed "
+                "over as a file. Re-running the same snapshot gives the same answer: split the "
+                "change and review the parts, so each part fits inline (<= %s chars)."
+                % (partial, size, limit)
+            )
+    elif state == "no_reviewer":
+        if design:
+            lines.append("%s -- no reviewer has run against this plan; run the design round." % mark)
+        else:
+            lines.append(
+                "%s -- no reviewer has run against this snapshot; run the reviewers against it "
+                "with review run." % mark
+            )
+    elif state == "none_ok":
+        if design:
+            lines.append(
+                "%s -- no reviewer came back ok for this plan; re-run the reviewers that did not." % mark
+            )
+        else:
+            lines.append(
+                "%s -- no reviewer came back ok for this snapshot; re-run the reviewers that did not." % mark
+            )
+    elif state == "fix_only":
+        if design:
+            lines.append(
+                "%s -- no round has shown a reviewer the whole plan; shorten .ai/plan.md until it "
+                "fits inline, then run the design round again." % mark
+            )
+        else:
+            lines.append(
+                "%s -- re-snapshot with --full once the whole change fits inline, then run again." % mark
+            )
+    if budget_spent and coverage.get("change") == "unverified":
+        lines.append("iteration budget exhausted -- report the change as not reviewed in full")
+    return lines
 
 
 # --------------------------------------------------------------------------- state

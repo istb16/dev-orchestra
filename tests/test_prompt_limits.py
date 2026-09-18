@@ -113,7 +113,7 @@ class TestWhatTheTemplateStillSays(IsolatedCase):
         self.workspace.ensure()
 
     def prompt(self, **kwargs):
-        return review_mod.build_review_prompt(reviewer("r1"), self.workspace, "diff body", **kwargs)
+        return review_mod.build_review_prompt(reviewer("r1"), self.workspace, "diff body", **kwargs).text
 
     def test_the_reviewer_is_still_told_it_is_read_only(self):
         text = self.prompt()
@@ -152,7 +152,7 @@ class TestWhatTheTemplateStillSays(IsolatedCase):
     def test_a_custom_template_without_the_limits_placeholder_still_renders(self):
         text = review_mod.build_review_prompt(
             reviewer("r1"), self.workspace, "diff", template="{role}: {diff_section}"
-        )
+        ).text
         self.assertIn("general: ", text)
 
 
@@ -167,7 +167,7 @@ class TestTheDiet(IsolatedCase):
     def test_the_fixed_part_of_the_prompt_stays_under_its_budget(self):
         """Every reviewer pays this, every round. The number is a ceiling with
         room to add a rule, not a measurement to keep in step with the text."""
-        overhead = len(review_mod.build_review_prompt(reviewer("r1"), self.workspace, "")) - len("")
+        overhead = len(review_mod.build_review_prompt(reviewer("r1"), self.workspace, "").text) - len("")
         self.assertLess(overhead, 1400, "the review prompt has grown back")
 
     def test_the_role_guidance_stays_terse(self):
@@ -181,7 +181,9 @@ class TestTheDiet(IsolatedCase):
             self.assertGreater(len(guidance.split(",")), 4, role)
 
     def test_an_unknown_role_still_gets_a_framing(self):
-        text = review_mod.build_review_prompt(reviewer("r1", role="accessibility"), self.workspace, "diff")
+        text = review_mod.build_review_prompt(
+            reviewer("r1", role="accessibility"), self.workspace, "diff"
+        ).text
         self.assertIn("accessibility specialist", text)
 
 

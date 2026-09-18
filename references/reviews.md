@@ -258,6 +258,152 @@ A reviewer that returns neither findings in a recognisable shape nor
 report that cannot be read is not evidence that the code is fine, and treating
 it as such is the worst way for a review tool to fail.
 
+## Coverage
+
+A change body over **120,000 characters** (`MAX_INLINE_DIFF_CHARS` in
+`review.py`) does not go into the prompt. The reviewer is handed the path of
+the frozen snapshot instead and asked to read it — and how much of it actually
+gets read is not knowable from here. Claude Code's `Read` stops at 2,000 lines
+by default, so a reviewer can answer `NO_FINDINGS` having seen a fifth of the
+change, and nothing in that answer distinguishes it from a genuinely clean
+review.
+
+So the verdict is not taken from the answer. A reviewer whose change body was
+handed over as a file is recorded with status **`partial`**, whatever it
+returned. Its findings are kept and triaged like any others; what is missing is
+the guarantee that it saw the whole change. `partial` is counted apart from
+`failed` — `reviewers_ok`, `reviewers_partial` and `reviewers_failed` sum to
+`reviewers_total` — and `unparsed` wins over it, because a report nobody can
+read is the more specific fact.
+
+Those four count the whole reviewer table, which outlives the round on purpose
+(see below). `counts` carries the same four again as
+`snapshot_reviewers_total`, `snapshot_reviewers_ok`, `snapshot_reviewers_partial`
+and `snapshot_reviewers_failed`, counted over the entries stamped with the
+snapshot the report is about — the set every `coverage` value is derived from.
+Both are named so that neither is read as the other: `0 ok / 0 total` beside
+`no reviewer has run against this snapshot` is one answer, `2 ok / 2 total`
+beside it is two snapshots in one document. `consolidated.md` prints the
+table's tally, and the snapshot's on a second line whenever the two differ;
+`review status` reports the snapshot's (its top-level `reviewers_partial` is
+that one, and `counts` carries both).
+
+The reviewer is never asked to declare any of this. A declaration cannot be
+checked for the case where it was *not* made, and the prompt ends with
+"Findings or `NO_FINDINGS` only", which overrides anything asked before it. The
+prompt says what the round is recorded as; the recording is done here.
+
+`consolidated.json` carries the round's answer at the top level:
+
+```json
+{
+  "coverage": {
+    "round": "complete",
+    "change": "unverified",
+    "unverified_since": 1,
+    "change_chars": 130412
+  }
+}
+```
+
+Every value below is derived from the reviewer entries stamped with the
+snapshot the report is about. Each entry carries `snapshot`, the same short sha
+the reviewer reports are stamped with, because the reviewer table deliberately
+outlives the round: `--only` merges a fresh run into it and a reviewer that did
+not run this time is kept so the table stays complete. An entry from an earlier
+snapshot is no more this round's coverage than a report from an earlier
+snapshot is this round's findings. `snapshot` is a new key; a reader that does
+not know it sees the entry it always saw.
+
+**`coverage.round`** — whether **this round's change body**
+(`review-target.diff`, or `review-target.md` for a design round; on an
+incremental round that diff is the fix alone) was inlined whole into every
+reviewer's prompt this round.
+
+- `complete`: inlined for every reviewer. **Says nothing about the whole
+  change.** On an incremental round it means "the fix was shown in full".
+- `unverified`: handed to one or more reviewers as a file.
+- `none`: no reviewer ran against this snapshot (none configured, none run
+  since it was taken, or every entry predates this version).
+
+**`coverage.change`** — **the whole change under review**.
+
+- `unverified`: this workflow and branch has a round whose `round` was
+  `unverified`, and since then no non-incremental snapshot (empty
+  `incremental_from`) has been reviewed with `round: complete` and at least one
+  reviewer *of that snapshot* `ok`.
+- `complete`: that has happened, or no round was ever unverified.
+- `none`: nothing on this workflow and branch has been reviewed yet.
+
+**`coverage.unverified_since`** — the round number `change: unverified` started
+at, when that number belongs to the current count. `null` otherwise — which
+includes an `unverified` change whose mark was carried across a lineage change:
+the round counter restarts there (see [Re-review](#re-review)), so the number
+would name a round the count does not have, `iteration 1/2` printed beside
+"since round 3". The mark is what the carry is for and it survives; the number
+is not and is dropped with the count it belonged to. Read the mark from
+`coverage.change`, never from this being set.
+
+**`coverage.change_chars`** — how many characters this round's change body was,
+as the runs recorded it (`null` when no run did).
+
+The two are separate because an incremental round inlines only the fix. Judging
+the whole change by what *this* round inlined would let a fix-only round launder
+a partial one: accept the finding, fix it, inline the fix, `NO_FINDINGS`, clean
+— with four fifths of the change still unread by anyone. So the mark carries
+across rounds.
+
+It carries on the **workflow and the branch** — the round counter's key with
+the base dropped. The base is the other way of saying which change, which is
+exactly why the mark cannot hang on it: narrowing with `--base` makes the round
+smaller and the change no more read than it was, so a mark keyed on the base
+would be cleared by the first thing anyone tries after seeing one. The price,
+and it is the one worth paying: a second, unrelated change on the same branch
+inherits the mark until a full snapshot is reviewed inline.
+
+What that buys is that the mark *survives* a change of base — it is not a
+guarantee against every narrowing. `coverage.change` says a reviewer saw, in
+full, the whole change the snapshot defines; re-base to a nearer commit and
+review the smaller change in full and it reports `complete` about that smaller
+change. Which is why the remedy named is splitting the change and reviewing the
+parts, each part in full, and not moving the base and calling it done.
+
+Clearing it is a change to the change, not another round, and not a narrower
+view of the same one. Re-running the same snapshot sends the same prompt and
+gets the same verdict:
+
+| State | What clears it |
+| --- | --- |
+| `round: unverified` | Split the change and review the parts, so that each body fits inline |
+| `change: unverified`, `round: none` | `review run` — no reviewer has run against this snapshot, so nothing about it has been read yet |
+| `change: unverified`, this round complete, no reviewer `ok` | Re-run the reviewers that did not come back `ok` — this snapshot was inlined and read by nobody |
+| `change: unverified`, this round complete, some reviewer `ok` | `review snapshot --full` once the whole change fits inline, then `review run` — the round inlined the fix alone |
+| Any of them, on a design round | Shorten `.ai/plan.md` until it fits inline, then run the design round again — `review snapshot` writes the code snapshot and has no `--design` form |
+
+The three middle rows are one mark with three different things missing, and
+naming the wrong one sends the reader to redo what they just did. So the state
+is classified once (`coverage_state`) and `consolidated.md` and `review status`
+word that one answer: the report says what the round is, the status line says
+what to do about it, and they never describe the same report differently.
+
+`review run` exits **1** on a round where no reviewer came back `ok`, partial
+included: the round produced no claim that the change is fine, which is the
+same thing every reviewer failing means. `review status` prints both values and
+the one action that would change them.
+
+Rounds recorded before this version have neither `delivery` nor `snapshot` on
+their reviewer entries and are left out of the derivation rather than assumed.
+A report from before this version has no `coverage` block at all, and neither
+`consolidated.md` nor `review status` describes it as `none`: an unmeasured
+round is not a round measured and found empty. Every run recorded so far was
+comfortably under the limit — the largest measured 99,814 characters — so
+nothing in the existing history is being read as clean when it was not; the
+record simply does not say.
+
+The design review's request section is a known exception: it is inlined whatever
+its size, because the change body a design round reviews is the plan. Bringing
+the request under the same limit is a later change.
+
 The parser is deliberately tolerant: it accepts `**Severity:** high`,
 `**Severity**: high`, `- Severity: high`, any heading level for `Finding`,
 `Recommended fix`/`Recommendation` as synonyms for `Fix`, multi-line values, and
@@ -462,6 +608,14 @@ fragment with nothing to judge it against.
 
 **Triage before you re-snapshot.** The scope narrows on the accepted findings
 existing, so re-snapshotting first gives you the whole change again.
+
+**A narrowed round is only clean about the fix.** `coverage.round: complete` on
+round 2 says the fix was inlined in full, and nothing about the change round 1
+was handed as a file — which is why `coverage.change` is carried separately and
+why round 2 answering `NO_FINDINGS` does not clear it. `review snapshot --full`
+re-sends the whole change; once that fits inline and one reviewer of *that*
+snapshot comes back `ok`, `coverage.change` goes back to `complete`. See
+[Coverage](#coverage).
 
 The tree is only recorded when the round might use one. `--base` and
 `review.incremental_rounds: false` both say it will not, and writing it means

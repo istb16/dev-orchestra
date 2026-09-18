@@ -93,6 +93,16 @@ class TestDocumentedYaml(IsolatedCase):
         parsed = parse_with_bundled_parser(path.read_text(encoding="utf-8"))
         self.assertEqual(str(parsed["version"]), str(front["version"]))
 
+    def test_coverage_is_defined_where_the_orchestrator_is_told_to_read_it(self):
+        """`review status` prints these words and `consolidated.json` stores
+        them, so the reference has to define them rather than mention them."""
+        text = (pathlib.Path(REPO_ROOT) / "references" / "reviews.md").read_text(encoding="utf-8")
+        self.assertIn("## Coverage", text)
+        for term in ("`coverage.round`", "`coverage.change`", "`coverage.unverified_since`"):
+            self.assertIn(term, text)
+        self.assertIn("`partial`", text)
+        self.assertIn("snapshot --full", text)
+
     def test_readme_config_example_is_a_valid_configuration(self):
         """The main README block is not just parseable, it is usable."""
         from orchestrator import config as config_mod
