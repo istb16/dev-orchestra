@@ -31,6 +31,15 @@ from . import workspace as ws
 #: Terminal states. Anything else means the job is still supposed to be running.
 FINISHED = ("succeeded", "failed", "cancelled", "abandoned")
 
+#: Placeholders the caller puts in the worker's argv for :func:`start` to fill
+#: in. Both paths are built from the job id, so only this module can name them;
+#: only the caller knows where on its own command line they may go, because
+#: ``--extra`` is ``nargs=REMAINDER`` and swallows anything after it. Appending
+#: them here instead is how the worker came to be handed its prompt path and
+#: its job path as provider arguments, claiming nothing and reading nothing.
+PROMPT_FILE = "{prompt_file}"
+JOB_FILE = "{job_file}"
+
 
 def jobs_dir(workspace: ws.Workspace) -> str:
     return os.path.join(workspace.dir, "jobs")
@@ -102,10 +111,21 @@ def start(
     timeout: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Spawn ``argv`` as a detached worker and return the job record."""
+    # Checked here because a placeholder the caller forgot is otherwise
+    # invisible until the worker is already gone: it would run with no prompt
+    # and no job to claim, and be reported as abandoned.
+    missing = [name for name in (PROMPT_FILE, JOB_FILE) if name not in argv]
+    if missing:
+        raise ValueError(
+            "the worker argv must carry %s and %s for start() to fill in; missing: %s"
+            % (PROMPT_FILE, JOB_FILE, ", ".join(missing))
+        )
     os.makedirs(jobs_dir(workspace), exist_ok=True)
     job_id = new_job_id(stage)
     prompt_file = os.path.join(jobs_dir(workspace), "%s.prompt" % job_id)
     ws.write_text(prompt_file, prompt)
+    filled = {PROMPT_FILE: prompt_file, JOB_FILE: job_path(workspace, job_id)}
+    argv = [filled.get(arg, arg) for arg in argv]
 
     job = {
         "id": job_id,
@@ -123,7 +143,7 @@ def start(
     # The worker is this same CLI, re-entered with --job-file. Its stdio goes
     # nowhere: everything it wants to say goes into the job file instead, so
     # nothing depends on a parent staying alive to read a pipe.
-    command = [sys.executable, _entry_point(), *argv, "--job-file", job_path(workspace, job_id)]
+    command = [sys.executable, _entry_point(), *argv]
     try:
         proc = subprocess.Popen(
             command,

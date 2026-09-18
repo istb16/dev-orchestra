@@ -10,6 +10,70 @@ The public surface covered by that promise is: the configuration schema, the
 
 ## [Unreleased]
 
+### Fixed
+
+- **`run --detach` never delivered its prompt.** The worker was started with
+  `--prompt-file -` and its stdin on `DEVNULL`, so it read nothing and
+  delegated an empty prompt -- while the prompt sat, written and unread, in the
+  `.prompt` file `jobs.start` had already created for it beside the job.
+  `_detached_argv`'s own docstring said the prompt came from a file; only the
+  wiring was missing. Every test passed because the mock provider does not read
+  a prompt, so nothing ever asked the provider what it had been handed. Two
+  tests now do: one fails the run on a marker in the prompt's text, the other
+  checks the prompt's length in the usage the run reports.
+
+  Naming the file was not enough by itself. `--extra` is `nargs=REMAINDER`, and
+  `jobs.start` appended both `--prompt-file` and `--job-file` to the end of the
+  worker's command line, so `run <role> --detach --extra ...` handed the two
+  paths to the provider CLI as arguments of its own: that worker read no
+  prompt, claimed no job, exited on its `DEVNULL` stdin, and the run ended
+  `abandoned` with the attempt already spent. `--job-file` had been appended
+  that way from the beginning, so a detached run carrying `--extra` has never
+  worked. `_detached_argv` now places a marker for each where its own command
+  line has room for one, and `jobs.start` substitutes the paths that only it,
+  holding the job id, can build.
+
+- **A detached worker now records why it gave up before running anything.**
+  Refusing an unreadable or empty `--prompt-file`, and failing to resolve the
+  model it was asked for, both write the reason to stderr, and a worker's
+  stderr is `DEVNULL`, so the reason was destroyed: the run surfaced only as
+  "the worker process (pid N) is gone and recorded no outcome", which is also
+  what is said about one that was killed. A run with `--job-file` now records
+  the message as the job's failure at both exits. The model one matters as of
+  this release: forwarding `--tier` is what puts an unresolvable model in front
+  of the worker rather than quietly running the default. The foreground call is
+  unchanged -- its caller is watching the stderr the message goes to.
+
+- **`--detach` dropped `--tier`.** `_detached_argv` forwarded `--mode`,
+  `--output`, `--timeout`, `--idle-timeout` and `--extra`, but not the tier, so
+  `run <role> --tier <t> --detach` quietly ran the role's default model --
+  usually the more expensive of the two -- and recorded what it spent without
+  the `role:tier` label a tier exists to be read against.
+
+- **An empty prompt is no longer delegated as though it were a request.**
+  `_read_prompt` read a `--prompt-file` through `ws.read_text`, whose default
+  answers `""` for anything that is not a readable file, so a mistyped path
+  became an empty prompt: the attempt was spent, the provider was started, and
+  what came back was that CLI's own complaint about its stdin, naming neither
+  the file nor the mistake. The path is now read so that failure is visible,
+  and "there is no such file" is reported apart from "it is there and it is
+  empty" -- different mistakes, and the reader needs to know which they made.
+  The message names the path as it was written as well as the one
+  `--workflow` resolved it to. The other ways a prompt arrives empty are
+  refused the same way and say which source was empty: an explicit
+  `--prompt ""` (`if args.prompt:` was falsy for it, so it fell through to the
+  stdin branch), and a pipe that carried nothing. All of it happens before the
+  budget is consulted, so a broken invocation costs no attempt.
+
+- **A run that produced nothing no longer exits 0.** Without `--output` an
+  `ok` run whose stdout was whitespace printed the whitespace, said nothing,
+  and exited 0; with `--output` the same result had its write refused and
+  exited 1. The two paths now share the judgement, because which one the
+  caller used says nothing about whether the run answered. The complaint names
+  the role and quotes the beginning of the raw stderr, which is where a CLI
+  that refused the prompt says why. A `--job-file` run is unchanged: its
+  stdout is recorded in the job and `jobs wait` reports the outcome.
+
 ## [0.7.0] - 2026-09-18
 
 ### Changed

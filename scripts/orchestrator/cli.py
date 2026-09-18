@@ -704,16 +704,56 @@ def cmd_doctor(args: argparse.Namespace) -> int:
 # --------------------------------------------------------------------------- run
 
 
+def _require_prompt(text: str, source: str) -> str:
+    """Refuse a prompt that arrived empty, whichever way it arrived.
+
+    An empty prompt is delegated like any other, and the provider then refuses
+    it in its own words -- about its stdin, naming neither the source the
+    caller used nor the mistake they made. It also costs an attempt to hear it.
+    """
+    if not text.strip():
+        raise SystemExit("empty prompt: %s; nothing was delegated" % source)
+    return text
+
+
+def _both_paths(written: str, resolved: Optional[str]) -> str:
+    """Name a path both ways when ``_in_workflow`` rewrote it.
+
+    The resolved path alone is one the caller never typed, and a caller looking
+    for their own typo needs to see what they wrote.
+    """
+    if not resolved or resolved == written:
+        return written
+    return "%s (resolved to %s)" % (written, resolved)
+
+
 def _read_prompt(args: argparse.Namespace, workspace: Optional[ws.Workspace] = None) -> str:
     if args.prompt_file:
         if args.prompt_file == "-":
-            return sys.stdin.read()
+            return _require_prompt(sys.stdin.read(), "stdin carried nothing")
         path = _in_workflow(workspace, args.prompt_file) if workspace else args.prompt_file
-        return ws.read_text(path)
-    if args.prompt:
-        return args.prompt
+        named = _both_paths(args.prompt_file, path)
+        # Deliberately not ws.read_text: its default is right for a report that
+        # may legitimately be absent, and turns a mistyped --prompt-file into an
+        # empty prompt that runs. Read it so the failure is the caller's to see,
+        # and so "no such file" stays distinct from "there and empty" -- they
+        # are different mistakes.
+        if not os.path.isfile(path):
+            trouble = "does not exist" if not os.path.exists(path) else "is not a file"
+            raise SystemExit("prompt file %s: %s" % (trouble, named))
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as handle:
+                text = handle.read()
+        except OSError as exc:
+            raise SystemExit("prompt file cannot be read: %s (%s)" % (named, exc)) from exc
+        return _require_prompt(text, "%s is empty" % named)
+    if args.prompt is not None:
+        # Tested against None, not truthiness: `--prompt ""` used to fall
+        # through to the stdin branch, where a pipe made it someone else's
+        # empty prompt and a terminal blamed a missing one.
+        return _require_prompt(args.prompt, "--prompt was empty")
     if not sys.stdin.isatty():
-        return sys.stdin.read()
+        return _require_prompt(sys.stdin.read(), "the piped stdin was empty")
     raise SystemExit("no prompt supplied: use --prompt, --prompt-file, or pipe one in")
 
 
@@ -733,6 +773,17 @@ def _remove_if_present(path: str) -> None:
         os.remove(path)
     except OSError:
         pass
+
+
+def _answered(result: Any) -> bool:
+    """Whether a run produced a result: it ended ``ok`` and printed something.
+
+    One function because ``--output`` and the bare print ask the same question,
+    and which of them the caller used says nothing about whether the run
+    answered. "Printed something" is ``strip()``-empty or not; see
+    ``_save_output`` for why nothing finer.
+    """
+    return bool(result.ok and result.stdout.strip())
 
 
 def _save_output(role: str, path: str, result: Any) -> Optional[_Refused]:
@@ -756,7 +807,7 @@ def _save_output(role: str, path: str, result: Any) -> Optional[_Refused]:
     # operator is told to read one before spending the next attempt. Cleared
     # first so no branch below can leave one behind by forgetting to.
     _remove_if_present(sidecar)
-    if result.ok and result.stdout.strip():
+    if _answered(result):
         ws.write_text(path, result.stdout)
         return None
     message = "%s produced nothing usable; %s is unchanged." % (role, path)
@@ -813,7 +864,19 @@ def cmd_run(args: argparse.Namespace) -> int:
         )
         return 0
 
-    prompt = _read_prompt(args, workspace)
+    try:
+        prompt = _read_prompt(args, workspace)
+    except SystemExit as exc:
+        # A worker's stderr is DEVNULL, so a reason left there reaches nobody:
+        # every exit this function can take before the outcome is written has
+        # to put its message in the job record, or the run is reported only as
+        # a worker that vanished having recorded no outcome -- which is also
+        # what is said about one that was killed. The same goes for the
+        # ModelResolutionError exit below. The foreground call keeps the
+        # message on stderr, where its caller is watching.
+        if args.job_file:
+            jobs_mod.finish(args.job_file, "failed", error=str(exc))
+        raise
     settings = loaded.review_settings()
     timeout = args.timeout or int(settings.get("timeout_seconds", 1800))
     idle_timeout = args.idle_timeout
@@ -874,6 +937,8 @@ def cmd_run(args: argparse.Namespace) -> int:
         )
     except ModelResolutionError as exc:
         book.end(token, "failed", {"error": str(exc)})
+        if args.job_file:
+            jobs_mod.finish(args.job_file, "failed", error=str(exc))
         _err(str(exc))
         return 2
 
@@ -928,12 +993,19 @@ def cmd_run(args: argparse.Namespace) -> int:
     # unrecorded and the next command reported this finished run as abandoned.
     # Nothing below this line is allowed to decide whether the run happened.
     refused = None
+    answered_nothing = False
     target = ""
     if args.output:
         target = _in_workflow(workspace, args.output)
         refused = _save_output(role, target, result)
     elif not args.job_file:
         _out(result.stdout)
+        # The same judgement `--output` refuses a write on. A run with nowhere
+        # to write has no refusal to report, so an `ok` run that printed
+        # nothing used to be reported as a success by printing that nothing.
+        # The --job-file branch is left out: a worker's stdout is in the job,
+        # and `jobs wait` reports the outcome.
+        answered_nothing = result.ok and not _answered(result)
     if result.stalled:
         _err(
             "%s produced no output for %.0fs and was treated as stalled (not merely slow)."
@@ -943,6 +1015,16 @@ def cmd_run(args: argparse.Namespace) -> int:
         _err("%s hit its %ss deadline and was killed." % (role, timeout))
     elif not result.ok:
         _err("%s failed (exit %s): %s" % (role, result.exit_code, result.stderr.strip()[:500]))
+    elif answered_nothing:
+        # Reported with the outcomes rather than beside the print: an exit 0
+        # over silence is a diagnosis, the same one the other branches make.
+        # The raw stderr comes along because a CLI that refused the prompt says
+        # why there and nowhere else.
+        complaint = "%s exited 0 but produced no output." % role
+        first_words = result.stderr.strip()[:500]
+        if first_words:
+            complaint += " Its stderr began: %s" % first_words
+        _err(complaint)
     # Said here rather than beside the write, so a refusal and the outcome that
     # caused it read as one report instead of two lines that look at odds.
     if refused:
@@ -968,8 +1050,9 @@ def cmd_run(args: argparse.Namespace) -> int:
     # A refused write exits non-zero even when the run itself was fine: the
     # promise `--output` makes is that the named file holds this run's result,
     # and exiting 0 over an untouched one lets the next command in a chain read
-    # the stale file as if it were new.
-    return 0 if result.ok and not refused else 1
+    # the stale file as if it were new. A run with nothing to show exits the
+    # same way for the same reason -- an empty answer is not a result.
+    return 0 if result.ok and not refused and not answered_nothing else 1
 
 
 def _reviewer_spec(loaded: config_mod.LoadedConfig, selector: str) -> Dict[str, Any]:
@@ -1614,8 +1697,22 @@ def cmd_review_status(args: argparse.Namespace) -> int:
 
 
 def _detached_argv(args: argparse.Namespace, role: str) -> List[str]:
-    """Rebuild this invocation for the worker, prompt now coming from a file."""
-    argv = ["run", role, "--prompt-file", "-", "--force"]
+    """Rebuild this invocation for the worker, prompt now coming from a file.
+
+    The prompt's text is deliberately absent: ``jobs.start`` writes it to a
+    file of its own, because only it knows the job id the path is built from.
+    What goes here is the placeholder it substitutes -- placed, not appended,
+    so it lands where this command line has room for it. This used to say
+    ``--prompt-file -`` while the worker's stdin was ``DEVNULL``, so every
+    detached run delegated an empty prompt -- invisible under the mock
+    provider, which does not read one.
+    """
+    argv = ["run", role, "--force"]
+    if args.tier:
+        # Left out, the worker ran the role's default model: a more expensive
+        # run than the one asked for, recorded without the label a tier exists
+        # to be read by.
+        argv += ["--tier", args.tier]
     if args.mode:
         argv += ["--mode", args.mode]
     if args.output:
@@ -1624,6 +1721,11 @@ def _detached_argv(args: argparse.Namespace, role: str) -> List[str]:
         argv += ["--timeout", str(args.timeout)]
     if args.idle_timeout is not None:
         argv += ["--idle-timeout", str(args.idle_timeout)]
+    # Ahead of --extra, which is nargs=REMAINDER and takes everything after it.
+    # Both used to be appended by `jobs.start`, past the end of a command whose
+    # shape only this function knows, and a detached run carrying --extra
+    # reached the provider with the two paths as provider arguments.
+    argv += ["--prompt-file", jobs_mod.PROMPT_FILE, "--job-file", jobs_mod.JOB_FILE]
     if args.extra:
         argv += ["--extra", *args.extra]
     return argv
