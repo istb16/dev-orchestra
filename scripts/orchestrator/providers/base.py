@@ -439,10 +439,48 @@ class Provider:
             idle_timeout=self.idle_timeout(options, idle_timeout),
             env=self._child_env(env),
         )
-        stdout, stderr = self.postprocess(outcome, mode)
-        # Read the cost from the raw output, before postprocess narrows it to
-        # the final answer: the accounting the CLI prints is not part of it.
-        usage = self.parse_usage(outcome, mode) or Usage()
+        try:
+            stdout, stderr = self.postprocess(outcome, mode)
+        except Exception as exc:
+            # The child ran and was measured; only the reading of its output
+            # failed. A failed run is not a free one, so the measurement
+            # travels with the failure instead of dying with the exception --
+            # an adapter raising here used to reach the caller as a run of
+            # unknown length, and the review path recorded it as taking 0s.
+            # ``ok`` is False whatever the child exited with: what we cannot
+            # read, we cannot use.
+            return RunResult(
+                False,
+                outcome.exit_code,
+                outcome.stdout,
+                "%s: %s\n%s" % (type(exc).__name__, exc, outcome.stderr),
+                command,
+                outcome.duration,
+                resolved,
+                timed_out=outcome.timed_out,
+                stalled=outcome.stalled,
+                idle_for=outcome.idle_for,
+                orphans_possible=outcome.orphans_possible,
+                # Nothing was parsed, so the account reports this run as one it
+                # could not measure rather than as one that cost nothing.
+                usage=Usage(),
+                invoked=True,
+            )
+        # Read from the raw output, before postprocess narrows it to the final
+        # answer: the accounting the CLI prints is not part of it. Apart from
+        # postprocess, because the two failures are not the same failure -- an
+        # unreadable answer is a failed run, an unreadable invoice is a run
+        # whose cost is unknown, and the account already has a word for that.
+        # Some adapters read the invoice out of prose, so it is the fragile one.
+        try:
+            usage = self.parse_usage(outcome, mode) or Usage()
+        except Exception as exc:
+            # An invoice this adapter can no longer read looks exactly like a
+            # CLI that reports none, so name it where the run's output is kept:
+            # otherwise a parser broken by a CLI's output drifting degrades
+            # every run to "unmeasured" with nothing to diagnose it from.
+            usage = Usage()
+            stderr = "%s: %s\n%s" % (type(exc).__name__, exc, stderr)
         usage.prompt_chars = len(prompt)
         return RunResult(
             outcome.ok,

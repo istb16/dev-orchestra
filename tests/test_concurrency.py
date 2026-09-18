@@ -237,6 +237,28 @@ class TestConcurrentLedgerUpdates(IsolatedCase):
         self.assertEqual(len(set(tokens)), 8, "tokens must be unique")
         self.assertEqual(len(book.in_flight()), 8, "no entry may be lost")
 
+    def test_concurrent_charges_are_all_added(self):
+        """The same read-modify-write hazard, on the runtime accumulator."""
+        book = self.book()
+        tokens = [book.begin("implementer", deadline=60) for _ in range(8)]
+        errors = []
+
+        def end(token):
+            try:
+                self.book().end(token, "ok", charged_seconds=1)
+            except Exception as exc:  # collected and reported after the join
+                errors.append(exc)
+
+        threads = [threading.Thread(target=end, args=(token,)) for token in tokens]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=30)
+
+        self.assertEqual(errors, [])
+        self.assertEqual(book.load()["runtime_seconds"], 8)
+        self.assertEqual(book.in_flight(), {})
+
     def test_in_flight_tokens_do_not_collide_when_started_together(self):
         book = self.book()
         tokens = {book.begin("test", deadline=1) for _ in range(20)}

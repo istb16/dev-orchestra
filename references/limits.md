@@ -87,11 +87,22 @@ Enforced by the action, refusing with **exit code 3**.
 | Design review rounds | `review.design.max_iterations` (2) | `review run --design` |
 | Attempts per stage | `budgets.architect` (3), `.implementer` (5), `.review_fixer` (4), `.test` (8) | `run <role>`, `budget consume <stage>` |
 | Delegated runs in a workflow | `budgets.total_delegated_runs` (40) | every `run` |
-| Wall clock | `budgets.max_runtime_seconds` (7200) | every `run` |
+| Delegated runtime | `budgets.max_runtime_seconds` (14400) | `run <role>`, `review run`, `review run --design`, `budget consume` |
 
-The last two are backstops. They bound a workflow even when the orchestrator
-invents a cycle nothing here anticipated, which is the failure that is hardest
-to design against.
+The last two are backstops for cycles that delegate: every run that consumes an
+attempt — `run <role>` and `budget consume <stage>` — counts against the first,
+every run that reaches its end with a measurement against the second. A cycle
+that delegates nothing is bounded by neither; the round, attempt and no-progress
+rules above are what stop the cycles this tool knows about.
+
+Runtime is charged from the measurement each run produces, so a run killed
+before it can record one — `jobs cancel`, Ctrl-C, an OOM kill — is charged
+nothing. On `run <role>` that costs an attempt and a delegated run before the
+child starts, so the first two rows hold it. Reviewer runs consume neither, and
+the round only advances once a round is consolidated: retrying the same snapshot
+stays in the same round. So a `review run` or `review run --design` killed
+before it consolidates is bounded by nothing — not the round budget, not the
+delegated-run count, and not runtime.
 
 `run` and `review run` consume their own budgets. Stages the orchestrator
 performs itself — running the test suite, above all — must claim theirs:
@@ -119,6 +130,51 @@ budgets and account.
 
 `--force` overrides a refusal. It is there for a human who has decided to
 override; the skill tells the orchestrator not to reach for it.
+
+### What the runtime budget counts
+
+Seconds of delegated execution, as measured by the run itself — never the time
+since the workflow started.
+
+**Counted.** The lifetime of each delegated child process, from the same
+measurement that already appears as `duration_seconds` in the run log. A review
+round is counted per panel member: three reviewers running in parallel for 25
+minutes each spend 75 minutes of it. A run killed at its deadline, one that
+failed, and one that stalled all spent what they spent, and are all charged.
+
+**Not counted.** The orchestrator's own work, the test suite, and a human
+thinking: an interactive session where nothing is delegated never spends this
+budget, and is not bounded by it. Neither is a run still in flight — it is
+charged when it ends, so `budget show` moves in steps rather than continuously.
+Nor is a run whose wrapper process died before it could record the outcome — a
+`jobs cancel`, a Ctrl-C, an OOM kill. Nobody measured it, so nobody bills it,
+and the only things bounding that shape of runaway are
+`budgets.total_delegated_runs` and the per-stage attempt budgets.
+
+Because concurrent work is summed, **the total can exceed the wall clock**. On
+the workflows measured while designing this, autonomous ones came to 1.23–1.45×
+their own wall clock; the heaviest came to 5619s of delegated execution.
+
+**How far past the limit a workflow can get.** A refusal happens before a run
+starts, never during one, and work in flight is not counted — so the overshoot
+is everything that began after the last check passed. With `D` for an entry's
+recorded deadline (`--timeout`, or `review.timeout_seconds`, which has no upper
+bound) and `G` for the kill grace plus output drain (`KILL_GRACE_SECONDS`, 5s,
+plus a little):
+
+```
+overshoot ≤ Σ over in-flight runs (D + G)  +  Σ over in-flight review batches N × (D + G)
+```
+
+`N` is every reviewer *admitted* to the batch, including the ones still waiting:
+a panel runs at most 8 at a time and there is no budget check inside a batch, so
+a ninth reviewer in a second wave still runs to its deadline. Driving stages one
+at a time, that is one run (≤ 1805s) or one two-reviewer round (≤ 3610s).
+Overlapping detached workers adds a term each.
+
+A ledger written before this became a measured budget starts it at zero: what
+that ledger recorded was a wall clock, and reconstructing measurements from it
+would be inventing them.
 
 ## No progress
 

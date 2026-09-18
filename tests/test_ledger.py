@@ -66,14 +66,6 @@ class TestAttemptBudgets(LedgerCase):
             book.consume("implementer")
         self.assertIn("delegated runs", str(ctx.exception))
 
-    def test_the_runtime_budget_stops_a_long_workflow(self):
-        book = self.book(max_runtime_seconds=3600)
-        ledger = book.load()
-        ledger["started_monotonic"] = time.time() - 7200
-        book._write(ledger)
-        self.assertEqual(book.runtime_remaining(), 0.0)
-        self.assertTrue(any("longer than" in r for r in book.check("test")))
-
     def test_an_idle_ledger_starts_a_fresh_workflow(self):
         book = self.book(test=1, session_idle_reset_seconds=60)
         book.consume("test")
@@ -96,6 +88,191 @@ class TestAttemptBudgets(LedgerCase):
         self.assertEqual(settings["test"], 1)
         # Unset keys keep their defaults rather than vanishing.
         self.assertEqual(settings["implementer"], ledger_mod.DEFAULT_BUDGETS["implementer"])
+
+
+class TestRuntimeBudget(LedgerCase):
+    """What the runtime budget charges, and what it refuses to charge.
+
+    The one rule underneath all of these: execution that was never measured is
+    never billed. Issue #40 was the other reading -- a budget named for runtime
+    that was really counting how long the ledger had existed, so an interactive
+    session spent it all without delegating a single run.
+    """
+
+    def test_neither_calendar_time_nor_a_running_stage_spends_the_budget(self):
+        book = self.book(max_runtime_seconds=3600)
+        token = book.begin("implementer", deadline=1800)
+        ledger = book.load()
+        ledger["started_monotonic"] = time.time() - 7200
+        ledger["in_flight"][token]["started_monotonic"] = time.time() - 7200
+        book._write(ledger)
+        self.assertEqual(book.runtime_used(), 0.0)
+        self.assertEqual(book.runtime_remaining(), 3600.0)
+        self.assertIsNone(book.runtime_refusal())
+        self.assertEqual(book.check("test"), [])
+
+    def test_ending_a_stage_charges_what_the_caller_measured(self):
+        book = self.book(max_runtime_seconds=3600)
+        token = book.begin("implementer", deadline=1800)
+        book.end(token, "ok", charged_seconds=600)
+        self.assertEqual(book.load()["runtime_seconds"], 600)
+        self.assertEqual(book.runtime_used(), 600)
+        event = self.workspace.read_state()["events"][-1]
+        self.assertEqual(event["charged_seconds"], 600)
+        self.assertNotIn("charge_skipped", event)
+        # The raw gap since `begin` is still recorded, and is not the charge.
+        self.assertLess(event["elapsed_seconds"], 60)
+
+    def test_the_charge_is_not_capped_at_the_deadline(self):
+        """A batch runs its whole panel; the entry's deadline is one member's."""
+        book = self.book(max_runtime_seconds=99_999)
+        token = book.begin("review", deadline=1800)
+        book.end(token, "ok", charged_seconds=5000)
+        self.assertEqual(book.runtime_used(), 5000)
+
+    def test_spending_the_budget_refuses_the_next_run(self):
+        book = self.book(max_runtime_seconds=100)
+        token = book.begin("implementer")
+        book.end(token, "ok", charged_seconds=100)
+        self.assertEqual(book.runtime_remaining(), 0.0)
+        refusal = book.runtime_refusal()
+        self.assertIn("delegated", refusal)
+        self.assertIn(refusal, book.check("test"))
+        with self.assertRaises(ledger_mod.BudgetExhausted) as ctx:
+            book.consume("test")
+        self.assertIn(refusal, str(ctx.exception))
+
+    def test_budget_left_means_no_refusal(self):
+        book = self.book(max_runtime_seconds=100)
+        token = book.begin("implementer")
+        book.end(token, "ok", charged_seconds=99)
+        self.assertIsNone(book.runtime_refusal())
+        self.assertEqual(book.check("test"), [])
+
+    def test_an_abandoned_stage_is_charged_nothing(self):
+        """However long it ran: nobody measured it, so nobody may bill it."""
+        book = self.book()
+        token = book.begin("implementer", deadline=3600)
+        ledger = book.load()
+        ledger["in_flight"][token]["pid"] = 999_999
+        ledger["in_flight"][token]["started_monotonic"] = time.time() - 1800
+        book._write(ledger)
+        self.assertEqual(book.clear_stalls(), ["implementer"])
+        self.assertEqual(book.runtime_used(), 0.0)
+        event = self.workspace.read_state()["events"][-1]
+        self.assertEqual(event["status"], "abandoned")
+        self.assertEqual(event["charged_seconds"], 0)
+        self.assertNotIn("charge_skipped", event)
+
+    def test_a_reset_between_begin_and_end_takes_the_claim_away(self):
+        book = self.book()
+        token = book.begin("implementer")
+        book.reset()
+        book.end(token, "ok", charged_seconds=100)
+        self.assertEqual(book.runtime_used(), 0.0)
+        self.assertEqual(book.in_flight(), {})
+        event = self.workspace.read_state()["events"][-1]
+        # The run happened and is recorded as it happened. What it may not do
+        # is bill budgets minted after it started.
+        self.assertEqual(event["status"], "ok")
+        self.assertEqual(event["charged_seconds"], 0)
+        self.assertIn("no in-flight entry", event["charge_skipped"])
+        self.assertIsNotNone(book.token_report())
+
+    def test_an_idle_reset_between_begin_and_end_takes_it_away_too(self):
+        book = self.book(session_idle_reset_seconds=60)
+        token = book.begin("implementer")
+        before = ledger_mod._epoch(book.load())
+        ledger = book.load()
+        ledger["last_activity_monotonic"] = time.time() - 600
+        book._write(ledger)
+        book.end(token, "ok", charged_seconds=100)
+        self.assertEqual(book.runtime_used(), 0.0)
+        self.assertNotEqual(ledger_mod._epoch(book.load()), before)
+
+    def test_ending_the_same_token_twice_charges_once(self):
+        book = self.book()
+        token = book.begin("implementer")
+        book.end(token, "ok", charged_seconds=10)
+        book.end(token, "ok", charged_seconds=10)
+        self.assertEqual(book.runtime_used(), 10)
+        event = self.workspace.read_state()["events"][-1]
+        self.assertEqual(event["charged_seconds"], 0)
+        self.assertIn("no in-flight entry", event["charge_skipped"])
+
+    def test_ending_a_token_that_was_never_begun_is_not_an_error(self):
+        book = self.book()
+        book.end("implementer-deadbeef", "ok", charged_seconds=10)
+        self.assertEqual(book.runtime_used(), 0.0)
+        event = self.workspace.read_state()["events"][-1]
+        self.assertEqual(event["stage"], "implementer")
+        self.assertEqual(event["charged_seconds"], 0)
+
+    def test_an_in_flight_entry_is_stamped_with_the_epoch_it_may_charge(self):
+        book = self.book()
+        token = book.begin("implementer")
+        self.assertEqual(book.in_flight()[token]["epoch"], ledger_mod._epoch(book.load()))
+
+    def test_an_entry_from_before_the_stamp_existed_still_charges(self):
+        """Its presence in *this* ledger is the proof no reset has happened."""
+        book = self.book()
+        token = book.begin("implementer")
+        ledger = book.load()
+        del ledger["in_flight"][token]["epoch"]
+        book._write(ledger)
+        book.end(token, "ok", charged_seconds=50)
+        self.assertEqual(book.runtime_used(), 50)
+        self.assertNotIn("charge_skipped", self.workspace.read_state()["events"][-1])
+
+    def test_an_entry_stamped_with_another_epoch_charges_nothing(self):
+        book = self.book()
+        token = book.begin("implementer")
+        ledger = book.load()
+        ledger["in_flight"][token]["epoch"] = "0123456789ab"
+        book._write(ledger)
+        book.end(token, "ok", charged_seconds=50)
+        self.assertEqual(book.runtime_used(), 0.0)
+        self.assertIn("epoch 0123456789ab", self.workspace.read_state()["events"][-1]["charge_skipped"])
+
+    def test_a_reset_returns_the_runtime_budget_but_keeps_the_account(self):
+        book = self.book(max_runtime_seconds=3600)
+        token = book.begin("implementer")
+        book.record_usage("implementer", {"billed_tokens": 1234, "measured": True})
+        book.end(token, "ok", charged_seconds=900)
+        book.reset()
+        self.assertEqual(book.runtime_remaining(), 3600.0)
+        self.assertEqual(book.token_report()["totals"]["billed_tokens"], 1234)
+
+    def test_an_idle_reset_returns_the_runtime_budget_too(self):
+        book = self.book(max_runtime_seconds=3600, session_idle_reset_seconds=60)
+        token = book.begin("implementer")
+        book.end(token, "ok", charged_seconds=900)
+        ledger = book.load()
+        ledger["last_activity_monotonic"] = time.time() - 600
+        book._write(ledger)
+        self.assertEqual(book.runtime_remaining(), 3600.0)
+
+    def test_a_ledger_written_before_this_budget_existed_starts_at_zero(self):
+        """Not reconstructed from the wall clock: nothing there was measured."""
+        book = self.book(max_runtime_seconds=3600)
+        ledger = book.load()
+        ledger.pop("runtime_seconds", None)
+        ledger["started_monotonic"] = time.time() - 7200
+        book._write(ledger)
+        self.assertEqual(book.runtime_used(), 0.0)
+        self.assertEqual(book.runtime_remaining(), 3600.0)
+        self.assertEqual(book.summary()["runtime"]["used"], 0)
+        json.dumps(book.summary())
+
+    def test_a_charge_that_is_missing_or_negative_is_read_as_nothing(self):
+        book = self.book()
+        first = book.begin("implementer")
+        book.end(first, "ok", charged_seconds=None)
+        second = book.begin("implementer")
+        book.end(second, "ok", charged_seconds=-30)
+        third = book.begin("implementer")
+        book.end(third, "ok")
+        self.assertEqual(book.runtime_used(), 0.0)
 
 
 class TestNoProgress(LedgerCase):
@@ -210,6 +387,20 @@ class TestSummary(LedgerCase):
         self.assertEqual(summary["budgets"]["test"]["remaining"], 2)
         self.assertEqual(summary["total_delegated_runs"]["used"], 1)
         self.assertIn("runtime_remaining_seconds", summary)
+
+    def test_summary_reports_runtime_as_used_and_as_remaining(self):
+        book = self.book(max_runtime_seconds=3600)
+        token = book.begin("implementer")
+        book.end(token, "ok", charged_seconds=600)
+        summary = book.summary()
+        self.assertEqual(summary["runtime"], {"used": 600, "limit": 3600, "remaining": 3000})
+        # The older key still answers what it always answered.
+        self.assertEqual(summary["runtime_remaining_seconds"], 3000)
+
+    def test_a_running_stage_does_not_move_the_runtime_summary(self):
+        book = self.book(max_runtime_seconds=3600)
+        book.begin("implementer", deadline=1800)
+        self.assertEqual(book.summary()["runtime"]["used"], 0)
 
     def test_summary_is_json_serialisable(self):
         book = self.book()

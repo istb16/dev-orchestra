@@ -369,6 +369,23 @@ class TestFanOut(IsolatedCase):
         broken = {"id": "bad", "provider": "nonexistent", "role": "general"}
         runs = review_mod.run_reviews([reviewer("r1"), broken], self.workspace)
         self.assertEqual(review_mod.summarise_runs(runs), (1, 1))
+        failed = next(run for run in runs if run.status == "failed")
+        # Nothing was started, so there is nothing to charge and nothing to
+        # account for. This is the one shape of failure that is genuinely free.
+        self.assertEqual(failed.duration, 0.0)
+        self.assertFalse(failed.invoked)
+
+    def test_a_reviewer_whose_adapter_cannot_read_the_output_still_has_a_duration(self):
+        """The other shape: the CLI ran, and only the reading of it failed."""
+        from test_providers import BrokenReaderProvider
+
+        original = review_mod.get_provider
+        review_mod.get_provider = lambda name: BrokenReaderProvider()
+        self.addCleanup(setattr, review_mod, "get_provider", original)
+        run = review_mod.run_reviews([reviewer("r1")], self.workspace)[0]
+        self.assertEqual(run.status, "failed")
+        self.assertGreater(run.duration, 0)
+        self.assertTrue(run.invoked)
 
     def test_zero_reviewers_is_a_no_op(self):
         self.assertEqual(review_mod.run_reviews([], self.workspace), [])

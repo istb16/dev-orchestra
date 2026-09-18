@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 import unittest
 
 from helpers import IsolatedCase
@@ -324,6 +325,84 @@ class TestMockAdapter(IsolatedCase):
         provider = MockProvider()
         self.assertTrue(provider.run("Reviewer id: reviewer-a", base.MODE_REVIEW, self.project).ok)
         self.assertFalse(provider.run("Reviewer id: reviewer-b", base.MODE_REVIEW, self.project).ok)
+
+
+class BrokenReaderProvider(base.Provider):
+    """A CLI that runs fine and an adapter that falls over reading it.
+
+    Imported by ``test_review`` too: the point it exists to make is about what
+    reaches the review path, and the two halves have to agree about the shape.
+    """
+
+    name = "broken-reader"
+    display_name = "Broken reader (test)"
+    executable = "python"
+
+    #: Which half raises. ``parse_usage`` is the more likely one in real life --
+    #: it reads a stream format the CLI owns -- but both are outside our control.
+    raise_in = "postprocess"
+
+    def which(self):
+        return sys.executable
+
+    def version(self):
+        return "test 0", None
+
+    def auth_status(self):
+        return "present", "no credentials required"
+
+    def _resolve_latest(self, family):
+        return base.ResolvedModel(self.name, family or "test", "latest", None, "test", "builtin-fallback")
+
+    def build_command(self, mode, resolved, cwd, extra_args=(), options=None):
+        return [sys.executable, "-c", "print('hi')"]
+
+    def postprocess(self, outcome, mode):
+        if self.raise_in == "postprocess":
+            raise ValueError("boom")
+        return outcome.stdout, outcome.stderr
+
+    def parse_usage(self, outcome, mode):
+        if self.raise_in == "parse_usage":
+            raise ValueError("boom")
+        return None
+
+
+class TestMeasurementSurvivesABrokenAdapter(IsolatedCase):
+    """A child that ran was measured, and the measurement must reach the caller.
+
+    It used not to: ``postprocess`` and ``parse_usage`` sat outside every
+    ``try``, so an adapter raising there took the whole ``RunResult`` with it.
+    The review path caught the exception two frames up, where the duration was
+    no longer knowable, and recorded a reviewer that had run for minutes as
+    having taken no time at all.
+    """
+
+    def _run(self, raise_in):
+        provider = BrokenReaderProvider()
+        provider.raise_in = raise_in
+        return provider.run("prompt", base.MODE_REVIEW, self.project)
+
+    def test_a_postprocess_failure_returns_a_measured_failure(self):
+        result = self._run("postprocess")
+        self.assertFalse(result.ok)
+        self.assertGreater(result.duration, 0)
+        self.assertTrue(result.invoked)
+        self.assertIn("ValueError: boom", result.stderr)
+
+    def test_a_parse_usage_failure_leaves_the_answer_alone(self):
+        """The invoice is unreadable, not the answer. Failing the run here
+        would throw away output that parsed fine -- and the run was paid for
+        either way, so the cost it cannot state is unknown, not zero."""
+        result = self._run("parse_usage")
+        self.assertTrue(result.ok)
+        self.assertEqual(result.stdout.strip(), "hi")
+        self.assertGreater(result.duration, 0)
+        self.assertFalse(result.usage.measured)
+
+    def test_the_run_reports_itself_as_unmeasured_rather_than_free(self):
+        """Nothing was parsed, so the account must call the total a floor."""
+        self.assertFalse(self._run("postprocess").usage.measured)
 
 
 class TestRedaction(IsolatedCase):

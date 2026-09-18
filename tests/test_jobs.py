@@ -284,5 +284,93 @@ class TestDetachedRun(IsolatedCase):
         self.assertIn("no such job", err)
 
 
+class TestDetachedRuntimeCharges(IsolatedCase):
+    """What a worker in another process may charge the ledger it shares.
+
+    Every other test of this lives inside one process, where a token opened and
+    closed by the same code cannot be surprised by a reset between the two.
+    That is precisely the case the epoch stamp exists for, so it is the case
+    worth paying a real worker to exercise.
+    """
+
+    def setUp(self):
+        super().setUp()
+        from test_cli import run_cli
+
+        self.run_cli = run_cli
+        run_cli("config", "setup", "--defaults")
+        run_cli("config", "set", "implementer.provider", "mock")
+
+    def _wait_for(self, job_id, timeout=60):
+        _, out, _ = self.run_cli("jobs", "wait", job_id, "--timeout", str(timeout), "--json")
+        return json.loads(out)
+
+    def ledger(self):
+        return self.cli_workspace().read_state().get("ledger") or {}
+
+    def events(self):
+        return self.cli_workspace().read_state().get("events") or []
+
+    def _wait_for_in_flight(self, timeout=30):
+        """Catch the worker while it is running, not after."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            in_flight = self.ledger().get("in_flight") or {}
+            if in_flight:
+                return in_flight
+            time.sleep(0.1)
+        self.fail("the worker never registered an in-flight stage")
+
+    def test_a_detached_worker_charges_the_ledger_it_shares_with_its_parent(self):
+        os.environ["DEV_ORCHESTRA_MOCK_DELAY"] = "0.5"
+        _, out, _ = self.run_cli("run", "implementer", "--prompt", "go", "--detach", "--json")
+        finished = self._wait_for(json.loads(out)["id"])
+        self.assertEqual(finished["status"], "succeeded")
+        event = self.events()[-1]
+        self.assertGreater(event["duration_seconds"], 0)
+        self.assertAlmostEqual(event["charged_seconds"], finished["duration_seconds"], places=2)
+        self.assertAlmostEqual(self.ledger()["runtime_seconds"], event["charged_seconds"], places=1)
+        self.assertEqual(self.ledger()["in_flight"], {})
+        payload = json.loads(self.run_cli("budget", "show", "--json")[1])
+        self.assertAlmostEqual(payload["runtime"]["used"], event["charged_seconds"], places=2)
+
+    def test_a_reset_while_the_worker_runs_leaves_the_new_budget_unbilled(self):
+        os.environ["DEV_ORCHESTRA_MOCK_DELAY"] = "3"
+        _, out, _ = self.run_cli("run", "implementer", "--prompt", "go", "--detach", "--json")
+        self._wait_for_in_flight()
+        self.assertEqual(self.run_cli("budget", "reset")[0], 0)
+        finished = self._wait_for(json.loads(out)["id"])
+        # The run itself is untouched: it succeeded, and it is recorded as
+        # having succeeded. What it lost is the right to bill budgets that were
+        # minted after it started.
+        self.assertEqual(finished["status"], "succeeded")
+        self.assertEqual(self.ledger()["runtime_seconds"], 0)
+        self.assertEqual(self.ledger()["in_flight"], {})
+        event = self.events()[-1]
+        self.assertEqual(event["status"], "ok")
+        self.assertEqual(event["charged_seconds"], 0)
+        self.assertIn("no in-flight entry", event["charge_skipped"])
+
+    def test_a_cancelled_worker_is_charged_nothing(self):
+        """Nobody measured it, so nobody bills it -- however long it ran."""
+        os.environ["DEV_ORCHESTRA_MOCK_DELAY"] = "30"
+        _, out, _ = self.run_cli("run", "implementer", "--prompt", "go", "--detach", "--json")
+        self._wait_for_in_flight()
+        self.assertEqual(self.run_cli("jobs", "cancel", json.loads(out)["id"])[0], 0)
+        # `status` is what buries the entry, and the kill it follows is not
+        # instant on either platform.
+        deadline = time.monotonic() + 30
+        while True:
+            status = json.loads(self.run_cli("status", "--json")[1])
+            if status["abandoned_stages"] or time.monotonic() >= deadline:
+                break
+            time.sleep(0.2)
+        self.assertEqual(status["abandoned_stages"], ["implementer"])
+        event = self.events()[-1]
+        self.assertEqual(event["status"], "abandoned")
+        self.assertEqual(event["charged_seconds"], 0)
+        self.assertEqual(self.ledger()["runtime_seconds"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()

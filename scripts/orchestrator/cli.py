@@ -917,6 +917,9 @@ def cmd_run(args: argparse.Namespace) -> int:
             "output": args.output,
             "billed_tokens": result.usage.billed_tokens,
         },
+        # What the child was measured to take, whatever it exited with. A run
+        # killed at its deadline spent the time it spent; so did a failed one.
+        charged_seconds=result.duration,
     )
 
     # Printed last, and after the books are closed. Showing the output used to
@@ -993,6 +996,29 @@ def _refuse_if_exhausted(book: ledger_mod.Ledger, stage: str, force: bool) -> Op
     _err("refusing to run %s:" % stage)
     for reason in reasons:
         _err("  - %s" % reason)
+    _err("Report what is unresolved instead of retrying, or pass --force to override.")
+    return ledger_mod.EXIT_BUDGET_EXHAUSTED
+
+
+def _refuse_if_runtime_spent(book: ledger_mod.Ledger, stage: str, force: bool) -> Optional[int]:
+    """The runtime budget, applied to the stages that do not consume attempts.
+
+    Review is the largest consumer of delegated runtime -- a round is a run per
+    panel member -- and until now it was the one consumer that never asked. A
+    budget the biggest spender does not consult is the "guard in name only"
+    this module's ledger exists to stop being.
+
+    Only the runtime reason, not ``check()``: that would also apply the
+    attempt, total-run and no-progress rules to review, which are governed by
+    ``review.max_review_iterations`` and decided above this point.
+    """
+    if force:
+        return None
+    reason = book.runtime_refusal()
+    if not reason:
+        return None
+    _err("refusing to run %s:" % stage)
+    _err("  - %s" % reason)
     _err("Report what is unresolved instead of retrying, or pass --force to override.")
     return ledger_mod.EXIT_BUDGET_EXHAUSTED
 
@@ -1157,6 +1183,14 @@ def _run_design_review(args: argparse.Namespace, loaded: config_mod.LoadedConfig
         _err("Report the remaining findings instead of looping, or pass --force to override.")
         return ledger_mod.EXIT_BUDGET_EXHAUSTED
 
+    book = _ledger(args, workspace)
+    # Before the refusal decides: a stage whose process is gone has no charge
+    # to answer for, and its absence is part of what the runtime budget says.
+    book.clear_stalls()
+    refusal = _refuse_if_runtime_spent(book, "design review", args.force)
+    if refusal is not None:
+        return refusal
+
     meta = review_mod.write_design_snapshot(workspace, workspace.plan_path, request_path, plan_text, digest)
 
     if not reviewers:
@@ -1174,8 +1208,6 @@ def _run_design_review(args: argparse.Namespace, loaded: config_mod.LoadedConfig
     # cross-model disagreement earns its cost -- so the whole panel runs.
     max_findings = opt_mod.findings_cap(loaded.optimization_settings(), settings)
 
-    book = _ledger(args, workspace)
-    book.clear_stalls()
     batch_timeout = args.timeout or int(settings.get("timeout_seconds", 1800))
     token = book.begin(
         "design_review",
@@ -1231,6 +1263,10 @@ def _run_design_review(args: argparse.Namespace, loaded: config_mod.LoadedConfig
             "findings": data["counts"].get("findings_total"),
             "identical_rounds": repeats,
         },
+        # Summed over the panel, not the wall clock of the batch: three
+        # reviewers running in parallel for 25 minutes delegated 75 minutes of
+        # execution, and the budget is on delegated execution.
+        charged_seconds=sum(run.duration for run in runs),
     )
     if repeats > 1:
         _err(
@@ -1353,6 +1389,9 @@ def cmd_review_run(args: argparse.Namespace) -> int:
 
     book = _ledger(args, workspace)
     book.clear_stalls()
+    refusal = _refuse_if_runtime_spent(book, "review", args.force)
+    if refusal is not None:
+        return refusal
     batch_timeout = args.timeout or int(settings.get("timeout_seconds", 1800))
     token = book.begin(
         "review",
@@ -1405,6 +1444,8 @@ def cmd_review_run(args: argparse.Namespace) -> int:
             "identical_rounds": repeats,
             "optimization": plan.to_dict(),
         },
+        # Per reviewer, as above: the panel is the unit that was delegated.
+        charged_seconds=sum(run.duration for run in runs),
     )
     if repeats > 1:
         _err(
@@ -1668,8 +1709,12 @@ def cmd_budget_show(args: argparse.Namespace) -> int:
         _out("  %-14s %d/%d used" % (stage, entry["used"], entry["limit"]))
     total = summary["total_delegated_runs"]
     _out("  %-14s %s/%s used" % ("delegated runs", total["used"], total["limit"]))
-    if summary["runtime_remaining_seconds"] is not None:
-        _out("  %-14s %ss left" % ("runtime", summary["runtime_remaining_seconds"]))
+    runtime = summary["runtime"]
+    if runtime["remaining"] is not None:
+        # Shown as used/limit like every other budget above it, and labelled:
+        # this counts delegated execution, not how long the workflow has been
+        # open, so a figure far below the wall clock is not a bug.
+        _out("  %-14s %.0f/%ss used (delegated execution)" % ("runtime", runtime["used"], runtime["limit"]))
     for stage, repeats in (summary["signatures"] or {}).items():
         if repeats and int(repeats) > 1:
             _out("  %-14s same outcome %s times in a row" % (stage, repeats))
@@ -2094,8 +2139,11 @@ def cmd_status(args: argparse.Namespace) -> int:
     total = summary["total_delegated_runs"]
     if total["limit"] and total["used"] >= int(total["limit"]):
         reasons.append("no delegated runs left in this workflow")
-    if summary["runtime_remaining_seconds"] == 0:
-        reasons.append("the workflow runtime budget is spent")
+    # Asked of the ledger rather than of the rounded summary key: advice that
+    # says stop while `run` still goes is the mismatch this budget exists to
+    # remove, and half a second of remaining runtime is enough to cause it.
+    if book.runtime_refusal():
+        reasons.append("the delegated runtime budget is spent")
 
     # What the next `review run` would decide, so the orchestrator finds out
     # here rather than by being refused. Cheap: the snapshot meta is already
@@ -2135,6 +2183,7 @@ def cmd_status(args: argparse.Namespace) -> int:
         "budgets": summary["budgets"],
         "total_delegated_runs": total,
         "runtime_remaining_seconds": summary["runtime_remaining_seconds"],
+        "runtime": summary["runtime"],
         # Reported, never enforced: no verdict here turns on what a run cost.
         "tokens": summary["tokens"],
         "optimization": plan.to_dict(),

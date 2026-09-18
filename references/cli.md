@@ -127,7 +127,7 @@ echo "explain the failure" | dev-orchestra run orchestrator
 | Command | Description |
 | --- | --- |
 | `review snapshot [--base <rev>] [--no-untracked] [--json]` | Freeze the change under review. Exit 1 if empty. |
-| `review run [--design] [--request <path>] [--iteration N] [--only <ids/roles>] [--sequential] [--context <text>] [--base <rev>] [--timeout <s>] [--idle-timeout <s>] [--force] [--json]` | Run every reviewer against the snapshot; write reports and the consolidated result. Exit 1 only if every reviewer failed. The round is derived from the snapshot unless `--iteration` is given, and a round past `review.max_review_iterations` is refused (exit 3) unless `--force`. A round refused by the optimization gate (tests recorded as failing) also exits 3, and is recorded as `refused` so `optimization report` can count it. `--only` runs a subset but still consolidates every reviewer's current report, so nothing is lost. |
+| `review run [--design] [--request <path>] [--iteration N] [--only <ids/roles>] [--sequential] [--context <text>] [--base <rev>] [--timeout <s>] [--idle-timeout <s>] [--force] [--json]` | Run every reviewer against the snapshot; write reports and the consolidated result. Exit 1 only if every reviewer failed. The round is derived from the snapshot unless `--iteration` is given, and a round past `review.max_review_iterations` is refused (exit 3) unless `--force`. A round refused by the optimization gate (tests recorded as failing) also exits 3, and is recorded as `refused` so `optimization report` can count it. A round is refused the same way once `budgets.max_runtime_seconds` of delegated execution has been spent — a panel is the largest consumer of it — and the message names which budget it was. `--only` runs a subset but still consolidates every reviewer's current report, so nothing is lost. |
 | `review consolidate [--design] [--iteration N] [--json]` | Re-parse the existing reports and rebuild the consolidated result. |
 | `review show [--design] [--accepted] [--json]` | Show the consolidated review. |
 | `review triage [--design] <ids…> --status <status> [--note <text>]` | Record triage decisions. |
@@ -204,7 +204,7 @@ forever.
 
 | Command | Description |
 | --- | --- |
-| `budget show [--json]` | Attempts spent per stage, delegated-run total, runtime left. |
+| `budget show [--json]` | Attempts spent per stage, delegated-run total, delegated runtime used. |
 | `budget consume <stage> [--force]` | Claim an attempt at a stage the orchestrator runs itself (notably `test`). Exits 3 when the budget is spent. |
 | `budget reset` | Start the budgets again, including the review round counter. The token account is kept — it is a record of what the work cost, not a budget, and no reset clears it. Also happens automatically once a ledger has been idle for `budgets.session_idle_reset_seconds`. |
 
