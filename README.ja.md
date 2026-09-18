@@ -623,6 +623,20 @@ Estimated saving from 2 refused round(s): ~137,184 billed tokens.
 レベルの効果は「率」です ── 何回拒否したか、何回パネルを削ったか。したがって
 `tokens show`（1ワークフロー分）ではなく run log を読みます。
 
+`review.design` が有効なら、消費量は分けて表示されます。設計レビューのラウンドには
+測るべき diff もゲートが読むテスト結果もなく、レベルは何も判断していません ──
+つまりコストには現れますが、上のどの「率」にも現れません。
+
+```
+Reviewer runs: 12 (12 reported usage), 909,313 billed
+  code review            8 (8 reported usage), 558,884 billed over 4 round(s), 139,721 each
+  design review          4 (4 reported usage), 350,429 billed over 2 round(s), 175,214 each
+```
+
+**この2つを平均することはありません。** プランに対する1ラウンドと diff に対する
+1ラウンドは同じ作業単位ではないからです。設計レビューが無効なら、上の例のように
+design の行は出ません ── 走っていないステージの `0` は、測定値のふりをしたノイズです。
+
 **削減額は推定値で、そう明示します。** 起きなかったラウンドのコストは知りよう
 がないので、実際に走ったラウンドの平均を代用しています。
 

@@ -349,6 +349,15 @@ def summarise_rounds(events: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
     round *would* have cost is unknowable -- it did not happen -- so the
     figure is the mean of the rounds that did run, in the same repository,
     which is the closest honest stand-in.
+
+    Design rounds are counted under their own keys and nowhere else. A plan has
+    no diff to measure and no test result to gate on, so a design round carries
+    no ``optimization`` block and no level decided anything for it -- which is
+    why it cannot join the figures above. Counting it nowhere at all is what
+    shipped, and it hid a real cost from the one command whose job is to say
+    what review cost: measured on one workflow, two design rounds and 350,429
+    billed tokens sat in ``tokens show`` and appeared in this report as zero.
+    ``design_rounds`` counts the rounds that ran, as ``ran`` does for code.
     """
     rounds = [
         event
@@ -356,6 +365,17 @@ def summarise_rounds(events: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
         if isinstance(event, dict)
         and event.get("stage") == "review"
         and isinstance(event.get("optimization"), dict)
+    ]
+    # Only rounds that finished, and matched on what a finished round *is*
+    # rather than on a list of the ways one ends badly: ``end`` writes whatever
+    # status it is handed and ``clear_stalls`` adds its own, so an exclusion
+    # list is a thing to keep in sync with every status ever added. A round that
+    # raised or was abandoned after a kill billed nothing, and counting it in
+    # the divisor halves the per-round figure of the round that did run.
+    design = [
+        event
+        for event in events
+        if isinstance(event, dict) and event.get("stage") == "design_review" and event.get("status") == "ok"
     ]
     levels: Dict[str, int] = {}
     gates: Dict[str, int] = {}
@@ -383,17 +403,23 @@ def summarise_rounds(events: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
         if event.get("status") == REFUSED:
             refused += 1
             continue
-        for run in event.get("reviewers") or []:
-            if not isinstance(run, dict):
-                continue
-            reviewer_runs += 1
-            spent = (run.get("usage") or {}).get("billed_tokens")
-            if spent:
-                measured_runs += 1
-                billed += int(spent)
+        runs, reported, spent = _reviewer_spend(event)
+        reviewer_runs += runs
+        measured_runs += reported
+        billed += spent
+
+    design_runs = design_measured = design_billed = 0
+    for event in design:
+        runs, reported, spent = _reviewer_spend(event)
+        design_runs += runs
+        design_measured += reported
+        design_billed += spent
 
     ran = len(rounds) - refused
     per_round = billed // ran if (ran and billed) else None
+    # Its own number, never averaged with the code figure above: a plan and a
+    # diff are not the same unit of work, and a mean of the two sizes neither.
+    design_per_round = design_billed // len(design) if (design and design_billed) else None
     return {
         "rounds": len(rounds),
         "ran": ran,
@@ -410,7 +436,31 @@ def summarise_rounds(events: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
         "billed_tokens": billed,
         "billed_per_round": per_round,
         "estimated_saving": (per_round * refused) if (per_round and refused) else 0,
+        "design_rounds": len(design),
+        "design_reviewer_runs": design_runs,
+        "design_measured_runs": design_measured,
+        "design_billed_tokens": design_billed,
+        "design_billed_per_round": design_per_round,
     }
+
+
+def _reviewer_spend(event: Dict[str, Any]) -> Tuple[int, int, int]:
+    """One round's reviewer runs, how many reported usage, and what they billed.
+
+    A run that reported nothing still ran, so it is counted and contributes
+    nothing to the total -- which is why the two counts are reported side by
+    side and the billed figure is a floor.
+    """
+    runs = reported = billed = 0
+    for run in event.get("reviewers") or []:
+        if not isinstance(run, dict):
+            continue
+        runs += 1
+        spent = (run.get("usage") or {}).get("billed_tokens")
+        if spent:
+            reported += 1
+            billed += int(spent)
+    return runs, reported, billed
 
 
 def _bump(counter: Dict[str, int], key: str) -> None:

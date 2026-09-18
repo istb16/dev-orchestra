@@ -141,8 +141,10 @@ result that says anything about a plan and no diff to measure, and a design
 decision is precisely where cross-model disagreement earns its cost, so the
 whole panel runs every round. `review.max_findings` still applies, and
 `optimization.level` still sets the cap when it is unset. Design rounds are
-deliberately absent from `optimization report`, which counts what the level
-decided.
+deliberately absent from every rate `optimization report` prints -- the levels
+in force, the gate verdicts, the panel reduction, the escalations -- because no
+level decided anything for them. Their **cost** is reported, in a row of its
+own beside code review's, and is never averaged with it.
 
 **Reflecting the findings** is a re-run of the architect, not a new stage:
 write a revision request (the original request, plus the brief, plus "read

@@ -253,7 +253,7 @@ dev-orchestra tokens show --json
 
 | Command | Description |
 | --- | --- |
-| `optimization report [--json]` | What `optimization.level` has decided, over every review round this project has recorded, and which high-risk patterns escalated it. |
+| `optimization report [--json]` | What `optimization.level` has decided, over every review round this project has recorded, which high-risk patterns escalated it, and what the reviewers billed. |
 
 Read from the run log, not the ledger. A level's effect is a *rate* -- how
 often it refused a round, how often it cut the panel -- and a rate needs
@@ -279,6 +279,34 @@ Estimated saving from 2 refused round(s): ~137,184 billed tokens.
 An estimate: what a round that did not happen would have cost is
 unknowable, so this is the mean of the 12 that did.
 ```
+
+Everything above `Reviewer runs:` is code review's alone. `review.design`
+rounds are reviewed against a plan, which has no diff to measure and no test
+result to gate on, so no level decided anything for them -- they appear in the
+cost and in no rate. With design review on, the spend splits:
+
+```
+Review rounds recorded: 4 (4 ran, 0 refused)
+  levels in force        balanced x4
+  gate verdicts          allow x4
+  panel reduced          0
+  escalated (high risk)  0
+
+Reviewer runs: 12 (12 reported usage), 909,313 billed
+  code review            8 (8 reported usage), 558,884 billed over 4 round(s), 139,721 each
+  design review          4 (4 reported usage), 350,429 billed over 2 round(s), 175,214 each
+```
+
+The two are never averaged together: a round against a plan and a round against
+a diff are not the same unit of work, so a figure spanning both describes
+neither. With design review off there is no design row -- a `0` for a stage
+that never ran is noise pretending to be a measurement. In `--json`,
+`reviewer_runs`, `measured_runs`, `billed_tokens` and `billed_per_round` are
+the code-review figures they have always been; the design ones are
+`design_rounds`, `design_reviewer_runs`, `design_measured_runs`,
+`design_billed_tokens` and `design_billed_per_round`. `design_rounds` counts
+the rounds that *ran*: one that failed or was abandoned after a kill billed
+nothing, so it is neither a round here nor a divisor under one.
 
 When every round escalated, the report says so outright: the level as
 configured never applied, and the patterns that did it are named. A dial

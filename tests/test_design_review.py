@@ -375,12 +375,16 @@ class TestWhatTheOrchestratorReads(DesignReviewCase):
         self.assertIn("design_review", out)
         self.assertIn("design reviews", out)
 
-    def test_optimization_report_does_not_count_design_rounds(self):
-        """The level decides nothing here, so counting these rounds would
-        dilute every rate that report is for."""
+    def test_optimization_report_counts_the_cost_but_not_the_rate(self):
+        """The level decides nothing here, so counting these rounds among the
+        code rounds would dilute every rate that report is for. The cost is a
+        different question, and the report used to answer it with zero."""
         run_cli("review", "run", "--design")
         report = json.loads(run_cli("optimization", "report", "--json")[1])
         self.assertEqual(report["rounds"], 0)
+        self.assertEqual(report["reviewer_runs"], 0)
+        self.assertEqual(report["design_rounds"], 1)
+        self.assertEqual(report["design_reviewer_runs"], 2)
 
 
 if __name__ == "__main__":

@@ -12,6 +12,28 @@ The public surface covered by that promise is: the configuration schema, the
 
 ### Fixed
 
+- **`optimization report` counts what the design review cost.** It selected
+  rounds on `stage == "review"` *and* a recorded `optimization` block, and a
+  design round has neither: its stage is `design_review`, and it carries no
+  block because a plan has no diff to measure and no test result to gate on.
+  So the one command whose job is to say what review cost reported half of it.
+  Measured on one workflow with two design rounds and one code round:
+  `Reviewer runs: 8 ... 558,884 billed`, while `tokens show` had a further
+  four runs and 350,429 billed tokens that appeared nowhere. The
+  `Reviewer runs:` line is now a total with a row per stage beneath it, and
+  `--json` gains `design_rounds`, `design_reviewer_runs`,
+  `design_measured_runs`, `design_billed_tokens` and
+  `design_billed_per_round`. The existing keys keep their meaning:
+  `reviewer_runs` and `billed_per_round` are still code review's.
+  `design_rounds` counts the rounds that *ran*: one that failed or was
+  abandoned after a kill billed nothing, so it neither counts as a round nor
+  halves the per-round figure of the round beside it. The two
+  per-round figures are never averaged together -- a round against a plan and
+  a round against a diff are not the same unit of work -- and `levels in
+  force`, the gate verdicts, the panel reduction and the escalations stay
+  code-review-only, because no level decided anything for a design round. A
+  project with design review off sees the line it always saw.
+
 - **A budget reset no longer destroys the token account.** Every ledger writer
   goes through `load`, which hands back a blank ledger once one has been idle
   past `budgets.session_idle_reset_seconds` (6h) -- so the first write after a
