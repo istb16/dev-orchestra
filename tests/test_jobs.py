@@ -203,6 +203,64 @@ class TestDetachedRun(IsolatedCase):
         self.assertEqual(finished["status"], "succeeded")
         self.assertIn("mock implement response", ws.read_text(str(finished["output_file"])))
 
+    def test_the_worker_is_given_the_prompt_it_was_started_with(self):
+        """The one thing the mock cannot tell us by answering.
+
+        It ignores the prompt, so every test here passed while the worker was
+        told `--prompt-file -` with its stdin on DEVNULL and delegated an empty
+        prompt. These two ask the provider what it was handed: the mock fails a
+        run whose prompt contains `$DEV_ORCHESTRA_MOCK_FAIL`, and records the
+        prompt's length in the usage it reports.
+        """
+        os.environ["DEV_ORCHESTRA_MOCK_FAIL"] = "needle"
+        _, out, _ = self.run_cli(
+            "run", "implementer", "--prompt", "a prompt with a needle in it", "--detach", "--json"
+        )
+        self.assertEqual(self._wait_for(json.loads(out)["id"])["status"], "failed")
+
+        del os.environ["DEV_ORCHESTRA_MOCK_FAIL"]
+        prompt = "counted to the character"
+        _, out, _ = self.run_cli("run", "implementer", "--prompt", prompt, "--detach", "--json")
+        self.assertEqual(self._wait_for(json.loads(out)["id"])["status"], "succeeded")
+        report = json.loads(self.run_cli("tokens", "show", "--json")[1])
+        self.assertEqual(report["by_stage"]["implementer"]["prompt_chars"], len(prompt))
+
+    def test_extra_provider_args_do_not_swallow_the_workers_own_options(self):
+        """`--extra` is REMAINDER, so it takes everything after it.
+
+        Both worker options were appended past it, which made them provider
+        arguments: the worker read no prompt, claimed no job, and the run ended
+        `abandoned` after the parent had already spent the attempt.
+        """
+        prompt = "not for the provider to eat"
+        _, out, _ = self.run_cli(
+            "run", "implementer", "--prompt", prompt, "--detach", "--json", "--extra", "--verbose"
+        )
+        finished = self._wait_for(json.loads(out)["id"])
+        self.assertEqual(finished["status"], "succeeded")
+        self.assertIn("claimed_at", finished)
+        report = json.loads(self.run_cli("tokens", "show", "--json")[1])
+        self.assertEqual(report["by_stage"]["implementer"]["prompt_chars"], len(prompt))
+
+    def test_a_worker_records_why_it_could_not_read_its_prompt(self):
+        """Its stderr is DEVNULL, so a complaint left there is a lost cause."""
+        workspace = self.cli_workspace()
+        jobs_mod.write_job(workspace, {"id": "p-1", "stage": "implementer", "status": "running"})
+        with self.assertRaises(SystemExit):
+            self.run_cli(
+                "run",
+                "implementer",
+                "--force",
+                "--prompt-file",
+                os.path.join(self.project, "gone.md"),
+                "--job-file",
+                jobs_mod.job_path(workspace, "p-1"),
+            )
+        job = jobs_mod.read_job(workspace, "p-1")
+        self.assertEqual(job["status"], "failed")
+        self.assertIn("gone.md", job["error"])
+        self.assertIn("does not exist", job["error"])
+
     def test_the_detached_worker_does_not_double_spend_the_budget(self):
         self.run_cli("config", "set", "budgets.implementer", "5")
         code, out, _ = self.run_cli("run", "implementer", "--prompt", "go", "--detach", "--json")

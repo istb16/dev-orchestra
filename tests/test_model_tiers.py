@@ -265,6 +265,25 @@ class TestRunningOnATier(IsolatedCase):
         self.assertIn("implementer:light", report["by_label"])
         self.assertEqual(report["by_stage"]["implementer"]["runs"], 2)
 
+    def test_a_detached_run_keeps_the_tier_it_was_asked_for(self):
+        """`--detach` used not to forward it, so the worker quietly ran the
+        default model -- the more expensive of the two, and unlabelled."""
+        _, out, _ = run_cli("run", "implementer", "--prompt", "hi", "--tier", "light", "--detach", "--json")
+        _, waited, _ = run_cli("jobs", "wait", json.loads(out)["id"], "--timeout", "60", "--json")
+        self.assertEqual(json.loads(waited)["status"], "succeeded")
+        report = json.loads(run_cli("tokens", "show", "--json")[1])
+        self.assertIn("implementer:light", report["by_label"])
+
+    def test_a_detached_run_records_a_tier_it_could_not_resolve(self):
+        """The path forwarding `--tier` opened: the worker is now the one that
+        fails to resolve, and its stderr goes nowhere. Left unrecorded the job
+        reads `abandoned`, which is what a killed worker is called."""
+        _, out, _ = run_cli("run", "implementer", "--prompt", "hi", "--tier", "broken", "--detach", "--json")
+        _, waited, _ = run_cli("jobs", "wait", json.loads(out)["id"], "--timeout", "60", "--json")
+        finished = json.loads(waited)
+        self.assertEqual(finished["status"], "failed")
+        self.assertIn("unresolvable", finished["error"])
+
     def test_an_untiered_run_is_not_labelled(self):
         run_cli("run", "implementer", "--prompt", "hi")
         report = json.loads(run_cli("tokens", "show", "--json")[1])

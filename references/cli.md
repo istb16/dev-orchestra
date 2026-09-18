@@ -94,6 +94,14 @@ review_fixer `implement`, reviewers `review`. `--print-command` shows the exact
 CLI invocation without running it. `--extra` forwards every remaining argument
 to the provider CLI verbatim.
 
+A prompt that arrives empty is refused (exit 1) before anything is delegated,
+so it costs no attempt: a `--prompt-file` that does not exist, one that is
+there and empty, an explicit `--prompt ""`, and a pipe that carried nothing.
+The message says which of those it was, and names the path as it was written
+as well as where it was looked for. An unreadable `--prompt-file` used to read
+as an empty prompt, which was delegated and answered by the provider CLI
+complaining about its own stdin.
+
 `--timeout` is the total deadline. `--idle-timeout` is the *no output* deadline:
 a wedged agent goes quiet while a slow one keeps producing, so this catches a
 stall in minutes rather than at the total deadline. It only applies to providers
@@ -111,7 +119,11 @@ run itself succeeded: `--output` promises that the named file holds this run's
 result, so a chained command must not read the stale one as if it were new. A
 detached run says the same in its job record, where `jobs show` reports it — its
 stderr goes nowhere. Without `--output` the stdout is printed whatever the
-outcome, and the exit code is 1 on a failed run either way.
+outcome, and the exit code is 1 on a failed run either way. It is also 1 when a
+run that exited 0 printed nothing but whitespace: the same judgement `--output`
+refuses a write on, because which of the two the caller used says nothing about
+whether the run answered. That message names the role and quotes the start of
+the raw stderr, which is where a CLI that refused the prompt says why.
 
 `--detach` starts the run in its own process and returns a job id immediately,
 so the call cannot block. See `jobs` below.

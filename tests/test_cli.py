@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import sys
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 
@@ -52,8 +53,6 @@ class TestConfigCommands(IsolatedCase):
         self.assertIn("Saved global configuration", out)
 
     def test_setup_without_a_tty_refuses_instead_of_hanging(self):
-        import sys
-
         saved = sys.stdin
         sys.stdin = io.StringIO("")  # not a TTY, and EOF immediately
         try:
@@ -285,6 +284,93 @@ class TestRunCommand(IsolatedCase):
         code, out, _ = run_cli("run", "solo", "--mode", "review", "--prompt", "review this")
         self.assertEqual(code, 0)
         self.assertIn("NO_FINDINGS", out)
+
+
+class TestEmptyPromptIsRefused(IsolatedCase):
+    """An empty prompt is not a request, so it must not become a run.
+
+    It used to become one: an unreadable `--prompt-file` read as `""` through
+    `ws.read_text`'s default, and the provider answered about its own stdin
+    after the attempt had already been spent.
+    """
+
+    def setUp(self):
+        super().setUp()
+        run_cli("config", "setup", "--defaults")
+        run_cli("config", "set", "implementer.provider", "mock")
+        self.started = []
+        from orchestrator.providers import mock as mock_mod
+
+        original = mock_mod.MockProvider.run
+
+        def record(provider, *args, **kwargs):
+            self.started.append(args[0] if args else kwargs.get("prompt"))
+            return original(provider, *args, **kwargs)
+
+        mock_mod.MockProvider.run = record
+        self.addCleanup(setattr, mock_mod.MockProvider, "run", original)
+
+    def refusal(self, *argv, stdin=None):
+        """Run the CLI over a refused prompt, returning what it complained of."""
+        saved = sys.stdin
+        if stdin is not None:
+            sys.stdin = io.StringIO(stdin)
+        try:
+            with self.assertRaises(SystemExit) as caught:
+                run_cli(*argv)
+        finally:
+            sys.stdin = saved
+        return str(caught.exception)
+
+    def assert_nothing_was_spent(self):
+        payload = json.loads(run_cli("budget", "show", "--json")[1])
+        self.assertEqual(payload["budgets"]["implementer"]["used"], 0)
+        self.assertEqual(self.started, [])
+
+    def test_a_prompt_file_that_does_not_exist_names_it_and_stops(self):
+        missing = os.path.join(self.project, "no-such-plan.md")
+        message = self.refusal("run", "implementer", "--prompt-file", missing)
+        self.assertIn("does not exist", message)
+        self.assertIn(missing, message)
+        self.assert_nothing_was_spent()
+
+    def test_a_prompt_file_that_is_empty_says_so_rather_than_missing(self):
+        """ "Not there" and "there and empty" are different mistakes."""
+        empty = self.write("brief.md", "   \n")
+        message = self.refusal("run", "implementer", "--prompt-file", empty)
+        self.assertIn("empty", message)
+        self.assertNotIn("does not exist", message)
+        self.assertIn(empty, message)
+        self.assert_nothing_was_spent()
+
+    def test_a_workflow_relative_prompt_file_is_named_as_it_was_written(self):
+        """The resolved path is one the caller never typed."""
+        message = self.refusal("run", "implementer", "--prompt-file", ".ai/design-request.md")
+        self.assertIn(".ai/design-request.md", message)
+        self.assertIn("workflows", message)
+
+    def test_an_explicitly_empty_prompt_is_refused_as_an_empty_prompt(self):
+        """`--prompt ""` used to be falsy, and fell through to the stdin branch."""
+        message = self.refusal("run", "implementer", "--prompt", "", stdin="")
+        self.assertIn("--prompt", message)
+        self.assert_nothing_was_spent()
+
+    def test_a_pipe_that_carried_nothing_is_refused(self):
+        message = self.refusal("run", "implementer", stdin="")
+        self.assertIn("stdin", message)
+        self.assert_nothing_was_spent()
+
+    def test_an_explicit_stdin_prompt_file_that_carried_nothing_is_refused(self):
+        message = self.refusal("run", "implementer", "--prompt-file", "-", stdin="\n\n")
+        self.assertIn("stdin", message)
+        self.assert_nothing_was_spent()
+
+    def test_a_prompt_file_with_a_prompt_in_it_still_runs(self):
+        brief = self.write("brief.md", "implement the thing\n")
+        code, out, _ = run_cli("run", "implementer", "--prompt-file", brief)
+        self.assertEqual(code, 0)
+        self.assertIn("mock implement response", out)
+        self.assertEqual(self.started, ["implement the thing\n"])
 
 
 class TestBudgetsStopLoops(IsolatedCase):
@@ -602,6 +688,47 @@ class TestOutputGuard(IsolatedCase):
         code, out, _ = run_cli("run", "implementer", "--prompt", "go")
         self.assertEqual(code, 1)
         self.assertIn("half a plan", out)
+
+
+class TestASilentRunIsNotASuccess(IsolatedCase):
+    """Without `--output` there is no refused write, and there used to be no
+    report either: a run that printed whitespace exited 0 over it. Which path
+    the caller used says nothing about whether the run answered."""
+
+    def setUp(self):
+        super().setUp()
+        run_cli("config", "setup", "--defaults")
+        run_cli("config", "set", "implementer.provider", "mock")
+
+    def run_returning(self, stdout, stderr=""):
+        from orchestrator.providers import mock as mock_mod
+        from orchestrator.providers.base import RunResult
+
+        def fake_run(provider, *args, **kwargs):
+            resolved = provider.resolve_model(kwargs.get("model_spec") or {"family": "small"})
+            return RunResult(True, 0, stdout, stderr, ["mock"], 1.0, resolved)
+
+        original = mock_mod.MockProvider.run
+        mock_mod.MockProvider.run = fake_run
+        self.addCleanup(setattr, mock_mod.MockProvider, "run", original)
+        return run_cli("run", "implementer", "--prompt", "go")
+
+    def test_an_ok_run_that_printed_only_whitespace_exits_non_zero(self):
+        code, _, err = self.run_returning("   \n\n")
+        self.assertEqual(code, 1)
+        self.assertIn("implementer", err)
+        self.assertIn("no output", err)
+
+    def test_the_raw_stderr_is_quoted_because_that_is_where_the_refusal_is(self):
+        code, _, err = self.run_returning("", stderr="No prompt provided on stdin\n")
+        self.assertEqual(code, 1)
+        self.assertIn("No prompt provided on stdin", err)
+
+    def test_a_run_that_answered_still_prints_and_exits_zero(self):
+        code, out, err = self.run_returning("# Plan\n")
+        self.assertEqual(code, 0)
+        self.assertIn("# Plan", out)
+        self.assertNotIn("no output", err)
 
 
 @unittest.skipUnless(has_git(), "git is required")
