@@ -657,7 +657,7 @@ Estimated saving from 2 refused round(s): ~137,184 billed tokens.
 
 A level's effect is a *rate* -- how often it refused, how often it cut the
 panel -- so this reads the run log rather than `tokens show`, which covers one
-workflow and is cleared by `budget reset`.
+workflow.
 
 The saving is an estimate and says so: what a round that did not happen would
 have cost is unknowable, so the figure is the mean of the rounds that did.

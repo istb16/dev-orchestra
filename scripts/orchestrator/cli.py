@@ -1693,7 +1693,10 @@ def cmd_budget_consume(args: argparse.Namespace) -> int:
 
 def cmd_budget_reset(args: argparse.Namespace) -> int:
     _ledger(args).reset()
-    _out("Budgets reset; this is now a fresh workflow.")
+    # It used to claim a fresh workflow, which was wrong twice over: the work
+    # done so far is still the same workflow, and the token account survives a
+    # reset. Saying otherwise invited reading `tokens show` as a contradiction.
+    _out("Budgets reset; the token account is kept.")
     return 0
 
 
@@ -2553,7 +2556,7 @@ def build_parser() -> argparse.ArgumentParser:
     budget_consume.add_argument("stage", help="a stage the orchestrator runs itself, e.g. test")
     budget_consume.add_argument("--force", action="store_true")
     budget_consume.set_defaults(func=cmd_budget_consume)
-    budget_reset = budget_sub.add_parser("reset", help="start a fresh workflow")
+    budget_reset = budget_sub.add_parser("reset", help="start the budgets again, keeping the token account")
     budget_reset.set_defaults(func=cmd_budget_reset)
 
     # Separate from `budget` on purpose: attempts are enforced, tokens are only

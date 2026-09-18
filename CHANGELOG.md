@@ -12,6 +12,20 @@ The public surface covered by that promise is: the configuration schema, the
 
 ### Fixed
 
+- **A budget reset no longer destroys the token account.** Every ledger writer
+  goes through `load`, which hands back a blank ledger once one has been idle
+  past `budgets.session_idle_reset_seconds` (6h) -- so the first write after a
+  gap erased the account of a workflow that was still running. Measured on the
+  workflow for issue #33: a six-hour pause between the code review and the fix
+  stage turned `$13.78` across six stages into `$5.11` across one, and the
+  architect's 462,124 and the implementer's 351,701 tokens had to be
+  reconstructed from the event log that happened to survive beside them. A
+  reset -- idle or `budget reset` -- now resets the budgets and carries the
+  account across. The account answers what the workflow has cost, refuses
+  nothing, and was never a budget. 0.4.2 fixed the reading side of this;
+  the writing side is the rest of it. `budget reset` says what it did rather
+  than announcing a fresh workflow.
+
 - **`run --output` no longer overwrites the target with a bad result.** The
   file was written from `result.stdout` before the outcome was so much as
   looked at, so a stalled Architect replaced the 50,088-byte plan it had been
