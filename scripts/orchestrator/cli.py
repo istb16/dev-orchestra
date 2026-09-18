@@ -1810,33 +1810,66 @@ def cmd_optimization_report(args: argparse.Namespace) -> int:
         _emit_json(report)
         return 0
 
-    if not report["rounds"]:
+    if not report["rounds"] and not report["design_rounds"]:
         _out("No review rounds recorded in %s." % source)
         _out("Run a review, then ask again -- this reads what happened, not what would.")
         return 0
 
-    _out(
-        "Review rounds recorded: %d (%d ran, %d refused)"
-        % (report["rounds"], report["ran"], report["refused"])
-    )
-    _out(_OPT_ROW % ("levels in force", _counts(report["levels"])))
-    _out(_OPT_ROW % ("gate verdicts", _counts(report["gates"])))
-    _out(_OPT_ROW % ("panel reduced", report["panel_reduced"]))
-    _out(_OPT_ROW % ("escalated (high risk)", report["escalated"]))
-    if report["escalation_patterns"]:
-        _out(_OPT_ROW % ("  caused by", _counts(report["escalation_patterns"])))
-    if report["always_escalated"]:
+    # Every row in this block describes a decision the level made, and no level
+    # decides anything for a design round. So the block is code review's alone,
+    # and is skipped rather than filled with zeroes when only design rounds
+    # were recorded -- a `levels in force` of `-` invites the reader to conclude
+    # the dial did nothing, when it was never asked.
+    if report["rounds"]:
         _out(
-            "  every round escalated, so the level you configured never applied. "
-            "Narrow optimization.high_risk_paths, or accept that this repository "
-            "reviews at quality."
+            "Review rounds recorded: %d (%d ran, %d refused)"
+            % (report["rounds"], report["ran"], report["refused"])
         )
-    _out("")
+        _out(_OPT_ROW % ("levels in force", _counts(report["levels"])))
+        _out(_OPT_ROW % ("gate verdicts", _counts(report["gates"])))
+        _out(_OPT_ROW % ("panel reduced", report["panel_reduced"]))
+        _out(_OPT_ROW % ("escalated (high risk)", report["escalated"]))
+        if report["escalation_patterns"]:
+            _out(_OPT_ROW % ("  caused by", _counts(report["escalation_patterns"])))
+        if report["always_escalated"]:
+            _out(
+                "  every round escalated, so the level you configured never applied. "
+                "Narrow optimization.high_risk_paths, or accept that this repository "
+                "reviews at quality."
+            )
+        _out("")
+    total_runs = report["reviewer_runs"] + report["design_reviewer_runs"]
+    total_reported = report["measured_runs"] + report["design_measured_runs"]
+    total_billed = report["billed_tokens"] + report["design_billed_tokens"]
     _out(
         "Reviewer runs: %d (%d reported usage), %s billed"
-        % (report["reviewer_runs"], report["measured_runs"], "{:,}".format(report["billed_tokens"]))
+        % (total_runs, total_reported, "{:,}".format(total_billed))
     )
-    if report["billed_per_round"]:
+    if report["design_rounds"]:
+        # The total above was code review only, so the one command asked what
+        # review cost answered with half of it: measured on one workflow,
+        # `Reviewer runs: 8` beside four design runs and 350,429 billed tokens
+        # that appeared nowhere. Split into rows rather than merged, because a
+        # round against a plan and a round against a diff are not the same unit
+        # of work and a per-round figure spanning both describes neither.
+        if report["rounds"]:
+            code_row = _runs_row(
+                report["reviewer_runs"],
+                report["measured_runs"],
+                report["billed_tokens"],
+                report["ran"],
+                report["billed_per_round"],
+            )
+            _out(_OPT_ROW % ("code review", code_row))
+        design_row = _runs_row(
+            report["design_reviewer_runs"],
+            report["design_measured_runs"],
+            report["design_billed_tokens"],
+            report["design_rounds"],
+            report["design_billed_per_round"],
+        )
+        _out(_OPT_ROW % ("design review", design_row))
+    elif report["billed_per_round"]:
         _out("  %s billed per round that ran" % "{:,}".format(report["billed_per_round"]))
     if report["estimated_saving"]:
         _out("")
@@ -1859,6 +1892,19 @@ def cmd_optimization_report(args: argparse.Namespace) -> int:
 
 def _counts(counter: Dict[str, int]) -> str:
     return ", ".join("%s x%d" % item for item in sorted(counter.items())) or "-"
+
+
+def _runs_row(runs: int, reported: int, billed: int, rounds: int, per_round: Optional[int]) -> str:
+    """One stage's share of the reviewer spend, for a row under the total."""
+    row = "%d (%d reported usage), %s billed over %d round(s)" % (
+        runs,
+        reported,
+        "{:,}".format(billed),
+        rounds,
+    )
+    if per_round:
+        row += ", %s each" % "{:,}".format(per_round)
+    return row
 
 
 def cmd_progress_record(args: argparse.Namespace) -> int:

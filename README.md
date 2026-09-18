@@ -659,6 +659,21 @@ A level's effect is a *rate* -- how often it refused, how often it cut the
 panel -- so this reads the run log rather than `tokens show`, which covers one
 workflow.
 
+With `review.design` on, the spend splits, because a design round has no diff
+to measure and no test result to gate on -- no level decided anything for it,
+so it appears in the cost and in none of the rates above:
+
+```
+Reviewer runs: 12 (12 reported usage), 909,313 billed
+  code review            8 (8 reported usage), 558,884 billed over 4 round(s), 139,721 each
+  design review          4 (4 reported usage), 350,429 billed over 2 round(s), 175,214 each
+```
+
+The two are never averaged together: a round against a plan and a round against
+a diff are not the same unit of work. With design review off there is no design
+row, as above -- a `0` for a stage that never ran is noise pretending to be a
+measurement.
+
 The saving is an estimate and says so: what a round that did not happen would
 have cost is unknowable, so the figure is the mean of the rounds that did.
 

@@ -615,6 +615,16 @@ def round_event(status="ok", reviewers=1, billed=1000, **plan):
     }
 
 
+def design_event(reviewers=1, billed=1000, status="ok"):
+    """A design round as `_run_design_review` records it: no `optimization`
+    block, because no level decided anything for a plan."""
+    return {
+        "stage": "design_review",
+        "status": status,
+        "reviewers": [{"usage": {"billed_tokens": billed}} for _ in range(reviewers)],
+    }
+
+
 class TestTheReport(unittest.TestCase):
     """A level's effect is a rate, not a number: how often it refused, how
     often it cut the panel. Counting that is the whole point of recording a
@@ -718,6 +728,77 @@ class TestTheReport(unittest.TestCase):
         events = ["not an event", None, {"stage": "review"}, round_event()]
         self.assertEqual(opt.summarise_rounds(events)["rounds"], 1)
 
+    def test_a_design_round_is_counted_apart_from_a_code_round(self):
+        """Measured on one workflow: two design rounds and 350,429 billed
+        tokens existed in `tokens show` and nowhere in this report."""
+        events = [
+            design_event(reviewers=2, billed=1000),
+            design_event(reviewers=2, billed=1000),
+            round_event(reviewers=2, billed=500),
+        ]
+        report = opt.summarise_rounds(events)
+        self.assertEqual(report["design_rounds"], 2)
+        self.assertEqual((report["design_reviewer_runs"], report["design_measured_runs"]), (4, 4))
+        self.assertEqual(report["design_billed_tokens"], 4000)
+        self.assertEqual(report["design_billed_per_round"], 2000)
+
+    def test_the_code_figures_do_not_move_when_a_design_round_is_present(self):
+        """`reviewer_runs` already means code review and `optimization report
+        --json` is a public format, so the new cost arrives as new keys. A
+        figure that silently grew would be a different bug, not a fix."""
+        code = [round_event(reviewers=2, billed=500), round_event(reviewers=2, billed=500)]
+        alone = opt.summarise_rounds(code)
+        beside = opt.summarise_rounds([*code, design_event(reviewers=2, billed=9000)])
+        for key in ("rounds", "ran", "reviewer_runs", "measured_runs", "billed_tokens"):
+            self.assertEqual(beside[key], alone[key], key)
+        self.assertEqual(beside["reviewer_runs"], 4)
+        self.assertEqual(beside["billed_per_round"], 1000)
+
+    def test_design_rounds_alone_leave_the_code_figures_at_zero(self):
+        """Nothing was reviewed against a diff, so no level was asked anything
+        -- and the levels tally has to stay empty rather than claim one."""
+        report = opt.summarise_rounds([design_event(reviewers=2, billed=700)])
+        self.assertEqual((report["rounds"], report["ran"], report["reviewer_runs"]), (0, 0, 0))
+        self.assertEqual(report["billed_tokens"], 0)
+        self.assertIsNone(report["billed_per_round"])
+        self.assertEqual(report["levels"], {})
+        self.assertEqual(report["design_billed_tokens"], 1400)
+
+    def test_a_design_run_that_reported_no_usage_is_counted_but_not_summed(self):
+        event = design_event(reviewers=0)
+        event["reviewers"] = [{"usage": {}}, {"usage": {"billed_tokens": 500}}]
+        report = opt.summarise_rounds([event])
+        self.assertEqual((report["design_reviewer_runs"], report["design_measured_runs"]), (2, 1))
+        self.assertEqual(report["design_billed_tokens"], 500)
+
+    def test_no_design_round_reports_no_design_spend(self):
+        report = opt.summarise_rounds([round_event(reviewers=2, billed=500)])
+        self.assertEqual(report["design_rounds"], 0)
+        self.assertEqual(report["design_reviewer_runs"], 0)
+        self.assertEqual(report["design_billed_tokens"], 0)
+        self.assertIsNone(report["design_billed_per_round"])
+
+    def test_a_round_that_did_not_finish_is_not_a_round(self):
+        """A round that raised or was abandoned after a kill billed nothing, so
+        counting it in the divisor reports half of what the round that did run
+        cost -- a per-round figure halved by a round that never ran."""
+        events = [
+            design_event(reviewers=2, billed=175_214),
+            {"stage": "design_review", "status": "failed", "error": "boom"},
+            {"stage": "design_review", "status": "abandoned", "reason": "killed"},
+        ]
+        report = opt.summarise_rounds(events)
+        self.assertEqual(report["design_rounds"], 1)
+        self.assertEqual(report["design_billed_tokens"], 350_428)
+        self.assertEqual(report["design_billed_per_round"], 350_428)
+
+    def test_a_round_where_every_reviewer_failed_still_ran(self):
+        """It cost its attempt: a round with zero runs, not a round that did
+        not happen -- and the one worth printing, since it produced nothing."""
+        report = opt.summarise_rounds([design_event(reviewers=0)])
+        self.assertEqual((report["design_rounds"], report["design_reviewer_runs"]), (1, 0))
+        self.assertIsNone(report["design_billed_per_round"])
+
 
 @unittest.skipUnless(has_git(), "git is required")
 class TestTheReportCommand(IsolatedCase):
@@ -812,6 +893,52 @@ class TestTheReportCommand(IsolatedCase):
         _, out, _ = run_cli("optimization", "report")
         self.assertIn("Estimated saving", out)
         self.assertIn("unknowable", out)
+
+    def test_both_stages_and_their_sum_are_shown(self):
+        """One `Reviewer runs:` number that silently meant code review only is
+        the bug: it answered 8 for a workflow that had run 12 reviewers."""
+        self.workspace.record_event("review", "ok", round_event(reviewers=2, billed=1000))
+        self.workspace.record_event("design_review", "ok", design_event(reviewers=2, billed=3000))
+        _, out, _ = run_cli("optimization", "report")
+        self.assertIn("Reviewer runs: 4 (4 reported usage), 8,000 billed", out)
+        self.assertIn("code review", out)
+        self.assertIn("2 (2 reported usage), 2,000 billed over 1 round(s)", out)
+        self.assertIn("design review", out)
+        self.assertIn("6,000 billed over 1 round(s)", out)
+
+    def test_a_project_with_design_review_off_sees_no_design_line(self):
+        """A `0` row for a stage that never ran is noise pretending to be a
+        measurement."""
+        self.workspace.record_event("review", "ok", round_event(reviewers=2, billed=1000))
+        _, out, _ = run_cli("optimization", "report")
+        self.assertNotIn("design", out)
+        self.assertIn("Reviewer runs: 2 (2 reported usage), 2,000 billed", out)
+        self.assertIn("2,000 billed per round that ran", out)
+
+    def test_design_rounds_alone_are_reported_without_claiming_a_level(self):
+        """No level decided anything for a plan, so there is no `levels in
+        force` to print -- but 350,429 billed tokens still have to appear."""
+        self.workspace.record_event("design_review", "ok", design_event(reviewers=2, billed=3000))
+        code, out, _ = run_cli("optimization", "report")
+        self.assertEqual(code, 0)
+        self.assertNotIn("levels in force", out)
+        self.assertNotIn("Review rounds recorded", out)
+        self.assertIn("design review", out)
+        self.assertIn("6,000 billed over 1 round(s)", out)
+
+    def test_a_design_round_alone_is_not_an_empty_log(self):
+        """It says what review cost, and a design round cost something."""
+        self.workspace.record_event("design_review", "ok", design_event(reviewers=1, billed=800))
+        _, out, _ = run_cli("optimization", "report")
+        self.assertNotIn("No review rounds recorded", out)
+
+    def test_a_design_round_that_failed_prints_no_design_row(self):
+        """`design review 0 (0 reported usage), 0 billed over 1 round(s)` is
+        the zero pretending to be a measurement this report exists to avoid."""
+        self.workspace.record_event("design_review", "failed", {"error": "boom"})
+        _, out, _ = run_cli("optimization", "report")
+        self.assertNotIn("design review", out)
+        self.assertIn("No review rounds recorded", out)
 
 
 @unittest.skipUnless(has_git(), "git is required")
