@@ -83,7 +83,7 @@ class TestAttemptBudgets(LedgerCase):
         # A new request should not inherit the previous one's spent budget.
         self.assertEqual(book.remaining("test"), 1)
 
-    def test_reset_clears_everything(self):
+    def test_reset_clears_the_budgets(self):
         book = self.book(test=2)
         book.consume("test")
         book.reset()

@@ -99,12 +99,23 @@ performs itself — running the test suite, above all — must claim theirs:
 ```bash
 dev-orchestra budget consume test     # exit 3 when spent
 dev-orchestra budget show
-dev-orchestra budget reset            # start a fresh workflow
+dev-orchestra budget reset            # start the budgets again
 ```
 
 A ledger idle for `budgets.session_idle_reset_seconds` (6h) is treated as a
 finished workflow, so the next request starts with full budgets without anyone
 remembering to reset.
+
+Either reset clears the budgets only. The token account behind `tokens show`
+is carried across, because it records what the work cost rather than what is
+left to spend, and clearing it made a workflow that paused for six hours
+report the runs before the pause as free. So the account covers the whole
+workflow, across every reset it has been through, and no reset clears it; only
+deleting the workflow (`workflow remove`) does.
+
+A separate account means a separate workflow: `dev-orchestra --workflow <id>`
+gives the work its own `.ai/workflows/<id>/`, and therefore its own ledger,
+budgets and account.
 
 `--force` overrides a refusal. It is there for a human who has decided to
 override; the skill tells the orchestrator not to reach for it.

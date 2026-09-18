@@ -206,7 +206,7 @@ forever.
 | --- | --- |
 | `budget show [--json]` | Attempts spent per stage, delegated-run total, runtime left. |
 | `budget consume <stage> [--force]` | Claim an attempt at a stage the orchestrator runs itself (notably `test`). Exits 3 when the budget is spent. |
-| `budget reset` | Start a fresh workflow, including the review round counter. Also happens automatically once a ledger has been idle for `budgets.session_idle_reset_seconds`. |
+| `budget reset` | Start the budgets again, including the review round counter. The token account is kept — it is a record of what the work cost, not a budget, and no reset clears it. Also happens automatically once a ledger has been idle for `budgets.session_idle_reset_seconds`. |
 
 `run` and `review run` consume their own budgets, so `budget consume` is only
 needed for stages the orchestrator performs directly.
@@ -220,6 +220,14 @@ needed for stages the orchestrator performs directly.
 Accounting, not a budget: nothing here refuses a run. Deliberately separate from
 `budget`, which is enforced -- reading one as the other is the mistake this
 split exists to prevent.
+
+The account covers the **whole workflow**, not the current budgets: `budget
+reset` and the idle reset start the budgets again and carry the account across,
+so the totals here span every reset the work has been through, and no reset
+clears them; only deleting the workflow (`workflow remove`) does. A separate
+account is therefore a separate workflow --
+`dev-orchestra --workflow <id>` gives that work its own `.ai/workflows/<id>/`,
+and with it its own ledger, budgets and account.
 
 The numbers come from the delegated CLIs, so they are only as complete as the
 CLIs are talkative. Claude Code reports input, output, cache-read and

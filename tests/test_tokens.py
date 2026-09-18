@@ -18,6 +18,8 @@ from __future__ import annotations
 import io
 import json
 import os
+import threading
+import time
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 
@@ -257,8 +259,6 @@ class TestLedgerAccount(IsolatedCase):
         the account: the account refuses nothing, so resetting it only hides
         what was spent. Reported from real use as "tokens show says no runs
         while state.json holds 446,430"."""
-        import time
-
         self.book.record_usage("review", self.measured(input_tokens=446430))
         state = self.cli_workspace().read_state()
         idle = float(state["ledger"]["last_activity_monotonic"])
@@ -347,16 +347,168 @@ class TestLedgerAccount(IsolatedCase):
         fresh = ledger_mod.Ledger(self.cli_workspace(), dict(ledger_mod.DEFAULT_BUDGETS))
         self.assertEqual(fresh.token_report()["by_stage"]["test"]["input_tokens"], 7)
 
-    def test_a_reset_starts_a_new_account(self):
-        self.book.record_usage("test", self.measured(input_tokens=7))
-        self.book.reset()
-        self.assertEqual(self.book.token_report()["totals"]["runs"], 0)
-
     def test_recording_a_cost_never_consumes_an_attempt(self):
         """Accounting must not be able to exhaust a budget."""
         before = self.book.remaining("architect")
         self.book.record_usage("architect", self.measured(input_tokens=1))
         self.assertEqual(self.book.remaining("architect"), before)
+
+
+class TestTheAccountSurvivesAReset(IsolatedCase):
+    """A reset resets the budgets. It does not reset the account.
+
+    0.4.2 stopped an idle ledger *hiding* the account. It kept destroying it:
+    every writer goes through `load`, so the first write after a six-hour gap
+    persisted the blank ledger `load` had minted. Measured on the workflow for
+    issue #33, where `$13.78` over six stages became `$5.11` over one and the
+    architect's and implementer's runs were gone from the ledger entirely.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.book = ledger_mod.Ledger(self.cli_workspace(), dict(ledger_mod.DEFAULT_BUDGETS))
+
+    def measured(self, **fields):
+        return Usage(source="test", **fields).to_dict()
+
+    def go_stale(self):
+        """Backdate the ledger past `session_idle_reset_seconds`."""
+        workspace = self.cli_workspace()
+        state = workspace.read_state()
+        limit = float(ledger_mod.DEFAULT_BUDGETS["session_idle_reset_seconds"])
+        state["ledger"]["last_activity_monotonic"] = time.time() - limit - 60
+        workspace.write_state(state)
+        return state["ledger"]
+
+    def test_an_idle_reset_keeps_the_account_and_clears_the_budgets(self):
+        self.book.record_usage("architect", self.measured(input_tokens=462124), label="claude-large")
+        self.book.consume("architect")
+        was = self.go_stale()
+
+        self.book.record_usage("review_fixer", self.measured(input_tokens=166298))
+
+        report = self.book.token_report()
+        self.assertEqual(report["by_stage"]["architect"]["input_tokens"], 462124)
+        self.assertEqual(report["by_stage"]["review_fixer"]["input_tokens"], 166298)
+        self.assertEqual(report["by_label"]["claude-large"]["input_tokens"], 462124)
+        # The budgets, meanwhile, really did reset -- that is the behaviour
+        # this change is careful not to touch.
+        ledger = self.cli_workspace().read_state()["ledger"]
+        self.assertEqual(ledger["attempts"], {})
+        self.assertEqual(ledger["total_delegated_runs"], 0)
+        self.assertNotEqual(ledger["epoch"], was["epoch"])
+
+    def test_budget_reset_keeps_the_account_and_clears_the_budgets(self):
+        """A human resetting the budgets to keep working has not asked to be
+        told the work so far was free."""
+        self.book.record_usage("implementer", self.measured(input_tokens=351701))
+        self.book.consume("implementer")
+        before = self.cli_workspace().read_state()["ledger"]["epoch"]
+
+        self.book.reset()
+
+        self.assertEqual(self.book.token_report()["totals"]["input_tokens"], 351701)
+        ledger = self.cli_workspace().read_state()["ledger"]
+        self.assertEqual(ledger["attempts"], {})
+        self.assertEqual(ledger["total_delegated_runs"], 0)
+        self.assertNotEqual(ledger["epoch"], before)
+
+    def test_a_run_reported_during_a_reset_is_not_lost(self):
+        """Carrying the account made `reset` a read-modify-write, and it was
+        the one mutating method holding no lock. A detached worker reporting
+        its usage between that read and the write is erased by the write --
+        the loss carrying the account exists to prevent, arriving by the other
+        door."""
+        self.book.record_usage("architect", self.measured(input_tokens=462124))
+
+        def report_usage():
+            book = ledger_mod.Ledger(self.cli_workspace(), dict(ledger_mod.DEFAULT_BUDGETS))
+            book.record_usage("review_fixer", self.measured(input_tokens=166298))
+
+        worker = threading.Thread(target=report_usage)
+        fresh = self.book._fresh
+
+        def fresh_while_a_worker_reports(previous=None):
+            ledger = fresh(previous)
+            worker.start()
+            # Long enough for the report to land if nothing holds it off, and
+            # not joined to completion: under the lock it cannot land until
+            # `reset` releases, and waiting for it here would be the deadlock.
+            worker.join(timeout=0.5)
+            return ledger
+
+        self.book._fresh = fresh_while_a_worker_reports
+        try:
+            self.book.reset()
+        finally:
+            self.book._fresh = fresh
+            worker.join(timeout=30)
+
+        report = self.book.token_report()
+        self.assertEqual(report["by_stage"]["architect"]["input_tokens"], 462124)
+        self.assertEqual(report["by_stage"]["review_fixer"]["input_tokens"], 166298)
+
+    def test_the_first_ledger_of_all_has_a_blank_account(self):
+        """There is nothing on disk to carry from, and that is not an error."""
+        self.assertEqual(self.book.load()["tokens"], {"by_stage": {}, "by_label": {}})
+
+    def test_a_ledger_too_old_to_have_an_account_resets_without_raising(self):
+        """This reads ledgers written by older versions, where `tokens` is
+        absent -- and, if something else mangled it, `None`, not a dict, or a
+        dict whose `by_stage` or `by_label` is not one."""
+        for tokens in (
+            {},
+            {"tokens": None},
+            {"tokens": []},
+            {"tokens": "446430"},
+            # A section mangled on its own: healed by the reset until the
+            # account started being carried across, and `record_usage` raises
+            # on it -- `by_stage.get(stage)` -- if it is carried as found.
+            {"tokens": {"by_stage": "oops"}},
+            {"tokens": {"by_stage": {}, "by_label": []}},
+        ):
+            with self.subTest(tokens=tokens):
+                workspace = self.cli_workspace()
+                state = workspace.read_state()
+                old = {"epoch": "old", "attempts": {"test": 1}}
+                old.update(tokens)
+                state["ledger"] = old
+                workspace.write_state(state)
+                self.assertEqual(self.book.reset()["tokens"], {"by_stage": {}, "by_label": {}})
+
+    def test_mangling_one_part_of_the_account_does_not_discard_the_rest(self):
+        """What is dropped is the mangled part, not the account around it --
+        blanking the whole thing on any bad input would be the data loss this
+        carries the account to prevent. Both levels: a mangled section beside a
+        healthy one, and a mangled entry beside a healthy entry within it."""
+        self.book.record_usage("architect", self.measured(input_tokens=462124))
+        workspace = self.cli_workspace()
+        state = workspace.read_state()
+        state["ledger"]["tokens"]["by_stage"]["implementer"] = "oops"
+        state["ledger"]["tokens"]["by_label"] = "oops"
+        workspace.write_state(state)
+
+        tokens = self.book.reset()["tokens"]
+        self.assertEqual(tokens["by_stage"]["architect"]["input_tokens"], 462124)
+        self.assertNotIn("implementer", tokens["by_stage"])
+        self.assertEqual(tokens["by_label"], {})
+        # The stage whose entry was mangled can be recorded again, rather than
+        # raising in `_accumulate` on every run from here on.
+        self.book.record_usage("implementer", self.measured(input_tokens=351701))
+        report = self.book.token_report()
+        self.assertEqual(report["by_stage"]["implementer"]["input_tokens"], 351701)
+        self.assertEqual(report["by_stage"]["architect"]["input_tokens"], 462124)
+
+    def test_the_carried_account_is_a_copy(self):
+        """`_fresh`'s result is written to disk and then mutated by
+        `record_usage`; handing it the dict the caller is still holding is how
+        one of these bugs starts."""
+        self.book.record_usage("architect", self.measured(input_tokens=100))
+        old = self.cli_workspace().read_state()["ledger"]
+        fresh = self.book._fresh(old)
+
+        fresh["tokens"]["by_stage"]["architect"]["input_tokens"] = 999
+        self.assertEqual(old["tokens"]["by_stage"]["architect"]["input_tokens"], 100)
 
 
 # --------------------------------------------------------------------------- cli

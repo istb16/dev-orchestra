@@ -27,6 +27,7 @@ as authoritative when it is only a floor.
 
 from __future__ import annotations
 
+import copy
 import os
 import time
 import uuid
@@ -117,6 +118,48 @@ def _merge_accounts(accounts: List[Dict[str, Any]]) -> Dict[str, Any]:
     return total
 
 
+def _carried_account(previous: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """The token account a reset hands on to the ledger that replaces it.
+
+    A reset resets the budgets; it does not reset the account. The account
+    answers what this *workflow* has cost and refuses nothing, so there was
+    never a reason to clear it. It was cleared anyway, and since every writer
+    goes through ``load`` the first write after a six-hour idle gap erased the
+    account of a workflow still running: issue #33 lost the architect's
+    462,124 and the implementer's 351,701, recoverable only because the event
+    log in `.ai/state.json` happened to survive.
+
+    Deep-copied rather than shared: the result is written to disk and mutated
+    by ``record_usage``, while the ledger it came from is still in the hands
+    of whoever passed it in.
+
+    A ledger written before the account existed -- or one whose ``tokens`` is
+    ``None`` or not a dict -- resets to a blank account rather than raising, and
+    so does a single mangled section, or a single mangled entry within one, of
+    an otherwise usable account.
+    """
+    tokens = (previous or {}).get("tokens")
+    if not isinstance(tokens, dict):
+        return {"by_stage": {}, "by_label": {}}
+    carried = copy.deepcopy(tokens)
+    for section in ("by_stage", "by_label"):
+        # Replaced, not filled in behind a missing key: a section that is
+        # present and mangled -- ``{"tokens": {"by_stage": "oops"}}`` -- used
+        # to be healed by the reset blanking the account, and is now carried
+        # into every ledger that follows. ``record_usage`` promises never to
+        # raise on a malformed report; left as found, the next one does.
+        entries = carried.get(section)
+        if not isinstance(entries, dict):
+            carried[section] = {}
+            continue
+        # The same trap one level down: ``{"by_stage": {"architect": "oops"}}``
+        # clears the section check, and ``_accumulate`` calls ``.get`` on the
+        # entry. Dropped rather than blanked, so the stages beside it keep
+        # their numbers.
+        carried[section] = {key: value for key, value in entries.items() if isinstance(value, dict)}
+    return carried
+
+
 def _epoch(ledger: Dict[str, Any]) -> str:
     """The budget epoch of a ledger, whichever key it was written with."""
     return str(ledger.get("epoch") or ledger.get("workflow") or "")
@@ -175,7 +218,7 @@ class Ledger:
         idle_limit = float(self.settings.get("session_idle_reset_seconds") or 0)
         last = float(ledger.get("last_activity_monotonic") or 0)
         if idle_limit and last and time.time() - last > idle_limit:
-            return self._fresh()
+            return self._fresh(ledger)
         return ledger
 
     def workflow_id(self) -> str:
@@ -211,7 +254,14 @@ class Ledger:
                 self._write(ledger)
             return _epoch(ledger) or str(ledger.get("started_at") or "")
 
-    def _fresh(self) -> Dict[str, Any]:
+    def _fresh(self, previous: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Fresh budgets, carrying ``previous``'s token account across.
+
+        Everything minted here *is* the budget. The account is not, which is
+        why it is the one thing taken from the ledger being replaced. No
+        ledger to replace -- the first request of a workflow -- carries
+        nothing.
+        """
         now = time.time()
         return {
             # Identity, not a timestamp: two epochs can start in the same
@@ -225,13 +275,22 @@ class Ledger:
             "in_flight": {},
             "signatures": {},
             "total_delegated_runs": 0,
-            "tokens": {"by_stage": {}, "by_label": {}},
+            "tokens": _carried_account(previous),
         }
 
     def reset(self) -> Dict[str, Any]:
-        ledger = self._fresh()
-        self._write(ledger)
-        return ledger
+        # Locked, like every other mutating method here, now that this is a
+        # read-modify-write rather than a blind overwrite: the account it
+        # carries across is read here and written back below, so a detached
+        # worker's ``record_usage`` landing in between is erased -- which is
+        # exactly the loss carrying the account exists to prevent.
+        with self._locked():
+            # From what is on disk, not through ``load``: a human resetting the
+            # budgets to keep working has not asked to be told the work so far
+            # was free.
+            ledger = self._fresh(self._read())
+            self._write(ledger)
+            return ledger
 
     # -- budgets -----------------------------------------------------------
 

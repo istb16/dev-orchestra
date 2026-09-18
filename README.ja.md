@@ -621,8 +621,7 @@ Estimated saving from 2 refused round(s): ~137,184 billed tokens.
 ```
 
 レベルの効果は「率」です ── 何回拒否したか、何回パネルを削ったか。したがって
-`tokens show`（1ワークフロー分、`budget reset` で消える）ではなく run log を
-読みます。
+`tokens show`（1ワークフロー分）ではなく run log を読みます。
 
 **削減額は推定値で、そう明示します。** 起きなかったラウンドのコストは知りよう
 がないので、実際に走ったラウンドの平均を代用しています。
