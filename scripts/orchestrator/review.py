@@ -1189,6 +1189,15 @@ def run_reviews(
         except ModelResolutionError as exc:
             return ReviewerRun(reviewer, "failed", error=str(exc))
         except Exception as exc:
+            # No duration, deliberately. Everything that reaches here was
+            # raised before ``provider.run`` had a ``RunResult`` to hand back
+            # -- ``detect``, a non-``ModelResolutionError`` from
+            # ``resolve_model``, ``build_command``, ``_child_env`` -- so no
+            # child was started, or none whose lifetime we were told. Reading
+            # the output is no longer one of these: an adapter that raises
+            # while parsing returns a measured failure instead, which lands in
+            # the ``not result.ok`` branch below with its duration intact. What
+            # cannot be known is not billed, and ``invoked`` stays False.
             return ReviewerRun(reviewer, "failed", error="%s: %s" % (type(exc).__name__, exc))
 
         model_display = result.resolved.display if result.resolved else ""

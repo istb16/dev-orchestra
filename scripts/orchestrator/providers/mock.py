@@ -5,6 +5,9 @@ Never touches the network or a real CLI. Responses come from, in order:
 1. a file named ``<role-or-mode>.txt`` inside ``$DEV_ORCHESTRA_MOCK_DIR``
 2. ``$DEV_ORCHESTRA_MOCK_RESPONSE``
 3. a built-in stub that echoes what was requested
+
+``$DEV_ORCHESTRA_MOCK_FAIL`` makes a run fail and ``$DEV_ORCHESTRA_MOCK_DELAY``
+makes it take a measurable amount of time.
 """
 
 from __future__ import annotations
@@ -77,6 +80,7 @@ class MockProvider(Provider):
         started = time.time()
         resolved = self.resolve_model(model_spec)
         command = self.build_command(mode, resolved, cwd, extra_args, options)
+        time.sleep(_mock_delay())
         if self.fail or _should_fail(prompt):
             return RunResult(False, 1, "", "mock failure", command, time.time() - started, resolved)
         response = _canned_response(mode)
@@ -107,6 +111,25 @@ def _mock_usage(prompt: str, response: str) -> Usage:
         source="mock",
         prompt_chars=len(prompt),
     )
+
+
+def _mock_delay() -> float:
+    """Seconds to stay alive for, from ``DEV_ORCHESTRA_MOCK_DELAY``.
+
+    The only reason this exists: a test that wants to catch a detached worker
+    *while it is running* -- to reset the budgets under it, or cancel it --
+    needs the worker to still be there when the parent looks. A mock run is
+    otherwise over before the job file has settled. An unreadable or negative
+    value means no delay rather than an error, since this is a test knob and
+    failing the run would say nothing useful about the run.
+    """
+    raw = os.environ.get("DEV_ORCHESTRA_MOCK_DELAY")
+    if not raw:
+        return 0.0
+    try:
+        return max(float(raw), 0.0)
+    except ValueError:
+        return 0.0
 
 
 def _should_fail(prompt: str) -> bool:

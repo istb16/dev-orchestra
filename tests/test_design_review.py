@@ -275,17 +275,31 @@ class TestRounds(DesignReviewCase):
         self.write_plan(REVISED_PLAN)
         self.assertEqual(run_cli("review", "run", "--design", "--force")[0], 0)
 
-    def test_a_refused_round_leaves_the_frozen_plan_where_it_was(self):
-        """The reports on disk are stamped with the plan's sha. Freezing the
-        revision for a round that is then refused would make every one of them
-        stale, which discards the triage the refusal asked to be reported."""
-        run_cli("config", "set", "review.design.max_iterations", "1")
+    def test_a_round_charges_every_reviewer_it_ran(self):
+        os.environ["DEV_ORCHESTRA_MOCK_DELAY"] = "0.2"
         self.write_plan()
-        run_cli("review", "run", "--design")
-        run_cli("review", "triage", "--design", "F1", "--status", "accepted")
+        self.assertEqual(run_cli("review", "run", "--design")[0], 0)
+        event = self.workspace.read_state()["events"][-1]
+        expected = sum(reviewer["duration_seconds"] for reviewer in event["reviewers"])
+        self.assertEqual(len(event["reviewers"]), 2)
+        self.assertAlmostEqual(event["charged_seconds"], expected, places=1)
+        payload = json.loads(run_cli("budget", "show", "--json")[1])
+        self.assertAlmostEqual(payload["runtime"]["used"], expected, places=1)
 
-        self.write_plan(REVISED_PLAN)
-        self.assertEqual(run_cli("review", "run", "--design")[0], 3)
+    def test_a_round_is_refused_once_the_runtime_budget_is_spent(self):
+        from test_cli import spend_the_runtime_budget
+
+        self.write_plan()
+        spend_the_runtime_budget(self.workspace)
+        code, _, err = run_cli("review", "run", "--design")
+        self.assertEqual(code, 3)
+        self.assertIn("refusing to run design review", err)
+        self.assertIn("delegated", err)
+        self.assertEqual(self.workspace.read_state()["ledger"]["in_flight"], {})
+        self.assertFalse(os.path.isfile(self.design.reviewer_report_path("m1")))
+        self.assertEqual(run_cli("review", "run", "--design", "--force")[0], 0)
+
+    def assert_the_first_plan_is_still_frozen_with_its_triage(self):
         frozen = ws.read_text(self.design.snapshot_path)
         self.assertIn("Add a NOT NULL column", frozen)
         self.assertNotIn("backfill", frozen)
@@ -294,6 +308,32 @@ class TestRounds(DesignReviewCase):
         data = json.loads(run_cli("review", "show", "--design", "--json")[1])
         self.assertEqual([f["id"] for f in data["findings"]], ["F1"])
         self.assertEqual(data["findings"][0]["triage"], "accepted")
+
+    def test_a_refused_round_leaves_the_frozen_plan_where_it_was(self):
+        """The reports on disk are stamped with the plan's sha. Freezing the
+        revision for a round that is then refused would make every one of them
+        stale, which discards the triage the refusal asked to be reported.
+
+        Both refusals, because both ask for the same report: whichever budget
+        says no, it has to say so before the freeze."""
+        from test_cli import spend_the_runtime_budget
+
+        run_cli("config", "set", "review.design.max_iterations", "1")
+        self.write_plan()
+        run_cli("review", "run", "--design")
+        run_cli("review", "triage", "--design", "F1", "--status", "accepted")
+
+        self.write_plan(REVISED_PLAN)
+        self.assertEqual(run_cli("review", "run", "--design")[0], 3)
+        self.assert_the_first_plan_is_still_frozen_with_its_triage()
+
+        # Room in the round budget, so the next refusal can only be the runtime.
+        run_cli("config", "set", "review.design.max_iterations", "5")
+        spend_the_runtime_budget(self.workspace)
+        code, _, err = run_cli("review", "run", "--design")
+        self.assertEqual(code, 3)
+        self.assertIn("runtime budget", err)
+        self.assert_the_first_plan_is_still_frozen_with_its_triage()
 
     def test_a_revision_that_changes_nothing_is_called_out(self):
         self.write_plan()

@@ -11,7 +11,10 @@ visible from outside the blocked process and survives a crash.
 **A loop that never ends.** The review budget used to be advertised by a query
 command and enforced nowhere, which is a guard in name only. Budgets now live
 here and are consumed by the actions themselves, so exhausting one refuses the
-next attempt instead of advising against it.
+next attempt instead of advising against it. The runtime budget is charged from
+what ``execute()`` measured for each delegated run, so a run nobody measured --
+one whose wrapper died before ``end()`` -- costs nothing, and time spent not
+delegating costs nothing either.
 
 **A loop that ends but achieves nothing.** Repeating a stage is only progress if
 something changed. A stage can register a signature — the set of findings, a
@@ -28,6 +31,7 @@ as authoritative when it is only a floor.
 from __future__ import annotations
 
 import copy
+import math
 import os
 import time
 import uuid
@@ -45,10 +49,16 @@ DEFAULT_BUDGETS: Dict[str, Any] = {
     "implementer": 5,
     "review_fixer": 4,
     "test": 8,
-    # Backstops for loops nobody anticipated. These bound the whole workflow
-    # even if the orchestrator invents a cycle this module knows nothing about.
+    # Backstops for delegating loops nobody anticipated: only runs that go
+    # through ``consume()`` count against the first, every run that reaches
+    # ``end()`` with a measurement against the second. A cycle that delegates
+    # nothing is bounded by neither.
+    #
+    # 14400 is the heaviest workflow actually observed (5619s of delegated
+    # execution) plus one round at its deadline ceiling -- a two-reviewer round
+    # and a fixer is 5400s on its own -- not an average. 7200 did not fit that.
     "total_delegated_runs": 40,
-    "max_runtime_seconds": 7200,
+    "max_runtime_seconds": 14400,
     # A ledger older than this is treated as a finished workflow, so a new
     # request starts with a full budget without anyone having to reset it.
     "session_idle_reset_seconds": 21600,
@@ -269,12 +279,21 @@ class Ledger:
             # was counting against" has to tell them apart.
             "epoch": uuid.uuid4().hex[:12],
             "started_at": ws.utcnow(),
+            # When this epoch began. Kept because it is part of the published
+            # format -- and used in no budget calculation: the runtime budget
+            # measures delegated work, not how long the ledger has existed,
+            # which is the whole of issue #40.
             "started_monotonic": now,
             "last_activity_monotonic": now,
             "attempts": {},
             "in_flight": {},
             "signatures": {},
             "total_delegated_runs": 0,
+            # Measured seconds charged to *this* epoch. A budget, not an
+            # account: a reset starts it at zero and carries nothing, because
+            # what the workflow has cost in total is already answered by the
+            # ``duration_seconds`` on the events, which outlive every reset.
+            "runtime_seconds": 0.0,
             "tokens": _carried_account(previous),
         }
 
@@ -302,13 +321,32 @@ class Ledger:
         used = int((self.load().get("attempts") or {}).get(stage, 0))
         return max(limit - used, 0)
 
+    def runtime_used(self) -> float:
+        """Seconds of delegated execution charged to the current budgets.
+
+        Only what has been measured and closed. A run still in flight
+        contributes nothing: projecting ``now - started`` onto it would be a
+        wall clock again -- the measure this budget exists to stop using --
+        and it would make ``budget show``, which does not clear stalls, climb
+        past a ``status`` that had already buried the same dead entry.
+        """
+        return max(float(self.load().get("runtime_seconds") or 0.0), 0.0)
+
     def runtime_remaining(self) -> Optional[float]:
         limit = self.settings.get("max_runtime_seconds")
         if not isinstance(limit, (int, float)) or limit <= 0:
             return None
-        ledger = self.load()
-        elapsed = time.time() - float(ledger.get("started_monotonic") or time.time())
-        return max(float(limit) - elapsed, 0.0)
+        return max(float(limit) - self.runtime_used(), 0.0)
+
+    def runtime_refusal(self) -> Optional[str]:
+        """Why delegating again is refused, or None while there is budget left."""
+        left = self.runtime_remaining()
+        if left is None or left > 0:
+            return None
+        return (
+            "this workflow's delegated runs have used their runtime budget of %ss "
+            "(%.0fs of measured execution)" % (self.settings.get("max_runtime_seconds"), self.runtime_used())
+        )
 
     def check(self, stage: str) -> List[str]:
         """Reasons this stage must not be attempted again. Empty means go."""
@@ -324,12 +362,9 @@ class Ledger:
             if int(ledger.get("total_delegated_runs") or 0) >= total_limit:
                 reasons.append("this workflow has used its budget of %d delegated runs" % total_limit)
 
-        runtime_left = self.runtime_remaining()
-        if runtime_left is not None and runtime_left <= 0:
-            reasons.append(
-                "this workflow has been running longer than its %ss budget"
-                % self.settings.get("max_runtime_seconds")
-            )
+        spent = self.runtime_refusal()
+        if spent:
+            reasons.append(spent)
 
         repeats = int((ledger.get("signatures") or {}).get(stage, {}).get("repeats", 0))
         allowed = int(self.settings.get("max_repeats_without_progress") or 0)
@@ -459,6 +494,10 @@ class Ledger:
             "started_monotonic": time.time(),
             "pid": os.getpid(),
             "deadline_seconds": deadline,
+            # Which budgets this run may be charged to. A worker that finishes
+            # after another process reset the ledger would otherwise bill the
+            # fresh budget for work the old one authorised.
+            "epoch": _epoch(ledger),
         }
         if detail:
             entry.update(detail)
@@ -467,13 +506,61 @@ class Ledger:
         self._write(ledger)
         return token
 
-    def end(self, token: str, status: str, detail: Optional[Dict[str, Any]] = None) -> None:
+    def end(
+        self,
+        token: str,
+        status: str,
+        detail: Optional[Dict[str, Any]] = None,
+        charged_seconds: float = 0.0,
+    ) -> None:
+        """Close an in-flight stage and charge what its run was measured to take.
+
+        ``charged_seconds`` is the caller's own measurement -- ``result.duration``
+        for a run, the sum over the panel for a review batch -- and defaults to
+        zero because a caller that has no measurement must not invent one.
+
+        The charge lands only when the pop returned an entry *and* that entry
+        belongs to the epoch the ledger is on now. Both halves matter:
+
+        * No entry means either a reset threw it away while the run was still
+          going, or this is the second ``end()`` for the same token. Either way
+          there is no claim on these budgets, so the run is recorded and not
+          billed. That is what stops a worker outliving a ``budget reset`` from
+          spending a budget minted after it started, and what stops a double
+          ``end()`` billing twice.
+        * A stamp from another epoch means the entry survived a writer that did
+          not go through ``_fresh``. There is no such writer today; the stamp
+          is here so that adding one cannot quietly reintroduce the first case.
+
+        An entry written before the stamp existed is read as belonging to the
+        current epoch: it is in *this* ledger, and every reset path goes through
+        ``_fresh``, which drops in-flight entries -- so its presence is itself
+        the evidence that no reset has happened since it was written.
+
+        The event always says what was charged, including when that is zero and
+        why, so a run that happened but could not be billed leaves a record of
+        both facts rather than looking free.
+        """
         with self._locked():
             ledger = self.load()
             entry = (ledger.get("in_flight") or {}).pop(token, None)
+            current = _epoch(ledger)
+            charged, skipped = 0.0, ""
+            if entry is None:
+                skipped = "no in-flight entry for this token"
+            elif entry.get("epoch", current) != current:
+                skipped = "entry began in epoch %s; the ledger is epoch %s" % (
+                    entry.get("epoch"),
+                    current,
+                )
+            else:
+                charged = max(float(charged_seconds or 0.0), 0.0)
+                ledger["runtime_seconds"] = float(ledger.get("runtime_seconds") or 0.0) + charged
             ledger["last_activity_monotonic"] = time.time()
             self._write(ledger)
-        event = {"status": status}
+        event = {"status": status, "charged_seconds": round(charged, 2)}
+        if skipped:
+            event["charge_skipped"] = skipped
         if entry:
             event["stage"] = entry.get("stage")
             event["elapsed_seconds"] = round(time.time() - float(entry.get("started_monotonic") or 0), 2)
@@ -540,6 +627,11 @@ class Ledger:
                     "remaining": self.remaining(stage),
                 }
         runtime_left = self.runtime_remaining()
+        runtime_used = self.runtime_used()
+        # Rounded up, never to nearest: a reported 0 has to mean what
+        # ``runtime_refusal`` means, or a caller keying off it stops over half a
+        # second a ``run`` would still spend from.
+        runtime_left = None if runtime_left is None else math.ceil(runtime_left)
         return {
             "started_at": ledger.get("started_at"),
             "budgets": budgets,
@@ -547,7 +639,14 @@ class Ledger:
                 "used": int(ledger.get("total_delegated_runs") or 0),
                 "limit": self.settings.get("total_delegated_runs"),
             },
-            "runtime_remaining_seconds": None if runtime_left is None else round(runtime_left),
+            # Kept alongside the block below, not replaced by it: callers and
+            # saved payloads already read this key.
+            "runtime_remaining_seconds": runtime_left,
+            "runtime": {
+                "used": round(runtime_used, 2),
+                "limit": self.settings.get("max_runtime_seconds"),
+                "remaining": runtime_left,
+            },
             "signatures": {
                 stage: entry.get("repeats") for stage, entry in (ledger.get("signatures") or {}).items()
             },

@@ -287,11 +287,21 @@ def pid_alive(pid: int) -> bool:
         import ctypes
 
         SYNCHRONIZE = 0x00100000
+        WAIT_TIMEOUT = 0x00000102
         handle = ctypes.windll.kernel32.OpenProcess(SYNCHRONIZE, False, pid)
         if not handle:
             return False
-        ctypes.windll.kernel32.CloseHandle(handle)
-        return True
+        # Opening a process is not the same as it running. A terminated process
+        # keeps its object, and its pid, for as long as anyone holds a handle to
+        # it, so OpenProcess alone answered "alive" for a worker taskkill had
+        # already reported dead -- measured: taskkill returned 0, tasklist no
+        # longer listed the pid, and this said True for as long as it was asked.
+        # Nothing ever cleared such a stage, because the wait that SYNCHRONIZE
+        # is requested for was never done.
+        try:
+            return ctypes.windll.kernel32.WaitForSingleObject(handle, 0) == WAIT_TIMEOUT
+        finally:
+            ctypes.windll.kernel32.CloseHandle(handle)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:

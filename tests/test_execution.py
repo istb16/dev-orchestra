@@ -169,9 +169,29 @@ class TestPidLiveness(IsolatedCase):
     def test_a_finished_child_is_not_alive(self):
         proc = subprocess.Popen(python_code("pass"))
         proc.wait(timeout=30)
-        # A recycled pid could in principle answer True; accept that and only
-        # assert the common case, which is what the caller relies on.
-        self.assertIn(execution.pid_alive(proc.pid), (False, True))
+        # Holding ``proc`` is what makes this deterministic rather than a race
+        # with pid reuse: on Windows its handle keeps the process object, and
+        # its pid, from being handed to anyone else. That same handle is why
+        # this used to answer True -- an openable process is not a running one.
+        self.assertFalse(execution.pid_alive(proc.pid))
+
+    def test_a_killed_child_is_not_alive(self):
+        """The shape that mattered: something killed it, nothing reaped it.
+
+        `clear_stalls` asks this about a worker that was cancelled or killed,
+        and while it answered True the stage was never buried -- so a cancelled
+        run stayed in flight until it passed 1.5x its deadline, three quarters
+        of an hour later.
+        """
+        proc = subprocess.Popen(python_code("import time\nwhile True: time.sleep(0.05)"))
+        try:
+            self.assertTrue(execution.pid_alive(proc.pid))
+            execution.terminate_tree(proc)
+            proc.wait(timeout=30)
+            self.assertFalse(execution.pid_alive(proc.pid))
+        finally:
+            if proc.poll() is None:  # pragma: no cover - safety net
+                proc.kill()
 
     def test_an_impossible_pid_is_not_alive(self):
         self.assertFalse(execution.pid_alive(-1))

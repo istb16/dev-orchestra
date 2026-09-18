@@ -158,7 +158,7 @@ def default_config() -> Dict[str, Any]:
             "review_fixer": 4,
             "test": 8,
             "total_delegated_runs": 40,
-            "max_runtime_seconds": 7200,
+            "max_runtime_seconds": 14400,
             "max_repeats_without_progress": 2,
         },
         "workspace": {

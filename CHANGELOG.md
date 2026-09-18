@@ -10,7 +10,80 @@ The public surface covered by that promise is: the configuration schema, the
 
 ## [Unreleased]
 
+### Changed
+
+- **`budgets.max_runtime_seconds` now measures delegated execution, not the
+  calendar.** It subtracted the ledger's start time from the current time, so
+  it was a wall clock under another name: an interactive session spent the
+  whole budget by existing for two hours, having delegated nothing. Reported
+  from a real session that opened with every budget untouched — `0` of every
+  stage's attempts, `0/40` delegated runs — beside `runtime 0s left` and a
+  `STOP-AND-REPORT` verdict, which is the one combination that cannot be true.
+  The budget is now charged from the measurement each delegated run already
+  produced: `execute()` times the child, `end()` adds that figure to the
+  ledger, and a review round is charged once per panel member. A run still in
+  flight is charged nothing until it ends, and a run whose wrapper died before
+  it could record an outcome — `jobs cancel`, Ctrl-C, an OOM kill — is charged
+  nothing at all, because nothing measured it. That last case is a deliberate
+  gap and the only one: across the 41 recorded events of the six workflows
+  measured while designing this, none was `abandoned` (38 `ok`, 2 `stalled`,
+  1 `failed`), and a stall or a timeout is detected by a live wrapper that
+  reaches `end()` with its measurement intact. What still bounds a runaway of
+  killed runs depends on the path: `run <role>` consumes an attempt and a
+  delegated run before it starts, so the per-stage budgets and
+  `budgets.total_delegated_runs` hold it. The review paths consume neither, and
+  a round only advances once one is consolidated — a retry of the same snapshot
+  stays in the round it was already in — so a reviewer killed before it
+  consolidates is bounded by nothing at all.
+
+- **`review run` and `review run --design` consult the runtime budget.** They
+  never did: a round is a delegated run per panel member per round, which
+  makes review the largest consumer of runtime, and it was the one consumer
+  that could not be refused. Both now exit 3 once the budget is spent, with a
+  message naming it, and `--force` overrides it as it does the round budget.
+
+- **The default `budgets.max_runtime_seconds` is 14400, was 7200.** Not a
+  round-up: because concurrent work is summed, the new measurement is *larger*
+  than the old one on workflows nobody interrupts — 1.23×, 1.30× and 1.45× the
+  wall clock on the three measured. The figure is the heaviest workflow
+  observed (5619s of delegated execution) plus one further round at its
+  deadline ceiling (two reviewers and a fixer at 1800s each is 5400s), which
+  comes to 77% of 14400 and does not fit in 7200 at all. **A configuration that
+  sets `max_runtime_seconds: 7200` explicitly keeps that value with its new
+  meaning**, which is stricter than it used to be for an autonomous workflow:
+  remove the key to take the new default, or raise it. `config setup
+  --defaults` does not write budget values, so a configuration that never set
+  one gets 14400 automatically. `status --json` and `budget show --json` gain a
+  `runtime` block (`used`, `limit`, `remaining`); `runtime_remaining_seconds`
+  is unchanged and still present.
+
 ### Fixed
+
+- **On Windows, a killed worker was reported as still running.** `pid_alive`
+  asked `OpenProcess` for a handle and answered "alive" whenever it got one.
+  A terminated process keeps its object, and its pid, for as long as anyone
+  holds a handle to it -- and the killer holds one -- so the answer was yes
+  for a worker `taskkill` had already reported dead. Measured: `taskkill`
+  returned 0, `tasklist` no longer listed the pid, and this still said True.
+  Nothing cleared such a stage, so a cancelled run stayed in flight until it
+  passed 1.5x its deadline three quarters of an hour later, and `status` never
+  named it. It now waits on the handle, which is what `SYNCHRONIZE` was being
+  requested for. The test that should have caught it asserted the answer was
+  `False` *or* `True`.
+
+- **An adapter that could not read its CLI's output threw the measurement away
+  with it.** `postprocess()` and `parse_usage()` ran outside every `try` in
+  `Provider.run`, so an exception in either propagated past the point where the
+  child's duration was known. `run_reviews` caught it two frames up and
+  recorded a reviewer that had been running for minutes as a failure that took
+  `0.0` seconds — the same reviewer, one branch over, is recorded with its
+  duration under the comment "a failed review is not a free one". Both calls
+  are now guarded, and each answers for what it reads: a `postprocess()` that
+  raises means the answer is unreadable, so the run is not ok but still carries
+  its duration; a `parse_usage()` that raises means only the invoice is
+  unreadable, so the run keeps its output and its exit status and reports its
+  usage as unmeasured. Neither reports a cost of zero. Exceptions raised before
+  the child starts are unchanged: those runs really did cost nothing.
 
 - **`optimization report` counts what the design review cost.** It selected
   rounds on `stage == "review"` *and* a recorded `optimization` block, and a

@@ -347,6 +347,73 @@ class TestBudgetsStopLoops(IsolatedCase):
         self.assertEqual(run_cli("budget", "consume", "test")[0], 0)
 
 
+def spend_the_runtime_budget(workspace, limit=None):
+    """Put the runtime budget at its limit without running anything for hours.
+
+    Written straight onto the ledger because the only other way to get there is
+    to actually delegate that much execution.
+    """
+    from orchestrator import ledger as ledger_mod
+
+    settings = dict(ledger_mod.DEFAULT_BUDGETS)
+    book = ledger_mod.Ledger(workspace, settings)
+    ledger = book.load()
+    ledger["runtime_seconds"] = float(limit or settings["max_runtime_seconds"])
+    book._write(ledger)
+    return book
+
+
+class TestRuntimeBudgetThroughTheCli(IsolatedCase):
+    """The runtime budget charges measured execution, and refuses on it."""
+
+    def setUp(self):
+        super().setUp()
+        run_cli("config", "setup", "--defaults")
+        run_cli("config", "set", "implementer.provider", "mock")
+        # Long enough to tell a charge from a rounding error, short enough that
+        # the suite does not notice.
+        os.environ["DEV_ORCHESTRA_MOCK_DELAY"] = "0.2"
+
+    def test_a_run_charges_what_it_was_measured_to_take(self):
+        self.assertEqual(run_cli("run", "implementer", "--prompt", "go")[0], 0)
+        event = self.cli_workspace().read_state()["events"][-1]
+        self.assertGreater(event["duration_seconds"], 0)
+        self.assertEqual(event["charged_seconds"], event["duration_seconds"])
+        payload = json.loads(run_cli("budget", "show", "--json")[1])
+        self.assertAlmostEqual(payload["runtime"]["used"], event["duration_seconds"], places=2)
+        self.assertEqual(payload["runtime"]["limit"], 14400)
+
+    def test_a_run_is_refused_once_the_runtime_budget_is_spent(self):
+        spend_the_runtime_budget(self.cli_workspace())
+        code, _, err = run_cli("run", "implementer", "--prompt", "go")
+        self.assertEqual(code, 3)
+        self.assertIn("refusing to run implementer", err)
+        self.assertIn("delegated", err)
+        self.assertEqual(run_cli("run", "implementer", "--prompt", "go", "--force")[0], 0)
+
+    def test_budget_show_reports_runtime_as_delegated_execution(self):
+        _, out, _ = run_cli("budget", "show")
+        self.assertIn("0/14400s used (delegated execution)", out)
+
+    def test_status_names_the_delegated_budget_when_it_is_spent(self):
+        payload = json.loads(run_cli("status", "--json")[1])
+        self.assertEqual(payload["runtime"], {"used": 0, "limit": 14400, "remaining": 14400})
+        spend_the_runtime_budget(self.cli_workspace())
+        payload = json.loads(run_cli("status", "--json")[1])
+        self.assertIn("the delegated runtime budget is spent", payload["reasons"])
+        self.assertEqual(payload["runtime"]["remaining"], 0)
+
+    def test_half_a_second_left_is_not_reported_as_spent(self):
+        """`status` reports the same answer the refusal does, in its reasons and
+        in the number it exports. Rounding that number to nearest put the two
+        back out of step for the last half-second of the budget -- a reported
+        `0` over a budget `run` would still spend from."""
+        spend_the_runtime_budget(self.cli_workspace(), limit=14399.6)
+        payload = json.loads(run_cli("status", "--json")[1])
+        self.assertEqual(payload["runtime_remaining_seconds"], 1)
+        self.assertNotIn("the delegated runtime budget is spent", payload["reasons"])
+
+
 class TestStatusVerdict(IsolatedCase):
     def setUp(self):
         super().setUp()
@@ -638,6 +705,49 @@ class TestReviewPipeline(IsolatedCase):
         run_cli("review", "snapshot")
         code, _, _ = run_cli("review", "run")
         self.assertEqual(code, 1)
+
+    def test_a_round_charges_every_reviewer_it_ran(self):
+        """Two reviewers in parallel for 0.2s each delegated 0.4s, not 0.2s."""
+        os.environ["DEV_ORCHESTRA_MOCK_DELAY"] = "0.2"
+        run_cli("review", "snapshot")
+        self.assertEqual(run_cli("review", "run")[0], 0)
+        event = self.cli_workspace().read_state()["events"][-1]
+        expected = sum(reviewer["duration_seconds"] for reviewer in event["reviewers"])
+        self.assertEqual(len(event["reviewers"]), 2)
+        # Loosely, because the charge is the sum of the raw measurements and
+        # the reviewer rows are each rounded: the point is that it is the sum
+        # of two, not the length of the batch.
+        self.assertAlmostEqual(event["charged_seconds"], expected, places=1)
+        payload = json.loads(run_cli("budget", "show", "--json")[1])
+        self.assertAlmostEqual(payload["runtime"]["used"], expected, places=1)
+
+    def test_a_round_is_refused_once_the_runtime_budget_is_spent(self):
+        """Review is the biggest consumer of runtime and never asked before."""
+        run_cli("review", "snapshot")
+        workspace = self.cli_workspace()
+        spend_the_runtime_budget(workspace)
+        before = len(workspace.read_state().get("events") or [])
+        code, _, err = run_cli("review", "run")
+        self.assertEqual(code, 3)
+        self.assertIn("refusing to run review", err)
+        self.assertIn("delegated", err)
+        state = workspace.read_state()
+        self.assertEqual(state["ledger"]["in_flight"], {})
+        self.assertEqual(len(state.get("events") or []), before)
+        self.assertFalse(os.path.exists(workspace.reviewer_report_path("m1")))
+        self.assertEqual(run_cli("review", "run", "--force")[0], 0)
+
+    def test_a_round_that_never_starts_is_charged_nothing(self):
+        from orchestrator import workspace as workspace_mod
+
+        workspace = self.cli_workspace()
+        workspace_mod.write_text(workspace.snapshot_path, "")
+        code, _, _ = run_cli("review", "run")
+        self.assertEqual(code, 2)
+        state = workspace.read_state()
+        self.assertEqual(state["events"][-1]["status"], "failed")
+        self.assertEqual(state["events"][-1]["charged_seconds"], 0)
+        self.assertEqual(state["ledger"]["runtime_seconds"], 0)
 
     def test_zero_reviewers_skips_the_stage_without_failing(self):
         run_cli("reviewer", "remove", "m1")
