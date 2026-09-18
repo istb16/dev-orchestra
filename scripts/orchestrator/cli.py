@@ -15,7 +15,7 @@ import copy
 import json
 import os
 import sys
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, NamedTuple, Optional, Sequence, Tuple
 
 from . import config as config_mod
 from . import doctor as doctor_mod
@@ -717,6 +717,63 @@ def _read_prompt(args: argparse.Namespace, workspace: Optional[ws.Workspace] = N
     raise SystemExit("no prompt supplied: use --prompt, --prompt-file, or pipe one in")
 
 
+class _Refused(NamedTuple):
+    """Why ``--output`` was not written, and what became of the stdout."""
+
+    message: str
+    rejected_file: Optional[str] = None
+    #: Set only when the sidecar could not be written, so the caller can print
+    #: what would otherwise be lost.
+    unsaved_output: str = ""
+
+
+def _remove_if_present(path: str) -> None:
+    """Remove ``path``. Gone is the state being asked for, so gone already is not a failure."""
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
+def _save_output(role: str, path: str, result: Any) -> Optional[_Refused]:
+    """Save a run's stdout to ``path``; return the complaint if it was refused.
+
+    The file named by ``--output`` is usually the one the run was asked to
+    revise, so writing a bad result destroys the input: a stalled Architect
+    replaced a 50,088-byte plan with the 150 bytes it had emitted before going
+    quiet. Only an ``ok`` run that produced something may overwrite, and
+    "produced something" is ``strip()``-empty or not. Nothing finer: a size
+    threshold is a number wrong for some role, and a short-but-real result is
+    the caller's to judge, not this function's.
+
+    The refused stdout goes to a sidecar rather than nowhere. It used to
+    survive by landing in the target, and it is often the only account of what
+    the run did instead of the work. The same ``strip()`` decides there is
+    anything to keep -- a sidecar holding two newlines is a file to delete.
+    """
+    sidecar = path + ".rejected"
+    # An earlier attempt's sidecar is not this run's account of itself, and the
+    # operator is told to read one before spending the next attempt. Cleared
+    # first so no branch below can leave one behind by forgetting to.
+    _remove_if_present(sidecar)
+    if result.ok and result.stdout.strip():
+        ws.write_text(path, result.stdout)
+        return None
+    message = "%s produced nothing usable; %s is unchanged." % (role, path)
+    if not result.stdout.strip():
+        return _Refused(message)
+    try:
+        ws.write_text(sidecar, result.stdout)
+    except OSError as exc:
+        # Keeping the output is the convenience; failing at it must cost only
+        # the convenience, not the output and not the report of the run itself.
+        return _Refused(
+            message + " It could not be kept in %s (%s), so it follows here." % (sidecar, exc),
+            unsaved_output=result.stdout,
+        )
+    return _Refused(message + " Its partial output is in %s." % sidecar, rejected_file=sidecar)
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     loaded = _load_or_die(args.cwd)
     role = args.role
@@ -867,8 +924,11 @@ def cmd_run(args: argparse.Namespace) -> int:
     # the accounting and the in-flight entry down with it: the tokens went
     # unrecorded and the next command reported this finished run as abandoned.
     # Nothing below this line is allowed to decide whether the run happened.
+    refused = None
+    target = ""
     if args.output:
-        ws.write_text(_in_workflow(workspace, args.output), result.stdout)
+        target = _in_workflow(workspace, args.output)
+        refused = _save_output(role, target, result)
     elif not args.job_file:
         _out(result.stdout)
     if result.stalled:
@@ -880,9 +940,33 @@ def cmd_run(args: argparse.Namespace) -> int:
         _err("%s hit its %ss deadline and was killed." % (role, timeout))
     elif not result.ok:
         _err("%s failed (exit %s): %s" % (role, result.exit_code, result.stderr.strip()[:500]))
+    # Said here rather than beside the write, so a refusal and the outcome that
+    # caused it read as one report instead of two lines that look at odds.
+    if refused:
+        _err(refused.message)
+        if refused.unsaved_output:
+            _err(refused.unsaved_output)
+        if args.job_file:
+            # A detached worker's stderr goes to DEVNULL, so the job record is
+            # the only reader this refusal has. Written as a second update
+            # rather than folded into the first: the accounting above must not
+            # wait on the save to decide that the run happened.
+            jobs_mod.finish(
+                args.job_file,
+                "succeeded" if result.ok else "failed",
+                detail={
+                    "output_written": False,
+                    "output_target": target,
+                    "rejected_file": refused.rejected_file,
+                },
+            )
     if result.orphans_possible:
         _err("warning: %s's process group may have left orphans; check for stray processes." % role)
-    return 0 if result.ok else 1
+    # A refused write exits non-zero even when the run itself was fine: the
+    # promise `--output` makes is that the named file holds this run's result,
+    # and exiting 0 over an untouched one lets the next command in a chain read
+    # the stale file as if it were new.
+    return 0 if result.ok and not refused else 1
 
 
 def _reviewer_spec(loaded: config_mod.LoadedConfig, selector: str) -> Dict[str, Any]:
@@ -1553,6 +1637,12 @@ def cmd_jobs_wait(args: argparse.Namespace) -> int:
             _out(ws.read_text(str(job["output_file"])))
     if job.get("waited_out"):
         return 4
+    # A refused `--output` write exits non-zero in the foreground, and waiting
+    # on the job is the same caller asking the same question about the same
+    # file. The run may well have succeeded; the file it was told to fill did
+    # not get filled, and that is what the next command in the chain reads.
+    if job.get("output_written") is False:
+        return 1
     return 0 if job.get("status") == "succeeded" else 1
 
 
@@ -2318,7 +2408,11 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--prompt", default=None)
     run_parser.add_argument("--prompt-file", default=None, help="path, or - for stdin")
     run_parser.add_argument("--mode", choices=list(MODES), default=None)
-    run_parser.add_argument("--output", default=None, help="write the response here instead of stdout")
+    run_parser.add_argument(
+        "--output",
+        default=None,
+        help="write the response here instead of stdout; kept as it is when the run produced none",
+    )
     run_parser.add_argument("--timeout", type=int, default=None, help="total deadline in seconds")
     run_parser.add_argument(
         "--idle-timeout",

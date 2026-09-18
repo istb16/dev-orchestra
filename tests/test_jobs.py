@@ -245,6 +245,39 @@ class TestDetachedRun(IsolatedCase):
         self.assertEqual(code, 0)
         self.assertIn("mock implement response", shown)
 
+    def test_a_refused_output_write_is_recorded_in_the_job(self):
+        """The worker's stderr goes nowhere, so the job record has to carry it."""
+        target = os.path.join(self.project, "plan.md")
+        with open(target, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write("# Plan\n\nevery section, all of it\n")
+        os.environ["DEV_ORCHESTRA_MOCK_RESPONSE"] = "   \n"
+        _, out, _ = self.run_cli(
+            "run", "implementer", "--prompt", "go", "--detach", "--output", target, "--json"
+        )
+        job_id = self._wait_for(json.loads(out)["id"])["id"]
+        record = self._settled(job_id)
+        self.assertFalse(record["output_written"])
+        self.assertEqual(record["output_target"], target)
+        self.assertEqual(ws.read_text(target), "# Plan\n\nevery section, all of it\n")
+        self.assertIn("was not updated", self.run_cli("jobs", "show", job_id)[1])
+        # The run succeeded; the file it was told to fill did not get filled,
+        # and `jobs wait` is how a chained caller learns which one it got.
+        self.assertEqual(self.run_cli("jobs", "wait", job_id)[0], 1)
+
+    def _settled(self, job_id, timeout=10):
+        """The job record once the worker's last write has landed.
+
+        The outcome is recorded before the output is saved -- nothing after the
+        accounting may decide whether the run happened -- so a refusal is a
+        second update, arriving just after the wait can already return.
+        """
+        deadline = time.monotonic() + timeout
+        while True:
+            job = json.loads(self.run_cli("jobs", "show", job_id, "--json")[1])
+            if "output_written" in job or time.monotonic() >= deadline:
+                return job
+            time.sleep(0.1)
+
     def test_showing_an_unknown_job_fails_cleanly(self):
         code, _, err = self.run_cli("jobs", "show", "nope")
         self.assertEqual(code, 2)

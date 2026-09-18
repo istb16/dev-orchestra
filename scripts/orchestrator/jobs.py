@@ -258,6 +258,12 @@ def render(job: Dict[str, Any]) -> str:
         lines.append("  error:    %s" % job["error"])
     if job.get("output_file") and os.path.isfile(str(job["output_file"])):
         lines.append("  output:   %s" % job["output_file"])
+    # A refused ``--output`` write is otherwise invisible for a detached run:
+    # the worker's stderr went nowhere, and the target looks merely unchanged.
+    if job.get("output_written") is False:
+        lines.append("  note:     %s was not updated (nothing usable to write)" % job.get("output_target"))
+        if job.get("rejected_file"):
+            lines.append("  rejected: %s" % job["rejected_file"])
     if job.get("waited_out"):
         lines.append("  note:     still running when the wait timed out")
     return "\n".join(lines)
