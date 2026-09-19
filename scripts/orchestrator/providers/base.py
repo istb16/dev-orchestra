@@ -153,6 +153,13 @@ class Usage:
     ``prompt_chars`` is the one figure this repository knows first-hand: the
     size of the prompt it composed. That is also the only part of the input it
     can shorten, so it is worth tracking separately from the total.
+
+    ``tool_output_chars`` is named for what it is: the characters a tool
+    *printed back to the agent*. It is not how much source the agent read. A
+    reviewer that runs ``wc -l`` on a two-hundred-line file is billed three
+    characters here, and one that runs ``cat`` on the same file is billed the
+    whole of it -- indistinguishable from outside the CLI. How much of the
+    repository a delegated run actually read is not knowable from here at all.
     """
 
     def __init__(
@@ -165,6 +172,9 @@ class Usage:
         cost_usd: Optional[float] = None,
         source: str = "",
         prompt_chars: Optional[int] = None,
+        tool_uses: Optional[int] = None,
+        tool_uses_by_name: Optional[Dict[str, int]] = None,
+        tool_output_chars: Optional[int] = None,
     ) -> None:
         self.input_tokens = input_tokens
         self.output_tokens = output_tokens
@@ -179,6 +189,19 @@ class Usage:
         #: ``unreported`` when it told us nothing.
         self.source = source or "unreported"
         self.prompt_chars = prompt_chars
+        #: How many times the agent called a tool, whatever the tool was.
+        #: Counting only ``Read`` undercounts: review mode denies only
+        #: ``Edit,Write,NotebookEdit``, so ``Bash``, ``Grep`` and ``Glob`` are
+        #: all legitimate ways for a reviewer to read a file, and the one run
+        #: measured while designing this read with ``Bash`` (``wc -l``).
+        self.tool_uses = tool_uses
+        self.tool_uses_by_name = tool_uses_by_name
+        #: Observed tool output, not source read -- see the class docstring.
+        #: Only the total: nothing aggregates a per-name breakdown of it, and
+        #: one serialised into every run's event that can never be read back
+        #: through the account is a cost with no reader. ``tool_uses_by_name``
+        #: already answers which tools a run called.
+        self.tool_output_chars = tool_output_chars
 
     @property
     def measured(self) -> bool:
@@ -209,6 +232,9 @@ class Usage:
             "cost_usd": self.cost_usd,
             "billed_tokens": self.billed_tokens,
             "prompt_chars": self.prompt_chars,
+            "tool_uses": self.tool_uses,
+            "tool_uses_by_name": self.tool_uses_by_name,
+            "tool_output_chars": self.tool_output_chars,
             "source": self.source,
             "measured": self.measured,
         }

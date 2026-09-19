@@ -205,15 +205,41 @@ class Workspace:
     def record_event(
         self, stage: str, status: str, detail: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
-        """Append one stage outcome to the run log (models included, secrets not)."""
-        state = self.read_state()
-        event = {"stage": stage, "status": status, "at": utcnow()}
-        if detail:
-            event.update(detail)
-        state.setdefault("events", []).append(event)
-        state["updated_at"] = utcnow()
-        self.write_state(state)
+        """Append one stage outcome to the run log (models included, secrets not).
+
+        Locked, because this rewrites the whole state file to append one line
+        and the ledger lives in that file too. Unlocked it read the state,
+        another process committed a charge, and this wrote its own copy back
+        over it: measured with eight concurrent charges, one of them vanished.
+        The lock is not re-entrant, so a caller already holding it appends with
+        :func:`new_event` instead of calling this.
+        """
+        event = new_event(stage, status, detail)
+        with file_lock(self.state_path):
+            state = self.read_state()
+            append_event(state, event)
+            self.write_state(state)
         return event
+
+
+def new_event(stage: str, status: str, detail: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """One run-log entry, built without touching the disk.
+
+    Split out so a caller that already holds the state lock can append without
+    taking it again -- :meth:`Workspace.record_event` is the same thing plus
+    the read, the append and the write.
+    """
+    event = {"stage": stage, "status": status, "at": utcnow()}
+    if detail:
+        event.update(detail)
+    return event
+
+
+def append_event(state: Dict[str, Any], event: Dict[str, Any]) -> Dict[str, Any]:
+    """Add ``event`` to ``state``'s run log, in place."""
+    state.setdefault("events", []).append(event)
+    state["updated_at"] = utcnow()
+    return state
 
 
 def write_json(path: str, data: Any) -> None:

@@ -150,6 +150,7 @@ class TestOneProvidersChecks(IsolatedCase):
                 "resolves a model",
                 "answers a review prompt",
                 "reports what it spent",
+                "reports its tool activity",
                 "stays read-only",
             ],
         )
@@ -166,6 +167,90 @@ class TestOneProvidersChecks(IsolatedCase):
         self.assertTrue(provider.calls)
         for call in provider.calls:
             self.assertEqual(call["mode"], "review")
+
+
+class TestTheToolActivityCheck(IsolatedCase):
+    """The event shape these counts come from belongs to the CLI.
+
+    The unit tests read it from a fixture, so they keep passing on the day it
+    changes. Only a real run catches that, and the cost of missing it is a
+    measurement that reads "this reviewer opened nothing" when it means "we
+    stopped being able to tell".
+    """
+
+    def expect_tools(self, providers=("fake",)):
+        original = smoke_live.REPORTS_TOOLS
+        smoke_live.REPORTS_TOOLS = providers
+        self.addCleanup(setattr, smoke_live, "REPORTS_TOOLS", original)
+
+    def test_a_provider_whose_adapter_does_not_count_them_is_not_failed_for_it(self):
+        """Codex hands back its final message and prices itself in prose. It is
+        unreported by design, which is not a drift to catch."""
+        check = smoke_live.check_tool_activity(_FakeProvider(), "fake", self.project)
+        self.assertTrue(check.ok)
+        self.assertIn("by design", check.detail)
+
+    def test_an_unparsed_count_is_a_failure(self):
+        self.expect_tools()
+        provider = _FakeProvider(usage=Usage(total_tokens=10, source="fake"))
+        check = smoke_live.check_tool_activity(provider, "fake", self.project)
+        self.assertFalse(check.ok)
+        self.assertIn("event shape", check.detail)
+
+    def test_a_zero_is_a_failure_for_a_prompt_that_needs_a_tool(self):
+        """A measured zero is a legitimate report elsewhere. Here the question
+        cannot be answered without a tool, so zero means the pairing broke."""
+        self.expect_tools()
+        usage = Usage(total_tokens=10, source="fake", tool_uses=0, tool_uses_by_name={})
+        check = smoke_live.check_tool_activity(_FakeProvider(usage=usage), "fake", self.project)
+        self.assertFalse(check.ok)
+        self.assertIn("0 tool uses", check.detail)
+
+    def test_calls_without_results_are_a_failure_too(self):
+        """Calls and results come from different events, paired by
+        `tool_use_id`, so the pairing can break on its own: the call count
+        still looks right while every output figure becomes zero. The prompt
+        makes the agent read a file, so it has output."""
+        self.expect_tools()
+        usage = Usage(
+            total_tokens=10,
+            source="fake",
+            tool_uses=2,
+            tool_uses_by_name={"Read": 2},
+            tool_output_chars=0,
+        )
+        check = smoke_live.check_tool_activity(_FakeProvider(usage=usage), "fake", self.project)
+        self.assertFalse(check.ok)
+        self.assertIn("no output to pair", check.detail)
+
+    def test_a_missing_output_count_is_not_read_as_a_pass(self):
+        usage = Usage(total_tokens=10, source="fake", tool_uses=1, tool_uses_by_name={"Read": 1})
+        self.expect_tools()
+        check = smoke_live.check_tool_activity(_FakeProvider(usage=usage), "fake", self.project)
+        self.assertFalse(check.ok)
+
+    def test_a_counted_run_names_the_tools_it_used(self):
+        """The breakdown is the point: the run measured while designing this
+        read a file with `Bash`, and counting only `Read` would have said it
+        read nothing."""
+        self.expect_tools()
+        usage = Usage(
+            total_tokens=10,
+            source="fake",
+            tool_uses=2,
+            tool_uses_by_name={"Bash": 2},
+            tool_output_chars=3,
+        )
+        check = smoke_live.check_tool_activity(_FakeProvider(usage=usage), "fake", self.project)
+        self.assertTrue(check.ok)
+        self.assertIn("Bash x2", check.detail)
+
+    def test_a_raising_run_is_a_failed_check_not_a_traceback(self):
+        self.expect_tools()
+        provider = _FakeProvider(raises=TypeError("unexpected keyword argument"))
+        check = smoke_live.check_tool_activity(provider, "fake", self.project)
+        self.assertFalse(check.ok)
+        self.assertIn("TypeError", check.detail)
 
 
 class TestTheCommandLine(IsolatedCase):
