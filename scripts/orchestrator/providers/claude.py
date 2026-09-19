@@ -217,9 +217,9 @@ class ClaudeProvider(Provider):
         stream twice -- and this exists to measure the runs whose streams are
         largest, where that is the one place the cost is worth avoiding.
 
-        The per-name character breakdown stays in the provider: nothing
-        aggregates it, and a field serialised into every run's event that can
-        never be read back is a cost with no reader.
+        There is no per-name character breakdown: nothing aggregates one, and
+        a field serialised into every run's event that can never be read back
+        is a cost with no reader. The characters are one total.
         """
         events = _stream_events(outcome.stdout)
         usage = _usage_from_events(events)
@@ -346,14 +346,12 @@ def parse_stream_tools(stdout: str) -> Optional[Dict[str, Any]]:
     read ``CONTRIBUTING.md`` with ``Bash`` and no ``Read`` at all. The breakdown
     by name is kept because the total alone cannot say which.
 
-    The character count is of what the tools printed back, correlated to the
-    call by ``tool_use_id``. **It is not how much source the agent read**:
-    ``wc -l`` on a two-hundred-line file returns three characters, ``cat`` on
-    the same file returns all of it, and the two look identical from here.
-
-    A ``tool_result`` whose ``tool_use`` is not in the stream is counted under
-    ``"unknown"`` rather than dropped, so the breakdown never sums to less than
-    the total it breaks down.
+    The character count is of what the tools printed back, one total over every
+    ``tool_result`` in the stream -- including one whose ``tool_use`` the stream
+    never showed, which is counted rather than dropped. **It is not how much
+    source the agent read**: ``wc -l`` on a two-hundred-line file returns three
+    characters, ``cat`` on the same file returns all of it, and the two look
+    identical from here.
 
     Returns None when this was not a stream at all -- absent is reported as
     absent, never as a measured zero.
@@ -380,11 +378,9 @@ def _tools_from_events(events: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]
     if not any(event.get("type") in _STREAM_EVENT_TYPES for event in events):
         return None
 
-    name_of: Dict[str, str] = {}
     uses = 0
     uses_by_name: Dict[str, int] = {}
     chars = 0
-    chars_by_name: Dict[str, int] = {}
 
     for event in events:
         for block in _content_blocks(event):
@@ -394,22 +390,16 @@ def _tools_from_events(events: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]
                 name = name if isinstance(name, str) and name else "unknown"
                 uses += 1
                 uses_by_name[name] = uses_by_name.get(name, 0) + 1
-                identifier = block.get("id")
-                if isinstance(identifier, str) and identifier:
-                    name_of[identifier] = name
             elif kind == "tool_result":
-                # In stream order, so a result is only attributed to a call
-                # this stream has already shown. Anything else is "unknown".
-                name = name_of.get(str(block.get("tool_use_id")), "unknown")
-                length = _text_length(block.get("content"))
-                chars += length
-                chars_by_name[name] = chars_by_name.get(name, 0) + length
+                # Totalled, not attributed to the call that produced it: the
+                # per-name character breakdown was bookkeeping on every block
+                # of every stream that no caller ever read.
+                chars += _text_length(block.get("content"))
 
     return {
         "tool_uses": uses,
         "tool_uses_by_name": uses_by_name,
         "tool_output_chars": chars,
-        "tool_output_chars_by_name": chars_by_name,
     }
 
 

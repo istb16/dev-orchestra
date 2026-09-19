@@ -143,26 +143,23 @@ class TestToolActivity(IsolatedCase):
         self.assertEqual(tools["tool_uses"], 4)
         self.assertEqual(tools["tool_uses_by_name"], {"Read": 1, "Bash": 2, "Grep": 1})
         self.assertEqual(tools["tool_output_chars"], 100 + 2 + 9 + 2)
-        self.assertEqual(tools["tool_output_chars_by_name"]["Bash"], 4)
 
     def test_a_result_carrying_blocks_is_measured_by_its_text(self):
         """``content`` is a string on some results and a list on others."""
         blocks = [{"type": "text", "text": "abcde"}, {"type": "text", "text": "fg"}]
         tools = parse_stream_tools(stream(tool_use("a", "Read"), tool_result("a", blocks)))
         self.assertEqual(tools["tool_output_chars"], 7)
-        self.assertEqual(tools["tool_output_chars_by_name"], {"Read": 7})
 
     def test_a_block_with_no_text_adds_nothing_rather_than_failing(self):
         blocks = [{"type": "image", "source": {"data": "...."}}, {"type": "text", "text": "ab"}]
         tools = parse_stream_tools(stream(tool_use("a", "Read"), tool_result("a", blocks)))
         self.assertEqual(tools["tool_output_chars"], 2)
 
-    def test_a_result_with_no_matching_call_is_counted_as_unknown(self):
-        """Dropping it would make the breakdown sum to less than the total."""
+    def test_a_result_with_no_matching_call_is_still_counted(self):
+        """The characters were printed back whether or not this stream showed
+        the call that asked for them. Dropping them would understate the run."""
         tools = parse_stream_tools(stream(tool_use("a", "Read"), tool_result("zz", "12345")))
         self.assertEqual(tools["tool_output_chars"], 5)
-        self.assertEqual(tools["tool_output_chars_by_name"], {"unknown": 5})
-        self.assertEqual(sum(tools["tool_output_chars_by_name"].values()), tools["tool_output_chars"])
 
     def test_a_stream_that_used_no_tools_reports_a_measured_zero(self):
         tools = parse_stream_tools(stream(THINKING, ASSISTANT, RESULT_EVENT))
@@ -231,9 +228,10 @@ class TestToolActivityReachesUsage(IsolatedCase):
         self.assertIsNone(usage.tool_uses)
         self.assertIsNone(usage.tool_output_chars)
 
-    def test_the_per_name_character_breakdown_stays_in_the_provider(self):
-        """Nothing aggregates it, so it is not carried into `Usage` and not
-        written into every run's event where it could never be read back."""
+    def test_no_per_name_character_breakdown_is_produced_at_all(self):
+        """Nothing aggregates it, so it is not carried into `Usage`, not
+        written into every run's event where it could never be read back, and
+        no longer accumulated per block on the way there."""
         usage = self.usage(tool_use("a", "Bash"), tool_result("a", "3\n"))
         self.assertNotIn("tool_output_chars_by_name", usage.to_dict())
         self.assertFalse(hasattr(usage, "tool_output_chars_by_name"))

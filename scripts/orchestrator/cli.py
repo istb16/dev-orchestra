@@ -2037,15 +2037,18 @@ def cmd_tokens_show(args: argparse.Namespace) -> int:
     unknown_tools = int(totals.get("tool_unknown_runs") or 0)
     silent_tools = max(int(totals["runs"]) - reported_tools - unknown_tools, 0)
     if unknown_tools:
-        # Said instead of the count below, not beside it: a run recorded before
-        # this was counted cannot say whether it used tools, and "it reported
-        # no tool activity" would be a claim about it.
+        # A run recorded before this was counted cannot say whether it used
+        # tools, and "it reported no tool activity" would be a claim about it.
+        # Said beside the count below rather than instead of it, now that
+        # ``silent_tools`` subtracts these out: a panel with a legacy stage and
+        # a Codex stage has both kinds, and the two numbers plus the reported
+        # ones account for every run.
         _out(
             "%d of %d run(s) predate tool counting and cannot say whether they used "
             "tools, so the tool columns leave them out. That is not the same as "
             "having used none." % (unknown_tools, totals["runs"])
         )
-    elif silent_tools:
+    if silent_tools:
         _out(
             "%d of %d run(s) reported no tool activity (Codex does not); the tool "
             "columns cover only the runs that did." % (silent_tools, totals["runs"])

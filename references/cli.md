@@ -280,10 +280,11 @@ file — and the run measured while designing this read a file with `wc -l` and
 never called `Read`.
 
 A run recorded before these counts existed cannot say whether it used tools,
-and is reported that way rather than as having used none. The first counted run
-written into such an account creates `tool_reported_runs`, so the count of runs
-that predate counting is carried in `tool_unknown_runs` instead of being read
-off a missing key, and the caveat survives every run recorded afterwards.
+and is reported that way rather than as having used none. The first run written
+into such an account creates `tool_reported_runs` -- whether or not it reports
+tools itself -- so the count of runs that predate counting is carried in
+`tool_unknown_runs` instead of being read off a missing key, and the caveat
+survives every run recorded afterwards.
 
 A Claude role configured with `options.output_format: json` reports no tool
 activity either: that format prints one `result` object and never emits a tool

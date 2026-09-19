@@ -141,8 +141,16 @@ def _accumulate(account: Dict[str, Any], usage: Dict[str, Any]) -> Dict[str, Any
     # Stamped before this run joins them: every run already in an account that
     # has no ``tool_reported_runs`` predates tool counting, and once this run
     # creates that key nothing else remembers them.
+    #
+    # The key is created here rather than left to the first *counted* run, so
+    # the migration happens once. Stamping without creating it closed nothing:
+    # the next unreported run -- a Codex run, or Claude under
+    # ``output_format: json`` -- found the key still absent, re-stamped the
+    # larger run count over the saved one, and was itself reported as
+    # predating the counting it ran alongside.
     if "tool_reported_runs" not in account:
         account["tool_unknown_runs"] = _unknown_tool_runs(account)
+        account["tool_reported_runs"] = 0
     account["runs"] = int(account.get("runs") or 0) + 1
     if usage.get("measured"):
         account["measured_runs"] = int(account.get("measured_runs") or 0) + 1
@@ -293,8 +301,17 @@ class Ledger:
 
     def load(self) -> Dict[str, Any]:
         """The current ledger, starting a fresh one if the last is stale."""
-        ledger = self._read()
-        if not ledger:
+        return self._ledger_of(self.workspace.read_state())
+
+    def _ledger_of(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        """:meth:`load` over a state the caller has already read.
+
+        One definition of "stale", used by both: a caller that needs the
+        ledger *and* the rest of the state in a single locked read cannot go
+        back to disk for the ledger without giving up what the lock is for.
+        """
+        ledger = state.get("ledger")
+        if not isinstance(ledger, dict) or not ledger:
             return self._fresh()
         idle_limit = float(self.settings.get("session_idle_reset_seconds") or 0)
         last = float(ledger.get("last_activity_monotonic") or 0)
@@ -612,8 +629,14 @@ class Ledger:
         why, so a run that happened but could not be billed leaves a record of
         both facts rather than looking free.
         """
+        # The charge and its event are written together, under one hold of the
+        # lock. Appending afterwards through ``record_event`` meant reading the
+        # whole state back after releasing it, so a charge another process had
+        # committed in between was overwritten by this copy: measured at eight
+        # concurrent charges, seven landed.
         with self._locked():
-            ledger = self.load()
+            state = self.workspace.read_state()
+            ledger = self._ledger_of(state)
             entry = (ledger.get("in_flight") or {}).pop(token, None)
             current = _epoch(ledger)
             charged, skipped = 0.0, ""
@@ -628,17 +651,21 @@ class Ledger:
                 charged = max(float(charged_seconds or 0.0), 0.0)
                 ledger["runtime_seconds"] = float(ledger.get("runtime_seconds") or 0.0) + charged
             ledger["last_activity_monotonic"] = time.time()
-            self._write(ledger)
-        event = {"status": status, "charged_seconds": round(charged, 2)}
-        if skipped:
-            event["charge_skipped"] = skipped
-        if entry:
-            event["stage"] = entry.get("stage")
-            event["elapsed_seconds"] = round(time.time() - float(entry.get("started_monotonic") or 0), 2)
-        if detail:
-            event.update(detail)
-        stage = event.pop("stage", token.rsplit("-", 1)[0])
-        self.workspace.record_event(str(stage), status, event)
+
+            event = {"status": status, "charged_seconds": round(charged, 2)}
+            if skipped:
+                event["charge_skipped"] = skipped
+            if entry:
+                event["stage"] = entry.get("stage")
+                started = float(entry.get("started_monotonic") or 0)
+                event["elapsed_seconds"] = round(time.time() - started, 2)
+            if detail:
+                event.update(detail)
+            stage = event.pop("stage", token.rsplit("-", 1)[0])
+
+            state["ledger"] = ledger
+            ws.append_event(state, ws.new_event(str(stage), status, event))
+            self.workspace.write_state(state)
 
     def in_flight(self) -> Dict[str, Any]:
         return dict(self.load().get("in_flight") or {})
