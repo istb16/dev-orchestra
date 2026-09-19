@@ -10,6 +10,8 @@ The public surface covered by that promise is: the configuration schema, the
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-09-19
+
 ### Added
 
 - **A review whose change body was not fully inlined is no longer reported as
@@ -1227,7 +1229,8 @@ First release.
   none of which invoke a real CLI.
 - CI on Linux, macOS and Windows: lint, tests, skill validation.
 
-[Unreleased]: https://github.com/istb16/dev-orchestra/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/istb16/dev-orchestra/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/istb16/dev-orchestra/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/istb16/dev-orchestra/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/istb16/dev-orchestra/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/istb16/dev-orchestra/compare/v0.4.4...v0.5.0
