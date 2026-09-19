@@ -138,13 +138,13 @@ echo "explain the failure" | dev-orchestra run orchestrator
 
 | Command | Description |
 | --- | --- |
-| `review snapshot [--base <rev>] [--no-untracked] [--json]` | Freeze the change under review. Exit 1 if empty. |
-| `review run [--design] [--request <path>] [--iteration N] [--only <ids/roles>] [--sequential] [--context <text>] [--base <rev>] [--timeout <s>] [--idle-timeout <s>] [--force] [--json]` | Run every reviewer against the snapshot; write reports and the consolidated result. Exit 1 only if no reviewer came back `ok` — every reviewer failing, or a round whose change body was too large to inline and was handed over as a file, which is recorded as `partial` rather than clean. The round is derived from the snapshot unless `--iteration` is given, and a round past `review.max_review_iterations` is refused (exit 3) unless `--force`. A round refused by the optimization gate (tests recorded as failing) also exits 3, and is recorded as `refused` so `optimization report` can count it. A round is refused the same way once `budgets.max_runtime_seconds` of delegated execution has been spent — a panel is the largest consumer of it — and the message names which budget it was. `--only` runs a subset but still consolidates every reviewer's current report, so nothing is lost. |
+| `review snapshot [--base <rev>] [--no-untracked] [--json]` | Freeze the change under review. Exit 1 if empty. A change over `review.context.max_chars` is warned about and still written — taking a snapshot spends nothing, and the refusal belongs to the command that would. `--json` says the same thing in numbers: `change_chars`, `max_chars` and `over_context`. |
+| `review run [--design] [--request <path>] [--iteration N] [--only <ids/roles>] [--sequential] [--context <text>] [--base <rev>] [--timeout <s>] [--idle-timeout <s>] [--force] [--json]` | Run every reviewer against the snapshot; write reports and the consolidated result. Exit 1 only if no reviewer came back `ok` — every reviewer failing, or a round whose change body was too large to inline and was handed over as a file, which is recorded as `partial` rather than clean. The round is derived from the snapshot unless `--iteration` is given, and a round past `review.max_review_iterations` is refused (exit 3) unless `--force`. A round refused by the optimization gate (tests recorded as failing) also exits 3, and is recorded as `refused` so `optimization report` can count it. So is a change body over `review.context.max_chars` (400,000): nothing is reviewed, the message names the size, the limit and the ways under it, and the round is recorded with `refused_by: "context"` — `--force` runs it anyway and records the round as `over_budget` everywhere it is reported. A round is refused the same way once `budgets.max_runtime_seconds` of delegated execution has been spent — a panel is the largest consumer of it — and the message names which budget it was. `--only` runs a subset but still consolidates every reviewer's current report, so nothing is lost. |
 | `review consolidate [--design] [--iteration N] [--json]` | Re-parse the existing reports and rebuild the consolidated result. |
 | `review show [--design] [--accepted] [--json]` | Show the consolidated review. |
 | `review triage [--design] <ids…> --status <status> [--note <text>]` | Record triage decisions. |
 | `review fix-brief [--design] [--output <path>]` | Emit the accepted-findings brief for the fixer. |
-| `review status [--design] [--json]` | Whether a re-review is warranted, the iteration budget, and the round's `coverage` — `round` and `change`, plus the one action that would clear an `unverified` one. See `references/reviews.md`. |
+| `review status [--design] [--json]` | Whether a re-review is warranted, the iteration budget, and the round's `coverage` — `round` and `change`, plus the one action that would clear an `unverified` one. `over_budget` says the round only ran because `--force` sent it past `review.context.max_chars`. See `references/reviews.md`. |
 
 `--design` switches every one of those to the *design* review: `.ai/plan.md`
 judged by the same panel before implementation, with its own reports, round
@@ -154,7 +154,10 @@ and no git is needed — and hashes it with the request it answers
 (`--request <path>`, default `.ai/execution/design-request.md`; a missing one
 is noted, not fatal). No plan exits 2, a round past
 `review.design.max_iterations` exits 3 unless `--force`, and every reviewer
-failing exits 1. The optimization gate and panel reduction do not apply, and
+failing exits 1. `review.context.max_chars` is measured over the plan *and*
+the request together, because both go into every reviewer's prompt, and the
+round is refused before the plan is frozen — so the previous round's reports
+and triage are still there to report on. The optimization gate and panel reduction do not apply, and
 `--base` is ignored. Running it while `review.design.enabled` is false prints a
 note and proceeds: the setting says whether the orchestrator runs the stage,
 not whether you may. See `references/reviews.md`.
@@ -172,6 +175,15 @@ rest of the payload is the same either way.
 Reading it also clears in-flight entries whose process is gone, so a stage that
 died without recording an outcome shows up as `abandoned` instead of appearing
 to run forever.
+
+A round refused for size is a `stop-and-report` reason until a round actually
+reviews the change — code or design. Nothing else clears it: not a later
+refusal of either kind, and not the `abandoned` entry `status` itself writes
+when it clears a stage whose process is gone. A refusal leaves the previous
+round's consolidation in place, so without that rule an oversized change would
+keep answering `continue` out of a clean review of something else.
+The reason names the size and the limit; `review.refused_for_size` and
+`design_review.refused_for_size` carry the same two numbers in `--json`.
 
 ```bash
 dev-orchestra status --json

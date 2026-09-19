@@ -12,6 +12,63 @@ The public surface covered by that promise is: the configuration schema, the
 
 ### Added
 
+- **A change too big to review is refused rather than half-reviewed.**
+  `review.context.max_chars` (default 400,000) is the most change body a
+  review round will send at all -- the diff for a code round, the plan *and*
+  the request it answers for a design one, because both go into every
+  reviewer's prompt whole and measuring one of them would let a round past
+  the limit on a technicality. Over it, `review run` and `review run --design`
+  exit 3 before any reviewer starts, before anything is charged, and -- on the
+  design path -- before the plan is frozen, so the previous round's reports
+  and triage survive the refusal. `review snapshot` warns and still writes the
+  snapshot: taking one spends nothing.
+
+  400,000 chars is roughly 100k tokens, four times the largest prompt this
+  repository has recorded (99,814), so **the default refuses nothing anyone
+  has recorded here**. Characters rather than tokens because that is the unit
+  everything else already measures in and the standard library cannot count
+  the other; CJK-heavy text is two to four times as many tokens per character,
+  and the docs say so rather than implying a constant.
+
+  It refuses rather than trimming. Dropping hunks to fit hands a reviewer a
+  change it cannot judge and says so nowhere, so the tool reports *not
+  reviewed* instead of calling an incomplete review complete. **`--force`
+  belongs to a human**, which means an automated workflow over the limit runs
+  no review at all and reports that: `status` answers `stop-and-report` until a
+  round actually reviews the change, so a clean consolidation from an earlier
+  round cannot stand in for this change having been reviewed. Nothing short of
+  a round that ran clears it -- not a second refusal of either kind, and not
+  the `abandoned` entry `status` writes when it clears a stage whose process is
+  gone. A forced round is recorded as `over_budget` on each reviewer entry, on
+  `consolidated.json`'s `snapshot` block -- beside `budget_chars`, the size the
+  limit measured -- in `consolidated.md` and in `review status`. What forcing
+  does *not* promise is that every reviewer comes back `partial` -- that is the
+  inline limit's answer, not this one's, and it is decided by the body that is
+  handed over, which on the design path is the plan without its request. The
+  two coincide under the defaults and do not when `max_chars` is set below
+  120,000, and the refusal message says which case the change in front of it
+  is.
+
+  `review snapshot --json` carries `change_chars`, `max_chars` and
+  `over_context` alongside the snapshot's metadata, so a wrapper reading that
+  form learns what the human-readable warning says before `review run` exits 3.
+  An explicit `review.context.max_chars: null` means the default, as `null`
+  does on `review.max_findings`; there is no value that switches the limit off.
+
+  The refusal is visible where refusals are counted: the event carries the
+  round's `optimization` block, as the gate's does, so `optimization report`
+  sees it at all, plus `refused_by` (`gate` or `context`) so the two can be
+  told apart. `estimated_saving` prices the gate's refusals only -- a round
+  refused for size was going to cost more than the mean, so charging it the
+  mean understates it -- and says so. Refused *design* rounds are counted on
+  their own, because the design tally counts rounds that ran.
+
+  Additions only: a config key an older `validate` ignores, `over_budget` and
+  `refused_by` keys an older reader skips. An older `optimization report`
+  counts a size refusal as one of the gate's, which overstates the gate and
+  keeps the refused total right. Nothing about what an unrefused round sends
+  changed.
+
 - **What a delegated run did with its tools is now counted.** Reducing what
   reviewers read is the point of the work this belongs to, and there was no
   way to measure it at all. A Claude run's `usage` gains `tool_uses`,

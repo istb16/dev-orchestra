@@ -357,7 +357,17 @@ def summarise_rounds(events: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
     shipped, and it hid a real cost from the one command whose job is to say
     what review cost: measured on one workflow, two design rounds and 350,429
     billed tokens sat in ``tokens show`` and appeared in this report as zero.
-    ``design_rounds`` counts the rounds that ran, as ``ran`` does for code.
+    ``design_rounds`` counts the rounds that ran, as ``ran`` does for code,
+    and ``design_refused`` the ones that were refused before they could --
+    counting those nowhere would hide the same cost from the other end.
+
+    A refusal is broken down by what refused it, because the two are not worth
+    the same. ``estimated_saving`` prices only the gate's: a round refused for
+    the size of its change was always going to be dearer than the mean, so
+    charging it the mean understates it, and a figure that understates by an
+    unknown amount is worse than one that is explicitly not being claimed. An
+    event recorded before ``refused_by`` existed is read as the gate's, which
+    is what it was -- nothing else refused a round then.
     """
     rounds = [
         event
@@ -377,9 +387,17 @@ def summarise_rounds(events: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
         for event in events
         if isinstance(event, dict) and event.get("stage") == "design_review" and event.get("status") == "ok"
     ]
+    design_refused = sum(
+        1
+        for event in events
+        if isinstance(event, dict)
+        and event.get("stage") == "design_review"
+        and event.get("status") == REFUSED
+    )
     levels: Dict[str, int] = {}
     gates: Dict[str, int] = {}
     patterns: Dict[str, int] = {}
+    refused_by: Dict[str, int] = {}
     escalated = reduced = refused = unrecorded = 0
     reviewer_runs = measured_runs = billed = 0
     tool_runs = tool_uses = tool_chars = 0
@@ -403,6 +421,7 @@ def summarise_rounds(events: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
             unrecorded += 1
         if event.get("status") == REFUSED:
             refused += 1
+            _bump(refused_by, str(event.get("refused_by") or "gate"))
             continue
         runs, reported, spent = _reviewer_spend(event)
         reviewer_runs += runs
@@ -434,6 +453,7 @@ def summarise_rounds(events: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
         "rounds": len(rounds),
         "ran": ran,
         "refused": refused,
+        "refused_by": refused_by,
         "levels": levels,
         "gates": gates,
         "escalated": escalated,
@@ -445,8 +465,11 @@ def summarise_rounds(events: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
         "measured_runs": measured_runs,
         "billed_tokens": billed,
         "billed_per_round": per_round,
-        "estimated_saving": (per_round * refused) if (per_round and refused) else 0,
+        # The gate's refusals alone -- see the docstring for why a round
+        # refused for size is left out rather than priced at the mean.
+        "estimated_saving": (per_round * refused_by.get("gate", 0)) if per_round else 0,
         "design_rounds": len(design),
+        "design_refused": design_refused,
         "design_reviewer_runs": design_runs,
         "design_measured_runs": design_measured,
         "design_billed_tokens": design_billed,
