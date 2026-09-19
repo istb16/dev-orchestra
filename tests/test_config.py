@@ -41,6 +41,25 @@ class TestDefaults(IsolatedCase):
         loaded = config_mod.load(self.project)
         self.assertEqual(loaded.design_review_settings(), {"enabled": False, "max_iterations": 2})
 
+    def test_the_context_budget_refuses_nothing_anyone_has_recorded(self):
+        """400,000 chars is four times the largest prompt this repository has
+        recorded, so shipping it changes no existing workflow."""
+        self.assertEqual(config_mod.default_config()["review"]["context"], {"max_chars": 400_000})
+
+    def test_context_settings_are_filled_in_for_a_config_that_omits_them(self):
+        self.write(".dev-orchestra.yaml", "version: 1\nreview:\n  max_review_iterations: 1\n")
+        loaded = config_mod.load(self.project)
+        self.assertEqual(loaded.context_settings()["max_chars"], 400_000)
+
+    def test_an_explicit_null_budget_means_the_default_not_no_limit(self):
+        """`null` means "use the default" here because that is what it means
+        on `review.max_findings` next door. What it must not mean is "no
+        limit": that reading is for a config written before the setting
+        existed, and a file naming the key is not one."""
+        self.write(".dev-orchestra.yaml", "version: 1\nreview:\n  context:\n    max_chars: null\n")
+        loaded = config_mod.load(self.project)
+        self.assertEqual(loaded.context_settings()["max_chars"], 400_000)
+
     def test_naming_one_design_setting_keeps_the_other(self):
         """`review_settings` updates shallowly, which would drop
         `max_iterations` and refuse the first round."""
@@ -149,6 +168,23 @@ class TestValidation(IsolatedCase):
         data = config_mod.default_config()
         data["review"]["design"]["max_iterations"] = -1
         self.assertTrue(any("review.design.max_iterations" in p for p in config_mod.validate(data)))
+
+    def test_a_context_budget_of_zero_is_rejected(self):
+        """Zero would read as "no limit" to `over_context`, which is not what
+        anyone writing it means; there is no way to switch the limit off."""
+        data = config_mod.default_config()
+        data["review"]["context"]["max_chars"] = 0
+        self.assertTrue(any("review.context.max_chars" in p for p in config_mod.validate(data)))
+
+    def test_a_non_integer_context_budget_is_rejected(self):
+        data = config_mod.default_config()
+        data["review"]["context"]["max_chars"] = "400000"
+        self.assertTrue(any("review.context.max_chars" in p for p in config_mod.validate(data)))
+
+    def test_context_must_be_a_mapping(self):
+        data = config_mod.default_config()
+        data["review"]["context"] = []
+        self.assertTrue(any("review.context: must be a mapping" in p for p in config_mod.validate(data)))
 
     def test_design_must_be_a_mapping(self):
         data = config_mod.default_config()

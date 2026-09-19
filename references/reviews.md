@@ -174,6 +174,21 @@ reviewer on a problem already known. `--force` overrides. A tree with no
 recorded test result is *not* refused -- it warns and runs, because "nobody
 wrote it down" is not "it failed".
 
+**A change too large is refused before any of that.** `review.context.max_chars`
+(400,000) is the most change body a round will send at all — the diff, or the
+plan plus the request it answers — and over it `review run` exits 3 with nothing
+reviewed, before the round is charged and, on the design path, before the plan
+is frozen. Trimming to fit is the one thing it will not do: a reviewer handed
+part of a change cannot tell which part is missing. The ways under it are
+`--base`, `review.exclude`, splitting the change, or a shorter plan; `--force`
+is the human's, so an automated workflow over the limit reports *not reviewed*
+and stops, and `status` keeps saying so until a round actually reviews the
+change — a second refusal is not that, and neither is bookkeeping. The
+refusal is recorded like the gate's, with `refused_by: "context"` to tell them
+apart, and a forced round carries `over_budget` on every reviewer entry and on
+`consolidated.json`'s `snapshot` block. See `references/limits.md` for the
+number and what forcing does and does not promise.
+
 **It can cut the panel to one reviewer**, at `aggressive`, when the change is
 under `low_risk_max_files` and `low_risk_max_lines` and touches no high-risk
 path. That reduced panel keeps a `general` reviewer in preference to a
@@ -347,6 +362,20 @@ is not and is dropped with the count it belonged to. Read the mark from
 **`coverage.change_chars`** — how many characters this round's change body was,
 as the runs recorded it (`null` when no run did).
 
+**`snapshot.over_budget`** — beside `sha256` and `files`: whether this round was
+sent past `review.context.max_chars` by `--force`. Derived from the same
+entries, for the same reason — the limit and the flag belong to the run, not to
+the frozen file — and `false` both for a round that was not forced and for
+every report written before the limit existed, which is the true answer for all
+of them.
+
+**`snapshot.budget_chars`** — the size that limit measured, which is what the
+`Change:` line in `consolidated.md` prints. Not `coverage.change_chars`: on a
+design round the budget counts the plan *and* the request, while the body a
+reviewer was handed is the plan alone. `null` when no run recorded one. Like
+`over_budget`, it is recorded on every reviewer entry as well as on this block,
+and this block is derived from those entries.
+
 The two are separate because an incremental round inlines only the fix. Judging
 the whole change by what *this* round inlined would let a fix-only round launder
 a partial one: accept the finding, fix it, inline the fix, `NO_FINDINGS`, clean
@@ -400,9 +429,10 @@ comfortably under the limit — the largest measured 99,814 characters — so
 nothing in the existing history is being read as clean when it was not; the
 record simply does not say.
 
-The design review's request section is a known exception: it is inlined whatever
-its size, because the change body a design round reviews is the plan. Bringing
-the request under the same limit is a later change.
+The design review's request section is a known exception to the *coverage*
+rule: it is inlined whatever its size, because the change body a design round
+reviews is the plan. It is not an exception to the size refusal below — that is
+measured over the plan and the request together, since both go into the prompt.
 
 The parser is deliberately tolerant: it accepts `**Severity:** high`,
 `**Severity**: high`, `- Severity: high`, any heading level for `Finding`,

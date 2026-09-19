@@ -1106,6 +1106,47 @@ def _refuse_if_runtime_spent(book: ledger_mod.Ledger, stage: str, force: bool) -
     return ledger_mod.EXIT_BUDGET_EXHAUSTED
 
 
+def _refuse_if_over_context(
+    workspace: ws.Workspace,
+    stage: str,
+    budget_chars: int,
+    max_chars: int,
+    delivery_chars: int,
+    force: bool,
+    iteration: int,
+    detail: Optional[Dict[str, Any]] = None,
+) -> Optional[int]:
+    """Stop a round whose change body is too large to review at all.
+
+    Written down even though nothing ran, and *because* nothing ran: this is
+    the largest thing the limit ever saves, and a saving that leaves no trace
+    cannot be counted. The code path passes its ``optimization`` block in
+    ``detail`` for the same reason the gate refusal carries one --
+    ``summarise_rounds`` selects rounds on that key, so a refusal without it
+    is a refusal no report can see.
+
+    Nothing is spent by getting here: no budget consumed, no ledger entry
+    opened, and on the design path the previous round's plan is left frozen
+    where it was, so the triage this refusal asks the reader to report on is
+    still there to report.
+
+    ``budget_chars`` is what the limit measures and what the refusal records;
+    ``delivery_chars`` is the body that would go into the prompt, and decides
+    only what forcing would do. They differ on the design path -- see
+    ``over_budget_note`` -- and both are passed on both paths.
+    """
+    if force or not review_mod.over_context(budget_chars, max_chars):
+        return None
+    event = {"iteration": iteration, "refused_by": "context", "reviewers": []}
+    event.update(detail or {})
+    event["context"] = {"chars": budget_chars, "max_chars": max_chars}
+    workspace.record_event(stage, opt_mod.REFUSED, event)
+    design = stage == "design_review"
+    for line in review_mod.over_budget_note(budget_chars, max_chars, delivery_chars, design=design):
+        _err(line)
+    return ledger_mod.EXIT_BUDGET_EXHAUSTED
+
+
 def _lineage(args: argparse.Namespace, workspace: ws.Workspace) -> str:
     """Which review the next round belongs to.
 
@@ -1201,8 +1242,24 @@ def cmd_review_snapshot(args: argparse.Namespace) -> int:
     except review_mod.ReviewError as exc:
         _err(str(exc))
         return 2
+    # Warned about, never refused: taking a snapshot spends nothing, and the
+    # command that would spend something says so itself. Refusing here would
+    # also leave no snapshot to narrow from.
+    #
+    # Measured before the JSON branch, because --json is the form a wrapper
+    # reads and a warning only a human sees is not one it can act on. The
+    # three keys go in the payload, not in the snapshot's metadata file: what
+    # the limit was and whether this change is over it are facts about the
+    # commands that read the snapshot, not about the frozen diff.
+    max_chars = int(loaded.context_settings().get("max_chars") or 0)
+    change_chars = review_mod.snapshot_chars(workspace)
+    over_context = review_mod.over_context(change_chars, max_chars)
     if args.json:
-        _emit_json(meta)
+        payload = dict(meta)
+        payload["change_chars"] = change_chars
+        payload["max_chars"] = max_chars
+        payload["over_context"] = over_context
+        _emit_json(payload)
         return 0
     _out("Snapshot: %s" % workspace.relative(workspace.snapshot_path))
     _out("  strategy: %s" % meta["strategy"])
@@ -1213,6 +1270,12 @@ def cmd_review_snapshot(args: argparse.Namespace) -> int:
         _out("            reviewers also get the findings the fix was meant to address")
     _out("  files:    %d" % len(meta["files"]))
     _out("  size:     %d bytes (sha256 %s)" % (meta["bytes"], meta["sha256"][:12]))
+    if over_context:
+        _out(
+            "  WARNING:  %s chars is over review.context.max_chars (%s) -- review run will "
+            "refuse this change." % ("{:,}".format(change_chars), "{:,}".format(max_chars))
+        )
+        _out("            Narrow it with --base or review.exclude, or split the change.")
     withheld = meta.get("withheld") or []
     if withheld:
         # Named, not merely counted: an exclusion nobody can see is an
@@ -1299,6 +1362,30 @@ def _run_design_review(args: argparse.Namespace, loaded: config_mod.LoadedConfig
     if refusal is not None:
         return refusal
 
+    # The plan *and* the request: both go into every reviewer's prompt, whole
+    # and unconditionally, so measuring the plan alone would let a round past
+    # the limit on a technicality. Refused here, before the plan is frozen,
+    # for the reason the digest above is read early.
+    #
+    # The plan alone is a second, separate size: it is the only part ever
+    # handed over as a file, so it -- and not the pair -- decides delivery and
+    # what forcing this round may promise.
+    max_chars = int(loaded.context_settings().get("max_chars") or 0)
+    budget_chars = len(plan_text) + len(request_text)
+    refusal = _refuse_if_over_context(
+        workspace,
+        "design_review",
+        budget_chars,
+        max_chars,
+        len(plan_text),
+        args.force,
+        iteration,
+        {"plan_chars": len(plan_text), "request_chars": len(request_text)},
+    )
+    if refusal is not None:
+        return refusal
+    over_budget = review_mod.over_context(budget_chars, max_chars)
+
     meta = review_mod.write_design_snapshot(workspace, workspace.plan_path, request_path, plan_text, digest)
 
     if not reviewers:
@@ -1333,6 +1420,8 @@ def _run_design_review(args: argparse.Namespace, loaded: config_mod.LoadedConfig
             timeout=batch_timeout,
             idle_timeout=idle_timeout,
             max_findings=max_findings,
+            over_budget=over_budget,
+            budget_chars=budget_chars,
             prompt_for=lambda reviewer: review_mod.build_design_review_prompt(
                 reviewer,
                 workspace,
@@ -1473,10 +1562,41 @@ def cmd_review_run(args: argparse.Namespace) -> int:
         workspace.record_event(
             "review",
             opt_mod.REFUSED,
-            {"iteration": iteration, "optimization": plan.to_dict(), "reviewers": []},
+            {
+                "iteration": iteration,
+                "optimization": plan.to_dict(),
+                # Which of the two refusals this was. Both are recorded the
+                # same way, and a report that cannot tell them apart prices
+                # them the same -- see ``summarise_rounds``.
+                "refused_by": "gate",
+                "reviewers": [],
+            },
         )
         _err(plan.gate_note())
         return ledger_mod.EXIT_BUDGET_EXHAUSTED
+
+    # After the gate, because a round the gate already refused has no reason to
+    # be measured, and before anything is charged or run.
+    max_chars = int(loaded.context_settings().get("max_chars") or 0)
+    # Here the budget's size and the delivered body's size are the same diff,
+    # and are passed as two arguments anyway: the design path's are not, and a
+    # call site that reads differently there is one nobody compares.
+    budget_chars = review_mod.snapshot_chars(workspace)
+    refusal = _refuse_if_over_context(
+        workspace,
+        "review",
+        budget_chars,
+        max_chars,
+        budget_chars,
+        args.force,
+        iteration,
+        {"optimization": plan.to_dict()},
+    )
+    if refusal is not None:
+        return refusal
+    # Forced past it: the round runs, and every record of it says so.
+    over_budget = review_mod.over_context(budget_chars, max_chars)
+
     if plan.gate == opt_mod.GATE_WARN:
         _err(plan.gate_note())
     if plan.reviewer_limit is not None and not args.only:
@@ -1512,6 +1632,8 @@ def cmd_review_run(args: argparse.Namespace) -> int:
             extra_context=args.context or "",
             idle_timeout=idle_timeout,
             max_findings=max_findings,
+            over_budget=over_budget,
+            budget_chars=budget_chars,
         )
     except review_mod.ReviewError as exc:
         book.end(token, "failed", {"error": str(exc)})
@@ -1704,6 +1826,11 @@ def cmd_review_status(args: argparse.Namespace) -> int:
         # this is the number printed in the same breath as that value. The
         # table-wide column is still in `counts`, under its own name.
         "reviewers_partial": review_mod.snapshot_reviewers(counts, "partial"),
+        # A round that only ran because a human forced it past
+        # review.context.max_chars. False for every round that was not, and
+        # for every report written before the limit existed -- which is the
+        # true answer for all of them: none of them was forced past it.
+        "over_budget": bool((data.get("snapshot") or {}).get("over_budget")),
         "counts": counts,
     }
     if args.json:
@@ -1717,6 +1844,11 @@ def cmd_review_status(args: argparse.Namespace) -> int:
             _out("coverage: not recorded -- this report predates it")
         else:
             _out("coverage: round %s, change %s" % (coverage.get("round"), coverage.get("change")))
+        if payload["over_budget"]:
+            _out(
+                "over budget: this round was sent past review.context.max_chars by --force; "
+                "say so when you report it"
+            )
         for line in _coverage_advice(
             coverage or {},
             counts,
@@ -2071,6 +2203,13 @@ def cmd_tokens_show(args: argparse.Namespace) -> int:
 
 _OPT_ROW = "  %-22s %s"
 
+#: What each ``refused_by`` means to somebody reading the final report, since
+#: the two ask for different things: fix the tests, or make the change smaller.
+_REFUSAL_CAUSE = {
+    "gate": "tests recorded as failing",
+    "context": "change over review.context.max_chars",
+}
+
 
 def _rounds_recorded(args: argparse.Namespace, workspace: ws.Workspace) -> "tuple[List[Dict[str, Any]], str]":
     """Every review round recorded in this project, and what was read.
@@ -2112,7 +2251,7 @@ def cmd_optimization_report(args: argparse.Namespace) -> int:
         _emit_json(report)
         return 0
 
-    if not report["rounds"] and not report["design_rounds"]:
+    if not report["rounds"] and not report["design_rounds"] and not report["design_refused"]:
         _out("No review rounds recorded in %s." % source)
         _out("Run a review, then ask again -- this reads what happened, not what would.")
         return 0
@@ -2127,6 +2266,11 @@ def cmd_optimization_report(args: argparse.Namespace) -> int:
             "Review rounds recorded: %d (%d ran, %d refused)"
             % (report["rounds"], report["ran"], report["refused"])
         )
+        if report["refused"]:
+            # Which of them refused, because the two mean different things to
+            # act on: the gate says fix the tests, the limit says the change
+            # is too big to review at all.
+            _out(_OPT_ROW % ("refused by", _counts(report["refused_by"])))
         _out(_OPT_ROW % ("levels in force", _counts(report["levels"])))
         _out(_OPT_ROW % ("gate verdicts", _counts(report["gates"])))
         _out(_OPT_ROW % ("panel reduced", report["panel_reduced"]))
@@ -2187,14 +2331,27 @@ def cmd_optimization_report(args: argparse.Namespace) -> int:
         _out("  for no reason but its composition.")
         _out("  Observed output is what the tools printed back, not source read: `wc -l`")
         _out("  returns 3 characters for a 200-line file and `cat` returns the file.")
+    if report["design_refused"]:
+        _out("")
+        _out(
+            "Design review rounds refused for size: %d -- nothing ran, and the plan and its"
+            % report["design_refused"]
+        )
+        _out("request were over review.context.max_chars.")
     if report["estimated_saving"]:
         _out("")
         _out(
-            "Estimated saving from %d refused round(s): ~%s billed tokens."
-            % (report["refused"], "{:,}".format(report["estimated_saving"]))
+            "Estimated saving from %d gate-refused round(s): ~%s billed tokens."
+            % (report["refused_by"].get("gate", 0), "{:,}".format(report["estimated_saving"]))
         )
         _out("An estimate: what a round that did not happen would have cost is")
         _out("unknowable, so this is the mean of the %d that did." % report["ran"])
+    refused_for_size = report["refused_by"].get("context")
+    if refused_for_size:
+        _out("")
+        _out("%d round(s) refused for size are not priced above: a change over" % refused_for_size)
+        _out("review.context.max_chars was going to cost more than the mean, so")
+        _out("charging it the mean would understate what was not spent.")
     if report["rounds_without_a_test_result"]:
         _out("")
         _out(
@@ -2380,6 +2537,77 @@ def cmd_workflow_remove(args: argparse.Namespace) -> int:
     return 0
 
 
+def _reviewed_something(event: Dict[str, Any]) -> bool:
+    """Whether this event is a round that put the change in front of a panel.
+
+    The one positive mark such a round leaves is a reviewer that actually
+    started: an entry with ``invoked`` true. Nothing else on the stage leaves
+    one -- a refusal of either kind records an empty list, and ``clear_stalls``
+    records a reason. The entries alone are not the mark: a reviewer that dies
+    on provider startup or model resolution is recorded too, with ``invoked``
+    false, and a round where every entry is one of those put the change in
+    front of nobody. Asked this way round rather than by naming the statuses
+    that do not count, so the next bookkeeping status added to the ledger
+    cannot quietly become one that clears a refusal.
+    """
+    reviewers = event.get("reviewers")
+    if not isinstance(reviewers, list):
+        return False
+    return any(isinstance(run, dict) and run.get("invoked") for run in reviewers)
+
+
+def _context_refusal(events: List[Dict[str, Any]], stage: str) -> Optional[Dict[str, Any]]:
+    """The context refusal ``stage`` is still sitting on, if it is.
+
+    Outstanding means: refused for size, and nothing has reviewed the change
+    since. A refusal deliberately leaves the previous round's consolidation in
+    place -- that is how its triage survives -- so without this, an oversized
+    change refused today still answers ``continue`` from a clean review of
+    something else, which was the hole this closes.
+
+    Only a round that actually reviewed something supersedes it, because only
+    that round's own coverage can say where the change stands afterwards. It
+    is emphatically not "the last thing that happened to this stage": a stage
+    collects entries nobody reviewed anything for. ``status`` itself writes
+    one, calling ``clear_stalls`` before it reads these events, so a killed
+    round left in flight would otherwise clear the very refusal this call is
+    looking for.
+
+    Nor does a refusal supersede a refusal. Two refused rounds mean nothing
+    was reviewed twice -- a gate refusal after a size refusal, then a passing
+    test run, still leaves the oversized change unread -- which is more reason
+    to stop and report, not less.
+    """
+    for event in reversed(events):
+        if not isinstance(event, dict) or event.get("stage") != stage:
+            continue
+        if _reviewed_something(event):
+            return None
+        if event.get("status") == opt_mod.REFUSED and event.get("refused_by") == "context":
+            return event
+    return None
+
+
+def _refusal_reason(event: Dict[str, Any], design: bool = False) -> str:
+    """One refusal, in the words the final report has to use.
+
+    The size and the limit come from the event because a refused round writes
+    no consolidation to read them from -- that is the whole point of it.
+    """
+    context = event.get("context") or {}
+    chars = context.get("chars")
+    limit = context.get("max_chars")
+    return (
+        "the last %s round was refused: the change body (%s chars) is over "
+        "review.context.max_chars (%s), so nothing was reviewed"
+        % (
+            "design review" if design else "review",
+            "{:,}".format(chars) if isinstance(chars, int) else "size unrecorded",
+            "{:,}".format(limit) if isinstance(limit, int) else "the limit",
+        )
+    )
+
+
 def cmd_status(args: argparse.Namespace) -> int:
     """One verdict the orchestrator can act on: continue, or stop and report."""
     loaded = config_mod.load(args.cwd, validate_result=False)
@@ -2404,7 +2632,15 @@ def cmd_status(args: argparse.Namespace) -> int:
     design_iteration = int(design_data.get("iteration", 0) or 0)
     design_max = int(design_settings.get("max_iterations", 2))
 
+    events = [event for event in (workspace.read_state().get("events") or []) if isinstance(event, dict)]
+    refused_for_size = _context_refusal(events, "review")
+    design_refused_for_size = _context_refusal(events, "design_review")
+
     reasons: List[str] = []
+    if refused_for_size:
+        reasons.append(_refusal_reason(refused_for_size))
+    if design_refused_for_size:
+        reasons.append(_refusal_reason(design_refused_for_size, design=True))
     if blocking and iteration >= max_iterations:
         reasons.append(
             "review budget spent (%d/%d rounds) with %d finding(s) still open"
@@ -2458,6 +2694,10 @@ def cmd_status(args: argparse.Namespace) -> int:
             "max_review_iterations": max_iterations,
             "blocking": [f["id"] for f in blocking],
             "accepted": len(review_mod.accepted_findings(review_data)),
+            # The refusal itself, not a flag: the size and the limit are what
+            # the report has to name, and they are not in the consolidation --
+            # a refused round writes no consolidation at all.
+            "refused_for_size": (refused_for_size or {}).get("context") or None,
         },
         "design_review": {
             "enabled": bool(design_settings.get("enabled")),
@@ -2465,6 +2705,7 @@ def cmd_status(args: argparse.Namespace) -> int:
             "max_iterations": design_max,
             "blocking": [f["id"] for f in design_blocking],
             "accepted": len(review_mod.accepted_findings(design_data)),
+            "refused_for_size": (design_refused_for_size or {}).get("context") or None,
         },
         "budgets": summary["budgets"],
         "total_delegated_runs": total,
@@ -2631,12 +2872,19 @@ def cmd_summary(args: argparse.Namespace) -> int:
     # no other part of this report -- and "what you skipped" is exactly what
     # the final report is required to name.
     decided = opt_mod.summarise_rounds(state.get("events") or [])
-    if decided["refused"] or decided["panel_reduced"]:
+    if decided["refused"] or decided["panel_reduced"] or decided["design_refused"]:
         lines.append("")
         lines.append("Optimization:")
-        if decided["refused"]:
+        # One line per reason, because "what you skipped" is only useful if it
+        # says what would make the round run: fixing the tests, or narrowing
+        # the change. A single total says neither.
+        for reason, count in sorted(decided["refused_by"].items()):
+            cause = _REFUSAL_CAUSE.get(reason, reason)
+            lines.append("  %-14s %d round(s) not run: %s" % (reason, count, cause))
+        if decided["design_refused"]:
             lines.append(
-                "  %-14s %d round(s) not run: tests recorded as failing" % ("gate", decided["refused"])
+                "  %-14s %d design round(s) not run: plan over review.context.max_chars"
+                % ("context", decided["design_refused"])
             )
         if decided["panel_reduced"]:
             lines.append(

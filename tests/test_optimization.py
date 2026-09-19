@@ -661,6 +661,33 @@ class TestTheReport(unittest.TestCase):
         self.assertEqual(report["billed_per_round"], 2000)
         self.assertEqual(report["estimated_saving"], 2000)
 
+    def test_the_two_refusals_are_counted_apart_and_only_one_is_priced(self):
+        """A round refused for the size of its change was never going to be an
+        average round, so pricing it at the mean of the rounds that ran would
+        understate what was not spent. It is counted and left unpriced."""
+        gate = round_event(status=opt.REFUSED, reviewers=0, gate="refuse")
+        gate["refused_by"] = "gate"
+        context = round_event(status=opt.REFUSED, reviewers=0)
+        context["refused_by"] = "context"
+        report = opt.summarise_rounds([round_event(reviewers=2, billed=1000), gate, context])
+        self.assertEqual(report["refused"], 2)
+        self.assertEqual(report["refused_by"], {"gate": 1, "context": 1})
+        self.assertEqual(report["billed_per_round"], 2000)
+        self.assertEqual(report["estimated_saving"], 2000)
+
+    def test_a_refusal_recorded_before_the_reason_existed_is_the_gates(self):
+        """Nothing else refused a round then, so reading it as the gate's is
+        reading it as what it was."""
+        report = opt.summarise_rounds([round_event(status=opt.REFUSED, reviewers=0, gate="refuse")])
+        self.assertEqual(report["refused_by"], {"gate": 1})
+
+    def test_a_refused_design_round_is_counted_apart_from_the_ones_that_ran(self):
+        """The design tally counts rounds that ran, so a refused one would
+        otherwise be invisible in the one report that says what review cost."""
+        report = opt.summarise_rounds([design_event(), design_event(status=opt.REFUSED, reviewers=0)])
+        self.assertEqual(report["design_rounds"], 1)
+        self.assertEqual(report["design_refused"], 1)
+
     def test_no_round_ever_ran_means_no_estimate_rather_than_zero(self):
         """Two refusals and nothing to compare them against is not a saving of
         zero; it is a saving nobody can size yet."""

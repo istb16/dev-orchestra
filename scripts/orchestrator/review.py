@@ -1018,7 +1018,107 @@ class BuiltPrompt(NamedTuple):
 
 
 def _delivery(change_text: str) -> str:
-    return "inline" if len(change_text) <= MAX_INLINE_DIFF_CHARS else "file"
+    return _delivery_of(len(change_text))
+
+
+def _delivery_of(change_chars: int) -> str:
+    """The same rule, for a caller that holds a size rather than the text.
+
+    Split out for the refusal below, which has to say what forcing the round
+    would get without building a 400,000-character string to ask.
+    """
+    return "inline" if change_chars <= MAX_INLINE_DIFF_CHARS else "file"
+
+
+def over_context(change_chars: int, max_chars: int) -> bool:
+    """Whether a change body is past the limit that refuses the round.
+
+    Inclusive on the limit, like ``_delivery``'s: the configured number is the
+    largest change that still runs. ``max_chars`` of zero or less is no limit,
+    which is what a caller reading a configuration that predates the setting
+    ends up with.
+    """
+    return max_chars > 0 and change_chars > max_chars
+
+
+def snapshot_chars(workspace: ws.Workspace) -> int:
+    """The size the context budget measures: characters of the frozen diff.
+
+    Characters, not the ``bytes`` already in the snapshot's metadata. The
+    budget is about how much of a context window the change spends, which is
+    what every other size in this module counts -- ``MAX_INLINE_DIFF_CHARS``,
+    ``Usage.prompt_chars``. A UTF-8 byte count is a different number, and it
+    is largest exactly where the difference matters most.
+    """
+    return len(ws.read_text(workspace.snapshot_path))
+
+
+def over_budget_note(
+    budget_chars: int, max_chars: int, delivery_chars: int, design: bool = False
+) -> List[str]:
+    """Why a round was refused for size, and what the reader can do about it.
+
+    Three things, in the order they are needed: the size against the limit,
+    the ways to make the change smaller, and what ``--force`` would do. The
+    middle one differs between the two paths because ``review snapshot`` has
+    no ``--design`` form -- ``--base`` and ``review.exclude`` cannot be aimed
+    at a plan, and pointing a reader at them would send them nowhere.
+
+    Two sizes, and neither can stand in for the other. ``budget_chars`` is
+    what this limit measures -- the plan *and* the request on the design path,
+    because both go into every prompt unconditionally -- and it is the number
+    the refusal states. ``delivery_chars`` is the body that would actually be
+    handed over, the plan alone there, and only it can say what forcing would
+    do. On the code path they are the same number and are still passed
+    separately, so that every call site reads the same.
+    """
+    if design:
+        narrow = (
+            "Shorten it: the plan and the request it answers are measured together, and "
+            "both go into every reviewer's prompt."
+        )
+    else:
+        narrow = (
+            "Narrow it: --base <rev>, review.exclude, or split the change and review the "
+            "parts, then take the snapshot again."
+        )
+    return [
+        "refusing to review a change body of %s chars: the limit is %s "
+        "(review.context.max_chars)." % ("{:,}".format(budget_chars), "{:,}".format(max_chars)),
+        narrow,
+        "Nothing was reviewed, and in an automated workflow that is the answer to report: "
+        "this change was not reviewed. Saying so is the point of the limit -- the "
+        "alternative is calling an incomplete review complete.",
+        "--force runs it anyway. It belongs to a human who has decided to pay for the "
+        "round, not to the orchestrator. %s" % _forced_consequence(delivery_chars),
+    ]
+
+
+def _forced_consequence(delivery_chars: int) -> str:
+    """What forcing *this* round would record -- not what forcing records.
+
+    Whether the reviewers come back ``partial`` is decided by ``_delivery``
+    and the inline limit, never by this budget. With the shipped defaults a
+    change over ``max_chars`` is also far over ``MAX_INLINE_DIFF_CHARS`` and
+    every reviewer is partial; a ``max_chars`` configured below 120,000
+    refuses rounds whose body would still have gone into the prompt whole.
+    Promising partial there would be a promise this code does not keep.
+
+    So the size handed in is the one ``_delivery`` decides on -- the plan
+    alone on the design path, where the budget counted the request too. A
+    plan that fits inline is delivered inline however far the pair went over.
+    """
+    if _delivery_of(delivery_chars) == "file":
+        return (
+            "The round is then recorded as over budget, and every reviewer comes back "
+            "partial: the body is over the %s-char inline limit, so it goes over as a file."
+            % "{:,}".format(MAX_INLINE_DIFF_CHARS)
+        )
+    return (
+        "The round is then recorded as over budget. The body still fits in the prompt "
+        "(the inline limit is %s chars), so it is not partial for that reason."
+        % "{:,}".format(MAX_INLINE_DIFF_CHARS)
+    )
 
 
 def _handover_note(change_chars: int) -> str:
@@ -1156,6 +1256,8 @@ class ReviewerRun:
         delivery: str = "",
         change_chars: int = 0,
         snapshot: str = "",
+        over_budget: bool = False,
+        budget_chars: int = 0,
     ) -> None:
         self.reviewer = reviewer
         # ok | partial | failed | stalled | unparsed. Only "ok" counts as a
@@ -1185,6 +1287,17 @@ class ReviewerRun:
         #: round it was written in, so an entry has to say what it answers for.
         #: "" for a run that fell over before there was a prompt to build.
         self.snapshot = snapshot
+        #: Whether this round was sent past ``review.context.max_chars`` by
+        #: ``--force``. Recorded here, and in the consolidation derived from
+        #: here, for the reason ``BuiltPrompt`` gives about delivery: the
+        #: limit and the flag belong to the run, not to the frozen file.
+        self.over_budget = over_budget
+        #: What ``review.context.max_chars`` measured for this round, which is
+        #: not always ``change_chars``: on the design path the budget counts
+        #: the plan and the request together while the body handed over is the
+        #: plan alone. Recorded so the report can print the number the refusal
+        #: would have used rather than the one delivery was decided by.
+        self.budget_chars = budget_chars
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -1201,6 +1314,8 @@ class ReviewerRun:
             "delivery": self.delivery,
             "change_chars": self.change_chars,
             "snapshot": self.snapshot,
+            "over_budget": self.over_budget,
+            "budget_chars": self.budget_chars,
             "usage": self.usage.to_dict(),
         }
 
@@ -1215,6 +1330,8 @@ def run_reviews(
     idle_timeout: Optional[float] = None,
     max_findings: int = DEFAULT_MAX_FINDINGS,
     prompt_for: Optional[Callable[[Dict[str, Any]], BuiltPrompt]] = None,
+    over_budget: bool = False,
+    budget_chars: int = 0,
 ) -> List[ReviewerRun]:
     """Run every configured reviewer against the frozen snapshot.
 
@@ -1224,6 +1341,14 @@ def run_reviews(
     ``unparsed`` verdict are properties of the fan-out, not of the diff. It
     returns a ``BuiltPrompt`` for the same reason the code path does: the
     round's coverage is decided from what each prompt actually carried.
+
+    ``over_budget`` is the caller's answer to "was this round only running
+    because a human forced it past ``review.context.max_chars``". It is asked
+    for rather than worked out here because the limit is configuration and the
+    flag is an argument, and neither is visible from the snapshot.
+    ``budget_chars`` is the size that answer was decided on, for the same
+    reason: on the design path the budget measured the plan and the request
+    together, and only the caller knows the pair.
     """
     if not reviewers:
         return []
@@ -1260,7 +1385,13 @@ def run_reviews(
         # Every run from here on knows what it was handed, and which snapshot it
         # was handed, failures included: a round is judged on what it sent, not
         # on what came back, and the entry has to say which round that was.
-        carried = {"delivery": built.delivery, "change_chars": built.change_chars, "snapshot": stamp}
+        carried = {
+            "delivery": built.delivery,
+            "change_chars": built.change_chars,
+            "snapshot": stamp,
+            "over_budget": over_budget,
+            "budget_chars": budget_chars,
+        }
         try:
             result = provider.run(
                 built.text,
@@ -1819,11 +1950,12 @@ def build_consolidation(
     """The round's report: consolidated findings, counts, and its coverage.
 
     ``runs`` is the reviewer table, which by design holds entries that did not
-    run this round -- see ``_merge_runs``. Coverage and the ``snapshot_``
-    reviewer counts are derived from the subset stamped with this snapshot, so
-    that one report describes one snapshot; see ``_coverage`` for what the two
-    coverage values mean, why one round's answer is not the whole change's, and
-    ``coverage_lineage`` for the key the whole change's answer carries on.
+    run this round -- see ``_merge_runs``. Coverage, ``snapshot.over_budget``
+    and the ``snapshot_`` reviewer counts are all derived from the subset
+    stamped with this snapshot, so that one report describes one snapshot; see
+    ``_coverage`` for what the two coverage values mean, why one round's answer
+    is not the whole change's, and ``coverage_lineage`` for the key the whole
+    change's answer carries on.
     """
     meta = ws.read_json(workspace.snapshot_meta_path, {}) or {}
     last = ws.read_json(workspace.consolidated_json_path, {}) or {}
@@ -1845,7 +1977,8 @@ def build_consolidation(
         for finding_id in pair["ids"]:
             other = [other_id for other_id in pair["ids"] if other_id != finding_id]
             by_id[finding_id].setdefault("possible_duplicates", []).extend(other)
-    counts = _counts(consolidated, runs, _current_runs(runs, meta))
+    current = _current_runs(runs, meta)
+    counts = _counts(consolidated, runs, current)
     counts["duplicate_candidates"] = len(candidates)
     return {
         "generated_at": ws.utcnow(),
@@ -1854,7 +1987,15 @@ def build_consolidation(
         #: tell a re-review from an unrelated change that happens to share a
         #: project directory.
         "lineage": lineage,
-        "snapshot": {"sha256": meta.get("sha256"), "files": meta.get("files", [])},
+        "snapshot": {
+            "sha256": meta.get("sha256"),
+            "files": meta.get("files", []),
+            # Read off this snapshot's reviewer entries rather than off the
+            # snapshot's own metadata: which limit was in force and whether
+            # --force was given are facts about the run. See ``BuiltPrompt``.
+            "over_budget": any(run.get("over_budget") for run in current),
+            "budget_chars": _budget_chars(current),
+        },
         "coverage": _coverage(runs, meta, iteration, lineage, last),
         "reviewers": list(runs),
         "counts": counts,
@@ -1990,6 +2131,22 @@ def _coverage(
         "unverified_since": unverified_since,
         "change_chars": int(measured[0].get("change_chars") or 0) if measured else None,
     }
+
+
+def _budget_chars(current: Sequence[Dict[str, Any]]) -> Optional[int]:
+    """What ``review.context.max_chars`` measured this round, per the runs.
+
+    Not ``coverage.change_chars``, which is the body a reviewer was handed: on
+    the design path the budget counted the plan and the request together and
+    the body handed over was the plan alone. A report that printed the second
+    number beside "over review.context.max_chars" would contradict itself.
+    ``None`` when no run recorded one -- the same answer coverage gives.
+    """
+    for run in current:
+        chars = run.get("budget_chars")
+        if isinstance(chars, int) and not isinstance(chars, bool) and chars:
+            return chars
+    return None
 
 
 def _current_runs(runs: Sequence[Dict[str, Any]], meta: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -2135,6 +2292,22 @@ def _coverage_line(coverage: Dict[str, Any], counts: Dict[str, Any]) -> str:
     )
 
 
+def _over_budget_line(snapshot: Dict[str, Any]) -> str:
+    """That this round only ran because a human said so.
+
+    It says who, because that is the part a reader of the report cannot see
+    anywhere else: the orchestrator is told not to reach for ``--force``, so a
+    round carrying this mark was a person's decision and the report has to
+    name it as one. The size is the one the budget measured, recorded beside
+    the flag it decided -- not ``coverage.change_chars``, which answers the
+    other question this line is not about. See ``_budget_chars``.
+    """
+    chars = snapshot.get("budget_chars")
+    return "- Change: %s chars, over review.context.max_chars -- reviewed only because --force was given" % (
+        "{:,}".format(chars) if chars else "size unrecorded"
+    )
+
+
 def _reviewer_lines(counts: Dict[str, Any]) -> List[str]:
     """The table's tally, and this snapshot's when the two differ.
 
@@ -2178,6 +2351,12 @@ def render_consolidation(data: Dict[str, Any]) -> str:
     coverage = data.get("coverage")
     if isinstance(coverage, dict):
         lines.append(_coverage_line(coverage, counts))
+    # Only when it happened. A line on every report saying a round was *not*
+    # over budget would bury the one round that was, and every report written
+    # before this existed would be claiming something nobody measured.
+    snapshot = data.get("snapshot") or {}
+    if snapshot.get("over_budget"):
+        lines.append(_over_budget_line(snapshot))
     lines += [
         "- Findings: %s (%s duplicate report(s) merged)"
         % (counts.get("findings_total"), counts.get("duplicates_merged")),
