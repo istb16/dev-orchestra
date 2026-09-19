@@ -78,16 +78,58 @@ USAGE_COUNTS = (
     "cache_write_tokens",
     "billed_tokens",
     "prompt_chars",
+    "tool_uses",
+    "tool_output_chars",
 )
+
+
+def _is_count(value: Any) -> bool:
+    """Whether a reported field is a count. ``True`` is an ``int``, and is not."""
+    return isinstance(value, int) and not isinstance(value, bool)
 
 
 def _blank_account() -> Dict[str, Any]:
     # ``priced_runs`` apart from ``measured_runs``: a CLI can report its tokens
     # and no money, which Codex does on every run. Counting the two together
     # made a cost total that omits one provider entirely look complete.
-    account: Dict[str, Any] = {"runs": 0, "measured_runs": 0, "priced_runs": 0, "cost_usd": 0.0}
+    #
+    # ``tool_reported_runs`` for the same reason one step along: summing
+    # ``tool_uses`` over ``runs`` would divide a Claude reviewer's tool calls
+    # by a panel that also contains Codex, which reports none -- halving the
+    # figure for no reason but the panel's composition. A run that used no
+    # tools and a run from a CLI that never says are different facts, and only
+    # this counter tells them apart.
+    #
+    # ``tool_unknown_runs`` because the counter alone cannot say it: the first
+    # tool-reporting run recorded into an account written before any of this
+    # existed *creates* ``tool_reported_runs``, and the absence that was the
+    # only evidence those earlier runs predate counting is gone with it. So the
+    # unknown is carried forward as a number of its own rather than inferred
+    # from whether a key is there. Same lesson as ``priced_runs`` in 0.4.2, not
+    # a new one.
+    account: Dict[str, Any] = {
+        "runs": 0,
+        "measured_runs": 0,
+        "priced_runs": 0,
+        "tool_reported_runs": 0,
+        "tool_unknown_runs": 0,
+        "tool_uses_by_name": {},
+        "cost_usd": 0.0,
+    }
     account.update(dict.fromkeys(USAGE_COUNTS, 0))
     return account
+
+
+def _unknown_tool_runs(account: Dict[str, Any]) -> int:
+    """How many of this account's runs cannot say whether they used tools.
+
+    An account with no ``tool_reported_runs`` was written before any run was
+    counted, so *all* of its runs are unknown. One that has the key knows,
+    except for whatever it carried forward when the key first appeared.
+    """
+    if "tool_reported_runs" not in account:
+        return int(account.get("runs") or 0)
+    return int(account.get("tool_unknown_runs") or 0)
 
 
 def _accumulate(account: Dict[str, Any], usage: Dict[str, Any]) -> Dict[str, Any]:
@@ -96,14 +138,29 @@ def _accumulate(account: Dict[str, Any], usage: Dict[str, Any]) -> Dict[str, Any
     A field the CLI did not report contributes nothing rather than zero, so a
     silent CLI cannot make a stage look free.
     """
+    # Stamped before this run joins them: every run already in an account that
+    # has no ``tool_reported_runs`` predates tool counting, and once this run
+    # creates that key nothing else remembers them.
+    if "tool_reported_runs" not in account:
+        account["tool_unknown_runs"] = _unknown_tool_runs(account)
     account["runs"] = int(account.get("runs") or 0) + 1
     if usage.get("measured"):
         account["measured_runs"] = int(account.get("measured_runs") or 0) + 1
     for field in USAGE_COUNTS:
         value = usage.get(field)
-        if isinstance(value, bool) or not isinstance(value, int):
+        if not _is_count(value):
             continue
         account[field] = int(account.get(field) or 0) + value
+    if _is_count(usage.get("tool_uses")):
+        # An ``int`` -- zero included -- is a report. A missing one is not.
+        account["tool_reported_runs"] = int(account.get("tool_reported_runs") or 0) + 1
+        by_name = usage.get("tool_uses_by_name")
+        if isinstance(by_name, dict):
+            merged = dict(account.get("tool_uses_by_name") or {})
+            for name, count in by_name.items():
+                if _is_count(count):
+                    merged[str(name)] = int(merged.get(str(name)) or 0) + int(count)
+            account["tool_uses_by_name"] = merged
     cost = usage.get("cost_usd")
     if isinstance(cost, (int, float)) and not isinstance(cost, bool):
         account["cost_usd"] = round(float(account.get("cost_usd") or 0.0) + float(cost), 6)
@@ -122,9 +179,23 @@ def _merge_accounts(accounts: List[Dict[str, Any]]) -> Dict[str, Any]:
         total["runs"] += int(account.get("runs") or 0)
         total["measured_runs"] += int(account.get("measured_runs") or 0)
         total["priced_runs"] += int(account.get("priced_runs") or 0)
+        total["tool_reported_runs"] += int(account.get("tool_reported_runs") or 0)
+        # The same shape, for the same reason: a run recorded before tool
+        # activity was counted cannot answer "did it use any", and reading that
+        # as zero would present "we did not count" as "no tools were used".
+        # Counted, not inferred from a missing key -- the key reappears as soon
+        # as one counted run is recorded beside them.
+        total["tool_unknown_runs"] += _unknown_tool_runs(account)
+        by_name = account.get("tool_uses_by_name")
+        if isinstance(by_name, dict):
+            for name, count in by_name.items():
+                if _is_count(count):
+                    merged = total["tool_uses_by_name"]
+                    merged[str(name)] = int(merged.get(str(name)) or 0) + int(count)
         for field in USAGE_COUNTS:
             total[field] += int(account.get(field) or 0)
         total["cost_usd"] = round(total["cost_usd"] + float(account.get("cost_usd") or 0.0), 6)
+    total["tool_known"] = not total["tool_unknown_runs"]
     return total
 
 

@@ -101,6 +101,11 @@ def _mock_usage(prompt: str, response: str) -> Usage:
 
     Four characters per token is only a rule of thumb, which is exactly why no
     real adapter estimates: here the number just has to be reproducible.
+
+    The tool counts are a *measured zero*, which is what this provider honestly
+    observed: it started no CLI, so nothing called a tool. That is deliberately
+    not the same as the ``None`` a provider that cannot say reports, and the
+    difference is what the CLI tests read.
     """
     return Usage(
         input_tokens=max(len(prompt) // 4, 1),
@@ -110,6 +115,9 @@ def _mock_usage(prompt: str, response: str) -> Usage:
         cost_usd=0.0,
         source="mock",
         prompt_chars=len(prompt),
+        tool_uses=0,
+        tool_uses_by_name={},
+        tool_output_chars=0,
     )
 
 
