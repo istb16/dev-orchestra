@@ -259,6 +259,32 @@ class TestConcurrentLedgerUpdates(IsolatedCase):
         self.assertEqual(book.load()["runtime_seconds"], 8)
         self.assertEqual(book.in_flight(), {})
 
+    def test_concurrent_ends_all_leave_their_event_behind(self):
+        """The other half of the same write: `end` records the charge and its
+        event under one hold of the lock. Appending afterwards read the whole
+        state back after releasing it, so an event another process had
+        committed in between vanished along with its charge."""
+        book = self.book()
+        tokens = [book.begin("implementer", deadline=60) for _ in range(8)]
+        errors = []
+
+        def end(token):
+            try:
+                self.book().end(token, "ok", charged_seconds=1)
+            except Exception as exc:  # collected and reported after the join
+                errors.append(exc)
+
+        threads = [threading.Thread(target=end, args=(token,)) for token in tokens]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=30)
+
+        self.assertEqual(errors, [])
+        events = self.workspace.read_state().get("events") or []
+        ended = [event for event in events if event.get("stage") == "implementer"]
+        self.assertEqual(len(ended), 8, "no event may be lost")
+
     def test_in_flight_tokens_do_not_collide_when_started_together(self):
         book = self.book()
         tokens = {book.begin("test", deadline=1) for _ in range(20)}

@@ -16,6 +16,7 @@ that only a real process can answer:
 
 * does the adapter's command line still work
 * does the CLI still report what a run cost, in a shape the parser reads
+* does it still report what the agent did with its tools, in the same sense
 * does a read-only mode still actually refuse to write
 
 Run it before a release, and after touching an adapter or bumping a CLI. It is
@@ -49,6 +50,19 @@ WRITE_PROMPT = (
     "Do it now, without asking."
 )
 WRITE_TARGET = "breach.txt"
+
+#: The tool-activity check. Phrased so that a tool is the only way to answer:
+#: the file is in the sandbox and its contents are not in the prompt, so an
+#: agent that reports a number has called something to get it. Which tool is
+#: deliberately left open -- the run measured while designing this used `Bash`
+#: (`wc -l`) and no `Read` at all, which is exactly why every tool is counted.
+TOOL_PROMPT = "Count the lines in README.md in this directory. Reply with only the number."
+
+#: Providers whose adapter reports tool activity. Codex is absent on purpose:
+#: it hands back only its final message and its usage comes from a prose
+#: footer, so counting tool calls from it would mean matching prose -- which
+#: matches the code under review as readily as the CLI's own output.
+REPORTS_TOOLS = ("claude",)
 
 #: Providers with no CLI behind them. Running the mock here would prove that
 #: the mock works, which is the one thing already covered.
@@ -133,8 +147,48 @@ def check_provider(name: str, root: str) -> List[Check]:
             )
         )
 
+    checks.append(check_tool_activity(provider, name, root))
     checks.append(check_read_only(provider, name, root))
     return checks
+
+
+def check_tool_activity(provider: Any, name: str, root: str) -> Check:
+    """Does a real run still report what it did with its tools?
+
+    The shape these counts are read from -- ``tool_use`` blocks on one event,
+    ``tool_result`` blocks on another, paired by ``tool_use_id`` -- belongs to
+    the CLI, not to this repository. The unit tests read it from a fixture, so
+    they will keep passing on the day the CLI changes it. Only a real run can
+    catch that drift, and the cost of missing it is a measurement that reads as
+    "this reviewer opened nothing" when it means "we stopped being able to
+    tell".
+    """
+    label = "reports its tool activity"
+    if name not in REPORTS_TOOLS:
+        return Check(name, label, True, "not reported by this adapter, by design")
+    try:
+        result = provider.run(TOOL_PROMPT, MODE_REVIEW, root, timeout=TIMEOUT, idle_timeout=60.0)
+    except Exception as exc:
+        return Check(name, label, False, "%s: %s" % (type(exc).__name__, exc))
+    usage = result.usage
+    if usage.tool_uses is None:
+        return Check(name, label, False, "no tool activity parsed -- the event shape may have changed")
+    if not usage.tool_uses:
+        # A measured zero is a legitimate report, and here it is still a failed
+        # check: the prompt cannot be answered without a tool, so zero means
+        # the pairing stopped working rather than that the agent used nothing.
+        return Check(name, label, False, "the run reported 0 tool uses for a prompt that needs one")
+    chars = usage.tool_output_chars
+    if not isinstance(chars, int) or chars <= 0:
+        # Calls and results are read from different events and paired by
+        # ``tool_use_id``, so a drift can break the second half alone: the
+        # counts still look right while every output-volume figure quietly
+        # becomes zero. This prompt makes the agent read a file, so it has
+        # output; checking only the calls would have passed that.
+        return Check(name, label, False, "%d tool use(s) and no output to pair with them" % usage.tool_uses)
+    names = ", ".join("%s x%d" % item for item in sorted((usage.tool_uses_by_name or {}).items()))
+    detail = "%d use(s) [%s], %s observed output chars" % (usage.tool_uses, names or "unnamed", chars)
+    return Check(name, label, True, detail)
 
 
 def check_read_only(provider: Any, name: str, root: str) -> Check:

@@ -800,6 +800,73 @@ class TestTheReport(unittest.TestCase):
         self.assertIsNone(report["design_billed_per_round"])
 
 
+def round_with(usages, status="ok"):
+    """A round whose reviewer usage is spelled out, rather than counted up."""
+    event = round_event(status=status, reviewers=0)
+    event["reviewers"] = [{"usage": dict(usage)} for usage in usages]
+    return event
+
+
+def design_with(usages):
+    event = design_event(reviewers=0)
+    event["reviewers"] = [{"usage": dict(usage)} for usage in usages]
+    return event
+
+
+class TestToolActivityInTheReport(unittest.TestCase):
+    """Per run, over the runs that reported -- never over every reviewer run.
+
+    Codex reports no tool activity, so a panel of one Claude and one Codex
+    divided by `reviewer_runs` halves the figure for no reason but the panel's
+    composition. The comparison this measurement exists for -- fewer tool calls
+    once reviewers are handed the context they were re-reading -- would then
+    move whenever a reviewer is added or dropped.
+    """
+
+    def test_a_silent_reviewer_stays_out_of_the_denominator(self):
+        events = [round_with([{"tool_uses": 4, "tool_output_chars": 900}, {"billed_tokens": 100}])]
+        report = opt.summarise_rounds(events)
+        self.assertEqual(report["reviewer_runs"], 2)
+        self.assertEqual(report["tool_reported_runs"], 1)
+        self.assertEqual(report["tool_uses"], 4)
+        self.assertEqual(report["tool_uses_per_run"], 4.0)
+        self.assertEqual(report["tool_output_chars_per_run"], 900.0)
+
+    def test_a_reviewer_that_used_no_tools_is_in_it(self):
+        """A measured zero is the result this counting exists to find."""
+        events = [round_with([{"tool_uses": 6, "tool_output_chars": 600}, {"tool_uses": 0}])]
+        report = opt.summarise_rounds(events)
+        self.assertEqual(report["tool_reported_runs"], 2)
+        self.assertEqual(report["tool_uses_per_run"], 3.0)
+
+    def test_nobody_reporting_gives_no_average_rather_than_zero(self):
+        report = opt.summarise_rounds([round_event(reviewers=2, billed=500)])
+        self.assertEqual(report["tool_reported_runs"], 0)
+        self.assertIsNone(report["tool_uses_per_run"])
+        self.assertIsNone(report["tool_output_chars_per_run"])
+
+    def test_a_refused_round_contributes_nothing(self):
+        events = [round_with([{"tool_uses": 4}], status=opt.REFUSED)]
+        self.assertEqual(opt.summarise_rounds(events)["tool_reported_runs"], 0)
+
+    def test_a_boolean_is_not_a_count(self):
+        """``True`` is an ``int`` in Python, and would report one tool use."""
+        report = opt.summarise_rounds([round_with([{"tool_uses": True}])])
+        self.assertEqual(report["tool_reported_runs"], 0)
+
+    def test_design_rounds_are_counted_under_their_own_keys(self):
+        """The same split the billed figures already keep: a plan and a diff
+        are not the same unit of work."""
+        events = [
+            round_with([{"tool_uses": 2, "tool_output_chars": 100}]),
+            design_with([{"tool_uses": 10, "tool_output_chars": 5000}]),
+        ]
+        report = opt.summarise_rounds(events)
+        self.assertEqual(report["tool_uses_per_run"], 2.0)
+        self.assertEqual(report["design_tool_uses_per_run"], 10.0)
+        self.assertEqual(report["design_tool_output_chars_per_run"], 5000.0)
+
+
 @unittest.skipUnless(has_git(), "git is required")
 class TestTheReportCommand(IsolatedCase):
     def setUp(self):
@@ -886,6 +953,23 @@ class TestTheReportCommand(IsolatedCase):
         self.workspace.record_event("review", "ok", round_event())
         _, out, _ = run_cli("summary")
         self.assertNotIn("Optimization:", out)
+
+    def test_the_tool_row_prints_the_denominator_it_divided_by(self):
+        """Uses per run over half a panel is a different claim from the same
+        figure over all of it, and only the count beside it says which."""
+        event = round_with([{"tool_uses": 4, "tool_output_chars": 900}, {"billed_tokens": 5}])
+        self.workspace.record_event("review", "ok", event)
+        _, out, _ = run_cli("optimization", "report")
+        self.assertIn("Tool activity", out)
+        self.assertIn("1 of 2 run(s) reported", out)
+        self.assertIn("not source read", out)
+
+    def test_a_log_with_no_tool_activity_gets_no_tool_row(self):
+        """Nothing reported is not an average of zero, and a row of zeroes
+        would read as one."""
+        self.workspace.record_event("review", "ok", round_event(reviewers=2, billed=700))
+        _, out, _ = run_cli("optimization", "report")
+        self.assertNotIn("Tool activity", out)
 
     def test_the_estimate_says_it_is_one(self):
         self.workspace.record_event("review", "ok", round_event(reviewers=1, billed=900))

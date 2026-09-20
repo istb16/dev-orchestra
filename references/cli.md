@@ -256,6 +256,40 @@ well-cached stage above an expensive one. Use `cost` for money.
 the only part of the input this repository can shorten, which is why it is
 counted apart from the total.
 
+`tools` and `tool out` are what the delegated agent did with its tools: how
+many tool calls it made, and how many characters those tools printed back. They
+come from Claude Code's event stream; **Codex reports neither**, and the footer
+says how many runs the columns cover. In these two columns `-` means *the run
+did not report* and `0` means *the run reported using no tools* — a distinction
+the token columns do not make, and the one that makes a reviewer which opened
+nothing visible.
+
+**`tool out` is observed tool output, not source read.** A reviewer that runs
+`wc -l` on a two-hundred-line file is counted three characters; one that runs
+`cat` on the same file is counted the whole of it. The two are
+indistinguishable from outside the CLI, so **how much source a reviewer read is
+not knowable from here at all** — these figures are a proxy, useful for
+comparing like with like (the same reviewer id, before and after a change) and
+not for stating what was read.
+
+Every tool call is counted, whatever it is named, with the breakdown kept in
+`tool_uses_by_name` (`--json`, and in each run's `usage`). Counting only `Read`
+would undercount badly: review mode denies `Edit,Write,NotebookEdit` and
+nothing else, so `Bash`, `Grep` and `Glob` are all legitimate ways to read a
+file — and the run measured while designing this read a file with `wc -l` and
+never called `Read`.
+
+A run recorded before these counts existed cannot say whether it used tools,
+and is reported that way rather than as having used none. The first run written
+into such an account creates `tool_reported_runs` -- whether or not it reports
+tools itself -- so the count of runs that predate counting is carried in
+`tool_unknown_runs` instead of being read off a missing key, and the caveat
+survives every run recorded afterwards.
+
+A Claude role configured with `options.output_format: json` reports no tool
+activity either: that format prints one `result` object and never emits a tool
+event, so its runs are `-` rather than a measured `0`.
+
 ```bash
 dev-orchestra tokens show
 dev-orchestra tokens show --json
@@ -319,6 +353,24 @@ the code-review figures they have always been; the design ones are
 `design_billed_tokens` and `design_billed_per_round`. `design_rounds` counts
 the rounds that *ran*: one that failed or was abandoned after a kill billed
 nothing, so it is neither a round here nor a divisor under one.
+
+Where the reviewers reported what they did with their tools, a block follows:
+
+```
+Tool activity, per run and only over the runs that reported it:
+  code review            6.5 use(s)/run, 41,300.0 observed output chars/run (4 of 8 run(s) reported)
+```
+
+The denominator is `tool_reported_runs`, never `reviewer_runs`, and it is
+printed for that reason: Codex reports no tool activity, so dividing by the
+whole panel would halve the figure for no reason but the panel's composition —
+and the comparison these numbers exist for would move whenever a reviewer is
+added or dropped. Nothing reported means no row rather than a row of zeroes.
+
+**Observed output is what the tools printed back, not source read**; `wc -l`
+returns three characters for a two-hundred-line file. In `--json`:
+`tool_reported_runs`, `tool_uses`, `tool_output_chars`, `tool_uses_per_run`,
+`tool_output_chars_per_run`, and the `design_`-prefixed five beside them.
 
 When every round escalated, the report says so outright: the level as
 configured never applied, and the patterns that did it are named. A dial

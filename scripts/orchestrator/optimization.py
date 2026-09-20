@@ -382,6 +382,7 @@ def summarise_rounds(events: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
     patterns: Dict[str, int] = {}
     escalated = reduced = refused = unrecorded = 0
     reviewer_runs = measured_runs = billed = 0
+    tool_runs = tool_uses = tool_chars = 0
 
     for event in rounds:
         plan = event["optimization"]
@@ -407,13 +408,22 @@ def summarise_rounds(events: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
         reviewer_runs += runs
         measured_runs += reported
         billed += spent
+        said, called, printed = _reviewer_tools(event)
+        tool_runs += said
+        tool_uses += called
+        tool_chars += printed
 
     design_runs = design_measured = design_billed = 0
+    design_tool_runs = design_tool_uses = design_tool_chars = 0
     for event in design:
         runs, reported, spent = _reviewer_spend(event)
         design_runs += runs
         design_measured += reported
         design_billed += spent
+        said, called, printed = _reviewer_tools(event)
+        design_tool_runs += said
+        design_tool_uses += called
+        design_tool_chars += printed
 
     ran = len(rounds) - refused
     per_round = billed // ran if (ran and billed) else None
@@ -441,7 +451,55 @@ def summarise_rounds(events: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
         "design_measured_runs": design_measured,
         "design_billed_tokens": design_billed,
         "design_billed_per_round": design_per_round,
+        # Per *run*, over the runs that reported -- never over ``reviewer_runs``.
+        # None rather than zero where nothing reported: a panel of CLIs that do
+        # not count tools has not measured no tool use.
+        "tool_reported_runs": tool_runs,
+        "tool_uses": tool_uses,
+        "tool_output_chars": tool_chars,
+        "tool_uses_per_run": _per_run(tool_uses, tool_runs),
+        "tool_output_chars_per_run": _per_run(tool_chars, tool_runs),
+        "design_tool_reported_runs": design_tool_runs,
+        "design_tool_uses": design_tool_uses,
+        "design_tool_output_chars": design_tool_chars,
+        "design_tool_uses_per_run": _per_run(design_tool_uses, design_tool_runs),
+        "design_tool_output_chars_per_run": _per_run(design_tool_chars, design_tool_runs),
     }
+
+
+def _per_run(total: int, runs: int) -> Optional[float]:
+    """A per-run average, or None when nobody reported one to average."""
+    if not runs:
+        return None
+    return round(total / float(runs), 1)
+
+
+def _reviewer_tools(event: Dict[str, Any]) -> Tuple[int, int, int]:
+    """One round's reported tool activity: runs that said, calls, output chars.
+
+    The first figure is the denominator, and it is not ``reviewer_runs``.
+    Codex reports no tool activity at all, so dividing a Claude reviewer's
+    tool calls by a mixed panel halves the figure for no reason but the
+    panel's composition -- and the comparison this exists for would then move
+    whenever a reviewer is added or dropped.
+
+    An ``int`` is a report, zero included: a reviewer that opened nothing is
+    the result this measurement is looking for.
+    """
+    reported = uses = chars = 0
+    for run in event.get("reviewers") or []:
+        if not isinstance(run, dict):
+            continue
+        usage = run.get("usage") or {}
+        called = usage.get("tool_uses")
+        if isinstance(called, bool) or not isinstance(called, int):
+            continue
+        reported += 1
+        uses += called
+        output = usage.get("tool_output_chars")
+        if isinstance(output, int) and not isinstance(output, bool):
+            chars += output
+    return reported, uses, chars
 
 
 def _reviewer_spend(event: Dict[str, Any]) -> Tuple[int, int, int]:

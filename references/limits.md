@@ -176,6 +176,44 @@ A ledger written before this became a measured budget starts it at zero: what
 that ledger recorded was a wall clock, and reconstructing measurements from it
 would be inventing them.
 
+### What a delegated run's tool activity can and cannot say
+
+Nothing here bounds what a delegated agent reads — neither CLI accepts a limit
+on it — but a Claude run can be counted afterwards, from the events it already
+streams. `tokens show` and `optimization report` report two figures per run:
+how many tool calls it made, and how many characters those tools printed back.
+
+**Every tool call is counted, not just `Read`.** Review mode denies
+`Edit,Write,NotebookEdit` and nothing else, so `Bash`, `Grep` and `Glob` are
+all legitimate ways for a reviewer to read a file. The one run measured while
+designing this was asked to report the line count of `CONTRIBUTING.md` and did
+it with `Bash` (`wc -l`), never calling `Read` at all — counting `Read` alone
+would have recorded that reviewer as having opened nothing.
+
+**The character count is observed tool output, not source read.** That same
+`wc -l` returned three characters for a two-hundred-line file; `cat` on the
+same file would have returned all of it. From outside the CLI the two are
+indistinguishable, so **how much source a delegated run actually read is not
+knowable from here**. The figures are a proxy for it, good for comparing the
+same reviewer before and after a change and not for stating what was read.
+
+Three consequences worth keeping in mind:
+
+* **Codex reports neither.** Its adapter takes the final message from a file
+  and reads usage from a prose footer; counting tool calls out of prose would
+  match the code under review as readily as the CLI's own output. Its runs are
+  unreported, which is why every per-run figure is divided by the runs that
+  reported rather than by every run.
+* **Unreported is not zero.** A run that used no tools reports `0`; a run that
+  could not say reports nothing, and the output prints `-`. A role set to
+  `options.output_format: json` cannot say — that format prints one `result`
+  object and never emits a tool event. Runs recorded before these counts
+  existed cannot say either, and go on saying so after counted runs are
+  recorded beside them.
+* **The event shape belongs to the CLI.** A change to it degrades to
+  unreported rather than to a wrong number; `scripts/smoke_live.py` is what
+  catches the drift, since the unit tests read a fixture.
+
 ## No progress
 
 A budget stops a loop eventually. Repeating an outcome proves it was pointless
@@ -242,6 +280,10 @@ Honest limits of the above:
 * **Budgets are per project workspace**, keyed on `.ai/state.json`. Two
   concurrent workflows in one checkout share them.
 * **Nothing here bounds a single reviewer's token spend**, only its wall clock.
+* **Nothing bounds what a reviewer reads**, and how much it read cannot be
+  measured either. The counts above are tool calls and the output those tools
+  printed: `wc -l` and `cat` read the same file and report three characters
+  and the whole of it. Codex reports neither figure.
 * **The stream-json parse depends on an event schema** that the CLI owns. It
   degrades rather than failing — result event, then assistant text blocks, then
   raw stdout — but a format change would still cost the structured extras

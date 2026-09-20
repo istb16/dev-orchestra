@@ -1960,13 +1960,25 @@ def cmd_budget_reset(args: argparse.Namespace) -> int:
     return 0
 
 
-_TOKEN_ROW = "  %-18s %5s %9s %9s %9s %9s %9s"
+_TOKEN_ROW = "  %-18s %5s %9s %9s %9s %9s %9s %7s %9s"
 
 
 def _token_row(name: str, account: Dict[str, Any]) -> str:
     def num(field: str) -> str:
         value = int(account.get(field) or 0)
         return "{:,}".format(value) if value else "-"
+
+    def tool(field: str) -> str:
+        """Unreported prints ``-``; a measured zero prints ``0``.
+
+        ``num`` renders both as ``-``, which is right for tokens -- a run that
+        billed nothing did not happen -- and wrong here: a reviewer that opened
+        no files is a result, and the finding this whole count exists to
+        produce. Only ``tool_reported_runs`` separates the two.
+        """
+        if not int(account.get("tool_reported_runs") or 0):
+            return "-"
+        return "{:,}".format(int(account.get(field) or 0))
 
     runs = "%s/%s" % (account.get("measured_runs") or 0, account.get("runs") or 0)
     cost = float(account.get("cost_usd") or 0.0)
@@ -1978,6 +1990,8 @@ def _token_row(name: str, account: Dict[str, Any]) -> str:
         num("total_tokens"),
         num("billed_tokens"),
         ("$%.4f" % cost) if cost else "-",
+        tool("tool_uses"),
+        tool("tool_output_chars"),
     )
 
 
@@ -1994,7 +2008,8 @@ def cmd_tokens_show(args: argparse.Namespace) -> int:
         _out("No delegated runs recorded yet.")
         return 0
 
-    _out(_TOKEN_ROW % ("stage", "meas.", "input", "output", "total", "billed", "cost"))
+    header = ("stage", "meas.", "input", "output", "total", "billed", "cost", "tools", "tool out")
+    _out(_TOKEN_ROW % header)
     for stage, account in sorted(report["by_stage"].items()):
         _out(_token_row(stage, account))
     _out(_token_row("ALL", totals))
@@ -2010,6 +2025,33 @@ def cmd_tokens_show(args: argparse.Namespace) -> int:
         _out(
             "Prompt text this repo composed: %s chars over %d run(s). "
             "That is the part it can shorten." % ("{:,}".format(chars), totals["runs"])
+        )
+    reported_tools = int(totals.get("tool_reported_runs") or 0)
+    if reported_tools:
+        _out(
+            "`tools` counts every tool call, whatever it was called. `tool out` is what "
+            "those tools printed back -- not source read: `wc -l` returns 3 characters "
+            "for a 200-line file and `cat` returns the file. How much of this repository "
+            "a delegated run actually read is not knowable from here."
+        )
+    unknown_tools = int(totals.get("tool_unknown_runs") or 0)
+    silent_tools = max(int(totals["runs"]) - reported_tools - unknown_tools, 0)
+    if unknown_tools:
+        # A run recorded before this was counted cannot say whether it used
+        # tools, and "it reported no tool activity" would be a claim about it.
+        # Said beside the count below rather than instead of it, now that
+        # ``silent_tools`` subtracts these out: a panel with a legacy stage and
+        # a Codex stage has both kinds, and the two numbers plus the reported
+        # ones account for every run.
+        _out(
+            "%d of %d run(s) predate tool counting and cannot say whether they used "
+            "tools, so the tool columns leave them out. That is not the same as "
+            "having used none." % (unknown_tools, totals["runs"])
+        )
+    if silent_tools:
+        _out(
+            "%d of %d run(s) reported no tool activity (Codex does not); the tool "
+            "columns cover only the runs that did." % (silent_tools, totals["runs"])
         )
     if not report["complete"]:
         silent = int(totals["runs"]) - int(totals["measured_runs"])
@@ -2131,6 +2173,20 @@ def cmd_optimization_report(args: argparse.Namespace) -> int:
         _out(_OPT_ROW % ("design review", design_row))
     elif report["billed_per_round"]:
         _out("  %s billed per round that ran" % "{:,}".format(report["billed_per_round"]))
+    if report["tool_reported_runs"] or report["design_tool_reported_runs"]:
+        _out("")
+        _out("Tool activity, per run and only over the runs that reported it:")
+        if report["tool_reported_runs"]:
+            row = _tools_row(report, "", report["reviewer_runs"])
+            _out(_OPT_ROW % ("code review", row))
+        if report["design_tool_reported_runs"]:
+            row = _tools_row(report, "design_", report["design_reviewer_runs"])
+            _out(_OPT_ROW % ("design review", row))
+        _out("  Divided by the runs that reported it, never by every reviewer run:")
+        _out("  Codex reports none, and a mixed panel would otherwise halve the figure")
+        _out("  for no reason but its composition.")
+        _out("  Observed output is what the tools printed back, not source read: `wc -l`")
+        _out("  returns 3 characters for a 200-line file and `cat` returns the file.")
     if report["estimated_saving"]:
         _out("")
         _out(
@@ -2165,6 +2221,21 @@ def _runs_row(runs: int, reported: int, billed: int, rounds: int, per_round: Opt
     if per_round:
         row += ", %s each" % "{:,}".format(per_round)
     return row
+
+
+def _tools_row(report: Dict[str, Any], prefix: str, runs: int) -> str:
+    """One stage's tool activity, with the denominator it was divided by.
+
+    The denominator is printed because it is the part that can mislead: "6.5
+    uses/run" over half a panel is a different claim from the same figure over
+    all of it, and only the count says which.
+    """
+    return "%s use(s)/run, %s observed output chars/run (%d of %d run(s) reported)" % (
+        report["%stool_uses_per_run" % prefix],
+        "{:,.1f}".format(report["%stool_output_chars_per_run" % prefix]),
+        report["%stool_reported_runs" % prefix],
+        runs,
+    )
 
 
 def cmd_progress_record(args: argparse.Namespace) -> int:

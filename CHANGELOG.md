@@ -10,6 +10,66 @@ The public surface covered by that promise is: the configuration schema, the
 
 ## [Unreleased]
 
+### Added
+
+- **What a delegated run did with its tools is now counted.** Reducing what
+  reviewers read is the point of the work this belongs to, and there was no
+  way to measure it at all. A Claude run's `usage` gains `tool_uses`,
+  `tool_uses_by_name` and `tool_output_chars`, read from the `tool_use` and
+  `tool_result` blocks the CLI already streams: the breakdown from the names
+  on the calls, the characters as one total over the results -- one whose call
+  the stream never showed included rather than dropped. `tokens show` gains a
+  `tools` and a `tool out` column, `optimization report` a per-run block, and
+  `scripts/smoke_live.py` a check that a real run still reports it -- the
+  event shape is the CLI's to change, and the unit tests read a fixture.
+
+  **Every tool call is counted, not just `Read`.** Review mode denies
+  `Edit,Write,NotebookEdit` and nothing else, so `Bash`, `Grep` and `Glob` are
+  all legitimate ways to read a file: the run this was measured against read a
+  file with `wc -l` and never called `Read`, and counting `Read` alone would
+  have recorded it as having opened nothing.
+
+  **`tool_output_chars` is observed tool output, not source read.** That
+  `wc -l` returned three characters for a two-hundred-line file; `cat` would
+  have returned all of it, and the two are indistinguishable from outside the
+  CLI. How much source a reviewer read is not knowable from here, and the
+  docs say so rather than letting the figure be read as if it were.
+
+  **Codex reports none of it**, by design: its usage comes from a prose
+  footer, and matching prose for tool calls would match the code under review.
+  So the ledger counts `tool_reported_runs` beside `runs`, and every per-run
+  figure is divided by it -- a mixed panel would otherwise halve the figure for
+  no reason but its composition. In the two new columns `-` means *did not
+  report* and `0` means *reported using no tools*; a run recorded before this
+  existed is reported as unable to say, never as having used none, and it goes
+  on saying so once later runs are recorded beside it. The absence of
+  `tool_reported_runs` is what marked those runs, and the first run recorded
+  into such an account converts it once and for all: it stamps how many runs
+  predate counting into `tool_unknown_runs` *and* creates `tool_reported_runs`
+  at zero, whether or not that run itself reports tools. A panel can therefore
+  hold both kinds at once -- a stage that predates counting and a Codex stage
+  that reports none -- and `tokens show` says both things rather than the first
+  of them.
+
+  Only what the CLI streams as a stream is counted: `output_format: json`
+  prints a single `result` object and never emits a tool event, so such a run
+  is unreported rather than a measured zero.
+
+  Additions only: `usage` keys an older reader ignores, ledger keys older
+  code skips as unknown (`_accumulate` walks a fixed list), and two columns.
+  Nothing about what is sent to a provider changed -- this stage only
+  observes, and the prompts come out byte-identical.
+
+### Fixed
+
+- **A run's charge or its event could be lost when two ended at once.**
+  `record_event` rewrites the whole state file to append one line, and the
+  ledger lives in that file: unlocked, it read the state, another process
+  committed a charge, and it wrote its own copy back over it. Measured with
+  eight concurrent charges, seven landed. `record_event` now appends under the
+  state lock, and `Ledger.end` writes the charge and its event together under
+  one hold of it rather than reading the state back after releasing it.
+
 ## [0.8.0] - 2026-09-19
 
 ### Added

@@ -205,8 +205,33 @@ class ClaudeProvider(Provider):
         return text, stderr
 
     def parse_usage(self, outcome: ExecOutcome, mode: str) -> Optional[Usage]:
-        """The token counts the CLI puts on its own ``result`` event."""
-        return parse_stream_usage(outcome.stdout)
+        """The token counts the CLI puts on its own ``result`` event.
+
+        The tool counts come from the same stream, and from different events,
+        so they are read apart and folded in here: a run can stream tool calls
+        and end without a usable ``result`` event, and that run still used the
+        tools it used.
+
+        Decoded once, and both readers take the events. Reading the invoice and
+        reading the tool calls from the same string meant decoding a review
+        stream twice -- and this exists to measure the runs whose streams are
+        largest, where that is the one place the cost is worth avoiding.
+
+        There is no per-name character breakdown: nothing aggregates one, and
+        a field serialised into every run's event that can never be read back
+        is a cost with no reader. The characters are one total.
+        """
+        events = _stream_events(outcome.stdout)
+        usage = _usage_from_events(events)
+        tools = _tools_from_events(events)
+        if tools is None:
+            return usage
+        if usage is None:
+            usage = Usage(source="claude stream events")
+        usage.tool_uses = tools["tool_uses"]
+        usage.tool_uses_by_name = tools["tool_uses_by_name"]
+        usage.tool_output_chars = tools["tool_output_chars"]
+        return usage
 
 
 def _stream_events(stdout: str) -> List[Dict[str, Any]]:
@@ -276,8 +301,16 @@ def parse_stream_usage(stdout: str) -> Optional[Usage]:
 
     Returns None when this was not a stream, or was a stream carrying no usage
     -- absent is reported as absent, never as zero.
+
+    Takes the raw output; :func:`_usage_from_events` is the same reader over an
+    already-decoded stream, for the caller that needs both readers at once.
     """
-    for event in reversed(_stream_events(stdout)):
+    return _usage_from_events(_stream_events(stdout))
+
+
+def _usage_from_events(events: List[Dict[str, Any]]) -> Optional[Usage]:
+    """:func:`parse_stream_usage` over decoded events."""
+    for event in reversed(events):
         if event.get("type") != "result":
             continue
         usage = event.get("usage")
@@ -295,6 +328,117 @@ def parse_stream_usage(stdout: str) -> Optional[Usage]:
         )
         return parsed if parsed.measured or parsed.cost_usd is not None else None
     return None
+
+
+#: Event types only a real stream emits. ``result`` is left out on purpose:
+#: ``output_format: json`` prints one of those and nothing else, and it is a
+#: format that never reports a tool either way.
+_STREAM_EVENT_TYPES = ("system", "assistant", "user")
+
+
+def parse_stream_tools(stdout: str) -> Optional[Dict[str, Any]]:
+    """Count what a stream-json run did with its tools.
+
+    Every ``tool_use`` block is counted, whatever it is called. Counting only
+    ``Read`` would undercount badly: review mode denies ``Edit,Write,
+    NotebookEdit`` and nothing else, so ``Bash``, ``Grep`` and ``Glob`` are all
+    legitimate ways to read a file -- and the run measured while designing this
+    read ``CONTRIBUTING.md`` with ``Bash`` and no ``Read`` at all. The breakdown
+    by name is kept because the total alone cannot say which.
+
+    The character count is of what the tools printed back, one total over every
+    ``tool_result`` in the stream -- including one whose ``tool_use`` the stream
+    never showed, which is counted rather than dropped. **It is not how much
+    source the agent read**: ``wc -l`` on a two-hundred-line file returns three
+    characters, ``cat`` on the same file returns all of it, and the two look
+    identical from here.
+
+    Returns None when this was not a stream at all -- absent is reported as
+    absent, never as a measured zero.
+
+    Takes the raw output; :func:`_tools_from_events` is the same reader over an
+    already-decoded stream, for the caller that needs both readers at once.
+    """
+    return _tools_from_events(_stream_events(stdout))
+
+
+def _tools_from_events(events: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """:func:`parse_stream_tools` over decoded events."""
+    # What was actually seen, not "did anything parse". ``output_format: json``
+    # is a documented, validated option, and it prints one compact ``result``
+    # object -- parseable, and no stream. Reporting zeros for it would record
+    # the one thing these counts must never claim: a measured zero for a format
+    # that never emits a tool event. A stream-json run always emits ``system``
+    # and ``assistant`` events, so a stream that genuinely used no tools still
+    # reports its zero.
+    #
+    # Asked as "was one of these seen", not "was anything other than a result
+    # seen": an object with no ``type`` at all answers the second question yes,
+    # so an unrecognised format got counted as a stream that used no tools.
+    if not any(event.get("type") in _STREAM_EVENT_TYPES for event in events):
+        return None
+
+    uses = 0
+    uses_by_name: Dict[str, int] = {}
+    chars = 0
+
+    for event in events:
+        for block in _content_blocks(event):
+            kind = block.get("type")
+            if kind == "tool_use":
+                name = block.get("name")
+                name = name if isinstance(name, str) and name else "unknown"
+                uses += 1
+                uses_by_name[name] = uses_by_name.get(name, 0) + 1
+            elif kind == "tool_result":
+                # Totalled, not attributed to the call that produced it: the
+                # per-name character breakdown was bookkeeping on every block
+                # of every stream that no caller ever read.
+                chars += _text_length(block.get("content"))
+
+    return {
+        "tool_uses": uses,
+        "tool_uses_by_name": uses_by_name,
+        "tool_output_chars": chars,
+    }
+
+
+def _content_blocks(event: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """The content blocks of an event, from whichever level carries them.
+
+    ``assistant`` and ``user`` events wrap theirs in ``message``; the envelope
+    is read as well so that a stream putting them one level up is not silently
+    counted as no tool activity.
+    """
+    blocks: List[Dict[str, Any]] = []
+    for holder in (event.get("message"), event):
+        content = holder.get("content") if isinstance(holder, dict) else None
+        if isinstance(content, list):
+            blocks.extend(block for block in content if isinstance(block, dict))
+            break
+    return blocks
+
+
+def _text_length(content: Any) -> int:
+    """How many characters of text a ``tool_result`` carried.
+
+    ``content`` is a plain string on some results and a list of blocks on
+    others, so both are measured. A block with no text -- an image, say -- is
+    counted as the nothing it adds to what the agent read.
+    """
+    if isinstance(content, str):
+        return len(content)
+    if not isinstance(content, list):
+        return 0
+    total = 0
+    for block in content:
+        if isinstance(block, str):
+            total += len(block)
+        elif isinstance(block, dict):
+            text = block.get("text")
+            if isinstance(text, str):
+                total += len(text)
+    return total
 
 
 def _count(value: Any) -> Optional[int]:
