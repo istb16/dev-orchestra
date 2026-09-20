@@ -85,6 +85,7 @@ Enforced by the action, refusing with **exit code 3**.
 | --- | --- | --- |
 | Review rounds | `review.max_review_iterations` (2) | `review run` |
 | Design review rounds | `review.design.max_iterations` (2) | `review run --design` |
+| Change size | `review.context.max_chars` (400,000 chars) | `review run`, `review run --design` |
 | Attempts per stage | `budgets.architect` (3), `.implementer` (5), `.review_fixer` (4), `.test` (8) | `run <role>`, `budget consume <stage>` |
 | Delegated runs in a workflow | `budgets.total_delegated_runs` (40) | every `run` |
 | Delegated runtime | `budgets.max_runtime_seconds` (14400) | `run <role>`, `review run`, `review run --design`, `budget consume` |
@@ -130,6 +131,49 @@ budgets and account.
 
 `--force` overrides a refusal. It is there for a human who has decided to
 override; the skill tells the orchestrator not to reach for it.
+
+### A change too big to review
+
+`review.context.max_chars` (400,000) is the most change body a round will send
+at all: the diff for a code round, the plan **and the request it answers** for
+a design one — both go into every reviewer's prompt whole, so measuring only
+the plan would let a round past the limit on a technicality. Over it,
+`review run` exits 3 before any reviewer starts, before the round is charged,
+and — on the design path — before the plan is frozen, so the reports and triage
+of the previous round survive the refusal.
+
+400,000 characters is roughly 100k tokens: half a 200k window spent on the
+change alone, and four times the largest prompt this repository has ever
+recorded (99,814 chars). **The default refuses nothing anyone here has run.**
+Characters are the unit because they are the unit everything else measures in
+(`MAX_INLINE_DIFF_CHARS`, `prompt_chars`), and because the standard library
+cannot count tokens. The conversion is not constant: CJK-heavy text is two to
+four times as many tokens per character, so the same budget is that much looser
+for it.
+
+This is a refusal rather than a trim. Dropping hunks to fit would hand a
+reviewer a change it cannot judge — nothing in the output would say which
+parts were never shown — so the tool says *not reviewed* instead of calling an
+incomplete review complete. The ways under the limit are all a person's:
+`--base <rev>`, `review.exclude`, splitting the change, or a shorter plan.
+
+**`--force` is the human's, and in an automated workflow that means no review
+runs at all.** The skill tells the orchestrator to report a refusal and stop,
+so a change over `max_chars` ends the run with nothing reviewed, and that is
+what the orchestrator reports. `status` answers `stop-and-report` until a round
+actually reviews the change — a later refusal does not clear it, and neither
+does bookkeeping — so a clean consolidation from an earlier round cannot be
+mistaken for this change having been reviewed.
+
+When a human does force it, the round runs and every record of it says so:
+`over_budget` on each reviewer entry and on `consolidated.json`'s `snapshot`
+block, a `Change:` line in `consolidated.md`, and a line in `review status`.
+What it does **not** promise is that forcing makes every reviewer `partial` —
+that depends on the inline limit, not on this one. With the defaults the two
+coincide, because anything over 400,000 chars is far over the 120,000-char
+inline limit and does go over as a file; with `max_chars` set below 120,000 a
+forced round is over budget and still delivered inline. The refusal message
+says which of the two applies to the change in front of it.
 
 ### What the runtime budget counts
 
@@ -280,6 +324,9 @@ Honest limits of the above:
 * **Budgets are per project workspace**, keyed on `.ai/state.json`. Two
   concurrent workflows in one checkout share them.
 * **Nothing here bounds a single reviewer's token spend**, only its wall clock.
+  `review.context.max_chars` bounds what is *sent*, in characters, which is a
+  different thing from tokens and a different thing again from what the
+  reviewer then goes and reads for itself.
 * **Nothing bounds what a reviewer reads**, and how much it read cannot be
   measured either. The counts above are tool calls and the output those tools
   printed: `wc -l` and `cat` read the same file and report three characters
