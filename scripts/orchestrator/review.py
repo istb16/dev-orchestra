@@ -38,9 +38,6 @@ SEVERITIES = ("critical", "high", "medium", "low")
 SEVERITY_RANK = {name: index for index, name in enumerate(SEVERITIES)}
 TRIAGE_STATUSES = ("accepted", "rejected", "duplicate", "needs-investigation", "needs-triage")
 
-#: Inline the diff up to this size; beyond it, reviewers read the file instead.
-MAX_INLINE_DIFF_CHARS = 120_000
-
 #: Files whose diff is withheld from reviewers by default.
 #:
 #: A reviewer reads a diff to judge code somebody wrote. None of these were
@@ -1017,26 +1014,58 @@ class BuiltPrompt(NamedTuple):
     change_chars: int
 
 
-def _delivery(change_text: str) -> str:
-    return _delivery_of(len(change_text))
+def default_inline_chars() -> int:
+    """The shipped ``review.context.inline_chars``, read where it is written.
+
+    Every default this tool has lives in ``default_config``, and this one is
+    read from there rather than copied next to the code that applies it: two
+    spellings of the same number are two answers the moment either moves.
+    Imported inside the function because ``config`` reaches back into this
+    module for ``DEFAULT_EXCLUDE``. A caller holding a configuration passes
+    its own number and never comes here.
+    """
+    from .config import default_config
+
+    return int(default_config()["review"]["context"]["inline_chars"])
 
 
-def _delivery_of(change_chars: int) -> str:
+def _inline_limit(inline_chars: Optional[int]) -> int:
+    """``None`` means the shipped default, as an explicit ``null`` does.
+
+    Every entry point below takes the limit as an optional argument and
+    resolves it through here, so "left unset" has one meaning in one place.
+    """
+    return default_inline_chars() if inline_chars is None else inline_chars
+
+
+def prompt_delivery(change_text: str, inline_chars: Optional[int] = None) -> str:
+    """Whether a change body goes into the prompt or over as a path.
+
+    One function and one number for both paths: the code review measures its
+    diff and the design review its plan, and a round that decided delivery
+    differently from the round beside it would record two things under one
+    name. ``None`` means the shipped default, which is what an explicit
+    ``null`` in the configuration means too.
+    """
+    return _delivery_of(len(change_text), inline_chars)
+
+
+def _delivery_of(change_chars: int, inline_chars: Optional[int] = None) -> str:
     """The same rule, for a caller that holds a size rather than the text.
 
     Split out for the refusal below, which has to say what forcing the round
     would get without building a 400,000-character string to ask.
     """
-    return "inline" if change_chars <= MAX_INLINE_DIFF_CHARS else "file"
+    return "inline" if change_chars <= _inline_limit(inline_chars) else "file"
 
 
 def over_context(change_chars: int, max_chars: int) -> bool:
     """Whether a change body is past the limit that refuses the round.
 
-    Inclusive on the limit, like ``_delivery``'s: the configured number is the
-    largest change that still runs. ``max_chars`` of zero or less is no limit,
-    which is what a caller reading a configuration that predates the setting
-    ends up with.
+    Inclusive on the limit, like ``prompt_delivery``'s: the configured number
+    is the largest change that still runs. ``max_chars`` of zero or less is no
+    limit, which is what a caller reading a configuration that predates the
+    setting ends up with.
     """
     return max_chars > 0 and change_chars > max_chars
 
@@ -1046,7 +1075,7 @@ def snapshot_chars(workspace: ws.Workspace) -> int:
 
     Characters, not the ``bytes`` already in the snapshot's metadata. The
     budget is about how much of a context window the change spends, which is
-    what every other size in this module counts -- ``MAX_INLINE_DIFF_CHARS``,
+    what every other size in this module counts -- ``inline_chars``,
     ``Usage.prompt_chars``. A UTF-8 byte count is a different number, and it
     is largest exactly where the difference matters most.
     """
@@ -1054,7 +1083,11 @@ def snapshot_chars(workspace: ws.Workspace) -> int:
 
 
 def over_budget_note(
-    budget_chars: int, max_chars: int, delivery_chars: int, design: bool = False
+    budget_chars: int,
+    max_chars: int,
+    delivery_chars: int,
+    inline_chars: Optional[int] = None,
+    design: bool = False,
 ) -> List[str]:
     """Why a round was refused for size, and what the reader can do about it.
 
@@ -1090,38 +1123,41 @@ def over_budget_note(
         "this change was not reviewed. Saying so is the point of the limit -- the "
         "alternative is calling an incomplete review complete.",
         "--force runs it anyway. It belongs to a human who has decided to pay for the "
-        "round, not to the orchestrator. %s" % _forced_consequence(delivery_chars),
+        "round, not to the orchestrator. %s" % _forced_consequence(delivery_chars, inline_chars),
     ]
 
 
-def _forced_consequence(delivery_chars: int) -> str:
+def _forced_consequence(delivery_chars: int, inline_chars: Optional[int] = None) -> str:
     """What forcing *this* round would record -- not what forcing records.
 
-    Whether the reviewers come back ``partial`` is decided by ``_delivery``
-    and the inline limit, never by this budget. With the shipped defaults a
-    change over ``max_chars`` is also far over ``MAX_INLINE_DIFF_CHARS`` and
-    every reviewer is partial; a ``max_chars`` configured below 120,000
-    refuses rounds whose body would still have gone into the prompt whole.
-    Promising partial there would be a promise this code does not keep.
+    Whether the reviewers come back ``partial`` is decided by
+    ``prompt_delivery`` and ``review.context.inline_chars``, never by this
+    budget. The shipped defaults make the two limits equal, so a change over
+    ``max_chars`` is over the inline limit too and every reviewer is partial
+    -- but that is a fact about *this* configuration, not about this code.
+    ``inline_chars`` raised above ``max_chars``, or ``max_chars`` lowered
+    below it, refuses rounds whose body would still have gone into the prompt
+    whole, and promising partial there would be a promise this code does not
+    keep. So it is computed, both ways, from the numbers actually in force.
 
-    So the size handed in is the one ``_delivery`` decides on -- the plan
+    The size handed in is the one ``prompt_delivery`` decides on -- the plan
     alone on the design path, where the budget counted the request too. A
     plan that fits inline is delivered inline however far the pair went over.
     """
-    if _delivery_of(delivery_chars) == "file":
+    limit = "{:,}".format(_inline_limit(inline_chars))
+    if _delivery_of(delivery_chars, inline_chars) == "file":
         return (
             "The round is then recorded as over budget, and every reviewer comes back "
-            "partial: the body is over the %s-char inline limit, so it goes over as a file."
-            % "{:,}".format(MAX_INLINE_DIFF_CHARS)
+            "partial: the body is over review.context.inline_chars (%s), so it goes over "
+            "as a file." % limit
         )
     return (
         "The round is then recorded as over budget. The body still fits in the prompt "
-        "(the inline limit is %s chars), so it is not partial for that reason."
-        % "{:,}".format(MAX_INLINE_DIFF_CHARS)
+        "(review.context.inline_chars is %s), so it is not partial for that reason." % limit
     )
 
 
-def _handover_note(change_chars: int) -> str:
+def _handover_note(change_chars: int, inline_chars: Optional[int] = None) -> str:
     """What a reviewer handed a path instead of a body is told.
 
     It states a fact and asks for nothing back. An earlier design had the
@@ -1135,18 +1171,23 @@ def _handover_note(change_chars: int) -> str:
     """
     return (
         "The change body is {:,} chars and is handed over as a file because it exceeds "
-        "the {:,}-char inline limit. This review is recorded as coverage-unverified "
+        "review.context.inline_chars ({:,}). This review is recorded as coverage-unverified "
         "whatever you answer. Read the whole file before judging; a paging tool needs "
-        "more than one call.".format(change_chars, MAX_INLINE_DIFF_CHARS)
+        "more than one call.".format(change_chars, _inline_limit(inline_chars))
     )
 
 
-def coverage_unverified_error(change_chars: int) -> str:
-    """The reason a ``partial`` run carries. Its findings are still real."""
+def coverage_unverified_error(change_chars: int, inline_chars: Optional[int] = None) -> str:
+    """The reason a ``partial`` run carries. Its findings are still real.
+
+    It names the limit as well as the size: the limit is configuration now,
+    so "over the inline limit" on its own no longer tells a reader which
+    number this round was measured against.
+    """
     return (
         "coverage unverified: the change body ({:,} chars) was handed over as a file, "
-        "not inlined (over {:,} chars). Findings kept; "
-        "not a clean review.".format(change_chars, MAX_INLINE_DIFF_CHARS)
+        "not inlined (over review.context.inline_chars, {:,}). Findings kept; "
+        "not a clean review.".format(change_chars, _inline_limit(inline_chars))
     )
 
 
@@ -1157,13 +1198,14 @@ def build_review_prompt(
     extra_context: str = "",
     template: Optional[str] = None,
     max_findings: int = DEFAULT_MAX_FINDINGS,
+    inline_chars: Optional[int] = None,
 ) -> BuiltPrompt:
     role = str(reviewer.get("role") or "general")
     guidance = ROLE_GUIDANCE.get(
         role,
         "Review as a %s specialist. Concrete, evidence-backed issues in that perspective only." % role,
     )
-    delivery = _delivery(diff_text)
+    delivery = prompt_delivery(diff_text, inline_chars)
     if delivery == "inline":
         diff_section = "```diff\n%s\n```" % diff_text.rstrip()
     else:
@@ -1171,7 +1213,7 @@ def build_review_prompt(
             "Diff too large to inline. Read it from this file, frozen for this review:\n\n"
             "    %s\n\nReview only what that diff contains." % workspace.relative(workspace.snapshot_path)
         )
-        diff_section += "\n\n" + _handover_note(len(diff_text))
+        diff_section += "\n\n" + _handover_note(len(diff_text), inline_chars)
     meta = ws.read_json(workspace.snapshot_meta_path, {}) or {}
     for note in (render_withheld(meta.get("withheld") or []), render_round_context(workspace, meta)):
         if note:
@@ -1196,6 +1238,7 @@ def build_design_review_prompt(
     request_text: str = "",
     extra_context: str = "",
     max_findings: int = DEFAULT_MAX_FINDINGS,
+    inline_chars: Optional[int] = None,
 ) -> BuiltPrompt:
     """The reviewer prompt for a plan, built from the frozen design snapshot.
 
@@ -1209,7 +1252,7 @@ def build_design_review_prompt(
         "Review the plan as a %s specialist. Concrete, evidence-backed issues in that "
         "perspective only." % role,
     )
-    delivery = _delivery(plan_text)
+    delivery = prompt_delivery(plan_text, inline_chars)
     if delivery == "inline":
         plan_section = "```markdown\n%s\n```" % plan_text.rstrip()
     else:
@@ -1217,7 +1260,7 @@ def build_design_review_prompt(
             "Plan too large to inline. Read it from this file, frozen for this review:\n\n"
             "    %s\n\nReview only what that plan contains." % workspace.relative(workspace.snapshot_path)
         )
-        plan_section += "\n\n" + _handover_note(len(plan_text))
+        plan_section += "\n\n" + _handover_note(len(plan_text), inline_chars)
     meta = ws.read_json(workspace.snapshot_meta_path, {}) or {}
     note = render_design_round_context(workspace, meta)
     if note:
@@ -1255,6 +1298,7 @@ class ReviewerRun:
         invoked: bool = False,
         delivery: str = "",
         change_chars: int = 0,
+        inline_chars: int = 0,
         snapshot: str = "",
         over_budget: bool = False,
         budget_chars: int = 0,
@@ -1282,6 +1326,13 @@ class ReviewerRun:
         #: "" for a run that fell over before there was a prompt to build.
         self.delivery = delivery
         self.change_chars = change_chars
+        #: What ``review.context.inline_chars`` was when ``delivery`` above was
+        #: decided. Recorded for the reason ``budget_chars`` is: the limit is
+        #: configuration and the shipped default is not the only answer, so a
+        #: reader of a ``partial`` round who has only the size cannot tell
+        #: whether it was a large change or a low limit that made it one.
+        #: 0 for a run that fell over before there was a prompt to build.
+        self.inline_chars = inline_chars
         #: Which snapshot this run was handed, stamped the way the reports are
         #: stamped and for the same reason: the reviewer table outlives the
         #: round it was written in, so an entry has to say what it answers for.
@@ -1313,6 +1364,7 @@ class ReviewerRun:
             "invoked": self.invoked,
             "delivery": self.delivery,
             "change_chars": self.change_chars,
+            "inline_chars": self.inline_chars,
             "snapshot": self.snapshot,
             "over_budget": self.over_budget,
             "budget_chars": self.budget_chars,
@@ -1332,6 +1384,7 @@ def run_reviews(
     prompt_for: Optional[Callable[[Dict[str, Any]], BuiltPrompt]] = None,
     over_budget: bool = False,
     budget_chars: int = 0,
+    inline_chars: Optional[int] = None,
 ) -> List[ReviewerRun]:
     """Run every configured reviewer against the frozen snapshot.
 
@@ -1349,6 +1402,12 @@ def run_reviews(
     ``budget_chars`` is the size that answer was decided on, for the same
     reason: on the design path the budget measured the plan and the request
     together, and only the caller knows the pair.
+
+    ``inline_chars`` is ``review.context.inline_chars``. It builds the
+    code-review prompt, is recorded on every entry, and words the ``partial``
+    verdict -- and when ``prompt_for`` builds the prompt instead, it must be
+    the number that callable was given, or the round would be measured
+    against one limit and report another.
     """
     if not reviewers:
         return []
@@ -1371,6 +1430,9 @@ def run_reviews(
     # Read once, before the fan-out: every run in this round answers for the
     # same snapshot, and its entry and its report are stamped with it alike.
     stamp = _snapshot_sha(workspace)
+    # Resolved once too, and for the same reason: every entry of this round
+    # records the limit it was measured against, and they must all record one.
+    limit = _inline_limit(inline_chars)
 
     def run_one(reviewer: Dict[str, Any]) -> ReviewerRun:
         reviewer_id = str(reviewer.get("id") or "reviewer")
@@ -1381,13 +1443,16 @@ def run_reviews(
         if prompt_for is not None:
             built = prompt_for(reviewer)
         else:
-            built = build_review_prompt(reviewer, workspace, diff_text, extra_context, template, max_findings)
+            built = build_review_prompt(
+                reviewer, workspace, diff_text, extra_context, template, max_findings, limit
+            )
         # Every run from here on knows what it was handed, and which snapshot it
         # was handed, failures included: a round is judged on what it sent, not
         # on what came back, and the entry has to say which round that was.
         carried = {
             "delivery": built.delivery,
             "change_chars": built.change_chars,
+            "inline_chars": limit,
             "snapshot": stamp,
             "over_budget": over_budget,
             "budget_chars": budget_chars,
@@ -1460,7 +1525,7 @@ def run_reviews(
         if warning:
             status, error = "unparsed", warning
         elif built.delivery == "file":
-            status, error = "partial", coverage_unverified_error(built.change_chars)
+            status, error = "partial", coverage_unverified_error(built.change_chars, limit)
         else:
             status, error = "ok", ""
         return ReviewerRun(
@@ -2125,11 +2190,29 @@ def _coverage(
         change = "complete"
 
     measured = [run for run in current if run.get("delivery")]
+    # Both numbers come off the entry that decided the mark -- the first one
+    # handed a file when there is one, any measured entry otherwise. The limit
+    # is no longer one number per round: ``--only`` re-runs a reviewer and
+    # ``_merge_runs`` puts the fresh entry ahead of the retained ones, so one
+    # snapshot's entries can carry limits from two configurations. Reading the
+    # pair off one entry, and that the one whose delivery made the round
+    # unverified, keeps it one round's two numbers and never one round's size
+    # against another's limit -- a line naming a limit the size beside it does
+    # not exceed contradicts itself.
+    decided = next(
+        (run for run in measured if str(run.get("delivery")) == "file"),
+        measured[0] if measured else None,
+    )
     return {
         "round": this_round,
         "change": change,
         "unverified_since": unverified_since,
-        "change_chars": int(measured[0].get("change_chars") or 0) if measured else None,
+        "change_chars": int(decided.get("change_chars") or 0) if decided else None,
+        # The limit the size beside it was measured against. ``null`` where
+        # ``change_chars`` is, and for a round recorded before the limit was
+        # configurable -- the answer was 120,000 then, but nothing wrote it
+        # down and this will not invent it.
+        "inline_chars": (int(decided.get("inline_chars") or 0) or None) if decided else None,
     }
 
 
@@ -2267,9 +2350,17 @@ def _coverage_line(coverage: Dict[str, Any], counts: Dict[str, Any]) -> str:
     state = coverage_state(coverage, counts)
     if state == "round_unverified":
         chars = coverage.get("change_chars")
+        size = "{:,}".format(chars) if chars else "size unrecorded"
+        # The limit rides along when the round recorded one, because it is
+        # configuration: "handed over as a file" says nothing on its own once
+        # the reader cannot assume which number decided that.
+        limit = coverage.get("inline_chars")
+        against = ""
+        if isinstance(limit, int) and limit:
+            against = " (review.context.inline_chars %s)" % "{:,}".format(limit)
         return (
             "- Coverage: round unverified -- the change body (%s chars) was handed over "
-            "as a file; not a clean review" % ("{:,}".format(chars) if chars else "size unrecorded")
+            "as a file%s; not a clean review" % (size, against)
         )
     if state == "no_reviewer":
         return (

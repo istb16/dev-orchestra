@@ -1112,6 +1112,7 @@ def _refuse_if_over_context(
     budget_chars: int,
     max_chars: int,
     delivery_chars: int,
+    inline_chars: int,
     force: bool,
     iteration: int,
     detail: Optional[Dict[str, Any]] = None,
@@ -1132,17 +1133,23 @@ def _refuse_if_over_context(
 
     ``budget_chars`` is what the limit measures and what the refusal records;
     ``delivery_chars`` is the body that would go into the prompt, and decides
-    only what forcing would do. They differ on the design path -- see
-    ``over_budget_note`` -- and both are passed on both paths.
+    only what forcing would do -- against ``inline_chars``, which is the other
+    limit and not this one. They differ on the design path -- see
+    ``over_budget_note`` -- and all three are passed on both paths.
     """
     if force or not review_mod.over_context(budget_chars, max_chars):
         return None
     event = {"iteration": iteration, "refused_by": "context", "reviewers": []}
     event.update(detail or {})
+    # The inline limit is not recorded here. It decided nothing about this
+    # round -- nothing was delivered -- and it only shapes the last line of the
+    # message below, which is about a round that does not exist yet.
     event["context"] = {"chars": budget_chars, "max_chars": max_chars}
     workspace.record_event(stage, opt_mod.REFUSED, event)
     design = stage == "design_review"
-    for line in review_mod.over_budget_note(budget_chars, max_chars, delivery_chars, design=design):
+    for line in review_mod.over_budget_note(
+        budget_chars, max_chars, delivery_chars, inline_chars, design=design
+    ):
         _err(line)
     return ledger_mod.EXIT_BUDGET_EXHAUSTED
 
@@ -1370,7 +1377,9 @@ def _run_design_review(args: argparse.Namespace, loaded: config_mod.LoadedConfig
     # The plan alone is a second, separate size: it is the only part ever
     # handed over as a file, so it -- and not the pair -- decides delivery and
     # what forcing this round may promise.
-    max_chars = int(loaded.context_settings().get("max_chars") or 0)
+    context_settings = loaded.context_settings()
+    max_chars = int(context_settings.get("max_chars") or 0)
+    inline_chars = int(context_settings.get("inline_chars") or 0)
     budget_chars = len(plan_text) + len(request_text)
     refusal = _refuse_if_over_context(
         workspace,
@@ -1378,6 +1387,7 @@ def _run_design_review(args: argparse.Namespace, loaded: config_mod.LoadedConfig
         budget_chars,
         max_chars,
         len(plan_text),
+        inline_chars,
         args.force,
         iteration,
         {"plan_chars": len(plan_text), "request_chars": len(request_text)},
@@ -1422,6 +1432,10 @@ def _run_design_review(args: argparse.Namespace, loaded: config_mod.LoadedConfig
             max_findings=max_findings,
             over_budget=over_budget,
             budget_chars=budget_chars,
+            # The same number to both: `prompt_for` decides the delivery and
+            # `run_reviews` records and words it, and a round that took them
+            # from two places would sooner or later take two different ones.
+            inline_chars=inline_chars,
             prompt_for=lambda reviewer: review_mod.build_design_review_prompt(
                 reviewer,
                 workspace,
@@ -1429,6 +1443,7 @@ def _run_design_review(args: argparse.Namespace, loaded: config_mod.LoadedConfig
                 request_text,
                 args.context or "",
                 max_findings,
+                inline_chars,
             ),
         )
     except review_mod.ReviewError as exc:
@@ -1577,7 +1592,9 @@ def cmd_review_run(args: argparse.Namespace) -> int:
 
     # After the gate, because a round the gate already refused has no reason to
     # be measured, and before anything is charged or run.
-    max_chars = int(loaded.context_settings().get("max_chars") or 0)
+    context_settings = loaded.context_settings()
+    max_chars = int(context_settings.get("max_chars") or 0)
+    inline_chars = int(context_settings.get("inline_chars") or 0)
     # Here the budget's size and the delivered body's size are the same diff,
     # and are passed as two arguments anyway: the design path's are not, and a
     # call site that reads differently there is one nobody compares.
@@ -1588,6 +1605,7 @@ def cmd_review_run(args: argparse.Namespace) -> int:
         budget_chars,
         max_chars,
         budget_chars,
+        inline_chars,
         args.force,
         iteration,
         {"optimization": plan.to_dict()},
@@ -1634,6 +1652,7 @@ def cmd_review_run(args: argparse.Namespace) -> int:
             max_findings=max_findings,
             over_budget=over_budget,
             budget_chars=budget_chars,
+            inline_chars=inline_chars,
         )
     except review_mod.ReviewError as exc:
         book.end(token, "failed", {"error": str(exc)})
@@ -1810,7 +1829,13 @@ def cmd_review_status(args: argparse.Namespace) -> int:
     # the same file -- they must not describe it differently.
     coverage = data.get("coverage")
     if not data:
-        coverage = {"round": "none", "change": "none", "unverified_since": None, "change_chars": None}
+        coverage = {
+            "round": "none",
+            "change": "none",
+            "unverified_since": None,
+            "change_chars": None,
+            "inline_chars": None,
+        }
     elif not isinstance(coverage, dict):
         coverage = None
     payload = {
@@ -1853,6 +1878,7 @@ def cmd_review_status(args: argparse.Namespace) -> int:
             coverage or {},
             counts,
             payload["iteration_budget_exhausted"],
+            _configured_inline_chars(loaded),
             args.design,
         ):
             _out(line)
@@ -1861,8 +1887,31 @@ def cmd_review_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def _configured_inline_chars(loaded: config_mod.LoadedConfig) -> int:
+    """``review.context.inline_chars``, resolved without trusting the file.
+
+    ``cmd_review_status`` loads with ``validate_result=False`` on purpose: it
+    is the one review command written to answer while the configuration is
+    broken. So the value here can be whatever a hand edit left behind --
+    ``400k``, a list, ``true`` -- and ``int()`` on it raises ``ValueError``,
+    which ``main`` does not catch. That is the command written to survive a
+    broken config dying on one, while every other command reports "invalid
+    configuration" and exits 2. Anything that is not a plain integer falls
+    back to the shipped default, which is what an unreadable setting is worth.
+    Thread any further setting into this command the same way.
+    """
+    value = loaded.context_settings().get("inline_chars")
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    return review_mod.default_inline_chars()
+
+
 def _coverage_advice(
-    coverage: Dict[str, Any], counts: Dict[str, Any], budget_spent: bool, design: bool = False
+    coverage: Dict[str, Any],
+    counts: Dict[str, Any],
+    budget_spent: bool,
+    inline_chars: int,
+    design: bool = False,
 ) -> List[str]:
     """What to do about an unverified coverage, if anything.
 
@@ -1883,28 +1932,59 @@ def _coverage_advice(
     code-review remedies can be aimed at it -- ``review snapshot`` writes the
     code snapshot and there is no ``--design`` form of it. The only thing that
     makes an oversize plan reviewable is a shorter plan.
+
+    ``inline_chars`` is the *configured* limit, not the one the round in the
+    report was measured against, because these lines are about the next run
+    and not the last one. It is also the second way out, and the one the
+    report itself cannot name: a limit is a setting, and a reader who decides
+    the prompt is worth paying for raises it rather than cutting the change up.
+
+    The recorded limit is read too, through the size beside it. A body handed
+    over as a file was over the limit of its own round, so a recorded size
+    that fits the configured one says the limit has been raised since -- and
+    then "the same snapshot gives the same answer" is false, splitting a
+    change that already fits is wasted work, and raising a limit the reader
+    has just raised is worse than saying nothing. That case gets its own line.
     """
     lines = []
     chars = coverage.get("change_chars")
     size = "{:,}".format(chars) if chars else "size unrecorded"
-    limit = "{:,}".format(review_mod.MAX_INLINE_DIFF_CHARS)
+    limit = "{:,}".format(inline_chars)
     # Counted over this snapshot, like the coverage value it is quoted beside.
     partial = review_mod.snapshot_reviewers(counts, "partial")
     state = review_mod.coverage_state(coverage, counts)
     mark = review_mod.unverified_phrase(coverage)
     if state == "round_unverified":
-        if design:
+        # ``coverage.change_chars`` is recorded for precisely this comparison.
+        # No check that the recorded limit differs is needed: the body went
+        # over as a file, so it was over the limit of its round, and a size at
+        # or under the configured one says that limit is not this one.
+        raised = isinstance(chars, int) and bool(chars) and inline_chars > 0 and chars <= inline_chars
+        if raised and design:
+            lines.append(
+                "not a clean review: %d reviewer(s) partial, the plan (%s chars) was handed over as "
+                "a file under a lower review.context.inline_chars. The limit is %s chars now, so "
+                "the plan fits inline: run the design round again." % (partial, size, limit)
+            )
+        elif raised:
+            lines.append(
+                "not a clean review: %d reviewer(s) partial, the change body (%s chars) was handed "
+                "over as a file under a lower review.context.inline_chars. The limit is %s chars now, "
+                "so this snapshot fits inline: run review run against it again." % (partial, size, limit)
+            )
+        elif design:
             lines.append(
                 "not a clean review: %d reviewer(s) partial, the plan (%s chars) was handed over "
                 "as a file. Re-running the same plan gives the same answer: shorten .ai/plan.md "
-                "to fit inline (<= %s chars), then run the design round again." % (partial, size, limit)
+                "to fit inline (<= %s chars), or raise review.context.inline_chars, then run the "
+                "design round again." % (partial, size, limit)
             )
         else:
             lines.append(
                 "not a clean review: %d reviewer(s) partial, the change body (%s chars) was handed "
                 "over as a file. Re-running the same snapshot gives the same answer: split the "
-                "change and review the parts, so each part fits inline (<= %s chars)."
-                % (partial, size, limit)
+                "change and review the parts, so each part fits inline (<= %s chars), or raise "
+                "review.context.inline_chars, then snapshot again." % (partial, size, limit)
             )
     elif state == "no_reviewer":
         if design:

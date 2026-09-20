@@ -23,10 +23,17 @@ from orchestrator import review as review_mod
 from orchestrator import workspace as ws
 from orchestrator.providers import mock as mock_mod
 
-#: Small enough to keep the fixtures small, and far under the inline limit --
-#: which is the point of several tests below: over this budget is not the same
-#: as over `MAX_INLINE_DIFF_CHARS`, and the code must not confuse the two.
+#: Small enough to keep the fixtures small, and under `INLINE_LIMIT` below --
+#: which is the point of several tests here: over this budget is not the same
+#: as over `review.context.inline_chars`, and the code must not confuse the
+#: two. The shipped defaults make them equal; these tests do not, because a
+#: rule only tested where its two inputs coincide is a rule nobody has tested.
 LIMIT = 2000
+
+#: The inline limit those tests configure, above `LIMIT` so that the band
+#: between the two exists at all: a body in it is refused by the budget and
+#: would still have gone into the prompt whole.
+INLINE_LIMIT = 3000
 
 PLAN = """# Plan
 
@@ -56,6 +63,15 @@ class MockPanelCase(IsolatedCase):
 
     def set_limit(self, chars=LIMIT):
         run_cli("config", "set", "review.context.max_chars", str(chars))
+
+    def set_inline_limit(self, chars=INLINE_LIMIT):
+        """Lower the inline limit as well, to keep the two apart.
+
+        Shipped, `inline_chars` equals `max_chars` and every refused round
+        would also have gone over as a file. Left that way here, the tests
+        below could not tell which limit any of these answers came from.
+        """
+        run_cli("config", "set", "review.context.inline_chars", str(chars))
 
     def events(self):
         return self.workspace.read_state().get("events") or []
@@ -192,13 +208,17 @@ class TestTheCodeRound(MockPanelCase):
 
     def test_forcing_a_body_that_still_fits_inline_is_not_partial(self):
         """The consequence is the inline limit's to decide, not this budget's.
-        With `max_chars` set below `MAX_INLINE_DIFF_CHARS` a forced round goes
-        into the prompt whole, and promising partial would be a promise the
-        code does not keep."""
+        With `max_chars` set below `review.context.inline_chars` a forced round
+        goes into the prompt whole, and promising partial would be a promise
+        the code does not keep. The shipped defaults make the two equal, so
+        this case exists only under a configuration -- which is exactly why the
+        message is computed rather than asserted."""
         self.set_limit()
+        self.set_inline_limit()
         self.body_of(LIMIT + 1)
         err = run_cli("review", "run")[2]
         self.assertIn("still fits in the prompt", err)
+        self.assertIn("review.context.inline_chars is 3,000", err)
         self.assertNotIn("comes back partial", err)
 
         code, out, _ = run_cli("review", "run", "--force")
@@ -210,16 +230,39 @@ class TestTheCodeRound(MockPanelCase):
 
     def test_forcing_a_body_over_the_inline_limit_is_partial_and_says_so_first(self):
         self.set_limit()
-        self.body_of(review_mod.MAX_INLINE_DIFF_CHARS + 1)
+        self.set_inline_limit()
+        self.body_of(INLINE_LIMIT + 1)
         err = run_cli("review", "run")[2]
         self.assertIn("every reviewer comes back partial", err)
+        self.assertIn("review.context.inline_chars (3,000)", err)
 
         code, out, _ = run_cli("review", "run", "--force")
         self.assertEqual(code, 1)
         self.assertIn("1 partial", out)
         data = ws.read_json(self.workspace.consolidated_json_path, {})
         self.assertEqual([run["status"] for run in data["reviewers"]], ["partial"])
+        self.assertEqual([run["inline_chars"] for run in data["reviewers"]], [INLINE_LIMIT])
         self.assertTrue(data["snapshot"]["over_budget"])
+
+    def test_the_shipped_defaults_make_a_forced_round_partial(self):
+        """One boundary, with nothing configured: at or under it the round runs
+        and is complete, over it it is refused, and forcing it is partial."""
+        self.body_of(400_001)
+        err = run_cli("review", "run")[2]
+        self.assertIn("every reviewer comes back partial", err)
+        self.assertIn("review.context.inline_chars (400,000)", err)
+
+    def test_an_inline_limit_above_the_budget_leaves_a_forced_round_complete(self):
+        """Allowed, and not a mistake: it says a body is only ever handed over
+        as a file on a round somebody forced past `max_chars` -- and not even
+        then, if it still fits."""
+        self.set_limit()
+        self.set_inline_limit(900_000)
+        self.body_of(LIMIT + 1)
+        self.assertEqual(run_cli("review", "run", "--force")[0], 0)
+        data = ws.read_json(self.workspace.consolidated_json_path, {})
+        self.assertEqual([run["delivery"] for run in data["reviewers"]], ["inline"])
+        self.assertEqual([run["status"] for run in data["reviewers"]], ["ok"])
 
     def test_status_stops_on_a_refusal_rather_than_reading_an_older_round(self):
         """The hole: a refusal leaves the previous consolidation in place, so
@@ -472,9 +515,10 @@ class TestTheDesignRound(MockPanelCase):
         only the plan is ever handed over as a file. A plan under the inline
         limit whose request takes the pair over the budget goes into every
         prompt whole, so promising partial would be a promise not kept."""
-        self.set_limit(review_mod.MAX_INLINE_DIFF_CHARS + 1000)
-        plan = PLAN + "p" * (review_mod.MAX_INLINE_DIFF_CHARS - len(PLAN))
-        self.assertEqual(len(plan), review_mod.MAX_INLINE_DIFF_CHARS)
+        self.set_limit(INLINE_LIMIT + 1000)
+        self.set_inline_limit()
+        plan = PLAN + "p" * (INLINE_LIMIT - len(PLAN))
+        self.assertEqual(len(plan), INLINE_LIMIT)
         self.write_plan(plan)
         self.write_request(2000)
 

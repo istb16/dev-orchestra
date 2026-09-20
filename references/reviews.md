@@ -275,8 +275,8 @@ it as such is the worst way for a review tool to fail.
 
 ## Coverage
 
-A change body over **120,000 characters** (`MAX_INLINE_DIFF_CHARS` in
-`review.py`) does not go into the prompt. The reviewer is handed the path of
+A change body over **`review.context.inline_chars`** (default 400,000
+characters) does not go into the prompt. The reviewer is handed the path of
 the frozen snapshot instead and asked to read it — and how much of it actually
 gets read is not knowable from here. Claude Code's `Read` stops at 2,000 lines
 by default, so a reviewer can answer `NO_FINDINGS` having seen a fifth of the
@@ -290,6 +290,15 @@ the guarantee that it saw the whole change. `partial` is counted apart from
 `failed` — `reviewers_ok`, `reviewers_partial` and `reviewers_failed` sum to
 `reviewers_total` — and `unparsed` wins over it, because a report nobody can
 read is the more specific fact.
+
+The default is the same number as `review.context.max_chars`, which leaves one
+boundary rather than two: at or under it the round runs and is complete, over
+it the round is refused, and a round forced past it is `partial`. Set
+`inline_chars` below `max_chars` and a band opens between the two where the
+round runs and is recorded `partial` — that is what the setting is for, and
+what it costs. Because the limit is configuration, every round records the
+number it was measured against: `coverage.inline_chars` in
+`consolidated.json`, and `inline_chars` on each reviewer entry.
 
 Those four count the whole reviewer table, which outlives the round on purpose
 (see below). `counts` carries the same four again as
@@ -362,6 +371,16 @@ is not and is dropped with the count it belonged to. Read the mark from
 **`coverage.change_chars`** — how many characters this round's change body was,
 as the runs recorded it (`null` when no run did).
 
+**`coverage.inline_chars`** — the `review.context.inline_chars` that size was
+measured against. Both numbers are read off the entry that decided the round's
+mark — the first reviewer handed a file, when there is one — so the pair is one
+round's two numbers and never one round's size against another's limit: after
+`--only`, entries of the same snapshot can carry limits from two
+configurations. `null` where `change_chars` is, and for a round recorded before
+the limit was configurable: it was 120,000 then, but nothing wrote it down and
+this does not invent it. Recorded because the limit is a setting — a `partial`
+round and a size alone do not say whether it was a large change or a low limit.
+
 **`snapshot.over_budget`** — beside `sha256` and `files`: whether this round was
 sent past `review.context.max_chars` by `--force`. Derived from the same
 entries, for the same reason — the limit and the flag belong to the run, not to
@@ -403,11 +422,18 @@ gets the same verdict:
 
 | State | What clears it |
 | --- | --- |
-| `round: unverified` | Split the change and review the parts, so that each body fits inline |
+| `round: unverified` | Split the change and review the parts, so that each body fits inline — or raise `review.context.inline_chars` and snapshot again, if the larger prompt is worth paying for |
 | `change: unverified`, `round: none` | `review run` — no reviewer has run against this snapshot, so nothing about it has been read yet |
 | `change: unverified`, this round complete, no reviewer `ok` | Re-run the reviewers that did not come back `ok` — this snapshot was inlined and read by nobody |
 | `change: unverified`, this round complete, some reviewer `ok` | `review snapshot --full` once the whole change fits inline, then `review run` — the round inlined the fix alone |
-| Any of them, on a design round | Shorten `.ai/plan.md` until it fits inline, then run the design round again — `review snapshot` writes the code snapshot and has no `--design` form |
+| Any of them, on a design round | Shorten `.ai/plan.md` until it fits inline (or raise `review.context.inline_chars`), then run the design round again — `review snapshot` writes the code snapshot and has no `--design` form |
+
+The first row has one exception, and `review status` says so instead: once
+`review.context.inline_chars` has been raised past the size the round recorded,
+the same snapshot *would* be inlined now, so it says the limit has changed and
+to run `review run` against it again. Splitting a change that already fits, or
+raising a limit already raised, is what the standing advice would otherwise
+tell the reader to do.
 
 The three middle rows are one mark with three different things missing, and
 naming the wrong one sends the reader to redo what they just did. So the state

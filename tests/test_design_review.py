@@ -18,7 +18,6 @@ from contextlib import redirect_stderr, redirect_stdout
 from helpers import IsolatedCase, has_git
 
 from orchestrator import cli
-from orchestrator import review as review_mod
 from orchestrator import workspace as ws
 
 #: `File:` names a plan section, which is what a design finding has instead of
@@ -83,6 +82,16 @@ class DesignReviewCase(IsolatedCase):
 
     def write_plan(self, text=PLAN):
         ws.write_text(self.workspace.plan_path, text)
+
+    def write_oversize_plan(self):
+        """A plan the round cannot inline, and the setting that makes it one.
+
+        The limit is lowered rather than the plan made enormous: delivery is
+        decided by `review.context.inline_chars` now, and 4,000 exercises the
+        same branch as the shipped 400,000 without a 400KB fixture.
+        """
+        run_cli("config", "set", "review.context.inline_chars", "4000")
+        self.write_plan(PLAN + "x" * 4_000)
 
     def write_request(self, text=REQUEST):
         ws.write_text(os.path.join(self.workspace.execution_dir, "design-request.md"), text)
@@ -194,7 +203,7 @@ class TestRunningIt(DesignReviewCase):
     def test_a_plan_too_large_to_inline_is_not_a_clean_round_either(self):
         """The change body of a design round is the plan itself, and the same
         rule applies to it: a reviewer handed a path is not a clean review."""
-        self.write_plan(PLAN + "x" * review_mod.MAX_INLINE_DIFF_CHARS)
+        self.write_oversize_plan()
         code, out, _ = run_cli("review", "run", "--design")
         self.assertEqual(code, 1)
         self.assertIn("PARTIAL", out)
@@ -208,19 +217,33 @@ class TestRunningIt(DesignReviewCase):
         form of it -- so `--base`, `review.exclude` and `--full` cannot be
         aimed at a design round at all. The only thing that makes an oversize
         plan reviewable is a shorter plan, and that is what has to be said."""
-        self.write_plan(PLAN + "x" * review_mod.MAX_INLINE_DIFF_CHARS)
+        self.write_oversize_plan()
         run_cli("review", "run", "--design")
         _, out, _ = run_cli("review", "status", "--design")
         self.assertIn("shorten .ai/plan.md", out)
+        self.assertIn("raise review.context.inline_chars", out)
         self.assertNotIn("snapshot", out)
         self.assertNotIn("--base", out)
         self.assertNotIn("review.exclude", out)
+
+    def test_status_says_the_limit_was_raised_rather_than_asking_for_a_shorter_plan(self):
+        """The plan-side remedy is a shorter plan, but not once the limit has
+        been raised past the size the round recorded: the same plan would be
+        inlined now, and telling the reader to shorten it is wasted work."""
+        self.write_oversize_plan()
+        run_cli("review", "run", "--design")
+        run_cli("config", "set", "review.context.inline_chars", "20000")
+        _, out, _ = run_cli("review", "status", "--design")
+        self.assertIn("under a lower review.context.inline_chars", out)
+        self.assertIn("run the design round again", out)
+        self.assertNotIn("shorten .ai/plan.md", out)
+        self.assertNotIn("gives the same answer", out)
 
     def test_a_revised_plan_that_fits_clears_the_whole_change(self):
         """Every design round is the whole plan -- there is no incremental
         design snapshot -- so a revision that fits inline really is the whole
         change being reviewed again."""
-        self.write_plan(PLAN + "x" * review_mod.MAX_INLINE_DIFF_CHARS)
+        self.write_oversize_plan()
         run_cli("review", "run", "--design")
         self.write_plan(REVISED_PLAN)
         code, _, _ = run_cli("review", "run", "--design")

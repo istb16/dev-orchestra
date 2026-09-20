@@ -132,14 +132,26 @@ def default_config() -> Dict[str, Any]:
             # lifts the cap, and null lets optimization.level decide. Nothing
             # that comes back is ever dropped.
             "max_findings": None,
-            # The largest change body a review round will send at all: the
-            # diff, or the plan and the request it answers. 400,000 chars is
-            # roughly 100k tokens -- half a 200k window spent on the change
-            # alone -- and four times the largest prompt this repository has
-            # recorded (99,814 chars), so it refuses nothing anyone has run.
-            # Over it, `review run` exits 3 rather than reviewing part of a
-            # change and calling the round complete.
-            "context": {"max_chars": 400_000},
+            # max_chars: the largest change body a review round will send at
+            # all -- the diff, or the plan and the request it answers. 400,000
+            # chars is roughly 100k tokens -- half a 200k window spent on the
+            # change alone -- and four times the largest prompt this repository
+            # has recorded (99,814 chars), so it refuses nothing anyone has
+            # run. Over it, `review run` exits 3 rather than reviewing part of
+            # a change and calling the round complete.
+            #
+            # inline_chars: how much of that body goes into the prompt itself.
+            # Equal to max_chars, and deliberately so: the 120,000 this
+            # replaces had no measured basis -- the prompt reaches the CLI on
+            # stdin, so no argv length is involved -- and what handing the body
+            # over as a file buys is a review this tool cannot verify. Equal
+            # means one boundary: at or under it the round runs and is
+            # complete, over it the round is refused, and a forced round is
+            # partial. Setting it lower is the explicit choice of somebody who
+            # will not pay for very large prompts, and costs them a `partial`
+            # round for every change between the two numbers; setting it higher
+            # than max_chars is allowed and means the same thing it always did.
+            "context": {"max_chars": 400_000, "inline_chars": 400_000},
             # Review the plan with the same panel before any code is written.
             # Off by default: turning it on adds a reviewer run per panel
             # member per round plus an architect re-run, which is a real cost
@@ -601,11 +613,17 @@ def validate(data: Dict[str, Any], known_providers: Optional[List[str]] = None) 
                 if not isinstance(context, dict):
                     problems.append("review.context: must be a mapping")
                 else:
-                    max_chars = context.get("max_chars")
-                    if max_chars is not None and (
-                        not isinstance(max_chars, int) or isinstance(max_chars, bool) or max_chars < 1
-                    ):
-                        problems.append("review.context.max_chars: must be a positive integer")
+                    # No cross-check between the two. `inline_chars` above
+                    # `max_chars` only says "nothing is ever handed over as a
+                    # file except a forced round", and below it says "I will
+                    # not pay for a prompt that large" -- both are things
+                    # somebody means, and neither is a mistake to warn about.
+                    for key in ("max_chars", "inline_chars"):
+                        value = context.get(key)
+                        if value is not None and (
+                            not isinstance(value, int) or isinstance(value, bool) or value < 1
+                        ):
+                            problems.append("review.context.%s: must be a positive integer" % key)
             exclude = review.get("exclude")
             if exclude is not None:
                 if not isinstance(exclude, list):

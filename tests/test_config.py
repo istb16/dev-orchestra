@@ -44,12 +44,22 @@ class TestDefaults(IsolatedCase):
     def test_the_context_budget_refuses_nothing_anyone_has_recorded(self):
         """400,000 chars is four times the largest prompt this repository has
         recorded, so shipping it changes no existing workflow."""
-        self.assertEqual(config_mod.default_config()["review"]["context"], {"max_chars": 400_000})
+        self.assertEqual(
+            config_mod.default_config()["review"]["context"],
+            {"max_chars": 400_000, "inline_chars": 400_000},
+        )
+
+    def test_the_two_limits_ship_equal_so_there_is_one_boundary(self):
+        """At or under it the round runs and is complete, over it the round is
+        refused, and a forced round is partial. Nothing in between."""
+        context = config_mod.default_config()["review"]["context"]
+        self.assertEqual(context["inline_chars"], context["max_chars"])
 
     def test_context_settings_are_filled_in_for_a_config_that_omits_them(self):
         self.write(".dev-orchestra.yaml", "version: 1\nreview:\n  max_review_iterations: 1\n")
         loaded = config_mod.load(self.project)
         self.assertEqual(loaded.context_settings()["max_chars"], 400_000)
+        self.assertEqual(loaded.context_settings()["inline_chars"], 400_000)
 
     def test_an_explicit_null_budget_means_the_default_not_no_limit(self):
         """`null` means "use the default" here because that is what it means
@@ -59,6 +69,17 @@ class TestDefaults(IsolatedCase):
         self.write(".dev-orchestra.yaml", "version: 1\nreview:\n  context:\n    max_chars: null\n")
         loaded = config_mod.load(self.project)
         self.assertEqual(loaded.context_settings()["max_chars"], 400_000)
+
+    def test_an_explicit_null_inline_limit_means_the_default_too(self):
+        self.write(".dev-orchestra.yaml", "version: 1\nreview:\n  context:\n    inline_chars: null\n")
+        loaded = config_mod.load(self.project)
+        self.assertEqual(loaded.context_settings()["inline_chars"], 400_000)
+
+    def test_naming_one_context_limit_keeps_the_other(self):
+        self.write(".dev-orchestra.yaml", "version: 1\nreview:\n  context:\n    inline_chars: 50000\n")
+        settings = config_mod.load(self.project).context_settings()
+        self.assertEqual(settings["inline_chars"], 50_000)
+        self.assertEqual(settings["max_chars"], 400_000)
 
     def test_naming_one_design_setting_keeps_the_other(self):
         """`review_settings` updates shallowly, which would drop
@@ -180,6 +201,31 @@ class TestValidation(IsolatedCase):
         data = config_mod.default_config()
         data["review"]["context"]["max_chars"] = "400000"
         self.assertTrue(any("review.context.max_chars" in p for p in config_mod.validate(data)))
+
+    def test_an_inline_limit_of_zero_is_rejected(self):
+        data = config_mod.default_config()
+        data["review"]["context"]["inline_chars"] = 0
+        self.assertTrue(any("review.context.inline_chars" in p for p in config_mod.validate(data)))
+
+    def test_a_non_integer_inline_limit_is_rejected(self):
+        data = config_mod.default_config()
+        data["review"]["context"]["inline_chars"] = "400000"
+        self.assertTrue(any("review.context.inline_chars" in p for p in config_mod.validate(data)))
+
+    def test_an_inline_limit_above_the_budget_validates(self):
+        """Not a mistake. It says "nothing is ever handed over as a file
+        except a round a human forced", which is a thing somebody means."""
+        data = config_mod.default_config()
+        data["review"]["context"]["inline_chars"] = 900_000
+        self.assertEqual([p for p in config_mod.validate(data) if "review.context" in p], [])
+
+    def test_an_inline_limit_below_the_budget_validates(self):
+        """Also not a mistake: it is what somebody who will not pay for very
+        large prompts writes, and it costs them a `partial` round between the
+        two numbers rather than a warning here."""
+        data = config_mod.default_config()
+        data["review"]["context"]["inline_chars"] = 120_000
+        self.assertEqual([p for p in config_mod.validate(data) if "review.context" in p], [])
 
     def test_context_must_be_a_mapping(self):
         data = config_mod.default_config()

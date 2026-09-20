@@ -98,7 +98,12 @@ class TestDocumentedYaml(IsolatedCase):
         them, so the reference has to define them rather than mention them."""
         text = (pathlib.Path(REPO_ROOT) / "references" / "reviews.md").read_text(encoding="utf-8")
         self.assertIn("## Coverage", text)
-        for term in ("`coverage.round`", "`coverage.change`", "`coverage.unverified_since`"):
+        for term in (
+            "`coverage.round`",
+            "`coverage.change`",
+            "`coverage.unverified_since`",
+            "`coverage.inline_chars`",
+        ):
             self.assertIn(term, text)
         self.assertIn("`partial`", text)
         self.assertIn("snapshot --full", text)

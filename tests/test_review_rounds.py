@@ -478,6 +478,23 @@ class TestCoverageCarriesAcrossRounds(IsolatedCase):
         self.assertEqual(data["coverage"]["change_chars"], 400)
         self.assertEqual(data["coverage"]["change"], "complete")
 
+    def test_the_pair_comes_off_the_entry_that_handed_the_body_over(self):
+        """The limit is no longer one number per round: `--only` re-runs a
+        reviewer after the setting has changed, and the fresh entry sits ahead
+        of the retained one carrying the old limit. Both numbers have to come
+        off the entry whose delivery made the round unverified -- 4,001 chars
+        against a limit of 10,000 would have been inlined, so a line naming
+        that limit beside that size contradicts itself."""
+        ws.write_json(self.workspace.snapshot_meta_path, {"sha256": "snapshot-two"})
+        table = [
+            dict(run("ok", "inline", 4_001, "r1", snapshot="snapshot-two"), inline_chars=10_000),
+            dict(run("partial", "file", 4_001, "r2", snapshot="snapshot-two"), inline_chars=4_000),
+        ]
+        data = review_mod.build_consolidation(self.workspace, table, [], 1, "")
+        self.assertEqual(data["coverage"]["round"], "unverified")
+        self.assertEqual(data["coverage"]["change_chars"], 4_001)
+        self.assertEqual(data["coverage"]["inline_chars"], 4_000)
+
     def test_a_round_with_no_reviewers_says_so_rather_than_guessing(self):
         data = review_mod.build_consolidation(self.workspace, [], [], 1, "")
         self.assertEqual(data["coverage"]["round"], "none")
@@ -625,7 +642,7 @@ class TestTheTwoReadersDescribeOneSnapshot(IsolatedCase):
         """What each command puts in front of a reader, for one report."""
         return (
             review_mod.render_consolidation(data),
-            "\n".join(cli_mod._coverage_advice(data["coverage"], data["counts"], False, design)),
+            "\n".join(cli_mod._coverage_advice(data["coverage"], data["counts"], False, 400_000, design)),
         )
 
     def test_a_snapshot_nobody_ran_against_names_the_missing_reviewer(self):
