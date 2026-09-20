@@ -13,7 +13,6 @@ from helpers import IsolatedCase, has_git
 
 from orchestrator import cli
 from orchestrator import config as config_mod
-from orchestrator import review as review_mod
 from orchestrator import workspace as ws
 
 FINDING = """## Finding
@@ -762,11 +761,17 @@ class TestReviewPipeline(IsolatedCase):
     def oversize_snapshot(self):
         """Replace the frozen diff with one too large to inline.
 
+        The limit is lowered rather than the body made enormous. Delivery is
+        decided by `review.context.inline_chars` now, and a small limit
+        exercises the same branch as the shipped one without a 400KB fixture
+        -- while also being the case the setting exists for: somebody who will
+        not pay for very large prompts, and takes a `partial` round for it.
+
         The mock provider never reads a prompt, so the snapshot's size is the
         whole of what decides the round's coverage.
         """
-        body = "x" * (review_mod.MAX_INLINE_DIFF_CHARS + 1)
-        ws.write_text(self.cli_workspace().snapshot_path, body)
+        run_cli("config", "set", "review.context.inline_chars", "4000")
+        ws.write_text(self.cli_workspace().snapshot_path, "x" * 4_001)
 
     def test_snapshot_then_review_then_triage_then_fix_brief(self):
         code, out, _ = run_cli("review", "snapshot")
@@ -891,6 +896,11 @@ class TestReviewPipeline(IsolatedCase):
         self.assertIn("coverage: round unverified, change unverified", out)
         self.assertIn("not a clean review: 2 reviewer(s) partial", out)
         self.assertIn("split the change and review the parts", out)
+        # The other way out, and the one the report cannot name for itself:
+        # the limit is a setting, so a reader who decides the prompt is worth
+        # paying for raises it rather than cutting the change up.
+        self.assertIn("raise review.context.inline_chars", out)
+        self.assertIn("<= 4,000 chars", out)
         # Narrowing the diff makes the round smaller, not the change reviewed:
         # `--base` changes what is shown and nothing about what was read, so
         # naming it here would be pointing at the way around the mark.
@@ -898,6 +908,59 @@ class TestReviewPipeline(IsolatedCase):
         status = json.loads(run_cli("review", "status", "--json")[1])
         self.assertEqual(status["coverage"]["change"], "unverified")
         self.assertEqual(status["reviewers_partial"], 2)
+
+    def test_status_says_the_limit_was_raised_rather_than_repeating_itself(self):
+        """The reader who took the advice and raised the limit must not be
+        handed it again. The recorded size now fits, so the same snapshot
+        would be inlined -- "re-running gives the same answer" is false, the
+        change no longer needs splitting, and the limit is already raised."""
+        run_cli("review", "snapshot")
+        self.oversize_snapshot()
+        run_cli("review", "run")
+        run_cli("config", "set", "review.context.inline_chars", "10000")
+        _, out, _ = run_cli("review", "status")
+        self.assertIn("under a lower review.context.inline_chars", out)
+        self.assertIn("The limit is 10,000 chars now", out)
+        self.assertIn("run review run against it again", out)
+        self.assertNotIn("gives the same answer", out)
+        self.assertNotIn("split the change", out)
+
+    def test_coverage_names_the_limit_that_handed_the_body_over_after_only(self):
+        """`--only` merges entries made under two configurations into one
+        snapshot's table, so the freshest entry is not necessarily the one
+        whose delivery made the round unverified. The pair printed as the
+        round's two numbers has to come off the entry that decided the mark --
+        4,001 chars against a limit of 10,000 would not have been a file."""
+        run_cli("review", "snapshot")
+        self.oversize_snapshot()
+        run_cli("review", "run")
+        run_cli("config", "set", "review.context.inline_chars", "10000")
+        self.assertEqual(run_cli("review", "run", "--only", "m1")[0], 0)
+        data = json.loads(run_cli("review", "show", "--json")[1])
+        by_id = {entry["id"]: entry for entry in data["reviewers"]}
+        self.assertEqual(by_id["m1"]["delivery"], "inline")
+        self.assertEqual(by_id["m2"]["delivery"], "file")
+        self.assertEqual(data["coverage"]["round"], "unverified")
+        self.assertEqual(data["coverage"]["change_chars"], 4_001)
+        self.assertEqual(data["coverage"]["inline_chars"], 4_000)
+        report = read_file(self.cli_workspace().consolidated_md_path)
+        self.assertIn("review.context.inline_chars 4,000", report)
+
+    def test_status_survives_an_inline_chars_it_cannot_read(self):
+        """`review status` loads with `validate_result=False` on purpose: it
+        is the one review command meant to answer while the config is broken.
+        Coercing the setting with a bare `int()` made it the one that died on
+        one, with a `ValueError` traceback `main` does not catch."""
+        run_cli("review", "snapshot")
+        self.oversize_snapshot()
+        run_cli("review", "run")
+        run_cli("config", "set", "--raw", "review.context.inline_chars", "400k")
+        code, out, _ = run_cli("review", "status")
+        self.assertEqual(code, 0)
+        self.assertIn("not a clean review: 2 reviewer(s) partial", out)
+        # The shipped default stands in for the value nobody can read, and the
+        # advice is built from it like any other number.
+        self.assertIn("The limit is 400,000 chars now", out)
 
     def test_status_and_the_report_agree_about_a_snapshot_nobody_has_run(self):
         """`review snapshot --full` then `review consolidate` -- the state the

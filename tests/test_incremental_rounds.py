@@ -560,19 +560,27 @@ class TestCoverageSurvivesTheNarrowing(RoundCase):
     whole change's own state, carried forward, says so.
     """
 
+    #: The inline limit this case configures -- the old default, which is
+    #: small enough that git can produce a diff over it in the time a test
+    #: has. The rule under test is the same one whatever the limit is set to.
+    INLINE_LIMIT = 120_000
+
     def setUp(self):
         super().setUp()
         # Four rounds below, each from a new snapshot, so each advances the
         # counter. The budget being spent is a different test.
         run_cli("config", "set", "review.max_review_iterations", "9")
+        # What this test needs is a round handed over as a file, and the
+        # shipped 400,000 would want a diff three times the size of this one.
+        run_cli("config", "set", "review.context.inline_chars", str(self.INLINE_LIMIT))
 
     def bulk(self, lines):
         return "".join('BULK_%04d = "%s"\n' % (index, "y" * 100) for index in range(lines))
 
     def oversize(self):
         """More change than fits in a prompt. 1,200 lines of ~115 characters
-        clears the 120,000-char limit with room to spare, and stays a diff git
-        can produce in the time a test has."""
+        clears `INLINE_LIMIT` with room to spare, and stays a diff git can
+        produce in the time a test has."""
         self.write("bulk.py", self.bulk(1200))
 
     def clean_answers(self):
@@ -594,7 +602,8 @@ class TestCoverageSurvivesTheNarrowing(RoundCase):
         self.assertEqual(first["round"], "unverified")
         self.assertEqual(first["change"], "unverified")
         self.assertEqual(first["unverified_since"], 1)
-        self.assertGreater(first["change_chars"], review_mod.MAX_INLINE_DIFF_CHARS)
+        self.assertGreater(first["change_chars"], self.INLINE_LIMIT)
+        self.assertEqual(first["inline_chars"], self.INLINE_LIMIT)
 
         # 2. Its finding is real: triage it, fix it. The next snapshot narrows
         #    to the fix, which is the whole point of an incremental round.

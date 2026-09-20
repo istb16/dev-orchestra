@@ -45,9 +45,9 @@ The public surface covered by that promise is: the configuration schema, the
   does *not* promise is that every reviewer comes back `partial` -- that is the
   inline limit's answer, not this one's, and it is decided by the body that is
   handed over, which on the design path is the plan without its request. The
-  two coincide under the defaults and do not when `max_chars` is set below
-  120,000, and the refusal message says which case the change in front of it
-  is.
+  two coincide under the defaults and do not when either limit is configured
+  away from the other, and the refusal message says which case the change in
+  front of it is.
 
   `review snapshot --json` carries `change_chars`, `max_chars` and
   `over_context` alongside the snapshot's metadata, so a wrapper reading that
@@ -116,6 +116,66 @@ The public surface covered by that promise is: the configuration schema, the
   code skips as unknown (`_accumulate` walks a fixed list), and two columns.
   Nothing about what is sent to a provider changed -- this stage only
   observes, and the prompts come out byte-identical.
+
+- **The inline limit is a setting.** `review.context.inline_chars` decides
+  whether the change body goes into the reviewer's prompt or is handed over as
+  a path to the frozen snapshot. It replaces `MAX_INLINE_DIFF_CHARS`, which was
+  a constant in `review.py`; the default now lives in `default_config()` beside
+  `max_chars`, where every other default lives, and is read from there rather
+  than copied, so the two cannot drift apart.
+
+  Every round records the number it was measured against -- `inline_chars` on
+  each reviewer entry and `coverage.inline_chars` in `consolidated.json`, with
+  the limit named in `consolidated.md`'s `Coverage:` line, in the handover note
+  the reviewer is given, and in the `coverage unverified` reason a `partial`
+  run carries. A limit that can be configured is one a reader cannot assume: a
+  `partial` round and a size alone do not say whether it was a large change or
+  a low limit. A round recorded before this reports `null` -- it was 120,000
+  then, but nothing wrote it down and this does not invent it.
+
+  `review status` now names both ways out of an unverified round: narrow the
+  change, **or raise `review.context.inline_chars`**, then snapshot again. Once
+  that limit has been raised past the size the round recorded, it says so
+  instead -- the same snapshot would be inlined now, so splitting the change
+  and raising a limit already raised are both wasted work, and what is left to
+  do is run `review run` against that snapshot again.
+
+  Both numbers of the pair are read off the entry that decided the round's
+  mark -- the first reviewer handed a file, when there is one -- because
+  `--only` merges entries made under two configurations into one snapshot's
+  table, and a size against another round's limit is a line that contradicts
+  itself.
+
+  `inline_chars` above `max_chars` validates and is not warned about -- it
+  means the body is only ever handed over on a round a human forced. So does
+  `inline_chars` below `max_chars`, which opens a band between the two where
+  rounds run and are recorded `partial`; `references/configuration.md` states
+  that consequence. `null` means the default, as it does on `max_chars`.
+
+  An older reader sees one more key in `review.context` that its `validate`
+  does not check, and one more key on each reviewer entry and on `coverage`
+  that it skips. Nothing existing changed its meaning or type.
+
+### Changed
+
+- **The default inline limit is 400,000 characters, up from 120,000, and this
+  changes what is sent.** A change body between 120,000 and 400,000 characters
+  now goes into every reviewer's prompt where it previously went over as a path
+  to the frozen snapshot. That is a larger prompt and a real cost change, and
+  it is the point: 120,000 had no measured basis -- the prompt reaches the CLI
+  on stdin, so no argv length is involved -- and what a file handover buys is a
+  review this tool cannot verify. Stage one made such a round `partial`; this
+  closes the band it left, where a change in that range was recorded `partial`
+  with no way out but editing a constant.
+
+  With `inline_chars` and `max_chars` both 400,000 the shipped behaviour is one
+  boundary: at or under it the round runs and is complete, over it the round is
+  refused, and a forced round is `partial`.
+
+  **`review.context.inline_chars: 120000` restores the old behaviour exactly.**
+  At or under 120,000 chars -- which is every round this repository has
+  recorded, the largest measuring 99,814 -- the prompt is byte-identical to
+  what it was either way.
 
 ### Fixed
 

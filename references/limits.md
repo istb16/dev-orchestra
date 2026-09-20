@@ -96,6 +96,10 @@ every run that reaches its end with a measurement against the second. A cycle
 that delegates nothing is bounded by neither; the round, attempt and no-progress
 rules above are what stop the cycles this tool knows about.
 
+`review.context.inline_chars` is not in that table because it refuses nothing:
+over it the change body is handed over as a file and the round is recorded
+`partial` — see [The change body in the prompt](#the-change-body-in-the-prompt).
+
 Runtime is charged from the measurement each run produces, so a run killed
 before it can record one — `jobs cancel`, Ctrl-C, an OOM kill — is charged
 nothing. On `run <role>` that costs an attempt and a delegated run before the
@@ -146,7 +150,7 @@ of the previous round survive the refusal.
 change alone, and four times the largest prompt this repository has ever
 recorded (99,814 chars). **The default refuses nothing anyone here has run.**
 Characters are the unit because they are the unit everything else measures in
-(`MAX_INLINE_DIFF_CHARS`, `prompt_chars`), and because the standard library
+(`inline_chars`, `prompt_chars`), and because the standard library
 cannot count tokens. The conversion is not constant: CJK-heavy text is two to
 four times as many tokens per character, so the same budget is that much looser
 for it.
@@ -169,11 +173,39 @@ When a human does force it, the round runs and every record of it says so:
 `over_budget` on each reviewer entry and on `consolidated.json`'s `snapshot`
 block, a `Change:` line in `consolidated.md`, and a line in `review status`.
 What it does **not** promise is that forcing makes every reviewer `partial` —
-that depends on the inline limit, not on this one. With the defaults the two
-coincide, because anything over 400,000 chars is far over the 120,000-char
-inline limit and does go over as a file; with `max_chars` set below 120,000 a
-forced round is over budget and still delivered inline. The refusal message
-says which of the two applies to the change in front of it.
+that depends on `review.context.inline_chars`, not on this one. With the
+defaults the two are the same number, so anything over `max_chars` is over the
+inline limit too and does go over as a file. That is a fact about the shipped
+configuration and not about the code: raise `inline_chars` above `max_chars`,
+or lower `max_chars` below it, and a forced round is over budget and still
+delivered inline. The refusal message says which of the two applies to the
+change in front of it.
+
+### The change body in the prompt
+
+`review.context.inline_chars` (400,000) is how much of the change body goes
+into the reviewer's prompt. At or under it the body is inlined and the round
+can be clean; over it the reviewer is handed the path of the frozen snapshot
+instead, and the round is recorded `partial` whatever comes back — see
+[Coverage](reviews.md#coverage) for why the verdict cannot be taken from the
+answer.
+
+The default matches `max_chars` on purpose. The previous value, 120,000, had no
+measured basis: the prompt reaches the CLI on stdin, so no argv length is
+involved. What handing the body over as a file buys is a review this tool
+cannot verify, so by default it happens only where a human asked for it, and
+the shipped behaviour is one boundary rather than two.
+
+Set it below `max_chars` and a band opens between the two: rounds in it run,
+are delivered as a file, and are recorded `partial`. That is the explicit
+choice of somebody who will not pay for very large prompts, and `partial` is
+what it costs. Set it above `max_chars` and the file handover is reachable only
+on a round forced past the budget. Both validate; neither is a mistake.
+
+Every round records the number it was measured against — `inline_chars` on each
+reviewer entry, `coverage.inline_chars` on `consolidated.json` — because a
+`partial` round and a size alone do not say whether it was a large change or a
+low limit.
 
 ### What the runtime budget counts
 

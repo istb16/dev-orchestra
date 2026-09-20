@@ -433,8 +433,8 @@ class TestFanOut(IsolatedCase):
         self.assertIn("accessibility specialist", built.text)
 
     def test_huge_diffs_are_referenced_by_path_instead_of_inlined(self):
-        big = "x" * (review_mod.MAX_INLINE_DIFF_CHARS + 1)
-        built = review_mod.build_review_prompt(reviewer("r1"), self.workspace, big)
+        big = "x" * 4_001
+        built = review_mod.build_review_prompt(reviewer("r1"), self.workspace, big, inline_chars=4_000)
         self.assertIn("review-target.diff", built.text)
         self.assertNotIn(big, built.text)
         self.assertEqual(built.delivery, "file")
@@ -443,8 +443,8 @@ class TestFanOut(IsolatedCase):
     def test_a_diff_exactly_on_the_limit_is_still_inlined(self):
         """The boundary is inclusive, and it is the only place the two
         deliveries meet -- an off-by-one here turns a clean round partial."""
-        exact = "x" * review_mod.MAX_INLINE_DIFF_CHARS
-        built = review_mod.build_review_prompt(reviewer("r1"), self.workspace, exact)
+        exact = "x" * 4_000
+        built = review_mod.build_review_prompt(reviewer("r1"), self.workspace, exact, inline_chars=4_000)
         self.assertEqual(built.delivery, "inline")
         self.assertIn(exact, built.text)
 
@@ -460,6 +460,11 @@ class TestCoverageOfTheChangeBody(IsolatedCase):
     genuinely clean review. So the verdict is taken from the one fact this
     tool holds with certainty: whether the body went into the prompt.
     """
+
+    #: The limit these tests configure. Any number will do -- the limit is a
+    #: setting now, so the only thing under test is the comparison against it,
+    #: and a small one keeps the fixtures small.
+    LIMIT = 4_000
 
     def setUp(self):
         super().setUp()
@@ -482,7 +487,22 @@ class TestCoverageOfTheChangeBody(IsolatedCase):
         whole of what decides the round -- the same handle
         ``test_empty_snapshot_refuses_to_run`` uses from the other end.
         """
-        ws.write_text(self.workspace.snapshot_path, "x" * (review_mod.MAX_INLINE_DIFF_CHARS + 1))
+        ws.write_text(self.workspace.snapshot_path, "x" * (self.LIMIT + 1))
+
+    def run_one(self, reviewers=None, **kwargs):
+        """One round at this class's configured limit.
+
+        Passed explicitly rather than left to the default: every one of these
+        tests is about a body measured against a limit, and reading the limit
+        from the shipped default would make them a test of that number too.
+        """
+        kwargs.setdefault("inline_chars", self.LIMIT)
+        return review_mod.run_reviews(reviewers or [reviewer("r1")], self.workspace, **kwargs)[0]
+
+    def prompt_for(self, body):
+        """One reviewer's prompt for this body, at this class's limit."""
+        built = review_mod.build_review_prompt(reviewer("r1"), self.workspace, body, inline_chars=self.LIMIT)
+        return built.text
 
     def answers(self, text):
         """What every reviewer replies. The mock reads its directory first, so
@@ -491,12 +511,49 @@ class TestCoverageOfTheChangeBody(IsolatedCase):
         os.environ["DEV_ORCHESTRA_MOCK_RESPONSE"] = text
 
     def test_the_limit_is_inclusive_on_both_sides(self):
-        self.assertEqual(review_mod._delivery("x" * review_mod.MAX_INLINE_DIFF_CHARS), "inline")
-        self.assertEqual(review_mod._delivery("x" * (review_mod.MAX_INLINE_DIFF_CHARS + 1)), "file")
+        self.assertEqual(review_mod.prompt_delivery("x" * self.LIMIT, self.LIMIT), "inline")
+        self.assertEqual(review_mod.prompt_delivery("x" * (self.LIMIT + 1), self.LIMIT), "file")
+
+    def test_the_limit_left_unset_is_the_shipped_default(self):
+        """Not a second copy of the number: the one in `default_config`, read
+        from there, so the two cannot drift apart."""
+        default = config_mod.default_config()["review"]["context"]["inline_chars"]
+        self.assertEqual(review_mod.default_inline_chars(), default)
+        self.assertEqual(review_mod.prompt_delivery("x" * default), "inline")
+        self.assertEqual(review_mod.prompt_delivery("x" * (default + 1)), "file")
+
+    def test_the_default_now_inlines_a_body_that_used_to_go_over_as_a_file(self):
+        """The behaviour change this stage ships. 350,000 chars is over the
+        120,000 that used to decide it and under the 400,000 that does now, so
+        it is the band that changed -- and it now goes into the prompt."""
+        body = "x" * 350_000
+        built = review_mod.build_review_prompt(reviewer("r1"), self.workspace, body)
+        self.assertEqual(built.delivery, "inline")
+        self.assertIn(body, built.text)
+
+    def test_the_old_limit_is_still_reachable_by_configuring_it(self):
+        """`inline_chars: 120000` restores exactly what shipped before."""
+        body = "x" * 350_000
+        built = review_mod.build_review_prompt(reviewer("r1"), self.workspace, body, inline_chars=120_000)
+        self.assertEqual(built.delivery, "file")
+        self.assertNotIn(body, built.text)
+
+    def test_an_inline_limit_above_the_budget_still_inlines(self):
+        """`inline_chars > max_chars` is allowed, and means what it says: a
+        body only ever goes over as a file on a round somebody forced."""
+        body = "x" * 500_000
+        built = review_mod.build_review_prompt(reviewer("r1"), self.workspace, body, inline_chars=900_000)
+        self.assertEqual(built.delivery, "inline")
+        self.assertIn(body, built.text)
 
     def test_the_inlined_prompt_is_byte_for_byte_what_it_always_was(self):
         """The check that this change did not quietly alter what every
         reviewer has been reading for every round so far.
+
+        Raising the default inline limit changed what is *sent* for a body
+        between 120,000 and 400,000 chars, and nothing else: at or under
+        120,000 -- which is every round this repository has ever recorded --
+        the prompt is the same bytes it was.
 
         Reassembled from the template rather than compared against a golden
         copy: a deliberate edit to the template is still one edit, while a
@@ -504,6 +561,7 @@ class TestCoverageOfTheChangeBody(IsolatedCase):
         appended in the wrong place -- fails here.
         """
         diff_text = ws.read_text(self.workspace.snapshot_path)
+        self.assertLessEqual(len(diff_text), 120_000)
         built = review_mod.build_review_prompt(reviewer("r1"), self.workspace, diff_text)
         expected = review_mod.REVIEW_PROMPT_TEMPLATE.format(
             reviewer_id="r1",
@@ -522,28 +580,43 @@ class TestCoverageOfTheChangeBody(IsolatedCase):
         asked to declare it. A declaration cannot be tested for the case where
         it was not made, and the templates end with "Findings or NO_FINDINGS
         only", which overrides anything asked before it."""
-        big = "x" * (review_mod.MAX_INLINE_DIFF_CHARS + 1)
-        text = review_mod.build_review_prompt(reviewer("r1"), self.workspace, big).text
+        big = "x" * (self.LIMIT + 1)
+        text = self.prompt_for(big)
         self.assertIn("coverage-unverified", text)
-        self.assertIn("120,001 chars", text)
+        self.assertIn("4,001 chars", text)
         self.assertIn("a paging tool needs more than one call", text)
         self.assertNotIn("PARTIAL_REVIEW", text)
 
+    def test_the_handover_note_quotes_the_configured_limit_not_a_constant(self):
+        """The number that decided it is the only one worth printing: a reader
+        told "too large to inline" and nothing else cannot tell a large change
+        from a low setting."""
+        big = "x" * (self.LIMIT + 1)
+        text = self.prompt_for(big)
+        self.assertIn("review.context.inline_chars (4,000)", text)
+        self.assertNotIn("120,000", text)
+
     def test_findings_are_kept_but_the_round_is_not_clean(self):
         self.oversize()
-        run = review_mod.run_reviews([reviewer("r1")], self.workspace)[0]
+        run = self.run_one()
         self.assertEqual(run.status, "partial")
         self.assertEqual(run.findings, 1)
         self.assertEqual(run.delivery, "file")
-        self.assertEqual(run.change_chars, review_mod.MAX_INLINE_DIFF_CHARS + 1)
+        self.assertEqual(run.change_chars, self.LIMIT + 1)
         self.assertIn("coverage unverified", run.error)
+
+    def test_the_partial_error_quotes_the_configured_limit(self):
+        self.oversize()
+        run = self.run_one()
+        self.assertIn("review.context.inline_chars, 4,000", run.error)
+        self.assertNotIn("120,000", run.error)
 
     def test_no_findings_over_a_handover_is_not_a_clean_review(self):
         """The hole this whole stage exists to close: a reviewer that saw a
         fifth of the change and had nothing to say used to be recorded ok."""
         self.answers("NO_FINDINGS\n")
         self.oversize()
-        run = review_mod.run_reviews([reviewer("r1")], self.workspace)[0]
+        run = self.run_one()
         self.assertEqual(run.status, "partial")
         self.assertEqual(run.findings, 0)
 
@@ -552,13 +625,13 @@ class TestCoverageOfTheChangeBody(IsolatedCase):
         fact, and the one that says the delegated run was wasted."""
         self.answers("Looks good to me.\n")
         self.oversize()
-        run = review_mod.run_reviews([reviewer("r1")], self.workspace)[0]
+        run = self.run_one()
         self.assertEqual(run.status, "unparsed")
         self.assertEqual(run.delivery, "file")
         self.assertIn("could not be parsed", run.error)
 
     def test_an_inlined_round_is_recorded_exactly_as_before(self):
-        run = review_mod.run_reviews([reviewer("r1")], self.workspace)[0]
+        run = self.run_one()
         self.assertEqual(run.status, "ok")
         self.assertEqual(run.delivery, "inline")
         self.assertEqual(run.error, "")
@@ -568,22 +641,60 @@ class TestCoverageOfTheChangeBody(IsolatedCase):
         is no delivery to claim -- and a blank one is left out of the round's
         coverage rather than read as either answer."""
         broken = {"id": "bad", "provider": "nonexistent", "role": "general"}
-        run = review_mod.run_reviews([broken], self.workspace)[0]
+        run = self.run_one([broken])
         self.assertEqual(run.status, "failed")
         self.assertEqual(run.delivery, "")
 
     def test_the_run_dict_carries_both(self):
         self.oversize()
-        entry = review_mod.run_reviews([reviewer("r1")], self.workspace)[0].to_dict()
+        entry = self.run_one().to_dict()
         self.assertEqual(entry["delivery"], "file")
-        self.assertEqual(entry["change_chars"], review_mod.MAX_INLINE_DIFF_CHARS + 1)
+        self.assertEqual(entry["change_chars"], self.LIMIT + 1)
         self.assertEqual(entry["status"], "partial")
+
+    def test_the_run_dict_records_the_limit_that_decided_the_delivery(self):
+        """Size alone cannot be read: the limit is configuration, and the
+        shipped default is not the only possible answer."""
+        self.oversize()
+        entry = self.run_one().to_dict()
+        self.assertEqual(entry["inline_chars"], self.LIMIT)
+
+    def test_an_inlined_round_records_the_limit_too(self):
+        """Not only the round that went over: a reader asking "how close was
+        this" needs both numbers on a clean round as well."""
+        entry = self.run_one().to_dict()
+        self.assertEqual(entry["delivery"], "inline")
+        self.assertEqual(entry["inline_chars"], self.LIMIT)
+
+    def test_the_limit_left_to_the_default_is_still_recorded(self):
+        """`run_reviews` resolves it once so that no entry says nothing."""
+        entry = review_mod.run_reviews([reviewer("r1")], self.workspace)[0].to_dict()
+        self.assertEqual(entry["inline_chars"], review_mod.default_inline_chars())
+
+    def test_the_consolidation_carries_the_limit_beside_the_size(self):
+        self.oversize()
+        runs = review_mod.run_reviews([reviewer("r1")], self.workspace, inline_chars=self.LIMIT)
+        data = review_mod.build_consolidation(self.workspace, [r.to_dict() for r in runs], [])
+        self.assertEqual(data["coverage"]["round"], "unverified")
+        self.assertEqual(data["coverage"]["change_chars"], self.LIMIT + 1)
+        self.assertEqual(data["coverage"]["inline_chars"], self.LIMIT)
+        self.assertIn("review.context.inline_chars 4,000", review_mod.render_consolidation(data))
+
+    def test_a_round_recorded_before_the_limit_was_written_down_says_nothing(self):
+        """An older report has no number, and this does not invent one: it was
+        120,000 then, but nothing wrote it down."""
+        runs = review_mod.run_reviews([reviewer("r1")], self.workspace)
+        entries = [r.to_dict() for r in runs]
+        for entry in entries:
+            entry.pop("inline_chars")
+        data = review_mod.build_consolidation(self.workspace, entries, [])
+        self.assertIsNone(data["coverage"]["inline_chars"])
 
     def test_the_run_dict_is_stamped_with_the_snapshot_it_answers_for(self):
         """The same stamp the report carries. The reviewer table outlives the
         round -- `--only` merges into it -- so coverage can only be derived
         from entries that say which snapshot they were handed."""
-        entry = review_mod.run_reviews([reviewer("r1")], self.workspace)[0].to_dict()
+        entry = self.run_one().to_dict()
         stamp = review_mod.current_snapshot_stamp(self.workspace)
         self.assertEqual(entry["snapshot"], stamp)
         self.assertEqual(
@@ -712,26 +823,51 @@ class TestDesignReviewPrompt(IsolatedCase):
         self.assertIn("Not recorded", built.text)
 
     def test_a_huge_plan_is_referenced_by_path_instead_of_inlined(self):
-        big = "x" * (review_mod.MAX_INLINE_DIFF_CHARS + 1)
-        built = review_mod.build_design_review_prompt(reviewer("r1"), self.workspace, big)
+        big = "x" * 4_001
+        built = review_mod.build_design_review_prompt(
+            reviewer("r1"),
+            self.workspace,
+            big,
+            inline_chars=4_000,
+        )
         self.assertIn("review-target.md", built.text)
         self.assertNotIn(big, built.text)
         self.assertEqual(built.delivery, "file")
         self.assertEqual(built.change_chars, len(big))
+        self.assertIn("review.context.inline_chars (4,000)", built.text)
 
     def test_a_plan_exactly_on_the_limit_is_still_inlined(self):
-        exact = "x" * review_mod.MAX_INLINE_DIFF_CHARS
-        built = review_mod.build_design_review_prompt(reviewer("r1"), self.workspace, exact)
+        exact = "x" * 4_000
+        built = review_mod.build_design_review_prompt(
+            reviewer("r1"),
+            self.workspace,
+            exact,
+            inline_chars=4_000,
+        )
         self.assertEqual(built.delivery, "inline")
         self.assertIn(exact, built.text)
+
+    def test_the_design_path_decides_delivery_with_the_same_number(self):
+        """One function, one setting. A plan and a diff of the same size are
+        delivered the same way or the record means two things."""
+        big = "x" * 350_000
+        built = review_mod.build_design_review_prompt(reviewer("r1"), self.workspace, big)
+        self.assertEqual(built.delivery, "inline")
+        self.assertEqual(built.delivery, review_mod.prompt_delivery(big))
 
     def test_the_request_is_inlined_whatever_its_size(self):
         """The change body under review is the plan; the request is context,
         and goes in unmeasured exactly as it did before. Making the limit
         apply to it too is a later stage, and until then this is what the
         docs have to say."""
-        big = "y" * (review_mod.MAX_INLINE_DIFF_CHARS + 1)
-        built = review_mod.build_design_review_prompt(reviewer("r1"), self.workspace, PLAN, big)
+        big = "y" * 4_001
+        built = review_mod.build_design_review_prompt(
+            reviewer("r1"),
+            self.workspace,
+            PLAN,
+            big,
+            inline_chars=4_000,
+        )
         self.assertIn(big, built.text)
         self.assertEqual(built.delivery, "inline")
         self.assertEqual(built.change_chars, len(PLAN))
