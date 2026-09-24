@@ -215,6 +215,12 @@ The public surface covered by that promise is: the configuration schema, the
   state lock, and `Ledger.end` writes the charge and its event together under
   one hold of it rather than reading the state back after releasing it.
 
+- **On Windows, a state file being rewritten could read as absent.** A reader
+  that opens the file in the instant `os.replace` swaps it in is refused with
+  an `OSError`, and `read_json` returned the default for that at once while it
+  retried a torn read. The same short retry now covers both; a file that is
+  really gone still returns the default without waiting.
+
 ## [0.8.0] - 2026-09-19
 
 ### Added

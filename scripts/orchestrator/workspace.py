@@ -303,15 +303,15 @@ def read_json(path: str, default: Any = None) -> Any:
     for attempt in range(_READ_ATTEMPTS):
         try:
             return json.loads(_read_shared(path))
-        except ValueError:
+        except (ValueError, OSError):
             # Writes are atomic, so this is rare -- but silently returning the
             # default turns "unreadable" into "absent", which is how a live job
             # once looked like a missing one. Retrying costs milliseconds.
-            if attempt == _READ_ATTEMPTS - 1:
+            # On Windows a reader that lands in the instant a rename replaces
+            # the file is refused outright, an OSError just as passing.
+            if attempt == _READ_ATTEMPTS - 1 or not os.path.isfile(path):
                 return default
             time.sleep(0.02 * (attempt + 1))
-        except OSError:
-            return default
     return default
 
 
