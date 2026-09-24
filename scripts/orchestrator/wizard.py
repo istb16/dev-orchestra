@@ -18,7 +18,14 @@ import copy
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from . import config as config_mod
-from .providers import ModelResolutionError, available_providers, get_provider
+from .providers import (
+    ModelResolutionError,
+    adapter_failure,
+    available_providers,
+    describe_exception,
+    describe_origin,
+    get_provider,
+)
 
 #: Per-role recommended defaults, expressed as families only.
 RECOMMENDED = {
@@ -106,14 +113,27 @@ class Prompter:
             self.say("Enter a number between %d and %d." % (minimum, maximum))
 
 
-def selectable_providers(include_missing: bool = True) -> List[Tuple[str, str, bool]]:
-    """(name, label, installed) for every registered adapter except the mock."""
+def selectable_providers(
+    include_missing: bool = True,
+    failures: Optional[List[Tuple[str, str]]] = None,
+) -> List[Tuple[str, str, bool]]:
+    """(name, label, installed) for every registered adapter except the mock.
+
+    An adapter that raises while being detected is left out rather than
+    offered, and recorded in ``failures`` as (name, reason) when given one.
+    """
     entries: List[Tuple[str, str, bool]] = []
     for name in available_providers():
         if name == "mock":
             continue
-        provider = get_provider(name)
-        detection = provider.detect()
+        try:
+            provider = get_provider(name)
+            detection = provider.detect()
+        except Exception as exc:
+            if failures is not None:
+                reason = "adapter failed (%s): %s" % (describe_origin(name), describe_exception(exc))
+                failures.append((name, reason))
+            continue
         if not detection.installed and not include_missing:
             continue
         label = "%s (%s)" % (
@@ -151,13 +171,16 @@ def run(
     # included, for `validate` to report rather than for this to paper over.
     data.setdefault("version", config_mod.CONFIG_VERSION)
 
-    providers = selectable_providers()
+    failures: List[Tuple[str, str]] = []
+    providers = selectable_providers(failures=failures)
     prompter.say("AI Development Orchestrator setup")
     prompter.say("")
     prompter.say("Detected CLIs:")
     for name, label, installed in providers:
         prompter.say("  %-8s %s" % (name + ":", "installed" if installed else "not found"))
         del label
+    for name, reason in failures:
+        prompter.say("  %-8s %s" % (name + ":", reason))
     prompter.say("")
     prompter.say("Roles below are saved as a model family plus a version policy, so they")
     prompter.say("keep following the latest model in that family.")
@@ -196,23 +219,56 @@ def _ask_role(
     default_provider: str,
     default_family: str,
 ) -> Dict[str, Any]:
-    names = [entry[0] for entry in providers]
-    labels = [entry[1] for entry in providers]
-    default_index = names.index(default_provider) if default_provider in names else 0
-    chosen = prompter.ask_choice("   CLI:", labels, default_index)
-    provider_name = names[chosen]
-    if not providers[chosen][2]:
-        prompter.say(
-            "   Note: %s is not installed. The config will be saved, but this role "
-            "will fail until the CLI is available." % provider_name
-        )
-    model = _ask_model(prompter, provider_name, default_family)
+    provider_name, model = _ask_cli_and_model(
+        prompter, providers, "   CLI:", default_provider, lambda _name: default_family, note_missing=True
+    )
     return {"provider": provider_name, "model": model}
 
 
-def _ask_model(prompter: Prompter, provider_name: str, default_family: str) -> Dict[str, Any]:
-    provider = get_provider(provider_name)
-    candidates = provider.list_models()
+def _ask_cli_and_model(
+    prompter: Prompter,
+    providers: Sequence[Tuple[str, str, bool]],
+    question: str,
+    default_provider: str,
+    family_for: Callable[[str], str],
+    note_missing: bool = False,
+) -> Tuple[str, Dict[str, Any]]:
+    """Pick a CLI, then its model; a CLI whose adapter raises is dropped and
+    the question asked again over the rest."""
+    remaining = list(providers)
+    while True:
+        names = [entry[0] for entry in remaining]
+        labels = [entry[1] for entry in remaining]
+        default_index = names.index(default_provider) if default_provider in names else 0
+        chosen = prompter.ask_choice(question, labels, default_index)
+        provider_name = names[chosen]
+        if note_missing and not remaining[chosen][2]:
+            prompter.say(
+                "   Note: %s is not installed. The config will be saved, but this role "
+                "will fail until the CLI is available." % provider_name
+            )
+        default_family = family_for(provider_name)
+        model = _ask_model(prompter, provider_name, default_family)
+        if model is not None:
+            return provider_name, model
+        remaining = [entry for entry in remaining if entry[0] != provider_name]
+        if not remaining:
+            prompter.say(
+                "   No other CLI to choose; keeping %s with model family %r."
+                % (provider_name, default_family)
+            )
+            return provider_name, {"family": default_family, "version": "latest"}
+        prompter.say("   Choose another CLI.")
+
+
+def _ask_model(prompter: Prompter, provider_name: str, default_family: str) -> Optional[Dict[str, Any]]:
+    """The model for ``provider_name``, or None when its adapter raised."""
+    try:
+        provider = get_provider(provider_name)
+        candidates = provider.list_models()
+    except Exception as exc:
+        _say_adapter_failed(prompter, provider_name, exc)
+        return None
     options = ["%s [%s]" % (c.label, c.source) for c in candidates]
     families = [c.family for c in candidates]
     options.append("custom (type a family or exact model id)")
@@ -230,7 +286,14 @@ def _ask_model(prompter: Prompter, provider_name: str, default_family: str) -> D
         if prompter.ask_yes_no("   Pin this exact model id instead?", False):
             return {"family": raw, "version": "pinned", "id": raw}
         return {"family": default_family, "version": "latest"}
+    except Exception as exc:
+        _say_adapter_failed(prompter, provider_name, exc)
+        return None
     return {"family": raw, "version": "latest"}
+
+
+def _say_adapter_failed(prompter: Prompter, provider_name: str, exc: BaseException) -> None:
+    prompter.say("   %s" % adapter_failure(provider_name, exc))
 
 
 def _ask_reviewers(
@@ -272,16 +335,15 @@ def _ask_reviewer(
     template: Dict[str, Any],
     scratch: Dict[str, Any],
 ) -> Dict[str, Any]:
-    names = [entry[0] for entry in providers]
-    labels = [entry[1] for entry in providers]
-    default_provider = str(template.get("provider") or names[0])
-    default_index = names.index(default_provider) if default_provider in names else 0
-    provider_name = names[prompter.ask_choice("     CLI:", labels, default_index)]
+    default_provider = str(template.get("provider") or providers[0][0])
+    template_family = str((template.get("model") or {}).get("family") or "")
 
-    default_family = str((template.get("model") or {}).get("family") or "")
-    if not default_family:
-        default_family = "opus" if provider_name == "claude" else "recommended-coding"
-    model = _ask_model(prompter, provider_name, default_family)
+    def family_for(provider_name: str) -> str:
+        if template_family:
+            return template_family
+        return "opus" if provider_name == "claude" else "recommended-coding"
+
+    provider_name, model = _ask_cli_and_model(prompter, providers, "     CLI:", default_provider, family_for)
 
     role_options = [*list(config_mod.BUILTIN_ROLES), "custom role"]
     default_role = str(template.get("role") or "general")

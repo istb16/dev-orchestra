@@ -1,8 +1,13 @@
 # Providers
 
 A provider adapter is the only place that knows how to talk to a particular CLI.
-Adapters live in `scripts/orchestrator/providers/` and are registered in that
-package's `__init__.py`.
+Adapters live in one of two places:
+
+- **Built-in**: `scripts/orchestrator/providers/`, registered in that package's
+  `__init__.py`. These ship with the plugin.
+- **Your own**: `<config dir>/providers/*.py`, outside the plugin, so they
+  survive a plugin update. See
+  [Adding a CLI without editing the plugin](#adding-a-cli-without-editing-the-plugin).
 
 ## The interface
 
@@ -188,6 +193,11 @@ pipeline end to end without spending tokens.
 
 ## Adding a CLI
 
+This section is for an adapter that ships *with the plugin*. To use a CLI of
+your own without editing the plugin, see
+[Adding a CLI without editing the plugin](#adding-a-cli-without-editing-the-plugin)
+-- the same steps apply, only the file goes somewhere else.
+
 1. Copy `providers/codex.py` as a starting point.
 2. **Read the real CLI's `--help`.** Do not write flags from memory — that is
    how adapters rot. Record the version you verified against in the module
@@ -202,8 +212,8 @@ pipeline end to end without spending tokens.
 def _bootstrap() -> None:
     from . import claude, codex, mock, yourcli
 
-    ...
-    register(yourcli.YourProvider.name, yourcli.build_provider)
+    for module, cls in (..., (yourcli, yourcli.YourProvider)):
+        register(cls.name, module.build_provider, ProviderOrigin("builtin", None, module.__name__))
 ```
 
 6. Add tests mirroring `tests/test_providers.py`: alias parsing, latest vs
@@ -212,6 +222,153 @@ def _bootstrap() -> None:
 
 `dev-orchestra model list --provider yourcli` and `dev-orchestra doctor`
 pick the new adapter up automatically.
+
+## Adding a CLI without editing the plugin
+
+The plugin is installed into a versioned cache, so an adapter added to
+`scripts/orchestrator/providers/` disappears on the next update while the
+`config.yaml` that refers to it stays. Put your adapter in the config directory
+instead; it is imported at startup, after the built-ins.
+
+| Platform | Directory |
+| --- | --- |
+| Windows | `%APPDATA%\dev-orchestra\providers\` |
+| macOS / Linux | `$XDG_CONFIG_HOME/dev-orchestra/providers/` (default `~/.config/dev-orchestra/providers/`) |
+| Any, when `DEV_ORCHESTRA_HOME` is set | `$DEV_ORCHESTRA_HOME/providers/` |
+
+`DEV_ORCHESTRA_CONFIG` does not move it: that variable names one file, which
+may sit in a project checkout, and the code beside it is not yours to import.
+`dev-orchestra doctor` prints the directory it reads, whether or not it exists.
+
+### The contract
+
+Each `<name>.py` in that directory defines a module-level
+`build_provider(executable=None)` that returns an instance of
+`orchestrator.providers.base.Provider`. It is called once while loading, and the
+instance's `name` -- lowercase letters, digits, `.`, `_` and `-` -- is what
+`provider:` takes in `config.yaml`. Import from `orchestrator.providers.base`,
+not from `.base`: the file is not part of the package, so a relative import
+fails. Copying a built-in adapter therefore means changing that one import line.
+
+A minimal adapter, for a CLI that reads its prompt on stdin:
+
+```python
+"""Adapter for the ``mycli`` CLI. Verified against mycli 1.2.0."""
+
+from __future__ import annotations
+
+from typing import Any, Dict, List, Optional, Sequence
+
+from orchestrator.providers.base import (
+    READ_ONLY_MODES,
+    ModelCandidate,
+    ModelResolutionError,
+    Provider,
+    ResolvedModel,
+)
+
+
+class MyCliProvider(Provider):
+    name = "mycli"  # what `provider:` takes in config.yaml; must not be claude, codex or mock
+    display_name = "My CLI"
+    executable = "mycli"
+
+    fallback_models = (ModelCandidate("", "default", "CLI default", "builtin-fallback"),)
+    fallback_updated = "2026-09-24"
+
+    def _resolve_latest(self, family: str) -> ResolvedModel:
+        if family in ("", "default"):
+            return ResolvedModel(self.name, "default", "latest", None, "mycli default", "cli-default")
+        raise ModelResolutionError(
+            "mycli: %r is not something the installed CLI vouches for; "
+            "pin it with model.version: pinned and model.id" % family
+        )
+
+    def build_command(
+        self,
+        mode: str,
+        resolved: ResolvedModel,
+        cwd: str,
+        extra_args: Sequence[str] = (),
+        options: Optional[Dict[str, Any]] = None,
+    ) -> List[str]:
+        # The prompt arrives on stdin; plan and review must be read-only.
+        command = [self.executable, "run", "--cwd", cwd]
+        if mode in READ_ONLY_MODES:
+            command.append("--read-only")
+        if resolved.argument:
+            command += ["--model", resolved.argument]
+        command += self.option_args(options)
+        command += list(extra_args)
+        return command
+
+
+def build_provider(executable: Optional[str] = None) -> MyCliProvider:
+    return MyCliProvider(executable)
+```
+
+Then refer to it like any other provider:
+
+```yaml
+reviewers:
+  - id: mycli-general
+    provider: mycli
+    model:
+      family: default
+      version: latest
+    role: general
+```
+
+### Rules
+
+- Files load in sorted order. Names starting with `_` or `.`, anything not
+  ending in `.py`, and directories (packages) are skipped. Keep the file name
+  an identifier (`my_cli.py`, not `my.cli.py`).
+- A built-in name (`claude`, `codex`, `mock`) is refused: the built-in wins.
+- Two files providing the same name: the first in sorted order wins, and the
+  second is reported.
+- Do not call `register()` yourself, and do not touch the registry. The loader
+  registers what `build_provider()` returns, under the name it read from the
+  first call; a module that registers anything itself, at import time or from
+  `build_provider()` -- on the loader's call or any later one -- is refused and
+  whatever it changed is put back. That catches a mistake, such as an adapter
+  copied from the plugin with its `register()` call still in it. It is not a
+  defence against a module written to get round it, which can rebind anything
+  in the process (see below).
+- Do not start the CLI from `build_provider()` or `__init__`, and do not call
+  `sys.exit()` at module level -- the file is imported on every command. A
+  `SystemExit` raised while loading is recorded as a load error, like any other.
+
+### When it goes wrong
+
+A file that fails to import, breaks the contract or is refused never stops the
+CLI: every other command carries on without it, and `dev-orchestra doctor`
+lists it under **User providers** with the error, and among its problems (so
+`doctor --strict` fails). `doctor` also catches an adapter that raises while it
+is being diagnosed -- from `detect()`, `list_models()` or model resolution --
+and reports it as `adapter-error` against the file it came from. Write the
+adapter, then run `doctor` before anything else.
+
+The directory holds trusted code, not a sandbox: every file in it is imported
+into the CLI's own process with your permissions every time the CLI starts,
+and can change anything the CLI does. Put only code you would run yourself
+there. That is why `doctor` always says where it is and what it imported.
+Set `DEV_ORCHESTRA_NO_USER_PROVIDERS=1` to skip the directory entirely, for
+example when a broken adapter is in the way. While it is set, `config
+validate`, `config show` and `doctor` say so next to any provider they cannot
+find, so a configured user adapter is not mistaken for a missing file.
+
+Loading the directory again in the same process (`load_user_providers()`) also
+clears the memoised discovery results, so an edited adapter is detected afresh.
+
+### Interface stability
+
+`base.Provider` and the types around it (`ModelCandidate`, `ResolvedModel`,
+`RunResult`, `Usage`, `Detection`) are internal to the plugin and may change
+between minor versions. Pin the plugin version, or run `dev-orchestra doctor`
+after an update to check that your adapter still loads. The signature of `run()`
+is the surface most likely to move; `tests/test_provider_contract.py` holds every
+adapter, including the example above, to it.
 
 ## Failure semantics
 

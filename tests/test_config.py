@@ -148,6 +148,27 @@ class TestValidation(IsolatedCase):
         problems = config_mod.validate(data)
         self.assertTrue(any("unknown provider" in p for p in problems))
 
+    def test_an_unknown_provider_points_at_the_user_adapter_directory(self):
+        data = config_mod.default_config()
+        data["implementer"]["provider"] = "mycli"
+        problems = config_mod.validate(data)
+        expected = "user adapters load from %s" % os.path.join(self.config_home, "providers")
+        self.assertTrue(any(expected in p for p in problems), problems)
+        self.assertFalse(any("disabled by" in p for p in problems), problems)
+
+    def test_an_unknown_provider_says_when_user_adapters_are_switched_off(self):
+        data = config_mod.default_config()
+        data["implementer"]["provider"] = "mycli"
+        os.environ["DEV_ORCHESTRA_NO_USER_PROVIDERS"] = "1"
+        problems = config_mod.validate(data)
+        self.assertTrue(any("(disabled by DEV_ORCHESTRA_NO_USER_PROVIDERS)" in p for p in problems), problems)
+
+    def test_referenced_providers_covers_roles_tiers_and_reviewers(self):
+        data = config_mod.default_config()
+        data["implementer"]["model_tiers"] = {"light": {"provider": "mock"}}
+        data["reviewers"] = [config_mod.make_reviewer("mycli-general", "mycli", "default")]
+        self.assertEqual(config_mod.referenced_providers(data), ["claude", "mock", "mycli"])
+
     def test_duplicate_reviewer_id_is_rejected(self):
         data = config_mod.default_config()
         data["reviewers"].append(dict(data["reviewers"][0]))
@@ -405,6 +426,14 @@ class TestPaths(IsolatedCase):
         explicit = os.path.join(self.tmp, "explicit.yaml")
         os.environ["DEV_ORCHESTRA_CONFIG"] = explicit
         self.assertEqual(config_mod.global_config_path(), explicit)
+
+    def test_user_providers_live_in_the_config_directory(self):
+        expected = os.path.join(config_mod.global_config_dir(), "providers")
+        self.assertEqual(config_mod.user_providers_dir(), expected)
+        # A config file named explicitly may sit in a project checkout; the
+        # code beside it is not imported.
+        os.environ["DEV_ORCHESTRA_CONFIG"] = os.path.join(self.tmp, "elsewhere", "explicit.yaml")
+        self.assertEqual(config_mod.user_providers_dir(), expected)
 
     def test_global_dir_is_platform_appropriate(self):
         os.environ.pop("DEV_ORCHESTRA_HOME")

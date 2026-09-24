@@ -80,6 +80,36 @@ class TestAtomicWrites(IsolatedCase):
             handle.write("{ this is not json")
         self.assertEqual(ws.read_json(path, "fallback"), "fallback")
 
+    def test_a_read_refused_mid_rename_is_retried(self):
+        """Windows refuses an open that lands in the instant a rename replaces
+        the file. That is as passing as a torn read, not a missing file."""
+        path = os.path.join(self.project, "state.json")
+        ws.write_json(path, {"ledger": {}})
+        original = ws._read_shared
+        refusals = [2]
+
+        def refuse_then_read(target):
+            if refusals[0]:
+                refusals[0] -= 1
+                raise PermissionError(13, "sharing violation", target)
+            return original(target)
+
+        ws._read_shared = refuse_then_read
+        self.addCleanup(setattr, ws, "_read_shared", original)
+        self.assertEqual(ws.read_json(path, "UNREADABLE"), {"ledger": {}})
+
+    def test_a_file_that_stays_refused_still_yields_the_default(self):
+        path = os.path.join(self.project, "state.json")
+        ws.write_json(path, {"ledger": {}})
+        original = ws._read_shared
+
+        def refuse(target):
+            raise PermissionError(13, "access denied", target)
+
+        ws._read_shared = refuse
+        self.addCleanup(setattr, ws, "_read_shared", original)
+        self.assertEqual(ws.read_json(path, "fallback"), "fallback")
+
     def test_a_missing_file_yields_the_default_without_retrying(self):
         started = time.monotonic()
         self.assertIsNone(ws.read_json(os.path.join(self.project, "absent.json")))

@@ -8,6 +8,12 @@
 | Global | see below | Your personal default for every project |
 | Built-in | `scripts/orchestrator/config.py` | Recommended defaults, used when no file exists |
 
+In the config directory, a `providers/` directory holds your own provider
+adapters (`%APPDATA%\dev-orchestra\providers\` on Windows,
+`~/.config/dev-orchestra/providers/` elsewhere, `$DEV_ORCHESTRA_HOME/providers/`
+when that is set; `DEV_ORCHESTRA_CONFIG` does not move it). See
+`references/providers.md`.
+
 Global config path by platform:
 
 | Platform | Path |
@@ -20,6 +26,8 @@ Environment overrides:
 
 - `DEV_ORCHESTRA_CONFIG` — use this exact file as the global layer.
 - `DEV_ORCHESTRA_HOME` — use this directory instead of the platform default.
+- `DEV_ORCHESTRA_NO_USER_PROVIDERS` — any value but empty or `0` skips the
+  user adapter directory (`<config dir>/providers/`) entirely.
 
 `dev-orchestra config path` prints both resolved locations.
 
@@ -100,7 +108,7 @@ workspace:
 | Field | Type | Notes |
 | --- | --- | --- |
 | `version` | int | Must be `1`. |
-| `<role>.provider` | string | A registered adapter: `claude`, `codex`, or `mock`. |
+| `<role>.provider` | string | A registered adapter: `claude`, `codex`, `mock`, or a user adapter (see `references/providers.md`). |
 | `<role>.model.family` | string | A family/alias the provider can resolve (`opus`, `sonnet`, `fable`, `recommended-coding`). Omit or use `default` to let the CLI choose. |
 | `<role>.model.version` | `latest` \| `pinned` | `latest` re-resolves on every run. `pinned` requires `model.id`. |
 | `<role>.model.id` | string | Exact model id, only with `version: pinned`. |

@@ -1069,6 +1069,8 @@ flowchart LR
 
 詳細版は `references/architecture.md`（英語）にあります。
 
+自前の CLI 用の adapter は、プラグインを編集せず `<設定ディレクトリ>/providers/` に置けます。起動時に読み込まれ、プラグインを更新しても残ります（`references/providers.md`、英語）。
+
 ## コントリビュート
 
 issue と pull request を歓迎します。詳細は `CONTRIBUTING.md`（英語）を参照してください。

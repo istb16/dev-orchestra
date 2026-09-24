@@ -205,6 +205,26 @@ def global_config_dir() -> str:
     return os.path.join(os.path.abspath(os.path.expanduser(base)), APP_DIR_NAME)
 
 
+def user_providers_dir() -> str:
+    """Where a user's own provider adapters live; loaded by the provider registry.
+
+    Under the config directory, which ``DEV_ORCHESTRA_HOME`` moves and
+    ``DEV_ORCHESTRA_CONFIG`` does not: that one names a file, which may sit in
+    a project checkout, and code beside it is not the user's to import.
+    """
+    return os.path.join(global_config_dir(), "providers")
+
+
+def user_providers_hint() -> str:
+    """Where a missing provider's adapter would come from, and whether it can."""
+    from .providers import USER_PROVIDERS_DISABLED_ENV, user_providers_disabled
+
+    hint = "user adapters load from %s" % user_providers_dir()
+    if user_providers_disabled():
+        hint += " (disabled by %s)" % USER_PROVIDERS_DISABLED_ENV
+    return hint
+
+
 def global_config_path() -> str:
     explicit = os.environ.get("DEV_ORCHESTRA_CONFIG")
     if explicit:
@@ -457,6 +477,24 @@ def pinned_differences(data: Dict[str, Any]) -> List[Dict[str, Any]]:
 
     walk(data, default_config(), "")
     return sorted(differences, key=lambda entry: entry["setting"])
+
+
+def referenced_providers(data: Dict[str, Any]) -> List[str]:
+    """Every provider name a configuration refers to: roles, tiers and reviewers."""
+    names = set()
+    specs: List[Any] = [data.get(role) for role in KNOWN_ROLES]
+    for spec in list(specs):
+        tiers = spec.get("model_tiers") if isinstance(spec, dict) else None
+        if isinstance(tiers, dict):
+            specs.extend(tiers.values())
+    reviewers = data.get("reviewers")
+    if isinstance(reviewers, list):
+        specs.extend(reviewers)
+    for spec in specs:
+        provider = spec.get("provider") if isinstance(spec, dict) else None
+        if isinstance(provider, str) and provider:
+            names.add(provider)
+    return sorted(names)
 
 
 def prune_layer(layer: Dict[str, Any], base: Dict[str, Any]) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
@@ -744,7 +782,9 @@ def _validate_role(spec: Dict[str, Any], providers: List[str]) -> List[str]:
     if not isinstance(provider, str) or not provider:
         problems.append("provider is required")
     elif provider not in providers:
-        problems.append("unknown provider %r (known: %s)" % (provider, ", ".join(providers)))
+        problems.append(
+            "unknown provider %r (known: %s; %s)" % (provider, ", ".join(providers), user_providers_hint())
+        )
 
     # Options first, because the model checks below return early. A role may
     # legitimately omit `model` -- that is how you let a CLI pick its own --

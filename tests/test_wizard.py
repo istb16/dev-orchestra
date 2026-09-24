@@ -195,5 +195,103 @@ class TestTheWizardsBase(IsolatedCase):
         self.assertEqual(data["reviewers"], [])
 
 
+class TestAFailingUserAdapter(IsolatedCase):
+    """A user adapter that raises while being detected is left off the menu
+    and said to have failed; the rest of the menu is still offered."""
+
+    SOURCE = (
+        "from orchestrator.providers.base import Provider\n"
+        "\n"
+        "\n"
+        "class Flaky(Provider):\n"
+        '    name = "flaky"\n'
+        '    executable = "flaky"\n'
+        "\n"
+        "    def detect(self):\n"
+        '        raise RuntimeError("detect exploded")\n'
+        "\n"
+        "\n"
+        "def build_provider(executable=None):\n"
+        "    return Flaky(executable)\n"
+    )
+
+    def setUp(self):
+        super().setUp()
+        from orchestrator import providers
+        from orchestrator.providers.claude import ClaudeProvider
+        from orchestrator.providers.codex import CodexProvider
+
+        for cls in (ClaudeProvider, CodexProvider):
+            self.addCleanup(setattr, cls, "which", cls.which)
+            cls.which = lambda self: None
+        self.path = self.write_user_provider("flaky", self.SOURCE)
+        providers.load_user_providers()
+
+    def test_selectable_providers_reports_it_and_goes_on(self):
+        failures = []
+        names = [name for name, _, _ in wizard_mod.selectable_providers(failures=failures)]
+        self.assertEqual(names, ["claude", "codex"])
+        self.assertEqual(len(failures), 1)
+        name, reason = failures[0]
+        self.assertEqual(name, "flaky")
+        self.assertIn("RuntimeError: detect exploded", reason)
+        self.assertIn(self.path, reason)
+
+    def test_selectable_providers_without_a_failure_list_still_goes_on(self):
+        names = [name for name, _, _ in wizard_mod.selectable_providers()]
+        self.assertEqual(names, ["claude", "codex"])
+
+
+class TestAUserAdapterFailingOnModels(IsolatedCase):
+    """One that passes detection and raises while its models are asked for:
+    reported, and the CLI question asked again over the rest."""
+
+    SOURCE = (
+        "import sys\n"
+        "\n"
+        "from orchestrator.providers.base import Provider\n"
+        "\n"
+        "\n"
+        "class Flaky(Provider):\n"
+        '    name = "flaky"\n'
+        '    display_name = "Flaky"\n'
+        '    executable = "flaky"\n'
+        "\n"
+        "    def which(self):\n"
+        "        return sys.executable\n"
+        "\n"
+        "    def version(self):\n"
+        '        return "flaky 1", None\n'
+        "\n"
+        "    def list_models(self):\n"
+        '        raise RuntimeError("list_models exploded")\n'
+        "\n"
+        "\n"
+        "def build_provider(executable=None):\n"
+        "    return Flaky(executable)\n"
+    )
+
+    def setUp(self):
+        super().setUp()
+        from orchestrator import providers
+
+        self.path = self.write_user_provider("flaky", self.SOURCE)
+        providers.load_user_providers()
+        self.providers = [("flaky", "Flaky", True), ("mock", "Mock", True)]
+
+    def test_the_question_is_asked_again_without_it(self):
+        prompter = ScriptedPrompter(["1", "", ""])
+        spec = wizard_mod._ask_role(prompter, self.providers, "flaky", "small")
+        self.assertEqual(spec["provider"], "mock")
+        said = "\n".join(prompter.output)
+        self.assertIn("flaky adapter failed (user module %s)" % self.path, said)
+        self.assertIn("RuntimeError: list_models exploded", said)
+
+    def test_with_nothing_else_to_choose_it_is_kept(self):
+        prompter = ScriptedPrompter(["1"])
+        spec = wizard_mod._ask_role(prompter, self.providers[:1], "flaky", "small")
+        self.assertEqual(spec, {"provider": "flaky", "model": {"family": "small", "version": "latest"}})
+
+
 if __name__ == "__main__":
     unittest.main()

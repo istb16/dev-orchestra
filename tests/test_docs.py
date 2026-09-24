@@ -12,7 +12,7 @@ import pathlib
 import re
 import unittest
 
-from helpers import REPO_ROOT, IsolatedCase
+from helpers import REPO_ROOT, USER_ADAPTER_SOURCE, IsolatedCase
 
 from orchestrator import miniyaml
 from orchestrator.miniyaml import _parse_node, _read_lines
@@ -107,6 +107,12 @@ class TestDocumentedYaml(IsolatedCase):
             self.assertIn(term, text)
         self.assertIn("`partial`", text)
         self.assertIn("snapshot --full", text)
+
+    def test_the_documented_user_adapter_is_the_one_the_contract_test_runs(self):
+        """Copied from the docs by anyone writing their first adapter, so it
+        has to be the example `test_provider_contract` holds to the seam."""
+        text = (pathlib.Path(REPO_ROOT) / "references" / "providers.md").read_text(encoding="utf-8")
+        self.assertIn(USER_ADAPTER_SOURCE.strip(), text)
 
     def test_readme_config_example_is_a_valid_configuration(self):
         """The main README block is not just parseable, it is usable."""

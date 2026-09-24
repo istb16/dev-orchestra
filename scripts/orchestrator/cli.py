@@ -33,8 +33,14 @@ from .providers import (
     MODE_REVIEW,
     MODES,
     ModelResolutionError,
+    UnknownProviderError,
+    adapter_failure,
     available_providers,
+    describe_exception,
+    describe_origin,
     get_provider,
+    origin_payload,
+    provider_origin,
 )
 
 __version__ = "0.8.0"
@@ -341,8 +347,10 @@ def cmd_config_show(args: argparse.Namespace) -> int:
             loaded.global_path or "none",
         )
 
+    referenced = config_mod.referenced_providers(data)
     if args.json:
-        _emit_json({"source": source, "config": data})
+        providers_payload = {name: origin_payload(name) for name in referenced}
+        _emit_json({"source": source, "config": data, "providers": providers_payload})
         return 0
     _out("Source: %s" % source)
     if loaded.used_defaults and not scoped:
@@ -352,12 +360,20 @@ def cmd_config_show(args: argparse.Namespace) -> int:
         _out(_render_layer(path, data, exists))
     else:
         _out(wizard_mod.render_summary(data) if "orchestrator" in data else "(empty layer)")
+    if referenced:
+        _out("Providers: %s" % ", ".join(_describe_referenced_provider(name) for name in referenced))
     problems = config_mod.validate(loaded.data)
     if problems:
         _out("Problems:")
         for problem in problems:
             _out("  - %s" % problem)
     return 0
+
+
+def _describe_referenced_provider(name: str) -> str:
+    if provider_origin(name) is None:
+        return "%s (no adapter; %s)" % (name, config_mod.user_providers_hint())
+    return "%s (%s)" % (name, describe_origin(name))
 
 
 def cmd_config_path(args: argparse.Namespace) -> int:
@@ -519,12 +535,15 @@ def _warn_unresolvable(effective: Dict[str, Any], role_key: str) -> None:
     spec = effective.get(role_key)
     if not isinstance(spec, dict) or not spec.get("provider"):
         return
+    name = str(spec["provider"])
     try:
-        get_provider(str(spec["provider"])).resolve_model(spec.get("model"))
+        get_provider(name).resolve_model(spec.get("model"))
     except ModelResolutionError as exc:
         _err("warning: %s" % exc)
-    except ValueError:
+    except UnknownProviderError:
         pass
+    except Exception as exc:
+        _err("warning: %s" % adapter_failure(name, exc))
 
 
 def cmd_config_validate(args: argparse.Namespace) -> int:
@@ -546,28 +565,46 @@ def cmd_config_validate(args: argparse.Namespace) -> int:
 
 def cmd_model_list(args: argparse.Namespace) -> int:
     names = [args.provider] if args.provider else available_providers()
+    if args.provider and provider_origin(args.provider) is None:
+        _err("unknown provider %r (known: %s)" % (args.provider, ", ".join(available_providers())))
+        return 2
     payload: Dict[str, Any] = {}
     for name in names:
+        # One adapter at a time, so a user adapter that raises is reported
+        # against its file and the others are still listed.
+        entry: Dict[str, Any] = {
+            "installed": False,
+            "version": None,
+            "models": [],
+            "fallback_updated": None,
+            "adapter_error": None,
+            "origin": origin_payload(name),
+        }
         try:
             provider = get_provider(name)
-        except ValueError as exc:
-            _err(str(exc))
-            return 2
-        detection = provider.detect()
-        entry: Dict[str, Any] = {
-            "installed": detection.installed,
-            "version": detection.version,
-            "models": [],
-            "fallback_updated": provider.fallback_updated,
-        }
-        if detection.installed:
-            entry["models"] = [candidate.to_dict() for candidate in provider.list_models()]
+            detection = provider.detect()
+            models: List[Dict[str, Any]] = []
+            if detection.installed:
+                models = [candidate.to_dict() for candidate in provider.list_models()]
+            entry.update(
+                installed=detection.installed,
+                version=detection.version,
+                models=models,
+                fallback_updated=provider.fallback_updated,
+            )
+        except Exception as exc:
+            entry["adapter_error"] = describe_exception(exc)
         payload[name] = entry
 
+    # Discovery that failed is a failure, even with the other results printed.
+    status = 1 if any(entry["adapter_error"] for entry in payload.values()) else 0
     if args.json:
         _emit_json(payload)
-        return 0
+        return status
     for name, entry in payload.items():
+        if entry.get("adapter_error"):
+            _out("%s: adapter failed (%s): %s" % (name, describe_origin(name), entry["adapter_error"]))
+            continue
         _out("%s: %s" % (name, "installed" if entry["installed"] else "not installed"))
         if not entry["installed"]:
             continue
@@ -575,7 +612,7 @@ def cmd_model_list(args: argparse.Namespace) -> int:
             _out("  %-28s family=%-20s source=%s" % (model["label"], model["family"], model["source"]))
         if all(m["source"] == "builtin-fallback" for m in entry["models"]) and entry["models"]:
             _out("  (built-in fallback list, last reviewed %s)" % entry["fallback_updated"])
-    return 0
+    return status
 
 
 # --------------------------------------------------------------------------- reviewers

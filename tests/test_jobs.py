@@ -99,7 +99,10 @@ class TestBoundedWait(JobCase):
         elapsed = time.monotonic() - started
         self.assertTrue(job["waited_out"])
         self.assertEqual(job["status"], "running")
-        self.assertGreaterEqual(elapsed, 1)
+        # wait() stops at its own `start + 1`. On Windows the clock is coarse
+        # enough for both starts to read the same, and `(t + 1) - t` then
+        # rounds to a hair under 1 -- a float artefact, not an early return.
+        self.assertGreaterEqual(elapsed, 1 - 1e-9)
         self.assertLess(elapsed, 10)
 
     def test_a_dead_worker_ends_the_wait_rather_than_timing_it_out(self):

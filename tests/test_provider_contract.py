@@ -92,6 +92,21 @@ class TestEveryAdapterTakesTheWholeCall(IsolatedCase):
                 self.assertFalse(result.invoked)
 
 
+class TestUserAdaptersTakeTheWholeCall(TestEveryAdapterTakesTheWholeCall):
+    """The same seam for an adapter from the user's config directory -- the
+    documented minimal example, so a change to ``run`` that would break
+    every adapter written from it fails here first. Loaded explicitly: the
+    suite never reads the real user's directory."""
+
+    def setUp(self):
+        super().setUp()
+        self.write_user_provider("mycli")
+        providers.load_user_providers()
+
+    def adapters(self):
+        return [providers.get_provider("mycli")]
+
+
 class TestOptionsReachTheCommand(IsolatedCase):
     """An override that accepts ``options`` and does not forward them turns a
     configured policy into a default, with nothing said."""

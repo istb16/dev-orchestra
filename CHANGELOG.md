@@ -156,7 +156,35 @@ The public surface covered by that promise is: the configuration schema, the
   does not check, and one more key on each reviewer entry and on `coverage`
   that it skips. Nothing existing changed its meaning or type.
 
+- **Provider adapters of your own load from the config directory, so they
+  survive a plugin update.** Every `.py` in `<config dir>/providers/`
+  (`%APPDATA%\dev-orchestra\providers\` on Windows,
+  `~/.config/dev-orchestra/providers/` elsewhere,
+  `$DEV_ORCHESTRA_HOME/providers/` when that is set; `DEV_ORCHESTRA_CONFIG`
+  does not move it) is imported after the built-ins and registers what its
+  `build_provider()` returns. The plugin installs into a versioned cache, so
+  an adapter dropped into `scripts/orchestrator/providers/` vanished on update
+  while the `config.yaml` naming it stayed behind. Built-in names cannot be
+  taken over and the first file to claim a name keeps it. A module that fails
+  to load never stops the CLI; `doctor` lists the directory, what it imported
+  and what failed (a problem under `--strict`), and a `Source:` line on every
+  provider. `doctor`, `model list` and the setup wizard now report an adapter
+  that raises -- built-in or not -- instead of dying with a traceback, and
+  `config show` says where each provider it refers to comes from.
+  `DEV_ORCHESTRA_NO_USER_PROVIDERS=1` skips the directory, and an unknown
+  provider says so while it is set. The directory is trusted code run in the
+  CLI's process, not a sandbox. See `references/providers.md`, including what
+  is and is not a stable interface.
+
 ### Changed
+
+- **`register()` refuses a name that is already registered, and a call
+  without an origin once the built-ins are in.** It used to overwrite
+  silently, which is how a user module could replace a built-in. Nothing in
+  the plugin registered twice; code outside it that swapped a built-in this way
+  was never documented and now gets `ProviderRegistrationError`. The discovery
+  cache is also keyed by the adapter's module, so a user adapter copied from a
+  built-in with its class name intact no longer shares the built-in's results.
 
 - **The default inline limit is 400,000 characters, up from 120,000, and this
   changes what is sent.** A change body between 120,000 and 400,000 characters
@@ -186,6 +214,12 @@ The public surface covered by that promise is: the configuration schema, the
   eight concurrent charges, seven landed. `record_event` now appends under the
   state lock, and `Ledger.end` writes the charge and its event together under
   one hold of it rather than reading the state back after releasing it.
+
+- **On Windows, a state file being rewritten could read as absent.** A reader
+  that opens the file in the instant `os.replace` swaps it in is refused with
+  an `OSError`, and `read_json` returned the default for that at once while it
+  retried a torn read. The same short retry now covers both; a file that is
+  really gone still returns the default without waiting.
 
 ## [0.8.0] - 2026-09-19
 

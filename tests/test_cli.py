@@ -11,7 +11,7 @@ from contextlib import redirect_stderr, redirect_stdout
 
 from helpers import IsolatedCase, has_git
 
-from orchestrator import cli
+from orchestrator import cli, providers
 from orchestrator import config as config_mod
 from orchestrator import workspace as ws
 
@@ -242,6 +242,268 @@ class TestDoctor(IsolatedCase):
         run_cli("reviewer", "remove", "codex-general")
         code, _, _ = run_cli("doctor", "--fast", "--strict")
         self.assertEqual(code, 1)
+
+
+#: A user adapter that raises from whichever method ``RAISE_IN`` names. Its
+#: ``which`` and ``version`` are answered in-process, so nothing is spawned.
+FLAKY_ADAPTER = """\
+import sys
+
+from orchestrator.providers.base import Provider, ResolvedModel
+
+RAISE_IN = %r
+_CALLS = 0
+
+
+class FlakyProvider(Provider):
+    name = "flaky"
+    display_name = "Flaky"
+    executable = "flaky"
+
+    def which(self):
+        return sys.executable
+
+    def version(self):
+        return "flaky 1", None
+
+    def detect(self):
+        if RAISE_IN == "detect":
+            raise RuntimeError("detect exploded")
+        return super().detect()
+
+    def list_models(self):
+        if RAISE_IN == "list_models":
+            raise RuntimeError("list_models exploded")
+        return super().list_models()
+
+    def _resolve_latest(self, family):
+        if RAISE_IN == "resolve":
+            raise RuntimeError("resolve exploded")
+        if RAISE_IN == "resolve-value":
+            raise ValueError("resolve exploded")
+        if RAISE_IN == "resolve-type":
+            return "not a resolved model"
+        return ResolvedModel(self.name, family, "latest", None, "default", "cli-default")
+
+    def build_command(self, mode, resolved, cwd, extra_args=(), options=None):
+        return [self.executable]
+
+
+def build_provider(executable=None):
+    global _CALLS
+    _CALLS += 1
+    if RAISE_IN == "factory" and _CALLS > 1:
+        raise RuntimeError("factory exploded")
+    return FlakyProvider(executable)
+"""
+
+
+class TestUserProviders(IsolatedCase):
+    """User adapters as the commands see them. Nothing here may start a real
+    CLI, so the built-in adapters are told theirs are not installed."""
+
+    def setUp(self):
+        super().setUp()
+        from orchestrator.providers.claude import ClaudeProvider
+        from orchestrator.providers.codex import CodexProvider
+
+        for cls in (ClaudeProvider, CodexProvider):
+            self.addCleanup(setattr, cls, "which", cls.which)
+            cls.which = lambda self: None
+
+    def write_mock_config(self, reviewers=None):
+        """Every role on the mock, so the only problems are the ones a test makes."""
+        role = {"provider": "mock", "model": {"family": "small", "version": "latest"}}
+        data = config_mod.default_config()
+        data.update(orchestrator=role, architect=role, implementer=role, review_fixer=role)
+        data["reviewers"] = reviewers or [config_mod.make_reviewer("mock-general", "mock", "small")]
+        config_mod.write_config_file(config_mod.global_config_path(), data)
+
+    def flaky(self, raise_in, reviewer=True):
+        path = self.write_user_provider("flaky", FLAKY_ADAPTER % raise_in)
+        self.load_user_providers()
+        self.write_mock_config(
+            [config_mod.make_reviewer("flaky-general", "flaky", "default")] if reviewer else None
+        )
+        return path
+
+    def test_doctor_names_where_each_provider_comes_from(self):
+        path = self.write_user_provider("mycli")
+        self.load_user_providers()
+        code, out, _ = run_cli("doctor", "--fast")
+        self.assertEqual(code, 0)
+        self.assertIn("Source: user module %s" % path, out)
+        self.assertIn("Source: built-in", out)
+        self.assertIn("User providers", out)
+        self.assertIn(os.path.dirname(path), out)
+        self.assertIn("imported", out)
+        self.assertIn("Imported: mycli", out)
+
+    def test_doctor_json_reports_origins_and_load_errors(self):
+        path = self.write_user_provider("mycli")
+        broken = self.write_user_provider("broken", "def oops(:\n")
+        self.load_user_providers()
+        _, out, _ = run_cli("doctor", "--fast", "--json")
+        payload = json.loads(out)
+        self.assertEqual(payload["providers"]["mycli"]["origin"], {"kind": "user", "path": path})
+        self.assertEqual(payload["providers"]["mock"]["origin"]["kind"], "builtin")
+        self.assertEqual(payload["user_providers"]["loaded"][0]["path"], path)
+        self.assertEqual(payload["user_providers"]["errors"][0]["path"], broken)
+        self.assertTrue(any(broken in problem for problem in payload["problems"]))
+
+    def test_strict_doctor_fails_on_a_broken_user_module_alone(self):
+        self.write_mock_config()
+        code, _, _ = run_cli("doctor", "--fast", "--strict")
+        self.assertEqual(code, 0)
+        self.write_user_provider("broken", "def oops(:\n")
+        self.load_user_providers()
+        code, _, _ = run_cli("doctor", "--fast", "--strict")
+        self.assertEqual(code, 1)
+
+    def test_doctor_says_when_there_is_no_directory(self):
+        self.write_mock_config()
+        self.load_user_providers()
+        _, out, _ = run_cli("doctor", "--fast")
+        self.assertIn("not present; nothing imported", out)
+        self.assertIn("No problems found.", out)
+
+    def test_an_unknown_provider_mentions_modules_that_failed_to_load(self):
+        self.write_mock_config([config_mod.make_reviewer("mycli-general", "mycli", "default")])
+        self.load_user_providers()
+        _, out, _ = run_cli("doctor", "--fast")
+        self.assertIn("unknown provider 'mycli'", out)
+        self.assertNotIn("failed to load", out)
+        self.write_user_provider("zzz_other", "def oops(:\n")
+        self.load_user_providers()
+        _, out, _ = run_cli("doctor", "--fast")
+        self.assertIn("1 user provider module(s) failed to load", out)
+
+    def test_an_adapter_raising_in_detect_is_reported_not_raised(self):
+        path = self.flaky("detect")
+        code, out, _ = run_cli("doctor", "--fast")
+        self.assertEqual(code, 0)
+        self.assertIn("Adapter error: RuntimeError: detect exploded", out)
+        self.assertIn("Installed: unknown (adapter failed)", out)
+        self.assertIn(path, out)
+        self.assertIn("adapter failed during diagnosis", out)
+        self.assertIn("(adapter-error)", out)
+        _, out, _ = run_cli("doctor", "--fast", "--json")
+        payload = json.loads(out)
+        self.assertIn("detect exploded", payload["providers"]["flaky"]["adapter_error"])
+        self.assertEqual(payload["providers"]["flaky"]["origin"]["path"], path)
+        self.assertEqual(payload["reviewers"][0]["status"], "adapter-error")
+
+    def test_a_factory_raising_after_loading_is_reported_not_raised(self):
+        self.flaky("factory")
+        code, out, _ = run_cli("doctor", "--fast")
+        self.assertEqual(code, 0)
+        self.assertIn("factory exploded", out)
+        self.assertIn("adapter failed during diagnosis", out)
+
+    def test_an_adapter_raising_in_list_models_is_reported_by_a_full_doctor(self):
+        """Without ``--fast``, so the discovery call is actually made."""
+        path = self.flaky("list_models")
+        code, out, _ = run_cli("doctor")
+        self.assertEqual(code, 0)
+        self.assertIn("Adapter error: RuntimeError: list_models exploded", out)
+        self.assertIn("provider flaky (user module %s): adapter failed during diagnosis" % path, out)
+        # The built-in that works is still diagnosed in full.
+        self.assertIn("Models (builtin-fallback): mock-small", out)
+        _, out, _ = run_cli("doctor", "--json")
+        payload = json.loads(out)
+        self.assertIn("list_models exploded", payload["providers"]["flaky"]["adapter_error"])
+        self.assertEqual(payload["providers"]["flaky"]["origin"], {"kind": "user", "path": path})
+        self.assertIn("models", payload["providers"]["mock"])
+        self.assertEqual(payload["reviewers"][0]["status"], "adapter-error")
+        self.assertTrue(any("list_models exploded" in problem for problem in payload["problems"]))
+
+    def test_an_adapter_raising_while_resolving_is_an_adapter_error(self):
+        for raise_in, expected in (("resolve", "resolve exploded"), ("resolve-type", "not a ResolvedModel")):
+            with self.subTest(raise_in=raise_in):
+                self.flaky(raise_in)
+                _, out, _ = run_cli("doctor", "--fast", "--json")
+                payload = json.loads(out)
+                reviewer = payload["reviewers"][0]
+                self.assertEqual(reviewer["status"], "adapter-error")
+                self.assertIn(expected, reviewer["error"])
+                self.assertNotIn("resolved", reviewer)
+                self.assertTrue(any("flaky adapter raised" in problem for problem in payload["problems"]))
+
+    def test_reviewer_add_accepts_a_user_provider(self):
+        self.write_user_provider("mycli")
+        self.load_user_providers()
+        run_cli("config", "setup", "--defaults")
+        code, out, err = run_cli("reviewer", "add", "--provider", "mycli", "--role", "general")
+        self.assertEqual(code, 0, err)
+        self.assertIn("mycli-general", out)
+        _, out, _ = run_cli("config", "validate")
+        self.assertNotIn("unknown provider", out)
+
+    def test_config_show_names_where_each_provider_comes_from(self):
+        path = self.write_user_provider("mycli")
+        self.load_user_providers()
+        run_cli("config", "setup", "--defaults")
+        run_cli("reviewer", "add", "--provider", "mycli", "--role", "general")
+        _, out, _ = run_cli("config", "show")
+        self.assertIn("mycli (user module %s)" % path, out)
+        self.assertIn("claude (built-in)", out)
+        _, out, _ = run_cli("config", "show", "--json")
+        payload = json.loads(out)
+        self.assertEqual(payload["providers"]["mycli"], {"kind": "user", "path": path})
+        self.assertEqual(payload["providers"]["claude"], {"kind": "builtin", "path": None})
+
+    def test_config_show_points_an_unknown_provider_at_the_directory(self):
+        self.write_mock_config([config_mod.make_reviewer("mycli-general", "mycli", "default")])
+        _, out, _ = run_cli("config", "show")
+        directory = config_mod.user_providers_dir()
+        self.assertIn("mycli (no adapter; user adapters load from %s)" % directory, out)
+
+    def test_model_list_reports_a_failing_adapter_and_lists_the_rest(self):
+        path = self.flaky("detect", reviewer=False)
+        code, out, _ = run_cli("model", "list")
+        self.assertEqual(code, 1)
+        self.assertIn("flaky: adapter failed (user module %s): RuntimeError: detect exploded" % path, out)
+        self.assertIn("mock: installed", out)
+        code, out, _ = run_cli("model", "list", "--json")
+        self.assertEqual(code, 1)
+        payload = json.loads(out)
+        self.assertIn("detect exploded", payload["flaky"]["adapter_error"])
+        self.assertEqual(payload["flaky"]["origin"]["path"], path)
+        self.assertTrue(payload["mock"]["installed"])
+        # Every entry has the same keys, failed or not.
+        self.assertEqual(set(payload["flaky"]), set(payload["mock"]))
+        self.assertIsNone(payload["mock"]["adapter_error"])
+        self.assertEqual(payload["mock"]["origin"], {"kind": "builtin", "path": None})
+
+    def test_model_list_succeeds_for_a_provider_that_works(self):
+        self.flaky("detect", reviewer=False)
+        code, _, _ = run_cli("model", "list", "--provider", "mock")
+        self.assertEqual(code, 0)
+
+    def test_config_set_warns_when_a_user_adapter_raises_while_resolving(self):
+        path = self.flaky("resolve", reviewer=False)
+        code, _, err = run_cli("config", "set", "implementer.provider", "flaky")
+        self.assertEqual(code, 0, err)
+        self.assertIn(
+            "warning: flaky adapter failed (user module %s): RuntimeError: resolve exploded" % path, err
+        )
+
+    def test_config_set_warns_when_a_user_adapter_raises_a_value_error(self):
+        """Only an unknown provider goes unmentioned -- validation already says so."""
+        path = self.flaky("resolve-value", reviewer=False)
+        code, _, err = run_cli("config", "set", "implementer.provider", "flaky")
+        self.assertEqual(code, 0, err)
+        self.assertIn(
+            "warning: flaky adapter failed (user module %s): ValueError: resolve exploded" % path, err
+        )
+
+    def test_config_show_says_when_user_adapters_are_switched_off(self):
+        self.write_mock_config([config_mod.make_reviewer("mycli-general", "mycli", "default")])
+        os.environ[providers.USER_PROVIDERS_DISABLED_ENV] = "1"
+        _, out, _ = run_cli("config", "show")
+        self.assertIn("(disabled by %s)" % providers.USER_PROVIDERS_DISABLED_ENV, out)
+        _, out, _ = run_cli("doctor", "--fast")
+        self.assertIn("user adapters are disabled by %s" % providers.USER_PROVIDERS_DISABLED_ENV, out)
 
 
 class TestRunCommand(IsolatedCase):

@@ -14,6 +14,16 @@ SCRIPTS_DIR = os.path.join(REPO_ROOT, "scripts")
 if SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, SCRIPTS_DIR)
 
+# Importing the provider registry imports every `.py` in the user's config
+# directory. Nothing has pointed DEV_ORCHESTRA_HOME anywhere yet at this point,
+# so that would be the real user's adapters -- which is why this module has to
+# be imported before anything from `orchestrator`, and why tests that want a
+# user adapter write one and call `load_user_providers()` themselves.
+os.environ.setdefault("DEV_ORCHESTRA_NO_USER_PROVIDERS", "1")
+if "orchestrator.providers" in sys.modules:
+    # Someone imported the registry first; drop whatever it picked up.
+    sys.modules["orchestrator.providers"].unload_user_providers()
+
 ENV_KEYS = (
     "DEV_ORCHESTRA_HOME",
     "DEV_ORCHESTRA_WORKFLOW",
@@ -25,6 +35,7 @@ ENV_KEYS = (
     "DEV_ORCHESTRA_MOCK_RESPONSE",
     "DEV_ORCHESTRA_MOCK_FAIL",
     "DEV_ORCHESTRA_MOCK_DELAY",
+    "DEV_ORCHESTRA_NO_USER_PROVIDERS",
     "XDG_CONFIG_HOME",
     "APPDATA",
 )
@@ -35,6 +46,63 @@ ASSUME_NO_CLI = "DEV_ORCHESTRA_TEST_ASSUME_NO_CLI"
 
 #: The workflow every test runs in unless it says otherwise.
 TEST_WORKFLOW = "test"
+
+#: The minimal user adapter from references/providers.md, verbatim; the docs
+#: test holds the two together and the contract test runs this one.
+USER_ADAPTER_SOURCE = '''\
+"""Adapter for the ``mycli`` CLI. Verified against mycli 1.2.0."""
+
+from __future__ import annotations
+
+from typing import Any, Dict, List, Optional, Sequence
+
+from orchestrator.providers.base import (
+    READ_ONLY_MODES,
+    ModelCandidate,
+    ModelResolutionError,
+    Provider,
+    ResolvedModel,
+)
+
+
+class MyCliProvider(Provider):
+    name = "mycli"  # what `provider:` takes in config.yaml; must not be claude, codex or mock
+    display_name = "My CLI"
+    executable = "mycli"
+
+    fallback_models = (ModelCandidate("", "default", "CLI default", "builtin-fallback"),)
+    fallback_updated = "2026-09-24"
+
+    def _resolve_latest(self, family: str) -> ResolvedModel:
+        if family in ("", "default"):
+            return ResolvedModel(self.name, "default", "latest", None, "mycli default", "cli-default")
+        raise ModelResolutionError(
+            "mycli: %r is not something the installed CLI vouches for; "
+            "pin it with model.version: pinned and model.id" % family
+        )
+
+    def build_command(
+        self,
+        mode: str,
+        resolved: ResolvedModel,
+        cwd: str,
+        extra_args: Sequence[str] = (),
+        options: Optional[Dict[str, Any]] = None,
+    ) -> List[str]:
+        # The prompt arrives on stdin; plan and review must be read-only.
+        command = [self.executable, "run", "--cwd", cwd]
+        if mode in READ_ONLY_MODES:
+            command.append("--read-only")
+        if resolved.argument:
+            command += ["--model", resolved.argument]
+        command += self.option_args(options)
+        command += list(extra_args)
+        return command
+
+
+def build_provider(executable: Optional[str] = None) -> MyCliProvider:
+    return MyCliProvider(executable)
+'''
 
 
 class IsolatedCase(unittest.TestCase):
@@ -58,10 +126,14 @@ class IsolatedCase(unittest.TestCase):
         os.environ["DEV_ORCHESTRA_WORKFLOW"] = TEST_WORKFLOW
         os.chdir(self.project)
         # Discovery is memoised per process; tests patch CLIs, so start clean.
+        from orchestrator import providers
         from orchestrator.providers import base as provider_base
 
         provider_base.clear_discovery_cache()
         self.addCleanup(provider_base.clear_discovery_cache)
+        # Likewise user adapters: none unless the test writes and loads one.
+        providers.unload_user_providers()
+        self.addCleanup(providers.unload_user_providers)
         if os.environ.get(ASSUME_NO_CLI):
             self._hide_provider_clis()
 
@@ -91,6 +163,19 @@ class IsolatedCase(unittest.TestCase):
         with open(path, "w", encoding="utf-8", newline="\n") as handle:
             handle.write(content)
         return path
+
+    def write_user_provider(self, stem: str, source: str = USER_ADAPTER_SOURCE) -> str:
+        """Write ``<config home>/providers/<stem>.py``; loading it is up to the test."""
+        path = os.path.join(self.config_home, "providers", stem + ".py")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(source)
+        return path
+
+    def load_user_providers(self):
+        from orchestrator import providers
+
+        return providers.load_user_providers()
 
     def cli_workspace(self, workflow: str = TEST_WORKFLOW):
         """The workspace the CLI writes to in this test.
