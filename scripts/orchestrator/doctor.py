@@ -11,7 +11,18 @@ import platform
 from typing import Any, Dict, List, Optional
 
 from . import config as config_mod
-from .providers import ModelResolutionError, available_providers, get_provider
+from .providers import (
+    USER_PROVIDERS_DISABLED_ENV,
+    ModelResolutionError,
+    ResolvedModel,
+    available_providers,
+    describe_exception,
+    describe_origin,
+    get_provider,
+    origin_payload,
+    user_provider_report,
+    user_providers_disabled,
+)
 
 ROLE_LABELS = (
     ("orchestrator", "Orchestrator"),
@@ -34,20 +45,37 @@ def collect(start: Optional[str] = None, probe_models: bool = True) -> Dict[str,
         "reviewers": [],
         "problems": [],
     }
+    report["user_providers"] = user_provider_report()
+    for failure in report["user_providers"]["errors"]:
+        report["problems"].append("user provider %s: %s" % (failure["path"], failure["error"]))
 
     detections = {}
+    adapter_errors: Dict[str, str] = {}
     for name in available_providers():
-        provider = get_provider(name)
-        detection = provider.detect()
-        detections[name] = detection
-        entry = detection.to_dict()
-        entry["display_name"] = provider.display_name
-        entry["model_selection"] = "supported"
-        if probe_models and detection.installed:
-            candidates = provider.list_models()
-            entry["models"] = [candidate.to_dict() for candidate in candidates]
-            entry["model_discovery"] = candidates[0].source if candidates else "none"
+        # One adapter at a time: a user adapter that raises is reported against
+        # its file instead of taking the whole diagnosis down with it.
+        try:
+            provider = get_provider(name)
+            detection = provider.detect()
+            entry = detection.to_dict()
+            entry["display_name"] = provider.display_name
+            entry["model_selection"] = "supported"
+            if probe_models and detection.installed:
+                candidates = provider.list_models()
+                entry["models"] = [candidate.to_dict() for candidate in candidates]
+                entry["model_discovery"] = candidates[0].source if candidates else "none"
+            detections[name] = detection
+        except Exception as exc:
+            message = describe_exception(exc)
+            adapter_errors[name] = message
+            entry = {"installed": False, "display_name": name, "adapter_error": message}
+            report["problems"].append(
+                "provider %s (%s): adapter failed during diagnosis: %s"
+                % (name, describe_origin(name), message)
+            )
+        entry["origin"] = origin_payload(name)
         report["providers"][name] = entry
+    load_errors = len(report["user_providers"]["errors"])
 
     try:
         loaded = config_mod.load(start, validate_result=False)
@@ -71,10 +99,13 @@ def collect(start: Optional[str] = None, probe_models: bool = True) -> Dict[str,
 
     for key, label in ROLE_LABELS:
         spec = loaded.data.get(key)
-        report["roles"][key] = _describe_role(label, spec, detections, report["problems"])
+        report["roles"][key] = _describe_role(
+            label, spec, detections, report["problems"], adapter_errors, load_errors
+        )
 
     for reviewer in loaded.reviewers():
-        entry = _describe_role("Reviewer %s" % reviewer.get("id"), reviewer, detections, report["problems"])
+        label = "Reviewer %s" % reviewer.get("id")
+        entry = _describe_role(label, reviewer, detections, report["problems"], adapter_errors, load_errors)
         entry["id"] = reviewer.get("id")
         entry["role"] = reviewer.get("role", "general")
         report["reviewers"].append(entry)
@@ -84,7 +115,14 @@ def collect(start: Optional[str] = None, probe_models: bool = True) -> Dict[str,
     return report
 
 
-def _describe_role(label: str, spec: Any, detections: Dict[str, Any], problems: List[str]) -> Dict[str, Any]:
+def _describe_role(
+    label: str,
+    spec: Any,
+    detections: Dict[str, Any],
+    problems: List[str],
+    adapter_errors: Dict[str, str],
+    load_errors: int,
+) -> Dict[str, Any]:
     entry: Dict[str, Any] = {"label": label}
     if not isinstance(spec, dict):
         entry["status"] = "missing"
@@ -102,9 +140,21 @@ def _describe_role(label: str, spec: Any, detections: Dict[str, Any], problems: 
     _describe_options(entry, spec, label, problems)
 
     detection = detections.get(provider_name)
+    if detection is None and provider_name in adapter_errors:
+        entry["status"] = "adapter-error"
+        entry["error"] = adapter_errors[provider_name]
+        problems.append(
+            "%s: %s adapter failed during diagnosis (see the provider block above)" % (label, provider_name)
+        )
+        return entry
     if detection is None:
         entry["status"] = "unknown-provider"
-        problems.append("%s: unknown provider %r" % (label, provider_name))
+        problem = "%s: unknown provider %r" % (label, provider_name)
+        if load_errors:
+            problem += "; %d user provider module(s) failed to load, see User providers" % load_errors
+        if user_providers_disabled():
+            problem += "; user adapters are disabled by %s" % USER_PROVIDERS_DISABLED_ENV
+        problems.append(problem)
         return entry
     if not detection.installed:
         entry["status"] = "cli-missing"
@@ -113,10 +163,19 @@ def _describe_role(label: str, spec: Any, detections: Dict[str, Any], problems: 
 
     try:
         resolved = get_provider(provider_name).resolve_model(model_spec)
+        if not isinstance(resolved, ResolvedModel):
+            raise TypeError("resolve_model() returned %s, not a ResolvedModel" % type(resolved).__name__)
     except ModelResolutionError as exc:
         entry["status"] = "unresolvable-model"
         entry["error"] = str(exc)
         problems.append("%s: %s" % (label, exc))
+        return entry
+    except Exception as exc:
+        # A user adapter can raise anything from its resolution code; the
+        # point of doctor is to say so rather than to fall over with it.
+        entry["status"] = "adapter-error"
+        entry["error"] = describe_exception(exc)
+        problems.append("%s: %s adapter raised %s" % (label, provider_name, entry["error"]))
         return entry
     entry["status"] = "ok"
     entry["resolved"] = resolved.display
@@ -158,8 +217,14 @@ def render(report: Dict[str, Any]) -> str:
 
     for name, entry in report["providers"].items():
         lines.append("%s (%s)" % (entry.get("display_name", name), name))
-        lines.append("  Installed: %s" % ("yes" if entry.get("installed") else "no"))
-        if entry.get("installed"):
+        if entry.get("adapter_error"):
+            lines.append("  Installed: unknown (adapter failed)")
+        else:
+            lines.append("  Installed: %s" % ("yes" if entry.get("installed") else "no"))
+        lines.append("  Source: %s" % describe_origin(name))
+        if entry.get("adapter_error"):
+            lines.append("  Adapter error: %s" % entry["adapter_error"])
+        elif entry.get("installed"):
             lines.append("  Version: %s" % (entry.get("version") or "unknown"))
             lines.append(
                 "  Authentication: %s (credential presence only, not verified)"
@@ -173,6 +238,9 @@ def render(report: Dict[str, Any]) -> str:
         elif entry.get("error"):
             lines.append("  Detail: %s" % entry["error"])
         lines.append("")
+
+    lines += _user_provider_lines(report.get("user_providers") or {})
+    lines.append("")
 
     config_info = report["config"]
     lines.append("Config")
@@ -212,6 +280,29 @@ def render(report: Dict[str, Any]) -> str:
     else:
         lines += ["", "No problems found."]
     return "\n".join(lines) + "\n"
+
+
+def _user_provider_lines(info: Dict[str, Any]) -> List[str]:
+    """Always shown, so the extension point and its path are never a secret."""
+    lines = ["User providers"]
+    directory = info.get("directory")
+    if not info.get("enabled", True):
+        lines.append("  Directory: %s" % directory)
+        lines.append("  Disabled by %s; nothing imported" % USER_PROVIDERS_DISABLED_ENV)
+        return lines
+    if not info.get("present"):
+        lines.append("  Directory: %s (not present; nothing imported)" % directory)
+        return lines
+    lines.append("  Directory: %s" % directory)
+    lines.append("  Code in this directory is imported at startup, from outside the plugin.")
+    loaded = info.get("loaded") or []
+    if not loaded:
+        lines.append("  Imported: none")
+    for item in loaded:
+        lines.append("  Imported: %s  <- %s" % (item["name"], item["path"]))
+    for failure in info.get("errors") or []:
+        lines.append("  Failed:   %s -- %s" % (failure["path"], failure["error"]))
+    return lines
 
 
 def _role_line(entry: Dict[str, Any]) -> str:

@@ -1114,6 +1114,10 @@ flowchart LR
 
 `references/architecture.md` has the long version.
 
+An adapter for a CLI of your own does not need a change to the plugin: put it
+in `<config dir>/providers/` and it is loaded at startup and survives updates
+(`references/providers.md`).
+
 ## Contributing
 
 Issues and pull requests welcome — see `CONTRIBUTING.md`. In particular: if a

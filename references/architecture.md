@@ -93,7 +93,9 @@ whether another round is warranted.
 
 ## Extension points
 
-- **A new CLI**: one module in `providers/` plus one `register()` call. See
+- **A new CLI**: one module in `providers/` plus one `register()` call -- or,
+  without editing the plugin, one module in `<config dir>/providers/`, which
+  is imported after the built-ins and survives plugin updates. See
   `references/providers.md`.
 - **A new reviewer role**: any string works; built-in roles just get sharper
   prompt guidance (`ROLE_GUIDANCE` in `review.py`).

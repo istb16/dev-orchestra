@@ -88,7 +88,7 @@ reason and a test proving the boundary still holds.
 | Orchestration policy (when to run a stage) | `skills/dev-orchestra/SKILL.md` |
 | Long-form explanation | `references/` — keep the skill under 500 lines |
 | Plugin packaging | `.claude-plugin/`, `.codex-plugin/`, `.agents/plugins/` |
-| A new CLI | `scripts/orchestrator/providers/` + `register()` — see `references/providers.md` |
+| A new CLI | `scripts/orchestrator/providers/` + `register()` — see `references/providers.md` (a user's own adapter goes in `<config dir>/providers/` instead, without a change here) |
 | Config schema | `config.py` (defaults **and** `validate`) + `references/configuration.md` |
 | Review parsing/dedup | `review.py` |
 

@@ -25,7 +25,7 @@ interrupted.
 
 | Command | Description |
 | --- | --- |
-| `config show [--scope effective\|global\|project] [--json]` | Show the configuration. Default `effective` (merged); a scope shows that layer exactly as it is on disk, which is usually much shorter. |
+| `config show [--scope effective\|global\|project] [--json]` | Show the configuration. Default `effective` (merged); a scope shows that layer exactly as it is on disk, which is usually much shorter. A `Providers:` line says where each provider it refers to comes from (built-in, a user module's path, or no adapter); `--json` has the same under `providers`. |
 | `config path` | Print both layer locations. |
 | `config setup [--scope global\|project] [--defaults] [--force]` | Setup wizard. `--defaults` overrides nothing, so the file holds only `version: 1` and every value follows the built-in defaults. `--force` prompts even without a TTY. |
 | `config reset [--scope …] [--delete]` | Clear this layer's overrides (the file stays, holding only `version`), or delete the file with `--delete`. |
@@ -50,7 +50,7 @@ leaves the file in place and goes on shadowing it.
 
 | Command | Description |
 | --- | --- |
-| `model list [--provider <name>] [--json]` | Models the installed CLIs advertise, with the discovery source for each (`cli-help`, `cli-catalog`, `cli-config`, `cli-default`, `builtin-fallback`). |
+| `model list [--provider <name>] [--json]` | Models the installed CLIs advertise, with the discovery source for each (`cli-help`, `cli-catalog`, `cli-config`, `cli-default`, `builtin-fallback`). An adapter that raises is reported and the rest still listed, but the exit status is 1. Every `--json` entry has the same keys, including `origin` and `adapter_error` (`null` when it worked). |
 
 ## reviewer
 
@@ -81,6 +81,16 @@ settings a file fixes where the recommendation has since changed. It is a
 report, never a rewrite: a deliberate choice and an inherited default look
 identical on disk. `config prune` drops the ones equal to the current default,
 on request. It says nothing about `reviewers` -- a panel is nobody's default.
+
+Each provider block has a `Source:` line -- `built-in` or `user module <path>`.
+The **User providers** block is always shown: the directory user adapters are
+imported from (or that it is not present, or disabled by
+`DEV_ORCHESTRA_NO_USER_PROVIDERS`), what was imported, and every file that
+failed to load, which is also a problem. An adapter that raises while being
+diagnosed gets `Installed: unknown (adapter failed)` and an `Adapter error:`
+line instead of a traceback, and the roles using it show `adapter-error`. In
+`--json`: `providers.<name>.origin`, `providers.<name>.adapter_error` and a
+top-level `user_providers`. See `references/providers.md`.
 
 ## run
 

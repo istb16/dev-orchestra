@@ -323,7 +323,7 @@ class Provider:
         return shutil.which(self.executable)
 
     def _cached(self, kind: str, compute):
-        key = (type(self).__name__, self.executable, kind)
+        key = (type(self).__module__, type(self).__name__, self.executable, kind)
         if key not in _DISCOVERY_CACHE:
             _DISCOVERY_CACHE[key] = compute()
         return _DISCOVERY_CACHE[key]

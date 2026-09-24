@@ -16,20 +16,18 @@ from __future__ import annotations
 
 import io
 import os
-import sys
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 
-REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-# The script under test lives beside the package rather than inside it, and is
-# imported by name. ``helpers`` would put ``scripts/`` on the path too, but
-# only once it has been imported -- which is after this line either way.
-sys.path.insert(0, os.path.join(REPO_ROOT, "scripts"))
+from helpers import REPO_ROOT, IsolatedCase
 
-import smoke_live  # noqa: E402
-from helpers import IsolatedCase  # noqa: E402
+# isort: split
+# ``helpers`` first: it puts ``scripts/`` on the path, where the script under
+# test lives, and fixes the environment before ``smoke_live`` imports the
+# provider registry -- which would otherwise import the real user's adapters.
+import smoke_live
 
-from orchestrator.providers.base import Detection, ResolvedModel, RunResult, Usage  # noqa: E402
+from orchestrator.providers.base import Detection, ResolvedModel, RunResult, Usage
 
 
 class _FakeProvider:
