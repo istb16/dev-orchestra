@@ -159,10 +159,11 @@ The public surface covered by that promise is: the configuration schema, the
 - **Provider adapters of your own load from the config directory, so they
   survive a plugin update.** Every `.py` in `<config dir>/providers/`
   (`%APPDATA%\dev-orchestra\providers\` on Windows,
-  `~/.config/dev-orchestra/providers/` elsewhere, `$DEV_ORCHESTRA_HOME/providers/`
-  when that is set; `DEV_ORCHESTRA_CONFIG` does not move it) is imported after
-  the built-ins and registers what its `build_provider()` returns. The plugin installs into a versioned cache, so an
-  adapter dropped into `scripts/orchestrator/providers/` vanished on update
+  `~/.config/dev-orchestra/providers/` elsewhere,
+  `$DEV_ORCHESTRA_HOME/providers/` when that is set; `DEV_ORCHESTRA_CONFIG`
+  does not move it) is imported after the built-ins and registers what its
+  `build_provider()` returns. The plugin installs into a versioned cache, so
+  an adapter dropped into `scripts/orchestrator/providers/` vanished on update
   while the `config.yaml` naming it stayed behind. Built-in names cannot be
   taken over and the first file to claim a name keeps it. A module that fails
   to load never stops the CLI; `doctor` lists the directory, what it imported
