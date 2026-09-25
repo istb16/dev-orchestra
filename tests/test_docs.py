@@ -17,6 +17,8 @@ from helpers import REPO_ROOT, USER_ADAPTER_SOURCE, IsolatedCase
 from orchestrator import miniyaml
 from orchestrator.miniyaml import _parse_node, _read_lines
 
+JA_REFERENCES = pathlib.Path(REPO_ROOT) / "docs" / "ja" / "references"
+
 YAML_FENCE = re.compile(r"^```ya?ml\s*$(.*?)^```\s*$", re.MULTILINE | re.DOTALL)
 
 
@@ -30,6 +32,7 @@ def documentation_files():
     ]
     paths = [pathlib.Path(REPO_ROOT) / name for name in names]
     paths += sorted((pathlib.Path(REPO_ROOT) / "references").glob("*.md"))
+    paths += sorted(JA_REFERENCES.glob("*.md"))
     return [path for path in paths if path.is_file()]
 
 
@@ -152,6 +155,89 @@ class TestReadmeLinks(unittest.TestCase):
                     continue
                 with self.subTest(readme=readme, target=target):
                     self.assertTrue((pathlib.Path(REPO_ROOT) / target).exists(), target)
+
+
+class TestJapaneseReferences(unittest.TestCase):
+    """A translation of every reference, which says what it was made from.
+
+    The English files are what the skill reads and stay authoritative; the
+    Japanese ones are for people. The header's sha256 is of the English file
+    the translation was brought up to date with, so an English change that the
+    translation has not followed fails here instead of quietly going stale.
+    """
+
+    def setUp(self):
+        import sys
+
+        scripts = str(pathlib.Path(REPO_ROOT) / "scripts")
+        if scripts not in sys.path:
+            sys.path.insert(0, scripts)
+        import stamp_translation
+
+        self.stamp = stamp_translation
+
+    def references(self):
+        return sorted((pathlib.Path(REPO_ROOT) / "references").glob("*.md"))
+
+    def test_every_reference_has_a_translation(self):
+        for source in self.references():
+            with self.subTest(reference=source.name):
+                self.assertTrue((JA_REFERENCES / source.name).is_file(), source.name)
+
+    def test_every_translation_is_of_the_english_as_it_is_now(self):
+        for source in self.references():
+            translation = JA_REFERENCES / source.name
+            if not translation.is_file():
+                continue
+            with self.subTest(reference=source.name):
+                header = self.stamp.HEADER.match(translation.read_text(encoding="utf-8"))
+                self.assertIsNotNone(header, "%s has no translated-from header" % translation.name)
+                self.assertEqual(header.group("source"), "references/%s" % source.name)
+                self.assertEqual(
+                    header.group("digest"),
+                    self.stamp.digest_of(source),
+                    "references/%s changed since docs/ja/references/%s was translated: bring the "
+                    "translation up to date, then run `python scripts/stamp_translation.py "
+                    "docs/ja/references/%s`" % (source.name, source.name, source.name),
+                )
+
+    def test_the_translations_keep_the_code_blocks_of_the_english(self):
+        """Commands, config and prompt templates are not translated."""
+        fence = re.compile(r"^```.*?^```\s*$", re.MULTILINE | re.DOTALL)
+        for source in self.references():
+            translation = JA_REFERENCES / source.name
+            if not translation.is_file():
+                continue
+            with self.subTest(reference=source.name):
+                self.assertEqual(
+                    fence.findall(translation.read_text(encoding="utf-8")),
+                    fence.findall(source.read_text(encoding="utf-8")),
+                )
+
+    def test_every_relative_link_in_the_translations_resolves(self):
+        for translation in sorted(JA_REFERENCES.glob("*.md")):
+            text = translation.read_text(encoding="utf-8")
+            for target in MARKDOWN_LINK.findall(text):
+                if "://" in target or target.startswith("mailto:"):
+                    continue
+                with self.subTest(translation=translation.name, target=target):
+                    self.assertTrue((translation.parent / target).exists(), target)
+
+    def test_every_in_page_anchor_in_the_translations_exists(self):
+        anchor = re.compile(r"\]\((?P<file>[^)#\s]*)#(?P<id>[^)\s]+)\)")
+        for translation in sorted(JA_REFERENCES.glob("*.md")):
+            for match in anchor.finditer(translation.read_text(encoding="utf-8")):
+                target = translation.parent / match.group("file") if match.group("file") else translation
+                if not target.is_file() or target.parent != JA_REFERENCES:
+                    continue
+                with self.subTest(translation=translation.name, link=match.group(0)):
+                    self.assertIn('<a id="%s"></a>' % match.group("id"), target.read_text(encoding="utf-8"))
+
+    def test_the_japanese_readme_links_every_translation(self):
+        text = (pathlib.Path(REPO_ROOT) / "README.ja.md").read_text(encoding="utf-8")
+        for source in self.references():
+            with self.subTest(reference=source.name):
+                self.assertIn("](docs/ja/references/%s)" % source.name, text)
 
 
 if __name__ == "__main__":

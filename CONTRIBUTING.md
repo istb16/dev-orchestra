@@ -117,6 +117,13 @@ schema.
 - One logical change per PR.
 - Include tests. Bug fixes should include a test that fails before the fix.
 - Update the docs in the same PR — an undocumented flag does not exist.
+- A change to `references/*.md` changes its Japanese translation in
+  `docs/ja/references/` too: bring the translation up to date, then run
+  `python scripts/stamp_translation.py docs/ja/references/<name>.md`. The
+  English stays authoritative, and `tests/test_docs.py` fails until the
+  translation's header names the English as it is now. If you cannot write
+  the Japanese yourself, say so in the PR so someone else can; do not stamp a
+  translation you did not update.
 - Add a `CHANGELOG.md` entry under `## [Unreleased]`.
 - Say which platform you tested on, and which CLI versions if you touched an
   adapter.
