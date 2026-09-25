@@ -127,5 +127,32 @@ class TestDocumentedYaml(IsolatedCase):
         self.fail("README.md no longer contains a full configuration example")
 
 
+MARKDOWN_LINK = re.compile(r"\]\(([^)#\s]+)(?:#[^)]*)?\)")
+
+
+class TestReadmeLinks(unittest.TestCase):
+    """The README is the way into the references, in both languages."""
+
+    READMES = ("README.md", "README.ja.md")
+
+    def test_every_reference_document_is_linked_from_both_readmes(self):
+        references = sorted(path.name for path in (pathlib.Path(REPO_ROOT) / "references").glob("*.md"))
+        self.assertTrue(references)
+        for readme in self.READMES:
+            text = (pathlib.Path(REPO_ROOT) / readme).read_text(encoding="utf-8")
+            for name in references:
+                with self.subTest(readme=readme, reference=name):
+                    self.assertIn("](references/%s)" % name, text)
+
+    def test_every_relative_link_in_the_readmes_resolves(self):
+        for readme in self.READMES:
+            text = (pathlib.Path(REPO_ROOT) / readme).read_text(encoding="utf-8")
+            for target in MARKDOWN_LINK.findall(text):
+                if "://" in target or target.startswith("mailto:"):
+                    continue
+                with self.subTest(readme=readme, target=target):
+                    self.assertTrue((pathlib.Path(REPO_ROOT) / target).exists(), target)
+
+
 if __name__ == "__main__":
     unittest.main()
