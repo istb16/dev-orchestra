@@ -99,6 +99,9 @@ review:
     enabled: false                    # review .ai/plan.md before implementing
     max_iterations: 2                 # design review -> revise -> re-review
 
+design:
+  require_approval: true              # implementer waits for the user's yes (design approve)
+
 workspace:
   dir: .ai                            # relative to the repo root, or absolute
 ```
@@ -125,6 +128,7 @@ workspace:
 | `review.context.inline_chars` | int ≥ 1 \| null | How much of the change body goes into the reviewer's prompt (default 400,000, the same number as `max_chars`). At or under it the body is inlined and the round can be clean; over it the reviewer is handed the path of the frozen snapshot and the round is recorded `partial` — coverage unverified — whatever comes back. **Setting it below `max_chars` opens a band between the two where rounds run and are recorded `partial`**: that is the explicit choice of somebody who will not pay for very large prompts, and `partial` is what it costs. Setting it *above* `max_chars` is also allowed and is not a mistake — it means the body is only ever handed over as a file on a round a human forced. `null` means the default. Every round records the number it was measured against, so a `partial` round says which limit made it one. See `references/limits.md`. |
 | `review.design.enabled` | bool | `false` (default) skips the design review entirely. `true` puts `.ai/plan.md` in front of the same panel before implementation; the stage costs a reviewer run per panel member per round, which is why it is opt-in. |
 | `review.design.max_iterations` | int ≥ 0 | Design review → revise → re-review rounds, counted apart from `max_review_iterations` (default 2). `1` is the cheap setting: one round, then report what is still open. |
+| `design.require_approval` | bool | `true` (default) makes `run implementer` refuse (exit 5) while `.ai/plan.md` exists and the plan as it is now has not been approved with `design approve` -- after the user said yes. `false` is for runs nobody is watching (CI, batch), and restores the behaviour from before the gate existed. Top-level rather than under `review.design`: approval matters whether or not the panel reviewed the plan. `--force` does not bypass it; only this setting does. |
 | `optimization.level` | `aggressive` \| `balanced` \| `quality` | How hard to try to be cheap. Default `balanced`. See below. |
 | `optimization.high_risk_paths` | list | Globs that force `quality` for a change touching them. Replaces the default list wholesale. |
 | `optimization.low_risk_max_files` | int | Below `quality`, at most this many files still counts as a small change (default 5). |
@@ -328,6 +332,7 @@ The skill carries the command grammar; this is the phrasebook.
 | "make the architect use Codex" | `config set architect.provider codex` **and** a family Codex accepts |
 | "the implementer can't run the tests" | `config set implementer.options.permission_mode bypassPermissions`, or allow-list the command in that CLI's own settings |
 | "review the design too" | `config set review.design.enabled true` |
+| "don't ask me to approve plans" / running in CI | `config set design.require_approval false` |
 | "add a Codex security reviewer" | `reviewer add --provider codex --role security` |
 | "make it three reviewers" | `reviewer add …` again, then `reviewer list` |
 | "remove the performance reviewer" | `reviewer remove performance` |

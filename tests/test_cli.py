@@ -88,6 +88,13 @@ class TestConfigCommands(IsolatedCase):
         _, out, _ = run_cli("config", "show")
         self.assertIn("design review: off", out)
 
+    def test_show_says_whether_the_plan_needs_approving(self):
+        _, out, _ = run_cli("config", "show")
+        self.assertIn("plan approval: required", out)
+        run_cli("config", "set", "design.require_approval", "false")
+        _, out, _ = run_cli("config", "show")
+        self.assertIn("plan approval: not required", out)
+
     def test_project_scope_writes_a_project_file(self):
         code, _, _ = run_cli("config", "set", "--scope", "project", "implementer.provider", "mock")
         self.assertEqual(code, 0)

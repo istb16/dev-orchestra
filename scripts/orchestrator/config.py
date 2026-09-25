@@ -160,6 +160,13 @@ def default_config() -> Dict[str, Any]:
             # says so once -- `config set review.design.enabled true`.
             "design": {"enabled": False, "max_iterations": 2},
         },
+        # Implementation waits for the user's explicit approval of the plan.
+        # On by default because the point is to catch a plan the user never
+        # saw; `false` is for pipelines nobody is watching (CI, batch runs),
+        # where nobody could answer the question anyway. Top-level rather
+        # than under review.design: approval matters whether or not the
+        # panel reviewed the plan.
+        "design": {"require_approval": True},
         # How hard to try to be cheap. See orchestrator/optimization.py: the
         # level gates a review of a tree whose tests are recorded as failing,
         # decides whether a small change gets one reviewer or the whole panel,
@@ -388,6 +395,17 @@ class LoadedConfig:
         configured = (self.data.get("review") or {}).get("design")
         if isinstance(configured, dict):
             settings.update(configured)
+        return settings
+
+    def design_settings(self) -> Dict[str, Any]:
+        """The top-level ``design`` block, with anything absent filled in."""
+        settings = default_config()["design"]
+        configured = self.data.get("design")
+        if isinstance(configured, dict):
+            # An explicit ``null`` means "use the default", as it does in
+            # ``context_settings``. Copied over as it is, it would read as
+            # false and turn the approval gate off without anyone choosing to.
+            settings.update({key: value for key, value in configured.items() if value is not None})
         return settings
 
     def context_settings(self) -> Dict[str, Any]:
@@ -672,6 +690,15 @@ def validate(data: Dict[str, Any], known_providers: Optional[List[str]] = None) 
                             problems.append(
                                 "review.exclude[%d]: must be a non-empty string (got %r)" % (index, pattern)
                             )
+
+    design = data.get("design")
+    if design is not None:
+        if not isinstance(design, dict):
+            problems.append("design: must be a mapping")
+        else:
+            approval = design.get("require_approval")
+            if approval is not None and not isinstance(approval, bool):
+                problems.append("design.require_approval: must be true or false")
 
     optimization = data.get("optimization")
     if optimization is not None:

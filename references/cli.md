@@ -18,8 +18,8 @@ Global options: `--cwd <dir>` (operate as if run from there),
 Exit codes: `0` success, `1` the operation ran but the outcome is negative
 (invalid config, empty snapshot, every reviewer failed, role run failed), `2` a
 usage or configuration error, `3` a budget is exhausted and the command refused
-to run, `4` a `jobs wait` returned while the job was still running, `130`
-interrupted.
+to run, `4` a `jobs wait` returned while the job was still running, `5` the
+plan is not approved and `design.require_approval` is on, `130` interrupted.
 
 ## config
 
@@ -96,7 +96,7 @@ top-level `user_providers`. See `references/providers.md`.
 
 | Command | Description |
 | --- | --- |
-| `run <role> [--prompt <text>\|--prompt-file <path>] [--tier <name>] [--mode plan\|implement\|review] [--output <path>] [--timeout <s>] [--idle-timeout <s>] [--detach] [--force] [--json] [--print-command] [--extra …]` | Run one configured role. `<role>` is `orchestrator`, `architect`, `implementer`, `review_fixer`, or a reviewer id. `--tier` picks one of that role's configured `model_tiers`; an unknown one is refused rather than run on the default model. Consumes an attempt from that stage's budget and refuses (exit 3) when it is spent, unless `--force`. |
+| `run <role> [--prompt <text>\|--prompt-file <path>] [--tier <name>] [--mode plan\|implement\|review] [--output <path>] [--timeout <s>] [--idle-timeout <s>] [--detach] [--force] [--json] [--print-command] [--extra …]` | Run one configured role. `<role>` is `orchestrator`, `architect`, `implementer`, `review_fixer`, or a reviewer id. `--tier` picks one of that role's configured `model_tiers`; an unknown one is refused rather than run on the default model. Consumes an attempt from that stage's budget and refuses (exit 3) when it is spent, unless `--force`. `run implementer` refuses (exit 5) while a plan exists and is not approved -- in the parent and again in a detached worker, whose refusal lands in the job record whole; `--force` does not apply. |
 
 The prompt may also be piped on stdin (`--prompt-file -` reads stdin
 explicitly). Default modes: architect/orchestrator `plan`, implementer and
@@ -176,6 +176,26 @@ not whether you may. See `references/reviews.md`.
 from: `max_review_iterations` without `--design`, `max_iterations` with it. The
 rest of the payload is the same either way.
 
+`review run --design` gives every round a new `round_id` in
+`reviews/design/review-target.json`, including a re-run of the same plan;
+`review consolidate --design` and `review triage --design` leave it alone. The
+consolidated report names a round only once `review run --design` has had
+every reviewer of it return; `review consolidate --design` keeps the round the
+previous report named, even while a newer round is running. An approval is
+given over the round that was current at the time.
+
+## design
+
+| Command | Description |
+| --- | --- |
+| `design approve [--json]` | Record the user's approval of `.ai/plan.md` as it is now (sha256 of the plan alone) together with the design review round it was given over. A later revision, or a design review that runs afterwards, needs approving again. The round is the last one with a consolidated report, read together with the findings it names; while a `review run --design` round has started but has no report yet (still running, or it crashed), nothing is recorded and it exits 2. A round that ran to the end with no reviewer's review -- every reviewer failed -- is approved over instead, with a note that the plan has no design review findings at all, so a panel that keeps failing never leaves the user unable to go ahead. Open design findings -- every one not rejected or marked a duplicate, whatever its severity -- are printed, not refused: approving over them is the user's call; findings from a review of an earlier revision of the plan (the frozen `review-target.md` differs from the plan) are labelled as such. Approving the same plan over the same round again says `already approved` and records nothing. No plan exits 2. Run it only after the user said yes in conversation. |
+
+The approval lives in `state.json` under `design_approval`, written by this
+command only, with a `design_approval` / `approved` event beside it; `state
+record` cannot forge one. `budget reset` keeps it and `workflow remove` deletes
+it. A round written before rounds had ids counts as no round: approving over it
+records none, and the next `review run --design` makes the approval stale.
+
 ## status
 
 | Command | Description |
@@ -194,6 +214,13 @@ round's consolidation in place, so without that rule an oversized change would
 keep answering `continue` out of a clean review of something else.
 The reason names the size and the limit; `review.refused_for_size` and
 `design_review.refused_for_size` carry the same two numbers in `--json`.
+
+`design_approval` and the `Plan approval:` line say whether the plan still has
+to be put to the user (`references/workflow.md`). They are not a reason and do
+not change the verdict: `run implementer` enforces them. The one exception runs
+the other way: once the user has approved the current plan, a design review
+budget spent with findings open is no longer a reason, because the user was
+shown them and decided to go ahead.
 
 ```bash
 dev-orchestra status --json
@@ -453,7 +480,7 @@ which is a different root and therefore a different `.ai/`.
 | --- | --- |
 | `state show [--json]` | The recorded stage events for this project. |
 | `state record <stage> <status> [--detail k=v …]` | Append a stage outcome (for stages not run through `run`). `state record test ok\|failed` is what the review gate reads. |
-| `summary [--json]` | The end-of-run stage + model summary. |
+| `summary [--json]` | The end-of-run stage + model summary, including `design_approval` once a plan was approved. |
 
 ## Environment variables
 

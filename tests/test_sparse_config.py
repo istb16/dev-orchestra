@@ -96,6 +96,17 @@ class TestSparseWriters(IsolatedCase):
         self.assertEqual(sorted(layer), ["optimization", "version"])
         self.assertEqual(layer["optimization"], {"low_risk_max_files": 7})
 
+    def test_turning_plan_approval_off_writes_only_that_value(self):
+        run_cli("config", "set", "design.require_approval", "false")
+        layer = self.global_layer()
+        self.assertEqual(sorted(layer), ["design", "version"])
+        self.assertEqual(layer["design"], {"require_approval": False})
+
+    def test_plan_approval_set_to_its_default_is_pruned(self):
+        run_cli("config", "set", "design.require_approval", "true")
+        run_cli("config", "prune")
+        self.assertEqual(self.global_layer(), {"version": 1})
+
     def test_a_value_equal_to_the_default_is_still_recorded(self):
         """Typing it is deciding it; only `config prune` reads equality as
         evidence of inheritance."""

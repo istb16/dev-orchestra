@@ -12,6 +12,41 @@ The public surface covered by that promise is: the configuration schema, the
 
 ### Added
 
+- **Implementation waits for the user's approval of the plan.**
+  `design.require_approval` (default `true`) makes `run implementer` refuse --
+  exit 5, before any budget is consumed and before `--detach` hands the work
+  to a worker, and again inside the worker, which writes the whole refusal
+  into its job -- while `.ai/plan.md` exists and the plan as it is now has not
+  been approved. `design approve` records the approval against the sha256 of
+  the plan alone and the design review round it was given over: every
+  `review run --design` now writes a new `round_id` into
+  `reviews/design/review-target.json`, so a later revision or a later design
+  review -- even of the same plan -- needs approving again, while
+  re-consolidating and triaging do not. The round is copied into the
+  consolidated report only by the `review run --design` that ran it, once
+  every reviewer has returned and at least one of them reviewed -- `review
+  consolidate --design` keeps the round the previous report named -- and
+  `design approve` binds to that, so it refuses (exit 2) while a round is
+  still running; a round every reviewer failed is approved over with a note
+  that the plan went unreviewed, rather than left unapprovable. Open design
+  findings -- all of them, not only the blocking severities, and the same
+  list in `status` -- are printed, not refused, and labelled when they come
+  from a review of an earlier revision. A
+  detached worker that refuses records the whole refusal in its job; the
+  attempt its parent consumed is not given back. An empty
+  `design.require_approval:` means the default rather than turning the gate
+  off.
+  `--force` does not apply: it overrides a budget, and approval is the user's
+  consent. `status` reports the state under `design_approval` and says to ask
+  the user; the verdict is unchanged, except that a design review budget spent
+  with findings open stops being a reason once the user has approved the
+  current plan over them. No plan, no gate. **A workflow in progress at
+  upgrade time stops before implementing until its plan is approved**,
+  including one whose implementer already ran: `status` does not ask about
+  that one, but running the implementer again needs an approval. `config set
+  design.require_approval false` restores the previous behaviour for
+  unattended runs.
+
 - **A change too big to review is refused rather than half-reviewed.**
   `review.context.max_chars` (default 400,000) is the most change body a
   review round will send at all -- the diff for a code round, the plan *and*

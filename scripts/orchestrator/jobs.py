@@ -23,7 +23,7 @@ import subprocess
 import sys
 import time
 import uuid
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from . import execution
 from . import workspace as ws
@@ -160,10 +160,15 @@ def start(
         write_job(workspace, job)
         return job
 
-    job["pid"] = proc.pid
-    job["status"] = "running"
-    write_job(workspace, job)
-    return job
+    def spawned(current: Dict[str, Any]) -> None:
+        # Merged into what is on disk, not written over it: a fast worker can
+        # already have claimed the job or finished it, and none of that may be
+        # put back to how it looked before the spawn.
+        current.setdefault("pid", proc.pid)
+        if current.get("status") == "starting":
+            current["status"] = "running"
+
+    return update(job_path(workspace, job_id), spawned, default=job)
 
 
 def _entry_point() -> str:
@@ -238,30 +243,53 @@ def _kill_pid(pid: int) -> bool:
 # --------------------------------------------------------------------------- worker side
 
 
+def update(
+    job_file: str,
+    change: Callable[[Dict[str, Any]], None],
+    default: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Apply ``change`` to the job record on disk, under the job's lock.
+
+    The parent and its worker both write the one file, and each used to read
+    it, edit its copy and write the copy back -- so whichever wrote second
+    undid the other. ``default`` stands in for a record that is not there.
+    """
+    with ws.file_lock(job_file):
+        job = ws.read_json(job_file, None)
+        if not isinstance(job, dict):
+            job = dict(default or {})
+        change(job)
+        ws.write_json(job_file, job)
+    return job
+
+
 def claim(job_file: str) -> Dict[str, Any]:
     """Called by the worker: record that it owns this job."""
-    job = ws.read_json(job_file, None) or {}
-    job["pid"] = os.getpid()
-    job["status"] = "running"
-    job["claimed_at"] = ws.utcnow()
-    ws.write_json(job_file, job)
-    return job
+
+    def claimed(job: Dict[str, Any]) -> None:
+        job["pid"] = os.getpid()
+        job["status"] = "running"
+        job["claimed_at"] = ws.utcnow()
+
+    return update(job_file, claimed)
 
 
 def finish(
     job_file: str, status: str, output: str = "", error: str = "", detail: Optional[Dict[str, Any]] = None
 ) -> None:
     """Called by the worker: record the outcome, whatever happened."""
-    job = ws.read_json(job_file, None) or {}
-    job["status"] = status
-    job["finished_at"] = ws.utcnow()
-    if error:
-        job["error"] = error
-    if detail:
-        job.update(detail)
-    if output and job.get("output_file"):
-        ws.write_text(str(job["output_file"]), output)
-    ws.write_json(job_file, job)
+
+    def finished(job: Dict[str, Any]) -> None:
+        job["status"] = status
+        job["finished_at"] = ws.utcnow()
+        if error:
+            job["error"] = error
+        if detail:
+            job.update(detail)
+        if output and job.get("output_file"):
+            ws.write_text(str(job["output_file"]), output)
+
+    update(job_file, finished)
 
 
 def render(job: Dict[str, Any]) -> str:

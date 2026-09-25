@@ -70,6 +70,11 @@ class TestWhatCountsAsPinned(unittest.TestCase):
         data["implementer"]["model"]["family"] = "sonnet"
         self.assertEqual(settings(pinned(data)), ["implementer.model.family"])
 
+    def test_turning_plan_approval_off_is_reported(self):
+        data = config_mod.default_config()
+        data["design"]["require_approval"] = False
+        self.assertEqual(settings(pinned(data)), ["design.require_approval"])
+
     def test_a_setting_the_defaults_do_not_mention_is_not_reported(self):
         """An option this version knows nothing about is not a stale default."""
         data = config_mod.default_config()

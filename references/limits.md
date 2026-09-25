@@ -90,6 +90,9 @@ Enforced by the action, refusing with **exit code 3**.
 | Delegated runs in a workflow | `budgets.total_delegated_runs` (40) | every `run` |
 | Delegated runtime | `budgets.max_runtime_seconds` (14400) | `run <role>`, `review run`, `review run --design`, `budget consume` |
 
+Exit 5 is not a budget: `run implementer` waits for `design approve`; see
+`references/workflow.md`.
+
 The last two are backstops for cycles that delegate: every run that consumes an
 attempt — `run <role>` and `budget consume <stage>` — counts against the first,
 every run that reaches its end with a measurement against the second. A cycle

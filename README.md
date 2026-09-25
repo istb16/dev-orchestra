@@ -53,7 +53,8 @@ model, and two of them are deliberately allowed to disagree.
    input (logs, a legacy module, a long spec).
 2. **Design** — investigates the codebase and writes the plan. Read-only. The
    plan itself can go to the review panel before anything is implemented, which
-   is off by default: `review.design.enabled`.
+   is off by default: `review.design.enabled`. Nothing is implemented until the
+   user approves the plan; `design.require_approval`.
 3. **Implementation** — writes the code and the tests from that plan.
 4. **Review** — reads the frozen diff and reports findings. Read-only.
 5. **Independent review** — the same diff, a different vendor's model, with no
@@ -380,6 +381,19 @@ not a prompt. `references/workflow.md` has the shape it expects.
 It keeps its own reports, round counter and triage under
 `.ai/reviews/design/`, so a design round never advances — or is refused by —
 the code review's count. Skipping the design stage skips this with it.
+
+**2c. Approval.** The orchestrator shows you the plan — goal, proposed change,
+files to modify, risks, and any design findings still open — and asks. Only
+your yes is recorded, and `run implementer` refuses (exit 5) until it is:
+
+```bash
+dev-orchestra design approve
+```
+
+The approval is of the plan as it is now: a revised plan, or a design review
+run afterwards, has to be approved again. `--force` does not get past it. For
+runs nobody is watching, `config set design.require_approval false` turns the
+gate off. No plan, no gate.
 
 **3. Implementation.** The implementer works from that plan, not from the
 original request:
@@ -780,6 +794,9 @@ review:
   design:
     enabled: false
     max_iterations: 2
+
+design:
+  require_approval: true
 ```
 
 ```bash

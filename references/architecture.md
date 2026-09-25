@@ -16,8 +16,11 @@ flowchart TD
     DR -->|yes| DP[[Design review<br/>same panel, read-only]]
     DP --> DT[Triage + revise<br/>run architect again]
     DT --> P
-    DR -->|no| I[Implementer<br/>writes code + tests]
-    DP --> I
+    DR -->|no| AP{plan approved<br/>by the user?}
+    DP --> AP
+    AP -->|no| ASK[Ask the user<br/>design approve on a yes]
+    ASK --> AP
+    AP -->|yes| I[Implementer<br/>writes code + tests]
     I --> T[Test<br/>project's own commands]
     T --> S[[review snapshot<br/>.ai/reviews/review-target.diff]]
     S --> R1[Reviewer 1<br/>read-only]

@@ -30,7 +30,8 @@ Run `doctor`, then `status`.
 
 `status` answers **continue or stop**: remaining budgets, any stage that
 stalled or died, whether the review loop has anything left. Consult it before
-each stage and obey it — `stop-and-report` means report, not retry.
+each stage and obey it — `stop-and-report` means report, not retry. With an
+unapproved plan, the report ends in the approval question.
 
 - `Source: built-in defaults` → first run. Set up first; see
   [Configuration](#configuration).
@@ -64,8 +65,8 @@ Stages are skippable; their **order is not**. Never review before tests, never
 fix before triage.
 
 ```
-Request → Design → (Design review → Triage → Revise) → Implement → Test →
-Reviews → Triage → Fix → Re-test → Report
+Request → Design → (Design review → Triage → Revise) → Approval → Implement →
+Test → Reviews → Triage → Fix → Re-test → Report
 ```
 
 Artifacts live in `.ai/`, one directory per workflow (`plan.md`,
@@ -77,6 +78,7 @@ stage detail: `references/workflow.md`.
 | --- | --- |
 | Design | `run architect --prompt-file .ai/execution/design-request.md --output .ai/plan.md` |
 | Design review | if `review.design.enabled` (`status` shows it): `review run --design`, `review triage --design …`, `review fix-brief --design --output .ai/execution/design-fix-brief.md`, then `run architect` again over `.ai/plan.md` |
+| Approval | show the user the plan, ask; on their yes: `design approve` |
 | Implement | `run implementer --prompt-file .ai/execution/implement-request.md` |
 | Test | the project's own test / lint / type commands |
 | Reviews | `review snapshot`, then `review run` |
@@ -84,9 +86,8 @@ stage detail: `references/workflow.md`.
 | Fix | `review fix-brief --output .ai/execution/fix-brief.md`, then `run review_fixer --prompt-file .ai/execution/fix-brief.md` |
 | Re-test | the same test commands, then `review status` |
 
-A role with `model_tiers` (see `config show`) can run on one: `run implementer
---tier light`. You pick from the difficulty judged in step 1; an unknown tier
-is refused.
+A role with `model_tiers` (`config show`) runs on one: `run implementer --tier
+light`; an unknown tier is refused.
 
 **Design.** Architect must not change code. You write the request: goal, files
 and symbols you already located, constraints, what you ruled out. Plan
@@ -99,6 +100,15 @@ instead of a diff. Triage as for code. Accepted findings go into a revision
 request; re-review only when `review status --design` says so. No design stage,
 no design review.
 
+**Approval.** Before implementing, give the user the plan's Goal, Proposed
+Change, Files to Modify, Risks and any open design findings, and ask. Only
+their explicit yes lets you run `design approve` -- never on your own
+judgement, never to unblock yourself. Changes requested → revise (re-review
+if enabled), ask again. A design review budget spent with findings open is
+not the end: report them, ask whether to approve over them or revise.
+`run implementer` refuses an unapproved plan (exit 5) while
+`design.require_approval` is true; no plan, no approval.
+
 **Implement.** Require: existing conventions, minimal change, no unrelated
 refactoring, tests added or updated and run, and — plan wrong — stop and
 report instead of redesigning. Implementer failure is fatal.
@@ -109,8 +119,8 @@ because `review run` reads it and refuses to review a tree whose tests are
 recorded as failing. Before each *retry*: `budget consume test`, then
 `progress record test --signature "3 failed: test_a, test_b"`. Exit 3 =
 attempts spent; a repeated signature = the last fix changed nothing. Both are
-refusals, not suggestions — fix→test is the loop most likely to run away,
-because from inside it never looks like a loop.
+refusals: fix→test is the loop most likely to run away, and from inside it
+never looks like one.
 
 **Reviews.** Record the test result first (`state record test ok|failed`) even
 if you ran none here.
@@ -175,12 +185,9 @@ Changed    app/models/order.rb, app/services/pricing.rb
 Remaining  F4 (medium, deferred — .ai/reviews/consolidated.md)
 ```
 
-`summary` prints stage, model and token totals from the recorded run state;
-`tokens show` breaks the cost down per stage and per reviewer. Counts come
-from the delegated CLIs, so when the output says some runs reported nothing,
-report the total as a floor. Always name what failed and what you skipped.
-Resolved model ids may appear in the run log; the saved config keeps family +
-version policy.
+`summary` prints stage, model and token totals; `tokens show` breaks the cost
+down per stage and reviewer. When some runs reported nothing, report the total
+as a floor. Always name what failed and what you skipped.
 
 ## Configuration
 
@@ -207,9 +214,8 @@ allow-listed in that CLI's own settings. Schema and worked examples:
 
 **First run.** With a terminal, `config setup` and let the user answer the
 wizard; otherwise collect the same answers in conversation and apply them with
-`config setup --defaults` plus `config set` / `reviewer add`. The defaults are
-the recommended lineup (`config show`). Show the result and confirm before
-moving on.
+`config setup --defaults` plus `config set` / `reviewer add`. Show the result
+and confirm before moving on.
 
 ## Rules that do not bend
 
@@ -230,11 +236,13 @@ moving on.
 8. **A stalled agent is not a clean result.** `stalled` means it produced
    nothing until it was killed. A failure — say so.
 9. **Keep the source tree clean.** Orchestration artifacts live in `.ai/`.
+10. **Approval is the user's.** `design approve` records their yes; without one
+    it is not yours to run, and exit 5 means ask, not retry.
 
 ## References
 
 Read one only when you need its detail — each costs about as much as this
-whole document.
+document.
 
 - `references/workflow.md` — stage detail, prompt templates, artifacts
 - `references/configuration.md` — schema, layering, every field, examples

@@ -401,6 +401,10 @@ def render_summary(data: Dict[str, Any]) -> str:
     lines.append(
         "    design review: %s  (review.design.enabled)" % ("on" if _design_review_enabled(data) else "off")
     )
+    lines.append(
+        "    plan approval: %s  (design.require_approval)"
+        % ("required" if _approval_required(data) else "not required")
+    )
     lines.append("")
     return "\n".join(lines)
 
@@ -412,6 +416,16 @@ def _design_review_enabled(data: Dict[str, Any]) -> bool:
     if isinstance(design, dict) and "enabled" in design:
         return bool(design["enabled"])
     return bool(config_mod.default_config()["review"]["design"]["enabled"])
+
+
+def _approval_required(data: Dict[str, Any]) -> bool:
+    """Falls back to the built-in default: a layer may name no `design` at all,
+    or name the key with no value, which means the default as it does in
+    ``LoadedConfig.design_settings``."""
+    design = data.get("design")
+    if isinstance(design, dict) and design.get("require_approval") is not None:
+        return bool(design["require_approval"])
+    return bool(config_mod.default_config()["design"]["require_approval"])
 
 
 def merged(spec: Dict[str, Any], tier: Dict[str, Any]) -> Dict[str, Any]:

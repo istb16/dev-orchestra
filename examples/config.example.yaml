@@ -129,6 +129,13 @@ review:
     # whatever is still open.
     max_iterations: 2
 
+design:
+  # `run implementer` refuses (exit 5) until the user has approved the plan as
+  # it is now, recorded with `dev-orchestra design approve`. A revised plan, or
+  # a design review run afterwards, needs approving again. `false` is for runs
+  # nobody is watching (CI, batch), where nobody could answer the question.
+  require_approval: true
+
 optimization:
   # How hard to try to be cheap: aggressive | balanced | quality.
   #
