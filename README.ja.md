@@ -326,7 +326,7 @@ dev-orchestra review triage F1 --status accepted --note "確認済み"
 dev-orchestra review fix-brief --output fix-brief.md
 ```
 
-全コマンドは [references/cli.md](references/cli.md)（英語）を参照してください。
+全コマンドは [docs/ja/references/cli.md](docs/ja/references/cli.md)（[英語版](references/cli.md)）を参照してください。
 
 ## 実際のワークフロー
 
@@ -360,7 +360,7 @@ dev-orchestra run architect --prompt-file .ai/execution/design-revise-request.md
 
 最後の行で渡す修正依頼は、ブリーフをもとに自分で書きます。architect は文脈を持たない
 状態で再び始まるため、採用した指摘だけではプロンプトになりません。書き方は
-[references/workflow.md](references/workflow.md) にあります。
+[docs/ja/references/workflow.md](docs/ja/references/workflow.md)（[英語版](references/workflow.md)）にあります。
 
 レポート・ラウンド数・トリアージは `.ai/reviews/design/` に独立して置かれるので、設計の
 ラウンドがコードレビューのラウンド数を進めたり、その上限に引っかかったりすることはありません。
@@ -772,7 +772,7 @@ dev-orchestra config reset
 マッピングはキー単位でマージされますが、**リストは丸ごと置き換わります**。プロジェクト設定で
 `reviewers` を定義すると、そのリポジトリのレビュー体制を完全に上書きできます。
 
-スキーマ全体は [references/configuration.md](references/configuration.md)（英語）にあります。
+スキーマ全体は [docs/ja/references/configuration.md](docs/ja/references/configuration.md)（[英語版](references/configuration.md)）にあります。
 
 ## 1つのロールに複数のモデル
 
@@ -891,7 +891,7 @@ dev-orchestra reviewer remove codex-security
 まとめてしまうと片方が消えるからです。**跨モデルの重複は散文がまったく似ません** — 実際の2社
 レビュー出力で測ったところ、真の重複ペアのテキスト類似度が 0.03、無関係なペアが 0.29 でした。
 そこで、異なるレビュアーが**同じコードを引用している** findings を「重複候補」として提示し、
-Orchestrator がトリアージ時に確定させます。詳細は [references/reviews.md](references/reviews.md)（英語）。
+Orchestrator がトリアージ時に確定させます。詳細は [docs/ja/references/reviews.md](docs/ja/references/reviews.md)（[英語版](references/reviews.md)）。
 
 各ロールには provider 固有の `options` も指定できます（Claude は `permission_mode`、Codex は
 `sandbox` / `approve`）。値はインストール済みCLIが実際に受け付けるものと照合されます。read-only
@@ -1086,23 +1086,23 @@ flowchart LR
 | Provider | `scripts/orchestrator/providers/` | CLIのフラグとモデル名を知る唯一の場所 |
 | References | `references/` | 詳細。必要になったときだけ読む（[リファレンス](#リファレンス)を参照） |
 
-詳細版は [references/architecture.md](references/architecture.md)（英語）にあります。
+詳細版は [docs/ja/references/architecture.md](docs/ja/references/architecture.md)（[英語版](references/architecture.md)）にあります。
 
-自前の CLI 用の adapter は、プラグインを編集せず `<設定ディレクトリ>/providers/` に置けます。起動時に読み込まれ、プラグインを更新しても残ります（[references/providers.md](references/providers.md)、英語）。
+自前の CLI 用の adapter は、プラグインを編集せず `<設定ディレクトリ>/providers/` に置けます。起動時に読み込まれ、プラグインを更新しても残ります（[docs/ja/references/providers.md](docs/ja/references/providers.md)、[英語版](references/providers.md)）。
 
 ## リファレンス
 
-この README の詳細です。オーケストレーターのモデルも読むドキュメントなので、英語のみです。
+この README の詳細です。英語版はオーケストレーターのモデルも読むドキュメントで、こちらが正です。日本語版は人が読むための訳です。
 
-| ドキュメント | 内容 |
-| --- | --- |
-| [references/workflow.md](references/workflow.md)（英語） | 各ステージの詳細、プロンプトのテンプレート、`.ai/` の成果物 |
-| [references/configuration.md](references/configuration.md)（英語） | 設定のスキーマ、階層、全フィールド、設定例 |
-| [references/providers.md](references/providers.md)（英語） | adapter のインターフェース、Claude と Codex、CLI の追加方法 |
-| [references/reviews.md](references/reviews.md)（英語） | スナップショット、出力の形式と上限、重複の統合、トリアージ |
-| [references/architecture.md](references/architecture.md)（英語） | 構成要素のつながりと、その理由 |
-| [references/limits.md](references/limits.md)（英語） | stall、タイムアウト、予算 |
-| [references/cli.md](references/cli.md)（英語） | 全コマンドとフラグ |
+| 日本語版 | 英語版 | 内容 |
+| --- | --- | --- |
+| [workflow.md](docs/ja/references/workflow.md) | [references/workflow.md](references/workflow.md) | 各ステージの詳細、プロンプトのテンプレート、`.ai/` の成果物 |
+| [configuration.md](docs/ja/references/configuration.md) | [references/configuration.md](references/configuration.md) | 設定のスキーマ、階層、全フィールド、設定例 |
+| [providers.md](docs/ja/references/providers.md) | [references/providers.md](references/providers.md) | adapter のインターフェース、Claude と Codex、CLI の追加方法 |
+| [reviews.md](docs/ja/references/reviews.md) | [references/reviews.md](references/reviews.md) | スナップショット、出力の形式と上限、重複の統合、トリアージ |
+| [architecture.md](docs/ja/references/architecture.md) | [references/architecture.md](references/architecture.md) | 構成要素のつながりと、その理由 |
+| [limits.md](docs/ja/references/limits.md) | [references/limits.md](references/limits.md) | stall、タイムアウト、予算 |
+| [cli.md](docs/ja/references/cli.md) | [references/cli.md](references/cli.md) | 全コマンドとフラグ |
 
 ## コントリビュート
 
@@ -1116,8 +1116,10 @@ python scripts/validate_skill.py
 
 ## ドキュメントの言語方針
 
-`skills/dev-orchestra/SKILL.md` と `references/` は英語のみです。これはAIモデルが読むファイルであり、英語のほうが
+`skills/dev-orchestra/SKILL.md` と `references/` は英語で書きます。これはAIモデルが読むファイルであり、英語のほうが
 トリガ精度とトークン効率の面で有利なためです。人間向けの入口である README は日英両方を用意しています。
+
+リファレンスには、人が読むための日本語訳を `docs/ja/references/` に用意しています。スキルが読むのは英語版だけで、内容が食い違うときは英語版が正です。各訳の冒頭には、訳した時点の英語版の sha256 が書かれています。英語版が変わって訳が追いついていないと、テストが失敗します。
 
 ## ライセンス
 

@@ -10,6 +10,17 @@ The public surface covered by that promise is: the configuration schema, the
 
 ## [Unreleased]
 
+### Added
+
+- **The references have a Japanese translation.** Every file in
+  `references/` has one in `docs/ja/references/`, linked from `README.ja.md`.
+  The English stays what the skill reads and what is authoritative. Each
+  translation starts with the sha256 of the English file it was brought up to
+  date with, and `tests/test_docs.py` fails once the English changes without
+  it, so a translation cannot fall behind unnoticed; the same test checks
+  that the code blocks, anchors and links match the English. After updating a
+  translation, `python scripts/stamp_translation.py` rewrites its header.
+
 ## [0.9.0] - 2026-09-25
 
 ### Added

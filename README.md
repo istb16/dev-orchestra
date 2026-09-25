@@ -1142,7 +1142,8 @@ in `<config dir>/providers/` and it is loaded at startup and survives updates
 ## Reference documents
 
 The detail behind this README. They are written for the orchestrating model
-as much as for you, which is why they are in English only.
+as much as for you, which is why they are written in English. A Japanese
+translation of each, for people to read, is in [docs/ja/references/](docs/ja/references/).
 
 | Document | What is in it |
 | --- | --- |
@@ -1171,6 +1172,12 @@ python scripts/validate_skill.py
 models, where English gives better trigger accuracy and token efficiency. The
 README, which is the human entry point, is available in
 [English](README.md) and [日本語](README.ja.md).
+
+The references also have a Japanese translation for people to read, in
+`docs/ja/references/`. The skill reads only the English, which stays
+authoritative. Each translation names the sha256 of the English file it was
+brought up to date with, and the tests fail once the English moves on without
+it.
 
 ## License
 
