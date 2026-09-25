@@ -46,6 +46,8 @@ jobs:
   test:
     name: Tests (${{ matrix.os }}, Python ${{ matrix.python-version }})
     runs-on: ${{ matrix.os }}
+    # The runner gives up on a hung class after 600s; this is the backstop.
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -71,9 +73,10 @@ jobs:
         # No AI CLI is installed here on purpose: the suite must pass without
         # claude or codex on PATH, and must never invoke a real CLI. The flag
         # asserts that rather than relying on the runner image to lack them.
+        # The runner is the same discover, one test class per worker process.
         env:
           DEV_ORCHESTRA_TEST_ASSUME_NO_CLI: "1"
-        run: python -m unittest discover -s tests -t tests -v
+        run: python tests/run_parallel.py -v
 
   validate-skill:
     name: Skill validation
