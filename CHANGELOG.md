@@ -264,6 +264,33 @@ The public surface covered by that promise is: the configuration schema, the
   retried a torn read. The same short retry now covers both; a file that is
   really gone still returns the default without waiting.
 
+- **The last review round's findings were reported instead of reflected
+  (#68).** Once a round reached `review.design.max_iterations`, `status` said
+  `stop-and-report` straight after its triage, so its accepted findings never
+  reached the plan; the code review stopped the same way before
+  `run review_fixer`. The limit counts reviews, and now refuses only the
+  re-review: `status` says `continue` until the last design round's revision
+  is made (the plan differs from the frozen `review-target.md`, or the
+  architect answered after the round with `--output` on the plan), and until
+  the last code round's fix is made and a `test` or `re-test` outcome is
+  recorded after it. Only accepted findings get that last pass: with none
+  accepted the stop comes at once, as before (`unaccepted`). `review status
+  [--design] --json` reports it as `final_revision` / `final_fix` with a
+  `*_pending` flag, `status --json` also under `design_review` / `review`
+  beside a new `identical_rounds`, and the last line of `review status` names
+  the next step. A plan already approved (even with `design.require_approval`
+  turned off since) or implemented is not asked to change; with no
+  `architect` or `review_fixer` attempt left for it, the stop comes at once.
+  The repeated-findings reason waits until that last pass is done,
+  `architect has no attempts left` is a reason only while there is no plan or
+  a design round within its budget still has blocking findings, and `review_fixer has no attempts left` only while the fix is not
+  made. A run's end event now records `answered`, so an exit 0 over silence
+  does not count as the revision or the fix. The refusals of `review run` and
+  `review run --design` past the limit say the last round still gets its fix
+  or revision. `references/workflow.md` recorded the re-test as stage
+  `re-test`, which the review gate never reads; it now says `state record
+  test`. Default budgets are unchanged.
+
 ## [0.8.0] - 2026-09-19
 
 ### Added
