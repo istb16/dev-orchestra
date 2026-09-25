@@ -78,6 +78,18 @@ def reported_round(design_data: Dict[str, Any]) -> Optional[str]:
     return str(round_id) if round_id else None
 
 
+def unreviewed_round(design_data: Dict[str, Any]) -> Optional[str]:
+    """The design round that ran to the end with no reviewer's review, or None.
+
+    Unlike a round still running, there is nothing to wait for: ``design
+    approve`` goes ahead over it and says the plan went unreviewed -- the
+    round's report has no findings, and none from before it are carried.
+    """
+    snapshot = design_data.get("snapshot") if isinstance(design_data, dict) else None
+    round_id = snapshot.get("unreviewed_round") if isinstance(snapshot, dict) else None
+    return str(round_id) if round_id else None
+
+
 def open_findings(design_data: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Every design finding not rejected or merged as a duplicate, whatever its severity.
 

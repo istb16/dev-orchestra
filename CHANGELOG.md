@@ -27,9 +27,11 @@ The public surface covered by that promise is: the configuration schema, the
   every reviewer has returned and at least one of them reviewed -- `review
   consolidate --design` keeps the round the previous report named -- and
   `design approve` binds to that, so it refuses (exit 2) while a round is
-  still running, or ended with no reviewer's report. Open design findings --
-  all of them, not only the blocking severities -- are printed, not refused,
-  and labelled when they come from a review of an earlier revision. A
+  still running; a round every reviewer failed is approved over with a note
+  that the plan went unreviewed, rather than left unapprovable. Open design
+  findings -- all of them, not only the blocking severities, and the same
+  list in `status` -- are printed, not refused, and labelled when they come
+  from a review of an earlier revision. A
   detached worker that refuses records the whole refusal in its job; the
   attempt its parent consumed is not given back. An empty
   `design.require_approval:` means the default rather than turning the gate

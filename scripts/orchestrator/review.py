@@ -2024,6 +2024,7 @@ def build_consolidation(
     iteration: int = 1,
     lineage: str = "",
     completed_round: Optional[str] = None,
+    unreviewed_round: Optional[str] = None,
 ) -> Dict[str, Any]:
     """The round's report: consolidated findings, counts, and its coverage.
 
@@ -2032,6 +2033,11 @@ def build_consolidation(
     round the previous report named: the snapshot's metadata names a round as
     soon as it starts, and a re-consolidation during it -- or after it failed
     -- must not claim findings nobody has reported yet.
+
+    ``unreviewed_round`` is the design round that ran to the end with no
+    reviewer's review in it. It is not a round the findings belong to, but it
+    is not one still running either: ``design approve`` may go ahead over it,
+    where a running round has to be waited for.
 
     ``runs`` is the reviewer table, which by design holds entries that did not
     run this round -- see ``_merge_runs``. Coverage, ``snapshot.over_budget``
@@ -2078,6 +2084,13 @@ def build_consolidation(
     round_id = completed_round or (last.get("snapshot") or {}).get("round_id")
     if round_id:
         snapshot["round_id"] = round_id
+    # Kept across a re-consolidation of that same round, and only of it: the
+    # snapshot moves on the moment the next round starts.
+    ended = unreviewed_round
+    if ended is None and completed_round is None:
+        ended = (last.get("snapshot") or {}).get("unreviewed_round")
+    if ended and ended == meta.get("round_id"):
+        snapshot["unreviewed_round"] = ended
     return {
         "generated_at": ws.utcnow(),
         "iteration": iteration,

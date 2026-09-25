@@ -222,18 +222,45 @@ class TestApproving(ApprovalCase):
         self.assertNotIn(approval.STAGE, self.workspace.read_state())
         self.assertEqual(self.implement()[0], 5)
 
-    def test_a_round_every_reviewer_failed_cannot_be_approved_over(self):
-        """Nobody reviewed it, so it has no findings to show -- not a clean round."""
+    def test_a_round_every_reviewer_failed_is_not_shown_as_clean(self):
+        """Nobody reviewed it: it names no round of findings, only one that went unreviewed."""
         self.write_plan()
         os.environ["DEV_ORCHESTRA_MOCK_FAIL"] = "1"
         run_cli("review", "run", "--design")
         del os.environ["DEV_ORCHESTRA_MOCK_FAIL"]
         report = ws.read_json(self.design.consolidated_json_path)
         self.assertIsNone(approval.reported_round(report))
-        code, _, err = run_cli("design", "approve")
-        self.assertEqual(code, 2)
-        self.assertIn("has no report yet", err)
-        self.assertNotIn(approval.STAGE, self.workspace.read_state())
+        self.assertEqual(approval.unreviewed_round(report), approval.design_round(self.workspace))
+
+    def test_a_round_every_reviewer_failed_can_still_be_approved_over(self):
+        """It ran to the end, so there is nothing to wait for.
+
+        Refusing would leave no way forward while the reviewers keep failing,
+        or once the design review budget is spent.
+        """
+        self.write_plan()
+        run_cli("review", "run", "--design")
+        self.write_plan(REVISED_PLAN)
+        os.environ["DEV_ORCHESTRA_MOCK_FAIL"] = "1"
+        run_cli("review", "run", "--design")
+        del os.environ["DEV_ORCHESTRA_MOCK_FAIL"]
+        code, out, err = run_cli("design", "approve", "--json")
+        self.assertEqual(code, 0, err)
+        self.assertIn("ended with no reviewer's review", err)
+        self.assertIn("no design review findings at all", err)
+        # Nobody reviewed this plan, so there is nothing to name -- which the
+        # note above is there to keep from reading as a clean review.
+        self.assertEqual(json.loads(out)["open_findings"], [])
+        self.assertEqual(self.approval()["state"], "approved")
+        self.assertEqual(self.implement()[0], 0)
+
+    def test_reconsolidating_an_unreviewed_round_keeps_it_approvable(self):
+        self.write_plan()
+        os.environ["DEV_ORCHESTRA_MOCK_FAIL"] = "1"
+        run_cli("review", "run", "--design")
+        del os.environ["DEV_ORCHESTRA_MOCK_FAIL"]
+        self.assertEqual(run_cli("review", "consolidate", "--design")[0], 0)
+        self.assertEqual(run_cli("design", "approve")[0], 0)
 
     def test_reconsolidating_a_round_with_no_report_does_not_publish_it(self):
         """`review consolidate` mid-round keeps the last reported round, not the new one."""
@@ -335,6 +362,17 @@ class TestStatus(ApprovalCase):
         run_cli("design", "approve")
         run_cli("budget", "reset")
         self.assertEqual(self.approval()["state"], "approved")
+
+    def test_status_names_the_same_open_findings_as_approve(self):
+        """Below the blocking severities too: the user is asked about what gets recorded."""
+        self.write_plan()
+        run_cli("review", "run", "--design")
+        data = ws.read_json(self.design.consolidated_json_path)
+        data["findings"][0]["severity"] = "low"
+        ws.write_json(self.design.consolidated_json_path, data)
+        self.assertEqual(self.approval()["open_findings"], ["F1"])
+        _, out, _ = run_cli("design", "approve", "--json")
+        self.assertEqual(json.loads(out)["open_findings"], self.approval()["open_findings"])
 
     def test_an_exhausted_design_review_still_ends_in_the_question(self):
         run_cli("config", "set", "review.design.max_iterations", "1")

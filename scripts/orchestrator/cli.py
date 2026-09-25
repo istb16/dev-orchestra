@@ -1550,6 +1550,7 @@ def _run_design_review(args: argparse.Namespace, loaded: config_mod.LoadedConfig
         iteration,
         lineage,
         completed_round=meta.get("round_id") if reviewed else None,
+        unreviewed_round=None if reviewed else meta.get("round_id"),
     )
     ws.write_json(workspace.consolidated_json_path, data)
     ws.write_text(workspace.consolidated_md_path, review_mod.render_consolidation(data))
@@ -2836,10 +2837,13 @@ def cmd_status(args: argparse.Namespace) -> int:
     design_max = int(design_settings.get("max_iterations", 2))
     design_exhausted = bool(design_blocking) and design_iteration >= design_max
     approval_info = approval_mod.current(workspace, bool(loaded.design_settings().get("require_approval")))
-    approval_info["open_findings"] = [f["id"] for f in design_blocking]
+    # The same list `design approve` names, whatever the severity: the user is
+    # asked about what the approval will record, not only what blocks.
+    design_open = [str(f.get("id")) for f in approval_mod.open_findings(design_data)]
+    approval_info["open_findings"] = design_open
     approval_info["open_findings_of_current_plan"] = (
         approval_mod.findings_of_current_plan(workspace, approval_mod.read_plan(workspace)[0])
-        if design_blocking
+        if design_open
         else None
     )
     approval_info["design_review_exhausted"] = design_exhausted
@@ -3028,7 +3032,19 @@ def cmd_design_approve(args: argparse.Namespace) -> int:
     # recorded approval stale.
     design_data = ws.read_json(workspace.design_review().consolidated_json_path, {}) or {}
     round_id = approval_mod.reported_round(design_data)
-    if approval_mod.design_round(workspace) != round_id:
+    latest = approval_mod.design_round(workspace)
+    unreviewed = (
+        latest is not None and latest != round_id and latest == approval_mod.unreviewed_round(design_data)
+    )
+    if unreviewed:
+        # The round ran to the end and nobody reviewed it: there is nothing
+        # left to wait for, and refusing would leave the user no way to go
+        # ahead once the design review budget is spent. The approval is given
+        # over that round, so it is not stale the moment it is recorded. Its
+        # report has no findings -- nobody reviewed it -- which the note below
+        # says, so an empty list does not read as a clean review.
+        round_id = latest
+    elif latest != round_id:
         _err(
             "not recording an approval: the latest design review round has no report yet -- "
             "it is still running or did not finish. Wait for it (or run `review run --design` "
@@ -3060,6 +3076,12 @@ def cmd_design_approve(args: argparse.Namespace) -> int:
         )
     if not loaded.design_settings().get("require_approval"):
         _err("note: design.require_approval is false; recorded anyway")
+    if unreviewed:
+        _err(
+            "note: the latest design review round ended with no reviewer's review (every reviewer "
+            "failed), so this plan has no design review findings at all; the approval goes ahead "
+            "without one -- say so in the report"
+        )
     if open_findings and of_current_plan is False:
         _err(
             "note: %d design finding(s) open from a review of an earlier revision of this plan: %s "
