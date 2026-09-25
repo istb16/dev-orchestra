@@ -68,10 +68,41 @@ class TestDefaults(IsolatedCase):
     def test_the_context_budget_refuses_nothing_anyone_has_recorded(self):
         """400,000 chars is four times the largest prompt this repository has
         recorded, so shipping it changes no existing workflow."""
+        context = config_mod.default_config()["review"]["context"]
         self.assertEqual(
-            config_mod.default_config()["review"]["context"],
+            {key: context[key] for key in ("max_chars", "inline_chars")},
             {"max_chars": 400_000, "inline_chars": 400_000},
         )
+
+    def test_surrounding_context_ships_off_with_a_cap_every_recorded_round_fits(self):
+        """Off until measured; 60,000 fits the largest recorded need (49,371)."""
+        context = config_mod.default_config()["review"]["context"]
+        self.assertEqual(context["surrounding"], "none")
+        self.assertEqual(context["surrounding_chars"], 60_000)
+
+    def test_the_surrounding_mode_accepts_none_enclosing_null_and_false(self):
+        for value in ("none", "enclosing", "Enclosing", None, False):
+            data = config_mod.default_config()
+            data["review"]["context"]["surrounding"] = value
+            problems = [p for p in config_mod.validate(data) if "review.context" in p]
+            self.assertEqual(problems, [], value)
+
+    def test_the_surrounding_mode_refuses_true_and_unknown_values(self):
+        for value in (True, "window", 3):
+            data = config_mod.default_config()
+            data["review"]["context"]["surrounding"] = value
+            self.assertIn(
+                "review.context.surrounding: must be one of enclosing, none",
+                config_mod.validate(data),
+                value,
+            )
+
+    def test_a_surrounding_cap_of_zero_is_rejected(self):
+        data = config_mod.default_config()
+        data["review"]["context"]["surrounding_chars"] = 0
+        self.assertTrue(any("review.context.surrounding_chars" in p for p in config_mod.validate(data)))
+        data["review"]["context"]["surrounding_chars"] = None
+        self.assertFalse(any("review.context.surrounding_chars" in p for p in config_mod.validate(data)))
 
     def test_the_two_limits_ship_equal_so_there_is_one_boundary(self):
         """At or under it the round runs and is complete, over it the round is

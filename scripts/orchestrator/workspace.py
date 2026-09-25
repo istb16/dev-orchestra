@@ -133,6 +133,16 @@ class Workspace:
         return os.path.join(self.reviews_dir, "review-target.json")
 
     @property
+    def surrounding_path(self) -> str:
+        """The enclosing symbols frozen with a code snapshot.
+
+        Written only with ``review.context.surrounding: enclosing``, from the
+        same git tree the diff was taken from, so a reviewer is shown the code
+        the diff describes rather than whatever the working tree says later.
+        """
+        return os.path.join(self.reviews_dir, "review-surrounding.json")
+
+    @property
     def consolidated_md_path(self) -> str:
         return os.path.join(self.reviews_dir, "consolidated.md")
 

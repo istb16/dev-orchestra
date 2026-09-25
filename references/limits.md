@@ -217,6 +217,45 @@ reviewer entry, `coverage.inline_chars` on `consolidated.json` — because a
 `partial` round and a size alone do not say whether it was a large change or a
 low limit.
 
+### Surrounding context within the budget
+
+`review.context.surrounding: enclosing` hands each code reviewer the Python
+function, method or class around every hunk as well as the diff (see
+[Surrounding context](reviews.md#surrounding-context)). It is off by default,
+because what it saves has not been measured yet.
+
+What it adds is capped, and the cap is taken out of both limits above rather
+than added to them:
+
+```
+budget = min(surrounding_chars, max_chars - change_chars, inline_chars - change_chars)
+```
+
+So the diff and its context together never go past `max_chars` or
+`inline_chars`: turning context on cannot refuse a round the diff alone would
+have run, and cannot turn an inlined diff into a file.
+`review.context.surrounding_chars` defaults to 60,000 -- every one of the seven
+workflows recorded before it shipped fits under it untrimmed (the largest
+needed 49,371), and it is 15% of `max_chars`. What does not fit is left out by
+name, never silently.
+
+The context adopted counts toward what `max_chars` measures: `budget_chars` on
+each reviewer entry and `snapshot.budget_chars` are the diff plus the context
+adopted as the prompt carries it (`context_chars`: the source with its headings,
+fences and notes), and so is the size a refusal would state. Delivery, and with
+it coverage, is still decided by the diff alone.
+
+The symbols are extracted when the snapshot is taken, from a git tree object
+written *before* the diff, and never from the working tree afterwards. With the
+setting on, that tree is written even under `review.incremental_rounds: false`,
+which goes on meaning only that the next round will not narrow to the fix:
+`tree` in the snapshot's metadata stays empty. A round diffed against the
+working tree then hashes each file it extracted from (`git hash-object`, which
+does not go through the index, so an untracked file is not taken for a deleted
+one) and compares it with its blob in the tree. A file edited in between is left
+out as `changed while the snapshot was taken`, named in the prompt, and cured by
+taking the snapshot again.
+
 ### What the runtime budget counts
 
 Seconds of delegated execution, as measured by the run itself — never the time
@@ -299,6 +338,38 @@ Three consequences worth keeping in mind:
 * **The event shape belongs to the CLI.** A change to it degrades to
   unreported rather than to a wrong number; `scripts/smoke_live.py` is what
   catches the drift, since the unit tests read a fixture.
+
+### Re-fetching the source: reported as tool activity, not counted, not limited
+
+Handing a reviewer the enclosing function is meant to save it opening the file
+again. Whether it does can only be seen indirectly, and this is the whole of
+what can be said about it:
+
+* **Claude's counts are proxies.** `tool_uses`, `tool_uses_by_name` and
+  `tool_output_chars` count calls, by tool name, and the characters those calls
+  printed back. A `cat` through `Bash` and a `Read` are one call each, the
+  second read of the same file cannot be told from the first, and `wc -l`'s
+  three characters and `cat`'s whole file are not an amount read. **A re-fetch
+  of source the prompt already carried is not something these counts can
+  see.**
+* **Codex has no proxy at all.** Its usage comes from a prose footer, and there
+  are no tool events to count.
+* **Nothing limits it.** The adapters pass
+  `--permission-mode plan --disallowed-tools Edit,Write,NotebookEdit` (Claude)
+  and `-s read-only` (Codex), and nothing else about reading. Neither CLI is
+  passed a flag that bounds how many reads or how many characters a run may
+  take, and none is added on a guess about what a CLI might accept.
+
+So this tool reports the proxies, and neither counts nor forbids re-fetching.
+The one way it has to reduce reading is to hand over the context a reviewer
+needs -- which is what [surrounding context](reviews.md#surrounding-context)
+is -- and the way to see whether that worked is `optimization report`, which
+splits code rounds into those that carried context and those that did not.
+**Compare the per-run lines, not the raw ones.** The raw billed and tool
+figures move with the size of each change and with the number of reviewers in
+the panel -- a small change is routinely cut to one reviewer -- so each group
+is also given per run and per 1k characters of change, each round's size
+weighted by the runs that reported the figure.
 
 ## No progress
 

@@ -20,6 +20,23 @@ The public surface covered by that promise is: the configuration schema, the
   it, so a translation cannot fall behind unnoticed; the same test checks
   that the code blocks, anchors and links match the English. After updating a
   translation, `python scripts/stamp_translation.py` rewrites its header.
+- **Code reviewers can be handed the function around each hunk.**
+  `review.context.surrounding: enclosing` (default `none`) makes
+  `review snapshot` extract the Python function, method or class enclosing
+  every hunk from the git tree the diff was taken from, freeze it in
+  `review-surrounding.json`, and `review run` adopt it into every code
+  reviewer's prompt within `review.context.surrounding_chars` (default
+  60,000) and what the diff leaves under `max_chars` and `inline_chars` -- so
+  it never refuses a round or sends a diff over as a file. A deletion with no
+  surviving symbol around it marks its neighbours `adjacent` rather than
+  enclosing. Whatever is left out -- over the budget, a file delivery, a file
+  that cannot be extracted exactly (not Python, a new file, a symlink, a file
+  edited while the snapshot was taken) -- is named, in the prompt, on each
+  reviewer entry, in `consolidated.json` and `consolidated.md`, and in
+  `review status`. Coverage is unchanged. `optimization report` splits code
+  rounds into with and without context, per run and per 1k characters of
+  change, so the effect can be measured before the default moves. With the
+  setting off, every prompt and artifact is what it was.
 
 ## [0.9.0] - 2026-09-25
 

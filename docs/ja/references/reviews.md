@@ -1,4 +1,4 @@
-<!-- translated-from: references/reviews.md sha256:0c679af69f76623e6462fe517ead22368b4c830866ed3f53162c3832c39871b4 -->
+<!-- translated-from: references/reviews.md sha256:51a46a375a9378f71f219eeb2bfecde0b87b54f1c17df1cf3b8c0101983edad1 -->
 
 > この文書は [references/reviews.md](../../../references/reviews.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -47,9 +47,14 @@ dev-orchestra review snapshot --no-exclude    # generated files included too
   "exclude_patterns": ["*.lock", "package-lock.json", "dist/*", "..."],
   "bytes": 4213,
   "sha256": "…",
-  "empty": false
+  "empty": false,
+  "surrounding": {"mode": "enclosing", "path": ".ai/reviews/review-surrounding.json", "tree": "3f2a…",
+                  "candidates": 7, "chars": 49371, "skipped": 3}
 }
 ```
+
+`surrounding` があるのは `review.context.surrounding: enclosing` のときだけです。
+[周辺コンテキスト](#surrounding-context) を参照してください。
 
 未追跡ファイルはデフォルトで含まれます（1 ファイルあたり 512 KB まで）。新しい
 モジュールは、たいてい変更の中で最も重要な部分だからです。sha256 はすべての
@@ -109,6 +114,163 @@ minify された出力、ソースマップ、`*.snap` をカバーします。�
 ステージされていない `mv` は、git にとって削除と未追跡ファイルという 2 つの無関係な
 事実になり、`git
 diff` の観点からもそのように扱われます。
+
+<a id="surrounding-context"></a>
+
+## 周辺コンテキスト
+
+```yaml
+review:
+  context:
+    surrounding: enclosing      # none (default) | enclosing
+    surrounding_chars: 60000    # the most it may add; null means the default
+```
+
+diff を渡されたレビュアーに見えるのは各 hunk の前後 3 行だけで、判断する前に
+ほぼ必ず、その hunk が属する関数を自分で開きます — そのコストはレビュアーごと、
+ラウンドごとに支払われ、ここからは見えません。`surrounding: enclosing` にすると、
+その関数もプロンプトに入ります。diff の後ろに置かれ、変更の一部ではなく
+コンテキストとして示されます。YAML では `off` は `false` として読まれ、`false` と
+`null` はどちらも `none` を意味します。`true` はどのモードも指さないので拒否
+されます。何が節約されるかがまだ計測されていないため、off で出荷されています。
+`optimization report` が、これを使ったラウンドと使わなかったラウンドを比較します
+（[optimization](cli.md#optimization) を参照してください）。
+
+**スナップショットと一緒に固定されます。** `review snapshot` は diff を取ったのと
+同じ git ツリーからシンボルを抽出し、diff の sha256 を刻印して
+`review-surrounding.json` に書き出します。`review run` はそのファイルを読むだけ
+なので、スナップショットと実行の間にファイルを編集しても、レビュアーに示される
+ものは何も変わりません。設定が off のときに取ったスナップショットには固定された
+ものがなく、設定を on にして実行すると、作業ツリーを読むのではなくその旨
+— `not frozen: … take it again` — を伝えます。
+
+**どのシンボルか。** 変更された各行は、新しい側の行番号の対です。追加された行 `n`
+は `(n, n)`、削除された行は `n - 1` と `n` の間にあったので `(n - 1, n)` です。
+両端を含む最小の関数・メソッド・クラスが、その変更を **encloses**（囲む）します。
+どれもなければ、どちらか一方の端を含む最小のシンボルが **adjacent**（隣接）に
+なります。削除がその縁にあり、残ったもののどれもそれを囲んでいない、ということ
+です。A と B の間の関数を丸ごと削除すると、A と B は adjacent であり、囲んでいる
+わけではありません。adjacent のシンボルは encloses のものの後に採用され、
+`adjacent to a deletion, not enclosing it` と示されます。
+
+すべての行が追加されたシンボルは候補になりません。diff がすでにその全体を
+示しているからです。その変更は外側のシンボルに移ります。メソッドを追加したときに
+クラスが候補になるのはこのためです。同じ理由で、新規ファイルは一切抽出しません。
+
+**Python のみ。** `ast` を通した `.py` ファイルだけです。それ以外は抽出せず、
+プロンプトでは `not python` として件数を示します。行の窓による代替はありません。
+diff はすでに前後 3 行を運んでおり、関数の途中で切れる窓は囲むシンボルでは
+ないからです — 誤解を招くコンテキストは、ないほうがましです。
+
+**何も推測しません。** シンボルを正確に取れないファイルは、理由とともに
+スキップされます。
+
+| 理由 | いつ |
+| --- | --- |
+| `not python` | `.py` ファイルではない |
+| `new file (the diff already shows all of it)` | この変更で追加された |
+| `deleted` | この変更で削除された |
+| `symlink`、`submodule` | ツリー内の symlink または gitlink — 決してたどらない |
+| `file over 512,000 bytes` | 全体を渡すには大きすぎる |
+| `not utf-8`、`syntax error` | 格納されたままの形では `ast` が読めない |
+| `no enclosing symbol beyond the diff` | モジュールレベルのコードだけ、または新しいシンボル全体だけが変更された |
+| `ambiguous path (x.py or b/x.py)` | 両方の名前がスナップショットにあり、diff のヘッダーからどちらかがわからない |
+| `changed while the snapshot was taken -- take it again` | ツリーと diff の間に編集された（[limits](limits.md#surrounding-context-within-the-budget) を参照） |
+| `not in tree`、`unreadable`、`no tree object (git write-tree failed)` | git がツリーからそのファイルを取り出せなかった |
+
+`+++` のパスは、このツールが設定しない git の設定（`diff.noprefix`、
+`diff.mnemonicPrefix`）に依存するので、接頭辞は仮定しません。リネームの
+`rename to` 行が優先され、そうでなければ、書かれた名前と、その先頭 2 文字を
+除いた名前のうちスナップショットが挙げているほうを使います。両方を挙げている
+ときに限って、`diff --git` 行にどちらかを尋ねます。それでも決まらなければ、
+両方のファイルを名前を挙げてスキップします。
+
+**予算の範囲内で採用します。** `review run` の時点で、候補は encloses を先に、
+次に adjacent を、それぞれの中では小さい順に採用します — 固定の予算で、最も多くの
+hunk にシンボルが行き渡る順序です — 上限は
+`min(surrounding_chars, max_chars - change, inline_chars - change)` です。予算は
+プロンプトに載る形のブロック — 見出し・フェンス・除外一覧を含む — に対して
+使われ、そのサイズは `context_chars` として記録されます。diff と
+そのコンテキストを合わせてもどちらの上限も超えないので、これを on にしても
+ラウンドが拒否されたり、インライン化されていた diff がファイル渡しになったりする
+ことはありません。クラスとその中のメソッドが両方とも候補になることがあります。
+メソッドが先に採用され、クラスは追加分がまだ収まる場合にだけ採用されます。
+その場合メソッドはクラスに畳み込まれ、`includes` に名前が挙がります。すでに
+採用したクラスの中にある、削除に隣接する（adjacent）メソッドも同じように
+畳み込まれます — 同じものが 2 度示されることはありません。diff がファイルとして
+渡されるラウンドは何も採用せず、すべての候補を `file delivery` による除外として
+名前を挙げます。
+
+**報告されるすべての場所で名前を挙げます。** 除外されたシンボルはすべて、
+パス・行・サイズとともに名前が挙がります。プロンプト（`Left out (…): read these
+yourself if a hunk needs them.`）、各レビュアーエントリー、`consolidated.json` と
+`consolidated.md`、そして `review status` です。プロンプトで名前を挙げるのは先頭の 20 件までで、
+残りは件数だけを示します（`- and N more, named in `review status` and consolidated.md`）。
+この一覧は予算で賄うブロックの一部なので、長くなると、一覧が指し示すはずのシンボルを
+押し出してしまうためです。どのシンボルも予算に収まらないときは、プロンプトとレポートに
+`no symbol fits within the budget` と示します。抽出しなかったファイルはプロンプトで
+理由ごとに件数を示し、スナップショットを取り直せば解消する 2 つの理由については
+名前も挙げます。`consolidated.md` と `review status` では、すべてを理由とともに
+名前を挙げて示します。
+
+```json
+"surrounding": {
+  "shared": true,
+  "mode": "enclosing",
+  "reason": "",
+  "budget": 60000,
+  "adopted_chars": 3100,
+  "trimmed_chars": 9812,
+  "context_chars": 3521,
+  "adopted": [
+    {"path": "app/models/user.py", "symbol": "User", "kind": "class", "relation": "encloses",
+     "start": 12, "end": 88, "chars": 3100, "includes": ["User.save"]}
+  ],
+  "trimmed": [
+    {"path": "app/cli.py", "symbol": "run", "kind": "function", "relation": "encloses",
+     "start": 610, "end": 826, "chars": 9812, "reason": "budget"}
+  ],
+  "skipped": [{"path": "web/app.js", "reason": "not python"}]
+}
+```
+
+これは `consolidated.json` の最上位のブロックで、`shared: true` になるのは、この
+スナップショットのすべてのレビュアーに同じコンテキストが渡された場合だけです。
+そうでない場合 — 設定を変えた後の `--only` — は `shared: false` と `by_reviewer`
+になり、レビュアーごとに 1 つのレコードを持ちます。設定が off のままプロンプトを
+組んだレビュアーは `null` です。プロンプトを組む前に失敗したレビュアーは
+レコードを持たず、ここには一切現れません。それが失敗したことは Reviewers 表が
+すでに示しています。設定が off のとき、または設計ラウンドでは、このキーは
+どこにも書かれません。
+
+**Coverage は変わりません。** Coverage は *diff* がインライン化されたかどうかで
+決まります。採用されたコンテキストも除外されたコンテキストも、`coverage.round` と
+`coverage.change` のどちらも動かしません。すべてのシンボルを除外したラウンドも
+complete のままで、diff がファイルとして渡されたラウンドは partial のままです。
+`snapshot.budget_chars` にはこれが含まれます — [Coverage](#coverage) を参照して
+ください。
+
+**どのラウンドか。** 修正ラウンドを含むすべてのコードラウンドです。
+インクリメンタルラウンドは、そのラウンドのツリーから読んだ、修正の hunk を囲む
+シンボルを受け取ります。設計ラウンドには何も付きません。
+
+**囲むシンボルの次に来るもの。** 順序は今の時点で固定しておきます。後から
+コンテキストの種類を足しても、すでに採用されているものの順序が変わらないように
+するためです。
+
+| 優先順位 | コンテキスト | 状態 |
+| --- | --- | --- |
+| 1 | 変更箇所の周辺: 囲む関数・メソッド・クラスと、削除に隣接する `adjacent` のシンボル | 実装済み |
+| 2 | 変更箇所が呼び出す関数・メソッド | 未実装 — ファイルをまたいだシンボル解決が必要 |
+| 3 | 変更箇所が属するクラス・モジュール | 未実装 — 1 のクラス候補が一部をカバーする |
+| 4 | 呼び出し元・呼び出し先 | 未実装 — 同上に加えて逆引きの索引が必要 |
+| 5 | 関連するテスト | 未実装 — テストを見つけるための規約が必要 |
+| 6 | その他 | 未実装 |
+
+候補は `(priority, relation, chars, path, start)` で順位付けされ、優先順位 1 だけの
+今は `(relation, chars, path, start)` になります。優先順位 2 と 4 にはファイルを
+またいだ索引と解決器が必要で `context.py` が倍になる一方、1 の効果さえまだ計測
+されていません — そのため、まず 1 を off で出荷します。
 
 <a id="design-review"></a>
 
@@ -426,7 +588,9 @@ plan が凍結される前です。収まるように切り詰めることだけ
 **`snapshot.budget_chars`**：その上限が測ったサイズで、`consolidated.md` の
 `Change:` 行が出力する値です。`coverage.change_chars` ではありません。設計
 ラウンドでは、予算は plan *と*リクエストを数えますが、レビュアーに渡される本文は
-plan だけだからです。どの実行も記録しなかった場合は `null` です。`over_budget` と
+plan だけだからです。[周辺コンテキスト](#surrounding-context)を採用したコード
+ラウンドでは、diff に採用したコンテキストを足したものになります。どちらも
+プロンプトに入ったからです。どの実行も記録しなかった場合は `null` です。`over_budget` と
 同様に、このブロックだけでなくすべてのレビュアーエントリにも記録され、このブロックは
 それらのエントリから導出されます。
 
@@ -696,6 +860,10 @@ create` と同じ手法です）。そのため、ユーザー自身のインデ
 届くので、レビュアー同士が互いの出力を見ることは引き続きありません。計測したところ、
 前提のコストは約 80 トークンで、数千トークン分の diff の再送を置き換えます。
 
+`review.context.surrounding: enclosing` のときは、修正ラウンドも、このラウンドの
+ツリーから読んだ、修正の hunk を囲むシンボルを運びます —
+[周辺コンテキスト](#surrounding-context) を参照してください。
+
 スコープが絞り込まれるのは、インクリメンタルにする対象のラウンドがある場合だけです。
 
 | 状況 | スコープ |
@@ -734,7 +902,10 @@ create` と同じ手法です）。そのため、ユーザー自身のインデ
 データベースに入れることを意味し、誰も ignore し忘れた大きなディレクトリがある
 リポジトリでは、安くもなければ目立たなくもありません。そのようなスナップショットの
 次のラウンドはツリーを見つけられず、変更全体を対象にします。これはフォールバック
-先として安全な方向です。
+先として安全な方向です。`review.context.surrounding: enclosing` は、囲むシンボルを
+抽出するために、それでも diff の前にツリーを書き出します。これは `tree` ではなく
+`surrounding.tree` として保持されるので、次のラウンドをインクリメンタルにする
+ことはありません。
 
 <a id="running-reviews-on-their-own"></a>
 
