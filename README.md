@@ -337,7 +337,7 @@ dev-orchestra review triage F1 --status accepted --note "confirmed"
 dev-orchestra review fix-brief --output fix-brief.md
 ```
 
-Full command list: `references/cli.md`.
+Full command list: [references/cli.md](references/cli.md).
 
 ## The workflow in practice
 
@@ -376,7 +376,7 @@ dev-orchestra run architect --prompt-file .ai/execution/design-revise-request.md
 
 The revision request on that last line is one you write by hand from the brief:
 the architect starts again with no context, so the accepted findings alone are
-not a prompt. `references/workflow.md` has the shape it expects.
+not a prompt. [references/workflow.md](references/workflow.md) has the shape it expects.
 
 It keeps its own reports, round counter and triage under
 `.ai/reviews/design/`, so a design round never advances — or is refused by —
@@ -806,7 +806,7 @@ dev-orchestra config set --scope project architect.provider codex
 dev-orchestra config reset
 ```
 
-Full schema: `references/configuration.md`.
+Full schema: [references/configuration.md](references/configuration.md).
 
 ## One role, more than one model
 
@@ -928,7 +928,7 @@ Cross-model duplicates almost never look alike in prose — measured on real
 two-provider output, a confirmed duplicate pair scored 0.03 text similarity
 while an unrelated pair scored 0.29 — so findings from different reviewers that
 quote the same code are listed as **possible duplicates** for the orchestrator
-to confirm during triage. Details: `references/reviews.md`.
+to confirm during triage. Details: [references/reviews.md](references/reviews.md).
 
 Each role can also carry provider-specific `options` — notably
 `permission_mode` for Claude and `sandbox` / `approve` for Codex — validated
@@ -1127,13 +1127,28 @@ flowchart LR
 | Skill | `skills/dev-orchestra/SKILL.md` | What to run, when, and what not to do |
 | CLI | `scripts/dev_orchestra.py` | Deterministic operations the agent calls |
 | Providers | `scripts/orchestrator/providers/` | The only code that knows CLI flags and model names |
-| References | `references/` | The detail, loaded only when needed |
+| References | `references/` | The detail, loaded only when needed — see [Reference documents](#reference-documents) |
 
-`references/architecture.md` has the long version.
+[references/architecture.md](references/architecture.md) has the long version.
 
 An adapter for a CLI of your own does not need a change to the plugin: put it
 in `<config dir>/providers/` and it is loaded at startup and survives updates
-(`references/providers.md`).
+([references/providers.md](references/providers.md)).
+
+## Reference documents
+
+The detail behind this README. They are written for the orchestrating model
+as much as for you, which is why they are in English only.
+
+| Document | What is in it |
+| --- | --- |
+| [references/workflow.md](references/workflow.md) | Stage detail, prompt templates, the `.ai/` artifacts |
+| [references/configuration.md](references/configuration.md) | The schema, layering, every field, worked examples |
+| [references/providers.md](references/providers.md) | The adapter interface, Claude and Codex, adding a CLI |
+| [references/reviews.md](references/reviews.md) | The snapshot, output schema and limits, dedup, triage |
+| [references/architecture.md](references/architecture.md) | How the pieces fit, and why |
+| [references/limits.md](references/limits.md) | Stalls, timeouts, budgets |
+| [references/cli.md](references/cli.md) | Every command and flag |
 
 ## Contributing
 
