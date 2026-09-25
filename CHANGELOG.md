@@ -205,6 +205,14 @@ The public surface covered by that promise is: the configuration schema, the
   recorded, the largest measuring 99,814 -- the prompt is byte-identical to
   what it was either way.
 
+- **CI runs the tests in parallel, and a test repository is a copy.**
+  `tests/run_parallel.py` runs what `python -m unittest discover -s tests -t
+  tests` finds, one test class per worker process, and fails if the counts
+  differ, a worker dies or a class hangs; `init_git_repo()` copies a `.git`
+  made once instead of starting four `git` processes per test. The Windows
+  test job took about 4m15s, almost all of it one process running the suite
+  serially. The discover command is unchanged and still what to run locally.
+
 ### Fixed
 
 - **A run's charge or its event could be lost when two ended at once.**

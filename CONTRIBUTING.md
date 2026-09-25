@@ -18,6 +18,14 @@ interpreter has. Linting uses [ruff](https://docs.astral.sh/ruff/) if you have
 it (`ruff check .`, then `ruff format .`); CI runs it but will not block on its
 absence locally.
 
+CI runs the same tests with `python tests/run_parallel.py -v`, which hands one
+test class at a time to a pool of worker processes (`-j N` or
+`DEV_ORCHESTRA_TEST_JOBS` sets how many; the default is the CPU count up to
+4). It is optional locally and the command above stays the reference. Classes
+from different modules run at the same time, so a test class that does not
+derive from `IsolatedCase` must not write outside its own temporary
+directory, change the working directory, or leave the environment changed.
+
 CI pins an exact ruff version so a formatter release cannot turn every PR red.
 Bumping it is a deliberate, manual change: update `.github/workflows/ci.yml`,
 run `ruff format .` locally with the new version, and commit the result

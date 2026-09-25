@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import atexit
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -46,6 +48,23 @@ ASSUME_NO_CLI = "DEV_ORCHESTRA_TEST_ASSUME_NO_CLI"
 
 #: The workflow every test runs in unless it says otherwise.
 TEST_WORKFLOW = "test"
+
+#: A directory holding an initialised `.git` that `init_git_repo()` copies. The
+#: parallel runner creates one and hands it to its workers through this; it is
+#: deliberately not in ENV_KEYS, which setUp clears for every test.
+GIT_TEMPLATE_ENV = "DEV_ORCHESTRA_TEST_GIT_TEMPLATE"
+
+#: The identity `git commit` needs, written straight into the template's config
+#: instead of three `git config` processes per repository.
+GIT_TEMPLATE_CONFIG = """\
+[user]
+\temail = test@example.invalid
+\tname = Test
+[commit]
+\tgpgsign = false
+"""
+
+_git_template = None
 
 #: The minimal user adapter from references/providers.md, verbatim; the docs
 #: test holds the two together and the contract test runs this one.
@@ -189,13 +208,14 @@ class IsolatedCase(unittest.TestCase):
         return ws.Workspace(self.project, workflow=workflow).ensure()
 
     def init_git_repo(self) -> None:
-        for args in (
-            ["init", "-q"],
-            ["config", "user.email", "test@example.invalid"],
-            ["config", "user.name", "Test"],
-            ["config", "commit.gpgsign", "false"],
-        ):
-            subprocess.run(["git", *args], cwd=self.project, check=True, capture_output=True)
+        # Copying a template is what `git init` plus three `git config` calls
+        # leave behind, without the processes. Copying over an existing `.git`
+        # would reset HEAD, which re-running `git init` does not, so refuse.
+        target = os.path.join(self.project, ".git")
+        if os.path.exists(target):
+            raise AssertionError("%s is already a git repository" % self.project)
+        template = os.path.join(ensure_git_template(), ".git")
+        shutil.copytree(template, target, ignore=shutil.ignore_patterns("hooks"))
 
     def git(self, *args: str) -> subprocess.CompletedProcess:
         return subprocess.run(["git", *args], cwd=self.project, check=True, capture_output=True, text=True)
@@ -207,3 +227,43 @@ class IsolatedCase(unittest.TestCase):
 
 def has_git() -> bool:
     return shutil.which("git") is not None
+
+
+def remove_tree(path: str) -> None:
+    """``rmtree`` that also removes read-only files, which git's objects are."""
+
+    def retry_writable(func, target, _exc):
+        os.chmod(target, stat.S_IWRITE)
+        func(target)
+
+    if not os.path.exists(path):
+        return
+    if sys.version_info >= (3, 12):
+        shutil.rmtree(path, onexc=retry_writable)
+    else:
+        shutil.rmtree(path, onerror=retry_writable)
+
+
+def create_git_template() -> str:
+    """Make a directory holding a freshly initialised `.git`; removing it is the caller's."""
+    path = tempfile.mkdtemp(prefix="devorchestra-git-template-")
+    try:
+        subprocess.run(["git", "init", "-q"], cwd=path, check=True, capture_output=True)
+        with open(os.path.join(path, ".git", "config"), "a", encoding="utf-8", newline="\n") as handle:
+            handle.write(GIT_TEMPLATE_CONFIG)
+    except BaseException:
+        remove_tree(path)
+        raise
+    return path
+
+
+def ensure_git_template() -> str:
+    """The template `init_git_repo()` copies: the runner's if it passed one, else this process's."""
+    global _git_template
+    shared = os.environ.get(GIT_TEMPLATE_ENV)
+    if shared and os.path.isdir(os.path.join(shared, ".git")):
+        return shared
+    if _git_template is None:
+        _git_template = create_git_template()
+        atexit.register(remove_tree, _git_template)
+    return _git_template
