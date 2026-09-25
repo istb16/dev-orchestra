@@ -1,4 +1,4 @@
-<!-- translated-from: references/cli.md sha256:201b0776e456d7014d63b531604b97a84f919c42cc36b46e39296c1ba648816a -->
+<!-- translated-from: references/cli.md sha256:24b1c2d81ca6a61ec17748ffd1bf709419a7b3f97fc7f6a3e519cb75b86e96b8 -->
 
 > この文書は [references/cli.md](../../../references/cli.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -161,13 +161,13 @@ echo "explain the failure" | dev-orchestra run orchestrator
 
 | コマンド | 説明 |
 | --- | --- |
-| `review snapshot [--base <rev>] [--no-untracked] [--json]` | レビュー対象の変更を固定します。空の場合は終了コード 1 です。`review.context.max_chars` を超える変更には警告が出ますが、それでも書き込まれます。スナップショットを取ること自体は何も消費せず、拒否するのは消費するコマンドの役目だからです。`--json` は同じことを数値で示します: `change_chars`、`max_chars`、`over_context`。 |
-| `review run [--design] [--request <path>] [--iteration N] [--only <ids/roles>] [--sequential] [--context <text>] [--base <rev>] [--timeout <s>] [--idle-timeout <s>] [--force] [--json]` | スナップショットに対してすべてのレビュアーを実行し、レポートと統合結果を書き込みます。終了コード 1 になるのは、`ok` で戻ったレビュアーが 1 人もいない場合だけです。すべてのレビュアーが失敗した場合や、変更本体が大きすぎてインライン化できずファイルとして渡されたラウンドがこれにあたり、後者はクリーンではなく `partial` として記録されます。ラウンドは `--iteration` が指定されない限りスナップショットから導出され、`review.max_review_iterations` を超えるラウンドは `--force` がない限り拒否されます（終了コード 3）。上限に達したラウンドでも fix と再テストは行われ、拒否されるのは再レビューだけです。最適化ゲートに拒否されたラウンド（テストが失敗として記録されている）も終了コード 3 で終了し、`optimization report` が数えられるよう `refused` として記録されます。`review.context.max_chars`（400,000）を超える変更本体も同様です。何もレビューされず、メッセージはサイズ、上限、上限内に収める方法を示し、ラウンドは `refused_by: "context"` として記録されます。`--force` を付けると構わず実行し、そのラウンドは報告されるすべての場所で `over_budget` として記録されます。本体をプロンプトに入れるかパスとして渡すかは `review.context.inline_chars`（400,000。デフォルトでは同じ数値）で決まり、各レビュアーのエントリには判断に使われた値が記録されます。`budgets.max_runtime_seconds` 分の委譲実行時間を使い切った場合も同様にラウンドは拒否され（パネルはその最大の消費者です）、メッセージはどの予算だったかを示します。`--only` は一部だけを実行しますが、統合はすべてのレビュアーの現在のレポートに対して行うので、何も失われません。 |
+| `review snapshot [--base <rev>] [--no-untracked] [--json]` | レビュー対象の変更を固定します。空の場合は終了コード 1 です。`review.context.max_chars` を超える変更には警告が出ますが、それでも書き込まれます。スナップショットを取ること自体は何も消費せず、拒否するのは消費するコマンドの役目だからです。`--json` は同じことを数値で示します: `change_chars`、`max_chars`、`over_context`。`review.context.surrounding: enclosing` のときは、各 hunk を囲むシンボルも、diff を取ったツリーから `review-surrounding.json` に固定し、固定したシンボル数と文字数、抽出しなかったファイルの数とその理由を示す `context:` 行を出力します。メタデータには `surrounding` ブロックが加わります。`references/reviews.md` を参照してください。 |
+| `review run [--design] [--request <path>] [--iteration N] [--only <ids/roles>] [--sequential] [--context <text>] [--base <rev>] [--timeout <s>] [--idle-timeout <s>] [--force] [--json]` | スナップショットに対してすべてのレビュアーを実行し、レポートと統合結果を書き込みます。終了コード 1 になるのは、`ok` で戻ったレビュアーが 1 人もいない場合だけです。すべてのレビュアーが失敗した場合や、変更本体が大きすぎてインライン化できずファイルとして渡されたラウンドがこれにあたり、後者はクリーンではなく `partial` として記録されます。ラウンドは `--iteration` が指定されない限りスナップショットから導出され、`review.max_review_iterations` を超えるラウンドは `--force` がない限り拒否されます（終了コード 3）。上限に達したラウンドでも fix と再テストは行われ、拒否されるのは再レビューだけです。最適化ゲートに拒否されたラウンド（テストが失敗として記録されている）も終了コード 3 で終了し、`optimization report` が数えられるよう `refused` として記録されます。`review.context.max_chars`（400,000）を超える変更本体も同様です。何もレビューされず、メッセージはサイズ、上限、上限内に収める方法を示し、ラウンドは `refused_by: "context"` として記録されます。`--force` を付けると構わず実行し、そのラウンドは報告されるすべての場所で `over_budget` として記録されます。本体をプロンプトに入れるかパスとして渡すかは `review.context.inline_chars`（400,000。デフォルトでは同じ数値）で決まり、各レビュアーのエントリには判断に使われた値が記録されます。`budgets.max_runtime_seconds` 分の委譲実行時間を使い切った場合も同様にラウンドは拒否され（パネルはその最大の消費者です）、メッセージはどの予算だったかを示します。`--only` は一部だけを実行しますが、統合はすべてのレビュアーの現在のレポートに対して行うので、何も失われません。`review.context.surrounding: enclosing` のときは、固定されたシンボルを `review.context.surrounding_chars` と、diff が両方の上限の下に残す分の範囲で採用し、`Surrounding context:` 行が採用した数と除外した数とその理由を示し、`--json` にはラウンドの `surrounding` レコードが入ります。上限が計測するサイズは、diff に採用したコンテキストを足したものになります。 |
 | `review consolidate [--design] [--iteration N] [--json]` | 既存のレポートを再解析し、統合結果を再構築します。 |
 | `review show [--design] [--accepted] [--json]` | 統合されたレビューを表示します。 |
 | `review triage [--design] <ids…> --status <status> [--note <text>]` | トリアージの判断を記録します。 |
 | `review fix-brief [--design] [--output <path>]` | fixer 向けに、受け入れた指摘のブリーフを出力します。 |
-| `review status [--design] [--json]` | 再レビューが必要かどうか、イテレーション予算、そしてラウンドの `coverage` を示します。`coverage` には `round`、`change`、ラウンドの計測に使われた `inline_chars` に加え、`unverified` を解消するための操作が含まれます。変更を絞るか `review.context.inline_chars` を引き上げ、その後スナップショットを取り直すことです。また、その上限がラウンドに記録されたサイズを超えて引き上げられた後は、同じスナップショットが今ならインライン化されるので、それに対して `review run` を実行すればよいだけだということも示します。`over_budget` は、そのラウンドが `--force` で `review.context.max_chars` を超えて送られたためにだけ実行されたことを示します。ラウンドの予算を使い切った後は、そのラウンドの最後のパスがどこまで進んでいるかも示します。これは台帳、実行ログ、承認状態から読み取られます（何も消去されません）。`final_fix` は `pending`（もう一度 fix する）、`retest`（fix 済み。再テストを記録する）、`done`、`blocked`（`review_fixer` の試行が残っていない）、`--design` の場合の `final_revision` は `pending`（もう一度修正する）、`done`、`blocked`（`architect` の試行が残っていない）、`approved`、`implemented` のいずれかです。どちらも上限に達する前は `null` で、`final_fix_pending` / `final_revision_pending` フラグを伴います。最後の行は次のステップを示し、前のラウンドの指摘を繰り返したラウンドについて注記します。`references/reviews.md` を参照してください。 |
+| `review status [--design] [--json]` | 再レビューが必要かどうか、イテレーション予算、そしてラウンドの `coverage` を示します。`coverage` には `round`、`change`、ラウンドの計測に使われた `inline_chars` に加え、`unverified` を解消するための操作が含まれます。変更を絞るか `review.context.inline_chars` を引き上げ、その後スナップショットを取り直すことです。また、その上限がラウンドに記録されたサイズを超えて引き上げられた後は、同じスナップショットが今ならインライン化されるので、それに対して `review run` を実行すればよいだけだということも示します。`over_budget` は、そのラウンドが `--force` で `review.context.max_chars` を超えて送られたためにだけ実行されたことを示します。周辺コンテキストを運んだラウンドでは `surrounding context:` 行が加わり（レビュアーごとに渡されたものが違う場合はレビュアーごとに 1 行）、除外されたシンボルを最大 5 つまで名前で示します。`--json` にはレポートの `surrounding` ブロックが入ります。ラウンドの予算を使い切った後は、そのラウンドの最後のパスがどこまで進んでいるかも示します。これは台帳、実行ログ、承認状態から読み取られます（何も消去されません）。`final_fix` は `pending`（もう一度 fix する）、`retest`（fix 済み。再テストを記録する）、`done`、`blocked`（`review_fixer` の試行が残っていない）、`--design` の場合の `final_revision` は `pending`（もう一度修正する）、`done`、`blocked`（`architect` の試行が残っていない）、`approved`、`implemented` のいずれかです。どちらも上限に達する前は `null` で、`final_fix_pending` / `final_revision_pending` フラグを伴います。最後の行は次のステップを示し、前のラウンドの指摘を繰り返したラウンドについて注記します。`references/reviews.md` を参照してください。 |
 
 `--design` を付けると、これらすべてが *design* レビューに切り替わります。実装前に `.ai/plan.md` を
 同じパネルで評価するもので、独自のレポート、ラウンドカウンター、トリアージが `.ai/reviews/design/`
@@ -449,6 +449,31 @@ Tool activity, per run and only over the runs that reported it:
 **観測された出力はツールが返したものであり、読んだソースではありません**。`wc -l` は 200 行のファイルに
 対して 3 文字を返します。`--json` では `tool_reported_runs`、`tool_uses`、`tool_output_chars`、
 `tool_uses_per_run`、`tool_output_chars_per_run`、そしてその隣に `design_` を前に付けた 5 つがあります。
+
+コードラウンドが一度でも[周辺コンテキスト](reviews.md#surrounding-context)を運ぶと、実行されたコード
+ラウンドが 2 つに分かれて表示されます。
+
+```
+Surrounding context (review.context.surrounding), code review rounds only:
+  with context           3 round(s), 6 run(s), 412,300 billed, 137,433 per round; 4.0 use(s)/run, 12,400.0 observed output chars/run (3 of 6 run(s) reported); 114,360 context chars adopted, 9,812 left out
+                         per run and 1k chars of change (3 sized round(s), 61,200 chars): 3,368.5 billed over 6 billed run(s), 607.8 observed output chars over 3 reporting run(s)
+  without context        9 round(s), 18 run(s), 1,522,880 billed, 169,208 per round; 9.6 use(s)/run, 44,120.0 observed output chars/run (9 of 18 run(s) reported)
+                         per run and 1k chars of change (7 sized round(s), 210,400 chars): 2,851.7 billed over 14 billed run(s), 1,425.9 observed output chars over 7 reporting run(s)
+```
+
+`with` になるのは、実際にどれかのレビュアーにコンテキストが示されたラウンドだけです。設定が on でも
+何も採用しなかったラウンドは `without` です。**比べるのは各群の 2 行目で、1 行目ではありません。**
+生の数値は変更ごとの大きさとパネルの大きさに連動して動きます — 小さな変更はレビュアー 1 人に削減される
+のが普通です — そのため 2 行目は、変更のサイズを各数値を報告した実行数で重み付けしたもので割ります。
+課金は `change_chars × 課金を報告した実行数` で、ツール出力は `change_chars × ツールを報告した実行数`
+で割り、どちらもサイズを記録したラウンドだけを対象にします。コンテキストを運んだラウンドが存在する
+までは何も表示されません。`--json` には `by_context.with` と `by_context.without` が常に含まれ、それぞれ
+`rounds`、`reviewer_runs`、`measured_runs`、`billed_tokens`、`billed_per_round`、ツールの数値、
+`sized_rounds`、`change_chars`、`sized_billed_tokens`、`billed_run_change_chars`、`sized_billed_runs`、
+`sized_tool_output_chars`、`tool_run_change_chars`、`sized_tool_runs`、
+`billed_per_run_per_1k_change_chars`、`tool_output_chars_per_run_per_1k_change_chars`、`adopted_chars`、
+`trimmed_chars` を持ちます。`tokens show` は台帳の累計なのでラウンドを分けられず、変更はありません。
+ラウンドごとの比較はこちらで行います。
 
 すべてのラウンドがエスカレートした場合、レポートはそれをはっきり述べます。設定されたレベルは一度も適用
 されなかったということであり、その原因となったパターンが示されます。すべてのラウンドでエスカレートして

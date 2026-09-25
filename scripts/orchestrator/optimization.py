@@ -394,6 +394,7 @@ def summarise_rounds(events: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
         and event.get("stage") == "design_review"
         and event.get("status") == REFUSED
     )
+    by_context = {"with": _context_group(), "without": _context_group()}
     levels: Dict[str, int] = {}
     gates: Dict[str, int] = {}
     patterns: Dict[str, int] = {}
@@ -431,6 +432,12 @@ def summarise_rounds(events: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
         tool_runs += said
         tool_uses += called
         tool_chars += printed
+        _add_to_context_group(
+            by_context["with" if _with_context(event) else "without"],
+            event,
+            (runs, reported, spent),
+            (said, called, printed),
+        )
 
     design_runs = design_measured = design_billed = 0
     design_tool_runs = design_tool_uses = design_tool_chars = 0
@@ -487,7 +494,133 @@ def summarise_rounds(events: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
         "design_tool_output_chars": design_tool_chars,
         "design_tool_uses_per_run": _per_run(design_tool_uses, design_tool_runs),
         "design_tool_output_chars_per_run": _per_run(design_tool_chars, design_tool_runs),
+        # Code rounds that ran, split on whether a reviewer was handed
+        # surrounding context -- see ``_with_context``.
+        "by_context": {name: _finish_context_group(group) for name, group in by_context.items()},
     }
+
+
+def _with_context(event: Dict[str, Any]) -> bool:
+    """Whether a round handed any reviewer surrounding context.
+
+    Read off the round's own summary, and off the reviewer entries for a
+    round without one. A round that adopted nothing -- the body went over as
+    a file, the budget was spent -- showed no context and is not a round
+    with it, whatever the setting said.
+    """
+    block = event.get("surrounding")
+    if isinstance(block, dict):
+        return _int(block.get("adopted_chars")) > 0
+    return any(
+        _int((run.get("surrounding") or {}).get("adopted_chars")) > 0
+        for run in event.get("reviewers") or []
+        if isinstance(run, dict) and isinstance(run.get("surrounding"), dict)
+    )
+
+
+def _round_change_chars(event: Dict[str, Any]) -> Optional[int]:
+    """The size of the diff a code round reviewed, or None where unrecorded.
+
+    Every reviewer of a code round is handed the same diff, so the first
+    entry that recorded a size answers for the round.
+    """
+    for run in event.get("reviewers") or []:
+        if not isinstance(run, dict):
+            continue
+        chars = run.get("change_chars")
+        if isinstance(chars, int) and not isinstance(chars, bool) and chars > 0:
+            return chars
+    return None
+
+
+def _round_context_chars(event: Dict[str, Any]) -> Tuple[int, int]:
+    """Adopted and left-out context chars of one round, counted once per round."""
+    block = event.get("surrounding")
+    if isinstance(block, dict):
+        return _int(block.get("adopted_chars")), _int(block.get("trimmed_chars"))
+    adopted = trimmed = 0
+    for run in event.get("reviewers") or []:
+        record = run.get("surrounding") if isinstance(run, dict) else None
+        if isinstance(record, dict):
+            adopted = max(adopted, _int(record.get("adopted_chars")))
+            trimmed = max(trimmed, _int(record.get("trimmed_chars")))
+    return adopted, trimmed
+
+
+def _int(value: Any) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
+def _context_group() -> Dict[str, int]:
+    keys = (
+        "rounds reviewer_runs measured_runs billed_tokens tool_reported_runs tool_uses "
+        "tool_output_chars sized_rounds change_chars sized_billed_tokens billed_run_change_chars "
+        "sized_tool_output_chars tool_run_change_chars sized_billed_runs sized_tool_runs "
+        "adopted_chars trimmed_chars"
+    )
+    return dict.fromkeys(keys.split(), 0)
+
+
+def _add_to_context_group(
+    group: Dict[str, int],
+    event: Dict[str, Any],
+    spend: Tuple[int, int, int],
+    tools: Tuple[int, int, int],
+) -> None:
+    """Add one round to a group, weighting its size by the runs that reported.
+
+    The raw totals move with the size of each change and with the number of
+    reviewers in the panel, and a reduced panel is an ordinary thing for a
+    small change to get. Dividing by "size times reporting runs" instead
+    gives what one run spent per 1k chars of change, which neither moves.
+    Only rounds that recorded their size count toward the normalised
+    figures, numerator and denominator alike.
+    """
+    runs, reported, billed = spend
+    said, called, printed = tools
+    group["rounds"] += 1
+    group["reviewer_runs"] += runs
+    group["measured_runs"] += reported
+    group["billed_tokens"] += billed
+    group["tool_reported_runs"] += said
+    group["tool_uses"] += called
+    group["tool_output_chars"] += printed
+    adopted, trimmed = _round_context_chars(event)
+    group["adopted_chars"] += adopted
+    group["trimmed_chars"] += trimmed
+    size = _round_change_chars(event)
+    if size is None:
+        return
+    group["sized_rounds"] += 1
+    group["change_chars"] += size
+    group["sized_billed_tokens"] += billed
+    group["billed_run_change_chars"] += size * reported
+    group["sized_billed_runs"] += reported
+    group["sized_tool_output_chars"] += printed
+    group["tool_run_change_chars"] += size * said
+    group["sized_tool_runs"] += said
+
+
+def _finish_context_group(group: Dict[str, int]) -> Dict[str, Any]:
+    finished: Dict[str, Any] = dict(group)
+    rounds, billed = group["rounds"], group["billed_tokens"]
+    finished["billed_per_round"] = billed // rounds if (rounds and billed) else None
+    finished["tool_uses_per_run"] = _per_run(group["tool_uses"], group["tool_reported_runs"])
+    finished["tool_output_chars_per_run"] = _per_run(group["tool_output_chars"], group["tool_reported_runs"])
+    finished["billed_per_run_per_1k_change_chars"] = _per_1k(
+        group["sized_billed_tokens"], group["billed_run_change_chars"]
+    )
+    finished["tool_output_chars_per_run_per_1k_change_chars"] = _per_1k(
+        group["sized_tool_output_chars"], group["tool_run_change_chars"]
+    )
+    return finished
+
+
+def _per_1k(total: int, weighted_chars: int) -> Optional[float]:
+    """``total`` per 1,000 run-weighted chars of change, or None with nothing to divide by."""
+    if not weighted_chars:
+        return None
+    return round(total / (weighted_chars / 1000.0), 1)
 
 
 def _per_run(total: int, runs: int) -> Optional[float]:

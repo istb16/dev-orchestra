@@ -893,6 +893,13 @@ dev-orchestra reviewer remove codex-security
 そこで、異なるレビュアーが**同じコードを引用している** findings を「重複候補」として提示し、
 Orchestrator がトリアージ時に確定させます。詳細は [docs/ja/references/reviews.md](docs/ja/references/reviews.md)（[英語版](references/reviews.md)）。
 
+`review.context.surrounding: enclosing` にすると、各 hunk を囲む Python の関数・メソッド・クラスも、
+すべてのコードレビュアーに渡します。diff を取ったツリーからスナップショットと一緒に固定するので、
+レビュアーが自分で開くファイルが減ります。量は `review.context.surrounding_chars`（60,000）と、
+diff がコンテキストの上限の下に残す分で制限され、収まらなかったものは黙って落とさず、プロンプトと
+すべてのレポートで名前を挙げます。出荷時は off です。`optimization report` がこれを使ったラウンドと
+使わなかったラウンドを実行あたり・変更 1k 文字あたりで比較するので、その比較を見て on にしてください。
+
 各ロールには provider 固有の `options` も指定できます（Claude は `permission_mode`、Codex は
 `sandbox` / `approve`）。値はインストール済みCLIが実際に受け付けるものと照合されます。read-only
 工程を緩めようとする option は無視され、`doctor` がそれを報告します。architect と全レビュアーは

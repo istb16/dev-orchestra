@@ -19,6 +19,7 @@ from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tu
 
 from . import approval as approval_mod
 from . import config as config_mod
+from . import context as context_mod
 from . import doctor as doctor_mod
 from . import jobs as jobs_mod
 from . import ledger as ledger_mod
@@ -1272,6 +1273,21 @@ def _merge_runs(workspace: ws.Workspace, run_dicts: List[Dict[str, Any]]) -> Lis
     return run_dicts + kept
 
 
+def _adoption_line(adoption: context_mod.Adoption) -> str:
+    """``review run``'s one line on the surrounding context it handed over."""
+    record = adoption.record()
+    if adoption.adopted:
+        line = "%d symbol(s), %s chars adopted" % (
+            len(adoption.adopted),
+            "{:,}".format(adoption.adopted_chars),
+        )
+    else:
+        line = "nothing adopted -- %s" % adoption.reason
+    if adoption.trimmed:
+        line += "; %d left out (%s)" % (len(adoption.trimmed), context_mod.trim_reasons(record))
+    return line
+
+
 def _reviewer_line(run: review_mod.ReviewerRun) -> str:
     mark = "ok" if run.status == "ok" else ("PARTIAL" if run.status == "partial" else "FAILED")
     return "%-7s %-18s %-8s %-18s %s" % (
@@ -1318,6 +1334,10 @@ def cmd_review_snapshot(args: argparse.Namespace) -> int:
     settings = loaded.review_settings()
     exclude = () if args.no_exclude else settings.get("exclude")
     incremental = bool(settings.get("incremental_rounds", True)) and not args.full
+    # Read before the snapshot, because the surrounding context is frozen with
+    # it: what a reviewer is shown has to come from the tree the diff did.
+    context_settings = loaded.context_settings()
+    surrounding = context_mod.surrounding_mode(context_settings.get("surrounding"))
     try:
         meta = review_mod.create_snapshot(
             workspace,
@@ -1325,6 +1345,7 @@ def cmd_review_snapshot(args: argparse.Namespace) -> int:
             include_untracked=not args.no_untracked,
             exclude=exclude,
             incremental=incremental,
+            surrounding=surrounding,
         )
     except review_mod.ReviewError as exc:
         _err(str(exc))
@@ -1338,7 +1359,7 @@ def cmd_review_snapshot(args: argparse.Namespace) -> int:
     # three keys go in the payload, not in the snapshot's metadata file: what
     # the limit was and whether this change is over it are facts about the
     # commands that read the snapshot, not about the frozen diff.
-    max_chars = int(loaded.context_settings().get("max_chars") or 0)
+    max_chars = int(context_settings.get("max_chars") or 0)
     change_chars = review_mod.snapshot_chars(workspace)
     over_context = review_mod.over_context(change_chars, max_chars)
     if args.json:
@@ -1357,6 +1378,8 @@ def cmd_review_snapshot(args: argparse.Namespace) -> int:
         _out("            reviewers also get the findings the fix was meant to address")
     _out("  files:    %d" % len(meta["files"]))
     _out("  size:     %d bytes (sha256 %s)" % (meta["bytes"], meta["sha256"][:12]))
+    for line in _surrounding_snapshot_lines(workspace, meta, context_settings):
+        _out(line)
     if over_context:
         _out(
             "  WARNING:  %s chars is over review.context.max_chars (%s) -- review run will "
@@ -1379,6 +1402,31 @@ def cmd_review_snapshot(args: argparse.Namespace) -> int:
             _out("  WARNING: the snapshot is empty -- there is nothing to review.")
         return 1
     return 0
+
+
+def _surrounding_snapshot_lines(
+    workspace: ws.Workspace, meta: Dict[str, Any], context_settings: Dict[str, Any]
+) -> List[str]:
+    """What was frozen as surrounding context, and what could not be. Nothing when off."""
+    block = meta.get("surrounding")
+    if not isinstance(block, dict):
+        return []
+    tree = str(block.get("tree") or "")
+    frozen = "  context:  enclosing -- %d symbol(s), %s chars frozen from tree %s at %s" % (
+        int(block.get("candidates") or 0),
+        "{:,}".format(int(block.get("chars") or 0)),
+        (tree[:7] + "...") if tree else "(none)",
+        block.get("path"),
+    )
+    cap = context_settings.get("surrounding_chars")
+    if isinstance(cap, int) and not isinstance(cap, bool):
+        cap = "{:,}".format(cap)
+    later = "            adopted at review run within review.context.surrounding_chars (%s)" % cap
+    skipped = (ws.read_json(workspace.surrounding_path, {}) or {}).get("skipped") or []
+    note = context_mod.not_extracted(skipped)
+    if note:
+        later += "; " + note[0].lower() + note[1:].rstrip(".")
+    return [frozen, later]
 
 
 def _design_request_path(args: argparse.Namespace, workspace: ws.Workspace) -> str:
@@ -1631,6 +1679,7 @@ def cmd_review_run(args: argparse.Namespace) -> int:
         return 2
 
     settings = loaded.review_settings()
+    context_settings = loaded.context_settings()
     if not os.path.isfile(workspace.snapshot_path):
         try:
             review_mod.create_snapshot(
@@ -1638,6 +1687,7 @@ def cmd_review_run(args: argparse.Namespace) -> int:
                 args.base,
                 exclude=settings.get("exclude"),
                 incremental=bool(settings.get("incremental_rounds", True)),
+                surrounding=context_mod.surrounding_mode(context_settings.get("surrounding")),
             )
         except review_mod.ReviewError as exc:
             _err(str(exc))
@@ -1691,19 +1741,32 @@ def cmd_review_run(args: argparse.Namespace) -> int:
 
     # After the gate, because a round the gate already refused has no reason to
     # be measured, and before anything is charged or run.
-    context_settings = loaded.context_settings()
     max_chars = int(context_settings.get("max_chars") or 0)
     inline_chars = int(context_settings.get("inline_chars") or 0)
-    # Here the budget's size and the delivered body's size are the same diff,
-    # and are passed as two arguments anyway: the design path's are not, and a
-    # call site that reads differently there is one nobody compares.
-    budget_chars = review_mod.snapshot_chars(workspace)
+    change_chars = review_mod.snapshot_chars(workspace)
+    # Chosen before the limit is checked, because the limit measures what the
+    # prompt carries: the diff and the context adopted beside it. The context
+    # is capped at what the diff leaves under both limits, so this never
+    # refuses a round the diff alone would have run.
+    adoption = context_mod.adopt(
+        workspace,
+        meta,
+        context_settings.get("surrounding"),
+        context_settings.get("surrounding_chars"),
+        change_chars,
+        max_chars,
+        inline_chars,
+        review_mod.delivery_of(change_chars, inline_chars),
+    )
+    # The delivered body is the diff alone -- context never decides delivery --
+    # so it is passed apart from the budget, as the design path passes its own.
+    budget_chars = change_chars + adoption.context_chars
     refusal = _refuse_if_over_context(
         workspace,
         "review",
         budget_chars,
         max_chars,
-        budget_chars,
+        change_chars,
         inline_chars,
         args.force,
         iteration,
@@ -1752,11 +1815,13 @@ def cmd_review_run(args: argparse.Namespace) -> int:
             over_budget=over_budget,
             budget_chars=budget_chars,
             inline_chars=inline_chars,
+            surrounding=adoption,
         )
     except review_mod.ReviewError as exc:
         book.end(token, "failed", {"error": str(exc)})
         _err(str(exc))
         return 2
+    context_on = adoption.mode != "none"
 
     for run in runs:
         if run.invoked:
@@ -1774,16 +1839,24 @@ def cmd_review_run(args: argparse.Namespace) -> int:
     ws.write_json(workspace.consolidated_json_path, data)
     ws.write_text(workspace.consolidated_md_path, review_mod.render_consolidation(data))
     repeats = book.register_signature("review", review_mod.findings_signature(data))
+    detail = {
+        "iteration": iteration,
+        "reviewers": run_dicts,
+        "findings": data["counts"].get("findings_total"),
+        "identical_rounds": repeats,
+        "optimization": plan.to_dict(),
+    }
+    if context_on and any("surrounding" in run for run in run_dicts):
+        # Sizes and counts only: ``optimization report`` splits rounds on it,
+        # and the names are on every reviewer entry beside it. Only when a
+        # reviewer's prompt was built with it: a round whose every reviewer
+        # fell over first showed no one any context, and must not be counted
+        # as a round with it.
+        detail["surrounding"] = adoption.summary()
     book.end(
         token,
         "ok",
-        {
-            "iteration": iteration,
-            "reviewers": run_dicts,
-            "findings": data["counts"].get("findings_total"),
-            "identical_rounds": repeats,
-            "optimization": plan.to_dict(),
-        },
+        detail,
         # Per reviewer, as above: the panel is the unit that was delegated.
         charged_seconds=sum(run.duration for run in runs),
     )
@@ -1805,21 +1878,24 @@ def cmd_review_run(args: argparse.Namespace) -> int:
 
     ok, failed, partial = review_mod.summarise_runs(runs)
     if args.json:
-        _emit_json(
-            {
-                "ok": ok,
-                "failed": failed,
-                "partial": partial,
-                "reviewers": run_dicts,
-                "counts": data["counts"],
-                "optimization": plan.to_dict(),
-            }
-        )
+        payload = {
+            "ok": ok,
+            "failed": failed,
+            "partial": partial,
+            "reviewers": run_dicts,
+            "counts": data["counts"],
+            "optimization": plan.to_dict(),
+        }
+        if context_on:
+            payload["surrounding"] = adoption.record()
+        _emit_json(payload)
     else:
         for run in runs:
             _out(_reviewer_line(run))
         _out("")
         _out(_panel_summary(ok, failed, partial))
+        if context_on:
+            _out("Surrounding context: %s" % _adoption_line(adoption))
         _out("Consolidated: %s" % workspace.relative(workspace.consolidated_md_path))
     if ok == 0 and (failed or partial):
         return 1
@@ -1983,6 +2059,10 @@ def cmd_review_status(args: argparse.Namespace) -> int:
         "over_budget": bool((data.get("snapshot") or {}).get("over_budget")),
         "counts": counts,
     }
+    # Only when the report recorded one, as `consolidated.md` does.
+    surrounding = data.get("surrounding")
+    if isinstance(surrounding, dict):
+        payload["surrounding"] = surrounding
     if args.design:
         payload["final_revision"] = final["state"]
         payload["final_revision_pending"] = final["pending"]
@@ -2005,6 +2085,9 @@ def cmd_review_status(args: argparse.Namespace) -> int:
                 "over budget: this round was sent past review.context.max_chars by --force; "
                 "say so when you report it"
             )
+        if isinstance(surrounding, dict):
+            for line in _surrounding_status_lines(surrounding):
+                _out(line)
         for line in _coverage_advice(
             coverage or {},
             counts,
@@ -2016,6 +2099,40 @@ def cmd_review_status(args: argparse.Namespace) -> int:
         if payload["iteration_budget_exhausted"] and blocking:
             _out("iteration budget exhausted -- %s" % _final_pass_advice(args.design, final, repeats))
     return 0
+
+
+def _surrounding_status_lines(block: Dict[str, Any]) -> List[str]:
+    """The context this snapshot's reviewers were shown, and what was left out by name."""
+    if block.get("shared") is False:
+        records = list((block.get("by_reviewer") or {}).items())
+    else:
+        records = [("", block)]
+    lines = []
+    for reviewer_id, record in records:
+        label = "surrounding context (%s)" % reviewer_id if reviewer_id else "surrounding context"
+        if not isinstance(record, dict):
+            lines.append("%s: none (ran with review.context.surrounding none)" % label)
+            continue
+        lines.append("%s: %s" % (label, context_mod.status_line(record)))
+        trimmed = [c for c in record.get("trimmed") or [] if isinstance(c, dict)]
+        for candidate in trimmed[:5]:
+            lines.append(
+                "  left out: %s:%s-%s %s"
+                % (
+                    candidate.get("path"),
+                    candidate.get("start"),
+                    candidate.get("end"),
+                    candidate.get("symbol"),
+                )
+            )
+        if len(trimmed) > 5:
+            lines.append("  and %d more" % (len(trimmed) - 5))
+        skipped = [entry for entry in record.get("skipped") or [] if isinstance(entry, dict)]
+        for entry in skipped[:5]:
+            lines.append("  not extracted: %s -- %s" % (entry.get("path"), entry.get("reason") or "?"))
+        if len(skipped) > 5:
+            lines.append("  and %d more not extracted" % (len(skipped) - 5))
+    return lines
 
 
 def _final_pass_advice(design: bool, final: Dict[str, Any], repeats: int) -> str:
@@ -2598,6 +2715,20 @@ def cmd_optimization_report(args: argparse.Namespace) -> int:
         _out("  for no reason but its composition.")
         _out("  Observed output is what the tools printed back, not source read: `wc -l`")
         _out("  returns 3 characters for a 200-line file and `cat` returns the file.")
+    by_context = report.get("by_context") or {}
+    # Only once a round has actually carried context: before that there is
+    # nothing to compare, and a block of dashes would read as a finding.
+    if (by_context.get("with") or {}).get("rounds"):
+        _out("")
+        _out("Surrounding context (review.context.surrounding), code review rounds only:")
+        for name, label in (("with", "with context"), ("without", "without context")):
+            group = by_context.get(name) or {}
+            _out("  %-22s %s" % (label, _context_row(group, name == "with")))
+            _out("  %-22s %s" % ("", _context_per_run_row(group)))
+        _out("  The raw figures move with the size of each change and with the number of reviewers in the")
+        _out("  panel; compare the per-run lines. Codex reports no tool activity, by design: its runs are in")
+        _out("  the billed figures and out of the tool ones, which is why each tool figure names the runs it")
+        _out("  was divided by.")
     if report["design_refused"]:
         _out("")
         _out(
@@ -2632,6 +2763,51 @@ def cmd_optimization_report(args: argparse.Namespace) -> int:
 
 def _counts(counter: Dict[str, int]) -> str:
     return ", ".join("%s x%d" % item for item in sorted(counter.items())) or "-"
+
+
+def _figure(value: Any) -> str:
+    """A per-run figure, or ``-`` where nobody reported one."""
+    if value is None:
+        return "-"
+    return "{:,.1f}".format(value) if isinstance(value, float) else "{:,}".format(value)
+
+
+def _context_row(group: Dict[str, Any], adopted: bool) -> str:
+    """One group's raw figures: rounds, runs, billed and tool activity."""
+    row = "%d round(s), %d run(s), %s billed, %s per round" % (
+        int(group.get("rounds") or 0),
+        int(group.get("reviewer_runs") or 0),
+        "{:,}".format(int(group.get("billed_tokens") or 0)),
+        _figure(group.get("billed_per_round")),
+    )
+    row += "; %s use(s)/run, %s observed output chars/run (%d of %d run(s) reported)" % (
+        _figure(group.get("tool_uses_per_run")),
+        _figure(group.get("tool_output_chars_per_run")),
+        int(group.get("tool_reported_runs") or 0),
+        int(group.get("reviewer_runs") or 0),
+    )
+    if adopted:
+        row += "; %s context chars adopted, %s left out" % (
+            "{:,}".format(int(group.get("adopted_chars") or 0)),
+            "{:,}".format(int(group.get("trimmed_chars") or 0)),
+        )
+    return row
+
+
+def _context_per_run_row(group: Dict[str, Any]) -> str:
+    """The same group per run and per 1k chars of change -- the line to compare."""
+    return (
+        "per run and 1k chars of change (%d sized round(s), %s chars): %s billed over %d billed run(s), "
+        "%s observed output chars over %d reporting run(s)"
+        % (
+            int(group.get("sized_rounds") or 0),
+            "{:,}".format(int(group.get("change_chars") or 0)),
+            _figure(group.get("billed_per_run_per_1k_change_chars")),
+            int(group.get("sized_billed_runs") or 0),
+            _figure(group.get("tool_output_chars_per_run_per_1k_change_chars")),
+            int(group.get("sized_tool_runs") or 0),
+        )
+    )
 
 
 def _runs_row(runs: int, reported: int, billed: int, rounds: int, per_round: Optional[int]) -> str:

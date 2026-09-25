@@ -31,6 +31,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple
 
+from . import context as context_mod
 from . import workspace as ws
 from .optimization import DEFAULT_LEVEL, MAX_FINDINGS_BY_LEVEL
 from .providers import MODE_REVIEW, ModelResolutionError, Usage, get_provider
@@ -270,6 +271,7 @@ def create_snapshot(
     include_untracked: bool = True,
     exclude: Optional[Sequence[str]] = None,
     incremental: bool = True,
+    surrounding: str = "none",
 ) -> Dict[str, Any]:
     """Freeze the change under review into ``.ai/reviews/review-target.diff``.
 
@@ -281,6 +283,10 @@ def create_snapshot(
     the whole change again. It only applies when the previous snapshot was
     actually reviewed and something has changed since; a plain re-snapshot is
     always the full diff.
+
+    ``surrounding`` is ``review.context.surrounding``. With ``enclosing`` the
+    symbol around every hunk is extracted from the tree written before the
+    diff and frozen beside it in ``review-surrounding.json``.
     """
     workspace.ensure()
     root = workspace.root
@@ -306,7 +312,13 @@ def create_snapshot(
     # 3,228 lines while the findings fell 11 -> 6 -> 5, and the cost per
     # finding went from $0.20 to $1.00.
     wanted = bool(incremental)
-    tree = _write_tree(root) if wanted else ""
+    context_on = context_mod.surrounding_mode(surrounding) == "enclosing"
+    # Written before the diff whenever context is on, incremental or not: only
+    # then does "the working tree still matches this tree" imply "and the diff
+    # taken after it". ``meta["tree"]`` keeps its meaning either way -- it is
+    # what the next round may narrow from, and ``incremental: False`` says none.
+    frozen_tree = _write_tree(root) if (wanted or context_on) else ""
+    tree = frozen_tree if wanted else ""
     previous_tree = _reviewed_tree(workspace, base) if wanted else ""
     if previous_tree and tree and previous_tree != tree:
         revisions = [previous_tree, tree]
@@ -437,6 +449,26 @@ def create_snapshot(
         "sha256": hashlib.sha256(diff.encode("utf-8")).hexdigest(),
         "empty": not diff.strip(),
     }
+    if context_on:
+        frozen = context_mod.extract(root, frozen_tree, diff, reviewed, working_tree_diff=not previous_tree)
+        frozen["sha256"] = meta["sha256"]
+        frozen["generated_at"] = ws.utcnow()
+        ws.write_json(workspace.surrounding_path, frozen)
+        meta["surrounding"] = {
+            "mode": "enclosing",
+            "path": workspace.relative(workspace.surrounding_path),
+            "tree": frozen_tree,
+            "candidates": len(frozen["candidates"]),
+            "chars": sum(int(c["chars"]) for c in frozen["candidates"]),
+            "skipped": len(frozen["skipped"]),
+        }
+    elif os.path.isfile(workspace.surrounding_path):
+        # A snapshot taken with the setting off has no context, and an older
+        # file left beside it would describe a diff that is no longer there.
+        try:
+            os.unlink(workspace.surrounding_path)
+        except OSError:
+            pass
     ws.write_json(workspace.snapshot_meta_path, meta)
     return meta
 
@@ -1071,6 +1103,11 @@ def _delivery_of(change_chars: int, inline_chars: Optional[int] = None) -> str:
     return "inline" if change_chars <= _inline_limit(inline_chars) else "file"
 
 
+#: Public for ``review run``, which has to know the delivery before any prompt
+#: is built: the surrounding context is budgeted against it.
+delivery_of = _delivery_of
+
+
 def over_context(change_chars: int, max_chars: int) -> bool:
     """Whether a change body is past the limit that refuses the round.
 
@@ -1211,7 +1248,14 @@ def build_review_prompt(
     template: Optional[str] = None,
     max_findings: int = DEFAULT_MAX_FINDINGS,
     inline_chars: Optional[int] = None,
+    surrounding: Optional[context_mod.Adoption] = None,
 ) -> BuiltPrompt:
+    """The code reviewer's prompt, built from the frozen snapshot.
+
+    ``surrounding`` is the round's adopted context. It goes after every other
+    note, and is nothing at all when the setting is off, so that prompt is
+    the one this function always built.
+    """
     role = str(reviewer.get("role") or "general")
     guidance = ROLE_GUIDANCE.get(
         role,
@@ -1227,7 +1271,11 @@ def build_review_prompt(
         )
         diff_section += "\n\n" + _handover_note(len(diff_text), inline_chars)
     meta = ws.read_json(workspace.snapshot_meta_path, {}) or {}
-    for note in (render_withheld(meta.get("withheld") or []), render_round_context(workspace, meta)):
+    for note in (
+        render_withheld(meta.get("withheld") or []),
+        render_round_context(workspace, meta),
+        context_mod.render_surrounding(surrounding),
+    ):
         if note:
             diff_section += "\n\n" + note
     prompt = (template or REVIEW_PROMPT_TEMPLATE).format(
@@ -1314,6 +1362,7 @@ class ReviewerRun:
         snapshot: str = "",
         over_budget: bool = False,
         budget_chars: int = 0,
+        surrounding: Optional[Dict[str, Any]] = None,
     ) -> None:
         self.reviewer = reviewer
         # ok | partial | failed | stalled | unparsed. Only "ok" counts as a
@@ -1361,9 +1410,14 @@ class ReviewerRun:
         #: plan alone. Recorded so the report can print the number the refusal
         #: would have used rather than the one delivery was decided by.
         self.budget_chars = budget_chars
+        #: The surrounding context this reviewer was handed and what was left
+        #: out of it, as ``Adoption.record`` gives it. None when the setting
+        #: was off, and for a run that fell over before there was a prompt:
+        #: only a built prompt is ever recorded as carrying context.
+        self.surrounding = surrounding
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        entry = {
             "id": self.reviewer.get("id"),
             "provider": self.reviewer.get("provider"),
             "role": self.reviewer.get("role", "general"),
@@ -1382,6 +1436,10 @@ class ReviewerRun:
             "budget_chars": self.budget_chars,
             "usage": self.usage.to_dict(),
         }
+        # Absent rather than null when off, so an entry is what it always was.
+        if self.surrounding is not None:
+            entry["surrounding"] = self.surrounding
+        return entry
 
 
 def run_reviews(
@@ -1397,6 +1455,7 @@ def run_reviews(
     over_budget: bool = False,
     budget_chars: int = 0,
     inline_chars: Optional[int] = None,
+    surrounding: Optional[context_mod.Adoption] = None,
 ) -> List[ReviewerRun]:
     """Run every configured reviewer against the frozen snapshot.
 
@@ -1420,6 +1479,10 @@ def run_reviews(
     verdict -- and when ``prompt_for`` builds the prompt instead, it must be
     the number that callable was given, or the round would be measured
     against one limit and report another.
+
+    ``surrounding`` is the round's adopted context, code review only. It is
+    recorded on the entry beside the snapshot stamp, by the same dict: an
+    entry carries it exactly when a prompt was built with it.
     """
     if not reviewers:
         return []
@@ -1445,6 +1508,8 @@ def run_reviews(
     # Resolved once too, and for the same reason: every entry of this round
     # records the limit it was measured against, and they must all record one.
     limit = _inline_limit(inline_chars)
+    # The design path builds its own prompt and never carries context.
+    context = surrounding if (prompt_for is None and surrounding and surrounding.mode != "none") else None
 
     def run_one(reviewer: Dict[str, Any]) -> ReviewerRun:
         reviewer_id = str(reviewer.get("id") or "reviewer")
@@ -1456,7 +1521,7 @@ def run_reviews(
             built = prompt_for(reviewer)
         else:
             built = build_review_prompt(
-                reviewer, workspace, diff_text, extra_context, template, max_findings, limit
+                reviewer, workspace, diff_text, extra_context, template, max_findings, limit, context
             )
         # Every run from here on knows what it was handed, and which snapshot it
         # was handed, failures included: a round is judged on what it sent, not
@@ -1469,6 +1534,8 @@ def run_reviews(
             "over_budget": over_budget,
             "budget_chars": budget_chars,
         }
+        if context is not None:
+            carried["surrounding"] = context.record()
         try:
             result = provider.run(
                 built.text,
@@ -2091,7 +2158,7 @@ def build_consolidation(
         ended = (last.get("snapshot") or {}).get("unreviewed_round")
     if ended and ended == meta.get("round_id"):
         snapshot["unreviewed_round"] = ended
-    return {
+    data = {
         "generated_at": ws.utcnow(),
         "iteration": iteration,
         #: Which review this round belongs to. Recorded so the next round can
@@ -2100,11 +2167,40 @@ def build_consolidation(
         "lineage": lineage,
         "snapshot": snapshot,
         "coverage": _coverage(runs, meta, iteration, lineage, last),
-        "reviewers": list(runs),
-        "counts": counts,
-        "duplicate_candidates": candidates,
-        "findings": consolidated,
     }
+    surrounding = _surrounding(current)
+    if surrounding is not None:
+        data["surrounding"] = surrounding
+    data.update(
+        {
+            "reviewers": list(runs),
+            "counts": counts,
+            "duplicate_candidates": candidates,
+            "findings": consolidated,
+        }
+    )
+    return data
+
+
+def _surrounding(current: Sequence[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """The context this snapshot's reviewers were shown, if any of them were.
+
+    ``shared`` only when every current entry carries the same record: after
+    ``--only`` with a different setting, "shown to every reviewer" would be a
+    claim about reviewers who were shown something else. A ``null`` under
+    ``by_reviewer`` is an entry that built its prompt with the setting off --
+    an entry that fell over before building one has no stamp, is not
+    current, and so is not here at all. None when no entry carries one: a
+    round with the setting off, a design round, a report from before it.
+    """
+    records = {str(run.get("id")): run.get("surrounding") for run in current}
+    if not any(isinstance(record, dict) for record in records.values()):
+        return None
+    values = list(records.values())
+    if all(isinstance(record, dict) for record in values) and all(record == values[0] for record in values):
+        return {"shared": True, **values[0]}
+    by_reviewer = {key: (record if isinstance(record, dict) else None) for key, record in records.items()}
+    return {"shared": False, "by_reviewer": by_reviewer}
 
 
 def _coverage(
@@ -2480,6 +2576,11 @@ def render_consolidation(data: Dict[str, Any]) -> str:
     coverage = data.get("coverage")
     if isinstance(coverage, dict):
         lines.append(_coverage_line(coverage, counts))
+    # Only when recorded, for the reason coverage is: a report from before the
+    # setting, or with it off, measured nothing about context.
+    surrounding = data.get("surrounding")
+    if isinstance(surrounding, dict):
+        lines.append(_surrounding_line(surrounding))
     # Only when it happened. A line on every report saying a round was *not*
     # over budget would bury the one round that was, and every report written
     # before this existed would be claiming something nobody measured.
@@ -2507,6 +2608,8 @@ def render_consolidation(data: Dict[str, Any]) -> str:
                 (run.get("error") or "%s finding(s)" % run.get("findings", 0)),
             )
         )
+    if isinstance(surrounding, dict):
+        lines += _surrounding_section(surrounding)
     candidates = data.get("duplicate_candidates") or []
     if candidates:
         lines += [
@@ -2548,6 +2651,71 @@ def render_consolidation(data: Dict[str, Any]) -> str:
             "",
         ]
     return "\n".join(lines).rstrip() + "\n"
+
+
+def _surrounding_line(block: Dict[str, Any]) -> str:
+    """The headline form of the context this snapshot's reviewers were shown."""
+    if block.get("shared") is False:
+        parts = []
+        for reviewer_id, record in (block.get("by_reviewer") or {}).items():
+            if isinstance(record, dict):
+                parts.append("%s: %s" % (reviewer_id, context_mod.brief(record)))
+            else:
+                parts.append("%s: none" % reviewer_id)
+        return "- Surrounding context: differs by reviewer -- %s" % "; ".join(parts)
+    return "- Surrounding context: enclosing -- %s" % context_mod.summary(block)
+
+
+def _surrounding_section(block: Dict[str, Any]) -> List[str]:
+    """Every symbol shown, every one left out, and every file not extracted, by name.
+
+    Only when there is a name to give. A reviewer that fell over before its
+    prompt was built is not here: the Reviewers table already says it failed.
+    """
+    if block.get("shared") is False:
+        records = block.get("by_reviewer") or {}
+        if not any(
+            isinstance(record, dict)
+            and (record.get("adopted") or record.get("trimmed") or record.get("skipped"))
+            for record in records.values()
+        ):
+            return []
+        lines = ["", "## Surrounding context"]
+        for reviewer_id, record in records.items():
+            lines += ["", "### %s" % reviewer_id, ""]
+            if not isinstance(record, dict):
+                lines.append("None (ran with review.context.surrounding none).")
+            else:
+                lines += _surrounding_names(record, "Shown")
+        return lines
+    if not (block.get("adopted") or block.get("trimmed") or block.get("skipped")):
+        return []
+    return ["", "## Surrounding context", "", *_surrounding_names(block, "Shown to every reviewer")]
+
+
+def _surrounding_names(record: Dict[str, Any], shown: str) -> List[str]:
+    lines: List[str] = []
+    adopted = [c for c in record.get("adopted") or [] if isinstance(c, dict)]
+    trimmed = [c for c in record.get("trimmed") or [] if isinstance(c, dict)]
+    if adopted:
+        lines.append(
+            "%s (%d symbol(s), %s chars):"
+            % (shown, len(adopted), "{:,}".format(int(record.get("adopted_chars") or 0)))
+        )
+        lines += ["- %s" % context_mod.describe(c) for c in adopted]
+    else:
+        lines.append("Nothing adopted (%s)." % (record.get("reason") or "no budget"))
+    groups: Dict[str, List[Dict[str, Any]]] = {}
+    for candidate in trimmed:
+        groups.setdefault(str(candidate.get("reason") or "budget"), []).append(candidate)
+    for reason, members in groups.items():
+        lines += ["", "Left out (%s):" % reason]
+        lines += ["- %s" % context_mod.describe(c) for c in members]
+    skipped = [entry for entry in record.get("skipped") or [] if isinstance(entry, dict)]
+    if skipped:
+        lines += ["", "Not extracted (%d file(s)):" % len(skipped)]
+        lines += ["- `%s` -- %s" % (entry.get("path"), entry.get("reason") or "?") for entry in skipped]
+    return lines
 
 
 def _note_suffix(note: str) -> str:

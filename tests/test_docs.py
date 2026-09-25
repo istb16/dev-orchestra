@@ -111,6 +111,17 @@ class TestDocumentedYaml(IsolatedCase):
         self.assertIn("`partial`", text)
         self.assertIn("snapshot --full", text)
 
+    def test_surrounding_context_is_defined_with_its_conclusion_on_re_fetching(self):
+        """The prompt and every report name what was left out, and point here
+        for why; `limits.md` holds the answer to "does it stop re-reading"."""
+        references = pathlib.Path(REPO_ROOT) / "references"
+        reviews = (references / "reviews.md").read_text(encoding="utf-8")
+        self.assertIn("## Surrounding context", reviews)
+        self.assertIn("review.context.surrounding", reviews)
+        limits = (references / "limits.md").read_text(encoding="utf-8")
+        self.assertIn("### Surrounding context within the budget", limits)
+        self.assertIn("reported as tool activity, not counted, not limited", limits)
+
     def test_the_documented_user_adapter_is_the_one_the_contract_test_runs(self):
         """Copied from the docs by anyone writing their first adapter, so it
         has to be the example `test_provider_contract` holds to the seam."""

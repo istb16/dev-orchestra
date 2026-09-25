@@ -1,4 +1,4 @@
-<!-- translated-from: references/architecture.md sha256:69a2c8e330ac40dcf5de07674a96cfcd04805b6e75801fd057463c6a2cc8d0a3 -->
+<!-- translated-from: references/architecture.md sha256:adf84efc19d6d40b1df6a9d19f854a4226a472dfb498262bdce9979fe4d08494 -->
 
 > この文書は [references/architecture.md](../../../references/architecture.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -82,6 +82,7 @@ project/
     ├── reviews/
     │   ├── review-target.diff    # the frozen snapshot every reviewer sees
     │   ├── review-target.json    # strategy, files, sha256
+    │   ├── review-surrounding.json  # enclosing symbols, only with review.context.surrounding: enclosing
     │   ├── <reviewer-id>.md      # one report per reviewer
     │   ├── consolidated.md       # deduped findings, human readable
     │   ├── consolidated.json     # deduped findings + triage state

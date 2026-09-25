@@ -151,7 +151,20 @@ def default_config() -> Dict[str, Any]:
             # will not pay for very large prompts, and costs them a `partial`
             # round for every change between the two numbers; setting it higher
             # than max_chars is allowed and means the same thing it always did.
-            "context": {"max_chars": 400_000, "inline_chars": 400_000},
+            #
+            # surrounding: "enclosing" also hands each reviewer the Python
+            # function, method or class enclosing every hunk, frozen with the
+            # snapshot; "none" hands over the diff alone. Off until measured:
+            # `optimization report` compares rounds with and without it.
+            # surrounding_chars caps what that adds. 60,000 fits every one of
+            # the seven recorded workflows untrimmed (the largest needed 49,371)
+            # and is 15% of max_chars.
+            "context": {
+                "max_chars": 400_000,
+                "inline_chars": 400_000,
+                "surrounding": "none",
+                "surrounding_chars": 60_000,
+            },
             # Review the plan with the same panel before any code is written.
             # Off by default: turning it on adds a reviewer run per panel
             # member per round plus an architect re-run, which is a real cost
@@ -674,12 +687,21 @@ def validate(data: Dict[str, Any], known_providers: Optional[List[str]] = None) 
                     # file except a forced round", and below it says "I will
                     # not pay for a prompt that large" -- both are things
                     # somebody means, and neither is a mistake to warn about.
-                    for key in ("max_chars", "inline_chars"):
+                    for key in ("max_chars", "inline_chars", "surrounding_chars"):
                         value = context.get(key)
                         if value is not None and (
                             not isinstance(value, int) or isinstance(value, bool) or value < 1
                         ):
                             problems.append("review.context.%s: must be a positive integer" % key)
+                    # `off` is read as false by YAML, so false means none too;
+                    # true names no mode and is refused rather than guessed at.
+                    surrounding = context.get("surrounding")
+                    if isinstance(surrounding, str):
+                        known = surrounding.strip().lower() in ("none", "enclosing")
+                    else:
+                        known = surrounding is None or surrounding is False
+                    if not known:
+                        problems.append("review.context.surrounding: must be one of enclosing, none")
             exclude = review.get("exclude")
             if exclude is not None:
                 if not isinstance(exclude, list):

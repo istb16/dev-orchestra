@@ -33,6 +33,7 @@ a doc comment" is a useful sentence; silently skipping is not.
         ├── reviews/
         │   ├── review-target.diff  # frozen snapshot
         │   ├── review-target.json  # strategy, files, sha256
+        │   ├── review-surrounding.json  # enclosing symbols, only with review.context.surrounding: enclosing
         │   ├── <reviewer-id>.md    # one per reviewer
         │   ├── consolidated.md
         │   ├── consolidated.json

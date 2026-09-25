@@ -1051,6 +1051,151 @@ class TestTheReportCommand(IsolatedCase):
         self.assertNotIn("design review", out)
         self.assertIn("No review rounds recorded", out)
 
+    def test_no_round_with_context_prints_no_context_block(self):
+        self.workspace.record_event("review", "ok", context_round(1000, [{"billed_tokens": 100}]))
+        _, out, _ = run_cli("optimization", "report")
+        self.assertNotIn("Surrounding context", out)
+        report = json.loads(run_cli("optimization", "report", "--json")[1])
+        self.assertEqual(report["by_context"]["with"]["rounds"], 0)
+        self.assertEqual(report["by_context"]["without"]["rounds"], 1)
+
+    def test_a_round_with_context_prints_both_groups_and_the_per_run_lines(self):
+        usage = {"billed_tokens": 1000, "tool_uses": 2, "tool_output_chars": 500}
+        with_context = context_round(2000, [usage, usage], adopted=300, trimmed=40)
+        self.workspace.record_event("review", "ok", with_context)
+        self.workspace.record_event("review", "ok", context_round(2000, [usage]))
+        _, out, _ = run_cli("optimization", "report")
+        self.assertIn("Surrounding context (review.context.surrounding), code review rounds only:", out)
+        self.assertIn("with context", out)
+        self.assertIn("without context", out)
+        self.assertIn("300 context chars adopted, 40 left out", out)
+        per_run = "per run and 1k chars of change (1 sized round(s), 2,000 chars): "
+        self.assertIn(per_run + "500.0 billed over 2 billed run(s)", out)
+        self.assertIn("250.0 observed output chars over 1 reporting run(s)", out)
+        self.assertIn("compare the per-run lines", out)
+        self.assertIn("Codex reports no tool activity", out)
+
+
+def context_round(change_chars, usages, adopted=0, trimmed=0, summary=True):
+    """A code round as `review run` records it with `review.context.surrounding` on."""
+    event = round_with(usages)
+    for run in event["reviewers"]:
+        if change_chars is not None:
+            run["change_chars"] = change_chars
+    if summary and (adopted or trimmed):
+        event["surrounding"] = {
+            "mode": "enclosing",
+            "adopted_chars": adopted,
+            "trimmed_chars": trimmed,
+            "adopted": 1 if adopted else 0,
+            "trimmed": 1 if trimmed else 0,
+        }
+    return event
+
+
+class TestRoundsWithAndWithoutContext(unittest.TestCase):
+    """The split `optimization report` compares, normalised by size and panel.
+
+    The raw figures move with how big each change was and with how many
+    reviewers ran it, and neither has anything to do with the context. So the
+    comparison is per run and per 1k chars of change, over the rounds that
+    recorded their size and the runs that reported each figure.
+    """
+
+    def test_a_round_is_split_on_its_own_summary(self):
+        report = opt.summarise_rounds(
+            [
+                context_round(1000, [{"billed_tokens": 100}], adopted=50),
+                context_round(1000, [{"billed_tokens": 100}]),
+            ]
+        )
+        self.assertEqual(report["by_context"]["with"]["rounds"], 1)
+        self.assertEqual(report["by_context"]["with"]["adopted_chars"], 50)
+        self.assertEqual(report["by_context"]["without"]["rounds"], 1)
+
+    def test_without_a_summary_the_reviewer_entries_decide(self):
+        event = context_round(1000, [{"billed_tokens": 100}])
+        event["reviewers"][0]["surrounding"] = {"mode": "enclosing", "adopted_chars": 70, "trimmed_chars": 0}
+        report = opt.summarise_rounds([event])
+        self.assertEqual(report["by_context"]["with"]["rounds"], 1)
+        self.assertEqual(report["by_context"]["with"]["adopted_chars"], 70)
+
+    def test_a_round_that_adopted_nothing_is_a_round_without(self):
+        """File delivery, or a budget already spent: the setting was on and
+        no reviewer was shown any context."""
+        report = opt.summarise_rounds([context_round(1000, [{"billed_tokens": 100}], trimmed=900)])
+        self.assertEqual(report["by_context"]["with"]["rounds"], 0)
+        self.assertEqual(report["by_context"]["without"]["rounds"], 1)
+        self.assertEqual(report["by_context"]["without"]["trimmed_chars"], 900)
+
+    def test_refused_and_design_rounds_are_in_neither_group(self):
+        refused = context_round(1000, [{"billed_tokens": 100}], adopted=50)
+        refused["status"] = opt.REFUSED
+        design = design_event()
+        design["surrounding"] = {"adopted_chars": 50}
+        report = opt.summarise_rounds([refused, design])
+        for name in ("with", "without"):
+            self.assertEqual(report["by_context"][name]["rounds"], 0)
+
+    def test_nobody_reporting_tools_gives_no_tool_figures(self):
+        report = opt.summarise_rounds([context_round(1000, [{"billed_tokens": 100}], adopted=5)])
+        group = report["by_context"]["with"]
+        self.assertIsNone(group["tool_uses_per_run"])
+        self.assertIsNone(group["tool_output_chars_per_run"])
+        self.assertIsNone(group["tool_output_chars_per_run_per_1k_change_chars"])
+        self.assertEqual(group["billed_per_run_per_1k_change_chars"], 100.0)
+
+    def test_a_round_with_no_recorded_size_is_left_out_of_the_normalised_figures(self):
+        report = opt.summarise_rounds(
+            [
+                context_round(1000, [{"billed_tokens": 100}], adopted=5),
+                context_round(None, [{"billed_tokens": 900}], adopted=5),
+            ]
+        )
+        group = report["by_context"]["with"]
+        self.assertEqual((group["rounds"], group["sized_rounds"]), (2, 1))
+        self.assertEqual(group["billed_tokens"], 1000)
+        self.assertEqual(group["sized_billed_tokens"], 100)
+        self.assertEqual(group["change_chars"], 1000)
+        self.assertEqual(group["billed_per_run_per_1k_change_chars"], 100.0)
+
+    def test_the_per_run_figures_do_not_move_with_the_panel(self):
+        """A panel cut to one reviewer is ordinary for a small change, and
+        must not read as the context halving what a round costs."""
+        usage = {"billed_tokens": 1000, "tool_uses": 3, "tool_output_chars": 600}
+        report = opt.summarise_rounds(
+            [
+                context_round(2000, [usage, usage], adopted=100),
+                context_round(2000, [usage]),
+            ]
+        )
+        with_, without = report["by_context"]["with"], report["by_context"]["without"]
+        self.assertNotEqual(with_["billed_tokens"], without["billed_tokens"])
+        self.assertEqual(with_["billed_per_run_per_1k_change_chars"], 500.0)
+        self.assertEqual(
+            with_["billed_per_run_per_1k_change_chars"], without["billed_per_run_per_1k_change_chars"]
+        )
+        self.assertEqual(
+            with_["tool_output_chars_per_run_per_1k_change_chars"],
+            without["tool_output_chars_per_run_per_1k_change_chars"],
+        )
+
+    def test_a_run_that_billed_nothing_is_not_in_the_billed_weight(self):
+        report = opt.summarise_rounds([context_round(1000, [{"billed_tokens": 400}, {}], adopted=5)])
+        group = report["by_context"]["with"]
+        self.assertEqual(group["billed_run_change_chars"], 1000)
+        self.assertEqual(group["sized_billed_runs"], 1)
+        self.assertEqual(group["billed_per_run_per_1k_change_chars"], 400.0)
+
+    def test_a_run_reporting_no_tools_is_not_in_the_tool_weight(self):
+        """Codex reports billed tokens and no tool activity at all."""
+        claude = {"billed_tokens": 100, "tool_uses": 2, "tool_output_chars": 300}
+        codex = {"billed_tokens": 100}
+        group = opt.summarise_rounds([context_round(1000, [claude, codex], adopted=5)])["by_context"]["with"]
+        self.assertEqual(group["billed_run_change_chars"], 2000)
+        self.assertEqual(group["tool_run_change_chars"], 1000)
+        self.assertEqual(group["tool_output_chars_per_run_per_1k_change_chars"], 300.0)
+
 
 @unittest.skipUnless(has_git(), "git is required")
 class TestWhatTheSnapshotReportsAsChanged(IsolatedCase):

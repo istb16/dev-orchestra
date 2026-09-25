@@ -82,6 +82,7 @@ project/
     ├── reviews/
     │   ├── review-target.diff    # the frozen snapshot every reviewer sees
     │   ├── review-target.json    # strategy, files, sha256
+    │   ├── review-surrounding.json  # enclosing symbols, only with review.context.surrounding: enclosing
     │   ├── <reviewer-id>.md      # one report per reviewer
     │   ├── consolidated.md       # deduped findings, human readable
     │   ├── consolidated.json     # deduped findings + triage state

@@ -1,4 +1,4 @@
-<!-- translated-from: references/workflow.md sha256:1251a752d40e72c2ff634eebc74c1b5e795d59a4060f1ae8b97a9ee322ee16fc -->
+<!-- translated-from: references/workflow.md sha256:a4881e955b45b0c968a56154ce3a7b80640679cd0e2bfe6fde5592cc387fb0bc -->
 
 > この文書は [references/workflow.md](../../../references/workflow.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -43,6 +43,7 @@
         ├── reviews/
         │   ├── review-target.diff  # frozen snapshot
         │   ├── review-target.json  # strategy, files, sha256
+        │   ├── review-surrounding.json  # enclosing symbols, only with review.context.surrounding: enclosing
         │   ├── <reviewer-id>.md    # one per reviewer
         │   ├── consolidated.md
         │   ├── consolidated.json

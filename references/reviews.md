@@ -37,9 +37,14 @@ Writes `.ai/reviews/review-target.diff` plus metadata:
   "exclude_patterns": ["*.lock", "package-lock.json", "dist/*", "..."],
   "bytes": 4213,
   "sha256": "…",
-  "empty": false
+  "empty": false,
+  "surrounding": {"mode": "enclosing", "path": ".ai/reviews/review-surrounding.json", "tree": "3f2a…",
+                  "candidates": 7, "chars": 49371, "skipped": 3}
 }
 ```
+
+`surrounding` is there only with `review.context.surrounding: enclosing`; see
+[Surrounding context](#surrounding-context).
 
 Untracked files are included by default (up to 512 KB each) — a new module is
 usually the most important part of a change. The sha256 is stamped into every
@@ -94,6 +99,159 @@ Renames are detected (`-M`), so a moved file costs a header instead of twice
 its length. This needs the move to be staged: an unstaged `mv` leaves git with
 a deletion and an untracked file, which are two unrelated facts as far as `git
 diff` is concerned.
+
+## Surrounding context
+
+```yaml
+review:
+  context:
+    surrounding: enclosing      # none (default) | enclosing
+    surrounding_chars: 60000    # the most it may add; null means the default
+```
+
+A reviewer handed a diff sees three lines either side of every hunk, and nearly
+always opens the function the hunk sits in before judging it -- at a cost paid
+once per reviewer and once per round, and invisible from here. With
+`surrounding: enclosing` the prompt carries that function too, after the diff,
+labelled as context and not as part of the change. `off` reads as `false` in
+YAML, and `false` and `null` both mean `none`; `true` names no mode and is
+refused. It ships off, because what it saves has not been measured yet:
+`optimization report` compares rounds with and without it (see
+[optimization](cli.md#optimization)).
+
+**Frozen with the snapshot.** `review snapshot` extracts the symbols from the
+git tree the diff was taken from and writes them to `review-surrounding.json`,
+stamped with the diff's sha256. `review run` only reads that file, so editing a
+file between the snapshot and the run changes nothing a reviewer is shown. A
+snapshot taken with the setting off has nothing frozen, and a run with it on
+says so -- `not frozen: … take it again` -- rather than reading the working
+tree.
+
+**Which symbol.** Every changed line is a pair of new-side line numbers: an
+added line `n` is `(n, n)`, and a deleted line, which sat between `n - 1` and
+`n`, is `(n - 1, n)`. The smallest function, method or class holding both ends
+**encloses** the change. When none does, the smallest symbol holding either end
+is **adjacent**: a deletion sits on its edge and nothing that survived encloses
+it. Delete a whole function between A and B and A and B are adjacent, never
+enclosing. Adjacent symbols are adopted after enclosing ones and marked
+`adjacent to a deletion, not enclosing it`.
+
+A symbol every line of which was added is not a candidate, because the diff
+already shows it whole; the change moves on to the symbol outside it, which is
+how a class becomes the candidate when a method is added to it. A new file is
+not extracted at all, for the same reason.
+
+**Python only.** `.py` files, through `ast`. Anything else is not extracted and
+is counted in the prompt as `not python`. There is no fallback to a window of
+lines: the diff already carries three lines either side, and a window that
+stops half way through a function is not the enclosing symbol -- misleading
+context is worse than none.
+
+**Nothing is guessed at.** A file whose symbols cannot be taken exactly is
+skipped, with a reason:
+
+| Reason | When |
+| --- | --- |
+| `not python` | Not a `.py` file |
+| `new file (the diff already shows all of it)` | Added by this change |
+| `deleted` | Removed by this change |
+| `symlink`, `submodule` | A symlink or a gitlink in the tree -- never followed |
+| `file over 512,000 bytes` | Too large to hand over whole |
+| `not utf-8`, `syntax error` | `ast` cannot read the file as it is stored |
+| `no enclosing symbol beyond the diff` | Only module-level code changed, or only whole new symbols |
+| `ambiguous path (x.py or b/x.py)` | Both names are in the snapshot and the diff header does not say which this is |
+| `changed while the snapshot was taken -- take it again` | Edited between the tree and the diff (see [limits](limits.md#surrounding-context-within-the-budget)) |
+| `not in tree`, `unreadable`, `no tree object (git write-tree failed)` | git could not produce the file from the tree |
+
+The `+++` path depends on git configuration this tool does not set
+(`diff.noprefix`, `diff.mnemonicPrefix`), so no prefix is assumed. A rename's
+`rename to` line wins; otherwise the written name, or the name less its first
+two characters, whichever the snapshot lists; and only when it lists both is
+the `diff --git` line asked which it is. When that does not settle it, both
+files are skipped by name.
+
+**Adopted within a budget.** At `review run` the candidates are adopted
+enclosing first, then adjacent, smallest first within each -- which gives the
+most hunks their symbol under a fixed budget -- up to
+`min(surrounding_chars, max_chars - change, inline_chars - change)`. The budget
+is spent on the block as the prompt carries it -- headings, fences and the
+left-out list included -- and that size is recorded as `context_chars`. The diff
+and its context together never pass either limit, so turning this on cannot
+refuse a round or turn an inlined diff into a file. A class and a method inside
+it can both be candidates: the method is taken first, and the class only if
+what it adds still fits, in which case the method is folded into it and named
+under `includes`. A method adjacent to a deletion inside a class already taken
+is folded in the same way -- nothing is shown twice. A round whose diff goes
+over as a file adopts nothing, and names every candidate as left out for
+`file delivery`.
+
+**Named wherever it is reported.** Every symbol left out is named, with its
+path, lines and size: in the prompt (`Left out (…): read these yourself if a
+hunk needs them.`), on each reviewer entry, in `consolidated.json` and
+`consolidated.md`, and in `review status`. The prompt names the first 20 and
+counts the rest (`- and N more, named in `review status` and consolidated.md`):
+the list is part of the block the budget pays for, and a long one would crowd
+out the symbols it was meant to point past. When no symbol fits, the prompt and
+the reports say `no symbol fits within the budget`. Files not extracted are counted by
+reason in the prompt, and the two reasons a fresh snapshot cures are named;
+`consolidated.md` and `review status` name every one with its reason.
+
+```json
+"surrounding": {
+  "shared": true,
+  "mode": "enclosing",
+  "reason": "",
+  "budget": 60000,
+  "adopted_chars": 3100,
+  "trimmed_chars": 9812,
+  "context_chars": 3521,
+  "adopted": [
+    {"path": "app/models/user.py", "symbol": "User", "kind": "class", "relation": "encloses",
+     "start": 12, "end": 88, "chars": 3100, "includes": ["User.save"]}
+  ],
+  "trimmed": [
+    {"path": "app/cli.py", "symbol": "run", "kind": "function", "relation": "encloses",
+     "start": 610, "end": 826, "chars": 9812, "reason": "budget"}
+  ],
+  "skipped": [{"path": "web/app.js", "reason": "not python"}]
+}
+```
+
+That is the top-level block of `consolidated.json`, and it is `shared: true`
+only when every reviewer of this snapshot was handed the same context. When
+they were not -- `--only` after the setting changed -- it is `shared: false`
+with `by_reviewer`, one record per reviewer, and `null` for a reviewer that
+built its prompt with the setting off. A reviewer that fell over before its
+prompt was built has no record and is not there at all; the Reviewers table
+already says it failed. With the setting off, or on a design round, the key is
+not written anywhere.
+
+**Coverage is unchanged.** Coverage is decided by whether the *diff* was
+inlined. Context adopted or left out moves neither `coverage.round` nor
+`coverage.change`: a round that left every symbol out is still complete, and a
+round whose diff went over as a file is still partial. `snapshot.budget_chars`
+does include it -- see [Coverage](#coverage).
+
+**Which rounds.** Every code round, fix rounds included: an incremental round
+gets the symbols around the fix's hunks, read from that round's tree. Design
+rounds carry none.
+
+**What comes after the enclosing symbol.** The order is fixed now, so that
+adding a kind of context later does not reorder what is already adopted:
+
+| Priority | Context | Status |
+| --- | --- | --- |
+| 1 | Around the change: the enclosing function, method or class, and `adjacent` symbols beside a deletion | Implemented |
+| 2 | Functions and methods the change calls | Not implemented -- needs symbols resolved across files |
+| 3 | The class or module the change belongs to | Not implemented -- the class candidate of 1 covers part of it |
+| 4 | Callers and callees | Not implemented -- needs the same, plus a reverse index |
+| 5 | Related tests | Not implemented -- needs a convention for finding them |
+| 6 | Anything else | Not implemented |
+
+Candidates rank on `(priority, relation, chars, path, start)`, which with
+priority 1 alone is `(relation, chars, path, start)`. Priorities 2 and 4 would
+need a cross-file index and resolver, doubling `context.py`, while the effect of
+1 has not been measured yet -- so 1 ships first, and off.
 
 ## Design review
 
@@ -395,7 +553,9 @@ of them.
 **`snapshot.budget_chars`** — the size that limit measured, which is what the
 `Change:` line in `consolidated.md` prints. Not `coverage.change_chars`: on a
 design round the budget counts the plan *and* the request, while the body a
-reviewer was handed is the plan alone. `null` when no run recorded one. Like
+reviewer was handed is the plan alone. On a code round that adopted
+[surrounding context](#surrounding-context) it is the diff plus the context
+adopted, since both went into the prompt. `null` when no run recorded one. Like
 `over_budget`, it is recorded on every reviewer entry as well as on this block,
 and this block is derived from those entries.
 
@@ -650,6 +810,10 @@ reviewer's opinion still in play, so reviewers still never see each other's
 output. Measured, the premise costs about 80 tokens and replaces a few thousand
 of re-sent diff.
 
+With `review.context.surrounding: enclosing` a fix round also carries the
+symbols enclosing the fix's hunks, read from this round's tree -- see
+[Surrounding context](#surrounding-context).
+
 It narrows the scope only when there is a round to be incremental to:
 
 | Situation | Scope |
@@ -686,6 +850,9 @@ hashing every untracked-but-not-ignored file into the object database, which on
 a repository with a large directory nobody remembered to ignore is neither
 cheap nor invisible. The round after such a snapshot finds no tree and takes
 the whole change, which is the safe direction to fall back in.
+`review.context.surrounding: enclosing` writes one anyway, before the diff, to
+extract the enclosing symbols from; it is kept as `surrounding.tree` and not as
+`tree`, so it does not make the next round incremental.
 
 ## Running reviews on their own
 
