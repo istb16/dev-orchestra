@@ -8,6 +8,7 @@ import unittest
 from helpers import IsolatedCase
 
 from orchestrator import config as config_mod
+from orchestrator import wizard
 
 
 class TestDefaults(IsolatedCase):
@@ -40,6 +41,29 @@ class TestDefaults(IsolatedCase):
         self.write(".dev-orchestra.yaml", "version: 1\nreview:\n  max_review_iterations: 1\n")
         loaded = config_mod.load(self.project)
         self.assertEqual(loaded.design_review_settings(), {"enabled": False, "max_iterations": 2})
+
+    def test_plan_approval_is_required_by_default(self):
+        self.assertEqual(config_mod.default_config()["design"], {"require_approval": True})
+
+    def test_the_approval_setting_is_filled_in_for_a_config_that_omits_it(self):
+        self.write(".dev-orchestra.yaml", "version: 1\n")
+        self.assertEqual(config_mod.load(self.project).design_settings(), {"require_approval": True})
+
+    def test_an_empty_approval_setting_means_the_default(self):
+        """`require_approval:` with no value parses as null; it must not turn the gate off."""
+        self.write(".dev-orchestra.yaml", "version: 1\ndesign:\n  require_approval:\n")
+        loaded = config_mod.load(self.project)
+        self.assertEqual(config_mod.validate(loaded.data), [])
+        self.assertEqual(loaded.design_settings(), {"require_approval": True})
+        self.assertTrue(wizard._approval_required({"design": {"require_approval": None}}))
+        self.assertFalse(wizard._approval_required({"design": {"require_approval": False}}))
+
+    def test_the_approval_setting_must_be_a_boolean(self):
+        data = config_mod.default_config()
+        data["design"]["require_approval"] = "yes"
+        self.assertIn("design.require_approval: must be true or false", config_mod.validate(data))
+        data["design"] = 3
+        self.assertIn("design: must be a mapping", config_mod.validate(data))
 
     def test_the_context_budget_refuses_nothing_anyone_has_recorded(self):
         """400,000 chars is four times the largest prompt this repository has

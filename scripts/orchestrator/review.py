@@ -27,6 +27,7 @@ import os
 import posixpath
 import re
 import tempfile
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple
 
@@ -926,6 +927,16 @@ def write_design_snapshot(
     ``previous_sha`` records what the last round reviewed, and only when this
     round is reviewing something else. The re-review prompt is built from it,
     and a re-run of the identical plan must not claim to be a revision.
+
+    ``round_id`` is new with every call, which is what the sha and the
+    timestamp are not: the sha repeats when the same plan is reviewed again,
+    and two rounds can start within one second. An approval of the plan is
+    given over one round (``approval.design_round``), and only a later call
+    here -- never a re-consolidation or a triage -- moves it on. The id is
+    written here, before any reviewer runs, and copied into the consolidated
+    report once every reviewer of the round has returned (see
+    ``build_consolidation``); ``design approve`` only binds to a round
+    whose report carries it.
     """
     workspace.ensure()
     ws.write_text(workspace.snapshot_path, plan_text)
@@ -933,6 +944,7 @@ def write_design_snapshot(
     reviewed = str((consolidated.get("snapshot") or {}).get("sha256") or "")
     meta = {
         "generated_at": ws.utcnow(),
+        "round_id": uuid.uuid4().hex,
         "strategy": "plan",
         "plan": workspace.relative(plan_path),
         "request": workspace.relative(request_path) if request_path else "",
@@ -2011,8 +2023,15 @@ def build_consolidation(
     findings: Sequence[Dict[str, Any]],
     iteration: int = 1,
     lineage: str = "",
+    completed_round: Optional[str] = None,
 ) -> Dict[str, Any]:
     """The round's report: consolidated findings, counts, and its coverage.
+
+    ``completed_round`` is the design round whose reviewers have all returned,
+    passed only by the caller that ran them. Without it the report keeps the
+    round the previous report named: the snapshot's metadata names a round as
+    soon as it starts, and a re-consolidation during it -- or after it failed
+    -- must not claim findings nobody has reported yet.
 
     ``runs`` is the reviewer table, which by design holds entries that did not
     run this round -- see ``_merge_runs``. Coverage, ``snapshot.over_budget``
@@ -2045,6 +2064,20 @@ def build_consolidation(
     current = _current_runs(runs, meta)
     counts = _counts(consolidated, runs, current)
     counts["duplicate_candidates"] = len(candidates)
+    snapshot = {
+        "sha256": meta.get("sha256"),
+        "files": meta.get("files", []),
+        # Read off this snapshot's reviewer entries rather than off the
+        # snapshot's own metadata: which limit was in force and whether
+        # --force was given are facts about the run. See ``BuiltPrompt``.
+        "over_budget": any(run.get("over_budget") for run in current),
+        "budget_chars": _budget_chars(current),
+    }
+    # The design round these findings belong to: the last one that got as far
+    # as a report, which is what an approval is given over.
+    round_id = completed_round or (last.get("snapshot") or {}).get("round_id")
+    if round_id:
+        snapshot["round_id"] = round_id
     return {
         "generated_at": ws.utcnow(),
         "iteration": iteration,
@@ -2052,15 +2085,7 @@ def build_consolidation(
         #: tell a re-review from an unrelated change that happens to share a
         #: project directory.
         "lineage": lineage,
-        "snapshot": {
-            "sha256": meta.get("sha256"),
-            "files": meta.get("files", []),
-            # Read off this snapshot's reviewer entries rather than off the
-            # snapshot's own metadata: which limit was in force and whether
-            # --force was given are facts about the run. See ``BuiltPrompt``.
-            "over_budget": any(run.get("over_budget") for run in current),
-            "budget_chars": _budget_chars(current),
-        },
+        "snapshot": snapshot,
         "coverage": _coverage(runs, meta, iteration, lineage, last),
         "reviewers": list(runs),
         "counts": counts,

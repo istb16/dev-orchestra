@@ -11,8 +11,11 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import time
+import types
 import unittest
+from unittest import mock
 
 from helpers import IsolatedCase
 
@@ -168,6 +171,67 @@ class TestWorkerSide(JobCase):
         self.record("a-1")
         jobs_mod.finish(jobs_mod.job_path(self.workspace, "a-1"), "failed", error="it broke")
         self.assertEqual(jobs_mod.read_job(self.workspace, "a-1")["error"], "it broke")
+
+
+def spawning(popen):
+    """Stand ``popen`` in for ``Popen`` as the jobs module sees it, and nowhere else."""
+    stand_in = types.SimpleNamespace(Popen=popen, DEVNULL=subprocess.DEVNULL)
+    return mock.patch.object(jobs_mod, "subprocess", stand_in)
+
+
+class TestStartAgainstAFastWorker(JobCase):
+    def test_the_parent_does_not_overwrite_what_the_worker_already_wrote(self):
+        """A worker that finishes before the parent records its pid keeps its outcome."""
+        workspace = self.workspace
+
+        class FinishedAtOnce:
+            pid = 999_999
+
+            def __init__(self, command, **_):
+                path = command[command.index("--job-file") + 1]
+                jobs_mod.finish(path, "failed", error="refused")
+
+        with spawning(FinishedAtOnce):
+            job = jobs_mod.start(
+                workspace,
+                "implementer",
+                [
+                    "run",
+                    "implementer",
+                    "--prompt-file",
+                    jobs_mod.PROMPT_FILE,
+                    "--job-file",
+                    jobs_mod.JOB_FILE,
+                ],
+            )
+        on_disk = ws.read_json(jobs_mod.job_path(workspace, job["id"]))
+        for record in (job, on_disk):
+            self.assertEqual(record["status"], "failed")
+            self.assertEqual(record["error"], "refused")
+        self.assertEqual(on_disk["pid"], 999_999)
+
+    def test_a_worker_not_yet_heard_from_is_recorded_as_running(self):
+        class Spawned:
+            pid = 4242
+
+            def __init__(self, command, **_):
+                pass
+
+        with spawning(Spawned):
+            job = jobs_mod.start(
+                self.workspace,
+                "implementer",
+                [
+                    "run",
+                    "implementer",
+                    "--prompt-file",
+                    jobs_mod.PROMPT_FILE,
+                    "--job-file",
+                    jobs_mod.JOB_FILE,
+                ],
+            )
+        on_disk = ws.read_json(jobs_mod.job_path(self.workspace, job["id"]))
+        self.assertEqual((on_disk["status"], on_disk["pid"]), ("running", 4242))
 
 
 class TestRendering(JobCase):

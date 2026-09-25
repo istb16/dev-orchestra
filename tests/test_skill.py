@@ -80,6 +80,7 @@ class TestSkillDocument(IsolatedCase):
             "review snapshot",
             "review run",
             "review run --design",
+            "design approve",
             "review triage",
             "review fix-brief",
             "run review_fixer",
@@ -125,6 +126,7 @@ class TestSkillDocument(IsolatedCase):
             "reviewers are read-only",
             "fix only triaged-accepted findings",
             "never print or store credentials",
+            "approval is the user's",
         ):
             self.assertIn(rule, body)
 

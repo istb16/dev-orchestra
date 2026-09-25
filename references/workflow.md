@@ -42,7 +42,7 @@ a doc comment" is a useful sentence; silently skipping is not.
         │       ├── <reviewer-id>.md
         │       ├── consolidated.md
         │       └── consolidated.json
-        └── state.json              # stage events + resolved model ids
+        └── state.json              # stage events, resolved model ids, plan approval
 ```
 
 **One directory per workflow.** Two sessions working in the same checkout used
@@ -186,6 +186,57 @@ problems are unanswered is the mistake this stage exists to prevent.
 Only the previous plan survives, frozen in `reviews/design/review-target.md`.
 A rewrite overwrites everything older.
 
+## Approval
+
+With `design.require_approval` on (the default), nothing is implemented until
+the user has approved the plan. Put to them:
+
+- the plan's **Goal**, **Proposed Change**, **Files to Modify** and **Risks**;
+- any design findings still open, and whether they came from a review of this
+  plan or of an earlier revision (`design approve` says which);
+
+and ask. Only their explicit yes is recorded, with `dev-orchestra design
+approve` -- never on your own judgement, and never to get past a refusal. If
+they ask for changes, revise the plan (and re-review it if the design review is
+on), then ask again: the revision hashes differently, so the old approval no
+longer counts.
+
+A design review budget spent with findings still open is `stop-and-report`,
+and that report ends in this question: name the findings and ask whether to
+approve over them or to revise. Once they approve, the stop is answered --
+`status` drops that reason for the approved plan.
+
+`run implementer` refuses (exit 5) while the plan is not approved, before it
+spends any budget and before `--detach` starts a worker; a worker checks again
+and writes the whole refusal into its job. `--force` does not apply. No plan
+(no design stage) means no gate.
+
+An approval is of the plan text alone (sha256) and of the design review round
+it was given over. It goes stale when the plan changes (`plan-changed`) or when
+`review run --design` runs again afterwards, even over the same plan
+(`reviewed-since`). Re-consolidating and triaging do not.
+
+`status --json` reports it under `design_approval`:
+
+| Field | Meaning |
+| --- | --- |
+| `required` | `design.require_approval` |
+| `state` | `pending`, `stale`, `approved`, `no-plan`, `not-required`, or `implemented-unapproved` |
+| `pending` | `true` when the user has to be asked (`pending` or `stale`) |
+| `stale_reason` | `plan-changed`, `reviewed-since`, or `null` |
+| `plan_sha256`, `approved_sha256`, `approved_at` | the plan now, and the one approved |
+| `matches_current_plan` | whether the approved sha is the current plan's; `null` without both |
+| `reviewed_since_approval` | whether a design review round ran after the approval; `null` without one |
+| `open_findings`, `open_findings_of_current_plan` | the blocking design findings, and whether that round reviewed this plan text |
+| `design_review_exhausted` | the design review budget is spent with findings open |
+
+`implemented-unapproved` is a workflow whose implementer last finished `ok`
+after the plan file was last written, with no approval on record -- one that
+was already implemented when the gate arrived. `status` says there is nothing
+to ask, so it is not raised at every later stage; it is not an exemption, and
+running the implementer again on it is refused like `pending`. A failed
+implementer run never counts, and a plan written afterwards is asked about.
+
 ## Implementation
 
 ```markdown
@@ -314,4 +365,6 @@ anything left unresolved.
 | Tests fail after a fix | Report the failure with output; do not keep fixing blindly |
 | A run comes back `stalled` | It produced no output until killed. Report it as a failure, and check for orphan processes if warned about them |
 | A command exits 3 | A budget is spent. Report what is unresolved; do not retry, and do not reach for `--force` |
+| `run implementer` exits 5 | The plan is not approved, or changed / was reviewed after approval. Present it and ask the user; record a yes with `design approve`. Do not retry and do not approve it yourself |
+| A detached implementer job is `failed` with "not approved" | Same cause, found by the worker; once the user approves, start it again |
 | `status` says `stop-and-report` | Stop. It has already weighed budgets, stalls and open findings |

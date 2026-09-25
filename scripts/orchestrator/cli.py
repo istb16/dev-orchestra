@@ -17,6 +17,7 @@ import os
 import sys
 from typing import Any, Dict, List, NamedTuple, Optional, Sequence, Tuple
 
+from . import approval as approval_mod
 from . import config as config_mod
 from . import doctor as doctor_mod
 from . import jobs as jobs_mod
@@ -914,6 +915,22 @@ def cmd_run(args: argparse.Namespace) -> int:
         if args.job_file:
             jobs_mod.finish(args.job_file, "failed", error=str(exc))
         raise
+    # The approval gate. Before the ledger is opened and before the budget is
+    # consumed: a refused run must cost nothing, and before --detach: a worker
+    # must never be the process that finds out first. The worker checks again
+    # all the same -- --job-file is a flag on a public parser, and a worker
+    # that trusted its parent would be the way round the gate; its refusal
+    # goes into the job record, for the reason given above about stderr. That
+    # refusal costs the attempt the parent consumed before handing over: it
+    # is not given back.
+    # --force is deliberately not honoured here. It overrides a budget, which
+    # is a resource; approval is the user's consent, and the human who would
+    # force past it is the human who can say yes, which `design approve`
+    # records.
+    if role == "implementer":
+        refusal = _refuse_unless_approved(loaded, workspace, args, role)
+        if refusal is not None:
+            return refusal
     settings = loaded.review_settings()
     timeout = args.timeout or int(settings.get("timeout_seconds", 1800))
     idle_timeout = args.idle_timeout
@@ -1090,6 +1107,28 @@ def cmd_run(args: argparse.Namespace) -> int:
     # the stale file as if it were new. A run with nothing to show exits the
     # same way for the same reason -- an empty answer is not a result.
     return 0 if result.ok and not refused and not answered_nothing else 1
+
+
+def _refuse_unless_approved(
+    loaded: config_mod.LoadedConfig, workspace: ws.Workspace, args: argparse.Namespace, role: str
+) -> Optional[int]:
+    """Refuse the implementer a plan the user has not approved as it is now."""
+    info = approval_mod.current(workspace, bool(loaded.design_settings().get("require_approval")))
+    if info["state"] not in approval_mod.REFUSED:
+        return None
+    lines = approval_mod.refusal_lines(info, workspace.relative(workspace.plan_path))
+    # The whole refusal, not its first line: the instruction to ask the user
+    # is the part a worker's reader most needs, and the job is all it has.
+    if args.job_file:
+        _record_worker_refusal(args, workspace, role, "\n".join(lines))
+    for line in lines:
+        _err(line)
+    return approval_mod.EXIT_APPROVAL_REQUIRED
+
+
+def _record_worker_refusal(args: argparse.Namespace, workspace: ws.Workspace, role: str, error: str) -> None:
+    """Record a worker's refusal in its job record, the only place it can say so."""
+    jobs_mod.finish(args.job_file, "failed", error=error)
 
 
 def _reviewer_spec(loaded: config_mod.LoadedConfig, selector: str) -> Dict[str, Any]:
@@ -1440,7 +1479,9 @@ def _run_design_review(args: argparse.Namespace, loaded: config_mod.LoadedConfig
         # skip occupies is the one the next real round continues from rather
         # than a phantom that quietly spends the budget.
         _out("No reviewers configured -- skipping the independent-review stage.")
-        data = review_mod.build_consolidation(workspace, [], [], iteration, lineage)
+        data = review_mod.build_consolidation(
+            workspace, [], [], iteration, lineage, completed_round=meta.get("round_id")
+        )
         ws.write_json(workspace.consolidated_json_path, data)
         ws.write_text(workspace.consolidated_md_path, review_mod.render_consolidation(data))
         return 0
@@ -1497,8 +1538,18 @@ def _run_design_review(args: argparse.Namespace, loaded: config_mod.LoadedConfig
     run_dicts = [run.to_dict() for run in runs]
     stamp = review_mod.current_snapshot_stamp(workspace)
     findings, stale = review_mod.read_reports(workspace, [str(r.get("id")) for r in configured], stamp)
+    # Every reviewer of this round has returned, so this is the report the
+    # round's id may be published in -- and the only place that says so. Not
+    # when none of them came back with a review: a round nobody reviewed has
+    # no findings to show, and approving over it would look clean.
+    reviewed = any(run.status in ("ok", "partial") for run in runs)
     data = review_mod.build_consolidation(
-        workspace, _merge_runs(workspace, run_dicts), findings, iteration, lineage
+        workspace,
+        _merge_runs(workspace, run_dicts),
+        findings,
+        iteration,
+        lineage,
+        completed_round=meta.get("round_id") if reviewed else None,
     )
     ws.write_json(workspace.consolidated_json_path, data)
     ws.write_text(workspace.consolidated_md_path, review_mod.render_consolidation(data))
@@ -2725,6 +2776,41 @@ def _refusal_reason(event: Dict[str, Any], design: bool = False) -> str:
     )
 
 
+def _approval_line(info: Dict[str, Any], plan_relative: str) -> str:
+    """The `Plan approval:` line of `status`, worded as what to do next."""
+    state = info["state"]
+    if info["pending"] and info.get("design_review_exhausted"):
+        # A spent design review is a stop-and-report, and the report has to
+        # end in the question or the orchestrator reads the stop as the end.
+        return (
+            "%s -- the design review budget is spent with %s open; report them and ask the user "
+            "whether to approve over them (`design approve`) or to revise"
+            % (state, ", ".join(info.get("open_findings") or []))
+        )
+    if state == "pending":
+        return (
+            "pending -- present %s to the user and ask; a yes is recorded with `design approve`, "
+            "never without one" % plan_relative
+        )
+    if state == "stale" and info.get("stale_reason") == "plan-changed":
+        return "stale -- the plan changed after it was approved (%s -> %s); present it again and ask" % (
+            str(info.get("approved_sha256") or "")[:12],
+            str(info.get("plan_sha256") or "")[:12],
+        )
+    if state == "stale":
+        return "stale -- a design review ran after the plan was approved; present its findings and ask again"
+    if state == "approved":
+        return "approved (%s)" % str(info.get("approved_sha256") or "")[:12]
+    if state == "not-required":
+        return "not required (design.require_approval: false)"
+    if state == "implemented-unapproved":
+        return (
+            "not recorded; the implementer already ran on this plan (this gate is newer than the "
+            "workflow) -- nothing to ask unless it is to run again, which needs `design approve`"
+        )
+    return "no plan"
+
+
 def cmd_status(args: argparse.Namespace) -> int:
     """One verdict the orchestrator can act on: continue, or stop and report."""
     loaded = config_mod.load(args.cwd, validate_result=False)
@@ -2748,6 +2834,15 @@ def cmd_status(args: argparse.Namespace) -> int:
     design_blocking = review_mod.unresolved_blocking(design_data, severities)
     design_iteration = int(design_data.get("iteration", 0) or 0)
     design_max = int(design_settings.get("max_iterations", 2))
+    design_exhausted = bool(design_blocking) and design_iteration >= design_max
+    approval_info = approval_mod.current(workspace, bool(loaded.design_settings().get("require_approval")))
+    approval_info["open_findings"] = [f["id"] for f in design_blocking]
+    approval_info["open_findings_of_current_plan"] = (
+        approval_mod.findings_of_current_plan(workspace, approval_mod.read_plan(workspace)[0])
+        if design_blocking
+        else None
+    )
+    approval_info["design_review_exhausted"] = design_exhausted
 
     events = [event for event in (workspace.read_state().get("events") or []) if isinstance(event, dict)]
     refused_for_size = _context_refusal(events, "review")
@@ -2765,7 +2860,10 @@ def cmd_status(args: argparse.Namespace) -> int:
         )
     if int((summary["signatures"] or {}).get("review") or 0) > 1:
         reasons.append("the last review round found exactly what the previous one found")
-    if design_blocking and design_iteration >= design_max:
+    # Left out once the user has approved this plan: they were shown the open
+    # findings and decided to go ahead over them, which is what the stop was
+    # waiting for. Kept, it would say stop at every stage that follows.
+    if design_exhausted and approval_info["state"] != "approved":
         reasons.append(
             "design review budget spent (%d/%d rounds) with %d finding(s) still open"
             % (design_iteration, design_max, len(design_blocking))
@@ -2824,6 +2922,10 @@ def cmd_status(args: argparse.Namespace) -> int:
             "accepted": len(review_mod.accepted_findings(design_data)),
             "refused_for_size": (design_refused_for_size or {}).get("context") or None,
         },
+        # Not a reason and not a verdict: `run implementer` enforces it, and a
+        # stop-and-report here would read as "give up" where the answer is to
+        # ask the user.
+        "design_approval": approval_info,
         "budgets": summary["budgets"],
         "total_delegated_runs": total,
         "runtime_remaining_seconds": summary["runtime_remaining_seconds"],
@@ -2880,6 +2982,7 @@ def cmd_status(args: argparse.Namespace) -> int:
             len(design_blocking),
         )
     )
+    _out("Plan approval: %s" % _approval_line(approval_info, workspace.relative(workspace.plan_path)))
     line = "Optimization: %s" % plan.level
     if plan.escalated:
         line += " (escalated from %s -- %s)" % (plan.requested, plan.escalation_note().split(": ", 1)[-1])
@@ -2896,6 +2999,77 @@ def cmd_status(args: argparse.Namespace) -> int:
                 tokens["runs"],
                 "" if summary["tokens"]["complete"] else ", partially reported",
             )
+        )
+    return 0
+
+
+def cmd_design_approve(args: argparse.Namespace) -> int:
+    """Record the user's yes to the plan as it is now.
+
+    Open design findings are printed rather than refused: going ahead over
+    them is the user's decision, and this command is only ever the record of
+    one. What it adds is whether the findings are about this plan or about an
+    earlier revision of it, which the report has to say.
+    """
+    loaded = config_mod.load(args.cwd, validate_result=False)
+    workspace = _workspace(args)
+    plan_relative = workspace.relative(workspace.plan_path)
+    plan_text, digest = approval_mod.read_plan(workspace)
+    if not digest:
+        _err("no plan to approve at %s -- run the architect first" % plan_relative)
+        return 2
+
+    # The findings and the round they belong to come out of one read of one
+    # report, so they cannot describe two different rounds. A round that has
+    # started but has no report yet -- still running, or it failed -- is
+    # refused rather than approved over: its findings are the ones the user
+    # has not seen. Checked after the report is read, so a round that starts
+    # in between is refused too, and one that starts after this makes the
+    # recorded approval stale.
+    design_data = ws.read_json(workspace.design_review().consolidated_json_path, {}) or {}
+    round_id = approval_mod.reported_round(design_data)
+    if approval_mod.design_round(workspace) != round_id:
+        _err(
+            "not recording an approval: the latest design review round has no report yet -- "
+            "it is still running or did not finish. Wait for it (or run `review run --design` "
+            "again), present its findings, and ask again."
+        )
+        return 2
+    open_findings = [str(f.get("id")) for f in approval_mod.open_findings(design_data)]
+    of_current_plan = approval_mod.findings_of_current_plan(workspace, plan_text) if open_findings else None
+
+    previous = workspace.read_state().get(approval_mod.STAGE)
+    already = (
+        isinstance(previous, dict)
+        and previous.get("sha256") == digest
+        and previous.get("design_round") == round_id
+    )
+    if already:
+        entry = previous
+    else:
+        entry = approval_mod.record(workspace, digest, open_findings, of_current_plan, round_id)
+
+    if args.json:
+        payload = dict(entry)
+        payload.update({"already_approved": already, "workflow": workspace.workflow})
+        _emit_json(payload)
+    else:
+        _out(
+            "%s %s (sha256 %s) for workflow %s"
+            % ("already approved" if already else "approved", plan_relative, digest[:12], workspace.workflow)
+        )
+    if not loaded.design_settings().get("require_approval"):
+        _err("note: design.require_approval is false; recorded anyway")
+    if open_findings and of_current_plan is False:
+        _err(
+            "note: %d design finding(s) open from a review of an earlier revision of this plan: %s "
+            "-- the revision may already address them; say so in the report"
+            % (len(open_findings), ", ".join(open_findings))
+        )
+    elif open_findings:
+        _err(
+            "note: %d design finding(s) still open: %s -- approving over them is the user's call; "
+            "name them in the report" % (len(open_findings), ", ".join(open_findings))
         )
     return 0
 
@@ -2942,6 +3116,7 @@ def cmd_summary(args: argparse.Namespace) -> int:
     for stage in (
         "architect",
         "design_review",
+        "design_approval",
         "implementer",
         "test",
         "review",
@@ -3260,6 +3435,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     for parser_with_scope in (review_run, consolidate, review_show, triage, fix_brief, status):
         _add_design_flag(parser_with_scope)
+
+    # design -----------------------------------------------------------------
+    design_parser = subparsers.add_parser("design", help="the user's approval of the plan")
+    design_sub = design_parser.add_subparsers(dest="subcommand", required=True)
+    design_approve = design_sub.add_parser(
+        "approve", help="record the user's approval of the plan as it is now (only after their yes)"
+    )
+    design_approve.add_argument("--json", action="store_true")
+    design_approve.set_defaults(func=cmd_design_approve)
 
     # state ------------------------------------------------------------------
     state_parser = subparsers.add_parser("state", help="inspect or append run state")
