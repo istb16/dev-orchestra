@@ -125,7 +125,7 @@ def _epoch(stamp: Any) -> Optional[float]:
         return None
 
 
-def _implemented_since_plan(workspace: ws.Workspace, events: List[Dict[str, Any]]) -> bool:
+def implemented_since_plan(workspace: ws.Workspace, events: List[Dict[str, Any]]) -> bool:
     """Whether the last successful implementer run is newer than the plan file.
 
     Measured against the plan's mtime rather than the last architect event: a
@@ -175,7 +175,7 @@ def current(workspace: ws.Workspace, required: bool) -> Dict[str, Any]:
         # Informational only: the gate refuses this state like `pending`. It
         # keeps a workflow finished before the gate existed from being told to
         # ask at every later stage.
-        name = "implemented-unapproved" if _implemented_since_plan(workspace, events) else "pending"
+        name = "implemented-unapproved" if implemented_since_plan(workspace, events) else "pending"
     elif not matches:
         name, stale_reason = "stale", "plan-changed"
     elif reviewed_since:

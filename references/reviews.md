@@ -152,11 +152,15 @@ write a revision request (the original request, plus the brief, plus "read
 whether you addressed it or why not") and run `run architect` over it. That
 spends `budgets.architect`, which is why no new budget key exists. Only the
 immediately previous plan survives, frozen in `review-target.md`; a rewrite
-overwrites the rest.
+overwrites the rest. The findings of the round that reaches the limit are
+reflected too: `review status --design` says `final_revision: pending` until
+the plan differs from the frozen one or the architect has answered after that
+round, and only the re-review of that revision is refused.
 
 **Cost.** A round is about what a code review round costs: reviewers read the
-files the plan names. `review.design.max_iterations` (default 2) bounds it, and
-`1` is the cheap setting — one round, then report what is still open.
+files the plan names. `review.design.max_iterations` (default 2) bounds the
+rounds, and `1` is the cheap setting — one round, one revision that is not
+re-reviewed, then ask.
 
 ## When a review does not run, or runs smaller
 
@@ -593,7 +597,10 @@ never block.
 
 A re-review round is: `review snapshot` (the code changed, so the snapshot must
 too) → `review run --iteration 2` → triage → fix. When the budget is exhausted,
-report what remains and stop. Two rounds catch the overwhelming majority of what
+the last round still gets its fix and re-test: `review fix-brief`, `run
+review_fixer`, the tests again, recorded with `state record test ok|failed`
+(`final_fix` goes `pending` → `retest` → `done`). Then report what remains and
+stop; do not re-review. Two rounds catch the overwhelming majority of what
 this pipeline is going to catch; a third mostly re-litigates.
 
 ### The second round only diffs the fix

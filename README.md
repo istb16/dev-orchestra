@@ -380,7 +380,9 @@ not a prompt. [references/workflow.md](references/workflow.md) has the shape it 
 
 It keeps its own reports, round counter and triage under
 `.ai/reviews/design/`, so a design round never advances — or is refused by —
-the code review's count. Skipping the design stage skips this with it.
+the code review's count. Skipping the design stage skips this with it. The
+findings of the round that reaches `review.design.max_iterations` are folded
+into the plan too; the limit stops only the re-review of that revision.
 
 **2c. Approval.** The orchestrator shows you the plan — goal, proposed change,
 files to modify, risks, and any design findings still open — and asks. Only
@@ -427,7 +429,9 @@ dev-orchestra run review_fixer --prompt-file .ai/fix-brief.md
 ```
 
 Then the tests run again, and `dev-orchestra review status` says whether another
-review round is worth it or the loop is done.
+review round is worth it or the loop is done. After the last round the fix and
+re-test still happen; `review status` then says not to re-review, and the
+remaining findings are reported.
 
 ## Feeding it a lot of text
 

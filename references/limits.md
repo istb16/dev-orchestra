@@ -93,6 +93,13 @@ Enforced by the action, refusing with **exit code 3**.
 Exit 5 is not a budget: `run implementer` waits for `design approve`; see
 `references/workflow.md`.
 
+A round budget refuses the next review, not the revision or fix after the
+round that reached it: that round's findings still go into the plan once more,
+or get fixed and re-tested, and only then does `status` say stop. For the same
+reason a spent attempt budget is a `status` reason only while that stage is
+still needed: `architect` only while there is no plan, `review_fixer` only
+while the last round's fix has not been made.
+
 The last two are backstops for cycles that delegate: every run that consumes an
 attempt — `run <role>` and `budget consume <stage>` — counts against the first,
 every run that reaches its end with a measurement against the second. A cycle
@@ -308,7 +315,10 @@ the count, because something moved.
 
 Reviews register their own signature automatically, from the set of open
 findings: an identical round is called out in the output and counted here, so
-review→fix→review stops when the fixer stops achieving anything.
+review→fix→review stops when the fixer stops achieving anything. At the round
+limit the repeat does not stop the last round's revision or fix and re-test --
+there is no re-review left to save -- so `status` gives it as a reason only
+once those are done, and reports `identical_rounds` meanwhile.
 
 `budgets.max_repeats_without_progress` (2) sets the threshold.
 
@@ -339,7 +349,7 @@ long stages (implementation, a big review) rather than every call.
 ```json
 {
   "verdict": "stop-and-report",
-  "reasons": ["review budget spent (2/2 rounds) with 1 finding(s) still open"],
+  "reasons": ["review budget spent (2/2 rounds) with 1 finding(s) still open; fixed and re-tested after the last round, not re-reviewed -- report"],
   "stalls": [],
   "abandoned_stages": ["implementer"],
   "budgets": {"test": {"used": 8, "limit": 8, "remaining": 0}}

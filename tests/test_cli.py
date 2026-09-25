@@ -1000,6 +1000,23 @@ class TestASilentRunIsNotASuccess(IsolatedCase):
         self.assertIn("# Plan", out)
         self.assertNotIn("no output", err)
 
+    def last_event(self):
+        return self.cli_workspace().read_state()["events"][-1]
+
+    def test_the_run_log_says_whether_the_run_answered(self):
+        """`status` reads it to tell a revision or fix from an exit 0 over silence."""
+        self.run_returning("# Plan\n")
+        self.assertIs(self.last_event()["answered"], True)
+        self.run_returning("  \n")
+        self.assertEqual(self.last_event()["status"], "ok")
+        self.assertIs(self.last_event()["answered"], False)
+
+    def test_a_failed_run_never_answered(self):
+        os.environ["DEV_ORCHESTRA_MOCK_FAIL"] = "1"
+        run_cli("run", "implementer", "--prompt", "go")
+        self.assertEqual(self.last_event()["status"], "failed")
+        self.assertIs(self.last_event()["answered"], False)
+
 
 @unittest.skipUnless(has_git(), "git is required")
 class TestReviewPipeline(IsolatedCase):
@@ -1010,7 +1027,7 @@ class TestReviewPipeline(IsolatedCase):
         self.commit_all("init")
         self.write("app.py", "def add(a, b):\n    return a - b\n")
 
-        mock_dir = os.path.join(self.tmp, "mock")
+        self.mock_dir = mock_dir = os.path.join(self.tmp, "mock")
         os.makedirs(mock_dir)
         with open(os.path.join(mock_dir, "review.txt"), "w", encoding="utf-8") as handle:
             handle.write(FINDING)
@@ -1070,6 +1087,7 @@ class TestReviewPipeline(IsolatedCase):
         code, _, err = run_cli("review", "run")
         self.assertEqual(code, 3)
         self.assertIn("refusing to run review round", err)
+        self.assertIn("only the re-review is refused", err)
 
     def test_force_runs_a_round_past_the_budget(self):
         run_cli("config", "set", "review.max_review_iterations", "1")
@@ -1101,6 +1119,139 @@ class TestReviewPipeline(IsolatedCase):
         status = json.loads(out)
         self.assertFalse(status["re_review_recommended"])
         self.assertTrue(status["iteration_budget_exhausted"])
+
+    # -- the round that reaches the limit still gets its fix and re-test --
+
+    def last_round(self):
+        run_cli("config", "set", "review_fixer.provider", "mock")
+        run_cli("review", "snapshot")
+        run_cli("review", "run", "--iteration", "2")
+        run_cli("review", "triage", "F1", "--status", "accepted")
+
+    def fix(self):
+        return run_cli("run", "review_fixer", "--prompt", "fix")
+
+    def review_status(self):
+        return json.loads(run_cli("review", "status", "--json")[1])
+
+    def status(self):
+        return json.loads(run_cli("status", "--json")[1])
+
+    def test_status_at_the_limit_asks_for_the_final_fix(self):
+        self.last_round()
+        self.assertEqual(self.review_status()["final_fix"], "pending")
+        self.assertIn("fix the accepted findings once more", run_cli("review", "status")[1])
+        payload = self.status()
+        self.assertEqual(payload["verdict"], "continue")
+        self.assertIs(payload["review"]["final_fix_pending"], True)
+
+    def test_a_fix_after_the_last_round_waits_for_the_re_test(self):
+        self.last_round()
+        self.assertEqual(self.fix()[0], 0)
+        self.assertEqual(self.review_status()["final_fix"], "retest")
+        self.assertIn("re-run the tests", run_cli("review", "status")[1])
+        payload = self.status()
+        self.assertEqual((payload["verdict"], payload["reasons"]), ("continue", []))
+
+    def test_the_last_fixer_attempt_does_not_stop_the_re_test(self):
+        self.last_round()
+        run_cli("config", "set", "budgets.review_fixer", "1")
+        self.fix()
+        payload = self.status()
+        self.assertEqual(payload["budgets"]["review_fixer"]["remaining"], 0)
+        self.assertEqual((payload["verdict"], payload["reasons"]), ("continue", []))
+        self.assertEqual(payload["review"]["final_fix"], "retest")
+        run_cli("state", "record", "test", "ok")
+        payload = self.status()
+        self.assertEqual(payload["verdict"], "stop-and-report")
+        self.assertTrue(any("fixed and re-tested" in r for r in payload["reasons"]))
+
+    def assert_the_re_test_ends_the_loop(self, stage, status, level=None):
+        self.last_round()
+        self.fix()
+        run_cli("state", "record", stage, status)
+        if level:
+            run_cli("config", "set", "optimization.level", level)
+        self.assertEqual(self.review_status()["final_fix"], "done")
+        payload = self.status()
+        self.assertEqual(payload["verdict"], "stop-and-report")
+        spent = [r for r in payload["reasons"] if r.startswith("review budget spent (2/2 rounds)")]
+        self.assertEqual(len(spent), 1)
+        self.assertIn("re-tested", spent[0])
+        return payload["reasons"]
+
+    def test_a_recorded_re_test_ends_the_loop(self):
+        reasons = self.assert_the_re_test_ends_the_loop("test", "ok")
+        self.assertNotIn("the last recorded test run failed; fix it before reviewing", reasons)
+
+    def test_a_failed_re_test_ends_the_loop_and_says_so(self):
+        # `quality` lets a round run over red tests; `balanced` is where the gate refuses.
+        reasons = self.assert_the_re_test_ends_the_loop("test", "failed", level="balanced")
+        self.assertIn("the last recorded test run failed; fix it before reviewing", reasons)
+
+    def test_a_re_test_recorded_under_its_own_stage_name_ends_the_loop_too(self):
+        self.assert_the_re_test_ends_the_loop("re-test", "ok")
+
+    def test_a_repeated_final_round_still_gets_its_fix(self):
+        run_cli("config", "set", "review_fixer.provider", "mock")
+        run_cli("review", "snapshot")
+        run_cli("review", "run", "--iteration", "1")
+        run_cli("review", "triage", "F1", "--status", "accepted")
+        self.fix()
+        run_cli("review", "run", "--iteration", "2")
+        run_cli("review", "triage", "F1", "--status", "accepted")
+        payload = self.status()
+        self.assertEqual((payload["verdict"], payload["reasons"]), ("continue", []))
+        self.assertEqual(payload["review"]["identical_rounds"], 2)
+        self.fix()
+        run_cli("state", "record", "test", "ok")
+        payload = self.status()
+        self.assertEqual(payload["verdict"], "stop-and-report")
+        self.assertTrue(any("found exactly what the previous one found" in r for r in payload["reasons"]))
+        self.assertTrue(any("fixed and re-tested" in r for r in payload["reasons"]))
+
+    def test_a_failed_fixer_run_does_not_count(self):
+        self.last_round()
+        os.environ["DEV_ORCHESTRA_MOCK_FAIL"] = "1"
+        self.assertEqual(self.fix()[0], 1)
+        del os.environ["DEV_ORCHESTRA_MOCK_FAIL"]
+        self.assertEqual(self.review_status()["final_fix"], "pending")
+
+    def test_an_empty_ok_fixer_run_does_not_count(self):
+        self.last_round()
+        with open(os.path.join(self.mock_dir, "implement.txt"), "w", encoding="utf-8") as handle:
+            handle.write("")
+        self.assertEqual(self.fix()[0], 1)
+        events = self.cli_workspace().read_state()["events"]
+        event = [e for e in events if e.get("stage") == "review_fixer"][-1]
+        self.assertEqual(event["status"], "ok")
+        self.assertIs(event["answered"], False)
+        self.assertEqual(self.review_status()["final_fix"], "pending")
+
+    def test_a_spent_fixer_budget_stops_before_the_fix(self):
+        self.last_round()
+        run_cli("config", "set", "budgets.review_fixer", "0")
+        payload = self.status()
+        self.assertEqual(payload["verdict"], "stop-and-report")
+        self.assertTrue(any("no review_fixer attempt left" in r for r in payload["reasons"]))
+        self.assertIn("review_fixer has no attempts left", payload["reasons"])
+        self.assertIn("no review_fixer attempt is left", run_cli("review", "status")[1])
+
+    def test_a_last_round_with_nothing_accepted_stops_as_before(self):
+        """Blocking but not accepted -- untriaged or under investigation --
+        leaves nothing to fix, so there is no final fix to wait for."""
+        run_cli("config", "set", "review_fixer.provider", "mock")
+        run_cli("review", "snapshot")
+        run_cli("review", "run", "--iteration", "2")
+        for triage in (None, "needs-investigation"):
+            if triage:
+                run_cli("review", "triage", "F1", "--status", triage)
+            self.assertEqual(self.review_status()["final_fix"], "unaccepted")
+            self.assertIn("report the remaining findings instead of looping", run_cli("review", "status")[1])
+            payload = self.status()
+            self.assertEqual(payload["verdict"], "stop-and-report")
+            self.assertIs(payload["review"]["final_fix_pending"], False)
+            self.assertIn("review budget spent (2/2 rounds) with 1 finding(s) still open", payload["reasons"])
 
     def test_partial_reviewer_failure_still_produces_a_report(self):
         os.environ["DEV_ORCHESTRA_MOCK_FAIL"] = "Reviewer: m2 |"

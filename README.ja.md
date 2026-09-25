@@ -364,7 +364,8 @@ dev-orchestra run architect --prompt-file .ai/execution/design-revise-request.md
 
 レポート・ラウンド数・トリアージは `.ai/reviews/design/` に独立して置かれるので、設計の
 ラウンドがコードレビューのラウンド数を進めたり、その上限に引っかかったりすることはありません。
-設計工程を省いた場合は、設計レビューも省かれます。
+設計工程を省いた場合は、設計レビューも省かれます。`review.design.max_iterations` に
+達したラウンドの findings も計画に反映されます。上限が止めるのは、その改訂の再レビューだけです。
 
 **2c. 承認.** オーケストレータが計画（目的、変更内容、変更するファイル、リスク、未解決の
 設計 finding）を提示して確認を求めます。記録されるのはユーザーの「はい」だけで、それが
@@ -410,7 +411,8 @@ dev-orchestra run review_fixer --prompt-file .ai/fix-brief.md
 ```
 
 その後テストを再実行し、`dev-orchestra review status` がもう1周する価値があるか、
-ループを終えるべきかを判断します。
+ループを終えるべきかを判断します。最終ラウンドの後も修正と再テストは行い、そのうえで
+`review status` が再レビューしないよう告げ、残った findings を報告します。
 
 ## 大量のテキストを扱う場合
 

@@ -375,7 +375,9 @@ class TestStatus(ApprovalCase):
         self.assertEqual(json.loads(out)["open_findings"], self.approval()["open_findings"])
 
     def test_an_exhausted_design_review_still_ends_in_the_question(self):
+        """With no architect attempt left to fold the findings in."""
         run_cli("config", "set", "review.design.max_iterations", "1")
+        run_cli("config", "set", "budgets.architect", "0")
         self.write_plan()
         run_cli("review", "run", "--design")
         payload = self.status()
@@ -394,6 +396,72 @@ class TestStatus(ApprovalCase):
         self.assertFalse(any("design review budget spent" in r for r in payload["reasons"]))
         self.assertEqual(self.implement()[0], 0)
         self.assertEqual(self.status()["verdict"], "continue")
+
+    def test_approving_before_the_final_revision_answers_it(self):
+        run_cli("config", "set", "review.design.max_iterations", "1")
+        self.write_plan()
+        run_cli("review", "run", "--design")
+        run_cli("review", "triage", "--design", "F1", "--status", "accepted")
+        self.assertEqual(self.status()["design_review"]["final_revision"], "pending")
+        self.assertEqual(run_cli("design", "approve")[0], 0)
+        design = self.status()["design_review"]
+        self.assertEqual(design["final_revision"], "approved")
+        self.assertIs(design["final_revision_pending"], False)
+        self.assertIn("do not revise or re-review", run_cli("review", "status", "--design")[1])
+        self.assertIn("Plan approval: approved", run_cli("status")[1])
+
+    def test_the_final_revision_is_approvable_without_a_new_design_round(self):
+        run_cli("config", "set", "review.design.max_iterations", "1")
+        self.write_plan()
+        run_cli("review", "run", "--design")
+        self.revise_plan()
+        code, out, _ = run_cli("design", "approve", "--json")
+        self.assertEqual(code, 0)
+        payload = json.loads(out)
+        report = ws.read_json(self.design.consolidated_json_path)
+        self.assertEqual(payload["design_round"], report["snapshot"]["round_id"])
+        self.assertIs(payload["open_findings_of_current_plan"], False)
+        self.assertEqual(self.status()["verdict"], "continue")
+
+    def test_a_revision_after_the_last_round_stops_without_the_approval_gate(self):
+        run_cli("config", "set", "design.require_approval", "false")
+        run_cli("config", "set", "review.design.max_iterations", "1")
+        self.write_plan()
+        run_cli("review", "run", "--design")
+        run_cli("review", "triage", "--design", "F1", "--status", "accepted")
+        self.assertEqual(self.status()["verdict"], "continue")
+        self.revise_plan()
+        payload = self.status()
+        self.assertEqual(payload["verdict"], "stop-and-report")
+        self.assertTrue(any("revised after the last round" in r for r in payload["reasons"]))
+        self.assertIn("Plan approval: not required", run_cli("status")[1])
+
+    def assert_no_final_revision_is_asked_for(self, approval_line):
+        payload = self.status()
+        self.assertEqual(payload["verdict"], "stop-and-report")
+        reason = "design review budget spent (1/1 rounds) with 1 finding(s) still open"
+        self.assertIn(reason, payload["reasons"])
+        self.assertEqual(payload["design_review"]["final_revision"], "implemented")
+        self.assertIs(payload["design_review"]["final_revision_pending"], False)
+        lines = run_cli("status")[1].splitlines()
+        self.assertIn(approval_line, next(text for text in lines if text.startswith("Plan approval:")))
+        design_line = next(text for text in lines if text.startswith("Design review:"))
+        self.assertNotIn("final revision pending", design_line)
+        self.assertIn(
+            "report the remaining findings instead of looping", run_cli("review", "status", "--design")[1]
+        )
+
+    def test_an_implemented_plan_gets_no_final_revision(self):
+        run_cli("config", "set", "review.design.max_iterations", "1")
+        self.write_plan()
+        run_cli("review", "run", "--design")
+        run_cli("review", "triage", "--design", "F1", "--status", "accepted")
+        self.date_plan(-60)
+        self.workspace.record_event("implementer", "ok", {"provider": "mock"})
+        self.assert_no_final_revision_is_asked_for("the implementer already ran on this plan")
+
+        run_cli("config", "set", "design.require_approval", "false")
+        self.assert_no_final_revision_is_asked_for("not required")
 
 
 class TestDesignRounds(ApprovalCase):

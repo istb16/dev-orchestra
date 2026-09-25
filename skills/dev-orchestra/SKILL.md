@@ -84,7 +84,7 @@ stage detail: `references/workflow.md`.
 | Reviews | `review snapshot`, then `review run` |
 | Triage | `review triage F1 F3 --status accepted --note "confirmed in orders_controller"` |
 | Fix | `review fix-brief --output .ai/execution/fix-brief.md`, then `run review_fixer --prompt-file .ai/execution/fix-brief.md` |
-| Re-test | the same test commands, then `review status` |
+| Re-test | the same test commands, `state record test ok\|failed`, then `review status` |
 
 A role with `model_tiers` (`config show`) runs on one: `run implementer --tier
 light`; an unknown tier is refused.
@@ -97,16 +97,16 @@ Implementation Steps. Vague or contradicted by the codebase → send back once,
 do not paper over it later. **Design review** is the same panel, same rules --
 parallel, read-only, independent -- pointed at `.ai/plan.md` and the request
 instead of a diff. Triage as for code. Accepted findings go into a revision
-request; re-review only when `review status --design` says so. No design stage,
-no design review.
+request, after the last round too; re-review only when `review status --design`
+says so. No design stage, no design review.
 
 **Approval.** Before implementing, give the user the plan's Goal, Proposed
 Change, Files to Modify, Risks and any open design findings, and ask. Only
 their explicit yes lets you run `design approve` -- never on your own
 judgement, never to unblock yourself. Changes requested → revise (re-review
-if enabled), ask again. A design review budget spent with findings open is
-not the end: report them, ask whether to approve over them or revise.
-`run implementer` refuses an unapproved plan (exit 5) while
+if enabled), ask again. A spent design review budget still gets one revision
+(no re-review); then report what is open and ask whether to approve over it or
+revise. `run implementer` refuses an unapproved plan (exit 5) while
 `design.require_approval` is true; no plan, no approval.
 
 **Implement.** Require: existing conventions, minimal change, no unrelated
@@ -158,8 +158,8 @@ is valid, add tests where a finding exposes a gap, re-run the relevant tests
 plus lint/type checks. Fixer failure is fatal.
 
 **Re-test, and re-review only if told to.** Re-run the tests, then `review
-status`; re-review only when it says so. Exhausted budget → report what
-remains, do not loop. A second snapshot diffs only what the fix changed and
+status`; re-review only when it says so. Exhausted budget → fix once more,
+re-test, report; never re-review. A second snapshot diffs only what the fix changed and
 carries the accepted findings with it, so **triage before re-snapshotting**:
 the narrowing depends on those findings existing. `--full` re-sends the lot.
 

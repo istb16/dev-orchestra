@@ -15,7 +15,7 @@ import copy
 import json
 import os
 import sys
-from typing import Any, Dict, List, NamedTuple, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple
 
 from . import approval as approval_mod
 from . import config as config_mod
@@ -1035,6 +1035,10 @@ def cmd_run(args: argparse.Namespace) -> int:
             "stalled": result.stalled,
             "output": args.output,
             "billed_tokens": result.usage.billed_tokens,
+            # Whether the run left a usable result: an ``ok`` over silence
+            # saved nothing, and `status` must not count it as the revision
+            # or fix that was asked for. Pure, so the order below stands.
+            "answered": _answered(result),
         },
         # What the child was measured to take, whatever it exited with. A run
         # killed at its deadline spent the time it spent; so did a failed one.
@@ -1434,7 +1438,10 @@ def _run_design_review(args: argparse.Namespace, loaded: config_mod.LoadedConfig
             "refusing to run design review round %d: the budget is %d rounds "
             "(review.design.max_iterations)." % (iteration, max_iterations)
         )
-        _err("Report the remaining findings instead of looping, or pass --force to override.")
+        _err(
+            "The round that reached the limit still gets its revision; only the re-review "
+            "is refused. Report what is still open, or pass --force to override."
+        )
         return ledger_mod.EXIT_BUDGET_EXHAUSTED
 
     book = _ledger(args, workspace)
@@ -1643,7 +1650,10 @@ def cmd_review_run(args: argparse.Namespace) -> int:
             "refusing to run review round %d: the budget is %d rounds "
             "(review.max_review_iterations)." % (iteration, max_iterations)
         )
-        _err("Report the remaining findings instead of looping, or pass --force to override.")
+        _err(
+            "The round that reached the limit still gets its fix and re-test; only the "
+            "re-review is refused. Report what is still open, or pass --force to override."
+        )
         return ledger_mod.EXIT_BUDGET_EXHAUSTED
 
     meta = ws.read_json(workspace.snapshot_meta_path, {}) or {}
@@ -1895,20 +1905,46 @@ def cmd_review_fix_brief(args: argparse.Namespace) -> int:
 def cmd_review_status(args: argparse.Namespace) -> int:
     loaded = config_mod.load(args.cwd, validate_result=False)
     workspace = _review_workspace(args)
+    # The ledger, the run log and the plan belong to the workflow, not to the
+    # review directory `--design` points at.
+    base = _workspace(args)
     data = ws.read_json(workspace.consolidated_json_path, {}) or {}
     settings = loaded.review_settings()
     severities = tuple(settings.get("re_review_severities") or ("critical", "high"))
     blocking = review_mod.unresolved_blocking(data, severities)
+    accepted = bool(review_mod.accepted_findings(data))
     iteration = int(data.get("iteration", 0) or 0)
+    # Read only: stalls are `status`'s to clear.
+    book = _ledger(args, base)
+    events = [event for event in (base.read_state().get("events") or []) if isinstance(event, dict)]
     # Each budget is reported under the name of the setting it came from, so a
     # consumer holding both payloads can tell which one it was handed. The code
     # review's key is what it always was; only --design carries the other name.
     if args.design:
         budget_key = "max_iterations"
         max_iterations = int(loaded.design_review_settings().get("max_iterations", 2))
+        final = _design_final_pass(
+            blocking,
+            iteration,
+            max_iterations,
+            approval_mod.findings_of_current_plan(base, approval_mod.read_plan(base)[0]),
+            _ran_since_last_round(events, "design_review", "architect", counts=_wrote_plan(base))[0],
+            book.remaining("architect"),
+            _approved_as_recorded(
+                approval_mod.current(base, bool(loaded.design_settings().get("require_approval")))
+            ),
+            approval_mod.implemented_since_plan(base, events),
+            accepted,
+        )
+        repeats = book.repeats("design_review")
     else:
         budget_key = "max_review_iterations"
         max_iterations = int(settings.get("max_review_iterations", 2))
+        fixed, retested = _ran_since_last_round(events, "review", "review_fixer", ("test", "re-test"))
+        final = _code_final_pass(
+            blocking, iteration, max_iterations, fixed, retested, book.remaining("review_fixer"), accepted
+        )
+        repeats = book.repeats("review")
     counts = data.get("counts", {})
     # No consolidated report at all is the only real "none": nothing has been
     # reviewed. A report with no `coverage` block is a round that happened
@@ -1947,6 +1983,12 @@ def cmd_review_status(args: argparse.Namespace) -> int:
         "over_budget": bool((data.get("snapshot") or {}).get("over_budget")),
         "counts": counts,
     }
+    if args.design:
+        payload["final_revision"] = final["state"]
+        payload["final_revision_pending"] = final["pending"]
+    else:
+        payload["final_fix"] = final["state"]
+        payload["final_fix_pending"] = final["pending"]
     if args.json:
         _emit_json(payload)
     else:
@@ -1972,8 +2014,64 @@ def cmd_review_status(args: argparse.Namespace) -> int:
         ):
             _out(line)
         if payload["iteration_budget_exhausted"] and blocking:
-            _out("iteration budget exhausted -- report the remaining findings instead of looping")
+            _out("iteration budget exhausted -- %s" % _final_pass_advice(args.design, final, repeats))
     return 0
+
+
+def _final_pass_advice(design: bool, final: Dict[str, Any], repeats: int) -> str:
+    """What `review status` says to do once the round budget is spent."""
+    state = final["state"]
+    if design and state == "pending":
+        advice = (
+            "fold the accepted findings into the plan once more (review fix-brief --design, then "
+            "run architect) and do not re-review it; then present the plan and the findings to the "
+            "user and ask"
+        )
+    elif design and state == "done" and final.get("plan_changed") is True:
+        advice = (
+            "the plan was revised after this round and is not re-reviewed; present it with the "
+            "findings still open from the earlier revision and ask"
+        )
+    elif design and state == "done" and final.get("plan_changed") is False:
+        advice = (
+            "the architect ran after this round and left the plan unchanged; present the plan and "
+            "the open findings and ask whether to approve over them or to triage them again"
+        )
+    elif design and state == "approved":
+        advice = "the plan is approved over the open findings; do not revise or re-review it"
+    elif design and state == "blocked":
+        advice = (
+            "the accepted findings are not folded in and no architect attempt is left "
+            "(budgets.architect); report them and ask whether to approve over them (`design approve`) "
+            "or to free an attempt (`budget reset`) and revise"
+        )
+    elif not design and state == "pending":
+        advice = (
+            "fix the accepted findings once more (review fix-brief, then run review_fixer), re-test "
+            "and record it (state record test ok|failed), and do not re-review; then report what is "
+            "still open"
+        )
+    elif not design and state == "retest":
+        advice = (
+            "the fix after this round is not re-reviewed; re-run the tests, record them "
+            "(state record test ok|failed), then report the remaining findings"
+        )
+    elif not design and state == "done":
+        advice = "fixed and re-tested after this round, not re-reviewed; report the remaining findings"
+    elif not design and state == "blocked":
+        advice = (
+            "the accepted findings are not fixed and no review_fixer attempt is left "
+            "(budgets.review_fixer); report them, or free an attempt (`budget reset`) and fix"
+        )
+    else:
+        # `implemented`, `unaccepted` (nothing to fold in or fix), and a
+        # design round with no frozen plan to compare.
+        advice = "report the remaining findings instead of looping"
+    # The repeat does not stop a revision or fix still owed; it is said so the
+    # report can.
+    if repeats > 1 and state in ("pending", "retest"):
+        advice += " (this round repeated the previous round's findings)"
+    return advice
 
 
 def _configured_inline_chars(loaded: config_mod.LoadedConfig) -> int:
@@ -2725,6 +2823,136 @@ def _reviewed_something(event: Dict[str, Any]) -> bool:
     return any(isinstance(run, dict) and run.get("invoked") for run in reviewers)
 
 
+def _ran_since_last_round(
+    events: List[Dict[str, Any]],
+    review_stage: str,
+    run_stage: str,
+    then_stages: Tuple[str, ...] = (),
+    counts: Optional[Callable[[Dict[str, Any]], bool]] = None,
+) -> Tuple[bool, bool]:
+    """Whether ``run_stage`` answered after the last round that reviewed something.
+
+    The first value: an ``ok`` run of ``run_stage`` with a usable result since
+    that round, and one ``counts`` accepts when it is given. An event without
+    ``answered`` predates the key and counts; an ``ok`` over silence saved
+    nothing and does not. The second: whether any ``then_stages`` event,
+    whatever its status, follows that run. Rounds that reviewed nothing --
+    refusals, abandoned entries -- are not the round.
+    """
+    ran = False
+    then = False
+    for event in reversed(events):
+        if not isinstance(event, dict):
+            continue
+        stage = event.get("stage")
+        if stage == review_stage and _reviewed_something(event):
+            break
+        if (
+            stage == run_stage
+            and event.get("status") == "ok"
+            and event.get("answered", True) is not False
+            and (counts is None or counts(event))
+        ):
+            ran = True
+            break
+        if stage in then_stages:
+            then = True
+    return ran, ran and then
+
+
+def _wrote_plan(workspace: ws.Workspace) -> Callable[[Dict[str, Any]], bool]:
+    """Whether an architect run event wrote its answer to this workflow's plan.
+
+    Only such a run is a revision of the plan: an architect run asked
+    something else, or left on stdout, is not the revision a round is owed.
+    """
+    plan = os.path.normcase(os.path.abspath(workspace.plan_path))
+
+    def counts(event: Dict[str, Any]) -> bool:
+        output = event.get("output")
+        if not isinstance(output, str) or not output or output == "-":
+            return False
+        return os.path.normcase(os.path.abspath(_in_workflow(workspace, output) or output)) == plan
+
+    return counts
+
+
+def _approved_as_recorded(info: Dict[str, Any]) -> bool:
+    """Whether the recorded approval covers this plan and this design round.
+
+    Read from the record rather than from ``state``: with
+    ``design.require_approval`` off the state is ``not-required`` whatever was
+    recorded, and a plan the user did approve is still one they approved.
+    """
+    return info.get("matches_current_plan") is True and info.get("reviewed_since_approval") is False
+
+
+def _design_final_pass(
+    blocking: List[Dict[str, Any]],
+    iteration: int,
+    max_iterations: int,
+    of_current_plan: Optional[bool],
+    ran_since: bool,
+    architect_left: Optional[int],
+    approved: bool,
+    implemented: bool,
+    accepted: bool,
+) -> Dict[str, Any]:
+    """Where the one revision the round that reached the limit still gets stands.
+
+    The limit counts reviews, not revisions: the last round's findings are
+    folded in once more, and only the re-review of that revision is refused.
+    ``status`` and ``review status --design`` both read this, so they cannot
+    disagree about it. With none of the findings accepted there is nothing to
+    fold in, and the spent budget is the stop it always was (``unaccepted``).
+    """
+    plan_changed = None
+    if not blocking or iteration < max_iterations:
+        state = None
+    elif approved:
+        state = "approved"
+    elif implemented:
+        # A plan already built on is not asked to change under the code.
+        state = "implemented"
+    elif of_current_plan is False or ran_since or of_current_plan is None:
+        state = "done"
+        plan_changed = True if of_current_plan is False else (None if of_current_plan is None else False)
+    elif not accepted:
+        state = "unaccepted"
+    elif architect_left == 0:
+        state = "blocked"
+    else:
+        state = "pending"
+    return {"state": state, "pending": state == "pending", "plan_changed": plan_changed}
+
+
+def _code_final_pass(
+    blocking: List[Dict[str, Any]],
+    iteration: int,
+    max_iterations: int,
+    fixed_since: bool,
+    retested_since: bool,
+    fixer_left: Optional[int],
+    accepted: bool,
+) -> Dict[str, Any]:
+    """The code review's counterpart: the last round gets its fix and re-test.
+
+    Only accepted findings are fixed, so with none accepted the spent budget
+    stops as it always did (``unaccepted``).
+    """
+    if not blocking or iteration < max_iterations:
+        state = None
+    elif fixed_since:
+        state = "done" if retested_since else "retest"
+    elif not accepted:
+        state = "unaccepted"
+    elif fixer_left == 0:
+        state = "blocked"
+    else:
+        state = "pending"
+    return {"state": state, "pending": state == "pending"}
+
+
 def _context_refusal(events: List[Dict[str, Any]], stage: str) -> Optional[Dict[str, Any]]:
     """The context refusal ``stage`` is still sitting on, if it is.
 
@@ -2777,9 +3005,49 @@ def _refusal_reason(event: Dict[str, Any], design: bool = False) -> str:
     )
 
 
-def _approval_line(info: Dict[str, Any], plan_relative: str) -> str:
+def _approval_line(
+    info: Dict[str, Any],
+    plan_relative: str,
+    design_pass: Optional[Dict[str, Any]] = None,
+    architect_left: Optional[int] = None,
+) -> str:
     """The `Plan approval:` line of `status`, worded as what to do next."""
+    line = _approval_advice(info, plan_relative, design_pass or {})
+    # Not a stop: nothing needs the architect until the user asks for a
+    # change, and then `run architect` refuses and says so.
+    if info["pending"] and architect_left == 0 and (design_pass or {}).get("state") != "blocked":
+        line += " (no architect attempt is left for changes; `budget reset architect` first)"
+    return line
+
+
+def _approval_advice(info: Dict[str, Any], plan_relative: str, design_pass: Dict[str, Any]) -> str:
     state = info["state"]
+    final = design_pass.get("state")
+    open_findings = ", ".join(info.get("open_findings") or [])
+    if info["pending"] and info.get("design_review_exhausted") and final == "pending":
+        return (
+            "%s -- the design review budget is spent; fold the accepted findings (%s) into %s first "
+            "(review fix-brief --design, then run architect) without re-reviewing, then present the "
+            "plan and ask" % (state, open_findings, plan_relative)
+        )
+    if info["pending"] and final == "done" and design_pass.get("plan_changed") is True:
+        return (
+            "%s -- present %s to the user with %s still open from a review of an earlier revision "
+            "(the design review budget is spent, so this revision is not re-reviewed) and ask; a yes "
+            "is recorded with `design approve`, never without one" % (state, plan_relative, open_findings)
+        )
+    if info["pending"] and final == "done" and design_pass.get("plan_changed") is False:
+        return (
+            "%s -- the architect left %s unchanged over %s (the design review budget is spent); "
+            "present the plan and the findings and ask whether to approve over them (`design approve`) "
+            "or to triage them again" % (state, plan_relative, open_findings)
+        )
+    if info["pending"] and final == "blocked":
+        return (
+            "%s -- the design review budget is spent with %s open and no architect attempt is left to "
+            "fold them in; report them and ask the user whether to approve over them (`design approve`) "
+            "or to free an attempt (`budget reset`) and revise" % (state, open_findings)
+        )
     if info["pending"] and info.get("design_review_exhausted"):
         # A spent design review is a stop-and-report, and the report has to
         # end in the question or the orchestrator reads the stop as the end.
@@ -2840,43 +3108,103 @@ def cmd_status(args: argparse.Namespace) -> int:
     # The same list `design approve` names, whatever the severity: the user is
     # asked about what the approval will record, not only what blocks.
     design_open = [str(f.get("id")) for f in approval_mod.open_findings(design_data)]
+    plan_text, plan_digest = approval_mod.read_plan(workspace)
+    of_current_plan = approval_mod.findings_of_current_plan(workspace, plan_text)
     approval_info["open_findings"] = design_open
-    approval_info["open_findings_of_current_plan"] = (
-        approval_mod.findings_of_current_plan(workspace, approval_mod.read_plan(workspace)[0])
-        if design_open
-        else None
-    )
+    approval_info["open_findings_of_current_plan"] = of_current_plan if design_open else None
     approval_info["design_review_exhausted"] = design_exhausted
 
     events = [event for event in (workspace.read_state().get("events") or []) if isinstance(event, dict)]
     refused_for_size = _context_refusal(events, "review")
     design_refused_for_size = _context_refusal(events, "design_review")
 
+    # The round that reached the limit still gets its revision and its fix;
+    # the limit refuses only the re-review. Until those are done the spent
+    # budget is not a stop.
+    architect_left = summary["budgets"].get("architect", {}).get("remaining")
+    plan_approved = _approved_as_recorded(approval_info)
+    design_accepted = bool(review_mod.accepted_findings(design_data))
+    design_pass = _design_final_pass(
+        design_blocking,
+        design_iteration,
+        design_max,
+        of_current_plan,
+        _ran_since_last_round(events, "design_review", "architect", counts=_wrote_plan(workspace))[0],
+        architect_left,
+        plan_approved,
+        approval_mod.implemented_since_plan(workspace, events),
+        design_accepted,
+    )
+    fixed, retested = _ran_since_last_round(events, "review", "review_fixer", ("test", "re-test"))
+    review_pass = _code_final_pass(
+        blocking,
+        iteration,
+        max_iterations,
+        fixed,
+        retested,
+        summary["budgets"].get("review_fixer", {}).get("remaining"),
+        bool(review_mod.accepted_findings(review_data)),
+    )
+    review_repeats = int((summary["signatures"] or {}).get("review") or 0)
+    design_repeats = int((summary["signatures"] or {}).get("design_review") or 0)
+
     reasons: List[str] = []
     if refused_for_size:
         reasons.append(_refusal_reason(refused_for_size))
     if design_refused_for_size:
         reasons.append(_refusal_reason(design_refused_for_size, design=True))
-    if blocking and iteration >= max_iterations:
+    if review_pass["state"] in ("done", "blocked", "unaccepted"):
+        suffix = ""
+        if review_pass["state"] == "blocked":
+            suffix = " and no review_fixer attempt left"
+        elif review_pass["state"] == "done":
+            suffix = "; fixed and re-tested after the last round, not re-reviewed -- report"
         reasons.append(
-            "review budget spent (%d/%d rounds) with %d finding(s) still open"
-            % (iteration, max_iterations, len(blocking))
+            "review budget spent (%d/%d rounds) with %d finding(s) still open%s"
+            % (iteration, max_iterations, len(blocking), suffix)
         )
-    if int((summary["signatures"] or {}).get("review") or 0) > 1:
+    # A repeat does not stop the fix still owed to the last round.
+    if review_repeats > 1 and review_pass["state"] not in ("pending", "retest"):
         reasons.append("the last review round found exactly what the previous one found")
-    # Left out once the user has approved this plan: they were shown the open
-    # findings and decided to go ahead over them, which is what the stop was
-    # waiting for. Kept, it would say stop at every stage that follows.
-    if design_exhausted and approval_info["state"] != "approved":
+    # Left out once the user has approved this plan (`approved`): they were
+    # shown the open findings and decided to go ahead over them, which is what
+    # the stop was waiting for. Kept, it would say stop at every stage that
+    # follows. Left out too while the last round's revision is still owed.
+    if design_pass["state"] in ("done", "blocked", "implemented", "unaccepted"):
+        suffix = ""
+        if design_pass["state"] == "blocked":
+            suffix = " and no architect attempt left to fold them in"
+        elif design_pass["state"] == "done" and design_pass["plan_changed"] is True:
+            suffix = "; revised after the last round, not re-reviewed -- present the plan and ask"
+        elif design_pass["state"] == "done" and design_pass["plan_changed"] is False:
+            suffix = (
+                "; the architect left the plan unchanged after the last round -- present the plan "
+                "and the findings and ask"
+            )
         reasons.append(
-            "design review budget spent (%d/%d rounds) with %d finding(s) still open"
-            % (design_iteration, design_max, len(design_blocking))
+            "design review budget spent (%d/%d rounds) with %d finding(s) still open%s"
+            % (design_iteration, design_max, len(design_blocking), suffix)
         )
-    if int((summary["signatures"] or {}).get("design_review") or 0) > 1:
+    if design_repeats > 1 and design_pass["state"] != "pending":
         reasons.append("the last design review round found exactly what the previous one found")
     for stage, entry in summary["budgets"].items():
-        if entry["remaining"] == 0:
-            reasons.append("%s has no attempts left" % stage)
+        if entry["remaining"] != 0:
+            continue
+        # With a plan written, the architect is needed again only for a
+        # revision a design round still owes before its limit: at the limit
+        # the revision says so in its own reason above, an approved plan is
+        # not revised, and a change asked for at approval is refused by
+        # `run architect`.
+        if (
+            stage == "architect"
+            and plan_digest
+            and (design_pass["state"] is not None or not design_blocking or plan_approved)
+        ):
+            continue
+        # A fix already made needs its re-test or its report, not the fixer.
+        if stage == "review_fixer" and review_pass["state"] in ("retest", "done"):
+            continue
+        reasons.append("%s has no attempts left" % stage)
     total = summary["total_delegated_runs"]
     if total["limit"] and total["used"] >= int(total["limit"]):
         reasons.append("no delegated runs left in this workflow")
@@ -2917,6 +3245,10 @@ def cmd_status(args: argparse.Namespace) -> int:
             # the report has to name, and they are not in the consolidation --
             # a refused round writes no consolidation at all.
             "refused_for_size": (refused_for_size or {}).get("context") or None,
+            # The ledger's repeat count, named as the run-log event names it.
+            "identical_rounds": review_repeats,
+            "final_fix": review_pass["state"],
+            "final_fix_pending": review_pass["pending"],
         },
         "design_review": {
             "enabled": bool(design_settings.get("enabled")),
@@ -2925,6 +3257,9 @@ def cmd_status(args: argparse.Namespace) -> int:
             "blocking": [f["id"] for f in design_blocking],
             "accepted": len(review_mod.accepted_findings(design_data)),
             "refused_for_size": (design_refused_for_size or {}).get("context") or None,
+            "identical_rounds": design_repeats,
+            "final_revision": design_pass["state"],
+            "final_revision_pending": design_pass["pending"],
         },
         # Not a reason and not a verdict: `run implementer` enforces it, and a
         # stop-and-report here would read as "give up" where the answer is to
@@ -2972,21 +3307,35 @@ def cmd_status(args: argparse.Namespace) -> int:
         for token, entry in summary["in_flight"].items():
             _out("  %s (%s) since %s" % (entry.get("stage"), token, entry.get("started_at")))
     _out("")
-    _out(
-        "Review: round %d/%d, %d accepted, %d blocking"
-        % (iteration, max_iterations, payload["review"]["accepted"], len(blocking))
+    line = "Review: round %d/%d, %d accepted, %d blocking" % (
+        iteration,
+        max_iterations,
+        payload["review"]["accepted"],
+        len(blocking),
     )
-    _out(
-        "Design review: %s, round %d/%d, %d accepted, %d blocking"
-        % (
-            "on" if payload["design_review"]["enabled"] else "off",
-            design_iteration,
-            design_max,
-            payload["design_review"]["accepted"],
-            len(design_blocking),
-        )
+    if review_pass["state"] == "pending":
+        line += " -- final fix pending (fix, re-test, do not re-review)"
+    elif review_pass["state"] == "retest":
+        line += " -- final fix done, re-test pending (record it, do not re-review)"
+    if review_pass["state"] in ("pending", "retest") and review_repeats > 1:
+        line += "; identical to the previous round"
+    _out(line)
+    line = "Design review: %s, round %d/%d, %d accepted, %d blocking" % (
+        "on" if payload["design_review"]["enabled"] else "off",
+        design_iteration,
+        design_max,
+        payload["design_review"]["accepted"],
+        len(design_blocking),
     )
-    _out("Plan approval: %s" % _approval_line(approval_info, workspace.relative(workspace.plan_path)))
+    if design_pass["pending"]:
+        line += " -- final revision pending (fold the findings in, do not re-review)"
+        if design_repeats > 1:
+            line += "; identical to the previous round"
+    _out(line)
+    _out(
+        "Plan approval: %s"
+        % _approval_line(approval_info, workspace.relative(workspace.plan_path), design_pass, architect_left)
+    )
     line = "Optimization: %s" % plan.level
     if plan.escalated:
         line += " (escalated from %s -- %s)" % (plan.requested, plan.escalation_note().split(": ", 1)[-1])

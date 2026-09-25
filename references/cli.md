@@ -134,6 +134,9 @@ run that exited 0 printed nothing but whitespace: the same judgement `--output`
 refuses a write on, because which of the two the caller used says nothing about
 whether the run answered. That message names the role and quotes the start of
 the raw stderr, which is where a CLI that refused the prompt says why.
+The run's end event records the same judgement as `answered` (`true` only for
+an `ok` run that printed something), so `status` can tell a revision or fix
+from an exit 0 over silence.
 
 `--detach` starts the run in its own process and returns a job id immediately,
 so the call cannot block. See `jobs` below.
@@ -149,12 +152,12 @@ echo "explain the failure" | dev-orchestra run orchestrator
 | Command | Description |
 | --- | --- |
 | `review snapshot [--base <rev>] [--no-untracked] [--json]` | Freeze the change under review. Exit 1 if empty. A change over `review.context.max_chars` is warned about and still written — taking a snapshot spends nothing, and the refusal belongs to the command that would. `--json` says the same thing in numbers: `change_chars`, `max_chars` and `over_context`. |
-| `review run [--design] [--request <path>] [--iteration N] [--only <ids/roles>] [--sequential] [--context <text>] [--base <rev>] [--timeout <s>] [--idle-timeout <s>] [--force] [--json]` | Run every reviewer against the snapshot; write reports and the consolidated result. Exit 1 only if no reviewer came back `ok` — every reviewer failing, or a round whose change body was too large to inline and was handed over as a file, which is recorded as `partial` rather than clean. The round is derived from the snapshot unless `--iteration` is given, and a round past `review.max_review_iterations` is refused (exit 3) unless `--force`. A round refused by the optimization gate (tests recorded as failing) also exits 3, and is recorded as `refused` so `optimization report` can count it. So is a change body over `review.context.max_chars` (400,000): nothing is reviewed, the message names the size, the limit and the ways under it, and the round is recorded with `refused_by: "context"` — `--force` runs it anyway and records the round as `over_budget` everywhere it is reported. Whether the body goes into the prompt or over as a path is `review.context.inline_chars` (400,000, the same number by default), and each reviewer entry records the value that decided it. A round is refused the same way once `budgets.max_runtime_seconds` of delegated execution has been spent — a panel is the largest consumer of it — and the message names which budget it was. `--only` runs a subset but still consolidates every reviewer's current report, so nothing is lost. |
+| `review run [--design] [--request <path>] [--iteration N] [--only <ids/roles>] [--sequential] [--context <text>] [--base <rev>] [--timeout <s>] [--idle-timeout <s>] [--force] [--json]` | Run every reviewer against the snapshot; write reports and the consolidated result. Exit 1 only if no reviewer came back `ok` — every reviewer failing, or a round whose change body was too large to inline and was handed over as a file, which is recorded as `partial` rather than clean. The round is derived from the snapshot unless `--iteration` is given, and a round past `review.max_review_iterations` is refused (exit 3) unless `--force` — the round that reached the limit still gets its fix and re-test; only the re-review is refused. A round refused by the optimization gate (tests recorded as failing) also exits 3, and is recorded as `refused` so `optimization report` can count it. So is a change body over `review.context.max_chars` (400,000): nothing is reviewed, the message names the size, the limit and the ways under it, and the round is recorded with `refused_by: "context"` — `--force` runs it anyway and records the round as `over_budget` everywhere it is reported. Whether the body goes into the prompt or over as a path is `review.context.inline_chars` (400,000, the same number by default), and each reviewer entry records the value that decided it. A round is refused the same way once `budgets.max_runtime_seconds` of delegated execution has been spent — a panel is the largest consumer of it — and the message names which budget it was. `--only` runs a subset but still consolidates every reviewer's current report, so nothing is lost. |
 | `review consolidate [--design] [--iteration N] [--json]` | Re-parse the existing reports and rebuild the consolidated result. |
 | `review show [--design] [--accepted] [--json]` | Show the consolidated review. |
 | `review triage [--design] <ids…> --status <status> [--note <text>]` | Record triage decisions. |
 | `review fix-brief [--design] [--output <path>]` | Emit the accepted-findings brief for the fixer. |
-| `review status [--design] [--json]` | Whether a re-review is warranted, the iteration budget, and the round's `coverage` — `round`, `change`, the `inline_chars` the round was measured against, plus the actions that would clear an `unverified` one: narrow the change, or raise `review.context.inline_chars`, then snapshot again — and once that limit has been raised past the size the round recorded, that the same snapshot would be inlined now and `review run` against it is all that is left. `over_budget` says the round only ran because `--force` sent it past `review.context.max_chars`. See `references/reviews.md`. |
+| `review status [--design] [--json]` | Whether a re-review is warranted, the iteration budget, and the round's `coverage` — `round`, `change`, the `inline_chars` the round was measured against, plus the actions that would clear an `unverified` one: narrow the change, or raise `review.context.inline_chars`, then snapshot again — and once that limit has been raised past the size the round recorded, that the same snapshot would be inlined now and `review run` against it is all that is left. `over_budget` says the round only ran because `--force` sent it past `review.context.max_chars`. Once the round budget is spent it also says where that round's last pass stands, read from the ledger, the run log and the approval state (nothing is cleared): `final_fix` — `pending` (fix once more), `retest` (fixed; record the re-test), `done`, `blocked` (no `review_fixer` attempt left) — or with `--design` `final_revision` — `pending` (revise once more), `done`, `blocked` (no `architect` attempt left), `approved`, `implemented` — each `null` before the limit and with a `final_fix_pending` / `final_revision_pending` flag; the last line names the next step and notes a round that repeated the previous one's findings. See `references/reviews.md`. |
 
 `--design` switches every one of those to the *design* review: `.ai/plan.md`
 judged by the same panel before implementation, with its own reports, round
@@ -163,8 +166,9 @@ the plan itself instead of a diff — there is no `review snapshot --design`,
 and no git is needed — and hashes it with the request it answers
 (`--request <path>`, default `.ai/execution/design-request.md`; a missing one
 is noted, not fatal). No plan exits 2, a round past
-`review.design.max_iterations` exits 3 unless `--force`, and every reviewer
-failing exits 1. `review.context.max_chars` is measured over the plan *and*
+`review.design.max_iterations` exits 3 unless `--force` (the round that
+reached the limit still gets its revision; only the re-review is refused), and
+every reviewer failing exits 1. `review.context.max_chars` is measured over the plan *and*
 the request together, because both go into every reviewer's prompt, and the
 round is refused before the plan is frozen — so the previous round's reports
 and triage are still there to report on. The optimization gate and panel reduction do not apply, and
@@ -222,6 +226,37 @@ the other way: once the user has approved the current plan, a design review
 budget spent with findings open is no longer a reason, because the user was
 shown them and decided to go ahead.
 
+A spent round budget is not a reason until the round that reached it has had
+its last pass. Design (`design_review.final_revision`): `pending` — fold the
+findings into the plan once more, no re-review — is `continue`; `done` (the
+plan differs from the frozen one, or the architect answered after the round
+with `--output` naming the plan)
+is `stop-and-report` with `; revised after the last round, not re-reviewed --
+present the plan and ask` or `; the architect left the plan unchanged …`;
+`blocked` (no architect attempt left) stops at once; `approved` (an approval
+recorded for this plan and round, whether or not `design.require_approval` is
+on) gives no reason; `implemented` (the implementer already ran on this plan)
+and `unaccepted` (none of the open findings is `accepted`, so there is nothing
+to fold in) keep the plain reason. Code (`review.final_fix`): `pending` (fix
+once more) and
+`retest` (fixed; waiting for a `test` or `re-test` outcome recorded after the
+fix) are `continue`; `done` is `stop-and-report` with `; fixed and re-tested
+after the last round, not re-reviewed -- report`; `blocked` (no `review_fixer`
+attempt left) stops at once; `unaccepted` (nothing accepted to fix) keeps the
+plain reason. With a plan written, `architect has no attempts left` is a reason
+only while a design round within its budget still has blocking findings to
+revise for. The `Review:` and `Design review:` lines say when
+a last pass is still owed.
+
+Two reasons wait for it too. `the last (design) review round found exactly
+what the previous one found` is held back while the revision or the fix and
+its re-test are still owed — `identical_rounds` in `review` / `design_review`
+carries the count meanwhile, and the human lines say `identical to the
+previous round`. And `<stage> has no attempts left` is given only for a stage
+still needed: `architect` only while there is no plan (a revision still owed
+says so in its own reason, and a pending approval's line notes that no
+attempt is left for changes), `review_fixer` only while the fix is not made.
+
 ```bash
 dev-orchestra status --json
 ```
@@ -229,9 +264,10 @@ dev-orchestra status --json
 ```json
 {
   "verdict": "stop-and-report",
-  "reasons": ["review budget spent (2/2 rounds) with 1 finding(s) still open"],
+  "reasons": ["review budget spent (2/2 rounds) with 1 finding(s) still open; fixed and re-tested after the last round, not re-reviewed -- report"],
   "stalls": [],
-  "design_review": {"enabled": false, "iteration": 0, "max_iterations": 2, "blocking": [], "accepted": 0},
+  "review": {"iteration": 2, "max_review_iterations": 2, "blocking": ["F1"], "accepted": 1, "refused_for_size": null, "identical_rounds": 1, "final_fix": "done", "final_fix_pending": false},
+  "design_review": {"enabled": false, "iteration": 0, "max_iterations": 2, "blocking": [], "accepted": 0, "identical_rounds": 0, "final_revision": null, "final_revision_pending": false},
   "budgets": {"implementer": {"used": 2, "limit": 5, "remaining": 3}}
 }
 ```
@@ -479,7 +515,7 @@ which is a different root and therefore a different `.ai/`.
 | Command | Description |
 | --- | --- |
 | `state show [--json]` | The recorded stage events for this project. |
-| `state record <stage> <status> [--detail k=v …]` | Append a stage outcome (for stages not run through `run`). `state record test ok\|failed` is what the review gate reads. |
+| `state record <stage> <status> [--detail k=v …]` | Append a stage outcome (for stages not run through `run`). `state record test ok\|failed` is what the review gate reads; record a re-test the same way. |
 | `summary [--json]` | The end-of-run stage + model summary, including `design_approval` once a plan was approved. |
 
 ## Environment variables

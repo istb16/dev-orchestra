@@ -178,10 +178,27 @@ so a chained `review run --design` does not review the old plan as the new one.
 That spends an attempt from `budgets.architect`, which is why the design review
 has no budget key of its own. Re-review with `review run --design` only when
 `review status --design` says so — the rewritten plan hashes differently, so
-the next round is derived, never passed in. When the round budget is spent,
-report the findings that are still open rather than looping; `status` says
-`stop-and-report` for exactly that, because implementing a plan whose known
-problems are unanswered is the mistake this stage exists to prevent.
+the next round is derived, never passed in.
+
+The round that reaches `review.design.max_iterations` still gets its revision:
+the limit counts reviews, and what it refuses is the re-review of that
+revision, not the revision. Until it is made, `status` says `continue` and
+`review status --design` says to fold the accepted findings in once more
+(`final_revision: pending`). Once the plan differs from the frozen
+`review-target.md`, or the architect answered after that round with its
+`--output` on the plan, `status` says
+`stop-and-report` (`final_revision: done`): present the unreviewed revision
+with the findings still open and ask, because implementing a plan whose known
+problems are unanswered is the mistake this stage exists to prevent. With no
+`budgets.architect` attempt left to revise it, the stop comes at once
+(`blocked`) and the question is whether to approve over the findings or free an
+attempt. A plan already approved (`approved`, even with
+`design.require_approval` turned off since) or already implemented
+(`implemented`) is not asked to change. Only accepted findings are folded in:
+with none of them `accepted` -- untriaged, `needs-triage` or
+`needs-investigation` -- the spent budget stops at once (`unaccepted`). A round that found exactly what the
+previous one found does not skip the revision either; the repeat is said
+beside it and becomes a reason once the revision is made.
 
 Only the previous plan survives, frozen in `reviews/design/review-target.md`.
 A rewrite overwrites everything older.
@@ -201,9 +218,13 @@ they ask for changes, revise the plan (and re-review it if the design review is
 on), then ask again: the revision hashes differently, so the old approval no
 longer counts.
 
-A design review budget spent with findings still open is `stop-and-report`,
-and that report ends in this question: name the findings and ask whether to
-approve over them or to revise. Once they approve, the stop is answered --
+A design review budget spent with findings still open is `stop-and-report`
+once the last round's revision is made, and that report ends in this question:
+present the revised plan, name the findings still open from the review of the
+earlier revision, and ask. If the architect left the plan unchanged, ask
+whether to approve over the findings or to triage them again; if no architect
+attempt was left to revise it, ask whether to approve over them or to free an
+attempt (`budget reset`) and revise. Once they approve, the stop is answered --
 `status` drops that reason for the approved plan.
 
 `run implementer` refuses (exit 5) while the plan is not approved, before it
@@ -229,6 +250,11 @@ it was given over. It goes stale when the plan changes (`plan-changed`) or when
 | `reviewed_since_approval` | whether a design review round ran after the approval; `null` without one |
 | `open_findings`, `open_findings_of_current_plan` | the blocking design findings, and whether that round reviewed this plan text |
 | `design_review_exhausted` | the design review budget is spent with findings open |
+
+Beside it, `design_review.final_revision` says where the last round's revision
+stands (`pending`, `done`, `blocked`, `approved`, `implemented`, `unaccepted`, or `null`
+before the limit), `final_revision_pending` is `true` while it is still owed,
+and `identical_rounds` is how many rounds in a row found the same findings.
 
 `implemented-unapproved` is a workflow whose implementer last finished `ok`
 after the plan file was last written, with no approval on record -- one that
@@ -321,7 +347,9 @@ dev-orchestra review status
   "max_review_iterations": 2,
   "blocking": ["F1"],
   "re_review_recommended": true,
-  "iteration_budget_exhausted": false
+  "iteration_budget_exhausted": false,
+  "final_fix": null,
+  "final_fix_pending": false
 }
 ```
 
@@ -331,9 +359,17 @@ failed, say) stays in the current round. Pass `--iteration` only to override
 that deliberately.
 
 Re-review only when `re_review_recommended` is true, and only after a fresh
-`review snapshot`. When the budget is spent, report the remaining findings with
-their severity and location and let the user decide. Looping past the budget is
-how a run turns into an expensive no-op.
+`review snapshot`. When the budget is spent, fix once more, re-test and record
+it, then report; do not re-review. The round that reached the limit still gets
+its fix (`final_fix: pending`, `status` says `continue`) and its re-test
+(`retest`, still `continue`, even if the fix used the last `review_fixer`
+attempt); once a `test` outcome is recorded after the fix (`done`), `status`
+says `stop-and-report`. Report the remaining findings with their severity and
+location and let the user decide. A final round that repeated the previous
+one's findings still gets its fix; the repeat becomes a reason after it. With
+no `review_fixer` attempt left for the fix, the stop comes at once (`blocked`),
+and so it does with no finding `accepted` to fix (`unaccepted`).
+Looping past the budget is how a run turns into an expensive no-op.
 
 ## Recording and reporting
 
@@ -342,9 +378,13 @@ the summary is complete:
 
 ```bash
 dev-orchestra state record test ok --detail command="pytest -q" passed=128
-dev-orchestra state record re-test ok
+dev-orchestra state record test ok --detail phase=re-test
 dev-orchestra summary
 ```
+
+Record the re-test under `test` too: the review gate and `status`'s re-test
+check read stage `test`. A `re-test` stage is accepted by `status` as the
+re-test, but the gate never sees it.
 
 The final report names: which stages ran, which were skipped and why, test
 results, review outcome including failures, triage counts, files changed, and
