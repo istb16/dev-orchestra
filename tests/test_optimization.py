@@ -1465,6 +1465,371 @@ class TestThePairedBlockInTheReport(IsolatedCase):
         self.assertNotIn("%s in " % ("s" * 12), out)
 
 
+# --------------------------------------------------------------------------- scorecard
+
+SHA = "a" * 64
+
+
+def scored_run(reviewer_id, status="ok", billed=100, cost=None, snapshot=SHA[:12]):
+    """A reviewer entry as a review event records it."""
+    usage = {"billed_tokens": billed, "cost_usd": cost, "measured": bool(billed)}
+    return {"id": reviewer_id, "status": status, "snapshot": snapshot, "usage": usage}
+
+
+def scored_event(runs, round_id="r1", iteration=1, surrounding=None, rerun=False, stage="review"):
+    event = {"stage": stage, "status": "ok", "iteration": iteration, "round_id": round_id, "reviewers": runs}
+    if surrounding:
+        event["measurement"] = {"surrounding": surrounding, "rerun": rerun}
+    return event
+
+
+def scored_finding(fid, key, reported_by, triage="needs-triage", set_at=None, duplicates=()):
+    finding = {"id": fid, "key": key, "reported_by": list(reported_by), "triage": triage}
+    if set_at:
+        finding["triage_set_at"] = set_at
+    if duplicates:
+        finding["possible_duplicates"] = list(duplicates)
+    return finding
+
+
+def scored_round(findings=(), sha=SHA, round_id="r1", iteration=1, live=True, at="2026-09-01T00:00:00Z"):
+    """A consolidated report in the shape ``review.recorded_rounds`` returns it."""
+    snapshot = {"sha256": sha}
+    if round_id:
+        snapshot["round_id"] = round_id
+    return {
+        "generated_at": at,
+        "iteration": iteration,
+        "snapshot": snapshot,
+        "findings": list(findings),
+        "live": live,
+    }
+
+
+def scorecard(events, rounds, stage="code"):
+    return opt.reviewer_scorecard([{"workflow": "w", "stage": stage, "events": events, "rounds": rounds}])
+
+
+class TestMatchingEventsToRounds(unittest.TestCase):
+    """Cost comes from the events and findings from the reports, so each
+    figure is only honest if both describe the same rounds."""
+
+    def test_a_round_id_matches_only_the_report_of_that_round(self):
+        rounds = [scored_round(round_id="r1", live=False), scored_round(round_id="r2")]
+        card = scorecard([scored_event([scored_run("a")], round_id="r1")], rounds)["code"]
+        self.assertEqual((card["rounds_recorded"], card["rounds_read"]), (1, 1))
+
+    def test_an_event_without_a_round_id_matches_the_one_report_of_its_sha(self):
+        """An event from before events carried the id, over a report that has one."""
+        event = scored_event([scored_run("a")], round_id="")
+        self.assertEqual(scorecard([event], [scored_round(round_id="rx")])["code"]["rounds_read"], 1)
+
+    def test_an_unstamped_event_matches_the_live_report_of_its_iteration(self):
+        event = scored_event([scored_run("a", snapshot="")], round_id="")
+        self.assertEqual(scorecard([event], [scored_round()])["code"]["rounds_read"], 1)
+        other = scored_event([scored_run("a", snapshot="")], round_id="", iteration=2)
+        self.assertEqual(scorecard([other], [scored_round()])["code"]["rounds_read"], 0)
+
+    def test_a_stamped_event_takes_the_live_report_before_an_unstamped_one(self):
+        """Round 1 unstamped and round 2 stamped, and only round 2's report left."""
+        first = scored_event([scored_run("a", snapshot="", billed=5)], round_id="")
+        second = scored_event([scored_run("a", billed=7)], round_id="")
+        card = scorecard([first, second], [scored_round()])["code"]
+        self.assertEqual((card["rounds_recorded"], card["rounds_read"]), (2, 1))
+        self.assertEqual(card["panel"]["billed_tokens"], 7)
+
+    def test_unstamped_events_of_one_iteration_are_one_round(self):
+        events = [scored_event([scored_run("a", snapshot="")], round_id="") for _ in range(3)]
+        card = scorecard(events, [scored_round()])["code"]
+        self.assertEqual((card["rounds_recorded"], card["rounds_read"]), (1, 1))
+        self.assertEqual(card["panel"]["runs"], 3)
+
+    def test_two_reports_of_one_sha_leave_an_event_without_a_round_id_unread(self):
+        """Taking the newer would pin the old round's cost on the new round's findings."""
+        rounds = [scored_round(round_id="", live=False), scored_round(round_id="r2")]
+        old = scored_event([scored_run("a", billed=5)], round_id="")
+        new = scored_event([scored_run("a", billed=7)], round_id="r2")
+        card = scorecard([old, new], rounds)["code"]
+        self.assertEqual((card["rounds_recorded"], card["rounds_read"]), (2, 1))
+        self.assertEqual(card["panel"]["billed_tokens"], 7)
+        alone = scorecard([old], rounds)["code"]
+        self.assertEqual(alone["rounds_read"], 0)
+        self.assertEqual(alone["panel"]["billed_tokens"], 0)
+
+    def test_one_sha_frozen_twice_is_two_rounds_with_their_own_cost(self):
+        rounds = [
+            scored_round([scored_finding("F1", "k1", ["a"], "accepted")], round_id="r1", live=False),
+            scored_round([scored_finding("F1", "k2", ["a"], "accepted")], round_id="r2"),
+        ]
+        events = [
+            scored_event([scored_run("a", billed=5)], round_id="r1"),
+            scored_event([scored_run("a", billed=7)], round_id="r2"),
+        ]
+        card = scorecard(events, rounds)["code"]
+        self.assertEqual((card["rounds_recorded"], card["rounds_read"]), (2, 2))
+        self.assertEqual(card["panel"]["billed_tokens"], 12)
+        self.assertEqual(card["panel"]["accepted"], 2)
+
+    def test_a_measured_pair_is_one_round_paid_twice(self):
+        """The findings and triage are the second run's, the cost is both runs'."""
+        first = [scored_run("a", billed=5), scored_run("b", billed=5)]
+        second = [scored_run("a", billed=7), scored_run("b", billed=7)]
+        events = [
+            scored_event(first, surrounding="none"),
+            scored_event(second, surrounding="enclosing", rerun=True),
+        ]
+        rounds = [scored_round([scored_finding("F1", "second", ["a"], "accepted")])]
+        card = scorecard(events, rounds)["code"]
+        self.assertEqual((card["rounds_recorded"], card["rounds_read"]), (1, 1))
+        self.assertEqual(card["rerun_rounds"], 1)
+        self.assertEqual(card["panel"]["billed_tokens"], 24)
+        self.assertEqual(card["panel"]["runs"], 4)
+        self.assertEqual(card["findings"], 1)
+
+    def test_a_measured_pair_with_no_report_is_one_hole(self):
+        events = [
+            scored_event([scored_run("a", billed=5)], surrounding="none"),
+            scored_event([scored_run("a", billed=7)], surrounding="enclosing", rerun=True),
+        ]
+        card = scorecard(events, [])["code"]
+        self.assertEqual((card["rounds_recorded"], card["rounds_read"]), (1, 0))
+        self.assertEqual(card["panel"]["billed_tokens"], 0)
+
+    def test_a_rerun_with_only_is_the_same_round(self):
+        events = [
+            scored_event([scored_run("a", billed=5), scored_run("b", status="failed", billed=0)]),
+            scored_event([scored_run("b", billed=7)]),
+        ]
+        card = scorecard(events, [scored_round()])["code"]
+        self.assertEqual(card["rounds_recorded"], 1)
+        self.assertEqual(card["panel"]["runs"], 3)
+        self.assertEqual(card["panel"]["billed_tokens"], 12)
+        self.assertEqual(card["reviewers"]["b"]["runs"], 2)
+
+    def test_a_round_nobody_reviewed_is_counted_but_not_a_hole(self):
+        """There was never a report to read, and its runs were still paid for."""
+        event = scored_event([scored_run("a", status="failed", billed=0), scored_run("b", status="failed")])
+        card = scorecard([event], [])["code"]
+        self.assertEqual((card["rounds_recorded"], card["rounds_read"], card["rounds_unreviewed"]), (1, 0, 1))
+        self.assertEqual(card["panel"]["runs"], 2)
+        self.assertEqual(card["panel"]["failed_runs"], 2)
+        self.assertEqual(card["panel"]["billed_tokens"], 100)
+
+    def test_a_round_nobody_reviewed_is_not_read_even_with_a_report(self):
+        """A code round keeps its id whether or not anyone returned, so it has one."""
+        rounds = [scored_round([scored_finding("F1", "k", ["a"], "accepted")])]
+        event = scored_event([scored_run("a", status="failed", billed=0)])
+        card = scorecard([event], rounds)["code"]
+        self.assertEqual((card["rounds_recorded"], card["rounds_read"], card["rounds_unreviewed"]), (1, 0, 1))
+        self.assertEqual(card["findings"], 0)
+        self.assertEqual(card["workflows_read"], 0)
+        self.assertEqual((card["panel"]["runs"], card["panel"]["failed_runs"]), (1, 1))
+
+    def test_a_round_with_no_report_leaves_its_cost_out_too(self):
+        events = [
+            scored_event([scored_run("a", billed=5)], round_id="r1"),
+            scored_event([scored_run("a")], round_id="r2"),
+        ]
+        card = scorecard(events, [scored_round(round_id="r1")])["code"]
+        self.assertEqual(card["rounds_recorded"] - card["rounds_read"] - card["rounds_unreviewed"], 1)
+        self.assertEqual(card["panel"]["billed_tokens"], 5)
+
+    def test_an_event_that_did_not_finish_is_not_a_round(self):
+        event = dict(scored_event([scored_run("a")]), status="failed")
+        self.assertEqual(scorecard([event], [scored_round()])["code"]["rounds_recorded"], 0)
+
+
+class TestCountingFindingsOnce(unittest.TestCase):
+    """A finding nobody fixed comes back every round, carrying its triage."""
+
+    def outcome(self, first, second):
+        rounds = [
+            scored_round([first], round_id="r1", live=False, at="2026-09-01T00:00:00Z"),
+            scored_round([second], round_id="r2", at="2026-09-02T00:00:00Z"),
+        ]
+        events = [
+            scored_event([scored_run("a")], round_id="r1"),
+            scored_event([scored_run("a")], round_id="r2"),
+        ]
+        panel = scorecard(events, rounds)["code"]["panel"]
+        self.assertEqual(panel["reported"], 1)
+        return {name for name in ("accepted", "rejected", "duplicate", "open") if panel[name]}
+
+    def test_a_finding_in_two_rounds_is_one_finding(self):
+        accepted = scored_finding("F1", "k", ["a"], "accepted", set_at="t1")
+        self.assertEqual(self.outcome(accepted, accepted), {"accepted"})
+
+    def test_a_rebuilt_default_does_not_undo_an_acceptance(self):
+        self.assertEqual(
+            self.outcome(scored_finding("F1", "k", ["a"], "accepted"), scored_finding("F2", "k", ["a"])),
+            {"accepted"},
+        )
+
+    def test_putting_it_back_to_needs_triage_withdraws_the_acceptance(self):
+        reopened = scored_finding("F1", "k", ["a"], "needs-triage", set_at="t2")
+        self.assertEqual(self.outcome(scored_finding("F1", "k", ["a"], "accepted"), reopened), {"open"})
+
+    def test_needs_investigation_is_a_decision_with_or_without_the_stamp(self):
+        for set_at in (None, "t2"):
+            later = scored_finding("F1", "k", ["a"], "needs-investigation", set_at=set_at)
+            self.assertEqual(self.outcome(scored_finding("F1", "k", ["a"], "accepted"), later), {"open"})
+
+    def test_a_later_decision_wins(self):
+        accepted = scored_finding("F1", "k", ["a"], "accepted")
+        rejected = scored_finding("F1", "k", ["a"], "rejected")
+        self.assertEqual(self.outcome(accepted, rejected), {"rejected"})
+
+    def test_rounds_written_in_one_second_are_ordered_by_their_events(self):
+        """The archive lists rounds by file name, and ``generated_at`` ties."""
+        rounds = [
+            scored_round([scored_finding("F1", "k", ["a"], "rejected")], round_id="r2", live=False),
+            scored_round([scored_finding("F1", "k", ["a"], "accepted")], round_id="r1", live=False),
+        ]
+        events = [
+            scored_event([scored_run("a")], round_id="r1"),
+            scored_event([scored_run("a")], round_id="r2"),
+        ]
+        panel = scorecard(events, rounds)["code"]["panel"]
+        self.assertEqual((panel["accepted"], panel["rejected"]), (0, 1))
+
+    def test_never_decided_is_open(self):
+        undecided = scored_finding("F1", "k", ["a"])
+        self.assertEqual(self.outcome(undecided, undecided), {"open"})
+
+    def test_a_finding_reported_by_two_counts_once_for_each_and_once_for_the_panel(self):
+        rounds = [scored_round([scored_finding("F1", "k", ["a", "b"], "accepted")])]
+        card = scorecard([scored_event([scored_run("a"), scored_run("b")])], rounds)["code"]
+        self.assertEqual(card["reviewers"]["a"]["reported"], 1)
+        self.assertEqual(card["reviewers"]["b"]["reported"], 1)
+        self.assertEqual(card["panel"]["reported"], 1)
+        self.assertEqual(card["reviewers"]["a"]["alone"], 0)
+
+
+class TestFoundAlone(unittest.TestCase):
+    """An upper bound on what dropping a reviewer would lose."""
+
+    def card(self, *findings):
+        rounds = [scored_round(list(findings))]
+        return scorecard([scored_event([scored_run("a"), scored_run("b")])], rounds)["code"]["reviewers"]
+
+    def test_a_finding_nobody_linked_is_found_alone(self):
+        card = self.card(scored_finding("F1", "k1", ["a"], "accepted"))
+        self.assertEqual((card["a"]["alone"], card["a"]["alone_accepted"]), (1, 1))
+
+    def test_the_other_reviewers_copy_triaged_duplicate_takes_it_out(self):
+        card = self.card(
+            scored_finding("F1", "k1", ["a"], "accepted", duplicates=["F2"]),
+            scored_finding("F2", "k2", ["b"], "duplicate", duplicates=["F1"]),
+        )
+        self.assertEqual(card["a"]["alone"], 0)
+        self.assertEqual(card["b"]["alone"], 0)
+
+    def test_being_the_duplicate_of_an_accepted_one_takes_it_out_too(self):
+        card = self.card(
+            scored_finding("F1", "k1", ["a"], "duplicate", duplicates=["F2"]),
+            scored_finding("F2", "k2", ["b"], "accepted", duplicates=["F1"]),
+        )
+        self.assertEqual(card["a"]["alone"], 0)
+
+    def test_a_link_between_one_reviewers_own_findings_does_not(self):
+        card = self.card(
+            scored_finding("F1", "k1", ["a"], "accepted", duplicates=["F2"]),
+            scored_finding("F2", "k2", ["a"], "duplicate", duplicates=["F1"]),
+        )
+        self.assertEqual(card["a"]["alone"], 2)
+
+    def test_a_link_nobody_triaged_duplicate_does_not(self):
+        card = self.card(
+            scored_finding("F1", "k1", ["a"], "accepted", duplicates=["F2"]),
+            scored_finding("F2", "k2", ["b"], "accepted", duplicates=["F1"]),
+        )
+        self.assertEqual(card["a"]["alone"], 1)
+
+    def test_ids_are_resolved_inside_their_own_round(self):
+        """F2 in the second round is a different finding from F2 in the first."""
+        first = scored_round(
+            [
+                scored_finding("F1", "k1", ["a"], "accepted", duplicates=["F2"]),
+                scored_finding("F2", "k2", ["a"], "accepted"),
+            ],
+            round_id="r1",
+            live=False,
+        )
+        second = scored_round([scored_finding("F2", "k3", ["b"], "duplicate")], round_id="r2")
+        events = [
+            scored_event([scored_run("a")], round_id="r1"),
+            scored_event([scored_run("b")], round_id="r2"),
+        ]
+        card = scorecard(events, [first, second])["code"]["reviewers"]
+        self.assertEqual(card["a"]["alone"], 2)
+
+
+class TestScorecardFigures(unittest.TestCase):
+    def card(self, accepted=0, rejected=0, duplicate=0, runs=None):
+        findings = []
+        for status, count in (("accepted", accepted), ("rejected", rejected), ("duplicate", duplicate)):
+            findings += [scored_finding("F", "%s%d" % (status, n), ["a"], status) for n in range(count)]
+        event = scored_event(runs or [scored_run("a", billed=1000, cost=1.0)])
+        return scorecard([event], [scored_round(findings)])["code"]
+
+    def test_a_rate_needs_ten_decided_findings(self):
+        self.assertIsNone(self.card(accepted=5, rejected=4)["reviewers"]["a"]["rejection_rate"])
+        self.assertEqual(self.card(accepted=6, rejected=4)["reviewers"]["a"]["rejection_rate"], 0.4)
+
+    def test_a_per_accepted_figure_needs_ten_accepted(self):
+        few = self.card(accepted=9, rejected=5)["reviewers"]["a"]
+        self.assertIsNone(few["billed_per_accepted"])
+        self.assertIsNone(few["cost_per_accepted"])
+        enough = self.card(accepted=10)["reviewers"]["a"]
+        self.assertEqual(enough["billed_per_accepted"], 100)
+        self.assertEqual(enough["cost_per_accepted"], 0.1)
+
+    def test_a_reviewer_that_prices_nothing_has_no_cost_per_accepted(self):
+        """Codex: zero dollars is not a price, and $0 per accepted would say it was."""
+        card = self.card(accepted=10, runs=[scored_run("a", billed=1000, cost=None)])["reviewers"]["a"]
+        self.assertEqual(card["billed_per_accepted"], 100)
+        self.assertIsNone(card["cost_per_accepted"])
+        self.assertEqual(card["priced_runs"], 0)
+
+    def test_a_failed_run_is_a_run_that_cost_nothing(self):
+        card = self.card(runs=[scored_run("a", billed=1000), scored_run("b", status="failed", billed=0)])
+        self.assertEqual((card["reviewers"]["b"]["runs"], card["reviewers"]["b"]["failed_runs"]), (1, 1))
+        self.assertEqual(card["reviewers"]["b"]["billed_tokens"], 0)
+        self.assertEqual(card["panel"]["runs"], 2)
+
+    def test_code_and_design_are_kept_apart_and_added_only_in_the_total(self):
+        code = {
+            "workflow": "w",
+            "stage": "code",
+            "events": [scored_event([scored_run("a", billed=10)])],
+            "rounds": [scored_round([scored_finding("F1", "k", ["a"], "accepted")])],
+        }
+        design = {
+            "workflow": "w",
+            "stage": "design",
+            "events": [scored_event([scored_run("a", billed=20)], stage="design_review")],
+            "rounds": [scored_round([scored_finding("F1", "k", ["a"], "accepted")])],
+        }
+        card = opt.reviewer_scorecard([code, design])
+        self.assertEqual(card["code"]["panel"]["billed_tokens"], 10)
+        self.assertEqual(card["design"]["panel"]["billed_tokens"], 20)
+        self.assertEqual(card["total"]["billed_tokens"], 30)
+        self.assertEqual(card["total"]["accepted"], 2)
+        self.assertEqual(card["total"]["rounds_read"], 2)
+
+    def test_the_total_of_one_stage_is_that_stage(self):
+        code = {
+            "workflow": "w",
+            "stage": "code",
+            "events": [scored_event([scored_run("a", billed=10)])],
+            "rounds": [scored_round([scored_finding("F1", "k", ["a"], "rejected")])],
+        }
+        card = opt.reviewer_scorecard([code])
+        for field in ("billed_tokens", "runs", "reported", "rejected"):
+            self.assertEqual(card["total"][field], card["code"]["panel"][field])
+        self.assertEqual(card["total"]["rounds_recorded"], card["code"]["rounds_recorded"])
+
+
 @unittest.skipUnless(has_git(), "git is required")
 class TestWhatTheSnapshotReportsAsChanged(IsolatedCase):
     """The lists the risk check and the size threshold are computed from."""

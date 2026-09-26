@@ -868,6 +868,325 @@ def _bump(counter: Dict[str, int], key: str) -> None:
     counter[key] = counter.get(key, 0) + 1
 
 
+#: Below this many decided findings no rate is printed, and below this many
+#: accepted ones no per-accepted figure. Under ten, one finding moves a rate by
+#: ten points or more, and that is noise, not a measurement. The counts are
+#: always printed; only the division is withheld.
+SCORECARD_MIN_DECIDED = 10
+
+#: A reviewer run that returned a review, whole or in part. Anything else is a
+#: run that was paid for, or at least attempted, and produced nothing to triage.
+_REVIEWED = ("ok", "partial")
+
+#: A triage value ``consolidate_findings`` never writes as its default, so a
+#: record holding one is a decision even in a report from before decisions
+#: were stamped with ``triage_set_at``.
+_EXPLICIT_TRIAGE = ("accepted", "rejected", "duplicate", "needs-investigation")
+
+_SCORE_SPEND = ("runs", "failed_runs", "measured_runs", "priced_runs", "billed_tokens", "cost_usd")
+_SCORE_FINDINGS = ("reported", "accepted", "rejected", "duplicate", "open")
+_SCORE_ROUNDS = ("rounds_recorded", "rounds_read", "rounds_unreviewed", "rerun_rounds")
+
+
+def reviewer_scorecard(inputs: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+    """What each reviewer found, what the owner kept of it, and what it cost.
+
+    ``inputs`` is one entry per workflow and stage: ``stage`` (``code`` or
+    ``design``), ``events`` (that stage's finished events) and ``rounds``
+    (``review.recorded_rounds``). Cost and runs come from the events, findings
+    and triage from the rounds' reports, and the two are matched round by
+    round -- see ``_match_rounds``. A round with events and no report to read
+    is a hole, and its cost is left out with its findings: a per-accepted
+    figure has to divide what one set of rounds cost by what the same set
+    found.
+
+    Findings are counted once per workflow and stage, by ``key``: a finding
+    nobody fixed comes back in every later round, carrying its triage, and
+    counting it per round would make the most persistent finding the most
+    accepted one.
+    """
+    stages: Dict[str, Dict[str, Any]] = {}
+    for stage in ("code", "design"):
+        stages[stage] = dict.fromkeys(_SCORE_ROUNDS, 0)
+        stages[stage].update(workflows_read=0, reviewers={}, panel=_score_group(), findings=0)
+    for item in inputs:
+        stage = stages["design" if item.get("stage") == "design" else "code"]
+        events = [
+            event
+            for event in item.get("events") or []
+            if isinstance(event, dict) and event.get("status") == "ok"
+        ]
+        rounds = [entry for entry in item.get("rounds") or [] if isinstance(entry, dict)]
+        groups = _match_rounds(events, rounds)
+        read = [group for group in groups if group["round"] is not None]
+        read.sort(key=lambda group: group["order"])
+        counted = [group for group in groups if group["round"] is not None or group["unreviewed"]]
+        stage["rounds_recorded"] += len(groups)
+        stage["rounds_read"] += len(read)
+        stage["rounds_unreviewed"] += sum(1 for group in groups if group["unreviewed"])
+        # Among the rounds whose cost is in: the note that goes with it says
+        # both runs of the pair were paid for, which is not so of a hole.
+        stage["rerun_rounds"] += sum(1 for group in counted if group["rerun"])
+        if read:
+            stage["workflows_read"] += 1
+        for group in counted:
+            for event in group["events"]:
+                _add_spend(stage, event)
+        for finding in _unique_findings([group["round"] for group in read]):
+            _score_finding(stage, finding)
+    for stage in stages.values():
+        stage["findings"] = stage["panel"]["reported"]
+        stage["reviewers"] = {name: _finish_score(group, True) for name, group in stage["reviewers"].items()}
+        stage["panel"] = _finish_score(stage["panel"], False)
+    total = _score_group()
+    for field in _SCORE_SPEND + _SCORE_FINDINGS:
+        total[field] = stages["code"]["panel"][field] + stages["design"]["panel"][field]
+    total = _finish_score(total, False)
+    for field in _SCORE_ROUNDS:
+        total[field] = stages["code"][field] + stages["design"][field]
+    return {"code": stages["code"], "design": stages["design"], "total": total}
+
+
+def _round_key_of_event(event: Dict[str, Any]) -> Tuple[Any, ...]:
+    """The round an event paid for, as far as the event can say.
+
+    ``("sha", sha12, round_id)`` when its reviewer entries agree on one
+    snapshot stamp, ``("iteration", n)`` when they carry none or disagree. A
+    re-run with ``--only`` and both runs of a ``--surrounding`` pair share the
+    key, and are one round.
+    """
+    runs = [run for run in event.get("reviewers") or [] if isinstance(run, dict)]
+    stamps = {str(run.get("snapshot") or "") for run in runs} - {"", "unknown"}
+    if len(stamps) == 1:
+        return ("sha", stamps.pop(), str(event.get("round_id") or ""))
+    return ("iteration", _int(event.get("iteration")))
+
+
+def _match_rounds(events: Sequence[Dict[str, Any]], rounds: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """One entry per round the events paid for, with the report it matched.
+
+    In order of certainty, and no report is matched twice:
+
+    1. an event with a round id matches the report of exactly that round;
+    2. one without (recorded before events carried it) matches the report of
+       its sha, only when there is exactly one. Two reports of one sha are two
+       rounds of the same content, and taking the newer would pin the old
+       round's cost on the new round's findings -- so it is a hole instead;
+    3. one with no snapshot stamp at all matches the live report, when their
+       iterations agree and nothing more certain has taken it.
+
+    A round where no reviewer returned a review is not a hole, and is not read
+    even when a report matched it: whatever that report holds, no reviewer of
+    the round put it there. Its runs and cost still count.
+
+    ``order`` is the position of the round's latest event. Events arrive in
+    the order they were written, which a report's ``generated_at`` -- to the
+    second -- cannot always tell.
+    """
+    # Here rather than at the top: the review module imports this one.
+    from .review import round_key
+
+    groups: Dict[Tuple[Any, ...], List[Dict[str, Any]]] = {}
+    order: Dict[Tuple[Any, ...], int] = {}
+    for position, event in enumerate(events):
+        key = _round_key_of_event(event)
+        groups.setdefault(key, []).append(event)
+        order[key] = position
+    keys = [round_key(entry) for entry in rounds]
+    live = next((index for index, entry in enumerate(rounds) if entry.get("live")), None)
+    matched: Dict[Tuple[Any, ...], int] = {}
+    taken: set = set()
+
+    def take(key: Tuple[Any, ...], index: int) -> None:
+        matched[key] = index
+        taken.add(index)
+
+    for key in groups:
+        if key[0] == "sha" and key[2]:
+            for index, found in enumerate(keys):
+                if found == (key[1], key[2]) and index not in taken:
+                    take(key, index)
+                    break
+    for key in groups:
+        if key[0] == "sha" and not key[2]:
+            candidates = [index for index, found in enumerate(keys) if found[0] == key[1]]
+            if len(candidates) == 1 and candidates[0] not in taken:
+                take(key, candidates[0])
+    for key in groups:
+        if key[0] == "iteration" and live is not None and live not in taken:
+            if _int(rounds[live].get("iteration")) == key[1]:
+                take(key, live)
+
+    result = []
+    for key, members in groups.items():
+        reviewed = any(
+            isinstance(run, dict) and run.get("status") in _REVIEWED
+            for event in members
+            for run in event.get("reviewers") or []
+        )
+        found = rounds[matched[key]] if key in matched and reviewed else None
+        result.append(
+            {
+                "key": key,
+                "events": members,
+                "order": order[key],
+                "round": found,
+                "unreviewed": not reviewed,
+                "rerun": any(
+                    isinstance(event.get("measurement"), dict) and event["measurement"].get("rerun") is True
+                    for event in members
+                ),
+            }
+        )
+    return result
+
+
+def _explicit_triage(finding: Dict[str, Any]) -> bool:
+    """Whether a finding's triage is a decision rather than a rebuilt default.
+
+    ``triage_set_at`` is written by every ``review triage``, so a finding put
+    back to ``needs-triage`` by its owner is a decision too: it withdraws an
+    earlier acceptance. Without the stamp, only a value the rebuild never
+    writes says so.
+    """
+    return bool(finding.get("triage_set_at")) or finding.get("triage") in _EXPLICIT_TRIAGE
+
+
+def _unique_findings(rounds: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """One record per finding ``key`` over one workflow's rounds of one stage.
+
+    ``rounds`` in the order they ran, oldest first. The last *explicit* triage
+    wins: a finding the carry missed comes back as ``needs-triage`` by
+    default, and that default must not undo an acceptance made in the round
+    before. A candidate duplicate link is resolved inside the round that made
+    it, since ids are positions renumbered every round.
+    """
+    unique: Dict[str, Dict[str, Any]] = {}
+    for position, report in enumerate(rounds):
+        findings = [finding for finding in report.get("findings") or [] if isinstance(finding, dict)]
+        by_id = {str(finding.get("id") or ""): finding for finding in findings}
+        for finding in findings:
+            key = str(finding.get("key") or "") or "%d:%s" % (position, finding.get("id"))
+            record = unique.setdefault(key, {"reported_by": [], "triage": None, "paired": False})
+            ours = [str(name) for name in finding.get("reported_by") or []]
+            for name in ours:
+                if name not in record["reported_by"]:
+                    record["reported_by"].append(name)
+            if _explicit_triage(finding):
+                record["triage"] = finding.get("triage")
+            if _alone_pairs(finding, by_id, ours):
+                record["paired"] = True
+    return list(unique.values())
+
+
+def _alone_pairs(finding: Dict[str, Any], by_id: Dict[str, Dict[str, Any]], ours: List[str]) -> bool:
+    """Whether this round linked the finding to another reviewer's as a duplicate.
+
+    Either side triaged ``duplicate`` will do: a finding judged a copy of
+    someone else's was not found alone, and neither was the one it copied.
+    A link between two findings of one reviewer says nothing about the panel.
+    """
+    for other_id in finding.get("possible_duplicates") or []:
+        other = by_id.get(str(other_id))
+        if not other:
+            continue
+        theirs = [str(name) for name in other.get("reported_by") or []]
+        if not any(name not in ours for name in theirs):
+            continue
+        if "duplicate" in (finding.get("triage"), other.get("triage")):
+            return True
+    return False
+
+
+def _score_group() -> Dict[str, Any]:
+    group: Dict[str, Any] = dict.fromkeys(_SCORE_SPEND + _SCORE_FINDINGS, 0)
+    group["cost_usd"] = 0.0
+    return group
+
+
+def _score_reviewer(stage: Dict[str, Any], name: str) -> Dict[str, Any]:
+    group = stage["reviewers"].get(name)
+    if group is None:
+        group = stage["reviewers"][name] = _score_group()
+        group.update(alone=0, alone_accepted=0)
+    return group
+
+
+def _add_spend(stage: Dict[str, Any], event: Dict[str, Any]) -> None:
+    """One event's runs, added to each reviewer and to the panel.
+
+    A run that reported nothing still ran, and adds nothing to the totals --
+    which is why they are floors.
+    """
+    for run in event.get("reviewers") or []:
+        if not isinstance(run, dict):
+            continue
+        usage = run.get("usage") if isinstance(run.get("usage"), dict) else {}
+        billed = _int(usage.get("billed_tokens"))
+        cost = usage.get("cost_usd")
+        priced = isinstance(cost, (int, float)) and not isinstance(cost, bool)
+        for group in (_score_reviewer(stage, str(run.get("id") or "?")), stage["panel"]):
+            group["runs"] += 1
+            if run.get("status") not in _REVIEWED:
+                group["failed_runs"] += 1
+            if usage.get("measured") is True or billed > 0:
+                group["measured_runs"] += 1
+            group["billed_tokens"] += billed
+            if priced:
+                group["priced_runs"] += 1
+                group["cost_usd"] += float(cost)
+
+
+def _final_triage(record: Dict[str, Any]) -> str:
+    """``accepted``, ``rejected``, ``duplicate``, or ``open`` for anything undecided."""
+    triage = record.get("triage")
+    return triage if triage in ("accepted", "rejected", "duplicate") else "open"
+
+
+def _score_finding(stage: Dict[str, Any], record: Dict[str, Any]) -> None:
+    """One finding, once to every reviewer who reported it and once to the panel."""
+    outcome = _final_triage(record)
+    reporters = record["reported_by"]
+    # Found alone only when one reviewer reported it and no round linked it to
+    # another reviewer's as a duplicate. A duplicate nobody linked is still
+    # counted here, which is what makes this an upper bound.
+    alone = len(reporters) == 1 and not record["paired"]
+    for name in reporters:
+        group = _score_reviewer(stage, name)
+        group["reported"] += 1
+        group[outcome] += 1
+        if alone:
+            group["alone"] += 1
+            if outcome == "accepted":
+                group["alone_accepted"] += 1
+    stage["panel"]["reported"] += 1
+    stage["panel"][outcome] += 1
+
+
+def _finish_score(group: Dict[str, Any], alone: bool) -> Dict[str, Any]:
+    """The counts, plus the rates they support -- None where they support none.
+
+    ``cost_per_accepted`` is None as well where no run was priced: a panel of
+    reviewers that report no price has not found findings for free.
+    """
+    finished: Dict[str, Any] = {field: group[field] for field in _SCORE_SPEND + _SCORE_FINDINGS}
+    finished["cost_usd"] = round(float(group["cost_usd"]), 4)
+    if alone:
+        finished["alone"] = group.get("alone", 0)
+        finished["alone_accepted"] = group.get("alone_accepted", 0)
+    decided = group["accepted"] + group["rejected"] + group["duplicate"]
+    accepted = group["accepted"]
+    finished["rejection_rate"] = (
+        round(group["rejected"] / float(decided), 3) if decided >= SCORECARD_MIN_DECIDED else None
+    )
+    enough = accepted >= SCORECARD_MIN_DECIDED
+    finished["billed_per_accepted"] = group["billed_tokens"] // accepted if enough else None
+    finished["cost_per_accepted"] = (
+        round(group["cost_usd"] / accepted, 4) if enough and group["priced_runs"] else None
+    )
+    return finished
+
+
 def choose_reviewers(reviewers: Sequence[Dict[str, Any]], limit: Optional[int]) -> List[Dict[str, Any]]:
     """Which reviewers survive a reduced panel.
 

@@ -155,7 +155,7 @@ echo "explain the failure" | dev-orchestra run orchestrator
 | `review run [--design] [--request <path>] [--iteration N] [--only <ids/roles>] [--sequential] [--context <text>] [--base <rev>] [--timeout <s>] [--idle-timeout <s>] [--force] [--surrounding none\|enclosing] [--json]` | Run every reviewer against the snapshot; write reports and the consolidated result. Exit 1 only if no reviewer came back `ok` — every reviewer failing, or a round whose change body was too large to inline and was handed over as a file, which is recorded as `partial` rather than clean. The round is derived from the snapshot unless `--iteration` is given, and a round past `review.max_review_iterations` is refused (exit 3) unless `--force` — the round that reached the limit still gets its fix and re-test; only the re-review is refused. A round refused by the optimization gate (tests recorded as failing) also exits 3, and is recorded as `refused` so `optimization report` can count it. So is a change body over `review.context.max_chars` (400,000): nothing is reviewed, the message names the size, the limit and the ways under it, and the round is recorded with `refused_by: "context"` — `--force` runs it anyway and records the round as `over_budget` everywhere it is reported. Whether the body goes into the prompt or over as a path is `review.context.inline_chars` (400,000, the same number by default), and each reviewer entry records the value that decided it. A round is refused the same way once `budgets.max_runtime_seconds` of delegated execution has been spent — a panel is the largest consumer of it — and the message names which budget it was. `--only` runs a subset but still consolidates every reviewer's current report, so nothing is lost. With `review.context.surrounding: enclosing` the frozen symbols are adopted within `review.context.surrounding_chars` and what the diff leaves under both limits, a `Surrounding context:` line says how many were adopted and how many left out and why, `--json` carries the round's `surrounding` record, and the size the limit measures is the diff plus the context adopted. `--surrounding none\|enclosing` overrides `review.context.surrounding` for this run only, to review one snapshot with and without the context (see [Measuring what surrounding context does](limits.md#measuring-what-surrounding-context-does)); the setting is not changed, and the line reads `(--surrounding enclosing for this run)` or `Surrounding context: none (--surrounding none for this run; review.context.surrounding unchanged)`. It is refused with exit 2 before anything is charged: with `--design`; on an incremental round (the re-review prompt carries the accepted findings of the moment it runs, so two runs on it would differ in more than the context); with `enclosing` when nothing would be adopted, whatever the reason (a snapshot not frozen with `review snapshot --surrounding enclosing`, no candidates, file delivery, no budget); and on a second run of the same snapshot -- across a `budget reset` too -- when a finding's triage or triage note was set since the last run built it (one carried in from an earlier round does not count). A rerun of the same snapshot stays in its round and registers no findings signature, so the pair does not read as a fix that changed nothing; the first run registers it as usual. A run after a lineage change, or one whose `--iteration` names another round, is no rerun and registers its signature. The run event and `--json` gain a `measurement` block (`surrounding`, full `snapshot` sha256, frozen `tree`, `head`, `base`, `workflow` directory, budget `epoch`, `rerun`, and `inputs`: `context_sha256`, `max_findings`, `inline_chars`, `max_chars`, `force`), and `consolidated.json` gains `measurement` with `triage_at_build` (each finding's `triage` and `triage_note` by key). Without the flag none of this is written. |
 | `review consolidate [--design] [--iteration N] [--json]` | Re-parse the existing reports and rebuild the consolidated result. |
 | `review show [--design] [--accepted] [--json]` | Show the consolidated review. |
-| `review triage [--design] <ids…> --status <status> [--note <text>]` | Record triage decisions. |
+| `review triage [--design] <ids…> --status <status> [--note <text>]` | Record triage decisions. Each one stamps the finding with `triage_set_at`, `needs-triage` included, so putting a finding back is told apart from never deciding it. |
 | `review fix-brief [--design] [--output <path>]` | Emit the accepted-findings brief for the fixer. |
 | `review status [--design] [--json]` | Whether a re-review is warranted, the iteration budget, and the round's `coverage` — `round`, `change`, the `inline_chars` the round was measured against, plus the actions that would clear an `unverified` one: narrow the change, or raise `review.context.inline_chars`, then snapshot again — and once that limit has been raised past the size the round recorded, that the same snapshot would be inlined now and `review run` against it is all that is left. `over_budget` says the round only ran because `--force` sent it past `review.context.max_chars`. A round that carried surrounding context adds a `surrounding context:` line -- one per reviewer when they were not handed the same -- naming up to five symbols left out, and `--json` carries the report's `surrounding` block. Once the round budget is spent it also says where that round's last pass stands, read from the ledger, the run log and the approval state (nothing is cleared): `final_fix` — `pending` (fix once more), `retest` (fixed; record the re-test), `done`, `blocked` (no `review_fixer` attempt left) — or with `--design` `final_revision` — `pending` (revise once more), `done`, `blocked` (no `architect` attempt left), `approved`, `implemented` — each `null` before the limit and with a `final_fix_pending` / `final_revision_pending` flag; the last line names the next step and notes a round that repeated the previous one's findings. See `references/reviews.md`. |
 
@@ -180,7 +180,21 @@ not whether you may. See `references/reviews.md`.
 from: `max_review_iterations` without `--design`, `max_iterations` with it. The
 rest of the payload is the same either way.
 
-`review run --design` gives every round a new `round_id` in
+Every write of `consolidated.json` -- `review run`, `review consolidate` and
+`review triage`, with or without `--design` -- also writes a copy to
+`reviews/rounds/<sha12>-<round_id>.json` (`reviews/design/rounds/` for the
+design review), overwritten only by a later write to the same round, so a
+round's findings and triage survive the next round. `optimization report`
+reads them. A report with no snapshot behind it gets no copy, and nor does one
+built after the current freeze under an earlier round's id -- a design round
+no reviewer returned a review for, or a `review consolidate` before the
+round's reviewers are back -- since for the same tree or plan frozen again that
+is the earlier round's copy.
+
+`review snapshot` gives every code snapshot a new `round_id` in
+`reviews/review-target.json`, including a second snapshot of the same tree,
+and `review run` copies it into the consolidated report's `snapshot` and its
+run event. `review run --design` gives every round a new `round_id` in
 `reviews/design/review-target.json`, including a re-run of the same plan;
 `review consolidate --design` and `review triage --design` leave it alone. The
 consolidated report names a round only once `review run --design` has had
@@ -526,6 +540,92 @@ In `--json`, `paired` is always present: `pairs` (each with `workflow`,
 `tool_reported_runs`, `tool_uses`, `tool_output_chars`, `tool_uses_per_run` and
 `tool_output_chars_per_run`; `delta` is with minus without per run, `null`
 where either side has nothing to divide by. `by_context` is unchanged.
+
+Once a round's report can be read, a scorecard follows for each stage: what
+each reviewer reported, what the owner decided about it, and what its runs
+cost. The findings and triage are read from the archived report of every
+round (`reviews/rounds/`, see [Re-review](reviews.md#re-review)), the runs and
+the cost from the run log, and the two are matched round by round:
+
+```
+Reviewer scorecard, code review: 18 of 27 recorded round(s) had a report to read.
+  claude-general         49 reported: 43 accepted, 1 rejected, 4 duplicate, 1 open; 37 found alone (33 accepted)
+                         18 run(s), 2,794,838 billed, $42.07 over 18 priced run(s); 2% rejected, 64,996 billed / $0.98 per accepted
+  codex-general          25 reported: 15 accepted, 2 rejected, 6 duplicate, 2 open; 16 found alone (11 accepted)
+                         17 run(s), 1,166,386 billed, no cost reported; 9% rejected, 77,759 billed per accepted, $ -
+  localllm-qwen          22 reported: 1 accepted, 19 rejected, 2 duplicate, 0 open; 20 found alone (1 accepted)
+                         9 run(s) (6 failed), nothing reported; 86% rejected, per accepted withheld under 10 accepted
+  panel                  96 reported: 59 accepted, 22 rejected, 12 duplicate, 3 open
+                         44 run(s), 3,961,224 billed, $42.07 over 18 of 44 run(s); 24% rejected, 67,139 billed / $0.71 per accepted
+
+Review effort, code and design together: 128 accepted over 28 of 46 recorded round(s); 5,614,101 billed,
+  $71.90 over 30 priced run(s); 43,860 billed / $0.56 per accepted
+```
+
+each block followed by notes on what its figures can claim. How a round is
+told apart, and how its events find its report:
+
+- **A round is a freeze**, named by the first twelve characters of the
+  snapshot's sha256 and the `round_id` it was given. The same tree or plan
+  frozen twice repeats the sha and is two rounds. A `--only` re-run and both
+  runs of a `--surrounding` pair are one round: every event of it adds its
+  cost, and the findings and triage are the last run's.
+- **An event with a `round_id`** matches the report of exactly that round.
+  One recorded before events carried it matches the report of its sha only
+  when there is exactly one; two reports of one sha are two rounds, and taking
+  the newer would pin the old round's cost on the new round's findings. An
+  event whose reviewer entries carry no snapshot stamp matches the live report
+  when their iterations agree and nothing more certain has taken it.
+- **A round with no report to read is left out of every figure, its cost
+  included**, so the cost and the findings describe the same rounds. Before
+  0.11.0 only a workflow's last round was kept, and the lost rounds reviewed
+  the change before its findings were fixed: a rate over what survives is
+  biased, and the direction of the bias is not known. The header says how many
+  recorded rounds could be read. A round no reviewer returned a review for is
+  not a gap, and is not read even when it has a report -- a code round writes
+  one whether or not anyone returned, and no reviewer of the round put what is
+  in it there. Its runs and cost still count, and the header counts it apart.
+- **A finding is counted once per workflow and stage**, by its `key`: one
+  nobody fixed comes back in every round. The rounds are taken in the order
+  their events were logged, and the last *explicit* triage wins --
+  `accepted`, `rejected`, `duplicate`, `needs-investigation`, or anything
+  carrying `triage_set_at`. A `needs-triage` without the stamp is the default
+  a rebuilt report gives a finding, and does not undo an acceptance; one
+  with it is `review triage --status needs-triage` and does. Undecided is
+  `open`.
+- **Found alone is an upper bound on what dropping the reviewer would lose**:
+  reported by that reviewer alone, and not linked in any round, as a possible
+  duplicate, to another reviewer's finding with either side triaged
+  `duplicate`. A duplicate no candidate link joined is still counted.
+- **Rates are printed from 10 decided findings** (`accepted`, `rejected`,
+  `duplicate`), and per-accepted figures from 10 accepted; below that the
+  counts stand alone. A per-accepted figure is over the readable rounds only,
+  and the unread rounds could move it either way. The cost totals are floors:
+  a run that reported nothing adds nothing, and one that reported tokens but
+  no price adds no dollars, so a reviewer that prices nothing has no cost per
+  accepted rather than `$0.00`.
+- **The code and design figures are added only in the last line.** Its
+  divisor is an accepted finding, one defect the owner decided to fix
+  whichever stage found it, where a per-round figure divides by a round, which
+  is a different unit of work for a plan and a diff. The mix of stages still
+  moves it, so it is read beside the two stage blocks.
+
+It says what review bought, not whether review got worse. A higher cost per
+accepted finding is what better code under review looks like, and also what a
+reviewer that has started missing defects looks like, and also what a price
+rise looks like; the figure cannot tell the three apart.
+
+A stage with no report to read prints no block. In `--json`, `scorecard` is
+always present, with `code`, `design` and `total`. Each stage has
+`rounds_recorded`, `rounds_read`, `rounds_unreviewed`, `rerun_rounds` (the
+`--surrounding` pairs among the rounds whose cost is in), `workflows_read`,
+`findings`, `reviewers` (by id) and `panel`. A reviewer carries `runs`,
+`failed_runs`, `measured_runs`, `priced_runs`, `billed_tokens`, `cost_usd`,
+`reported`, `accepted`, `rejected`, `duplicate`, `open`, `alone`,
+`alone_accepted`, `rejection_rate`, `billed_per_accepted` and
+`cost_per_accepted`, the last three `null` below their threshold; `panel` and
+`total` the same without the `alone` pair, a finding reported by two reviewers
+counted once. `total` also sums the four round counts.
 
 When every round escalated, the report says so outright: the level as
 configured never applied, and the patterns that did it are named. A dial

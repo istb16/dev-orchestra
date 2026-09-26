@@ -1504,5 +1504,147 @@ class TestReviewPipeline(IsolatedCase):
         self.assertNotIn(".ai/", tracked)
 
 
+@unittest.skipUnless(has_git(), "git is required")
+class TestTheScorecardThroughTheCli(IsolatedCase):
+    """What each round found and what the owner kept of it, read back by
+    `optimization report` from the archived report of every round."""
+
+    def setUp(self):
+        super().setUp()
+        self.init_git_repo()
+        self.write("app.py", "def add(a, b):\n    return a + b\n")
+        self.commit_all("init")
+        self.write("app.py", "def add(a, b):\n    return a - b\n")
+
+        mock_dir = os.path.join(self.tmp, "mock")
+        os.makedirs(mock_dir)
+        with open(os.path.join(mock_dir, "review.txt"), "w", encoding="utf-8") as handle:
+            handle.write(FINDING)
+        os.environ["DEV_ORCHESTRA_MOCK_DIR"] = mock_dir
+
+        run_cli("config", "setup", "--defaults")
+        run_cli("reviewer", "remove", "claude-general")
+        run_cli("reviewer", "remove", "codex-general")
+        run_cli("reviewer", "add", "--provider", "mock", "--id", "m1", "--role", "general")
+        run_cli("reviewer", "add", "--provider", "mock", "--id", "m2", "--role", "security")
+        # Both reviewers on every round: the panel reduction has its own tests.
+        run_cli("config", "set", "optimization.level", "quality")
+        self.workspace = self.cli_workspace()
+
+    def scorecard(self, *before):
+        return json.loads(run_cli(*before, "optimization", "report", "--json")[1])["scorecard"]
+
+    def reviewed_and_accepted(self):
+        run_cli("review", "snapshot")
+        run_cli("review", "run")
+        run_cli("review", "triage", "F1", "--status", "accepted")
+
+    def archived(self):
+        return ws.list_files(self.workspace.rounds_dir, ".json")
+
+    def test_a_triaged_round_is_scored_from_its_archive(self):
+        self.reviewed_and_accepted()
+        card = self.scorecard()["code"]
+        self.assertEqual(card["reviewers"]["m1"]["accepted"], 1)
+        self.assertEqual(card["panel"]["accepted"], 1)
+        self.assertEqual((card["rounds_read"], card["rounds_recorded"]), (1, 1))
+
+        round_id = ws.read_json(self.workspace.snapshot_meta_path)["round_id"]
+        self.assertTrue(round_id)
+        live = ws.read_json(self.workspace.consolidated_json_path)
+        self.assertEqual(live["snapshot"]["round_id"], round_id)
+        events = [event for event in self.workspace.read_state()["events"] if event.get("stage") == "review"]
+        self.assertEqual(events[-1]["round_id"], round_id)
+        self.assertEqual(len(self.archived()), 1)
+        self.assertTrue(ws.read_json(self.archived()[0])["findings"][0]["triage_set_at"])
+
+    def test_putting_a_finding_back_withdraws_its_acceptance(self):
+        self.reviewed_and_accepted()
+        run_cli("review", "triage", "F1", "--status", "needs-triage")
+        panel = self.scorecard()["code"]["panel"]
+        self.assertEqual((panel["accepted"], panel["open"]), (0, 1))
+
+    def test_the_same_tree_frozen_again_is_a_second_round_not_a_second_finding(self):
+        self.reviewed_and_accepted()
+        run_cli("review", "snapshot")
+        run_cli("review", "run")
+        self.assertEqual(len(self.archived()), 2)
+        card = self.scorecard()["code"]
+        self.assertEqual((card["rounds_recorded"], card["rounds_read"]), (2, 2))
+        self.assertEqual(card["panel"]["accepted"], 1)
+
+    def test_a_round_every_reviewer_failed_is_declared_unreviewed(self):
+        """Its report is archived all the same, and holds the last round's findings."""
+        self.reviewed_and_accepted()
+        run_cli("review", "snapshot")
+        os.environ["DEV_ORCHESTRA_MOCK_FAIL"] = "1"
+        run_cli("review", "run")
+        del os.environ["DEV_ORCHESTRA_MOCK_FAIL"]
+        card = self.scorecard()["code"]
+        self.assertEqual((card["rounds_recorded"], card["rounds_read"], card["rounds_unreviewed"]), (2, 1, 1))
+        self.assertEqual(card["panel"]["accepted"], 1)
+        self.assertEqual(card["reviewers"]["m1"]["failed_runs"], 1)
+        _, out, _ = run_cli("optimization", "report")
+        self.assertIn("1 of 2 recorded round(s) had a report to read; 1 round(s) no reviewer reviewed.", out)
+
+    def test_a_rerun_with_only_stays_one_round(self):
+        run_cli("review", "snapshot")
+        run_cli("review", "run")
+        run_cli("review", "run", "--only", "m2")
+        self.assertEqual(len(self.archived()), 1)
+        card = self.scorecard()["code"]
+        self.assertEqual(card["rounds_recorded"], 1)
+        self.assertEqual(card["panel"]["runs"], 3)
+        self.assertEqual(card["reviewers"]["m2"]["runs"], 2)
+
+    def test_every_workflow_is_read_and_workflow_narrows_it_to_one(self):
+        self.reviewed_and_accepted()
+        other = ws.Workspace(self.project, workflow="elsewhere").ensure()
+        run = {"id": "x", "status": "ok", "snapshot": "b" * 12, "usage": {"billed_tokens": 10}}
+        other.record_event("review", "ok", {"iteration": 1, "round_id": "r", "reviewers": [run]})
+        finding = {"id": "F1", "key": "k", "reported_by": ["x"], "triage": "accepted"}
+        report = {"iteration": 1, "snapshot": {"sha256": "b" * 64, "round_id": "r"}, "findings": [finding]}
+        ws.write_json(other.consolidated_json_path, report)
+
+        both = self.scorecard()["code"]
+        self.assertEqual((both["rounds_read"], both["workflows_read"]), (2, 2))
+        one = self.scorecard("--workflow", "elsewhere")["code"]
+        self.assertEqual((one["rounds_read"], one["workflows_read"]), (1, 1))
+        self.assertEqual(sorted(one["reviewers"]), ["x"])
+
+    def test_a_workflow_with_no_report_prints_no_scorecard(self):
+        """A table of zeroes would read as a panel that found nothing."""
+        run = {"id": "m1", "status": "ok", "snapshot": "c" * 12, "usage": {"billed_tokens": 10}}
+        self.workspace.record_event("review", "ok", {"iteration": 1, "reviewers": [run]})
+        _, out, _ = run_cli("optimization", "report")
+        self.assertNotIn("Reviewer scorecard", out)
+        self.assertNotIn("Review effort", out)
+        self.assertEqual(self.scorecard()["code"]["rounds_read"], 0)
+
+    def test_the_text_says_what_the_figures_can_and_cannot_claim(self):
+        self.reviewed_and_accepted()
+        _, out, _ = run_cli("optimization", "report")
+        self.assertIn("Reviewer scorecard, code review: 1 of 1 recorded round(s) had a report to read.", out)
+        self.assertIn("Review effort, code and design together:", out)
+        self.assertIn("rates withheld under 10 decided", out)
+        self.assertIn("upper bound", out)
+        self.assertNotIn("biased", out)
+        self.assertNotIn("either way", out)
+        self.assertNotIn("understates", out)
+        for line in out.splitlines():
+            if "floor" in line:
+                self.assertIn("Cost totals are floors", line)
+
+    def test_a_round_with_no_report_to_read_is_declared(self):
+        self.reviewed_and_accepted()
+        run = {"id": "m1", "status": "ok", "snapshot": "c" * 12, "usage": {"billed_tokens": 10}}
+        self.workspace.record_event("review", "ok", {"iteration": 2, "round_id": "gone", "reviewers": [run]})
+        _, out, _ = run_cli("optimization", "report")
+        self.assertIn("1 of 2 recorded round(s) had a report to read.", out)
+        self.assertIn("biased", out)
+        self.assertIn("either way", out)
+        self.assertNotIn("understates", out)
+
+
 if __name__ == "__main__":
     unittest.main()

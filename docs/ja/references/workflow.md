@@ -1,4 +1,4 @@
-<!-- translated-from: references/workflow.md sha256:a4881e955b45b0c968a56154ce3a7b80640679cd0e2bfe6fde5592cc387fb0bc -->
+<!-- translated-from: references/workflow.md sha256:a97af2b44a8d3661d001e093cc8482893e108139a39cda17dca467febeca6108 -->
 
 > この文書は [references/workflow.md](../../../references/workflow.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -42,17 +42,19 @@
         │   └── fix-brief.md        # generated from accepted findings
         ├── reviews/
         │   ├── review-target.diff  # frozen snapshot
-        │   ├── review-target.json  # strategy, files, sha256
+        │   ├── review-target.json  # strategy, files, sha256, round_id
         │   ├── review-surrounding.json  # enclosing symbols, only with review.context.surrounding: enclosing
         │   ├── <reviewer-id>.md    # one per reviewer
         │   ├── consolidated.md
         │   ├── consolidated.json
+        │   ├── rounds/             # consolidated.json of every round, <sha12>-<round_id>.json
         │   └── design/             # the design review, counted separately
         │       ├── review-target.md    # the frozen plan
-        │       ├── review-target.json  # plan, request, sha256
+        │       ├── review-target.json  # plan, request, sha256, round_id
         │       ├── <reviewer-id>.md
         │       ├── consolidated.md
-        │       └── consolidated.json
+        │       ├── consolidated.json
+        │       └── rounds/
         └── state.json              # stage events, resolved model ids, plan approval
 ```
 

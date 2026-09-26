@@ -32,17 +32,19 @@ a doc comment" is a useful sentence; silently skipping is not.
         │   └── fix-brief.md        # generated from accepted findings
         ├── reviews/
         │   ├── review-target.diff  # frozen snapshot
-        │   ├── review-target.json  # strategy, files, sha256
+        │   ├── review-target.json  # strategy, files, sha256, round_id
         │   ├── review-surrounding.json  # enclosing symbols, only with review.context.surrounding: enclosing
         │   ├── <reviewer-id>.md    # one per reviewer
         │   ├── consolidated.md
         │   ├── consolidated.json
+        │   ├── rounds/             # consolidated.json of every round, <sha12>-<round_id>.json
         │   └── design/             # the design review, counted separately
         │       ├── review-target.md    # the frozen plan
-        │       ├── review-target.json  # plan, request, sha256
+        │       ├── review-target.json  # plan, request, sha256, round_id
         │       ├── <reviewer-id>.md
         │       ├── consolidated.md
-        │       └── consolidated.json
+        │       ├── consolidated.json
+        │       └── rounds/
         └── state.json              # stage events, resolved model ids, plan approval
 ```
 

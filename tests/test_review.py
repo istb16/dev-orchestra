@@ -170,6 +170,17 @@ class TestTriage(IsolatedCase):
     def test_blocking_includes_untriaged_high_severity(self):
         self.assertEqual([f["id"] for f in review_mod.unresolved_blocking(self._data())], ["F1"])
 
+    def test_every_decision_is_stamped_needs_triage_included(self):
+        """A rebuilt report defaults a finding to `needs-triage` too, and only
+        the stamp says the owner put it back there."""
+        for status in review_mod.TRIAGE_STATUSES:
+            data = self._data()
+            review_mod.set_triage(data, "F1", status)
+            self.assertTrue(data["findings"][0]["triage_set_at"], status)
+
+    def test_an_untriaged_finding_carries_no_stamp(self):
+        self.assertNotIn("triage_set_at", self._data()["findings"][0])
+
     def test_the_brief_heading_can_ask_for_a_revision_instead_of_a_fix(self):
         data = self._data()
         review_mod.set_triage(data, "F1", "accepted")
@@ -323,6 +334,17 @@ class TestSnapshot(IsolatedCase):
         second = review_mod.create_snapshot(self.workspace)
         self.assertEqual(first["sha256"], second["sha256"])
 
+    def test_every_freeze_gets_its_own_round_id(self):
+        """The sha repeats when the same tree is frozen again; the round id
+        is what keeps the second round from being filed over the first."""
+        self.write("app.py", "def add(a, b):\n    return a / b\n")
+        first = review_mod.create_snapshot(self.workspace)
+        second = review_mod.create_snapshot(self.workspace)
+        self.assertEqual(first["sha256"], second["sha256"])
+        self.assertTrue(first["round_id"])
+        self.assertNotEqual(first["round_id"], second["round_id"])
+        self.assertEqual(ws.read_json(self.workspace.snapshot_meta_path)["round_id"], second["round_id"])
+
     def test_non_git_directory_is_reported_clearly(self):
         outside = os.path.join(self.tmp, "plain")
         os.makedirs(outside)
@@ -418,6 +440,29 @@ class TestFanOut(IsolatedCase):
 
         again = review_mod.build_consolidation(self.workspace, [], findings, iteration=2)
         self.assertEqual(again["findings"][0]["triage"], "accepted")
+
+    def test_the_decision_stamp_is_carried_with_the_decision(self):
+        runs = review_mod.run_reviews([reviewer("r1")], self.workspace)
+        findings = review_mod.collect_reports(self.workspace, ["r1"])
+        data = review_mod.build_consolidation(self.workspace, [r.to_dict() for r in runs], findings)
+        review_mod.set_triage(data, "F1", "accepted")
+        stamped = data["findings"][0]["triage_set_at"]
+        ws.write_json(self.workspace.consolidated_json_path, data)
+
+        again = review_mod.build_consolidation(self.workspace, [], findings, iteration=2)
+        self.assertEqual(again["findings"][0]["triage_set_at"], stamped)
+
+    def test_a_carried_finding_never_decided_gets_no_stamp(self):
+        """Its absence is what tells a rebuilt default from a decision."""
+        runs = review_mod.run_reviews([reviewer("r1")], self.workspace)
+        findings = review_mod.collect_reports(self.workspace, ["r1"])
+        data = review_mod.build_consolidation(self.workspace, [r.to_dict() for r in runs], findings)
+        self.assertNotIn("triage_set_at", data["findings"][0])
+        self.assertEqual(data["findings"][0]["triage"], "needs-triage")
+        ws.write_json(self.workspace.consolidated_json_path, data)
+
+        again = review_mod.build_consolidation(self.workspace, [], findings, iteration=2)
+        self.assertNotIn("triage_set_at", again["findings"][0])
 
     def test_review_prompt_carries_role_guidance_and_read_only_rules(self):
         prompt = review_mod.build_review_prompt(
@@ -898,6 +943,145 @@ class TestDesignReviewPrompt(IsolatedCase):
     def test_a_first_round_carries_no_revision_note(self):
         prompt = review_mod.build_design_review_prompt(reviewer("r1"), self.workspace, PLAN).text
         self.assertNotIn("This plan is a revision", prompt)
+
+
+def consolidation(sha="a" * 64, round_id="r" * 32, surrounding=None, findings=()):
+    """A consolidated report with only the fields the round archive reads."""
+    snapshot = {"sha256": sha}
+    if round_id:
+        snapshot["round_id"] = round_id
+    data = {
+        "generated_at": "2026-09-01T00:00:00Z",
+        "iteration": 1,
+        "snapshot": snapshot,
+        "findings": [{"severity": "high", **finding} for finding in findings],
+    }
+    if surrounding:
+        data["measurement"] = {"surrounding": surrounding}
+    return data
+
+
+class TestRoundArchive(IsolatedCase):
+    """The live report is rewritten by every round, and it was the only place
+    a triage decision was kept. The archive keeps one copy per round."""
+
+    def setUp(self):
+        super().setUp()
+        self.workspace = ws.Workspace(self.tmp).ensure()
+
+    def archived(self):
+        return ws.list_files(self.workspace.rounds_dir, ".json")
+
+    def test_the_key_is_the_sha_and_the_round_id(self):
+        self.assertEqual(review_mod.round_key(consolidation()), ("a" * 12, "r" * 32))
+        self.assertEqual(review_mod.round_key(consolidation(round_id="")), ("a" * 12, ""))
+
+    def test_the_measured_side_is_not_part_of_the_key(self):
+        """A --surrounding pair reads one freeze twice and is one round."""
+        self.assertEqual(
+            review_mod.round_key(consolidation(surrounding="none")),
+            review_mod.round_key(consolidation(surrounding="enclosing")),
+        )
+
+    def test_a_report_with_no_sha_has_no_key(self):
+        self.assertEqual(review_mod.round_key(consolidation(sha=None)), ("", ""))
+
+    def test_saving_writes_the_live_report_and_the_archive(self):
+        path = review_mod.save_consolidation(self.workspace, consolidation())
+        self.assertTrue(os.path.isfile(self.workspace.consolidated_json_path))
+        self.assertTrue(os.path.isfile(self.workspace.consolidated_md_path))
+        self.assertEqual(self.archived(), [path])
+        self.assertEqual(os.path.basename(path), "%s-%s.json" % ("a" * 12, "r" * 12))
+
+    def test_a_report_frozen_before_round_ids_is_filed_under_its_sha(self):
+        path = review_mod.save_consolidation(self.workspace, consolidation(round_id=""))
+        self.assertEqual(os.path.basename(path), "%s.json" % ("a" * 12))
+
+    def test_saving_one_round_again_overwrites_its_copy(self):
+        review_mod.save_consolidation(self.workspace, consolidation())
+        review_mod.save_consolidation(self.workspace, consolidation(findings=[{"id": "F1", "key": "k"}]))
+        self.assertEqual(len(self.archived()), 1)
+        self.assertEqual(len(ws.read_json(self.archived()[0])["findings"]), 1)
+
+    def test_another_sha_or_another_round_id_is_another_file(self):
+        review_mod.save_consolidation(self.workspace, consolidation())
+        review_mod.save_consolidation(self.workspace, consolidation(sha="b" * 64))
+        review_mod.save_consolidation(self.workspace, consolidation(round_id="s" * 32))
+        self.assertEqual(len(self.archived()), 3)
+
+    def test_the_second_run_of_a_pair_replaces_the_first(self):
+        review_mod.save_consolidation(self.workspace, consolidation(surrounding="none"))
+        review_mod.save_consolidation(self.workspace, consolidation(surrounding="enclosing"))
+        self.assertEqual(len(self.archived()), 1)
+        self.assertEqual(ws.read_json(self.archived()[0])["measurement"]["surrounding"], "enclosing")
+
+    def test_a_report_with_no_sha_is_not_archived(self):
+        """Nothing was frozen, so there is no round it could belong to."""
+        self.assertEqual(review_mod.save_consolidation(self.workspace, consolidation(sha=None)), "")
+        self.assertTrue(os.path.isfile(self.workspace.consolidated_json_path))
+        self.assertEqual(self.archived(), [])
+
+    def test_a_triage_saved_reaches_the_archive(self):
+        data = consolidation(findings=[{"id": "F1", "key": "k", "triage": "needs-triage"}])
+        review_mod.save_consolidation(self.workspace, data)
+        review_mod.set_triage(data, "F1", "accepted")
+        review_mod.save_consolidation(self.workspace, data)
+        finding = ws.read_json(self.archived()[0])["findings"][0]
+        self.assertEqual(finding["triage"], "accepted")
+        self.assertTrue(finding["triage_set_at"])
+
+    def reported_round(self, triage):
+        """The same plan's first round, reviewed, then frozen again."""
+        meta = review_mod.write_design_snapshot(self.workspace, self.workspace.plan_path, "", PLAN, "a" * 64)
+        data = review_mod.build_consolidation(self.workspace, [], [], completed_round=meta["round_id"])
+        data["findings"] = [{"id": "F1", "key": "k", "severity": "high", "triage": triage}]
+        # A second before the next freeze, as a round that ran would be.
+        data["generated_at"] = "2000-01-01T00:00:00Z"
+        review_mod.save_consolidation(self.workspace, data)
+        again = review_mod.write_design_snapshot(self.workspace, self.workspace.plan_path, "", PLAN, "a" * 64)
+        return data, again
+
+    def test_a_round_nobody_reviewed_leaves_the_last_round_of_its_plan_alone(self):
+        """It keeps the last round's id, which for the same plan is that round's key."""
+        _, again = self.reported_round("accepted")
+        empty = review_mod.build_consolidation(self.workspace, [], [], unreviewed_round=again["round_id"])
+        self.assertEqual(review_mod.save_consolidation(self.workspace, empty), "")
+        self.assertEqual(len(self.archived()), 1)
+        self.assertEqual([f["triage"] for f in ws.read_json(self.archived()[0])["findings"]], ["accepted"])
+        rounds = review_mod.recorded_rounds(self.workspace)
+        self.assertEqual([(entry["live"], len(entry["findings"])) for entry in rounds], [(False, 1)])
+
+    def test_a_triage_after_the_next_freeze_still_reaches_its_round(self):
+        data, _ = self.reported_round("needs-triage")
+        review_mod.set_triage(data, "F1", "accepted")
+        review_mod.save_consolidation(self.workspace, data)
+        self.assertEqual([f["triage"] for f in ws.read_json(self.archived()[0])["findings"]], ["accepted"])
+        self.assertEqual(len(review_mod.recorded_rounds(self.workspace)), 1)
+
+    def test_a_workflow_without_an_archive_is_its_live_report(self):
+        ws.write_json(self.workspace.consolidated_json_path, consolidation())
+        rounds = review_mod.recorded_rounds(self.workspace)
+        self.assertEqual(len(rounds), 1)
+        self.assertTrue(rounds[0]["live"])
+
+    def test_the_live_report_wins_over_its_own_copy(self):
+        review_mod.save_consolidation(self.workspace, consolidation())
+        ws.write_json(self.workspace.consolidated_json_path, consolidation(findings=[{"id": "F1"}]))
+        rounds = review_mod.recorded_rounds(self.workspace)
+        self.assertEqual(len(rounds), 1)
+        self.assertTrue(rounds[0]["live"])
+        self.assertEqual(len(rounds[0]["findings"]), 1)
+
+    def test_earlier_rounds_are_read_beside_the_live_one(self):
+        review_mod.save_consolidation(self.workspace, consolidation())
+        review_mod.save_consolidation(self.workspace, consolidation(sha="b" * 64))
+        rounds = review_mod.recorded_rounds(self.workspace)
+        self.assertEqual(sorted(entry["live"] for entry in rounds), [False, True])
+
+    def test_an_unreadable_copy_is_skipped(self):
+        review_mod.save_consolidation(self.workspace, consolidation())
+        ws.write_text(os.path.join(self.workspace.rounds_dir, "broken.json"), "{not json")
+        self.assertEqual(len(review_mod.recorded_rounds(self.workspace)), 1)
 
 
 if __name__ == "__main__":

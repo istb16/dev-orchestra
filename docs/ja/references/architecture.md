@@ -1,4 +1,4 @@
-<!-- translated-from: references/architecture.md sha256:adf84efc19d6d40b1df6a9d19f854a4226a472dfb498262bdce9979fe4d08494 -->
+<!-- translated-from: references/architecture.md sha256:7e7f50aa3f9ed4f43dc55ed61cf0c7876b7af8d0c401c6248fdd592fab71b895 -->
 
 > この文書は [references/architecture.md](../../../references/architecture.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -86,6 +86,7 @@ project/
     │   ├── <reviewer-id>.md      # one report per reviewer
     │   ├── consolidated.md       # deduped findings, human readable
     │   ├── consolidated.json     # deduped findings + triage state
+    │   ├── rounds/               # consolidated.json of every round, kept after the next
     │   └── design/               # the same files for the design review, so
     │                             # its rounds and triage stay its own
     └── state.json                # stage events with resolved model ids
