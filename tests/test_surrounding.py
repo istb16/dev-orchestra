@@ -839,7 +839,7 @@ class TestEndToEnd(GitCase):
         code, out, _ = run_cli("review", "snapshot")
         self.assertEqual(code, 0)
         self.assertIn("  context:  enclosing -- 1 symbol(s)", out)
-        self.assertIn("adopted at review run within review.context.surrounding_chars (60,000)", out)
+        self.assertIn("adopted at review run within review.context.surrounding_chars (15,000)", out)
         meta, frozen = self.meta(), self.frozen()
         self.assertEqual(frozen["sha256"], meta["sha256"])
         self.assertRegex(frozen["tree"], r"^[0-9a-f]{40}$")

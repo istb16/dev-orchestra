@@ -1,4 +1,4 @@
-<!-- translated-from: references/limits.md sha256:50db820c6b2f681fa568c1fce6d7a568ca7aa3dbd2111fa6dff722c49d7f8e08 -->
+<!-- translated-from: references/limits.md sha256:58fcc3c67cb84cd169e248973d5bbe8fc3b9934cb85314dcf4892b905c677f2d -->
 
 > この文書は [references/limits.md](../../../references/limits.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -247,7 +247,8 @@ plan だけを計測すると、形式上の理由でラウンドが上限を通
 `review.context.surrounding: enclosing` は、各コードレビュアーに diff に加えて、
 各 hunk を囲む Python の関数・メソッド・クラスを渡します
 （[周辺コンテキスト](reviews.md#surrounding-context) を参照してください）。
-それで何が節約されるかがまだ計測されていないため、デフォルトでは off です。
+1 つのスナップショットで計測したところレビューが安くならなかったため、デフォルトでは off です
+（[周辺コンテキストの効果を測る](#measuring-what-surrounding-context-does) を参照してください）。
 
 追加される量には上限があり、その上限は上の 2 つの上限に上乗せされるのではなく、
 そこから差し引かれます。
@@ -259,9 +260,9 @@ budget = min(surrounding_chars, max_chars - change_chars, inline_chars - change_
 したがって diff とそのコンテキストを合わせても、`max_chars` と `inline_chars` を
 超えることはありません。コンテキストを on にしても、diff だけなら実行されたはずの
 ラウンドが拒否されることはなく、インライン化されていた diff がファイル渡しに
-なることもありません。`review.context.surrounding_chars` のデフォルトは 60,000 です
-— 出荷前に記録された 7 つのワークフローはどれも切り詰めなしで収まり（最大でも
-49,371 でした）、`max_chars` の 15% にあたります。収まらなかったものは黙って
+なることもありません。`review.context.surrounding_chars` のデフォルトは 15,000 です。
+1 つのスナップショットで計測したところ、実行あたりの費用は変わらず、60,000 では
+渡した分がそのまま上乗せされました。収まらなかったものは黙って
 落とされるのではなく、名前を挙げて除外されます。
 
 採用したコンテキストは `max_chars` が計測するものに数えられます。各レビュアー
@@ -360,6 +361,16 @@ dev-orchestra optimization report --json   # paired.pairs[*], paired.delta
   トリアージは lineage に関係なく finding のキーで引き継がれるからです。
 - **`--iteration` の明示。** 1 本目が記録したのと別のラウンドを `--iteration`
   で指定した run は独立したラウンドです。`rerun: false` を記録し、署名を登録します。
+
+**計測した結果。** 4 つの変更（3,669〜91,562 文字）で、合計に数える 13 ペアを
+取りました。パネルは両側とも Claude と Codex です（issue #130）。最大の変更の
+対照側の run は、課金トークンが run ごとに約 5.6% 揺れ、Claude のツール出力は
+最大 3.7 倍違いました。`surrounding_chars` が 15,000 のとき、平均の差はどの大きさの
+変更でも ±6% 以内で、この揺れの中に収まりました。60,000 では、最大の変更で約
+57,000 文字が採用され、2 ペアとも実行あたり 29% 増えました。渡したコンテキストの
+分とほぼ同じです。どの設定でもレビューは安くならなかったので、コンテキストは off の
+まま、上限は 15,000 とし、[周辺コンテキスト](reviews.md#surrounding-context) の
+優先順位 2〜6 は進めません。
 
 <a id="what-the-runtime-budget-counts"></a>
 

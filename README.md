@@ -937,7 +937,7 @@ to confirm during triage. Details: [references/reviews.md](references/reviews.md
 `review.context.surrounding: enclosing` also hands every code reviewer the
 Python function, method or class around each hunk, frozen with the snapshot
 from the tree the diff was taken from, so a reviewer opens fewer files. It is
-capped by `review.context.surrounding_chars` (60,000) and by what the diff
+capped by `review.context.surrounding_chars` (15,000) and by what the diff
 leaves under the context limits, and whatever does not fit is named in the
 prompt and in every report rather than dropped quietly. It ships off:
 `optimization report` compares rounds with and without it, per run and per 1k

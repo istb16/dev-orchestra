@@ -26,7 +26,7 @@ The public surface covered by that promise is: the configuration schema, the
   every hunk from the git tree the diff was taken from, freeze it in
   `review-surrounding.json`, and `review run` adopt it into every code
   reviewer's prompt within `review.context.surrounding_chars` (default
-  60,000) and what the diff leaves under `max_chars` and `inline_chars` -- so
+  15,000) and what the diff leaves under `max_chars` and `inline_chars` -- so
   it never refuses a round or sends a diff over as a file. A deletion with no
   surviving symbol around it marks its neighbours `adjacent` rather than
   enclosing. Whatever is left out -- over the budget, a file delivery, a file

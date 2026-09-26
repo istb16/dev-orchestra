@@ -222,7 +222,8 @@ low limit.
 `review.context.surrounding: enclosing` hands each code reviewer the Python
 function, method or class around every hunk as well as the diff (see
 [Surrounding context](reviews.md#surrounding-context)). It is off by default,
-because what it saves has not been measured yet.
+because measured on one snapshot it did not make a review cheaper (see
+[Measuring what surrounding context does](#measuring-what-surrounding-context-does)).
 
 What it adds is capped, and the cap is taken out of both limits above rather
 than added to them:
@@ -234,9 +235,9 @@ budget = min(surrounding_chars, max_chars - change_chars, inline_chars - change_
 So the diff and its context together never go past `max_chars` or
 `inline_chars`: turning context on cannot refuse a round the diff alone would
 have run, and cannot turn an inlined diff into a file.
-`review.context.surrounding_chars` defaults to 60,000 -- every one of the seven
-workflows recorded before it shipped fits under it untrimmed (the largest
-needed 49,371), and it is 15% of `max_chars`. What does not fit is left out by
+`review.context.surrounding_chars` defaults to 15,000: measured on one
+snapshot, that left the cost per run where it was, while 60,000 added what it
+carried. What does not fit is left out by
 name, never silently.
 
 The context adopted counts toward what `max_chars` measures: `budget_chars` on
@@ -336,6 +337,16 @@ dev-orchestra optimization report --json   # paired.pairs[*], paired.delta
 - **An explicit `--iteration`.** A run whose `--iteration` names a round other
   than the one the first run recorded is a round of its own: it records
   `rerun: false` and registers its signature.
+
+**What was measured.** Thirteen counted pairs on four changes (3,669 to 91,562
+characters), with Claude and Codex on both sides (issue #130). The control runs
+of the largest change varied by about 5.6% in billed tokens from run to run, and
+Claude's tool output by up to 3.7 times. With `surrounding_chars` at 15,000 the
+mean delta stayed within 6% either way on every change size -- inside that
+variation. At 60,000, about 57,000 characters adopted on the largest change added
+29% per run on both pairs, roughly the context carried. No setting made a review
+cheaper, so the context stays off, the cap is 15,000, and priorities 2 to 6 of
+[Surrounding context](reviews.md#surrounding-context) are not pursued.
 
 ### What the runtime budget counts
 
