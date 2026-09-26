@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import codecs
 import copy
+import hashlib
 import json
 import os
 import sys
@@ -1273,6 +1274,103 @@ def _merge_runs(workspace: ws.Workspace, run_dicts: List[Dict[str, Any]]) -> Lis
     return run_dicts + kept
 
 
+def _same_snapshot_report(workspace: ws.Workspace, meta: Dict[str, Any]) -> Dict[str, Any]:
+    """The consolidated report when its last run reviewed this snapshot, else empty.
+
+    Whatever the lineage: ``build_consolidation`` carries triage over by
+    finding key across a lineage change too, so a rebuild after ``budget
+    reset`` can lose a decision just as one without it can.
+    """
+    previous = ws.read_json(workspace.consolidated_json_path, {}) or {}
+    sha = str(meta.get("sha256") or "")
+    if not previous or not sha or str((previous.get("snapshot") or {}).get("sha256") or "") != sha:
+        return {}
+    return previous
+
+
+def _measurement_rerun(workspace: ws.Workspace, meta: Dict[str, Any], lineage: str, iteration: int) -> bool:
+    """Whether this run reviews again the snapshot the last run of this review did.
+
+    The condition ``next_iteration`` keeps the current round on, and the round
+    this run records has to be that round: an explicit ``--iteration`` that
+    names another is a round of its own, and registers its signature.
+    """
+    previous = _same_snapshot_report(workspace, meta)
+    if not previous or str(previous.get("lineage") or "") != lineage:
+        return False
+    return iteration == int(previous.get("iteration") or 0)
+
+
+def _triage_record(entry: Dict[str, Any]) -> Dict[str, str]:
+    """What triage keeps on a finding: the decision and its note."""
+    return {
+        "triage": str(entry.get("triage") or "needs-triage"),
+        "triage_note": str(entry.get("triage_note") or ""),
+    }
+
+
+def _triage_changed_since_build(consolidated: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """The findings whose triage or note was set after the last run built them.
+
+    Measured against the triage that run recorded, so a decision carried in
+    from an earlier round is not one made on this snapshot. A report without
+    that record -- built without the flag, or by ``review consolidate`` --
+    counts every finding with a decision or a note.
+    """
+    findings = [entry for entry in consolidated.get("findings") or [] if isinstance(entry, dict)]
+    baseline = (consolidated.get("measurement") or {}).get("triage_at_build")
+    untouched = {"triage": "needs-triage", "triage_note": ""}
+    if not isinstance(baseline, dict):
+        baseline = {}
+    return [entry for entry in findings if _triage_record(entry) != baseline.get(entry.get("key"), untouched)]
+
+
+def _measurement_inputs(
+    args: argparse.Namespace, plan: opt_mod.Plan, inline_chars: int, max_chars: int
+) -> Dict[str, Any]:
+    """The prompt inputs other than the context, which a pair has to hold equal.
+
+    The extra context is kept as a digest: the record is for telling two runs
+    apart, not for keeping what a caller passed.
+    """
+    extra = args.context or ""
+    return {
+        "context_sha256": hashlib.sha256(extra.encode("utf-8")).hexdigest() if extra else "",
+        "max_findings": plan.max_findings,
+        "inline_chars": inline_chars,
+        "max_chars": max_chars,
+        "force": bool(args.force),
+    }
+
+
+def _measurement_block(
+    meta: Dict[str, Any],
+    workspace: ws.Workspace,
+    book: ledger_mod.Ledger,
+    override: str,
+    rerun: bool,
+    inputs: Dict[str, Any],
+) -> Dict[str, Any]:
+    """What ``optimization report`` pairs a ``--surrounding`` run on.
+
+    The whole snapshot identity rather than the reviewer entries' short sha,
+    and the workflow directory apart from the budget epoch: a pair is keyed on
+    the first, and ``budget reset`` between the two runs changes only the second.
+    """
+    frozen = meta.get("surrounding") if isinstance(meta.get("surrounding"), dict) else {}
+    return {
+        "surrounding": override,
+        "snapshot": str(meta.get("sha256") or ""),
+        "tree": str(frozen.get("tree") or meta.get("tree") or ""),
+        "head": meta.get("head"),
+        "base": meta.get("base"),
+        "workflow": workspace.workflow,
+        "epoch": book.workflow_id(),
+        "rerun": rerun,
+        "inputs": inputs,
+    }
+
+
 def _adoption_line(adoption: context_mod.Adoption) -> str:
     """``review run``'s one line on the surrounding context it handed over."""
     record = adoption.record()
@@ -1337,7 +1435,7 @@ def cmd_review_snapshot(args: argparse.Namespace) -> int:
     # Read before the snapshot, because the surrounding context is frozen with
     # it: what a reviewer is shown has to come from the tree the diff did.
     context_settings = loaded.context_settings()
-    surrounding = context_mod.surrounding_mode(context_settings.get("surrounding"))
+    surrounding = args.surrounding or context_mod.surrounding_mode(context_settings.get("surrounding"))
     try:
         meta = review_mod.create_snapshot(
             workspace,
@@ -1657,6 +1755,13 @@ def _run_design_review(args: argparse.Namespace, loaded: config_mod.LoadedConfig
 
 def cmd_review_run(args: argparse.Namespace) -> int:
     loaded = _load_or_die(args.cwd)
+    # One run's override of review.context.surrounding, for measuring what the
+    # context does on one snapshot. None when not given, and then nothing below
+    # differs from a run without the flag.
+    override = getattr(args, "surrounding", None)
+    if args.design and override:
+        _err("--surrounding applies to the code review only: a design round carries no surrounding context.")
+        return 2
     if args.design:
         return _run_design_review(args, loaded)
     workspace = _workspace(args)
@@ -1679,7 +1784,9 @@ def cmd_review_run(args: argparse.Namespace) -> int:
         return 2
 
     settings = loaded.review_settings()
-    context_settings = loaded.context_settings()
+    context_settings = dict(loaded.context_settings())
+    if override:
+        context_settings["surrounding"] = override
     if not os.path.isfile(workspace.snapshot_path):
         try:
             review_mod.create_snapshot(
@@ -1707,6 +1814,19 @@ def cmd_review_run(args: argparse.Namespace) -> int:
         return ledger_mod.EXIT_BUDGET_EXHAUSTED
 
     meta = ws.read_json(workspace.snapshot_meta_path, {}) or {}
+    if override and meta.get("incremental_from"):
+        # Refused on the first run as well as the second: the premise section
+        # is built from the consolidated report of the moment a run starts, and
+        # the first run rewrites it, so no pair on this snapshot would differ
+        # in the context alone.
+        _err(
+            "refusing to run: --surrounding %s on an incremental round (fix diff since %s). The prompt of "
+            "a re-review carries the accepted findings of the moment it runs, so two runs on it would "
+            "differ in more than the surrounding context. Measure on a whole-change snapshot: the first "
+            "round of a change, or a round after a clean or all-rejected review."
+            % (override, meta.get("incremental_from"))
+        )
+        return 2
     plan = opt_mod.decide(
         loaded.optimization_settings(),
         settings,
@@ -1774,6 +1894,33 @@ def cmd_review_run(args: argparse.Namespace) -> int:
     )
     if refusal is not None:
         return refusal
+    # Before anything is charged: an asked-for measurement that would measure
+    # nothing, or that would throw away a decision made on this snapshot, is
+    # refused rather than billed. Without the flag neither check runs.
+    rerun = override is not None and _measurement_rerun(workspace, meta, lineage, iteration)
+    if override == "enclosing" and not adoption.adopted:
+        _err(
+            "refusing to run: --surrounding enclosing was asked for but nothing would be adopted (%s); "
+            "the run would measure nothing and still bill the whole panel." % adoption.reason
+        )
+        if adoption.reason == context_mod.NOT_FROZEN:
+            _err("Run `review snapshot --surrounding enclosing` first.")
+        else:
+            _err('See references/limits.md, "Measuring what surrounding context does".')
+        return 2
+    # On the snapshot alone, not on ``rerun``: a lineage change between the two
+    # runs makes the second no rerun, but it still rebuilds the same findings.
+    previous = _same_snapshot_report(workspace, meta) if override is not None else {}
+    if previous:
+        changed = _triage_changed_since_build(previous)
+        if changed:
+            _err(
+                "refusing to run: --surrounding %s would rebuild the findings of a snapshot that has been "
+                "triaged since its last run (%d of %d with a new decision or note), and a decision on a "
+                "finding that does not come back would be lost. Take the pair before triage, or take a new "
+                "snapshot." % (override, len(changed), len(previous.get("findings") or []))
+            )
+            return 2
     # Forced past it: the round runs, and every record of it says so.
     over_budget = review_mod.over_context(budget_chars, max_chars)
 
@@ -1836,9 +1983,23 @@ def cmd_review_run(args: argparse.Namespace) -> int:
     data = review_mod.build_consolidation(
         workspace, _merge_runs(workspace, run_dicts), findings, iteration, lineage
     )
+    if override:
+        # The triage as this run built it, so the second run of a pair can tell
+        # a decision made on this snapshot from one carried in with a finding.
+        data["measurement"] = {
+            "surrounding": override,
+            "rerun": rerun,
+            "triage_at_build": {entry["key"]: _triage_record(entry) for entry in data["findings"]},
+        }
     ws.write_json(workspace.consolidated_json_path, data)
     ws.write_text(workspace.consolidated_md_path, review_mod.render_consolidation(data))
-    repeats = book.register_signature("review", review_mod.findings_signature(data))
+    # The second run of a pair is the same snapshot reviewed again on purpose,
+    # not a fix that changed nothing, so it registers no signature: the pair's
+    # signature is its first run's.
+    if rerun:
+        repeats = book.repeats("review")
+    else:
+        repeats = book.register_signature("review", review_mod.findings_signature(data))
     detail = {
         "iteration": iteration,
         "reviewers": run_dicts,
@@ -1846,6 +2007,12 @@ def cmd_review_run(args: argparse.Namespace) -> int:
         "identical_rounds": repeats,
         "optimization": plan.to_dict(),
     }
+    measurement = None
+    if override:
+        measurement = _measurement_block(
+            meta, workspace, book, override, rerun, _measurement_inputs(args, plan, inline_chars, max_chars)
+        )
+        detail["measurement"] = measurement
     if context_on and any("surrounding" in run for run in run_dicts):
         # Sizes and counts only: ``optimization report`` splits rounds on it,
         # and the names are on every reviewer entry beside it. Only when a
@@ -1860,7 +2027,7 @@ def cmd_review_run(args: argparse.Namespace) -> int:
         # Per reviewer, as above: the panel is the unit that was delegated.
         charged_seconds=sum(run.duration for run in runs),
     )
-    if repeats > 1:
+    if repeats > 1 and not rerun:
         _err(
             "note: round %d produced the same findings as the previous round -- "
             "the last fix changed nothing that the reviewers can see." % iteration
@@ -1888,6 +2055,8 @@ def cmd_review_run(args: argparse.Namespace) -> int:
         }
         if context_on:
             payload["surrounding"] = adoption.record()
+        if measurement is not None:
+            payload["measurement"] = measurement
         _emit_json(payload)
     else:
         for run in runs:
@@ -1895,7 +2064,15 @@ def cmd_review_run(args: argparse.Namespace) -> int:
         _out("")
         _out(_panel_summary(ok, failed, partial))
         if context_on:
-            _out("Surrounding context: %s" % _adoption_line(adoption))
+            line = "Surrounding context: %s" % _adoption_line(adoption)
+            if override:
+                line += " (--surrounding enclosing for this run)"
+            _out(line)
+        elif override:
+            _out(
+                "Surrounding context: none (--surrounding none for this run; "
+                "review.context.surrounding unchanged)"
+            )
         _out("Consolidated: %s" % workspace.relative(workspace.consolidated_md_path))
     if ok == 0 and (failed or partial):
         return 1
@@ -2729,6 +2906,11 @@ def cmd_optimization_report(args: argparse.Namespace) -> int:
         _out("  panel; compare the per-run lines. Codex reports no tool activity, by design: its runs are in")
         _out("  the billed figures and out of the tool ones, which is why each tool figure names the runs it")
         _out("  was divided by.")
+    paired = report.get("paired") or {}
+    if paired.get("pairs_listed"):
+        _out("")
+        for line in _paired_rows(paired):
+            _out(line)
     if report["design_refused"]:
         _out("")
         _out(
@@ -2770,6 +2952,105 @@ def _figure(value: Any) -> str:
     if value is None:
         return "-"
     return "{:,.1f}".format(value) if isinstance(value, float) else "{:,}".format(value)
+
+
+def _paired_rows(paired: Dict[str, Any]) -> List[str]:
+    """``optimization report``'s block of runs paired on one snapshot."""
+    lines = [
+        "Paired on one snapshot (--surrounding none vs enclosing: the same frozen diff, tree, panel "
+        "and prompt inputs):"
+    ]
+    for pair in paired.get("pairs") or []:
+        head = "  %s" % str(pair.get("snapshot") or "")[:12]
+        if pair.get("workflow"):
+            head += " in %s" % pair["workflow"]
+        head += "   change %s chars; panel %s; %s context chars adopted (%s as carried), %s left out" % (
+            _figure(pair.get("change_chars")),
+            _panel_names(pair.get("panel") or []),
+            "{:,}".format(int(pair.get("adopted_chars") or 0)),
+            "{:,}".format(int(pair.get("context_chars") or 0)),
+            "{:,}".format(int(pair.get("trimmed_chars") or 0)),
+        )
+        for reason in _pair_exclusions(pair):
+            head += "; " + reason
+        lines.append(head)
+        for name in ("with", "without"):
+            side = pair.get(name) or {}
+            lines.append(
+                "      %-8s %d run(s), %s billed, %s per run; %s use(s)/run, %s observed output chars/run "
+                "(%d of %d run(s) reported)"
+                % (
+                    name + ":",
+                    int(side.get("reviewer_runs") or 0),
+                    "{:,}".format(int(side.get("billed_tokens") or 0)),
+                    _figure(side.get("billed_per_run")),
+                    _figure(side.get("tool_uses_per_run")),
+                    _figure(side.get("tool_output_chars_per_run")),
+                    int(side.get("tool_reported_runs") or 0),
+                    int(side.get("reviewer_runs") or 0),
+                )
+            )
+        delta = pair.get("delta") or {}
+        lines.append(
+            "      delta:   %s billed/run, %s use(s)/run, %s observed output chars/run"
+            % (
+                _figure(delta.get("billed_per_run")),
+                _figure(delta.get("tool_uses_per_run")),
+                _figure(delta.get("tool_output_chars_per_run")),
+            )
+        )
+    counted = int(paired.get("pairs_total") or 0)
+    ours, theirs, delta = paired.get("with") or {}, paired.get("without") or {}, paired.get("delta") or {}
+    fields = ("billed_per_run", "tool_uses_per_run", "tool_output_chars_per_run")
+    lines.append(
+        "  total, %d pair(s) counted   with: %s billed/run, %s use(s)/run, %s observed output chars/run; "
+        "without: %s; delta: %s"
+        % (
+            counted,
+            _figure(ours.get(fields[0])),
+            _figure(ours.get(fields[1])),
+            _figure(ours.get(fields[2])),
+            ", ".join(_figure(theirs.get(field)) for field in fields),
+            ", ".join(_figure(delta.get(field)) for field in fields),
+        )
+    )
+    lines.extend(
+        [
+            "  %d pair(s) is a small-sample observation, not a statistical result. A counted" % counted,
+            "  pair holds the change, the tree, the panel, the delivered reviews and the other prompt",
+            "  inputs equal; what it does not hold equal is the reviewers' own run-to-run variation, so",
+            "  one pair says what happened once. Codex reports no tool activity, so the tool figures",
+            "  are over the runs that reported them. A pair is listed but left out of the total when",
+            '  its panels differ ("panels differ"), when a reviewer run on either side did not deliver',
+            '  ("not delivered"), when the two runs had different prompt inputs ("inputs differ"), or',
+            '  when the enclosing run adopted nothing ("nothing adopted").',
+        ]
+    )
+    return lines
+
+
+def _panel_names(panel: List[Dict[str, Any]]) -> str:
+    names = []
+    for entry in panel:
+        details = (entry.get("provider"), entry.get("model") or "?", entry.get("role") or "?")
+        names.append("%s (%s, %s, %s)" % (entry.get("id"), *details))
+    return ", ".join(names)
+
+
+def _pair_exclusions(pair: Dict[str, Any]) -> List[str]:
+    """Why a listed pair is left out of the total, one clause per reason."""
+    reasons = []
+    if not pair.get("same_panel"):
+        reasons.append("panels differ (without: %s)" % _panel_names(pair.get("without_panel") or []))
+    if not pair.get("delivered"):
+        undelivered = pair.get("undelivered") or []
+        names = ["%s: %s %s" % (run.get("side"), run.get("id"), run.get("status")) for run in undelivered]
+        reasons.append("not delivered (%s)" % ", ".join(names))
+    if not pair.get("same_inputs"):
+        reasons.append("inputs differ (%s)" % ", ".join(pair.get("inputs_differ") or []))
+    if pair.get("nothing_adopted"):
+        reasons.append("nothing adopted")
+    return reasons
 
 
 def _context_row(group: Dict[str, Any], adopted: bool) -> str:
@@ -3920,6 +4201,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="diff the whole change even on a re-review, not just what the fix changed",
     )
+    snapshot.add_argument(
+        "--surrounding",
+        choices=context_mod.SURROUNDING_MODES,
+        default=None,
+        help="override review.context.surrounding for this snapshot only",
+    )
     snapshot.add_argument("--json", action="store_true")
     snapshot.set_defaults(func=cmd_review_snapshot)
 
@@ -3952,6 +4239,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--force",
         action="store_true",
         help="run past the review iteration budget, or with the tests recorded as failing",
+    )
+    review_run.add_argument(
+        "--surrounding",
+        choices=context_mod.SURROUNDING_MODES,
+        default=None,
+        help="override review.context.surrounding for this run only",
     )
     review_run.add_argument("--json", action="store_true")
     review_run.set_defaults(func=cmd_review_run)

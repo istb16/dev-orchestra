@@ -256,6 +256,87 @@ one) and compares it with its blob in the tree. A file edited in between is left
 out as `changed while the snapshot was taken`, named in the prompt, and cured by
 taking the snapshot again.
 
+### Measuring what surrounding context does
+
+The split in `optimization report` compares rounds with and without context
+across *different* changes. To see what it does on one change, review the same
+frozen snapshot twice -- once without context, once with -- using one-run
+overrides that leave `review.context.surrounding` as it is, and read the pair.
+
+Before starting: keep the setting at its default (`none`) and do not change any
+setting between the two runs; run the same panel both times (the same `--only`
+arguments, if any); pass the same `--context` to both runs or to neither; do it
+**before triage**; and do it on a **whole-change round** -- the first round of a
+change, or a round after a clean or all-rejected review. An incremental round is
+refused. **Always start from step 1**: a snapshot that was not frozen with the
+context refuses `--surrounding enclosing`.
+
+```bash
+# 1. Freeze the change and its candidates (even with the setting at none). The pair starts here
+dev-orchestra review snapshot --surrounding enclosing
+#    note "sha256 <12 chars>" and "context:  enclosing -- N symbol(s)"
+
+# 2. Control: no context. The pair's first run, so its signature is registered as usual
+dev-orchestra review run --surrounding none
+
+# 3. Treatment: the same snapshot with context. The round does not advance; no signature is registered
+dev-orchestra review run --surrounding enclosing
+#    "Surrounding context: N symbol(s), X chars adopted (--surrounding enclosing for this run)"
+#    exit 2 before any cost if nothing would be adopted (not frozen, no candidates, file delivery, no budget)
+#    exit 2 if a finding was triaged or given a note after step 2
+
+# 4. Read
+dev-orchestra optimization report          # the "Paired on one snapshot" block
+dev-orchestra optimization report --json   # paired.pairs[*], paired.delta
+```
+
+- Steps 2 and 3 may be swapped. Either way the first run registers the findings
+  signature and the second -- a rerun of the same snapshot -- does not. The
+  report that triage then works from, `reports/*.md` and `consolidated.*`, is the
+  last run's; the signature the next round is compared with is the first run's.
+- Pass `--surrounding` to both runs. A run without it records no `measurement`
+  and is never paired.
+- **What the numbers mean.** Only the `delta` of a *counted* pair -- the same
+  panel, every run delivered (`ok`), the same prompt inputs, and context
+  actually adopted -- can be read as the effect of the context. A negative delta
+  means the context saved that much on that pair. Pairs that fail one of those
+  are listed with the reason and left out of the total.
+- **What it cannot say.** One pair is one observation: the reviewers vary from
+  run to run on identical input, and nothing here holds that equal. Take pairs on
+  three to five different changes before letting the figures decide anything.
+  Codex reports no tool activity, so the tool figures are the reporting runs'
+  (Claude's) alone.
+- **Cost.** One pair runs the snapshot's panel twice. The billed tokens and the
+  runtime budget (`charged_seconds`) are each run's measured values added as they
+  are; the two prompts and their durations differ, so the total is not exactly
+  double. Read the real figures in `review run --json`'s `usage` and in the
+  pair's `with` / `without`. `review run` itself consumes no `review` attempt,
+  but a procedure that calls `budget consume review` before every run consumes
+  one per run. The second run may be refused because the first spent what was
+  left of `budgets.max_runtime_seconds`.
+- **Why whole-change rounds only.** The prompt of an incremental round carries
+  the accepted findings of the moment it runs ("The fix was meant to address:"),
+  read from `consolidated.json` -- which the first run rewrites. Two runs on it
+  would differ in more than the context, so `--surrounding` is refused there
+  before any cost.
+- **Why always from the snapshot.** On an incremental round whose previous
+  review had an accepted finding, with the same base, the snapshot diffs against
+  the previous round's tree; taking it again with `--surrounding enclosing` then
+  finds that tree equal to the working tree, goes back to the whole diff, and the
+  sha256 changes. After a clean or all-rejected review the diff is whole already
+  and the sha256 stays. Either way, a snapshot without the freeze refuses the
+  enclosing run, so the procedure starts from step 1.
+- **A budget reset between the two runs.** `budget reset` or the idle reset
+  changes the review's lineage, so the second run counts from round 1 again,
+  records `rerun: false` and registers its signature. The pair still forms --
+  it is keyed on the workflow directory and the snapshot, not the budget epoch --
+  and `epoch` in `--json` shows the two values. The second run is still refused
+  if a finding was triaged after the first: it rebuilds the same findings, and
+  triage is carried over by finding key whatever the lineage.
+- **An explicit `--iteration`.** A run whose `--iteration` names a round other
+  than the one the first run recorded is a round of its own: it records
+  `rerun: false` and registers its signature.
+
 ### What the runtime budget counts
 
 Seconds of delegated execution, as measured by the run itself — never the time

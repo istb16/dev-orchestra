@@ -10,6 +10,8 @@ off nothing changes at all: the prompt is the bytes it always was.
 
 from __future__ import annotations
 
+import argparse
+import hashlib
 import io
 import json
 import os
@@ -908,6 +910,8 @@ class TestEndToEnd(GitCase):
         self.assertNotIn("Surrounding", self.report())
         self.assertNotIn("surrounding", json.loads(run_cli("review", "status", "--json")[1]))
         self.assertNotIn("surrounding", self.last_review_event())
+        self.assertNotIn("measurement", data)
+        self.assertNotIn("measurement", self.last_review_event())
 
     def test_off_with_incremental_off_writes_no_tree(self):
         run_cli("config", "set", "review.incremental_rounds", "false")
@@ -1182,6 +1186,308 @@ class TestTheFixRound(GitCase):
         _, _, _, built = self.prompts_of()
         self.assertIn("return a + b + 0", built[0])
         self.assertNotIn("return 42", built[0])
+
+
+HEADING = "Surrounding context (review.context.surrounding: enclosing)"
+
+
+class MeasuringCase(GitCase):
+    """`review run --surrounding`: one snapshot reviewed with and without the context."""
+
+    def use_finding(self):
+        mock_dir = os.path.join(self.tmp, "mock")
+        os.makedirs(mock_dir, exist_ok=True)
+        with open(os.path.join(mock_dir, "review.txt"), "w", encoding="utf-8") as handle:
+            handle.write(FINDING)
+        os.environ["DEV_ORCHESTRA_MOCK_DIR"] = mock_dir
+
+    def review_events(self):
+        events = self.workspace.read_state().get("events") or []
+        return [event for event in events if event.get("stage") == "review"]
+
+    def ledger(self):
+        return self.workspace.read_state().get("ledger") or {}
+
+    def assert_refused_before_any_cost(self, argv, expected):
+        before = len(self.review_events())
+        code, _, err = run_cli("review", "run", *argv)
+        self.assertEqual(code, 2, err)
+        self.assertIn(expected, err)
+        self.assertEqual(len(self.review_events()), before)
+        self.assertEqual(self.ledger().get("in_flight") or {}, {})
+        return err
+
+    def without_block(self, prompt, context_chars):
+        """The prompt with the adopted context block and its separator cut out."""
+        start = prompt.index(HEADING) - len("\n\n")
+        return prompt[:start] + prompt[start + context_chars :]
+
+
+class TestOnePairOnOneSnapshot(MeasuringCase):
+    def test_the_snapshot_flag_freezes_with_the_setting_off(self):
+        self.edit_add()
+        code, out, _ = run_cli("review", "snapshot", "--surrounding", "enclosing")
+        self.assertEqual(code, 0)
+        self.assertIn("  context:  enclosing -- 1 symbol(s)", out)
+        self.assertEqual(self.meta()["surrounding"]["tree"], self.frozen()["tree"])
+        loaded = config_mod.load(self.project)
+        self.assertEqual(context_mod.surrounding_mode(loaded.context_settings()["surrounding"]), "none")
+
+    def test_none_then_enclosing(self):
+        self.use_finding()
+        self.edit_add()
+        run_cli("review", "snapshot", "--surrounding", "enclosing")
+        code, out, err, without = self.prompts_of("--surrounding", "none")
+        self.assertEqual(code, 0, err)
+        self.assertIn("Surrounding context: none (--surrounding none for this run;", out)
+        self.assertEqual(self.consolidated()["iteration"], 1)
+        first = self.last_review_event()["measurement"]
+        self.assertFalse(first["rerun"])
+        self.assertEqual(first["surrounding"], "none")
+        signature = review_mod.findings_signature(self.consolidated())
+
+        code, out, err, with_ = self.prompts_of("--surrounding", "enclosing")
+        self.assertEqual(code, 0, err)
+        self.assertIn("(--surrounding enclosing for this run)", out)
+        self.assertNotIn("same findings as the previous round", err)
+        data = self.consolidated()
+        self.assertEqual(data["iteration"], 1)
+        self.assertIn(HEADING, with_[0])
+        self.assertNotIn("Surrounding context", without[0])
+        # Nothing but the context block differs between the two prompts.
+        chars = data["reviewers"][0]["surrounding"]["context_chars"]
+        self.assertEqual(self.without_block(with_[0], chars), without[0])
+
+        second = self.last_review_event()["measurement"]
+        self.assertTrue(second["rerun"])
+        self.assertEqual(second["workflow"], self.workspace.workflow)
+        self.assertEqual(second["epoch"], cli._ledger(argparse.Namespace(), self.workspace).workflow_id())
+        self.assertEqual(second["snapshot"], self.meta()["sha256"])
+        self.assertEqual(second["tree"], self.meta()["surrounding"]["tree"])
+        self.assertEqual(second["inputs"], first["inputs"])
+        stored = self.ledger()["signatures"]["review"]
+        self.assertEqual((stored["value"], stored["repeats"]), (signature, 1))
+        self.assertEqual(data["measurement"]["surrounding"], "enclosing")
+        self.assertTrue(data["measurement"]["rerun"])
+        blank = {"triage": "needs-triage", "triage_note": ""}
+        undecided = {entry["key"]: blank for entry in data["findings"]}
+        self.assertEqual(data["measurement"]["triage_at_build"], undecided)
+        self.assertTrue(data["findings"])
+
+        report = json.loads(run_cli("optimization", "report", "--json")[1])["paired"]
+        (pair,) = report["pairs"]
+        self.assertTrue(pair["counted"])
+        self.assertEqual(pair["workflow"], self.workspace.workflow)
+        self.assertEqual((pair["panel"][0]["id"], pair["panel"][0]["provider"]), ("m1", "mock"))
+        self.assertGreater(pair["delta"]["billed_per_run"], 0)
+        self.assertEqual(pair["delta"]["tool_uses_per_run"], 0.0)
+        self.assertIn("Paired on one snapshot", run_cli("optimization", "report")[1])
+
+    def test_enclosing_then_none(self):
+        self.edit_add()
+        run_cli("review", "snapshot", "--surrounding", "enclosing")
+        code, _, err, with_ = self.prompts_of("--surrounding", "enclosing")
+        self.assertEqual(code, 0, err)
+        chars = self.consolidated()["reviewers"][0]["surrounding"]["context_chars"]
+        self.assertFalse(self.last_review_event()["measurement"]["rerun"])
+        code, _, err, without = self.prompts_of("--surrounding", "none")
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("Surrounding context", without[0])
+        self.assertEqual(self.without_block(with_[0], chars), without[0])
+        self.assertTrue(self.last_review_event()["measurement"]["rerun"])
+        self.assertEqual(self.consolidated()["iteration"], 1)
+        self.assertEqual(self.ledger()["signatures"]["review"]["repeats"], 1)
+
+    def test_the_next_round_registers_its_signature_as_usual(self):
+        self.edit_add()
+        run_cli("review", "snapshot", "--surrounding", "enclosing")
+        run_cli("review", "run", "--surrounding", "none")
+        run_cli("review", "run", "--surrounding", "enclosing")
+        self.assertEqual(self.ledger()["signatures"]["review"]["repeats"], 1)
+        self.edit_add("return a - b + 0")
+        run_cli("review", "snapshot")
+        code, _, err = run_cli("review", "run")
+        self.assertEqual(code, 0, err)
+        data = self.consolidated()
+        self.assertEqual(data["iteration"], 2)
+        self.assertNotIn("measurement", data)
+        self.assertNotIn("measurement", self.last_review_event())
+        # The same (empty) findings as the pair's first run: counted once more,
+        # and only once -- the pair's second run registered nothing.
+        self.assertEqual(self.ledger()["signatures"]["review"]["repeats"], 2)
+
+    def test_an_explicit_iteration_naming_another_round_is_no_rerun(self):
+        self.use_finding()
+        self.edit_add()
+        run_cli("review", "snapshot", "--surrounding", "enclosing")
+        run_cli("review", "run", "--surrounding", "none")
+        code, _, err = run_cli("review", "run", "--surrounding", "enclosing", "--iteration", "2")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.consolidated()["iteration"], 2)
+        self.assertFalse(self.last_review_event()["measurement"]["rerun"])
+        self.assertIn("same findings as the previous round", err)
+        self.assertEqual(self.ledger()["signatures"]["review"]["repeats"], 2)
+
+    def test_an_explicit_iteration_naming_the_same_round_is_a_rerun(self):
+        self.edit_add()
+        run_cli("review", "snapshot", "--surrounding", "enclosing")
+        run_cli("review", "run", "--surrounding", "none")
+        code, _, err = run_cli("review", "run", "--surrounding", "enclosing", "--iteration", "1")
+        self.assertEqual(code, 0, err)
+        self.assertTrue(self.last_review_event()["measurement"]["rerun"])
+
+    def test_the_flag_builds_the_prompt_the_setting_does(self):
+        self.enable()
+        self.edit_add()
+        run_cli("review", "snapshot")
+        _, _, _, configured = self.prompts_of()
+        run_cli("config", "set", "review.context.surrounding", "none")
+        code, _, err, flagged = self.prompts_of("--surrounding", "enclosing")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(configured[0], flagged[0])
+
+    def test_none_overrides_the_setting(self):
+        self.enable()
+        self.edit_add()
+        run_cli("review", "snapshot")
+        code, _, err, flagged = self.prompts_of("--surrounding", "none")
+        self.assertEqual(code, 0, err)
+        event = self.last_review_event()
+        self.assertNotIn("surrounding", event)
+        self.assertEqual(event["measurement"]["surrounding"], "none")
+        run_cli("config", "set", "review.context.surrounding", "none")
+        _, _, _, off = self.prompts_of()
+        self.assertEqual(flagged[0], off[0])
+
+    def test_the_other_prompt_inputs_are_recorded(self):
+        self.edit_add()
+        run_cli("review", "snapshot", "--surrounding", "enclosing")
+        run_cli("review", "run", "--surrounding", "none", "--context", "x")
+        event = self.last_review_event()
+        inputs = event["measurement"]["inputs"]
+        self.assertEqual(inputs["context_sha256"], hashlib.sha256(b"x").hexdigest())
+        self.assertEqual(inputs["max_findings"], event["optimization"]["max_findings"])
+        settings = config_mod.load(self.project).context_settings()
+        self.assertEqual(inputs["inline_chars"], settings["inline_chars"])
+        self.assertEqual(inputs["max_chars"], settings["max_chars"])
+        self.assertFalse(inputs["force"])
+        code, out, _ = run_cli("review", "run", "--surrounding", "enclosing", "--json")
+        self.assertEqual(code, 0)
+        payload = json.loads(out)
+        self.assertEqual(payload["measurement"]["inputs"]["context_sha256"], "")
+        self.assertTrue(payload["measurement"]["rerun"])
+
+    def test_a_design_round_takes_no_override(self):
+        code, _, err = run_cli("review", "run", "--design", "--surrounding", "enclosing")
+        self.assertEqual(code, 2)
+        self.assertIn("--surrounding applies to the code review only", err)
+
+    def test_an_unknown_mode_is_refused_by_the_parser(self):
+        with self.assertRaises(SystemExit) as raised:
+            run_cli("review", "run", "--surrounding", "bad")
+        self.assertEqual(raised.exception.code, 2)
+
+
+class TestWhatIsRefusedBeforeAnyCost(MeasuringCase):
+    def test_an_incremental_round_is_refused_on_either_run(self):
+        self.use_finding()
+        self.edit_add()
+        run_cli("review", "snapshot")
+        run_cli("review", "run")
+        run_cli("review", "triage", "F1", "--status", "accepted")
+        self.edit_add("return a + b + 0")
+        run_cli("review", "snapshot", "--surrounding", "enclosing")
+        self.assertTrue(self.meta()["incremental_from"])
+        for mode in ("none", "enclosing"):
+            self.assert_refused_before_any_cost(["--surrounding", mode], "incremental round")
+
+    def test_nothing_frozen_is_refused(self):
+        self.edit_add()
+        run_cli("review", "snapshot")
+        err = self.assert_refused_before_any_cost(["--surrounding", "enclosing"], "nothing would be adopted")
+        self.assertIn("review snapshot --surrounding enclosing", err)
+
+    def test_no_candidates_is_refused(self):
+        self.write("notes.txt", "one\n")
+        self.commit_all("notes")
+        self.write("notes.txt", "two\n")
+        run_cli("review", "snapshot", "--surrounding", "enclosing")
+        err = self.assert_refused_before_any_cost(["--surrounding", "enclosing"], context_mod.NO_CANDIDATES)
+        self.assertIn("Measuring what surrounding context does", err)
+
+    def test_a_file_delivery_is_refused(self):
+        run_cli("config", "set", "review.context.inline_chars", "10")
+        self.edit_add()
+        run_cli("review", "snapshot", "--surrounding", "enclosing")
+        self.assert_refused_before_any_cost(["--surrounding", "enclosing"], context_mod.FILE_DELIVERY)
+
+    def test_a_decision_made_since_the_first_run_is_protected(self):
+        self.use_finding()
+        self.edit_add()
+        run_cli("review", "snapshot", "--surrounding", "enclosing")
+        run_cli("review", "run", "--surrounding", "none")
+        run_cli("review", "triage", "F1", "--status", "accepted")
+        self.assert_refused_before_any_cost(["--surrounding", "enclosing"], "triaged since its last run")
+        self.assertEqual(self.consolidated()["findings"][0]["triage"], "accepted")
+
+    def test_a_note_added_since_the_first_run_is_protected(self):
+        self.use_finding()
+        self.edit_add()
+        run_cli("review", "snapshot", "--surrounding", "enclosing")
+        run_cli("review", "run", "--surrounding", "none")
+        run_cli("review", "triage", "F1", "--status", "needs-triage", "--note", "ask the author")
+        self.assert_refused_before_any_cost(["--surrounding", "enclosing"], "triaged since its last run")
+        self.assertEqual(self.consolidated()["findings"][0]["triage_note"], "ask the author")
+
+    def test_a_budget_reset_between_the_runs_still_protects_the_decision(self):
+        """The reset makes the second run no rerun, but it rebuilds the same findings."""
+        self.use_finding()
+        self.edit_add()
+        run_cli("review", "snapshot", "--surrounding", "enclosing")
+        run_cli("review", "run", "--surrounding", "none")
+        run_cli("review", "triage", "F1", "--status", "accepted")
+        self.assertEqual(run_cli("budget", "reset")[0], 0)
+        self.assert_refused_before_any_cost(["--surrounding", "enclosing"], "triaged since its last run")
+        self.assertEqual(self.consolidated()["findings"][0]["triage"], "accepted")
+
+    def test_a_budget_reset_before_triage_still_forms_a_pair(self):
+        self.use_finding()
+        self.edit_add()
+        run_cli("review", "snapshot", "--surrounding", "enclosing")
+        run_cli("review", "run", "--surrounding", "none")
+        self.assertEqual(run_cli("budget", "reset")[0], 0)
+        code, _, err = run_cli("review", "run", "--surrounding", "enclosing")
+        self.assertEqual(code, 0, err)
+        self.assertFalse(self.last_review_event()["measurement"]["rerun"])
+
+    def test_a_decision_carried_in_from_an_earlier_round_is_not_refused(self):
+        self.use_finding()
+        self.edit_add()
+        run_cli("review", "snapshot")
+        run_cli("review", "run")
+        run_cli("review", "triage", "F1", "--status", "rejected")
+        # Nothing accepted, so the next snapshot is the whole change again.
+        self.edit_add("return a * b * 1")
+        run_cli("review", "snapshot", "--surrounding", "enclosing")
+        self.assertFalse(self.meta()["incremental_from"])
+        code, _, err = run_cli("review", "run", "--surrounding", "none")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.consolidated()["findings"][0]["triage"], "rejected")
+        code, _, err = run_cli("review", "run", "--surrounding", "enclosing")
+        self.assertEqual(code, 0, err)
+        self.assertTrue(self.last_review_event()["measurement"]["rerun"])
+        self.assertEqual(self.consolidated()["findings"][0]["triage"], "rejected")
+
+    def test_a_report_without_the_record_counts_every_decision(self):
+        self.use_finding()
+        self.edit_add()
+        run_cli("review", "snapshot")
+        run_cli("review", "run")
+        run_cli("review", "triage", "F1", "--status", "accepted")
+        sha = self.meta()["sha256"]
+        run_cli("review", "snapshot", "--surrounding", "enclosing")
+        self.assertEqual(self.meta()["sha256"], sha)
+        self.assert_refused_before_any_cost(["--surrounding", "none"], "triaged since its last run")
 
 
 if __name__ == "__main__":

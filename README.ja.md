@@ -898,7 +898,9 @@ Orchestrator がトリアージ時に確定させます。詳細は [docs/ja/ref
 レビュアーが自分で開くファイルが減ります。量は `review.context.surrounding_chars`（60,000）と、
 diff がコンテキストの上限の下に残す分で制限され、収まらなかったものは黙って落とさず、プロンプトと
 すべてのレポートで名前を挙げます。出荷時は off です。`optimization report` がこれを使ったラウンドと
-使わなかったラウンドを実行あたり・変更 1k 文字あたりで比較するので、その比較を見て on にしてください。
+使わなかったラウンドを実行あたり・変更 1k 文字あたりで比較しますが、これは異なる変更どうしの比較です。
+1 つの変更での効果は、`review run --surrounding none|enclosing` で同じスナップショットを 2 回レビューし、
+ペアの数値で読みます。その数値を見て on にしてください。
 
 各ロールには provider 固有の `options` も指定できます（Claude は `permission_mode`、Codex は
 `sandbox` / `approve`）。値はインストール済みCLIが実際に受け付けるものと照合されます。read-only

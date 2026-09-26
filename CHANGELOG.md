@@ -37,6 +37,25 @@ The public surface covered by that promise is: the configuration schema, the
   rounds into with and without context, per run and per 1k characters of
   change, so the effect can be measured before the default moves. With the
   setting off, every prompt and artifact is what it was.
+- **The surrounding context can be measured on one snapshot.**
+  `review snapshot --surrounding none|enclosing` and
+  `review run --surrounding none|enclosing` override
+  `review.context.surrounding` for one snapshot or run without editing the
+  setting, so the same frozen change can be reviewed with and without the
+  context. `optimization report` pairs the two runs -- keyed on the workflow
+  directory, the full snapshot sha256, the frozen tree, `head` and `base` --
+  and prints the per-run billed tokens, tool uses and observed tool output of
+  each side and their delta; `--json` adds `paired`. A pair counts toward the
+  total only when the panel (reviewer, provider, model and role), every run's
+  delivery and the other prompt inputs match and the enclosing run adopted
+  something; otherwise it is listed with the reason. The override is refused
+  before any cost on a design round, on an incremental round, when `enclosing`
+  would adopt nothing, and on a second run of a snapshot whose triage or
+  triage notes changed since its last run, across a budget reset too. The rerun stays in its round and
+  registers no findings signature. The run event and `review run --json` gain
+  a `measurement` block, and `consolidated.json` a `measurement` record, only
+  when the flag is given. See `references/limits.md`, "Measuring what
+  surrounding context does".
 
 ## [0.9.0] - 2026-09-25
 

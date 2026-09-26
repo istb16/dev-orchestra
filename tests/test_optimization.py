@@ -1076,12 +1076,31 @@ class TestTheReportCommand(IsolatedCase):
         self.assertIn("Codex reports no tool activity", out)
 
 
-def context_round(change_chars, usages, adopted=0, trimmed=0, summary=True):
-    """A code round as `review run` records it with `review.context.surrounding` on."""
+def context_round(change_chars, usages, adopted=0, trimmed=0, summary=True, measurement=None, statuses=None):
+    """A code round as `review run` records it with `review.context.surrounding` on.
+
+    ``measurement`` is the block `review run --surrounding` adds, and with it
+    each reviewer entry gets the id, provider, model, role and status a pair
+    is compared on; ``statuses`` spells those out per entry.
+    """
     event = round_with(usages)
-    for run in event["reviewers"]:
+    for index, run in enumerate(event["reviewers"]):
         if change_chars is not None:
             run["change_chars"] = change_chars
+        if measurement is not None:
+            run.update(
+                {
+                    "id": "r%d" % (index + 1),
+                    "provider": "claude",
+                    "model": "opus",
+                    "role": "general",
+                    "status": "ok",
+                }
+            )
+        if statuses is not None:
+            run["status"] = statuses[index]
+    if measurement is not None:
+        event["measurement"] = measurement
     if summary and (adopted or trimmed):
         event["surrounding"] = {
             "mode": "enclosing",
@@ -1195,6 +1214,255 @@ class TestRoundsWithAndWithoutContext(unittest.TestCase):
         self.assertEqual(group["billed_run_change_chars"], 2000)
         self.assertEqual(group["tool_run_change_chars"], 1000)
         self.assertEqual(group["tool_output_chars_per_run_per_1k_change_chars"], 300.0)
+
+
+def measured(
+    side, workflow="wf", snapshot="s" * 64, tree="t" * 40, head="h" * 40, base=None, epoch="e1", **inputs
+):
+    """The `measurement` block of a `review run --surrounding` event."""
+    values = {
+        "context_sha256": "",
+        "max_findings": 12,
+        "inline_chars": 60000,
+        "max_chars": 200000,
+        "force": False,
+    }
+    values.update(inputs)
+    return {
+        "surrounding": side,
+        "snapshot": snapshot,
+        "tree": tree,
+        "head": head,
+        "base": base,
+        "workflow": workflow,
+        "epoch": epoch,
+        "rerun": False,
+        "inputs": values,
+    }
+
+
+def paired_round(side, usages, at="2026-09-01T00:00:00Z", adopted=None, statuses=None, **block):
+    """One side of a pair; the enclosing side adopts context unless told otherwise."""
+    if adopted is None:
+        adopted = 100 if side == "enclosing" else 0
+    event = context_round(
+        1000, usages, adopted=adopted, measurement=measured(side, **block), statuses=statuses
+    )
+    event["at"] = at
+    return event
+
+
+CLAUDE = {"billed_tokens": 1000, "tool_uses": 3, "tool_output_chars": 900}
+CODEX = {"billed_tokens": 2000}
+
+
+class TestPairedOnOneSnapshot(unittest.TestCase):
+    """Two runs of one frozen snapshot, one with the context and one without.
+
+    A pair is listed whatever it holds and counted only when nothing but the
+    context differed: the panel, a delivered review from every run, the other
+    prompt inputs -- and the context side adopted something.
+    """
+
+    def paired(self, *events):
+        return opt.summarise_rounds(list(events))["paired"]
+
+    def test_the_two_sides_of_one_snapshot_are_a_pair(self):
+        paired = self.paired(
+            paired_round("none", [dict(CLAUDE, billed_tokens=1200, tool_uses=5)]),
+            paired_round("enclosing", [CLAUDE]),
+        )
+        self.assertEqual((paired["pairs_listed"], paired["pairs_total"]), (1, 1))
+        (pair,) = paired["pairs"]
+        self.assertTrue(pair["counted"])
+        self.assertEqual(pair["workflow"], "wf")
+        self.assertEqual(pair["snapshot"], "s" * 64)
+        member = {"id": "r1", "provider": "claude", "model": "opus", "role": "general"}
+        self.assertEqual(pair["panel"], [member])
+        self.assertIsNone(pair["without_panel"])
+        self.assertEqual(pair["adopted_chars"], 100)
+        self.assertEqual(pair["change_chars"], 1000)
+        expected = {"billed_per_run": -200.0, "tool_uses_per_run": -2.0, "tool_output_chars_per_run": 0.0}
+        self.assertEqual(pair["delta"], expected)
+        self.assertEqual(paired["with"]["billed_per_run"], 1000.0)
+        self.assertEqual(paired["without"]["billed_per_run"], 1200.0)
+        self.assertEqual(paired["delta"]["billed_per_run"], -200.0)
+        self.assertEqual(paired["note"], opt.PAIRED_NOTE)
+
+    def test_another_tree_or_workflow_is_not_the_same_snapshot(self):
+        for other in ({"tree": "u" * 40}, {"workflow": "elsewhere"}, {"snapshot": "x" * 64}):
+            paired = self.paired(paired_round("none", [CLAUDE]), paired_round("enclosing", [CLAUDE], **other))
+            self.assertEqual(paired["pairs"], [], other)
+
+    def test_another_epoch_is_still_a_pair_and_both_are_shown(self):
+        paired = self.paired(
+            paired_round("none", [CLAUDE], epoch="e1"), paired_round("enclosing", [CLAUDE], epoch="e2")
+        )
+        (pair,) = paired["pairs"]
+        self.assertEqual(pair["epoch"], {"with": "e2", "without": "e1"})
+        self.assertTrue(pair["counted"])
+
+    def test_a_round_without_the_block_is_never_paired(self):
+        plain = context_round(1000, [CLAUDE])
+        paired = self.paired(plain, paired_round("enclosing", [CLAUDE]))
+        self.assertEqual(paired["pairs_listed"], 0)
+        self.assertEqual(paired["pairs_total"], 0)
+        self.assertIsNone(paired["with"]["billed_per_run"])
+        self.assertIsNone(paired["delta"]["billed_per_run"])
+
+    def test_one_side_alone_is_not_a_pair(self):
+        self.assertEqual(self.paired(paired_round("enclosing", [CLAUDE]))["pairs"], [])
+
+    def test_the_latest_run_of_a_side_is_the_one_paired(self):
+        paired = self.paired(
+            paired_round("none", [dict(CLAUDE, billed_tokens=5000)], at="2026-09-01T00:00:00Z"),
+            paired_round("none", [dict(CLAUDE, billed_tokens=1500)], at="2026-09-02T00:00:00Z"),
+            paired_round("enclosing", [CLAUDE], at="2026-09-03T00:00:00Z"),
+        )
+        (pair,) = paired["pairs"]
+        self.assertEqual(pair["without"]["billed_tokens"], 1500)
+        self.assertEqual(pair["without"]["at"], "2026-09-02T00:00:00Z")
+
+    def test_an_enclosing_run_that_adopted_nothing_is_listed_and_not_counted(self):
+        paired = self.paired(paired_round("none", [CLAUDE]), paired_round("enclosing", [CLAUDE], adopted=0))
+        (pair,) = paired["pairs"]
+        self.assertTrue(pair["nothing_adopted"])
+        self.assertFalse(pair["counted"])
+        self.assertEqual(paired["pairs_total"], 0)
+        self.assertEqual(paired["with"]["reviewer_runs"], 0)
+
+    def test_the_same_id_on_another_model_is_another_panel(self):
+        without = paired_round("none", [CLAUDE])
+        without["reviewers"][0]["model"] = "sonnet"
+        (pair,) = self.paired(without, paired_round("enclosing", [CLAUDE]))["pairs"]
+        self.assertFalse(pair["same_panel"])
+        self.assertFalse(pair["counted"])
+        self.assertEqual(
+            pair["without_panel"], [{"id": "r1", "provider": "claude", "model": "sonnet", "role": "general"}]
+        )
+
+    def test_the_same_reviewer_in_another_role_is_another_panel(self):
+        """The role picks the prompt, so the two runs differed in more than the context."""
+        without = paired_round("none", [CLAUDE])
+        without["reviewers"][0]["role"] = "security"
+        (pair,) = self.paired(without, paired_round("enclosing", [CLAUDE]))["pairs"]
+        self.assertFalse(pair["same_panel"])
+        self.assertFalse(pair["counted"])
+        self.assertEqual(pair["without_panel"][0]["role"], "security")
+
+    def test_a_run_that_did_not_deliver_leaves_the_pair_out(self):
+        paired = self.paired(
+            paired_round("none", [CLAUDE, CODEX]),
+            paired_round("enclosing", [CLAUDE, CODEX], statuses=["ok", "failed"]),
+        )
+        (pair,) = paired["pairs"]
+        self.assertTrue(pair["same_panel"])
+        self.assertFalse(pair["delivered"])
+        self.assertEqual(pair["undelivered"], [{"side": "with", "id": "r2", "status": "failed"}])
+        self.assertFalse(pair["counted"])
+        self.assertEqual(paired["pairs_total"], 0)
+
+    def test_other_prompt_inputs_leave_the_pair_out(self):
+        paired = self.paired(
+            paired_round("none", [CLAUDE]),
+            paired_round("enclosing", [CLAUDE], context_sha256="c" * 64, max_findings=8),
+        )
+        (pair,) = paired["pairs"]
+        self.assertFalse(pair["same_inputs"])
+        self.assertEqual(pair["inputs_differ"], ["context", "max_findings"])
+        self.assertFalse(pair["counted"])
+
+    def test_a_run_that_reported_no_usage_is_not_in_the_billed_divisor(self):
+        (pair,) = self.paired(paired_round("none", [CLAUDE, {}]), paired_round("enclosing", [CLAUDE, {}]))[
+            "pairs"
+        ]
+        self.assertEqual((pair["with"]["reviewer_runs"], pair["with"]["measured_runs"]), (2, 1))
+        self.assertEqual(pair["with"]["billed_per_run"], 1000.0)
+
+    def test_a_codex_run_is_not_in_the_tool_divisor(self):
+        (pair,) = self.paired(
+            paired_round("none", [CLAUDE, CODEX]), paired_round("enclosing", [CLAUDE, CODEX])
+        )["pairs"]
+        self.assertEqual(pair["with"]["tool_reported_runs"], 1)
+        self.assertEqual(pair["with"]["tool_uses_per_run"], 3.0)
+        self.assertEqual(pair["with"]["billed_per_run"], 1500.0)
+
+    def test_a_side_with_nothing_to_divide_gives_no_delta(self):
+        (pair,) = self.paired(paired_round("none", [CODEX]), paired_round("enclosing", [CODEX]))["pairs"]
+        self.assertIsNone(pair["delta"]["tool_uses_per_run"])
+        self.assertEqual(pair["delta"]["billed_per_run"], 0.0)
+
+    def test_refused_and_design_rounds_are_not_paired(self):
+        refused = paired_round("enclosing", [CLAUDE])
+        refused["status"] = opt.REFUSED
+        design = design_event()
+        design["measurement"] = measured("enclosing")
+        paired = self.paired(paired_round("none", [CLAUDE]), refused, design)
+        self.assertEqual(paired["pairs"], [])
+
+    def test_the_context_split_does_not_move(self):
+        events = [paired_round("none", [CLAUDE]), paired_round("enclosing", [CLAUDE])]
+        plain = [context_round(1000, [CLAUDE]), context_round(1000, [CLAUDE], adopted=100)]
+        self.assertEqual(
+            opt.summarise_rounds(events)["by_context"], opt.summarise_rounds(plain)["by_context"]
+        )
+
+
+@unittest.skipUnless(has_git(), "git is required")
+class TestThePairedBlockInTheReport(IsolatedCase):
+    def setUp(self):
+        super().setUp()
+        self.workspace = self.cli_workspace()
+        self.workspace.ensure()
+
+    def record(self, *events):
+        for event in events:
+            self.workspace.record_event("review", event["status"], event)
+
+    def test_a_counted_pair_is_printed_with_its_delta_and_its_limits(self):
+        self.record(
+            paired_round("none", [dict(CLAUDE, billed_tokens=1200)], workflow=self.workspace.workflow),
+            paired_round("enclosing", [CLAUDE], workflow=self.workspace.workflow),
+        )
+        _, out, _ = run_cli("optimization", "report")
+        self.assertIn("Paired on one snapshot (--surrounding none vs enclosing", out)
+        self.assertIn("  %s in %s   change 1,000 chars" % ("s" * 12, self.workspace.workflow), out)
+        self.assertIn("      with:    1 run(s), 1,000 billed, 1,000.0 per run", out)
+        self.assertIn("      delta:   -200.0 billed/run, 0.0 use(s)/run", out)
+        self.assertIn("  total, 1 pair(s) counted", out)
+        self.assertIn("small-sample observation, not a statistical result", out)
+        report = json.loads(run_cli("optimization", "report", "--json")[1])
+        self.assertEqual(report["paired"]["pairs_total"], 1)
+
+    def test_each_reason_a_pair_is_left_out_is_named(self):
+        without = paired_round("none", [CLAUDE, CODEX])
+        without["reviewers"][1]["model"] = "gpt-4.1"
+        self.record(
+            without,
+            paired_round(
+                "enclosing", [CLAUDE, CODEX], adopted=0, statuses=["ok", "failed"], context_sha256="c"
+            ),
+        )
+        _, out, _ = run_cli("optimization", "report")
+        differ = "panels differ (without: r1 (claude, opus, general), r2 (claude, gpt-4.1, general))"
+        self.assertIn(differ, out)
+        self.assertIn("not delivered (with: r2 failed)", out)
+        self.assertIn("inputs differ (context)", out)
+        self.assertIn("nothing adopted", out)
+        self.assertIn("  total, 0 pair(s) counted", out)
+
+    def test_no_pair_prints_no_block(self):
+        self.record(paired_round("enclosing", [CLAUDE]))
+        _, out, _ = run_cli("optimization", "report")
+        self.assertNotIn("Paired on one snapshot", out)
+
+    def test_a_flat_workspace_names_no_workflow(self):
+        self.record(
+            paired_round("none", [CLAUDE], workflow=""), paired_round("enclosing", [CLAUDE], workflow="")
+        )
+        _, out, _ = run_cli("optimization", "report")
+        self.assertIn("  %s   change 1,000 chars" % ("s" * 12), out)
+        self.assertNotIn("%s in " % ("s" * 12), out)
 
 
 @unittest.skipUnless(has_git(), "git is required")
