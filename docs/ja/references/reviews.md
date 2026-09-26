@@ -1,4 +1,4 @@
-<!-- translated-from: references/reviews.md sha256:2596ae711e51008bea16b7ab9926f695490ffe6d130e428e2f1af91a76834b09 -->
+<!-- translated-from: references/reviews.md sha256:8d96ebe289ecef383cbf96198ad73a3f15b4071c3c81a90f0353604237ade5fc -->
 
 > この文書は [references/reviews.md](../../../references/reviews.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -421,6 +421,10 @@ plan が凍結される前です。収まるように切り詰めることだけ
 `general` では、スタイルだけに関する所見の重大度は最大でも low です。命名に関する
 細かい指摘を 4 つ返して null ポインターのパスを見逃すレビューは、失敗したレビュー
 です。
+
+レビュアーを追加したら、数ラウンドたったところで `optimization report` の採点表で
+その行を確認してください。外すべきレビュアーを知らせる仕組みは無く、何も加えない
+レビュアーは `reviewer remove` でパネルから外せます。
 
 <a id="output-schema"></a>
 

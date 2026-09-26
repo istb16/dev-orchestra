@@ -398,6 +398,10 @@ are worth writing down in the project config so the panel is reproducible.
 For `general`, style-only observations are low severity at most. A review that
 returns four naming nits and misses a null-pointer path is a failed review.
 
+After adding a reviewer, check its row in the `optimization report` scorecard
+once it has a few rounds behind it: nothing suggests a removal for you, and
+`reviewer remove` takes a reviewer that adds nothing off the panel.
+
 ## Output schema
 
 Reviewers are asked for this exact shape:
