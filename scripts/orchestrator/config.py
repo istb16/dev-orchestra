@@ -154,16 +154,16 @@ def default_config() -> Dict[str, Any]:
             #
             # surrounding: "enclosing" also hands each reviewer the Python
             # function, method or class enclosing every hunk, frozen with the
-            # snapshot; "none" hands over the diff alone. Off until measured:
-            # `optimization report` compares rounds with and without it.
-            # surrounding_chars caps what that adds. 60,000 fits every one of
-            # the seven recorded workflows untrimmed (the largest needed 49,371)
-            # and is 15% of max_chars.
+            # snapshot; "none" hands over the diff alone. Off: measured on one snapshot at
+            # a time (#130), it did not make a review cheaper.
+            # surrounding_chars caps what that adds. Measured on one snapshot
+            # (#130), 15,000 left the cost per run where it was, while 60,000
+            # added what it carried -- about 29% on a 90,000-character change.
             "context": {
                 "max_chars": 400_000,
                 "inline_chars": 400_000,
                 "surrounding": "none",
-                "surrounding_chars": 60_000,
+                "surrounding_chars": 15_000,
             },
             # Review the plan with the same panel before any code is written.
             # Off by default: turning it on adds a reviewer run per panel

@@ -106,7 +106,7 @@ diff` is concerned.
 review:
   context:
     surrounding: enclosing      # none (default) | enclosing
-    surrounding_chars: 60000    # the most it may add; null means the default
+    surrounding_chars: 15000    # the most it may add; null means the default
 ```
 
 A reviewer handed a diff sees three lines either side of every hunk, and nearly
@@ -115,7 +115,8 @@ once per reviewer and once per round, and invisible from here. With
 `surrounding: enclosing` the prompt carries that function too, after the diff,
 labelled as context and not as part of the change. `off` reads as `false` in
 YAML, and `false` and `null` both mean `none`; `true` names no mode and is
-refused. It ships off, because what it saves has not been measured yet:
+refused. It ships off, because measured on one snapshot it did not make a review
+cheaper (see [Measuring what surrounding context does](limits.md#measuring-what-surrounding-context-does)):
 `optimization report` compares rounds with and without it (see
 [optimization](cli.md#optimization)).
 
@@ -201,7 +202,7 @@ reason in the prompt, and the two reasons a fresh snapshot cures are named;
   "shared": true,
   "mode": "enclosing",
   "reason": "",
-  "budget": 60000,
+  "budget": 15000,
   "adopted_chars": 3100,
   "trimmed_chars": 9812,
   "context_chars": 3521,
@@ -251,12 +252,13 @@ adding a kind of context later does not reorder what is already adopted:
 Candidates rank on `(priority, relation, chars, path, start)`, which with
 priority 1 alone is `(relation, chars, path, start)`. Priorities 2 and 4 would
 need a cross-file index and resolver, doubling `context.py`, while the effect of
-1 has not been measured yet -- so 1 ships first, and off. The effect of 1 is
+1 was not measured yet -- so 1 shipped first, and off. The effect of 1 is
 measured by reviewing one snapshot with and without it, with
 `review run --surrounding none|enclosing`, and reading the paired figures in
 `optimization report` (see
 [Measuring what surrounding context does](limits.md#measuring-what-surrounding-context-does)).
-Priorities 2 to 6 are decided on those figures.
+Measured that way, 1 did not make a review cheaper and what it adopted was
+added to the cost, so priorities 2 to 6, which would add more, are not pursued.
 
 ## Design review
 

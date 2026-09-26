@@ -1,4 +1,4 @@
-<!-- translated-from: references/reviews.md sha256:4e3bb07e102a3bf259cb890c38eb896f802db42823335b2e4d2513f4bed7952e -->
+<!-- translated-from: references/reviews.md sha256:31fef3ec341556b69845aff9990424d4fb2efca95bba6d37e068b9cade06c256 -->
 
 > この文書は [references/reviews.md](../../../references/reviews.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -123,7 +123,7 @@ diff` の観点からもそのように扱われます。
 review:
   context:
     surrounding: enclosing      # none (default) | enclosing
-    surrounding_chars: 60000    # the most it may add; null means the default
+    surrounding_chars: 15000    # the most it may add; null means the default
 ```
 
 diff を渡されたレビュアーに見えるのは各 hunk の前後 3 行だけで、判断する前に
@@ -132,7 +132,8 @@ diff を渡されたレビュアーに見えるのは各 hunk の前後 3 行だ
 その関数もプロンプトに入ります。diff の後ろに置かれ、変更の一部ではなく
 コンテキストとして示されます。YAML では `off` は `false` として読まれ、`false` と
 `null` はどちらも `none` を意味します。`true` はどのモードも指さないので拒否
-されます。何が節約されるかがまだ計測されていないため、off で出荷されています。
+されます。1 つのスナップショットで計測したところレビューが安くならなかったため、off で出荷
+されています（[周辺コンテキストの効果を測る](limits.md#measuring-what-surrounding-context-does) を参照してください）。
 `optimization report` が、これを使ったラウンドと使わなかったラウンドを比較します
 （[optimization](cli.md#optimization) を参照してください）。
 
@@ -218,7 +219,7 @@ yourself if a hunk needs them.`）、各レビュアーエントリー、`consol
   "shared": true,
   "mode": "enclosing",
   "reason": "",
-  "budget": 60000,
+  "budget": 15000,
   "adopted_chars": 3100,
   "trimmed_chars": 9812,
   "context_chars": 3521,
@@ -269,12 +270,13 @@ complete のままで、diff がファイルとして渡されたラウンドは
 
 候補は `(priority, relation, chars, path, start)` で順位付けされ、優先順位 1 だけの
 今は `(relation, chars, path, start)` になります。優先順位 2 と 4 にはファイルを
-またいだ索引と解決器が必要で `context.py` が倍になる一方、1 の効果さえまだ計測
-されていません — そのため、まず 1 を off で出荷します。1 の効果は、
+またいだ索引と解決器が必要で `context.py` が倍になる一方、1 の効果はまだ計測
+されていませんでした — そのため、まず 1 を off で出荷しました。1 の効果は、
 `review run --surrounding none|enclosing` で 1 つのスナップショットをあり・なしの
 両方でレビューし、`optimization report` のペアの数値を読んで測ります
 （[周辺コンテキストの効果を測る](limits.md#measuring-what-surrounding-context-does) を
-参照してください）。優先順位 2〜6 はその数値で決めます。
+参照してください）。そうして測ったところ、1 でレビューは安くならず、採用した分が
+そのまま費用に上乗せされました。そのため、さらに多くを渡す優先順位 2〜6 は進めません。
 
 <a id="design-review"></a>
 

@@ -74,11 +74,11 @@ class TestDefaults(IsolatedCase):
             {"max_chars": 400_000, "inline_chars": 400_000},
         )
 
-    def test_surrounding_context_ships_off_with_a_cap_every_recorded_round_fits(self):
-        """Off until measured; 60,000 fits the largest recorded need (49,371)."""
+    def test_surrounding_context_ships_off_with_a_cap_that_did_not_raise_cost(self):
+        """Off by default; 15,000 is the cap measured to leave the cost per run unchanged."""
         context = config_mod.default_config()["review"]["context"]
         self.assertEqual(context["surrounding"], "none")
-        self.assertEqual(context["surrounding_chars"], 60_000)
+        self.assertEqual(context["surrounding_chars"], 15_000)
 
     def test_the_surrounding_mode_accepts_none_enclosing_null_and_false(self):
         for value in ("none", "enclosing", "Enclosing", None, False):
