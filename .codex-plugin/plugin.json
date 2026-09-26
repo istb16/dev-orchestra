@@ -1,6 +1,6 @@
 {
   "name": "dev-orchestra",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "description": "Orchestrate a multi-model development workflow across Claude Code and Codex CLIs: design, implement, test, independent multi-model review, triage, fix, re-test.",
   "author": {
     "name": "Takayuki Hirasawa",
