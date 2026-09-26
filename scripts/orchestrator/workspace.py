@@ -151,6 +151,27 @@ class Workspace:
         return os.path.join(self.reviews_dir, "consolidated.json")
 
     @property
+    def rounds_dir(self) -> str:
+        """One consolidated report per round, kept after the next round starts.
+
+        The live report is rewritten by every round, and it was the only place
+        a triage decision was written down: the previous round's findings, and
+        what the owner decided about them, went with it.
+        """
+        return os.path.join(self.reviews_dir, "rounds")
+
+    def round_report_path(self, key: "tuple[str, str]") -> str:
+        """Where the round ``(sha12, round_id)`` is archived.
+
+        A report frozen before rounds had an id is filed under its sha alone.
+        The id is cut to twelve characters like the sha: the name only has to
+        tell rounds of one workflow apart, and the full key is inside the file.
+        """
+        sha12, round_id = key
+        name = "%s-%s.json" % (sha12, round_id[:12]) if round_id else "%s.json" % sha12
+        return os.path.join(self.rounds_dir, name)
+
+    @property
     def state_path(self) -> str:
         return os.path.join(self.dir, "state.json")
 

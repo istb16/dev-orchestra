@@ -1635,8 +1635,7 @@ def _run_design_review(args: argparse.Namespace, loaded: config_mod.LoadedConfig
         data = review_mod.build_consolidation(
             workspace, [], [], iteration, lineage, completed_round=meta.get("round_id")
         )
-        ws.write_json(workspace.consolidated_json_path, data)
-        ws.write_text(workspace.consolidated_md_path, review_mod.render_consolidation(data))
+        review_mod.save_consolidation(workspace, data)
         return 0
 
     # No gate and no panel reduction. There is no test result to judge a plan
@@ -1705,14 +1704,17 @@ def _run_design_review(args: argparse.Namespace, loaded: config_mod.LoadedConfig
         completed_round=meta.get("round_id") if reviewed else None,
         unreviewed_round=None if reviewed else meta.get("round_id"),
     )
-    ws.write_json(workspace.consolidated_json_path, data)
-    ws.write_text(workspace.consolidated_md_path, review_mod.render_consolidation(data))
+    review_mod.save_consolidation(workspace, data)
     repeats = book.register_signature("design_review", review_mod.findings_signature(data))
     book.end(
         token,
         "ok",
         {
             "iteration": iteration,
+            # Which freeze this event paid for. The sha repeats when a plan is
+            # reviewed again; this does not, and it names the archived report
+            # the findings of this round are in.
+            "round_id": meta.get("round_id") or "",
             "reviewers": run_dicts,
             "findings": data["counts"].get("findings_total"),
             "identical_rounds": repeats,
@@ -1773,11 +1775,16 @@ def cmd_review_run(args: argparse.Namespace) -> int:
     if not reviewers and not args.only:
         _out("No reviewers configured -- skipping the independent-review stage.")
         lineage = _lineage(args, workspace)
+        meta = ws.read_json(workspace.snapshot_meta_path, {}) or {}
         data = review_mod.build_consolidation(
-            workspace, [], [], _iteration(args, workspace, lineage), lineage
+            workspace,
+            [],
+            [],
+            _iteration(args, workspace, lineage),
+            lineage,
+            completed_round=meta.get("round_id"),
         )
-        ws.write_json(workspace.consolidated_json_path, data)
-        ws.write_text(workspace.consolidated_md_path, review_mod.render_consolidation(data))
+        review_mod.save_consolidation(workspace, data)
         return 0
     if not reviewers:
         _err("--only %s matched no configured reviewer" % " ".join(args.only))
@@ -1980,8 +1987,15 @@ def cmd_review_run(args: argparse.Namespace) -> int:
     # from an earlier snapshot are skipped rather than mixed in.
     stamp = review_mod.current_snapshot_stamp(workspace)
     findings, stale = review_mod.read_reports(workspace, [str(r.get("id")) for r in configured], stamp)
+    # Passed whether or not anyone returned: nothing is approved over a code
+    # round, so the id only has to name the round this report was built for.
     data = review_mod.build_consolidation(
-        workspace, _merge_runs(workspace, run_dicts), findings, iteration, lineage
+        workspace,
+        _merge_runs(workspace, run_dicts),
+        findings,
+        iteration,
+        lineage,
+        completed_round=meta.get("round_id"),
     )
     if override:
         # The triage as this run built it, so the second run of a pair can tell
@@ -1991,8 +2005,7 @@ def cmd_review_run(args: argparse.Namespace) -> int:
             "rerun": rerun,
             "triage_at_build": {entry["key"]: _triage_record(entry) for entry in data["findings"]},
         }
-    ws.write_json(workspace.consolidated_json_path, data)
-    ws.write_text(workspace.consolidated_md_path, review_mod.render_consolidation(data))
+    review_mod.save_consolidation(workspace, data)
     # The second run of a pair is the same snapshot reviewed again on purpose,
     # not a fix that changed nothing, so it registers no signature: the pair's
     # signature is its first run's.
@@ -2002,6 +2015,9 @@ def cmd_review_run(args: argparse.Namespace) -> int:
         repeats = book.register_signature("review", review_mod.findings_signature(data))
     detail = {
         "iteration": iteration,
+        # Which freeze this event paid for: the sha repeats when the same tree
+        # is frozen again, this does not. See ``review_mod.round_key``.
+        "round_id": meta.get("round_id") or "",
         "reviewers": run_dicts,
         "findings": data["counts"].get("findings_total"),
         "identical_rounds": repeats,
@@ -2092,8 +2108,7 @@ def cmd_review_consolidate(args: argparse.Namespace) -> int:
     )
     for reviewer_id in stale:
         _err("note: %s's report predates the current snapshot and was ignored" % reviewer_id)
-    ws.write_json(workspace.consolidated_json_path, data)
-    ws.write_text(workspace.consolidated_md_path, review_mod.render_consolidation(data))
+    review_mod.save_consolidation(workspace, data)
     if args.json:
         _emit_json(data)
     else:
@@ -2133,8 +2148,7 @@ def cmd_review_triage(args: argparse.Namespace) -> int:
     except review_mod.ReviewError as exc:
         _err(str(exc))
         return 2
-    ws.write_json(workspace.consolidated_json_path, data)
-    ws.write_text(workspace.consolidated_md_path, review_mod.render_consolidation(data))
+    review_mod.save_consolidation(workspace, data)
     _out("Triaged %s as %s" % (", ".join(args.ids), args.status))
     return 0
 
@@ -2772,7 +2786,48 @@ _REFUSAL_CAUSE = {
 }
 
 
-def _rounds_recorded(args: argparse.Namespace, workspace: ws.Workspace) -> "tuple[List[Dict[str, Any]], str]":
+def _workflows_recorded(args: argparse.Namespace, workspace: ws.Workspace) -> List[Dict[str, Any]]:
+    """Each workflow's run log, with the workspace its review reports are in.
+
+    Kept apart per workflow, where ``_rounds_recorded`` flattens them: an
+    event names its round by a sha and an iteration, and both repeat from one
+    workflow to the next, so matching an event to the report of its round only
+    means something inside one workflow. Which workflows are read is the same
+    rule as there.
+    """
+    if getattr(args, "workflow", ""):
+        return [
+            {
+                "workflow": workspace.workflow,
+                "workspace": workspace,
+                "events": list(workspace.read_state().get("events") or []),
+            }
+        ]
+
+    found: List[Dict[str, Any]] = []
+    for entry in workflow_mod.listing(workspace.container):
+        state = ws.read_json(os.path.join(entry["dir"], "state.json"), {}) or {}
+        events = state.get("events")
+        if isinstance(events, list):
+            found.append(
+                {
+                    "workflow": entry["workflow"],
+                    "workspace": ws.Workspace(workspace.root, workspace.container, entry["workflow"]),
+                    "events": [item for item in events if isinstance(item, dict)],
+                }
+            )
+    if not any(item["events"] for item in found):
+        # A flat `.ai/` that has not been adopted yet, or nothing recorded.
+        events = [item for item in (workspace.read_state().get("events") or []) if isinstance(item, dict)]
+        found = [{"workflow": workspace.workflow, "workspace": workspace, "events": events}]
+    return found
+
+
+def _rounds_recorded(
+    args: argparse.Namespace,
+    workspace: ws.Workspace,
+    workflows: Optional[List[Dict[str, Any]]] = None,
+) -> "tuple[List[Dict[str, Any]], str]":
     """Every review round recorded in this project, and what was read.
 
     A level's effect is a rate -- how often it refused a round, how often it
@@ -2784,19 +2839,16 @@ def _rounds_recorded(args: argparse.Namespace, workspace: ws.Workspace) -> "tupl
 
     `--workflow` narrows it to one, which is the question "what did the level
     do *in this piece of work*" rather than "in this repository".
-    """
-    if getattr(args, "workflow", ""):
-        return list(workspace.read_state().get("events") or []), workspace.relative(workspace.state_path)
 
-    events: List[Dict[str, Any]] = []
-    for entry in workflow_mod.listing(workspace.container):
-        state = ws.read_json(os.path.join(entry["dir"], "state.json"), {}) or {}
-        found = state.get("events")
-        if isinstance(found, list):
-            events.extend(item for item in found if isinstance(item, dict))
-    if not events:
-        # A flat `.ai/` that has not been adopted yet, or nothing recorded.
-        events = [item for item in (workspace.read_state().get("events") or []) if isinstance(item, dict)]
+    ``workflows`` is what ``_workflows_recorded`` returned, for a caller that
+    needs both views and should read the logs once.
+    """
+    if workflows is None:
+        workflows = _workflows_recorded(args, workspace)
+    events = [event for item in workflows for event in item["events"]]
+    if getattr(args, "workflow", ""):
+        return events, workspace.relative(workspace.state_path)
+
     # One sequence out of several logs. The counts do not depend on the order,
     # but "what happened over time" reads wrong when it is per directory.
     events.sort(key=lambda item: str(item.get("at") or ""))
@@ -2806,8 +2858,12 @@ def _rounds_recorded(args: argparse.Namespace, workspace: ws.Workspace) -> "tupl
 def cmd_optimization_report(args: argparse.Namespace) -> int:
     """What the level decided, over every round this project has recorded."""
     workspace = _workspace(args)
-    events, source = _rounds_recorded(args, workspace)
+    workflows = _workflows_recorded(args, workspace)
+    events, source = _rounds_recorded(args, workspace, workflows)
     report = opt_mod.summarise_rounds(events)
+    # Beside the event summary rather than inside it: that one reads the run
+    # log alone, and what a round found is only in the round's report.
+    report["scorecard"] = opt_mod.reviewer_scorecard(_scorecard_inputs(workflows))
     if args.json:
         _emit_json(report)
         return 0
@@ -2911,6 +2967,8 @@ def cmd_optimization_report(args: argparse.Namespace) -> int:
         _out("")
         for line in _paired_rows(paired):
             _out(line)
+    for line in _scorecard_rows(report["scorecard"]):
+        _out(line)
     if report["design_refused"]:
         _out("")
         _out(
@@ -2952,6 +3010,195 @@ def _figure(value: Any) -> str:
     if value is None:
         return "-"
     return "{:,.1f}".format(value) if isinstance(value, float) else "{:,}".format(value)
+
+
+def _scorecard_inputs(workflows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """One entry per workflow and stage, for ``opt_mod.reviewer_scorecard``.
+
+    Per workflow, because a round is matched to its report by a sha and an
+    iteration, and both repeat across workflows. Per stage, because the design
+    review keeps its reports in a directory of its own.
+    """
+    inputs = []
+    for item in workflows:
+        scopes = (
+            ("code", "review", item["workspace"]),
+            ("design", "design_review", item["workspace"].design_review()),
+        )
+        for stage, name, scope in scopes:
+            events = [
+                event
+                for event in item["events"]
+                if isinstance(event, dict) and event.get("stage") == name and event.get("status") == "ok"
+            ]
+            inputs.append(
+                {
+                    "workflow": item["workflow"],
+                    "stage": stage,
+                    "events": events,
+                    "rounds": review_mod.recorded_rounds(scope),
+                }
+            )
+    return inputs
+
+
+def _usd(value: Optional[float]) -> str:
+    # Two places where `tokens show` prints four: a per-accepted figure is read
+    # as a price, and a fraction of a cent on it is noise to the reader.
+    return "-" if value is None else "$%.2f" % value
+
+
+_SCORECARD_OUTCOMES = ("reported", "accepted", "rejected", "duplicate", "open")
+
+#: Under a stage whose recorded rounds were not all readable. The rounds that
+#: were lost are not a random few: they are the early rounds, before the fixes,
+#: so no correction is possible and the most that can be said is that the
+#: figures lean -- not by how much, and not which way.
+_SCORECARD_BIAS = (
+    "  Reported and accepted are counted over the rounds whose report could be read; a round\n"
+    "  with none is left out of every figure, its cost included. Before 0.11.0 only a workflow's\n"
+    "  last round was kept, and the lost rounds reviewed the %s before its findings were fixed,\n"
+    "  so what survives is not a sample of the whole: a rejection rate over it is biased, and the\n"
+    "  direction of the bias is not known. Per-accepted figures are taken over the readable\n"
+    "  rounds only; the unread rounds could move them either way."
+)
+
+_SCORECARD_FLOORS = (
+    "  Cost totals are floors: a run that reported nothing adds nothing, and one that reported\n"
+    "  tokens but no price (Codex) adds no dollars."
+)
+
+_SCORECARD_PAIRS = (
+    "  %d round(s) %s a --surrounding pair: both runs' cost is in, and its findings and triage\n"
+    "  are the second run's. See the paired block for what it measured."
+)
+
+_SCORECARD_ALONE = (
+    "  Found alone is an upper bound on what dropping the reviewer would lose: a duplicate no\n"
+    "  candidate link joined is counted as found alone.\n"
+    "  Rates are printed from %d decided findings; below that the counts stand alone."
+)
+
+_SCORECARD_EFFORT = (
+    "Review effort, code and design together: %d accepted over %d of %d recorded round(s); %s billed,"
+)
+
+#: Under the figure for both stages together. Added although the per-round
+#: figures are not: those divide by a round, which is a different unit of work
+#: for a plan and for a diff, and this divides by an accepted finding, which is
+#: one defect the owner decided to fix whichever stage found it.
+_SCORECARD_TOTAL = (
+    "  Added here because both stages count the same thing, a finding the owner accepted; the\n"
+    "  per-round figures above are not added, because a round of each is a different unit of\n"
+    "  work. Read it beside the two stage figures: the mix of stages moves it, and it is taken\n"
+    "  over the readable rounds only."
+)
+
+
+def _scorecard_counts(group: Dict[str, Any], alone: bool) -> str:
+    counts = tuple(int(group.get(field) or 0) for field in _SCORECARD_OUTCOMES)
+    row = "%d reported: %d accepted, %d rejected, %d duplicate, %d open" % counts
+    if alone:
+        row += "; %d found alone (%d accepted)" % (
+            int(group.get("alone") or 0),
+            int(group.get("alone_accepted") or 0),
+        )
+    return row
+
+
+def _scorecard_spend(group: Dict[str, Any], panel: bool) -> str:
+    """Runs and what they cost; the panel says how many of its runs were priced."""
+    runs = int(group.get("runs") or 0)
+    row = "%d run(s)" % runs
+    if group.get("failed_runs"):
+        row += " (%d failed)" % int(group["failed_runs"])
+    billed = int(group.get("billed_tokens") or 0)
+    if not group.get("measured_runs") and not billed:
+        return row + ", nothing reported"
+    row += ", %s billed" % "{:,}".format(billed)
+    priced = int(group.get("priced_runs") or 0)
+    if not priced:
+        return row + ", no cost reported"
+    if panel:
+        return row + ", %s over %d of %d run(s)" % (_usd(group.get("cost_usd")), priced, runs)
+    return row + ", %s over %d priced run(s)" % (_usd(group.get("cost_usd")), priced)
+
+
+def _scorecard_per_accepted(group: Dict[str, Any]) -> str:
+    per = group.get("billed_per_accepted")
+    if per is None:
+        return "per accepted withheld under %d accepted" % opt_mod.SCORECARD_MIN_DECIDED
+    cost = group.get("cost_per_accepted")
+    if cost is None:
+        # Said, not left out: a reviewer that prices nothing did not find its
+        # findings for free, and a missing column reads as if it had.
+        return "%s billed per accepted, $ -" % "{:,}".format(per)
+    return "%s billed / %s per accepted" % ("{:,}".format(per), _usd(cost))
+
+
+def _scorecard_rates(group: Dict[str, Any]) -> str:
+    rate = group.get("rejection_rate")
+    if rate is None:
+        # Accepted is a part of decided, so under this threshold both are.
+        return "rates withheld under %d decided" % opt_mod.SCORECARD_MIN_DECIDED
+    return "%.0f%% rejected, %s" % (rate * 100, _scorecard_per_accepted(group))
+
+
+def _scorecard_cost_row(group: Dict[str, Any], panel: bool) -> str:
+    """The second line of a scorecard row: what the runs cost, and the rates."""
+    return "%s; %s" % (_scorecard_spend(group, panel), _scorecard_rates(group))
+
+
+def _scorecard_rows(scorecard: Dict[str, Any]) -> List[str]:
+    """``optimization report``'s scorecard: one block per stage, then both together.
+
+    A stage with no report to read is left out rather than printed as zeroes,
+    which would read as a panel that found nothing.
+    """
+    lines: List[str] = []
+    for stage, label, subject in (("code", "code review", "code"), ("design", "design review", "plan")):
+        block = scorecard.get(stage) or {}
+        read = int(block.get("rounds_read") or 0)
+        if not read:
+            continue
+        recorded = int(block.get("rounds_recorded") or 0)
+        unreviewed = int(block.get("rounds_unreviewed") or 0)
+        head = "Reviewer scorecard, %s: %d of %d recorded round(s)" % (label, read, recorded)
+        head += " had a report to read"
+        if unreviewed:
+            head += "; %d round(s) no reviewer reviewed" % unreviewed
+        lines.extend(["", head + "."])
+        for name, group in sorted((block.get("reviewers") or {}).items()):
+            lines.append(_OPT_ROW % (name, _scorecard_counts(group, True)))
+            lines.append(_OPT_ROW % ("", _scorecard_cost_row(group, False)))
+        panel = block.get("panel") or {}
+        lines.append(_OPT_ROW % ("panel", _scorecard_counts(panel, False)))
+        lines.append(_OPT_ROW % ("", _scorecard_cost_row(panel, True)))
+        if recorded - read - unreviewed > 0:
+            lines.extend((_SCORECARD_BIAS % subject).splitlines())
+        lines.extend(_SCORECARD_FLOORS.splitlines())
+        rerun = int(block.get("rerun_rounds") or 0)
+        if rerun:
+            lines.extend((_SCORECARD_PAIRS % (rerun, "was" if rerun == 1 else "were")).splitlines())
+        lines.extend((_SCORECARD_ALONE % opt_mod.SCORECARD_MIN_DECIDED).splitlines())
+    if not lines:
+        return lines
+    total = scorecard.get("total") or {}
+    priced = int(total.get("priced_runs") or 0)
+    cost = "no cost reported"
+    if priced:
+        cost = "%s over %d priced run(s)" % (_usd(total.get("cost_usd")), priced)
+    counts = (
+        int(total.get("accepted") or 0),
+        int(total.get("rounds_read") or 0),
+        int(total.get("rounds_recorded") or 0),
+        "{:,}".format(int(total.get("billed_tokens") or 0)),
+    )
+    lines.append("")
+    lines.append(_SCORECARD_EFFORT % counts)
+    lines.append("  %s; %s" % (cost, _scorecard_per_accepted(total)))
+    lines.extend(_SCORECARD_TOTAL.splitlines())
+    return lines
 
 
 def _paired_rows(paired: Dict[str, Any]) -> List[str]:

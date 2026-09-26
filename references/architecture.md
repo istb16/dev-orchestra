@@ -86,6 +86,7 @@ project/
     │   ├── <reviewer-id>.md      # one report per reviewer
     │   ├── consolidated.md       # deduped findings, human readable
     │   ├── consolidated.json     # deduped findings + triage state
+    │   ├── rounds/               # consolidated.json of every round, kept after the next
     │   └── design/               # the same files for the design review, so
     │                             # its rounds and triage stay its own
     └── state.json                # stage events with resolved model ids

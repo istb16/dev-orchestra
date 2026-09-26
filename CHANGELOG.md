@@ -10,6 +10,42 @@ The public surface covered by that promise is: the configuration schema, the
 
 ## [Unreleased]
 
+### Added
+
+- **`optimization report` scores each reviewer.** A block per stage lists,
+  for every reviewer and the panel, the findings reported, accepted,
+  rejected, duplicate and still open, the findings it alone reported
+  (an upper bound on what dropping it would lose), its runs and failed runs,
+  what it billed and cost, its rejection rate, and what it billed and cost per
+  accepted finding. A last line adds the code and design panels together, the
+  figure for what review as a whole cost per accepted finding. Rates are
+  withheld under 10 decided findings, per-accepted figures under 10 accepted,
+  and the counts are always printed. Cost comes from the run log and findings
+  from each round's report, matched round by round; a round with no report to
+  read is left out, its cost included, and the report says how many there
+  were and that the figures over the rest are biased in a direction that is
+  not known. The per-accepted cost measures efficiency, not quality: better
+  code, a reviewer missing more, and a price rise all raise it, and it cannot
+  tell them apart. `--json` carries it as `scorecard` (`code`, `design`,
+  `total`).
+- **Every round's consolidated report is kept**, as
+  `reviews/rounds/<sha12>-<round_id>.json` (and `reviews/design/rounds/`),
+  written alongside `consolidated.json` by `review run`, `review consolidate`
+  and `review triage`, and overwritten only by a later write to the same
+  round.
+- **Code snapshots have a `round_id`**, new with every `review snapshot` as
+  the design review's already was, copied into the consolidated report's
+  `snapshot`. `review` and `design_review` run events record it too.
+- **`review triage` stamps each decision with `triage_set_at`**,
+  `needs-triage` included, and the stamp is carried to the next round with the
+  decision. It is what tells a finding put back to `needs-triage` from one
+  never decided.
+
+### Changed
+
+- `consolidated.json` is no longer the only record of a round: the triage
+  decisions of earlier rounds used to be lost when the next round rewrote it.
+
 ## [0.10.0] - 2026-09-26
 
 ### Added

@@ -293,7 +293,8 @@ the diff does. `File:` therefore takes a plan section
 `Line:` is usually `n/a`.
 
 **The artifacts are its own**, under `reviews/design/`: one report per
-reviewer, `consolidated.md` / `.json`, and the frozen plan. That is the whole
+reviewer, `consolidated.md` / `.json`, the frozen plan, and `rounds/` with the
+consolidated report of every round (see [Re-review](#re-review)). That is the whole
 reason it is a directory rather than a filename prefix — the round counter and
 the triage live in the consolidated report, and a design round must never
 advance, or be refused by, the code review's count. `review show`,
@@ -723,6 +724,17 @@ a decision follows its finding even when a more severe finding is fixed and
 everything below it renumbers. Reword a finding and the decision is lost, which
 is the honest outcome: it is no longer the same claim.
 
+Every decision also stamps the finding with `triage_set_at` (UTC, in the form
+of `generated_at`), and the stamp travels with the decision into the next
+round. It is the only thing that tells `review triage --status needs-triage`
+from a finding nobody ever judged: a rebuilt report writes `needs-triage` as
+its default and no stamp. The difference matters to `optimization report`,
+whose scorecard lets the last explicit decision on a finding stand across
+rounds: putting an accepted finding back to `needs-triage` withdraws the
+acceptance there, and a default does not. A report written before 0.11.0 has
+no stamps; `needs-investigation` is still read as a decision, since nothing
+writes it by default, and a `needs-triage` is read as the default.
+
 Reviewer reports are stamped with the snapshot they were written against, and a
 report from an earlier snapshot is skipped rather than folded into the current
 round -- otherwise re-consolidating would hand the fixer issues that were
@@ -769,6 +781,29 @@ review_fixer`, the tests again, recorded with `state record test ok|failed`
 (`final_fix` goes `pending` → `retest` → `done`). Then report what remains and
 stop; do not re-review. Two rounds catch the overwhelming majority of what
 this pipeline is going to catch; a third mostly re-litigates.
+
+**Every round's report is kept.** `consolidated.json` is the current round, and
+the next round replaces it. Each write of it also writes a copy to
+`reviews/rounds/<sha12>-<round_id>.json`, named by the snapshot sha and the
+`round_id` every snapshot is given -- a code snapshot in
+`reviews/review-target.json`, a design round in
+`reviews/design/review-target.json`. The sha alone would not do: the same tree
+or plan frozen again repeats it, and the second round would overwrite the
+first. A later write to the same round -- a `--only` re-run, a
+`review consolidate`, a `review triage` -- overwrites its copy, as it does the
+live report. A report built after the current freeze under an earlier round's
+id -- a design round no reviewer returned a review for, or a
+`review consolidate` before the round's reviewers are back -- gets no copy:
+for the same tree or plan frozen again, that id is the earlier round's key.
+A `--only` re-run of a reviewer that succeeded replaces that reviewer's earlier report in both, so what only the earlier run found is gone
+from the round; re-running a reviewer that failed loses nothing. The two runs
+of a [`--surrounding` pair](limits.md#measuring-what-surrounding-context-does)
+read one freeze and are one round: the second run's copy replaces the first's,
+and in the scorecard the pair counts the cost of both runs, and the findings
+and triage of the second -- the one triage reaches, since the pair is taken
+before triage. `optimization report` reads these copies for its reviewer scorecard. A
+workflow from before 0.11.0 has only its live report, and every earlier round
+of it is reported as a round with no report to read.
 
 ### The second round only diffs the fix
 

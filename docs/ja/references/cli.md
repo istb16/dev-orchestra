@@ -1,4 +1,4 @@
-<!-- translated-from: references/cli.md sha256:f0efe1fd917bdef9de5805e5bbc4a26f1c0908f3f4dbaf8e37c4f3b8191de89f -->
+<!-- translated-from: references/cli.md sha256:1c8568ce7f41b6349bc3b7ed19d9507891cca075e5a7444e3daff2ec6f56f794 -->
 
 > この文書は [references/cli.md](../../../references/cli.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -165,7 +165,7 @@ echo "explain the failure" | dev-orchestra run orchestrator
 | `review run [--design] [--request <path>] [--iteration N] [--only <ids/roles>] [--sequential] [--context <text>] [--base <rev>] [--timeout <s>] [--idle-timeout <s>] [--force] [--surrounding none\|enclosing] [--json]` | スナップショットに対してすべてのレビュアーを実行し、レポートと統合結果を書き込みます。終了コード 1 になるのは、`ok` で戻ったレビュアーが 1 人もいない場合だけです。すべてのレビュアーが失敗した場合や、変更本体が大きすぎてインライン化できずファイルとして渡されたラウンドがこれにあたり、後者はクリーンではなく `partial` として記録されます。ラウンドは `--iteration` が指定されない限りスナップショットから導出され、`review.max_review_iterations` を超えるラウンドは `--force` がない限り拒否されます（終了コード 3）。上限に達したラウンドでも fix と再テストは行われ、拒否されるのは再レビューだけです。最適化ゲートに拒否されたラウンド（テストが失敗として記録されている）も終了コード 3 で終了し、`optimization report` が数えられるよう `refused` として記録されます。`review.context.max_chars`（400,000）を超える変更本体も同様です。何もレビューされず、メッセージはサイズ、上限、上限内に収める方法を示し、ラウンドは `refused_by: "context"` として記録されます。`--force` を付けると構わず実行し、そのラウンドは報告されるすべての場所で `over_budget` として記録されます。本体をプロンプトに入れるかパスとして渡すかは `review.context.inline_chars`（400,000。デフォルトでは同じ数値）で決まり、各レビュアーのエントリには判断に使われた値が記録されます。`budgets.max_runtime_seconds` 分の委譲実行時間を使い切った場合も同様にラウンドは拒否され（パネルはその最大の消費者です）、メッセージはどの予算だったかを示します。`--only` は一部だけを実行しますが、統合はすべてのレビュアーの現在のレポートに対して行うので、何も失われません。`review.context.surrounding: enclosing` のときは、固定されたシンボルを `review.context.surrounding_chars` と、diff が両方の上限の下に残す分の範囲で採用し、`Surrounding context:` 行が採用した数と除外した数とその理由を示し、`--json` にはラウンドの `surrounding` レコードが入ります。上限が計測するサイズは、diff に採用したコンテキストを足したものになります。`--surrounding none\|enclosing` は、1 つのスナップショットをコンテキストあり・なしでレビューするために、この run に限って `review.context.surrounding` を上書きします（[周辺コンテキストの効果を測る](limits.md#measuring-what-surrounding-context-does) を参照してください）。設定は変わらず、行は `(--surrounding enclosing for this run)` または `Surrounding context: none (--surrounding none for this run; review.context.surrounding unchanged)` となります。次の場合は何も課金される前に終了コード 2 で拒否されます: `--design` と併用したとき。incremental ラウンド（再レビューのプロンプトには実行時点の accepted findings が載るので、2 本の run はコンテキスト以外でも違ってしまう）。`enclosing` で何も採用されないとき（理由を問わない: `review snapshot --surrounding enclosing` で凍結していないスナップショット、候補なし、ファイル渡し、予算なし）。同じスナップショットに対する 2 本目の run（間に `budget reset` を挟んでも同じ）で、前回の run が組み立てた後に finding のトリアージまたはトリアージのメモが設定されたとき（前のラウンドから引き継がれたものは数えない）。同じスナップショットの再実行はラウンドを進めず、findings の署名を登録しないので、ペアが「何も変えなかった修正」に見えることはありません。1 本目は通常どおり登録します。lineage が変わった後の run や、`--iteration` で別のラウンドを指定した run は再実行ではなく、署名を登録します。run のイベントと `--json` には `measurement` ブロック（`surrounding`、完全な `snapshot` sha256、凍結した `tree`、`head`、`base`、`workflow` ディレクトリ、予算の `epoch`、`rerun`、そして `inputs`: `context_sha256`、`max_findings`、`inline_chars`、`max_chars`、`force`）が加わり、`consolidated.json` には `triage_at_build`（キーごとの各 finding の `triage` と `triage_note`）を持つ `measurement` が加わります。フラグが無ければ、これらは何も書かれません。 |
 | `review consolidate [--design] [--iteration N] [--json]` | 既存のレポートを再解析し、統合結果を再構築します。 |
 | `review show [--design] [--accepted] [--json]` | 統合されたレビューを表示します。 |
-| `review triage [--design] <ids…> --status <status> [--note <text>]` | トリアージの判断を記録します。 |
+| `review triage [--design] <ids…> --status <status> [--note <text>]` | トリアージの判断を記録します。判断のたびに、`needs-triage` も含めて指摘に `triage_set_at` を刻むので、指摘を戻したことと一度も判断していないことが区別できます。 |
 | `review fix-brief [--design] [--output <path>]` | fixer 向けに、受け入れた指摘のブリーフを出力します。 |
 | `review status [--design] [--json]` | 再レビューが必要かどうか、イテレーション予算、そしてラウンドの `coverage` を示します。`coverage` には `round`、`change`、ラウンドの計測に使われた `inline_chars` に加え、`unverified` を解消するための操作が含まれます。変更を絞るか `review.context.inline_chars` を引き上げ、その後スナップショットを取り直すことです。また、その上限がラウンドに記録されたサイズを超えて引き上げられた後は、同じスナップショットが今ならインライン化されるので、それに対して `review run` を実行すればよいだけだということも示します。`over_budget` は、そのラウンドが `--force` で `review.context.max_chars` を超えて送られたためにだけ実行されたことを示します。周辺コンテキストを運んだラウンドでは `surrounding context:` 行が加わり（レビュアーごとに渡されたものが違う場合はレビュアーごとに 1 行）、除外されたシンボルを最大 5 つまで名前で示します。`--json` にはレポートの `surrounding` ブロックが入ります。ラウンドの予算を使い切った後は、そのラウンドの最後のパスがどこまで進んでいるかも示します。これは台帳、実行ログ、承認状態から読み取られます（何も消去されません）。`final_fix` は `pending`（もう一度 fix する）、`retest`（fix 済み。再テストを記録する）、`done`、`blocked`（`review_fixer` の試行が残っていない）、`--design` の場合の `final_revision` は `pending`（もう一度修正する）、`done`、`blocked`（`architect` の試行が残っていない）、`approved`、`implemented` のいずれかです。どちらも上限に達する前は `null` で、`final_fix_pending` / `final_revision_pending` フラグを伴います。最後の行は次のステップを示し、前のラウンドの指摘を繰り返したラウンドについて注記します。`references/reviews.md` を参照してください。 |
 
@@ -187,8 +187,19 @@ orchestrator がそのステージを実行するかどうかを示すもので�
 `review status --json` は、予算をその取得元の設定の名前で報告します。`--design` なしでは
 `max_review_iterations`、ありでは `max_iterations` です。ペイロードの残りはどちらでも同じです。
 
-`review run --design` は、同じ plan の再実行も含め、すべてのラウンドに
-`reviews/design/review-target.json` 内の新しい `round_id` を与えます。
+`consolidated.json` を書くたびに -- `review run`、`review consolidate`、`review triage` のいずれも、
+`--design` の有無を問わず -- `reviews/rounds/<sha12>-<round_id>.json`（design レビューでは
+`reviews/design/rounds/`）にもコピーを書きます。コピーを上書きするのは同じラウンドへの後の書き込み
+だけなので、ラウンドの指摘とトリアージは次のラウンドの後も残ります。`optimization report` がこれを
+読みます。背後にスナップショットの無いレポートにはコピーを作りません。現在の凍結の後に前のラウンドの
+id のまま作られたレポート -- どのレビュアーもレビューを返さなかった design ラウンドや、ラウンドの
+レビュアーが戻る前の `review consolidate` -- にも作りません。同じツリーや plan を凍結し直した場合、
+それは前のラウンドのコピーだからです。
+
+`review snapshot` は、同じツリーの 2 回目のスナップショットも含め、すべての code スナップショットに
+`reviews/review-target.json` 内の新しい `round_id` を与え、`review run` がそれを統合レポートの
+`snapshot` と run イベントに写します。`review run --design` は、同じ plan の再実行も含め、すべての
+ラウンドに `reviews/design/review-target.json` 内の新しい `round_id` を与えます。
 `review consolidate --design` と `review triage --design` はそれに手を付けません。統合レポートが
 ラウンドを示すのは、`review run --design` でそのラウンドのすべてのレビュアーが戻った後だけです。
 `review consolidate --design` は、より新しいラウンドが実行中であっても、前のレポートが示していた
@@ -510,6 +521,79 @@ sha256、凍結したツリー、`head`、`base` で、予算の epoch は決し
 `tool_uses`、`tool_output_chars`、`tool_uses_per_run`、`tool_output_chars_per_run` を持ちます。
 `delta` は実行あたりの with − without で、どちらかの側に割る対象が無ければ `null` です。
 `by_context` は変わりません。
+
+ラウンドのレポートを 1 つでも読めると、stage ごとに採点表が続きます。各レビュアーが何を報告し、
+オーナーがそれをどう判断し、その run にいくら掛かったかです。指摘とトリアージは全ラウンドの
+アーカイブされたレポート（`reviews/rounds/`、[再レビュー](reviews.md#re-review) を参照）から、
+run とコストは run ログから読み、両者をラウンドごとに突き合わせます:
+
+```
+Reviewer scorecard, code review: 18 of 27 recorded round(s) had a report to read.
+  claude-general         49 reported: 43 accepted, 1 rejected, 4 duplicate, 1 open; 37 found alone (33 accepted)
+                         18 run(s), 2,794,838 billed, $42.07 over 18 priced run(s); 2% rejected, 64,996 billed / $0.98 per accepted
+  codex-general          25 reported: 15 accepted, 2 rejected, 6 duplicate, 2 open; 16 found alone (11 accepted)
+                         17 run(s), 1,166,386 billed, no cost reported; 9% rejected, 77,759 billed per accepted, $ -
+  localllm-qwen          22 reported: 1 accepted, 19 rejected, 2 duplicate, 0 open; 20 found alone (1 accepted)
+                         9 run(s) (6 failed), nothing reported; 86% rejected, per accepted withheld under 10 accepted
+  panel                  96 reported: 59 accepted, 22 rejected, 12 duplicate, 3 open
+                         44 run(s), 3,961,224 billed, $42.07 over 18 of 44 run(s); 24% rejected, 67,139 billed / $0.71 per accepted
+
+Review effort, code and design together: 128 accepted over 28 of 46 recorded round(s); 5,614,101 billed,
+  $71.90 over 30 priced run(s); 43,860 billed / $0.56 per accepted
+```
+
+各ブロックの後には、その数字が何を主張できるかの注記が付きます。ラウンドの区別の仕方と、イベントが
+自分のレポートを見つける方法:
+
+- **ラウンドとは凍結 1 回** で、スナップショットの sha256 の先頭 12 文字と、与えられた `round_id` で
+  名付けられます。同じツリーや plan を 2 回凍結すると sha は繰り返し、ラウンドは 2 つです。`--only` の
+  再実行と `--surrounding` の対の 2 回の run は 1 ラウンドです。そのイベントはすべてコストを足し、
+  指摘とトリアージは最後の run のものです。
+- **`round_id` を持つイベント** は、ちょうどそのラウンドのレポートに一致します。イベントがそれを
+  持つ前に記録されたものは、その sha のレポートがちょうど 1 つのときだけ一致します。同じ sha の
+  レポートが 2 つあれば 2 ラウンドであり、新しい方を取ると古いラウンドのコストを新しいラウンドの
+  指摘に付けてしまいます。レビュアーエントリにスナップショットの印が無いイベントは、iteration が
+  等しく、より確かなものがまだ取っていなければ live のレポートに一致します。
+- **読めるレポートの無いラウンドは、コストも含めてすべての数字から除かれます。** コストと指摘が
+  同じラウンドを指すようにするためです。0.11.0 より前はワークフローの最後のラウンドしか残らず、
+  失われたラウンドは指摘が直される前の変更をレビューしていました。残ったものに対する率は偏っており、
+  偏りの向きは分かりません。見出しは、記録されたラウンドのうちいくつを読めたかを示します。どの
+  レビュアーもレビューを返さなかったラウンドは穴ではなく、レポートがあっても読みません -- code の
+  ラウンドは誰かが戻ったかどうかに関わらずレポートを書き、その中身はそのラウンドのレビュアーが
+  書いたものではないからです。その run とコストは数えられ、見出しはこれを別に数えます。
+- **指摘はワークフローと stage ごとに、`key` で 1 回だけ数えます。** 誰も直さなかった指摘は
+  毎ラウンド戻ってくるからです。ラウンドはそのイベントが記録された順に取り、最後の *明示的な*
+  トリアージが勝ちます -- `accepted`、`rejected`、
+  `duplicate`、`needs-investigation`、または `triage_set_at` を持つもの。印の無い `needs-triage` は
+  再構築されたレポートが指摘に与える既定値で、採用を取り消しません。印のあるものは
+  `review triage --status needs-triage` で、取り消します。未判断は `open` です。
+- **found alone は、そのレビュアーを外したときに失われ得る数の上限 (upper bound) です**: その
+  レビュアーだけが報告し、どのラウンドでも、別レビュアーの指摘と重複候補として結ばれ、かつどちらかが
+  `duplicate` とトリアージされた、ということが無いもの。候補リンクで結ばれなかった重複は、
+  それでも数えられます。
+- **率は判定済み（`accepted`、`rejected`、`duplicate`）10 件から、1 採用あたりの数字は採用 10 件から
+  印字します**。それ未満では件数だけが出ます。1 採用あたりの数字は読めたラウンドだけに対する値で、
+  読めなかったラウンドはそれをどちらにも動かし得ます。コスト合計は床 (floor) です: 何も報告しなかった
+  run は何も足さず、トークンは報告したが価格を報告しなかった run はドルを足しません。したがって価格を
+  報告しないレビュアーの 1 採用あたりコストは `$0.00` ではなく無しです。
+- **code と design の数字は最後の行でだけ合算します。** その分母は採用された指摘、つまりどちらの
+  stage が見つけたにせよオーナーが直すと決めた欠陥 1 件です。ラウンドあたりの数字はラウンドで割り、
+  ラウンドは plan と diff で違う作業単位です。それでも stage の混合比はこの数字を動かすので、2 つの
+  stage のブロックと並べて読みます。
+
+これはレビューが何を買ったかを言うものであって、レビューが悪くなったかどうかを言うものではありません。
+1 採用あたりのコストが上がるのは、レビュー対象のコードが良くなったときの姿でもあり、レビュアーが欠陥を
+見落とし始めたときの姿でもあり、価格が上がったときの姿でもあります。この数字は 3 つを区別できません。
+
+読めるレポートの無い stage はブロックを出しません。`--json` には `scorecard` が常に含まれ、`code`、
+`design`、`total` を持ちます。各 stage は `rounds_recorded`、`rounds_read`、`rounds_unreviewed`、
+`rerun_rounds`（コストが入っているラウンドのうち `--surrounding` の対の数）、`workflows_read`、
+`findings`、`reviewers`（id ごと）、`panel` を持ちます。レビュアーは `runs`、`failed_runs`、
+`measured_runs`、`priced_runs`、`billed_tokens`、`cost_usd`、`reported`、`accepted`、`rejected`、
+`duplicate`、`open`、`alone`、`alone_accepted`、`rejection_rate`、`billed_per_accepted`、
+`cost_per_accepted` を持ち、最後の 3 つは閾値未満で `null` です。`panel` と `total` は `alone` の 2 つを
+除いた同じ列で、2 人のレビュアーが報告した指摘は 1 回と数えます。`total` は 4 つのラウンド数の和も
+持ちます。
 
 すべてのラウンドがエスカレートした場合、レポートはそれをはっきり述べます。設定されたレベルは一度も適用
 されなかったということであり、その原因となったパターンが示されます。すべてのラウンドでエスカレートして

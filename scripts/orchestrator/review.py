@@ -430,6 +430,10 @@ def create_snapshot(
             changed_paths.append(name)
     meta = {
         "generated_at": ws.utcnow(),
+        # New with every freeze, as for a design round: the sha repeats when
+        # the same tree is frozen again, and the archived report of each round
+        # is filed under this so the second does not overwrite the first.
+        "round_id": uuid.uuid4().hex,
         "strategy": strategy,
         "base": base,
         "head": head,
@@ -2095,8 +2099,10 @@ def build_consolidation(
 ) -> Dict[str, Any]:
     """The round's report: consolidated findings, counts, and its coverage.
 
-    ``completed_round`` is the design round whose reviewers have all returned,
-    passed only by the caller that ran them. Without it the report keeps the
+    ``completed_round`` is the round whose reviewers have all returned, passed
+    only by the caller that ran them -- for a design round only once one of
+    them returned a review, for a code round whenever it ran, since nothing
+    is approved over a code round. Without it the report keeps the
     round the previous report named: the snapshot's metadata names a round as
     soon as it starts, and a re-consolidation during it -- or after it failed
     -- must not claim findings nobody has reported yet.
@@ -2128,6 +2134,10 @@ def build_consolidation(
         if old:
             entry["triage"] = old.get("triage", entry["triage"])
             entry["triage_note"] = old.get("triage_note", "")
+            # Carried with the decision it marks, and only where there is one:
+            # its absence is what tells a rebuilt default from a decision.
+            if old.get("triage_set_at"):
+                entry["triage_set_at"] = old.get("triage_set_at")
     candidates = duplicate_candidates(consolidated)
     by_id = {entry["id"]: entry for entry in consolidated}
     for pair in candidates:
@@ -2146,8 +2156,9 @@ def build_consolidation(
         "over_budget": any(run.get("over_budget") for run in current),
         "budget_chars": _budget_chars(current),
     }
-    # The design round these findings belong to: the last one that got as far
-    # as a report, which is what an approval is given over.
+    # The round these findings belong to: the last one that got as far as a
+    # report, which is what a design approval is given over and what the
+    # archived copy of this report is filed under.
     round_id = completed_round or (last.get("snapshot") or {}).get("round_id")
     if round_id:
         snapshot["round_id"] = round_id
@@ -2748,8 +2759,96 @@ def set_triage(data: Dict[str, Any], finding_id: str, status: str, note: str = "
         if finding.get("id") == finding_id:
             finding["triage"] = status
             finding["triage_note"] = note
+            # Written with every decision, ``needs-triage`` included: a rebuilt
+            # report defaults a finding to ``needs-triage`` too, and only this
+            # says the owner put it back there rather than never deciding.
+            finding["triage_set_at"] = ws.utcnow()
             return data
     raise ReviewError("no finding with id %r" % finding_id)
+
+
+def round_key(data: Dict[str, Any]) -> Tuple[str, str]:
+    """The round a consolidated report belongs to: ``(sha12, round_id)``.
+
+    The sha alone does not name a round. Freezing the same plan or the same
+    tree again repeats it, and the round id is what tells the two rounds
+    apart. The surrounding-context side of a measured pair is deliberately
+    not part of it: the pair reads one freeze twice and is one round.
+
+    Taken from the report's content, never its file name, so the archive and
+    the live report of one round compare equal. ``("", "")`` for a report
+    written before anything was frozen.
+    """
+    snapshot = data.get("snapshot") or {}
+    sha = str(snapshot.get("sha256") or "")
+    if not sha:
+        return "", ""
+    return _stamp(snapshot), str(snapshot.get("round_id") or "")
+
+
+def save_consolidation(workspace: ws.Workspace, data: Dict[str, Any]) -> str:
+    """Write the live report and its round's archived copy; return the copy's path.
+
+    The live report is what everything downstream reads, and the next round
+    replaces it. The copy under ``rounds/`` is the same record kept after
+    that, overwritten only by a later write to the same round -- a re-run,
+    a re-consolidation, a triage. Only the json is archived: the markdown is
+    a rendering of it.
+
+    A report with no snapshot sha gets no copy and ``""`` back. It was written
+    before anything was frozen, so there is no round it could belong to, and
+    no reviewer event will ever ask for it. Nor does one built for another
+    round than its own -- see ``_built_for_another_round``.
+    """
+    ws.write_json(workspace.consolidated_json_path, data)
+    ws.write_text(workspace.consolidated_md_path, render_consolidation(data))
+    if not (data.get("snapshot") or {}).get("sha256"):
+        return ""
+    if _built_for_another_round(workspace, data):
+        return ""
+    path = workspace.round_report_path(round_key(data))
+    ws.write_json(path, data)
+    return path
+
+
+def _built_for_another_round(workspace: ws.Workspace, data: Dict[str, Any]) -> bool:
+    """Whether a report was built after the current freeze under an older round's id.
+
+    A design round no reviewer returned a review for, and a re-consolidation
+    before the round's reviewers are back, keep the round id of the last
+    report (see ``build_consolidation``) over the current freeze's content.
+    When the same plan or tree was frozen again, that is the older round's
+    key, and filing the report under it would replace that round's findings
+    and triage. A report built before the freeze -- the previous round's,
+    triaged since -- is still its own round's.
+    """
+    meta = ws.read_json(workspace.snapshot_meta_path, {}) or {}
+    current = str(meta.get("round_id") or "")
+    if not current or str((data.get("snapshot") or {}).get("round_id") or "") == current:
+        return False
+    return str(data.get("generated_at") or "") >= str(meta.get("generated_at") or "")
+
+
+def recorded_rounds(workspace: ws.Workspace) -> List[Dict[str, Any]]:
+    """Every round's report this workspace still has, one per round.
+
+    The archived copies and the live report, which wins where both name one
+    round: it is the same record, and the live one is what ``review status``
+    shows. A workflow from before the archive existed has only the live
+    report, and is read as one round. A live report built for another round
+    than its own is no round's, and is left out rather than standing in for
+    the round whose id it carries. Each entry is a copy of the report with
+    ``live`` added.
+    """
+    rounds: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    for path in ws.list_files(workspace.rounds_dir, ".json"):
+        data = ws.read_json(path, None)
+        if isinstance(data, dict) and round_key(data)[0]:
+            rounds[round_key(data)] = dict(data, live=False)
+    live = ws.read_json(workspace.consolidated_json_path, None)
+    if isinstance(live, dict) and live and not _built_for_another_round(workspace, live):
+        rounds[round_key(live)] = dict(live, live=True)
+    return list(rounds.values())
 
 
 def accepted_findings(data: Dict[str, Any]) -> List[Dict[str, Any]]:
