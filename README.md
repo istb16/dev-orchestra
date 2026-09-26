@@ -941,7 +941,9 @@ capped by `review.context.surrounding_chars` (60,000) and by what the diff
 leaves under the context limits, and whatever does not fit is named in the
 prompt and in every report rather than dropped quietly. It ships off:
 `optimization report` compares rounds with and without it, per run and per 1k
-characters of change, and that comparison is what should turn it on.
+characters of change — across different changes; to see its effect on one
+change, review the same snapshot twice with `review run --surrounding none|enclosing`
+and read the paired figures. That is what should turn it on.
 
 Each role can also carry provider-specific `options` — notably
 `permission_mode` for Claude and `sandbox` / `approve` for Codex — validated

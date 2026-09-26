@@ -1,4 +1,4 @@
-<!-- translated-from: references/limits.md sha256:6fdc974dfde6da53c1f32098c46c0fb989e22d5cc127e06bb42e21fd56f1654b -->
+<!-- translated-from: references/limits.md sha256:50db820c6b2f681fa568c1fce6d7a568ca7aa3dbd2111fa6dff722c49d7f8e08 -->
 
 > この文書は [references/limits.md](../../../references/limits.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -279,6 +279,87 @@ budget = min(surrounding_chars, max_chars - change_chars, inline_chars - change_
 index を通らないので、未追跡ファイルを削除されたものと取り違えません）、ツリー内の
 blob と比べます。その間に編集されたファイルは `changed while the snapshot was taken`
 として除外され、プロンプトで名前が示され、スナップショットを取り直せば解消します。
+
+<a id="measuring-what-surrounding-context-does"></a>
+
+### 周辺コンテキストの効果を測る
+
+`optimization report` の分割は、コンテキストあり・なしのラウンドを*異なる*変更
+どうしで比べます。1 つの変更での効果を見るには、同じ凍結済みスナップショットを
+2 回 — コンテキストなしで 1 回、ありで 1 回 — レビューします。そのとき
+`review.context.surrounding` を変えない 1 回限りの上書きを使い、そのペアを読みます。
+
+始める前に: 設定はデフォルト（`none`）のままにし、2 回の間に設定を変えないこと。
+両回とも同じパネルで走らせること（`--only` を使うなら同じ引数で）。`--context` は
+両方に同じものを渡すか、どちらにも渡さないこと。**トリアージの前に**行うこと。
+そして**変更全体のラウンド** — 変更の最初のラウンド、またはクリーン / 全却下の
+レビューの後のラウンド — で行うこと。incremental ラウンドは拒否されます。
+**必ず手順 1 から始めてください**: コンテキスト付きで凍結されていない
+スナップショットでは `--surrounding enclosing` が拒否されます。
+
+```bash
+# 1. Freeze the change and its candidates (even with the setting at none). The pair starts here
+dev-orchestra review snapshot --surrounding enclosing
+#    note "sha256 <12 chars>" and "context:  enclosing -- N symbol(s)"
+
+# 2. Control: no context. The pair's first run, so its signature is registered as usual
+dev-orchestra review run --surrounding none
+
+# 3. Treatment: the same snapshot with context. The round does not advance; no signature is registered
+dev-orchestra review run --surrounding enclosing
+#    "Surrounding context: N symbol(s), X chars adopted (--surrounding enclosing for this run)"
+#    exit 2 before any cost if nothing would be adopted (not frozen, no candidates, file delivery, no budget)
+#    exit 2 if a finding was triaged or given a note after step 2
+
+# 4. Read
+dev-orchestra optimization report          # the "Paired on one snapshot" block
+dev-orchestra optimization report --json   # paired.pairs[*], paired.delta
+```
+
+- 手順 2 と 3 は逆でも構いません。どちらの順でも、1 本目が findings の署名を
+  登録し、2 本目 — 同じスナップショットの再実行 — は登録しません。その後の
+  トリアージが扱うレポート（`reports/*.md` と `consolidated.*`）は最後の run の
+  もので、次のラウンドと比べられる署名は 1 本目のものです。
+- 両方の run に `--surrounding` を付けてください。付けない run は `measurement` を
+  記録せず、ペアになりません。
+- **数値の意味。** *counted* なペア — 同じパネル、全 run が届いた（`ok`）、同じ
+  プロンプト入力、実際にコンテキストが採用された — の `delta` だけが、
+  コンテキストの効果として読めます。delta が負なら、そのペアでコンテキストが
+  それだけ節約したということです。どれかを満たさないペアは理由付きで一覧に
+  載り、合計からは外れます。
+- **言えないこと。** 1 ペアは 1 回の観測です。レビュアーは同一の入力でも run ごとに
+  揺れ、ここではそれを揃えていません。数値で何かを決める前に、異なる 3〜5 個の
+  変更でペアを取ってください。Codex はツールの利用を報告しないので、ツール系の
+  数値は報告した run（Claude）だけのものです。
+- **費用。** 1 ペアはそのスナップショットのパネルを 2 回走らせます。課金トークンと
+  実行時間予算（`charged_seconds`）は、それぞれの run で実測された値がそのまま
+  積まれます。2 本のプロンプトも所要時間も違うので、合計は正確に 2 倍には
+  なりません。実際の値は `review run --json` の `usage` と、ペアの `with` /
+  `without` で読んでください。`review run` 自体は `review` の試行回数を消費
+  しませんが、毎回の run の前に `budget consume review` を呼ぶ手順なら、run ごとに
+  1 回消費します。1 本目が `budgets.max_runtime_seconds` の残りを使い切ると、
+  2 本目が拒否されることがあります。
+- **変更全体のラウンドに限る理由。** incremental ラウンドのプロンプトには、
+  その run の時点で accepted な findings（"The fix was meant to address:"）が
+  `consolidated.json` から載ります — そして 1 本目がそれを書き直します。2 本の
+  run はコンテキスト以外でも違ってしまうので、そこでは `--surrounding` を課金前に
+  拒否します。
+- **必ずスナップショットから始める理由。** 前回のレビューに accepted な finding が
+  あり base が同じ incremental ラウンドでは、スナップショットは前回ラウンドの
+  ツリーとの diff になります。そこで `--surrounding enclosing` で取り直すと、その
+  ツリーが作業ツリーと一致するので全体の diff に戻り、sha256 が変わります。
+  クリーン / 全却下のレビューの後は元から全体の diff なので、sha256 は変わりません。
+  どちらの場合も、凍結の無いスナップショットでは enclosing の run が拒否されるので、
+  手順は手順 1 から始めます。
+- **2 本の間に予算がリセットされたとき。** `budget reset` やアイドルリセットは
+  レビューの lineage を変えるので、2 本目はラウンド 1 から数え直し、
+  `rerun: false` を記録して署名を登録します。ペアはそれでも成立し — 鍵は
+  workflow ディレクトリとスナップショットで、予算の epoch ではありません —
+  `--json` の `epoch` に 2 つの値が出ます。1 本目の後に finding がトリアージ
+  されていれば、2 本目はそれでも拒否されます。同じ findings を組み立て直すうえ、
+  トリアージは lineage に関係なく finding のキーで引き継がれるからです。
+- **`--iteration` の明示。** 1 本目が記録したのと別のラウンドを `--iteration`
+  で指定した run は独立したラウンドです。`rerun: false` を記録し、署名を登録します。
 
 <a id="what-the-runtime-budget-counts"></a>
 

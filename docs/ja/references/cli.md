@@ -1,4 +1,4 @@
-<!-- translated-from: references/cli.md sha256:24b1c2d81ca6a61ec17748ffd1bf709419a7b3f97fc7f6a3e519cb75b86e96b8 -->
+<!-- translated-from: references/cli.md sha256:f0efe1fd917bdef9de5805e5bbc4a26f1c0908f3f4dbaf8e37c4f3b8191de89f -->
 
 > この文書は [references/cli.md](../../../references/cli.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -161,8 +161,8 @@ echo "explain the failure" | dev-orchestra run orchestrator
 
 | コマンド | 説明 |
 | --- | --- |
-| `review snapshot [--base <rev>] [--no-untracked] [--json]` | レビュー対象の変更を固定します。空の場合は終了コード 1 です。`review.context.max_chars` を超える変更には警告が出ますが、それでも書き込まれます。スナップショットを取ること自体は何も消費せず、拒否するのは消費するコマンドの役目だからです。`--json` は同じことを数値で示します: `change_chars`、`max_chars`、`over_context`。`review.context.surrounding: enclosing` のときは、各 hunk を囲むシンボルも、diff を取ったツリーから `review-surrounding.json` に固定し、固定したシンボル数と文字数、抽出しなかったファイルの数とその理由を示す `context:` 行を出力します。メタデータには `surrounding` ブロックが加わります。`references/reviews.md` を参照してください。 |
-| `review run [--design] [--request <path>] [--iteration N] [--only <ids/roles>] [--sequential] [--context <text>] [--base <rev>] [--timeout <s>] [--idle-timeout <s>] [--force] [--json]` | スナップショットに対してすべてのレビュアーを実行し、レポートと統合結果を書き込みます。終了コード 1 になるのは、`ok` で戻ったレビュアーが 1 人もいない場合だけです。すべてのレビュアーが失敗した場合や、変更本体が大きすぎてインライン化できずファイルとして渡されたラウンドがこれにあたり、後者はクリーンではなく `partial` として記録されます。ラウンドは `--iteration` が指定されない限りスナップショットから導出され、`review.max_review_iterations` を超えるラウンドは `--force` がない限り拒否されます（終了コード 3）。上限に達したラウンドでも fix と再テストは行われ、拒否されるのは再レビューだけです。最適化ゲートに拒否されたラウンド（テストが失敗として記録されている）も終了コード 3 で終了し、`optimization report` が数えられるよう `refused` として記録されます。`review.context.max_chars`（400,000）を超える変更本体も同様です。何もレビューされず、メッセージはサイズ、上限、上限内に収める方法を示し、ラウンドは `refused_by: "context"` として記録されます。`--force` を付けると構わず実行し、そのラウンドは報告されるすべての場所で `over_budget` として記録されます。本体をプロンプトに入れるかパスとして渡すかは `review.context.inline_chars`（400,000。デフォルトでは同じ数値）で決まり、各レビュアーのエントリには判断に使われた値が記録されます。`budgets.max_runtime_seconds` 分の委譲実行時間を使い切った場合も同様にラウンドは拒否され（パネルはその最大の消費者です）、メッセージはどの予算だったかを示します。`--only` は一部だけを実行しますが、統合はすべてのレビュアーの現在のレポートに対して行うので、何も失われません。`review.context.surrounding: enclosing` のときは、固定されたシンボルを `review.context.surrounding_chars` と、diff が両方の上限の下に残す分の範囲で採用し、`Surrounding context:` 行が採用した数と除外した数とその理由を示し、`--json` にはラウンドの `surrounding` レコードが入ります。上限が計測するサイズは、diff に採用したコンテキストを足したものになります。 |
+| `review snapshot [--base <rev>] [--no-untracked] [--surrounding none\|enclosing] [--json]` | レビュー対象の変更を固定します。空の場合は終了コード 1 です。`review.context.max_chars` を超える変更には警告が出ますが、それでも書き込まれます。スナップショットを取ること自体は何も消費せず、拒否するのは消費するコマンドの役目だからです。`--json` は同じことを数値で示します: `change_chars`、`max_chars`、`over_context`。`review.context.surrounding: enclosing` のときは、各 hunk を囲むシンボルも、diff を取ったツリーから `review-surrounding.json` に固定し、固定したシンボル数と文字数、抽出しなかったファイルの数とその理由を示す `context:` 行を出力します。メタデータには `surrounding` ブロックが加わります。`--surrounding` はこのスナップショットに限って設定を上書きします: **`enclosing` は設定が `none` でもこのスナップショットについて候補を凍結します**。この凍結が無いと `review run --surrounding enclosing` は拒否されます。`none` は何も凍結せず、古い凍結ファイルを削除します。設定そのものは変わりません。`references/reviews.md` と [周辺コンテキストの効果を測る](limits.md#measuring-what-surrounding-context-does) を参照してください。 |
+| `review run [--design] [--request <path>] [--iteration N] [--only <ids/roles>] [--sequential] [--context <text>] [--base <rev>] [--timeout <s>] [--idle-timeout <s>] [--force] [--surrounding none\|enclosing] [--json]` | スナップショットに対してすべてのレビュアーを実行し、レポートと統合結果を書き込みます。終了コード 1 になるのは、`ok` で戻ったレビュアーが 1 人もいない場合だけです。すべてのレビュアーが失敗した場合や、変更本体が大きすぎてインライン化できずファイルとして渡されたラウンドがこれにあたり、後者はクリーンではなく `partial` として記録されます。ラウンドは `--iteration` が指定されない限りスナップショットから導出され、`review.max_review_iterations` を超えるラウンドは `--force` がない限り拒否されます（終了コード 3）。上限に達したラウンドでも fix と再テストは行われ、拒否されるのは再レビューだけです。最適化ゲートに拒否されたラウンド（テストが失敗として記録されている）も終了コード 3 で終了し、`optimization report` が数えられるよう `refused` として記録されます。`review.context.max_chars`（400,000）を超える変更本体も同様です。何もレビューされず、メッセージはサイズ、上限、上限内に収める方法を示し、ラウンドは `refused_by: "context"` として記録されます。`--force` を付けると構わず実行し、そのラウンドは報告されるすべての場所で `over_budget` として記録されます。本体をプロンプトに入れるかパスとして渡すかは `review.context.inline_chars`（400,000。デフォルトでは同じ数値）で決まり、各レビュアーのエントリには判断に使われた値が記録されます。`budgets.max_runtime_seconds` 分の委譲実行時間を使い切った場合も同様にラウンドは拒否され（パネルはその最大の消費者です）、メッセージはどの予算だったかを示します。`--only` は一部だけを実行しますが、統合はすべてのレビュアーの現在のレポートに対して行うので、何も失われません。`review.context.surrounding: enclosing` のときは、固定されたシンボルを `review.context.surrounding_chars` と、diff が両方の上限の下に残す分の範囲で採用し、`Surrounding context:` 行が採用した数と除外した数とその理由を示し、`--json` にはラウンドの `surrounding` レコードが入ります。上限が計測するサイズは、diff に採用したコンテキストを足したものになります。`--surrounding none\|enclosing` は、1 つのスナップショットをコンテキストあり・なしでレビューするために、この run に限って `review.context.surrounding` を上書きします（[周辺コンテキストの効果を測る](limits.md#measuring-what-surrounding-context-does) を参照してください）。設定は変わらず、行は `(--surrounding enclosing for this run)` または `Surrounding context: none (--surrounding none for this run; review.context.surrounding unchanged)` となります。次の場合は何も課金される前に終了コード 2 で拒否されます: `--design` と併用したとき。incremental ラウンド（再レビューのプロンプトには実行時点の accepted findings が載るので、2 本の run はコンテキスト以外でも違ってしまう）。`enclosing` で何も採用されないとき（理由を問わない: `review snapshot --surrounding enclosing` で凍結していないスナップショット、候補なし、ファイル渡し、予算なし）。同じスナップショットに対する 2 本目の run（間に `budget reset` を挟んでも同じ）で、前回の run が組み立てた後に finding のトリアージまたはトリアージのメモが設定されたとき（前のラウンドから引き継がれたものは数えない）。同じスナップショットの再実行はラウンドを進めず、findings の署名を登録しないので、ペアが「何も変えなかった修正」に見えることはありません。1 本目は通常どおり登録します。lineage が変わった後の run や、`--iteration` で別のラウンドを指定した run は再実行ではなく、署名を登録します。run のイベントと `--json` には `measurement` ブロック（`surrounding`、完全な `snapshot` sha256、凍結した `tree`、`head`、`base`、`workflow` ディレクトリ、予算の `epoch`、`rerun`、そして `inputs`: `context_sha256`、`max_findings`、`inline_chars`、`max_chars`、`force`）が加わり、`consolidated.json` には `triage_at_build`（キーごとの各 finding の `triage` と `triage_note`）を持つ `measurement` が加わります。フラグが無ければ、これらは何も書かれません。 |
 | `review consolidate [--design] [--iteration N] [--json]` | 既存のレポートを再解析し、統合結果を再構築します。 |
 | `review show [--design] [--accepted] [--json]` | 統合されたレビューを表示します。 |
 | `review triage [--design] <ids…> --status <status> [--note <text>]` | トリアージの判断を記録します。 |
@@ -474,6 +474,42 @@ Surrounding context (review.context.surrounding), code review rounds only:
 `billed_per_run_per_1k_change_chars`、`tool_output_chars_per_run_per_1k_change_chars`、`adopted_chars`、
 `trimmed_chars` を持ちます。`tokens show` は台帳の累計なのでラウンドを分けられず、変更はありません。
 ラウンドごとの比較はこちらで行います。
+
+この分割は異なる変更どうしを比べます。1 つのスナップショットを `review run --surrounding none` と
+`--surrounding enclosing` の両方でレビューすると
+（[周辺コンテキストの効果を測る](limits.md#measuring-what-surrounding-context-does) を参照してください）、
+その 2 本の run を対にしたブロックが出ます:
+
+```
+Paired on one snapshot (--surrounding none vs enclosing: the same frozen diff, tree, panel and prompt inputs):
+  3f2a9c1b7e04 in issue-54   change 12,400 chars; panel claude-general (claude, opus), codex-general (codex, gpt-5); 3,100 context chars adopted (3,521 as carried), 0 left out
+      with:    2 run(s), 41,200 billed, 20,600.0 per run; 3.0 use(s)/run, 9,800.0 observed output chars/run (1 of 2 run(s) reported)
+      without: 2 run(s), 45,900 billed, 22,950.0 per run; 6.0 use(s)/run, 22,100.0 observed output chars/run (1 of 2 run(s) reported)
+      delta:   -2,350.0 billed/run, -3.0 use(s)/run, -12,300.0 observed output chars/run
+  total, 1 pair(s) counted   with: 20,600.0 billed/run, 3.0 use(s)/run, 9,800.0 observed output chars/run; without: 22,950.0, 6.0, 22,100.0; delta: -2,350.0, -3.0, -12,300.0
+```
+
+その後に、ペアが何を揃え、何を揃えていないかの注記が続きます。対になるのは `--surrounding` 付きで
+実行した run だけです。側はフラグの値で決まり、ペアの鍵は workflow ディレクトリ、完全なスナップショット
+sha256、凍結したツリー、`head`、`base` で、予算の epoch は決して含みません。各側で最新の run が対に
+なります。実行あたりの課金は usage を報告した run で、ツールの数値はツールを報告した run で割ります。
+次の場合、ペアは一覧には載りますが合計からは外れ、その理由が 1 行目の末尾に付きます:
+
+- パネルが違う（`panels differ (without: ...)`）: `(id, provider, model, role)` の集合が等しくない（role はプロンプトを変える）。
+- どちらかの側のレビュアー run が届かなかった（`not delivered (with: codex-general failed)`）:
+  `ok` 以外の status。
+- 2 本の run のプロンプト入力が違った（`inputs differ (context, max_findings)`）。
+- enclosing の run が何も採用しなかった（`nothing adopted`）。
+
+`--json` には `paired` が常に含まれます: `pairs`（それぞれ `workflow`、両側の `epoch`、`snapshot`、
+`tree`、`same_panel`、`delivered`、`same_inputs`、`nothing_adopted`、`counted`、`panel`、
+`without_panel`、`undelivered`、`inputs_differ`、`change_chars`、`adopted_chars`、`context_chars`、
+`trimmed_chars`、`with`、`without`、`delta` を持つ）、`pairs_total`（counted なペアの数）、
+`pairs_listed`、counted なペアについての合計 `with`、`without`、`delta`、そして `note` です。各側は
+`reviewer_runs`、`measured_runs`、`billed_tokens`、`billed_per_run`、`tool_reported_runs`、
+`tool_uses`、`tool_output_chars`、`tool_uses_per_run`、`tool_output_chars_per_run` を持ちます。
+`delta` は実行あたりの with − without で、どちらかの側に割る対象が無ければ `null` です。
+`by_context` は変わりません。
 
 すべてのラウンドがエスカレートした場合、レポートはそれをはっきり述べます。設定されたレベルは一度も適用
 されなかったということであり、その原因となったパターンが示されます。すべてのラウンドでエスカレートして

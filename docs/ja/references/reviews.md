@@ -1,4 +1,4 @@
-<!-- translated-from: references/reviews.md sha256:51a46a375a9378f71f219eeb2bfecde0b87b54f1c17df1cf3b8c0101983edad1 -->
+<!-- translated-from: references/reviews.md sha256:4e3bb07e102a3bf259cb890c38eb896f802db42823335b2e4d2513f4bed7952e -->
 
 > この文書は [references/reviews.md](../../../references/reviews.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -270,7 +270,11 @@ complete のままで、diff がファイルとして渡されたラウンドは
 候補は `(priority, relation, chars, path, start)` で順位付けされ、優先順位 1 だけの
 今は `(relation, chars, path, start)` になります。優先順位 2 と 4 にはファイルを
 またいだ索引と解決器が必要で `context.py` が倍になる一方、1 の効果さえまだ計測
-されていません — そのため、まず 1 を off で出荷します。
+されていません — そのため、まず 1 を off で出荷します。1 の効果は、
+`review run --surrounding none|enclosing` で 1 つのスナップショットをあり・なしの
+両方でレビューし、`optimization report` のペアの数値を読んで測ります
+（[周辺コンテキストの効果を測る](limits.md#measuring-what-surrounding-context-does) を
+参照してください）。優先順位 2〜6 はその数値で決めます。
 
 <a id="design-review"></a>
 

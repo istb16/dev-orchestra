@@ -402,6 +402,7 @@ def summarise_rounds(events: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
     escalated = reduced = refused = unrecorded = 0
     reviewer_runs = measured_runs = billed = 0
     tool_runs = tool_uses = tool_chars = 0
+    measured: List[Dict[str, Any]] = []
 
     for event in rounds:
         plan = event["optimization"]
@@ -438,6 +439,8 @@ def summarise_rounds(events: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
             (runs, reported, spent),
             (said, called, printed),
         )
+        if isinstance(event.get("measurement"), dict):
+            measured.append(event)
 
     design_runs = design_measured = design_billed = 0
     design_tool_runs = design_tool_uses = design_tool_chars = 0
@@ -497,7 +500,191 @@ def summarise_rounds(events: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
         # Code rounds that ran, split on whether a reviewer was handed
         # surrounding context -- see ``_with_context``.
         "by_context": {name: _finish_context_group(group) for name, group in by_context.items()},
+        # Runs of one snapshot with and without it -- see ``_pair_rounds``.
+        "paired": _pair_rounds(measured),
     }
+
+
+#: What ``inputs_differ`` calls each prompt input, where the key is not a name.
+_INPUT_NAMES = {"context_sha256": "context"}
+
+PAIRED_NOTE = "small-sample observation over pairs of runs on one snapshot, not a statistical result"
+
+
+def _pair_rounds(events: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+    """Code rounds run twice on one snapshot, with and without surrounding context.
+
+    Only rounds run with ``review run --surrounding``, which record the whole
+    snapshot identity; the side is the flag's value, never whether context
+    was adopted. The latest run of each side makes the pair. A pair is listed
+    whatever it holds, and counted toward the totals only when everything but
+    the context was held equal: the panel, a delivered review from every run,
+    the other prompt inputs -- and when the context side adopted anything.
+    """
+    sides: Dict[Tuple[Any, ...], Dict[str, Dict[str, Any]]] = {}
+    for event in events:
+        side = _pair_side(event)
+        if side is None:
+            continue
+        slot = sides.setdefault(_pair_key(event), {})
+        if side not in slot or str(event.get("at") or "") >= str(slot[side].get("at") or ""):
+            slot[side] = event
+    pairs = []
+    totals = {"with": _pair_group(), "without": _pair_group()}
+    for key, slot in sides.items():
+        if "with" not in slot or "without" not in slot:
+            continue
+        pair = _pair(key, slot["with"], slot["without"])
+        pairs.append(pair)
+        if pair["counted"]:
+            for name in ("with", "without"):
+                for field in totals[name]:
+                    totals[name][field] += pair[name][field]
+    pairs.sort(key=lambda pair: str(pair["with"].get("at") or ""))
+    finished = {name: _finish_pair_group(group) for name, group in totals.items()}
+    return {
+        "pairs": pairs,
+        "pairs_total": sum(1 for pair in pairs if pair["counted"]),
+        "pairs_listed": len(pairs),
+        "with": finished["with"],
+        "without": finished["without"],
+        "delta": _pair_delta(finished["with"], finished["without"]),
+        "note": PAIRED_NOTE,
+    }
+
+
+def _pair_key(event: Dict[str, Any]) -> Tuple[Any, ...]:
+    """The workflow directory and the frozen snapshot -- never the budget epoch."""
+    block = event["measurement"]
+    return (
+        str(block.get("workflow") or ""),
+        str(block.get("snapshot") or ""),
+        str(block.get("tree") or ""),
+        block.get("head"),
+        block.get("base"),
+    )
+
+
+def _pair_side(event: Dict[str, Any]) -> Optional[str]:
+    mode = event["measurement"].get("surrounding")
+    return {"none": "without", "enclosing": "with"}.get(str(mode or ""))
+
+
+def _panel(event: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Who reviewed, and in what role: the role changes the prompt a reviewer gets."""
+    return [
+        {
+            "id": run.get("id"),
+            "provider": run.get("provider"),
+            "model": run.get("model"),
+            "role": run.get("role"),
+        }
+        for run in event.get("reviewers") or []
+        if isinstance(run, dict)
+    ]
+
+
+def _undelivered(event: Dict[str, Any], side: str) -> List[Dict[str, Any]]:
+    """The runs of one side that did not deliver a review."""
+    return [
+        {"side": side, "id": run.get("id"), "status": run.get("status")}
+        for run in event.get("reviewers") or []
+        if isinstance(run, dict) and run.get("status") != "ok"
+    ]
+
+
+def _inputs_differ(with_event: Dict[str, Any], without_event: Dict[str, Any]) -> List[str]:
+    """The prompt inputs the two runs did not share, by name.
+
+    A run that recorded none differs in every one the other recorded, and in
+    ``inputs`` itself when neither did: nothing says they were equal.
+    """
+    ours = with_event["measurement"].get("inputs")
+    theirs = without_event["measurement"].get("inputs")
+    if not isinstance(ours, dict) or not isinstance(theirs, dict):
+        return ["inputs"]
+    keys = list(ours) + [key for key in theirs if key not in ours]
+    return [_INPUT_NAMES.get(key, key) for key in keys if ours.get(key) != theirs.get(key)]
+
+
+def _pair(key: Tuple[Any, ...], with_event: Dict[str, Any], without_event: Dict[str, Any]) -> Dict[str, Any]:
+    panel, without_panel = _panel(with_event), _panel(without_event)
+
+    def members(entries: List[Dict[str, Any]]) -> set:
+        return {(entry["id"], entry["provider"], entry["model"], entry["role"]) for entry in entries}
+
+    same_panel = members(panel) == members(without_panel)
+    undelivered = _undelivered(with_event, "with") + _undelivered(without_event, "without")
+    inputs_differ = _inputs_differ(with_event, without_event)
+    nothing_adopted = not _with_context(with_event)
+    adopted, trimmed = _round_context_chars(with_event)
+    context_chars = 0
+    for run in with_event.get("reviewers") or []:
+        record = run.get("surrounding") if isinstance(run, dict) else None
+        if isinstance(record, dict):
+            context_chars = max(context_chars, _int(record.get("context_chars")))
+    sides = {"with": _pair_side_figures(with_event), "without": _pair_side_figures(without_event)}
+    return {
+        "workflow": key[0],
+        "epoch": {
+            "with": with_event["measurement"].get("epoch"),
+            "without": without_event["measurement"].get("epoch"),
+        },
+        "snapshot": key[1],
+        "tree": key[2],
+        "same_panel": same_panel,
+        "delivered": not undelivered,
+        "same_inputs": not inputs_differ,
+        "nothing_adopted": nothing_adopted,
+        "counted": same_panel and not undelivered and not inputs_differ and not nothing_adopted,
+        "panel": panel,
+        "without_panel": None if same_panel else without_panel,
+        "undelivered": undelivered,
+        "inputs_differ": inputs_differ,
+        "change_chars": _round_change_chars(with_event),
+        "adopted_chars": adopted,
+        "context_chars": context_chars,
+        "trimmed_chars": trimmed,
+        "with": sides["with"],
+        "without": sides["without"],
+        "delta": _pair_delta(sides["with"], sides["without"]),
+    }
+
+
+def _pair_group() -> Dict[str, int]:
+    keys = "reviewer_runs measured_runs billed_tokens tool_reported_runs tool_uses tool_output_chars"
+    return dict.fromkeys(keys.split(), 0)
+
+
+def _finish_pair_group(group: Dict[str, int]) -> Dict[str, Any]:
+    finished: Dict[str, Any] = dict(group)
+    finished["billed_per_run"] = _per_run(group["billed_tokens"], group["measured_runs"])
+    finished["tool_uses_per_run"] = _per_run(group["tool_uses"], group["tool_reported_runs"])
+    finished["tool_output_chars_per_run"] = _per_run(group["tool_output_chars"], group["tool_reported_runs"])
+    return finished
+
+
+def _pair_side_figures(event: Dict[str, Any]) -> Dict[str, Any]:
+    runs, reported, billed = _reviewer_spend(event)
+    said, called, printed = _reviewer_tools(event)
+    group = {
+        "reviewer_runs": runs,
+        "measured_runs": reported,
+        "billed_tokens": billed,
+        "tool_reported_runs": said,
+        "tool_uses": called,
+        "tool_output_chars": printed,
+    }
+    return dict(_finish_pair_group(group), at=event.get("at"))
+
+
+def _pair_delta(with_side: Dict[str, Any], without_side: Dict[str, Any]) -> Dict[str, Optional[float]]:
+    """With minus without, per run; None where either side has nothing to divide."""
+    delta: Dict[str, Optional[float]] = {}
+    for field in ("billed_per_run", "tool_uses_per_run", "tool_output_chars_per_run"):
+        ours, theirs = with_side.get(field), without_side.get(field)
+        delta[field] = None if ours is None or theirs is None else round(ours - theirs, 1)
+    return delta
 
 
 def _with_context(event: Dict[str, Any]) -> bool:

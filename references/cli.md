@@ -151,8 +151,8 @@ echo "explain the failure" | dev-orchestra run orchestrator
 
 | Command | Description |
 | --- | --- |
-| `review snapshot [--base <rev>] [--no-untracked] [--json]` | Freeze the change under review. Exit 1 if empty. A change over `review.context.max_chars` is warned about and still written — taking a snapshot spends nothing, and the refusal belongs to the command that would. `--json` says the same thing in numbers: `change_chars`, `max_chars` and `over_context`. With `review.context.surrounding: enclosing` it also freezes the symbol enclosing every hunk into `review-surrounding.json`, from the tree the diff was taken from, and prints a `context:` line saying how many symbols and characters were frozen and how many files were not extracted, and why; the metadata gains a `surrounding` block. See `references/reviews.md`. |
-| `review run [--design] [--request <path>] [--iteration N] [--only <ids/roles>] [--sequential] [--context <text>] [--base <rev>] [--timeout <s>] [--idle-timeout <s>] [--force] [--json]` | Run every reviewer against the snapshot; write reports and the consolidated result. Exit 1 only if no reviewer came back `ok` — every reviewer failing, or a round whose change body was too large to inline and was handed over as a file, which is recorded as `partial` rather than clean. The round is derived from the snapshot unless `--iteration` is given, and a round past `review.max_review_iterations` is refused (exit 3) unless `--force` — the round that reached the limit still gets its fix and re-test; only the re-review is refused. A round refused by the optimization gate (tests recorded as failing) also exits 3, and is recorded as `refused` so `optimization report` can count it. So is a change body over `review.context.max_chars` (400,000): nothing is reviewed, the message names the size, the limit and the ways under it, and the round is recorded with `refused_by: "context"` — `--force` runs it anyway and records the round as `over_budget` everywhere it is reported. Whether the body goes into the prompt or over as a path is `review.context.inline_chars` (400,000, the same number by default), and each reviewer entry records the value that decided it. A round is refused the same way once `budgets.max_runtime_seconds` of delegated execution has been spent — a panel is the largest consumer of it — and the message names which budget it was. `--only` runs a subset but still consolidates every reviewer's current report, so nothing is lost. With `review.context.surrounding: enclosing` the frozen symbols are adopted within `review.context.surrounding_chars` and what the diff leaves under both limits, a `Surrounding context:` line says how many were adopted and how many left out and why, `--json` carries the round's `surrounding` record, and the size the limit measures is the diff plus the context adopted. |
+| `review snapshot [--base <rev>] [--no-untracked] [--surrounding none\|enclosing] [--json]` | Freeze the change under review. Exit 1 if empty. A change over `review.context.max_chars` is warned about and still written — taking a snapshot spends nothing, and the refusal belongs to the command that would. `--json` says the same thing in numbers: `change_chars`, `max_chars` and `over_context`. With `review.context.surrounding: enclosing` it also freezes the symbol enclosing every hunk into `review-surrounding.json`, from the tree the diff was taken from, and prints a `context:` line saying how many symbols and characters were frozen and how many files were not extracted, and why; the metadata gains a `surrounding` block. `--surrounding` overrides the setting for this snapshot only: **`enclosing` freezes the candidates for this snapshot even with the setting at `none`**, and without that freeze `review run --surrounding enclosing` is refused; `none` freezes nothing and removes an older frozen file. The setting itself is not changed. See `references/reviews.md` and [Measuring what surrounding context does](limits.md#measuring-what-surrounding-context-does). |
+| `review run [--design] [--request <path>] [--iteration N] [--only <ids/roles>] [--sequential] [--context <text>] [--base <rev>] [--timeout <s>] [--idle-timeout <s>] [--force] [--surrounding none\|enclosing] [--json]` | Run every reviewer against the snapshot; write reports and the consolidated result. Exit 1 only if no reviewer came back `ok` — every reviewer failing, or a round whose change body was too large to inline and was handed over as a file, which is recorded as `partial` rather than clean. The round is derived from the snapshot unless `--iteration` is given, and a round past `review.max_review_iterations` is refused (exit 3) unless `--force` — the round that reached the limit still gets its fix and re-test; only the re-review is refused. A round refused by the optimization gate (tests recorded as failing) also exits 3, and is recorded as `refused` so `optimization report` can count it. So is a change body over `review.context.max_chars` (400,000): nothing is reviewed, the message names the size, the limit and the ways under it, and the round is recorded with `refused_by: "context"` — `--force` runs it anyway and records the round as `over_budget` everywhere it is reported. Whether the body goes into the prompt or over as a path is `review.context.inline_chars` (400,000, the same number by default), and each reviewer entry records the value that decided it. A round is refused the same way once `budgets.max_runtime_seconds` of delegated execution has been spent — a panel is the largest consumer of it — and the message names which budget it was. `--only` runs a subset but still consolidates every reviewer's current report, so nothing is lost. With `review.context.surrounding: enclosing` the frozen symbols are adopted within `review.context.surrounding_chars` and what the diff leaves under both limits, a `Surrounding context:` line says how many were adopted and how many left out and why, `--json` carries the round's `surrounding` record, and the size the limit measures is the diff plus the context adopted. `--surrounding none\|enclosing` overrides `review.context.surrounding` for this run only, to review one snapshot with and without the context (see [Measuring what surrounding context does](limits.md#measuring-what-surrounding-context-does)); the setting is not changed, and the line reads `(--surrounding enclosing for this run)` or `Surrounding context: none (--surrounding none for this run; review.context.surrounding unchanged)`. It is refused with exit 2 before anything is charged: with `--design`; on an incremental round (the re-review prompt carries the accepted findings of the moment it runs, so two runs on it would differ in more than the context); with `enclosing` when nothing would be adopted, whatever the reason (a snapshot not frozen with `review snapshot --surrounding enclosing`, no candidates, file delivery, no budget); and on a second run of the same snapshot -- across a `budget reset` too -- when a finding's triage or triage note was set since the last run built it (one carried in from an earlier round does not count). A rerun of the same snapshot stays in its round and registers no findings signature, so the pair does not read as a fix that changed nothing; the first run registers it as usual. A run after a lineage change, or one whose `--iteration` names another round, is no rerun and registers its signature. The run event and `--json` gain a `measurement` block (`surrounding`, full `snapshot` sha256, frozen `tree`, `head`, `base`, `workflow` directory, budget `epoch`, `rerun`, and `inputs`: `context_sha256`, `max_findings`, `inline_chars`, `max_chars`, `force`), and `consolidated.json` gains `measurement` with `triage_at_build` (each finding's `triage` and `triage_note` by key). Without the flag none of this is written. |
 | `review consolidate [--design] [--iteration N] [--json]` | Re-parse the existing reports and rebuild the consolidated result. |
 | `review show [--design] [--accepted] [--json]` | Show the consolidated review. |
 | `review triage [--design] <ids…> --status <status> [--note <text>]` | Record triage decisions. |
@@ -485,6 +485,47 @@ always present, each with `rounds`, `reviewer_runs`, `measured_runs`,
 `tool_output_chars_per_run_per_1k_change_chars`, `adopted_chars` and
 `trimmed_chars`. `tokens show` is a ledger total and cannot split rounds, so it
 is unchanged; the round-by-round comparison is this one.
+
+That split compares different changes. Once one snapshot has been reviewed
+both ways with `review run --surrounding none` and `--surrounding enclosing`
+(see [Measuring what surrounding context does](limits.md#measuring-what-surrounding-context-does)),
+a block pairs the two runs:
+
+```
+Paired on one snapshot (--surrounding none vs enclosing: the same frozen diff, tree, panel and prompt inputs):
+  3f2a9c1b7e04 in issue-54   change 12,400 chars; panel claude-general (claude, opus), codex-general (codex, gpt-5); 3,100 context chars adopted (3,521 as carried), 0 left out
+      with:    2 run(s), 41,200 billed, 20,600.0 per run; 3.0 use(s)/run, 9,800.0 observed output chars/run (1 of 2 run(s) reported)
+      without: 2 run(s), 45,900 billed, 22,950.0 per run; 6.0 use(s)/run, 22,100.0 observed output chars/run (1 of 2 run(s) reported)
+      delta:   -2,350.0 billed/run, -3.0 use(s)/run, -12,300.0 observed output chars/run
+  total, 1 pair(s) counted   with: 20,600.0 billed/run, 3.0 use(s)/run, 9,800.0 observed output chars/run; without: 22,950.0, 6.0, 22,100.0; delta: -2,350.0, -3.0, -12,300.0
+```
+
+followed by a note on what a pair does and does not hold equal. Only runs made
+with `--surrounding` are paired; the side is the flag's value, and the pair key
+is the workflow directory, the full snapshot sha256, the frozen tree, `head` and
+`base` -- never the budget epoch. The latest run of each side is the one
+paired. Billed per run is over the runs that reported usage, the tool figures
+over the runs that reported tools. A pair is listed but left out of the total,
+with the reason at the end of its first line, when:
+
+- its panels differ (`panels differ (without: ...)`): the sets of
+  `(id, provider, model, role)` are not equal -- the role changes the prompt;
+- a reviewer run on either side did not deliver (`not delivered (with: codex-general failed)`):
+  any status but `ok`;
+- the two runs had different prompt inputs (`inputs differ (context, max_findings)`);
+- the enclosing run adopted nothing (`nothing adopted`).
+
+In `--json`, `paired` is always present: `pairs` (each with `workflow`,
+`epoch` for both sides, `snapshot`, `tree`, `same_panel`, `delivered`,
+`same_inputs`, `nothing_adopted`, `counted`, `panel`, `without_panel`,
+`undelivered`, `inputs_differ`, `change_chars`, `adopted_chars`,
+`context_chars`, `trimmed_chars`, `with`, `without` and `delta`),
+`pairs_total` (the counted pairs), `pairs_listed`, the totals `with`,
+`without` and `delta` over the counted pairs, and `note`. Each side carries
+`reviewer_runs`, `measured_runs`, `billed_tokens`, `billed_per_run`,
+`tool_reported_runs`, `tool_uses`, `tool_output_chars`, `tool_uses_per_run` and
+`tool_output_chars_per_run`; `delta` is with minus without per run, `null`
+where either side has nothing to divide by. `by_context` is unchanged.
 
 When every round escalated, the report says so outright: the level as
 configured never applied, and the patterns that did it are named. A dial
