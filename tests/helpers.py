@@ -136,9 +136,20 @@ CLAUDE_HELP_RESUME_ONLY = """\
 #: The two lines a resumed run needs, verbatim from 2.1.283.
 CLAUDE_HELP_RESUME = CLAUDE_HELP_FORK + CLAUDE_HELP_RESUME_ONLY
 
+#: The wording 2.1.283 prints; the line breaks follow the other options.
+CLAUDE_HELP_PARTIAL_MESSAGES = """\
+  --include-partial-messages            Include partial message chunks as they
+                                        arrive (only works with --print and
+                                        --output-format=stream-json)
+"""
+
 #: A CLI that advertises read-only runs and nothing about resuming.
 CLAUDE_HELP_NO_RESUME = (
-    CLAUDE_HELP_BEFORE_READ_ONLY + CLAUDE_HELP_RESTRICTED + CLAUDE_HELP_STRICT_MCP + CLAUDE_HELP_TOOLS
+    CLAUDE_HELP_BEFORE_READ_ONLY
+    + CLAUDE_HELP_PARTIAL_MESSAGES
+    + CLAUDE_HELP_RESTRICTED
+    + CLAUDE_HELP_STRICT_MCP
+    + CLAUDE_HELP_TOOLS
 )
 
 #: A CLI that advertises everything read-only and resumed runs need.

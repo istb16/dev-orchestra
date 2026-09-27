@@ -124,7 +124,7 @@ Verified against `claude` 2.1.x.
 
 | Aspect | How |
 | --- | --- |
-| Non-interactive run | `claude -p --output-format stream-json --verbose`, prompt on stdin |
+| Non-interactive run | `claude -p --output-format stream-json --verbose --include-partial-messages`, prompt on stdin; the last flag only when `--help` lists it |
 | Model | `--model <alias-or-name>`, omitted when the family is `default` |
 | Model discovery | Parses the aliases the CLI advertises in its own `--model` help text |
 | `plan` / `review` | `--permission-mode plan --disallowed-tools Edit,Write,NotebookEdit --tools Read,Grep,Glob --strict-mcp-config --restricted` |
@@ -210,10 +210,16 @@ length limits and quoting differences between shells.
 The output format is `stream-json`, not `text`, for one reason: measured,
 `text` prints nothing until a run is nearly over (first output 8.1s into an
 8.9s run), so there is no way to tell a wedged agent from a busy one. The
-streaming format emits `system`/`thinking_tokens` events throughout, which is
-what the idle deadline watches. The final answer comes from the `result` event,
-falling back to assistant text blocks and then to raw stdout, so a schema change
-degrades instead of losing the output. `options.output_format: text` opts back
+streaming format emits `system`/`thinking_tokens` events while the model
+thinks, which is what the idle deadline watches — but they stop once the answer
+starts, and a 17k-character answer was measured to leave 141s with no line at
+all. So the adapter adds `--include-partial-messages` when `claude --help` lists
+it (never guessed): the answer then streams as `stream_event` chunks, the
+largest gap on the same prompt was 1.7s, and stdout is about 8× larger. The
+final answer comes from the `result` event, falling back to assistant text
+blocks (plus the streamed text of a message the run was killed in the middle
+of) and then to raw stdout, so a schema change degrades instead of losing the
+output. `options.output_format: text` opts back
 out — at the cost of stall detection, which is why it is not the default.
 
 The permission modes this adapter accepts are read from the CLI's own
