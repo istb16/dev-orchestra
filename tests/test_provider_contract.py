@@ -312,5 +312,229 @@ class TestOptionsReachTheCommand(IsolatedCase):
         self.assertEqual(self.seen["idle_timeout"], 5.0)
 
 
+SESSION = "22222222-2222-4222-8222-222222222222"
+PARSED_SESSION = "11111111-1111-4111-8111-111111111111"
+
+
+class _BareAdapter(base.Provider):
+    """An adapter with nothing but a command, the way one is written."""
+
+    name = "bare"
+    executable = "bare"
+
+    def which(self):
+        return "bare"
+
+    def version(self):
+        return "bare 1", None
+
+    def _resolve_latest(self, family):
+        return base.ResolvedModel(self.name, family, "latest", None, "default", "cli-default")
+
+    def build_command(self, mode, resolved, cwd, extra_args=(), options=None):
+        return ["bare", mode, *extra_args]
+
+
+class _TodaysLaunch(_BareAdapter):
+    """``_launch`` overridden with the signature it had before resuming."""
+
+    def _launch(
+        self,
+        prompt,
+        mode,
+        cwd,
+        model_spec=None,
+        timeout=1800,
+        extra_args=(),
+        env=None,
+        options=None,
+        idle_timeout=None,
+    ):
+        return super()._launch(
+            prompt,
+            mode,
+            cwd,
+            model_spec=model_spec,
+            timeout=timeout,
+            extra_args=extra_args,
+            env=env,
+            options=options,
+            idle_timeout=idle_timeout,
+        )
+
+
+class _ResumingAdapter(_BareAdapter):
+    name = "resuming"
+    supports_resume = True
+
+    def __init__(self):
+        super().__init__()
+        self.rejected_calls = []
+        self.parse_calls = 0
+        self.launch_kwargs = []
+        self.raise_in_rejected = False
+        self.raise_in_parse = False
+        self.raise_in_postprocess = False
+
+    def resume_args(self, session_id):
+        return ["--resume=%s" % session_id]
+
+    def resume_rejected(self, outcome, mode, options, session_id):
+        self.rejected_calls.append({"options": options, "session_id": session_id})
+        if self.raise_in_rejected:
+            raise RuntimeError("rejected reader broke")
+        return outcome.stderr.startswith("No conversation") and session_id == SESSION
+
+    def parse_session(self, outcome):
+        self.parse_calls += 1
+        if self.raise_in_parse:
+            raise RuntimeError("session reader broke")
+        return {"session_id": PARSED_SESSION, "context_tokens": 123, "init": {"tools": ["Read"]}}
+
+    def postprocess(self, outcome, mode):
+        if self.raise_in_postprocess:
+            raise RuntimeError("answer reader broke")
+        return super().postprocess(outcome, mode)
+
+    def _launch(self, prompt, mode, cwd, **kwargs):
+        self.launch_kwargs.append(dict(kwargs))
+        return super()._launch(prompt, mode, cwd, **kwargs)
+
+
+class _RejectedOutcome(_Outcome):
+    def __init__(self):
+        super().__init__()
+        self.exit_code = 1
+        self.stdout = ""
+        self.stderr = "No conversation found with session ID: %s" % SESSION
+
+    @property
+    def ok(self):
+        return False
+
+
+class TestResumingThroughTheBase(IsolatedCase):
+    def setUp(self):
+        super().setUp()
+        self.seen = {}
+        self.outcome = _Outcome()
+        original = execution.execute
+        self.addCleanup(setattr, execution, "execute", original)
+
+        def execute(command, cwd, prompt="", timeout=None, idle_timeout=None, env=None):
+            self.seen["command"] = list(command)
+            return self.outcome
+
+        execution.execute = execute
+
+    def test_the_default_says_unsupported_or_unspecified(self):
+        self.assertEqual(base.Provider().resume_support(self.project)["status"], "unsupported")
+
+        class Declares(base.Provider):
+            supports_resume = True
+
+        self.assertEqual(Declares().resume_support(self.project)["status"], "unspecified")
+
+    def test_codex_and_mock_say_what_they_do(self):
+        codex = providers.get_provider("codex")
+        self.assertFalse(codex.supports_resume)
+        self.assertEqual(codex.resume_support(self.project)["status"], "unsupported")
+        self.assertEqual(providers.get_provider("mock").resume_support(self.project)["status"], "verified")
+
+    def test_a_launch_with_todays_signature_still_runs_fresh(self):
+        provider = _TodaysLaunch()
+        for mode in (base.MODE_PLAN, base.MODE_REVIEW):
+            with self.subTest(mode=mode):
+                result = provider.run("prompt", mode, self.project, **CALL)
+                self.assertTrue(result.ok)
+        with self.assertRaises(TypeError):
+            provider.run("prompt", base.MODE_PLAN, self.project, resume_session=SESSION, **CALL)
+
+    def test_a_build_command_only_adapter_still_runs_fresh(self):
+        result = _BareAdapter().run("prompt", base.MODE_PLAN, self.project, **CALL)
+        self.assertTrue(result.ok)
+        self.assertEqual(self.seen["command"], ["bare", base.MODE_PLAN])
+
+    def test_command_line_refuses_to_resume_on_an_adapter_that_cannot(self):
+        provider = _BareAdapter()
+        resolved = provider.resolve_model(None)
+        with self.assertRaises(NotImplementedError):
+            provider.command_line(base.MODE_PLAN, resolved, self.project, resume_session=SESSION)
+
+    def test_only_a_read_only_run_may_resume(self):
+        with self.assertRaises(ValueError):
+            _ResumingAdapter().run("prompt", base.MODE_IMPLEMENT, self.project, resume_session=SESSION)
+
+    def test_a_rejected_resume_is_reported(self):
+        provider = _ResumingAdapter()
+        self.outcome = _RejectedOutcome()
+        result = provider.run("prompt", base.MODE_PLAN, self.project, resume_session=SESSION, **CALL)
+        self.assertFalse(result.ok)
+        self.assertTrue(result.resume_rejected)
+        self.assertEqual(result.session_id, PARSED_SESSION)
+        self.assertEqual(result.context_tokens, 123)
+        self.assertEqual(result.session_init, {"tools": ["Read"]})
+        self.assertEqual(self.seen["command"][-1], "--resume=%s" % SESSION)
+        self.assertIs(provider.rejected_calls[0]["options"], CALL["options"])
+        self.assertEqual(provider.rejected_calls[0]["session_id"], SESSION)
+
+    def test_a_rejected_resume_survives_an_unreadable_answer(self):
+        provider = _ResumingAdapter()
+        provider.raise_in_postprocess = True
+        self.outcome = _RejectedOutcome()
+        result = provider.run("prompt", base.MODE_PLAN, self.project, resume_session=SESSION, **CALL)
+        self.assertFalse(result.ok)
+        self.assertFalse(result.usage.measured)
+        self.assertTrue(result.resume_rejected)
+        self.assertEqual(result.session_id, PARSED_SESSION)
+        self.assertEqual(result.session_init, {"tools": ["Read"]})
+
+    def test_a_fresh_run_is_not_asked_about_rejection(self):
+        provider = _ResumingAdapter()
+        result = provider.run("prompt", base.MODE_PLAN, self.project, **CALL)
+        self.assertTrue(result.ok)
+        self.assertEqual(provider.rejected_calls, [])
+        self.assertFalse(any(token.startswith("--resume") for token in self.seen["command"]))
+        self.assertEqual(provider.parse_calls, 1)
+        self.assertEqual(result.session_id, PARSED_SESSION)
+        self.assertNotIn("resume_session", provider.launch_kwargs[0])
+
+    def test_a_broken_rejection_reader_is_not_a_rejection(self):
+        provider = _ResumingAdapter()
+        provider.raise_in_rejected = True
+        self.outcome = _RejectedOutcome()
+        result = provider.run("prompt", base.MODE_PLAN, self.project, resume_session=SESSION, **CALL)
+        self.assertFalse(result.resume_rejected)
+        self.assertTrue(result.stderr.startswith("RuntimeError: rejected reader broke"))
+
+    def test_a_broken_session_reader_leaves_the_fields_empty(self):
+        provider = _ResumingAdapter()
+        provider.raise_in_parse = True
+        result = provider.run("prompt", base.MODE_PLAN, self.project, **CALL)
+        self.assertIsNone(result.session_id)
+        self.assertIsNone(result.context_tokens)
+        self.assertIsNone(result.session_init)
+        self.assertIn("RuntimeError: session reader broke", result.stderr)
+
+    def test_a_raw_resume_argument_is_still_refused(self):
+        provider = _ResumingAdapter()
+        result = provider.run(
+            "prompt",
+            base.MODE_PLAN,
+            self.project,
+            options={"args": ["--resume=33333333-3333-4333-8333-333333333333"]},
+            resume_session=SESSION,
+        )
+        self.assertEqual(result.exit_code, 2)
+        self.assertFalse(result.invoked)
+        self.assertNotIn("command", self.seen)
+
+    def test_the_session_fields_are_serialised(self):
+        result = _ResumingAdapter().run("prompt", base.MODE_PLAN, self.project, **CALL)
+        data = result.to_dict()
+        for key in ("session_id", "context_tokens", "session_init", "resume_rejected"):
+            self.assertIn(key, data)
+
+
 if __name__ == "__main__":
     unittest.main()

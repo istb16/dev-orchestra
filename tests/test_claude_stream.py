@@ -10,13 +10,20 @@ schema change would be a worse bug than the one being fixed.
 from __future__ import annotations
 
 import json
+import os
+import re
 import unittest
 
 from helpers import IsolatedCase
 
 from orchestrator.execution import ExecOutcome
 from orchestrator.providers import base
-from orchestrator.providers.claude import ClaudeProvider, parse_stream_json, parse_stream_tools
+from orchestrator.providers.claude import (
+    ClaudeProvider,
+    parse_stream_json,
+    parse_stream_tools,
+    parse_stream_usage,
+)
 
 
 def stream(*events):
@@ -313,6 +320,127 @@ class _Help:
         "  --strict-mcp-config                   Only use MCP servers from --mcp-config,\n"
         "  --tools <tools...>                    Specify the list of available tools from\n"
     )
+
+
+FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "claude")
+MISSING = "00000000-0000-4000-8000-000000000000"
+REJECTED_EXIT = 1
+
+
+def fixture(name):
+    with open(os.path.join(FIXTURES, name), "r", encoding="utf-8") as handle:
+        return handle.read()
+
+
+class TestResumeRejected(IsolatedCase):
+    """Matched to what the CLI printed for a session that does not exist."""
+
+    def setUp(self):
+        super().setUp()
+        self.provider = ClaudeProvider()
+        self.stdout = fixture("resume-rejected.stdout")
+        self.stderr = fixture("resume-rejected.stderr")
+
+    def rejected(self, stdout=None, exit_code=REJECTED_EXIT, options=None, session=MISSING, **flags):
+        outcome = ExecOutcome(exit_code, self.stdout if stdout is None else stdout, self.stderr, 0.5, **flags)
+        options = {} if options is None else options
+        return self.provider.resume_rejected(outcome, base.MODE_PLAN, options, session)
+
+    def result_with(self, **changes):
+        event = json.loads(self.stdout)
+        event.update(changes)
+        return json.dumps(event) + "\n"
+
+    def test_the_recorded_rejection_is_one(self):
+        self.assertTrue(self.rejected())
+
+    def test_only_for_the_id_that_was_asked_for(self):
+        self.assertFalse(self.rejected(session="44444444-4444-4444-8444-444444444444"))
+
+    def test_another_error_is_not(self):
+        self.assertFalse(self.rejected(fixture("resume-rejected-other-error.stdout")))
+        event = json.loads(self.stdout)
+        del event["errors"]
+        self.assertFalse(self.rejected(json.dumps(event) + "\n"))
+
+    def test_a_run_that_got_anywhere_is_not(self):
+        self.assertFalse(self.rejected(exit_code=0))
+        self.assertFalse(self.rejected(stalled=True))
+        self.assertFalse(self.rejected(timed_out=True))
+        self.assertFalse(self.rejected(stream(THINKING) + self.stdout))
+        self.assertFalse(self.rejected(""))
+        self.assertFalse(self.rejected(self.result_with(num_turns=1)))
+        self.assertFalse(self.rejected(self.result_with(is_error=False)))
+        self.assertFalse(self.rejected(self.result_with(subtype="success")))
+
+    def test_other_formats_are_never_judged(self):
+        for output_format in ("json", "text"):
+            with self.subTest(output_format=output_format):
+                self.assertFalse(self.rejected(options={"output_format": output_format}))
+
+    def test_the_rejection_is_measured_at_zero(self):
+        outcome = ExecOutcome(REJECTED_EXIT, self.stdout, self.stderr, 0.5)
+        usage = self.provider.parse_usage(outcome, base.MODE_PLAN)
+        self.assertTrue(usage.measured)
+        self.assertEqual((usage.input_tokens, usage.output_tokens), (0, 0))
+        self.assertEqual((usage.cache_read_tokens, usage.cache_write_tokens), (0, 0))
+        self.assertEqual(usage.cost_usd, 0.0)
+        self.assertIsNone(usage.tool_uses)
+        self.assertEqual(
+            self.provider.parse_session(outcome),
+            {"session_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "context_tokens": None, "init": None},
+        )
+
+
+class TestParseSession(IsolatedCase):
+    def setUp(self):
+        super().setUp()
+        self.provider = ClaudeProvider()
+
+    def parse(self, stdout):
+        return self.provider.parse_session(ExecOutcome(0, stdout, "", 1.0))
+
+    def test_the_recorded_resumed_session(self):
+        stdout = fixture("resume-write-probe.jsonl")
+        session = self.parse(stdout)
+        self.assertEqual(session["session_id"], "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+        self.assertEqual(session["context_tokens"], 11336)
+        expected = {"tools": ["Glob", "Grep", "Read"], "mcp_servers": [], "permission_mode": "plan"}
+        self.assertEqual(session["init"], dict(expected, version="2.1.283"))
+        outcome = ExecOutcome(0, stdout, "", 1.0)
+        self.assertFalse(self.provider.resume_rejected(outcome, base.MODE_PLAN, {}, MISSING))
+        self.assertEqual(parse_stream_tools(stdout)["tool_uses"], 0)
+        self.assertEqual(parse_stream_usage(stdout).cost_usd, 0.037491)
+
+    def test_the_fixture_carries_nothing_from_the_machine_it_was_recorded_on(self):
+        stdout = fixture("resume-write-probe.jsonl")
+        # A home directory or drive path would name the user it came from.
+        self.assertIsNone(re.search(r"[A-Za-z]:\\\\|/Users/|/home/|\\\\Users\\\\", stdout))
+        for word in ("pipe", "signature", "scratchpad"):
+            self.assertNotIn(word, stdout)
+
+    def test_the_result_id_wins(self):
+        session = self.parse(
+            stream(
+                {"type": "system", "subtype": "init", "session_id": "system-id"},
+                {"type": "result", "session_id": "result-id"},
+            )
+        )
+        self.assertEqual(session["session_id"], "result-id")
+
+    def test_init_fields_of_the_wrong_shape_are_dropped(self):
+        session = self.parse(stream({"type": "system", "subtype": "init", "tools": "Read"}))
+        self.assertIsNone(session["init"]["tools"])
+        self.assertIsNone(self.parse(stream(THINKING))["init"])
+
+    def test_context_is_only_what_the_cli_counted(self):
+        self.assertIsNone(self.parse(stream(RESULT_EVENT))["context_tokens"])
+        self.assertIsNone(self.parse(stream(ASSISTANT))["context_tokens"])
+        for bad in (True, "12"):
+            usage = {"input_tokens": bad, "cache_creation_input_tokens": 1, "cache_read_input_tokens": 1}
+            event = {"type": "assistant", "message": {"usage": usage}}
+            with self.subTest(value=bad):
+                self.assertIsNone(self.parse(stream(event))["context_tokens"])
 
 
 if __name__ == "__main__":

@@ -234,6 +234,50 @@ class TestStartAgainstAFastWorker(JobCase):
         self.assertEqual((on_disk["status"], on_disk["pid"]), ("running", 4242))
 
 
+class _Spawned:
+    pid = 4242
+
+    def __init__(self, command, **_):
+        pass
+
+
+WORKER_ARGV = ["run", "architect", "--prompt-file", jobs_mod.PROMPT_FILE, "--job-file", jobs_mod.JOB_FILE]
+
+
+class TestStartRecordsWhatTheWorkerCannotKnow(JobCase):
+    def start(self, argv=WORKER_ARGV, **kwargs):
+        with spawning(_Spawned):
+            return jobs_mod.start(self.workspace, "architect", list(argv), prompt="F", **kwargs)
+
+    def test_force_is_recorded(self):
+        self.assertIs(self.start(force=True)["force"], True)
+        self.assertIs(self.start()["force"], False)
+        job = self.start(force=True)
+        claimed = jobs_mod.claim(jobs_mod.job_path(self.workspace, job["id"]))
+        self.assertIs(claimed["force"], True)
+
+    def test_the_resume_prompt_is_copied_like_the_fresh_one(self):
+        argv = [*WORKER_ARGV, "--resume-prompt-file", jobs_mod.RESUME_PROMPT_FILE]
+        job = self.start(argv, resume_prompt="R")
+        path = job["resume_prompt_file"]
+        self.assertEqual(ws.read_text(path), "R")
+        self.assertTrue(path.endswith("%s.resume-prompt" % job["id"]))
+        self.assertIn(path, job["command"])
+        self.assertNotIn(jobs_mod.RESUME_PROMPT_FILE, job["command"])
+
+    def test_no_resume_prompt_leaves_nothing_behind(self):
+        job = self.start()
+        self.assertNotIn("resume_prompt_file", job)
+        leftover = os.path.join(jobs_mod.jobs_dir(self.workspace), "%s.resume-prompt" % job["id"])
+        self.assertFalse(os.path.exists(leftover))
+
+    def test_the_placeholder_and_the_prompt_go_together(self):
+        with self.assertRaises(ValueError):
+            self.start(resume_prompt="R")
+        with self.assertRaises(ValueError):
+            self.start([*WORKER_ARGV, "--resume-prompt-file", jobs_mod.RESUME_PROMPT_FILE])
+
+
 class TestRendering(JobCase):
     def test_render_mentions_the_status_and_stage(self):
         job = self.record("a-1", status="succeeded")

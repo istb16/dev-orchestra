@@ -118,7 +118,8 @@ def findings_of_current_plan(workspace: ws.Workspace, plan_text: str) -> Optiona
     return ws.read_text(snapshot) == plan_text
 
 
-def _epoch(stamp: Any) -> Optional[float]:
+def epoch_of(stamp: Any) -> Optional[float]:
+    """An event's ``at`` as seconds since the epoch, or None if it is not one."""
     try:
         return datetime.strptime(str(stamp), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).timestamp()
     except ValueError:
@@ -136,7 +137,7 @@ def implemented_since_plan(workspace: ws.Workspace, events: List[Dict[str, Any]]
     finished = [e for e in events if e.get("stage") == "implementer" and e.get("status") == "ok"]
     if not finished:
         return False
-    at = _epoch(finished[-1].get("at"))
+    at = epoch_of(finished[-1].get("at"))
     try:
         written = os.path.getmtime(workspace.plan_path)
     except OSError:

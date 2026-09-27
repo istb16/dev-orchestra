@@ -107,11 +107,19 @@ line instead of a traceback, and the roles using it show `adapter-error`. In
 `--json`: `providers.<name>.origin`, `providers.<name>.adapter_error` and a
 top-level `user_providers`. See `references/providers.md`.
 
+A `Resume:` line follows, saying whether `run architect --resume` can continue
+a session on that CLI: `verified for claude <version> on <date> (built-in)` or
+`(record: <path>)`, `UNVERIFIED -- <why>; --resume runs fresh until then`,
+`NOT SUPPORTED -- <why>`, `not reported by this adapter`, or `not checked
+(--fast)`. In `--json` it is `providers.<name>.resume_support` (`status`,
+`detail`, `version`, `source`, `record`, `verified_at`, `missing`). It is never
+a problem: a run that cannot resume runs fresh.
+
 ## run
 
 | Command | Description |
 | --- | --- |
-| `run <role> [--prompt <text>\|--prompt-file <path>] [--tier <name>] [--mode plan\|implement\|review] [--output <path>] [--timeout <s>] [--idle-timeout <s>] [--detach] [--force] [--json] [--print-command] [--extra …]` | Run one configured role. `<role>` is `orchestrator`, `architect`, `implementer`, `review_fixer`, or a reviewer id. `--tier` picks one of that role's configured `model_tiers`; an unknown one is refused rather than run on the default model. Consumes an attempt from that stage's budget and refuses (exit 3) when it is spent, unless `--force`. `run implementer` refuses (exit 5) while a plan exists and is not approved -- in the parent and again in a detached worker, whose refusal lands in the job record whole; `--force` does not apply. |
+| `run <role> [--prompt <text>\|--prompt-file <path>] [--tier <name>] [--mode plan\|implement\|review] [--output <path>] [--timeout <s>] [--idle-timeout <s>] [--resume --resume-prompt-file <path>] [--detach] [--force] [--json] [--print-command] [--extra …]` | Run one configured role. `<role>` is `orchestrator`, `architect`, `implementer`, `review_fixer`, or a reviewer id. `--tier` picks one of that role's configured `model_tiers`; an unknown one is refused rather than run on the default model. Consumes an attempt from that stage's budget and refuses (exit 3) when it is spent, unless `--force`. `run implementer` refuses (exit 5) while a plan exists and is not approved -- in the parent and again in a detached worker, whose refusal lands in the job record whole; `--force` does not apply. |
 
 The prompt may also be piped on stdin (`--prompt-file -` reads stdin
 explicitly). Default modes: architect/orchestrator `plan`, implementer and
@@ -164,8 +172,84 @@ from an exit 0 over silence.
 `--detach` starts the run in its own process and returns a job id immediately,
 so the call cannot block. See `jobs` below.
 
+### Revising the plan in the architect's own session (`--resume`)
+
+`--resume` revises this workflow's plan by continuing the session of the last
+architect run instead of starting a new one, so the architect does not read
+the code and rebuild its context again. It takes two prompts:
+`--prompt-file` (or `--prompt`, or stdin) is the full prompt a fresh run gets,
+and `--resume-prompt-file` is the short one a continued session gets. Both are
+read before anything is spent; which one is sent is decided afterwards.
+
+It is refused (exit 2, before anything is spent, with a fixed message that
+names no argument's value) unless all of these hold: the role is `architect`;
+the effective mode is `plan` (`--mode implement` is refused as it always was,
+and `--mode review --resume` too); `--resume-prompt-file` is given (and it is
+refused without `--resume`), and is `-` only when the fresh prompt comes from
+`--prompt` or a file, since stdin is read once; and `--output` is this workflow's plan
+(`.ai/plan.md`, or the path it resolves to). The same checks run for
+`--print-command`, in the parent of `--detach`, and again in the worker.
+
+The session continued is the one the last architect event in this workflow
+ended in, forked so the original is left as it was: the run adds only
+`--resume=<id> --fork-session` to the read-only command, and a raw `--resume`
+in `--extra` or `options.args` is refused as any other raw argument is. It
+runs fresh instead, with the full prompt, and says why on stderr (`note:
+--resume requested, running fresh: <reason>`), when the first of these applies:
+
+| Reason (recorded as `resume.reason`) | When |
+| --- | --- |
+| `the provider cannot resume a session` | the provider does not resume (Codex, a user adapter) |
+| `the provider cannot resume a session (unsupported)` | its `--help` does not list `--resume` and `--fork-session` |
+| `the provider cannot resume a session (unverified)` | this CLI version has not been checked to keep a resumed session read-only (see below) |
+| `the provider cannot resume a session (unspecified)` | an adapter that resumes but does not say whether that stays read-only |
+| `no earlier architect run in this workflow` | nothing to continue |
+| `the last architect run is not resumable: it did not succeed` | it failed, stalled or was rejected |
+| `the last architect run is not resumable: it did not answer` | it exited 0 over silence |
+| `the last architect run is not resumable: it has no session id` | a run log from before this existed |
+| `the last architect run is not resumable: its session id is not a UUID` | the recorded id is not one |
+| `the last architect run is not resumable: its recorded mode is not plan` | it was not a read-only plan run |
+| `the last architect run is not resumable: its output is not this workflow's plan` | it answered something else |
+| `the last architect run is not resumable: its recorded provider differs` | the architect's provider changed since |
+| `the last architect run is older than design.resume.max_age_seconds` | default an hour |
+| `the last architect run's context exceeds design.resume.max_context_tokens` | only when a cap is set |
+| `the last architect run's context is unknown and design.resume.max_context_tokens is set` | a cap is set and the run recorded no `context_tokens` to hold against it |
+| `the CLI rejected the session it was asked to resume` | the retry described below |
+
+With `(unverified)` a second note gives the adapter's detail: the CLI version
+and `python scripts/smoke_live.py --provider claude`. A CLI version is cleared
+for resuming when it is in the table shipped with the adapter, or when that
+script passed on this machine and recorded it (`references/providers.md`). So
+right after the CLI is updated, every `--resume` runs fresh until the script is
+run again or a release that lists the new version is installed; `doctor` says
+the same on its `Resume:` line.
+
+If the CLI rejects the session because it no longer exists, that run is
+recorded as a failed event (`resume.outcome: "rejected"`, its stderr not
+copied) and the run is made once more, fresh, with the full prompt. That second
+run is another attempt: it is checked against the architect's budget and
+consumes one, and when none is left it is not made (exit 3; `running fresh
+would spend an attempt`). `--force` applies as the user gave it, including in a
+detached worker. Any other failure of a continued run -- a stall, a timeout, an
+error -- is reported as it is today and not retried; the next `--resume` then
+runs fresh (`it did not succeed`).
+
+Every `run` end event now records `session_id`, `context_tokens` (the context
+the model last saw, when the CLI reports it), `cost_usd` and
+`cache_read_tokens`; a `--resume` run also records `resume` (`requested`,
+`mode` `resumed` or `fresh`, `resumed_from`, `reason`, `outcome`), in its
+in-flight entry too. A continued run's usage is labelled `architect:resumed`
+in `tokens show` (a `--tier` label takes precedence). With `--detach` both
+prompts are copied into the job, so an edit to either file after the command
+returned does not reach the run, and the job record carries `force`,
+`resume_prompt_file`, `session_id` and `resume`.
+
 ```bash
 dev-orchestra run architect --prompt-file .ai/execution/design-request.md --output .ai/plan.md
+dev-orchestra run architect --resume \
+  --prompt-file .ai/execution/design-revise-request.md \
+  --resume-prompt-file .ai/execution/design-resume-request.md \
+  --output .ai/plan.md
 dev-orchestra run implementer --print-command
 echo "explain the failure" | dev-orchestra run orchestrator
 ```
@@ -665,6 +749,37 @@ A round recorded with no test result is reported too. The gate reads what
 `state record test ok|failed` wrote, so a round where nothing was written had
 nothing to act on and cannot have fired -- which is a different thing from a
 level that had no effect, and the two are easy to confuse from the totals alone.
+
+### Architect revisions
+
+What revising the plan cost, split by whether the revision continued the
+architect's session (`resumed`, from `run architect --resume`) or ran fresh.
+Per workflow, only architect runs whose `--output` was that workflow's plan
+count: the first that succeeded and answered is the initial design, and every
+one after it is an attempt at a revision. Each revision is measured as its
+cost against its own workflow's initial run, because plans differ in size far
+more than the two kinds of run differ; an initial run that reported no cost
+above zero (the mock reports `0.0`) gives no ratio. A group's line counts the
+completed revisions, the mean ratio, and the ratio per completed revision
+counting what the failed attempts on the way cost:
+
+```
+Architect revisions (cost against each workflow's initial design run):
+  resumed: 3 revisions (3 priced, 3 with ratio) cost ratio to initial 0.21 mean, 0.27 per completed incl. 1 stalled + 0 rejected + 0 failed attempts (0 priced)
+  fresh: 1 revisions (1 priced, 0 with ratio) cost ratio to initial n/a (initial run has no usable cost); 0 stalled + 0 rejected + 0 failed attempts (0 priced)
+  --resume ran fresh because:
+    no earlier architect run in this workflow x2
+```
+
+The reasons are counted as the fixed phrases `run --resume` records. The block
+is printed whenever there is an attempt, with or without review rounds, and not
+at all otherwise. In `--json` it is `architect_revisions`: `attempts`,
+`resumed` and `fresh` (each with `runs`, `measured_runs`, `priced_runs`,
+`ratio_runs`, `billed_tokens`, `cost_usd`, `cost_ratio_sum`,
+`duration_seconds`, `context_runs`, `context_tokens`, the means
+`billed_per_run`, `cost_per_run`, `cost_ratio_mean`, `duration_per_run`,
+`context_per_run`, `failed_attempts` and `cost_per_completed_ratio`), and
+`fallbacks` (`total`, `reasons`).
 
 ## progress
 

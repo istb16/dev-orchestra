@@ -1,4 +1,4 @@
-<!-- translated-from: references/limits.md sha256:e144aea789d39caf39ec89cba01267b3ad1ec58ed9c5330ede99b585f229c939 -->
+<!-- translated-from: references/limits.md sha256:2748a9c6cd7feb3adf28dbc407d801e1e32921b25aee04dab941f8702a5b2bc3 -->
 
 > この文書は [references/limits.md](../../../references/limits.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -587,3 +587,23 @@ dev-orchestra status                            # meanwhile, visible from anywhe
   所有しています。失敗するのではなく劣化します — result イベント、次に assistant
   のテキストブロック、次に生の stdout — が、形式が変わると構造化された追加情報
   （`is_error`、`num_turns`）は失われます。
+* **継続した architect のセッションも他の実行と同じく stall しうります**（`run architect
+  --resume`）。長い plan を出力している間はなおさらです。アダプタは partial message を
+  要求しないので、最終メッセージを書いている間は何もストリームされません。stall または
+  失敗した継続の実行は報告され、再試行されません。次の `--resume` は新規に走ります
+  （`it did not succeed`）。新規にもう一度だけ実行されるのは、CLI がもう存在しないと言った
+  セッションだけで、それには試行を 1 回使います。
+* **`--resume` が継続するセッションの指定については `state.json` を信頼します。** plan の
+  承認や予算について信頼しているのと同じです。それを編集できる人は、このマシンにある自分の
+  別のセッションを architect に継続させられますが、そのセッションはもともと直接読めるものです。
+  id は使う前、記録する前に UUID であることを確かめるので、コマンドラインにフラグを差し込む
+  ことはできません。そこから読んだ値で繰り返されるのはこの確かめた id だけで、コマンドライン
+  （`--print-command` が表示するもの）と、イベント、ジョブレコード、実行中のエントリの
+  `resume.resumed_from` に現れます。
+* **拒否されたセッションを見分けられるのは `stream-json` のときだけです。**
+  `options.output_format: text` や `json` では、CLI の出力にセッションがなかったことを示す
+  兆候がないので、そうした実行は通常の失敗として報告されます。
+* **継続したセッションが読み取り専用のままかどうかは、CLI の版ごとに**
+  `scripts/smoke_live.py` で確認するもので、常時確認しているわけではありません。誰も確認して
+  いない版は継続しません。版の文字列が変わらないまま挙動が変わった場合は、スクリプトを再実行
+  するまで気づけません。

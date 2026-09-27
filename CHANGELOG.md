@@ -10,6 +10,55 @@ The public surface covered by that promise is: the configuration schema, the
 
 ## [Unreleased]
 
+### Added
+
+- **`run architect --resume` revises the plan in the architect's own
+  session.** With `--resume-prompt-file <short>` beside the usual full prompt,
+  a revision continues the last architect session of the workflow (forked:
+  the claude command is the read-only one plus `--resume=<id>
+  --fork-session`) instead of reading the code and rebuilding the context
+  again. Refused (exit 2) unless the role is the architect, the mode is
+  `plan` and `--output` is this workflow's plan. When the session cannot be
+  continued -- no earlier run, it failed, it is older than
+  `design.resume.max_age_seconds`, the provider cannot resume, the CLI
+  version has not been verified, and so on -- the run goes fresh with the full
+  prompt, as before, and records why as a fixed phrase. A session the CLI
+  says no longer exists is run again fresh once, which costs an attempt; any
+  other failure is reported and not retried. Codex does not resume.
+- **Resuming is enabled per claude version.** A version is resumed only when
+  it is in `VERIFIED_RESUME` in the claude adapter or recorded as passed on
+  this machine in `<config dir>/verified/claude-resume.json`, which
+  `scripts/smoke_live.py` writes after checking that a resumed session keeps
+  the read-only tools, no MCP servers, plan mode, confinement and no
+  repository hooks, and that a missing session is recognised. A record inside
+  the workspace is ignored. `doctor` has a `Resume:` line
+  (`providers.<name>.resume_support` in `--json`). The table ships with
+  claude 2.1.283, which passed every required check on 2026-09-27 (the two
+  symlink checks were skipped on a Windows machine without the privilege to
+  create a symlink; they are not required).
+- **`design.resume.max_age_seconds`** (default 3600) and
+  **`design.resume.max_context_tokens`** (default `null`, no cap).
+- **Every `run` end event records `session_id`, `context_tokens`, `cost_usd`
+  and `cache_read_tokens`**; a `--resume` run also records `resume`
+  (`requested`, `mode`, `resumed_from`, `reason`, `outcome`). A continued
+  run's usage is labelled `architect:resumed` in `tokens show`, and job
+  records carry `force`, `resume_prompt_file`, `session_id` and `resume`.
+- **`optimization report` has an "Architect revisions" block**
+  (`architect_revisions` in `--json`): resumed and fresh revisions, each
+  measured as its cost against the workflow's initial design run, with the
+  failed attempts and why `--resume` ran fresh. It is printed without any
+  review round too.
+- **Adapter contract:** `supports_resume`, `resume_support(root)`,
+  `resume_args`, `resume_rejected`, `parse_session` and `command_line`, a
+  `resume_session` keyword on `run` and `_launch` (passed to `_launch` only
+  when there is one), and `session_id`, `context_tokens`, `session_init` and
+  `resume_rejected` on `RunResult`. `build_command` is unchanged.
+
+### Changed
+
+- **The design review and approval steps of `references/workflow.md`** write
+  two revision prompts and pass `--resume`.
+
 ## [0.11.0] - 2026-09-27
 
 ### Added

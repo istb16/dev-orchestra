@@ -1187,6 +1187,157 @@ def _finish_score(group: Dict[str, Any], alone: bool) -> Dict[str, Any]:
     return finished
 
 
+def architect_revisions(workflows: Sequence[Tuple[Sequence[Dict[str, Any]], Any]]) -> Dict[str, Any]:
+    """What revising a plan cost, continuing the architect's session or not.
+
+    ``workflows`` is ``[(events, wrote_plan), ...]``: each workflow's run log
+    and the predicate saying whether an event wrote that workflow's plan.
+    Only such architect runs count. The first one that succeeded and answered
+    is the initial design; every plan-writing run after it is an attempt at a
+    revision, in the ``resumed`` group when it continued a session and in
+    ``fresh`` otherwise.
+
+    Each revision is measured against its own workflow's initial run, by cost:
+    plans differ in size far more than a resumed run differs from a fresh one,
+    so absolute figures pooled across workflows would compare the plans. An
+    initial run is only a base when it reported a cost above zero -- the mock
+    provider reports a measured zero.
+    """
+    groups = {"resumed": _revision_group(), "fresh": _revision_group()}
+    reasons: Dict[str, int] = {}
+    attempts = 0
+    for events, wrote_plan in workflows:
+        runs = [
+            event
+            for event in events
+            if isinstance(event, dict) and event.get("stage") == "architect" and wrote_plan(event)
+        ]
+        for event in runs:
+            resume = event.get("resume")
+            if isinstance(resume, dict) and resume.get("requested") and resume.get("mode") == "fresh":
+                _bump(reasons, str(resume.get("reason")))
+        initial_index = next((index for index, event in enumerate(runs) if _completed(event)), None)
+        if initial_index is None:
+            continue
+        base = _money(runs[initial_index].get("cost_usd"))
+        base = base if base is not None and base > 0 else None
+        for event in runs[initial_index + 1 :]:
+            attempts += 1
+            resume = event.get("resume")
+            resumed = isinstance(resume, dict) and resume.get("mode") == "resumed"
+            _add_revision(groups["resumed" if resumed else "fresh"], event, base)
+    return {
+        "attempts": attempts,
+        "resumed": _finish_revision_group(groups["resumed"]),
+        "fresh": _finish_revision_group(groups["fresh"]),
+        "fallbacks": {"total": sum(reasons.values()), "reasons": reasons},
+    }
+
+
+def _completed(event: Dict[str, Any]) -> bool:
+    return event.get("status") == "ok" and event.get("answered", True) is not False
+
+
+def _money(value: Any) -> Optional[float]:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
+def _count_of(value: Any) -> Optional[int]:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
+def _revision_group() -> Dict[str, Any]:
+    group: Dict[str, Any] = {
+        "runs": 0,
+        "measured_runs": 0,
+        "priced_runs": 0,
+        "ratio_runs": 0,
+        "billed_tokens": 0,
+        "cost_usd": 0.0,
+        "cost_ratio_sum": 0.0,
+        "duration_seconds": 0.0,
+        "context_runs": 0,
+        "context_tokens": 0,
+    }
+    group["failed_attempts"] = {
+        "rejected": 0,
+        "stalled": 0,
+        "failed": 0,
+        "priced": 0,
+        "ratio_attempts": 0,
+        "cost_usd": 0.0,
+        "cost_ratio_sum": 0.0,
+        "duration_seconds": 0.0,
+    }
+    return group
+
+
+def _add_revision(group: Dict[str, Any], event: Dict[str, Any], base: Optional[float]) -> None:
+    cost = _money(event.get("cost_usd"))
+    duration = _money(event.get("duration_seconds")) or 0.0
+    if not _completed(event):
+        failed = group["failed_attempts"]
+        resume = event.get("resume")
+        if isinstance(resume, dict) and resume.get("outcome") == "rejected":
+            failed["rejected"] += 1
+        elif event.get("status") == "stalled":
+            failed["stalled"] += 1
+        else:
+            failed["failed"] += 1
+        failed["duration_seconds"] += duration
+        if cost is not None:
+            failed["priced"] += 1
+            failed["cost_usd"] += cost
+            if base is not None:
+                failed["ratio_attempts"] += 1
+                failed["cost_ratio_sum"] += cost / base
+        return
+    group["runs"] += 1
+    group["duration_seconds"] += duration
+    billed = _count_of(event.get("billed_tokens"))
+    if billed is not None:
+        group["measured_runs"] += 1
+        group["billed_tokens"] += billed
+    if cost is not None:
+        group["priced_runs"] += 1
+        group["cost_usd"] += cost
+        if base is not None:
+            group["ratio_runs"] += 1
+            group["cost_ratio_sum"] += cost / base
+    context = _count_of(event.get("context_tokens"))
+    if context is not None:
+        group["context_runs"] += 1
+        group["context_tokens"] += context
+
+
+def _finish_revision_group(group: Dict[str, Any]) -> Dict[str, Any]:
+    finished = dict(group)
+
+    def mean(total: float, count: int, digits: int) -> Optional[float]:
+        return round(total / count, digits) if count else None
+
+    finished["billed_per_run"] = mean(group["billed_tokens"], group["measured_runs"], 1)
+    finished["cost_per_run"] = mean(group["cost_usd"], group["priced_runs"], 6)
+    finished["cost_ratio_mean"] = mean(group["cost_ratio_sum"], group["ratio_runs"], 4)
+    finished["duration_per_run"] = mean(group["duration_seconds"], group["runs"], 2)
+    finished["context_per_run"] = mean(group["context_tokens"], group["context_runs"], 1)
+    # What one completed revision cost, counting the attempts that failed on
+    # the way to it: a cheap resumed run that often stalls is not cheap.
+    spent = group["cost_ratio_sum"] + group["failed_attempts"]["cost_ratio_sum"]
+    finished["cost_per_completed_ratio"] = mean(spent, group["ratio_runs"], 4)
+    failed = dict(group["failed_attempts"])
+    for totals in (finished, failed):
+        totals["cost_usd"] = round(totals["cost_usd"], 6)
+        totals["cost_ratio_sum"] = round(totals["cost_ratio_sum"], 4)
+        totals["duration_seconds"] = round(totals["duration_seconds"], 2)
+    finished["failed_attempts"] = failed
+    return finished
+
+
 def choose_reviewers(reviewers: Sequence[Dict[str, Any]], limit: Optional[int]) -> List[Dict[str, Any]]:
     """Which reviewers survive a reduced panel.
 

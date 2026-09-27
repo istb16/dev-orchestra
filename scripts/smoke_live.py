@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """Run the installed CLIs for real, and check the adapters still fit them.
 
+This script writes a verification record to the user's config directory
+(``verified/<provider>-resume.json``), and nothing else writes one: it is how
+a CLI version is cleared for ``run architect --resume`` on this machine.
+
 The test suite may not do this. It has to pass on a machine with neither CLI
 installed -- that is what CI runs on -- so it reviews with the `mock` provider,
 which replaces the part of ``run`` that starts a process. The consequence was
@@ -21,6 +25,9 @@ that only a real process can answer:
 * does a read-only mode still actually refuse to write
 * does a read-only Claude run still stay inside its working directory, and
   does ``--add-dir`` still widen it
+* does a resumed Claude session keep all of that: the same tools, no MCP
+  servers, plan mode, no repository hooks, the same confinement -- and does a
+  missing session still fail in the shape the adapter recognises
 
 Run it before a release, and after touching an adapter or bumping a CLI. It is
 not part of ``unittest discover`` and never should be.
@@ -40,7 +47,8 @@ from typing import Any, Dict, List, Optional
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from orchestrator.providers import MODE_REVIEW, available_providers, get_provider
+from orchestrator import verified
+from orchestrator.providers import MODE_PLAN, MODE_REVIEW, available_providers, get_provider
 
 #: Short enough to cost almost nothing, specific enough that a wrong answer is
 #: obvious rather than arguable.
@@ -88,6 +96,27 @@ OFFLINE = ("mock",)
 
 TIMEOUT = 180
 
+#: A session id nothing will ever have been given, for the rejection check.
+MISSING_SESSION = "00000000-0000-4000-8000-000000000000"
+
+#: What a resumed read-only session may be offered, per its init event.
+RESUMED_TOOLS = {"Read", "Grep", "Glob"}
+
+#: The file a command hook from the repository's settings would create.
+HOOK_TARGET = "hook-ran.txt"
+
+#: Every check about resuming, in the order they run. The symlink one is not
+#: required: Windows cannot always make a symlink, as for ``check_confined``.
+RESUME_CHECKS = (
+    "resumes read-only",
+    "forks the session",
+    "reports a missing session",
+    "resumes confined (absolute)",
+    "resumes confined (symlink)",
+    "ignores repository hooks",
+    "ignores repository hooks on resume",
+)
+
 
 class Check:
     def __init__(self, provider: str, name: str, ok: bool, detail: str = "", skipped: bool = False) -> None:
@@ -97,6 +126,10 @@ class Check:
         self.ok = ok and not skipped
         self.detail = detail
         self.skipped = skipped
+        #: Set on the line reporting a resume record written: what was written.
+        self.record: Optional[Dict[str, Any]] = None
+        #: Printed after every check, for a person to act on.
+        self.notes: List[str] = []
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -176,6 +209,10 @@ def check_provider(name: str, root: str) -> List[Check]:
     checks.append(check_tool_activity(provider, name, root))
     checks.append(check_read_only(provider, name, root))
     checks.extend(check_confined(provider, name, root))
+    resume_checks = check_resume(provider, name, root)
+    checks.extend(resume_checks)
+    if resume_checks:
+        checks.extend(record_resume(provider, name, checks, resolved.display))
     return checks
 
 
@@ -269,7 +306,7 @@ def _outside_prompt(path: str, directory: str, marker: str) -> str:
 
 
 def _reads_marker(
-    provider: Any, prompt: str, root: str, marker: str, **kwargs: Any
+    provider: Any, prompt: str, root: str, marker: str, mode: str = MODE_REVIEW, **kwargs: Any
 ) -> "tuple[Optional[str], bool]":
     """Run ``prompt``: (why it could not be judged, or None; whether ``marker`` came back).
 
@@ -277,7 +314,7 @@ def _reads_marker(
     whole of it in the answer means the file was read.
     """
     try:
-        result = provider.run(prompt, MODE_REVIEW, root, timeout=TIMEOUT, idle_timeout=60.0, **kwargs)
+        result = provider.run(prompt, mode, root, timeout=TIMEOUT, idle_timeout=60.0, **kwargs)
     except Exception as exc:
         return "%s: %s" % (type(exc).__name__, exc), False
     reason = _did_not_run(result)
@@ -286,8 +323,17 @@ def _reads_marker(
     return None, marker in (result.stdout or "")
 
 
-def _stays_confined(provider: Any, name: str, label: str, prompt: str, root: str, marker: str) -> Check:
-    failure, read = _reads_marker(provider, prompt, root, marker)
+def _stays_confined(
+    provider: Any,
+    name: str,
+    label: str,
+    prompt: str,
+    root: str,
+    marker: str,
+    mode: str = MODE_REVIEW,
+    **kwargs: Any,
+) -> Check:
+    failure, read = _reads_marker(provider, prompt, root, marker, mode, **kwargs)
     if failure:
         return Check(name, label, False, failure)
     if read:
@@ -341,6 +387,215 @@ def check_confined(provider: Any, name: str, root: str) -> List[Check]:
     return checks
 
 
+def _plan_run(provider: Any, prompt: str, root: str, **kwargs: Any) -> "tuple[Any, Optional[str]]":
+    """Run ``prompt`` in plan mode: (result or None, why it cannot be judged)."""
+    try:
+        result = provider.run(prompt, MODE_PLAN, root, timeout=TIMEOUT, idle_timeout=60.0, **kwargs)
+    except Exception as exc:
+        return None, "%s: %s" % (type(exc).__name__, exc)
+    return result, _did_not_run(result)
+
+
+def _resumed_restrictions(result: Any) -> Optional[str]:
+    """The first way a resumed session's init falls short of read-only, or None.
+
+    Read from what the CLI said it started the session with, not from what
+    the model chose to do: a model that simply did not write proves nothing
+    about a CLI that dropped ``--tools`` on resume.
+    """
+    init = getattr(result, "session_init", None)
+    if not isinstance(init, dict):
+        return "the resumed run reported no init event"
+    tools = init.get("tools")
+    if not isinstance(tools, list):
+        return "the resumed run reported no tool list"
+    extra = sorted(set(tools) - RESUMED_TOOLS)
+    if extra:
+        return "the resumed session was offered tools outside Read/Grep/Glob: %s" % ", ".join(extra)
+    servers = init.get("mcp_servers")
+    if servers != []:
+        count = len(servers) if isinstance(servers, list) else "an unknown number of"
+        return "the resumed session had %s MCP server(s)" % count
+    if init.get("permission_mode") != "plan":
+        return "the resumed session's permission mode was not plan"
+    return None
+
+
+def _check_hooks(provider: Any, name: str, root: str, parent: str) -> List[Check]:
+    """Does a command hook in the repository's settings stay silent, fresh and resumed?
+
+    Three events, because the prompt calls no tool, so a ``PreToolUse`` hook
+    would prove nothing; any one firing leaves the marker.
+    """
+    marker = os.path.join(root, HOOK_TARGET)
+    script = os.path.join(root, "hook.py")
+    settings_dir = os.path.join(root, ".claude")
+    # Forward slashes and double quotes read the same in bash and in cmd.
+    with open(script, "w", encoding="utf-8") as handle:
+        handle.write("open(%r, 'w').close()\n" % marker.replace("\\", "/"))
+    command = '"%s" "%s"' % (sys.executable.replace("\\", "/"), script.replace("\\", "/"))
+    hook = [{"hooks": [{"type": "command", "command": command}]}]
+    os.makedirs(settings_dir, exist_ok=True)
+    with open(os.path.join(settings_dir, "settings.json"), "w", encoding="utf-8") as handle:
+        json.dump({"hooks": {"SessionStart": hook, "UserPromptSubmit": hook, "Stop": hook}}, handle)
+    checks: List[Check] = []
+    try:
+        for label, mode, kwargs in (
+            ("ignores repository hooks", MODE_REVIEW, {}),
+            ("ignores repository hooks on resume", MODE_PLAN, {"resume_session": parent}),
+        ):
+            if os.path.exists(marker):
+                os.unlink(marker)
+            try:
+                result = provider.run(READY_PROMPT, mode, root, timeout=TIMEOUT, idle_timeout=60.0, **kwargs)
+            except Exception as exc:
+                checks.append(Check(name, label, False, "%s: %s" % (type(exc).__name__, exc)))
+                continue
+            if os.path.exists(marker):
+                checks.append(Check(name, label, False, "a command hook from .claude/settings.json ran"))
+                continue
+            reason = _did_not_run(result)
+            checks.append(Check(name, label, not reason, reason or "no hook ran"))
+    finally:
+        shutil.rmtree(settings_dir, ignore_errors=True)
+        for path in (script, marker):
+            if os.path.exists(path):
+                os.unlink(path)
+    return checks
+
+
+def check_resume(provider: Any, name: str, root: str) -> List[Check]:
+    """Does a resumed session keep every restriction a fresh read-only run has?
+
+    One parent session, and every check forks it. Not asked of an adapter
+    that does not resume.
+    """
+    if not getattr(provider, "supports_resume", False):
+        return []
+    labels = [label for label in RESUME_CHECKS if name in CONFINES or "confined" not in label]
+    parent_result, reason = _plan_run(provider, READY_PROMPT, root)
+    parent = getattr(parent_result, "session_id", None) if not reason else None
+    if not parent:
+        # Nothing was resumed, so nothing was shown to break: skipped, not
+        # failed, or one transient failure would record the version as failed.
+        detail = "no parent session id" + (": %s" % reason if reason else "")
+        return [Check(name, label, False, detail, skipped=True) for label in labels]
+
+    checks: List[Check] = []
+    target = os.path.join(root, WRITE_TARGET)
+    if os.path.exists(target):
+        os.unlink(target)
+    resumed, reason = _plan_run(provider, WRITE_PROMPT, root, resume_session=parent)
+    if os.path.exists(target):
+        os.unlink(target)
+        detail = "it wrote %s in a resumed session" % WRITE_TARGET
+        checks.append(Check(name, "resumes read-only", False, detail))
+    else:
+        problem = reason or _resumed_restrictions(resumed)
+        detail = problem or "refused to write; started read-only"
+        checks.append(Check(name, "resumes read-only", not problem, detail))
+
+    if reason:
+        checks.append(Check(name, "forks the session", False, "the resumed run did not run: %s" % reason))
+    elif not resumed.session_id:
+        checks.append(Check(name, "forks the session", False, "the resumed run reported no session id"))
+    elif resumed.session_id == parent:
+        checks.append(Check(name, "forks the session", False, "the resumed run kept the parent's session id"))
+    else:
+        checks.append(Check(name, "forks the session", True, "a new session id"))
+
+    missing, _ = _plan_run(provider, READY_PROMPT, root, resume_session=MISSING_SESSION)
+    if missing is not None and missing.invoked and missing.resume_rejected:
+        checks.append(Check(name, "reports a missing session", True, "rejected as the adapter expects"))
+    else:
+        detail = "a missing session was not reported in the shape the adapter recognises"
+        checks.append(Check(name, "reports a missing session", False, detail))
+
+    if name in CONFINES:
+        checks.extend(_check_resumed_confinement(provider, name, root, parent))
+    checks.extend(_check_hooks(provider, name, root, parent))
+    return checks
+
+
+def _check_resumed_confinement(provider: Any, name: str, root: str, parent: str) -> List[Check]:
+    """``check_confined`` for a resumed session. ``--add-dir`` is not repeated:
+    widening is not what keeps a run read-only."""
+    outside = tempfile.mkdtemp(prefix="dev-orchestra-smoke-outside-")
+    marker = uuid.uuid4().hex
+    secret = os.path.join(outside, "outside.txt")
+    with open(secret, "w", encoding="utf-8") as handle:
+        handle.write(marker + "\n")
+    link = os.path.join(root, "link.txt")
+    checks: List[Check] = []
+
+    def confined(label: str, prompt: str) -> Check:
+        return _stays_confined(provider, name, label, prompt, root, marker, MODE_PLAN, resume_session=parent)
+
+    try:
+        checks.append(confined("resumes confined (absolute)", _outside_prompt(secret, outside, marker)))
+        try:
+            os.symlink(secret, link)
+        except OSError as exc:
+            detail = "symlink not tested: %s" % exc
+            checks.append(Check(name, "resumes confined (symlink)", False, detail, skipped=True))
+        else:
+            checks.append(confined("resumes confined (symlink)", LINK_PROMPT))
+    finally:
+        if os.path.lexists(link):
+            os.unlink(link)
+        shutil.rmtree(outside, ignore_errors=True)
+    return checks
+
+
+def record_resume(provider: Any, name: str, checks: List[Check], model: str) -> List[Check]:
+    """Write down whether this CLI version passed, so ``--resume`` can trust it.
+
+    Passed: every required check ok and no resume check failed. Failed: any
+    of them failed outright. A check only skipped decides nothing, and
+    nothing is written.
+    """
+    by_name = {check.name: check for check in checks if check.provider == name}
+    watched = set(verified.REQUIRED_RESUME_CHECKS) | set(RESUME_CHECKS)
+    failed = [
+        label for label, check in by_name.items() if label in watched and not check.ok and not check.skipped
+    ]
+    passed = all(label in by_name and by_name[label].ok for label in verified.REQUIRED_RESUME_CHECKS)
+    if not failed and not passed:
+        return []
+    label = "resume verified"
+    version = provider.version()[0]
+    if not version:
+        return [Check(name, label, False, "could not read the CLI version; nothing recorded")]
+    root = os.getcwd()
+    try:
+        if failed:
+            verified.record_fail(name, version, failed, root)
+            detail = "this version is recorded as failed; --resume runs fresh on this machine"
+            return [Check(name, "resume recorded as failed", False, detail)]
+        before, _ = verified.read(name, root)
+        known = version in ((before or {}).get("versions") or {})
+        mechanism = provider.read_only_enforcement()["mechanism"]
+        ok_checks = [label for label, check in by_name.items() if check.ok]
+        path = verified.record_pass(name, version, mechanism, ok_checks, model, root)
+    except verified.VerifiedRecordError:
+        detail = (
+            "the verification record would land inside this checkout (DEV_ORCHESTRA_HOME); nothing recorded"
+        )
+        return [Check(name, label, False, detail)]
+    check = Check(name, label, True, "recorded %s in %s" % (version, path))
+    check.record = {"version": version, "path": path, "new": not known}
+    table = getattr(sys.modules.get(type(provider).__module__), "VERIFIED_RESUME", None)
+    if isinstance(table, dict) and version not in table:
+        data, _ = verified.read(name, root)
+        entry = dict((data or {}).get("versions", {}).get(version) or {})
+        check.notes.append(
+            "note: %s is not in providers/%s.py VERIFIED_RESUME; copy this entry there before a release:"
+            % (version, name)
+        )
+        check.notes.append(json.dumps({version: entry}, indent=2))
+    return [check]
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--provider", action="append", help="only this provider (repeatable)")
@@ -367,14 +622,19 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     failed = [c for c in checks if not c.ok and not c.skipped]
     skipped = [c for c in checks if c.skipped]
+    records = [c.record for c in checks if c.record is not None]
     if args.json:
         payload = {"checks": [c.to_dict() for c in checks], "failed": len(failed), "skipped": len(skipped)}
+        payload["record"] = records[0] if records else None
         print(json.dumps(payload, indent=2))
         return 1 if failed or skipped else 0
 
     for check in checks:
         status = "SKIP" if check.skipped else "ok" if check.ok else "FAIL"
         print("%-4s %-8s %-24s %s" % (status, check.provider, check.name, check.detail))
+    for check in checks:
+        for note in check.notes:
+            print(note)
     print("")
     if failed:
         print("%d check(s) failed." % len(failed))

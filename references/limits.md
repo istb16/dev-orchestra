@@ -551,3 +551,24 @@ Honest limits of the above:
   degrades rather than failing — result event, then assistant text blocks, then
   raw stdout — but a format change would still cost the structured extras
   (`is_error`, `num_turns`).
+* **A continued architect session can stall like any run** (`run architect
+  --resume`), and more readily while it prints a long plan: the adapter does
+  not ask for partial messages, so nothing streams while the final message is
+  written. A stalled or failed continued run is reported and not retried; the
+  next `--resume` runs fresh (`it did not succeed`). Only a session the CLI
+  says no longer exists is run again fresh, once, and that costs an attempt.
+* **`state.json` is trusted to name the session `--resume` continues**, as it
+  is trusted with the plan approval and the budgets. Anyone who can edit it can
+  make the architect continue another of their own sessions on this machine --
+  which they could already read directly. The id has to be a UUID before it is
+  used or recorded, so it cannot put a flag on the command line. That checked
+  id is the only value read from it that is repeated: on the command line
+  (which `--print-command` prints) and as `resume.resumed_from` in the event,
+  the job record and the in-flight entry.
+* **A rejected session is recognised only with `stream-json`.** With
+  `options.output_format: text` or `json` the CLI's output carries no sign that
+  the session was missing, so such a run is reported as an ordinary failure.
+* **Whether a resumed session stays read-only is checked per CLI version**,
+  by `scripts/smoke_live.py`, not continuously. A version nobody has checked is
+  not resumed; a change in behaviour that keeps the same version string would
+  go unnoticed until the script is run again.

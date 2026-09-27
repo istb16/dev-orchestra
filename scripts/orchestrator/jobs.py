@@ -39,6 +39,9 @@ FINISHED = ("succeeded", "failed", "cancelled", "abandoned")
 #: its job path as provider arguments, claiming nothing and reading nothing.
 PROMPT_FILE = "{prompt_file}"
 JOB_FILE = "{job_file}"
+#: The prompt a resumed architect run sends, copied like the fresh one so the
+#: worker reads what the parent checked, not the file as it is later.
+RESUME_PROMPT_FILE = "{resume_prompt_file}"
 
 
 def jobs_dir(workspace: ws.Workspace) -> str:
@@ -109,8 +112,14 @@ def start(
     argv: Sequence[str],
     prompt: str = "",
     timeout: Optional[float] = None,
+    resume_prompt: Optional[str] = None,
+    force: bool = False,
 ) -> Dict[str, Any]:
-    """Spawn ``argv`` as a detached worker and return the job record."""
+    """Spawn ``argv`` as a detached worker and return the job record.
+
+    ``force`` is whether the user passed ``--force``: the worker is always
+    started with it, so it cannot tell from its own argv.
+    """
     # Checked here because a placeholder the caller forgot is otherwise
     # invisible until the worker is already gone: it would run with no prompt
     # and no job to claim, and be reported as abandoned.
@@ -120,11 +129,18 @@ def start(
             "the worker argv must carry %s and %s for start() to fill in; missing: %s"
             % (PROMPT_FILE, JOB_FILE, ", ".join(missing))
         )
+    if (resume_prompt is not None) != (RESUME_PROMPT_FILE in argv):
+        raise ValueError("%s and resume_prompt go together, or not at all" % RESUME_PROMPT_FILE)
     os.makedirs(jobs_dir(workspace), exist_ok=True)
     job_id = new_job_id(stage)
     prompt_file = os.path.join(jobs_dir(workspace), "%s.prompt" % job_id)
     ws.write_text(prompt_file, prompt)
     filled = {PROMPT_FILE: prompt_file, JOB_FILE: job_path(workspace, job_id)}
+    resume_prompt_file = None
+    if resume_prompt is not None:
+        resume_prompt_file = os.path.join(jobs_dir(workspace), "%s.resume-prompt" % job_id)
+        ws.write_text(resume_prompt_file, resume_prompt)
+        filled[RESUME_PROMPT_FILE] = resume_prompt_file
     argv = [filled.get(arg, arg) for arg in argv]
 
     job = {
@@ -137,7 +153,10 @@ def start(
         "output": ws.read_text(output_path(workspace, job_id), ""),
         "prompt_file": prompt_file,
         "output_file": output_path(workspace, job_id),
+        "force": bool(force),
     }
+    if resume_prompt_file is not None:
+        job["resume_prompt_file"] = resume_prompt_file
     write_job(workspace, job)
 
     # The worker is this same CLI, re-entered with --job-file. Its stdio goes

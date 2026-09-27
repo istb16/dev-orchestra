@@ -7,10 +7,12 @@ can actually be resolved to a model. Deliberately reports authentication as a
 
 from __future__ import annotations
 
+import os
 import platform
 from typing import Any, Dict, List, Optional
 
 from . import config as config_mod
+from . import workspace as ws
 from .providers import (
     REFUSED_ENFORCEMENT,
     USER_PROVIDERS_DISABLED_ENV,
@@ -52,6 +54,10 @@ def collect(start: Optional[str] = None, probe_models: bool = True) -> Dict[str,
 
     detections = {}
     adapter_errors: Dict[str, str] = {}
+    # A resume record inside this directory is not trusted; see verified.py.
+    # The repository root, as `run` uses, or a subdirectory would trust a
+    # record that `run` refuses.
+    root = ws.repo_root(start or os.getcwd())
     for name in available_providers():
         # One adapter at a time: a user adapter that raises is reported against
         # its file instead of taking the whole diagnosis down with it.
@@ -66,10 +72,12 @@ def collect(start: Optional[str] = None, probe_models: bool = True) -> Dict[str,
                 entry["models"] = [candidate.to_dict() for candidate in candidates]
                 entry["model_discovery"] = candidates[0].source if candidates else "none"
                 entry["read_only_enforcement"] = dict(provider.read_only_enforcement())
+                entry["resume_support"] = dict(provider.resume_support(root))
             elif not probe_models:
                 # --fast skips this probe. It does not promise that no --help
                 # is read: validating options.permission_mode reads one.
                 entry["read_only_enforcement"] = {"status": "not-checked"}
+                entry["resume_support"] = {"status": "not-checked"}
             detections[name] = detection
         except Exception as exc:
             message = describe_exception(exc)
@@ -265,6 +273,28 @@ def _enforcement_line(enforcement: Dict[str, Any]) -> str:
     return "not reported by this adapter"
 
 
+def _resume_line(name: str, support: Dict[str, Any]) -> str:
+    """Whether ``run architect --resume`` continues a session on this CLI.
+
+    Not a problem either way: a run that cannot resume runs fresh.
+    """
+    status = support.get("status")
+    detail = support.get("detail") or ""
+    if status == "verified":
+        if not support.get("version"):
+            return "verified (%s)" % detail
+        where = "built-in" if support.get("source") == "built-in" else "record: %s" % support.get("record")
+        version, verified_at = support["version"], support.get("verified_at")
+        return "verified for %s %s on %s (%s)" % (name, version, verified_at, where)
+    if status == "unverified":
+        return "UNVERIFIED -- %s; --resume runs fresh until then" % detail
+    if status == "unsupported":
+        return "NOT SUPPORTED -- %s" % detail
+    if status == "not-checked":
+        return "not checked (--fast)"
+    return "not reported by this adapter"
+
+
 def render(report: Dict[str, Any]) -> str:
     lines: List[str] = ["AI Development Orchestrator -- doctor", ""]
     platform_info = report["platform"]
@@ -296,6 +326,8 @@ def render(report: Dict[str, Any]) -> str:
                 lines.append("  Models (%s): %s" % (entry.get("model_discovery", "?"), shown))
             if entry.get("read_only_enforcement"):
                 lines.append("  Read-only runs: %s" % _enforcement_line(entry["read_only_enforcement"]))
+            if entry.get("resume_support"):
+                lines.append("  Resume: %s" % _resume_line(name, entry["resume_support"]))
         elif entry.get("error"):
             lines.append("  Detail: %s" % entry["error"])
         lines.append("")

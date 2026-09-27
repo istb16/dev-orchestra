@@ -10,6 +10,11 @@ from helpers import IsolatedCase
 from orchestrator import config as config_mod
 from orchestrator import wizard
 
+DESIGN_DEFAULTS = {
+    "require_approval": True,
+    "resume": {"max_age_seconds": 3600, "max_context_tokens": None},
+}
+
 
 class TestDefaults(IsolatedCase):
     def test_no_config_falls_back_to_builtin_defaults(self):
@@ -43,18 +48,18 @@ class TestDefaults(IsolatedCase):
         self.assertEqual(loaded.design_review_settings(), {"enabled": False, "max_iterations": 2})
 
     def test_plan_approval_is_required_by_default(self):
-        self.assertEqual(config_mod.default_config()["design"], {"require_approval": True})
+        self.assertIs(config_mod.default_config()["design"]["require_approval"], True)
 
     def test_the_approval_setting_is_filled_in_for_a_config_that_omits_it(self):
         self.write(".dev-orchestra.yaml", "version: 1\n")
-        self.assertEqual(config_mod.load(self.project).design_settings(), {"require_approval": True})
+        self.assertEqual(config_mod.load(self.project).design_settings(), DESIGN_DEFAULTS)
 
     def test_an_empty_approval_setting_means_the_default(self):
         """`require_approval:` with no value parses as null; it must not turn the gate off."""
         self.write(".dev-orchestra.yaml", "version: 1\ndesign:\n  require_approval:\n")
         loaded = config_mod.load(self.project)
         self.assertEqual(config_mod.validate(loaded.data), [])
-        self.assertEqual(loaded.design_settings(), {"require_approval": True})
+        self.assertEqual(loaded.design_settings(), DESIGN_DEFAULTS)
         self.assertTrue(wizard._approval_required({"design": {"require_approval": None}}))
         self.assertFalse(wizard._approval_required({"design": {"require_approval": False}}))
 
@@ -64,6 +69,41 @@ class TestDefaults(IsolatedCase):
         self.assertIn("design.require_approval: must be true or false", config_mod.validate(data))
         data["design"] = 3
         self.assertIn("design: must be a mapping", config_mod.validate(data))
+
+    def test_resuming_the_architect_has_an_age_limit_and_no_context_cap(self):
+        self.assertEqual(
+            config_mod.default_config()["design"]["resume"],
+            {"max_age_seconds": 3600, "max_context_tokens": None},
+        )
+
+    def test_the_resume_limits_must_be_integers(self):
+        data = config_mod.default_config()
+        age_problem = "design.resume.max_age_seconds: must be a non-negative integer"
+        for age in ("1h", -1, True):
+            data["design"]["resume"] = {"max_age_seconds": age}
+            with self.subTest(max_age_seconds=age):
+                self.assertIn(age_problem, config_mod.validate(data))
+        cap_problem = "design.resume.max_context_tokens: must be a positive integer or null"
+        for cap in ("big", 0, False):
+            data["design"]["resume"] = {"max_context_tokens": cap}
+            with self.subTest(max_context_tokens=cap):
+                self.assertIn(cap_problem, config_mod.validate(data))
+        data["design"]["resume"] = 3
+        self.assertIn("design.resume: must be a mapping", config_mod.validate(data))
+
+    def test_one_resume_limit_keeps_the_other_default(self):
+        self.write(".dev-orchestra.yaml", "version: 1\ndesign:\n  resume:\n    max_context_tokens: 50000\n")
+        loaded = config_mod.load(self.project)
+        self.assertEqual(config_mod.validate(loaded.data), [])
+        self.assertEqual(
+            loaded.design_settings()["resume"], {"max_age_seconds": 3600, "max_context_tokens": 50000}
+        )
+
+    def test_the_approval_setting_alone_keeps_the_resume_defaults(self):
+        self.write(".dev-orchestra.yaml", "version: 1\ndesign:\n  require_approval: false\n")
+        settings = config_mod.load(self.project).design_settings()
+        self.assertIs(settings["require_approval"], False)
+        self.assertEqual(settings["resume"], DESIGN_DEFAULTS["resume"])
 
     def test_the_context_budget_refuses_nothing_anyone_has_recorded(self):
         """400,000 chars is four times the largest prompt this repository has

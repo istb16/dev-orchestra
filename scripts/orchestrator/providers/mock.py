@@ -8,14 +8,25 @@ Never touches the network or a real CLI. Responses come from, in order:
 
 ``$DEV_ORCHESTRA_MOCK_FAIL`` makes a run fail and ``$DEV_ORCHESTRA_MOCK_DELAY``
 makes it take a measurable amount of time.
+
+Resuming, for the tests of an architect continuing its session:
+``$DEV_ORCHESTRA_MOCK_SESSION`` is the session id every run reports (a new
+UUID otherwise), ``$DEV_ORCHESTRA_MOCK_CONTEXT_TOKENS`` its context size, and
+``$DEV_ORCHESTRA_MOCK_RESUME`` makes a resumed run fail the way the real CLI
+does for a missing session (``reject``) or stall (``stall``).
+``$DEV_ORCHESTRA_MOCK_TRACE`` names a file each run appends one JSON line to:
+its mode, command, the session it resumed and the prompt's length.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import time
+import uuid
 from typing import Any, Dict, List, Optional, Sequence
 
+from ..execution import EXIT_IDLE_STALL
 from .base import ModelCandidate, ModelResolutionError, Provider, ResolvedModel, RunResult, Usage
 
 #: Asking for this family raises, so tests can exercise the resolution-failure
@@ -36,6 +47,7 @@ class MockProvider(Provider):
 
     #: Set by tests to force a failure without touching the environment.
     fail = False
+    supports_resume = True
 
     def which(self) -> Optional[str]:
         return "mock"
@@ -72,6 +84,12 @@ class MockProvider(Provider):
             "detail": "no CLI is started",
         }
 
+    def resume_support(self, root: str) -> Dict[str, Any]:
+        return {"status": "verified", "detail": "runs nothing (offline mock)"}
+
+    def resume_args(self, session_id: str) -> List[str]:
+        return ["--resume=%s" % session_id]
+
     def _launch(
         self,
         prompt: str,
@@ -83,13 +101,54 @@ class MockProvider(Provider):
         env: Optional[Dict[str, str]] = None,
         options: Optional[Dict[str, Any]] = None,
         idle_timeout: Optional[float] = None,
+        resume_session: Optional[str] = None,
     ) -> RunResult:
         started = time.time()
         resolved = self.resolve_model(model_spec)
-        command = self.build_command(mode, resolved, cwd, extra_args, options)
+        command = self.command_line(mode, resolved, cwd, extra_args, options, resume_session)
+        _trace(mode, command, resume_session, prompt)
         time.sleep(_mock_delay())
+        resume = os.environ.get("DEV_ORCHESTRA_MOCK_RESUME") if resume_session is not None else None
+        if resume == "reject":
+            # The shape the real CLI gives a session that does not exist: no
+            # output, a zero usage it still reports, and a new id it discards.
+            return RunResult(
+                False,
+                1,
+                "",
+                "No conversation found with session ID: %s" % resume_session,
+                command,
+                time.time() - started,
+                resolved,
+                usage=Usage(
+                    input_tokens=0,
+                    output_tokens=0,
+                    cache_read_tokens=0,
+                    cache_write_tokens=0,
+                    cost_usd=0.0,
+                    source="mock",
+                    prompt_chars=len(prompt),
+                ),
+                session_id=str(uuid.uuid4()),
+                resume_rejected=True,
+            )
+        session = {"session_id": _mock_session(), "context_tokens": _mock_context(prompt)}
+        if resume == "stall":
+            return RunResult(
+                False,
+                EXIT_IDLE_STALL,
+                "",
+                "no output (mock stall)",
+                command,
+                time.time() - started,
+                resolved,
+                stalled=True,
+                usage=_mock_usage(prompt, ""),
+                **session,
+            )
         if self.fail or _should_fail(prompt):
-            return RunResult(False, 1, "", "mock failure", command, time.time() - started, resolved)
+            elapsed = time.time() - started
+            return RunResult(False, 1, "", "mock failure", command, elapsed, resolved, **session)
         response = _canned_response(mode)
         return RunResult(
             True,
@@ -100,7 +159,36 @@ class MockProvider(Provider):
             time.time() - started,
             resolved,
             usage=_mock_usage(prompt, response),
+            **session,
         )
+
+
+def _mock_session() -> str:
+    return os.environ.get("DEV_ORCHESTRA_MOCK_SESSION") or str(uuid.uuid4())
+
+
+def _mock_context(prompt: str) -> Optional[int]:
+    raw = os.environ.get("DEV_ORCHESTRA_MOCK_CONTEXT_TOKENS")
+    if raw:
+        try:
+            return int(raw)
+        except ValueError:
+            return None
+    return len(prompt) // 4
+
+
+def _trace(mode: str, command: Sequence[str], resume_session: Optional[str], prompt: str) -> None:
+    path = os.environ.get("DEV_ORCHESTRA_MOCK_TRACE")
+    if not path:
+        return
+    line = {
+        "mode": mode,
+        "command": list(command),
+        "resume_session": resume_session,
+        "prompt_chars": len(prompt),
+    }
+    with open(path, "a", encoding="utf-8") as handle:
+        handle.write(json.dumps(line) + "\n")
 
 
 def _mock_usage(prompt: str, response: str) -> Usage:

@@ -24,10 +24,17 @@ class Provider:
     def list_models() -> list[ModelCandidate]  # discovered from the installed CLI
     def resolve_model(spec) -> ResolvedModel   # family + policy -> CLI argument
     def build_command(mode, resolved, cwd, extra_args) -> list[str]
-    def run(prompt, mode, cwd, model_spec, timeout, extra_args) -> RunResult   # do not override
-    def _launch(prompt, mode, cwd, model_spec, timeout, extra_args) -> RunResult
+    def command_line(mode, resolved, cwd, extra_args, options, resume_session) -> list[str]   # do not override
+    def run(prompt, mode, cwd, model_spec, timeout, extra_args, resume_session) -> RunResult  # do not override
+    def _launch(prompt, mode, cwd, model_spec, timeout, extra_args, resume_session) -> RunResult
     def refused_read_only_args(raw_args, source) -> list[str]   # default: refuse all
     def read_only_enforcement() -> dict                         # default: "unspecified"
+
+    supports_resume: bool                                       # default: False
+    def resume_support(root) -> dict                            # default: "unsupported" / "unspecified"
+    def resume_args(session_id) -> list[str]                    # default: NotImplementedError
+    def resume_rejected(outcome, mode, options, session_id) -> bool   # default: False
+    def parse_session(outcome) -> dict                          # session_id, context_tokens, init
 ```
 
 `detect`, `version` and `list_models` are memoised per process, so the doctor and
@@ -39,6 +46,25 @@ allowlist, before the adapter adds its own, and then calls `_launch`, which
 starts the CLI. An adapter that needs to change how the CLI is started
 overrides `_launch`; one that overrides `run` bypasses the gate and has to
 carry it itself.
+
+Continuing a session (`run architect --resume`) is opt-in per adapter.
+`resume_session` travels as a keyword from `run` through `_launch` to
+`command_line`, which calls `build_command` as it always did and appends the
+adapter's own `resume_args(session_id)`; it is never a raw argument, so it
+never meets the allowlist, and `run` refuses it on an `implement` run. The
+orchestrator sends it only to an adapter that declares `supports_resume` and
+whose `resume_support(root)` reports `verified`; `run` passes the keyword on
+to `_launch` only when there is one, so an adapter that overrides `_launch`
+with the signature from before still runs fresh runs unchanged. An adapter
+that resumes has to accept the keyword and pass it to the base. After the run
+the base asks `parse_session(outcome)` for the session the run ended in, the
+context it last had (`context_tokens`) and what the CLI reported when the
+session started (`init`), and, for a resumed run only,
+`resume_rejected(outcome, mode, options, session_id)`: it must return True
+only on a positive sign that the session asked for does not exist, because
+the orchestrator then spends an attempt on a fresh run. The results are on
+`RunResult.session_id`, `context_tokens`, `session_init` and
+`resume_rejected`.
 
 ### Modes
 
@@ -103,6 +129,7 @@ Verified against `claude` 2.1.x.
 | Model discovery | Parses the aliases the CLI advertises in its own `--model` help text |
 | `plan` / `review` | `--permission-mode plan --disallowed-tools Edit,Write,NotebookEdit --tools Read,Grep,Glob --strict-mcp-config --restricted` |
 | `implement` | `--permission-mode acceptEdits` |
+| Resume (`run architect --resume`) | the read-only command plus `--resume=<id> --fork-session`, on a CLI version verified to keep a resumed session read-only |
 | Auth | Inherited environment; presence detected via `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, or the CLI's credential file |
 
 The read-only flags were measured on claude 2.1.283. Plan mode and the three
@@ -133,6 +160,43 @@ A CLI whose `claude --help` does not list `--tools`, `--strict-mcp-config` and
 `NOT ENFORCEABLE`; one whose `--help` cannot be read is refused as `UNVERIFIED`.
 `claude --help` is read once per process and shared with model and
 permission-mode discovery.
+
+### Resuming a session
+
+`run architect --resume` continues the last architect session: the adapter
+appends `--resume=<id> --fork-session` to the same read-only command. The `=`
+form because `--resume` takes an optional value, and forked so the session
+continued is left as it was. Only a UUID is accepted as the id. Measured on
+claude 2.1.283 with the read-only flags: the forked session started with
+`Glob`, `Grep` and `Read`, no MCP servers and permission mode `plan` (its init
+event), under a new session id, and asked to write a file it wrote nothing. A
+session that no longer exists exits 1 with one `result` event -- no turn, zero
+usage, and an `errors` entry naming the id asked for -- which is how the
+adapter recognises a rejection (with `stream-json` only; `text` and `json`
+carry no such sign, and such a rejection is reported as an ordinary failure).
+
+Whether a resumed session keeps those restrictions belongs to the CLI version,
+so it is checked per version, in two layers, and a version in neither is not
+resumed -- `--resume` runs fresh and says `(unverified)`:
+
+- **The table shipped with the adapter**, `VERIFIED_RESUME` in
+  `providers/claude.py`: versions checked before a release. Each entry names
+  the read-only flags it was checked with; changing the flags makes every
+  entry stale until the check is run again.
+- **The record on this machine**, `<config dir>/verified/claude-resume.json`,
+  written only by `python scripts/smoke_live.py --provider claude`. It runs
+  the checks against the installed CLI -- a resumed session's tools, MCP
+  servers and permission mode, a fork, a missing session, confinement, and
+  that repository hooks do not run, fresh or resumed -- and records the
+  version as passed (`versions`) or failed (`failed`), with the flags and the
+  check names. A failure recorded here wins over the shipped table. The record
+  is not read, and not written, when its real path is inside the workspace
+  (`DEV_ORCHESTRA_HOME` pointing into the checkout); the table still applies.
+
+So after the CLI is updated, `--resume` runs fresh until the script has been
+run or a release listing the new version is installed. `resume_support(root)`
+reports which (`status`, `detail`, `version`, `source`, `record`,
+`verified_at`, `missing`), and `doctor` prints it on its `Resume:` line.
 
 Aliases such as `opus`, `sonnet` and `fable` already mean "the latest snapshot
 of that family", so `version: latest` simply passes the alias through. A full
@@ -197,6 +261,7 @@ Verified against `codex` 0.154.x.
 | `plan` / `review` | `-s read-only` |
 | `implement` | `-s workspace-write --approve-for-me` |
 | Final answer | Captured with `-o <file>` rather than scraped from the event stream |
+| Resume | not supported: `--resume` runs fresh |
 | Auth | Inherited environment; presence detected via `OPENAI_API_KEY` or `$CODEX_HOME/auth.json` |
 
 Role options: `sandbox` (`read-only` / `workspace-write` / `danger-full-access`)
@@ -209,6 +274,13 @@ effects are not covered: `doctor` reports Codex as `partial`. A `plan` or
 `review` run takes no raw arguments at all -- `-s`, `-sdanger-full-access`,
 `-c sandbox_mode=...` and `--profile` are all refused, whatever the spelling.
 The `-o` the adapter adds itself is not a raw argument.
+
+Codex does not resume sessions. `codex exec resume` (0.156.1) takes no `-s`,
+so nothing yet shows that a resumed session keeps the read-only sandbox, and
+its session id is only printed by `--json`, which this adapter does not read.
+Enabling it needs `-c sandbox_mode="read-only"` checked on a resumed session
+by the same write, hook and confinement probes `smoke_live.py` runs for
+Claude, and the output and usage read from `--json`.
 
 The `recommended-coding` family deliberately resolves to *no* `-m` flag. That is
 the honest way to say "use the current recommended coding model": the CLI's own

@@ -36,6 +36,23 @@ prompt: ``--permission-mode plan --disallowed-tools Edit,Write,NotebookEdit
 
 A CLI whose ``--help`` does not list all three flags, or whose ``--help``
 cannot be read, gets its read-only runs refused rather than run with less.
+
+Resuming a session (an architect revising its own plan) adds only
+``--resume=<id> --fork-session`` to the read-only command. The ``=`` form,
+because ``--resume`` takes an optional value and a value starting with ``-``
+would otherwise be read as the next flag. Measured on 2.1.283 with the flags
+above: the resumed, forked session started with the tools ``Glob``, ``Grep``
+and ``Read``, no MCP servers and permission mode ``plan`` (its init event),
+under a new session id; asked to write a file, it called no tool and wrote
+nothing. A session that does not exist exits 1 with a single ``result``
+event: no turn, zero usage, and an ``errors`` sentence naming the id that was
+asked for. The redacted recordings are in ``tests/fixtures/claude/``.
+
+Whether a resumed session keeps these restrictions is a property of the CLI
+version, so it is checked per version, in two layers: :data:`VERIFIED_RESUME`
+ships with the adapter, and ``scripts/smoke_live.py`` records the versions it
+checked on this machine (:mod:`orchestrator.verified`). A version in neither
+is not resumed.
 """
 
 from __future__ import annotations
@@ -45,6 +62,7 @@ import os
 import re
 from typing import Any, Dict, List, Optional, Sequence
 
+from .. import verified
 from ..execution import ExecOutcome
 from .base import (
     MODE_IMPLEMENT,
@@ -67,8 +85,52 @@ READ_ONLY_MECHANISM = (
     "--permission-mode plan --disallowed-tools %s --tools %s --strict-mcp-config --restricted"
     % (_READ_ONLY_DENY, _READ_ONLY_TOOLS)
 )
+#: What ``--help`` has to list before a session is resumed.
+_RESUME_FLAGS = ("--resume", "--fork-session")
+#: Only a UUID goes on the command line after ``--resume=``: the id is read
+#: from the run log, and anything else could smuggle in a flag.
+_SESSION_ID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+#: How the CLI says a resumed session does not exist, before the id.
+_MISSING_SESSION = "No conversation found with session ID: "
 _CHOICES_RE = re.compile(r'"([A-Za-z]+)"')
 _NO_PATH = "has no path after it"
+
+#: Versions whose resumed sessions were measured to stay read-only, by the
+#: checks smoke_live.py runs. Keyed by the first line of `claude --version`.
+#: The mechanism is a literal, not READ_ONLY_MECHANISM: changing the adapter's
+#: flags must make every entry stale until the check is run again.
+#: An entry is added only when a release runs every check in
+#: verified.REQUIRED_RESUME_CHECKS against that version; any other version
+#: resumes only on a machine that ran them itself. The symlink checks were
+#: skipped for 2.1.283 (the Windows machine it was verified on lacks the
+#: privilege to create a symlink) and are not required.
+VERIFIED_RESUME: Dict[str, Dict[str, Any]] = {
+    "2.1.283 (Claude Code)": {
+        "verified_at": "2026-09-27T05:58:04Z",
+        "read_only_mechanism": (
+            "--permission-mode plan --disallowed-tools Edit,Write,NotebookEdit "
+            "--tools Read,Grep,Glob --strict-mcp-config --restricted"
+        ),
+        "checks": [
+            "installed",
+            "resolves a model",
+            "answers a review prompt",
+            "reports what it spent",
+            "reports its tool activity",
+            "stays read-only",
+            "stays confined (absolute)",
+            "--add-dir widens",
+            "resumes read-only",
+            "forks the session",
+            "reports a missing session",
+            "resumes confined (absolute)",
+            "ignores repository hooks",
+            "ignores repository hooks on resume",
+        ],
+        "model": "CLI default",
+        "dev_orchestra": "0.11.0",
+    },
+}
 
 #: Used only when ``claude --help`` cannot be read. Same rule as models: this is
 #: a fallback, not a source of truth.
@@ -96,6 +158,7 @@ class ClaudeProvider(Provider):
     streams_progress = True
     #: What the adapter asks for unless a role overrides it.
     default_output_format = "stream-json"
+    supports_resume = True
 
     def auth_status(self) -> "tuple[str, str]":
         for variable in ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_AUTH_TOKEN"):
@@ -190,6 +253,160 @@ class ClaudeProvider(Provider):
             return {"status": "unverified", "missing": []}
         missing = [flag for flag in _READ_ONLY_FLAGS if not _advertises(text, flag)]
         return {"status": "unsupported" if missing else "verified", "missing": missing}
+
+    # -- resuming a session ------------------------------------------------
+
+    def resume_support(self, root: str) -> Dict[str, Any]:
+        """Whether this version's resumed sessions are known to stay read-only.
+
+        A failure recorded on this machine outranks the built-in table: a
+        regression seen here is not overruled by a release that saw none.
+        Not memoised, so a record smoke_live.py just wrote is read.
+        """
+        report: Dict[str, Any] = {
+            "status": "unverified",
+            "detail": "",
+            "version": None,
+            "source": None,
+            "record": verified.record_path(self.name),
+            "verified_at": None,
+            "missing": [],
+        }
+        text = self.help_text()
+        if text is None:
+            report["detail"] = "could not read 'claude --help', so --resume / --fork-session are unverified"
+            return report
+        missing = [flag for flag in _RESUME_FLAGS if not _advertises(text, flag)]
+        if missing:
+            report["status"] = "unsupported"
+            report["missing"] = missing
+            report["detail"] = "%s not advertised" % ", ".join(missing)
+            return report
+        version = self.version()[0]
+        if not version:
+            report["detail"] = "could not read 'claude --version'"
+            return report
+        report["version"] = version
+        found = verified.lookup(self.name, version, READ_ONLY_MECHANISM, root)
+        if found["status"] == "failed":
+            report["detail"] = (
+                "claude %s failed the resume check on this machine; run python scripts/smoke_live.py "
+                "--provider claude again after fixing it" % version
+            )
+            return report
+        if found["status"] == "passed":
+            return self._resume_verified(report, version, found["entry"], "record")
+        entry = VERIFIED_RESUME.get(version)
+        if isinstance(entry, dict) and verified.entry_is_complete(entry, READ_ONLY_MECHANISM):
+            return self._resume_verified(report, version, entry, "built-in")
+        detail = (
+            "claude %s has not been verified to keep a resumed session read-only; "
+            "run python scripts/smoke_live.py --provider claude" % version
+        )
+        if found["problem"]:
+            detail += "; %s" % found["problem"]
+        report["detail"] = detail
+        return report
+
+    @staticmethod
+    def _resume_verified(
+        report: Dict[str, Any], version: str, entry: Dict[str, Any], source: str
+    ) -> Dict[str, Any]:
+        verified_at = str(entry.get("verified_at") or "")
+        report["status"] = "verified"
+        report["source"] = source
+        report["verified_at"] = verified_at
+        report["detail"] = "resume verified for claude %s on %s (%s)" % (version, verified_at, source)
+        return report
+
+    def resume_args(self, session_id: str) -> List[str]:
+        if not isinstance(session_id, str) or not _SESSION_ID_RE.match(session_id):
+            raise ValueError("a session to resume must be named by a UUID")
+        return ["--resume=%s" % session_id, "--fork-session"]
+
+    def resume_rejected(
+        self,
+        outcome: ExecOutcome,
+        mode: str,
+        options: Optional[Dict[str, Any]],
+        session_id: str,
+    ) -> bool:
+        """True only for the CLI's own "no such session" result.
+
+        Matched to what 2.1.283 printed (``tests/fixtures/claude/``): a
+        non-zero exit, no turn at all, and one ``result`` event whose
+        ``errors`` names the id that was asked for. Stderr is not read. If
+        the wording changes, a rejection is reported as an ordinary failure
+        and not retried -- never the other way round.
+        """
+        output_format = str((options or {}).get("output_format") or self.default_output_format)
+        if output_format != "stream-json":
+            return False
+        if outcome.exit_code == 0 or outcome.timed_out or outcome.stalled:
+            return False
+        events = _stream_events(outcome.stdout)
+        if any(event.get("type") in _STREAM_EVENT_TYPES for event in events):
+            return False
+        result = next((event for event in reversed(events) if event.get("type") == "result"), None)
+        if result is None:
+            return False
+        turns = result.get("num_turns")
+        if (
+            result.get("is_error") is not True
+            or isinstance(turns, bool)
+            or turns != 0
+            or result.get("subtype") != "error_during_execution"
+        ):
+            return False
+        errors = result.get("errors")
+        if not isinstance(errors, list):
+            return False
+        expected = _MISSING_SESSION + session_id
+        return any(isinstance(error, str) and error.strip() == expected for error in errors)
+
+    def parse_session(self, outcome: ExecOutcome) -> Dict[str, Any]:
+        """The session a run ended in, the context it last had, and its init.
+
+        The context is the last ``assistant`` event's input: the ``result``
+        usage adds up every turn, so it is the run's cost, not its size.
+        """
+        events = _stream_events(outcome.stdout)
+        session_id = None
+        for kind in ("result", "system"):
+            event = next((item for item in reversed(events) if item.get("type") == kind), None)
+            if event is not None and isinstance(event.get("session_id"), str):
+                session_id = event["session_id"]
+                break
+        context_tokens = None
+        last = next((item for item in reversed(events) if item.get("type") == "assistant"), None)
+        message = last.get("message") if last is not None else None
+        usage = message.get("usage") if isinstance(message, dict) else None
+        if isinstance(usage, dict):
+            parts = [
+                _count(usage.get(key))
+                for key in ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
+            ]
+            if all(part is not None for part in parts):
+                context_tokens = sum(parts)
+        init = None
+        start = next(
+            (item for item in events if item.get("type") == "system" and item.get("subtype") == "init"),
+            None,
+        )
+        if start is not None:
+            tools = start.get("tools")
+            if not (isinstance(tools, list) and all(isinstance(tool, str) for tool in tools)):
+                tools = None
+            servers = start.get("mcp_servers")
+            permission = start.get("permissionMode")
+            version = start.get("claude_code_version")
+            init = {
+                "tools": tools,
+                "mcp_servers": servers if isinstance(servers, list) else None,
+                "permission_mode": permission if isinstance(permission, str) else None,
+                "version": version if isinstance(version, str) else None,
+            }
+        return {"session_id": session_id, "context_tokens": context_tokens, "init": init}
 
     def validate_options(self, options: Optional[Dict[str, Any]]) -> List[str]:
         problems = super().validate_options(options)
