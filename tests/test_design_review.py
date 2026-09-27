@@ -128,6 +128,22 @@ class TestRunningIt(DesignReviewCase):
         self.assertFalse(os.path.isfile(self.workspace.snapshot_path))
         self.assertFalse(os.path.isfile(self.workspace.consolidated_json_path))
 
+    def test_a_project_reviewer_with_raw_arguments_fails_alone(self):
+        """The project file can come with the branch, so its reviewers' raw
+        arguments are refused -- that reviewer fails, and the round goes on."""
+        self.write(
+            ".dev-orchestra.yaml",
+            "version: 1\nreviewers:\n"
+            "  - id: m1\n    provider: mock\n    role: general\n"
+            '    options:\n      args: ["--add-dir", "x"]\n'
+            "  - id: m2\n    provider: mock\n    role: architecture\n",
+        )
+        self.write_plan()
+        self.write_request()
+        _, out, err = run_cli("review", "run", "--design")
+        self.assertIn("1 successful, 1 failed", out)
+        self.assertIn("reviewer m1: options.args is set in the project config", out + err)
+
     def test_it_works_outside_a_git_repository(self):
         """There is no diff to take, so there is nothing for git to do."""
         self.write_plan()

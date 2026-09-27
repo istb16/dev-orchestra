@@ -1,4 +1,4 @@
-<!-- translated-from: references/providers.md sha256:4c0c07ab1ee917d7bdd3b38c7c0f39ca16c07d86e372540fd97e266516e0d4c3 -->
+<!-- translated-from: references/providers.md sha256:c6eca14d8cfc70ff1c5f1a04f2e73341d16e597ee120778418436ef9acbe1c1e -->
 
 > この文書は [references/providers.md](../../../references/providers.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -28,10 +28,15 @@ class Provider:
     def list_models() -> list[ModelCandidate]  # discovered from the installed CLI
     def resolve_model(spec) -> ResolvedModel   # family + policy -> CLI argument
     def build_command(mode, resolved, cwd, extra_args) -> list[str]
-    def run(prompt, mode, cwd, model_spec, timeout, extra_args) -> RunResult
+    def run(prompt, mode, cwd, model_spec, timeout, extra_args) -> RunResult   # do not override
+    def _launch(prompt, mode, cwd, model_spec, timeout, extra_args) -> RunResult
+    def refused_read_only_args(raw_args, source) -> list[str]   # default: refuse all
+    def read_only_enforcement() -> dict                         # default: "unspecified"
 ```
 
 `detect`、`version`、`list_models` はプロセスごとにメモ化されるため、doctor やウィザードは CLI を再起動することなく何度でも問い合わせられます。
+
+`run` はすべてのアダプタが共有するゲートです。`plan` または `review` の実行では、呼び出し元の生引数（`options.args` と `--extra`）を、アダプタが自分の引数を足す前にアダプタの許可リストと照合し、そのうえで CLI を起動する `_launch` を呼びます。CLI の起動方法を変える必要があるアダプタは `_launch` をオーバーライドします。`run` をオーバーライドしたアダプタはこのゲートを通らないため、ゲートを自分で持たなければなりません。
 
 <a id="modes"></a>
 
@@ -43,7 +48,20 @@ class Provider:
 | `implement` | コードとテストを書く | はい |
 | `review` | レビューレポートを作成する | いいえ — 読み取り専用 |
 
-アダプタは、モードをそれぞれの CLI が読み取り専用と呼ぶものに変換します。この対応付けは、アダプタがスキルの他の部分と交わす契約です。ファイルを編集できてしまう `review` の実行は、アダプタのバグです。
+アダプタは、モードをそれぞれの CLI が読み取り専用と呼ぶものに変換します。この対応付けは、アダプタがスキルの他の部分と交わす契約です。ファイルを編集できてしまう `review` の実行は、アダプタのバグです。読み取り専用とは、CLI が書き込みを止めることであって、プロンプトがモデルに書かないよう頼むことではありません。
+
+built-in の各アダプタが何を、何によって強制しているか:
+
+| | Claude | Codex |
+| --- | --- | --- |
+| Edit / Write ツール | 拒否（`--disallowed-tools`。`--tools` にも含まれない） | OS サンドボックス（`-s read-only`） |
+| シェルでの書き込み | シェルがない。存在するのは `Read`、`Grep`、`Glob` だけ | OS サンドボックス（実測） |
+| MCP ツール（Slack、Drive など） | なし（`--strict-mcp-config`） | **未確認** |
+| 設定ファイルのフック | 実行されない（`--restricted` がユーザー・プロジェクト・ローカルの設定を無視する） | 未確認 |
+| 作業ディレクトリ外の読み取り | 作業ディレクトリと `--add-dir` の中に閉じ込められる（`--restricted`） | 閉じ込められない |
+| 生引数（`options.args`、`--extra`） | `--add-dir <path>` だけ | なし |
+
+`read_only_enforcement()` はこれをアダプタごとに報告し、`dev-orchestra doctor` がそれを表示します。`verified`（CLI が書き込みと外部への副作用を止める）、`partial`（書き込みは止めるが、外部への副作用は未確認）、`unsupported`（強制に必要なものを CLI が提示していない）、`unverified`（それを確認できなかった）、`unspecified`（アダプタが何も報告しない）のいずれかです。`unsupported` または `unverified` の CLI での `plan` や `review` の実行は、弱い形で走らせるのではなく拒否されます（exit 2）。
 
 <a id="progress-and-the-idle-deadline"></a>
 
@@ -73,9 +91,18 @@ class Provider:
 | 非対話実行 | `claude -p --output-format stream-json --verbose`、プロンプトは stdin で渡す |
 | モデル | `--model <alias-or-name>`。family が `default` の場合は省略 |
 | モデルの検出 | CLI 自身の `--model` のヘルプテキストに示されるエイリアスを解析 |
-| `plan` / `review` | `--permission-mode plan --disallowed-tools Edit,Write,NotebookEdit` |
+| `plan` / `review` | `--permission-mode plan --disallowed-tools Edit,Write,NotebookEdit --tools Read,Grep,Glob --strict-mcp-config --restricted` |
 | `implement` | `--permission-mode acceptEdits` |
 | 認証 | 環境を継承。`ANTHROPIC_API_KEY`、`CLAUDE_CODE_OAUTH_TOKEN`、または CLI の認証情報ファイルで有無を検出 |
+
+読み取り専用のフラグは claude 2.1.283 で実測しました。plan モードと 3 つのツールの拒否だけでは実行は止まりませんでした。`Write` を拒否された実行は `Bash` でファイルを書き、Slack へのメッセージ送信のような MCP ツールにも到達できました。`--tools Read,Grep,Glob --strict-mcp-config` を付けると、セッションが持つのはその 3 つのツールだけになり、MCP サーバーはなくなります。resume したセッションでも同じです。リポジトリの `.claude/settings.json` にあるコマンドフックはそれでも実行されましたが、`--restricted` で止まりました。
+
+`--restricted` は、レビュー対象のブランチが自分の設定を持ち込めないようにするためのもので、知っておくべき帰結があります。
+
+- これらの実行では、ユーザー・プロジェクト・ローカルの `settings.json` は読まれません。そこにあるフック、`env`、`apiKeyHelper`、`permissions.allow`、`permissions.additionalDirectories`、モデルの既定値、そして **`permissions.deny`** も効きません。`Read(./.env)` のような deny ルールでリポジトリ内の秘密をモデルから遠ざけていた場合、それは architect やレビュアーには効かなくなります。管理設定（managed settings）は引き続き効くので、そうしたルールはそこへ移してください。implementer と review fixer は変わりません。
+- `Read`、`Grep`、`Glob` は作業ディレクトリと `--add-dir` の中に閉じ込められます。claude 2.1.283 で実測: `--restricted` 付きでは、作業ディレクトリ外の絶対パスの Read、そのディレクトリの Grep と Glob がすべて失敗し、付けなければ同じ実行がファイルを読みます。シンボリックリンクは未検証です。
+
+`claude --help` に `--tools`、`--strict-mcp-config`、`--restricted` が載っていない CLI では、`plan` と `review` の実行は拒否され、`doctor` は `NOT ENFORCEABLE` と表示します。`--help` を読めない CLI では `UNVERIFIED` として拒否されます。`claude --help` はプロセスごとに 1 回だけ読まれ、モデルとパーミッションモードの検出と共有されます。
 
 `opus`、`sonnet`、`fable` などのエイリアスはすでに「その family の最新スナップショット」を意味するため、`version: latest` はエイリアスをそのまま渡すだけです。完全なモデル名（`claude-opus-5`）も family として受け付けられ、そのまま渡されます。built-in のフォールバックリストは `claude --help` を読み取れない場合にのみ使われ、エイリアスだけを含みます。日付付きのスナップショット ID は決して含みません。
 
@@ -103,7 +130,7 @@ implementer:
 dev-orchestra run implementer --prompt-file plan.md --extra --permission-mode bypassPermissions
 ```
 
-`--extra` はそれ以降のすべてをそのまま CLI に転送し、後に指定したフラグが優先されます。いずれの場合も、`plan` モードと `review` モードは読み取り専用のままです。アダプタは設計上、これらのモードでは制限を緩める `permission_mode` を無視します。
+`--extra` は、`implement` の実行ではそれ以降のすべてをそのまま CLI に転送します。`plan` と `review` では、アダプタは設計上、制限を緩める `permission_mode` を無視し、`--add-dir <path>`（または `--add-dir=<path>`）以外の生引数をすべて拒否します。実行は何も消費する前に exit 2 で終わります。`--add-dir` を受け付けるのは global 設定と `--extra` からだけで、project ファイルの `options.args` は読み取り専用のロールでは中身を問わず拒否されます。拒否メッセージはフラグ名、位置、出所を示し、値は決して表示しません。
 
 <a id="codex-adapter"></a>
 
@@ -122,6 +149,8 @@ dev-orchestra run implementer --prompt-file plan.md --extra --permission-mode by
 | 認証 | 環境を継承。`OPENAI_API_KEY` または `$CODEX_HOME/auth.json` で有無を検出 |
 
 ロールのオプション: `sandbox`（`read-only` / `workspace-write` / `danger-full-access`）と `approve`（`false` にすると `--approve-for-me` を外します）。どちらも `plan` と `review` では無視され、これらは常に `-s read-only` を使います。
+
+読み取り専用サンドボックスがシェルでの書き込みを拒否することは実測しました（「Access to the path ... is denied」、Windows）。MCP サーバーは確認していないため、外部への副作用は対象外です。`doctor` は Codex を `partial` と報告します。`plan` や `review` の実行は生引数を一切受け付けません。`-s`、`-sdanger-full-access`、`-c sandbox_mode=...`、`--profile` は、どう綴っても拒否されます。アダプタ自身が付ける `-o` は生引数ではありません。
 
 `recommended-coding` family は意図的に `-m` フラグ*なし*に解決されます。これが「現在推奨されているコーディングモデルを使う」と正直に伝える方法です。CLI 自身のデフォルトは、定義上、現行のものだからです。
 
@@ -174,8 +203,8 @@ reviewers:
 
 1. 出発点として `providers/codex.py` をコピーします。
 2. **実際の CLI の `--help` を読みます。** フラグを記憶に頼って書かないでください。それがアダプタが腐っていく原因です。検証したバージョンをモジュールの docstring に記録します。
-3. `_discover_models`、`_resolve_latest`、`build_command`、`auth_status` を実装します。`run` をオーバーライドするのは、CLI が特別な出力の取得を必要とする場合だけです。
-4. `plan` と `review` が本当に読み取り専用のモードに対応付けられていることを確認します。
+3. `_discover_models`、`_resolve_latest`、`build_command`、`auth_status` を実装します。`_launch` をオーバーライドするのは、CLI が特別な出力の取得を必要とする場合だけです。**`run` ではなく `_launch` をオーバーライドしてください**。`run` をオーバーライドしたアダプタは、読み取り専用の生引数ゲートを自分で持つことになります。
+4. `plan` と `review` が本当に読み取り専用のモード、つまりモデルの協力なしに CLI が強制するモードに対応付けられていることを確認します。読み取り専用の実行に生引数が必要なら `refused_read_only_args` を実装し（既定ではすべて拒否）、CLI が何を強制するかを示す `read_only_enforcement` を実装します。実装しなければ `doctor` は `not reported by this adapter` と表示します。
 5. 登録します:
 
 ```python
@@ -304,7 +333,9 @@ reviewers:
 
 ### インターフェースの安定性
 
-`base.Provider` とその周辺の型（`ModelCandidate`、`ResolvedModel`、`RunResult`、`Usage`、`Detection`）はプラグインの内部のものであり、マイナーバージョン間で変更される可能性があります。プラグインのバージョンを固定するか、更新後に `dev-orchestra doctor` を実行して、アダプタがまだ読み込めることを確認してください。`run()` のシグネチャは最も変わりやすい部分です。`tests/test_provider_contract.py` は、上記の例を含むすべてのアダプタがこれに従っていることを検証します。
+`base.Provider` とその周辺の型（`ModelCandidate`、`ResolvedModel`、`RunResult`、`Usage`、`Detection`）はプラグインの内部のものであり、マイナーバージョン間で変更される可能性があります。プラグインのバージョンを固定するか、更新後に `dev-orchestra doctor` を実行して、アダプタがまだ読み込めることを確認してください。`run()` と `_launch()` のシグネチャは最も変わりやすい部分です。`tests/test_provider_contract.py` は、上記の例を含むすべてのアダプタがこれらに従っていることを検証します。
+
+上記の例は `build_command` しか実装していませんが、それでも読み取り専用のゲートは効きます。ゲートはアダプタが継承する `run` にあるので、生引数を伴う `plan` や `review` の実行は拒否され（base の許可リストは空）、`read_only_enforcement` を実装するまで `doctor` は `not reported by this adapter` と報告します。その `--read-only` フラグが本当に書き込みを止めるかどうかはアダプタの責任で、ここでは何も検証しません。
 
 <a id="failure-semantics"></a>
 
@@ -317,5 +348,7 @@ reviewers:
 | タイムアウト | `exit_code=124`、`timed_out=True` — 報告されるだけで、例外は送出されない |
 | 0 以外の終了コード | `ok=False`、stderr を取得して秘匿化 |
 | 解決できないモデル | 何かが実行される前に `ModelResolutionError` |
+| `plan` / `review` で拒否された生引数 | `exit_code=2`、`invoked=False`。フラグ名は示すが値は示さない 1 行 |
+| 読み取り専用の強制が `unsupported` / `unverified` | `exit_code=2`、`invoked=False`。CLI がインストールされている場合だけ |
 
 取得したすべてのストリームは `redact()` を通ります。これは、何かが `.ai/` やコンソールに届く前に、認証情報のような形の部分文字列を消去します。

@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional
 
 from . import config as config_mod
 from .providers import (
+    REFUSED_ENFORCEMENT,
     USER_PROVIDERS_DISABLED_ENV,
     ModelResolutionError,
     ResolvedModel,
@@ -64,6 +65,11 @@ def collect(start: Optional[str] = None, probe_models: bool = True) -> Dict[str,
                 candidates = provider.list_models()
                 entry["models"] = [candidate.to_dict() for candidate in candidates]
                 entry["model_discovery"] = candidates[0].source if candidates else "none"
+                entry["read_only_enforcement"] = dict(provider.read_only_enforcement())
+            elif not probe_models:
+                # --fast skips this probe. It does not promise that no --help
+                # is read: validating options.permission_mode reads one.
+                entry["read_only_enforcement"] = {"status": "not-checked"}
             detections[name] = detection
         except Exception as exc:
             message = describe_exception(exc)
@@ -96,12 +102,32 @@ def collect(start: Optional[str] = None, probe_models: bool = True) -> Dict[str,
         "pinned": config_mod.pinned_differences(loaded.data),
     }
     report["problems"].extend(problems)
+    # Problems for doctor, warnings for `config validate`: either way these
+    # runs are refused, and --strict should say so before one is attempted.
+    warnings = config_mod.read_only_arg_warnings(loaded)
+    report["config"]["warnings"] = warnings
+    report["problems"].extend(warnings)
 
     for key, label in ROLE_LABELS:
         spec = loaded.data.get(key)
         report["roles"][key] = _describe_role(
             label, spec, detections, report["problems"], adapter_errors, load_errors
         )
+        if key in config_mod.READ_ONLY_ROLES:
+            _refused_enforcement(label, spec, report)
+            # A tier can switch provider, and its runs are refused by that
+            # provider's enforcement, not the base role's. One that keeps the
+            # provider is refused for the same reason the role already was, so
+            # it is not reported a second time.
+            tiers = spec.get("model_tiers") if isinstance(spec, dict) else None
+            tier_items = tiers.items() if isinstance(tiers, dict) else ()
+            for tier, tier_entry in tier_items:
+                if isinstance(tier_entry, dict):
+                    merged = config_mod.merge_tier(spec, tier_entry)
+                    if merged.get("provider") == spec.get("provider"):
+                        continue
+                    tier_label = "%s (tier %s)" % (label, tier)
+                    _refused_enforcement(tier_label, merged, report)
 
     for reviewer in loaded.reviewers():
         label = "Reviewer %s" % reviewer.get("id")
@@ -109,6 +135,7 @@ def collect(start: Optional[str] = None, probe_models: bool = True) -> Dict[str,
         entry["id"] = reviewer.get("id")
         entry["role"] = reviewer.get("role", "general")
         report["reviewers"].append(entry)
+        _refused_enforcement(label, reviewer, report)
 
     if not report["reviewers"]:
         report["problems"].append("no reviewers configured: the independent-review stage will be skipped")
@@ -203,7 +230,39 @@ READ_ONLY_IGNORED_OPTIONS = {"permission_mode", "sandbox", "approve"}
 
 
 def _is_read_only_role(label: str) -> bool:
-    return label.startswith("Architect") or label.startswith("Reviewer")
+    return label.startswith(("Orchestrator", "Architect", "Reviewer"))
+
+
+def _refused_enforcement(label: str, spec: Any, report: Dict[str, Any]) -> None:
+    """A read-only role on a provider whose read-only runs will be refused."""
+    if not isinstance(spec, dict):
+        return
+    entry = report["providers"].get(str(spec.get("provider") or "")) or {}
+    enforcement = entry.get("read_only_enforcement") or {}
+    if enforcement.get("status") in REFUSED_ENFORCEMENT:
+        report["problems"].append("%s: read-only runs are refused -- %s" % (label, enforcement.get("detail")))
+
+
+def _enforcement_line(enforcement: Dict[str, Any]) -> str:
+    """How an enforcement status reads on the provider's line.
+
+    ``partial`` carries its detail on the line itself: what it does not cover
+    is the part a reader must not miss.
+    """
+    status = enforcement.get("status")
+    mechanism = enforcement.get("mechanism") or ""
+    detail = enforcement.get("detail") or ""
+    if status == "verified":
+        return "enforced by %s" % mechanism
+    if status == "partial":
+        return "enforced by %s; %s" % (mechanism, detail)
+    if status == "unsupported":
+        return "NOT ENFORCEABLE -- %s" % detail
+    if status == "unverified":
+        return "UNVERIFIED -- %s" % detail
+    if status == "not-checked":
+        return "not checked (--fast)"
+    return "not reported by this adapter"
 
 
 def render(report: Dict[str, Any]) -> str:
@@ -235,6 +294,8 @@ def render(report: Dict[str, Any]) -> str:
             if models:
                 shown = ", ".join(m["label"] for m in models[:6])
                 lines.append("  Models (%s): %s" % (entry.get("model_discovery", "?"), shown))
+            if entry.get("read_only_enforcement"):
+                lines.append("  Read-only runs: %s" % _enforcement_line(entry["read_only_enforcement"]))
         elif entry.get("error"):
             lines.append("  Detail: %s" % entry["error"])
         lines.append("")

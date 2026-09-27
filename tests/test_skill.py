@@ -130,6 +130,14 @@ class TestSkillDocument(IsolatedCase):
         ):
             self.assertIn(rule, body)
 
+    def test_says_what_holds_reviewers_to_reading(self):
+        """Read-only is a claim about what the CLI enforces, and the one
+        guarantee Codex does not have -- external side effects -- has to stay
+        said."""
+        body = self.body.lower()
+        self.assertIn("enforced by the cli", body)
+        self.assertIn("not examined", body)
+
     def test_documents_stage_selection_both_ways(self):
         self.assertIn("Skip", self.body)
         self.assertIn("**Run**", self.body)

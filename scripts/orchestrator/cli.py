@@ -35,6 +35,8 @@ from .providers import (
     MODE_PLAN,
     MODE_REVIEW,
     MODES,
+    READ_ONLY_MODES,
+    REFUSED_ENFORCEMENT,
     ModelResolutionError,
     UnknownProviderError,
     adapter_failure,
@@ -478,9 +480,12 @@ def cmd_config_set(args: argparse.Namespace) -> int:
         return 2
     config_mod.write_config_file(path, layer, scope)
     _out("%s = %r  (%s: %s)" % (args.path, value, scope, path))
-    effective = config_mod.load(args.cwd, validate_result=False).data
+    reloaded = config_mod.load(args.cwd, validate_result=False)
+    effective = reloaded.data
     for problem in config_mod.validate(effective):
         _err("warning: %s" % problem)
+    for warning in config_mod.read_only_arg_warnings(reloaded):
+        _err("warning: %s" % warning)
     _warn_unresolvable(effective, args.path.split(".")[0])
     return 0
 
@@ -552,14 +557,21 @@ def _warn_unresolvable(effective: Dict[str, Any], role_key: str) -> None:
 def cmd_config_validate(args: argparse.Namespace) -> int:
     loaded = config_mod.load(args.cwd, validate_result=False)
     problems = config_mod.validate(loaded.data)
+    # Warnings, not problems: they refuse one role's runs, not the file.
+    warnings = config_mod.read_only_arg_warnings(loaded)
     if args.json:
-        _emit_json({"valid": not problems, "problems": problems})
-    elif problems:
-        _out("Invalid configuration:")
-        for problem in problems:
-            _out("  - %s" % problem)
+        _emit_json({"valid": not problems, "problems": problems, "warnings": warnings})
     else:
-        _out("Configuration is valid.")
+        if problems:
+            _out("Invalid configuration:")
+            for problem in problems:
+                _out("  - %s" % problem)
+        else:
+            _out("Configuration is valid.")
+        if warnings:
+            _out("Warnings:")
+            for warning in warnings:
+                _out("  - %s" % warning)
     return 1 if problems else 0
 
 
@@ -869,6 +881,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     loaded = _load_or_die(args.cwd)
     role = args.role
     tier = args.tier
+    reviewer_index = None
     try:
         if role in config_mod.KNOWN_ROLES:
             spec = loaded.role(role, tier)
@@ -877,12 +890,22 @@ def cmd_run(args: argparse.Namespace) -> int:
             _err("--tier applies to %s, not to a reviewer" % ", ".join(config_mod.KNOWN_ROLES))
             return 2
         else:
-            spec = _reviewer_spec(loaded, role)
+            reviewer_index, spec = _reviewer_spec(loaded, role)
     except config_mod.ConfigError as exc:
         _err(str(exc))
         return 2
 
     mode = args.mode or DEFAULT_MODES.get(role, MODE_REVIEW)
+    # Refused before anything is printed, spent or started, and into the job
+    # record as well as onto stderr, for the reason `_read_prompt` below gives.
+    # None of these messages carries an argument's value.
+    read_only_role = role not in config_mod.KNOWN_ROLES or DEFAULT_MODES[role] in READ_ONLY_MODES
+    if read_only_role and args.mode == MODE_IMPLEMENT:
+        message = (
+            "%s: refused -- %s runs are read-only (plan or review); --mode implement is not "
+            "accepted for this role" % (role, role)
+        )
+        return _refuse_run(args, [message])
     workspace = _workspace(args)
     provider_name = str(spec.get("provider"))
     try:
@@ -890,6 +913,21 @@ def cmd_run(args: argparse.Namespace) -> int:
     except ValueError as exc:
         _err(str(exc))
         return 2
+
+    if mode in READ_ONLY_MODES:
+        if reviewer_index is not None:
+            label = "reviewers[%d]" % reviewer_index
+        elif tier:
+            label = "%s.model_tiers.%s" % (role, tier)
+        else:
+            label = role
+        from_project = config_mod.project_raw_arg_refusals(loaded).get(label)
+        if from_project:
+            return _refuse_run(args, ["refused -- %s" % from_project])
+        problems = provider.refused_read_only_args(provider.option_args(spec.get("options")), "options.args")
+        problems += provider.refused_read_only_args(args.extra or [], "--extra")
+        if problems:
+            return _refuse_run(args, ["%s: refused -- %s" % (role, problem) for problem in problems])
 
     if args.print_command:
         try:
@@ -903,6 +941,13 @@ def cmd_run(args: argparse.Namespace) -> int:
             )
         )
         return 0
+
+    # Only for a CLI that is there: a missing one is reported by the run as
+    # missing (127), not as one whose enforcement could not be read.
+    if mode in READ_ONLY_MODES and provider.detect().installed:
+        enforcement = provider.read_only_enforcement()
+        if enforcement.get("status") in REFUSED_ENFORCEMENT:
+            return _refuse_run(args, ["%s: refused -- %s" % (role, enforcement.get("detail"))])
 
     try:
         prompt = _read_prompt(args, workspace)
@@ -1137,9 +1182,17 @@ def _record_worker_refusal(args: argparse.Namespace, workspace: ws.Workspace, ro
     jobs_mod.finish(args.job_file, "failed", error=error)
 
 
-def _reviewer_spec(loaded: config_mod.LoadedConfig, selector: str) -> Dict[str, Any]:
-    _, reviewer = config_mod.find_reviewer(loaded.data, selector)
-    return reviewer
+def _refuse_run(args: argparse.Namespace, lines: List[str]) -> int:
+    """Refuse a run before it starts: exit 2, said on stderr and in the job."""
+    if args.job_file:
+        jobs_mod.finish(args.job_file, "failed", error="\n".join(lines))
+    for line in lines:
+        _err(line)
+    return 2
+
+
+def _reviewer_spec(loaded: config_mod.LoadedConfig, selector: str) -> Tuple[int, Dict[str, Any]]:
+    return config_mod.find_reviewer(loaded.data, selector)
 
 
 # --------------------------------------------------------------------------- review
@@ -1675,6 +1728,7 @@ def _run_design_review(args: argparse.Namespace, loaded: config_mod.LoadedConfig
                 max_findings,
                 inline_chars,
             ),
+            refusals=config_mod.reviewer_raw_arg_refusals(loaded),
         )
     except review_mod.ReviewError as exc:
         book.end(token, "failed", {"error": str(exc)})
@@ -1970,6 +2024,7 @@ def cmd_review_run(args: argparse.Namespace) -> int:
             budget_chars=budget_chars,
             inline_chars=inline_chars,
             surrounding=adoption,
+            refusals=config_mod.reviewer_raw_arg_refusals(loaded),
         )
     except review_mod.ReviewError as exc:
         book.end(token, "failed", {"error": str(exc)})

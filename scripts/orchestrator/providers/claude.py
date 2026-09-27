@@ -16,6 +16,26 @@ idle deadline something real to watch. The final answer is read from the
 ``result`` event, with fallbacks so a schema change degrades instead of losing
 the output: assistant text blocks, then raw stdout. ``options.output_format:
 text`` opts back out, at the cost of stall detection.
+
+Read-only runs (plan and review) are held to reading by the CLI, not by the
+prompt: ``--permission-mode plan --disallowed-tools Edit,Write,NotebookEdit
+--tools Read,Grep,Glob --strict-mcp-config --restricted``. Measured on 2.1.283:
+
+- Plan mode and the three denied tools alone did not stop writes. A run
+  refused ``Write`` wrote the same file with ``Bash``, and MCP tools such as
+  sending a Slack message were reachable through ``ToolSearch``.
+- With ``--tools Read,Grep,Glob --strict-mcp-config`` the session starts with
+  those three tools and no MCP servers, and a resumed session still answers
+  ``Write`` and ``Bash`` with "No such tool available".
+- Command hooks in the repository's ``.claude/settings.json`` still ran with
+  ``--tools``. ``--restricted`` stopped them: it ignores user, project and
+  local settings files, so the branch under review cannot bring its own.
+- ``--restricted`` also confines Read, Grep and Glob to the working directory
+  and ``--add-dir``: all three failed on an absolute path outside it, and
+  succeeded without the flag. Symlinks were not tested.
+
+A CLI whose ``--help`` does not list all three flags, or whose ``--help``
+cannot be read, gets its read-only runs refused rather than run with less.
 """
 
 from __future__ import annotations
@@ -38,7 +58,17 @@ from .base import (
 
 _ALIAS_RE = re.compile(r"'([a-z][a-z0-9.\-]*)'")
 _READ_ONLY_DENY = "Edit,Write,NotebookEdit"
+#: The only tools a read-only session has. ``--disallowed-tools`` above is
+#: redundant with it and kept anyway: this pair is the combination measured.
+_READ_ONLY_TOOLS = "Read,Grep,Glob"
+#: What ``--help`` has to list before a read-only run is started.
+_READ_ONLY_FLAGS = ("--tools", "--strict-mcp-config", "--restricted")
+READ_ONLY_MECHANISM = (
+    "--permission-mode plan --disallowed-tools %s --tools %s --strict-mcp-config --restricted"
+    % (_READ_ONLY_DENY, _READ_ONLY_TOOLS)
+)
 _CHOICES_RE = re.compile(r'"([A-Za-z]+)"')
+_NO_PATH = "has no path after it"
 
 #: Used only when ``claude --help`` cannot be read. Same rule as models: this is
 #: a fallback, not a source of truth.
@@ -80,13 +110,86 @@ class ClaudeProvider(Provider):
         """The modes the installed CLI advertises for ``--permission-mode``."""
         return list(self._cached("permission_modes", self._discover_permission_modes))
 
-    def _discover_permission_modes(self) -> List[str]:
+    def help_text(self) -> Optional[str]:
+        """``claude --help``, read once per process; None if it could not be.
+
+        Permission modes, model aliases and read-only support are all read
+        from it, and a read-only run may ask for all three.
+        """
+        return self._cached("help_text", self._read_help)
+
+    def _read_help(self) -> Optional[str]:
         completed = self._capture([self.executable, "--help"], timeout=45)
         if completed is None or completed.returncode != 0:
+            return None
+        return completed.stdout or ""
+
+    def _discover_permission_modes(self) -> List[str]:
+        text = self.help_text()
+        if text is None:
             return list(FALLBACK_PERMISSION_MODES)
-        block = _help_block(completed.stdout or "", "--permission-mode <mode>")
+        block = _help_block(text, "--permission-mode <mode>")
         modes = _CHOICES_RE.findall(block)
         return modes or list(FALLBACK_PERMISSION_MODES)
+
+    # -- read-only enforcement ---------------------------------------------
+
+    #: ``--restricted`` confines the file tools to the working directories, so
+    #: widening that set is all ``--add-dir`` can do. Anything else could hand
+    #: back what the adapter's own flags take away: ``--tools default``, a
+    #: ``--settings`` file with hooks, ``--agents``, ``--plugin-dir``.
+    read_only_args_accepted = "only --add-dir <path>"
+
+    def refused_read_only_args(self, raw_args: Sequence[str], source: str) -> List[str]:
+        raw = list(raw_args)
+        problems: List[str] = []
+        index = 0
+        while index < len(raw):
+            token = raw[index]
+            if token == "--add-dir":
+                following = raw[index + 1] if index + 1 < len(raw) else ""
+                if following and not following.startswith("-"):
+                    index += 2
+                    continue
+                problems.append(self._raw_argument_problem(token, index, len(raw), source, _NO_PATH))
+            elif token == "--add-dir=":
+                problems.append(self._raw_argument_problem(token, index, len(raw), source, _NO_PATH))
+            elif not token.startswith("--add-dir="):
+                problems.append(self._raw_argument_problem(token, index, len(raw), source))
+            index += 1
+        return problems
+
+    def read_only_enforcement(self) -> Dict[str, Any]:
+        support = self._cached("read_only_support", self._discover_read_only_support)
+        status = support["status"]
+        report: Dict[str, Any] = {"status": status, "mechanism": READ_ONLY_MECHANISM}
+        if status == "verified":
+            report["detail"] = (
+                "tool allowlist %s, no MCP servers, --restricted (settings files ignored; "
+                "Read/Grep/Glob confined to the working directory and --add-dir)" % _READ_ONLY_TOOLS
+            )
+        elif status == "unsupported":
+            version = self.version()[0]
+            report["missing"] = list(support["missing"])
+            report["detail"] = (
+                "%s does not advertise --tools / --strict-mcp-config / --restricted (missing: %s); "
+                "plan and review runs are refused rather than run without enforcement. Upgrade the CLI."
+                % ("claude %s" % version if version else "this claude", ", ".join(support["missing"]))
+            )
+        else:
+            report["detail"] = (
+                "could not read 'claude --help', so read-only enforcement (--tools / "
+                "--strict-mcp-config / --restricted) is unverified; plan and review runs are "
+                "refused rather than run unverified."
+            )
+        return report
+
+    def _discover_read_only_support(self) -> Dict[str, Any]:
+        text = self.help_text()
+        if text is None:
+            return {"status": "unverified", "missing": []}
+        missing = [flag for flag in _READ_ONLY_FLAGS if not _advertises(text, flag)]
+        return {"status": "unsupported" if missing else "verified", "missing": missing}
 
     def validate_options(self, options: Optional[Dict[str, Any]]) -> List[str]:
         problems = super().validate_options(options)
@@ -111,10 +214,10 @@ class ClaudeProvider(Provider):
 
     def _discover_models(self) -> List[ModelCandidate]:
         """Read the aliases the installed CLI advertises in its own help."""
-        completed = self._capture([self.executable, "--help"], timeout=45)
-        if completed is None or completed.returncode != 0:
+        text = self.help_text()
+        if text is None:
             return list(self.fallback_models)
-        aliases = _parse_model_aliases(completed.stdout or "")
+        aliases = _parse_model_aliases(text)
         if not aliases:
             return list(self.fallback_models)
         return [ModelCandidate(alias, alias, alias, "cli-help") for alias in aliases]
@@ -179,9 +282,10 @@ class ClaudeProvider(Provider):
             command += ["--model", resolved.argument]
         requested = options.get("permission_mode")
         command += _permission_args(mode, requested if isinstance(requested, str) else None)
+        # Raw arguments go last. On a read-only run they have already been
+        # held to the allowlist by ``run``; nothing here depends on the order
+        # to keep that run read-only.
         command += self.option_args(options)
-        # Anything passed at the call site wins by position: for repeated flags
-        # the CLI takes the last occurrence.
         command += list(extra_args)
         return command
 
@@ -340,11 +444,12 @@ def parse_stream_tools(stdout: str) -> Optional[Dict[str, Any]]:
     """Count what a stream-json run did with its tools.
 
     Every ``tool_use`` block is counted, whatever it is called. Counting only
-    ``Read`` would undercount badly: review mode denies ``Edit,Write,
-    NotebookEdit`` and nothing else, so ``Bash``, ``Grep`` and ``Glob`` are all
-    legitimate ways to read a file -- and the run measured while designing this
-    read ``CONTRIBUTING.md`` with ``Bash`` and no ``Read`` at all. The breakdown
-    by name is kept because the total alone cannot say which.
+    ``Read`` would undercount: a read-only run has ``Grep`` and ``Glob`` as
+    well, and an implement run has every tool -- the run measured while
+    designing this, from before read-only runs were narrowed to ``Read``,
+    ``Grep`` and ``Glob``, read ``CONTRIBUTING.md`` with ``Bash`` and no
+    ``Read`` at all. The breakdown by name is kept because the total alone
+    cannot say which.
 
     The character count is of what the tools printed back, one total over every
     ``tool_result`` in the stream -- including one whose ``tool_use`` the stream
@@ -453,10 +558,34 @@ def _permission_args(mode: str, requested: Optional[str] = None) -> List[str]:
         # A configured permission_mode is deliberately ignored here: planning
         # and review stages stay read-only whatever the config says. Loosening
         # them is not a preference, it is a broken invariant.
-        return ["--permission-mode", "plan", "--disallowed-tools", _READ_ONLY_DENY]
+        #
+        # The order is part of it. ``--tools`` takes a variable number of
+        # values, so a boolean flag has to follow it to close the list; see the
+        # module docstring for what each flag was measured to stop.
+        return [
+            "--permission-mode",
+            "plan",
+            "--disallowed-tools",
+            _READ_ONLY_DENY,
+            "--tools",
+            _READ_ONLY_TOOLS,
+            "--strict-mcp-config",
+            "--restricted",
+        ]
     if mode == MODE_IMPLEMENT:
         return ["--permission-mode", requested or "acceptEdits"]
     return []
+
+
+def _advertises(help_text: str, option: str) -> bool:
+    """Whether ``claude --help`` has a line for ``option`` itself.
+
+    Anchored to the option column, because descriptions mention other
+    options: the ``--restricted`` entry says "unless --tools names them" on a
+    continuation line, and a CLI without ``--tools`` still prints that.
+    """
+    pattern = r"^[ \t]{2,4}(?:-\w,[ \t]+)?%s(?=[ \t]|$)" % re.escape(option)
+    return re.search(pattern, help_text, re.MULTILINE) is not None
 
 
 def _help_block(help_text: str, option: str) -> str:

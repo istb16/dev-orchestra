@@ -6,8 +6,10 @@
    before any of them starts.
 2. **No cross-contamination.** No reviewer sees another's output. Independent
    disagreement is the entire value.
-3. **Read-only.** Reviewers run in a read-only sandbox. A reviewer that edits
-   code is a bug.
+3. **Read-only.** Enforced by the CLI, not by the prompt: Claude runs with a
+   tool allowlist (Read, Grep, Glob), no MCP servers and `--restricted`; Codex
+   in its read-only sandbox -- its MCP servers were not examined. A reviewer
+   that edits code is a bug.
 4. **Partial failure is normal.** One reviewer timing out does not invalidate
    the others.
 5. **Findings are claims, not facts.** Nothing reaches the fixer until the

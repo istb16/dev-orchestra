@@ -66,6 +66,66 @@ GIT_TEMPLATE_CONFIG = """\
 
 _git_template = None
 
+#: ``claude --help`` as 2.1.283 prints it, trimmed to the options the adapter
+#: reads. The three read-only flags are verbatim, including the ``--restricted``
+#: description that mentions ``--tools`` mid-sentence.
+CLAUDE_HELP_BEFORE_READ_ONLY = """Usage: claude [options] [command] [prompt]
+
+Options:
+  --mcp-config <configs...>             Load MCP servers from JSON files
+  --model <model>                       Model for the current session. Provide
+                                        an alias for the latest model (e.g.
+                                        'fable', 'opus', or 'sonnet') or a
+                                        model's full name (e.g.
+                                        'claude-fable-5').
+  -n, --name <name>                     Set a display name for this session
+  --permission-mode <mode>              Permission mode to use for the session
+                                        (choices: "acceptEdits", "auto",
+                                        "bypassPermissions", "manual",
+                                        "dontAsk", "plan")
+  -p, --print                           Print response and exit
+"""
+
+CLAUDE_HELP_RESTRICTED = """\
+  --restricted                          Restricted mode: removes the built-in
+                                        tools that run commands or code (Bash,
+                                        PowerShell, REPL and the other
+                                        code-running tools) and WebFetch unless
+                                        --tools names them, and ignores user,
+                                        project and local settings files
+                                        (managed settings and --settings still
+                                        apply; add --strict-mcp-config to skip
+                                        MCP servers too). Also confines the file
+                                        tools to the working directories
+                                        (--add-dir included), refuses
+                                        bypassPermissions, and lets only a
+                                        person or the configured permission
+                                        handler approve writes to settings, git
+                                        and tool-configuration files.
+"""
+
+CLAUDE_HELP_STRICT_MCP = """\
+  --strict-mcp-config                   Only use MCP servers from --mcp-config,
+                                        ignoring all other MCP configurations
+"""
+
+CLAUDE_HELP_TOOLS = """\
+  --tools <tools...>                    Specify the list of available tools from
+                                        the built-in set. Use "" to disable all
+                                        tools, "default" to use all tools, or
+                                        specify tool names (e.g.
+                                        "Bash,Edit,Read").
+"""
+
+#: A CLI that advertises everything read-only runs need.
+CLAUDE_HELP = (
+    CLAUDE_HELP_BEFORE_READ_ONLY + CLAUDE_HELP_RESTRICTED + CLAUDE_HELP_STRICT_MCP + CLAUDE_HELP_TOOLS
+)
+
+#: The same CLI without ``--tools``: ``--tools`` still appears, inside the
+#: ``--restricted`` description, which must not count as the option.
+CLAUDE_HELP_OLD = CLAUDE_HELP_BEFORE_READ_ONLY + CLAUDE_HELP_RESTRICTED + CLAUDE_HELP_STRICT_MCP
+
 #: The minimal user adapter from references/providers.md, verbatim; the docs
 #: test holds the two together and the contract test runs this one.
 USER_ADAPTER_SOURCE = '''\

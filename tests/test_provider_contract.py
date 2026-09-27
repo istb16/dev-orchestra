@@ -1,6 +1,8 @@
 """Every adapter must answer the call the orchestrator actually makes.
 
-An adapter overrides ``run`` to do something the base class cannot: Codex
+An adapter overrides ``_launch`` (it used to override ``run``, which is now
+the read-only gate every adapter shares) to do something the base class
+cannot: Codex
 writes its final message to a file and reads it back, rather than having its
 log scraped. An override like that has to repeat the base signature, and a
 repeated signature drifts.
@@ -22,10 +24,18 @@ from __future__ import annotations
 import inspect
 import unittest
 
-from helpers import IsolatedCase
+from helpers import CLAUDE_HELP, IsolatedCase
 
 from orchestrator import execution, providers
 from orchestrator.providers import base
+
+
+class _Completed:
+    def __init__(self, stdout="", returncode=0):
+        self.stdout = stdout
+        self.stderr = ""
+        self.returncode = returncode
+
 
 #: Exactly what `run`/`review run` pass. Written out rather than generated
 #: from the base signature, so a keyword the orchestrator sends and an
@@ -81,6 +91,21 @@ class TestEveryAdapterTakesTheWholeCall(IsolatedCase):
                 actual = set(inspect.signature(type(provider).run).parameters)
                 self.assertEqual(expected - actual, set(), "%s.run is missing keywords" % provider.name)
 
+    def test_every_launch_signature_covers_the_base_signature(self):
+        """``_launch`` is where adapters override now, so it drifts the same way."""
+        expected = set(inspect.signature(base.Provider._launch).parameters)
+        for provider in self.adapters():
+            with self.subTest(provider=provider.name):
+                actual = set(inspect.signature(type(provider)._launch).parameters)
+                self.assertEqual(expected - actual, set(), "%s._launch is missing keywords" % provider.name)
+
+    def test_no_adapter_overrides_the_gate(self):
+        """``run`` holds the read-only raw-argument gate; an adapter that
+        overrides it runs without one."""
+        for provider in self.adapters():
+            with self.subTest(provider=provider.name):
+                self.assertIs(type(provider).run, base.Provider.run)
+
     def test_a_not_installed_cli_is_reported_not_raised(self):
         for provider in self.adapters():
             if provider.name == "mock":
@@ -105,6 +130,45 @@ class TestUserAdaptersTakeTheWholeCall(TestEveryAdapterTakesTheWholeCall):
 
     def adapters(self):
         return [providers.get_provider("mycli")]
+
+
+class TestUserAdaptersPassTheGate(IsolatedCase):
+    """The documented template only implements ``build_command``, which
+    forwards raw arguments untouched. The gate still holds, because it is in
+    the ``run`` the template inherits."""
+
+    def setUp(self):
+        super().setUp()
+        self.write_user_provider("mycli")
+        providers.load_user_providers()
+        self.seen = {}
+        original = execution.execute
+        self.addCleanup(setattr, execution, "execute", original)
+
+        def execute(command, cwd, prompt="", timeout=None, idle_timeout=None, env=None):
+            self.seen["command"] = list(command)
+            return _Outcome()
+
+        execution.execute = execute
+        self.provider = providers.get_provider("mycli")
+        self.provider.which = lambda: "mycli"
+        self.provider.version = lambda: ("mycli 1.2.0", None)
+
+    def test_an_unspecified_adapter_still_runs(self):
+        self.assertEqual(self.provider.read_only_enforcement()["status"], "unspecified")
+        result = self.provider.run("prompt", base.MODE_REVIEW, self.project)
+        self.assertTrue(result.ok)
+        self.assertIn("--read-only", self.seen["command"])
+
+    def test_raw_arguments_are_refused_in_review(self):
+        result = self.provider.run("prompt", base.MODE_REVIEW, self.project, options={"args": ["--yolo"]})
+        self.assertEqual(result.exit_code, 2)
+        self.assertFalse(result.invoked)
+        self.assertNotIn("command", self.seen)
+
+    def test_raw_arguments_still_reach_implement(self):
+        self.provider.run("prompt", base.MODE_IMPLEMENT, self.project, options={"args": ["--yolo"]})
+        self.assertIn("--yolo", self.seen["command"])
 
 
 class TestOptionsReachTheCommand(IsolatedCase):
@@ -154,12 +218,56 @@ class TestOptionsReachTheCommand(IsolatedCase):
         provider = self.capture(providers.get_provider("codex"))
         provider.run(
             "prompt",
-            base.MODE_REVIEW,
+            base.MODE_IMPLEMENT,
             self.project,
             model_spec={"family": "recommended-coding", "version": "latest"},
             options={"args": ["--flag-from-config"]},
         )
         self.assertIn("--flag-from-config", self.seen["command"])
+
+    def test_codex_refuses_options_args_in_review_through_run(self):
+        """The gate sees the caller's arguments before `-o` is added, so the
+        refusal is of the config's flag and no child is started."""
+        provider = self.capture(providers.get_provider("codex"))
+        result = provider.run(
+            "prompt",
+            base.MODE_REVIEW,
+            self.project,
+            model_spec={"family": "recommended-coding", "version": "latest"},
+            options={"args": ["--flag-from-config"]},
+        )
+        self.assertFalse(result.ok)
+        self.assertEqual(result.exit_code, 2)
+        self.assertFalse(result.invoked)
+        self.assertNotIn("command", self.seen)
+        self.assertEqual(result.command, ["codex"])
+
+    def test_codex_refuses_a_loosening_extra_arg_without_its_value(self):
+        provider = self.capture(providers.get_provider("codex"))
+        result = provider.run(
+            "prompt",
+            base.MODE_REVIEW,
+            self.project,
+            model_spec={"family": "recommended-coding", "version": "latest"},
+            extra_args=["-sdanger-full-access"],
+        )
+        self.assertEqual(result.exit_code, 2)
+        self.assertIn("'-s'", result.stderr)
+        self.assertNotIn("danger-full-access", result.stderr)
+        self.assertNotIn("command", self.seen)
+
+    def test_mock_refuses_options_args_in_review(self):
+        """The mock overrides `_launch`, so it passes through the gate too --
+        the path `review run` takes in the suite."""
+        provider = providers.get_provider("mock")
+        result = provider.run("prompt", base.MODE_REVIEW, self.project, options={"args": ["x"]})
+        self.assertEqual(result.exit_code, 2)
+        self.assertFalse(result.invoked)
+        self.assertIn("a bare value", result.stderr)
+
+    def test_mock_still_runs_with_no_raw_arguments(self):
+        result = providers.get_provider("mock").run("prompt", base.MODE_REVIEW, self.project)
+        self.assertTrue(result.ok)
 
     def test_codex_still_captures_its_final_message_to_a_file(self):
         """The reason the override exists in the first place."""
@@ -191,6 +299,9 @@ class TestOptionsReachTheCommand(IsolatedCase):
         is real there. Without this the test above would pass on an adapter
         that ignored the keyword everywhere."""
         provider = self.capture(providers.get_provider("claude"))
+        # A CLI that advertises its read-only flags; otherwise the run is
+        # refused before anything is spawned.
+        provider._capture = lambda command, timeout=30: _Completed(CLAUDE_HELP)
         provider.run(
             "prompt",
             base.MODE_REVIEW,

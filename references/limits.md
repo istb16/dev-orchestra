@@ -400,12 +400,14 @@ on it — but a Claude run can be counted afterwards, from the events it already
 streams. `tokens show` and `optimization report` report two figures per run:
 how many tool calls it made, and how many characters those tools printed back.
 
-**Every tool call is counted, not just `Read`.** Review mode denies
-`Edit,Write,NotebookEdit` and nothing else, so `Bash`, `Grep` and `Glob` are
-all legitimate ways for a reviewer to read a file. The one run measured while
-designing this was asked to report the line count of `CONTRIBUTING.md` and did
-it with `Bash` (`wc -l`), never calling `Read` at all — counting `Read` alone
-would have recorded that reviewer as having opened nothing.
+**Every tool call is counted, not just `Read`.** A read-only Claude run has
+`Read`, `Grep` and `Glob` and nothing else -- no `Bash` -- and `Grep` and
+`Glob` read files as surely as `Read` does; an implement run has every tool.
+The one run measured while designing this, from before read-only Claude runs
+were narrowed to those three, was asked to report the line count of
+`CONTRIBUTING.md` and did it with `Bash` (`wc -l`), never calling `Read` at all
+— counting `Read` alone would have recorded that reviewer as having opened
+nothing.
 
 **The character count is observed tool output, not source read.** That same
 `wc -l` returned three characters for a two-hundred-line file; `cat` on the
@@ -447,10 +449,14 @@ what can be said about it:
 * **Codex has no proxy at all.** Its usage comes from a prose footer, and there
   are no tool events to count.
 * **Nothing limits it.** The adapters pass
-  `--permission-mode plan --disallowed-tools Edit,Write,NotebookEdit` (Claude)
-  and `-s read-only` (Codex), and nothing else about reading. Neither CLI is
-  passed a flag that bounds how many reads or how many characters a run may
-  take, and none is added on a guess about what a CLI might accept.
+  `--permission-mode plan --disallowed-tools Edit,Write,NotebookEdit --tools
+  Read,Grep,Glob --strict-mcp-config --restricted` (Claude) and `-s read-only`
+  (Codex). That bounds *how* and *where* a Claude run reads -- with `Read`,
+  `Grep` and `Glob`, inside the working directory and `--add-dir` (measured for
+  absolute paths on claude 2.1.283; symlinks were not tested) -- and not how
+  much. Neither CLI is passed a flag that bounds how many reads or how many
+  characters a run may take, and none is added on a guess about what a CLI
+  might accept.
 
 So this tool reports the proxies, and neither counts nor forbids re-fetching.
 The one way it has to reduce reading is to hand over the context a reviewer
@@ -535,8 +541,10 @@ Honest limits of the above:
   `review.context.max_chars` bounds what is *sent*, in characters, which is a
   different thing from tokens and a different thing again from what the
   reviewer then goes and reads for itself.
-* **Nothing bounds what a reviewer reads**, and how much it read cannot be
-  measured either. The counts above are tool calls and the output those tools
+* **Nothing bounds how much a reviewer reads**, and how much it read cannot be
+  measured either. A Claude reviewer reads only with `Read`, `Grep` and `Glob`,
+  inside the working directory and `--add-dir`; a Codex reviewer is not
+  confined. The counts above are tool calls and the output those tools
   printed: `wc -l` and `cat` read the same file and report three characters
   and the whole of it. Codex reports neither figure.
 * **The stream-json parse depends on an event schema** that the CLI owns. It

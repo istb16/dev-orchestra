@@ -15,6 +15,7 @@ day you need it.
 from __future__ import annotations
 
 import io
+import json
 import os
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
@@ -36,12 +37,13 @@ class _FakeProvider:
     name = "fake"
     executable = "fake"
 
-    def __init__(self, installed=True, raises=None, writes=None, usage=None, stdout="READY"):
+    def __init__(self, installed=True, raises=None, writes=None, usage=None, stdout="READY", result=None):
         self._installed = installed
         self._raises = raises
         self._writes = writes
         self._usage = usage if usage is not None else Usage(total_tokens=10, source="fake")
         self._stdout = stdout
+        self._result = result
         self.calls = []
 
     def detect(self):
@@ -57,6 +59,8 @@ class _FakeProvider:
         if self._writes:
             with open(os.path.join(cwd, self._writes), "w", encoding="utf-8") as handle:
                 handle.write("BREACH\n")
+        if self._result is not None:
+            return self._result
         return RunResult(True, 0, self._stdout, "", ["fake"], 0.1, usage=self._usage)
 
 
@@ -107,6 +111,108 @@ class TestTheReadOnlyVerdict(IsolatedCase):
         check = smoke_live.check_read_only(provider, "fake", self.project)
         self.assertFalse(check.ok)
         self.assertIn("TypeError", check.detail)
+
+    def test_a_run_that_never_started_proves_nothing(self):
+        """No file is also what an adapter that refused to launch leaves."""
+        result = RunResult(False, 2, "", "read-only run: refused", ["fake"], 0.0, invoked=False)
+        check = smoke_live.check_read_only(_FakeProvider(result=result), "fake", self.project)
+        self.assertFalse(check.ok)
+        self.assertIn("refused to launch", check.detail)
+
+    def test_a_run_that_failed_proves_nothing_either(self):
+        failed = _FakeProvider(result=RunResult(False, 1, "", "boom", ["fake"], 0.1))
+        check = smoke_live.check_read_only(failed, "fake", self.project)
+        self.assertFalse(check.ok)
+        self.assertIn("did not complete (exit 1): boom", check.detail)
+
+
+class _Reader(_FakeProvider):
+    """Reads what the prompt names, the way a CLI that is not confined would.
+
+    ``confined``: nothing outside the working directory is read unless
+    ``--add-dir`` was passed. ``reads``: whether it reads anything at all.
+    """
+
+    name = "claude"
+
+    def __init__(self, confined=False, reads=True):
+        super().__init__()
+        self.confined = confined
+        self.reads = reads
+
+    def run(self, prompt, mode, cwd, **kwargs):
+        self.calls.append({"prompt": prompt, "mode": mode, "cwd": cwd, "kwargs": kwargs})
+        widened = "--add-dir" in (kwargs.get("extra_args") or [])
+        text = ""
+        if self.reads and (widened or not self.confined):
+            for piece in prompt.split("`")[1::2]:
+                path = piece if os.path.isabs(piece) else os.path.join(cwd, piece)
+                if os.path.isfile(path):
+                    with open(path, encoding="utf-8") as handle:
+                        text += handle.read()
+        return RunResult(True, 0, text or "nothing", "", ["claude"], 0.1)
+
+
+class TestTheConfinementCheck(IsolatedCase):
+    def copy_instead_of_link(self):
+        """A symlink that works everywhere: Windows needs a privilege for one."""
+        import shutil
+
+        original = smoke_live.os.symlink
+        smoke_live.os.symlink = lambda source, target: shutil.copyfile(source, target)
+        self.addCleanup(setattr, smoke_live.os, "symlink", original)
+
+    def by_name(self, provider):
+        return {check.name: check for check in smoke_live.check_confined(provider, "claude", self.project)}
+
+    def test_only_confining_providers_are_checked(self):
+        self.assertEqual(smoke_live.check_confined(_Reader(), "codex", self.project), [])
+
+    def test_a_cli_that_reads_outside_fails(self):
+        self.copy_instead_of_link()
+        checks = self.by_name(_Reader(confined=False))
+        self.assertFalse(checks["stays confined (absolute)"].ok)
+        self.assertFalse(checks["stays confined (symlink)"].ok)
+        self.assertTrue(checks["--add-dir widens"].ok)
+
+    def test_a_confined_cli_passes_and_add_dir_widens_it(self):
+        self.copy_instead_of_link()
+        checks = self.by_name(_Reader(confined=True))
+        self.assertTrue(all(check.ok for check in checks.values()), checks)
+        self.assertEqual(len(checks), 3)
+
+    def test_add_dir_that_reads_nothing_fails(self):
+        self.copy_instead_of_link()
+        checks = self.by_name(_Reader(reads=False))
+        self.assertTrue(checks["stays confined (absolute)"].ok)
+        self.assertFalse(checks["--add-dir widens"].ok)
+
+    def test_an_untestable_symlink_is_skipped_not_passed(self):
+        def refuse(source, target):
+            raise OSError("symbolic link privilege not held")
+
+        original = smoke_live.os.symlink
+        smoke_live.os.symlink = refuse
+        self.addCleanup(setattr, smoke_live.os, "symlink", original)
+        check = self.by_name(_Reader(confined=True))["stays confined (symlink)"]
+        self.assertFalse(check.ok)
+        self.assertTrue(check.skipped)
+        self.assertIn("symlink not tested: symbolic link privilege not held", check.detail)
+
+    def test_nothing_is_left_behind(self):
+        self.copy_instead_of_link()
+        self.by_name(_Reader(confined=True))
+        self.assertFalse(os.path.lexists(os.path.join(self.project, "link.txt")))
+
+    def test_the_marker_is_never_in_a_prompt_whole(self):
+        reader = _Reader(confined=True)
+        self.copy_instead_of_link()
+        self.by_name(reader)
+        prompts = " ".join(call["prompt"] for call in reader.calls)
+        self.assertEqual(len(reader.calls), 3)
+        for call in reader.calls:
+            self.assertEqual(call["mode"], "review")
+        self.assertNotRegex(prompts, r"[0-9a-f]{32}")
 
 
 class TestOneProvidersChecks(IsolatedCase):
@@ -262,6 +368,26 @@ class TestTheCommandLine(IsolatedCase):
         code, _, err = self.run_main("--provider", "nonexistent")
         self.assertEqual(code, 2)
         self.assertIn("nonexistent", err)
+
+    def fake_checks(self, *checks):
+        original = smoke_live.check_provider
+        smoke_live.check_provider = lambda name, root: list(checks)
+        self.addCleanup(setattr, smoke_live, "check_provider", original)
+
+    def test_a_skipped_check_keeps_the_run_from_reading_all_green(self):
+        self.fake_checks(
+            smoke_live.Check("claude", "installed", True, "1"),
+            smoke_live.Check("claude", "stays confined (symlink)", False, "not tested: x", skipped=True),
+        )
+        code, out, _ = self.run_main("--provider", "claude")
+        self.assertEqual(code, 1)
+        self.assertIn("SKIP claude", out)
+        self.assertIn("1 check(s) were not tested", out)
+        self.assertNotIn("All checks passed", out)
+        self.assertNotIn("failed", out)
+        code, out, _ = self.run_main("--provider", "claude", "--json")
+        self.assertEqual(code, 1)
+        self.assertEqual(json.loads(out)["skipped"], 1)
 
     def test_the_mock_is_not_smoke_tested(self):
         """It is always "installed" and never starts a process, so running it

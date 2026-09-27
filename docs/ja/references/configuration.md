@@ -1,4 +1,4 @@
-<!-- translated-from: references/configuration.md sha256:bbd2496db34c0b453bd579a8cd25bcf909b4fee6589a4b861d4bcf1080eb9007 -->
+<!-- translated-from: references/configuration.md sha256:074bd3c3bd9c0bb1097004470df61c4e33f8e7798c2b6381a39cb49eb4e5333d -->
 
 > この文書は [references/configuration.md](../../../references/configuration.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -12,7 +12,7 @@
 
 | レイヤー | パス | 用途 |
 | --- | --- | --- |
-| プロジェクト | `<repo>/.dev-orchestra.yaml` | リポジトリごとの上書き。commit するかどうかはお好みで |
+| プロジェクト | `<repo>/.dev-orchestra.yaml` | リポジトリごとの上書き。commit するかどうかはお好みで。読み取り専用のロールはここから `options.args` を受け取りません（[下記](#role-options)） |
 | グローバル | 下記参照 | すべてのプロジェクトに対するあなた個人のデフォルト |
 | 組み込み | `scripts/orchestrator/config.py` | 推奨デフォルト。ファイルが存在しないときに使われます |
 
@@ -186,16 +186,36 @@ implementer:
     args: ["--add-dir", "../shared-lib"]
 ```
 
-**読み取り専用ステージを緩めるようなオプションは無視されます。** architect と
-すべてのレビュアーは、`permission_mode` や `sandbox` が何と言っていても常に読み取り専用で
-実行されます -- この不変条件こそが、独立したレビューに価値を与えるものです。
-`dev-orchestra doctor` は、その理由で無視しているオプションを黙って捨てるのではなく
-一覧表示します。
+読み取り専用のロール（orchestrator、architect、それらの tier、すべてのレビュアー）では、
+Claude が受け付ける生引数は `--add-dir <path>` だけで、Codex は何も受け付けません。
+それも global 設定か `--extra` からだけ受け付けます。同じ `args` を project ファイルに
+書くと、中身を問わずそのロールの実行は拒否されます。project ファイルはレビュー対象の
+ブランチと一緒に持ち込まれうるもので、自分のレビュアーのディレクトリを指定できる
+ブランチは、レビュアーが読める範囲を広げられてしまうからです。implementer と
+review fixer は、これまでどおりどちらのファイルからも `args` を受け取ります。
+
+**読み取り専用ステージを緩めるようなオプションは無視されるか、拒否されます。**
+orchestrator、architect、すべてのレビュアーは、`permission_mode` や `sandbox` が何と
+言っていても常に読み取り専用で実行されます -- この不変条件こそが、独立したレビューに
+価値を与えるものです。`dev-orchestra doctor` は、その理由で無視しているオプションを
+黙って捨てるのではなく一覧表示します。`options.args` にそれ以外の生引数があると、
+そのロールの実行は拒否されます（終了コード 2。レビューのラウンドではそのレビュアーが
+失敗になります）。`config validate` と `doctor` は、実行より前にそれを警告します。
 
 permission mode を緩める代わりの方法は、CLI 自身の設定で特定のコマンドを
 許可リストに入れることです（Claude Code なら、`.claude/settings.json` の
 `Bash(pytest:*)` のような `permissions.allow` エントリ）。こちらのほうが範囲が狭く、
 このスキルではなくプロジェクトの側に置かれます。
+
+Claude の読み取り専用の実行は `--restricted` を付けて走るので、そこではプロジェクトと
+ユーザーの `settings.json` はまったく読まれません。**`permissions.deny` も読まれません**。
+`Read(./.env)` のような deny ルールでリポジトリ内の秘密をモデルから遠ざけていても、
+architect やレビュアーの実行には効きません。管理設定（managed settings）は引き続き
+効くので、そうしたルールはそこへ移してください。implementer と review fixer は、
+これまでどおり設定ファイルを読みます。読み取り専用の実行が読めるのは作業ディレクトリと
+`--add-dir` の中だけです。ワークスペースのコンテナをリポジトリの外に置いている場合
+（`workspace.dir` を絶対パスにしている場合）は、global 設定のそのロールの
+`options.args` に `--add-dir <container>` を足すか、`--extra` で渡してください。
 
 `mock` は実在する登録済みの provider です。テストで使われるオフラインの adapter で、
 トークンを消費せずにパイプラインを試運転するのにも便利です。セットアップウィザードには

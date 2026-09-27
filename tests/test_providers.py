@@ -7,30 +7,13 @@ import sys
 import textwrap
 import unittest
 
-from helpers import IsolatedCase
+from helpers import CLAUDE_HELP, CLAUDE_HELP_OLD, IsolatedCase
 
-from orchestrator import providers
+from orchestrator import execution, providers
 from orchestrator.providers import base
 from orchestrator.providers.claude import ClaudeProvider, _parse_model_aliases
 from orchestrator.providers.codex import CodexProvider
 from orchestrator.providers.mock import MockProvider
-
-CLAUDE_HELP = """Usage: claude [options] [command] [prompt]
-
-Options:
-  --mcp-config <configs...>             Load MCP servers from JSON files
-  --model <model>                       Model for the current session. Provide
-                                        an alias for the latest model (e.g.
-                                        'fable', 'opus', or 'sonnet') or a
-                                        model's full name (e.g.
-                                        'claude-fable-5').
-  -n, --name <name>                     Set a display name for this session
-  --permission-mode <mode>              Permission mode to use for the session
-                                        (choices: "acceptEdits", "auto",
-                                        "bypassPermissions", "manual",
-                                        "dontAsk", "plan")
-  -p, --print                           Print response and exit
-"""
 
 
 class _FakeCompleted:
@@ -439,10 +422,25 @@ class TestClaudeAdapter(IsolatedCase):
             self.assertIn("--disallowed-tools", command)
             self.assertIn("Edit", command[command.index("--disallowed-tools") + 1])
 
+    def test_read_only_modes_allow_three_tools_no_mcp_and_restricted(self):
+        """In this order: `--tools` takes several values, and the boolean flag
+        after it is what closes the list."""
+        resolved = self.provider.resolve_model({"family": "opus"})
+        for mode in (base.MODE_PLAN, base.MODE_REVIEW):
+            command = self.provider.build_command(mode, resolved, self.project)
+            at = command.index("--tools")
+            self.assertEqual(
+                command[at : at + 4], ["--tools", "Read,Grep,Glob", "--strict-mcp-config", "--restricted"]
+            )
+            self.assertLess(command.index("--disallowed-tools"), at)
+            self.assertLess(command.index("--permission-mode"), at)
+
     def test_implement_mode_accepts_edits(self):
         resolved = self.provider.resolve_model({"family": "opus"})
         command = self.provider.build_command(base.MODE_IMPLEMENT, resolved, self.project)
         self.assertEqual(command[command.index("--permission-mode") + 1], "acceptEdits")
+        for flag in ("--tools", "--strict-mcp-config", "--restricted"):
+            self.assertNotIn(flag, command)
 
     def test_missing_cli_reports_cleanly(self):
         self.provider.which = lambda: None
@@ -498,6 +496,226 @@ class TestClaudeRoleOptions(IsolatedCase):
 
     def test_no_options_means_no_problems(self):
         self.assertEqual(self.provider.validate_options(None), [])
+
+
+SECRET = "sk-ant-abcdefghijklmnopqrs"
+
+
+class TestClaudeReadOnlyArguments(IsolatedCase):
+    """Raw arguments on a read-only Claude run: `--add-dir <path>` and nothing else."""
+
+    def setUp(self):
+        super().setUp()
+        self.provider = ClaudeProvider()
+
+    def refused(self, args, source="options.args"):
+        return self.provider.refused_read_only_args(args, source)
+
+    def test_each_loosening_spelling_is_refused(self):
+        cases = [
+            (["--tools", "default"], "'--tools'"),
+            (["--tools=default"], "'--tools'"),
+            (["--agents", "x"], "'--agents'"),
+            (["--plugin-dir", "d"], "'--plugin-dir'"),
+            (["--mcp-config", "x.json"], "'--mcp-config'"),
+            (["--permission-mode", "acceptEdits"], "'--permission-mode'"),
+            (["--allowedTools", "Bash"], "'--allowedTools'"),
+            (["--dangerously-skip-permissions"], "'--dangerously-skip-permissions'"),
+            (["--restricted"], "'--restricted'"),
+            (["Bash"], "a bare value"),
+            (["--add-dir"], "has no path after it"),
+            (["--add-dir", "--tools"], "'--tools'"),
+        ]
+        for args, expected in cases:
+            with self.subTest(args=args):
+                problems = self.refused(args)
+                self.assertTrue(problems)
+                self.assertIn(expected, " ".join(problems))
+                self.assertIn("only --add-dir <path>", problems[0])
+
+    def test_add_dir_is_accepted_in_both_spellings_and_repeated(self):
+        for args in (["--add-dir", "../x"], ["--add-dir=../x"], ["--add-dir", "a", "--add-dir", "b"]):
+            with self.subTest(args=args):
+                self.assertEqual(self.refused(args), [])
+
+    def test_a_refusal_never_shows_the_value(self):
+        helper = '{"apiKeyHelper":"%s"}' % SECRET
+        for args in (["--settings", helper], ["--settings=" + helper]):
+            with self.subTest(args=args):
+                message = " ".join(self.refused(args))
+                self.assertNotIn("sk-ant", message)
+                self.assertIn("'--settings'", message)
+                self.assertIn("token 1 of %d in options.args" % len(args), message)
+
+    def test_the_source_is_named(self):
+        self.assertIn("token 2 of 2 in --extra", self.refused(["--add-dir", "--x"], "--extra")[1])
+
+
+class TestCodexReadOnlyArguments(IsolatedCase):
+    """Codex takes no raw arguments on a read-only run, however spelled."""
+
+    def test_every_spelling_is_refused_by_name_only(self):
+        provider = CodexProvider()
+        cases = [
+            (["-s", "workspace-write"], ["'-s'", "a bare value"]),
+            (["-sdanger-full-access"], ["'-s'"]),
+            (["--sandbox=workspace-write"], ["'--sandbox'"]),
+            (["-a", "never"], ["'-a'"]),
+            (["--ask-for-approval=never"], ["'--ask-for-approval'"]),
+            (["--full-auto"], ["'--full-auto'"]),
+            (["--dangerously-bypass-approvals-and-sandbox"], ["'--dangerously-bypass-approvals-and-sand"]),
+            (["-c", "sandbox_mode=danger-full-access"], ["'-c'", "a bare value"]),
+            (["-c=sandbox_mode=danger-full-access"], ["'-c'"]),
+            (["-p", "prof"], ["'-p'"]),
+            (["--profile=prof"], ["'--profile'"]),
+            (["x"], ["a bare value"]),
+        ]
+        for args, expected in cases:
+            with self.subTest(args=args):
+                problems = provider.refused_read_only_args(args, "options.args")
+                self.assertEqual(len(problems), len(args))
+                message = " ".join(problems)
+                for name in expected:
+                    self.assertIn(name, message)
+                for value in ("workspace-write", "danger-full-access", "never", "prof"):
+                    self.assertNotIn(value, message.replace("'--profile'", ""))
+                self.assertIn("read-only codex runs accept no raw arguments", problems[0])
+
+
+class TestDescribeRawArgument(unittest.TestCase):
+    def test_naming_rules(self):
+        describe = base.Provider.describe_raw_argument
+        self.assertEqual(describe('--settings={"hooks":1}'), "'--settings'")
+        self.assertEqual(describe("--full-auto"), "'--full-auto'")
+        self.assertEqual(describe("-sdanger-full-access"), "'-s'")
+        self.assertEqual(describe("-c"), "'-c'")
+        self.assertEqual(describe("value"), "a bare value")
+        self.assertEqual(describe("-"), "a bare value")
+        self.assertEqual(describe(""), "a bare value")
+
+    def test_a_long_name_is_cut(self):
+        self.assertEqual(base.Provider.describe_raw_argument("--" + "x" * 80), "'%s'" % ("--" + "x" * 38))
+
+
+class _Recorder:
+    """`execution.execute` replaced by a recording, for runs through `Provider.run`."""
+
+    def __init__(self, case):
+        self.commands = []
+        original = execution.execute
+        case.addCleanup(setattr, execution, "execute", original)
+        execution.execute = self
+
+    def __call__(self, command, cwd, prompt="", timeout=None, idle_timeout=None, env=None):
+        self.commands.append(list(command))
+        return execution.ExecOutcome(0, "done", "", 0.1)
+
+
+class TestClaudeReadOnlyRun(IsolatedCase):
+    def setUp(self):
+        super().setUp()
+        self.recorder = _Recorder(self)
+        self.provider = ClaudeProvider()
+        self.provider.which = lambda: "claude"
+        self.provider.version = lambda: ("2.1.283 (Claude Code)", None)
+        self.help(CLAUDE_HELP)
+
+    def help(self, stdout, returncode=0, calls=None):
+        def capture(command, timeout=30):
+            if calls is not None:
+                calls.append(list(command))
+            if stdout is None:
+                return None
+            return _FakeCompleted(stdout, "", returncode)
+
+        self.provider._capture = capture
+
+    def run_claude(self, mode=base.MODE_REVIEW, **kwargs):
+        return self.provider.run("prompt", mode, self.project, model_spec={"family": "opus"}, **kwargs)
+
+    def test_a_refused_argument_starts_nothing_and_is_not_echoed(self):
+        result = self.run_claude(options={"args": ["--tools", "default"]})
+        self.assertFalse(result.ok)
+        self.assertEqual(result.exit_code, 2)
+        self.assertFalse(result.invoked)
+        self.assertEqual(result.command, ["claude"])
+        self.assertEqual(self.recorder.commands, [])
+        self.assertIn("'--tools'", result.stderr)
+        self.assertNotIn("default", result.stderr)
+        self.assertEqual(len(result.stderr.splitlines()), 1)
+
+    def test_add_dir_reaches_the_end_of_the_command(self):
+        result = self.run_claude(extra_args=["--add-dir", "../x"])
+        self.assertTrue(result.ok)
+        command = self.recorder.commands[0]
+        self.assertEqual(command[-2:], ["--add-dir", "../x"])
+        self.assertIn("--restricted", command)
+
+    def test_implement_forwards_raw_arguments_untouched(self):
+        self.run_claude(base.MODE_IMPLEMENT, options={"args": ["--tools", "default"]})
+        self.assertEqual(self.recorder.commands[0][-2:], ["--tools", "default"])
+
+    def test_help_is_read_once_for_every_question(self):
+        calls = []
+        self.help(CLAUDE_HELP, calls=calls)
+        self.provider.permission_modes()
+        self.provider.list_models()
+        self.provider.read_only_enforcement()
+        self.assertEqual(calls, [["claude", "--help"]])
+
+    def test_enforcement_is_verified_by_the_current_help(self):
+        report = self.provider.read_only_enforcement()
+        self.assertEqual(report["status"], "verified")
+        self.assertIn("--restricted", report["mechanism"])
+        self.assertIn("--tools Read,Grep,Glob", report["mechanism"])
+
+    def test_an_old_cli_is_unsupported_and_names_only_what_is_missing(self):
+        self.help(CLAUDE_HELP_OLD)
+        report = self.provider.read_only_enforcement()
+        self.assertEqual(report["status"], "unsupported")
+        self.assertEqual(report["missing"], ["--tools"])
+        self.assertIn("claude 2.1.283", report["detail"])
+        result = self.run_claude()
+        self.assertEqual(result.exit_code, 2)
+        self.assertFalse(result.invoked)
+        self.assertEqual(self.recorder.commands, [])
+
+    def test_unreadable_help_is_unverified_and_refused(self):
+        for stdout, code in ((None, 0), ("boom", 1)):
+            with self.subTest(returncode=code):
+                base.clear_discovery_cache()
+                self.help(stdout, code)
+                self.assertEqual(self.provider.read_only_enforcement()["status"], "unverified")
+                result = self.run_claude()
+                self.assertEqual(result.exit_code, 2)
+                self.assertFalse(result.invoked)
+                self.assertIn("could not read 'claude --help'", result.stderr)
+
+    def test_implement_is_not_held_to_read_only_support(self):
+        self.help(None)
+        self.assertTrue(self.run_claude(base.MODE_IMPLEMENT).ok)
+        self.assertEqual(len(self.recorder.commands), 1)
+
+    def test_a_missing_cli_is_reported_as_missing_not_unverified(self):
+        self.provider.which = lambda: None
+        self.help(None)
+        result = self.run_claude()
+        self.assertEqual(result.exit_code, 127)
+        self.assertIn("not found on PATH", result.stderr)
+        self.assertNotIn("unverified", result.stderr)
+
+
+class TestReadOnlyEnforcementReports(IsolatedCase):
+    def test_codex_is_partial_and_says_why(self):
+        report = CodexProvider().read_only_enforcement()
+        self.assertEqual(report["status"], "partial")
+        self.assertIn("MCP", report["detail"])
+
+    def test_mock_is_verified(self):
+        self.assertEqual(MockProvider().read_only_enforcement()["status"], "verified")
+
+    def test_the_base_reports_nothing(self):
+        self.assertEqual(base.Provider().read_only_enforcement()["status"], "unspecified")
 
 
 class TestCodexRoleOptions(IsolatedCase):

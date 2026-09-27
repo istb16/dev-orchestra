@@ -9,7 +9,7 @@ import sys
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 
-from helpers import IsolatedCase, has_git
+from helpers import CLAUDE_HELP, CLAUDE_HELP_OLD, IsolatedCase, has_git
 
 from orchestrator import cli, providers
 from orchestrator import config as config_mod
@@ -249,6 +249,86 @@ class TestDoctor(IsolatedCase):
         run_cli("reviewer", "remove", "codex-general")
         code, _, _ = run_cli("doctor", "--fast", "--strict")
         self.assertEqual(code, 1)
+
+
+class TestDoctorReadOnlyEnforcement(IsolatedCase):
+    def setUp(self):
+        super().setUp()
+        run_cli("config", "setup", "--defaults")
+
+    def pretend_codex_is_installed(self):
+        from orchestrator.providers.codex import CodexProvider
+
+        for name, value in (
+            ("which", lambda self: "codex"),
+            ("version", lambda self: ("codex-cli 0.154.0", None)),
+            ("configured_model", lambda self: None),
+            ("_capture", lambda self, command, timeout=30: _Completed("", 1)),
+        ):
+            self.addCleanup(setattr, CodexProvider, name, getattr(CodexProvider, name))
+            setattr(CodexProvider, name, value)
+
+    def doctor(self, *argv):
+        return json.loads(run_cli("doctor", "--json", *argv)[1])
+
+    def test_fast_does_not_check(self):
+        report = self.doctor("--fast")
+        self.assertEqual(report["providers"]["claude"]["read_only_enforcement"]["status"], "not-checked")
+
+    def test_verified_and_partial_are_reported_with_what_they_cover(self):
+        pretend_claude_is_installed(self)
+        self.pretend_codex_is_installed()
+        report = self.doctor()
+        claude = report["providers"]["claude"]["read_only_enforcement"]
+        self.assertEqual(claude["status"], "verified")
+        self.assertIn("--tools Read,Grep,Glob --strict-mcp-config --restricted", claude["mechanism"])
+        self.assertEqual(report["providers"]["codex"]["read_only_enforcement"]["status"], "partial")
+        _, out, _ = run_cli("doctor")
+        self.assertIn("Read-only runs: enforced by --permission-mode plan", out)
+        self.assertIn("Read-only runs: enforced by -s read-only (CLI sandbox); ", out)
+        self.assertIn("MCP servers were not examined", out)
+        self.assertFalse(any("read-only runs are refused" in p for p in report["problems"]))
+
+    def test_an_old_cli_is_not_enforceable_and_a_problem(self):
+        pretend_claude_is_installed(self, CLAUDE_HELP_OLD)
+        report = self.doctor()
+        self.assertEqual(report["providers"]["claude"]["read_only_enforcement"]["status"], "unsupported")
+        refused = [p for p in report["problems"] if "read-only runs are refused" in p]
+        self.assertTrue(any(p.startswith("Orchestrator:") for p in refused))
+        self.assertTrue(any(p.startswith("Architect:") for p in refused))
+        self.assertTrue(any(p.startswith("Reviewer claude-general:") for p in refused))
+        _, out, _ = run_cli("doctor")
+        self.assertIn("Read-only runs: NOT ENFORCEABLE -- ", out)
+        self.assertEqual(run_cli("doctor", "--strict")[0], 1)
+
+    def test_a_tier_is_checked_against_its_own_provider(self):
+        pretend_claude_is_installed(self, CLAUDE_HELP_OLD)
+        self.pretend_codex_is_installed()
+        run_cli("config", "set", "architect.provider", "codex")
+        run_cli("config", "set", "architect.model_tiers.light.provider", "claude")
+        report = self.doctor()
+        refused = [p for p in report["problems"] if "read-only runs are refused" in p]
+        self.assertFalse(any(p.startswith("Architect:") for p in refused), refused)
+        self.assertTrue(any(p.startswith("Architect (tier light):") for p in refused), refused)
+
+    def test_a_tier_keeping_the_provider_is_not_reported_twice(self):
+        pretend_claude_is_installed(self, CLAUDE_HELP_OLD)
+        run_cli("config", "set", "architect.provider", "claude")
+        run_cli("config", "set", "architect.model_tiers.light.model.family", "opus")
+        report = self.doctor()
+        refused = [p for p in report["problems"] if "read-only runs are refused" in p]
+        self.assertTrue(any(p.startswith("Architect:") for p in refused), refused)
+        self.assertFalse(any(p.startswith("Architect (tier light):") for p in refused), refused)
+
+    def test_unreadable_help_is_unverified(self):
+        pretend_claude_is_installed(self, None)
+        _, out, _ = run_cli("doctor")
+        self.assertIn("Read-only runs: UNVERIFIED -- could not read 'claude --help'", out)
+
+    def test_the_orchestrator_counts_as_read_only_for_ignored_options(self):
+        run_cli("config", "set", "orchestrator.options.permission_mode", "bypassPermissions")
+        _, out, _ = run_cli("doctor", "--fast")
+        self.assertIn("Orchestrator: options.permission_mode ignored", out)
 
 
 #: A user adapter that raises from whichever method ``RAISE_IN`` names. Its
@@ -554,6 +634,216 @@ class TestRunCommand(IsolatedCase):
         code, out, _ = run_cli("run", "solo", "--mode", "review", "--prompt", "review this")
         self.assertEqual(code, 0)
         self.assertIn("NO_FINDINGS", out)
+
+
+SECRET_SETTINGS = '--settings={"apiKeyHelper":"sk-ant-abcdefghijklmnopqrs"}'
+
+
+class _Completed:
+    def __init__(self, stdout="", returncode=0):
+        self.stdout = stdout
+        self.stderr = ""
+        self.returncode = returncode
+
+
+def pretend_claude_is_installed(case, help_text=CLAUDE_HELP):
+    """The claude adapter answering from fixtures: installed, 2.1.283, and
+    ``--help`` reading as ``help_text`` (None: it cannot be read)."""
+    from orchestrator.providers.claude import ClaudeProvider
+
+    def capture(self, command, timeout=30):
+        return None if help_text is None else _Completed(help_text)
+
+    for name, value in (
+        ("which", lambda self: "claude"),
+        ("version", lambda self: ("2.1.283 (Claude Code)", None)),
+        ("_capture", capture),
+    ):
+        case.addCleanup(setattr, ClaudeProvider, name, getattr(ClaudeProvider, name))
+        setattr(ClaudeProvider, name, value)
+
+
+class TestReadOnlyRuns(IsolatedCase):
+    """What `run` refuses for a read-only role, and that refusing costs nothing."""
+
+    def setUp(self):
+        super().setUp()
+        run_cli("config", "setup", "--defaults")
+
+    def used(self, role="architect"):
+        return json.loads(run_cli("budget", "show", "--json")[1])["budgets"][role]["used"]
+
+    def write_project(self, text):
+        self.write(".dev-orchestra.yaml", "version: 1\n" + text)
+
+    def test_implement_mode_is_refused_for_a_read_only_role(self):
+        code, _, err = run_cli("run", "architect", "--mode", "implement", "--prompt", "x")
+        self.assertEqual(code, 2)
+        self.assertIn("--mode implement is not accepted", err)
+        self.assertEqual(self.used(), 0)
+
+    def test_a_reviewer_is_refused_implement_mode_too(self):
+        run_cli("reviewer", "add", "--provider", "mock", "--id", "solo", "--role", "security")
+        code, _, err = run_cli("run", "solo", "--mode", "implement", "--prompt", "x")
+        self.assertEqual(code, 2)
+        self.assertIn("solo: refused", err)
+
+    def test_tightening_an_implement_role_is_still_allowed(self):
+        pretend_claude_is_installed(self)
+        code, out, _ = run_cli("run", "implementer", "--mode", "review", "--print-command")
+        self.assertEqual(code, 0)
+        self.assertIn("--restricted", out)
+
+    def test_a_loosening_extra_is_refused_before_anything_is_spent(self):
+        code, _, err = run_cli("run", "architect", "--prompt", "x", "--extra", "--tools", "default")
+        self.assertEqual(code, 2)
+        self.assertIn("'--tools'", err)
+        self.assertIn("in --extra", err)
+        self.assertEqual(self.used(), 0)
+
+    def test_a_refused_value_is_never_printed(self):
+        code, _, err = run_cli("run", "architect", "--prompt", "x", "--extra", SECRET_SETTINGS)
+        self.assertEqual(code, 2)
+        self.assertIn("'--settings'", err)
+        self.assertNotIn("sk-ant", err)
+
+    def test_the_printed_command_carries_the_allowlist(self):
+        pretend_claude_is_installed(self)
+        code, out, _ = run_cli("run", "architect", "--print-command", "--extra", "--add-dir", "../x")
+        self.assertEqual(code, 0)
+        self.assertIn("--tools Read,Grep,Glob --strict-mcp-config --restricted", out)
+        self.assertTrue(out.strip().endswith("--add-dir ../x"))
+
+    def test_an_implement_role_keeps_its_raw_arguments(self):
+        pretend_claude_is_installed(self)
+        code, out, _ = run_cli("run", "implementer", "--print-command", "--extra", "--tools", "default")
+        self.assertEqual(code, 0)
+        self.assertTrue(out.strip().endswith("--tools default"))
+
+    def test_project_args_are_refused_even_when_they_are_add_dir(self):
+        self.write_project('architect:\n  options:\n    args: ["--add-dir", "../x"]\n')
+        code, _, err = run_cli("run", "architect", "--prompt", "x")
+        self.assertEqual(code, 2)
+        self.assertIn("set in the project config (.dev-orchestra.yaml)", err)
+        self.assertNotIn("../x", err)
+        self.assertEqual(self.used(), 0)
+        self.assertEqual(run_cli("run", "architect", "--print-command")[0], 2)
+
+    def test_the_same_args_in_the_global_file_are_accepted(self):
+        pretend_claude_is_installed(self)
+        run_cli("config", "set", "architect.options.args", '["--add-dir", "../x"]')
+        code, out, _ = run_cli("run", "architect", "--print-command")
+        self.assertEqual(code, 0)
+        self.assertTrue(out.strip().endswith("--add-dir ../x"))
+
+    def test_a_project_reviewer_with_args_is_refused(self):
+        self.write_project(
+            "reviewers:\n  - id: mine\n    provider: mock\n    role: general\n"
+            '    options:\n      args: ["--add-dir", "../x"]\n'
+        )
+        code, _, err = run_cli("run", "mine", "--mode", "review", "--prompt", "x")
+        self.assertEqual(code, 2)
+        self.assertIn("reviewer mine: options.args is set in the project config", err)
+
+    def test_a_project_tier_is_refused_and_the_global_base_is_not(self):
+        pretend_claude_is_installed(self)
+        run_cli("config", "set", "architect.options.args", '["--add-dir", "../g"]')
+        self.write_project(
+            'architect:\n  model_tiers:\n    light:\n      options:\n        args: ["--add-dir", "../x"]\n'
+        )
+        self.assertEqual(run_cli("run", "architect", "--tier", "light", "--print-command")[0], 2)
+        code, out, _ = run_cli("run", "architect", "--print-command")
+        self.assertEqual(code, 0)
+        self.assertTrue(out.strip().endswith("--add-dir ../g"))
+
+    def test_an_implement_role_may_take_args_from_the_project(self):
+        self.write_project('implementer:\n  provider: mock\n  options:\n    args: ["--anything"]\n')
+        code, out, _ = run_cli("run", "implementer", "--print-command")
+        self.assertEqual(code, 0)
+        self.assertIn("--anything", out)
+
+    def test_a_cli_without_the_flags_is_refused(self):
+        pretend_claude_is_installed(self, CLAUDE_HELP_OLD)
+        code, _, err = run_cli("run", "architect", "--prompt", "x")
+        self.assertEqual(code, 2)
+        self.assertIn("does not advertise", err)
+        self.assertIn("missing: --tools", err)
+        self.assertEqual(self.used(), 0)
+
+    def test_a_missing_cli_is_still_reported_as_missing(self):
+        from orchestrator.providers.claude import ClaudeProvider
+
+        self.addCleanup(setattr, ClaudeProvider, "which", ClaudeProvider.which)
+        ClaudeProvider.which = lambda self: None
+        _, _, err = run_cli("run", "architect", "--prompt", "x")
+        self.assertIn("not found on PATH", err)
+        self.assertNotIn("unverified", err)
+
+    def test_config_warnings_do_not_stop_other_commands(self):
+        status_before = run_cli("status")[0]
+        loosening = '["--permission-mode","acceptEdits"]'
+        code, _, err = run_cli("config", "set", "architect.options.args", loosening)
+        self.assertEqual(code, 0)
+        self.assertIn("warning: architect: read-only run: '--permission-mode'", err)
+        code, out, _ = run_cli("config", "validate")
+        self.assertEqual(code, 0)
+        self.assertIn("Warnings:", out)
+        payload = json.loads(run_cli("config", "validate", "--json")[1])
+        self.assertTrue(payload["valid"])
+        self.assertTrue(any("'--permission-mode'" in w for w in payload["warnings"]))
+        self.assertEqual(run_cli("status")[0], status_before)
+        self.assertEqual(run_cli("budget", "show")[0], 0)
+        self.assertEqual(run_cli("run", "architect", "--prompt", "x")[0], 2)
+
+    def test_project_args_are_warned_about_before_a_run(self):
+        self.write_project('architect:\n  options:\n    args: ["--add-dir", "x"]\n')
+        payload = json.loads(run_cli("config", "validate", "--json")[1])
+        self.assertTrue(any("set in the project config" in w for w in payload["warnings"]))
+        report = json.loads(run_cli("doctor", "--fast", "--json")[1])
+        self.assertTrue(any("set in the project config" in p for p in report["problems"]))
+        self.assertEqual(report["config"]["warnings"], payload["warnings"])
+        self.assertEqual(run_cli("doctor", "--fast", "--strict")[0], 1)
+
+
+class TestReadOnlyRefusalsReachTheJob(IsolatedCase):
+    """A worker's stderr goes nowhere, so each refusal is in the job record."""
+
+    def setUp(self):
+        super().setUp()
+        run_cli("config", "setup", "--defaults")
+        self.workspace = self.cli_workspace()
+        self.prompt = self.write("brief.md", "plan it\n")
+
+    def refused_job(self, *extra):
+        from orchestrator import jobs as jobs_mod
+
+        jobs_mod.write_job(self.workspace, {"id": "p-1", "stage": "architect", "status": "running"})
+        argv = ["run", "architect", "--prompt-file", self.prompt]
+        argv += ["--job-file", jobs_mod.job_path(self.workspace, "p-1"), *extra]
+        code, _, err = run_cli(*argv)
+        self.assertEqual(code, 2)
+        job = jobs_mod.read_job(self.workspace, "p-1")
+        self.assertEqual(job["status"], "failed")
+        self.assertTrue(job["error"])
+        self.assertIn(job["error"].splitlines()[0], err)
+        self.assertNotIn("sk-ant", job["error"])
+        return job
+
+    def test_a_refused_global_arg(self):
+        run_cli("config", "set", "architect.options.args", '["--settings=sk-ant-abcdefghijklmnopqrs"]')
+        self.assertIn("'--settings'", self.refused_job()["error"])
+
+    def test_a_refused_project_arg(self):
+        project = 'version: 1\narchitect:\n  options:\n    args: ["--add-dir", "x"]\n'
+        self.write(".dev-orchestra.yaml", project)
+        self.assertIn("set in the project config", self.refused_job()["error"])
+
+    def test_a_refused_mode(self):
+        self.assertIn("--mode implement", self.refused_job("--mode", "implement")["error"])
+
+    def test_a_cli_that_cannot_enforce(self):
+        pretend_claude_is_installed(self, CLAUDE_HELP_OLD)
+        self.assertIn("does not advertise", self.refused_job()["error"])
 
 
 class TestEmptyPromptIsRefused(IsolatedCase):

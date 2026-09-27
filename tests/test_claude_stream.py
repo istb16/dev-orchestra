@@ -273,6 +273,9 @@ class TestCommandShape(IsolatedCase):
         command = self.provider.build_command(base.MODE_REVIEW, self.resolved, self.project)
         self.assertEqual(command[command.index("--permission-mode") + 1], "plan")
         self.assertIn("--disallowed-tools", command)
+        self.assertEqual(command[command.index("--tools") + 1], "Read,Grep,Glob")
+        self.assertIn("--restricted", command)
+        self.assertEqual(self.provider.read_only_enforcement()["status"], "verified")
 
 
 class TestIdleDeadlineApplicability(IsolatedCase):
@@ -306,6 +309,9 @@ class _Help:
         "                                        'sonnet').\n"
         '  --permission-mode <mode>              (choices: "acceptEdits", "plan",\n'
         '                                        "bypassPermissions")\n'
+        "  --restricted                          Restricted mode: removes the built-in\n"
+        "  --strict-mcp-config                   Only use MCP servers from --mcp-config,\n"
+        "  --tools <tools...>                    Specify the list of available tools from\n"
     )
 
 

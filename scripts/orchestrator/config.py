@@ -17,7 +17,7 @@ import copy
 import os
 import re
 import sys
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, NamedTuple, Optional, Sequence, Tuple, Union
 
 from . import miniyaml
 
@@ -30,6 +30,11 @@ PROJECT_CONFIG_NAMES = (
 )
 
 KNOWN_ROLES = ("orchestrator", "architect", "implementer", "review_fixer")
+
+#: Roles whose runs are plan or review, never implement. Reviewers are too.
+READ_ONLY_ROLES = ("orchestrator", "architect")
+
+_MISSING = object()
 
 #: Tier names are typed on a command line and read in a report, so they are
 #: kept to the shape of a word rather than allowed to be a sentence.
@@ -350,16 +355,41 @@ class LoadedConfig:
         global_path: Optional[str],
         project_path: Optional[str],
         used_defaults: bool,
+        global_layer: Optional[Dict[str, Any]] = None,
+        project_layer: Optional[Dict[str, Any]] = None,
     ) -> None:
         self.data = data
         self.global_path = global_path
         self.project_path = project_path
         self.used_defaults = used_defaults
+        #: Each file as it was read, before merging -- kept to say where a
+        #: merged value came from.
+        self.global_layer = global_layer or {}
+        self.project_layer = project_layer or {}
 
     @property
     def exists(self) -> bool:
         """True when at least one config file was found on disk."""
         return bool(self.global_path or self.project_path)
+
+    def layer_of(self, path: Union[str, Sequence[Any]]) -> str:
+        """``project``, ``global`` or ``default``: the layer a value came from.
+
+        Exact because of how layers merge: mappings merge key by key, and a
+        list or a tier's ``options`` is replaced whole. So when the project
+        file names the key, the merged value is the project's; otherwise it is
+        the global file's, if that names it.
+
+        ``path`` is dotted, or a list of literal keys: a tier name may contain
+        a dot, and splitting it would look up a key nobody wrote -- labeling a
+        project value ``default``.
+        """
+        parts = _split_path(path) if isinstance(path, str) else list(path)
+        if _get_parts(self.project_layer, parts, _MISSING) is not _MISSING:
+            return "project"
+        if _get_parts(self.global_layer, parts, _MISSING) is not _MISSING:
+            return "global"
+        return "default"
 
     def role(self, name: str, tier: Optional[str] = None) -> Dict[str, Any]:
         """One role's spec, optionally as one of its tiers.
@@ -581,14 +611,25 @@ def load(start: Optional[str] = None, validate_result: bool = True) -> LoadedCon
     data = default_config()
     gpath = global_config_path()
     global_found = gpath if os.path.isfile(gpath) else None
+    global_layer: Dict[str, Any] = {}
     if global_found:
-        data = deep_merge(data, read_config_file(global_found))
+        global_layer = read_config_file(global_found)
+        data = deep_merge(data, global_layer)
 
     ppath = find_project_config(start)
+    project_layer: Dict[str, Any] = {}
     if ppath:
-        data = deep_merge(data, read_config_file(ppath))
+        project_layer = read_config_file(ppath)
+        data = deep_merge(data, project_layer)
 
-    loaded = LoadedConfig(data, global_found, ppath, not (global_found or ppath))
+    loaded = LoadedConfig(
+        data,
+        global_found,
+        ppath,
+        not (global_found or ppath),
+        global_layer=copy.deepcopy(global_layer),
+        project_layer=copy.deepcopy(project_layer),
+    )
     if validate_result:
         problems = validate(data)
         if problems:
@@ -788,6 +829,131 @@ def merge_tier(spec: Dict[str, Any], tier: Dict[str, Any]) -> Dict[str, Any]:
     return merged
 
 
+# --------------------------------------------------------------------------- read-only raw arguments
+
+
+class RawArgs(NamedTuple):
+    """The raw ``options.args`` one read-only run would get, and whose they are."""
+
+    #: ``architect``, ``architect.model_tiers.light`` or ``reviewers[0]``.
+    label: str
+    #: ``architect``, ``architect (tier light)`` or ``reviewer <id>``.
+    display: str
+    #: Set for a reviewer only.
+    reviewer_id: str
+    provider: str
+    args: List[str]
+    #: ``project``, ``global`` or ``default``.
+    layer: str
+
+
+def _string_args(spec: Dict[str, Any]) -> List[str]:
+    options = spec.get("options")
+    args = options.get("args") if isinstance(options, dict) else None
+    return [str(item) for item in args] if isinstance(args, list) else []
+
+
+def read_only_raw_args(loaded: LoadedConfig) -> List[RawArgs]:
+    """Every read-only run's configured ``options.args``, with its layer.
+
+    Broken entries are skipped: ``validate`` reports those already.
+    """
+    found: List[RawArgs] = []
+    for role in READ_ONLY_ROLES:
+        spec = loaded.data.get(role)
+        if not isinstance(spec, dict):
+            continue
+        key = "%s.options.args" % role
+        provider = str(spec.get("provider") or "")
+        found.append(RawArgs(role, role, "", provider, _string_args(spec), loaded.layer_of(key)))
+        tiers = spec.get("model_tiers")
+        tier_items = tiers.items() if isinstance(tiers, dict) else ()
+        for tier, entry in tier_items:
+            if not isinstance(entry, dict):
+                continue
+            merged = merge_tier(spec, entry)
+            # A tier's ``options`` replaces the role's whole, so the args are
+            # the tier's own when it has options at all.
+            tier_key = [role, "model_tiers", tier, "options", "args"] if "options" in entry else key
+            found.append(
+                RawArgs(
+                    "%s.model_tiers.%s" % (role, tier),
+                    "%s (tier %s)" % (role, tier),
+                    "",
+                    str(merged.get("provider") or ""),
+                    _string_args(merged),
+                    loaded.layer_of(tier_key),
+                )
+            )
+    reviewers = loaded.data.get("reviewers")
+    for index, reviewer in enumerate(reviewers if isinstance(reviewers, list) else []):
+        if not isinstance(reviewer, dict):
+            continue
+        reviewer_id = str(reviewer.get("id") or "")
+        found.append(
+            RawArgs(
+                "reviewers[%d]" % index,
+                "reviewer %s" % (reviewer_id or index + 1),
+                reviewer_id,
+                str(reviewer.get("provider") or ""),
+                _string_args(reviewer),
+                loaded.layer_of("reviewers[%d].options.args" % index),
+            )
+        )
+    return found
+
+
+def _project_refused(loaded: LoadedConfig) -> List[Tuple[RawArgs, str]]:
+    """Read-only runs whose raw arguments come from the project file.
+
+    Refused whatever they are, ``--add-dir`` included. The project file can be
+    committed, and it is read without asking, so it can come with the branch
+    under review -- and a branch that names its own reviewers' directories
+    can widen what they read to anything the user can.
+    """
+    name = os.path.basename(loaded.project_path or "") or "the project file"
+    return [
+        (
+            entry,
+            "%s: options.args is set in the project config (%s); read-only roles take raw "
+            "arguments only from the global config or from --extra" % (entry.display, name),
+        )
+        for entry in read_only_raw_args(loaded)
+        if entry.layer == "project" and entry.args
+    ]
+
+
+def project_raw_arg_refusals(loaded: LoadedConfig) -> Dict[str, str]:
+    """``label`` -> why that run is refused. Empty when nothing is."""
+    return {entry.label: message for entry, message in _project_refused(loaded)}
+
+
+def reviewer_raw_arg_refusals(loaded: LoadedConfig) -> Dict[str, str]:
+    """The same refusals, by reviewer id, for the review path."""
+    return {entry.reviewer_id: message for entry, message in _project_refused(loaded) if entry.reviewer_id}
+
+
+def read_only_arg_warnings(loaded: LoadedConfig) -> List[str]:
+    """What a read-only run would refuse, said before anything is run.
+
+    Deliberately not part of ``validate``: that makes ``load`` raise, and
+    every command -- ``status``, ``budget`` -- would stop over one role's raw
+    arguments when only that role's runs are refused.
+    """
+    from .providers import get_provider
+
+    warnings = [message for _entry, message in _project_refused(loaded)]
+    for entry in read_only_raw_args(loaded):
+        if entry.layer == "project" or not entry.args:
+            continue
+        try:
+            problems = get_provider(entry.provider).refused_read_only_args(entry.args, "options.args")
+        except Exception:
+            continue  # an unknown provider or a broken adapter is validate's to report
+        warnings.extend("%s: %s" % (entry.display, problem) for problem in problems)
+    return warnings
+
+
 def _validate_tiers(spec: Dict[str, Any], label: str, providers: List[str]) -> List[str]:
     """Every tier is checked as the role it would become.
 
@@ -898,9 +1064,17 @@ def set_path(data: Dict[str, Any], dotted: str, value: Any) -> Dict[str, Any]:
 
 
 def get_path(data: Dict[str, Any], dotted: str, default: Any = None) -> Any:
+    try:
+        parts = _split_path(dotted)
+    except ConfigError:
+        return default
+    return _get_parts(data, parts, default)
+
+
+def _get_parts(data: Dict[str, Any], parts: Sequence[Any], default: Any) -> Any:
     node: Any = data
     try:
-        for part in _split_path(dotted):
+        for part in parts:
             node = _descend(node, part, create=False)
     except (KeyError, IndexError, TypeError, ConfigError):
         return default

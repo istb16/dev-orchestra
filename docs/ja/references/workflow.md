@@ -1,4 +1,4 @@
-<!-- translated-from: references/workflow.md sha256:a97af2b44a8d3661d001e093cc8482893e108139a39cda17dca467febeca6108 -->
+<!-- translated-from: references/workflow.md sha256:548bb97433d910f7a52749c1a023a76456a40fcbf085b541c0e4d7882500013a -->
 
 > この文書は [references/workflow.md](../../../references/workflow.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -112,6 +112,7 @@ design リクエストは自分で書いてください。Architect はこの会
 - Entry point: app/controllers/orders_controller.rb:42
 - Related: app/services/pricing.rb, spec/services/pricing_spec.rb
 - The project uses <framework/conventions you observed>
+- History that matters: <git log --oneline -- path, or blame of the lines in question -- the architect has no shell>
 
 ## Constraints
 - Must stay backward compatible with the v1 API
