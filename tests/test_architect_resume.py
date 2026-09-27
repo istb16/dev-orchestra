@@ -166,7 +166,8 @@ class TestTheArgumentsAreChecked(ResumeCase):
             os.symlink(self.project, link, target_is_directory=True)
         except (OSError, NotImplementedError) as exc:
             self.skipTest("cannot create a directory link here: %s" % exc)
-        self.addCleanup(os.remove if os.name != "nt" else os.rmdir, link)
+        # The link sits in the test's temporary directory, which tearDown
+        # removes whole -- the link with it, never what it points to.
         plan = self.cli_workspace().plan_path
         output = os.path.join(link, os.path.relpath(plan, self.project))
         code, _, err = run_cli(
