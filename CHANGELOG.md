@@ -10,6 +10,8 @@ The public surface covered by that promise is: the configuration schema, the
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-09-27
+
 ### Added
 
 - **`optimization report` scores each reviewer.** A block per stage lists,
@@ -1670,7 +1672,8 @@ First release.
   none of which invoke a real CLI.
 - CI on Linux, macOS and Windows: lint, tests, skill validation.
 
-[Unreleased]: https://github.com/istb16/dev-orchestra/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/istb16/dev-orchestra/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/istb16/dev-orchestra/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/istb16/dev-orchestra/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/istb16/dev-orchestra/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/istb16/dev-orchestra/compare/v0.7.0...v0.8.0
