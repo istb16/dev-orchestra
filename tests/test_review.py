@@ -409,6 +409,90 @@ class TestFanOut(IsolatedCase):
         self.assertGreater(run.duration, 0)
         self.assertTrue(run.invoked)
 
+    def test_a_reviewer_with_refused_raw_arguments_fails_alone(self):
+        """Refused by the gate in `Provider.run`: nothing is started, the error
+        is one line naming the flag, and the other reviewer still reports."""
+        claude = config_mod.make_reviewer("c1", "claude", "opus")
+        claude["options"] = {"args": ["--tools", "default"]}
+        runs = review_mod.run_reviews([reviewer("r1"), claude], self.workspace)
+        by_id = {run.reviewer["id"]: run for run in runs}
+        self.assertEqual(by_id["r1"].status, "ok")
+        self.assertEqual(by_id["c1"].status, "failed")
+        self.assertFalse(by_id["c1"].invoked)
+        self.assertIn("'--tools'", by_id["c1"].error)
+        self.assertNotIn("default", by_id["c1"].error)
+
+    def test_review_run_fails_a_project_reviewer_with_raw_arguments(self):
+        import io
+        from contextlib import redirect_stderr, redirect_stdout
+
+        from orchestrator import cli
+
+        self.write(
+            ".dev-orchestra.yaml",
+            # quality: a snapshot this small would otherwise cut the panel to
+            # one reviewer, and r2 would never run.
+            "version: 1\noptimization:\n  level: quality\nreviewers:\n"
+            "  - id: r1\n    provider: mock\n    role: general\n"
+            '    options:\n      args: ["--add-dir", "x"]\n'
+            "  - id: r2\n    provider: mock\n    role: general\n",
+        )
+        review_mod.create_snapshot(self.workspace)
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            cli.main(["review", "run"])
+        said = out.getvalue() + err.getvalue()
+        self.assertIn("1 successful, 1 failed", out.getvalue())
+        self.assertIn("reviewer r1: options.args is set in the project config", said)
+
+    def test_a_mock_reviewer_passes_through_the_same_gate(self):
+        mock = reviewer("r2")
+        mock["options"] = {"args": ["x"]}
+        runs = review_mod.run_reviews([reviewer("r1"), mock], self.workspace)
+        self.assertEqual([run.status for run in runs], ["ok", "failed"])
+        self.assertIn("a bare value", runs[1].error)
+
+    def test_a_refused_reviewer_is_not_run(self):
+        started = []
+        from orchestrator.providers.mock import MockProvider
+
+        original = MockProvider._launch
+
+        def record(provider, prompt, *args, **kwargs):
+            started.append(prompt)
+            return original(provider, prompt, *args, **kwargs)
+
+        MockProvider._launch = record
+        self.addCleanup(setattr, MockProvider, "_launch", original)
+        runs = review_mod.run_reviews(
+            [reviewer("r1"), reviewer("r2")], self.workspace, refusals={"r2": "reviewer r2: refused here"}
+        )
+        self.assertEqual([run.status for run in runs], ["ok", "failed"])
+        self.assertEqual(runs[1].error, "reviewer r2: refused here")
+        self.assertFalse(runs[1].invoked)
+        self.assertEqual(len(started), 1)
+
+    def test_a_claude_that_cannot_enforce_fails_its_reviewer(self):
+        from helpers import CLAUDE_HELP_OLD
+
+        from orchestrator.providers.claude import ClaudeProvider
+
+        class Completed:
+            stdout, stderr, returncode = CLAUDE_HELP_OLD, "", 0
+
+        for name, value in (
+            ("which", lambda self: "claude"),
+            ("version", lambda self: ("2.1.283 (Claude Code)", None)),
+            ("_capture", lambda self, command, timeout=30: Completed()),
+        ):
+            self.addCleanup(setattr, ClaudeProvider, name, getattr(ClaudeProvider, name))
+            setattr(ClaudeProvider, name, value)
+        claude = config_mod.make_reviewer("c1", "claude", "opus")
+        runs = review_mod.run_reviews([reviewer("r1"), claude], self.workspace)
+        self.assertEqual([run.status for run in runs], ["ok", "failed"])
+        self.assertIn("does not advertise", runs[1].error)
+        self.assertFalse(runs[1].invoked)
+
     def test_zero_reviewers_is_a_no_op(self):
         self.assertEqual(review_mod.run_reviews([], self.workspace), [])
 

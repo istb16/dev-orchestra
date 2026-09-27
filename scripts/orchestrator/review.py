@@ -1460,6 +1460,7 @@ def run_reviews(
     budget_chars: int = 0,
     inline_chars: Optional[int] = None,
     surrounding: Optional[context_mod.Adoption] = None,
+    refusals: Optional[Dict[str, str]] = None,
 ) -> List[ReviewerRun]:
     """Run every configured reviewer against the frozen snapshot.
 
@@ -1487,6 +1488,10 @@ def run_reviews(
     ``surrounding`` is the round's adopted context, code review only. It is
     recorded on the entry beside the snapshot stamp, by the same dict: an
     entry carries it exactly when a prompt was built with it.
+
+    ``refusals`` maps a reviewer id to why that reviewer is not run at all --
+    its raw arguments came from the project file. The reviewer fails and the
+    round goes on, as it does for any one reviewer that fails.
     """
     if not reviewers:
         return []
@@ -1540,6 +1545,8 @@ def run_reviews(
         }
         if context is not None:
             carried["surrounding"] = context.record()
+        if refusals and reviewer_id in refusals:
+            return ReviewerRun(reviewer, "failed", error=refusals[reviewer_id], **carried)
         try:
             result = provider.run(
                 built.text,

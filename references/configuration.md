@@ -4,7 +4,7 @@
 
 | Layer | Path | Purpose |
 | --- | --- | --- |
-| Project | `<repo>/.dev-orchestra.yaml` | Per-repository override, committed or not as you prefer |
+| Project | `<repo>/.dev-orchestra.yaml` | Per-repository override, committed or not as you prefer. Read-only roles do not take `options.args` from it ([below](#role-options)) |
 | Global | see below | Your personal default for every project |
 | Built-in | `scripts/orchestrator/config.py` | Recommended defaults, used when no file exists |
 
@@ -169,16 +169,37 @@ implementer:
     args: ["--add-dir", "../shared-lib"]
 ```
 
-**Options that would loosen a read-only stage are ignored.** The architect and
-every reviewer always run read-only, whatever `permission_mode` or `sandbox`
-says -- that invariant is what makes an independent review worth anything.
-`dev-orchestra doctor` lists any option it is ignoring for that reason rather
-than dropping it silently.
+On a read-only role (the orchestrator, the architect, their tiers, every
+reviewer) `--add-dir <path>` is the only raw argument Claude accepts, and Codex
+accepts none. It is also taken only from the global config or from `--extra`:
+the same `args` in the project file makes that role's runs refuse, whatever
+they hold, because the project file can come with the branch under review, and
+a branch that names its own reviewers' directories can widen what they read. An
+implementer or review fixer takes `args` from either file, as before.
+
+**Options that would loosen a read-only stage are ignored or refused.** The
+orchestrator, the architect and every reviewer always run read-only, whatever
+`permission_mode` or `sandbox` says -- that invariant is what makes an
+independent review worth anything. `dev-orchestra doctor` lists any option it
+is ignoring for that reason rather than dropping it silently. Any other raw
+argument in `options.args` makes that role's runs refuse (exit 2, and a failed
+reviewer in a review round); `config validate` and `doctor` warn about it
+before a run does.
 
 The alternative to loosening a permission mode is allow-listing the specific
 commands in the CLI's own settings (for Claude Code, a `permissions.allow` entry
 such as `Bash(pytest:*)` in `.claude/settings.json`). That is narrower, and it
 lives with the project rather than with this skill.
+
+Read-only Claude runs pass `--restricted`, so project and user `settings.json`
+files are not read there at all. **`permissions.deny` is not read either**: a
+deny rule such as `Read(./.env)` that keeps the model away from a secret in the
+repository does not apply to architect or reviewer runs. Managed settings still
+apply, so move such rules there. The implementer and the review fixer read
+their settings files as before. Those read-only runs read only inside the
+working directory and `--add-dir`: with the workspace container outside the
+repository (`workspace.dir` set to an absolute path), add `--add-dir <container>`
+to that role's `options.args` in the global config, or pass it with `--extra`.
 
 `mock` is a real, registered provider: an offline adapter used by the tests and
 useful for dry-running the pipeline without spending tokens. It is hidden from

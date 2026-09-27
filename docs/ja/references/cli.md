@@ -1,4 +1,4 @@
-<!-- translated-from: references/cli.md sha256:1c8568ce7f41b6349bc3b7ed19d9507891cca075e5a7444e3daff2ec6f56f794 -->
+<!-- translated-from: references/cli.md sha256:5eda81b2525cf9667b2012fff3af04e2f58546d83e7747abe24543fe0c3a1242 -->
 
 > この文書は [references/cli.md](../../../references/cli.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -38,7 +38,7 @@ Microsoft Store のエイリアスだからです。
 | `config reset [--scope …] [--delete]` | このレイヤーの上書きを消去します（ファイルは残り、`version` だけが入った状態になります）。`--delete` を付けるとファイルを削除します。 |
 | `config prune [--scope …] [--dry-run]` | レイヤーが持つ値のうち、継承される値と等しいものを削除します。すべてのデフォルトを保持している 0.6.0 より前に書かれたファイル向けです。`--dry-run` は書き込まずに一覧表示します。 |
 | `config set <path> <value> [--scope …] [--raw]` | 値を 1 つ設定します。パスは `a.b.c` と `reviewers[0].role` をサポートします。インデックス付きの編集では、リストの残りを下のレイヤーからコピーします。末尾を超えたインデックスは終了コード 2 で終了します。 |
-| `config validate [--json]` | 有効な設定を検証します。無効な場合は終了コード 1 です。 |
+| `config validate [--json]` | 有効な設定を検証します。無効な場合は終了コード 1 です。`Warnings:` セクション（`--json` では `warnings`）には、読み取り専用のロールの実行が拒否することになる生引数 — project ファイルにある `options.args` のすべてと、アダプタの許可リストが受け付けないもの — が一覧表示されますが、終了コードは変わりません。`config set` も同じものを `warning:` 行として表示します。 |
 
 ```bash
 dev-orchestra config set implementer.model.family opus
@@ -85,9 +85,21 @@ dev-orchestra reviewer remove db-review
 
 | コマンド | 説明 |
 | --- | --- |
-| `doctor [--json] [--fast] [--strict]` | CLI、認証情報の有無、設定、そして各ロールのモデルが解決できるかを診断します。`--fast` はモデルの検出を省略します。`--strict` は問題が見つかった場合に終了コード 1 で終了します。 |
+| `doctor [--json] [--fast] [--strict]` | CLI、認証情報の有無、設定、そして各ロールのモデルが解決できるかを診断します。`--fast` はモデルの検出と読み取り専用の強制のプローブを省略します。`--strict` は問題が見つかった場合に終了コード 1 で終了します。 |
 
 認証情報の値は決して表示しません。認証情報が存在するように見えるかどうかだけを表示します。
+
+インストール済みの各 provider には `Read-only runs:` 行があり、その `plan` と `review` の実行がどう
+読み取りに限定されているかを示します。`enforced by <flags>`（verified）、`enforced by <flags>; <対象外のもの>`
+（partial。MCP サーバーを確認していない Codex）、`NOT ENFORCEABLE`（CLI がフラグを提示していない）、
+`UNVERIFIED`（`--help` を読めなかった）、`not reported by this adapter`、`not checked (--fast)` の
+いずれかです。`--json` では `providers.<name>.read_only_enforcement` で、`status` は `verified`、`partial`、
+`unsupported`、`unverified`、`unspecified`、`not-checked` のいずれかです。読み取り専用のロール
+（orchestrator、architect、レビュアー）がその provider を使っている場合、`NOT ENFORCEABLE` と `UNVERIFIED`
+は問題として扱われます。その実行は拒否されるからです。ロールの各 tier は実際に使う provider に対して確認され、
+`<Role> (tier <name>)` として報告されます。`config validate` が表示する生引数の警告も
+ここでは問題として扱われ、`--json` では `config.warnings` に入ります。`--fast` は `--help` を一切読まない
+ことを約束するものではありません。`options.permission_mode` の検証では読みます。
 
 「Pinned at a value the built-in default has moved off」セクションは、ファイルが固定している設定の
 うち、その後推奨値が変わったものを一覧表示します。これは報告であって書き換えではありません。
@@ -115,8 +127,15 @@ dev-orchestra reviewer remove db-review
 
 プロンプトは stdin からパイプで渡すこともできます（`--prompt-file -` は明示的に stdin を読みます）。
 デフォルトのモード: architect/orchestrator は `plan`、implementer と review_fixer は `implement`、
-レビュアーは `review` です。`--print-command` は、実行せずに正確な CLI の呼び出しを表示します。
-`--extra` は残りのすべての引数をそのまま provider CLI に渡します。
+レビュアーは `review` です。orchestrator、architect、レビュアーは読み取り専用のロールで、これらに
+`--mode implement` を指定すると終了コード 2 になります。`--print-command` は、実行せずに正確な CLI の
+呼び出しを表示します。`--extra` は、`implement` の実行では残りのすべての引数をそのまま provider CLI に
+渡します。`plan` と `review` では、通るのは `--add-dir <path>` だけ（Claude）で、Codex では何も通りません。
+それ以外は試行を消費する前に終了コード 2 になり、読み取り専用のロールが project ファイルから受け取る
+`options.args` も同様です。インストール済みの Claude CLI の `--help` に `--tools`、`--strict-mcp-config`、
+`--restricted` が載っていない場合、または `--help` を読めない場合の `plan` や `review` の実行も同様です。
+拒否メッセージはフラグ名、位置、出所を示し、値は決して表示しません。detach されたワーカーでの拒否は
+ジョブレコードに書かれます。
 
 空のプロンプトは、何かが委譲される前に拒否されます（終了コード 1）。そのため試行は消費されません。
 対象は、存在しない `--prompt-file`、存在するが空のもの、明示的な `--prompt ""`、そして何も運ばなかった
@@ -368,10 +387,10 @@ Codex は合計を 1 つだけ文章で出力し、言い回しが変わると�
 変更の前と後）を比較するには役立ちますが、何が読まれたかを述べるためのものではありません。
 
 ツール呼び出しは名前にかかわらずすべて数えられ、内訳は `tool_uses_by_name`（`--json`、および各実行の
-`usage`）に保持されます。`Read` だけを数えるとひどく過小に数えることになります。review モードが拒否する
-のは `Edit,Write,NotebookEdit` だけなので、`Bash`、`Grep`、`Glob` はどれもファイルを読む正当な方法
-です。実際、これを設計している間に計測した実行は、`wc -l` でファイルを読み、`Read` を一度も呼び出しません
-でした。
+`usage`）に保持されます。`Read` だけを数えると過小に数えることになります。Claude の読み取り専用の
+実行には `Bash` はありませんが、`Grep` と `Glob` もファイルを読みますし、implement の実行はすべての
+ツールを持ちます。実際、これを設計している間に計測した実行は、読み取り専用の実行から `Bash` がなくなる
+前のもので、`wc -l` でファイルを読み、`Read` を一度も呼び出しませんでした。
 
 これらのカウントができる前に記録された実行は、ツールを使ったかどうかを示せないので、使わなかったものと
 してではなく、そのように報告されます。そのような集計に書き込まれる最初の実行は（自分自身がツールを報告

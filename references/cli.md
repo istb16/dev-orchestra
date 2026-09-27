@@ -31,7 +31,7 @@ plan is not approved and `design.require_approval` is on, `130` interrupted.
 | `config reset [--scope …] [--delete]` | Clear this layer's overrides (the file stays, holding only `version`), or delete the file with `--delete`. |
 | `config prune [--scope …] [--dry-run]` | Drop values a layer holds that are equal to what it inherits -- for files written before 0.6.0, which hold every default. `--dry-run` lists them without writing. |
 | `config set <path> <value> [--scope …] [--raw]` | Set one value. Paths support `a.b.c` and `reviewers[0].role`; an indexed edit copies the rest of the list from the layer below, and an index past the end exits 2. |
-| `config validate [--json]` | Validate the effective configuration. Exit 1 if invalid. |
+| `config validate [--json]` | Validate the effective configuration. Exit 1 if invalid. A `Warnings:` section (`warnings` in `--json`) lists the raw arguments a read-only role's runs would refuse -- any `options.args` in the project file, and anything the adapter's allowlist does not take -- without changing the exit status. `config set` prints the same as `warning:` lines. |
 
 ```bash
 dev-orchestra config set implementer.model.family opus
@@ -72,9 +72,24 @@ dev-orchestra reviewer remove db-review
 
 | Command | Description |
 | --- | --- |
-| `doctor [--json] [--fast] [--strict]` | Diagnose CLIs, authentication presence, configuration, and whether each role's model resolves. `--fast` skips model discovery. `--strict` exits 1 when problems are found. |
+| `doctor [--json] [--fast] [--strict]` | Diagnose CLIs, authentication presence, configuration, and whether each role's model resolves. `--fast` skips model discovery and the read-only enforcement probe. `--strict` exits 1 when problems are found. |
 
 Never prints credential values -- only whether credentials appear to be present.
+
+Each installed provider gets a `Read-only runs:` line saying how its `plan` and
+`review` runs are held to reading: `enforced by <flags>` (verified), `enforced
+by <flags>; <what is not covered>` (partial -- Codex, whose MCP servers were not
+examined), `NOT ENFORCEABLE` (the CLI does not advertise the flags), `UNVERIFIED`
+(its `--help` could not be read), `not reported by this adapter`, or `not
+checked (--fast)`. In `--json` it is `providers.<name>.read_only_enforcement`,
+with `status` one of `verified`, `partial`, `unsupported`, `unverified`,
+`unspecified` and `not-checked`. `NOT ENFORCEABLE` and `UNVERIFIED` are problems
+when a read-only role (orchestrator, architect, a reviewer) uses that provider,
+since its runs will be refused; each of a role's tiers is checked against the
+provider it would run on, and reported as `<Role> (tier <name>)`. The raw-argument warnings `config validate`
+prints are problems here as well, under `config.warnings` in `--json`. `--fast`
+does not promise that no `--help` is read: validating `options.permission_mode`
+reads one.
 
 The "Pinned at a value the built-in default has moved off" section lists the
 settings a file fixes where the recommendation has since changed. It is a
@@ -100,9 +115,17 @@ top-level `user_providers`. See `references/providers.md`.
 
 The prompt may also be piped on stdin (`--prompt-file -` reads stdin
 explicitly). Default modes: architect/orchestrator `plan`, implementer and
-review_fixer `implement`, reviewers `review`. `--print-command` shows the exact
-CLI invocation without running it. `--extra` forwards every remaining argument
-to the provider CLI verbatim.
+review_fixer `implement`, reviewers `review`. The orchestrator, the architect
+and reviewers are read-only roles: `--mode implement` on one exits 2.
+`--print-command` shows the exact CLI invocation without running it. `--extra`
+forwards every remaining argument to the provider CLI verbatim on an
+`implement` run. On `plan` and `review` only `--add-dir <path>` gets through
+(Claude) and nothing does (Codex); anything else exits 2 before an attempt is
+spent, and so does any `options.args` a read-only role takes from the project
+file. So does a `plan` or `review` run on an installed Claude CLI whose `--help`
+does not list `--tools`, `--strict-mcp-config` and `--restricted`, or cannot be
+read. A refusal names the flag, its position and where it came from, never its
+value, and a detached worker's refusal is written to its job record.
 
 A prompt that arrives empty is refused (exit 1) before anything is delegated,
 so it costs no attempt: a `--prompt-file` that does not exist, one that is
@@ -373,9 +396,9 @@ not for stating what was read.
 
 Every tool call is counted, whatever it is named, with the breakdown kept in
 `tool_uses_by_name` (`--json`, and in each run's `usage`). Counting only `Read`
-would undercount badly: review mode denies `Edit,Write,NotebookEdit` and
-nothing else, so `Bash`, `Grep` and `Glob` are all legitimate ways to read a
-file — and the run measured while designing this read a file with `wc -l` and
+would undercount: a read-only Claude run has no `Bash`, but `Grep` and `Glob`
+read files too, and an implement run has every tool — the run measured while
+designing this, before read-only runs lost `Bash`, read a file with `wc -l` and
 never called `Read`.
 
 A run recorded before these counts existed cannot say whether it used tools,

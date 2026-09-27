@@ -76,15 +76,19 @@ It spends a small number of real tokens on the questions only a real process
 can answer: does the command line still work, does the CLI still report what a
 run cost in a shape the parser reads, and does a read-only mode still actually
 refuse to write -- checked by asking for a file and then looking for it, not by
-believing what the agent said about itself.
+believing what the agent said about itself -- and, for Claude, does a read-only
+run still stay inside its working directory while `--add-dir` still widens it.
 
 Run it before a release, after touching an adapter, and after bumping a CLI. A
 failure there is the adapter and the CLI having drifted apart: read the CLI's
-`--help` before changing anything.
+`--help` before changing anything. A `SKIP` is a check that could not be run --
+the symlink check on Windows without the symlink privilege -- and also exits 1:
+run it where symlinks can be created before calling the run clean.
 
 **4. Reviewers stay read-only and independent.** If a change could let a
 reviewer edit files or see another reviewer's output, it needs a very good
-reason and a test proving the boundary still holds.
+reason and a test proving the boundary still holds, and the built command
+still carries the allowlist and `--restricted`.
 
 **5. Never print or persist a credential.** New output paths go through
 `redact()`. `doctor` reports credential presence, never values.

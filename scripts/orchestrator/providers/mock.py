@@ -65,7 +65,14 @@ class MockProvider(Provider):
     ) -> List[str]:
         return ["mock", mode, resolved.argument or "default", *self.option_args(options), *extra_args]
 
-    def run(
+    def read_only_enforcement(self) -> Dict[str, Any]:
+        return {
+            "status": "verified",
+            "mechanism": "runs nothing (offline mock)",
+            "detail": "no CLI is started",
+        }
+
+    def _launch(
         self,
         prompt: str,
         mode: str,

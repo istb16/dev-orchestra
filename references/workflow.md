@@ -100,6 +100,7 @@ this conversation.
 - Entry point: app/controllers/orders_controller.rb:42
 - Related: app/services/pricing.rb, spec/services/pricing_spec.rb
 - The project uses <framework/conventions you observed>
+- History that matters: <git log --oneline -- path, or blame of the lines in question -- the architect has no shell>
 
 ## Constraints
 - Must stay backward compatible with the v1 API

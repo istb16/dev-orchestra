@@ -46,11 +46,11 @@ typo修正なら編集だけ、スキーマ変更ならフルパイプライン�
 
 1. **指揮** — 依頼を読み、必要な工程を判断し、タスクを分解して結果を統合します。
    大量の入力（ログ、レガシーコード、長い仕様書）を消化するのもこの工程です。
-2. **設計** — コードベースを調査して計画を書きます。読み取り専用。実装前に、その計画
+2. **設計** — コードベースを調査して計画を書きます。CLI が強制する読み取り専用（[セキュリティ](#セキュリティ)参照）。実装前に、その計画
    自体を同じレビューパネルにかけることもできます（`review.design.enabled`、既定は無効）。
    ユーザーが計画を承認するまで実装には進みません（`design.require_approval`）。
 3. **実装** — その計画からコードとテストを書きます。
-4. **レビュー** — 凍結した差分を読み、findings を報告します。読み取り専用。
+4. **レビュー** — 凍結した差分を読み、findings を報告します。CLI が強制する読み取り専用。
 5. **独立レビュー** — 同じ差分を、別ベンダーのモデルが、1人目の意見を知らないまま
    レビューします。
 6. **トリアージ・修正・再テスト** — findings を重複排除し、オーケストレータが採否を
@@ -341,6 +341,7 @@ dev-orchestra status
 ```
 
 **2. 設計.** architect が調査して計画を書きます。ファイルは編集できません（読み取り専用）。
+Claude では `Read`・`Grep`・`Glob` だけで、シェルも git もないので、重要な履歴は依頼に書いてください。
 
 ```bash
 dev-orchestra run architect --prompt-file .ai/request.md --output .ai/plan.md
@@ -904,8 +905,9 @@ diff がコンテキストの上限の下に残す分で制限され、収まら
 
 各ロールには provider 固有の `options` も指定できます（Claude は `permission_mode`、Codex は
 `sandbox` / `approve`）。値はインストール済みCLIが実際に受け付けるものと照合されます。read-only
-工程を緩めようとする option は無視され、`doctor` がそれを報告します。architect と全レビュアーは
-設定に関わらず read-only を維持します。
+工程を緩めようとする option は無視され、`doctor` がそれを報告します。orchestrator、architect、
+全レビュアーは設定に関わらず read-only を維持し、Claude の `--add-dir` 以外の生の `options.args`
+があるとその実行は拒否されます（[設定](docs/ja/references/configuration.md) を参照）。
 
 ## ワークフロー例
 
@@ -989,8 +991,15 @@ DEV_ORCHESTRA_MOCK_RESPONSE=NO_FINDINGS dev-orchestra review run --only dry
 - **認証情報を要求も保存も出力もしません。** 環境を継承し、CLI側の既存認証に依存します。
 - `doctor` が報告するのは認証情報の**存在**（`present` / `unknown`）だけで、値ではありません。
 - 取得した stdout/stderr は、`.ai/` や画面に出る前に認証情報らしき文字列を除去するredactorを通ります。
-- レビュアーは read-only で動作します（Claude は `--permission-mode plan` + 編集ツール禁止、
-  Codex は `-s read-only`）。
+- architect とレビュアーは read-only で動作し、それはプロンプトではなく CLI が強制します。
+  Claude は plan モード、`Read`・`Grep`・`Glob` のツールだけ、MCP サーバーなし、`--restricted`
+  で動くので、シェルはなく、リポジトリの設定ファイルのフックも走らず、作業ディレクトリと
+  `--add-dir` の外は読めません。Codex は `-s read-only` で書き込みが止まりますが、MCP サーバーは
+  未確認です。`--restricted` のため、あなた自身の `permissions.deny` もこれらの Claude の実行には
+  効きません。管理設定（managed settings）へ移してください。
+- read-only の実行は、それを緩めうる生引数を拒否します。Claude が受け付けるのは global 設定か
+  `--extra` からの `--add-dir <path>` だけ（project ファイルからは受け付けません）で、Codex は
+  何も受け付けません。拒否メッセージは値を表示しません。
 - 成果物は `.ai/` に隔離され、既定で自分自身をgit管理外にします。
 - Skill自身はネットワークにアクセスしません。通信するのはCLIです。
 

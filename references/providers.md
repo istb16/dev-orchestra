@@ -24,11 +24,21 @@ class Provider:
     def list_models() -> list[ModelCandidate]  # discovered from the installed CLI
     def resolve_model(spec) -> ResolvedModel   # family + policy -> CLI argument
     def build_command(mode, resolved, cwd, extra_args) -> list[str]
-    def run(prompt, mode, cwd, model_spec, timeout, extra_args) -> RunResult
+    def run(prompt, mode, cwd, model_spec, timeout, extra_args) -> RunResult   # do not override
+    def _launch(prompt, mode, cwd, model_spec, timeout, extra_args) -> RunResult
+    def refused_read_only_args(raw_args, source) -> list[str]   # default: refuse all
+    def read_only_enforcement() -> dict                         # default: "unspecified"
 ```
 
 `detect`, `version` and `list_models` are memoised per process, so the doctor and
 the wizard can ask repeatedly without re-spawning the CLI.
+
+`run` is the gate every adapter shares: on a `plan` or `review` run it holds the
+caller's raw arguments (`options.args` and `--extra`) to the adapter's
+allowlist, before the adapter adds its own, and then calls `_launch`, which
+starts the CLI. An adapter that needs to change how the CLI is started
+overrides `_launch`; one that overrides `run` bypasses the gate and has to
+carry it itself.
 
 ### Modes
 
@@ -40,7 +50,27 @@ the wizard can ask repeatedly without re-spawning the CLI.
 
 Adapters translate the mode into whatever their CLI calls read-only. That
 mapping is the adapter's contract with the rest of the skill: a `review` run
-that can edit files is a bug in the adapter.
+that can edit files is a bug in the adapter. Read-only means the CLI stops the
+write, not that the prompt asks the model not to.
+
+What each built-in adapter enforces, and by what:
+
+| | Claude | Codex |
+| --- | --- | --- |
+| Edit / Write tools | refused (`--disallowed-tools`, and not in `--tools`) | OS sandbox (`-s read-only`) |
+| Shell writes | no shell: only `Read`, `Grep` and `Glob` exist | OS sandbox (measured) |
+| MCP tools (Slack, Drive, ...) | none: `--strict-mcp-config` | **not examined** |
+| Hooks in settings files | not run: `--restricted` ignores user, project and local settings | not examined |
+| Reading outside the working directory | confined to it and `--add-dir` (`--restricted`) | not confined |
+| Raw arguments (`options.args`, `--extra`) | only `--add-dir <path>` | none |
+
+`read_only_enforcement()` reports this per adapter, and `dev-orchestra doctor`
+prints it: `verified` (the CLI stops writes and external side effects),
+`partial` (writes are stopped, external side effects were not examined),
+`unsupported` (the CLI does not advertise what enforcement needs), `unverified`
+(that could not be checked), `unspecified` (the adapter says nothing). A `plan`
+or `review` run on an `unsupported` or `unverified` CLI is refused (exit 2)
+rather than run with less.
 
 ### Progress and the idle deadline
 
@@ -71,9 +101,38 @@ Verified against `claude` 2.1.x.
 | Non-interactive run | `claude -p --output-format stream-json --verbose`, prompt on stdin |
 | Model | `--model <alias-or-name>`, omitted when the family is `default` |
 | Model discovery | Parses the aliases the CLI advertises in its own `--model` help text |
-| `plan` / `review` | `--permission-mode plan --disallowed-tools Edit,Write,NotebookEdit` |
+| `plan` / `review` | `--permission-mode plan --disallowed-tools Edit,Write,NotebookEdit --tools Read,Grep,Glob --strict-mcp-config --restricted` |
 | `implement` | `--permission-mode acceptEdits` |
 | Auth | Inherited environment; presence detected via `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, or the CLI's credential file |
+
+The read-only flags were measured on claude 2.1.283. Plan mode and the three
+denied tools alone did not stop a run: refused `Write`, it wrote the file with
+`Bash`, and MCP tools such as sending a Slack message were reachable. With
+`--tools Read,Grep,Glob --strict-mcp-config` the session has those three tools
+and no MCP servers, in a resumed session too. Command hooks in the
+repository's `.claude/settings.json` still ran; `--restricted` stopped them.
+
+`--restricted` is what keeps a branch under review from bringing its own
+settings, and it has consequences worth knowing:
+
+- User, project and local `settings.json` files are not read on these runs --
+  their hooks, `env`, `apiKeyHelper`, `permissions.allow`,
+  `permissions.additionalDirectories`, model defaults and **`permissions.deny`**.
+  A deny rule such as `Read(./.env)` that kept the model away from a secret in
+  the repository no longer applies to the architect or a reviewer. Managed
+  settings still apply, so move such rules there. The implementer and the
+  review fixer are unchanged.
+- `Read`, `Grep` and `Glob` are confined to the working directory and
+  `--add-dir`. Measured on claude 2.1.283: with `--restricted`, Read of an
+  absolute path outside the working directory, Grep of that directory and Glob
+  of it all fail; without it the same run reads the file. Symlinks were not
+  tested.
+
+A CLI whose `claude --help` does not list `--tools`, `--strict-mcp-config` and
+`--restricted` gets its `plan` and `review` runs refused, and `doctor` says
+`NOT ENFORCEABLE`; one whose `--help` cannot be read is refused as `UNVERIFIED`.
+`claude --help` is read once per process and shared with model and
+permission-mode discovery.
 
 Aliases such as `opus`, `sonnet` and `fable` already mean "the latest snapshot
 of that family", so `version: latest` simply passes the alias through. A full
@@ -118,9 +177,13 @@ Or ad hoc, for one run:
 dev-orchestra run implementer --prompt-file plan.md --extra --permission-mode bypassPermissions
 ```
 
-`--extra` forwards everything after it to the CLI verbatim, and later flags win.
-Either way, `plan` and `review` modes stay read-only: the adapter ignores a
-loosening `permission_mode` there by design.
+`--extra` forwards everything after it to the CLI verbatim on an `implement`
+run. On `plan` and `review` the adapter ignores a loosening `permission_mode`
+by design, and refuses every raw argument except `--add-dir <path>` (or
+`--add-dir=<path>`): the run exits 2 before anything is spent. `--add-dir` is
+accepted only from the global config and from `--extra`; the project file's
+`options.args` is refused on read-only roles whatever it holds. A refusal names
+the flag, its position and where it came from, never its value.
 
 ## Codex adapter
 
@@ -139,6 +202,13 @@ Verified against `codex` 0.154.x.
 Role options: `sandbox` (`read-only` / `workspace-write` / `danger-full-access`)
 and `approve` (`false` drops `--approve-for-me`). Both are ignored for `plan`
 and `review`, which always use `-s read-only`.
+
+The read-only sandbox was measured refusing a shell write ("Access to the path
+... is denied", Windows). Its MCP servers were not examined, so external side
+effects are not covered: `doctor` reports Codex as `partial`. A `plan` or
+`review` run takes no raw arguments at all -- `-s`, `-sdanger-full-access`,
+`-c sandbox_mode=...` and `--profile` are all refused, whatever the spelling.
+The `-o` the adapter adds itself is not a raw argument.
 
 The `recommended-coding` family deliberately resolves to *no* `-m` flag. That is
 the honest way to say "use the current recommended coding model": the CLI's own
@@ -203,8 +273,14 @@ your own without editing the plugin, see
    how adapters rot. Record the version you verified against in the module
    docstring.
 3. Implement `_discover_models`, `_resolve_latest`, `build_command`, and
-   `auth_status`. Override `run` only if the CLI needs special output capture.
-4. Make sure `plan` and `review` map to a genuinely read-only mode.
+   `auth_status`. Override `_launch` only if the CLI needs special output
+   capture. **Override `_launch`, not `run`**: an adapter that overrides `run`
+   carries the read-only raw-argument gate itself.
+4. Make sure `plan` and `review` map to a genuinely read-only mode: one the CLI
+   enforces without the model's cooperation. Implement
+   `refused_read_only_args` if a read-only run needs any raw argument (the
+   default refuses all of them), and `read_only_enforcement` to say what the
+   CLI enforces; without it `doctor` says `not reported by this adapter`.
 5. Register it:
 
 ```python
@@ -366,9 +442,17 @@ clears the memoised discovery results, so an edited adapter is detected afresh.
 `base.Provider` and the types around it (`ModelCandidate`, `ResolvedModel`,
 `RunResult`, `Usage`, `Detection`) are internal to the plugin and may change
 between minor versions. Pin the plugin version, or run `dev-orchestra doctor`
-after an update to check that your adapter still loads. The signature of `run()`
-is the surface most likely to move; `tests/test_provider_contract.py` holds every
-adapter, including the example above, to it.
+after an update to check that your adapter still loads. The signatures of
+`run()` and `_launch()` are the surface most likely to move;
+`tests/test_provider_contract.py` holds every adapter, including the example
+above, to them.
+
+The example implements only `build_command`, and still gets the read-only gate:
+it lives in the `run` the adapter inherits, so a `plan` or `review` run with
+any raw argument is refused (the base allowlist is empty), and `doctor` reports
+`not reported by this adapter` until it implements `read_only_enforcement`.
+Whether its `--read-only` flag really stops writes is the adapter's
+responsibility; nothing here verifies it.
 
 ## Failure semantics
 
@@ -379,6 +463,8 @@ adapter, including the example above, to it.
 | Timeout | `exit_code=124`, `timed_out=True` — reported, never raised |
 | Non-zero exit | `ok=False`, stderr captured and redacted |
 | Unresolvable model | `ModelResolutionError` before anything runs |
+| Raw argument refused on `plan` / `review` | `exit_code=2`, `invoked=False`, one line naming the flag but not its value |
+| Read-only enforcement `unsupported` / `unverified` | `exit_code=2`, `invoked=False`, only when the CLI is installed |
 
 Every captured stream passes through `redact()`, which scrubs
 credential-shaped substrings before anything reaches `.ai/` or the console.

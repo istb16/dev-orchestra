@@ -89,7 +89,10 @@ stage detail: `references/workflow.md`.
 A role with `model_tiers` (`config show`) runs on one: `run implementer --tier
 light`; an unknown tier is refused.
 
-**Design.** Architect must not change code. You write the request: goal, files
+**Design.** Architect must not change code. On Claude it has only Read, Grep
+and Glob (no shell, git, subagents or files outside the project): put what it
+would have run -- `git log --oneline`, blame -- in the request. You write the
+request: goal, files
 and symbols you already located, constraints, what you ruled out. Plan
 sections: Goal, Current Behavior, Investigation, Root Cause, Proposed Change,
 Files to Modify, Data/API Impact, Compatibility, Test Strategy, Risks,
@@ -115,12 +118,10 @@ report instead of redesigning. Implementer failure is fatal.
 
 **Test.** The project's documented commands only; never invent one. A red
 suite stops the pipeline. Record the outcome — `state record test ok|failed` —
-because `review run` reads it and refuses to review a tree whose tests are
-recorded as failing. Before each *retry*: `budget consume test`, then
+because `review run` refuses a tree recorded as failing. Before each *retry*: `budget consume test`, then
 `progress record test --signature "3 failed: test_a, test_b"`. Exit 3 =
 attempts spent; a repeated signature = the last fix changed nothing. Both are
-refusals: fix→test is the loop most likely to run away, and from inside it
-never looks like one.
+refusals.
 
 **Reviews.** Record the test result first (`state record test ok|failed`) even
 if you ran none here.
@@ -142,16 +143,15 @@ then writes one report each plus deduplicated `consolidated.md` / `.json`.
   real, the review is not clean: if `review status` says `coverage` is
   `unverified`, report "not reviewed in full" and do not re-run that snapshot.
 - `review run` may cut the panel to one reviewer on a small, low-risk change
-  (`optimization.level: aggressive`) and prints why. Say so in the report:
-  one reviewer is one opinion, not an independent second one.
+  (`optimization.level: aggressive`) and prints why. Say so in the report.
 
 **Triage.** **You** decide what is real; raw findings never reach the fixer.
 Per finding in `consolidated.md`: read the cited code, decide, record it.
 Statuses `accepted`, `rejected`, `duplicate`, `needs-investigation` —
 investigate that last one and re-triage, never leave it unresolved. Two
 reviewers agreeing is evidence, not proof. Clear **Possible duplicates**
-first, or the fixer gets the same defect twice: different models word one bug
-differently, so auto-merge leaves those pairs to you.
+first, or the fixer gets the same defect twice: auto-merge leaves those pairs
+to you.
 
 **Fix.** Require: verify each finding against current code first, fix only what
 is valid, add tests where a finding exposes a gap, re-run the relevant tests
@@ -160,8 +160,8 @@ plus lint/type checks. Fixer failure is fatal.
 **Re-test, and re-review only if told to.** Re-run the tests, then `review
 status`; re-review only when it says so. Exhausted budget → fix once more,
 re-test, report; never re-review. A second snapshot diffs only what the fix changed and
-carries the accepted findings with it, so **triage before re-snapshotting**:
-the narrowing depends on those findings existing. `--full` re-sends the lot.
+carries the accepted findings with it, so **triage before re-snapshotting**.
+`--full` re-sends the lot.
 
 ## 3. Delegation rules
 
@@ -224,7 +224,9 @@ and confirm before moving on.
    never a name that merely looks plausible.
 2. **Never guess CLI flags.** `scripts/orchestrator/providers/` is the only
    place that knows CLI syntax. Changed CLI → read `--help`, update the adapter.
-3. **Reviewers are read-only and independent.** No shared context, no edits.
+3. **Reviewers are read-only and independent.** Enforced by the CLI, not the
+   prompt: Claude gets only Read, Grep, Glob, no MCP and `--restricted`; Codex
+   its read-only sandbox (MCP not examined). No shared context, no edits.
 4. **Fix only triaged-accepted findings.**
 5. **Never print or store credentials.** Use the CLIs' own authentication;
    never ask for an API key; never echo tokens into `.ai/`, reports or logs.
@@ -241,8 +243,7 @@ and confirm before moving on.
 
 ## References
 
-Read one only when you need its detail — each costs about as much as this
-document.
+Read one only when you need its detail.
 
 - `references/workflow.md` — stage detail, prompt templates, artifacts
 - `references/configuration.md` — schema, layering, every field, examples

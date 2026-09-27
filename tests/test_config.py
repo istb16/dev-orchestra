@@ -196,6 +196,113 @@ class TestLayering(IsolatedCase):
         self.assertEqual(loaded.role("orchestrator")["provider"], "claude")
 
 
+class TestReadOnlyRawArgs(IsolatedCase):
+    """Where a read-only run's `options.args` came from, and what is said about it."""
+
+    def write_global(self, text):
+        path = config_mod.global_config_path()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write("version: 1\n" + text)
+
+    def write_project(self, text):
+        self.write(".dev-orchestra.yaml", "version: 1\n" + text)
+
+    def entries(self, loaded):
+        return {entry.label: entry for entry in config_mod.read_only_raw_args(loaded)}
+
+    def test_layer_of_names_the_file_that_set_the_key(self):
+        self.write_global('architect:\n  options:\n    args: ["--add-dir", "g"]\n')
+        self.write_project('orchestrator:\n  options:\n    args: ["--add-dir", "p"]\n')
+        loaded = config_mod.load(self.project)
+        self.assertEqual(loaded.layer_of("orchestrator.options.args"), "project")
+        self.assertEqual(loaded.layer_of("architect.options.args"), "global")
+        self.assertEqual(loaded.layer_of("implementer.options.args"), "default")
+
+    def test_a_project_mapping_without_args_leaves_them_global(self):
+        """Mappings merge key by key, so the args are still the global file's."""
+        self.write_global('architect:\n  options:\n    args: ["--add-dir", "g"]\n')
+        self.write_project("architect:\n  options:\n    permission_mode: plan\n")
+        loaded = config_mod.load(self.project, validate_result=False)
+        self.assertEqual(loaded.layer_of("architect.options.args"), "global")
+        self.assertEqual(self.entries(loaded)["architect"].args, ["--add-dir", "g"])
+
+    def test_reviewer_paths_are_understood(self):
+        self.write_project(
+            'reviewers:\n  - id: mine\n    provider: mock\n    options:\n      args: ["--add-dir", "x"]\n'
+        )
+        loaded = config_mod.load(self.project)
+        self.assertEqual(loaded.layer_of("reviewers[0].options.args"), "project")
+        entry = self.entries(loaded)["reviewers[0]"]
+        self.assertEqual(
+            (entry.reviewer_id, entry.display, entry.layer), ("mine", "reviewer mine", "project")
+        )
+
+    def test_a_tier_with_options_owns_its_args(self):
+        self.write_global('architect:\n  options:\n    args: ["--add-dir", "g"]\n')
+        self.write_project(
+            "architect:\n  model_tiers:\n"
+            '    light:\n      options:\n        args: ["--add-dir", "p"]\n'
+            "    other:\n      model:\n        family: sonnet\n"
+        )
+        entries = self.entries(config_mod.load(self.project))
+        self.assertEqual(entries["architect.model_tiers.light"].layer, "project")
+        self.assertEqual(entries["architect.model_tiers.light"].display, "architect (tier light)")
+        # No options of its own: it inherits the role's, and their layer.
+        self.assertEqual(entries["architect.model_tiers.other"].layer, "global")
+        self.assertEqual(entries["architect.model_tiers.other"].args, ["--add-dir", "g"])
+        self.assertEqual(entries["architect"].layer, "global")
+
+    def test_a_tier_name_with_a_dot_is_still_the_projects(self):
+        """The name is one key, not a path: splitting it would label the args ``default``."""
+        self.write_project(
+            'architect:\n  model_tiers:\n    light.v2:\n      options:\n        args: ["--add-dir", "p"]\n'
+        )
+        loaded = config_mod.load(self.project)
+        label = "architect.model_tiers.light.v2"
+        self.assertEqual(self.entries(loaded)[label].layer, "project")
+        self.assertEqual(list(config_mod.project_raw_arg_refusals(loaded)), [label])
+
+    def test_project_args_are_refused_whatever_they_are(self):
+        self.write_project(
+            'architect:\n  options:\n    args: ["--add-dir", "../x"]\n'
+            'implementer:\n  options:\n    args: ["--tools", "default"]\n'
+            'reviewers:\n  - id: mine\n    provider: claude\n    options:\n      args: ["--add-dir", "x"]\n'
+        )
+        loaded = config_mod.load(self.project)
+        refusals = config_mod.project_raw_arg_refusals(loaded)
+        self.assertEqual(sorted(refusals), ["architect", "reviewers[0]"])
+        self.assertIn("set in the project config (.dev-orchestra.yaml)", refusals["architect"])
+        self.assertNotIn("../x", refusals["architect"])
+        self.assertEqual(list(config_mod.reviewer_raw_arg_refusals(loaded)), ["mine"])
+
+    def test_global_args_are_allowed_when_the_adapter_accepts_them(self):
+        self.write_global('architect:\n  options:\n    args: ["--add-dir", "../x"]\n')
+        loaded = config_mod.load(self.project)
+        self.assertEqual(config_mod.project_raw_arg_refusals(loaded), {})
+        self.assertEqual(config_mod.read_only_arg_warnings(loaded), [])
+
+    def test_warnings_cover_both_layers_and_skip_implement_roles(self):
+        self.write_global(
+            'architect:\n  options:\n    args: ["--permission-mode", "acceptEdits"]\n'
+            'implementer:\n  options:\n    args: ["--tools", "default"]\n'
+        )
+        self.write_project('orchestrator:\n  options:\n    args: ["--add-dir", "x"]\n')
+        warnings = config_mod.read_only_arg_warnings(config_mod.load(self.project))
+        self.assertEqual(len(warnings), 3, warnings)
+        self.assertTrue(warnings[0].startswith("orchestrator: options.args is set in the project config"))
+        expected = "architect: read-only run: '--permission-mode' (token 1 of 2 in options.args)"
+        self.assertIn(expected, warnings[1])
+        self.assertNotIn("acceptEdits", " ".join(warnings))
+        self.assertFalse(any(w.startswith("implementer") for w in warnings))
+
+    def test_none_of_this_makes_load_raise_or_validate_complain(self):
+        self.write_global('architect:\n  options:\n    args: ["--permission-mode", "acceptEdits"]\n')
+        self.write_project('orchestrator:\n  options:\n    args: ["--add-dir", "x"]\n')
+        loaded = config_mod.load(self.project)
+        self.assertEqual(config_mod.validate(loaded.data), [])
+
+
 class TestValidation(IsolatedCase):
     def test_invalid_provider_is_rejected(self):
         data = config_mod.default_config()

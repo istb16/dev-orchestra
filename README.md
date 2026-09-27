@@ -51,12 +51,14 @@ model, and two of them are deliberately allowed to disagree.
 1. **Direction** — reads the request, decides which stages it needs, splits the
    work up, and merges the results. This is also the stage that digests bulk
    input (logs, a legacy module, a long spec).
-2. **Design** — investigates the codebase and writes the plan. Read-only. The
+2. **Design** — investigates the codebase and writes the plan. Read-only,
+   enforced by the CLI (see [Security](#security)). The
    plan itself can go to the review panel before anything is implemented, which
    is off by default: `review.design.enabled`. Nothing is implemented until the
    user approves the plan; `design.require_approval`.
 3. **Implementation** — writes the code and the tests from that plan.
-4. **Review** — reads the frozen diff and reports findings. Read-only.
+4. **Review** — reads the frozen diff and reports findings. Read-only, enforced
+   by the CLI.
 5. **Independent review** — the same diff, a different vendor's model, with no
    knowledge of the first reviewer's opinion.
 6. **Triage, fix, re-test** — findings are deduplicated, the orchestrator
@@ -354,7 +356,8 @@ dev-orchestra status
 ```
 
 **2. Design.** The architect investigates and writes the plan. It cannot edit
-files — the stage runs read-only:
+files — the stage runs read-only, and on Claude with only `Read`, `Grep` and
+`Glob`: no shell and no git, so put the history that matters in the request:
 
 ```bash
 dev-orchestra run architect --prompt-file .ai/request.md --output .ai/plan.md
@@ -948,8 +951,10 @@ and read the paired figures. That is what should turn it on.
 Each role can also carry provider-specific `options` — notably
 `permission_mode` for Claude and `sandbox` / `approve` for Codex — validated
 against what the installed CLI actually accepts. Options that would loosen a
-read-only stage are ignored and reported by `doctor`: the architect and every
-reviewer stay read-only regardless.
+read-only stage are ignored and reported by `doctor`: the orchestrator, the
+architect and every reviewer stay read-only regardless, and raw `options.args`
+other than Claude's `--add-dir` make their runs refuse (see
+[configuration](references/configuration.md)).
 
 ## Example workflows
 
@@ -1035,8 +1040,16 @@ DEV_ORCHESTRA_MOCK_RESPONSE=NO_FINDINGS dev-orchestra review run --only dry
 - `doctor` reports credential *presence* (`present` / `unknown`), never values.
 - Captured stdout/stderr passes through a redactor that scrubs
   credential-shaped strings before anything is written to `.ai/` or shown.
-- Reviewers run read-only: `--permission-mode plan` + denied edit tools for
-  Claude, `-s read-only` for Codex.
+- The architect and reviewers run read-only, enforced by the CLI rather than
+  the prompt. Claude: plan mode, only the `Read`, `Grep` and `Glob` tools, no
+  MCP servers, and `--restricted`, so no shell, no hooks from the repository's
+  settings files, and no reading outside the working directory and
+  `--add-dir`. Codex: `-s read-only`, which stops writes; its MCP servers were
+  not examined. `--restricted` also means your own `permissions.deny` rules do
+  not apply to those Claude runs -- move them to managed settings.
+- Read-only runs refuse raw arguments that could loosen them: Claude accepts
+  only `--add-dir <path>`, from the global config or `--extra` (never from the
+  project file), and Codex accepts none. Refusals never print the value.
 - Artifacts stay in `.ai/`, which ignores itself by default.
 - No network access of its own; the CLIs do their own networking.
 

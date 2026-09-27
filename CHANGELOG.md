@@ -45,6 +45,76 @@ The public surface covered by that promise is: the configuration schema, the
 
 - `consolidated.json` is no longer the only record of a round: the triage
   decisions of earlier rounds used to be lost when the next round rewrote it.
+- **Read-only runs are read-only by construction.** This changes what every
+  architect, orchestrator and reviewer run can do, and refuses configurations
+  that used to be accepted -- under 1.x it would be a major version.
+  - Claude `plan` and `review` runs add `--tools Read,Grep,Glob
+    --strict-mcp-config --restricted` to plan mode and the denied edit tools.
+    They have `Read`, `Grep` and `Glob` and nothing else: no `Bash` or
+    `PowerShell`, no subagents, no MCP tools, no `ToolSearch`. The settings
+    files of the user, the project and `.claude/settings.local.json` are not
+    read on these runs, so a branch under review cannot run its own hooks in
+    its reviewers. That includes **`permissions.deny`**: a rule such as
+    `Read(./.env)` no longer keeps an architect or reviewer away from a file in
+    the repository; move it to managed settings, which still apply. `env`,
+    `apiKeyHelper`, `permissions.allow` and `permissions.additionalDirectories`
+    in those files stop applying to these runs too. `Read`, `Grep` and `Glob`
+    are confined to the working directory and `--add-dir` (measured for
+    absolute paths on claude 2.1.283; symlinks were not tested). The implementer
+    and the review fixer are unchanged.
+  - What is lost: git history, running a command to check a claim, reading
+    outside the project, and subagents. The design request template has a line
+    for the history that matters, and SKILL.md says to fill it.
+  - A read-only run takes raw arguments from an allowlist, checked in
+    `Provider.run` before an adapter adds its own: Claude accepts only
+    `--add-dir <path>` (or `--add-dir=<path>`), Codex none. Anything else in
+    `options.args` or `--extra` makes `run` exit 2 before a budget attempt is
+    spent, and fails that reviewer in `review run`. `--add-dir` is taken only
+    from the global config and `--extra`: any `options.args` a read-only role
+    gets from the project file is refused, whatever it holds, because that file
+    can come with the branch under review. A refusal names the flag, its
+    position and its source, never its value, and a detached worker writes it
+    to its job record.
+  - `run <read-only role> --mode implement` exits 2.
+  - A Claude CLI whose `--help` does not list all three flags has its `plan`
+    and `review` runs refused (exit 2) rather than run with less; one whose
+    `--help` cannot be read is refused the same way. A CLI that is not
+    installed is still reported as missing (127).
+  - `doctor` prints a `Read-only runs:` line per provider (`verified`,
+    `partial`, `NOT ENFORCEABLE`, `UNVERIFIED`, `not reported by this adapter`,
+    `not checked (--fast)`; `providers.<name>.read_only_enforcement` in
+    `--json`). Codex is `partial`: its sandbox stops writes, and its MCP servers
+    were not examined. A read-only role, or one of its tiers, on a provider
+    that cannot enforce is a problem, and so is every raw argument a read-only run would refuse, which
+    `config validate` lists as warnings (`warnings` in `--json`) without
+    changing its exit status and `config set` prints as `warning:` lines.
+    `config.load()` does not raise over any of this, so other commands carry
+    on. The orchestrator now counts as a read-only role for ignored options.
+  - `claude --help` is read once per process, shared by model, permission-mode
+    and read-only discovery.
+  - Adapters override `_launch`, not `run`: `run` is now the gate every
+    adapter shares, and one that overrides it runs without it. The built-in
+    Codex and mock adapters moved their overrides to `_launch`.
+
+### Fixed
+
+- **A read-only Claude run could write, reach external services, and run the
+  repository's hooks (#140).** Refused `Write`, a plan-mode run wrote the file
+  with `Bash`; MCP tools such as sending a Slack message were reachable through
+  `ToolSearch`; command hooks in the reviewed branch's `.claude/settings.json`
+  ran; and the architect and reviewers could read anything the user can. The
+  tool allowlist, `--strict-mcp-config` and `--restricted` above close each.
+- **Configured or `--extra` arguments could undo read-only mode (#139).** They
+  were appended after the adapter's own flags, so `--tools default`,
+  `--permission-mode acceptEdits`, a `--settings` file or a Codex `-s
+  workspace-write` reopened what the adapter had closed. They are now held to
+  the allowlist above.
+- `scripts/smoke_live.py` no longer passes a read-only check for a run that
+  never started or did not complete, asks for the shell fallback outright, and
+  checks that a read-only Claude run stays in its working directory (by
+  absolute path and by symlink) and that `--add-dir` widens it. A symlink it
+  cannot create is reported as `SKIP` with the reason, and makes the run exit
+  1 instead of reading as all passed.
 
 ## [0.10.0] - 2026-09-26
 

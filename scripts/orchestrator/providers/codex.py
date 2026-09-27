@@ -246,7 +246,23 @@ class CodexProvider(Provider):
         """
         return parse_usage_text(outcome.stdout, outcome.stderr)
 
-    def run(
+    # ``refused_read_only_args`` is the base allowlist, which accepts nothing:
+    # everything a read-only run needs is built above, and every spelling that
+    # could loosen it -- ``-s``, ``-sVALUE``, ``-c sandbox_mode=...``, a
+    # ``--profile`` -- is a raw argument.
+
+    def read_only_enforcement(self) -> Dict[str, Any]:
+        """Static: ``-s read-only`` is always passed, and nothing needs asking."""
+        return {
+            "status": "partial",
+            "mechanism": "-s read-only (CLI sandbox)",
+            "detail": (
+                "filesystem writes are blocked by the sandbox (measured); MCP servers were not "
+                "examined, so external side effects are not covered"
+            ),
+        }
+
+    def _launch(
         self,
         prompt: str,
         mode: str,
@@ -260,6 +276,10 @@ class CodexProvider(Provider):
     ) -> RunResult:
         """Capture the agent's final message via ``-o`` instead of scraping logs.
 
+        Overrides ``_launch`` rather than ``run`` so that ``-o`` is added after
+        the read-only gate has looked at the caller's arguments; it is this
+        adapter's own argument, not a raw one.
+
         Every keyword the base method takes has to be named here *and* passed
         on. An override that quietly drops one is worse than no override: the
         caller's request disappears with nothing raised, or -- for a keyword
@@ -269,7 +289,7 @@ class CodexProvider(Provider):
         handle, last_message_path = tempfile.mkstemp(prefix="codex-last-", suffix=".txt")
         os.close(handle)
         try:
-            result = super().run(
+            result = super()._launch(
                 prompt,
                 mode,
                 cwd,

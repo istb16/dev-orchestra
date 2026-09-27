@@ -59,8 +59,10 @@ they are code and they are tested. Deciding whether a finding is a real bug in
 
 **Reviews must be independent to be worth anything.** Three models that see each
 other's output converge; three that don't, disagree usefully. So the fan-out is
-code: same frozen snapshot, isolated processes, no shared context, read-only
-sandboxes. It cannot be accidentally violated by a prompt that gets edited.
+code: same frozen snapshot, isolated processes, no shared context, read-only by
+the CLI's own enforcement (tool allowlist and `--restricted` for Claude,
+sandbox for Codex). It cannot be accidentally violated by a prompt that gets
+edited.
 
 **Models change faster than skills do.** Nothing persists a dated model id. The
 config stores `family` + `version: latest`, and adapters resolve that against

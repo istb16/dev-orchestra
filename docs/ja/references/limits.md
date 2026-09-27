@@ -1,4 +1,4 @@
-<!-- translated-from: references/limits.md sha256:58fcc3c67cb84cd169e248973d5bbe8fc3b9934cb85314dcf4892b905c677f2d -->
+<!-- translated-from: references/limits.md sha256:e144aea789d39caf39ec89cba01267b3ad1ec58ed9c5330ede99b585f229c939 -->
 
 > この文書は [references/limits.md](../../../references/limits.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -428,9 +428,11 @@ CLI もそれに対する制限を受け付けません — が、Claude の実�
 `optimization report` は、実行ごとに 2 つの数値を報告します。ツール呼び出しの
 回数と、それらのツールが出力した文字数です。
 
-**`Read` だけでなく、すべてのツール呼び出しを数えます。** レビューモードが拒否
-するのは `Edit,Write,NotebookEdit` だけなので、`Bash`、`Grep`、`Glob` はどれも
-レビュアーがファイルを読む正当な手段です。これを設計する際に計測した唯一の実行は、
+**`Read` だけでなく、すべてのツール呼び出しを数えます。** Claude の読み取り専用の
+実行が持つのは `Read`、`Grep`、`Glob` だけで — `Bash` はありません — `Grep` と
+`Glob` も `Read` と同じようにファイルを読みます。implement の実行はすべてのツールを
+持ちます。これを設計する際に計測した唯一の実行は、Claude の読み取り専用の実行が
+この 3 つに絞られる前のもので、
 `CONTRIBUTING.md` の行数を報告するよう求められ、`Bash`（`wc -l`）でそれを行い、
 一度も `Read` を呼びませんでした — `Read` だけを数えていたら、そのレビュアーは
 何も開かなかったと記録されていたでしょう。
@@ -476,10 +478,14 @@ CLI もそれに対する制限を受け付けません — が、Claude の実�
 * **Codex には代理指標すらありません。** 使用量は散文のフッターから取っており、
   数えるべきツールイベントがありません。
 * **何も制限していません。** adapter が渡すのは
-  `--permission-mode plan --disallowed-tools Edit,Write,NotebookEdit`（Claude）と
-  `-s read-only`（Codex）だけで、読み取りに関するものはそれ以外にありません。
-  どちらの CLI にも、実行が行える読み取りの回数や文字数を制限するフラグは渡して
-  おらず、CLI が受け付けるかもしれないという推測でフラグを足すこともしません。
+  `--permission-mode plan --disallowed-tools Edit,Write,NotebookEdit --tools
+  Read,Grep,Glob --strict-mcp-config --restricted`（Claude）と `-s read-only`
+  （Codex）です。これは Claude の実行が*どう*、*どこで*読むか — `Read`、`Grep`、
+  `Glob` で、作業ディレクトリと `--add-dir` の中で（claude 2.1.283 で絶対パスに
+  ついて実測。シンボリックリンクは未検証）— を制限しますが、どれだけ読むかは
+  制限しません。どちらの CLI にも、実行が行える読み取りの回数や文字数を制限する
+  フラグは渡しておらず、CLI が受け付けるかもしれないという推測でフラグを足すことも
+  しません。
 
 したがって、このツールは代理指標を報告するだけで、再取得を数えることも禁じる
 こともしません。読み取りを減らすためにこのツールが持つ唯一の手段は、レビュアーが
@@ -571,7 +577,9 @@ dev-orchestra status                            # meanwhile, visible from anywhe
   実時間だけです。`review.context.max_chars` は*送る*ものを文字数で制限しますが、
   これはトークンとは別物であり、さらにレビュアーがその後自分で読みに行くものとも
   別物です。
-* **レビュアーが読むものを制限するものはなく**、どれだけ読んだかも計測できません。
+* **レビュアーが読む量を制限するものはなく**、どれだけ読んだかも計測できません。
+  Claude のレビュアーが読む手段は `Read`、`Grep`、`Glob` だけで、範囲は作業
+  ディレクトリと `--add-dir` の中です。Codex のレビュアーは閉じ込められていません。
   上記のカウントはツール呼び出しとそれらのツールが出力したものです。`wc -l` と
   `cat` は同じファイルを読み、3 文字と全体をそれぞれ報告します。Codex はどちらの
   数値も報告しません。

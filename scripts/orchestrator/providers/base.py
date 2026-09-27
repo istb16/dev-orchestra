@@ -23,6 +23,23 @@ MODE_REVIEW = "review"  # read-only, produces a review report
 MODES = (MODE_PLAN, MODE_IMPLEMENT, MODE_REVIEW)
 READ_ONLY_MODES = (MODE_PLAN, MODE_REVIEW)
 
+#: What ``Provider.read_only_enforcement`` may report. ``verified``: the CLI
+#: itself stops writes and external side effects. ``partial``: it stops
+#: filesystem writes, and external side effects were not examined.
+#: ``unsupported``: the CLI does not advertise what enforcement needs.
+#: ``unverified``: that could not be checked. ``unspecified``: the adapter
+#: says nothing.
+ENFORCEMENT_STATUSES = ("verified", "partial", "unsupported", "unverified", "unspecified")
+
+#: The statuses a read-only run is refused under. Falling back to a weaker
+#: command would call a run read-only that nothing is holding to it.
+REFUSED_ENFORCEMENT = ("unsupported", "unverified")
+
+#: A raw argument is named in a refusal by its flag, never by its value: the
+#: value of ``--settings`` or ``-c`` can be a credential, and a refusal is
+#: printed, persisted in job records and shown to the orchestrator session.
+_RAW_ARGUMENT_NAME_LIMIT = 40
+
 
 _SECRET_PATTERNS = (
     re.compile(r"\b(sk-[A-Za-z0-9_\-]{12,})"),
@@ -190,10 +207,11 @@ class Usage:
         self.source = source or "unreported"
         self.prompt_chars = prompt_chars
         #: How many times the agent called a tool, whatever the tool was.
-        #: Counting only ``Read`` undercounts: review mode denies only
-        #: ``Edit,Write,NotebookEdit``, so ``Bash``, ``Grep`` and ``Glob`` are
-        #: all legitimate ways for a reviewer to read a file, and the one run
-        #: measured while designing this read with ``Bash`` (``wc -l``).
+        #: Counting only ``Read`` undercounts: ``Grep`` and ``Glob`` read files
+        #: too, and so does a shell wherever a read-only run still has one --
+        #: Codex does, and the one Claude run measured while designing this
+        #: read with ``Bash`` (``wc -l``) before Claude's read-only runs were
+        #: narrowed to ``Read``, ``Grep`` and ``Glob``.
         self.tool_uses = tool_uses
         self.tool_uses_by_name = tool_uses_by_name
         #: Observed tool output, not source read -- see the class docstring.
@@ -429,6 +447,86 @@ class Provider:
         args = options.get("args")
         return [str(item) for item in args] if isinstance(args, list) else []
 
+    # -- read-only enforcement ---------------------------------------------
+
+    #: How a refusal says what a read-only run of this adapter does accept.
+    read_only_args_accepted = "no raw arguments"
+
+    def refused_read_only_args(self, raw_args: Sequence[str], source: str) -> List[str]:
+        """Problems with raw arguments a caller wants on a read-only run.
+
+        An allowlist, and empty unless an adapter names something: a raw
+        argument can reopen what the adapter's own flags close -- a later
+        sandbox flag, a profile, a settings file -- and a denylist cannot know
+        the flags a CLI adds next release. ``source`` is where the arguments
+        came from (``options.args`` or ``--extra``).
+        """
+        raw = list(raw_args)
+        return [self._raw_argument_problem(token, index, len(raw), source) for index, token in enumerate(raw)]
+
+    def _raw_argument_problem(
+        self, token: str, index: int, total: int, source: str, reason: str = "is not accepted"
+    ) -> str:
+        return "read-only run: %s (token %d of %d in %s) %s; read-only %s runs accept %s" % (
+            self.describe_raw_argument(token),
+            index + 1,
+            total,
+            source,
+            reason,
+            self.name,
+            self.read_only_args_accepted,
+        )
+
+    @staticmethod
+    def describe_raw_argument(token: str) -> str:
+        """Name a raw argument without its value.
+
+        ``--flag=value`` is named up to the ``=``, and a short option by its
+        first two characters, because a CLI may read ``-sVALUE`` as ``-s
+        VALUE``. Anything else is a value, and is only called one.
+        """
+        if token.startswith("--"):
+            name = token.split("=", 1)[0]
+        elif token.startswith("-") and len(token) >= 2:
+            name = token[:2]
+        else:
+            return "a bare value"
+        return "'%s'" % name[:_RAW_ARGUMENT_NAME_LIMIT]
+
+    def read_only_refusal(
+        self, mode: str, extra_args: Sequence[str] = (), options: Optional[Dict[str, Any]] = None
+    ) -> Optional[RunResult]:
+        """A refused run, if the caller's raw arguments cannot go on this one.
+
+        Only the caller's arguments are looked at, before an adapter adds its
+        own: those are the ones a config file or a command line put there.
+        """
+        if mode not in READ_ONLY_MODES:
+            return None
+        problems = self.refused_read_only_args(self.option_args(options), "options.args")
+        problems += self.refused_read_only_args(list(extra_args), "--extra")
+        if not problems:
+            return None
+        # One line: the review path reports the last line of stderr as the
+        # reviewer's error, and the command carries none of the arguments.
+        return RunResult(False, 2, "", "; ".join(problems), [self.executable], 0.0, invoked=False)
+
+    def read_only_enforcement(self) -> Dict[str, Any]:
+        """How this CLI holds a plan or review run to reading, as far as known.
+
+        ``status`` is one of :data:`ENFORCEMENT_STATUSES`; ``mechanism`` names
+        the flags or sandbox that do it and ``detail`` says what that covers.
+        Only what the CLI itself stops counts: an instruction in the prompt is
+        not enforcement.
+        """
+        return {
+            "status": "unspecified",
+            "mechanism": "",
+            "detail": "this adapter does not report how it enforces read-only runs",
+        }
+
+    # -- running -----------------------------------------------------------
+
     def run(
         self,
         prompt: str,
@@ -441,8 +539,42 @@ class Provider:
         options: Optional[Dict[str, Any]] = None,
         idle_timeout: Optional[float] = None,
     ) -> RunResult:
+        """Run the CLI once. Adapters override :meth:`_launch`, not this.
+
+        The raw-argument gate lives here so that every adapter passes through
+        it, including one whose ``build_command`` never calls the base, and so
+        that it sees the caller's arguments before an adapter appends its own.
+        An adapter that overrides ``run`` has to carry the gate itself.
+        """
         if mode not in MODES:
             raise ValueError("unknown mode %r" % mode)
+        refusal = self.read_only_refusal(mode, extra_args, options)
+        if refusal is not None:
+            return refusal
+        return self._launch(
+            prompt,
+            mode,
+            cwd,
+            model_spec=model_spec,
+            timeout=timeout,
+            extra_args=extra_args,
+            env=env,
+            options=options,
+            idle_timeout=idle_timeout,
+        )
+
+    def _launch(
+        self,
+        prompt: str,
+        mode: str,
+        cwd: str,
+        model_spec: Optional[Dict[str, Any]] = None,
+        timeout: int = 1800,
+        extra_args: Sequence[str] = (),
+        env: Optional[Dict[str, str]] = None,
+        options: Optional[Dict[str, Any]] = None,
+        idle_timeout: Optional[float] = None,
+    ) -> RunResult:
         detection = self.detect()
         if not detection.installed:
             return RunResult(
@@ -454,6 +586,14 @@ class Provider:
                 0.0,
                 invoked=False,
             )
+        # After detection: a CLI that is not there is reported as missing, not
+        # as one whose enforcement could not be read.
+        if mode in READ_ONLY_MODES:
+            enforcement = self.read_only_enforcement()
+            status = enforcement.get("status")
+            if status in REFUSED_ENFORCEMENT:
+                detail = enforcement.get("detail") or "read-only enforcement is %s" % status
+                return RunResult(False, 2, "", str(detail), [self.executable], 0.0, invoked=False)
 
         resolved = self.resolve_model(model_spec)
         command = self.build_command(mode, resolved, cwd, extra_args, options)
