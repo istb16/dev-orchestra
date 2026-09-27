@@ -15,7 +15,9 @@ import copy
 import hashlib
 import json
 import os
+import re
 import sys
+import time
 from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple
 
 from . import approval as approval_mod
@@ -781,24 +783,7 @@ def _both_paths(written: str, resolved: Optional[str]) -> str:
 
 def _read_prompt(args: argparse.Namespace, workspace: Optional[ws.Workspace] = None) -> str:
     if args.prompt_file:
-        if args.prompt_file == "-":
-            return _require_prompt(sys.stdin.read(), "stdin carried nothing")
-        path = _in_workflow(workspace, args.prompt_file) if workspace else args.prompt_file
-        named = _both_paths(args.prompt_file, path)
-        # Deliberately not ws.read_text: its default is right for a report that
-        # may legitimately be absent, and turns a mistyped --prompt-file into an
-        # empty prompt that runs. Read it so the failure is the caller's to see,
-        # and so "no such file" stays distinct from "there and empty" -- they
-        # are different mistakes.
-        if not os.path.isfile(path):
-            trouble = "does not exist" if not os.path.exists(path) else "is not a file"
-            raise SystemExit("prompt file %s: %s" % (trouble, named))
-        try:
-            with open(path, "r", encoding="utf-8", errors="replace") as handle:
-                text = handle.read()
-        except OSError as exc:
-            raise SystemExit("prompt file cannot be read: %s (%s)" % (named, exc)) from exc
-        return _require_prompt(text, "%s is empty" % named)
+        return _read_prompt_file(args.prompt_file, workspace)
     if args.prompt is not None:
         # Tested against None, not truthiness: `--prompt ""` used to fall
         # through to the stdin branch, where a pipe made it someone else's
@@ -807,6 +792,28 @@ def _read_prompt(args: argparse.Namespace, workspace: Optional[ws.Workspace] = N
     if not sys.stdin.isatty():
         return _require_prompt(sys.stdin.read(), "the piped stdin was empty")
     raise SystemExit("no prompt supplied: use --prompt, --prompt-file, or pipe one in")
+
+
+def _read_prompt_file(prompt_file: str, workspace: Optional[ws.Workspace] = None) -> str:
+    """A prompt from a file (or ``-`` for stdin); SystemExit if there is none."""
+    if prompt_file == "-":
+        return _require_prompt(sys.stdin.read(), "stdin carried nothing")
+    path = (_in_workflow(workspace, prompt_file) if workspace else prompt_file) or prompt_file
+    named = _both_paths(prompt_file, path)
+    # Deliberately not ws.read_text: its default is right for a report that
+    # may legitimately be absent, and turns a mistyped --prompt-file into an
+    # empty prompt that runs. Read it so the failure is the caller's to see,
+    # and so "no such file" stays distinct from "there and empty" -- they
+    # are different mistakes.
+    if not os.path.isfile(path):
+        trouble = "does not exist" if not os.path.exists(path) else "is not a file"
+        raise SystemExit("prompt file %s: %s" % (trouble, named))
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as handle:
+            text = handle.read()
+    except OSError as exc:
+        raise SystemExit("prompt file cannot be read: %s (%s)" % (named, exc)) from exc
+    return _require_prompt(text, "%s is empty" % named)
 
 
 class _Refused(NamedTuple):
@@ -907,6 +914,10 @@ def cmd_run(args: argparse.Namespace) -> int:
         )
         return _refuse_run(args, [message])
     workspace = _workspace(args)
+    # Before the provider is known: these depend on the arguments alone.
+    resume_problem = _resume_refusal(args, role, mode, workspace)
+    if resume_problem:
+        return _refuse_run(args, [resume_problem])
     provider_name = str(spec.get("provider"))
     try:
         provider = get_provider(provider_name)
@@ -935,11 +946,21 @@ def cmd_run(args: argparse.Namespace) -> int:
         except ModelResolutionError as exc:
             _err(str(exc))
             return 2
-        _out(
-            " ".join(
-                provider.build_command(mode, resolved, workspace.root, args.extra or [], spec.get("options"))
+        # Looked up without opening the ledger, so printing spends nothing.
+        session_id = None
+        if args.resume:
+            session_id, detail, note = _resume_candidate(
+                workspace,
+                list(workspace.read_state().get("events") or []),
+                provider,
+                provider_name,
+                loaded.design_settings(),
             )
+            _announce_resume(session_id, detail, note)
+        command = provider.command_line(
+            mode, resolved, workspace.root, args.extra or [], spec.get("options"), resume_session=session_id
         )
+        _out(" ".join(command))
         return 0
 
     # Only for a CLI that is there: a missing one is reported by the run as
@@ -951,6 +972,9 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     try:
         prompt = _read_prompt(args, workspace)
+        # Both prompts are read before anything is spent: which one is sent
+        # is only known once the run log has been read, below.
+        resume_prompt = _read_prompt_file(args.resume_prompt_file, workspace) if args.resume else None
     except SystemExit as exc:
         # A worker's stderr is DEVNULL, so a reason left there reaches nobody:
         # every exit this function can take before the outcome is written has
@@ -1002,7 +1026,15 @@ def cmd_run(args: argparse.Namespace) -> int:
         # Hand the work to a detached worker so this call cannot block. The
         # budget was already consumed above, so the worker must not do it again.
         passthrough = _detached_argv(args, role)
-        job = jobs_mod.start(workspace, role, passthrough, prompt=prompt, timeout=timeout)
+        job = jobs_mod.start(
+            workspace,
+            role,
+            passthrough,
+            prompt=prompt,
+            timeout=timeout,
+            resume_prompt=resume_prompt,
+            force=bool(args.force),
+        )
         if args.json:
             _emit_json(job)
         else:
@@ -1010,65 +1042,58 @@ def cmd_run(args: argparse.Namespace) -> int:
             _out("follow it with: dev-orchestra jobs wait %s" % job["id"])
         return 0 if job.get("status") != "failed" else 1
 
+    session_id: Optional[str] = None
+    resume_detail: Optional[Dict[str, Any]] = None
+    if args.resume:
+        session_id, resume_detail, note = _resume_candidate(
+            workspace,
+            list(workspace.read_state().get("events") or []),
+            provider,
+            provider_name,
+            loaded.design_settings(),
+        )
+        _announce_resume(session_id, resume_detail, note)
+
     # Written down before the call, so a stall is visible from outside this
-    # process and survives it dying.
-    if args.job_file:
-        jobs_mod.claim(args.job_file)
-    token = book.begin(
-        role,
-        {
+    # process and survives it dying. The record is kept: whether the user
+    # forced this run is in it, and the worker's own --force says nothing.
+    job = jobs_mod.claim(args.job_file) if args.job_file else None
+
+    def launch(text: str, resume_session: Optional[str]) -> Tuple[str, Any]:
+        begun = {
             "mode": mode,
             "provider": provider_name,
             "command": provider.executable,
             "job": args.job_file,
             "tier": tier or None,
-        },
-        deadline=timeout,
-    )
-    try:
-        result = provider.run(
-            prompt,
-            mode,
-            workspace.root,
-            spec.get("model"),
-            timeout=timeout,
-            extra_args=args.extra or [],
-            options=spec.get("options"),
-            idle_timeout=idle_timeout,
-        )
-    except ModelResolutionError as exc:
-        book.end(token, "failed", {"error": str(exc)})
-        if args.job_file:
-            jobs_mod.finish(args.job_file, "failed", error=str(exc))
-        _err(str(exc))
-        return 2
+        }
+        if resume_detail is not None:
+            begun["resume"] = dict(resume_detail)
+        token = book.begin(role, begun, deadline=timeout)
+        # The keyword only when there is a session: an adapter that cannot
+        # resume is called exactly as it was before resuming existed.
+        resuming = {"resume_session": resume_session} if resume_session is not None else {}
+        try:
+            return token, provider.run(
+                text,
+                mode,
+                workspace.root,
+                spec.get("model"),
+                timeout=timeout,
+                extra_args=args.extra or [],
+                options=spec.get("options"),
+                idle_timeout=idle_timeout,
+                **resuming,
+            )
+        except ModelResolutionError as exc:
+            book.end(token, "failed", {"error": str(exc)})
+            if args.job_file:
+                jobs_mod.finish(args.job_file, "failed", error=str(exc))
+            _err(str(exc))
+            return token, None
 
-    if args.job_file:
-        jobs_mod.finish(
-            args.job_file,
-            "succeeded" if result.ok else "failed",
-            output=result.stdout,
-            error="" if result.ok else (result.stderr or "").strip()[:2000],
-            detail={
-                "exit_code": result.exit_code,
-                "stalled": result.stalled,
-                "timed_out": result.timed_out,
-                "duration_seconds": round(result.duration, 2),
-                "model": result.resolved.display if result.resolved else None,
-            },
-        )
-    # Recorded whatever the outcome -- a failed run still spent what it spent.
-    # A run that never started one is a different thing, and counting it as
-    # unreported would make the account call itself incomplete over a run with
-    # nothing to report.
-    if result.invoked:
-        # Labelled by tier when there is one, so `tokens show` can answer the
-        # question a tier exists to raise: did the cheaper one cost less.
-        book.record_usage(role, result.usage.to_dict(), label="%s:%s" % (role, tier) if tier else "")
-    book.end(
-        token,
-        "ok" if result.ok else ("stalled" if result.stalled else "failed"),
-        {
+    def end_detail(result: Any) -> Dict[str, Any]:
+        detail = {
             "mode": mode,
             "provider": provider_name,
             # Recorded on the *end* event, not only on the start: the start
@@ -1086,7 +1111,98 @@ def cmd_run(args: argparse.Namespace) -> int:
             # saved nothing, and `status` must not count it as the revision
             # or fix that was asked for. Pure, so the order below stands.
             "answered": _answered(result),
-        },
+            # The session this run ended in is what the next --resume
+            # continues; the rest is what comparing resumed and fresh
+            # revisions needs.
+            "session_id": result.session_id,
+            "context_tokens": result.context_tokens,
+            "cost_usd": result.usage.cost_usd,
+            "cache_read_tokens": result.usage.cache_read_tokens,
+        }
+        if resume_detail is not None:
+            detail["resume"] = dict(resume_detail, outcome="ok" if result.ok else None)
+        return detail
+
+    token, result = launch(resume_prompt if session_id is not None else prompt, session_id)
+    if result is None:
+        return 2
+
+    if session_id is not None and resume_detail is not None and result.resume_rejected:
+        # The session is gone (the CLI said so, naming it). That run is
+        # recorded as the failure it was, without its stderr, and not in the
+        # job: the job's outcome is the fresh run's.
+        if result.invoked:
+            book.record_usage(role, result.usage.to_dict())
+        rejected = end_detail(result)
+        rejected["context_tokens"] = None
+        rejected["resume"] = dict(resume_detail, outcome="rejected")
+        book.end(token, "failed", rejected, charged_seconds=result.duration)
+        _err("note: %s" % _RESUME_REJECTED)
+        # Running fresh is another attempt, so it asks the budget as any run
+        # does -- as the user asked it, not as the worker was started.
+        user_force = bool(job.get("force", False)) if job is not None else bool(args.force)
+        if not user_force and book.check(role):
+            _err(_RESUME_NO_BUDGET)
+            _refuse_if_exhausted(book, role, user_force)
+            if args.job_file:
+                jobs_mod.finish(args.job_file, "failed", error=_RESUME_NO_BUDGET)
+            return ledger_mod.EXIT_BUDGET_EXHAUSTED
+        try:
+            book.consume(role, force=user_force)
+        except ledger_mod.BudgetExhausted as exc:
+            _err(_RESUME_NO_BUDGET)
+            _err(str(exc))
+            if args.job_file:
+                jobs_mod.finish(args.job_file, "failed", error=_RESUME_NO_BUDGET)
+            return ledger_mod.EXIT_BUDGET_EXHAUSTED
+        session_id = None
+        resume_detail = {
+            "requested": True,
+            "mode": "fresh",
+            "resumed_from": None,
+            "reason": _RESUME_REJECTED,
+            "outcome": None,
+        }
+        token, result = launch(prompt, None)
+        if result is None:
+            return 2
+
+    if args.job_file:
+        finished = {
+            "exit_code": result.exit_code,
+            "stalled": result.stalled,
+            "timed_out": result.timed_out,
+            "duration_seconds": round(result.duration, 2),
+            "model": result.resolved.display if result.resolved else None,
+            "session_id": result.session_id,
+        }
+        if resume_detail is not None:
+            finished["resume"] = dict(resume_detail, outcome="ok" if result.ok else None)
+        jobs_mod.finish(
+            args.job_file,
+            "succeeded" if result.ok else "failed",
+            output=result.stdout,
+            error="" if result.ok else (result.stderr or "").strip()[:2000],
+            detail=finished,
+        )
+    # Recorded whatever the outcome -- a failed run still spent what it spent.
+    # A run that never started one is a different thing, and counting it as
+    # unreported would make the account call itself incomplete over a run with
+    # nothing to report.
+    if result.invoked:
+        # Labelled by tier when there is one, so `tokens show` can answer the
+        # question a tier exists to raise: did the cheaper one cost less. A
+        # continued session is labelled too, to be read against fresh runs.
+        label = ""
+        if tier:
+            label = "%s:%s" % (role, tier)
+        elif session_id is not None:
+            label = "%s:resumed" % role
+        book.record_usage(role, result.usage.to_dict(), label=label)
+    book.end(
+        token,
+        "ok" if result.ok else ("stalled" if result.stalled else "failed"),
+        end_detail(result),
         # What the child was measured to take, whatever it exited with. A run
         # killed at its deadline spent the time it spent; so did a failed one.
         charged_seconds=result.duration,
@@ -1189,6 +1305,155 @@ def _refuse_run(args: argparse.Namespace, lines: List[str]) -> int:
     for line in lines:
         _err(line)
     return 2
+
+
+#: Why a ``--resume`` run ran fresh. Fixed phrases only: every value they could
+#: name (a mode, a provider, a path, a session id, an age, a CLI version) is
+#: already in the event's own keys or came from ``state.json`` or the CLI, and
+#: `optimization report` counts these strings as they are.
+_RESUME_NOT_SUPPORTED = "the provider cannot resume a session"
+_RESUME_REJECTED = "the CLI rejected the session it was asked to resume"
+_RESUME_REASONS = (
+    _RESUME_NOT_SUPPORTED,
+    _RESUME_NOT_SUPPORTED + " (unsupported)",
+    _RESUME_NOT_SUPPORTED + " (unverified)",
+    _RESUME_NOT_SUPPORTED + " (unspecified)",
+    "no earlier architect run in this workflow",
+    "the last architect run is not resumable: it did not succeed",
+    "the last architect run is not resumable: it did not answer",
+    "the last architect run is not resumable: it has no session id",
+    "the last architect run is not resumable: its session id is not a UUID",
+    "the last architect run is not resumable: its recorded mode is not plan",
+    "the last architect run is not resumable: its output is not this workflow's plan",
+    "the last architect run is not resumable: its recorded provider differs",
+    "the last architect run is older than design.resume.max_age_seconds",
+    "the last architect run's context exceeds design.resume.max_context_tokens",
+    "the last architect run's context is unknown and design.resume.max_context_tokens is set",
+    _RESUME_REJECTED,
+)
+_RESUME_NO_BUDGET = _RESUME_REJECTED + "; running fresh would spend an attempt"
+
+#: A session id goes on a command line; only a UUID may.
+_SESSION_ID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+
+
+def _resume_refusal(args: argparse.Namespace, role: str, mode: str, workspace: ws.Workspace) -> Optional[str]:
+    """Why ``--resume`` cannot go on this command line, as a fixed sentence.
+
+    Decided by the arguments alone, so it is checked on every path: the
+    foreground run, ``--print-command``, the parent of ``--detach`` and the
+    worker, which must not trust its parent -- ``--job-file`` is a public flag.
+    """
+    if not getattr(args, "resume", False):
+        return "--resume-prompt-file needs --resume" if getattr(args, "resume_prompt_file", None) else None
+    if role != "architect":
+        return "--resume applies to architect"
+    if mode != MODE_PLAN:
+        return (
+            "--resume applies to architect in plan mode: the session it would continue was "
+            "read-only and must stay so"
+        )
+    if not args.resume_prompt_file:
+        return "--resume needs --resume-prompt-file"
+    # Both prompts are read before the run: stdin would give the second one
+    # nothing, and the run would blame a prompt the user did pipe.
+    fresh_from_stdin = args.prompt_file == "-" or (not args.prompt_file and args.prompt is None)
+    if args.resume_prompt_file == "-" and fresh_from_stdin:
+        return "--resume-prompt-file - needs the fresh prompt from --prompt or a file: stdin is read once"
+    # The session continued is one that wrote the plan, so the run continuing
+    # it must write the plan too, or an earlier design's context would carry
+    # into an unrelated answer.
+    if not args.output:
+        return "--resume revises this workflow's plan: --output is missing"
+    if not _wrote_plan(workspace)({"output": args.output}):
+        return "--resume revises this workflow's plan: --output must be .ai/plan.md"
+    return None
+
+
+def _resume_candidate(
+    workspace: ws.Workspace,
+    events: List[Dict[str, Any]],
+    provider: Any,
+    provider_name: str,
+    design_settings: Dict[str, Any],
+) -> Tuple[Optional[str], Dict[str, Any], str]:
+    """The session ``--resume`` continues, or why the run goes fresh.
+
+    Returns ``(session_id, resume_detail, provider_note)``. ``provider_note``
+    is the adapter's own explanation, for stderr only: it names the CLI
+    version and never goes into an event or a job record.
+
+    ``state.json`` is trusted to name the session, as it is trusted with the
+    approval and the budget; its values are checked, never repeated.
+    """
+
+    def fresh(reason: str, note: str = "") -> Tuple[None, Dict[str, Any], str]:
+        detail = {"requested": True, "mode": "fresh", "resumed_from": None, "reason": reason, "outcome": None}
+        return None, detail, note
+
+    if not getattr(provider, "supports_resume", False):
+        return fresh(_RESUME_NOT_SUPPORTED)
+    support = provider.resume_support(workspace.root) or {}
+    status = support.get("status")
+    if status != "verified":
+        suffix = status if status in ("unsupported", "unverified") else "unspecified"
+        return fresh("%s (%s)" % (_RESUME_NOT_SUPPORTED, suffix), str(support.get("detail") or ""))
+
+    runs = [event for event in events if isinstance(event, dict) and event.get("stage") == "architect"]
+    last = runs[-1] if runs else None
+    if last is None:
+        return fresh("no earlier architect run in this workflow")
+    if last.get("status") != "ok":
+        return fresh("the last architect run is not resumable: it did not succeed")
+    if last.get("answered") is False:
+        return fresh("the last architect run is not resumable: it did not answer")
+    session_id = last.get("session_id")
+    if not session_id:
+        return fresh("the last architect run is not resumable: it has no session id")
+    if not isinstance(session_id, str) or not _SESSION_ID_RE.match(session_id):
+        return fresh("the last architect run is not resumable: its session id is not a UUID")
+    if last.get("mode") != MODE_PLAN:
+        return fresh("the last architect run is not resumable: its recorded mode is not plan")
+    if not _wrote_plan(workspace)(last):
+        return fresh("the last architect run is not resumable: its output is not this workflow's plan")
+    if last.get("provider") != provider_name:
+        return fresh("the last architect run is not resumable: its recorded provider differs")
+
+    limits = design_settings.get("resume") or {}
+    max_age = limits.get("max_age_seconds")
+    if not isinstance(max_age, int) or isinstance(max_age, bool):
+        max_age = config_mod.default_config()["design"]["resume"]["max_age_seconds"]
+    ended = approval_mod.epoch_of(last.get("at"))
+    if ended is None or time.time() - ended >= max_age:
+        return fresh("the last architect run is older than design.resume.max_age_seconds")
+    cap = limits.get("max_context_tokens")
+    context = last.get("context_tokens")
+    if isinstance(cap, int) and not isinstance(cap, bool):
+        # A run that reported no usable size could be over the cap: only a
+        # size shown to be within it resumes.
+        if not isinstance(context, int) or isinstance(context, bool):
+            return fresh(
+                "the last architect run's context is unknown and design.resume.max_context_tokens is set"
+            )
+        if context > cap:
+            return fresh("the last architect run's context exceeds design.resume.max_context_tokens")
+    detail = {
+        "requested": True,
+        "mode": "resumed",
+        "resumed_from": session_id,
+        "reason": None,
+        "outcome": None,
+    }
+    return session_id, detail, ""
+
+
+def _announce_resume(session_id: Optional[str], detail: Dict[str, Any], note: str) -> None:
+    if session_id is not None:
+        _err("note: resuming the last architect session")
+        return
+    _err("note: --resume requested, running fresh: %s" % detail["reason"])
+    if note:
+        _err("note: %s" % note)
 
 
 def _reviewer_spec(loaded: config_mod.LoadedConfig, selector: str) -> Tuple[int, Dict[str, Any]]:
@@ -2601,6 +2866,11 @@ def _detached_argv(args: argparse.Namespace, role: str) -> List[str]:
     # shape only this function knows, and a detached run carrying --extra
     # reached the provider with the two paths as provider arguments.
     argv += ["--prompt-file", jobs_mod.PROMPT_FILE, "--job-file", jobs_mod.JOB_FILE]
+    if getattr(args, "resume", False):
+        # The worker reads the copy `jobs.start` makes, as it does the fresh
+        # prompt, so an edit to the file after this parent checked it does not
+        # reach the continued session.
+        argv += ["--resume", "--resume-prompt-file", jobs_mod.RESUME_PROMPT_FILE]
     if args.extra:
         argv += ["--extra", *args.extra]
     return argv
@@ -2919,13 +3189,27 @@ def cmd_optimization_report(args: argparse.Namespace) -> int:
     # Beside the event summary rather than inside it: that one reads the run
     # log alone, and what a round found is only in the round's report.
     report["scorecard"] = opt_mod.reviewer_scorecard(_scorecard_inputs(workflows))
+    report["architect_revisions"] = opt_mod.architect_revisions(
+        [(item["events"], _wrote_plan(item["workspace"])) for item in workflows]
+    )
     if args.json:
         _emit_json(report)
         return 0
 
-    if not report["rounds"] and not report["design_rounds"] and not report["design_refused"]:
+    revisions = report["architect_revisions"]
+    if (
+        not report["rounds"]
+        and not report["design_rounds"]
+        and not report["design_refused"]
+        and not revisions["attempts"]
+    ):
         _out("No review rounds recorded in %s." % source)
         _out("Run a review, then ask again -- this reads what happened, not what would.")
+        return 0
+    if not report["rounds"] and not report["design_rounds"] and not report["design_refused"]:
+        # Revisions alone: the review blocks below would all be zeroes.
+        for line in _revision_rows(revisions):
+            _out(line)
         return 0
 
     # Every row in this block describes a decision the level made, and no level
@@ -3024,6 +3308,10 @@ def cmd_optimization_report(args: argparse.Namespace) -> int:
             _out(line)
     for line in _scorecard_rows(report["scorecard"]):
         _out(line)
+    if revisions["attempts"]:
+        _out("")
+        for line in _revision_rows(revisions):
+            _out(line)
     if report["design_refused"]:
         _out("")
         _out(
@@ -3054,6 +3342,48 @@ def cmd_optimization_report(args: argparse.Namespace) -> int:
         _out("nothing to act on and cannot have fired. Record one before `review run`:")
         _out("  dev-orchestra state record test ok|failed")
     return 0
+
+
+def _revision_rows(revisions: Dict[str, Any]) -> List[str]:
+    """The ``Architect revisions`` block: one line per group, then why runs went fresh."""
+    lines = ["Architect revisions (cost against each workflow's initial design run):"]
+    for name in ("resumed", "fresh"):
+        group = revisions[name]
+        failed = group["failed_attempts"]
+        head = "%s: %d revisions (%d priced, %d with ratio)" % (
+            name,
+            group["runs"],
+            group["priced_runs"],
+            group["ratio_runs"],
+        )
+        if group["cost_ratio_mean"] is None:
+            # The attempts still cost something even with no ratio to show.
+            lines.append(
+                "  %s cost ratio to initial n/a (initial run has no usable cost); %d stalled + %d rejected "
+                "+ %d failed attempts (%d priced)"
+                % (head, failed["stalled"], failed["rejected"], failed["failed"], failed["priced"])
+            )
+            continue
+        per_completed = group["cost_per_completed_ratio"]
+        lines.append(
+            "  %s cost ratio to initial %.2f mean, %s per completed incl. %d stalled + %d rejected "
+            "+ %d failed attempts (%d priced)"
+            % (
+                head,
+                group["cost_ratio_mean"],
+                "n/a" if per_completed is None else "%.2f" % per_completed,
+                failed["stalled"],
+                failed["rejected"],
+                failed["failed"],
+                failed["priced"],
+            )
+        )
+    reasons = revisions["fallbacks"]["reasons"]
+    if reasons:
+        lines.append("  --resume ran fresh because:")
+        for reason, count in sorted(reasons.items()):
+            lines.append("    %s x%d" % (reason, count))
+    return lines
 
 
 def _counts(counter: Dict[str, int]) -> str:
@@ -4479,6 +4809,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--detach",
         action="store_true",
         help="start the run in its own process and return a job id immediately",
+    )
+    run_parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="architect only: revise this workflow's plan by continuing the last architect session",
+    )
+    run_parser.add_argument(
+        "--resume-prompt-file",
+        default=None,
+        help="with --resume: the prompt for a continued session (a fresh run gets --prompt-file)",
     )
     run_parser.add_argument("--json", action="store_true", help="machine-readable output")
     run_parser.add_argument("--job-file", default=None, help=argparse.SUPPRESS)

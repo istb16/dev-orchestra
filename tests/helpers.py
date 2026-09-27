@@ -37,6 +37,10 @@ ENV_KEYS = (
     "DEV_ORCHESTRA_MOCK_RESPONSE",
     "DEV_ORCHESTRA_MOCK_FAIL",
     "DEV_ORCHESTRA_MOCK_DELAY",
+    "DEV_ORCHESTRA_MOCK_SESSION",
+    "DEV_ORCHESTRA_MOCK_RESUME",
+    "DEV_ORCHESTRA_MOCK_CONTEXT_TOKENS",
+    "DEV_ORCHESTRA_MOCK_TRACE",
     "DEV_ORCHESTRA_NO_USER_PROVIDERS",
     "XDG_CONFIG_HOME",
     "APPDATA",
@@ -117,10 +121,31 @@ CLAUDE_HELP_TOOLS = """\
                                         "Bash,Edit,Read").
 """
 
-#: A CLI that advertises everything read-only runs need.
-CLAUDE_HELP = (
+CLAUDE_HELP_FORK = """\
+  --fork-session                        When resuming, create a new session ID
+                                        instead of reusing the original (use
+                                        with --resume or --continue)
+"""
+
+CLAUDE_HELP_RESUME_ONLY = """\
+  -r, --resume [value]                  Resume a conversation by session ID, or
+                                        open interactive picker with optional
+                                        search term
+"""
+
+#: The two lines a resumed run needs, verbatim from 2.1.283.
+CLAUDE_HELP_RESUME = CLAUDE_HELP_FORK + CLAUDE_HELP_RESUME_ONLY
+
+#: A CLI that advertises read-only runs and nothing about resuming.
+CLAUDE_HELP_NO_RESUME = (
     CLAUDE_HELP_BEFORE_READ_ONLY + CLAUDE_HELP_RESTRICTED + CLAUDE_HELP_STRICT_MCP + CLAUDE_HELP_TOOLS
 )
+
+#: A CLI that advertises everything read-only and resumed runs need.
+CLAUDE_HELP = CLAUDE_HELP_NO_RESUME + CLAUDE_HELP_RESUME
+
+#: The same CLI without ``--fork-session``.
+CLAUDE_HELP_NO_FORK = CLAUDE_HELP_NO_RESUME + CLAUDE_HELP_RESUME_ONLY
 
 #: The same CLI without ``--tools``: ``--tools`` still appears, inside the
 #: ``--restricted`` description, which must not count as the option.

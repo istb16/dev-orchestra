@@ -7,11 +7,12 @@ import sys
 import textwrap
 import unittest
 
-from helpers import CLAUDE_HELP, CLAUDE_HELP_OLD, IsolatedCase
+from helpers import CLAUDE_HELP, CLAUDE_HELP_NO_FORK, CLAUDE_HELP_NO_RESUME, CLAUDE_HELP_OLD, IsolatedCase
 
-from orchestrator import execution, providers
+from orchestrator import execution, providers, verified
 from orchestrator.providers import base
-from orchestrator.providers.claude import ClaudeProvider, _parse_model_aliases
+from orchestrator.providers import claude as claude_module
+from orchestrator.providers.claude import READ_ONLY_MECHANISM, ClaudeProvider, _parse_model_aliases
 from orchestrator.providers.codex import CodexProvider
 from orchestrator.providers.mock import MockProvider
 
@@ -661,6 +662,7 @@ class TestClaudeReadOnlyRun(IsolatedCase):
         self.provider.permission_modes()
         self.provider.list_models()
         self.provider.read_only_enforcement()
+        self.provider.resume_support(self.project)
         self.assertEqual(calls, [["claude", "--help"]])
 
     def test_enforcement_is_verified_by_the_current_help(self):
@@ -703,6 +705,164 @@ class TestClaudeReadOnlyRun(IsolatedCase):
         self.assertEqual(result.exit_code, 127)
         self.assertIn("not found on PATH", result.stderr)
         self.assertNotIn("unverified", result.stderr)
+
+
+PARENT = "33333333-3333-4333-8333-333333333333"
+UNLISTED = "9.9.9 (Claude Code)"
+
+
+class TestClaudeResume(IsolatedCase):
+    def setUp(self):
+        super().setUp()
+        self.provider = ClaudeProvider()
+        self.provider.which = lambda: "claude"
+        self.provider.version = lambda: (UNLISTED, None)
+        self.help(CLAUDE_HELP)
+
+    def help(self, stdout):
+        def capture(command, timeout=30):
+            return None if stdout is None else _FakeCompleted(stdout, "", 0)
+
+        self.provider._capture = capture
+
+    def resolved(self):
+        return base.ResolvedModel("claude", "opus", "latest", "opus", "opus", "cli-help")
+
+    def record_pass(self, version=UNLISTED, mechanism=READ_ONLY_MECHANISM, checks=None):
+        verified.record_pass(
+            "claude",
+            version,
+            mechanism,
+            list(verified.REQUIRED_RESUME_CHECKS if checks is None else checks),
+            "sonnet",
+            self.project,
+        )
+
+    def status(self):
+        return self.provider.resume_support(self.project)["status"]
+
+    def test_resuming_appends_to_the_read_only_command(self):
+        fresh = self.provider.command_line(base.MODE_PLAN, self.resolved(), self.project)
+        resumed = self.provider.command_line(
+            base.MODE_PLAN, self.resolved(), self.project, resume_session=PARENT
+        )
+        self.assertEqual(resumed, [*fresh, "--resume=%s" % PARENT, "--fork-session"])
+        self.assertEqual(fresh, self.provider.build_command(base.MODE_PLAN, self.resolved(), self.project))
+        for flag in ("--permission-mode", "--tools", "--strict-mcp-config", "--restricted"):
+            self.assertEqual(resumed.index(flag), fresh.index(flag))
+
+    def test_only_a_uuid_is_resumed(self):
+        for value in ("not-a-uuid", "--permission-mode", PARENT + " --tools default"):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                self.provider.resume_args(value)
+
+    def test_an_unlisted_version_is_unverified(self):
+        support = self.provider.resume_support(self.project)
+        self.assertEqual(support["status"], "unverified")
+        self.assertIn(UNLISTED, support["detail"])
+        self.assertIn("smoke_live.py", support["detail"])
+
+    def test_the_built_in_table_is_used_as_it_stands(self):
+        # 2.1.283 passed every required check before release, so it resumes
+        # on a machine that never ran them; its neighbour does not.
+        self.provider.version = lambda: ("2.1.283 (Claude Code)", None)
+        support = self.provider.resume_support(self.project)
+        self.assertEqual(support["status"], "verified")
+        self.assertEqual(support["source"], "built-in")
+        self.provider.version = lambda: ("2.1.284 (Claude Code)", None)
+        self.assertEqual(self.status(), "unverified")
+
+    def test_a_built_in_entry_needs_the_current_mechanism(self):
+        entry = {
+            "verified_at": "2026-09-27",
+            "read_only_mechanism": READ_ONLY_MECHANISM,
+            "checks": list(verified.REQUIRED_RESUME_CHECKS),
+            "source": "test",
+        }
+        self.patch_table({UNLISTED: entry})
+        support = self.provider.resume_support(self.project)
+        self.assertEqual(support["status"], "verified")
+        self.assertEqual(support["source"], "built-in")
+        self.patch_table({UNLISTED: dict(entry, read_only_mechanism="--other")})
+        self.assertEqual(self.status(), "unverified")
+
+    def patch_table(self, table):
+        original = claude_module.VERIFIED_RESUME
+        claude_module.VERIFIED_RESUME = table
+        self.addCleanup(setattr, claude_module, "VERIFIED_RESUME", original)
+
+    def test_a_record_verifies_and_a_failure_unverifies(self):
+        self.record_pass()
+        support = self.provider.resume_support(self.project)
+        self.assertEqual(support["status"], "verified")
+        self.assertEqual(support["source"], "record")
+        verified.record_fail("claude", UNLISTED, ["resumes read-only"], self.project)
+        support = self.provider.resume_support(self.project)
+        self.assertEqual(support["status"], "unverified")
+        self.assertIn("failed the resume check on this machine", support["detail"])
+
+    def test_a_local_failure_outranks_the_table(self):
+        self.patch_table(
+            {
+                UNLISTED: {
+                    "verified_at": "2026-09-27",
+                    "read_only_mechanism": READ_ONLY_MECHANISM,
+                    "checks": list(verified.REQUIRED_RESUME_CHECKS),
+                }
+            }
+        )
+        self.assertEqual(self.status(), "verified")
+        verified.record_fail("claude", UNLISTED, ["resumes read-only"], self.project)
+        self.assertEqual(self.status(), "unverified")
+
+    def test_an_incomplete_record_does_not_verify(self):
+        self.record_pass(mechanism="--other")
+        self.assertEqual(self.status(), "unverified")
+        self.record_pass(checks=verified.REQUIRED_RESUME_CHECKS[:6])
+        self.assertEqual(self.status(), "unverified")
+
+    def test_the_help_has_to_list_both_flags(self):
+        self.help(CLAUDE_HELP_NO_FORK)
+        support = self.provider.resume_support(self.project)
+        self.assertEqual(support["status"], "unsupported")
+        self.assertEqual(support["missing"], ["--fork-session"])
+        base.clear_discovery_cache()
+        self.help(CLAUDE_HELP_NO_RESUME)
+        missing = self.provider.resume_support(self.project)["missing"]
+        self.assertEqual(missing, ["--resume", "--fork-session"])
+
+    def test_unreadable_help_or_version_is_unverified(self):
+        self.help(None)
+        support = self.provider.resume_support(self.project)
+        self.assertEqual(support["status"], "unverified")
+        self.assertIn("--help", support["detail"])
+        base.clear_discovery_cache()
+        self.help(CLAUDE_HELP)
+        self.provider.version = lambda: (None, "boom")
+        support = self.provider.resume_support(self.project)
+        self.assertEqual(support["status"], "unverified")
+        self.assertIn("--version", support["detail"])
+
+    def test_the_answer_follows_the_record_without_clearing_a_cache(self):
+        self.assertEqual(self.status(), "unverified")
+        self.record_pass()
+        self.assertEqual(self.status(), "verified")
+        verified.record_fail("claude", UNLISTED, ["resumes read-only"], self.project)
+        self.assertEqual(self.status(), "unverified")
+
+
+class TestVerifiedResumeTable(unittest.TestCase):
+    def test_every_entry_vouches_for_the_current_flags(self):
+        for version, entry in claude_module.VERIFIED_RESUME.items():
+            with self.subTest(version=version):
+                self.assertRegex(version, r"^\d+\.\d+\.\d+ \(Claude Code\)$")
+                self.assertEqual(
+                    entry.get("read_only_mechanism"),
+                    READ_ONLY_MECHANISM,
+                    "re-run scripts/smoke_live.py --provider claude and update VERIFIED_RESUME",
+                )
+                for name in verified.REQUIRED_RESUME_CHECKS:
+                    self.assertIn(name, entry.get("checks") or [])
 
 
 class TestReadOnlyEnforcementReports(IsolatedCase):

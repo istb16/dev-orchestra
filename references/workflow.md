@@ -28,6 +28,7 @@ a doc comment" is a useful sentence; silently skipping is not.
         │   ├── design-request.md   # prompt you wrote for the Architect
         │   ├── design-fix-brief.md # generated from accepted design findings
         │   ├── design-revise-request.md
+        │   ├── design-resume-request.md
         │   ├── implement-request.md
         │   └── fix-brief.md        # generated from accepted findings
         ├── reviews/
@@ -147,8 +148,12 @@ dev-orchestra review status --design
 ```
 
 Triage exactly as for a code review: read what the plan claims, check it
-against the code, decide. Then write the revision request yourself — the
-Architect starts again with no context, so the brief alone is not a prompt:
+against the code, decide. Then write the revision request yourself, as two
+files. The architect continues the session in which it designed the plan when
+it can, and starts again with no context when it cannot -- `run` knows which
+and sends the matching one, so write both.
+
+`design-revise-request.md`, for a fresh run (the brief alone is not a prompt):
 
 ```markdown
 # Revise the plan
@@ -166,11 +171,43 @@ Print the complete revised plan to stdout as Markdown. The caller captures
 stdout. Do not write it to a file: this role runs in plan mode.
 ```
 
+`design-resume-request.md`, for a continued session -- it does not repeat the
+plan, which the session already holds, but has it read once, because you may
+have trimmed what the architect printed and the findings point into the file:
+
+```markdown
+# Revise the plan
+
+You are continuing the session in which you designed this plan. Read
+.ai/plan.md once before changing anything: it is the plan you printed, as
+saved by the orchestrator, and the findings below refer to its sections.
+Do not re-read code you already read unless a finding contradicts what you
+remember.
+
+<paste .ai/execution/design-fix-brief.md here>
+
+For each finding: say whether you addressed it and how, or why it is not a
+problem. Do not widen the scope beyond the original request.
+
+Print the complete revised plan to stdout as Markdown. The caller captures
+stdout. Do not write it to a file: this role runs in plan mode.
+```
+
 ```bash
-dev-orchestra run architect \
+dev-orchestra run architect --resume \
   --prompt-file .ai/execution/design-revise-request.md \
+  --resume-prompt-file .ai/execution/design-resume-request.md \
   --output .ai/plan.md
 ```
+
+Pass `--resume` only to revise the plan the last architect run wrote. A new
+design request in the same workflow is run without it. Whether it continued or
+ran fresh, and why, is in the note on stderr and in the run log
+(`references/cli.md`). If the note says `running fresh: the provider cannot
+resume a session (unverified)`, this version of the CLI has not been checked
+to keep a continued session read-only: tell the user, who can run `python
+scripts/smoke_live.py --provider claude` to check it. Do not run it yourself --
+it spends real tokens on the real CLI.
 
 A revision that stalls, times out or fails leaves `.ai/plan.md` as it was --
 the run is being asked to rewrite its own input, so a bad one must not consume
@@ -221,6 +258,55 @@ approve` -- never on your own judgement, and never to get past a refusal. If
 they ask for changes, revise the plan (and re-review it if the design review is
 on), then ask again: the revision hashes differently, so the old approval no
 longer counts.
+
+A revision the user asked for has no fix brief, so its two files carry their
+words instead. `design-change-request.md`, for a fresh run:
+
+```markdown
+# Revise the plan
+
+<the original design request, unchanged>
+
+Read .ai/plan.md and revise it. Keep every section it already has.
+
+The owner reviewed the plan and asked for these changes, in their words:
+
+<the changes the owner asked for, unchanged>
+
+For each change: say how you made it, or why it conflicts with the original
+request. Do not widen the scope beyond the original request.
+
+Print the complete revised plan to stdout as Markdown. The caller captures
+stdout. Do not write it to a file: this role runs in plan mode.
+```
+
+`design-change-resume-request.md`, for a continued session:
+
+```markdown
+# Revise the plan
+
+You are continuing the session in which you designed this plan. Read
+.ai/plan.md once before changing anything: it is the plan you printed, as
+saved by the orchestrator. Do not re-read code you already read unless a
+change below contradicts what you remember.
+
+The owner reviewed the plan and asked for these changes, in their words:
+
+<the changes the owner asked for, unchanged>
+
+For each change: say how you made it, or why it conflicts with the original
+request. Do not widen the scope beyond the original request.
+
+Print the complete revised plan to stdout as Markdown. The caller captures
+stdout. Do not write it to a file: this role runs in plan mode.
+```
+
+```bash
+dev-orchestra run architect --resume \
+  --prompt-file .ai/execution/design-change-request.md \
+  --resume-prompt-file .ai/execution/design-change-resume-request.md \
+  --output .ai/plan.md
+```
 
 A design review budget spent with findings still open is `stop-and-report`
 once the last round's revision is made, and that report ends in this question:

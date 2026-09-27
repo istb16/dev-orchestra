@@ -74,6 +74,13 @@ def redact(text: str) -> str:
     return cleaned
 
 
+def _prefixed(notes: Sequence[str], stderr: str) -> str:
+    """``stderr`` with an adapter's own failures named above it."""
+    if not notes:
+        return stderr
+    return "\n".join([*notes, stderr])
+
+
 class Detection:
     """Result of looking for a CLI on this machine."""
 
@@ -274,6 +281,10 @@ class RunResult:
         orphans_possible: bool = False,
         usage: Optional[Usage] = None,
         invoked: bool = True,
+        session_id: Optional[str] = None,
+        context_tokens: Optional[int] = None,
+        session_init: Optional[Dict[str, Any]] = None,
+        resume_rejected: bool = False,
     ) -> None:
         self.ok = ok
         self.exit_code = exit_code
@@ -297,6 +308,17 @@ class RunResult:
         #: it as one that failed to report would make the token account
         #: declare itself incomplete over a run that had nothing to report.
         self.invoked = invoked
+        #: The session the run ended in, as the CLI reported it -- after a
+        #: fork, not the session it continued.
+        self.session_id = session_id
+        #: The context the model last saw, in tokens, if the CLI said.
+        self.context_tokens = context_tokens
+        #: What the CLI reported when the session started: the facts a check
+        #: of a resumed session's restrictions has to rest on.
+        self.session_init = session_init
+        #: True only when the CLI positively said the session asked for does
+        #: not exist; any other failure is an ordinary one.
+        self.resume_rejected = resume_rejected
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -311,6 +333,10 @@ class RunResult:
             "model": self.resolved.to_dict() if self.resolved else None,
             "invoked": self.invoked,
             "usage": self.usage.to_dict(),
+            "session_id": self.session_id,
+            "context_tokens": self.context_tokens,
+            "session_init": self.session_init,
+            "resume_rejected": self.resume_rejected,
         }
 
 
@@ -330,6 +356,11 @@ class Provider:
     #: output *while working*. Measured, not assumed: it decides whether an
     #: idle-output deadline can distinguish a wedged agent from a busy one.
     streams_progress = False
+
+    #: True when this adapter can continue an earlier session of a read-only
+    #: run. The orchestrator still only asks when :meth:`resume_support`
+    #: reports ``verified``.
+    supports_resume = False
 
     def __init__(self, executable: Optional[str] = None) -> None:
         if executable:
@@ -525,6 +556,71 @@ class Provider:
             "detail": "this adapter does not report how it enforces read-only runs",
         }
 
+    # -- resuming a session ------------------------------------------------
+
+    def resume_support(self, root: str) -> Dict[str, Any]:
+        """Whether a resumed session of this CLI is known to stay read-only.
+
+        ``status`` is ``verified``, ``unverified``, ``unsupported`` or
+        ``unspecified``; only ``verified`` lets the orchestrator resume.
+        ``root`` is the workspace, which a per-machine record must lie
+        outside of to be trusted. Not memoised: a record written a moment ago
+        has to be read.
+        """
+        if not self.supports_resume:
+            return {"status": "unsupported", "detail": "%s does not resume sessions" % self.name}
+        return {
+            "status": "unspecified",
+            "detail": "this adapter does not report whether a resumed session stays read-only",
+        }
+
+    def resume_args(self, session_id: str) -> List[str]:
+        """The arguments that continue ``session_id``; appended after the
+        command :meth:`build_command` returns."""
+        raise NotImplementedError("%s does not resume sessions" % self.name)
+
+    def resume_rejected(
+        self,
+        outcome: "execution.ExecOutcome",
+        mode: str,
+        options: Optional[Dict[str, Any]],
+        session_id: str,
+    ) -> bool:
+        """True only when the CLI positively said ``session_id`` does not exist.
+
+        The orchestrator runs fresh once after a rejection, so a False here
+        costs a retry and a wrong True spends an attempt on a run that had
+        already failed for another reason.
+        """
+        return False
+
+    def parse_session(self, outcome: "execution.ExecOutcome") -> Dict[str, Any]:
+        """``session_id``, ``context_tokens`` and ``init`` of a finished run,
+        as far as the CLI printed them. Empty when it says nothing."""
+        return {}
+
+    def command_line(
+        self,
+        mode: str,
+        resolved: ResolvedModel,
+        cwd: str,
+        extra_args: Sequence[str] = (),
+        options: Optional[Dict[str, Any]] = None,
+        resume_session: Optional[str] = None,
+    ) -> List[str]:
+        """The command a run starts. Adapters override :meth:`build_command`
+        and :meth:`resume_args`, not this.
+
+        The resume arguments are the adapter's own and go after everything
+        else, so they never pass through the caller's raw-argument gate and a
+        ``build_command`` written before resuming existed is called as it
+        always was.
+        """
+        command = list(self.build_command(mode, resolved, cwd, extra_args, options))
+        if resume_session is not None:
+            command += self.resume_args(resume_session)
+        return command
+
     # -- running -----------------------------------------------------------
 
     def run(
@@ -538,6 +634,7 @@ class Provider:
         env: Optional[Dict[str, str]] = None,
         options: Optional[Dict[str, Any]] = None,
         idle_timeout: Optional[float] = None,
+        resume_session: Optional[str] = None,
     ) -> RunResult:
         """Run the CLI once. Adapters override :meth:`_launch`, not this.
 
@@ -545,23 +642,32 @@ class Provider:
         it, including one whose ``build_command`` never calls the base, and so
         that it sees the caller's arguments before an adapter appends its own.
         An adapter that overrides ``run`` has to carry the gate itself.
+
+        ``resume_session`` is never a raw argument: it travels as a keyword to
+        :meth:`command_line`, which appends the adapter's own
+        :meth:`resume_args`. Only a read-only run may continue a session.
         """
         if mode not in MODES:
             raise ValueError("unknown mode %r" % mode)
+        if resume_session is not None and mode not in READ_ONLY_MODES:
+            raise ValueError("only a read-only run may resume a session")
         refusal = self.read_only_refusal(mode, extra_args, options)
         if refusal is not None:
             return refusal
-        return self._launch(
-            prompt,
-            mode,
-            cwd,
-            model_spec=model_spec,
-            timeout=timeout,
-            extra_args=extra_args,
-            env=env,
-            options=options,
-            idle_timeout=idle_timeout,
-        )
+        kwargs: Dict[str, Any] = {
+            "model_spec": model_spec,
+            "timeout": timeout,
+            "extra_args": extra_args,
+            "env": env,
+            "options": options,
+            "idle_timeout": idle_timeout,
+        }
+        # Passed only when there is one: an adapter that overrides
+        # ``_launch`` with the signature it had before resuming existed has
+        # to keep running fresh runs unchanged.
+        if resume_session is not None:
+            kwargs["resume_session"] = resume_session
+        return self._launch(prompt, mode, cwd, **kwargs)
 
     def _launch(
         self,
@@ -574,6 +680,7 @@ class Provider:
         env: Optional[Dict[str, str]] = None,
         options: Optional[Dict[str, Any]] = None,
         idle_timeout: Optional[float] = None,
+        resume_session: Optional[str] = None,
     ) -> RunResult:
         detection = self.detect()
         if not detection.installed:
@@ -596,7 +703,7 @@ class Provider:
                 return RunResult(False, 2, "", str(detail), [self.executable], 0.0, invoked=False)
 
         resolved = self.resolve_model(model_spec)
-        command = self.build_command(mode, resolved, cwd, extra_args, options)
+        command = self.command_line(mode, resolved, cwd, extra_args, options, resume_session)
         outcome = execution.execute(
             command,
             cwd=cwd,
@@ -605,6 +712,27 @@ class Provider:
             idle_timeout=self.idle_timeout(options, idle_timeout),
             env=self._child_env(env),
         )
+        # Read before postprocess, which keeps only the final answer, and on
+        # both paths below: a rejected resume is also a run whose output an
+        # adapter may fail to read.
+        notes: List[str] = []
+        rejected = False
+        if resume_session is not None:
+            try:
+                rejected = bool(self.resume_rejected(outcome, mode, options, resume_session))
+            except Exception as exc:
+                notes.append("%s: %s" % (type(exc).__name__, exc))
+        try:
+            session = self.parse_session(outcome) or {}
+        except Exception as exc:
+            session = {}
+            notes.append("%s: %s" % (type(exc).__name__, exc))
+        session_fields = {
+            "session_id": session.get("session_id"),
+            "context_tokens": session.get("context_tokens"),
+            "session_init": session.get("init"),
+            "resume_rejected": rejected,
+        }
         try:
             stdout, stderr = self.postprocess(outcome, mode)
         except Exception as exc:
@@ -619,7 +747,7 @@ class Provider:
                 False,
                 outcome.exit_code,
                 outcome.stdout,
-                "%s: %s\n%s" % (type(exc).__name__, exc, outcome.stderr),
+                _prefixed(notes, "%s: %s\n%s" % (type(exc).__name__, exc, outcome.stderr)),
                 command,
                 outcome.duration,
                 resolved,
@@ -631,6 +759,7 @@ class Provider:
                 # could not measure rather than as one that cost nothing.
                 usage=Usage(),
                 invoked=True,
+                **session_fields,
             )
         # Read from the raw output, before postprocess narrows it to the final
         # answer: the accounting the CLI prints is not part of it. Apart from
@@ -652,7 +781,7 @@ class Provider:
             outcome.ok,
             outcome.exit_code,
             stdout,
-            stderr,
+            _prefixed(notes, stderr),
             command,
             outcome.duration,
             resolved,
@@ -661,6 +790,7 @@ class Provider:
             idle_for=outcome.idle_for,
             orphans_possible=outcome.orphans_possible,
             usage=usage,
+            **session_fields,
         )
 
     def idle_timeout(

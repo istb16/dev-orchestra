@@ -1,4 +1,4 @@
-<!-- translated-from: references/workflow.md sha256:548bb97433d910f7a52749c1a023a76456a40fcbf085b541c0e4d7882500013a -->
+<!-- translated-from: references/workflow.md sha256:3fb62342895b0fcb79ae3686339bf4f5e4a4b9beccf1ed4bdd096088b50bc36b -->
 
 > この文書は [references/workflow.md](../../../references/workflow.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -38,6 +38,7 @@
         │   ├── design-request.md   # prompt you wrote for the Architect
         │   ├── design-fix-brief.md # generated from accepted design findings
         │   ├── design-revise-request.md
+        │   ├── design-resume-request.md
         │   ├── implement-request.md
         │   └── fix-brief.md        # generated from accepted findings
         ├── reviews/
@@ -162,8 +163,11 @@ dev-orchestra review status --design
 ```
 
 トリアージはコードレビューとまったく同じように行います。plan が何を主張しているかを読み、
-コードと照合し、判断します。その後、修正リクエストは自分で書いてください。Architect は
-再びコンテキストなしで開始するので、brief だけではプロンプトになりません。
+コードと照合し、判断します。その後、修正リクエストを自分で 2 つのファイルとして書いてください。
+architect は、できるときは plan を設計したセッションを継続し、できないときはコンテキストなしで
+改めて開始します。どちらになるかは `run` が知っていて対応する方を送るので、両方を書きます。
+
+`design-revise-request.md` は新規に走る場合のものです（brief だけではプロンプトになりません）。
 
 ```markdown
 # Revise the plan
@@ -181,11 +185,42 @@ Print the complete revised plan to stdout as Markdown. The caller captures
 stdout. Do not write it to a file: this role runs in plan mode.
 ```
 
+`design-resume-request.md` は継続したセッション向けです。セッションがすでに持っている plan は
+再掲しませんが、一度は読ませます。architect が出力したものをあなたが削っているかもしれず、指摘は
+そのファイルを指しているからです。
+
+```markdown
+# Revise the plan
+
+You are continuing the session in which you designed this plan. Read
+.ai/plan.md once before changing anything: it is the plan you printed, as
+saved by the orchestrator, and the findings below refer to its sections.
+Do not re-read code you already read unless a finding contradicts what you
+remember.
+
+<paste .ai/execution/design-fix-brief.md here>
+
+For each finding: say whether you addressed it and how, or why it is not a
+problem. Do not widen the scope beyond the original request.
+
+Print the complete revised plan to stdout as Markdown. The caller captures
+stdout. Do not write it to a file: this role runs in plan mode.
+```
+
 ```bash
-dev-orchestra run architect \
+dev-orchestra run architect --resume \
   --prompt-file .ai/execution/design-revise-request.md \
+  --resume-prompt-file .ai/execution/design-resume-request.md \
   --output .ai/plan.md
 ```
+
+`--resume` は、直前の architect の実行が書いた plan を改訂するときにだけ付けてください。同じ
+ワークフローで新しい design リクエストを出すときは付けません。継続したか新規に走ったか、そしてその
+理由は、stderr の note と run log に残ります（`references/cli.md`）。note が
+`running fresh: the provider cannot resume a session (unverified)` なら、その版の CLI は継続した
+セッションを読み取り専用のまま保つと確認されていません。ユーザーに伝えてください。確認するには
+ユーザーが `python scripts/smoke_live.py --provider claude` を実行できます。自分では実行しないで
+ください。実際の CLI で実際のトークンを使うからです。
 
 修正の実行が stall した場合、タイムアウトした場合、または失敗した場合、`.ai/plan.md` は
 元のまま残ります。この実行は自身の入力を書き換えるよう求められているので、失敗した実行が
@@ -236,6 +271,55 @@ approve` で記録します。自分の判断で記録したり、拒否を回�
 いけません。変更を求められた場合は、plan を修正し（design レビューが有効なら再レビューも
 行い）、改めて尋ねてください。修正版はハッシュが変わるので、以前の承認はもう有効では
 ありません。
+
+ユーザーが求めた修正には fix brief がないので、2 つのファイルには代わりにユーザーの言葉を入れます。
+`design-change-request.md` は新規に走る場合のものです。
+
+```markdown
+# Revise the plan
+
+<the original design request, unchanged>
+
+Read .ai/plan.md and revise it. Keep every section it already has.
+
+The owner reviewed the plan and asked for these changes, in their words:
+
+<the changes the owner asked for, unchanged>
+
+For each change: say how you made it, or why it conflicts with the original
+request. Do not widen the scope beyond the original request.
+
+Print the complete revised plan to stdout as Markdown. The caller captures
+stdout. Do not write it to a file: this role runs in plan mode.
+```
+
+`design-change-resume-request.md` は継続したセッション向けです。
+
+```markdown
+# Revise the plan
+
+You are continuing the session in which you designed this plan. Read
+.ai/plan.md once before changing anything: it is the plan you printed, as
+saved by the orchestrator. Do not re-read code you already read unless a
+change below contradicts what you remember.
+
+The owner reviewed the plan and asked for these changes, in their words:
+
+<the changes the owner asked for, unchanged>
+
+For each change: say how you made it, or why it conflicts with the original
+request. Do not widen the scope beyond the original request.
+
+Print the complete revised plan to stdout as Markdown. The caller captures
+stdout. Do not write it to a file: this role runs in plan mode.
+```
+
+```bash
+dev-orchestra run architect --resume \
+  --prompt-file .ai/execution/design-change-request.md \
+  --resume-prompt-file .ai/execution/design-change-resume-request.md \
+  --output .ai/plan.md
+```
 
 未解決の指摘を残したまま design レビューの予算を使い切ると、最後のラウンドの修正が
 行われた時点で `stop-and-report` となり、そのレポートはこの問いで締めくくられます。

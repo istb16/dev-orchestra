@@ -184,7 +184,16 @@ def default_config() -> Dict[str, Any]:
         # where nobody could answer the question anyway. Top-level rather
         # than under review.design: approval matters whether or not the
         # panel reviewed the plan.
-        "design": {"require_approval": True},
+        #
+        # ``resume`` bounds `run architect --resume`, which continues the
+        # architect's last session to revise the plan. An hour is how long the
+        # CLI kept the prompt cache when this was measured; past it, a resumed
+        # run pays to rebuild the context anyway. No context cap until one is
+        # measured to hurt a revision.
+        "design": {
+            "require_approval": True,
+            "resume": {"max_age_seconds": 3600, "max_context_tokens": None},
+        },
         # How hard to try to be cheap. See orchestrator/optimization.py: the
         # level gates a review of a tree whose tests are recorded as failing,
         # decides whether a small change gets one reviewer or the whole panel,
@@ -448,7 +457,15 @@ class LoadedConfig:
             # An explicit ``null`` means "use the default", as it does in
             # ``context_settings``. Copied over as it is, it would read as
             # false and turn the approval gate off without anyone choosing to.
-            settings.update({key: value for key, value in configured.items() if value is not None})
+            settings.update(
+                {key: value for key, value in configured.items() if value is not None and key != "resume"}
+            )
+            # Nested, so merged key by key: a file naming one limit keeps the
+            # other's default. ``max_age_seconds: null`` is the default too,
+            # and ``max_context_tokens: null`` is already "no cap".
+            resume = configured.get("resume")
+            if isinstance(resume, dict):
+                settings["resume"].update({key: value for key, value in resume.items() if value is not None})
         return settings
 
     def context_settings(self) -> Dict[str, Any]:
@@ -762,6 +779,19 @@ def validate(data: Dict[str, Any], known_providers: Optional[List[str]] = None) 
             approval = design.get("require_approval")
             if approval is not None and not isinstance(approval, bool):
                 problems.append("design.require_approval: must be true or false")
+            resume = design.get("resume")
+            if resume is not None:
+                if not isinstance(resume, dict):
+                    problems.append("design.resume: must be a mapping")
+                else:
+                    age = resume.get("max_age_seconds")
+                    if age is not None and (not isinstance(age, int) or isinstance(age, bool) or age < 0):
+                        problems.append("design.resume.max_age_seconds: must be a non-negative integer")
+                    cap = resume.get("max_context_tokens")
+                    if cap is not None and (not isinstance(cap, int) or isinstance(cap, bool) or cap < 1):
+                        problems.append(
+                            "design.resume.max_context_tokens: must be a positive integer or null"
+                        )
 
     optimization = data.get("optimization")
     if optimization is not None:

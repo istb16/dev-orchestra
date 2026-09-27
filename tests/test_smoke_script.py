@@ -17,7 +17,9 @@ from __future__ import annotations
 import io
 import json
 import os
+import shutil
 import unittest
+import uuid
 from contextlib import redirect_stderr, redirect_stdout
 
 from helpers import REPO_ROOT, IsolatedCase
@@ -393,6 +395,170 @@ class TestTheCommandLine(IsolatedCase):
         """It is always "installed" and never starts a process, so running it
         here would prove only that the stub is a stub."""
         self.assertIn("mock", smoke_live.OFFLINE)
+
+
+#: Read by ``record_resume`` from the module the provider's class lives in,
+#: the way it reads the claude adapter's table. Empty: nothing is built in.
+VERIFIED_RESUME = {}
+
+PARENT = "66666666-6666-4666-8666-666666666666"
+READ_ONLY_INIT = {"tools": ["Glob", "Grep", "Read"], "mcp_servers": [], "permission_mode": "plan"}
+
+
+class _Resumer(_Reader):
+    """A CLI that resumes, with whatever init it is told to report."""
+
+    supports_resume = True
+
+    def __init__(self, init=None, fork=True, parent=PARENT, rejects=True, hooks_on_resume=False):
+        super().__init__(confined=True)
+        self.init = dict(READ_ONLY_INIT) if init is None else init
+        self.fork = fork
+        self.parent = parent
+        self.rejects = rejects
+        self.hooks_on_resume = hooks_on_resume
+
+    def version(self):
+        return "9.9.9 (Fake)", None
+
+    def read_only_enforcement(self):
+        return {"status": "verified", "mechanism": "--fake-read-only"}
+
+    def run(self, prompt, mode, cwd, **kwargs):
+        read = super().run(prompt, mode, cwd, **kwargs)
+        session = kwargs.get("resume_session")
+        if session is None:
+            return RunResult(True, 0, read.stdout, "", ["fake"], 0.1, session_id=self.parent)
+        if session == smoke_live.MISSING_SESSION:
+            return RunResult(False, 1, "", "", ["fake"], 0.1, resume_rejected=self.rejects)
+        if self.hooks_on_resume and os.path.isdir(os.path.join(cwd, ".claude")):
+            open(os.path.join(cwd, smoke_live.HOOK_TARGET), "w").close()
+        return RunResult(
+            True,
+            0,
+            read.stdout,
+            "",
+            ["fake"],
+            0.1,
+            session_id=str(uuid.uuid4()) if self.fork else session,
+            session_init=self.init,
+        )
+
+
+class TestTheResumeChecks(IsolatedCase):
+    def setUp(self):
+        super().setUp()
+        original = smoke_live.os.symlink
+        smoke_live.os.symlink = lambda source, target: shutil.copyfile(source, target)
+        self.addCleanup(setattr, smoke_live.os, "symlink", original)
+
+    def checks(self, provider, name="claude"):
+        return {check.name: check for check in smoke_live.check_resume(provider, name, self.project)}
+
+    def test_an_adapter_that_does_not_resume_is_not_asked(self):
+        self.assertEqual(smoke_live.check_resume(_FakeProvider(), "fake", self.project), [])
+
+    def test_a_read_only_resumed_session_passes_everything(self):
+        provider = _Resumer()
+        checks = self.checks(provider)
+        self.assertEqual(sorted(checks), sorted(smoke_live.RESUME_CHECKS))
+        self.assertTrue(all(check.ok for check in checks.values()), checks)
+        for call in provider.calls[1:]:
+            if call["kwargs"].get("resume_session"):
+                self.assertEqual(call["mode"], "plan")
+
+    def test_extra_tools_fail_even_when_nothing_was_written(self):
+        init = dict(READ_ONLY_INIT, tools=["Bash", "Read"])
+        check = self.checks(_Resumer(init=init))["resumes read-only"]
+        self.assertFalse(check.ok)
+        self.assertIn("outside Read/Grep/Glob: Bash", check.detail)
+
+    def test_no_init_mcp_servers_or_another_mode_fail(self):
+        for init, text in (
+            ({}, "no tool list"),
+            (dict(READ_ONLY_INIT, mcp_servers=[{"name": "slack"}]), "1 MCP server(s)"),
+            (dict(READ_ONLY_INIT, permission_mode="default"), "permission mode was not plan"),
+        ):
+            with self.subTest(text=text):
+                check = self.checks(_Resumer(init=init))["resumes read-only"]
+                self.assertFalse(check.ok)
+                self.assertIn(text, check.detail)
+
+    def test_keeping_the_parent_id_is_not_a_fork(self):
+        self.assertFalse(self.checks(_Resumer(fork=False))["forks the session"].ok)
+
+    def test_a_missing_session_has_to_be_recognised(self):
+        self.assertFalse(self.checks(_Resumer(rejects=False))["reports a missing session"].ok)
+
+    def test_a_hook_that_runs_on_resume_fails_and_is_cleaned_up(self):
+        checks = self.checks(_Resumer(hooks_on_resume=True))
+        self.assertTrue(checks["ignores repository hooks"].ok)
+        self.assertFalse(checks["ignores repository hooks on resume"].ok)
+        for leftover in (".claude", "hook.py", smoke_live.HOOK_TARGET):
+            self.assertFalse(os.path.exists(os.path.join(self.project, leftover)))
+
+    def test_no_parent_session_skips_every_resume_check_and_records_nothing(self):
+        class _NoParentRun(_Resumer):
+            def run(self, prompt, mode, cwd, **kwargs):
+                if kwargs.get("resume_session") is None:
+                    return RunResult(False, 1, "", "rate limited", ["fake"], 0.1)
+                return super().run(prompt, mode, cwd, **kwargs)
+
+        for provider in (_Resumer(parent=None), _NoParentRun()):
+            with self.subTest(provider=type(provider).__name__):
+                checks = self.checks(provider)
+                self.assertTrue(checks)
+                self.assertTrue(all(not check.ok and check.skipped for check in checks.values()))
+                self.assertIn("no parent session id", checks["resumes read-only"].detail)
+                recorded = smoke_live.record_resume(provider, "claude", list(checks.values()), "fake-1")
+                self.assertEqual(recorded, [])
+                self.assertFalse(os.path.exists(smoke_live.verified.record_path("claude")))
+
+    def test_confinement_is_only_asked_of_a_confining_provider(self):
+        checks = self.checks(_Resumer(), name="other")
+        self.assertNotIn("resumes confined (absolute)", checks)
+
+
+class TestTheResumeRecord(IsolatedCase):
+    def checks(self, **overrides):
+        names = [*smoke_live.verified.REQUIRED_RESUME_CHECKS, "resumes confined (symlink)"]
+        checks = []
+        for label in names:
+            state = overrides.get(label, "ok")
+            checks.append(smoke_live.Check("claude", label, state == "ok", "", skipped=state == "skip"))
+        return checks
+
+    def record(self, checks):
+        os.chdir(self.project)
+        return smoke_live.record_resume(_Resumer(), "claude", checks, "fake-1")
+
+    def test_a_pass_is_recorded_and_the_table_entry_printed(self):
+        lines = self.record(self.checks(**{"resumes confined (symlink)": "skip"}))
+        self.assertEqual(len(lines), 1)
+        self.assertTrue(lines[0].ok)
+        self.assertEqual(lines[0].record["version"], "9.9.9 (Fake)")
+        self.assertTrue(lines[0].record["new"])
+        self.assertIn("VERIFIED_RESUME", lines[0].notes[0])
+        found = smoke_live.verified.lookup("claude", "9.9.9 (Fake)", "--fake-read-only", self.project)
+        self.assertEqual(found["status"], "passed")
+
+    def test_a_failure_is_recorded(self):
+        lines = self.record(self.checks(**{"ignores repository hooks on resume": "fail"}))
+        self.assertFalse(lines[0].ok)
+        self.assertIn("recorded as failed", lines[0].detail)
+        found = smoke_live.verified.lookup("claude", "9.9.9 (Fake)", "--fake-read-only", self.project)
+        self.assertEqual(found["status"], "failed")
+
+    def test_a_skipped_required_check_records_nothing(self):
+        self.assertEqual(self.record(self.checks(**{"resumes read-only": "skip"})), [])
+        self.assertFalse(os.path.exists(smoke_live.verified.record_path("claude")))
+
+    def test_a_record_inside_the_checkout_is_refused(self):
+        os.environ["DEV_ORCHESTRA_HOME"] = os.path.join(self.project, ".ai", "home")
+        lines = self.record(self.checks())
+        self.assertFalse(lines[0].ok)
+        self.assertIn("nothing recorded", lines[0].detail)
+        self.assertFalse(os.path.exists(smoke_live.verified.record_path("claude")))
 
 
 class TestItStaysOutOfTheSuite(unittest.TestCase):

@@ -1,4 +1,4 @@
-<!-- translated-from: references/configuration.md sha256:074bd3c3bd9c0bb1097004470df61c4e33f8e7798c2b6381a39cb49eb4e5333d -->
+<!-- translated-from: references/configuration.md sha256:9219851bd2363fbb46041355e1e18f7e4fa31ec5f65d9e94d6664b6f50da7f29 -->
 
 > この文書は [references/configuration.md](../../../references/configuration.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -21,6 +21,11 @@ adapter を置きます（Windows では `%APPDATA%\dev-orchestra\providers\`、
 それ以外では `~/.config/dev-orchestra/providers/`、それが設定されている場合は
 `$DEV_ORCHESTRA_HOME/providers/`。`DEV_ORCHESTRA_CONFIG`
 ではこの場所は変わりません）。`references/providers.md` を参照してください。
+
+その隣の `verified/<provider>-resume.json` には、セッションの継続（`run architect --resume`）について
+`python scripts/smoke_live.py` がこのマシンで確認した CLI の版が記録されます。書くのはこのスクリプト
+だけです。読まれるのは実パスがワークスペースの外にあるときだけで、`DEV_ORCHESTRA_HOME` をチェック
+アウトの中に向けると記録は読まれず書かれもせず、`doctor` と `--resume` の note がその旨を示します。
 
 プラットフォーム別のグローバル設定のパス:
 
@@ -114,6 +119,9 @@ review:
 
 design:
   require_approval: true              # implementer waits for the user's yes (design approve)
+  resume:                             # run architect --resume
+    max_age_seconds: 3600             # older than this, the revision runs fresh
+    max_context_tokens: null          # no cap on the context a resumed session carries
 
 workspace:
   dir: .ai                            # relative to the repo root, or absolute
@@ -146,6 +154,8 @@ workspace:
 | `review.design.enabled` | bool | `false`（デフォルト）は設計レビューを完全にスキップします。`true` にすると、実装の前に `.ai/plan.md` を同じパネルにかけます。このステージはラウンドごとにパネルのメンバー 1 人につきレビュアー実行 1 回分のコストがかかるため、オプトインになっています。 |
 | `review.design.max_iterations` | int ≥ 0 | 設計レビューのラウンド数（レビュー → トリアージ → 修正）。`max_review_iterations` とは別にカウントされます（デフォルト 2）。上限に達したラウンドでも修正は行われます。上限が拒否するのはその後の再レビューだけです。`1`: 1 ラウンド、1 回の修正、その後ユーザーに確認。`0`: 設計レビューなし。`budgets.architect`（デフォルト 3）は、デフォルトでは設計とラウンドごとに 1 回の修正をまかないます。`max_iterations` に合わせて引き上げ、承認時に変更を求められることが予想される場合はさらに 1 つ増やしてください。 |
 | `design.require_approval` | bool | `true`（デフォルト）にすると、`.ai/plan.md` が存在し、現時点の plan が `design approve` で承認されていない間は -- ユーザーが了承した後に承認するものです -- `run implementer` が拒否します（exit 5）。`false` は誰も見ていない実行（CI、バッチ）向けで、このゲートが導入される前の挙動に戻します。`review.design` の下ではなくトップレベルにあるのは、パネルが plan をレビューしたかどうかにかかわらず承認が重要だからです。`--force` ではバイパスできず、この設定だけがバイパスできます。 |
+| `design.resume.max_age_seconds` | int ≥ 0 \| null | `run architect --resume` がセッションを継続できる、直前の architect の実行の古さの上限です（デフォルト 3600。測定時に CLI がプロンプトキャッシュを保持していた時間）。これより古ければ、改訂は全文プロンプトで新規に走ります。`0` は常に新規、`null` はデフォルトの意味です。 |
+| `design.resume.max_context_tokens` | int > 0 \| null | 継続を許す、セッション終了時の文脈の大きさ（トークン）の上限です（デフォルト `null`: 上限なし）。各実行は `context_tokens` を記録するので、測った値から上限を決められます。一方だけを設定しても、もう一方はデフォルトのままです。 |
 | `optimization.level` | `aggressive` \| `balanced` \| `quality` | どれだけ安く済ませようとするか。デフォルトは `balanced`。下記を参照。 |
 | `optimization.high_risk_paths` | list | それに触れる変更に対して `quality` を強制する glob。デフォルトのリストを丸ごと置き換えます。 |
 | `optimization.low_risk_max_files` | int | `quality` 未満のレベルで、小さな変更とみなすファイル数の上限（デフォルト 5）。 |

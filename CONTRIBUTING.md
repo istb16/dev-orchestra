@@ -153,20 +153,27 @@ schema, the CLI commands and flags, and the `.ai/` artifact formats.
 
 1. Run `python scripts/smoke_live.py` against the installed CLIs. The suite
    cannot tell you an adapter has drifted; this can.
-2. Changing a value in `default_config()` is a change to the effective
+2. If that run recorded a claude version it had not recorded before (it says
+   so on its `resume verified` line and prints the entry), copy the entry into
+   `VERIFIED_RESUME` in `scripts/orchestrator/providers/claude.py`: the version
+   string, the date, the read-only mechanism, the check names, and in `source`
+   the date and the environment it was run in. Never add a version that
+   failed. A user on a version missing from the table has every `--resume` run
+   fresh until they run the script themselves.
+3. Changing a value in `default_config()` is a change to the effective
    configuration of everyone who never set it, so record it under `Changed`
    with the old and the new value.
-3. Move `Unreleased` entries under a new version heading with a date, and fix
+4. Move `Unreleased` entries under a new version heading with a date, and fix
    the reference links at the foot of the file: point `[Unreleased]` at
    `compare/vX.Y.Z...HEAD` and add `[X.Y.Z]: .../compare/vW...vX.Y.Z`. Without
    the definition the new heading renders as literal `[X.Y.Z]` on GitHub.
-4. Bump the version everywhere it is written down:
+5. Bump the version everywhere it is written down:
    `skills/dev-orchestra/SKILL.md`, `agents/openai.yaml`, the two plugin
    manifests, both entries in the Claude marketplace file, and `__version__`
    in `scripts/orchestrator/__init__.py` and `cli.py`. Seven files;
    `python scripts/validate_skill.py` refuses if any of them disagree, so run
    it rather than counting.
-5. Tag `vX.Y.Z`.
+6. Tag `vX.Y.Z`.
 
 ## Reporting a security issue
 

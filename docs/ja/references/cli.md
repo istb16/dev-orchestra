@@ -1,4 +1,4 @@
-<!-- translated-from: references/cli.md sha256:5eda81b2525cf9667b2012fff3af04e2f58546d83e7747abe24543fe0c3a1242 -->
+<!-- translated-from: references/cli.md sha256:949673babd3aab1e4721bdca54b5d30773f1a9f0836088b1b92052ebeea3d68a -->
 
 > この文書は [references/cli.md](../../../references/cli.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -117,13 +117,20 @@ dev-orchestra reviewer remove db-review
 `providers.<name>.adapter_error` と、トップレベルの `user_providers` になります。
 `references/providers.md` を参照してください。
 
+続いて `Resume:` 行があり、その CLI で `run architect --resume` がセッションを継続できるかを示します。
+`verified for claude <version> on <date> (built-in)` または `(record: <path>)`、
+`UNVERIFIED -- <理由>; --resume runs fresh until then`、`NOT SUPPORTED -- <理由>`、
+`not reported by this adapter`、`not checked (--fast)` のいずれかです。`--json` では
+`providers.<name>.resume_support`（`status`、`detail`、`version`、`source`、`record`、`verified_at`、
+`missing`）です。これは決して問題として扱われません。継続できない実行は新規に走るだけだからです。
+
 <a id="run"></a>
 
 ## run
 
 | コマンド | 説明 |
 | --- | --- |
-| `run <role> [--prompt <text>\|--prompt-file <path>] [--tier <name>] [--mode plan\|implement\|review] [--output <path>] [--timeout <s>] [--idle-timeout <s>] [--detach] [--force] [--json] [--print-command] [--extra …]` | 設定されたロールを 1 つ実行します。`<role>` は `orchestrator`、`architect`、`implementer`、`review_fixer`、またはレビュアーの id です。`--tier` はそのロールに設定された `model_tiers` の 1 つを選びます。未知のものはデフォルトのモデルで実行されるのではなく拒否されます。そのステージの予算から試行を 1 回消費し、予算が尽きていれば `--force` がない限り拒否します（終了コード 3）。`run implementer` は、plan が存在し承認されていない間は拒否します（終了コード 5）。これは親プロセスで行われ、detach されたワーカーでも再度行われます。ワーカーでの拒否はそのままジョブレコードに記録されます。`--force` は適用されません。 |
+| `run <role> [--prompt <text>\|--prompt-file <path>] [--tier <name>] [--mode plan\|implement\|review] [--output <path>] [--timeout <s>] [--idle-timeout <s>] [--resume --resume-prompt-file <path>] [--detach] [--force] [--json] [--print-command] [--extra …]` | 設定されたロールを 1 つ実行します。`<role>` は `orchestrator`、`architect`、`implementer`、`review_fixer`、またはレビュアーの id です。`--tier` はそのロールに設定された `model_tiers` の 1 つを選びます。未知のものはデフォルトのモデルで実行されるのではなく拒否されます。そのステージの予算から試行を 1 回消費し、予算が尽きていれば `--force` がない限り拒否します（終了コード 3）。`run implementer` は、plan が存在し承認されていない間は拒否します（終了コード 5）。これは親プロセスで行われ、detach されたワーカーでも再度行われます。ワーカーでの拒否はそのままジョブレコードに記録されます。`--force` は適用されません。 |
 
 プロンプトは stdin からパイプで渡すこともできます（`--prompt-file -` は明示的に stdin を読みます）。
 デフォルトのモード: architect/orchestrator は `plan`、implementer と review_fixer は `implement`、
@@ -168,8 +175,76 @@ dev-orchestra reviewer remove db-review
 `--detach` は実行を独自のプロセスで開始し、すぐにジョブ id を返すので、呼び出しがブロックすることは
 ありません。後述の `jobs` を参照してください。
 
+### architect 自身のセッションで plan を改訂する（`--resume`）
+
+`--resume` は、新しいセッションを始める代わりに直前の architect run のセッションを継続して、この
+ワークフローの plan を改訂します。これにより architect はコードを読み直して文脈を組み立て直さずに
+済みます。プロンプトは 2 本取ります。`--prompt-file`（または `--prompt`、stdin）は新規に走る場合の全文
+プロンプトで、`--resume-prompt-file` は継続したセッションに渡す短いプロンプトです。どちらも何かを消費する
+前に読み込まれ、どちらを送るかはその後で決まります。
+
+次のすべてを満たさない限り拒否されます（終了コード 2。何も消費する前に、引数の値を含まない固定の
+メッセージで）。ロールが `architect` であること。実効の mode が `plan` であること（`--mode implement` は
+これまでどおり拒否され、`--mode review --resume` も拒否されます）。`--resume-prompt-file` が指定されて
+いること（`--resume` なしの指定も拒否されます）。`--resume-prompt-file` に `-` を指定するのは、
+新規用のプロンプトを `--prompt` かファイルから渡すときだけであること（stdin は 1 回しか読めないため）。
+`--output` がこのワークフローの plan（`.ai/plan.md`、
+またはそれが解決される先のパス）であること。同じ検査が `--print-command`、`--detach` の親プロセス、
+そしてワーカーでも改めて行われます。
+
+継続するのは、このワークフローの直前の architect イベントが終わったセッションで、元のセッションを
+そのまま残すよう fork されます。実行は読み取り専用のコマンドに `--resume=<id> --fork-session` を足す
+だけで、`--extra` や `options.args` に書いた生の `--resume` は他の生引数と同じく拒否されます。次のうち
+最初に当てはまるものがあれば、代わりに全文プロンプトで新規に走り、その理由を stderr に出します
+（`note: --resume requested, running fresh: <reason>`）。
+
+| 理由（`resume.reason` として記録） | 条件 |
+| --- | --- |
+| `the provider cannot resume a session` | provider がセッションを継続しない（Codex、ユーザー adapter） |
+| `the provider cannot resume a session (unsupported)` | `--help` が `--resume` と `--fork-session` を挙げていない |
+| `the provider cannot resume a session (unverified)` | この CLI の版が、継続したセッションを読み取り専用のまま保つと確認されていない（後述） |
+| `the provider cannot resume a session (unspecified)` | 継続はするが、それが読み取り専用のままかを示さない adapter |
+| `no earlier architect run in this workflow` | 継続するものがない |
+| `the last architect run is not resumable: it did not succeed` | 失敗した、stall した、または拒否された |
+| `the last architect run is not resumable: it did not answer` | 沈黙のまま終了コード 0 で終わった |
+| `the last architect run is not resumable: it has no session id` | この機能より前の run log |
+| `the last architect run is not resumable: its session id is not a UUID` | 記録された id が UUID でない |
+| `the last architect run is not resumable: its recorded mode is not plan` | 読み取り専用の plan の実行ではなかった |
+| `the last architect run is not resumable: its output is not this workflow's plan` | 別のものに答えていた |
+| `the last architect run is not resumable: its recorded provider differs` | その後 architect の provider が変わった |
+| `the last architect run is older than design.resume.max_age_seconds` | デフォルトは 1 時間 |
+| `the last architect run's context exceeds design.resume.max_context_tokens` | 上限を設定した場合のみ |
+| `the last architect run's context is unknown and design.resume.max_context_tokens is set` | 上限を設定していて、その実行が照らし合わせる `context_tokens` を記録していない |
+| `the CLI rejected the session it was asked to resume` | 後述の再実行 |
+
+`(unverified)` の場合は 2 行目の note に adapter の詳細が出ます。CLI の版と
+`python scripts/smoke_live.py --provider claude` です。CLI の版が継続を許されるのは、adapter に同梱された
+表にあるか、このマシンでそのスクリプトが合格してその版を記録したときです（`references/providers.md`）。
+したがって CLI を更新した直後は、スクリプトを再実行するか、新しい版を載せたリリースをインストールする
+まで、すべての `--resume` が新規に走ります。`doctor` の `Resume:` 行も同じことを示します。
+
+セッションがもう存在しないために CLI が継続を拒んだ場合、その実行は失敗イベントとして記録され
+（`resume.outcome: "rejected"`。stderr は写しません）、全文プロンプトで新規にもう一度だけ実行されます。
+この 2 回目は別の試行です。architect の予算に照らして確認され、試行を 1 回消費し、残っていなければ
+実行されません（終了コード 3、`running fresh would spend an attempt`）。`--force` はユーザーが指定した
+とおりに効き、detach されたワーカーでも同じです。継続した実行のそれ以外の失敗（stall、タイムアウト、
+エラー）はこれまでどおり報告され、再試行されません。次の `--resume` は新規に走ります
+（`it did not succeed`）。
+
+すべての `run` の終了イベントは `session_id`、`context_tokens`（CLI が報告した場合、モデルが最後に見た
+文脈の大きさ）、`cost_usd`、`cache_read_tokens` を記録するようになりました。`--resume` の実行は `resume`
+（`requested`、`mode` は `resumed` または `fresh`、`resumed_from`、`reason`、`outcome`）も記録し、
+実行中のエントリにも入ります。継続した実行の使用量は `tokens show` で `architect:resumed` とラベル付け
+されます（`--tier` のラベルが優先されます）。`--detach` では両方のプロンプトがジョブにコピーされるので、
+コマンドが戻った後にどちらかのファイルを編集しても実行には届きません。ジョブレコードには `force`、
+`resume_prompt_file`、`session_id`、`resume` が入ります。
+
 ```bash
 dev-orchestra run architect --prompt-file .ai/execution/design-request.md --output .ai/plan.md
+dev-orchestra run architect --resume \
+  --prompt-file .ai/execution/design-revise-request.md \
+  --resume-prompt-file .ai/execution/design-resume-request.md \
+  --output .ai/plan.md
 dev-orchestra run implementer --print-command
 echo "explain the failure" | dev-orchestra run orchestrator
 ```
@@ -627,6 +702,31 @@ Review effort, code and design together: 128 accepted over 28 of 46 recorded rou
 テスト結果なしで記録されたラウンドも報告されます。ゲートは `state record test ok|failed` が書き込んだ
 ものを読むので、何も書き込まれなかったラウンドでは判断の材料がなく、ゲートが作動したはずがありません。
 これは効果のなかったレベルとは別のことであり、合計だけからでは両者を取り違えやすいのです。
+
+### Architect revisions
+
+plan の改訂にかかった費用を、その改訂が architect のセッションを継続したもの（`resumed`、
+`run architect --resume` による）か新規に走ったものかで分けて示します。ワークフローごとに、`--output` が
+そのワークフローの plan だった architect の実行だけを数えます。成功して応答した最初のものが初回の設計で、
+それ以降のものはすべて改訂の試みです。各改訂は、そのワークフローの初回の実行に対する費用の比で測ります。
+plan の大きさの違いは 2 種類の実行の違いよりはるかに大きいからです。0 より大きい費用を報告しなかった初回の
+実行（mock は `0.0` を報告します）では比を出しません。群ごとの行には、完了した改訂の数、比の平均、そして
+途中で失敗した試みの費用も含めた完了 1 件あたりの比が出ます。
+
+```
+Architect revisions (cost against each workflow's initial design run):
+  resumed: 3 revisions (3 priced, 3 with ratio) cost ratio to initial 0.21 mean, 0.27 per completed incl. 1 stalled + 0 rejected + 0 failed attempts (0 priced)
+  fresh: 1 revisions (1 priced, 0 with ratio) cost ratio to initial n/a (initial run has no usable cost); 0 stalled + 0 rejected + 0 failed attempts (0 priced)
+  --resume ran fresh because:
+    no earlier architect run in this workflow x2
+```
+
+理由は `run --resume` が記録する固定句のまま数えます。このブロックは試みが 1 つでもあればレビューの
+ラウンドの有無にかかわらず表示され、なければ表示されません。`--json` では `architect_revisions` で、
+`attempts`、`resumed` と `fresh`（それぞれ `runs`、`measured_runs`、`priced_runs`、`ratio_runs`、
+`billed_tokens`、`cost_usd`、`cost_ratio_sum`、`duration_seconds`、`context_runs`、`context_tokens`、
+平均の `billed_per_run`、`cost_per_run`、`cost_ratio_mean`、`duration_per_run`、`context_per_run`、
+`failed_attempts`、`cost_per_completed_ratio`）、そして `fallbacks`（`total`、`reasons`）を持ちます。
 
 <a id="progress"></a>
 

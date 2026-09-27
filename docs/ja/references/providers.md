@@ -1,4 +1,4 @@
-<!-- translated-from: references/providers.md sha256:c6eca14d8cfc70ff1c5f1a04f2e73341d16e597ee120778418436ef9acbe1c1e -->
+<!-- translated-from: references/providers.md sha256:fa40067b704fa0824896957628cfe7b1205bd78a084cce1802dba4791ad7366f -->
 
 > この文書は [references/providers.md](../../../references/providers.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -28,15 +28,24 @@ class Provider:
     def list_models() -> list[ModelCandidate]  # discovered from the installed CLI
     def resolve_model(spec) -> ResolvedModel   # family + policy -> CLI argument
     def build_command(mode, resolved, cwd, extra_args) -> list[str]
-    def run(prompt, mode, cwd, model_spec, timeout, extra_args) -> RunResult   # do not override
-    def _launch(prompt, mode, cwd, model_spec, timeout, extra_args) -> RunResult
+    def command_line(mode, resolved, cwd, extra_args, options, resume_session) -> list[str]   # do not override
+    def run(prompt, mode, cwd, model_spec, timeout, extra_args, resume_session) -> RunResult  # do not override
+    def _launch(prompt, mode, cwd, model_spec, timeout, extra_args, resume_session) -> RunResult
     def refused_read_only_args(raw_args, source) -> list[str]   # default: refuse all
     def read_only_enforcement() -> dict                         # default: "unspecified"
+
+    supports_resume: bool                                       # default: False
+    def resume_support(root) -> dict                            # default: "unsupported" / "unspecified"
+    def resume_args(session_id) -> list[str]                    # default: NotImplementedError
+    def resume_rejected(outcome, mode, options, session_id) -> bool   # default: False
+    def parse_session(outcome) -> dict                          # session_id, context_tokens, init
 ```
 
 `detect`、`version`、`list_models` はプロセスごとにメモ化されるため、doctor やウィザードは CLI を再起動することなく何度でも問い合わせられます。
 
 `run` はすべてのアダプタが共有するゲートです。`plan` または `review` の実行では、呼び出し元の生引数（`options.args` と `--extra`）を、アダプタが自分の引数を足す前にアダプタの許可リストと照合し、そのうえで CLI を起動する `_launch` を呼びます。CLI の起動方法を変える必要があるアダプタは `_launch` をオーバーライドします。`run` をオーバーライドしたアダプタはこのゲートを通らないため、ゲートを自分で持たなければなりません。
+
+セッションの継続（`run architect --resume`）はアダプタごとのオプトインです。`resume_session` はキーワード引数として `run` から `_launch` を経て `command_line` に渡され、`command_line` はこれまでどおり `build_command` を呼んだうえで、アダプタ自身の `resume_args(session_id)` を末尾に足します。これは生引数ではないので許可リストを通ることはなく、`implement` の実行では `run` が拒否します。オーケストレーターがこれを送るのは、`supports_resume` を宣言し、かつ `resume_support(root)` が `verified` を報告するアダプタに対してだけです。`run` は値があるときだけキーワードを `_launch` に渡すので、以前のシグネチャで `_launch` をオーバーライドしているアダプタでも新規の実行はこれまでどおり動きます。継続に対応するアダプタは、このキーワードを受け取って base に渡さなければなりません。実行後、base は `parse_session(outcome)` に、実行が終わったセッション、最後の文脈の大きさ（`context_tokens`）、セッション開始時に CLI が報告した内容（`init`）を問い合わせます。継続した実行に限り `resume_rejected(outcome, mode, options, session_id)` も問い合わせます。これは、求めたセッションが存在しないという正の兆候があるときだけ True を返さなければなりません。オーケストレーターはその場合、新規の実行に試行を 1 回使うからです。結果は `RunResult.session_id`、`context_tokens`、`session_init`、`resume_rejected` に入ります。
 
 <a id="modes"></a>
 
@@ -93,6 +102,7 @@ built-in の各アダプタが何を、何によって強制しているか:
 | モデルの検出 | CLI 自身の `--model` のヘルプテキストに示されるエイリアスを解析 |
 | `plan` / `review` | `--permission-mode plan --disallowed-tools Edit,Write,NotebookEdit --tools Read,Grep,Glob --strict-mcp-config --restricted` |
 | `implement` | `--permission-mode acceptEdits` |
+| 継続（`run architect --resume`） | 読み取り専用のコマンドに `--resume=<id> --fork-session` を足したもの。継続したセッションを読み取り専用のまま保つと確認された CLI の版でのみ |
 | 認証 | 環境を継承。`ANTHROPIC_API_KEY`、`CLAUDE_CODE_OAUTH_TOKEN`、または CLI の認証情報ファイルで有無を検出 |
 
 読み取り専用のフラグは claude 2.1.283 で実測しました。plan モードと 3 つのツールの拒否だけでは実行は止まりませんでした。`Write` を拒否された実行は `Bash` でファイルを書き、Slack へのメッセージ送信のような MCP ツールにも到達できました。`--tools Read,Grep,Glob --strict-mcp-config` を付けると、セッションが持つのはその 3 つのツールだけになり、MCP サーバーはなくなります。resume したセッションでも同じです。リポジトリの `.claude/settings.json` にあるコマンドフックはそれでも実行されましたが、`--restricted` で止まりました。
@@ -103,6 +113,19 @@ built-in の各アダプタが何を、何によって強制しているか:
 - `Read`、`Grep`、`Glob` は作業ディレクトリと `--add-dir` の中に閉じ込められます。claude 2.1.283 で実測: `--restricted` 付きでは、作業ディレクトリ外の絶対パスの Read、そのディレクトリの Grep と Glob がすべて失敗し、付けなければ同じ実行がファイルを読みます。シンボリックリンクは未検証です。
 
 `claude --help` に `--tools`、`--strict-mcp-config`、`--restricted` が載っていない CLI では、`plan` と `review` の実行は拒否され、`doctor` は `NOT ENFORCEABLE` と表示します。`--help` を読めない CLI では `UNVERIFIED` として拒否されます。`claude --help` はプロセスごとに 1 回だけ読まれ、モデルとパーミッションモードの検出と共有されます。
+
+<a id="resuming-a-session"></a>
+
+### セッションの継続
+
+`run architect --resume` は直前の architect のセッションを継続します。アダプタは同じ読み取り専用のコマンドに `--resume=<id> --fork-session` を足します。`=` の形にするのは `--resume` が値を省略できるオプションだからで、fork するのは継続元のセッションをそのまま残すためです。id として受け付けるのは UUID だけです。claude 2.1.283 で読み取り専用のフラグとともに実測: fork したセッションは `Glob`、`Grep`、`Read` のツール、MCP サーバーなし、パーミッションモード `plan` で開始し（init イベント）、新しいセッション id で走り、ファイルを書くよう求められても何も書きませんでした。もう存在しないセッションは、`result` イベント 1 つで exit 1 になります。ターンはなく、使用量はゼロで、`errors` に求めた id を示す一文があります。アダプタはこれで拒否を見分けます（`stream-json` の場合のみ。`text` と `json` にはそのような兆候がなく、その場合の拒否は通常の失敗として報告されます）。
+
+継続したセッションがこれらの制限を保つかどうかは CLI の版の性質なので、版ごとに 2 層で確認し、どちらにもない版は継続しません。`--resume` は新規に走り、`(unverified)` と示します。
+
+- **アダプタに同梱された表**、`providers/claude.py` の `VERIFIED_RESUME`: リリース前に確認した版です。各エントリは確認したときの読み取り専用のフラグを記録しており、フラグを変えると確認をやり直すまですべてのエントリが無効になります。
+- **このマシンの記録**、`<config dir>/verified/claude-resume.json`: `python scripts/smoke_live.py --provider claude` だけが書きます。インストール済みの CLI に対して、継続したセッションのツール・MCP サーバー・パーミッションモード、fork、存在しないセッション、閉じ込め、そして新規でも継続でもリポジトリのフックが走らないことを確認し、その版を合格（`versions`）または不合格（`failed`）として、フラグと確認名とともに記録します。ここに記録された不合格は同梱の表に優先します。記録の実パスがワークスペースの中にある場合（`DEV_ORCHESTRA_HOME` がチェックアウト内を指している場合）、記録は読まれず書かれもしません。表は引き続き使われます。
+
+したがって CLI を更新した後は、スクリプトを実行するか新しい版を載せたリリースをインストールするまで、`--resume` は新規に走ります。`resume_support(root)` がどちらかを報告し（`status`、`detail`、`version`、`source`、`record`、`verified_at`、`missing`）、`doctor` がそれを `Resume:` 行に表示します。
 
 `opus`、`sonnet`、`fable` などのエイリアスはすでに「その family の最新スナップショット」を意味するため、`version: latest` はエイリアスをそのまま渡すだけです。完全なモデル名（`claude-opus-5`）も family として受け付けられ、そのまま渡されます。built-in のフォールバックリストは `claude --help` を読み取れない場合にのみ使われ、エイリアスだけを含みます。日付付きのスナップショット ID は決して含みません。
 
@@ -146,11 +169,14 @@ dev-orchestra run implementer --prompt-file plan.md --extra --permission-mode by
 | `plan` / `review` | `-s read-only` |
 | `implement` | `-s workspace-write --approve-for-me` |
 | 最終的な回答 | イベントストリームから抜き出すのではなく、`-o <file>` で取得 |
+| 継続 | 非対応。`--resume` は新規に走る |
 | 認証 | 環境を継承。`OPENAI_API_KEY` または `$CODEX_HOME/auth.json` で有無を検出 |
 
 ロールのオプション: `sandbox`（`read-only` / `workspace-write` / `danger-full-access`）と `approve`（`false` にすると `--approve-for-me` を外します）。どちらも `plan` と `review` では無視され、これらは常に `-s read-only` を使います。
 
 読み取り専用サンドボックスがシェルでの書き込みを拒否することは実測しました（「Access to the path ... is denied」、Windows）。MCP サーバーは確認していないため、外部への副作用は対象外です。`doctor` は Codex を `partial` と報告します。`plan` や `review` の実行は生引数を一切受け付けません。`-s`、`-sdanger-full-access`、`-c sandbox_mode=...`、`--profile` は、どう綴っても拒否されます。アダプタ自身が付ける `-o` は生引数ではありません。
+
+Codex はセッションを継続しません。`codex exec resume`（0.156.1）は `-s` を取らないので、継続したセッションが読み取り専用のサンドボックスを保つことはまだ何も示されておらず、そのセッション id は `--json` でしか出力されず、このアダプタはそれを読みません。有効にするには、Claude 向けに `smoke_live.py` が行うのと同じ書き込み・フック・閉じ込めのプローブで、継続したセッションに対する `-c sandbox_mode="read-only"` を確認し、出力と使用量を `--json` から読む必要があります。
 
 `recommended-coding` family は意図的に `-m` フラグ*なし*に解決されます。これが「現在推奨されているコーディングモデルを使う」と正直に伝える方法です。CLI 自身のデフォルトは、定義上、現行のものだからです。
 

@@ -1946,5 +1946,108 @@ class TestSnapshotLineCounts(IsolatedCase):
         self.assertLess(meta["lines_added"], 10)
 
 
+def plan_run(status="ok", cost=None, resume=None, output=".ai/plan.md", **extra):
+    event = {
+        "stage": "architect",
+        "status": status,
+        "output": output,
+        "answered": status == "ok",
+        "billed_tokens": 1000,
+        "duration_seconds": 10.0,
+        "context_tokens": 5000,
+        "cost_usd": cost,
+    }
+    if resume is not None:
+        event["resume"] = resume
+    event.update(extra)
+    return event
+
+
+def resumed(outcome="ok"):
+    return {"requested": True, "mode": "resumed", "resumed_from": "x", "reason": None, "outcome": outcome}
+
+
+def fell_back(reason):
+    return {"requested": True, "mode": "fresh", "resumed_from": None, "reason": reason, "outcome": None}
+
+
+def writes_plan(event):
+    return event.get("output") == ".ai/plan.md"
+
+
+class TestArchitectRevisions(unittest.TestCase):
+    def test_groups_ratios_and_failed_attempts(self):
+        events = [
+            plan_run(cost=1.0, resume=fell_back("no earlier architect run in this workflow")),
+            plan_run(cost=0.2, resume=resumed()),
+            plan_run(status="stalled", cost=0.1, resume=resumed(outcome=None)),
+            plan_run(status="failed", cost=0.0, resume=resumed(outcome="rejected")),
+            plan_run(cost=0.3, resume=resumed()),
+            plan_run(cost=0.5),
+            plan_run(cost=9.0, output=".ai/execution/other.md"),
+        ]
+        report = opt.architect_revisions([(events, writes_plan)])
+        self.assertEqual(report["attempts"], 5)
+        group = report["resumed"]
+        self.assertEqual(group["runs"], 2)
+        self.assertEqual(group["ratio_runs"], 2)
+        self.assertAlmostEqual(group["cost_ratio_mean"], 0.25)
+        self.assertEqual(group["failed_attempts"]["stalled"], 1)
+        self.assertEqual(group["failed_attempts"]["rejected"], 1)
+        self.assertEqual(group["failed_attempts"]["failed"], 0)
+        self.assertEqual(group["failed_attempts"]["priced"], 2)
+        self.assertAlmostEqual(group["cost_per_completed_ratio"], 0.3)
+        self.assertEqual(group["context_per_run"], 5000.0)
+        fresh = report["fresh"]
+        self.assertEqual(fresh["runs"], 1)
+        self.assertAlmostEqual(fresh["cost_ratio_mean"], 0.5)
+        self.assertEqual(report["fallbacks"]["reasons"], {"no earlier architect run in this workflow": 1})
+
+    def test_an_unusable_initial_cost_gives_no_ratio(self):
+        for cost in (0.0, None, -1.0, True):
+            with self.subTest(cost=cost):
+                events = [plan_run(cost=cost), plan_run(cost=0.2, resume=resumed())]
+                group = opt.architect_revisions([(events, writes_plan)])["resumed"]
+                self.assertEqual(group["runs"], 1)
+                self.assertEqual(group["priced_runs"], 1)
+                self.assertEqual(group["ratio_runs"], 0)
+                self.assertIsNone(group["cost_ratio_mean"])
+                self.assertIsNone(group["cost_per_completed_ratio"])
+
+    def test_a_group_with_nothing_completed_has_no_ratio(self):
+        events = [plan_run(cost=1.0), plan_run(status="stalled", cost=0.4, resume=resumed(outcome=None))]
+        group = opt.architect_revisions([(events, writes_plan)])["resumed"]
+        self.assertEqual(group["runs"], 0)
+        self.assertIsNone(group["cost_per_completed_ratio"])
+        self.assertEqual(group["failed_attempts"]["ratio_attempts"], 1)
+
+    def test_no_initial_run_means_no_attempts(self):
+        events = [plan_run(status="failed", cost=1.0)]
+        self.assertEqual(opt.architect_revisions([(events, writes_plan)])["attempts"], 0)
+
+
+class TestArchitectRevisionsReport(IsolatedCase):
+    def record(self, *events):
+        workspace = self.cli_workspace()
+        state = workspace.read_state()
+        state["events"] = list(state.get("events") or []) + list(events)
+        workspace.write_state(state)
+
+    def test_revisions_alone_are_reported(self):
+        self.record(plan_run(cost=1.0), plan_run(cost=0.25, resume=resumed()))
+        code, out, _ = run_cli("optimization", "report")
+        self.assertEqual(code, 0)
+        self.assertIn("Architect revisions", out)
+        self.assertIn("resumed: 1 revisions (1 priced, 1 with ratio)", out)
+        self.assertIn("cost ratio to initial 0.25 mean", out)
+        self.assertNotIn("No review rounds recorded", out)
+
+    def test_nothing_to_report_says_so(self):
+        self.record(plan_run(cost=1.0))
+        _, out, _ = run_cli("optimization", "report")
+        self.assertIn("No review rounds recorded", out)
+        self.assertNotIn("Architect revisions", out)
+
+
 if __name__ == "__main__":
     unittest.main()

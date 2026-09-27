@@ -78,6 +78,13 @@ class CodexProvider(Provider):
     )
     fallback_updated = "2026-09-10"
     option_keys = ("args", "sandbox", "approve")
+    #: ``codex exec resume`` (0.156.1) takes no ``-s``, so nothing yet shows a
+    #: resumed session keeps the read-only sandbox, and its session id is only
+    #: printed by ``--json``, which this adapter does not read. Resuming needs
+    #: both: ``-c sandbox_mode="read-only"`` checked on a resumed session by
+    #: the probes smoke_live.py runs for claude, and output and usage read
+    #: from ``--json``.
+    supports_resume = False
 
     def validate_options(self, options: Optional[Dict[str, Any]]) -> List[str]:
         problems = super().validate_options(options)
@@ -273,6 +280,7 @@ class CodexProvider(Provider):
         env: Optional[Dict[str, str]] = None,
         options: Optional[Dict[str, Any]] = None,
         idle_timeout: Optional[float] = None,
+        resume_session: Optional[str] = None,
     ) -> RunResult:
         """Capture the agent's final message via ``-o`` instead of scraping logs.
 
@@ -299,6 +307,7 @@ class CodexProvider(Provider):
                 env=env,
                 options=options,
                 idle_timeout=idle_timeout,
+                resume_session=resume_session,
             )
             final = _read_text(last_message_path)
             if final.strip():

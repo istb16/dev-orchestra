@@ -128,6 +128,31 @@ class TestDocumentedYaml(IsolatedCase):
         text = (pathlib.Path(REPO_ROOT) / "references" / "providers.md").read_text(encoding="utf-8")
         self.assertIn(USER_ADAPTER_SOURCE.strip(), text)
 
+    def test_every_resume_fallback_reason_is_documented(self):
+        """`resume.reason` is one of these phrases and nothing else, so the
+        table a user reads it against has to list every one."""
+        from orchestrator import cli
+
+        text = (pathlib.Path(REPO_ROOT) / "references" / "cli.md").read_text(encoding="utf-8")
+        for reason in cli._RESUME_REASONS:
+            with self.subTest(reason=reason):
+                self.assertIn("| `%s` |" % reason, text)
+
+    def test_the_resume_trust_note_names_the_id_it_repeats(self):
+        """The session id read from `state.json` is recorded, so the note on
+        trusting that file must not say nothing read from it is repeated."""
+        text = (pathlib.Path(REPO_ROOT) / "references" / "limits.md").read_text(encoding="utf-8")
+        note = text.split("* **`state.json` is trusted to name the session", 1)[1].split("\n* ", 1)[0]
+        self.assertIn("`resume.resumed_from`", note)
+        self.assertNotIn("no value read from it is ever", note)
+
+    def test_the_release_steps_say_to_update_the_resume_table(self):
+        """A version smoke_live.py cleared on a maintainer's machine reaches
+        users only through the table, so a release has to copy it there."""
+        text = (pathlib.Path(REPO_ROOT) / "CONTRIBUTING.md").read_text(encoding="utf-8")
+        releases = text.split("## Releases", 1)[1].split("\n## ", 1)[0]
+        self.assertIn("VERIFIED_RESUME", releases)
+
     def test_readme_config_example_is_a_valid_configuration(self):
         """The main README block is not just parseable, it is usable."""
         from orchestrator import config as config_mod

@@ -69,15 +69,14 @@ Request → Design → (Design review → Triage → Revise) → Approval → Im
 Test → Reviews → Triage → Fix → Re-test → Report
 ```
 
-Artifacts live in `.ai/`, one directory per workflow (`plan.md`,
-`execution/`, `reviews/`, `state.json`), which ignores itself by default. Keep
-writing `.ai/plan.md`: paths resolve inside your workflow. Prompt templates and
+Artifacts live in `.ai/`, one directory per workflow, which ignores itself by
+default. Keep writing `.ai/plan.md`: paths resolve inside your workflow. Prompt templates and
 stage detail: `references/workflow.md`.
 
 | Stage | Command |
 | --- | --- |
 | Design | `run architect --prompt-file .ai/execution/design-request.md --output .ai/plan.md` |
-| Design review | if `review.design.enabled` (`status` shows it): `review run --design`, `review triage --design …`, `review fix-brief --design --output .ai/execution/design-fix-brief.md`, then `run architect` again over `.ai/plan.md` |
+| Design review | if `review.design.enabled` (`status` shows it): `review run --design`, `review triage --design …`, `review fix-brief --design --output .ai/execution/design-fix-brief.md`, then `run architect --resume --prompt-file <full> --resume-prompt-file <short> --output .ai/plan.md` |
 | Approval | show the user the plan, ask; on their yes: `design approve` |
 | Implement | `run implementer --prompt-file .ai/execution/implement-request.md` |
 | Test | the project's own test / lint / type commands |
@@ -106,8 +105,8 @@ says so. No design stage, no design review.
 **Approval.** Before implementing, give the user the plan's Goal, Proposed
 Change, Files to Modify, Risks and any open design findings, and ask. Only
 their explicit yes lets you run `design approve` -- never on your own
-judgement, never to unblock yourself. Changes requested → revise (re-review
-if enabled), ask again. A spent design review budget still gets one revision
+judgement, never to unblock yourself. Changes requested → revise, `--resume`
+too (re-review if enabled), ask again. A spent design review budget still gets one revision
 (no re-review); then report what is open and ask whether to approve over it or
 revise. `run implementer` refuses an unapproved plan (exit 5) while
 `design.require_approval` is true; no plan, no approval.
@@ -123,8 +122,7 @@ because `review run` refuses a tree recorded as failing. Before each *retry*: `b
 attempts spent; a repeated signature = the last fix changed nothing. Both are
 refusals.
 
-**Reviews.** Record the test result first (`state record test ok|failed`) even
-if you ran none here.
+**Reviews.** Record the test result first, even if you ran none here.
 
 Snapshot first: every reviewer judges the same frozen diff. The
 round comes from the snapshot — new snapshot, new round — so never track it by

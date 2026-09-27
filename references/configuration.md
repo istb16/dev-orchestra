@@ -14,6 +14,13 @@ adapters (`%APPDATA%\dev-orchestra\providers\` on Windows,
 when that is set; `DEV_ORCHESTRA_CONFIG` does not move it). See
 `references/providers.md`.
 
+Beside it, `verified/<provider>-resume.json` records the CLI versions that
+`python scripts/smoke_live.py` checked on this machine for resuming a session
+(`run architect --resume`); only that script writes it. It is read only when
+its real path is outside the workspace: point `DEV_ORCHESTRA_HOME` into the
+checkout and the record is neither read nor written, and `doctor` and the
+`--resume` note say so.
+
 Global config path by platform:
 
 | Platform | Path |
@@ -101,6 +108,9 @@ review:
 
 design:
   require_approval: true              # implementer waits for the user's yes (design approve)
+  resume:                             # run architect --resume
+    max_age_seconds: 3600             # older than this, the revision runs fresh
+    max_context_tokens: null          # no cap on the context a resumed session carries
 
 workspace:
   dir: .ai                            # relative to the repo root, or absolute
@@ -131,6 +141,8 @@ workspace:
 | `review.design.enabled` | bool | `false` (default) skips the design review entirely. `true` puts `.ai/plan.md` in front of the same panel before implementation; the stage costs a reviewer run per panel member per round, which is why it is opt-in. |
 | `review.design.max_iterations` | int ≥ 0 | Design review rounds (review → triage → revise), counted apart from `max_review_iterations` (default 2). The round that reaches the limit still gets its revision; the limit refuses only the re-review after it. `1`: one round, one revision, then ask. `0`: no design review. `budgets.architect` (default 3) covers the design plus one revision per round at the default; raise it with `max_iterations`, and by one more if changes asked for at approval are expected. |
 | `design.require_approval` | bool | `true` (default) makes `run implementer` refuse (exit 5) while `.ai/plan.md` exists and the plan as it is now has not been approved with `design approve` -- after the user said yes. `false` is for runs nobody is watching (CI, batch), and restores the behaviour from before the gate existed. Top-level rather than under `review.design`: approval matters whether or not the panel reviewed the plan. `--force` does not bypass it; only this setting does. |
+| `design.resume.max_age_seconds` | int ≥ 0 \| null | How old the last architect run may be for `run architect --resume` to continue its session (default 3600, how long the CLI kept its prompt cache when this was measured). Older, the revision runs fresh with the full prompt. `0` always runs fresh; `null` means the default. |
+| `design.resume.max_context_tokens` | int > 0 \| null | The largest context, in tokens, a session may have ended with and still be continued (default `null`: no cap). Every run records its `context_tokens`, so a cap can be set from what was measured. Setting one of the two keeps the other's default. |
 | `optimization.level` | `aggressive` \| `balanced` \| `quality` | How hard to try to be cheap. Default `balanced`. See below. |
 | `optimization.high_risk_paths` | list | Globs that force `quality` for a change touching them. Replaces the default list wholesale. |
 | `optimization.low_risk_max_files` | int | Below `quality`, at most this many files still counts as a small change (default 5). |
