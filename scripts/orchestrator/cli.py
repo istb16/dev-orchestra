@@ -3955,13 +3955,17 @@ def _wrote_plan(workspace: ws.Workspace) -> Callable[[Dict[str, Any]], bool]:
     Only such a run is a revision of the plan: an architect run asked
     something else, or left on stdout, is not the revision a round is owed.
     """
-    plan = os.path.normcase(os.path.abspath(workspace.plan_path))
+    # Resolved, not just made absolute: one plan has more than one spelling
+    # when a directory on its path is a link -- macOS's temporary directories
+    # live under /var, which is /private/var -- and a correct --output must not
+    # be refused for the spelling it was given in.
+    plan = os.path.normcase(os.path.realpath(workspace.plan_path))
 
     def counts(event: Dict[str, Any]) -> bool:
         output = event.get("output")
         if not isinstance(output, str) or not output or output == "-":
             return False
-        return os.path.normcase(os.path.abspath(_in_workflow(workspace, output) or output)) == plan
+        return os.path.normcase(os.path.realpath(_in_workflow(workspace, output) or output)) == plan
 
     return counts
 

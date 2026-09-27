@@ -158,6 +158,30 @@ class TestTheArgumentsAreChecked(ResumeCase):
         self.assertEqual(code, 2)
         self.assertNotIn(other_plan, err)
 
+    def test_the_plan_is_accepted_through_a_linked_directory(self):
+        # The spelling macOS gives a temporary directory (/var for
+        # /private/var): the same plan, reached through a link.
+        link = os.path.join(os.path.dirname(self.project), "linked-project")
+        try:
+            os.symlink(self.project, link, target_is_directory=True)
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest("cannot create a directory link here: %s" % exc)
+        self.addCleanup(os.remove if os.name != "nt" else os.rmdir, link)
+        plan = self.cli_workspace().plan_path
+        output = os.path.join(link, os.path.relpath(plan, self.project))
+        code, _, err = run_cli(
+            "run",
+            "architect",
+            "--prompt-file",
+            "fresh.md",
+            "--resume",
+            "--resume-prompt-file",
+            "resume.md",
+            "--output",
+            output,
+        )
+        self.assertEqual(code, 0, err)
+
     def test_the_plan_is_accepted_either_way_it_is_named(self):
         for output in (".ai/plan.md", self.cli_workspace().plan_path):
             with self.subTest(output=output):
