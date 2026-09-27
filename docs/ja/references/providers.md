@@ -1,4 +1,4 @@
-<!-- translated-from: references/providers.md sha256:fa40067b704fa0824896957628cfe7b1205bd78a084cce1802dba4791ad7366f -->
+<!-- translated-from: references/providers.md sha256:15ec41eb129fccac91ed314dfc0d6e28629623b0addf18191ebce0ed6bb59078 -->
 
 > この文書は [references/providers.md](../../../references/providers.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -97,7 +97,7 @@ built-in の各アダプタが何を、何によって強制しているか:
 
 | 項目 | 方法 |
 | --- | --- |
-| 非対話実行 | `claude -p --output-format stream-json --verbose`、プロンプトは stdin で渡す |
+| 非対話実行 | `claude -p --output-format stream-json --verbose --include-partial-messages`、プロンプトは stdin で渡す。最後のフラグは `--help` に載っている場合だけ |
 | モデル | `--model <alias-or-name>`。family が `default` の場合は省略 |
 | モデルの検出 | CLI 自身の `--model` のヘルプテキストに示されるエイリアスを解析 |
 | `plan` / `review` | `--permission-mode plan --disallowed-tools Edit,Write,NotebookEdit --tools Read,Grep,Glob --strict-mcp-config --restricted` |
@@ -131,7 +131,7 @@ built-in の各アダプタが何を、何によって強制しているか:
 
 プロンプトは引数ではなく **stdin** で送られます。これにより、コマンドラインの長さ制限や、シェルごとのクォートの違いを回避できます。
 
-出力形式が `text` ではなく `stream-json` なのには理由が 1 つあります。測定したところ、`text` は実行がほぼ終わるまで何も出力しない（8.9 秒の実行で最初の出力が 8.1 秒時点）ため、固まったエージェントと忙しいエージェントを見分ける方法がありません。ストリーミング形式は実行中ずっと `system`/`thinking_tokens` イベントを出力し、アイドル期限はこれを監視します。最終的な回答は `result` イベントから取得し、なければアシスタントのテキストブロック、さらに生の stdout へとフォールバックします。そのため、スキーマが変わっても出力が失われるのではなく、段階的に劣化するだけで済みます。`options.output_format: text` で元に戻すこともできますが、停止検出が犠牲になります。これがデフォルトではない理由です。
+出力形式が `text` ではなく `stream-json` なのには理由が 1 つあります。測定したところ、`text` は実行がほぼ終わるまで何も出力しない（8.9 秒の実行で最初の出力が 8.1 秒時点）ため、固まったエージェントと忙しいエージェントを見分ける方法がありません。ストリーミング形式はモデルが考えている間 `system`/`thinking_tokens` イベントを出力し、アイドル期限はこれを監視します。ただしこのイベントは回答が始まると止まり、17k 文字の回答では 141 秒間 1 行も出ないことを測定しました。そこでアダプタは、`claude --help` に載っていれば `--include-partial-messages` を付けます（推測では付けません）。回答が `stream_event` のチャンクとしてストリームされるようになり、同じプロンプトで最大の間隔は 1.7 秒、stdout は約 8 倍になりました。最終的な回答は `result` イベントから取得し、なければアシスタントのテキストブロック（と、途中で kill されたメッセージのストリーム済みテキスト）、さらに生の stdout へとフォールバックします。そのため、スキーマが変わっても出力が失われるのではなく、段階的に劣化するだけで済みます。`options.output_format: text` で元に戻すこともできますが、停止検出が犠牲になります。これがデフォルトではない理由です。
 
 このアダプタが受け付けるパーミッションモードは、モデルのエイリアスとまったく同じように CLI 自身の `--permission-mode` のヘルプテキストから読み取られます。そのため、`options.permission_mode` は実際にインストールされているものに対して検証されます。
 

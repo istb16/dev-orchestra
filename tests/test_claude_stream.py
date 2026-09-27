@@ -13,8 +13,9 @@ import json
 import os
 import re
 import unittest
+from typing import Any, ClassVar, Dict
 
-from helpers import IsolatedCase
+from helpers import CLAUDE_HELP, IsolatedCase
 
 from orchestrator.execution import ExecOutcome
 from orchestrator.providers import base
@@ -272,6 +273,42 @@ class TestCommandShape(IsolatedCase):
         self.assertEqual(command[command.index("--output-format") + 1], "text")
         self.assertNotIn("--verbose", command)
 
+    def with_help(self, stdout, returncode=0):
+        base.clear_discovery_cache()
+        completed = _Help()
+        completed.stdout, completed.returncode = stdout, returncode
+        self.provider._capture = lambda command, timeout=30: completed
+
+    def test_partial_messages_are_asked_for_when_the_help_lists_them(self):
+        self.with_help(CLAUDE_HELP)
+        for mode in (base.MODE_PLAN, base.MODE_REVIEW, base.MODE_IMPLEMENT):
+            with self.subTest(mode=mode):
+                command = self.provider.build_command(mode, self.resolved, self.project)
+                self.assertEqual(command[command.index("--verbose") + 1], "--include-partial-messages")
+
+    def test_partial_messages_are_only_for_the_streaming_format(self):
+        self.with_help(CLAUDE_HELP)
+        for output_format in ("text", "json"):
+            with self.subTest(output_format=output_format):
+                command = self.provider.build_command(
+                    base.MODE_PLAN, self.resolved, self.project, options={"output_format": output_format}
+                )
+                self.assertNotIn("--include-partial-messages", command)
+
+    def test_partial_messages_are_never_guessed(self):
+        """Help without the flag, or help that cannot be read, leaves the
+        command as it was before the flag existed."""
+        for stdout, code in ((_Help.stdout, 0), (CLAUDE_HELP, 1)):
+            with self.subTest(returncode=code):
+                self.with_help(stdout, code)
+                command = self.provider.build_command(base.MODE_IMPLEMENT, self.resolved, self.project)
+                self.assertNotIn("--include-partial-messages", command)
+                self.assertEqual(command[:5], ["claude", "-p", "--output-format", "stream-json", "--verbose"])
+        base.clear_discovery_cache()
+        self.provider._capture = lambda command, timeout=30: None
+        command = self.provider.build_command(base.MODE_IMPLEMENT, self.resolved, self.project)
+        self.assertNotIn("--include-partial-messages", command)
+
     def test_an_unknown_output_format_is_rejected(self):
         problems = self.provider.validate_options({"output_format": "yaml"})
         self.assertTrue(any("output_format" in p for p in problems))
@@ -441,6 +478,200 @@ class TestParseSession(IsolatedCase):
             event = {"type": "assistant", "message": {"usage": usage}}
             with self.subTest(value=bad):
                 self.assertIsNone(self.parse(stream(event))["context_tokens"])
+
+
+class TestPartialMessages(IsolatedCase):
+    """A recorded run with ``--include-partial-messages`` that called ``Read``.
+
+    The ``stream_event`` lines repeat what the ``assistant`` events say, so
+    every reader has to give the answer it gives without them.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.provider = ClaudeProvider()
+        self.stdout = fixture("partial-messages-tool.jsonl")
+        self.events = [json.loads(line) for line in self.stdout.splitlines()]
+        self.result = next(event for event in self.events if event["type"] == "result")
+
+    def outcome(self, stdout=None, exit_code=0):
+        return ExecOutcome(exit_code, self.stdout if stdout is None else stdout, "", 1.0)
+
+    def without_partial_messages(self):
+        return stream(*[event for event in self.events if event["type"] != "stream_event"])
+
+    def test_the_fixture_streams_partial_messages(self):
+        kinds = {event["event"]["type"] for event in self.events if event["type"] == "stream_event"}
+        self.assertTrue({"message_start", "content_block_start", "content_block_delta"} <= kinds)
+
+    def test_the_answer_is_the_result_event(self):
+        self.assertEqual(parse_stream_json(self.stdout), (self.result["result"], ""))
+
+    def test_usage_is_the_result_event(self):
+        usage = self.provider.parse_usage(self.outcome(), base.MODE_REVIEW)
+        self.assertEqual(usage.input_tokens, self.result["usage"]["input_tokens"])
+        self.assertEqual(usage.output_tokens, self.result["usage"]["output_tokens"])
+        self.assertEqual(usage.cache_read_tokens, self.result["usage"]["cache_read_input_tokens"])
+        self.assertEqual(usage.cache_write_tokens, self.result["usage"]["cache_creation_input_tokens"])
+        self.assertEqual(usage.cost_usd, self.result["total_cost_usd"])
+
+    def test_a_tool_is_counted_once_not_again_from_its_content_block_start(self):
+        names = [
+            block["name"]
+            for event in self.events
+            if event["type"] == "assistant"
+            for block in event["message"]["content"]
+            if block["type"] == "tool_use"
+        ]
+        started = [
+            event
+            for event in self.events
+            if event["type"] == "stream_event"
+            and event["event"].get("content_block", {}).get("type") == "tool_use"
+        ]
+        self.assertIn("Read", names)
+        self.assertEqual(len(started), len(names))
+        tools = parse_stream_tools(self.stdout)
+        self.assertEqual(tools["tool_uses"], len(names))
+        self.assertEqual(tools["tool_uses_by_name"], {name: names.count(name) for name in names})
+        self.assertEqual(tools, parse_stream_tools(self.without_partial_messages()))
+
+    def test_the_session_and_context_come_from_the_assistant_and_result_events(self):
+        last = [event for event in self.events if event["type"] == "assistant"][-1]["message"]["usage"]
+        context = sum(
+            last[key] for key in ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
+        )
+        session = self.provider.parse_session(self.outcome())
+        self.assertEqual(session["session_id"], self.result["session_id"])
+        self.assertEqual(session["context_tokens"], context)
+        self.assertEqual(session, self.provider.parse_session(self.outcome(self.without_partial_messages())))
+
+    def test_the_fixture_carries_nothing_from_the_machine_it_was_recorded_on(self):
+        self.assertIsNone(re.search(r"[A-Za-z]:\\\\|/Users/|/home/|\\\\Users\\\\", self.stdout))
+        self.assertNotIn("scratchpad", self.stdout)
+
+    def test_the_recorded_rejection_is_still_one(self):
+        stdout = fixture("resume-rejected.stdout")
+        outcome = ExecOutcome(REJECTED_EXIT, stdout, fixture("resume-rejected.stderr"), 0.5)
+        self.assertTrue(self.provider.resume_rejected(outcome, base.MODE_PLAN, {}, MISSING))
+
+    def test_a_stream_with_partial_messages_is_not_a_rejection(self):
+        """Even with the rejection's own result event after them: a message
+        was being written, so the session existed."""
+        chunks = stream(*[event for event in self.events if event["type"] == "stream_event"])
+        stdout = chunks + fixture("resume-rejected.stdout")
+        outcome = ExecOutcome(REJECTED_EXIT, stdout, "", 0.5)
+        self.assertFalse(self.provider.resume_rejected(outcome, base.MODE_PLAN, {}, MISSING))
+
+    def cut_after(self, count):
+        """The stream up to the ``count``-th ``text_delta`` of its last message."""
+        last_start = max(
+            index
+            for index, event in enumerate(self.events)
+            if event["type"] == "stream_event" and event["event"]["type"] == "message_start"
+        )
+        kept, seen, written = self.events[:last_start], 0, []
+        for event in self.events[last_start:]:
+            delta = event.get("event", {}).get("delta", {})
+            if delta.get("type") == "text_delta":
+                if seen == count:
+                    break
+                seen += 1
+                written.append(delta["text"])
+            kept.append(event)
+        self.assertEqual(seen, count)
+        return stream(*kept), "".join(written)
+
+    def test_a_run_killed_mid_message_keeps_what_it_had_written(self):
+        stdout, written = self.cut_after(4)
+        earlier = [
+            block["text"]
+            for event in self.events[: len(stdout.splitlines())]
+            if event["type"] == "assistant"
+            for block in event["message"]["content"]
+            if block["type"] == "text"
+        ]
+        text, note = parse_stream_json(stdout)
+        self.assertEqual(text, "\n".join([*earlier, written]))
+        self.assertIn("unfinished message", note)
+        outcome = ExecOutcome(0, stdout, "", 1.0, stalled=True)
+        self.assertEqual(self.provider.postprocess(outcome, base.MODE_PLAN)[0], text)
+
+    def test_an_unfinished_message_alone_is_kept(self):
+        start = {"type": "stream_event", "event": {"type": "message_start", "message": {}}}
+        chunks = [
+            {"type": "stream_event", "event": {"type": "content_block_delta", "delta": delta}}
+            for delta in ({"type": "text_delta", "text": "a"}, {"type": "text_delta", "text": "b"})
+        ]
+        text, note = parse_stream_json(stream(THINKING, start, *chunks))
+        self.assertEqual(text, "ab")
+        self.assertEqual(note, "no result event; reconstructed from an unfinished message")
+
+    START: ClassVar[Dict[str, Any]] = {
+        "type": "stream_event",
+        "event": {"type": "message_start", "message": {}},
+    }
+    BOTH = "no result event; reconstructed from assistant messages and an unfinished message"
+
+    @staticmethod
+    def delta(kind, **fields):
+        inner = {"type": "content_block_delta", "delta": {"type": kind, **fields}}
+        return {"type": "stream_event", "event": inner}
+
+    @staticmethod
+    def assistant(*blocks):
+        return {"type": "assistant", "message": {"content": list(blocks)}}
+
+    def test_a_second_block_cut_off_follows_the_finished_first(self):
+        events = [
+            self.START,
+            self.delta("text_delta", text="a"),
+            self.assistant({"type": "text", "text": "a"}),
+            self.delta("text_delta", text="b"),
+        ]
+        text, note = parse_stream_json(stream(*events))
+        self.assertEqual(text, "a\nb")
+        self.assertEqual(note, self.BOTH)
+
+    def test_a_thinking_only_assistant_event_keeps_the_text_after_it(self):
+        events = [
+            self.START,
+            self.delta("thinking_delta", thinking=""),
+            self.assistant({"type": "thinking", "thinking": "", "signature": ""}),
+            self.delta("text_delta", text="a"),
+            self.delta("text_delta", text="b"),
+        ]
+        self.assertEqual(
+            parse_stream_json(stream(*events)),
+            ("ab", "no result event; reconstructed from an unfinished message"),
+        )
+
+    def test_an_empty_result_does_not_hide_the_unfinished_message_after_it(self):
+        events = [
+            self.START,
+            self.delta("text_delta", text="a"),
+            self.assistant({"type": "text", "text": "a"}),
+            {"type": "result", "subtype": "success", "result": "", "is_error": False},
+            self.START,
+            self.delta("text_delta", text="b"),
+        ]
+        text, note = parse_stream_json(stream(*events))
+        self.assertEqual(text, "a\nb")
+        self.assertEqual(note, self.BOTH)
+
+    def test_a_finished_message_is_not_repeated(self):
+        """Without the result event, every message did get its assistant event."""
+        events = [event for event in self.events if event["type"] != "result"]
+        text, note = parse_stream_json(stream(*events))
+        answers = [
+            block["text"]
+            for event in events
+            if event["type"] == "assistant"
+            for block in event["message"]["content"]
+            if block["type"] == "text"
+        ]
+        self.assertEqual(text, "\n".join(answers))
+        self.assertEqual(note, "no result event; reconstructed from assistant messages")
 
 
 if __name__ == "__main__":

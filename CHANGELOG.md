@@ -59,6 +59,18 @@ The public surface covered by that promise is: the configuration schema, the
 - **The design review and approval steps of `references/workflow.md`** write
   two revision prompts and pass `--resume`.
 
+### Fixed
+
+- **A healthy Claude run writing a long answer was killed as a stall (#138).**
+  The `thinking_tokens` events stop once the answer starts, and the answer
+  arrives only when it is finished: a 17k-character answer was measured to
+  leave 141s with no output, and a long plan crossed the 300s idle deadline.
+  On `stream-json` the adapter now adds `--include-partial-messages` when
+  `claude --help` lists it (largest gap 1.7s on the same prompt; stdout about
+  8× larger). The answer, usage, tool counts, session and the missing-session
+  check read the same as before. A run killed while writing its final message
+  keeps the text it had streamed in the fallback answer.
+
 ## [0.11.0] - 2026-09-27
 
 ### Added

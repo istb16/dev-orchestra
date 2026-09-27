@@ -1,4 +1,4 @@
-<!-- translated-from: references/limits.md sha256:2748a9c6cd7feb3adf28dbc407d801e1e32921b25aee04dab941f8702a5b2bc3 -->
+<!-- translated-from: references/limits.md sha256:5bb72e41382a46190cb1ef3097aeda58a085dde5fc016f904e63310e82227561 -->
 
 > この文書は [references/limits.md](../../../references/limits.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -60,10 +60,19 @@
 | コマンド | 最初の出力 | 実行中 |
 | --- | --- | --- |
 | `codex exec` | 11.5s の実行のうち 0.4s | 出力が続く（間隔 ≤3.5s） |
-| `claude -p --output-format stream-json` | 6.5s の実行のうち 2.5s | 全体を通じて `thinking_tokens` イベント |
+| `claude -p --output-format stream-json` | 6.5s の実行のうち 2.5s | 回答が始まるまで `thinking_tokens` イベント、その後は書き終わるまで何も出ない |
+| `claude -p --output-format stream-json --include-partial-messages` | — | 回答を含めて間隔 ≤1.7s |
 | `claude -p --output-format text` | **8.9s の実行のうち 8.1s** | 終わるまで何も出ない |
 
-最後の行にアイドル期限を適用すると正常な実行を kill してしまうため、adapter に
+`thinking_tokens` イベントはモデルが回答を書き始めると止まり、回答は書き終わった
+ときにひとまとまりで届きます。17k 文字の回答では、そのためにストリーミング形式でも
+191s の実行のうち 141s 何も出ませんでした。その 3 倍ほどの plan なら、正常なまま
+300s のアイドル期限を越えます。そこで Claude の adapter は、`claude --help` に
+フラグがあれば partial message も要求します。同じプロンプトで最大の間隔は 1.7s
+でした。代わりに stdout は約 8 倍（そのときは 97 KB に対して 810 KB）になりますが、
+adapter はこれまでどおり回答だけに絞ります。
+
+text の行にアイドル期限を適用すると正常な実行を kill してしまうため、adapter に
 アイドル期限を適用するには、その adapter が `streams_progress = True` を宣言して
 いなければならず、しかもそれは根拠がある場合に限ります。適用されない場合は
 合計期限だけが保護になります。だからこそ、以下の可観測性が重要なのです。
@@ -585,11 +594,13 @@ dev-orchestra status                            # meanwhile, visible from anywhe
   数値も報告しません。
 * **stream-json の解析はイベントスキーマに依存しており**、そのスキーマは CLI が
   所有しています。失敗するのではなく劣化します — result イベント、次に assistant
-  のテキストブロック、次に生の stdout — が、形式が変わると構造化された追加情報
+  のテキストブロックと途中で切れたメッセージのストリーム済みテキスト、次に生の
+  stdout — が、形式が変わると構造化された追加情報
   （`is_error`、`num_turns`）は失われます。
 * **継続した architect のセッションも他の実行と同じく stall しうります**（`run architect
-  --resume`）。長い plan を出力している間はなおさらです。アダプタは partial message を
-  要求しないので、最終メッセージを書いている間は何もストリームされません。stall または
+  --resume`）。アダプタが partial message を要求するので、長い plan を出力している
+  だけでは stall に見えなくなりました。ただし、インストールされた CLI がそのフラグを
+  示していなければ、最終メッセージを書いている間は何もストリームされません。stall または
   失敗した継続の実行は報告され、再試行されません。次の `--resume` は新規に走ります
   （`it did not succeed`）。新規にもう一度だけ実行されるのは、CLI がもう存在しないと言った
   セッションだけで、それには試行を 1 回使います。

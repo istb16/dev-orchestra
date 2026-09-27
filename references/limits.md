@@ -46,10 +46,20 @@ assumed:
 | Command | First output | During the run |
 | --- | --- | --- |
 | `codex exec` | 0.4s of an 11.5s run | keeps ticking (≤3.5s gaps) |
-| `claude -p --output-format stream-json` | 2.5s of a 6.5s run | `thinking_tokens` events throughout |
+| `claude -p --output-format stream-json` | 2.5s of a 6.5s run | `thinking_tokens` events until the answer starts, then nothing until it is finished |
+| `claude -p --output-format stream-json --include-partial-messages` | — | ≤1.7s gaps, the answer included |
 | `claude -p --output-format text` | **8.1s of an 8.9s run** | nothing until the end |
 
-An idle deadline on that last row would kill healthy runs, so an adapter must
+The `thinking_tokens` events stop once the model starts writing its answer, and
+the answer arrives in one piece when it is finished. On a 17k-character answer
+that left the plain streaming format silent for 141s of a 191s run; a plan
+three times that size crosses the 300s idle deadline while perfectly healthy.
+So the Claude adapter asks for partial messages too, when `claude --help` lists
+the flag: on the same prompt the largest gap was 1.7s. The price is stdout
+about 8× larger (810 KB against 97 KB there), which the adapter reduces to the
+answer as before.
+
+An idle deadline on the text row would kill healthy runs, so an adapter must
 declare `streams_progress = True` before one is applied to it, and only on
 evidence. Where it does not apply, the total deadline is the only protection —
 which is exactly why the observability below matters.
@@ -548,13 +558,14 @@ Honest limits of the above:
   printed: `wc -l` and `cat` read the same file and report three characters
   and the whole of it. Codex reports neither figure.
 * **The stream-json parse depends on an event schema** that the CLI owns. It
-  degrades rather than failing — result event, then assistant text blocks, then
-  raw stdout — but a format change would still cost the structured extras
+  degrades rather than failing — result event, then assistant text blocks and
+  the streamed text of a message cut off mid-way, then raw stdout — but a format change would still cost the structured extras
   (`is_error`, `num_turns`).
 * **A continued architect session can stall like any run** (`run architect
-  --resume`), and more readily while it prints a long plan: the adapter does
-  not ask for partial messages, so nothing streams while the final message is
-  written. A stalled or failed continued run is reported and not retried; the
+  --resume`). A long plan no longer looks like one, since the adapter asks for
+  partial messages — unless the installed CLI does not list the flag, and then
+  nothing streams while the final message is written. A stalled or failed
+  continued run is reported and not retried; the
   next `--resume` runs fresh (`it did not succeed`). Only a session the CLI
   says no longer exists is run again fresh, once, and that costs an attempt.
 * **`state.json` is trusted to name the session `--resume` continues**, as it

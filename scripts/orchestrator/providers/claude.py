@@ -17,6 +17,14 @@ idle deadline something real to watch. The final answer is read from the
 the output: assistant text blocks, then raw stdout. ``options.output_format:
 text`` opts back out, at the cost of stall detection.
 
+The ``thinking_tokens`` events stop once the answer starts, and the answer
+arrives as one ``assistant`` event when it is finished: measured on 2.1.283, a
+17k-character answer left 141s with no line at all. So the adapter also asks
+for ``--include-partial-messages`` when ``--help`` lists it, which streams the
+answer as ``stream_event`` chunks (largest gap 1.7s on the same prompt, stdout
+about 8x larger). The readers below ignore those lines, except to keep the
+text of a message the run was killed in the middle of.
+
 Read-only runs (plan and review) are held to reading by the CLI, not by the
 prompt: ``--permission-mode plan --disallowed-tools Edit,Write,NotebookEdit
 --tools Read,Grep,Glob --strict-mcp-config --restricted``. Measured on 2.1.283:
@@ -92,6 +100,8 @@ _RESUME_FLAGS = ("--resume", "--fork-session")
 _SESSION_ID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 #: How the CLI says a resumed session does not exist, before the id.
 _MISSING_SESSION = "No conversation found with session ID: "
+#: Streams the answer while it is written; asked for only when advertised.
+_PARTIAL_MESSAGES_FLAG = "--include-partial-messages"
 _CHOICES_RE = re.compile(r'"([A-Za-z]+)"')
 _NO_PATH = "has no path after it"
 
@@ -345,7 +355,8 @@ class ClaudeProvider(Provider):
         if outcome.exit_code == 0 or outcome.timed_out or outcome.stalled:
             return False
         events = _stream_events(outcome.stdout)
-        if any(event.get("type") in _STREAM_EVENT_TYPES for event in events):
+        # A ``stream_event`` is a message being written, so a turn happened.
+        if any(event.get("type") in (*_STREAM_EVENT_TYPES, "stream_event") for event in events):
             return False
         result = next((event for event in reversed(events) if event.get("type") == "result"), None)
         if result is None:
@@ -495,6 +506,11 @@ class ClaudeProvider(Provider):
         if output_format == "stream-json":
             # The CLI requires --verbose with the streaming format.
             command.append("--verbose")
+            # Without it a long answer is silent until it is finished, and
+            # the idle deadline takes that for a stall. Never guessed.
+            text = self.help_text()
+            if text is not None and _advertises(text, _PARTIAL_MESSAGES_FLAG):
+                command.append(_PARTIAL_MESSAGES_FLAG)
         if resolved.argument:
             command += ["--model", resolved.argument]
         requested = options.get("permission_mode")
@@ -592,9 +608,25 @@ def parse_stream_json(stdout: str) -> "tuple[Optional[str], str]":
                 return result, note
             break
 
-    # No usable result event: fall back to the assistant's own text blocks.
+    # No usable result event: fall back to the assistant's own text blocks,
+    # then to the text a run killed mid-message had streamed so far. The CLI
+    # sends each finished block as an ``assistant`` event before the message
+    # stops, so only the chunks after the last one with text are unfinished.
     collected: List[str] = []
+    pending: List[str] = []
     for event in events:
+        if event.get("type") == "stream_event":
+            inner = event.get("event")
+            if not isinstance(inner, dict):
+                continue
+            if inner.get("type") == "message_start":
+                pending = []
+            delta = inner.get("delta")
+            if isinstance(delta, dict) and delta.get("type") == "text_delta":
+                piece = delta.get("text")
+                if isinstance(piece, str):
+                    pending.append(piece)
+            continue
         if event.get("type") != "assistant":
             continue
         message = event.get("message")
@@ -605,9 +637,16 @@ def parse_stream_json(stdout: str) -> "tuple[Optional[str], str]":
                 piece = block.get("text")
                 if isinstance(piece, str) and piece.strip():
                     collected.append(piece)
-    if collected:
-        return "\n".join(collected), "no result event; reconstructed from assistant messages"
-    return None, ""
+                    pending = []
+    unfinished = "".join(pending)
+    if not unfinished.strip():
+        if collected:
+            return "\n".join(collected), "no result event; reconstructed from assistant messages"
+        return None, ""
+    if not collected:
+        return unfinished, "no result event; reconstructed from an unfinished message"
+    note = "no result event; reconstructed from assistant messages and an unfinished message"
+    return "\n".join([*collected, unfinished]), note
 
 
 def parse_stream_usage(stdout: str) -> Optional[Usage]:

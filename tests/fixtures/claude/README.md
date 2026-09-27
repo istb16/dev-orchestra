@@ -10,6 +10,7 @@ the repository: they carry machine-specific values.
 | `resume-rejected.stdout`, `resume-rejected.stderr` | `--resume=00000000-0000-4000-8000-000000000000 --fork-session`, a session that does not exist. Exit code 1 (a constant in the tests). |
 | `resume-rejected-other-error.stdout` | The same line with a different `errors` entry, to show that only the missing-session sentence counts as a rejection. Not a recording. |
 | `resume-write-probe.jsonl` | A forked, resumed session asked to write a file. It called no tool and wrote nothing. |
+| `partial-messages-tool.jsonl` | A read-only run with `--include-partial-messages` that called `Read` once, so its `stream_event` lines include a `tool_use` block start and `text_delta` chunks. Run with `--model haiku`: its `init` event names `claude-haiku-4-5-20251001` while every message and `modelUsage` name `claude-sonnet-5`, both as the CLI printed them; no test reads either. |
 
 ## Redaction
 
@@ -33,6 +34,19 @@ the answer text are verbatim.
   content, usage}`; message and request ids are dropped.
 - `result` keeps `type`, `subtype`, `is_error`, `num_turns`, `session_id`,
   `total_cost_usd`, `usage`, `modelUsage`, `result` and `duration_ms`.
+
+Partial-messages run, on top of the rules above:
+
+- Every `session_id` is replaced by `cccccccc-cccc-4ccc-8ccc-cccccccccccc`, and
+  the working directory, in `init` and in tool inputs, by `/sandbox/probe138`.
+- `uuid` and `parent_tool_use_id` are dropped from every event.
+- Lines kept: `system` events `init` and `thinking_tokens`, `stream_event`,
+  `assistant`, `user` and `result`. Dropped: other `system` events and
+  `rate_limit_event`.
+- Thinking text and signatures are blanked, in `assistant` events and in
+  `thinking_delta` / `signature_delta` chunks.
+- Each tool input's `input_json_delta` chunks are folded into one chunk, so
+  the path could be redacted.
 
 If the adapter starts reading a field dropped here, copy it again from a new
 recording rather than inventing it.
