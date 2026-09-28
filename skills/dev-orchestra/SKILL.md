@@ -54,7 +54,8 @@ architecture, dependency or build change; a security-sensitive path (auth,
 permissions, secrets, payments).
 
 Review stage: run whenever code changed in a way worth reviewing. Skip for
-pure typo/comment/formatting, and say you skipped it.
+pure typo/comment/formatting, and say so. Security-sensitive: `review run
+--high-risk`.
 
 State the plan in one line first: *"Multi-file API change: design → implement
 → test → 2 reviews → triage → fix → re-test."*
@@ -140,8 +141,8 @@ then writes one report each plus deduplicated `consolidated.md` / `.json`.
 - `partial` = a round whose change body went over as a file. The findings are
   real, the review is not clean: if `review status` says `coverage` is
   `unverified`, report "not reviewed in full" and do not re-run that snapshot.
-- `review run` may cut the panel to one reviewer on a small, low-risk change
-  (`optimization.level: aggressive`) and prints why. Say so in the report.
+- `review run` may shrink the panel (small change, or a `when: high-risk`
+  reviewer left out) and prints why. Say so in the report.
 
 **Triage.** **You** decide what is real; raw findings never reach the fixer.
 Per finding in `consolidated.md`: read the cited code, decide, record it.

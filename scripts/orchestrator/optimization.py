@@ -22,6 +22,14 @@ config gets the full treatment whatever the dial says, because the saving on
 one skipped reviewer is worth a fraction of one missed authorisation bug. That
 escalation is not configurable down to nothing: the patterns are, the fact
 that a match escalates is not.
+
+The same judgement decides who sits on a code review panel. A reviewer
+configured ``when: high-risk`` joins a round only when that round matched a
+high-risk path, was declared high-risk with ``review run --high-risk``, or is
+re-checking an accepted finding the reviewer itself reported. That is a
+membership lever and nothing more: a declaration is a claim, not evidence, so
+it never moves the level or the gate, and it is not an escalation. A panel
+must keep one reviewer that always runs, or a quiet round would have nobody.
 """
 
 from __future__ import annotations
@@ -58,7 +66,8 @@ DEFAULT_LOW_RISK_MAX_LINES = 150
 #:
 #: Matched against the whole path and, for a pattern with no slash, against the
 #: basename too. Replace the list wholesale in config to suit a codebase whose
-#: names differ; that is the part that is configurable.
+#: names differ, or add to it with ``extra_high_risk_paths``; that is the part
+#: that is configurable.
 DEFAULT_HIGH_RISK_PATHS = (
     # Authentication and authorisation.
     "*auth*",
@@ -109,6 +118,13 @@ GATE_REFUSE = "refuse"
 GATE_WARN = "warn"
 GATE_ALLOW = "allow"
 
+#: When a reviewer runs on a code review round. ``always`` is the default and
+#: what a reviewer with no ``when`` means; ``high-risk`` joins only the rounds
+#: ``condition_reviewers`` says qualify. The design review ignores both.
+WHEN_ALWAYS = "always"
+WHEN_HIGH_RISK = "high-risk"
+REVIEWER_CONDITIONS = (WHEN_ALWAYS, WHEN_HIGH_RISK)
+
 
 def normalise_level(value: Any) -> str:
     """A level we recognise, or the default. Never raises.
@@ -154,6 +170,99 @@ def high_risk_matches(paths: Sequence[str], patterns: Sequence[str]) -> List[Tup
     return hits
 
 
+def reviewer_condition(reviewer: Any) -> str:
+    """A reviewer's ``when``, normalised; ``always`` when unset or unrecognised.
+
+    Validation reports an unknown value at ``config validate``, and
+    ``review run`` refuses a config with one, so reading it as ``always``
+    here only ever affects a caller that loaded without validation.
+    """
+    value = reviewer.get("when") if isinstance(reviewer, dict) else None
+    if isinstance(value, str) and value.strip().lower() in REVIEWER_CONDITIONS:
+        return value.strip().lower()
+    return WHEN_ALWAYS
+
+
+def risk_patterns(settings: Dict[str, Any]) -> List[str]:
+    """Every high-risk path pattern in force.
+
+    ``high_risk_paths`` when configured as a list, the defaults otherwise,
+    plus ``extra_high_risk_paths`` -- so a repository can add the one path
+    the defaults miss without copying the thirty they already cover.
+    """
+    patterns = settings.get("high_risk_paths")
+    if not isinstance(patterns, (list, tuple)):
+        patterns = DEFAULT_HIGH_RISK_PATHS
+    extra = settings.get("extra_high_risk_paths")
+    if not isinstance(extra, (list, tuple)):
+        extra = ()
+    combined = list(patterns) + list(extra)
+    return [pattern for pattern in combined if isinstance(pattern, str) and pattern.strip()]
+
+
+def _and_more(more: int) -> str:
+    return " (and %d more)" % more if more > 0 else ""
+
+
+def _finding_order(finding: Dict[str, Any]) -> Tuple[int, str]:
+    """``F3`` before ``F12``: ids are positions, so order them as numbers."""
+    name = str(finding.get("id") or "")
+    digits = "".join(ch for ch in name if ch.isdigit())
+    return (int(digits) if digits else 0, name)
+
+
+def condition_reviewers(
+    reviewers: Sequence[Dict[str, Any]],
+    hits: Sequence[Tuple[str, str]],
+    declared: bool = False,
+    carried: Sequence[Dict[str, Any]] = (),
+    only: bool = False,
+) -> List[Dict[str, Any]]:
+    """One record per conditional reviewer: whether it runs this round, and why.
+
+    Reasons are tried in order and the first that applies is kept: a
+    high-risk path matched, the round was declared with ``--high-risk``, the
+    round carries an accepted finding this reviewer reported (``carried``,
+    from ``review.carried_findings``), or ``--only`` named it. An
+    unconditional reviewer gets no record: it runs whatever the round is.
+    """
+    records: List[Dict[str, Any]] = []
+    for reviewer in reviewers:
+        if not isinstance(reviewer, dict):
+            continue
+        when = reviewer_condition(reviewer)
+        if when == WHEN_ALWAYS:
+            continue
+        name = str(reviewer.get("id") or "")
+        own = [
+            finding
+            for finding in carried
+            if isinstance(finding, dict) and name in [str(r) for r in finding.get("reported_by") or []]
+        ]
+        own.sort(key=_finding_order)
+        if hits:
+            reason = "%s matches %s%s" % (hits[0][0], hits[0][1], _and_more(len(hits) - 1))
+        elif declared:
+            reason = "declared with --high-risk"
+        elif own:
+            reason = "has open accepted finding %s%s" % (own[0].get("id"), _and_more(len(own) - 1))
+        elif only:
+            reason = "named by --only"
+        else:
+            records.append({"id": name, "when": when, "runs": False, "reason": "no high-risk path matched"})
+            continue
+        records.append({"id": name, "when": when, "runs": True, "reason": reason})
+    return records
+
+
+def qualifies(reviewer: Dict[str, Any], records: Sequence[Dict[str, Any]]) -> bool:
+    """Whether a reviewer runs this round, by its ``condition_reviewers`` record."""
+    if reviewer_condition(reviewer) == WHEN_ALWAYS:
+        return True
+    name = str(reviewer.get("id") or "")
+    return any(record.get("id") == name and record.get("runs") for record in records)
+
+
 class Plan:
     """What this level decided, and what it decided it from."""
 
@@ -168,6 +277,8 @@ class Plan:
         high_risk: Sequence[Tuple[str, str]] = (),
         files: int = 0,
         lines: int = 0,
+        conditional: Sequence[Dict[str, Any]] = (),
+        declared: bool = False,
     ) -> None:
         #: The configured level, before any escalation.
         self.requested = requested
@@ -183,6 +294,10 @@ class Plan:
         self.high_risk = list(high_risk)
         self.files = files
         self.lines = lines
+        #: One ``condition_reviewers`` record per conditional reviewer.
+        self.conditional = [dict(record) for record in conditional]
+        #: Whether the round was declared high-risk with ``--high-risk``.
+        self.declared = declared
 
     @property
     def escalated(self) -> bool:
@@ -226,6 +341,14 @@ class Plan:
             self.reviewer_limit,
         )
 
+    def conditional_notes(self) -> List[str]:
+        """One line per conditional reviewer, saying whether it runs and why."""
+        notes: List[str] = []
+        for record in self.conditional:
+            verdict = "added" if record["runs"] else "left out"
+            notes.append("%s (when: %s) %s: %s" % (record["id"], record["when"], verdict, record["reason"]))
+        return notes
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "requested_level": self.requested,
@@ -238,6 +361,8 @@ class Plan:
             "reviewer_limit": self.reviewer_limit,
             "files": self.files,
             "lines": self.lines,
+            "conditional": [dict(record) for record in self.conditional],
+            "declared": self.declared,
         }
 
 
@@ -249,6 +374,11 @@ def decide(
     test_status: str,
     reviewers: int,
     reviewed_files: Optional[int] = None,
+    *,
+    panel: Optional[Sequence[Dict[str, Any]]] = None,
+    declared: bool = False,
+    carried: Sequence[Dict[str, Any]] = (),
+    only: bool = False,
 ) -> Plan:
     """Work out what this round should cost, from the change and the config.
 
@@ -260,12 +390,16 @@ def decide(
     otherwise a one-line fix next to a lockfile bump stops counting as small
     while the diff a reviewer sees is two lines long. It defaults to
     ``len(paths)`` for a caller that has only one number.
+
+    ``panel`` is the reviewers themselves, for a caller that has them. It
+    decides each conditional reviewer (see ``condition_reviewers``), and
+    ``reviewers`` is then the number that would run rather than the count
+    passed in. ``declared`` is ``review run --high-risk``: it adds the
+    conditional reviewers and keeps the panel whole, and touches nothing
+    else -- not the level, the gate, the findings cap or ``high_risk``.
     """
     requested = normalise_level(settings.get("level"))
-    patterns = settings.get("high_risk_paths")
-    if not isinstance(patterns, (list, tuple)):
-        patterns = DEFAULT_HIGH_RISK_PATHS
-    hits = high_risk_matches(paths, patterns)
+    hits = high_risk_matches(paths, risk_patterns(settings))
     level = at_least(requested, "quality") if hits else requested
 
     status = (test_status or "").strip().lower()
@@ -279,6 +413,16 @@ def decide(
     max_findings = findings_cap(settings, review_settings, level)
 
     files = len(paths) if reviewed_files is None else max(int(reviewed_files), 0)
+    conditional: List[Dict[str, Any]] = []
+    if panel is not None:
+        conditional = condition_reviewers(panel, hits, declared=declared, carried=carried, only=only)
+        members = [reviewer for reviewer in panel if isinstance(reviewer, dict)]
+        reviewers = sum(1 for reviewer in members if qualifies(reviewer, conditional))
+    # A conditional reviewer that qualified keeps the panel whole. A path hit
+    # already does, through `quality`; a declaration or a carried finding
+    # does not move the level, and the cut would drop the very reviewer
+    # that just qualified.
+    keep_whole = declared or any(record["runs"] for record in conditional)
     limit = None
     # Any level short of `quality`, which is the level that means "spend what
     # it takes". Restricting this to `aggressive` made it unreachable in the
@@ -288,7 +432,7 @@ def decide(
     # `hits` is still what stops it -- a small change to an auth file gets the
     # full panel -- but a small change to nothing risky no longer pays for two
     # independent reviewers to agree it is small.
-    if level != "quality" and reviewers > 1:
+    if level != "quality" and reviewers > 1 and not keep_whole:
         max_files = _positive(settings.get("low_risk_max_files"), DEFAULT_LOW_RISK_MAX_FILES)
         max_lines = _positive(settings.get("low_risk_max_lines"), DEFAULT_LOW_RISK_MAX_LINES)
         if files <= max_files and lines <= max_lines:
@@ -304,6 +448,8 @@ def decide(
         hits,
         files=files,
         lines=lines,
+        conditional=conditional,
+        declared=bool(declared),
     )
 
 
@@ -400,6 +546,7 @@ def summarise_rounds(events: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
     patterns: Dict[str, int] = {}
     refused_by: Dict[str, int] = {}
     escalated = reduced = refused = unrecorded = 0
+    conditional = {"added": 0, "left_out": 0, "declared_rounds": 0}
     reviewer_runs = measured_runs = billed = 0
     tool_runs = tool_uses = tool_chars = 0
     measured: List[Dict[str, Any]] = []
@@ -421,6 +568,13 @@ def summarise_rounds(events: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
             reduced += 1
         if not str(plan.get("test_status") or ""):
             unrecorded += 1
+        # Refused rounds too: the decision was made and recorded either way.
+        # An event from before conditional reviewers carries neither key.
+        for record in plan.get("conditional") or []:
+            if isinstance(record, dict):
+                conditional["added" if record.get("runs") else "left_out"] += 1
+        if plan.get("declared"):
+            conditional["declared_rounds"] += 1
         if event.get("status") == REFUSED:
             refused += 1
             _bump(refused_by, str(event.get("refused_by") or "gate"))
@@ -470,6 +624,7 @@ def summarise_rounds(events: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
         "escalation_patterns": patterns,
         "always_escalated": bool(rounds) and escalated == len(rounds),
         "panel_reduced": reduced,
+        "conditional": conditional,
         "rounds_without_a_test_result": unrecorded,
         "reviewer_runs": reviewer_runs,
         "measured_runs": measured_runs,

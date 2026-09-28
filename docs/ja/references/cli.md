@@ -1,4 +1,4 @@
-<!-- translated-from: references/cli.md sha256:949673babd3aab1e4721bdca54b5d30773f1a9f0836088b1b92052ebeea3d68a -->
+<!-- translated-from: references/cli.md sha256:069f88596609df73a3f567d337af14bfb3494ca70a03fd0d50166756f03db91f -->
 
 > この文書は [references/cli.md](../../../references/cli.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -68,9 +68,9 @@ dev-orchestra config set --raw review.note "3 reviewers"
 | コマンド | 説明 |
 | --- | --- |
 | `reviewer list [--json]` | 設定されているパネルを一覧表示します。 |
-| `reviewer add --provider <p> [--model <family>] [--role <r>] [--id <id>] [--pin <model-id>] [--scope …]` | レビュアーを追加します。id を省略すると生成されます（`codex-security`、`codex-security-2`、…）。 |
-| `reviewer remove <id\|role\|position> [--scope …]` | id、一意なロール、または 1 始まりの位置で削除します。 |
-| `reviewer set <selector> [--provider] [--model] [--role] [--id] [--pin] [--scope …]` | 既存のレビュアーを変更します。 |
+| `reviewer add --provider <p> [--model <family>] [--role <r>] [--id <id>] [--pin <model-id>] [--when always\|high-risk] [--scope …]` | レビュアーを追加します。id を省略すると生成されます（`codex-security`、`codex-security-2`、…）。`--when high-risk` にすると、高リスクと判定されたラウンドでだけコードレビューに加わります（`references/configuration.md` を参照）。デフォルトの `always` ではキーを書きません。 |
+| `reviewer remove <id\|role\|position> [--scope …]` | id、一意なロール、または 1 始まりの位置で削除します。`when: high-risk` のレビュアーだけが残る場合は拒否されます（exit 2）。 |
+| `reviewer set <selector> [--provider] [--model] [--role] [--id] [--pin] [--when always\|high-risk] [--scope …]` | 既存のレビュアーを変更します。`--when always` は条件を外します。常に走る最後のレビュアーへの `--when high-risk` は拒否されます（exit 2）。 |
 
 ```bash
 dev-orchestra reviewer add --provider codex --role security
@@ -256,8 +256,8 @@ echo "explain the failure" | dev-orchestra run orchestrator
 | コマンド | 説明 |
 | --- | --- |
 | `review snapshot [--base <rev>] [--no-untracked] [--surrounding none\|enclosing] [--json]` | レビュー対象の変更を固定します。空の場合は終了コード 1 です。`review.context.max_chars` を超える変更には警告が出ますが、それでも書き込まれます。スナップショットを取ること自体は何も消費せず、拒否するのは消費するコマンドの役目だからです。`--json` は同じことを数値で示します: `change_chars`、`max_chars`、`over_context`。`review.context.surrounding: enclosing` のときは、各 hunk を囲むシンボルも、diff を取ったツリーから `review-surrounding.json` に固定し、固定したシンボル数と文字数、抽出しなかったファイルの数とその理由を示す `context:` 行を出力します。メタデータには `surrounding` ブロックが加わります。`--surrounding` はこのスナップショットに限って設定を上書きします: **`enclosing` は設定が `none` でもこのスナップショットについて候補を凍結します**。この凍結が無いと `review run --surrounding enclosing` は拒否されます。`none` は何も凍結せず、古い凍結ファイルを削除します。設定そのものは変わりません。`references/reviews.md` と [周辺コンテキストの効果を測る](limits.md#measuring-what-surrounding-context-does) を参照してください。 |
-| `review run [--design] [--request <path>] [--iteration N] [--only <ids/roles>] [--sequential] [--context <text>] [--base <rev>] [--timeout <s>] [--idle-timeout <s>] [--force] [--surrounding none\|enclosing] [--json]` | スナップショットに対してすべてのレビュアーを実行し、レポートと統合結果を書き込みます。終了コード 1 になるのは、`ok` で戻ったレビュアーが 1 人もいない場合だけです。すべてのレビュアーが失敗した場合や、変更本体が大きすぎてインライン化できずファイルとして渡されたラウンドがこれにあたり、後者はクリーンではなく `partial` として記録されます。ラウンドは `--iteration` が指定されない限りスナップショットから導出され、`review.max_review_iterations` を超えるラウンドは `--force` がない限り拒否されます（終了コード 3）。上限に達したラウンドでも fix と再テストは行われ、拒否されるのは再レビューだけです。最適化ゲートに拒否されたラウンド（テストが失敗として記録されている）も終了コード 3 で終了し、`optimization report` が数えられるよう `refused` として記録されます。`review.context.max_chars`（400,000）を超える変更本体も同様です。何もレビューされず、メッセージはサイズ、上限、上限内に収める方法を示し、ラウンドは `refused_by: "context"` として記録されます。`--force` を付けると構わず実行し、そのラウンドは報告されるすべての場所で `over_budget` として記録されます。本体をプロンプトに入れるかパスとして渡すかは `review.context.inline_chars`（400,000。デフォルトでは同じ数値）で決まり、各レビュアーのエントリには判断に使われた値が記録されます。`budgets.max_runtime_seconds` 分の委譲実行時間を使い切った場合も同様にラウンドは拒否され（パネルはその最大の消費者です）、メッセージはどの予算だったかを示します。`--only` は一部だけを実行しますが、統合はすべてのレビュアーの現在のレポートに対して行うので、何も失われません。`review.context.surrounding: enclosing` のときは、固定されたシンボルを `review.context.surrounding_chars` と、diff が両方の上限の下に残す分の範囲で採用し、`Surrounding context:` 行が採用した数と除外した数とその理由を示し、`--json` にはラウンドの `surrounding` レコードが入ります。上限が計測するサイズは、diff に採用したコンテキストを足したものになります。`--surrounding none\|enclosing` は、1 つのスナップショットをコンテキストあり・なしでレビューするために、この run に限って `review.context.surrounding` を上書きします（[周辺コンテキストの効果を測る](limits.md#measuring-what-surrounding-context-does) を参照してください）。設定は変わらず、行は `(--surrounding enclosing for this run)` または `Surrounding context: none (--surrounding none for this run; review.context.surrounding unchanged)` となります。次の場合は何も課金される前に終了コード 2 で拒否されます: `--design` と併用したとき。incremental ラウンド（再レビューのプロンプトには実行時点の accepted findings が載るので、2 本の run はコンテキスト以外でも違ってしまう）。`enclosing` で何も採用されないとき（理由を問わない: `review snapshot --surrounding enclosing` で凍結していないスナップショット、候補なし、ファイル渡し、予算なし）。同じスナップショットに対する 2 本目の run（間に `budget reset` を挟んでも同じ）で、前回の run が組み立てた後に finding のトリアージまたはトリアージのメモが設定されたとき（前のラウンドから引き継がれたものは数えない）。同じスナップショットの再実行はラウンドを進めず、findings の署名を登録しないので、ペアが「何も変えなかった修正」に見えることはありません。1 本目は通常どおり登録します。lineage が変わった後の run や、`--iteration` で別のラウンドを指定した run は再実行ではなく、署名を登録します。run のイベントと `--json` には `measurement` ブロック（`surrounding`、完全な `snapshot` sha256、凍結した `tree`、`head`、`base`、`workflow` ディレクトリ、予算の `epoch`、`rerun`、そして `inputs`: `context_sha256`、`max_findings`、`inline_chars`、`max_chars`、`force`）が加わり、`consolidated.json` には `triage_at_build`（キーごとの各 finding の `triage` と `triage_note`）を持つ `measurement` が加わります。フラグが無ければ、これらは何も書かれません。 |
-| `review consolidate [--design] [--iteration N] [--json]` | 既存のレポートを再解析し、統合結果を再構築します。 |
+| `review run [--design] [--request <path>] [--iteration N] [--only <ids/roles>] [--sequential] [--context <text>] [--base <rev>] [--timeout <s>] [--idle-timeout <s>] [--force] [--surrounding none\|enclosing] [--high-risk] [--json]` | スナップショットに対してすべてのレビュアーを実行し、レポートと統合結果を書き込みます。終了コード 1 になるのは、`ok` で戻ったレビュアーが 1 人もいない場合だけです。すべてのレビュアーが失敗した場合や、変更本体が大きすぎてインライン化できずファイルとして渡されたラウンドがこれにあたり、後者はクリーンではなく `partial` として記録されます。ラウンドは `--iteration` が指定されない限りスナップショットから導出され、`review.max_review_iterations` を超えるラウンドは `--force` がない限り拒否されます（終了コード 3）。上限に達したラウンドでも fix と再テストは行われ、拒否されるのは再レビューだけです。最適化ゲートに拒否されたラウンド（テストが失敗として記録されている）も終了コード 3 で終了し、`optimization report` が数えられるよう `refused` として記録されます。`review.context.max_chars`（400,000）を超える変更本体も同様です。何もレビューされず、メッセージはサイズ、上限、上限内に収める方法を示し、ラウンドは `refused_by: "context"` として記録されます。`--force` を付けると構わず実行し、そのラウンドは報告されるすべての場所で `over_budget` として記録されます。本体をプロンプトに入れるかパスとして渡すかは `review.context.inline_chars`（400,000。デフォルトでは同じ数値）で決まり、各レビュアーのエントリには判断に使われた値が記録されます。`budgets.max_runtime_seconds` 分の委譲実行時間を使い切った場合も同様にラウンドは拒否され（パネルはその最大の消費者です）、メッセージはどの予算だったかを示します。`--only` は一部だけを実行しますが、統合はすべてのレビュアーの現在のレポートに対して行うので、何も失われません — ただし、このラウンドで外された `when: high-risk` のレビュアーのレポートは統合されません。`when: high-risk` のレビュアーはそれぞれ、理由（高リスクなパス、`--high-risk`、差分ラウンドでの自身の未解決の accepted の指摘、`--only` での指名）を示す `note:` とともに加えられるか外され、その判断はイベントと `--json` の `optimization.conditional` に `optimization.declared` とともに記録されます。`--high-risk` は変更を高リスクと宣言します。`when: high-risk` のレビュアーを加えてパネルを縮小させませんが、レベル・指摘の上限・ゲートは決して変えないので、red のツリーに対する宣言付きのラウンドは他と同じように拒否されます。`--design` と一緒に使うと終了コード 2 で拒否されます。`review.context.surrounding: enclosing` のときは、固定されたシンボルを `review.context.surrounding_chars` と、diff が両方の上限の下に残す分の範囲で採用し、`Surrounding context:` 行が採用した数と除外した数とその理由を示し、`--json` にはラウンドの `surrounding` レコードが入ります。上限が計測するサイズは、diff に採用したコンテキストを足したものになります。`--surrounding none\|enclosing` は、1 つのスナップショットをコンテキストあり・なしでレビューするために、この run に限って `review.context.surrounding` を上書きします（[周辺コンテキストの効果を測る](limits.md#measuring-what-surrounding-context-does) を参照してください）。設定は変わらず、行は `(--surrounding enclosing for this run)` または `Surrounding context: none (--surrounding none for this run; review.context.surrounding unchanged)` となります。次の場合は何も課金される前に終了コード 2 で拒否されます: `--design` と併用したとき。incremental ラウンド（再レビューのプロンプトには実行時点の accepted findings が載るので、2 本の run はコンテキスト以外でも違ってしまう）。`enclosing` で何も採用されないとき（理由を問わない: `review snapshot --surrounding enclosing` で凍結していないスナップショット、候補なし、ファイル渡し、予算なし）。同じスナップショットに対する 2 本目の run（間に `budget reset` を挟んでも同じ）で、前回の run が組み立てた後に finding のトリアージまたはトリアージのメモが設定されたとき（前のラウンドから引き継がれたものは数えない）。同じスナップショットの再実行はラウンドを進めず、findings の署名を登録しないので、ペアが「何も変えなかった修正」に見えることはありません。1 本目は通常どおり登録します。lineage が変わった後の run や、`--iteration` で別のラウンドを指定した run は再実行ではなく、署名を登録します。run のイベントと `--json` には `measurement` ブロック（`surrounding`、完全な `snapshot` sha256、凍結した `tree`、`head`、`base`、`workflow` ディレクトリ、予算の `epoch`、`rerun`、そして `inputs`: `context_sha256`、`max_findings`、`inline_chars`、`max_chars`、`force`）が加わり、`consolidated.json` には `triage_at_build`（キーごとの各 finding の `triage` と `triage_note`）を持つ `measurement` が加わります。フラグが無ければ、これらは何も書かれません。 |
+| `review consolidate [--design] [--iteration N] [--json]` | 既存のレポートを再解析し、統合結果を再構築します。コードレビューでは、現在のスナップショットに対する直近のラウンドが外した `when: high-risk` のレビュアーのレポートを除くので、そのラウンドが読んだレポートを読みます。 |
 | `review show [--design] [--accepted] [--json]` | 統合されたレビューを表示します。 |
 | `review triage [--design] <ids…> --status <status> [--note <text>]` | トリアージの判断を記録します。判断のたびに、`needs-triage` も含めて指摘に `triage_set_at` を刻むので、指摘を戻したことと一度も判断していないことが区別できます。 |
 | `review fix-brief [--design] [--output <path>]` | fixer 向けに、受け入れた指摘のブリーフを出力します。 |
@@ -273,7 +273,8 @@ echo "explain the failure" | dev-orchestra run orchestrator
 だけです）、すべてのレビュアーが失敗した場合は終了コード 1 です。`review.context.max_chars` は plan
 *と* リクエストを合わせて計測されます。どちらもすべてのレビュアーのプロンプトに入るからです。また、
 ラウンドは plan が固定される前に拒否されるので、前のラウンドのレポートとトリアージは報告のために
-そのまま残ります。最適化ゲートとパネルの削減は適用されず、`--base` は無視されます。
+そのまま残ります。最適化ゲートとパネルの削減は適用されず、`when` にかかわらずすべてのレビュアーが
+走り、`--high-risk` は拒否され（終了コード 2）、`--base` は無視されます。
 `review.design.enabled` が false のときに実行すると、注記を表示したうえで続行します。この設定は
 orchestrator がそのステージを実行するかどうかを示すものであり、あなたが実行してよいかどうかを示すもの
 ではないからです。`references/reviews.md` を参照してください。
@@ -331,6 +332,13 @@ id のまま作られたレポート -- どのレビュアーもレビューを�
 別のもののクリーンなレビューを根拠に `continue` と答え続けてしまいます。
 理由にはサイズと上限が示されます。`--json` では `review.refused_for_size` と
 `design_review.refused_for_size` が同じ 2 つの数値を持ちます。
+
+`Optimization:` 行は次の `review run` が判断するであろう内容で、加える、または外すことになる
+`when: high-risk` のレビュアーをそれぞれ理由とともに示します:
+`; claude-security left out (no high-risk path matched)`、または
+`; claude-security added (has open accepted finding F3)`。`--json` では同じ内容を
+`optimization.conditional` に持ちます。これは予測にすぎません。`status` は設定を検証せずに読むので、
+`review run` が拒否するようなパネルは、ここではなく `config validate` と `doctor` が報告します。
 
 `design_approval` と `Plan approval:` 行は、plan をまだユーザーに提示する必要があるかどうかを示します
 （`references/workflow.md`）。これらは理由ではなく、判定も変えません。それを強制するのは
@@ -512,6 +520,16 @@ Estimated saving from 2 refused round(s): ~137,184 billed tokens.
 An estimate: what a round that did not happen would have cost is
 unknowable, so this is the mean of the 12 that did.
 ```
+
+`when: high-risk` のレビュアーが設定されていると、`panel reduced` の後に `conditional reviewers` の行が
+続きます -- `added x3, left out x7`、どこかのラウンドが宣言されていればさらに
+`declared with --high-risk x2` -- 拒否されたラウンドも含め、すべてのコードラウンドについて数えます。
+`--json` では `conditional`（`added`、`left_out`、`declared_rounds`）です。そうした判断が 1 つもない
+ログでは、この行は表示されません。宣言されたラウンドはエスカレーションではなく、
+`escalated (high risk)` には決して現れません。`optimization.extra_high_risk_paths` のパターンへの一致は
+エスカレーションであり、そのパターンも他と同じように一覧されます。すべてのラウンドがエスカレーション
+された場合の助言は、`optimization.high_risk_paths` と `optimization.extra_high_risk_paths` の両方を
+挙げます。
 
 `Reviewer runs:` より上はすべてコードレビューだけのものです。`review.design` のラウンドは plan に対して
 レビューされ、plan には計測する diff もゲートの判断に使うテスト結果もないので、それらについてはどの

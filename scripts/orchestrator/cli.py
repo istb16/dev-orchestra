@@ -646,8 +646,9 @@ def cmd_reviewer_list(args: argparse.Namespace) -> int:
         return 0
     for index, reviewer in enumerate(reviewers, 1):
         model = reviewer.get("model") or {}
+        when = opt_mod.reviewer_condition(reviewer)
         _out(
-            "%d. %-18s %-8s %-18s %-8s %s"
+            "%d. %-18s %-8s %-18s %-8s %s%s"
             % (
                 index,
                 reviewer.get("id"),
@@ -655,6 +656,7 @@ def cmd_reviewer_list(args: argparse.Namespace) -> int:
                 model.get("family", "default"),
                 model.get("version", "latest"),
                 reviewer.get("role", "general"),
+                "" if when == opt_mod.WHEN_ALWAYS else " (when: %s)" % when,
             )
         )
     return 0
@@ -676,6 +678,7 @@ def cmd_reviewer_add(args: argparse.Namespace) -> int:
         role,
         version="pinned" if args.pin else "latest",
         model_id=args.pin,
+        when=args.when,
     )
     try:
         config_mod.add_reviewer(layer, reviewer)
@@ -693,14 +696,35 @@ def cmd_reviewer_add(args: argparse.Namespace) -> int:
     return 0
 
 
+def _reviewer_problems(layer: Dict[str, Any]) -> List[str]:
+    """The ``reviewers`` problems of a config layer, merged over the defaults."""
+    problems = config_mod.validate(config_mod.deep_merge(config_mod.default_config(), layer))
+    return [p for p in problems if p.startswith("reviewers")]
+
+
+def _unindexed(problem: str) -> str:
+    """A problem without its list indices, which a removal shifts."""
+    return re.sub(r"\[\d+\]", "[]", problem)
+
+
 def cmd_reviewer_remove(args: argparse.Namespace) -> int:
     scope = _resolve_scope(args.scope, args.cwd)
     path, layer = _read_layer(scope, args.cwd)
     _seed_list(layer, "reviewers", _layer_base(scope, args.cwd))
+    before = {_unindexed(p) for p in _reviewer_problems(layer)}
     try:
         _, removed = config_mod.remove_reviewer(layer, args.selector)
     except config_mod.ConfigError as exc:
         _err(str(exc))
+        return 2
+    # The same check add and set make: removing the last reviewer that always
+    # runs would leave a panel that a quiet round could not be reviewed by.
+    # Only what the removal itself introduced is refused, so removing a broken
+    # reviewer stays a way out of a panel that has another one.
+    problems = [p for p in _reviewer_problems(layer) if _unindexed(p) not in before]
+    if problems:
+        for problem in problems:
+            _err(problem)
         return 2
     config_mod.write_config_file(path, layer, scope)
     _out("Removed reviewer %s from %s" % (removed.get("id"), path))
@@ -728,6 +752,10 @@ def cmd_reviewer_set(args: argparse.Namespace) -> int:
         reviewer["model"] = model
     if args.id:
         reviewer["id"] = args.id
+    if args.when == opt_mod.WHEN_ALWAYS:
+        reviewer.pop("when", None)
+    elif args.when:
+        reviewer["when"] = args.when
     layer["reviewers"][index] = reviewer
     problems = [
         p
@@ -1958,7 +1986,9 @@ def _run_design_review(args: argparse.Namespace, loaded: config_mod.LoadedConfig
 
     # No gate and no panel reduction. There is no test result to judge a plan
     # by and no diff to measure, and a design decision is precisely where
-    # cross-model disagreement earns its cost -- so the whole panel runs.
+    # cross-model disagreement earns its cost -- so the whole panel runs. A
+    # reviewer's `when` is ignored here too: a plan has no paths to judge, and
+    # the design stage is where the specialists were measured to pay off.
     max_findings = opt_mod.findings_cap(loaded.optimization_settings(), settings)
 
     batch_timeout = args.timeout or int(settings.get("timeout_seconds", 1800))
@@ -2083,6 +2113,10 @@ def cmd_review_run(args: argparse.Namespace) -> int:
     if args.design and override:
         _err("--surrounding applies to the code review only: a design round carries no surrounding context.")
         return 2
+    declared = bool(getattr(args, "high_risk", False))
+    if args.design and declared:
+        _err("--high-risk applies to the code review only: a design round runs every configured reviewer.")
+        return 2
     if args.design:
         return _run_design_review(args, loaded)
     workspace = _workspace(args)
@@ -2161,9 +2195,23 @@ def cmd_review_run(args: argparse.Namespace) -> int:
         workspace.last_status("test"),
         len(reviewers),
         reviewed_files=len(meta.get("files") or []),
+        panel=reviewers,
+        declared=declared,
+        carried=review_mod.carried_findings(workspace, meta),
+        only=bool(args.only),
     )
     if plan.escalated:
         _err("note: %s" % plan.escalation_note())
+    for line in plan.conditional_notes():
+        _err("note: %s" % line)
+    # Under --only every named reviewer runs, and its record says so.
+    # Otherwise a conditional reviewer that did not qualify sits the round
+    # out, and is left out of its consolidation too: a report it wrote on an
+    # earlier run of this snapshot must not be rebuilt into a round its own
+    # event says it sat out.
+    excluded = {str(record["id"]) for record in plan.conditional if not record["runs"]}
+    if not args.only:
+        reviewers = [r for r in reviewers if opt_mod.qualifies(r, plan.conditional)]
     if plan.gate == opt_mod.GATE_REFUSE and not args.force:
         # Written down even though nothing ran, and *because* nothing ran: a
         # skipped round is the largest thing this level ever saves, and a
@@ -2304,14 +2352,17 @@ def cmd_review_run(args: argparse.Namespace) -> int:
     # Consolidate from every configured reviewer's report, not only the ones
     # that just ran: with --only that would otherwise overwrite the report with
     # a subset and discard the other reviewers' findings and triage. Reports
-    # from an earlier snapshot are skipped rather than mixed in.
+    # from an earlier snapshot are skipped rather than mixed in, and so are
+    # those of a conditional reviewer this round left out.
     stamp = review_mod.current_snapshot_stamp(workspace)
-    findings, stale = review_mod.read_reports(workspace, [str(r.get("id")) for r in configured], stamp)
+    findings, stale = review_mod.read_reports(
+        workspace, [str(r.get("id")) for r in configured if str(r.get("id")) not in excluded], stamp
+    )
     # Passed whether or not anyone returned: nothing is approved over a code
     # round, so the id only has to name the round this report was built for.
     data = review_mod.build_consolidation(
         workspace,
-        _merge_runs(workspace, run_dicts),
+        [entry for entry in _merge_runs(workspace, run_dicts) if str(entry.get("id")) not in excluded],
         findings,
         iteration,
         lineage,
@@ -2415,16 +2466,49 @@ def cmd_review_run(args: argparse.Namespace) -> int:
     return 0
 
 
+def _condition_excluded(workspace: ws.Workspace) -> set:
+    """The conditional reviewers the last code round on this snapshot left out.
+
+    Read off that round's own event, so a re-consolidation reads the reports
+    the round did and no others: a left-out reviewer's report from an earlier
+    run of the same snapshot is not brought back by rebuilding.
+    """
+    meta = ws.read_json(workspace.snapshot_meta_path, {}) or {}
+    round_id = str(meta.get("round_id") or "")
+    if not round_id:
+        return set()
+    events = workspace.read_state().get("events") or []
+    for event in reversed(events if isinstance(events, list) else []):
+        if not isinstance(event, dict) or event.get("stage") != "review" or event.get("status") != "ok":
+            continue
+        if str(event.get("round_id") or "") != round_id:
+            continue
+        plan = event.get("optimization") if isinstance(event.get("optimization"), dict) else {}
+        return {
+            str(record.get("id"))
+            for record in plan.get("conditional") or []
+            if isinstance(record, dict) and not record.get("runs")
+        }
+    return set()
+
+
 def cmd_review_consolidate(args: argparse.Namespace) -> int:
     loaded = config_mod.load(args.cwd, validate_result=False)
     workspace = _review_workspace(args)
     reviewer_ids = [str(r.get("id")) for r in loaded.reviewers()]
+    excluded: set = set()
+    if not getattr(args, "design", False):
+        excluded = _condition_excluded(workspace)
+        reviewer_ids = [name for name in reviewer_ids if name not in excluded]
     stamp = review_mod.current_snapshot_stamp(workspace)
     findings, stale = review_mod.read_reports(workspace, reviewer_ids, stamp)
     previous = ws.read_json(workspace.consolidated_json_path, {}) or {}
+    # The same reviewers left out of the table as out of the findings, or one
+    # the round sat out would be listed and counted again.
+    entries = [entry for entry in previous.get("reviewers", []) if str(entry.get("id")) not in excluded]
     lineage = _lineage(args, workspace)
     data = review_mod.build_consolidation(
-        workspace, previous.get("reviewers", []), findings, _iteration(args, workspace, lineage), lineage
+        workspace, entries, findings, _iteration(args, workspace, lineage), lineage
     )
     for reviewer_id in stale:
         _err("note: %s's report predates the current snapshot and was ignored" % reviewer_id)
@@ -3230,14 +3314,22 @@ def cmd_optimization_report(args: argparse.Namespace) -> int:
         _out(_OPT_ROW % ("levels in force", _counts(report["levels"])))
         _out(_OPT_ROW % ("gate verdicts", _counts(report["gates"])))
         _out(_OPT_ROW % ("panel reduced", report["panel_reduced"]))
+        conditional = report.get("conditional") or {}
+        if any(conditional.values()):
+            # Only once a log holds a conditional decision: a panel without
+            # one would print a row of zeroes about a setting it never used.
+            row = "added x%d, left out x%d" % (conditional.get("added", 0), conditional.get("left_out", 0))
+            if conditional.get("declared_rounds"):
+                row += ", declared with --high-risk x%d" % conditional["declared_rounds"]
+            _out(_OPT_ROW % ("conditional reviewers", row))
         _out(_OPT_ROW % ("escalated (high risk)", report["escalated"]))
         if report["escalation_patterns"]:
             _out(_OPT_ROW % ("  caused by", _counts(report["escalation_patterns"])))
         if report["always_escalated"]:
             _out(
                 "  every round escalated, so the level you configured never applied. "
-                "Narrow optimization.high_risk_paths, or accept that this repository "
-                "reviews at quality."
+                "Narrow optimization.high_risk_paths and optimization.extra_high_risk_paths, "
+                "or accept that this repository reviews at quality."
             )
         _out("")
     total_runs = report["reviewer_runs"] + report["design_reviewer_runs"]
@@ -4319,6 +4411,8 @@ def cmd_status(args: argparse.Namespace) -> int:
         workspace.last_status("test"),
         len(loaded.reviewers()),
         reviewed_files=len(meta.get("files") or []),
+        panel=loaded.reviewers(),
+        carried=review_mod.carried_findings(workspace, meta),
     )
     if plan.gate == opt_mod.GATE_REFUSE:
         reasons.append("the last recorded test run failed; fix it before reviewing")
@@ -4435,6 +4529,8 @@ def cmd_status(args: argparse.Namespace) -> int:
     line += ", tests %s" % (plan.test_status or "not recorded")
     if plan.reviewer_limit is not None:
         line += ", %d reviewer" % plan.reviewer_limit
+    for record in plan.conditional:
+        line += "; %s %s (%s)" % (record["id"], "added" if record["runs"] else "left out", record["reason"])
     _out(line)
     tokens = summary["tokens"]["totals"]
     if tokens["runs"]:
@@ -4758,6 +4854,12 @@ def build_parser() -> argparse.ArgumentParser:
     r_add.add_argument("--role", default="general")
     r_add.add_argument("--id", default=None)
     r_add.add_argument("--pin", default=None, help="pin an exact model id instead of tracking latest")
+    r_add.add_argument(
+        "--when",
+        choices=list(opt_mod.REVIEWER_CONDITIONS),
+        default=None,
+        help="when it runs on a code review (default: always; design reviews run every reviewer)",
+    )
     r_add.add_argument("--scope", choices=["global", "project"], default=None)
     r_add.set_defaults(func=cmd_reviewer_add)
 
@@ -4773,6 +4875,7 @@ def build_parser() -> argparse.ArgumentParser:
     r_set.add_argument("--role", default=None)
     r_set.add_argument("--id", default=None)
     r_set.add_argument("--pin", default=None)
+    r_set.add_argument("--when", choices=list(opt_mod.REVIEWER_CONDITIONS), default=None)
     r_set.add_argument("--scope", choices=["global", "project"], default=None)
     r_set.set_defaults(func=cmd_reviewer_set)
 
@@ -4891,6 +4994,11 @@ def build_parser() -> argparse.ArgumentParser:
         choices=context_mod.SURROUNDING_MODES,
         default=None,
         help="override review.context.surrounding for this run only",
+    )
+    review_run.add_argument(
+        "--high-risk",
+        action="store_true",
+        help="declare the change high-risk: adds when: high-risk reviewers; level and gate are unchanged",
     )
     review_run.add_argument("--json", action="store_true")
     review_run.set_defaults(func=cmd_review_run)

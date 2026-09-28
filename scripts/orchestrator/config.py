@@ -203,6 +203,10 @@ def default_config() -> Dict[str, Any]:
         "optimization": {
             "level": _optimization().DEFAULT_LEVEL,
             "high_risk_paths": list(_optimization().DEFAULT_HIGH_RISK_PATHS),
+            # Added to high_risk_paths rather than replacing it, so a
+            # repository can name the one path the defaults miss. Its hits
+            # escalate exactly as the others do.
+            "extra_high_risk_paths": [],
             "low_risk_max_files": _optimization().DEFAULT_LOW_RISK_MAX_FILES,
             "low_risk_max_lines": _optimization().DEFAULT_LOW_RISK_MAX_LINES,
         },
@@ -699,6 +703,14 @@ def validate(data: Dict[str, Any], known_providers: Optional[List[str]] = None) 
             if not isinstance(role_name, str) or not role_name.strip():
                 problems.append("%s: role must be a non-empty string" % label)
             problems.extend("%s: %s" % (label, msg) for msg in _validate_role(reviewer, providers))
+            when = reviewer.get("when")
+            if when is not None and (
+                not isinstance(when, str) or when.strip().lower() not in _optimization().REVIEWER_CONDITIONS
+            ):
+                problems.append(
+                    "%s.when: must be one of %s" % (label, ", ".join(_optimization().REVIEWER_CONDITIONS))
+                )
+        problems.extend(_validate_conditions(reviewers, data.get("optimization")))
 
     review = data.get("review")
     if review is not None:
@@ -810,6 +822,29 @@ def validate(data: Dict[str, Any], known_providers: Optional[List[str]] = None) 
     return problems
 
 
+def _validate_conditions(reviewers: List[Any], optimization: Any) -> List[str]:
+    """What a panel of conditional reviewers needs to be able to run at all.
+
+    One reviewer that always runs, or a round that matched nothing would have
+    nobody to review it; and a pattern for the conditional ones to be judged
+    by, or they would never run. ``review run`` validates before it reads a
+    snapshot, so either mistake stops there rather than inside a round.
+    """
+    opt = _optimization()
+    entries = [(index, reviewer) for index, reviewer in enumerate(reviewers) if isinstance(reviewer, dict)]
+    always = opt.WHEN_ALWAYS
+    conditional = [index for index, reviewer in entries if opt.reviewer_condition(reviewer) != always]
+    problems: List[str] = []
+    if entries and len(conditional) == len(entries):
+        problems.append("reviewers: at least one reviewer must run always; every reviewer is when: high-risk")
+    if conditional and isinstance(optimization, dict) and not opt.risk_patterns(optimization):
+        problems.append(
+            "optimization.high_risk_paths: no pattern in force, but reviewers[%d] is when: high-risk "
+            "and would never run; add patterns to high_risk_paths or extra_high_risk_paths" % conditional[0]
+        )
+    return problems
+
+
 def _validate_optimization(data: Any) -> List[str]:
     problems: List[str] = []
     if not isinstance(data, dict):
@@ -818,17 +853,18 @@ def _validate_optimization(data: Any) -> List[str]:
     level = data.get("level")
     if level is not None and (not isinstance(level, str) or level.strip().lower() not in levels):
         problems.append("optimization.level: must be one of %s" % ", ".join(sorted(levels)))
-    patterns = data.get("high_risk_paths")
-    if patterns is not None:
+    for key in ("high_risk_paths", "extra_high_risk_paths"):
+        patterns = data.get(key)
+        if patterns is None:
+            continue
         if not isinstance(patterns, list):
-            problems.append("optimization.high_risk_paths: must be a list of glob patterns (use [] for none)")
-        else:
-            for index, pattern in enumerate(patterns):
-                if not isinstance(pattern, str) or not pattern.strip():
-                    problems.append(
-                        "optimization.high_risk_paths[%d]: must be a non-empty string (got %r)"
-                        % (index, pattern)
-                    )
+            problems.append("optimization.%s: must be a list of glob patterns (use [] for none)" % key)
+            continue
+        for index, pattern in enumerate(patterns):
+            if not isinstance(pattern, str) or not pattern.strip():
+                problems.append(
+                    "optimization.%s[%d]: must be a non-empty string (got %r)" % (key, index, pattern)
+                )
     for key in ("low_risk_max_files", "low_risk_max_lines"):
         value = data.get(key)
         if value is not None and (not isinstance(value, int) or isinstance(value, bool) or value < 0):
@@ -1160,6 +1196,7 @@ def make_reviewer(
     role: str = "general",
     version: str = "latest",
     model_id: Optional[str] = None,
+    when: Optional[str] = None,
 ) -> Dict[str, Any]:
     reviewer: Dict[str, Any] = {"id": reviewer_id, "provider": provider}
     model: Dict[str, Any] = {}
@@ -1170,6 +1207,10 @@ def make_reviewer(
         model["id"] = model_id
     reviewer["model"] = model
     reviewer["role"] = role
+    # Written only when it says something, so a panel with no conditional
+    # reviewer stays byte-identical to the one the defaults describe.
+    if when and when != _optimization().WHEN_ALWAYS:
+        reviewer["when"] = when
     return reviewer
 
 

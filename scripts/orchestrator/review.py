@@ -645,11 +645,10 @@ def render_round_context(workspace: ws.Workspace, meta: Dict[str, Any]) -> str:
     """
     if not meta.get("incremental_from"):
         return ""
-    consolidated = ws.read_json(workspace.consolidated_json_path, {}) or {}
     lines = ["Re-review. The diff above is the fix only, not the whole change."]
     if meta.get("full_diff"):
         lines.append("Whole change frozen at %s -- read it if you need the context." % meta["full_diff"])
-    accepted = accepted_findings(consolidated)
+    accepted = carried_findings(workspace, meta)
     if accepted:
         lines.append("")
         lines.append("The fix was meant to address:")
@@ -669,6 +668,25 @@ def render_round_context(workspace: ws.Workspace, meta: Dict[str, Any]) -> str:
             "Do not assume a listed item was real."
         )
     return "\n".join(lines)
+
+
+def carried_findings(workspace: ws.Workspace, meta: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """The accepted findings a round still has open; empty when it has none.
+
+    The accepted findings of the live consolidated report, on a snapshot with
+    ``incremental_from`` set -- the set ``render_round_context`` hands every
+    reviewer -- or on a rerun of the snapshot that report was built for,
+    where nothing has changed that could have fixed them. A conditional
+    reviewer whose id is in one of these findings' ``reported_by`` joins the
+    round to re-check its own finding, so a rerun that would otherwise leave
+    it out cannot drop the finding from the report unfixed.
+    """
+    consolidated = ws.read_json(workspace.consolidated_json_path, {}) or {}
+    if not meta.get("incremental_from"):
+        sha = str(meta.get("sha256") or "")
+        if not sha or str((consolidated.get("snapshot") or {}).get("sha256") or "") != sha:
+            return []
+    return accepted_findings(consolidated)
 
 
 def render_design_round_context(workspace: ws.Workspace, meta: Dict[str, Any]) -> str:

@@ -365,6 +365,149 @@ class TestTheFindingsCap(unittest.TestCase):
         self.assertEqual(decide(paths=["auth.py"], level="aggressive").max_findings, 10)
 
 
+# --------------------------------------------------------------------------- conditional reviewers
+
+
+GEN = {"id": "gen", "role": "general"}
+SEC = {"id": "sec", "role": "security", "when": "high-risk"}
+
+
+def decide_panel(panel=(GEN, SEC), paths=("app.py",), lines=10, test_status="ok", **keywords):
+    settings = dict(config_mod.default_config()["optimization"])
+    review = dict(config_mod.default_config()["review"])
+    count = len(panel)
+    return opt.decide(settings, review, list(paths), lines, test_status, count, panel=list(panel), **keywords)
+
+
+class TestConditionRecords(unittest.TestCase):
+    """One record per conditional reviewer, with the first reason that applies."""
+
+    def records(self, hits=(), **keywords):
+        return opt.condition_reviewers([GEN, SEC], list(hits), **keywords)
+
+    def test_an_unconditional_reviewer_gets_no_record(self):
+        self.assertEqual([record["id"] for record in self.records()], ["sec"])
+
+    def test_nothing_matched_leaves_it_out(self):
+        self.assertEqual(
+            self.records(),
+            [{"id": "sec", "when": "high-risk", "runs": False, "reason": "no high-risk path matched"}],
+        )
+
+    def test_a_hit_names_the_path_and_the_pattern(self):
+        record = self.records([("auth.py", "*auth*"), ("db/1.sql", "*.sql")])[0]
+        self.assertTrue(record["runs"])
+        self.assertEqual(record["reason"], "auth.py matches *auth* (and 1 more)")
+
+    def test_a_declaration_adds_it(self):
+        self.assertEqual(self.records(declared=True)[0]["reason"], "declared with --high-risk")
+
+    def test_its_own_carried_finding_adds_it_lowest_id_first(self):
+        carried = [{"id": "F12", "reported_by": ["sec"]}, {"id": "F3", "reported_by": ["gen", "sec"]}]
+        record = self.records(carried=carried)[0]
+        self.assertTrue(record["runs"])
+        self.assertEqual(record["reason"], "has open accepted finding F3 (and 1 more)")
+
+    def test_another_reviewers_carried_finding_does_not(self):
+        self.assertFalse(self.records(carried=[{"id": "F1", "reported_by": ["gen"]}])[0]["runs"])
+
+    def test_only_naming_it_runs_it(self):
+        self.assertEqual(self.records(only=True)[0]["reason"], "named by --only")
+
+    def test_the_reasons_are_tried_in_order(self):
+        carried = [{"id": "F1", "reported_by": ["sec"]}]
+
+        def reason(**keywords):
+            return self.records(**keywords)[0]["reason"]
+
+        everything = {"declared": True, "carried": carried, "only": True}
+        self.assertEqual(reason(hits=[("auth.py", "*auth*")], **everything), "auth.py matches *auth*")
+        self.assertEqual(reason(**everything), "declared with --high-risk")
+        self.assertEqual(reason(carried=carried, only=True), "has open accepted finding F1")
+
+    def test_qualifies_reads_the_record(self):
+        left_out = self.records()
+        self.assertTrue(opt.qualifies(GEN, left_out))
+        self.assertFalse(opt.qualifies(SEC, left_out))
+        self.assertTrue(opt.qualifies(SEC, self.records(declared=True)))
+
+    def test_an_unknown_condition_reads_as_always(self):
+        self.assertEqual(opt.reviewer_condition({"when": "sometimes"}), "always")
+        self.assertEqual(opt.reviewer_condition({"when": " High-Risk"}), "high-risk")
+
+
+class TestDecidingTheConditionalPanel(unittest.TestCase):
+    def test_the_count_is_of_the_reviewers_that_would_run(self):
+        """Two configured, one of them left out: one reviewer runs, so there
+        is no panel for the low-risk cut to reduce."""
+        self.assertEqual(decide(reviewers=2).reviewer_limit, 1)
+        plan = decide_panel()
+        self.assertIsNone(plan.reviewer_limit)
+        self.assertFalse(plan.conditional[0]["runs"])
+
+    def test_the_cut_still_applies_among_the_unconditional_ones(self):
+        plan = decide_panel(panel=(GEN, dict(GEN, id="gen2"), SEC))
+        self.assertEqual(plan.reviewer_limit, 1)
+
+    def test_a_declaration_moves_membership_and_nothing_else(self):
+        """A flag is a claim, not evidence: it must not move the level, and
+        with it the gate that lets a red tree through."""
+        baseline = decide_panel(test_status="failed")
+        declared = decide_panel(test_status="failed", declared=True)
+        self.assertEqual(declared.level, baseline.level)
+        self.assertEqual(declared.gate, opt.GATE_REFUSE)
+        self.assertEqual(declared.max_findings, baseline.max_findings)
+        self.assertEqual(declared.high_risk, [])
+        self.assertFalse(declared.escalated)
+        self.assertTrue(declared.declared)
+        self.assertTrue(declared.conditional[0]["runs"])
+
+    def test_a_declaration_keeps_the_panel_whole(self):
+        self.assertEqual(decide(reviewers=2).reviewer_limit, 1)
+        self.assertIsNone(decide_panel(panel=(GEN, dict(GEN, id="gen2")), declared=True).reviewer_limit)
+
+    def test_a_carried_finding_keeps_the_panel_whole_on_a_small_change(self):
+        """It does not move the level, so at `balanced` the cut would drop the
+        very reviewer that just qualified."""
+        plan = decide_panel(carried=[{"id": "F1", "reported_by": ["sec"]}])
+        self.assertEqual(plan.level, "balanced")
+        self.assertIsNone(plan.reviewer_limit)
+        self.assertEqual(plan.conditional[0]["reason"], "has open accepted finding F1")
+
+    def test_a_high_risk_path_adds_it_at_quality(self):
+        plan = decide_panel(paths=["auth.py"])
+        self.assertEqual(plan.level, "quality")
+        self.assertTrue(plan.conditional[0]["runs"])
+
+    def test_an_extra_pattern_escalates_like_any_other(self):
+        settings = dict(config_mod.default_config()["optimization"], extra_high_risk_paths=["*/providers/*"])
+        review = dict(config_mod.default_config()["review"])
+        plan = opt.decide(settings, review, ["lib/providers/x.py"], 1, "failed", 2, panel=[GEN, SEC])
+        self.assertEqual(plan.level, "quality")
+        self.assertEqual(plan.gate, opt.GATE_ALLOW)
+        self.assertEqual(plan.high_risk, [("lib/providers/x.py", "*/providers/*")])
+
+    def test_the_decisions_are_recorded_and_worded(self):
+        plan = decide_panel()
+        self.assertEqual(plan.to_dict()["conditional"], plan.conditional)
+        self.assertIs(plan.to_dict()["declared"], False)
+        left_out = plan.conditional_notes()
+        self.assertEqual(left_out, ["sec (when: high-risk) left out: no high-risk path matched"])
+        added = decide_panel(paths=["auth.py"]).conditional_notes()
+        self.assertEqual(added, ["sec (when: high-risk) added: auth.py matches *auth*"])
+
+    def test_without_a_panel_nothing_changes(self):
+        """Every caller that passes a count keeps the behaviour it had."""
+        plan = decide(reviewers=2)
+        self.assertEqual((plan.conditional, plan.declared), ([], False))
+        self.assertEqual(plan.to_dict()["conditional"], [])
+
+    def test_a_panel_with_no_conditional_reviewer_decides_as_before(self):
+        plan = decide_panel(panel=(GEN, dict(GEN, id="gen2")))
+        self.assertEqual(plan.reviewer_limit, 1)
+        self.assertEqual(plan.conditional_notes(), [])
+
+
 # --------------------------------------------------------------------------- config
 
 
@@ -592,6 +735,230 @@ class TestThePanelInThePipeline(TestTheGateInThePipeline):
         reviews = [e for e in events if e.get("stage") == "review" and "optimization" in e]
         self.assertTrue(reviews)
         self.assertEqual(reviews[-1]["optimization"]["reviewer_limit"], 1)
+
+
+@unittest.skipUnless(has_git(), "git is required")
+class TestConditionalReviewersInThePipeline(IsolatedCase):
+    """`gen` always runs; `sec` is `when: high-risk`. Every change here is
+    under the low-risk thresholds, at `balanced`."""
+
+    def setUp(self):
+        super().setUp()
+        self.init_git_repo()
+        self.write("app.py", "def add(a, b):\n    return a + b\n")
+        self.commit_all("init")
+        self.write("app.py", "def add(a, b):\n    return a - b\n")
+
+        self.mock_dir = os.path.join(self.tmp, "mock")
+        os.makedirs(self.mock_dir)
+        self.answer(FINDING)
+        os.environ["DEV_ORCHESTRA_MOCK_DIR"] = self.mock_dir
+
+        run_cli("config", "setup", "--defaults")
+        run_cli("reviewer", "remove", "claude-general")
+        run_cli("reviewer", "remove", "codex-general")
+        run_cli("reviewer", "add", "--provider", "mock", "--id", "gen", "--role", "general")
+        conditional = ("--role", "security", "--when", "high-risk")
+        run_cli("reviewer", "add", "--provider", "mock", "--id", "sec", *conditional)
+        self.workspace = self.cli_workspace()
+
+    def answer(self, text):
+        with open(os.path.join(self.mock_dir, "review.txt"), "w", encoding="utf-8") as handle:
+            handle.write(text)
+
+    def run_json(self, *extra):
+        code, out, err = run_cli("review", "run", "--json", *extra)
+        return code, json.loads(out), err
+
+    def last_review(self):
+        events = ws.read_json(self.workspace.state_path, {}).get("events") or []
+        return [e for e in events if e.get("stage") == "review" and "optimization" in e][-1]
+
+    def consolidated(self):
+        return json.loads(run_cli("review", "show", "--json")[1])
+
+    def first_round_by_declaration(self):
+        """Round 1 declared high-risk, so `sec` runs and reports F1."""
+        run_cli("state", "record", "test", "ok")
+        run_cli("review", "snapshot")
+        self.assertEqual(self.run_json("--high-risk")[0], 0)
+        self.assertIn("sec", self.consolidated()["findings"][0]["reported_by"])
+
+    def fix_and_resnapshot(self):
+        self.write("app.py", "def add(a, b):\n    return b + a\n")
+        run_cli("review", "snapshot")
+        return ws.read_json(self.workspace.snapshot_meta_path, {})
+
+    def test_a_quiet_change_leaves_it_out_and_says_so(self):
+        run_cli("state", "record", "test", "ok")
+        run_cli("review", "snapshot")
+        code, out, err = run_cli("review", "run")
+        self.assertEqual(code, 0)
+        self.assertIn("1 successful", out)
+        self.assertIn("sec (when: high-risk) left out: no high-risk path matched", err)
+        event = self.last_review()
+        self.assertEqual([r["id"] for r in event["reviewers"]], ["gen"])
+        self.assertEqual(
+            event["optimization"]["conditional"],
+            [{"id": "sec", "when": "high-risk", "runs": False, "reason": "no high-risk path matched"}],
+        )
+
+    def test_a_high_risk_path_adds_it(self):
+        self.write("auth.py", "def check():\n    return True\n")
+        run_cli("state", "record", "test", "ok")
+        run_cli("review", "snapshot")
+        code, out, err = run_cli("review", "run")
+        self.assertEqual(code, 0)
+        self.assertIn("2 successful", out)
+        self.assertIn("sec (when: high-risk) added: auth.py matches *auth*", err)
+        self.assertEqual(self.last_review()["optimization"]["level"], "quality")
+
+    def test_only_naming_it_runs_it(self):
+        run_cli("state", "record", "test", "ok")
+        run_cli("review", "snapshot")
+        _, payload, _ = self.run_json("--only", "sec")
+        self.assertEqual([r["id"] for r in payload["reviewers"]], ["sec"])
+        record = payload["optimization"]["conditional"][0]
+        self.assertEqual((record["runs"], record["reason"]), (True, "named by --only"))
+
+    def test_a_declaration_adds_it_without_escalating(self):
+        run_cli("state", "record", "test", "ok")
+        run_cli("review", "snapshot")
+        _, payload, _ = self.run_json("--high-risk")
+        self.assertEqual(sorted(r["id"] for r in payload["reviewers"]), ["gen", "sec"])
+        plan = payload["optimization"]
+        self.assertEqual(plan["level"], "balanced")
+        self.assertIsNone(plan["reviewer_limit"])
+        self.assertIs(plan["declared"], True)
+        self.assertEqual(plan["high_risk"], [])
+
+    def test_a_declared_round_on_a_red_tree_is_still_refused(self):
+        run_cli("state", "record", "test", "failed")
+        run_cli("review", "snapshot")
+        code, _, _ = run_cli("review", "run", "--high-risk")
+        self.assertEqual(code, ledger_mod.EXIT_BUDGET_EXHAUSTED)
+        event = self.last_review()
+        self.assertEqual((event["status"], event["refused_by"]), (opt.REFUSED, "gate"))
+        self.assertIs(event["optimization"]["declared"], True)
+
+    def test_an_open_accepted_finding_brings_it_back(self):
+        self.first_round_by_declaration()
+        run_cli("review", "triage", "F1", "--status", "accepted")
+        self.assertTrue(self.fix_and_resnapshot()["incremental_from"])
+        _, payload, err = self.run_json()
+        self.assertIn("sec", [r["id"] for r in payload["reviewers"]])
+        self.assertIsNone(payload["optimization"]["reviewer_limit"])
+        self.assertIn("sec (when: high-risk) added: has open accepted finding F1", err)
+
+    def test_a_budget_reset_changes_nothing(self):
+        """The set is the live report's accepted findings, not a lineage."""
+        self.first_round_by_declaration()
+        run_cli("review", "triage", "F1", "--status", "accepted")
+        self.fix_and_resnapshot()
+        run_cli("budget", "reset")
+        _, payload, _ = self.run_json()
+        self.assertIn("sec", [r["id"] for r in payload["reviewers"]])
+        self.assertEqual(payload["optimization"]["conditional"][0]["reason"], "has open accepted finding F1")
+
+    def test_a_rejected_finding_does_not(self):
+        self.first_round_by_declaration()
+        run_cli("review", "triage", "F1", "--status", "rejected")
+        self.assertFalse(self.fix_and_resnapshot().get("incremental_from"))
+        _, payload, _ = self.run_json()
+        self.assertEqual([r["id"] for r in payload["reviewers"]], ["gen"])
+        self.assertFalse(payload["optimization"]["conditional"][0]["runs"])
+
+    def test_a_rerun_keeps_it_for_its_accepted_finding(self):
+        """Nothing changed that could have fixed the finding, so a rerun of the
+        same snapshot brings its reviewer back rather than dropping it."""
+        self.first_round_by_declaration()
+        run_cli("review", "triage", "F1", "--status", "accepted")
+        code, _, err = run_cli("review", "run")
+        self.assertEqual(code, 0)
+        self.assertIn("sec (when: high-risk) added: has open accepted finding F1", err)
+        data = self.consolidated()
+        self.assertEqual(sorted(entry["id"] for entry in data["reviewers"]), ["gen", "sec"])
+        self.assertEqual([f["triage"] for f in data["findings"]], ["accepted"])
+        self.assertIn("sec", data["findings"][0]["reported_by"])
+
+        run_cli("review", "consolidate")
+        self.assertEqual([f["triage"] for f in self.consolidated()["findings"]], ["accepted"])
+
+    def test_a_rerun_that_leaves_it_out_leaves_its_report_out(self):
+        """With its finding rejected it does not qualify, and its report of the
+        same snapshot, still on disk, must not be rebuilt into a round its own
+        event says it sat out."""
+        self.first_round_by_declaration()
+        run_cli("review", "triage", "F1", "--status", "rejected")
+        self.answer("NO_FINDINGS\n")
+        code, _, err = run_cli("review", "run")
+        self.assertEqual(code, 0)
+        self.assertIn("sec (when: high-risk) left out", err)
+        self.assertNotIn("sec has no report", err)
+        data = self.consolidated()
+        self.assertEqual(data["findings"], [])
+        self.assertEqual([entry["id"] for entry in data["reviewers"]], ["gen"])
+
+        code, _, err = run_cli("review", "consolidate")
+        self.assertEqual(code, 0)
+        self.assertNotIn("predates", err)
+        self.assertEqual(self.consolidated()["findings"], [])
+
+        self.answer(FINDING)
+        run_cli("review", "run", "--only", "sec")
+        data = self.consolidated()
+        self.assertIn("sec", [entry["id"] for entry in data["reviewers"]])
+        self.assertEqual([f["reported_by"] for f in data["findings"]], [["sec"]])
+
+    def test_reconsolidating_leaves_it_out_of_the_reviewer_table(self):
+        self.first_round_by_declaration()
+        run_cli("review", "triage", "F1", "--status", "rejected")
+        run_cli("review", "run")
+        path = self.workspace.consolidated_json_path
+        data = ws.read_json(path, {})
+        data["reviewers"].append(dict(data["reviewers"][0], id="sec"))
+        ws.write_json(path, data)
+
+        self.assertEqual(run_cli("review", "consolidate")[0], 0)
+        self.assertEqual([entry["id"] for entry in self.consolidated()["reviewers"]], ["gen"])
+
+    def test_a_panel_of_conditional_reviewers_never_reaches_a_round(self):
+        self.write(
+            ".dev-orchestra.yaml",
+            "version: 1\nreviewers:\n"
+            "  - id: sec\n    provider: mock\n    role: security\n    when: high-risk\n"
+            "  - id: perf\n    provider: mock\n    role: performance\n    when: high-risk\n",
+        )
+        err = io.StringIO()
+        with redirect_stdout(io.StringIO()), redirect_stderr(err), self.assertRaises(SystemExit) as raised:
+            cli.main(["review", "run"])
+        self.assertEqual(raised.exception.code, 2)
+        self.assertIn("at least one reviewer must run always", err.getvalue())
+        self.assertFalse(os.path.isfile(self.workspace.snapshot_path))
+
+    def test_status_says_who_the_next_round_leaves_out(self):
+        run_cli("state", "record", "test", "ok")
+        run_cli("review", "snapshot")
+        _, out, _ = run_cli("status")
+        line = next(line for line in out.splitlines() if line.startswith("Optimization:"))
+        self.assertIn("; sec left out (no high-risk path matched)", line)
+        status = json.loads(run_cli("status", "--json")[1])
+        self.assertFalse(status["optimization"]["conditional"][0]["runs"])
+
+    def test_status_says_who_the_next_round_brings_back(self):
+        self.first_round_by_declaration()
+        run_cli("review", "triage", "F1", "--status", "accepted")
+        self.fix_and_resnapshot()
+        _, out, _ = run_cli("status")
+        self.assertIn("; sec added (has open accepted finding F1)", out)
+
+    def test_the_report_counts_the_decisions(self):
+        run_cli("state", "record", "test", "ok")
+        run_cli("review", "snapshot")
+        run_cli("review", "run")
+        _, out, _ = run_cli("optimization", "report")
+        self.assertIn("conditional reviewers", out)
+        self.assertIn("added x0, left out x1", out)
 
 
 # --------------------------------------------------------------------------- report
@@ -827,6 +1194,44 @@ class TestTheReport(unittest.TestCase):
         self.assertIsNone(report["design_billed_per_round"])
 
 
+def left_out(reviewer_id="sec"):
+    return {"id": reviewer_id, "when": "high-risk", "runs": False, "reason": "no high-risk path matched"}
+
+
+def added(reviewer_id="sec", reason="declared with --high-risk"):
+    return {"id": reviewer_id, "when": "high-risk", "runs": True, "reason": reason}
+
+
+class TestConditionalCounters(unittest.TestCase):
+    def test_ok_and_refused_rounds_are_both_counted(self):
+        """The decision was made and recorded either way."""
+        refused = round_event(status=opt.REFUSED, reviewers=0, gate="refuse", conditional=[left_out()])
+        refused["optimization"]["declared"] = True
+        events = [
+            round_event(conditional=[added()], declared=True),
+            refused,
+            round_event(conditional=[left_out()]),
+        ]
+        report = opt.summarise_rounds(events)
+        self.assertEqual(report["conditional"], {"added": 1, "left_out": 2, "declared_rounds": 2})
+
+    def test_an_old_event_counts_as_no_conditional_reviewer(self):
+        report = opt.summarise_rounds([round_event()])
+        self.assertEqual(report["conditional"], {"added": 0, "left_out": 0, "declared_rounds": 0})
+
+    def test_a_declaration_is_not_an_escalation(self):
+        report = opt.summarise_rounds([round_event(conditional=[added()], declared=True)] * 2)
+        self.assertEqual(report["escalated"], 0)
+        self.assertEqual(report["escalation_patterns"], {})
+        self.assertFalse(report["always_escalated"])
+
+    def test_an_extra_pattern_hit_is_counted_like_any_other(self):
+        hit = [{"path": "lib/providers/x.py", "pattern": "*/providers/*"}]
+        report = opt.summarise_rounds([round_event(escalated=True, level="quality", high_risk=hit)])
+        self.assertEqual(report["escalation_patterns"], {"*/providers/*": 1})
+        self.assertTrue(report["always_escalated"])
+
+
 def round_with(usages, status="ok"):
     """A round whose reviewer usage is spelled out, rather than counted up."""
     event = round_event(status=status, reviewers=0)
@@ -959,6 +1364,30 @@ class TestTheReportCommand(IsolatedCase):
         _, out, _ = run_cli("optimization", "report")
         self.assertIn("every round escalated", out)
         self.assertIn("never applied", out)
+
+    def test_the_advice_names_both_pattern_lists(self):
+        """An extra pattern escalates like any other, so narrowing only the
+        built-in list would not bring the configured level back."""
+        hit = [{"path": "lib/providers/x.py", "pattern": "*/providers/*"}]
+        event = round_event(escalated=True, level="quality", high_risk=hit)
+        for _ in range(2):
+            self.workspace.record_event("review", "ok", event)
+        _, out, _ = run_cli("optimization", "report")
+        self.assertIn("*/providers/* x2", out)
+        self.assertIn("optimization.high_risk_paths", out)
+        self.assertIn("optimization.extra_high_risk_paths", out)
+
+    def test_the_conditional_row_counts_added_left_out_and_declared(self):
+        self.workspace.record_event("review", "ok", round_event(conditional=[added()], declared=True))
+        self.workspace.record_event("review", "ok", round_event(conditional=[left_out()]))
+        _, out, _ = run_cli("optimization", "report")
+        self.assertIn("conditional reviewers", out)
+        self.assertIn("added x1, left out x1, declared with --high-risk x1", out)
+
+    def test_a_log_without_conditional_reviewers_gets_no_row(self):
+        self.workspace.record_event("review", "ok", round_event())
+        _, out, _ = run_cli("optimization", "report")
+        self.assertNotIn("conditional reviewers", out)
 
     def test_a_refused_round_shows_up_in_the_summary(self):
         """It ran nothing, so it appears nowhere else in the final report --

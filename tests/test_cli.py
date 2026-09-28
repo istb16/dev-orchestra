@@ -194,6 +194,82 @@ class TestReviewerCommands(IsolatedCase):
         self.assertEqual(entry["model"]["version"], "pinned")
         self.assertEqual(entry["model"]["id"], "mock-small")
 
+    def listed(self, reviewer_id):
+        _, out, _ = run_cli("reviewer", "list", "--json")
+        return next(r for r in json.loads(out) if r["id"] == reviewer_id)
+
+    def test_add_when_high_risk_writes_the_condition(self):
+        code, _, _ = run_cli("reviewer", "add", "--provider", "mock", "--id", "sec", "--when", "high-risk")
+        self.assertEqual(code, 0)
+        self.assertEqual(self.listed("sec")["when"], "high-risk")
+
+    def test_add_when_always_writes_no_key(self):
+        """The default, so a panel that never uses the condition stays the
+        file it would have been without it."""
+        run_cli("reviewer", "add", "--provider", "mock", "--id", "sec", "--when", "always")
+        self.assertNotIn("when", self.listed("sec"))
+
+    def test_set_when_always_removes_the_condition(self):
+        run_cli("reviewer", "add", "--provider", "mock", "--id", "sec", "--when", "high-risk")
+        code, _, _ = run_cli("reviewer", "set", "sec", "--when", "always")
+        self.assertEqual(code, 0)
+        self.assertNotIn("when", self.listed("sec"))
+
+    def test_the_only_reviewer_cannot_become_conditional(self):
+        run_cli("reviewer", "remove", "codex-general")
+        code, _, err = run_cli("reviewer", "set", "claude-general", "--when", "high-risk")
+        self.assertEqual(code, 2)
+        self.assertIn("reviewers: at least one reviewer must run always", err)
+        self.assertNotIn("when", self.listed("claude-general"))
+
+    def test_removing_the_last_unconditional_reviewer_is_refused(self):
+        run_cli("reviewer", "set", "codex-general", "--when", "high-risk")
+        code, _, err = run_cli("reviewer", "remove", "claude-general")
+        self.assertEqual(code, 2)
+        self.assertIn("at least one reviewer must run always", err)
+        self.assertEqual(self.listed("claude-general")["id"], "claude-general")
+
+    def broken_panel(self):
+        """`gen` always runs; `bad1` and `bad2` are conditional, each with an
+        empty role that validation reports."""
+        broken = {"provider": "mock", "role": "", "when": "high-risk"}
+        config_mod.write_config_file(
+            config_mod.global_config_path(),
+            dict(
+                config_mod.default_config(),
+                reviewers=[
+                    {"id": "gen", "provider": "mock", "role": "general"},
+                    dict(broken, id="bad1"),
+                    dict(broken, id="bad2"),
+                ],
+            ),
+        )
+
+    def test_removing_one_of_two_broken_reviewers_is_allowed(self):
+        """Only a problem the removal introduced refuses it, so another
+        reviewer's problem does not lock the panel."""
+        self.broken_panel()
+        code, out, err = run_cli("reviewer", "remove", "bad1")
+        self.assertEqual(code, 0, err)
+        self.assertIn("Removed reviewer bad1", out)
+        _, listing, _ = run_cli("reviewer", "list", "--json")
+        self.assertEqual([r["id"] for r in json.loads(listing)], ["gen", "bad2"])
+
+    def test_removing_the_last_unconditional_reviewer_of_a_broken_panel_is_refused(self):
+        self.broken_panel()
+        code, _, err = run_cli("reviewer", "remove", "gen")
+        self.assertEqual(code, 2)
+        self.assertIn("at least one reviewer must run always", err)
+        self.assertNotIn("role", err)
+        self.assertEqual(self.listed("gen")["id"], "gen")
+
+    def test_list_shows_the_condition(self):
+        run_cli("reviewer", "add", "--provider", "mock", "--id", "sec", "--when", "high-risk")
+        _, out, _ = run_cli("reviewer", "list")
+        line = next(line for line in out.splitlines() if " sec " in line)
+        self.assertIn("general (when: high-risk)", line)
+        self.assertNotIn("when:", next(line for line in out.splitlines() if "claude-general" in line))
+
 
 class TestDoctor(IsolatedCase):
     def test_doctor_runs_and_reports_roles(self):

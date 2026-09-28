@@ -127,6 +127,7 @@ workspace:
 | `<role>.model.id` | string | Exact model id, only with `version: pinned`. |
 | `reviewers[].id` | string | Unique, matching `[a-z0-9][a-z0-9._-]*`. Names the report file. |
 | `reviewers[].role` | string | Built-in or your own; see `references/reviews.md`. |
+| `reviewers[].when` | `always` \| `high-risk` | When the reviewer runs on a **code** review round (default `always`). `high-risk` joins only the rounds judged high-risk; the design review ignores it and runs every reviewer. At least one reviewer must stay `always`. See [Reviewers that run only on high-risk changes](#reviewers-that-run-only-on-high-risk-changes). |
 | `review.max_review_iterations` | int ≥ 0 | Rounds per review, not per project: the count restarts on a new branch, a new `--base`, or `budget reset`. `0` disables re-review entirely. |
 | `review.parallel` | bool | `false` runs reviewers one at a time (easier to debug). |
 | `review.re_review_severities` | list | Severities that count as blocking. |
@@ -145,6 +146,7 @@ workspace:
 | `design.resume.max_context_tokens` | int > 0 \| null | The largest context, in tokens, a session may have ended with and still be continued (default `null`: no cap). Every run records its `context_tokens`, so a cap can be set from what was measured. Setting one of the two keeps the other's default. |
 | `optimization.level` | `aggressive` \| `balanced` \| `quality` | How hard to try to be cheap. Default `balanced`. See below. |
 | `optimization.high_risk_paths` | list | Globs that force `quality` for a change touching them. Replaces the default list wholesale. |
+| `optimization.extra_high_risk_paths` | list | Globs added to `high_risk_paths` rather than replacing it (default `[]`). A hit escalates exactly as a `high_risk_paths` hit does. Like every list, a project value replaces a global one. |
 | `optimization.low_risk_max_files` | int | Below `quality`, at most this many files still counts as a small change (default 5). |
 | `optimization.low_risk_max_lines` | int | And at most this many changed lines (default 150). |
 | `workspace.dir` | string | Where `.ai/` artifacts go. |
@@ -273,6 +275,62 @@ optimization:
   low_risk_max_lines: 80
 ```
 
+### Reviewers that run only on high-risk changes
+
+A specialist such as a `security` reviewer can be made to join the code
+review only when the round is judged high-risk, and cost nothing otherwise:
+
+```yaml
+reviewers:
+  - id: claude-general
+    provider: claude
+    role: general            # when: always (default)
+  - id: claude-security
+    provider: claude
+    role: security
+    when: high-risk          # always (default) | high-risk; code review only
+optimization:
+  extra_high_risk_paths: ["*/providers/*", "*/config.py"]   # added to high_risk_paths; default []
+```
+
+**A `when: high-risk` reviewer runs on a code round when the change matches a
+high-risk path, when the orchestrator declares the round high-risk with
+`review run --high-risk`, or when it must re-check its own open accepted
+finding on an incremental round or a re-run of the same snapshot. Otherwise it
+is left out.** On the design
+review it always runs, and `--only` naming it runs it. The judgement is the one
+that escalates a round to `quality`; every decision to add or leave out a
+conditional reviewer is printed and recorded with its reason. See
+`references/reviews.md` for how a round decides.
+
+Two rules keep such a panel able to review anything, and `config validate`,
+`doctor` and `review run` all refuse a configuration that breaks either:
+
+- **At least one reviewer must run always.** A panel where every reviewer is
+  `high-risk` would leave a quiet round with nobody to review it.
+  `reviewer set --when high-risk` on the last unconditional reviewer, and
+  `reviewer remove` of it, are refused.
+- **A pattern must be in force.** `high_risk_paths: []` with no
+  `extra_high_risk_paths` leaves a `high-risk` reviewer nothing to be judged by,
+  so it would never run.
+
+`extra_high_risk_paths` adds to whichever `high_risk_paths` list is in force, so
+a repository can name the one path the defaults miss without copying the thirty
+they already cover. **Every hit on an extra pattern escalates the round to
+`quality` and lets a red tree through the gate, exactly as a `high_risk_paths`
+hit does**, so add only paths whose changes deserve the whole panel. Between
+config layers it replaces like every list: a project that sets it discards the
+global value.
+
+Roll it out in this order: add `extra_high_risk_paths` for the paths the
+defaults miss first, then switch a reviewer to `when: high-risk`. The other way
+round, the reviewer sits out the rounds the new patterns were meant to catch.
+
+```bash
+dev-orchestra reviewer set claude-security --when high-risk
+dev-orchestra reviewer set claude-security --when always      # back to every round
+```
+
 ## Model tiers
 
 The same role, the same prompt, a different model behind it. A one-line fix
@@ -369,6 +427,7 @@ The skill carries the command grammar; this is the phrasebook.
 | "review the design too" | `config set review.design.enabled true` |
 | "don't ask me to approve plans" / running in CI | `config set design.require_approval false` |
 | "add a Codex security reviewer" | `reviewer add --provider codex --role security` |
+| "run the security reviewer only on risky changes" | `reviewer set <id> --when high-risk` (see [above](#reviewers-that-run-only-on-high-risk-changes)) |
 | "make it three reviewers" | `reviewer add …` again, then `reviewer list` |
 | "remove the performance reviewer" | `reviewer remove performance` |
 | "change the second reviewer" | `reviewer set 2 --provider … --role …` |

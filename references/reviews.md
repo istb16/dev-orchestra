@@ -307,7 +307,11 @@ read that copy instead; without the flag they never see a design finding.
 **The optimization gate and panel reduction do not apply.** There is no test
 result that says anything about a plan and no diff to measure, and a design
 decision is precisely where cross-model disagreement earns its cost, so the
-whole panel runs every round. `review.max_findings` still applies, and
+whole panel runs every round. That includes a reviewer configured
+`when: high-risk`: a plan has no paths to judge, and the design stage is where
+such specialists were measured to pay off, so the condition is a code review
+one only (`review run --design --high-risk` exits 2 rather than pretending to
+decide anything). `review.max_findings` still applies, and
 `optimization.level` still sets the cap when it is unset. Design rounds are
 deliberately absent from every rate `optimization report` prints -- the levels
 in force, the gate verdicts, the panel reduction, the escalations -- because no
@@ -371,8 +375,42 @@ printed with the counts that produced it.
 **It cannot make a high-risk change cheap.** Anything matching
 `optimization.high_risk_paths` -- auth, secrets, payments, migrations, SQL,
 crypto, deploy config -- escalates to `quality` whatever the level says: full
-panel, full findings budget, no gate. The patterns are yours to replace; the
-escalation is not yours to switch off.
+panel, full findings budget, no gate. The patterns are yours to replace, or to
+add to with `optimization.extra_high_risk_paths`; the escalation is not yours
+to switch off.
+
+**It decides who of the conditional reviewers joins.** A reviewer configured
+`when: high-risk` runs on a code round when the change matches a high-risk
+path, when the orchestrator declares the round high-risk with
+`review run --high-risk`, or when it must re-check its own open accepted
+finding on an incremental round or on a re-run of the snapshot that finding
+was reported on. Otherwise it is left out. "Open" means accepted in the live
+consolidated report, the same findings the incremental round's prompt hands
+every reviewer; a rejected or untriaged finding is not open, and neither is
+one that did not come back. `--only` naming it runs it.
+Each decision is printed as a note with its reason --
+`claude-security (when: high-risk) left out: no high-risk path matched`, or
+`added: auth.py matches *auth*` -- and recorded under
+`optimization.conditional` in the round's event, refused rounds included.
+
+- **A declaration is not evidence.** `--high-risk` adds the conditional
+  reviewers and keeps the panel whole, and changes nothing else: not the
+  level, not the findings cap, not the gate. A declared round on a red tree is
+  refused like any other. Only a path pattern escalates.
+- **No cut when a conditional reviewer qualifies.** Whenever one joins, for any
+  reason, the low-risk reduction does not apply, so the reviewer that just
+  qualified is never the one cut. A path hit already implies `quality`; a
+  declaration and a carried finding do not move the level, which is why this
+  is a rule of its own.
+- **A left-out reviewer is left out of the consolidation too.** On a re-run of
+  one snapshot, the report it wrote on an earlier run is not rebuilt into a
+  round its own event says it sat out, and `review consolidate` reads the same
+  reports the round did. `--only` or `--high-risk` brings it back, and so
+  does an accepted finding of its own: a re-run of an unchanged snapshot
+  cannot drop that finding unfixed.
+- **The panel always has someone.** Configuration requires one reviewer that
+  always runs, so no round is left without a reviewer; see
+  `references/configuration.md`.
 
 What it never does is drop findings, merge reviewers' reports, or hide that
 it acted. Every decision is printed, recorded in the run state, and returned
@@ -399,6 +437,12 @@ are worth writing down in the project config so the panel is reproducible.
 
 For `general`, style-only observations are low severity at most. A review that
 returns four naming nits and misses a null-pointer path is a failed review.
+
+A specialist that is only worth its cost on some changes -- `security` is the
+usual one -- can be configured `when: high-risk`, so it joins the code review
+only on rounds judged high-risk and still reviews every plan. Keep a `general`
+reviewer unconditional beside it. See [When a review does not run, or runs
+smaller](#when-a-review-does-not-run-or-runs-smaller).
 
 After adding a reviewer, check its row in the `optimization report` scorecard
 once it has a few rounds behind it: nothing suggests a removal for you, and

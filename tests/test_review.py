@@ -1168,5 +1168,41 @@ class TestRoundArchive(IsolatedCase):
         self.assertEqual(len(review_mod.recorded_rounds(self.workspace)), 1)
 
 
+class TestCarriedFindings(IsolatedCase):
+    """What an incremental round is re-checking: the set its prompt carries,
+    and the one a conditional reviewer joins a round to re-check."""
+
+    def setUp(self):
+        super().setUp()
+        self.workspace = ws.Workspace(self.tmp).ensure()
+
+    def live(self, *triages):
+        findings = [
+            {"id": "F%d" % index, "triage": triage, "reported_by": ["sec"]}
+            for index, triage in enumerate(triages, 1)
+        ]
+        ws.write_json(self.workspace.consolidated_json_path, consolidation(findings=findings))
+
+    def test_an_incremental_round_carries_the_accepted_findings(self):
+        self.live("accepted", "rejected", "accepted")
+        carried = review_mod.carried_findings(self.workspace, {"incremental_from": "t" * 40})
+        self.assertEqual([f["id"] for f in carried], ["F1", "F3"])
+
+    def test_a_whole_change_round_carries_nothing(self):
+        self.live("accepted")
+        self.assertEqual(review_mod.carried_findings(self.workspace, {"incremental_from": ""}), [])
+        self.assertEqual(review_mod.carried_findings(self.workspace, {}), [])
+
+    def test_only_accepted_is_open(self):
+        self.live("rejected", "needs-triage", "duplicate", "needs-investigation")
+        self.assertEqual(review_mod.carried_findings(self.workspace, {"incremental_from": "t" * 40}), [])
+
+    def test_the_prompt_carries_the_same_set(self):
+        self.live("accepted", "rejected")
+        text = review_mod.render_round_context(self.workspace, {"incremental_from": "t" * 40})
+        self.assertIn("The fix was meant to address:", text)
+        self.assertEqual(text.count("\n- ["), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

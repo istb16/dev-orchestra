@@ -166,6 +166,28 @@ class TestRunningIt(DesignReviewCase):
         self.assertEqual(code, 0)
         self.assertIn("2 successful, 0 failed", out)
 
+    def test_a_conditional_reviewer_runs_on_every_plan(self):
+        """`when` is a code review condition: a plan has no paths to judge,
+        and the design stage is where the specialists paid off."""
+        self.assertEqual(run_cli("reviewer", "set", "m2", "--when", "high-risk")[0], 0)
+        self.write_plan()
+        code, out, err = run_cli("review", "run", "--design")
+        self.assertEqual(code, 0)
+        self.assertIn("2 successful, 0 failed", out)
+        self.assertNotIn("left out", err)
+        events = ws.read_json(self.workspace.state_path, {}).get("events") or []
+        design = [e for e in events if e.get("stage") == "design_review"][-1]
+        for key in ("optimization", "conditional", "declared"):
+            self.assertNotIn(key, design)
+
+    def test_a_declaration_is_refused_on_the_design_review(self):
+        self.write_plan()
+        code, _, err = run_cli("review", "run", "--design", "--high-risk")
+        self.assertEqual(code, 2)
+        self.assertIn("--high-risk applies to the code review only", err)
+        self.assertIn("a design round runs every configured reviewer.", err)
+        self.assertFalse(os.path.isfile(self.design.snapshot_path))
+
     def test_the_setting_being_off_notes_but_does_not_refuse(self):
         """The setting says whether the orchestrator runs this stage, not
         whether a person may."""
