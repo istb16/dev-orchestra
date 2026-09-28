@@ -10,6 +10,48 @@ The public surface covered by that promise is: the configuration schema, the
 
 ## [Unreleased]
 
+### Added
+
+- **`reviewers[].when: high-risk` runs a reviewer on high-risk code rounds
+  only.** A conditional reviewer joins a code review round when the change
+  matches a high-risk path, when the round is declared with
+  `review run --high-risk`, or when it must re-check its own open accepted
+  finding on an incremental round or a re-run of the same snapshot; otherwise
+  it is left out. `--only` naming it
+  runs it. The design review ignores the condition and runs every reviewer.
+  Every decision is printed as a `note:` with its reason and recorded under
+  `optimization.conditional` in the round's event (refused rounds included),
+  in `review run --json` and in `status --json`. Whenever a conditional
+  reviewer joins, the low-risk panel reduction does not apply. A left-out
+  reviewer's report of the same snapshot is not consolidated, by `review run`
+  or by `review consolidate`. A config without `when` behaves as before.
+- **`review run --high-risk`** declares a code round high-risk: it adds the
+  conditional reviewers and keeps the panel whole, and never changes the
+  level, the findings cap or the gate. Recorded as `optimization.declared`.
+  Refused (exit 2) with `--design`.
+- **`optimization.extra_high_risk_paths`** (default `[]`) adds patterns to
+  `high_risk_paths` instead of replacing it. A hit escalates to `quality` and
+  lets a red tree through the gate exactly as a `high_risk_paths` hit does.
+- **Validation:** an unknown `when`, a panel where every reviewer is
+  `high-risk`, and a `high-risk` reviewer with no pattern in force are
+  configuration problems. `reviewer add` and `reviewer set` take
+  `--when always|high-risk`; `reviewer set` and `reviewer remove` refuse to
+  leave no reviewer that always runs. `reviewer list` shows the condition.
+- **`status`** names each conditional reviewer the next round would add or
+  leave out on its `Optimization:` line, and **`optimization report`** has a
+  `conditional reviewers` row (`conditional` in `--json`: `added`, `left_out`,
+  `declared_rounds`). The "every round escalated" advice names both pattern
+  lists.
+
+Rolling it out: add `extra_high_risk_paths` for the paths the defaults miss
+first (for this repository, `*/providers/*` and `*/config.py`), then switch a
+reviewer to `when: high-risk`. A project value of `extra_high_risk_paths`
+replaces a global one, like every list, and every hit on an extra pattern
+escalates the round to `quality` and lets a red tree through the gate.
+Path-scoped conditions, per-reviewer scorecard rows for conditional reviewers
+and a `doctor` note for a `high-risk` reviewer judged by the default patterns
+are left for later.
+
 ## [0.12.0] - 2026-09-27
 
 ### Added

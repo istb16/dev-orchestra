@@ -468,6 +468,92 @@ class TestValidation(IsolatedCase):
             config_mod.load(self.project)
 
 
+class TestReviewerConditions(IsolatedCase):
+    """`reviewers[].when`, and what a panel of conditional reviewers needs."""
+
+    ALWAYS = "reviewers: at least one reviewer must run always; every reviewer is when: high-risk"
+    NO_PATTERNS = (
+        "optimization.high_risk_paths: no pattern in force, but reviewers[1] is when: high-risk "
+        "and would never run; add patterns to high_risk_paths or extra_high_risk_paths"
+    )
+
+    def with_conditions(self, *conditions, **optimization):
+        data = config_mod.default_config()
+        for reviewer, when in zip(data["reviewers"], conditions):
+            if when is not None:
+                reviewer["when"] = when
+        data["optimization"].update(optimization)
+        return config_mod.validate(data)
+
+    def test_both_conditions_validate(self):
+        self.assertEqual(self.with_conditions("always", "high-risk"), [])
+        self.assertEqual(self.with_conditions(None, "High-Risk "), [])
+
+    def test_an_unknown_condition_is_named(self):
+        for value in ("sometimes", 1):
+            with self.subTest(value=value):
+                self.assertIn(
+                    "reviewers[1].when: must be one of always, high-risk", self.with_conditions(None, value)
+                )
+
+    def test_every_reviewer_conditional_is_refused(self):
+        self.assertIn(self.ALWAYS, self.with_conditions("high-risk", "high-risk"))
+
+    def test_one_unconditional_reviewer_is_enough(self):
+        self.assertNotIn(self.ALWAYS, self.with_conditions("always", "high-risk"))
+
+    def test_an_empty_panel_is_still_valid(self):
+        data = config_mod.default_config()
+        data["reviewers"] = []
+        self.assertEqual(config_mod.validate(data), [])
+
+    def test_a_conditional_reviewer_needs_a_pattern(self):
+        self.assertIn(self.NO_PATTERNS, self.with_conditions(None, "high-risk", high_risk_paths=[]))
+
+    def test_an_extra_pattern_is_a_pattern(self):
+        problems = self.with_conditions(
+            None, "high-risk", high_risk_paths=[], extra_high_risk_paths=["*/providers/*"]
+        )
+        self.assertEqual(problems, [])
+
+    def test_no_patterns_without_a_conditional_reviewer_stays_allowed(self):
+        self.assertEqual(self.with_conditions(None, None, high_risk_paths=[]), [])
+
+    def test_extra_high_risk_paths_is_validated_like_high_risk_paths(self):
+        problems = self.with_conditions(extra_high_risk_paths="*/providers/*")
+        self.assertIn(
+            "optimization.extra_high_risk_paths: must be a list of glob patterns (use [] for none)", problems
+        )
+        problems = self.with_conditions(extra_high_risk_paths=[""])
+        self.assertIn("optimization.extra_high_risk_paths[0]: must be a non-empty string (got '')", problems)
+
+    def test_extra_high_risk_paths_ships_empty(self):
+        self.assertEqual(config_mod.default_config()["optimization"]["extra_high_risk_paths"], [])
+
+    def test_the_extra_patterns_are_added_to_the_list_in_force(self):
+        from orchestrator import optimization as opt
+
+        self.assertEqual(
+            opt.risk_patterns({"high_risk_paths": ["*auth*"], "extra_high_risk_paths": ["*/providers/*"]}),
+            ["*auth*", "*/providers/*"],
+        )
+        added = opt.risk_patterns({"extra_high_risk_paths": ["*/providers/*"]})
+        self.assertEqual(added, [*opt.DEFAULT_HIGH_RISK_PATHS, "*/providers/*"])
+
+    def test_a_project_list_replaces_a_global_one(self):
+        """Like every list between the layers: a project that sets it
+        discards the global value rather than adding to it."""
+        data = config_mod.default_config()
+        data["optimization"]["extra_high_risk_paths"] = ["*/global/*"]
+        config_mod.write_config_file(config_mod.global_config_path(), data)
+        self.write(
+            ".dev-orchestra.yaml",
+            'version: 1\noptimization:\n  extra_high_risk_paths: ["*/providers/*"]\n',
+        )
+        loaded = config_mod.load(self.project)
+        self.assertEqual(loaded.optimization_settings()["extra_high_risk_paths"], ["*/providers/*"])
+
+
 class TestRoleOptions(IsolatedCase):
     def test_valid_options_pass(self):
         data = config_mod.default_config()

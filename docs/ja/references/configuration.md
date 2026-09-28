@@ -1,4 +1,4 @@
-<!-- translated-from: references/configuration.md sha256:9219851bd2363fbb46041355e1e18f7e4fa31ec5f65d9e94d6664b6f50da7f29 -->
+<!-- translated-from: references/configuration.md sha256:4dc1975683eb68c23ad893d755dfd4cecc7302096182e1d7f42e9169ea383445 -->
 
 > この文書は [references/configuration.md](../../../references/configuration.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -140,6 +140,7 @@ workspace:
 | `<role>.model.id` | string | 正確なモデル id。`version: pinned` のときのみ。 |
 | `reviewers[].id` | string | 一意で、`[a-z0-9][a-z0-9._-]*` に一致すること。レポートファイルの名前になります。 |
 | `reviewers[].role` | string | 組み込みのもの、または独自のもの。`references/reviews.md` を参照。 |
+| `reviewers[].when` | `always` \| `high-risk` | **コード**レビューのラウンドでそのレビュアーがいつ走るか（デフォルト `always`）。`high-risk` は高リスクと判定されたラウンドにだけ加わります。設計レビューはこれを無視し、すべてのレビュアーを走らせます。少なくとも 1 人は `always` のままでなければなりません。[高リスクな変更でだけ走るレビュアー](#reviewers-that-run-only-on-high-risk-changes)を参照。 |
 | `review.max_review_iterations` | int ≥ 0 | プロジェクト単位ではなくレビュー単位のラウンド数です。新しいブランチ、新しい `--base`、または `budget reset` でカウントはリセットされます。`0` で再レビューを完全に無効にします。 |
 | `review.parallel` | bool | `false` にするとレビュアーを 1 つずつ実行します（デバッグしやすくなります）。 |
 | `review.re_review_severities` | list | ブロッキングとみなす severity。 |
@@ -158,6 +159,7 @@ workspace:
 | `design.resume.max_context_tokens` | int > 0 \| null | 継続を許す、セッション終了時の文脈の大きさ（トークン）の上限です（デフォルト `null`: 上限なし）。各実行は `context_tokens` を記録するので、測った値から上限を決められます。一方だけを設定しても、もう一方はデフォルトのままです。 |
 | `optimization.level` | `aggressive` \| `balanced` \| `quality` | どれだけ安く済ませようとするか。デフォルトは `balanced`。下記を参照。 |
 | `optimization.high_risk_paths` | list | それに触れる変更に対して `quality` を強制する glob。デフォルトのリストを丸ごと置き換えます。 |
+| `optimization.extra_high_risk_paths` | list | `high_risk_paths` を置き換えずに、それに追加する glob（デフォルト `[]`）。一致すると `high_risk_paths` の一致とまったく同じように引き上げられます。他のリストと同様、project の値は global の値を置き換えます。 |
 | `optimization.low_risk_max_files` | int | `quality` 未満のレベルで、小さな変更とみなすファイル数の上限（デフォルト 5）。 |
 | `optimization.low_risk_max_lines` | int | さらに、変更行数の上限（デフォルト 150）。 |
 | `workspace.dir` | string | `.ai/` の成果物を置く場所。 |
@@ -287,6 +289,61 @@ optimization:
   low_risk_max_lines: 80
 ```
 
+<a id="reviewers-that-run-only-on-high-risk-changes"></a>
+
+### 高リスクな変更でだけ走るレビュアー
+
+`security` レビュアーのような専門レビュアーを、ラウンドが高リスクと判定されたときだけ
+コードレビューに加え、それ以外では費用がかからないようにできます:
+
+```yaml
+reviewers:
+  - id: claude-general
+    provider: claude
+    role: general            # when: always (default)
+  - id: claude-security
+    provider: claude
+    role: security
+    when: high-risk          # always (default) | high-risk; code review only
+optimization:
+  extra_high_risk_paths: ["*/providers/*", "*/config.py"]   # added to high_risk_paths; default []
+```
+
+**`when: high-risk` のレビュアーがコードのラウンドで走るのは、変更が高リスクなパスに
+一致したとき、オーケストレーターが `review run --high-risk` でそのラウンドを高リスクと
+宣言したとき、または差分ラウンドか同じスナップショットの再実行で、自分自身の未解決の
+accepted の指摘を確認し直す必要があるときです。それ以外では外されます。** 設計レビューでは常に走り、`--only` で名前を
+挙げれば走ります。判定はラウンドを `quality` に引き上げるのと同じものです。条件付きの
+レビュアーを加えたり外したりする判断は、すべて理由とともに表示され記録されます。ラウンドが
+どう判断するかは `references/reviews.md` を参照してください。
+
+このようなパネルが何でもレビューできるように 2 つの規則があり、どちらかに反する設定は
+`config validate`、`doctor`、`review run` のいずれも拒否します:
+
+- **少なくとも 1 人のレビュアーは常に走らなければなりません。** すべてのレビュアーが
+  `high-risk` のパネルでは、静かなラウンドをレビューする人が誰もいなくなります。
+  最後の無条件のレビュアーに対する `reviewer set --when high-risk` と、その
+  `reviewer remove` は拒否されます。
+- **有効なパターンがなければなりません。** `high_risk_paths: []` で
+  `extra_high_risk_paths` もなければ、`high-risk` のレビュアーには判定の材料がなく、
+  決して走りません。
+
+`extra_high_risk_paths` は、有効になっているほうの `high_risk_paths` のリストに追加されます。
+そのため、リポジトリはデフォルトがすでにカバーしている 30 個をコピーせずに、デフォルトが
+見逃している 1 つのパスを指定できます。**追加のパターンへの一致はすべて、`high_risk_paths` の
+一致とまったく同じように、ラウンドを `quality` に引き上げ、red のツリーをゲートに通します。**
+ですから、変更がパネル全体に値するパスだけを追加してください。設定レイヤー間では他のリストと
+同様に置き換えられます: project でこれを設定すると、global の値は捨てられます。
+
+導入は次の順序で行ってください: まずデフォルトが見逃しているパスを `extra_high_risk_paths` に
+追加し、その後でレビュアーを `when: high-risk` に切り替えます。逆の順序だと、新しいパターンで
+捉えるはずだったラウンドにそのレビュアーが参加しません。
+
+```bash
+dev-orchestra reviewer set claude-security --when high-risk
+dev-orchestra reviewer set claude-security --when always      # back to every round
+```
+
 <a id="model-tiers"></a>
 
 ## モデルティア
@@ -385,6 +442,7 @@ review_fixer:           # let the CLI pick entirely
 | 「設計もレビューして」 | `config set review.design.enabled true` |
 | 「plan の承認を求めないで」/ CI で実行する | `config set design.require_approval false` |
 | 「Codex のセキュリティレビュアーを追加して」 | `reviewer add --provider codex --role security` |
+| 「セキュリティレビュアーはリスクのある変更のときだけ走らせて」 | `reviewer set <id> --when high-risk`（[上記](#reviewers-that-run-only-on-high-risk-changes)を参照） |
 | 「レビュアーを 3 人にして」 | もう一度 `reviewer add …`、その後 `reviewer list` |
 | 「パフォーマンスのレビュアーを外して」 | `reviewer remove performance` |
 | 「2 番目のレビュアーを変えて」 | `reviewer set 2 --provider … --role …` |
