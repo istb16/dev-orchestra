@@ -13,8 +13,10 @@ from typing import Any, Dict, List, Optional
 
 from . import config as config_mod
 from . import optimization as opt_mod
+from . import verified
 from . import workspace as ws
 from .providers import (
+    OFFLINE,
     REFUSED_ENFORCEMENT,
     USER_PROVIDERS_DISABLED_ENV,
     ModelResolutionError,
@@ -35,6 +37,9 @@ ROLE_LABELS = (
     ("implementer", "Implementer"),
     ("review_fixer", "Review fixer"),
 )
+
+#: The live check, next to this package: the same file from a plugin install.
+SMOKE_SCRIPT = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "smoke_live.py")
 
 
 def collect(start: Optional[str] = None, probe_models: bool = True) -> Dict[str, Any]:
@@ -82,6 +87,14 @@ def collect(start: Optional[str] = None, probe_models: bool = True) -> Dict[str,
                 # is read: validating options.permission_mode reads one.
                 entry["read_only_enforcement"] = {"status": "not-checked"}
                 entry["resume_support"] = {"status": "not-checked"}
+            if detection.installed and name not in OFFLINE:
+                if detection.version:
+                    # A file read only, so --fast reports it too.
+                    entry["live_check"] = verified.smoke_status(name, detection.version, root)
+                    _live_check_note(name, detection.version, entry["live_check"], report)
+                else:
+                    # No version to look up or to ask a check of.
+                    entry["live_check"] = {"status": "version-unavailable"}
             detections[name] = detection
         except Exception as exc:
             message = describe_exception(exc)
@@ -161,6 +174,24 @@ def collect(start: Optional[str] = None, probe_models: bool = True) -> Dict[str,
         report["problems"].append("no reviewers configured: the independent-review stage will be skipped")
     _default_patterns_note(report, loaded.optimization_settings())
     return report
+
+
+def _live_check_note(name: str, version: str, status: Dict[str, Any], report: Dict[str, Any]) -> None:
+    """A CLI version that never went through scripts/smoke_live.py here.
+
+    A CLI update is when its output or flags can drift from the adapter. Not
+    for a failed check: whoever ran it has seen the failure. Not for a record
+    inside the workspace either: the script would refuse to write it.
+    """
+    if status["status"] != "absent" or status.get("problem") == verified.SMOKE_INSIDE_WORKSPACE:
+        return
+    last = status.get("last_passed")
+    script = '"%s"' % SMOKE_SCRIPT if " " in SMOKE_SCRIPT else SMOKE_SCRIPT
+    report["notes"].append(
+        "%s %s has not been live-checked on this machine (last passed: %s); "
+        "run python %s --provider %s -- it spends a few real tokens"
+        % (name, version, last["version"] if last else "never", script, name)
+    )
 
 
 def _default_patterns_note(report: Dict[str, Any], settings: Dict[str, Any]) -> None:
@@ -328,6 +359,26 @@ def _resume_line(name: str, support: Dict[str, Any]) -> str:
     return "not reported by this adapter"
 
 
+def _live_check_line(version: Any, status: Dict[str, Any]) -> str:
+    """Whether scripts/smoke_live.py has run this CLI version on this machine."""
+    if status.get("status") == "version-unavailable":
+        return "version unavailable"
+    if status.get("problem"):
+        return str(status["problem"])
+    entry = status.get("entry") or {}
+    day = str(entry.get("checked_at") or "")[:10]
+    if status.get("status") == "passed":
+        skipped = len(entry.get("skipped") or [])
+        return "passed for %s on %s%s" % (version, day, ", %d skipped" % skipped if skipped else "")
+    if status.get("status") == "failed":
+        return "FAILED for %s on %s (%s)" % (version, day, ", ".join(entry.get("failed") or []))
+    last = status.get("last_passed")
+    if last:
+        last_day = str(last.get("checked_at") or "")[:10]
+        return "not run for %s (last passed: %s on %s)" % (version, last.get("version"), last_day)
+    return "never run on this machine"
+
+
 def render(report: Dict[str, Any]) -> str:
     lines: List[str] = ["AI Development Orchestrator -- doctor", ""]
     platform_info = report["platform"]
@@ -361,6 +412,9 @@ def render(report: Dict[str, Any]) -> str:
                 lines.append("  Read-only runs: %s" % _enforcement_line(entry["read_only_enforcement"]))
             if entry.get("resume_support"):
                 lines.append("  Resume: %s" % _resume_line(name, entry["resume_support"]))
+            if entry.get("live_check"):
+                live = _live_check_line(entry.get("version"), entry["live_check"])
+                lines.append("  Live check: %s" % live)
         elif entry.get("error"):
             lines.append("  Detail: %s" % entry["error"])
         lines.append("")

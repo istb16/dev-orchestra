@@ -1,4 +1,4 @@
-<!-- translated-from: references/cli.md sha256:c45995c4d68f78865193245f3131f7e83985ec0cd69c81df5684055554f1fd2c -->
+<!-- translated-from: references/cli.md sha256:6e37f3e539710f61d89bb0a762ced73080b2e730403223a4ae827381d083cd93 -->
 
 > この文書は [references/cli.md](../../../references/cli.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -109,7 +109,9 @@ dev-orchestra reviewer remove db-review
 言いません。どの版もこの設定をファイルに書き込んだことはないので、値があれば必ず誰かが足したものだからです。
 
 誤りではないが知っておくべきことがあると、問題の後に **Notes** ブロックが表示されます。注記は
-`--strict` の判定に数えられず、`--json` では `notes` に入ります（ないときは `[]`）。現在は 1 種類だけです:
+`--strict` の判定に数えられず、`--json` では `notes` に入ります（ないときは `[]`）。注記は 2 種類あります。
+1 つは、このマシンでまだ live check していないインストール済み CLI のバージョンを挙げるものです（後述の
+`Live check:` 行を参照）。もう 1 つは次のものです:
 組み込みの `high_risk_paths` だけで判定される -- リポジトリ独自のリストも `extra_high_risk_paths` もない --
 `when: high-risk` のレビュアーを、すべて 1 つの注記にまとめて名前を挙げます。デフォルトは一般的な名前に
 合わせてあり、このリポジトリの機密性の高いパスを見逃して、そのレビュアーがほとんど走らないことがあるからです。
@@ -137,6 +139,24 @@ dev-orchestra reviewer remove db-review
 `not reported by this adapter`、`not checked (--fast)` のいずれかです。`--json` では
 `providers.<name>.resume_support`（`status`、`detail`、`version`、`source`、`record`、`verified_at`、
 `missing`）です。これは決して問題として扱われません。継続できない実行は新規に走るだけだからです。
+
+その隣に、オフラインの `mock` を除くインストール済みのすべての provider について `Live check:` 行があり、
+このマシンで `scripts/smoke_live.py` がこの CLI バージョンを走らせたかを示します。実際の CLI を走らせるのは
+このスクリプトだけで、CLI の更新は出力やフラグが adapter とずれうるときだからです。
+`passed for <version> on <date>`（スキップしたチェックがあれば `, N skipped` が付きます）、
+`FAILED for <version> on <date> (<チェック名>)`、
+`not run for <version> (last passed: <古いバージョン> on <date>)`、`never run on this machine`、
+または記録の問題（たとえばワークスペースの内側にあること）のいずれかです。記録は設定ディレクトリの
+`verified/<provider>-smoke.json` で、スクリプトが書き込みます。読むのはファイルの読み込みだけなので、
+`--fast` でもこの行は表示されます。まだチェックしていないバージョンには注記も付きます:
+`<provider> <version> has not been live-checked on this machine (last passed: <version>|never); run python
+<path>/smoke_live.py --provider <provider> -- it spends a few real tokens`（スクリプトの実際のパス付き）。
+チェックに失敗したバージョンは行だけで、注記は付きません。実行した人がすでに失敗を見ているからです。
+記録がワークスペースの内側にある場合も同様です。スクリプトはそこへの書き込みを拒むからです。
+インストール済みでもバージョンを読み取れなかった CLI は `version unavailable` と表示され、注記は付きません。
+照らし合わせるバージョンがないからです。
+`--json` では `providers.<name>.live_check`（`status` は `passed`、`failed`、`absent`、`version-unavailable` のいずれか。
+`entry`、`last_passed`、`problem`）です。これは決して問題として扱われません。
 
 <a id="run"></a>
 

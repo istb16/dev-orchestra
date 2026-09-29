@@ -85,6 +85,13 @@ failure there is the adapter and the CLI having drifted apart: read the CLI's
 the symlink check on Windows without the symlink privilege -- and also exits 1:
 run it where symlinks can be created before calling the run clean.
 
+Each run records, per provider, which CLI version it checked and which checks
+failed or were skipped (names only) in `verified/<provider>-smoke.json` in the
+config directory. `doctor` shows it on a `Live check:` line and adds a note
+when the installed version has not been through the script on this machine --
+which is exactly when a CLI update can have drifted. It is not scheduled in CI,
+which has no API keys.
+
 **4. Reviewers stay read-only and independent.** If a change could let a
 reviewer edit files or see another reviewer's output, it needs a very good
 reason and a test proving the boundary still holds, and the built command

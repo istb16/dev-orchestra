@@ -106,6 +106,11 @@ def register(name: str, factory: ProviderFactory, origin: Optional[ProviderOrigi
     _ORIGINS[name] = origin
 
 
+#: Providers with no CLI behind them: scripts/smoke_live.py never runs them by
+#: default, and ``doctor`` asks for no live check of them.
+OFFLINE = ("mock",)
+
+
 def available_providers() -> List[str]:
     return sorted(_REGISTRY)
 

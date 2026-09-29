@@ -593,6 +593,139 @@ class TestDoctorDefaultPatternsNote(IsolatedCase):
         self.assertNotIn(secret, out + payload)
 
 
+class TestDoctorLiveCheck(IsolatedCase):
+    """Whether scripts/smoke_live.py has run the installed CLI version here.
+
+    A note, never a problem: an unchecked version is when a drift can have
+    happened, not proof that one did.
+    """
+
+    VERSION = "codex-cli 0.200.0"
+
+    def setUp(self):
+        super().setUp()
+        self.setUp_config()
+        from orchestrator.providers.claude import ClaudeProvider
+        from orchestrator.providers.codex import CodexProvider
+
+        for cls, name, value in (
+            (ClaudeProvider, "which", lambda self: None),
+            (CodexProvider, "which", lambda self: "codex"),
+            (CodexProvider, "version", lambda self: (TestDoctorLiveCheck.VERSION, None)),
+        ):
+            self.addCleanup(setattr, cls, name, getattr(cls, name))
+            setattr(cls, name, value)
+
+    def setUp_config(self):
+        role = {"provider": "mock", "model": {"family": "small", "version": "latest"}}
+        data = config_mod.default_config()
+        data.update(orchestrator=role, architect=role, implementer=role, review_fixer=role)
+        data["reviewers"] = [config_mod.make_reviewer("gen", "mock", "small")]
+        config_mod.write_config_file(config_mod.global_config_path(), data)
+
+    def record(self, version, failed=(), skipped=(), at="2026-09-01T00:00:00Z"):
+        from unittest import mock
+
+        from orchestrator import verified
+
+        with mock.patch.object(verified.ws, "utcnow", return_value=at):
+            verified.record_smoke("codex", version, list(failed), list(skipped), self.project)
+
+    def doctor(self):
+        code, out, _ = run_cli("doctor", "--fast", "--strict")
+        report = json.loads(run_cli("doctor", "--fast", "--json")[1])
+        return code, out, report
+
+    def live_line(self, out):
+        return [line.strip() for line in out.splitlines() if line.strip().startswith("Live check:")]
+
+    def test_a_passing_record_is_a_line_and_no_note(self):
+        self.record(self.VERSION, skipped=["x"])
+        code, out, report = self.doctor()
+        self.assertEqual(code, 0, out)
+        self.assertEqual(
+            self.live_line(out), ["Live check: passed for %s on 2026-09-01, 1 skipped" % self.VERSION]
+        )
+        self.assertEqual(report["notes"], [])
+        self.assertEqual(report["providers"]["codex"]["live_check"]["status"], "passed")
+
+    def test_a_newer_version_is_a_line_and_one_note(self):
+        self.record("codex-cli 0.150.0")
+        code, out, report = self.doctor()
+        self.assertEqual(code, 0, out)
+        self.assertEqual(
+            self.live_line(out),
+            ["Live check: not run for %s (last passed: codex-cli 0.150.0 on 2026-09-01)" % self.VERSION],
+        )
+        self.assertEqual(len(report["notes"]), 1)
+        note = report["notes"][0]
+        self.assertTrue(note.startswith("codex %s has not been live-checked" % self.VERSION), note)
+        self.assertIn("(last passed: codex-cli 0.150.0)", note)
+        self.assertIn("smoke_live.py --provider codex", note)
+        from orchestrator import doctor
+
+        self.assertTrue(os.path.isfile(doctor.SMOKE_SCRIPT))
+        self.assertIn(doctor.SMOKE_SCRIPT, note)
+        self.assertIn("\nNotes\n", out)
+        self.assertEqual(report["providers"]["codex"]["live_check"]["status"], "absent")
+
+    def test_a_failed_record_is_a_line_and_no_note(self):
+        self.record(self.VERSION, failed=["reports what it spent", "stays read-only"])
+        code, out, report = self.doctor()
+        self.assertEqual(code, 0, out)
+        expected = "FAILED for %s on 2026-09-01 (reports what it spent, stays read-only)" % self.VERSION
+        self.assertEqual(self.live_line(out), ["Live check: " + expected])
+        self.assertEqual(report["notes"], [])
+
+    def test_no_record_is_never_run_and_a_note(self):
+        code, out, report = self.doctor()
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.live_line(out), ["Live check: never run on this machine"])
+        self.assertEqual(len(report["notes"]), 1)
+        self.assertIn("(last passed: never)", report["notes"][0])
+        self.assertEqual(
+            report["providers"]["codex"]["live_check"],
+            {"status": "absent", "entry": None, "last_passed": None, "problem": None},
+        )
+
+    def test_the_mock_and_a_missing_cli_have_no_line(self):
+        _, _, report = self.doctor()
+        self.assertNotIn("live_check", report["providers"]["mock"])
+        self.assertNotIn("live_check", report["providers"]["claude"])
+
+    def test_an_unreadable_version_is_a_line_and_no_note(self):
+        from orchestrator.providers.codex import CodexProvider
+
+        self.addCleanup(setattr, CodexProvider, "version", CodexProvider.version)
+        CodexProvider.version = lambda self: (None, "unexpected output")
+        _, out, report = self.doctor()
+        self.assertEqual(self.live_line(out), ["Live check: version unavailable"])
+        self.assertEqual(report["notes"], [])
+        self.assertEqual(report["providers"]["codex"]["live_check"], {"status": "version-unavailable"})
+
+    def test_a_record_inside_the_workspace_is_a_line_and_no_note(self):
+        """The script would refuse to write it, so no note asks for a run."""
+        os.environ["DEV_ORCHESTRA_HOME"] = os.path.join(self.project, ".ai", "home")
+        # The configuration moves with the home: write it there too.
+        self.setUp_config()
+        _, out, report = self.doctor()
+        expected = (
+            "the live-check record is inside the workspace; point DEV_ORCHESTRA_HOME outside the checkout"
+        )
+        self.assertEqual(self.live_line(out), ["Live check: " + expected])
+        self.assertEqual(report["notes"], [])
+
+    def test_an_unknown_schema_names_the_live_check_record(self):
+        from orchestrator import verified
+
+        path = verified.smoke_record_path("codex")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump({"schema": 999}, handle)
+        _, out, _ = self.doctor()
+        self.assertEqual(self.live_line(out), ["Live check: the live-check record has an unknown schema"])
+
+
 class TestDoctorReadOnlyEnforcement(IsolatedCase):
     def setUp(self):
         super().setUp()

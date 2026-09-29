@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import os
 import unittest
+from unittest import mock
 
 from helpers import CLAUDE_HELP, IsolatedCase
 
 from orchestrator import config, verified
+from orchestrator import workspace as ws
 from orchestrator.providers.claude import READ_ONLY_MECHANISM, ClaudeProvider
 
 VERSION = "9.9.9 (Claude Code)"
@@ -107,6 +109,78 @@ class TestOutside(IsolatedCase):
         data, problem = verified.read("claude", self.project)
         self.assertIsNone(data)
         self.assertIn("inside the workspace", problem)
+
+
+class TestSmokeRecord(IsolatedCase):
+    """Which CLI versions went through scripts/smoke_live.py on this machine."""
+
+    def record(self, version, failed=(), skipped=(), at="2026-09-01T00:00:00Z"):
+        with mock.patch.object(verified.ws, "utcnow", return_value=at):
+            return verified.record_smoke("claude", version, list(failed), list(skipped), self.project)
+
+    def status(self, version=VERSION):
+        return verified.smoke_status("claude", version, self.project)
+
+    def test_a_pass_reads_back(self):
+        path = self.record(VERSION)
+        self.assertEqual(path, verified.smoke_record_path("claude"))
+        self.assertNotEqual(path, verified.record_path("claude"))
+        found = self.status()
+        self.assertEqual(found["status"], "passed")
+        self.assertEqual(found["entry"]["checked_at"], "2026-09-01T00:00:00Z")
+        self.assertEqual(found["last_passed"], {"version": VERSION, "checked_at": "2026-09-01T00:00:00Z"})
+        self.assertIsNone(found["problem"])
+        self.assertFalse(os.path.exists(verified.record_path("claude")))
+
+    def test_skipped_checks_still_pass(self):
+        self.record(VERSION, skipped=["stays confined (symlink)"])
+        found = self.status()
+        self.assertEqual(found["status"], "passed")
+        self.assertEqual(found["entry"]["skipped"], ["stays confined (symlink)"])
+        self.assertEqual(found["entry"]["failed"], [])
+
+    def test_a_failure(self):
+        self.record(VERSION, failed=["reports what it spent"])
+        found = self.status()
+        self.assertEqual(found["status"], "failed")
+        self.assertFalse(found["entry"]["ok"])
+        self.assertEqual(found["entry"]["failed"], ["reports what it spent"])
+        self.assertIsNone(found["last_passed"])
+
+    def test_a_newer_version_is_absent_and_names_the_last_pass(self):
+        self.record("1.0.0 (Claude Code)", at="2026-08-01T00:00:00Z")
+        self.record("1.1.0 (Claude Code)", at="2026-09-01T00:00:00Z")
+        self.record("1.2.0 (Claude Code)", failed=["x"], at="2026-09-10T00:00:00Z")
+        found = self.status()
+        self.assertEqual(found["status"], "absent")
+        self.assertIsNone(found["entry"])
+        self.assertEqual(found["last_passed"]["version"], "1.1.0 (Claude Code)")
+
+    def test_no_record_is_never(self):
+        self.assertEqual(
+            self.status(), {"status": "absent", "entry": None, "last_passed": None, "problem": None}
+        )
+
+    def test_a_record_inside_is_neither_read_nor_written(self):
+        self.record(VERSION)
+        os.environ["DEV_ORCHESTRA_HOME"] = os.path.join(self.project, ".ai", "home")
+        with self.assertRaises(verified.VerifiedRecordError):
+            self.record(VERSION)
+        self.assertFalse(os.path.exists(verified.smoke_record_path("claude")))
+        found = self.status()
+        self.assertEqual(found["status"], "absent")
+        self.assertIn("inside the workspace", found["problem"])
+
+    def test_an_unknown_schema_is_ignored(self):
+        path = verified.smoke_record_path("claude")
+        os.makedirs(os.path.dirname(path))
+        ws.write_json(path, {"schema": 99, "versions": {VERSION: {"ok": True, "checked_at": "x"}}})
+        found = self.status()
+        self.assertEqual(found["status"], "absent")
+        self.assertIsNone(found["last_passed"])
+        self.assertTrue(found["problem"])
+        self.record(VERSION)
+        self.assertEqual(self.status()["status"], "passed")
 
 
 class _Completed:
