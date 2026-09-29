@@ -31,10 +31,20 @@ $root = Split-Path -Parent $PSScriptRoot
 # The pointer block tells the host how to run the CLI, so it has to name an
 # interpreter this machine actually has. Same order as bin/dev-orchestra.ps1:
 # a `python3` on PATH here is usually the Store's alias, which opens the
-# Microsoft Store rather than running anything.
+# Microsoft Store rather than running anything. A name that runs a Python older
+# than 3.11 is passed over, the same as the wrapper does.
+function Test-Python([string]$Path) {
+    try {
+        & $Path -c 'import sys; sys.exit(sys.version_info < (3, 11))' *> $null
+        return $LASTEXITCODE -eq 0
+    }
+    catch { return $false }
+}
+
 $PythonCmd = 'python'
 foreach ($candidate in @('python', 'py', 'python3')) {
-    if (Get-Command $candidate -ErrorAction SilentlyContinue) {
+    $found = Get-Command $candidate -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($found -and (Test-Python $found.Source)) {
         $PythonCmd = $candidate
         break
     }

@@ -16,6 +16,7 @@ import os
 import shutil
 import stat
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -50,8 +51,56 @@ class TestTheWrappers(unittest.TestCase):
         """Rather than a shell error naming a command nobody typed."""
         for relative in ("bin/dev-orchestra", "bin/dev-orchestra.ps1"):
             text = read(relative)
-            self.assertIn("Python 3.9+ is required but was not found on PATH", text)
+            self.assertIn("no Python 3.11+ was found on PATH", text)
             self.assertIn("127", text)
+
+    def test_every_candidate_is_asked_its_version(self):
+        """An older `python3` ahead of a newer `python` must not win just by
+        being first -- the entry point would then refuse to run."""
+        probe = "import sys; sys.exit(sys.version_info < (3, 11))"
+        for relative in (
+            "bin/dev-orchestra",
+            "bin/dev-orchestra.ps1",
+            "install/install.sh",
+            "install/install.ps1",
+        ):
+            self.assertIn(probe, read(relative), relative)
+
+
+class TestTheEntryPointChecksTheVersion(unittest.TestCase):
+    """The wrappers pass over an older Python, but the entry point can also be
+    run directly: an interpreter older than 3.11 has to be turned away by name
+    before the package is imported, not by a syntax error inside it."""
+
+    ENTRY = os.path.join(REPO_ROOT, "scripts", "dev_orchestra.py")
+
+    def run_as(self, version):
+        import io
+        import runpy
+        from contextlib import redirect_stderr
+        from unittest import mock
+
+        err = io.StringIO()
+        with mock.patch.object(sys, "version_info", version), redirect_stderr(err):
+            with self.assertRaises(SystemExit) as caught:
+                runpy.run_path(self.ENTRY, run_name="__main__")
+        return caught.exception.code, err.getvalue()
+
+    def test_an_older_python_is_told_what_it_needs(self):
+        code, err = self.run_as((3, 10, 14, "final", 0))
+        self.assertEqual(code, 2)
+        self.assertIn("dev-orchestra needs Python 3.11 or later; this is Python 3.10", err)
+
+    def test_the_check_is_written_for_an_older_parser(self):
+        """No syntax newer than the check itself, above it: the point is to be
+        read by the interpreter it refuses."""
+        source = read("scripts/dev_orchestra.py")
+        head = source[: source.index("sys.path.insert")]
+        self.assertNotIn('f"', head)
+        self.assertNotIn(":=", head)
+        self.assertNotIn("match ", head)
+        # A SyntaxError at compile time before 3.7, so the check never runs.
+        self.assertNotIn("from __future__ import annotations", head)
 
 
 @unittest.skipIf(os.name == "nt", "the POSIX wrapper needs a POSIX shell")
@@ -71,11 +120,16 @@ class TestThePosixWrapperPicks(unittest.TestCase):
             self.skipTest("dirname is required")
         shutil.copy(dirname, os.path.join(self.bin, "dirname"))
 
-    def stub(self, name):
-        """An interpreter that does nothing but say which name ran it."""
+    def stub(self, name, old=False):
+        """An interpreter that does nothing but say which name ran it, and
+        answers the wrapper's version probe (`-c ...`) as a 3.11+ one would --
+        or, with `old`, as an older one would."""
         path = os.path.join(self.bin, name)
         with open(path, "w", encoding="utf-8") as handle:
-            handle.write("#!/bin/sh\nprintf '%s' " + name + "\n")
+            handle.write(
+                "#!/bin/sh\n"
+                'if [ "$1" = "-c" ]; then exit %d; fi\n' % (1 if old else 0) + "printf '%s' " + name + "\n"
+            )
         os.chmod(path, os.stat(path).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
 
     def run_wrapper(self):
@@ -95,7 +149,26 @@ class TestThePosixWrapperPicks(unittest.TestCase):
             text=True,
         )
         self.assertEqual(result.returncode, 127)
-        self.assertIn("Python 3.9+ is required", result.stderr)
+        self.assertIn("no Python 3.11+ was found on PATH", result.stderr)
+
+    def test_an_older_python3_is_passed_over_for_a_newer_python(self):
+        """The system `python3` of some macOS versions next to a pyenv or
+        conda `python`."""
+        self.stub("python3", old=True)
+        self.stub("python")
+        self.assertEqual(self.run_wrapper(), "python")
+
+    def test_only_older_ones_is_the_same_as_none(self):
+        self.stub("python3", old=True)
+        self.stub("python", old=True)
+        result = subprocess.run(
+            [SH, POSIX_WRAPPER, "--version"],
+            env={"PATH": self.bin},
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 127)
+        self.assertIn("no Python 3.11+ was found on PATH", result.stderr)
 
     def test_python3_wins_when_both_are_there(self):
         self.stub("python")

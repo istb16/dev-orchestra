@@ -485,7 +485,7 @@ def _drifted(root: str, blobs: Dict[str, str], run: Runner) -> List[str]:
     code, out, _ = run(["hash-object", "--", *paths], root)
     hashes = out.split()
     if code == 0 and len(hashes) == len(paths):
-        return [path for path, found in zip(paths, hashes) if found != blobs[path]]
+        return [path for path, found in zip(paths, hashes, strict=True) if found != blobs[path]]
     drifted = []
     for path in paths:
         code, out, _ = run(["hash-object", "--", path], root)

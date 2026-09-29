@@ -4,7 +4,7 @@
 
 [tool.ruff]
 line-length = 110
-target-version = "py39"
+target-version = "py311"
 extend-exclude = [".ai", ".tmpcfg"]
 
 [tool.ruff.lint]

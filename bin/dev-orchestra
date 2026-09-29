@@ -15,11 +15,14 @@ done
 here=$(cd -- "$(dirname -- "$script_path")" && pwd)
 root=$(dirname -- "$here")
 
+# A name that runs an older Python is passed over rather than run: the other
+# name may well be a newer one (a system python3 next to a pyenv python).
 for candidate in python3 python; do
-  if command -v "$candidate" >/dev/null 2>&1; then
+  if command -v "$candidate" >/dev/null 2>&1 &&
+    "$candidate" -c 'import sys; sys.exit(sys.version_info < (3, 11))' >/dev/null 2>&1; then
     exec "$candidate" "$root/scripts/dev_orchestra.py" "$@"
   fi
 done
 
-echo "dev-orchestra: Python 3.9+ is required but was not found on PATH" >&2
+echo "dev-orchestra: no Python 3.11+ was found on PATH" >&2
 exit 127

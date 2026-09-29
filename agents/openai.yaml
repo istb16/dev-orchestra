@@ -33,7 +33,7 @@ entrypoint:
     windows: ../bin/dev-orchestra.ps1
 
 requirements:
-  python: ">=3.9"
+  python: ">=3.11"
   tools:
     - git
   optional_clis:
