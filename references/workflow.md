@@ -117,6 +117,18 @@ An upgrade from a version before 0.4.0 adopts the flat `.ai/` into the first
 workflow that runs, so an interrupted workflow keeps its plan, its reports and
 its budget.
 
+**How the formats change.** The `.ai/` artifacts are part of the public
+surface, and they change by addition only: a new version adds a key or a file,
+a reader skips a key it does not know, and a key an older version never wrote
+reads as what that older file meant -- which is "unknown" rather than zero
+where zero would be a claim, as with `priced_runs` in the token ledger. A key is not removed, renamed or given a new meaning.
+A change that cannot be made by addition is a breaking change -- a major
+release, or a minor one while the version is below 1.0 -- and it ships with a
+migration that moves the old form into the new, as the 0.4.0 layout change
+did. The files carry no format version for that
+reason: nothing reads one, and the rule above is what keeps an older workflow
+readable.
+
 `.ai/` gets a `.gitignore` containing `*` on first use, so artifacts stay out of
 the user's commits. Teams who want them reviewable can delete that file and
 commit the directory; teams who never want it can add `.ai/` to the repo's own
