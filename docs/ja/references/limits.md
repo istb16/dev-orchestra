@@ -1,10 +1,37 @@
-<!-- translated-from: references/limits.md sha256:aebb9ce3d9fa56192c725857a197e16d80376304680d1c7b8e39a28a234f7705 -->
+<!-- translated-from: references/limits.md sha256:0a83de16845b9ec0f888944a404e0aeaeaf43a0e35f2ea6ba9e7397973706ee0 -->
 
 > この文書は [references/limits.md](../../../references/limits.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
 <a id="limits-stalls-timeouts-and-budgets"></a>
 
 # 制限: stall、タイムアウト、予算
+
+<!-- contents: start -->
+
+**目次**
+
+- [stall](#stalls)
+  - [タイムアウトだけでは不十分だった理由](#why-a-timeout-was-not-enough)
+  - [2 つの期限（「遅い」と「固まった」は違うため）](#two-deadlines-because-slow-and-wedged-differ)
+  - [外から stall を見る](#seeing-a-stall-from-outside)
+- [予算](#budgets)
+  - [レビューするには大きすぎる変更](#a-change-too-big-to-review)
+  - [プロンプト内の変更本体](#the-change-body-in-the-prompt)
+  - [予算の範囲内の周辺コンテキスト](#surrounding-context-within-the-budget)
+  - [周辺コンテキストの効果を測る](#measuring-what-surrounding-context-does)
+  - [実行時間予算が数えるもの](#what-the-runtime-budget-counts)
+  - [委譲実行のツール活動からわかること、わからないこと](#what-a-delegated-runs-tool-activity-can-and-cannot-say)
+  - [ソースの再取得: ツール活動として報告し、数えず、制限もしない](#re-fetching-the-source-reported-as-tool-activity-not-counted-not-limited)
+- [進捗なし](#no-progress)
+- [そもそもブロックしない](#not-blocking-in-the-first-place)
+- [判定](#the-verdict)
+- [大量のテキストを渡す](#feeding-it-a-lot-of-text)
+- [実行にかかるコスト](#what-a-run-costs)
+- [どこまでコストを削るか](#how-hard-to-try-to-be-cheap)
+  - [効いたのか](#did-it-work)
+- [まだカバーされていないこと](#what-is-still-not-covered)
+
+<!-- contents: end -->
 
 見た目以上に重要な失敗モードが 2 つあります。どちらの場合もパイプラインが
 動いているように見えるからです。

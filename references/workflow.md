@@ -1,5 +1,26 @@
 # Workflow
 
+<!-- contents: start -->
+
+**Contents**
+
+- [Stage selection](#stage-selection)
+- [Artifacts](#artifacts)
+- [Design](#design)
+- [Design review](#design-review)
+- [Approval](#approval)
+- [Implementation](#implementation)
+- [Test](#test)
+- [Reviews](#reviews)
+- [Fix](#fix)
+- [Re-test and re-review](#re-test-and-re-review)
+- [Recording and reporting](#recording-and-reporting)
+- [When something goes wrong](#when-something-goes-wrong)
+- [Example workflows](#example-workflows)
+- [Installing from a skill checkout](#installing-from-a-skill-checkout)
+
+<!-- contents: end -->
+
 Full detail for each stage. The skill has the short version; read this when a
 stage needs more care than the summary gives.
 

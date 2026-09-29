@@ -1,10 +1,36 @@
-<!-- translated-from: references/cli.md sha256:12c0ca0714104de5a94a490570c7006ca03b9103d3edfc336d22299c4e4817da -->
+<!-- translated-from: references/cli.md sha256:b4f29a226631b5e0a3445ee52a2761152c6629895b2ce901d020bb660c526d75 -->
 
 > この文書は [references/cli.md](../../../references/cli.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
 <a id="cli-reference"></a>
 
 # CLI リファレンス
+
+<!-- contents: start -->
+
+**目次**
+
+- [config](#config)
+- [model](#model)
+- [reviewer](#reviewer)
+- [doctor](#doctor)
+- [run](#run)
+  - [architect 自身のセッションで plan を改訂する（`--resume`）](#revising-the-plan-in-the-architects-own-session---resume)
+- [review](#review)
+- [design](#design)
+- [status](#status)
+- [jobs](#jobs)
+- [budget](#budget)
+- [tokens](#tokens)
+- [optimization](#optimization)
+  - [Architect revisions](#architect-revisions)
+- [progress](#progress)
+- [workflow](#workflow)
+- [state / summary](#state--summary)
+- [環境変数](#environment-variables)
+- [トラブルシューティング](#troubleshooting)
+
+<!-- contents: end -->
 
 ```
 python scripts/dev_orchestra.py <command> [options]
@@ -208,6 +234,8 @@ dev-orchestra reviewer remove db-review
 
 `--detach` は実行を独自のプロセスで開始し、すぐにジョブ id を返すので、呼び出しがブロックすることは
 ありません。後述の `jobs` を参照してください。
+
+<a id="revising-the-plan-in-the-architects-own-session---resume"></a>
 
 ### architect 自身のセッションで plan を改訂する（`--resume`）
 
@@ -763,6 +791,8 @@ Review effort, code and design together: 128 accepted over 28 of 46 recorded rou
 テスト結果なしで記録されたラウンドも報告されます。ゲートは `state record test ok|failed` が書き込んだ
 ものを読むので、何も書き込まれなかったラウンドでは判断の材料がなく、ゲートが作動したはずがありません。
 これは効果のなかったレベルとは別のことであり、合計だけからでは両者を取り違えやすいのです。
+
+<a id="architect-revisions"></a>
 
 ### Architect revisions
 

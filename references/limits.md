@@ -1,5 +1,32 @@
 # Limits: stalls, timeouts and budgets
 
+<!-- contents: start -->
+
+**Contents**
+
+- [Stalls](#stalls)
+  - [Why a timeout was not enough](#why-a-timeout-was-not-enough)
+  - [Two deadlines, because "slow" and "wedged" differ](#two-deadlines-because-slow-and-wedged-differ)
+  - [Seeing a stall from outside](#seeing-a-stall-from-outside)
+- [Budgets](#budgets)
+  - [A change too big to review](#a-change-too-big-to-review)
+  - [The change body in the prompt](#the-change-body-in-the-prompt)
+  - [Surrounding context within the budget](#surrounding-context-within-the-budget)
+  - [Measuring what surrounding context does](#measuring-what-surrounding-context-does)
+  - [What the runtime budget counts](#what-the-runtime-budget-counts)
+  - [What a delegated run's tool activity can and cannot say](#what-a-delegated-runs-tool-activity-can-and-cannot-say)
+  - [Re-fetching the source: reported as tool activity, not counted, not limited](#re-fetching-the-source-reported-as-tool-activity-not-counted-not-limited)
+- [No progress](#no-progress)
+- [Not blocking in the first place](#not-blocking-in-the-first-place)
+- [The verdict](#the-verdict)
+- [Feeding it a lot of text](#feeding-it-a-lot-of-text)
+- [What a run costs](#what-a-run-costs)
+- [How hard to try to be cheap](#how-hard-to-try-to-be-cheap)
+  - [Did it work?](#did-it-work)
+- [What is still not covered](#what-is-still-not-covered)
+
+<!-- contents: end -->
+
 Two failure modes matter more than they look, because in both of them the
 pipeline appears to be working:
 

@@ -282,5 +282,71 @@ class TestJapaneseReferences(unittest.TestCase):
                 self.assertIn("](docs/ja/references/%s)" % source.name, text)
 
 
+class TestReferenceContents(unittest.TestCase):
+    """The long references open with a table of contents that matches their
+    headings, in both languages, and every link in it lands on a section."""
+
+    NAMES = ("reviews", "cli", "configuration", "limits", "workflow", "providers")
+
+    def setUp(self):
+        import sys
+
+        scripts = str(pathlib.Path(REPO_ROOT) / "scripts")
+        if scripts not in sys.path:
+            sys.path.insert(0, scripts)
+        import doc_contents
+
+        self.contents = doc_contents
+
+    def documents(self):
+        for name in self.NAMES:
+            yield pathlib.Path(REPO_ROOT) / "references" / ("%s.md" % name)
+            yield JA_REFERENCES / ("%s.md" % name)
+
+    def test_the_contents_are_those_of_the_headings(self):
+        for path in self.documents():
+            text = path.read_text(encoding="utf-8")
+            with self.subTest(document=str(path.relative_to(REPO_ROOT))):
+                self.assertIn(self.contents.START, text)
+                self.assertEqual(
+                    self.contents.with_contents(text, self.contents.language_of(path)),
+                    text,
+                    "run python scripts/doc_contents.py %s" % path.relative_to(REPO_ROOT),
+                )
+
+    def test_every_link_in_the_contents_has_a_section(self):
+        """Checked against what the page will have, not against the function
+        that wrote the links: the explicit anchors a translation carries, and
+        the English headings under GitHub's own naming."""
+        for path in self.documents():
+            text = path.read_text(encoding="utf-8")
+            block = text.split(self.contents.START, 1)[1].split(self.contents.END, 1)[0]
+            if self.contents.language_of(path) == "ja":
+                anchors = set(re.findall(r'^<a id="([^"]+)"></a>$', text, re.MULTILINE))
+            else:
+                body = text.split(self.contents.END, 1)[1]
+                anchors = {
+                    self.contents.slug(title)
+                    for title in re.findall(r"^#{2,3} (.+?)\s*$", body, re.MULTILINE)
+                }
+            for target in re.findall(r"\]\(#([^)]+)\)", block):
+                with self.subTest(document=path.name, anchor=target):
+                    self.assertIn(target, anchors)
+
+    def test_every_translated_heading_carries_its_english_anchor(self):
+        """Without one, its link falls back to a slug of the Japanese title and
+        no longer lands where the English one does."""
+        for name in self.NAMES:
+            lines = (JA_REFERENCES / ("%s.md" % name)).read_text(encoding="utf-8").split("\n")
+            fence = False
+            for number, line in enumerate(lines):
+                if line.lstrip().startswith(("```", "~~~")):
+                    fence = not fence
+                if fence or not re.match(r"^#{2,3} ", line):
+                    continue
+                with self.subTest(translation=name, heading=line):
+                    self.assertRegex(lines[number - 2] if number >= 2 else "", r'^<a id="[^"]+"></a>$')
+
+
 if __name__ == "__main__":
     unittest.main()

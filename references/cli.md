@@ -1,5 +1,31 @@
 # CLI reference
 
+<!-- contents: start -->
+
+**Contents**
+
+- [config](#config)
+- [model](#model)
+- [reviewer](#reviewer)
+- [doctor](#doctor)
+- [run](#run)
+  - [Revising the plan in the architect's own session (`--resume`)](#revising-the-plan-in-the-architects-own-session---resume)
+- [review](#review)
+- [design](#design)
+- [status](#status)
+- [jobs](#jobs)
+- [budget](#budget)
+- [tokens](#tokens)
+- [optimization](#optimization)
+  - [Architect revisions](#architect-revisions)
+- [progress](#progress)
+- [workflow](#workflow)
+- [state / summary](#state--summary)
+- [Environment variables](#environment-variables)
+- [Troubleshooting](#troubleshooting)
+
+<!-- contents: end -->
+
 ```
 python scripts/dev_orchestra.py <command> [options]
 bin/dev-orchestra <command> [options]           # POSIX wrapper

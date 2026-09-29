@@ -1,10 +1,33 @@
-<!-- translated-from: references/reviews.md sha256:8f74146be807bb7a9868b7d64653e49585793c29568a53ad516f28053c8b2a2e -->
+<!-- translated-from: references/reviews.md sha256:a5eb87ebaed633c2c8ede1ead1327fe37e7fe7c007f909227a2b087b520d9f56 -->
 
 > この文書は [references/reviews.md](../../../references/reviews.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
 <a id="reviews"></a>
 
 # レビュー
+
+<!-- contents: start -->
+
+**目次**
+
+- [マルチモデルレビューを価値あるものにするルール](#the-rules-that-make-multi-model-review-worth-doing)
+- [スナップショット](#snapshot)
+  - [本文を省略するファイル](#withheld-files)
+- [周辺コンテキスト](#surrounding-context)
+- [設計レビュー](#design-review)
+- [レビューが実行されない場合、または縮小して実行される場合](#when-a-review-does-not-run-or-runs-smaller)
+- [ロール](#roles)
+- [出力スキーマ](#output-schema)
+  - [出力の上限](#output-limits)
+- [Coverage](#coverage)
+- [重複排除](#deduplication)
+  - [自動マージが保守的なままである理由](#why-auto-merge-stays-conservative)
+- [トリアージ](#triage)
+- [再レビュー](#re-review)
+  - [2 ラウンド目は修正だけを diff する](#the-second-round-only-diffs-the-fix)
+- [レビューを単独で実行する](#running-reviews-on-their-own)
+
+<!-- contents: end -->
 
 <a id="the-rules-that-make-multi-model-review-worth-doing"></a>
 

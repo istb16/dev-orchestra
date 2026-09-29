@@ -1,5 +1,26 @@
 # Configuration
 
+<!-- contents: start -->
+
+**Contents**
+
+- [Where it lives](#where-it-lives)
+- [Precedence](#precedence)
+- [Schema (version 1)](#schema-version-1)
+  - [Field reference](#field-reference)
+  - [Role options](#role-options)
+- [Optimization level](#optimization-level)
+  - [Reviewers that run only on high-risk changes](#reviewers-that-run-only-on-high-risk-changes)
+- [Model tiers](#model-tiers)
+- [Model families and version policy](#model-families-and-version-policy)
+- [What the user asks for, and what to run](#what-the-user-asks-for-and-what-to-run)
+- [Editing](#editing)
+  - [The wizard](#the-wizard)
+- [Worked examples](#worked-examples)
+- [YAML dialect](#yaml-dialect)
+
+<!-- contents: end -->
+
 ## Where it lives
 
 | Layer | Path | Purpose |

@@ -1,10 +1,31 @@
-<!-- translated-from: references/configuration.md sha256:ce4a90ea7f688225cc20810d1ce71cbe08765966acd2b1821b47e24f8353c915 -->
+<!-- translated-from: references/configuration.md sha256:7af1d447a8b5d2530915b2bb0813c7a38c3fa34cf2449ab2d449ade3af877071 -->
 
 > この文書は [references/configuration.md](../../../references/configuration.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
 <a id="configuration"></a>
 
 # 設定
+
+<!-- contents: start -->
+
+**目次**
+
+- [設定の置き場所](#where-it-lives)
+- [優先順位](#precedence)
+- [スキーマ（version 1）](#schema-version-1)
+  - [フィールドリファレンス](#field-reference)
+  - [ロールのオプション](#role-options)
+- [最適化レベル](#optimization-level)
+  - [高リスクな変更でだけ走るレビュアー](#reviewers-that-run-only-on-high-risk-changes)
+- [モデルティア](#model-tiers)
+- [モデル family とバージョンポリシー](#model-families-and-version-policy)
+- [ユーザーの依頼と実行するコマンド](#what-the-user-asks-for-and-what-to-run)
+- [編集](#editing)
+  - [ウィザード](#the-wizard)
+- [実例](#worked-examples)
+- [YAML の方言](#yaml-dialect)
+
+<!-- contents: end -->
 
 <a id="where-it-lives"></a>
 
