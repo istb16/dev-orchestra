@@ -560,6 +560,101 @@ class TestTheResumeRecord(IsolatedCase):
         self.assertIn("nothing recorded", lines[0].detail)
         self.assertFalse(os.path.exists(smoke_live.verified.record_path("claude")))
 
+    def test_a_record_inside_the_checkout_is_refused_from_a_subdirectory(self):
+        self.init_git_repo()
+        os.environ["DEV_ORCHESTRA_HOME"] = os.path.join(self.project, ".ai", "home")
+        subdirectory = os.path.join(self.project, "src")
+        os.makedirs(subdirectory)
+        os.chdir(subdirectory)
+        lines = smoke_live.record_resume(_Resumer(), "claude", self.checks(), "fake-1")
+        self.assertFalse(lines[0].ok)
+        self.assertIn("nothing recorded", lines[0].detail)
+        self.assertFalse(os.path.exists(smoke_live.verified.record_path("claude")))
+
+
+class TestTheLiveCheckRecord(IsolatedCase):
+    """Which version each run checked, for doctor. Names only, never a detail."""
+
+    def run_provider(self, provider):
+        original = smoke_live.get_provider
+        smoke_live.get_provider = lambda name: provider
+        self.addCleanup(setattr, smoke_live, "get_provider", original)
+        os.chdir(self.project)
+        return smoke_live.check_provider("fake", self.project)
+
+    def test_a_failure_and_a_skip_are_recorded_by_name(self):
+        checks = [
+            smoke_live.Check("fake", "installed", True, "fake 1"),
+            smoke_live.Check("fake", "reports what it spent", False, "secret=abc"),
+            smoke_live.Check("fake", "stays confined (symlink)", False, "not tested", skipped=True),
+            smoke_live.Check("other", "stays read-only", False, "not this provider"),
+        ]
+        os.chdir(self.project)
+        self.assertEqual(smoke_live.record_smoke("fake", "fake 1", checks), [])
+        entry = smoke_live.verified.smoke_status("fake", "fake 1", self.project)["entry"]
+        self.assertFalse(entry["ok"])
+        self.assertEqual(entry["failed"], ["reports what it spent"])
+        self.assertEqual(entry["skipped"], ["stays confined (symlink)"])
+        with open(smoke_live.verified.smoke_record_path("fake"), encoding="utf-8") as handle:
+            self.assertNotIn("secret", handle.read())
+
+    def test_a_provider_run_records_its_version(self):
+        checks = self.run_provider(_FakeProvider(usage=Usage()))
+        self.assertNotIn("live check recorded", [c.name for c in checks])
+        found = smoke_live.verified.smoke_status("fake", "fake 1", self.project)
+        self.assertEqual(found["status"], "failed")
+        self.assertEqual(found["entry"]["failed"], ["reports what it spent"])
+
+    def test_a_run_that_stops_early_is_still_recorded(self):
+        self.run_provider(_FakeProvider(raises=TypeError("unexpected keyword argument")))
+        found = smoke_live.verified.smoke_status("fake", "fake 1", self.project)
+        self.assertEqual(found["entry"]["failed"], ["answers a review prompt"])
+
+    def test_a_missing_cli_records_nothing(self):
+        self.run_provider(_FakeProvider(installed=False))
+        self.assertFalse(os.path.exists(smoke_live.verified.smoke_record_path("fake")))
+
+    def test_a_record_inside_the_checkout_is_a_failed_check(self):
+        os.environ["DEV_ORCHESTRA_HOME"] = os.path.join(self.project, ".ai", "home")
+        checks = self.run_provider(_FakeProvider())
+        line = verdict(checks, "live check recorded")
+        self.assertFalse(line.ok)
+        self.assertIn("nothing recorded", line.detail)
+        self.assertFalse(os.path.exists(smoke_live.verified.smoke_record_path("fake")))
+
+    def test_a_record_inside_the_checkout_is_refused_from_a_subdirectory(self):
+        """Judged against the checkout, as doctor judges it, not the current directory."""
+        self.init_git_repo()
+        os.environ["DEV_ORCHESTRA_HOME"] = os.path.join(self.project, ".ai", "home")
+        subdirectory = os.path.join(self.project, "src")
+        os.makedirs(subdirectory)
+        os.chdir(subdirectory)
+        checks = [smoke_live.Check("fake", "installed", True, "fake 1")]
+        lines = smoke_live.record_smoke("fake", "fake 1", checks)
+        self.assertEqual([c.name for c in lines], ["live check recorded"])
+        self.assertIn("nothing recorded", lines[0].detail)
+        self.assertFalse(os.path.exists(smoke_live.verified.smoke_record_path("fake")))
+
+    def test_a_write_that_fails_is_a_failed_check_not_a_crash(self):
+        """The tokens are spent by then: the run still reports."""
+        from unittest import mock
+
+        error = PermissionError(13, "Access is denied", "C:/cfg/secret=abc")
+        with mock.patch.object(smoke_live.verified.ws, "write_json", side_effect=error):
+            checks = self.run_provider(_FakeProvider(usage=Usage()))
+        line = verdict(checks, "live check recorded")
+        self.assertFalse(line.ok)
+        self.assertIn("PermissionError", line.detail)
+        self.assertIn("Access is denied", line.detail)
+        self.assertIn("reports what it spent", [c.name for c in checks])
+
+
+class TestTheOfflineProviders(unittest.TestCase):
+    def test_doctor_and_the_script_share_one_list(self):
+        from orchestrator import doctor
+
+        self.assertIs(doctor.OFFLINE, smoke_live.OFFLINE)
+
 
 class TestItStaysOutOfTheSuite(unittest.TestCase):
     def test_the_script_is_not_collected_by_discovery(self):

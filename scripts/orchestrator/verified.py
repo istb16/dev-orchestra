@@ -11,6 +11,11 @@ workspace is neither read nor written.
 Only ``scripts/smoke_live.py`` writes here, after running the checks named in
 :data:`REQUIRED_RESUME_CHECKS` against the real CLI. This module knows no CLI
 syntax.
+
+A second record per provider (``<provider>-smoke.json``) says which versions
+went through that script at all, and how they fared: a CLI update is when its
+output or flags can drift, and ``doctor`` notes a version never checked here.
+It holds check names only, never a check's detail.
 """
 
 from __future__ import annotations
@@ -34,9 +39,17 @@ REQUIRED_RESUME_CHECKS = (
     "ignores repository hooks on resume",
 )
 
-INSIDE_WORKSPACE = (
-    "the verification record is inside the workspace; point DEV_ORCHESTRA_HOME outside the checkout"
-)
+#: How a problem names each record: ``doctor`` reports both, on separate lines.
+RECORD = "verification record"
+SMOKE_RECORD = "live-check record"
+
+
+def _inside(label: str) -> str:
+    return "the %s is inside the workspace; point DEV_ORCHESTRA_HOME outside the checkout" % label
+
+
+INSIDE_WORKSPACE = _inside(RECORD)
+SMOKE_INSIDE_WORKSPACE = _inside(SMOKE_RECORD)
 
 
 class VerifiedRecordError(RuntimeError):
@@ -64,16 +77,19 @@ def outside(path: str, root: str) -> bool:
 
 def read(provider: str, root: str) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
     """``(data, problem)``. ``(None, None)`` when there is no record yet."""
-    path = record_path(provider)
+    return _load(record_path(provider), root)
+
+
+def _load(path: str, root: str, label: str = RECORD) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
     if not outside(path, root):
-        return None, INSIDE_WORKSPACE
+        return None, _inside(label)
     if not os.path.isfile(path):
         return None, None
     data = ws.read_json(path)
     if not isinstance(data, dict):
-        return None, "the verification record is not a JSON object"
+        return None, "the %s is not a JSON object" % label
     if data.get("schema") != SCHEMA:
-        return None, "the verification record has an unknown schema"
+        return None, "the %s has an unknown schema" % label
     return data, None
 
 
@@ -155,3 +171,61 @@ def record_fail(provider: str, version: str, failed_checks: Sequence[str], root:
         data["failed"][version] = {"failed_at": ws.utcnow(), "checks": list(failed_checks)}
 
     return _update(provider, root, change)
+
+
+def smoke_record_path(provider: str) -> str:
+    """Where ``provider``'s live-check record lives. Nothing else builds this path."""
+    return os.path.join(config.global_config_dir(), "verified", "%s-smoke.json" % provider)
+
+
+def record_smoke(
+    provider: str, version: str, failed: Sequence[str], skipped: Sequence[str], root: str
+) -> str:
+    """Record how ``version`` fared in a live check; returns the record's path."""
+    path = smoke_record_path(provider)
+    if not outside(path, root):
+        raise VerifiedRecordError(SMOKE_INSIDE_WORKSPACE)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with ws.file_lock(path):
+        data = ws.read_json(path)
+        if not isinstance(data, dict) or data.get("schema") != SCHEMA:
+            data = {}
+        versions = data.get("versions")
+        data = {
+            "schema": SCHEMA,
+            "provider": provider,
+            "versions": versions if isinstance(versions, dict) else {},
+        }
+        data["versions"][version] = {
+            "checked_at": ws.utcnow(),
+            "ok": not failed,
+            "failed": list(failed),
+            "skipped": list(skipped),
+            "dev_orchestra": __version__,
+        }
+        ws.write_json(path, data)
+    return path
+
+
+def smoke_status(provider: str, version: str, root: str) -> Dict[str, Any]:
+    """``status`` is ``passed``, ``failed`` or ``absent`` for this version.
+
+    ``passed`` allows skipped checks: nothing was shown to fail. ``last_passed``
+    is the most recent passing entry of any version, or None.
+    """
+    data, problem = _load(smoke_record_path(provider), root, SMOKE_RECORD)
+    versions = (data or {}).get("versions")
+    versions = versions if isinstance(versions, dict) else {}
+    last_passed: Optional[Dict[str, Any]] = None
+    for name, entry in versions.items():
+        if not isinstance(entry, dict) or entry.get("ok") is not True:
+            continue
+        checked_at = entry.get("checked_at")
+        if isinstance(checked_at, str) and (last_passed is None or checked_at > last_passed["checked_at"]):
+            last_passed = {"version": name, "checked_at": checked_at}
+    entry = versions.get(version)
+    if not isinstance(entry, dict):
+        status, entry = "absent", None
+    else:
+        status = "passed" if entry.get("ok") is True else "failed"
+    return {"status": status, "entry": entry, "last_passed": last_passed, "problem": problem}

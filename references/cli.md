@@ -101,7 +101,9 @@ into a file, so a value there is always one somebody added.
 
 A **Notes** block follows the problems when there is something worth knowing
 that is not wrong; notes never count towards `--strict`, and in `--json` they
-are `notes` (`[]` when there are none). Today there is one: every `when:
+are `notes` (`[]` when there are none). There are two kinds. One names an
+installed CLI version that has not been live-checked on this machine (see the
+`Live check:` line below). The other: every `when:
 high-risk` reviewer judged by the built-in `high_risk_paths` alone -- no list
 of the repository's own, no `extra_high_risk_paths` -- is named in a single
 note, because the defaults fit common names and can miss this repository's
@@ -132,6 +134,27 @@ a session on that CLI: `verified for claude <version> on <date> (built-in)` or
 (--fast)`. In `--json` it is `providers.<name>.resume_support` (`status`,
 `detail`, `version`, `source`, `record`, `verified_at`, `missing`). It is never
 a problem: a run that cannot resume runs fresh.
+
+Beside it, every installed provider except the offline `mock` gets a `Live
+check:` line saying whether `scripts/smoke_live.py` has run this CLI version on
+this machine -- it is the only thing that runs the real CLIs, and a CLI update
+is when their output or flags can drift from the adapter: `passed for
+<version> on <date>` (with `, N skipped` when checks were skipped), `FAILED for
+<version> on <date> (<check names>)`, `not run for <version> (last passed:
+<old version> on <date>)`, `never run on this machine`, or what is wrong with
+the record (for example that it is inside the workspace). The record is
+`verified/<provider>-smoke.json` in the config directory, written by the
+script; reading it is a file read, so `--fast` shows the line too. A version
+not yet checked also gets a note: `<provider> <version> has not been
+live-checked on this machine (last passed: <version>|never); run python
+<path>/smoke_live.py --provider <provider> -- it spends a few real tokens`,
+with the real path of the script. A version whose check failed gets the line
+only -- whoever ran it has seen the failure -- and so does a record inside the
+workspace, which the script would refuse to write. An installed CLI whose
+version could not be read shows `version unavailable` and no note: there is no
+version to look up. In `--json` it is `providers.<name>.live_check` (`status`
+one of `passed`, `failed`, `absent`, `version-unavailable`; `entry`,
+`last_passed`, `problem`). It is never a problem.
 
 ## run
 

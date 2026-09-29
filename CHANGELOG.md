@@ -10,6 +10,22 @@ The public surface covered by that promise is: the configuration schema, the
 
 ## [Unreleased]
 
+### Added
+
+- **`doctor` says whether the installed CLI version has been live-checked.**
+  `scripts/smoke_live.py` now records, per provider and on this machine, the
+  CLI version it ran and which checks failed or were skipped (names only), in
+  `verified/<provider>-smoke.json` in the config directory. `doctor` shows it
+  on a `Live check:` line beside `Resume:` -- `passed for <version> on
+  <date>`, `FAILED for ...`, `not run for <version> (last passed: ...)` or
+  `never run on this machine`, or `version unavailable` when the CLI's
+  version could not be read -- and in `--json` as
+  `providers.<name>.live_check`. When the installed version has never been
+  checked here, which is when a CLI update can have changed its output or
+  flags, it adds a note naming the command to run. A failed check gets the
+  line only. Notes never affect the exit code, and `--fast` reads the record
+  too. The offline `mock` provider gets neither.
+
 ## [0.13.2] - 2026-09-29
 
 ### Added

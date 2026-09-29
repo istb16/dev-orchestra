@@ -3,7 +3,9 @@
 
 This script writes a verification record to the user's config directory
 (``verified/<provider>-resume.json``), and nothing else writes one: it is how
-a CLI version is cleared for ``run architect --resume`` on this machine.
+a CLI version is cleared for ``run architect --resume`` on this machine. It
+also records which CLI version each run checked (``<provider>-smoke.json``),
+so ``doctor`` can note a version that has not been through it here.
 
 The test suite may not do this. It has to pass on a machine with neither CLI
 installed -- that is what CI runs on -- so it reviews with the `mock` provider,
@@ -48,7 +50,15 @@ from typing import Any, Dict, List, Optional
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from orchestrator import verified
-from orchestrator.providers import MODE_PLAN, MODE_REVIEW, available_providers, get_provider
+from orchestrator import workspace as ws
+from orchestrator.providers import (
+    MODE_PLAN,
+    MODE_REVIEW,
+    OFFLINE,
+    available_providers,
+    get_provider,
+    redact,
+)
 
 #: Short enough to cost almost nothing, specific enough that a wrong answer is
 #: obvious rather than arguable.
@@ -89,10 +99,6 @@ LINK_PROMPT = "Read the file `link.txt` in the current directory and reply with 
 #: footer, so counting tool calls from it would mean matching prose -- which
 #: matches the code under review as readily as the CLI's own output.
 REPORTS_TOOLS = ("claude",)
-
-#: Providers with no CLI behind them. Running the mock here would prove that
-#: the mock works, which is the one thing already covered.
-OFFLINE = ("mock",)
 
 TIMEOUT = 180
 
@@ -161,14 +167,20 @@ def sandbox() -> str:
 
 
 def check_provider(name: str, root: str) -> List[Check]:
-    checks: List[Check] = []
     provider = get_provider(name)
 
     detection = provider.detect()
     if not detection.installed:
         return [Check(name, "installed", False, detection.error or "not on PATH")]
-    checks.append(Check(name, "installed", True, detection.version or ""))
+    checks = [Check(name, "installed", True, detection.version or "")]
+    checks.extend(_installed_checks(provider, name, root))
+    if detection.version:
+        checks.extend(record_smoke(name, detection.version, checks))
+    return checks
 
+
+def _installed_checks(provider: Any, name: str, root: str) -> List[Check]:
+    checks: List[Check] = []
     try:
         resolved = provider.resolve_model(None)
         checks.append(Check(name, "resolves a model", True, resolved.display))
@@ -566,7 +578,7 @@ def record_resume(provider: Any, name: str, checks: List[Check], model: str) -> 
     version = provider.version()[0]
     if not version:
         return [Check(name, label, False, "could not read the CLI version; nothing recorded")]
-    root = os.getcwd()
+    root = checkout_root()
     try:
         if failed:
             verified.record_fail(name, version, failed, root)
@@ -594,6 +606,36 @@ def record_resume(provider: Any, name: str, checks: List[Check], model: str) -> 
         )
         check.notes.append(json.dumps({version: entry}, indent=2))
     return [check]
+
+
+def record_smoke(name: str, version: str, checks: List[Check]) -> List[Check]:
+    """Write down that this CLI version went through these checks, for ``doctor``.
+
+    Names only: a check's detail can quote what the CLI printed. Nothing is
+    printed on success; a refused or failed write is a failed check, so the
+    run still reports what it spent tokens on.
+    """
+    mine = [check for check in checks if check.provider == name]
+    failed = list(dict.fromkeys(c.name for c in mine if not c.ok and not c.skipped))
+    skipped = list(dict.fromkeys(c.name for c in mine if c.skipped))
+    label = "live check recorded"
+    try:
+        verified.record_smoke(name, version, failed, skipped, checkout_root())
+    except verified.VerifiedRecordError:
+        detail = (
+            "the live-check record would land inside this checkout (DEV_ORCHESTRA_HOME); nothing recorded"
+        )
+        return [Check(name, label, False, detail)]
+    except OSError as exc:
+        reason = "%s: %s" % (type(exc).__name__, redact(str(exc)))
+        detail = "could not write the live-check record (%s); nothing recorded" % reason
+        return [Check(name, label, False, detail)]
+    return []
+
+
+def checkout_root() -> str:
+    """The checkout a record may not land in, from anywhere inside it."""
+    return ws.repo_root(os.getcwd())
 
 
 def main(argv: Optional[List[str]] = None) -> int:
