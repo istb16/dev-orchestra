@@ -72,6 +72,13 @@ The public surface covered by that promise is: the configuration schema, the
 
 ### Changed
 
+- **The compatibility rule for `.ai/` artifacts is written down once**, under
+  "How the formats change" in `references/workflow.md`: additions only,
+  readers skip unknown keys and read missing ones as the older file meant
+  them (unknown, not zero, where zero would be a claim), and a change that
+  cannot be an addition is a breaking release with a migration. The artifacts
+  get no format version, since nothing would read one (#126).
+
 - **The long references open with a table of contents**: `reviews`, `cli`,
   `configuration`, `limits`, `workflow` and `providers`, in both languages,
   listing their `##` and `###` sections. `scripts/doc_contents.py` writes
