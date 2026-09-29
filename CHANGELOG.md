@@ -10,6 +10,8 @@ The public surface covered by that promise is: the configuration schema, the
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-09-29
+
 ### Added
 
 - **Google Antigravity as a third plugin host.** A root `plugin.json` (only
@@ -46,6 +48,10 @@ The public surface covered by that promise is: the configuration schema, the
   the exit code. See `doctor` in `references/cli.md` (#122).
 
 ### Changed
+
+- **claude 2.1.284 resumes the architect's session**: it is added to the
+  verified table after passing every required check on 2026-09-29 (the two
+  symlink checks were skipped, as before; they are not required).
 
 - **The `.ai/` artifact compatibility rule is written down once**, under "How
   the formats change" in `references/workflow.md`. The artifacts get no
@@ -1936,7 +1942,8 @@ First release.
   none of which invoke a real CLI.
 - CI on Linux, macOS and Windows: lint, tests, skill validation.
 
-[Unreleased]: https://github.com/istb16/dev-orchestra/compare/v0.13.2...HEAD
+[Unreleased]: https://github.com/istb16/dev-orchestra/compare/v0.14.0...HEAD
+[0.14.0]: https://github.com/istb16/dev-orchestra/compare/v0.13.2...v0.14.0
 [0.13.2]: https://github.com/istb16/dev-orchestra/compare/v0.13.1...v0.13.2
 [0.13.1]: https://github.com/istb16/dev-orchestra/compare/v0.13.0...v0.13.1
 [0.13.0]: https://github.com/istb16/dev-orchestra/compare/v0.12.0...v0.13.0

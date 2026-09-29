@@ -781,7 +781,7 @@ class TestClaudeResume(IsolatedCase):
         support = self.provider.resume_support(self.project)
         self.assertEqual(support["status"], "verified")
         self.assertEqual(support["source"], "built-in")
-        self.provider.version = lambda: ("2.1.284 (Claude Code)", None)
+        self.provider.version = lambda: ("2.1.285 (Claude Code)", None)
         self.assertEqual(self.status(), "unverified")
 
     def test_a_built_in_entry_needs_the_current_mechanism(self):
