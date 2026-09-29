@@ -52,7 +52,7 @@ def stamp(translation: pathlib.Path) -> None:
 
 def main(argv: list) -> int:
     if not argv:
-        print(__doc__.strip(), file=sys.stderr)
+        print(str(__doc__).strip(), file=sys.stderr)
         return 2
     for name in argv:
         path = pathlib.Path(name).resolve()

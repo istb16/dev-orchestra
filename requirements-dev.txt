@@ -1,0 +1,10 @@
+# Tools for working on dev-orchestra, not for running it: the runtime is the
+# standard library only. Pinned so a new release cannot turn every PR red; CI
+# installs exactly these.
+#
+#   python -m venv .venv
+#   .venv/bin/pip install -r requirements-dev.txt      (Windows: .venv\Scripts\pip)
+ruff==0.16.6
+# The nodejs extra brings the Node.js Pyright runs on as a wheel, installed
+# with the rest, instead of a download on its first run.
+pyright[nodejs]==1.1.414

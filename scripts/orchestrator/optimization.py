@@ -43,7 +43,7 @@ from __future__ import annotations
 
 import fnmatch
 import posixpath
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple, cast
 
 from .providers.base import redact
 
@@ -876,7 +876,7 @@ def _inputs_differ(with_event: Dict[str, Any], without_event: Dict[str, Any]) ->
     if not isinstance(ours, dict) or not isinstance(theirs, dict):
         return ["inputs"]
     keys = list(ours) + [key for key in theirs if key not in ours]
-    return [_INPUT_NAMES.get(key, key) for key in keys if ours.get(key) != theirs.get(key)]
+    return [_INPUT_NAMES.get(str(key), str(key)) for key in keys if ours.get(key) != theirs.get(key)]
 
 
 def _pair(key: Tuple[Any, ...], with_event: Dict[str, Any], without_event: Dict[str, Any]) -> Dict[str, Any]:
@@ -1394,7 +1394,8 @@ def _add_spend(stage: Dict[str, Any], event: Dict[str, Any]) -> None:
     for run in event.get("reviewers") or []:
         if not isinstance(run, dict):
             continue
-        usage = run.get("usage") if isinstance(run.get("usage"), dict) else {}
+        raw_usage = run.get("usage")
+        usage = raw_usage if isinstance(raw_usage, dict) else {}
         billed = _int(usage.get("billed_tokens"))
         cost = usage.get("cost_usd")
         priced = isinstance(cost, (int, float)) and not isinstance(cost, bool)
@@ -1407,7 +1408,7 @@ def _add_spend(stage: Dict[str, Any], event: Dict[str, Any]) -> None:
             group["billed_tokens"] += billed
             if priced:
                 group["priced_runs"] += 1
-                group["cost_usd"] += float(cost)
+                group["cost_usd"] += float(cast(float, cost))
 
 
 def _add_left_out(stage: Dict[str, Any], groups: Sequence[Dict[str, Any]]) -> None:
@@ -1433,7 +1434,8 @@ def _add_left_out(stage: Dict[str, Any], groups: Sequence[Dict[str, Any]]) -> No
         }
         left: set = set()
         for event in group["events"]:
-            plan = event.get("optimization") if isinstance(event.get("optimization"), dict) else {}
+            raw_plan = event.get("optimization")
+            plan = raw_plan if isinstance(raw_plan, dict) else {}
             at = str(event.get("at") or "")
             for record in plan.get("conditional") or []:
                 if not isinstance(record, dict) or not record.get("id"):

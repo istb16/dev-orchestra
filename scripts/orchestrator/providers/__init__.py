@@ -19,7 +19,7 @@ import importlib.util
 import os
 import re
 import sys
-from typing import Any, Callable, Dict, List, NamedTuple, Optional, Tuple
+from typing import Any, Callable, Dict, List, NamedTuple, Optional, Tuple, cast
 
 from .base import (  # noqa: F401 - re-exported as the adapter interface
     MODE_IMPLEMENT,
@@ -97,6 +97,8 @@ def register(name: str, factory: ProviderFactory, origin: Optional[ProviderOrigi
         origin = origin or ProviderOrigin("builtin", None, getattr(factory, "__module__", "") or "")
     existing = _ORIGINS.get(name)
     if name in _REGISTRY:
+        # Registered and recorded together, so a registered name has an origin.
+        assert existing is not None
         if existing.kind == "builtin":
             raise ProviderRegistrationError("%r is a built-in provider; the built-in wins" % name)
         raise ProviderRegistrationError(
@@ -267,7 +269,10 @@ def _load_user_module(path: str) -> Tuple[Optional[str], Optional[str]]:
     if error is None:
         _LOADER_REGISTERING = True
         try:
-            register(name, _guarded(module.build_provider, path), ProviderOrigin("user", path, modname))
+            # No error means the contract check returned the provider name.
+            register(
+                cast(str, name), _guarded(module.build_provider, path), ProviderOrigin("user", path, modname)
+            )
         except ProviderRegistrationError as exc:
             error = describe_exception(exc)
         finally:

@@ -6,7 +6,7 @@ import difflib
 import hashlib
 import os
 import re
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple, cast
 
 from . import context as context_mod
 from . import workspace as ws
@@ -418,7 +418,7 @@ def _surrounding(current: Sequence[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
         return None
     values = list(records.values())
     if all(isinstance(record, dict) for record in values) and all(record == values[0] for record in values):
-        return {"shared": True, **values[0]}
+        return {"shared": True, **cast(Dict[str, Any], values[0])}
     by_reviewer = {key: (record if isinstance(record, dict) else None) for key, record in records.items()}
     return {"shared": False, "by_reviewer": by_reviewer}
 

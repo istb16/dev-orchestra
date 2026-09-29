@@ -247,7 +247,7 @@ class TestPortability(IsolatedCase):
         marker = "You are the **Orchestrator**"
         hits = []
         for dirpath, dirnames, filenames in os.walk(REPO_ROOT):
-            dirnames[:] = [d for d in dirnames if d not in (".git", "__pycache__", ".ai")]
+            dirnames[:] = [d for d in dirnames if d not in (".git", "__pycache__", ".ai", ".tmpcfg", ".venv")]
             for name in filenames:
                 if not name.endswith((".md", ".yaml", ".yml", ".sh", ".ps1")):
                     continue
@@ -301,7 +301,9 @@ class TestPortability(IsolatedCase):
         """Nothing machine-specific should be committable."""
         offenders = []
         for dirpath, dirnames, filenames in os.walk(REPO_ROOT):
-            dirnames[:] = [d for d in dirnames if d not in (".git", "__pycache__", ".ai", ".tmpcfg")]
+            # `.venv` is the development environment CONTRIBUTING sets up: ignored by
+            # git, and full of the machine it was made on.
+            dirnames[:] = [d for d in dirnames if d not in (".git", "__pycache__", ".ai", ".tmpcfg", ".venv")]
             for name in filenames:
                 if not name.endswith((".py", ".md", ".yaml", ".yml", ".sh", ".ps1", ".json")):
                     continue

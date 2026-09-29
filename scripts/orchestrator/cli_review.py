@@ -231,7 +231,8 @@ def _measurement_block(
     and the workflow directory apart from the budget epoch: a pair is keyed on
     the first, and ``budget reset`` between the two runs changes only the second.
     """
-    frozen = meta.get("surrounding") if isinstance(meta.get("surrounding"), dict) else {}
+    raw_frozen = meta.get("surrounding")
+    frozen = raw_frozen if isinstance(raw_frozen, dict) else {}
     return {
         "surrounding": override,
         "snapshot": str(meta.get("sha256") or ""),
@@ -1030,7 +1031,8 @@ def _condition_excluded(workspace: ws.Workspace) -> set:
             continue
         if str(event.get("round_id") or "") != round_id:
             continue
-        plan = event.get("optimization") if isinstance(event.get("optimization"), dict) else {}
+        raw_plan = event.get("optimization")
+        plan = raw_plan if isinstance(raw_plan, dict) else {}
         return {
             str(record.get("id"))
             for record in plan.get("conditional") or []
@@ -1112,7 +1114,7 @@ def cmd_review_fix_brief(args: argparse.Namespace) -> int:
     else:
         brief = review_mod.render_fix_brief(data)
     if args.output:
-        path = _in_workflow(workspace, args.output)
+        path = _in_workflow(workspace, str(args.output))
         ws.write_text(path, brief)
         _out("Wrote %s" % workspace.relative(path))
     else:

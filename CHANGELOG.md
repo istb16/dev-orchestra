@@ -12,6 +12,16 @@ The public surface covered by that promise is: the configuration schema, the
 
 ### Added
 
+- **Type checking with Pyright in CI.** A `Type check` job runs `pyright` over
+  `scripts/` against Python 3.11 for every platform, and fails on any error.
+  The tools for working on the code are pinned in a new
+  `requirements-dev.txt` (ruff, and Pyright with the Node.js it runs on as a
+  wheel), which the lint job installs too;
+  CONTRIBUTING describes setting them up in a `.venv`. The 88 errors the
+  first run reported were all places the checker could not follow a
+  narrowing the code relies on; they are fixed without changing what the code
+  does. The tests are not type-checked yet (#125).
+
 - **`doctor` says whether the installed CLI version has been live-checked.**
   `scripts/smoke_live.py` now records, per provider and on this machine, the
   CLI version it ran and which checks failed or were skipped (names only), in

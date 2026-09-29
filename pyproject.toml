@@ -32,3 +32,17 @@ ignore = [
 
 [tool.ruff.lint.isort]
 known-first-party = ["orchestrator"]
+
+[tool.pyright]
+# The code that ships. Tests are not checked yet: they replace functions and
+# build fixtures in ways the checker cannot follow, and are a separate step.
+include = ["scripts"]
+pythonVersion = "3.11"
+typeCheckingMode = "standard"
+# Checked for every platform at once: the code branches on the OS, and the
+# Unix branch uses os.killpg and signal.SIGKILL, which a Windows run would
+# otherwise report as missing.
+pythonPlatform = "All"
+# The runtime has no dependencies; PyYAML is used when present and is not
+# installed for the check.
+reportMissingModuleSource = false

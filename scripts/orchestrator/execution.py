@@ -27,7 +27,7 @@ import subprocess
 import sys
 import threading
 import time
-from typing import Dict, List, Optional, Sequence
+from typing import IO, Any, Dict, List, Optional, Sequence, cast
 
 #: Exit codes this module reports for its own decisions. Chosen to stay clear
 #: of the 0-127 range a child is likely to use for its own reasons.
@@ -114,7 +114,7 @@ class _Drain:
             return self.last_output_at
 
 
-def _spawn_kwargs() -> Dict[str, object]:
+def _spawn_kwargs() -> Dict[str, Any]:
     """Put the child in its own group so the whole tree can be signalled."""
     if IS_WINDOWS:
         return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
@@ -267,10 +267,12 @@ def execute(
 
 
 def _feed_stdin(proc: subprocess.Popen, prompt: str) -> None:
+    # Every caller opens stdin as a text pipe.
+    stdin = cast(IO[str], proc.stdin)
     try:
         if prompt:
-            proc.stdin.write(prompt)
-        proc.stdin.close()
+            stdin.write(prompt)
+        stdin.close()
     except (OSError, ValueError):
         pass
 
