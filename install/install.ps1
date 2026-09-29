@@ -272,10 +272,18 @@ function Install-AntigravityPlugin {
     if (-not $Copy) {
         # A junction needs neither Developer Mode nor elevation, but cannot
         # point at a network path; a symlink can, when it is allowed.
+        # Junctions are Windows only: elsewhere PowerShell answers the request
+        # without making a link.
+        $kinds = @('SymbolicLink')
+        if ($env:OS -eq 'Windows_NT') { $kinds = @('Junction', 'SymbolicLink') }
         $failures = @()
-        foreach ($kind in @('Junction', 'SymbolicLink')) {
+        foreach ($kind in $kinds) {
             try {
                 New-Item -ItemType $kind -Path $dest -Target $root -ErrorAction Stop | Out-Null
+                $made = Get-Item -LiteralPath $dest -Force -ErrorAction SilentlyContinue
+                if (-not ($made -and ($made.Attributes -band [System.IO.FileAttributes]::ReparsePoint))) {
+                    throw 'no link was made'
+                }
                 $mechanism = 'symlink'
                 if ($kind -eq 'Junction') { $mechanism = 'junction' }
                 Write-Host "Linked ($mechanism) $dest -> $root"
