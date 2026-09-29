@@ -10,6 +10,42 @@ The public surface covered by that promise is: the configuration schema, the
 
 ## [Unreleased]
 
+### Added
+
+- **Reviewers scoped to paths.** A reviewer's `when` can now be a mapping whose
+  one key, `paths`, lists its own glob patterns, so a specialist such as a
+  `database` reviewer joins a code review round only when the change touches
+  the files it knows about. Write it in block form, as
+  `references/configuration.md` shows. A path-scoped reviewer joins when a changed path matches one of its own
+  patterns, when it must re-check its own open accepted finding, or when
+  `--only` names it, and nothing else adds it: a high-risk path hit and
+  `review run --high-risk` still add only the `when: high-risk` reviewers, and
+  its left-out note says so and names `--only` as the way in. A match never
+  escalates the level or lifts the gate. It is matched against the change a
+  reviewer is shown, withheld files and rename sources included; the snapshot
+  meta gains `condition_paths` for that, and files suppressed from an
+  incremental round (the orchestrator's own, excluded untracked ones) never
+  add it. It counts as conditional for the "one reviewer must run always"
+  rule and needs no `high_risk_paths` pattern in force. `reviewer add` and
+  `reviewer set` take `--when-paths GLOB [GLOB ...]`, which writes the mapping
+  in block form and replaces any existing condition whole. `reviewer list`,
+  `doctor` (`condition` and `paths` in `--json`), `status` and the round event
+  show the new kind as `when: paths`. Security and other roles that judge risk
+  should stay `when: high-risk`. A config with a `when` mapping is refused by
+  0.13.x and earlier at `review run` and `config validate`.
+
+### Changed
+
+- The reasons recorded for conditional reviewers, including the existing
+  high-risk ones, are now redacted: a credential-shaped part of a path or
+  pattern is replaced with `[redacted]` in notes, `status`, `--json` and the
+  event log. So are the escalation note, the `high_risk` path/pattern pairs in
+  the round's `optimization` record, and the `when.paths` patterns in
+  `reviewer list --json`. Two validation messages are reworded to cover the new form:
+  `reviewers[i].when: must be one of always, high-risk, or a mapping with
+  paths`, and `... every reviewer is conditional (when: high-risk or when:
+  paths)`.
+
 ## [0.13.1] - 2026-09-29
 
 ### Added

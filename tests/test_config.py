@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import unittest
+from typing import Any, ClassVar, Dict
 
 from helpers import IsolatedCase
 
@@ -471,7 +472,11 @@ class TestValidation(IsolatedCase):
 class TestReviewerConditions(IsolatedCase):
     """`reviewers[].when`, and what a panel of conditional reviewers needs."""
 
-    ALWAYS = "reviewers: at least one reviewer must run always; every reviewer is when: high-risk"
+    ALWAYS = (
+        "reviewers: at least one reviewer must run always; every reviewer is conditional "
+        "(when: high-risk or when: paths)"
+    )
+    SQL: ClassVar[Dict[str, Any]] = {"paths": ["*.sql"]}
     NO_PATTERNS = (
         "optimization.high_risk_paths: no pattern in force, but reviewers[1] is when: high-risk "
         "and would never run; add patterns to high_risk_paths or extra_high_risk_paths"
@@ -490,11 +495,70 @@ class TestReviewerConditions(IsolatedCase):
         self.assertEqual(self.with_conditions(None, "High-Risk "), [])
 
     def test_an_unknown_condition_is_named(self):
-        for value in ("sometimes", 1):
+        for value in ("sometimes", 1, "paths", ["*.sql"]):
             with self.subTest(value=value):
                 self.assertIn(
-                    "reviewers[1].when: must be one of always, high-risk", self.with_conditions(None, value)
+                    "reviewers[1].when: must be one of always, high-risk, or a mapping with paths",
+                    self.with_conditions(None, value),
                 )
+
+    def test_a_paths_mapping_validates(self):
+        self.assertEqual(self.with_conditions(None, {"paths": ["*migrate*/*", "*.sql"]}), [])
+
+    def test_a_mapping_takes_paths_only(self):
+        cases = (
+            ({}, "none"),
+            ({"path": ["*.sql"]}, "path"),
+            ({"paths": ["*.sql"], "x": 1}, "paths, x"),
+        )
+        for value, keys in cases:
+            with self.subTest(value=value):
+                self.assertIn(
+                    "reviewers[1].when: a when mapping takes paths only (got keys: %s)" % keys,
+                    self.with_conditions(None, value),
+                )
+
+    def test_paths_must_be_a_non_empty_list(self):
+        for value in ("*.sql", [], None):
+            with self.subTest(value=value):
+                self.assertIn(
+                    "reviewers[1].when.paths: must be a non-empty list of glob patterns",
+                    self.with_conditions(None, {"paths": value}),
+                )
+
+    def test_every_pattern_must_be_a_non_empty_string(self):
+        problems = self.with_conditions(None, {"paths": ["*.sql", 42, " "]})
+        self.assertIn("reviewers[1].when.paths[1]: must be a non-empty string (got 42)", problems)
+        self.assertIn("reviewers[1].when.paths[2]: must be a non-empty string (got ' ')", problems)
+        self.assertNotIn("reviewers[1].when.paths[0]", " ".join(problems))
+
+    def test_what_validation_refuses_is_what_reads_as_always(self):
+        from orchestrator import optimization as opt
+
+        for value in ({}, {"paths": []}, {"paths": [""]}, {"paths": ["*.sql", 42]}, {"paths": "*.sql"}):
+            with self.subTest(value=value):
+                self.assertTrue(self.with_conditions(None, value))
+                self.assertEqual(opt.reviewer_condition({"when": value}), "always")
+
+    def test_a_panel_of_high_risk_and_path_scoped_reviewers_is_refused(self):
+        self.assertIn(self.ALWAYS, self.with_conditions("high-risk", self.SQL))
+        self.assertIn(self.ALWAYS, self.with_conditions(self.SQL, self.SQL))
+
+    def test_a_path_scoped_reviewer_needs_no_high_risk_pattern(self):
+        problems = self.with_conditions(None, self.SQL, high_risk_paths=[], extra_high_risk_paths=[])
+        self.assertEqual(problems, [])
+
+    def test_a_high_risk_reviewer_beside_it_still_needs_one(self):
+        data = config_mod.default_config()
+        data["reviewers"].append(dict(data["reviewers"][0], id="db", when=self.SQL))
+        data["reviewers"][1]["when"] = "high-risk"
+        data["optimization"]["high_risk_paths"] = []
+        self.assertIn(self.NO_PATTERNS, config_mod.validate(data))
+
+    def test_make_reviewer_writes_the_mapping(self):
+        reviewer = config_mod.make_reviewer("db", "mock", None, "database", paths=["*migrate*/*", "*.sql"])
+        self.assertEqual(reviewer["when"], {"paths": ["*migrate*/*", "*.sql"]})
+        self.assertNotIn("when", config_mod.make_reviewer("gen", "mock", None, when="always"))
 
     def test_every_reviewer_conditional_is_refused(self):
         self.assertIn(self.ALWAYS, self.with_conditions("high-risk", "high-risk"))

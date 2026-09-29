@@ -29,7 +29,7 @@ import re
 import tempfile
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Set, Tuple
 
 from . import context as context_mod
 from . import workspace as ws
@@ -416,18 +416,15 @@ def create_snapshot(
     # neither of which appears in the diff. Risk is judged from the second:
     # a withheld ``.env`` is still a secret, and a file renamed away from
     # ``auth.py`` was still an auth file a moment ago.
-    changed_paths = list(reviewed)
-    for entry in tracked:
-        for name in (entry.get("path"), entry.get("previous")):
-            if name and name not in changed_paths:
-                changed_paths.append(str(name))
-    for entry in withheld:
-        name = entry.get("path")
-        if name and name not in changed_paths:
-            changed_paths.append(str(name))
-    for name in untracked:
-        if name not in changed_paths:
-            changed_paths.append(name)
+    changed_paths = _touched_paths(reviewed, tracked, withheld, untracked, skip=set())
+    # A third list, for who joins the panel: a path-scoped reviewer is matched
+    # against the change as a reviewer sees it, the reviewed and withheld
+    # files and rename sources, but not what is suppressed. A suppressed file
+    # is in neither the diff nor the withheld notice, so a reviewer added for
+    # it would be handed a diff with no trace of what summoned it. Suppression
+    # happens only on an incremental round; on a first round the two lists
+    # are the same.
+    condition_paths = _touched_paths(reviewed, tracked, withheld, untracked, skip=set(suppressed))
     meta = {
         "generated_at": ws.utcnow(),
         # New with every freeze, as for a design round: the sha repeats when
@@ -444,6 +441,7 @@ def create_snapshot(
         "full_diff": full_diff_path,
         "files": reviewed,
         "changed_paths": changed_paths,
+        "condition_paths": condition_paths,
         "untracked_included": untracked,
         "withheld": sorted(withheld, key=lambda entry: str(entry.get("path"))),
         "exclude_patterns": patterns,
@@ -932,6 +930,37 @@ def _reviewed_files(
         if path and path not in files:
             files.append(path)
     return files
+
+
+def _touched_paths(
+    reviewed: Sequence[str],
+    tracked: Sequence[Dict[str, Any]],
+    withheld: Sequence[Dict[str, Any]],
+    untracked: Sequence[str],
+    skip: Set[str],
+) -> List[str]:
+    """``reviewed`` plus every other path the change touches, less ``skip``.
+
+    Rename sources and withheld files are added after the reviewed ones. A
+    tracked entry whose path is in ``skip`` contributes neither its path nor
+    the name it was renamed from. ``changed_paths`` and ``condition_paths``
+    are both built here, so the two cannot drift apart.
+    """
+    paths = list(reviewed)
+    for entry in tracked:
+        if str(entry.get("path") or "") in skip:
+            continue
+        for name in (entry.get("path"), entry.get("previous")):
+            if name and name not in paths:
+                paths.append(str(name))
+    for entry in withheld:
+        name = entry.get("path")
+        if name and name not in paths:
+            paths.append(str(name))
+    for name in untracked:
+        if name not in paths:
+            paths.append(name)
+    return paths
 
 
 class ReviewError(RuntimeError):

@@ -141,7 +141,7 @@ then writes one report each plus deduplicated `consolidated.md` / `.json`.
 - `partial` = a round whose change body went over as a file. The findings are
   real, the review is not clean: if `review status` says `coverage` is
   `unverified`, report "not reviewed in full" and do not re-run that snapshot.
-- `review run` may shrink the panel (small change, or a `when: high-risk`
+- `review run` may shrink the panel (small change, or a conditional
   reviewer left out) and prints why. Say so in the report.
 
 **Triage.** **You** decide what is real; raw findings never reach the fixer.

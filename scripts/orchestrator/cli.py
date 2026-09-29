@@ -48,6 +48,7 @@ from .providers import (
     get_provider,
     origin_payload,
     provider_origin,
+    redact,
 )
 
 __version__ = "0.13.1"
@@ -635,18 +636,33 @@ def cmd_model_list(args: argparse.Namespace) -> int:
 # --------------------------------------------------------------------------- reviewers
 
 
+def _redacted_reviewer(reviewer: Any) -> Any:
+    """A copy of ``reviewer`` with its ``when.paths`` patterns redacted.
+
+    The text listing redacts them through ``condition_label``; the JSON one
+    prints the entry itself, so it is redacted here instead.
+    """
+    if not isinstance(reviewer, dict):
+        return reviewer
+    shown = copy.deepcopy(reviewer)
+    when = shown.get("when")
+    if isinstance(when, dict) and isinstance(when.get("paths"), list):
+        when["paths"] = [redact(p) if isinstance(p, str) else p for p in when["paths"]]
+    return shown
+
+
 def cmd_reviewer_list(args: argparse.Namespace) -> int:
     loaded = config_mod.load(args.cwd, validate_result=False)
     reviewers = loaded.reviewers()
     if args.json:
-        _emit_json(reviewers)
+        _emit_json([_redacted_reviewer(reviewer) for reviewer in reviewers])
         return 0
     if not reviewers:
         _out("No reviewers configured.")
         return 0
     for index, reviewer in enumerate(reviewers, 1):
         model = reviewer.get("model") or {}
-        when = opt_mod.reviewer_condition(reviewer)
+        when = opt_mod.condition_label(reviewer)
         _out(
             "%d. %-18s %-8s %-18s %-8s %s%s"
             % (
@@ -662,7 +678,17 @@ def cmd_reviewer_list(args: argparse.Namespace) -> int:
     return 0
 
 
+def _both_conditions(args: argparse.Namespace) -> bool:
+    """``--when`` and ``--when-paths`` together, which name two conditions for one reviewer."""
+    if args.when and args.when_paths:
+        _err("give --when or --when-paths, not both")
+        return True
+    return False
+
+
 def cmd_reviewer_add(args: argparse.Namespace) -> int:
+    if _both_conditions(args):
+        return 2
     scope = _resolve_scope(args.scope, args.cwd)
     path, layer = _read_layer(scope, args.cwd)
     _seed_list(layer, "reviewers", _layer_base(scope, args.cwd))
@@ -679,6 +705,7 @@ def cmd_reviewer_add(args: argparse.Namespace) -> int:
         version="pinned" if args.pin else "latest",
         model_id=args.pin,
         when=args.when,
+        paths=args.when_paths,
     )
     try:
         config_mod.add_reviewer(layer, reviewer)
@@ -732,6 +759,8 @@ def cmd_reviewer_remove(args: argparse.Namespace) -> int:
 
 
 def cmd_reviewer_set(args: argparse.Namespace) -> int:
+    if _both_conditions(args):
+        return 2
     scope = _resolve_scope(args.scope, args.cwd)
     path, layer = _read_layer(scope, args.cwd)
     _seed_list(layer, "reviewers", _layer_base(scope, args.cwd))
@@ -752,7 +781,11 @@ def cmd_reviewer_set(args: argparse.Namespace) -> int:
         reviewer["model"] = model
     if args.id:
         reviewer["id"] = args.id
-    if args.when == opt_mod.WHEN_ALWAYS:
+    # Each replaces the condition whole, as --model replaces the model block:
+    # a list of patterns is never merged into the one already there.
+    if args.when_paths:
+        reviewer["when"] = {"paths": list(args.when_paths)}
+    elif args.when == opt_mod.WHEN_ALWAYS:
         reviewer.pop("when", None)
     elif args.when:
         reviewer["when"] = args.when
@@ -1772,6 +1805,24 @@ def _risk_paths(meta: Dict[str, Any]) -> List[str]:
     return list(meta.get("files") or []) + [str(entry.get("path")) for entry in (meta.get("withheld") or [])]
 
 
+def _condition_paths(meta: Dict[str, Any]) -> List[str]:
+    """The paths a path-scoped reviewer is matched against.
+
+    ``condition_paths`` is the change as a reviewer sees it: ``changed_paths``
+    less what is in neither the diff nor the withheld notice. A snapshot
+    written before it existed falls back to ``_risk_paths`` on a first round,
+    where nothing is suppressed and the two lists are the same, so rename
+    sources still count. An incremental one may have suppressed files in
+    ``changed_paths``, so it gets the reviewed and withheld files only.
+    """
+    paths = meta.get("condition_paths")
+    if isinstance(paths, list) and paths:
+        return [str(path) for path in paths]
+    if not meta.get("incremental_from"):
+        return _risk_paths(meta)
+    return list(meta.get("files") or []) + [str(entry.get("path")) for entry in (meta.get("withheld") or [])]
+
+
 def cmd_review_snapshot(args: argparse.Namespace) -> int:
     loaded = config_mod.load(args.cwd, validate_result=False)
     workspace = _workspace(args)
@@ -2199,6 +2250,7 @@ def cmd_review_run(args: argparse.Namespace) -> int:
         declared=declared,
         carried=review_mod.carried_findings(workspace, meta),
         only=bool(args.only),
+        condition_paths=_condition_paths(meta),
     )
     if plan.escalated:
         _err("note: %s" % plan.escalation_note())
@@ -4413,6 +4465,7 @@ def cmd_status(args: argparse.Namespace) -> int:
         reviewed_files=len(meta.get("files") or []),
         panel=loaded.reviewers(),
         carried=review_mod.carried_findings(workspace, meta),
+        condition_paths=_condition_paths(meta),
     )
     if plan.gate == opt_mod.GATE_REFUSE:
         reasons.append("the last recorded test run failed; fix it before reviewing")
@@ -4860,6 +4913,13 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="when it runs on a code review (default: always; design reviews run every reviewer)",
     )
+    r_add.add_argument(
+        "--when-paths",
+        nargs="+",
+        default=None,
+        metavar="GLOB",
+        help="run on a code review only when a changed path matches one of these (quote each)",
+    )
     r_add.add_argument("--scope", choices=["global", "project"], default=None)
     r_add.set_defaults(func=cmd_reviewer_add)
 
@@ -4876,6 +4936,13 @@ def build_parser() -> argparse.ArgumentParser:
     r_set.add_argument("--id", default=None)
     r_set.add_argument("--pin", default=None)
     r_set.add_argument("--when", choices=list(opt_mod.REVIEWER_CONDITIONS), default=None)
+    r_set.add_argument(
+        "--when-paths",
+        nargs="+",
+        default=None,
+        metavar="GLOB",
+        help="replace the condition with these patterns (quote each)",
+    )
     r_set.add_argument("--scope", choices=["global", "project"], default=None)
     r_set.set_defaults(func=cmd_reviewer_set)
 

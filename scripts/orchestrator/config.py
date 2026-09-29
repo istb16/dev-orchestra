@@ -713,13 +713,7 @@ def validate(data: Dict[str, Any], known_providers: Optional[List[str]] = None) 
             if not isinstance(role_name, str) or not role_name.strip():
                 problems.append("%s: role must be a non-empty string" % label)
             problems.extend("%s: %s" % (label, msg) for msg in _validate_role(reviewer, providers))
-            when = reviewer.get("when")
-            if when is not None and (
-                not isinstance(when, str) or when.strip().lower() not in _optimization().REVIEWER_CONDITIONS
-            ):
-                problems.append(
-                    "%s.when: must be one of %s" % (label, ", ".join(_optimization().REVIEWER_CONDITIONS))
-                )
+            problems.extend(_validate_when(reviewer.get("when"), label))
         problems.extend(_validate_conditions(reviewers, data.get("optimization")))
 
     review = data.get("review")
@@ -832,25 +826,65 @@ def validate(data: Dict[str, Any], known_providers: Optional[List[str]] = None) 
     return problems
 
 
+def _validate_when(when: Any, label: str) -> List[str]:
+    """A reviewer's ``when``: one of the strings, or a mapping with ``paths``.
+
+    Refuses exactly the forms ``optimization.reviewer_condition`` reads as
+    ``always``, by asking the same predicate, so a config that validates is
+    never read differently from how it was written.
+    """
+    opt = _optimization()
+    if when is None:
+        return []
+    if isinstance(when, str):
+        if when.strip().lower() in opt.REVIEWER_CONDITIONS:
+            return []
+    elif isinstance(when, dict):
+        if opt.is_paths_condition(when):
+            return []
+        if set(when) != {"paths"}:
+            keys = ", ".join(sorted(str(key) for key in when)) or "none"
+            return ["%s.when: a when mapping takes paths only (got keys: %s)" % (label, keys)]
+        patterns = when.get("paths")
+        if not isinstance(patterns, list) or not patterns:
+            return ["%s.when.paths: must be a non-empty list of glob patterns" % label]
+        return [
+            "%s.when.paths[%d]: must be a non-empty string (got %r)" % (label, index, pattern)
+            for index, pattern in enumerate(patterns)
+            if not isinstance(pattern, str) or not pattern.strip()
+        ]
+    return [
+        "%s.when: must be one of %s, or a mapping with paths" % (label, ", ".join(opt.REVIEWER_CONDITIONS))
+    ]
+
+
 def _validate_conditions(reviewers: List[Any], optimization: Any) -> List[str]:
     """What a panel of conditional reviewers needs to be able to run at all.
 
     One reviewer that always runs, or a round that matched nothing would have
-    nobody to review it; and a pattern for the conditional ones to be judged
-    by, or they would never run. ``review run`` validates before it reads a
-    snapshot, so either mistake stops there rather than inside a round.
+    nobody to review it; and a pattern for the high-risk ones to be judged
+    by, or they would never run. A path-scoped reviewer brings its own
+    patterns, so only the first rule applies to it. ``review run`` validates
+    before it reads a snapshot, so either mistake stops there rather than
+    inside a round.
     """
     opt = _optimization()
     entries = [(index, reviewer) for index, reviewer in enumerate(reviewers) if isinstance(reviewer, dict)]
     always = opt.WHEN_ALWAYS
     conditional = [index for index, reviewer in entries if opt.reviewer_condition(reviewer) != always]
+    high_risk = [
+        index for index, reviewer in entries if opt.reviewer_condition(reviewer) == opt.WHEN_HIGH_RISK
+    ]
     problems: List[str] = []
     if entries and len(conditional) == len(entries):
-        problems.append("reviewers: at least one reviewer must run always; every reviewer is when: high-risk")
-    if conditional and isinstance(optimization, dict) and not opt.risk_patterns(optimization):
+        problems.append(
+            "reviewers: at least one reviewer must run always; every reviewer is conditional "
+            "(when: high-risk or when: paths)"
+        )
+    if high_risk and isinstance(optimization, dict) and not opt.risk_patterns(optimization):
         problems.append(
             "optimization.high_risk_paths: no pattern in force, but reviewers[%d] is when: high-risk "
-            "and would never run; add patterns to high_risk_paths or extra_high_risk_paths" % conditional[0]
+            "and would never run; add patterns to high_risk_paths or extra_high_risk_paths" % high_risk[0]
         )
     return problems
 
@@ -1207,6 +1241,7 @@ def make_reviewer(
     version: str = "latest",
     model_id: Optional[str] = None,
     when: Optional[str] = None,
+    paths: Optional[Sequence[str]] = None,
 ) -> Dict[str, Any]:
     reviewer: Dict[str, Any] = {"id": reviewer_id, "provider": provider}
     model: Dict[str, Any] = {}
@@ -1219,7 +1254,9 @@ def make_reviewer(
     reviewer["role"] = role
     # Written only when it says something, so a panel with no conditional
     # reviewer stays byte-identical to the one the defaults describe.
-    if when and when != _optimization().WHEN_ALWAYS:
+    if paths:
+        reviewer["when"] = {"paths": list(paths)}
+    elif when and when != _optimization().WHEN_ALWAYS:
         reviewer["when"] = when
     return reviewer
 

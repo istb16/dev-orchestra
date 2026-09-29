@@ -30,6 +30,13 @@ re-checking an accepted finding the reviewer itself reported. That is a
 membership lever and nothing more: a declaration is a claim, not evidence, so
 it never moves the level or the gate, and it is not an escalation. A panel
 must keep one reviewer that always runs, or a quiet round would have nobody.
+
+A reviewer configured ``when: {paths: [...]}`` is judged by its own patterns
+instead: it joins a round when a changed path matches one of them, when it is
+re-checking an accepted finding it reported, or when ``--only`` names it, and
+nothing else adds it -- not a high-risk hit, not a declaration. Its patterns
+say what the reviewer knows about, not how dangerous the change is, so a match
+never moves the level or the gate either.
 """
 
 from __future__ import annotations
@@ -37,6 +44,8 @@ from __future__ import annotations
 import fnmatch
 import posixpath
 from typing import Any, Dict, List, Optional, Sequence, Tuple
+
+from .providers.base import redact
 
 #: Ordered least to most careful, so a comparison can ask "at least as careful
 #: as", and so an escalation can be expressed as a maximum rather than a jump.
@@ -120,9 +129,12 @@ GATE_ALLOW = "allow"
 
 #: When a reviewer runs on a code review round. ``always`` is the default and
 #: what a reviewer with no ``when`` means; ``high-risk`` joins only the rounds
-#: ``condition_reviewers`` says qualify. The design review ignores both.
+#: ``condition_reviewers`` says qualify. ``paths`` is not a string value but
+#: the kind of a ``when`` mapping holding the reviewer's own patterns, so it
+#: is not in ``REVIEWER_CONDITIONS``. The design review ignores all three.
 WHEN_ALWAYS = "always"
 WHEN_HIGH_RISK = "high-risk"
+WHEN_PATHS = "paths"
 REVIEWER_CONDITIONS = (WHEN_ALWAYS, WHEN_HIGH_RISK)
 
 
@@ -170,17 +182,54 @@ def high_risk_matches(paths: Sequence[str], patterns: Sequence[str]) -> List[Tup
     return hits
 
 
+def is_paths_condition(value: Any) -> bool:
+    """Whether ``value`` is a ``when`` mapping that validation accepts.
+
+    The key ``paths`` alone, holding a non-empty list whose every entry is a
+    string that is not blank. ``config.validate`` refuses exactly the
+    mappings this rejects, and ``reviewer_condition`` reads exactly those as
+    ``always``, so the two cannot drift apart.
+    """
+    if not isinstance(value, dict) or set(value) != {"paths"}:
+        return False
+    patterns = value.get("paths")
+    return (
+        isinstance(patterns, list)
+        and bool(patterns)
+        and all(isinstance(pattern, str) and pattern.strip() for pattern in patterns)
+    )
+
+
 def reviewer_condition(reviewer: Any) -> str:
     """A reviewer's ``when``, normalised; ``always`` when unset or unrecognised.
 
     Validation reports an unknown value at ``config validate``, and
     ``review run`` refuses a config with one, so reading it as ``always``
-    here only ever affects a caller that loaded without validation.
+    here only ever affects a caller that loaded without validation. A
+    malformed ``when`` mapping is read the same way: a reviewer that always
+    runs is the careful answer, one that never can is a broken one.
     """
     value = reviewer.get("when") if isinstance(reviewer, dict) else None
     if isinstance(value, str) and value.strip().lower() in REVIEWER_CONDITIONS:
         return value.strip().lower()
+    if is_paths_condition(value):
+        return WHEN_PATHS
     return WHEN_ALWAYS
+
+
+def reviewer_paths(reviewer: Any) -> List[str]:
+    """A path-scoped reviewer's own patterns, stripped; ``[]`` for any other."""
+    if reviewer_condition(reviewer) != WHEN_PATHS:
+        return []
+    return [pattern.strip() for pattern in reviewer["when"]["paths"]]
+
+
+def condition_label(reviewer: Any) -> str:
+    """A reviewer's condition for display: ``paths`` followed by its patterns."""
+    when = reviewer_condition(reviewer)
+    if when == WHEN_PATHS:
+        return redact("%s %s" % (WHEN_PATHS, ", ".join(reviewer_paths(reviewer))))
+    return when
 
 
 def risk_patterns(settings: Dict[str, Any]) -> List[str]:
@@ -240,6 +289,7 @@ def condition_reviewers(
     declared: bool = False,
     carried: Sequence[Dict[str, Any]] = (),
     only: bool = False,
+    paths: Sequence[str] = (),
 ) -> List[Dict[str, Any]]:
     """One record per conditional reviewer: whether it runs this round, and why.
 
@@ -248,6 +298,12 @@ def condition_reviewers(
     round carries an accepted finding this reviewer reported (``carried``,
     from ``review.carried_findings``), or ``--only`` named it. An
     unconditional reviewer gets no record: it runs whatever the round is.
+
+    A path-scoped reviewer is judged by its own patterns against ``paths``
+    instead, and ``hits`` and ``declared`` never add it; when either is set
+    and it is left out, the reason says so and names ``--only`` as the way
+    in. Every reason is redacted here, because it carries filenames and
+    patterns to notes, JSON and the event log alike.
     """
     records: List[Dict[str, Any]] = []
     for reviewer in reviewers:
@@ -263,19 +319,40 @@ def condition_reviewers(
             if isinstance(finding, dict) and name in [str(r) for r in finding.get("reported_by") or []]
         ]
         own.sort(key=_finding_order)
-        if hits:
-            reason = "%s matches %s%s" % (hits[0][0], hits[0][1], _and_more(len(hits) - 1))
-        elif declared:
+        matched = hits if when == WHEN_HIGH_RISK else high_risk_matches(paths, reviewer_paths(reviewer))
+        if matched:
+            reason = "%s matches %s%s" % (matched[0][0], matched[0][1], _and_more(len(matched) - 1))
+        elif declared and when == WHEN_HIGH_RISK:
             reason = "declared with --high-risk"
         elif own:
             reason = "has open accepted finding %s%s" % (own[0].get("id"), _and_more(len(own) - 1))
         elif only:
             reason = "named by --only"
         else:
-            records.append({"id": name, "when": when, "runs": False, "reason": "no high-risk path matched"})
+            reason = redact(_left_out(reviewer, hits, declared))
+            records.append({"id": name, "when": when, "runs": False, "reason": reason})
             continue
-        records.append({"id": name, "when": when, "runs": True, "reason": reason})
+        records.append({"id": name, "when": when, "runs": True, "reason": redact(reason)})
     return records
+
+
+def _left_out(reviewer: Dict[str, Any], hits: Sequence[Tuple[str, str]], declared: bool) -> str:
+    """Why a conditional reviewer sits this round out.
+
+    A path-scoped one names its own patterns, so a change someone thought
+    relevant shows at once why it did not qualify. On a round that would
+    have added a high-risk reviewer, it also says that this one ignores
+    that, and how to bring it in anyway. The hits win over a declaration:
+    they are the evidence, and a declaration is only a claim.
+    """
+    if reviewer_condition(reviewer) != WHEN_PATHS:
+        return "no high-risk path matched"
+    reason = "no path matches %s" % ", ".join(reviewer_paths(reviewer))
+    if hits:
+        reason += " (round is high-risk; when: paths ignores that; --only <ids> to include it)"
+    elif declared:
+        reason += " (declared with --high-risk; when: paths ignores that; --only <ids> to include it)"
+    return reason
 
 
 def qualifies(reviewer: Dict[str, Any], records: Sequence[Dict[str, Any]]) -> bool:
@@ -331,12 +408,16 @@ class Plan:
             return ""
         first = self.high_risk[0] if self.high_risk else ("", "")
         more = len(self.high_risk) - 1
-        return "%s → %s: %s matches %s%s" % (
-            self.requested,
-            self.level,
-            first[0],
-            first[1],
-            " (and %d more)" % more if more > 0 else "",
+        # Redacted like every reason: it carries a filename and a pattern.
+        return redact(
+            "%s → %s: %s matches %s%s"
+            % (
+                self.requested,
+                self.level,
+                first[0],
+                first[1],
+                " (and %d more)" % more if more > 0 else "",
+            )
         )
 
     def gate_note(self) -> str:
@@ -377,7 +458,7 @@ class Plan:
             "requested_level": self.requested,
             "level": self.level,
             "escalated": self.escalated,
-            "high_risk": [{"path": p, "pattern": q} for p, q in self.high_risk],
+            "high_risk": [{"path": redact(p), "pattern": redact(q)} for p, q in self.high_risk],
             "gate": self.gate,
             "test_status": self.test_status,
             "max_findings": self.max_findings,
@@ -402,6 +483,7 @@ def decide(
     declared: bool = False,
     carried: Sequence[Dict[str, Any]] = (),
     only: bool = False,
+    condition_paths: Optional[Sequence[str]] = None,
 ) -> Plan:
     """Work out what this round should cost, from the change and the config.
 
@@ -420,6 +502,11 @@ def decide(
     passed in. ``declared`` is ``review run --high-risk``: it adds the
     conditional reviewers and keeps the panel whole, and touches nothing
     else -- not the level, the gate, the findings cap or ``high_risk``.
+
+    ``condition_paths`` is what a path-scoped reviewer's patterns are matched
+    against: the change as a reviewer sees it, without the files that are in
+    neither the diff nor the withheld notice. It defaults to ``paths``. It
+    decides membership only; risk is still judged from ``paths``.
     """
     requested = normalise_level(settings.get("level"))
     hits = high_risk_matches(paths, risk_patterns(settings))
@@ -438,13 +525,20 @@ def decide(
     files = len(paths) if reviewed_files is None else max(int(reviewed_files), 0)
     conditional: List[Dict[str, Any]] = []
     if panel is not None:
-        conditional = condition_reviewers(panel, hits, declared=declared, carried=carried, only=only)
+        conditional = condition_reviewers(
+            panel,
+            hits,
+            declared=declared,
+            carried=carried,
+            only=only,
+            paths=paths if condition_paths is None else condition_paths,
+        )
         members = [reviewer for reviewer in panel if isinstance(reviewer, dict)]
         reviewers = sum(1 for reviewer in members if qualifies(reviewer, conditional))
-    # A conditional reviewer that qualified keeps the panel whole. A path hit
-    # already does, through `quality`; a declaration or a carried finding
-    # does not move the level, and the cut would drop the very reviewer
-    # that just qualified.
+    # A conditional reviewer that qualified keeps the panel whole. A high-risk
+    # path hit already does, through `quality`; a declaration, a carried
+    # finding or a reviewer's own path does not move the level, and the cut
+    # would drop the very reviewer that just qualified.
     keep_whole = declared or any(record["runs"] for record in conditional)
     limit = None
     # Any level short of `quality`, which is the level that means "spend what

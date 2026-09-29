@@ -308,9 +308,9 @@ read that copy instead; without the flag they never see a design finding.
 result that says anything about a plan and no diff to measure, and a design
 decision is precisely where cross-model disagreement earns its cost, so the
 whole panel runs every round. That includes a reviewer configured
-`when: high-risk`: a plan has no paths to judge, and the design stage is where
-such specialists were measured to pay off, so the condition is a code review
-one only (`review run --design --high-risk` exits 2 rather than pretending to
+`when: high-risk` or scoped to `paths`: a plan has no paths to judge, and the
+design stage is where such specialists were measured to pay off, so both
+conditions are code review ones only (`review run --design --high-risk` exits 2 rather than pretending to
 decide anything). `review.max_findings` still applies, and
 `optimization.level` still sets the cap when it is unset. Design rounds are
 deliberately absent from every rate `optimization report` prints -- the levels
@@ -393,19 +393,40 @@ Each decision is printed as a note with its reason --
 `added: auth.py matches *auth*` -- and recorded under
 `optimization.conditional` in the round's event, refused rounds included.
 
-- **A declaration is not evidence.** `--high-risk` adds the conditional
+A reviewer scoped to `paths` (see `references/configuration.md`) is judged by
+its own patterns instead: it runs when a changed path matches one of them,
+when it must re-check its own open accepted finding, or when `--only` names
+it, and nothing else adds it -- not a high-risk path, not `--high-risk`. Its
+note names the path and pattern that matched, or the patterns that did not:
+`codex-database (when: paths) added: db/migrate/003_drop_orders.rb matches *migrate*/*`,
+or `left out: no path matches *migration*/*, *migrate*/*, *.sql`. On a round
+with a high-risk hit the note ends in
+`(round is high-risk; when: paths ignores that; --only <ids> to include it)`,
+and on one declared with `--high-risk` and no hit in
+`(declared with --high-risk; when: paths ignores that; --only <ids> to include it)`.
+`--only <ids>`, naming every reviewer that should run, includes it for one
+round; `reviewer set <id> --when high-risk` is the lasting fix if that keeps
+happening. It is matched against the change a reviewer is shown, withheld
+files and rename sources included: a file left out of the diff and of the
+withheld notice -- the orchestrator's own files, or untracked files an
+incremental round leaves out -- never adds it, since the reviewer would find
+no trace of it. The risk judgement still reads every changed path.
+
+- **A declaration is not evidence.** `--high-risk` adds the `when: high-risk`
   reviewers and keeps the panel whole, and changes nothing else: not the
   level, not the findings cap, not the gate. A declared round on a red tree is
-  refused like any other. Only a path pattern escalates.
+  refused like any other. Only a path pattern escalates. A declared round is
+  never cut, whether or not it added anyone.
 - **No cut when a conditional reviewer qualifies.** Whenever one joins, for any
   reason, the low-risk reduction does not apply, so the reviewer that just
-  qualified is never the one cut. A path hit already implies `quality`; a
-  declaration and a carried finding do not move the level, which is why this
-  is a rule of its own.
+  qualified is never the one cut. A high-risk path hit already implies
+  `quality`; a declaration, a carried finding and a reviewer's own path do not
+  move the level, which is why this is a rule of its own.
 - **A left-out reviewer is left out of the consolidation too.** On a re-run of
   one snapshot, the report it wrote on an earlier run is not rebuilt into a
   round its own event says it sat out, and `review consolidate` reads the same
-  reports the round did. `--only` or `--high-risk` brings it back, and so
+  reports the round did. `--only` brings it back, as `--high-risk` does a
+  `when: high-risk` reviewer, and so
   does an accepted finding of its own: a re-run of an unchanged snapshot
   cannot drop that finding unfixed.
 - **The panel always has someone.** Configuration requires one reviewer that
@@ -440,9 +461,10 @@ returns four naming nits and misses a null-pointer path is a failed review.
 
 A specialist that is only worth its cost on some changes -- `security` is the
 usual one -- can be configured `when: high-risk`, so it joins the code review
-only on rounds judged high-risk and still reviews every plan. Keep a `general`
-reviewer unconditional beside it. See [When a review does not run, or runs
-smaller](#when-a-review-does-not-run-or-runs-smaller).
+only on rounds judged high-risk and still reviews every plan. A specialist
+whose interest is a set of files -- `database`, `frontend` -- can instead be
+scoped to `paths`. Keep a `general` reviewer unconditional beside it. See
+[When a review does not run, or runs smaller](#when-a-review-does-not-run-or-runs-smaller).
 
 After adding a reviewer, check its row in the `optimization report` scorecard
 once it has a few rounds behind it: nothing suggests a removal for you, and
