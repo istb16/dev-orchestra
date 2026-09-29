@@ -153,13 +153,13 @@ first, or the fixer gets the same defect twice: auto-merge leaves those pairs
 to you.
 
 **Fix.** Require: verify each finding against current code first, fix only what
-is valid, add tests where a finding exposes a gap, re-run the relevant tests
-plus lint/type checks. Fixer failure is fatal.
+is valid, add a failing test or say why none can; rerun tests, lint, types. Fixer failure is fatal.
 
-**Re-test, and re-review only if told to.** Re-run the tests, then `review
-status`; re-review only when it says so. Exhausted budget → fix once more,
-re-test, report; never re-review. A second snapshot diffs only what the fix changed and
-carries the accepted findings with it, so **triage before re-snapshotting**.
+**Re-test, and re-review only if told to.** Re-run the tests (a new one
+must fail with the fix reversed), then `review status`;
+re-review only when it says so. Exhausted budget → fix once more,
+re-test, report; never re-review. A second snapshot diffs only the fix and
+carries the accepted findings, so **triage before re-snapshotting**.
 `--full` re-sends the lot.
 
 ## 3. Delegation rules

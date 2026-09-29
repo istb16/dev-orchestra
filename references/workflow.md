@@ -512,13 +512,47 @@ For each finding below:
 1. Read the cited code as it is now.
 2. Verify the finding is still true. If it is not, say so and change nothing.
 3. Fix valid findings with the smallest correct change.
-4. Add a test where the finding exposes a coverage gap.
+4. Where a test can show the defect, add one that fails on the code as it
+   was and passes after the fix; where none can (wording, documentation,
+   a design choice), say why.
 5. Run the relevant tests plus lint/type checks, and report the output.
 
 Do not fix anything that is not listed here.
 ```
 
 ## Re-test and re-review
+
+A test the fixer added is only evidence if it fails without the fix, and
+one that passes either way reads the same in a green run. So before `run
+review_fixer`, record the tree as it is. The change under review is usually
+uncommitted and may hold files never added, so neither `HEAD` nor `git stash`
+is "before the fix"; a throwaway index takes all of it, `git add -A` as the
+snapshot does, and touches neither the real index nor the files. Keep it in
+files, not shell variables: the commands run in separate calls.
+
+```bash
+GIT_INDEX_FILE=.ai/pre-fix.index git add -A
+GIT_INDEX_FILE=.ai/pre-fix.index git write-tree > .ai/pre-fix.tree
+```
+
+After the fix, and before recording the re-test, take out only what the fixer
+changed, run each new test, and put the fix back:
+
+```bash
+GIT_INDEX_FILE=.ai/post-fix.index git add -A
+GIT_INDEX_FILE=.ai/post-fix.index git diff --cached "$(cat .ai/pre-fix.tree)" -- <files the fix changed, not the test> > .ai/fix.patch
+git apply -R .ai/fix.patch
+<the project's test command> <the new test>    # must fail, on its assertion
+git apply .ai/fix.patch
+rm .ai/pre-fix.index .ai/post-fix.index .ai/pre-fix.tree .ai/fix.patch
+```
+
+An empty `fix.patch` means the files named are not the ones the fix changed.
+The test has to fail for the reason the finding gives, on its assertion. One
+that passes there reproduces nothing, and one that fails to import or collect
+(it calls something only the fix adds) proves nothing either: send it back
+to the fixer with that result. This holds whatever the finding's severity;
+the fixer often cannot run commands itself, so this check is yours.
 
 ```bash
 dev-orchestra review status

@@ -27,6 +27,13 @@ The public surface covered by that promise is: the configuration schema, the
 
 ### Changed
 
+- **A fixer's new test must fail without the fix.** The fix template asks for
+  a test that fails on the code as it was, or a reason there cannot be one,
+  and the re-test step has the orchestrator reverse only the fixer's diff
+  (against a tree recorded before the fixer ran, untracked files included) and see the test fail
+  on its assertion, whatever the finding's severity. See "Re-test and re-review" in
+  `references/workflow.md` (#87).
+
 - **`review.design.enabled` defaults to `auto`** (was `false`), and an explicit
   `enabled:` with no value now means `auto` too. `true` and `false` keep their
   meaning; `config set review.design.enabled false` restores the old
