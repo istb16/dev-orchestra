@@ -302,7 +302,12 @@ added to the cost, so priorities 2 to 6, which would add more, are not pursued.
 ## Design review
 
 The same panel, before any code exists to be wrong. `review.design.enabled`
-(default `false`) turns it on:
+decides whether the orchestrator runs it: `true` always, `false` never, and
+`auto` (the default) for a plan that names a high-risk path anywhere in the
+plan, or 6 or more code files in `Files to Modify` (docs, tests and `.md`
+files not counted), or once a design round has run for the workflow.
+`status` prints the answer and its reason (see `references/configuration.md`
+for the rules):
 
 ```bash
 dev-orchestra config set review.design.enabled true
@@ -348,7 +353,10 @@ whole panel runs every round. That includes a reviewer configured
 `when: high-risk` or scoped to `paths`: a plan has no paths to judge, and the
 design stage is where such specialists were measured to pay off, so both
 conditions are code review ones only (`review run --design --high-risk` exits 2 rather than pretending to
-decide anything). `review.max_findings` still applies, and
+decide anything). `auto` borrows the high-risk patterns only to decide whether
+the stage runs at all, judged from every token the plan names in backticks,
+with the size taken from Files to Modify; once it runs, the whole panel still
+does. `review.max_findings` still applies, and
 `optimization.level` still sets the cap when it is unset. Design rounds are
 deliberately absent from every rate `optimization report` prints -- the levels
 in force, the gate verdicts, the panel reduction, the escalations -- because no

@@ -10,6 +10,29 @@ The public surface covered by that promise is: the configuration schema, the
 
 ## [Unreleased]
 
+### Added
+
+- **`review.design.enabled: auto`** runs the design review only for a plan
+  that calls for it: one that names a high-risk path anywhere (matched in any
+  case), or whose `Files to Modify` names 6 or more code files (docs, tests
+  and `.md` files not counted), a glob, a directory or a path through `..`.
+  Entries there count whether or not they are in backticks. A plan that
+  cannot be read runs too, and before a plan is written the answer is
+  `auto -> run (once a plan is written)`. Once a design round has run for the workflow the answer stays
+  run, so a revision cannot switch the loop off half way. `status`,
+  `review status --design` and the `review run --design` note show the answer
+  and its reason (`auto -> skip (3 code files, none high-risk)`); their
+  `--json` gains `mode` and `reason`, and `enabled` now says whether the stage
+  runs (#80).
+
+### Changed
+
+- **`review.design.enabled` defaults to `auto`** (was `false`), and an explicit
+  `enabled:` with no value now means `auto` too. `true` and `false` keep their
+  meaning; `config set review.design.enabled false` restores the old
+  behaviour. An older dev-orchestra reading `auto` from a shared project file
+  treats it as `true` and its `config validate` reports it (#80).
+
 ## [0.14.0] - 2026-09-29
 
 ### Added

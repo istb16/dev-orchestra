@@ -1,4 +1,4 @@
-<!-- translated-from: references/cli.md sha256:e1de4d5cf9cfcd14a3db895ec8ad9b72123ccf7aeb7c621ca9a9bf154db0d454 -->
+<!-- translated-from: references/cli.md sha256:60628011ff2af54d6cf4e5a781846f282f447c1f75bad872b4363e182ca10cbc -->
 
 > この文書は [references/cli.md](../../../references/cli.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -333,7 +333,7 @@ echo "explain the failure" | dev-orchestra run orchestrator
 | `review show [--design] [--accepted] [--json]` | 統合されたレビューを表示します。 |
 | `review triage [--design] <ids…> --status <status> [--note <text>]` | トリアージの判断を記録します。判断のたびに、`needs-triage` も含めて指摘に `triage_set_at` を刻むので、指摘を戻したことと一度も判断していないことが区別できます。 |
 | `review fix-brief [--design] [--output <path>]` | fixer 向けに、受け入れた指摘のブリーフを出力します。 |
-| `review status [--design] [--json]` | 再レビューが必要かどうか、イテレーション予算、そしてラウンドの `coverage` を示します。`coverage` には `round`、`change`、ラウンドの計測に使われた `inline_chars` に加え、`unverified` を解消するための操作が含まれます。変更を絞るか `review.context.inline_chars` を引き上げ、その後スナップショットを取り直すことです。また、その上限がラウンドに記録されたサイズを超えて引き上げられた後は、同じスナップショットが今ならインライン化されるので、それに対して `review run` を実行すればよいだけだということも示します。`over_budget` は、そのラウンドが `--force` で `review.context.max_chars` を超えて送られたためにだけ実行されたことを示します。周辺コンテキストを運んだラウンドでは `surrounding context:` 行が加わり（レビュアーごとに渡されたものが違う場合はレビュアーごとに 1 行）、除外されたシンボルを最大 5 つまで名前で示します。`--json` にはレポートの `surrounding` ブロックが入ります。ラウンドの予算を使い切った後は、そのラウンドの最後のパスがどこまで進んでいるかも示します。これは台帳、実行ログ、承認状態から読み取られます（何も消去されません）。`final_fix` は `pending`（もう一度 fix する）、`retest`（fix 済み。再テストを記録する）、`done`、`blocked`（`review_fixer` の試行が残っていない）、`--design` の場合の `final_revision` は `pending`（もう一度修正する）、`done`、`blocked`（`architect` の試行が残っていない）、`approved`、`implemented` のいずれかです。どちらも上限に達する前は `null` で、`final_fix_pending` / `final_revision_pending` フラグを伴います。最後の行は次のステップを示し、前のラウンドの指摘を繰り返したラウンドについて注記します。`references/reviews.md` を参照してください。 |
+| `review status [--design] [--json]` | 再レビューが必要かどうか、イテレーション予算、そしてラウンドの `coverage` を示します。`coverage` には `round`、`change`、ラウンドの計測に使われた `inline_chars` に加え、`unverified` を解消するための操作が含まれます。変更を絞るか `review.context.inline_chars` を引き上げ、その後スナップショットを取り直すことです。また、その上限がラウンドに記録されたサイズを超えて引き上げられた後は、同じスナップショットが今ならインライン化されるので、それに対して `review run` を実行すればよいだけだということも示します。`over_budget` は、そのラウンドが `--force` で `review.context.max_chars` を超えて送られたためにだけ実行されたことを示します。周辺コンテキストを運んだラウンドでは `surrounding context:` 行が加わり（レビュアーごとに渡されたものが違う場合はレビュアーごとに 1 行）、除外されたシンボルを最大 5 つまで名前で示します。`--json` にはレポートの `surrounding` ブロックが入ります。ラウンドの予算を使い切った後は、そのラウンドの最後のパスがどこまで進んでいるかも示します。これは台帳、実行ログ、承認状態から読み取られます（何も消去されません）。`final_fix` は `pending`（もう一度 fix する）、`retest`（fix 済み。再テストを記録する）、`done`、`blocked`（`review_fixer` の試行が残っていない）、`--design` の場合の `final_revision` は `pending`（もう一度修正する）、`done`、`blocked`（`architect` の試行が残っていない）、`approved`、`implemented` のいずれかです。どちらも上限に達する前は `null` で、`final_fix_pending` / `final_revision_pending` フラグを伴います。最後の行は次のステップを示し、前のラウンドの指摘を繰り返したラウンドについて注記します。`--design` を付けると最初の行は `design review: <label>` になります。ラベルは `on`、`off`、`auto -> run (<reason>)`、`auto -> skip (<reason>)` のいずれかで、`status` と同じ答えです。`--json` には `enabled`（そのステージを実行するかどうか）、`mode`（`on`、`off`、`auto`）、`reason`（`on` と `off` では `null`）が加わります。`references/reviews.md` を参照してください。 |
 
 `--design` を付けると、これらすべてが *design* レビューに切り替わります。実装前に `.ai/plan.md` を
 同じパネルで評価するもので、独自のレポート、ラウンドカウンター、トリアージが `.ai/reviews/design/`
@@ -347,9 +347,12 @@ echo "explain the failure" | dev-orchestra run orchestrator
 ラウンドは plan が固定される前に拒否されるので、前のラウンドのレポートとトリアージは報告のために
 そのまま残ります。最適化ゲートとパネルの削減は適用されず、`when` にかかわらずすべてのレビュアーが
 走り、`--high-risk` は拒否され（終了コード 2）、`--base` は無視されます。
-`review.design.enabled` が false のときに実行すると、注記を表示したうえで続行します。この設定は
-orchestrator がそのステージを実行するかどうかを示すものであり、あなたが実行してよいかどうかを示すもの
-ではないからです。`references/reviews.md` を参照してください。
+`review.design.enabled` が false のとき、または `auto` でこの plan ならスキップされるときに実行すると、
+注記（`note: review.design.enabled is auto and this plan would be skipped (<reason>); running
+because you asked`）を表示したうえで続行します。この設定は orchestrator がそのステージを実行するか
+どうかを示すものであり、あなたが実行してよいかどうかを示すものではないからです。こうして実行した
+ラウンドも design ラウンドなので、それ以降 `auto` は実行（`a design round already ran`）と答え、
+ループは `true` のときと同じように進みます。`references/reviews.md` を参照してください。
 
 `review status --json` は、予算をその取得元の設定の名前で報告します。`--design` なしでは
 `max_review_iterations`、ありでは `max_iterations` です。ペイロードの残りはどちらでも同じです。
@@ -413,6 +416,13 @@ id のまま作られたレポート -- どのレビュアーもレビューを�
 `optimization.conditional` に持ちます。これは予測にすぎません。`status` は設定を検証せずに読むので、
 `review run` が拒否するようなパネルは、ここではなく `config validate` と `doctor` が報告します。
 
+`Design review:` 行は、この plan でそのステージを実行するかどうかから始まります。`on`、`off`、
+`auto -> run (<reason>)`、`auto -> skip (<reason>)` のいずれかで、たとえば
+`Design review: auto -> skip (5 code files, none high-risk), round 0/2, 0 accepted, 0 blocking`
+のようになります。`--json` では `design_review.enabled` がその答え（ステージを実行するかどうか）、
+`design_review.mode` が `on`、`off`、`auto` のいずれか、`design_review.reason` が理由で、`on` と
+`off` では `null` です。スキップは理由ではなく、判定も変えません。
+
 `design_approval` と `Plan approval:` 行は、plan をまだユーザーに提示する必要があるかどうかを示します
 （`references/workflow.md`）。これらは理由ではなく、判定も変えません。それを強制するのは
 `run implementer` です。唯一の例外は逆方向に働きます。ユーザーが現在の plan を承認した後は、未解決の
@@ -454,7 +464,7 @@ dev-orchestra status --json
   "reasons": ["review budget spent (2/2 rounds) with 1 finding(s) still open; fixed and re-tested after the last round, not re-reviewed -- report"],
   "stalls": [],
   "review": {"iteration": 2, "max_review_iterations": 2, "blocking": ["F1"], "accepted": 1, "refused_for_size": null, "identical_rounds": 1, "final_fix": "done", "final_fix_pending": false},
-  "design_review": {"enabled": false, "iteration": 0, "max_iterations": 2, "blocking": [], "accepted": 0, "identical_rounds": 0, "final_revision": null, "final_revision_pending": false},
+  "design_review": {"enabled": true, "mode": "auto", "reason": "touches db/migrate/ (Files to Modify)", "iteration": 0, "max_iterations": 2, "blocking": [], "accepted": 0, "identical_rounds": 0, "final_revision": null, "final_revision_pending": false},
   "budgets": {"implementer": {"used": 2, "limit": 5, "remaining": 3}}
 }
 ```

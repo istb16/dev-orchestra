@@ -398,9 +398,7 @@ def render_summary(data: Dict[str, Any]) -> str:
     # is a behaviour knob like `max_review_iterations`. But it decides whether
     # a whole stage runs, so leaving it out of the summary entirely would make
     # it the one stage nobody can see the state of.
-    lines.append(
-        "    design review: %s  (review.design.enabled)" % ("on" if _design_review_enabled(data) else "off")
-    )
+    lines.append("    design review: %s  (review.design.enabled)" % _design_review_mode(data))
     lines.append(
         "    plan approval: %s  (design.require_approval)"
         % ("required" if _approval_required(data) else "not required")
@@ -409,13 +407,14 @@ def render_summary(data: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def _design_review_enabled(data: Dict[str, Any]) -> bool:
-    """Falls back to the built-in default: a layer may name no `review` at all."""
+def _design_review_mode(data: Dict[str, Any]) -> str:
+    """``on``, ``off`` or ``auto``; falls back to the built-in default, since a
+    layer may name no `review` at all."""
     review = data.get("review")
     design = review.get("design") if isinstance(review, dict) else None
     if isinstance(design, dict) and "enabled" in design:
-        return bool(design["enabled"])
-    return bool(config_mod.default_config()["review"]["design"]["enabled"])
+        return config_mod.design_review_mode(design["enabled"])
+    return config_mod.design_review_mode(config_mod.default_config()["review"]["design"]["enabled"])
 
 
 def _approval_required(data: Dict[str, Any]) -> bool:

@@ -537,6 +537,30 @@ def read_text(path: str, default: str = "") -> str:
             return default
 
 
+def read_text_strict(path: str) -> Optional[str]:
+    """The file's text, ``""`` when it is absent, ``None`` when unreadable.
+
+    For a decision that must not be made on a guess: no ``errors="replace"``
+    fallback, so a corrupted byte cannot turn one file name into another. A
+    refused open is retried the way ``read_json`` retries it, because on
+    Windows it is usually a rename in progress.
+    """
+    if not os.path.isfile(path):
+        return ""
+    for attempt in range(_READ_ATTEMPTS):
+        try:
+            return _read_shared(path)
+        except UnicodeDecodeError:
+            return None
+        except OSError:
+            if not os.path.isfile(path):
+                return ""
+            if attempt == _READ_ATTEMPTS - 1:
+                return None
+            time.sleep(0.02 * (attempt + 1))
+    return None
+
+
 def list_files(directory: str, suffix: str = "") -> List[str]:
     if not os.path.isdir(directory):
         return []

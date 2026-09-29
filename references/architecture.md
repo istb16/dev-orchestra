@@ -12,7 +12,7 @@ flowchart TD
     D -->|no| I
     D -->|yes| A[Architect<br/>read-only]
     A --> P[(.ai/plan.md)]
-    P --> DR{review.design.enabled?}
+    P --> DR{design review runs?<br/>on, or auto and risky/large}
     DR -->|yes| DP[[Design review<br/>same panel, read-only]]
     DP --> DT[Triage + revise<br/>run architect again]
     DT --> P

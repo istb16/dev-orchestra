@@ -189,11 +189,13 @@ still weak, say so in the report rather than quietly improvising.
 
 ## Design review
 
-Off unless `review.design.enabled` is true; `status` reports which. The same
-panel judges `.ai/plan.md` against the codebase before any code is written.
-A design mistake otherwise costs an implementation and a review to find, so
-this is the cheapest place to catch one -- but it is a reviewer run per panel
-member per round, which is why it is opt-in.
+Runs when `review.design.enabled` is `true`, or `auto` (the default) and the
+plan is risky or large or a round has already run; `status` says which and
+why. The same panel judges `.ai/plan.md` against the codebase before any code
+is written. A design mistake otherwise costs an implementation and a review to
+find, so this is the cheapest place to catch one -- but it is a reviewer run
+per panel member per round, which is why `auto` spends it only where the plan
+calls for it.
 
 It keeps its own reports, round counter and triage under `reviews/design/`, so
 a design round never advances -- or is refused by -- the code review's count.

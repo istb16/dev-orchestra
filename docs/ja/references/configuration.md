@@ -1,4 +1,4 @@
-<!-- translated-from: references/configuration.md sha256:9dd9744d62654dab3b5d7aede29c18df1e552097b270a881a9d02ea285a13485 -->
+<!-- translated-from: references/configuration.md sha256:e97fd3a4dd8fc134c8c56a7f28c99499f717277569ca1f63d38ee01f51019093 -->
 
 > この文書は [references/configuration.md](../../../references/configuration.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -135,7 +135,7 @@ review:
   re_review_severities: [critical, high]
   timeout_seconds: 1800               # per delegated CLI run
   design:
-    enabled: false                    # review .ai/plan.md before implementing
+    enabled: auto                     # review .ai/plan.md before implementing (true, false or auto)
     max_iterations: 2                 # design review -> revise -> re-review
 
 design:
@@ -173,7 +173,7 @@ workspace:
 | `review.context.inline_chars` | int ≥ 1 \| null | 変更本文のうちどれだけをレビュアーのプロンプトに含めるか（デフォルト 400,000、`max_chars` と同じ数値）。これ以下なら本文はインラインで渡され、ラウンドは clean になり得ます。これを超えると、レビュアーには凍結されたスナップショットのパスが渡され、何が返ってきてもラウンドは `partial` — カバレッジ未検証 — として記録されます。**`max_chars` より小さく設定すると、両者の間に、ラウンドは実行されるものの `partial` として記録される帯域が生まれます**: これは非常に大きなプロンプトに費用をかけたくない人が明示的に選ぶもので、`partial` はその代償です。`max_chars` *より大きく*設定することも許されており、誤りではありません — その場合、本文がファイルとして渡されるのは人間が強制したラウンドだけになります。`null` はデフォルトを意味します。各ラウンドは比較に使った数値を記録するので、`partial` のラウンドはどの上限によってそうなったのかがわかります。`references/limits.md` を参照。 |
 | `review.context.surrounding` | `none` \| `enclosing` | `enclosing` にすると、各 hunk を囲む Python の関数・メソッド・クラスも、すべてのコードレビュアーに渡します。スナップショットの取得時に、その git ツリーから抽出します（デフォルト `none`: diff だけ）。1 つのスナップショットで計測したところレビューが安くならなかったため、off です — `optimization report` が、これを使ったラウンドと使わなかったラウンドを比較します。`false` と `null` は `none` を意味します（`off` は `false` として読まれます）。`true` は拒否されます。`references/reviews.md` を参照。 |
 | `review.context.surrounding_chars` | int ≥ 1 \| null | 1 つのラウンドが追加できる周辺コンテキストの最大量（デフォルト 15,000: 1 つのスナップショットで計測したところ、実行あたりの費用は変わらず、60,000 では渡した分がそのまま上乗せされました）。さらに、diff が `max_chars` と `inline_chars` の下に残す分で上限がかかるので、コンテキストがラウンドを拒否させたり、diff をファイル渡しにしたりすることはありません。収まらなかったものは、プロンプトとすべてのレポートで名前を挙げて除外されます。`null` はデフォルトを意味します。`references/limits.md` を参照。 |
-| `review.design.enabled` | bool | `false`（デフォルト）は設計レビューを完全にスキップします。`true` にすると、実装の前に `.ai/plan.md` を同じパネルにかけます。このステージはラウンドごとにパネルのメンバー 1 人につきレビュアー実行 1 回分のコストがかかるため、オプトインになっています。 |
+| `review.design.enabled` | bool \| `auto` \| null | 実装の前に `.ai/plan.md` を同じパネルにかけるかどうか。このステージはラウンドごとにパネルのメンバー 1 人につきレビュアー実行 1 回分のコストがかかります。`true` は常に実行、`false` は実行しません。`auto`（デフォルト）は計画書から判断し、その答えと理由を `status` が表示します。計画書のどこにあってもバッククォートで囲まれたトークンと、計画書の `Files to Modify` 見出しの下にあるパスらしい語（バッククォートの有無を問わず、そこにあるフェンスブロックも含む）はすべて、大文字小文字を区別せずに高リスクパターン（`optimization.high_risk_paths` と `extra_high_risk_paths`）と照合され、一致すれば実行します。`db/migrate` のように `/` を含み拡張子のない名前はディレクトリとしても照合します。規模は、`Files to Modify` の下にあるファイル名らしいトークン（`/` かファイル拡張子を含むもの）のうち、フェンスブロックの中、`docs/`・`references/`・`tests/` と `.md` ファイルを除いたものを、ディスクを見ずに数え、6 個以上なら実行します。そこにグロブ、ディレクトリ、`/` を含み拡張子のない名前、`..` を通るパスがあれば実行します（`payload["mode"]` のようなコードはグロブとして読みません）。計画書が読めない、`Files to Modify` セクションがない、あってもファイルを 1 つも挙げていない場合も実行します。計画書がまだないときの答えは `auto -> run (once a plan is written)` です。そしてワークフローで設計レビューのラウンドが一度でも走ったら答えは実行のままなので、改訂によってループが途中で止まることはありません。`null` はデフォルトの `auto` を意味します。 |
 | `review.design.max_iterations` | int ≥ 0 | 設計レビューのラウンド数（レビュー → トリアージ → 修正）。`max_review_iterations` とは別にカウントされます（デフォルト 2）。上限に達したラウンドでも修正は行われます。上限が拒否するのはその後の再レビューだけです。`1`: 1 ラウンド、1 回の修正、その後ユーザーに確認。`0`: 設計レビューなし。`budgets.architect`（デフォルト 3）は、デフォルトでは設計とラウンドごとに 1 回の修正をまかないます。`max_iterations` に合わせて引き上げ、承認時に変更を求められることが予想される場合はさらに 1 つ増やしてください。 |
 | `design.require_approval` | bool | `true`（デフォルト）にすると、`.ai/plan.md` が存在し、現時点の plan が `design approve` で承認されていない間は -- ユーザーが了承した後に承認するものです -- `run implementer` が拒否します（exit 5）。`false` は誰も見ていない実行（CI、バッチ）向けで、このゲートが導入される前の挙動に戻します。`review.design` の下ではなくトップレベルにあるのは、パネルが plan をレビューしたかどうかにかかわらず承認が重要だからです。`--force` ではバイパスできず、この設定だけがバイパスできます。 |
 | `design.resume.max_age_seconds` | int ≥ 0 \| null | `run architect --resume` がセッションを継続できる、直前の architect の実行の古さの上限です（デフォルト 3600。測定時に CLI がプロンプトキャッシュを保持していた時間）。これより古ければ、改訂は全文プロンプトで新規に走ります。`0` は常に新規、`null` はデフォルトの意味です。 |
@@ -579,7 +579,8 @@ codex: installed
 | 「実装には Claude Opus を使って」 | `config set implementer.model.family opus` |
 | 「architect に Codex を使わせて」 | `config set architect.provider codex` **と**、Codex が受け付ける family |
 | 「implementer がテストを実行できない」 | `config set implementer.options.permission_mode bypassPermissions`、またはその CLI 自身の設定でコマンドを許可リストに入れる |
-| 「設計もレビューして」 | `config set review.design.enabled true` |
+| 「設計もレビューして」／「設計は必ずレビューして」 | `config set review.design.enabled true` |
+| 「設計はレビューしないで」 | `config set review.design.enabled false` |
 | 「plan の承認を求めないで」/ CI で実行する | `config set design.require_approval false` |
 | 「Codex のセキュリティレビュアーを追加して」 | `reviewer add --provider codex --role security` |
 | 「セキュリティレビュアーはリスクのある変更のときだけ走らせて」 | `reviewer set <id> --when high-risk`（[上記](#reviewers-that-run-only-on-high-risk-changes)を参照） |

@@ -1,4 +1,4 @@
-<!-- translated-from: references/architecture.md sha256:c73fc196ae291dde0677ba85934df5cebe108d381b98cf18a0bce1ea80928d1d -->
+<!-- translated-from: references/architecture.md sha256:c1110243c62a02d857d94e18dabb537947d9948071137bca590abc16b8d57450 -->
 
 > この文書は [references/architecture.md](../../../references/architecture.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -19,7 +19,7 @@ flowchart TD
     D -->|no| I
     D -->|yes| A[Architect<br/>read-only]
     A --> P[(.ai/plan.md)]
-    P --> DR{review.design.enabled?}
+    P --> DR{design review runs?<br/>on, or auto and risky/large}
     DR -->|yes| DP[[Design review<br/>same panel, read-only]]
     DP --> DT[Triage + revise<br/>run architect again]
     DT --> P

@@ -442,6 +442,7 @@ def cmd_status(args: argparse.Namespace) -> int:
     design_blocking = review_mod.unresolved_blocking(design_data, severities)
     design_iteration = int(design_data.get("iteration", 0) or 0)
     design_max = int(design_settings.get("max_iterations", 2))
+    design_decision = _design_decision(loaded, workspace)
     design_exhausted = bool(design_blocking) and design_iteration >= design_max
     approval_info = approval_mod.current(workspace, bool(loaded.design_settings().get("require_approval")))
     # The same list `design approve` names, whatever the severity: the user is
@@ -593,7 +594,10 @@ def cmd_status(args: argparse.Namespace) -> int:
             "final_fix_pending": review_pass["pending"],
         },
         "design_review": {
-            "enabled": bool(design_settings.get("enabled")),
+            # Whether the stage runs: `on`, or `auto` and this plan calls for it.
+            "enabled": design_decision.run,
+            "mode": design_decision.mode,
+            "reason": design_decision.reason or None,
             "iteration": design_iteration,
             "max_iterations": design_max,
             "blocking": [f["id"] for f in design_blocking],
@@ -663,7 +667,7 @@ def cmd_status(args: argparse.Namespace) -> int:
         line += "; identical to the previous round"
     _out(line)
     line = "Design review: %s, round %d/%d, %d accepted, %d blocking" % (
-        "on" if payload["design_review"]["enabled"] else "off",
+        design_decision.label(),
         design_iteration,
         design_max,
         payload["design_review"]["accepted"],
@@ -928,5 +932,5 @@ def cmd_summary(args: argparse.Namespace) -> int:
 
 # Imported last: these modules import this one back, and every use
 # is inside a function, so the names only have to exist by the first call.
-from .cli_review import _condition_paths, _ledger, _risk_paths  # noqa: E402
+from .cli_review import _condition_paths, _design_decision, _ledger, _risk_paths  # noqa: E402
 from .cli_state import _REFUSAL_CAUSE  # noqa: E402

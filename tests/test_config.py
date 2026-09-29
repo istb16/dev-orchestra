@@ -37,16 +37,36 @@ class TestDefaults(IsolatedCase):
     def test_defaults_are_valid(self):
         self.assertEqual(config_mod.validate(config_mod.default_config()), [])
 
-    def test_the_design_review_is_off_by_default(self):
-        """Turning it on costs a reviewer run per panel member per round plus
-        an architect re-run, so existing workflows must not inherit it."""
+    def test_the_design_review_is_auto_by_default(self):
+        """A round costs a reviewer run per panel member plus an architect
+        re-run, so by default only a risky or large plan pays for one."""
         design = config_mod.default_config()["review"]["design"]
-        self.assertEqual(design, {"enabled": False, "max_iterations": 2})
+        self.assertEqual(design, {"enabled": "auto", "max_iterations": 2})
 
     def test_design_settings_are_filled_in_for_a_config_that_omits_them(self):
         self.write(".dev-orchestra.yaml", "version: 1\nreview:\n  max_review_iterations: 1\n")
         loaded = config_mod.load(self.project)
-        self.assertEqual(loaded.design_review_settings(), {"enabled": False, "max_iterations": 2})
+        self.assertEqual(loaded.design_review_settings(), {"enabled": "auto", "max_iterations": 2})
+
+    def test_the_design_review_mode_keeps_the_old_truth_test(self):
+        """Null is the default; anything else not `auto` reads as the truth
+        test every reader applied before `auto` existed."""
+        cases = [
+            (True, "on"),
+            (False, "off"),
+            ("auto", "auto"),
+            (" Auto", "auto"),
+            ("AUTO ", "auto"),
+            (None, "auto"),
+            ("true", "on"),
+            ("yes", "on"),
+            (1, "on"),
+            (0, "off"),
+            ("", "off"),
+        ]
+        for value, mode in cases:
+            with self.subTest(value=value):
+                self.assertEqual(config_mod.design_review_mode(value), mode)
 
     def test_plan_approval_is_required_by_default(self):
         self.assertIs(config_mod.default_config()["design"]["require_approval"], True)
@@ -457,9 +477,17 @@ class TestValidation(IsolatedCase):
         self.assertTrue(any("max_review_iterations" in p for p in config_mod.validate(data)))
 
     def test_a_non_boolean_design_switch_is_rejected(self):
-        data = config_mod.default_config()
-        data["review"]["design"]["enabled"] = "yes"
-        self.assertTrue(any("review.design.enabled" in p for p in config_mod.validate(data)))
+        def problems(value):
+            data = config_mod.default_config()
+            data["review"]["design"]["enabled"] = value
+            return [p for p in config_mod.validate(data) if p.startswith("review.design")]
+
+        for value in ("yes", "true", 1):
+            with self.subTest(value=value):
+                self.assertEqual(problems(value), ["review.design.enabled: must be true, false or auto"])
+        for value in ("auto", "AUTO ", True, False, None):
+            with self.subTest(value=value):
+                self.assertEqual(problems(value), [])
 
     def test_a_negative_design_round_budget_is_rejected(self):
         data = config_mod.default_config()
@@ -803,6 +831,15 @@ class TestPruneLayer(IsolatedCase):
         base = {"review": {"design": {"enabled": False}}}
         pruned, _ = config_mod.prune_layer({"version": 1, "review": {"design": {"enabled": False}}}, base)
         self.assertEqual(pruned, {"version": 1})
+
+    def test_an_explicit_design_switch_off_is_kept_over_the_default(self):
+        """`false` used to equal the default and be pruned; it is now a choice."""
+        base = config_mod.default_config()
+        layer = {"version": 1, "review": {"design": {"enabled": False}}}
+        pruned, _ = config_mod.prune_layer(layer, base)
+        self.assertEqual(pruned, layer)
+        same, _ = config_mod.prune_layer({"version": 1, "review": {"design": {"enabled": "auto"}}}, base)
+        self.assertEqual(same, {"version": 1})
 
     def test_a_key_the_base_does_not_mention_is_kept(self):
         base = config_mod.default_config()
