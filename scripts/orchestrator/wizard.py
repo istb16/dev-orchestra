@@ -15,7 +15,7 @@ what that layer would inherit.
 from __future__ import annotations
 
 import copy
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, cast
 
 from . import config as config_mod
 from .providers import (
@@ -382,7 +382,7 @@ def render_summary(data: Dict[str, Any]) -> str:
         # and an unused tier is usually one nobody remembered was there.
         tiers = spec.get("model_tiers") if isinstance(spec, dict) else None
         for name in sorted(tiers) if isinstance(tiers, dict) else []:
-            entry = tiers[name]
+            entry = cast(Dict[str, Any], tiers)[name]
             described = _describe(merged(spec, entry)) if isinstance(entry, dict) else "(invalid)"
             lines.append("      --tier %-10s %s" % (name, described))
     reviewers = data.get("reviewers") or []

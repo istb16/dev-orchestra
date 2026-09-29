@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 import os
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple, cast
 
 from . import approval as approval_mod
 from . import config as config_mod
@@ -754,7 +754,7 @@ def cmd_design_approve(args: argparse.Namespace) -> int:
         and previous.get("design_round") == round_id
     )
     if already:
-        entry = previous
+        entry = cast(Dict[str, Any], previous)
     else:
         entry = approval_mod.record(workspace, digest, open_findings, of_current_plan, round_id)
 

@@ -45,7 +45,7 @@ import subprocess
 import sys
 import tempfile
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, cast
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -639,7 +639,7 @@ def checkout_root() -> str:
 
 
 def main(argv: Optional[List[str]] = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser = argparse.ArgumentParser(description=cast(str, __doc__).splitlines()[0])
     parser.add_argument("--provider", action="append", help="only this provider (repeatable)")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)

@@ -33,7 +33,7 @@ import hashlib
 import os
 import re
 import uuid
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from . import workspace as ws
 
@@ -83,7 +83,7 @@ def from_session(session: str) -> str:
     return hashlib.sha256(session.encode("utf-8")).hexdigest()[:12]
 
 
-def session_id(env: Optional[Dict[str, str]] = None) -> str:
+def session_id(env: Optional[Mapping[str, str]] = None) -> str:
     env = os.environ if env is None else env
     for name in SESSION_ENV:
         value = (env.get(name) or "").strip()
@@ -124,7 +124,7 @@ def write_pointer(container: str, workflow: str, origin: str = "") -> None:
 def resolve(
     container: str,
     requested: str = "",
-    env: Optional[Dict[str, str]] = None,
+    env: Optional[Mapping[str, str]] = None,
 ) -> Tuple[str, str]:
     """Return ``(id, origin)`` for the workflow this command belongs to.
 
@@ -152,7 +152,7 @@ def resolve(
     return new_id(), "new"
 
 
-def ensure(container: str, requested: str = "", env: Optional[Dict[str, str]] = None) -> str:
+def ensure(container: str, requested: str = "", env: Optional[Mapping[str, str]] = None) -> str:
     """Resolve the workflow and record it as the one this directory is on."""
     workflow, origin = resolve(container, requested, env)
     if origin != "pointer" and read_pointer(container) != workflow:
@@ -167,10 +167,13 @@ def _meta(container: str, workflow: str) -> Dict[str, Any]:
     """What is known about one workflow, read from what it has written."""
     directory = workflow_dir(container, workflow)
     state = ws.read_json(os.path.join(directory, "state.json"), {}) or {}
-    ledger = state.get("ledger") if isinstance(state.get("ledger"), dict) else {}
-    events = state.get("events") if isinstance(state.get("events"), list) else []
+    raw_ledger = state.get("ledger")
+    ledger = raw_ledger if isinstance(raw_ledger, dict) else {}
+    raw_events = state.get("events")
+    events = raw_events if isinstance(raw_events, list) else []
     last = events[-1] if events else {}
-    in_flight = ledger.get("in_flight") if isinstance(ledger.get("in_flight"), dict) else {}
+    raw_in_flight = ledger.get("in_flight")
+    in_flight = raw_in_flight if isinstance(raw_in_flight, dict) else {}
     return {
         "workflow": workflow,
         "dir": directory,

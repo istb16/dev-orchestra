@@ -7,7 +7,7 @@ import os
 import re
 import sys
 import time
-from typing import Any, Dict, List, NamedTuple, Optional, Tuple
+from typing import Any, Dict, List, NamedTuple, Optional, Tuple, cast
 
 from . import approval as approval_mod
 from . import config as config_mod
@@ -343,7 +343,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         token = book.begin(role, begun, deadline=timeout)
         # The keyword only when there is a session: an adapter that cannot
         # resume is called exactly as it was before resuming existed.
-        resuming = {"resume_session": resume_session} if resume_session is not None else {}
+        resuming: Dict[str, Any] = {"resume_session": resume_session} if resume_session is not None else {}
         try:
             return token, provider.run(
                 text,
@@ -394,7 +394,9 @@ def cmd_run(args: argparse.Namespace) -> int:
             detail["resume"] = dict(resume_detail, outcome="ok" if result.ok else None)
         return detail
 
-    token, result = launch(resume_prompt if session_id is not None else prompt, session_id)
+    # `resume_prompt` is read whenever --resume is given, and a session id is
+    # only ever found under --resume.
+    token, result = launch(cast(str, resume_prompt) if session_id is not None else prompt, session_id)
     if result is None:
         return 2
 
@@ -513,7 +515,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     answered_nothing = False
     target = ""
     if args.output:
-        target = _in_workflow(workspace, args.output)
+        target = _in_workflow(workspace, str(args.output))
         refused = _save_output(role, target, result)
     elif not args.job_file:
         _out(result.stdout)

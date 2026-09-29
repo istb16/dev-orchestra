@@ -606,7 +606,8 @@ def adopt(
     if not isinstance(cap, int) or isinstance(cap, bool) or cap < 1:
         cap = _default_surrounding_chars()
     frozen = ws.read_json(workspace.surrounding_path, {}) or {}
-    marked = meta.get("surrounding") if isinstance(meta.get("surrounding"), dict) else {}
+    raw_marked = meta.get("surrounding")
+    marked = raw_marked if isinstance(raw_marked, dict) else {}
     if (
         str(marked.get("mode") or "") != "enclosing"
         or not isinstance(frozen, dict)

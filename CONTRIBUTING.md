@@ -26,10 +26,31 @@ from different modules run at the same time, so a test class that does not
 derive from `IsolatedCase` must not write outside its own temporary
 directory, change the working directory, or leave the environment changed.
 
-CI pins an exact ruff version so a formatter release cannot turn every PR red.
-Bumping it is a deliberate, manual change: update `.github/workflows/ci.yml`,
-run `ruff format .` locally with the new version, and commit the result
-separately from any behaviour change.
+The tools for working on the code -- ruff and
+[Pyright](https://microsoft.github.io/pyright/) -- are pinned in
+`requirements-dev.txt`. Nothing at runtime needs them; set them up once in a
+virtual environment, which `.gitignore` already leaves out:
+
+```bash
+python -m venv .venv
+.venv/bin/pip install -r requirements-dev.txt     # Windows: .venv\Scripts\pip
+```
+
+Pyright's settings are in `pyproject.toml`: it checks `scripts/` against
+Python 3.11 for every platform at once, so a Unix-only branch is checked on
+Windows too. Run `pyright` from the repository root; it has to report no
+errors. The Node.js it runs on comes with it, from its `nodejs` extra. The
+tests are not type-checked yet.
+
+When the checker cannot follow a narrowing the code relies on, prefer making
+it followable -- read the value into a variable before testing its type --
+over `cast()`, and keep a `cast()` to the places where the reason fits in a
+one-line comment beside it. Neither may change what the code does.
+
+CI installs exactly these versions, so a formatter or checker release cannot
+turn every PR red. Bumping one is a deliberate, manual change: update
+`requirements-dev.txt`, run `ruff format .` and `pyright` locally with the new
+version, and commit the result separately from any behaviour change.
 
 ## The rules that matter
 

@@ -35,7 +35,7 @@ import math
 import os
 import time
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TypeGuard
 
 from . import execution
 from . import workspace as ws
@@ -83,7 +83,7 @@ USAGE_COUNTS = (
 )
 
 
-def _is_count(value: Any) -> bool:
+def _is_count(value: Any) -> TypeGuard[int]:
     """Whether a reported field is a count. ``True`` is an ``int``, and is not."""
     return isinstance(value, int) and not isinstance(value, bool)
 

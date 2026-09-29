@@ -73,6 +73,7 @@ def cmd_config_show(args: argparse.Namespace) -> int:
     loaded = config_mod.load(args.cwd, validate_result=False)
     scoped = args.scope in ("global", "project")
     exists = False
+    path = ""
     if args.scope == "global":
         # Deliberately not `_read_layer`: that one supplies what a writer needs
         # a saved file to hold, and reporting it here would show a `version`

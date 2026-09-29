@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import os
 import platform
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, cast
 
 from . import config as config_mod
 from . import optimization as opt_mod
@@ -148,8 +148,10 @@ def collect(start: Optional[str] = None, probe_models: bool = True) -> Dict[str,
             tier_items = tiers.items() if isinstance(tiers, dict) else ()
             for tier, tier_entry in tier_items:
                 if isinstance(tier_entry, dict):
-                    merged = config_mod.merge_tier(spec, tier_entry)
-                    if merged.get("provider") == spec.get("provider"):
+                    # A tier is only read from a spec that is a mapping.
+                    base = cast(Dict[str, Any], spec)
+                    merged = config_mod.merge_tier(base, tier_entry)
+                    if merged.get("provider") == base.get("provider"):
                         continue
                     tier_label = "%s (tier %s)" % (label, tier)
                     _refused_enforcement(tier_label, merged, report)

@@ -8,7 +8,7 @@ import copy
 import json
 import os
 import sys
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple, overload
 
 from . import config as config_mod
 from . import workflow as workflow_mod
@@ -229,6 +229,10 @@ def _review_workspace(args: argparse.Namespace) -> ws.Workspace:
     return workspace
 
 
+@overload
+def _in_workflow(workspace: ws.Workspace, path: str) -> str: ...
+@overload
+def _in_workflow(workspace: ws.Workspace, path: Optional[str]) -> Optional[str]: ...
 def _in_workflow(workspace: ws.Workspace, path: Optional[str]) -> Optional[str]:
     """Resolve a path written as ``.ai/...`` inside this workflow's directory.
 

@@ -68,7 +68,7 @@ from __future__ import annotations
 import json
 import os
 import re
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, cast
 
 from .. import verified
 from ..execution import ExecOutcome
@@ -398,7 +398,7 @@ class ClaudeProvider(Provider):
                 for key in ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
             ]
             if all(part is not None for part in parts):
-                context_tokens = sum(parts)
+                context_tokens = sum(cast(List[int], parts))
         init = None
         start = next(
             (item for item in events if item.get("type") == "system" and item.get("subtype") == "init"),
@@ -683,7 +683,7 @@ def _usage_from_events(events: List[Dict[str, Any]]) -> Optional[Usage]:
             output_tokens=_count(usage.get("output_tokens")),
             cache_read_tokens=_count(usage.get("cache_read_input_tokens")),
             cache_write_tokens=_count(usage.get("cache_creation_input_tokens")),
-            cost_usd=float(cost) if measured_cost else None,
+            cost_usd=float(cast(float, cost)) if measured_cost else None,
             source="claude result event",
         )
         return parsed if parsed.measured or parsed.cost_usd is not None else None
