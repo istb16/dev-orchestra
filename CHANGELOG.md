@@ -59,6 +59,20 @@ The public surface covered by that promise is: the configuration schema, the
   code that replaces a function (a user adapter's tests, say) has to replace
   it in the module that looks it up (#119).
 
+- **The README is now the way in, and the detail lives in `references/`.**
+  Both READMEs went from about 1,200 lines to about 250: what it is, who does
+  what, installing it, setup, the first run, and a short section per topic
+  pointing at the reference that explains it. The stage-by-stage walkthrough,
+  example workflows and installing from a skill checkout moved to
+  `references/workflow.md`; bulk input, what a run costs and the optimization
+  level to `references/limits.md`; the withheld-files example and the
+  fix-only round's measurement to `references/reviews.md`; the full
+  configuration example, the two-vendor lineup, model resolution and the setup
+  wizard to `references/configuration.md`; security to
+  `references/architecture.md`; troubleshooting to `references/cli.md`; and
+  running the plugin from a clone to `CONTRIBUTING.md`. The Japanese
+  translations follow (#164, #117).
+
 ## [0.13.2] - 2026-09-29
 
 ### Added

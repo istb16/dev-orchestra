@@ -1,4 +1,4 @@
-<!-- translated-from: references/limits.md sha256:5bb72e41382a46190cb1ef3097aeda58a085dde5fc016f904e63310e82227561 -->
+<!-- translated-from: references/limits.md sha256:aebb9ce3d9fa56192c725857a197e16d80376304680d1c7b8e39a28a234f7705 -->
 
 > この文書は [references/limits.md](../../../references/limits.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -571,6 +571,127 @@ dev-orchestra status                            # meanwhile, visible from anywhe
 `continue` または `stop-and-report` と、その理由です。覚えておくべき 4 つの
 ルールではなく参照すべき 1 つのコマンドであり — しかも仕組みなので、
 オーケストレーターがこのページを読んだかどうかに依存しません。
+
+<a id="feeding-it-a-lot-of-text"></a>
+
+## 大量のテキストを渡す
+
+ログ、レガシーモジュール、長い仕様書は、そのために設定したモデルにまとめて渡し、
+*結論* だけを残して、design とレビューは生の山ではなくその結論から進めます。
+40 MB のログに使ったコンテキストは、レビュアーが差分に使えなくなるコンテキストです。
+
+解析の依頼はファイルに書き（中身を貼り付けるのではなく、リポジトリ内のパスを指します）、
+大きなコンテキストを持つモデルに割り当てたロールで実行します。
+
+```bash
+dev-orchestra run orchestrator \
+  --prompt-file .ai/analysis-request.md \
+  --output .ai/analysis.md
+```
+
+うまくいく依頼の例:
+
+> `log/production-2026-09-08.log` と `app/services/checkout/*.rb` を読んでください。
+> 失敗パターンの種類、それぞれの発生頻度、関係するコードパスを挙げてください。
+> 修正はまだ不要です。finding だけを、グループに分け、`file:line` を付けて出してください。
+
+そして、ログではなく要約から設計します。
+
+```bash
+dev-orchestra run architect --prompt-file .ai/analysis.md --output .ai/plan.md
+dev-orchestra run implementer --prompt-file .ai/plan.md
+dev-orchestra review snapshot --base main
+dev-orchestra review run
+```
+
+仕様書のレビューや依存関係の監査でも同じ分担が使えます。1 つのモデルが消化し、
+別のモデルが設計し、さらに 2 つが結果について意見を食い違わせます。
+
+<a id="what-a-run-costs"></a>
+
+## 実行にかかるコスト
+
+委譲した実行はそれぞれ消費量を記録するので、「トークンはどこに消えたのか」という
+問いには推測以外の答えがあります。
+
+```bash
+dev-orchestra tokens show
+```
+
+```
+  stage              meas.     input    output     total    billed      cost
+  architect            1/1     8,200     2,100         -    11,500   $0.0421
+  implementer          1/1    21,300     8,400         -    31,900   $0.2140
+  review               4/4    58,000     6,400         -    64,400   $0.3900
+  ALL                  6/6    87,500    16,900         -   107,800   $0.6461
+
+Per reviewer:
+  claude-general       2/2    29,100     3,300         -    32,400   $0.1950
+  codex-general        2/2    28,900     3,100         -    32,000   $0.1950
+```
+
+合計は `status` と `summary` にも出ます。各列の意味と、`meas.` と `billed` が何を
+含まないかは [`tokens`](cli.md#tokens) にあります。読むときに大事なのは次の 2 つです。
+
+- **推定は一切しません。** プロンプトだけから見積もると、子 CLI のシステムプロンプト、
+  ツールスキーマ、CLI が自分で読んだファイル — 入力の大部分 — が抜け落ちるので、
+  数字はすべて CLI が報告したものです。
+- **レビュアーは 1 人ずつ数えます。** レビューはパイプラインで最も重複するコスト
+  （同じ差分を、レビュアーごとに、ラウンドごとに）だからです。3 人目のレビュアーが
+  元を取れているかは、レビュアーごとの行で分かります。
+
+これは会計であって予算ではありません。かかるコストを理由に実行を拒否するものは
+ありません。それは [予算](#budgets) の役目です。
+
+<a id="how-hard-to-try-to-be-cheap"></a>
+
+## どこまでコストを削るか
+
+`optimization.level` は、レビュアーが動き出す前にレビューラウンドについて 3 つのことを
+決めます。テストが失敗しているツリーをそもそもレビューするか、小さく低リスクな変更に
+パネル全員を使うか、各レビュアーに何件の finding を求めるかです。レベルとその表、
+キーは [最適化レベル](configuration.md#optimization-level) に、レベルがラウンドに
+できることとできないことは
+[レビューが実行されない場合、または縮小して実行される場合](reviews.md#when-a-review-does-not-run-or-runs-smaller)
+にあります。コマンドラインでは次のように見えます。
+
+```
+$ dev-orchestra review run
+refusing to review: the last recorded test run failed. Reviewing code that
+does not pass its own tests spends a reviewer on a problem you already know
+about. Fix the tests, record the result, and run again -- or pass --force.
+```
+
+ゲートが読むのは、直近の `dev-orchestra state record test ok|failed` が書いたものです。
+結果が記録されていないツリーは、警告したうえでレビューされます。
+
+```
+$ dev-orchestra review run
+note: aggressive → quality: db/migrate/003_drop_orders.rb matches *migrate*/*
+```
+
+高リスクの変更は、設定が何であれ `quality` にエスカレーションします。
+
+```
+note: low-risk change (1 file(s), 12 line(s)): 1 reviewer instead of the full
+panel (claude-general). Cross-model disagreement is what a second reviewer
+buys; raise optimization.level or the low_risk thresholds to keep it.
+```
+
+縮小したパネルには `general` のレビュアーが残り、そのことが表示されます。
+
+<a id="did-it-work"></a>
+
+### 効いたのか
+
+```bash
+dev-orchestra optimization report
+```
+
+レベルの効果は率です — 何回拒否したか、何回パネルを削ったか。そのためこのレポートは、
+1 つのワークフローの `tokens show` ではなく、すべてのワークフローの run log を読みます。
+出力、design レビューの消費が別に出ること、推定削減量が何であって何でないかは
+[`optimization`](cli.md#optimization) にあります。
 
 <a id="what-is-still-not-covered"></a>
 

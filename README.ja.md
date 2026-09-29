@@ -4,24 +4,10 @@
 
 **複数のAIコーディングCLI** を組み合わせてソフトウェア開発フロー全体をオーケストレーションする、汎用の
 [Agent Skill](https://code.claude.com/docs/en/skills) です。あるモデルで設計し、別のモデルで実装し、
-完了とみなす前に複数のモデルが独立してレビューします。
-
-Rails、React、TypeScript、Python、Go など、任意のコードベースで動作します。プロジェクト固有の前提は
-一切含みません。
-
-```
-リクエスト → 調査/設計 → 実装 → テスト
-           → 独立レビュー → トリアージ → 修正 → 再テスト → 最終報告
-```
-
-全工程が必須ではありません。オーケストレーターがリクエストを判断し、**必要な工程だけ**を実行します。
-typo修正なら編集だけ、スキーマ変更ならフルパイプライン。
-
----
+完了とみなす前に複数のモデルが独立してレビューします。どんなコードベースでも動き、リクエストに必要な
+工程だけを実行します。typo修正なら編集だけ、スキーマ変更ならフルパイプラインです。
 
 ## なぜ作るのか
-
-単一モデルの開発ループには2つの盲点があります。
 
 **モデルは自分の成果物のレビューが苦手です。** バグを生んだ前提をそのまま共有しているからです。
 互いの意見を知らない状態で同じdiffを見た2〜3の**異なる**モデルは、有用な形で食い違います。
@@ -29,1055 +15,19 @@ typo修正なら編集だけ、スキーマ変更ならフルパイプライン�
 
 **生のレビュー出力は修正リストではありません。** 複数のレビュアーは互いに重複し、一部はfalse positiveで、
 それを全部fixerに丸投げすると無駄な変更が量産されます。そこで findings は機械的に重複統合したうえで、
-オーケストレーターが**トリアージ**し、accepted になったものだけが fixer に届きます。
-
-来年も動き続けるために、2つの設計制約を置いています。
-
-- **設定ファイルに日付付きモデルIDを一切書かない。** 設定するのは *family*（`opus`、`fable`、
-  `recommended-coding`）と `version: latest` だけで、実際にインストールされているCLIに対して
-  provider adapter が実行時に解決します。
-- **モデル名を推測しない。** 検証できないモデルに対して adapter は「それらしい文字列」をCLIに渡さず、
-  エラーで停止します。
-
-## AIオーケストラ: 誰が何を担当するか
-
-`dev-orchestra` は「1つのAIにコードを書かせる」ものではありません。工程ごとに
-別のモデルを割り当て、そのうち2つには**意図的に意見を食い違わせます**。
-
-1. **指揮** — 依頼を読み、必要な工程を判断し、タスクを分解して結果を統合します。
-   大量の入力（ログ、レガシーコード、長い仕様書）を消化するのもこの工程です。
-2. **設計** — コードベースを調査して計画を書きます。CLI が強制する読み取り専用（[セキュリティ](#セキュリティ)参照）。実装前に、その計画
-   自体を同じレビューパネルにかけることもできます（`review.design.enabled`、既定は無効）。
-   ユーザーが計画を承認するまで実装には進みません（`design.require_approval`）。
-3. **実装** — その計画からコードとテストを書きます。
-4. **レビュー** — 凍結した差分を読み、findings を報告します。CLI が強制する読み取り専用。
-5. **独立レビュー** — 同じ差分を、別ベンダーのモデルが、1人目の意見を知らないまま
-   レビューします。
-6. **トリアージ・修正・再テスト** — findings を重複排除し、オーケストレータが採否を
-   判断し、accepted のものだけが修正担当に渡ります。
-
-現時点の両CLIが提供しているモデルに当てはめた構成例:
-
-| 工程 | 設定上のロール | CLI | family |
-| --- | --- | --- | --- |
-| 指揮・大量入力の処理 | `orchestrator` | Codex | `gpt-5.6-sol` |
-| 設計 | `architect` | Claude Code | `fable` |
-| 実装 | `implementer` | Claude Code | `opus` |
-| レビュー | reviewer | Claude Code | `opus` |
-| 独立レビュー | reviewer | Codex | `gpt-5.6-terra` |
-| accepted findings の修正 | `review_fixer` | Claude Code | `opus` |
-
-設定ファイルにすると次のようになります。
-
-```yaml
-version: 1
-
-orchestrator:
-  provider: codex
-  model:
-    family: gpt-5.6-sol
-    version: latest
-
-architect:
-  provider: claude
-  model:
-    family: fable
-    version: latest
-
-implementer:
-  provider: claude
-  model:
-    family: opus
-    version: latest
-
-review_fixer:
-  provider: claude
-  model:
-    family: opus
-    version: latest
-
-reviewers:
-  - id: claude-review
-    provider: claude
-    model:
-      family: opus
-      version: latest
-    role: general
-  - id: codex-independent
-    provider: codex
-    model:
-      family: gpt-5.6-terra
-      version: latest
-    role: general
-```
-
-**コピーする前に、自分の環境で family を確認してください。** モデル名は変わりますし、
-CLIのバージョンやアカウントによって提供されるモデルも異なります。
-
-```bash
-dev-orchestra model list
-```
-
-ここに表示されたものを使ってください。各アダプタは、インストール済みCLIが認めない
-family を推測せずに拒否します。古い名前は実行時に黙って別モデルを使うのではなく、
-セットアップ時にはっきり失敗します。
-
-重要なのはこの表そのものではなく、**設計と独立レビューを別ベンダーに割り当てる**という
-形です。同じ系列のモデル同士は、バグを生んだ思い込みまで共有してしまいます。
-
-## 必要なもの
-
-- **Python 3.11以上** — 標準ライブラリのみ。pip install 不要。
-  （PyYAML があれば使いますが、設定形式は内蔵パーサでカバーしています。）
-  `python` が無く `python3` だけある環境では `python3` で実行してください。
-  `bin/dev-orchestra[.ps1]` はこれを自動で選びます。
-- **git** — レビュースナップショットに必要です。
-- **サポート対象CLIのいずれか**（認証済みであること）:
-  - [Claude Code](https://claude.com/claude-code) (`claude`)
-  - [Codex CLI](https://developers.openai.com/codex/cli) (`codex`)
-
-このSkillは**既存のCLIログインをそのまま使います**。APIキーを要求せず、認証情報を保存せず、出力もしません。
-
-## インストール
-
-**Plugin として入れる**（Claude Code と Codex が同じパッケージを読みます）か、
-従来どおり **チェックアウトを Skill として入れる** かを選べます。どちらも
-サポート対象ですが、Plugin のほうが手順が短く、その場で更新できます。
-
-配布はこのリポジトリからのみです。Anthropic / OpenAI の公式Marketplaceには
-公開していません。
-
-### Claude Code Plugin
-
-Claude Code 内から:
-
-```
-/plugin marketplace add istb16/dev-orchestra
-/plugin install dev-orchestra@dev-orchestra
-```
-
-シェルから:
-
-```bash
-claude plugin marketplace add istb16/dev-orchestra
-claude plugin install dev-orchestra@dev-orchestra
-```
-
-Skill は次のセッションから使えます。`/plugin marketplace update` で更新、
-`claude plugin uninstall dev-orchestra` で削除します。
-
-### Codex Plugin
-
-```bash
-codex plugin marketplace add istb16/dev-orchestra
-codex plugin add dev-orchestra@dev-orchestra
-```
-
-`codex plugin marketplace upgrade` でスナップショットを取り直し（反映するには
-`codex plugin add` を再実行）、`codex plugin list` で状態を確認、
-`codex plugin remove dev-orchestra@dev-orchestra` で削除します。
-Codex も次のセッションから同梱Skillを認識します。
-
-どちらのホストも Plugin を自分のキャッシュ（`~/.claude/plugins/cache/…`、
-`~/.codex/plugins/cache/…`）にコピーして、そこから実行します。Skillが使う
-`scripts/`・`references/`・`bin/` はすべてそのコピーに含まれるので、
-チェックアウト先を指すパスは残りません。
-
-### ローカルでのPlugin開発
-
-GitHubではなくクローンを直接指定します。
-
-```bash
-git clone https://github.com/istb16/dev-orchestra.git
-cd dev-orchestra
-
-claude plugin validate .                    # manifest検証、CIでは --strict
-claude plugin marketplace add "$PWD"
-claude plugin install dev-orchestra@dev-orchestra
-
-codex plugin marketplace add "$PWD"
-codex plugin add dev-orchestra@dev-orchestra
-```
-
-実際に読み込まれた内容は `claude plugin details dev-orchestra` で確認できます。
-manifestを編集したら `python scripts/validate_skill.py` を再実行してください。
-両ホストのmanifestと同梱Skillの整合をチェックします。
-
-### 従来方式: チェックアウトをSkillとして導入
-
-Plugin以前のインストーラも従来どおり使えます（変更なし）。
-
-```bash
-git clone https://github.com/istb16/dev-orchestra.git
-cd dev-orchestra
-```
-
-#### Claude Code の場合
-
-```bash
-./install/install.sh              # ~/.claude/skills/ にシンボリックリンク
-```
-
-```powershell
-.\install\install.ps1             # Windows
-```
-
-インストーラはこのリポジトリをスキルディレクトリにリンク（`--copy` でコピー）するので、`git pull`
-だけでその場でアップグレードされます。`--project <path>` で特定リポジトリの `.claude/skills/` にだけ
-入れることもできます。その場合、対象リポジトリの `.git/info/exclude` にもパスを追記するので、
-**相手のリポジトリの `git status` を汚しません**（これがないと `git add -A` が
-"does not have a commit checked out" で失敗します）。
-
-Windows では Git Bash から `install.sh` を実行せず、`install.ps1` を使ってください。Git Bash は
-MSYS形式のパス（`/c/...`）を書き込みますが、ネイティブPythonはそれを開けません。シンボリックリンクには
-開発者モードか管理者権限が必要で、作れない場合はインストーラが自動でコピーにフォールバックします。
-
-#### Codex CLI の場合
-
-Pluginを使わない場合、インストーラは `AGENTS.md` にマーカー付きの短いポインタブロックを
-追記します。
-
-```bash
-./install/install.sh --codex                    # ~/.codex/AGENTS.md
-./install/install.sh --codex --project /path    # <project>/AGENTS.md
-```
-
-`skills/dev-orchestra/SKILL.md` が単一の情報源であり続けます。ポインタは参照するだけで、内容を複製しません。
-
-#### 任意: CLIをPATHに通す
-
-```bash
-export PATH="$PWD/bin:$PATH"      # どこからでも `dev-orchestra doctor` が使えます
-```
-
-#### 動作確認
-
-```bash
-./bin/dev-orchestra doctor
-```
-
-## 初期セットアップ
-
-初回実行時、設定が無いことを検知してウィザードが起動します。
-
-```
-AI Development Orchestrator setup
-
-Detected CLIs:
-  claude:  installed
-  codex:   installed
-
-1. Orchestrator
-   CLI:
-     1) Claude Code (2.1.x) (recommended)
-     2) Codex CLI (0.154.x)
-   Model:
-     1) sonnet [cli-help] (recommended)
-     2) opus [cli-help]
-     3) fable [cli-help]
-     4) custom (type a family or exact model id)
-...
-5. External Reviewers
-   How many reviewers? [2]
-   reviewer #1  CLI / Model / Review role / id
-   reviewer #2  CLI / Model / Review role / id
-   Add another reviewer? [y/N]
-
-Configuration
-  Orchestrator    claude / sonnet / latest
-  Architect       claude / fable  / latest
-  Implementer     claude / opus   / latest
-  Review Fixer    claude / opus   / latest
-  Reviews
-    1. claude / opus / latest / general / claude-general
-    2. codex / recommended-coding / latest / general / codex-general
-
-Save configuration? [Y/n]
-```
-
-対話なしで推奨値を書き込む場合:
-
-```bash
-dev-orchestra config setup --defaults
-```
-
-どちらの場合も、ファイルに残るのは自分で決めた値だけです。それ以外は組み込み
-既定値から解決されるため、既定値の改善が既存の設定ファイルに遮られずに届きます。
-
-## 使い方
-
-普段どおり自然言語でエージェントに話しかけてください。次のようなリクエストで起動します。
-
-- 「この issue を設定済みのワークフローで実装して」
-- 「チェックアウトのタイムアウトを調査して直して」
-- 「今の変更を全レビュアーでレビューして」
-- 「このブランチを main と比較してマルチモデルレビューして」
-- 「Codex の security reviewer を追加して」
-- 「実装は最新の Claude Opus を使って」
-
-配管部分は直接叩くこともできます。
-
-```bash
-dev-orchestra doctor
-dev-orchestra review snapshot --base main
-dev-orchestra review run
-dev-orchestra review show
-dev-orchestra review triage F1 --status accepted --note "確認済み"
-dev-orchestra review fix-brief --output fix-brief.md
-```
-
-全コマンドは [docs/ja/references/cli.md](docs/ja/references/cli.md)（[英語版](references/cli.md)）を参照してください。
-
-## 実際のワークフロー
-
-工程ごとに手で叩く必要はありません。1文で依頼すれば、必要な工程だけが実行されます。
-以下のコマンドは、その裏でオーケストレータが実行しているものです。1工程だけを自分で
-回したいときに使ってください。
-
-**1. 指揮.** オーケストレータが依頼を分類し、各工程の前に残り予算を確認します。
-
-```bash
-dev-orchestra status
-```
-
-**2. 設計.** architect が調査して計画を書きます。ファイルは編集できません（読み取り専用）。
-Claude では `Read`・`Grep`・`Glob` だけで、シェルも git もないので、重要な履歴は依頼に書いてください。
-
-```bash
-dev-orchestra run architect --prompt-file .ai/request.md --output .ai/plan.md
-```
-
-**2b. 設計レビュー（任意）.** 差分ではなく計画そのものを同じパネルに渡します。まだ間違える
-コードが存在しない段階なので、設計上の誤りを見つける場所としては最も安上がりです。ただし
-1ラウンドにつきパネル人数分の委譲実行が増えるため、明示的に有効化するまでは実行されません。
-
-```bash
-dev-orchestra config set review.design.enabled true
-dev-orchestra review run --design
-dev-orchestra review triage --design F1 --status accepted
-dev-orchestra review fix-brief --design --output .ai/execution/design-fix-brief.md
-dev-orchestra run architect --prompt-file .ai/execution/design-revise-request.md --output .ai/plan.md
-```
-
-最後の行で渡す修正依頼は、ブリーフをもとに自分で書きます。architect は文脈を持たない
-状態で再び始まるため、採用した指摘だけではプロンプトになりません。書き方は
-[docs/ja/references/workflow.md](docs/ja/references/workflow.md)（[英語版](references/workflow.md)）にあります。
-
-レポート・ラウンド数・トリアージは `.ai/reviews/design/` に独立して置かれるので、設計の
-ラウンドがコードレビューのラウンド数を進めたり、その上限に引っかかったりすることはありません。
-設計工程を省いた場合は、設計レビューも省かれます。`review.design.max_iterations` に
-達したラウンドの findings も計画に反映されます。上限が止めるのは、その改訂の再レビューだけです。
-
-**2c. 承認.** オーケストレータが計画（目的、変更内容、変更するファイル、リスク、未解決の
-設計 finding）を提示して確認を求めます。記録されるのはユーザーの「はい」だけで、それが
-記録されるまで `run implementer` は拒否されます（exit 5）。
-
-```bash
-dev-orchestra design approve
-```
-
-承認の対象は「今の計画」です。計画を改訂したり、承認後に設計レビューを走らせたりすると、
-もう一度承認が必要になります。`--force` では通れません。誰も見ていない自動実行では
-`config set design.require_approval false` でこの確認を無効にできます。計画がなければ
-確認もありません。
-
-**3. 実装.** implementer は元の依頼ではなく、その計画から実装します。
-
-```bash
-dev-orchestra run implementer --prompt-file .ai/plan.md
-```
-
-**4. レビュー.** まず差分を凍結し、全レビュアーがバイト単位で同一の入力を見ます。
-その上で、並列・独立・読み取り専用で実行されます。
-
-```bash
-dev-orchestra review snapshot --base main
-dev-orchestra review run
-dev-orchestra review show
-```
-
-**5. トリアージ.** 重複排除は機械的に行いますが、どれが本物かの判断はオーケストレータが
-担当します。
-
-```bash
-dev-orchestra review triage F1 F3 --status accepted --note "confirmed"
-dev-orchestra review triage F2 --status rejected --note "guarded by the caller"
-```
-
-**6. 修正と再テスト.** 修正担当に渡るのは accepted の findings だけです。
-
-```bash
-dev-orchestra review fix-brief --output .ai/fix-brief.md
-dev-orchestra run review_fixer --prompt-file .ai/fix-brief.md
-```
-
-その後テストを再実行し、`dev-orchestra review status` がもう1周する価値があるか、
-ループを終えるべきかを判断します。最終ラウンドの後も修正と再テストは行い、そのうえで
-`review status` が再レビューしないよう告げ、残った findings を報告します。
-
-## 大量のテキストを扱う場合
-
-ログ、レガシーモジュール、長い仕様書などは、そのために設定したモデルにまとめて渡し、
-**結論だけ**を残して設計・レビュー工程へ引き継ぎます。40MBのログに使ったコンテキストは、
-そのぶんレビュアーが差分に使えなくなるコンテキストです。
-
-解析依頼はファイルに書き（中身を貼り付けるのではなく、リポジトリ内のパスを指し示す）、
-大量入力担当に割り当てたロールで実行します。
-
-```bash
-dev-orchestra run orchestrator \
-  --prompt-file .ai/analysis-request.md \
-  --output .ai/analysis.md
-```
-
-依頼文の例:
-
-> `log/production-2026-09-08.log` と `app/services/checkout/*.rb` を読んで、
-> 失敗パターンの種類、それぞれの発生頻度、関係するコードパスを列挙してください。
-> 修正はまだ不要です。findings のみを、`file:line` 付きでグループ化して出力してください。
-
-そして、ログではなく**その要約から**設計します。
-
-```bash
-dev-orchestra run architect --prompt-file .ai/analysis.md --output .ai/plan.md
-dev-orchestra run implementer --prompt-file .ai/plan.md
-dev-orchestra review snapshot --base main
-dev-orchestra review run
-```
-
-仕様書レビューや依存関係の棚卸しでも同じ分担が使えます。1つのモデルが情報を消化し、
-別のモデルが設計し、さらに2つが結果について意見を戦わせます。
-
-## 同じチェックアウトで2つのセッション
-
-成果物は `.ai/workflows/<id>/` に置かれる — ワークフローごとに1ディレクトリ。以前は
-`.ai/` 直下だったため、同じチェックアウトで動く2つ目のセッションが1つ目の `plan.md` を
-上書きし、レビュー結果を混ぜ、予算を消費していた。どちらのセッションも名乗らない。
-
-```
-$ dev-orchestra workflow show
-Workflow: 5942d94f5248 (from: session)
-Artifacts: /code/app/.ai/workflows/5942d94f5248
-
-$ dev-orchestra workflow list
-5942d94f5248  2026-09-15T09:12:04Z  runs=6  review/ok  [current]
-9c1e07b3a880  2026-09-15T08:40:11Z  runs=2  implementer/ok
-```
-
-IDはコマンドごとに、この順で解決される:
-
-| | |
-| --- | --- |
-| `--workflow <id>` | 明示指定（例 `--workflow auth-fix`） |
-| `DEV_ORCHESTRA_WORKFLOW` | 同じものを環境変数から |
-| ホストのセッションID | 12文字にハッシュ化。決定的なので、同一セッションの全コマンドが、調整用ファイルなしで一致する |
-| `.ai/current.json` | このディレクトリが最後に解決した値。セッションIDを持たないホスト向け |
-| 新規ID | 初回 |
-
-コマンドの書き方は従来どおりでよい。`--output .ai/plan.md` は*このワークフローの*
-plan を指し、そのディレクトリに書かれる。`.ai/` の外のパスと、既にワークフローを
-含むパスは、書かれたとおりに使われる。
-
-**分離されるのは帳簿であって、作業対象ではない。** implementer は作業ツリーを書き換え、
-レビュアーは同じ作業ツリーの `git diff` を読む — そしてチェックアウトには作業ツリーが
-1つしかない。ここで*同時に*2つのワークフローを動かせば、レポートの置き場所が別でも、
-互いの書きかけを見てしまう。本当に並行させるなら、ワークフローごとに worktree を分ける:
-
-```
-git worktree add ../feature-x feature-x
-```
-
-リポジトリルートが変わるので、`.ai/` も自動的に別になる。同じツリーで他のワークフローが
-動いていそうなときは、コマンドがそう言う — ディレクトリが分かれていることが、
-提供できない安全性を暗示しないように。
-
-0.4.0 より前からのアップグレードでは、平置きの `.ai/` が最初に動いたワークフローに
-取り込まれる。アップグレードで中断されたワークフローも plan・レポート・予算を保つ。
-
-## 2巡目は修正だけを見る
-
-毎ラウンド `HEAD` と全体を再 diff していたため、1行の修正を見るのに2巡目が1巡目と同じ
-コストを — レビュアーごとに — 要していた。snapshot が作業ツリーを git tree オブジェクトとして
-記録するようになったので、次のラウンドは「前のラウンドが実際にレビューしたツリー」との
-差分を取る。
-
-```
-$ dev-orchestra review snapshot
-Snapshot: .ai/workflows/5942d94f5248/reviews/review-target.diff
-  strategy: git diff <previous round> <now>
-  scope:    what changed since the last reviewed round, not the whole change
-            whole change kept alongside it as review-target-full.diff
-            reviewers also get the findings the fix was meant to address
-  files:    1
-  size:     199 bytes (sha256 17ac3ae8c8a2)
-```
-
-60関数の変更に1行の修正を加えたケースで、2巡目の diff は 8,617 → 199 bytes（レビュアー1人あたり）。
-
-**前提も一緒に渡す。** レビュアーはステートレスで、他のレビュアーの出力を見ない。つまり
-修正 diff だけを渡すのは「目的が書かれていない変更」を渡すことになる — 何を直そうと
-していたか分からなければ「これは正しいか」に答えられない。そこでラウンドには、修正が
-対処すべきだった accepted findings（1件1行）と、ディスク上に凍結された変更全体への
-ポインタも載せる。コストは数千トークンの代わりに約80トークンで、しかも2回目の全 diff
-より鋭い問いになる: **各 finding は実際に直ったか、修正が何かを壊していないか。**
-
-re-snapshot の前に triage すること。スコープが狭まるのは accepted findings があるときだけで、
-finding が出なかったラウンドの次は「修正の検証」ではなく「新しい変更のレビュー」なので全体が渡る。
-`--full`（または `review.incremental_rounds: false`）で全体を再送できる。
-
-## レビュアーに送らないもの
-
-レビュアーが diff を読むのは、誰かが書いたコードを判断するためだ。ロックファイル・
-バンドル・記録されたスナップショットは誰も書いていないが、実コードと同じだけトークンを
-消費する — レビュアーごとに1回、ラウンドごとに1回。そこで snapshot はこれらの diff の
-**本体**を送らない。
-
-```
-$ dev-orchestra review snapshot
-Snapshot: .ai/workflows/5942d94f5248/reviews/review-target.diff
-  strategy: git diff HEAD
-  files:    1
-  size:     153 bytes (sha256 bf2b71e951ea)
-  withheld: 2 file(s), 802 changed line(s) not sent to reviewers
-    dist/bundle.min.js (dist/*)
-    package-lock.json (package-lock.json)
-    reviewers are told these changed; --no-exclude sends them in full
-```
-
-この変更 — 400パッケージのロックファイル更新と2行の修正 — で、レビュアー2人の1ラウンドが
-**44,783 → 1,711 input tokens** になった。
-
-送らないことは隠すことではない。ここが設計の要点で、レビュアーには「そのファイルが
-何行変わったか」は伝わる。依存バージョンが本当に判断を左右するなら、自分で読みに行ける。
-`--no-exclude` で全部送る。
-
-対象は `review.exclude`: ロックファイル、`dist/`、`vendor/`、`node_modules/`、
-minify済みファイル、source map、`*.snap`。`[]` にすれば全部レビューする。独自のリストに
-差し替えてもよい。判断が曖昧なものは既定から意図的に外している — `build/` は慣習的には
-出力先だが手書きの場合も十分あり、隠すと本物の変更を落としうる。ロックファイルに課金
-されるより、そのほうが悪い失敗だ。
-
-## どこまでコストを削るか
-
-`optimization.level` ひとつで、レビュー開始前に3つのことが決まります。既定は
-`balanced` です。
-
-| | `aggressive` | `balanced` | `quality` |
-| --- | --- | --- | --- |
-| テスト失敗が記録済み | 拒否 | 拒否 | それでもレビュー |
-| テスト結果が未記録 | 警告してレビュー | 警告してレビュー | レビュー |
-| 小さい低リスク変更 | レビュアー1人 | レビュアー1人 | 全員 |
-| 要求する finding 数 | 4 | 6 | 10 |
-
-**0.4.2 から `balanced` でもパネルを削減します。** `aggressive` 限定にしていたため、
-必要な場所でちょうど到達不能になっていました。高リスクに当たると `quality` へ昇格し、
-`quality` は `aggressive` でないので、`*.tf` が毎ラウンド当たるインフラ系リポジトリでは
-ダイヤルが一度も発火できません。`balanced` の実測11ラウンドでは削減0回で、旧閾値
-（2ファイル/50行）に近づいたラウンドすらありませんでした。閾値も併せて引き上げています（5ファイル/150行）。
-全員を必ず立てるのは `quality` だけになりました — それがこのレベルの意味です。
-
-このゲートは**記録された結果を読むだけで、何も実行しません**。dev-orchestra は
-プロジェクトのテストコマンドを知る手段がなく（発見して実行するのは orchestrator
-側です）、直近の `dev-orchestra state record test ok|failed` が書いたものを読みます:
-
-```
-$ dev-orchestra review run
-refusing to review: the last recorded test run failed. ...
-```
-
-状態は2つではなく3つです。**未記録**のツリーは拒否されません。警告してレビュー
-します。「誰も書き留めなかった」は「失敗した」ではありませんし、`state record` を
-使っていないワークフローはこれまでどおり動きます。
-
-高リスク変更は、設定が何であれ `quality` へエスカレーションします:
-
-```
-$ dev-orchestra review run
-note: aggressive → quality: db/migrate/003_drop_orders.rb matches *migrate*/*
-```
-
-認証、秘密情報、決済、マイグレーション、SQL、暗号、デプロイ設定。パターンは
-`optimization.high_risk_paths` で差し替えられますが、エスカレーションそのものは
-無効化できません。パターンは意図的に広めです ── `authors_controller.rb` が
-`*auth*` に当たってもレビュアーが1人増えるだけですが、`auth_controller.rb` を
-取りこぼすと認可バグを1件見逃します。
-
-サイズだけを基準にはしません。認証ファイルの1行変更は、認可バグが現れる典型的な
-形だからです。レビュアーを減らすのは「小さい」かつ「高リスクパスに触れていない」
-場合だけで、減らすときは専門レビュアーより `general` を残します（security 専門
-1人だけでは、そう指示されていない正当性バグを誰も見ません）。そして必ず理由を
-出力します:
-
-```
-note: low-risk change (1 file(s), 12 line(s)): 1 reviewer instead of the full
-panel (claude-general). ...
-```
-
-finding を捨てることも、レビュアーのレポートを統合することも、黙って振る舞いを
-変えることもありません。決定はすべて出力され、run state に記録され、
-`review run --json` と `status --json` から取得できます。
-
-
-### 効いたのか
-
-```bash
-dev-orchestra optimization report
-```
-
-```
-Review rounds recorded: 14 (12 ran, 2 refused)
-  levels in force        aggressive x14
-  gate verdicts          allow x12, refuse x2
-  panel reduced          5
-  escalated (high risk)  3
-
-Reviewer runs: 19 (19 reported usage), 823,104 billed
-  68,592 billed per round that ran
-
-Estimated saving from 2 refused round(s): ~137,184 billed tokens.
-```
-
-レベルの効果は「率」です ── 何回拒否したか、何回パネルを削ったか。したがって
-`tokens show`（1ワークフロー分）ではなく run log を読みます。
-
-`review.design` が有効なら、消費量は分けて表示されます。設計レビューのラウンドには
-測るべき diff もゲートが読むテスト結果もなく、レベルは何も判断していません ──
-つまりコストには現れますが、上のどの「率」にも現れません。
-
-```
-Reviewer runs: 12 (12 reported usage), 909,313 billed
-  code review            8 (8 reported usage), 558,884 billed over 4 round(s), 139,721 each
-  design review          4 (4 reported usage), 350,429 billed over 2 round(s), 175,214 each
-```
-
-**この2つを平均することはありません。** プランに対する1ラウンドと diff に対する
-1ラウンドは同じ作業単位ではないからです。設計レビューが無効なら、上の例のように
-design の行は出ません ── 走っていないステージの `0` は、測定値のふりをしたノイズです。
-
-**削減額は推定値で、そう明示します。** 起きなかったラウンドのコストは知りよう
-がないので、実際に走ったラウンドの平均を代用しています。
-
-テスト結果が未記録のラウンドがあれば、それも報告します。ゲートが読むのは
-`state record test ok|failed` が書いたものなので、何も書かれていないラウンドは
-**判断材料を与えられておらず、発火し得ません**。これは「レベルに効果がなかった」
-とはまったく別の結論ですが、合計値の中では見分けがつきません。
-
-## 実行コストの確認
-
-委譲した実行ごとに消費量を記録するので、「トークンがどこで消えたか」は推測せずに答えられる。
-
-```bash
-dev-orchestra tokens show
-```
-
-```
-  stage              meas.     input    output     total    billed      cost
-  architect            1/1     8,200     2,100         -    11,500   $0.0421
-  implementer          1/1    21,300     8,400         -    31,900   $0.2140
-  review               4/4    58,000     6,400         -    64,400   $0.3900
-  ALL                  6/6    87,500    16,900         -   107,800   $0.6461
-
-Per reviewer:
-  claude-general       2/2    29,100     3,300         -    32,400   $0.1950
-  codex-general        2/2    28,900     3,100         -    32,000   $0.1950
-```
-
-合計は `status` と `summary` にも出る。読むときの前提が3つある。
-
-- **数字はCLI側の報告で、こちらの推定ではない。** Claude Code は input / output /
-  キャッシュ読み / キャッシュ書き込みと価格を返す。Codex は合計値のみ。推定は一切
-  しない: 送ったプロンプトから見積もっても、子CLI自身のシステムプロンプト・ツール
-  スキーマ・CLIが自分で読んだファイル — 入力の大部分 — が抜け落ちる。`meas.` は
-  そのステージのうち何回が実際に報告したかで、報告のない実行があれば「合計は下限
-  (floor) である」と明示する。
-- **`billed` にキャッシュ読みは含めない。** 価格が新規入力の約1/10なので、含めると
-  キャッシュが効いたステージが高コストなステージより上に来てしまう。金額は `cost`
-  を見る。
-- **レビュアーは1人ずつ計上する。** レビューはパイプライン中で最も重複するコスト
-  (同じ diff を、レビュアーごとに、ラウンドごとに) だからで、3人目のレビュアーが
-  元を取れているかはこの行でしか判断できない。
-
-これは計測であって予算ではない。コストを理由に実行を拒否することはしない。拒否する
-のは `budget` の試行回数予算の役目で、どちらか一方を他方と読み違えないようコマンドを
-分けている。
-
-## 設定
-
-優先順位: **プロジェクト → グローバル → 内蔵デフォルト**。
-
-| レイヤ | パス |
-| --- | --- |
-| プロジェクト | `<repo>/.dev-orchestra.yaml` |
-| グローバル (Linux/macOS) | `~/.config/dev-orchestra/config.yaml` |
-| グローバル (Windows) | `%APPDATA%\dev-orchestra\config.yaml` |
-
-```yaml
-version: 1
-
-orchestrator:
-  provider: claude
-  model:
-    family: sonnet
-    version: latest
-
-architect:
-  provider: claude
-  model:
-    family: fable
-    version: latest
-
-implementer:
-  provider: claude
-  model:
-    family: opus
-    version: latest
-
-review_fixer:
-  provider: claude
-  model:
-    family: opus
-    version: latest
-
-reviewers:
-  - id: claude-general
-    provider: claude
-    model:
-      family: opus
-      version: latest
-    role: general
-  - id: codex-general
-    provider: codex
-    model:
-      family: recommended-coding
-      version: latest
-    role: general
-
-review:
-  max_review_iterations: 2
-  parallel: true
-  design:
-    enabled: false
-    max_iterations: 2
-
-design:
-  require_approval: true
-```
-
-```bash
-dev-orchestra config show
-dev-orchestra config set implementer.model.family sonnet
-dev-orchestra config set --scope project architect.provider codex
-dev-orchestra config reset
-```
-
-マッピングはキー単位でマージされますが、**リストは丸ごと置き換わります**。プロジェクト設定で
-`reviewers` を定義すると、そのリポジトリのレビュー体制を完全に上書きできます。
-
-スキーマ全体は [docs/ja/references/configuration.md](docs/ja/references/configuration.md)（[英語版](references/configuration.md)）にあります。
-
-## 1つのロールに複数のモデル
-
-ロールは「仕事」であって「モデル」ではありません。`model_tiers` を使うと、
-仕事はそのままに動かすモデルだけを差し替えられます ── 1行修正は安いモデルへ、
-セカンドオピニオンは別ベンダーへ:
-
-```yaml
-implementer:
-  provider: claude
-  model:
-    family: opus
-    version: latest
-  model_tiers:
-    light:
-      model:
-        family: sonnet
-        version: latest
-    second-opinion:
-      provider: codex
-```
-
-```bash
-dev-orchestra run implementer --tier light --prompt-file .ai/execution/fix.md
-```
-
-**tier を選ぶのは呼び出し側です。** diff のサイズなどから自動推測はしません。
-タスクの難易度を知っているのは呼び出し側だけであり、推測を外すと tier が制御
-しようとしているコストか品質のどちらかを失うためです。
-
-**存在しない tier はエラーです。** 既定モデルへ黙って落ちることはありません。
-tier が黙殺されると、安く済ませたいときに高いモデルが、丁寧にやりたいときに
-安いモデルが動くことになります。
-
-各キーは**マージではなく丸ごと置換**されます。family だけを指定した tier が
-ベースの `pinned` + `id` を引き継いで、誰も指定していないモデルで動く事故を
-防ぐためです。provider を変えた場合は、前の provider の model と options も
-一緒に落とします（`opus` は Codex にとって無意味です）。
-
-tier は `config show` に一覧表示され、tier 付きの実行は `tokens show` で
-独立した行として記録されます。「安い方は本当に安かったのか」を推測ではなく
-数字で確認できます。
-
-レビュアーに tier はありません。パネルは既にレビュアーごとに1モデルで、それが
-同じ意味のルーティングだからです。
-
-## モデル選択
-
-設定に保存するのは **family と方針** だけで、スナップショットは保存しません。
-
-```yaml
-implementer:            # tracks the latest Opus, whatever that is today
-  model:
-    family: opus
-    version: latest
-
-architect:              # frozen to one snapshot - only do this deliberately
-  model:
-    family: opus
-    version: pinned
-    id: claude-opus-5
-
-review_fixer:           # let the CLI pick entirely
-  model:
-    family: default
-    version: latest
-```
-
-解決の優先順位:
-
-1. インストール済みCLIが提示する情報 — Claude は `claude --help` の alias、Codex は
-   `codex debug models` のカタログと `$CODEX_HOME/config.toml` のデフォルト
-2. provider の現行 alias
-3. **family のみ**を並べた内蔵フォールバック（最終確認日付き）
-
-どれでも検証できない場合、理由を示して停止します。推測は行いません。
-
-```bash
-dev-orchestra model list
-```
-
-```
-claude: installed
-  fable    family=fable    source=cli-help
-  opus     family=opus     source=cli-help
-  sonnet   family=sonnet   source=cli-help
-codex: installed
-  CLI default (recommended coding model)  family=recommended-coding  source=cli-default
-  gpt-6-astra (this CLI's configured model) family=gpt-6-astra       source=cli-config
-  GPT-5.6-Terra                           family=gpt-5.6-terra       source=cli-catalog
-```
-
-`recommended-coding` は **`-m` を付けない**ことで解決します。CLI自身の現行デフォルトが、
-定義上いちばん新しいからです。それ以外の family は、この一覧に出てくるものに限られます。
-Codexアダプタが受け付けるのは、CLIが設定しているモデルと、CLI自身のカタログが公開している
-slug だけで、それ以外は拒否します。
-
-## レビュアー
-
-0個以上（2個以上を推奨）。それぞれが独立・read-only で、同一の凍結済みdiffをレビューします。
-
-```bash
-dev-orchestra reviewer list
-dev-orchestra reviewer add --provider codex --role security
-dev-orchestra reviewer add --provider claude --role database
-dev-orchestra reviewer set 2 --role performance
-dev-orchestra reviewer remove codex-security
-```
-
-組み込みロール: `general`、`security`、`performance`、`test`、`architecture`、`database`、
-`frontend`、`backend`。任意のカスタムロールも指定できます。
-
-全レビュアーの findings はパースされ、重複統合され、深刻度順に並べられ、修正前に必ずトリアージされます。
-
-重複判定は意図的に2段構えです。自動統合はほぼ同一の言い換えだけを潰します。異なるバグを1つに
-まとめてしまうと片方が消えるからです。**跨モデルの重複は散文がまったく似ません** — 実際の2社
-レビュー出力で測ったところ、真の重複ペアのテキスト類似度が 0.03、無関係なペアが 0.29 でした。
-そこで、異なるレビュアーが**同じコードを引用している** findings を「重複候補」として提示し、
-Orchestrator がトリアージ時に確定させます。詳細は [docs/ja/references/reviews.md](docs/ja/references/reviews.md)（[英語版](references/reviews.md)）。
-
-`review.context.surrounding: enclosing` にすると、各 hunk を囲む Python の関数・メソッド・クラスも、
-すべてのコードレビュアーに渡します。diff を取ったツリーからスナップショットと一緒に固定するので、
-レビュアーが自分で開くファイルが減ります。量は `review.context.surrounding_chars`（15,000）と、
-diff がコンテキストの上限の下に残す分で制限され、収まらなかったものは黙って落とさず、プロンプトと
-すべてのレポートで名前を挙げます。出荷時は off です。`optimization report` がこれを使ったラウンドと
-使わなかったラウンドを実行あたり・変更 1k 文字あたりで比較しますが、これは異なる変更どうしの比較です。
-1 つの変更での効果は、`review run --surrounding none|enclosing` で同じスナップショットを 2 回レビューし、
-ペアの数値で読みます。その数値を見て on にしてください。
-
-各ロールには provider 固有の `options` も指定できます（Claude は `permission_mode`、Codex は
-`sandbox` / `approve`）。値はインストール済みCLIが実際に受け付けるものと照合されます。read-only
-工程を緩めようとする option は無視され、`doctor` がそれを報告します。orchestrator、architect、
-全レビュアーは設定に関わらず read-only を維持し、Claude の `--add-dir` 以外の生の `options.args`
-があるとその実行は拒否されます（[設定](docs/ja/references/configuration.md) を参照）。
-
-## ワークフロー例
-
-**既存Railsアプリケーションへの機能追加**
-
-> 「チェックアウトに顧客ごとの上限金額を追加して」
-
-```
-Codex gpt-5.6-sol      既存のチェックアウト実装と直近のログを読み、
-                       依頼を工程に分解
-        |
-Claude fable           設計: 上限をどこに持たせるか、影響範囲、マイグレーション
-        |
-Claude opus            実装とテストの作成
-        |
-Claude opus            凍結された差分をレビュー
-Codex gpt-5.6-terra    同じ差分を独立にレビュー
-        |
-Codex gpt-5.6-sol      両方の結果を統合し、重複を落とし、トリアージ
-        |
-Claude opus            accepted の findings だけを修正
-        |
-                       テスト再実行、報告
-```
-
-利用者側の操作はエージェントへの1文だけです。成果物は `.ai/` に残ります（計画、
-各レビュー、統合済み findings、トリアージ結果）。
-
-**API変更を伴う機能追加**
-
-> 「orders エンドポイントにページネーションを追加して」
-
-設計 (Fable) → 実装 (Opus) → テスト → 独立レビュー2件 → トリアージ（2件accepted、1件rejected）
-→ 修正 (Opus) → 再テスト → 報告。
-
-**typo修正**
-
-> 「README の見出しの typo を直して」
-
-編集1回のみ。設計もレビューもしません。省略したことは報告に明記されます。
-
-**レビューのみ**
-
-> 「このブランチの main 以降の変更を全レビュアーでレビューして」
-
-```bash
-dev-orchestra review snapshot --base main
-dev-orchestra review run
-dev-orchestra review show
-```
-
-**低コストな動作確認** — レビュアーをオフラインの mock provider に差し替えます。
-
-```bash
-dev-orchestra reviewer add --provider mock --id dry --role general
-DEV_ORCHESTRA_MOCK_RESPONSE=NO_FINDINGS dev-orchestra review run --only dry
-```
-
-## トラブルシューティング
-
-| 症状 | 原因と対処 |
-| --- | --- |
-| `Source: built-in defaults` | 設定ファイルが未作成。`dev-orchestra config setup`。 |
-| `codex: … does not vouch for …` | この Codex CLI が提供していない family。`dev-orchestra model list` で確認し、`recommended-coding` を使うか、正確なIDをpinする。 |
-| `claude: cannot resolve model family 'x'` | 提示されていない alias。`dev-orchestra model list` で確認。 |
-| `Installed: no` | CLIがPATHにない。自分でインストールしてください（Skillは勝手に入れません）。 |
-| 委譲先CLIの `Failed to authenticate` | そのCLIで直接ログイン（`claude`、`codex login`）。`doctor` は認証情報の**存在**のみを見ており、有効性は検証しません。 |
-| `review snapshot` が empty | `HEAD` との差分がない。`--base <rev>` を使うか、実装工程が動いたか確認。 |
-| `not a git repository` | スナップショットにはgitが必要。`git init` するか、コミット済みリポジトリで実行。 |
-| レビュアーが1件失敗 | 想定内で継続します。理由は `.ai/reviews/consolidated.md` に記録されます。 |
-| Implementerがテストを実行できない | `acceptEdits` は編集のみ自動承認し、シェルコマンドは承認しません。プロジェクト側のCLI設定でコマンドを許可リストに入れるか、`implementer.options.permission_mode` を設定してください。 |
-| 明らかに同じ findings が2件ある | 自動統合は意図的に保守的です。「Possible duplicates」の一覧を確認し、片方を `duplicate` としてトリアージしてください。 |
-| レビューが終わらない | `review.timeout_seconds` を下げるか、`--sequential` でどのレビュアーが止まっているか特定。 |
-| 設定のパースエラー | 内蔵YAMLパーサは anchor、alias、ブロックスカラーを拒否します。簡素化するか PyYAML を入れてください。 |
-| `—` が `\u2014` と表示される | コンソールがその文字を表現できません（日本語 Windows の cp932 など）。落とさず落ちもせず、エスケープして表示します。`chcp 65001` か `PYTHONIOENCODING=utf-8` で正しく出ます。 |
-
-`dev-orchestra doctor --json` で同じ情報を機械可読な形で取得できます。
-
-## セキュリティ
-
-- **認証情報を要求も保存も出力もしません。** 環境を継承し、CLI側の既存認証に依存します。
-- `doctor` が報告するのは認証情報の**存在**（`present` / `unknown`）だけで、値ではありません。
-- 取得した stdout/stderr は、`.ai/` や画面に出る前に認証情報らしき文字列を除去するredactorを通ります。
-- architect とレビュアーは read-only で動作し、それはプロンプトではなく CLI が強制します。
-  Claude は plan モード、`Read`・`Grep`・`Glob` のツールだけ、MCP サーバーなし、`--restricted`
-  で動くので、シェルはなく、リポジトリの設定ファイルのフックも走らず、作業ディレクトリと
-  `--add-dir` の外は読めません。Codex は `-s read-only` で書き込みが止まりますが、MCP サーバーは
-  未確認です。`--restricted` のため、あなた自身の `permissions.deny` もこれらの Claude の実行には
-  効きません。管理設定（managed settings）へ移してください。
-- read-only の実行は、それを緩めうる生引数を拒否します。Claude が受け付けるのは global 設定か
-  `--extra` からの `--add-dir <path>` だけ（project ファイルからは受け付けません）で、Codex は
-  何も受け付けません。拒否メッセージは値を表示しません。
-- 成果物は `.ai/` に隔離され、既定で自分自身をgit管理外にします。
-- Skill自身はネットワークにアクセスしません。通信するのはCLIです。
-
-セキュリティ上の問題を見つけた場合は `CONTRIBUTING.md` を参照してください（公開issueは立てないでください）。
-
-## 対応プラットフォーム
-
-| プラットフォーム | 状態 |
-| --- | --- |
-| Linux | 対応・CI検証済み |
-| macOS | 対応・CI検証済み |
-| Windows（ネイティブ / PowerShell） | 対応・CI検証済み。`bin\dev-orchestra.ps1` を使用。 |
-| Windows（WSL） | 対応 — Linuxとして扱ってください |
-
-WSLは**必須ではありません**。中身は純粋なPythonと`git`だけで、シェルラッパーは利便性のためのものです。
-
-## アップグレード
-
-Claude Code は marketplace の更新と新バージョンの導入を1コマンドで行います。
-
-```bash
-/plugin marketplace update
-```
-
-Codex は2段階です。`marketplace upgrade` はGitスナップショットを取り直すだけで、
-インストール済みのコピーは `add` し直すまでキャッシュ内の古いバージョンのままです。
-
-```bash
-codex plugin marketplace upgrade
-codex plugin add dev-orchestra@dev-orchestra
-```
-
-チェックアウト導入の場合:
-
-```bash
-cd /path/to/dev-orchestra
-git pull
-./bin/dev-orchestra doctor
-```
-
-シンボリックリンク導入なら即座に反映されます。`--copy` の場合はインストーラを再実行してください。
-設定はメジャーバージョン内で前方互換です。対応が必要な変更は `CHANGELOG.md` に明記します。
-
-## アンインストール
-
-```bash
-claude plugin uninstall dev-orchestra      # Plugin導入の場合
-codex plugin remove dev-orchestra@dev-orchestra
-```
-
-```bash
-./install/uninstall.sh            # スキルのリンクと AGENTS.md のブロックを削除
-```
-
-```powershell
-.\install\uninstall.ps1
-```
-
-設定は残ります。設定も消す場合:
-
-```bash
-dev-orchestra config reset --scope global --delete
-rm -rf .ai                        # 成果物も消す場合、プロジェクトごとに
-```
-
-## バージョニングと変更履歴
-
-[セマンティックバージョニング](https://semver.org/lang/ja/)に従います。公開APIとみなすのは、
-設定スキーマ、CLIのコマンドとフラグ、`.ai/` の成果物フォーマットです。
-
-- **major** — 設定スキーマまたはCLIの破壊的変更
-- **minor** — コマンド、provider、ロール、フィールドの追加
-- **patch** — 修正とドキュメント
-
-変更は `CHANGELOG.md` の `Unreleased` に追記し、リリース時に確定させます
-（[Keep a Changelog](https://keepachangelog.com/ja/1.1.0/)）。
-
-## アーキテクチャ
+オーケストレーターが**トリアージ**し、accepted になったものだけが fixer に届きます。そしてモデル名は
+決して推測しません。設定に書くのは *family* と `version: latest` で、検証できなければ adapter は
+エラーで停止します。
+
+## 誰が何を担当するか
+
+| 工程 | 設定上のロール | 役割 |
+| --- | --- | --- |
+| 指揮 | `orchestrator` | 依頼に必要な工程を判断し、大量の入力を消化し、結果を統合する |
+| 設計 | `architect` | 調査して計画を書く（読み取り専用）。承認するまで実装には進まない |
+| 実装 | `implementer` | 計画からコードとテストを書く |
+| レビュー | reviewers | 2つ以上のモデルが同じ凍結済みの差分を、読み取り専用で、互いを見ずに読む |
+| 修正 | `review_fixer` | オーケストレーターが accepted にした findings だけを直す |
 
 ```mermaid
 flowchart LR
@@ -1097,47 +47,197 @@ flowchart LR
     F --> T2[再テスト] --> REP[最終報告]
 ```
 
-| 要素 | 場所 | 役割 |
-| --- | --- | --- |
-| Skill | `skills/dev-orchestra/SKILL.md` | 何をいつ実行するか、何をしてはいけないか |
-| CLI | `scripts/dev_orchestra.py` | エージェントが呼ぶ決定的な操作 |
-| Provider | `scripts/orchestrator/providers/` | CLIのフラグとモデル名を知る唯一の場所 |
-| References | `references/` | 詳細。必要になったときだけ読む（[リファレンス](#リファレンス)を参照） |
+重要なのは **設計と独立レビューを別ベンダーに割り当てる** という形です。同じ系列のモデル同士は、
+バグを生んだ思い込みまで共有してしまいます。
 
-詳細版は [docs/ja/references/architecture.md](docs/ja/references/architecture.md)（[英語版](references/architecture.md)）にあります。
+## 必要なもの
 
-自前の CLI 用の adapter は、プラグインを編集せず `<設定ディレクトリ>/providers/` に置けます。起動時に読み込まれ、プラグインを更新しても残ります（[docs/ja/references/providers.md](docs/ja/references/providers.md)、[英語版](references/providers.md)）。
+- **Python 3.11以上** — 標準ライブラリのみ（PyYAML があれば使います）。`python3` という名前しか
+  ない環境では `python3` で、または自動で選ぶ `bin/dev-orchestra[.ps1]` で実行してください。
+- **git** — レビュースナップショットに必要です。
+- **サポート対象CLIのいずれか**（認証済みであること）:
+  - [Claude Code](https://claude.com/claude-code) (`claude`)
+  - [Codex CLI](https://developers.openai.com/codex/cli) (`codex`)
+
+このSkillは**既存のCLIログインをそのまま使います**。APIキーを要求せず、認証情報を保存せず、出力もしません。
+
+## インストール
+
+このリポジトリから Plugin として入れます（公式Marketplaceには公開していません）。各ホストは
+自分のキャッシュ（`~/.claude/plugins/cache/…`、`~/.codex/plugins/cache/…`）にあるコピーを
+実行し、次のセッションから使えます。
+
+### Claude Code Plugin
+
+```bash
+claude plugin marketplace add istb16/dev-orchestra
+claude plugin install dev-orchestra@dev-orchestra
+```
+
+Claude Code の中からは `/plugin marketplace add istb16/dev-orchestra`、続けて
+`/plugin install dev-orchestra@dev-orchestra` です。
+
+### Codex Plugin
+
+```bash
+codex plugin marketplace add istb16/dev-orchestra
+codex plugin add dev-orchestra@dev-orchestra
+```
+
+`codex plugin list` で導入済みのものを確認できます。Plugin 以前のインストーラも使えます
+（[Skill のチェックアウトからのインストール](docs/ja/references/workflow.md#installing-from-a-skill-checkout)）。
+クローンから Plugin を動かす方法は `CONTRIBUTING.md`（英語）にあります。
+
+## 初期セットアップ
+
+初回実行時、設定が無いことを検知してウィザードが起動し、`orchestrator`・`architect`・
+`implementer`・`review_fixer` の各ロールと各レビュアーについて、CLI とモデルの family を
+尋ねます。自分で起動する場合や、質問なしで推奨値を使う場合:
+
+```bash
+dev-orchestra config setup
+dev-orchestra config setup --defaults
+dev-orchestra model list        # the families your installed CLIs offer
+```
+
+推奨構成は、architect が Claude の `fable`、実装と修正が Claude の `opus`、レビュアーが Claude と
+Codex の1人ずつです。family は `dev-orchestra model list` に表示されたものを使ってください。
+ファイルに残るのは自分で決めた値だけです。[ウィザード](docs/ja/references/configuration.md#the-wizard)
+と [2社構成の設定例](docs/ja/references/configuration.md#worked-examples) を参照してください。
+
+## 使い方
+
+普段どおりエージェントに話しかけてください。「この issue を設定済みのワークフローで実装して」
+「チェックアウトのタイムアウトを調査して直して」「このブランチを main と比較してマルチモデル
+レビューして」「Codex の security reviewer を追加して」。1文で依頼すれば、必要な工程だけが
+実行されます。1工程だけを自分で回したいときは、オーケストレーターが裏で実行している次の
+コマンドを使います（各コマンドの説明は [ワークフロー](docs/ja/references/workflow.md)、[英語版](references/workflow.md)）。
+
+```bash
+dev-orchestra run architect --prompt-file .ai/request.md --output .ai/plan.md
+dev-orchestra design approve            # after you have read the plan
+dev-orchestra run implementer --prompt-file .ai/plan.md
+# プロジェクトのテストを走らせ、結果を記録する
+dev-orchestra state record test ok
+dev-orchestra review snapshot --base main
+dev-orchestra review run
+dev-orchestra review triage F1 --status accepted --note "confirmed"
+dev-orchestra review fix-brief --output .ai/fix-brief.md
+dev-orchestra run review_fixer --prompt-file .ai/fix-brief.md
+# 同じテストをもう一度走らせ、結果を記録する
+dev-orchestra state record test ok
+dev-orchestra review status             # 次の回に進むか、報告する
+```
+
+ログや長い仕様書は、先にまとめて消化させ、その要約から設計します
+（[大量のテキストを渡す](docs/ja/references/limits.md#feeding-it-a-lot-of-text)）。
+
+```bash
+dev-orchestra run orchestrator --prompt-file .ai/analysis-request.md --output .ai/analysis.md
+```
+
+## 設定
+
+優先順位は **プロジェクト → グローバル → 内蔵デフォルト** です。`<repo>/.dev-orchestra.yaml`、
+次に `~/.config/dev-orchestra/config.yaml`（Windows では `%APPDATA%\dev-orchestra\config.yaml`）。
+`dev-orchestra config show` で結果を表示し、`config set` で値を1つ変更します。スキーマ、全フィールド、
+設定例は [設定](docs/ja/references/configuration.md)（[英語版](references/configuration.md)）にあります。
+
+## モデル選択
+
+ロールには family と `version: latest`（または正確なIDを指定した `pinned`）を保存し、実行のたびに
+インストール済みCLIに対して解決します（[モデルの family](docs/ja/references/configuration.md#model-families-and-version-policy)）。
+`model_tiers` を使うと、1つのロールに安いモデルやセカンドオピニオン用のモデルを、呼び出し側の指定で
+割り当てられます（[モデルの tier](docs/ja/references/configuration.md#model-tiers)）。
+
+## レビュアー
+
+0個以上（2個以上を推奨）。`dev-orchestra reviewer add --provider codex --role security` で追加します。
+2巡目は修正だけをレビューし、ロックファイルやバンドルはレビュアーに送りません。ロール、スナップショット、
+重複統合、トリアージは [レビュー](docs/ja/references/reviews.md)（[英語版](references/reviews.md)）にあります。
+
+## ワークフロー例
+
+Rails への機能追加、API 変更、typo 修正、レビューのみ、mock provider での試運転:
+[ワークフローの例](docs/ja/references/workflow.md#example-workflows)。
+
+## トラブルシューティング
+
+`dev-orchestra doctor` が CLI、設定、モデルの family を確認します。`doctor --json` で同じ内容を
+機械可読な形で得られます。症状と対処は [トラブルシューティング](docs/ja/references/cli.md#troubleshooting) にあります。
+
+## セキュリティ
+
+認証情報を要求も保存も出力もしません。architect と全レビュアーは読み取り専用で動き、それはプロンプト
+ではなく CLI が強制します。Skill 自身はネットワークにアクセスしません。`--restricted` があなたの
+`permissions.deny` に与える影響を含む詳細は [セキュリティ](docs/ja/references/architecture.md#security) にあります。
+
+## 対応プラットフォーム
+
+Linux、macOS、ネイティブの Windows（`bin\dev-orchestra.ps1`）を CI で検証しています。WSL は
+Linux として動きますが、必須ではありません。中身は純粋な Python と `git` だけです。
+
+## アップグレード
+
+```bash
+/plugin marketplace update                     # Claude Code, inside a session
+codex plugin marketplace upgrade               # Codex: re-fetches the snapshot only,
+codex plugin add dev-orchestra@dev-orchestra   # so add it again to install it
+```
+
+チェックアウト導入は `git pull` で更新します（[詳細](docs/ja/references/workflow.md#installing-from-a-skill-checkout)）。
+設定はメジャーバージョン内で前方互換です。対応が必要な変更は `CHANGELOG.md` に明記します。
+
+## アンインストール
+
+```bash
+claude plugin uninstall dev-orchestra
+codex plugin remove dev-orchestra@dev-orchestra
+dev-orchestra config reset --scope global --delete   # optional: your configuration
+```
+
+設定は消さない限り残ります。成果物も消す場合は、プロジェクトごとに `.ai/` を削除してください。
+チェックアウト導入には `install/uninstall.sh`（Windows は `.ps1`）があります。
+
+## バージョニングと変更履歴
+
+[セマンティックバージョニング](https://semver.org/lang/ja/)に従い、設定スキーマ、CLIのコマンドとフラグ、
+`.ai/` の成果物フォーマットを公開APIとみなします。破壊的変更は major、コマンド・provider・ロール・
+フィールドの追加は minor、修正とドキュメントは patch です。`CHANGELOG.md` は
+[Keep a Changelog](https://keepachangelog.com/ja/1.1.0/) に従います。
+
+## アーキテクチャ
+
+判断はモデルに、手順はコードに置きます。`skills/dev-orchestra/SKILL.md` が何を実行するかを決め、
+`scripts/dev_orchestra.py` が決定的な処理を行い、CLIのフラグとモデル名を知っているのは provider だけです。
+自前の adapter は `<設定ディレクトリ>/providers/` に置けます（[providers](docs/ja/references/providers.md)）。
+詳細版は [アーキテクチャ](docs/ja/references/architecture.md) にあります。
 
 ## リファレンス
 
 この README の詳細です。英語版はオーケストレーターのモデルも読むドキュメントで、こちらが正です。日本語版は人が読むための訳です。
 
-| 日本語版 | 英語版 | 内容 |
+| 日本語版 | 英語版 | 答えている問い |
 | --- | --- | --- |
-| [workflow.md](docs/ja/references/workflow.md) | [references/workflow.md](references/workflow.md) | 各ステージの詳細、プロンプトのテンプレート、`.ai/` の成果物 |
-| [configuration.md](docs/ja/references/configuration.md) | [references/configuration.md](references/configuration.md) | 設定のスキーマ、階層、全フィールド、設定例 |
+| [workflow.md](docs/ja/references/workflow.md) | [references/workflow.md](references/workflow.md) | 各工程で何をするか、プロンプトのテンプレート、`.ai/` の成果物、ワークフローの例、チェックアウトからの導入 |
+| [configuration.md](docs/ja/references/configuration.md) | [references/configuration.md](references/configuration.md) | スキーマ、階層、全フィールド、モデルの family と tier、ウィザード、設定例 |
 | [providers.md](docs/ja/references/providers.md) | [references/providers.md](references/providers.md) | adapter のインターフェース、Claude と Codex、CLI の追加方法 |
-| [reviews.md](docs/ja/references/reviews.md) | [references/reviews.md](references/reviews.md) | スナップショット、出力の形式と上限、重複の統合、トリアージ |
-| [architecture.md](docs/ja/references/architecture.md) | [references/architecture.md](references/architecture.md) | 構成要素のつながりと、その理由 |
-| [limits.md](docs/ja/references/limits.md) | [references/limits.md](references/limits.md) | stall、タイムアウト、予算 |
-| [cli.md](docs/ja/references/cli.md) | [references/cli.md](references/cli.md) | 全コマンドとフラグ |
+| [reviews.md](docs/ja/references/reviews.md) | [references/reviews.md](references/reviews.md) | スナップショット、送らないファイル、修正だけを見る2巡目、出力の形式、重複統合、トリアージ |
+| [architecture.md](docs/ja/references/architecture.md) | [references/architecture.md](references/architecture.md) | 構成要素のつながり、その理由、セキュリティ |
+| [limits.md](docs/ja/references/limits.md) | [references/limits.md](references/limits.md) | stall、タイムアウト、予算、大量の入力、実行コスト、最適化レベル |
+| [cli.md](docs/ja/references/cli.md) | [references/cli.md](references/cli.md) | 全コマンドとフラグ、トラブルシューティング |
 
 ## コントリビュート
 
-issue と pull request を歓迎します。詳細は `CONTRIBUTING.md`（英語）を参照してください。
-とくに、**CLIがフラグやモデル名を変更したときの adapter 修正**が最も価値の高い貢献です。
-
-```bash
-python -m unittest discover -s tests -t tests
-python scripts/validate_skill.py
-```
+issue と pull request を歓迎します。詳細は `CONTRIBUTING.md`（英語）を参照してください。セキュリティ上の
+問題の報告方法もそこにあります（公開issueは立てないでください）。とくに、**CLIがフラグやモデル名を
+変更したときの adapter 修正**が最も価値の高い貢献です。
 
 ## ドキュメントの言語方針
 
-`skills/dev-orchestra/SKILL.md` と `references/` は英語で書きます。これはAIモデルが読むファイルであり、英語のほうが
-トリガ精度とトークン効率の面で有利なためです。人間向けの入口である README は日英両方を用意しています。
-
-リファレンスには、人が読むための日本語訳を `docs/ja/references/` に用意しています。スキルが読むのは英語版だけで、内容が食い違うときは英語版が正です。各訳の冒頭には、訳した時点の英語版の sha256 が書かれています。英語版が変わって訳が追いついていないと、テストが失敗します。
+Skill と `references/` は、AIモデルが最もよく読める英語で書きます。README は [English](README.md) と
+[日本語](README.ja.md) の両方があります。`docs/ja/references/` の訳は人が読むためのもので、英語版が正です。
+各訳は訳した英語版の sha256 を記しており、英語版が変わって訳が追いついていないとテストが失敗します。
 
 ## ライセンス
 

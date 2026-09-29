@@ -1,4 +1,4 @@
-<!-- translated-from: references/workflow.md sha256:25941729bb395c760ccaf8557e9b4accc889f8367421bfdaa4a60ff4e6938d98 -->
+<!-- translated-from: references/workflow.md sha256:b619c620383e8b0306230c9c39686c38544ae3055d62054776357d2336373b44 -->
 
 > この文書は [references/workflow.md](../../../references/workflow.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -62,10 +62,27 @@
 **ワークフローごとに 1 つのディレクトリ。** 以前は、同じチェックアウトで作業する
 2 つのセッションが `plan.md`、レビューレポート、予算、ラウンドカウンターを共有しており、
 しかもどちらも自分の存在を知らせませんでした。そのため、最初のセッションの plan は
-上書きされ、その予算はもう一方に消費されていました。id はコマンドごとに、
-`--workflow`、`DEV_ORCHESTRA_WORKFLOW`、ホストのセッション id（12 文字にハッシュ化
-されるため、他ツールの内部識別子がこちらのパスに入り込みません）、`current.json` の順に
-解決され、最後に新しい id が割り当てられます。
+上書きされ、その予算はもう一方に消費されていました。
+
+```
+$ dev-orchestra workflow show
+Workflow: 5942d94f5248 (from: session)
+Artifacts: /code/app/.ai/workflows/5942d94f5248
+
+$ dev-orchestra workflow list
+5942d94f5248  2026-09-15T09:12:04Z  runs=6  review/ok  [current]
+9c1e07b3a880  2026-09-15T08:40:11Z  runs=2  implementer/ok
+```
+
+id はコマンドごとに、次の順で解決されます。
+
+| 取得元 | |
+| --- | --- |
+| `--workflow <id>` | 明示的な名前（例 `--workflow auth-fix`） |
+| `DEV_ORCHESTRA_WORKFLOW` | 同じものを環境変数から |
+| ホストのセッション id | 12 文字にハッシュ化されるため、他ツールの内部識別子がこちらのパスに入り込みません。決定的なので、同じセッションのすべてのコマンドが、調整用のファイルなしで同じ値になります |
+| `current.json` | このディレクトリが最後に解決した値。セッション id を持たないホスト向け |
+| 新しい id | 初回 |
 
 コマンドは成果物をコンテナ相対パスで指定するため、`--output
 .ai/plan.md` は *このワークフローの plan* を意味し、そのディレクトリに保存されます。
@@ -86,7 +103,7 @@ git worktree add ../feature-x feature-x
 ディレクトリが分かれていることで誤解を招かないよう、その旨を伝えます。
 
 0.4.0 より前のバージョンからアップグレードすると、フラットな `.ai/` は最初に実行された
-ワークフローに引き継がれるため、中断していたワークフローも plan とレポートを失いません。
+ワークフローに引き継がれるため、中断していたワークフローも plan、レポート、予算を失いません。
 
 `.ai/` には初回使用時に `*` を含む `.gitignore` が作られるので、成果物はユーザーの
 commit に入りません。成果物をレビュー可能にしたいチームはこのファイルを削除して
@@ -101,7 +118,8 @@ commit に入りません。成果物をレビュー可能にしたいチーム�
 ## Design
 
 design リクエストは自分で書いてください。Architect はこの会話のコンテキストを
-一切持たずに開始します。
+一切持たずに開始します。読み取り専用で動き、Claude では `Read`・`Grep`・`Glob` だけを
+使います。シェルも git もないので、重要な履歴はリクエストに書いてください。
 
 ```markdown
 # Design request
@@ -153,6 +171,13 @@ plan は先に渡す前に読んでください。曖昧である、コードベ
 
 `review.design.enabled` が true でない限り無効です。どちらなのかは `status` が報告します。
 同じパネルが、コードが書かれる前に `.ai/plan.md` をコードベースに照らして評価します。
+設計の誤りは、ここで見つけなければ実装とレビューを 1 回ずつ費やして見つけることになるので、
+ここが最も安く見つけられる場所です。ただし 1 ラウンドにつきパネルの人数分のレビュアー実行が
+かかるため、明示的に有効にしたときだけ動きます。
+
+レポート、ラウンドカウンター、トリアージは `reviews/design/` に独立して置かれるので、
+design のラウンドがコードレビューのラウンド数を進めたり、その上限で拒否されたりする
+ことはありません。design ステージを省略すると、design レビューも一緒に省略されます。
 
 ```bash
 dev-orchestra review run --design
@@ -556,3 +581,136 @@ dev-orchestra summary
 | `run implementer` が exit 5 で終了した | plan が承認されていないか、承認後に変更された／レビューされたということです。plan を提示してユーザーに尋ね、yes なら `design approve` で記録します。再試行せず、自分で承認してはいけません |
 | デタッチされた implementer ジョブが "not approved" で `failed` になった | 原因は同じで、ワーカーが検出したものです。ユーザーが承認したら、もう一度開始します |
 | `status` が `stop-and-report` を示す | 停止します。予算、stall、未解決の指摘はすでに考慮済みです |
+
+<a id="example-workflows"></a>
+
+## ワークフローの例
+
+**既存の Rails アプリケーションへの機能追加**
+
+> 「チェックアウトに顧客ごとの上限金額を追加して」
+
+```
+Codex gpt-5.6-sol      reads the existing checkout code and recent logs,
+                       breaks the request into stages
+        |
+Claude fable           designs: where the cap lives, what it touches, migrations
+        |
+Claude opus            implements the change and its tests
+        |
+Claude opus            reviews the frozen diff
+Codex gpt-5.6-terra    reviews the same diff, independently
+        |
+Codex gpt-5.6-sol      consolidates both reports, drops duplicates, triages
+        |
+Claude opus            fixes the accepted findings only
+        |
+                       tests re-run, report
+```
+
+ユーザー側の操作はエージェントへの 1 文だけです。成果物は `.ai/` に残ります。plan、
+各レビュー、統合済みの finding 一覧、トリアージの判断です。
+
+**API 変更を伴う機能追加**
+
+> 「orders エンドポイントにページネーションを追加して」
+
+設計 (Fable) → 実装 (Opus) → テスト → 独立レビュー 2 件 →
+トリアージ（accepted 2 件、rejected 1 件）→ 修正 (Opus) → 再テスト → 報告。
+
+**タイポ**
+
+> 「README の見出しのタイポを直して」
+
+編集 1 回だけで、design もレビューもしません。オーケストレーターはそのことを報告に書きます。
+
+**レビューのみ**
+
+> 「このブランチの main 以降の変更を 3 人のレビュアー全員でレビューして」
+
+```bash
+dev-orchestra review snapshot --base main
+dev-orchestra review run
+dev-orchestra review show
+```
+
+**低コストの試運転** — レビュアーをオフラインの mock provider に差し替えます。
+
+```bash
+dev-orchestra reviewer add --provider mock --id dry --role general
+DEV_ORCHESTRA_MOCK_RESPONSE=NO_FINDINGS dev-orchestra review run --only dry
+```
+
+<a id="installing-from-a-skill-checkout"></a>
+
+## Skill のチェックアウトからのインストール
+
+Plugin 以前のインストーラも、変更なしでそのまま使えます。手順が短いのは Plugin の
+ほうですが、こちらは `git pull` で更新できるチェックアウトを手元に残します。
+
+```bash
+git clone https://github.com/istb16/dev-orchestra.git
+cd dev-orchestra
+```
+
+**Claude Code:**
+
+```bash
+./install/install.sh              # symlinks into ~/.claude/skills/
+```
+
+```powershell
+.\install\install.ps1             # Windows
+```
+
+インストーラはこのリポジトリを skills ディレクトリにリンク（`--copy` ならコピー）する
+ので、`git pull` だけでその場で更新されます。`--project <path>` を付けると、全体ではなく
+特定のリポジトリの `.claude/skills/` に入れます。そのパスは対象リポジトリの
+`.git/info/exclude` にも追加されるので、入れ子のチェックアウトが *相手の* `git status` に
+出ることも commit されることもありません（これがないと、そこでの `git add -A` が
+"does not have a commit checked out" で失敗します）。
+
+Windows では、Git Bash で `install.sh` を動かすより `install.ps1` を使ってください。
+Git Bash は MSYS 形式のパス（`/c/...`）を書き込み、ネイティブの Python はそれを開けません。
+シンボリックリンクには開発者モードか管理者権限が必要で、リンクできないときは
+インストーラが自動でコピーに切り替えます。
+
+**Codex CLI:** Plugin を使わない場合、インストーラは `AGENTS.md` に、このチェックアウトを
+指す短いマーカー付きのブロックを追記します。
+
+```bash
+./install/install.sh --codex                    # ~/.codex/AGENTS.md
+./install/install.sh --codex --project /path    # <project>/AGENTS.md
+```
+
+`skills/dev-orchestra/SKILL.md` が唯一の情報源であり続けます。ブロックはそれを参照する
+だけで、内容を複製しません。
+
+必要なら CLI を PATH に通し、動作を確認します。
+
+```bash
+export PATH="$PWD/bin:$PATH"      # then `dev-orchestra doctor` works anywhere
+./bin/dev-orchestra doctor
+```
+
+チェックアウトでの導入の **アップグレード**:
+
+```bash
+cd /path/to/dev-orchestra
+git pull
+./bin/dev-orchestra doctor
+```
+
+シンボリックリンクで入れた場合はすぐに新しいバージョンになります。`--copy` の場合は
+インストーラをもう一度実行してください。
+
+**アンインストール** は skill のリンクと `AGENTS.md` のブロックを取り除き、設定には
+手を付けません。
+
+```bash
+./install/uninstall.sh
+```
+
+```powershell
+.\install\uninstall.ps1
+```

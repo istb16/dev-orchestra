@@ -60,6 +60,28 @@ turn every PR red. Bumping one is a deliberate, manual change: update
 `requirements-dev.txt`, run `ruff format .` and `pyright` locally with the new
 version, and commit the result separately from any behaviour change.
 
+### Running the plugin from a clone
+
+Point either host at the clone instead of at GitHub:
+
+```bash
+claude plugin validate .                    # manifest check, --strict in CI
+claude plugin marketplace add "$PWD"
+claude plugin install dev-orchestra@dev-orchestra
+
+codex plugin marketplace add "$PWD"
+codex plugin add dev-orchestra@dev-orchestra
+```
+
+Both hosts copy the plugin into their own cache (`~/.claude/plugins/cache/…`,
+`~/.codex/plugins/cache/…`) and run it from there. Everything the skill needs
+— `scripts/`, `references/`, `bin/` — ships inside that copy, so no path
+points back at the clone.
+
+`claude plugin details dev-orchestra` lists what was actually loaded. Re-run
+`python scripts/validate_skill.py` after touching a manifest: it checks both
+hosts' manifests against the skill they ship.
+
 ## The rules that matter
 
 **1. Never hard-code a dated model id.** Not in defaults, not in the wizard, not

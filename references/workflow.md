@@ -52,10 +52,27 @@ a doc comment" is a useful sentence; silently skipping is not.
 **One directory per workflow.** Two sessions working in the same checkout used
 to share `plan.md`, the review reports, the budgets and the round counter, and
 neither announced itself -- so the first session's plan was overwritten and its
-budget spent by the other. The id is resolved per command, in order, from
-`--workflow`, `DEV_ORCHESTRA_WORKFLOW`, the host's session id (hashed to twelve
-characters, so another tool's internal identifier stays out of our paths),
-`current.json`, and finally a new id.
+budget spent by the other.
+
+```
+$ dev-orchestra workflow show
+Workflow: 5942d94f5248 (from: session)
+Artifacts: /code/app/.ai/workflows/5942d94f5248
+
+$ dev-orchestra workflow list
+5942d94f5248  2026-09-15T09:12:04Z  runs=6  review/ok  [current]
+9c1e07b3a880  2026-09-15T08:40:11Z  runs=2  implementer/ok
+```
+
+The id is resolved per command, in this order:
+
+| Source | |
+| --- | --- |
+| `--workflow <id>` | An explicit name, e.g. `--workflow auth-fix` |
+| `DEV_ORCHESTRA_WORKFLOW` | The same, from the environment |
+| the host's session id | Hashed to twelve characters, so another tool's internal identifier stays out of our paths. Deterministic, so every command in one session agrees without a file to coordinate through |
+| `current.json` | What this directory last resolved, for hosts that export no session id |
+| a new id | First run |
 
 Because commands name artifacts by their container-relative path, `--output
 .ai/plan.md` means *the plan of this workflow* and lands in its directory. A
@@ -76,7 +93,8 @@ which is a different repository root, and therefore a different `.ai/`.
 commands say so rather than let the separate directories imply otherwise.
 
 An upgrade from a version before 0.4.0 adopts the flat `.ai/` into the first
-workflow that runs, so an interrupted workflow keeps its plan and its reports.
+workflow that runs, so an interrupted workflow keeps its plan, its reports and
+its budget.
 
 `.ai/` gets a `.gitignore` containing `*` on first use, so artifacts stay out of
 the user's commits. Teams who want them reviewable can delete that file and
@@ -89,7 +107,9 @@ snapshot — the skill's own files are not the change under review.
 ## Design
 
 Write the design request yourself — the Architect starts with no context from
-this conversation.
+this conversation. It runs read-only, and on Claude with only `Read`, `Grep`
+and `Glob`: no shell and no git, so put the history that matters in the
+request.
 
 ```markdown
 # Design request
@@ -138,6 +158,13 @@ still weak, say so in the report rather than quietly improvising.
 
 Off unless `review.design.enabled` is true; `status` reports which. The same
 panel judges `.ai/plan.md` against the codebase before any code is written.
+A design mistake otherwise costs an implementation and a review to find, so
+this is the cheapest place to catch one -- but it is a reviewer run per panel
+member per round, which is why it is opt-in.
+
+It keeps its own reports, round counter and triage under `reviews/design/`, so
+a design round never advances -- or is refused by -- the code review's count.
+Skipping the design stage skips this with it.
 
 ```bash
 dev-orchestra review run --design
@@ -529,3 +556,134 @@ anything left unresolved.
 | `run implementer` exits 5 | The plan is not approved, or changed / was reviewed after approval. Present it and ask the user; record a yes with `design approve`. Do not retry and do not approve it yourself |
 | A detached implementer job is `failed` with "not approved" | Same cause, found by the worker; once the user approves, start it again |
 | `status` says `stop-and-report` | Stop. It has already weighed budgets, stalls and open findings |
+
+## Example workflows
+
+**A feature in an existing Rails application**
+
+> "Add a per-customer spending cap to the checkout flow."
+
+```
+Codex gpt-5.6-sol      reads the existing checkout code and recent logs,
+                       breaks the request into stages
+        |
+Claude fable           designs: where the cap lives, what it touches, migrations
+        |
+Claude opus            implements the change and its tests
+        |
+Claude opus            reviews the frozen diff
+Codex gpt-5.6-terra    reviews the same diff, independently
+        |
+Codex gpt-5.6-sol      consolidates both reports, drops duplicates, triages
+        |
+Claude opus            fixes the accepted findings only
+        |
+                       tests re-run, report
+```
+
+From the user's side that is one sentence to the agent. The artifacts land in
+`.ai/`: the plan, each review, the consolidated finding list, and the triage
+decisions.
+
+**Feature with an API change**
+
+> "Add pagination to the orders endpoint."
+
+Design (Fable) → Implementation (Opus) → tests → 2 independent reviews →
+triage (2 accepted, 1 rejected) → fix (Opus) → re-test → report.
+
+**Typo**
+
+> "Fix the typo in the README heading."
+
+One edit, no design, no review. The orchestrator says so in the report.
+
+**Review only**
+
+> "Review everything on this branch since main with all three reviewers."
+
+```bash
+dev-orchestra review snapshot --base main
+dev-orchestra review run
+dev-orchestra review show
+```
+
+**Cheap dry run** — swap a reviewer to the offline mock provider:
+
+```bash
+dev-orchestra reviewer add --provider mock --id dry --role general
+DEV_ORCHESTRA_MOCK_RESPONSE=NO_FINDINGS dev-orchestra review run --only dry
+```
+
+## Installing from a skill checkout
+
+The installers from before the plugin still work and are unchanged. The plugin
+is the shorter path; this one keeps a checkout that `git pull` upgrades.
+
+```bash
+git clone https://github.com/istb16/dev-orchestra.git
+cd dev-orchestra
+```
+
+**Claude Code:**
+
+```bash
+./install/install.sh              # symlinks into ~/.claude/skills/
+```
+
+```powershell
+.\install\install.ps1             # Windows
+```
+
+The installer links (or copies, with `--copy`) this repository into your skills
+directory, so `git pull` upgrades the skill in place. Use `--project <path>` to
+install into a single repository's `.claude/skills/` instead of globally; that
+path is also added to the target repo's `.git/info/exclude`, so the nested
+checkout never appears in *their* `git status` and never gets committed
+(without it, `git add -A` there fails with "does not have a commit checked
+out").
+
+On Windows, prefer `install.ps1` over running `install.sh` in Git Bash: Git Bash
+writes MSYS-style paths (`/c/...`) that native Python cannot open. Symlinks need
+Developer Mode or an elevated shell; the installer falls back to a copy on its
+own if it cannot link.
+
+**Codex CLI:** without the plugin, the installer appends a short, marked
+pointer block to `AGENTS.md` referencing this checkout:
+
+```bash
+./install/install.sh --codex                    # ~/.codex/AGENTS.md
+./install/install.sh --codex --project /path    # <project>/AGENTS.md
+```
+
+`skills/dev-orchestra/SKILL.md` stays the single source of truth — the pointer
+references it rather than duplicating it.
+
+Optionally put the CLI on PATH, then verify:
+
+```bash
+export PATH="$PWD/bin:$PATH"      # then `dev-orchestra doctor` works anywhere
+./bin/dev-orchestra doctor
+```
+
+**Upgrading** a checkout install:
+
+```bash
+cd /path/to/dev-orchestra
+git pull
+./bin/dev-orchestra doctor
+```
+
+A symlink install picks the new version up immediately; with `--copy`, re-run
+the installer.
+
+**Uninstalling** removes the skill link and the `AGENTS.md` block, and leaves
+the configuration alone:
+
+```bash
+./install/uninstall.sh
+```
+
+```powershell
+.\install\uninstall.ps1
+```

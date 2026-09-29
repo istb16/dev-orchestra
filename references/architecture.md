@@ -109,6 +109,29 @@ whether another round is warranted.
 - **A different workspace location**: `workspace.dir` in the config.
 - **A different review prompt**: `build_review_prompt` accepts a template.
 
+## Security
+
+- **Credentials are never requested, stored, or printed.** The skill inherits
+  the user's environment and relies on the CLIs' existing authentication.
+- `doctor` reports credential *presence* (`present` / `unknown`), never values.
+- Captured stdout/stderr passes through a redactor that scrubs
+  credential-shaped strings before anything is written to `.ai/` or shown
+  (`references/providers.md`).
+- The architect and reviewers run read-only, enforced by the CLI rather than
+  the prompt. Claude: plan mode, only the `Read`, `Grep` and `Glob` tools, no
+  MCP servers, and `--restricted`, so no shell, no hooks from the repository's
+  settings files, and no reading outside the working directory and
+  `--add-dir`. Codex: `-s read-only`, which stops writes; its MCP servers were
+  not examined. `--restricted` also means the user's own `permissions.deny`
+  rules do not apply to those Claude runs -- they belong in managed settings.
+- Read-only runs refuse raw arguments that could loosen them: Claude accepts
+  only `--add-dir <path>`, from the global config or `--extra` (never from the
+  project file), and Codex accepts none. Refusals never print the value. See
+  [Role options](configuration.md#role-options).
+- Artifacts stay in `.ai/`, which ignores itself by default.
+
+Security problems are reported privately, as `CONTRIBUTING.md` describes.
+
 ## Deliberate non-goals
 
 - No daemon, no server, no state outside the project and the config file.

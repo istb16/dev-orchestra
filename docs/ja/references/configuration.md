@@ -1,4 +1,4 @@
-<!-- translated-from: references/configuration.md sha256:ecf88ee1a68a61c11d306abcdac3075e450940cf6af5e10389e57129dd18f5b1 -->
+<!-- translated-from: references/configuration.md sha256:ce4a90ea7f688225cc20810d1ce71cbe08765966acd2b1821b47e24f8353c915 -->
 
 > この文書は [references/configuration.md](../../../references/configuration.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -94,7 +94,7 @@ review_fixer:                 # fixes accepted findings
     family: opus
     version: latest
 
-reviewers:                    # 0..n independent reviewers
+reviewers:                    # 0..n independent reviewers; two or more recommended
   - id: claude-general
     provider: claude
     model:
@@ -512,6 +512,37 @@ review_fixer:           # let the CLI pick entirely
 推測した名前を CLI に送るのではなく `ModelResolutionError` を送出します。*解決された* id は
 追跡可能性のために `.ai/state.json` に記録され、設定ファイルには family が残ります。
 
+adapter は次の順に確認します。
+
+1. インストール済みの CLI が提示しているもの — Claude は `claude --help` の alias、
+   Codex は `codex debug models` と `$CODEX_HOME/config.toml`。
+2. provider の現行の alias。
+3. **family だけ** を並べた内蔵のフォールバック一覧（最後に確認した日付付き）。
+
+どれでも family を検証できなければ、理由を示して実行を止めます。
+`model list` で、このマシンで各情報源が何を提示しているかが分かります。
+
+```bash
+dev-orchestra model list
+```
+
+```
+claude: installed
+  fable    family=fable    source=cli-help
+  opus     family=opus     source=cli-help
+  sonnet   family=sonnet   source=cli-help
+codex: installed
+  CLI default (recommended coding model)  family=recommended-coding  source=cli-default
+  gpt-6-astra (this CLI's configured model) family=gpt-6-astra       source=cli-config
+  GPT-5.6-Terra                           family=gpt-5.6-terra       source=cli-catalog
+```
+
+`recommended-coding` は `-m` フラグを *付けない* ことで解決します。CLI 自身の現行の
+既定値は、定義上いつも最新だからです。それ以外の Codex の family は、この一覧に出て
+いなければなりません。adapter が受け付けるのは、CLI に設定されているモデルと、CLI 自身の
+カタログが公開している slug だけで、それ以外は拒否します。adapter の詳細は
+`references/providers.md` にあります。
+
 <a id="what-the-user-asks-for-and-what-to-run"></a>
 
 ## ユーザーの依頼と実行するコマンド
@@ -599,6 +630,43 @@ prune されます。そのため、グローバルの値を打ち消すため�
 
 ### ウィザード
 
+初めて使うとき、スキルは設定がないことに気づいてウィザードを起動します。
+
+```
+AI Development Orchestrator setup
+
+Detected CLIs:
+  claude:  installed
+  codex:   installed
+
+1. Orchestrator
+   CLI:
+     1) Claude Code (2.1.x) (recommended)
+     2) Codex CLI (0.154.x)
+   Model:
+     1) sonnet [cli-help] (recommended)
+     2) opus [cli-help]
+     3) fable [cli-help]
+     4) custom (type a family or exact model id)
+...
+5. External Reviewers
+   How many reviewers? [2]
+   reviewer #1  CLI / Model / Review role / id
+   reviewer #2  CLI / Model / Review role / id
+   Add another reviewer? [y/N]
+
+Configuration
+  Orchestrator    claude / sonnet / latest
+  Architect       claude / fable  / latest
+  Implementer     claude / opus   / latest
+  Review Fixer    claude / opus   / latest
+  Reviews
+    1. claude / opus / latest / general / claude-general
+    2. codex / recommended-coding / latest / general / codex-general
+
+Save configuration? [Y/n]
+```
+
 `config setup` は、あなたが答えた内容だけを保存します。推奨される回答と、あなたが承認する
 サマリーは、編集中のレイヤーが継承するものから導かれます: sonnet を選んだグローバルレイヤーの上で
 プロジェクトレイヤーをセットアップすると sonnet が提示され、グローバルレイヤーで設計レビューを
@@ -617,6 +685,58 @@ Enter を押して受け入れた回答もやはり回答であり、保存さ�
 <a id="worked-examples"></a>
 
 ## 実例
+
+**設計と独立レビューを別ベンダーに** — これを書いた時点で両 CLI が提供していた
+モデルに当てはめた構成です。
+
+```yaml
+version: 1
+
+orchestrator:
+  provider: codex
+  model:
+    family: gpt-5.6-sol
+    version: latest
+
+architect:
+  provider: claude
+  model:
+    family: fable
+    version: latest
+
+implementer:
+  provider: claude
+  model:
+    family: opus
+    version: latest
+
+review_fixer:
+  provider: claude
+  model:
+    family: opus
+    version: latest
+
+reviewers:
+  - id: claude-review
+    provider: claude
+    model:
+      family: opus
+      version: latest
+    role: general
+  - id: codex-independent
+    provider: codex
+    model:
+      family: gpt-5.6-terra
+      version: latest
+    role: general
+```
+
+コピーする前に `dev-orchestra model list` で family を確認してください。モデル名は
+変わりますし、両 CLI はバージョンやアカウントによって提供するモデルが異なります。
+各 adapter はインストール済みの CLI が認めない family を推測せずに拒否するので、
+古い名前は黙って別のものを動かすのではなく、セットアップ時にはっきり失敗します。
+大事なのは個々の family より形です。同じ系列の 2 つのモデルは、バグを生んだ盲点を
+共有してしまいます。
 
 **チーム全体で同じパネルを使うべきリポジトリ** — `.dev-orchestra.yaml` を
 commit します:

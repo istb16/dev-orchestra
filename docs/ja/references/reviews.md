@@ -1,4 +1,4 @@
-<!-- translated-from: references/reviews.md sha256:3c13513c2b27666b08de9b7dc3e05e43cfa38edf791c6bf11092d1e2e31de81d -->
+<!-- translated-from: references/reviews.md sha256:8f74146be807bb7a9868b7d64653e49585793c29568a53ad516f28053c8b2a2e -->
 
 > この文書は [references/reviews.md](../../../references/reviews.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -80,9 +80,22 @@ dev-orchestra review snapshot --no-exclude    # generated files included too
 実際のコードと同じだけトークンを消費します。しかもレビュアーごとに、ラウンドごとに
 です。そのため、よくある依存関係の更新が、それに付随する変更そのものより高く
 つくことが日常的に起こります。`review.exclude` は、そうした diff の*本文*を
-省略します。400 パッケージのロックファイル更新と 2 行のソース変更を組み合わせて
-計測したところ、レビュアー 2 人による 1 ラウンドの入力トークンは 44,783 から
-1,711 に減りました。
+省略します。
+
+```
+$ dev-orchestra review snapshot
+Snapshot: .ai/workflows/5942d94f5248/reviews/review-target.diff
+  strategy: git diff HEAD
+  files:    1
+  size:     153 bytes (sha256 bf2b71e951ea)
+  withheld: 2 file(s), 802 changed line(s) not sent to reviewers
+    dist/bundle.min.js (dist/*)
+    package-lock.json (package-lock.json)
+    reviewers are told these changed; --no-exclude sends them in full
+```
+
+この変更 — 400 パッケージのロックファイル更新と 2 行のソース変更 — で計測したところ、
+レビュアー 2 人による 1 ラウンドの入力トークンは 44,783 から 1,711 に減りました。
 
 省略は隠蔽ではなく、この区別こそが設計のすべてです。
 
@@ -384,7 +397,7 @@ plan が凍結される前です。収まるように切り詰めることだけ
 持ちます。この数値と、強制実行が何を保証し何を保証しないかについては
 `references/limits.md` を参照してください。
 
-**レビュアー陣を 1 人に減らせます。** `aggressive` のときで、変更が
+**レビュアー陣を 1 人に減らせます。** `quality` より下のレベルのときで、変更が
 `low_risk_max_files` と `low_risk_max_lines` を下回り、高リスクのパスに触れていない
 場合です。縮小されたレビュアー陣では、スペシャリストよりも `general` レビュアーが
 優先して残されます。単独のセキュリティレビュアーは正しさのバグを報告しません。
@@ -947,6 +960,9 @@ $ dev-orchestra review snapshot
             whole change kept at .ai/reviews/review-target-full.diff
             reviewers also get the findings the fix was meant to address
 ```
+
+60 関数の変更に続く 1 行の修正では、2 巡目の diff はレビュアー 1 人あたり 8,617 から
+199 バイトになりました。
 
 ツリーは使い捨てのインデックスを通して書き込まれます（`git stash
 create` と同じ手法です）。そのため、ユーザー自身のインデックスには一切触れません。

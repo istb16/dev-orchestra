@@ -1,4 +1,4 @@
-<!-- translated-from: references/architecture.md sha256:0b722610a2c7cce12e9664e8f06566ac564d9f3c3f69be6a76412d498e48e3f7 -->
+<!-- translated-from: references/architecture.md sha256:c73fc196ae291dde0677ba85934df5cebe108d381b98cf18a0bce1ea80928d1d -->
 
 > この文書は [references/architecture.md](../../../references/architecture.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -102,6 +102,30 @@ project/
 - **新しいレビュアーロール**: 任意の文字列が使えます。組み込みのロールには、より的確なプロンプトのガイダンス（`review_common.py` の `ROLE_GUIDANCE`）が付くだけです。
 - **別のワークスペースの場所**: 設定の `workspace.dir` で指定します。
 - **別のレビュープロンプト**: `build_review_prompt` はテンプレートを受け取れます。
+
+<a id="security"></a>
+
+## セキュリティ
+
+- **認証情報を要求も保存も出力もしません。** スキルはユーザーの環境を引き継ぎ、
+  CLI 側の既存の認証に頼ります。
+- `doctor` が報告するのは認証情報の *存在*（`present` / `unknown`）だけで、値は出しません。
+- 取得した stdout/stderr は、`.ai/` に書かれたり表示されたりする前に、認証情報らしき
+  文字列を取り除く redactor を通ります（`references/providers.md`）。
+- architect とレビュアーは読み取り専用で動き、それはプロンプトではなく CLI が強制します。
+  Claude は plan モード、`Read`・`Grep`・`Glob` のツールだけ、MCP サーバーなし、
+  `--restricted` で動くので、シェルはなく、リポジトリの設定ファイルのフックも動かず、
+  作業ディレクトリと `--add-dir` の外は読めません。Codex は `-s read-only` で書き込みが
+  止まりますが、MCP サーバーは確認していません。`--restricted` のため、ユーザー自身の
+  `permissions.deny` もこれらの Claude の実行には効きません。そうしたルールは
+  managed settings に置くものです。
+- 読み取り専用の実行は、それを緩めうる生の引数を拒否します。Claude が受け付けるのは
+  global 設定か `--extra` からの `--add-dir <path>` だけで（project ファイルからは
+  受け付けません）、Codex は何も受け付けません。拒否のメッセージは値を表示しません。
+  [ロールのオプション](configuration.md#role-options) を参照してください。
+- 成果物は `.ai/` に置かれ、`.ai/` は既定で自分自身を git の管理外にします。
+
+セキュリティ上の問題は、`CONTRIBUTING.md` にあるとおり非公開で報告してください。
 
 <a id="deliberate-non-goals"></a>
 
