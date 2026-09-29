@@ -1,4 +1,4 @@
-<!-- translated-from: references/configuration.md sha256:7af1d447a8b5d2530915b2bb0813c7a38c3fa34cf2449ab2d449ade3af877071 -->
+<!-- translated-from: references/configuration.md sha256:9dd9744d62654dab3b5d7aede29c18df1e552097b270a881a9d02ea285a13485 -->
 
 > この文書は [references/configuration.md](../../../references/configuration.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -184,6 +184,7 @@ workspace:
 | `optimization.low_risk_max_files` | int | `quality` 未満のレベルで、小さな変更とみなすファイル数の上限（デフォルト 5）。 |
 | `optimization.low_risk_max_lines` | int | さらに、変更行数の上限（デフォルト 150）。 |
 | `workspace.dir` | string | `.ai/` の成果物を置く場所。 |
+| `workspace.stale_notice_days` | int 0–36500 | 新しいワークフローが始まったとき、その最初のコマンドが、最後の活動（`state.json` の `updated_at`、なければ `started_at`）からこの日数以上たったほかのワークフローを、stderr に一度だけ知らせます（デフォルト 30）。現在のワークフローは含めず、実行中のステージがあるワークフローも含めません。その印はそのワークフロー自身で `status` を実行したときにしか消えないため、ステージの途中で放置されたワークフローがここで名前を挙げられることはありません。`workflow list` では `in flight` と表示されます。使えるタイムスタンプがないワークフローや、`state.json` が読めないワークフローは数えません。何も削除しません。ワークフローを削除するのは、これまでどおり `workflow remove <id> --yes` だけです。`0` でこの通知を止め、`null` はデフォルトを意味します。通知がコマンドの動作を変えることはありません。 |
 | `<role>.options` | mapping | provider 固有の設定項目。下記を参照。 |
 | `<role>.model_tiers` | mapping | このロールのモデルに対する名前付きの代替。下記を参照。省略可。 |
 

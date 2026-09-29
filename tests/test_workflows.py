@@ -19,6 +19,8 @@ import json
 import os
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict
 
 from helpers import IsolatedCase, has_git
 
@@ -202,6 +204,221 @@ class TestSayingTheTreeIsStillShared(IsolatedCase):
         workspace = ws.Workspace(self.project, workflow="old").ensure()
         workspace.write_state({"version": 1, "runs": [], "ledger": {"last_activity_monotonic": 1.0}})
         self.assertEqual(wf.active_elsewhere(self.container, "mine"), [])
+
+
+NOW = datetime(2026, 9, 29, 12, 0, 0, tzinfo=timezone.utc)
+
+
+def stamp(days_ago, now=None):
+    return ((now or NOW) - timedelta(days=days_ago)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+class StaleCase(IsolatedCase):
+    def setUp(self):
+        super().setUp()
+        self.container = os.path.join(self.project, ".ai")
+
+    def seed(self, workflow, updated_at="", started_at="", in_flight=None):
+        """A workflow whose ``state.json`` holds exactly these stamps."""
+        ledger: Dict[str, Any] = {}
+        if started_at:
+            ledger["started_at"] = started_at
+        if in_flight:
+            ledger["in_flight"] = in_flight
+        state: Dict[str, Any] = {"version": 1, "runs": [], "ledger": ledger}
+        if updated_at:
+            state["updated_at"] = updated_at
+        ws.Workspace(self.project, workflow=workflow).ensure().write_state(state)
+
+    def seed_raw(self, workflow, content):
+        workspace = ws.Workspace(self.project, workflow=workflow).ensure()
+        with open(workspace.state_path, "w", encoding="utf-8") as handle:
+            handle.write(content)
+
+
+class TestNotingWorkflowsThatWentQuiet(StaleCase):
+    """Old workflows pile up by design; they are named, never removed."""
+
+    def stale(self, days=30, workflow="mine"):
+        return wf.stale_elsewhere(self.container, workflow, days, now=NOW)
+
+    def test_nothing_is_named_when_everything_is_recent(self):
+        self.seed("a", updated_at=stamp(1))
+        self.seed("b", updated_at=stamp(1))
+        self.assertEqual(self.stale(), [])
+
+    def test_the_threshold_is_inclusive(self):
+        self.seed("old", updated_at=stamp(31))
+        self.seed("recent", updated_at=stamp(29))
+        self.seed("exact", updated_at=stamp(30))
+        self.assertEqual(self.stale(), ["old", "exact"])
+
+    def test_the_current_workflow_is_left_out(self):
+        self.seed("mine", updated_at=stamp(100))
+        self.assertEqual(self.stale(), [])
+
+    def test_a_workflow_with_a_stage_in_flight_is_left_out(self):
+        """Accepted limitation: an abandoned stage is never cleared from the
+        outside, so a workflow left mid-stage is never named here either. A
+        date cannot tell it from one still running."""
+        self.seed("busy", updated_at=stamp(100), in_flight={"implementer": {"pid": 1}})
+        self.assertEqual(self.stale(), [])
+
+    def test_no_evidence_is_not_staleness(self):
+        ws.Workspace(self.project, workflow="bare").ensure()
+        self.seed("empty")
+        self.seed("vague", updated_at="yesterday")
+        self.assertEqual(self.stale(), [])
+
+    def test_started_at_answers_when_updated_at_is_missing(self):
+        self.seed("started", started_at=stamp(40))
+        self.assertEqual(self.stale(), ["started"])
+
+    def test_a_malformed_sibling_is_skipped_not_raised(self):
+        self.seed_raw("listed", "[1]")
+        self.seed_raw(
+            "garbled",
+            json.dumps({"ledger": {"last_activity_monotonic": "soon", "total_delegated_runs": "many"}}),
+        )
+        self.seed("old", updated_at=stamp(40))
+        self.assertEqual(self.stale(), ["old"])
+
+    def test_the_oldest_comes_first(self):
+        self.seed("b", updated_at=stamp(50))
+        self.seed("a", updated_at=stamp(40))
+        self.seed("c", updated_at=stamp(60))
+        self.assertEqual(self.stale(), ["c", "b", "a"])
+
+    def test_zero_turns_it_off(self):
+        self.seed("old", updated_at=stamp(400))
+        self.assertEqual(self.stale(days=0), [])
+
+    def test_a_huge_threshold_does_not_raise(self):
+        """Seconds are compared; no timedelta is built from the number."""
+        self.seed("old", updated_at=stamp(400))
+        self.assertEqual(self.stale(days=10**12), [])
+        self.assertEqual(self.stale(days=1), ["old"])
+
+    def test_create_dir_says_whether_this_call_created_it(self):
+        self.assertTrue(wf.create_dir(self.container, "w1"))
+        self.assertFalse(wf.create_dir(self.container, "w1"))
+
+    def test_listing_reads_a_malformed_state_as_nothing_recorded(self):
+        """A behaviour change for `workflow list`: a row, not a traceback."""
+        self.seed_raw("listed", "[1]")
+        (entry,) = wf.listing(self.container)
+        self.assertEqual(entry["workflow"], "listed")
+        self.assertEqual((entry["updated_at"], entry["started_at"], entry["in_flight"]), ("", "", []))
+        self.assertEqual(entry["runs"], 0)
+
+
+class TestTheStaleNoteThroughTheCli(StaleCase):
+    def ago(self, days):
+        return stamp(days, datetime.now(timezone.utc))
+
+    def config(self, days):
+        self.write(".dev-orchestra.yaml", "version: 1\nworkspace:\n  stale_notice_days: %s\n" % days)
+
+    def test_the_first_command_of_a_new_workflow_notes_the_quiet_ones(self):
+        self.seed("old", updated_at=self.ago(40))
+        code, _, err = run_cli("--workflow", "fresh", "state", "record", "architect", "ok")
+        self.assertEqual(code, 0)
+        self.assertIn("note: 1 workflow has not been active for 30 days or more (old)", err)
+        self.assertIn('"workflow list"', err)
+        self.assertIn('"workflow remove <id> --yes"', err)
+        self.assertTrue(os.path.isdir(wf.workflow_dir(self.container, "old")))
+
+    def test_it_is_said_once(self):
+        self.seed("old", updated_at=self.ago(40))
+        run_cli("--workflow", "fresh", "state", "record", "architect", "ok")
+        _, _, err = run_cli("--workflow", "fresh", "state", "record", "architect", "ok")
+        self.assertNotIn("note:", err)
+
+    def test_zero_silences_it(self):
+        self.config(0)
+        self.seed("old", updated_at=self.ago(40))
+        _, _, err = run_cli("--workflow", "fresh", "state", "record", "architect", "ok")
+        self.assertNotIn("note:", err)
+
+    def test_a_higher_threshold_leaves_a_younger_workflow_out(self):
+        self.config(200)
+        self.seed("old", updated_at=self.ago(100))
+        _, _, err = run_cli("--workflow", "fresh", "state", "record", "architect", "ok")
+        self.assertNotIn("note:", err)
+
+    def test_a_lower_threshold_names_a_younger_workflow(self):
+        self.config(5)
+        self.seed("old", updated_at=self.ago(10))
+        _, _, err = run_cli("--workflow", "fresh", "state", "record", "architect", "ok")
+        self.assertIn("note: 1 workflow has not been active for 5 days or more (old)", err)
+
+    def test_json_output_stays_clean(self):
+        self.seed("old", updated_at=self.ago(40))
+        code, out, err = run_cli("--workflow", "fresh", "state", "show", "--json")
+        self.assertEqual(code, 0)
+        json.loads(out)
+        self.assertIn("note:", err)
+
+    def test_at_most_five_are_named(self):
+        for number in range(6):
+            self.seed("old%d" % number, updated_at=self.ago(60 - number))
+        _, _, err = run_cli("--workflow", "fresh", "state", "record", "architect", "ok")
+        self.assertIn("note: 6 workflows have not been active", err)
+        self.assertIn("(old0, old1, old2, old3, old4, ...)", err)
+        self.assertNotIn("old5", err)
+
+    def test_workflow_list_says_nothing(self):
+        """It is where the note sends the user, so it must not repeat it."""
+        self.seed("old", updated_at=self.ago(40))
+        self.seed("older", updated_at=self.ago(80))
+        code, _, err = run_cli("--workflow", "fresh", "workflow", "list")
+        self.assertEqual(code, 0)
+        self.assertNotIn("note:", err)
+
+    def test_a_corrupt_sibling_does_not_stop_the_command(self):
+        self.seed_raw("bad", "[1]")
+        self.seed("old", updated_at=self.ago(40))
+        code, _, err = run_cli("--workflow", "fresh", "state", "record", "architect", "ok")
+        self.assertEqual(code, 0)
+        state = ws.read_json(os.path.join(wf.workflow_dir(self.container, "fresh"), "state.json"), {})
+        self.assertEqual([event["stage"] for event in state["events"]], ["architect"])
+        self.assertTrue(os.path.isfile(os.path.join(self.container, ".gitignore")))
+        self.assertIn("(old)", err)
+        self.assertNotIn("bad", err)
+
+    def test_a_corrupt_sibling_does_not_stop_the_readers_of_every_workflow(self):
+        # Not "[]": an empty list is falsy and already reads as nothing.
+        self.seed_raw("bad", "[1]")
+        self.seed("old", updated_at=self.ago(40))
+        run_cli("--workflow", "fresh", "state", "record", "architect", "ok")
+        for command in (("workflow", "list"), ("optimization", "report")):
+            with self.subTest(command=command):
+                # No --workflow: that is when the report reads every workflow.
+                code, out, err = run_cli(*command)
+                self.assertEqual(code, 0, out + err)
+
+    def test_an_out_of_range_threshold_falls_back_to_the_default(self):
+        self.config(1000000000)
+        self.seed("old", updated_at=self.ago(31))
+        code, _, err = run_cli("--workflow", "fresh", "state", "record", "architect", "ok")
+        self.assertEqual(code, 0)
+        self.assertIn("note: 1 workflow has not been active for 30 days or more (old)", err)
+        _, out, _ = run_cli("config", "validate")
+        self.assertIn("workspace.stale_notice_days: must be 36500 or less (100 years)", out)
+
+    def test_an_adopted_flat_layout_is_announced_before_the_note(self):
+        """The probe must run before migrate(), which creates the directory too."""
+        self.seed("old", updated_at=self.ago(40))
+        with open(os.path.join(self.container, "plan.md"), "w", encoding="utf-8") as handle:
+            handle.write("# the plan")
+        ws.write_json(os.path.join(self.container, "state.json"), {"version": 1, "runs": []})
+        code, _, err = run_cli("--workflow", "w1", "state", "show")
+        self.assertEqual(code, 0)
+        self.assertLess(
+            err.index("Adopted the previous .ai into workflow w1"),
+            err.index("note: 1 workflow has not been active"),
+        )
+        self.assertTrue(os.path.isfile(os.path.join(self.container, "workflows", "w1", "plan.md")))
 
 
 @unittest.skipUnless(has_git(), "git is required")

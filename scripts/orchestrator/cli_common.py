@@ -191,11 +191,41 @@ def _effective_preview(scope: str, layer: Dict[str, Any], start: Optional[str] =
     return config_mod.deep_merge(_layer_base(scope, start), layer)
 
 
-def _container(args: argparse.Namespace) -> "tuple[str, str]":
-    """The project root and its ``.ai/``, before a workflow is chosen."""
+def _container_and_config(args: argparse.Namespace) -> "tuple[str, str, config_mod.LoadedConfig]":
+    """The project root, its ``.ai/``, and the configuration they came from."""
     root = ws.repo_root(getattr(args, "cwd", None) or os.getcwd())
     loaded = config_mod.load(root, validate_result=False)
-    return root, loaded.workspace_dir(root)
+    return root, loaded.workspace_dir(root), loaded
+
+
+def _container(args: argparse.Namespace) -> "tuple[str, str]":
+    """The project root and its ``.ai/``, before a workflow is chosen."""
+    root, container, _ = _container_and_config(args)
+    return root, container
+
+
+#: How many quiet workflows the note names before it says "...".
+_STALE_LISTED = 5
+
+
+def _stale_notice(container: str, workflow: str, days: int) -> None:
+    """Advisory only: whatever happens in here, the command goes on unchanged."""
+    if days <= 0:
+        return
+    try:
+        stale = workflow_mod.stale_elsewhere(container, workflow, days)
+    except Exception:  # a sibling's file is not this command's problem
+        return
+    if not stale:
+        return
+    count = len(stale)
+    names = ", ".join(stale[:_STALE_LISTED]) + (", ..." if count > _STALE_LISTED else "")
+    subject = "workflow has" if count == 1 else "workflows have"
+    unit = "day" if days == 1 else "days"
+    _err(
+        'note: %d %s not been active for %d %s or more (%s). See them with "workflow list"; '
+        'remove one with "workflow remove <id> --yes".' % (count, subject, days, unit, names)
+    )
 
 
 def _workspace(args: argparse.Namespace) -> ws.Workspace:
@@ -203,17 +233,24 @@ def _workspace(args: argparse.Namespace) -> ws.Workspace:
 
     Every command goes through here, which is why the layout change is one
     function: resolve the id, adopt any pre-0.4.0 artifacts into it, and hand
-    back a workspace pointed at that workflow's directory.
+    back a workspace pointed at that workflow's directory. The call that
+    creates the directory is the start of a new workflow, and the one place the
+    others that went quiet are noted.
     """
-    root, container = _container(args)
+    root, container, loaded = _container_and_config(args)
     workflow = workflow_mod.ensure(container, getattr(args, "workflow", "") or "")
+    # Before migrate(), which would otherwise create the directory itself.
+    fresh = workflow_mod.create_dir(container, workflow)
     moved = workflow_mod.migrate(container, workflow)
     if moved:
         _err(
             "Adopted the previous %s into workflow %s: %s"
             % (os.path.basename(container), workflow, ", ".join(moved))
         )
-    return ws.Workspace(root, container, workflow).ensure()
+    workspace = ws.Workspace(root, container, workflow).ensure()
+    if fresh:
+        _stale_notice(container, workflow, loaded.stale_notice_days())
+    return workspace
 
 
 def _review_workspace(args: argparse.Namespace) -> ws.Workspace:

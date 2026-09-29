@@ -22,6 +22,9 @@ from typing import Any, Dict, List, NamedTuple, Optional, Sequence, Tuple, Union
 from . import miniyaml
 
 CONFIG_VERSION = 1
+#: Ceiling on ``workspace.stale_notice_days`` (100 years). Commands load the
+#: configuration unvalidated, so an unbounded integer would reach every one.
+STALE_NOTICE_MAX_DAYS = 36500
 APP_DIR_NAME = "dev-orchestra"
 PROJECT_CONFIG_NAMES = (
     ".dev-orchestra.yaml",
@@ -221,6 +224,9 @@ def default_config() -> Dict[str, Any]:
         },
         "workspace": {
             "dir": ".ai",
+            # The first command of a new workflow notes the others quiet for
+            # this many days or more. Nothing is deleted; 0 turns it off.
+            "stale_notice_days": 30,
         },
     }
 
@@ -502,6 +508,18 @@ class LoadedConfig:
         if os.path.isabs(workspace):
             return workspace
         return os.path.join(root, workspace)
+
+    def stale_notice_days(self) -> int:
+        """``workspace.stale_notice_days``, or the default for anything unusable.
+
+        Commands load unvalidated, so a value ``validate`` would refuse still
+        arrives here; the default keeps it from reaching the scan.
+        """
+        fallback = default_config()["workspace"]["stale_notice_days"]
+        value = (self.data.get("workspace") or {}).get("stale_notice_days")
+        if not isinstance(value, int) or isinstance(value, bool) or not 0 <= value <= STALE_NOTICE_MAX_DAYS:
+            return fallback
+        return value
 
 
 #: Settings whose value is a matter of taste rather than a recommendation, so
@@ -823,6 +841,20 @@ def validate(data: Dict[str, Any], known_providers: Optional[List[str]] = None) 
                     continue
                 if not isinstance(value, int) or isinstance(value, bool) or value < 0:
                     problems.append("budgets.%s: must be a non-negative integer or null" % key)
+
+    workspace = data.get("workspace")
+    if workspace is not None:
+        if not isinstance(workspace, dict):
+            problems.append("workspace: must be a mapping")
+        else:
+            days = workspace.get("stale_notice_days")
+            if days is not None:
+                if not isinstance(days, int) or isinstance(days, bool) or days < 0:
+                    problems.append("workspace.stale_notice_days: must be a non-negative integer (0 = off)")
+                elif days > STALE_NOTICE_MAX_DAYS:
+                    problems.append(
+                        "workspace.stale_notice_days: must be %d or less (100 years)" % STALE_NOTICE_MAX_DAYS
+                    )
     return problems
 
 
