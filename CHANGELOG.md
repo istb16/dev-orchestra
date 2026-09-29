@@ -33,6 +33,14 @@ The public surface covered by that promise is: the configuration schema, the
   show the new kind as `when: paths`. Security and other roles that judge risk
   should stay `when: high-risk`. A config with a `when` mapping is refused by
   0.13.x and earlier at `review run` and `config validate`.
+- **Left-out rounds in the reviewer scorecard.** `optimization report` now ends
+  a conditional reviewer's cost line with its condition and how many of the
+  scorecard's rounds it sat out, as `(when: high-risk; left out of 2
+  round(s))`, so its runs and the rounds it was left out of read side by side.
+  A round with several events is sat out once, and not at all when a `--only`
+  re-run ran the reviewer; one left out of every round still gets a row. In
+  `--json`, such a reviewer gains `when` and `left_out_rounds`; other
+  reviewers are unchanged.
 
 ### Changed
 

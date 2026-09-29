@@ -701,7 +701,7 @@ Reviewer scorecard, code review: 18 of 27 recorded round(s) had a report to read
   codex-general          25 reported: 15 accepted, 2 rejected, 6 duplicate, 2 open; 16 found alone (11 accepted)
                          17 run(s), 1,166,386 billed, no cost reported; 9% rejected, 77,759 billed per accepted, $ -
   localllm-qwen          22 reported: 1 accepted, 19 rejected, 2 duplicate, 0 open; 20 found alone (1 accepted)
-                         9 run(s) (6 failed), nothing reported; 86% rejected, per accepted withheld under 10 accepted
+                         9 run(s) (6 failed), nothing reported; 86% rejected, per accepted withheld under 10 accepted (when: high-risk; left out of 9 round(s))
   panel                  96 reported: 59 accepted, 22 rejected, 12 duplicate, 3 open
                          44 run(s), 3,961,224 billed, $42.07 over 18 of 44 run(s); 24% rejected, 67,139 billed / $0.71 per accepted
 
@@ -756,6 +756,14 @@ told apart, and how its events find its report:
   whichever stage found it, where a per-round figure divides by a round, which
   is a different unit of work for a plan and a diff. The mix of stages still
   moves it, so it is read beside the two stage blocks.
+- **A conditional reviewer's cost line ends with its condition** and how many
+  of the rounds whose cost is in it sat out, so "ran N, left out of M" says
+  whether the condition is doing its job. A round is sat out once however
+  many events it has, and not at all when one of them -- a `--only` re-run,
+  say -- ran the reviewer. A reviewer left out of every round still gets a
+  row, its counts zero. A round sat out has no run, so its cost per accepted
+  is not diluted by it. The design review ignores conditions, and events from
+  before conditional reviewers record none.
 
 It says what review bought, not whether review got worse. A higher cost per
 accepted finding is what better code under review looks like, and also what a
@@ -770,7 +778,9 @@ always present, with `code`, `design` and `total`. Each stage has
 `failed_runs`, `measured_runs`, `priced_runs`, `billed_tokens`, `cost_usd`,
 `reported`, `accepted`, `rejected`, `duplicate`, `open`, `alone`,
 `alone_accepted`, `rejection_rate`, `billed_per_accepted` and
-`cost_per_accepted`, the last three `null` below their threshold; `panel` and
+`cost_per_accepted`, the last three `null` below their threshold. A reviewer
+some counted round recorded as conditional also carries `when` (`high-risk`
+or `paths`, from the latest such round) and `left_out_rounds`; `panel` and
 `total` the same without the `alone` pair, a finding reported by two reviewers
 counted once. `total` also sums the four round counts.
 
