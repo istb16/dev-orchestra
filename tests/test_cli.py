@@ -83,11 +83,20 @@ class TestConfigCommands(IsolatedCase):
         _, out, _ = run_cli("config", "show")
         self.assertIn("design review: on", out)
 
-    def test_show_says_when_the_design_review_is_off(self):
+    def test_show_says_what_the_design_review_is_set_to(self):
         """It decides whether a whole stage runs, so its state has to be
         visible without reading the JSON."""
         _, out, _ = run_cli("config", "show")
-        self.assertIn("design review: off", out)
+        self.assertIn("design review: auto", out)
+
+    def test_set_puts_the_design_review_on_auto_or_off(self):
+        run_cli("config", "setup", "--defaults")
+        run_cli("config", "set", "review.design.enabled", "auto")
+        self.assertEqual(config_mod.load(self.project).design_review_settings()["enabled"], "auto")
+        self.assertIn("design review: auto", run_cli("config", "show")[1])
+        run_cli("config", "set", "review.design.enabled", "false")
+        self.assertIs(config_mod.load(self.project).design_review_settings()["enabled"], False)
+        self.assertIn("design review: off", run_cli("config", "show")[1])
 
     def test_show_says_whether_the_plan_needs_approving(self):
         _, out, _ = run_cli("config", "show")

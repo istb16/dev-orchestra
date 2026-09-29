@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import fnmatch
 import posixpath
+import re
 from typing import Any, Dict, List, Optional, Sequence, Tuple, cast
 
 from .providers.base import redact
@@ -568,6 +569,173 @@ def decide(
         conditional=conditional,
         declared=bool(declared),
     )
+
+
+#: Under ``review.design.enabled: auto``, a plan whose Files to Modify names
+#: this many code files or more gets a design round. Drawn from six measured
+#: plans: the one low-risk plan counted 5, every other 7 or more.
+DESIGN_LARGE_PLAN_FILES = 6
+
+#: Files to Modify entries under these, or with a ``.md`` basename, are docs
+#: or tests and do not count toward the size of a plan.
+DESIGN_DOCS_PREFIXES = ("docs/", "references/")
+DESIGN_TESTS_PREFIXES = ("tests/",)
+
+_GLOB_CHARS = ("*", "?", "[", "{", "}")
+#: Underscores included, so a config key such as ``workspace.stale_notice_days``
+#: counts like the file names beside it; that over-count only moves toward run.
+_EXTENSION_RE = re.compile(r"\.[A-Za-z0-9_]+$")
+
+
+class DesignDecision:
+    """Whether the design review runs for this plan, and why."""
+
+    def __init__(
+        self,
+        mode: str,
+        run: bool,
+        reason: str = "",
+        files: int = 0,
+        high_risk: Sequence[Tuple[str, str]] = (),
+    ) -> None:
+        #: "on", "off" or "auto".
+        self.mode = mode
+        self.run = run
+        #: Empty under on and off. Redacted: it carries file names.
+        self.reason = redact(reason) if reason else ""
+        #: Code files counted in Files to Modify, when the size was judged.
+        self.files = files
+        #: ``(token, pattern)`` for every token that matched a high-risk pattern.
+        self.high_risk = list(high_risk)
+
+    def label(self) -> str:
+        if self.mode != "auto":
+            return self.mode
+        return "auto -> %s (%s)" % ("run" if self.run else "skip", self.reason)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "mode": self.mode,
+            "run": self.run,
+            "reason": self.reason or None,
+            "files": self.files,
+            "high_risk": [{"path": redact(p), "pattern": redact(q)} for p, q in self.high_risk],
+        }
+
+
+def _plan_path(token: str) -> str:
+    path = token.replace("\\", "/")
+    while path.startswith("./"):
+        path = path[2:]
+    return path
+
+
+def _has_extension(path: str) -> bool:
+    return bool(_EXTENSION_RE.search(posixpath.basename(path.rstrip("/"))))
+
+
+def _risk_candidates(token: str) -> List[str]:
+    """What a plan token is matched as against the high-risk patterns.
+
+    Lower-cased, since the plan's spelling of ``src/Auth.py`` says nothing
+    about the risk. ``normpath`` would drop the trailing slash the directory
+    patterns need, so a directory gets a child; so does a name with a ``/``
+    and no extension, which may be one (``db/migrate``).
+    """
+    path = _plan_path(token).lower()
+    if path.endswith("/"):
+        return [path + "_"]
+    if "/" in path and not _has_extension(path):
+        return [path, path + "/_"]
+    return [path]
+
+
+def decide_design(
+    mode: str,
+    settings: Dict[str, Any],
+    scan: Any,
+    *,
+    plan_state: str,
+    round_ran: bool,
+) -> DesignDecision:
+    """Whether the design review runs, from the plan the architect wrote.
+
+    ``scan`` is ``review.plan_tokens()`` of the plan when ``plan_state`` is
+    ``"ok"``; ``"missing"`` and ``"unreadable"`` come with none. Under
+    ``auto`` every doubt answers run: once a round has run, so a revision
+    cannot switch the loop off half way; for a plan not yet written or not
+    readable; for any token matching a high-risk pattern, in any case; and
+    for a Files to Modify section that is absent, names no file, names a
+    glob, a directory or a path through ``..``, or names
+    ``DESIGN_LARGE_PLAN_FILES`` code files or more. Only file-shaped tokens
+    (a ``/`` or an extension) are judged as globs or directories, so
+    ``payload["mode"]`` there is code, not a pattern. Nothing here reads the
+    disk.
+    """
+    if mode != "auto":
+        return DesignDecision(mode, mode == "on")
+    if round_ran:
+        return DesignDecision(mode, True, "a design round already ran")
+    if plan_state == "missing":
+        # Run once there is a plan to review: with no design stage there is none.
+        return DesignDecision(mode, True, "once a plan is written")
+    if plan_state != "ok" or scan is None:
+        return DesignDecision(mode, True, "plan could not be read")
+
+    folded: Dict[str, str] = {}
+    for pattern in risk_patterns(settings):
+        folded.setdefault(pattern.lower(), pattern)
+    seen = set()
+    hits: List[Tuple[str, str, str]] = []
+    for item in scan.tokens:
+        if item.token in seen:
+            continue
+        seen.add(item.token)
+        matched = high_risk_matches(_risk_candidates(item.token), list(folded))
+        if matched:
+            hits.append((item.token, item.section, folded[matched[0][1]]))
+    if hits:
+        token, section, _ = hits[0]
+        where = " (%s)" % section if section else ""
+        more = " and %d more" % (len(hits) - 1) if len(hits) > 1 else ""
+        return DesignDecision(
+            mode, True, "touches %s%s%s" % (token, where, more), high_risk=[(t, p) for t, _, p in hits]
+        )
+
+    if not scan.has_files_section:
+        return DesignDecision(mode, True, "no Files to Modify section")
+    listed = [item for item in scan.tokens if item.in_files]
+    shaped: List[str] = []
+    for item in listed:
+        path = _plan_path(item.token)
+        extension = _has_extension(path)
+        if "/" not in path and not extension:
+            continue
+        if any(ch in path for ch in _GLOB_CHARS):
+            return DesignDecision(mode, True, "names a glob: %s" % item.token)
+        if path.endswith("/"):
+            return DesignDecision(mode, True, "names a directory: %s" % item.token)
+        if ".." in path.split("/"):
+            return DesignDecision(mode, True, "names a path through ..: %s" % item.token)
+        if not extension:
+            if item.prose:
+                continue
+            return DesignDecision(mode, True, "may name a directory: %s" % item.token)
+        if path not in shaped:
+            shaped.append(path)
+    if not shaped:
+        return DesignDecision(mode, True, "Files to Modify names no file")
+    code = [
+        path
+        for path in shaped
+        if not path.startswith(DESIGN_DOCS_PREFIXES + DESIGN_TESTS_PREFIXES)
+        and not posixpath.basename(path).lower().endswith(".md")
+    ]
+    count = len(code)
+    if count >= DESIGN_LARGE_PLAN_FILES:
+        return DesignDecision(mode, True, "%d code files" % count, files=count)
+    noun = "code file" if count == 1 else "code files"
+    return DesignDecision(mode, False, "%d %s, none high-risk" % (count, noun), files=count)
 
 
 def findings_cap(

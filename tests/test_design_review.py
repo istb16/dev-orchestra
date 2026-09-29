@@ -199,6 +199,7 @@ class TestRunningIt(DesignReviewCase):
     def test_the_setting_being_off_notes_but_does_not_refuse(self):
         """The setting says whether the orchestrator runs this stage, not
         whether a person may."""
+        run_cli("config", "set", "review.design.enabled", "false")
         self.write_plan()
         code, _, err = run_cli("review", "run", "--design")
         self.assertEqual(code, 0)
@@ -505,7 +506,8 @@ class TestWhatTheOrchestratorReads(DesignReviewCase):
         run_cli("review", "run", "--design")
         payload = json.loads(run_cli("status", "--json")[1])
         design = payload["design_review"]
-        self.assertFalse(design["enabled"])
+        self.assertTrue(design["enabled"])
+        self.assertEqual(design["mode"], "auto")
         self.assertEqual(design["iteration"], 1)
         self.assertEqual(design["blocking"], ["F1"])
 
@@ -521,6 +523,7 @@ class TestWhatTheOrchestratorReads(DesignReviewCase):
         self.assertTrue(any("design review budget spent" in r for r in payload["reasons"]))
 
     def test_status_says_so_to_a_human_too(self):
+        run_cli("config", "set", "review.design.enabled", "false")
         run_cli("review", "run", "--design")
         _, out, _ = run_cli("status")
         self.assertIn("Design review: off, round 1/2", out)
@@ -541,6 +544,139 @@ class TestWhatTheOrchestratorReads(DesignReviewCase):
         self.assertEqual(report["reviewer_runs"], 0)
         self.assertEqual(report["design_rounds"], 1)
         self.assertEqual(report["design_reviewer_runs"], 2)
+
+
+SKIP_PLAN = """# Plan
+
+## Files to Modify
+
+- `docs/a.md`: say what changed.
+- `scripts/a.py`: the change.
+"""
+
+MIGRATION_PLAN = """# Plan
+
+## Files to Modify
+
+- `db/migrate/1.sql`: the new column.
+"""
+
+DIRECTORY_PLAN = """# Plan
+
+## Files to Modify
+
+- A new migration in `db/migrate/`.
+"""
+
+SKIP_NOTE = (
+    "review.design.enabled is auto and this plan would be skipped "
+    "(1 code file, none high-risk); running because you asked"
+)
+
+
+class TestTheAutoDecision(DesignReviewCase):
+    """`auto`, the default: a round for a risky or large plan, or once one ran."""
+
+    def design_status(self):
+        return json.loads(run_cli("status", "--json")[1])["design_review"]
+
+    def test_a_small_plan_is_noted_when_run_by_hand(self):
+        self.write_plan(SKIP_PLAN)
+        code, _, err = run_cli("review", "run", "--design")
+        self.assertEqual(code, 0)
+        self.assertIn(SKIP_NOTE, err)
+
+    def test_a_plan_naming_a_migration_runs_without_a_note(self):
+        self.write_plan(MIGRATION_PLAN)
+        self.assertNotIn("review.design.enabled", run_cli("review", "run", "--design")[2])
+
+    def test_a_plan_naming_a_migration_directory_runs_without_a_note(self):
+        self.write_plan(DIRECTORY_PLAN)
+        self.assertNotIn("review.design.enabled", run_cli("review", "run", "--design")[2])
+
+    def test_a_plan_with_no_files_section_runs_without_a_note(self):
+        self.write_plan(PLAN)
+        self.assertNotIn("review.design.enabled", run_cli("review", "run", "--design")[2])
+
+    def test_once_a_round_ran_the_answer_stays_run(self):
+        """A revision that drops what made the plan risky, or everything, must
+        not switch the loop off half way."""
+        self.write_plan(SKIP_PLAN)
+        self.assertIn(SKIP_NOTE, run_cli("review", "run", "--design")[2])
+        design = self.design_status()
+        self.assertTrue(design["enabled"])
+        self.assertEqual(design["reason"], "a design round already ran")
+        self.assertNotIn("review.design.enabled", run_cli("review", "run", "--design")[2])
+        self.write_plan("# Plan\n\nNothing named at all.\n")
+        design = self.design_status()
+        self.assertTrue(design["enabled"])
+        self.assertEqual(design["reason"], "a design round already ran")
+
+    def test_status_says_why_a_plan_is_skipped(self):
+        self.write_plan(SKIP_PLAN)
+        _, out, _ = run_cli("status")
+        self.assertIn("Design review: auto -> skip (1 code file, none high-risk), round 0/2", out)
+        design = self.design_status()
+        self.assertFalse(design["enabled"])
+        self.assertEqual(design["mode"], "auto")
+        self.assertEqual(design["reason"], "1 code file, none high-risk")
+
+    def test_status_names_the_risky_path(self):
+        self.write_plan(MIGRATION_PLAN)
+        design = self.design_status()
+        self.assertTrue(design["enabled"])
+        self.assertTrue(design["reason"].startswith("touches db/migrate/1.sql (Files to Modify)"))
+
+    def test_no_plan_and_a_blank_plan_both_run_once_one_is_written(self):
+        """With no design stage there is no plan, and no round to suggest."""
+        self.assertIn("Design review: auto -> run (once a plan is written)", run_cli("status")[1])
+        self.write_plan("  \n\n")
+        self.assertIn("Design review: auto -> run (once a plan is written)", run_cli("status")[1])
+
+    def test_a_plain_text_migration_entry_runs(self):
+        self.write_plan(SKIP_PLAN + "- db/migrate/003_drop.sql: the column goes.\n")
+        design = self.design_status()
+        self.assertTrue(design["enabled"])
+        self.assertEqual(design["reason"], "touches db/migrate/003_drop.sql (Files to Modify)")
+
+    def test_a_heading_padded_with_spaces_does_not_hang(self):
+        self.write_plan(SKIP_PLAN + "#" + " " * 20000 + "x\n")
+        self.assertEqual(self.design_status()["reason"], "1 code file, none high-risk")
+
+    def test_on_says_on_with_no_reason(self):
+        run_cli("config", "set", "review.design.enabled", "true")
+        self.write_plan(SKIP_PLAN)
+        self.assertIn("Design review: on, round 0/2", run_cli("status")[1])
+        design = self.design_status()
+        self.assertTrue(design["enabled"])
+        self.assertEqual(design["mode"], "on")
+        self.assertIsNone(design["reason"])
+
+    def test_an_explicit_null_means_auto(self):
+        self.write(".dev-orchestra.yaml", "version: 1\nreview:\n  design:\n    enabled:\n")
+        self.assertEqual(self.design_status()["mode"], "auto")
+
+    def test_review_status_carries_the_decision_under_design_only(self):
+        self.write_plan(SKIP_PLAN)
+        _, out, _ = run_cli("review", "status", "--design")
+        first = out.splitlines()[0]
+        self.assertEqual(first, "design review: auto -> skip (1 code file, none high-risk)")
+        payload = json.loads(run_cli("review", "status", "--design", "--json")[1])
+        self.assertIs(payload["enabled"], False)
+        self.assertEqual(payload["mode"], "auto")
+        self.assertEqual(payload["reason"], "1 code file, none high-risk")
+        code_payload = json.loads(run_cli("review", "status", "--json")[1])
+        for key in ("enabled", "mode", "reason"):
+            self.assertNotIn(key, code_payload)
+
+    def test_a_plan_that_is_not_utf8_runs(self):
+        """A replaced byte could hide a high-risk name behind a small count."""
+        os.makedirs(os.path.dirname(self.workspace.plan_path), exist_ok=True)
+        with open(self.workspace.plan_path, "wb") as handle:
+            handle.write(b"# Plan\n\n## Files to Modify\n\n- `docs/a.md` \xff\xfe\n")
+        code, out, _ = run_cli("status")
+        self.assertEqual(code, 0)
+        self.assertIn("auto -> run (plan could not be read)", out)
 
 
 class TestTheFinalRevision(DesignReviewCase):

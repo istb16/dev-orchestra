@@ -116,6 +116,67 @@ class TestAtomicWrites(IsolatedCase):
         self.assertLess(time.monotonic() - started, 0.5)
 
 
+class TestStrictTextReads(IsolatedCase):
+    """`read_text_strict` never guesses: absent is "", unreadable is None."""
+
+    def patch_reader(self, reader):
+        original = ws._read_shared
+        ws._read_shared = reader
+        self.addCleanup(setattr, ws, "_read_shared", original)
+
+    def test_an_absent_file_is_empty(self):
+        self.assertEqual(ws.read_text_strict(os.path.join(self.project, "absent.md")), "")
+
+    def test_a_valid_file_is_its_text(self):
+        path = os.path.join(self.project, "plan.md")
+        ws.write_text(path, "# Plan\n")
+        self.assertEqual(ws.read_text_strict(path), "# Plan\n")
+
+    def test_invalid_utf8_is_unreadable_where_the_tolerant_read_replaces(self):
+        path = os.path.join(self.project, "plan.md")
+        with open(path, "wb") as handle:
+            handle.write(b"# Plan \xff\n")
+        self.assertIsNone(ws.read_text_strict(path))
+        self.assertIn("�", ws.read_text(path))
+
+    def test_a_read_refused_once_is_retried(self):
+        path = os.path.join(self.project, "plan.md")
+        ws.write_text(path, "# Plan\n")
+        original = ws._read_shared
+        calls = []
+
+        def refuse_once(target):
+            calls.append(target)
+            if len(calls) == 1:
+                raise PermissionError(13, "sharing violation", target)
+            return original(target)
+
+        self.patch_reader(refuse_once)
+        self.assertEqual(ws.read_text_strict(path), "# Plan\n")
+        self.assertEqual(len(calls), 2)
+
+    def test_a_file_that_stays_refused_is_unreadable(self):
+        path = os.path.join(self.project, "plan.md")
+        ws.write_text(path, "# Plan\n")
+
+        def refuse(target):
+            raise PermissionError(13, "access denied", target)
+
+        self.patch_reader(refuse)
+        self.assertIsNone(ws.read_text_strict(path))
+
+    def test_a_file_removed_between_attempts_is_empty(self):
+        path = os.path.join(self.project, "plan.md")
+        ws.write_text(path, "# Plan\n")
+
+        def remove_and_refuse(target):
+            os.unlink(target)
+            raise FileNotFoundError(2, "gone", target)
+
+        self.patch_reader(remove_and_refuse)
+        self.assertEqual(ws.read_text_strict(path), "")
+
+
 class TestFileLock(IsolatedCase):
     def test_the_lock_is_exclusive(self):
         path = os.path.join(self.project, "state.json")

@@ -174,6 +174,18 @@ class TestTheWizardsBase(IsolatedCase):
         self.assertIn("design review: on", "\n".join(prompter.output))
         self.assertNotIn("review", data)
 
+    def test_the_summary_shows_the_default_design_review_as_auto(self):
+        prompter = ScriptedPrompter(accept_all())
+        wizard_mod.run(prompter)
+        self.assertIn("design review: auto", "\n".join(prompter.output))
+
+    def test_a_null_design_switch_in_the_base_is_the_default(self):
+        base = config_mod.default_config()
+        base["review"]["design"]["enabled"] = None
+        prompter = ScriptedPrompter(accept_all())
+        wizard_mod.run(prompter, None, base)
+        self.assertIn("design review: auto", "\n".join(prompter.output))
+
     def test_the_reviewer_template_comes_from_the_base_too(self):
         panel = [config_mod.make_reviewer("only-one", "claude", "opus", "general")]
         base = config_mod.deep_merge(config_mod.default_config(), {"reviewers": panel})

@@ -343,7 +343,7 @@ echo "explain the failure" | dev-orchestra run orchestrator
 | `review show [--design] [--accepted] [--json]` | Show the consolidated review. |
 | `review triage [--design] <ids…> --status <status> [--note <text>]` | Record triage decisions. Each one stamps the finding with `triage_set_at`, `needs-triage` included, so putting a finding back is told apart from never deciding it. |
 | `review fix-brief [--design] [--output <path>]` | Emit the accepted-findings brief for the fixer. |
-| `review status [--design] [--json]` | Whether a re-review is warranted, the iteration budget, and the round's `coverage` — `round`, `change`, the `inline_chars` the round was measured against, plus the actions that would clear an `unverified` one: narrow the change, or raise `review.context.inline_chars`, then snapshot again — and once that limit has been raised past the size the round recorded, that the same snapshot would be inlined now and `review run` against it is all that is left. `over_budget` says the round only ran because `--force` sent it past `review.context.max_chars`. A round that carried surrounding context adds a `surrounding context:` line -- one per reviewer when they were not handed the same -- naming up to five symbols left out, and `--json` carries the report's `surrounding` block. Once the round budget is spent it also says where that round's last pass stands, read from the ledger, the run log and the approval state (nothing is cleared): `final_fix` — `pending` (fix once more), `retest` (fixed; record the re-test), `done`, `blocked` (no `review_fixer` attempt left) — or with `--design` `final_revision` — `pending` (revise once more), `done`, `blocked` (no `architect` attempt left), `approved`, `implemented` — each `null` before the limit and with a `final_fix_pending` / `final_revision_pending` flag; the last line names the next step and notes a round that repeated the previous one's findings. See `references/reviews.md`. |
+| `review status [--design] [--json]` | Whether a re-review is warranted, the iteration budget, and the round's `coverage` — `round`, `change`, the `inline_chars` the round was measured against, plus the actions that would clear an `unverified` one: narrow the change, or raise `review.context.inline_chars`, then snapshot again — and once that limit has been raised past the size the round recorded, that the same snapshot would be inlined now and `review run` against it is all that is left. `over_budget` says the round only ran because `--force` sent it past `review.context.max_chars`. A round that carried surrounding context adds a `surrounding context:` line -- one per reviewer when they were not handed the same -- naming up to five symbols left out, and `--json` carries the report's `surrounding` block. Once the round budget is spent it also says where that round's last pass stands, read from the ledger, the run log and the approval state (nothing is cleared): `final_fix` — `pending` (fix once more), `retest` (fixed; record the re-test), `done`, `blocked` (no `review_fixer` attempt left) — or with `--design` `final_revision` — `pending` (revise once more), `done`, `blocked` (no `architect` attempt left), `approved`, `implemented` — each `null` before the limit and with a `final_fix_pending` / `final_revision_pending` flag; the last line names the next step and notes a round that repeated the previous one's findings. With `--design` the first line is `design review: <label>` — `on`, `off`, `auto -> run (<reason>)` or `auto -> skip (<reason>)`, the answer `status` gives — and `--json` adds `enabled` (whether the stage runs), `mode` (`on`, `off`, `auto`) and `reason` (`null` under `on` and `off`). See `references/reviews.md`. |
 
 `--design` switches every one of those to the *design* review: `.ai/plan.md`
 judged by the same panel before implementation, with its own reports, round
@@ -359,9 +359,13 @@ the request together, because both go into every reviewer's prompt, and the
 round is refused before the plan is frozen — so the previous round's reports
 and triage are still there to report on. The optimization gate and panel reduction do not apply,
 every reviewer runs whatever its `when`, `--high-risk` is refused (exit 2), and
-`--base` is ignored. Running it while `review.design.enabled` is false prints a
-note and proceeds: the setting says whether the orchestrator runs the stage,
-not whether you may. See `references/reviews.md`.
+`--base` is ignored. Running it while `review.design.enabled` is false, or
+`auto` and this plan would be skipped, prints a note (`note:
+review.design.enabled is auto and this plan would be skipped (<reason>);
+running because you asked`) and proceeds: the setting says whether the
+orchestrator runs the stage, not whether you may. A round run that way is a
+design round, so from then on `auto` answers run (`a design round already
+ran`) and the loop proceeds as under `true`. See `references/reviews.md`.
 
 `review status --json` reports the budget under the name of the setting it came
 from: `max_review_iterations` without `--design`, `max_iterations` with it. The
@@ -429,6 +433,14 @@ same under `optimization.conditional`. It is a prediction only: `status` reads
 the configuration without validating it, so a panel `review run` would refuse
 is reported by `config validate` and `doctor`, not here.
 
+The `Design review:` line starts with whether the stage runs for this plan:
+`on`, `off`, `auto -> run (<reason>)` or `auto -> skip (<reason>)`, as in
+`Design review: auto -> skip (5 code files, none high-risk), round 0/2, 0
+accepted, 0 blocking`. In `--json`, `design_review.enabled` is that answer
+(whether the stage runs), `design_review.mode` is `on`, `off` or `auto`, and
+`design_review.reason` is the reason, `null` under `on` and `off`. A skip is
+not a reason and does not change the verdict.
+
 `design_approval` and the `Plan approval:` line say whether the plan still has
 to be put to the user (`references/workflow.md`). They are not a reason and do
 not change the verdict: `run implementer` enforces them. The one exception runs
@@ -477,7 +489,7 @@ dev-orchestra status --json
   "reasons": ["review budget spent (2/2 rounds) with 1 finding(s) still open; fixed and re-tested after the last round, not re-reviewed -- report"],
   "stalls": [],
   "review": {"iteration": 2, "max_review_iterations": 2, "blocking": ["F1"], "accepted": 1, "refused_for_size": null, "identical_rounds": 1, "final_fix": "done", "final_fix_pending": false},
-  "design_review": {"enabled": false, "iteration": 0, "max_iterations": 2, "blocking": [], "accepted": 0, "identical_rounds": 0, "final_revision": null, "final_revision_pending": false},
+  "design_review": {"enabled": true, "mode": "auto", "reason": "touches db/migrate/ (Files to Modify)", "iteration": 0, "max_iterations": 2, "blocking": [], "accepted": 0, "identical_rounds": 0, "final_revision": null, "final_revision_pending": false},
   "budgets": {"implementer": {"used": 2, "limit": 5, "remaining": 3}}
 }
 ```

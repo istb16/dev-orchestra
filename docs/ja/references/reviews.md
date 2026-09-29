@@ -1,4 +1,4 @@
-<!-- translated-from: references/reviews.md sha256:a5eb87ebaed633c2c8ede1ead1327fe37e7fe7c007f909227a2b087b520d9f56 -->
+<!-- translated-from: references/reviews.md sha256:937ef98d4db8958e86958317de43874e7952fbbbab55c29112d4d920f072d03b -->
 
 > この文書は [references/reviews.md](../../../references/reviews.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -321,7 +321,11 @@ complete のままで、diff がファイルとして渡されたラウンドは
 ## 設計レビュー
 
 間違えうるコードがまだ存在しない段階での、同じレビュアー陣によるレビューです。
-`review.design.enabled`（デフォルトは `false`）で有効にします。
+orchestrator がこれを実行するかどうかは `review.design.enabled` が決めます。`true` は常に、
+`false` は決して実行せず、`auto`（デフォルト）は plan のどこかで高リスクのパスを挙げているか、
+`Files to Modify` で 6 個以上のコードファイル（docs・tests・`.md` ファイルは数えません）を挙げる plan のとき、
+またはワークフローで設計ラウンドが一度でも走ったときに実行します。
+答えとその理由は `status` が表示します（規則は `references/configuration.md` を参照）。
 
 ```bash
 dev-orchestra config set review.design.enabled true
@@ -365,7 +369,10 @@ Test Strategy は十分か、といった点です。各組み込みロールも
 されます。`when: high-risk` と設定されたレビュアーや、`paths` で絞り込んだレビュアーも
 含みます。plan には判定すべきパスがなく、設計ステージこそそうしたスペシャリストが元を
 取ると計測された場面なので、どちらの条件もコードレビュー専用です（`review run --design --high-risk` は何かを判断した
-ふりをせず、終了コード 2 で終了します）。`review.max_findings` は引き続き適用され、それが未設定の場合は
+ふりをせず、終了コード 2 で終了します）。`auto` が高リスクパターンを借りるのは、ステージを
+そもそも実行するかどうかを決めるためだけです。判定は plan がバッククォートで挙げるすべてのトークンから
+行い、規模は Files to Modify から取ります。実行するとなれば、やはりレビュアー陣全員が実行されます。
+`review.max_findings` は引き続き適用され、それが未設定の場合は
 `optimization.level` が上限を決めます。設計ラウンドは、`optimization report` が
 出力するあらゆる率（有効だったレベル、ゲートの判定、レビュアー陣の縮小、エスカ
 レーション）から意図的に除外されています。どのレベルも設計ラウンドについて何も

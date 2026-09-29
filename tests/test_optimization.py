@@ -3131,5 +3131,204 @@ class TestArchitectRevisionsReport(IsolatedCase):
         self.assertNotIn("Architect revisions", out)
 
 
+def plan_scan(files=(), elsewhere=(), has_section=True):
+    """A plan scan: ``files`` under Files to Modify, ``elsewhere`` as (token, section)."""
+    tokens = [review_mod.PlanToken(token, section, False) for token, section in elsewhere]
+    tokens += [review_mod.PlanToken(token, "Files to Modify", True) for token in files]
+    return review_mod.PlanScan(tokens, has_section)
+
+
+def decide_design(scan=None, mode="auto", settings=None, plan_state="ok", round_ran=False):
+    scan = plan_scan() if scan is None else scan
+    return opt.decide_design(mode, settings or {}, scan, plan_state=plan_state, round_ran=round_ran)
+
+
+MODULES = ("config.py", "cli.py", "review.py", "optimization.py", "hosts.py", "approval.py")
+
+
+class TestDecideDesign(unittest.TestCase):
+    """`review.design.enabled: auto`: every doubt answers run."""
+
+    def assertRuns(self, decision, reason):
+        self.assertTrue(decision.run)
+        self.assertEqual(decision.reason, reason)
+
+    def assertSkips(self, decision, reason):
+        self.assertFalse(decision.run)
+        self.assertEqual(decision.reason, reason)
+
+    def test_on_and_off_ignore_the_plan(self):
+        for scan in (plan_scan(), plan_scan(["db/migrate/1.sql"]), plan_scan(["a.py"])):
+            on = decide_design(scan, mode="on")
+            off = decide_design(scan, mode="off")
+            self.assertEqual((on.run, on.reason, on.label()), (True, "", "on"))
+            self.assertEqual((off.run, off.reason, off.label()), (False, "", "off"))
+
+    def test_a_round_that_ran_comes_before_everything(self):
+        self.assertRuns(
+            decide_design(plan_scan(["a.py"]), plan_state="unreadable", round_ran=True),
+            "a design round already ran",
+        )
+        self.assertRuns(decide_design(plan_scan(["a.py"]), round_ran=True), "a design round already ran")
+
+    def test_a_missing_or_unreadable_plan_runs(self):
+        self.assertRuns(decide_design(plan_state="missing"), "once a plan is written")
+        self.assertRuns(decide_design(plan_state="unreadable"), "plan could not be read")
+
+    def test_no_section_runs(self):
+        self.assertRuns(decide_design(review_mod.PlanScan([], False)), "no Files to Modify section")
+
+    def test_a_section_naming_only_symbols_runs(self):
+        scan = plan_scan(["create_dir()", "--workflow"])
+        self.assertRuns(decide_design(scan), "Files to Modify names no file")
+
+    def test_bare_risky_names_run_whatever_their_shape(self):
+        for token in (".env", "Dockerfile", "auth", "secrets"):
+            with self.subTest(token=token):
+                decision = decide_design(plan_scan([token]))
+                self.assertRuns(decision, "touches %s (Files to Modify)" % token)
+                self.assertEqual(decision.high_risk[0][0], token)
+
+    def test_a_risky_directory_keeps_its_slash(self):
+        for token in ("db/migrate/", ".github/workflows/"):
+            with self.subTest(token=token):
+                self.assertRuns(decide_design(plan_scan([token])), "touches %s (Files to Modify)" % token)
+
+    def test_a_hit_outside_the_section_names_the_section(self):
+        scan = plan_scan(["docs/a.md"], elsewhere=[("*.sql", "Decisions")])
+        self.assertRuns(decide_design(scan), "touches *.sql (Decisions)")
+
+    def test_several_hits_are_counted(self):
+        scan = plan_scan(["auth.py", "billing.py", "Dockerfile", "a.py"])
+        decision = decide_design(scan)
+        self.assertRuns(decision, "touches auth.py (Files to Modify) and 2 more")
+        self.assertEqual(len(decision.high_risk), 3)
+
+    def test_a_glob_or_a_leftover_brace_runs(self):
+        # `migrations/*.sql` would read as a hit on `*.sql` first: risk is judged before size.
+        self.assertRuns(decide_design(plan_scan(["a.py", "src/*.py"])), "names a glob: src/*.py")
+        scan = plan_scan(["migrations/*.sql"])
+        self.assertRuns(decide_design(scan), "touches migrations/*.sql (Files to Modify)")
+        self.assertRuns(decide_design(plan_scan(["a/{b}.py"])), "names a glob: a/{b}.py")
+
+    def test_a_directory_with_no_hit_runs(self):
+        self.assertRuns(decide_design(plan_scan(["a.py", "verified/"])), "names a directory: verified/")
+
+    def test_a_risky_directory_without_its_slash_runs(self):
+        scan = plan_scan(["db/migrate", "a.py", "b.py"])
+        decision = decide_design(scan)
+        self.assertRuns(decision, "touches db/migrate (Files to Modify)")
+        self.assertEqual(decision.high_risk, [("db/migrate", "*migrate*/*")])
+
+    def test_a_slashed_name_with_no_extension_may_be_a_directory(self):
+        self.assertRuns(
+            decide_design(plan_scan(["a.py", "src/handlers"])), "may name a directory: src/handlers"
+        )
+
+    def test_a_prose_word_with_no_extension_is_not_a_directory(self):
+        scan = review_mod.PlanScan(
+            [
+                review_mod.PlanToken("a.py", "Files to Modify", True),
+                review_mod.PlanToken("read/write", "Files to Modify", True, True),
+            ],
+            True,
+        )
+        self.assertSkips(decide_design(scan), "1 code file, none high-risk")
+
+    def test_risk_is_matched_in_any_case(self):
+        for token, pattern in (
+            ("src/Auth.py", "*auth*"),
+            ("DB/Migrate/1.SQL", "*.sql"),
+            ("dockerfile", "Dockerfile"),
+        ):
+            with self.subTest(token=token):
+                decision = decide_design(plan_scan([token, "a.py"]))
+                self.assertRuns(decision, "touches %s (Files to Modify)" % token)
+                self.assertEqual(decision.high_risk, [(token, pattern)])
+        settings = {"extra_high_risk_paths": ["*/Providers/*"]}
+        decision = decide_design(plan_scan(["scripts/providers/claude.py"]), settings=settings)
+        self.assertEqual(decision.high_risk, [("scripts/providers/claude.py", "*/Providers/*")])
+
+    def test_code_with_brackets_is_not_a_glob(self):
+        for token in ('payload["mode"]', "Optional[str]", 'f"{x}"', "items[0]"):
+            with self.subTest(token=token):
+                self.assertSkips(
+                    decide_design(plan_scan(["scripts/a.py", token])), "1 code file, none high-risk"
+                )
+        self.assertRuns(decide_design(plan_scan(["a.py", "test_[ab].py"])), "names a glob: test_[ab].py")
+
+    def test_a_path_through_a_parent_directory_runs(self):
+        listed = ["docs/../src/%s.py" % name for name in "abcdef"]
+        self.assertRuns(decide_design(plan_scan(listed)), "names a path through ..: docs/../src/a.py")
+        self.assertRuns(
+            decide_design(plan_scan(["tests\\..\\a.py"])), "names a path through ..: tests\\..\\a.py"
+        )
+
+    def test_six_bare_modules_run_and_five_skip(self):
+        self.assertRuns(decide_design(plan_scan(MODULES)), "6 code files")
+        self.assertSkips(decide_design(plan_scan(MODULES[:5])), "5 code files, none high-risk")
+
+    def test_config_keys_count_toward_the_size(self):
+        """The measured `issue-112` shape: three modules and two config keys."""
+        shape = [*MODULES[:3], "workspace.dir", "workspace.stale_notice_days"]
+        self.assertSkips(decide_design(plan_scan(shape)), "5 code files, none high-risk")
+        self.assertRuns(decide_design(plan_scan([*shape, "review.max_findings"])), "6 code files")
+
+    def test_docs_and_tests_do_not_count(self):
+        listed = [
+            *MODULES[:3],
+            "docs/a.md",
+            "docs/ja/references/a.md",
+            "references/b.md",
+            "references/c.md",
+            "tests/test_x.py",
+            "tests/test_y.py",
+            "CHANGELOG.md",
+            "README.md",
+        ]
+        decision = decide_design(plan_scan(listed))
+        self.assertSkips(decision, "3 code files, none high-risk")
+        self.assertEqual(decision.files, 3)
+
+    def test_docs_alone_skip(self):
+        scan = plan_scan(["docs/a.md", "references/b.md", "tests/test_x.py"])
+        self.assertSkips(decide_design(scan), "0 code files, none high-risk")
+
+    def test_one_code_file_is_singular(self):
+        scan = plan_scan(["docs/a.md", "scripts/a.py"])
+        self.assertSkips(decide_design(scan), "1 code file, none high-risk")
+
+    def test_the_same_file_twice_counts_once(self):
+        scan = plan_scan(["a.py", "./a.py", "a.py", "scripts\\b.py", "scripts/b.py"])
+        self.assertSkips(decide_design(scan), "2 code files, none high-risk")
+
+    def test_an_extra_high_risk_path_counts(self):
+        settings = {"extra_high_risk_paths": ["*/providers/*"]}
+        decision = decide_design(plan_scan(["scripts/providers/claude.py"]), settings=settings)
+        self.assertRuns(decision, "touches scripts/providers/claude.py (Files to Modify)")
+
+    def test_the_label_and_the_dict(self):
+        decision = decide_design(plan_scan(["scripts/a.py"]))
+        self.assertEqual(decision.label(), "auto -> skip (1 code file, none high-risk)")
+        expected = {
+            "mode": "auto",
+            "run": False,
+            "reason": "1 code file, none high-risk",
+            "files": 1,
+            "high_risk": [],
+        }
+        self.assertEqual(decision.to_dict(), expected)
+        risky = decide_design(plan_scan(["db/migrate/1.sql"]))
+        self.assertEqual(risky.label(), "auto -> run (touches db/migrate/1.sql (Files to Modify))")
+        self.assertEqual(risky.to_dict()["high_risk"], [{"path": "db/migrate/1.sql", "pattern": "*.sql"}])
+        self.assertIsNone(decide_design(mode="on").to_dict()["reason"])
+
+    def test_the_reason_is_redacted(self):
+        decision = decide_design(plan_scan(["config/%s.sql" % TOKEN]))
+        self.assertEqual(decision.reason, "touches config/[redacted].sql (Files to Modify)")
+        self.assertNotIn(TOKEN, decision.label())
+        self.assertNotIn(TOKEN, json.dumps(decision.to_dict()))
+
+
 if __name__ == "__main__":
     unittest.main()

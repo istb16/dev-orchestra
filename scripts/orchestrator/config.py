@@ -80,6 +80,20 @@ def is_valid_reviewer_id(value: Any) -> bool:
     return isinstance(value, str) and bool(_ID_RE.match(value))
 
 
+def design_review_mode(value: Any) -> str:
+    """``on``, ``off`` or ``auto`` for a ``review.design.enabled`` value.
+
+    Null means the default, ``auto``. Anything else keeps the truth test the
+    readers applied before ``auto`` existed, so a quoted ``"true"`` or a ``1``
+    loaded without validation is still on and a ``0`` or ``""`` still off.
+    """
+    if value is None:
+        return "auto"
+    if isinstance(value, str) and value.strip().lower() == "auto":
+        return "auto"
+    return "on" if value else "off"
+
+
 def default_config() -> Dict[str, Any]:
     """Recommended out-of-the-box configuration."""
     return {
@@ -174,12 +188,14 @@ def default_config() -> Dict[str, Any]:
                 "surrounding_chars": 15_000,
             },
             # Review the plan with the same panel before any code is written.
-            # Off by default: turning it on adds a reviewer run per panel
-            # member per round plus an architect re-run, which is a real cost
-            # to impose on every existing workflow, and nothing about the
-            # current behaviour changes while it stays off. Whoever wants it
-            # says so once -- `config set review.design.enabled true`.
-            "design": {"enabled": False, "max_iterations": 2},
+            # "auto" by default: a round runs for a plan that names a
+            # high-risk path anywhere or 6 or more code files in Files to
+            # Modify, or once a round has already run for the workflow, and
+            # is skipped for the rest. Measured, the
+            # design loop was 40-50% of each workflow that had one, which a
+            # risky or large plan earns and a small, contained one does not.
+            # `true` always reviews the plan, `false` never does.
+            "design": {"enabled": "auto", "max_iterations": 2},
         },
         # Implementation waits for the user's explicit approval of the plan.
         # On by default because the point is to catch a plan the user never
@@ -762,8 +778,12 @@ def validate(data: Dict[str, Any], known_providers: Optional[List[str]] = None) 
                     problems.append("review.design: must be a mapping")
                 else:
                     enabled = design.get("enabled")
-                    if enabled is not None and not isinstance(enabled, bool):
-                        problems.append("review.design.enabled: must be true or false")
+                    if isinstance(enabled, str):
+                        known = enabled.strip().lower() == "auto"
+                    else:
+                        known = enabled is None or isinstance(enabled, bool)
+                    if not known:
+                        problems.append("review.design.enabled: must be true, false or auto")
                     rounds = design.get("max_iterations")
                     if rounds is not None and (
                         not isinstance(rounds, int) or isinstance(rounds, bool) or rounds < 0

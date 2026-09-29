@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import os
+import time
 import unittest
 from typing import Optional
 
 from helpers import IsolatedCase, has_git, present
 
 from orchestrator import config as config_mod
+from orchestrator import optimization as opt
 from orchestrator import review as review_mod
 from orchestrator import review_fanout
 from orchestrator import workspace as ws
@@ -1110,6 +1112,165 @@ class TestDesignReviewPrompt(IsolatedCase):
         prompt = self.revision_prompt(plan)
         self.assertIn("added a mechanism without saying so", prompt)
         self.assertNotIn("Examine each item", prompt)
+
+
+class TestPlanTokens(unittest.TestCase):
+    """What `review.design.enabled: auto` reads from a plan: backticked tokens,
+    and path-shaped words under Files to Modify."""
+
+    def words(self, scan, in_files=None):
+        return [t.token for t in scan.tokens if in_files is None or t.in_files == in_files]
+
+    def test_bullets_and_table_rows_lose_only_their_line_reference(self):
+        plan = (
+            "## Files to Modify\n\n"
+            "- `scripts/orchestrator/config.py:176-182`: `default_config()`, key `workspace.dir`, "
+            "see `:173`.\n"
+            "| `scripts/orchestrator/cli.py:40` | the flag |\n"
+        )
+        scan = review_mod.plan_tokens(plan)
+        self.assertTrue(scan.has_files_section)
+        expected = [
+            "scripts/orchestrator/config.py",
+            "default_config()",
+            "workspace.dir",
+            ":173",
+            "scripts/orchestrator/cli.py",
+        ]
+        self.assertEqual(self.words(scan), expected)
+        self.assertTrue(all(t.in_files and t.section == "Files to Modify" for t in scan.tokens))
+
+    def test_an_annotated_span_is_its_first_word(self):
+        scan = review_mod.plan_tokens("## Files to Modify\n\n- `scripts/auth.py (new)`\n")
+        self.assertEqual(self.words(scan), ["scripts/auth.py"])
+
+    def test_a_brace_group_is_one_token_per_member_but_a_nested_one_stays_whole(self):
+        scan = review_mod.plan_tokens(
+            "## Files to Modify\n\n- `docs/ja/references/{cli,workflow}.md`\n- `a/{b,{c,d}}.md`\n"
+        )
+        expected = ["docs/ja/references/cli.md", "docs/ja/references/workflow.md", "a/{b,{c,d}}.md"]
+        self.assertEqual(self.words(scan), expected)
+
+    def test_a_trailing_slash_is_kept(self):
+        scan = review_mod.plan_tokens("## Files to Modify\n\n- a migration in `db/migrate/`\n")
+        self.assertEqual(self.words(scan), ["db/migrate/"])
+
+    def test_a_numbered_heading_in_any_case_is_the_section(self):
+        for heading in ("## 6. Files to Modify", "## 2) files TO modify", "### FILES TO MODIFY"):
+            with self.subTest(heading=heading):
+                scan = review_mod.plan_tokens("%s\n\n- `a.py`\n" % heading)
+                self.assertTrue(scan.has_files_section)
+                self.assertTrue(scan.tokens[0].in_files)
+
+    def test_subsections_stay_inside_until_the_next_heading_of_the_same_level(self):
+        plan = (
+            "## Files to Modify\n\n### Code\n\n- `a.py`\n\n### Docs\n\n- `docs/a.md`\n\n"
+            "## Data/API Impact\n\n- `b.py`\n"
+        )
+        scan = review_mod.plan_tokens(plan)
+        self.assertEqual(self.words(scan, in_files=True), ["a.py", "docs/a.md"])
+        self.assertEqual([t.section for t in scan.tokens], ["Code", "Docs", "Data/API Impact"])
+        self.assertFalse(scan.tokens[-1].in_files)
+
+    def test_a_fenced_block_is_read_for_risk_but_not_for_the_size(self):
+        body = "- `CHANGELOG.md` and `scripts/x.py`\n"
+        fenced = review_mod.plan_tokens("## Files to Modify\n\n```markdown\n%s```\n" % body)
+        self.assertEqual(self.words(fenced), ["CHANGELOG.md", "scripts/x.py"])
+        self.assertFalse(any(t.in_files for t in fenced.tokens))
+        unfenced = review_mod.plan_tokens("## Files to Modify\n\n%s" % body)
+        self.assertEqual(self.words(unfenced), ["CHANGELOG.md", "scripts/x.py"])
+        self.assertTrue(all(t.in_files for t in unfenced.tokens))
+
+    def test_a_fenced_block_outside_the_section_contributes_nothing(self):
+        scan = review_mod.plan_tokens("## Decisions\n\n```\ndb/migrate/1.sql `auth.py`\n```\n")
+        self.assertEqual(scan.tokens, [])
+
+    def test_a_file_tree_in_the_section_forces_a_round(self):
+        plan = (
+            "## Files to Modify\n\n- `scripts/a.py`\n\n```\n"
+            ".github/\n└── workflows/\n    └── deploy.yml\ndb/migrate/003_drop.sql\n```\n"
+        )
+        decision = opt.decide_design(
+            "auto", {}, review_mod.plan_tokens(plan), plan_state="ok", round_ran=False
+        )
+        self.assertTrue(decision.run)
+        self.assertEqual(decision.reason, "touches db/migrate/003_drop.sql (Files to Modify)")
+
+    def test_an_entry_without_backticks_is_read_too(self):
+        plan = (
+            "## Files to Modify\n\n"
+            "- `scripts/a.py`: the change, e.g. a flag, for 0.15.0.\n"
+            "- db/migrate/003_drop.sql -- drop the column\n"
+            "| .github/workflows/deploy.yml | the job |\n"
+            "- **src/b.py**: see [the guide](docs/guide.md).\n"
+            "- src/handlers\n"
+        )
+        scan = review_mod.plan_tokens(plan)
+        expected = [
+            "scripts/a.py",
+            "db/migrate/003_drop.sql",
+            ".github/workflows/deploy.yml",
+            "src/b.py",
+            "docs/guide.md",
+            "src/handlers",
+        ]
+        self.assertEqual(self.words(scan), expected)
+        self.assertTrue(all(t.in_files for t in scan.tokens))
+        self.assertEqual([t.prose for t in scan.tokens], [False] * 6)
+        decision = opt.decide_design("auto", {}, scan, plan_state="ok", round_ran=False)
+        self.assertEqual(decision.reason, "touches db/migrate/003_drop.sql (Files to Modify) and 1 more")
+
+    def test_a_plain_word_beside_a_backticked_entry_is_prose(self):
+        scan = review_mod.plan_tokens(
+            "## Files to Modify\n\n- `a.py`: add a read/write lock, like b.py does\n"
+        )
+        self.assertEqual(
+            [(t.token, t.prose) for t in scan.tokens], [("a.py", False), ("read/write", True), ("b.py", True)]
+        )
+
+    def test_a_slash_between_two_entries_is_not_a_directory(self):
+        scan = review_mod.plan_tokens(
+            "## Files to Modify\n\n- `CHANGELOG.md`: under `## [Unreleased]` / `### Added`\n"
+        )
+        self.assertNotIn("/", self.words(scan))
+        decision = opt.decide_design("auto", {}, scan, plan_state="ok", round_ran=False)
+        self.assertFalse(decision.run, decision.reason)
+
+    def test_every_path_in_a_span_is_a_token(self):
+        scan = review_mod.plan_tokens(
+            "## Files to Modify\n\n- `src/main.py, src/auth.py`\n- `run --flag x.py`\n"
+        )
+        self.assertEqual(self.words(scan), ["src/main.py", "src/auth.py", "run", "x.py"])
+        decision = opt.decide_design("auto", {}, scan, plan_state="ok", round_ran=False)
+        self.assertEqual(decision.reason, "touches src/auth.py (Files to Modify)")
+
+    def test_a_heading_padded_with_spaces_is_read_in_linear_time(self):
+        start = time.monotonic()
+        scan = review_mod.plan_tokens("#" + " " * 50000 + "x\n## Files to Modify ##\n\n- `a.py`\n")
+        self.assertLess(time.monotonic() - start, 1.0)
+        self.assertTrue(scan.has_files_section)
+        self.assertEqual(scan.tokens[0].section, "Files to Modify")
+
+    def test_closing_hashes_leave_the_title(self):
+        for heading, title in (
+            ("## Files ##", "Files"),
+            ("## C# ", "C#"),
+            ("## ##", ""),
+            ("## a#b ###", "a#b"),
+        ):
+            with self.subTest(heading=heading):
+                scan = review_mod.plan_tokens("%s\n`a.py`\n" % heading)
+                self.assertEqual(scan.tokens[0].section, title)
+
+    def test_a_token_before_any_heading_has_no_section(self):
+        scan = review_mod.plan_tokens("Touches `a.py`.\n\n# Plan\n")
+        self.assertEqual(scan.tokens, [review_mod.PlanToken("a.py", "", False)])
+
+    def test_a_plan_without_the_section_still_lists_every_token(self):
+        scan = review_mod.plan_tokens("# Plan\n\n## Proposed Change\n\nEdit `a.py` and `b.py`.\n")
+        self.assertFalse(scan.has_files_section)
+        self.assertEqual(self.words(scan), ["a.py", "b.py"])
+        self.assertEqual(scan.tokens[0].section, "Proposed Change")
 
 
 def consolidation(sha: Optional[str] = "a" * 64, round_id="r" * 32, surrounding=None, findings=()):

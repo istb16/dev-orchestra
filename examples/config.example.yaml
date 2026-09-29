@@ -121,9 +121,12 @@ review:
   # Review .ai/plan.md with the same panel before anything is implemented. A
   # design mistake otherwise costs an implementation and a code review to
   # find, so this is the cheapest place to catch one -- but it is a reviewer
-  # run per panel member per round, so it is off until you ask for it.
+  # run per panel member per round. auto runs a round for a plan that names a
+  # high-risk path anywhere in the plan, or 6 or more code files in Files to
+  # Modify (docs, tests and .md files not counted), or once a round has run;
+  # true always, false never.
   design:
-    enabled: false
+    enabled: auto
     # Design review -> revise the plan -> re-review. Counted apart from
     # max_review_iterations. 1 is the cheap setting: one round, then report
     # whatever is still open.

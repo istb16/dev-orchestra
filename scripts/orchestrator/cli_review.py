@@ -427,6 +427,32 @@ def _design_request_path(args: argparse.Namespace, workspace: ws.Workspace) -> s
     return os.path.join(workspace.execution_dir, "design-request.md")
 
 
+def _design_decision(loaded: config_mod.LoadedConfig, workspace: ws.Workspace) -> opt_mod.DesignDecision:
+    """Whether the design review runs for this workflow's plan, and why.
+
+    One answer for ``status``, ``review status --design`` and ``review run
+    --design``. Once a design round exists ``auto`` keeps answering run, so a
+    revision cannot switch the loop off half way. The plan is read strictly:
+    a decision made from a guessed file name would be worse than none.
+    """
+    mode = config_mod.design_review_mode(loaded.design_review_settings().get("enabled"))
+    design_data = ws.read_json(workspace.design_review().consolidated_json_path, {}) or {}
+    round_ran = (
+        int(design_data.get("iteration", 0) or 0) > 0 or approval_mod.design_round(workspace) is not None
+    )
+    text = ws.read_text_strict(workspace.plan_path)
+    if text is None:
+        plan_state, scan = "unreadable", None
+    elif not text.strip():
+        # Blank is no plan, as approval.read_plan reads it.
+        plan_state, scan = "missing", None
+    else:
+        plan_state, scan = "ok", review_mod.plan_tokens(text)
+    return opt_mod.decide_design(
+        mode, loaded.optimization_settings(), scan, plan_state=plan_state, round_ran=round_ran
+    )
+
+
 def _run_design_review(args: argparse.Namespace, loaded: config_mod.LoadedConfig) -> int:
     """Run the panel against `.ai/plan.md` instead of against a diff.
 
@@ -438,8 +464,14 @@ def _run_design_review(args: argparse.Namespace, loaded: config_mod.LoadedConfig
     workspace = _workspace(args).design_review().ensure()
     settings = loaded.review_settings()
     design = loaded.design_review_settings()
-    if not design.get("enabled"):
+    decision = _design_decision(loaded, workspace)
+    if decision.mode == "off":
         _err("note: review.design.enabled is false; running because you asked")
+    elif not decision.run:
+        _err(
+            "note: review.design.enabled is auto and this plan would be skipped (%s); "
+            "running because you asked" % decision.reason
+        )
 
     configured = loaded.reviewers()
     reviewers = configured
@@ -1207,15 +1239,22 @@ def cmd_review_status(args: argparse.Namespace) -> int:
     surrounding = data.get("surrounding")
     if isinstance(surrounding, dict):
         payload["surrounding"] = surrounding
+    decision = None
     if args.design:
         payload["final_revision"] = final["state"]
         payload["final_revision_pending"] = final["pending"]
+        decision = _design_decision(loaded, base)
+        payload["enabled"] = decision.run
+        payload["mode"] = decision.mode
+        payload["reason"] = decision.reason or None
     else:
         payload["final_fix"] = final["state"]
         payload["final_fix_pending"] = final["pending"]
     if args.json:
         _emit_json(payload)
     else:
+        if decision is not None:
+            _out("design review: %s" % decision.label())
         _out("iteration %d/%d" % (iteration, max_iterations))
         _out("accepted findings: %d" % payload["accepted_count"])
         _out("blocking (%s): %d %s" % ("/".join(severities), len(blocking), ", ".join(payload["blocking"])))
