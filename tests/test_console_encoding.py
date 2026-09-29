@@ -33,7 +33,7 @@ from contextlib import redirect_stderr, redirect_stdout
 
 from helpers import IsolatedCase
 
-from orchestrator import cli
+from orchestrator import cli, cli_run
 from orchestrator import ledger as ledger_mod
 
 EM_DASH = "—"
@@ -259,15 +259,16 @@ class TestTheBooksAreClosedBeforeAnythingIsPrinted(IsolatedCase):
         run_cli("config", "setup", "--defaults")
         run_cli("config", "set", "implementer.provider", "mock")
         os.environ["DEV_ORCHESTRA_MOCK_RESPONSE"] = "Fixed the parser %s cleanly" % EM_DASH
-        self.original = cli._out
+        # Patched where the run command looks it up, which is its own module.
+        self.original = cli_run._out
 
         def explode(text=""):
             if EM_DASH in text:
                 raise UnicodeEncodeError("cp932", text, 0, 1, "illegal multibyte sequence")
             return self.original(text)
 
-        cli._out = explode
-        self.addCleanup(setattr, cli, "_out", self.original)
+        cli_run._out = explode
+        self.addCleanup(setattr, cli_run, "_out", self.original)
 
     def ledger(self):
         return ledger_mod.Ledger(self.cli_workspace(), dict(ledger_mod.DEFAULT_BUDGETS))
@@ -298,7 +299,7 @@ class TestTheBooksAreClosedBeforeAnythingIsPrinted(IsolatedCase):
 
     def test_and_with_the_console_relaxed_it_simply_works(self):
         """The two halves together, which is what the user sees."""
-        cli._out = self.original
+        cli_run._out = self.original
         code, out, _ = run_cli("run", "implementer", "--prompt", "go")
         self.assertEqual(code, 0)
         self.assertIn("Fixed the parser", out)

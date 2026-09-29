@@ -1,4 +1,4 @@
-<!-- translated-from: references/architecture.md sha256:0360fb14932ed136895c39b138624bf7924d8500016b384a003f9f354d674746 -->
+<!-- translated-from: references/architecture.md sha256:0b722610a2c7cce12e9664e8f06566ac564d9f3c3f69be6a76412d498e48e3f7 -->
 
 > この文書は [references/architecture.md](../../../references/architecture.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -51,8 +51,8 @@ flowchart TD
 | レイヤー | 置き場所 | 責務 |
 | --- | --- | --- |
 | スキル | `skills/dev-orchestra/SKILL.md`, `references/` | オーケストレーターが何をいつ決めるか |
-| CLI | `scripts/dev_orchestra.py`, `scripts/orchestrator/cli.py` | エージェントが呼び出せる決定的な操作 |
-| ドメイン | `config.py`, `review.py`, `workspace.py`, `wizard.py`, `doctor.py` | 設定のレイヤリング、スナップショット取得、パース、重複排除、トリアージ、診断 |
+| CLI | `scripts/dev_orchestra.py`、`scripts/orchestrator/cli.py`（引数の解析と入口）と `cli_*.py`（コマンドのまとまりごとのモジュール） | エージェントが呼び出せる決定的な操作 |
+| ドメイン | `config.py`、`review_*.py`（`review.py` が再公開する）、`workspace.py`、`wizard.py`、`doctor.py` | 設定のレイヤリング、スナップショット取得、パース、重複排除、トリアージ、診断 |
 | provider | `scripts/orchestrator/providers/` | CLI の構文とモデル名を知っている唯一のコード |
 
 provider レイヤーより上のコードは、`claude` が `--model` を使い `codex` が `-m` を使うことを一切知りません。スキルレイヤーより下のコードは、設計ステージが必要かどうかを一切判断しません。
@@ -99,7 +99,7 @@ project/
 ## 拡張ポイント
 
 - **新しい CLI**: `providers/` にモジュールを 1 つ追加し、`register()` を 1 回呼び出すだけです。あるいは、プラグインを編集せずに `<config dir>/providers/` にモジュールを 1 つ置くこともできます。これは組み込みの provider の後に import され、プラグインを更新しても残ります。`references/providers.md` を参照してください。
-- **新しいレビュアーロール**: 任意の文字列が使えます。組み込みのロールには、より的確なプロンプトのガイダンス（`review.py` の `ROLE_GUIDANCE`）が付くだけです。
+- **新しいレビュアーロール**: 任意の文字列が使えます。組み込みのロールには、より的確なプロンプトのガイダンス（`review_common.py` の `ROLE_GUIDANCE`）が付くだけです。
 - **別のワークスペースの場所**: 設定の `workspace.dir` で指定します。
 - **別のレビュープロンプト**: `build_review_prompt` はテンプレートを受け取れます。
 

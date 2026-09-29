@@ -24,5 +24,11 @@ ignore = [
     "S101",
 ]
 
+[tool.ruff.lint.per-file-ignores]
+# These two only re-export what moved into cli_*.py and review_*.py, so every
+# `cli.name` and `review.name` in the code and the tests keeps working.
+"scripts/orchestrator/cli.py" = ["F401"]
+"scripts/orchestrator/review.py" = ["F401"]
+
 [tool.ruff.lint.isort]
 known-first-party = ["orchestrator"]

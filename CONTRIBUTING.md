@@ -109,7 +109,13 @@ still carries the allowlist and `--restricted`.
 | Plugin packaging | `.claude-plugin/`, `.codex-plugin/`, `.agents/plugins/` |
 | A new CLI | `scripts/orchestrator/providers/` + `register()` — see `references/providers.md` (a user's own adapter goes in `<config dir>/providers/` instead, without a change here) |
 | Config schema | `config.py` (defaults **and** `validate`) + `references/configuration.md` |
-| Review parsing/dedup | `review.py` |
+| A command | its `cli_*.py` module (`cli_review.py` for `review …`, `cli_state.py` for `state`/`budget`/`tokens`, …), and its arguments in `cli.py` |
+| Review snapshot, fan-out, parsing, consolidation | `review_snapshot.py`, `review_fanout.py`, `review_parsing.py`, `review_consolidation.py`; constants and prompt templates in `review_common.py` |
+
+`cli.py` and `review.py` re-export every name the modules split out of them
+define, so `cli.name` and `review.name` keep working. A test that replaces a
+function has to replace it where it is looked up: `cli_run._out`, not
+`cli._out`.
 
 `skills/dev-orchestra/SKILL.md` is the single source of truth for skill content.
 Installers point at it; they never copy it. It sits under `skills/` because

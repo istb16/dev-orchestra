@@ -22,7 +22,7 @@ from unittest import mock
 
 from helpers import IsolatedCase, has_git
 
-from orchestrator import cli
+from orchestrator import cli, review_fanout, review_snapshot
 from orchestrator import config as config_mod
 from orchestrator import context as context_mod
 from orchestrator import optimization as opt_mod
@@ -827,7 +827,7 @@ class GitCase(IsolatedCase):
             built.append(result.text)
             return result
 
-        with mock.patch.object(review_mod, "build_review_prompt", side_effect=spy):
+        with mock.patch.object(review_fanout, "build_review_prompt", side_effect=spy):
             code, out, err = run_cli("review", "run", *argv)
         return code, out, err, built
 
@@ -874,7 +874,7 @@ class TestEndToEnd(GitCase):
         self.enable()
         self.edit_add()
         run_cli("review", "snapshot")
-        with mock.patch.object(review_mod, "get_provider", side_effect=RuntimeError("no provider")):
+        with mock.patch.object(review_fanout, "get_provider", side_effect=RuntimeError("no provider")):
             run_cli("review", "run")
         event = self.last_review_event()
         self.assertEqual([run["status"] for run in event["reviewers"]], ["failed"])
@@ -916,7 +916,7 @@ class TestEndToEnd(GitCase):
     def test_off_with_incremental_off_writes_no_tree(self):
         run_cli("config", "set", "review.incremental_rounds", "false")
         self.edit_add()
-        with mock.patch.object(review_mod, "_write_tree", side_effect=AssertionError("wrote a tree")):
+        with mock.patch.object(review_snapshot, "_write_tree", side_effect=AssertionError("wrote a tree")):
             code, _, err = run_cli("review", "snapshot")
         self.assertEqual(code, 0, err)
 
