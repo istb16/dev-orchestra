@@ -1,4 +1,4 @@
-<!-- translated-from: references/cli.md sha256:5e9cc074f6ded6c20b0e93e91aea14ffc9c595914335d89a9bafe00642380966 -->
+<!-- translated-from: references/cli.md sha256:e1de4d5cf9cfcd14a3db895ec8ad9b72123ccf7aeb7c621ca9a9bf154db0d454 -->
 
 > この文書は [references/cli.md](../../../references/cli.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -861,6 +861,11 @@ dev-orchestra progress record test --signature "3 failed: test_totals, test_disc
 しかなく、レビュアーはその `git diff` を読みます。本当に同時に実行される作業では、各ワークフローに独自の
 worktree（`git worktree add ../x x`）を与えてください。それは別のルートであり、したがって別の `.ai/` に
 なります。
+
+ワークフローのディレクトリが自動で片付けられることはありません。新しいワークフローの最初のコマンドは、
+`workspace.stale_notice_days` 日（デフォルト 30。`0` で止まります）以上アクティブでないほかのワークフローを、
+stderr に一度だけ知らせます。実行中のステージがあるワークフローは挙げません。何も削除しません。ワークフロー
+を削除するのは、これまでどおり `workflow remove` だけです。
 
 | コマンド | 説明 |
 | --- | --- |

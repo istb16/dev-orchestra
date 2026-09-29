@@ -106,6 +106,58 @@ class TestDefaults(IsolatedCase):
         self.assertIs(settings["require_approval"], False)
         self.assertEqual(settings["resume"], DESIGN_DEFAULTS["resume"])
 
+    def test_the_stale_notice_threshold_must_be_a_non_negative_integer(self):
+        problem = "workspace.stale_notice_days: must be a non-negative integer (0 = off)"
+        for value in (-1, "30", True):
+            data = config_mod.default_config()
+            data["workspace"]["stale_notice_days"] = value
+            with self.subTest(stale_notice_days=value):
+                self.assertIn(problem, config_mod.validate(data))
+        for value in (0, 30, 36500, None):
+            data = config_mod.default_config()
+            data["workspace"]["stale_notice_days"] = value
+            with self.subTest(stale_notice_days=value):
+                self.assertEqual([p for p in config_mod.validate(data) if p.startswith("workspace.")], [])
+
+    def test_the_stale_notice_threshold_has_a_ceiling(self):
+        """Commands load unvalidated, so an unbounded number would reach all of them."""
+        self.assertEqual(config_mod.STALE_NOTICE_MAX_DAYS, 36500)
+        problem = "workspace.stale_notice_days: must be 36500 or less (100 years)"
+        for value in (36501, 10**9):
+            data = config_mod.default_config()
+            data["workspace"]["stale_notice_days"] = value
+            with self.subTest(stale_notice_days=value):
+                self.assertIn(problem, config_mod.validate(data))
+        data = config_mod.default_config()
+        data["workspace"]["stale_notice_days"] = 36500
+        self.assertNotIn(problem, config_mod.validate(data))
+
+    def test_a_null_workspace_block_is_absent(self):
+        """`workspace:` with no value validated before the setting existed, and still does."""
+        self.write(".dev-orchestra.yaml", "version: 1\nworkspace:\n")
+        loaded = config_mod.load(self.project, validate_result=False)
+        self.assertEqual([p for p in config_mod.validate(loaded.data) if p.startswith("workspace")], [])
+        self.assertTrue(loaded.workspace_dir(self.project).endswith(".ai"))
+        default = config_mod.default_config()["workspace"]["stale_notice_days"]
+        self.assertEqual(loaded.stale_notice_days(), default)
+        data = config_mod.default_config()
+        data["workspace"] = 3
+        self.assertIn("workspace: must be a mapping", config_mod.validate(data))
+
+    def test_the_stale_notice_defaults_to_thirty_days(self):
+        default = config_mod.default_config()["workspace"]["stale_notice_days"]
+        self.assertEqual(default, 30)
+        self.assertEqual(config_mod.load(self.project).stale_notice_days(), default)
+        for value in ("null", '"30"', "-1", "36501"):
+            self.write(".dev-orchestra.yaml", "version: 1\nworkspace:\n  stale_notice_days: %s\n" % value)
+            loaded = config_mod.load(self.project, validate_result=False)
+            with self.subTest(stale_notice_days=value):
+                self.assertEqual(loaded.stale_notice_days(), default)
+        for value, expected in (("0", 0), ("36500", 36500)):
+            self.write(".dev-orchestra.yaml", "version: 1\nworkspace:\n  stale_notice_days: %s\n" % value)
+            with self.subTest(stale_notice_days=value):
+                self.assertEqual(config_mod.load(self.project).stale_notice_days(), expected)
+
     def test_the_context_budget_refuses_nothing_anyone_has_recorded(self):
         """400,000 chars is four times the largest prompt this repository has
         recorded, so shipping it changes no existing workflow."""

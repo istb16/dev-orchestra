@@ -313,7 +313,8 @@ def _workflows_recorded(args: argparse.Namespace, workspace: ws.Workspace) -> Li
     found: List[Dict[str, Any]] = []
     for entry in workflow_mod.listing(workspace.container):
         state = ws.read_json(os.path.join(entry["dir"], "state.json"), {}) or {}
-        events = state.get("events")
+        # Not a mapping reads as nothing recorded, as it does in the listing.
+        events = state.get("events") if isinstance(state, dict) else None
         if isinstance(events, list):
             found.append(
                 {

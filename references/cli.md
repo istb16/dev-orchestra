@@ -922,6 +922,12 @@ files, and the reviewers read `git diff` of it. For work that really runs at
 the same time, give each workflow its own worktree (`git worktree add ../x x`),
 which is a different root and therefore a different `.ai/`.
 
+Workflow directories are never pruned. The first command of a new workflow
+notes, once and on stderr, the other workflows that have not been active for
+`workspace.stale_notice_days` days (default 30; `0` turns it off). A workflow
+with a stage in flight is not named. Nothing is deleted: `workflow remove` is
+still the only thing that deletes a workflow.
+
 | Command | Description |
 | --- | --- |
 | `workflow list [--json]` | Every workflow here, most recently active first, marking the current one and any stage in flight. |

@@ -25,6 +25,16 @@ The public surface covered by that promise is: the configuration schema, the
   copy install now includes `plugin.json`. Details are in
   `references/workflow.md` under "Installing from a skill checkout" (#160).
 
+- **The first command of a new workflow notes the workflows that have gone
+  quiet**, once, on stderr: those whose `state.json` was last updated
+  `workspace.stale_notice_days` days ago or more (a new key, default 30; `0`
+  turns it off; at most 36500). The current workflow and any with a stage in
+  flight are left out, and nothing is deleted or moved; `workflow remove <id>
+  --yes` is still the only thing that deletes one. `workflow list`, `status`
+  and `optimization report` now read a workflow with an unreadable
+  `state.json` as one with nothing recorded instead of failing. See
+  `workspace.stale_notice_days` in `references/configuration.md` (#112).
+
 - **Type checking with Pyright in CI**, over `scripts/` and `tests/`. The
   development tools are pinned in `requirements-dev.txt`; CONTRIBUTING says
   how to set them up (#125).

@@ -25,6 +25,10 @@ hashed rather than used as the name: it keeps another tool's internal
 identifier out of our paths, it is short, and -- the reason it is preferred
 over the pointer -- it is *deterministic*, so every command from one session
 resolves to the same workflow without two sessions having to agree on a file.
+
+Workflow directories are never pruned; when a new one is created,
+`stale_elsewhere` names the others that have gone quiet so the first command
+can say so.
 """
 
 from __future__ import annotations
@@ -33,7 +37,8 @@ import hashlib
 import os
 import re
 import uuid
-from typing import Any, Dict, List, Mapping, Optional, Tuple
+from datetime import datetime, timezone
+from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple, Union
 
 from . import workspace as ws
 
@@ -160,13 +165,43 @@ def ensure(container: str, requested: str = "", env: Optional[Mapping[str, str]]
     return workflow
 
 
+def create_dir(container: str, workflow: str) -> bool:
+    """Create the workflow's directory; True only if this call created it.
+
+    The filesystem picks exactly one creator when two commands race, which is
+    what makes "a new workflow starts here" a fact rather than a guess. A
+    directory made some other way (``Workspace.ensure()`` called directly, or
+    ``migrate()`` reached first) is simply not seen as a start.
+    """
+    os.makedirs(workflows_dir(container), exist_ok=True)
+    try:
+        os.mkdir(workflow_dir(container, workflow))
+    except FileExistsError:
+        return False
+    return True
+
+
 # --------------------------------------------------------------------------- listing
 
 
+def _number(value: Any, cast: Callable[[Any], Union[int, float]]) -> Union[int, float]:
+    """``cast(value)``, or 0 for a value someone else's file got wrong."""
+    try:
+        return cast(value or 0)
+    except (ValueError, TypeError, OverflowError):
+        return 0
+
+
 def _meta(container: str, workflow: str) -> Dict[str, Any]:
-    """What is known about one workflow, read from what it has written."""
+    """What is known about one workflow, read from what it has written.
+
+    A malformed ``state.json`` reads as nothing recorded: it belongs to another
+    workflow, and it must not break a command that only lists it.
+    """
     directory = workflow_dir(container, workflow)
-    state = ws.read_json(os.path.join(directory, "state.json"), {}) or {}
+    state = ws.read_json(os.path.join(directory, "state.json"), {})
+    if not isinstance(state, dict):
+        state = {}
     raw_ledger = state.get("ledger")
     ledger = raw_ledger if isinstance(raw_ledger, dict) else {}
     raw_events = state.get("events")
@@ -179,11 +214,11 @@ def _meta(container: str, workflow: str) -> Dict[str, Any]:
         "dir": directory,
         "started_at": str(ledger.get("started_at") or ""),
         "updated_at": str(state.get("updated_at") or ""),
-        "last_activity_monotonic": float(ledger.get("last_activity_monotonic") or 0),
+        "last_activity_monotonic": float(_number(ledger.get("last_activity_monotonic"), float)),
         "last_stage": str(last.get("stage") or "") if isinstance(last, dict) else "",
         "last_status": str(last.get("status") or "") if isinstance(last, dict) else "",
         "in_flight": sorted(str(key) for key in in_flight),
-        "runs": int(ledger.get("total_delegated_runs") or 0),
+        "runs": int(_number(ledger.get("total_delegated_runs"), int)),
     }
 
 
@@ -223,6 +258,43 @@ def active_elsewhere(container: str, workflow: str, idle_seconds: float = 900.0)
         if entry["in_flight"] or (last and now - last < idle_seconds):
             names.append(entry["workflow"])
     return names
+
+
+def _parse_stamp(value: Any) -> Optional[datetime]:
+    """A timestamp as ``ws.utcnow()`` writes it, or None for anything else."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        stamp = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=timezone.utc)  # every stamp this tool writes is UTC
+    return stamp
+
+
+def stale_elsewhere(container: str, workflow: str, days: int, now: Optional[datetime] = None) -> List[str]:
+    """Other workflows here quiet for ``days`` days or more, oldest first.
+
+    Last activity is ``updated_at``, else ``started_at``; a workflow with
+    neither, or with a stage in flight, is not counted -- a date cannot tell a
+    crashed stage from a running one. Seconds are compared rather than a
+    ``timedelta`` built, so any ``days`` is safe.
+    """
+    if days <= 0:
+        return []
+    now = now or datetime.now(timezone.utc)
+    found: List[Tuple[datetime, str]] = []
+    for entry in listing(container):
+        if entry["workflow"] == workflow or entry["in_flight"]:
+            continue
+        last = _parse_stamp(entry["updated_at"]) or _parse_stamp(entry["started_at"])
+        if last is None:
+            continue
+        if (now - last).total_seconds() >= days * 86400:
+            found.append((last, entry["workflow"]))
+    found.sort()
+    return [name for _, name in found]
 
 
 # --------------------------------------------------------------------------- migration
