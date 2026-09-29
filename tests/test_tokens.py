@@ -23,7 +23,7 @@ import time
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 
-from helpers import IsolatedCase, has_git
+from helpers import IsolatedCase, has_git, present
 
 from orchestrator import cli
 from orchestrator import ledger as ledger_mod
@@ -128,16 +128,18 @@ class TestUsageArithmetic(unittest.TestCase):
 class TestClaudeUsage(unittest.TestCase):
     def test_the_result_event_is_read_field_by_field(self):
         usage = parse_stream_usage(stream({"type": "system"}, RESULT))
+        assert usage is not None
         self.assertEqual(usage.input_tokens, 8200)
         self.assertEqual(usage.output_tokens, 2100)
         self.assertEqual(usage.cache_read_tokens, 15000)
         self.assertEqual(usage.cache_write_tokens, 1200)
-        self.assertAlmostEqual(usage.cost_usd, 0.0421)
+        self.assertAlmostEqual(present(usage.cost_usd), 0.0421)
         self.assertEqual(usage.source, "claude result event")
 
     def test_the_four_counts_are_never_summed_into_one(self):
         """Keeping them apart is the whole point: they are priced differently."""
         usage = parse_stream_usage(stream(RESULT))
+        assert usage is not None
         self.assertNotEqual(usage.input_tokens, usage.billed_tokens)
         self.assertEqual(usage.billed_tokens, 8200 + 2100 + 1200)
 
@@ -146,7 +148,8 @@ class TestClaudeUsage(unittest.TestCase):
 
     def test_a_cost_alone_is_still_worth_recording(self):
         usage = parse_stream_usage(stream({"type": "result", "result": "x", "total_cost_usd": 0.02}))
-        self.assertAlmostEqual(usage.cost_usd, 0.02)
+        assert usage is not None
+        self.assertAlmostEqual(present(usage.cost_usd), 0.02)
         self.assertFalse(usage.measured)
 
     def test_output_that_is_not_a_stream_reports_nothing(self):
@@ -160,6 +163,7 @@ class TestClaudeUsage(unittest.TestCase):
     def test_the_last_result_event_wins(self):
         stale = dict(RESULT, usage={"input_tokens": 1, "output_tokens": 1})
         usage = parse_stream_usage(stream(stale, RESULT))
+        assert usage is not None
         self.assertEqual(usage.input_tokens, 8200)
 
 
@@ -180,11 +184,13 @@ class TestCodexUsage(unittest.TestCase):
     def test_the_footer_the_cli_actually_prints(self):
         """Label on its own line, number on the next."""
         usage = parse_usage_text("codex\nOK\ntokens used\n3,877\nOK\n")
+        assert usage is not None
         self.assertEqual(usage.total_tokens, 3877)
         self.assertEqual(usage.billed_tokens, 3877)
 
     def test_a_printed_total_is_read_as_a_total(self):
         usage = parse_usage_text("working...\ntokens used: 12,345\n")
+        assert usage is not None
         self.assertEqual(usage.total_tokens, 12345)
         self.assertIsNone(usage.input_tokens)
         self.assertEqual(usage.billed_tokens, 12345)
@@ -192,7 +198,7 @@ class TestCodexUsage(unittest.TestCase):
     def test_the_final_figure_wins_over_progress_updates(self):
         """Also what makes the footer win over an answer that quotes one: the
         CLI prints its accounting after the answer it is accounting for."""
-        self.assertEqual(parse_usage_text("tokens used: 5\ntokens used: 900\n").total_tokens, 900)
+        self.assertEqual(present(parse_usage_text("tokens used: 5\ntokens used: 900\n")).total_tokens, 900)
 
     def test_prose_about_tokens_is_not_accounting(self):
         """The exact string that broke a real run."""
@@ -200,6 +206,7 @@ class TestCodexUsage(unittest.TestCase):
 
     def test_an_answer_discussing_tokens_does_not_override_the_footer(self):
         usage = parse_usage_text("an answer mentioning input_tokens: 12\ntokens used\n9,876\n")
+        assert usage is not None
         self.assertEqual(usage.total_tokens, 9876)
 
     def test_a_split_is_not_parsed_at_all(self):
@@ -207,6 +214,7 @@ class TestCodexUsage(unittest.TestCase):
         never emitted -- and the only thing they ever matched was a reviewer
         writing about token accounting. The total is what was actually said."""
         usage = parse_usage_text("tokens used: 125\ninput tokens: 100\noutput tokens: 25\n")
+        assert usage is not None
         self.assertEqual(usage.total_tokens, 125)
         self.assertIsNone(usage.input_tokens)
         self.assertIsNone(usage.output_tokens)
@@ -227,7 +235,7 @@ class TestCodexUsage(unittest.TestCase):
         self.assertIsNone(parse_usage_text("finished successfully\n"))
 
     def test_stderr_is_searched_when_stdout_is_silent(self):
-        self.assertEqual(parse_usage_text("", "tokens used: 42").total_tokens, 42)
+        self.assertEqual(present(parse_usage_text("", "tokens used: 42")).total_tokens, 42)
 
 
 class TestNothingRanIsNotAFailureToReport(IsolatedCase):
@@ -454,7 +462,8 @@ class TestLedgerAccount(IsolatedCase):
         self.assertFalse(report["complete"])
 
     def test_a_malformed_report_is_not_worth_losing_the_run_over(self):
-        self.book.record_usage("architect", None)
+        # None on purpose: an adapter that reports nothing at all.
+        self.book.record_usage("architect", None)  # pyright: ignore[reportArgumentType]
         self.book.record_usage("architect", {"input_tokens": "lots", "cost_usd": "some"})
         account = self.book.token_report()["by_stage"]["architect"]
         self.assertEqual(account["runs"], 2)

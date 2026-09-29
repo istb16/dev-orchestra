@@ -6,7 +6,7 @@ import os
 import unittest
 from unittest import mock
 
-from helpers import CLAUDE_HELP, IsolatedCase
+from helpers import CLAUDE_HELP, IsolatedCase, present
 
 from orchestrator import config, verified
 from orchestrator import workspace as ws
@@ -24,6 +24,7 @@ class TestRecord(IsolatedCase):
     def test_a_pass_reads_back(self):
         path = record_pass(self.project)
         data, problem = verified.read("claude", self.project)
+        assert data is not None
         self.assertIsNone(problem)
         entry = data["versions"][VERSION]
         self.assertEqual(entry["read_only_mechanism"], MECHANISM)
@@ -43,11 +44,13 @@ class TestRecord(IsolatedCase):
         record_pass(self.project)
         verified.record_fail("claude", VERSION, ["ignores repository hooks on resume"], self.project)
         data, _ = verified.read("claude", self.project)
+        assert data is not None
         self.assertNotIn(VERSION, data["versions"])
         self.assertEqual(data["failed"][VERSION]["checks"], ["ignores repository hooks on resume"])
         self.assertEqual(verified.lookup("claude", VERSION, MECHANISM, self.project)["status"], "failed")
         record_pass(self.project)
         data, _ = verified.read("claude", self.project)
+        assert data is not None
         self.assertNotIn(VERSION, data["failed"])
         self.assertEqual(verified.lookup("claude", VERSION, MECHANISM, self.project)["status"], "passed")
 
@@ -108,7 +111,7 @@ class TestOutside(IsolatedCase):
         self.assertFalse(os.path.exists(verified.record_path("claude")))
         data, problem = verified.read("claude", self.project)
         self.assertIsNone(data)
-        self.assertIn("inside the workspace", problem)
+        self.assertIn("inside the workspace", present(problem))
 
 
 class TestSmokeRecord(IsolatedCase):
@@ -193,7 +196,7 @@ class _Completed:
 class TestClaudeReadsTheRecord(IsolatedCase):
     def provider(self):
         provider = ClaudeProvider()
-        provider._capture = lambda command, timeout=30: _Completed(CLAUDE_HELP)
+        setattr(provider, "_capture", lambda command, timeout=30: _Completed(CLAUDE_HELP))
         provider.version = lambda: (VERSION, None)
         return provider
 

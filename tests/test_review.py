@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import os
 import unittest
+from typing import Optional
 
-from helpers import IsolatedCase, has_git
+from helpers import IsolatedCase, has_git, present
 
 from orchestrator import config as config_mod
 from orchestrator import review as review_mod
@@ -463,7 +464,7 @@ class TestFanOut(IsolatedCase):
             started.append(prompt)
             return original(provider, prompt, *args, **kwargs)
 
-        MockProvider._launch = record
+        setattr(MockProvider, "_launch", record)
         self.addCleanup(setattr, MockProvider, "_launch", original)
         runs = review_mod.run_reviews(
             [reviewer("r1"), reviewer("r2")], self.workspace, refusals={"r2": "reviewer r2: refused here"}
@@ -1067,8 +1068,8 @@ class TestDesignReviewPrompt(IsolatedCase):
             "### Retry flag\n\n- off by default.\n\n"
             "## Risks\n\n- a risk\n"
         )
-        self.assertIn("### Retry flag", review_mod.added_in_revision(plan))
-        self.assertNotIn("## Risks", review_mod.added_in_revision(plan))
+        self.assertIn("### Retry flag", present(review_mod.added_in_revision(plan)))
+        self.assertNotIn("## Risks", present(review_mod.added_in_revision(plan)))
         prompt = self.revision_prompt(plan)
         self.assertIn('Examine each item under "Added in this revision" first', prompt)
         self.assertNotIn("without saying so", prompt)
@@ -1111,7 +1112,7 @@ class TestDesignReviewPrompt(IsolatedCase):
         self.assertNotIn("Examine each item", prompt)
 
 
-def consolidation(sha="a" * 64, round_id="r" * 32, surrounding=None, findings=()):
+def consolidation(sha: Optional[str] = "a" * 64, round_id="r" * 32, surrounding=None, findings=()):
     """A consolidated report with only the fields the round archive reads."""
     snapshot = {"sha256": sha}
     if round_id:

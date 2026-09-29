@@ -24,7 +24,7 @@ import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from unittest import mock
 
-from helpers import REPO_ROOT, IsolatedCase
+from helpers import REPO_ROOT, IsolatedCase, present
 
 from orchestrator import cli
 from orchestrator import config as config_mod
@@ -284,14 +284,14 @@ class TestResetAgainstDelete(IsolatedCase):
         run_cli("config", "reset", "--scope", "project")
         self.assertEqual(config_mod.read_config_file(self.first), {"version": 1})
         loaded = config_mod.load(self.project)
-        self.assertEqual(os.path.basename(loaded.project_path), os.path.basename(self.first))
+        self.assertEqual(os.path.basename(present(loaded.project_path)), os.path.basename(self.first))
         self.assertEqual(loaded.role("implementer")["model"]["family"], "opus")
 
     def test_delete_uncovers_it(self):
         run_cli("config", "reset", "--scope", "project", "--delete")
         self.assertFalse(os.path.isfile(self.first))
         loaded = config_mod.load(self.project)
-        self.assertEqual(os.path.basename(loaded.project_path), os.path.basename(self.second))
+        self.assertEqual(os.path.basename(present(loaded.project_path)), os.path.basename(self.second))
         self.assertEqual(loaded.role("implementer")["model"]["family"], "sonnet")
 
 

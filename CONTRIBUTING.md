@@ -36,11 +36,19 @@ python -m venv .venv
 .venv/bin/pip install -r requirements-dev.txt     # Windows: .venv\Scripts\pip
 ```
 
-Pyright's settings are in `pyproject.toml`: it checks `scripts/` against
-Python 3.11 for every platform at once, so a Unix-only branch is checked on
+Pyright's settings are in `pyproject.toml`: it checks `scripts/` and `tests/`
+against Python 3.11 for every platform at once, so a Unix-only branch is checked on
 Windows too. Run `pyright` from the repository root; it has to report no
-errors. The Node.js it runs on comes with it, from its `nodejs` extra. The
-tests are not type-checked yet.
+errors. The Node.js it runs on comes with it, from its `nodejs` extra.
+
+In a test, a value that may be `None` but that the test has just made sure of
+is narrowed where it is named: `assert job is not None` right after
+`job = ...`. Where it has no name -- a call used in place --
+`present(value)` from `tests/helpers.py` does the same inline. A
+test that passes a wrong type on purpose -- `None` where a string goes, to
+check what happens -- says why on the line above and silences that one line
+with `# pyright: ignore[<rule>]`. A test that swaps a function out uses
+`setattr()`, which ruff is told not to flag in `tests/`.
 
 When the checker cannot follow a narrowing the code relies on, prefer making
 it followable -- read the value into a variable before testing its type --

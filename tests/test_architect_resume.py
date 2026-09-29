@@ -322,7 +322,7 @@ class TestFallingBackToFresh(ResumeCase):
             return {"status": "unverified", "detail": "mock 0 has not been verified"}
 
         self.addCleanup(setattr, MockProvider, "resume_support", MockProvider.resume_support)
-        MockProvider.resume_support = unverified
+        setattr(MockProvider, "resume_support", unverified)
         _, err = self.fallback("the provider cannot resume a session (unverified)")
         self.assertIn("note: mock 0 has not been verified", err)
         self.assertNotIn("mock 0 has not been verified", json.dumps(self.last()))

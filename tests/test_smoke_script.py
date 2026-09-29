@@ -21,8 +21,9 @@ import shutil
 import unittest
 import uuid
 from contextlib import redirect_stderr, redirect_stdout
+from typing import Optional
 
-from helpers import REPO_ROOT, IsolatedCase
+from helpers import REPO_ROOT, IsolatedCase, present
 
 # isort: split
 # ``helpers`` first: it puts ``scripts/`` on the path, where the script under
@@ -410,7 +411,9 @@ class _Resumer(_Reader):
 
     supports_resume = True
 
-    def __init__(self, init=None, fork=True, parent=PARENT, rejects=True, hooks_on_resume=False):
+    def __init__(
+        self, init=None, fork=True, parent: Optional[str] = PARENT, rejects=True, hooks_on_resume=False
+    ):
         super().__init__(confined=True)
         self.init = dict(READ_ONLY_INIT) if init is None else init
         self.fork = fork
@@ -534,10 +537,11 @@ class TestTheResumeRecord(IsolatedCase):
 
     def test_a_pass_is_recorded_and_the_table_entry_printed(self):
         lines = self.record(self.checks(**{"resumes confined (symlink)": "skip"}))
+        assert lines is not None
         self.assertEqual(len(lines), 1)
         self.assertTrue(lines[0].ok)
-        self.assertEqual(lines[0].record["version"], "9.9.9 (Fake)")
-        self.assertTrue(lines[0].record["new"])
+        self.assertEqual(present(lines[0].record)["version"], "9.9.9 (Fake)")
+        self.assertTrue(present(lines[0].record)["new"])
         self.assertIn("VERIFIED_RESUME", lines[0].notes[0])
         found = smoke_live.verified.lookup("claude", "9.9.9 (Fake)", "--fake-read-only", self.project)
         self.assertEqual(found["status"], "passed")

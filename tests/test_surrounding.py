@@ -580,7 +580,8 @@ class TestAdopt(AdoptCase):
         adoption = self.adopt(mode="none")
         self.assertEqual(adoption.mode, "none")
         self.assertEqual(context_mod.render_surrounding(adoption), "")
-        self.assertEqual(self.adopt(mode=False).mode, "none")
+        # Not a string, on purpose: YAML reads an unquoted `off` as False.
+        self.assertEqual(self.adopt(mode=False).mode, "none")  # pyright: ignore[reportArgumentType]
 
     def test_a_class_over_the_budget_leaves_its_method_in(self):
         self.freeze(

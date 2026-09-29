@@ -6,7 +6,7 @@ import os
 import unittest
 from typing import Any, ClassVar, Dict
 
-from helpers import IsolatedCase
+from helpers import IsolatedCase, present
 
 from orchestrator import config as config_mod
 from orchestrator import wizard
@@ -222,7 +222,7 @@ class TestLayering(IsolatedCase):
         self.write(".dev-orchestra.yaml", "version: 1\n")
         nested = os.path.join(self.project, "a", "b")
         os.makedirs(nested)
-        self.assertEqual(os.path.dirname(config_mod.find_project_config(nested)), self.project)
+        self.assertEqual(os.path.dirname(present(config_mod.find_project_config(nested))), self.project)
 
     def test_search_stops_at_the_git_root(self):
         self.init_git_repo()

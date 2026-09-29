@@ -20,7 +20,7 @@ import sys
 import tempfile
 import unittest
 
-from helpers import REPO_ROOT
+from helpers import REPO_ROOT, present
 
 from orchestrator import miniyaml
 
@@ -134,7 +134,7 @@ class TestThePosixWrapperPicks(unittest.TestCase):
 
     def run_wrapper(self):
         result = subprocess.run(
-            [SH, POSIX_WRAPPER, "--version"],
+            [present(SH), POSIX_WRAPPER, "--version"],
             env={"PATH": self.bin},
             capture_output=True,
             text=True,
@@ -143,7 +143,7 @@ class TestThePosixWrapperPicks(unittest.TestCase):
 
     def test_a_machine_with_neither_says_so_and_exits_127(self):
         result = subprocess.run(
-            [SH, POSIX_WRAPPER, "--version"],
+            [present(SH), POSIX_WRAPPER, "--version"],
             env={"PATH": self.bin},
             capture_output=True,
             text=True,
@@ -162,7 +162,7 @@ class TestThePosixWrapperPicks(unittest.TestCase):
         self.stub("python3", old=True)
         self.stub("python", old=True)
         result = subprocess.run(
-            [SH, POSIX_WRAPPER, "--version"],
+            [present(SH), POSIX_WRAPPER, "--version"],
             env={"PATH": self.bin},
             capture_output=True,
             text=True,

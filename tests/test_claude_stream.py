@@ -15,7 +15,7 @@ import re
 import unittest
 from typing import Any, ClassVar, Dict
 
-from helpers import CLAUDE_HELP, IsolatedCase
+from helpers import CLAUDE_HELP, IsolatedCase, present
 
 from orchestrator.execution import ExecOutcome
 from orchestrator.providers import base
@@ -148,6 +148,7 @@ class TestToolActivity(IsolatedCase):
             RESULT_EVENT,
         ]
         tools = parse_stream_tools(stream(*events))
+        assert tools is not None
         self.assertEqual(tools["tool_uses"], 4)
         self.assertEqual(tools["tool_uses_by_name"], {"Read": 1, "Bash": 2, "Grep": 1})
         self.assertEqual(tools["tool_output_chars"], 100 + 2 + 9 + 2)
@@ -156,21 +157,25 @@ class TestToolActivity(IsolatedCase):
         """``content`` is a string on some results and a list on others."""
         blocks = [{"type": "text", "text": "abcde"}, {"type": "text", "text": "fg"}]
         tools = parse_stream_tools(stream(tool_use("a", "Read"), tool_result("a", blocks)))
+        assert tools is not None
         self.assertEqual(tools["tool_output_chars"], 7)
 
     def test_a_block_with_no_text_adds_nothing_rather_than_failing(self):
         blocks = [{"type": "image", "source": {"data": "...."}}, {"type": "text", "text": "ab"}]
         tools = parse_stream_tools(stream(tool_use("a", "Read"), tool_result("a", blocks)))
+        assert tools is not None
         self.assertEqual(tools["tool_output_chars"], 2)
 
     def test_a_result_with_no_matching_call_is_still_counted(self):
         """The characters were printed back whether or not this stream showed
         the call that asked for them. Dropping them would understate the run."""
         tools = parse_stream_tools(stream(tool_use("a", "Read"), tool_result("zz", "12345")))
+        assert tools is not None
         self.assertEqual(tools["tool_output_chars"], 5)
 
     def test_a_stream_that_used_no_tools_reports_a_measured_zero(self):
         tools = parse_stream_tools(stream(THINKING, ASSISTANT, RESULT_EVENT))
+        assert tools is not None
         self.assertEqual(tools["tool_uses"], 0)
         self.assertEqual(tools["tool_output_chars"], 0)
         self.assertEqual(tools["tool_uses_by_name"], {})
@@ -191,6 +196,7 @@ class TestToolActivity(IsolatedCase):
     def test_a_tool_use_without_a_name_is_still_counted(self):
         unnamed = {"type": "assistant", "message": {"content": [{"type": "tool_use"}]}}
         tools = parse_stream_tools(stream(unnamed))
+        assert tools is not None
         self.assertEqual(tools["tool_uses"], 1)
         self.assertEqual(tools["tool_uses_by_name"], {"unknown": 1})
 
@@ -198,6 +204,7 @@ class TestToolActivity(IsolatedCase):
         """Some events carry prose where others carry a list. Neither is a
         tool call, and asking a string for `.get` would be an exception."""
         tools = parse_stream_tools(stream({"type": "assistant", "message": {"content": "hello"}}))
+        assert tools is not None
         self.assertEqual(tools["tool_uses"], 0)
 
 
@@ -212,6 +219,7 @@ class TestToolActivityReachesUsage(IsolatedCase):
     def test_the_counts_ride_along_with_the_token_report(self):
         result = dict(RESULT_EVENT, usage={"input_tokens": 10, "output_tokens": 2})
         usage = self.usage(tool_use("a", "Bash"), tool_result("a", "3\n"), result)
+        assert usage is not None
         self.assertEqual(usage.input_tokens, 10)
         self.assertEqual(usage.tool_uses, 1)
         self.assertEqual(usage.tool_uses_by_name, {"Bash": 1})
@@ -221,6 +229,7 @@ class TestToolActivityReachesUsage(IsolatedCase):
         """A stream can end without a usable `result` event. The run still
         used the tools it used, and `measured` still means tokens."""
         usage = self.usage(tool_use("a", "Read"), tool_result("a", "abc"))
+        assert usage is not None
         self.assertEqual(usage.tool_uses, 1)
         self.assertFalse(usage.measured)
         self.assertIsNone(usage.billed_tokens)
@@ -232,6 +241,7 @@ class TestToolActivityReachesUsage(IsolatedCase):
         result = dict(RESULT_EVENT, usage={"input_tokens": 10}, total_cost_usd=0.01)
         outcome = ExecOutcome(0, json.dumps(result) + "\n", "", 1.0)
         usage = self.provider.parse_usage(outcome, base.MODE_REVIEW)
+        assert usage is not None
         self.assertEqual(usage.input_tokens, 10)
         self.assertIsNone(usage.tool_uses)
         self.assertIsNone(usage.tool_output_chars)
@@ -241,6 +251,7 @@ class TestToolActivityReachesUsage(IsolatedCase):
         written into every run's event where it could never be read back, and
         no longer accumulated per block on the way there."""
         usage = self.usage(tool_use("a", "Bash"), tool_result("a", "3\n"))
+        assert usage is not None
         self.assertNotIn("tool_output_chars_by_name", usage.to_dict())
         self.assertFalse(hasattr(usage, "tool_output_chars_by_name"))
 
@@ -258,7 +269,7 @@ class TestCommandShape(IsolatedCase):
     def setUp(self):
         super().setUp()
         self.provider = ClaudeProvider()
-        self.provider._capture = lambda command, timeout=30: _Help()
+        setattr(self.provider, "_capture", lambda command, timeout=30: _Help())
         self.resolved = self.provider.resolve_model({"family": "opus"})
 
     def test_streaming_is_the_default_and_needs_verbose(self):
@@ -277,7 +288,7 @@ class TestCommandShape(IsolatedCase):
         base.clear_discovery_cache()
         completed = _Help()
         completed.stdout, completed.returncode = stdout, returncode
-        self.provider._capture = lambda command, timeout=30: completed
+        setattr(self.provider, "_capture", lambda command, timeout=30: completed)
 
     def test_partial_messages_are_asked_for_when_the_help_lists_them(self):
         self.with_help(CLAUDE_HELP)
@@ -418,6 +429,7 @@ class TestResumeRejected(IsolatedCase):
     def test_the_rejection_is_measured_at_zero(self):
         outcome = ExecOutcome(REJECTED_EXIT, self.stdout, self.stderr, 0.5)
         usage = self.provider.parse_usage(outcome, base.MODE_PLAN)
+        assert usage is not None
         self.assertTrue(usage.measured)
         self.assertEqual((usage.input_tokens, usage.output_tokens), (0, 0))
         self.assertEqual((usage.cache_read_tokens, usage.cache_write_tokens), (0, 0))
@@ -446,8 +458,8 @@ class TestParseSession(IsolatedCase):
         self.assertEqual(session["init"], dict(expected, version="2.1.283"))
         outcome = ExecOutcome(0, stdout, "", 1.0)
         self.assertFalse(self.provider.resume_rejected(outcome, base.MODE_PLAN, {}, MISSING))
-        self.assertEqual(parse_stream_tools(stdout)["tool_uses"], 0)
-        self.assertEqual(parse_stream_usage(stdout).cost_usd, 0.037491)
+        self.assertEqual(present(parse_stream_tools(stdout))["tool_uses"], 0)
+        self.assertEqual(present(parse_stream_usage(stdout)).cost_usd, 0.037491)
 
     def test_the_fixture_carries_nothing_from_the_machine_it_was_recorded_on(self):
         stdout = fixture("resume-write-probe.jsonl")
@@ -509,6 +521,7 @@ class TestPartialMessages(IsolatedCase):
 
     def test_usage_is_the_result_event(self):
         usage = self.provider.parse_usage(self.outcome(), base.MODE_REVIEW)
+        assert usage is not None
         self.assertEqual(usage.input_tokens, self.result["usage"]["input_tokens"])
         self.assertEqual(usage.output_tokens, self.result["usage"]["output_tokens"])
         self.assertEqual(usage.cache_read_tokens, self.result["usage"]["cache_read_input_tokens"])
@@ -532,6 +545,7 @@ class TestPartialMessages(IsolatedCase):
         self.assertIn("Read", names)
         self.assertEqual(len(started), len(names))
         tools = parse_stream_tools(self.stdout)
+        assert tools is not None
         self.assertEqual(tools["tool_uses"], len(names))
         self.assertEqual(tools["tool_uses_by_name"], {name: names.count(name) for name in names})
         self.assertEqual(tools, parse_stream_tools(self.without_partial_messages()))

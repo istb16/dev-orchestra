@@ -8,7 +8,7 @@ import os
 import sys
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
-from typing import Any, ClassVar, Dict
+from typing import Any, ClassVar, Dict, Optional
 
 from helpers import CLAUDE_HELP, CLAUDE_HELP_NO_FORK, CLAUDE_HELP_OLD, IsolatedCase, has_git
 
@@ -871,7 +871,7 @@ class TestUserProviders(IsolatedCase):
 
         for cls in (ClaudeProvider, CodexProvider):
             self.addCleanup(setattr, cls, "which", cls.which)
-            cls.which = lambda self: None
+            setattr(cls, "which", lambda self: None)
 
     def write_mock_config(self, reviewers=None):
         """Every role on the mock, so the only problems are the ones a test makes."""
@@ -1121,7 +1121,7 @@ class _Completed:
         self.returncode = returncode
 
 
-def pretend_claude_is_installed(case, help_text=CLAUDE_HELP):
+def pretend_claude_is_installed(case, help_text: Optional[str] = CLAUDE_HELP):
     """The claude adapter answering from fixtures: installed, 2.1.283, and
     ``--help`` reading as ``help_text`` (None: it cannot be read)."""
     from orchestrator.providers.claude import ClaudeProvider
@@ -1298,6 +1298,7 @@ class TestReadOnlyRefusalsReachTheJob(IsolatedCase):
         code, _, err = run_cli(*argv)
         self.assertEqual(code, 2)
         job = jobs_mod.read_job(self.workspace, "p-1")
+        assert job is not None
         self.assertEqual(job["status"], "failed")
         self.assertTrue(job["error"])
         self.assertIn(job["error"].splitlines()[0], err)
@@ -1342,7 +1343,7 @@ class TestEmptyPromptIsRefused(IsolatedCase):
             self.started.append(args[0] if args else kwargs.get("prompt"))
             return original(provider, *args, **kwargs)
 
-        mock_mod.MockProvider.run = record
+        setattr(mock_mod.MockProvider, "run", record)
         self.addCleanup(setattr, mock_mod.MockProvider, "run", original)
 
     def refusal(self, *argv, stdin=None):
@@ -1644,7 +1645,7 @@ class TestOutputGuard(IsolatedCase):
             )
 
         original = mock_mod.MockProvider.run
-        mock_mod.MockProvider.run = fake_run
+        setattr(mock_mod.MockProvider, "run", fake_run)
         self.addCleanup(setattr, mock_mod.MockProvider, "run", original)
 
     def run_returning(self, **fields):
@@ -1744,7 +1745,7 @@ class TestASilentRunIsNotASuccess(IsolatedCase):
             return RunResult(True, 0, stdout, stderr, ["mock"], 1.0, resolved)
 
         original = mock_mod.MockProvider.run
-        mock_mod.MockProvider.run = fake_run
+        setattr(mock_mod.MockProvider, "run", fake_run)
         self.addCleanup(setattr, mock_mod.MockProvider, "run", original)
         return run_cli("run", "implementer", "--prompt", "go")
 

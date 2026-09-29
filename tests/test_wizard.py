@@ -223,7 +223,7 @@ class TestAFailingUserAdapter(IsolatedCase):
 
         for cls in (ClaudeProvider, CodexProvider):
             self.addCleanup(setattr, cls, "which", cls.which)
-            cls.which = lambda self: None
+            setattr(cls, "which", lambda self: None)
         self.path = self.write_user_provider("flaky", self.SOURCE)
         providers.load_user_providers()
 

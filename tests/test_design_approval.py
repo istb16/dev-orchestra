@@ -132,6 +132,7 @@ class TestTheWorker(ApprovalCase):
     def test_a_worker_is_gated_too(self):
         self.write_plan()
         code, job = self.worker()
+        assert job is not None
         self.assertEqual(code, 5)
         self.assertEqual(job["status"], "failed")
         # The whole refusal, including what to do about it.
@@ -145,6 +146,7 @@ class TestTheWorker(ApprovalCase):
         run_cli("design", "approve")
         self.write_plan(REVISED_PLAN)
         code, job = self.worker(paid=True)
+        assert job is not None
         self.assertEqual(code, 5)
         self.assertEqual(job["status"], "failed")
         self.assertIn("changed after it was approved", job["error"])
