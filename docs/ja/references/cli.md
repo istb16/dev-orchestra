@@ -1,4 +1,4 @@
-<!-- translated-from: references/cli.md sha256:069f88596609df73a3f567d337af14bfb3494ca70a03fd0d50166756f03db91f -->
+<!-- translated-from: references/cli.md sha256:c821094b96a9ea42af6943e8287c9e0a4214d97a2bc46ea28e673e562aa507d9 -->
 
 > この文書は [references/cli.md](../../../references/cli.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -106,6 +106,17 @@ dev-orchestra reviewer remove db-review
 意図的な選択と継承されたデフォルトは、ディスク上では見分けがつかないからです。`config prune` は、
 求められれば、現在のデフォルトと等しいものを削除します。`reviewers` については何も言いません。
 パネルは誰のデフォルトでもないからです。
+
+誤りではないが知っておくべきことがあると、問題の後に **Notes** ブロックが表示されます。注記は
+`--strict` の判定に数えられず、`--json` では `notes` に入ります（ないときは `[]`）。現在は 1 種類だけです:
+組み込みの `high_risk_paths` だけで判定される -- リポジトリ独自のリストも `extra_high_risk_paths` もない --
+`when: high-risk` のレビュアーを、すべて 1 つの注記にまとめて名前を挙げます。デフォルトは一般的な名前に
+合わせてあり、このリポジトリの機密性の高いパスを見逃して、そのレビュアーがほとんど走らないことがあるからです。
+デフォルトに含まれるパターンだけでできた `high_risk_paths` は、順序を問わず、リポジトリ独自のリストとは
+みなしません。0.6.0 より前に書かれた設定が持つもので、その後追加されたパターンを欠いた古いデフォルトの
+リストかもしれないからです。
+そのようなレビュアーの **Roles** の行は `(when: high-risk)` で終わり、`--json` のエントリには `always` 以外の
+とき `when` が入ります。
 
 各 provider ブロックには `Source:` 行があり、`built-in` または `user module <path>` と表示されます。
 **User providers** ブロックは常に表示されます。ユーザー adapter をインポートするディレクトリ（または

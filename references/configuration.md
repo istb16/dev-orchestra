@@ -325,6 +325,8 @@ global value.
 Roll it out in this order: add `extra_high_risk_paths` for the paths the
 defaults miss first, then switch a reviewer to `when: high-risk`. The other way
 round, the reviewer sits out the rounds the new patterns were meant to catch.
+`doctor` notes a `high-risk` reviewer that is judged by the built-in patterns
+alone, so a switch made without that first step does not go unnoticed.
 
 ```bash
 dev-orchestra reviewer set claude-security --when high-risk

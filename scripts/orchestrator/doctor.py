@@ -12,6 +12,7 @@ import platform
 from typing import Any, Dict, List, Optional
 
 from . import config as config_mod
+from . import optimization as opt_mod
 from . import workspace as ws
 from .providers import (
     REFUSED_ENFORCEMENT,
@@ -47,6 +48,8 @@ def collect(start: Optional[str] = None, probe_models: bool = True) -> Dict[str,
         "roles": {},
         "reviewers": [],
         "problems": [],
+        # Worth knowing, never wrong: they do not count towards exit_code.
+        "notes": [],
     }
     report["user_providers"] = user_provider_report()
     for failure in report["user_providers"]["errors"]:
@@ -142,12 +145,36 @@ def collect(start: Optional[str] = None, probe_models: bool = True) -> Dict[str,
         entry = _describe_role(label, reviewer, detections, report["problems"], adapter_errors, load_errors)
         entry["id"] = reviewer.get("id")
         entry["role"] = reviewer.get("role", "general")
+        when = opt_mod.reviewer_condition(reviewer)
+        if when != opt_mod.WHEN_ALWAYS:
+            entry["when"] = when
         report["reviewers"].append(entry)
         _refused_enforcement(label, reviewer, report)
 
     if not report["reviewers"]:
         report["problems"].append("no reviewers configured: the independent-review stage will be skipped")
+    _default_patterns_note(report, loaded.optimization_settings())
     return report
+
+
+def _default_patterns_note(report: Dict[str, Any], settings: Dict[str, Any]) -> None:
+    """A high-risk reviewer judged by patterns nobody chose for this repository.
+
+    A note, not a problem: the defaults can be exactly right. They fit the
+    common names and miss a repository's own, and a reviewer that then almost
+    never runs looks no different from one that has nothing to say. No pattern
+    in force at all is a validation problem already.
+    """
+    conditional = [
+        str(entry.get("id")) for entry in report["reviewers"] if entry.get("when") == opt_mod.WHEN_HIGH_RISK
+    ]
+    if not conditional or not opt_mod.default_patterns_only(settings):
+        return
+    report["notes"].append(
+        "%s: when: high-risk, judged by the built-in high_risk_paths only. If this repository's "
+        "sensitive paths have other names, add them to optimization.extra_high_risk_paths."
+        % ", ".join(conditional)
+    )
 
 
 def _describe_role(
@@ -362,9 +389,10 @@ def render(report: Dict[str, Any]) -> str:
     reviewers = report["reviewers"]
     lines.append("  %-13s %d" % ("Reviewers:", len(reviewers)))
     for index, entry in enumerate(reviewers, 1):
-        lines.append(
-            "    %d. %s / %s / %s" % (index, entry.get("id"), _role_line(entry), entry.get("role", "general"))
-        )
+        role = entry.get("role", "general")
+        if entry.get("when"):
+            role += " (when: %s)" % entry["when"]
+        lines.append("    %d. %s / %s / %s" % (index, entry.get("id"), _role_line(entry), role))
 
     if report["problems"]:
         lines += ["", "Problems"]
@@ -372,6 +400,10 @@ def render(report: Dict[str, Any]) -> str:
             lines.append("  - %s" % problem)
     else:
         lines += ["", "No problems found."]
+    if report.get("notes"):
+        lines += ["", "Notes"]
+        for note in report["notes"]:
+            lines.append("  - %s" % note)
     return "\n".join(lines) + "\n"
 
 

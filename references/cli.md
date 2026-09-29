@@ -97,6 +97,19 @@ report, never a rewrite: a deliberate choice and an inherited default look
 identical on disk. `config prune` drops the ones equal to the current default,
 on request. It says nothing about `reviewers` -- a panel is nobody's default.
 
+A **Notes** block follows the problems when there is something worth knowing
+that is not wrong; notes never count towards `--strict`, and in `--json` they
+are `notes` (`[]` when there are none). Today there is one: every `when:
+high-risk` reviewer judged by the built-in `high_risk_paths` alone -- no list
+of the repository's own, no `extra_high_risk_paths` -- is named in a single
+note, because the defaults fit common names and can miss this repository's
+sensitive paths, leaving the reviewer almost never running. A `high_risk_paths`
+drawn only from the defaults, in any order, is not a list of the repository's
+own: it is what a config written before 0.6.0 holds, perhaps an older default
+list missing patterns added since. A reviewer line in
+**Roles** ends in `(when: high-risk)` for such a reviewer, and its `--json`
+entry carries `when` whenever it is not `always`.
+
 Each provider block has a `Source:` line -- `built-in` or `user module <path>`.
 The **User providers** block is always shown: the directory user adapters are
 imported from (or that it is not present, or disabled by
