@@ -50,7 +50,7 @@ from .providers import (
     provider_origin,
 )
 
-__version__ = "0.13.0"
+__version__ = "0.13.1"
 
 DEFAULT_MODES = {
     "orchestrator": MODE_PLAN,
