@@ -63,14 +63,18 @@ from the same family share the blind spot that produced the bug.
   - [Claude Code](https://claude.com/claude-code) (`claude`)
   - [Codex CLI](https://developers.openai.com/codex/cli) (`codex`)
 
+The skill runs as a plugin in Claude Code, Codex or Antigravity; the CLIs above
+are what it drives, not where it runs.
+
 The skill uses **your existing CLI logins**. It never asks for an API key, never
 stores credentials, and never prints them.
 
 ## Installation
 
 Install it as a plugin from this repository (it is on no official marketplace).
-Each host runs its own copy from its cache (`~/.claude/plugins/cache/…`,
-`~/.codex/plugins/cache/…`), available from the next session.
+Claude Code and Codex each run their own copy from their cache
+(`~/.claude/plugins/cache/…`, `~/.codex/plugins/cache/…`), available from the
+next session. Antigravity loads the directory placed in its `plugins/` folder.
 
 ### Claude Code plugin
 
@@ -89,8 +93,29 @@ codex plugin marketplace add istb16/dev-orchestra
 codex plugin add dev-orchestra@dev-orchestra
 ```
 
-`codex plugin list` shows what is installed. The installers from before the
-plugin still work ([Installing from a skill checkout](references/workflow.md#installing-from-a-skill-checkout));
+`codex plugin list` shows what is installed.
+
+### Antigravity plugin
+
+Clone the repository and link it into Antigravity's plugins folder:
+
+```bash
+git clone https://github.com/istb16/dev-orchestra.git
+cd dev-orchestra
+./install/install.sh --antigravity    # links into ~/.gemini/config/plugins/
+```
+
+```powershell
+.\install\install.ps1 -Antigravity    # Windows
+```
+
+By hand it is one link: `ln -s "$PWD" ~/.gemini/config/plugins/dev-orchestra`.
+`--project <path>` installs into `<path>/.agents/plugins/` instead. Restart
+Antigravity afterwards: a new plugin directory is only discovered on startup.
+A linked install loads whatever branch the checkout has, so look at an
+untrusted branch with `--copy` or from a separate worktree.
+
+The installers from before the plugin still work ([Installing from a skill checkout](references/workflow.md#installing-from-a-skill-checkout));
 running the plugin from a clone is in `CONTRIBUTING.md`.
 
 ## Initial setup
@@ -187,7 +212,8 @@ for your `permissions.deny` rules: [Security](references/architecture.md#securit
 ## Supported platforms
 
 Linux, macOS and native Windows (`bin\dev-orchestra.ps1`) are CI-tested; WSL
-works as Linux and is not required. Everything is pure Python plus `git`.
+works as Linux and is not required. Everything is pure Python plus `git`. The
+Antigravity install on Windows makes a junction, which needs no Developer Mode.
 
 ## Upgrading
 
@@ -198,6 +224,7 @@ codex plugin add dev-orchestra@dev-orchestra   # so add it again to install it
 ```
 
 A checkout install upgrades with `git pull` ([details](references/workflow.md#installing-from-a-skill-checkout)).
+Antigravity: `git pull` in the checkout, then restart Antigravity.
 Configuration is forward-compatible within a major version, and `CHANGELOG.md`
 calls out anything that needs action.
 
@@ -211,6 +238,7 @@ dev-orchestra config reset --scope global --delete   # optional: your configurat
 
 Configuration stays unless you remove it; delete `.ai/` in a project to drop
 its artifacts. A checkout install has `install/uninstall.sh` (`.ps1` on Windows).
+Antigravity: `./install/uninstall.sh --antigravity` (`-Antigravity` on Windows), then restart it.
 
 ## Versioning and changelog
 

@@ -12,6 +12,26 @@ The public surface covered by that promise is: the configuration schema, the
 
 ### Added
 
+- **Google Antigravity as a third plugin host.** A root `plugin.json`, with
+  only the fields Antigravity reads, makes the repository an Antigravity
+  plugin that loads the same `skills/dev-orchestra/SKILL.md`. The installers
+  gain `--antigravity` (alias `--gemini`; `-Antigravity` and `-Gemini` in
+  PowerShell), which links the checkout into `~/.gemini/config/plugins/`, or
+  into `<path>/.agents/plugins/` with `--project`, and tells you to restart
+  Antigravity. On Windows it makes a junction, which needs no Developer Mode,
+  then tries a symlink, then copies; elsewhere it makes a symlink, then
+  copies. A copy carries a `.dev-orchestra-install` file, and the installer
+  and uninstaller replace or remove only a link to this checkout or a copy
+  they made, never a clone or another directory. A project install adds its
+  `.git/info/exclude` entry under a marker comment once it has succeeded, and
+  the uninstaller removes only a marked entry. A link is refused while the
+  checkout root has a `hooks.json`, `mcp_config.json`, `plugins.json`,
+  `rules/` or `agents/*.md`, which Antigravity would load too;
+  `scripts/validate_skill.py` reports the same entries and checks the new
+  manifest's fields, name and version. A copy install for Claude Code now
+  includes `plugin.json` too. Releases bump eight version-bearing files
+  instead of seven (#160).
+
 - **Type checking with Pyright in CI.** A `Type check` job runs `pyright` over
   `scripts/` against Python 3.11 for every platform, and fails on any error.
   The tools for working on the code are pinned in a new

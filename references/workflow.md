@@ -680,6 +680,40 @@ pointer block to `AGENTS.md` referencing this checkout:
 `skills/dev-orchestra/SKILL.md` stays the single source of truth — the pointer
 references it rather than duplicating it.
 
+**Antigravity:** the installer links this checkout into Antigravity's plugins
+folder. The root `plugin.json` is what makes the directory a plugin, and
+Antigravity finds `skills/` under it on its own:
+
+```bash
+./install/install.sh --antigravity                    # ~/.gemini/config/plugins/dev-orchestra
+./install/install.sh --antigravity --project /path    # <project>/.agents/plugins/dev-orchestra
+```
+
+```powershell
+.\install\install.ps1 -Antigravity                    # Windows
+```
+
+`--gemini` (`-Gemini`) is the same switch. On Windows the installer makes a
+junction, which needs no Developer Mode, then tries a symlink, then copies;
+elsewhere it makes a symlink, then copies. It says which one it used, and a
+copy has to be re-run after `git pull`. `--copy` always copies, and a copy
+carries a `.dev-orchestra-install` file so that a later run knows it made it.
+With `--project`, the entry goes into that repository's `.git/info/exclude`
+under a marker comment, and the uninstaller removes it only when the marker is
+there. The installer never replaces a link to somewhere else, a link to
+nothing, or a directory it did not write, a clone included; it stops and says
+how to remove it by hand. It also refuses to link while the checkout has a
+`hooks.json`, `mcp_config.json`, `plugins.json`, `rules/` or `agents/*.md` at
+its root, which Antigravity would load as well; a copy leaves `agents/*.md`
+out. That check comes first, so a refused run leaves the existing install in
+place. A clone made directly into the
+plugins folder is already installed and needs no installer run.
+`./install/uninstall.sh --antigravity` (with the same `--project`) removes the
+install. Restart Antigravity after installing, upgrading or uninstalling: it
+only discovers a plugin directory on startup. A linked install loads whatever
+branch the checkout has, so look at an untrusted branch with `--copy` or from
+a separate worktree.
+
 Optionally put the CLI on PATH, then verify:
 
 ```bash

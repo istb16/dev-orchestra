@@ -28,6 +28,21 @@ CLAUDE_PLUGIN = ".claude-plugin/plugin.json"
 CLAUDE_MARKETPLACE = ".claude-plugin/marketplace.json"
 CODEX_PLUGIN = ".codex-plugin/plugin.json"
 CODEX_MARKETPLACE = ".agents/plugins/marketplace.json"
+ANTIGRAVITY_PLUGIN = "plugin.json"
+
+#: The only top-level fields Antigravity's loader reads. Anything else, such
+#: as the ``author`` and ``homepage`` the other hosts take, is dropped without
+#: an error, so it would look configured and do nothing.
+ANTIGRAVITY_FIELDS = frozenset(
+    ("name", "description", "logo", "suggestedPrompts", "displayName", "version", "disabled")
+)
+ANTIGRAVITY_LOGO_EXTENSIONS = (".png", ".svg", ".jpg", ".jpeg", ".webp")
+
+#: Entries at a plugin root that Antigravity loads on its own when the plugin
+#: is enabled, and ``plugins.json``, which would make the root a customization
+#: root. A linked checkout exposes its working tree, so none may exist here.
+#: ``agents/*.md`` is checked separately. The installers carry the same list.
+ANTIGRAVITY_AUTOLOAD = ("hooks.json", "mcp_config.json", "plugins.json", "rules")
 
 MAX_SKILL_LINES = 500
 
@@ -53,6 +68,7 @@ REQUIRED_FILES = (
     CLAUDE_MARKETPLACE,
     CODEX_PLUGIN,
     CODEX_MARKETPLACE,
+    ANTIGRAVITY_PLUGIN,
     "README.md",
     "README.ja.md",
     "LICENSE",
@@ -125,12 +141,13 @@ def _entry_for(marketplace: Dict[str, Any]) -> Any:
 
 
 def check_manifests(version: str = "") -> List[str]:
-    """The plugin and marketplace manifests of both hosts must agree.
+    """The plugin and marketplace manifests of Claude Code and Codex must agree.
 
     Claude Code reads ``.claude-plugin/``; Codex reads ``.codex-plugin/`` plus
     a marketplace under ``.agents/plugins/``. Everything else -- skill,
     scripts, references -- is shared, so the two manifests must not drift
-    apart from each other or from the skill they ship.
+    apart from each other or from the skill they ship. The third host,
+    Antigravity, reads the root ``plugin.json``: see ``check_antigravity``.
     """
     problems: List[str] = []
 
@@ -237,6 +254,96 @@ def check_manifests(version: str = "") -> List[str]:
     return problems
 
 
+def _logo_problem(logo: Any, root: str) -> str:
+    """Why ``logo`` is not an image file inside ``root``, or ``""`` when it is."""
+    if not isinstance(logo, str) or not logo:
+        return "must be a relative path string"
+    if os.path.isabs(logo) or logo.startswith(("/", "\\")) or re.match(r"[A-Za-z]:", logo):
+        return "must be a relative path, not %r" % logo
+    if ".." in re.split(r"[\\/]", logo):
+        return "must not contain '..': %r" % logo
+    base = os.path.normpath(os.path.abspath(root))
+    full = os.path.normpath(os.path.join(base, logo))
+    try:
+        inside = os.path.commonpath([base, full]) == base
+    except ValueError:
+        inside = False
+    if not inside:
+        return "must point inside the plugin root: %r" % logo
+    if not logo.lower().endswith(ANTIGRAVITY_LOGO_EXTENSIONS):
+        return "must end in one of %s: %r" % (", ".join(ANTIGRAVITY_LOGO_EXTENSIONS), logo)
+    if not os.path.isfile(full):
+        return "names a missing file: %r" % logo
+    return ""
+
+
+def check_antigravity(version: str = "", root: str = REPO_ROOT) -> List[str]:
+    """The root ``plugin.json`` Antigravity reads, and what else it would load.
+
+    Antigravity treats a directory holding ``plugin.json`` as a plugin, finds
+    ``skills/`` under it by convention, and loads a few other root entries on
+    its own. ``root`` is the plugin directory; tests pass a throwaway one.
+    """
+    problems: List[str] = []
+    relative = ANTIGRAVITY_PLUGIN
+
+    manifest: Any = None
+    try:
+        with open(os.path.join(root, relative), "r", encoding="utf-8") as handle:
+            manifest = json.loads(handle.read())
+    except OSError as exc:
+        problems.append(str(exc))
+    except ValueError as exc:
+        problems.append("%s is not valid JSON: %s" % (relative, exc))
+
+    if manifest is not None and not isinstance(manifest, dict):
+        problems.append("%s must contain a JSON object" % relative)
+    elif isinstance(manifest, dict):
+        if manifest.get("name") != SKILL_NAME:
+            problems.append("%s declares name %r; expected %r" % (relative, manifest.get("name"), SKILL_NAME))
+        if version and str(manifest.get("version", "")) != version:
+            problems.append(
+                "version mismatch: %s says %s, %s says %s"
+                % (SKILL_PATH, version, relative, manifest.get("version"))
+            )
+        description = manifest.get("description")
+        if not isinstance(description, str) or not description.strip():
+            problems.append("%s needs a non-empty description string" % relative)
+        for key in sorted(set(manifest) - ANTIGRAVITY_FIELDS):
+            problems.append(
+                "%s: %r is not a field Antigravity reads; its loader drops it silently" % (relative, key)
+            )
+        if "suggestedPrompts" in manifest:
+            prompts = manifest["suggestedPrompts"]
+            if (
+                not isinstance(prompts, list)
+                or len(prompts) > 3
+                or not all(isinstance(prompt, str) for prompt in prompts)
+            ):
+                problems.append("%s: suggestedPrompts must be a list of at most 3 strings" % relative)
+        if "disabled" in manifest and not isinstance(manifest["disabled"], bool):
+            problems.append("%s: disabled must be true or false" % relative)
+        if "logo" in manifest:
+            reason = _logo_problem(manifest["logo"], root)
+            if reason:
+                problems.append("%s: logo %s" % (relative, reason))
+
+    if not os.path.isfile(os.path.join(root, SKILL_PATH)):
+        problems.append("%s is missing; Antigravity looks for the skill there" % SKILL_PATH)
+
+    loaded = [entry for entry in ANTIGRAVITY_AUTOLOAD if os.path.lexists(os.path.join(root, entry))]
+    agents_dir = os.path.join(root, "agents")
+    if os.path.isdir(agents_dir):
+        loaded.extend("agents/%s" % name for name in sorted(os.listdir(agents_dir)) if name.endswith(".md"))
+    for entry in loaded:
+        problems.append(
+            "%s would be auto-loaded by Antigravity from a linked checkout; "
+            "remove it or move it out of the plugin root" % entry
+        )
+
+    return problems
+
+
 def check() -> List[str]:
     problems: List[str] = []
 
@@ -310,6 +417,7 @@ def check() -> List[str]:
             problems.append("CHANGELOG.md has no entry for version %s" % declared)
 
     problems.extend(check_manifests(declared))
+    problems.extend(check_antigravity(declared))
 
     # The translated README must not silently drift out of the doc set.
     try:

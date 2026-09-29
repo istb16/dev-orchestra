@@ -62,7 +62,7 @@ version, and commit the result separately from any behaviour change.
 
 ### Running the plugin from a clone
 
-Point either host at the clone instead of at GitHub:
+Point any of the three hosts at the clone instead of at GitHub:
 
 ```bash
 claude plugin validate .                    # manifest check, --strict in CI
@@ -71,16 +71,28 @@ claude plugin install dev-orchestra@dev-orchestra
 
 codex plugin marketplace add "$PWD"
 codex plugin add dev-orchestra@dev-orchestra
+
+./install/install.sh --antigravity --project .   # Antigravity, for this repository only
+./install/install.sh --antigravity               # or for every workspace
 ```
 
-Both hosts copy the plugin into their own cache (`~/.claude/plugins/cache/…`,
-`~/.codex/plugins/cache/…`) and run it from there. Everything the skill needs
-— `scripts/`, `references/`, `bin/` — ships inside that copy, so no path
-points back at the clone.
+Every host runs the same skill from its own plugin directory, and everything
+the skill needs — `scripts/`, `references/`, `bin/` — is inside it. Claude
+Code and Codex copy the plugin into their cache (`~/.claude/plugins/cache/…`,
+`~/.codex/plugins/cache/…`), so no path points back at the clone and a change
+needs a reinstall. Antigravity loads the link itself, so a change is live at
+its next restart. `--project .` puts the link in `.agents/plugins/` inside
+this repository and keeps it out of `git status` through `.git/info/exclude`;
+`./install/uninstall.sh --antigravity --project .` removes both. Because the
+link exposes the working tree, a branch you check out is what Antigravity
+loads: look at an untrusted branch with `--copy` or from a separate worktree.
+Antigravity can also register a plugin stored elsewhere through a
+`plugins.json` in a customization root; the installers do not use it, and a
+`plugins.json` at this repository's root is refused.
 
 `claude plugin details dev-orchestra` lists what was actually loaded. Re-run
-`python scripts/validate_skill.py` after touching a manifest: it checks both
-hosts' manifests against the skill they ship.
+`python scripts/validate_skill.py` after touching a manifest: it checks every
+host's manifests against the skill they ship.
 
 ## The rules that matter
 
@@ -157,7 +169,7 @@ still carries the allowlist and `--restricted`.
 | --- | --- |
 | Orchestration policy (when to run a stage) | `skills/dev-orchestra/SKILL.md` |
 | Long-form explanation | `references/` — keep the skill under 500 lines |
-| Plugin packaging | `.claude-plugin/`, `.codex-plugin/`, `.agents/plugins/` |
+| Plugin packaging | `.claude-plugin/`, `.codex-plugin/`, `.agents/plugins/`, and the root `plugin.json` for Antigravity |
 | A new CLI | `scripts/orchestrator/providers/` + `register()` — see `references/providers.md` (a user's own adapter goes in `<config dir>/providers/` instead, without a change here) |
 | Config schema | `config.py` (defaults **and** `validate`) + `references/configuration.md` |
 | A command | its `cli_*.py` module (`cli_review.py` for `review …`, `cli_state.py` for `state`/`budget`/`tokens`, …), and its arguments in `cli.py` |
@@ -174,11 +186,13 @@ that is the only place Codex looks — a `SKILL.md` at the repository root would
 be invisible there and a second copy of the skill for Claude Code.
 
 The repository is also the plugin *and* its marketplace: `.claude-plugin/` and
-`.codex-plugin/` describe the same package for the two hosts, and both
-marketplace manifests source it from `./`. `python scripts/validate_skill.py`
-checks that they agree with each other and with the skill; `claude plugin
-validate . --strict` checks the Claude manifests against the host's own
-schema.
+`.codex-plugin/` describe the same package for Claude Code and Codex, and both
+marketplace manifests source it from `./`. For Antigravity the repository root
+is the plugin directory, marked by the root `plugin.json`, which may carry only
+the fields Antigravity reads. `python scripts/validate_skill.py` checks that
+the manifests agree with each other and with the skill, and that the root holds
+nothing else Antigravity would load; `claude plugin validate . --strict`
+checks the Claude manifests against the host's own schema.
 
 ## Pull requests
 
@@ -237,9 +251,10 @@ schema, the CLI commands and flags, and the `.ai/` artifact formats.
    `compare/vX.Y.Z...HEAD` and add `[X.Y.Z]: .../compare/vW...vX.Y.Z`. Without
    the definition the new heading renders as literal `[X.Y.Z]` on GitHub.
 5. Bump the version everywhere it is written down:
-   `skills/dev-orchestra/SKILL.md`, `agents/openai.yaml`, the two plugin
-   manifests, both entries in the Claude marketplace file, and `__version__`
-   in `scripts/orchestrator/__init__.py` and `cli.py`. Seven files;
+   `skills/dev-orchestra/SKILL.md`, `agents/openai.yaml`, the three plugin
+   manifests (`.claude-plugin/`, `.codex-plugin/` and the root `plugin.json`),
+   both entries in the Claude marketplace file, and `__version__` in
+   `scripts/orchestrator/__init__.py` and `cli.py`. Eight files;
    `python scripts/validate_skill.py` refuses if any of them disagree, so run
    it rather than counting.
 6. Tag `vX.Y.Z`.

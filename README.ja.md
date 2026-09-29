@@ -59,13 +59,17 @@ flowchart LR
   - [Claude Code](https://claude.com/claude-code) (`claude`)
   - [Codex CLI](https://developers.openai.com/codex/cli) (`codex`)
 
+Skill は Claude Code、Codex、Antigravity のいずれかの Plugin として動きます。上の CLI は
+Skill が動かす相手で、Skill が動く場所ではありません。
+
 このSkillは**既存のCLIログインをそのまま使います**。APIキーを要求せず、認証情報を保存せず、出力もしません。
 
 ## インストール
 
-このリポジトリから Plugin として入れます（公式Marketplaceには公開していません）。各ホストは
-自分のキャッシュ（`~/.claude/plugins/cache/…`、`~/.codex/plugins/cache/…`）にあるコピーを
-実行し、次のセッションから使えます。
+このリポジトリから Plugin として入れます（公式Marketplaceには公開していません）。Claude Code と
+Codex は自分のキャッシュ（`~/.claude/plugins/cache/…`、`~/.codex/plugins/cache/…`）にある
+コピーを実行し、次のセッションから使えます。Antigravity は自分の `plugins/` フォルダに置かれた
+ディレクトリを読み込みます。
 
 ### Claude Code Plugin
 
@@ -84,7 +88,29 @@ codex plugin marketplace add istb16/dev-orchestra
 codex plugin add dev-orchestra@dev-orchestra
 ```
 
-`codex plugin list` で導入済みのものを確認できます。Plugin 以前のインストーラも使えます
+`codex plugin list` で導入済みのものを確認できます。
+
+### Antigravity Plugin
+
+リポジトリをクローンし、Antigravity の plugins フォルダにリンクします。
+
+```bash
+git clone https://github.com/istb16/dev-orchestra.git
+cd dev-orchestra
+./install/install.sh --antigravity    # links into ~/.gemini/config/plugins/
+```
+
+```powershell
+.\install\install.ps1 -Antigravity    # Windows
+```
+
+手でやる場合はリンク1つです: `ln -s "$PWD" ~/.gemini/config/plugins/dev-orchestra`。
+`--project <path>` を付けると `<path>/.agents/plugins/` に入れます。入れたあとは Antigravity を
+再起動してください。新しい Plugin のディレクトリは起動時にしか見つけられません。リンクで入れた
+場合はチェックアウトで今のブランチがそのまま読み込まれるので、信頼できないブランチを見るときは
+`--copy` か別の worktree を使ってください。
+
+Plugin 以前のインストーラも使えます
 （[Skill のチェックアウトからのインストール](docs/ja/references/workflow.md#installing-from-a-skill-checkout)）。
 クローンから Plugin を動かす方法は `CONTRIBUTING.md`（英語）にあります。
 
@@ -175,7 +201,8 @@ Rails への機能追加、API 変更、typo 修正、レビューのみ、mock 
 ## 対応プラットフォーム
 
 Linux、macOS、ネイティブの Windows（`bin\dev-orchestra.ps1`）を CI で検証しています。WSL は
-Linux として動きますが、必須ではありません。中身は純粋な Python と `git` だけです。
+Linux として動きますが、必須ではありません。中身は純粋な Python と `git` だけです。Windows での
+Antigravity の導入はジャンクションを作るので、開発者モードは要りません。
 
 ## アップグレード
 
@@ -186,6 +213,7 @@ codex plugin add dev-orchestra@dev-orchestra   # so add it again to install it
 ```
 
 チェックアウト導入は `git pull` で更新します（[詳細](docs/ja/references/workflow.md#installing-from-a-skill-checkout)）。
+Antigravity はチェックアウトで `git pull` し、Antigravity を再起動します。
 設定はメジャーバージョン内で前方互換です。対応が必要な変更は `CHANGELOG.md` に明記します。
 
 ## アンインストール
@@ -198,6 +226,7 @@ dev-orchestra config reset --scope global --delete   # optional: your configurat
 
 設定は消さない限り残ります。成果物も消す場合は、プロジェクトごとに `.ai/` を削除してください。
 チェックアウト導入には `install/uninstall.sh`（Windows は `.ps1`）があります。
+Antigravity は `./install/uninstall.sh --antigravity`（Windows は `-Antigravity`）のあと、再起動します。
 
 ## バージョニングと変更履歴
 

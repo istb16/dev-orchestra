@@ -1,4 +1,4 @@
-<!-- translated-from: references/workflow.md sha256:ca23685fde0be7e2bc6a8082f31633cfcc03742b7bb1a964e72f9ef39c0d92fd -->
+<!-- translated-from: references/workflow.md sha256:76314b943077f36bade02ba15f33c6ae06bf75c97dacae8f6527be36a4c77a0a -->
 
 > この文書は [references/workflow.md](../../../references/workflow.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -706,6 +706,38 @@ Git Bash は MSYS 形式のパス（`/c/...`）を書き込み、ネイティブ
 
 `skills/dev-orchestra/SKILL.md` が唯一の情報源であり続けます。ブロックはそれを参照する
 だけで、内容を複製しません。
+
+**Antigravity:** インストーラはこのチェックアウトを Antigravity の plugins フォルダに
+リンクします。ディレクトリを Plugin にするのはルートの `plugin.json` で、その下の
+`skills/` は Antigravity が自分で見つけます。
+
+```bash
+./install/install.sh --antigravity                    # ~/.gemini/config/plugins/dev-orchestra
+./install/install.sh --antigravity --project /path    # <project>/.agents/plugins/dev-orchestra
+```
+
+```powershell
+.\install\install.ps1 -Antigravity                    # Windows
+```
+
+`--gemini`（`-Gemini`）も同じ指定です。Windows ではまずジャンクション（開発者モード不要）を
+作り、だめならシンボリックリンク、それもだめならコピーにします。それ以外の環境では
+シンボリックリンク、だめならコピーです。どれを使ったかは表示され、コピーの場合は
+`git pull` のあとにもう一度実行する必要があります。`--copy` は常にコピーで、コピーには
+`.dev-orchestra-install` というファイルが入り、次の実行が自分で作ったものだと分かります。
+`--project` を付けると、そのリポジトリの `.git/info/exclude` にマーカーのコメント付きで
+エントリを追加し、アンインストーラはマーカーがあるときだけそれを取り除きます。
+インストーラは、別の場所を指すリンク、指す先がないリンク、自分が書いていない
+ディレクトリ（クローンを含む）を置き換えません。その場で止まり、手で消す方法を表示します。
+また、チェックアウトのルートに `hooks.json`、`mcp_config.json`、`plugins.json`、`rules/`、
+`agents/*.md` があると、Antigravity がそれも読み込むため、リンクを作りません。コピーには
+`agents/*.md` を入れません。この確認は最初に行うので、断ったときは入っていたものがそのまま残ります。
+plugins フォルダに直接クローンしたものは、そのままで導入済みなので、インストーラは不要です。
+`./install/uninstall.sh --antigravity`（`--project` も同じ指定）で取り除きます。
+インストール、アップグレード、アンインストールのあとは Antigravity を再起動してください。
+Plugin のディレクトリは起動時にしか見つけられません。リンクで入れた場合はチェックアウトで
+今のブランチがそのまま読み込まれるので、信頼できないブランチを見るときは `--copy` か
+別の worktree を使ってください。
 
 必要なら CLI を PATH に通し、動作を確認します。
 

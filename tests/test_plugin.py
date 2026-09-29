@@ -12,13 +12,23 @@ import importlib
 import json
 import os
 import re
+import shutil
 import unittest
+from typing import Any, Dict
 
-from helpers import REPO_ROOT, IsolatedCase
+from helpers import REPO_ROOT, IsolatedCase, is_link, make_dir_link, remove_link
 
 validate_skill = importlib.import_module("validate_skill")
 
 SKILL_PATH = validate_skill.SKILL_PATH
+
+_NOT_COPIED = shutil.ignore_patterns(".git", "__pycache__", ".ai", "tests")
+
+
+def ignore_for_copy(directory, names):
+    """What a plugin cache copy of the tree leaves out, and every link in it."""
+    ignored = set(_NOT_COPIED(directory, names))
+    return ignored | {name for name in names if is_link(os.path.join(directory, name))}
 
 
 def read(relative):
@@ -40,23 +50,35 @@ class TestManifests(IsolatedCase):
     def test_the_shipped_manifests_validate(self):
         self.assertEqual(validate_skill.check_manifests(skill_version()), [])
 
+    def test_the_shipped_root_manifest_validates(self):
+        self.assertEqual(validate_skill.check_antigravity(skill_version()), [])
+        manifest = load(validate_skill.ANTIGRAVITY_PLUGIN)
+        self.assertLessEqual(set(manifest), validate_skill.ANTIGRAVITY_FIELDS)
+
     def test_every_manifest_is_json(self):
         for relative in (
             validate_skill.CLAUDE_PLUGIN,
             validate_skill.CLAUDE_MARKETPLACE,
             validate_skill.CODEX_PLUGIN,
             validate_skill.CODEX_MARKETPLACE,
+            validate_skill.ANTIGRAVITY_PLUGIN,
         ):
             self.assertIsInstance(load(relative), dict, relative)
 
     def test_both_hosts_declare_the_same_plugin(self):
+        """All three: Claude Code, Codex and Antigravity."""
         claude = load(validate_skill.CLAUDE_PLUGIN)
-        codex = load(validate_skill.CODEX_PLUGIN)
-        for field in ("name", "version", "description"):
-            self.assertEqual(claude[field], codex[field], field)
+        for relative in (validate_skill.CODEX_PLUGIN, validate_skill.ANTIGRAVITY_PLUGIN):
+            other = load(relative)
+            for field in ("name", "version", "description"):
+                self.assertEqual(claude[field], other[field], "%s: %s" % (relative, field))
 
     def test_the_version_matches_the_skill(self):
-        for relative in (validate_skill.CLAUDE_PLUGIN, validate_skill.CODEX_PLUGIN):
+        for relative in (
+            validate_skill.CLAUDE_PLUGIN,
+            validate_skill.CODEX_PLUGIN,
+            validate_skill.ANTIGRAVITY_PLUGIN,
+        ):
             self.assertEqual(load(relative)["version"], skill_version(), relative)
 
     def test_a_version_drift_is_reported(self):
@@ -123,6 +145,123 @@ class TestMalformedManifests(IsolatedCase):
         problems = validate_skill.check_manifests()
         self.assertTrue(any("is not valid JSON" in problem for problem in problems), problems)
 
+    def test_a_broken_root_manifest_hides_nothing_else(self):
+        """Antigravity's manifest is checked on its own, so a broken one
+        leaves the Claude and Codex problems reported, and the other way round."""
+        manifest = load(validate_skill.CODEX_PLUGIN)
+        manifest["version"] = "9.9.9"
+        self.override(validate_skill.CODEX_PLUGIN, manifest)
+        broken = os.path.join(self.tmp, "plugin.json")
+        with open(broken, "w", encoding="utf-8") as handle:
+            handle.write("{not json")
+        # An absolute name wins over the root it is joined to.
+        self.addCleanup(setattr, validate_skill, "ANTIGRAVITY_PLUGIN", validate_skill.ANTIGRAVITY_PLUGIN)
+        setattr(validate_skill, "ANTIGRAVITY_PLUGIN", broken)
+
+        expected = validate_skill.check_manifests(skill_version())
+        self.assertTrue(expected)
+        problems = validate_skill.check()
+        for problem in expected:
+            self.assertIn(problem, problems)
+        self.assertTrue(any("is not valid JSON" in problem for problem in problems), problems)
+
+
+class TestAntigravityManifest(IsolatedCase):
+    """``check_antigravity`` against a throwaway plugin root."""
+
+    def setUp(self):
+        super().setUp()
+        self.root = os.path.join(self.tmp, "plugin")
+        os.makedirs(os.path.join(self.root, os.path.dirname(SKILL_PATH)))
+        with open(os.path.join(self.root, SKILL_PATH), "w", encoding="utf-8") as handle:
+            handle.write("---\nname: dev-orchestra\n---\n")
+        self.manifest: Dict[str, Any] = {"name": "dev-orchestra", "description": "d", "version": "1.0.0"}
+
+    def check(self, text=None):
+        if text is None:
+            text = json.dumps(self.manifest)
+        with open(os.path.join(self.root, "plugin.json"), "w", encoding="utf-8") as handle:
+            handle.write(text)
+        return validate_skill.check_antigravity("1.0.0", root=self.root)
+
+    def touch(self, relative, directory=False):
+        path = os.path.join(self.root, relative)
+        if directory:
+            os.makedirs(path)
+            return
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write("{}\n")
+
+    def assert_reported(self, problems, fragment):
+        self.assertTrue(any(fragment in problem for problem in problems), problems)
+
+    def test_a_minimal_root_passes(self):
+        self.assertEqual(self.check(), [])
+
+    def test_an_undocumented_key_is_named(self):
+        self.manifest["author"] = {"name": "someone"}
+        self.assert_reported(self.check(), "'author' is not a field Antigravity reads")
+
+    def test_a_wrong_name_is_reported(self):
+        self.manifest["name"] = "orchestra"
+        self.assert_reported(self.check(), "declares name 'orchestra'")
+
+    def test_a_version_drift_is_reported(self):
+        self.manifest["version"] = "0.0.1"
+        self.assert_reported(self.check(), "version mismatch")
+
+    def test_a_comment_is_not_json(self):
+        """Antigravity reads JSONC; this file is kept to strict JSON."""
+        self.assert_reported(self.check('// the manifest\n{"name": "dev-orchestra"}\n'), "is not valid JSON")
+
+    def test_a_manifest_that_is_not_an_object_is_reported(self):
+        self.assert_reported(self.check("[]"), "must contain a JSON object")
+
+    def test_four_prompts_are_one_too_many(self):
+        self.manifest["suggestedPrompts"] = ["a", "b", "c", "d"]
+        self.assert_reported(self.check(), "at most 3 strings")
+
+    def test_disabled_must_be_a_bool(self):
+        self.manifest["disabled"] = "no"
+        self.assert_reported(self.check(), "disabled must be true or false")
+
+    def test_a_logo_inside_the_root_passes(self):
+        self.touch("assets/logo.svg")
+        self.manifest["logo"] = "assets/logo.svg"
+        self.assertEqual(self.check(), [])
+
+    def test_each_bad_logo_is_reported(self):
+        self.touch("assets/logo.gif")
+        for logo, fragment in (
+            ("/etc/logo.png", "must be a relative path"),
+            ("C:\\logo.png", "must be a relative path"),
+            ("assets/../../logo.png", "must not contain '..'"),
+            ("assets\\..\\logo.png", "must not contain '..'"),
+            ("assets/logo.gif", "must end in one of"),
+            ("assets/missing.png", "names a missing file"),
+            (7, "must be a relative path string"),
+        ):
+            with self.subTest(logo=logo):
+                self.manifest["logo"] = logo
+                self.assert_reported(self.check(), fragment)
+
+    def test_the_skill_must_be_where_antigravity_looks(self):
+        os.remove(os.path.join(self.root, SKILL_PATH))
+        self.assert_reported(self.check(), "%s is missing" % SKILL_PATH)
+
+    def test_each_entry_antigravity_would_load_is_reported(self):
+        for entry in validate_skill.ANTIGRAVITY_AUTOLOAD:
+            with self.subTest(entry=entry):
+                self.touch(entry, directory=entry == "rules")
+                self.assert_reported(self.check(), "%s would be auto-loaded" % entry)
+
+    def test_an_agent_file_is_reported_and_a_yaml_one_is_not(self):
+        self.touch("agents/openai.yaml")
+        self.assertEqual(self.check(), [])
+        self.touch("agents/x.md")
+        self.assert_reported(self.check(), "agents/x.md would be auto-loaded")
+
 
 class TestSkillDiscovery(IsolatedCase):
     def test_the_skill_lives_where_both_hosts_look(self):
@@ -156,17 +295,12 @@ class TestInstalledLayout(IsolatedCase):
 
     def test_the_helper_cli_runs_from_a_copy_of_the_repository(self):
         """A plugin install is a copy: no path may resolve back to a checkout."""
-        import shutil
         import subprocess
         import sys
 
         version = skill_version()
         copy = os.path.join(self.tmp, "plugin-cache", "dev-orchestra", version)
-        shutil.copytree(
-            REPO_ROOT,
-            copy,
-            ignore=shutil.ignore_patterns(".git", "__pycache__", ".ai", "tests"),
-        )
+        shutil.copytree(REPO_ROOT, copy, ignore=ignore_for_copy)
         result = subprocess.run(
             [sys.executable, os.path.join(copy, "scripts", "dev_orchestra.py"), "--version"],
             capture_output=True,
@@ -179,16 +313,41 @@ class TestInstalledLayout(IsolatedCase):
     def test_the_copying_installer_ships_the_manifests(self):
         for relative in ("install/install.sh", "install/install.ps1"):
             script = read(relative)
-            for item in ("skills", ".claude-plugin", ".codex-plugin"):
+            for item in ("plugin.json", "skills", ".claude-plugin", ".codex-plugin"):
                 self.assertIn(item, script, "%s: %s" % (relative, item))
+
+    def test_the_copy_does_not_follow_a_link_in_the_tree(self):
+        """A project install made in the checkout is a link back into it."""
+        tree = os.path.join(self.tmp, "tree")
+        os.makedirs(os.path.join(tree, "real"))
+        link = os.path.join(tree, "loop")
+        make_dir_link(link, tree)
+        try:
+            copy = os.path.join(self.tmp, "copy")
+            shutil.copytree(tree, copy, ignore=ignore_for_copy)
+            self.assertEqual(os.listdir(copy), ["real"])
+        finally:
+            remove_link(link)
 
 
 class TestPluginDocumentation(IsolatedCase):
-    def test_both_readmes_document_both_plugin_installs(self):
-        for relative in ("README.md", "README.ja.md"):
+    def test_both_readmes_document_every_plugin_install(self):
+        for relative, untrusted in (
+            ("README.md", "untrusted branch"),
+            ("README.ja.md", "信頼できないブランチ"),
+        ):
             text = read(relative)
             self.assertIn("/plugin marketplace add istb16/dev-orchestra", text, relative)
             self.assertIn("codex plugin marketplace add istb16/dev-orchestra", text, relative)
+            self.assertIn("install.sh --antigravity", text, relative)
+            self.assertIn("install.ps1 -Antigravity", text, relative)
+            self.assertIn(untrusted, text, relative)
+
+    def test_the_checkout_install_covers_antigravity(self):
+        for relative in ("references/workflow.md", "docs/ja/references/workflow.md"):
+            text = read(relative)
+            self.assertIn("**Antigravity:**", text, relative)
+            self.assertIn("--antigravity --project", text, relative)
 
 
 if __name__ == "__main__":

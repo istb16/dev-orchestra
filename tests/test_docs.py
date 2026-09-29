@@ -84,7 +84,7 @@ class TestDocumentedYaml(IsolatedCase):
 
     def test_the_agent_manifest_parses_too(self):
         """Checked against SKILL.md's frontmatter -- the source of truth every
-        other version is compared to -- not a literal: this is one of seven
+        other version is compared to -- not a literal: this is one of eight
         files a release has to bump, and a test pinned to a number is one that
         fails on every release for no reason."""
         import importlib

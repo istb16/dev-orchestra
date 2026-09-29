@@ -5,21 +5,29 @@
 .DESCRIPTION
   Claude Code: links (or copies) this checkout into the skills directory.
   Codex CLI:   appends a marked pointer block to AGENTS.md.
+  Antigravity: links (or copies) this checkout into ~/.gemini/config/plugins,
+               or <project>/.agents/plugins with -Project. -Gemini is the
+               same switch. Restart Antigravity afterwards.
 
   SKILL.md is never duplicated - the Codex install points at it.
 
   Symlink creation on Windows needs Developer Mode or an elevated shell; the
-  installer falls back to a copy automatically when it cannot link.
+  installer falls back to a copy automatically when it cannot link. The
+  Antigravity install makes a junction first, which needs neither.
 
 .EXAMPLE
   .\install\install.ps1
   .\install\install.ps1 -Copy
   .\install\install.ps1 -Project C:\code\my-app
   .\install\install.ps1 -Codex
+  .\install\install.ps1 -Antigravity
+  .\install\install.ps1 -Antigravity -Project C:\code\my-app
 #>
 [CmdletBinding()]
 param(
     [switch]$Codex,
+    [Alias('Gemini')]
+    [switch]$Antigravity,
     [switch]$Copy,
     [string]$Project
 )
@@ -27,6 +35,23 @@ param(
 $ErrorActionPreference = 'Stop'
 $SkillName = 'dev-orchestra'
 $root = Split-Path -Parent $PSScriptRoot
+
+if ($Codex -and $Antigravity) {
+    [Console]::Error.WriteLine('-Antigravity and -Codex cannot be combined')
+    exit 2
+}
+
+# What a copy install carries: the plugin payload, not .git, tests or CI.
+$Payload = @('plugin.json', 'skills', '.claude-plugin', '.codex-plugin', 'README.md', 'LICENSE', 'references', 'scripts', 'bin', 'agents', 'examples')
+
+# Written into a copy made by the Antigravity install, so that a later run can
+# tell a directory it made from one it did not.
+$Sentinel = '.dev-orchestra-install'
+
+# The project's .git/info/exclude gets the entry below this comment, and the
+# uninstaller removes the entry only when the comment is right above it.
+$ExcludeMarker = '# added by dev-orchestra install --antigravity'
+$ExcludeEntry = "/.agents/plugins/$SkillName"
 
 # The pointer block tells the host how to run the CLI, so it has to name an
 # interpreter this machine actually has. Same order as bin/dev-orchestra.ps1:
@@ -73,6 +98,214 @@ function Add-ProjectGitExclude {
     }
 }
 
+function Copy-Payload {
+    param([string]$Destination)
+
+    New-Item -ItemType Directory -Force -Path $Destination | Out-Null
+    foreach ($item in $Payload) {
+        $source = Join-Path $root $item
+        if (Test-Path -LiteralPath $source) {
+            Copy-Item -LiteralPath $source -Destination $Destination -Recurse -Force
+        }
+    }
+}
+
+function Get-LinkTarget {
+    # Where a junction or symlink points, as a plain path. Windows PowerShell
+    # returns an array and may prefix a junction's target with \\?\. Reading
+    # it does not need the target to exist.
+    param($Item)
+
+    $target = [string]@($Item.Target)[0]
+    foreach ($prefix in '\\?\', '\??\') {
+        if ($target.StartsWith($prefix)) { $target = $target.Substring($prefix.Length) }
+    }
+    return $target.TrimEnd('\', '/')
+}
+
+function Stop-Refused {
+    param([string[]]$Lines)
+
+    foreach ($line in $Lines) { [Console]::Error.WriteLine($line) }
+    exit 1
+}
+
+function Remove-OwnedDestination {
+    # Clear the way for an install at $Destination, or stop. A link is removed
+    # only when it resolves to this checkout, and never recursively; a
+    # directory only when this installer wrote it (the sentinel is there and
+    # it is not a clone); anything else is left where it is. Returns $true
+    # when something was removed.
+    param([string]$Destination)
+
+    $item = Get-Item -LiteralPath $Destination -Force -ErrorAction SilentlyContinue
+    if ($null -eq $item) {
+        # Get-Item can miss a dangling link; the attributes cannot.
+        try { $attributes = [System.IO.File]::GetAttributes($Destination) } catch { return $false }
+        if ($attributes -band [System.IO.FileAttributes]::ReparsePoint) {
+            Stop-Refused @(
+                "$Destination is a link to a path that cannot be read, not to this checkout; the installer did not make it."
+                'Remove it by hand if it is no longer wanted:'
+                "    [System.IO.Directory]::Delete('$($Destination -replace "'", "''")', `$false)"
+            )
+        }
+        Stop-Refused @(
+            "$Destination exists and the installer did not write it; it was left in place."
+            'Remove it by hand if it is no longer wanted, then re-run.'
+        )
+    }
+
+    if ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
+        $target = Get-LinkTarget $item
+        if ($target -and ($target -ieq $root.TrimEnd('\', '/'))) {
+            [System.IO.Directory]::Delete($Destination, $false)
+            return $true
+        }
+        if (-not $target) { $target = 'a path that cannot be read' }
+        Stop-Refused @(
+            "$Destination is a link to $target, not to this checkout; the installer did not make it."
+            'Remove it by hand if it is no longer wanted:'
+            "    [System.IO.Directory]::Delete('$($Destination -replace "'", "''")', `$false)"
+        )
+    }
+
+    $hasSentinel = Test-Path -LiteralPath (Join-Path $Destination $Sentinel) -PathType Leaf
+    $gitEntry = Get-Item -LiteralPath (Join-Path $Destination '.git') -Force -ErrorAction SilentlyContinue
+    if ($item.PSIsContainer -and $hasSentinel -and ($null -eq $gitEntry)) {
+        Remove-Item -LiteralPath $Destination -Recurse -Force -Confirm:$false
+        return $true
+    }
+    Stop-Refused @(
+        "$Destination exists and the installer did not write it; it was left in place."
+        'Remove it by hand if it is no longer wanted, then re-run.'
+    )
+}
+
+function Get-AutoloadEntries {
+    # Entries at the checkout root that Antigravity would load along with the
+    # skill. Kept in step with ANTIGRAVITY_AUTOLOAD in scripts/validate_skill.py.
+    $found = New-Object System.Collections.Generic.List[string]
+    foreach ($entry in @('hooks.json', 'mcp_config.json', 'plugins.json', 'rules')) {
+        if (Get-Item -LiteralPath (Join-Path $root $entry) -Force -ErrorAction SilentlyContinue) {
+            $found.Add($entry)
+        }
+    }
+    $agentsDir = Join-Path $root 'agents'
+    if (Test-Path -LiteralPath $agentsDir -PathType Container) {
+        foreach ($file in @(Get-ChildItem -LiteralPath $agentsDir -Filter '*.md' -Force)) {
+            $found.Add('agents/' + $file.Name)
+        }
+    }
+    return $found.ToArray()
+}
+
+function Add-MarkedGitExclude {
+    if (-not $Project) { return }
+    $gitDir = Join-Path $Project '.git'
+    if (-not (Test-Path -LiteralPath $gitDir -PathType Container)) { return }
+
+    # A full path: the .NET call below does not follow Set-Location.
+    $infoDir = (New-Item -ItemType Directory -Force -Path (Join-Path $gitDir 'info')).FullName
+    $excludeFile = Join-Path $infoDir 'exclude'
+
+    # @() around the whole if: assigning an if unrolls a one-line array into a
+    # string, and `+` would then join the lines into one.
+    $existing = @(if (Test-Path -LiteralPath $excludeFile) { Get-Content -LiteralPath $excludeFile })
+    if ($existing -notcontains $ExcludeEntry) {
+        # No BOM: Windows PowerShell's utf8 writes one, and git would read it
+        # as part of the first pattern.
+        $lines = [string[]]($existing + @($ExcludeMarker, $ExcludeEntry))
+        [System.IO.File]::WriteAllLines($excludeFile, $lines, (New-Object System.Text.UTF8Encoding($false)))
+        Write-Host "Excluded $ExcludeEntry via .git/info/exclude (local only)"
+    }
+}
+
+function Copy-ForAntigravity {
+    param([string]$Destination)
+
+    Copy-Payload -Destination $Destination
+    # Antigravity would load an agents/*.md as an agent definition; the payload
+    # needs only the rest of agents/.
+    $agentsDir = Join-Path $Destination 'agents'
+    if (Test-Path -LiteralPath $agentsDir -PathType Container) {
+        foreach ($file in @(Get-ChildItem -LiteralPath $agentsDir -Filter '*.md' -Force)) {
+            Remove-Item -LiteralPath $file.FullName -Force -Confirm:$false
+        }
+    }
+    Set-Content -LiteralPath (Join-Path $Destination $Sentinel) -Value "Installed by install/install.ps1 from $root" -Encoding utf8
+    Write-Host "Copied the plugin to $Destination"
+    Write-Host 'Re-run this installer after `git pull` to upgrade.'
+}
+
+function Install-AntigravityPlugin {
+    if ($Project) {
+        $pluginsDir = Join-Path $Project '.agents/plugins'
+    }
+    else {
+        $pluginsDir = Join-Path $HOME '.gemini/config/plugins'
+    }
+    # First, so that a fresh home or a project path that does not exist yet
+    # works, and before anything below resolves a path. The full path, because
+    # the .NET calls below do not follow Set-Location.
+    $pluginsDir = (New-Item -ItemType Directory -Force -Path $pluginsDir).FullName
+    $dest = Join-Path $pluginsDir $SkillName
+
+    # A link exposes the whole working tree, and Antigravity loads more than
+    # skills/ from a plugin root. A copy carries only the payload, without
+    # agents/*.md. Checked before anything is removed, so that a refused run
+    # leaves the existing install in place.
+    if (-not $Copy) {
+        $loaded = @(Get-AutoloadEntries)
+        if ($loaded.Count -gt 0) {
+            $lines = @('Refusing to link: Antigravity would also load these from the checkout:')
+            foreach ($entry in $loaded) { $lines += "    $entry" }
+            $lines += 'Remove them, re-run with -Copy, or install from a clean worktree.'
+            Stop-Refused $lines
+        }
+    }
+
+    if (Remove-OwnedDestination -Destination $dest) {
+        Write-Host "Replaced the existing install at $dest"
+    }
+
+    $linked = $false
+    if (-not $Copy) {
+        # A junction needs neither Developer Mode nor elevation, but cannot
+        # point at a network path; a symlink can, when it is allowed.
+        $failures = @()
+        foreach ($kind in @('Junction', 'SymbolicLink')) {
+            try {
+                New-Item -ItemType $kind -Path $dest -Target $root -ErrorAction Stop | Out-Null
+                $mechanism = 'symlink'
+                if ($kind -eq 'Junction') { $mechanism = 'junction' }
+                Write-Host "Linked ($mechanism) $dest -> $root"
+                Write-Host "``git pull`` in the checkout now upgrades the plugin in place."
+                $linked = $true
+                break
+            }
+            catch {
+                $failures += ($kind + ': ' + $_.Exception.Message)
+                # A failed attempt must not leave an empty directory behind
+                # for the next one to trip over.
+                $left = Get-Item -LiteralPath $dest -Force -ErrorAction SilentlyContinue
+                if ($left -and $left.PSIsContainer -and -not ($left.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -and -not (Get-ChildItem -LiteralPath $dest -Force)) {
+                    Remove-Item -LiteralPath $dest -Force -Confirm:$false
+                }
+            }
+        }
+        if (-not $linked) {
+            Write-Warning ('Could not create a junction or a symlink (' + ($failures -join '; ') + '). Copying instead.')
+        }
+    }
+    if (-not $linked) {
+        Copy-ForAntigravity -Destination $dest
+    }
+
+    # Only now: a failed install leaves the exclude file as it was.
+    Add-MarkedGitExclude
+    Write-Host 'Restart Antigravity: a newly installed plugin directory is only discovered on startup.'
+}
+
 function Install-ClaudeSkill {
     if ($Project) {
         $skillsDir = Join-Path $Project '.claude/skills'
@@ -103,13 +336,7 @@ function Install-ClaudeSkill {
         }
     }
 
-    New-Item -ItemType Directory -Force -Path $dest | Out-Null
-    foreach ($item in 'skills', '.claude-plugin', '.codex-plugin', 'README.md', 'LICENSE', 'references', 'scripts', 'bin', 'agents', 'examples') {
-        $source = Join-Path $root $item
-        if (Test-Path -LiteralPath $source) {
-            Copy-Item -LiteralPath $source -Destination $dest -Recurse -Force
-        }
-    }
+    Copy-Payload -Destination $dest
     Write-Host "Copied the skill to $dest"
     Write-Host 'Re-run this installer after `git pull` to upgrade.'
 }
@@ -160,7 +387,7 @@ function Install-CodexPointer {
     Write-Host "Added the pointer block to $agentsFile"
 }
 
-if ($Codex) { Install-CodexPointer } else { Install-ClaudeSkill }
+if ($Codex) { Install-CodexPointer } elseif ($Antigravity) { Install-AntigravityPlugin } else { Install-ClaudeSkill }
 
 Write-Host ''
 Write-Host 'Verify with:'

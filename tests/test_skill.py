@@ -7,7 +7,7 @@ import os
 import re
 import unittest
 
-from helpers import REPO_ROOT, IsolatedCase, present
+from helpers import REPO_ROOT, IsolatedCase, is_link, make_dir_link, present, remove_link
 
 from orchestrator import miniyaml
 
@@ -27,6 +27,18 @@ def _has_local_path(content):
 def read(relative):
     with open(os.path.join(REPO_ROOT, relative), encoding="utf-8") as handle:
         return handle.read()
+
+
+_UNWALKED = (".git", "__pycache__", ".ai", ".tmpcfg", ".venv")
+
+
+def _walked_dirs(dirpath, dirnames):
+    """The subdirectories a walk of the repository goes into.
+
+    Not a link: that is a project install made in the checkout, which leads
+    back into it -- a junction on Windows, which Python 3.11 walks into.
+    """
+    return [d for d in dirnames if d not in _UNWALKED and not is_link(os.path.join(dirpath, d))]
 
 
 class TestValidator(IsolatedCase):
@@ -247,7 +259,7 @@ class TestPortability(IsolatedCase):
         marker = "You are the **Orchestrator**"
         hits = []
         for dirpath, dirnames, filenames in os.walk(REPO_ROOT):
-            dirnames[:] = [d for d in dirnames if d not in (".git", "__pycache__", ".ai", ".tmpcfg", ".venv")]
+            dirnames[:] = _walked_dirs(dirpath, dirnames)
             for name in filenames:
                 if not name.endswith((".md", ".yaml", ".yml", ".sh", ".ps1")):
                     continue
@@ -278,6 +290,68 @@ class TestPortability(IsolatedCase):
         for relative in ("install/install.sh", "install/install.ps1"):
             self.assertIn("info/exclude", read(relative), relative)
 
+    def test_every_script_has_the_antigravity_mode(self):
+        """Either uninstaller has to undo either installer, so the names match."""
+        flags = {".sh": ("--antigravity|--gemini",), ".ps1": ("[switch]$Antigravity", "[Alias('Gemini')]")}
+        for relative in (
+            "install/install.sh",
+            "install/uninstall.sh",
+            "install/install.ps1",
+            "install/uninstall.ps1",
+        ):
+            script = read(relative)
+            for token in (
+                *flags[os.path.splitext(relative)[1]],
+                ".gemini/config/plugins",
+                ".agents/plugins",
+                "# added by dev-orchestra install --antigravity",
+                ".dev-orchestra-install",
+                "Restart Antigravity",
+            ):
+                self.assertIn(token, script, "%s: %s" % (relative, token))
+
+    def test_the_installers_refuse_what_the_validator_refuses(self):
+        """The auto-load list is written three times; a new entry goes in all three."""
+        entries = validate_skill.ANTIGRAVITY_AUTOLOAD
+        self.assertIn("for entry in %s; do" % " ".join(entries), read("install/install.sh"))
+        self.assertIn('"$root"/agents/*.md', read("install/install.sh"))
+        self.assertIn("@(%s)" % ", ".join("'%s'" % entry for entry in entries), read("install/install.ps1"))
+        self.assertIn("-Filter '*.md'", read("install/install.ps1"))
+
+
+class TestLinksInTheTree(IsolatedCase):
+    """A project install made in the checkout puts a link to it inside it."""
+
+    def setUp(self):
+        super().setUp()
+        self.link = ""
+
+    def tearDown(self):
+        # Before the temp tree goes, so that removing it cannot follow the link.
+        if self.link and os.path.lexists(self.link):
+            remove_link(self.link)
+        super().tearDown()
+
+    def make_tree(self):
+        tree = os.path.join(self.tmp, "tree")
+        os.makedirs(os.path.join(tree, "real"))
+        self.link = os.path.join(tree, "loop")
+        make_dir_link(self.link, tree)
+        return tree, self.link
+
+    def test_is_link_sees_the_link_and_not_the_directory(self):
+        tree, link = self.make_tree()
+        self.assertTrue(is_link(link))
+        self.assertFalse(is_link(os.path.join(tree, "real")))
+
+    def test_the_walks_do_not_follow_it(self):
+        tree, _ = self.make_tree()
+        seen = []
+        for dirpath, dirnames, _ in os.walk(tree):
+            dirnames[:] = _walked_dirs(dirpath, dirnames)
+            seen.append(os.path.relpath(dirpath, tree))
+        self.assertEqual(sorted(seen), [".", "real"])
+
     def test_entry_point_needs_no_third_party_packages(self):
         """The whole package must import with only the standard library."""
         import subprocess
@@ -303,7 +377,7 @@ class TestPortability(IsolatedCase):
         for dirpath, dirnames, filenames in os.walk(REPO_ROOT):
             # `.venv` is the development environment CONTRIBUTING sets up: ignored by
             # git, and full of the machine it was made on.
-            dirnames[:] = [d for d in dirnames if d not in (".git", "__pycache__", ".ai", ".tmpcfg", ".venv")]
+            dirnames[:] = _walked_dirs(dirpath, dirnames)
             for name in filenames:
                 if not name.endswith((".py", ".md", ".yaml", ".yml", ".sh", ".ps1", ".json")):
                     continue
