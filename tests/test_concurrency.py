@@ -159,11 +159,16 @@ class TestFileLock(IsolatedCase):
         """
         path = os.path.join(self.project, "state.json")
         acquired = []
-        hold = 0.2
-        contenders = 12  # 2.4s of serialised work against a 0.5s bound
+        # 2.4s of serialised work against a 1s bound, so the queue outlasts the
+        # bound more than twice over. The slack between one hold and the bound
+        # is what a slow runner has to absorb a stall in: at 0.2s held against
+        # 0.5s it was 0.3s, and a Windows runner in CI lost six of twelve
+        # contenders to it while the lock itself changed hands every 0.2s.
+        hold = 0.1
+        contenders = 24
 
         def worker():
-            with ws.file_lock(path, timeout=0.5) as lock:
+            with ws.file_lock(path, timeout=1.0) as lock:
                 acquired.append(lock.acquired)
                 time.sleep(hold)
 

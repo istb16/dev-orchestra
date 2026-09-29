@@ -54,6 +54,14 @@ The public surface covered by that promise is: the configuration schema, the
   paths`, and `... every reviewer is conditional (when: high-risk or when:
   paths)`.
 
+### Fixed
+
+- **A detached run's usage is recorded before its job says it finished.**
+  The worker wrote `succeeded` to the job record first and the run's usage
+  and ledger entry a moment later, so a `tokens show` read straight after
+  `jobs wait` could miss the run. The books are now closed first, and the job
+  still records its outcome if closing them fails (#158).
+
 ## [0.13.1] - 2026-09-29
 
 ### Added

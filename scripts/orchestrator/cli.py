@@ -1228,17 +1228,64 @@ def cmd_run(args: argparse.Namespace) -> int:
         if result is None:
             return 2
 
+    finished = {
+        "exit_code": result.exit_code,
+        "stalled": result.stalled,
+        "timed_out": result.timed_out,
+        "duration_seconds": round(result.duration, 2),
+        "model": result.resolved.display if result.resolved else None,
+        "session_id": result.session_id,
+    }
+    if resume_detail is not None:
+        finished["resume"] = dict(resume_detail, outcome="ok" if result.ok else None)
+
+    # The books are closed before the job says it finished. `jobs wait`
+    # returns on that status, and a caller that reads `tokens show` next used
+    # to find the run's usage not yet written: the worker recorded "succeeded"
+    # first and the account a moment later. A failure in the accounting still
+    # finishes the job -- as failed, naming it -- rather than leaving a worker
+    # that vanished, or a success whose usage is nowhere.
+    try:
+        # Recorded whatever the outcome -- a failed run still spent what it spent.
+        # A run that never started one is a different thing, and counting it as
+        # unreported would make the account call itself incomplete over a run with
+        # nothing to report.
+        if result.invoked:
+            # Labelled by tier when there is one, so `tokens show` can answer the
+            # question a tier exists to raise: did the cheaper one cost less. A
+            # continued session is labelled too, to be read against fresh runs.
+            label = ""
+            if tier:
+                label = "%s:%s" % (role, tier)
+            elif session_id is not None:
+                label = "%s:resumed" % role
+            book.record_usage(role, result.usage.to_dict(), label=label)
+        book.end(
+            token,
+            "ok" if result.ok else ("stalled" if result.stalled else "failed"),
+            end_detail(result),
+            # What the child was measured to take, whatever it exited with. A run
+            # killed at its deadline spent the time it spent; so did a failed one.
+            charged_seconds=result.duration,
+        )
+    except BaseException as exc:
+        if args.job_file:
+            # Its own guard, so a job file that cannot be written does not
+            # take the place of the failure that brought us here.
+            try:
+                jobs_mod.finish(
+                    args.job_file,
+                    "failed",
+                    output=result.stdout,
+                    error=redact(
+                        "the run finished (exit %s) but recording it failed: %s" % (result.exit_code, exc)
+                    )[:2000],
+                    detail=finished,
+                )
+            except Exception as finish_exc:
+                _err("error: could not record the job's outcome: %s" % redact(str(finish_exc)))
+        raise
     if args.job_file:
-        finished = {
-            "exit_code": result.exit_code,
-            "stalled": result.stalled,
-            "timed_out": result.timed_out,
-            "duration_seconds": round(result.duration, 2),
-            "model": result.resolved.display if result.resolved else None,
-            "session_id": result.session_id,
-        }
-        if resume_detail is not None:
-            finished["resume"] = dict(resume_detail, outcome="ok" if result.ok else None)
         jobs_mod.finish(
             args.job_file,
             "succeeded" if result.ok else "failed",
@@ -1246,28 +1293,6 @@ def cmd_run(args: argparse.Namespace) -> int:
             error="" if result.ok else (result.stderr or "").strip()[:2000],
             detail=finished,
         )
-    # Recorded whatever the outcome -- a failed run still spent what it spent.
-    # A run that never started one is a different thing, and counting it as
-    # unreported would make the account call itself incomplete over a run with
-    # nothing to report.
-    if result.invoked:
-        # Labelled by tier when there is one, so `tokens show` can answer the
-        # question a tier exists to raise: did the cheaper one cost less. A
-        # continued session is labelled too, to be read against fresh runs.
-        label = ""
-        if tier:
-            label = "%s:%s" % (role, tier)
-        elif session_id is not None:
-            label = "%s:resumed" % role
-        book.record_usage(role, result.usage.to_dict(), label=label)
-    book.end(
-        token,
-        "ok" if result.ok else ("stalled" if result.stalled else "failed"),
-        end_detail(result),
-        # What the child was measured to take, whatever it exited with. A run
-        # killed at its deadline spent the time it spent; so did a failed one.
-        charged_seconds=result.duration,
-    )
 
     # Printed last, and after the books are closed. Showing the output used to
     # come first, so a console that could not encode one character of it took

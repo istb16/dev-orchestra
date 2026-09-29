@@ -27,6 +27,7 @@ from helpers import IsolatedCase, has_git
 
 from orchestrator import cli
 from orchestrator import config as config_mod
+from orchestrator import ledger as ledger_mod
 from orchestrator import wizard as wizard_mod
 
 
@@ -273,6 +274,75 @@ class TestRunningOnATier(IsolatedCase):
         self.assertEqual(json.loads(waited)["status"], "succeeded")
         report = json.loads(run_cli("tokens", "show", "--json")[1])
         self.assertIn("implementer:light", report["by_label"])
+
+    def test_a_worker_closes_the_books_before_it_says_it_finished(self):
+        """`jobs wait` returns on the job's status, so a `tokens show` read
+        straight after it has to find the run's usage. The worker used to write
+        "succeeded" first and the account a moment later, and a caller that
+        read in between saw none -- intermittently, on a slow CI runner."""
+        from unittest import mock
+
+        from orchestrator import jobs as jobs_mod
+
+        workspace = self.cli_workspace()
+        jobs_mod.write_job(workspace, {"id": "w-1", "stage": "implementer", "status": "running"})
+        job_file = jobs_mod.job_path(workspace, "w-1")
+        seen = []
+        finish = jobs_mod.finish
+
+        def finishing(*args, **kwargs):
+            seen.append(json.loads(run_cli("tokens", "show", "--json")[1])["by_label"])
+            finish(*args, **kwargs)
+
+        with mock.patch.object(jobs_mod, "finish", finishing):
+            code, _, err = run_cli(
+                "run", "implementer", "--prompt", "hi", "--tier", "light", "--job-file", job_file
+            )
+        self.assertEqual(code, 0, err)
+        self.assertEqual(jobs_mod.read_job(workspace, "w-1")["status"], "succeeded")
+        self.assertIn("implementer:light", seen[0])
+
+    def worker_job(self):
+        from orchestrator import jobs as jobs_mod
+
+        workspace = self.cli_workspace()
+        jobs_mod.write_job(workspace, {"id": "w-1", "stage": "implementer", "status": "running"})
+        return workspace, jobs_mod.job_path(workspace, "w-1")
+
+    def test_a_worker_whose_accounting_fails_finishes_the_job_as_failed(self):
+        """Closing the books comes first now, so a failure there must still
+        finish the job -- and not as the success whose usage is nowhere."""
+        from unittest import mock
+
+        from orchestrator import jobs as jobs_mod
+
+        workspace, job_file = self.worker_job()
+        with mock.patch.object(ledger_mod.Ledger, "record_usage", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError) as raised:
+                run_cli("run", "implementer", "--prompt", "hi", "--job-file", job_file)
+        self.assertIn("disk full", str(raised.exception))
+        job = jobs_mod.read_job(workspace, "w-1")
+        self.assertEqual(job["status"], "failed")
+        self.assertIn("recording it failed", job["error"])
+        self.assertIn("disk full", job["error"])
+        self.assertEqual(job["exit_code"], 0)
+
+    def test_a_job_file_that_cannot_be_written_does_not_hide_the_accounting_failure(self):
+        from unittest import mock
+
+        from orchestrator import jobs as jobs_mod
+
+        _, job_file = self.worker_job()
+        with (
+            mock.patch.object(ledger_mod.Ledger, "end", side_effect=OSError("disk full")),
+            mock.patch.object(jobs_mod, "finish", side_effect=TimeoutError("job lock")),
+        ):
+            out, err = io.StringIO(), io.StringIO()
+            with redirect_stdout(out), redirect_stderr(err), self.assertRaises(OSError) as raised:
+                cli.main(["run", "implementer", "--prompt", "hi", "--job-file", job_file])
+        self.assertNotIsInstance(raised.exception, TimeoutError)
+        self.assertIn("disk full", str(raised.exception))
+        self.assertIn("job lock", err.getvalue())
 
     def test_a_detached_run_records_a_tier_it_could_not_resolve(self):
         """The path forwarding `--tier` opened: the worker is now the one that
