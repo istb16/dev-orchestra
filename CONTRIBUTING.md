@@ -12,7 +12,7 @@ python -m unittest discover -s tests -t tests
 python scripts/validate_skill.py
 ```
 
-No dependencies to install. Python 3.9+ and `git` are enough. Commands here
+No dependencies to install. Python 3.11+ and `git` are enough. Commands here
 are written `python`; read it as `python3` where that is the only name the
 interpreter has. Linting uses [ruff](https://docs.astral.sh/ruff/) if you have
 it (`ruff check .`, then `ruff format .`); CI runs it but will not block on its

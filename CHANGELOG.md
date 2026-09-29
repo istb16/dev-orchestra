@@ -28,6 +28,17 @@ The public surface covered by that promise is: the configuration schema, the
 
 ### Changed
 
+- **Python 3.11 or later is required** (was 3.9). Python 3.9 is past its
+  end of life, and the type checker the project is adopting (#125) no longer
+  targets anything older than 3.10. `scripts/dev_orchestra.py` now checks the
+  interpreter before importing anything and stops with `dev-orchestra needs
+  Python 3.11 or later; this is Python 3.x (<path>)` (exit 2) instead of a
+  syntax error from inside the package. The `bin/` wrappers and the installers
+  pass over a `python3`, `python` or `py` that is older and use the next one
+  that is 3.11 or later. A machine whose only Python is older
+  -- the `python3` some macOS versions ship, for one -- needs a newer one
+  installed (#167).
+
 - **`cli.py` and `review.py` are split into modules, with no change in
   behaviour.** The commands live in `cli_common.py`, `cli_config.py`,
   `cli_run.py`, `cli_review.py`, `cli_state.py` and `cli_workflow.py`; `cli.py`

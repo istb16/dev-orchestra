@@ -127,7 +127,7 @@ family を推測せずに拒否します。古い名前は実行時に黙って�
 
 ## 必要なもの
 
-- **Python 3.9以上** — 標準ライブラリのみ。pip install 不要。
+- **Python 3.11以上** — 標準ライブラリのみ。pip install 不要。
   （PyYAML があれば使いますが、設定形式は内蔵パーサでカバーしています。）
   `python` が無く `python3` だけある環境では `python3` で実行してください。
   `bin/dev-orchestra[.ps1]` はこれを自動で選びます。

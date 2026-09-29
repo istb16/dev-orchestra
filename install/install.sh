@@ -38,10 +38,12 @@ done
 # The pointer block tells the host how to run the CLI, so it has to name an
 # interpreter this machine actually has. Distributions that ship Python 3 only
 # as `python3` are common enough that a hardcoded `python` sends the agent to a
-# command that is not there.
+# command that is not there. A name that runs a Python older than 3.11 is
+# passed over, the same as bin/dev-orchestra does.
 python_cmd=python
 for candidate in python3 python; do
-  if command -v "$candidate" >/dev/null 2>&1; then
+  if command -v "$candidate" >/dev/null 2>&1 &&
+    "$candidate" -c 'import sys; sys.exit(sys.version_info < (3, 11))' >/dev/null 2>&1; then
     python_cmd=$candidate
     break
   fi

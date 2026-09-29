@@ -484,7 +484,7 @@ class TestReviewerConditions(IsolatedCase):
 
     def with_conditions(self, *conditions, **optimization):
         data = config_mod.default_config()
-        for reviewer, when in zip(data["reviewers"], conditions):
+        for reviewer, when in zip(data["reviewers"], conditions, strict=False):
             if when is not None:
                 reviewer["when"] = when
         data["optimization"].update(optimization)
