@@ -1,4 +1,4 @@
-<!-- translated-from: references/workflow.md sha256:76314b943077f36bade02ba15f33c6ae06bf75c97dacae8f6527be36a4c77a0a -->
+<!-- translated-from: references/workflow.md sha256:a93291d8cdf97ab31cb626c45687eabb5fd5276624df7d8421fef95eb5eacb13 -->
 
 > この文書は [references/workflow.md](../../../references/workflow.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -737,7 +737,35 @@ plugins フォルダに直接クローンしたものは、そのままで導入
 インストール、アップグレード、アンインストールのあとは Antigravity を再起動してください。
 Plugin のディレクトリは起動時にしか見つけられません。リンクで入れた場合はチェックアウトで
 今のブランチがそのまま読み込まれるので、信頼できないブランチを見るときは `--copy` か
-別の worktree を使ってください。
+別の worktree を使ってください。リンクしたチェックアウトや plugins フォルダに置いたクローンに、
+あとのチェックアウトで上のどれかが加わったときは、`dev-orchestra doctor` が報告します。
+
+Plugin が Antigravity に入る道は、ほかに三つあります。Marketplace は Google が選んで
+載せるもので、利用者が追加するマーケットプレイスはなく、掲載は申込フォームを通します。
+Antigravity CLI は `agy plugin install /path/to/dev-orchestra`（セッション内では
+`/plugin install <local-path>`）でローカルの Plugin を入れ、そのコピーを
+`~/.gemini/antigravity-cli/plugins/dev-orchestra/` に置きます。`agy plugin uninstall
+dev-orchestra` で取り除けます。渡したディレクトリを丸ごとそのままコピーするので、
+インストーラのペイロード一覧は使われず、`agents/*.md` も残ります。実行するのは、スキル以外に
+Antigravity が読み込むもの（`hooks.json`、`mcp_config.json`、`plugins.json`、`rules/`、
+`agents/*.md`。`python scripts/validate_skill.py` が報告します）がなく、信頼できない
+ブランチもチェックアウトしていない、きれいなチェックアウトだけにしてください。コピーは
+`git pull` に追従しないので、pull のあと、きれいな状態に戻したチェックアウトでもう一度
+実行します。最後に、カスタマイズのルート（`~/.gemini/config/plugins.json`、プロジェクトでは
+`.agents/plugins.json`）に置いた `plugins.json` で、別の場所にあるチェックアウトを
+Antigravity に読ませることもできます。エントリに書くのは Plugin のディレクトリそのものではなく、
+それを含む親ディレクトリです。
+`{"entries":[{"path":"C:/Projects","include_only":["dev-orchestra"]}]}` は
+`C:/Projects/dev-orchestra` にあるチェックアウトを読み込み、`path` にチェックアウトそのものを
+書いたエントリは何も読み込みません。Windows では `C:/` の形のパスが使えます。これは
+リンクと同じく作業ツリーをそのまま読み込むので、あとでチェックアウトしたブランチが次の
+再起動で有効になります。リンクで入れた場合と同じく信頼できないブランチには注意が必要で、
+しかも何も守ってくれません。インストーラの拒否はインストーラがリンクするときにしか働かず、
+`doctor` が確認するのはインストーラの二つの入れ先だけで、`plugins.json` のエントリや
+`agy plugin install` が置いたコピーは見ません。勧める方法はインストーラのままです。
+そのリンクはアプリ、IDE、CLI のどれでも使え、`git pull` に追従し、スキル以外に
+読み込まれるものがあるチェックアウトでは拒否され、そのあとは `doctor` が見張ります。
+ほかの道にはそのどれもありません。
 
 必要なら CLI を PATH に通し、動作を確認します。
 

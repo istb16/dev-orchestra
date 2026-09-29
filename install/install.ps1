@@ -52,6 +52,7 @@ $Sentinel = '.dev-orchestra-install'
 # uninstaller removes the entry only when the comment is right above it.
 $ExcludeMarker = '# added by dev-orchestra install --antigravity'
 $ExcludeEntry = "/.agents/plugins/$SkillName"
+$ClaudeExcludeEntry = "/.claude/skills/$SkillName"
 
 # The pointer block tells the host how to run the CLI, so it has to name an
 # interpreter this machine actually has. Same order as bin/dev-orchestra.ps1:
@@ -75,26 +76,72 @@ foreach ($candidate in @('python', 'py', 'python3')) {
     }
 }
 
+function Test-Utf8Bom {
+    param([string]$Path)
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $false }
+    $bytes = [System.IO.File]::ReadAllBytes($Path)
+    return ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF)
+}
+
+function Add-GitExcludeLines {
+    # Append $Lines to <project>/.git/info/exclude unless $Entry is already a
+    # line there. No BOM: Windows PowerShell's utf8 writes one, and git would
+    # read it as part of the first pattern.
+    param([string]$Entry, [string[]]$Lines)
+
+    $gitDir = Join-Path $Project '.git'
+    if (-not (Test-Path -LiteralPath $gitDir -PathType Container)) { return }
+    # A full path: the .NET call below does not follow Set-Location.
+    $infoDir = (New-Item -ItemType Directory -Force -Path (Join-Path $gitDir 'info')).FullName
+    $excludeFile = Join-Path $infoDir 'exclude'
+    # @() around the whole if: assigning an if unrolls a one-line array into a
+    # string, and `+` would then join the lines into one.
+    $existing = @(if (Test-Path -LiteralPath $excludeFile) { Get-Content -LiteralPath $excludeFile })
+    $noBom = New-Object System.Text.UTF8Encoding($false)
+    if ($existing -notcontains $Entry) {
+        [System.IO.File]::WriteAllLines($excludeFile, [string[]]($existing + $Lines), $noBom)
+        Write-Host "Excluded $Entry via .git/info/exclude (local only)"
+    }
+    elseif (Test-Utf8Bom $excludeFile) {
+        # An earlier installer wrote the entry with a BOM, which hides it from git.
+        [System.IO.File]::WriteAllLines($excludeFile, [string[]]$existing, $noBom)
+    }
+}
+
 function Add-ProjectGitExclude {
     # A per-project install drops a directory (usually a link to this git
     # checkout) inside someone else's repository. Left alone, `git add -A`
     # there fails with "does not have a commit checked out". Exclude it
     # locally, which touches neither their .gitignore nor their history.
-    param([string]$Destination)
-
     if (-not $Project) { return }
-    $gitDir = Join-Path $Project '.git'
-    if (-not (Test-Path -LiteralPath $gitDir -PathType Container)) { return }
+    Add-GitExcludeLines -Entry $ClaudeExcludeEntry -Lines @($ClaudeExcludeEntry)
+}
 
-    $entry = '/' + ($Destination.Substring($Project.Length).TrimStart('\', '/') -replace '\\', '/')
-    $infoDir = Join-Path $gitDir 'info'
-    New-Item -ItemType Directory -Force -Path $infoDir | Out-Null
-    $excludeFile = Join-Path $infoDir 'exclude'
+function Test-ReparsePoint {
+    # A link or junction, dangling or not.
+    param([string]$Path)
 
-    $existing = if (Test-Path -LiteralPath $excludeFile) { @(Get-Content -LiteralPath $excludeFile) } else { @() }
-    if ($existing -notcontains $entry) {
-        Set-Content -LiteralPath $excludeFile -Value ($existing + $entry) -Encoding utf8
-        Write-Host "Excluded $entry via .git/info/exclude (local only)"
+    $item = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+    if ($item) { return [bool]($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) }
+    # Get-Item can miss a dangling link; the attributes cannot. Remove-OwnedDestination
+    # reads them too before it gets here, deliberately: it needs three answers.
+    try { return [bool]([System.IO.File]::GetAttributes($Path) -band [System.IO.FileAttributes]::ReparsePoint) }
+    catch { return $false }
+}
+
+function Remove-Link {
+    # Remove a link itself, never what it points at. A directory link or
+    # junction goes through Directory.Delete without recursion; a file symlink
+    # has no Directory attribute and is removed like a file.
+    param([string]$Path)
+
+    $attributes = [System.IO.File]::GetAttributes($Path)
+    if ($attributes -band [System.IO.FileAttributes]::Directory) {
+        [System.IO.Directory]::Delete($Path, $false)
+    }
+    else {
+        # Not Remove-Item: the provider can fail to find a dangling file link.
+        [System.IO.File]::Delete($Path)
     }
 }
 
@@ -155,10 +202,10 @@ function Remove-OwnedDestination {
         )
     }
 
-    if ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
+    if (Test-ReparsePoint $Destination) {
         $target = Get-LinkTarget $item
         if ($target -and ($target -ieq $root.TrimEnd('\', '/'))) {
-            [System.IO.Directory]::Delete($Destination, $false)
+            Remove-Link $Destination
             return $true
         }
         if (-not $target) { $target = 'a path that cannot be read' }
@@ -183,7 +230,7 @@ function Remove-OwnedDestination {
 
 function Get-AutoloadEntries {
     # Entries at the checkout root that Antigravity would load along with the
-    # skill. Kept in step with ANTIGRAVITY_AUTOLOAD in scripts/validate_skill.py.
+    # skill. Kept in step with ANTIGRAVITY_AUTOLOAD in scripts/orchestrator/hosts.py.
     $found = New-Object System.Collections.Generic.List[string]
     foreach ($entry in @('hooks.json', 'mcp_config.json', 'plugins.json', 'rules')) {
         if (Get-Item -LiteralPath (Join-Path $root $entry) -Force -ErrorAction SilentlyContinue) {
@@ -201,23 +248,7 @@ function Get-AutoloadEntries {
 
 function Add-MarkedGitExclude {
     if (-not $Project) { return }
-    $gitDir = Join-Path $Project '.git'
-    if (-not (Test-Path -LiteralPath $gitDir -PathType Container)) { return }
-
-    # A full path: the .NET call below does not follow Set-Location.
-    $infoDir = (New-Item -ItemType Directory -Force -Path (Join-Path $gitDir 'info')).FullName
-    $excludeFile = Join-Path $infoDir 'exclude'
-
-    # @() around the whole if: assigning an if unrolls a one-line array into a
-    # string, and `+` would then join the lines into one.
-    $existing = @(if (Test-Path -LiteralPath $excludeFile) { Get-Content -LiteralPath $excludeFile })
-    if ($existing -notcontains $ExcludeEntry) {
-        # No BOM: Windows PowerShell's utf8 writes one, and git would read it
-        # as part of the first pattern.
-        $lines = [string[]]($existing + @($ExcludeMarker, $ExcludeEntry))
-        [System.IO.File]::WriteAllLines($excludeFile, $lines, (New-Object System.Text.UTF8Encoding($false)))
-        Write-Host "Excluded $ExcludeEntry via .git/info/exclude (local only)"
-    }
+    Add-GitExcludeLines -Entry $ExcludeEntry -Lines @($ExcludeMarker, $ExcludeEntry)
 }
 
 function Copy-ForAntigravity {
@@ -322,31 +353,42 @@ function Install-ClaudeSkill {
         $base = if ($env:CLAUDE_CONFIG_DIR) { $env:CLAUDE_CONFIG_DIR } else { Join-Path $HOME '.claude' }
         $skillsDir = Join-Path $base 'skills'
     }
-    New-Item -ItemType Directory -Force -Path $skillsDir | Out-Null
+    # The full path, because the .NET calls below do not follow Set-Location.
+    $skillsDir = (New-Item -ItemType Directory -Force -Path $skillsDir).FullName
     $dest = Join-Path $skillsDir $SkillName
 
-    if (Test-Path -LiteralPath $dest) {
+    # A link is removed as a link: recursing through it would empty whatever
+    # it points at.
+    if (Test-ReparsePoint $dest) {
+        Write-Host "Replacing existing install at $dest"
+        Remove-Link $dest
+    }
+    elseif (Test-Path -LiteralPath $dest) {
         Write-Host "Replacing existing install at $dest"
         Remove-Item -LiteralPath $dest -Recurse -Force -Confirm:$false
     }
 
-    Add-ProjectGitExclude -Destination $dest
-
+    $linked = $false
     if (-not $Copy) {
         try {
             New-Item -ItemType SymbolicLink -Path $dest -Target $root -ErrorAction Stop | Out-Null
             Write-Host "Linked $dest -> $root"
             Write-Host "``git pull`` in the checkout now upgrades the skill in place."
-            return
+            $linked = $true
         }
         catch {
             Write-Warning 'Could not create a symlink (Developer Mode off?). Copying instead.'
         }
     }
 
-    Copy-Payload -Destination $dest
-    Write-Host "Copied the skill to $dest"
-    Write-Host 'Re-run this installer after `git pull` to upgrade.'
+    if (-not $linked) {
+        Copy-Payload -Destination $dest
+        Write-Host "Copied the skill to $dest"
+        Write-Host 'Re-run this installer after `git pull` to upgrade.'
+    }
+
+    # Only now: a failed install leaves the exclude file as it was.
+    Add-ProjectGitExclude
 }
 
 function Install-CodexPointer {

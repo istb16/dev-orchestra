@@ -131,7 +131,7 @@ release_destination() {
 }
 
 # Entries at the checkout root that Antigravity would load along with the
-# skill. Kept in step with ANTIGRAVITY_AUTOLOAD in scripts/validate_skill.py.
+# skill. Kept in step with ANTIGRAVITY_AUTOLOAD in scripts/orchestrator/hosts.py.
 autoload_entries() {
   for entry in hooks.json mcp_config.json plugins.json rules; do
     if [ -e "$root/$entry" ] || [ -L "$root/$entry" ]; then
@@ -179,12 +179,6 @@ install_claude() {
     rm -rf "$dest"
   fi
 
-  # A per-project install drops a directory (usually a symlink to this git
-  # checkout) inside someone else's repository. Left alone, `git add -A` there
-  # fails with "does not have a commit checked out". Exclude it locally, which
-  # touches neither their .gitignore nor their history.
-  exclude_from_project_git "$dest"
-
   if [ "$use_copy" -eq 1 ]; then
     copy_payload "$dest"
     printf 'Copied the skill to %s\n' "$dest"
@@ -196,6 +190,13 @@ install_claude() {
     echo "Could not create a symlink; re-run with --copy." >&2
     exit 1
   fi
+
+  # A per-project install drops a directory (usually a symlink to this git
+  # checkout) inside someone else's repository. Left alone, `git add -A` there
+  # fails with "does not have a commit checked out". Exclude it locally, which
+  # touches neither their .gitignore nor their history. Only now: a failed
+  # install leaves the exclude file as it was.
+  exclude_from_project_git "$dest"
 }
 
 install_codex() {

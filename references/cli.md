@@ -143,6 +143,18 @@ a conditional reviewer, and its `--json` entry carries `when` (`high-risk` or
 `paths`) and `condition` (the same label as the line) whenever it is not
 `always`, plus `paths`, the reviewer's patterns, for a path-scoped one.
 
+When an Antigravity install location (`~/.gemini/config/plugins/dev-orchestra`,
+or `.agents/plugins/dev-orchestra` in the repository `doctor` runs in) is this
+checkout, whether through a link or junction or because the checkout itself
+sits there, `doctor` reports as a problem any `hooks.json`, `mcp_config.json`,
+`plugins.json`, `rules/` or `agents/*.md` at the checkout root, because
+Antigravity loads them with the skill on its next start; an `agents/` it
+cannot list is a problem too. A copy install has none of them. A checkout
+registered through a `plugins.json` entry, or a copy staged by `agy plugin
+install`, is not checked by `doctor` (see "Installing from a skill checkout" in
+`references/workflow.md`). In `--json` it is `antigravity`, with `root`, `live`
+(the install locations that are this checkout) and `autoload`.
+
 Each provider block has a `Source:` line -- `built-in` or `user module <path>`.
 The **User providers** block is always shown: the directory user adapters are
 imported from (or that it is not present, or disabled by

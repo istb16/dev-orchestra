@@ -1,13 +1,15 @@
-"""The Antigravity mode of the installers, run for real against temp directories.
+"""The installers, run for real against temp directories.
 
-Nothing here needs Antigravity: an install is a link or a copy in a `plugins/`
-folder, and that is what these tests look at. Every shell found on PATH runs
-the same cases, one subtest each -- `sh` off Windows, and `pwsh` and Windows
-PowerShell wherever they are.
+Mostly the Antigravity mode, and the Claude mode's link handling and exclude
+line. Nothing here needs Antigravity: an install is a link or a copy in a
+`plugins/` folder, and that is what these tests look at. Every shell found on
+PATH runs the same cases, one subtest each -- `sh` off Windows, and `pwsh` and
+Windows PowerShell wherever they are.
 """
 
 from __future__ import annotations
 
+import codecs
 import os
 import re
 import shutil
@@ -93,9 +95,13 @@ class _InstallerCase(IsolatedCase):
         copy: bool = False,
         root: str = REPO_ROOT,
         env: Optional[dict] = None,
+        mode: str = "antigravity",
+        cwd: Optional[str] = None,
     ) -> Tuple[int, str]:
         script = os.path.join(root, "install", action + shell.suffix)
-        args = ["--antigravity"] if shell.posix else ["-Antigravity"]
+        args: List[str] = []
+        if mode == "antigravity":
+            args.append("--antigravity" if shell.posix else "-Antigravity")
         if project is not None:
             args += ["--project" if shell.posix else "-Project", project]
         if copy:
@@ -107,6 +113,7 @@ class _InstallerCase(IsolatedCase):
             capture_output=True,
             text=True,
             env=env,
+            cwd=cwd,
             timeout=300,
         )
         return result.returncode, result.stdout + result.stderr
@@ -465,7 +472,213 @@ class TestAntigravityInstallers(_InstallerCase):
                 handle.write(saved)
 
 
+CLAUDE_ENTRY = "/.claude/skills/dev-orchestra"
+
+
+@unittest.skipUnless(SHELLS, "needs sh (off Windows), pwsh or powershell")
+class TestClaudeInstallers(_InstallerCase):
+    """Claude mode: a link at the destination is removed as a link, and the
+    exclude line is written once the install succeeded, on a line of its own."""
+
+    def claude_dest(self, project: str) -> str:
+        return os.path.join(project, ".claude", "skills", SKILL_NAME)
+
+    def claude(self, shell: Shell, action: str, project: str, **kwargs) -> Tuple[int, str]:
+        return self.run_installer(shell, action, project, mode="claude", **kwargs)
+
+    def link_at_destination(self, base: str) -> Tuple[str, str, str]:
+        """A throwaway checkout with a file of its own, linked from the destination."""
+        checkout = self.make_checkout(base)
+        self.write_file(os.path.join(checkout, "mine.txt"))
+        project = os.path.join(base, "proj")
+        dest = self.claude_dest(project)
+        os.makedirs(os.path.dirname(dest))
+        make_dir_link(dest, checkout)
+        return project, dest, checkout
+
+    def assert_checkout_intact(self, checkout: str) -> None:
+        for name in ("mine.txt", "plugin.json"):
+            self.assertTrue(os.path.isfile(os.path.join(checkout, name)), name)
+
+    def test_a_bom_left_by_an_earlier_install_is_removed(self):
+        for shell in [s for s in SHELLS if not s.posix]:
+            with self.subTest(shell=shell.name):
+                base = self.fresh(shell, "bom")
+                project = self.git_project(base)
+                exclude = os.path.join(project, ".git", "info", "exclude")
+                with open(exclude, "wb") as handle:
+                    handle.write(codecs.BOM_UTF8 + (CLAUDE_ENTRY + "\n").encode("utf-8"))
+                code, output = self.claude(shell, "install", project, copy=True)
+                self.assertEqual(code, 0, output)
+                with open(exclude, "rb") as handle:
+                    data = handle.read()
+                self.assertFalse(data.startswith(codecs.BOM_UTF8), data)
+                self.assertEqual(self.exclude_lines(project).count(CLAUDE_ENTRY), 1)
+
+    def test_a_relative_project_from_another_directory(self):
+        for shell in SHELLS:
+            with self.subTest(shell=shell.name):
+                base = self.fresh(shell, "relative")
+                project = self.git_project(base)
+                elsewhere = os.path.join(base, "elsewhere")
+                os.makedirs(elsewhere)
+                relative = os.path.relpath(project, elsewhere)
+                dest = self.claude_dest(project)
+                code, output = self.claude(shell, "install", relative, copy=True, cwd=elsewhere)
+                self.assertEqual(code, 0, output)
+                self.assertTrue(os.path.isfile(os.path.join(dest, "plugin.json")), output)
+                self.assertEqual(self.exclude_lines(project).count(CLAUDE_ENTRY), 1)
+                code, output = self.claude(shell, "uninstall", relative, cwd=elsewhere)
+                self.assertEqual(code, 0, output)
+                self.assertNotIn(SKILL_NAME, os.listdir(os.path.dirname(dest)))
+
+    @unittest.skipUnless(os.name == "nt", "a junction, and the .NET calls that take a relative path wrong")
+    def test_a_relative_project_with_a_junction_at_the_destination(self):
+        for shell in SHELLS:
+            with self.subTest(shell=shell.name):
+                base = self.fresh(shell, "relative-link")
+                project, dest, checkout = self.link_at_destination(base)
+                elsewhere = os.path.join(base, "elsewhere")
+                os.makedirs(elsewhere)
+                relative = os.path.relpath(project, elsewhere)
+                code, output = self.claude(shell, "uninstall", relative, cwd=elsewhere)
+                self.assertEqual(code, 0, output)
+                self.assertFalse(os.path.lexists(dest), output)
+                self.assert_checkout_intact(checkout)
+
+    def test_install_replaces_a_link_without_emptying_its_target(self):
+        for shell in SHELLS:
+            with self.subTest(shell=shell.name):
+                project, dest, checkout = self.link_at_destination(self.fresh(shell, "replace"))
+                code, output = self.claude(shell, "install", project, copy=True)
+                self.assertEqual(code, 0, output)
+                self.assertFalse(is_link(dest), output)
+                self.assertTrue(os.path.isfile(os.path.join(dest, "plugin.json")), output)
+                self.assert_checkout_intact(checkout)
+
+    def test_uninstall_removes_a_link_without_emptying_its_target(self):
+        for shell in SHELLS:
+            with self.subTest(shell=shell.name):
+                project, dest, checkout = self.link_at_destination(self.fresh(shell, "unlink"))
+                code, output = self.claude(shell, "uninstall", project)
+                self.assertEqual(code, 0, output)
+                self.assertIn("Removed", output)
+                self.assertNotIn(SKILL_NAME, os.listdir(os.path.dirname(dest)))
+                self.assert_checkout_intact(checkout)
+
+    def test_a_dangling_link_is_removed(self):
+        for shell in SHELLS:
+            with self.subTest(shell=shell.name):
+                base = self.fresh(shell, "dangling")
+                gone = os.path.join(base, "gone")
+                project = os.path.join(base, "proj")
+                dest = self.claude_dest(project)
+                os.makedirs(os.path.dirname(dest))
+                if os.name == "nt":
+                    # A junction needs a target when it is made; take it away after.
+                    os.makedirs(gone)
+                    make_dir_link(dest, gone)
+                    os.rmdir(gone)
+                else:
+                    os.symlink(gone, dest)
+                code, output = self.claude(shell, "uninstall", project)
+                self.assertEqual(code, 0, output)
+                self.assertIn("Removed", output)
+                self.assertFalse(os.path.lexists(dest), output)
+
+                if os.name == "nt":
+                    os.makedirs(gone)
+                    make_dir_link(dest, gone)
+                    os.rmdir(gone)
+                else:
+                    os.symlink(gone, dest)
+                code, output = self.claude(shell, "install", project, copy=True)
+                self.assertEqual(code, 0, output)
+                self.assertFalse(is_link(dest), output)
+                self.assertTrue(os.path.isfile(os.path.join(dest, "plugin.json")), output)
+                self.assertFalse(os.path.exists(gone), output)
+
+    def test_a_file_symlink_is_removed_as_a_file(self):
+        for shell in SHELLS:
+            with self.subTest(shell=shell.name):
+                base = self.fresh(shell, "file-link")
+                target = os.path.join(base, "target.txt")
+                self.write_file(target, "keep me\n")
+                project = os.path.join(base, "proj")
+                dest = self.claude_dest(project)
+                os.makedirs(os.path.dirname(dest))
+                try:
+                    os.symlink(target, dest)
+                except OSError as exc:
+                    self.skipTest("cannot make a file symlink here: %s" % exc)
+                code, output = self.claude(shell, "uninstall", project)
+                self.assertEqual(code, 0, output)
+                self.assertIn("Removed", output)
+                self.assertFalse(os.path.lexists(dest), output)
+                self.assertEqual(read_text(target), "keep me\n")
+
+                os.symlink(target, dest)
+                code, output = self.claude(shell, "install", project, copy=True)
+                self.assertEqual(code, 0, output)
+                self.assertTrue(os.path.isfile(os.path.join(dest, "plugin.json")), output)
+                self.assertEqual(read_text(target), "keep me\n")
+
+    def test_the_exclude_entry_is_written_once(self):
+        for shell in SHELLS:
+            with self.subTest(shell=shell.name):
+                project = self.git_project(self.fresh(shell, "twice"))
+                for _ in range(2):
+                    code, output = self.claude(shell, "install", project, copy=True)
+                    self.assertEqual(code, 0, output)
+                self.assertEqual(self.exclude_lines(project).count(CLAUDE_ENTRY), 1)
+
+    def test_the_exclude_entry_gets_its_own_line_and_no_bom(self):
+        """A one-line file is where PowerShell's if-assignment joined the two."""
+        for shell in SHELLS:
+            with self.subTest(shell=shell.name):
+                project = self.git_project(self.fresh(shell, "one-line"), exclude="/build\n")
+                exclude = os.path.join(project, ".git", "info", "exclude")
+                code, output = self.claude(shell, "install", project, copy=True)
+                self.assertEqual(code, 0, output)
+                with open(exclude, "rb") as handle:
+                    written = handle.read()
+                self.assertFalse(written.startswith(b"\xef\xbb\xbf"), written)
+                self.assertEqual(written.decode("utf-8").splitlines(), ["/build", CLAUDE_ENTRY])
+                code, output = self.claude(shell, "install", project, copy=True)
+                self.assertEqual(code, 0, output)
+                with open(exclude, "rb") as handle:
+                    self.assertEqual(handle.read(), written)
+
+
 POSIX_SHELLS = [shell for shell in SHELLS if shell.posix]
+PWSH_ON_POSIX = [shell for shell in SHELLS if shell.name == "pwsh" and os.name != "nt"]
+
+
+@unittest.skipUnless(
+    PWSH_ON_POSIX and os.name != "nt" and os.geteuid() != 0, "needs pwsh off Windows, not as root"
+)
+class TestPowerShellClaudeCopyFailure(_InstallerCase):
+    def test_a_failed_copy_leaves_the_exclude_file_alone(self):
+        """Proven by running it here; on Windows by the static ordering test."""
+        shell = PWSH_ON_POSIX[0]
+        base = self.fresh(shell, "unreadable")
+        checkout = self.make_checkout(base)
+        project = self.git_project(base)
+        # One level below a readable skills/, so that Copy-Payload's Test-Path
+        # passes and Copy-Item then fails.
+        unreadable = os.path.join(checkout, "skills", "dev-orchestra")
+        os.chmod(unreadable, 0)
+        try:
+            code, output = self.run_installer(
+                shell, "install", project, copy=True, root=checkout, mode="claude"
+            )
+        finally:
+            # Before tearDown removes the tree.
+            os.chmod(unreadable, 0o755)
+        self.assertNotEqual(code, 0, output)
+        dest = os.path.join(project, ".claude", "skills", SKILL_NAME)
+        self.assertFalse(os.path.isfile(os.path.join(dest, "skills", "dev-orchestra", "SKILL.md")), output)
+        self.assertFalse(os.path.exists(os.path.join(project, ".git", "info", "exclude")), output)
 
 
 @unittest.skipUnless(POSIX_SHELLS, "needs sh, off Windows")
@@ -501,6 +714,22 @@ class TestPosixAntigravityInstaller(_InstallerCase):
         self.assertFalse(is_link(dest))
         for relative in ("plugin.json", "skills/dev-orchestra/SKILL.md", SENTINEL):
             self.assertTrue(os.path.isfile(os.path.join(dest, relative)), relative)
+
+    def test_a_failed_claude_link_leaves_the_exclude_file_alone(self):
+        shell = POSIX_SHELLS[0]
+        stubs = os.path.join(self.tmp, "stubs")
+        os.makedirs(stubs)
+        ln = os.path.join(stubs, "ln")
+        with open(ln, "w", encoding="utf-8") as handle:
+            handle.write("#!/bin/sh\necho 'ln: not allowed here' >&2\nexit 1\n")
+        os.chmod(ln, os.stat(ln).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+        env = dict(os.environ, HOME=self.home, PATH=stubs + os.pathsep + os.environ.get("PATH", ""))
+
+        project = self.git_project(self.tmp)
+        code, output = self.run_installer(shell, "install", project, env=env, mode="claude")
+        self.assertEqual(code, 1, output)
+        self.assertIn("re-run with --copy", output)
+        self.assertFalse(os.path.exists(os.path.join(project, ".git", "info", "exclude")), output)
 
     def test_an_ln_that_copies_instead_is_replaced_by_the_payload(self):
         """Git Bash's `ln -s` copies the whole checkout and exits 0."""

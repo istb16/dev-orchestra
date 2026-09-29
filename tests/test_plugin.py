@@ -51,9 +51,10 @@ class TestManifests(IsolatedCase):
         self.assertEqual(validate_skill.check_manifests(skill_version()), [])
 
     def test_the_shipped_root_manifest_validates(self):
-        self.assertEqual(validate_skill.check_antigravity(skill_version()), [])
+        self.assertEqual(validate_skill.check_antigravity(), [])
         manifest = load(validate_skill.ANTIGRAVITY_PLUGIN)
         self.assertLessEqual(set(manifest), validate_skill.ANTIGRAVITY_FIELDS)
+        self.assertEqual(manifest["$schema"], validate_skill.ANTIGRAVITY_SCHEMA)
 
     def test_every_manifest_is_json(self):
         for relative in (
@@ -66,19 +67,18 @@ class TestManifests(IsolatedCase):
             self.assertIsInstance(load(relative), dict, relative)
 
     def test_both_hosts_declare_the_same_plugin(self):
-        """All three: Claude Code, Codex and Antigravity."""
+        """All three: Claude Code, Codex and Antigravity, whose schema has no version."""
         claude = load(validate_skill.CLAUDE_PLUGIN)
-        for relative in (validate_skill.CODEX_PLUGIN, validate_skill.ANTIGRAVITY_PLUGIN):
+        for relative, fields in (
+            (validate_skill.CODEX_PLUGIN, ("name", "version", "description")),
+            (validate_skill.ANTIGRAVITY_PLUGIN, ("name", "description")),
+        ):
             other = load(relative)
-            for field in ("name", "version", "description"):
+            for field in fields:
                 self.assertEqual(claude[field], other[field], "%s: %s" % (relative, field))
 
     def test_the_version_matches_the_skill(self):
-        for relative in (
-            validate_skill.CLAUDE_PLUGIN,
-            validate_skill.CODEX_PLUGIN,
-            validate_skill.ANTIGRAVITY_PLUGIN,
-        ):
+        for relative in (validate_skill.CLAUDE_PLUGIN, validate_skill.CODEX_PLUGIN):
             self.assertEqual(load(relative)["version"], skill_version(), relative)
 
     def test_a_version_drift_is_reported(self):
@@ -175,14 +175,18 @@ class TestAntigravityManifest(IsolatedCase):
         os.makedirs(os.path.join(self.root, os.path.dirname(SKILL_PATH)))
         with open(os.path.join(self.root, SKILL_PATH), "w", encoding="utf-8") as handle:
             handle.write("---\nname: dev-orchestra\n---\n")
-        self.manifest: Dict[str, Any] = {"name": "dev-orchestra", "description": "d", "version": "1.0.0"}
+        self.manifest: Dict[str, Any] = {
+            "$schema": validate_skill.ANTIGRAVITY_SCHEMA,
+            "name": "dev-orchestra",
+            "description": "d",
+        }
 
     def check(self, text=None):
         if text is None:
             text = json.dumps(self.manifest)
         with open(os.path.join(self.root, "plugin.json"), "w", encoding="utf-8") as handle:
             handle.write(text)
-        return validate_skill.check_antigravity("1.0.0", root=self.root)
+        return validate_skill.check_antigravity(root=self.root)
 
     def touch(self, relative, directory=False):
         path = os.path.join(self.root, relative)
@@ -207,9 +211,29 @@ class TestAntigravityManifest(IsolatedCase):
         self.manifest["name"] = "orchestra"
         self.assert_reported(self.check(), "declares name 'orchestra'")
 
-    def test_a_version_drift_is_reported(self):
-        self.manifest["version"] = "0.0.1"
-        self.assert_reported(self.check(), "version mismatch")
+    def test_a_missing_name_is_reported_as_required(self):
+        del self.manifest["name"]
+        self.assert_reported(self.check(), "name is required")
+
+    def test_a_name_outside_the_pattern_is_reported(self):
+        self.manifest["name"] = "dev orchestra"
+        self.assert_reported(self.check(), validate_skill.ANTIGRAVITY_NAME_RE.pattern)
+
+    def test_a_name_with_a_trailing_newline_is_outside_the_pattern(self):
+        self.manifest["name"] = "dev-orchestra\n"
+        self.assert_reported(self.check(), validate_skill.ANTIGRAVITY_NAME_RE.pattern)
+
+    def test_another_schema_is_reported(self):
+        self.manifest["$schema"] = "https://example.invalid/plugin.json"
+        self.assert_reported(self.check(), "$schema is")
+
+    def test_a_manifest_without_schema_passes(self):
+        del self.manifest["$schema"]
+        self.assertEqual(self.check(), [])
+
+    def test_a_version_is_not_in_the_schema(self):
+        self.manifest["version"] = "1.0.0"
+        self.assert_reported(self.check(), "'version' is not a field Antigravity reads")
 
     def test_a_comment_is_not_json(self):
         """Antigravity reads JSONC; this file is kept to strict JSON."""
@@ -217,34 +241,6 @@ class TestAntigravityManifest(IsolatedCase):
 
     def test_a_manifest_that_is_not_an_object_is_reported(self):
         self.assert_reported(self.check("[]"), "must contain a JSON object")
-
-    def test_four_prompts_are_one_too_many(self):
-        self.manifest["suggestedPrompts"] = ["a", "b", "c", "d"]
-        self.assert_reported(self.check(), "at most 3 strings")
-
-    def test_disabled_must_be_a_bool(self):
-        self.manifest["disabled"] = "no"
-        self.assert_reported(self.check(), "disabled must be true or false")
-
-    def test_a_logo_inside_the_root_passes(self):
-        self.touch("assets/logo.svg")
-        self.manifest["logo"] = "assets/logo.svg"
-        self.assertEqual(self.check(), [])
-
-    def test_each_bad_logo_is_reported(self):
-        self.touch("assets/logo.gif")
-        for logo, fragment in (
-            ("/etc/logo.png", "must be a relative path"),
-            ("C:\\logo.png", "must be a relative path"),
-            ("assets/../../logo.png", "must not contain '..'"),
-            ("assets\\..\\logo.png", "must not contain '..'"),
-            ("assets/logo.gif", "must end in one of"),
-            ("assets/missing.png", "names a missing file"),
-            (7, "must be a relative path string"),
-        ):
-            with self.subTest(logo=logo):
-                self.manifest["logo"] = logo
-                self.assert_reported(self.check(), fragment)
 
     def test_the_skill_must_be_where_antigravity_looks(self):
         os.remove(os.path.join(self.root, SKILL_PATH))
@@ -261,6 +257,22 @@ class TestAntigravityManifest(IsolatedCase):
         self.assertEqual(self.check(), [])
         self.touch("agents/x.md")
         self.assert_reported(self.check(), "agents/x.md would be auto-loaded")
+
+    def test_an_upper_case_agent_file_is_reported(self):
+        """The PowerShell installer's *.md filter refuses it on Windows."""
+        self.touch("agents/x.MD")
+        self.assert_reported(self.check(), "agents/x.MD would be auto-loaded")
+
+    @unittest.skipIf(os.name == "nt" or os.geteuid() == 0, "needs a POSIX user that mode 000 stops")
+    def test_an_unreadable_agents_directory_is_reported(self):
+        agents = os.path.join(self.root, "agents")
+        os.makedirs(agents)
+        os.chmod(agents, 0)
+        try:
+            self.assert_reported(self.check(), "cannot list agents/")
+        finally:
+            # Before tearDown removes the tree.
+            os.chmod(agents, 0o755)
 
 
 class TestSkillDiscovery(IsolatedCase):
@@ -342,6 +354,19 @@ class TestPluginDocumentation(IsolatedCase):
             self.assertIn("install.sh --antigravity", text, relative)
             self.assertIn("install.ps1 -Antigravity", text, relative)
             self.assertIn(untrusted, text, relative)
+
+    def test_the_other_antigravity_routes_and_their_caveat_are_documented(self):
+        for relative in ("README.md", "README.ja.md", "references/workflow.md"):
+            text = read(relative)
+            self.assertIn("agy plugin install", text, relative)
+            self.assertIn("plugins.json", text, relative)
+        # Neither reference may drop that doctor does not look at plugins.json.
+        for relative, caveat in (
+            ("references/workflow.md", "checks only the two installer locations, not `plugins.json`"),
+            ("references/cli.md", "registered through a `plugins.json` entry"),
+        ):
+            self.assertIn(caveat, read(relative), relative)
+        self.assertIn("is not checked by `doctor`", read("references/cli.md"))
 
     def test_the_checkout_install_covers_antigravity(self):
         for relative in ("references/workflow.md", "docs/ja/references/workflow.md"):

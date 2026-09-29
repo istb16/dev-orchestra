@@ -57,6 +57,34 @@ function Stop-Refused {
     exit 1
 }
 
+function Test-ReparsePoint {
+    # A link or junction, dangling or not.
+    param([string]$Path)
+
+    $item = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+    if ($item) { return [bool]($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) }
+    # Get-Item can miss a dangling link; the attributes cannot. Remove-OwnedDestination
+    # reads them too before it gets here, deliberately: it needs three answers.
+    try { return [bool]([System.IO.File]::GetAttributes($Path) -band [System.IO.FileAttributes]::ReparsePoint) }
+    catch { return $false }
+}
+
+function Remove-Link {
+    # Remove a link itself, never what it points at. A directory link or
+    # junction goes through Directory.Delete without recursion; a file symlink
+    # has no Directory attribute and is removed like a file.
+    param([string]$Path)
+
+    $attributes = [System.IO.File]::GetAttributes($Path)
+    if ($attributes -band [System.IO.FileAttributes]::Directory) {
+        [System.IO.Directory]::Delete($Path, $false)
+    }
+    else {
+        # Not Remove-Item: the provider can fail to find a dangling file link.
+        [System.IO.File]::Delete($Path)
+    }
+}
+
 function Remove-OwnedDestination {
     # Remove the install at $Destination, or stop. A link is removed only when
     # it resolves to this checkout, and never recursively; a directory only
@@ -82,10 +110,10 @@ function Remove-OwnedDestination {
         )
     }
 
-    if ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
+    if (Test-ReparsePoint $Destination) {
         $target = Get-LinkTarget $item
         if ($target -and ($target -ieq $root.TrimEnd('\', '/'))) {
-            [System.IO.Directory]::Delete($Destination, $false)
+            Remove-Link $Destination
             return $true
         }
         if (-not $target) { $target = 'a path that cannot be read' }
@@ -161,13 +189,25 @@ if ($Antigravity) {
 }
 elseif (-not $Codex) {
     if ($Project) {
-        $dest = Join-Path $Project ".claude/skills/$SkillName"
+        $skillsDir = Join-Path $Project '.claude/skills'
     }
     else {
         $base = if ($env:CLAUDE_CONFIG_DIR) { $env:CLAUDE_CONFIG_DIR } else { Join-Path $HOME '.claude' }
-        $dest = Join-Path $base "skills/$SkillName"
+        $skillsDir = Join-Path $base 'skills'
     }
-    if (Test-Path -LiteralPath $dest) {
+    # The full path, because the .NET calls above do not follow Set-Location.
+    # Missing, nothing is installed and no .NET call is made.
+    $resolved = Get-Item -LiteralPath $skillsDir -Force -ErrorAction SilentlyContinue
+    if ($resolved) { $skillsDir = $resolved.FullName }
+    $dest = Join-Path $skillsDir $SkillName
+
+    # A link is removed as a link: recursing through it would empty whatever
+    # it points at.
+    if ($resolved -and (Test-ReparsePoint $dest)) {
+        Remove-Link $dest
+        Write-Host "Removed $dest"
+    }
+    elseif ($resolved -and (Test-Path -LiteralPath $dest)) {
         Remove-Item -LiteralPath $dest -Recurse -Force -Confirm:$false
         Write-Host "Removed $dest"
     }

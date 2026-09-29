@@ -113,7 +113,13 @@ By hand it is one link: `ln -s "$PWD" ~/.gemini/config/plugins/dev-orchestra`.
 `--project <path>` installs into `<path>/.agents/plugins/` instead. Restart
 Antigravity afterwards: a new plugin directory is only discovered on startup.
 A linked install loads whatever branch the checkout has, so look at an
-untrusted branch with `--copy` or from a separate worktree.
+untrusted branch with `--copy` or from a separate worktree. The Antigravity
+CLI can also stage a copy with `agy plugin install <path>`, which copies the
+checkout as it is, and a `plugins.json` entry can point at the folder that
+contains the checkout, which loads it live; both carry the same
+untrusted-branch caution, and neither is guarded by the installer or checked
+by `doctor` ([details](references/workflow.md#installing-from-a-skill-checkout)).
+The Marketplace is curated by Google and takes no user-added entries.
 
 The installers from before the plugin still work ([Installing from a skill checkout](references/workflow.md#installing-from-a-skill-checkout));
 running the plugin from a clone is in `CONTRIBUTING.md`.

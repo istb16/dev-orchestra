@@ -311,12 +311,45 @@ class TestPortability(IsolatedCase):
                 self.assertIn(token, script, "%s: %s" % (relative, token))
 
     def test_the_installers_refuse_what_the_validator_refuses(self):
-        """The auto-load list is written three times; a new entry goes in all three."""
-        entries = validate_skill.ANTIGRAVITY_AUTOLOAD
+        """The auto-load list is defined once in scripts/orchestrator/hosts.py and spelled
+        out in both installers; a new entry goes in all three places."""
+        from orchestrator import hosts
+
+        self.assertIs(validate_skill.ANTIGRAVITY_AUTOLOAD, hosts.ANTIGRAVITY_AUTOLOAD)
+        entries = hosts.ANTIGRAVITY_AUTOLOAD
         self.assertIn("for entry in %s; do" % " ".join(entries), read("install/install.sh"))
         self.assertIn('"$root"/agents/*.md', read("install/install.sh"))
         self.assertIn("@(%s)" % ", ".join("'%s'" % entry for entry in entries), read("install/install.ps1"))
         self.assertIn("-Filter '*.md'", read("install/install.ps1"))
+        for relative in ("install/install.sh", "install/install.ps1"):
+            self.assertIn(
+                "Kept in step with ANTIGRAVITY_AUTOLOAD in scripts/orchestrator/hosts.py",
+                read(relative),
+                relative,
+            )
+
+    def test_the_claude_exclude_line_is_written_after_the_install(self):
+        """A failed link or copy must leave the project's exclude file alone."""
+        script = read("install/install.ps1")
+        start = script.index("function Install-ClaudeSkill")
+        body = script[start : script.index("\nfunction ", start + 1)]
+        call = body.index("Add-ProjectGitExclude")
+        self.assertGreater(call, body.index("Copy-Payload -Destination $dest"))
+        self.assertGreater(call, body.index("New-Item -ItemType SymbolicLink"))
+
+        script = read("install/install.sh")
+        start = script.index("install_claude() {")
+        body = script[start : script.index("\n}\n", start)]
+        self.assertGreater(
+            body.index('exclude_from_project_git "$dest"'), body.index('ln -s "$root" "$dest"')
+        )
+
+    def test_doctor_never_sees_the_real_home_in_a_test(self):
+        from orchestrator import doctor
+
+        home = doctor.user_home()
+        self.assertTrue(os.path.abspath(home).startswith(os.path.abspath(self.tmp)), home)
+        self.assertNotEqual(home, os.path.expanduser("~"))
 
 
 class TestLinksInTheTree(IsolatedCase):

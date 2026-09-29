@@ -12,9 +12,11 @@ The public surface covered by that promise is: the configuration schema, the
 
 ### Added
 
-- **Google Antigravity as a third plugin host.** A root `plugin.json`, with
-  only the fields Antigravity reads, makes the repository an Antigravity
-  plugin that loads the same `skills/dev-orchestra/SKILL.md`. The installers
+- **Google Antigravity as a third plugin host.** A root `plugin.json` makes
+  the repository an Antigravity plugin that loads the same
+  `skills/dev-orchestra/SKILL.md`. It carries exactly `$schema`, `name` and
+  `description`, the three fields Antigravity's published manifest schema
+  allows; the version stays in the other manifests. The installers
   gain `--antigravity` (alias `--gemini`; `-Antigravity` and `-Gemini` in
   PowerShell), which links the checkout into `~/.gemini/config/plugins/`, or
   into `<path>/.agents/plugins/` with `--project`, and tells you to restart
@@ -27,10 +29,22 @@ The public surface covered by that promise is: the configuration schema, the
   the uninstaller removes only a marked entry. A link is refused while the
   checkout root has a `hooks.json`, `mcp_config.json`, `plugins.json`,
   `rules/` or `agents/*.md`, which Antigravity would load too;
-  `scripts/validate_skill.py` reports the same entries and checks the new
-  manifest's fields, name and version. A copy install for Claude Code now
-  includes `plugin.json` too. Releases bump eight version-bearing files
-  instead of seven (#160).
+  `scripts/validate_skill.py` reports the same entries, an `agents/` it cannot
+  list, and checks the manifest against the schema: the three fields, `name`
+  present and matching its pattern, and `$schema` naming the published one.
+  `doctor` reports as a problem an Antigravity install location (global, or
+  `.agents/plugins/dev-orchestra` in the repository it runs in) that is this
+  checkout, through a link or junction or because the checkout sits there,
+  while the checkout root holds any of those entries, since Antigravity loads
+  them on its next start; it reports an `agents/` it cannot list too, and
+  `doctor --json` gains an `antigravity` block (`root`, `live`, `autoload`).
+  The docs also describe the other routes: `agy plugin install`, which stages
+  an unfiltered copy of the checkout as it is; a `plugins.json` entry naming
+  the checkout's parent directory, which loads the working tree live; and the
+  Marketplace, which Google curates. Neither of the first two is guarded by
+  the installer's refusal or checked by `doctor`, and the installer stays the
+  recommended route. A copy install for Claude Code now includes
+  `plugin.json` too (#160).
 
 - **Type checking with Pyright in CI.** A `Type check` job runs `pyright` over
   `scripts/` against Python 3.11 for every platform, and fails on any error.
@@ -99,6 +113,19 @@ The public surface covered by that promise is: the configuration schema, the
   `references/architecture.md`; troubleshooting to `references/cli.md`; and
   running the plugin from a clone to `CONTRIBUTING.md`. The Japanese
   translations follow (#164, #117).
+
+### Fixed
+
+- **The Claude Code install on Windows no longer empties what a link at its
+  destination points at.** `install.ps1` and `uninstall.ps1` remove a link or
+  junction there as a link, a file symlink as a file, and now also a dangling
+  link, which was missed and made the next install fail; a real directory is
+  removed as before. A relative `-Project` given from another directory is
+  resolved before any of that. Both installers write the project's
+  `.git/info/exclude` line only once the link or copy has succeeded, and
+  `install.ps1` now writes it on a line of its own, without the byte order
+  mark Windows PowerShell added, which git read as part of the first pattern
+  (#160).
 
 ## [0.13.2] - 2026-09-29
 

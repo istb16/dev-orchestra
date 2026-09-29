@@ -108,7 +108,12 @@ cd dev-orchestra
 `--project <path>` を付けると `<path>/.agents/plugins/` に入れます。入れたあとは Antigravity を
 再起動してください。新しい Plugin のディレクトリは起動時にしか見つけられません。リンクで入れた
 場合はチェックアウトで今のブランチがそのまま読み込まれるので、信頼できないブランチを見るときは
-`--copy` か別の worktree を使ってください。
+`--copy` か別の worktree を使ってください。Antigravity CLI の `agy plugin install <path>` でも
+コピーを置けますが、これはチェックアウトをそのままコピーします。また `plugins.json` のエントリで
+チェックアウトを含むフォルダを指せば、作業ツリーがそのまま読み込まれます。どちらも信頼できない
+ブランチには同じ注意が必要で、インストーラの拒否も `doctor` の確認も働きません
+（[詳細](docs/ja/references/workflow.md#installing-from-a-skill-checkout)）。Marketplace は
+Google が選んで載せるもので、利用者が追加することはできません。
 
 Plugin 以前のインストーラも使えます
 （[Skill のチェックアウトからのインストール](docs/ja/references/workflow.md#installing-from-a-skill-checkout)）。

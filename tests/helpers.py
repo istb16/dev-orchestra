@@ -242,9 +242,16 @@ class IsolatedCase(unittest.TestCase):
         os.environ["DEV_ORCHESTRA_WORKFLOW"] = TEST_WORKFLOW
         os.chdir(self.project)
         # Discovery is memoised per process; tests patch CLIs, so start clean.
-        from orchestrator import providers
+        from orchestrator import doctor, providers
         from orchestrator.providers import base as provider_base
 
+        # The Antigravity global install is under the home directory: every
+        # doctor test would otherwise look at the developer's own. Named, not
+        # created; a test that needs it makes it.
+        self.os_home = os.path.join(self.tmp, "home")
+        original_home = doctor.user_home
+        setattr(doctor, "user_home", lambda: self.os_home)
+        self.addCleanup(setattr, doctor, "user_home", original_home)
         provider_base.clear_discovery_cache()
         self.addCleanup(provider_base.clear_discovery_cache)
         # Likewise user adapters: none unless the test writes and loads one.
