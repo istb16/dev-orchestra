@@ -95,7 +95,9 @@ The "Pinned at a value the built-in default has moved off" section lists the
 settings a file fixes where the recommendation has since changed. It is a
 report, never a rewrite: a deliberate choice and an inherited default look
 identical on disk. `config prune` drops the ones equal to the current default,
-on request. It says nothing about `reviewers` -- a panel is nobody's default.
+on request. It says nothing about `reviewers` -- a panel is nobody's default
+-- nor about `optimization.extra_high_risk_paths`, which no release ever wrote
+into a file, so a value there is always one somebody added.
 
 A **Notes** block follows the problems when there is something worth knowing
 that is not wrong; notes never count towards `--strict`, and in `--json` they

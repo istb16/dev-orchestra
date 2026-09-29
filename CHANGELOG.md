@@ -24,6 +24,13 @@ The public surface covered by that promise is: the configuration schema, the
   in `(when: high-risk)` for a conditional reviewer, as in `reviewer list`, and
   the `--json` entry carries `when` when it is not `always`.
 
+### Fixed
+
+- **`doctor` no longer lists `optimization.extra_high_risk_paths` as "pinned at
+  a value the built-in default has moved off".** That section finds values an
+  older release copied into a file and later improved; no release ever wrote
+  this key, so a value there is always one somebody added (#152).
+
 ## [0.13.0] - 2026-09-29
 
 ### Added
