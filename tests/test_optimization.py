@@ -2739,6 +2739,158 @@ class TestScorecardFigures(unittest.TestCase):
         self.assertEqual(card["total"]["rounds_recorded"], card["code"]["rounds_recorded"])
 
 
+def conditional_event(runs, records, round_id="r1", at=None):
+    """A code-review event whose round decided the given conditional reviewers."""
+    event = scored_event(runs, round_id=round_id)
+    event["optimization"] = {"conditional": [dict(record) for record in records]}
+    if at:
+        event["at"] = at
+    return event
+
+
+def condition(reviewer_id, runs, when="high-risk"):
+    return {"id": reviewer_id, "when": when, "runs": runs, "reason": "test"}
+
+
+class TestScorecardLeftOutRounds(unittest.TestCase):
+    """A conditional reviewer's row says how many rounds it sat out."""
+
+    def three_rounds(self, events):
+        rounds = [
+            scored_round(round_id="r1", live=False),
+            scored_round(round_id="r2", live=False),
+            scored_round(round_id="r3"),
+        ]
+        return scorecard(events, rounds)["code"]
+
+    def test_a_reviewer_run_once_and_left_out_twice(self):
+        events = [
+            conditional_event([scored_run("a"), scored_run("s")], [condition("s", True)], "r1"),
+            conditional_event([scored_run("a")], [condition("s", False)], "r2"),
+            conditional_event([scored_run("a")], [condition("s", False)], "r3"),
+        ]
+        card = self.three_rounds(events)
+        group = card["reviewers"]["s"]
+        self.assertEqual((group["runs"], group["left_out_rounds"], group["when"]), (1, 2, "high-risk"))
+        rows = "\n".join(cli._scorecard_rows({"code": card}))
+        self.assertIn("(when: high-risk; left out of 2 round(s))", rows)
+
+    def test_a_reviewer_left_out_of_every_round_still_has_a_row(self):
+        events = [
+            conditional_event([scored_run("a")], [condition("s", False)], round_id)
+            for round_id in ("r1", "r2", "r3")
+        ]
+        card = self.three_rounds(events)
+        group = card["reviewers"]["s"]
+        self.assertEqual((group["runs"], group["reported"], group["left_out_rounds"]), (0, 0, 3))
+        rows = cli._scorecard_rows({"code": card})
+        self.assertTrue(any(line.lstrip().startswith("s ") for line in rows))
+        self.assertIn("left out of 3 round(s)", "\n".join(rows))
+
+    def test_a_reviewer_run_by_a_later_event_of_the_round_was_not_left_out(self):
+        """Left out of the panel, then run on its own with ``--only``."""
+        events = [
+            conditional_event([scored_run("a")], [condition("s", False)]),
+            conditional_event([scored_run("s")], []),
+        ]
+        group = scorecard(events, [scored_round()])["code"]["reviewers"]["s"]
+        self.assertEqual((group["runs"], group["left_out_rounds"]), (1, 0))
+
+    def test_a_round_is_sat_out_once_however_many_events_it_has(self):
+        events = [
+            conditional_event([scored_run("a")], [condition("s", False)]),
+            conditional_event([scored_run("a")], [condition("s", False)]),
+        ]
+        group = scorecard(events, [scored_round()])["code"]["reviewers"]["s"]
+        self.assertEqual(group["left_out_rounds"], 1)
+
+    def test_a_paths_reviewer_says_so(self):
+        events = [conditional_event([scored_run("a")], [condition("s", False, when="paths")])]
+        group = scorecard(events, [scored_round()])["code"]["reviewers"]["s"]
+        self.assertEqual(group["when"], "paths")
+
+    def test_the_condition_is_the_one_of_the_latest_round(self):
+        events = [
+            conditional_event([scored_run("a")], [condition("s", False)], "r1", at="2026-09-01T00:00:00Z"),
+            conditional_event([scored_run("a")], [condition("s", False)], "r2", at="2026-09-01T01:00:00Z"),
+            conditional_event(
+                [scored_run("a")], [condition("s", False, when="paths")], "r3", at="2026-09-01T02:00:00Z"
+            ),
+        ]
+        group = self.three_rounds(events)["reviewers"]["s"]
+        self.assertEqual((group["when"], group["left_out_rounds"]), ("paths", 3))
+        self.assertNotIn("when_at", group)
+
+    def test_the_newer_workflow_s_condition_wins_though_it_is_read_first(self):
+        """Workflows arrive most recently active first."""
+        newer = {
+            "workflow": "new",
+            "stage": "code",
+            "events": [
+                conditional_event(
+                    [scored_run("a")], [condition("s", False, when="paths")], at="2026-09-02T00:00:00Z"
+                )
+            ],
+            "rounds": [scored_round()],
+        }
+        older = {
+            "workflow": "old",
+            "stage": "code",
+            "events": [
+                conditional_event([scored_run("a")], [condition("s", False)], at="2026-09-01T00:00:00Z")
+            ],
+            "rounds": [scored_round()],
+        }
+        group = opt.reviewer_scorecard([newer, older])["code"]["reviewers"]["s"]
+        self.assertEqual((group["when"], group["left_out_rounds"]), ("paths", 2))
+
+    def test_an_event_with_no_time_loses_to_one_with(self):
+        dated = {
+            "workflow": "new",
+            "stage": "code",
+            "events": [
+                conditional_event(
+                    [scored_run("a")], [condition("s", False, when="paths")], at="2026-09-02T00:00:00Z"
+                )
+            ],
+            "rounds": [scored_round()],
+        }
+        undated = {
+            "workflow": "old",
+            "stage": "code",
+            "events": [conditional_event([scored_run("a")], [condition("s", False)])],
+            "rounds": [scored_round()],
+        }
+        group = opt.reviewer_scorecard([dated, undated])["code"]["reviewers"]["s"]
+        self.assertEqual(group["when"], "paths")
+
+    def test_an_unconditional_reviewer_is_unchanged(self):
+        events = [conditional_event([scored_run("a")], [condition("s", False)])]
+        card = scorecard(events, [scored_round()])["code"]
+        self.assertNotIn("when", card["reviewers"]["a"])
+        self.assertNotIn("left_out_rounds", card["reviewers"]["a"])
+        self.assertNotIn("when", card["panel"])
+        rows = cli._scorecard_rows({"code": card})
+        index = next(i for i, line in enumerate(rows) if line.lstrip().startswith("a "))
+        self.assertNotIn("when:", rows[index + 1])
+
+    def test_an_event_without_a_record_changes_nothing(self):
+        events = [scored_event([scored_run("a")])]
+        plain = scorecard(events, [scored_round()])
+        self.assertNotIn("when", plain["code"]["reviewers"]["a"])
+        self.assertEqual(list(plain["code"]["reviewers"]), ["a"])
+
+    def test_a_round_left_out_of_the_count_is_not_counted(self):
+        """A hole: its events have no report, so neither its spend nor its sitting out is in."""
+        events = [
+            conditional_event([scored_run("a")], [condition("s", False)], "r1"),
+            conditional_event([scored_run("a")], [condition("s", False)], "r9"),
+        ]
+        card = scorecard(events, [scored_round(round_id="r1")])["code"]
+        self.assertEqual((card["rounds_recorded"], card["rounds_read"]), (2, 1))
+        self.assertEqual(card["reviewers"]["s"]["left_out_rounds"], 1)
+
+
 @unittest.skipUnless(has_git(), "git is required")
 class TestWhatTheSnapshotReportsAsChanged(IsolatedCase):
     """The lists the risk check and the size threshold are computed from."""

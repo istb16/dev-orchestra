@@ -3699,7 +3699,13 @@ def _scorecard_rows(scorecard: Dict[str, Any]) -> List[str]:
         lines.extend(["", head + "."])
         for name, group in sorted((block.get("reviewers") or {}).items()):
             lines.append(_OPT_ROW % (name, _scorecard_counts(group, True)))
-            lines.append(_OPT_ROW % ("", _scorecard_cost_row(group, False)))
+            cost_row = _scorecard_cost_row(group, False)
+            if group.get("when"):
+                cost_row += " (when: %s; left out of %d round(s))" % (
+                    group["when"],
+                    int(group.get("left_out_rounds") or 0),
+                )
+            lines.append(_OPT_ROW % ("", cost_row))
         panel = block.get("panel") or {}
         lines.append(_OPT_ROW % ("panel", _scorecard_counts(panel, False)))
         lines.append(_OPT_ROW % ("", _scorecard_cost_row(panel, True)))

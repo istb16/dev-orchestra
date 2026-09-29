@@ -1,4 +1,4 @@
-<!-- translated-from: references/cli.md sha256:4345ace39ee4c67a29ee1b8399b810d004af58814a454b1b4f370a81ccdd6b1a -->
+<!-- translated-from: references/cli.md sha256:c45995c4d68f78865193245f3131f7e83985ec0cd69c81df5684055554f1fd2c -->
 
 > この文書は [references/cli.md](../../../references/cli.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -661,7 +661,7 @@ Reviewer scorecard, code review: 18 of 27 recorded round(s) had a report to read
   codex-general          25 reported: 15 accepted, 2 rejected, 6 duplicate, 2 open; 16 found alone (11 accepted)
                          17 run(s), 1,166,386 billed, no cost reported; 9% rejected, 77,759 billed per accepted, $ -
   localllm-qwen          22 reported: 1 accepted, 19 rejected, 2 duplicate, 0 open; 20 found alone (1 accepted)
-                         9 run(s) (6 failed), nothing reported; 86% rejected, per accepted withheld under 10 accepted
+                         9 run(s) (6 failed), nothing reported; 86% rejected, per accepted withheld under 10 accepted (when: high-risk; left out of 9 round(s))
   panel                  96 reported: 59 accepted, 22 rejected, 12 duplicate, 3 open
                          44 run(s), 3,961,224 billed, $42.07 over 18 of 44 run(s); 24% rejected, 67,139 billed / $0.71 per accepted
 
@@ -707,6 +707,12 @@ Review effort, code and design together: 128 accepted over 28 of 46 recorded rou
   stage が見つけたにせよオーナーが直すと決めた欠陥 1 件です。ラウンドあたりの数字はラウンドで割り、
   ラウンドは plan と diff で違う作業単位です。それでも stage の混合比はこの数字を動かすので、2 つの
   stage のブロックと並べて読みます。
+- **条件付きレビュアーのコスト行の末尾には、その条件と、コストが入っているラウンドのうち外れた数が
+  付きます。** 「N 回走り、M ラウンド外れた」と並ぶので、条件が役目を果たしているかを判断できます。
+  1 ラウンドにイベントがいくつあっても外れたのは 1 回と数え、そのうちの 1 つ（`--only` の再実行など）
+  がそのレビュアーを走らせていれば外れたとは数えません。すべてのラウンドで外れたレビュアーも、件数
+  ゼロの行として出ます。外れたラウンドには run が無いので、1 採用あたりのコストはそれで薄まりません。
+  design レビューは条件を無視し、条件付きレビュアーより前のイベントは何も記録していません。
 
 これはレビューが何を買ったかを言うものであって、レビューが悪くなったかどうかを言うものではありません。
 1 採用あたりのコストが上がるのは、レビュー対象のコードが良くなったときの姿でもあり、レビュアーが欠陥を
@@ -718,7 +724,9 @@ Review effort, code and design together: 128 accepted over 28 of 46 recorded rou
 `findings`、`reviewers`（id ごと）、`panel` を持ちます。レビュアーは `runs`、`failed_runs`、
 `measured_runs`、`priced_runs`、`billed_tokens`、`cost_usd`、`reported`、`accepted`、`rejected`、
 `duplicate`、`open`、`alone`、`alone_accepted`、`rejection_rate`、`billed_per_accepted`、
-`cost_per_accepted` を持ち、最後の 3 つは閾値未満で `null` です。`panel` と `total` は `alone` の 2 つを
+`cost_per_accepted` を持ち、最後の 3 つは閾値未満で `null` です。数えたラウンドのどれかで条件付きと
+記録されたレビュアーは、さらに `when`（`high-risk` か `paths`。そう記録された最新のラウンドの値）と
+`left_out_rounds` を持ちます。`panel` と `total` は `alone` の 2 つを
 除いた同じ列で、2 人のレビュアーが報告した指摘は 1 回と数えます。`total` は 4 つのラウンド数の和も
 持ちます。
 

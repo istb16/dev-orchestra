@@ -1204,6 +1204,7 @@ def reviewer_scorecard(inputs: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
         for group in counted:
             for event in group["events"]:
                 _add_spend(stage, event)
+        _add_left_out(stage, sorted(counted, key=lambda group: group["order"]))
         for finding in _unique_findings([group["round"] for group in read]):
             _score_finding(stage, finding)
     for stage in stages.values():
@@ -1409,6 +1410,48 @@ def _add_spend(stage: Dict[str, Any], event: Dict[str, Any]) -> None:
                 group["cost_usd"] += float(cost)
 
 
+def _add_left_out(stage: Dict[str, Any], groups: Sequence[Dict[str, Any]]) -> None:
+    """Each conditional reviewer's condition, and the rounds it sat out.
+
+    ``groups`` are the rounds whose spend is in, oldest first, so a reviewer's
+    runs and the rounds it was left out of are over the same set. A round is
+    sat out once however many events it has, and not at all when one of them
+    -- a re-run with ``--only``, say -- ran the reviewer after all. An event
+    from before conditional reviewers carries no record, and adds nothing.
+
+    The condition shown is the one of the latest record by its event's
+    ``at``: workflows arrive most recently active first, so the order they
+    are read in says nothing about which is newer. An event with no ``at``
+    loses to one with, and among those the last read wins.
+    """
+    for group in groups:
+        ran = {
+            str(run.get("id") or "?")
+            for event in group["events"]
+            for run in event.get("reviewers") or []
+            if isinstance(run, dict)
+        }
+        left: set = set()
+        for event in group["events"]:
+            plan = event.get("optimization") if isinstance(event.get("optimization"), dict) else {}
+            at = str(event.get("at") or "")
+            for record in plan.get("conditional") or []:
+                if not isinstance(record, dict) or not record.get("id"):
+                    continue
+                name = str(record["id"])
+                score = _score_reviewer(stage, name)
+                # ISO stamps to the second compare as strings. A tie goes to
+                # the event read later, which inside one workflow is the newer.
+                if at >= score.get("when_at", ""):
+                    score["when"] = str(record.get("when") or "?")
+                    score["when_at"] = at
+                score.setdefault("left_out_rounds", 0)
+                if not record.get("runs"):
+                    left.add(name)
+        for name in left - ran:
+            stage["reviewers"][name]["left_out_rounds"] += 1
+
+
 def _final_triage(record: Dict[str, Any]) -> str:
     """``accepted``, ``rejected``, ``duplicate``, or ``open`` for anything undecided."""
     triage = record.get("triage")
@@ -1446,6 +1489,10 @@ def _finish_score(group: Dict[str, Any], alone: bool) -> Dict[str, Any]:
     if alone:
         finished["alone"] = group.get("alone", 0)
         finished["alone_accepted"] = group.get("alone_accepted", 0)
+    # Only a reviewer some round recorded as conditional has either.
+    if "when" in group:
+        finished["when"] = group["when"]
+        finished["left_out_rounds"] = group["left_out_rounds"]
     decided = group["accepted"] + group["rejected"] + group["duplicate"]
     accepted = group["accepted"]
     finished["rejection_rate"] = (
