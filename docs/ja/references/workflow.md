@@ -1,4 +1,4 @@
-<!-- translated-from: references/workflow.md sha256:56fc6f3f005815c56d545b36f78de641291c48e2c8ae424072ea672216700c99 -->
+<!-- translated-from: references/workflow.md sha256:e6233c51267dc6e05f8d583f4f1b8f485511a59fa8ca7894e6f4fa413c21946d -->
 
 > この文書は [references/workflow.md](../../../references/workflow.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -278,6 +278,19 @@ revision; do not keep an earlier revision's list.
 
 Print the complete revised plan to stdout as Markdown. The caller captures
 stdout. Do not write it to a file: this role runs in plan mode.
+```
+
+`review status --design` が `final_revision: pending` と言うとき（どのレビューも見ない改訂）は、両方にこれを足します。その指摘は
+たいてい前の改訂で足したものの穴で、穴を 1 つずつふさぐと次の穴が出ます。収まった最後の改訂は、
+仕組みを減らすことで収めていました。
+
+```markdown
+This is the last revision; no review will see it. Where a finding is a hole
+in something an earlier revision added, remove or simplify that mechanism
+rather than patching it, and where a rule is left uncertain, make it fail
+toward the safe side. Under `## Added in this revision`, also list each
+removal as `Removed:` with the finding it answers; write `None.` only when
+you neither added nor removed anything.
 ```
 
 ```bash

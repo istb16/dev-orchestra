@@ -27,6 +27,12 @@ The public surface covered by that promise is: the configuration schema, the
 
 ### Changed
 
+- **The last design revision is asked to simplify, not patch.** The revision
+  that follows the last design round, which no review sees, is asked to remove
+  or simplify what an earlier revision added where a finding is a hole in it,
+  and to fail toward the safe side. The round limits stay at 2. See the design
+  revision templates in `references/workflow.md` (#133).
+
 - **A fixer's new test must fail without the fix.** The fix template asks for
   a test that fails on the code as it was, or a reason there cannot be one,
   and the re-test step has the orchestrator reverse only the fixer's diff
