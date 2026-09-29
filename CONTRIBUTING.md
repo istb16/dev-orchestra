@@ -218,7 +218,13 @@ checks the Claude manifests against the host's own schema.
   contents. After adding, renaming or removing a `##` or `###` heading in one,
   run `python scripts/doc_contents.py <file>` on it and on its translation;
   `tests/test_docs.py` fails while the contents are out of date.
-- Add a `CHANGELOG.md` entry under `## [Unreleased]`.
+- Add a `CHANGELOG.md` entry under `## [Unreleased]`. Keep it to a few lines
+  for someone upgrading: what changed, anything they have to do, and what it
+  means for compatibility (a key, flag or file that is new, or behaviour that
+  differs), ending with the issue number. The reasons and the detail go in the
+  reference that covers the topic, not in the entry; name that reference
+  instead of repeating it. Entries in released sections stay as they were
+  written.
 - Say which platform you tested on, and which CLI versions if you touched an
   adapter.
 
