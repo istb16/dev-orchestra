@@ -1,10 +1,32 @@
-<!-- translated-from: references/providers.md sha256:15ec41eb129fccac91ed314dfc0d6e28629623b0addf18191ebce0ed6bb59078 -->
+<!-- translated-from: references/providers.md sha256:79d9eeb4a9cba7e282e6ca0e00872d13181d625b3e8dc2fd2ca4330cdf1a6dad -->
 
 > この文書は [references/providers.md](../../../references/providers.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
 <a id="providers"></a>
 
 # Providers
+
+<!-- contents: start -->
+
+**目次**
+
+- [インターフェース](#the-interface)
+  - [モード](#modes)
+  - [進捗とアイドル期限](#progress-and-the-idle-deadline)
+  - [モデル解決の契約](#model-resolution-contract)
+- [Claude Code アダプタ](#claude-code-adapter)
+  - [セッションの継続](#resuming-a-session)
+- [Codex アダプタ](#codex-adapter)
+- [Mock アダプタ](#mock-adapter)
+- [CLI の追加](#adding-a-cli)
+- [プラグインを編集せずに CLI を追加する](#adding-a-cli-without-editing-the-plugin)
+  - [契約](#the-contract)
+  - [ルール](#rules)
+  - [うまくいかないとき](#when-it-goes-wrong)
+  - [インターフェースの安定性](#interface-stability)
+- [失敗時の挙動](#failure-semantics)
+
+<!-- contents: end -->
 
 provider アダプタは、特定の CLI とのやり取りの方法を知っている唯一の場所です。アダプタは次の 2 か所のいずれかに置かれます。
 

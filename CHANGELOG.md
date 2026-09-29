@@ -38,6 +38,13 @@ The public surface covered by that promise is: the configuration schema, the
 
 ### Changed
 
+- **The long references open with a table of contents**: `reviews`, `cli`,
+  `configuration`, `limits`, `workflow` and `providers`, in both languages,
+  listing their `##` and `###` sections. `scripts/doc_contents.py` writes
+  them from the headings, and a test fails when one is out of date. The files
+  are not split: the orchestrator is the only reader that loads them while
+  working, and the contents let it read the one section it needs (#164).
+
 - **Python 3.11 or later is required** (was 3.9). Python 3.9 is past its
   end of life, and the type checker the project is adopting (#125) no longer
   targets anything older than 3.10. `scripts/dev_orchestra.py` now checks the

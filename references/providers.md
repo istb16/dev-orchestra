@@ -1,5 +1,27 @@
 # Providers
 
+<!-- contents: start -->
+
+**Contents**
+
+- [The interface](#the-interface)
+  - [Modes](#modes)
+  - [Progress and the idle deadline](#progress-and-the-idle-deadline)
+  - [Model resolution contract](#model-resolution-contract)
+- [Claude Code adapter](#claude-code-adapter)
+  - [Resuming a session](#resuming-a-session)
+- [Codex adapter](#codex-adapter)
+- [Mock adapter](#mock-adapter)
+- [Adding a CLI](#adding-a-cli)
+- [Adding a CLI without editing the plugin](#adding-a-cli-without-editing-the-plugin)
+  - [The contract](#the-contract)
+  - [Rules](#rules)
+  - [When it goes wrong](#when-it-goes-wrong)
+  - [Interface stability](#interface-stability)
+- [Failure semantics](#failure-semantics)
+
+<!-- contents: end -->
+
 A provider adapter is the only place that knows how to talk to a particular CLI.
 Adapters live in one of two places:
 

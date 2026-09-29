@@ -1,10 +1,31 @@
-<!-- translated-from: references/workflow.md sha256:b619c620383e8b0306230c9c39686c38544ae3055d62054776357d2336373b44 -->
+<!-- translated-from: references/workflow.md sha256:ca23685fde0be7e2bc6a8082f31633cfcc03742b7bb1a964e72f9ef39c0d92fd -->
 
 > この文書は [references/workflow.md](../../../references/workflow.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
 <a id="workflow"></a>
 
 # ワークフロー
+
+<!-- contents: start -->
+
+**目次**
+
+- [ステージの選択](#stage-selection)
+- [成果物](#artifacts)
+- [Design](#design)
+- [Design レビュー](#design-review)
+- [承認](#approval)
+- [実装](#implementation)
+- [テスト](#test)
+- [レビュー](#reviews)
+- [修正](#fix)
+- [再テストと再レビュー](#re-test-and-re-review)
+- [記録と報告](#recording-and-reporting)
+- [問題が起きたとき](#when-something-goes-wrong)
+- [ワークフローの例](#example-workflows)
+- [Skill のチェックアウトからのインストール](#installing-from-a-skill-checkout)
+
+<!-- contents: end -->
 
 各ステージの詳細です。スキル本体には短い版があります。要約だけでは足りず、
 あるステージをより慎重に進める必要があるときにこちらを読んでください。

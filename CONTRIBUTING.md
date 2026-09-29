@@ -192,6 +192,11 @@ schema.
   translation's header names the English as it is now. If you cannot write
   the Japanese yourself, say so in the PR so someone else can; do not stamp a
   translation you did not update.
+- The long references (`reviews`, `cli`, `configuration`, `limits`,
+  `workflow`, `providers`) and their translations open with a table of
+  contents. After adding, renaming or removing a `##` or `###` heading in one,
+  run `python scripts/doc_contents.py <file>` on it and on its translation;
+  `tests/test_docs.py` fails while the contents are out of date.
 - Add a `CHANGELOG.md` entry under `## [Unreleased]`.
 - Say which platform you tested on, and which CLI versions if you touched an
   adapter.

@@ -1,5 +1,28 @@
 # Reviews
 
+<!-- contents: start -->
+
+**Contents**
+
+- [The rules that make multi-model review worth doing](#the-rules-that-make-multi-model-review-worth-doing)
+- [Snapshot](#snapshot)
+  - [Withheld files](#withheld-files)
+- [Surrounding context](#surrounding-context)
+- [Design review](#design-review)
+- [When a review does not run, or runs smaller](#when-a-review-does-not-run-or-runs-smaller)
+- [Roles](#roles)
+- [Output schema](#output-schema)
+  - [Output limits](#output-limits)
+- [Coverage](#coverage)
+- [Deduplication](#deduplication)
+  - [Why auto-merge stays conservative](#why-auto-merge-stays-conservative)
+- [Triage](#triage)
+- [Re-review](#re-review)
+  - [The second round only diffs the fix](#the-second-round-only-diffs-the-fix)
+- [Running reviews on their own](#running-reviews-on-their-own)
+
+<!-- contents: end -->
+
 ## The rules that make multi-model review worth doing
 
 1. **One frozen snapshot.** Every reviewer sees exactly the same diff, taken
