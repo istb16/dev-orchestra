@@ -9,6 +9,7 @@ from helpers import IsolatedCase, has_git
 
 from orchestrator import config as config_mod
 from orchestrator import review as review_mod
+from orchestrator import review_fanout
 from orchestrator import workspace as ws
 
 FINDING_A = """## Finding
@@ -401,9 +402,9 @@ class TestFanOut(IsolatedCase):
         """The other shape: the CLI ran, and only the reading of it failed."""
         from test_providers import BrokenReaderProvider
 
-        original = review_mod.get_provider
-        review_mod.get_provider = lambda name: BrokenReaderProvider()
-        self.addCleanup(setattr, review_mod, "get_provider", original)
+        original = review_fanout.get_provider
+        review_fanout.get_provider = lambda name: BrokenReaderProvider()
+        self.addCleanup(setattr, review_fanout, "get_provider", original)
         run = review_mod.run_reviews([reviewer("r1")], self.workspace)[0]
         self.assertEqual(run.status, "failed")
         self.assertGreater(run.duration, 0)

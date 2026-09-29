@@ -26,6 +26,18 @@ The public surface covered by that promise is: the configuration schema, the
   line only. Notes never affect the exit code, and `--fast` reads the record
   too. The offline `mock` provider gets neither.
 
+### Changed
+
+- **`cli.py` and `review.py` are split into modules, with no change in
+  behaviour.** The commands live in `cli_common.py`, `cli_config.py`,
+  `cli_run.py`, `cli_review.py`, `cli_state.py` and `cli_workflow.py`; `cli.py`
+  keeps the parser, the entry point and `__version__`. The review mechanics
+  live in `review_common.py`, `review_snapshot.py`, `review_fanout.py`,
+  `review_parsing.py` and `review_consolidation.py`. Both old modules
+  re-export every name they had, so `cli.name` and `review.name` still work;
+  code that replaces a function (a user adapter's tests, say) has to replace
+  it in the module that looks it up (#119).
+
 ## [0.13.2] - 2026-09-29
 
 ### Added
