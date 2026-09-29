@@ -12,126 +12,60 @@ The public surface covered by that promise is: the configuration schema, the
 
 ### Added
 
-- **Google Antigravity as a third plugin host.** A root `plugin.json` makes
-  the repository an Antigravity plugin that loads the same
-  `skills/dev-orchestra/SKILL.md`. It carries exactly `$schema`, `name` and
-  `description`, the three fields Antigravity's published manifest schema
-  allows; the version stays in the other manifests. The installers
-  gain `--antigravity` (alias `--gemini`; `-Antigravity` and `-Gemini` in
-  PowerShell), which links the checkout into `~/.gemini/config/plugins/`, or
-  into `<path>/.agents/plugins/` with `--project`, and tells you to restart
-  Antigravity. On Windows it makes a junction, which needs no Developer Mode,
-  then tries a symlink, then copies; elsewhere it makes a symlink, then
-  copies. A copy carries a `.dev-orchestra-install` file, and the installer
-  and uninstaller replace or remove only a link to this checkout or a copy
-  they made, never a clone or another directory. A project install adds its
-  `.git/info/exclude` entry under a marker comment once it has succeeded, and
-  the uninstaller removes only a marked entry. A link is refused while the
-  checkout root has a `hooks.json`, `mcp_config.json`, `plugins.json`,
-  `rules/` or `agents/*.md`, which Antigravity would load too;
-  `scripts/validate_skill.py` reports the same entries, an `agents/` it cannot
-  list, and checks the manifest against the schema: the three fields, `name`
-  present and matching its pattern, and `$schema` naming the published one.
-  `doctor` reports as a problem an Antigravity install location (global, or
-  `.agents/plugins/dev-orchestra` in the repository it runs in) that is this
-  checkout, through a link or junction or because the checkout sits there,
-  while the checkout root holds any of those entries, since Antigravity loads
-  them on its next start; it reports an `agents/` it cannot list too, and
-  `doctor --json` gains an `antigravity` block (`root`, `live`, `autoload`).
-  The docs also describe the other routes: `agy plugin install`, which stages
-  an unfiltered copy of the checkout as it is; a `plugins.json` entry naming
-  the checkout's parent directory, which loads the working tree live; and the
-  Marketplace, which Google curates. Neither of the first two is guarded by
-  the installer's refusal or checked by `doctor`, and the installer stays the
-  recommended route. A copy install for Claude Code now includes
-  `plugin.json` too (#160).
+- **Google Antigravity as a third plugin host.** A root `plugin.json` (only
+  `$schema`, `name` and `description`, as Antigravity's schema allows) makes
+  the repository an Antigravity plugin. The installers gain `--antigravity`
+  (`--gemini`; `-Antigravity`/`-Gemini` in PowerShell), which links the
+  checkout into `~/.gemini/config/plugins/` or, with `--project`,
+  `<path>/.agents/plugins/`; restart Antigravity afterwards. It refuses to
+  link a checkout that holds other files Antigravity would load (`hooks.json`,
+  `rules/`, `agents/*.md`, ...), and `doctor` reports a live install that has
+  them later; `doctor --json` gains an `antigravity` block. The other routes,
+  `agy plugin install` and `plugins.json`, get neither guard. A Claude Code
+  copy install now includes `plugin.json`. Details are in
+  `references/workflow.md` under "Installing from a skill checkout" (#160).
 
-- **Type checking with Pyright in CI.** A `Type check` job runs `pyright` over
-  `scripts/` against Python 3.11 for every platform, and fails on any error.
-  The tools for working on the code are pinned in a new
-  `requirements-dev.txt` (ruff, and Pyright with the Node.js it runs on as a
-  wheel), which the lint job installs too;
-  CONTRIBUTING describes setting them up in a `.venv`. The 88 errors the
-  first run reported were all places the checker could not follow a
-  narrowing the code relies on; they are fixed without changing what the code
-  does. The tests are checked too (#125).
+- **Type checking with Pyright in CI**, over `scripts/` and `tests/`. The
+  development tools are pinned in `requirements-dev.txt`; CONTRIBUTING says
+  how to set them up (#125).
 
-- **`doctor` says whether the installed CLI version has been live-checked.**
-  `scripts/smoke_live.py` now records, per provider and on this machine, the
-  CLI version it ran and which checks failed or were skipped (names only), in
-  `verified/<provider>-smoke.json` in the config directory. `doctor` shows it
-  on a `Live check:` line beside `Resume:` -- `passed for <version> on
-  <date>`, `FAILED for ...`, `not run for <version> (last passed: ...)` or
-  `never run on this machine`, or `version unavailable` when the CLI's
-  version could not be read -- and in `--json` as
-  `providers.<name>.live_check`. When the installed version has never been
-  checked here, which is when a CLI update can have changed its output or
-  flags, it adds a note naming the command to run. A failed check gets the
-  line only. Notes never affect the exit code, and `--fast` reads the record
-  too. The offline `mock` provider gets neither.
+- **`doctor` says whether the installed CLI version has been live-checked**,
+  on a `Live check:` line (`providers.<name>.live_check` in `--json`), from
+  what `scripts/smoke_live.py` records in `verified/<provider>-smoke.json` in
+  the config directory. An unchecked version gets a note; notes never change
+  the exit code. See `doctor` in `references/cli.md` (#122).
 
 ### Changed
 
-- **The compatibility rule for `.ai/` artifacts is written down once**, under
-  "How the formats change" in `references/workflow.md`: additions only,
-  readers skip unknown keys and read missing ones as the older file meant
-  them (unknown, not zero, where zero would be a claim), and a change that
-  cannot be an addition is a breaking release with a migration. The artifacts
-  get no format version, since nothing would read one (#126).
+- **The `.ai/` artifact compatibility rule is written down once**, under "How
+  the formats change" in `references/workflow.md`. The artifacts get no
+  format version (#126).
 
-- **The long references open with a table of contents**: `reviews`, `cli`,
-  `configuration`, `limits`, `workflow` and `providers`, in both languages,
-  listing their `##` and `###` sections. `scripts/doc_contents.py` writes
-  them from the headings, and a test fails when one is out of date. The files
-  are not split: the orchestrator is the only reader that loads them while
-  working, and the contents let it read the one section it needs (#164).
+- **The long references open with a table of contents**, written by
+  `scripts/doc_contents.py` and checked by the tests (#164).
 
-- **Python 3.11 or later is required** (was 3.9). Python 3.9 is past its
-  end of life, and the type checker the project is adopting (#125) no longer
-  targets anything older than 3.10. `scripts/dev_orchestra.py` now checks the
-  interpreter before importing anything and stops with `dev-orchestra needs
-  Python 3.11 or later; this is Python 3.x (<path>)` (exit 2) instead of a
-  syntax error from inside the package. The `bin/` wrappers and the installers
-  pass over a `python3`, `python` or `py` that is older and use the next one
-  that is 3.11 or later. A machine whose only Python is older
-  -- the `python3` some macOS versions ship, for one -- needs a newer one
-  installed (#167).
+- **Python 3.11 or later is required** (was 3.9). An older interpreter stops
+  with a message naming the version it found (exit 2), and the `bin/`
+  wrappers and the installers pass over one. A machine whose only Python is
+  older needs a newer one installed (#167).
 
-- **`cli.py` and `review.py` are split into modules, with no change in
-  behaviour.** The commands live in `cli_common.py`, `cli_config.py`,
-  `cli_run.py`, `cli_review.py`, `cli_state.py` and `cli_workflow.py`; `cli.py`
-  keeps the parser, the entry point and `__version__`. The review mechanics
-  live in `review_common.py`, `review_snapshot.py`, `review_fanout.py`,
-  `review_parsing.py` and `review_consolidation.py`. Both old modules
-  re-export every name they had, so `cli.name` and `review.name` still work;
-  code that replaces a function (a user adapter's tests, say) has to replace
-  it in the module that looks it up (#119).
+- **`cli.py` and `review.py` are split into modules**, with no change in
+  behaviour. Both still re-export every name, but code that replaces a
+  function (a user adapter's tests, say) has to replace it in the module that
+  looks it up; CONTRIBUTING's "Where things go" lists the modules (#119).
 
-- **The README is now the way in, and the detail lives in `references/`.**
-  Both READMEs went from about 1,200 lines to about 250: what it is, who does
-  what, installing it, setup, the first run, and a short section per topic
-  pointing at the reference that explains it. The stage-by-stage walkthrough,
-  example workflows and installing from a skill checkout moved to
-  `references/workflow.md`; bulk input, what a run costs and the optimization
-  level to `references/limits.md`; the withheld-files example and the
-  fix-only round's measurement to `references/reviews.md`; the full
-  configuration example, the two-vendor lineup, model resolution and the setup
-  wizard to `references/configuration.md`; security to
-  `references/architecture.md`; troubleshooting to `references/cli.md`; and
-  running the plugin from a clone to `CONTRIBUTING.md`. The Japanese
-  translations follow (#164, #117).
+- **The README is now the way in**, about 250 lines, and the detail it used
+  to hold is in `references/`; its "Reference documents" section says which
+  file covers what. Running the plugin from a clone moved to CONTRIBUTING
+  (#164, #117).
 
 ### Fixed
 
 - **The Claude Code install on Windows no longer empties what a link at its
-  destination points at.** `install.ps1` and `uninstall.ps1` remove a link or
-  junction there as a link, a file symlink as a file, and now also a dangling
-  link, which was missed and made the next install fail; a real directory is
-  removed as before. A relative `-Project` given from another directory is
-  resolved before any of that. Both installers write the project's
-  `.git/info/exclude` line only once the link or copy has succeeded, and
-  `install.ps1` now writes it on a line of its own, without the byte order
-  mark Windows PowerShell added, which git read as part of the first pattern
+  destination points at**: `install.ps1` and `uninstall.ps1` remove a link as
+  a link, dangling ones included. A relative `-Project` works from another
+  directory, and the project's `.git/info/exclude` line is written only after
+  the install succeeded, on its own line and without a byte order mark
   (#160).
 
 ## [0.13.2] - 2026-09-29
