@@ -28,7 +28,7 @@ import traceback
 import unittest
 import warnings
 from concurrent.futures.process import BrokenProcessPool
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
 if TESTS_DIR not in sys.path:
@@ -57,9 +57,10 @@ class _Buffer(io.StringIO):
         self.write(text + "\n")
 
 
-def _run_suite(name: str, suite: unittest.TestSuite, verbosity: int) -> Dict[str, object]:
+def _run_suite(name: str, suite: unittest.TestSuite, verbosity: int) -> Dict[str, Any]:
     buffer = _Buffer()
-    result = unittest.TextTestResult(buffer, True, verbosity)
+    # A string buffer with `writeln`, which is all TextTestResult writes through.
+    result = unittest.TextTestResult(buffer, True, verbosity)  # pyright: ignore[reportArgumentType]
     saved = sys.stdout, sys.stderr
     sys.stdout = sys.stderr = buffer
     started = time.monotonic()
@@ -166,7 +167,7 @@ class _Tally:
         self.expected_failures = 0
         self.unexpected_successes = 0
 
-    def add(self, outcome: Dict[str, object]) -> None:
+    def add(self, outcome: Dict[str, Any]) -> None:
         sys.stderr.write(str(outcome["text"]))
         sys.stderr.flush()
         self.run += int(outcome["testsRun"])

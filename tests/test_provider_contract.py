@@ -64,7 +64,7 @@ class _Outcome:
         self.orphans_possible = False
 
     @property
-    def ok(self):
+    def ok(self) -> bool:
         return True
 
 
@@ -301,7 +301,7 @@ class TestOptionsReachTheCommand(IsolatedCase):
         provider = self.capture(providers.get_provider("claude"))
         # A CLI that advertises its read-only flags; otherwise the run is
         # refused before anything is spawned.
-        provider._capture = lambda command, timeout=30: _Completed(CLAUDE_HELP)
+        setattr(provider, "_capture", lambda command, timeout=30: _Completed(CLAUDE_HELP))
         provider.run(
             "prompt",
             base.MODE_REVIEW,
@@ -338,7 +338,8 @@ class _BareAdapter(base.Provider):
 class _TodaysLaunch(_BareAdapter):
     """``_launch`` overridden with the signature it had before resuming."""
 
-    def _launch(
+    # The older signature is the point: a user adapter written before resuming.
+    def _launch(  # pyright: ignore[reportIncompatibleMethodOverride]
         self,
         prompt,
         mode,
@@ -396,7 +397,8 @@ class _ResumingAdapter(_BareAdapter):
             raise RuntimeError("answer reader broke")
         return super().postprocess(outcome, mode)
 
-    def _launch(self, prompt, mode, cwd, **kwargs):
+    # Takes whatever the base passes, to record it; the base names its keywords.
+    def _launch(self, prompt, mode, cwd, **kwargs):  # pyright: ignore[reportIncompatibleMethodOverride]
         self.launch_kwargs.append(dict(kwargs))
         return super()._launch(prompt, mode, cwd, **kwargs)
 
@@ -409,7 +411,7 @@ class _RejectedOutcome(_Outcome):
         self.stderr = "No conversation found with session ID: %s" % SESSION
 
     @property
-    def ok(self):
+    def ok(self) -> bool:
         return False
 
 

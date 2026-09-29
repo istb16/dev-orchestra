@@ -23,7 +23,7 @@ import json
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 
-from helpers import IsolatedCase, has_git
+from helpers import IsolatedCase, has_git, present
 
 from orchestrator import cli
 from orchestrator import config as config_mod
@@ -299,7 +299,7 @@ class TestRunningOnATier(IsolatedCase):
                 "run", "implementer", "--prompt", "hi", "--tier", "light", "--job-file", job_file
             )
         self.assertEqual(code, 0, err)
-        self.assertEqual(jobs_mod.read_job(workspace, "w-1")["status"], "succeeded")
+        self.assertEqual(present(jobs_mod.read_job(workspace, "w-1"))["status"], "succeeded")
         self.assertIn("implementer:light", seen[0])
 
     def worker_job(self):
@@ -322,6 +322,7 @@ class TestRunningOnATier(IsolatedCase):
                 run_cli("run", "implementer", "--prompt", "hi", "--job-file", job_file)
         self.assertIn("disk full", str(raised.exception))
         job = jobs_mod.read_job(workspace, "w-1")
+        assert job is not None
         self.assertEqual(job["status"], "failed")
         self.assertIn("recording it failed", job["error"])
         self.assertIn("disk full", job["error"])

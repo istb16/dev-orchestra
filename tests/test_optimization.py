@@ -20,6 +20,7 @@ import json
 import os
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
+from typing import Optional
 
 from helpers import IsolatedCase, has_git
 
@@ -113,7 +114,8 @@ class TestHighRiskPaths(unittest.TestCase):
         self.assertTrue(opt.high_risk_matches(["db\\migrate\\1.rb"], opt.DEFAULT_HIGH_RISK_PATHS))
 
     def test_junk_in_the_pattern_list_is_skipped(self):
-        self.assertTrue(opt.high_risk_matches(["auth.py"], [None, "", 7, "*auth*"]))
+        # Entries that are not patterns, on purpose: a hand-edited config can hold them.
+        self.assertTrue(opt.high_risk_matches(["auth.py"], [None, "", 7, "*auth*"]))  # pyright: ignore[reportArgumentType]
 
     def test_an_empty_pattern_list_matches_nothing(self):
         self.assertFalse(opt.high_risk_matches(["db/migrate/1.rb"], []))
@@ -3043,7 +3045,7 @@ def plan_run(status="ok", cost=None, resume=None, output=".ai/plan.md", **extra)
     return event
 
 
-def resumed(outcome="ok"):
+def resumed(outcome: Optional[str] = "ok"):
     return {"requested": True, "mode": "resumed", "resumed_from": "x", "reason": None, "outcome": outcome}
 
 

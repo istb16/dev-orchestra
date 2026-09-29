@@ -7,7 +7,7 @@ import os
 import re
 import unittest
 
-from helpers import REPO_ROOT, IsolatedCase
+from helpers import REPO_ROOT, IsolatedCase, present
 
 from orchestrator import miniyaml
 
@@ -236,7 +236,7 @@ class TestDocumentation(IsolatedCase):
         reference = read("references/cli.md")
         parser = cli.build_parser()
         actions = [action for action in parser._actions if hasattr(action, "choices") and action.choices]
-        commands = [c for action in actions for c in action.choices]
+        commands = [c for action in actions for c in present(action.choices)]
         for command in commands:
             self.assertIn(command, reference, command)
 

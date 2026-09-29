@@ -11,7 +11,7 @@ import json
 import time
 import unittest
 
-from helpers import IsolatedCase
+from helpers import IsolatedCase, present
 
 from orchestrator import config as config_mod
 from orchestrator import ledger as ledger_mod
@@ -136,7 +136,7 @@ class TestRuntimeBudget(LedgerCase):
         book.end(token, "ok", charged_seconds=100)
         self.assertEqual(book.runtime_remaining(), 0.0)
         refusal = book.runtime_refusal()
-        self.assertIn("delegated", refusal)
+        self.assertIn("delegated", present(refusal))
         self.assertIn(refusal, book.check("test"))
         with self.assertRaises(ledger_mod.BudgetExhausted) as ctx:
             book.consume("test")
@@ -267,7 +267,8 @@ class TestRuntimeBudget(LedgerCase):
     def test_a_charge_that_is_missing_or_negative_is_read_as_nothing(self):
         book = self.book()
         first = book.begin("implementer")
-        book.end(first, "ok", charged_seconds=None)
+        # None on purpose: what an old caller passed.
+        book.end(first, "ok", charged_seconds=None)  # pyright: ignore[reportArgumentType]
         second = book.begin("implementer")
         book.end(second, "ok", charged_seconds=-30)
         third = book.begin("implementer")

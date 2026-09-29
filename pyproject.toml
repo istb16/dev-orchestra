@@ -29,14 +29,18 @@ ignore = [
 # `cli.name` and `review.name` in the code and the tests keeps working.
 "scripts/orchestrator/cli.py" = ["F401"]
 "scripts/orchestrator/review.py" = ["F401"]
+# A test replaces a function with setattr() so the checker sees a deliberate
+# swap rather than an assignment to a method.
+"tests/**" = ["B010"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["orchestrator"]
 
 [tool.pyright]
-# The code that ships. Tests are not checked yet: they replace functions and
-# build fixtures in ways the checker cannot follow, and are a separate step.
-include = ["scripts"]
+include = ["scripts", "tests"]
+# Where the code and the tests import from at run time: the entry point and
+# the test runner put these two on sys.path, not an install.
+extraPaths = ["scripts", "tests"]
 pythonVersion = "3.11"
 typeCheckingMode = "standard"
 # Checked for every platform at once: the code branches on the OS, and the

@@ -7,7 +7,14 @@ import sys
 import textwrap
 import unittest
 
-from helpers import CLAUDE_HELP, CLAUDE_HELP_NO_FORK, CLAUDE_HELP_NO_RESUME, CLAUDE_HELP_OLD, IsolatedCase
+from helpers import (
+    CLAUDE_HELP,
+    CLAUDE_HELP_NO_FORK,
+    CLAUDE_HELP_NO_RESUME,
+    CLAUDE_HELP_OLD,
+    IsolatedCase,
+    present,
+)
 
 from orchestrator import execution, providers, verified
 from orchestrator.providers import base
@@ -34,7 +41,7 @@ class TestRegistry(IsolatedCase):
 
     def test_built_ins_are_recorded_as_built_in(self):
         for name in ("claude", "codex", "mock"):
-            self.assertEqual(providers.provider_origin(name).kind, "builtin")
+            self.assertEqual(present(providers.provider_origin(name)).kind, "builtin")
             self.assertEqual(providers.describe_origin(name), "built-in")
 
 
@@ -73,16 +80,17 @@ class TestUserProviders(IsolatedCase):
         self.assertIsInstance(providers.get_provider("claude"), ClaudeProvider)
         self.assertIsInstance(providers.get_provider("mock"), MockProvider)
         for name in ("claude", "codex", "mock"):
-            self.assertEqual(providers.provider_origin(name).kind, "builtin")
+            self.assertEqual(present(providers.provider_origin(name)).kind, "builtin")
 
     def test_a_valid_module_is_registered_with_its_path(self):
         path = self.write_user_provider("mycli")
+        assert path is not None
         report = self.load_user_providers()
         self.assertEqual(report["loaded"][0]["name"], "mycli")
         self.assertEqual(report["errors"], [])
         self.assertIn("mycli", providers.available_providers())
         self.assertIsInstance(providers.get_provider("mycli"), base.Provider)
-        self.assertEqual(providers.provider_origin("mycli").path, path)
+        self.assertEqual(present(providers.provider_origin("mycli")).path, path)
         self.assertEqual(providers.describe_origin("mycli"), "user module %s" % path)
 
     def test_a_built_in_name_is_refused(self):
@@ -146,29 +154,33 @@ class TestUserProviders(IsolatedCase):
         report = self.load_user_providers()
         self.assertEqual([item["name"] for item in report["loaded"]], ["mycli"])
         self.assertIn("restored", self.errors(report)["b_evil.py"])
-        self.assertEqual(providers.provider_origin("mycli").path, first)
+        self.assertEqual(present(providers.provider_origin("mycli")).path, first)
         self.assertEqual(type(providers.get_provider("mycli")).__name__, "MyCliProvider")
         self.assertNotIn("evil", providers.available_providers())
 
     def test_register_outside_the_loader_cannot_claim_a_built_in(self):
         with self.assertRaises(providers.ProviderRegistrationError):
-            providers.register("codex", lambda executable=None: None)
+            # A factory that is never called: the registration is refused first.
+            providers.register("codex", lambda executable=None: None)  # pyright: ignore[reportArgumentType]
         self.assert_built_ins_intact()
 
     def test_register_without_an_origin_is_refused_after_bootstrap(self):
         """What a user factory called later from get_provider() would do; it
         must not end up labelled built-in."""
         with self.assertRaises(providers.ProviderRegistrationError):
-            providers.register("late", lambda executable=None: None)
+            # A factory that is never called: the registration is refused first.
+            providers.register("late", lambda executable=None: None)  # pyright: ignore[reportArgumentType]
         builtin = providers.ProviderOrigin("builtin", None, "x")
         with self.assertRaises(providers.ProviderRegistrationError):
-            providers.register("late", lambda executable=None: None, builtin)
+            # A factory that is never called: the registration is refused first.
+            providers.register("late", lambda executable=None: None, builtin)  # pyright: ignore[reportArgumentType]
         self.assertNotIn("late", providers.available_providers())
 
     def test_register_with_a_user_origin_is_refused_outside_the_loader(self):
         forged = providers.ProviderOrigin("user", "/made/up.py", "made_up")
         with self.assertRaises(providers.ProviderRegistrationError):
-            providers.register("forged", lambda executable=None: None, forged)
+            # A factory that is never called: the registration is refused first.
+            providers.register("forged", lambda executable=None: None, forged)  # pyright: ignore[reportArgumentType]
         self.assertNotIn("forged", providers.available_providers())
 
     def test_a_later_build_provider_call_cannot_register_an_extra_name(self):
@@ -199,7 +211,7 @@ class TestUserProviders(IsolatedCase):
         with self.assertRaisesRegex(providers.ProviderRegistrationError, "restored"):
             providers.get_provider("late")
         self.assertNotIn("extra", providers.available_providers())
-        self.assertEqual(providers.provider_origin("late").kind, "user")
+        self.assertEqual(present(providers.provider_origin("late")).kind, "user")
 
     def test_the_name_is_read_once(self):
         """A ``name`` that raises on a second read must not take the CLI down."""
@@ -238,7 +250,7 @@ class TestUserProviders(IsolatedCase):
         report = self.load_user_providers()
         self.assertEqual([item["path"] for item in report["loaded"]], [first])
         self.assertIn(first, self.errors(report)["b_mycli.py"])
-        self.assertEqual(providers.provider_origin("mycli").path, first)
+        self.assertEqual(present(providers.provider_origin("mycli")).path, first)
 
     def test_a_syntax_error_does_not_stop_the_others(self):
         self.write_user_provider("broken", "def oops(:\n")
@@ -377,7 +389,7 @@ class TestClaudeAdapter(IsolatedCase):
     def setUp(self):
         super().setUp()
         self.provider = ClaudeProvider()
-        self.provider._capture = lambda command, timeout=30: _FakeCompleted(CLAUDE_HELP)
+        setattr(self.provider, "_capture", lambda command, timeout=30: _FakeCompleted(CLAUDE_HELP))
 
     def test_aliases_come_from_the_installed_cli_help(self):
         self.assertEqual(_parse_model_aliases(CLAUDE_HELP), ["fable", "opus", "sonnet"])
@@ -405,7 +417,7 @@ class TestClaudeAdapter(IsolatedCase):
         self.assertIn("cannot resolve model family", str(ctx.exception))
 
     def test_help_failure_falls_back_to_documented_aliases(self):
-        self.provider._capture = lambda command, timeout=30: _FakeCompleted("", "boom", 1)
+        setattr(self.provider, "_capture", lambda command, timeout=30: _FakeCompleted("", "boom", 1))
         families = {candidate.family for candidate in self.provider.list_models()}
         self.assertIn("opus", families)
         self.assertTrue(all(c.source == "builtin-fallback" for c in self.provider.list_models()))
@@ -455,7 +467,7 @@ class TestClaudeRoleOptions(IsolatedCase):
     def setUp(self):
         super().setUp()
         self.provider = ClaudeProvider()
-        self.provider._capture = lambda command, timeout=30: _FakeCompleted(CLAUDE_HELP)
+        setattr(self.provider, "_capture", lambda command, timeout=30: _FakeCompleted(CLAUDE_HELP))
         self.resolved = self.provider.resolve_model({"family": "opus"})
 
     def test_permission_modes_come_from_the_installed_cli(self):
@@ -629,7 +641,7 @@ class TestClaudeReadOnlyRun(IsolatedCase):
                 return None
             return _FakeCompleted(stdout, "", returncode)
 
-        self.provider._capture = capture
+        setattr(self.provider, "_capture", capture)
 
     def run_claude(self, mode=base.MODE_REVIEW, **kwargs):
         return self.provider.run("prompt", mode, self.project, model_spec={"family": "opus"}, **kwargs)
@@ -723,7 +735,7 @@ class TestClaudeResume(IsolatedCase):
         def capture(command, timeout=30):
             return None if stdout is None else _FakeCompleted(stdout, "", 0)
 
-        self.provider._capture = capture
+        setattr(self.provider, "_capture", capture)
 
     def resolved(self):
         return base.ResolvedModel("claude", "opus", "latest", "opus", "opus", "cli-help")
@@ -930,7 +942,7 @@ class TestCodexAdapter(IsolatedCase):
 
     def catalogue(self, stdout=CODEX_CATALOG, returncode=0):
         self.provider.which = lambda: "codex"
-        self.provider._capture = lambda command, timeout=30: _FakeCompleted(stdout, "", returncode)
+        setattr(self.provider, "_capture", lambda command, timeout=30: _FakeCompleted(stdout, "", returncode))
 
     def test_recommended_family_omits_the_model_flag(self):
         resolved = self.provider.resolve_model({"family": "recommended-coding", "version": "latest"})
@@ -969,7 +981,7 @@ class TestCodexAdapter(IsolatedCase):
             calls.append(list(command))
             return _FakeCompleted(CODEX_CATALOG)
 
-        self.provider._capture = capture
+        setattr(self.provider, "_capture", capture)
         for _ in range(3):
             self.provider.resolve_model({"family": "gpt-example-3", "version": "latest"})
         with self.assertRaises(base.ModelResolutionError):

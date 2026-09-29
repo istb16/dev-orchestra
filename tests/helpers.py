@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from typing import Optional, TypeVar
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCRIPTS_DIR = os.path.join(REPO_ROOT, "scripts")
@@ -258,7 +259,7 @@ class IsolatedCase(unittest.TestCase):
 
         for cls in (ClaudeProvider, CodexProvider):
             original = cls.which
-            cls.which = lambda self: None
+            setattr(cls, "which", lambda self: None)
             self.addCleanup(setattr, cls, "which", original)
 
     def tearDown(self) -> None:
@@ -319,6 +320,22 @@ class IsolatedCase(unittest.TestCase):
     def commit_all(self, message: str = "wip") -> None:
         self.git("add", "-A")
         self.git("commit", "-qm", message)
+
+
+_T = TypeVar("_T")
+
+
+def present(value: Optional[_T]) -> _T:
+    """``value``, asserted to be there: a test's precondition, said out loud.
+
+    For a call that returns ``None`` when there is nothing to return, used where
+    the test has just made sure there is. Failing here says so, instead of a
+    ``TypeError`` one line later -- and raises rather than asserts, so it holds
+    under ``python -O`` too.
+    """
+    if value is None:
+        raise AssertionError("expected a value, got None")
+    return value
 
 
 def has_git() -> bool:

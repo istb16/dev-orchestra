@@ -206,7 +206,9 @@ class TestOutcomeReporting(IsolatedCase):
         outcome = execution.execute(python_code(SILENT_HANG), cwd=self.project, timeout=60, idle_timeout=1)
         payload = outcome.to_dict()
         self.assertTrue(payload["stalled"])
-        self.assertGreaterEqual(payload["idle_for_seconds"], 1)
+        idle = payload["idle_for_seconds"]
+        assert isinstance(idle, (int, float))
+        self.assertGreaterEqual(idle, 1)
         self.assertIn("orphans_possible", payload)
 
 

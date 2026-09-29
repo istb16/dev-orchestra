@@ -20,7 +20,7 @@ The public surface covered by that promise is: the configuration schema, the
   CONTRIBUTING describes setting them up in a `.venv`. The 88 errors the
   first run reported were all places the checker could not follow a
   narrowing the code relies on; they are fixed without changing what the code
-  does. The tests are not type-checked yet (#125).
+  does. The tests are checked too (#125).
 
 - **`doctor` says whether the installed CLI version has been live-checked.**
   `scripts/smoke_live.py` now records, per provider and on this machine, the

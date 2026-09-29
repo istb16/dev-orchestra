@@ -17,7 +17,7 @@ import types
 import unittest
 from unittest import mock
 
-from helpers import IsolatedCase
+from helpers import IsolatedCase, present
 
 from orchestrator import jobs as jobs_mod
 from orchestrator import workspace as ws
@@ -45,6 +45,7 @@ class TestJobRecords(JobCase):
     def test_a_job_round_trips(self):
         self.record("a-1", stage="architect")
         job = jobs_mod.read_job(self.workspace, "a-1")
+        assert job is not None
         self.assertEqual(job["stage"], "architect")
         self.assertEqual(job["status"], "running")
 
@@ -64,6 +65,7 @@ class TestDeadWorkerDetection(JobCase):
     def test_a_running_job_whose_worker_is_gone_becomes_abandoned(self):
         self.record("a-1", pid=999_999)
         job = jobs_mod.read_job(self.workspace, "a-1")
+        assert job is not None
         self.assertEqual(job["status"], "abandoned")
         self.assertIn("is gone", job["error"])
 
@@ -75,15 +77,15 @@ class TestDeadWorkerDetection(JobCase):
 
     def test_a_live_worker_is_left_alone(self):
         self.record("a-1", pid=os.getpid())
-        self.assertEqual(jobs_mod.read_job(self.workspace, "a-1")["status"], "running")
+        self.assertEqual(present(jobs_mod.read_job(self.workspace, "a-1"))["status"], "running")
 
     def test_a_finished_job_is_never_reinterpreted(self):
         self.record("a-1", pid=999_999, status="succeeded")
-        self.assertEqual(jobs_mod.read_job(self.workspace, "a-1")["status"], "succeeded")
+        self.assertEqual(present(jobs_mod.read_job(self.workspace, "a-1"))["status"], "succeeded")
 
     def test_a_job_with_no_pid_yet_is_left_alone(self):
         self.record("a-1", status="starting")
-        self.assertEqual(jobs_mod.read_job(self.workspace, "a-1")["status"], "starting")
+        self.assertEqual(present(jobs_mod.read_job(self.workspace, "a-1"))["status"], "starting")
 
 
 class TestBoundedWait(JobCase):
@@ -155,6 +157,7 @@ class TestWorkerSide(JobCase):
         path = jobs_mod.job_path(self.workspace, "a-1")
         jobs_mod.claim(path)
         job = jobs_mod.read_job(self.workspace, "a-1")
+        assert job is not None
         self.assertEqual(job["pid"], os.getpid())
         self.assertEqual(job["status"], "running")
 
@@ -163,6 +166,7 @@ class TestWorkerSide(JobCase):
         path = jobs_mod.job_path(self.workspace, "a-1")
         jobs_mod.finish(path, "succeeded", output="the answer", detail={"exit_code": 0})
         job = jobs_mod.read_job(self.workspace, "a-1")
+        assert job is not None
         self.assertEqual(job["status"], "succeeded")
         self.assertEqual(job["exit_code"], 0)
         self.assertEqual(ws.read_text(str(job["output_file"])).strip(), "the answer")
@@ -170,7 +174,7 @@ class TestWorkerSide(JobCase):
     def test_finish_records_a_failure_reason(self):
         self.record("a-1")
         jobs_mod.finish(jobs_mod.job_path(self.workspace, "a-1"), "failed", error="it broke")
-        self.assertEqual(jobs_mod.read_job(self.workspace, "a-1")["error"], "it broke")
+        self.assertEqual(present(jobs_mod.read_job(self.workspace, "a-1"))["error"], "it broke")
 
 
 def spawning(popen):
@@ -368,6 +372,7 @@ class TestDetachedRun(IsolatedCase):
                 jobs_mod.job_path(workspace, "p-1"),
             )
         job = jobs_mod.read_job(workspace, "p-1")
+        assert job is not None
         self.assertEqual(job["status"], "failed")
         self.assertIn("gone.md", job["error"])
         self.assertIn("does not exist", job["error"])

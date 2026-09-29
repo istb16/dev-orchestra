@@ -69,7 +69,8 @@ class TestPatternMatching(unittest.TestCase):
         self.assertFalse(review_mod.withholds("package-lock.json", []))
 
     def test_junk_in_the_pattern_list_is_skipped_not_raised_on(self):
-        self.assertEqual(review_mod.withholds("a.lock", [None, "", 7, "*.lock"]), "*.lock")
+        # Entries that are not patterns, on purpose: a hand-edited config can hold them.
+        self.assertEqual(review_mod.withholds("a.lock", [None, "", 7, "*.lock"]), "*.lock")  # pyright: ignore[reportArgumentType]
 
     def test_source_files_are_never_withheld_by_the_defaults(self):
         for path in ("app.py", "src/main.rs", "lib/dist_utils.go", "build_config.py", "app/vendor.ts"):

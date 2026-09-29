@@ -79,6 +79,7 @@ class TestDocumentedYaml(IsolatedCase):
         for name in ("config.example.yaml", "project-override.example.yaml"):
             path = pathlib.Path(REPO_ROOT) / "examples" / name
             data = parse_with_bundled_parser(path.read_text(encoding="utf-8"))
+            assert data is not None
             self.assertEqual(data["version"], 1, name)
 
     def test_the_agent_manifest_parses_too(self):
@@ -94,6 +95,7 @@ class TestDocumentedYaml(IsolatedCase):
 
         path = pathlib.Path(REPO_ROOT) / "agents" / "openai.yaml"
         parsed = parse_with_bundled_parser(path.read_text(encoding="utf-8"))
+        assert parsed is not None
         self.assertEqual(str(parsed["version"]), str(front["version"]))
 
     def test_coverage_is_defined_where_the_orchestrator_is_told_to_read_it(self):
@@ -228,6 +230,7 @@ class TestJapaneseReferences(unittest.TestCase):
             with self.subTest(reference=source.name):
                 header = self.stamp.HEADER.match(translation.read_text(encoding="utf-8"))
                 self.assertIsNotNone(header, "%s has no translated-from header" % translation.name)
+                assert header is not None
                 self.assertEqual(header.group("source"), "references/%s" % source.name)
                 self.assertEqual(
                     header.group("digest"),

@@ -87,7 +87,7 @@ class TestMalformedManifests(IsolatedCase):
                 return json.dumps(payload)
             return original(path)
 
-        validate_skill._read = fake
+        setattr(validate_skill, "_read", fake)
         self.addCleanup(setattr, validate_skill, "_read", original)
 
     def test_a_manifest_that_is_not_an_object_is_reported(self):
@@ -118,7 +118,7 @@ class TestMalformedManifests(IsolatedCase):
                 return "{not json"
             return original(path)
 
-        validate_skill._read = fake
+        setattr(validate_skill, "_read", fake)
         self.addCleanup(setattr, validate_skill, "_read", original)
         problems = validate_skill.check_manifests()
         self.assertTrue(any("is not valid JSON" in problem for problem in problems), problems)
