@@ -200,6 +200,29 @@ def risk_patterns(settings: Dict[str, Any]) -> List[str]:
     return [pattern for pattern in combined if isinstance(pattern, str) and pattern.strip()]
 
 
+def default_patterns_only(settings: Dict[str, Any]) -> bool:
+    """Whether the patterns in force come from the built-in defaults alone.
+
+    ``high_risk_paths`` unset, or a list drawn only from the defaults in any
+    order, and no ``extra_high_risk_paths``. A subset counts because configs
+    written before 0.6.0 copied the whole default config into the file, so
+    they hold an older default list nobody chose. A pattern outside the
+    defaults means someone chose the patterns, so it is not this case; nor is
+    a list with no usable pattern, which validation already reports. Entries
+    are read the way ``risk_patterns`` reads them, so a blank or non-string
+    one changes nothing.
+    """
+    patterns = settings.get("high_risk_paths")
+    if isinstance(patterns, (list, tuple)):
+        chosen = {p for p in patterns if isinstance(p, str) and p.strip()}
+        if not chosen or not chosen <= set(DEFAULT_HIGH_RISK_PATHS):
+            return False
+    extra = settings.get("extra_high_risk_paths")
+    if not isinstance(extra, (list, tuple)):
+        return True
+    return not [pattern for pattern in extra if isinstance(pattern, str) and pattern.strip()]
+
+
 def _and_more(more: int) -> str:
     return " (and %d more)" % more if more > 0 else ""
 

@@ -10,6 +10,20 @@ The public surface covered by that promise is: the configuration schema, the
 
 ## [Unreleased]
 
+### Added
+
+- **`doctor` notes a `when: high-risk` reviewer judged by the built-in
+  patterns alone.** With no `high_risk_paths` of the repository's own and no
+  `extra_high_risk_paths`, one note names every such reviewer and points at
+  `optimization.extra_high_risk_paths`: the defaults fit common names and can
+  miss a repository's own sensitive paths, leaving the reviewer almost never
+  running. A `high_risk_paths` drawn only from the defaults, such as the older
+  default list a config written before 0.6.0 holds, counts as none of the
+  repository's own. A new **Notes** block (`notes` in `--json`) carries it; notes are
+  not problems and never fail `--strict`. Reviewer lines in **Roles** now end
+  in `(when: high-risk)` for a conditional reviewer, as in `reviewer list`, and
+  the `--json` entry carries `when` when it is not `always`.
+
 ## [0.13.0] - 2026-09-29
 
 ### Added

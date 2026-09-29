@@ -327,6 +327,88 @@ class TestDoctor(IsolatedCase):
         self.assertEqual(code, 1)
 
 
+class TestDoctorDefaultPatternsNote(IsolatedCase):
+    """A high-risk reviewer judged by the built-in patterns alone is noted.
+
+    Not a problem: the defaults can be exactly right, and `doctor --strict`
+    must not fail over a configuration that is working.
+    """
+
+    def write_config(self, conditional=("sec",), **optimization):
+        role = {"provider": "mock", "model": {"family": "small", "version": "latest"}}
+        data = config_mod.default_config()
+        data.update(orchestrator=role, architect=role, implementer=role, review_fixer=role)
+        data["reviewers"] = [config_mod.make_reviewer("gen", "mock", "small")]
+        for name in conditional:
+            data["reviewers"].append(config_mod.make_reviewer(name, "mock", "small", when="high-risk"))
+        data["optimization"].update(optimization)
+        config_mod.write_config_file(config_mod.global_config_path(), data)
+
+    def notes(self):
+        _, out, _ = run_cli("doctor", "--fast", "--json")
+        return json.loads(out)["notes"]
+
+    def test_a_high_risk_reviewer_on_the_defaults_is_noted(self):
+        self.write_config()
+        code, out, _ = run_cli("doctor", "--fast", "--strict")
+        self.assertEqual(code, 0, out)
+        self.assertIn("No problems found.", out)
+        self.assertIn("\nNotes\n", out)
+        self.assertIn("sec: when: high-risk", out)
+        self.assertIn("optimization.extra_high_risk_paths", out)
+        notes = self.notes()
+        self.assertEqual(len(notes), 1)
+        self.assertTrue(notes[0].startswith("sec: "))
+
+    def test_two_high_risk_reviewers_share_one_note(self):
+        self.write_config(conditional=("sec", "pay"))
+        notes = self.notes()
+        self.assertEqual(len(notes), 1)
+        self.assertTrue(notes[0].startswith("sec, pay: "))
+
+    def test_extra_patterns_mean_no_note(self):
+        self.write_config(extra_high_risk_paths=["app/guards/*"])
+        self.assertEqual(self.notes(), [])
+
+    def test_a_replaced_list_means_no_note(self):
+        self.write_config(high_risk_paths=["app/guards/*", "*auth*"])
+        self.assertEqual(self.notes(), [])
+
+    def test_the_defaults_written_out_in_any_order_are_still_the_defaults(self):
+        defaults = config_mod.default_config()["optimization"]["high_risk_paths"]
+        self.write_config(high_risk_paths=list(reversed(defaults)))
+        self.assertEqual(len(self.notes()), 1)
+
+    def test_an_older_copy_of_the_defaults_is_still_the_defaults(self):
+        # Configs written before 0.6.0 hold the default list of their day,
+        # which lacks patterns added since.
+        defaults = config_mod.default_config()["optimization"]["high_risk_paths"]
+        self.write_config(high_risk_paths=[p for p in defaults if p not in ("k8s/*", "deploy/*")])
+        self.assertEqual(len(self.notes()), 1)
+
+    def test_a_blank_entry_does_not_make_the_defaults_a_choice(self):
+        defaults = config_mod.default_config()["optimization"]["high_risk_paths"]
+        self.write_config(high_risk_paths=[*defaults, "", "  "])
+        self.assertEqual(len(self.notes()), 1)
+
+    def test_no_high_risk_reviewer_means_no_note(self):
+        self.write_config(conditional=())
+        self.assertEqual(self.notes(), [])
+        _, out, _ = run_cli("doctor", "--fast")
+        self.assertNotIn("Notes", out)
+
+    def test_the_reviewer_line_shows_the_condition(self):
+        self.write_config()
+        _, out, _ = run_cli("doctor", "--fast")
+        line = next(line for line in out.splitlines() if ". sec / " in line)
+        self.assertTrue(line.endswith("general (when: high-risk)"), line)
+        self.assertNotIn("when:", next(line for line in out.splitlines() if ". gen / " in line))
+        _, payload, _ = run_cli("doctor", "--fast", "--json")
+        entries = {entry["id"]: entry for entry in json.loads(payload)["reviewers"]}
+        self.assertEqual(entries["sec"]["when"], "high-risk")
+        self.assertNotIn("when", entries["gen"])
+
+
 class TestDoctorReadOnlyEnforcement(IsolatedCase):
     def setUp(self):
         super().setUp()

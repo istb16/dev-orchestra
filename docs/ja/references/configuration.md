@@ -1,4 +1,4 @@
-<!-- translated-from: references/configuration.md sha256:4dc1975683eb68c23ad893d755dfd4cecc7302096182e1d7f42e9169ea383445 -->
+<!-- translated-from: references/configuration.md sha256:6c235596e3d6bc9c8d3b16c8e4b7de5900f81fc686ffc0ea84d59b6934c356cb -->
 
 > この文書は [references/configuration.md](../../../references/configuration.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -338,6 +338,8 @@ accepted の指摘を確認し直す必要があるときです。それ以外�
 導入は次の順序で行ってください: まずデフォルトが見逃しているパスを `extra_high_risk_paths` に
 追加し、その後でレビュアーを `when: high-risk` に切り替えます。逆の順序だと、新しいパターンで
 捉えるはずだったラウンドにそのレビュアーが参加しません。
+`doctor` は、組み込みのパターンだけで判定される `high-risk` のレビュアーがあると注記するので、
+最初の手順を飛ばして切り替えても気づかれないままにはなりません。
 
 ```bash
 dev-orchestra reviewer set claude-security --when high-risk
