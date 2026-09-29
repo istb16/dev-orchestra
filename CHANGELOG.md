@@ -53,6 +53,18 @@ The public surface covered by that promise is: the configuration schema, the
   `reviewers[i].when: must be one of always, high-risk, or a mapping with
   paths`, and `... every reviewer is conditional (when: high-risk or when:
   paths)`.
+- **Design revisions stay small and say what they add.** The four revision
+  request templates in `references/workflow.md` now ask the architect to answer
+  each finding or change with the smallest change that does it, and to end the
+  plan with `## Added in this revision`, listing each new record, flag, rule,
+  state or code path, the finding it answers and why nothing smaller would do
+  (`None.` when there is none). A design re-review then points every reviewer
+  at that list first -- its failure paths, older or malformed input, and how
+  the items interact with existing behaviour and each other -- and asks it to
+  check that nothing else changed unlisted. When the list is `None.` or
+  missing, the reviewer is asked whether the revision added a mechanism without
+  saying so. In the recorded rounds, most new findings on a re-review came from
+  what the revision itself added. First-round prompts are unchanged.
 
 ### Fixed
 

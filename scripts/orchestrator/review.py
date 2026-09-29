@@ -687,7 +687,50 @@ def carried_findings(workspace: ws.Workspace, meta: Dict[str, Any]) -> List[Dict
     return accepted_findings(consolidated)
 
 
-def render_design_round_context(workspace: ws.Workspace, meta: Dict[str, Any]) -> str:
+ADDED_HEADING_RE = re.compile(r"^\s{0,3}(#{2,3})\s+added in this revision\b", re.IGNORECASE)
+HEADING_RE = re.compile(r"^\s{0,3}(#{1,6})\s")
+NONE_ADDED_RE = re.compile(r"^[\s\-*_]*none(?![a-z0-9])", re.IGNORECASE)
+FENCE_RE = re.compile(r"^\s{0,3}(`{3,}|~{3,})")
+
+
+def added_in_revision(plan_text: str) -> Optional[str]:
+    """The body of the plan's ``## Added in this revision`` section.
+
+    None when the plan has no such heading outside a fenced block; the body
+    runs to the next heading of the same level or higher, stripped, so
+    ``###`` items under a ``##`` heading stay inside it.
+    """
+    fence = ""
+    body: Optional[List[str]] = None
+    level = 0
+    for line in plan_text.splitlines():
+        marker = FENCE_RE.match(line)
+        if fence:
+            if marker and marker.group(1)[0] == fence[0] and len(marker.group(1)) >= len(fence):
+                fence = ""
+            if body is not None:
+                body.append(line)
+            continue
+        if marker:
+            fence = marker.group(1)
+        elif body is not None:
+            heading = HEADING_RE.match(line)
+            if heading and len(heading.group(1)) <= level:
+                break
+        else:
+            added = ADDED_HEADING_RE.match(line)
+            if added:
+                body = []
+                level = len(added.group(1))
+                continue
+        if body is not None:
+            body.append(line)
+    return None if body is None else "\n".join(body).strip()
+
+
+def render_design_round_context(
+    workspace: ws.Workspace, meta: Dict[str, Any], plan_text: Optional[str] = None
+) -> str:
     """What a re-reviewed plan needs to say that the plan itself does not.
 
     The design version of ``render_round_context``, and the same reasoning:
@@ -695,24 +738,46 @@ def render_design_round_context(workspace: ws.Workspace, meta: Dict[str, Any]) -
     invites the same objections again. Who reported what is left out here too
     -- the accepted findings arrive as the brief the revision worked from, not
     as another reviewer's opinion still in play.
+
+    Most new findings on a recorded re-review came from what the revision
+    added to answer the last round, so the reviewer is pointed at the plan's
+    ``## Added in this revision`` list -- or asked to look for an unlisted
+    addition when the list is empty or missing. That pointer goes out on every
+    recorded re-review, including one the owner asked for with no accepted
+    findings behind it; only the findings block needs them. ``plan_text`` is
+    the frozen plan the round reviews; it is read from the snapshot when not
+    given.
     """
     if not meta.get("previous_sha"):
         return ""
     consolidated = ws.read_json(workspace.consolidated_json_path, {}) or {}
     accepted = accepted_findings(consolidated)
-    if not accepted:
-        return ""
-    lines = ["This plan is a revision. It was meant to address:"]
-    for finding in accepted:
+    lines: List[str] = []
+    if accepted:
+        lines.append("This plan is a revision. It was meant to address:")
+        for finding in accepted:
+            lines.append(
+                "- [%s] %s -- %s"
+                % (finding.get("severity", "?"), finding.get("file", "?"), finding.get("problem", ""))
+            )
+        lines += [
+            "",
+            "For each: addressed or not, plus any new problem the revision introduced. "
+            "Do not assume a listed item was real.",
+            "",
+        ]
+    if plan_text is None:
+        plan_text = ws.read_text(workspace.snapshot_path, "")
+    added = added_in_revision(plan_text)
+    if added and not NONE_ADDED_RE.match(added):
         lines.append(
-            "- [%s] %s -- %s"
-            % (finding.get("severity", "?"), finding.get("file", "?"), finding.get("problem", ""))
+            "New problems on a re-review mostly come from what a revision adds. Examine each item "
+            'under "Added in this revision" first -- its failure paths, what it does on older or '
+            "malformed input, how it interacts with existing behaviour and with the other items -- "
+            "then check that nothing else changed without being listed."
         )
-    lines += [
-        "",
-        "For each: addressed or not, plus any new problem the revision introduced. "
-        "Do not assume a listed item was real.",
-    ]
+    else:
+        lines.append("Check whether the revision added a mechanism without saying so.")
     return "\n".join(lines)
 
 
@@ -1373,7 +1438,7 @@ def build_design_review_prompt(
         )
         plan_section += "\n\n" + _handover_note(len(plan_text), inline_chars)
     meta = ws.read_json(workspace.snapshot_meta_path, {}) or {}
-    note = render_design_round_context(workspace, meta)
+    note = render_design_round_context(workspace, meta, plan_text)
     if note:
         plan_section += "\n\n" + note
     request_section = (

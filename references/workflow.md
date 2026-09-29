@@ -151,7 +151,10 @@ Triage exactly as for a code review: read what the plan claims, check it
 against the code, decide. Then write the revision request yourself, as two
 files. The architect continues the session in which it designed the plan when
 it can, and starts again with no context when it cannot -- `run` knows which
-and sends the matching one, so write both.
+and sends the matching one, so write both. Both ask the architect to answer
+with the smallest change and to list what it added under `## Added in this
+revision`: in the recorded rounds most new high findings on a re-review came
+from what the revision itself added, so the re-review is pointed at that list.
 
 `design-revise-request.md`, for a fresh run (the brief alone is not a prompt):
 
@@ -166,6 +169,13 @@ Read .ai/plan.md and revise it. Keep every section it already has.
 
 For each finding: say whether you addressed it and how, or why it is not a
 problem. Do not widen the scope beyond the original request.
+
+Answer each with the smallest change that does it. Add a new mechanism -- a
+record, a flag, a rule, a state, a code path -- only when nothing smaller will
+do. End the plan with a section `## Added in this revision` listing each one
+you added: what it is, which finding it answers, and why a smaller change was
+not enough. Write `None.` when you added none. Replace that section on every
+revision; do not keep an earlier revision's list.
 
 Print the complete revised plan to stdout as Markdown. The caller captures
 stdout. Do not write it to a file: this role runs in plan mode.
@@ -188,6 +198,13 @@ remember.
 
 For each finding: say whether you addressed it and how, or why it is not a
 problem. Do not widen the scope beyond the original request.
+
+Answer each with the smallest change that does it. Add a new mechanism -- a
+record, a flag, a rule, a state, a code path -- only when nothing smaller will
+do. End the plan with a section `## Added in this revision` listing each one
+you added: what it is, which finding it answers, and why a smaller change was
+not enough. Write `None.` when you added none. Replace that section on every
+revision; do not keep an earlier revision's list.
 
 Print the complete revised plan to stdout as Markdown. The caller captures
 stdout. Do not write it to a file: this role runs in plan mode.
@@ -276,6 +293,13 @@ The owner reviewed the plan and asked for these changes, in their words:
 For each change: say how you made it, or why it conflicts with the original
 request. Do not widen the scope beyond the original request.
 
+Answer each with the smallest change that does it. Add a new mechanism -- a
+record, a flag, a rule, a state, a code path -- only when nothing smaller will
+do. End the plan with a section `## Added in this revision` listing each one
+you added: what it is, which change it answers, and why a smaller change was
+not enough. Write `None.` when you added none. Replace that section on every
+revision; do not keep an earlier revision's list.
+
 Print the complete revised plan to stdout as Markdown. The caller captures
 stdout. Do not write it to a file: this role runs in plan mode.
 ```
@@ -296,6 +320,13 @@ The owner reviewed the plan and asked for these changes, in their words:
 
 For each change: say how you made it, or why it conflicts with the original
 request. Do not widen the scope beyond the original request.
+
+Answer each with the smallest change that does it. Add a new mechanism -- a
+record, a flag, a rule, a state, a code path -- only when nothing smaller will
+do. End the plan with a section `## Added in this revision` listing each one
+you added: what it is, which change it answers, and why a smaller change was
+not enough. Write `None.` when you added none. Replace that section on every
+revision; do not keep an earlier revision's list.
 
 Print the complete revised plan to stdout as Markdown. The caller captures
 stdout. Do not write it to a file: this role runs in plan mode.

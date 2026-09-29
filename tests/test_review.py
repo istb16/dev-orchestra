@@ -1027,6 +1027,87 @@ class TestDesignReviewPrompt(IsolatedCase):
     def test_a_first_round_carries_no_revision_note(self):
         prompt = review_mod.build_design_review_prompt(reviewer("r1"), self.workspace, PLAN).text
         self.assertNotIn("This plan is a revision", prompt)
+        self.assertNotIn("Added in this revision", prompt)
+        self.assertNotIn("without saying so", prompt)
+
+    def revision_prompt(self, plan, accepted=True):
+        if accepted:
+            ws.write_json(
+                self.workspace.consolidated_json_path,
+                {
+                    "findings": [
+                        {
+                            "id": "F1",
+                            "severity": "high",
+                            "file": "plan.md#Proposed Change",
+                            "problem": "no backfill is described",
+                            "triage": "accepted",
+                        }
+                    ]
+                },
+            )
+        ws.write_json(self.workspace.snapshot_meta_path, {"previous_sha": "abc123"})
+        return review_mod.build_design_review_prompt(reviewer("r1"), self.workspace, plan).text
+
+    def test_a_revision_that_lists_its_additions_is_pointed_at_them(self):
+        plan = PLAN + (
+            "\n### Added in this revision (round 2)\n\n"
+            "- A backfill record, for F1: a flag alone could not resume.\n"
+        )
+        prompt = self.revision_prompt(plan)
+        self.assertIn('Examine each item under "Added in this revision" first', prompt)
+        self.assertIn("nothing else changed without being listed", prompt)
+        self.assertNotIn("without saying so", prompt)
+
+    def test_subheadings_inside_the_section_stay_in_it(self):
+        plan = PLAN + (
+            "\n## Added in this revision\n\n"
+            "### Backfill record\n\n- resumes after a crash, for F1.\n\n"
+            "### Retry flag\n\n- off by default.\n\n"
+            "## Risks\n\n- a risk\n"
+        )
+        self.assertIn("### Retry flag", review_mod.added_in_revision(plan))
+        self.assertNotIn("## Risks", review_mod.added_in_revision(plan))
+        prompt = self.revision_prompt(plan)
+        self.assertIn('Examine each item under "Added in this revision" first', prompt)
+        self.assertNotIn("without saying so", prompt)
+
+    def test_an_owner_requested_revision_is_still_pointed_at_its_additions(self):
+        plan = PLAN + "\n## Added in this revision\n\n- A retry flag, as the owner asked.\n"
+        prompt = self.revision_prompt(plan, accepted=False)
+        self.assertNotIn("It was meant to address", prompt)
+        self.assertIn('Examine each item under "Added in this revision" first', prompt)
+
+    def test_an_owner_requested_revision_without_the_section_is_asked_about_unlisted_additions(self):
+        prompt = self.revision_prompt(PLAN, accepted=False)
+        self.assertNotIn("It was meant to address", prompt)
+        self.assertIn("added a mechanism without saying so", prompt)
+
+    def test_a_revision_that_added_nothing_is_asked_about_unlisted_additions(self):
+        for body in ("None.", "- None.", "*None.*", "_none_", "None -- only wording changed.", "None added."):
+            with self.subTest(body=body):
+                prompt = self.revision_prompt(
+                    PLAN + "\n## Added in this revision\n\n%s\n\n## Risks\n\n- a risk\n" % body
+                )
+                self.assertIn("added a mechanism without saying so", prompt)
+                self.assertNotIn("Examine each item", prompt)
+
+    def test_an_item_that_only_starts_like_none_still_counts(self):
+        prompt = self.revision_prompt(
+            PLAN + "\n## Added in this revision\n\n- Nonempty check on the queue.\n"
+        )
+        self.assertIn("Examine each item", prompt)
+
+    def test_a_revision_without_the_section_is_asked_about_unlisted_additions(self):
+        prompt = self.revision_prompt(PLAN)
+        self.assertIn("added a mechanism without saying so", prompt)
+        self.assertNotIn("Examine each item", prompt)
+
+    def test_the_heading_inside_a_fenced_block_does_not_count(self):
+        plan = PLAN + "\n```markdown\n## Added in this revision\n\n- a record\n```\n"
+        prompt = self.revision_prompt(plan)
+        self.assertIn("added a mechanism without saying so", prompt)
+        self.assertNotIn("Examine each item", prompt)
 
 
 def consolidation(sha="a" * 64, round_id="r" * 32, surrounding=None, findings=()):
