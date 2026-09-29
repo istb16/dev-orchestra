@@ -88,6 +88,14 @@ class TestWhatCountsAsPinned(unittest.TestCase):
         data["reviewers"] = [dict(data["reviewers"][0], id="mine")]
         self.assertEqual(pinned(data), [])
 
+    def test_patterns_added_to_the_defaults_are_never_reported(self):
+        """`extra_high_risk_paths` arrived after writers went sparse: no
+        release ever wrote it into a file, so a value there was added by
+        someone and is not an older default left behind."""
+        data = config_mod.default_config()
+        data["optimization"]["extra_high_risk_paths"] = ["*/providers/*", "*/config.py"]
+        self.assertEqual(pinned(data), [])
+
     def test_a_list_is_compared_by_length_rather_than_dumped(self):
         """`high_risk_paths` is thirty entries and nobody reads a diff of it in
         a diagnostic. This is the setting a user is most likely to narrow."""

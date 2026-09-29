@@ -508,6 +508,11 @@ class LoadedConfig:
 #: a difference from the default says nothing worth reporting.
 _TASTE = ("version", "reviewers", "workspace")
 
+#: Settings whose default is empty and which only ever add to another one, so
+#: any value in a file was put there by someone. No release ever seeded a file
+#: with them, which is the one thing a pinned report is looking for.
+_ADDITIONS = ("optimization.extra_high_risk_paths",)
+
 
 def pinned_differences(data: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Settings this configuration fixes at a value the defaults have moved off.
@@ -530,7 +535,9 @@ def pinned_differences(data: Dict[str, Any]) -> List[Dict[str, Any]]:
     entries and nobody reads a diff of it in a diagnostic. `reviewers` is not
     compared at all (`_TASTE`): a panel is the user's own, and holding it
     against the default one would report every installation that added a
-    reviewer.
+    reviewer. Nor is an addition (`_ADDITIONS`) such as
+    `extra_high_risk_paths`: it arrived after writers went sparse, so a value
+    in a file is always one somebody added, never an inherited default.
     """
     differences: List[Dict[str, Any]] = []
 
@@ -541,8 +548,11 @@ def pinned_differences(data: Dict[str, Any]) -> List[Dict[str, Any]]:
             for key, value in default.items():
                 if path == "" and key in _TASTE:
                     continue
+                name = ("%s.%s" % (path, key)) if path else str(key)
+                if name in _ADDITIONS:
+                    continue
                 if key in current:
-                    walk(current[key], value, ("%s.%s" % (path, key)) if path else str(key))
+                    walk(current[key], value, name)
             return
         if isinstance(default, list):
             if isinstance(current, list) and len(current) != len(default):

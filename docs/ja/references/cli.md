@@ -1,4 +1,4 @@
-<!-- translated-from: references/cli.md sha256:c821094b96a9ea42af6943e8287c9e0a4214d97a2bc46ea28e673e562aa507d9 -->
+<!-- translated-from: references/cli.md sha256:f0882bf035af1ff90ba9620a3be964dae9951b7e39c6b5634accd846a9680794 -->
 
 > この文書は [references/cli.md](../../../references/cli.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -105,7 +105,8 @@ dev-orchestra reviewer remove db-review
 うち、その後推奨値が変わったものを一覧表示します。これは報告であって書き換えではありません。
 意図的な選択と継承されたデフォルトは、ディスク上では見分けがつかないからです。`config prune` は、
 求められれば、現在のデフォルトと等しいものを削除します。`reviewers` については何も言いません。
-パネルは誰のデフォルトでもないからです。
+パネルは誰のデフォルトでもないからです。`optimization.extra_high_risk_paths` についても何も
+言いません。どの版もこの設定をファイルに書き込んだことはないので、値があれば必ず誰かが足したものだからです。
 
 誤りではないが知っておくべきことがあると、問題の後に **Notes** ブロックが表示されます。注記は
 `--strict` の判定に数えられず、`--json` では `notes` に入ります（ないときは `[]`）。現在は 1 種類だけです:
