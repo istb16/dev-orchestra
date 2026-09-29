@@ -272,6 +272,20 @@ Print the complete revised plan to stdout as Markdown. The caller captures
 stdout. Do not write it to a file: this role runs in plan mode.
 ```
 
+When `review status --design` says `final_revision: pending` -- the revision
+no review will see -- add this to both. Its findings are mostly holes in what the previous
+revision added, and patching each hole adds the next one; the last revisions
+that settled did it by taking machinery out:
+
+```markdown
+This is the last revision; no review will see it. Where a finding is a hole
+in something an earlier revision added, remove or simplify that mechanism
+rather than patching it, and where a rule is left uncertain, make it fail
+toward the safe side. Under `## Added in this revision`, also list each
+removal as `Removed:` with the finding it answers; write `None.` only when
+you neither added nor removed anything.
+```
+
 ```bash
 dev-orchestra run architect --resume \
   --prompt-file .ai/execution/design-revise-request.md \
