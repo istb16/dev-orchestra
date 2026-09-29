@@ -1,4 +1,4 @@
-<!-- translated-from: references/workflow.md sha256:3fb62342895b0fcb79ae3686339bf4f5e4a4b9beccf1ed4bdd096088b50bc36b -->
+<!-- translated-from: references/workflow.md sha256:25941729bb395c760ccaf8557e9b4accc889f8367421bfdaa4a60ff4e6938d98 -->
 
 > この文書は [references/workflow.md](../../../references/workflow.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -166,6 +166,9 @@ dev-orchestra review status --design
 コードと照合し、判断します。その後、修正リクエストを自分で 2 つのファイルとして書いてください。
 architect は、できるときは plan を設計したセッションを継続し、できないときはコンテキストなしで
 改めて開始します。どちらになるかは `run` が知っていて対応する方を送るので、両方を書きます。
+どちらも architect に、最小の変更で答えることと、追加したものを `## Added in this revision` に
+並べることを求めます。記録されたラウンドでは、再レビューで新たに出た high の指摘の多くが修正版
+自身の追加したものから出ていたので、再レビューはその一覧に向けられます。
 
 `design-revise-request.md` は新規に走る場合のものです（brief だけではプロンプトになりません）。
 
@@ -180,6 +183,13 @@ Read .ai/plan.md and revise it. Keep every section it already has.
 
 For each finding: say whether you addressed it and how, or why it is not a
 problem. Do not widen the scope beyond the original request.
+
+Answer each with the smallest change that does it. Add a new mechanism -- a
+record, a flag, a rule, a state, a code path -- only when nothing smaller will
+do. End the plan with a section `## Added in this revision` listing each one
+you added: what it is, which finding it answers, and why a smaller change was
+not enough. Write `None.` when you added none. Replace that section on every
+revision; do not keep an earlier revision's list.
 
 Print the complete revised plan to stdout as Markdown. The caller captures
 stdout. Do not write it to a file: this role runs in plan mode.
@@ -202,6 +212,13 @@ remember.
 
 For each finding: say whether you addressed it and how, or why it is not a
 problem. Do not widen the scope beyond the original request.
+
+Answer each with the smallest change that does it. Add a new mechanism -- a
+record, a flag, a rule, a state, a code path -- only when nothing smaller will
+do. End the plan with a section `## Added in this revision` listing each one
+you added: what it is, which finding it answers, and why a smaller change was
+not enough. Write `None.` when you added none. Replace that section on every
+revision; do not keep an earlier revision's list.
 
 Print the complete revised plan to stdout as Markdown. The caller captures
 stdout. Do not write it to a file: this role runs in plan mode.
@@ -289,6 +306,13 @@ The owner reviewed the plan and asked for these changes, in their words:
 For each change: say how you made it, or why it conflicts with the original
 request. Do not widen the scope beyond the original request.
 
+Answer each with the smallest change that does it. Add a new mechanism -- a
+record, a flag, a rule, a state, a code path -- only when nothing smaller will
+do. End the plan with a section `## Added in this revision` listing each one
+you added: what it is, which change it answers, and why a smaller change was
+not enough. Write `None.` when you added none. Replace that section on every
+revision; do not keep an earlier revision's list.
+
 Print the complete revised plan to stdout as Markdown. The caller captures
 stdout. Do not write it to a file: this role runs in plan mode.
 ```
@@ -309,6 +333,13 @@ The owner reviewed the plan and asked for these changes, in their words:
 
 For each change: say how you made it, or why it conflicts with the original
 request. Do not widen the scope beyond the original request.
+
+Answer each with the smallest change that does it. Add a new mechanism -- a
+record, a flag, a rule, a state, a code path -- only when nothing smaller will
+do. End the plan with a section `## Added in this revision` listing each one
+you added: what it is, which change it answers, and why a smaller change was
+not enough. Write `None.` when you added none. Replace that section on every
+revision; do not keep an earlier revision's list.
 
 Print the complete revised plan to stdout as Markdown. The caller captures
 stdout. Do not write it to a file: this role runs in plan mode.
