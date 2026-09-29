@@ -912,3 +912,24 @@ which is a different root and therefore a different `.ai/`.
 | `DEV_ORCHESTRA_MOCK_FAIL` | Make mock runs fail (`1` = all, otherwise a prompt substring) |
 | `CODEX_HOME` | Respected when locating the Codex CLI's config and credentials |
 | `DEV_ORCHESTRA_TEST_ASSUME_NO_CLI` | Test-only: hides both provider CLIs, reproducing CI |
+
+## Troubleshooting
+
+Start with `dev-orchestra doctor`; `doctor --json` gives a machine-readable
+version of all of this.
+
+| Symptom | Cause and fix |
+| --- | --- |
+| `Source: built-in defaults` | No config file yet. `dev-orchestra config setup`. |
+| `codex: … does not vouch for …` | A family this Codex CLI does not offer. Check `dev-orchestra model list`, use `recommended-coding`, or pin an exact id. |
+| `claude: cannot resolve model family 'x'` | Not an advertised alias. `dev-orchestra model list`. |
+| `Installed: no` | The CLI is not on PATH. Install it yourself; the skill will not. |
+| `Failed to authenticate` from a delegated CLI | Log in with that CLI directly (`claude`, `codex login`). `doctor` reports credential *presence*, not validity. |
+| `review snapshot` says empty | Nothing changed vs `HEAD`. Use `--base <rev>`, or check the implementation ran. |
+| `not a git repository` | Snapshots need git. `git init`, or review a committed repo. |
+| One reviewer failed | Expected to be survivable. The workflow's `reviews/consolidated.md` gives the reason. |
+| The implementer cannot run tests | `acceptEdits` auto-approves edits, not shell commands. Allow-list the command in the project's own CLI settings, or set `implementer.options.permission_mode`. |
+| Two findings are obviously the same | Auto-merge is conservative by design. Check the "Possible duplicates" list and triage one as `duplicate`. |
+| Reviews never finish | Lower `review.timeout_seconds`, or use `--sequential` to see which reviewer hangs. |
+| Config parse error | The built-in YAML parser rejects anchors, aliases and block scalars. Simplify, or install PyYAML. |
+| `—` appears as `\u2014` | The console cannot encode it -- cp932 on Japanese Windows, for instance. The character is escaped rather than dropped or fatal. `chcp 65001`, or `PYTHONIOENCODING=utf-8`, shows it properly. |

@@ -155,17 +155,20 @@ class TestDocumentedYaml(IsolatedCase):
         releases = text.split("## Releases", 1)[1].split("\n## ", 1)[0]
         self.assertIn("VERIFIED_RESUME", releases)
 
-    def test_readme_config_example_is_a_valid_configuration(self):
-        """The main README block is not just parseable, it is usable."""
+    def test_reference_config_example_is_a_valid_configuration(self):
+        """The full example in the configuration reference is not just
+        parseable, it is usable."""
         from orchestrator import config as config_mod
 
-        text = (pathlib.Path(REPO_ROOT) / "README.md").read_text(encoding="utf-8")
+        text = (pathlib.Path(REPO_ROOT) / "references" / "configuration.md").read_text(encoding="utf-8")
+        full = 0
         for block in YAML_FENCE.findall(text):
             data = parse_with_bundled_parser(block)
             if isinstance(data, dict) and "orchestrator" in data and "reviewers" in data:
-                self.assertEqual(config_mod.validate(data), [])
-                return
-        self.fail("README.md no longer contains a full configuration example")
+                full += 1
+                with self.subTest(block=full):
+                    self.assertEqual(config_mod.validate(data), [])
+        self.assertTrue(full, "references/configuration.md no longer contains a full configuration example")
 
 
 MARKDOWN_LINK = re.compile(r"\]\(([^)#\s]+)(?:#[^)]*)?\)")

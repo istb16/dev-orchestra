@@ -83,7 +83,7 @@ review_fixer:                 # fixes accepted findings
     family: opus
     version: latest
 
-reviewers:                    # 0..n independent reviewers
+reviewers:                    # 0..n independent reviewers; two or more recommended
   - id: claude-general
     provider: claude
     model:
@@ -498,6 +498,38 @@ cannot verify a family raises `ModelResolutionError` rather than sending a
 guessed name to the CLI. The *resolved* id is recorded in `.ai/state.json` for
 traceability; the config file keeps the family.
 
+The adapter checks, in order:
+
+1. What the installed CLI advertises — `claude --help` for aliases,
+   `codex debug models` plus `$CODEX_HOME/config.toml` for Codex.
+2. The provider's current aliases.
+3. A built-in fallback list of **families only**, carrying the date it was last
+   checked.
+
+If none of those can verify the family, the run stops with an explanation.
+`model list` shows what each source offers on this machine:
+
+```bash
+dev-orchestra model list
+```
+
+```
+claude: installed
+  fable    family=fable    source=cli-help
+  opus     family=opus     source=cli-help
+  sonnet   family=sonnet   source=cli-help
+codex: installed
+  CLI default (recommended coding model)  family=recommended-coding  source=cli-default
+  gpt-6-astra (this CLI's configured model) family=gpt-6-astra       source=cli-config
+  GPT-5.6-Terra                           family=gpt-5.6-terra       source=cli-catalog
+```
+
+`recommended-coding` resolves by *omitting* the `-m` flag — the CLI's own
+current default is, by definition, current. Any other Codex family has to
+appear in that listing: the adapter accepts the model the CLI is configured
+with and the slugs its own catalogue publishes, and refuses everything else.
+Adapter detail is in `references/providers.md`.
+
 ## What the user asks for, and what to run
 
 The skill carries the command grammar; this is the phrasebook.
@@ -581,6 +613,43 @@ list is an error (exit 2), not a new entry.
 
 ### The wizard
 
+On first use the skill notices there is no configuration and runs it:
+
+```
+AI Development Orchestrator setup
+
+Detected CLIs:
+  claude:  installed
+  codex:   installed
+
+1. Orchestrator
+   CLI:
+     1) Claude Code (2.1.x) (recommended)
+     2) Codex CLI (0.154.x)
+   Model:
+     1) sonnet [cli-help] (recommended)
+     2) opus [cli-help]
+     3) fable [cli-help]
+     4) custom (type a family or exact model id)
+...
+5. External Reviewers
+   How many reviewers? [2]
+   reviewer #1  CLI / Model / Review role / id
+   reviewer #2  CLI / Model / Review role / id
+   Add another reviewer? [y/N]
+
+Configuration
+  Orchestrator    claude / sonnet / latest
+  Architect       claude / fable  / latest
+  Implementer     claude / opus   / latest
+  Review Fixer    claude / opus   / latest
+  Reviews
+    1. claude / opus / latest / general / claude-general
+    2. codex / recommended-coding / latest / general / codex-general
+
+Save configuration? [Y/n]
+```
+
 `config setup` saves the answers you gave and nothing else. Its recommended
 answers, and the summary you approve, come from whatever the layer you are
 editing would inherit: setting up a project layer over a global one that chose
@@ -599,6 +668,58 @@ when it still equals the current default panel. If you want to override nothing
 at all, `config setup --defaults`.
 
 ## Worked examples
+
+**One vendor designs, another reviews** — a lineup that maps onto what the two
+CLIs offered when this was written:
+
+```yaml
+version: 1
+
+orchestrator:
+  provider: codex
+  model:
+    family: gpt-5.6-sol
+    version: latest
+
+architect:
+  provider: claude
+  model:
+    family: fable
+    version: latest
+
+implementer:
+  provider: claude
+  model:
+    family: opus
+    version: latest
+
+review_fixer:
+  provider: claude
+  model:
+    family: opus
+    version: latest
+
+reviewers:
+  - id: claude-review
+    provider: claude
+    model:
+      family: opus
+      version: latest
+    role: general
+  - id: codex-independent
+    provider: codex
+    model:
+      family: gpt-5.6-terra
+      version: latest
+    role: general
+```
+
+Check those families with `dev-orchestra model list` before copying them: model
+names change, and the two CLIs offer different ones per version and account.
+Every adapter refuses a family the installed CLI does not vouch for instead of
+guessing, so a stale name fails loudly during setup rather than quietly running
+something else. The particular families matter less than the shape: two models
+from the same family share the blind spot that produced the bug.
 
 **A repo where the whole team should use the same panel** — commit
 `.dev-orchestra.yaml`:

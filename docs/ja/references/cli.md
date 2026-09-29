@@ -1,4 +1,4 @@
-<!-- translated-from: references/cli.md sha256:6e37f3e539710f61d89bb0a762ced73080b2e730403223a4ae827381d083cd93 -->
+<!-- translated-from: references/cli.md sha256:12c0ca0714104de5a94a490570c7006ca03b9103d3edfc336d22299c4e4817da -->
 
 > この文書は [references/cli.md](../../../references/cli.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -854,3 +854,26 @@ worktree（`git worktree add ../x x`）を与えてください。それは別�
 | `DEV_ORCHESTRA_MOCK_FAIL` | mock の実行を失敗させます（`1` = すべて、それ以外はプロンプトの部分文字列） |
 | `CODEX_HOME` | Codex CLI の設定と認証情報を探すときに考慮されます |
 | `DEV_ORCHESTRA_TEST_ASSUME_NO_CLI` | テスト専用: 両方の provider CLI を隠し、CI を再現します |
+
+<a id="troubleshooting"></a>
+
+## トラブルシューティング
+
+まず `dev-orchestra doctor` を実行してください。`doctor --json` で同じ内容を機械可読な
+形で得られます。
+
+| 症状 | 原因と対処 |
+| --- | --- |
+| `Source: built-in defaults` | 設定ファイルがまだありません。`dev-orchestra config setup`。 |
+| `codex: … does not vouch for …` | この Codex CLI が提供していない family です。`dev-orchestra model list` で確認し、`recommended-coding` を使うか、正確な id を pin してください。 |
+| `claude: cannot resolve model family 'x'` | 提示されている alias ではありません。`dev-orchestra model list`。 |
+| `Installed: no` | CLI が PATH にありません。自分でインストールしてください。スキルはインストールしません。 |
+| 委譲先の CLI から `Failed to authenticate` | その CLI で直接ログインしてください（`claude`、`codex login`）。`doctor` が報告するのは認証情報の *存在* で、有効かどうかではありません。 |
+| `review snapshot` が empty と言う | `HEAD` から何も変わっていません。`--base <rev>` を使うか、実装が動いたかを確認してください。 |
+| `not a git repository` | スナップショットには git が必要です。`git init` するか、commit のあるリポジトリをレビューしてください。 |
+| レビュアーが 1 人失敗した | 想定内で、処理は続きます。理由はワークフローの `reviews/consolidated.md` にあります。 |
+| implementer がテストを実行できない | `acceptEdits` が自動承認するのは編集で、シェルコマンドではありません。プロジェクト自身の CLI 設定でそのコマンドを許可リストに入れるか、`implementer.options.permission_mode` を設定してください。 |
+| 明らかに同じ finding が 2 件ある | 自動統合は意図的に保守的です。「Possible duplicates」の一覧を確認し、片方を `duplicate` としてトリアージしてください。 |
+| レビューが終わらない | `review.timeout_seconds` を下げるか、`--sequential` でどのレビュアーが止まっているかを確かめてください。 |
+| 設定のパースエラー | 内蔵の YAML パーサは anchor、alias、ブロックスカラーを拒否します。簡素にするか、PyYAML を入れてください。 |
+| `—` が `\u2014` と表示される | コンソールがその文字を表現できません（日本語 Windows の cp932 など）。落としたり止まったりせず、エスケープして表示します。`chcp 65001` か `PYTHONIOENCODING=utf-8` で正しく表示されます。 |

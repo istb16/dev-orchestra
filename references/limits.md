@@ -539,6 +539,126 @@ long stages (implementation, a big review) rather than every call.
 than four rules to remember — and it is a mechanism, so it does not depend on
 the orchestrator having read this page.
 
+## Feeding it a lot of text
+
+Logs, a legacy module, a long specification: hand the bulk to the model you
+configured for it, keep the *conclusions*, and let design and review work from
+those instead of from the raw pile. Context spent on a 40 MB log is context the
+reviewer no longer has for the diff.
+
+Write the analysis request to a file (pointing at paths in the repo rather than
+pasting their contents), and run it through the role you gave the
+large-context model:
+
+```bash
+dev-orchestra run orchestrator \
+  --prompt-file .ai/analysis-request.md \
+  --output .ai/analysis.md
+```
+
+A request that works well:
+
+> Read `log/production-2026-09-08.log` and `app/services/checkout/*.rb`. List
+> the distinct failure patterns, how often each occurs, and the code paths
+> involved. No fixes yet — findings only, grouped, with `file:line`
+> references.
+
+Then design from the summary, not from the log:
+
+```bash
+dev-orchestra run architect --prompt-file .ai/analysis.md --output .ai/plan.md
+dev-orchestra run implementer --prompt-file .ai/plan.md
+dev-orchestra review snapshot --base main
+dev-orchestra review run
+```
+
+The same split works for a spec review or a dependency audit: one model digests,
+another designs, two more disagree about the result.
+
+## What a run costs
+
+Every delegated run records what it spent, so the question "where did the
+tokens go" has an answer other than a guess:
+
+```bash
+dev-orchestra tokens show
+```
+
+```
+  stage              meas.     input    output     total    billed      cost
+  architect            1/1     8,200     2,100         -    11,500   $0.0421
+  implementer          1/1    21,300     8,400         -    31,900   $0.2140
+  review               4/4    58,000     6,400         -    64,400   $0.3900
+  ALL                  6/6    87,500    16,900         -   107,800   $0.6461
+
+Per reviewer:
+  claude-general       2/2    29,100     3,300         -    32,400   $0.1950
+  codex-general        2/2    28,900     3,100         -    32,000   $0.1950
+```
+
+`status` and `summary` show the total too. What each column means, and what
+`meas.` and `billed` leave out, is in [`tokens`](cli.md#tokens). Two things
+matter when reading it:
+
+- **Nothing is estimated.** An estimate from the prompt alone would miss the
+  child CLI's system prompt, tool schemas and the files it chose to read, which
+  are most of the input, so every figure is what the CLI reported.
+- **Reviewers are counted one by one** because review is the most duplicated
+  cost in the pipeline: the same diff, once per reviewer, once per round. The
+  per-reviewer rows are what tell you whether a third reviewer is earning its
+  keep.
+
+This is accounting, not a budget: nothing refuses a run over what it would
+cost. That is what the [budgets](#budgets) are for.
+
+## How hard to try to be cheap
+
+`optimization.level` decides three things about a review round before any
+reviewer starts: whether a red tree is reviewed at all, whether a small,
+low-risk change gets the whole panel, and how many findings each reviewer is
+asked for. The levels, their table and the keys are in
+[Optimization level](configuration.md#optimization-level); what the level can
+and cannot do to a round is in
+[When a review does not run, or runs smaller](reviews.md#when-a-review-does-not-run-or-runs-smaller).
+What it looks like from the command line:
+
+```
+$ dev-orchestra review run
+refusing to review: the last recorded test run failed. Reviewing code that
+does not pass its own tests spends a reviewer on a problem you already know
+about. Fix the tests, record the result, and run again -- or pass --force.
+```
+
+The gate reads whatever the last `dev-orchestra state record test ok|failed`
+wrote. A tree with no recorded result warns and is reviewed.
+
+```
+$ dev-orchestra review run
+note: aggressive → quality: db/migrate/003_drop_orders.rb matches *migrate*/*
+```
+
+A high-risk change escalates to `quality` whatever is configured.
+
+```
+note: low-risk change (1 file(s), 12 line(s)): 1 reviewer instead of the full
+panel (claude-general). Cross-model disagreement is what a second reviewer
+buys; raise optimization.level or the low_risk thresholds to keep it.
+```
+
+A reduced panel keeps a `general` reviewer and says so.
+
+### Did it work?
+
+```bash
+dev-orchestra optimization report
+```
+
+A level's effect is a rate -- how often it refused, how often it cut the panel
+-- so the report reads the run log of every workflow rather than one
+workflow's `tokens show`. Its output, the design review's separate spend, and
+what the estimated saving is and is not are in
+[`optimization`](cli.md#optimization).
+
 ## What is still not covered
 
 Honest limits of the above:

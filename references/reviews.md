@@ -66,9 +66,23 @@ A reviewer reads a diff to judge code somebody wrote. A lockfile, a bundle and
 a recorded snapshot were not written, and they cost the same tokens as real
 code -- once per reviewer, once per round. A routine dependency bump therefore
 regularly costs more than the change it accompanies. `review.exclude` withholds
-the *body* of those diffs. Measured on a 400-package lockfile bump alongside a
-two-line source change, one review round with two reviewers went from 44,783 to
-1,711 input tokens.
+the *body* of those diffs:
+
+```
+$ dev-orchestra review snapshot
+Snapshot: .ai/workflows/5942d94f5248/reviews/review-target.diff
+  strategy: git diff HEAD
+  files:    1
+  size:     153 bytes (sha256 bf2b71e951ea)
+  withheld: 2 file(s), 802 changed line(s) not sent to reviewers
+    dist/bundle.min.js (dist/*)
+    package-lock.json (package-lock.json)
+    reviewers are told these changed; --no-exclude sends them in full
+```
+
+Measured on that change -- a 400-package lockfile bump alongside a two-line
+source change -- one review round with two reviewers went from 44,783 to 1,711
+input tokens.
 
 Withheld is not hidden, and the distinction is the whole design:
 
@@ -365,7 +379,7 @@ apart, and a forced round carries `over_budget` on every reviewer entry and on
 `consolidated.json`'s `snapshot` block. See `references/limits.md` for the
 number and what forcing does and does not promise.
 
-**It can cut the panel to one reviewer**, at `aggressive`, when the change is
+**It can cut the panel to one reviewer**, below `quality`, when the change is
 under `low_risk_max_files` and `low_risk_max_lines` and touches no high-risk
 path. That reduced panel keeps a `general` reviewer in preference to a
 specialist: a lone security reviewer reports no correctness bugs, because it
@@ -902,6 +916,9 @@ $ dev-orchestra review snapshot
             whole change kept at .ai/reviews/review-target-full.diff
             reviewers also get the findings the fix was meant to address
 ```
+
+A 60-function change followed by a one-line fix: round 2's diff went from 8,617
+to 199 bytes, per reviewer.
 
 The tree is written through a throwaway index -- the same trick `git stash
 create` uses -- so the user's own index is never touched, and untracked files
