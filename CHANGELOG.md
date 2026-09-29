@@ -10,6 +10,8 @@ The public surface covered by that promise is: the configuration schema, the
 
 ## [Unreleased]
 
+## [0.13.2] - 2026-09-29
+
 ### Added
 
 - **Reviewers scoped to paths.** A reviewer's `when` can now be a mapping whose
@@ -1866,7 +1868,8 @@ First release.
   none of which invoke a real CLI.
 - CI on Linux, macOS and Windows: lint, tests, skill validation.
 
-[Unreleased]: https://github.com/istb16/dev-orchestra/compare/v0.13.1...HEAD
+[Unreleased]: https://github.com/istb16/dev-orchestra/compare/v0.13.2...HEAD
+[0.13.2]: https://github.com/istb16/dev-orchestra/compare/v0.13.1...v0.13.2
 [0.13.1]: https://github.com/istb16/dev-orchestra/compare/v0.13.0...v0.13.1
 [0.13.0]: https://github.com/istb16/dev-orchestra/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/istb16/dev-orchestra/compare/v0.11.0...v0.12.0
