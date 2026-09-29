@@ -15,7 +15,7 @@ from typing import Any, Dict, List, Tuple
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from orchestrator import miniyaml
+from orchestrator import hosts, miniyaml
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -28,6 +28,20 @@ CLAUDE_PLUGIN = ".claude-plugin/plugin.json"
 CLAUDE_MARKETPLACE = ".claude-plugin/marketplace.json"
 CODEX_PLUGIN = ".codex-plugin/plugin.json"
 CODEX_MARKETPLACE = ".agents/plugins/marketplace.json"
+ANTIGRAVITY_PLUGIN = "plugin.json"
+
+#: The only top-level fields Antigravity's published manifest schema allows.
+#: It sets ``additionalProperties: false``, so anything else, such as the
+#: ``author`` and ``homepage`` the other hosts take, is invalid, not merely
+#: dropped.
+ANTIGRAVITY_FIELDS = frozenset(("$schema", "name", "description"))
+ANTIGRAVITY_SCHEMA = "https://antigravity.google/schemas/v1/plugin.json"
+#: The schema's pattern for ``name``.
+ANTIGRAVITY_NAME_RE = re.compile(r"^[a-zA-Z0-9-_]+$")
+
+#: The package's tuple, kept under this name for the tests; the definition is
+#: in scripts/orchestrator/hosts.py.
+ANTIGRAVITY_AUTOLOAD = hosts.ANTIGRAVITY_AUTOLOAD
 
 MAX_SKILL_LINES = 500
 
@@ -53,6 +67,7 @@ REQUIRED_FILES = (
     CLAUDE_MARKETPLACE,
     CODEX_PLUGIN,
     CODEX_MARKETPLACE,
+    ANTIGRAVITY_PLUGIN,
     "README.md",
     "README.ja.md",
     "LICENSE",
@@ -125,12 +140,13 @@ def _entry_for(marketplace: Dict[str, Any]) -> Any:
 
 
 def check_manifests(version: str = "") -> List[str]:
-    """The plugin and marketplace manifests of both hosts must agree.
+    """The plugin and marketplace manifests of Claude Code and Codex must agree.
 
     Claude Code reads ``.claude-plugin/``; Codex reads ``.codex-plugin/`` plus
     a marketplace under ``.agents/plugins/``. Everything else -- skill,
     scripts, references -- is shared, so the two manifests must not drift
-    apart from each other or from the skill they ship.
+    apart from each other or from the skill they ship. The third host,
+    Antigravity, reads the root ``plugin.json``: see ``check_antigravity``.
     """
     problems: List[str] = []
 
@@ -237,6 +253,67 @@ def check_manifests(version: str = "") -> List[str]:
     return problems
 
 
+def check_antigravity(root: str = REPO_ROOT) -> List[str]:
+    """The root ``plugin.json`` Antigravity reads, and what else it would load.
+
+    Antigravity treats a directory holding ``plugin.json`` as a plugin, finds
+    ``skills/`` under it by convention, and loads a few other root entries on
+    its own. The manifest is checked against the published schema; the
+    version lives in the other manifests, not here. ``root`` is the plugin
+    directory; tests pass a throwaway one.
+    """
+    problems: List[str] = []
+    relative = ANTIGRAVITY_PLUGIN
+
+    manifest: Any = None
+    try:
+        with open(os.path.join(root, relative), "r", encoding="utf-8") as handle:
+            manifest = json.loads(handle.read())
+    except OSError as exc:
+        problems.append(str(exc))
+    except ValueError as exc:
+        problems.append("%s is not valid JSON: %s" % (relative, exc))
+
+    if manifest is not None and not isinstance(manifest, dict):
+        problems.append("%s must contain a JSON object" % relative)
+    elif isinstance(manifest, dict):
+        name = manifest.get("name")
+        if "name" not in manifest:
+            # Required by the schema, and by the Antigravity CLI.
+            problems.append("%s: name is required by its schema" % relative)
+        elif not isinstance(name, str) or not ANTIGRAVITY_NAME_RE.fullmatch(name):
+            problems.append(
+                "%s: name %r does not match the schema's pattern %s"
+                % (relative, name, ANTIGRAVITY_NAME_RE.pattern)
+            )
+        elif name != SKILL_NAME:
+            problems.append("%s declares name %r; expected %r" % (relative, name, SKILL_NAME))
+        if "$schema" in manifest and manifest["$schema"] != ANTIGRAVITY_SCHEMA:
+            problems.append(
+                "%s: $schema is %r; expected %r" % (relative, manifest["$schema"], ANTIGRAVITY_SCHEMA)
+            )
+        description = manifest.get("description")
+        if not isinstance(description, str) or not description.strip():
+            problems.append("%s needs a non-empty description string" % relative)
+        for key in sorted(set(manifest) - ANTIGRAVITY_FIELDS):
+            problems.append(
+                "%s: %r is not a field Antigravity reads; its schema allows no others" % (relative, key)
+            )
+
+    if not os.path.isfile(os.path.join(root, SKILL_PATH)):
+        problems.append("%s is missing; Antigravity looks for the skill there" % SKILL_PATH)
+
+    scan = hosts.antigravity_autoload(root)
+    for entry in scan.entries:
+        problems.append(
+            "%s would be auto-loaded by Antigravity from a linked checkout; "
+            "remove it or move it out of the plugin root" % entry
+        )
+    problems.extend(scan.errors)
+
+    return problems
+
+
 def check() -> List[str]:
     problems: List[str] = []
 
@@ -310,6 +387,7 @@ def check() -> List[str]:
             problems.append("CHANGELOG.md has no entry for version %s" % declared)
 
     problems.extend(check_manifests(declared))
+    problems.extend(check_antigravity())
 
     # The translated README must not silently drift out of the doc set.
     try:

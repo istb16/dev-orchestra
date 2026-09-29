@@ -12,8 +12,8 @@ import platform
 from typing import Any, Dict, List, Optional, cast
 
 from . import config as config_mod
+from . import hosts, verified
 from . import optimization as opt_mod
-from . import verified
 from . import workspace as ws
 from .providers import (
     OFFLINE,
@@ -41,6 +41,15 @@ ROLE_LABELS = (
 #: The live check, next to this package: the same file from a plugin install.
 SMOKE_SCRIPT = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "smoke_live.py")
 
+#: The directory two levels above skills/dev-orchestra/SKILL.md, which is what
+#: Antigravity loads. realpath: launched through a link, this is the checkout.
+PLUGIN_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
+
+
+def user_home() -> str:
+    """The home the Antigravity global install is under; tests replace it."""
+    return os.path.expanduser("~")
+
 
 def collect(start: Optional[str] = None, probe_models: bool = True) -> Dict[str, Any]:
     report: Dict[str, Any] = {
@@ -67,6 +76,9 @@ def collect(start: Optional[str] = None, probe_models: bool = True) -> Dict[str,
     # The repository root, as `run` uses, or a subdirectory would trust a
     # record that `run` refuses.
     root = ws.repo_root(start or os.getcwd())
+    # Before anything that can return early: a filesystem read only, so a
+    # config error or --fast does not hide it.
+    _antigravity_live(report, root)
     for name in available_providers():
         # One adapter at a time: a user adapter that raises is reported against
         # its file instead of taking the whole diagnosis down with it.
@@ -176,6 +188,45 @@ def collect(start: Optional[str] = None, probe_models: bool = True) -> Dict[str,
         report["problems"].append("no reviewers configured: the independent-review stage will be skipped")
     _default_patterns_note(report, loaded.optimization_settings())
     return report
+
+
+def _antigravity_live(
+    report: Dict[str, Any],
+    project_root: str,
+    plugin_root: Optional[str] = None,
+    home: Optional[str] = None,
+) -> None:
+    """An Antigravity install that is this checkout, and what else it would load.
+
+    The installer refuses to link a checkout whose root holds something
+    Antigravity loads on its own, but only at link time; a later checkout can
+    add one, and it goes live on the next restart. A location is live when it
+    resolves to this root: a link or junction to it, or the checkout itself
+    sitting there. A copy elsewhere never does. A checkout registered through
+    a plugins.json entry, or a copy staged by `agy plugin install`, is not
+    checked: the docs say so.
+    """
+    plugin_root = PLUGIN_ROOT if plugin_root is None else plugin_root
+    home = user_home() if home is None else home
+    info: Dict[str, Any] = {"root": plugin_root, "live": [], "autoload": []}
+    report["antigravity"] = info
+    for _scope, location in hosts.antigravity_install_locations(project_root, home):
+        if hosts.resolves_to(location, plugin_root):
+            info["live"].append(location)
+    if not info["live"]:
+        return
+    scan = hosts.antigravity_autoload(plugin_root)
+    info["autoload"] = scan.entries
+    report["problems"].extend(scan.errors)
+    if not scan.entries:
+        return
+    shown = ", ".join("rules/" if entry == "rules" else entry for entry in scan.entries)
+    for location in info["live"]:
+        report["problems"].append(
+            "Antigravity loads this checkout through %s and would also load %s on its next start; "
+            "remove them, or replace it with a copy install (--copy, or -Copy in PowerShell)"
+            % (location, shown)
+        )
 
 
 def _live_check_note(name: str, version: str, status: Dict[str, Any], report: Dict[str, Any]) -> None:

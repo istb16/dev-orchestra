@@ -1,4 +1,4 @@
-<!-- translated-from: references/workflow.md sha256:ca23685fde0be7e2bc6a8082f31633cfcc03742b7bb1a964e72f9ef39c0d92fd -->
+<!-- translated-from: references/workflow.md sha256:a93291d8cdf97ab31cb626c45687eabb5fd5276624df7d8421fef95eb5eacb13 -->
 
 > この文書は [references/workflow.md](../../../references/workflow.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -706,6 +706,66 @@ Git Bash は MSYS 形式のパス（`/c/...`）を書き込み、ネイティブ
 
 `skills/dev-orchestra/SKILL.md` が唯一の情報源であり続けます。ブロックはそれを参照する
 だけで、内容を複製しません。
+
+**Antigravity:** インストーラはこのチェックアウトを Antigravity の plugins フォルダに
+リンクします。ディレクトリを Plugin にするのはルートの `plugin.json` で、その下の
+`skills/` は Antigravity が自分で見つけます。
+
+```bash
+./install/install.sh --antigravity                    # ~/.gemini/config/plugins/dev-orchestra
+./install/install.sh --antigravity --project /path    # <project>/.agents/plugins/dev-orchestra
+```
+
+```powershell
+.\install\install.ps1 -Antigravity                    # Windows
+```
+
+`--gemini`（`-Gemini`）も同じ指定です。Windows ではまずジャンクション（開発者モード不要）を
+作り、だめならシンボリックリンク、それもだめならコピーにします。それ以外の環境では
+シンボリックリンク、だめならコピーです。どれを使ったかは表示され、コピーの場合は
+`git pull` のあとにもう一度実行する必要があります。`--copy` は常にコピーで、コピーには
+`.dev-orchestra-install` というファイルが入り、次の実行が自分で作ったものだと分かります。
+`--project` を付けると、そのリポジトリの `.git/info/exclude` にマーカーのコメント付きで
+エントリを追加し、アンインストーラはマーカーがあるときだけそれを取り除きます。
+インストーラは、別の場所を指すリンク、指す先がないリンク、自分が書いていない
+ディレクトリ（クローンを含む）を置き換えません。その場で止まり、手で消す方法を表示します。
+また、チェックアウトのルートに `hooks.json`、`mcp_config.json`、`plugins.json`、`rules/`、
+`agents/*.md` があると、Antigravity がそれも読み込むため、リンクを作りません。コピーには
+`agents/*.md` を入れません。この確認は最初に行うので、断ったときは入っていたものがそのまま残ります。
+plugins フォルダに直接クローンしたものは、そのままで導入済みなので、インストーラは不要です。
+`./install/uninstall.sh --antigravity`（`--project` も同じ指定）で取り除きます。
+インストール、アップグレード、アンインストールのあとは Antigravity を再起動してください。
+Plugin のディレクトリは起動時にしか見つけられません。リンクで入れた場合はチェックアウトで
+今のブランチがそのまま読み込まれるので、信頼できないブランチを見るときは `--copy` か
+別の worktree を使ってください。リンクしたチェックアウトや plugins フォルダに置いたクローンに、
+あとのチェックアウトで上のどれかが加わったときは、`dev-orchestra doctor` が報告します。
+
+Plugin が Antigravity に入る道は、ほかに三つあります。Marketplace は Google が選んで
+載せるもので、利用者が追加するマーケットプレイスはなく、掲載は申込フォームを通します。
+Antigravity CLI は `agy plugin install /path/to/dev-orchestra`（セッション内では
+`/plugin install <local-path>`）でローカルの Plugin を入れ、そのコピーを
+`~/.gemini/antigravity-cli/plugins/dev-orchestra/` に置きます。`agy plugin uninstall
+dev-orchestra` で取り除けます。渡したディレクトリを丸ごとそのままコピーするので、
+インストーラのペイロード一覧は使われず、`agents/*.md` も残ります。実行するのは、スキル以外に
+Antigravity が読み込むもの（`hooks.json`、`mcp_config.json`、`plugins.json`、`rules/`、
+`agents/*.md`。`python scripts/validate_skill.py` が報告します）がなく、信頼できない
+ブランチもチェックアウトしていない、きれいなチェックアウトだけにしてください。コピーは
+`git pull` に追従しないので、pull のあと、きれいな状態に戻したチェックアウトでもう一度
+実行します。最後に、カスタマイズのルート（`~/.gemini/config/plugins.json`、プロジェクトでは
+`.agents/plugins.json`）に置いた `plugins.json` で、別の場所にあるチェックアウトを
+Antigravity に読ませることもできます。エントリに書くのは Plugin のディレクトリそのものではなく、
+それを含む親ディレクトリです。
+`{"entries":[{"path":"C:/Projects","include_only":["dev-orchestra"]}]}` は
+`C:/Projects/dev-orchestra` にあるチェックアウトを読み込み、`path` にチェックアウトそのものを
+書いたエントリは何も読み込みません。Windows では `C:/` の形のパスが使えます。これは
+リンクと同じく作業ツリーをそのまま読み込むので、あとでチェックアウトしたブランチが次の
+再起動で有効になります。リンクで入れた場合と同じく信頼できないブランチには注意が必要で、
+しかも何も守ってくれません。インストーラの拒否はインストーラがリンクするときにしか働かず、
+`doctor` が確認するのはインストーラの二つの入れ先だけで、`plugins.json` のエントリや
+`agy plugin install` が置いたコピーは見ません。勧める方法はインストーラのままです。
+そのリンクはアプリ、IDE、CLI のどれでも使え、`git pull` に追従し、スキル以外に
+読み込まれるものがあるチェックアウトでは拒否され、そのあとは `doctor` が見張ります。
+ほかの道にはそのどれもありません。
 
 必要なら CLI を PATH に通し、動作を確認します。
 

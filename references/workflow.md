@@ -680,6 +680,72 @@ pointer block to `AGENTS.md` referencing this checkout:
 `skills/dev-orchestra/SKILL.md` stays the single source of truth — the pointer
 references it rather than duplicating it.
 
+**Antigravity:** the installer links this checkout into Antigravity's plugins
+folder. The root `plugin.json` is what makes the directory a plugin, and
+Antigravity finds `skills/` under it on its own:
+
+```bash
+./install/install.sh --antigravity                    # ~/.gemini/config/plugins/dev-orchestra
+./install/install.sh --antigravity --project /path    # <project>/.agents/plugins/dev-orchestra
+```
+
+```powershell
+.\install\install.ps1 -Antigravity                    # Windows
+```
+
+`--gemini` (`-Gemini`) is the same switch. On Windows the installer makes a
+junction, which needs no Developer Mode, then tries a symlink, then copies;
+elsewhere it makes a symlink, then copies. It says which one it used, and a
+copy has to be re-run after `git pull`. `--copy` always copies, and a copy
+carries a `.dev-orchestra-install` file so that a later run knows it made it.
+With `--project`, the entry goes into that repository's `.git/info/exclude`
+under a marker comment, and the uninstaller removes it only when the marker is
+there. The installer never replaces a link to somewhere else, a link to
+nothing, or a directory it did not write, a clone included; it stops and says
+how to remove it by hand. It also refuses to link while the checkout has a
+`hooks.json`, `mcp_config.json`, `plugins.json`, `rules/` or `agents/*.md` at
+its root, which Antigravity would load as well; a copy leaves `agents/*.md`
+out. That check comes first, so a refused run leaves the existing install in
+place. A clone made directly into the
+plugins folder is already installed and needs no installer run.
+`./install/uninstall.sh --antigravity` (with the same `--project`) removes the
+install. Restart Antigravity after installing, upgrading or uninstalling: it
+only discovers a plugin directory on startup. A linked install loads whatever
+branch the checkout has, so look at an untrusted branch with `--copy` or from
+a separate worktree. `dev-orchestra doctor` reports it when a later checkout
+adds one of the entries above to a linked checkout, or to a clone in the
+plugins folder.
+
+A plugin can reach Antigravity three other ways. The Marketplace is curated by
+Google: there is no user-added marketplace, and a listing goes through an
+interest form. The Antigravity CLI installs a local plugin with
+`agy plugin install /path/to/dev-orchestra` (or `/plugin install <local-path>`
+inside a session), which stages a copy into
+`~/.gemini/antigravity-cli/plugins/dev-orchestra/`; `agy plugin uninstall
+dev-orchestra` removes it. It copies the whole directory it is given, as it
+is: not the installer's payload list, and with `agents/*.md` left in. Run it
+only on a clean checkout, one with nothing Antigravity would load besides the
+skill (no `hooks.json`, `mcp_config.json`, `plugins.json`, `rules/` or
+`agents/*.md`, which `python scripts/validate_skill.py` reports) and no
+untrusted branch checked out. The copy does not follow `git pull`, so run it
+again after pulling, on a checkout that is clean again. Finally, a
+`plugins.json` in a customization root (`~/.gemini/config/plugins.json`, or
+`.agents/plugins.json` in a project) can point Antigravity at a checkout kept
+elsewhere. An entry names the parent directory that contains the plugin
+directory, not the plugin directory itself:
+`{"entries":[{"path":"C:/Projects","include_only":["dev-orchestra"]}]}` loads
+a checkout at `C:/Projects/dev-orchestra`, while an entry whose `path` is the
+checkout itself loads nothing; a `C:/` path works on Windows. This loads the
+live working tree, like a link: a branch checked out later goes live on the
+next restart, with the same untrusted-branch caution as a linked install, and
+nothing guards it. The installer's refusal runs only when the installer links,
+and `doctor` checks only the two installer locations, not `plugins.json`
+entries or a copy staged by `agy plugin install`. The installer stays the
+recommended route: its link works in the app, the IDE and the CLI, follows
+`git pull`, is refused while the checkout would load anything besides the
+skill, and is what `doctor` watches afterwards; the other routes have none of
+those guards.
+
 Optionally put the CLI on PATH, then verify:
 
 ```bash

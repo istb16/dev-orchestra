@@ -242,9 +242,16 @@ class IsolatedCase(unittest.TestCase):
         os.environ["DEV_ORCHESTRA_WORKFLOW"] = TEST_WORKFLOW
         os.chdir(self.project)
         # Discovery is memoised per process; tests patch CLIs, so start clean.
-        from orchestrator import providers
+        from orchestrator import doctor, providers
         from orchestrator.providers import base as provider_base
 
+        # The Antigravity global install is under the home directory: every
+        # doctor test would otherwise look at the developer's own. Named, not
+        # created; a test that needs it makes it.
+        self.os_home = os.path.join(self.tmp, "home")
+        original_home = doctor.user_home
+        setattr(doctor, "user_home", lambda: self.os_home)
+        self.addCleanup(setattr, doctor, "user_home", original_home)
         provider_base.clear_discovery_cache()
         self.addCleanup(provider_base.clear_discovery_cache)
         # Likewise user adapters: none unless the test writes and loads one.
@@ -340,6 +347,40 @@ def present(value: Optional[_T]) -> _T:
 
 def has_git() -> bool:
     return shutil.which("git") is not None
+
+
+def is_link(path: str) -> bool:
+    """A symlink, or on Windows any reparse point, which a junction is.
+
+    ``os.path.islink`` is false for a junction before Python 3.12, so a walk
+    or a copy of the tree would follow one -- into the checkout itself, when
+    a project install was made there.
+    """
+    if os.path.islink(path):
+        return True
+    if os.name != "nt":
+        return False
+    try:
+        attributes = os.lstat(path).st_file_attributes
+    except OSError:
+        return False
+    return bool(attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT)
+
+
+def make_dir_link(link: str, target: str) -> None:
+    """A link to a directory: a junction on Windows, which needs no privilege; a symlink elsewhere."""
+    if os.name == "nt":
+        subprocess.run(["cmd", "/c", "mklink", "/J", link, target], check=True, capture_output=True)
+    else:
+        os.symlink(target, link)
+
+
+def remove_link(path: str) -> None:
+    """Remove a link made by ``make_dir_link`` without touching what it points at."""
+    if os.name == "nt":
+        os.rmdir(path)
+    else:
+        os.unlink(path)
 
 
 def remove_tree(path: str) -> None:

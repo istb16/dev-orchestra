@@ -94,11 +94,11 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-      - name: Validate the skill and both hosts' plugin manifests
+      - name: Validate the skill and all three hosts' plugin manifests
         run: python scripts/validate_skill.py
       - name: Plugin manifests are well-formed JSON
         run: |
-          for manifest in .claude-plugin/plugin.json .claude-plugin/marketplace.json .codex-plugin/plugin.json .agents/plugins/marketplace.json; do
+          for manifest in plugin.json .claude-plugin/plugin.json .claude-plugin/marketplace.json .codex-plugin/plugin.json .agents/plugins/marketplace.json; do
             python -c "import json,sys; json.load(open(sys.argv[1]))" "$manifest"
           done
       - name: CLI is runnable from a clean checkout
@@ -118,3 +118,8 @@ jobs:
           ./install/uninstall.sh --codex --project "$RUNNER_TEMP/proj"
           test ! -e "$RUNNER_TEMP/proj/.claude/skills/dev-orchestra"
           test "$(grep -c 'BEGIN dev-orchestra' "$RUNNER_TEMP/proj/AGENTS.md" || true)" -eq 0
+          ./install/install.sh --antigravity --project "$RUNNER_TEMP/proj"
+          ./install/install.sh --antigravity --project "$RUNNER_TEMP/proj"
+          test -e "$RUNNER_TEMP/proj/.agents/plugins/dev-orchestra/skills/dev-orchestra/SKILL.md"
+          ./install/uninstall.sh --antigravity --project "$RUNNER_TEMP/proj"
+          test ! -e "$RUNNER_TEMP/proj/.agents/plugins/dev-orchestra"

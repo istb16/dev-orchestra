@@ -1,4 +1,4 @@
-<!-- translated-from: references/cli.md sha256:b4f29a226631b5e0a3445ee52a2761152c6629895b2ce901d020bb660c526d75 -->
+<!-- translated-from: references/cli.md sha256:5e9cc074f6ded6c20b0e93e91aea14ffc9c595914335d89a9bafe00642380966 -->
 
 > この文書は [references/cli.md](../../../references/cli.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -148,6 +148,16 @@ dev-orchestra reviewer remove db-review
 条件付きのレビュアーの **Roles** の行は `(when: high-risk)` または `(when: paths *migrate*/*, *.sql)` で終わり、
 `--json` のエントリには `always` 以外のとき `when`（`high-risk` または `paths`）と `condition`（行と同じ
 ラベル）が入り、パスで絞り込んだレビュアーではさらにそのパターンの `paths` が入ります。
+
+Antigravity の入れ先（`~/.gemini/config/plugins/dev-orchestra`、または `doctor` を実行したリポジトリの
+`.agents/plugins/dev-orchestra`）がこのチェックアウトそのもの（リンクやジャンクション経由でも、チェックアウト
+自体がそこに置かれていても）のとき、`doctor` はチェックアウト直下にある `hooks.json`、`mcp_config.json`、
+`plugins.json`、`rules/`、`agents/*.md` を問題として報告します。Antigravity は次に起動したとき、これらを
+スキルと一緒に読み込むからです。一覧を取得できない `agents/` も問題になります。コピーによるインストールには
+これらは含まれません。`plugins.json` のエントリで登録したチェックアウトや、`agy plugin install` が置いた
+コピーは `doctor` の確認対象外です（`references/workflow.md` の「Skill のチェックアウトからのインストール」を
+参照）。`--json` では `antigravity` に `root`、`live`（このチェックアウトそのものである入れ先）、`autoload` が
+入ります。
 
 各 provider ブロックには `Source:` 行があり、`built-in` または `user module <path>` と表示されます。
 **User providers** ブロックは常に表示されます。ユーザー adapter をインポートするディレクトリ（または
