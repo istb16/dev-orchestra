@@ -508,6 +508,235 @@ class TestDecidingTheConditionalPanel(unittest.TestCase):
         self.assertEqual(plan.conditional_notes(), [])
 
 
+# --------------------------------------------------------------------------- path-scoped reviewers
+
+
+DB_PATTERNS = ["*migration*/*", "*migrate*/*", "*.sql"]
+DB = {"id": "db", "role": "database", "when": {"paths": list(DB_PATTERNS)}}
+GEN2 = dict(GEN, id="gen2")
+HIGH_RISK_SUFFIX = " (round is high-risk; when: paths ignores that; --only <ids> to include it)"
+DECLARED_SUFFIX = " (declared with --high-risk; when: paths ignores that; --only <ids> to include it)"
+NO_DB_MATCH = "no path matches *migration*/*, *migrate*/*, *.sql"
+
+#: Credential-shaped, and built at run time so nothing scanning this file
+#: takes it for a real one.
+TOKEN = "gh" + "p_" + "A1b2C3d4E5f6G7h8I9j0"
+
+
+def narrow_settings():
+    """The defaults less the high-risk list, which already holds `*.sql` and
+    both migration directories: a reviewer scoped to those must be seen to
+    join on its own patterns, not through an escalation."""
+    settings = dict(config_mod.default_config()["optimization"])
+    settings.update(high_risk_paths=["*auth*"], extra_high_risk_paths=[])
+    return settings
+
+
+def decide_scoped(panel=(GEN, DB), paths=("app.py",), lines=10, test_status="ok", settings=None, **keywords):
+    settings = narrow_settings() if settings is None else settings
+    review = dict(config_mod.default_config()["review"])
+    return opt.decide(
+        settings, review, list(paths), lines, test_status, len(panel), panel=list(panel), **keywords
+    )
+
+
+class TestPathConditionForms(unittest.TestCase):
+    """Exactly the forms validation accepts read as `paths`; every other one
+    reads as `always`, which is what an unvalidated caller must be handed."""
+
+    MALFORMED = (
+        {"paths": "*.sql"},
+        {"paths": []},
+        {"paths": [""]},
+        {"paths": ["*.sql", 42]},
+        {"paths": ["*.sql", ""]},
+        {},
+        {"path": ["*.sql"]},
+        {"paths": ["*.sql"], "x": 1},
+        "paths",
+    )
+
+    def test_a_well_formed_mapping_is_path_scoped(self):
+        self.assertEqual(opt.reviewer_condition(DB), opt.WHEN_PATHS)
+
+    def test_every_malformed_form_reads_as_always(self):
+        for when in self.MALFORMED:
+            self.assertEqual(opt.reviewer_condition({"id": "db", "when": when}), "always", when)
+
+    def test_the_patterns_are_stripped(self):
+        self.assertEqual(opt.reviewer_paths({"when": {"paths": [" *.sql ", "db/*"]}}), ["*.sql", "db/*"])
+
+    def test_a_malformed_form_has_no_patterns(self):
+        """Never a half-cleaned list, and never a string iterated by letter."""
+        for when in self.MALFORMED:
+            self.assertEqual(opt.reviewer_paths({"id": "db", "when": when}), [], when)
+        self.assertEqual(opt.reviewer_paths(SEC), [])
+        self.assertEqual(opt.reviewer_paths(GEN), [])
+
+    def test_the_label_of_each_kind(self):
+        self.assertEqual(opt.condition_label(GEN), "always")
+        self.assertEqual(opt.condition_label(SEC), "high-risk")
+        self.assertEqual(opt.condition_label(DB), "paths *migration*/*, *migrate*/*, *.sql")
+
+    def test_the_string_enum_is_unchanged(self):
+        self.assertEqual(opt.REVIEWER_CONDITIONS, ("always", "high-risk"))
+
+
+class TestPathScopedRecords(unittest.TestCase):
+    """`db` is judged by its own patterns; the global hits and a declaration
+    never add it."""
+
+    def records(self, paths=("app.py",), hits=(), **keywords):
+        return opt.condition_reviewers([GEN, DB], list(hits), paths=list(paths), **keywords)
+
+    def test_a_migrate_directory_matches(self):
+        record = self.records(["db/migrate/003_drop_orders.rb"])[0]
+        reason = "db/migrate/003_drop_orders.rb matches *migrate*/*"
+        self.assertEqual(record, {"id": "db", "when": "paths", "runs": True, "reason": reason})
+
+    def test_a_migrations_directory_matches(self):
+        record = self.records(["db/migrations/004.rb"])[0]
+        self.assertEqual(record["reason"], "db/migrations/004.rb matches *migration*/*")
+
+    def test_several_matches_name_the_first_and_count_the_rest(self):
+        record = self.records(["db/migrate/003_drop_orders.rb", "db/migrations/004.rb"])[0]
+        self.assertEqual(record["reason"], "db/migrate/003_drop_orders.rb matches *migrate*/* (and 1 more)")
+
+    def test_a_quiet_round_names_its_patterns_without_a_suffix(self):
+        self.assertEqual(
+            self.records(),
+            [{"id": "db", "when": "paths", "runs": False, "reason": NO_DB_MATCH}],
+        )
+
+    def test_a_high_risk_hit_does_not_add_it(self):
+        record = self.records(["auth.py"], hits=[("auth.py", "*auth*")])[0]
+        self.assertFalse(record["runs"])
+        self.assertEqual(record["reason"], NO_DB_MATCH + HIGH_RISK_SUFFIX)
+
+    def test_a_declaration_does_not_add_it(self):
+        record = self.records(declared=True)[0]
+        self.assertFalse(record["runs"])
+        self.assertEqual(record["reason"], NO_DB_MATCH + DECLARED_SUFFIX)
+
+    def test_hits_and_a_declaration_give_the_hits_wording(self):
+        """The hits are the evidence; the declaration is only a claim."""
+        record = self.records(["auth.py"], hits=[("auth.py", "*auth*")], declared=True)[0]
+        self.assertEqual(record["reason"], NO_DB_MATCH + HIGH_RISK_SUFFIX)
+
+    def test_its_own_carried_finding_adds_it(self):
+        record = self.records(carried=[{"id": "F2", "reported_by": ["db"]}])[0]
+        self.assertEqual((record["runs"], record["reason"]), (True, "has open accepted finding F2"))
+
+    def test_another_reviewers_carried_finding_does_not(self):
+        self.assertFalse(self.records(carried=[{"id": "F1", "reported_by": ["gen"]}])[0]["runs"])
+
+    def test_only_naming_it_runs_it(self):
+        self.assertEqual(self.records(only=True)[0]["reason"], "named by --only")
+
+    def test_the_reasons_are_tried_in_order(self):
+        carried = [{"id": "F1", "reported_by": ["db"]}]
+
+        def reason(paths=("app.py",), **keywords):
+            return self.records(paths, **keywords)[0]["reason"]
+
+        everything = {"declared": True, "carried": carried, "only": True, "hits": [("auth.py", "*auth*")]}
+        self.assertEqual(reason(["q.sql"], **everything), "q.sql matches *.sql")
+        self.assertEqual(reason(**everything), "has open accepted finding F1")
+        self.assertEqual(reason(only=True, declared=True), "named by --only")
+
+    def test_a_high_risk_reviewer_beside_it_decides_as_before(self):
+        records = opt.condition_reviewers([GEN, SEC, DB], [("auth.py", "*auth*")], paths=["auth.py"])
+        self.assertEqual([(r["id"], r["runs"]) for r in records], [("sec", True), ("db", False)])
+        self.assertEqual(records[0]["reason"], "auth.py matches *auth*")
+
+
+class TestRedactingConditionReasons(unittest.TestCase):
+    """Filenames and patterns now reach notes, JSON and the event log, so a
+    credential-shaped part of either never does."""
+
+    SECRET_PATTERN = "*secret=%s*" % ("k" * 16)
+
+    def test_a_path_is_redacted_in_the_reason(self):
+        path = "config/%s.sql" % TOKEN
+        plan = decide_scoped(paths=[path])
+        record = plan.conditional[0]
+        self.assertTrue(record["runs"])
+        self.assertEqual(record["reason"], "config/[redacted].sql matches *.sql")
+        self.assertNotIn(TOKEN, json.dumps(plan.to_dict()))
+        self.assertNotIn(TOKEN, "\n".join(plan.conditional_notes()))
+
+    def test_a_pattern_is_redacted_in_the_reason_and_the_label(self):
+        reviewer = {"id": "db", "when": {"paths": [self.SECRET_PATTERN]}}
+        plan = decide_scoped(panel=(GEN, reviewer))
+        self.assertEqual(plan.conditional[0]["reason"], "no path matches *secret=[redacted]*")
+        self.assertEqual(opt.condition_label(reviewer), "paths *secret=[redacted]*")
+        for text in (json.dumps(plan.to_dict()), "\n".join(plan.conditional_notes())):
+            self.assertNotIn("k" * 16, text)
+
+    def test_a_high_risk_hit_is_redacted_too(self):
+        path = "%s/auth.py" % TOKEN
+        record = opt.condition_reviewers([SEC], [(path, "*auth*")])[0]
+        self.assertEqual(record["reason"], "[redacted]/auth.py matches *auth*")
+
+    def test_the_escalation_is_redacted_in_the_note_and_the_record(self):
+        path = "queries/%s.sql" % TOKEN
+        plan = decide_scoped(paths=[path], settings=dict(config_mod.default_config()["optimization"]))
+        self.assertTrue(plan.escalated)
+        note = plan.escalation_note()
+        self.assertEqual(note, "balanced → quality: queries/[redacted].sql matches *.sql")
+        hits = plan.to_dict()["high_risk"]
+        self.assertEqual(hits, [{"path": "queries/[redacted].sql", "pattern": "*.sql"}])
+        self.assertNotIn(TOKEN, json.dumps(plan.to_dict()))
+
+
+class TestDecidingThePathScopedPanel(unittest.TestCase):
+    def test_its_own_path_adds_it_without_escalating(self):
+        plan = decide_scoped(paths=["queries/report.sql"])
+        self.assertEqual(plan.level, "balanced")
+        self.assertEqual(plan.high_risk, [])
+        self.assertFalse(plan.escalated)
+        self.assertIsNone(plan.reviewer_limit)
+        self.assertTrue(plan.conditional[0]["runs"])
+
+    def test_a_reviewer_that_joined_is_never_the_one_cut(self):
+        self.assertEqual(decide_scoped(panel=(GEN, GEN2, DB)).reviewer_limit, 1)
+        self.assertIsNone(decide_scoped(panel=(GEN, GEN2, DB), paths=["q.sql"]).reviewer_limit)
+
+    def test_the_decisions_are_recorded_and_worded(self):
+        added = decide_scoped(paths=["db/migrate/003_drop_orders.rb"])
+        self.assertEqual(added.to_dict()["conditional"][0]["when"], "paths")
+        self.assertEqual(
+            added.conditional_notes(),
+            ["db (when: paths) added: db/migrate/003_drop_orders.rb matches *migrate*/*"],
+        )
+        self.assertEqual(decide_scoped().conditional_notes(), ["db (when: paths) left out: " + NO_DB_MATCH])
+
+    def test_a_high_risk_change_escalates_and_leaves_it_out(self):
+        plan = decide_scoped(paths=["auth.py"])
+        self.assertEqual(plan.level, "quality")
+        self.assertFalse(plan.conditional[0]["runs"])
+        self.assertEqual(plan.conditional[0]["reason"], NO_DB_MATCH + HIGH_RISK_SUFFIX)
+
+    def test_membership_and_risk_are_judged_from_their_own_lists(self):
+        suppressed = decide_scoped(paths=["app.py", "scratch.sql"], condition_paths=["app.py"])
+        self.assertFalse(suppressed.conditional[0]["runs"])
+        crossed = decide_scoped(paths=["auth.py"], condition_paths=["q.sql"])
+        self.assertEqual(crossed.level, "quality")
+        self.assertEqual(crossed.conditional[0]["reason"], "q.sql matches *.sql")
+
+    def test_a_declared_round_is_never_cut_whether_or_not_it_added_anyone(self):
+        plan = decide_scoped(panel=(GEN, GEN2, DB), declared=True)
+        self.assertIsNone(plan.reviewer_limit)
+        self.assertFalse(plan.conditional[0]["runs"])
+        self.assertEqual(plan.conditional[0]["reason"], NO_DB_MATCH + DECLARED_SUFFIX)
+
+    def test_with_the_defaults_sql_escalates_and_it_joins_on_its_own_pattern(self):
+        plan = decide_scoped(paths=["q.sql"], settings=dict(config_mod.default_config()["optimization"]))
+        self.assertEqual(plan.level, "quality")
+        self.assertEqual(plan.high_risk, [("q.sql", "*.sql")])
+        self.assertEqual(plan.conditional[0]["reason"], "q.sql matches *.sql")
+
+
 # --------------------------------------------------------------------------- config
 
 
@@ -961,6 +1190,252 @@ class TestConditionalReviewersInThePipeline(IsolatedCase):
         self.assertIn("added x0, left out x1", out)
 
 
+@unittest.skipUnless(has_git(), "git is required")
+class TestPathScopedReviewersInThePipeline(IsolatedCase):
+    """`gen` always runs, `sec` is `when: high-risk`, and `db` is scoped to
+    `*migrate*/*` and `*.sql`. The high-risk list is narrowed to `*auth*`, so
+    a SQL change is not also an escalation. Every change is small, at
+    `balanced`."""
+
+    DB_LEFT_OUT = "db (when: paths) left out: no path matches *migrate*/*, *.sql"
+
+    def setUp(self):
+        super().setUp()
+        self.init_git_repo()
+        self.write("app.py", "def add(a, b):\n    return a + b\n")
+        self.commit_all("init")
+        self.write("app.py", "def add(a, b):\n    return a - b\n")
+
+        self.mock_dir = os.path.join(self.tmp, "mock")
+        os.makedirs(self.mock_dir)
+        self.answer(FINDING)
+        os.environ["DEV_ORCHESTRA_MOCK_DIR"] = self.mock_dir
+
+        run_cli("config", "setup", "--defaults")
+        run_cli("reviewer", "remove", "claude-general")
+        run_cli("reviewer", "remove", "codex-general")
+        run_cli("reviewer", "add", "--provider", "mock", "--id", "gen", "--role", "general")
+        high_risk = ("--role", "security", "--when", "high-risk")
+        run_cli("reviewer", "add", "--provider", "mock", "--id", "sec", *high_risk)
+        scoped = ("--role", "database", "--when-paths", "*migrate*/*", "*.sql")
+        code, _, err = run_cli("reviewer", "add", "--provider", "mock", "--id", "db", *scoped)
+        self.assertEqual(code, 0, err)
+        self.set_global("optimization", high_risk_paths=["*auth*"], extra_high_risk_paths=[])
+        self.workspace = self.cli_workspace()
+
+    def set_global(self, section, **values):
+        path = config_mod.global_config_path()
+        layer = config_mod.read_config_file(path)
+        layer.setdefault(section, {}).update(values)
+        config_mod.write_config_file(path, layer)
+
+    def answer(self, text):
+        with open(os.path.join(self.mock_dir, "review.txt"), "w", encoding="utf-8") as handle:
+            handle.write(text)
+
+    def run_json(self, *extra):
+        code, out, err = run_cli("review", "run", "--json", *extra)
+        return code, json.loads(out), err
+
+    def last_review(self):
+        events = ws.read_json(self.workspace.state_path, {}).get("events") or []
+        return [e for e in events if e.get("stage") == "review" and "optimization" in e][-1]
+
+    def record(self, plan, reviewer_id="db"):
+        return next(record for record in plan["conditional"] if record["id"] == reviewer_id)
+
+    def ran(self, payload):
+        return sorted(r["id"] for r in payload["reviewers"])
+
+    def meta(self):
+        return ws.read_json(self.workspace.snapshot_meta_path, {})
+
+    def first_round_accepted(self):
+        """Round 1 on `app.py` alone: `db` sits out, `gen` reports F1 and it is
+        accepted, so the next snapshot narrows to the fix."""
+        run_cli("state", "record", "test", "ok")
+        run_cli("review", "snapshot")
+        _, payload, _ = self.run_json()
+        self.assertNotIn("db", self.ran(payload))
+        run_cli("review", "triage", "F1", "--status", "accepted")
+
+    def test_the_reviewer_is_written_in_block_form(self):
+        with open(config_mod.global_config_path(), encoding="utf-8") as handle:
+            text = handle.read()
+        self.assertIn('    when:\n      paths:\n        - "*migrate*/*"\n        - "*.sql"\n', text)
+
+    def test_a_quiet_change_leaves_it_out_and_says_so(self):
+        run_cli("state", "record", "test", "ok")
+        run_cli("review", "snapshot")
+        code, _, err = run_cli("review", "run")
+        self.assertEqual(code, 0)
+        self.assertIn(self.DB_LEFT_OUT, err)
+        event = self.last_review()
+        self.assertEqual([r["id"] for r in event["reviewers"]], ["gen"])
+        self.assertEqual(
+            self.record(event["optimization"]),
+            {"id": "db", "when": "paths", "runs": False, "reason": "no path matches *migrate*/*, *.sql"},
+        )
+
+    def test_a_sql_change_adds_it_and_stays_balanced(self):
+        self.write("queries/report.sql", "select 1;\n")
+        run_cli("state", "record", "test", "ok")
+        run_cli("review", "snapshot")
+        code, payload, err = self.run_json()
+        self.assertEqual(code, 0)
+        self.assertEqual(self.ran(payload), ["db", "gen"])
+        plan = payload["optimization"]
+        self.assertEqual(plan["level"], "balanced")
+        self.assertIsNone(plan["reviewer_limit"])
+        self.assertIn("db (when: paths) added: queries/report.sql matches *.sql", err)
+
+    def test_a_declaration_adds_the_high_risk_reviewer_only(self):
+        run_cli("state", "record", "test", "ok")
+        run_cli("review", "snapshot")
+        _, payload, _ = self.run_json("--high-risk")
+        self.assertEqual(self.ran(payload), ["gen", "sec"])
+        self.assertEqual(
+            self.record(payload["optimization"])["reason"],
+            "no path matches *migrate*/*, *.sql (declared with --high-risk; when: paths ignores that; "
+            "--only <ids> to include it)",
+        )
+
+    def test_only_brings_it_into_a_high_risk_round(self):
+        self.write("auth.py", "def check():\n    return True\n")
+        run_cli("state", "record", "test", "ok")
+        run_cli("review", "snapshot")
+        _, payload, _ = self.run_json()
+        self.assertEqual(self.ran(payload), ["gen", "sec"])
+        self.assertIn("round is high-risk", self.record(payload["optimization"])["reason"])
+        _, payload, _ = self.run_json("--only", "gen", "sec", "db")
+        self.assertEqual(self.ran(payload), ["db", "gen", "sec"])
+
+    def test_an_open_accepted_finding_brings_it_back(self):
+        self.write("queries/report.sql", "select 1;\n")
+        run_cli("state", "record", "test", "ok")
+        run_cli("review", "snapshot")
+        self.run_json()
+        data = json.loads(run_cli("review", "show", "--json")[1])
+        self.assertIn("db", data["findings"][0]["reported_by"])
+        run_cli("review", "triage", "F1", "--status", "accepted")
+        self.write("app.py", "def add(a, b):\n    return b + a\n")
+        run_cli("review", "snapshot")
+        self.assertTrue(self.meta()["incremental_from"])
+        self.assertEqual(self.meta()["condition_paths"], ["app.py"])
+        _, payload, err = self.run_json()
+        self.assertIn("db", self.ran(payload))
+        self.assertIn("db (when: paths) added: has open accepted finding F1", err)
+
+    def test_after_rejection_it_sits_out_and_its_report_is_left_out(self):
+        self.write("queries/report.sql", "select 1;\n")
+        run_cli("state", "record", "test", "ok")
+        run_cli("review", "snapshot")
+        self.run_json()
+        run_cli("review", "triage", "F1", "--status", "rejected")
+        os.remove(os.path.join(self.project, "queries", "report.sql"))
+        self.answer("NO_FINDINGS\n")
+        run_cli("review", "snapshot")
+        _, payload, _ = self.run_json()
+        self.assertEqual(self.ran(payload), ["gen"])
+        self.assertEqual(run_cli("review", "consolidate")[0], 0)
+        data = json.loads(run_cli("review", "show", "--json")[1])
+        self.assertEqual([entry["id"] for entry in data["reviewers"]], ["gen"])
+
+    def test_status_names_it_with_its_reason(self):
+        run_cli("state", "record", "test", "ok")
+        run_cli("review", "snapshot")
+        _, out, _ = run_cli("status")
+        self.assertIn("db left out (no path matches *migrate*/*, *.sql)", out)
+        self.write("queries/report.sql", "select 1;\n")
+        run_cli("review", "snapshot")
+        status = json.loads(run_cli("status", "--json")[1])
+        self.assertTrue(self.record(status["optimization"])["runs"])
+
+    def test_a_withheld_sql_file_still_adds_it(self):
+        self.set_global("review", exclude=["*.sql"])
+        self.write("queries/report.sql", "select 1;\n")
+        run_cli("state", "record", "test", "ok")
+        run_cli("review", "snapshot")
+        self.assertIn("queries/report.sql", [entry["path"] for entry in self.meta()["withheld"]])
+        _, payload, _ = self.run_json()
+        self.assertIn("db", self.ran(payload))
+
+    def test_with_the_defaults_sql_escalates_and_it_still_joins(self):
+        path = config_mod.global_config_path()
+        layer = config_mod.read_config_file(path)
+        del layer["optimization"]["high_risk_paths"]
+        config_mod.write_config_file(path, layer)
+        self.assertIn("*.sql", opt.risk_patterns(config_mod.load(self.project).optimization_settings()))
+        self.write("queries/report.sql", "select 1;\n")
+        run_cli("state", "record", "test", "ok")
+        run_cli("review", "snapshot")
+        _, payload, err = self.run_json()
+        self.assertEqual(payload["optimization"]["level"], "quality")
+        self.assertIn("db (when: paths) added: queries/report.sql matches *.sql", err)
+
+    def test_with_the_defaults_a_credential_shaped_sql_path_is_redacted_everywhere(self):
+        """The escalation names the file that forced it, in the note, the JSON
+        and the event, and each of those is redacted like the reasons are."""
+        path = config_mod.global_config_path()
+        layer = config_mod.read_config_file(path)
+        del layer["optimization"]["high_risk_paths"]
+        config_mod.write_config_file(path, layer)
+        self.write("queries/%s.sql" % TOKEN, "select 1;\n")
+        run_cli("state", "record", "test", "ok")
+        run_cli("review", "snapshot")
+        _, payload, err = self.run_json()
+        plan = payload["optimization"]
+        self.assertEqual(plan["level"], "quality")
+        self.assertIn({"path": "queries/[redacted].sql", "pattern": "*.sql"}, plan["high_risk"])
+        notes = [line for line in err.splitlines() if line.startswith("note:")]
+        self.assertIn("note: balanced → quality: queries/[redacted].sql matches *.sql", notes)
+        self.assertNotIn(TOKEN, "\n".join(notes))
+        self.assertNotIn(TOKEN, json.dumps(plan))
+        self.assertNotIn(TOKEN, json.dumps(self.last_review()["optimization"]))
+
+    def test_a_first_round_matches_against_the_whole_change(self):
+        run_cli("review", "snapshot")
+        meta = self.meta()
+        self.assertFalse(meta["incremental_from"])
+        self.assertEqual(meta["condition_paths"], meta["changed_paths"])
+
+    def test_an_untracked_file_left_out_of_an_incremental_round_does_not_add_it(self):
+        """`scratch.sql` is in the tree the round narrows from, but with
+        untracked files excluded it is in neither the diff nor the withheld
+        notice: a reviewer added for it would have nothing to look at."""
+        self.first_round_accepted()
+        self.write("scratch.sql", "select 1;\n")
+        self.write("app.py", "def add(a, b):\n    return b + a\n")
+        run_cli("review", "snapshot", "--no-untracked")
+        meta = self.meta()
+        self.assertTrue(meta["incremental_from"])
+        self.assertIn("scratch.sql", meta["changed_paths"])
+        self.assertNotIn("scratch.sql", meta["condition_paths"])
+        _, payload, err = self.run_json()
+        self.assertEqual(self.ran(payload), ["gen"])
+        self.assertIn(self.DB_LEFT_OUT, err)
+        self.assertFalse(self.record(self.last_review()["optimization"])["runs"])
+
+    def test_the_project_config_changing_on_an_incremental_round_does_not_add_it(self):
+        self.write(".dev-orchestra.yaml", "version: 1\n")
+        self.git("add", ".dev-orchestra.yaml")
+        self.git("commit", "-qm", "config")
+        patterns = ("--when-paths", "*.sql", "*.yaml")
+        code, _, err = run_cli("reviewer", "set", "db", "--scope", "global", *patterns)
+        self.assertEqual(code, 0, err)
+        self.first_round_accepted()
+        self.write(".dev-orchestra.yaml", "version: 1\n# touched\n")
+        self.write("app.py", "def add(a, b):\n    return b + a\n")
+        run_cli("review", "snapshot")
+        meta = self.meta()
+        self.assertTrue(meta["incremental_from"])
+        self.assertIn(".dev-orchestra.yaml", meta["changed_paths"])
+        self.assertNotIn(".dev-orchestra.yaml", meta["condition_paths"])
+        _, payload, err = self.run_json()
+        self.assertEqual(self.ran(payload), ["gen"])
+        self.assertIn("db (when: paths) left out: no path matches *.sql, *.yaml", err)
+
+
 # --------------------------------------------------------------------------- report
 
 
@@ -1230,6 +1705,11 @@ class TestConditionalCounters(unittest.TestCase):
         report = opt.summarise_rounds([round_event(escalated=True, level="quality", high_risk=hit)])
         self.assertEqual(report["escalation_patterns"], {"*/providers/*": 1})
         self.assertTrue(report["always_escalated"])
+
+    def test_a_path_scoped_record_counts_like_any_other(self):
+        scoped = dict(added("db", "q.sql matches *.sql"), when="paths")
+        report = opt.summarise_rounds([round_event(conditional=[scoped, dict(left_out("db"), when="paths")])])
+        self.assertEqual(report["conditional"], {"added": 1, "left_out": 1, "declared_rounds": 0})
 
 
 def round_with(usages, status="ok"):
@@ -2334,6 +2814,25 @@ class TestWhatTheSnapshotReportsAsChanged(IsolatedCase):
         meta = self.snapshot()
         self.assertIn("yarn.lock", meta["changed_paths"])
         self.assertNotIn("yarn.lock", meta["files"])
+
+    def test_the_membership_list_holds_reviewed_withheld_and_renamed_paths(self):
+        self.write("yarn.lock", "dep 1.0\n")
+        self.commit_all("lock")
+        self.write("yarn.lock", "dep 2.0\n")
+        self.git("mv", "app/auth.py", "app/helper.py")
+        self.write("app/main.py", "x = 2\n")
+        meta = self.snapshot()
+        for name in ("app/main.py", "yarn.lock", "app/helper.py", "app/auth.py"):
+            self.assertIn(name, meta["condition_paths"], name)
+
+    def test_on_a_first_round_the_membership_list_is_the_whole_change(self):
+        self.write(".dev-orchestra.yaml", "version: 1\n")
+        self.git("add", ".dev-orchestra.yaml")
+        self.git("commit", "-qm", "config")
+        self.write(".dev-orchestra.yaml", "version: 1\n# touched\n")
+        self.write("app/main.py", "x = 2\n")
+        meta = self.snapshot()
+        self.assertEqual(meta["condition_paths"], meta["changed_paths"])
 
 
 @unittest.skipUnless(has_git(), "git is required")

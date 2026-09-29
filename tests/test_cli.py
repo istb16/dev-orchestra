@@ -8,6 +8,7 @@ import os
 import sys
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
+from typing import Any, ClassVar, Dict
 
 from helpers import CLAUDE_HELP, CLAUDE_HELP_NO_FORK, CLAUDE_HELP_OLD, IsolatedCase, has_git
 
@@ -270,6 +271,158 @@ class TestReviewerCommands(IsolatedCase):
         self.assertIn("general (when: high-risk)", line)
         self.assertNotIn("when:", next(line for line in out.splitlines() if "claude-general" in line))
 
+    def add_db(self, *patterns):
+        return run_cli("reviewer", "add", "--provider", "mock", "--id", "db", "--when-paths", *patterns)
+
+    def test_add_when_paths_writes_the_mapping_in_block_form(self):
+        code, _, err = self.add_db("*migrate*/*", "*.sql")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.listed("db")["when"], {"paths": ["*migrate*/*", "*.sql"]})
+        text = read_file(config_mod.global_config_path())
+        self.assertIn('    when:\n      paths:\n        - "*migrate*/*"\n        - "*.sql"\n', text)
+
+    def test_the_written_patterns_load_with_the_bundled_parser(self):
+        """Quoted and in block form, so a pattern holding `[` loads without
+        PyYAML too."""
+        from orchestrator.miniyaml import _parse_node, _read_lines
+
+        self.add_db("*[Mm]igration*/*", "*.sql")
+        lines = _read_lines(read_file(config_mod.global_config_path()))
+        data, consumed = _parse_node(lines, 0)
+        self.assertEqual(consumed, len(lines))
+        db = next(r for r in data["reviewers"] if r["id"] == "db")
+        self.assertEqual(db["when"]["paths"], ["*[Mm]igration*/*", "*.sql"])
+
+    def test_when_and_when_paths_together_are_refused(self):
+        both = ("--when", "high-risk", "--when-paths", "*.sql")
+        code, _, err = run_cli("reviewer", "add", "--provider", "mock", "--id", "db", *both)
+        self.assertEqual(code, 2)
+        self.assertIn("give --when or --when-paths, not both", err)
+        self.add_db("*.sql")
+        code, _, err = run_cli("reviewer", "set", "db", "--when", "always", "--when-paths", "*.md")
+        self.assertEqual(code, 2)
+        self.assertIn("give --when or --when-paths, not both", err)
+        self.assertEqual(self.listed("db")["when"], {"paths": ["*.sql"]})
+
+    def test_set_when_always_removes_the_mapping(self):
+        self.add_db("*.sql")
+        self.assertEqual(run_cli("reviewer", "set", "db", "--when", "always")[0], 0)
+        self.assertNotIn("when", self.listed("db"))
+
+    def test_set_when_paths_replaces_the_list_wholesale(self):
+        self.add_db("*migrate*/*", "*.sql")
+        self.assertEqual(run_cli("reviewer", "set", "db", "--when-paths", "*.md")[0], 0)
+        self.assertEqual(self.listed("db")["when"], {"paths": ["*.md"]})
+
+    def test_set_when_high_risk_replaces_the_mapping(self):
+        self.add_db("*.sql")
+        self.assertEqual(run_cli("reviewer", "set", "db", "--when", "high-risk")[0], 0)
+        self.assertEqual(self.listed("db")["when"], "high-risk")
+
+    def test_set_when_paths_on_a_high_risk_reviewer_replaces_the_string(self):
+        run_cli("reviewer", "add", "--provider", "mock", "--id", "sec", "--when", "high-risk")
+        self.assertEqual(run_cli("reviewer", "set", "sec", "--when-paths", "*.sql")[0], 0)
+        self.assertEqual(self.listed("sec")["when"], {"paths": ["*.sql"]})
+
+    def test_list_shows_the_patterns(self):
+        self.add_db("*.sql")
+        _, out, _ = run_cli("reviewer", "list")
+        line = next(line for line in out.splitlines() if " db " in line)
+        self.assertTrue(line.endswith("general (when: paths *.sql)"), line)
+
+    def test_removing_the_last_unconditional_reviewer_is_refused_when_the_rest_are_path_scoped(self):
+        run_cli("reviewer", "remove", "codex-general")
+        self.add_db("*.sql")
+        code, _, err = run_cli("reviewer", "remove", "claude-general")
+        self.assertEqual(code, 2)
+        self.assertIn("at least one reviewer must run always", err)
+
+    def test_an_empty_pattern_is_refused(self):
+        code, _, err = self.add_db("*.sql", " ")
+        self.assertEqual(code, 2)
+        self.assertIn("when.paths[1]: must be a non-empty string", err)
+
+    def test_a_credential_shaped_pattern_is_redacted_in_the_list(self):
+        secret = "k" * 16
+        self.add_db("*secret=%s*" % secret)
+        _, out, _ = run_cli("reviewer", "list")
+        self.assertIn("(when: paths *secret=[redacted]*)", out)
+        self.assertNotIn(secret, out)
+
+    def test_a_credential_shaped_pattern_is_redacted_in_the_json_list(self):
+        secret = "k" * 16
+        self.add_db("*.sql", "*secret=%s*" % secret)
+        _, out, _ = run_cli("reviewer", "list", "--json")
+        self.assertNotIn(secret, out)
+        self.assertEqual(self.listed("db")["when"], {"paths": ["*.sql", "*secret=[redacted]*"]})
+        self.assertIn(secret, read_file(config_mod.global_config_path()))
+
+
+class TestConditionPathsFallback(unittest.TestCase):
+    """A snapshot frozen before `condition_paths` existed."""
+
+    META: ClassVar[Dict[str, Any]] = {
+        "files": ["lib/x.rb"],
+        "withheld": [{"path": "gen/schema.rb"}],
+        "changed_paths": ["lib/x.rb", "db/migrate/x.rb", "gen/schema.rb"],
+    }
+
+    def test_a_first_round_uses_the_whole_change_with_rename_sources(self):
+        meta = dict(self.META, incremental_from="")
+        self.assertEqual(cli._condition_paths(meta), ["lib/x.rb", "db/migrate/x.rb", "gen/schema.rb"])
+
+    def test_an_incremental_round_uses_the_reviewed_and_withheld_files(self):
+        meta = dict(self.META, incremental_from="abc123")
+        self.assertEqual(cli._condition_paths(meta), ["lib/x.rb", "gen/schema.rb"])
+
+    def test_a_recorded_list_is_used_as_it_is(self):
+        meta = dict(self.META, incremental_from="", condition_paths=["lib/x.rb"])
+        self.assertEqual(cli._condition_paths(meta), ["lib/x.rb"])
+
+
+class TestMalformedPathConditions(IsolatedCase):
+    """`reviewer list`, `doctor` and `status` read the config unvalidated, so
+    a malformed `when` mapping must reach them as a reviewer that always
+    runs; `config validate` names the problem."""
+
+    CASES = (
+        (
+            '      paths:\n        - "*.sql"\n        - 42\n',
+            "reviewers[1].when.paths[1]: must be a non-empty string (got 42)",
+        ),
+        (
+            '      paths: "*.sql"\n',
+            "reviewers[1].when.paths: must be a non-empty list of glob patterns",
+        ),
+        (
+            '      paths:\n        - "*.sql"\n      extra: 1\n',
+            "reviewers[1].when: a when mapping takes paths only (got keys: extra, paths)",
+        ),
+    )
+
+    def write_config(self, when):
+        self.write(
+            ".dev-orchestra.yaml",
+            "version: 1\n"
+            "reviewers:\n"
+            "  - id: gen\n    provider: mock\n    role: general\n"
+            "  - id: db\n    provider: mock\n    role: database\n    when:\n" + when,
+        )
+
+    def test_each_form_reads_as_always_and_is_named_by_validate(self):
+        for when, problem in self.CASES:
+            with self.subTest(problem=problem):
+                self.write_config(when)
+                _, out, _ = run_cli("reviewer", "list")
+                self.assertNotIn("when:", out)
+                _, payload, _ = run_cli("doctor", "--fast", "--json")
+                entries = {entry["id"]: entry for entry in json.loads(payload)["reviewers"]}
+                self.assertNotIn("when", entries["db"])
+                _, payload, _ = run_cli("status", "--json")
+                self.assertEqual(json.loads(payload)["optimization"]["conditional"], [])
+                _, out, err = run_cli("config", "validate")
+                self.assertIn(problem, out + err)
+
 
 class TestDoctor(IsolatedCase):
     def test_doctor_runs_and_reports_roles(self):
@@ -334,13 +487,15 @@ class TestDoctorDefaultPatternsNote(IsolatedCase):
     must not fail over a configuration that is working.
     """
 
-    def write_config(self, conditional=("sec",), **optimization):
+    def write_config(self, conditional=("sec",), scoped=(), **optimization):
         role = {"provider": "mock", "model": {"family": "small", "version": "latest"}}
         data = config_mod.default_config()
         data.update(orchestrator=role, architect=role, implementer=role, review_fixer=role)
         data["reviewers"] = [config_mod.make_reviewer("gen", "mock", "small")]
         for name in conditional:
             data["reviewers"].append(config_mod.make_reviewer(name, "mock", "small", when="high-risk"))
+        for name, patterns in scoped:
+            data["reviewers"].append(config_mod.make_reviewer(name, "mock", "small", paths=patterns))
         data["optimization"].update(optimization)
         config_mod.write_config_file(config_mod.global_config_path(), data)
 
@@ -406,7 +561,36 @@ class TestDoctorDefaultPatternsNote(IsolatedCase):
         _, payload, _ = run_cli("doctor", "--fast", "--json")
         entries = {entry["id"]: entry for entry in json.loads(payload)["reviewers"]}
         self.assertEqual(entries["sec"]["when"], "high-risk")
+        self.assertEqual(entries["sec"]["condition"], "high-risk")
         self.assertNotIn("when", entries["gen"])
+
+    def test_the_reviewer_line_shows_the_patterns(self):
+        self.write_config(conditional=(), scoped=[("db", ["*migrate*/*", "*.sql"])])
+        _, out, _ = run_cli("doctor", "--fast")
+        line = next(line for line in out.splitlines() if ". db / " in line)
+        self.assertTrue(line.endswith("general (when: paths *migrate*/*, *.sql)"), line)
+        _, payload, _ = run_cli("doctor", "--fast", "--json")
+        entry = next(entry for entry in json.loads(payload)["reviewers"] if entry["id"] == "db")
+        self.assertEqual(entry["when"], "paths")
+        self.assertEqual(entry["paths"], ["*migrate*/*", "*.sql"])
+        self.assertEqual(entry["condition"], "paths *migrate*/*, *.sql")
+
+    def test_a_path_scoped_panel_on_the_defaults_is_not_noted(self):
+        """Its patterns were chosen; the note is about patterns nobody chose."""
+        self.write_config(conditional=(), scoped=[("db", ["*.sql"])])
+        self.assertEqual(self.notes(), [])
+        self.write_config(conditional=("sec",), scoped=[("db", ["*.sql"])])
+        notes = self.notes()
+        self.assertEqual(len(notes), 1)
+        self.assertTrue(notes[0].startswith("sec: "))
+
+    def test_a_credential_shaped_pattern_is_redacted(self):
+        secret = "k" * 16
+        self.write_config(conditional=(), scoped=[("db", ["*secret=%s*" % secret])])
+        _, out, _ = run_cli("doctor", "--fast")
+        _, payload, _ = run_cli("doctor", "--fast", "--json")
+        self.assertIn("(when: paths *secret=[redacted]*)", out)
+        self.assertNotIn(secret, out + payload)
 
 
 class TestDoctorReadOnlyEnforcement(IsolatedCase):

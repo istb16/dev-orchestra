@@ -1,4 +1,4 @@
-<!-- translated-from: references/configuration.md sha256:6c235596e3d6bc9c8d3b16c8e4b7de5900f81fc686ffc0ea84d59b6934c356cb -->
+<!-- translated-from: references/configuration.md sha256:ecf88ee1a68a61c11d306abcdac3075e450940cf6af5e10389e57129dd18f5b1 -->
 
 > この文書は [references/configuration.md](../../../references/configuration.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -140,7 +140,7 @@ workspace:
 | `<role>.model.id` | string | 正確なモデル id。`version: pinned` のときのみ。 |
 | `reviewers[].id` | string | 一意で、`[a-z0-9][a-z0-9._-]*` に一致すること。レポートファイルの名前になります。 |
 | `reviewers[].role` | string | 組み込みのもの、または独自のもの。`references/reviews.md` を参照。 |
-| `reviewers[].when` | `always` \| `high-risk` | **コード**レビューのラウンドでそのレビュアーがいつ走るか（デフォルト `always`）。`high-risk` は高リスクと判定されたラウンドにだけ加わります。設計レビューはこれを無視し、すべてのレビュアーを走らせます。少なくとも 1 人は `always` のままでなければなりません。[高リスクな変更でだけ走るレビュアー](#reviewers-that-run-only-on-high-risk-changes)を参照。 |
+| `reviewers[].when` | `always` \| `high-risk` \| `paths` を持つマッピング | **コード**レビューのラウンドでそのレビュアーがいつ走るか（デフォルト `always`）。`high-risk` は高リスクと判定されたラウンドにだけ加わります。`paths` を持つマッピングは、変更が自分のパターンのどれかに一致したラウンドにだけ加わります。設計レビューはどちらも無視し、すべてのレビュアーを走らせます。少なくとも 1 人は `always` のままでなければなりません。[高リスクな変更でだけ走るレビュアー](#reviewers-that-run-only-on-high-risk-changes)と[パスで絞り込むレビュアー](#reviewers-scoped-to-paths)を参照。 |
 | `review.max_review_iterations` | int ≥ 0 | プロジェクト単位ではなくレビュー単位のラウンド数です。新しいブランチ、新しい `--base`、または `budget reset` でカウントはリセットされます。`0` で再レビューを完全に無効にします。 |
 | `review.parallel` | bool | `false` にするとレビュアーを 1 つずつ実行します（デバッグしやすくなります）。 |
 | `review.re_review_severities` | list | ブロッキングとみなす severity。 |
@@ -344,6 +344,91 @@ accepted の指摘を確認し直す必要があるときです。それ以外�
 ```bash
 dev-orchestra reviewer set claude-security --when high-risk
 dev-orchestra reviewer set claude-security --when always      # back to every round
+```
+
+<a id="reviewers-scoped-to-paths"></a>
+
+#### パスで絞り込むレビュアー
+
+`database` レビュアーのような特定分野の専門レビュアーを、変更がそのレビュアーの担当する
+ファイルに触れたときだけコードレビューに加えることができます:
+
+```yaml
+reviewers:
+  - id: codex-database
+    provider: codex
+    role: database
+    when:
+      paths:
+        - "*migration*/*"
+        - "*migrate*/*"
+        - "*.sql"
+```
+
+**パスで絞り込んだレビュアーがコードのラウンドに加わるのは、変更されたパスが自分の
+パターンのどれかに一致したとき、自分自身の未解決の accepted の指摘を確認し直す必要が
+あるとき、または `--only` で名前を挙げられたときだけで、それ以外の理由では加わりません。**
+他の条件付きのレビュアーと同じく、設計レビューでは毎回走り、加わったときはパネルを縮小
+させず、加える・外す判断はすべて理由とともに表示され記録されます。「少なくとも 1 人の
+レビュアーは常に走らなければならない」という規則では条件付きとして数えられ、自分の
+パターンを持っているので、`high_risk_paths` に有効なパターンがなくても構いません。
+
+- **特定分野の専門レビュアー向けであり、リスクを判断する役割向けではありません。**
+  database、frontend、docs のレビュアーが関心を持つのはファイルの集まりですが、
+  security レビュアーが関心を持つのはラウンドがどれだけ危ないかです。security など
+  リスクを判断する役割は `when: high-risk`（または `always`）のままにしてください。
+  パスで絞り込むと、security レビュアーは `.env`、`*secret*`、`*.tf`、
+  `.github/workflows/*` への変更でも、ラウンドが引き上げられているのに参加しません。
+  「高リスクなラウンドでも、これらのパスでも」という組み合わせの参加条件は用意して
+  いません。専門レビュアーのパスを `extra_high_risk_paths` に加えてこれを実現しようと
+  しないでください。それはリスクの方針を変えることになり、そのパスへの変更をすべて
+  `quality` に引き上げ、1 人のレビュアーしか関心を持たないパスのために red のツリーを
+  ゲートに通してしまいます。
+- **一致してもレベルは引き上げられません。** レビュアーのパターンが表すのはそのレビュアーが
+  何を知っているかであって、変更がどれだけ危ないかではありません。そのため一致しても
+  レベルもゲートも動きません。引き上げは引き続き `high_risk_paths` と
+  `extra_high_risk_paths` が決めます。同じパターンが両方にある場合（デフォルトには
+  `*.sql`、`*migration*/*`、`*migrate*/*` が含まれます）、ラウンドは高リスクのリストに
+  よって引き上げられ、レビュアーは自分のパターンによって加わり、それぞれに注記が出ます。
+- **高リスクなラウンドだからといって加わりません。** 高リスクなパスへの一致と
+  `review run --high-risk` が加えるのは `when: high-risk` のレビュアーだけです。どちらかが
+  起きてパスで絞り込んだレビュアーが外されたときは、その注記にそう書かれます。
+  1 ラウンドだけ含めるには、走らせたいレビュアーをすべて `--only <ids>` で挙げます。
+  恒久的に直すには `reviewer set <id> --when high-risk` にします。
+- **照合の対象は、レビュアーに見せる変更です**: レビューされるファイル、withheld の
+  ファイル、リネーム元のパスです。オーケストレーター自身のファイルや、差分ラウンドで
+  外される追跡外のファイルは、レビュアーに一切見せないので対象になりません。
+
+パターンは `high_risk_paths` と同じ方法で照合されます:
+
+- パス全体に対して照合し、`/` を含まないパターンはベース名にも照合するので、`*.sql` は
+  どの深さでも一致します。
+- `**` はありません: `db/**/*.sql` は `db/*/*.sql` として働き、ディレクトリのパターンには
+  両方の形（`migrations/*` と `*/migrations/*`）か `*migration*/*` が必要です。
+  `*migration*/*` は `migrate` には一致しない点に注意してください。
+- **大文字と小文字を区別します。** 両方が混在するリポジトリでは両方を並べてください。
+- 書いたとおりに扱われます: 決して一致しないパターンがあっても報告されません。
+
+マッピングは上の例のようにブロック形式で書き、パターンは 1 行に 1 つ、`*` で始まる
+パターンはすべて引用符で囲んでください。引用符のない `*.sql` は PyYAML では YAML の
+エイリアスとして読まれ、PyYAML がない場合の同梱パーサーはインラインのマッピングと、
+フロー形式のリストの中で `[` を含むパターンを（引用符の有無にかかわらず）拒否します:
+
+```yaml
+when:
+  paths:
+    - "*.sql"
+    - "*.SQL"
+    - "*[Mm]igration*/*"
+```
+
+`reviewer add` と `reviewer set` はこの形式で書き込みます。シェルに展開されないよう、
+コマンドラインでも各パターンを引用符で囲んでください:
+
+```bash
+dev-orchestra reviewer add --provider codex --role database --when-paths "*migrate*/*" "*.sql"
+dev-orchestra reviewer set codex-database --when-paths "*.sql"   # replaces the list
+dev-orchestra reviewer set codex-database --when always          # back to every round
 ```
 
 <a id="model-tiers"></a>

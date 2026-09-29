@@ -24,6 +24,7 @@ from .providers import (
     describe_origin,
     get_provider,
     origin_payload,
+    redact,
     user_provider_report,
     user_providers_disabled,
 )
@@ -148,6 +149,11 @@ def collect(start: Optional[str] = None, probe_models: bool = True) -> Dict[str,
         when = opt_mod.reviewer_condition(reviewer)
         if when != opt_mod.WHEN_ALWAYS:
             entry["when"] = when
+            # The label is kept on the entry, so the renderer never has to
+            # rebuild one from the bare kind.
+            entry["condition"] = opt_mod.condition_label(reviewer)
+            if when == opt_mod.WHEN_PATHS:
+                entry["paths"] = [redact(pattern) for pattern in opt_mod.reviewer_paths(reviewer)]
         report["reviewers"].append(entry)
         _refused_enforcement(label, reviewer, report)
 
@@ -391,7 +397,7 @@ def render(report: Dict[str, Any]) -> str:
     for index, entry in enumerate(reviewers, 1):
         role = entry.get("role", "general")
         if entry.get("when"):
-            role += " (when: %s)" % entry["when"]
+            role += " (when: %s)" % entry.get("condition", entry["when"])
         lines.append("    %d. %s / %s / %s" % (index, entry.get("id"), _role_line(entry), role))
 
     if report["problems"]:

@@ -127,7 +127,7 @@ workspace:
 | `<role>.model.id` | string | Exact model id, only with `version: pinned`. |
 | `reviewers[].id` | string | Unique, matching `[a-z0-9][a-z0-9._-]*`. Names the report file. |
 | `reviewers[].role` | string | Built-in or your own; see `references/reviews.md`. |
-| `reviewers[].when` | `always` \| `high-risk` | When the reviewer runs on a **code** review round (default `always`). `high-risk` joins only the rounds judged high-risk; the design review ignores it and runs every reviewer. At least one reviewer must stay `always`. See [Reviewers that run only on high-risk changes](#reviewers-that-run-only-on-high-risk-changes). |
+| `reviewers[].when` | `always` \| `high-risk` \| mapping with `paths` | When the reviewer runs on a **code** review round (default `always`). `high-risk` joins only the rounds judged high-risk; a mapping with `paths` joins only the rounds whose change matches one of its own patterns. The design review ignores both and runs every reviewer. At least one reviewer must stay `always`. See [Reviewers that run only on high-risk changes](#reviewers-that-run-only-on-high-risk-changes) and [Reviewers scoped to paths](#reviewers-scoped-to-paths). |
 | `review.max_review_iterations` | int ≥ 0 | Rounds per review, not per project: the count restarts on a new branch, a new `--base`, or `budget reset`. `0` disables re-review entirely. |
 | `review.parallel` | bool | `false` runs reviewers one at a time (easier to debug). |
 | `review.re_review_severities` | list | Severities that count as blocking. |
@@ -331,6 +331,90 @@ alone, so a switch made without that first step does not go unnoticed.
 ```bash
 dev-orchestra reviewer set claude-security --when high-risk
 dev-orchestra reviewer set claude-security --when always      # back to every round
+```
+
+#### Reviewers scoped to paths
+
+A domain specialist, such as a `database` reviewer, can be made to join the
+code review only when the change touches the files it knows about:
+
+```yaml
+reviewers:
+  - id: codex-database
+    provider: codex
+    role: database
+    when:
+      paths:
+        - "*migration*/*"
+        - "*migrate*/*"
+        - "*.sql"
+```
+
+**A path-scoped reviewer joins a code round when a changed path matches one
+of its own patterns, when it must re-check its own open accepted finding, or
+when `--only` names it, and nothing else adds it.** Like any conditional
+reviewer, it runs on every design review, it keeps the panel whole when it
+joins, and every decision to add or leave it out is printed and recorded with
+its reason. It counts as conditional for the "at least one reviewer must run
+always" rule, and it needs no `high_risk_paths` pattern in force, since it
+brings its own.
+
+- **It is for domain specialists, not for roles that judge risk.** A database,
+  frontend or docs reviewer is interested in a set of files; a security
+  reviewer is interested in how risky the round is. Keep security and other
+  risk-judging roles `when: high-risk` (or `always`): scoped to paths, a
+  security reviewer sits out a change to `.env`, `*secret*`, `*.tf` or
+  `.github/workflows/*` even though the round escalates. Membership that is
+  both "on high-risk rounds" and "on these paths" is not offered. Do not get it
+  by adding a specialist's path to `extra_high_risk_paths`: that changes the
+  risk policy, escalating every such change to `quality` and letting a red
+  tree through the gate for a path only one reviewer cares about.
+- **A match never escalates.** The reviewer's patterns say what it knows, not
+  how dangerous the change is, so a hit does not move the level or the gate.
+  Escalation stays with `high_risk_paths` and `extra_high_risk_paths`. When a
+  pattern is in both (the defaults include `*.sql`, `*migration*/*` and
+  `*migrate*/*`), the round escalates through the high-risk list and the
+  reviewer joins through its own, each with its own note.
+- **A high-risk round does not add it.** A high-risk path hit and
+  `review run --high-risk` add the `when: high-risk` reviewers only. When
+  either happens and the path-scoped reviewer is left out, its note says so.
+  `--only <ids>` naming every reviewer that should run includes it for one
+  round; `reviewer set <id> --when high-risk` is the lasting fix.
+- **It is matched against the change a reviewer sees**: the reviewed files,
+  withheld files and rename sources, but not the orchestrator's own files or
+  untracked files left out of an incremental round, which a reviewer is never
+  shown.
+
+The patterns are matched the way `high_risk_paths` is:
+
+- against the whole path, and, for a pattern with no `/`, against the basename
+  too, so `*.sql` matches at any depth;
+- with no `**`: `db/**/*.sql` behaves as `db/*/*.sql`, and a directory pattern
+  needs both forms (`migrations/*` and `*/migrations/*`), or `*migration*/*`;
+  note that `*migration*/*` does not match `migrate`;
+- **case-sensitively**, so list both cases when a repository mixes them;
+- as written: a pattern that can never match is not reported.
+
+Write the mapping in block form, as above, one pattern per line and every
+pattern that starts with `*` in quotes. An unquoted `*.sql` is read as a YAML
+alias by PyYAML, and without PyYAML the bundled parser refuses an inline
+mapping and any pattern containing `[` inside a flow list, quoted or not:
+
+```yaml
+when:
+  paths:
+    - "*.sql"
+    - "*.SQL"
+    - "*[Mm]igration*/*"
+```
+
+`reviewer add` and `reviewer set` write this form for you. Quote each pattern
+on the command line too, so the shell does not expand it:
+
+```bash
+dev-orchestra reviewer add --provider codex --role database --when-paths "*migrate*/*" "*.sql"
+dev-orchestra reviewer set codex-database --when-paths "*.sql"   # replaces the list
+dev-orchestra reviewer set codex-database --when always          # back to every round
 ```
 
 ## Model tiers

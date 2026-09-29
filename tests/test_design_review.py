@@ -180,6 +180,14 @@ class TestRunningIt(DesignReviewCase):
         for key in ("optimization", "conditional", "declared"):
             self.assertNotIn(key, design)
 
+    def test_a_path_scoped_reviewer_runs_on_every_plan(self):
+        self.assertEqual(run_cli("reviewer", "set", "m2", "--when-paths", "*.sql")[0], 0)
+        self.write_plan()
+        code, out, err = run_cli("review", "run", "--design")
+        self.assertEqual(code, 0)
+        self.assertIn("2 successful, 0 failed", out)
+        self.assertNotIn("left out", err)
+
     def test_a_declaration_is_refused_on_the_design_review(self):
         self.write_plan()
         code, _, err = run_cli("review", "run", "--design", "--high-risk")
