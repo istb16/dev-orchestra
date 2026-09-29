@@ -1,4 +1,4 @@
-<!-- translated-from: references/workflow.md sha256:4d5ba56721d65420ee3aa9d35359bd618b906ce9ab55bd139d78c1dc735a96d8 -->
+<!-- translated-from: references/workflow.md sha256:56fc6f3f005815c56d545b36f78de641291c48e2c8ae424072ea672216700c99 -->
 
 > この文書は [references/workflow.md](../../../references/workflow.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -527,7 +527,9 @@ For each finding below:
 1. Read the cited code as it is now.
 2. Verify the finding is still true. If it is not, say so and change nothing.
 3. Fix valid findings with the smallest correct change.
-4. Add a test where the finding exposes a coverage gap.
+4. Where a test can show the defect, add one that fails on the code as it
+   was and passes after the fix; where none can (wording, documentation,
+   a design choice), say why.
 5. Run the relevant tests plus lint/type checks, and report the output.
 
 Do not fix anything that is not listed here.
@@ -536,6 +538,35 @@ Do not fix anything that is not listed here.
 <a id="re-test-and-re-review"></a>
 
 ## 再テストと再レビュー
+
+fixer が足したテストは、修正がないと失敗するときだけ証拠になります。どちらでも通るテストは、
+すべて通った結果の中では区別がつきません。そこで `run review_fixer` の前に、その時点の作業ツリーを
+記録しておきます。レビュー中の変更はたいていコミットしておらず、`git add` していないファイルも
+あるので、`HEAD` も `git stash` も「修正の前」にはなりません。使い捨てのインデックスに、スナップ
+ショットと同じく `git add -A` で全部を取り込めば、本来のインデックスにもファイルにも触れずに済み
+ます。コマンドは別々に実行されるので、値はシェル変数ではなくファイルに残します。
+
+```bash
+GIT_INDEX_FILE=.ai/pre-fix.index git add -A
+GIT_INDEX_FILE=.ai/pre-fix.index git write-tree > .ai/pre-fix.tree
+```
+
+修正のあと、再テストを記録する前に、fixer が変えた分だけを取り除いて新しいテストを流し、修正を戻します。
+
+```bash
+GIT_INDEX_FILE=.ai/post-fix.index git add -A
+GIT_INDEX_FILE=.ai/post-fix.index git diff --cached "$(cat .ai/pre-fix.tree)" -- <files the fix changed, not the test> > .ai/fix.patch
+git apply -R .ai/fix.patch
+<the project's test command> <the new test>    # must fail, on its assertion
+git apply .ai/fix.patch
+rm .ai/pre-fix.index .ai/post-fix.index .ai/pre-fix.tree .ai/fix.patch
+```
+
+`fix.patch` が空なら、指定したファイルが修正で変わったものではありません。テストは、指摘が述べる
+理由で、アサーションで失敗しなければなりません。そこで通ってしまうテストは何も再現していません。
+修正で足したものを呼んでいて読み込みや収集の段階で失敗するテストも、何も示していません。どちらも
+その結果を添えて fixer に戻します。指摘の重大度に関係なく行います。fixer は自分ではコマンドを実行
+できないことが多いので、この確認はオーケストレーターが行います。
 
 ```bash
 dev-orchestra review status
