@@ -508,6 +508,22 @@ class TestDetachedRuntimeCharges(IsolatedCase):
         payload = json.loads(self.run_cli("budget", "show", "--json")[1])
         self.assertAlmostEqual(payload["runtime"]["used"], event["charged_seconds"], places=2)
 
+    def test_a_detached_worker_leaves_its_sleep_out_of_the_shared_ledger(self):
+        os.environ["DEV_ORCHESTRA_MOCK_DELAY"] = "0.5"
+        os.environ["DEV_ORCHESTRA_MOCK_SUSPENDED"] = "90"
+        _, out, _ = self.run_cli("run", "implementer", "--prompt", "go", "--detach", "--json")
+        finished = self._wait_for(json.loads(out)["id"])
+        self.assertEqual(finished["status"], "succeeded")
+        self.assertEqual(finished["suspended_seconds"], 90)
+        event = self.events()[-1]
+        self.assertEqual(event["suspended_seconds"], 90)
+        self.assertAlmostEqual(event["charged_seconds"], event["duration_seconds"] - 90, delta=0.02)
+        self.assertAlmostEqual(self.ledger()["runtime_seconds"], event["charged_seconds"], places=1)
+        self.assertEqual(self.ledger()["runtime_suspended_seconds"], 90)
+        payload = json.loads(self.run_cli("budget", "show", "--json")[1])
+        self.assertAlmostEqual(payload["runtime"]["used"], event["charged_seconds"], places=2)
+        self.assertEqual(payload["runtime"]["suspended"], 90)
+
     def test_a_reset_while_the_worker_runs_leaves_the_new_budget_unbilled(self):
         os.environ["DEV_ORCHESTRA_MOCK_DELAY"] = "3"
         _, out, _ = self.run_cli("run", "implementer", "--prompt", "go", "--detach", "--json")

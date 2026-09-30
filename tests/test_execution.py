@@ -11,10 +11,11 @@ import subprocess
 import sys
 import time
 import unittest
+from unittest import mock
 
 from helpers import IsolatedCase
 
-from orchestrator import execution
+from orchestrator import clocks, execution
 
 #: Sleeps forever without ever writing anything: a wedged agent.
 SILENT_HANG = "import time\nwhile True: time.sleep(0.05)\n"
@@ -210,6 +211,31 @@ class TestOutcomeReporting(IsolatedCase):
         assert isinstance(idle, (int, float))
         self.assertGreaterEqual(idle, 1)
         self.assertIn("orphans_possible", payload)
+
+
+class TestSuspendedTime(IsolatedCase):
+    def test_a_quick_command_spent_no_time_asleep(self):
+        outcome = execution.execute(python_code("print('hi')"), cwd=self.project, timeout=60)
+        self.assertEqual(outcome.suspended, 0.0)
+        self.assertEqual(outcome.to_dict()["suspended_seconds"], 0.0)
+
+    def test_the_time_the_awake_clock_missed_is_reported_as_asleep(self):
+        # An awake clock that missed 1.2s of the run while the monotonic one
+        # ran on: the shape of a Windows machine sleeping through part of it.
+        reads = []
+
+        def awake() -> float:
+            reads.append(1)
+            return time.monotonic() if len(reads) == 1 else time.monotonic() - 1.2
+
+        with mock.patch.object(clocks, "awake_clock", return_value=awake):
+            outcome = execution.execute(
+                python_code("import time; time.sleep(1.5)"), cwd=self.project, timeout=60
+            )
+        self.assertTrue(outcome.ok)
+        self.assertGreaterEqual(outcome.duration, 1.5)
+        self.assertAlmostEqual(outcome.suspended, 1.2, delta=0.05)
+        self.assertEqual(outcome.to_dict()["suspended_seconds"], round(outcome.suspended, 2))
 
 
 if __name__ == "__main__":

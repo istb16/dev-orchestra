@@ -441,7 +441,13 @@ def cmd_run(args: argparse.Namespace) -> int:
         rejected = end_detail(result)
         rejected["context_tokens"] = None
         rejected["resume"] = dict(resume_detail, outcome="rejected")
-        book.end(token, "failed", rejected, charged_seconds=result.duration)
+        book.end(
+            token,
+            "failed",
+            rejected,
+            charged_seconds=result.duration - result.suspended,
+            suspended_seconds=result.suspended,
+        )
         _err("note: %s" % _RESUME_REJECTED)
         # Running fresh is another attempt, so it asks the budget as any run
         # does -- as the user asked it, not as the worker was started.
@@ -484,6 +490,8 @@ def cmd_run(args: argparse.Namespace) -> int:
         finished["resume"] = dict(resume_detail, outcome="ok" if result.ok else None)
     if result.warnings:
         finished["warnings"] = list(result.warnings)
+    if result.suspended:
+        finished["suspended_seconds"] = round(result.suspended, 2)
 
     # The books are closed before the job says it finished. `jobs wait`
     # returns on that status, and a caller that reads `tokens show` next used
@@ -512,7 +520,9 @@ def cmd_run(args: argparse.Namespace) -> int:
             end_detail(result),
             # What the child was measured to take, whatever it exited with. A run
             # killed at its deadline spent the time it spent; so did a failed one.
-            charged_seconds=result.duration,
+            # The time the machine slept through is not execution.
+            charged_seconds=result.duration - result.suspended,
+            suspended_seconds=result.suspended,
         )
     except BaseException as exc:
         if args.job_file:

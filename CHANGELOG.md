@@ -10,6 +10,18 @@ The public surface covered by that promise is: the configuration schema, the
 
 ## [Unreleased]
 
+### Changed
+
+- **The runtime budget no longer charges sleep on Windows.** A delegated run
+  that spanned a sleep is charged its duration less the time the machine was
+  asleep; Linux and macOS already left sleep out. The sleep left out is
+  recorded as `suspended_seconds` on the run event, each reviewer entry and a
+  detached run's job when it is non-zero, totalled in the ledger as
+  `runtime_suspended_seconds`, and shown by `budget show` and `status` (and as
+  `runtime.suspended` in their `--json`). `duration_seconds` and the run
+  deadlines are unchanged. See "What the runtime budget counts" in
+  `references/limits.md` (#191).
+
 ## [0.15.0] - 2026-09-30
 
 ### Added

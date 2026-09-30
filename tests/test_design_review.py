@@ -402,6 +402,22 @@ class TestRounds(DesignReviewCase):
         payload = json.loads(run_cli("budget", "show", "--json")[1])
         self.assertAlmostEqual(payload["runtime"]["used"], expected, places=1)
 
+    def test_a_round_leaves_out_the_sleep_of_every_reviewer(self):
+        os.environ["DEV_ORCHESTRA_MOCK_DELAY"] = "0.2"
+        os.environ["DEV_ORCHESTRA_MOCK_SUSPENDED"] = "90"
+        self.write_plan()
+        self.assertEqual(run_cli("review", "run", "--design")[0], 0)
+        event = self.workspace.read_state()["events"][-1]
+        self.assertEqual(len(event["reviewers"]), 2)
+        suspended = sum(reviewer["suspended_seconds"] for reviewer in event["reviewers"])
+        durations = sum(reviewer["duration_seconds"] for reviewer in event["reviewers"])
+        self.assertEqual(suspended, 180)
+        self.assertEqual(event["suspended_seconds"], suspended)
+        self.assertAlmostEqual(event["charged_seconds"], durations - suspended, places=1)
+        payload = json.loads(run_cli("budget", "show", "--json")[1])
+        self.assertAlmostEqual(payload["runtime"]["used"], event["charged_seconds"], places=1)
+        self.assertEqual(payload["runtime"]["suspended"], 180)
+
     def test_a_round_is_refused_once_the_runtime_budget_is_spent(self):
         from test_cli import spend_the_runtime_budget
 

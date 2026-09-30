@@ -378,6 +378,7 @@ class ReviewerRun:
         budget_chars: int = 0,
         surrounding: Optional[Dict[str, Any]] = None,
         warnings: Optional[Sequence[str]] = None,
+        suspended: float = 0.0,
     ) -> None:
         self.reviewer = reviewer
         # ok | partial | failed | stalled | unparsed. Only "ok" counts as a
@@ -389,6 +390,9 @@ class ReviewerRun:
         self.error = error
         self.model_display = model_display
         self.duration = duration
+        #: How much of ``duration`` the machine spent asleep, as
+        #: ``RunResult.suspended`` carries it. Not charged to the runtime budget.
+        self.suspended = suspended
         self.findings = findings
         #: What this reviewer cost. Reviewers are the most duplicated stage in
         #: the pipeline -- the same diff, once per reviewer, once per round --
@@ -459,6 +463,8 @@ class ReviewerRun:
             entry["surrounding"] = self.surrounding
         if self.warnings:
             entry["warnings"] = list(self.warnings)
+        if self.suspended:
+            entry["suspended_seconds"] = round(self.suspended, 2)
         return entry
 
 
@@ -603,6 +609,7 @@ def run_reviews(
                 error=error,
                 model_display=model_display,
                 duration=result.duration,
+                suspended=result.suspended,
                 # A failed review is not a free one: whatever it burned before
                 # falling over still has to appear in the account.
                 usage=result.usage,
@@ -642,6 +649,7 @@ def run_reviews(
             error=error,
             model_display=model_display,
             duration=result.duration,
+            suspended=result.suspended,
             findings=len(findings),
             usage=result.usage,
             invoked=result.invoked,

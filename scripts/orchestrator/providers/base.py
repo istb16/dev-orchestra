@@ -7,6 +7,7 @@ returns a resolution that lets the CLI pick its own default.
 
 from __future__ import annotations
 
+import math
 import os
 import re
 import shutil
@@ -296,6 +297,7 @@ class RunResult:
         session_init: Optional[Dict[str, Any]] = None,
         resume_rejected: bool = False,
         warnings: Optional[Sequence[str]] = None,
+        suspended: float = 0.0,
     ) -> None:
         self.ok = ok
         self.exit_code = exit_code
@@ -303,6 +305,9 @@ class RunResult:
         self.stderr = redact(stderr)
         self.command = list(command)
         self.duration = duration
+        #: How much of ``duration`` the machine spent asleep. The runtime
+        #: budget is charged ``duration - suspended``; 0 when nothing measured it.
+        self.suspended = suspended
         self.resolved = resolved
         #: The total deadline was reached.
         self.timed_out = timed_out
@@ -343,6 +348,7 @@ class RunResult:
             "idle_for_seconds": round(self.idle_for, 2),
             "orphans_possible": self.orphans_possible,
             "duration_seconds": round(self.duration, 2),
+            "suspended_seconds": round(self.suspended, 2),
             "command": self.command,
             "model": self.resolved.to_dict() if self.resolved else None,
             "invoked": self.invoked,
@@ -800,6 +806,7 @@ class Provider:
                 # could not measure rather than as one that cost nothing.
                 usage=Usage(),
                 invoked=True,
+                suspended=_suspended_of(outcome),
                 **session_fields,
             )
         # Read from the raw output, before postprocess narrows it to the final
@@ -831,6 +838,7 @@ class Provider:
             idle_for=outcome.idle_for,
             orphans_possible=outcome.orphans_possible,
             usage=usage,
+            suspended=_suspended_of(outcome),
             **session_fields,
         )
 
@@ -888,3 +896,24 @@ class Provider:
             )
         except (OSError, subprocess.SubprocessError):
             return None
+
+
+def _suspended_of(outcome: Any) -> float:
+    """``outcome.suspended``, or 0 for an outcome built without one.
+
+    An adapter or a test may hand back its own stand-in for
+    ``execution.ExecOutcome``; one written before the field existed measured
+    no sleep, so it is charged its whole duration, as it always was.
+
+    Clamped to ``[0, outcome.duration]``, and 0 unless finite: callers charge
+    ``duration - suspended``, so a NaN or an overlarge value would otherwise
+    wipe out the run's whole charge rather than leave what was measured.
+    """
+    try:
+        suspended = float(getattr(outcome, "suspended", 0.0) or 0.0)
+        duration = float(getattr(outcome, "duration", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+    if not (math.isfinite(suspended) and math.isfinite(duration)):
+        return 0.0
+    return min(max(suspended, 0.0), max(duration, 0.0))

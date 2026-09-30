@@ -710,8 +710,10 @@ def _run_design_review(args: argparse.Namespace, loaded: config_mod.LoadedConfig
         },
         # Summed over the panel, not the wall clock of the batch: three
         # reviewers running in parallel for 25 minutes delegated 75 minutes of
-        # execution, and the budget is on delegated execution.
-        charged_seconds=sum(run.duration for run in runs),
+        # execution, and the budget is on delegated execution. Less what each
+        # run spent with the machine asleep.
+        charged_seconds=sum(run.duration - run.suspended for run in runs),
+        suspended_seconds=sum(run.suspended for run in runs),
     )
     if repeats > 1:
         _err(
@@ -1055,7 +1057,8 @@ def cmd_review_run(args: argparse.Namespace) -> int:
         "ok",
         detail,
         # Per reviewer, as above: the panel is the unit that was delegated.
-        charged_seconds=sum(run.duration for run in runs),
+        charged_seconds=sum(run.duration - run.suspended for run in runs),
+        suspended_seconds=sum(run.suspended for run in runs),
     )
     if repeats > 1 and not rerun:
         _err(
