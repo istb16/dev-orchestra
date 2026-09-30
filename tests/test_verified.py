@@ -12,7 +12,7 @@ from orchestrator import config, verified
 from orchestrator import workspace as ws
 from orchestrator.providers.claude import READ_ONLY_MECHANISM, ClaudeProvider
 
-VERSION = "9.9.9 (Claude Code)"
+VERSION = "1.0.0 (Claude Code)"
 MECHANISM = "--flags that hold it"
 
 
@@ -34,7 +34,7 @@ class TestRecord(IsolatedCase):
     def test_lookup_needs_version_mechanism_and_every_check(self):
         record_pass(self.project)
         self.assertEqual(verified.lookup("claude", VERSION, MECHANISM, self.project)["status"], "passed")
-        found = verified.lookup("claude", "1.0.0 (Claude Code)", MECHANISM, self.project)
+        found = verified.lookup("claude", "1.0.1 (Claude Code)", MECHANISM, self.project)
         self.assertEqual(found["status"], "absent")
         self.assertEqual(verified.lookup("claude", VERSION, "--other", self.project)["status"], "absent")
         record_pass(self.project, checks=verified.REQUIRED_RESUME_CHECKS[:-1])
@@ -151,13 +151,13 @@ class TestSmokeRecord(IsolatedCase):
         self.assertIsNone(found["last_passed"])
 
     def test_a_newer_version_is_absent_and_names_the_last_pass(self):
-        self.record("1.0.0 (Claude Code)", at="2026-08-01T00:00:00Z")
-        self.record("1.1.0 (Claude Code)", at="2026-09-01T00:00:00Z")
-        self.record("1.2.0 (Claude Code)", failed=["x"], at="2026-09-10T00:00:00Z")
+        self.record("1.1.0 (Claude Code)", at="2026-08-01T00:00:00Z")
+        self.record("1.2.0 (Claude Code)", at="2026-09-01T00:00:00Z")
+        self.record("1.3.0 (Claude Code)", failed=["x"], at="2026-09-10T00:00:00Z")
         found = self.status()
         self.assertEqual(found["status"], "absent")
         self.assertIsNone(found["entry"])
-        self.assertEqual(found["last_passed"]["version"], "1.1.0 (Claude Code)")
+        self.assertEqual(found["last_passed"]["version"], "1.2.0 (Claude Code)")
 
     def test_no_record_is_never(self):
         self.assertEqual(
@@ -184,6 +184,189 @@ class TestSmokeRecord(IsolatedCase):
         self.assertTrue(found["problem"])
         self.record(VERSION)
         self.assertEqual(self.status()["status"], "passed")
+
+
+class TestParseVersion(unittest.TestCase):
+    def test_the_three_real_formats(self):
+        self.assertEqual(verified.parse_version("2.1.285 (Claude Code)"), (2, 1, 285))
+        self.assertEqual(verified.parse_version("codex-cli 0.156.1"), (0, 156, 1))
+        self.assertEqual(verified.parse_version("1.2.14"), (1, 2, 14))
+
+    def test_a_pre_release_or_garbage_does_not_parse(self):
+        for text in (
+            "2.1.286-beta.1 (Claude Code)",
+            "codex-cli 0.157.0-alpha.2",
+            "2.1.286-beta.1 (build 2026.09.30)",
+            "codex-cli 0.157.0-alpha.2 1.0",
+            "nightly",
+            "7",
+            "",
+            None,
+        ):
+            with self.subTest(text=text):
+                self.assertIsNone(verified.parse_version(text))
+
+
+def claude(number):
+    return "%s (Claude Code)" % number
+
+
+def entry(mechanism=MECHANISM, checks=verified.REQUIRED_RESUME_CHECKS, at="2026-09-01T00:00:00Z"):
+    return {"verified_at": at, "read_only_mechanism": mechanism, "checks": list(checks)}
+
+
+class TestResumeTrust(IsolatedCase):
+    """The rule: exact passes, then newer than a pass, unless a failure here outranks it."""
+
+    def trust(self, number, table=None, **kwargs):
+        built_in = {claude(name): value for name, value in (table or {}).items()}
+        return verified.resume_trust("claude", claude(number), MECHANISM, self.project, built_in, **kwargs)
+
+    def passed_here(self, number):
+        record_pass(self.project, version=claude(number))
+
+    def failed_here(self, number):
+        verified.record_fail("claude", claude(number), ["resumes read-only"], self.project)
+
+    def assert_newer(self, found, number, source):
+        self.assertEqual(found["status"], "newer")
+        self.assertEqual(found["newer_than"], claude(number))
+        self.assertEqual(found["source"], source)
+
+    def assert_blocked(self, found, number):
+        self.assertEqual(found["status"], "failed")
+        self.assertEqual(found["blocked_by"], claude(number))
+
+    def test_newer_than_the_table(self):
+        self.assert_newer(self.trust("2.1.286", {"2.1.285": entry()}), "2.1.285", "built-in")
+
+    def test_newer_than_the_record(self):
+        self.passed_here("2.1.285")
+        found = self.trust("2.1.286")
+        self.assert_newer(found, "2.1.285", "record")
+        self.assertIsNotNone(found["entry"])
+
+    def test_the_record_wins_a_tie(self):
+        self.passed_here("2.1.285")
+        self.assert_newer(self.trust("2.1.286", {"2.1.285": entry()}), "2.1.285", "record")
+
+    def test_older_than_every_pass_is_absent(self):
+        self.assertEqual(self.trust("2.1.284", {"2.1.285": entry()})["status"], "absent")
+
+    def test_an_unparsable_version_is_absent(self):
+        self.assertEqual(self.trust("nightly", {"2.1.285": entry()})["status"], "absent")
+
+    def test_between_two_passes_it_is_newer_than_the_lower(self):
+        found = self.trust("2.1.284", {"2.1.283": entry(), "2.1.285": entry()})
+        self.assert_newer(found, "2.1.283", "built-in")
+
+    def test_an_exact_pass_is_passed(self):
+        found = self.trust("2.1.285", {"2.1.285": entry()})
+        self.assertEqual(found["status"], "passed")
+        self.assertEqual(found["source"], "built-in")
+        self.passed_here("2.1.285")
+        self.assertEqual(self.trust("2.1.285", {"2.1.285": entry()})["source"], "record")
+
+    def test_an_exact_local_failure_wins(self):
+        self.failed_here("2.1.286")
+        found = self.trust("2.1.286", {"2.1.286": entry()})
+        self.assertEqual(found["status"], "failed")
+        self.assertIsNone(found["blocked_by"])
+
+    def test_a_failure_above_the_last_local_pass_blocks(self):
+        self.passed_here("2.1.283")
+        self.failed_here("2.1.284")
+        self.assert_blocked(self.trust("2.1.286", {"2.1.285": entry()}), "2.1.284")
+
+    def test_a_failure_below_a_local_pass_is_superseded(self):
+        self.failed_here("2.1.283")
+        self.passed_here("2.1.284")
+        self.assert_newer(self.trust("2.1.286"), "2.1.284", "record")
+
+    def test_a_failure_at_the_tables_version_blocks(self):
+        self.failed_here("2.1.285")
+        self.assert_blocked(self.trust("2.1.286", {"2.1.285": entry()}), "2.1.285")
+
+    def test_a_failure_below_the_tables_version_blocks(self):
+        self.failed_here("2.1.284")
+        self.assert_blocked(self.trust("2.1.286", {"2.1.285": entry()}), "2.1.284")
+
+    def test_an_exact_built_in_version_is_blocked_by_an_older_local_failure(self):
+        self.failed_here("2.1.284")
+        self.assert_blocked(self.trust("2.1.285", {"2.1.285": entry()}), "2.1.284")
+
+    def test_an_exact_local_pass_outranks_an_older_local_failure(self):
+        self.failed_here("2.1.284")
+        self.passed_here("2.1.285")
+        found = self.trust("2.1.285", {"2.1.285": entry()})
+        self.assertEqual(found["status"], "passed")
+        self.assertEqual(found["source"], "record")
+
+    def test_a_failure_newer_than_the_current_version_does_not_block(self):
+        self.failed_here("2.1.287")
+        self.assert_newer(self.trust("2.1.286", {"2.1.285": entry()}), "2.1.285", "built-in")
+
+    def test_an_unparsable_local_failure_blocks(self):
+        verified.record_fail("claude", "nightly", ["resumes read-only"], self.project)
+        found = self.trust("2.1.286", {"2.1.285": entry()})
+        self.assertEqual(found["status"], "failed")
+        self.assertEqual(found["blocked_by"], "nightly")
+
+    def test_an_unparsable_version_with_a_local_failure_fails(self):
+        self.failed_here("2.1.284")
+        found = self.trust("nightly", {"2.1.285": entry()})
+        self.assertEqual(found["status"], "failed")
+        # It cannot be ordered, so no failure is named as lying below it.
+        self.assertTrue(found["unordered"])
+        self.assertIsNone(found["blocked_by"])
+        detail = ClaudeProvider().resume_report(claude("nightly"), found)["detail"]
+        self.assertIn("cannot be ordered against the versions checked here", detail)
+        self.assertNotIn("2.1.284", detail)
+
+    def test_a_pass_vouches_for_its_own_major_version_only(self):
+        table = {"2.1.285": entry()}
+        self.assert_newer(self.trust("2.9.0", table), "2.1.285", "built-in")
+        self.assertEqual(self.trust("3.0.0", table)["status"], "absent")
+        self.passed_here("2.1.285")
+        self.assertEqual(self.trust("3.0.0")["status"], "absent")
+        self.assert_newer(self.trust("3.0.1", {"3.0.0": entry(), "2.9.9": entry()}), "3.0.0", "built-in")
+
+    def test_a_malformed_failure_entry_trusts_only_an_exact_built_in_version(self):
+        self.passed_here("2.1.285")
+        path = verified.record_path("claude")
+        data = ws.read_json(path)
+        data["failed"] = {claude("2.1.284"): "resumes read-only"}
+        ws.write_json(path, data)
+        table = {"2.1.285": entry()}
+        found = self.trust("2.1.286", table)
+        self.assertEqual(found["status"], "absent")
+        self.assertIn("malformed failure entry", found["problem"])
+        self.assertEqual(self.trust("2.1.285", table)["source"], "built-in")
+        data["failed"] = ["2.1.284"]
+        ws.write_json(path, data)
+        self.assertEqual(self.trust("2.1.286", table)["status"], "absent")
+
+    def test_a_stale_mechanism_is_not_a_candidate(self):
+        found = self.trust("2.1.286", {"2.1.285": entry(mechanism="--other")})
+        self.assertEqual(found["status"], "absent")
+        found = self.trust("2.1.286", {"2.1.284": entry(), "2.1.285": entry(mechanism="--other")})
+        self.assert_newer(found, "2.1.284", "built-in")
+
+    def test_an_adapters_own_required_checks(self):
+        table = {"2.1.285": entry(checks=["forks the session"])}
+        self.assertEqual(self.trust("2.1.286", table)["status"], "absent")
+        found = self.trust("2.1.286", table, required=("forks the session",))
+        self.assert_newer(found, "2.1.285", "built-in")
+
+    def test_a_record_inside_the_workspace_trusts_only_an_exact_built_in_version(self):
+        os.environ["DEV_ORCHESTRA_HOME"] = os.path.join(self.project, ".ai", "home")
+        table = {"2.1.285": entry()}
+        found = self.trust("2.1.285", table)
+        self.assertEqual(found["status"], "passed")
+        self.assertEqual(found["source"], "built-in")
+        found = self.trust("2.1.286", table)
+        self.assertEqual(found["status"], "absent")
+        self.assertIn("inside the workspace", found["problem"])
 
 
 class _Completed:

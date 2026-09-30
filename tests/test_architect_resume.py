@@ -20,6 +20,7 @@ from test_cli import run_cli
 from orchestrator import cli
 from orchestrator import jobs as jobs_mod
 from orchestrator import workspace as ws
+from orchestrator.providers.base import RunResult
 from orchestrator.providers.mock import MockProvider
 
 FRESH = "Revise the plan: the original request, in full, and the findings.\n"
@@ -430,8 +431,118 @@ class TestPrintCommand(ResumeCase):
         self.assertEqual(self.attempts(), 1)
 
 
+TRUSTED_DETAIL = "mock 1 is trusted to resume as newer than mock 0, verified on 2026-10-01 (built-in)"
+SANDBOX_UNCONFIRMED = (
+    "the forked session's filesystem sandbox could not be confirmed read-only (workspace-write); "
+    "its output is not used"
+)
+REFUSED = "codex: the session to resume was not started in this workspace"
+
+
+class TestATrustedVersion(ResumeCase):
+    """A version newer than one that passed resumes, and says it was not checked."""
+
+    def setUp(self):
+        super().setUp()
+
+        def trusted(provider, root):
+            return {"status": "trusted", "detail": TRUSTED_DETAIL, "newer_than": "mock 0"}
+
+        self.addCleanup(setattr, MockProvider, "resume_support", MockProvider.resume_support)
+        setattr(MockProvider, "resume_support", trusted)
+        self.revise()
+
+    def test_it_resumes_and_records_the_trust_without_a_version(self):
+        job_file = os.path.join(jobs_mod.jobs_dir(self.cli_workspace()), "manual.json")
+        jobs_mod.write_job(self.cli_workspace(), {"id": "manual", "stage": "architect", "status": "running"})
+        code, _, err = self.revise("--job-file", job_file)
+        self.assertEqual(code, 0, err)
+        event = self.last()
+        self.assertEqual(event["resume"]["mode"], "resumed")
+        self.assertEqual(event["resume"]["trust"], "newer")
+        job = ws.read_json(job_file)
+        self.assertEqual(job["resume"]["trust"], "newer")
+        for record in (event, job):
+            self.assertNotIn("mock 0", json.dumps(record))
+            self.assertNotIn("mock 1", json.dumps(record))
+        self.assertIn("note: resuming the last architect session\nnote: %s" % TRUSTED_DETAIL, err)
+        self.assertIsNotNone(self.trace()[-1]["resume_session"])
+
+    def test_the_report_counts_it_as_resumed(self):
+        self.revise()
+        report = json.loads(run_cli("optimization", "report", "--json")[1])
+        self.assertEqual(report["architect_revisions"]["resumed"]["runs"], 1)
+
+    def test_an_exactly_verified_run_records_no_trust(self):
+        setattr(MockProvider, "resume_support", lambda provider, root: {"status": "verified", "detail": ""})
+        self.revise()
+        self.assertEqual(self.last()["resume"]["mode"], "resumed")
+        self.assertNotIn("trust", self.last()["resume"])
+
+
+class TestTheAdapterJudgesTheResumedRun(ResumeCase):
+    def setUp(self):
+        super().setUp()
+        self.revise()
+
+    def resumed_returns(self, result):
+        original = MockProvider._launch
+
+        def launch(provider, prompt, mode, cwd, **kwargs):
+            if kwargs.get("resume_session") is not None:
+                return result
+            return original(provider, prompt, mode, cwd, **kwargs)
+
+        self.addCleanup(setattr, MockProvider, "_launch", original)
+        setattr(MockProvider, "_launch", launch)
+
+    def test_an_unconfirmed_sandbox_fails_the_run_and_the_next_goes_fresh(self):
+        plan = self.cli_workspace().plan_path
+        with open(plan, "w", encoding="utf-8") as handle:
+            handle.write("the earlier plan\n")
+        self.resumed_returns(RunResult(False, 1, "", SANDBOX_UNCONFIRMED, ["mock"], 0.1))
+        code, _, _ = self.revise()
+        self.assertEqual(code, 1)
+        self.assertEqual(self.last()["status"], "failed")
+        self.assertEqual(self.last()["resume"]["mode"], "resumed")
+        with open(plan, encoding="utf-8") as handle:
+            self.assertEqual(handle.read(), "the earlier plan\n")
+        self.revise()
+        self.assertEqual(self.last()["resume"]["reason"], NOT_SUCCEEDED)
+
+    def test_an_adapter_refusal_runs_fresh_once_and_says_why(self):
+        refusal = RunResult(False, 2, "", REFUSED, ["mock"], 0.0, invoked=False, resume_rejected=True)
+        self.resumed_returns(refusal)
+        code, _, err = self.revise()
+        self.assertEqual(code, 0, err)
+        rejected, retried = self.events()[-2:]
+        self.assertEqual(rejected["status"], "failed")
+        self.assertEqual(rejected["resume"]["outcome"], "rejected")
+        self.assertEqual(retried["status"], "ok")
+        self.assertEqual(retried["resume"]["reason"], cli._RESUME_REJECTED)
+        self.assertIn("note: %s\nnote: %s" % (cli._RESUME_REJECTED, REFUSED), err)
+        self.assertNotIn(REFUSED, json.dumps(self.events()))
+        # Nothing ran for the refusal, so the fresh run spends its attempt.
+        self.assertEqual(self.attempts(), 2)
+        self.assertIsNone(self.trace()[-1]["resume_session"])
+
+    def test_an_adapter_refusal_with_one_attempt_left_still_runs_fresh(self):
+        run_cli("config", "set", "budgets.architect", "2")
+        refusal = RunResult(False, 2, "", REFUSED, ["mock"], 0.0, invoked=False, resume_rejected=True)
+        self.resumed_returns(refusal)
+        code, _, err = self.revise()
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("running fresh would spend an attempt", err)
+        self.assertEqual(self.last()["status"], "ok")
+        self.assertEqual(self.attempts(), 2)
+
+
 class TestCodexIsNotResumed(ResumeCase):
-    def test_codex_runs_fresh(self):
+    def test_codex_with_resume_off_runs_fresh(self):
+        from orchestrator.providers.codex import CodexProvider
+
+        self.addCleanup(setattr, CodexProvider, "supports_resume", CodexProvider.supports_resume)
+        CodexProvider.supports_resume = False
         run_cli("config", "set", "architect.provider", "codex")
         run_cli("config", "set", "architect.model.family", "recommended-coding")
         _, _, err = self.revise("--print-command")

@@ -439,8 +439,8 @@ class TestResumingThroughTheBase(IsolatedCase):
 
     def test_codex_and_mock_say_what_they_do(self):
         codex = providers.get_provider("codex")
-        self.assertFalse(codex.supports_resume)
-        self.assertEqual(codex.resume_support(self.project)["status"], "unsupported")
+        self.assertTrue(codex.supports_resume)
+        self.assertNotEqual(codex.resume_support(self.project)["status"], "unspecified")
         self.assertEqual(providers.get_provider("mock").resume_support(self.project)["status"], "verified")
 
     def test_a_launch_with_todays_signature_still_runs_fresh(self):

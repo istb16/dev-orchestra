@@ -117,7 +117,12 @@ class AgyProvider(Provider):
     static_enforcement = True
     #: ``json`` prints once, at the end.
     streams_progress = False
-    #: ``--conversation <id>`` exists and was not measured.
+    #: Left out on purpose. A resume check asks whether a resumed session
+    #: keeps read-only, and agy's plan runs are ``unenforced``, so a version
+    #: gate would protect nothing. ``--conversation <id>`` continues the
+    #: original conversation with no fork, and was not measured. It would fit
+    #: under verified.resume_trust() with ``required_resume_checks =
+    #: ("reports a missing session",)``.
     supports_resume = False
 
     def __init__(self, executable: Optional[str] = None) -> None:

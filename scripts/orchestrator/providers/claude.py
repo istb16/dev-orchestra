@@ -60,7 +60,8 @@ Whether a resumed session keeps these restrictions is a property of the CLI
 version, so it is checked per version, in two layers: :data:`VERIFIED_RESUME`
 ships with the adapter, and ``scripts/smoke_live.py`` records the versions it
 checked on this machine (:mod:`orchestrator.verified`). A version in neither
-is not resumed.
+is resumed only when it is newer than one that is, and this machine recorded
+no failure it has not since passed.
 """
 
 from __future__ import annotations
@@ -111,7 +112,8 @@ _NO_PATH = "has no path after it"
 #: flags must make every entry stale until the check is run again.
 #: An entry is added only when a release runs every check in
 #: verified.REQUIRED_RESUME_CHECKS against that version; any other version
-#: resumes only on a machine that ran them itself. The symlink checks were
+#: resumes only on a machine that ran them itself, or on trust as newer than
+#: an entry (verified.resume_trust). The symlink checks were
 #: skipped for 2.1.283 (the Windows machine it was verified on lacks the
 #: privilege to create a symlink) and are not required.
 VERIFIED_RESUME: Dict[str, Dict[str, Any]] = {
@@ -328,6 +330,7 @@ class ClaudeProvider(Provider):
             "source": None,
             "record": verified.record_path(self.name),
             "verified_at": None,
+            "newer_than": None,
             "missing": [],
         }
         text = self.help_text()
@@ -344,38 +347,8 @@ class ClaudeProvider(Provider):
         if not version:
             report["detail"] = "could not read 'claude --version'"
             return report
-        report["version"] = version
-        found = verified.lookup(self.name, version, READ_ONLY_MECHANISM, root)
-        if found["status"] == "failed":
-            report["detail"] = (
-                "claude %s failed the resume check on this machine; run python scripts/smoke_live.py "
-                "--provider claude again after fixing it" % version
-            )
-            return report
-        if found["status"] == "passed":
-            return self._resume_verified(report, version, found["entry"], "record")
-        entry = VERIFIED_RESUME.get(version)
-        if isinstance(entry, dict) and verified.entry_is_complete(entry, READ_ONLY_MECHANISM):
-            return self._resume_verified(report, version, entry, "built-in")
-        detail = (
-            "claude %s has not been verified to keep a resumed session read-only; "
-            "run python scripts/smoke_live.py --provider claude" % version
-        )
-        if found["problem"]:
-            detail += "; %s" % found["problem"]
-        report["detail"] = detail
-        return report
-
-    @staticmethod
-    def _resume_verified(
-        report: Dict[str, Any], version: str, entry: Dict[str, Any], source: str
-    ) -> Dict[str, Any]:
-        verified_at = str(entry.get("verified_at") or "")
-        report["status"] = "verified"
-        report["source"] = source
-        report["verified_at"] = verified_at
-        report["detail"] = "resume verified for claude %s on %s (%s)" % (version, verified_at, source)
-        return report
+        trust = verified.resume_trust(self.name, version, self.resume_mechanism(), root, VERIFIED_RESUME)
+        return self.resume_report(version, trust)
 
     def resume_args(self, session_id: str) -> List[str]:
         if not isinstance(session_id, str) or not _SESSION_ID_RE.match(session_id):

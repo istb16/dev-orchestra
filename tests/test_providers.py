@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime
 import json
 import os
 import re
@@ -27,6 +28,7 @@ from orchestrator import execution, providers, verified
 from orchestrator.providers import agy as agy_module
 from orchestrator.providers import base
 from orchestrator.providers import claude as claude_module
+from orchestrator.providers import codex as codex_module
 from orchestrator.providers.agy import AgyProvider
 from orchestrator.providers.claude import READ_ONLY_MECHANISM, ClaudeProvider, _parse_model_aliases
 from orchestrator.providers.codex import CodexProvider
@@ -729,7 +731,7 @@ class TestClaudeReadOnlyRun(IsolatedCase):
 
 
 PARENT = "33333333-3333-4333-8333-333333333333"
-UNLISTED = "9.9.9 (Claude Code)"
+UNLISTED = "1.0.0 (Claude Code)"
 
 
 class TestClaudeResume(IsolatedCase):
@@ -785,13 +787,56 @@ class TestClaudeResume(IsolatedCase):
 
     def test_the_built_in_table_is_used_as_it_stands(self):
         # 2.1.283 passed every required check before release, so it resumes
-        # on a machine that never ran them; its neighbour does not.
+        # on a machine that never ran them; so does a version newer than the
+        # last entry, on trust. One older than every entry does not.
         self.provider.version = lambda: ("2.1.283 (Claude Code)", None)
         support = self.provider.resume_support(self.project)
         self.assertEqual(support["status"], "verified")
         self.assertEqual(support["source"], "built-in")
-        self.provider.version = lambda: ("2.1.286 (Claude Code)", None)
+        self.provider.version = lambda: ("2.1.282 (Claude Code)", None)
         self.assertEqual(self.status(), "unverified")
+        self.provider.version = lambda: ("2.1.286 (Claude Code)", None)
+        support = self.provider.resume_support(self.project)
+        self.assertEqual(support["status"], "trusted")
+        self.assertEqual(support["newer_than"], "2.1.285 (Claude Code)")
+        self.assertEqual(support["source"], "built-in")
+
+    def test_a_newer_version_is_trusted_and_says_it_was_not_checked(self):
+        self.provider.version = lambda: ("2.1.286 (Claude Code)", None)
+        support = self.provider.resume_support(self.project)
+        self.assertEqual(support["version"], "2.1.286 (Claude Code)")
+        last = claude_module.VERIFIED_RESUME["2.1.285 (Claude Code)"]
+        self.assertEqual(support["verified_at"], last["verified_at"])
+        self.assertIn("is trusted to resume as newer than 2.1.285 (Claude Code)", support["detail"])
+        self.assertIn("itself has not been checked", support["detail"])
+        self.assertIn("smoke_live.py --provider claude", support["detail"])
+
+    def test_a_resume_record_vouches_for_the_fresh_read_only_flags(self):
+        self.assertEqual(self.provider.resume_mechanism(), READ_ONLY_MECHANISM)
+        self.assertEqual(self.provider.required_resume_checks, verified.REQUIRED_RESUME_CHECKS)
+
+    def test_the_help_gate_comes_before_trust(self):
+        self.provider.version = lambda: ("2.1.286 (Claude Code)", None)
+        self.help(CLAUDE_HELP_NO_FORK)
+        self.assertEqual(self.status(), "unsupported")
+
+    def test_a_local_failure_blocks_every_newer_version(self):
+        verified.record_fail("claude", "2.1.284 (Claude Code)", ["resumes read-only"], self.project)
+        self.provider.version = lambda: ("2.1.286 (Claude Code)", None)
+        support = self.provider.resume_support(self.project)
+        self.assertEqual(support["status"], "unverified")
+        self.assertIn("claude 2.1.284 (Claude Code), newer than the last pass", support["detail"])
+        self.assertIn("failed the resume check here", support["detail"])
+
+    def test_an_unreadable_record_trusts_nothing_newer(self):
+        os.environ["DEV_ORCHESTRA_HOME"] = os.path.join(self.project, ".ai", "home")
+        self.provider.version = lambda: ("2.1.286 (Claude Code)", None)
+        support = self.provider.resume_support(self.project)
+        self.assertEqual(support["status"], "unverified")
+        self.assertIn("could not be read", support["detail"])
+        self.assertIn("only versions in the built-in table resume", support["detail"])
+        self.provider.version = lambda: ("2.1.285 (Claude Code)", None)
+        self.assertEqual(self.status(), "verified")
 
     def test_a_built_in_entry_needs_the_current_mechanism(self):
         entry = {
@@ -883,6 +928,21 @@ class TestVerifiedResumeTable(unittest.TestCase):
                     "re-run scripts/smoke_live.py --provider claude and update VERIFIED_RESUME",
                 )
                 for name in verified.REQUIRED_RESUME_CHECKS:
+                    self.assertIn(name, entry.get("checks") or [])
+
+
+class TestVerifiedCodexResumeTable(unittest.TestCase):
+    def test_every_entry_vouches_for_the_current_flags(self):
+        provider = CodexProvider()
+        for version, entry in codex_module.VERIFIED_RESUME.items():
+            with self.subTest(version=version):
+                self.assertRegex(version, r"^codex-cli \d+\.\d+\.\d+$")
+                self.assertEqual(
+                    entry.get("read_only_mechanism"),
+                    provider.resume_mechanism(),
+                    "re-run scripts/smoke_live.py --provider codex and update VERIFIED_RESUME",
+                )
+                for name in provider.required_resume_checks:
                     self.assertIn(name, entry.get("checks") or [])
 
 
@@ -1062,6 +1122,438 @@ class TestCodexAdapter(IsolatedCase):
         self.provider.configured_model = lambda: None
         self.provider._capture = lambda command, timeout=30: self.fail("spawned %s" % command)
         self.assertEqual([c.family for c in self.provider.list_models()], ["recommended-coding"])
+
+
+CODEX_FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "codex")
+#: The thread ids in the recordings: the parent, its read-only fork and its
+#: workspace-write fork.
+CODEX_PARENT = "01a0f266-8141-7e62-a53b-8a09a8cf13a3"
+CODEX_FORK = "01a0f266-f964-7df1-87f1-bc4cb2b13683"
+CODEX_LOOSE_FORK = "01a0f267-79f4-7ae2-a147-11018d834baa"
+CODEX_MISSING = "00000000-0000-4000-8000-000000000000"
+#: The working directory the recordings name, replaced by each test's own.
+CODEX_RECORDED_CWD = "/sandbox/probe181"
+#: ``codex exec fork --help`` as codex-cli 0.156.1 printed it.
+with open(os.path.join(CODEX_FIXTURES, "fork-help.txt"), encoding="utf-8") as _handle:
+    CODEX_FORK_HELP = _handle.read()
+
+
+def codex_fixture(name):
+    with open(os.path.join(CODEX_FIXTURES, name), "r", encoding="utf-8") as handle:
+        return handle.read()
+
+
+class _CodexExecute:
+    """`execution.execute` replaced by a Codex that prints ``stdout`` and
+    writes ``answer`` to its ``-o`` file."""
+
+    def __init__(self, case, stdout="", answer="READY", exit_code=0, stderr=""):
+        self.stdout = stdout
+        self.answer = answer
+        self.exit_code = exit_code
+        self.stderr = stderr
+        self.commands = []
+        case.addCleanup(setattr, execution, "execute", execution.execute)
+        execution.execute = self
+
+    def __call__(self, command, cwd, prompt="", timeout=None, idle_timeout=None, env=None):
+        self.commands.append(list(command))
+        if self.answer and "-o" in command:
+            with open(command[command.index("-o") + 1], "w", encoding="utf-8") as handle:
+                handle.write(self.answer)
+        return execution.ExecOutcome(self.exit_code, self.stdout, self.stderr, 0.1)
+
+
+class TestCodexResume(IsolatedCase):
+    """Forking a Codex session: the command, the refusals and the verdict."""
+
+    def setUp(self):
+        super().setUp()
+        self.codex_home = os.path.join(self.tmp, "codex-home")
+        saved = os.environ.get("CODEX_HOME")
+        self.addCleanup(self.restore_codex_home, saved)
+        os.environ["CODEX_HOME"] = self.codex_home
+        self.provider = CodexProvider()
+        self.provider.which = lambda: "codex"
+        self.provider.version = lambda: ("codex-cli 0.156.1", None)
+        self.provider.configured_model = lambda: "gpt-6-sol"
+        self.fork_help(CODEX_FORK_HELP)
+
+    @staticmethod
+    def restore_codex_home(saved):
+        if saved is None:
+            os.environ.pop("CODEX_HOME", None)
+        else:
+            os.environ["CODEX_HOME"] = saved
+
+    def fork_help(self, stdout):
+        def capture(command, timeout=30):
+            if list(command) == ["codex", "exec", "fork", "--help"] and stdout is not None:
+                return _FakeCompleted(stdout, "", 0)
+            return _FakeCompleted("", "", 1)
+
+        base.clear_discovery_cache()
+        setattr(self.provider, "_capture", capture)
+
+    def rollout(self, fixture, thread_id, cwd=None, day=None, **meta):
+        """Write ``fixture`` as ``thread_id``'s rollout, in today's directory
+        unless ``day`` says otherwise, with this test's workspace as its cwd."""
+        day = day or datetime.date.today()
+        directory = os.path.join(
+            self.codex_home, "sessions", "%04d" % day.year, "%02d" % day.month, "%02d" % day.day
+        )
+        os.makedirs(directory, exist_ok=True)
+        lines = []
+        for line in codex_fixture(fixture).splitlines():
+            record = json.loads(line)
+            payload = record.get("payload")
+            if isinstance(payload, dict):
+                if payload.get("cwd") == CODEX_RECORDED_CWD:
+                    payload["cwd"] = self.project if cwd is None else cwd
+                if record.get("type") == "session_meta":
+                    payload.update(meta)
+            lines.append(json.dumps(record))
+        path = os.path.join(directory, "rollout-2026-09-30T13-00-30-%s.jsonl" % thread_id)
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write("\n".join(lines) + "\n")
+        return path
+
+    def parent_here(self, **kwargs):
+        # An old directory: the parent is found by walking the tree.
+        return self.rollout("parent-rollout.jsonl", CODEX_PARENT, day=datetime.date(2026, 1, 2), **kwargs)
+
+    def fork_output(self, thread_id=CODEX_FORK):
+        return codex_fixture("fork-json-read-only.jsonl").replace(CODEX_FORK, thread_id)
+
+    def resolved(self, argument: Optional[str] = "gpt-example-3"):
+        return base.ResolvedModel("codex", "x", "latest", argument, argument or "codex default", "test")
+
+    def fork_command(self, resolved):
+        extra = ["-o", "last.txt"]
+        return self.provider.command_line(base.MODE_PLAN, resolved, self.project, extra, None, CODEX_PARENT)
+
+    def run_codex(self, mode=base.MODE_PLAN, family="gpt-6-sol", **kwargs):
+        return self.provider.run("prompt", mode, self.project, model_spec={"family": family}, **kwargs)
+
+    def fork(self, **kwargs):
+        return self.run_codex(resume_session=CODEX_PARENT, **kwargs)
+
+    # -- the command -------------------------------------------------------
+
+    def test_plan_runs_print_json_events_and_review_runs_do_not(self):
+        plan = self.provider.build_command(base.MODE_PLAN, self.resolved(), self.project)
+        review = self.provider.build_command(base.MODE_REVIEW, self.resolved(), self.project)
+        self.assertIn("--json", plan)
+        self.assertNotIn("--json", review)
+        self.assertEqual(plan[plan.index("-s") + 1], "read-only")
+
+    def test_the_fork_command(self):
+        expected = [
+            "codex",
+            "exec",
+            "fork",
+            CODEX_PARENT,
+            "-",
+            "--skip-git-repo-check",
+            "--ignore-user-config",
+            "-c",
+            'sandbox_mode="read-only"',
+            "-m",
+            "gpt-example-3",
+            "--json",
+            "-o",
+            "last.txt",
+        ]
+        self.assertEqual(self.fork_command(self.resolved()), expected)
+        # The CLI-default family: the model config.toml names, which the
+        # parent ran under and --ignore-user-config would otherwise drop.
+        command = self.fork_command(self.resolved(None))
+        self.assertEqual(command[command.index("-m") + 1], "gpt-6-sol")
+        for flag in ("-s", "-C", "--color"):
+            self.assertNotIn(flag, command)
+
+    def test_only_a_uuid_is_forked(self):
+        for value in ("not-a-uuid", "--last", CODEX_PARENT + " -s danger-full-access"):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                self.provider.resume_args(value)
+
+    def test_a_raw_sandbox_override_is_still_refused(self):
+        executed = _CodexExecute(self)
+        self.parent_here()
+        result = self.fork(extra_args=["-c", 'sandbox_mode="danger-full-access"'])
+        self.assertEqual(result.exit_code, 2)
+        self.assertFalse(result.invoked)
+        self.assertFalse(result.resume_rejected)
+        self.assertNotIn("danger-full-access", result.stderr)
+        self.assertEqual(executed.commands, [])
+
+    # -- the session id ----------------------------------------------------
+
+    def outcome(self, stdout, exit_code=0, stderr=""):
+        return execution.ExecOutcome(exit_code, stdout, stderr, 0.1)
+
+    def test_the_session_is_the_first_thread_started(self):
+        recorded = codex_fixture("exec-json-ready.jsonl")
+        self.assertEqual(self.provider.parse_session(self.outcome(recorded)), {"session_id": CODEX_PARENT})
+        second = recorded + '{"type":"thread.started","thread_id":"%s"}\n' % CODEX_FORK
+        self.assertEqual(self.provider.parse_session(self.outcome(second))["session_id"], CODEX_PARENT)
+
+    def test_a_thread_id_that_is_not_a_uuid_is_no_session(self):
+        for value in ("not-a-uuid", "*", "[0-9]*", CODEX_PARENT + "/../x"):
+            with self.subTest(value=value):
+                stdout = codex_fixture("exec-json-ready.jsonl").replace(CODEX_PARENT, value)
+                self.assertEqual(self.provider.parse_session(self.outcome(stdout)), {})
+
+    def test_a_fresh_plan_run_reads_no_rollout(self):
+        executed = _CodexExecute(self, stdout=codex_fixture("exec-json-ready.jsonl"))
+        result = self.run_codex()
+        self.assertTrue(result.ok, result.stderr)
+        self.assertEqual(result.stdout, "READY")
+        self.assertEqual(result.session_id, CODEX_PARENT)
+        self.assertIsNone(result.session_init)
+        self.assertIn("--json", executed.commands[0])
+        self.assertFalse(os.path.exists(self.codex_home))
+
+    # -- refused before the fork -------------------------------------------
+
+    def assert_refused(self, result, executed, text):
+        self.assertFalse(result.ok)
+        self.assertFalse(result.invoked)
+        self.assertTrue(result.resume_rejected)
+        self.assertEqual(result.command, ["codex"])
+        self.assertIn(text, result.stderr)
+        self.assertEqual(executed.commands, [])
+
+    def test_no_model_to_pass_is_refused(self):
+        executed = _CodexExecute(self, stdout=self.fork_output())
+        self.parent_here()
+        self.provider.configured_model = lambda: None
+        result = self.fork(family="recommended-coding")
+        self.assert_refused(result, executed, "needs a model; set model.family for the architect")
+
+    def test_a_parent_from_another_workspace_is_refused(self):
+        executed = _CodexExecute(self, stdout=self.fork_output())
+        other = os.path.join(self.tmp, "elsewhere")
+        os.makedirs(other)
+        self.parent_here(cwd=other)
+        result = self.fork()
+        self.assert_refused(result, executed, "the session to resume was not started in this workspace")
+        self.assertNotIn(other, result.stderr)
+        self.assertNotIn(self.project, result.stderr)
+
+    def test_a_parent_with_no_rollout_is_refused(self):
+        executed = _CodexExecute(self, stdout=self.fork_output())
+        self.assert_refused(self.fork(), executed, "not started in this workspace")
+
+    def test_a_missing_cli_is_reported_missing_not_as_a_refused_session(self):
+        executed = _CodexExecute(self, stdout=self.fork_output())
+        self.provider.which = lambda: None
+        result = self.fork()
+        self.assertEqual(result.exit_code, 127)
+        self.assertFalse(result.resume_rejected)
+        self.assertIn("not found on PATH", result.stderr)
+        self.assertEqual(executed.commands, [])
+
+    def test_a_rollout_naming_another_thread_is_refused(self):
+        executed = _CodexExecute(self, stdout=self.fork_output())
+        self.parent_here(id=CODEX_FORK)
+        self.assert_refused(self.fork(), executed, "not started in this workspace")
+
+    def test_the_same_workspace_spelled_differently_is_accepted(self):
+        executed = _CodexExecute(self, stdout=self.fork_output())
+        self.rollout("fork-rollout-read-only.jsonl", CODEX_FORK)
+        os.makedirs(os.path.join(self.project, "sub"))
+        self.parent_here(cwd=os.path.join(self.project, "sub", ".."))
+        result = self.fork()
+        self.assertTrue(result.ok, result.stderr)
+        self.assertEqual(len(executed.commands), 1)
+
+    # -- judged after the fork ---------------------------------------------
+
+    def test_a_read_only_fork_is_confirmed_from_its_rollout(self):
+        _CodexExecute(self, stdout=self.fork_output(), answer="I could not create it.")
+        self.parent_here()
+        self.rollout("fork-rollout-read-only.jsonl", CODEX_FORK)
+        result = self.fork()
+        self.assertTrue(result.ok, result.stderr)
+        self.assertEqual(result.stdout, "I could not create it.")
+        self.assertEqual(result.session_id, CODEX_FORK)
+        self.assertEqual(result.session_init, {"sandbox_policy": "read-only", "approval_policy": "never"})
+
+    def assert_unconfirmed(self, result, text):
+        self.assertFalse(result.ok)
+        self.assertTrue(result.invoked)
+        self.assertEqual(result.stdout, "")
+        self.assertIsNone(result.session_init)
+        self.assertIn("could not be confirmed read-only (%s)" % text, result.stderr)
+        self.assertIn("its output is not used", result.stderr)
+
+    def test_a_workspace_write_fork_fails(self):
+        _CodexExecute(self, stdout=self.fork_output(CODEX_LOOSE_FORK))
+        self.parent_here()
+        self.rollout("fork-rollout-workspace-write.jsonl", CODEX_LOOSE_FORK)
+        self.assert_unconfirmed(self.fork(), "workspace-write")
+
+    def test_the_parents_history_is_not_the_forks_verdict(self):
+        _CodexExecute(self, stdout=self.fork_output())
+        self.parent_here()
+        self.rollout("fork-rollout-parent-history.jsonl", CODEX_FORK)
+        self.assert_unconfirmed(self.fork(), "rollout does not name the parent")
+
+    def test_a_fork_of_another_parent_fails(self):
+        _CodexExecute(self, stdout=self.fork_output())
+        self.parent_here()
+        self.rollout("fork-rollout-read-only.jsonl", CODEX_FORK, forked_from_id=CODEX_MISSING)
+        self.assert_unconfirmed(self.fork(), "rollout does not name the parent")
+
+    def test_a_fork_with_no_rollout_fails(self):
+        _CodexExecute(self, stdout=self.fork_output())
+        self.parent_here()
+        self.assert_unconfirmed(self.fork(), "no rollout for the fork")
+
+    def test_a_thread_id_with_glob_characters_never_reaches_the_glob(self):
+        _CodexExecute(self, stdout=self.fork_output("*"))
+        self.parent_here()
+        self.rollout("fork-rollout-read-only.jsonl", CODEX_FORK)
+        patterns = []
+        original = codex_module.glob.glob
+
+        def recording(pattern, *args, **kwargs):
+            patterns.append(pattern)
+            return original(pattern, *args, **kwargs)
+
+        self.addCleanup(setattr, codex_module.glob, "glob", original)
+        setattr(codex_module.glob, "glob", recording)
+        self.assert_unconfirmed(self.fork(), "no rollout for the fork")
+        self.assertTrue(patterns)
+        for pattern in patterns:
+            self.assertTrue(pattern.endswith("-%s.jsonl" % CODEX_PARENT), pattern)
+
+    # -- the answer --------------------------------------------------------
+
+    def test_an_empty_final_message_fails_a_plan_run(self):
+        _CodexExecute(self, stdout=codex_fixture("exec-json-ready.jsonl"), answer="")
+        result = self.run_codex()
+        self.assertFalse(result.ok)
+        self.assertEqual(result.stdout, "")
+        self.assertIn("codex printed no final message (-o was empty)", result.stderr)
+
+    def test_an_empty_final_message_keeps_the_fallback_in_review(self):
+        _CodexExecute(self, stdout="the whole transcript", answer="")
+        result = self.run_codex(base.MODE_REVIEW)
+        self.assertTrue(result.ok)
+        self.assertEqual(result.stdout, "the whole transcript")
+
+    # -- usage ---------------------------------------------------------------
+
+    def test_usage_comes_from_the_json_events_without_cache_reads(self):
+        outcome = self.outcome(codex_fixture("exec-json-ready.jsonl"))
+        usage = self.provider.parse_usage(outcome, base.MODE_PLAN)
+        assert usage is not None
+        self.assertEqual(usage.input_tokens, 3523)
+        self.assertEqual(usage.cache_read_tokens, 11904)
+        self.assertEqual(usage.output_tokens, 5)
+        self.assertEqual(usage.billed_tokens, 3528)
+        self.assertEqual(usage.source, "codex json events")
+        # A review's output is a transcript, which may quote such an event.
+        self.assertIsNone(self.provider.parse_usage(outcome, base.MODE_REVIEW))
+
+    def test_the_prose_footer_is_still_read(self):
+        usage = self.provider.parse_usage(self.outcome("answer\ntokens used\n3,877\n"), base.MODE_REVIEW)
+        assert usage is not None
+        self.assertEqual(usage.total_tokens, 3877)
+        self.assertEqual(usage.source, "codex output")
+
+    # -- a missing session -------------------------------------------------
+
+    def test_a_missing_thread_is_rejected(self):
+        stderr = codex_fixture("fork-missing-session.stderr")
+
+        def rejected(stdout, exit_code, text, session=CODEX_MISSING):
+            outcome = self.outcome(stdout, exit_code, text)
+            return self.provider.resume_rejected(outcome, base.MODE_PLAN, None, session)
+
+        self.assertTrue(rejected("", 1, stderr))
+        self.assertFalse(rejected("", 1, stderr, CODEX_PARENT))
+        self.assertFalse(rejected("", 1, "Error: something else"))
+        self.assertFalse(rejected("", 0, stderr))
+        self.assertFalse(rejected(codex_fixture("exec-json-ready.jsonl"), 1, stderr))
+
+    # -- whether it resumes ------------------------------------------------
+
+    def resumes(self):
+        self.provider.supports_resume = True
+
+    def patch_table(self, table):
+        original = codex_module.VERIFIED_RESUME
+        codex_module.VERIFIED_RESUME = table
+        self.addCleanup(setattr, codex_module, "VERIFIED_RESUME", original)
+
+    def passing_entry(self):
+        return {
+            "verified_at": "2026-10-01T00:00:00Z",
+            "read_only_mechanism": self.provider.resume_mechanism(),
+            "checks": list(self.provider.required_resume_checks),
+        }
+
+    def test_it_does_not_resume_while_the_flag_is_off(self):
+        setattr(self.provider, "supports_resume", False)
+        support = self.provider.resume_support(self.project)
+        self.assertEqual(support["status"], "unsupported")
+        self.assertEqual(support["detail"], "codex does not resume sessions")
+
+    def test_a_fork_help_without_ignore_user_config_is_unsupported(self):
+        self.resumes()
+        self.fork_help(CODEX_FORK_HELP.replace("--ignore-user-config", ""))
+        support = self.provider.resume_support(self.project)
+        self.assertEqual(support["status"], "unsupported")
+        self.assertEqual(support["missing"], ["--ignore-user-config"])
+
+    def test_an_unreadable_fork_help_is_unverified(self):
+        self.resumes()
+        self.fork_help(None)
+        support = self.provider.resume_support(self.project)
+        self.assertEqual(support["status"], "unverified")
+        self.assertIn("codex exec fork --help", support["detail"])
+
+    def test_the_table_verifies_and_a_newer_version_is_trusted(self):
+        self.resumes()
+        self.patch_table({})
+        self.assertEqual(self.provider.resume_support(self.project)["status"], "unverified")
+        self.patch_table({"codex-cli 0.156.1": self.passing_entry()})
+        support = self.provider.resume_support(self.project)
+        self.assertEqual(support["status"], "verified")
+        self.assertEqual(support["source"], "built-in")
+        self.provider.version = lambda: ("codex-cli 0.157.0", None)
+        support = self.provider.resume_support(self.project)
+        self.assertEqual(support["status"], "trusted")
+        self.assertEqual(support["newer_than"], "codex-cli 0.156.1")
+        self.assertIn("smoke_live.py --provider codex", support["detail"])
+
+    def test_a_claude_shaped_entry_does_not_count(self):
+        self.resumes()
+        entry = dict(self.passing_entry(), checks=list(verified.REQUIRED_RESUME_CHECKS))
+        self.patch_table({"codex-cli 0.156.1": entry})
+        self.assertEqual(self.provider.resume_support(self.project)["status"], "unverified")
+
+    def test_what_a_resume_record_vouches_for(self):
+        self.assertEqual(
+            self.provider.required_resume_checks,
+            (
+                "stays read-only",
+                "resumes read-only",
+                "forks the session",
+                "reports a missing session",
+                "ignores repository config on resume",
+            ),
+        )
+        self.assertEqual(
+            self.provider.resume_mechanism(),
+            '--ignore-user-config -c sandbox_mode="read-only" '
+            "(fork; filesystem sandbox confirmed from the fork's rollout)",
+        )
+        fresh = self.provider.read_only_enforcement()["mechanism"]
+        self.assertNotEqual(self.provider.resume_mechanism(), fresh)
 
 
 #: ``agy models`` as 1.2.13 prints it: a progress line, then ``id<TAB>name``.

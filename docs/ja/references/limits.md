@@ -1,4 +1,4 @@
-<!-- translated-from: references/limits.md sha256:fcf31002a61880c4ed8720d82f170725baa5da427437eecf044896bd5d64c093 -->
+<!-- translated-from: references/limits.md sha256:a1c4de3c15c57f7bd228292ff95609a992bec8c91a256fb8adae068d87ccd01d -->
 
 > この文書は [references/limits.md](../../../references/limits.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -805,6 +805,8 @@ dev-orchestra optimization report
   `options.output_format: text` や `json` では、CLI の出力にセッションがなかったことを示す
   兆候がないので、そうした実行は通常の失敗として報告されます。
 * **継続したセッションが読み取り専用のままかどうかは、CLI の版ごとに**
-  `scripts/smoke_live.py` で確認するもので、常時確認しているわけではありません。誰も確認して
-  いない版は継続しません。版の文字列が変わらないまま挙動が変わった場合は、スクリプトを再実行
-  するまで気づけません。
+  `scripts/smoke_live.py` で確認するもので、常時確認しているわけではありません。確認した版より
+  新しく、メジャー版が同じ版は信頼に基づいて継続するので、新しい版で継続した Claude のセッションが読み取り専用を
+  失っても、その版でスクリプトを実行するまで気づけません。版の文字列が変わらないまま挙動が変わった
+  場合も、スクリプトを再実行するまで気づけません。Codex の fork は実行後にその rollout から読み取り
+  専用だったことを確かめます。これは書き込みを見つけますが、防ぎはしません。

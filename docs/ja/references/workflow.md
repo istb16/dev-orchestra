@@ -1,4 +1,4 @@
-<!-- translated-from: references/workflow.md sha256:e6233c51267dc6e05f8d583f4f1b8f485511a59fa8ca7894e6f4fa413c21946d -->
+<!-- translated-from: references/workflow.md sha256:05b43c891db5b426761ff404fe3aec770fcd3b79817fd713ece84a8cde88b948 -->
 
 > この文書は [references/workflow.md](../../../references/workflow.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -306,7 +306,9 @@ dev-orchestra run architect --resume \
 `running fresh: the provider cannot resume a session (unverified)` なら、その版の CLI は継続した
 セッションを読み取り専用のまま保つと確認されていません。ユーザーに伝えてください。確認するには
 ユーザーが `python scripts/smoke_live.py --provider claude` を実行できます。自分では実行しないで
-ください。実際の CLI で実際のトークンを使うからです。
+ください。実際の CLI で実際のトークンを使うからです。`resuming the last architect session` の後の
+2 行目の note が、その版は別の版より新しいとして `is trusted to resume as newer than` と言っていれば、
+信頼に基づいて継続しています。同じコマンドを添えて、ユーザーに一度伝えてください。
 
 修正の実行が stall した場合、タイムアウトした場合、または失敗した場合、`.ai/plan.md` は
 元のまま残ります。この実行は自身の入力を書き換えるよう求められているので、失敗した実行が

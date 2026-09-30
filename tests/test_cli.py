@@ -2473,7 +2473,7 @@ class TestTheScorecardThroughTheCli(IsolatedCase):
 
 
 PARENT_SESSION = "55555555-5555-4555-8555-555555555555"
-UNLISTED_CLAUDE = "9.9.9 (Claude Code)"
+UNLISTED_CLAUDE = "1.0.0 (Claude Code)"
 
 
 def pretend_claude_version(case, version):
@@ -2532,10 +2532,11 @@ class TestDoctorResume(IsolatedCase):
         _, out, _ = run_cli("doctor")
         self.assertIn("Resume: NOT SUPPORTED -- --fork-session not advertised", out)
 
-    def test_codex_does_not_resume(self):
+    def test_codex_with_resume_off_does_not_resume(self):
         from orchestrator.providers.codex import CodexProvider
 
         for name, value in (
+            ("supports_resume", False),
             ("which", lambda self: "codex"),
             ("version", lambda self: ("codex-cli 0.154.0", None)),
             ("configured_model", lambda self: None),
@@ -2545,6 +2546,75 @@ class TestDoctorResume(IsolatedCase):
             setattr(CodexProvider, name, value)
         _, out, _ = run_cli("doctor")
         self.assertIn("Resume: NOT SUPPORTED -- codex does not resume sessions", out)
+
+    def test_a_newer_claude_is_trusted_and_says_so(self):
+        pretend_claude_is_installed(self)
+        pretend_claude_version(self, "2.1.285 (Claude Code)")
+        strict_verified = run_cli("doctor", "--strict")[0]
+        pretend_claude_version(self, "2.1.286 (Claude Code)")
+        support = self.support()
+        self.assertEqual(support["status"], "trusted")
+        self.assertEqual(support["newer_than"], "2.1.285 (Claude Code)")
+        _, out, _ = run_cli("doctor")
+        trusted = "Resume: trusted for claude 2.1.286 (Claude Code) as newer than 2.1.285 (Claude Code) "
+        self.assertIn(trusted + "(verified on ", out)
+        tail = ", built-in); not verified itself -- run python scripts/smoke_live.py --provider claude"
+        self.assertIn(tail, out)
+        self.assertEqual(run_cli("doctor", "--strict")[0], strict_verified)
+
+    def test_codex_once_it_resumes(self):
+        from orchestrator.providers import codex as codex_module
+        from orchestrator.providers.codex import CodexProvider
+
+        # `codex exec fork --help` as codex-cli 0.156.1 printed it.
+        here = os.path.dirname(os.path.abspath(__file__))
+        fixture = os.path.join(here, "fixtures", "codex", "fork-help.txt")
+        with open(fixture, encoding="utf-8") as handle:
+            fork_help = handle.read()
+
+        def capture(self, command, timeout=30):
+            if list(command[1:]) == ["exec", "fork", "--help"]:
+                return _Completed(fork_help)
+            return _Completed("", 1)
+
+        version = ["codex-cli 0.156.1"]
+        for name, value in (
+            ("which", lambda self: "codex"),
+            ("version", lambda self: (version[0], None)),
+            ("configured_model", lambda self: None),
+            ("_capture", capture),
+            ("supports_resume", True),
+        ):
+            self.addCleanup(setattr, CodexProvider, name, getattr(CodexProvider, name))
+            setattr(CodexProvider, name, value)
+        from orchestrator.providers import codex as codex_table
+
+        self.addCleanup(setattr, codex_table, "VERIFIED_RESUME", codex_table.VERIFIED_RESUME)
+        codex_table.VERIFIED_RESUME = {}
+
+        def line():
+            lines = run_cli("doctor")[1].splitlines()
+            return [text for text in lines if "Resume:" in text and "codex" in text]
+
+        self.assertIn("UNVERIFIED -- codex codex-cli 0.156.1 has not been verified", line()[0])
+        entry = {
+            "verified_at": "2026-10-01",
+            "read_only_mechanism": CodexProvider().resume_mechanism(),
+            "checks": list(CodexProvider.required_resume_checks),
+        }
+        self.addCleanup(setattr, codex_module, "VERIFIED_RESUME", codex_module.VERIFIED_RESUME)
+        codex_module.VERIFIED_RESUME = {"codex-cli 0.156.1": entry}
+        self.assertIn("Resume: verified for codex codex-cli 0.156.1 on 2026-10-01 (built-in)", line()[0])
+        version[0] = "codex-cli 0.157.0"
+        self.assertIn(
+            "Resume: trusted for codex codex-cli 0.157.0 as newer than codex-cli 0.156.1 "
+            "(verified on 2026-10-01, built-in); not verified itself -- "
+            "run python scripts/smoke_live.py --provider codex",
+            line()[0],
+        )
+        codex = json.loads(run_cli("doctor", "--json")[1])["providers"]["codex"]["resume_support"]
+        self.assertEqual(codex["status"], "trusted")
+        self.assertEqual(codex["newer_than"], "codex-cli 0.156.1")
 
     def test_a_record_inside_the_checkout_is_not_read(self):
         pretend_claude_is_installed(self)

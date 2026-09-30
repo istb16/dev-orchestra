@@ -1,4 +1,4 @@
-<!-- translated-from: references/configuration.md sha256:1250c149453cda32760fc820ea9a1150f4ede7ac5f0123ddb546537873f08db6 -->
+<!-- translated-from: references/configuration.md sha256:7b651ebd6915c3cfdb0015ce25e2f8b53a425c5a911b57ba70b2275524bed91a -->
 
 > この文書は [references/configuration.md](../../../references/configuration.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -48,6 +48,9 @@ adapter を置きます（Windows では `%APPDATA%\dev-orchestra\providers\`、
 `python scripts/smoke_live.py` がこのマシンで確認した CLI の版が記録されます。書くのはこのスクリプト
 だけです。読まれるのは実パスがワークスペースの外にあるときだけで、`DEV_ORCHESTRA_HOME` をチェック
 アウトの中に向けると記録は読まれず書かれもせず、`doctor` と `--resume` の note がその旨を示します。
+ここか adapter の表で合格した版より新しく、メジャー版が同じ版は、ここに記録された不合格が間にない限り信頼に基づいて
+継続します。そのため、継続したセッションが制限を失った新しい CLI も、その版でスクリプトを実行するまでは
+継続します。`design.resume.max_age_seconds: 0` で継続を止められます。
 
 プラットフォーム別のグローバル設定のパス:
 

@@ -12,6 +12,17 @@ The public surface covered by that promise is: the configuration schema, the
 
 ### Changed
 
+- **`run architect --resume` continues on a Claude Code version newer than one
+  that passed the resume checks and of the same major version**, unless a
+  failure recorded on this machine stands in between; a version older than
+  every pass, or a new major version, still runs fresh. Such a
+  run prints a second note saying it resumed on trust, records `resume.trust:
+  "newer"`, and `doctor` shows `Resume: trusted for ... as newer than ...`
+  (`status: trusted` and `newer_than` in `--json`). Codex gets a fork
+  (`codex exec fork` under `--ignore-user-config`, checked from its rollout),
+  verified on codex-cli 0.156.1, and a Codex `plan` run now adds
+  `--json` and reads its usage from the events. See "Resuming a session" in
+  `references/providers.md` (#181).
 - **The runtime budget no longer charges sleep on Windows.** A delegated run
   that spanned a sleep is charged its duration less the time the machine was
   asleep; Linux and macOS already left sleep out. The sleep left out is
