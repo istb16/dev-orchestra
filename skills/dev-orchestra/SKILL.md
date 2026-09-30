@@ -225,7 +225,7 @@ for anything else.
    place that knows CLI syntax. Changed CLI → read `--help`, update the adapter.
 3. **Reviewers are read-only and independent.** Enforced by the CLI, not the
    prompt: Claude gets only Read, Grep, Glob, no MCP and `--restricted`; Codex
-   its read-only sandbox (MCP not examined). No shared context, no edits.
+   its read-only sandbox (MCP not examined); agy none (global config only, warned). No shared context, no edits.
 4. **Fix only triaged-accepted findings.**
 5. **Never print or store credentials.** Use the CLIs' own authentication;
    never ask for an API key; never echo tokens into `.ai/`, reports or logs.
@@ -246,7 +246,7 @@ Read one only when you need its detail.
 
 - `references/workflow.md` — stage detail, prompt templates, artifacts
 - `references/configuration.md` — schema, layering, every field, examples
-- `references/providers.md` — adapter interface, Claude/Codex, adding a CLI
+- `references/providers.md` — adapters, adding a CLI
 - `references/reviews.md` — snapshot, output schema and limits, dedup, triage
 - `references/architecture.md` — how the pieces fit, and why
 - `references/limits.md` — stalls, timeouts, budgets

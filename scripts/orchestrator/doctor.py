@@ -20,6 +20,7 @@ from .providers import (
     OFFLINE,
     REFUSED_ENFORCEMENT,
     USER_PROVIDERS_DISABLED_ENV,
+    WARNED_ENFORCEMENT,
     ModelResolutionError,
     ResolvedModel,
     available_providers,
@@ -89,6 +90,10 @@ def collect(start: Optional[str] = None, probe_models: bool = True) -> Dict[str,
             entry = detection.to_dict()
             entry["display_name"] = provider.display_name
             entry["model_selection"] = "supported"
+            if provider.static_enforcement:
+                # A constant, so it is known in both modes and whether or not
+                # the CLI is there -- and the seats below are noted from it.
+                entry["read_only_enforcement"] = dict(provider.read_only_enforcement())
             if probe_models and detection.installed:
                 candidates = provider.list_models()
                 entry["models"] = [candidate.to_dict() for candidate in candidates]
@@ -98,7 +103,7 @@ def collect(start: Optional[str] = None, probe_models: bool = True) -> Dict[str,
             elif not probe_models:
                 # --fast skips this probe. It does not promise that no --help
                 # is read: validating options.permission_mode reads one.
-                entry["read_only_enforcement"] = {"status": "not-checked"}
+                entry.setdefault("read_only_enforcement", {"status": "not-checked"})
                 entry["resume_support"] = {"status": "not-checked"}
             if detection.installed and name not in OFFLINE:
                 if detection.version:
@@ -154,6 +159,10 @@ def collect(start: Optional[str] = None, probe_models: bool = True) -> Dict[str,
     warnings = config_mod.read_only_arg_warnings(loaded)
     report["config"]["warnings"] = warnings
     report["problems"].extend(warnings)
+    # A seat refused for coming with the project file is a problem above, and
+    # not also a note below.
+    refused = config_mod.project_raw_arg_refusals(loaded)
+    reviewer_refused = config_mod.reviewer_raw_arg_refusals(loaded)
 
     layers = (loaded.global_layer, loaded.project_layer)
     for key, label in ROLE_LABELS:
@@ -169,7 +178,7 @@ def collect(start: Optional[str] = None, probe_models: bool = True) -> Dict[str,
             label, spec, detections, report["problems"], adapter_errors, load_errors, missing_hint=hint
         )
         if key in config_mod.READ_ONLY_ROLES:
-            _refused_enforcement(label, spec, report)
+            _enforcement_report(label, spec, report, report["roles"][key], key in refused)
             # A tier can switch provider, and its runs are refused by that
             # provider's enforcement, not the base role's. One that keeps the
             # provider is refused for the same reason the role already was, so
@@ -184,7 +193,8 @@ def collect(start: Optional[str] = None, probe_models: bool = True) -> Dict[str,
                     if merged.get("provider") == base.get("provider"):
                         continue
                     tier_label = "%s (tier %s)" % (label, tier)
-                    _refused_enforcement(tier_label, merged, report)
+                    tier_refused = "%s.model_tiers.%s" % (key, tier) in refused
+                    _enforcement_report(tier_label, merged, report, None, tier_refused)
 
     for reviewer in loaded.reviewers():
         label = "Reviewer %s" % reviewer.get("id")
@@ -200,7 +210,8 @@ def collect(start: Optional[str] = None, probe_models: bool = True) -> Dict[str,
             if when == opt_mod.WHEN_PATHS:
                 entry["paths"] = [redact(pattern) for pattern in opt_mod.reviewer_paths(reviewer)]
         report["reviewers"].append(entry)
-        _refused_enforcement(label, reviewer, report)
+        from_project = str(reviewer.get("id") or "") in reviewer_refused
+        _enforcement_report(label, reviewer, report, entry, from_project)
 
     if not report["reviewers"]:
         report["problems"].append("no reviewers configured: the independent-review stage will be skipped")
@@ -371,21 +382,42 @@ def _describe_options(entry: Dict[str, Any], spec: Dict[str, Any], label: str, p
 
 #: Options that would loosen a sandbox. Harmless on the implementer and fixer,
 #: silently overridden everywhere else -- so say so out loud instead.
-READ_ONLY_IGNORED_OPTIONS = {"permission_mode", "sandbox", "approve"}
+READ_ONLY_IGNORED_OPTIONS = {"permission_mode", "sandbox", "approve", "skip_permissions"}
 
 
 def _is_read_only_role(label: str) -> bool:
     return label.startswith(("Orchestrator", "Architect", "Reviewer"))
 
 
-def _refused_enforcement(label: str, spec: Any, report: Dict[str, Any]) -> None:
-    """A read-only role on a provider whose read-only runs will be refused."""
+def _enforcement_report(
+    label: str,
+    spec: Any,
+    report: Dict[str, Any],
+    seat: Optional[Dict[str, Any]] = None,
+    refused: bool = False,
+) -> None:
+    """A read-only seat on a provider whose read-only runs are refused, or warned about.
+
+    Refused is a problem. Warned is a note -- the run goes ahead, by the
+    user's choice in the global file -- unless the seat came with the project
+    file, which ``read_only_arg_warnings`` has already made a problem of.
+    """
     if not isinstance(spec, dict):
         return
-    entry = report["providers"].get(str(spec.get("provider") or "")) or {}
+    name = str(spec.get("provider") or "")
+    entry = report["providers"].get(name) or {}
     enforcement = entry.get("read_only_enforcement") or {}
-    if enforcement.get("status") in REFUSED_ENFORCEMENT:
+    status = enforcement.get("status")
+    if status in REFUSED_ENFORCEMENT:
         report["problems"].append("%s: read-only runs are refused -- %s" % (label, enforcement.get("detail")))
+    elif status in WARNED_ENFORCEMENT:
+        if seat is not None:
+            seat["read_only"] = status
+        if not refused:
+            report["notes"].append(
+                "%s: read-only runs are NOT enforced by %s (allowed, warned) -- %s"
+                % (label, name, enforcement.get("detail"))
+            )
 
 
 def _enforcement_line(enforcement: Dict[str, Any]) -> str:
@@ -401,6 +433,8 @@ def _enforcement_line(enforcement: Dict[str, Any]) -> str:
         return "enforced by %s" % mechanism
     if status == "partial":
         return "enforced by %s; %s" % (mechanism, detail)
+    if status == "unenforced":
+        return "NOT ENFORCED (runs allowed, warned) -- %s" % detail
     if status == "unsupported":
         return "NOT ENFORCEABLE -- %s" % detail
     if status == "unverified":
@@ -488,8 +522,14 @@ def render(report: Dict[str, Any]) -> str:
             if entry.get("live_check"):
                 live = _live_check_line(entry.get("version"), entry["live_check"])
                 lines.append("  Live check: %s" % live)
-        elif entry.get("error"):
-            lines.append("  Detail: %s" % entry["error"])
+        else:
+            if entry.get("error"):
+                lines.append("  Detail: %s" % entry["error"])
+            # Only a static report reaches here: what an absent CLI's
+            # enforcement would be is otherwise not known.
+            enforcement = entry.get("read_only_enforcement") or {}
+            if enforcement.get("status") not in (None, "not-checked"):
+                lines.append("  Read-only runs: %s" % _enforcement_line(enforcement))
         lines.append("")
 
     lines += _user_provider_lines(report.get("user_providers") or {})

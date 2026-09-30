@@ -233,6 +233,8 @@ def run(
             providers,
             default_provider=str(current.get("provider") or rec_provider),
             default_family=str((current.get("model") or {}).get("family") or rec_family),
+            seat=key if key in config_mod.READ_ONLY_ROLES else "",
+            scope=scope,
         )
         # The answer is a provider and a model; the role's options and tiers
         # were not asked about, so they stay as the layer held them.
@@ -242,7 +244,7 @@ def run(
         step += 1
 
     prompter.say("%d. External Reviewers" % step)
-    data["reviewers"] = _ask_reviewers(prompter, providers, effective)
+    data["reviewers"] = _ask_reviewers(prompter, providers, effective, scope)
     prompter.say("")
 
     if preset is not None:
@@ -294,11 +296,30 @@ def _ask_role(
     providers: Sequence[Tuple[str, str, bool]],
     default_provider: str,
     default_family: str,
+    seat: str = "",
+    scope: str = "global",
 ) -> Dict[str, Any]:
-    provider_name, model = _ask_cli_and_model(
-        prompter, providers, "   CLI:", default_provider, lambda _name: default_family, note_missing=True
-    )
-    return {"provider": provider_name, "model": model}
+    """``seat`` is the role's name when it is a read-only one: a CLI that
+    cannot be held to reading is warned about there, and refused in a project
+    layer, where the question is asked again."""
+    while True:
+        provider_name, model = _ask_cli_and_model(
+            prompter, providers, "   CLI:", default_provider, lambda _name: default_family, note_missing=True
+        )
+        spec = {"provider": provider_name, "model": model}
+        if seat and config_mod.warned_provider(provider_name):
+            if scope == "project":
+                name = config_mod.PROJECT_CONFIG_NAMES[0]
+                path = "%s.provider" % seat
+                prompter.say("   %s" % config_mod.project_seat_refusal(seat, provider_name, name, path))
+                continue
+            _say_unenforced(prompter, {seat: spec})
+        return spec
+
+
+def _say_unenforced(prompter: Prompter, data: Dict[str, Any]) -> None:
+    for line in config_mod.read_only_enforcement_warnings(data):
+        prompter.say("   Warning: %s" % line)
 
 
 def _ask_cli_and_model(
@@ -376,6 +397,7 @@ def _ask_reviewers(
     prompter: Prompter,
     providers: Sequence[Tuple[str, str, bool]],
     data: Dict[str, Any],
+    scope: str = "global",
 ) -> List[Dict[str, Any]]:
     # An empty panel is a decision -- somebody chose to run no independent
     # review -- and only an absent one means nobody has chosen yet. Reading the
@@ -391,7 +413,7 @@ def _ask_reviewers(
         while index < count:
             prompter.say("   reviewer #%d" % (index + 1))
             template = existing[index] if index < len(existing) else {}
-            reviewers.append(_ask_reviewer(prompter, providers, template, {"reviewers": reviewers}))
+            reviewers.append(_ask_reviewer(prompter, providers, template, {"reviewers": reviewers}, scope))
             index += 1
         if count == 0:
             prompter.say(
@@ -410,16 +432,27 @@ def _ask_reviewer(
     providers: Sequence[Tuple[str, str, bool]],
     template: Dict[str, Any],
     scratch: Dict[str, Any],
+    scope: str = "global",
 ) -> Dict[str, Any]:
-    default_provider = str(template.get("provider") or providers[0][0])
+    default_provider = str(template.get("provider") or _default_reviewer_provider(providers))
     template_family = str((template.get("model") or {}).get("family") or "")
 
     def family_for(provider_name: str) -> str:
         if template_family:
             return template_family
-        return "opus" if provider_name == "claude" else "recommended-coding"
+        return config_mod.default_reviewer_family(provider_name)
 
-    provider_name, model = _ask_cli_and_model(prompter, providers, "     CLI:", default_provider, family_for)
+    while True:
+        provider_name, model = _ask_cli_and_model(
+            prompter, providers, "     CLI:", default_provider, family_for
+        )
+        if scope != "project" or not config_mod.warned_provider(provider_name):
+            break
+        # Refused in a project layer, as a run of it would be; asked again.
+        shown = template.get("id") or config_mod.suggest_reviewer_id(scratch, provider_name, "general")
+        name = config_mod.PROJECT_CONFIG_NAMES[0]
+        refusal = config_mod.project_reviewer_refusal("reviewer %s" % shown, provider_name, name)
+        prompter.say("     %s" % refusal)
 
     role_options = [*list(config_mod.BUILTIN_ROLES), "custom role"]
     default_role = str(template.get("role") or "general")
@@ -450,7 +483,23 @@ def _ask_reviewer(
     # other answers are taken as offered.
     if template.get("when") is not None:
         reviewer["when"] = copy.deepcopy(template["when"])
+    _say_unenforced(prompter, {"reviewers": [reviewer]})
     return reviewer
+
+
+def _default_reviewer_provider(providers: Sequence[Tuple[str, str, bool]]) -> str:
+    """The CLI a new reviewer is offered: a seat provider, installed if one is.
+
+    Not the first of the menu, which is sorted: a CLI that cannot be held to
+    reading would sort first and be the default.
+    """
+    names = [entry[0] for entry in providers]
+    installed = [entry[0] for entry in providers if entry[2]]
+    for pool in (installed, names):
+        for name in presets_mod.SEAT_PROVIDERS:
+            if name in pool:
+                return name
+    return providers[0][0]
 
 
 def render_summary(data: Dict[str, Any]) -> str:
@@ -492,6 +541,8 @@ def render_summary(data: Dict[str, Any]) -> str:
         "    plan approval: %s  (design.require_approval)"
         % ("required" if _approval_required(data) else "not required")
     )
+    for warning in config_mod.read_only_enforcement_warnings(data):
+        lines.append("  Warning: %s" % warning)
     lines.append("")
     return "\n".join(lines)
 

@@ -56,8 +56,8 @@ plan is not approved and `design.require_approval` is on, `130` interrupted.
 | `config setup [--scope global\|project] [--preset quality\|standard\|fast \| --defaults] [--force]` | Setup wizard; for the global file its first question is the preset. `--preset` asks nothing: it writes `version` and `preset`, keeps what the file held apart from the keys a preset governs (a role keeps its `options` and `model_tiers` and is then not fitted), and prints the configuration that preset resolves to on this machine with its notes (see `references/configuration.md`, Presets). Only the global file can name a preset: with `--scope project` it is refused (exit 2) and nothing is written. `--defaults` overrides nothing, so the file holds only `version: 1` and runs under preset `standard`. `--force` prompts even without a TTY. |
 | `config reset [--scope …] [--delete]` | Clear this layer's overrides (the file stays, holding only `version`, and the global file its `preset` too when it names a known one; an unknown name is cleared with a `note:`), then print the configuration that is left. `--delete` removes the file; the global layer then runs under `standard`. |
 | `config prune [--scope …] [--dry-run]` | Drop values a layer holds that are equal to what it inherits -- for files written before 0.6.0, which hold every default. A value goes only when the built-in defaults and the preset's fit agree on it, so pruning never changes the configuration in force. `--dry-run` lists them without writing. |
-| `config set <path> <value> [--scope …] [--raw]` | Set one value. Paths support `a.b.c` and `reviewers[0].role`; an indexed edit copies the rest of the list from the layer below, and an index past the end exits 2. `preset` is written to the global file even when a project file exists; `--scope project` with it exits 2 and writes nothing. |
-| `config validate [--json]` | Validate the effective configuration. Exit 1 if invalid. A `Warnings:` section (`warnings` in `--json`) lists the raw arguments a read-only role's runs would refuse -- any `options.args` in the project file, and anything the adapter's allowlist does not take -- without changing the exit status. `config set` prints the same as `warning:` lines. |
+| `config set <path> <value> [--scope …] [--raw]` | Set one value. Paths support `a.b.c` and `reviewers[0].role`; an indexed edit copies the rest of the list from the layer below, and an index past the end exits 2. `preset` is written to the global file even when a project file exists; `--scope project` with it exits 2 and writes nothing. Setting a read-only seat's provider (`orchestrator.provider`, `architect.provider`, `<role>.model_tiers.<tier>.provider`, `reviewers[<n>].provider`) to `agy` in the project file exits 2 and writes nothing, naming the `--scope global` command instead; in the global file it is written and warned about. |
+| `config validate [--json]` | Validate the effective configuration. Exit 1 if invalid. A `Warnings:` section (`warnings` in `--json`) lists the raw arguments a read-only role's runs would refuse -- any `options.args` in the project file, and anything the adapter's allowlist does not take -- the read-only seats on `agy` that come from the project file, the `options.skip_permissions` or `options.args` an agy write role would take from the project file, and one `<seat>: read-only is NOT enforced by agy -- ...` line per read-only seat on agy from the global file, without changing the exit status. `config set` prints the same as `warning:` lines. |
 
 ```bash
 dev-orchestra config set implementer.model.family opus
@@ -76,7 +76,7 @@ leaves the file in place and goes on shadowing it.
 
 | Command | Description |
 | --- | --- |
-| `model list [--provider <name>] [--json]` | Models the installed CLIs advertise, with the discovery source for each (`cli-help`, `cli-catalog`, `cli-config`, `cli-default`, `builtin-fallback`). An adapter that raises is reported and the rest still listed, but the exit status is 1. Every `--json` entry has the same keys, including `origin` and `adapter_error` (`null` when it worked). |
+| `model list [--provider <name>] [--json]` | Models the installed CLIs advertise, with the discovery source for each (`cli-help`, `cli-catalog`, `cli-config`, `cli-default`, `builtin-fallback`). An adapter that raises is reported and the rest still listed, but the exit status is 1. For a CLI whose listed models are dated ids (agy), a `families to put in a config` section follows, one `family=<name> now <id>` line per family the adapter resolves on this machine; those are the names to store, as an id does not follow a newer model. Every `--json` entry has the same keys, including `origin`, `adapter_error` (`null` when it worked) and `families` (`[]` when there are none; each `{"family", "resolves_to"}`). |
 
 ## reviewer
 
@@ -86,6 +86,17 @@ leaves the file in place and goes on shadowing it.
 | `reviewer add --provider <p> [--model <family>] [--role <r>] [--id <id>] [--pin <model-id>] [--when always\|high-risk \| --when-paths GLOB [GLOB ...]] [--scope …]` | Add a reviewer. The id is generated (`codex-security`, `codex-security-2`, …) when omitted. `--when high-risk` makes it join the code review only on rounds judged high-risk; `--when-paths "*migrate*/*" "*.sql"` makes it join only when a changed path matches one of those patterns, written as a `when:` mapping with `paths` in block form (see `references/configuration.md`). Quote each pattern so the shell does not expand it. `always`, the default, writes no key. Giving `--when` and `--when-paths` together exits 2. |
 | `reviewer remove <id\|role\|position> [--scope …]` | Remove by id, by unique role, or by 1-based position. Refused (exit 2) when it would leave only conditional (`when: high-risk` or path-scoped) reviewers. |
 | `reviewer set <selector> [--provider] [--model] [--role] [--id] [--pin] [--when always\|high-risk \| --when-paths GLOB [GLOB ...]] [--scope …]` | Change an existing reviewer. `--when always` removes the condition; `--when high-risk` and `--when-paths` each replace it whole, so `--when-paths` replaces the list rather than adding to it. Making the last reviewer that always runs conditional is refused (exit 2), and so is giving `--when` and `--when-paths` together. |
+
+Without `--model`, `reviewer add` writes the CLI's default family (`opus` on
+Claude, `default` on agy, `recommended-coding` otherwise), and `reviewer set
+--provider <other>` without `--model` or `--pin` resets the family to the new
+CLI's default, with a `note:` naming the old one. With `--provider agy`, both
+exit 2 without writing in the project file, and in the global file print a
+`warning:` line after writing: a reviewer on agy is not held to reading. With
+any provider, `--scope project` copies the global panel into the project file
+when it has none, agy reviewers included; after writing, each of those gets a
+`warning: reviewer <id>: the reviewers list comes from the project config ...`
+line, as `config set` prints it, since it is refused from then on.
 
 `add`, `remove` and `set` edit the whole list in the file. When neither the
 file they write nor one below it (the global file, under a project one) lists
@@ -112,17 +123,25 @@ Never prints credential values -- only whether credentials appear to be present.
 Each installed provider gets a `Read-only runs:` line saying how its `plan` and
 `review` runs are held to reading: `enforced by <flags>` (verified), `enforced
 by <flags>; <what is not covered>` (partial -- Codex, whose MCP servers were not
-examined), `NOT ENFORCEABLE` (the CLI does not advertise the flags), `UNVERIFIED`
-(its `--help` could not be read), `not reported by this adapter`, or `not
-checked (--fast)`. In `--json` it is `providers.<name>.read_only_enforcement`,
-with `status` one of `verified`, `partial`, `unsupported`, `unverified`,
-`unspecified` and `not-checked`. `NOT ENFORCEABLE` and `UNVERIFIED` are problems
-when a read-only role (orchestrator, architect, a reviewer) uses that provider,
-since its runs will be refused; each of a role's tiers is checked against the
-provider it would run on, and reported as `<Role> (tier <name>)`. The raw-argument warnings `config validate`
-prints are problems here as well, under `config.warnings` in `--json`. `--fast`
-does not promise that no `--help` is read: validating `options.permission_mode`
-reads one.
+examined), `NOT ENFORCED (runs allowed, warned) -- <why>` (agy, which has no
+read-only mode), `NOT ENFORCEABLE` (the CLI does not advertise the flags),
+`UNVERIFIED` (its `--help` could not be read), `not reported by this adapter`,
+or `not checked (--fast)`. agy's status is a constant, so its line is shown in
+`--fast` mode and when the CLI is not installed as well. In `--json` it is
+`providers.<name>.read_only_enforcement`, with `status` one of `verified`,
+`partial`, `unenforced`, `unsupported`, `unverified`, `unspecified` and
+`not-checked`. `NOT ENFORCEABLE` and `UNVERIFIED` are problems when a
+read-only role (orchestrator, architect, a reviewer) uses that provider, since
+its runs will be refused; each of a role's tiers is checked against the
+provider it would run on, and reported as `<Role> (tier <name>)`. A read-only
+seat on agy from the global file is a note instead -- `Reviewer agy-general:
+read-only runs are NOT enforced by agy (allowed, warned) -- <why>` -- in both
+modes and whether or not agy is installed, and its `--json` entry carries
+`read_only: "unenforced"`; `--strict` still passes. The same seat from the
+project file is a problem (the refusal `run` would give), so `--strict` fails.
+The raw-argument warnings `config validate` prints are problems here as well,
+under `config.warnings` in `--json`. `--fast` does not promise that no
+`--help` is read: validating `options.permission_mode` reads one.
 
 The "Pinned at a value the built-in default has moved off" section lists the
 settings a file fixes where the recommendation has since changed. It is a
@@ -134,7 +153,8 @@ into a file, so a value there is always one somebody added.
 
 A **Notes** block follows the problems when there is something worth knowing
 that is not wrong; notes never count towards `--strict`, and in `--json` they
-are `notes` (`[]` when there are none). There are two kinds. One names an
+are `notes` (`[]` when there are none). One kind is the read-only seat on agy
+described above. One names an
 installed CLI version that has not been live-checked on this machine (see the
 `Live check:` line below). The other: every `when:
 high-risk` reviewer judged by the built-in `high_risk_paths` alone -- no list
@@ -211,7 +231,9 @@ The prompt may also be piped on stdin (`--prompt-file -` reads stdin
 explicitly). Default modes: architect/orchestrator `plan`, implementer and
 review_fixer `implement`, reviewers `review`. The orchestrator, the architect
 and reviewers are read-only roles: `--mode implement` on one exits 2.
-`--print-command` shows the exact CLI invocation without running it. `--extra`
+`--print-command` shows the exact CLI invocation without running it, an
+argument holding spaces quoted; on agy the prompt file, which only a run
+writes, appears as `.ai/agy-prompt-<pid>-<random>.md`. `--extra`
 forwards every remaining argument to the provider CLI verbatim on an
 `implement` run. On `plan` and `review` only `--add-dir <path>` gets through
 (Claude) and nothing does (Codex); anything else exits 2 before an attempt is
@@ -220,6 +242,20 @@ file. So does a `plan` or `review` run on an installed Claude CLI whose `--help`
 does not list `--tools`, `--strict-mcp-config` and `--restricted`, or cannot be
 read. A refusal names the flag, its position and where it came from, never its
 value, and a detached worker's refusal is written to its job record.
+
+A `plan` or `review` run on `agy`, which has no read-only mode, runs with a
+`warning: <role>: read-only is NOT enforced by agy -- ...` line before it when
+the seat comes from the global config, and is refused (exit 2, before the run
+log is opened or the prompt read) when its provider comes from the project
+file. The same holds for any adapter whose installed CLI reports `unenforced`
+when the run asks it, including one whose report is not static and so is not
+refused by the config commands. An `implement` run on agy is refused the same
+way when the project file names `options.skip_permissions` or sets any
+`options.args` for that role. Whatever the outcome, the adapter's run warnings
+-- an agy status that is not success, the actions agy denied -- are printed as
+`warning: <role>: ...` lines, and recorded as `warnings` in the run log's end
+event and the job record; the enforcement warning is recorded there too, and
+printed only the once, before the run.
 
 A prompt that arrives empty is refused (exit 1) before anything is delegated,
 so it costs no attempt: a `--prompt-file` that does not exist, one that is
@@ -232,7 +268,7 @@ complaining about its own stdin.
 `--timeout` is the total deadline. `--idle-timeout` is the *no output* deadline:
 a wedged agent goes quiet while a slow one keeps producing, so this catches a
 stall in minutes rather than at the total deadline. It only applies to providers
-that stream progress (both adapters do; see `references/providers.md`), and is
+that stream progress (the Claude and Codex adapters do, agy's does not; see `references/providers.md`), and is
 ignored elsewhere rather than guessed at.
 
 `--output` writes the run's stdout only when the run succeeded and printed
@@ -373,6 +409,16 @@ running because you asked`) and proceeds: the setting says whether the
 orchestrator runs the stage, not whether you may. A round run that way is a
 design round, so from then on `auto` answers run (`a design round already
 ran`) and the loop proceeds as under `true`. See `references/reviews.md`.
+
+A reviewer on `agy`, which has no read-only mode, is warned about before
+either kind of round runs (`warning: reviewer <id>: read-only is NOT enforced
+by agy -- ...`) when the panel comes from the global config, and fails in the
+round with the refusal as its `error` -- the other reviewers still run -- when
+the reviewers list comes from the project file -- as is a project reviewer on
+any adapter whose installed CLI reports `unenforced` when asked before the
+round. After the round, each reviewer's run warnings are printed as `warning:
+reviewer <id>: ...` lines, less the enforcement warning already printed before
+it, and all are kept as `warnings` on its entry.
 
 `review status --json` reports the budget under the name of the setting it came
 from: `max_review_iterations` without `--design`, `max_iterations` with it. The

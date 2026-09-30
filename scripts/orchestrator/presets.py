@@ -14,7 +14,12 @@ a PATH lookup, no subprocess, so it is cheap enough for every ``load()``.
 
 Codex gets ``recommended-coding`` in every slot, the one family its adapter
 vouches for without running the CLI, so an expansion never needs the network
-or a subprocess to be valid.
+or a subprocess to be valid. agy gets ``default`` for the same reason.
+
+Write roles and read-only seats are fitted from different pools. agy cannot
+be held to reading, so it only ever takes the implementer and the review
+fixer, and only when neither Claude nor Codex is on PATH; the orchestrator,
+the architect and every reviewer seat are fitted from Claude and Codex alone.
 """
 
 from __future__ import annotations
@@ -26,12 +31,17 @@ from . import config as config_mod
 
 CLAUDE = "claude"
 CODEX = "codex"
+AGY = "agy"
 
-#: The providers a preset is dealt across, in the order roles prefer them.
-FITTED_PROVIDERS = (CLAUDE, CODEX)
+#: The providers a preset is fitted to, in the order roles prefer them. The
+#: write roles are fitted from here.
+FITTED_PROVIDERS = (CLAUDE, CODEX, AGY)
+
+#: The providers the read-only roles and the reviewer seats are fitted from.
+SEAT_PROVIDERS = (CLAUDE, CODEX)
 
 #: The family each non-Claude provider gets, whatever the preset's tier.
-_OFFLINE_FAMILY = {CODEX: "recommended-coding"}
+_OFFLINE_FAMILY = {CODEX: "recommended-coding", AGY: "default"}
 
 #: The keys a preset sets. ``config setup --preset`` and the wizard's preset
 #: path replace these in an existing file and keep everything else.
@@ -203,28 +213,34 @@ def _deal(preset: Preset, pool: Sequence[str], implementer: Optional[str] = None
 def expand(name: str, installed: Sequence[str], implementer: Optional[str] = None) -> Fit:
     """``name`` as values of existing keys, fitted to ``installed``.
 
-    With neither CLI installed the preset expands as written: nothing better
-    is known, and ``doctor`` already reports the missing CLIs. ``implementer``
-    is the provider a file set the implementer to, which the panel is dealt
-    around instead of the fitted one.
+    With no fitted CLI installed the preset expands as written: nothing
+    better is known, and ``doctor`` already reports the missing CLIs. The same
+    goes for the read-only roles and the panel when only agy is installed.
+    ``implementer`` is the provider a file set the implementer to, which the
+    panel is dealt around instead of the fitted one.
     """
     preset = PRESETS[name]
     pool = [provider for provider in FITTED_PROVIDERS if provider in installed] or list(FITTED_PROVIDERS)
-    missing = ", ".join(provider for provider in FITTED_PROVIDERS if provider not in pool)
+    seat_pool = [provider for provider in SEAT_PROVIDERS if provider in installed] or list(SEAT_PROVIDERS)
+    missing = ", ".join(provider for provider in SEAT_PROVIDERS if provider not in seat_pool)
     values: Dict[str, Any] = {}
     notes: List[str] = []
     subjects: List[str] = []
 
-    role_provider = pool[0]
     for role in config_mod.KNOWN_ROLES:
+        read_only = role in config_mod.READ_ONLY_ROLES
+        order = SEAT_PROVIDERS if read_only else FITTED_PROVIDERS
+        role_provider = seat_pool[0] if read_only else pool[0]
         family = _family(role_provider, preset.roles[role])
         values[role] = {"provider": role_provider, "model": {"family": family, "version": "latest"}}
-        if role_provider != FITTED_PROVIDERS[0]:
-            notes.append("%s not found on PATH: %s went to %s (%s)" % (missing, role, role_provider, family))
+        if role_provider != order[0]:
+            # The CLIs preferred to the one it went to, which are what is missing.
+            passed = ", ".join(order[: order.index(role_provider)])
+            notes.append("%s not found on PATH: %s went to %s (%s)" % (passed, role, role_provider, family))
             subjects.append(role)
 
-    written = _deal(preset, FITTED_PROVIDERS, implementer)
-    dealt = _deal(preset, pool, implementer)
+    written = _deal(preset, SEAT_PROVIDERS, implementer)
+    dealt = _deal(preset, seat_pool, implementer)
     panel: Dict[str, List[Dict[str, Any]]] = {"reviewers": []}
     seen: Dict[Tuple[str, str, str, str], str] = {}
     seat_notes: List[str] = []

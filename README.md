@@ -62,6 +62,9 @@ from the same family share the blind spot that produced the bug.
 - **At least one supported CLI**, already authenticated:
   - [Claude Code](https://claude.com/claude-code) (`claude`)
   - [Codex CLI](https://developers.openai.com/codex/cli) (`codex`)
+  - Antigravity CLI (`agy`), for the implementer and the review fixer: it has
+    no read-only mode, so a plan or review seat on it is taken only from the
+    global config, with a warning (see `references/providers.md`)
 
 The skill runs as a plugin in Claude Code, Codex or Antigravity; the CLIs above
 are what it drives, not where it runs.
@@ -275,7 +278,7 @@ translation of each, for people to read, is in [docs/ja/references/](docs/ja/ref
 | --- | --- |
 | [references/workflow.md](references/workflow.md) | What each stage does, the prompt templates, the `.ai/` artifacts, example workflows, installing from a checkout |
 | [references/configuration.md](references/configuration.md) | The schema, layering, every field, model families and tiers, the wizard, worked examples |
-| [references/providers.md](references/providers.md) | The adapter interface, Claude and Codex, adding a CLI |
+| [references/providers.md](references/providers.md) | The adapter interface, Claude, Codex and agy, adding a CLI |
 | [references/reviews.md](references/reviews.md) | The snapshot, withheld files, the fix-only second round, output schema, dedup, triage |
 | [references/architecture.md](references/architecture.md) | How the pieces fit, why, and the security model |
 | [references/limits.md](references/limits.md) | Stalls, timeouts, budgets, bulk input, what a run costs, the optimization level |

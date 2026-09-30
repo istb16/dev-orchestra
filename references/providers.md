@@ -11,6 +11,7 @@
 - [Claude Code adapter](#claude-code-adapter)
   - [Resuming a session](#resuming-a-session)
 - [Codex adapter](#codex-adapter)
+- [Antigravity CLI adapter](#antigravity-cli-adapter)
 - [Mock adapter](#mock-adapter)
 - [Adding a CLI](#adding-a-cli)
 - [Adding a CLI without editing the plugin](#adding-a-cli-without-editing-the-plugin)
@@ -51,6 +52,10 @@ class Provider:
     def _launch(prompt, mode, cwd, model_spec, timeout, extra_args, resume_session) -> RunResult
     def refused_read_only_args(raw_args, source) -> list[str]   # default: refuse all
     def read_only_enforcement() -> dict                         # default: "unspecified"
+    static_enforcement: bool                                    # default: False
+    local_only_options: Sequence[str]                           # default: ()
+    def run_warnings(outcome, mode) -> list[str]                # default: []
+    def config_families() -> list[tuple[str, str]]              # default: []
 
     supports_resume: bool                                       # default: False
     def resume_support(root) -> dict                            # default: "unsupported" / "unspecified"
@@ -88,6 +93,21 @@ the orchestrator then spends an attempt on a fresh run. The results are on
 `RunResult.session_id`, `context_tokens`, `session_init` and
 `resume_rejected`.
 
+`run_warnings(outcome, mode)` is what a finished run should say whatever its
+outcome -- a refused tool, a status that is not success. The base keeps the
+list in `RunResult.warnings` and puts it above stderr; `run` and `review run`
+print it on success too, where stderr is not shown, and record it in the run
+log and the job record. `static_enforcement = True` says
+`read_only_enforcement()` is a constant that needs no subprocess, so `doctor`
+reports it in `--fast` mode and for an uninstalled CLI, and the config
+commands warn from it without looking for the CLI. `local_only_options` names
+options a write role takes only from the global config or `--extra`; on such
+an adapter no project-file option of a write role is honoured (see
+[Antigravity CLI adapter](#antigravity-cli-adapter)). `config_families()`
+returns `(family, what it resolves to now)` for the families to put in a
+config, for a CLI whose listed models are dated ids that go stale;
+`dev-orchestra model list` prints them after the models.
+
 ### Modes
 
 | Mode | Meaning | Must the working tree be writable? |
@@ -103,31 +123,38 @@ write, not that the prompt asks the model not to.
 
 What each built-in adapter enforces, and by what:
 
-| | Claude | Codex |
-| --- | --- | --- |
-| Edit / Write tools | refused (`--disallowed-tools`, and not in `--tools`) | OS sandbox (`-s read-only`) |
-| Shell writes | no shell: only `Read`, `Grep` and `Glob` exist | OS sandbox (measured) |
-| MCP tools (Slack, Drive, ...) | none: `--strict-mcp-config` | **not examined** |
-| Hooks in settings files | not run: `--restricted` ignores user, project and local settings | not examined |
-| Reading outside the working directory | confined to it and `--add-dir` (`--restricted`) | not confined |
-| Raw arguments (`options.args`, `--extra`) | only `--add-dir <path>` | none |
+| | Claude | Codex | agy |
+| --- | --- | --- | --- |
+| Edit / Write tools | refused (`--disallowed-tools`, and not in `--tools`) | OS sandbox (`-s read-only`) | **not stopped** (measured) |
+| Shell writes | no shell: only `Read`, `Grep` and `Glob` exist | OS sandbox (measured) | refused in headless mode without `--dangerously-skip-permissions` (measured) |
+| MCP tools (Slack, Drive, ...) | none: `--strict-mcp-config` | **not examined** | not examined |
+| Hooks in settings files | not run: `--restricted` ignores user, project and local settings | not examined | not examined |
+| Reading outside the working directory | confined to it and `--add-dir` (`--restricted`) | not confined | not confined (measured) |
+| Raw arguments (`options.args`, `--extra`) | only `--add-dir <path>` | none | none |
 
 `read_only_enforcement()` reports this per adapter, and `dev-orchestra doctor`
 prints it: `verified` (the CLI stops writes and external side effects),
 `partial` (writes are stopped, external side effects were not examined),
-`unsupported` (the CLI does not advertise what enforcement needs), `unverified`
-(that could not be checked), `unspecified` (the adapter says nothing). A `plan`
-or `review` run on an `unsupported` or `unverified` CLI is refused (exit 2)
-rather than run with less.
+`unenforced` (the CLI was measured to have no read-only mode; runs go ahead,
+warned), `unsupported` (the CLI does not advertise what enforcement needs),
+`unverified` (that could not be checked), `unspecified` (the adapter says
+nothing). A `plan` or `review` run on an `unsupported` or `unverified` CLI is
+refused (exit 2) rather than run with less. One on an `unenforced` CLI runs,
+with a warning, when the seat comes from the global config, and is refused
+when it comes from the project file. The config commands decide that from a
+static report only, as they start no CLI; for an adapter whose report is not
+static, `run` and `review run` refuse the project-file seat on the live report.
 
 ### Progress and the idle deadline
 
 An adapter sets `streams_progress = True` only when a healthy run of the command
 it builds emits output *while working*. That must be measured, not assumed:
-claiming it falsely turns a slow but working agent into a killed one. Both
-shipped adapters stream, for different reasons -- Codex does so natively, Claude
-because its adapter asks for `stream-json`. A role can override the deadline
-with `options.idle_timeout`. See `references/limits.md` for the measurements.
+claiming it falsely turns a slow but working agent into a killed one. The
+Claude and Codex adapters stream, for different reasons -- Codex does so
+natively, Claude because its adapter asks for `stream-json`. The agy adapter
+does not: `--output-format json` prints once, at the end, so an agy run has
+the total deadline only. A role can override the deadline with
+`options.idle_timeout`. See `references/limits.md` for the measurements.
 
 ### Model resolution contract
 
@@ -344,6 +371,109 @@ reviewers:
     role: general
 ```
 
+## Antigravity CLI adapter
+
+Verified against `agy` 1.2.13 on Windows. Meant for the implementer and the
+review fixer.
+
+| Aspect | How |
+| --- | --- |
+| Non-interactive run | `agy --output-format json [--model <id>] -p "Read the file .ai/agy-prompt-<pid>-<random>.md ..."`, `-p` last; one JSON object at the end |
+| Model | `--model <id>`, **omitted** for the `default` family |
+| Model discovery | `agy models` (needs the network): the `id<TAB>name` lines it prints; nothing else is read |
+| `plan` / `review` | the same command: agy has no read-only mode, so these runs are **not enforced** |
+| `implement` | the same command, plus `--dangerously-skip-permissions` when `options.skip_permissions: true` comes from the global config |
+| Final answer | the `response` field of the JSON object; `AGY_ERROR` lines and the `error` field go to stderr |
+| Usage | `usage.input_tokens`, `output_tokens` and `cache_read_tokens` of the JSON object; no cost |
+| Resume | not supported: `--resume` runs fresh |
+| Progress | none until the end (`streams_progress = False`), so no idle deadline |
+| Auth | not detected; run `agy` once to sign in if runs fail |
+
+Families are names, never ids; the id comes from what `agy models` lists on
+this machine when a run is resolved.
+
+| Family | Resolves to |
+| --- | --- |
+| `default` (also `""`, `recommended`, `auto`) | no `--model`: agy chooses. Needs no subprocess, so presets and `reviewer add` use it |
+| `gemini-flash`, `gemini-pro` | the newest listed `gemini-<major>.<minor>-<kind>[-<effort>]`, by version, then `high`, no suffix, `medium`, `low` |
+| `gemini-flash-low`, `-medium`, `-high`; `gemini-pro-low`, `-high` | the newest listed version carrying that suffix |
+| an id `agy models` lists | that id, verbatim |
+
+Anything else is refused (`ModelResolutionError`), and so is every named family
+while `agy models` cannot be run: only `default` resolves offline.
+`dev-orchestra model list --provider agy` lists the ids `agy models` prints
+and then, as the ones to put in a config, each family above that resolves on
+this machine with the id it picks now; a stored id does not follow a newer
+model.
+
+**What was measured.** `-p` takes the prompt as its value: `-p` with nothing
+after it exits 2. stdin is not read: `-p -` sends the literal `-`, and `-p ""`
+exits 1 with a JSON object whose `status` is `ERROR` and whose `error` names
+the empty prompt. So the prompt always goes into a file inside the workspace,
+`.ai/agy-prompt-<pid>-<random>.md` (owner-only where the platform has modes),
+and `-p` carries only the instruction to read it: never the prompt itself,
+which any local process could read from the command line. `run
+--print-command` shows the same command with the file name as a placeholder.
+A `.ai` that is a link, or resolves anywhere else, is refused (exit 2, nothing
+started). The file is deleted when the run ends. Before a run, only files
+whose process id is no longer running are deleted: never this process's
+(reviewers run in parallel) or another live run's, nor one without a process
+id in its name. A run killed from outside therefore leaves its prompt --
+which can hold the plan, a diff or anything the prompt carried -- in `.ai/`
+until a later run finds its process gone, or until it is deleted by hand;
+`.ai/` is kept out of git by default. Nothing is written under the user's
+home. `usage.output_tokens` already includes
+`thinking_tokens` (a `gemini-3.1-pro-high` run reported input 12527, output
+215, thinking 212, total 12742, which is input plus output), so thinking is
+not added on top. A trivial prompt costs about 12k-25k input tokens.
+
+**Read-only runs are not enforced.** On agy 1.2.13, `--mode plan`, `--mode plan
+--sandbox` and `--agent research` each wrote a file and read outside the
+workspace, and plan mode moved the answer out of the reply. So no `--mode` is
+passed, and `read_only_enforcement()` reports `unenforced`. A plan or review
+run on agy -- the orchestrator, the architect, a tier of either, a reviewer --
+**can modify the working tree, `.ai/` (including the approval record in
+`state.json`, the plan, the snapshot and other reviewers' reports), `.git/`
+and files outside the repository, and nothing in dev-orchestra checks
+afterwards what it did.** Such a seat is accepted only from the global config,
+as your own choice, and is warned about wherever it is set or run: `config
+set`, `reviewer add`, `reviewer set`, `config validate`, the setup wizard,
+`doctor` (as a note), `run`, `review run` and `review run --design`, and in
+the run record. The same seat in the project file is refused (exit 2 for
+`run`; a failed reviewer in a round; a problem in `doctor`), because the
+project file can arrive with the branch under review, which could then choose
+its own write-capable reviewer. Presets and the wizard's defaults never put
+agy on one of these seats.
+
+**Permissions on the implementer.** Without `--dangerously-skip-permissions`,
+file edits ran and shell commands were refused in headless mode, so an
+implementer on agy cannot run the tests unless the bypass is on; with it, a
+command ran. `denied_actions` in the JSON result becomes a run warning, shown
+on success too, that says how to turn it on. The bypass is
+`options.skip_permissions: true` (default `false`) in the **global** config,
+or `--extra --dangerously-skip-permissions` for one run:
+
+```yaml
+implementer:
+  provider: agy
+  model:
+    family: default
+    version: latest
+  options:
+    skip_permissions: true
+```
+
+On agy write roles nothing of `options` is taken from the project file: a
+project file that names `options.skip_permissions` (whatever its value) or
+sets any `options.args` on the implementer, the review fixer or one of their
+tiers has that role's `implement` runs refused before anything is spent, and
+`config validate` and `doctor` say so. No flag spelling is inspected, so
+`--dangerously-skip-permissions=true` and `-dangerously-skip-permissions` in
+the project's `options.args` are refused like anything else. This is the same
+reasoning as Claude's read-only raw arguments; Claude's own
+`permission_mode: bypassPermissions` is not affected. On `plan` and `review`
+`skip_permissions` is ignored, and `doctor` reports it as ignored.
+
 ## Mock adapter
 
 An offline adapter for tests and dry runs. It never spawns a process.
@@ -445,7 +575,7 @@ from orchestrator.providers.base import (
 
 
 class MyCliProvider(Provider):
-    name = "mycli"  # what `provider:` takes in config.yaml; must not be claude, codex or mock
+    name = "mycli"  # what `provider:` takes in config.yaml; must not be agy, claude, codex or mock
     display_name = "My CLI"
     executable = "mycli"
 
@@ -500,7 +630,7 @@ reviewers:
 - Files load in sorted order. Names starting with `_` or `.`, anything not
   ending in `.py`, and directories (packages) are skipped. Keep the file name
   an identifier (`my_cli.py`, not `my.cli.py`).
-- A built-in name (`claude`, `codex`, `mock`) is refused: the built-in wins.
+- A built-in name (`agy`, `claude`, `codex`, `mock`) is refused: the built-in wins.
 - Two files providing the same name: the first in sorted order wins, and the
   second is reported.
 - Do not call `register()` yourself, and do not touch the registry. The loader
@@ -565,6 +695,7 @@ responsibility; nothing here verifies it.
 | Unresolvable model | `ModelResolutionError` before anything runs |
 | Raw argument refused on `plan` / `review` | `exit_code=2`, `invoked=False`, one line naming the flag but not its value |
 | Read-only enforcement `unsupported` / `unverified` | `exit_code=2`, `invoked=False`, only when the CLI is installed |
+| Read-only enforcement `unenforced` | the run goes ahead; the warning is in `RunResult.warnings` and above stderr |
 
 Every captured stream passes through `redact()`, which scrubs
 credential-shaped substrings before anything reaches `.ai/` or the console.

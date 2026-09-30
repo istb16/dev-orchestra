@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import json
 import os
+import re
+import shutil
 import sys
 import textwrap
+import time
 import unittest
+from typing import Optional
 
 from helpers import (
     CLAUDE_HELP,
@@ -13,12 +18,16 @@ from helpers import (
     CLAUDE_HELP_NO_RESUME,
     CLAUDE_HELP_OLD,
     IsolatedCase,
+    make_dir_link,
     present,
+    remove_link,
 )
 
 from orchestrator import execution, providers, verified
+from orchestrator.providers import agy as agy_module
 from orchestrator.providers import base
 from orchestrator.providers import claude as claude_module
+from orchestrator.providers.agy import AgyProvider
 from orchestrator.providers.claude import READ_ONLY_MECHANISM, ClaudeProvider, _parse_model_aliases
 from orchestrator.providers.codex import CodexProvider
 from orchestrator.providers.mock import MockProvider
@@ -33,14 +42,14 @@ class _FakeCompleted:
 
 class TestRegistry(IsolatedCase):
     def test_known_providers(self):
-        self.assertEqual(providers.available_providers(), ["claude", "codex", "mock"])
+        self.assertEqual(providers.available_providers(), ["agy", "claude", "codex", "mock"])
 
     def test_unknown_provider_raises(self):
         with self.assertRaises(providers.UnknownProviderError):
             providers.get_provider("nonexistent")
 
     def test_built_ins_are_recorded_as_built_in(self):
-        for name in ("claude", "codex", "mock"):
+        for name in ("agy", "claude", "codex", "mock"):
             self.assertEqual(present(providers.provider_origin(name)).kind, "builtin")
             self.assertEqual(providers.describe_origin(name), "built-in")
 
@@ -79,7 +88,7 @@ class TestUserProviders(IsolatedCase):
         self.assertIsInstance(providers.get_provider("codex"), CodexProvider)
         self.assertIsInstance(providers.get_provider("claude"), ClaudeProvider)
         self.assertIsInstance(providers.get_provider("mock"), MockProvider)
-        for name in ("claude", "codex", "mock"):
+        for name in ("agy", "claude", "codex", "mock"):
             self.assertEqual(present(providers.provider_origin(name)).kind, "builtin")
 
     def test_a_valid_module_is_registered_with_its_path(self):
@@ -126,15 +135,15 @@ class TestUserProviders(IsolatedCase):
         self.write_user_provider("greedy", user_adapter("greedy", build=build))
         report = self.load_user_providers()
         self.assertIn("register through build_provider", self.errors(report)["greedy.py"])
-        self.assertEqual(providers.available_providers(), ["claude", "codex", "mock"])
+        self.assertEqual(providers.available_providers(), ["agy", "claude", "codex", "mock"])
 
     def test_build_provider_writing_an_extra_name_is_undone(self):
         build = 'registry._REGISTRY["extra"] = build_provider\n    return Adapter(executable)'
         self.write_user_provider("greedy", user_adapter("greedy", build=build))
         report = self.load_user_providers()
         self.assertIn("restored", self.errors(report)["greedy.py"])
-        self.assertEqual(providers.available_providers(), ["claude", "codex", "mock"])
-        self.assertEqual(sorted(providers._ORIGINS), ["claude", "codex", "mock"])
+        self.assertEqual(providers.available_providers(), ["agy", "claude", "codex", "mock"])
+        self.assertEqual(sorted(providers._ORIGINS), ["agy", "claude", "codex", "mock"])
 
     def test_build_provider_overwriting_a_built_in_is_undone(self):
         build = 'registry._REGISTRY["codex"] = build_provider\n    return Adapter(executable)'
@@ -277,7 +286,7 @@ class TestUserProviders(IsolatedCase):
         self.assertIn("not an orchestrator.providers.base.Provider", errors["notprovider.py"])
         self.assertIn("not usable", errors["badname.py"])
         self.assertIn("not usable", errors["basename.py"])
-        self.assertEqual(providers.available_providers(), ["claude", "codex", "mock"])
+        self.assertEqual(providers.available_providers(), ["agy", "claude", "codex", "mock"])
 
     def test_private_hidden_and_non_python_entries_are_skipped(self):
         self.write_user_provider("_private", "raise RuntimeError('imported')\n")
@@ -300,7 +309,7 @@ class TestUserProviders(IsolatedCase):
         report = self.load_user_providers()
         self.assertFalse(report["present"])
         self.assertEqual(report["errors"], [])
-        self.assertEqual(providers.available_providers(), ["claude", "codex", "mock"])
+        self.assertEqual(providers.available_providers(), ["agy", "claude", "codex", "mock"])
 
     def test_the_switch_disables_loading(self):
         self.write_user_provider("mycli")
@@ -347,7 +356,7 @@ class TestUserProviders(IsolatedCase):
         self.write_user_provider("mycli")
         self.load_user_providers()
         providers.unload_user_providers()
-        self.assertEqual(providers.available_providers(), ["claude", "codex", "mock"])
+        self.assertEqual(providers.available_providers(), ["agy", "claude", "codex", "mock"])
         self.assertFalse(any(name.startswith(providers.USER_MODULE_PREFIX) for name in sys.modules))
 
     def test_a_copied_class_name_does_not_share_the_built_in_detection(self):
@@ -883,6 +892,17 @@ class TestReadOnlyEnforcementReports(IsolatedCase):
         self.assertEqual(report["status"], "partial")
         self.assertIn("MCP", report["detail"])
 
+    def test_agy_is_unenforced_warned_and_static(self):
+        report = AgyProvider().read_only_enforcement()
+        self.assertEqual(report["status"], "unenforced")
+        self.assertIn("unenforced", base.ENFORCEMENT_STATUSES)
+        self.assertIn("unenforced", base.WARNED_ENFORCEMENT)
+        self.assertNotIn("unenforced", base.REFUSED_ENFORCEMENT)
+        self.assertIn(".git/", report["detail"])
+        self.assertIn("nothing checks afterwards", report["detail"])
+        self.assertTrue(AgyProvider.static_enforcement)
+        self.assertFalse(CodexProvider.static_enforcement)
+
     def test_mock_is_verified(self):
         self.assertEqual(MockProvider().read_only_enforcement()["status"], "verified")
 
@@ -1042,6 +1062,499 @@ class TestCodexAdapter(IsolatedCase):
         self.provider.configured_model = lambda: None
         self.provider._capture = lambda command, timeout=30: self.fail("spawned %s" % command)
         self.assertEqual([c.family for c in self.provider.list_models()], ["recommended-coding"])
+
+
+#: ``agy models`` as 1.2.13 prints it: a progress line, then ``id<TAB>name``.
+#: The ids are fixtures for the ordering rules, not a catalogue.
+AGY_MODELS = (
+    "Fetching available models...\n"
+    "gemini-3.7-flash-high\tGemini 3.7 Flash (high)\n"
+    "gemini-3.8-flash\tGemini 3.8 Flash\n"
+    "gemini-3.8-flash-medium\tGemini 3.8 Flash (medium)\n"
+    "gemini-3.8-flash-high\tGemini 3.8 Flash (high)\n"
+    "gemini-3.8-flash-low\tGemini 3.8 Flash (low)\n"
+    "gemini-2.9-pro-high\tGemini 2.9 Pro (high)\n"
+    "gemini-3.1-pro-low\tGemini 3.1 Pro (low)\n"
+    "gemini-3.1-pro-high\tGemini 3.1 Pro (high)\n"
+)
+
+
+def agy_result(**fields):
+    """One JSON result line, as ``agy --output-format json`` prints it."""
+    payload = {"conversation_id": "conv-1", "status": "SUCCESS", "response": "READY"}
+    payload.update(fields)
+    return json.dumps(payload) + "\n"
+
+
+#: A thinking model's measured usage: total = input + output, with the
+#: thinking already inside output.
+AGY_USAGE = {
+    "input_tokens": 12527,
+    "output_tokens": 215,
+    "thinking_tokens": 212,
+    "cache_read_tokens": 300,
+    "total_tokens": 12742,
+}
+
+
+class _AgyCase(IsolatedCase):
+    """An agy adapter whose CLI is faked: nothing is ever spawned."""
+
+    def setUp(self):
+        super().setUp()
+        self.provider = AgyProvider()
+        self.provider.which = lambda: None
+        setattr(self.provider, "_capture", lambda command, timeout=30: self.fail("spawned %s" % command))
+        self.seen = {}
+        self.addCleanup(setattr, execution, "execute", execution.execute)
+
+    def installed(self, models: Optional[str] = AGY_MODELS, returncode: int = 0):
+        self.provider.which = lambda: "agy"
+        self.provider.version = lambda: ("1.2.13", None)
+        self.captures = []
+
+        def capture(command, timeout=30):
+            self.captures.append(list(command))
+            return None if models is None else _FakeCompleted(models, "", returncode)
+
+        setattr(self.provider, "_capture", capture)
+
+    def answer(self, stdout=None, exit_code=0, stderr="", observe=None):
+        """Replace the child process with one that prints ``stdout``."""
+        printed = agy_result() if stdout is None else stdout
+
+        def execute(command, cwd, prompt="", timeout=None, idle_timeout=None, env=None):
+            self.seen["command"] = list(command)
+            self.seen["stdin"] = prompt
+            if observe is not None:
+                observe(command, cwd)
+            return execution.ExecOutcome(exit_code, printed, stderr, 0.5)
+
+        execution.execute = execute
+
+    def resolve(self, family):
+        return self.provider.resolve_model({"family": family, "version": "latest"})
+
+
+class TestAgyAdapter(_AgyCase):
+    def test_models_are_the_tab_lines_after_the_default(self):
+        self.installed()
+        candidates = self.provider.list_models()
+        self.assertEqual(candidates[0].family, "default")
+        self.assertEqual(candidates[0].value, "")
+        self.assertEqual(candidates[1].value, "gemini-3.7-flash-high")
+        self.assertEqual(candidates[1].label, "Gemini 3.7 Flash (high)")
+        self.assertEqual(candidates[1].source, "cli-catalog")
+        self.assertNotIn("Fetching available models...", [c.value for c in candidates])
+        self.assertEqual(self.captures, [["agy", "models"]])
+
+    def test_a_failing_or_silent_models_command_falls_back(self):
+        for models, returncode in ((AGY_MODELS, 1), (None, 0), ("Fetching available models...\n", 0)):
+            with self.subTest(models=models, returncode=returncode):
+                providers.clear_discovery_cache()
+                self.installed(models, returncode)
+                candidates = self.provider.list_models()
+                self.assertEqual([c.family for c in candidates], ["default"])
+                self.assertEqual(candidates[0].source, "builtin-fallback")
+
+    def test_default_omits_the_model_flag(self):
+        for family in ("default", "", "recommended", "auto"):
+            with self.subTest(family=family):
+                resolved = self.resolve(family)
+                self.assertIsNone(resolved.argument)
+                self.assertEqual(resolved.source, "cli-default")
+                command = self.provider.build_command(base.MODE_IMPLEMENT, resolved, self.project)
+                self.assertNotIn("--model", command)
+
+    def test_a_family_picks_the_newest_version_then_high(self):
+        self.installed()
+        self.assertEqual(self.resolve("gemini-flash").argument, "gemini-3.8-flash-high")
+        self.assertEqual(self.resolve("gemini-pro").argument, "gemini-3.1-pro-high")
+        resolved = self.resolve("gemini-flash")
+        command = self.provider.build_command(base.MODE_IMPLEMENT, resolved, self.project)
+        self.assertEqual(command[command.index("--model") + 1], "gemini-3.8-flash-high")
+
+    def test_no_suffix_comes_before_medium_and_low(self):
+        self.installed("gemini-3.8-flash-low\tlow\ngemini-3.8-flash-medium\tmid\ngemini-3.8-flash\tplain\n")
+        self.assertEqual(self.resolve("gemini-flash").argument, "gemini-3.8-flash")
+
+    def test_a_suffixed_family_keeps_its_suffix(self):
+        self.installed()
+        self.assertEqual(self.resolve("gemini-flash-medium").argument, "gemini-3.8-flash-medium")
+        self.assertEqual(self.resolve("gemini-flash-low").argument, "gemini-3.8-flash-low")
+        self.assertEqual(self.resolve("gemini-pro-low").argument, "gemini-3.1-pro-low")
+        self.assertEqual(self.resolve("gemini-pro-high").argument, "gemini-3.1-pro-high")
+
+    def test_a_listed_id_passes_through(self):
+        self.installed()
+        resolved = self.resolve("gemini-3.7-flash-high")
+        self.assertEqual(resolved.argument, "gemini-3.7-flash-high")
+        self.assertEqual(resolved.source, "cli-catalog")
+
+    def test_an_unlisted_name_is_refused(self):
+        self.installed()
+        for family in ("gemini-9.9-flash", "gemini-pro-medium", "something-else"):
+            with self.subTest(family=family):
+                with self.assertRaises(base.ModelResolutionError) as ctx:
+                    self.resolve(family)
+                self.assertIn("does not list", str(ctx.exception))
+                self.assertIn("model list --provider agy", str(ctx.exception))
+
+    def test_offline_only_the_default_resolves(self):
+        with self.assertRaises(base.ModelResolutionError):
+            self.resolve("gemini-flash")
+        self.assertIsNone(self.resolve("default").argument)
+
+    def test_pinned_passes_through(self):
+        resolved = self.provider.resolve_model({"family": "x", "version": "pinned", "id": "gemini-pinned"})
+        self.assertEqual(resolved.argument, "gemini-pinned")
+
+    def test_the_models_are_fetched_once(self):
+        self.installed()
+        for family in ("gemini-flash", "gemini-pro", "gemini-flash-low"):
+            self.resolve(family)
+        with self.assertRaises(base.ModelResolutionError):
+            self.resolve("gemini-9.9-flash")
+        self.assertEqual(len(self.captures), 1)
+
+    def test_auth_is_not_detected(self):
+        state, detail = self.provider.auth_status()
+        self.assertEqual(state, "unknown")
+        self.assertIn("run `agy` once", detail)
+
+    def test_the_contract_attributes(self):
+        self.assertEqual(self.provider.name, "agy")
+        self.assertFalse(self.provider.streams_progress)
+        self.assertFalse(self.provider.supports_resume)
+        self.assertEqual(self.provider.local_only_options, ("skip_permissions",))
+        self.assertIsInstance(providers.get_provider("agy"), AgyProvider)
+
+
+class TestAgyRoleOptions(_AgyCase):
+    def setUp(self):
+        super().setUp()
+        self.resolved = self.resolve("default")
+
+    def test_implement_asks_for_json_with_p_last(self):
+        command = self.provider.build_command(base.MODE_IMPLEMENT, self.resolved, self.project)
+        self.assertEqual(command[:3], ["agy", "--output-format", "json"])
+        self.assertEqual(command[-2], "-p")
+        for flag in ("--mode", "--sandbox", "--dangerously-skip-permissions"):
+            self.assertNotIn(flag, command)
+
+    def test_without_a_run_p_still_gets_a_value(self):
+        """`--print-command` builds the command with no run: `-p` alone exits 2."""
+        command = self.provider.build_command(base.MODE_IMPLEMENT, self.resolved, self.project)
+        self.assertEqual(command[-2], "-p")
+        self.assertIn(agy_module.PROMPT_FILE_PLACEHOLDER, command[-1])
+        self.assertIn("carry out the instructions in it exactly", command[-1])
+
+    def test_skip_permissions_true_adds_the_flag_to_the_run(self):
+        """Through run(), with the child replaced: the flag reaches the argv."""
+        self.installed()
+        self.answer()
+        result = self.provider.run(
+            "do it", base.MODE_IMPLEMENT, self.project, options={"skip_permissions": True}
+        )
+        self.assertTrue(result.ok)
+        command = self.seen["command"]
+        self.assertIn("--dangerously-skip-permissions", command)
+        self.assertEqual(command[-2], "-p")
+        self.assertIn("carry out the instructions in it exactly", command[-1])
+
+    def test_skip_permissions_false_or_absent_adds_nothing(self):
+        for options in ({"skip_permissions": False}, {}, None):
+            with self.subTest(options=options):
+                command = self.provider.build_command(
+                    base.MODE_IMPLEMENT, self.resolved, self.project, options=options
+                )
+                self.assertNotIn("--dangerously-skip-permissions", command)
+
+    def test_implement_keeps_raw_arguments_before_p(self):
+        command = self.provider.build_command(
+            base.MODE_IMPLEMENT, self.resolved, self.project, ["--extra-flag"], {"args": ["--from-config"]}
+        )
+        self.assertEqual(command[-4:-1], ["--from-config", "--extra-flag", "-p"])
+
+    def test_read_only_modes_drop_the_bypass_and_pass_no_mode(self):
+        for mode in (base.MODE_PLAN, base.MODE_REVIEW):
+            with self.subTest(mode=mode):
+                command = self.provider.build_command(
+                    mode, self.resolved, self.project, options={"skip_permissions": True}
+                )
+                self.assertEqual(command[:-1], ["agy", "--output-format", "json", "-p"])
+
+    def test_raw_arguments_on_a_read_only_run_are_refused(self):
+        self.installed()
+        self.answer()
+        result = self.provider.run("x", base.MODE_REVIEW, self.project, options={"args": ["--x"]})
+        self.assertEqual(result.exit_code, 2)
+        self.assertFalse(result.invoked)
+        self.assertNotIn("command", self.seen)
+
+    def test_skip_permissions_must_be_a_bool(self):
+        problems = self.provider.validate_options({"skip_permissions": "yes"})
+        self.assertTrue(any("true or false" in p for p in problems), problems)
+        self.assertEqual(self.provider.validate_options({"skip_permissions": True}), [])
+
+    def test_a_short_prompt_is_never_on_the_command_line_and_stdin_is_empty(self):
+        """Any local process can read a command line; the file is the owner's."""
+        self.installed()
+        seen = {}
+
+        def observe(command, cwd):
+            match = re.search(r"\.ai/(agy-prompt-[^ ]+\.md)", command[-1])
+            assert match is not None, command[-1]
+            with open(os.path.join(cwd, ".ai", match.group(1)), encoding="utf-8") as handle:
+                seen["text"] = handle.read()
+
+        self.answer(observe=observe)
+        result = self.provider.run("Reply READY", base.MODE_REVIEW, self.project)
+        self.assertFalse(any("Reply READY" in token for token in self.seen["command"]))
+        self.assertEqual(seen["text"], "Reply READY")
+        self.assertEqual(self.seen["stdin"], "")
+        self.assertEqual(result.usage.prompt_chars, len("Reply READY"))
+
+
+LONG_PROMPT = "a prompt much longer than ten characters"
+
+
+class TestAgyPromptFile(_AgyCase):
+    """The prompt goes into the workspace's `.ai/`, in a file `-p` names."""
+
+    def setUp(self):
+        super().setUp()
+        self.ai = os.path.join(self.project, ".ai")
+        os.makedirs(self.ai, exist_ok=True)
+        self.stale = os.path.join(self.ai, "agy-prompt-stale.md")
+        self.keep = os.path.join(self.ai, "keep.md")
+        for path in (self.stale, self.keep):
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write("left over\n")
+        self.during = {}
+
+    def observe(self, command, cwd):
+        match = re.search(r"\.ai/(agy-prompt-[^ ]+\.md)", command[-1])
+        assert match is not None, command[-1]
+        path = os.path.join(cwd, ".ai", match.group(1))
+        self.during["path"] = path
+        with open(path, encoding="utf-8") as handle:
+            self.during["text"] = handle.read()
+
+    def test_the_prompt_is_read_from_a_file_that_is_gone_afterwards(self):
+        self.installed()
+        self.answer(observe=self.observe)
+        result = self.provider.run(LONG_PROMPT, base.MODE_IMPLEMENT, self.project)
+        self.assertTrue(result.ok)
+        self.assertEqual(self.during["text"], LONG_PROMPT)
+        self.assertIn("carry out the instructions in it exactly", self.seen["command"][-1])
+        self.assertNotIn(LONG_PROMPT, self.seen["command"])
+        self.assertFalse(os.path.exists(self.during["path"]))
+        self.assertEqual(result.usage.prompt_chars, len(LONG_PROMPT))
+
+    def test_the_file_is_named_after_this_process(self):
+        self.installed()
+        self.answer(observe=self.observe)
+        self.provider.run(LONG_PROMPT, base.MODE_REVIEW, self.project)
+        self.assertTrue(os.path.basename(self.during["path"]).startswith("agy-prompt-%d-" % os.getpid()))
+
+    def test_only_a_file_whose_process_is_gone_is_removed_first(self):
+        """Reviewers run in parallel, in this process and in others: a file
+        another run may still be reading is never removed."""
+        live, gone = 4242, 4243
+        original = execution.pid_alive
+        self.addCleanup(setattr, execution, "pid_alive", original)
+        setattr(execution, "pid_alive", lambda pid: pid == live)
+        names = {
+            "live": "agy-prompt-%d-abc.md" % live,
+            "gone": "agy-prompt-%d-abc.md" % gone,
+            "mine": "agy-prompt-%d-abc.md" % os.getpid(),
+        }
+        old = time.time() - agy_module.ORPHAN_MIN_AGE_SECONDS - 60
+        for name in names.values():
+            path = os.path.join(self.ai, name)
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write("in use\n")
+            os.utime(path, (old, old))
+        self.installed()
+        self.answer(observe=self.observe)
+        self.provider.run(LONG_PROMPT, base.MODE_REVIEW, self.project)
+        left = set(os.listdir(self.ai))
+        self.assertNotIn(names["gone"], left)
+        for kept in (names["live"], names["mine"], "agy-prompt-stale.md", "keep.md"):
+            self.assertIn(kept, left)
+
+    def test_a_recent_file_of_a_process_that_reads_as_gone_is_kept(self):
+        """A pid that cannot be opened -- another user's, an elevated one --
+        reads as gone; a file it wrote recently may still be in use."""
+        original = execution.pid_alive
+        self.addCleanup(setattr, execution, "pid_alive", original)
+        setattr(execution, "pid_alive", lambda pid: False)
+        recent = "agy-prompt-4244-abc.md"
+        with open(os.path.join(self.ai, recent), "w", encoding="utf-8") as handle:
+            handle.write("in use\n")
+        self.installed()
+        self.answer(observe=self.observe)
+        self.provider.run(LONG_PROMPT, base.MODE_REVIEW, self.project)
+        self.assertIn(recent, os.listdir(self.ai))
+
+    def test_a_prompt_that_cannot_be_written_leaves_no_file(self):
+        original = os.fdopen
+
+        def failing(handle, *args, **kwargs):
+            stream = original(handle, *args, **kwargs)
+
+            class Broken:
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *exc):
+                    stream.close()
+                    return False
+
+                def write(self, text):
+                    stream.write(text[:10])
+                    raise OSError("disk full")
+
+            return Broken()
+
+        self.addCleanup(setattr, agy_module.os, "fdopen", original)
+        setattr(agy_module.os, "fdopen", failing)
+        with self.assertRaises(OSError):
+            agy_module._write_prompt_file(self.project, LONG_PROMPT)
+        self.assertEqual(sorted(os.listdir(self.ai)), ["agy-prompt-stale.md", "keep.md"])
+
+    def test_a_linked_ai_directory_is_refused_and_nothing_outside_is_touched(self):
+        outside = os.path.join(self.tmp, "outside")
+        os.makedirs(outside)
+        victim = os.path.join(outside, "agy-prompt-1-x.md")
+        with open(victim, "w", encoding="utf-8") as handle:
+            handle.write("not ours\n")
+        shutil.rmtree(self.ai)
+        make_dir_link(self.ai, outside)
+        # tearDown, which runs first, may already have removed it with the tree.
+        self.addCleanup(lambda: os.path.lexists(self.ai) and remove_link(self.ai))
+        self.installed()
+        self.answer()
+        result = self.provider.run(LONG_PROMPT, base.MODE_REVIEW, self.project)
+        self.assertEqual(result.exit_code, 2)
+        self.assertFalse(result.invoked)
+        self.assertIn("only inside the workspace", result.stderr)
+        self.assertNotIn("command", self.seen)
+        self.assertEqual(os.listdir(outside), ["agy-prompt-1-x.md"])
+
+    def test_the_file_is_removed_when_the_run_raises(self):
+        self.installed()
+
+        def execute(command, cwd, prompt="", timeout=None, idle_timeout=None, env=None):
+            self.observe(command, cwd)
+            raise RuntimeError("child exploded")
+
+        execution.execute = execute
+        with self.assertRaises(RuntimeError):
+            self.provider.run(LONG_PROMPT, base.MODE_IMPLEMENT, self.project)
+        self.assertFalse(os.path.exists(self.during["path"]))
+
+    def test_a_missing_cli_writes_nothing(self):
+        result = self.provider.run(LONG_PROMPT, base.MODE_IMPLEMENT, self.project)
+        self.assertEqual(result.exit_code, 127)
+        self.assertEqual(sorted(os.listdir(self.ai)), ["agy-prompt-stale.md", "keep.md"])
+
+
+class TestAgyOutput(_AgyCase):
+    def setUp(self):
+        super().setUp()
+        self.installed()
+
+    def run_agy(self, mode=base.MODE_IMPLEMENT):
+        return self.provider.run("prompt", mode, self.project)
+
+    def test_a_success_is_its_response_usage_and_conversation(self):
+        self.answer(agy_result(usage=AGY_USAGE))
+        result = self.run_agy()
+        self.assertTrue(result.ok)
+        self.assertEqual(result.stdout, "READY")
+        self.assertEqual(result.session_id, "conv-1")
+        self.assertEqual(result.warnings, [])
+        usage = result.usage
+        # Thinking is already inside output: measured, so it is not added.
+        self.assertEqual((usage.input_tokens, usage.output_tokens), (12527, 215))
+        self.assertEqual(usage.cache_read_tokens, 300)
+        self.assertIsNone(usage.total_tokens)
+        self.assertIsNone(usage.cost_usd)
+        self.assertEqual(usage.source, "agy json result")
+        self.assertEqual(usage.billed_tokens, 12527 + 215)
+
+    def test_denied_actions_are_a_warning_on_success_too(self):
+        denied = [{"action": "run_command", "display_name": "Run command"}]
+        self.answer(agy_result(denied_actions=denied))
+        result = self.run_agy()
+        self.assertTrue(result.ok)
+        self.assertEqual(len(result.warnings), 1)
+        warning = result.warnings[0]
+        self.assertIn("agy denied 1 action(s): Run command (run_command)", warning)
+        self.assertIn("options.skip_permissions: true in the global config", warning)
+        self.assertIn(warning, result.stderr)
+        self.assertEqual(result.to_dict()["warnings"], [warning])
+
+    def test_exit_3_keeps_the_partial_response_and_names_the_error(self):
+        printed = "AGY_ERROR: the tool call failed\n" + agy_result(
+            status="ERROR", response="partial answer", error="Error: tool failed"
+        )
+        self.answer(printed, exit_code=3)
+        result = self.run_agy()
+        self.assertFalse(result.ok)
+        self.assertEqual(result.stdout, "partial answer")
+        self.assertIn("AGY_ERROR: the tool call failed", result.stderr)
+        self.assertTrue(result.stderr.strip().endswith("Error: tool failed"))
+        self.assertIn("agy reported status ERROR", result.warnings)
+
+    def test_an_empty_response_keeps_the_raw_output(self):
+        printed = agy_result(conversation_id="", status="ERROR", response="", error="Error: empty prompt.")
+        self.answer(printed, exit_code=1, stderr="error: Error: empty prompt.\n")
+        result = self.run_agy()
+        self.assertFalse(result.ok)
+        self.assertEqual(result.stdout, printed)
+        self.assertEqual(result.stderr.count("Error: empty prompt."), 1)
+        self.assertIsNone(result.session_id)
+
+    def test_output_that_is_not_json_passes_through(self):
+        self.answer("plain words\n", stderr="some noise\n")
+        result = self.run_agy()
+        self.assertEqual(result.stdout, "plain words\n")
+        self.assertEqual(result.stderr, "some noise\n")
+        self.assertFalse(result.usage.measured)
+        self.assertEqual(result.warnings, [])
+
+    def test_a_result_without_usage_is_unmeasured(self):
+        self.answer(agy_result())
+        self.assertFalse(self.run_agy().usage.measured)
+
+    def test_a_review_run_is_not_refused_and_says_so(self):
+        self.answer()
+        result = self.run_agy(base.MODE_REVIEW)
+        self.assertTrue(result.ok)
+        self.assertTrue(result.invoked)
+        self.assertEqual(len(result.warnings), 1)
+        self.assertTrue(result.warnings[0].startswith("read-only is NOT enforced by agy -- "))
+        self.assertIn(agy_module.AGY_UNENFORCED, result.warnings[0])
+        self.assertTrue(result.stderr.startswith("read-only is NOT enforced by agy"))
+
+    def test_an_implement_run_has_no_enforcement_warning(self):
+        self.answer()
+        self.assertEqual(self.run_agy(base.MODE_IMPLEMENT).warnings, [])
+
+
+class TestRunWarnings(IsolatedCase):
+    def test_a_run_result_carries_its_warnings_redacted(self):
+        result = base.RunResult(True, 0, "", "", [], 0.0, warnings=["key sk-ant-abcdefghijklmnopqrs"])
+        self.assertEqual(result.warnings, ["key [redacted]"])
+        self.assertEqual(result.to_dict()["warnings"], ["key [redacted]"])
+        self.assertEqual(base.RunResult(True, 0, "", "", [], 0.0).to_dict()["warnings"], [])
+
+    def test_the_base_hook_says_nothing(self):
+        outcome = execution.ExecOutcome(0, "", "", 0.0)
+        self.assertEqual(base.Provider().run_warnings(outcome, base.MODE_REVIEW), [])
 
 
 class TestMockAdapter(IsolatedCase):

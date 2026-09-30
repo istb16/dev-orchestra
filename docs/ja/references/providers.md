@@ -1,4 +1,4 @@
-<!-- translated-from: references/providers.md sha256:79d9eeb4a9cba7e282e6ca0e00872d13181d625b3e8dc2fd2ca4330cdf1a6dad -->
+<!-- translated-from: references/providers.md sha256:62766599e1d66a2fb32c460aeedd70e762fa2c23bfb7cc378854a6ee287c43a2 -->
 
 > この文書は [references/providers.md](../../../references/providers.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -17,6 +17,7 @@
 - [Claude Code アダプタ](#claude-code-adapter)
   - [セッションの継続](#resuming-a-session)
 - [Codex アダプタ](#codex-adapter)
+- [Antigravity CLI アダプタ](#antigravity-cli-adapter)
 - [Mock アダプタ](#mock-adapter)
 - [CLI の追加](#adding-a-cli)
 - [プラグインを編集せずに CLI を追加する](#adding-a-cli-without-editing-the-plugin)
@@ -55,6 +56,10 @@ class Provider:
     def _launch(prompt, mode, cwd, model_spec, timeout, extra_args, resume_session) -> RunResult
     def refused_read_only_args(raw_args, source) -> list[str]   # default: refuse all
     def read_only_enforcement() -> dict                         # default: "unspecified"
+    static_enforcement: bool                                    # default: False
+    local_only_options: Sequence[str]                           # default: ()
+    def run_warnings(outcome, mode) -> list[str]                # default: []
+    def config_families() -> list[tuple[str, str]]              # default: []
 
     supports_resume: bool                                       # default: False
     def resume_support(root) -> dict                            # default: "unsupported" / "unspecified"
@@ -68,6 +73,8 @@ class Provider:
 `run` はすべてのアダプタが共有するゲートです。`plan` または `review` の実行では、呼び出し元の生引数（`options.args` と `--extra`）を、アダプタが自分の引数を足す前にアダプタの許可リストと照合し、そのうえで CLI を起動する `_launch` を呼びます。CLI の起動方法を変える必要があるアダプタは `_launch` をオーバーライドします。`run` をオーバーライドしたアダプタはこのゲートを通らないため、ゲートを自分で持たなければなりません。
 
 セッションの継続（`run architect --resume`）はアダプタごとのオプトインです。`resume_session` はキーワード引数として `run` から `_launch` を経て `command_line` に渡され、`command_line` はこれまでどおり `build_command` を呼んだうえで、アダプタ自身の `resume_args(session_id)` を末尾に足します。これは生引数ではないので許可リストを通ることはなく、`implement` の実行では `run` が拒否します。オーケストレーターがこれを送るのは、`supports_resume` を宣言し、かつ `resume_support(root)` が `verified` を報告するアダプタに対してだけです。`run` は値があるときだけキーワードを `_launch` に渡すので、以前のシグネチャで `_launch` をオーバーライドしているアダプタでも新規の実行はこれまでどおり動きます。継続に対応するアダプタは、このキーワードを受け取って base に渡さなければなりません。実行後、base は `parse_session(outcome)` に、実行が終わったセッション、最後の文脈の大きさ（`context_tokens`）、セッション開始時に CLI が報告した内容（`init`）を問い合わせます。継続した実行に限り `resume_rejected(outcome, mode, options, session_id)` も問い合わせます。これは、求めたセッションが存在しないという正の兆候があるときだけ True を返さなければなりません。オーケストレーターはその場合、新規の実行に試行を 1 回使うからです。結果は `RunResult.session_id`、`context_tokens`、`session_init`、`resume_rejected` に入ります。
+
+`run_warnings(outcome, mode)` は、終わった実行について結果にかかわらず伝えるべきこと（拒否されたツール、成功でない status など）です。base はこの一覧を `RunResult.warnings` に保持し、stderr の先頭にも置きます。`run` と `review run` は stderr が表示されない成功時にもこれを表示し、実行ログとジョブの記録に残します。`static_enforcement = True` は、`read_only_enforcement()` がサブプロセスを必要としない定数であることを示します。そのため `doctor` は `--fast` のときも CLI がインストールされていないときもそれを報告し、設定コマンドは CLI を探さずにそれをもとに警告します。`local_only_options` は、書き込みロールが global 設定か `--extra` からだけ受け取るオプションを挙げます。そうしたアダプタでは、書き込みロールの project ファイルのオプションは一切使われません（[Antigravity CLI adapter](#antigravity-cli-adapter) を参照）。`config_families()` は、一覧に出るモデルが日付入りの id で、いずれ古くなる CLI のために、設定に書くべき family を `(family, 今それが解決される先)` の形で返します。`dev-orchestra model list` はこれをモデルの後に表示します。
 
 <a id="modes"></a>
 
@@ -83,22 +90,22 @@ class Provider:
 
 built-in の各アダプタが何を、何によって強制しているか:
 
-| | Claude | Codex |
-| --- | --- | --- |
-| Edit / Write ツール | 拒否（`--disallowed-tools`。`--tools` にも含まれない） | OS サンドボックス（`-s read-only`） |
-| シェルでの書き込み | シェルがない。存在するのは `Read`、`Grep`、`Glob` だけ | OS サンドボックス（実測） |
-| MCP ツール（Slack、Drive など） | なし（`--strict-mcp-config`） | **未確認** |
-| 設定ファイルのフック | 実行されない（`--restricted` がユーザー・プロジェクト・ローカルの設定を無視する） | 未確認 |
-| 作業ディレクトリ外の読み取り | 作業ディレクトリと `--add-dir` の中に閉じ込められる（`--restricted`） | 閉じ込められない |
-| 生引数（`options.args`、`--extra`） | `--add-dir <path>` だけ | なし |
+| | Claude | Codex | agy |
+| --- | --- | --- | --- |
+| Edit / Write ツール | 拒否（`--disallowed-tools`。`--tools` にも含まれない） | OS サンドボックス（`-s read-only`） | **止まらない**（実測） |
+| シェルでの書き込み | シェルがない。存在するのは `Read`、`Grep`、`Glob` だけ | OS サンドボックス（実測） | `--dangerously-skip-permissions` なしのヘッドレスモードでは拒否される（実測） |
+| MCP ツール（Slack、Drive など） | なし（`--strict-mcp-config`） | **未確認** | 未確認 |
+| 設定ファイルのフック | 実行されない（`--restricted` がユーザー・プロジェクト・ローカルの設定を無視する） | 未確認 | 未確認 |
+| 作業ディレクトリ外の読み取り | 作業ディレクトリと `--add-dir` の中に閉じ込められる（`--restricted`） | 閉じ込められない | 閉じ込められない（実測） |
+| 生引数（`options.args`、`--extra`） | `--add-dir <path>` だけ | なし | なし |
 
-`read_only_enforcement()` はこれをアダプタごとに報告し、`dev-orchestra doctor` がそれを表示します。`verified`（CLI が書き込みと外部への副作用を止める）、`partial`（書き込みは止めるが、外部への副作用は未確認）、`unsupported`（強制に必要なものを CLI が提示していない）、`unverified`（それを確認できなかった）、`unspecified`（アダプタが何も報告しない）のいずれかです。`unsupported` または `unverified` の CLI での `plan` や `review` の実行は、弱い形で走らせるのではなく拒否されます（exit 2）。
+`read_only_enforcement()` はこれをアダプタごとに報告し、`dev-orchestra doctor` がそれを表示します。`verified`（CLI が書き込みと外部への副作用を止める）、`partial`（書き込みは止めるが、外部への副作用は未確認）、`unenforced`（CLI に読み取り専用のモードがないと実測された。実行は警告付きで進む）、`unsupported`（強制に必要なものを CLI が提示していない）、`unverified`（それを確認できなかった）、`unspecified`（アダプタが何も報告しない）のいずれかです。`unsupported` または `unverified` の CLI での `plan` や `review` の実行は、弱い形で走らせるのではなく拒否されます（exit 2）。`unenforced` の CLI での実行は、その席が global 設定から来ていれば警告付きで走り、project ファイルから来ていれば拒否されます。設定コマンドは CLI を起動しないので、これを静的な報告からだけ判断します。報告が静的でないアダプタについては、`run` と `review run` がその場で得た報告にもとづいて project ファイルの席を拒否します。
 
 <a id="progress-and-the-idle-deadline"></a>
 
 ### 進捗とアイドル期限
 
-アダプタが `streams_progress = True` を設定するのは、そのアダプタが組み立てたコマンドの正常な実行が、*作業中に*出力を出す場合だけです。これは想定ではなく、測定して確かめなければなりません。誤ってそう宣言すると、遅いながらも動いているエージェントが強制終了されてしまいます。同梱の 2 つのアダプタはどちらもストリーミングしますが、理由は異なります。Codex はネイティブにストリーミングし、Claude はアダプタが `stream-json` を要求しているためです。ロールごとに `options.idle_timeout` で期限を上書きできます。測定結果については `references/limits.md` を参照してください。
+アダプタが `streams_progress = True` を設定するのは、そのアダプタが組み立てたコマンドの正常な実行が、*作業中に*出力を出す場合だけです。これは想定ではなく、測定して確かめなければなりません。誤ってそう宣言すると、遅いながらも動いているエージェントが強制終了されてしまいます。Claude と Codex のアダプタはストリーミングしますが、理由は異なります。Codex はネイティブにストリーミングし、Claude はアダプタが `stream-json` を要求しているためです。agy のアダプタはストリーミングしません。`--output-format json` は最後に 1 回だけ出力するので、agy の実行には全体の期限しかありません。ロールごとに `options.idle_timeout` で期限を上書きできます。測定結果については `references/limits.md` を参照してください。
 
 <a id="model-resolution-contract"></a>
 
@@ -227,6 +234,54 @@ reviewers:
     role: general
 ```
 
+<a id="antigravity-cli-adapter"></a>
+
+## Antigravity CLI アダプタ
+
+Windows 上の `agy` 1.2.13 で検証済みです。implementer と review fixer 向けです。
+
+| 項目 | 方法 |
+| --- | --- |
+| 非対話実行 | `agy --output-format json [--model <id>] -p "Read the file .ai/agy-prompt-<pid>-<random>.md ..."`。`-p` は最後。最後に JSON オブジェクトを 1 つ出力する |
+| モデル | `--model <id>`。`default` family の場合は**省略** |
+| モデルの検出 | `agy models`（ネットワークが必要）が出力する `id<TAB>name` の行。それ以外は読まない |
+| `plan` / `review` | 同じコマンド。agy には読み取り専用のモードがないので、これらの実行は**強制されない** |
+| `implement` | 同じコマンドに、global 設定の `options.skip_permissions: true` があれば `--dangerously-skip-permissions` を足したもの |
+| 最終的な回答 | JSON オブジェクトの `response` フィールド。`AGY_ERROR` の行と `error` フィールドは stderr へ |
+| 使用量 | JSON オブジェクトの `usage.input_tokens`、`output_tokens`、`cache_read_tokens`。費用はない |
+| 継続 | 非対応。`--resume` は新規に走る |
+| 進捗 | 最後まで出力がない（`streams_progress = False`）ので、アイドル期限はない |
+| 認証 | 検出しない。実行が失敗するなら一度 `agy` を起動してサインインする |
+
+family は名前であって id ではありません。id は、実行を解決するときにこのマシンで `agy models` が出力したものから選びます。
+
+| family | 解決先 |
+| --- | --- |
+| `default`（`""`、`recommended`、`auto` も） | `--model` なし。agy が選ぶ。サブプロセスが要らないので、プリセットと `reviewer add` はこれを使う |
+| `gemini-flash`、`gemini-pro` | 一覧にある最新の `gemini-<major>.<minor>-<kind>[-<effort>]`。版の順、次に `high`、接尾辞なし、`medium`、`low` の順 |
+| `gemini-flash-low`、`-medium`、`-high`、`gemini-pro-low`、`-high` | その接尾辞を持つ、一覧にある最新の版 |
+| `agy models` が出力する id | その id をそのまま |
+
+それ以外は拒否されます（`ModelResolutionError`）。`agy models` を実行できない間は名前付きの family もすべて拒否され、オフラインで解決できるのは `default` だけです。`dev-orchestra model list --provider agy` は、`agy models` が表示する id を並べたあと、設定に書くものとして、上の family のうちこのマシンで解決できるものを、今選ばれる id とともに表示します。書き込んだ id は新しいモデルに追従しません。
+
+**実測したこと。** `-p` はプロンプトを値として取ります。`-p` の後に何もないと exit 2 になります。stdin は読まれません。`-p -` は文字どおりの `-` を送り、`-p ""` は、`status` が `ERROR` で `error` が空のプロンプトを示す JSON オブジェクトを出して exit 1 になります。そこでプロンプトは常にワークスペースの中のファイル `.ai/agy-prompt-<pid>-<random>.md`（モードのあるプラットフォームでは所有者だけが読める）に書き、`-p` にはそれを読むよう指示する文だけを載せます。プロンプトそのものは載せません。コマンドラインはローカルのどのプロセスからも読めるからです。`run --print-command` は同じコマンドを、ファイル名をプレースホルダーにして表示します。`.ai` がリンクであるか、ほかの場所に解決される場合は拒否されます（exit 2、何も起動しない）。このファイルは実行の終わりに削除されます。実行の前に削除されるのは、プロセス id がもう動いていないファイルだけです。このプロセスのもの（レビュアーは並列に走る）や、動いている別の実行のもの、名前にプロセス id のないものは削除しません。したがって外から kill された実行は、そのプロンプト（計画、差分、その他プロンプトに入っていたもの）を、後の実行がそのプロセスの終了に気づくか、手で削除するまで `.ai/` に残します。`.ai/` は既定で git から外されています。ユーザーのホームの下には何も書きません。`usage.output_tokens` にはすでに `thinking_tokens` が含まれているので（`gemini-3.1-pro-high` の実行で input 12527、output 215、thinking 212、total 12742。これは input と output の和）、thinking は上乗せしません。些細なプロンプトでも入力は約 12k〜25k トークンかかります。
+
+**読み取り専用の実行は強制されません。** agy 1.2.13 では、`--mode plan`、`--mode plan --sandbox`、`--agent research` のいずれもファイルを書き、ワークスペースの外を読みました。plan モードでは回答が返答から外れました。そのため `--mode` は渡さず、`read_only_enforcement()` は `unenforced` を報告します。agy での plan や review の実行（orchestrator、architect、そのいずれかの tier、レビュアー）は、**作業ツリー、`.ai/`（`state.json` の承認記録、計画、スナップショット、他のレビュアーのレポートを含む）、`.git/`、リポジトリの外のファイルを変更でき、dev-orchestra はその実行が何をしたかを後から確かめません。** そうした席は、あなた自身の選択として global 設定からだけ受け付けられ、設定する場所と実行する場所のすべてで警告されます。`config set`、`reviewer add`、`reviewer set`、`config validate`、セットアップウィザード、`doctor`（注記として）、`run`、`review run`、`review run --design`、そして実行の記録です。同じ席が project ファイルにあれば拒否されます（`run` では exit 2、ラウンドでは失敗したレビュアー、`doctor` では問題）。project ファイルはレビュー対象のブランチと一緒にやってくることがあり、そのブランチが書き込みのできるレビュアーを自分で選べてしまうからです。プリセットとウィザードの既定値は、agy をこれらの席に置きません。
+
+**implementer のパーミッション。** `--dangerously-skip-permissions` なしでは、ヘッドレスモードでファイルの編集は走り、シェルコマンドは拒否されました。そのため、バイパスを有効にしない限り、agy の implementer はテストを実行できません。有効にするとコマンドが走りました。JSON の結果の `denied_actions` は実行の警告になり、成功時にも表示されて、有効にする方法を示します。バイパスは **global** 設定の `options.skip_permissions: true`（既定は `false`）か、1 回の実行だけなら `--extra --dangerously-skip-permissions` です。
+
+```yaml
+implementer:
+  provider: agy
+  model:
+    family: default
+    version: latest
+  options:
+    skip_permissions: true
+```
+
+agy の書き込みロールでは、`options` の何ひとつとして project ファイルからは受け取りません。project ファイルが implementer、review fixer、またはそのいずれかの tier で `options.skip_permissions` を（値を問わず）挙げるか、何らかの `options.args` を設定すると、そのロールの `implement` の実行は何も消費する前に拒否され、`config validate` と `doctor` がそう伝えます。フラグの綴りは調べないので、project の `options.args` にある `--dangerously-skip-permissions=true` や `-dangerously-skip-permissions` も他のものと同様に拒否されます。これは Claude の読み取り専用の生引数と同じ理屈です。Claude 自身の `permission_mode: bypassPermissions` は影響を受けません。`plan` と `review` では `skip_permissions` は無視され、`doctor` はそれを無視されたものとして報告します。
+
 <a id="mock-adapter"></a>
 
 ## Mock アダプタ
@@ -307,7 +362,7 @@ from orchestrator.providers.base import (
 
 
 class MyCliProvider(Provider):
-    name = "mycli"  # what `provider:` takes in config.yaml; must not be claude, codex or mock
+    name = "mycli"  # what `provider:` takes in config.yaml; must not be agy, claude, codex or mock
     display_name = "My CLI"
     executable = "mycli"
 
@@ -362,7 +417,7 @@ reviewers:
 ### ルール
 
 - ファイルはソート順に読み込まれます。`_` または `.` で始まる名前、`.py` で終わらないもの、ディレクトリ（パッケージ）はスキップされます。ファイル名は識別子にしてください（`my.cli.py` ではなく `my_cli.py`）。
-- built-in の名前（`claude`、`codex`、`mock`）は拒否されます。built-in が優先されます。
+- built-in の名前（`agy`、`claude`、`codex`、`mock`）は拒否されます。built-in が優先されます。
 - 2 つのファイルが同じ名前を提供する場合は、ソート順で先のものが優先され、後のものは報告されます。
 - 自分で `register()` を呼んだり、レジストリに触れたりしないでください。ローダーは `build_provider()` が返したものを、最初の呼び出しで読み取った名前で登録します。インポート時、または `build_provider()` から（ローダーによる呼び出しでも、それ以降の呼び出しでも）自分で何かを登録するモジュールは拒否され、変更した内容は元に戻されます。これは、`register()` の呼び出しを残したままプラグインからコピーしたアダプタのような、うっかりしたミスを捕まえるためのものです。これを回避するように書かれたモジュールに対する防御ではありません。そのようなモジュールはプロセス内の何でも再束縛できます（下記参照）。
 - `build_provider()` や `__init__` から CLI を起動しないでください。また、モジュールレベルで `sys.exit()` を呼ばないでください。このファイルはすべてのコマンドでインポートされます。読み込み中に送出された `SystemExit` は、他のものと同様に読み込みエラーとして記録されます。
@@ -398,5 +453,6 @@ reviewers:
 | 解決できないモデル | 何かが実行される前に `ModelResolutionError` |
 | `plan` / `review` で拒否された生引数 | `exit_code=2`、`invoked=False`。フラグ名は示すが値は示さない 1 行 |
 | 読み取り専用の強制が `unsupported` / `unverified` | `exit_code=2`、`invoked=False`。CLI がインストールされている場合だけ |
+| 読み取り専用の強制が `unenforced` | 実行は進む。警告は `RunResult.warnings` と stderr の先頭に入る |
 
 取得したすべてのストリームは `redact()` を通ります。これは、何かが `.ai/` やコンソールに届く前に、認証情報のような形の部分文字列を消去します。

@@ -1,4 +1,4 @@
-<!-- translated-from: references/cli.md sha256:f430c8765493f7d619e6b5f400fa2cb94fd4bb3cee99eae0b1c81e1eb3ed4a01 -->
+<!-- translated-from: references/cli.md sha256:f4739923fd5e4afcfaac2701aba838f98dd5b8083ba5ffa2ce8bf8cc6aec0938 -->
 
 > この文書は [references/cli.md](../../../references/cli.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -63,8 +63,8 @@ Microsoft Store のエイリアスだからです。
 | `config setup [--scope global\|project] [--preset quality\|standard\|fast \| --defaults] [--force]` | セットアップウィザードです。グローバルファイルでは最初の質問がプリセットです。`--preset` は何も尋ねません: `version` と `preset` を書き込み、プリセットが決めるキー以外にファイルが持っていた値は残し（ロールは `options` と `model_tiers` を残し、そのためフィットされません）、そのプリセットがこのマシンで解決される設定を note とともに表示します（`references/configuration.md` のプリセットを参照）。プリセットを指定できるのはグローバルファイルだけで、`--scope project` では拒否され（exit 2）、何も書き込みません。`--defaults` は何も上書きしないため、ファイルには `version: 1` だけが入り、プリセット `standard` で動きます。`--force` は TTY がなくてもプロンプトを表示します。 |
 | `config reset [--scope …] [--delete]` | このレイヤーの上書きを消去し（ファイルは残り、`version` だけ、グローバルファイルなら既知の `preset` も入った状態になります。知らないプリセット名は `note:` を表示して消します）、残った設定を表示します。`--delete` を付けるとファイルを削除し、グローバルレイヤーは `standard` で動きます。 |
 | `config prune [--scope …] [--dry-run]` | レイヤーが持つ値のうち、継承される値と等しいものを削除します。すべてのデフォルトを保持している 0.6.0 より前に書かれたファイル向けです。値を削除するのは組み込みのデフォルトとプリセットのフィットがどちらもその値で一致するときだけなので、prune で有効な設定が変わることはありません。`--dry-run` は書き込まずに一覧表示します。 |
-| `config set <path> <value> [--scope …] [--raw]` | 値を 1 つ設定します。パスは `a.b.c` と `reviewers[0].role` をサポートします。インデックス付きの編集では、リストの残りを下のレイヤーからコピーします。末尾を超えたインデックスは終了コード 2 で終了します。`preset` は、プロジェクトファイルがあってもグローバルファイルに書き込みます。`--scope project` を付けると終了コード 2 で終了し、何も書き込みません。 |
-| `config validate [--json]` | 有効な設定を検証します。無効な場合は終了コード 1 です。`Warnings:` セクション（`--json` では `warnings`）には、読み取り専用のロールの実行が拒否することになる生引数 — project ファイルにある `options.args` のすべてと、アダプタの許可リストが受け付けないもの — が一覧表示されますが、終了コードは変わりません。`config set` も同じものを `warning:` 行として表示します。 |
+| `config set <path> <value> [--scope …] [--raw]` | 値を 1 つ設定します。パスは `a.b.c` と `reviewers[0].role` をサポートします。インデックス付きの編集では、リストの残りを下のレイヤーからコピーします。末尾を超えたインデックスは終了コード 2 で終了します。`preset` は、プロジェクトファイルがあってもグローバルファイルに書き込みます。`--scope project` を付けると終了コード 2 で終了し、何も書き込みません。読み取り専用の席の provider（`orchestrator.provider`、`architect.provider`、`<role>.model_tiers.<tier>.provider`、`reviewers[<n>].provider`）を project ファイルで `agy` にすると、終了コード 2 で終了して何も書き込まず、代わりに `--scope global` のコマンドを示します。global ファイルでは書き込んだうえで警告します。 |
+| `config validate [--json]` | 有効な設定を検証します。無効な場合は終了コード 1 です。`Warnings:` セクション（`--json` では `warnings`）には、読み取り専用のロールの実行が拒否することになる生引数 — project ファイルにある `options.args` のすべてと、アダプタの許可リストが受け付けないもの — 、project ファイルから来た `agy` の読み取り専用の席、agy の書き込みロールが project ファイルから受け取ることになる `options.skip_permissions` や `options.args`、そして global ファイルから来た agy の読み取り専用の席ごとに 1 行の `<seat>: read-only is NOT enforced by agy -- ...` が一覧表示されますが、終了コードは変わりません。`config set` も同じものを `warning:` 行として表示します。 |
 
 ```bash
 dev-orchestra config set implementer.model.family opus
@@ -85,7 +85,7 @@ dev-orchestra config set --raw review.note "3 reviewers"
 
 | コマンド | 説明 |
 | --- | --- |
-| `model list [--provider <name>] [--json]` | インストールされている CLI が公開しているモデルを、それぞれの検出元（`cli-help`、`cli-catalog`、`cli-config`、`cli-default`、`builtin-fallback`）とともに表示します。例外を送出した adapter は報告され、残りは引き続き一覧表示されますが、終了ステータスは 1 になります。`--json` のすべてのエントリは同じキーを持ち、`origin` と `adapter_error`（正常に動作した場合は `null`）も含みます。 |
+| `model list [--provider <name>] [--json]` | インストールされている CLI が公開しているモデルを、それぞれの検出元（`cli-help`、`cli-catalog`、`cli-config`、`cli-default`、`builtin-fallback`）とともに表示します。例外を送出した adapter は報告され、残りは引き続き一覧表示されますが、終了ステータスは 1 になります。一覧に出るモデルが日付入りの id である CLI（agy）では、そのあとに `families to put in a config` の節が続き、このマシンでアダプタが解決できる family ごとに `family=<name> now <id>` の行が 1 つ出ます。設定に書くのはこの名前です。id は新しいモデルに追従しません。`--json` のすべてのエントリは同じキーを持ち、`origin`、`adapter_error`（正常に動作した場合は `null`）、`families`（ない場合は `[]`。各要素は `{"family", "resolves_to"}`）も含みます。 |
 
 <a id="reviewer"></a>
 
@@ -97,6 +97,15 @@ dev-orchestra config set --raw review.note "3 reviewers"
 | `reviewer add --provider <p> [--model <family>] [--role <r>] [--id <id>] [--pin <model-id>] [--when always\|high-risk \| --when-paths GLOB [GLOB ...]] [--scope …]` | レビュアーを追加します。id を省略すると生成されます（`codex-security`、`codex-security-2`、…）。`--when high-risk` にすると、高リスクと判定されたラウンドでだけコードレビューに加わります。`--when-paths "*migrate*/*" "*.sql"` にすると、変更されたパスがそれらのパターンのどれかに一致したときだけ加わり、`paths` を持つ `when:` のマッピングとしてブロック形式で書き込まれます（`references/configuration.md` を参照）。シェルに展開されないよう、各パターンは引用符で囲んでください。デフォルトの `always` ではキーを書きません。`--when` と `--when-paths` を同時に指定すると終了コード 2 になります。 |
 | `reviewer remove <id\|role\|position> [--scope …]` | id、一意なロール、または 1 始まりの位置で削除します。条件付き（`when: high-risk` またはパスで絞り込んだもの）のレビュアーだけが残る場合は拒否されます（exit 2）。 |
 | `reviewer set <selector> [--provider] [--model] [--role] [--id] [--pin] [--when always\|high-risk \| --when-paths GLOB [GLOB ...]] [--scope …]` | 既存のレビュアーを変更します。`--when always` は条件を外します。`--when high-risk` と `--when-paths` はどちらも条件を丸ごと置き換えるので、`--when-paths` はリストに追加するのではなく置き換えます。常に走る最後のレビュアーを条件付きにする変更は拒否され（exit 2）、`--when` と `--when-paths` の同時指定も同様です。 |
+
+`--model` なしの `reviewer add` は CLI の既定の family（Claude では `opus`、agy では `default`、それ以外では
+`recommended-coding`）を書き、`--model` も `--pin` もない `reviewer set --provider <other>` は family を新しい CLI の
+既定値に戻して、元の値を `note:` で示します。`--provider agy` では、どちらも project ファイルに対しては
+何も書かずに終了コード 2 で終了し、global ファイルに対しては書き込んだ後に `warning:` 行を表示します。
+agy のレビュアーは読み取り専用に保たれないからです。provider にかかわらず、`--scope project` は project ファイルに
+パネルがなければ global のパネルを agy のレビュアーごと project ファイルに写します。書き込んだ後、そうしたレビュアーには
+それぞれ `warning: reviewer <id>: the reviewers list comes from the project config ...` の行が、`config set` と同じように
+表示されます。以後それは拒否されるからです。
 
 `add`・`remove`・`set` は、ファイル内のリスト全体を編集します。書き込むファイルもその下のファイル
 （プロジェクトファイルに対するグローバルファイル）もまだ `reviewers` を並べていないときは、プリセットがこのマシンに与えるパネルから始め、それをファイルにコピーし、記録した
@@ -122,13 +131,19 @@ dev-orchestra reviewer remove db-review
 
 インストール済みの各 provider には `Read-only runs:` 行があり、その `plan` と `review` の実行がどう
 読み取りに限定されているかを示します。`enforced by <flags>`（verified）、`enforced by <flags>; <対象外のもの>`
-（partial。MCP サーバーを確認していない Codex）、`NOT ENFORCEABLE`（CLI がフラグを提示していない）、
+（partial。MCP サーバーを確認していない Codex）、`NOT ENFORCED (runs allowed, warned) -- <理由>`（読み取り専用の
+モードがない agy）、`NOT ENFORCEABLE`（CLI がフラグを提示していない）、
 `UNVERIFIED`（`--help` を読めなかった）、`not reported by this adapter`、`not checked (--fast)` の
-いずれかです。`--json` では `providers.<name>.read_only_enforcement` で、`status` は `verified`、`partial`、
+いずれかです。agy の状態は定数なので、その行は `--fast` のときも CLI がインストールされていないときも表示されます。
+`--json` では `providers.<name>.read_only_enforcement` で、`status` は `verified`、`partial`、`unenforced`、
 `unsupported`、`unverified`、`unspecified`、`not-checked` のいずれかです。読み取り専用のロール
 （orchestrator、architect、レビュアー）がその provider を使っている場合、`NOT ENFORCEABLE` と `UNVERIFIED`
 は問題として扱われます。その実行は拒否されるからです。ロールの各 tier は実際に使う provider に対して確認され、
-`<Role> (tier <name>)` として報告されます。`config validate` が表示する生引数の警告も
+`<Role> (tier <name>)` として報告されます。global ファイルから来た agy の読み取り専用の席は、代わりに注記に
+なります（`Reviewer agy-general: read-only runs are NOT enforced by agy (allowed, warned) -- <理由>`）。どちらの
+モードでも、agy がインストールされていてもいなくても出て、`--json` のエントリには `read_only: "unenforced"` が
+入ります。`--strict` は通ります。同じ席が project ファイルから来た場合は問題（`run` が返す拒否）になるので、
+`--strict` は失敗します。`config validate` が表示する生引数の警告も
 ここでは問題として扱われ、`--json` では `config.warnings` に入ります。`--fast` は `--help` を一切読まない
 ことを約束するものではありません。`options.permission_mode` の検証では読みます。
 
@@ -140,8 +155,8 @@ dev-orchestra reviewer remove db-review
 言いません。どの版もこの設定をファイルに書き込んだことはないので、値があれば必ず誰かが足したものだからです。
 
 誤りではないが知っておくべきことがあると、問題の後に **Notes** ブロックが表示されます。注記は
-`--strict` の判定に数えられず、`--json` では `notes` に入ります（ないときは `[]`）。注記は 2 種類あります。
-1 つは、このマシンでまだ live check していないインストール済み CLI のバージョンを挙げるものです（後述の
+`--strict` の判定に数えられず、`--json` では `notes` に入ります（ないときは `[]`）。1 種類は、上で述べた
+agy の読み取り専用の席です。1 つは、このマシンでまだ live check していないインストール済み CLI のバージョンを挙げるものです（後述の
 `Live check:` 行を参照）。もう 1 つは次のものです:
 組み込みの `high_risk_paths` だけで判定される -- リポジトリ独自のリストも `extra_high_risk_paths` もない --
 `when: high-risk` のレビュアーを、すべて 1 つの注記にまとめて名前を挙げます。デフォルトは一般的な名前に
@@ -211,13 +226,24 @@ Antigravity の入れ先（`~/.gemini/config/plugins/dev-orchestra`、または 
 デフォルトのモード: architect/orchestrator は `plan`、implementer と review_fixer は `implement`、
 レビュアーは `review` です。orchestrator、architect、レビュアーは読み取り専用のロールで、これらに
 `--mode implement` を指定すると終了コード 2 になります。`--print-command` は、実行せずに正確な CLI の
-呼び出しを表示します。`--extra` は、`implement` の実行では残りのすべての引数をそのまま provider CLI に
+呼び出しを表示します。空白を含む引数は引用符で囲みます。agy では、実行時にしか書かれないプロンプトのファイルが
+`.ai/agy-prompt-<pid>-<random>.md` として表示されます。`--extra` は、`implement` の実行では残りのすべての引数をそのまま provider CLI に
 渡します。`plan` と `review` では、通るのは `--add-dir <path>` だけ（Claude）で、Codex では何も通りません。
 それ以外は試行を消費する前に終了コード 2 になり、読み取り専用のロールが project ファイルから受け取る
 `options.args` も同様です。インストール済みの Claude CLI の `--help` に `--tools`、`--strict-mcp-config`、
 `--restricted` が載っていない場合、または `--help` を読めない場合の `plan` や `review` の実行も同様です。
 拒否メッセージはフラグ名、位置、出所を示し、値は決して表示しません。detach されたワーカーでの拒否は
 ジョブレコードに書かれます。
+
+読み取り専用のモードがない `agy` での `plan` や `review` の実行は、席が global 設定から来ていれば
+実行の前に `warning: <role>: read-only is NOT enforced by agy -- ...` の行を出して走り、provider が
+project ファイルから来ていれば拒否されます（終了コード 2。実行ログを開く前、プロンプトを読む前）。
+実行時に問い合わせたインストール済みの CLI が `unenforced` を報告するアダプタも同じで、報告が静的でないため
+設定コマンドでは拒否されないものも含みます。agy での `implement` の実行も、project ファイルがそのロールの
+`options.skip_permissions` を挙げるか何らかの `options.args` を設定していれば、同じように拒否されます。
+結果にかかわらず、adapter の実行の警告（成功でない agy の status、agy が拒否した操作）は
+`warning: <role>: ...` の行として表示され、実行ログの終了イベントとジョブレコードに `warnings` として
+記録されます。強制の警告もそこに記録されますが、表示は実行の前の 1 回だけです。
 
 空のプロンプトは、何かが委譲される前に拒否されます（終了コード 1）。そのため試行は消費されません。
 対象は、存在しない `--prompt-file`、存在するが空のもの、明示的な `--prompt ""`、そして何も運ばなかった
@@ -227,8 +253,8 @@ Antigravity の入れ先（`~/.gemini/config/plugins/dev-orchestra`、または 
 
 `--timeout` は全体の期限です。`--idle-timeout` は *出力がない* 状態の期限です。固まったエージェントは
 静かになり、遅いだけのエージェントは出力を続けるので、これを使えば stall を全体の期限ではなく数分で
-検出できます。これは進捗をストリームする provider にのみ適用され（両方の adapter が該当します。
-`references/providers.md` を参照）、それ以外では推測せずに無視されます。
+検出できます。これは進捗をストリームする provider にのみ適用され（Claude と Codex の adapter が該当し、
+agy の adapter は該当しません。`references/providers.md` を参照）、それ以外では推測せずに無視されます。
 
 `--output` は、実行が成功して何かを出力した場合にのみ、実行の stdout を書き込みます。stall した、
 タイムアウトした、または失敗した実行では既存のファイルはまったくそのまま残り、その旨が stderr に
@@ -358,6 +384,14 @@ because you asked`）を表示したうえで続行します。この設定は o
 どうかを示すものであり、あなたが実行してよいかどうかを示すものではないからです。こうして実行した
 ラウンドも design ラウンドなので、それ以降 `auto` は実行（`a design round already ran`）と答え、
 ループは `true` のときと同じように進みます。`references/reviews.md` を参照してください。
+
+読み取り専用のモードがない `agy` のレビュアーは、パネルが global 設定から来ていれば、どちらの種類の
+ラウンドでも実行の前に警告されます（`warning: reviewer <id>: read-only is NOT enforced by agy -- ...`）。
+reviewers のリストが project ファイルから来ていれば、そのレビュアーは拒否を `error` としてラウンドで
+失敗し、ほかのレビュアーは走ります。ラウンドの前に問い合わせたインストール済みの CLI が `unenforced` を
+報告するアダプタの project のレビュアーも同じです。ラウンドの後、各レビュアーの実行の警告は、実行の前に
+すでに表示した強制の警告を除いて `warning: reviewer <id>: ...` の行として表示され、すべてがそのエントリに
+`warnings` として残ります。
 
 `review status --json` は、予算をその取得元の設定の名前で報告します。`--design` なしでは
 `max_review_iterations`、ありでは `max_iterations` です。ペイロードの残りはどちらでも同じです。

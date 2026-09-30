@@ -273,6 +273,13 @@ def cmd_config_set(args: argparse.Namespace) -> int:
         if list_path == "reviewers":
             frozen = _frozen_panel_note(seeded, path, base, scope, args.cwd)
     value = args.value if args.raw else config_mod.coerce_scalar(args.value)
+    if scope == "project":
+        # From the arguments alone, before anything is written: the same
+        # refusal a run of that seat would meet.
+        refusal = _project_seat_write_refusal(args.path, value, layer, path)
+        if refusal:
+            _err(refusal)
+            return 2
     try:
         config_mod.set_path(layer, args.path, value)
     except config_mod.ConfigError as exc:
@@ -297,8 +304,48 @@ def cmd_config_set(args: argparse.Namespace) -> int:
         _err("warning: %s" % problem)
     for warning in config_mod.read_only_arg_warnings(reloaded):
         _err("warning: %s" % warning)
+    _warn_unenforced(reloaded)
     _warn_unresolvable(effective, args.path.split(".")[0])
     return 0
+
+
+#: The keys that name a read-only seat's provider.
+_SEAT_PROVIDER_PATHS = (
+    re.compile(r"^(?P<role>orchestrator|architect)\.provider$"),
+    re.compile(r"^(?P<role>orchestrator|architect)\.model_tiers\.(?P<tier>.+)\.provider$"),
+    re.compile(r"^reviewers\[(?P<index>\d+)\]\.provider$"),
+)
+
+
+def _project_seat_write_refusal(dotted: str, value: Any, layer: Dict[str, Any], path: str) -> str:
+    """Why ``dotted = value`` is not written to the project file, or ""."""
+    provider = str(value) if isinstance(value, str) else ""
+    if not provider or not config_mod.warned_provider(provider):
+        return ""
+    name = os.path.basename(path)
+    for pattern in _SEAT_PROVIDER_PATHS:
+        match = pattern.match(dotted)
+        if not match:
+            continue
+        found = match.groupdict()
+        if found.get("index") is not None:
+            index = int(found["index"])
+            reviewers = layer.get("reviewers")
+            entry = reviewers[index] if isinstance(reviewers, list) and index < len(reviewers) else {}
+            reviewer_id = entry.get("id") if isinstance(entry, dict) else None
+            display = "reviewer %s" % (reviewer_id or index + 1)
+            return config_mod.project_reviewer_refusal(display, provider, name)
+        role, tier = found["role"], found.get("tier")
+        display = "%s (tier %s)" % (role, tier) if tier else role
+        return config_mod.project_seat_refusal(display, provider, name, dotted)
+    return ""
+
+
+def _warn_unenforced(loaded: config_mod.LoadedConfig) -> None:
+    """One ``warning:`` line per read-only seat that cannot be held to reading."""
+    refused = list(config_mod.project_raw_arg_refusals(loaded))
+    for line in config_mod.read_only_enforcement_warnings(loaded.data, refused):
+        _err("warning: %s" % line)
 
 
 def _left_the_fit_note(
@@ -388,6 +435,8 @@ def cmd_config_validate(args: argparse.Namespace) -> int:
     problems = config_mod.validate(loaded.data, project_layer=loaded.project_layer)
     # Warnings, not problems: they refuse one role's runs, not the file.
     warnings = config_mod.read_only_arg_warnings(loaded)
+    refused = list(config_mod.project_raw_arg_refusals(loaded))
+    warnings += config_mod.read_only_enforcement_warnings(loaded.data, refused)
     if args.json:
         _emit_json({"valid": not problems, "problems": problems, "warnings": warnings})
     else:
@@ -420,6 +469,7 @@ def cmd_model_list(args: argparse.Namespace) -> int:
             "installed": False,
             "version": None,
             "models": [],
+            "families": [],
             "fallback_updated": None,
             "adapter_error": None,
             "origin": origin_payload(name),
@@ -430,6 +480,9 @@ def cmd_model_list(args: argparse.Namespace) -> int:
             models: List[Dict[str, Any]] = []
             if detection.installed:
                 models = [candidate.to_dict() for candidate in provider.list_models()]
+                entry["families"] = [
+                    {"family": family, "resolves_to": target} for family, target in provider.config_families()
+                ]
             entry.update(
                 installed=detection.installed,
                 version=detection.version,
@@ -456,6 +509,10 @@ def cmd_model_list(args: argparse.Namespace) -> int:
             _out("  %-28s family=%-20s source=%s" % (model["label"], model["family"], model["source"]))
         if all(m["source"] == "builtin-fallback" for m in entry["models"]) and entry["models"]:
             _out("  (built-in fallback list, last reviewed %s)" % entry["fallback_updated"])
+        if entry.get("families"):
+            _out("  families to put in a config (each follows the newest listed id):")
+            for item in entry["families"]:
+                _out("    family=%-26s now %s" % (item["family"], item["resolves_to"]))
     return status
 
 
@@ -521,9 +578,14 @@ def cmd_reviewer_add(args: argparse.Namespace) -> int:
     frozen = _frozen_panel_note(_seed_list(layer, "reviewers", base), path, base, scope, args.cwd)
     role = args.role or "general"
     reviewer_id = args.id or config_mod.suggest_reviewer_id(layer, args.provider, role)
+    if scope == "project" and config_mod.warned_provider(args.provider):
+        # Nothing written: the same refusal a run of this reviewer would meet.
+        name = os.path.basename(path)
+        _err(config_mod.project_reviewer_refusal("reviewer %s" % reviewer_id, args.provider, name))
+        return 2
     family = args.model
     if family is None:
-        family = "opus" if args.provider == "claude" else "recommended-coding"
+        family = config_mod.default_reviewer_family(args.provider)
     reviewer = config_mod.make_reviewer(
         reviewer_id,
         args.provider,
@@ -549,7 +611,21 @@ def cmd_reviewer_add(args: argparse.Namespace) -> int:
     _out("Added reviewer %s (%s / %s / %s) to %s" % (reviewer_id, args.provider, family, role, path))
     if frozen:
         _out(frozen)
+    _warn_unenforced_after_write(args.cwd)
     return 0
+
+
+def _warn_unenforced_after_write(cwd: Any) -> None:
+    """The enforcement warnings of the configuration a write left in force."""
+    try:
+        loaded = config_mod.load(cwd, validate_result=False)
+    except config_mod.ConfigError:
+        return  # the other layer does not parse; the write itself is done
+    # The refusals too, as `config set` prints them: a project panel copied
+    # from the global one can hold a seat the project file may not set.
+    for warning in config_mod.read_only_arg_warnings(loaded):
+        _err("warning: %s" % warning)
+    _warn_unenforced(loaded)
 
 
 def _reviewer_problems(layer: Dict[str, Any]) -> List[str]:
@@ -587,6 +663,7 @@ def cmd_reviewer_remove(args: argparse.Namespace) -> int:
     _out("Removed reviewer %s from %s" % (removed.get("id"), path))
     if frozen:
         _out(frozen)
+    _warn_unenforced_after_write(args.cwd)
     return 0
 
 
@@ -602,8 +679,22 @@ def cmd_reviewer_set(args: argparse.Namespace) -> int:
     except config_mod.ConfigError as exc:
         _err(str(exc))
         return 2
+    if args.provider and scope == "project" and config_mod.warned_provider(args.provider):
+        display = "reviewer %s" % (args.id or reviewer.get("id") or index + 1)
+        _err(config_mod.project_reviewer_refusal(display, args.provider, os.path.basename(path)))
+        return 2
+    family_note = ""
     if args.provider:
+        previous = reviewer.get("provider")
         reviewer["provider"] = args.provider
+        if args.provider != previous and not (args.model or args.pin):
+            # A family is the old CLI's word for a model; the new one would
+            # not resolve it, so it gets its own default instead.
+            old_family = (reviewer.get("model") or {}).get("family")
+            new_family = config_mod.default_reviewer_family(args.provider)
+            reviewer["model"] = {"family": new_family, "version": "latest"}
+            message = "note: model family reset from %r to %r for provider %s (--model picks another)"
+            family_note = message % (old_family, new_family, args.provider)
     if args.role:
         reviewer["role"] = args.role
     if args.model or args.pin:
@@ -634,8 +725,11 @@ def cmd_reviewer_set(args: argparse.Namespace) -> int:
         return 2
     config_mod.write_config_file(path, layer, scope)
     _out("Updated reviewer %s in %s" % (reviewer.get("id"), path))
+    if family_note:
+        _out(family_note)
     if frozen:
         _out(frozen)
+    _warn_unenforced_after_write(args.cwd)
     return 0
 
 

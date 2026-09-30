@@ -179,9 +179,18 @@ def smoke_record_path(provider: str) -> str:
 
 
 def record_smoke(
-    provider: str, version: str, failed: Sequence[str], skipped: Sequence[str], root: str
+    provider: str,
+    version: str,
+    failed: Sequence[str],
+    skipped: Sequence[str],
+    root: str,
+    observed: Optional[Dict[str, Any]] = None,
 ) -> str:
-    """Record how ``version`` fared in a live check; returns the record's path."""
+    """Record how ``version`` fared in a live check; returns the record's path.
+
+    ``observed`` is what a check saw rather than whether it passed -- whether
+    a review-mode run wrote, for one -- kept as a baseline for the next run.
+    """
     path = smoke_record_path(provider)
     if not outside(path, root):
         raise VerifiedRecordError(SMOKE_INSIDE_WORKSPACE)
@@ -203,6 +212,8 @@ def record_smoke(
             "skipped": list(skipped),
             "dev_orchestra": __version__,
         }
+        if observed:
+            data["versions"][version]["observed"] = dict(observed)
         ws.write_json(path, data)
     return path
 

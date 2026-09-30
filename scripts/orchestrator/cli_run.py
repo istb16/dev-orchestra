@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 import os
 import re
+import shlex
+import subprocess
 import sys
 import time
 from typing import Any, Dict, List, NamedTuple, Optional, Tuple, cast
@@ -21,9 +23,11 @@ from .providers import (
     MODE_REVIEW,
     READ_ONLY_MODES,
     REFUSED_ENFORCEMENT,
+    WARNED_ENFORCEMENT,
     ModelResolutionError,
     get_provider,
     redact,
+    unenforced_warning,
 )
 
 # --------------------------------------------------------------------------- run
@@ -50,6 +54,14 @@ def _both_paths(written: str, resolved: Optional[str]) -> str:
     if not resolved or resolved == written:
         return written
     return "%s (resolved to %s)" % (written, resolved)
+
+
+def _quoted(token: str) -> str:
+    """``token`` as ``--print-command`` shows it: quoted when it has spaces,
+    so an argument such as agy's ``-p`` value stays one argument."""
+    if not re.search(r"\s", token):
+        return token
+    return subprocess.list2cmdline([token]) if os.name == "nt" else shlex.quote(token)
 
 
 def _read_prompt(args: argparse.Namespace, workspace: Optional[ws.Workspace] = None) -> str:
@@ -196,13 +208,21 @@ def cmd_run(args: argparse.Namespace) -> int:
         _err(str(exc))
         return 2
 
+    if reviewer_index is not None:
+        label = "reviewers[%d]" % reviewer_index
+    elif tier:
+        label = "%s.model_tiers.%s" % (role, tier)
+    else:
+        label = role
+    if mode == MODE_IMPLEMENT:
+        # The same reasoning for a write role on a provider whose permission
+        # bypass is local-only: nothing of it is taken from the project file.
+        from_project = config_mod.project_write_refusals(loaded).get(label)
+        if from_project:
+            return _refuse_run(args, ["refused -- %s" % from_project])
     if mode in READ_ONLY_MODES:
-        if reviewer_index is not None:
-            label = "reviewers[%d]" % reviewer_index
-        elif tier:
-            label = "%s.model_tiers.%s" % (role, tier)
-        else:
-            label = role
+        # Raw arguments, and a seat on a provider that cannot be held to
+        # reading, that came with the project file.
         from_project = config_mod.project_raw_arg_refusals(loaded).get(label)
         if from_project:
             return _refuse_run(args, ["refused -- %s" % from_project])
@@ -231,15 +251,24 @@ def cmd_run(args: argparse.Namespace) -> int:
         command = provider.command_line(
             mode, resolved, workspace.root, args.extra or [], spec.get("options"), resume_session=session_id
         )
-        _out(" ".join(command))
+        _out(" ".join(_quoted(token) for token in command))
         return 0
 
     # Only for a CLI that is there: a missing one is reported by the run as
     # missing (127), not as one whose enforcement could not be read.
+    warned_before = ""
     if mode in READ_ONLY_MODES and provider.detect().installed:
         enforcement = provider.read_only_enforcement()
         if enforcement.get("status") in REFUSED_ENFORCEMENT:
             return _refuse_run(args, ["%s: refused -- %s" % (role, enforcement.get("detail"))])
+        if enforcement.get("status") in WARNED_ENFORCEMENT:
+            # The live report, for an adapter whose report is not static and
+            # so was not asked above: a project file does not choose it either.
+            from_project = config_mod.project_provider_refusals(loaded).get(label)
+            if from_project:
+                return _refuse_run(args, ["refused -- %s" % from_project])
+            warned_before = unenforced_warning(provider_name, enforcement)
+            _err("warning: %s: %s" % (role, warned_before))
 
     try:
         prompt = _read_prompt(args, workspace)
@@ -392,6 +421,9 @@ def cmd_run(args: argparse.Namespace) -> int:
         }
         if resume_detail is not None:
             detail["resume"] = dict(resume_detail, outcome="ok" if result.ok else None)
+        # Only when there are some, so a run's event is what it always was.
+        if result.warnings:
+            detail["warnings"] = list(result.warnings)
         return detail
 
     # `resume_prompt` is read whenever --resume is given, and a session id is
@@ -450,6 +482,8 @@ def cmd_run(args: argparse.Namespace) -> int:
     }
     if resume_detail is not None:
         finished["resume"] = dict(resume_detail, outcome="ok" if result.ok else None)
+    if result.warnings:
+        finished["warnings"] = list(result.warnings)
 
     # The books are closed before the job says it finished. `jobs wait`
     # returns on that status, and a caller that reads `tokens show` next used
@@ -525,6 +559,11 @@ def cmd_run(args: argparse.Namespace) -> int:
         # The --job-file branch is left out: a worker's stdout is in the job,
         # and `jobs wait` reports the outcome.
         answered_nothing = result.ok and not _answered(result)
+    # Whatever the outcome: on success nothing else shows stderr. The
+    # enforcement warning was already printed before the run.
+    for warning in result.warnings:
+        if warning != warned_before:
+            _err("warning: %s: %s" % (role, warning))
     if result.stalled:
         _err(
             "%s produced no output for %.0fs and was treated as stalled (not merely slow)."
