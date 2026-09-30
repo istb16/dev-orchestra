@@ -32,6 +32,10 @@ AGY_MODELS = (
 
 UNENFORCED = "read-only is NOT enforced by agy"
 
+#: What a fit note on a read-only seat that went to agy ends with.
+ROLE_OPT_OUT = "; agy cannot be held to reading -- set %s in the global file to keep it off agy"
+SEAT_OPT_OUT = "; agy cannot be held to reading -- list reviewers in the global file to keep them off agy"
+
 
 def run_cli(*argv):
     """Run the CLI, returning (exit_code, stdout, stderr)."""
@@ -100,15 +104,17 @@ class TestProjectSeatRefusals(_GateCase):
         self.assertEqual(list(refusals), ["architect"])
         self.assertIn("taken only from the global config", refusals["architect"])
         self.assertIn("config set --scope global architect.provider agy", refusals["architect"])
-        self.assertEqual(config_mod.read_only_enforcement_warnings(loaded.data, list(refusals)), [])
+        warnings = config_mod.read_only_enforcement_warnings(loaded.data, list(refusals))
+        self.assertEqual([line for line in warnings if line.startswith("architect:")], [])
 
     def test_the_same_role_from_the_global_file_is_warned_not_refused(self):
         self.write_global("architect:\n" + AGY_ROLE)
         loaded = config_mod.load(self.project)
         self.assertEqual(config_mod.project_raw_arg_refusals(loaded), {})
         warnings = config_mod.read_only_enforcement_warnings(loaded.data)
-        self.assertEqual(len(warnings), 1, warnings)
-        self.assertTrue(warnings[0].startswith("architect: %s" % UNENFORCED))
+        architect = [line for line in warnings if line.startswith("architect:")]
+        self.assertEqual(len(architect), 1, warnings)
+        self.assertTrue(architect[0].startswith("architect: %s" % UNENFORCED))
 
     def test_a_tier_that_names_agy_in_the_project_is_refused_alone(self):
         self.write_project("architect:\n" + AGY_TIER)
@@ -335,22 +341,176 @@ class TestDoctor(_GateCase):
         self.assertNotIn("Architect: read-only runs are NOT enforced", notes)
 
 
+class TestTheFitOnAgyAlone(_GateCase):
+    """No file at all: the read-only seats are fitted to agy, and warned
+    wherever a global-file agy seat is."""
+
+    FITTED = ("orchestrator", "architect", "reviewer agy-general")
+
+    def test_config_show_warns_about_every_fitted_seat(self):
+        code, out, err = run_cli("config", "show")
+        self.assertEqual(code, 0, err)
+        for seat in self.FITTED:
+            self.assertIn("  Warning: %s: %s" % (seat, UNENFORCED), out)
+        self.assertIn(ROLE_OPT_OUT % "architect", out)
+        self.assertIn(SEAT_OPT_OUT, out)
+
+    def test_config_validate_warns_about_the_same_seats(self):
+        code, out, err = run_cli("config", "validate", "--json")
+        self.assertEqual(code, 0, err)
+        warnings = json.loads(out)["warnings"]
+        for seat in self.FITTED:
+            self.assertEqual(len([w for w in warnings if w.startswith("%s: %s" % (seat, UNENFORCED))]), 1)
+        loaded = config_mod.load(self.project)
+        self.assertEqual(list(config_mod.reviewer_enforcement_warnings(loaded.data)), ["agy-general"])
+
+    def test_doctor_notes_the_seats_and_finds_no_problem(self):
+        report = doctor.collect(self.project, probe_models=False)
+        notes = " ".join(report["notes"])
+        self.assertIn("Architect: read-only runs are NOT enforced by agy (allowed, warned)", notes)
+        self.assertIn("Reviewer agy-general: read-only runs are NOT enforced by agy (allowed, warned)", notes)
+        self.assertNotIn("read-only runs", " ".join(report["problems"]))
+        self.assertEqual(doctor.exit_code(report), 0, report["problems"])
+
+    @unittest.skipUnless(has_git(), "git not available")
+    def test_review_run_warns_about_the_fitted_reviewer(self):
+        self.init_git_repo()
+        self.write("app.py", "a = 1\n")
+        self.commit_all("init")
+        self.write("app.py", "a = 2\n")
+        self.write_global("optimization:\n  level: quality\n")
+        review_mod.create_snapshot(self.cli_workspace())
+        self.answer("NO_FINDINGS")
+        _, out, err = run_cli("review", "run")
+        self.assertEqual(len(self.started), 1, out + err)
+        self.assertIn("warning: reviewer agy-general: %s" % UNENFORCED, err)
+
+    def test_a_project_role_on_agy_is_still_refused_beside_the_fitted_orchestrator(self):
+        self.write_project("architect:\n" + AGY_ROLE)
+        loaded = config_mod.load(self.project)
+        self.assertEqual(loaded.data["orchestrator"]["provider"], "agy")
+        refusals = config_mod.project_raw_arg_refusals(loaded)
+        self.assertEqual(list(refusals), ["architect"])
+        warnings = config_mod.read_only_enforcement_warnings(loaded.data, list(refusals))
+        self.assertTrue([w for w in warnings if w.startswith("orchestrator: %s" % UNENFORCED)], warnings)
+        report = doctor.collect(self.project, probe_models=False)
+        problems = " ".join(report["problems"])
+        self.assertIn("architect: provider agy is set in the project config", problems)
+        self.assertNotIn("orchestrator: provider agy", problems)
+        self.assertIn("Orchestrator: read-only runs are NOT enforced by agy", " ".join(report["notes"]))
+        self.answer()
+        code, _, err = run_cli("run", "architect", "--prompt", "x")
+        self.assertEqual(code, 2)
+        self.assertIn("architect: provider agy is set in the project config", err)
+        self.assertEqual(self.started, [])
+
+
+class TestSeedingTheFittedPanel(_GateCase):
+    """A reviewer write that copies the fitted panel into the project file
+    leaves the agy seat out, which that file could not hold anyway."""
+
+    def test_a_project_panel_seeded_from_the_fit_leaves_agy_out(self):
+        code, out, err = run_cli("reviewer", "add", "--scope", "project", "--provider", "mock", "--id", "m1")
+        self.assertEqual(code, 0, err)
+        written = config_mod.read_config_file(self.project_file())
+        self.assertEqual([reviewer["id"] for reviewer in written["reviewers"]], ["m1"])
+        self.assertIn("the panel no longer follows preset standard's fit (recorded none)", out)
+        self.assertIn(
+            "; not copied into .dev-orchestra.yaml: agy-general -- a reviewer on agy is taken only from "
+            "the global config",
+            out,
+        )
+        self.assertEqual(config_mod.reviewer_raw_arg_refusals(config_mod.load(self.project)), {})
+        self.assertNotIn("comes from the project config", err)
+
+    def test_config_set_on_the_project_panel_edits_its_own_reviewer(self):
+        code, _, err = run_cli("reviewer", "add", "--scope", "project", "--provider", "mock", "--id", "m1")
+        self.assertEqual(code, 0, err)
+        code, _, err = run_cli("config", "set", "--scope", "project", "reviewers[0].role", "security")
+        self.assertEqual(code, 0, err)
+        written = config_mod.read_config_file(self.project_file())
+        self.assertEqual([(r["id"], r["role"]) for r in written["reviewers"]], [("m1", "security")])
+
+    def test_an_edit_that_names_a_seat_left_out_says_why(self):
+        left_out = (
+            "note: not copied into .dev-orchestra.yaml: agy-general -- a reviewer on agy is taken only "
+            "from the global config"
+        )
+        commands = (
+            ("config", "set", "--scope", "project", "reviewers[0].role", "security"),
+            ("reviewer", "set", "--scope", "project", "agy-general", "--role", "security"),
+            ("reviewer", "remove", "--scope", "project", "agy-general"),
+        )
+        for command in commands:
+            with self.subTest(command=command[:2]):
+                code, _, err = run_cli(*command)
+                self.assertEqual(code, 2, err)
+                self.assertIn(left_out, err)
+                self.assertFalse(os.path.exists(self.project_file()))
+
+    def test_a_global_panel_seeded_from_the_fit_keeps_the_agy_seat(self):
+        code, out, err = run_cli("reviewer", "add", "--scope", "global", "--provider", "mock", "--id", "m1")
+        self.assertEqual(code, 0, err)
+        written = config_mod.read_config_file(config_mod.global_config_path())
+        self.assertEqual([reviewer["id"] for reviewer in written["reviewers"]], ["agy-general", "m1"])
+        self.assertIn("(recorded agy-general default)", out)
+        self.assertNotIn("not copied", out)
+        self.assertIn("warning: reviewer agy-general: %s" % UNENFORCED, err)
+
+
+#: (id, role, when) of the panel each preset gets from agy alone.
+AGY_PANELS = {
+    "quality": [
+        ("agy-general", "general", None),
+        ("agy-security", "security", None),
+        ("agy-architecture", "architecture", None),
+    ],
+    "standard": [("agy-general", "general", None)],
+    "fast": [("agy-general", "general", None), ("agy-security", "security", "high-risk")],
+}
+
+
 class TestPresetsWithAgy(unittest.TestCase):
     def providers_of(self, fit):
         roles = {role: fit.values[role]["provider"] for role in config_mod.KNOWN_ROLES}
         return roles, {reviewer["provider"] for reviewer in fit.values["reviewers"]}
 
-    def test_agy_alone_takes_only_the_write_roles(self):
+    def test_agy_alone_takes_every_role_and_seat(self):
         for name in presets.NAMES:
             with self.subTest(preset=name):
-                roles, panel = self.providers_of(presets.expand(name, ["agy"]))
-                self.assertEqual(roles["implementer"], "agy")
-                self.assertEqual(roles["review_fixer"], "agy")
-                self.assertNotEqual(roles["orchestrator"], "agy")
-                self.assertNotEqual(roles["architect"], "agy")
-                self.assertNotIn("agy", panel)
                 fit = presets.expand(name, ["agy"])
-                self.assertEqual(fit.values["implementer"]["model"]["family"], "default")
+                for role in config_mod.KNOWN_ROLES:
+                    expected = {"provider": "agy", "model": {"family": "default", "version": "latest"}}
+                    self.assertEqual(fit.values[role], expected)
+                panel = [(r["id"], r["role"], r.get("when")) for r in fit.values["reviewers"]]
+                self.assertEqual(panel, AGY_PANELS[name])
+                self.assertEqual({r["provider"] for r in fit.values["reviewers"]}, {"agy"})
+                self.assertEqual({r["model"]["family"] for r in fit.values["reviewers"]}, {"default"})
+
+    def test_the_notes_name_what_is_missing_and_how_to_opt_out(self):
+        for name in presets.NAMES:
+            with self.subTest(preset=name):
+                fit = presets.expand(name, ["agy"])
+                for role in config_mod.KNOWN_ROLES:
+                    note = "claude, codex not found on PATH: %s went to agy (default)" % role
+                    if role in config_mod.READ_ONLY_ROLES:
+                        note += ROLE_OPT_OUT % role
+                    self.assertIn(note, fit.notes)
+                seats = [note for note in fit.notes if "reviewer seat" in note]
+                self.assertTrue(seats)
+                for note in seats:
+                    self.assertTrue(note.startswith("claude, codex not found on PATH: reviewer seat"), note)
+                    if "was not added" in note:
+                        self.assertNotIn("agy cannot be held", note)
+                    else:
+                        self.assertTrue(note.endswith(SEAT_OPT_OUT), note)
+                self.assertFalse([note for note in fit.notes if UNENFORCED in note])
+                self.assertEqual(len(fit.notes), len(fit.subjects))
+        self.assertIn(
+            "claude, codex not found on PATH: reviewer seat 2 (general) was not added; it would repeat "
+            "agy-general",
+            presets.expand("standard", ["agy"]).notes,
+        )
 
     def test_with_claude_there_agy_takes_nothing(self):
         for name in presets.NAMES:

@@ -8,7 +8,7 @@ import copy
 import json
 import os
 import sys
-from typing import Any, Dict, Optional, Tuple, overload
+from typing import Any, Dict, List, Optional, Tuple, overload
 
 from . import config as config_mod
 from . import workflow as workflow_mod
@@ -289,6 +289,45 @@ def _frozen_panel_note(
     )
     message = "note: %s now lists the reviewers; the panel no longer follows preset %s's fit (recorded %s)"
     return message % (path, loaded.preset, recorded or "none")
+
+
+def _seed_panel(
+    scope: str, layer: Dict[str, Any], base: Dict[str, Any], path: str, start: Optional[str] = None
+) -> Tuple[Optional[str], Optional[str]]:
+    """``_seed_list`` for ``reviewers``, and what the writer says about it.
+
+    A project file may not hold a reviewer on a warned provider, so when the
+    panel copied into one is the global preset's fit -- the global file lists
+    no reviewers -- those seats are left out of the copy and named. A panel
+    the global file lists is copied whole: the user chose those seats, and the
+    write says which of them the project file will have refused.
+
+    Returns the note for a write that succeeds, and the note for one that
+    fails -- a selector or an index that named a seat left out would
+    otherwise read as a plain "not found".
+    """
+    dropped: List[Tuple[str, str]] = []
+    reviewers = base.get("reviewers")
+    if scope == "project" and _global_file().get("reviewers") is None and isinstance(reviewers, list):
+        kept: List[Any] = []
+        for reviewer in reviewers:
+            provider = str(reviewer.get("provider") or "") if isinstance(reviewer, dict) else ""
+            if config_mod.warned_provider(provider):
+                dropped.append((str(reviewer.get("id")), provider))
+            else:
+                kept.append(reviewer)
+        base = dict(base, reviewers=kept)
+    seeded = _seed_list(layer, "reviewers", base)
+    frozen = _frozen_panel_note(seeded, path, base, scope, start)
+    if not (seeded and dropped):
+        return frozen, None
+    message = "not copied into %s: %s -- a reviewer on %s is taken only from the global config"
+    ids = ", ".join(reviewer_id for reviewer_id, _provider in dropped)
+    providers = ", ".join(sorted({provider for _id, provider in dropped}))
+    left_out = message % (os.path.basename(path), ids, providers)
+    if frozen:
+        frozen += "; " + left_out
+    return frozen, "note: " + left_out
 
 
 def _container_and_config(args: argparse.Namespace) -> "tuple[str, str, config_mod.LoadedConfig]":

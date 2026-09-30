@@ -10,7 +10,30 @@ The public surface covered by that promise is: the configuration schema, the
 
 ## [Unreleased]
 
+### Added
+
+- **A user adapter can take part in preset fitting** by declaring
+  `preset_family` on its class. It then takes the implementer and the review
+  fixer when neither Claude, Codex nor agy is on PATH, and the orchestrator,
+  the architect and the reviewer seats when neither Claude nor Codex is and its
+  static read-only report is `verified` or `partial`. `doctor` prints a
+  `Preset fitting:` line in the adapter's block (`preset_fit` in `--json`),
+  and a static report that raises is now `status: error` there rather than
+  an adapter failure. Adapters without the attribute are fitted to nothing, as
+  before. See "Taking part in preset fitting" in `references/providers.md`
+  (#186).
+
 ### Changed
+
+- **On a machine with agy and neither Claude, Codex nor an eligible user
+  adapter, the orchestrator, the architect and the reviewer panel are fitted
+  to agy**, the implicit `standard` preset included, instead of expanding as
+  written and failing. Those seats are warned wherever a global-file agy seat
+  is, and each fit note says how to keep agy off: set the role, or list
+  `reviewers`, in the global file. A project-scope reviewer write on such a
+  machine no longer copies the fitted agy reviewer into the project file.
+  Nothing changes with Claude or Codex installed. See "Presets" in
+  `references/configuration.md` (#186).
 
 - **`run architect --resume` continues on a Claude Code version newer than one
   that passed the resume checks and of the same major version**, unless a

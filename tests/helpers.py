@@ -9,6 +9,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import textwrap
 import unittest
 from typing import Optional, TypeVar
 
@@ -220,6 +221,25 @@ class MyCliProvider(Provider):
 def build_provider(executable: Optional[str] = None) -> MyCliProvider:
     return MyCliProvider(executable)
 '''
+
+
+def user_adapter_source(name: str, attributes: str = "", enforcement: Optional[str] = None) -> str:
+    """``USER_ADAPTER_SOURCE`` providing ``name``, with ``attributes`` (class
+    body lines, unindented) added to the class, and a static read-only report
+    of status ``enforcement`` when one is given."""
+    lines = [textwrap.dedent(attributes)]
+    if enforcement is not None:
+        report = {"status": enforcement, "mechanism": "--read-only", "detail": "shell commands still run"}
+        lines += [
+            "static_enforcement = True",
+            "",
+            "def read_only_enforcement(self) -> Dict[str, Any]:",
+            "    return %r" % report,
+        ]
+    source = USER_ADAPTER_SOURCE.replace('name = "mycli"', "name = %r" % name, 1)
+    source = source.replace('executable = "mycli"', "executable = %r" % name, 1)
+    anchor = 'fallback_updated = "2026-09-24"\n'
+    return source.replace(anchor, anchor + "\n" + textwrap.indent("\n".join(lines) + "\n", "    "), 1)
 
 
 class IsolatedCase(unittest.TestCase):

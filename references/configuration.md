@@ -82,7 +82,7 @@ your global architect. **Lists replace wholesale**: a project file that defines
 
 The preset layer reaches only the roles and the reviewer panel that no file
 sets ([Presets](#presets)). With both Claude Code and Codex installed, or
-neither, the default preset is the built-in defaults exactly.
+none of the fitted CLIs, the default preset is the built-in defaults exactly.
 
 ## Presets
 
@@ -124,40 +124,54 @@ timeouts, `review.max_review_iterations`, `design.require_approval` — is the
 built-in default unless a file sets it. `standard` is read from the built-in
 defaults, so the two cannot drift apart.
 
-**Fitting.** Only `claude`, `codex` and `agy` take part; a user adapter runs
-only when a file names it, as before. Detection is a PATH lookup, with no CLI
-started:
+**Fitting.** `claude`, `codex` and `agy` take part, and a user adapter only
+when it declares `preset_family` (see
+[Taking part in preset fitting](providers.md#taking-part-in-preset-fitting));
+any other user adapter runs only when a file names it, as before. Detection is
+a PATH lookup, with no CLI started:
 
 1. The orchestrator and the architect go to the first installed CLI of
-   `claude`, `codex`; the implementer and the review fixer to the first of
-   `claude`, `codex`, `agy`. Claude gets the preset's family, Codex
-   `recommended-coding`, agy `default`. agy cannot be held to reading, so a
-   preset gives it the two write roles only, and only when neither Claude nor
-   Codex is on PATH; it never gets a read-only role or a reviewer seat.
-2. Reviewer seats are dealt round the installed CLIs of `claude`, `codex` in
-   turn, starting with the implementer's -- the provider a file puts it on, when a file sets it -- so
+   `claude`, `codex`; failing both, to the first user adapter eligible for a
+   seat, by name; failing that, to agy. The implementer and the review fixer
+   go to the first of `claude`, `codex`, `agy`; failing all three, to the
+   first opted-in user adapter, by name. Claude gets the preset's family,
+   Codex `recommended-coding`, agy `default`, a user adapter the family it
+   declares. agy cannot be held to reading, so it gets a read-only role or a
+   reviewer seat only on a machine with neither Claude, Codex nor an eligible
+   user adapter. There the seat is warned wherever a global-file agy seat is,
+   and its note ends with how to keep it off (`; agy cannot be held to reading
+   -- set architect in the global file to keep it off agy`).
+2. Reviewer seats are dealt round the same CLIs as the orchestrator's --
+   `claude`, `codex`; else the eligible user adapters; else agy -- in turn,
+   starting with the implementer's -- the provider a file puts it on, when a file sets it -- so
    with two vendors every panel holds both. A preset with one
    reviewer that always runs (`fast`) starts with the other vendor: one
    always-running reviewer from the implementer's own vendor is not an
-   independent review. A seat keeps its `when` wherever it lands.
+   independent review. A seat keeps its `when` wherever it lands. Between
+   two eligible user adapters the round works the same way, so a project file
+   that sets `implementer` to the second one gives it the first seat under
+   `quality` and `standard`, and gives the one always-running seat of `fast`
+   to the first.
 3. A seat that would repeat an earlier one exactly (provider, family, role,
    condition) is not added. Ids come from the provider and the role, so a
    second Claude seat of the same role is `claude-general-2`.
-4. With neither Claude nor Codex installed the orchestrator, the architect and
-   the panel expand as written; `doctor` reports the missing CLIs. The
-   implementer and the review fixer go to agy when it is installed, with a
-   note (`claude, codex not found on PATH: implementer went to agy
-   (default)`), and are written as they are otherwise.
+4. With none of Claude, Codex, an opted-in user adapter or agy installed,
+   every role and the panel expand as written; `doctor` reports the missing
+   CLIs. With agy alone every role and seat goes to agy, each with a note
+   (`claude, codex not found on PATH: implementer went to agy (default)`).
 
 | Preset | Claude + Codex | Claude only | Codex only | agy only |
 | --- | --- | --- | --- | --- |
-| `quality` | claude-general fable, codex-security, claude-architecture opus | claude-general fable, claude-security opus, claude-architecture opus | codex-general, codex-security, codex-architecture | as written (the Claude + Codex panel) |
-| `standard` | claude-general opus, codex-general (the built-in defaults) | claude-general opus, claude-general-2 sonnet | codex-general | as written (the built-in defaults) |
-| `fast` | codex-general; claude-security opus (high-risk) | claude-general opus; claude-security opus (high-risk) | codex-general; codex-security (high-risk) | as written (the Claude + Codex panel) |
+| `quality` | claude-general fable, codex-security, claude-architecture opus | claude-general fable, claude-security opus, claude-architecture opus | codex-general, codex-security, codex-architecture | agy-general, agy-security, agy-architecture |
+| `standard` | claude-general opus, codex-general (the built-in defaults) | claude-general opus, claude-general-2 sonnet | codex-general | agy-general |
+| `fast` | codex-general; claude-security opus (high-risk) | claude-general opus; claude-security opus (high-risk) | codex-general; codex-security (high-risk) | agy-general; agy-security (high-risk) |
 
 agy beside Claude or Codex changes nothing: with Claude, Codex and agy
 installed every preset is what it is with Claude and Codex, the built-in
 defaults included; Claude + agy is Claude only, and Codex + agy is Codex only.
+On a machine with agy alone, keep it off the read-only seats by setting the
+orchestrator and the architect, or listing `reviewers`, in the global file: a
+role a file sets, and a panel a file lists, are not fitted (below).
 
 The fit is worked out again on every load: install Codex later and the next
 command's panel has it. Reviewer ids can therefore differ between teammates'
@@ -188,7 +202,14 @@ from the inherited list. From then on the file's list is the panel, on this
 machine and any other that reads the file, and the command says so once:
 `note: <path> now lists the reviewers; the panel no longer follows preset
 standard's fit (recorded claude-general opus, claude-general-2 sonnet)`. Roles,
-the design review and the optimization level keep following the preset.
+the design review and the optimization level keep following the preset. In
+project scope, when the global file lists no reviewers -- so what is copied
+is the fit -- a seat on agy is left out of the copy, since the project file
+may not hold it, and the note ends `; not copied into .dev-orchestra.yaml:
+agy-general -- a reviewer on agy is taken only from the global config`. An
+edit that names such a seat -- `reviewer set agy-general`, or an index past
+the copied list -- fails with the same `note: not copied into ...` beside its
+error. A panel the global file lists is copied whole ([below](#role-options)).
 `config reset` on the global file keeps `preset` and clears the list, which
 restores the fit. An unknown preset name is cleared with the rest, with a
 `note:`, and the file then runs under `standard`.
@@ -284,7 +305,7 @@ workspace:
 | Field | Type | Notes |
 | --- | --- | --- |
 | `version` | int | Must be `1`. |
-| `<role>.provider` | string | A registered adapter: `agy`, `claude`, `codex`, `mock`, or a user adapter (see `references/providers.md`). A read-only role or reviewer on `agy` is taken only from the global config ([below](#role-options)). |
+| `<role>.provider` | string | A registered adapter: `agy`, `claude`, `codex`, `mock`, or a user adapter (see `references/providers.md`). A read-only role or reviewer on `agy` is taken only from the global config, or from the global preset's fit when no other installed CLI can take the seat ([below](#role-options)). |
 | `<role>.model.family` | string | A family/alias the provider can resolve (`opus`, `sonnet`, `fable`, `recommended-coding`). Omit or use `default` to let the CLI choose. |
 | `<role>.model.version` | `latest` \| `pinned` | `latest` re-resolves on every run. `pinned` requires `model.id`. |
 | `<role>.model.id` | string | Exact model id, only with `version: pinned`. |
@@ -366,7 +387,9 @@ implementer, the review fixer or one of their tiers has that role's
 **A read-only seat on agy is taken only from the global config.** agy has no
 read-only mode, so a plan or review run on it can modify the working tree,
 `.ai/` (including the approval record), `.git/` and files outside the
-repository, and nothing checks afterwards. Set in the global file, such a seat
+repository, and nothing checks afterwards. Set in the global file -- or put
+there by the global preset's fit, on a machine with neither Claude, Codex nor
+a user adapter eligible for a seat ([Presets](#presets)) -- such a seat
 -- the orchestrator, the architect, a tier of either, a reviewer -- runs, and
 is warned about by `config set`, `reviewer add`, `reviewer set`, `config
 validate`, the wizard, `doctor` (as a note; `--strict` still passes), `run`
@@ -386,7 +409,9 @@ dev-orchestra reviewer add --scope global --provider agy
 
 A project file that sets any `reviewers[i].<key>` holds the whole panel (the
 list is replaced whole), so a global agy reviewer copied into it becomes a
-project one and is refused, with the same message.
+project one and is refused, with the same message. An agy seat that came from
+the preset's fit, with no reviewers in the global file, is not copied: the
+writer leaves it out and says so ([Presets](#presets)).
 
 **Options that would loosen a read-only stage are ignored or refused.** The
 orchestrator, the architect and every reviewer always run read-only, whatever

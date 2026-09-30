@@ -389,7 +389,14 @@ class Provider:
 
     #: True when :meth:`read_only_enforcement` is a constant that needs no
     #: subprocess, so ``doctor`` reports it whether or not the CLI is there.
+    #: Read from the class everywhere: an instance value is ignored.
     static_enforcement = False
+
+    #: The model family a preset gives this adapter in every slot, vouched for
+    #: without running the CLI (like Codex's ``recommended-coding``). Set to a
+    #: non-empty string to let presets fit this adapter; None keeps it out.
+    #: Read from the class, like ``static_enforcement``: an instance value is ignored.
+    preset_family: Optional[str] = None
 
     #: Options a write role takes only from the global config or ``--extra``.
     #: For an adapter that names any, no project-file option of a write role

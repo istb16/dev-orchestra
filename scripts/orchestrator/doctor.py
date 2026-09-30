@@ -28,6 +28,7 @@ from .providers import (
     describe_origin,
     get_provider,
     origin_payload,
+    provider_origin,
     redact,
     user_provider_report,
     user_providers_disabled,
@@ -90,15 +91,29 @@ def collect(start: Optional[str] = None, probe_models: bool = True) -> Dict[str,
             entry = detection.to_dict()
             entry["display_name"] = provider.display_name
             entry["model_selection"] = "supported"
-            if provider.static_enforcement:
+            if type(provider).static_enforcement:
                 # A constant, so it is known in both modes and whether or not
-                # the CLI is there -- and the seats below are noted from it.
-                entry["read_only_enforcement"] = dict(provider.read_only_enforcement())
+                # the CLI is there -- and the seats below are noted from it. A
+                # user adapter's can raise; the rest of its block still stands.
+                try:
+                    entry["read_only_enforcement"] = dict(provider.read_only_enforcement())
+                except Exception as exc:
+                    message = describe_exception(exc)
+                    entry["read_only_enforcement"] = {"status": "error", "detail": message}
+                    report["problems"].append(
+                        "provider %s (%s): read_only_enforcement() raised %s"
+                        % (name, describe_origin(name), message)
+                    )
+            origin = provider_origin(name)
+            if origin is not None and origin.kind == "user":
+                entry["preset_fit"] = presets_mod.user_fit(provider)._asdict()
             if probe_models and detection.installed:
                 candidates = provider.list_models()
                 entry["models"] = [candidate.to_dict() for candidate in candidates]
                 entry["model_discovery"] = candidates[0].source if candidates else "none"
-                entry["read_only_enforcement"] = dict(provider.read_only_enforcement())
+                if not type(provider).static_enforcement:
+                    # A static report was read above, and would be the same.
+                    entry["read_only_enforcement"] = dict(provider.read_only_enforcement())
                 entry["resume_support"] = dict(provider.resume_support(root))
             elif not probe_models:
                 # --fast skips this probe. It does not promise that no --help
@@ -398,9 +413,10 @@ def _enforcement_report(
 ) -> None:
     """A read-only seat on a provider whose read-only runs are refused, or warned about.
 
-    Refused is a problem. Warned is a note -- the run goes ahead, by the
-    user's choice in the global file -- unless the seat came with the project
-    file, which ``read_only_arg_warnings`` has already made a problem of.
+    Refused is a problem. Warned is a note -- the run goes ahead, from the
+    global file or the global preset's fit -- unless the seat came with the
+    project file, which ``read_only_arg_warnings`` has already made a problem
+    of. Any other status, ``error`` included, is neither.
     """
     if not isinstance(spec, dict):
         return
@@ -441,6 +457,8 @@ def _enforcement_line(enforcement: Dict[str, Any]) -> str:
         return "UNVERIFIED -- %s" % detail
     if status == "not-checked":
         return "not checked (--fast)"
+    if status == "error":
+        return "adapter error -- %s" % detail
     return "not reported by this adapter"
 
 
@@ -542,6 +560,10 @@ def render(report: Dict[str, Any]) -> str:
             enforcement = entry.get("read_only_enforcement") or {}
             if enforcement.get("status") not in (None, "not-checked"):
                 lines.append("  Read-only runs: %s" % _enforcement_line(enforcement))
+        # A user adapter's declaration, known whether or not its CLI is there.
+        fit_note = (entry.get("preset_fit") or {}).get("note")
+        if fit_note:
+            lines.append("  Preset fitting: %s" % fit_note)
         lines.append("")
 
     lines += _user_provider_lines(report.get("user_providers") or {})
