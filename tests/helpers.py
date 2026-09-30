@@ -182,7 +182,7 @@ from orchestrator.providers.base import (
 
 
 class MyCliProvider(Provider):
-    name = "mycli"  # what `provider:` takes in config.yaml; must not be claude, codex or mock
+    name = "mycli"  # what `provider:` takes in config.yaml; must not be agy, claude, codex or mock
     display_name = "My CLI"
     executable = "mycli"
 
@@ -261,25 +261,27 @@ class IsolatedCase(unittest.TestCase):
             self._hide_provider_clis()
 
     def _hide_provider_clis(self) -> None:
+        from orchestrator.providers.agy import AgyProvider
         from orchestrator.providers.claude import ClaudeProvider
         from orchestrator.providers.codex import CodexProvider
 
-        for cls in (ClaudeProvider, CodexProvider):
+        for cls in (AgyProvider, ClaudeProvider, CodexProvider):
             original = cls.which
             setattr(cls, "which", lambda self: None)
             self.addCleanup(setattr, cls, "which", original)
 
-    def fake_clis(self, claude: bool = False, codex: bool = False) -> None:
+    def fake_clis(self, claude: bool = False, codex: bool = False, agy: bool = False) -> None:
         """Pretend exactly these built-in CLIs are on PATH, whatever the machine has.
 
         Nothing is ever spawned: ``_capture`` answers as a CLI that cannot be
         run, and Codex reads no configuration of the user's.
         """
+        from orchestrator.providers.agy import AgyProvider
         from orchestrator.providers.claude import ClaudeProvider
         from orchestrator.providers.codex import CodexProvider
 
         replacements = []
-        for cls, present in ((ClaudeProvider, claude), (CodexProvider, codex)):
+        for cls, present in ((ClaudeProvider, claude), (CodexProvider, codex), (AgyProvider, agy)):
             found = (lambda self: self.executable) if present else (lambda self: None)
             replacements += [(cls, "which", found), (cls, "_capture", lambda self, command, timeout=30: None)]
         replacements.append((CodexProvider, "configured_model", lambda self: None))

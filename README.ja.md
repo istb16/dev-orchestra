@@ -58,6 +58,9 @@ flowchart LR
 - **サポート対象CLIのいずれか**（認証済みであること）:
   - [Claude Code](https://claude.com/claude-code) (`claude`)
   - [Codex CLI](https://developers.openai.com/codex/cli) (`codex`)
+  - Antigravity CLI (`agy`)。implementer と review fixer 向けです。読み取り専用のモードがないので、
+    plan や review の席に置く場合は global 設定からだけ、警告付きで受け付けます
+    （`docs/ja/references/providers.md` を参照）
 
 Skill は Claude Code、Codex、Antigravity のいずれかの Plugin として動きます。上の CLI は
 Skill が動かす相手で、Skill が動く場所ではありません。
@@ -258,7 +261,7 @@ Antigravity は `./install/uninstall.sh --antigravity`（Windows は `-Antigravi
 | --- | --- | --- |
 | [workflow.md](docs/ja/references/workflow.md) | [references/workflow.md](references/workflow.md) | 各工程で何をするか、プロンプトのテンプレート、`.ai/` の成果物、ワークフローの例、チェックアウトからの導入 |
 | [configuration.md](docs/ja/references/configuration.md) | [references/configuration.md](references/configuration.md) | スキーマ、階層、全フィールド、モデルの family と tier、ウィザード、設定例 |
-| [providers.md](docs/ja/references/providers.md) | [references/providers.md](references/providers.md) | adapter のインターフェース、Claude と Codex、CLI の追加方法 |
+| [providers.md](docs/ja/references/providers.md) | [references/providers.md](references/providers.md) | adapter のインターフェース、Claude と Codex と agy、CLI の追加方法 |
 | [reviews.md](docs/ja/references/reviews.md) | [references/reviews.md](references/reviews.md) | スナップショット、送らないファイル、修正だけを見る2巡目、出力の形式、重複統合、トリアージ |
 | [architecture.md](docs/ja/references/architecture.md) | [references/architecture.md](references/architecture.md) | 構成要素のつながり、その理由、セキュリティ |
 | [limits.md](docs/ja/references/limits.md) | [references/limits.md](references/limits.md) | stall、タイムアウト、予算、大量の入力、実行コスト、最適化レベル |

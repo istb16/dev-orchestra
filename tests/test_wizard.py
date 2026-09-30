@@ -311,10 +311,11 @@ class TestAFailingUserAdapter(IsolatedCase):
     def setUp(self):
         super().setUp()
         from orchestrator import providers
+        from orchestrator.providers.agy import AgyProvider
         from orchestrator.providers.claude import ClaudeProvider
         from orchestrator.providers.codex import CodexProvider
 
-        for cls in (ClaudeProvider, CodexProvider):
+        for cls in (AgyProvider, ClaudeProvider, CodexProvider):
             self.addCleanup(setattr, cls, "which", cls.which)
             setattr(cls, "which", lambda self: None)
         self.path = self.write_user_provider("flaky", self.SOURCE)
@@ -323,7 +324,7 @@ class TestAFailingUserAdapter(IsolatedCase):
     def test_selectable_providers_reports_it_and_goes_on(self):
         failures = []
         names = [name for name, _, _ in wizard_mod.selectable_providers(failures=failures)]
-        self.assertEqual(names, ["claude", "codex"])
+        self.assertEqual(names, ["agy", "claude", "codex"])
         self.assertEqual(len(failures), 1)
         name, reason = failures[0]
         self.assertEqual(name, "flaky")
@@ -332,7 +333,7 @@ class TestAFailingUserAdapter(IsolatedCase):
 
     def test_selectable_providers_without_a_failure_list_still_goes_on(self):
         names = [name for name, _, _ in wizard_mod.selectable_providers()]
-        self.assertEqual(names, ["claude", "codex"])
+        self.assertEqual(names, ["agy", "claude", "codex"])
 
 
 class TestAUserAdapterFailingOnModels(IsolatedCase):

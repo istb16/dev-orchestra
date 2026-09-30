@@ -28,6 +28,7 @@ from .base import (  # noqa: F401 - re-exported as the adapter interface
     MODES,
     READ_ONLY_MODES,
     REFUSED_ENFORCEMENT,
+    WARNED_ENFORCEMENT,
     Detection,
     ModelCandidate,
     ModelResolutionError,
@@ -37,6 +38,7 @@ from .base import (  # noqa: F401 - re-exported as the adapter interface
     Usage,
     clear_discovery_cache,
     redact,
+    unenforced_warning,
 )
 
 ProviderFactory = Callable[[Optional[str]], Provider]
@@ -340,9 +342,14 @@ def _restore(snapshot: Tuple[Dict[str, ProviderFactory], Dict[str, ProviderOrigi
 
 def _bootstrap() -> None:
     global _BOOTSTRAPPED
-    from . import claude, codex, mock
+    from . import agy, claude, codex, mock
 
-    built_ins = ((claude, claude.ClaudeProvider), (codex, codex.CodexProvider), (mock, mock.MockProvider))
+    built_ins = (
+        (agy, agy.AgyProvider),
+        (claude, claude.ClaudeProvider),
+        (codex, codex.CodexProvider),
+        (mock, mock.MockProvider),
+    )
     for module, cls in built_ins:
         register(cls.name, module.build_provider, ProviderOrigin("builtin", None, module.__name__))
     _BOOTSTRAPPED = True

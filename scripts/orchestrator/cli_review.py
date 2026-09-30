@@ -15,6 +15,7 @@ from . import optimization as opt_mod
 from . import review as review_mod
 from . import workspace as ws
 from .cli_common import _emit_json, _err, _in_workflow, _load_or_die, _out, _review_workspace, _workspace
+from .providers import WARNED_ENFORCEMENT, get_provider
 
 # --------------------------------------------------------------------------- review
 
@@ -60,6 +61,64 @@ def _refuse_if_runtime_spent(book: ledger_mod.Ledger, stage: str, force: bool) -
     _err("  - %s" % reason)
     _err("Report what is unresolved instead of retrying, or pass --force to override.")
     return ledger_mod.EXIT_BUDGET_EXHAUSTED
+
+
+def _warn_unenforced(loaded: config_mod.LoadedConfig, reviewers: List[Dict[str, Any]]) -> Dict[str, str]:
+    """One line per reviewer about to run on a provider that cannot be held to reading.
+
+    A reviewer refused for coming with the project file is not warned about:
+    it does not run. Returns the lines printed, by reviewer id.
+    """
+    refused = list(config_mod.project_raw_arg_refusals(loaded))
+    lines = config_mod.reviewer_enforcement_warnings(loaded.data, refused)
+    printed: Dict[str, str] = {}
+    for reviewer in reviewers:
+        reviewer_id = str(reviewer.get("id") or "")
+        line = lines.get(reviewer_id)
+        if line:
+            _err("warning: %s" % line)
+            printed[reviewer_id] = line
+    return printed
+
+
+def _reviewer_refusals(loaded: config_mod.LoadedConfig, reviewers: List[Dict[str, Any]]) -> Dict[str, str]:
+    """Why each reviewer about to run is not run, by reviewer id.
+
+    The configuration's refusals, and one decided on the live report: a
+    reviewer from the project file whose adapter reports, when asked now, that
+    it cannot be held to reading -- one whose report is not static, which the
+    configuration's refusals never ask.
+    """
+    refusals = dict(config_mod.reviewer_raw_arg_refusals(loaded))
+    from_project = config_mod.reviewer_provider_refusals(loaded)
+    for reviewer in reviewers:
+        reviewer_id = str(reviewer.get("id") or "")
+        if reviewer_id in refusals or reviewer_id not in from_project:
+            continue
+        try:
+            provider = get_provider(str(reviewer.get("provider")))
+            if provider.static_enforcement:
+                continue  # reviewer_raw_arg_refusals already decided it
+            if not provider.detect().installed:
+                continue
+            status = provider.read_only_enforcement().get("status")
+        except Exception:
+            continue  # the run reports it
+        if status in WARNED_ENFORCEMENT:
+            refusals[reviewer_id] = from_project[reviewer_id]
+    return refusals
+
+
+def _report_run_warnings(runs: List[Any], warned: Optional[Dict[str, str]] = None) -> None:
+    """What each reviewer's adapter said about its run, whatever the outcome,
+    less the enforcement warning ``_warn_unenforced`` already printed."""
+    for run in runs:
+        reviewer_id = str(run.reviewer.get("id") or "")
+        before = (warned or {}).get(reviewer_id, "")
+        for warning in run.warnings:
+            if before and before.endswith(warning):
+                continue
+            _err("warning: reviewer %s: %s" % (reviewer_id or "reviewer", warning))
 
 
 def _refuse_if_over_context(
@@ -579,6 +638,7 @@ def _run_design_review(args: argparse.Namespace, loaded: config_mod.LoadedConfig
     idle_timeout = args.idle_timeout
     if idle_timeout is None:
         idle_timeout = settings.get("idle_timeout_seconds")
+    warned = _warn_unenforced(loaded, reviewers)
     try:
         runs = review_mod.run_reviews(
             reviewers,
@@ -602,7 +662,7 @@ def _run_design_review(args: argparse.Namespace, loaded: config_mod.LoadedConfig
                 max_findings,
                 inline_chars,
             ),
-            refusals=config_mod.reviewer_raw_arg_refusals(loaded),
+            refusals=_reviewer_refusals(loaded, reviewers),
         )
     except review_mod.ReviewError as exc:
         book.end(token, "failed", {"error": str(exc)})
@@ -615,6 +675,7 @@ def _run_design_review(args: argparse.Namespace, loaded: config_mod.LoadedConfig
             # cost in `tokens show` -- the same reasoning as `role:tier`.
             label = "design:%s" % (run.reviewer.get("id") or "reviewer")
             book.record_usage("design_review", run.usage.to_dict(), label=label)
+    _report_run_warnings(runs, warned)
     run_dicts = [run.to_dict() for run in runs]
     stamp = review_mod.current_snapshot_stamp(workspace)
     findings, stale = review_mod.read_reports(workspace, [str(r.get("id")) for r in configured], stamp)
@@ -904,6 +965,7 @@ def cmd_review_run(args: argparse.Namespace) -> int:
     if idle_timeout is None:
         idle_timeout = settings.get("idle_timeout_seconds")
     max_findings = plan.max_findings
+    warned = _warn_unenforced(loaded, reviewers)
     try:
         runs = review_mod.run_reviews(
             reviewers,
@@ -917,7 +979,7 @@ def cmd_review_run(args: argparse.Namespace) -> int:
             budget_chars=budget_chars,
             inline_chars=inline_chars,
             surrounding=adoption,
-            refusals=config_mod.reviewer_raw_arg_refusals(loaded),
+            refusals=_reviewer_refusals(loaded, reviewers),
         )
     except review_mod.ReviewError as exc:
         book.end(token, "failed", {"error": str(exc)})
@@ -928,6 +990,7 @@ def cmd_review_run(args: argparse.Namespace) -> int:
     for run in runs:
         if run.invoked:
             book.record_usage("review", run.usage.to_dict(), label=str(run.reviewer.get("id") or "reviewer"))
+    _report_run_warnings(runs, warned)
     run_dicts = [run.to_dict() for run in runs]
     # Consolidate from every configured reviewer's report, not only the ones
     # that just ran: with --only that would otherwise overwrite the report with

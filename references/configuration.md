@@ -120,13 +120,18 @@ timeouts, `review.max_review_iterations`, `design.require_approval` — is the
 built-in default unless a file sets it. `standard` is read from the built-in
 defaults, so the two cannot drift apart.
 
-**Fitting.** Only `claude` and `codex` take part; a user adapter runs only when
-a file names it, as before. Detection is a PATH lookup, with no CLI started:
+**Fitting.** Only `claude`, `codex` and `agy` take part; a user adapter runs
+only when a file names it, as before. Detection is a PATH lookup, with no CLI
+started:
 
-1. The four roles go to the first installed CLI of `claude`, `codex`. Claude
-   gets the preset's family, Codex `recommended-coding`.
-2. Reviewer seats are dealt round the installed CLIs in turn, starting with the
-   implementer's -- the provider a file puts it on, when a file sets it -- so
+1. The orchestrator and the architect go to the first installed CLI of
+   `claude`, `codex`; the implementer and the review fixer to the first of
+   `claude`, `codex`, `agy`. Claude gets the preset's family, Codex
+   `recommended-coding`, agy `default`. agy cannot be held to reading, so a
+   preset gives it the two write roles only, and only when neither Claude nor
+   Codex is on PATH; it never gets a read-only role or a reviewer seat.
+2. Reviewer seats are dealt round the installed CLIs of `claude`, `codex` in
+   turn, starting with the implementer's -- the provider a file puts it on, when a file sets it -- so
    with two vendors every panel holds both. A preset with one
    reviewer that always runs (`fast`) starts with the other vendor: one
    always-running reviewer from the implementer's own vendor is not an
@@ -134,14 +139,21 @@ a file names it, as before. Detection is a PATH lookup, with no CLI started:
 3. A seat that would repeat an earlier one exactly (provider, family, role,
    condition) is not added. Ids come from the provider and the role, so a
    second Claude seat of the same role is `claude-general-2`.
-4. With neither CLI installed the preset expands as written; `doctor` reports
-   the missing CLIs.
+4. With neither Claude nor Codex installed the orchestrator, the architect and
+   the panel expand as written; `doctor` reports the missing CLIs. The
+   implementer and the review fixer go to agy when it is installed, with a
+   note (`claude, codex not found on PATH: implementer went to agy
+   (default)`), and are written as they are otherwise.
 
-| Preset | Claude + Codex | Claude only | Codex only |
-| --- | --- | --- | --- |
-| `quality` | claude-general fable, codex-security, claude-architecture opus | claude-general fable, claude-security opus, claude-architecture opus | codex-general, codex-security, codex-architecture |
-| `standard` | claude-general opus, codex-general (the built-in defaults) | claude-general opus, claude-general-2 sonnet | codex-general |
-| `fast` | codex-general; claude-security opus (high-risk) | claude-general opus; claude-security opus (high-risk) | codex-general; codex-security (high-risk) |
+| Preset | Claude + Codex | Claude only | Codex only | agy only |
+| --- | --- | --- | --- | --- |
+| `quality` | claude-general fable, codex-security, claude-architecture opus | claude-general fable, claude-security opus, claude-architecture opus | codex-general, codex-security, codex-architecture | as written (the Claude + Codex panel) |
+| `standard` | claude-general opus, codex-general (the built-in defaults) | claude-general opus, claude-general-2 sonnet | codex-general | as written (the built-in defaults) |
+| `fast` | codex-general; claude-security opus (high-risk) | claude-general opus; claude-security opus (high-risk) | codex-general; codex-security (high-risk) | as written (the Claude + Codex panel) |
+
+agy beside Claude or Codex changes nothing: with Claude, Codex and agy
+installed every preset is what it is with Claude and Codex, the built-in
+defaults included; Claude + agy is Claude only, and Codex + agy is Codex only.
 
 The fit is worked out again on every load: install Codex later and the next
 command's panel has it. Reviewer ids can therefore differ between teammates'
@@ -176,6 +188,14 @@ the design review and the optimization level keep following the preset.
 `config reset` on the global file keeps `preset` and clears the list, which
 restores the fit. An unknown preset name is cleared with the rest, with a
 `note:`, and the file then runs under `standard`.
+
+A reviewer added without `--model` gets its CLI's default family: `opus` on
+Claude, `default` on agy, `recommended-coding` on Codex and on any other
+adapter. `reviewer set --provider <other>` without `--model` or `--pin` writes
+the new CLI's default family the same way, because a family is the old CLI's
+name for a model and the new one would not resolve it; a `note:` line says
+what it was (`note: model family reset from 'opus' to 'default' for provider
+agy (--model picks another)`).
 
 **Only the global file can name a preset, for now.** A `preset:` in a project
 file fails validation with `preset: only the global file can name a preset for
@@ -260,7 +280,7 @@ workspace:
 | Field | Type | Notes |
 | --- | --- | --- |
 | `version` | int | Must be `1`. |
-| `<role>.provider` | string | A registered adapter: `claude`, `codex`, `mock`, or a user adapter (see `references/providers.md`). |
+| `<role>.provider` | string | A registered adapter: `agy`, `claude`, `codex`, `mock`, or a user adapter (see `references/providers.md`). A read-only role or reviewer on `agy` is taken only from the global config ([below](#role-options)). |
 | `<role>.model.family` | string | A family/alias the provider can resolve (`opus`, `sonnet`, `fable`, `recommended-coding`). Omit or use `default` to let the CLI choose. |
 | `<role>.model.version` | `latest` \| `pinned` | `latest` re-resolves on every run. `pinned` requires `model.id`. |
 | `<role>.model.id` | string | Exact model id, only with `version: pinned`. |
@@ -307,6 +327,7 @@ by `config validate`, not at run time.
 | `claude` | `permission_mode` | Whatever the installed CLI advertises for `--permission-mode` (`dev-orchestra model list` aside, run `claude --help` to see them) |
 | `codex` | `sandbox` | `read-only`, `workspace-write`, `danger-full-access` |
 | `codex` | `approve` | `true` (default) passes `--approve-for-me`; `false` omits it |
+| `agy` | `skip_permissions` | `true` passes `--dangerously-skip-permissions` on `implement` runs, so the implementer can run commands; default `false`. Taken only from the global config (or `--extra --dangerously-skip-permissions`) |
 | any | `idle_timeout` | Override the no-output deadline for this role |
 
 ```yaml
@@ -329,7 +350,39 @@ accepts none. It is also taken only from the global config or from `--extra`:
 the same `args` in the project file makes that role's runs refuse, whatever
 they hold, because the project file can come with the branch under review, and
 a branch that names its own reviewers' directories can widen what they read. An
-implementer or review fixer takes `args` from either file, as before.
+implementer or review fixer takes `args` from either file, as before -- except
+on `agy`, whose write roles take neither `options.skip_permissions` nor any
+`options.args` from the project file: a project file that names either on the
+implementer, the review fixer or one of their tiers has that role's
+`implement` runs refused, whatever the value, and `config validate` and
+`doctor` say so. The permission bypass comes from the global config or from
+`--extra --dangerously-skip-permissions` for one run. (Claude's
+`permission_mode: bypassPermissions` is not affected.)
+
+**A read-only seat on agy is taken only from the global config.** agy has no
+read-only mode, so a plan or review run on it can modify the working tree,
+`.ai/` (including the approval record), `.git/` and files outside the
+repository, and nothing checks afterwards. Set in the global file, such a seat
+-- the orchestrator, the architect, a tier of either, a reviewer -- runs, and
+is warned about by `config set`, `reviewer add`, `reviewer set`, `config
+validate`, the wizard, `doctor` (as a note; `--strict` still passes), `run`
+and `review run`. The same seat from the project file is refused: `run` exits
+2, the reviewer fails in its round while the others run, and `config validate`
+and `doctor` report it (so `doctor --strict` fails). `config set --scope
+project architect.provider agy` (and `orchestrator.provider`,
+`<role>.model_tiers.<tier>.provider`, `reviewers[<n>].provider`), `reviewer add
+--scope project --provider agy` and `reviewer set --scope project --provider
+agy` exit 2 without writing. The refusal names the command that sets the seat
+globally:
+
+```bash
+dev-orchestra config set --scope global architect.provider agy
+dev-orchestra reviewer add --scope global --provider agy
+```
+
+A project file that sets any `reviewers[i].<key>` holds the whole panel (the
+list is replaced whole), so a global agy reviewer copied into it becomes a
+project one and is refused, with the same message.
 
 **Options that would loosen a read-only stage are ignored or refused.** The
 orchestrator, the architect and every reviewer always run read-only, whatever
@@ -682,7 +735,7 @@ The skill carries the command grammar; this is the phrasebook.
 | "which models can I use?" | `model list` |
 | "use Claude Opus for implementation" | `config set implementer.model.family opus` |
 | "make the architect use Codex" | `config set architect.provider codex` **and** a family Codex accepts |
-| "the implementer can't run the tests" | `config set implementer.options.permission_mode bypassPermissions`, or allow-list the command in that CLI's own settings |
+| "the implementer can't run the tests" | `config set implementer.options.permission_mode bypassPermissions` (on agy, `config set --scope global implementer.options.skip_permissions true`), or allow-list the command in that CLI's own settings |
 | "review the design too" / "always review the design" | `config set review.design.enabled true` |
 | "never review the design" | `config set review.design.enabled false` |
 | "don't ask me to approve plans" / running in CI | `config set design.require_approval false` |

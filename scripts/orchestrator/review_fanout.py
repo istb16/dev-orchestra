@@ -377,6 +377,7 @@ class ReviewerRun:
         over_budget: bool = False,
         budget_chars: int = 0,
         surrounding: Optional[Dict[str, Any]] = None,
+        warnings: Optional[Sequence[str]] = None,
     ) -> None:
         self.reviewer = reviewer
         # ok | partial | failed | stalled | unparsed. Only "ok" counts as a
@@ -429,6 +430,9 @@ class ReviewerRun:
         #: was off, and for a run that fell over before there was a prompt:
         #: only a built prompt is ever recorded as carrying context.
         self.surrounding = surrounding
+        #: What the adapter said about the run whatever its outcome, as
+        #: ``RunResult.warnings`` carries it.
+        self.warnings = list(warnings or ())
 
     def to_dict(self) -> Dict[str, Any]:
         entry = {
@@ -453,6 +457,8 @@ class ReviewerRun:
         # Absent rather than null when off, so an entry is what it always was.
         if self.surrounding is not None:
             entry["surrounding"] = self.surrounding
+        if self.warnings:
+            entry["warnings"] = list(self.warnings)
         return entry
 
 
@@ -601,6 +607,7 @@ def run_reviews(
                 # falling over still has to appear in the account.
                 usage=result.usage,
                 invoked=result.invoked,
+                warnings=result.warnings,
                 **carried,
             )
         body = result.stdout.strip() or "NO_FINDINGS"
@@ -638,6 +645,7 @@ def run_reviews(
             findings=len(findings),
             usage=result.usage,
             invoked=result.invoked,
+            warnings=result.warnings,
             **carried,
         )
 

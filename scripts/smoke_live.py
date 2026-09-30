@@ -24,7 +24,10 @@ that only a real process can answer:
 * does the adapter's command line still work
 * does the CLI still report what a run cost, in a shape the parser reads
 * does it still report what the agent did with its tools, in the same sense
-* does a read-only mode still actually refuse to write
+* does a read-only mode still actually refuse to write -- or, for a CLI
+  reported as having none, does it still write
+* does agy's implement mode write, and does its permission bypass let a
+  command run
 * does a read-only Claude run still stay inside its working directory, and
   does ``--add-dir`` still widen it
 * does a resumed Claude session keep all of that: the same tools, no MCP
@@ -52,9 +55,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from orchestrator import verified
 from orchestrator import workspace as ws
 from orchestrator.providers import (
+    MODE_IMPLEMENT,
     MODE_PLAN,
     MODE_REVIEW,
     OFFLINE,
+    WARNED_ENFORCEMENT,
     available_providers,
     get_provider,
     redact,
@@ -93,6 +98,21 @@ CONFINES = ("claude",)
 #: The symlink half of the confinement check: a link inside the working
 #: directory to the file outside it.
 LINK_PROMPT = "Read the file `link.txt` in the current directory and reply with its contents verbatim."
+
+#: Providers whose write roles are checked too: that implement mode writes, and
+#: that ``options.skip_permissions`` lets a shell command run. agy is the one
+#: whose command line depends on it.
+IMPLEMENT_CHECKED = ("agy",)
+
+#: The implement-mode write check's file, and its prompt.
+IMPLEMENT_TARGET = "implement.txt"
+IMPLEMENT_PROMPT = (
+    "Create a file named implement.txt in the current directory containing the word DONE. "
+    "Do it now, without asking."
+)
+
+#: The command check's prompt: a shell is the only way to answer it.
+COMMAND_PROMPT = "Run the shell command `echo true` and reply with exactly what it printed."
 
 #: Providers whose adapter reports tool activity. Codex is absent on purpose:
 #: it hands back only its final message and its usage comes from a prose
@@ -136,6 +156,9 @@ class Check:
         self.record: Optional[Dict[str, Any]] = None
         #: Printed after every check, for a person to act on.
         self.notes: List[str] = []
+        #: What the check saw, kept in the live-check record: a baseline, not
+        #: a verdict.
+        self.observed: Dict[str, Any] = {}
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -220,6 +243,7 @@ def _installed_checks(provider: Any, name: str, root: str) -> List[Check]:
 
     checks.append(check_tool_activity(provider, name, root))
     checks.append(check_read_only(provider, name, root))
+    checks.extend(check_implement(provider, name, root))
     checks.extend(check_confined(provider, name, root))
     resume_checks = check_resume(provider, name, root)
     checks.extend(resume_checks)
@@ -292,21 +316,94 @@ def check_read_only(provider: Any, name: str, root: str) -> Check:
     that the file is not there afterwards -- after a run that actually ran.
     Whether the agent refuses politely or ignores the instruction is not the
     question.
+
+    For a provider whose adapter reports read-only runs as not enforced, the
+    same probe checks the report instead: it passes when the file appears,
+    and a run that did not write is a mismatch to look into, since the status
+    the warnings rest on was measured, not assumed.
     """
+    warned = _enforcement_status(provider) in WARNED_ENFORCEMENT
+    label = "read-only status matches reality" if warned else "stays read-only"
     target = os.path.join(root, WRITE_TARGET)
     if os.path.exists(target):
         os.unlink(target)
     try:
         result = provider.run(WRITE_PROMPT, MODE_REVIEW, root, timeout=TIMEOUT, idle_timeout=60.0)
     except Exception as exc:
-        return Check(name, "stays read-only", False, "%s: %s" % (type(exc).__name__, exc))
+        return Check(name, label, False, "%s: %s" % (type(exc).__name__, exc))
     if os.path.exists(target):
         os.unlink(target)
-        return Check(name, "stays read-only", False, "it wrote %s in review mode" % WRITE_TARGET)
+        check = Check(name, label, warned, "it wrote %s in review mode" % WRITE_TARGET)
+        check.observed["read_only"] = "wrote"
+        return check
     reason = _did_not_run(result)
     if reason:
-        return Check(name, "stays read-only", False, reason)
-    return Check(name, "stays read-only", True, "refused to write")
+        return Check(name, label, False, reason)
+    if warned:
+        detail = "mismatch: reported as not enforced, and it did not write %s" % WRITE_TARGET
+        check = Check(name, label, False, detail)
+    else:
+        check = Check(name, label, True, "refused to write")
+    check.observed["read_only"] = "did not write"
+    return check
+
+
+def _enforcement_status(provider: Any) -> Optional[str]:
+    """The adapter's read-only status, or None when it reports none."""
+    try:
+        return provider.read_only_enforcement().get("status")
+    except Exception:
+        return None
+
+
+def check_implement(provider: Any, name: str, root: str) -> List[Check]:
+    """Does implement mode write, and does ``skip_permissions`` let a command run?
+
+    Only for ``IMPLEMENT_CHECKED``. The write is judged on the filesystem;
+    the command by its output and by the CLI naming no denied action.
+    """
+    if name not in IMPLEMENT_CHECKED:
+        return []
+    checks: List[Check] = []
+    label = "writes a file in implement mode"
+    target = os.path.join(root, IMPLEMENT_TARGET)
+    if os.path.exists(target):
+        os.unlink(target)
+    try:
+        result = provider.run(IMPLEMENT_PROMPT, MODE_IMPLEMENT, root, timeout=TIMEOUT, idle_timeout=60.0)
+    except Exception as exc:
+        checks.append(Check(name, label, False, "%s: %s" % (type(exc).__name__, exc)))
+    else:
+        if os.path.exists(target):
+            os.unlink(target)
+            checks.append(Check(name, label, True, "wrote %s" % IMPLEMENT_TARGET))
+        else:
+            checks.append(Check(name, label, False, _did_not_run(result) or "no file was written"))
+
+    label = "runs a command with skip_permissions"
+    try:
+        result = provider.run(
+            COMMAND_PROMPT,
+            MODE_IMPLEMENT,
+            root,
+            timeout=TIMEOUT,
+            idle_timeout=60.0,
+            options={"skip_permissions": True},
+        )
+    except Exception as exc:
+        checks.append(Check(name, label, False, "%s: %s" % (type(exc).__name__, exc)))
+        return checks
+    reason = _did_not_run(result)
+    denied = [warning for warning in getattr(result, "warnings", []) or [] if "denied" in warning]
+    if reason:
+        checks.append(Check(name, label, False, reason))
+    elif denied:
+        checks.append(Check(name, label, False, denied[0][:160]))
+    elif "true" not in (result.stdout or "").lower():
+        checks.append(Check(name, label, False, "the reply did not carry the command's output"))
+    else:
+        checks.append(Check(name, label, True, "ran, no denied action"))
+    return checks
 
 
 def _outside_prompt(path: str, directory: str, marker: str) -> str:
@@ -618,9 +715,12 @@ def record_smoke(name: str, version: str, checks: List[Check]) -> List[Check]:
     mine = [check for check in checks if check.provider == name]
     failed = list(dict.fromkeys(c.name for c in mine if not c.ok and not c.skipped))
     skipped = list(dict.fromkeys(c.name for c in mine if c.skipped))
+    observed: Dict[str, Any] = {}
+    for check in mine:
+        observed.update(check.observed)
     label = "live check recorded"
     try:
-        verified.record_smoke(name, version, failed, skipped, checkout_root())
+        verified.record_smoke(name, version, failed, skipped, checkout_root(), observed=observed or None)
     except verified.VerifiedRecordError:
         detail = (
             "the live-check record would land inside this checkout (DEV_ORCHESTRA_HOME); nothing recorded"

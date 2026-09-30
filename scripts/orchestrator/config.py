@@ -1126,6 +1126,8 @@ class RawArgs(NamedTuple):
     args: List[str]
     #: ``project``, ``global`` or ``default``.
     layer: str
+    #: The layer ``provider`` came from, by the same rule.
+    provider_layer: str = "default"
 
 
 def _string_args(spec: Dict[str, Any]) -> List[str]:
@@ -1146,7 +1148,10 @@ def read_only_raw_args(loaded: LoadedConfig) -> List[RawArgs]:
             continue
         key = "%s.options.args" % role
         provider = str(spec.get("provider") or "")
-        found.append(RawArgs(role, role, "", provider, _string_args(spec), loaded.layer_of(key)))
+        provider_layer = loaded.layer_of([role, "provider"])
+        found.append(
+            RawArgs(role, role, "", provider, _string_args(spec), loaded.layer_of(key), provider_layer)
+        )
         tiers = spec.get("model_tiers")
         tier_items = tiers.items() if isinstance(tiers, dict) else ()
         for tier, entry in tier_items:
@@ -1164,6 +1169,7 @@ def read_only_raw_args(loaded: LoadedConfig) -> List[RawArgs]:
                     str(merged.get("provider") or ""),
                     _string_args(merged),
                     loaded.layer_of(tier_key),
+                    loaded.layer_of(_tier_provider_path(role, tier, entry)),
                 )
             )
     reviewers = loaded.data.get("reviewers")
@@ -1179,9 +1185,17 @@ def read_only_raw_args(loaded: LoadedConfig) -> List[RawArgs]:
                 str(reviewer.get("provider") or ""),
                 _string_args(reviewer),
                 loaded.layer_of("reviewers[%d].options.args" % index),
+                # The list is replaced whole, so every reviewer in it came
+                # with the file that set it.
+                loaded.layer_of("reviewers"),
             )
         )
     return found
+
+
+def _tier_provider_path(role: str, tier: str, entry: Dict[str, Any]) -> List[str]:
+    """Where a tier's provider is set: the tier, when it names one, else the role."""
+    return [role, "model_tiers", tier, "provider"] if entry.get("provider") else [role, "provider"]
 
 
 def _project_refused(loaded: LoadedConfig) -> List[Tuple[RawArgs, str]]:
@@ -1204,14 +1218,263 @@ def _project_refused(loaded: LoadedConfig) -> List[Tuple[RawArgs, str]]:
     ]
 
 
+def _warned_provider(name: str) -> Optional[Dict[str, Any]]:
+    """The enforcement report of a provider whose read-only runs are warned
+    about, or None.
+
+    Asked only of an adapter whose report is static, so configuration checks
+    never start a CLI: Claude's report reads ``--help``. An unknown provider
+    is None, for ``validate`` to report.
+    """
+    from .providers import WARNED_ENFORCEMENT, get_provider
+
+    if not name:
+        return None
+    try:
+        provider = get_provider(name)
+        if not provider.static_enforcement:
+            return None
+        enforcement = provider.read_only_enforcement()
+    except Exception:
+        return None
+    return dict(enforcement) if enforcement.get("status") in WARNED_ENFORCEMENT else None
+
+
+def _project_seat_refused(loaded: LoadedConfig) -> List[Tuple[RawArgs, str]]:
+    """Read-only seats on a warned provider whose provider came with the project file.
+
+    Refused for the reason project raw arguments are: a branch under review
+    could otherwise choose its own write-capable reviewer. The same seat from
+    the global file runs, warned.
+    """
+    return [
+        (entry, message)
+        for entry, message in _project_provider_seats(loaded)
+        if _warned_provider(entry.provider) is not None
+    ]
+
+
+def _project_provider_seats(loaded: LoadedConfig) -> List[Tuple[RawArgs, str]]:
+    """Every read-only seat whose provider came with the project file, with
+    the refusal it meets should that provider not hold it to reading."""
+    name = os.path.basename(loaded.project_path or "") or "the project file"
+    seats: List[Tuple[RawArgs, str]] = []
+    for entry in read_only_raw_args(loaded):
+        if entry.provider_layer != "project":
+            continue
+        if entry.reviewer_id or entry.label.startswith("reviewers["):
+            message = project_reviewer_refusal(entry.display, entry.provider, name)
+        else:
+            path = _seat_provider_path(loaded, entry.label)
+            message = project_seat_refusal(entry.display, entry.provider, name, path)
+        seats.append((entry, message))
+    return seats
+
+
+def project_provider_refusals(loaded: LoadedConfig) -> Dict[str, str]:
+    """``label`` -> the refusal of a read-only seat whose provider came with
+    the project file, to apply when that provider reports, live, a status in
+    ``WARNED_ENFORCEMENT``.
+
+    For the run paths: an adapter whose report is not static is not asked by
+    ``project_raw_arg_refusals``, which never starts a CLI, so the run that
+    has the live report decides.
+    """
+    return {entry.label: message for entry, message in _project_provider_seats(loaded)}
+
+
+def reviewer_provider_refusals(loaded: LoadedConfig) -> Dict[str, str]:
+    """The same, by reviewer id, for the review path."""
+    return {
+        entry.reviewer_id: message for entry, message in _project_provider_seats(loaded) if entry.reviewer_id
+    }
+
+
+def project_seat_refusal(display: str, provider: str, file_name: str, provider_path: str) -> str:
+    """Why a read-only role or tier on ``provider`` is not taken from the project file."""
+    return (
+        "%s: provider %s is set in the project config (%s); a read-only seat on %s is taken "
+        "only from the global config -- if this is intended, run `dev-orchestra config set "
+        "--scope global %s %s` and remove it from %s"
+        % (display, provider, file_name, provider, provider_path, provider, file_name)
+    )
+
+
+def project_reviewer_refusal(display: str, provider: str, file_name: str) -> str:
+    """Why a reviewer on ``provider`` is not taken from the project file."""
+    return (
+        "%s: the reviewers list comes from the project config (%s) and this reviewer is on %s; "
+        "reviewers on %s are taken only from the global config -- if this is intended, add it "
+        "there with `dev-orchestra reviewer add --scope global --provider %s` and remove it from %s"
+        % (display, file_name, provider, provider, provider, file_name)
+    )
+
+
+def warned_provider(name: str) -> bool:
+    """True when read-only runs on ``name`` go ahead only with a warning."""
+    return _warned_provider(name) is not None
+
+
+def _seat_provider_path(loaded: LoadedConfig, label: str) -> str:
+    """The dotted key that names a role's or a tier's provider."""
+    role, _, tier = label.partition(".model_tiers.")
+    if tier:
+        tiers = (loaded.data.get(role) or {}).get("model_tiers") or {}
+        entry = tiers.get(tier) if isinstance(tiers, dict) else None
+        if isinstance(entry, dict) and entry.get("provider"):
+            return "%s.model_tiers.%s.provider" % (role, tier)
+    return "%s.provider" % role
+
+
+def _all_refused(loaded: LoadedConfig) -> List[Tuple[RawArgs, str]]:
+    return _project_refused(loaded) + _project_seat_refused(loaded)
+
+
+def _by_key(pairs: Sequence[Tuple[str, str]]) -> Dict[str, str]:
+    """One message per key: two refusals of one run are said together."""
+    merged: Dict[str, str] = {}
+    for key, message in pairs:
+        merged[key] = "%s; %s" % (merged[key], message) if key in merged else message
+    return merged
+
+
 def project_raw_arg_refusals(loaded: LoadedConfig) -> Dict[str, str]:
     """``label`` -> why that run is refused. Empty when nothing is."""
-    return {entry.label: message for entry, message in _project_refused(loaded)}
+    return _by_key([(entry.label, message) for entry, message in _all_refused(loaded)])
 
 
 def reviewer_raw_arg_refusals(loaded: LoadedConfig) -> Dict[str, str]:
     """The same refusals, by reviewer id, for the review path."""
-    return {entry.reviewer_id: message for entry, message in _project_refused(loaded) if entry.reviewer_id}
+    return _by_key(
+        [(entry.reviewer_id, message) for entry, message in _all_refused(loaded) if entry.reviewer_id]
+    )
+
+
+def read_only_enforcement_warnings(data: Dict[str, Any], refused: Sequence[str] = ()) -> List[str]:
+    """One line per read-only seat whose provider cannot be held to reading.
+
+    ``data`` is merged configuration, so the wizard can ask about its scratch.
+    ``which()`` is not asked: such a provider's status is static, so the line
+    is the same whether or not its CLI is installed. ``refused`` holds the
+    labels already refused (``project_raw_arg_refusals``), which are not also
+    warned about.
+    """
+    return [line for _label, _reviewer_id, line in _enforcement_warned_seats(data, refused)]
+
+
+def _enforcement_warned_seats(
+    data: Dict[str, Any], refused: Sequence[str] = ()
+) -> List[Tuple[str, str, str]]:
+    """``(label, reviewer id, line)`` for every warned read-only seat.
+
+    The seats ``doctor`` reports enforcement for: the read-only roles, their
+    tiers that change provider, and every reviewer.
+    """
+    from .providers import unenforced_warning
+
+    seats: List[Tuple[str, str, str, Any]] = []
+    for role in READ_ONLY_ROLES:
+        spec = data.get(role)
+        if not isinstance(spec, dict):
+            continue
+        seats.append((role, role, "", spec.get("provider")))
+        tiers = spec.get("model_tiers")
+        for tier, entry in tiers.items() if isinstance(tiers, dict) else ():
+            if not isinstance(entry, dict):
+                continue
+            merged = merge_tier(spec, entry)
+            if merged.get("provider") == spec.get("provider"):
+                continue
+            label = "%s.model_tiers.%s" % (role, tier)
+            seats.append((label, "%s (tier %s)" % (role, tier), "", merged.get("provider")))
+    reviewers = data.get("reviewers")
+    for index, reviewer in enumerate(reviewers if isinstance(reviewers, list) else []):
+        if not isinstance(reviewer, dict):
+            continue
+        reviewer_id = str(reviewer.get("id") or "")
+        display = "reviewer %s" % (reviewer_id or index + 1)
+        seats.append(("reviewers[%d]" % index, display, reviewer_id, reviewer.get("provider")))
+    found: List[Tuple[str, str, str]] = []
+    for label, display, reviewer_id, provider in seats:
+        if label in refused:
+            continue
+        name = str(provider or "")
+        enforcement = _warned_provider(name)
+        if enforcement is not None:
+            found.append((label, reviewer_id, "%s: %s" % (display, unenforced_warning(name, enforcement))))
+    return found
+
+
+def reviewer_enforcement_warnings(data: Dict[str, Any], refused: Sequence[str] = ()) -> Dict[str, str]:
+    """The warned reviewers' lines by reviewer id, for the review path."""
+    return {
+        reviewer_id: line
+        for _label, reviewer_id, line in _enforcement_warned_seats(data, refused)
+        if reviewer_id
+    }
+
+
+#: The write roles, which ``project_write_refusals`` looks at.
+WRITE_ROLES = tuple(role for role in KNOWN_ROLES if role not in READ_ONLY_ROLES)
+
+
+def project_write_refusals(loaded: LoadedConfig) -> Dict[str, str]:
+    """``label`` -> why that implement-mode run is refused. Empty when nothing is.
+
+    On a provider with ``local_only_options``, no project-file option of a
+    write role is honoured: neither one of those options, named whatever its
+    value, nor any raw argument, whatever it is. No flag spelling is looked
+    at, so none can slip past.
+    """
+    from .providers import get_provider
+
+    name = os.path.basename(loaded.project_path or "") or "the project file"
+    refused: Dict[str, str] = {}
+    for role in WRITE_ROLES:
+        spec = loaded.data.get(role)
+        if not isinstance(spec, dict):
+            continue
+        role_options: List[Any] = [role, "options"]
+        candidates = [(role, role, spec, role_options)]
+        tiers = spec.get("model_tiers")
+        for tier, entry in tiers.items() if isinstance(tiers, dict) else ():
+            if not isinstance(entry, dict):
+                continue
+            merged = merge_tier(spec, entry)
+            # A tier's ``options`` replaces the role's whole; one that changes
+            # provider without any has none at all.
+            if "options" in entry:
+                options_path: List[Any] = [role, "model_tiers", tier, "options"]
+            elif merged.get("provider") != spec.get("provider"):
+                continue
+            else:
+                options_path = [role, "options"]
+            label = "%s.model_tiers.%s" % (role, tier)
+            candidates.append((label, "%s (tier %s)" % (role, tier), merged, options_path))
+        for label, display, run_spec, options_path in candidates:
+            provider = str(run_spec.get("provider") or "")
+            try:
+                local_only = list(get_provider(provider).local_only_options) if provider else []
+            except Exception:
+                continue  # an unknown provider or a broken adapter is validate's to report
+            if not local_only:
+                continue
+            named = [key for key in local_only if loaded.layer_of([*options_path, key]) == "project"]
+            args = loaded.layer_of([*options_path, "args"]) == "project" and bool(_string_args(run_spec))
+            if not named and not args:
+                continue
+            keys = " / ".join(["options.%s" % key for key in local_only] + ["options.args"])
+            refused[label] = (
+                "%s: %s is set in the project config (%s); on %s the permission bypass and raw "
+                "arguments are taken only from the global config or from --extra"
+                % (display, keys, name, provider)
+            )
+    return refused
+
+
+def default_reviewer_family(provider: str) -> str:
+    """The family a new reviewer on ``provider`` gets when none is named."""
+    return {"claude": "opus", "agy": "default"}.get(provider, "recommended-coding")
 
 
 def read_only_arg_warnings(loaded: LoadedConfig) -> List[str]:
@@ -1220,10 +1483,15 @@ def read_only_arg_warnings(loaded: LoadedConfig) -> List[str]:
     Deliberately not part of ``validate``: that makes ``load`` raise, and
     every command -- ``status``, ``budget`` -- would stop over one role's raw
     arguments when only that role's runs are refused.
+
+    Also the refusals of the other two kinds that come from the project file:
+    a read-only seat on a warned provider, and a write role's options on a
+    provider that takes them only from the global config.
     """
     from .providers import get_provider
 
-    warnings = [message for _entry, message in _project_refused(loaded)]
+    warnings = [message for _entry, message in _all_refused(loaded)]
+    warnings.extend(project_write_refusals(loaded).values())
     for entry in read_only_raw_args(loaded):
         if entry.layer == "project" or not entry.args:
             continue

@@ -37,7 +37,26 @@ The public surface covered by that promise is: the configuration schema, the
   once. An older dev-orchestra ignores `preset:` and its `config validate`
   does not report it. See Presets in `references/configuration.md` (#163).
 
+- **An `agy` (Antigravity CLI) provider**, verified against agy 1.2.13, for
+  the implementer and the review fixer. agy has no read-only mode, so a new
+  enforcement status, `unenforced`, lets a plan or review seat on it run with
+  a warning at every place it is set or run when it comes from the global
+  config, and refuses it when it comes from the project file. On agy write
+  roles the permission bypass (`options.skip_permissions`) and any
+  `options.args` are taken only from the global config or `--extra`. Presets
+  give agy the write roles only when neither Claude nor Codex is on PATH. Run
+  warnings (such as actions agy denied) are shown and recorded on success
+  too. The prompt reaches agy in a file inside `.ai/`, never on the command
+  line, and `model list --provider agy` lists the families to put in a
+  config with the id each resolves to now. See "Antigravity CLI adapter" in
+  `references/providers.md` (#182).
+
 ### Changed
+
+- **`reviewer set --provider` without `--model` resets the family** to the new
+  CLI's default (was: the old family was kept, which the new CLI could not
+  resolve), with a `note:` naming the old one. `available_providers()` now
+  lists `agy` first, so `model list` and `doctor` show it first (#182).
 
 - **No config file, or a global file that names no preset, runs under preset
   `standard` fitted to the installed CLIs** (was: the built-in defaults as

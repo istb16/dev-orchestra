@@ -1,4 +1,4 @@
-<!-- translated-from: references/configuration.md sha256:1a9bb0002c2b8cf1bc0a7fb24631aa7eff9370a1a556874e9f785511a66431a9 -->
+<!-- translated-from: references/configuration.md sha256:1250c149453cda32760fc820ea9a1150f4ede7ac5f0123ddb546537873f08db6 -->
 
 > この文書は [references/configuration.md](../../../references/configuration.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -128,26 +128,36 @@ preset: quality
 組み込みデフォルトのままです。`standard` は組み込みデフォルトから読み取って作るので、両者が
 ずれることはありません。
 
-**フィット。** 対象は `claude` と `codex` だけです。ユーザー adapter は、これまでどおりファイルが
+**フィット。** 対象は `claude`、`codex`、`agy` だけです。ユーザー adapter は、これまでどおりファイルが
 名前を挙げたときにだけ動きます。検出は PATH の探索だけで、CLI は起動しません:
 
-1. 4つのロールは、`claude`、`codex` の順で最初にインストールされている CLI に割り当てます。
-   Claude にはプリセットの family、Codex には `recommended-coding` が付きます。
-2. レビュアーの枠は、インストール済みの CLI に implementer の CLI（ファイルが implementer を
+1. orchestrator と architect は `claude`、`codex` の順で、implementer と review fixer は
+   `claude`、`codex`、`agy` の順で、最初にインストールされている CLI に割り当てます。
+   Claude にはプリセットの family、Codex には `recommended-coding`、agy には `default` が付きます。
+   agy は読み取り専用に保てないので、プリセットが agy に割り当てるのは 2 つの書き込みロールだけで、
+   それも Claude も Codex も PATH にないときだけです。読み取り専用のロールやレビュアーの枠が
+   agy に割り当てられることはありません。
+2. レビュアーの枠は、インストール済みの `claude`、`codex` の CLI に implementer の CLI（ファイルが implementer を
    設定していれば、ファイルが指定した provider）から順に配ります。そのため
    2社あれば、どのパネルにも両方が入ります。常に走るレビュアーが1人だけのプリセット（`fast`）は、
    もう一方のベンダーから始めます: implementer と同じベンダーの常時レビュアー1人では、独立した
    レビューにならないからです。枠の `when` は、どこに配られても維持されます。
 3. 前の枠とまったく同じになる枠（provider、family、role、条件）は追加しません。id は provider と
    role から作るので、同じ role の2人目の Claude の枠は `claude-general-2` になります。
-4. どちらの CLI も無いときは、プリセットを書かれたとおりに展開します。CLI が無いことは `doctor`
-   が報告します。
+4. Claude も Codex も無いときは、orchestrator、architect、パネルを書かれたとおりに展開します。
+   CLI が無いことは `doctor` が報告します。implementer と review fixer は、agy がインストール
+   されていれば agy に割り当て、note を出します（`claude, codex not found on PATH: implementer
+   went to agy (default)`）。agy も無ければ書かれたとおりです。
 
-| プリセット | Claude + Codex | Claude のみ | Codex のみ |
-| --- | --- | --- | --- |
-| `quality` | claude-general fable、codex-security、claude-architecture opus | claude-general fable、claude-security opus、claude-architecture opus | codex-general、codex-security、codex-architecture |
-| `standard` | claude-general opus、codex-general（組み込みデフォルト） | claude-general opus、claude-general-2 sonnet | codex-general |
-| `fast` | codex-general; claude-security opus（high-risk） | claude-general opus; claude-security opus（high-risk） | codex-general; codex-security（high-risk） |
+| プリセット | Claude + Codex | Claude のみ | Codex のみ | agy のみ |
+| --- | --- | --- | --- | --- |
+| `quality` | claude-general fable、codex-security、claude-architecture opus | claude-general fable、claude-security opus、claude-architecture opus | codex-general、codex-security、codex-architecture | 書かれたとおり（Claude + Codex のパネル） |
+| `standard` | claude-general opus、codex-general（組み込みデフォルト） | claude-general opus、claude-general-2 sonnet | codex-general | 書かれたとおり（組み込みデフォルト） |
+| `fast` | codex-general; claude-security opus（high-risk） | claude-general opus; claude-security opus（high-risk） | codex-general; codex-security（high-risk） | 書かれたとおり（Claude + Codex のパネル） |
+
+Claude や Codex と並んで agy があっても何も変わりません。Claude、Codex、agy がそろっていれば、
+どのプリセットも Claude と Codex のときと同じで、組み込みデフォルトもそのままです。Claude + agy は
+Claude のみと、Codex + agy は Codex のみと同じです。
 
 フィットは読み込むたびにやり直されます: 後から Codex を入れれば、次のコマンドのパネルに
 入ります。そのため、レビュアーの id はチームメンバーのマシンごとに違うことがあり、`--only` で
@@ -178,6 +188,13 @@ standard's fit (recorded claude-general opus, claude-general-2 sonnet)`。ロー
 最適化レベルは引き続きプリセットに従います。グローバルファイルの `config reset` は `preset` を残して
 リストを消すので、フィットが戻ります。知らないプリセット名はほかの上書きと一緒に消して `note:` を
 表示し、そのファイルは `standard` で動くようになります。
+
+`--model` なしで追加したレビュアーには、その CLI の既定の family が付きます: Claude では `opus`、
+agy では `default`、Codex とそれ以外の adapter では `recommended-coding` です。`--model` も `--pin`
+も付けない `reviewer set --provider <other>` も、同じように新しい CLI の既定の family を書きます。
+family は古い CLI にとってのモデルの名前で、新しい CLI では解決できないからです。`note:` の行が
+元の値を伝えます（`note: model family reset from 'opus' to 'default' for provider agy (--model
+picks another)`）。
 
 **プリセットを指定できるのは、今のところグローバルファイルだけです。** プロジェクトファイルの
 `preset:` は `preset: only the global file can name a preset for now` で検証に失敗し、削除するまで
@@ -265,7 +282,7 @@ workspace:
 | Field | 型 | 備考 |
 | --- | --- | --- |
 | `version` | int | `1` でなければなりません。 |
-| `<role>.provider` | string | 登録済みの adapter: `claude`、`codex`、`mock`、またはユーザー adapter（`references/providers.md` を参照）。 |
+| `<role>.provider` | string | 登録済みの adapter: `agy`、`claude`、`codex`、`mock`、またはユーザー adapter（`references/providers.md` を参照）。`agy` の読み取り専用のロールやレビュアーは global 設定からだけ受け付けます（[下記](#role-options)）。 |
 | `<role>.model.family` | string | provider が解決できる family/エイリアス（`opus`、`sonnet`、`fable`、`recommended-coding`）。省略するか `default` を使うと CLI に選ばせます。 |
 | `<role>.model.version` | `latest` \| `pinned` | `latest` は実行のたびに解決し直します。`pinned` には `model.id` が必要です。 |
 | `<role>.model.id` | string | 正確なモデル id。`version: pinned` のときのみ。 |
@@ -314,6 +331,7 @@ Codex の sandbox ポリシーに正直に対応付ける方法はないので�
 | `claude` | `permission_mode` | インストールされている CLI が `--permission-mode` に対して提示するもの（`dev-orchestra model list` とは別に、`claude --help` を実行して確認してください） |
 | `codex` | `sandbox` | `read-only`、`workspace-write`、`danger-full-access` |
 | `codex` | `approve` | `true`（デフォルト）は `--approve-for-me` を渡し、`false` は省略します |
+| `agy` | `skip_permissions` | `true` にすると `implement` の実行で `--dangerously-skip-permissions` を渡し、implementer がコマンドを実行できるようになります。デフォルトは `false`。global 設定（または `--extra --dangerously-skip-permissions`）からだけ受け付けます |
 | any | `idle_timeout` | このロールの無出力期限を上書きします |
 
 ```yaml
@@ -336,7 +354,35 @@ Claude が受け付ける生引数は `--add-dir <path>` だけで、Codex は�
 書くと、中身を問わずそのロールの実行は拒否されます。project ファイルはレビュー対象の
 ブランチと一緒に持ち込まれうるもので、自分のレビュアーのディレクトリを指定できる
 ブランチは、レビュアーが読める範囲を広げられてしまうからです。implementer と
-review fixer は、これまでどおりどちらのファイルからも `args` を受け取ります。
+review fixer は、これまでどおりどちらのファイルからも `args` を受け取ります -- ただし
+`agy` は例外で、その書き込みロールは `options.skip_permissions` も `options.args` も
+project ファイルからは受け取りません。project ファイルが implementer、review fixer、
+またはそのいずれかの tier でどちらかを挙げると、値を問わずそのロールの `implement` の
+実行は拒否され、`config validate` と `doctor` がそう伝えます。パーミッションのバイパスは
+global 設定から、1 回の実行だけなら `--extra --dangerously-skip-permissions` で指定します。
+（Claude の `permission_mode: bypassPermissions` は影響を受けません。）
+
+**agy の読み取り専用の席は global 設定からだけ受け付けます。** agy には読み取り専用の
+モードがないので、agy での plan や review の実行は、作業ツリー、`.ai/`（承認記録を含む）、
+`.git/`、リポジトリの外のファイルを変更でき、後から確かめるものは何もありません。global
+ファイルで設定したそうした席（orchestrator、architect、そのいずれかの tier、レビュアー）は
+実行され、`config set`、`reviewer add`、`reviewer set`、`config validate`、ウィザード、
+`doctor`（注記として。`--strict` は通ります）、`run`、`review run` で警告されます。同じ席が
+project ファイルから来ると拒否されます。`run` は exit 2 で終わり、レビュアーはそのラウンドで
+失敗し（ほかのレビュアーは走ります）、`config validate` と `doctor` がそれを報告します
+（そのため `doctor --strict` は失敗します）。`config set --scope project architect.provider agy`
+（`orchestrator.provider`、`<role>.model_tiers.<tier>.provider`、`reviewers[<n>].provider` も）、
+`reviewer add --scope project --provider agy`、`reviewer set --scope project --provider agy` は、
+何も書かずに exit 2 で終わります。拒否のメッセージは、その席を global に設定するコマンドを示します。
+
+```bash
+dev-orchestra config set --scope global architect.provider agy
+dev-orchestra reviewer add --scope global --provider agy
+```
+
+`reviewers[i].<key>` を 1 つでも設定した project ファイルはパネル全体を持つので（リストは
+丸ごと置き換わります）、そこへコピーされた global の agy レビュアーは project のものになり、
+同じメッセージで拒否されます。
 
 **読み取り専用ステージを緩めるようなオプションは無視されるか、拒否されます。**
 orchestrator、architect、すべてのレビュアーは、`permission_mode` や `sandbox` が何と
@@ -689,7 +735,7 @@ codex: installed
 | 「どのモデルが使える？」 | `model list` |
 | 「実装には Claude Opus を使って」 | `config set implementer.model.family opus` |
 | 「architect に Codex を使わせて」 | `config set architect.provider codex` **と**、Codex が受け付ける family |
-| 「implementer がテストを実行できない」 | `config set implementer.options.permission_mode bypassPermissions`、またはその CLI 自身の設定でコマンドを許可リストに入れる |
+| 「implementer がテストを実行できない」 | `config set implementer.options.permission_mode bypassPermissions`（agy では `config set --scope global implementer.options.skip_permissions true`）、またはその CLI 自身の設定でコマンドを許可リストに入れる |
 | 「設計もレビューして」／「設計は必ずレビューして」 | `config set review.design.enabled true` |
 | 「設計はレビューしないで」 | `config set review.design.enabled false` |
 | 「plan の承認を求めないで」/ CI で実行する | `config set design.require_approval false` |

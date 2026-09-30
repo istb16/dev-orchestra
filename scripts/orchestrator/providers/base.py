@@ -26,14 +26,19 @@ READ_ONLY_MODES = (MODE_PLAN, MODE_REVIEW)
 #: What ``Provider.read_only_enforcement`` may report. ``verified``: the CLI
 #: itself stops writes and external side effects. ``partial``: it stops
 #: filesystem writes, and external side effects were not examined.
-#: ``unsupported``: the CLI does not advertise what enforcement needs.
-#: ``unverified``: that could not be checked. ``unspecified``: the adapter
-#: says nothing.
-ENFORCEMENT_STATUSES = ("verified", "partial", "unsupported", "unverified", "unspecified")
+#: ``unenforced``: the CLI was measured to have no read-only mode, and a run
+#: goes ahead with a warning. ``unsupported``: the CLI does not advertise what
+#: enforcement needs. ``unverified``: that could not be checked.
+#: ``unspecified``: the adapter says nothing.
+ENFORCEMENT_STATUSES = ("verified", "partial", "unenforced", "unsupported", "unverified", "unspecified")
 
 #: The statuses a read-only run is refused under. Falling back to a weaker
 #: command would call a run read-only that nothing is holding to it.
 REFUSED_ENFORCEMENT = ("unsupported", "unverified")
+
+#: The statuses a read-only run goes ahead under, warned about wherever the
+#: seat is configured or run. Nothing checks afterwards what such a run did.
+WARNED_ENFORCEMENT = ("unenforced",)
 
 #: A raw argument is named in a refusal by its flag, never by its value: the
 #: value of ``--settings`` or ``-c`` can be a credential, and a refusal is
@@ -72,6 +77,11 @@ def redact(text: str) -> str:
     for pattern in _SECRET_PATTERNS:
         cleaned = pattern.sub(lambda m: m.group(0).replace(m.group(1), "[redacted]"), cleaned)
     return cleaned
+
+
+def unenforced_warning(name: str, enforcement: Dict[str, Any]) -> str:
+    """The one wording for a read-only seat on a provider that cannot be held to reading."""
+    return "read-only is NOT enforced by %s -- %s" % (name, enforcement.get("detail") or "")
 
 
 def _prefixed(notes: Sequence[str], stderr: str) -> str:
@@ -285,6 +295,7 @@ class RunResult:
         context_tokens: Optional[int] = None,
         session_init: Optional[Dict[str, Any]] = None,
         resume_rejected: bool = False,
+        warnings: Optional[Sequence[str]] = None,
     ) -> None:
         self.ok = ok
         self.exit_code = exit_code
@@ -319,6 +330,9 @@ class RunResult:
         #: True only when the CLI positively said the session asked for does
         #: not exist; any other failure is an ordinary one.
         self.resume_rejected = resume_rejected
+        #: What the adapter wants said about this run whatever its outcome --
+        #: stderr alone is dropped on success.
+        self.warnings = [redact(str(warning)) for warning in warnings or ()]
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -337,6 +351,7 @@ class RunResult:
             "context_tokens": self.context_tokens,
             "session_init": self.session_init,
             "resume_rejected": self.resume_rejected,
+            "warnings": list(self.warnings),
         }
 
 
@@ -361,6 +376,15 @@ class Provider:
     #: run. The orchestrator still only asks when :meth:`resume_support`
     #: reports ``verified``.
     supports_resume = False
+
+    #: True when :meth:`read_only_enforcement` is a constant that needs no
+    #: subprocess, so ``doctor`` reports it whether or not the CLI is there.
+    static_enforcement = False
+
+    #: Options a write role takes only from the global config or ``--extra``.
+    #: For an adapter that names any, no project-file option of a write role
+    #: is honoured, raw arguments included.
+    local_only_options: Sequence[str] = ()
 
     def __init__(self, executable: Optional[str] = None) -> None:
         if executable:
@@ -432,6 +456,12 @@ class Provider:
 
     def _resolve_latest(self, family: str) -> ResolvedModel:
         raise NotImplementedError
+
+    def config_families(self) -> List["tuple[str, str]"]:
+        """``(family, what it resolves to now)`` for the families to put in a
+        config, when the listed models are dated ids that go stale. Empty
+        when the listed families are those; ``model list`` shows these apart."""
+        return []
 
     # -- execution ---------------------------------------------------------
 
@@ -695,12 +725,15 @@ class Provider:
             )
         # After detection: a CLI that is not there is reported as missing, not
         # as one whose enforcement could not be read.
+        warnings: List[str] = []
         if mode in READ_ONLY_MODES:
             enforcement = self.read_only_enforcement()
             status = enforcement.get("status")
             if status in REFUSED_ENFORCEMENT:
                 detail = enforcement.get("detail") or "read-only enforcement is %s" % status
                 return RunResult(False, 2, "", str(detail), [self.executable], 0.0, invoked=False)
+            if status in WARNED_ENFORCEMENT:
+                warnings.append(unenforced_warning(self.name, enforcement))
 
         resolved = self.resolve_model(model_spec)
         command = self.command_line(mode, resolved, cwd, extra_args, options, resume_session)
@@ -727,11 +760,19 @@ class Provider:
         except Exception as exc:
             session = {}
             notes.append("%s: %s" % (type(exc).__name__, exc))
+        try:
+            warnings.extend(str(warning) for warning in self.run_warnings(outcome, mode) or ())
+        except Exception as exc:
+            notes.append("%s: %s" % (type(exc).__name__, exc))
+        # Said above the adapter's own failures, as those are: on success the
+        # caller shows ``warnings`` and drops stderr.
+        notes = [*warnings, *notes]
         session_fields = {
             "session_id": session.get("session_id"),
             "context_tokens": session.get("context_tokens"),
             "session_init": session.get("init"),
             "resume_rejected": rejected,
+            "warnings": warnings,
         }
         try:
             stdout, stderr = self.postprocess(outcome, mode)
@@ -811,6 +852,11 @@ class Provider:
     def postprocess(self, outcome: "execution.ExecOutcome", mode: str) -> "tuple[str, str]":
         """Turn raw child output into (stdout, stderr) for the caller."""
         return outcome.stdout, outcome.stderr
+
+    def run_warnings(self, outcome: "execution.ExecOutcome", mode: str) -> List[str]:
+        """What a finished run should say whatever its outcome, read from the
+        raw output. Kept in ``RunResult.warnings`` and put above stderr."""
+        return []
 
     def parse_usage(self, outcome: "execution.ExecOutcome", mode: str) -> Optional[Usage]:
         """What the run cost, if this CLI says so. None means it does not.
