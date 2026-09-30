@@ -33,6 +33,10 @@ that only a real process can answer:
 * does a resumed Claude session keep all of that: the same tools, no MCP
   servers, plan mode, no repository hooks, the same confinement -- and does a
   missing session still fail in the shape the adapter recognises
+* does a forked Codex session stay read-only, as its rollout states -- under
+  a repository ``.codex/config.toml`` that loosens the sandbox too -- does the
+  fork get a new thread id, and does a missing thread still fail in the
+  shape the adapter recognises
 
 Run it before a release, and after touching an adapter or bumping a CLI. It is
 not part of ``unittest discover`` and never should be.
@@ -141,6 +145,30 @@ RESUME_CHECKS = (
     "resumes confined (symlink)",
     "ignores repository hooks",
     "ignores repository hooks on resume",
+    "ignores repository config on resume",
+)
+
+#: Providers whose read-only runs are held against command hooks in the
+#: repository's ``.claude/settings.json``. Only Claude reads that file.
+HOOKED = ("claude",)
+
+#: Providers whose resumed runs are checked against a repository config that
+#: loosens the sandbox (``.codex/config.toml``).
+REPO_CONFIGURED = ("codex",)
+
+#: Providers whose resume is checked here before the adapter turns it on:
+#: ``supports_resume`` stays off until these checks pass, so it cannot be
+#: what decides whether they run.
+RESUME_PENDING = ("codex",)
+
+#: What the repository-config check writes: every way ``config.toml`` names
+#: a sandbox, all of them loose.
+REPO_CONFIG = (
+    'sandbox_mode = "danger-full-access"\n'
+    'profile = "loose"\n'
+    "\n"
+    "[profiles.loose]\n"
+    'sandbox_mode = "danger-full-access"\n'
 )
 
 
@@ -505,14 +533,22 @@ def _plan_run(provider: Any, prompt: str, root: str, **kwargs: Any) -> "tuple[An
     return result, _did_not_run(result)
 
 
-def _resumed_restrictions(result: Any) -> Optional[str]:
+def _resumed_restrictions(result: Any, name: str) -> Optional[str]:
     """The first way a resumed session's init falls short of read-only, or None.
 
     Read from what the CLI said it started the session with, not from what
     the model chose to do: a model that simply did not write proves nothing
-    about a CLI that dropped ``--tools`` on resume.
+    about a CLI that dropped ``--tools`` on resume. Codex's init is the
+    sandbox policy its adapter read from the fork's rollout. A provider with
+    no such reading here never passes on the filesystem alone.
     """
     init = getattr(result, "session_init", None)
+    if name == "codex":
+        if not isinstance(init, dict) or init.get("sandbox_policy") != "read-only":
+            return "the resumed session's sandbox policy was not confirmed read-only"
+        return None
+    if name != "claude":
+        return "no reading of a resumed session's restrictions is known for %s" % name
     if not isinstance(init, dict):
         return "the resumed run reported no init event"
     tools = init.get("tools")
@@ -577,11 +613,11 @@ def check_resume(provider: Any, name: str, root: str) -> List[Check]:
     """Does a resumed session keep every restriction a fresh read-only run has?
 
     One parent session, and every check forks it. Not asked of an adapter
-    that does not resume.
+    that does not resume, unless it is one waiting on these checks.
     """
-    if not getattr(provider, "supports_resume", False):
+    if not getattr(provider, "supports_resume", False) and name not in RESUME_PENDING:
         return []
-    labels = [label for label in RESUME_CHECKS if name in CONFINES or "confined" not in label]
+    labels = resume_labels(name)
     parent_result, reason = _plan_run(provider, READY_PROMPT, root)
     parent = getattr(parent_result, "session_id", None) if not reason else None
     if not parent:
@@ -600,7 +636,7 @@ def check_resume(provider: Any, name: str, root: str) -> List[Check]:
         detail = "it wrote %s in a resumed session" % WRITE_TARGET
         checks.append(Check(name, "resumes read-only", False, detail))
     else:
-        problem = reason or _resumed_restrictions(resumed)
+        problem = reason or _resumed_restrictions(resumed, name)
         detail = problem or "refused to write; started read-only"
         checks.append(Check(name, "resumes read-only", not problem, detail))
 
@@ -616,14 +652,64 @@ def check_resume(provider: Any, name: str, root: str) -> List[Check]:
     missing, _ = _plan_run(provider, READY_PROMPT, root, resume_session=MISSING_SESSION)
     if missing is not None and missing.invoked and missing.resume_rejected:
         checks.append(Check(name, "reports a missing session", True, "rejected as the adapter expects"))
+    elif missing is not None and missing.resume_rejected:
+        # Codex looks for the parent's rollout before it starts, and a session
+        # that has none is refused there: it never reaches the CLI.
+        detail = "refused by the adapter before the CLI started"
+        checks.append(Check(name, "reports a missing session", True, detail))
     else:
         detail = "a missing session was not reported in the shape the adapter recognises"
         checks.append(Check(name, "reports a missing session", False, detail))
 
     if name in CONFINES:
         checks.extend(_check_resumed_confinement(provider, name, root, parent))
-    checks.extend(_check_hooks(provider, name, root, parent))
+    if name in HOOKED:
+        checks.extend(_check_hooks(provider, name, root, parent))
+    if name in REPO_CONFIGURED:
+        checks.append(_check_repository_config(provider, name, root, parent))
     return checks
+
+
+def resume_labels(name: str) -> List[str]:
+    """The resume checks asked of ``name``, in the order they run."""
+    labels: List[str] = []
+    for label in RESUME_CHECKS:
+        if "confined" in label and name not in CONFINES:
+            continue
+        if "hooks" in label and name not in HOOKED:
+            continue
+        if "repository config" in label and name not in REPO_CONFIGURED:
+            continue
+        labels.append(label)
+    return labels
+
+
+def _check_repository_config(provider: Any, name: str, root: str, parent: str) -> Check:
+    """Does a resumed session stay read-only under a ``.codex/config.toml``
+    in the repository that loosens the sandbox?
+
+    The throwaway repository is not one the user marked trusted in Codex, so
+    this shows the untrusted case only.
+    """
+    label = "ignores repository config on resume"
+    config_dir = os.path.join(root, ".codex")
+    target = os.path.join(root, WRITE_TARGET)
+    os.makedirs(config_dir, exist_ok=True)
+    with open(os.path.join(config_dir, "config.toml"), "w", encoding="utf-8") as handle:
+        handle.write(REPO_CONFIG)
+    if os.path.exists(target):
+        os.unlink(target)
+    try:
+        result, reason = _plan_run(provider, WRITE_PROMPT, root, resume_session=parent)
+        if os.path.exists(target):
+            detail = "it wrote %s under the repository's .codex/config.toml" % WRITE_TARGET
+            return Check(name, label, False, detail)
+        problem = reason or _resumed_restrictions(result, name)
+        return Check(name, label, not problem, problem or "wrote nothing; the fork ran read-only")
+    finally:
+        shutil.rmtree(config_dir, ignore_errors=True)
+        if os.path.exists(target):
+            os.unlink(target)
 
 
 def _check_resumed_confinement(provider: Any, name: str, root: str, parent: str) -> List[Check]:
@@ -659,16 +745,20 @@ def _check_resumed_confinement(provider: Any, name: str, root: str, parent: str)
 def record_resume(provider: Any, name: str, checks: List[Check], model: str) -> List[Check]:
     """Write down whether this CLI version passed, so ``--resume`` can trust it.
 
-    Passed: every required check ok and no resume check failed. Failed: any
-    of them failed outright. A check only skipped decides nothing, and
-    nothing is written.
+    Passed: every check the adapter requires ok and no resume check failed.
+    Failed: any of them failed outright. A check only skipped decides
+    nothing, and nothing is written; nor is anything for an adapter that
+    requires no check.
     """
+    required = tuple(getattr(provider, "required_resume_checks", verified.REQUIRED_RESUME_CHECKS))
+    if not required:
+        return []
     by_name = {check.name: check for check in checks if check.provider == name}
-    watched = set(verified.REQUIRED_RESUME_CHECKS) | set(RESUME_CHECKS)
+    watched = set(required) | set(RESUME_CHECKS)
     failed = [
         label for label, check in by_name.items() if label in watched and not check.ok and not check.skipped
     ]
-    passed = all(label in by_name and by_name[label].ok for label in verified.REQUIRED_RESUME_CHECKS)
+    passed = all(label in by_name and by_name[label].ok for label in required)
     if not failed and not passed:
         return []
     label = "resume verified"
@@ -683,7 +773,10 @@ def record_resume(provider: Any, name: str, checks: List[Check], model: str) -> 
             return [Check(name, "resume recorded as failed", False, detail)]
         before, _ = verified.read(name, root)
         known = version in ((before or {}).get("versions") or {})
-        mechanism = provider.read_only_enforcement()["mechanism"]
+        if hasattr(provider, "resume_mechanism"):
+            mechanism = provider.resume_mechanism()
+        else:
+            mechanism = provider.read_only_enforcement()["mechanism"]
         ok_checks = [label for label, check in by_name.items() if check.ok]
         path = verified.record_pass(name, version, mechanism, ok_checks, model, root)
     except verified.VerifiedRecordError:

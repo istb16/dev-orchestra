@@ -140,6 +140,10 @@ class TestDocumentedYaml(IsolatedCase):
             with self.subTest(reason=reason):
                 self.assertIn("| `%s` |" % reason, text)
 
+    def test_the_trust_a_resumed_run_records_is_documented(self):
+        text = (pathlib.Path(REPO_ROOT) / "references" / "cli.md").read_text(encoding="utf-8")
+        self.assertIn("`resume.trust", text)
+
     def test_the_resume_trust_note_names_the_id_it_repeats(self):
         """The session id read from `state.json` is recorded, so the note on
         trusting that file must not say nothing read from it is repeated."""

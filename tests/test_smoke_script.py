@@ -464,7 +464,8 @@ class TestTheResumeChecks(IsolatedCase):
     def test_a_read_only_resumed_session_passes_everything(self):
         provider = _Resumer()
         checks = self.checks(provider)
-        self.assertEqual(sorted(checks), sorted(smoke_live.RESUME_CHECKS))
+        self.assertEqual(sorted(checks), sorted(smoke_live.resume_labels("claude")))
+        self.assertNotIn("ignores repository config on resume", checks)
         self.assertTrue(all(check.ok for check in checks.values()), checks)
         for call in provider.calls[1:]:
             if call["kwargs"].get("resume_session"):
@@ -521,6 +522,119 @@ class TestTheResumeChecks(IsolatedCase):
         checks = self.checks(_Resumer(), name="other")
         self.assertNotIn("resumes confined (absolute)", checks)
 
+    def test_no_other_provider_passes_on_the_filesystem_alone(self):
+        check = self.checks(_Resumer(), name="other")["resumes read-only"]
+        self.assertFalse(check.ok)
+        self.assertIn("no reading of a resumed session's restrictions is known for other", check.detail)
+
+
+CODEX_READ_ONLY_INIT = {"sandbox_policy": "read-only", "approval_policy": "never"}
+
+
+class _CodexResumer(_Resumer):
+    """A Codex-shaped resumer: its init is the sandbox policy of the fork's
+    rollout, and a repository ``.codex/config.toml`` may change it."""
+
+    name = "codex"
+
+    def __init__(self, init=None, under_config=None, writes_under_config=False):
+        super().__init__(init=dict(CODEX_READ_ONLY_INIT) if init is None else init)
+        self.under_config = under_config
+        self.writes_under_config = writes_under_config
+        self.configs_seen = []
+
+    def run(self, prompt, mode, cwd, **kwargs):
+        config = os.path.join(cwd, ".codex", "config.toml")
+        result = super().run(prompt, mode, cwd, **kwargs)
+        if os.path.isfile(config) and kwargs.get("resume_session"):
+            with open(config, encoding="utf-8") as handle:
+                self.configs_seen.append(handle.read())
+            if self.writes_under_config:
+                open(os.path.join(cwd, smoke_live.WRITE_TARGET), "w").close()
+            if self.under_config is not None:
+                result.session_init = self.under_config
+        return result
+
+
+class TestTheCodexResumeChecks(IsolatedCase):
+    def codex_checks(self, provider):
+        return {check.name: check for check in smoke_live.check_resume(provider, "codex", self.project)}
+
+    def test_a_read_only_fork_passes_everything_asked_of_codex(self):
+        provider = _CodexResumer()
+        checks = self.codex_checks(provider)
+        self.assertEqual(list(checks), smoke_live.resume_labels("codex"))
+        self.assertTrue(all(check.ok for check in checks.values()), checks)
+        for label in smoke_live.RESUME_CHECKS:
+            if "hooks" in label or "confined" in label:
+                self.assertNotIn(label, checks)
+        self.assertFalse(os.path.exists(os.path.join(self.project, ".claude")))
+
+    def test_a_loose_or_missing_sandbox_policy_fails(self):
+        for init in ({"sandbox_policy": "workspace-write"}, {}, None):
+            with self.subTest(init=init):
+                provider = _CodexResumer()
+                setattr(provider, "init", init)
+                check = self.codex_checks(provider)["resumes read-only"]
+                self.assertFalse(check.ok)
+                self.assertIn("sandbox policy was not confirmed read-only", check.detail)
+                self.assertFalse(os.path.exists(os.path.join(self.project, smoke_live.WRITE_TARGET)))
+
+    def test_the_repository_config_is_written_for_the_fork_and_removed(self):
+        provider = _CodexResumer()
+        check = self.codex_checks(provider)["ignores repository config on resume"]
+        self.assertTrue(check.ok, check.detail)
+        self.assertEqual(provider.configs_seen, [smoke_live.REPO_CONFIG])
+        self.assertIn('sandbox_mode = "danger-full-access"', smoke_live.REPO_CONFIG)
+        self.assertIn('profile = "loose"', smoke_live.REPO_CONFIG)
+        self.assertFalse(os.path.exists(os.path.join(self.project, ".codex")))
+
+    def test_a_fork_loosened_by_the_repository_config_fails(self):
+        loosened = self.codex_checks(_CodexResumer(under_config={"sandbox_policy": "danger-full-access"}))
+        self.assertFalse(loosened["ignores repository config on resume"].ok)
+        self.assertTrue(loosened["resumes read-only"].ok)
+        checks = self.codex_checks(_CodexResumer(writes_under_config=True))
+        wrote = checks["ignores repository config on resume"]
+        self.assertFalse(wrote.ok)
+        self.assertIn("it wrote breach.txt", wrote.detail)
+        for leftover in (".codex", smoke_live.WRITE_TARGET):
+            self.assertFalse(os.path.exists(os.path.join(self.project, leftover)))
+
+    def test_codex_is_checked_while_its_resume_is_still_off(self):
+        provider = _CodexResumer()
+        setattr(provider, "supports_resume", False)
+        checks = self.codex_checks(provider)
+        self.assertEqual(list(checks), smoke_live.resume_labels("codex"))
+        self.assertTrue(all(check.ok for check in checks.values()), checks)
+
+    def test_a_missing_session_refused_before_the_cli_starts_is_reported(self):
+        class _RefusesUnknown(_CodexResumer):
+            def run(self, prompt, mode, cwd, **kwargs):
+                if kwargs.get("resume_session") == smoke_live.MISSING_SESSION:
+                    refused = "codex: the session to resume was not started in this workspace"
+                    return RunResult(
+                        False, 2, "", refused, ["codex"], 0.0, invoked=False, resume_rejected=True
+                    )
+                return super().run(prompt, mode, cwd, **kwargs)
+
+        check = self.codex_checks(_RefusesUnknown())["reports a missing session"]
+        self.assertTrue(check.ok, check.detail)
+        self.assertIn("before the CLI started", check.detail)
+
+    def test_the_repository_config_is_asked_only_of_codex(self):
+        self.assertIn("ignores repository config on resume", smoke_live.resume_labels("codex"))
+        for name in ("claude", "other"):
+            self.assertNotIn("ignores repository config on resume", smoke_live.resume_labels(name))
+
+
+class _OwnChecks(_Resumer):
+    """An adapter that names its own required checks and resume mechanism."""
+
+    required_resume_checks = ("resumes read-only", "forks the session")
+
+    def resume_mechanism(self):
+        return "--fork-read-only"
+
 
 class TestTheResumeRecord(IsolatedCase):
     def checks(self, **overrides):
@@ -556,6 +670,30 @@ class TestTheResumeRecord(IsolatedCase):
     def test_a_skipped_required_check_records_nothing(self):
         self.assertEqual(self.record(self.checks(**{"resumes read-only": "skip"})), [])
         self.assertFalse(os.path.exists(smoke_live.verified.record_path("claude")))
+
+    def test_the_adapters_own_checks_and_mechanism_are_recorded(self):
+        os.chdir(self.project)
+        provider = _OwnChecks()
+        checks = [smoke_live.Check("codex", label, True, "") for label in provider.required_resume_checks]
+        lines = smoke_live.record_resume(provider, "codex", checks, "fake-1")
+        self.assertTrue(lines[0].ok, lines[0].detail)
+
+        def status(mechanism):
+            found = smoke_live.verified.lookup(
+                "codex", "9.9.9 (Fake)", mechanism, self.project, provider.required_resume_checks
+            )
+            return found["status"]
+
+        self.assertEqual(status("--fork-read-only"), "passed")
+        self.assertEqual(status("--fake-read-only"), "absent")
+
+    def test_an_adapter_that_requires_no_check_records_nothing(self):
+        os.chdir(self.project)
+        provider = _OwnChecks()
+        setattr(provider, "required_resume_checks", ())
+        checks = [smoke_live.Check("codex", "resumes read-only", False, "it wrote breach.txt")]
+        self.assertEqual(smoke_live.record_resume(provider, "codex", checks, "fake-1"), [])
+        self.assertFalse(os.path.exists(smoke_live.verified.record_path("codex")))
 
     def test_a_record_inside_the_checkout_is_refused(self):
         os.environ["DEV_ORCHESTRA_HOME"] = os.path.join(self.project, ".ai", "home")

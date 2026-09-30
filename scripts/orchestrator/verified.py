@@ -21,6 +21,7 @@ It holds check names only, never a check's detail.
 from __future__ import annotations
 
 import os
+import re
 from typing import Any, Dict, Optional, Sequence, Tuple
 
 from . import __version__, config
@@ -93,7 +94,13 @@ def _load(path: str, root: str, label: str = RECORD) -> Tuple[Optional[Dict[str,
     return data, None
 
 
-def lookup(provider: str, version: str, mechanism: str, root: str) -> Dict[str, Any]:
+def lookup(
+    provider: str,
+    version: str,
+    mechanism: str,
+    root: str,
+    required: Sequence[str] = REQUIRED_RESUME_CHECKS,
+) -> Dict[str, Any]:
     """``status`` is ``passed``, ``failed`` or ``absent`` for this version.
 
     ``passed`` needs the same read-only mechanism the adapter uses now and
@@ -107,17 +114,144 @@ def lookup(provider: str, version: str, mechanism: str, root: str) -> Dict[str, 
         return {"status": "failed", "entry": failed[version], "problem": None}
     versions = data.get("versions")
     entry = versions.get(version) if isinstance(versions, dict) else None
-    if isinstance(entry, dict) and entry_is_complete(entry, mechanism):
+    if isinstance(entry, dict) and entry_is_complete(entry, mechanism, required):
         return {"status": "passed", "entry": entry, "problem": None}
     return {"status": "absent", "entry": None, "problem": None}
 
 
-def entry_is_complete(entry: Dict[str, Any], mechanism: str) -> bool:
+def entry_is_complete(
+    entry: Dict[str, Any], mechanism: str, required: Sequence[str] = REQUIRED_RESUME_CHECKS
+) -> bool:
     """Whether a recorded or built-in entry vouches for the current flags."""
     checks = entry.get("checks")
     if entry.get("read_only_mechanism") != mechanism or not isinstance(checks, list):
         return False
-    return all(name in checks for name in REQUIRED_RESUME_CHECKS)
+    return all(name in checks for name in required)
+
+
+#: The first standalone dotted run of integers in a ``--version`` line:
+#: ``2.1.285 (Claude Code)``, ``codex-cli 0.156.1``, ``1.2.14``.
+_VERSION_RE = re.compile(r"(?<![\w.])\d+(?:\.\d+)+")
+
+
+def parse_version(text: Any) -> Optional[Tuple[int, ...]]:
+    """The version numbers in ``text``, or None when there is no clean run.
+
+    Only the first run is read: a suffix such as ``-beta.1`` on it makes the
+    whole string unparsable, so a pre-release cannot be read off a later
+    number in the same line (``2.1.286-beta.1 (build 2026.09.30)``).
+    """
+    if not isinstance(text, str):
+        return None
+    match = _VERSION_RE.search(text)
+    if match is None:
+        return None
+    after = text[match.end() : match.end() + 1]
+    if after and (after.isalnum() or after in "._-"):
+        return None
+    return tuple(int(part) for part in match.group(0).split("."))
+
+
+def _compare(left: Tuple[int, ...], right: Tuple[int, ...]) -> int:
+    """-1, 0 or 1, the shorter version padded with zeros."""
+    width = max(len(left), len(right))
+    a = left + (0,) * (width - len(left))
+    b = right + (0,) * (width - len(right))
+    return (a > b) - (a < b)
+
+
+def resume_trust(
+    provider: str,
+    version: str,
+    mechanism: str,
+    root: str,
+    built_in: Dict[str, Dict[str, Any]],
+    required: Sequence[str] = REQUIRED_RESUME_CHECKS,
+) -> Dict[str, Any]:
+    """How far ``version`` is trusted to keep a resumed session read-only.
+
+    ``status`` is ``failed``, ``passed`` (this exact version), ``newer``
+    (newer than ``newer_than``, which passed, and of the same major version)
+    or ``absent``. A failure recorded on this machine is overruled only by a
+    pass recorded here above it, never by the built-in table, and blocks
+    every version up to the next such pass (``blocked_by``); a version that
+    cannot be ordered is blocked by any (``unordered``). Nothing newer is
+    trusted without this machine's failures to hand: with ``problem`` set --
+    a failure the record holds but not as an object included -- only an
+    exact built-in entry counts.
+    """
+    data, problem = read(provider, root)
+    recorded_failures = (data or {}).get("failed", {})
+    if data is not None and not (
+        isinstance(recorded_failures, dict) and all(isinstance(e, dict) for e in recorded_failures.values())
+    ):
+        data, problem = None, "the %s has a malformed failure entry" % RECORD
+    trust: Dict[str, Any] = {
+        "status": "absent",
+        "entry": None,
+        "source": None,
+        "newer_than": None,
+        "blocked_by": None,
+        "unordered": False,
+        "problem": problem,
+    }
+    recorded_passes = (data or {}).get("versions")
+    failed: Dict[str, Any] = dict(recorded_failures) if data is not None else {}
+    passes: Dict[str, Any] = recorded_passes if isinstance(recorded_passes, dict) else {}
+
+    def complete(entry: Any) -> bool:
+        return isinstance(entry, dict) and entry_is_complete(entry, mechanism, required)
+
+    if version in failed:
+        return dict(trust, status="failed", entry=failed[version])
+    if complete(passes.get(version)):
+        return dict(trust, status="passed", entry=passes[version], source="record")
+    exact = built_in.get(version)
+    if problem:
+        if complete(exact):
+            return dict(trust, status="passed", entry=exact, source="built-in")
+        return trust
+
+    current = parse_version(version)
+    if failed:
+        if current is None:
+            # Not ordered, so no failure can be said to lie below it.
+            return dict(trust, status="failed", unordered=True)
+        last_pass: Optional[Tuple[int, ...]] = None
+        for name, entry in passes.items():
+            parsed = parse_version(name)
+            if parsed is None or not complete(entry) or _compare(parsed, current) >= 0:
+                continue
+            if last_pass is None or _compare(parsed, last_pass) > 0:
+                last_pass = parsed
+        for name in sorted(failed):
+            parsed = parse_version(name)
+            if parsed is None or (
+                _compare(parsed, current) <= 0 and (last_pass is None or _compare(parsed, last_pass) > 0)
+            ):
+                return dict(trust, status="failed", entry=failed[name], blocked_by=name)
+
+    if complete(exact):
+        return dict(trust, status="passed", entry=exact, source="built-in")
+    if current is None:
+        return trust
+
+    best: Optional[Tuple[Tuple[int, ...], str, Dict[str, Any], str]] = None
+    # The record first, so that it wins a tie with the table. A pass vouches
+    # for its own major version only: a major release is where the flags a
+    # pass measured are most likely to change.
+    for source, table in (("record", passes), ("built-in", built_in)):
+        for name, entry in table.items():
+            parsed = parse_version(name)
+            if parsed is None or name in failed or not complete(entry) or _compare(parsed, current) >= 0:
+                continue
+            if parsed[0] != current[0]:
+                continue
+            if best is None or _compare(parsed, best[0]) > 0:
+                best = (parsed, name, entry, source)
+    if best is None:
+        return trust
+    return dict(trust, status="newer", entry=best[2], source=best[3], newer_than=best[1])
 
 
 def _update(provider: str, root: str, change) -> str:

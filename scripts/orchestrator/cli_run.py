@@ -449,17 +449,25 @@ def cmd_run(args: argparse.Namespace) -> int:
             suspended_seconds=result.suspended,
         )
         _err("note: %s" % _RESUME_REJECTED)
+        if not result.invoked:
+            # The adapter refused to start it, so nothing came from the CLI:
+            # its reason is said here, and still not recorded.
+            refused = (result.stderr or "").strip().splitlines()
+            if refused:
+                _err("note: %s" % refused[-1])
         # Running fresh is another attempt, so it asks the budget as any run
-        # does -- as the user asked it, not as the worker was started.
+        # does -- as the user asked it, not as the worker was started. A
+        # refusal ran nothing, so the attempt already taken is the fresh one's.
         user_force = bool(job.get("force", False)) if job is not None else bool(args.force)
-        if not user_force and book.check(role):
+        if result.invoked and not user_force and book.check(role):
             _err(_RESUME_NO_BUDGET)
             _refuse_if_exhausted(book, role, user_force)
             if args.job_file:
                 jobs_mod.finish(args.job_file, "failed", error=_RESUME_NO_BUDGET)
             return ledger_mod.EXIT_BUDGET_EXHAUSTED
         try:
-            book.consume(role, force=user_force)
+            if result.invoked:
+                book.consume(role, force=user_force)
         except ledger_mod.BudgetExhausted as exc:
             _err(_RESUME_NO_BUDGET)
             _err(str(exc))
@@ -742,7 +750,7 @@ def _resume_candidate(
         return fresh(_RESUME_NOT_SUPPORTED)
     support = provider.resume_support(workspace.root) or {}
     status = support.get("status")
-    if status != "verified":
+    if status not in ("verified", "trusted"):
         suffix = status if status in ("unsupported", "unverified") else "unspecified"
         return fresh("%s (%s)" % (_RESUME_NOT_SUPPORTED, suffix), str(support.get("detail") or ""))
 
@@ -791,12 +799,20 @@ def _resume_candidate(
         "reason": None,
         "outcome": None,
     }
+    if status == "trusted":
+        # Trusted as newer than a version that passed, not checked itself:
+        # the adapter's sentence says so on stderr, and only the word goes
+        # into the record, never the versions.
+        detail["trust"] = "newer"
+        return session_id, detail, str(support.get("detail") or "")
     return session_id, detail, ""
 
 
 def _announce_resume(session_id: Optional[str], detail: Dict[str, Any], note: str) -> None:
     if session_id is not None:
         _err("note: resuming the last architect session")
+        if note:
+            _err("note: %s" % note)
         return
     _err("note: --resume requested, running fresh: %s" % detail["reason"])
     if note:

@@ -41,7 +41,11 @@ Beside it, `verified/<provider>-resume.json` records the CLI versions that
 (`run architect --resume`); only that script writes it. It is read only when
 its real path is outside the workspace: point `DEV_ORCHESTRA_HOME` into the
 checkout and the record is neither read nor written, and `doctor` and the
-`--resume` note say so.
+`--resume` note say so. A version newer than one that passed here or in the
+adapter's table, and of the same major version, resumes on trust unless a
+failure recorded here stands in between, so a newer CLI whose resumed session lost a restriction is resumed
+until the script is run on it; `design.resume.max_age_seconds: 0` turns
+resuming off.
 
 Global config path by platform:
 

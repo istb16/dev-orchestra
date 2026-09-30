@@ -1,0 +1,2 @@
+{"type": "session_meta", "payload": {"session_id": "01a0f266-8141-7e62-a53b-8a09a8cf13a3", "id": "01a0f266-8141-7e62-a53b-8a09a8cf13a3", "timestamp": "2026-09-30T12:59:59.250Z", "cwd": "/sandbox/probe181", "cli_version": "0.156.1", "source": "exec"}}
+{"type": "turn_context", "payload": {"cwd": "/sandbox/probe181", "approval_policy": "never", "sandbox_policy": {"type": "read-only"}, "model": "gpt-6-sol"}}

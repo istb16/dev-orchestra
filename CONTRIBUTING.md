@@ -251,13 +251,14 @@ needs, is under "How the formats change" in `references/workflow.md`.
 
 1. Run `python scripts/smoke_live.py` against the installed CLIs. The suite
    cannot tell you an adapter has drifted; this can.
-2. If that run recorded a claude version it had not recorded before (it says
-   so on its `resume verified` line and prints the entry), copy the entry into
-   `VERIFIED_RESUME` in `scripts/orchestrator/providers/claude.py`: the version
-   string, the date, the read-only mechanism, the check names, and in `source`
-   the date and the environment it was run in. Never add a version that
-   failed. A user on a version missing from the table has every `--resume` run
-   fresh until they run the script themselves.
+2. If that run recorded a claude or codex version it had not recorded before
+   (it says so on its `resume verified` line and prints the entry), copy the
+   entry into `VERIFIED_RESUME` in that adapter's
+   `scripts/orchestrator/providers/<name>.py`: the version string, the date,
+   the read-only mechanism, the check names, and in `source` the date and the
+   environment it was run in. Never add a version that failed. A user on a
+   version older than every entry has every `--resume` run fresh until they run
+   the script themselves; one on a newer version resumes on trust.
 3. Changing a value in `default_config()` is a change to the effective
    configuration of everyone who never set it, so record it under `Changed`
    with the old and the new value.

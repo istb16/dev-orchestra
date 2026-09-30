@@ -457,6 +457,18 @@ def _resume_line(name: str, support: Dict[str, Any]) -> str:
         where = "built-in" if support.get("source") == "built-in" else "record: %s" % support.get("record")
         version, verified_at = support["version"], support.get("verified_at")
         return "verified for %s %s on %s (%s)" % (name, version, verified_at, where)
+    if status == "trusted":
+        where = "built-in" if support.get("source") == "built-in" else "record: %s" % support.get("record")
+        version, newer_than = support.get("version"), support.get("newer_than")
+        smoke = "python scripts/smoke_live.py --provider %s" % name
+        return "trusted for %s %s as newer than %s (verified on %s, %s); not verified itself -- run %s" % (
+            name,
+            version,
+            newer_than,
+            support.get("verified_at"),
+            where,
+            smoke,
+        )
     if status == "unverified":
         return "UNVERIFIED -- %s; --resume runs fresh until then" % detail
     if status == "unsupported":

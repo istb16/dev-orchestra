@@ -770,6 +770,9 @@ Honest limits of the above:
   `options.output_format: text` or `json` the CLI's output carries no sign that
   the session was missing, so such a run is reported as an ordinary failure.
 * **Whether a resumed session stays read-only is checked per CLI version**,
-  by `scripts/smoke_live.py`, not continuously. A version nobody has checked is
-  not resumed; a change in behaviour that keeps the same version string would
-  go unnoticed until the script is run again.
+  by `scripts/smoke_live.py`, not continuously. A version newer than one that
+  was checked, and of the same major version, resumes on trust, so a resumed Claude session that lost
+  read-only on a newer version is noticed only when the script is run on it;
+  a change in behaviour that keeps the same version string would go unnoticed
+  until the script is run again. A Codex fork is confirmed read-only from its
+  rollout after the run, which detects a write but does not prevent one.

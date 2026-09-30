@@ -194,11 +194,15 @@ top-level `user_providers`. See `references/providers.md`.
 
 A `Resume:` line follows, saying whether `run architect --resume` can continue
 a session on that CLI: `verified for claude <version> on <date> (built-in)` or
-`(record: <path>)`, `UNVERIFIED -- <why>; --resume runs fresh until then`,
-`NOT SUPPORTED -- <why>`, `not reported by this adapter`, or `not checked
-(--fast)`. In `--json` it is `providers.<name>.resume_support` (`status`,
-`detail`, `version`, `source`, `record`, `verified_at`, `missing`). It is never
-a problem: a run that cannot resume runs fresh.
+`(record: <path>)`, `trusted for claude <version> as newer than <version>
+(verified on <date>, built-in); not verified itself -- run python
+scripts/smoke_live.py --provider claude` (or `record: <path>`), `UNVERIFIED --
+<why>; --resume runs fresh until then`, `NOT SUPPORTED -- <why>`, `not reported
+by this adapter`, or `not checked (--fast)`. In `--json` it is
+`providers.<name>.resume_support` (`status` -- `verified`, `trusted`,
+`unverified`, `unsupported` or `unspecified` -- `detail`, `version`, `source`,
+`record`, `verified_at`, `newer_than`, `missing`). It is never a problem, the
+trusted line included: a run that cannot resume runs fresh.
 
 Beside it, every installed provider except the offline `mock` gets a `Live
 check:` line saying whether `scripts/smoke_live.py` has run this CLI version on
@@ -313,8 +317,9 @@ refused without `--resume`), and is `-` only when the fresh prompt comes from
 `--print-command`, in the parent of `--detach`, and again in the worker.
 
 The session continued is the one the last architect event in this workflow
-ended in, forked so the original is left as it was: the run adds only
-`--resume=<id> --fork-session` to the read-only command, and a raw `--resume`
+ended in, forked so the original is left as it was: on Claude the run adds only
+`--resume=<id> --fork-session` to the read-only command (Codex forks with the
+command in `references/providers.md`), and a raw `--resume`
 in `--extra` or `options.args` is refused as any other raw argument is. It
 runs fresh instead, with the full prompt, and says why on stderr (`note:
 --resume requested, running fresh: <reason>`), when the first of these applies:
@@ -322,7 +327,7 @@ runs fresh instead, with the full prompt, and says why on stderr (`note:
 | Reason (recorded as `resume.reason`) | When |
 | --- | --- |
 | `the provider cannot resume a session` | the provider does not resume (Codex, a user adapter) |
-| `the provider cannot resume a session (unsupported)` | its `--help` does not list `--resume` and `--fork-session` |
+| `the provider cannot resume a session (unsupported)` | its `--help` does not list `--resume` and `--fork-session` (Codex: `codex exec fork --help` does not list every flag the fork needs) |
 | `the provider cannot resume a session (unverified)` | this CLI version has not been checked to keep a resumed session read-only (see below) |
 | `the provider cannot resume a session (unspecified)` | an adapter that resumes but does not say whether that stays read-only |
 | `no earlier architect run in this workflow` | nothing to continue |
@@ -341,25 +346,40 @@ runs fresh instead, with the full prompt, and says why on stderr (`note:
 With `(unverified)` a second note gives the adapter's detail: the CLI version
 and `python scripts/smoke_live.py --provider claude`. A CLI version is cleared
 for resuming when it is in the table shipped with the adapter, or when that
-script passed on this machine and recorded it (`references/providers.md`). So
-right after the CLI is updated, every `--resume` runs fresh until the script is
-run again or a release that lists the new version is installed; `doctor` says
-the same on its `Resume:` line.
+script passed on this machine and recorded it (`references/providers.md`). A
+version newer than one cleared that way, and of the same major version,
+resumes too, on trust, unless this machine recorded a failure at or below it
+that no later pass here has superseded; it runs resumed with a second note
+after `note: resuming the last architect session`, the adapter's detail: which
+version it is trusted as newer than, and that it has not been checked itself.
+So right after the CLI is updated, `--resume` continues on trust until the
+script is run on the new version; a version older than every cleared one, a
+new major version, or one after a failure here, runs fresh (`(unverified)`),
+and `doctor` says the same on its `Resume:` line.
 
 If the CLI rejects the session because it no longer exists, that run is
 recorded as a failed event (`resume.outcome: "rejected"`, its stderr not
-copied) and the run is made once more, fresh, with the full prompt. That second
-run is another attempt: it is checked against the architect's budget and
-consumes one, and when none is left it is not made (exit 3; `running fresh
-would spend an attempt`). `--force` applies as the user gave it, including in a
+copied) and the run is made once more, fresh, with the full prompt. An adapter
+may refuse to start the continued run itself, and is handled the same way:
+Codex refuses when it has no model to pass the fork, or when the session was
+not started in this workspace; the refusal's reason follows `note: the CLI
+rejected the session it was asked to resume` on stderr, and is not recorded
+either. After a rejection by the CLI that second run is another attempt: it is
+checked against the architect's budget and consumes one, and when none is left
+it is not made (exit 3; `running fresh would spend an attempt`). After a
+refusal by the adapter nothing ran, so the fresh run spends the attempt the
+continued one took, and is made even when that was the last. `--force` applies as the user gave it, including in a
 detached worker. Any other failure of a continued run -- a stall, a timeout, an
 error -- is reported as it is today and not retried; the next `--resume` then
-runs fresh (`it did not succeed`).
+runs fresh (`it did not succeed`). A continued Codex run whose fork's rollout
+does not confirm a read-only filesystem sandbox is such a failure: its answer
+is not used.
 
 Every `run` end event now records `session_id`, `context_tokens` (the context
 the model last saw, when the CLI reports it), `cost_usd` and
 `cache_read_tokens`; a `--resume` run also records `resume` (`requested`,
-`mode` `resumed` or `fresh`, `resumed_from`, `reason`, `outcome`), in its
+`mode` `resumed` or `fresh`, `resumed_from`, `reason`, `outcome`, and
+`resume.trust: "newer"` on a run resumed on trust -- never a version), in its
 in-flight entry too. A continued run's usage is labelled `architect:resumed`
 in `tokens show` (a `--tier` label takes precedence). With `--detach` both
 prompts are copied into the job, so an edit to either file after the command

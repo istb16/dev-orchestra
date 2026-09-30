@@ -1,4 +1,4 @@
-<!-- translated-from: references/cli.md sha256:f4739923fd5e4afcfaac2701aba838f98dd5b8083ba5ffa2ce8bf8cc6aec0938 -->
+<!-- translated-from: references/cli.md sha256:1581cc646d2b091856a1ad9e4879b9da0e2605fc8186de5101798c0970f6600f -->
 
 > この文書は [references/cli.md](../../../references/cli.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -191,10 +191,13 @@ Antigravity の入れ先（`~/.gemini/config/plugins/dev-orchestra`、または 
 
 続いて `Resume:` 行があり、その CLI で `run architect --resume` がセッションを継続できるかを示します。
 `verified for claude <version> on <date> (built-in)` または `(record: <path>)`、
+`trusted for claude <version> as newer than <version> (verified on <date>, built-in); not verified
+itself -- run python scripts/smoke_live.py --provider claude`（または `record: <path>`）、
 `UNVERIFIED -- <理由>; --resume runs fresh until then`、`NOT SUPPORTED -- <理由>`、
 `not reported by this adapter`、`not checked (--fast)` のいずれかです。`--json` では
-`providers.<name>.resume_support`（`status`、`detail`、`version`、`source`、`record`、`verified_at`、
-`missing`）です。これは決して問題として扱われません。継続できない実行は新規に走るだけだからです。
+`providers.<name>.resume_support`（`status` は `verified`、`trusted`、`unverified`、`unsupported`、
+`unspecified` のいずれか。ほかに `detail`、`version`、`source`、`record`、`verified_at`、`newer_than`、
+`missing`）です。これは trusted の行も含めて決して問題として扱われません。継続できない実行は新規に走るだけだからです。
 
 その隣に、オフラインの `mock` を除くインストール済みのすべての provider について `Live check:` 行があり、
 このマシンで `scripts/smoke_live.py` がこの CLI バージョンを走らせたかを示します。実際の CLI を走らせるのは
@@ -296,15 +299,15 @@ agy の adapter は該当しません。`references/providers.md` を参照）�
 そしてワーカーでも改めて行われます。
 
 継続するのは、このワークフローの直前の architect イベントが終わったセッションで、元のセッションを
-そのまま残すよう fork されます。実行は読み取り専用のコマンドに `--resume=<id> --fork-session` を足す
-だけで、`--extra` や `options.args` に書いた生の `--resume` は他の生引数と同じく拒否されます。次のうち
+そのまま残すよう fork されます。Claude では実行は読み取り専用のコマンドに `--resume=<id> --fork-session` を足す
+だけで（Codex は `references/providers.md` のコマンドで fork します）、`--extra` や `options.args` に書いた生の `--resume` は他の生引数と同じく拒否されます。次のうち
 最初に当てはまるものがあれば、代わりに全文プロンプトで新規に走り、その理由を stderr に出します
 （`note: --resume requested, running fresh: <reason>`）。
 
 | 理由（`resume.reason` として記録） | 条件 |
 | --- | --- |
 | `the provider cannot resume a session` | provider がセッションを継続しない（Codex、ユーザー adapter） |
-| `the provider cannot resume a session (unsupported)` | `--help` が `--resume` と `--fork-session` を挙げていない |
+| `the provider cannot resume a session (unsupported)` | `--help` が `--resume` と `--fork-session` を挙げていない（Codex: `codex exec fork --help` が fork に要るフラグをすべては挙げていない） |
 | `the provider cannot resume a session (unverified)` | この CLI の版が、継続したセッションを読み取り専用のまま保つと確認されていない（後述） |
 | `the provider cannot resume a session (unspecified)` | 継続はするが、それが読み取り専用のままかを示さない adapter |
 | `no earlier architect run in this workflow` | 継続するものがない |
@@ -323,20 +326,30 @@ agy の adapter は該当しません。`references/providers.md` を参照）�
 `(unverified)` の場合は 2 行目の note に adapter の詳細が出ます。CLI の版と
 `python scripts/smoke_live.py --provider claude` です。CLI の版が継続を許されるのは、adapter に同梱された
 表にあるか、このマシンでそのスクリプトが合格してその版を記録したときです（`references/providers.md`）。
-したがって CLI を更新した直後は、スクリプトを再実行するか、新しい版を載せたリリースをインストールする
-まで、すべての `--resume` が新規に走ります。`doctor` の `Resume:` 行も同じことを示します。
+そうして許された版より新しく、メジャー版が同じ版も、信頼に基づいて継続します。ただし、その版以下でこのマシンが不合格と
+記録し、その後ここでの合格で覆っていないものがあれば別です。その場合は `note: resuming the last
+architect session` の後に 2 行目の note として adapter の詳細が出ます。どの版より新しいとして信頼したか、
+そしてその版自体は確認されていないことです。したがって CLI を更新した直後は、新しい版でスクリプトを
+実行するまで、`--resume` は信頼に基づいて継続します。許されたどの版よりも古い版、新しいメジャー版、ここでの不合格の後の版は
+新規に走り（`(unverified)`）、`doctor` の `Resume:` 行も同じことを示します。
 
 セッションがもう存在しないために CLI が継続を拒んだ場合、その実行は失敗イベントとして記録され
 （`resume.outcome: "rejected"`。stderr は写しません）、全文プロンプトで新規にもう一度だけ実行されます。
-この 2 回目は別の試行です。architect の予算に照らして確認され、試行を 1 回消費し、残っていなければ
-実行されません（終了コード 3、`running fresh would spend an attempt`）。`--force` はユーザーが指定した
+adapter が継続の実行を自分で始めないこともあり、同じように扱われます。Codex は、fork に渡すモデルが
+ないとき、またはそのセッションがこのワークスペースで始まったものでないときに拒否します。拒否の理由は
+stderr の `note: the CLI rejected the session it was asked to resume` の後に出て、これも記録されません。
+CLI が拒んだ後の 2 回目は別の試行です。architect の予算に照らして確認され、試行を 1 回消費し、残っていなければ
+実行されません（終了コード 3、`running fresh would spend an attempt`）。adapter が拒否した後は何も
+走っていないので、新規の実行は継続の実行が確保した試行を使い、それが最後の 1 回でも実行されます。`--force` はユーザーが指定した
 とおりに効き、detach されたワーカーでも同じです。継続した実行のそれ以外の失敗（stall、タイムアウト、
 エラー）はこれまでどおり報告され、再試行されません。次の `--resume` は新規に走ります
-（`it did not succeed`）。
+（`it did not succeed`）。継続した Codex の実行で、fork の rollout が読み取り専用のファイルシステムの
+サンドボックスを確かめられなかったものもこの失敗で、その回答は使われません。
 
 すべての `run` の終了イベントは `session_id`、`context_tokens`（CLI が報告した場合、モデルが最後に見た
 文脈の大きさ）、`cost_usd`、`cache_read_tokens` を記録するようになりました。`--resume` の実行は `resume`
-（`requested`、`mode` は `resumed` または `fresh`、`resumed_from`、`reason`、`outcome`）も記録し、
+（`requested`、`mode` は `resumed` または `fresh`、`resumed_from`、`reason`、`outcome`、そして信頼に
+基づいて継続した実行では `resume.trust: "newer"`。版は決して記録しません）も記録し、
 実行中のエントリにも入ります。継続した実行の使用量は `tokens show` で `architect:resumed` とラベル付け
 されます（`--tier` のラベルが優先されます）。`--detach` では両方のプロンプトがジョブにコピーされるので、
 コマンドが戻った後にどちらかのファイルを編集しても実行には届きません。ジョブレコードには `force`、

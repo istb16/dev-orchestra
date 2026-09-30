@@ -300,7 +300,10 @@ ran fresh, and why, is in the note on stderr and in the run log
 resume a session (unverified)`, this version of the CLI has not been checked
 to keep a continued session read-only: tell the user, who can run `python
 scripts/smoke_live.py --provider claude` to check it. Do not run it yourself --
-it spends real tokens on the real CLI.
+it spends real tokens on the real CLI. A second note after `resuming the last
+architect session` saying the version `is trusted to resume as newer than`
+another means it continued on trust: mention it to the user once, with the
+same command.
 
 A revision that stalls, times out or fails leaves `.ai/plan.md` as it was --
 the run is being asked to rewrite its own input, so a bad one must not consume

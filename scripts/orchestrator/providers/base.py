@@ -14,7 +14,7 @@ import shutil
 import subprocess
 from typing import Any, Dict, List, Optional, Sequence
 
-from .. import execution
+from .. import execution, verified
 
 # Execution modes shared by every adapter.
 MODE_PLAN = "plan"  # investigate / design, must not modify files
@@ -380,8 +380,12 @@ class Provider:
 
     #: True when this adapter can continue an earlier session of a read-only
     #: run. The orchestrator still only asks when :meth:`resume_support`
-    #: reports ``verified``.
+    #: reports ``verified`` or ``trusted``.
     supports_resume = False
+
+    #: The checks a version must pass before this adapter's resumed sessions
+    #: are trusted. The strictest set unless an adapter names its own.
+    required_resume_checks: Sequence[str] = verified.REQUIRED_RESUME_CHECKS
 
     #: True when :meth:`read_only_enforcement` is a constant that needs no
     #: subprocess, so ``doctor`` reports it whether or not the CLI is there.
@@ -597,11 +601,12 @@ class Provider:
     def resume_support(self, root: str) -> Dict[str, Any]:
         """Whether a resumed session of this CLI is known to stay read-only.
 
-        ``status`` is ``verified``, ``unverified``, ``unsupported`` or
-        ``unspecified``; only ``verified`` lets the orchestrator resume.
-        ``root`` is the workspace, which a per-machine record must lie
-        outside of to be trusted. Not memoised: a record written a moment ago
-        has to be read.
+        ``status`` is ``verified``, ``trusted``, ``unverified``,
+        ``unsupported`` or ``unspecified``; ``verified`` or ``trusted`` lets
+        the orchestrator resume. ``trusted`` is a version newer than one that
+        passed (``newer_than``), not checked itself. ``root`` is the
+        workspace, which a per-machine record must lie outside of to be
+        trusted. Not memoised: a record written a moment ago has to be read.
         """
         if not self.supports_resume:
             return {"status": "unsupported", "detail": "%s does not resume sessions" % self.name}
@@ -610,10 +615,100 @@ class Provider:
             "detail": "this adapter does not report whether a resumed session stays read-only",
         }
 
+    def resume_mechanism(self) -> str:
+        """The flags a resume record vouches for. A record made under other
+        flags is stale. The fresh read-only mechanism unless an adapter's
+        resumed command differs from its fresh one."""
+        return str(self.read_only_enforcement().get("mechanism") or "")
+
+    def resume_report(self, version: str, trust: Dict[str, Any]) -> Dict[str, Any]:
+        """A :func:`verified.resume_trust` result as a :meth:`resume_support`
+        report, in the same sentences for every adapter."""
+        smoke = "python scripts/smoke_live.py --provider %s" % self.name
+        entry = trust.get("entry") or {}
+        report: Dict[str, Any] = {
+            "status": "unverified",
+            "detail": "",
+            "version": version,
+            "source": None,
+            "record": verified.record_path(self.name),
+            "verified_at": None,
+            "newer_than": None,
+            "missing": [],
+        }
+        status = trust.get("status")
+        if status in ("passed", "newer"):
+            verified_at = str(entry.get("verified_at") or "")
+            source = trust.get("source")
+            report["source"] = source
+            report["verified_at"] = verified_at
+            if status == "passed":
+                report["status"] = "verified"
+                report["detail"] = "resume verified for %s %s on %s (%s)" % (
+                    self.name,
+                    version,
+                    verified_at,
+                    source,
+                )
+                return report
+            newer_than = trust.get("newer_than")
+            report["status"] = "trusted"
+            report["newer_than"] = newer_than
+            words = (self.name, version, newer_than, verified_at, source, version, smoke)
+            report["detail"] = (
+                "%s %s is trusted to resume as newer than %s, verified on %s (%s); %s itself has not "
+                "been checked -- run %s to check it" % words
+            )
+            return report
+        blocked_by = trust.get("blocked_by")
+        if status == "failed" and trust.get("unordered"):
+            report["detail"] = (
+                "%s %s cannot be ordered against the versions checked here, and a failure of the resume "
+                "check is recorded on this machine; run %s" % (self.name, version, smoke)
+            )
+        elif status == "failed" and blocked_by:
+            report["detail"] = (
+                "%s %s, newer than the last pass this machine trusts, failed the resume check here; "
+                "run %s again after fixing it" % (self.name, blocked_by, smoke)
+            )
+        elif status == "failed":
+            detail = "%s %s failed the resume check on this machine; run %s again after fixing it" % (
+                self.name,
+                version,
+                smoke,
+            )
+            report["detail"] = detail
+        else:
+            detail = "%s %s has not been verified to keep a resumed session read-only; run %s" % (
+                self.name,
+                version,
+                smoke,
+            )
+            if trust.get("problem"):
+                unread = "; the %s could not be read (%s), so only versions in the built-in table resume"
+                detail += unread % (verified.RECORD, trust["problem"])
+            report["detail"] = detail
+        return report
+
     def resume_args(self, session_id: str) -> List[str]:
         """The arguments that continue ``session_id``; appended after the
         command :meth:`build_command` returns."""
         raise NotImplementedError("%s does not resume sessions" % self.name)
+
+    def resume_command(
+        self,
+        mode: str,
+        resolved: ResolvedModel,
+        cwd: str,
+        extra_args: Sequence[str],
+        options: Optional[Dict[str, Any]],
+        session_id: str,
+    ) -> List[str]:
+        """The command that continues ``session_id``: the fresh command with
+        :meth:`resume_args` after it, unless an adapter's CLI resumes with a
+        command of another shape."""
+        command = list(self.build_command(mode, resolved, cwd, extra_args, options))
+        return command + self.resume_args(session_id)
 
     def resume_rejected(
         self,
@@ -627,6 +722,11 @@ class Provider:
         The orchestrator runs fresh once after a rejection, so a False here
         costs a retry and a wrong True spends an attempt on a run that had
         already failed for another reason.
+
+        An adapter may also refuse to start a resumed run itself, returning a
+        result with ``resume_rejected=True`` and ``invoked=False`` from
+        :meth:`_launch`; the orchestrator runs fresh once, as for a rejection
+        by the CLI.
         """
         return False
 
@@ -644,18 +744,17 @@ class Provider:
         options: Optional[Dict[str, Any]] = None,
         resume_session: Optional[str] = None,
     ) -> List[str]:
-        """The command a run starts. Adapters override :meth:`build_command`
-        and :meth:`resume_args`, not this.
+        """The command a run starts. Adapters override :meth:`build_command`,
+        :meth:`resume_args` and :meth:`resume_command`, not this.
 
-        The resume arguments are the adapter's own and go after everything
-        else, so they never pass through the caller's raw-argument gate and a
-        ``build_command`` written before resuming existed is called as it
-        always was.
+        The resume arguments are the adapter's own, so they never pass
+        through the caller's raw-argument gate, which :meth:`run` applies
+        before any command is built; a ``build_command`` written before
+        resuming existed is called as it always was.
         """
-        command = list(self.build_command(mode, resolved, cwd, extra_args, options))
         if resume_session is not None:
-            command += self.resume_args(resume_session)
-        return command
+            return list(self.resume_command(mode, resolved, cwd, extra_args, options, resume_session))
+        return list(self.build_command(mode, resolved, cwd, extra_args, options))
 
     # -- running -----------------------------------------------------------
 

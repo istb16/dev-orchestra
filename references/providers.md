@@ -58,8 +58,11 @@ class Provider:
     def config_families() -> list[tuple[str, str]]              # default: []
 
     supports_resume: bool                                       # default: False
+    required_resume_checks: Sequence[str]                       # default: every check verified.py names
     def resume_support(root) -> dict                            # default: "unsupported" / "unspecified"
+    def resume_mechanism() -> str                               # default: read_only_enforcement()["mechanism"]
     def resume_args(session_id) -> list[str]                    # default: NotImplementedError
+    def resume_command(mode, resolved, cwd, extra_args, options, session_id) -> list[str]  # default: build_command + resume_args
     def resume_rejected(outcome, mode, options, session_id) -> bool   # default: False
     def parse_session(outcome) -> dict                          # session_id, context_tokens, init
 ```
@@ -76,14 +79,27 @@ carry it itself.
 
 Continuing a session (`run architect --resume`) is opt-in per adapter.
 `resume_session` travels as a keyword from `run` through `_launch` to
-`command_line`, which calls `build_command` as it always did and appends the
-adapter's own `resume_args(session_id)`; it is never a raw argument, so it
-never meets the allowlist, and `run` refuses it on an `implement` run. The
-orchestrator sends it only to an adapter that declares `supports_resume` and
-whose `resume_support(root)` reports `verified`; `run` passes the keyword on
+`command_line`, which calls `resume_command(...)`: by default `build_command`
+as it always did with the adapter's own `resume_args(session_id)` after it,
+and overridden by an adapter whose CLI resumes with a command of another shape
+(Codex). It is never a raw argument, so it never meets the allowlist, which
+`run` applies before any command is built, and `run` refuses it on an
+`implement` run. The orchestrator sends it only to an adapter that declares
+`supports_resume` and whose `resume_support(root)` reports `verified`, or
+`trusted` (a version newer than one that passed, of the same major version,
+named in `newer_than`, not checked itself); `run` passes the keyword on
 to `_launch` only when there is one, so an adapter that overrides `_launch`
 with the signature from before still runs fresh runs unchanged. An adapter
-that resumes has to accept the keyword and pass it to the base. After the run
+that resumes has to accept the keyword and pass it to the base. An adapter
+that resumes on the shared rule passes `verified.resume_trust(...)` its
+`resume_mechanism()` -- the flags a record vouches for, the fresh read-only
+mechanism unless the resumed command differs -- and its
+`required_resume_checks`, the checks a version must pass (every check
+`verified.py` names unless it names fewer), and turns the answer into its
+report with `resume_report(version, trust)`. An adapter may also refuse to
+start a resumed run: `_launch` returns a result with `resume_rejected=True`
+and `invoked=False`, and the orchestrator runs fresh once, as for a rejection
+by the CLI. After the run
 the base asks `parse_session(outcome)` for the session the run ended in, the
 context it last had (`context_tokens`) and what the CLI reported when the
 session started (`init`), and, for a resumed run only,
@@ -178,7 +194,7 @@ Verified against `claude` 2.1.x.
 | Model discovery | Parses the aliases the CLI advertises in its own `--model` help text |
 | `plan` / `review` | `--permission-mode plan --disallowed-tools Edit,Write,NotebookEdit --tools Read,Grep,Glob --strict-mcp-config --restricted` |
 | `implement` | `--permission-mode acceptEdits` |
-| Resume (`run architect --resume`) | the read-only command plus `--resume=<id> --fork-session`, on a CLI version verified to keep a resumed session read-only |
+| Resume (`run architect --resume`) | the read-only command plus `--resume=<id> --fork-session`, on a CLI version verified to keep a resumed session read-only, or newer than one that was |
 | Auth | Inherited environment; presence detected via `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, or the CLI's credential file |
 
 The read-only flags were measured on claude 2.1.283. Plan mode and the three
@@ -225,8 +241,7 @@ adapter recognises a rejection (with `stream-json` only; `text` and `json`
 carry no such sign, and such a rejection is reported as an ordinary failure).
 
 Whether a resumed session keeps those restrictions belongs to the CLI version,
-so it is checked per version, in two layers, and a version in neither is not
-resumed -- `--resume` runs fresh and says `(unverified)`:
+so it is checked per version, in two layers:
 
 - **The table shipped with the adapter**, `VERIFIED_RESUME` in
   `providers/claude.py`: versions checked before a release. Each entry names
@@ -242,10 +257,38 @@ resumed -- `--resume` runs fresh and says `(unverified)`:
   is not read, and not written, when its real path is inside the workspace
   (`DEV_ORCHESTRA_HOME` pointing into the checkout); the table still applies.
 
-So after the CLI is updated, `--resume` runs fresh until the script has been
-run or a release listing the new version is installed. `resume_support(root)`
-reports which (`status`, `detail`, `version`, `source`, `record`,
-`verified_at`, `missing`), and `doctor` prints it on its `Resume:` line.
+A version in either layer is `verified`. Claude Code updates faster than
+releases or live checks, so a version in neither is resumed on trust
+(`trusted`) when it is newer than one that is and has the same major version
+-- the highest such version is its `newer_than`, and the record wins a tie
+with the table -- unless this machine recorded a failure that stands in the
+way. A new major version (`2.1.285` to `3.0.0`) is not trusted on an older
+major's pass: it resumes once it passes itself.
+
+- **A local failure blocks every version up to the next local pass.** A
+  version recorded as failed here, at or below the current one and above the
+  highest version that passed here below it, keeps the current version from
+  resuming (`unverified`, naming the failed version), even one that is in the
+  shipped table. Only a pass recorded on this machine above it overrules it,
+  never the table. A failed version that cannot be read as a version blocks
+  too, and so does any local failure when the current version cannot be read
+  (the detail says it cannot be ordered).
+- **An unreadable record trusts nothing newer.** When the record cannot be read
+  (inside the workspace, not JSON, an unknown schema, a failure entry that is
+  not an object), only a version that is itself in the table resumes: without
+  this machine's failures, nothing newer is trusted.
+- Versions are compared by the first dotted run of numbers in `claude
+  --version` (`2.1.285 (Claude Code)`); when that run has a suffix such as
+  `-beta.1` the whole string cannot be read -- a later number in it
+  (`(build 2026.09.30)`) is not taken instead -- and it is resumed only when it
+  is itself in a layer.
+
+A version older than every one in both layers runs fresh and says
+`(unverified)`. `resume_support(root)` reports which (`status`, `detail`,
+`version`, `source`, `record`, `verified_at`, `newer_than`, `missing`), and
+`doctor` prints it on its `Resume:` line; a trusted version's line says it has
+not been verified itself. The risk is accepted: a newer version whose forked
+session drops a restriction is resumed on trust until the script is run on it.
 
 Aliases such as `opus`, `sonnet` and `fable` already mean "the latest snapshot
 of that family", so `version: latest` simply passes the alias through. A full
@@ -306,17 +349,18 @@ the flag, its position and where it came from, never its value.
 
 ## Codex adapter
 
-Verified against `codex` 0.154.x.
+Verified against `codex` 0.156.x.
 
 | Aspect | How |
 | --- | --- |
 | Non-interactive run | `codex exec --skip-git-repo-check --color never -C <cwd>`, prompt on stdin |
 | Model | `-m <model>`, **omitted** for the `recommended-coding` family |
 | Model discovery | `codex debug models` (the CLI's own catalogue, 0.154+) plus the `model` key from `$CODEX_HOME/config.toml`; models marked `hide` are skipped |
-| `plan` / `review` | `-s read-only` |
+| `plan` / `review` | `-s read-only`; `plan` adds `--json` |
 | `implement` | `-s workspace-write --approve-for-me` |
-| Final answer | Captured with `-o <file>` rather than scraped from the event stream |
-| Resume | not supported: `--resume` runs fresh |
+| Final answer | Captured with `-o <file>` rather than scraped from the event stream; a `plan` run with an empty `-o` fails |
+| Session and usage | `plan`: the first `thread.started` event's `thread_id`, and `turn.completed`'s `usage`; otherwise the prose `tokens used` footer |
+| Resume (`run architect --resume`) | a fork, described below, on a version in `VERIFIED_RESUME` (codex-cli 0.156.1) or newer under the same rule as Claude |
 | Auth | Inherited environment; presence detected via `OPENAI_API_KEY` or `$CODEX_HOME/auth.json` |
 
 Role options: `sandbox` (`read-only` / `workspace-write` / `danger-full-access`)
@@ -330,12 +374,70 @@ effects are not covered: `doctor` reports Codex as `partial`. A `plan` or
 `-c sandbox_mode=...` and `--profile` are all refused, whatever the spelling.
 The `-o` the adapter adds itself is not a raw argument.
 
-Codex does not resume sessions. `codex exec resume` (0.156.1) takes no `-s`,
-so nothing yet shows that a resumed session keeps the read-only sandbox, and
-its session id is only printed by `--json`, which this adapter does not read.
-Enabling it needs `-c sandbox_mode="read-only"` checked on a resumed session
-by the same write, hook and confinement probes `smoke_live.py` runs for
-Claude, and the output and usage read from `--json`.
+A `plan` run adds `--json`, which prints JSONL events (measured on 0.156.1):
+the session id is the first `thread.started` event's `thread_id`, accepted
+only as a UUID, and usage comes from `turn.completed`. Its `input_tokens`
+includes `cached_input_tokens`, so the cache reads are taken out and recorded
+as `cache_read_tokens`; `output_tokens` is kept as printed. The prose footer is
+not printed under `--json`, and the event stream is never taken for the
+answer: a `plan` run whose `-o` file is empty fails. `review` and `implement`
+runs are unchanged.
+
+Codex resumes a session by forking it. A version is trusted once
+`python scripts/smoke_live.py --provider codex` has passed its checks
+(`stays read-only`, `resumes read-only`, `forks the session`, `reports a
+missing session`, `ignores repository config on resume`) and its entry is in
+`VERIFIED_RESUME` in `providers/codex.py` (codex-cli 0.156.1, 2026-09-30); a
+newer version of the same major is trusted by the rule above. The script runs
+those checks whatever `supports_resume` says (`RESUME_PENDING` in
+`scripts/smoke_live.py`), so turning resume off in the adapter does not stop a
+version from being checked. The command:
+
+```bash
+codex exec fork <id> - --skip-git-repo-check --ignore-user-config -c 'sandbox_mode="read-only"' -m <model> --json -o <file>
+```
+
+- `-` is the prompt, read from stdin: a fork given `-o` needs one. `fork`
+  takes no `-s`, `-C` or `--color`; the process runs in the workspace.
+- **Prevention, before the run.** `--ignore-user-config` keeps the user's
+  `config.toml` -- a default profile, a `sandbox_mode` -- from loosening the
+  fork, and `-c sandbox_mode="read-only"` sets the sandbox. It also drops the
+  model and provider settings in `config.toml`, so `-m` is always passed: the
+  resolved model, or for `recommended-coding` the `model` in `config.toml`, the
+  one the parent ran under. With neither, the fork is refused (`codex: a forked
+  session runs under --ignore-user-config and needs a model; ...`). A custom
+  `model_provider` or base URL in `config.toml` is dropped too, so such a fork
+  fails (an auth or provider error), never runs writable, and the next
+  `--resume` runs fresh; set an explicit family or `model` in `config.toml`,
+  or accept fresh revisions.
+- **Only this workspace's session.** Before forking, the parent's rollout
+  (`$CODEX_HOME/sessions/YYYY/MM/DD/rollout-<timestamp>-<id>.jsonl`) must name
+  the parent in its `session_meta` and this workspace as its `cwd` (after
+  resolving links and case); otherwise the fork is refused (`codex: the session
+  to resume was not started in this workspace`). The path is compared, never
+  stored or printed. Both refusals go the way a rejected session does -- a
+  failed event and one fresh run -- except that nothing ran, so the fresh run
+  spends the attempt already taken rather than another. A session with no
+  rollout at all is refused here too, before Codex starts, and `smoke_live.py`
+  counts that as `reports a missing session`. A Codex that is not installed
+  is reported as missing (exit 127), not as a refused session.
+- **Detection, after the run.** The fork's rollout must name it and its parent
+  (`session_meta.id`, `forked_from_id`) and state `sandbox_policy.type:
+  read-only` for every `turn_context`. Otherwise the run fails and its answer
+  is not used (`the forked session's filesystem sandbox could not be confirmed
+  read-only (...)`), and the next `--resume` runs fresh. This finds a write
+  after the fact; it does not prevent one -- the flags above do.
+- A thread that does not exist exits 1 with no `thread.started` and `thread/fork
+  failed: no rollout found for thread id <id>` on stderr, which is how the
+  adapter recognises a rejection; stderr is read because it is the only place
+  the CLI says so.
+
+What it covers is the filesystem, as for a fresh read-only run (`partial`):
+MCP servers and external side effects are not examined. `--ignore-user-config`
+probably leaves the MCP servers in the user's `config.toml` unloaded, but that
+was not measured and is not claimed. A repository's own `.codex/config.toml`
+was not loaded at all in a checkout Codex does not trust; one the user marked
+trusted was not measured, and is checked by hand before the flag is turned on.
 
 The `recommended-coding` family deliberately resolves to *no* `-m` flag. That is
 the honest way to say "use the current recommended coding model": the CLI's own
@@ -385,7 +487,7 @@ review fixer.
 | `implement` | the same command, plus `--dangerously-skip-permissions` when `options.skip_permissions: true` comes from the global config |
 | Final answer | the `response` field of the JSON object; `AGY_ERROR` lines and the `error` field go to stderr |
 | Usage | `usage.input_tokens`, `output_tokens` and `cache_read_tokens` of the JSON object; no cost |
-| Resume | not supported: `--resume` runs fresh |
+| Resume | left out: `--resume` runs fresh (below) |
 | Progress | none until the end (`streams_progress = False`), so no idle deadline |
 | Auth | not detected; run `agy` once to sign in if runs fail |
 
@@ -444,6 +546,15 @@ the run record. The same seat in the project file is refused (exit 2 for
 project file can arrive with the branch under review, which could then choose
 its own write-capable reviewer. Presets and the wizard's defaults never put
 agy on one of these seats.
+
+**Resuming is left out on purpose.** The resume rule asks whether a resumed
+session keeps read-only, and agy's plan runs are `unenforced`, so a version
+gate would protect nothing. `--conversation <id>` continues the original
+conversation with no fork, the architect on agy is a warned, global-config-only
+seat, and enabling it would cost three live checks at 12k-25k tokens each.
+If it is wanted later, it fits under the same rule
+(`verified.resume_trust()`) with `required_resume_checks = ("reports a missing
+session",)`.
 
 **Permissions on the implementer.** Without `--dangerously-skip-permissions`,
 file edits ran and shell commands were refused in headless mode, so an

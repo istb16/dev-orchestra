@@ -1,4 +1,4 @@
-<!-- translated-from: references/providers.md sha256:62766599e1d66a2fb32c460aeedd70e762fa2c23bfb7cc378854a6ee287c43a2 -->
+<!-- translated-from: references/providers.md sha256:a52be18a5a1d0d1df65e4537282e7779c457c2fd2f5d6d57acbc99f4d5e18d29 -->
 
 > この文書は [references/providers.md](../../../references/providers.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -62,8 +62,11 @@ class Provider:
     def config_families() -> list[tuple[str, str]]              # default: []
 
     supports_resume: bool                                       # default: False
+    required_resume_checks: Sequence[str]                       # default: every check verified.py names
     def resume_support(root) -> dict                            # default: "unsupported" / "unspecified"
+    def resume_mechanism() -> str                               # default: read_only_enforcement()["mechanism"]
     def resume_args(session_id) -> list[str]                    # default: NotImplementedError
+    def resume_command(mode, resolved, cwd, extra_args, options, session_id) -> list[str]  # default: build_command + resume_args
     def resume_rejected(outcome, mode, options, session_id) -> bool   # default: False
     def parse_session(outcome) -> dict                          # session_id, context_tokens, init
 ```
@@ -72,7 +75,7 @@ class Provider:
 
 `run` はすべてのアダプタが共有するゲートです。`plan` または `review` の実行では、呼び出し元の生引数（`options.args` と `--extra`）を、アダプタが自分の引数を足す前にアダプタの許可リストと照合し、そのうえで CLI を起動する `_launch` を呼びます。CLI の起動方法を変える必要があるアダプタは `_launch` をオーバーライドします。`run` をオーバーライドしたアダプタはこのゲートを通らないため、ゲートを自分で持たなければなりません。
 
-セッションの継続（`run architect --resume`）はアダプタごとのオプトインです。`resume_session` はキーワード引数として `run` から `_launch` を経て `command_line` に渡され、`command_line` はこれまでどおり `build_command` を呼んだうえで、アダプタ自身の `resume_args(session_id)` を末尾に足します。これは生引数ではないので許可リストを通ることはなく、`implement` の実行では `run` が拒否します。オーケストレーターがこれを送るのは、`supports_resume` を宣言し、かつ `resume_support(root)` が `verified` を報告するアダプタに対してだけです。`run` は値があるときだけキーワードを `_launch` に渡すので、以前のシグネチャで `_launch` をオーバーライドしているアダプタでも新規の実行はこれまでどおり動きます。継続に対応するアダプタは、このキーワードを受け取って base に渡さなければなりません。実行後、base は `parse_session(outcome)` に、実行が終わったセッション、最後の文脈の大きさ（`context_tokens`）、セッション開始時に CLI が報告した内容（`init`）を問い合わせます。継続した実行に限り `resume_rejected(outcome, mode, options, session_id)` も問い合わせます。これは、求めたセッションが存在しないという正の兆候があるときだけ True を返さなければなりません。オーケストレーターはその場合、新規の実行に試行を 1 回使うからです。結果は `RunResult.session_id`、`context_tokens`、`session_init`、`resume_rejected` に入ります。
+セッションの継続（`run architect --resume`）はアダプタごとのオプトインです。`resume_session` はキーワード引数として `run` から `_launch` を経て `command_line` に渡され、`command_line` は `resume_command(...)` を呼びます。既定ではこれまでどおり `build_command` を呼び、その後ろにアダプタ自身の `resume_args(session_id)` を足します。CLI が別の形のコマンドで継続するアダプタ（Codex）はこれをオーバーライドします。これは生引数ではないので、コマンドを組み立てる前に `run` がかける許可リストを通ることはなく、`implement` の実行では `run` が拒否します。オーケストレーターがこれを送るのは、`supports_resume` を宣言し、かつ `resume_support(root)` が `verified`、または `trusted`（合格した版より新しく、メジャー版が同じ版で、それを `newer_than` が示す。その版自体は確認されていない）を報告するアダプタに対してだけです。`run` は値があるときだけキーワードを `_launch` に渡すので、以前のシグネチャで `_launch` をオーバーライドしているアダプタでも新規の実行はこれまでどおり動きます。継続に対応するアダプタは、このキーワードを受け取って base に渡さなければなりません。共通のルールで継続するアダプタは、`verified.resume_trust(...)` に自分の `resume_mechanism()`（記録が保証するフラグ。継続のコマンドが新規と異なるのでなければ、新規の読み取り専用の仕組み）と `required_resume_checks`（版が合格しなければならない確認。これより少なく挙げない限り `verified.py` が挙げるすべて）を渡し、その答えを `resume_report(version, trust)` で報告にします。アダプタは継続の実行を自分で始めないこともできます。その場合 `_launch` は `resume_rejected=True` かつ `invoked=False` の結果を返し、オーケストレーターは CLI による拒否と同じく新規で 1 回だけ走らせます。実行後、base は `parse_session(outcome)` に、実行が終わったセッション、最後の文脈の大きさ（`context_tokens`）、セッション開始時に CLI が報告した内容（`init`）を問い合わせます。継続した実行に限り `resume_rejected(outcome, mode, options, session_id)` も問い合わせます。これは、求めたセッションが存在しないという正の兆候があるときだけ True を返さなければなりません。オーケストレーターはその場合、新規の実行に試行を 1 回使うからです。結果は `RunResult.session_id`、`context_tokens`、`session_init`、`resume_rejected` に入ります。
 
 `run_warnings(outcome, mode)` は、終わった実行について結果にかかわらず伝えるべきこと（拒否されたツール、成功でない status など）です。base はこの一覧を `RunResult.warnings` に保持し、stderr の先頭にも置きます。`run` と `review run` は stderr が表示されない成功時にもこれを表示し、実行ログとジョブの記録に残します。`static_enforcement = True` は、`read_only_enforcement()` がサブプロセスを必要としない定数であることを示します。そのため `doctor` は `--fast` のときも CLI がインストールされていないときもそれを報告し、設定コマンドは CLI を探さずにそれをもとに警告します。`local_only_options` は、書き込みロールが global 設定か `--extra` からだけ受け取るオプションを挙げます。そうしたアダプタでは、書き込みロールの project ファイルのオプションは一切使われません（[Antigravity CLI adapter](#antigravity-cli-adapter) を参照）。`config_families()` は、一覧に出るモデルが日付入りの id で、いずれ古くなる CLI のために、設定に書くべき family を `(family, 今それが解決される先)` の形で返します。`dev-orchestra model list` はこれをモデルの後に表示します。
 
@@ -131,7 +134,7 @@ built-in の各アダプタが何を、何によって強制しているか:
 | モデルの検出 | CLI 自身の `--model` のヘルプテキストに示されるエイリアスを解析 |
 | `plan` / `review` | `--permission-mode plan --disallowed-tools Edit,Write,NotebookEdit --tools Read,Grep,Glob --strict-mcp-config --restricted` |
 | `implement` | `--permission-mode acceptEdits` |
-| 継続（`run architect --resume`） | 読み取り専用のコマンドに `--resume=<id> --fork-session` を足したもの。継続したセッションを読み取り専用のまま保つと確認された CLI の版でのみ |
+| 継続（`run architect --resume`） | 読み取り専用のコマンドに `--resume=<id> --fork-session` を足したもの。継続したセッションを読み取り専用のまま保つと確認された CLI の版、またはそれより新しい版でのみ |
 | 認証 | 環境を継承。`ANTHROPIC_API_KEY`、`CLAUDE_CODE_OAUTH_TOKEN`、または CLI の認証情報ファイルで有無を検出 |
 
 読み取り専用のフラグは claude 2.1.283 で実測しました。plan モードと 3 つのツールの拒否だけでは実行は止まりませんでした。`Write` を拒否された実行は `Bash` でファイルを書き、Slack へのメッセージ送信のような MCP ツールにも到達できました。`--tools Read,Grep,Glob --strict-mcp-config` を付けると、セッションが持つのはその 3 つのツールだけになり、MCP サーバーはなくなります。resume したセッションでも同じです。リポジトリの `.claude/settings.json` にあるコマンドフックはそれでも実行されましたが、`--restricted` で止まりました。
@@ -149,12 +152,18 @@ built-in の各アダプタが何を、何によって強制しているか:
 
 `run architect --resume` は直前の architect のセッションを継続します。アダプタは同じ読み取り専用のコマンドに `--resume=<id> --fork-session` を足します。`=` の形にするのは `--resume` が値を省略できるオプションだからで、fork するのは継続元のセッションをそのまま残すためです。id として受け付けるのは UUID だけです。claude 2.1.283 で読み取り専用のフラグとともに実測: fork したセッションは `Glob`、`Grep`、`Read` のツール、MCP サーバーなし、パーミッションモード `plan` で開始し（init イベント）、新しいセッション id で走り、ファイルを書くよう求められても何も書きませんでした。もう存在しないセッションは、`result` イベント 1 つで exit 1 になります。ターンはなく、使用量はゼロで、`errors` に求めた id を示す一文があります。アダプタはこれで拒否を見分けます（`stream-json` の場合のみ。`text` と `json` にはそのような兆候がなく、その場合の拒否は通常の失敗として報告されます）。
 
-継続したセッションがこれらの制限を保つかどうかは CLI の版の性質なので、版ごとに 2 層で確認し、どちらにもない版は継続しません。`--resume` は新規に走り、`(unverified)` と示します。
+継続したセッションがこれらの制限を保つかどうかは CLI の版の性質なので、版ごとに 2 層で確認します。
 
 - **アダプタに同梱された表**、`providers/claude.py` の `VERIFIED_RESUME`: リリース前に確認した版です。各エントリは確認したときの読み取り専用のフラグを記録しており、フラグを変えると確認をやり直すまですべてのエントリが無効になります。
 - **このマシンの記録**、`<config dir>/verified/claude-resume.json`: `python scripts/smoke_live.py --provider claude` だけが書きます。インストール済みの CLI に対して、継続したセッションのツール・MCP サーバー・パーミッションモード、fork、存在しないセッション、閉じ込め、そして新規でも継続でもリポジトリのフックが走らないことを確認し、その版を合格（`versions`）または不合格（`failed`）として、フラグと確認名とともに記録します。ここに記録された不合格は同梱の表に優先します。記録の実パスがワークスペースの中にある場合（`DEV_ORCHESTRA_HOME` がチェックアウト内を指している場合）、記録は読まれず書かれもしません。表は引き続き使われます。
 
-したがって CLI を更新した後は、スクリプトを実行するか新しい版を載せたリリースをインストールするまで、`--resume` は新規に走ります。`resume_support(root)` がどちらかを報告し（`status`、`detail`、`version`、`source`、`record`、`verified_at`、`missing`）、`doctor` がそれを `Resume:` 行に表示します。
+どちらかの層にある版は `verified` です。Claude Code はリリースや実機確認より速く更新されるので、どちらにもない版でも、どちらかにある版より新しく、メジャー版が同じなら信頼に基づいて継続します（`trusted`）。そうした版のうち最も新しいものがその `newer_than` で、同じ版なら表より記録が優先します。ただし、このマシンに記録された不合格が間にある場合は別です。新しいメジャー版（`2.1.285` から `3.0.0`）は、古いメジャー版の合格では信頼せず、その版自体が合格してから継続します。
+
+- **ローカルの不合格は、次のローカルの合格までのすべての版を止めます。** 現在の版以下で、かつ現在の版より下でこのマシンが合格とした最も新しい版より上の版がここで不合格と記録されていれば、現在の版は継続しません（`unverified`。不合格の版を示します）。同梱の表にある版でも同じです。これを覆すのは、それより上の版についてこのマシンに記録された合格だけで、表では覆りません。版として読めない不合格の版も止めます。現在の版が読めないときは、ローカルの不合格がひとつでもあれば止めます（詳細には、順序を付けられないと出ます）。
+- **記録を読めなければ、新しい版は何も信頼しません。** 記録を読めないとき（ワークスペースの中にある、JSON でない、未知のスキーマ、オブジェクトでない不合格の項目）は、それ自体が表にある版だけが継続します。このマシンの不合格が分からないまま、新しい版を信頼することはありません。
+- 版は `claude --version` の最初のドット区切りの数字の並びで比べます（`2.1.285 (Claude Code)`）。その並びに `-beta.1` のような接尾辞が付いていれば文字列全体が読めず（後ろにある別の数字 `(build 2026.09.30)` を代わりに読むことはしません）、それ自体がどちらかの層にあるときだけ継続します。
+
+どちらの層のどの版よりも古い版は新規に走り、`(unverified)` と示します。`resume_support(root)` がどれに当たるかを報告し（`status`、`detail`、`version`、`source`、`record`、`verified_at`、`newer_than`、`missing`）、`doctor` がそれを `Resume:` 行に表示します。信頼に基づく版の行は、その版自体は確認されていないと示します。このリスクは受け入れています。新しい版で fork したセッションが制限を失っても、その版でスクリプトを実行するまでは信頼に基づいて継続します。
 
 `opus`、`sonnet`、`fable` などのエイリアスはすでに「その family の最新スナップショット」を意味するため、`version: latest` はエイリアスをそのまま渡すだけです。完全なモデル名（`claude-opus-5`）も family として受け付けられ、そのまま渡されます。built-in のフォールバックリストは `claude --help` を読み取れない場合にのみ使われ、エイリアスだけを含みます。日付付きのスナップショット ID は決して含みません。
 
@@ -188,24 +197,39 @@ dev-orchestra run implementer --prompt-file plan.md --extra --permission-mode by
 
 ## Codex アダプタ
 
-`codex` 0.154.x で検証済みです。
+`codex` 0.156.x で検証済みです。
 
 | 項目 | 方法 |
 | --- | --- |
 | 非対話実行 | `codex exec --skip-git-repo-check --color never -C <cwd>`、プロンプトは stdin で渡す |
 | モデル | `-m <model>`。`recommended-coding` family の場合は**省略** |
 | モデルの検出 | `codex debug models`（CLI 自身のカタログ、0.154 以降）と `$CODEX_HOME/config.toml` の `model` キー。`hide` が付いたモデルはスキップ |
-| `plan` / `review` | `-s read-only` |
+| `plan` / `review` | `-s read-only`。`plan` は `--json` を足す |
 | `implement` | `-s workspace-write --approve-for-me` |
-| 最終的な回答 | イベントストリームから抜き出すのではなく、`-o <file>` で取得 |
-| 継続 | 非対応。`--resume` は新規に走る |
+| 最終的な回答 | イベントストリームから抜き出すのではなく、`-o <file>` で取得。`-o` が空の `plan` の実行は失敗 |
+| セッションと使用量 | `plan`: 最初の `thread.started` イベントの `thread_id` と、`turn.completed` の `usage`。それ以外は散文の `tokens used` のフッター |
+| 継続（`run architect --resume`） | 後述の fork。`VERIFIED_RESUME` にある版（codex-cli 0.156.1）か、Claude と同じ決まりでそれより新しい版でのみ |
 | 認証 | 環境を継承。`OPENAI_API_KEY` または `$CODEX_HOME/auth.json` で有無を検出 |
 
 ロールのオプション: `sandbox`（`read-only` / `workspace-write` / `danger-full-access`）と `approve`（`false` にすると `--approve-for-me` を外します）。どちらも `plan` と `review` では無視され、これらは常に `-s read-only` を使います。
 
 読み取り専用サンドボックスがシェルでの書き込みを拒否することは実測しました（「Access to the path ... is denied」、Windows）。MCP サーバーは確認していないため、外部への副作用は対象外です。`doctor` は Codex を `partial` と報告します。`plan` や `review` の実行は生引数を一切受け付けません。`-s`、`-sdanger-full-access`、`-c sandbox_mode=...`、`--profile` は、どう綴っても拒否されます。アダプタ自身が付ける `-o` は生引数ではありません。
 
-Codex はセッションを継続しません。`codex exec resume`（0.156.1）は `-s` を取らないので、継続したセッションが読み取り専用のサンドボックスを保つことはまだ何も示されておらず、そのセッション id は `--json` でしか出力されず、このアダプタはそれを読みません。有効にするには、Claude 向けに `smoke_live.py` が行うのと同じ書き込み・フック・閉じ込めのプローブで、継続したセッションに対する `-c sandbox_mode="read-only"` を確認し、出力と使用量を `--json` から読む必要があります。
+`plan` の実行は `--json` を足し、JSONL のイベントを出力させます（0.156.1 で実測）。セッション id は最初の `thread.started` イベントの `thread_id` で、UUID のときだけ受け付けます。使用量は `turn.completed` から取ります。その `input_tokens` は `cached_input_tokens` を含むので、キャッシュの読み込みを差し引いて `cache_read_tokens` として記録します。`output_tokens` は出力されたままです。`--json` のもとでは散文のフッターは出力されず、イベントストリームを回答とみなすことはありません。`-o` のファイルが空の `plan` の実行は失敗します。`review` と `implement` の実行は変わりません。
+
+Codex は、セッションを fork して継続します。`python scripts/smoke_live.py --provider codex` が確認（`stays read-only`、`resumes read-only`、`forks the session`、`reports a missing session`、`ignores repository config on resume`）に合格し、その版が `providers/codex.py` の `VERIFIED_RESUME` に入ると、その版を信用します（codex-cli 0.156.1、2026-09-30）。同じメジャー版でそれより新しい版は、上の決まりで信用します。スクリプトは `supports_resume` の値にかかわらずこれらの確認を行う（`scripts/smoke_live.py` の `RESUME_PENDING`）ので、adapter で継続を切っても、版の確認は止まりません。組み立てるコマンドは次のとおりです。
+
+```bash
+codex exec fork <id> - --skip-git-repo-check --ignore-user-config -c 'sandbox_mode="read-only"' -m <model> --json -o <file>
+```
+
+- `-` は stdin から読むプロンプトです。`-o` を渡した fork にはこれが必要です。`fork` は `-s`、`-C`、`--color` を取りません。プロセスはワークスペースで走ります。
+- **実行前の防止。** `--ignore-user-config` は、ユーザーの `config.toml`（既定のプロファイルや `sandbox_mode`）が fork を緩めないようにし、`-c sandbox_mode="read-only"` がサンドボックスを設定します。これは `config.toml` のモデルとプロバイダーの設定も落とすので、`-m` を必ず渡します。解決したモデル、`recommended-coding` なら `config.toml` の `model`（親セッションが走ったモデル）です。どちらもなければ fork は拒否されます（`codex: a forked session runs under --ignore-user-config and needs a model; ...`）。`config.toml` の独自の `model_provider` やベース URL も落ちるので、そうした fork は（認証やプロバイダーのエラーで）失敗し、書き込み可能で走ることはなく、次の `--resume` は新規に走ります。明示的な family か `config.toml` の `model` を設定するか、新規での改訂を受け入れてください。
+- **このワークスペースのセッションだけ。** fork の前に、親の rollout（`$CODEX_HOME/sessions/YYYY/MM/DD/rollout-<timestamp>-<id>.jsonl`）の `session_meta` が親を示し、その `cwd` が（リンクと大文字小文字を解決したうえで）このワークスペースでなければなりません。そうでなければ fork は拒否されます（`codex: the session to resume was not started in this workspace`）。パスは比較するだけで、保存も表示もしません。どちらの拒否も、セッションが拒否されたときと同じ道をたどります。失敗のイベントと新規の実行 1 回です。ただし何も走っていないので、新規の実行は別の試行を使わず、すでに確保した試行を使います。rollout がまったくないセッションもここで、Codex が起動する前に拒否され、`smoke_live.py` はこれを `reports a missing session` として数えます。Codex がインストールされていなければ、拒否されたセッションではなく、見つからない CLI として報告されます（終了コード 127）。
+- **実行後の検出。** fork の rollout が fork 自身とその親を示し（`session_meta.id`、`forked_from_id`）、すべての `turn_context` で `sandbox_policy.type: read-only` を示さなければなりません。そうでなければ実行は失敗し、その回答は使われず（`the forked session's filesystem sandbox could not be confirmed read-only (...)`）、次の `--resume` は新規に走ります。これは書き込みを事後に見つけるもので、防ぐものではありません。防ぐのは上のフラグです。
+- 存在しないスレッドは、`thread.started` なしで exit 1 になり、stderr に `thread/fork failed: no rollout found for thread id <id>` が出ます。アダプタはこれで拒否を見分けます。CLI がそれを伝えるのは stderr だけなので、stderr を読みます。
+
+対象はファイルシステムで、新規の読み取り専用の実行と同じです（`partial`）。MCP サーバーと外部への副作用は確認していません。`--ignore-user-config` はおそらくユーザーの `config.toml` の MCP サーバーも読み込まなくしますが、測定しておらず、そうは主張しません。リポジトリ自身の `.codex/config.toml` は、Codex が信頼していないチェックアウトでは一切読み込まれませんでした。ユーザーが信頼済みにしたチェックアウトは測定しておらず、フラグをオンにする前に手で確認します。
 
 `recommended-coding` family は意図的に `-m` フラグ*なし*に解決されます。これが「現在推奨されているコーディングモデルを使う」と正直に伝える方法です。CLI 自身のデフォルトは、定義上、現行のものだからです。
 
@@ -249,7 +273,7 @@ Windows 上の `agy` 1.2.13 で検証済みです。implementer と review fixer
 | `implement` | 同じコマンドに、global 設定の `options.skip_permissions: true` があれば `--dangerously-skip-permissions` を足したもの |
 | 最終的な回答 | JSON オブジェクトの `response` フィールド。`AGY_ERROR` の行と `error` フィールドは stderr へ |
 | 使用量 | JSON オブジェクトの `usage.input_tokens`、`output_tokens`、`cache_read_tokens`。費用はない |
-| 継続 | 非対応。`--resume` は新規に走る |
+| 継続 | 外している。`--resume` は新規に走る（後述） |
 | 進捗 | 最後まで出力がない（`streams_progress = False`）ので、アイドル期限はない |
 | 認証 | 検出しない。実行が失敗するなら一度 `agy` を起動してサインインする |
 
@@ -267,6 +291,8 @@ family は名前であって id ではありません。id は、実行を解決
 **実測したこと。** `-p` はプロンプトを値として取ります。`-p` の後に何もないと exit 2 になります。stdin は読まれません。`-p -` は文字どおりの `-` を送り、`-p ""` は、`status` が `ERROR` で `error` が空のプロンプトを示す JSON オブジェクトを出して exit 1 になります。そこでプロンプトは常にワークスペースの中のファイル `.ai/agy-prompt-<pid>-<random>.md`（モードのあるプラットフォームでは所有者だけが読める）に書き、`-p` にはそれを読むよう指示する文だけを載せます。プロンプトそのものは載せません。コマンドラインはローカルのどのプロセスからも読めるからです。`run --print-command` は同じコマンドを、ファイル名をプレースホルダーにして表示します。`.ai` がリンクであるか、ほかの場所に解決される場合は拒否されます（exit 2、何も起動しない）。このファイルは実行の終わりに削除されます。実行の前に削除されるのは、プロセス id がもう動いていないファイルだけです。このプロセスのもの（レビュアーは並列に走る）や、動いている別の実行のもの、名前にプロセス id のないものは削除しません。したがって外から kill された実行は、そのプロンプト（計画、差分、その他プロンプトに入っていたもの）を、後の実行がそのプロセスの終了に気づくか、手で削除するまで `.ai/` に残します。`.ai/` は既定で git から外されています。ユーザーのホームの下には何も書きません。`usage.output_tokens` にはすでに `thinking_tokens` が含まれているので（`gemini-3.1-pro-high` の実行で input 12527、output 215、thinking 212、total 12742。これは input と output の和）、thinking は上乗せしません。些細なプロンプトでも入力は約 12k〜25k トークンかかります。
 
 **読み取り専用の実行は強制されません。** agy 1.2.13 では、`--mode plan`、`--mode plan --sandbox`、`--agent research` のいずれもファイルを書き、ワークスペースの外を読みました。plan モードでは回答が返答から外れました。そのため `--mode` は渡さず、`read_only_enforcement()` は `unenforced` を報告します。agy での plan や review の実行（orchestrator、architect、そのいずれかの tier、レビュアー）は、**作業ツリー、`.ai/`（`state.json` の承認記録、計画、スナップショット、他のレビュアーのレポートを含む）、`.git/`、リポジトリの外のファイルを変更でき、dev-orchestra はその実行が何をしたかを後から確かめません。** そうした席は、あなた自身の選択として global 設定からだけ受け付けられ、設定する場所と実行する場所のすべてで警告されます。`config set`、`reviewer add`、`reviewer set`、`config validate`、セットアップウィザード、`doctor`（注記として）、`run`、`review run`、`review run --design`、そして実行の記録です。同じ席が project ファイルにあれば拒否されます（`run` では exit 2、ラウンドでは失敗したレビュアー、`doctor` では問題）。project ファイルはレビュー対象のブランチと一緒にやってくることがあり、そのブランチが書き込みのできるレビュアーを自分で選べてしまうからです。プリセットとウィザードの既定値は、agy をこれらの席に置きません。
+
+**継続は意図して外しています。** 継続のルールが問うのは継続したセッションが読み取り専用を保つかどうかですが、agy の plan の実行は `unenforced` なので、版で絞っても何も守れません。`--conversation <id>` は fork せずに元の会話を続けます。agy の architect は警告付きの、global 設定だけの席です。そして有効にするには、1 回 12k〜25k トークンの実機確認が 3 つ要ります。後で必要になれば、同じルール（`verified.resume_trust()`）に `required_resume_checks = ("reports a missing session",)` で収まります。
 
 **implementer のパーミッション。** `--dangerously-skip-permissions` なしでは、ヘッドレスモードでファイルの編集は走り、シェルコマンドは拒否されました。そのため、バイパスを有効にしない限り、agy の implementer はテストを実行できません。有効にするとコマンドが走りました。JSON の結果の `denied_actions` は実行の警告になり、成功時にも表示されて、有効にする方法を示します。バイパスは **global** 設定の `options.skip_permissions: true`（既定は `false`）か、1 回の実行だけなら `--extra --dangerously-skip-permissions` です。
 
