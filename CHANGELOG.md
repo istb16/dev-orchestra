@@ -10,6 +10,8 @@ The public surface covered by that promise is: the configuration schema, the
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-09-30
+
 ### Added
 
 - **`review.design.enabled: auto`** runs the design review only for a plan
@@ -90,6 +92,10 @@ The public surface covered by that promise is: the configuration schema, the
   meaning; `config set review.design.enabled false` restores the old
   behaviour. An older dev-orchestra reading `auto` from a shared project file
   treats it as `true` and its `config validate` reports it (#80).
+
+- **claude 2.1.285 resumes the architect's session**: it is added to the
+  verified table after passing every required check on 2026-09-30 (the two
+  symlink checks were skipped, as before; they are not required).
 
 ## [0.14.0] - 2026-09-29
 
@@ -2023,7 +2029,8 @@ First release.
   none of which invoke a real CLI.
 - CI on Linux, macOS and Windows: lint, tests, skill validation.
 
-[Unreleased]: https://github.com/istb16/dev-orchestra/compare/v0.14.0...HEAD
+[Unreleased]: https://github.com/istb16/dev-orchestra/compare/v0.15.0...HEAD
+[0.15.0]: https://github.com/istb16/dev-orchestra/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/istb16/dev-orchestra/compare/v0.13.2...v0.14.0
 [0.13.2]: https://github.com/istb16/dev-orchestra/compare/v0.13.1...v0.13.2
 [0.13.1]: https://github.com/istb16/dev-orchestra/compare/v0.13.0...v0.13.1
