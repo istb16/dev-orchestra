@@ -121,19 +121,22 @@ Plugin 以前のインストーラも使えます
 
 ## 初期セットアップ
 
-初回実行時、設定が無いことを検知してウィザードが起動し、`orchestrator`・`architect`・
-`implementer`・`review_fixer` の各ロールと各レビュアーについて、CLI とモデルの family を
-尋ねます。自分で起動する場合や、質問なしで推奨値を使う場合:
+初回実行時、設定が無いことを検知して今有効な設定を表示し、保存するプリセット
+（`quality`・`standard`・`fast`）を尋ねます。プリセットはロール・レビュアー構成・設計レビュー・
+最適化レベルをまとめて決め、そのマシンにインストールされている CLI に合わせます。Claude Code
+だけのマシンなら、レビュアーも Claude だけになります。自分で選ぶ場合や、ウィザードの質問に
+すべて答える場合:
 
 ```bash
+dev-orchestra config setup --preset standard
 dev-orchestra config setup
-dev-orchestra config setup --defaults
 dev-orchestra model list        # the families your installed CLIs offer
 ```
 
-推奨構成は、architect が Claude の `fable`、実装と修正が Claude の `opus`、レビュアーが Claude と
-Codex の1人ずつです。family は `dev-orchestra model list` に表示されたものを使ってください。
-ファイルに残るのは自分で決めた値だけです。[ウィザード](docs/ja/references/configuration.md#the-wizard)
+ファイルを保存するまでは、インストール済みの CLI に合わせた `standard` が有効です。Claude Code と
+Codex の両方があれば、それが推奨構成です: architect が Claude の `fable`、実装と修正が Claude の
+`opus`、レビュアーが Claude と Codex の1人ずつ。ファイルに残るのは自分で決めた値だけです。
+[プリセット](docs/ja/references/configuration.md#presets)、[ウィザード](docs/ja/references/configuration.md#the-wizard)
 と [2社構成の設定例](docs/ja/references/configuration.md#worked-examples) を参照してください。
 
 ## 使い方

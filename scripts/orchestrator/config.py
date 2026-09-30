@@ -4,7 +4,10 @@ Precedence (highest first):
 
 1. project config   -- ``.dev-orchestra.yaml`` found by walking up from cwd
 2. global config    -- OS-appropriate user config directory
-3. built-in defaults
+3. the global file's preset (``standard`` when it names none), fitted to the
+   installed CLIs -- minus every role a file sets and, when a file lists
+   ``reviewers``, the panel (``compose``; see ``presets``)
+4. built-in defaults
 
 Only *model families* and a *version policy* are persisted. Concrete model ids
 are resolved at run time by the provider adapters so that the configuration
@@ -17,9 +20,12 @@ import copy
 import os
 import re
 import sys
-from typing import Any, Dict, List, NamedTuple, Optional, Sequence, Tuple, Union
+from typing import TYPE_CHECKING, Any, Dict, List, NamedTuple, Optional, Sequence, Tuple, Union
 
 from . import miniyaml
+
+if TYPE_CHECKING:
+    from .presets import Fit
 
 CONFIG_VERSION = 1
 #: Ceiling on ``workspace.stale_notice_days`` (100 years). Commands load the
@@ -392,6 +398,10 @@ class LoadedConfig:
         used_defaults: bool,
         global_layer: Optional[Dict[str, Any]] = None,
         project_layer: Optional[Dict[str, Any]] = None,
+        preset: Optional[str] = None,
+        preset_source: str = "implicit",
+        preset_notes: Optional[List[str]] = None,
+        files_data: Optional[Dict[str, Any]] = None,
     ) -> None:
         self.data = data
         self.global_path = global_path
@@ -401,6 +411,14 @@ class LoadedConfig:
         #: merged value came from.
         self.global_layer = global_layer or {}
         self.project_layer = project_layer or {}
+        #: The preset in force, or None when the global file names an unknown
+        #: one; ``global``, ``implicit`` (it names none) or ``invalid``.
+        self.preset = preset
+        self.preset_source = preset_source
+        #: What the fit changed and why, for ``config show`` and ``doctor``.
+        self.preset_notes = list(preset_notes or [])
+        #: The defaults and the files, without the preset's expansion.
+        self.files_data = files_data if files_data is not None else data
 
     @property
     def exists(self) -> bool:
@@ -418,6 +436,10 @@ class LoadedConfig:
         ``path`` is dotted, or a list of literal keys: a tier name may contain
         a dot, and splitting it would look up a key nobody wrote -- labeling a
         project value ``default``.
+
+        A value the preset's expansion supplied reads as ``default``: no file
+        names it. Presets never set ``options``, so the raw-argument checks
+        that ask this are unaffected.
         """
         parts = _split_path(path) if isinstance(path, str) else list(path)
         if _get_parts(self.project_layer, parts, _MISSING) is not _MISSING:
@@ -671,22 +693,100 @@ def prune_layer(layer: Dict[str, Any], base: Dict[str, Any]) -> Tuple[Dict[str, 
     return pruned, dropped
 
 
+def mentions(layer: Dict[str, Any], key: str) -> bool:
+    """True when ``layer`` sets anything at ``key``; ``{}`` and null set nothing."""
+    value = layer.get(key)
+    return value is not None and value != {}
+
+
+def compose(
+    global_layer: Dict[str, Any],
+    project_layer: Dict[str, Any],
+    installed: Sequence[str],
+    around: Optional[Dict[str, Any]] = None,
+) -> Tuple[Dict[str, Any], Fit, Optional[str], str]:
+    """The effective configuration: ``(data, fit, preset, source)``.
+
+    The one place that knows the layer order: the defaults, then the global
+    file's preset fitted to ``installed``, then the global file, then the
+    project file. A project file's ``preset`` is never expanded (``validate``
+    refuses it). The expansion loses every role a file sets any field of, and
+    the whole panel when a file lists ``reviewers``: those resolve exactly as
+    they did before presets existed, on the provider the files put them on.
+
+    ``fit`` carries only the notes that still apply, plus one for each role a
+    file took out of a fit that would have changed it. ``source`` is
+    ``global``, ``implicit`` (the file names no preset, so ``standard``) or
+    ``invalid`` (an unknown name, so nothing is expanded).
+
+    ``around`` is a layer left out of the result whose implementer still
+    counts when the panel is dealt: a writer's base is composed without the
+    layer it edits, but the panel it copies is the one in force with it.
+    """
+    from . import presets
+
+    named = global_layer.get("preset")
+    if named is None:
+        name: Optional[str] = presets.DEFAULT
+        source = "implicit"
+    elif isinstance(named, str) and named in presets.PRESETS:
+        name = named
+        source = "global"
+    else:
+        name = None
+        source = "invalid"
+    layers = (("the project file", project_layer), ("the global file", global_layer))
+    # A file that sets the implementer takes it out of the fit, so the panel is
+    # dealt around the provider the files put it on.
+    implementer = None
+    if any(mentions(layer, "implementer") for layer in (project_layer, global_layer, around or {})):
+        files = deep_merge(
+            deep_merge(deep_merge(default_config(), global_layer), project_layer), around or {}
+        )
+        spec = files.get("implementer")
+        implementer = spec.get("provider") if isinstance(spec, dict) else None
+    fit = presets.expand(name, installed, implementer) if name else presets.Fit({}, [], [])
+
+    values = copy.deepcopy(fit.values)
+    listed = any(layer.get("reviewers") is not None for _label, layer in layers)
+    if listed:
+        values.pop("reviewers", None)
+    defaults = default_config()
+    unfitted: List[str] = []
+    for role in KNOWN_ROLES:
+        where = next((label for label, layer in layers if mentions(layer, role)), None)
+        if where is None or role not in values:
+            continue
+        unfitted.append(role)
+        if values.pop(role) != defaults[role]:
+            fit.notes.append("%s is set by %s and was not fitted" % (role, where))
+            fit.subjects.append("")
+    kept = [
+        (note, subject)
+        for note, subject in zip(fit.notes, fit.subjects, strict=True)
+        if subject not in unfitted and not (listed and subject == "reviewers")
+    ]
+    fit = presets.Fit(values, [note for note, _ in kept], [subject for _, subject in kept])
+    data = deep_merge(deep_merge(deep_merge(defaults, values), global_layer), project_layer)
+    return data, fit, name, source
+
+
 def load(start: Optional[str] = None, validate_result: bool = True) -> LoadedConfig:
     """Load the layered configuration for the project rooted at ``start``."""
-    data = default_config()
+    from . import presets
+
     gpath = global_config_path()
     global_found = gpath if os.path.isfile(gpath) else None
     global_layer: Dict[str, Any] = {}
     if global_found:
         global_layer = read_config_file(global_found)
-        data = deep_merge(data, global_layer)
 
     ppath = find_project_config(start)
     project_layer: Dict[str, Any] = {}
     if ppath:
         project_layer = read_config_file(ppath)
-        data = deep_merge(data, project_layer)
 
+    data, fit, preset, source = compose(global_layer, project_layer, presets.installed_providers())
     loaded = LoadedConfig(
         data,
         global_found,
@@ -694,9 +794,13 @@ def load(start: Optional[str] = None, validate_result: bool = True) -> LoadedCon
         not (global_found or ppath),
         global_layer=copy.deepcopy(global_layer),
         project_layer=copy.deepcopy(project_layer),
+        preset=preset,
+        preset_source=source,
+        preset_notes=fit.notes,
+        files_data=deep_merge(deep_merge(default_config(), global_layer), project_layer),
     )
     if validate_result:
-        problems = validate(data)
+        problems = validate(data, project_layer=project_layer)
         if problems:
             raise ConfigError("invalid configuration:\n  - " + "\n  - ".join(problems))
     return loaded
@@ -705,8 +809,17 @@ def load(start: Optional[str] = None, validate_result: bool = True) -> LoadedCon
 # --------------------------------------------------------------------------- validation
 
 
-def validate(data: Dict[str, Any], known_providers: Optional[List[str]] = None) -> List[str]:
-    """Return a list of human-readable problems; empty means valid."""
+def validate(
+    data: Dict[str, Any],
+    known_providers: Optional[List[str]] = None,
+    project_layer: Optional[Dict[str, Any]] = None,
+) -> List[str]:
+    """Return a list of human-readable problems; empty means valid.
+
+    ``project_layer`` is the project file on its own, for the one rule merged
+    data cannot express: only the global file can name a preset.
+    """
+    from . import presets
     from .providers import available_providers
 
     providers = known_providers if known_providers is not None else available_providers()
@@ -715,6 +828,12 @@ def validate(data: Dict[str, Any], known_providers: Optional[List[str]] = None) 
     version = data.get("version")
     if version != CONFIG_VERSION:
         problems.append("version must be %d (got %r)" % (CONFIG_VERSION, version))
+
+    preset = data.get("preset")
+    if preset is not None and not (isinstance(preset, str) and preset in presets.PRESETS):
+        problems.append("preset: unknown %r (known: %s)" % (preset, ", ".join(presets.NAMES)))
+    if project_layer and project_layer.get("preset") is not None:
+        problems.append("preset: only the global file can name a preset for now")
 
     for role in KNOWN_ROLES:
         spec = data.get(role)

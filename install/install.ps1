@@ -442,3 +442,4 @@ if ($Codex) { Install-CodexPointer } elseif ($Antigravity) { Install-Antigravity
 Write-Host ''
 Write-Host 'Verify with:'
 Write-Host "    $root\bin\dev-orchestra.ps1 doctor"
+Write-Host "    $root\bin\dev-orchestra.ps1 config setup --preset standard"

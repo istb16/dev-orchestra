@@ -13,14 +13,17 @@ from . import config as config_mod
 from . import doctor as doctor_mod
 from . import miniyaml
 from . import optimization as opt_mod
+from . import presets as presets_mod
 from . import wizard as wizard_mod
 from .cli_common import (
-    _effective_preview,
+    _compose_preview,
     _emit_json,
     _err,
-    _layer_base,
+    _fitted_base,
+    _frozen_panel_note,
     _layer_path,
     _out,
+    _prune_base,
     _read_layer,
     _resolve_scope,
     _seed_list,
@@ -95,13 +98,19 @@ def cmd_config_show(args: argparse.Namespace) -> int:
         )
 
     referenced = config_mod.referenced_providers(data)
+    preset = {"name": loaded.preset, "source": loaded.preset_source, "notes": loaded.preset_notes}
     if args.json:
         providers_payload = {name: origin_payload(name) for name in referenced}
-        _emit_json({"source": source, "config": data, "providers": providers_payload})
+        _emit_json({"source": source, "config": data, "providers": providers_payload, "preset": preset})
         return 0
     _out("Source: %s" % source)
+    if not scoped:
+        installed = presets_mod.installed_providers()
+        _out("Preset: %s" % presets_mod.describe(loaded.preset, loaded.preset_source, installed))
+        for note in loaded.preset_notes:
+            _out("  note: %s" % note)
     if loaded.used_defaults and not scoped:
-        _out("No config file found yet -- showing built-in defaults.")
+        _out("No config file found yet -- showing preset %s fitted to the installed CLIs." % loaded.preset)
     _out("")
     if scoped:
         _out(_render_layer(path, data, exists))
@@ -109,7 +118,7 @@ def cmd_config_show(args: argparse.Namespace) -> int:
         _out(wizard_mod.render_summary(data) if "orchestrator" in data else "(empty layer)")
     if referenced:
         _out("Providers: %s" % ", ".join(_describe_referenced_provider(name) for name in referenced))
-    problems = config_mod.validate(loaded.data)
+    problems = config_mod.validate(loaded.data, project_layer=loaded.project_layer)
     if problems:
         _out("Problems:")
         for problem in problems:
@@ -138,7 +147,12 @@ def cmd_config_setup(args: argparse.Namespace) -> int:
     path = _layer_path(scope, args.cwd)
     existing = config_mod.read_config_file(path) if os.path.isfile(path) else None
 
-    if args.defaults:
+    if args.preset:
+        # The file names the preset and keeps what it held beside the keys a
+        # preset governs; the values are fitted to this machine at load time.
+        data = presets_mod.with_preset(existing, args.preset)
+        save = True
+    elif args.defaults:
         # The recommended configuration *is* the built-in defaults, so the
         # honest way to record a choice of it is to override nothing. Writing
         # the values out would freeze today's copy of them into the file and
@@ -147,10 +161,15 @@ def cmd_config_setup(args: argparse.Namespace) -> int:
         save = True
     else:
         if not sys.stdin.isatty() and not args.force:
-            _err("config setup needs an interactive terminal; use --defaults for the recommended setup.")
+            _err(
+                "config setup needs an interactive terminal; use --preset quality|standard|fast, "
+                "or --defaults for the recommended setup."
+            )
             return 2
         try:
-            data, save = wizard_mod.run(wizard_mod.Prompter(), existing, _layer_base(scope, args.cwd))
+            data, save = wizard_mod.run(
+                wizard_mod.Prompter(), existing, _fitted_base(scope, args.cwd, existing), scope=scope
+            )
         except EOFError:
             _err("input ended before setup finished; nothing was saved. Try --defaults instead.")
             return 2
@@ -160,7 +179,8 @@ def cmd_config_setup(args: argparse.Namespace) -> int:
         return 1
     # The layer on its own names no roles at all, so it is the configuration it
     # resolves to that has to be valid -- the same dict the wizard summarised.
-    problems = config_mod.validate(_effective_preview(scope, data, args.cwd))
+    preview, fit, _preset, _source = _compose_preview(scope, data, args.cwd)
+    problems = config_mod.validate(preview, project_layer=data if scope == "project" else None)
     if problems:
         # Writing this would leave every workflow command failing with
         # "invalid configuration" straight after a successful-looking setup.
@@ -169,6 +189,11 @@ def cmd_config_setup(args: argparse.Namespace) -> int:
             _err("  - %s" % problem)
         return 2
     config_mod.write_config_file(path, data, scope)
+    if args.preset:
+        _out(wizard_mod.render_summary(preview))
+        notes = presets_mod.render_notes(fit)
+        if notes:
+            _out(notes)
     _out("Saved %s configuration to %s" % (scope, path))
     _out("It records only what you chose; everything else follows %s (config show)." % _below(scope))
     return 0
@@ -193,20 +218,60 @@ def cmd_config_reset(args: argparse.Namespace) -> int:
     # those are the same thing, and for a project layer the difference matters
     # -- writing the defaults there would pin them over whatever the global
     # layer says, in a file that is usually committed and read by the team.
-    config_mod.write_config_file(path, {"version": config_mod.CONFIG_VERSION}, scope)
+    # The global file keeps the preset it names: that is the choice the reset
+    # returns to, and the overrides are what it clears. An unknown name is one
+    # of those overrides, or the reset would leave the file as invalid as before.
+    cleared: Dict[str, Any] = {"version": config_mod.CONFIG_VERSION}
+    unknown = None
+    if scope == "global" and os.path.isfile(path):
+        try:
+            preset = config_mod.read_config_file(path).get("preset")
+        except config_mod.ConfigError:
+            preset = None  # a file that does not parse is what a reset is for
+        if isinstance(preset, str) and preset in presets_mod.PRESETS:
+            cleared["preset"] = preset
+        elif preset is not None:
+            unknown = preset
+    config_mod.write_config_file(path, cleared, scope)
+    if unknown is not None:
+        _out("note: dropped the unknown preset %r; the global file now names none" % (unknown,))
     if scope == "global":
-        following = "every value now follows the built-in defaults"
+        name = cleared.get("preset") or presets_mod.DEFAULT
+        following = "every value now follows preset %s and the built-in defaults" % name
     else:
         following = "this project now follows the global layer"
     _out("Reset %s configuration: overrides cleared, %s (%s)" % (scope, following, path))
+    try:
+        loaded = config_mod.load(args.cwd, validate_result=False)
+    except config_mod.ConfigError as exc:
+        _err(str(exc))  # the other layer does not parse; the reset itself is done
+        return 0
+    _out(wizard_mod.render_summary(loaded.data))
+    for note in loaded.preset_notes:
+        _out("note: %s" % note)
     return 0
 
 
 def cmd_config_set(args: argparse.Namespace) -> int:
-    scope = _resolve_scope(args.scope, args.cwd)
+    role_key = args.path.split(".")[0].split("[")[0]
+    if role_key == "preset":
+        # Only the global file can name one, so that is where it goes unless a
+        # scope says otherwise -- and a project scope is refused, not written.
+        if args.scope == "project":
+            _err("preset: only the global file can name a preset for now (use --scope global)")
+            return 2
+        scope = "global"
+    else:
+        scope = _resolve_scope(args.scope, args.cwd)
     path, layer = _read_layer(scope, args.cwd)
+    before = config_mod.load(args.cwd, validate_result=False) if role_key in config_mod.KNOWN_ROLES else None
+    frozen = None
     if "[" in args.path:
-        _seed_list(layer, args.path.split("[", 1)[0], _layer_base(scope, args.cwd))
+        list_path = args.path.split("[", 1)[0]
+        base = _fitted_base(scope, args.cwd, layer)
+        seeded = _seed_list(layer, list_path, base)
+        if list_path == "reviewers":
+            frozen = _frozen_panel_note(seeded, path, base, scope, args.cwd)
     value = args.value if args.raw else config_mod.coerce_scalar(args.value)
     try:
         config_mod.set_path(layer, args.path, value)
@@ -222,14 +287,37 @@ def cmd_config_set(args: argparse.Namespace) -> int:
         return 2
     config_mod.write_config_file(path, layer, scope)
     _out("%s = %r  (%s: %s)" % (args.path, value, scope, path))
+    if frozen:
+        _out(frozen)
     reloaded = config_mod.load(args.cwd, validate_result=False)
     effective = reloaded.data
-    for problem in config_mod.validate(effective):
+    if before is not None:
+        _left_the_fit_note(before, reloaded, role_key, path)
+    for problem in config_mod.validate(effective, project_layer=reloaded.project_layer):
         _err("warning: %s" % problem)
     for warning in config_mod.read_only_arg_warnings(reloaded):
         _err("warning: %s" % warning)
     _warn_unresolvable(effective, args.path.split(".")[0])
     return 0
+
+
+def _left_the_fit_note(
+    before: config_mod.LoadedConfig, after: config_mod.LoadedConfig, role: str, path: str
+) -> None:
+    """A role edit that took the role out of the preset's fit and moved its provider.
+
+    A role any file sets is not fitted at all, so the first edit to one can
+    move it back to the default provider -- which is worth a line.
+    """
+    layers = (before.global_layer, before.project_layer)
+    if not after.preset or any(config_mod.mentions(layer, role) for layer in layers):
+        return
+    old = (before.data.get(role) or {}).get("provider")
+    new = (after.data.get(role) or {}).get("provider")
+    if old == new:
+        return
+    message = "note: %s is now set by %s (provider %s); preset %s no longer fits it"
+    _out(message % (role, path, new, after.preset))
 
 
 def cmd_config_prune(args: argparse.Namespace) -> int:
@@ -239,9 +327,8 @@ def cmd_config_prune(args: argparse.Namespace) -> int:
         _err("no %s configuration file at %s" % (scope, path))
         return 2
     layer = config_mod.read_config_file(path)
-    base = _layer_base(scope, args.cwd)
-    pruned, dropped = config_mod.prune_layer(layer, base)
-    if config_mod.deep_merge(base, pruned) != config_mod.deep_merge(base, layer):
+    pruned, dropped = config_mod.prune_layer(layer, _prune_base(scope, args.cwd, layer))
+    if _compose_preview(scope, pruned, args.cwd)[0] != _compose_preview(scope, layer, args.cwd)[0]:
         # Nothing should be able to get here. It is checked anyway because the
         # failure would be a configuration quietly changing underneath someone
         # who asked for it not to.
@@ -298,7 +385,7 @@ def _warn_unresolvable(effective: Dict[str, Any], role_key: str) -> None:
 
 def cmd_config_validate(args: argparse.Namespace) -> int:
     loaded = config_mod.load(args.cwd, validate_result=False)
-    problems = config_mod.validate(loaded.data)
+    problems = config_mod.validate(loaded.data, project_layer=loaded.project_layer)
     # Warnings, not problems: they refuse one role's runs, not the file.
     warnings = config_mod.read_only_arg_warnings(loaded)
     if args.json:
@@ -430,7 +517,8 @@ def cmd_reviewer_add(args: argparse.Namespace) -> int:
         return 2
     scope = _resolve_scope(args.scope, args.cwd)
     path, layer = _read_layer(scope, args.cwd)
-    _seed_list(layer, "reviewers", _layer_base(scope, args.cwd))
+    base = _fitted_base(scope, args.cwd, layer)
+    frozen = _frozen_panel_note(_seed_list(layer, "reviewers", base), path, base, scope, args.cwd)
     role = args.role or "general"
     reviewer_id = args.id or config_mod.suggest_reviewer_id(layer, args.provider, role)
     family = args.model
@@ -459,6 +547,8 @@ def cmd_reviewer_add(args: argparse.Namespace) -> int:
         return 2
     config_mod.write_config_file(path, layer, scope)
     _out("Added reviewer %s (%s / %s / %s) to %s" % (reviewer_id, args.provider, family, role, path))
+    if frozen:
+        _out(frozen)
     return 0
 
 
@@ -476,7 +566,8 @@ def _unindexed(problem: str) -> str:
 def cmd_reviewer_remove(args: argparse.Namespace) -> int:
     scope = _resolve_scope(args.scope, args.cwd)
     path, layer = _read_layer(scope, args.cwd)
-    _seed_list(layer, "reviewers", _layer_base(scope, args.cwd))
+    base = _fitted_base(scope, args.cwd, layer)
+    frozen = _frozen_panel_note(_seed_list(layer, "reviewers", base), path, base, scope, args.cwd)
     before = {_unindexed(p) for p in _reviewer_problems(layer)}
     try:
         _, removed = config_mod.remove_reviewer(layer, args.selector)
@@ -494,6 +585,8 @@ def cmd_reviewer_remove(args: argparse.Namespace) -> int:
         return 2
     config_mod.write_config_file(path, layer, scope)
     _out("Removed reviewer %s from %s" % (removed.get("id"), path))
+    if frozen:
+        _out(frozen)
     return 0
 
 
@@ -502,7 +595,8 @@ def cmd_reviewer_set(args: argparse.Namespace) -> int:
         return 2
     scope = _resolve_scope(args.scope, args.cwd)
     path, layer = _read_layer(scope, args.cwd)
-    _seed_list(layer, "reviewers", _layer_base(scope, args.cwd))
+    base = _fitted_base(scope, args.cwd, layer)
+    frozen = _frozen_panel_note(_seed_list(layer, "reviewers", base), path, base, scope, args.cwd)
     try:
         index, reviewer = config_mod.find_reviewer(layer, args.selector)
     except config_mod.ConfigError as exc:
@@ -540,6 +634,8 @@ def cmd_reviewer_set(args: argparse.Namespace) -> int:
         return 2
     config_mod.write_config_file(path, layer, scope)
     _out("Updated reviewer %s in %s" % (reviewer.get("id"), path))
+    if frozen:
+        _out(frozen)
     return 0
 
 

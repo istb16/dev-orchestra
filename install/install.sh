@@ -310,4 +310,4 @@ case $mode in
   antigravity) install_antigravity ;;
 esac
 
-printf '\nVerify with:\n    %s/bin/dev-orchestra doctor\n' "$root"
+printf '\nVerify with:\n    %s/bin/dev-orchestra doctor\n    %s/bin/dev-orchestra config setup --preset standard\n' "$root" "$root"

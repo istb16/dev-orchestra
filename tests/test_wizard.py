@@ -32,9 +32,17 @@ class ScriptedPrompter(wizard_mod.Prompter):
         return self.answers.pop(0)
 
 
-def accept_all(count=40):
-    """Press enter for everything: every prompt takes its recommended default."""
-    return [""] * count
+#: The preset menu's last choice: go through the role questions one by one.
+CUSTOMISE = str(len(wizard_mod.PRESET_CHOICES) + 1)
+
+
+def accept_all(count=40, customise=True):
+    """Press enter for everything: every prompt takes its recommended default.
+
+    The global wizard asks for a preset first; ``customise`` answers it with
+    "customise each role", so the questions below it are the ones replayed.
+    """
+    return [*([CUSTOMISE] if customise else []), *[""] * count]
 
 
 class TestWizard(IsolatedCase):
@@ -63,7 +71,7 @@ class TestWizard(IsolatedCase):
 
     def test_zero_reviewers_is_offered_with_a_warning(self):
         # Four roles x (CLI, model) = 8 enters, then "0" reviewers, then save.
-        prompter = ScriptedPrompter([""] * 8 + ["0", ""])
+        prompter = ScriptedPrompter([CUSTOMISE, *[""] * 8, "0", ""])
         data, save = wizard_mod.run(prompter)
         self.assertEqual(data["reviewers"], [])
         self.assertTrue(save)
@@ -92,11 +100,12 @@ class TestWizard(IsolatedCase):
         provider_index = [name for name, _, _ in wizard_mod.selectable_providers()].index("claude") + 1
         candidates = len(wizard_mod.get_provider("claude").list_models())
         answers = [
+            CUSTOMISE,
             str(provider_index),  # orchestrator CLI: claude
             str(candidates + 1),  # model: "custom"
             "totally-made-up-family",  # the custom value
             "y",  # yes, pin it
-            *accept_all(),
+            *accept_all(customise=False),
         ]
         data, _ = wizard_mod.run(ScriptedPrompter(answers))
         model = data["orchestrator"]["model"]
@@ -107,7 +116,7 @@ class TestWizard(IsolatedCase):
         # 8 enters for the roles, 2 reviewers, both mock/general.
         providers = [name for name, _, _ in wizard_mod.selectable_providers()]
         first = str(providers.index(providers[0]) + 1)
-        answers = [""] * 8 + ["2"]
+        answers = [CUSTOMISE, *[""] * 8, "2"]
         for _ in range(2):
             answers += [first, "", "1", ""]  # CLI, model, role=general, default id
         answers += ["n", ""]  # no more reviewers, then save
@@ -116,7 +125,7 @@ class TestWizard(IsolatedCase):
         self.assertEqual(len(ids), len(set(ids)))
 
     def test_invalid_menu_input_is_re_prompted(self):
-        prompter = ScriptedPrompter(["99", "abc", "", *accept_all()])
+        prompter = ScriptedPrompter(["99", "abc", *accept_all()])
         wizard_mod.run(prompter)
         self.assertTrue(any("Enter a number" in line for line in prompter.output))
 
@@ -205,6 +214,78 @@ class TestTheWizardsBase(IsolatedCase):
         prompter = ScriptedPrompter(accept_all())
         data, _ = wizard_mod.run(prompter, None, base)
         self.assertEqual(data["reviewers"], [])
+
+
+class TestThePresetQuestion(IsolatedCase):
+    """The global wizard asks for a preset first; saved as is it records the
+    name, and adjusted it records only what differs from the preset's fit."""
+
+    def setUp(self):
+        super().setUp()
+        self.fake_clis()
+
+    def test_it_is_the_first_question(self):
+        prompter = ScriptedPrompter(["", ""])
+        wizard_mod.run(prompter)
+        self.assertEqual(prompter.questions[0], "Choice [2]: ")
+        said = "\n".join(prompter.output)
+        self.assertIn("Preset (fitted to the CLIs found above):", said)
+        self.assertNotIn("1. Orchestrator", said)
+
+    def test_enter_through_saves_the_name_only(self):
+        data, save = wizard_mod.run(ScriptedPrompter(["", ""]))
+        self.assertTrue(save)
+        self.assertEqual(data, {"version": 1, "preset": "standard"})
+
+    def test_adjusting_nothing_saves_the_name_only(self):
+        data, save = wizard_mod.run(ScriptedPrompter(["", "n", *accept_all(customise=False)]))
+        self.assertTrue(save)
+        self.assertEqual(data, {"version": 1, "preset": "standard"})
+
+    def test_adjusting_keeps_a_value_the_file_held_that_equals_a_default(self):
+        existing = {"version": 1, "review": {"max_review_iterations": 2}}
+        data, _ = wizard_mod.run(ScriptedPrompter(["", "n", *accept_all(customise=False)]), existing)
+        self.assertEqual(data, {"version": 1, "preset": "standard", "review": {"max_review_iterations": 2}})
+
+    def test_adjusting_keeps_a_roles_options(self):
+        options = {"permission_mode": "plan"}
+        existing = {"version": 1, "implementer": {"provider": "claude", "options": options}}
+        data, _ = wizard_mod.run(ScriptedPrompter(["", "n", *accept_all(customise=False)]), existing)
+        self.assertEqual(data["implementer"]["options"], options)
+
+    def test_adjusting_one_role_saves_that_role_and_the_panel_still_fits(self):
+        families = [candidate.family for candidate in wizard_mod.get_provider("claude").list_models()]
+        answers = ["", "n", "", str(families.index("opus") + 1), *accept_all(customise=False)]
+        data, _ = wizard_mod.run(ScriptedPrompter(answers))
+        opus = {"provider": "claude", "model": {"family": "opus", "version": "latest"}}
+        self.assertEqual(data, {"version": 1, "preset": "standard", "orchestrator": opus})
+        config_mod.write_config_file(config_mod.global_config_path(), data, "global")
+        self.fake_clis(claude=True)
+        loaded = config_mod.load(self.project)
+        self.assertEqual(loaded.role("orchestrator"), opus)
+        self.assertEqual([r["id"] for r in loaded.reviewers()], ["claude-general", "claude-general-2"])
+
+    def test_changing_a_reviewer_saves_the_whole_panel(self):
+        security = str(config_mod.BUILTIN_ROLES.index("security") + 1)
+        # Preset, adjust, eight role answers, the count, then CLI, model, role.
+        answers = ["", "n", *[""] * 8, "", "", "", security, *accept_all(customise=False)]
+        data, _ = wizard_mod.run(ScriptedPrompter(answers))
+        self.assertEqual(sorted(data), ["preset", "reviewers", "version"])
+        self.assertEqual([r["role"] for r in data["reviewers"]], ["security", "general"])
+
+    def test_a_chosen_preset_replaces_what_it_governs_and_keeps_the_rest(self):
+        existing = {"version": 1, "implementer": {"provider": "claude"}, "review": {"parallel": False}}
+        prompter = ScriptedPrompter(["1", ""])
+        data, _ = wizard_mod.run(prompter, existing)
+        self.assertEqual(data, {"version": 1, "preset": "quality", "review": {"parallel": False}})
+        self.assertIn("optimization level: quality", "\n".join(prompter.output))
+
+    def test_a_project_is_not_asked(self):
+        prompter = ScriptedPrompter(accept_all(customise=False))
+        data, _ = wizard_mod.run(prompter, None, None, scope="project")
+        self.assertNotIn("Preset (fitted", "\n".join(prompter.output))
+        self.assertNotIn("preset", data)
+        self.assertIn("implementer", data)
 
 
 class TestAFailingUserAdapter(IsolatedCase):

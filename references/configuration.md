@@ -6,6 +6,7 @@
 
 - [Where it lives](#where-it-lives)
 - [Precedence](#precedence)
+- [Presets](#presets)
 - [Schema (version 1)](#schema-version-1)
   - [Field reference](#field-reference)
   - [Role options](#role-options)
@@ -67,13 +68,130 @@ Accepted names, in order: `.dev-orchestra.yaml`, `.dev-orchestra.yml`,
 ## Precedence
 
 ```
-project config  →  global config  →  built-in defaults
+project config  →  global config  →  the global file's preset, fitted to the installed CLIs  →  built-in defaults
 ```
 
 Mappings merge key by key, so a project file that only sets `implementer` keeps
 your global architect. **Lists replace wholesale**: a project file that defines
 `reviewers` defines the entire panel for that project. That is deliberate —
 "this repo reviews with security + database only" must be expressible.
+
+The preset layer reaches only the roles and the reviewer panel that no file
+sets ([Presets](#presets)). With both Claude Code and Codex installed, or
+neither, the default preset is the built-in defaults exactly.
+
+## Presets
+
+A preset is one choice on the spend axis: `quality`, `standard` or `fast`. It
+is saved as one key in the global file and worked out every time the
+configuration is loaded, against the CLIs this machine has on PATH, so a
+machine without Codex never carries a Codex reviewer that fails every round.
+
+```bash
+dev-orchestra config setup --preset quality   # save it; nothing is asked
+dev-orchestra config set preset fast          # switch, keeping your other settings (always the global file)
+```
+
+```yaml
+version: 1
+preset: quality
+```
+
+A global file that names no preset, and no file at all, run under `standard`.
+There is no "none": the first `config set` on a fresh machine does not switch
+the fit off.
+
+What each one sets (families only, `version: latest` throughout; Codex is
+`recommended-coding` in every slot, the one family its adapter vouches for
+without running the CLI):
+
+| Key | `quality` | `standard` | `fast` |
+| --- | --- | --- | --- |
+| `orchestrator` | opus | sonnet | sonnet |
+| `architect` | fable | fable | opus |
+| `implementer` | fable | opus | sonnet |
+| `review_fixer` | fable | opus | sonnet |
+| reviewer seats (role / Claude family) | general / fable, security / opus, architecture / opus | general / opus, general / sonnet | general / opus; security / opus, `when: high-risk` |
+| `review.design.enabled` | `true` | not set (`auto`) | not set (`auto`) |
+| `optimization.level` | `quality` | not set (`balanced`) | `aggressive` |
+
+Those seven keys are the ones a preset governs. Everything else — budgets,
+timeouts, `review.max_review_iterations`, `design.require_approval` — is the
+built-in default unless a file sets it. `standard` is read from the built-in
+defaults, so the two cannot drift apart.
+
+**Fitting.** Only `claude` and `codex` take part; a user adapter runs only when
+a file names it, as before. Detection is a PATH lookup, with no CLI started:
+
+1. The four roles go to the first installed CLI of `claude`, `codex`. Claude
+   gets the preset's family, Codex `recommended-coding`.
+2. Reviewer seats are dealt round the installed CLIs in turn, starting with the
+   implementer's -- the provider a file puts it on, when a file sets it -- so
+   with two vendors every panel holds both. A preset with one
+   reviewer that always runs (`fast`) starts with the other vendor: one
+   always-running reviewer from the implementer's own vendor is not an
+   independent review. A seat keeps its `when` wherever it lands.
+3. A seat that would repeat an earlier one exactly (provider, family, role,
+   condition) is not added. Ids come from the provider and the role, so a
+   second Claude seat of the same role is `claude-general-2`.
+4. With neither CLI installed the preset expands as written; `doctor` reports
+   the missing CLIs.
+
+| Preset | Claude + Codex | Claude only | Codex only |
+| --- | --- | --- | --- |
+| `quality` | claude-general fable, codex-security, claude-architecture opus | claude-general fable, claude-security opus, claude-architecture opus | codex-general, codex-security, codex-architecture |
+| `standard` | claude-general opus, codex-general (the built-in defaults) | claude-general opus, claude-general-2 sonnet | codex-general |
+| `fast` | codex-general; claude-security opus (high-risk) | claude-general opus; claude-security opus (high-risk) | codex-general; codex-security (high-risk) |
+
+The fit is worked out again on every load: install Codex later and the next
+command's panel has it. Reviewer ids can therefore differ between teammates'
+machines, so a script that names `codex-security` in `--only` has to allow for
+that. What was refitted, and why, is a line each under `Preset:` in
+`config show`, under Notes in `doctor`, and under the summary `config setup`
+prints: `codex not found on PATH: reviewer seat 2 (general) went to claude as
+claude-general-2 (sonnet)`.
+
+**Only what no file sets is fitted.** A role that any file sets any field of —
+`provider`, `model`, `options`, `model_tiers` — gets nothing from the preset: it
+resolves from the built-in defaults and the files exactly as it did before
+presets existed, on the provider the files name. Set a role whole if you set it
+at all; a `quality` user who sets only `implementer.options` gets the default
+`opus` implementer, and `config show` says the role was not fitted. When that
+provider's CLI is absent, `doctor` says to set `<role>.provider` to an installed
+CLI or to remove the role from the file. The first `config set` that takes a
+role out of the fit and so changes its provider says so.
+
+The panel follows the same rule: a `reviewers` list in any file replaces the
+fitted panel whole, and a reviewer you listed whose CLI is absent still fails
+in every round, because you listed it.
+
+**Writers that edit the panel record it.** `reviewer add`, `reviewer remove`,
+`reviewer set` and `config set reviewers[...]` start from this machine's fitted
+panel, copy it into the file and edit it there, as they have always started
+from the inherited list. From then on the file's list is the panel, on this
+machine and any other that reads the file, and the command says so once:
+`note: <path> now lists the reviewers; the panel no longer follows preset
+standard's fit (recorded claude-general opus, claude-general-2 sonnet)`. Roles,
+the design review and the optimization level keep following the preset.
+`config reset` on the global file keeps `preset` and clears the list, which
+restores the fit. An unknown preset name is cleared with the rest, with a
+`note:`, and the file then runs under `standard`.
+
+**Only the global file can name a preset, for now.** A `preset:` in a project
+file fails validation with `preset: only the global file can name a preset for
+now`, and workflow commands exit 2 until it is removed. `config set preset
+<name>` therefore writes the global file even inside a project that has its own,
+and refuses `--scope project` (exit 2) without writing.
+
+**Security and unattended runs are additions, not presets.** For a security
+reviewer on risky changes, `reviewer add --provider claude --role security
+--when high-risk` plus `optimization.extra_high_risk_paths` for this
+repository's own sensitive paths; that records the panel, as above. For runs
+nobody watches, `config set design.require_approval false`; with
+`preset: quality` beside it, that is "unattended quality".
+
+An older dev-orchestra reading a global file with `preset:` ignores the key and
+runs its built-in defaults; its `config validate` does not report it.
 
 ## Schema (version 1)
 
@@ -559,7 +677,8 @@ The skill carries the command grammar; this is the phrasebook.
 | The user says | Run |
 | --- | --- |
 | "show my configuration" | `config show` |
-| "set this up" / "redo setup" | `config setup`, or `config setup --defaults` |
+| "set this up" / "redo setup" | `config setup`, or `config setup --preset quality\|standard\|fast` |
+| "best quality" / "spend less" | `config set preset quality`, `config set preset fast` ([Presets](#presets)) |
 | "which models can I use?" | `model list` |
 | "use Claude Opus for implementation" | `config set implementer.model.family opus` |
 | "make the architect use Codex" | `config set architect.provider codex` **and** a family Codex accepts |
@@ -573,8 +692,8 @@ The skill carries the command grammar; this is the phrasebook.
 | "remove the performance reviewer" | `reviewer remove performance` |
 | "change the second reviewer" | `reviewer set 2 --provider … --role …` |
 | "just this project" | add `--scope project` to any write |
-| "undo my own settings" | `config reset --scope global` (clears your overrides; the built-in defaults are what is left) |
-| "drop this project's overrides" | `config reset --scope project` (the project then follows the global layer) |
+| "undo my own settings" | `config reset --scope global` (clears your overrides and keeps your preset; the preset fitted to this machine is what is left) |
+| "drop this project's overrides" | `config reset --scope project` (the project then follows the global layer and its preset) |
 | "my config is from an old version" | `config prune --dry-run`, then `config prune` |
 | "check my environment" | `doctor` |
 
@@ -586,11 +705,12 @@ Show the resulting configuration after any write, so the user can confirm it.
 dev-orchestra config show                    # effective configuration
 dev-orchestra config show --scope project    # just the project layer
 dev-orchestra config setup                   # interactive wizard
+dev-orchestra config setup --preset standard # non-interactive, a preset fitted to the installed CLIs
 dev-orchestra config setup --defaults        # non-interactive, recommended values
 dev-orchestra config set implementer.model.family sonnet
 dev-orchestra config set --scope project architect.provider codex
 dev-orchestra config set reviewers[1].role security
-dev-orchestra config reset                   # clear this layer's overrides
+dev-orchestra config reset                   # clear this layer's overrides (the global file keeps its preset)
 dev-orchestra config reset --delete          # remove the file entirely
 dev-orchestra config prune                   # drop values equal to what is inherited
 dev-orchestra config validate
@@ -601,7 +721,12 @@ the layer below when the config is loaded, so a default improved in a later
 release reaches your installation instead of being shadowed by the copy that
 was current the day you ran setup. `config setup --defaults` therefore writes
 `version: 1` and nothing else: choosing the recommended configuration is
-choosing to override nothing. `config show --scope global|project` prints the
+choosing to override nothing, and such a file runs under preset `standard`.
+`config setup --preset <name>` writes `version` and `preset`, and keeps what
+the file already held beside the keys a preset governs. Of a role it removes
+only `provider` and `model`: a role that still holds `options` or `model_tiers`
+stays set, is therefore not fitted, and the printed notes say so.
+`config show --scope global|project` prints the
 layer exactly as it is on disk, and `config show` the configuration it resolves
 to.
 
@@ -617,6 +742,13 @@ dev-orchestra config prune --dry-run         # list what would be dropped
 dev-orchestra config prune --scope project
 ```
 
+A value is dropped only when the built-in defaults and the preset's fit on this
+machine agree on it, so pruning never changes the configuration in force. A key
+a preset governs that the file stopped setting would fall to the fit: under
+`quality`, `optimization.level: balanced` or the default `opus` implementer
+stays, and so does a role or a panel equal to this machine's fit alone. A role
+is compared whole, since dropping its last field hands it to the fit.
+
 A project file is pruned against *your* global layer, not against the built-in
 defaults, so a value placed there to cancel a global one survives. The other
 side of that: prune a `.dev-orchestra.yaml` the team shares only while your own
@@ -630,9 +762,9 @@ Writes go to the project layer when one exists, otherwise the global layer;
 writes the whole list**, because a list replaces the one below it wholesale:
 `reviewers[1].role`, `review.exclude[0]` and `optimization.high_risk_paths[2]`
 all copy the rest of the list from the layer below first -- the built-in
-defaults for the global layer, the global layer for a project one. A project's
-panel therefore never ends up in your global file. An index past the end of the
-list is an error (exit 2), not a new entry.
+defaults and the preset's fit for the global layer, the global layer for a
+project one. A project's panel therefore never ends up in your global file. An
+index past the end of the list is an error (exit 2), not a new entry.
 
 ### The wizard
 
@@ -644,6 +776,13 @@ AI Development Orchestrator setup
 Detected CLIs:
   claude:  installed
   codex:   installed
+
+Preset (fitted to the CLIs found above):
+  1) quality  -- strongest models, three reviewers, design review always on
+  2) standard -- the built-in defaults, two reviewers (recommended)
+  3) fast     -- lighter models, one reviewer plus a security one on high-risk changes
+  4) customise each role
+Choice [2]: 4
 
 1. Orchestrator
    CLI:
@@ -669,9 +808,29 @@ Configuration
   Reviews
     1. claude / opus / latest / general / claude-general
     2. codex / recommended-coding / latest / general / codex-general
+    design review: auto  (review.design.enabled)
+    optimization level: balanced  (optimization.level)
+    plan approval: required  (design.require_approval)
 
 Save configuration? [Y/n]
 ```
+
+For the global file the first question is the preset. Choosing one shows the
+configuration it resolves to on this machine, with any notes on what was
+refitted, and asks `Save as is?`: yes saves `version` and `preset` beside what
+the file held apart from the keys a preset governs. No goes through the role and
+reviewer questions starting from the preset's fit, and saves only what you
+changed from it: a role you changed is saved whole, a panel you changed is
+saved as a list, and everything you left as offered keeps following the preset.
+The file's other settings are kept as they were, a value equal to a default
+included.
+`customise each role` is the wizard as it was before presets: every answer is
+saved. A project file is never asked the preset question.
+
+Files the wizard wrote before presets existed list every role and the panel, so
+a `preset:` added to one reaches only what they do not set. `config reset`
+clears them and keeps `preset`; `config prune` drops a value only when the
+built-in defaults and the preset's fit agree on it.
 
 `config setup` saves the answers you gave and nothing else. Its recommended
 answers, and the summary you approve, come from whatever the layer you are

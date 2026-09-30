@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional, cast
 from . import config as config_mod
 from . import hosts, verified
 from . import optimization as opt_mod
+from . import presets as presets_mod
 from . import workspace as ws
 from .providers import (
     OFFLINE,
@@ -127,28 +128,45 @@ def collect(start: Optional[str] = None, probe_models: bool = True) -> Dict[str,
         report["problems"].append(str(exc))
         return report
 
-    problems = config_mod.validate(loaded.data)
+    problems = config_mod.validate(loaded.data, project_layer=loaded.project_layer)
+    installed = presets_mod.installed_providers()
     report["config"] = {
         "status": "ok" if not problems else "invalid",
         "global": loaded.global_path or "not found",
         "project_override": loaded.project_path or "none",
         "using_builtin_defaults": loaded.used_defaults,
+        "preset": {
+            "name": loaded.preset,
+            "source": loaded.preset_source,
+            "fitted_to": installed,
+            "notes": loaded.preset_notes,
+        },
         "problems": problems,
         # Reported so a default that has since been improved is visible rather
-        # than silently overridden by the file that recorded the old one.
-        "pinned": config_mod.pinned_differences(loaded.data),
+        # than silently overridden by the file that recorded the old one. On
+        # the files alone: a preset's own values are not something pinned.
+        "pinned": config_mod.pinned_differences(loaded.files_data),
     }
     report["problems"].extend(problems)
+    report["notes"].extend(loaded.preset_notes)
     # Problems for doctor, warnings for `config validate`: either way these
     # runs are refused, and --strict should say so before one is attempted.
     warnings = config_mod.read_only_arg_warnings(loaded)
     report["config"]["warnings"] = warnings
     report["problems"].extend(warnings)
 
+    layers = (loaded.global_layer, loaded.project_layer)
     for key, label in ROLE_LABELS:
         spec = loaded.data.get(key)
+        hint = ""
+        # A role a file sets is not fitted, so a missing CLI there is the file's.
+        if loaded.preset and any(config_mod.mentions(layer, key) for layer in layers):
+            hint = (
+                "set %s.provider to an installed CLI, or remove the role from the file so "
+                "preset %s's fit applies" % (key, loaded.preset)
+            )
         report["roles"][key] = _describe_role(
-            label, spec, detections, report["problems"], adapter_errors, load_errors
+            label, spec, detections, report["problems"], adapter_errors, load_errors, missing_hint=hint
         )
         if key in config_mod.READ_ONLY_ROLES:
             _refused_enforcement(label, spec, report)
@@ -274,6 +292,7 @@ def _describe_role(
     problems: List[str],
     adapter_errors: Dict[str, str],
     load_errors: int,
+    missing_hint: str = "",
 ) -> Dict[str, Any]:
     entry: Dict[str, Any] = {"label": label}
     if not isinstance(spec, dict):
@@ -310,7 +329,8 @@ def _describe_role(
         return entry
     if not detection.installed:
         entry["status"] = "cli-missing"
-        problems.append("%s: %s CLI is not installed" % (label, provider_name))
+        problem = "%s: %s CLI is not installed" % (label, provider_name)
+        problems.append(problem + ("; %s" % missing_hint if missing_hint else ""))
         return entry
 
     try:
@@ -479,8 +499,15 @@ def render(report: Dict[str, Any]) -> str:
     lines.append("Config")
     lines.append("  Global: %s" % config_info.get("global"))
     lines.append("  Project override: %s" % config_info.get("project_override"))
+    preset = config_info.get("preset") or {}
+    preset_name = preset.get("name")
+    if preset:
+        installed = preset.get("fitted_to") or []
+        described = presets_mod.describe(preset_name, preset.get("source") or "", installed)
+        lines.append("  Preset: %s" % described)
     if config_info.get("using_builtin_defaults"):
-        lines.append("  Source: built-in defaults (run `config setup` to save your own)")
+        source = "built-in defaults, fitted as preset %s" % (preset_name or presets_mod.DEFAULT)
+        lines.append("  Source: %s (`config setup --preset <name>` saves one)" % source)
     pinned = config_info.get("pinned") or []
     if pinned:
         lines.append("  Pinned at a value the built-in default has moved off:")
