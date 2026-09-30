@@ -190,13 +190,13 @@ as a floor. Always name what failed and what you skipped.
 
 ## Configuration
 
-Handle conversationally, ask only what you cannot infer, and show the
-resulting configuration afterwards so the user can confirm it.
+Handle conversationally, ask only what you cannot infer, and show the result
+so the user confirms it before moving on.
 
 | Want | Command |
 | --- | --- |
 | show, reset | `config show`, `config reset`, `config prune` |
-| set up | `config setup` (interactive), or `config setup --defaults` |
+| set up | `config setup` (interactive), or `config setup --preset quality\|standard\|fast` |
 | available models | `model list` |
 | change a role | `config set <role>.provider codex`, `config set <role>.model.family opus` |
 | a cheaper/stronger model for one run | `run <role> --tier <name>`, if `model_tiers` is configured |
@@ -212,9 +212,9 @@ allow-listed in that CLI's own settings. Schema and worked examples:
 `references/configuration.md`.
 
 **First run.** With a terminal, `config setup` and let the user answer the
-wizard; otherwise collect the same answers in conversation and apply them with
-`config setup --defaults` plus `config set` / `reviewer add`. Show the result
-and confirm before moving on.
+wizard; otherwise show `config show`, ask which preset (quality, standard,
+fast), run `config setup --preset <name>`, then `config set` / `reviewer add`
+for anything else.
 
 ## Rules that do not bend
 

@@ -149,7 +149,9 @@ def _layer_base(scope: str, start: Optional[str] = None) -> Dict[str, Any]:
     be the working directory.
 
     This mirrors the layer order in ``config.load``; a third layer would have
-    to be added in both places.
+    to be added in both places. It leaves out the preset's expansion:
+    ``_fitted_base`` is the base with it, through ``config.compose``, and
+    ``_prune_base`` is where the two agree.
     """
     defaults = config_mod.default_config()
     if scope == "global":
@@ -160,12 +162,72 @@ def _layer_base(scope: str, start: Optional[str] = None) -> Dict[str, Any]:
     return config_mod.deep_merge(defaults, config_mod.read_config_file(global_path))
 
 
+def _global_file() -> Dict[str, Any]:
+    path = config_mod.global_config_path()
+    return config_mod.read_config_file(path) if os.path.isfile(path) else {}
+
+
+def _fitted_base(
+    scope: str, start: Optional[str] = None, layer: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
+    """What ``load()`` gives without this layer, the preset's fit included.
+
+    The global layer's base is the defaults plus the expansion of its own
+    preset (``standard`` when it names none); a project layer's is ``load()``
+    without the project file. The panel is still dealt around the implementer
+    ``layer`` -- the one being edited -- sets, as it is in force.
+    """
+    from . import presets
+
+    installed = presets.installed_providers()
+    if scope == "global":
+        preset = _global_file().get("preset")
+        return config_mod.compose({"preset": preset or presets.DEFAULT}, {}, installed, layer)[0]
+    return config_mod.compose(_global_file(), {}, installed, layer)[0]
+
+
+def _agreed(first: Dict[str, Any], second: Dict[str, Any], whole: Tuple[str, ...] = ()) -> Dict[str, Any]:
+    """The values ``first`` and ``second`` both hold; the keys in ``whole`` only when equal whole."""
+    agreed: Dict[str, Any] = {}
+    for key, value in first.items():
+        if key not in second:
+            continue
+        other = second[key]
+        if isinstance(value, dict) and isinstance(other, dict) and key not in whole:
+            agreed[key] = _agreed(value, other)
+        elif value == other:
+            agreed[key] = copy.deepcopy(value)
+    return agreed
+
+
+def _prune_base(scope: str, start: Optional[str], layer: Dict[str, Any]) -> Dict[str, Any]:
+    """What ``config prune`` compares ``layer`` against.
+
+    A value may go only when the built-in defaults and the preset's fit both
+    say it: a governed key the file stops setting falls through to the fit,
+    and nothing may be pruned for equalling one machine's fit either. A role
+    counts only whole, since dropping its last field hands it to the fit.
+
+    A project file that sets the implementer deals the panel around it, so
+    for the global layer the fit that project sees has to agree as well.
+    """
+    roles = config_mod.KNOWN_ROLES
+    base = _agreed(_layer_base(scope, start), _fitted_base(scope, start, layer), roles)
+    if scope == "global":
+        project_path = config_mod.find_project_config(start)
+        project = config_mod.read_config_file(project_path) if project_path else {}
+        if config_mod.mentions(project, "implementer"):
+            with_project = config_mod.deep_merge(layer, project)
+            base = _agreed(base, _fitted_base(scope, start, with_project), roles)
+    return base
+
+
 #: Sentinel for "the layer holds nothing here at all", which ``get_path`` cannot
 #: otherwise distinguish from a value that happens to be falsy.
 _UNSET = object()
 
 
-def _seed_list(layer: Dict[str, Any], list_path: str, base: Dict[str, Any]) -> None:
+def _seed_list(layer: Dict[str, Any], list_path: str, base: Dict[str, Any]) -> bool:
     """Give the layer the whole list before one entry of it is edited.
 
     A list replaces the one below it wholesale (``deep_merge``), so changing
@@ -178,17 +240,55 @@ def _seed_list(layer: Dict[str, Any], list_path: str, base: Dict[str, Any]) -> N
     always has -- and so is one this layer already holds something else at. A
     scalar where a list is expected is the same kind of mistake, and seeding
     over it would replace a value the user wrote instead of refusing.
+
+    Returns True when it seeded, so a writer can say it froze the panel.
     """
     if config_mod.get_path(layer, list_path, _UNSET) is not _UNSET:
-        return
+        return False
     inherited = config_mod.get_path(base, list_path)
     if isinstance(inherited, list):
         config_mod.set_path(layer, list_path, copy.deepcopy(inherited))
+        return True
+    return False
+
+
+def _compose_preview(scope: str, layer: Dict[str, Any], start: Optional[str] = None) -> Tuple[Any, ...]:
+    """``config.compose`` of this layer as it would be saved: ``(data, fit, preset, source)``."""
+    from . import presets
+
+    installed = presets.installed_providers()
+    if scope == "global":
+        return config_mod.compose(layer, {}, installed)
+    return config_mod.compose(_global_file(), layer, installed)
 
 
 def _effective_preview(scope: str, layer: Dict[str, Any], start: Optional[str] = None) -> Dict[str, Any]:
-    """What ``load()`` will resolve once this layer is saved."""
-    return config_mod.deep_merge(_layer_base(scope, start), layer)
+    """What ``load()`` will resolve once this layer is saved, mention rule included."""
+    return _compose_preview(scope, layer, start)[0]
+
+
+def _frozen_panel_note(
+    seeded: bool, path: str, base: Dict[str, Any], scope: str, start: Optional[str] = None
+) -> Optional[str]:
+    """What a writer says when seeding ``reviewers`` took the panel off the fit.
+
+    Only when no file under the written one listed the reviewers before:
+    copying a list another file already chose freezes nothing that was
+    following a preset. A project file is not under the global one.
+    """
+    if not seeded:
+        return None
+    loaded = config_mod.load(start, validate_result=False)
+    layers = (loaded.global_layer, loaded.project_layer) if scope == "project" else (loaded.global_layer,)
+    if not loaded.preset or any(layer.get("reviewers") is not None for layer in layers):
+        return None
+    recorded = ", ".join(
+        "%s %s" % (reviewer.get("id"), (reviewer.get("model") or {}).get("family", "default"))
+        for reviewer in base.get("reviewers") or []
+        if isinstance(reviewer, dict)
+    )
+    message = "note: %s now lists the reviewers; the panel no longer follows preset %s's fit (recorded %s)"
+    return message % (path, loaded.preset, recorded or "none")
 
 
 def _container_and_config(args: argparse.Namespace) -> "tuple[str, str, config_mod.LoadedConfig]":
@@ -250,7 +350,27 @@ def _workspace(args: argparse.Namespace) -> ws.Workspace:
     workspace = ws.Workspace(root, container, workflow).ensure()
     if fresh:
         _stale_notice(container, workflow, loaded.stale_notice_days())
+        if loaded.used_defaults:
+            _first_run_summary(loaded)
     return workspace
+
+
+def _first_run_summary(loaded: config_mod.LoadedConfig) -> None:
+    """The whole configuration, once, when a workflow starts with no config file.
+
+    Nothing is saved and nothing is asked: these commands run under an agent
+    with no terminal. The choice belongs to ``config setup``.
+    """
+    from . import presets
+    from .wizard import render_summary  # late: wizard imports cli
+
+    _err(render_summary(loaded.data))
+    for note in loaded.preset_notes:
+        _err("note: %s" % note)
+    _err(
+        "Save it with config setup --preset %s, or choose another with config setup."
+        % (loaded.preset or presets.DEFAULT)
+    )
 
 
 def _review_workspace(args: argparse.Namespace) -> ws.Workspace:
@@ -296,8 +416,17 @@ def _in_workflow(workspace: ws.Workspace, path: Optional[str]) -> Optional[str]:
 
 def _load_or_die(start: Optional[str] = None) -> config_mod.LoadedConfig:
     try:
-        return config_mod.load(start)
+        loaded = config_mod.load(start)
     except config_mod.ConfigError as exc:
         _err(str(exc))
         _err("Run `dev-orchestra config setup` to rebuild the configuration.")
         raise SystemExit(2) from exc
+    if loaded.used_defaults:
+        # One line: every `run` is its own process, and a workflow has many.
+        from . import presets
+
+        _err(
+            "note: no config file; running preset %s fitted to %s (config setup --preset <name> saves one)"
+            % (loaded.preset, presets.describe_installed(presets.installed_providers()))
+        )
+    return loaded

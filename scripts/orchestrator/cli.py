@@ -28,6 +28,7 @@ from . import jobs as jobs_mod
 from . import ledger as ledger_mod
 from . import miniyaml
 from . import optimization as opt_mod
+from . import presets as presets_mod
 from . import review as review_mod
 from . import wizard as wizard_mod
 from . import workflow as workflow_mod
@@ -258,14 +259,22 @@ def build_parser() -> argparse.ArgumentParser:
 
     setup = config_sub.add_parser("setup", help="run the setup wizard")
     setup.add_argument("--scope", choices=["global", "project"], default="global")
-    setup.add_argument(
+    setup_choice = setup.add_mutually_exclusive_group()
+    setup_choice.add_argument(
+        "--preset",
+        choices=presets_mod.NAMES,
+        help="save this preset without prompting; it is fitted to the installed CLIs at load time",
+    )
+    setup_choice.add_argument(
         "--defaults", action="store_true", help="write the recommended config without prompting"
     )
     setup.add_argument("--force", action="store_true", help="prompt even without a TTY")
     setup.set_defaults(func=cmd_config_setup)
 
     reset = config_sub.add_parser(
-        "reset", help="clear this layer's overrides (the file keeps only version); --delete removes it"
+        "reset",
+        help="clear this layer's overrides (the file keeps only version, and the global file its "
+        "preset); --delete removes it",
     )
     reset.add_argument("--scope", choices=["global", "project"], default=None)
     reset.add_argument("--delete", action="store_true", help="delete the config file instead of clearing it")

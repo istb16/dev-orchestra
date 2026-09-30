@@ -51,12 +51,12 @@ plan is not approved and `design.require_approval` is on, `130` interrupted.
 
 | Command | Description |
 | --- | --- |
-| `config show [--scope effective\|global\|project] [--json]` | Show the configuration. Default `effective` (merged); a scope shows that layer exactly as it is on disk, which is usually much shorter. A `Providers:` line says where each provider it refers to comes from (built-in, a user module's path, or no adapter); `--json` has the same under `providers`. |
+| `config show [--scope effective\|global\|project] [--json]` | Show the configuration. Default `effective` (merged); a scope shows that layer exactly as it is on disk, which is usually much shorter. The effective view names the preset in force after `Source:` (`Preset: quality (global; fitted to claude, codex)`) with a `note:` line for each thing that was refitted; `--json` has them under `preset` (`name`, `source`, `notes`). A `Providers:` line says where each provider it refers to comes from (built-in, a user module's path, or no adapter); `--json` has the same under `providers`. |
 | `config path` | Print both layer locations. |
-| `config setup [--scope global\|project] [--defaults] [--force]` | Setup wizard. `--defaults` overrides nothing, so the file holds only `version: 1` and every value follows the built-in defaults. `--force` prompts even without a TTY. |
-| `config reset [--scope …] [--delete]` | Clear this layer's overrides (the file stays, holding only `version`), or delete the file with `--delete`. |
-| `config prune [--scope …] [--dry-run]` | Drop values a layer holds that are equal to what it inherits -- for files written before 0.6.0, which hold every default. `--dry-run` lists them without writing. |
-| `config set <path> <value> [--scope …] [--raw]` | Set one value. Paths support `a.b.c` and `reviewers[0].role`; an indexed edit copies the rest of the list from the layer below, and an index past the end exits 2. |
+| `config setup [--scope global\|project] [--preset quality\|standard\|fast \| --defaults] [--force]` | Setup wizard; for the global file its first question is the preset. `--preset` asks nothing: it writes `version` and `preset`, keeps what the file held apart from the keys a preset governs (a role keeps its `options` and `model_tiers` and is then not fitted), and prints the configuration that preset resolves to on this machine with its notes (see `references/configuration.md`, Presets). Only the global file can name a preset: with `--scope project` it is refused (exit 2) and nothing is written. `--defaults` overrides nothing, so the file holds only `version: 1` and runs under preset `standard`. `--force` prompts even without a TTY. |
+| `config reset [--scope …] [--delete]` | Clear this layer's overrides (the file stays, holding only `version`, and the global file its `preset` too when it names a known one; an unknown name is cleared with a `note:`), then print the configuration that is left. `--delete` removes the file; the global layer then runs under `standard`. |
+| `config prune [--scope …] [--dry-run]` | Drop values a layer holds that are equal to what it inherits -- for files written before 0.6.0, which hold every default. A value goes only when the built-in defaults and the preset's fit agree on it, so pruning never changes the configuration in force. `--dry-run` lists them without writing. |
+| `config set <path> <value> [--scope …] [--raw]` | Set one value. Paths support `a.b.c` and `reviewers[0].role`; an indexed edit copies the rest of the list from the layer below, and an index past the end exits 2. `preset` is written to the global file even when a project file exists; `--scope project` with it exits 2 and writes nothing. |
 | `config validate [--json]` | Validate the effective configuration. Exit 1 if invalid. A `Warnings:` section (`warnings` in `--json`) lists the raw arguments a read-only role's runs would refuse -- any `options.args` in the project file, and anything the adapter's allowlist does not take -- without changing the exit status. `config set` prints the same as `warning:` lines. |
 
 ```bash
@@ -86,6 +86,13 @@ leaves the file in place and goes on shadowing it.
 | `reviewer add --provider <p> [--model <family>] [--role <r>] [--id <id>] [--pin <model-id>] [--when always\|high-risk \| --when-paths GLOB [GLOB ...]] [--scope …]` | Add a reviewer. The id is generated (`codex-security`, `codex-security-2`, …) when omitted. `--when high-risk` makes it join the code review only on rounds judged high-risk; `--when-paths "*migrate*/*" "*.sql"` makes it join only when a changed path matches one of those patterns, written as a `when:` mapping with `paths` in block form (see `references/configuration.md`). Quote each pattern so the shell does not expand it. `always`, the default, writes no key. Giving `--when` and `--when-paths` together exits 2. |
 | `reviewer remove <id\|role\|position> [--scope …]` | Remove by id, by unique role, or by 1-based position. Refused (exit 2) when it would leave only conditional (`when: high-risk` or path-scoped) reviewers. |
 | `reviewer set <selector> [--provider] [--model] [--role] [--id] [--pin] [--when always\|high-risk \| --when-paths GLOB [GLOB ...]] [--scope …]` | Change an existing reviewer. `--when always` removes the condition; `--when high-risk` and `--when-paths` each replace it whole, so `--when-paths` replaces the list rather than adding to it. Making the last reviewer that always runs conditional is refused (exit 2), and so is giving `--when` and `--when-paths` together. |
+
+`add`, `remove` and `set` edit the whole list in the file. When neither the
+file they write nor one below it (the global file, under a project one) lists
+`reviewers` yet, they start from the panel the preset gives this machine, copy
+it into the file, and print one `note:` naming the reviewers they recorded:
+from then on the panel is the file's and no longer follows the preset. `config
+set reviewers[...]` does the same.
 
 ```bash
 dev-orchestra reviewer add --provider codex --role security
@@ -976,7 +983,8 @@ version of all of this.
 
 | Symptom | Cause and fix |
 | --- | --- |
-| `Source: built-in defaults` | No config file yet. `dev-orchestra config setup`. |
+| `Source: built-in defaults, fitted as preset standard` | No config file yet; the built-in `standard` preset fitted to the installed CLIs is in force. `dev-orchestra config setup`, or `config setup --preset <name>`. |
+| `note: no config file; running preset standard …` | The same, from `run` and `review run`; a new workflow also prints the whole configuration once. |
 | `codex: … does not vouch for …` | A family this Codex CLI does not offer. Check `dev-orchestra model list`, use `recommended-coding`, or pin an exact id. |
 | `claude: cannot resolve model family 'x'` | Not an advertised alias. `dev-orchestra model list`. |
 | `Installed: no` | The CLI is not on PATH. Install it yourself; the skill will not. |

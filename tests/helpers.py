@@ -269,6 +269,27 @@ class IsolatedCase(unittest.TestCase):
             setattr(cls, "which", lambda self: None)
             self.addCleanup(setattr, cls, "which", original)
 
+    def fake_clis(self, claude: bool = False, codex: bool = False) -> None:
+        """Pretend exactly these built-in CLIs are on PATH, whatever the machine has.
+
+        Nothing is ever spawned: ``_capture`` answers as a CLI that cannot be
+        run, and Codex reads no configuration of the user's.
+        """
+        from orchestrator.providers.claude import ClaudeProvider
+        from orchestrator.providers.codex import CodexProvider
+
+        replacements = []
+        for cls, present in ((ClaudeProvider, claude), (CodexProvider, codex)):
+            found = (lambda self: self.executable) if present else (lambda self: None)
+            replacements += [(cls, "which", found), (cls, "_capture", lambda self, command, timeout=30: None)]
+        replacements.append((CodexProvider, "configured_model", lambda self: None))
+        for cls, name, value in replacements:
+            self.addCleanup(setattr, cls, name, getattr(cls, name))
+            setattr(cls, name, value)
+        from orchestrator.providers import base as provider_base
+
+        provider_base.clear_discovery_cache()
+
     def tearDown(self) -> None:
         os.chdir(self._saved_cwd)
         for key, value in self._saved_env.items():

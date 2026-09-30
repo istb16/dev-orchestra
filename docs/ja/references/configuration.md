@@ -1,4 +1,4 @@
-<!-- translated-from: references/configuration.md sha256:e97fd3a4dd8fc134c8c56a7f28c99499f717277569ca1f63d38ee01f51019093 -->
+<!-- translated-from: references/configuration.md sha256:1a9bb0002c2b8cf1bc0a7fb24631aa7eff9370a1a556874e9f785511a66431a9 -->
 
 > この文書は [references/configuration.md](../../../references/configuration.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -12,6 +12,7 @@
 
 - [設定の置き場所](#where-it-lives)
 - [優先順位](#precedence)
+- [プリセット](#presets)
 - [スキーマ（version 1）](#schema-version-1)
   - [フィールドリファレンス](#field-reference)
   - [ロールのオプション](#role-options)
@@ -75,7 +76,7 @@ adapter を置きます（Windows では `%APPDATA%\dev-orchestra\providers\`、
 ## 優先順位
 
 ```
-project config  →  global config  →  built-in defaults
+project config  →  global config  →  the global file's preset, fitted to the installed CLIs  →  built-in defaults
 ```
 
 マッピングはキーごとにマージされるので、`implementer` だけを設定したプロジェクト
@@ -83,6 +84,115 @@ project config  →  global config  →  built-in defaults
 `reviewers` を定義したプロジェクトファイルは、そのプロジェクトのパネル全体を定義します。
 これは意図的です — 「このリポジトリは security + database だけでレビューする」を
 表現できなければならないからです。
+
+プリセットのレイヤーが届くのは、どのファイルも設定していないロールとレビュアーパネルだけです
+（[プリセット](#presets)）。Claude Code と Codex が両方インストールされているとき、またはどちらも
+無いとき、デフォルトのプリセットは組み込みデフォルトとまったく同じです。
+
+<a id="presets"></a>
+
+## プリセット
+
+プリセットは、費用の軸での1つの選択です: `quality`・`standard`・`fast`。グローバルファイルに
+キー1つとして保存され、設定を読み込むたびに、このマシンの PATH にある CLI に合わせて展開されます。
+そのため、Codex の無いマシンが、毎回失敗する Codex のレビュアーを抱えることはありません。
+
+```bash
+dev-orchestra config setup --preset quality   # save it; nothing is asked
+dev-orchestra config set preset fast          # switch, keeping your other settings (always the global file)
+```
+
+```yaml
+version: 1
+preset: quality
+```
+
+プリセットを指定していないグローバルファイルも、ファイルが1つも無い場合も、`standard` で動きます。
+「なし」はありません: 新しいマシンで最初に `config set` を実行しても、フィットが止まることはありません。
+
+それぞれが設定する値（family のみ、すべて `version: latest`。Codex はどの枠でも
+`recommended-coding` です。CLI を起動せずに adapter が保証できる family はこれだけだからです）:
+
+| キー | `quality` | `standard` | `fast` |
+| --- | --- | --- | --- |
+| `orchestrator` | opus | sonnet | sonnet |
+| `architect` | fable | fable | opus |
+| `implementer` | fable | opus | sonnet |
+| `review_fixer` | fable | opus | sonnet |
+| レビュアーの枠（role / Claude の family） | general / fable、security / opus、architecture / opus | general / opus、general / sonnet | general / opus; security / opus、`when: high-risk` |
+| `review.design.enabled` | `true` | 設定しない（`auto`） | 設定しない（`auto`） |
+| `optimization.level` | `quality` | 設定しない（`balanced`） | `aggressive` |
+
+プリセットが決めるのはこの7つのキーです。それ以外 — budgets、タイムアウト、
+`review.max_review_iterations`、`design.require_approval` — は、ファイルが設定しない限り
+組み込みデフォルトのままです。`standard` は組み込みデフォルトから読み取って作るので、両者が
+ずれることはありません。
+
+**フィット。** 対象は `claude` と `codex` だけです。ユーザー adapter は、これまでどおりファイルが
+名前を挙げたときにだけ動きます。検出は PATH の探索だけで、CLI は起動しません:
+
+1. 4つのロールは、`claude`、`codex` の順で最初にインストールされている CLI に割り当てます。
+   Claude にはプリセットの family、Codex には `recommended-coding` が付きます。
+2. レビュアーの枠は、インストール済みの CLI に implementer の CLI（ファイルが implementer を
+   設定していれば、ファイルが指定した provider）から順に配ります。そのため
+   2社あれば、どのパネルにも両方が入ります。常に走るレビュアーが1人だけのプリセット（`fast`）は、
+   もう一方のベンダーから始めます: implementer と同じベンダーの常時レビュアー1人では、独立した
+   レビューにならないからです。枠の `when` は、どこに配られても維持されます。
+3. 前の枠とまったく同じになる枠（provider、family、role、条件）は追加しません。id は provider と
+   role から作るので、同じ role の2人目の Claude の枠は `claude-general-2` になります。
+4. どちらの CLI も無いときは、プリセットを書かれたとおりに展開します。CLI が無いことは `doctor`
+   が報告します。
+
+| プリセット | Claude + Codex | Claude のみ | Codex のみ |
+| --- | --- | --- | --- |
+| `quality` | claude-general fable、codex-security、claude-architecture opus | claude-general fable、claude-security opus、claude-architecture opus | codex-general、codex-security、codex-architecture |
+| `standard` | claude-general opus、codex-general（組み込みデフォルト） | claude-general opus、claude-general-2 sonnet | codex-general |
+| `fast` | codex-general; claude-security opus（high-risk） | claude-general opus; claude-security opus（high-risk） | codex-general; codex-security（high-risk） |
+
+フィットは読み込むたびにやり直されます: 後から Codex を入れれば、次のコマンドのパネルに
+入ります。そのため、レビュアーの id はチームメンバーのマシンごとに違うことがあり、`--only` で
+`codex-security` を名指しするスクリプトはそれを考慮する必要があります。何がなぜフィットし直されたかは、
+`config show` の `Preset:` の下、`doctor` の Notes、`config setup` が表示するサマリーの下に1行ずつ
+出ます: `codex not found on PATH: reviewer seat 2 (general) went to claude as
+claude-general-2 (sonnet)`。
+
+**フィットされるのは、どのファイルも設定していないものだけです。** どれかのファイルが
+いずれかのフィールド — `provider`、`model`、`options`、`model_tiers` — を設定したロールは、
+プリセットから何も受け取りません: プリセットが無かったころとまったく同じく、組み込みデフォルトと
+ファイルから、ファイルが指定した provider で解決されます。ロールを設定するなら丸ごと設定して
+ください。`implementer.options` だけを設定した `quality` のユーザーの implementer はデフォルトの
+`opus` になり、`config show` はそのロールがフィットされなかったと表示します。その provider の CLI
+が無いとき、`doctor` は `<role>.provider` をインストール済みの CLI にするか、ファイルからそのロールを
+削除するよう示します。ロールをフィットから外し、その結果 provider が変わる最初の `config set` は、
+その旨を表示します。
+
+パネルも同じ規則です: どれかのファイルの `reviewers` リストはフィットしたパネルを丸ごと置き換え、
+自分で並べたレビュアーの CLI が無ければ、並べたのは自分なので、毎回のラウンドで失敗し続けます。
+
+**パネルを編集するコマンドは、パネルを記録します。** `reviewer add`、`reviewer remove`、
+`reviewer set`、`config set reviewers[...]` は、このマシンでフィットしたパネルから始め、それを
+ファイルにコピーしてから編集します。これまで継承したリストから始めていたのと同じです。それ以降は
+ファイルのリストがパネルになり、このマシンでも、そのファイルを読む他のマシンでも同じです。コマンドは
+一度だけその旨を表示します: `note: <path> now lists the reviewers; the panel no longer follows preset
+standard's fit (recorded claude-general opus, claude-general-2 sonnet)`。ロール、設計レビュー、
+最適化レベルは引き続きプリセットに従います。グローバルファイルの `config reset` は `preset` を残して
+リストを消すので、フィットが戻ります。知らないプリセット名はほかの上書きと一緒に消して `note:` を
+表示し、そのファイルは `standard` で動くようになります。
+
+**プリセットを指定できるのは、今のところグローバルファイルだけです。** プロジェクトファイルの
+`preset:` は `preset: only the global file can name a preset for now` で検証に失敗し、削除するまで
+ワークフローのコマンドは exit 2 で終了します。そのため `config set preset <name>` は、独自の
+プロジェクトファイルがあるプロジェクトの中でもグローバルファイルに書き込み、`--scope project` を
+付けると何も書き込まずに拒否します（exit 2）。
+
+**セキュリティ重視や無人実行は、プリセットではなく追加の設定です。** 危険な変更に security
+レビュアーを付けるなら、`reviewer add --provider claude --role security --when high-risk` に加えて、
+このリポジトリ独自の機密パスを `optimization.extra_high_risk_paths` に。これは上のとおりパネルを
+記録します。誰も見ていない実行なら `config set design.require_approval false`。`preset: quality` と
+組み合わせれば「無人の quality」になります。
+
+古い dev-orchestra が `preset:` のあるグローバルファイルを読むと、このキーを無視して組み込み
+デフォルトで動きます。その `config validate` もこのキーを報告しません。
 
 <a id="schema-version-1"></a>
 
@@ -574,7 +684,8 @@ codex: installed
 | ユーザーの発言 | 実行するもの |
 | --- | --- |
 | 「設定を見せて」 | `config show` |
-| 「セットアップして」/「セットアップをやり直して」 | `config setup`、または `config setup --defaults` |
+| 「セットアップして」/「セットアップをやり直して」 | `config setup`、または `config setup --preset quality\|standard\|fast` |
+| 「最高品質で」/「費用を抑えて」 | `config set preset quality`、`config set preset fast`（[プリセット](#presets)） |
 | 「どのモデルが使える？」 | `model list` |
 | 「実装には Claude Opus を使って」 | `config set implementer.model.family opus` |
 | 「architect に Codex を使わせて」 | `config set architect.provider codex` **と**、Codex が受け付ける family |
@@ -588,8 +699,8 @@ codex: installed
 | 「パフォーマンスのレビュアーを外して」 | `reviewer remove performance` |
 | 「2 番目のレビュアーを変えて」 | `reviewer set 2 --provider … --role …` |
 | 「このプロジェクトだけ」 | 書き込み系のコマンドに `--scope project` を付ける |
-| 「自分の設定を元に戻して」 | `config reset --scope global`（あなたの上書きをクリアし、組み込みのデフォルトだけが残ります） |
-| 「このプロジェクトの上書きを捨てて」 | `config reset --scope project`（以後そのプロジェクトはグローバルレイヤーに従います） |
+| 「自分の設定を元に戻して」 | `config reset --scope global`（あなたの上書きをクリアし、プリセットは残します。このマシンに合わせたプリセットだけが残ります） |
+| 「このプロジェクトの上書きを捨てて」 | `config reset --scope project`（以後そのプロジェクトはグローバルレイヤーとそのプリセットに従います） |
 | 「設定が古いバージョンのものだ」 | `config prune --dry-run`、その後 `config prune` |
 | 「環境をチェックして」 | `doctor` |
 
@@ -603,11 +714,12 @@ codex: installed
 dev-orchestra config show                    # effective configuration
 dev-orchestra config show --scope project    # just the project layer
 dev-orchestra config setup                   # interactive wizard
+dev-orchestra config setup --preset standard # non-interactive, a preset fitted to the installed CLIs
 dev-orchestra config setup --defaults        # non-interactive, recommended values
 dev-orchestra config set implementer.model.family sonnet
 dev-orchestra config set --scope project architect.provider codex
 dev-orchestra config set reviewers[1].role security
-dev-orchestra config reset                   # clear this layer's overrides
+dev-orchestra config reset                   # clear this layer's overrides (the global file keeps its preset)
 dev-orchestra config reset --delete          # remove the file entirely
 dev-orchestra config prune                   # drop values equal to what is inherited
 dev-orchestra config validate
@@ -617,7 +729,11 @@ dev-orchestra config validate
 読み込み時に下のレイヤーから解決されます。そのため、後のリリースで改善されたデフォルトは、
 セットアップを実行した日の時点のコピーに隠されることなく、あなたの環境に届きます。したがって
 `config setup --defaults` は `version: 1` だけを書き込みます: 推奨設定を選ぶということは、
-何も上書きしないことを選ぶということです。`config show --scope global|project` はそのレイヤーを
+何も上書きしないことを選ぶということで、そのファイルはプリセット `standard` で動きます。
+`config setup --preset <name>` は `version` と `preset` を書き込み、プリセットが決めるキー以外に
+ファイルが持っていた値は残します。ロールから消すのは `provider` と `model` だけです:
+`options` や `model_tiers` が残るロールは設定されたままなのでフィットされず、表示される note が
+その旨を伝えます。`config show --scope global|project` はそのレイヤーを
 ディスク上にあるとおりに表示し、`config show` は解決された結果の設定を表示します。
 
 **0.6.0 より前に書き込まれたファイルには、すべてのデフォルトがそのまま入っています**。
@@ -632,6 +748,12 @@ dev-orchestra config prune --dry-run         # list what would be dropped
 dev-orchestra config prune --scope project
 ```
 
+値が削除されるのは、組み込みのデフォルトとこのマシンでのプリセットのフィットが、どちらもその値で
+一致するときだけです。そのため prune で有効な設定が変わることはありません。プリセットが決めるキーは、
+ファイルが設定しなくなるとフィットの値になります: `quality` の下では `optimization.level: balanced`
+やデフォルトの `opus` の implementer は残り、このマシンのフィットとだけ等しいロールやパネルも
+残ります。ロールは丸ごと比較します。最後のフィールドを消すと、そのロールはフィットに渡るからです。
+
 プロジェクトファイルは、組み込みのデフォルトではなく*あなたの*グローバルレイヤーと比較して
 prune されます。そのため、グローバルの値を打ち消すためにそこに置かれた値は残ります。その裏返しとして、
 チームで共有している `.dev-orchestra.yaml` を prune するのは、あなた自身のグローバルレイヤーが
@@ -644,8 +766,8 @@ prune されます。そのため、グローバルの値を打ち消すため�
 `--scope global|project` で明示的に指定できます。**リストの 1 エントリを編集すると
 リスト全体が書き込まれます**。リストは下のリストを丸ごと置き換えるからです:
 `reviewers[1].role`、`review.exclude[0]`、`optimization.high_risk_paths[2]` はいずれも、
-まず下のレイヤーからリストの残りをコピーします -- グローバルレイヤーなら組み込みのデフォルトから、
-プロジェクトレイヤーならグローバルレイヤーから。そのため、プロジェクトのパネルがあなたの
+まず下のレイヤーからリストの残りをコピーします -- グローバルレイヤーなら組み込みのデフォルトと
+プリセットのフィットから、プロジェクトレイヤーならグローバルレイヤーから。そのため、プロジェクトのパネルがあなたの
 グローバルファイルに入り込むことはありません。リストの末尾を超えるインデックスは新しいエントリには
 ならず、エラー（exit 2）になります。
 
@@ -661,6 +783,13 @@ AI Development Orchestrator setup
 Detected CLIs:
   claude:  installed
   codex:   installed
+
+Preset (fitted to the CLIs found above):
+  1) quality  -- strongest models, three reviewers, design review always on
+  2) standard -- the built-in defaults, two reviewers (recommended)
+  3) fast     -- lighter models, one reviewer plus a security one on high-risk changes
+  4) customise each role
+Choice [2]: 4
 
 1. Orchestrator
    CLI:
@@ -686,9 +815,26 @@ Configuration
   Reviews
     1. claude / opus / latest / general / claude-general
     2. codex / recommended-coding / latest / general / codex-general
+    design review: auto  (review.design.enabled)
+    optimization level: balanced  (optimization.level)
+    plan approval: required  (design.require_approval)
 
 Save configuration? [Y/n]
 ```
+
+グローバルファイルでは、最初の質問がプリセットです。プリセットを選ぶと、それがこのマシンで
+解決される設定と、フィットし直した点の note を表示して `Save as is?` と尋ねます: yes なら、
+プリセットが決めるキー以外にファイルが持っていた値と一緒に `version` と `preset` を保存します。
+no なら、プリセットのフィットを出発点にロールとレビュアーの質問に進み、そこから変えた点だけを
+保存します: 変えたロールは丸ごと、変えたパネルはリストとして保存され、提示されたままにした
+ものはすべてプリセットに従い続けます。ファイルのそれ以外の設定は、デフォルトと等しい値も含めて
+そのまま残ります。`customise each role` はプリセット導入前のウィザードと
+同じで、すべての回答が保存されます。プロジェクトファイルでは、プリセットの質問はしません。
+
+プリセット導入前にウィザードが書き込んだファイルには、すべてのロールとパネルが入っているので、
+そこに `preset:` を足しても、届くのはファイルが設定していないものだけです。`config reset` は
+それらを消して `preset` を残します。`config prune` が値を削除するのは、組み込みのデフォルトと
+プリセットのフィットがどちらもその値で一致するときだけです。
 
 `config setup` は、あなたが答えた内容だけを保存します。推奨される回答と、あなたが承認する
 サマリーは、編集中のレイヤーが継承するものから導かれます: sonnet を選んだグローバルレイヤーの上で

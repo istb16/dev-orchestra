@@ -45,7 +45,7 @@ class TestConfigCommands(IsolatedCase):
     def test_show_without_a_config_uses_defaults(self):
         code, out, _ = run_cli("config", "show")
         self.assertEqual(code, 0)
-        self.assertIn("built-in defaults", out)
+        self.assertIn("showing preset standard fitted to the installed CLIs", out)
         self.assertIn("claude / sonnet / latest", out)
 
     def test_setup_defaults_writes_a_config(self):
@@ -643,6 +643,10 @@ class TestDoctorLiveCheck(IsolatedCase):
     def doctor(self):
         code, out, _ = run_cli("doctor", "--fast", "--strict")
         report = json.loads(run_cli("doctor", "--fast", "--json")[1])
+        # Codex alone is installed, so the preset notes that every role here
+        # is set by the file; those are about the fit, not the live check.
+        fit_notes = report["config"]["preset"]["notes"]
+        report["notes"] = [note for note in report["notes"] if note not in fit_notes]
         return code, out, report
 
     def live_line(self, out):
@@ -2619,6 +2623,333 @@ class TestUserAdapterResume(IsolatedCase):
         self.assertEqual(code, 0)
         self.assertEqual(out, before)
         self.assertIn("running fresh: the provider cannot resume a session", err)
+
+
+FROZEN = "now lists the reviewers; the panel no longer follows preset standard's fit (recorded %s)"
+CODEX_IMPLEMENTER = {"provider": "codex", "model": {"family": "recommended-coding", "version": "latest"}}
+
+
+class PresetCase(IsolatedCase):
+    def global_layer(self):
+        return config_mod.read_config_file(config_mod.global_config_path())
+
+    def write_global(self, data):
+        config_mod.write_config_file(config_mod.global_config_path(), data, "global")
+
+    def ids(self, reviewers=None):
+        if reviewers is None:
+            reviewers = config_mod.load(self.project).reviewers()
+        return [reviewer["id"] for reviewer in reviewers]
+
+
+class TestPresetWriters(PresetCase):
+    """Each writer under preset standard, with Claude alone installed unless
+    the test says otherwise: what reaches the file, and what is in force after."""
+
+    def setUp(self):
+        super().setUp()
+        self.fake_clis(claude=True)
+
+    def test_the_first_set_on_a_fresh_machine_keeps_the_fit(self):
+        code, _, _ = run_cli("config", "set", "review.parallel", "false")
+        self.assertEqual(code, 0)
+        self.assertEqual(self.global_layer(), {"version": 1, "review": {"parallel": False}})
+        self.assertEqual(self.ids(), ["claude-general", "claude-general-2"])
+
+    def test_reset_on_a_fresh_machine_keeps_the_fit(self):
+        code, out, _ = run_cli("config", "reset", "--scope", "global")
+        self.assertEqual(code, 0)
+        self.assertEqual(self.global_layer(), {"version": 1})
+        self.assertEqual(self.ids(), ["claude-general", "claude-general-2"])
+        self.assertIn("claude-general-2", out)
+
+    def add_security(self):
+        return run_cli("reviewer", "add", "--provider", "claude", "--role", "security", "--when", "high-risk")
+
+    def test_adding_a_reviewer_records_the_fitted_panel(self):
+        code, out, _ = self.add_security()
+        self.assertEqual(code, 0)
+        recorded = self.ids(self.global_layer()["reviewers"])
+        self.assertEqual(recorded, ["claude-general", "claude-general-2", "claude-security"])
+        self.assertIn(FROZEN % "claude-general opus, claude-general-2 sonnet", out)
+        self.assertEqual(self.ids(), recorded)
+
+    def test_adding_a_reviewer_with_both_clis_records_both_vendors(self):
+        self.fake_clis(claude=True, codex=True)
+        self.add_security()
+        recorded = self.ids(self.global_layer()["reviewers"])
+        self.assertEqual(recorded, ["claude-general", "codex-general", "claude-security"])
+
+    def test_adding_a_reviewer_records_the_panel_dealt_around_the_files_implementer(self):
+        self.fake_clis(claude=True, codex=True)
+        self.write_global({"version": 1, "implementer": CODEX_IMPLEMENTER})
+        in_force = self.ids()
+        self.add_security()
+        self.assertEqual(self.ids(self.global_layer()["reviewers"]), [*in_force, "claude-security"])
+        self.assertEqual(self.ids(), [*in_force, "claude-security"])
+
+    def test_removing_a_reviewer_records_the_rest(self):
+        code, out, _ = run_cli("reviewer", "remove", "claude-general-2")
+        self.assertEqual(code, 0)
+        self.assertEqual(self.ids(self.global_layer()["reviewers"]), ["claude-general"])
+        self.assertIn(FROZEN % "claude-general opus, claude-general-2 sonnet", out)
+
+    def test_setting_a_reviewer_records_the_panel(self):
+        code, out, _ = run_cli("reviewer", "set", "claude-general-2", "--role", "test")
+        self.assertEqual(code, 0)
+        reviewers = self.global_layer()["reviewers"]
+        self.assertEqual(self.ids(reviewers), ["claude-general", "claude-general-2"])
+        self.assertEqual(reviewers[1]["role"], "test")
+        self.assertIn(FROZEN % "claude-general opus, claude-general-2 sonnet", out)
+
+    def test_an_indexed_set_records_the_panel(self):
+        code, out, _ = run_cli("config", "set", "reviewers[0].role", "security")
+        self.assertEqual(code, 0)
+        reviewers = self.global_layer()["reviewers"]
+        self.assertEqual(self.ids(reviewers), ["claude-general", "claude-general-2"])
+        self.assertEqual(reviewers[0]["role"], "security")
+        self.assertIn(FROZEN % "claude-general opus, claude-general-2 sonnet", out)
+
+    def test_a_global_edit_inside_a_project_that_lists_reviewers_says_so(self):
+        project_path = os.path.join(self.project, ".dev-orchestra.yaml")
+        mine = [config_mod.make_reviewer("mine", "mock", "small")]
+        config_mod.write_config_file(project_path, {"version": 1, "reviewers": mine}, "project")
+        code, out, _ = run_cli(
+            "reviewer", "add", "--scope", "global", "--provider", "claude", "--role", "security"
+        )
+        self.assertEqual(code, 0)
+        self.assertIn(FROZEN % "claude-general opus, claude-general-2 sonnet", out)
+
+    def test_a_second_edit_says_nothing_more(self):
+        run_cli("reviewer", "remove", "claude-general-2")
+        _, out, _ = run_cli("reviewer", "add", "--provider", "mock", "--id", "m1")
+        self.assertNotIn("now lists the reviewers", out)
+
+    def test_a_role_edit_that_leaves_the_fit_says_so(self):
+        self.fake_clis(codex=True)
+        path = config_mod.global_config_path()
+        code, out, _ = run_cli("config", "set", "implementer.model.family", "sonnet")
+        self.assertEqual(code, 0)
+        self.assertIn(
+            "note: implementer is now set by %s (provider claude); preset standard no longer fits it" % path,
+            out,
+        )
+        report = json.loads(run_cli("doctor", "--fast", "--json")[1])
+        self.assertIn(
+            "Implementer: claude CLI is not installed; set implementer.provider to an installed CLI, "
+            "or remove the role from the file so preset standard's fit applies",
+            report["problems"],
+        )
+
+
+class TestPresetPrune(PresetCase):
+    def test_what_a_preset_install_chose_is_kept(self):
+        layer = {
+            "version": 1,
+            "preset": "quality",
+            "optimization": {"level": "quality"},
+            "review": {"design": {"enabled": True}},
+        }
+        self.write_global(layer)
+        code, out, _ = run_cli("config", "prune")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.global_layer(), layer)
+
+    def test_a_default_the_preset_sets_otherwise_is_kept(self):
+        """Dropped, the level and the implementer would fall through to the fit."""
+        self.fake_clis(claude=True, codex=True)
+        layer = {
+            "version": 1,
+            "preset": "quality",
+            "implementer": config_mod.default_config()["implementer"],
+            "optimization": {"level": "balanced"},
+        }
+        self.write_global(layer)
+        before = config_mod.load(self.project).data
+        code, out, _ = run_cli("config", "prune")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.global_layer(), layer)
+        self.assertEqual(config_mod.load(self.project).data, before)
+
+    def test_a_default_the_preset_also_holds_is_dropped(self):
+        self.write_global({"version": 1, "preset": "standard", "optimization": {"level": "balanced"}})
+        code, _, _ = run_cli("config", "prune")
+        self.assertEqual(code, 0)
+        self.assertEqual(self.global_layer(), {"version": 1, "preset": "standard"})
+
+    def test_a_panel_equal_to_this_machines_fit_is_not_dropped(self):
+        from orchestrator import presets
+
+        self.fake_clis(claude=True)
+        fitted = presets.expand("standard", ["claude"]).values["reviewers"]
+        self.write_global({"version": 1, "preset": "standard", "reviewers": fitted})
+        run_cli("config", "prune")
+        self.assertEqual(self.global_layer()["reviewers"], fitted)
+
+    def test_a_default_panel_beside_a_codex_implementer_is_kept(self):
+        """Dropped, the panel would be dealt around codex instead."""
+        self.fake_clis(claude=True, codex=True)
+        reviewers = config_mod.default_config()["reviewers"]
+        layer = {"version": 1, "implementer": CODEX_IMPLEMENTER, "reviewers": reviewers}
+        self.write_global(layer)
+        code, _, err = run_cli("config", "prune")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.global_layer()["reviewers"], reviewers)
+
+    def test_a_panel_a_projects_implementer_would_redeal_is_kept(self):
+        self.fake_clis(claude=True, codex=True)
+        reviewers = config_mod.default_config()["reviewers"]
+        self.write_global({"version": 1, "preset": "standard", "reviewers": reviewers})
+        project_path = os.path.join(self.project, ".dev-orchestra.yaml")
+        config_mod.write_config_file(
+            project_path, {"version": 1, "implementer": CODEX_IMPLEMENTER}, "project"
+        )
+        before = config_mod.load(self.project).data
+        code, _, err = run_cli("config", "prune", "--scope", "global")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.global_layer()["reviewers"], reviewers)
+        self.assertEqual(config_mod.load(self.project).data, before)
+
+
+class TestPresetCommands(PresetCase):
+    def test_setup_preset_writes_only_the_name(self):
+        self.fake_clis(claude=True)
+        code, out, _ = run_cli("config", "setup", "--preset", "fast")
+        self.assertEqual(code, 0)
+        self.assertEqual(self.global_layer(), {"version": 1, "preset": "fast"})
+        self.assertIn("optimization level: aggressive  (optimization.level)", out)
+        self.assertIn("security / claude-security (when: high-risk)", out)
+        self.assertIn("note: codex not found on PATH: reviewer seat 1 (general)", out)
+
+    def test_setup_preset_keeps_what_it_does_not_govern(self):
+        self.write_global(
+            {
+                "version": 1,
+                "review": {"parallel": False, "design": {"enabled": False}},
+                "implementer": {"provider": "claude"},
+                "reviewers": [config_mod.make_reviewer("mine", "mock", "small")],
+                "optimization": {"level": "quality"},
+            }
+        )
+        code, _, _ = run_cli("config", "setup", "--preset", "fast")
+        self.assertEqual(code, 0)
+        self.assertEqual(self.global_layer(), {"version": 1, "preset": "fast", "review": {"parallel": False}})
+
+    def test_an_unknown_preset_is_refused_by_the_parser(self):
+        with self.assertRaises(SystemExit) as caught:
+            run_cli("config", "setup", "--preset", "nope")
+        self.assertEqual(caught.exception.code, 2)
+
+    def test_a_project_setup_cannot_name_a_preset(self):
+        code, _, err = run_cli("config", "setup", "--preset", "fast", "--scope", "project")
+        self.assertEqual(code, 2)
+        self.assertIn("preset: only the global file can name a preset for now", err)
+        self.assertFalse(os.path.isfile(os.path.join(self.project, ".dev-orchestra.yaml")))
+
+    def test_setting_the_preset_is_how_to_switch(self):
+        self.assertEqual(run_cli("config", "set", "preset", "quality")[0], 0)
+        self.assertEqual(run_cli("config", "validate")[0], 0)
+        self.assertEqual(config_mod.load(self.project).preset, "quality")
+
+    def test_setting_the_preset_inside_a_project_writes_the_global_file(self):
+        project_path = os.path.join(self.project, ".dev-orchestra.yaml")
+        project = {"version": 1, "review": {"parallel": False}}
+        config_mod.write_config_file(project_path, project, "project")
+        code, _, err = run_cli("config", "set", "preset", "fast")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.global_layer()["preset"], "fast")
+        self.assertEqual(config_mod.read_config_file(project_path), project)
+        self.assertEqual(config_mod.load(self.project).preset, "fast")
+
+    def test_setting_the_preset_in_the_project_scope_is_refused(self):
+        project_path = os.path.join(self.project, ".dev-orchestra.yaml")
+        project = {"version": 1, "review": {"parallel": False}}
+        config_mod.write_config_file(project_path, project, "project")
+        code, _, err = run_cli("config", "set", "--scope", "project", "preset", "fast")
+        self.assertEqual(code, 2)
+        self.assertIn("preset: only the global file can name a preset for now", err)
+        self.assertEqual(config_mod.read_config_file(project_path), project)
+
+    def test_reset_drops_an_unknown_preset(self):
+        self.write_global({"version": 1, "preset": "nope"})
+        code, out, _ = run_cli("config", "reset", "--scope", "global")
+        self.assertEqual(code, 0)
+        self.assertEqual(self.global_layer(), {"version": 1})
+        self.assertIn("note: dropped the unknown preset 'nope'", out)
+        self.assertIn("follows preset standard", out)
+        self.assertEqual(run_cli("config", "validate")[0], 0)
+
+    def test_setup_preset_keeps_a_roles_options_and_says_it_is_not_fitted(self):
+        options = {"permission_mode": "acceptEdits"}
+        self.write_global({"version": 1, "implementer": {"provider": "claude", "options": options}})
+        code, out, _ = run_cli("config", "setup", "--preset", "fast")
+        self.assertEqual(code, 0)
+        self.assertEqual(self.global_layer()["implementer"], {"options": options})
+        self.assertIn("note: implementer is set by the global file and was not fitted", out)
+
+    def test_setting_an_unknown_preset_warns(self):
+        _, _, err = run_cli("config", "set", "preset", "nope")
+        self.assertIn("warning: preset: unknown 'nope' (known: fast, quality, standard)", err)
+
+    def test_reset_keeps_the_preset_and_shows_the_result(self):
+        self.write_global({"version": 1, "preset": "fast", "review": {"parallel": False}})
+        code, out, _ = run_cli("config", "reset", "--scope", "global")
+        self.assertEqual(code, 0)
+        self.assertEqual(self.global_layer(), {"version": 1, "preset": "fast"})
+        self.assertIn("follows preset fast", out)
+        self.assertIn("optimization level: aggressive", out)
+
+    def test_delete_goes_back_to_implicit_standard(self):
+        self.write_global({"version": 1, "preset": "fast"})
+        run_cli("config", "reset", "--scope", "global", "--delete")
+        _, out, _ = run_cli("config", "show")
+        self.assertIn("Preset: standard (implicit; fitted to", out)
+        self.assertIn("No config file found yet -- showing preset standard fitted to the installed CLIs", out)
+
+    def test_show_and_doctor_name_the_preset_and_the_fit(self):
+        self.fake_clis(claude=True)
+        self.write_global({"version": 1, "preset": "quality"})
+        note = "codex not found on PATH: reviewer seat 2 (security) went to claude as claude-security (opus)"
+        _, out, _ = run_cli("config", "show")
+        self.assertIn("Preset: quality (global; fitted to claude)", out)
+        self.assertIn("note: %s" % note, out)
+        payload = json.loads(run_cli("config", "show", "--json")[1])
+        self.assertEqual(payload["preset"], {"name": "quality", "source": "global", "notes": [note]})
+        _, out, _ = run_cli("doctor", "--fast")
+        self.assertIn("Preset: quality (global; fitted to claude)", out)
+        self.assertIn("  - %s" % note, out)
+        report = json.loads(run_cli("doctor", "--fast", "--json")[1])
+        self.assertEqual(report["config"]["preset"]["name"], "quality")
+        self.assertIn(note, report["notes"])
+
+    def test_loading_with_no_file_says_one_line(self):
+        from orchestrator import cli_common
+
+        self.fake_clis(claude=True)
+        err = io.StringIO()
+        with redirect_stderr(err):
+            cli_common._load_or_die(self.project)
+        expected = (
+            "note: no config file; running preset standard fitted to claude "
+            "(config setup --preset <name> saves one)"
+        )
+        self.assertEqual(err.getvalue().splitlines(), [expected])
+        self.write_global({"version": 1})
+        err = io.StringIO()
+        with redirect_stderr(err):
+            cli_common._load_or_die(self.project)
+        self.assertEqual(err.getvalue(), "")
+
+    def test_a_new_workflow_with_no_file_shows_the_configuration_once(self):
+        self.fake_clis()
+        _, _, first = run_cli("run", "architect", "--prompt", "x")
+        self.assertEqual(first.count("optimization level:"), 1)
+        self.assertEqual(first.count("Save it with config setup --preset standard"), 1)
+        self.assertEqual(first.count("note: no config file"), 1)
+        _, _, second = run_cli("run", "architect", "--prompt", "x")
+        self.assertEqual(second.count("note: no config file"), 1)
+        self.assertNotIn("optimization level:", second)
+        self.assertNotIn("Save it with", second)
 
 
 if __name__ == "__main__":

@@ -25,7 +25,33 @@ The public surface covered by that promise is: the configuration schema, the
   `--json` gains `mode` and `reason`, and `enabled` now says whether the stage
   runs (#80).
 
+- **Setup presets fitted to the installed CLIs.** `config setup --preset
+  quality|standard|fast` writes `preset: <name>` to the global file, and the
+  wizard asks for a preset first. A preset sets the roles, the reviewer panel,
+  the design review and the optimization level, worked out at every load
+  against the CLIs on PATH, so a Claude-only machine gets a Claude-only panel.
+  Only what no file sets is fitted, and only the global file can name a preset
+  for now. `config show` and `doctor` name the preset and what was refitted;
+  the configuration summary shows the optimization level and each reviewer's
+  condition; a workflow started with no config file prints the configuration
+  once. An older dev-orchestra ignores `preset:` and its `config validate`
+  does not report it. See Presets in `references/configuration.md` (#163).
+
 ### Changed
+
+- **No config file, or a global file that names no preset, runs under preset
+  `standard` fitted to the installed CLIs** (was: the built-in defaults as
+  written). With Claude Code and Codex both installed, or neither, nothing
+  changes. With one of them, the roles and the reviewer panel that no file
+  sets move to that CLI: Claude alone gets `claude-general` and
+  `claude-general-2` (sonnet) instead of a Codex reviewer that failed every
+  round. Roles and panels a file sets are untouched (#163).
+
+- **`config reset` on the global file keeps its `preset`** (was: only
+  `version` was kept), and both scopes print the resulting configuration.
+  `reviewer add` / `remove` / `set` and `config set reviewers[...]` print a
+  note when they copy this machine's fitted panel into the file, since from
+  then on the panel no longer follows the preset (#163).
 
 - **The last design revision is asked to simplify, not patch.** The revision
   that follows the last design round, which no review sees, is asked to remove

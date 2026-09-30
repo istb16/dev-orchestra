@@ -18,6 +18,8 @@ import copy
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, cast
 
 from . import config as config_mod
+from . import presets as presets_mod
+from .optimization import WHEN_ALWAYS, condition_label
 from .providers import (
     ModelResolutionError,
     adapter_failure,
@@ -27,17 +29,21 @@ from .providers import (
     get_provider,
 )
 
-#: Per-role recommended defaults, expressed as families only.
-RECOMMENDED = {
-    "orchestrator": ("claude", "sonnet"),
-    "architect": ("claude", "fable"),
-    "implementer": ("claude", "opus"),
-    "review_fixer": ("claude", "opus"),
-}
-RECOMMENDED_REVIEWERS = (
-    ("claude", "opus", "general"),
-    ("codex", "recommended-coding", "general"),
+#: Per-role recommended defaults, expressed as families only: the ``standard``
+#: preset as written, so the wizard and the preset cannot disagree.
+RECOMMENDED = {role: ("claude", family) for role, family in presets_mod.PRESETS["standard"].roles.items()}
+RECOMMENDED_REVIEWERS = tuple(
+    (reviewer["provider"], reviewer["model"]["family"], reviewer["role"])
+    for reviewer in presets_mod.expand("standard", presets_mod.FITTED_PROVIDERS).values["reviewers"]
 )
+
+#: The preset question's menu, in the order it is offered.
+PRESET_CHOICES = (
+    ("quality", "quality  -- strongest models, three reviewers, design review always on"),
+    ("standard", "standard -- the built-in defaults, two reviewers"),
+    ("fast", "fast     -- lighter models, one reviewer plus a security one on high-risk changes"),
+)
+CUSTOMISE = "customise each role"
 ROLE_TITLES = (
     ("orchestrator", "Orchestrator"),
     ("architect", "Architect"),
@@ -155,6 +161,7 @@ def run(
     prompter: Prompter,
     existing: Optional[Dict[str, Any]] = None,
     base: Optional[Dict[str, Any]] = None,
+    scope: str = "global",
 ) -> Tuple[Dict[str, Any], bool]:
     """Drive the wizard. Returns (layer, save?).
 
@@ -163,9 +170,13 @@ def run(
     Setting up a project layer over a global one that chose sonnet has to offer
     sonnet, or pressing enter through the wizard would quietly overrule the
     global choice with a built-in default nobody asked for.
+
+    For the global layer a preset is asked for first. Saved as is, the layer
+    names it and nothing else it governs; adjusted, the questions below start
+    from its fit and only what differs from that fit is kept. Only the global
+    file can name a preset, so a project layer is asked the questions alone.
     """
     base = base or config_mod.default_config()
-    effective = config_mod.deep_merge(base, existing or {})
     data: Dict[str, Any] = copy.deepcopy(existing or {})
     # Whatever else the layer keeps, it keeps its own version -- an invalid one
     # included, for `validate` to report rather than for this to paper over.
@@ -182,6 +193,32 @@ def run(
     for name, reason in failures:
         prompter.say("  %-8s %s" % (name + ":", reason))
     prompter.say("")
+
+    preset: Optional[str] = None
+    on_path = presets_mod.installed_providers()
+    if scope == "global":
+        options = [label for _name, label in PRESET_CHOICES]
+        options.append(CUSTOMISE)
+        names = [name for name, _label in PRESET_CHOICES]
+        picked = prompter.ask_choice(
+            "Preset (fitted to the CLIs found above):", options, names.index(presets_mod.DEFAULT)
+        )
+        prompter.say("")
+        if picked < len(names):
+            preset = names[picked]
+            data = presets_mod.with_preset(existing, preset)
+            preview, fit, _name, _source = config_mod.compose(data, {}, on_path)
+            prompter.say(render_summary(preview))
+            notes = presets_mod.render_notes(fit)
+            if notes:
+                prompter.say(notes)
+                prompter.say("")
+            if prompter.ask_yes_no("Save as is?", True):
+                return data, True
+            prompter.say("")
+            base = config_mod.compose({"preset": preset}, {}, on_path)[0]
+    effective = config_mod.deep_merge(base, data)
+
     prompter.say("Roles below are saved as a model family plus a version policy, so they")
     prompter.say("keep following the latest model in that family.")
     prompter.say("")
@@ -197,7 +234,10 @@ def run(
             default_provider=str(current.get("provider") or rec_provider),
             default_family=str((current.get("model") or {}).get("family") or rec_family),
         )
-        data[key] = spec
+        # The answer is a provider and a model; the role's options and tiers
+        # were not asked about, so they stay as the layer held them.
+        held = data.get(key)
+        data[key] = {**held, **spec} if isinstance(held, dict) else spec
         prompter.say("")
         step += 1
 
@@ -205,12 +245,48 @@ def run(
     data["reviewers"] = _ask_reviewers(prompter, providers, effective)
     prompter.say("")
 
-    # Summarised over the base, so what is shown before saving is what `load()`
-    # will resolve afterwards -- the layer alone would report a design review
-    # as off while the global layer has it on.
-    prompter.say(render_summary(config_mod.deep_merge(base, data)))
+    if preset is not None:
+        data = _differences_from_fit(data, base, preset)
+        preview, fit, _name, _source = config_mod.compose(data, {}, on_path)
+        prompter.say(render_summary(preview))
+        notes = presets_mod.render_notes(fit)
+        if notes:
+            prompter.say(notes)
+            prompter.say("")
+    else:
+        # Summarised over the base, so what is shown before saving is what
+        # `load()` will resolve afterwards -- the layer alone would report a
+        # design review as off while the global layer has it on.
+        prompter.say(render_summary(config_mod.deep_merge(base, data)))
     save = prompter.ask_yes_no("Save configuration?", True)
     return data, save
+
+
+def _differences_from_fit(data: Dict[str, Any], fit: Dict[str, Any], preset: str) -> Dict[str, Any]:
+    """What an adjusted preset setup saves: only what differs from the fit.
+
+    A role that differs is kept whole. Pruned field by field it could lose
+    the provider that happens to equal this machine's fit, and a role a file
+    names is never fitted -- so it would come back on the default provider.
+    A panel is compared whole, as ``deep_merge`` replaces it.
+
+    Only what a preset governs is compared. Everything else the file held is
+    kept as it was, a value equal to a default included: the user wrote it.
+    """
+    roles = {
+        role: data[role] for role in config_mod.KNOWN_ROLES if role in data and data[role] != fit.get(role)
+    }
+    missing = object()
+    governed: Dict[str, Any] = {}
+    for dotted in presets_mod.GOVERNED:
+        value = config_mod.get_path(data, dotted, missing)
+        if dotted not in config_mod.KNOWN_ROLES and value is not missing:
+            config_mod.set_path(governed, dotted, copy.deepcopy(value))
+    reference = {key: value for key, value in fit.items() if key != "preset"}
+    pruned, _dropped = config_mod.prune_layer(governed, reference)
+    pruned.pop("version")
+    kept = config_mod.deep_merge(presets_mod.with_preset(data, preset), pruned)
+    return {**kept, **roles}
 
 
 def _ask_role(
@@ -369,7 +445,12 @@ def _ask_reviewer(
             prompter.say("     Ids must look like %s (lowercase, digits, . _ -)." % suggested)
             continue
         break
-    return {"id": reviewer_id, "provider": provider_name, "model": model, "role": role}
+    reviewer: Dict[str, Any] = {"id": reviewer_id, "provider": provider_name, "model": model, "role": role}
+    # Not asked, so kept: a preset's high-risk seat stays high-risk when its
+    # other answers are taken as offered.
+    if template.get("when") is not None:
+        reviewer["when"] = copy.deepcopy(template["when"])
+    return reviewer
 
 
 def render_summary(data: Dict[str, Any]) -> str:
@@ -390,15 +471,23 @@ def render_summary(data: Dict[str, Any]) -> str:
     if not reviewers:
         lines.append("    (none configured)")
     for index, reviewer in enumerate(reviewers, 1):
+        when = condition_label(reviewer)
         lines.append(
-            "    %d. %s / %s / %s"
-            % (index, _describe(reviewer), reviewer.get("role", "general"), reviewer.get("id"))
+            "    %d. %s / %s / %s%s"
+            % (
+                index,
+                _describe(reviewer),
+                reviewer.get("role", "general"),
+                reviewer.get("id"),
+                "" if when == WHEN_ALWAYS else " (when: %s)" % when,
+            )
         )
     # Shown rather than asked: the wizard settles who does which job, and this
     # is a behaviour knob like `max_review_iterations`. But it decides whether
     # a whole stage runs, so leaving it out of the summary entirely would make
     # it the one stage nobody can see the state of.
     lines.append("    design review: %s  (review.design.enabled)" % _design_review_mode(data))
+    lines.append("    optimization level: %s  (optimization.level)" % _optimization_level(data))
     lines.append(
         "    plan approval: %s  (design.require_approval)"
         % ("required" if _approval_required(data) else "not required")
@@ -415,6 +504,13 @@ def _design_review_mode(data: Dict[str, Any]) -> str:
     if isinstance(design, dict) and "enabled" in design:
         return config_mod.design_review_mode(design["enabled"])
     return config_mod.design_review_mode(config_mod.default_config()["review"]["design"]["enabled"])
+
+
+def _optimization_level(data: Dict[str, Any]) -> str:
+    """Falls back to the built-in default: a layer may name no `optimization`."""
+    optimization = data.get("optimization")
+    level = optimization.get("level") if isinstance(optimization, dict) else None
+    return str(level or config_mod.default_config()["optimization"]["level"])
 
 
 def _approval_required(data: Dict[str, Any]) -> bool:

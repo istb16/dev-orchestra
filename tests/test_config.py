@@ -29,8 +29,19 @@ class TestDefaults(IsolatedCase):
         self.assertEqual(len(loaded.reviewers()), 2)
 
     def test_defaults_never_pin_a_dated_model_id(self):
+        from orchestrator import presets
+
         text = str(config_mod.default_config())
         self.assertNotIn("id", config_mod.default_config()["implementer"]["model"])
+        for name in presets.NAMES:
+            for installed in ([], ["claude"], ["codex"], ["claude", "codex"]):
+                values = presets.expand(name, installed).values
+                text += str(values)
+                specs = [values[role] for role in config_mod.KNOWN_ROLES]
+                specs.extend(values["reviewers"])
+                for spec in specs:
+                    self.assertNotIn("id", spec["model"], (name, installed))
+                    self.assertEqual(spec["model"]["version"], "latest")
         for token in ("2026", "2025", "-2024"):
             self.assertNotIn(token, text)
 
@@ -887,6 +898,108 @@ class TestPaths(IsolatedCase):
         data = config_mod.default_config()
         config_mod.write_config_file(path, data)
         self.assertEqual(config_mod.read_config_file(path), data)
+
+
+class TestPresetLayering(IsolatedCase):
+    """The global file's preset sits between the defaults and the files, and
+    reaches only the roles and the panel no file sets."""
+
+    def write_global(self, data):
+        config_mod.write_config_file(config_mod.global_config_path(), data, "global")
+
+    def ids(self, loaded):
+        return [reviewer["id"] for reviewer in loaded.reviewers()]
+
+    def test_the_global_preset_is_expanded(self):
+        self.fake_clis(claude=True, codex=True)
+        self.write_global({"version": 1, "preset": "quality"})
+        loaded = config_mod.load(self.project)
+        self.assertEqual((loaded.preset, loaded.preset_source), ("quality", "global"))
+        self.assertEqual(loaded.role("implementer")["model"]["family"], "fable")
+        self.assertEqual(self.ids(loaded), ["claude-general", "codex-security", "claude-architecture"])
+        self.assertEqual(loaded.optimization_settings()["level"], "quality")
+        self.assertIs(loaded.design_review_settings()["enabled"], True)
+
+    def test_a_global_override_survives_the_expansion(self):
+        self.fake_clis(claude=True, codex=True)
+        self.write_global({"version": 1, "preset": "fast", "review": {"parallel": False}})
+        loaded = config_mod.load(self.project)
+        self.assertIs(loaded.review_settings()["parallel"], False)
+        self.assertEqual(loaded.optimization_settings()["level"], "aggressive")
+
+    def test_a_listed_panel_replaces_the_fit_and_its_notes(self):
+        self.fake_clis(claude=True)
+        panel = [config_mod.make_reviewer("mine", "mock", "small")]
+        self.write_global({"version": 1, "preset": "standard", "reviewers": panel})
+        loaded = config_mod.load(self.project)
+        self.assertEqual(self.ids(loaded), ["mine"])
+        self.assertFalse(any("reviewer seat" in note for note in loaded.preset_notes), loaded.preset_notes)
+
+    def test_an_unknown_preset_is_a_problem_and_expands_nothing(self):
+        self.fake_clis(claude=True)
+        self.write_global({"version": 1, "preset": "bogus"})
+        loaded = config_mod.load(self.project, validate_result=False)
+        self.assertEqual((loaded.preset, loaded.preset_source), (None, "invalid"))
+        self.assertEqual(self.ids(loaded), ["claude-general", "codex-general"])
+        self.assertIn(
+            "preset: unknown 'bogus' (known: fast, quality, standard)", config_mod.validate(loaded.data)
+        )
+        with self.assertRaises(config_mod.ConfigError):
+            config_mod.load(self.project)
+
+    def test_a_project_file_cannot_name_a_preset(self):
+        self.fake_clis(claude=True, codex=True)
+        self.write_global({"version": 1, "preset": "fast"})
+        self.write(".dev-orchestra.yaml", "version: 1\npreset: quality\n")
+        with self.assertRaises(config_mod.ConfigError) as caught:
+            config_mod.load(self.project)
+        self.assertIn("preset: only the global file can name a preset for now", str(caught.exception))
+        loaded = config_mod.load(self.project, validate_result=False)
+        self.assertEqual(loaded.preset, "fast")
+        self.assertEqual(loaded.optimization_settings()["level"], "aggressive")
+
+    def test_standard_is_implicit_with_no_file(self):
+        self.fake_clis(claude=True)
+        loaded = config_mod.load(self.project)
+        self.assertTrue(loaded.used_defaults)
+        self.assertEqual((loaded.preset, loaded.preset_source), ("standard", "implicit"))
+        self.assertEqual(self.ids(loaded), ["claude-general", "claude-general-2"])
+
+    def test_standard_is_implicit_in_a_file_that_names_none(self):
+        self.fake_clis(claude=True)
+        for layer in ({"version": 1}, {"version": 1, "review": {"parallel": False}}):
+            with self.subTest(layer=layer):
+                self.write_global(layer)
+                loaded = config_mod.load(self.project)
+                self.assertFalse(loaded.used_defaults)
+                self.assertEqual((loaded.preset, loaded.preset_source), ("standard", "implicit"))
+                self.assertEqual(self.ids(loaded), ["claude-general", "claude-general-2"])
+
+    def test_a_role_a_file_sets_is_not_fitted(self):
+        self.fake_clis(codex=True)
+        for role_layer in (
+            {"model": {"family": "sonnet"}},
+            {"options": {"permission_mode": "acceptEdits"}},
+        ):
+            with self.subTest(implementer=role_layer):
+                self.write_global({"version": 1, "implementer": role_layer})
+                loaded = config_mod.load(self.project, validate_result=False)
+                implementer = loaded.role("implementer")
+                self.assertEqual(implementer["provider"], "claude")
+                family = role_layer.get("model", {}).get("family", "opus")
+                self.assertEqual(implementer["model"]["family"], family)
+                self.assertEqual(loaded.role("orchestrator")["provider"], "codex")
+                notes = loaded.preset_notes
+                self.assertIn("implementer is set by the global file and was not fitted", notes)
+                self.assertFalse(any("implementer went to" in note for note in notes))
+
+    def test_a_preset_is_not_reported_as_pinned(self):
+        self.fake_clis(claude=True, codex=True)
+        self.write_global({"version": 1, "preset": "quality"})
+        loaded = config_mod.load(self.project)
+        self.assertEqual(config_mod.pinned_differences(loaded.files_data), [])
+        pinned = [entry["setting"] for entry in config_mod.pinned_differences(loaded.data)]
+        self.assertIn("optimization.level", pinned)
 
 
 if __name__ == "__main__":

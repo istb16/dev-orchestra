@@ -1,4 +1,4 @@
-<!-- translated-from: references/cli.md sha256:60628011ff2af54d6cf4e5a781846f282f447c1f75bad872b4363e182ca10cbc -->
+<!-- translated-from: references/cli.md sha256:f430c8765493f7d619e6b5f400fa2cb94fd4bb3cee99eae0b1c81e1eb3ed4a01 -->
 
 > この文書は [references/cli.md](../../../references/cli.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -58,12 +58,12 @@ Microsoft Store のエイリアスだからです。
 
 | コマンド | 説明 |
 | --- | --- |
-| `config show [--scope effective\|global\|project] [--json]` | 設定を表示します。デフォルトは `effective`（マージ済み）です。スコープを指定すると、そのレイヤーをディスク上にあるとおりに表示し、たいていはずっと短くなります。`Providers:` 行は、参照している各 provider がどこから来ているか（built-in、ユーザーモジュールのパス、または adapter なし）を示します。`--json` では同じ内容が `providers` の下に入ります。 |
+| `config show [--scope effective\|global\|project] [--json]` | 設定を表示します。デフォルトは `effective`（マージ済み）です。スコープを指定すると、そのレイヤーをディスク上にあるとおりに表示し、たいていはずっと短くなります。effective の表示では `Source:` の後に有効なプリセット（`Preset: quality (global; fitted to claude, codex)`）を示し、フィットし直した点ごとに `note:` 行を出します。`--json` では `preset`（`name`、`source`、`notes`）に入ります。`Providers:` 行は、参照している各 provider がどこから来ているか（built-in、ユーザーモジュールのパス、または adapter なし）を示します。`--json` では同じ内容が `providers` の下に入ります。 |
 | `config path` | 両方のレイヤーの場所を表示します。 |
-| `config setup [--scope global\|project] [--defaults] [--force]` | セットアップウィザードです。`--defaults` は何も上書きしないため、ファイルには `version: 1` だけが入り、すべての値が組み込みのデフォルトに従います。`--force` は TTY がなくてもプロンプトを表示します。 |
-| `config reset [--scope …] [--delete]` | このレイヤーの上書きを消去します（ファイルは残り、`version` だけが入った状態になります）。`--delete` を付けるとファイルを削除します。 |
-| `config prune [--scope …] [--dry-run]` | レイヤーが持つ値のうち、継承される値と等しいものを削除します。すべてのデフォルトを保持している 0.6.0 より前に書かれたファイル向けです。`--dry-run` は書き込まずに一覧表示します。 |
-| `config set <path> <value> [--scope …] [--raw]` | 値を 1 つ設定します。パスは `a.b.c` と `reviewers[0].role` をサポートします。インデックス付きの編集では、リストの残りを下のレイヤーからコピーします。末尾を超えたインデックスは終了コード 2 で終了します。 |
+| `config setup [--scope global\|project] [--preset quality\|standard\|fast \| --defaults] [--force]` | セットアップウィザードです。グローバルファイルでは最初の質問がプリセットです。`--preset` は何も尋ねません: `version` と `preset` を書き込み、プリセットが決めるキー以外にファイルが持っていた値は残し（ロールは `options` と `model_tiers` を残し、そのためフィットされません）、そのプリセットがこのマシンで解決される設定を note とともに表示します（`references/configuration.md` のプリセットを参照）。プリセットを指定できるのはグローバルファイルだけで、`--scope project` では拒否され（exit 2）、何も書き込みません。`--defaults` は何も上書きしないため、ファイルには `version: 1` だけが入り、プリセット `standard` で動きます。`--force` は TTY がなくてもプロンプトを表示します。 |
+| `config reset [--scope …] [--delete]` | このレイヤーの上書きを消去し（ファイルは残り、`version` だけ、グローバルファイルなら既知の `preset` も入った状態になります。知らないプリセット名は `note:` を表示して消します）、残った設定を表示します。`--delete` を付けるとファイルを削除し、グローバルレイヤーは `standard` で動きます。 |
+| `config prune [--scope …] [--dry-run]` | レイヤーが持つ値のうち、継承される値と等しいものを削除します。すべてのデフォルトを保持している 0.6.0 より前に書かれたファイル向けです。値を削除するのは組み込みのデフォルトとプリセットのフィットがどちらもその値で一致するときだけなので、prune で有効な設定が変わることはありません。`--dry-run` は書き込まずに一覧表示します。 |
+| `config set <path> <value> [--scope …] [--raw]` | 値を 1 つ設定します。パスは `a.b.c` と `reviewers[0].role` をサポートします。インデックス付きの編集では、リストの残りを下のレイヤーからコピーします。末尾を超えたインデックスは終了コード 2 で終了します。`preset` は、プロジェクトファイルがあってもグローバルファイルに書き込みます。`--scope project` を付けると終了コード 2 で終了し、何も書き込みません。 |
 | `config validate [--json]` | 有効な設定を検証します。無効な場合は終了コード 1 です。`Warnings:` セクション（`--json` では `warnings`）には、読み取り専用のロールの実行が拒否することになる生引数 — project ファイルにある `options.args` のすべてと、アダプタの許可リストが受け付けないもの — が一覧表示されますが、終了コードは変わりません。`config set` も同じものを `warning:` 行として表示します。 |
 
 ```bash
@@ -97,6 +97,11 @@ dev-orchestra config set --raw review.note "3 reviewers"
 | `reviewer add --provider <p> [--model <family>] [--role <r>] [--id <id>] [--pin <model-id>] [--when always\|high-risk \| --when-paths GLOB [GLOB ...]] [--scope …]` | レビュアーを追加します。id を省略すると生成されます（`codex-security`、`codex-security-2`、…）。`--when high-risk` にすると、高リスクと判定されたラウンドでだけコードレビューに加わります。`--when-paths "*migrate*/*" "*.sql"` にすると、変更されたパスがそれらのパターンのどれかに一致したときだけ加わり、`paths` を持つ `when:` のマッピングとしてブロック形式で書き込まれます（`references/configuration.md` を参照）。シェルに展開されないよう、各パターンは引用符で囲んでください。デフォルトの `always` ではキーを書きません。`--when` と `--when-paths` を同時に指定すると終了コード 2 になります。 |
 | `reviewer remove <id\|role\|position> [--scope …]` | id、一意なロール、または 1 始まりの位置で削除します。条件付き（`when: high-risk` またはパスで絞り込んだもの）のレビュアーだけが残る場合は拒否されます（exit 2）。 |
 | `reviewer set <selector> [--provider] [--model] [--role] [--id] [--pin] [--when always\|high-risk \| --when-paths GLOB [GLOB ...]] [--scope …]` | 既存のレビュアーを変更します。`--when always` は条件を外します。`--when high-risk` と `--when-paths` はどちらも条件を丸ごと置き換えるので、`--when-paths` はリストに追加するのではなく置き換えます。常に走る最後のレビュアーを条件付きにする変更は拒否され（exit 2）、`--when` と `--when-paths` の同時指定も同様です。 |
+
+`add`・`remove`・`set` は、ファイル内のリスト全体を編集します。書き込むファイルもその下のファイル
+（プロジェクトファイルに対するグローバルファイル）もまだ `reviewers` を並べていないときは、プリセットがこのマシンに与えるパネルから始め、それをファイルにコピーし、記録した
+レビュアーを挙げた `note:` を1行表示します: それ以降、パネルはファイルのものになり、プリセットには
+従いません。`config set reviewers[...]` も同じです。
 
 ```bash
 dev-orchestra reviewer add --provider codex --role security
@@ -919,7 +924,8 @@ stderr に一度だけ知らせます。実行中のステージがあるワー�
 
 | 症状 | 原因と対処 |
 | --- | --- |
-| `Source: built-in defaults` | 設定ファイルがまだありません。`dev-orchestra config setup`。 |
+| `Source: built-in defaults, fitted as preset standard` | 設定ファイルがまだなく、インストール済みの CLI に合わせた組み込みの `standard` プリセットが有効です。`dev-orchestra config setup`、または `config setup --preset <name>`。 |
+| `note: no config file; running preset standard …` | 同じ状況を `run` と `review run` が示すものです。新しいワークフローでは、設定全体も一度表示されます。 |
 | `codex: … does not vouch for …` | この Codex CLI が提供していない family です。`dev-orchestra model list` で確認し、`recommended-coding` を使うか、正確な id を pin してください。 |
 | `claude: cannot resolve model family 'x'` | 提示されている alias ではありません。`dev-orchestra model list`。 |
 | `Installed: no` | CLI が PATH にありません。自分でインストールしてください。スキルはインストールしません。 |

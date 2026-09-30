@@ -427,8 +427,9 @@ class TestSetupPassesTheLayerBase(IsolatedCase):
     def captured_base(self, *argv):
         seen = {}
 
-        def fake(prompter, existing=None, base=None):
+        def fake(prompter, existing=None, base=None, scope="global"):
             seen["base"] = base
+            seen["scope"] = scope
             return {"version": 1}, True
 
         with mock.patch.object(cli.wizard_mod, "run", fake):

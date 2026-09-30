@@ -126,20 +126,24 @@ running the plugin from a clone is in `CONTRIBUTING.md`.
 
 ## Initial setup
 
-On first use the skill notices there is no configuration and runs the wizard:
-a CLI and a model family for the `orchestrator`, `architect`, `implementer`
-and `review_fixer` roles and for each reviewer. To run it yourself, or to take
-the recommended values without questions:
+On first use the skill notices there is no configuration, shows the one in
+force, and asks which preset to save: `quality`, `standard` or `fast`. A preset
+sets the roles, the reviewer panel, the design review and the optimization
+level, fitted to the CLIs installed on the machine, so a machine with Claude
+Code alone gets a Claude-only panel. To choose yourself, or to answer every
+question in the wizard:
 
 ```bash
+dev-orchestra config setup --preset standard
 dev-orchestra config setup
-dev-orchestra config setup --defaults
 dev-orchestra model list        # the families your installed CLIs offer
 ```
 
-The recommended lineup: a Claude `fable` architect, Claude `opus` for
-implementation and fixes, one Claude and one Codex reviewer. Use the families
-`dev-orchestra model list` prints. The file keeps only what you chose. See
+Until a file is saved, `standard` fitted to the installed CLIs is in force.
+With Claude Code and Codex both installed that is the recommended lineup: a
+Claude `fable` architect, Claude `opus` for implementation and fixes, one
+Claude and one Codex reviewer. The file keeps only what you chose. See
+[presets](references/configuration.md#presets),
 [the wizard](references/configuration.md#the-wizard) and a
 [two-vendor lineup](references/configuration.md#worked-examples).
 
