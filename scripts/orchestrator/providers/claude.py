@@ -164,6 +164,30 @@ VERIFIED_RESUME: Dict[str, Dict[str, Any]] = {
         "model": "CLI default",
         "dev_orchestra": "0.13.2",
     },
+    "2.1.285 (Claude Code)": {
+        "verified_at": "2026-09-30T08:37:01Z",
+        "read_only_mechanism": (
+            "--permission-mode plan --disallowed-tools Edit,Write,NotebookEdit "
+            "--tools Read,Grep,Glob --strict-mcp-config --restricted"
+        ),
+        "checks": [
+            "resolves a model",
+            "answers a review prompt",
+            "reports what it spent",
+            "reports its tool activity",
+            "stays read-only",
+            "stays confined (absolute)",
+            "--add-dir widens",
+            "resumes read-only",
+            "forks the session",
+            "reports a missing session",
+            "resumes confined (absolute)",
+            "ignores repository hooks",
+            "ignores repository hooks on resume",
+        ],
+        "model": "CLI default",
+        "dev_orchestra": "0.14.0",
+    },
 }
 
 #: Used only when ``claude --help`` cannot be read. Same rule as models: this is
