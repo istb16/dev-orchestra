@@ -1,4 +1,4 @@
-<!-- translated-from: references/providers.md sha256:a52be18a5a1d0d1df65e4537282e7779c457c2fd2f5d6d57acbc99f4d5e18d29 -->
+<!-- translated-from: references/providers.md sha256:c98a63d442d548f4201d5839949ce99a689dcebc44c76b369e0458ae2629a9dd -->
 
 > この文書は [references/providers.md](../../../references/providers.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -23,6 +23,7 @@
 - [プラグインを編集せずに CLI を追加する](#adding-a-cli-without-editing-the-plugin)
   - [契約](#the-contract)
   - [ルール](#rules)
+  - [プリセットのフィットに加わる](#taking-part-in-preset-fitting)
   - [うまくいかないとき](#when-it-goes-wrong)
   - [インターフェースの安定性](#interface-stability)
 - [失敗時の挙動](#failure-semantics)
@@ -57,6 +58,7 @@ class Provider:
     def refused_read_only_args(raw_args, source) -> list[str]   # default: refuse all
     def read_only_enforcement() -> dict                         # default: "unspecified"
     static_enforcement: bool                                    # default: False
+    preset_family: str | None                                   # default: None (not fitted to presets)
     local_only_options: Sequence[str]                           # default: ()
     def run_warnings(outcome, mode) -> list[str]                # default: []
     def config_families() -> list[tuple[str, str]]              # default: []
@@ -77,7 +79,7 @@ class Provider:
 
 セッションの継続（`run architect --resume`）はアダプタごとのオプトインです。`resume_session` はキーワード引数として `run` から `_launch` を経て `command_line` に渡され、`command_line` は `resume_command(...)` を呼びます。既定ではこれまでどおり `build_command` を呼び、その後ろにアダプタ自身の `resume_args(session_id)` を足します。CLI が別の形のコマンドで継続するアダプタ（Codex）はこれをオーバーライドします。これは生引数ではないので、コマンドを組み立てる前に `run` がかける許可リストを通ることはなく、`implement` の実行では `run` が拒否します。オーケストレーターがこれを送るのは、`supports_resume` を宣言し、かつ `resume_support(root)` が `verified`、または `trusted`（合格した版より新しく、メジャー版が同じ版で、それを `newer_than` が示す。その版自体は確認されていない）を報告するアダプタに対してだけです。`run` は値があるときだけキーワードを `_launch` に渡すので、以前のシグネチャで `_launch` をオーバーライドしているアダプタでも新規の実行はこれまでどおり動きます。継続に対応するアダプタは、このキーワードを受け取って base に渡さなければなりません。共通のルールで継続するアダプタは、`verified.resume_trust(...)` に自分の `resume_mechanism()`（記録が保証するフラグ。継続のコマンドが新規と異なるのでなければ、新規の読み取り専用の仕組み）と `required_resume_checks`（版が合格しなければならない確認。これより少なく挙げない限り `verified.py` が挙げるすべて）を渡し、その答えを `resume_report(version, trust)` で報告にします。アダプタは継続の実行を自分で始めないこともできます。その場合 `_launch` は `resume_rejected=True` かつ `invoked=False` の結果を返し、オーケストレーターは CLI による拒否と同じく新規で 1 回だけ走らせます。実行後、base は `parse_session(outcome)` に、実行が終わったセッション、最後の文脈の大きさ（`context_tokens`）、セッション開始時に CLI が報告した内容（`init`）を問い合わせます。継続した実行に限り `resume_rejected(outcome, mode, options, session_id)` も問い合わせます。これは、求めたセッションが存在しないという正の兆候があるときだけ True を返さなければなりません。オーケストレーターはその場合、新規の実行に試行を 1 回使うからです。結果は `RunResult.session_id`、`context_tokens`、`session_init`、`resume_rejected` に入ります。
 
-`run_warnings(outcome, mode)` は、終わった実行について結果にかかわらず伝えるべきこと（拒否されたツール、成功でない status など）です。base はこの一覧を `RunResult.warnings` に保持し、stderr の先頭にも置きます。`run` と `review run` は stderr が表示されない成功時にもこれを表示し、実行ログとジョブの記録に残します。`static_enforcement = True` は、`read_only_enforcement()` がサブプロセスを必要としない定数であることを示します。そのため `doctor` は `--fast` のときも CLI がインストールされていないときもそれを報告し、設定コマンドは CLI を探さずにそれをもとに警告します。`local_only_options` は、書き込みロールが global 設定か `--extra` からだけ受け取るオプションを挙げます。そうしたアダプタでは、書き込みロールの project ファイルのオプションは一切使われません（[Antigravity CLI adapter](#antigravity-cli-adapter) を参照）。`config_families()` は、一覧に出るモデルが日付入りの id で、いずれ古くなる CLI のために、設定に書くべき family を `(family, 今それが解決される先)` の形で返します。`dev-orchestra model list` はこれをモデルの後に表示します。
+`run_warnings(outcome, mode)` は、終わった実行について結果にかかわらず伝えるべきこと（拒否されたツール、成功でない status など）です。base はこの一覧を `RunResult.warnings` に保持し、stderr の先頭にも置きます。`run` と `review run` は stderr が表示されない成功時にもこれを表示し、実行ログとジョブの記録に残します。`static_enforcement = True` は、`read_only_enforcement()` がサブプロセスを必要としない定数であることを示します。そのため `doctor` は `--fast` のときも CLI がインストールされていないときもそれを報告し、設定コマンドは CLI を探さずにそれをもとに警告します。`preset_family` は、プリセットがそのアダプタをフィットできるようにします（[Taking part in preset fitting](#taking-part-in-preset-fitting) を参照）。どちらもクラスから読まれるので、インスタンスに設定した値は無視されます。プリセットから読み取り専用の席を得るには静的な報告が必要です。フィットは読み込みのたびに行われ、CLI を起動してはならないからです。`preset_family`、`static_enforcement`、`which()` は宣言どおりに信頼されます。`which()` は PATH の検索のままでなければならず、静的な報告はプロセスを起動してはなりません。フィットの側ではそれを見分けられないからです。見分けられるもの（例外、マッピングでない報告、未知の status）は、アダプタを席から外します。`local_only_options` は、書き込みロールが global 設定か `--extra` からだけ受け取るオプションを挙げます。そうしたアダプタでは、書き込みロールの project ファイルのオプションは一切使われません（[Antigravity CLI adapter](#antigravity-cli-adapter) を参照）。`config_families()` は、一覧に出るモデルが日付入りの id で、いずれ古くなる CLI のために、設定に書くべき family を `(family, 今それが解決される先)` の形で返します。`dev-orchestra model list` はこれをモデルの後に表示します。
 
 <a id="modes"></a>
 
@@ -290,7 +292,7 @@ family は名前であって id ではありません。id は、実行を解決
 
 **実測したこと。** `-p` はプロンプトを値として取ります。`-p` の後に何もないと exit 2 になります。stdin は読まれません。`-p -` は文字どおりの `-` を送り、`-p ""` は、`status` が `ERROR` で `error` が空のプロンプトを示す JSON オブジェクトを出して exit 1 になります。そこでプロンプトは常にワークスペースの中のファイル `.ai/agy-prompt-<pid>-<random>.md`（モードのあるプラットフォームでは所有者だけが読める）に書き、`-p` にはそれを読むよう指示する文だけを載せます。プロンプトそのものは載せません。コマンドラインはローカルのどのプロセスからも読めるからです。`run --print-command` は同じコマンドを、ファイル名をプレースホルダーにして表示します。`.ai` がリンクであるか、ほかの場所に解決される場合は拒否されます（exit 2、何も起動しない）。このファイルは実行の終わりに削除されます。実行の前に削除されるのは、プロセス id がもう動いていないファイルだけです。このプロセスのもの（レビュアーは並列に走る）や、動いている別の実行のもの、名前にプロセス id のないものは削除しません。したがって外から kill された実行は、そのプロンプト（計画、差分、その他プロンプトに入っていたもの）を、後の実行がそのプロセスの終了に気づくか、手で削除するまで `.ai/` に残します。`.ai/` は既定で git から外されています。ユーザーのホームの下には何も書きません。`usage.output_tokens` にはすでに `thinking_tokens` が含まれているので（`gemini-3.1-pro-high` の実行で input 12527、output 215、thinking 212、total 12742。これは input と output の和）、thinking は上乗せしません。些細なプロンプトでも入力は約 12k〜25k トークンかかります。
 
-**読み取り専用の実行は強制されません。** agy 1.2.13 では、`--mode plan`、`--mode plan --sandbox`、`--agent research` のいずれもファイルを書き、ワークスペースの外を読みました。plan モードでは回答が返答から外れました。そのため `--mode` は渡さず、`read_only_enforcement()` は `unenforced` を報告します。agy での plan や review の実行（orchestrator、architect、そのいずれかの tier、レビュアー）は、**作業ツリー、`.ai/`（`state.json` の承認記録、計画、スナップショット、他のレビュアーのレポートを含む）、`.git/`、リポジトリの外のファイルを変更でき、dev-orchestra はその実行が何をしたかを後から確かめません。** そうした席は、あなた自身の選択として global 設定からだけ受け付けられ、設定する場所と実行する場所のすべてで警告されます。`config set`、`reviewer add`、`reviewer set`、`config validate`、セットアップウィザード、`doctor`（注記として）、`run`、`review run`、`review run --design`、そして実行の記録です。同じ席が project ファイルにあれば拒否されます（`run` では exit 2、ラウンドでは失敗したレビュアー、`doctor` では問題）。project ファイルはレビュー対象のブランチと一緒にやってくることがあり、そのブランチが書き込みのできるレビュアーを自分で選べてしまうからです。プリセットとウィザードの既定値は、agy をこれらの席に置きません。
+**読み取り専用の実行は強制されません。** agy 1.2.13 では、`--mode plan`、`--mode plan --sandbox`、`--agent research` のいずれもファイルを書き、ワークスペースの外を読みました。plan モードでは回答が返答から外れました。そのため `--mode` は渡さず、`read_only_enforcement()` は `unenforced` を報告します。agy での plan や review の実行（orchestrator、architect、そのいずれかの tier、レビュアー）は、**作業ツリー、`.ai/`（`state.json` の承認記録、計画、スナップショット、他のレビュアーのレポートを含む）、`.git/`、リポジトリの外のファイルを変更でき、dev-orchestra はその実行が何をしたかを後から確かめません。** そうした席は global 設定からだけ受け付けられ（あなた自身の選択として、またはフィットの対象の CLI が agy だけのマシンでの global のプリセットのフィットとして）、設定する場所と実行する場所のすべてで警告されます。`config set`、`reviewer add`、`reviewer set`、`config validate`、セットアップウィザード、`doctor`（注記として）、`run`、`review run`、`review run --design`、そして実行の記録です。同じ席が project ファイルにあれば拒否されます（`run` では exit 2、ラウンドでは失敗したレビュアー、`doctor` では問題）。project ファイルはレビュー対象のブランチと一緒にやってくることがあり、そのブランチが書き込みのできるレビュアーを自分で選べてしまうからです。ウィザードの既定値は、agy をこれらの席に置きません。プリセットが置くのは、Claude も Codex も、席に就けるユーザーアダプタも PATH にないときだけで、そこへ置くフィットの注記はどれも、外す方法（そのロールを設定するか、`reviewers` を並べるかを global ファイルで行う）で終わります。
 
 **継続は意図して外しています。** 継続のルールが問うのは継続したセッションが読み取り専用を保つかどうかですが、agy の plan の実行は `unenforced` なので、版で絞っても何も守れません。`--conversation <id>` は fork せずに元の会話を続けます。agy の architect は警告付きの、global 設定だけの席です。そして有効にするには、1 回 12k〜25k トークンの実機確認が 3 つ要ります。後で必要になれば、同じルール（`verified.resume_trust()`）に `required_resume_checks = ("reports a missing session",)` で収まります。
 
@@ -447,6 +449,27 @@ reviewers:
 - 2 つのファイルが同じ名前を提供する場合は、ソート順で先のものが優先され、後のものは報告されます。
 - 自分で `register()` を呼んだり、レジストリに触れたりしないでください。ローダーは `build_provider()` が返したものを、最初の呼び出しで読み取った名前で登録します。インポート時、または `build_provider()` から（ローダーによる呼び出しでも、それ以降の呼び出しでも）自分で何かを登録するモジュールは拒否され、変更した内容は元に戻されます。これは、`register()` の呼び出しを残したままプラグインからコピーしたアダプタのような、うっかりしたミスを捕まえるためのものです。これを回避するように書かれたモジュールに対する防御ではありません。そのようなモジュールはプロセス内の何でも再束縛できます（下記参照）。
 - `build_provider()` や `__init__` から CLI を起動しないでください。また、モジュールレベルで `sys.exit()` を呼ばないでください。このファイルはすべてのコマンドでインポートされます。読み込み中に送出された `SystemExit` は、他のものと同様に読み込みエラーとして記録されます。
+
+<a id="taking-part-in-preset-fitting"></a>
+
+### プリセットのフィットに加わる
+
+ユーザーアダプタは、クラスが `preset_family` を宣言しない限り [プリセット](configuration.md#presets) から外されます。`preset_family` は、プリセットがそのアダプタに与えるすべての枠で使う family です。フィットは読み込みのたびに行われるので、この family は上の例の `default` のように、CLI を起動せずに解決できなければなりません。宣言があれば、アダプタは built-in の CLI が欠けているところにだけフィットされます。
+
+- **implementer と review fixer**: Claude も Codex も agy も PATH にないとき。
+- **orchestrator、architect、レビュアーの席**: Claude も Codex も PATH になく、かつ `static_enforcement = True` で `read_only_enforcement()` が `verified` か `partial` のときだけ。サブプロセスを必要とする報告（たとえば `--help` を読むもの）は、何を報告するとしても条件を満たしません。フィットは CLI を起動してはならないからです。満たさなければ、これらの席は agy がインストールされていれば agy へ、そうでなければ書かれたとおりに展開されます。
+
+```python
+class MyCliProvider(Provider):
+    ...
+    preset_family = "default"  # the family every preset slot gets; must resolve offline
+    static_enforcement = True  # read_only_enforcement() below is a constant
+
+    def read_only_enforcement(self) -> Dict[str, Any]:
+        return {"status": "partial", "mechanism": "--read-only", "detail": "what it does not cover"}
+```
+
+席に就けるアダプタが複数あれば名前順に扱われ、レビュアーの席は Claude と Codex のときと同じように順に配られます。そのため、project ファイルが `implementer` をそのうちの 1 つにすると、どれから配り始めるかが決まります。ファイルの内容でアダプタをオプトインさせたり、その強制の度合いを上げたりすることはできません。どちらもクラスから来ます。空でない文字列でない `preset_family` は、書き込みロールも含めてアダプタをすべてのプリセットから外します。前後の空白は取り除かれます。`doctor` はアダプタのブロックに `Preset fitting:` の行を出し、どのロールに就けるか、その理由を示します。`doctor --json` では `providers.<name>.preset_fit` です。`DEV_ORCHESTRA_NO_USER_PROVIDERS=1` は、他のすべてからと同じく、フィットからもすべてのユーザーアダプタを外します。
 
 <a id="when-it-goes-wrong"></a>
 

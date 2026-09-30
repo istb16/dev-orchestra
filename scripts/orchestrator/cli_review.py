@@ -97,7 +97,7 @@ def _reviewer_refusals(loaded: config_mod.LoadedConfig, reviewers: List[Dict[str
             continue
         try:
             provider = get_provider(str(reviewer.get("provider")))
-            if provider.static_enforcement:
+            if type(provider).static_enforcement:
                 continue  # reviewer_raw_arg_refusals already decided it
             if not provider.detect().installed:
                 continue

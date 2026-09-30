@@ -1,4 +1,4 @@
-<!-- translated-from: references/configuration.md sha256:7b651ebd6915c3cfdb0015ce25e2f8b53a425c5a911b57ba70b2275524bed91a -->
+<!-- translated-from: references/configuration.md sha256:e268495cdfbfa0fc7c06dc8bfc41b5e21565b8ea398c4817a3795524f3ee92c5 -->
 
 > この文書は [references/configuration.md](../../../references/configuration.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -89,8 +89,8 @@ project config  →  global config  →  the global file's preset, fitted to the
 表現できなければならないからです。
 
 プリセットのレイヤーが届くのは、どのファイルも設定していないロールとレビュアーパネルだけです
-（[プリセット](#presets)）。Claude Code と Codex が両方インストールされているとき、またはどちらも
-無いとき、デフォルトのプリセットは組み込みデフォルトとまったく同じです。
+（[プリセット](#presets)）。Claude Code と Codex が両方インストールされているとき、またはフィットの
+対象の CLI がどれも無いとき、デフォルトのプリセットは組み込みデフォルトとまったく同じです。
 
 <a id="presets"></a>
 
@@ -131,36 +131,47 @@ preset: quality
 組み込みデフォルトのままです。`standard` は組み込みデフォルトから読み取って作るので、両者が
 ずれることはありません。
 
-**フィット。** 対象は `claude`、`codex`、`agy` だけです。ユーザー adapter は、これまでどおりファイルが
-名前を挙げたときにだけ動きます。検出は PATH の探索だけで、CLI は起動しません:
+**フィット。** 対象は `claude`、`codex`、`agy` と、`preset_family` を宣言したユーザー adapter です
+（[Taking part in preset fitting](providers.md#taking-part-in-preset-fitting) を参照）。それ以外の
+ユーザー adapter は、これまでどおりファイルが名前を挙げたときにだけ動きます。検出は PATH の探索だけで、
+CLI は起動しません:
 
-1. orchestrator と architect は `claude`、`codex` の順で、implementer と review fixer は
-   `claude`、`codex`、`agy` の順で、最初にインストールされている CLI に割り当てます。
-   Claude にはプリセットの family、Codex には `recommended-coding`、agy には `default` が付きます。
-   agy は読み取り専用に保てないので、プリセットが agy に割り当てるのは 2 つの書き込みロールだけで、
-   それも Claude も Codex も PATH にないときだけです。読み取り専用のロールやレビュアーの枠が
-   agy に割り当てられることはありません。
-2. レビュアーの枠は、インストール済みの `claude`、`codex` の CLI に implementer の CLI（ファイルが implementer を
+1. orchestrator と architect は `claude`、`codex` の順で最初にインストールされている CLI に、
+   どちらも無ければ席に就けるユーザー adapter のうち名前順で最初のものに、それも無ければ agy に
+   割り当てます。implementer と review fixer は `claude`、`codex`、`agy` の順で最初のものに、
+   3つとも無ければオプトインしたユーザー adapter のうち名前順で最初のものに割り当てます。
+   Claude にはプリセットの family、Codex には `recommended-coding`、agy には `default`、ユーザー
+   adapter には宣言した family が付きます。agy は読み取り専用に保てないので、読み取り専用のロールや
+   レビュアーの枠が agy に割り当てられるのは、Claude も Codex も席に就けるユーザー adapter も無い
+   マシンだけです。そこではその席は、global ファイルの agy の席と同じ場所すべてで警告され、その note は
+   外す方法で終わります（`; agy cannot be held to reading -- set architect in the global file to
+   keep it off agy`）。
+2. レビュアーの枠は、orchestrator と同じ CLI（`claude`、`codex`、無ければ席に就けるユーザー
+   adapter、それも無ければ agy）に implementer の CLI（ファイルが implementer を
    設定していれば、ファイルが指定した provider）から順に配ります。そのため
    2社あれば、どのパネルにも両方が入ります。常に走るレビュアーが1人だけのプリセット（`fast`）は、
    もう一方のベンダーから始めます: implementer と同じベンダーの常時レビュアー1人では、独立した
-   レビューにならないからです。枠の `when` は、どこに配られても維持されます。
+   レビューにならないからです。枠の `when` は、どこに配られても維持されます。席に就けるユーザー
+   adapter が2つあるときも同じように配るので、project ファイルが `implementer` を2つ目にすると、
+   `quality` と `standard` では2つ目が最初の枠を取り、`fast` の常に走る1つの枠は1つ目が取ります。
 3. 前の枠とまったく同じになる枠（provider、family、role、条件）は追加しません。id は provider と
    role から作るので、同じ role の2人目の Claude の枠は `claude-general-2` になります。
-4. Claude も Codex も無いときは、orchestrator、architect、パネルを書かれたとおりに展開します。
-   CLI が無いことは `doctor` が報告します。implementer と review fixer は、agy がインストール
-   されていれば agy に割り当て、note を出します（`claude, codex not found on PATH: implementer
-   went to agy (default)`）。agy も無ければ書かれたとおりです。
+4. Claude も Codex もオプトインしたユーザー adapter も agy も無いときは、すべてのロールとパネルを
+   書かれたとおりに展開します。CLI が無いことは `doctor` が報告します。agy だけのときは、すべての
+   ロールと枠を agy に割り当て、それぞれ note を出します（`claude, codex not found on PATH:
+   implementer went to agy (default)`）。
 
 | プリセット | Claude + Codex | Claude のみ | Codex のみ | agy のみ |
 | --- | --- | --- | --- | --- |
-| `quality` | claude-general fable、codex-security、claude-architecture opus | claude-general fable、claude-security opus、claude-architecture opus | codex-general、codex-security、codex-architecture | 書かれたとおり（Claude + Codex のパネル） |
-| `standard` | claude-general opus、codex-general（組み込みデフォルト） | claude-general opus、claude-general-2 sonnet | codex-general | 書かれたとおり（組み込みデフォルト） |
-| `fast` | codex-general; claude-security opus（high-risk） | claude-general opus; claude-security opus（high-risk） | codex-general; codex-security（high-risk） | 書かれたとおり（Claude + Codex のパネル） |
+| `quality` | claude-general fable、codex-security、claude-architecture opus | claude-general fable、claude-security opus、claude-architecture opus | codex-general、codex-security、codex-architecture | agy-general、agy-security、agy-architecture |
+| `standard` | claude-general opus、codex-general（組み込みデフォルト） | claude-general opus、claude-general-2 sonnet | codex-general | agy-general |
+| `fast` | codex-general; claude-security opus（high-risk） | claude-general opus; claude-security opus（high-risk） | codex-general; codex-security（high-risk） | agy-general; agy-security（high-risk） |
 
 Claude や Codex と並んで agy があっても何も変わりません。Claude、Codex、agy がそろっていれば、
 どのプリセットも Claude と Codex のときと同じで、組み込みデフォルトもそのままです。Claude + agy は
-Claude のみと、Codex + agy は Codex のみと同じです。
+Claude のみと、Codex + agy は Codex のみと同じです。agy だけのマシンで読み取り専用の席から agy を
+外すには、global ファイルで orchestrator と architect を設定するか、`reviewers` を並べます。
+ファイルが設定したロールと、ファイルが並べたパネルはフィットされません（下記）。
 
 フィットは読み込むたびにやり直されます: 後から Codex を入れれば、次のコマンドのパネルに
 入ります。そのため、レビュアーの id はチームメンバーのマシンごとに違うことがあり、`--only` で
@@ -188,7 +199,13 @@ claude-general-2 (sonnet)`。
 ファイルのリストがパネルになり、このマシンでも、そのファイルを読む他のマシンでも同じです。コマンドは
 一度だけその旨を表示します: `note: <path> now lists the reviewers; the panel no longer follows preset
 standard's fit (recorded claude-general opus, claude-general-2 sonnet)`。ロール、設計レビュー、
-最適化レベルは引き続きプリセットに従います。グローバルファイルの `config reset` は `preset` を残して
+最適化レベルは引き続きプリセットに従います。project スコープで、グローバルファイルがレビュアーを
+並べていない（つまりコピーするのがフィットしたパネルである）ときは、agy の枠はコピーから外します。
+project ファイルはその枠を持てないからです。note の末尾は `; not copied into .dev-orchestra.yaml:
+agy-general -- a reviewer on agy is taken only from the global config` になります。外した枠を
+指す編集（`reviewer set agy-general` や、コピーしたリストの長さを超える index）は失敗し、エラーの
+横に同じ `note: not copied into ...` を出します。グローバル
+ファイルが並べたパネルは丸ごとコピーします（[下記](#role-options)）。グローバルファイルの `config reset` は `preset` を残して
 リストを消すので、フィットが戻ります。知らないプリセット名はほかの上書きと一緒に消して `note:` を
 表示し、そのファイルは `standard` で動くようになります。
 
@@ -285,7 +302,7 @@ workspace:
 | Field | 型 | 備考 |
 | --- | --- | --- |
 | `version` | int | `1` でなければなりません。 |
-| `<role>.provider` | string | 登録済みの adapter: `agy`、`claude`、`codex`、`mock`、またはユーザー adapter（`references/providers.md` を参照）。`agy` の読み取り専用のロールやレビュアーは global 設定からだけ受け付けます（[下記](#role-options)）。 |
+| `<role>.provider` | string | 登録済みの adapter: `agy`、`claude`、`codex`、`mock`、またはユーザー adapter（`references/providers.md` を参照）。`agy` の読み取り専用のロールやレビュアーは、global 設定から、またはほかのインストール済みの CLI がその席に就けないときの global のプリセットのフィットからだけ受け付けます（[下記](#role-options)）。 |
 | `<role>.model.family` | string | provider が解決できる family/エイリアス（`opus`、`sonnet`、`fable`、`recommended-coding`）。省略するか `default` を使うと CLI に選ばせます。 |
 | `<role>.model.version` | `latest` \| `pinned` | `latest` は実行のたびに解決し直します。`pinned` には `model.id` が必要です。 |
 | `<role>.model.id` | string | 正確なモデル id。`version: pinned` のときのみ。 |
@@ -368,8 +385,9 @@ global 設定から、1 回の実行だけなら `--extra --dangerously-skip-per
 **agy の読み取り専用の席は global 設定からだけ受け付けます。** agy には読み取り専用の
 モードがないので、agy での plan や review の実行は、作業ツリー、`.ai/`（承認記録を含む）、
 `.git/`、リポジトリの外のファイルを変更でき、後から確かめるものは何もありません。global
-ファイルで設定したそうした席（orchestrator、architect、そのいずれかの tier、レビュアー）は
-実行され、`config set`、`reviewer add`、`reviewer set`、`config validate`、ウィザード、
+ファイルで設定した（または、Claude も Codex も席に就けるユーザー adapter も無いマシンで global の
+プリセットのフィットが置いた。[プリセット](#presets)を参照）そうした席（orchestrator、architect、
+そのいずれかの tier、レビュアー）は実行され、`config set`、`reviewer add`、`reviewer set`、`config validate`、ウィザード、
 `doctor`（注記として。`--strict` は通ります）、`run`、`review run` で警告されます。同じ席が
 project ファイルから来ると拒否されます。`run` は exit 2 で終わり、レビュアーはそのラウンドで
 失敗し（ほかのレビュアーは走ります）、`config validate` と `doctor` がそれを報告します
@@ -385,7 +403,8 @@ dev-orchestra reviewer add --scope global --provider agy
 
 `reviewers[i].<key>` を 1 つでも設定した project ファイルはパネル全体を持つので（リストは
 丸ごと置き換わります）、そこへコピーされた global の agy レビュアーは project のものになり、
-同じメッセージで拒否されます。
+同じメッセージで拒否されます。グローバルファイルにレビュアーが無く、プリセットのフィットから来た
+agy の枠はコピーされません。書き込むコマンドがそれを外し、その旨を表示します（[プリセット](#presets)）。
 
 **読み取り専用ステージを緩めるようなオプションは無視されるか、拒否されます。**
 orchestrator、architect、すべてのレビュアーは、`permission_mode` や `sandbox` が何と

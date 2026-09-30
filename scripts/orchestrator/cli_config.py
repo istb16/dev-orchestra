@@ -20,13 +20,13 @@ from .cli_common import (
     _emit_json,
     _err,
     _fitted_base,
-    _frozen_panel_note,
     _layer_path,
     _out,
     _prune_base,
     _read_layer,
     _resolve_scope,
     _seed_list,
+    _seed_panel,
 )
 from .providers import (
     ModelResolutionError,
@@ -265,13 +265,14 @@ def cmd_config_set(args: argparse.Namespace) -> int:
         scope = _resolve_scope(args.scope, args.cwd)
     path, layer = _read_layer(scope, args.cwd)
     before = config_mod.load(args.cwd, validate_result=False) if role_key in config_mod.KNOWN_ROLES else None
-    frozen = None
+    frozen = left_out = None
     if "[" in args.path:
         list_path = args.path.split("[", 1)[0]
         base = _fitted_base(scope, args.cwd, layer)
-        seeded = _seed_list(layer, list_path, base)
         if list_path == "reviewers":
-            frozen = _frozen_panel_note(seeded, path, base, scope, args.cwd)
+            frozen, left_out = _seed_panel(scope, layer, base, path, args.cwd)
+        else:
+            _seed_list(layer, list_path, base)
     value = args.value if args.raw else config_mod.coerce_scalar(args.value)
     if scope == "project":
         # From the arguments alone, before anything is written: the same
@@ -284,6 +285,8 @@ def cmd_config_set(args: argparse.Namespace) -> int:
         config_mod.set_path(layer, args.path, value)
     except config_mod.ConfigError as exc:
         _err(str(exc))
+        if left_out:
+            _err(left_out)
         return 2
     except IndexError:
         # `set_path` assigns straight into the list, so an index past its end
@@ -291,6 +294,8 @@ def cmd_config_set(args: argparse.Namespace) -> int:
         # errors. This is the one entry point that takes an index at all, so it
         # is the one that owes the user a message instead of a traceback.
         _err("%s: index out of range" % args.path)
+        if left_out:
+            _err(left_out)
         return 2
     config_mod.write_config_file(path, layer, scope)
     _out("%s = %r  (%s: %s)" % (args.path, value, scope, path))
@@ -575,7 +580,7 @@ def cmd_reviewer_add(args: argparse.Namespace) -> int:
     scope = _resolve_scope(args.scope, args.cwd)
     path, layer = _read_layer(scope, args.cwd)
     base = _fitted_base(scope, args.cwd, layer)
-    frozen = _frozen_panel_note(_seed_list(layer, "reviewers", base), path, base, scope, args.cwd)
+    frozen, _left_out = _seed_panel(scope, layer, base, path, args.cwd)
     role = args.role or "general"
     reviewer_id = args.id or config_mod.suggest_reviewer_id(layer, args.provider, role)
     if scope == "project" and config_mod.warned_provider(args.provider):
@@ -643,12 +648,14 @@ def cmd_reviewer_remove(args: argparse.Namespace) -> int:
     scope = _resolve_scope(args.scope, args.cwd)
     path, layer = _read_layer(scope, args.cwd)
     base = _fitted_base(scope, args.cwd, layer)
-    frozen = _frozen_panel_note(_seed_list(layer, "reviewers", base), path, base, scope, args.cwd)
+    frozen, left_out = _seed_panel(scope, layer, base, path, args.cwd)
     before = {_unindexed(p) for p in _reviewer_problems(layer)}
     try:
         _, removed = config_mod.remove_reviewer(layer, args.selector)
     except config_mod.ConfigError as exc:
         _err(str(exc))
+        if left_out:
+            _err(left_out)
         return 2
     # The same check add and set make: removing the last reviewer that always
     # runs would leave a panel that a quiet round could not be reviewed by.
@@ -673,11 +680,13 @@ def cmd_reviewer_set(args: argparse.Namespace) -> int:
     scope = _resolve_scope(args.scope, args.cwd)
     path, layer = _read_layer(scope, args.cwd)
     base = _fitted_base(scope, args.cwd, layer)
-    frozen = _frozen_panel_note(_seed_list(layer, "reviewers", base), path, base, scope, args.cwd)
+    frozen, left_out = _seed_panel(scope, layer, base, path, args.cwd)
     try:
         index, reviewer = config_mod.find_reviewer(layer, args.selector)
     except config_mod.ConfigError as exc:
         _err(str(exc))
+        if left_out:
+            _err(left_out)
         return 2
     if args.provider and scope == "project" and config_mod.warned_provider(args.provider):
         display = "reviewer %s" % (args.id or reviewer.get("id") or index + 1)

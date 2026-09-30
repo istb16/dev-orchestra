@@ -1232,7 +1232,7 @@ def _warned_provider(name: str) -> Optional[Dict[str, Any]]:
         return None
     try:
         provider = get_provider(name)
-        if not provider.static_enforcement:
+        if not type(provider).static_enforcement:
             return None
         enforcement = provider.read_only_enforcement()
     except Exception:
@@ -1245,7 +1245,7 @@ def _project_seat_refused(loaded: LoadedConfig) -> List[Tuple[RawArgs, str]]:
 
     Refused for the reason project raw arguments are: a branch under review
     could otherwise choose its own write-capable reviewer. The same seat from
-    the global file runs, warned.
+    the global file or the global preset's fit runs, warned.
     """
     return [
         (entry, message)

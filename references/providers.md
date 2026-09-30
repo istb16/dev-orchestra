@@ -17,6 +17,7 @@
 - [Adding a CLI without editing the plugin](#adding-a-cli-without-editing-the-plugin)
   - [The contract](#the-contract)
   - [Rules](#rules)
+  - [Taking part in preset fitting](#taking-part-in-preset-fitting)
   - [When it goes wrong](#when-it-goes-wrong)
   - [Interface stability](#interface-stability)
 - [Failure semantics](#failure-semantics)
@@ -53,6 +54,7 @@ class Provider:
     def refused_read_only_args(raw_args, source) -> list[str]   # default: refuse all
     def read_only_enforcement() -> dict                         # default: "unspecified"
     static_enforcement: bool                                    # default: False
+    preset_family: str | None                                   # default: None (not fitted to presets)
     local_only_options: Sequence[str]                           # default: ()
     def run_warnings(outcome, mode) -> list[str]                # default: []
     def config_families() -> list[tuple[str, str]]              # default: []
@@ -116,7 +118,17 @@ print it on success too, where stderr is not shown, and record it in the run
 log and the job record. `static_enforcement = True` says
 `read_only_enforcement()` is a constant that needs no subprocess, so `doctor`
 reports it in `--fast` mode and for an uninstalled CLI, and the config
-commands warn from it without looking for the CLI. `local_only_options` names
+commands warn from it without looking for the CLI. `preset_family` lets
+presets fit the adapter (see
+[Taking part in preset fitting](#taking-part-in-preset-fitting)). Both are
+read from the class wherever they are used, so a value set on the instance
+is ignored. A read-only
+seat from a preset needs a static report: fitting runs at every load and
+must not start a CLI. `preset_family`, `static_enforcement` and `which()` are
+trusted as declared -- `which()` must stay a PATH lookup, and a static report
+must not start a process -- because fitting cannot tell otherwise; what it can
+detect (a raise, a report that is not a mapping, an unknown status) keeps the
+adapter off a seat. `local_only_options` names
 options a write role takes only from the global config or `--extra`; on such
 an adapter no project-file option of a write role is honoured (see
 [Antigravity CLI adapter](#antigravity-cli-adapter)). `config_families()`
@@ -537,15 +549,18 @@ run on agy -- the orchestrator, the architect, a tier of either, a reviewer --
 **can modify the working tree, `.ai/` (including the approval record in
 `state.json`, the plan, the snapshot and other reviewers' reports), `.git/`
 and files outside the repository, and nothing in dev-orchestra checks
-afterwards what it did.** Such a seat is accepted only from the global config,
-as your own choice, and is warned about wherever it is set or run: `config
+afterwards what it did.** Such a seat is accepted only from the global config
+-- as your own choice, or from the global preset's fit on a machine where agy
+is the only fitted CLI -- and is warned about wherever it is set or run: `config
 set`, `reviewer add`, `reviewer set`, `config validate`, the setup wizard,
 `doctor` (as a note), `run`, `review run` and `review run --design`, and in
 the run record. The same seat in the project file is refused (exit 2 for
 `run`; a failed reviewer in a round; a problem in `doctor`), because the
 project file can arrive with the branch under review, which could then choose
-its own write-capable reviewer. Presets and the wizard's defaults never put
-agy on one of these seats.
+its own write-capable reviewer. The wizard's defaults never put agy on one of
+these seats. Presets do only when neither Claude, Codex nor a user adapter
+eligible for a seat is on PATH, and each fit note that puts it there ends with
+how to keep it off: set that role, or list `reviewers`, in the global file.
 
 **Resuming is left out on purpose.** The resume rule asks whether a resumed
 session keeps read-only, and agy's plan runs are `unenforced`, so a version
@@ -755,6 +770,44 @@ reviewers:
 - Do not start the CLI from `build_provider()` or `__init__`, and do not call
   `sys.exit()` at module level -- the file is imported on every command. A
   `SystemExit` raised while loading is recorded as a load error, like any other.
+
+### Taking part in preset fitting
+
+A user adapter is left out of [presets](configuration.md#presets) unless its
+class declares `preset_family`: the family every slot a preset gives it
+takes. Fitting runs at every load, so that family has to resolve without
+running the CLI, as `default` does in the example above. With it, the adapter
+is fitted only where the built-in CLIs are missing:
+
+- **The implementer and the review fixer** when neither Claude, Codex nor agy
+  is on PATH.
+- **The orchestrator, the architect and the reviewer seats** when neither
+  Claude nor Codex is on PATH, and only with `static_enforcement = True` and a
+  `read_only_enforcement()` of `verified` or `partial`. A report that needs a
+  subprocess -- one that reads `--help`, say -- never qualifies, whatever it
+  would say, because fitting must not start a CLI. Otherwise those seats go to
+  agy when it is installed, or expand as written.
+
+```python
+class MyCliProvider(Provider):
+    ...
+    preset_family = "default"  # the family every preset slot gets; must resolve offline
+    static_enforcement = True  # read_only_enforcement() below is a constant
+
+    def read_only_enforcement(self) -> Dict[str, Any]:
+        return {"status": "partial", "mechanism": "--read-only", "detail": "what it does not cover"}
+```
+
+Several eligible adapters are taken in name order, and the panel is dealt
+over them as it is over Claude and Codex, so a project file that sets
+`implementer` to one of them chooses which one starts the round. Nothing in a
+file can opt an adapter in or raise its enforcement: both come from the class.
+A `preset_family` that is not a non-empty string keeps the adapter out of
+every preset, write roles included; spaces around it are dropped. `doctor`
+prints a `Preset fitting:` line in the adapter's block saying which roles it
+can take and why, and `doctor --json` has it as `providers.<name>.preset_fit`.
+`DEV_ORCHESTRA_NO_USER_PROVIDERS=1` takes every user adapter out of the fit,
+as it takes it out of everything else.
 
 ### When it goes wrong
 
