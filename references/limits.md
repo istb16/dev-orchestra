@@ -94,6 +94,12 @@ which is exactly why the observability below matters.
 A killed run is reported as `stalled` rather than merely failed, and if the
 process group did not fully exit you are warned that orphans may remain.
 
+Both deadlines run on `time.monotonic()`, which counts sleep on Windows and not
+on Linux or macOS. So on Windows a run that sleeps past its deadline is stopped
+when the machine wakes, while elsewhere the deadline waits out the sleep. The
+runtime budget leaves sleep out on every platform; see
+[What the runtime budget counts](#what-the-runtime-budget-counts).
+
 ### Seeing a stall from outside
 
 A blocked orchestrator cannot rescue itself, so stages are written down
@@ -391,10 +397,11 @@ Seconds of delegated execution, as measured by the run itself — never the time
 since the workflow started.
 
 **Counted.** The lifetime of each delegated child process, from the same
-measurement that already appears as `duration_seconds` in the run log. A review
-round is counted per panel member: three reviewers running in parallel for 25
-minutes each spend 75 minutes of it. A run killed at its deadline, one that
-failed, and one that stalled all spent what they spent, and are all charged.
+measurement that already appears as `duration_seconds` in the run log, less the
+time the machine spent asleep during it. A review round is counted per panel
+member: three reviewers running in parallel for 25 minutes each spend 75 minutes
+of it. A run killed at its deadline, one that failed, and one that stalled all
+spent what they spent, and are all charged.
 
 **Not counted.** The orchestrator's own work, the test suite, and a human
 thinking: an interactive session where nothing is delegated never spends this
@@ -404,6 +411,42 @@ Nor is a run whose wrapper process died before it could record the outcome — a
 `jobs cancel`, a Ctrl-C, an OOM kill. Nobody measured it, so nobody bills it,
 and the only things bounding that shape of runaway are
 `budgets.total_delegated_runs` and the per-stage attempt budgets.
+
+Nor is **sleep**: a laptop closed on a detached run has not executed anything
+while it was shut. How that is measured depends on the platform, because the
+clock a run is timed with, Python's `time.monotonic()`, counts sleep on one and
+not on the others:
+
+| Platform | `duration_seconds` | What is left out of the charge | `suspended_seconds` |
+| --- | --- | --- | --- |
+| Windows | includes sleep | `duration_seconds` less the run's delta on `QueryUnbiasedInterruptTime`, which stops during sleep | written when non-zero |
+| Linux, macOS | excludes sleep: the clock stops | nothing; there is no sleep in it to leave out | never written |
+
+So on every platform `charged_seconds` is `duration_seconds` less
+`suspended_seconds`, and a run that did not sleep is charged exactly its
+duration. Two consequences of how it is measured:
+
+* A difference under one second is not read as sleep. The interrupt-time clock
+  advances once per timer tick, about 15.6 ms, so it and the far finer
+  `time.monotonic()` disagree by a little on every run. A shorter sleep is
+  charged.
+* Modern Standby is not the classic sleep state, and whether the interrupt-time
+  clock stops during it is not documented. Some standby time may still be
+  charged.
+
+The sleep left out is recorded as `suspended_seconds` on the run event, on each
+reviewer entry of a review event, and on a detached run's job. It is totalled
+per budget epoch and reset with the runtime budget; `budget show` and `status`
+add a line saying how much was left out, only when there was some, and their
+`--json` carries it as `runtime.suspended`. Like the charge, the figure is
+summed per run: two reviewers asleep for the same ten minutes add twenty, so it
+is delegated run time spent asleep, not how long the machine slept.
+
+`duration_seconds` itself is unchanged, and so are the reports built from it:
+on Windows, and only there, `optimization report` counts sleep in a run's time.
+And `status` judges a live stage against its deadline on the wall clock, so a
+run that slept can be listed under "Stalled stages" until it ends. That line is
+advice only: a stage whose process is still alive is never cleared.
 
 Because concurrent work is summed, **the total can exceed the wall clock**. On
 the workflows measured while designing this, autonomous ones came to 1.23–1.45×

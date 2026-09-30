@@ -7,7 +7,8 @@ Never touches the network or a real CLI. Responses come from, in order:
 3. a built-in stub that echoes what was requested
 
 ``$DEV_ORCHESTRA_MOCK_FAIL`` makes a run fail and ``$DEV_ORCHESTRA_MOCK_DELAY``
-makes it take a measurable amount of time.
+makes it take a measurable amount of time. ``$DEV_ORCHESTRA_MOCK_SUSPENDED``
+makes it report that many seconds of sleep on top of what it measured.
 
 Resuming, for the tests of an architect continuing its session:
 ``$DEV_ORCHESTRA_MOCK_SESSION`` is the session id every run reports (a new
@@ -21,11 +22,13 @@ its mode, command, the session it resumed and the prompt's length.
 from __future__ import annotations
 
 import json
+import math
 import os
 import time
 import uuid
 from typing import Any, Dict, List, Optional, Sequence
 
+from ..clocks import Stopwatch
 from ..execution import EXIT_IDLE_STALL
 from .base import ModelCandidate, ModelResolutionError, Provider, ResolvedModel, RunResult, Usage
 
@@ -103,11 +106,19 @@ class MockProvider(Provider):
         idle_timeout: Optional[float] = None,
         resume_session: Optional[str] = None,
     ) -> RunResult:
-        started = time.time()
+        watch = Stopwatch()
+        started = time.monotonic()
+        watch.start()
+
         resolved = self.resolve_model(model_spec)
         command = self.command_line(mode, resolved, cwd, extra_args, options, resume_session)
         _trace(mode, command, resume_session, prompt)
         time.sleep(_mock_delay())
+        # Measured the way ``execution.execute`` measures a real child, with a
+        # simulated sleep added to the duration and excluded from the charge.
+        elapsed = time.monotonic() - started
+        simulated = _mock_suspended()
+        duration, suspended = elapsed + simulated, watch.read(elapsed) + simulated
         resume = os.environ.get("DEV_ORCHESTRA_MOCK_RESUME") if resume_session is not None else None
         if resume == "reject":
             # The shape the real CLI gives a session that does not exist: no
@@ -118,7 +129,7 @@ class MockProvider(Provider):
                 "",
                 "No conversation found with session ID: %s" % resume_session,
                 command,
-                time.time() - started,
+                duration,
                 resolved,
                 usage=Usage(
                     input_tokens=0,
@@ -131,6 +142,7 @@ class MockProvider(Provider):
                 ),
                 session_id=str(uuid.uuid4()),
                 resume_rejected=True,
+                suspended=suspended,
             )
         session = {"session_id": _mock_session(), "context_tokens": _mock_context(prompt)}
         if resume == "stall":
@@ -140,15 +152,17 @@ class MockProvider(Provider):
                 "",
                 "no output (mock stall)",
                 command,
-                time.time() - started,
+                duration,
                 resolved,
                 stalled=True,
                 usage=_mock_usage(prompt, ""),
+                suspended=suspended,
                 **session,
             )
         if self.fail or _should_fail(prompt):
-            elapsed = time.time() - started
-            return RunResult(False, 1, "", "mock failure", command, elapsed, resolved, **session)
+            return RunResult(
+                False, 1, "", "mock failure", command, duration, resolved, suspended=suspended, **session
+            )
         response = _canned_response(mode)
         return RunResult(
             True,
@@ -156,9 +170,10 @@ class MockProvider(Provider):
             response,
             "",
             command,
-            time.time() - started,
+            duration,
             resolved,
             usage=_mock_usage(prompt, response),
+            suspended=suspended,
             **session,
         )
 
@@ -233,6 +248,26 @@ def _mock_delay() -> float:
         return max(float(raw), 0.0)
     except ValueError:
         return 0.0
+
+
+def _mock_suspended() -> float:
+    """Seconds of sleep to simulate, from ``DEV_ORCHESTRA_MOCK_SUSPENDED``.
+
+    Added to the run's duration and reported as suspended, so the charge stays
+    what was measured: the only way to show the runtime budget excluding sleep
+    without sleeping a machine. Anything but a finite, non-negative number
+    means no simulated sleep, as for ``_mock_delay``.
+    """
+    raw = os.environ.get("DEV_ORCHESTRA_MOCK_SUSPENDED")
+    if not raw:
+        return 0.0
+    try:
+        value = float(raw)
+    except ValueError:
+        return 0.0
+    if not math.isfinite(value) or value < 0:
+        return 0.0
+    return value
 
 
 def _should_fail(prompt: str) -> bool:

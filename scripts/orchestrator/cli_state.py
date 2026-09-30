@@ -143,6 +143,13 @@ def cmd_budget_show(args: argparse.Namespace) -> int:
         # this counts delegated execution, not how long the workflow has been
         # open, so a figure far below the wall clock is not a bug.
         _out("  %-14s %.0f/%ss used (delegated execution)" % ("runtime", runtime["used"], runtime["limit"]))
+    # Whether or not the cap is on: the figure says what the runs cost, not
+    # how close they are to a limit.
+    if runtime["suspended"]:
+        _out(
+            "  %-14s %.0fs of delegated run time spent asleep was not charged"
+            % ("runtime", runtime["suspended"])
+        )
     for stage, repeats in (summary["signatures"] or {}).items():
         if repeats and int(repeats) > 1:
             _out("  %-14s same outcome %s times in a row" % (stage, repeats))

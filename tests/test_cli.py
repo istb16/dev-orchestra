@@ -1532,7 +1532,7 @@ class TestRuntimeBudgetThroughTheCli(IsolatedCase):
 
     def test_status_names_the_delegated_budget_when_it_is_spent(self):
         payload = json.loads(run_cli("status", "--json")[1])
-        self.assertEqual(payload["runtime"], {"used": 0, "limit": 14400, "remaining": 14400})
+        self.assertEqual(payload["runtime"], {"used": 0, "limit": 14400, "remaining": 14400, "suspended": 0})
         spend_the_runtime_budget(self.cli_workspace())
         payload = json.loads(run_cli("status", "--json")[1])
         self.assertIn("the delegated runtime budget is spent", payload["reasons"])
@@ -1547,6 +1547,38 @@ class TestRuntimeBudgetThroughTheCli(IsolatedCase):
         payload = json.loads(run_cli("status", "--json")[1])
         self.assertEqual(payload["runtime_remaining_seconds"], 1)
         self.assertNotIn("the delegated runtime budget is spent", payload["reasons"])
+
+    def test_a_run_that_slept_is_charged_only_its_awake_time(self):
+        os.environ["DEV_ORCHESTRA_MOCK_SUSPENDED"] = "90"
+        self.assertEqual(run_cli("run", "implementer", "--prompt", "go")[0], 0)
+        event = self.cli_workspace().read_state()["events"][-1]
+        self.assertEqual(event["suspended_seconds"], 90)
+        self.assertGreater(event["duration_seconds"], 90)
+        self.assertAlmostEqual(event["charged_seconds"], event["duration_seconds"] - 90, delta=0.02)
+        payload = json.loads(run_cli("budget", "show", "--json")[1])
+        self.assertAlmostEqual(payload["runtime"]["used"], event["charged_seconds"], delta=0.01)
+        self.assertEqual(payload["runtime"]["suspended"], 90)
+        _, out, _ = run_cli("budget", "show")
+        self.assertIn("90s of delegated run time spent asleep was not charged", out)
+        _, out, _ = run_cli("status")
+        self.assertIn(
+            "Runtime: 90s of delegated run time spent asleep was not charged (dev-orchestra budget show)", out
+        )
+        self.assertEqual(json.loads(run_cli("status", "--json")[1])["runtime"]["suspended"], 90)
+
+    def test_the_sleep_line_shows_with_the_runtime_cap_off(self):
+        run_cli("config", "set", "budgets.max_runtime_seconds", "0")
+        os.environ["DEV_ORCHESTRA_MOCK_SUSPENDED"] = "90"
+        self.assertEqual(run_cli("run", "implementer", "--prompt", "go")[0], 0)
+        _, out, _ = run_cli("budget", "show")
+        self.assertNotIn("(delegated execution)", out)
+        self.assertIn("90s of delegated run time spent asleep was not charged", out)
+
+    def test_a_run_that_did_not_sleep_says_nothing_about_sleep(self):
+        self.assertEqual(run_cli("run", "implementer", "--prompt", "go")[0], 0)
+        self.assertNotIn("suspended_seconds", self.cli_workspace().read_state()["events"][-1])
+        self.assertNotIn("asleep", run_cli("budget", "show")[1])
+        self.assertNotIn("asleep", run_cli("status")[1])
 
 
 class TestStatusVerdict(IsolatedCase):
@@ -1856,6 +1888,21 @@ class TestReviewPipeline(IsolatedCase):
         _, brief, _ = run_cli("review", "fix-brief")
         self.assertIn("F1", brief)
         self.assertIn("restore the addition", brief)
+
+    def test_a_round_leaves_out_the_sleep_of_every_reviewer(self):
+        os.environ["DEV_ORCHESTRA_MOCK_SUSPENDED"] = "90"
+        run_cli("review", "snapshot")
+        self.assertEqual(run_cli("review", "run")[0], 0)
+        event = self.cli_workspace().read_state()["events"][-1]
+        self.assertEqual(len(event["reviewers"]), 2)
+        suspended = sum(reviewer["suspended_seconds"] for reviewer in event["reviewers"])
+        durations = sum(reviewer["duration_seconds"] for reviewer in event["reviewers"])
+        self.assertEqual(suspended, 180)
+        self.assertEqual(event["suspended_seconds"], suspended)
+        self.assertAlmostEqual(event["charged_seconds"], durations - suspended, places=1)
+        payload = json.loads(run_cli("budget", "show", "--json")[1])
+        self.assertAlmostEqual(payload["runtime"]["used"], event["charged_seconds"], places=1)
+        self.assertEqual(payload["runtime"]["suspended"], 180)
 
     def test_review_run_refuses_a_round_past_the_budget(self):
         run_cli("config", "set", "review.max_review_iterations", "1")

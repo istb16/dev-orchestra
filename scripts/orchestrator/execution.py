@@ -29,6 +29,8 @@ import threading
 import time
 from typing import IO, Any, Dict, List, Optional, Sequence, cast
 
+from . import clocks
+
 #: Exit codes this module reports for its own decisions. Chosen to stay clear
 #: of the 0-127 range a child is likely to use for its own reasons.
 EXIT_TOTAL_TIMEOUT = 124  # conventional timeout(1) code
@@ -55,11 +57,14 @@ class ExecOutcome:
         stalled: bool = False,
         idle_for: float = 0.0,
         orphans_possible: bool = False,
+        suspended: float = 0.0,
     ) -> None:
         self.exit_code = exit_code
         self.stdout = stdout
         self.stderr = stderr
         self.duration = duration
+        #: How much of ``duration`` the machine spent asleep: see ``clocks``.
+        self.suspended = suspended
         #: The total deadline was reached.
         self.timed_out = timed_out
         #: No output arrived for the idle deadline: the agent looks wedged.
@@ -76,6 +81,7 @@ class ExecOutcome:
         return {
             "exit_code": self.exit_code,
             "duration_seconds": round(self.duration, 2),
+            "suspended_seconds": round(self.suspended, 2),
             "timed_out": self.timed_out,
             "stalled": self.stalled,
             "idle_for_seconds": round(self.idle_for, 2),
@@ -173,7 +179,11 @@ def execute(
     ``idle_timeout`` is only meaningful for a command that streams progress;
     pass ``None`` to disable it.
     """
+    # Only the charge reads this clock; the deadlines below stay on
+    # ``time.monotonic()``.
+    watch = clocks.Stopwatch()
     started = time.monotonic()
+    watch.start()
     try:
         proc = subprocess.Popen(
             list(command),
@@ -236,6 +246,7 @@ def execute(
             pass
 
     duration = time.monotonic() - started
+    suspended = watch.read(duration)
     exit_code = proc.poll()
     if stalled:
         exit_code = EXIT_IDLE_STALL
@@ -263,6 +274,7 @@ def execute(
         stalled=stalled,
         idle_for=idle_for,
         orphans_possible=orphans,
+        suspended=suspended,
     )
 
 

@@ -276,6 +276,70 @@ class TestRuntimeBudget(LedgerCase):
         self.assertEqual(book.runtime_used(), 0.0)
 
 
+class TestSuspendedTime(LedgerCase):
+    """The sleep a run spanned: recorded beside the charge, never in it."""
+
+    def test_the_sleep_is_recorded_and_not_charged(self):
+        book = self.book(max_runtime_seconds=3600)
+        token = book.begin("implementer")
+        book.end(token, "ok", charged_seconds=480, suspended_seconds=120)
+        self.assertEqual(book.runtime_used(), 480)
+        self.assertEqual(book.load()["runtime_suspended_seconds"], 120)
+        event = self.workspace.read_state()["events"][-1]
+        self.assertEqual(event["charged_seconds"], 480)
+        self.assertEqual(event["suspended_seconds"], 120)
+        self.assertEqual(book.summary()["runtime"]["suspended"], 120)
+
+    def test_no_sleep_leaves_the_event_as_it_was(self):
+        book = self.book()
+        token = book.begin("implementer")
+        book.end(token, "ok", charged_seconds=30)
+        self.assertNotIn("suspended_seconds", self.workspace.read_state()["events"][-1])
+        self.assertEqual(book.summary()["runtime"]["suspended"], 0)
+
+    def test_a_skipped_charge_records_the_sleep_without_counting_it(self):
+        book = self.book()
+        token = book.begin("implementer")
+        book.reset()
+        book.end(token, "ok", charged_seconds=100, suspended_seconds=60)
+        event = self.workspace.read_state()["events"][-1]
+        self.assertIn("charge_skipped", event)
+        self.assertEqual(event["suspended_seconds"], 60)
+        self.assertEqual(book.load()["runtime_suspended_seconds"], 0)
+
+    def test_a_reset_starts_the_sleep_total_at_zero(self):
+        book = self.book()
+        token = book.begin("implementer")
+        book.end(token, "ok", charged_seconds=10, suspended_seconds=60)
+        book.reset()
+        self.assertEqual(book.load()["runtime_suspended_seconds"], 0)
+        self.assertEqual(book.summary()["runtime"]["suspended"], 0)
+
+    def test_values_that_are_not_finite_non_negative_numbers_land_as_zero(self):
+        book = self.book()
+        for suspended in (-5, float("nan"), float("inf")):
+            token = book.begin("implementer")
+            book.end(token, "ok", charged_seconds=10, suspended_seconds=suspended)
+            self.assertNotIn("suspended_seconds", self.workspace.read_state()["events"][-1])
+        token = book.begin("implementer")
+        book.end(token, "ok", charged_seconds=float("nan"))
+        self.assertEqual(self.workspace.read_state()["events"][-1]["charged_seconds"], 0)
+        self.assertEqual(book.runtime_used(), 30)
+        self.assertEqual(book.load()["runtime_suspended_seconds"], 0)
+
+    def test_a_stored_total_that_is_not_a_number_reads_as_zero(self):
+        book = self.book()
+        book.begin("implementer")
+        for stored in ("abc", float("nan"), float("inf")):
+            state = self.workspace.read_state()
+            state["ledger"]["runtime_suspended_seconds"] = stored
+            self.workspace.write_state(state)
+            self.assertEqual(book.summary()["runtime"]["suspended"], 0)
+        token = book.begin("implementer")
+        book.end(token, "ok", charged_seconds=10, suspended_seconds=60)
+        self.assertEqual(book.load()["runtime_suspended_seconds"], 60)
+
+
 class TestNoProgress(LedgerCase):
     def test_a_repeated_outcome_is_counted(self):
         book = self.book()
@@ -394,7 +458,7 @@ class TestSummary(LedgerCase):
         token = book.begin("implementer")
         book.end(token, "ok", charged_seconds=600)
         summary = book.summary()
-        self.assertEqual(summary["runtime"], {"used": 600, "limit": 3600, "remaining": 3000})
+        self.assertEqual(summary["runtime"], {"used": 600, "limit": 3600, "remaining": 3000, "suspended": 0})
         # The older key still answers what it always answered.
         self.assertEqual(summary["runtime_remaining_seconds"], 3000)
 

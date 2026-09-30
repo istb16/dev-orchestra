@@ -701,6 +701,11 @@ def cmd_status(args: argparse.Namespace) -> int:
                 "" if summary["tokens"]["complete"] else ", partially reported",
             )
         )
+    if summary["runtime"]["suspended"]:
+        _out(
+            "Runtime: %.0fs of delegated run time spent asleep was not charged (dev-orchestra budget show)"
+            % summary["runtime"]["suspended"]
+        )
     return 0
 
 

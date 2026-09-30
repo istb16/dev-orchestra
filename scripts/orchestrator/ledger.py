@@ -254,6 +254,21 @@ def _epoch(ledger: Dict[str, Any]) -> str:
     return str(ledger.get("epoch") or ledger.get("workflow") or "")
 
 
+def _seconds(value: Any) -> float:
+    """A measured number of seconds as a finite, non-negative float, or 0.
+
+    ``max(x, 0.0)`` alone lets NaN through, and one NaN charge would leave
+    ``runtime_seconds`` NaN for the rest of the epoch.
+    """
+    try:
+        seconds = float(value or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+    if not math.isfinite(seconds):
+        return 0.0
+    return max(seconds, 0.0)
+
+
 class BudgetExhausted(RuntimeError):
     """Raised when a stage may not be attempted again."""
 
@@ -382,6 +397,9 @@ class Ledger:
             # what the workflow has cost in total is already answered by the
             # ``duration_seconds`` on the events, which outlive every reset.
             "runtime_seconds": 0.0,
+            # The sleep left out of ``runtime_seconds`` above, over the same
+            # runs and reset with it. Summed per run, like the charge.
+            "runtime_suspended_seconds": 0.0,
             "tokens": _carried_account(previous),
         }
 
@@ -600,12 +618,15 @@ class Ledger:
         status: str,
         detail: Optional[Dict[str, Any]] = None,
         charged_seconds: float = 0.0,
+        suspended_seconds: float = 0.0,
     ) -> None:
         """Close an in-flight stage and charge what its run was measured to take.
 
         ``charged_seconds`` is the caller's own measurement -- ``result.duration``
-        for a run, the sum over the panel for a review batch -- and defaults to
-        zero because a caller that has no measurement must not invent one.
+        less ``result.suspended`` for a run, the sum over the panel for a review
+        batch -- and defaults to zero because a caller that has no measurement
+        must not invent one. ``suspended_seconds`` is the sleep already left
+        out of it, recorded beside the charge and never charged.
 
         The charge lands only when the pop returned an entry *and* that entry
         belongs to the epoch the ledger is on now. Both halves matter:
@@ -640,6 +661,7 @@ class Ledger:
             entry = (ledger.get("in_flight") or {}).pop(token, None)
             current = _epoch(ledger)
             charged, skipped = 0.0, ""
+            suspended = _seconds(suspended_seconds)
             if entry is None:
                 skipped = "no in-flight entry for this token"
             elif entry.get("epoch", current) != current:
@@ -648,11 +670,17 @@ class Ledger:
                     current,
                 )
             else:
-                charged = max(float(charged_seconds or 0.0), 0.0)
+                charged = _seconds(charged_seconds)
                 ledger["runtime_seconds"] = float(ledger.get("runtime_seconds") or 0.0) + charged
+                ledger["runtime_suspended_seconds"] = (
+                    _seconds(ledger.get("runtime_suspended_seconds")) + suspended
+                )
             ledger["last_activity_monotonic"] = time.time()
 
             event = {"status": status, "charged_seconds": round(charged, 2)}
+            # Absent when nothing was left out, so an event is what it always was.
+            if suspended:
+                event["suspended_seconds"] = round(suspended, 2)
             if skipped:
                 event["charge_skipped"] = skipped
             if entry:
@@ -726,6 +754,7 @@ class Ledger:
                 }
         runtime_left = self.runtime_remaining()
         runtime_used = self.runtime_used()
+        runtime_suspended = _seconds(ledger.get("runtime_suspended_seconds"))
         # Rounded up, never to nearest: a reported 0 has to mean what
         # ``runtime_refusal`` means, or a caller keying off it stops over half a
         # second a ``run`` would still spend from.
@@ -744,6 +773,7 @@ class Ledger:
                 "used": round(runtime_used, 2),
                 "limit": self.settings.get("max_runtime_seconds"),
                 "remaining": runtime_left,
+                "suspended": round(runtime_suspended, 2),
             },
             "signatures": {
                 stage: entry.get("repeats") for stage, entry in (ledger.get("signatures") or {}).items()
