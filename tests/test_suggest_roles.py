@@ -243,6 +243,9 @@ class CliCase(IsolatedCase):
     def setUp(self):
         super().setUp()
         self.fake_clis(claude=True)
+        # The command reports the root it resolved; on macOS the temporary
+        # directory is a symlink (/var -> /private/var), so compare real paths.
+        self.project = os.path.realpath(self.project)
 
     def project_file(self):
         return os.path.join(self.project, ".dev-orchestra.yaml")
