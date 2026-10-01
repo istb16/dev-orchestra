@@ -7,7 +7,7 @@ import copy
 import os
 import re
 import sys
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from . import config as config_mod
 from . import doctor as doctor_mod
@@ -20,8 +20,10 @@ from .cli_common import (
     _emit_json,
     _err,
     _fitted_base,
+    _global_file,
     _layer_path,
     _out,
+    _panel_write_problems,
     _prune_base,
     _read_layer,
     _resolve_scope,
@@ -101,7 +103,15 @@ def cmd_config_show(args: argparse.Namespace) -> int:
     preset = {"name": loaded.preset, "source": loaded.preset_source, "notes": loaded.preset_notes}
     if args.json:
         providers_payload = {name: origin_payload(name) for name in referenced}
-        _emit_json({"source": source, "config": data, "providers": providers_payload, "preset": preset})
+        payload: Dict[str, Any] = {
+            "source": source,
+            "config": data,
+            "providers": providers_payload,
+            "preset": preset,
+        }
+        if not scoped:
+            payload["reviewer_origins"] = [origin.label() for origin in loaded.reviewer_origins]
+        _emit_json(payload)
         return 0
     _out("Source: %s" % source)
     if not scoped:
@@ -115,10 +125,16 @@ def cmd_config_show(args: argparse.Namespace) -> int:
     if scoped:
         _out(_render_layer(path, data, exists))
     else:
-        _out(wizard_mod.render_summary(data) if "orchestrator" in data else "(empty layer)")
+        summary = wizard_mod.render_summary(data, loaded.reviewer_origins)
+        _out(summary if "orchestrator" in data else "(empty layer)")
     if referenced:
         _out("Providers: %s" % ", ".join(_describe_referenced_provider(name) for name in referenced))
-    problems = config_mod.validate(loaded.data, project_layer=loaded.project_layer)
+    problems = config_mod.validate(
+        loaded.data,
+        project_layer=loaded.project_layer,
+        global_layer=loaded.global_layer,
+        origins=loaded.reviewer_origins,
+    )
     if problems:
         _out("Problems:")
         for problem in problems:
@@ -180,7 +196,12 @@ def cmd_config_setup(args: argparse.Namespace) -> int:
     # The layer on its own names no roles at all, so it is the configuration it
     # resolves to that has to be valid -- the same dict the wizard summarised.
     preview, fit, _preset, _source = _compose_preview(scope, data, args.cwd)
-    problems = config_mod.validate(preview, project_layer=data if scope == "project" else None)
+    problems = config_mod.validate(
+        preview,
+        project_layer=data if scope == "project" else None,
+        global_layer=data if scope == "global" else _global_file(),
+        origins=fit.origins,
+    )
     if problems:
         # Writing this would leave every workflow command failing with
         # "invalid configuration" straight after a successful-looking setup.
@@ -190,7 +211,7 @@ def cmd_config_setup(args: argparse.Namespace) -> int:
         return 2
     config_mod.write_config_file(path, data, scope)
     if args.preset:
-        _out(wizard_mod.render_summary(preview))
+        _out(wizard_mod.render_summary(preview, fit.origins))
         notes = presets_mod.render_notes(fit)
         if notes:
             _out(notes)
@@ -223,11 +244,14 @@ def cmd_config_reset(args: argparse.Namespace) -> int:
     # of those overrides, or the reset would leave the file as invalid as before.
     cleared: Dict[str, Any] = {"version": config_mod.CONFIG_VERSION}
     unknown = None
-    if scope == "global" and os.path.isfile(path):
+    previous: Dict[str, Any] = {}
+    if os.path.isfile(path):
         try:
-            preset = config_mod.read_config_file(path).get("preset")
+            previous = config_mod.read_config_file(path)
         except config_mod.ConfigError:
-            preset = None  # a file that does not parse is what a reset is for
+            pass  # a file that does not parse is what a reset is for
+    if scope == "global":
+        preset = previous.get("preset")
         if isinstance(preset, str) and preset in presets_mod.PRESETS:
             cleared["preset"] = preset
         elif preset is not None:
@@ -235,6 +259,9 @@ def cmd_config_reset(args: argparse.Namespace) -> int:
     config_mod.write_config_file(path, cleared, scope)
     if unknown is not None:
         _out("note: dropped the unknown preset %r; the global file now names none" % (unknown,))
+    extras = previous.get("reviewers_extra")
+    if isinstance(extras, list) and extras:
+        _out("removed %d extra reviewer(s) (reviewers_extra)" % len(extras))
     if scope == "global":
         name = cleared.get("preset") or presets_mod.DEFAULT
         following = "every value now follows preset %s and the built-in defaults" % name
@@ -246,7 +273,7 @@ def cmd_config_reset(args: argparse.Namespace) -> int:
     except config_mod.ConfigError as exc:
         _err(str(exc))  # the other layer does not parse; the reset itself is done
         return 0
-    _out(wizard_mod.render_summary(loaded.data))
+    _out(wizard_mod.render_summary(loaded.data, loaded.reviewer_origins))
     for note in loaded.preset_notes:
         _out("note: %s" % note)
     return 0
@@ -265,6 +292,8 @@ def cmd_config_set(args: argparse.Namespace) -> int:
         scope = _resolve_scope(args.scope, args.cwd)
     path, layer = _read_layer(scope, args.cwd)
     before = config_mod.load(args.cwd, validate_result=False) if role_key in config_mod.KNOWN_ROLES else None
+    # A panel path is checked as the panel it leaves, before anything is written.
+    panel_before = copy.deepcopy(layer) if role_key in ("reviewers", "reviewers_extra") else None
     frozen = left_out = None
     if "[" in args.path:
         list_path = args.path.split("[", 1)[0]
@@ -280,6 +309,15 @@ def cmd_config_set(args: argparse.Namespace) -> int:
         refusal = _project_seat_write_refusal(args.path, value, layer, path)
         if refusal:
             _err(refusal)
+            return 2
+    renamed = re.fullmatch(r"reviewers_extra\[(\d+)\]\.id", args.path)
+    if renamed:
+        # As `reviewer set --id` refuses it: the extra would run under another name.
+        preview, fit, _preset, _source = _compose_preview(scope, layer, args.cwd)
+        own = config_mod.ReviewerOrigin(scope, "reviewers_extra", int(renamed.group(1)))
+        index = next((i for i, origin in enumerate(fit.origins) if origin == own), None)
+        if index is not None and _id_taken(preview, index, value):
+            _err("reviewer id %r already exists" % (value,))
             return 2
     try:
         config_mod.set_path(layer, args.path, value)
@@ -297,6 +335,12 @@ def cmd_config_set(args: argparse.Namespace) -> int:
         if left_out:
             _err(left_out)
         return 2
+    if panel_before is not None:
+        introduced = _panel_write_problems(scope, panel_before, layer, args.cwd)
+        if introduced:
+            for problem in introduced:
+                _err(problem)
+            return 2
     config_mod.write_config_file(path, layer, scope)
     _out("%s = %r  (%s: %s)" % (args.path, value, scope, path))
     if frozen:
@@ -305,7 +349,13 @@ def cmd_config_set(args: argparse.Namespace) -> int:
     effective = reloaded.data
     if before is not None:
         _left_the_fit_note(before, reloaded, role_key, path)
-    for problem in config_mod.validate(effective, project_layer=reloaded.project_layer):
+    problems = config_mod.validate(
+        effective,
+        project_layer=reloaded.project_layer,
+        global_layer=reloaded.global_layer,
+        origins=reloaded.reviewer_origins,
+    )
+    for problem in problems:
         _err("warning: %s" % problem)
     for warning in config_mod.read_only_arg_warnings(reloaded):
         _err("warning: %s" % warning)
@@ -319,6 +369,7 @@ _SEAT_PROVIDER_PATHS = (
     re.compile(r"^(?P<role>orchestrator|architect)\.provider$"),
     re.compile(r"^(?P<role>orchestrator|architect)\.model_tiers\.(?P<tier>.+)\.provider$"),
     re.compile(r"^reviewers\[(?P<index>\d+)\]\.provider$"),
+    re.compile(r"^reviewers_extra\[(?P<index>\d+)\]\.provider$"),
 )
 
 
@@ -335,7 +386,7 @@ def _project_seat_write_refusal(dotted: str, value: Any, layer: Dict[str, Any], 
         found = match.groupdict()
         if found.get("index") is not None:
             index = int(found["index"])
-            reviewers = layer.get("reviewers")
+            reviewers = layer.get(dotted.split("[", 1)[0])
             entry = reviewers[index] if isinstance(reviewers, list) and index < len(reviewers) else {}
             reviewer_id = entry.get("id") if isinstance(entry, dict) else None
             display = "reviewer %s" % (reviewer_id or index + 1)
@@ -437,7 +488,12 @@ def _warn_unresolvable(effective: Dict[str, Any], role_key: str) -> None:
 
 def cmd_config_validate(args: argparse.Namespace) -> int:
     loaded = config_mod.load(args.cwd, validate_result=False)
-    problems = config_mod.validate(loaded.data, project_layer=loaded.project_layer)
+    problems = config_mod.validate(
+        loaded.data,
+        project_layer=loaded.project_layer,
+        global_layer=loaded.global_layer,
+        origins=loaded.reviewer_origins,
+    )
     # Warnings, not problems: they refuse one role's runs, not the file.
     warnings = config_mod.read_only_arg_warnings(loaded)
     refused = list(config_mod.project_raw_arg_refusals(loaded))
@@ -543,7 +599,13 @@ def cmd_reviewer_list(args: argparse.Namespace) -> int:
     loaded = config_mod.load(args.cwd, validate_result=False)
     reviewers = loaded.reviewers()
     if args.json:
-        _emit_json([_redacted_reviewer(reviewer) for reviewer in reviewers])
+        listed: List[Any] = []
+        for index, reviewer in enumerate(reviewers):
+            shown = _redacted_reviewer(reviewer)
+            if isinstance(shown, dict):
+                shown["origin"] = loaded.reviewer_origin(index).label()
+            listed.append(shown)
+        _emit_json(listed)
         return 0
     if not reviewers:
         _out("No reviewers configured.")
@@ -551,8 +613,9 @@ def cmd_reviewer_list(args: argparse.Namespace) -> int:
     for index, reviewer in enumerate(reviewers, 1):
         model = reviewer.get("model") or {}
         when = opt_mod.condition_label(reviewer)
+        origin = loaded.reviewer_origin(index - 1)
         _out(
-            "%d. %-18s %-8s %-18s %-8s %s%s"
+            "%d. %-18s %-8s %-18s %-8s %s%s%s"
             % (
                 index,
                 reviewer.get("id"),
@@ -561,6 +624,7 @@ def cmd_reviewer_list(args: argparse.Namespace) -> int:
                 model.get("version", "latest"),
                 reviewer.get("role", "general"),
                 "" if when == opt_mod.WHEN_ALWAYS else " (when: %s)" % when,
+                " (extra: %s)" % origin.layer if origin.key == "reviewers_extra" else "",
             )
         )
     return 0
@@ -579,14 +643,19 @@ def cmd_reviewer_add(args: argparse.Namespace) -> int:
         return 2
     scope = _resolve_scope(args.scope, args.cwd)
     path, layer = _read_layer(scope, args.cwd)
-    base = _fitted_base(scope, args.cwd, layer)
-    frozen, _left_out = _seed_panel(scope, layer, base, path, args.cwd)
+    before = copy.deepcopy(layer)
+    preview, _fit, preset, _source = _compose_preview(scope, layer, args.cwd)
     role = args.role or "general"
-    reviewer_id = args.id or config_mod.suggest_reviewer_id(layer, args.provider, role)
+    reviewer_id = args.id or config_mod.suggest_reviewer_id(preview, args.provider, role)
     if scope == "project" and config_mod.warned_provider(args.provider):
         # Nothing written: the same refusal a run of this reviewer would meet.
         name = os.path.basename(path)
         _err(config_mod.project_reviewer_refusal("reviewer %s" % reviewer_id, args.provider, name))
+        return 2
+    panel = preview.get("reviewers")
+    if args.id and any(isinstance(r, dict) and r.get("id") == args.id for r in panel or []):
+        # Any id of the panel in force: an extra never takes one, it is renamed.
+        _err("reviewer id %r already exists" % args.id)
         return 2
     family = args.model
     if family is None:
@@ -601,23 +670,66 @@ def cmd_reviewer_add(args: argparse.Namespace) -> int:
         when=args.when,
         paths=args.when_paths,
     )
+    # A file that lists the panel owns it, so the reviewer joins that list;
+    # otherwise it goes beside the panel the file inherits, which keeps
+    # following the fit or the global file's list.
+    listed = layer.get("reviewers") is not None
     try:
-        config_mod.add_reviewer(layer, reviewer)
+        if listed:
+            config_mod.add_reviewer(layer, reviewer)
+        else:
+            config_mod.add_extra_reviewer(layer, reviewer)
     except config_mod.ConfigError as exc:
         _err(str(exc))
         return 2
-    problems = config_mod.validate(config_mod.deep_merge(config_mod.default_config(), layer))
-    blocking = [p for p in problems if p.startswith("reviewers")]
+    blocking = _panel_write_problems(scope, before, layer, args.cwd)
     if blocking:
         for problem in blocking:
             _err(problem)
         return 2
     config_mod.write_config_file(path, layer, scope)
-    _out("Added reviewer %s (%s / %s / %s) to %s" % (reviewer_id, args.provider, family, role, path))
-    if frozen:
-        _out(frozen)
+    added = "Added reviewer %s (%s / %s / %s) to %s" % (reviewer_id, args.provider, family, role, path)
+    if listed:
+        _out(added)
+    else:
+        _out("%s as an extra; the panel still follows %s" % (added, _inherited_panel(scope, preset)))
     _warn_unenforced_after_write(args.cwd)
     return 0
+
+
+def _inherited_panel(scope: str, preset: Any) -> str:
+    """What a file that lists no reviewers takes its panel from, the way a message says it."""
+    if scope == "project" and _global_file().get("reviewers") is not None:
+        return "the global file's reviewers"
+    return "preset %s's fit" % preset if preset else "the built-in defaults"
+
+
+def _own_extra(fit: Any, index: int, scope: str) -> Any:
+    """The origin of reviewer ``index`` when it is an extra of the file being edited, else None."""
+    origins = fit.origins
+    origin = origins[index] if index < len(origins) else None
+    if origin is not None and origin.key == "reviewers_extra" and origin.layer == scope:
+        return origin
+    return None
+
+
+def _id_taken(preview: Dict[str, Any], index: Optional[int], reviewer_id: Any) -> bool:
+    """Whether a reviewer other than ``index`` of the panel in force holds ``reviewer_id``.
+
+    The check ``reviewer add`` makes, for a write that renames a seat: an
+    extra never takes an id, it is renamed, so the name written would not be
+    the one it runs under.
+    """
+    return any(
+        position != index and isinstance(reviewer, dict) and reviewer.get("id") == reviewer_id
+        for position, reviewer in enumerate(preview.get("reviewers") or [])
+    )
+
+
+def _seat_selector(reviewer: Any, selector: str) -> str:
+    """How a seat resolved over the panel in force is found again in the seeded list."""
+    reviewer_id = reviewer.get("id") if isinstance(reviewer, dict) else None
+    return reviewer_id if isinstance(reviewer_id, str) and reviewer_id else selector
 
 
 def _warn_unenforced_after_write(cwd: Any) -> None:
@@ -633,35 +745,38 @@ def _warn_unenforced_after_write(cwd: Any) -> None:
     _warn_unenforced(loaded)
 
 
-def _reviewer_problems(layer: Dict[str, Any]) -> List[str]:
-    """The ``reviewers`` problems of a config layer, merged over the defaults."""
-    problems = config_mod.validate(config_mod.deep_merge(config_mod.default_config(), layer))
-    return [p for p in problems if p.startswith("reviewers")]
-
-
-def _unindexed(problem: str) -> str:
-    """A problem without its list indices, which a removal shifts."""
-    return re.sub(r"\[\d+\]", "[]", problem)
-
-
 def cmd_reviewer_remove(args: argparse.Namespace) -> int:
     scope = _resolve_scope(args.scope, args.cwd)
     path, layer = _read_layer(scope, args.cwd)
-    base = _fitted_base(scope, args.cwd, layer)
-    frozen, left_out = _seed_panel(scope, layer, base, path, args.cwd)
-    before = {_unindexed(p) for p in _reviewer_problems(layer)}
+    before = copy.deepcopy(layer)
+    # Resolved over the panel in force with this file, which in project scope
+    # is what `reviewer list` shows, so its positions are the list's.
+    preview, fit, _preset, _source = _compose_preview(scope, layer, args.cwd)
     try:
-        _, removed = config_mod.remove_reviewer(layer, args.selector)
+        index, found = config_mod.find_reviewer(preview, args.selector)
     except config_mod.ConfigError as exc:
         _err(str(exc))
-        if left_out:
-            _err(left_out)
         return 2
+    frozen = None
+    origin = _own_extra(fit, index, scope)
+    if origin is not None:
+        # The file's own extra goes in place, and the panel stays inherited.
+        removed = layer["reviewers_extra"].pop(origin.position)
+    else:
+        base = _fitted_base(scope, args.cwd, layer)
+        frozen, left_out = _seed_panel(scope, layer, base, path, args.cwd)
+        try:
+            _, removed = config_mod.remove_reviewer(layer, _seat_selector(found, args.selector))
+        except config_mod.ConfigError as exc:
+            _err(str(exc))
+            if left_out:
+                _err(left_out)
+            return 2
     # The same check add and set make: removing the last reviewer that always
     # runs would leave a panel that a quiet round could not be reviewed by.
     # Only what the removal itself introduced is refused, so removing a broken
     # reviewer stays a way out of a panel that has another one.
-    problems = [p for p in _reviewer_problems(layer) if _unindexed(p) not in before]
+    problems = _panel_write_problems(scope, before, layer, args.cwd, removed=origin)
     if problems:
         for problem in problems:
             _err(problem)
@@ -679,19 +794,36 @@ def cmd_reviewer_set(args: argparse.Namespace) -> int:
         return 2
     scope = _resolve_scope(args.scope, args.cwd)
     path, layer = _read_layer(scope, args.cwd)
-    base = _fitted_base(scope, args.cwd, layer)
-    frozen, left_out = _seed_panel(scope, layer, base, path, args.cwd)
+    before = copy.deepcopy(layer)
+    preview, fit, _preset, _source = _compose_preview(scope, layer, args.cwd)
     try:
-        index, reviewer = config_mod.find_reviewer(layer, args.selector)
+        index, found = config_mod.find_reviewer(preview, args.selector)
     except config_mod.ConfigError as exc:
         _err(str(exc))
-        if left_out:
-            _err(left_out)
         return 2
+    # Before either edit path: an extra of the project file is held to it too.
     if args.provider and scope == "project" and config_mod.warned_provider(args.provider):
-        display = "reviewer %s" % (args.id or reviewer.get("id") or index + 1)
+        display = "reviewer %s" % (args.id or found.get("id") or index + 1)
         _err(config_mod.project_reviewer_refusal(display, args.provider, os.path.basename(path)))
         return 2
+    if args.id and _id_taken(preview, index, args.id):
+        _err("reviewer id %r already exists" % args.id)
+        return 2
+    frozen = None
+    origin = _own_extra(fit, index, scope)
+    if origin is not None:
+        # The entry as the file holds it: a renamed extra keeps its written id.
+        reviewer = layer["reviewers_extra"][origin.position]
+    else:
+        base = _fitted_base(scope, args.cwd, layer)
+        frozen, left_out = _seed_panel(scope, layer, base, path, args.cwd)
+        try:
+            _, reviewer = config_mod.find_reviewer(layer, _seat_selector(found, args.selector))
+        except config_mod.ConfigError as exc:
+            _err(str(exc))
+            if left_out:
+                _err(left_out)
+            return 2
     family_note = ""
     if args.provider:
         previous = reviewer.get("provider")
@@ -722,12 +854,7 @@ def cmd_reviewer_set(args: argparse.Namespace) -> int:
         reviewer.pop("when", None)
     elif args.when:
         reviewer["when"] = args.when
-    layer["reviewers"][index] = reviewer
-    problems = [
-        p
-        for p in config_mod.validate(config_mod.deep_merge(config_mod.default_config(), layer))
-        if p.startswith("reviewers")
-    ]
+    problems = _panel_write_problems(scope, before, layer, args.cwd)
     if problems:
         for problem in problems:
             _err(problem)

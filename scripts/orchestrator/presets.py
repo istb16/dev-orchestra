@@ -97,6 +97,9 @@ class Fit(NamedTuple):
     #: Parallel to ``notes``: the key each one is about (a role, or
     #: ``reviewers``), so a caller can drop the notes for what a file sets.
     subjects: List[str]
+    #: Parallel to the composed panel: where each reviewer was written.
+    #: Filled by ``config.compose``; an expansion alone leaves it empty.
+    origins: Tuple[config_mod.ReviewerOrigin, ...] = ()
 
 
 def _standard() -> Preset:

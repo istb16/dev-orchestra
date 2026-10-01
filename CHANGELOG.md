@@ -23,6 +23,19 @@ The public surface covered by that promise is: the configuration schema, the
   before. See "Taking part in preset fitting" in `references/providers.md`
   (#186).
 
+- **`reviewers_extra` adds reviewers beside the panel a file inherits**, so the
+  panel keeps following the preset's fit or the global file's list. `reviewer
+  add` now writes it in a file that lists no `reviewers`, where it used to copy
+  the whole panel in; `reviewer remove` and `reviewer set` edit an extra in
+  place. An extra whose id is taken runs under a new one, with a note. Every
+  panel writer, `config set reviewers[...]` included, now refuses (exit 2)
+  before writing a panel problem it would introduce. A project add on an
+  agy-only machine keeps the fitted agy reviewer running, warned. `config
+  show`, `reviewer list` and `doctor` mark each extra, and `doctor` notes a
+  list that holds the inherited panel plus more. Files already written resolve
+  as before; an older release ignores the key. See "Adding reviewers beside the
+  panel" in `references/configuration.md` (#187).
+
 ### Changed
 
 - **On a machine with agy and neither Claude, Codex nor an eligible user

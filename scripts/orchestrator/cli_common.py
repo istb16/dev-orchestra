@@ -7,6 +7,7 @@ import codecs
 import copy
 import json
 import os
+import re
 import sys
 from typing import Any, Dict, List, Optional, Tuple, overload
 
@@ -265,6 +266,93 @@ def _compose_preview(scope: str, layer: Dict[str, Any], start: Optional[str] = N
 def _effective_preview(scope: str, layer: Dict[str, Any], start: Optional[str] = None) -> Dict[str, Any]:
     """What ``load()`` will resolve once this layer is saved, mention rule included."""
     return _compose_preview(scope, layer, start)[0]
+
+
+#: The one panel-wide problem that names an entry only as an example: which
+#: high-risk reviewer it names says nothing about whether a write caused it.
+_NO_RISK_PATTERN = "optimization.high_risk_paths: no pattern in force"
+
+#: How a problem names a panel entry: an extra by its file and position, any
+#: other reviewer by its place in the panel.
+_ENTRY_LABEL = re.compile(r"reviewers_extra\[(\d+)\] in the (global|project) file|reviewers\[(\d+)\]")
+
+
+def _panel_problems(
+    scope: str, layer: Dict[str, Any], start: Optional[str] = None
+) -> Tuple[List[str], List[Optional[str]]]:
+    """The panel problems ``load()`` would raise with this layer saved, and the panel's ids."""
+    data, fit, _preset, _source = _compose_preview(scope, layer, start)
+    global_layer, project_layer = (layer, None) if scope == "global" else (_global_file(), layer)
+    problems = config_mod.validate(
+        data, project_layer=project_layer, global_layer=global_layer, origins=fit.origins
+    )
+    panel = data.get("reviewers")
+    ids = [
+        reviewer.get("id") if isinstance(reviewer, dict) and isinstance(reviewer.get("id"), str) else None
+        for reviewer in (panel if isinstance(panel, list) else [])
+    ]
+    return [problem for problem in problems if problem.startswith(("reviewers", _NO_RISK_PATTERN))], ids
+
+
+def _problem_key(problem: str, ids: List[Optional[str]], removed: Any = None) -> Optional[str]:
+    """A problem with each entry it names said by what stays the same across a write.
+
+    A reviewer of the panel by its id, which a removal or a seeded list does
+    not move; an extra by its file and position, less one past an extra the
+    write ``removed`` -- and None for a problem of that extra itself, which
+    the write took away.
+    """
+    if problem.startswith(_NO_RISK_PATTERN):
+        return _NO_RISK_PATTERN
+    gone = False
+
+    def entry(match: "re.Match[str]") -> str:
+        nonlocal gone
+        if match.group(3) is not None:
+            index = int(match.group(3))
+            name = ids[index] if index < len(ids) else None
+            return "reviewers{%s}" % (name if name is not None else "#%d" % index)
+        position, layer = int(match.group(1)), match.group(2)
+        if removed is not None and removed.key == "reviewers_extra" and removed.layer == layer:
+            if position == removed.position:
+                gone = True
+            elif position > removed.position:
+                position -= 1
+        return "reviewers_extra[%d] in the %s file" % (position, layer)
+
+    key = _ENTRY_LABEL.sub(entry, problem)
+    return None if gone else key
+
+
+def _panel_write_problems(
+    scope: str,
+    before: Dict[str, Any],
+    after: Dict[str, Any],
+    start: Optional[str] = None,
+    removed: Any = None,
+) -> List[str]:
+    """The panel problems a write from ``before`` to ``after`` would introduce.
+
+    The one check every writer of a panel path makes before writing: the
+    configuration is composed as it would be saved, both files and the
+    extras included, so nothing is written that ``load()`` then refuses.
+    Only what the write itself introduced is refused, so an already broken
+    file stays fixable -- a problem counts as already there only for the
+    same entry, so the same mistake made on another one is still refused.
+    ``removed`` is the origin of an extra the write took out of its file.
+    """
+    old_problems, old_ids = _panel_problems(scope, before, start)
+    new_problems, new_ids = _panel_problems(scope, after, start)
+    # A reviewer renamed in place is still the one it was.
+    kept = set(new_ids)
+    names = [
+        old_ids[index]
+        if name not in old_ids and index < len(old_ids) and old_ids[index] not in kept
+        else name
+        for index, name in enumerate(new_ids)
+    ]
+    known = {_problem_key(problem, old_ids, removed) for problem in old_problems}
+    return [problem for problem in new_problems if _problem_key(problem, names) not in known]
 
 
 def _frozen_panel_note(

@@ -208,7 +208,7 @@ def run(
             preset = names[picked]
             data = presets_mod.with_preset(existing, preset)
             preview, fit, _name, _source = config_mod.compose(data, {}, on_path)
-            prompter.say(render_summary(preview))
+            prompter.say(render_summary(preview, fit.origins))
             notes = presets_mod.render_notes(fit)
             if notes:
                 prompter.say(notes)
@@ -244,22 +244,33 @@ def run(
         step += 1
 
     prompter.say("%d. External Reviewers" % step)
+    # Never asked about and never written: the layer keeps it as the file held it.
+    extras = data.get("reviewers_extra")
+    if isinstance(extras, list) and extras:
+        ids = ", ".join(str(entry.get("id")) for entry in extras if isinstance(entry, dict))
+        prompter.say(
+            "   This file's reviewers_extra (%s) is kept as it is; reviewer add/remove manage it." % ids
+        )
     data["reviewers"] = _ask_reviewers(prompter, providers, effective, scope)
     prompter.say("")
 
     if preset is not None:
         data = _differences_from_fit(data, base, preset)
         preview, fit, _name, _source = config_mod.compose(data, {}, on_path)
-        prompter.say(render_summary(preview))
+        prompter.say(render_summary(preview, fit.origins))
         notes = presets_mod.render_notes(fit)
         if notes:
             prompter.say(notes)
             prompter.say("")
     else:
-        # Summarised over the base, so what is shown before saving is what
-        # `load()` will resolve afterwards -- the layer alone would report a
-        # design review as off while the global layer has it on.
-        prompter.say(render_summary(config_mod.deep_merge(base, data)))
+        # Composed as `load()` will compose it once saved, so what is shown
+        # before saving is what is in force afterwards -- the layer alone would
+        # report a design review as off while the global layer has it on, and
+        # would leave out the extras it keeps. Imported late, as `_say` does.
+        from .cli_common import _compose_preview
+
+        preview, fit, _name, _source = _compose_preview(scope, data)
+        prompter.say(render_summary(preview, fit.origins))
     save = prompter.ask_yes_no("Save configuration?", True)
     return data, save
 
@@ -502,7 +513,8 @@ def _default_reviewer_provider(providers: Sequence[Tuple[str, str, bool]]) -> st
     return providers[0][0]
 
 
-def render_summary(data: Dict[str, Any]) -> str:
+def render_summary(data: Dict[str, Any], origins: Sequence[config_mod.ReviewerOrigin] = ()) -> str:
+    """``origins``, parallel to the panel, marks each extra with the file it came from."""
     lines = ["Configuration", ""]
     for key, title in ROLE_TITLES:
         spec = data.get(key) or {}
@@ -521,14 +533,19 @@ def render_summary(data: Dict[str, Any]) -> str:
         lines.append("    (none configured)")
     for index, reviewer in enumerate(reviewers, 1):
         when = condition_label(reviewer)
+        origin = origins[index - 1] if index <= len(origins) else None
+        mark = ""
+        if origin is not None and origin.key == "reviewers_extra":
+            mark = " (extra, %s file)" % origin.layer
         lines.append(
-            "    %d. %s / %s / %s%s"
+            "    %d. %s / %s / %s%s%s"
             % (
                 index,
                 _describe(reviewer),
                 reviewer.get("role", "general"),
                 reviewer.get("id"),
                 "" if when == WHEN_ALWAYS else " (when: %s)" % when,
+                mark,
             )
         )
     # Shown rather than asked: the wizard settles who does which job, and this

@@ -1,4 +1,4 @@
-<!-- translated-from: references/configuration.md sha256:e268495cdfbfa0fc7c06dc8bfc41b5e21565b8ea398c4817a3795524f3ee92c5 -->
+<!-- translated-from: references/configuration.md sha256:a80522aa0b907e1236d55ab64b17ab4fea1ac17134fe57399b7bed26aed17024 -->
 
 > この文書は [references/configuration.md](../../../references/configuration.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -13,6 +13,7 @@
 - [設定の置き場所](#where-it-lives)
 - [優先順位](#precedence)
 - [プリセット](#presets)
+  - [パネルの横にレビュアーを足す（`reviewers_extra`）](#adding-reviewers-beside-the-panel-reviewers_extra)
 - [スキーマ（version 1）](#schema-version-1)
   - [フィールドリファレンス](#field-reference)
   - [ロールのオプション](#role-options)
@@ -193,21 +194,33 @@ claude-general-2 (sonnet)`。
 パネルも同じ規則です: どれかのファイルの `reviewers` リストはフィットしたパネルを丸ごと置き換え、
 自分で並べたレビュアーの CLI が無ければ、並べたのは自分なので、毎回のラウンドで失敗し続けます。
 
-**パネルを編集するコマンドは、パネルを記録します。** `reviewer add`、`reviewer remove`、
-`reviewer set`、`config set reviewers[...]` は、このマシンでフィットしたパネルから始め、それを
-ファイルにコピーしてから編集します。これまで継承したリストから始めていたのと同じです。それ以降は
-ファイルのリストがパネルになり、このマシンでも、そのファイルを読む他のマシンでも同じです。コマンドは
-一度だけその旨を表示します: `note: <path> now lists the reviewers; the panel no longer follows preset
-standard's fit (recorded claude-general opus, claude-general-2 sonnet)`。ロール、設計レビュー、
-最適化レベルは引き続きプリセットに従います。project スコープで、グローバルファイルがレビュアーを
-並べていない（つまりコピーするのがフィットしたパネルである）ときは、agy の枠はコピーから外します。
-project ファイルはその枠を持てないからです。note の末尾は `; not copied into .dev-orchestra.yaml:
-agy-general -- a reviewer on agy is taken only from the global config` になります。外した枠を
-指す編集（`reviewer set agy-general` や、コピーしたリストの長さを超える index）は失敗し、エラーの
-横に同じ `note: not copied into ...` を出します。グローバル
-ファイルが並べたパネルは丸ごとコピーします（[下記](#role-options)）。グローバルファイルの `config reset` は `preset` を残して
-リストを消すので、フィットが戻ります。知らないプリセット名はほかの上書きと一緒に消して `note:` を
-表示し、そのファイルは `standard` で動くようになります。
+**`reviewer add` はパネルの横に足し、ほかの書き込みコマンドはパネルを記録します。**
+`reviewers` を並べていないファイルでは、`reviewer add` は新しいレビュアーをそのファイルの
+`reviewers_extra` に書き、何もコピーしません。そのためパネルはフィット（project では
+グローバルファイルのリスト）に従い続け、コマンドはその旨を表示します: `Added reviewer
+claude-security (claude / opus / security) to <path> as an extra; the panel still follows preset
+standard's fit`。`reviewers` を並べたファイルでは、これまでどおりそこへ追加します
+（[下記](#adding-reviewers-beside-the-panel-reviewers_extra)）。`reviewer remove` と
+`reviewer set` は、有効なパネル（`reviewer list` が示す id と位置）から対象を探し、ファイル自身の
+extra ならその場で編集します。それ以外の枠（フィットしたもの、並べたもの、project から見た
+グローバルの extra）を指すときは、`config set reviewers[...]` と同じく、このマシンでフィットした
+パネルから始め、それをファイルにコピーしてから編集します。これまで継承したリストから始めていたのと
+同じです。それ以降はファイルのリストがパネルになり、このマシンでも、そのファイルを読む他のマシンでも
+同じです。コマンドは一度だけその旨を表示します: `note: <path> now lists the reviewers; the panel no
+longer follows preset standard's fit (recorded claude-general opus, claude-general-2 sonnet)`。
+ロール、設計レビュー、最適化レベルは引き続きプリセットに従います。project スコープで、グローバル
+ファイルがレビュアーを並べていない（つまりコピーするのがフィットしたパネルとグローバルの extra
+である）ときは、agy の枠はコピーから外します。project ファイルはその枠を持てないからです。note の
+末尾は `; not copied into .dev-orchestra.yaml: agy-general -- a reviewer on agy is taken only from
+the global config` になります。外した枠を指す編集（`reviewer set agy-general` や、コピーした
+リストの長さを超える index）は失敗し、エラーの横に同じ `note: not copied into ...` を出します。
+グローバルファイルが並べたパネルは丸ごとコピーします（[下記](#role-options)）。これらの
+書き込みコマンドはどれも、保存後の設定を両方のファイルを含めて組み立て、書き込みによって新たに
+生じる `reviewers` の問題（たとえば常に走るレビュアーがいなくなること）があれば、何も書かずに
+拒否します（exit 2）。ファイルにもともとあった問題は書き込みを止めません。グローバルファイルの
+`config reset` は `preset` を残してリストと extra を消すので、フィットが戻ります。知らない
+プリセット名はほかの上書きと一緒に消して `note:` を表示し、そのファイルは `standard` で動くように
+なります。
 
 `--model` なしで追加したレビュアーには、その CLI の既定の family が付きます: Claude では `opus`、
 agy では `default`、Codex とそれ以外の adapter では `recommended-coding` です。`--model` も `--pin`
@@ -224,12 +237,77 @@ picks another)`）。
 
 **セキュリティ重視や無人実行は、プリセットではなく追加の設定です。** 危険な変更に security
 レビュアーを付けるなら、`reviewer add --provider claude --role security --when high-risk` に加えて、
-このリポジトリ独自の機密パスを `optimization.extra_high_risk_paths` に。これは上のとおりパネルを
-記録します。誰も見ていない実行なら `config set design.require_approval false`。`preset: quality` と
+このリポジトリ独自の機密パスを `optimization.extra_high_risk_paths` に。これは上のとおりパネルの
+横に足します。誰も見ていない実行なら `config set design.require_approval false`。`preset: quality` と
 組み合わせれば「無人の quality」になります。
 
 古い dev-orchestra が `preset:` のあるグローバルファイルを読むと、このキーを無視して組み込み
 デフォルトで動きます。その `config validate` もこのキーを報告しません。
+
+<a id="adding-reviewers-beside-the-panel-reviewers_extra"></a>
+
+### パネルの横にレビュアーを足す（`reviewers_extra`）
+
+ファイルは、継承するパネルをコピーする代わりに、そのパネルにレビュアーを足せます。パネルは
+プリセットのフィットやグローバルファイルのリストに従い続け、足したものは残ります:
+
+```yaml
+version: 1
+reviewers_extra:
+  - id: claude-security
+    provider: claude
+    model:
+      family: opus
+      version: latest
+    role: security
+    when: high-risk
+```
+
+`reviewer add` は、ファイルが `reviewers` を並べていなければこのキーに書きます。各エントリは
+`reviewers` のエントリと同じスキーマで、`null` と `[]` は何も足しません。どちらのファイルにも
+置けて、extra はパネルの後ろに加わります:
+
+| パネル | 条件 |
+| --- | --- |
+| project ファイルの `reviewers`、次に project ファイルの extra | project ファイルが `reviewers` を並べている |
+| グローバルファイルの `reviewers`、次にグローバルの extra、次に project の extra | それ以外で、グローバルファイルが `reviewers` を並べている |
+| プリセットのフィット、次にグローバルの extra、次に project の extra | それ以外 |
+
+`reviewers: []` もリストとして数えます。
+
+**id。** extra が加わる先のパネルは、すべての id をそのまま保ちます。id がすでに使われている
+（フィット、並べたレビュアー、それより前の extra のいずれかで）extra は新しい id で走り、
+`config show` の `Preset:` の下と `doctor` の Notes に note が出ます: `reviewers_extra[0] in the
+project file: id codex-general is taken by the fitted panel; it runs as codex-general-2 (reviewer
+set codex-general-2 --id <name> keeps a name)`。そのため `--only <フィットした id>` は常に
+フィットした枠を選びます。フィットはインストールされているものに従うので、Codex を入れると
+extra の id が変わることがあります。extra がそれ以外の理由で外されることはないので、後で
+フィットが同じ枠を持つようになった extra は、削除するまで 2 回走ります。
+
+**何を検査するか。** 各ファイルの extra は、パネルに加わるかどうかにかかわらず、エントリごとに
+検査されます（id、role、provider と model、`when`、そのファイル内での id の一意性）。問題は
+`reviewers_extra[0] in the global file: ...` のように表示されます。パネル全体の規則（常に走る
+レビュアーが少なくとも 1 人いることなど）は、extra を含めたパネルに適用されます。
+`reviewer remove`、`reviewer set`、`config set reviewers_extra[<n>].<key>` は、ファイル自身の
+extra をその場で編集し（新しい id で走っている extra もその id で見つかります）、何もコピーしません。
+
+**それぞれの出どころ。** project の extra は、project の `reviewers` リストが受けるのと同じ拒否を
+すべて受けます。agy のものや `options.args` を持つものは拒否されます（[下記](#role-options)）。
+グローバルの extra が agy なら、警告付きで実行されます。`config show` は各 extra に印を付け
+（`(extra, project file)`）、その JSON には `config.reviewers` と並行する `reviewer_origins` が
+加わります。`reviewer list` は `(extra: project)` の印を付け、その JSON と `doctor` の JSON は
+各レビュアーに `origin`（`fit`、`global`、`project`、`global extra`、`project extra`）を付けます。
+`config prune` は extra を残し、`config reset` はほかの上書きと一緒に消して、いくつ消したかを
+表示します。小さな変更でレビュアーを 1 人だけ走らせるときは、パネルの順で最初の `general` の
+レビュアーなので、extra が選ばれるのは、加わる先のパネルに `general` の枠がないときだけです。
+
+**継承するパネルにさらに足したものを持つリスト**（このキーができる前の `reviewer add` が残した
+形）には、`doctor` が note を出します: `reviewers in <file>: holds the inherited panel plus
+<ids>; move <ids> to reviewers_extra and remove reviewers to keep following it`。ファイルを
+書き換えることはありません。
+
+古い dev-orchestra は `reviewers_extra` を無視します。パネルは extra なしで走り、その
+`config validate` もこのキーを報告しません。
 
 <a id="schema-version-1"></a>
 
@@ -309,6 +387,7 @@ workspace:
 | `reviewers[].id` | string | 一意で、`[a-z0-9][a-z0-9._-]*` に一致すること。レポートファイルの名前になります。 |
 | `reviewers[].role` | string | 組み込みのもの、または独自のもの。`references/reviews.md` を参照。 |
 | `reviewers[].when` | `always` \| `high-risk` \| `paths` を持つマッピング | **コード**レビューのラウンドでそのレビュアーがいつ走るか（デフォルト `always`）。`high-risk` は高リスクと判定されたラウンドにだけ加わります。`paths` を持つマッピングは、変更が自分のパターンのどれかに一致したラウンドにだけ加わります。設計レビューはどちらも無視し、すべてのレビュアーを走らせます。少なくとも 1 人は `always` のままでなければなりません。[高リスクな変更でだけ走るレビュアー](#reviewers-that-run-only-on-high-risk-changes)と[パスで絞り込むレビュアー](#reviewers-scoped-to-paths)を参照。 |
+| `reviewers_extra` | list \| null | ファイルが継承するパネルの横に足すレビュアー。`reviewers` のエントリと同じスキーマで、どちらのファイルにも置けます。id が使われていれば別の id になり、外されることはありません。[パネルの横にレビュアーを足す](#adding-reviewers-beside-the-panel-reviewers_extra)を参照。 |
 | `review.max_review_iterations` | int ≥ 0 | プロジェクト単位ではなくレビュー単位のラウンド数です。新しいブランチ、新しい `--base`、または `budget reset` でカウントはリセットされます。`0` で再レビューを完全に無効にします。 |
 | `review.parallel` | bool | `false` にするとレビュアーを 1 つずつ実行します（デバッグしやすくなります）。 |
 | `review.re_review_severities` | list | ブロッキングとみなす severity。 |
@@ -392,7 +471,8 @@ global 設定から、1 回の実行だけなら `--extra --dangerously-skip-per
 project ファイルから来ると拒否されます。`run` は exit 2 で終わり、レビュアーはそのラウンドで
 失敗し（ほかのレビュアーは走ります）、`config validate` と `doctor` がそれを報告します
 （そのため `doctor --strict` は失敗します）。`config set --scope project architect.provider agy`
-（`orchestrator.provider`、`<role>.model_tiers.<tier>.provider`、`reviewers[<n>].provider` も）、
+（`orchestrator.provider`、`<role>.model_tiers.<tier>.provider`、`reviewers[<n>].provider`、
+`reviewers_extra[<n>].provider` も）、
 `reviewer add --scope project --provider agy`、`reviewer set --scope project --provider agy` は、
 何も書かずに exit 2 で終わります。拒否のメッセージは、その席を global に設定するコマンドを示します。
 
@@ -403,8 +483,10 @@ dev-orchestra reviewer add --scope global --provider agy
 
 `reviewers[i].<key>` を 1 つでも設定した project ファイルはパネル全体を持つので（リストは
 丸ごと置き換わります）、そこへコピーされた global の agy レビュアーは project のものになり、
-同じメッセージで拒否されます。グローバルファイルにレビュアーが無く、プリセットのフィットから来た
-agy の枠はコピーされません。書き込むコマンドがそれを外し、その旨を表示します（[プリセット](#presets)）。
+同じメッセージで拒否されます。グローバルファイルにレビュアーが無いとき、プリセットのフィットから来た
+agy の枠や agy のグローバルの extra はコピーされません。書き込むコマンドがそれを外し、その旨を
+表示します（[プリセット](#presets)）。project ファイルの `reviewers_extra` も、その `reviewers` と
+同じように拒否されます。
 
 **読み取り専用ステージを緩めるようなオプションは無視されるか、拒否されます。**
 orchestrator、architect、すべてのレビュアーは、`permission_mode` や `sandbox` が何と
@@ -837,7 +919,9 @@ prune されます。そのため、グローバルの値を打ち消すため�
 まず下のレイヤーからリストの残りをコピーします -- グローバルレイヤーなら組み込みのデフォルトと
 プリセットのフィットから、プロジェクトレイヤーならグローバルレイヤーから。そのため、プロジェクトのパネルがあなたの
 グローバルファイルに入り込むことはありません。リストの末尾を超えるインデックスは新しいエントリには
-ならず、エラー（exit 2）になります。
+ならず、エラー（exit 2）になります。`reviewers_extra[0].role` は例外で、ファイル自身の extra を
+編集し、何もコピーしません。`reviewers[...]` や `reviewers_extra[...]` のパスは書き込む前に検査され、
+新たに生じるパネルの問題は、書き込んで警告するのではなく拒否されます（exit 2）。
 
 <a id="the-wizard"></a>
 
@@ -898,6 +982,13 @@ no なら、プリセットのフィットを出発点にロールとレビュ�
 ものはすべてプリセットに従い続けます。ファイルのそれ以外の設定は、デフォルトと等しい値も含めて
 そのまま残ります。`customise each role` はプリセット導入前のウィザードと
 同じで、すべての回答が保存されます。プロジェクトファイルでは、プリセットの質問はしません。
+
+ウィザードは `reviewers_extra` について尋ねず、書き込みもしません: プリセットを選んだときも含めて、
+ファイルはこのキーを持っていたとおりに残し、レビュアーの質問の前の 1 行がその旨を伝えます
+（`This file's reviewers_extra (<ids>) is kept as it is; reviewer add/remove manage it.`）。
+保存前のサマリーはどれも `load()` が解決する設定で、extra には `(extra, global file)` の印が
+付きます。レビュアーの質問への回答はこれまでどおり `reviewers` として保存され、パネルはそれに
+従います。継承するパネルに従い続けたままレビュアーを足すには `reviewer add` を使ってください。
 
 プリセット導入前にウィザードが書き込んだファイルには、すべてのロールとパネルが入っているので、
 そこに `preset:` を足しても、届くのはファイルが設定していないものだけです。`config reset` は
