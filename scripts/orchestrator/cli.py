@@ -70,6 +70,7 @@ from .cli_config import (
     cmd_config_set,
     cmd_config_setup,
     cmd_config_show,
+    cmd_config_suggest_roles,
     cmd_config_validate,
     cmd_doctor,
     cmd_model_list,
@@ -293,6 +294,25 @@ def build_parser() -> argparse.ArgumentParser:
     validate = config_sub.add_parser("validate", help="validate the effective configuration")
     validate.add_argument("--json", action="store_true")
     validate.set_defaults(func=cmd_config_validate)
+
+    suggest_roles = config_sub.add_parser(
+        "suggest-roles",
+        help="propose path-scoped specialist reviewers from the project's files (no model call)",
+    )
+    suggest_roles.add_argument(
+        "--write", action="store_true", help="add them to the project file's reviewers_extra"
+    )
+    suggest_roles.add_argument("--json", action="store_true")
+    suggest_roles.add_argument(
+        "--provider",
+        choices=available_providers(),
+        default=None,
+        help="the CLI they run on (default: the first installed of claude, codex)",
+    )
+    suggest_roles.add_argument(
+        "--model", default=None, help="model family (default: the provider's cheap one)"
+    )
+    suggest_roles.set_defaults(func=cmd_config_suggest_roles)
 
     # model ------------------------------------------------------------------
     model_parser = subparsers.add_parser("model", help="inspect available models")

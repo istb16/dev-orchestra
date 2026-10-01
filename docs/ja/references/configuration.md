@@ -1,4 +1,4 @@
-<!-- translated-from: references/configuration.md sha256:f0f79d84267c7443f36a7460e9cbac7979b9560ecbb961486aec7fd7e5686c07 -->
+<!-- translated-from: references/configuration.md sha256:1289abd76b45bc70af8e9cda43474830e0d8d72d447fe409c21f3ffa8d6e0eb0 -->
 
 > この文書は [references/configuration.md](../../../references/configuration.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -754,6 +754,94 @@ dev-orchestra reviewer add --provider codex --role database --when-paths "*migra
 dev-orchestra reviewer set codex-database --when-paths "*.sql"   # replaces the list
 dev-orchestra reviewer set codex-database --when always          # back to every round
 ```
+
+<a id="suggesting-path-scoped-reviewers-config-suggest-roles"></a>
+
+#### パスで絞り込むレビュアーを提案させる（`config suggest-roles`）
+
+`config suggest-roles` はプロジェクトのファイル名を読み、パスの集まりで担当を言い表せる
+組み込みの専門レビュアー、つまり `database`、`frontend`、`backend` を、それぞれ専用の
+`when.paths` 付きで提案します。モデルは呼ばず、トークンも使いません。`--write` を
+付けない限り何も書き込みません:
+
+```bash
+dev-orchestra config suggest-roles            # what it would add, and why
+dev-orchestra config suggest-roles --write    # add them to the project file's reviewers_extra
+dev-orchestra config suggest-roles --json
+```
+
+提案ごとに、id、プロバイダーと family、パターン、提案の根拠になったファイル、パターンが
+一覧のファイルのうち何件に一致するか、そのうち何件を `review.exclude` が withheld に
+するかを表示します。続いて、提案しなかったロールをすべて理由とともに挙げます。
+`--provider` で CLI を選びます（デフォルトは `claude` と `codex` のうち最初に
+インストールされているもの）。`--model` で family を選びます（デフォルトは Claude なら
+`sonnet`、Codex なら `recommended-coding`）。
+
+**読むファイル。** git リポジトリの中では、`git ls-files` が挙げるものだけを読みます。
+無視されたファイルと追跡外のファイルは読みません。`git ls-files` が失敗したとき、
+タイムアウト（30 秒）したとき、16 MiB を超えて出力したときはエラー（exit 2）になり、
+代わりにディレクトリを走査することはしません。git リポジトリの外ではディレクトリを
+走査します。ドットで始まるディレクトリ、下に挙げるベンダーや生成物のディレクトリ、
+8 階層より深いものは飛ばし、20,000 ファイル
+または 10 秒で打ち切ります。その場合、割合はおおよそだと出力に書かれます。ほかに開く
+ファイルは一覧のルートにある `package.json` だけで、それも追跡されていて、通常の
+ファイルで、1 MiB 以下のときに限ります。
+
+**2 つのファイル集合。** 一致件数と割合は、オーケストレーター自身のファイル
+（`workspace.dir` とプロジェクトファイル）を除く、一覧のすべてのファイルに対して数えます。
+`review.exclude` が withheld にするファイルも含みます。withheld のファイルでも、
+パスで絞り込んだレビュアーをラウンドに加えるからです。規則が読む根拠からは、ドットで
+始まるディレクトリの下、`node_modules`、`vendor`、`third_party`、`dist`、`build`、
+`target`、`venv`、`__pycache__`、`generated`、`__generated__`、`gen` の下、テスト用の
+ディレクトリ（`test`、`tests`、`__tests__`、`spec`、`testdata`、`fixtures`）の下に
+あるファイルと、`review.exclude` が withheld にするファイルを除きます。根拠として読むのは
+先頭から最大 20,000 ファイルで、それを超えると「evidence read from the first 20,000
+files」と出力されます。
+
+**規則:**
+
+| ロール | 提案する条件 | パターン |
+| --- | --- | --- |
+| `database` | `migrations`、`migrate`、`alembic`、`prisma` のいずれかのディレクトリに 2 ファイル以上ある、`*.sql` が 2 ファイル以上ある、または `schema.prisma` がある | ディレクトリ名ごとに `<name>/*` と `*/<name>/*`、`*.sql`、`schema.prisma` |
+| `frontend` | `*.tsx`、`*.jsx`、`*.vue`、`*.svelte` が 2 ファイル以上ある | 見つかった拡張子 |
+| `backend` | `api`、`server`、`backend`、`handlers`、`routes`、`controllers` のいずれかのディレクトリに 2 ファイル以上ある | ディレクトリ名ごとに `<name>/*` と `*/<name>/*`。言語の拡張子だけのパターンは使いません |
+
+- 名前は大文字小文字を問わず見つけ、パターンはリポジトリで使われている表記のまま、
+  表記ごとに 1 つ（ディレクトリなら 1 組）書きます。`Migrations/` ディレクトリからは
+  `Migrations/*` と `*/Migrations/*` ができます。
+- `package.json` のフロントエンドの依存（react、vue、svelte、`@angular/core`、next、
+  `@sveltejs/kit`、`@remix-run/*`）は根拠として挙げるだけです。コンポーネントの
+  ファイルがなければ `frontend` は提案せず、理由にそう書きます。
+- ファイルの半分以上がコンポーネントか SvelteKit の `+` で始まるルートファイルである
+  ディレクトリは、`backend` の根拠に数えません。`package.json` が `@sveltejs/kit` か
+  `@remix-run/` のパッケージを挙げているとき、または `package.json` を読まなかったうえで
+  フロントエンドの兆候があるときは、`routes` を数えません。同じ名前に数えるディレクトリと
+  数えないディレクトリがあるときは、数えるほうをフルパス（`backend/api/*`）で書き、
+  数えないほうに一致しないようにします。
+- 2 ファイルはディレクトリごとに数えます。1 ファイルずつの `migrations/` が 2 つあっても
+  数えません。
+- 有効なパネルにすでにそのロールがいるとき（フィットでも、一覧でも、どちらのファイルの
+  extra でも）、パターンが 12 個を超えるとき、パターンが一覧のファイルの半分を超えて
+  一致するときは、そのロールを提案しません。最後の場合はほとんどのラウンドに加わり、
+  パネルが縮小されなくなるからです。
+- `general`、`security`、`architecture`、`performance`、`test` は提案しません。これらが
+  判断するのはリスクや変更全体であって、パスの集まりではありません。
+
+**`--write` の書き込み先。** 現在のディレクトリから有効なプロジェクトファイルの
+`reviewers_extra` に追記します。プロジェクトファイルがなければ、一覧のルート（`.git` の
+あるディレクトリ）に `.dev-orchestra.yaml` を作ります。こうしてパネルはそれまでと同じものに
+従い続けます。有効なプロジェクトファイルが一覧のルートにないとき（たとえば実行した
+サブディレクトリにあるとき）は拒否します（exit 2、何も書き込みません）。書き込まない
+実行ではその食い違いを表示します。ほかにも、`reviewers_extra` がリストでないとき、
+有効なパネルがリストでないとき、プロジェクトのレビュアーを走らせられる CLI が
+インストールされておらず `--provider` もないとき、そして他のパネルの書き込みと同じく、
+書き込みによってパネルの問題が新たに生じるとき（条件付きのレビュアーしか残らない
+`reviewers: []` など）は、書き込む前に拒否します。`--provider agy` は `--write` の有無に
+かかわらず拒否します。
+
+提案したレビュアーは、上の family で、そのパスに触れるすべてのコードのラウンドと、
+すべての設計レビューのラウンドで走ります。リポジトリが変わったら、もう一度実行して
+ください。パネルにすでにいるロールは、名前を挙げたうえで提案しません。
 
 <a id="model-tiers"></a>
 

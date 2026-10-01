@@ -36,6 +36,16 @@ The public surface covered by that promise is: the configuration schema, the
   as before; an older release ignores the key. See "Adding reviewers beside the
   panel" in `references/configuration.md` (#187).
 
+- **`config suggest-roles` proposes path-scoped specialist reviewers from the
+  project's files**: database, frontend and backend, from directory names,
+  extensions and the root `package.json`, with no model call. `--write` adds
+  them to the `reviewers_extra` of the project file at the repository root,
+  each with `when: paths`, and refuses when the project file in force is
+  elsewhere. Roles already on the panel, and patterns matching most files, are
+  skipped and named. Inside a git repository only tracked files are read, and
+  a failing or oversized `git ls-files` is an error. See "Suggesting
+  path-scoped reviewers" in `references/configuration.md` (#183).
+
 ### Changed
 
 - **On a machine with agy and neither Claude, Codex nor an eligible user

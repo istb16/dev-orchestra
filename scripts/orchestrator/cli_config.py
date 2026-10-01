@@ -14,6 +14,7 @@ from . import doctor as doctor_mod
 from . import miniyaml
 from . import optimization as opt_mod
 from . import presets as presets_mod
+from . import suggest as suggest_mod
 from . import wizard as wizard_mod
 from .cli_common import (
     _compose_preview,
@@ -512,6 +513,137 @@ def cmd_config_validate(args: argparse.Namespace) -> int:
             for warning in warnings:
                 _out("  - %s" % warning)
     return 1 if problems else 0
+
+
+def _preview_inputs(preview: Any, notes: List[str]) -> Tuple[List[str], str, Optional[List[Any]]]:
+    """``(exclude, workspace dir, panel)`` read from an unvalidated preview.
+
+    Each falls back to its default with a note when it is not the type it
+    should be; the panel to None, which a write refuses.
+    """
+    review = preview.get("review") if isinstance(preview, dict) else None
+    exclude = review.get("exclude") if isinstance(review, dict) else None
+    if not (isinstance(exclude, list) and all(isinstance(p, str) for p in exclude)):
+        notes.append("review.exclude is not a list of strings; the default list was used")
+        exclude = list(config_mod.default_config()["review"]["exclude"])
+    workspace = preview.get("workspace") if isinstance(preview, dict) else None
+    directory = workspace.get("dir") if isinstance(workspace, dict) else None
+    if not (isinstance(directory, str) and directory):
+        notes.append("workspace.dir is not a non-empty string; .ai was used")
+        directory = ".ai"
+    panel = preview.get("reviewers") if isinstance(preview, dict) else None
+    if not isinstance(panel, list):
+        notes.append("reviewers is not a list; the panel was treated as empty")
+        return exclude, directory, None
+    return exclude, directory, panel
+
+
+def cmd_config_suggest_roles(args: argparse.Namespace) -> int:
+    cwd = os.path.abspath(args.cwd or os.getcwd())
+    root, in_git = suggest_mod.find_listing_root(cwd)
+    # The file `load()` uses from here, which is the one a write must change.
+    found = config_mod.find_project_config(cwd)
+    target = found or os.path.join(root, config_mod.PROJECT_CONFIG_NAMES[0])
+    layer = config_mod.read_config_file(found) if found else {}
+    layer.setdefault("version", config_mod.CONFIG_VERSION)
+    outside = found is not None and os.path.normcase(os.path.dirname(found)) != os.path.normcase(root)
+
+    # Every refusal comes before git runs.
+    if args.provider and config_mod.warned_provider(args.provider):
+        display = "suggested reviewers"
+        _err(config_mod.project_reviewer_refusal(display, args.provider, os.path.basename(target)))
+        return 2
+    installed = presets_mod.installed_providers()
+    provider = args.provider or presets_mod.suggestion_provider(installed)
+    no_provider = "no CLI a project reviewer can run on is installed (claude, codex); --provider names one"
+    if args.write:
+        if outside:
+            _err(
+                "the project file in force here is %s, but the files are listed from %s; run where the "
+                "project file sits at the listing root, or move it there" % (found, root)
+            )
+            return 2
+        extras = layer.get("reviewers_extra")
+        if extras is not None and not isinstance(extras, list):
+            _err("%s: reviewers_extra: must be a list; nothing was written" % target)
+            return 2
+        if provider is None:
+            _err(no_provider)
+            return 2
+    notes: List[str] = []
+    preview, fit, preset, _source = _compose_preview("project", layer, cwd)
+    exclude, workspace_dir, panel = _preview_inputs(preview, notes)
+    if panel is None and args.write:
+        _err("reviewers: the panel in force is not a list; nothing was written")
+        return 2
+
+    try:
+        if in_git:
+            paths, walked_short = suggest_mod.git_paths(root), False
+        else:
+            paths, walked_short = suggest_mod.walk_paths(root)
+    except suggest_mod.ListingError as exc:
+        _err(str(exc))
+        return 2
+    source = "git" if in_git else "walk"
+    listing = suggest_mod.build_listing(root, source, paths, exclude, workspace_dir, walked_short, notes)
+    deps, note = suggest_mod.read_package_deps(root, listing)
+    if note:
+        listing.notes.append(note)
+    if provider is None:
+        listing.notes.append(no_provider)
+        provider = presets_mod.CLAUDE  # for display only; a write was refused above
+    family = args.model or presets_mod.cheap_family(provider)
+    panel = panel or []
+    labels = [origin.label() for origin in fit.origins]
+    suggestions, skipped = suggest_mod.suggest(listing, panel, deps, labels)
+    # An id this file's extras write is taken too, even when it runs as another.
+    own_extras = layer.get("reviewers_extra")
+    own: List[Any] = own_extras if isinstance(own_extras, list) else []
+    reviewers = suggest_mod.reviewers_for(suggestions, [*panel, *own], provider, family)
+    result = suggest_mod.Result(listing, suggestions, reviewers, skipped)
+
+    written = None
+    if args.write and reviewers:
+        before = copy.deepcopy(layer)
+        try:
+            for reviewer in reviewers:
+                config_mod.add_extra_reviewer(layer, reviewer)
+        except config_mod.ConfigError as exc:
+            _err(str(exc))
+            return 2
+        problems = _panel_write_problems("project", before, layer, cwd)
+        if problems:
+            for problem in problems:
+                _err(problem)
+            return 2
+        config_mod.write_config_file(target, layer, "project")
+        written = target
+
+    if args.json:
+        for line in listing.notes:
+            _err("note: %s" % line)
+        _emit_json(suggest_mod.payload(result, written))
+    else:
+        _out(suggest_mod.render(result))
+        ids = ", ".join(reviewer["id"] for reviewer in reviewers)
+        if not reviewers:
+            _out("Nothing to add.")
+        elif written and layer.get("reviewers") is not None:
+            _out("Added %s to %s as extras, after the reviewers it lists" % (ids, target))
+        elif written:
+            _out(
+                "Added %s to %s as extras; the panel still follows %s"
+                % (ids, target, _inherited_panel("project", preset))
+            )
+        else:
+            message = "Nothing was written; --write adds them to %s's reviewers_extra" % target
+            if outside:
+                message += " (refused from here: %s is not at %s)" % (found, root)
+            _out(message)
+    if written:
+        _warn_unenforced_after_write(cwd)
+    return 0
 
 
 # --------------------------------------------------------------------------- models

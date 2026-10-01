@@ -1,4 +1,4 @@
-<!-- translated-from: references/cli.md sha256:1581cc646d2b091856a1ad9e4879b9da0e2605fc8186de5101798c0970f6600f -->
+<!-- translated-from: references/cli.md sha256:2649f747030d46cbb63ad491b83036c9bc3448a8705fe0068b93d5d2f0994dc8 -->
 
 > この文書は [references/cli.md](../../../references/cli.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -64,6 +64,7 @@ Microsoft Store のエイリアスだからです。
 | `config reset [--scope …] [--delete]` | このレイヤーの上書きを消去し（ファイルは残り、`version` だけ、グローバルファイルなら既知の `preset` も入った状態になります。知らないプリセット名は `note:` を表示して消します）、残った設定を表示します。`--delete` を付けるとファイルを削除し、グローバルレイヤーは `standard` で動きます。 |
 | `config prune [--scope …] [--dry-run]` | レイヤーが持つ値のうち、継承される値と等しいものを削除します。すべてのデフォルトを保持している 0.6.0 より前に書かれたファイル向けです。値を削除するのは組み込みのデフォルトとプリセットのフィットがどちらもその値で一致するときだけなので、prune で有効な設定が変わることはありません。`--dry-run` は書き込まずに一覧表示します。 |
 | `config set <path> <value> [--scope …] [--raw]` | 値を 1 つ設定します。パスは `a.b.c` と `reviewers[0].role` をサポートします。インデックス付きの編集では、リストの残りを下のレイヤーからコピーします。末尾を超えたインデックスは終了コード 2 で終了します。`preset` は、プロジェクトファイルがあってもグローバルファイルに書き込みます。`--scope project` を付けると終了コード 2 で終了し、何も書き込みません。読み取り専用の席の provider（`orchestrator.provider`、`architect.provider`、`<role>.model_tiers.<tier>.provider`、`reviewers[<n>].provider`）を project ファイルで `agy` にすると、終了コード 2 で終了して何も書き込まず、代わりに `--scope global` のコマンドを示します。global ファイルでは書き込んだうえで警告します。 |
+| `config suggest-roles [--write] [--json] [--provider P] [--model F]` | プロジェクトのファイル名とルートの `package.json` から、パスで絞り込む `database`、`frontend`、`backend` のレビュアーを提案します。モデルは呼びません。提案ごとに id、プロバイダー、family、`when.paths`、根拠、一覧のファイルのうち何件に一致するか（そのうち何件を `review.exclude` が withheld にするか）を表示し、続いて提案しなかったロールをすべて理由とともに表示します。git リポジトリの中では `git ls-files` だけを読み、一覧の取得に失敗したときや大きすぎるときは終了コード 2 です。`--write` は一覧のルートにあるプロジェクトファイルの `reviewers_extra` に追記し、有効なプロジェクトファイルが別の場所にあるときは拒否します（終了コード 2、何も書き込みません）。`--json` は 1 つのオブジェクト（`root`、`source`、`files`、`truncated`、`notes`、`suggestions`、`skipped`、`written`）を表示し、注記は stderr に出します。`references/configuration.md` の「パスで絞り込むレビュアーを提案させる」を参照。 |
 | `config validate [--json]` | 有効な設定を検証します。無効な場合は終了コード 1 です。`Warnings:` セクション（`--json` では `warnings`）には、読み取り専用のロールの実行が拒否することになる生引数 — project ファイルにある `options.args` のすべてと、アダプタの許可リストが受け付けないもの — 、project ファイルから来た `agy` の読み取り専用の席、agy の書き込みロールが project ファイルから受け取ることになる `options.skip_permissions` や `options.args`、そして global ファイルから来た agy の読み取り専用の席ごとに 1 行の `<seat>: read-only is NOT enforced by agy -- ...` が一覧表示されますが、終了コードは変わりません。`config set` も同じものを `warning:` 行として表示します。 |
 
 ```bash
