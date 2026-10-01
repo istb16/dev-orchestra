@@ -8,6 +8,7 @@ from helpers import IsolatedCase
 
 from orchestrator import cli, cli_common
 from orchestrator import config as config_mod
+from orchestrator import presets as presets_mod
 from orchestrator import wizard as wizard_mod
 
 
@@ -54,8 +55,50 @@ class TestWizard(IsolatedCase):
         self.assertEqual(data["architect"]["model"]["family"], "fable")
         self.assertEqual(data["implementer"]["model"]["family"], "opus")
         self.assertEqual(data["review_fixer"]["model"]["family"], "opus")
-        self.assertEqual(len(data["reviewers"]), 2)
+        self.assertEqual(len(data["reviewers"]), 5)
         self.assertEqual(config_mod.validate(data), [])
+
+    def test_enter_through_the_reviewers_keeps_the_five_defaults(self):
+        prompter = ScriptedPrompter(accept_all())
+        data, _ = wizard_mod.run(prompter)
+        self.assertIn("   How many reviewers? [5]: ", prompter.questions)
+        self.assertEqual(data["reviewers"], config_mod.default_config()["reviewers"])
+        ids = [r["id"] for r in data["reviewers"]]
+        self.assertEqual(len(ids), len(set(ids)))
+        self.assertEqual(data["reviewers"][4]["id"], "claude-security-2")
+        self.assertEqual(data["reviewers"][4]["when"], "high-risk")
+
+    def test_no_risk_pattern_leaves_the_high_risk_seat_unoffered(self):
+        existing = {"version": 1, "optimization": {"high_risk_paths": []}}
+        prompter = ScriptedPrompter(accept_all())
+        data, _ = wizard_mod.run(prompter, existing)
+        self.assertIn("   How many reviewers? [4]: ", prompter.questions)
+        self.assertIn(
+            "   Not offered: claude-security-2 (when: high-risk); optimization.high_risk_paths "
+            "has no pattern in force.",
+            prompter.output,
+        )
+        self.assertNotIn("claude-security-2", [r["id"] for r in data["reviewers"]])
+        self.assertEqual(config_mod.validate(data), [])
+
+    def test_the_fallback_panel_is_the_built_in_one_and_reads_no_path(self):
+        def installed():
+            raise AssertionError("PATH was read")
+
+        self.addCleanup(setattr, presets_mod, "installed_providers", presets_mod.installed_providers)
+        setattr(presets_mod, "installed_providers", installed)
+        self.assertEqual(wizard_mod.default_reviewer_config(), config_mod.default_config()["reviewers"])
+
+    def test_the_preset_labels_give_the_new_panels(self):
+        prompter = ScriptedPrompter(["", ""])
+        wizard_mod.run(prompter)
+        said = "\n".join(prompter.output)
+        self.assertIn("quality  -- strongest models, four reviewers, design review always on", said)
+        self.assertIn(
+            "standard -- the built-in defaults: general reviewers, security and test on Claude sonnet, "
+            "security on high-risk changes",
+            said,
+        )
 
     def test_saved_config_stores_families_not_snapshot_ids(self):
         data, _ = wizard_mod.run(ScriptedPrompter(accept_all()))
@@ -265,7 +308,10 @@ class TestThePresetQuestion(IsolatedCase):
         self.fake_clis(claude=True)
         loaded = config_mod.load(self.project)
         self.assertEqual(loaded.role("orchestrator"), opus)
-        self.assertEqual([r["id"] for r in loaded.reviewers()], ["claude-general", "claude-general-2"])
+        self.assertEqual(
+            [r["id"] for r in loaded.reviewers()],
+            ["claude-general", "claude-general-2", "claude-security", "claude-test", "claude-security-2"],
+        )
 
     def test_changing_a_reviewer_saves_the_whole_panel(self):
         security = str(config_mod.BUILTIN_ROLES.index("security") + 1)
@@ -273,7 +319,9 @@ class TestThePresetQuestion(IsolatedCase):
         answers = ["", "n", *[""] * 8, "", "", "", security, *accept_all(customise=False)]
         data, _ = wizard_mod.run(ScriptedPrompter(answers))
         self.assertEqual(sorted(data), ["preset", "reviewers", "version"])
-        self.assertEqual([r["role"] for r in data["reviewers"]], ["security", "general"])
+        self.assertEqual(
+            [r["role"] for r in data["reviewers"]], ["security", "general", "security", "test", "security"]
+        )
 
     def test_a_chosen_preset_replaces_what_it_governs_and_keeps_the_rest(self):
         existing = {"version": 1, "implementer": {"provider": "claude"}, "review": {"parallel": False}}

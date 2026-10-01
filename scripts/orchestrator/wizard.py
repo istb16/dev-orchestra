@@ -19,7 +19,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, cast
 
 from . import config as config_mod
 from . import presets as presets_mod
-from .optimization import WHEN_ALWAYS, condition_label
+from .optimization import WHEN_ALWAYS, WHEN_HIGH_RISK, condition_label, reviewer_condition, risk_patterns
 from .providers import (
     ModelResolutionError,
     adapter_failure,
@@ -32,15 +32,15 @@ from .providers import (
 #: Per-role recommended defaults, expressed as families only: the ``standard``
 #: preset as written, so the wizard and the preset cannot disagree.
 RECOMMENDED = {role: ("claude", family) for role, family in presets_mod.PRESETS["standard"].roles.items()}
-RECOMMENDED_REVIEWERS = tuple(
-    (reviewer["provider"], reviewer["model"]["family"], reviewer["role"])
-    for reviewer in presets_mod.expand("standard", presets_mod.FITTED_PROVIDERS).values["reviewers"]
-)
 
 #: The preset question's menu, in the order it is offered.
 PRESET_CHOICES = (
-    ("quality", "quality  -- strongest models, three reviewers, design review always on"),
-    ("standard", "standard -- the built-in defaults, two reviewers"),
+    ("quality", "quality  -- strongest models, four reviewers, design review always on"),
+    (
+        "standard",
+        "standard -- the built-in defaults: general reviewers, security and test on Claude sonnet, "
+        "security on high-risk changes",
+    ),
     ("fast", "fast     -- lighter models, one reviewer plus a security one on high-risk changes"),
 )
 CUSTOMISE = "customise each role"
@@ -151,10 +151,9 @@ def selectable_providers(
 
 
 def default_reviewer_config() -> List[Dict[str, Any]]:
-    reviewers = []
-    for provider, family, role in RECOMMENDED_REVIEWERS:
-        reviewers.append(config_mod.make_reviewer("%s-%s" % (provider, role), provider, family, role))
-    return reviewers
+    """The built-in panel, which is ``standard`` expanded with nothing installed:
+    unique ids and ``when`` included, and PATH never read."""
+    return copy.deepcopy(config_mod.default_config()["reviewers"])
 
 
 def run(
@@ -417,6 +416,17 @@ def _ask_reviewers(
     existing = data.get("reviewers")
     if not isinstance(existing, list):
         existing = default_reviewer_config()
+    # Saved, a fitted or built-in high-risk seat becomes one the file wrote,
+    # which validate() refuses while no risk pattern is in force.
+    optimization = data.get("optimization")
+    if isinstance(optimization, dict) and not risk_patterns(optimization):
+        skipped = [r for r in existing if isinstance(r, dict) and reviewer_condition(r) == WHEN_HIGH_RISK]
+        if skipped:
+            existing = [r for r in existing if r not in skipped]
+            prompter.say(
+                "   Not offered: %s (when: high-risk); optimization.high_risk_paths "
+                "has no pattern in force." % ", ".join(str(r.get("id")) for r in skipped)
+            )
     count = prompter.ask_int("   How many reviewers?", len(existing), 0, 10)
     reviewers: List[Dict[str, Any]] = []
     index = 0

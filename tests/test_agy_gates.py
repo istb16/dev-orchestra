@@ -519,7 +519,7 @@ class TestPresetsWithAgy(unittest.TestCase):
                 for note in seats:
                     self.assertTrue(note.startswith("claude, codex not found on PATH: reviewer seat"), note)
                     if "was not added" in note:
-                        self.assertNotIn("agy cannot be held", note)
+                        self.assertNotIn(SEAT_OPT_OUT, note)
                     else:
                         self.assertTrue(note.endswith(SEAT_OPT_OUT), note)
                 self.assertFalse([note for note in fit.notes if UNENFORCED in note])
@@ -529,6 +529,24 @@ class TestPresetsWithAgy(unittest.TestCase):
             "agy-general",
             presets.expand("standard", ["agy"]).notes,
         )
+
+    def test_the_seats_agy_does_not_take_are_named(self):
+        """No cheap model is named offline on agy, and a held seat is never put there."""
+        skip = "claude, codex not found on PATH: reviewer seat %d (%s) was not added; "
+        cheap = skip + "agy has no cheap model named offline"
+        held = skip + "agy cannot be held to reading"
+        expected = {
+            "standard": [cheap % (3, "security"), cheap % (4, "test"), held % (5, "security")],
+            "quality": [held % (4, "test")],
+            "fast": [],
+        }
+        for name, skipped in expected.items():
+            with self.subTest(preset=name):
+                fit = presets.expand(name, ["agy"])
+                notes = [note for note in fit.notes if "was not added" in note and "would repeat" not in note]
+                self.assertEqual(notes, skipped)
+                for note in notes:
+                    self.assertEqual(fit.subjects[fit.notes.index(note)], "reviewers")
 
     def test_with_claude_there_agy_takes_nothing(self):
         for name in presets.NAMES:

@@ -25,6 +25,12 @@ Write roles and read-only seats are fitted from different pools. agy cannot
 be held to reading, so it takes the orchestrator, the architect and the
 reviewer seats last of all: only when neither Claude, Codex nor an eligible
 user adapter is on PATH, and warned wherever a global-file agy seat is.
+
+A cheap seat runs on a provider's cheap model, and only Claude has one that
+can be named offline, so it is dealt round the Claude seats alone and is not
+added where Claude is not installed. A held seat is added only where its
+reviewer can be held to reading, so it is never put on agy. Both are skipped
+after the full seats are dealt, so a skipped seat moves no other one.
 """
 
 from __future__ import annotations
@@ -49,6 +55,9 @@ SEAT_PROVIDERS = (CLAUDE, CODEX)
 #: The family each non-Claude provider gets, whatever the preset's tier.
 _OFFLINE_FAMILY = {CODEX: "recommended-coding", AGY: "default"}
 
+#: The family a cheap seat takes on each provider that has one named offline.
+_CHEAP_FAMILY = {CLAUDE: "sonnet"}
+
 #: The read-only enforcement a user adapter's static report must give for it
 #: to take the read-only roles and the reviewer seats.
 SEAT_ENFORCEMENT = ("verified", "partial")
@@ -58,6 +67,10 @@ _AGY_ROLE_OPT_OUT = "; agy cannot be held to reading -- set %s in the global fil
 _AGY_SEAT_OPT_OUT = (
     "; agy cannot be held to reading -- list reviewers in the global file to keep them off agy"
 )
+
+#: The fit note for a cheap or held seat that is not added: what is missing,
+#: the seat's number and role, and why.
+_SEAT_SKIPPED = "%s not found on PATH: reviewer seat %d (%s) was not added; %s"
 
 #: The keys a preset sets. ``config setup --preset`` and the wizard's preset
 #: path replace these in an existing file and keep everything else.
@@ -78,11 +91,24 @@ _ALWAYS = "always"
 _HIGH_RISK = "high-risk"
 
 
+class Seat(NamedTuple):
+    #: The review role.
+    role: str
+    #: The Claude model family; a cheap seat takes ``_CHEAP_FAMILY`` instead.
+    family: str
+    #: The condition it runs under.
+    when: str
+    #: True for a seat on a provider's cheap model, dealt round those alone.
+    cheap: bool = False
+    #: True for a seat added only where its reviewer can be held to reading.
+    held: bool = False
+
+
 class Preset(NamedTuple):
     #: role -> Claude model family.
     roles: Dict[str, str]
-    #: (review role, Claude model family, condition), dealt in this order.
-    seats: Tuple[Tuple[str, str, str], ...]
+    #: The reviewer seats, dealt in this order.
+    seats: Tuple[Seat, ...]
     #: ``review.design.enabled``, or None to leave it unset.
     design_review: Optional[bool]
     #: ``optimization.level``, or None to leave it unset.
@@ -107,12 +133,19 @@ def _standard() -> Preset:
 
     A default seat held by another vendor takes ``sonnet`` when it lands on
     Claude: a Claude-only machine then gets two models, not two copies of one.
+    A Claude seat on the cheap family is a cheap seat, and every seat but a
+    general one is held: only the general seats predate them, and agy keeps
+    exactly those.
     """
     defaults = config_mod.default_config()
     seats = []
     for reviewer in defaults["reviewers"]:
+        role = reviewer.get("role", "general")
         family = reviewer["model"]["family"] if reviewer["provider"] == CLAUDE else "sonnet"
-        seats.append((reviewer.get("role", "general"), family, str(reviewer.get("when") or _ALWAYS)))
+        cheap = reviewer["provider"] == CLAUDE and family == _CHEAP_FAMILY[CLAUDE]
+        seats.append(
+            Seat(role, family, str(reviewer.get("when") or _ALWAYS), cheap=cheap, held=role != "general")
+        )
     return Preset(
         {role: defaults[role]["model"]["family"] for role in config_mod.KNOWN_ROLES},
         tuple(seats),
@@ -124,14 +157,19 @@ def _standard() -> Preset:
 PRESETS: Dict[str, Preset] = {
     "quality": Preset(
         {"orchestrator": "opus", "architect": "fable", "implementer": "fable", "review_fixer": "fable"},
-        (("general", "fable", _ALWAYS), ("security", "opus", _ALWAYS), ("architecture", "opus", _ALWAYS)),
+        (
+            Seat("general", "fable", _ALWAYS),
+            Seat("security", "opus", _ALWAYS),
+            Seat("architecture", "opus", _ALWAYS),
+            Seat("test", "opus", _ALWAYS, held=True),
+        ),
         True,
         "quality",
     ),
     "standard": _standard(),
     "fast": Preset(
         {"orchestrator": "sonnet", "architect": "opus", "implementer": "sonnet", "review_fixer": "sonnet"},
-        (("general", "opus", _ALWAYS), ("security", "opus", _HIGH_RISK)),
+        (Seat("general", "opus", _ALWAYS), Seat("security", "opus", _HIGH_RISK)),
         None,
         "aggressive",
     ),
@@ -277,22 +315,31 @@ def _family(provider: str, claude_family: str, families: Dict[str, str]) -> str:
     return families.get(provider, claude_family)
 
 
-def _deal(preset: Preset, pool: Sequence[str], implementer: Optional[str] = None) -> List[str]:
-    """The provider each seat lands on: round the pool, from the implementer's.
+def _deal(preset: Preset, pool: Sequence[str], implementer: Optional[str] = None) -> List[Optional[str]]:
+    """The provider each full seat lands on: round the pool, from the implementer's.
 
     A single always-running seat from the implementer's own vendor is not an
     independent review, so a preset with one starts with the other vendor.
     ``implementer`` is the provider a file put the implementer on; without one
-    the implementer is fitted, to ``pool[0]``.
+    the implementer is fitted, to ``pool[0]``. Cheap seats are not dealt here
+    and get ``None``, so they move no full seat.
     """
     if implementer is not None and implementer in pool:
         at = list(pool).index(implementer)
         pool = list(pool[at:]) + list(pool[:at])
     start = 0
-    always = [seat for seat in preset.seats if seat[2] == _ALWAYS]
+    always = [seat for seat in preset.seats if not seat.cheap and seat.when == _ALWAYS]
     if len(always) == 1 and len(pool) > 1:
         start = 1
-    return [pool[(start + index) % len(pool)] for index in range(len(preset.seats))]
+    dealt: List[Optional[str]] = []
+    index = 0
+    for seat in preset.seats:
+        if seat.cheap:
+            dealt.append(None)
+            continue
+        dealt.append(pool[(start + index) % len(pool)])
+        index += 1
+    return dealt
 
 
 def expand(name: str, installed: Sequence[str], implementer: Optional[str] = None) -> Fit:
@@ -350,12 +397,28 @@ def expand(name: str, installed: Sequence[str], implementer: Optional[str] = Non
 
     written = _deal(preset, SEAT_PROVIDERS, implementer)
     dealt = _deal(preset, seat_pool, implementer)
+    cheap_pool = [provider for provider in seat_pool if provider in _CHEAP_FAMILY]
+    cheap_index = 0
     panel: Dict[str, List[Dict[str, Any]]] = {"reviewers": []}
     seen: Dict[Tuple[str, str, str, str], str] = {}
     seat_notes: List[str] = []
     for index, (seat, provider, intended) in enumerate(zip(preset.seats, dealt, written, strict=True), 1):
-        role, claude_family, when = seat
-        family = _family(provider, claude_family, families)
+        role, claude_family, when = seat.role, seat.family, seat.when
+        if seat.cheap:
+            if not cheap_pool:
+                reason = "%s has no cheap model named offline" % describe_installed(seat_pool)
+                seat_notes.append(_SEAT_SKIPPED % (missing, index, role, reason))
+                continue
+            provider = intended = cheap_pool[cheap_index % len(cheap_pool)]
+            cheap_index += 1
+            family = _CHEAP_FAMILY[provider]
+        elif provider is None:  # only cheap seats go undealt; anything else is not added
+            continue
+        else:
+            family = _family(provider, claude_family, families)
+        if seat.held and provider == AGY:
+            seat_notes.append(_SEAT_SKIPPED % (missing, index, role, "agy cannot be held to reading"))
+            continue
         key = (provider, family, role, when)
         if key in seen:
             seat_notes.append(

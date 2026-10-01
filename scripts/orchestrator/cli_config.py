@@ -7,7 +7,7 @@ import copy
 import os
 import re
 import sys
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from . import config as config_mod
 from . import doctor as doctor_mod
@@ -713,6 +713,48 @@ def _own_extra(fit: Any, index: int, scope: str) -> Any:
     return None
 
 
+def _renamed_own_extra(
+    layer: Dict[str, Any], preview: Dict[str, Any], fit: Any, scope: str, selector: str
+) -> Optional[Tuple[int, str]]:
+    """``(j, id)`` when ``reviewers_extra[j]`` of this file is written as ``selector``
+    but runs under another id, since a seat in force took it; else None.
+
+    The selector would otherwise find that seat, and editing it would seed
+    the panel and change or drop a reviewer nobody named.
+    """
+    extras = layer.get("reviewers_extra")
+    if not isinstance(extras, list):
+        return None
+    panel = preview.get("reviewers") or []
+    for position, extra in enumerate(extras):
+        if not isinstance(extra, dict) or extra.get("id") != selector:
+            continue
+        origin = config_mod.ReviewerOrigin(scope, "reviewers_extra", position)
+        for index, seat_origin in enumerate(fit.origins):
+            if seat_origin != origin or index >= len(panel) or not isinstance(panel[index], dict):
+                continue
+            runs_as = panel[index].get("id")
+            if isinstance(runs_as, str) and runs_as != selector:
+                return position, runs_as
+    return None
+
+
+def _refuse_renamed_own_extra(
+    layer: Dict[str, Any], preview: Dict[str, Any], fit: Any, scope: str, selector: str
+) -> bool:
+    """Print the refusal ``_renamed_own_extra`` calls for; True when it did."""
+    renamed = _renamed_own_extra(layer, preview, fit, scope, selector)
+    if renamed is None:
+        return False
+    position, runs_as = renamed
+    message = (
+        "reviewer %s: reviewers_extra[%d] in the %s file runs as %s, since %s is taken; use %s "
+        "(select the other seat by its position in reviewer list)"
+    )
+    _err(message % (selector, position, scope, runs_as, selector, runs_as))
+    return True
+
+
 def _id_taken(preview: Dict[str, Any], index: Optional[int], reviewer_id: Any) -> bool:
     """Whether a reviewer other than ``index`` of the panel in force holds ``reviewer_id``.
 
@@ -752,6 +794,8 @@ def cmd_reviewer_remove(args: argparse.Namespace) -> int:
     # Resolved over the panel in force with this file, which in project scope
     # is what `reviewer list` shows, so its positions are the list's.
     preview, fit, _preset, _source = _compose_preview(scope, layer, args.cwd)
+    if _refuse_renamed_own_extra(layer, preview, fit, scope, args.selector):
+        return 2
     try:
         index, found = config_mod.find_reviewer(preview, args.selector)
     except config_mod.ConfigError as exc:
@@ -796,6 +840,8 @@ def cmd_reviewer_set(args: argparse.Namespace) -> int:
     path, layer = _read_layer(scope, args.cwd)
     before = copy.deepcopy(layer)
     preview, fit, _preset, _source = _compose_preview(scope, layer, args.cwd)
+    if _refuse_renamed_own_extra(layer, preview, fit, scope, args.selector):
+        return 2
     try:
         index, found = config_mod.find_reviewer(preview, args.selector)
     except config_mod.ConfigError as exc:

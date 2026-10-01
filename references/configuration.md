@@ -116,7 +116,7 @@ without running the CLI):
 | `architect` | fable | fable | opus |
 | `implementer` | fable | opus | sonnet |
 | `review_fixer` | fable | opus | sonnet |
-| reviewer seats (role / Claude family) | general / fable, security / opus, architecture / opus | general / opus, general / sonnet | general / opus; security / opus, `when: high-risk` |
+| reviewer seats (role / Claude family) | general / fable, security / opus, architecture / opus, test / opus | general / opus, general / sonnet, security / sonnet, test / sonnet; security / opus, `when: high-risk` | general / opus; security / opus, `when: high-risk` |
 | `review.design.enabled` | `true` | not set (`auto`) | not set (`auto`) |
 | `optimization.level` | `quality` | not set (`balanced`) | `aggressive` |
 
@@ -145,7 +145,8 @@ a PATH lookup, with no CLI started:
 2. Reviewer seats are dealt round the same CLIs as the orchestrator's --
    `claude`, `codex`; else the eligible user adapters; else agy -- in turn,
    starting with the implementer's -- the provider a file puts it on, when a file sets it -- so
-   with two vendors every panel holds both. A preset with one
+   with two vendors every panel holds both. Only full seats are dealt and
+   counted here; cheap seats are step 4. A preset with one full
    reviewer that always runs (`fast`) starts with the other vendor: one
    always-running reviewer from the implementer's own vendor is not an
    independent review. A seat keeps its `when` wherever it lands. Between
@@ -156,15 +157,29 @@ a PATH lookup, with no CLI started:
 3. A seat that would repeat an earlier one exactly (provider, family, role,
    condition) is not added. Ids come from the provider and the role, so a
    second Claude seat of the same role is `claude-general-2`.
-4. With none of Claude, Codex, an opted-in user adapter or agy installed,
+4. `standard`'s sonnet seats are cheap seats: they go to Claude alone, the one
+   CLI with a cheap model that can be named offline, and are not added where
+   Claude is not installed (`claude not found on PATH: reviewer seat 3
+   (security) was not added; codex has no cheap model named offline`). Codex
+   and user adapters therefore get no cheap seat. Every seat of `standard` but
+   a general one, and `test` in `quality`, is a held seat, never put on agy
+   (`...; agy cannot be held to reading`), so agy alone keeps `standard` at
+   `agy-general` and `quality` at three seats. A skipped seat moves no other
+   seat and changes no id. When the files leave no risk pattern in force
+   (`optimization.high_risk_paths: []` and no `extra_high_risk_paths`), a
+   fitted `when: high-risk` seat stays and runs only on rounds declared with
+   `review run --high-risk`; a `when: high-risk` reviewer a file writes, in
+   `reviewers` or `reviewers_extra`, is still refused, and the wizard does not
+   offer the built-in one.
+5. With none of Claude, Codex, an opted-in user adapter or agy installed,
    every role and the panel expand as written; `doctor` reports the missing
    CLIs. With agy alone every role and seat goes to agy, each with a note
    (`claude, codex not found on PATH: implementer went to agy (default)`).
 
 | Preset | Claude + Codex | Claude only | Codex only | agy only |
 | --- | --- | --- | --- | --- |
-| `quality` | claude-general fable, codex-security, claude-architecture opus | claude-general fable, claude-security opus, claude-architecture opus | codex-general, codex-security, codex-architecture | agy-general, agy-security, agy-architecture |
-| `standard` | claude-general opus, codex-general (the built-in defaults) | claude-general opus, claude-general-2 sonnet | codex-general | agy-general |
+| `quality` | claude-general fable, codex-security, claude-architecture opus, codex-test | claude-general fable, claude-security opus, claude-architecture opus, claude-test opus | codex-general, codex-security, codex-architecture, codex-test | agy-general, agy-security, agy-architecture |
+| `standard` | claude-general opus, codex-general, claude-security sonnet, claude-test sonnet; claude-security-2 opus (high-risk) (the built-in defaults) | claude-general opus, claude-general-2 sonnet, claude-security sonnet, claude-test sonnet; claude-security-2 opus (high-risk) | codex-general; codex-security (high-risk) | agy-general |
 | `fast` | codex-general; claude-security opus (high-risk) | claude-general opus; claude-security opus (high-risk) | codex-general; codex-security (high-risk) | agy-general; agy-security (high-risk) |
 
 agy beside Claude or Codex changes nothing: with Claude, Codex and agy
@@ -200,7 +215,7 @@ in every round, because you listed it.
 file that lists no `reviewers`, `reviewer add` writes the new reviewer to that
 file's `reviewers_extra` and copies nothing, so the panel keeps following the
 fit -- or, in a project, the global file's list -- and the command says so:
-`Added reviewer claude-security (claude / opus / security) to <path> as an
+`Added reviewer claude-security-3 (claude / opus / security) to <path> as an
 extra; the panel still follows preset standard's fit`. In a file that lists
 `reviewers` it appends there, as before ([below](#adding-reviewers-beside-the-panel-reviewers_extra)).
 `reviewer remove` and `reviewer set` find their reviewer in the panel in force
@@ -211,7 +226,8 @@ machine's fitted panel, copy it into the file and edit it there, as they have
 always started from the inherited list. From then on the file's list is the
 panel, on this machine and any other that reads the file, and the command says
 so once: `note: <path> now lists the reviewers; the panel no longer follows
-preset standard's fit (recorded claude-general opus, claude-general-2 sonnet)`.
+preset standard's fit (recorded claude-general opus, claude-general-2 sonnet,
+claude-security sonnet, claude-test sonnet, claude-security-2 opus)`.
 Roles, the design review and the optimization level keep following the preset.
 In project scope, when the global file lists no reviewers -- so what is copied
 is the fit and the global extras -- a seat on agy is left out of the copy,
@@ -298,7 +314,13 @@ whether or not they join the panel, as `reviewers_extra[0] in the global file:
 ...`. The rules of the whole panel, at least one reviewer that always runs
 among them, apply with the extras in it. `reviewer remove`, `reviewer set` and
 `config set reviewers_extra[<n>].<key>` edit one of the file's own extras in
-place, a renamed one found by the id it runs under, and copy nothing.
+place, a renamed one found by the id it runs under, and copy nothing. Given a
+renamed extra's old id, `reviewer remove` and `reviewer set` refuse (exit 2,
+nothing written), since that id now selects another seat, and the message
+names the id the extra runs under: `reviewer claude-security:
+reviewers_extra[0] in the project file runs as claude-security-3, since
+claude-security is taken; use claude-security-3 (select the other seat by its
+position in reviewer list)`.
 
 **Where each one came from.** A project extra meets every refusal a project
 `reviewers` list does: one on agy, or one with `options.args`, is refused
@@ -316,6 +338,10 @@ one in panel order, so an extra is chosen only when the panel it joins has no
 before this key existed -- gets a note in `doctor`: `reviewers in <file>: holds
 the inherited panel plus <ids>; move <ids> to reviewers_extra and remove
 reviewers to keep following it`. Files are never rewritten.
+
+**A file that lists `reviewers` keeps exactly those seats.** When a preset
+gains seats, a listed panel -- a copy a writer once seeded from an older fit
+included -- gets none of them. `config show` prints the panel in force.
 
 An older dev-orchestra ignores `reviewers_extra`: the panel runs without the
 extras, and its `config validate` does not report the key.
@@ -362,6 +388,25 @@ reviewers:                    # 0..n independent reviewers; two or more recommen
       family: recommended-coding
       version: latest
     role: general
+  - id: claude-security        # security and test on sonnet, Claude's cheap model
+    provider: claude
+    model:
+      family: sonnet
+      version: latest
+    role: security
+  - id: claude-test
+    provider: claude
+    model:
+      family: sonnet
+      version: latest
+    role: test
+  - id: claude-security-2      # the full model, on high-risk changes only
+    provider: claude
+    model:
+      family: opus
+      version: latest
+    role: security
+    when: high-risk
 
 review:
   max_review_iterations: 2            # hard stop on review→fix→re-review loops
@@ -949,8 +994,8 @@ Detected CLIs:
   codex:   installed
 
 Preset (fitted to the CLIs found above):
-  1) quality  -- strongest models, three reviewers, design review always on
-  2) standard -- the built-in defaults, two reviewers (recommended)
+  1) quality  -- strongest models, four reviewers, design review always on
+  2) standard -- the built-in defaults: general reviewers, security and test on Claude sonnet, security on high-risk changes (recommended)
   3) fast     -- lighter models, one reviewer plus a security one on high-risk changes
   4) customise each role
 Choice [2]: 4
@@ -966,9 +1011,12 @@ Choice [2]: 4
      4) custom (type a family or exact model id)
 ...
 5. External Reviewers
-   How many reviewers? [2]
+   How many reviewers? [5]
    reviewer #1  CLI / Model / Review role / id
    reviewer #2  CLI / Model / Review role / id
+   reviewer #3  CLI / Model / Review role / id
+   reviewer #4  CLI / Model / Review role / id
+   reviewer #5  CLI / Model / Review role / id
    Add another reviewer? [y/N]
 
 Configuration
@@ -979,6 +1027,9 @@ Configuration
   Reviews
     1. claude / opus / latest / general / claude-general
     2. codex / recommended-coding / latest / general / codex-general
+    3. claude / sonnet / latest / security / claude-security
+    4. claude / sonnet / latest / test / claude-test
+    5. claude / opus / latest / security / claude-security-2 (when: high-risk)
     design review: auto  (review.design.enabled)
     optimization level: balanced  (optimization.level)
     plan approval: required  (design.require_approval)

@@ -133,6 +133,25 @@ def default_config() -> Dict[str, Any]:
                 "model": {"family": "recommended-coding", "version": "latest"},
                 "role": "general",
             },
+            {
+                "id": "claude-security",
+                "provider": "claude",
+                "model": {"family": "sonnet", "version": "latest"},
+                "role": "security",
+            },
+            {
+                "id": "claude-test",
+                "provider": "claude",
+                "model": {"family": "sonnet", "version": "latest"},
+                "role": "test",
+            },
+            {
+                "id": "claude-security-2",
+                "provider": "claude",
+                "model": {"family": "opus", "version": "latest"},
+                "role": "security",
+                "when": "high-risk",
+            },
         ],
         "review": {
             "max_review_iterations": 2,
@@ -1211,13 +1230,21 @@ def _validate_conditions(
     patterns, so only the first rule applies to it. ``review run`` validates
     before it reads a snapshot, so either mistake stops there rather than
     inside a round.
+
+    The second rule holds only for a reviewer a file wrote. A seat from the
+    fit or the built-in panel stays without patterns and runs on the rounds
+    declared with ``review run --high-risk``; without ``origins`` every
+    reviewer counts as written.
     """
     opt = _optimization()
     entries = [(index, reviewer) for index, reviewer in enumerate(reviewers) if isinstance(reviewer, dict)]
     always = opt.WHEN_ALWAYS
     conditional = [index for index, reviewer in entries if opt.reviewer_condition(reviewer) != always]
     high_risk = [
-        index for index, reviewer in entries if opt.reviewer_condition(reviewer) == opt.WHEN_HIGH_RISK
+        index
+        for index, reviewer in entries
+        if opt.reviewer_condition(reviewer) == opt.WHEN_HIGH_RISK
+        and not (origins is not None and index < len(origins) and origins[index].layer == "default")
     ]
     problems: List[str] = []
     if entries and len(conditional) == len(entries):

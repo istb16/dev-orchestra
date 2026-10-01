@@ -38,6 +38,9 @@ PROJECT_PANEL = [
     }
 ]
 
+#: The built-in panel, which is what a machine with no CLI is fitted.
+DEFAULT_IDS = [reviewer["id"] for reviewer in config_mod.default_config()["reviewers"]]
+
 
 def run_cli(*argv):
     out, err = io.StringIO(), io.StringIO()
@@ -216,14 +219,14 @@ class TestGlobalWritesWithAProjectLayer(IsolatedCase):
     def test_reviewer_remove_removes_from_the_default_panel(self):
         code, _, _ = run_cli("reviewer", "remove", "--scope", "global", "claude-general")
         self.assertEqual(code, 0)
-        self.assertEqual([r["id"] for r in self.global_layer()["reviewers"]], ["codex-general"])
+        self.assertEqual([r["id"] for r in self.global_layer()["reviewers"]], DEFAULT_IDS[1:])
         self.assertProjectFileUntouched()
 
     def test_reviewer_set_changes_the_default_panel(self):
         code, _, _ = run_cli("reviewer", "set", "--scope", "global", "codex-general", "--role", "test")
         self.assertEqual(code, 0)
         reviewers = self.global_layer()["reviewers"]
-        self.assertEqual([r["id"] for r in reviewers], ["claude-general", "codex-general"])
+        self.assertEqual([r["id"] for r in reviewers], DEFAULT_IDS)
         self.assertEqual(reviewers[1]["role"], "test")
         self.assertProjectFileUntouched()
 
@@ -231,7 +234,7 @@ class TestGlobalWritesWithAProjectLayer(IsolatedCase):
         code, _, _ = run_cli("config", "set", "--scope", "global", "reviewers[0].role", "security")
         self.assertEqual(code, 0)
         reviewers = self.global_layer()["reviewers"]
-        self.assertEqual(len(reviewers), 2)
+        self.assertEqual(len(reviewers), len(DEFAULT_IDS))
         self.assertEqual(reviewers[0]["id"], "claude-general")
         self.assertEqual(reviewers[0]["role"], "security")
         self.assertProjectFileUntouched()
@@ -244,7 +247,7 @@ class TestGlobalWritesWithAProjectLayer(IsolatedCase):
         self.assertIn("follows the global layer", out)
         loaded = config_mod.load(self.project)
         self.assertEqual(loaded.role("implementer")["model"]["family"], "sonnet")
-        self.assertEqual(len(loaded.reviewers()), 2)
+        self.assertEqual(len(loaded.reviewers()), len(DEFAULT_IDS))
 
     def test_resetting_the_global_layer_leaves_the_project_one_alone(self):
         run_cli("config", "set", "--scope", "global", "implementer.model.family", "sonnet")

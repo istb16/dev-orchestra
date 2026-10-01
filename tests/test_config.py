@@ -16,6 +16,9 @@ DESIGN_DEFAULTS = {
     "resume": {"max_age_seconds": 3600, "max_context_tokens": None},
 }
 
+#: Preset standard's panel with Claude alone installed.
+CLAUDE_FIT = ["claude-general", "claude-general-2", "claude-security", "claude-test", "claude-security-2"]
+
 
 class TestDefaults(IsolatedCase):
     def test_no_config_falls_back_to_builtin_defaults(self):
@@ -26,7 +29,7 @@ class TestDefaults(IsolatedCase):
         self.assertEqual(loaded.role("architect")["model"]["family"], "fable")
         self.assertEqual(loaded.role("implementer")["model"]["family"], "opus")
         self.assertEqual(loaded.role("review_fixer")["model"]["family"], "opus")
-        self.assertEqual(len(loaded.reviewers()), 2)
+        self.assertEqual(len(loaded.reviewers()), 5)
 
     def test_defaults_never_pin_a_dated_model_id(self):
         from orchestrator import presets
@@ -575,6 +578,8 @@ class TestReviewerConditions(IsolatedCase):
 
     def with_conditions(self, *conditions, **optimization):
         data = config_mod.default_config()
+        # The two general seats: the conditions under test are set on them.
+        data["reviewers"] = data["reviewers"][:2]
         for reviewer, when in zip(data["reviewers"], conditions, strict=False):
             if when is not None:
                 reviewer["when"] = when
@@ -777,7 +782,9 @@ class TestReviewerManagement(IsolatedCase):
 
         _, removed = config_mod.remove_reviewer(data, "general")
         self.assertEqual(removed["id"], "claude-general")
-        self.assertEqual(data["reviewers"], [])
+        self.assertEqual(
+            [r["id"] for r in data["reviewers"]], ["claude-security", "claude-test", "claude-security-2"]
+        )
 
     def test_remove_ambiguous_role_raises_with_guidance(self):
         data = config_mod.default_config()
@@ -916,7 +923,9 @@ class TestPresetLayering(IsolatedCase):
         loaded = config_mod.load(self.project)
         self.assertEqual((loaded.preset, loaded.preset_source), ("quality", "global"))
         self.assertEqual(loaded.role("implementer")["model"]["family"], "fable")
-        self.assertEqual(self.ids(loaded), ["claude-general", "codex-security", "claude-architecture"])
+        self.assertEqual(
+            self.ids(loaded), ["claude-general", "codex-security", "claude-architecture", "codex-test"]
+        )
         self.assertEqual(loaded.optimization_settings()["level"], "quality")
         self.assertIs(loaded.design_review_settings()["enabled"], True)
 
@@ -940,7 +949,7 @@ class TestPresetLayering(IsolatedCase):
         self.write_global({"version": 1, "preset": "bogus"})
         loaded = config_mod.load(self.project, validate_result=False)
         self.assertEqual((loaded.preset, loaded.preset_source), (None, "invalid"))
-        self.assertEqual(self.ids(loaded), ["claude-general", "codex-general"])
+        self.assertEqual(self.ids(loaded), [r["id"] for r in config_mod.default_config()["reviewers"]])
         self.assertIn(
             "preset: unknown 'bogus' (known: fast, quality, standard)", config_mod.validate(loaded.data)
         )
@@ -963,7 +972,7 @@ class TestPresetLayering(IsolatedCase):
         loaded = config_mod.load(self.project)
         self.assertTrue(loaded.used_defaults)
         self.assertEqual((loaded.preset, loaded.preset_source), ("standard", "implicit"))
-        self.assertEqual(self.ids(loaded), ["claude-general", "claude-general-2"])
+        self.assertEqual(self.ids(loaded), CLAUDE_FIT)
 
     def test_standard_is_implicit_in_a_file_that_names_none(self):
         self.fake_clis(claude=True)
@@ -973,7 +982,7 @@ class TestPresetLayering(IsolatedCase):
                 loaded = config_mod.load(self.project)
                 self.assertFalse(loaded.used_defaults)
                 self.assertEqual((loaded.preset, loaded.preset_source), ("standard", "implicit"))
-                self.assertEqual(self.ids(loaded), ["claude-general", "claude-general-2"])
+                self.assertEqual(self.ids(loaded), CLAUDE_FIT)
 
     def test_a_role_a_file_sets_is_not_fitted(self):
         self.fake_clis(codex=True)

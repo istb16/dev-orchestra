@@ -22,7 +22,9 @@ from orchestrator import optimization as opt_mod
 from orchestrator import review as review_mod
 from orchestrator import wizard as wizard_mod
 
-FITTED = ["claude-general", "claude-general-2"]
+FITTED = ["claude-general", "claude-general-2", "claude-security", "claude-test", "claude-security-2"]
+FIT_LABELS = ["fit"] * len(FITTED)
+BOTH_FITTED = ["claude-general", "codex-general", "claude-security", "claude-test", "claude-security-2"]
 
 
 def run_cli(*argv):
@@ -48,7 +50,8 @@ EXTRAS = [mock("x")]
 
 
 class ExtrasCase(IsolatedCase):
-    """Claude alone installed: the fit is claude-general opus, claude-general-2 sonnet."""
+    """Claude alone installed: the fit is claude-general opus, claude-general-2 sonnet,
+    claude-security and claude-test on sonnet, and claude-security-2 opus on high-risk changes."""
 
     def setUp(self):
         super().setUp()
@@ -90,8 +93,8 @@ class TestLayering(ExtrasCase):
         self.write_global({"reviewers_extra": [mock("g1")]})
         self.write_project({"reviewers_extra": [mock("p1")]})
         self.assertEqual(self.ids(), [*FITTED, "g1", "p1"])
-        self.assertEqual(self.labels(), ["fit", "fit", "global extra", "project extra"])
-        self.assertEqual(config_mod.load(self.project).reviewers()[2], mock("g1"))
+        self.assertEqual(self.labels(), [*FIT_LABELS, "global extra", "project extra"])
+        self.assertEqual(config_mod.load(self.project).reviewers()[len(FITTED)], mock("g1"))
 
     def test_a_global_list_keeps_both_files_extras(self):
         self.write_global({"reviewers": [mock("base")], "reviewers_extra": [mock("g1")]})
@@ -122,7 +125,7 @@ class TestLayering(ExtrasCase):
         self.assertEqual(code, 0, err)
         self.assertEqual(self.ids(), [*FITTED, "m1"])
         self.fake_clis(claude=True, codex=True)
-        self.assertEqual(self.ids(), ["claude-general", "codex-general", "m1"])
+        self.assertEqual(self.ids(), [*BOTH_FITTED, "m1"])
 
     def test_with_no_extras_the_defaults_compose_unchanged(self):
         self.assertEqual(config_mod.compose({}, {}, ["claude", "codex"])[0], config_mod.default_config())
@@ -167,24 +170,79 @@ class TestCollisions(ExtrasCase):
     def test_a_project_extra_never_takes_a_base_seat(self):
         self.write_project({"reviewers_extra": [mock("claude-general"), mock("claude-general-2")]})
         reviewers = config_mod.load(self.project).reviewers()
-        self.assertEqual(reviewers[:2], presets.expand("standard", ["claude"]).values["reviewers"])
+        self.assertEqual(reviewers[: len(FITTED)], presets.expand("standard", ["claude"]).values["reviewers"])
         self.assertEqual(self.ids(reviewers), [*FITTED, "mock-general", "mock-general-2"])
 
     def test_a_base_seeded_beside_an_extra_with_the_same_id_stays_valid(self):
         code, _, err = run_cli("reviewer", "add", "--provider", "codex", "--id", "codex-general")
         self.assertEqual(code, 0, err)
         self.fake_clis(claude=True, codex=True)
-        self.assertEqual(self.ids(), ["claude-general", "codex-general", "codex-general-2"])
+        self.assertEqual(self.ids(), [*BOTH_FITTED, "codex-general-2"])
         code, _, err = run_cli("reviewer", "remove", "--scope", "global", "claude-general")
         self.assertEqual(code, 0, err)
-        self.assertEqual(self.ids(self.global_layer()["reviewers"]), ["codex-general"])
+        self.assertEqual(self.ids(self.global_layer()["reviewers"]), BOTH_FITTED[1:])
         code, _, err = run_cli("config", "set", "reviewers[0].role", "security")
         self.assertEqual(code, 0, err)
         code, out, _ = run_cli("config", "validate")
         self.assertEqual(code, 0, out)
         reviewers = self.loaded().reviewers()
-        self.assertEqual(self.ids(reviewers), ["codex-general", "codex-general-2"])
-        self.assertEqual([reviewer["role"] for reviewer in reviewers], ["security", "general"])
+        self.assertEqual(self.ids(reviewers), [*BOTH_FITTED[1:], "codex-general-2"])
+        self.assertEqual(
+            [reviewer["role"] for reviewer in reviewers],
+            ["security", "security", "test", "security", "general"],
+        )
+
+
+class TestAnIdANewSeatTook(ExtrasCase):
+    """An extra written as claude-security before the fit held a seat by that id."""
+
+    REFUSAL = (
+        "reviewer claude-security: reviewers_extra[0] in the %s file runs as claude-security-3, since "
+        "claude-security is taken; use claude-security-3 (select the other seat by its position in "
+        "reviewer list)"
+    )
+
+    def extra(self):
+        return config_mod.make_reviewer("claude-security", "claude", "opus", "security")
+
+    def test_it_runs_renamed_and_the_fitted_seat_keeps_the_id(self):
+        self.write_project({"reviewers_extra": [self.extra()]})
+        reviewers = self.loaded().reviewers()
+        self.assertEqual(self.ids(reviewers), [*FITTED, "claude-security-3"])
+        self.assertEqual(reviewers[FITTED.index("claude-security")]["model"]["family"], "sonnet")
+
+    def test_editing_it_by_its_old_id_is_refused_and_writes_nothing(self):
+        paths = {"project": self.project_file(), "global": config_mod.global_config_path()}
+        for scope in ("project", "global"):
+            with self.subTest(scope=scope):
+                if os.path.exists(paths["project"]):
+                    os.remove(paths["project"])
+                writer = self.write_project if scope == "project" else self.write_global
+                writer({"reviewers_extra": [self.extra()]})
+                with open(paths[scope], "rb") as handle:
+                    before = handle.read()
+                commands = (
+                    ("reviewer", "remove", "--scope", scope, "claude-security"),
+                    ("reviewer", "set", "--scope", scope, "claude-security", "--model", "sonnet"),
+                )
+                for command in commands:
+                    code, _, err = run_cli(*command)
+                    self.assertEqual(code, 2, err)
+                    self.assertIn(self.REFUSAL % scope, err)
+                    with open(paths[scope], "rb") as handle:
+                        self.assertEqual(handle.read(), before)
+
+    def test_it_is_removed_in_place_by_the_id_it_runs_under(self):
+        self.write_project({"reviewers_extra": [self.extra()]})
+        code, out, err = run_cli("reviewer", "remove", "--scope", "project", "claude-security-3")
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("now lists the reviewers", out)
+        self.assertEqual(self.project_layer(), {"version": 1, "reviewers_extra": []})
+        self.assertEqual(self.ids(), FITTED)
+
+    def test_a_reduced_round_still_keeps_the_fitted_general_seat(self):
+        self.write_project({"reviewers_extra": [self.extra(), mock("x")]})
+        self.assertEqual(self.ids(opt_mod.choose_reviewers(self.loaded().reviewers(), 1)), ["claude-general"])
 
 
 class TestValidation(ExtrasCase):
@@ -310,8 +368,9 @@ class TestProjectRefusals(ExtrasCase):
         self.write_project({"reviewers_extra": [agy("gem")]})
         loaded = self.loaded()
         refusals = config_mod.project_raw_arg_refusals(loaded)
-        self.assertEqual(list(refusals), ["reviewers[2]"])
-        self.assertIn("reviewers on agy are taken only from the global config", refusals["reviewers[2]"])
+        position = "reviewers[%d]" % len(FITTED)
+        self.assertEqual(list(refusals), [position])
+        self.assertIn("reviewers on agy are taken only from the global config", refusals[position])
         self.assertEqual(list(config_mod.reviewer_raw_arg_refusals(loaded)), ["gem"])
         self.assertEqual(list(config_mod.reviewer_provider_refusals(loaded)), ["gem"])
 
@@ -473,7 +532,7 @@ class TestWriters(ExtrasCase):
         self.assertIn("now lists the reviewers", out)
         reviewers = self.project_layer()["reviewers"]
         self.assertEqual(self.ids(reviewers), [*FITTED, "g1"])
-        self.assertEqual(reviewers[2]["role"], "security")
+        self.assertEqual(reviewers[len(FITTED)]["role"], "security")
         self.assertNotIn("reviewers_extra", self.project_layer())
         os.remove(self.project_file())
         code, _, err = run_cli("reviewer", "remove", "--scope", "project", "g1")
@@ -486,16 +545,18 @@ class TestWriters(ExtrasCase):
         self.assertEqual(code, 0, err)
         self.assertIn("now lists the reviewers; the panel no longer follows preset standard's fit", out)
         layer = self.global_layer()
-        self.assertEqual(self.ids(layer["reviewers"]), ["claude-general"])
+        kept = [reviewer_id for reviewer_id in FITTED if reviewer_id != "claude-general-2"]
+        self.assertEqual(self.ids(layer["reviewers"]), kept)
         self.assertEqual(self.ids(layer["reviewers_extra"]), ["m1"])
-        self.assertEqual(self.ids(), ["claude-general", "m1"])
+        self.assertEqual(self.ids(), [*kept, "m1"])
 
     def test_positions_are_the_lists(self):
         self.write_global({"reviewers_extra": [mock("m1")]})
         _, listing, _ = run_cli("reviewer", "list")
-        self.assertTrue(listing.splitlines()[2].startswith("3. m1 "), listing)
-        self.assertTrue(listing.splitlines()[2].endswith(" (extra: global)"), listing)
-        code, _, err = run_cli("reviewer", "remove", "3")
+        line = listing.splitlines()[len(FITTED)]
+        self.assertTrue(line.startswith("%d. m1 " % (len(FITTED) + 1)), listing)
+        self.assertTrue(line.endswith(" (extra: global)"), listing)
+        code, _, err = run_cli("reviewer", "remove", str(len(FITTED) + 1))
         self.assertEqual(code, 0, err)
         self.assertEqual(self.global_layer()["reviewers_extra"], [])
         self.assertNotIn("reviewers", self.global_layer())
@@ -503,7 +564,7 @@ class TestWriters(ExtrasCase):
     def test_list_json_gives_each_entrys_origin(self):
         self.write_global({"reviewers_extra": [mock("m1")]})
         _, listing, _ = run_cli("reviewer", "list", "--json")
-        self.assertEqual([entry["origin"] for entry in json.loads(listing)], ["fit", "fit", "global extra"])
+        self.assertEqual([entry["origin"] for entry in json.loads(listing)], [*FIT_LABELS, "global extra"])
 
 
 class TestTheWizard(ExtrasCase):
@@ -571,7 +632,7 @@ class TestTheOtherCommands(ExtrasCase):
         self.assertIn("/ m1 (extra, global file)", out)
         _, out, _ = run_cli("config", "show", "--json")
         payload = json.loads(out)
-        self.assertEqual(payload["reviewer_origins"], ["fit", "fit", "global extra"])
+        self.assertEqual(payload["reviewer_origins"], [*FIT_LABELS, "global extra"])
         self.assertEqual(len(payload["reviewer_origins"]), len(payload["config"]["reviewers"]))
         self.assertNotIn("reviewers_extra", payload["config"])
         _, out, _ = run_cli("config", "show", "--scope", "global", "--json")
@@ -580,7 +641,7 @@ class TestTheOtherCommands(ExtrasCase):
     def test_doctor_gives_each_reviewers_origin(self):
         self.write_global({"reviewers_extra": [mock("m1")]})
         report = doctor.collect(self.project, probe_models=False)
-        self.assertEqual([entry["origin"] for entry in report["reviewers"]], ["fit", "fit", "global extra"])
+        self.assertEqual([entry["origin"] for entry in report["reviewers"]], [*FIT_LABELS, "global extra"])
         self.assertIn("/ general (extra: global)", doctor.render(report))
 
     def test_doctor_notes_a_list_that_holds_the_inherited_panel_plus_more(self):

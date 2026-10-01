@@ -1,4 +1,4 @@
-<!-- translated-from: references/configuration.md sha256:a80522aa0b907e1236d55ab64b17ab4fea1ac17134fe57399b7bed26aed17024 -->
+<!-- translated-from: references/configuration.md sha256:f0f79d84267c7443f36a7460e9cbac7979b9560ecbb961486aec7fd7e5686c07 -->
 
 > この文書は [references/configuration.md](../../../references/configuration.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -123,7 +123,7 @@ preset: quality
 | `architect` | fable | fable | opus |
 | `implementer` | fable | opus | sonnet |
 | `review_fixer` | fable | opus | sonnet |
-| レビュアーの枠（role / Claude の family） | general / fable、security / opus、architecture / opus | general / opus、general / sonnet | general / opus; security / opus、`when: high-risk` |
+| レビュアーの枠（role / Claude の family） | general / fable、security / opus、architecture / opus、test / opus | general / opus、general / sonnet、security / sonnet、test / sonnet; security / opus、`when: high-risk` | general / opus; security / opus、`when: high-risk` |
 | `review.design.enabled` | `true` | 設定しない（`auto`） | 設定しない（`auto`） |
 | `optimization.level` | `quality` | 設定しない（`balanced`） | `aggressive` |
 
@@ -150,22 +150,35 @@ CLI は起動しません:
 2. レビュアーの枠は、orchestrator と同じ CLI（`claude`、`codex`、無ければ席に就けるユーザー
    adapter、それも無ければ agy）に implementer の CLI（ファイルが implementer を
    設定していれば、ファイルが指定した provider）から順に配ります。そのため
-   2社あれば、どのパネルにも両方が入ります。常に走るレビュアーが1人だけのプリセット（`fast`）は、
+   2社あれば、どのパネルにも両方が入ります。ここで配って数えるのは通常の枠だけで、安い枠は
+   手順 4 で扱います。常に走る通常のレビュアーが1人だけのプリセット（`fast`）は、
    もう一方のベンダーから始めます: implementer と同じベンダーの常時レビュアー1人では、独立した
    レビューにならないからです。枠の `when` は、どこに配られても維持されます。席に就けるユーザー
    adapter が2つあるときも同じように配るので、project ファイルが `implementer` を2つ目にすると、
    `quality` と `standard` では2つ目が最初の枠を取り、`fast` の常に走る1つの枠は1つ目が取ります。
 3. 前の枠とまったく同じになる枠（provider、family、role、条件）は追加しません。id は provider と
    role から作るので、同じ role の2人目の Claude の枠は `claude-general-2` になります。
-4. Claude も Codex もオプトインしたユーザー adapter も agy も無いときは、すべてのロールとパネルを
+4. `standard` の sonnet の枠は安い枠です。オフラインで名前を挙げられる安いモデルを持つ CLI は
+   Claude だけなので、安い枠は Claude にだけ配り、Claude が無いところには追加しません
+   （`claude not found on PATH: reviewer seat 3 (security) was not added; codex has no cheap
+   model named offline`）。そのため Codex とユーザー adapter は安い枠を受け取りません。`standard`
+   の general 以外のすべての枠と `quality` の `test` は、読み取り専用に保てる相手にだけ置く枠で、
+   agy には置きません（`...; agy cannot be held to reading`）。そのため agy だけのときの `standard`
+   は `agy-general` のまま、`quality` は3つの枠のままです。追加しなかった枠が、ほかの枠を動かしたり
+   id を変えたりすることはありません。ファイルが危険なパスのパターンを1つも残していないとき
+   （`optimization.high_risk_paths: []` で `extra_high_risk_paths` もない）も、組み替えで入る
+   `when: high-risk` の枠は残り、`review run --high-risk` で宣言したラウンドでだけ動きます。
+   ファイルが `reviewers` や `reviewers_extra` に書いた `when: high-risk` のレビュアーは、
+   これまでどおり断ります。ウィザードも、組み込みの high-risk の枠は勧めません。
+5. Claude も Codex もオプトインしたユーザー adapter も agy も無いときは、すべてのロールとパネルを
    書かれたとおりに展開します。CLI が無いことは `doctor` が報告します。agy だけのときは、すべての
    ロールと枠を agy に割り当て、それぞれ note を出します（`claude, codex not found on PATH:
    implementer went to agy (default)`）。
 
 | プリセット | Claude + Codex | Claude のみ | Codex のみ | agy のみ |
 | --- | --- | --- | --- | --- |
-| `quality` | claude-general fable、codex-security、claude-architecture opus | claude-general fable、claude-security opus、claude-architecture opus | codex-general、codex-security、codex-architecture | agy-general、agy-security、agy-architecture |
-| `standard` | claude-general opus、codex-general（組み込みデフォルト） | claude-general opus、claude-general-2 sonnet | codex-general | agy-general |
+| `quality` | claude-general fable、codex-security、claude-architecture opus、codex-test | claude-general fable、claude-security opus、claude-architecture opus、claude-test opus | codex-general、codex-security、codex-architecture、codex-test | agy-general、agy-security、agy-architecture |
+| `standard` | claude-general opus、codex-general、claude-security sonnet、claude-test sonnet; claude-security-2 opus（high-risk）（組み込みデフォルト） | claude-general opus、claude-general-2 sonnet、claude-security sonnet、claude-test sonnet; claude-security-2 opus（high-risk） | codex-general; codex-security（high-risk） | agy-general |
 | `fast` | codex-general; claude-security opus（high-risk） | claude-general opus; claude-security opus（high-risk） | codex-general; codex-security（high-risk） | agy-general; agy-security（high-risk） |
 
 Claude や Codex と並んで agy があっても何も変わりません。Claude、Codex、agy がそろっていれば、
@@ -198,7 +211,7 @@ claude-general-2 (sonnet)`。
 `reviewers` を並べていないファイルでは、`reviewer add` は新しいレビュアーをそのファイルの
 `reviewers_extra` に書き、何もコピーしません。そのためパネルはフィット（project では
 グローバルファイルのリスト）に従い続け、コマンドはその旨を表示します: `Added reviewer
-claude-security (claude / opus / security) to <path> as an extra; the panel still follows preset
+claude-security-3 (claude / opus / security) to <path> as an extra; the panel still follows preset
 standard's fit`。`reviewers` を並べたファイルでは、これまでどおりそこへ追加します
 （[下記](#adding-reviewers-beside-the-panel-reviewers_extra)）。`reviewer remove` と
 `reviewer set` は、有効なパネル（`reviewer list` が示す id と位置）から対象を探し、ファイル自身の
@@ -207,7 +220,8 @@ extra ならその場で編集します。それ以外の枠（フィットし�
 パネルから始め、それをファイルにコピーしてから編集します。これまで継承したリストから始めていたのと
 同じです。それ以降はファイルのリストがパネルになり、このマシンでも、そのファイルを読む他のマシンでも
 同じです。コマンドは一度だけその旨を表示します: `note: <path> now lists the reviewers; the panel no
-longer follows preset standard's fit (recorded claude-general opus, claude-general-2 sonnet)`。
+longer follows preset standard's fit (recorded claude-general opus, claude-general-2 sonnet,
+claude-security sonnet, claude-test sonnet, claude-security-2 opus)`。
 ロール、設計レビュー、最適化レベルは引き続きプリセットに従います。project スコープで、グローバル
 ファイルがレビュアーを並べていない（つまりコピーするのがフィットしたパネルとグローバルの extra
 である）ときは、agy の枠はコピーから外します。project ファイルはその枠を持てないからです。note の
@@ -290,6 +304,11 @@ extra の id が変わることがあります。extra がそれ以外の理由�
 レビュアーが少なくとも 1 人いることなど）は、extra を含めたパネルに適用されます。
 `reviewer remove`、`reviewer set`、`config set reviewers_extra[<n>].<key>` は、ファイル自身の
 extra をその場で編集し（新しい id で走っている extra もその id で見つかります）、何もコピーしません。
+新しい id で走っている extra を元の id で指すと、その id は今は別の枠を選ぶので、`reviewer remove` と
+`reviewer set` は何も書かずに拒否し（exit 2）、メッセージは extra が走っている id を示します:
+`reviewer claude-security: reviewers_extra[0] in the project file runs as claude-security-3, since
+claude-security is taken; use claude-security-3 (select the other seat by its position in reviewer
+list)`。
 
 **それぞれの出どころ。** project の extra は、project の `reviewers` リストが受けるのと同じ拒否を
 すべて受けます。agy のものや `options.args` を持つものは拒否されます（[下記](#role-options)）。
@@ -305,6 +324,10 @@ extra をその場で編集し（新しい id で走っている extra もその
 形）には、`doctor` が note を出します: `reviewers in <file>: holds the inherited panel plus
 <ids>; move <ids> to reviewers_extra and remove reviewers to keep following it`。ファイルを
 書き換えることはありません。
+
+**`reviewers` を並べたファイルは、並べた枠だけを持ち続けます。** プリセットの枠が増えても、
+並べたパネル（書き込みコマンドが以前のフィットからコピーしたものも含む）には1つも加わりません。
+有効なパネルは `config show` が表示します。
 
 古い dev-orchestra は `reviewers_extra` を無視します。パネルは extra なしで走り、その
 `config validate` もこのキーを報告しません。
@@ -353,6 +376,25 @@ reviewers:                    # 0..n independent reviewers; two or more recommen
       family: recommended-coding
       version: latest
     role: general
+  - id: claude-security        # security and test on sonnet, Claude's cheap model
+    provider: claude
+    model:
+      family: sonnet
+      version: latest
+    role: security
+  - id: claude-test
+    provider: claude
+    model:
+      family: sonnet
+      version: latest
+    role: test
+  - id: claude-security-2      # the full model, on high-risk changes only
+    provider: claude
+    model:
+      family: opus
+      version: latest
+    role: security
+    when: high-risk
 
 review:
   max_review_iterations: 2            # hard stop on review→fix→re-review loops
@@ -937,8 +979,8 @@ Detected CLIs:
   codex:   installed
 
 Preset (fitted to the CLIs found above):
-  1) quality  -- strongest models, three reviewers, design review always on
-  2) standard -- the built-in defaults, two reviewers (recommended)
+  1) quality  -- strongest models, four reviewers, design review always on
+  2) standard -- the built-in defaults: general reviewers, security and test on Claude sonnet, security on high-risk changes (recommended)
   3) fast     -- lighter models, one reviewer plus a security one on high-risk changes
   4) customise each role
 Choice [2]: 4
@@ -954,9 +996,12 @@ Choice [2]: 4
      4) custom (type a family or exact model id)
 ...
 5. External Reviewers
-   How many reviewers? [2]
+   How many reviewers? [5]
    reviewer #1  CLI / Model / Review role / id
    reviewer #2  CLI / Model / Review role / id
+   reviewer #3  CLI / Model / Review role / id
+   reviewer #4  CLI / Model / Review role / id
+   reviewer #5  CLI / Model / Review role / id
    Add another reviewer? [y/N]
 
 Configuration
@@ -967,6 +1012,9 @@ Configuration
   Reviews
     1. claude / opus / latest / general / claude-general
     2. codex / recommended-coding / latest / general / codex-general
+    3. claude / sonnet / latest / security / claude-security
+    4. claude / sonnet / latest / test / claude-test
+    5. claude / opus / latest / security / claude-security-2 (when: high-risk)
     design review: auto  (review.design.enabled)
     optimization level: balanced  (optimization.level)
     plan approval: required  (design.require_approval)
