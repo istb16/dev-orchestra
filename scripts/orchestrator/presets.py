@@ -258,6 +258,46 @@ def installed_providers() -> List[str]:
     return found
 
 
+def suggestion_provider(installed: Sequence[str]) -> Optional[str]:
+    """The provider ``config suggest-roles`` puts its reviewers on, or None.
+
+    The first seat provider installed, else the first installed user adapter
+    that may take a reviewer seat and is not warned about. Never agy: the
+    reviewers go to the project file, which may not hold one on it.
+    """
+    for name in SEAT_PROVIDERS:
+        if name in installed:
+            return name
+    from .providers import get_provider
+
+    for name in installed:
+        if name in FITTED_PROVIDERS:
+            continue
+        try:
+            seats = user_fit(get_provider(name)).seats
+        except Exception:  # an adapter that fails is not fitted
+            continue
+        if seats and not config_mod.warned_provider(name):
+            return name
+    return None
+
+
+def cheap_family(provider: str) -> str:
+    """The family a suggested reviewer on ``provider`` takes: its cheap one where
+    it has one, else the family a preset would give it."""
+    if provider in _CHEAP_FAMILY:
+        return _CHEAP_FAMILY[provider]
+    if provider in _OFFLINE_FAMILY:
+        return _OFFLINE_FAMILY[provider]
+    try:
+        from .providers import get_provider
+
+        declared = user_fit(get_provider(provider)).family
+    except Exception:  # an unknown name, or a factory that failed
+        declared = ""
+    return declared or config_mod.default_reviewer_family(provider)
+
+
 def describe_installed(installed: Sequence[str]) -> str:
     """``claude, codex``, or what to say when neither is there."""
     return ", ".join(installed) if installed else "no installed CLI"

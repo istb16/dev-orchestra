@@ -769,6 +769,93 @@ dev-orchestra reviewer set codex-database --when-paths "*.sql"   # replaces the 
 dev-orchestra reviewer set codex-database --when always          # back to every round
 ```
 
+#### Suggesting path-scoped reviewers (`config suggest-roles`)
+
+`config suggest-roles` reads the project's file names and proposes the
+built-in specialists a set of paths can speak for: `database`, `frontend` and
+`backend`, each with its own `when.paths`. It makes no model call and spends
+no tokens. It writes nothing unless you pass `--write`:
+
+```bash
+dev-orchestra config suggest-roles            # what it would add, and why
+dev-orchestra config suggest-roles --write    # add them to the project file's reviewers_extra
+dev-orchestra config suggest-roles --json
+```
+
+For each proposal it prints the id, provider and family, the patterns, the
+files that led to it, and how many listed files the patterns match, with how
+many of those `review.exclude` withholds. Then it names every role it did not
+propose, with the reason. `--provider` picks the CLI (default: the first
+installed of `claude` and `codex`), and `--model` the family (default:
+`sonnet` on Claude, `recommended-coding` on Codex).
+
+**The files it reads.** Inside a git repository, only what `git ls-files`
+lists: ignored and untracked files are not read. A `git ls-files` that fails,
+times out (30 seconds) or prints more than 16 MiB is an error (exit 2), and
+nothing is walked instead. Outside a git repository the directory is walked,
+skipping dot-directories, the vendored and generated directories named below,
+and anything more than 8 levels deep, and stopping at
+20,000 files or after 10 seconds; the output then says the shares are
+approximate. The only other file opened is the `package.json` at the listing
+root, and only when it is tracked, a regular file, and at most 1 MiB.
+
+**Two sets of files.** Match counts and shares are taken over every listed
+file except the orchestrator's own (`workspace.dir` and the project file).
+That includes the files `review.exclude` withholds, because a withheld file
+still brings a path-scoped reviewer into a round. The evidence the rules read
+leaves out files under a dot-directory, under `node_modules`, `vendor`,
+`third_party`, `dist`, `build`, `target`, `venv`, `__pycache__`, `generated`,
+`__generated__` or `gen`, under a test directory (`test`, `tests`,
+`__tests__`, `spec`, `testdata`, `fixtures`), and files `review.exclude`
+withholds. At most the first 20,000 evidence files are read; past that the
+output says "evidence read from the first 20,000 files".
+
+**The rules:**
+
+| Role | Proposed when | Patterns |
+| --- | --- | --- |
+| `database` | A `migrations`, `migrate`, `alembic` or `prisma` directory holds at least 2 files, there are at least 2 `*.sql` files, or there is a `schema.prisma` | `<name>/*` and `*/<name>/*` per directory name, `*.sql`, and `schema.prisma` |
+| `frontend` | At least 2 `*.tsx`, `*.jsx`, `*.vue` or `*.svelte` files | The extensions found |
+| `backend` | An `api`, `server`, `backend`, `handlers`, `routes` or `controllers` directory holds at least 2 files | `<name>/*` and `*/<name>/*` per directory name, never a bare language extension |
+
+- Names are found whatever their case, and each pattern is written in the case
+  the repository uses, one pattern or pair per spelling: a `Migrations/`
+  directory gives `Migrations/*` and `*/Migrations/*`.
+- Frontend dependencies in `package.json` (react, vue, svelte,
+  `@angular/core`, next, `@sveltejs/kit`, `@remix-run/*`) are evidence only;
+  with no component files, `frontend` is skipped and the reason says so.
+- A directory does not count for `backend` when at least half its files are
+  components or SvelteKit `+` route files. `routes` never counts when
+  `package.json` lists `@sveltejs/kit` or a `@remix-run/` package, or when
+  `package.json` was not read and there is a frontend signal. When a name has
+  directories that count and directories that do not, each one that counts is
+  written by its full path (`backend/api/*`), so the pattern does not match
+  the others.
+- Each directory needs its 2 files on its own: two `migrations/` directories
+  of one file each do not count.
+- A role is skipped when it is already on the panel in force (fitted, listed
+  or an extra, from either file), when it would need more than 12 patterns,
+  or when its patterns match more than half the listed files: it would join
+  most rounds, which keeps the panel whole.
+- `general`, `security`, `architecture`, `performance` and `test` are never
+  proposed: they judge risk or the whole change, not a set of paths.
+
+**Where `--write` writes.** It appends to the `reviewers_extra` of the project
+file in force from the current directory, or creates `.dev-orchestra.yaml` at
+the listing root (the directory holding `.git`) when there is none, so the
+panel keeps following what it followed. It refuses (exit 2, nothing written)
+when the project file in force is not at the listing root, for example one in
+the subdirectory you ran from; the dry run names the mismatch. It also
+refuses when `reviewers_extra` is not a list, when the panel in force is not a
+list, when no CLI a project reviewer can run on is installed and `--provider`
+is not given, and, like every panel writer, before writing a panel problem it
+would introduce, such as a `reviewers: []` that would leave only conditional
+reviewers. `--provider agy` is refused with or without `--write`.
+
+Each proposal runs in every code round touching its paths and in every design
+review round, on the family above. Run it again after the repository changes:
+a role already on the panel is skipped and named.
+
 ## Model tiers
 
 The same role, the same prompt, a different model behind it. A one-line fix
