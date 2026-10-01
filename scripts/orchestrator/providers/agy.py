@@ -57,8 +57,9 @@ AGY_UNENFORCED = (
     "agy cannot be held to reading only: on agy 1.2.13, `--mode plan`, `--mode plan --sandbox` and "
     "`--agent research` each wrote a file and read outside the workspace. A plan or review run on "
     "agy can modify the working tree, `.ai/` (including the approval record), `.git/` and files "
-    "outside the repository, and nothing checks afterwards. Allowed from the global config as your "
-    "choice; use agy for the implementer and review fixer."
+    "outside the repository, and nothing checks afterwards. Allowed from the global config, or "
+    "from the preset's fit when agy is the only CLI installed; set the role or list reviewers in "
+    "the global config to keep it off agy."
 )
 
 #: An id ``agy models`` lists: ``gemini-<major>.<minor>-<kind>[-<effort>]``.
