@@ -387,6 +387,107 @@ def deep_merge(base: Any, override: Any) -> Any:
     return copy.deepcopy(override)
 
 
+class ReviewerOrigin(NamedTuple):
+    """Where one reviewer of the effective panel was written."""
+
+    #: ``default`` (the fit, or the built-in panel), ``global`` or ``project``.
+    layer: str
+    #: ``reviewers`` or ``reviewers_extra``.
+    key: str
+    #: The index in that file's list. Not ``index``, which ``tuple`` owns.
+    position: int
+
+    def label(self) -> str:
+        """``fit``, ``global``, ``project``, ``global extra`` or ``project extra``."""
+        if self.key == "reviewers_extra":
+            return "%s extra" % self.layer
+        return "fit" if self.layer == "default" else self.layer
+
+
+def fold_extras(
+    base: Any, global_layer: Dict[str, Any], project_layer: Dict[str, Any]
+) -> Tuple[Any, List[ReviewerOrigin], List[str]]:
+    """The panel with each file's ``reviewers_extra`` after it: ``(reviewers, origins, notes)``.
+
+    ``base`` is the merged ``reviewers``: the project file's list, else the
+    global file's, else the fit. A project list replaces the global extras
+    along with the global list; otherwise the global extras come first, then
+    the project's. Only mapping entries are folded, and only from a file whose
+    key is a list: ``validate`` reports the rest, once, per file.
+
+    The base keeps every id. An extra whose id is already taken runs under a
+    new one, with a note, and is never dropped for anything else.
+    """
+    original = base
+    if base is None:
+        base = []
+    if not isinstance(base, list):
+        return original, [], []
+    if project_layer.get("reviewers") is not None:
+        base_layer, sources = "project", (("project", project_layer),)
+    else:
+        base_layer = "global" if global_layer.get("reviewers") is not None else "default"
+        sources = (("global", global_layer), ("project", project_layer))
+    origins = [ReviewerOrigin(base_layer, "reviewers", index) for index in range(len(base))]
+    panel = list(base)
+    notes: List[str] = []
+    owners: Dict[str, ReviewerOrigin] = {}
+    for origin, reviewer in zip(origins, panel, strict=True):
+        if isinstance(reviewer, dict) and isinstance(reviewer.get("id"), str):
+            owners.setdefault(reviewer["id"], origin)
+    # Every id an extra writes, folded yet or not: a new name never takes one,
+    # or the extra that wrote it would be renamed in turn.
+    written = [
+        {"id": extra["id"]}
+        for _name, layer in sources
+        if isinstance(layer.get("reviewers_extra"), list)
+        for extra in layer["reviewers_extra"]
+        if isinstance(extra, dict) and isinstance(extra.get("id"), str)
+    ]
+    for layer_name, layer in sources:
+        extras = layer.get("reviewers_extra")
+        if not isinstance(extras, list):
+            continue
+        for index, extra in enumerate(extras):
+            if not isinstance(extra, dict):
+                continue
+            origin = ReviewerOrigin(layer_name, "reviewers_extra", index)
+            entry = copy.deepcopy(extra)
+            taken = entry.get("id")
+            if isinstance(taken, str) and taken in owners:
+                provider, role = str(entry.get("provider") or ""), str(entry.get("role") or "general")
+                renamed = suggest_reviewer_id({"reviewers": panel + written}, provider, role)
+                entry["id"] = renamed
+                notes.append(
+                    "reviewers_extra[%d] in the %s file: id %s is taken by %s; it runs as %s "
+                    "(reviewer set %s --id <name> keeps a name)"
+                    % (index, layer_name, taken, _owner(owners[taken]), renamed, renamed)
+                )
+            if isinstance(entry.get("id"), str):
+                owners.setdefault(entry["id"], origin)
+            panel.append(entry)
+            origins.append(origin)
+    if len(panel) == len(base):
+        return original, origins, notes
+    return panel, origins, notes
+
+
+def _owner(origin: ReviewerOrigin) -> str:
+    """The entry an id belongs to, the way a fold note names it."""
+    if origin.key == "reviewers_extra":
+        return "reviewers_extra[%d] in the %s file" % (origin.position, origin.layer)
+    if origin.layer == "default":
+        return "the fitted panel"
+    return "the %s file's reviewers" % origin.layer
+
+
+def _origin_label(origin: ReviewerOrigin, index: int) -> str:
+    """How a problem names a panel entry: its file for an extra, else ``reviewers[i]``."""
+    if origin.key == "reviewers_extra":
+        return "reviewers_extra[%d] in the %s file" % (origin.position, origin.layer)
+    return "reviewers[%d]" % index
+
+
 class LoadedConfig:
     """A resolved configuration plus provenance about where it came from."""
 
@@ -402,6 +503,7 @@ class LoadedConfig:
         preset_source: str = "implicit",
         preset_notes: Optional[List[str]] = None,
         files_data: Optional[Dict[str, Any]] = None,
+        reviewer_origins: Optional[Sequence[ReviewerOrigin]] = None,
     ) -> None:
         self.data = data
         self.global_path = global_path
@@ -419,6 +521,8 @@ class LoadedConfig:
         self.preset_notes = list(preset_notes or [])
         #: The defaults and the files, without the preset's expansion.
         self.files_data = files_data if files_data is not None else data
+        #: Parallel to ``reviewers()``: where each one was written.
+        self.reviewer_origins = list(reviewer_origins or [])
 
     @property
     def exists(self) -> bool:
@@ -478,6 +582,16 @@ class LoadedConfig:
 
     def reviewers(self) -> List[Dict[str, Any]]:
         return list(self.data.get("reviewers") or [])
+
+    def reviewer_origin(self, index: int) -> ReviewerOrigin:
+        """Where reviewer ``index`` was written.
+
+        A ``LoadedConfig`` built without origins has folded nothing, so its
+        whole panel came with the file that names ``reviewers``.
+        """
+        if 0 <= index < len(self.reviewer_origins):
+            return self.reviewer_origins[index]
+        return ReviewerOrigin(self.layer_of("reviewers"), "reviewers", index)
 
     def review_settings(self) -> Dict[str, Any]:
         settings = default_config()["review"]
@@ -766,8 +880,15 @@ def compose(
         for note, subject in zip(fit.notes, fit.subjects, strict=True)
         if subject not in unfitted and not (listed and subject == "reviewers")
     ]
-    fit = presets.Fit(values, [note for note, _ in kept], [subject for _, subject in kept])
     data = deep_merge(deep_merge(deep_merge(defaults, values), global_layer), project_layer)
+    # Each file's extras join the panel it inherits, so every reader of
+    # ``reviewers`` sees them; ``origins`` keeps whose each one is.
+    reviewers, origins, folded = fold_extras(data.get("reviewers"), global_layer, project_layer)
+    data.pop("reviewers_extra", None)
+    if reviewers is not data.get("reviewers"):
+        data["reviewers"] = reviewers
+    kept += [(note, "reviewers_extra") for note in folded]
+    fit = presets.Fit(values, [note for note, _ in kept], [subject for _, subject in kept], tuple(origins))
     return data, fit, name, source
 
 
@@ -798,9 +919,10 @@ def load(start: Optional[str] = None, validate_result: bool = True) -> LoadedCon
         preset_source=source,
         preset_notes=fit.notes,
         files_data=deep_merge(deep_merge(default_config(), global_layer), project_layer),
+        reviewer_origins=fit.origins,
     )
     if validate_result:
-        problems = validate(data, project_layer=project_layer)
+        problems = validate(data, project_layer=project_layer, global_layer=global_layer, origins=fit.origins)
         if problems:
             raise ConfigError("invalid configuration:\n  - " + "\n  - ".join(problems))
     return loaded
@@ -813,11 +935,17 @@ def validate(
     data: Dict[str, Any],
     known_providers: Optional[List[str]] = None,
     project_layer: Optional[Dict[str, Any]] = None,
+    global_layer: Optional[Dict[str, Any]] = None,
+    origins: Optional[Sequence[ReviewerOrigin]] = None,
 ) -> List[str]:
     """Return a list of human-readable problems; empty means valid.
 
     ``project_layer`` is the project file on its own, for the one rule merged
-    data cannot express: only the global file can name a preset.
+    data cannot express: only the global file can name a preset. It and
+    ``global_layer`` also have their ``reviewers_extra`` checked, entry by
+    entry, whether or not the extras made it into the panel. ``origins`` is
+    parallel to the folded ``reviewers``: an extra's entry is checked there
+    and not again here, while the panel-wide rules cover it.
     """
     from . import presets
     from .providers import available_providers
@@ -851,23 +979,31 @@ def validate(
     else:
         seen = set()
         for index, reviewer in enumerate(reviewers):
-            label = "reviewers[%d]" % index
+            origin = origins[index] if origins is not None and index < len(origins) else None
+            extra = origin is not None and origin.key == "reviewers_extra"
+            label = _origin_label(origin, index) if origin is not None else "reviewers[%d]" % index
             if not isinstance(reviewer, dict):
                 problems.append("%s: must be a mapping" % label)
                 continue
             rid = reviewer.get("id")
             if not isinstance(rid, str) or not _ID_RE.match(rid):
-                problems.append("%s: id must match [a-z0-9][a-z0-9._-]* (got %r)" % (label, rid))
+                if not extra:
+                    problems.append("%s: id must match [a-z0-9][a-z0-9._-]* (got %r)" % (label, rid))
             elif rid in seen:
                 problems.append("%s: duplicate reviewer id %r" % (label, rid))
             else:
                 seen.add(rid)
+            if extra:
+                continue
             role_name = reviewer.get("role", "general")
             if not isinstance(role_name, str) or not role_name.strip():
                 problems.append("%s: role must be a non-empty string" % label)
             problems.extend("%s: %s" % (label, msg) for msg in _validate_role(reviewer, providers))
             problems.extend(_validate_when(reviewer.get("when"), label))
-        problems.extend(_validate_conditions(reviewers, data.get("optimization")))
+        problems.extend(_validate_conditions(reviewers, data.get("optimization"), origins))
+    for name, layer in (("global", global_layer), ("project", project_layer)):
+        if layer:
+            problems.extend(_validate_extras_file(layer, name, providers))
 
     review = data.get("review")
     if review is not None:
@@ -1029,7 +1165,44 @@ def _validate_when(when: Any, label: str) -> List[str]:
     ]
 
 
-def _validate_conditions(reviewers: List[Any], optimization: Any) -> List[str]:
+def _validate_extras_file(layer: Dict[str, Any], name: str, providers: List[str]) -> List[str]:
+    """One file's ``reviewers_extra``, entry by entry: the only check of an extra's entry.
+
+    Run on each file whether or not its extras joined the panel, so a global
+    list that a project ``reviewers`` list replaces is still checked.
+    """
+    extras = layer.get("reviewers_extra")
+    if extras is None:
+        return []
+    if not isinstance(extras, list):
+        return ["reviewers_extra in the %s file: must be a list (use [] for none)" % name]
+    problems: List[str] = []
+    seen = set()
+    for index, reviewer in enumerate(extras):
+        label = "reviewers_extra[%d] in the %s file" % (index, name)
+        if not isinstance(reviewer, dict):
+            problems.append("%s: must be a mapping" % label)
+            continue
+        rid = reviewer.get("id")
+        if not isinstance(rid, str) or not _ID_RE.match(rid):
+            problems.append("%s: id must match [a-z0-9][a-z0-9._-]* (got %r)" % (label, rid))
+        elif rid in seen:
+            problems.append("%s: duplicate reviewer id %r" % (label, rid))
+        else:
+            seen.add(rid)
+        role_name = reviewer.get("role", "general")
+        if not isinstance(role_name, str) or not role_name.strip():
+            problems.append("%s: role must be a non-empty string" % label)
+        problems.extend("%s: %s" % (label, msg) for msg in _validate_role(reviewer, providers))
+        # ``_validate_when`` names the key after its label; here the file
+        # does, so the key is said after it.
+        problems.extend("%s: %s" % (label, msg[1:]) for msg in _validate_when(reviewer.get("when"), ""))
+    return problems
+
+
+def _validate_conditions(
+    reviewers: List[Any], optimization: Any, origins: Optional[Sequence[ReviewerOrigin]] = None
+) -> List[str]:
     """What a panel of conditional reviewers needs to be able to run at all.
 
     One reviewer that always runs, or a round that matched nothing would have
@@ -1053,9 +1226,12 @@ def _validate_conditions(reviewers: List[Any], optimization: Any) -> List[str]:
             "(when: high-risk or when: paths)"
         )
     if high_risk and isinstance(optimization, dict) and not opt.risk_patterns(optimization):
+        first = high_risk[0]
+        origin = origins[first] if origins is not None and first < len(origins) else None
+        label = _origin_label(origin, first) if origin is not None else "reviewers[%d]" % first
         problems.append(
-            "optimization.high_risk_paths: no pattern in force, but reviewers[%d] is when: high-risk "
-            "and would never run; add patterns to high_risk_paths or extra_high_risk_paths" % high_risk[0]
+            "optimization.high_risk_paths: no pattern in force, but %s is when: high-risk "
+            "and would never run; add patterns to high_risk_paths or extra_high_risk_paths" % label
         )
     return problems
 
@@ -1177,17 +1353,27 @@ def read_only_raw_args(loaded: LoadedConfig) -> List[RawArgs]:
         if not isinstance(reviewer, dict):
             continue
         reviewer_id = str(reviewer.get("id") or "")
+        args = _string_args(reviewer)
+        origin = loaded.reviewer_origin(index)
+        if origin.key == "reviewers":
+            layer = loaded.layer_of("reviewers[%d].options.args" % index)
+            # The list is replaced whole, so every reviewer in it came
+            # with the file that set it.
+            provider_layer = loaded.layer_of("reviewers")
+        else:
+            # An extra is the one file's whole entry; ``layer_of`` would ask
+            # the project file first for an index into the global list.
+            layer = origin.layer if args else "default"
+            provider_layer = origin.layer
         found.append(
             RawArgs(
                 "reviewers[%d]" % index,
                 "reviewer %s" % (reviewer_id or index + 1),
                 reviewer_id,
                 str(reviewer.get("provider") or ""),
-                _string_args(reviewer),
-                loaded.layer_of("reviewers[%d].options.args" % index),
-                # The list is replaced whole, so every reviewer in it came
-                # with the file that set it.
-                loaded.layer_of("reviewers"),
+                args,
+                layer,
+                provider_layer,
             )
         )
     return found
@@ -1707,6 +1893,19 @@ def add_reviewer(data: Dict[str, Any], reviewer: Dict[str, Any]) -> Dict[str, An
     if any(isinstance(item, dict) and item.get("id") == reviewer.get("id") for item in reviewers):
         raise ConfigError("reviewer id %r already exists" % reviewer.get("id"))
     reviewers.append(reviewer)
+    return data
+
+
+def add_extra_reviewer(data: Dict[str, Any], reviewer: Dict[str, Any]) -> Dict[str, Any]:
+    """``add_reviewer`` for ``reviewers_extra``: beside the inherited panel, not instead of it."""
+    extras = data.get("reviewers_extra")
+    if extras is None:
+        extras = data["reviewers_extra"] = []
+    if not isinstance(extras, list):
+        raise ConfigError("reviewers_extra: must be a list")
+    if any(isinstance(item, dict) and item.get("id") == reviewer.get("id") for item in extras):
+        raise ConfigError("reviewer id %r already exists" % reviewer.get("id"))
+    extras.append(reviewer)
     return data
 
 

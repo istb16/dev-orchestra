@@ -6,7 +6,7 @@ import unittest
 
 from helpers import IsolatedCase
 
-from orchestrator import cli
+from orchestrator import cli, cli_common
 from orchestrator import config as config_mod
 from orchestrator import wizard as wizard_mod
 
@@ -177,9 +177,11 @@ class TestTheWizardsBase(IsolatedCase):
     def test_the_summary_shows_what_will_be_in_force(self):
         """The layer alone would report the design review as off while the
         layer below has it on -- and the summary is what the user says yes to."""
-        base = config_mod.deep_merge(config_mod.default_config(), {"review": {"design": {"enabled": True}}})
-        prompter = ScriptedPrompter(accept_all())
-        data, _ = wizard_mod.run(prompter, None, base)
+        layer = {"version": 1, "review": {"design": {"enabled": True}}}
+        config_mod.write_config_file(config_mod.global_config_path(), layer, "global")
+        base = cli_common._fitted_base("project", self.project)
+        prompter = ScriptedPrompter(accept_all(customise=False))
+        data, _ = wizard_mod.run(prompter, None, base, scope="project")
         self.assertIn("design review: on", "\n".join(prompter.output))
         self.assertNotIn("review", data)
 

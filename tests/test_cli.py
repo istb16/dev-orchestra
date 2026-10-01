@@ -299,7 +299,7 @@ class TestReviewerCommands(IsolatedCase):
         lines = _read_lines(read_file(config_mod.global_config_path()))
         data, consumed = _parse_node(lines, 0)
         self.assertEqual(consumed, len(lines))
-        db = next(r for r in data["reviewers"] if r["id"] == "db")
+        db = next(r for r in data["reviewers_extra"] if r["id"] == "db")
         self.assertEqual(db["when"]["paths"], ["*[Mm]igration*/*", "*.sql"])
 
     def test_when_and_when_paths_together_are_refused(self):
@@ -337,7 +337,7 @@ class TestReviewerCommands(IsolatedCase):
         self.add_db("*.sql")
         _, out, _ = run_cli("reviewer", "list")
         line = next(line for line in out.splitlines() if " db " in line)
-        self.assertTrue(line.endswith("general (when: paths *.sql)"), line)
+        self.assertTrue(line.endswith("general (when: paths *.sql) (extra: global)"), line)
 
     def test_removing_the_last_unconditional_reviewer_is_refused_when_the_rest_are_path_scoped(self):
         run_cli("reviewer", "remove", "codex-general")
@@ -2783,26 +2783,28 @@ class TestPresetWriters(PresetCase):
     def add_security(self):
         return run_cli("reviewer", "add", "--provider", "claude", "--role", "security", "--when", "high-risk")
 
-    def test_adding_a_reviewer_records_the_fitted_panel(self):
+    def test_adding_a_reviewer_keeps_the_fitted_panel(self):
         code, out, _ = self.add_security()
         self.assertEqual(code, 0)
-        recorded = self.ids(self.global_layer()["reviewers"])
-        self.assertEqual(recorded, ["claude-general", "claude-general-2", "claude-security"])
-        self.assertIn(FROZEN % "claude-general opus, claude-general-2 sonnet", out)
-        self.assertEqual(self.ids(), recorded)
+        layer = self.global_layer()
+        self.assertNotIn("reviewers", layer)
+        self.assertEqual(self.ids(layer["reviewers_extra"]), ["claude-security"])
+        self.assertIn("as an extra; the panel still follows preset standard's fit", out)
+        self.assertNotIn("now lists the reviewers", out)
+        self.assertEqual(self.ids(), ["claude-general", "claude-general-2", "claude-security"])
 
-    def test_adding_a_reviewer_with_both_clis_records_both_vendors(self):
+    def test_adding_a_reviewer_with_both_clis_keeps_both_vendors(self):
         self.fake_clis(claude=True, codex=True)
         self.add_security()
-        recorded = self.ids(self.global_layer()["reviewers"])
-        self.assertEqual(recorded, ["claude-general", "codex-general", "claude-security"])
+        self.assertNotIn("reviewers", self.global_layer())
+        self.assertEqual(self.ids(), ["claude-general", "codex-general", "claude-security"])
 
-    def test_adding_a_reviewer_records_the_panel_dealt_around_the_files_implementer(self):
+    def test_adding_a_reviewer_keeps_the_panel_dealt_around_the_files_implementer(self):
         self.fake_clis(claude=True, codex=True)
         self.write_global({"version": 1, "implementer": CODEX_IMPLEMENTER})
         in_force = self.ids()
         self.add_security()
-        self.assertEqual(self.ids(self.global_layer()["reviewers"]), [*in_force, "claude-security"])
+        self.assertEqual(self.ids(self.global_layer()["reviewers_extra"]), ["claude-security"])
         self.assertEqual(self.ids(), [*in_force, "claude-security"])
 
     def test_removing_a_reviewer_records_the_rest(self):
@@ -2831,9 +2833,7 @@ class TestPresetWriters(PresetCase):
         project_path = os.path.join(self.project, ".dev-orchestra.yaml")
         mine = [config_mod.make_reviewer("mine", "mock", "small")]
         config_mod.write_config_file(project_path, {"version": 1, "reviewers": mine}, "project")
-        code, out, _ = run_cli(
-            "reviewer", "add", "--scope", "global", "--provider", "claude", "--role", "security"
-        )
+        code, out, _ = run_cli("reviewer", "remove", "--scope", "global", "claude-general-2")
         self.assertEqual(code, 0)
         self.assertIn(FROZEN % "claude-general opus, claude-general-2 sonnet", out)
 

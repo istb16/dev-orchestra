@@ -120,15 +120,12 @@ class TestSparseWriters(IsolatedCase):
         self.assertEqual(project["implementer"]["model"]["family"], "opus")
         self.assertEqual(config_mod.load(self.project).role("implementer")["model"]["family"], "opus")
 
-    def test_adding_a_reviewer_writes_the_panel_and_nothing_else(self):
+    def test_adding_a_reviewer_writes_the_reviewer_and_nothing_else(self):
         code, _, _ = run_cli("reviewer", "add", "--provider", "codex", "--role", "security")
         self.assertEqual(code, 0)
         layer = self.global_layer()
-        self.assertEqual(sorted(layer), ["reviewers", "version"])
-        self.assertEqual(
-            [r["id"] for r in layer["reviewers"]],
-            ["claude-general", "codex-general", "codex-security"],
-        )
+        self.assertEqual(sorted(layer), ["reviewers_extra", "version"])
+        self.assertEqual([r["id"] for r in layer["reviewers_extra"]], ["codex-security"])
 
     def test_reset_clears_the_overrides(self):
         run_cli("config", "setup", "--defaults")
@@ -175,7 +172,7 @@ class TestVersionIsAlwaysWritten(IsolatedCase):
         layer = config_mod.read_config_file(config_mod.global_config_path())
         self.assertEqual(layer["version"], 1)
         self.assertEqual(layer["optimization"], {"low_risk_max_lines": 10})
-        self.assertEqual(len(layer["reviewers"]), 3)
+        self.assertEqual(len(layer["reviewers_extra"]), 1)
 
     def test_a_version_the_file_states_is_left_for_validate_to_report(self):
         config_mod.write_config_file(config_mod.global_config_path(), {"version": 0})
@@ -203,15 +200,14 @@ class TestGlobalWritesWithAProjectLayer(IsolatedCase):
     def assertProjectFileUntouched(self):
         self.assertEqual(open(self.project_path, "rb").read(), self.project_bytes)
 
-    def test_reviewer_add_starts_from_the_default_panel(self):
+    def test_reviewer_add_goes_beside_the_default_panel(self):
         code, _, _ = run_cli(
             "reviewer", "add", "--scope", "global", "--provider", "codex", "--role", "security"
         )
         self.assertEqual(code, 0)
-        self.assertEqual(
-            [r["id"] for r in self.global_layer()["reviewers"]],
-            ["claude-general", "codex-general", "codex-security"],
-        )
+        layer = self.global_layer()
+        self.assertNotIn("reviewers", layer)
+        self.assertEqual([r["id"] for r in layer["reviewers_extra"]], ["codex-security"])
         self.assertProjectFileUntouched()
         self.assertEqual([r["id"] for r in config_mod.load(self.project).reviewers()], ["proj-only"])
         _, listing, _ = run_cli("reviewer", "list", "--json")

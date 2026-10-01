@@ -15,7 +15,7 @@ from contextlib import redirect_stderr, redirect_stdout
 
 from helpers import IsolatedCase, has_git
 
-from orchestrator import cli, doctor, execution, presets
+from orchestrator import cli, doctor, execution, miniyaml, presets
 from orchestrator import config as config_mod
 from orchestrator import review as review_mod
 from orchestrator.providers.agy import AgyProvider
@@ -211,28 +211,36 @@ class TestProjectScopeWrites(_GateCase):
         self.assertEqual(code, 2)
         self.assertIn("reviewers on agy are taken only from the global config", err)
 
-    def test_reviewer_add_says_the_copied_agy_reviewer_is_refused(self):
-        """A project panel starts as a copy of the global one, agy reviewers
-        included, and those are refused from then on: said, not silent."""
+    def test_reviewer_add_keeps_the_global_agy_reviewer_in_the_global_file(self):
+        """A project addition is an extra: nothing is copied, so the global
+        agy reviewer stays where the global file put it and is not refused."""
         self.add_global("agy", "gem")
-        code, _, err = run_cli("reviewer", "add", "--scope", "project", "--provider", "mock", "--id", "m1")
+        code, out, err = run_cli("reviewer", "add", "--scope", "project", "--provider", "mock", "--id", "m1")
         self.assertEqual(code, 0, err)
-        self.assertIn("warning: reviewer gem: the reviewers list comes from the project config", err)
+        self.assertIn("as an extra", out)
+        self.assertNotIn("comes from the project config", err)
+        project = miniyaml.loads(
+            open(os.path.join(self.project, ".dev-orchestra.yaml"), encoding="utf-8").read()
+        )
+        self.assertEqual([entry["id"] for entry in project["reviewers_extra"]], ["m1"])
+        self.assertNotIn("reviewers", project)
 
-    def test_reviewer_set_says_so_too(self):
+    def test_reviewer_set_leaves_the_global_agy_reviewer_out_of_the_copy(self):
         self.add_global("agy", "gem")
         self.add_global("mock", "m1")
-        code, _, err = run_cli("reviewer", "set", "m1", "--scope", "project", "--role", "security")
+        code, out, err = run_cli("reviewer", "set", "m1", "--scope", "project", "--role", "security")
         self.assertEqual(code, 0, err)
-        self.assertIn("warning: reviewer gem: the reviewers list comes from the project config", err)
+        self.assertIn("gem -- a reviewer on agy is taken only from the global config", out)
+        self.assertNotIn("comes from the project config", err)
 
-    def test_reviewer_remove_says_so_too(self):
+    def test_reviewer_remove_leaves_it_out_too(self):
         self.add_global("agy", "gem")
         self.add_global("mock", "m1")
         self.add_global("mock", "m2")
-        code, _, err = run_cli("reviewer", "remove", "m2", "--scope", "project")
+        code, out, err = run_cli("reviewer", "remove", "m2", "--scope", "project")
         self.assertEqual(code, 0, err)
-        self.assertIn("warning: reviewer gem: the reviewers list comes from the project config", err)
+        self.assertIn("gem -- a reviewer on agy is taken only from the global config", out)
+        self.assertNotIn("comes from the project config", err)
 
 
 class TestLiveUnenforcedFromTheProject(_GateCase):
@@ -407,29 +415,31 @@ class TestTheFitOnAgyAlone(_GateCase):
 
 class TestSeedingTheFittedPanel(_GateCase):
     """A reviewer write that copies the fitted panel into the project file
-    leaves the agy seat out, which that file could not hold anyway."""
+    leaves the agy seat out, which that file could not hold anyway. An add
+    copies nothing, so the fitted agy seat keeps running, warned."""
 
-    def test_a_project_panel_seeded_from_the_fit_leaves_agy_out(self):
+    def test_a_project_add_keeps_the_fitted_agy_seat(self):
         code, out, err = run_cli("reviewer", "add", "--scope", "project", "--provider", "mock", "--id", "m1")
         self.assertEqual(code, 0, err)
         written = config_mod.read_config_file(self.project_file())
-        self.assertEqual([reviewer["id"] for reviewer in written["reviewers"]], ["m1"])
-        self.assertIn("the panel no longer follows preset standard's fit (recorded none)", out)
-        self.assertIn(
-            "; not copied into .dev-orchestra.yaml: agy-general -- a reviewer on agy is taken only from "
-            "the global config",
-            out,
-        )
-        self.assertEqual(config_mod.reviewer_raw_arg_refusals(config_mod.load(self.project)), {})
+        self.assertNotIn("reviewers", written)
+        self.assertEqual([reviewer["id"] for reviewer in written["reviewers_extra"]], ["m1"])
+        self.assertNotIn("now lists the reviewers", out)
+        self.assertNotIn("not copied", out)
+        loaded = config_mod.load(self.project)
+        self.assertEqual([reviewer["id"] for reviewer in loaded.reviewers()], ["agy-general", "m1"])
+        self.assertEqual(config_mod.reviewer_raw_arg_refusals(loaded), {})
+        self.assertEqual(list(config_mod.reviewer_enforcement_warnings(loaded.data)), ["agy-general"])
+        self.assertIn("warning: reviewer agy-general: %s" % UNENFORCED, err)
         self.assertNotIn("comes from the project config", err)
 
-    def test_config_set_on_the_project_panel_edits_its_own_reviewer(self):
+    def test_config_set_on_the_project_extras_edits_its_own_reviewer(self):
         code, _, err = run_cli("reviewer", "add", "--scope", "project", "--provider", "mock", "--id", "m1")
         self.assertEqual(code, 0, err)
-        code, _, err = run_cli("config", "set", "--scope", "project", "reviewers[0].role", "security")
+        code, _, err = run_cli("config", "set", "--scope", "project", "reviewers_extra[0].role", "security")
         self.assertEqual(code, 0, err)
         written = config_mod.read_config_file(self.project_file())
-        self.assertEqual([(r["id"], r["role"]) for r in written["reviewers"]], [("m1", "security")])
+        self.assertEqual([(r["id"], r["role"]) for r in written["reviewers_extra"]], [("m1", "security")])
 
     def test_an_edit_that_names_a_seat_left_out_says_why(self):
         left_out = (
@@ -449,11 +459,19 @@ class TestSeedingTheFittedPanel(_GateCase):
                 self.assertFalse(os.path.exists(self.project_file()))
 
     def test_a_global_panel_seeded_from_the_fit_keeps_the_agy_seat(self):
+        code, out, err = run_cli("reviewer", "set", "--scope", "global", "agy-general", "--role", "security")
+        self.assertEqual(code, 0, err)
+        written = config_mod.read_config_file(config_mod.global_config_path())
+        self.assertEqual([reviewer["id"] for reviewer in written["reviewers"]], ["agy-general"])
+        self.assertIn("(recorded agy-general default)", out)
+        self.assertNotIn("not copied", out)
+        self.assertIn("warning: reviewer agy-general: %s" % UNENFORCED, err)
+
+    def test_a_global_add_keeps_the_fitted_agy_seat(self):
         code, out, err = run_cli("reviewer", "add", "--scope", "global", "--provider", "mock", "--id", "m1")
         self.assertEqual(code, 0, err)
         written = config_mod.read_config_file(config_mod.global_config_path())
-        self.assertEqual([reviewer["id"] for reviewer in written["reviewers"]], ["agy-general", "m1"])
-        self.assertIn("(recorded agy-general default)", out)
+        self.assertEqual([reviewer["id"] for reviewer in written["reviewers_extra"]], ["m1"])
         self.assertNotIn("not copied", out)
         self.assertIn("warning: reviewer agy-general: %s" % UNENFORCED, err)
 

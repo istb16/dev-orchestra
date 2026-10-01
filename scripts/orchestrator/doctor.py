@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import os
 import platform
-from typing import Any, Dict, List, Optional, cast
+from typing import Any, Dict, List, Optional, Tuple, cast
 
 from . import config as config_mod
 from . import hosts, verified
@@ -148,7 +148,12 @@ def collect(start: Optional[str] = None, probe_models: bool = True) -> Dict[str,
         report["problems"].append(str(exc))
         return report
 
-    problems = config_mod.validate(loaded.data, project_layer=loaded.project_layer)
+    problems = config_mod.validate(
+        loaded.data,
+        project_layer=loaded.project_layer,
+        global_layer=loaded.global_layer,
+        origins=loaded.reviewer_origins,
+    )
     installed = presets_mod.installed_providers()
     report["config"] = {
         "status": "ok" if not problems else "invalid",
@@ -211,11 +216,12 @@ def collect(start: Optional[str] = None, probe_models: bool = True) -> Dict[str,
                     tier_refused = "%s.model_tiers.%s" % (key, tier) in refused
                     _enforcement_report(tier_label, merged, report, None, tier_refused)
 
-    for reviewer in loaded.reviewers():
+    for index, reviewer in enumerate(loaded.reviewers()):
         label = "Reviewer %s" % reviewer.get("id")
         entry = _describe_role(label, reviewer, detections, report["problems"], adapter_errors, load_errors)
         entry["id"] = reviewer.get("id")
         entry["role"] = reviewer.get("role", "general")
+        entry["origin"] = loaded.reviewer_origin(index).label()
         when = opt_mod.reviewer_condition(reviewer)
         if when != opt_mod.WHEN_ALWAYS:
             entry["when"] = when
@@ -231,7 +237,61 @@ def collect(start: Optional[str] = None, probe_models: bool = True) -> Dict[str,
     if not report["reviewers"]:
         report["problems"].append("no reviewers configured: the independent-review stage will be skipped")
     _default_patterns_note(report, loaded.optimization_settings())
+    _frozen_panel_notes(report, loaded, installed)
     return report
+
+
+def _seat(reviewer: Dict[str, Any]) -> Tuple[Any, ...]:
+    """What a seat is, ids aside: provider, family, role and condition."""
+    when = reviewer.get("when")
+    return (
+        reviewer.get("provider"),
+        (reviewer.get("model") or {}).get("family"),
+        reviewer.get("role", "general"),
+        None if when in (None, opt_mod.WHEN_ALWAYS) else repr(when),
+    )
+
+
+def _frozen_panel_notes(
+    report: Dict[str, Any], loaded: config_mod.LoadedConfig, installed: List[str]
+) -> None:
+    """A ``reviewers`` list that is the panel its file would inherit, plus more.
+
+    The shape an older ``reviewer add`` left: the inherited panel copied in,
+    then the addition. Moving the additions to ``reviewers_extra`` keeps them
+    and lets the panel follow the fit again. A note, and never a rewrite.
+    """
+    if not loaded.preset:
+        return
+    files = (
+        (loaded.global_path, loaded.global_layer, {"preset": loaded.preset}),
+        (loaded.project_path, loaded.project_layer, loaded.global_layer),
+    )
+    for path, layer, below in files:
+        listed = layer.get("reviewers")
+        if not path or not isinstance(listed, list):
+            continue
+        # Dealt around the implementer the file sets, as its writers deal it.
+        inherited = config_mod.compose(below, {}, installed, layer)[0].get("reviewers")
+        if not isinstance(inherited, list):
+            continue
+        rest = [reviewer for reviewer in listed if isinstance(reviewer, dict)]
+        matched = True
+        for seat in inherited:
+            if not isinstance(seat, dict):
+                continue
+            match = next((reviewer for reviewer in rest if _seat(reviewer) == _seat(seat)), None)
+            if match is None:
+                matched = False
+                break
+            rest.remove(match)
+        if not matched or not rest:
+            continue
+        ids = ", ".join(str(reviewer.get("id")) for reviewer in rest)
+        report["notes"].append(
+            "reviewers in %s: holds the inherited panel plus %s; move %s to reviewers_extra and "
+            "remove reviewers to keep following it" % (path, ids, ids)
+        )
 
 
 def _antigravity_live(
@@ -606,6 +666,9 @@ def render(report: Dict[str, Any]) -> str:
         role = entry.get("role", "general")
         if entry.get("when"):
             role += " (when: %s)" % entry.get("condition", entry["when"])
+        origin = str(entry.get("origin") or "")
+        if origin.endswith(" extra"):
+            role += " (extra: %s)" % origin[: -len(" extra")]
         lines.append("    %d. %s / %s / %s" % (index, entry.get("id"), _role_line(entry), role))
 
     if report["problems"]:

@@ -7,6 +7,7 @@
 - [Where it lives](#where-it-lives)
 - [Precedence](#precedence)
 - [Presets](#presets)
+  - [Adding reviewers beside the panel (`reviewers_extra`)](#adding-reviewers-beside-the-panel-reviewers_extra)
 - [Schema (version 1)](#schema-version-1)
   - [Field reference](#field-reference)
   - [Role options](#role-options)
@@ -195,24 +196,37 @@ The panel follows the same rule: a `reviewers` list in any file replaces the
 fitted panel whole, and a reviewer you listed whose CLI is absent still fails
 in every round, because you listed it.
 
-**Writers that edit the panel record it.** `reviewer add`, `reviewer remove`,
-`reviewer set` and `config set reviewers[...]` start from this machine's fitted
-panel, copy it into the file and edit it there, as they have always started
-from the inherited list. From then on the file's list is the panel, on this
-machine and any other that reads the file, and the command says so once:
-`note: <path> now lists the reviewers; the panel no longer follows preset
-standard's fit (recorded claude-general opus, claude-general-2 sonnet)`. Roles,
-the design review and the optimization level keep following the preset. In
-project scope, when the global file lists no reviewers -- so what is copied
-is the fit -- a seat on agy is left out of the copy, since the project file
-may not hold it, and the note ends `; not copied into .dev-orchestra.yaml:
-agy-general -- a reviewer on agy is taken only from the global config`. An
-edit that names such a seat -- `reviewer set agy-general`, or an index past
-the copied list -- fails with the same `note: not copied into ...` beside its
-error. A panel the global file lists is copied whole ([below](#role-options)).
-`config reset` on the global file keeps `preset` and clears the list, which
-restores the fit. An unknown preset name is cleared with the rest, with a
-`note:`, and the file then runs under `standard`.
+**`reviewer add` adds beside the panel; the other writers record it.** In a
+file that lists no `reviewers`, `reviewer add` writes the new reviewer to that
+file's `reviewers_extra` and copies nothing, so the panel keeps following the
+fit -- or, in a project, the global file's list -- and the command says so:
+`Added reviewer claude-security (claude / opus / security) to <path> as an
+extra; the panel still follows preset standard's fit`. In a file that lists
+`reviewers` it appends there, as before ([below](#adding-reviewers-beside-the-panel-reviewers_extra)).
+`reviewer remove` and `reviewer set` find their reviewer in the panel in force
+-- the ids and positions `reviewer list` shows -- and edit one of the file's own
+extras in place. For any other seat -- fitted, listed, or a global extra seen
+from a project -- they and `config set reviewers[...]` start from this
+machine's fitted panel, copy it into the file and edit it there, as they have
+always started from the inherited list. From then on the file's list is the
+panel, on this machine and any other that reads the file, and the command says
+so once: `note: <path> now lists the reviewers; the panel no longer follows
+preset standard's fit (recorded claude-general opus, claude-general-2 sonnet)`.
+Roles, the design review and the optimization level keep following the preset.
+In project scope, when the global file lists no reviewers -- so what is copied
+is the fit and the global extras -- a seat on agy is left out of the copy,
+since the project file may not hold it, and the note ends `; not copied into
+.dev-orchestra.yaml: agy-general -- a reviewer on agy is taken only from the
+global config`. An edit that names such a seat -- `reviewer set agy-general`,
+or an index past the copied list -- fails with the same `note: not copied into
+...` beside its error. A panel the global file lists is copied whole
+([below](#role-options)). Each of these writers composes the configuration as
+it would be saved, both files included, and refuses (exit 2, nothing written)
+a `reviewers` problem the write would introduce -- leaving no reviewer that
+always runs, for one; a problem the file already had does not stop a write.
+`config reset` on the global file keeps `preset` and clears the list and the
+extras, which restores the fit. An unknown preset name is cleared with the
+rest, with a `note:`, and the file then runs under `standard`.
 
 A reviewer added without `--model` gets its CLI's default family: `opus` on
 Claude, `default` on agy, `recommended-coding` on Codex and on any other
@@ -231,12 +245,80 @@ and refuses `--scope project` (exit 2) without writing.
 **Security and unattended runs are additions, not presets.** For a security
 reviewer on risky changes, `reviewer add --provider claude --role security
 --when high-risk` plus `optimization.extra_high_risk_paths` for this
-repository's own sensitive paths; that records the panel, as above. For runs
+repository's own sensitive paths; that adds it beside the panel, as above. For runs
 nobody watches, `config set design.require_approval false`; with
 `preset: quality` beside it, that is "unattended quality".
 
 An older dev-orchestra reading a global file with `preset:` ignores the key and
 runs its built-in defaults; its `config validate` does not report it.
+
+### Adding reviewers beside the panel (`reviewers_extra`)
+
+A file can add reviewers to the panel it inherits instead of copying that
+panel. The panel then keeps following the preset's fit or the global file's
+list, and the additions stay:
+
+```yaml
+version: 1
+reviewers_extra:
+  - id: claude-security
+    provider: claude
+    model:
+      family: opus
+      version: latest
+    role: security
+    when: high-risk
+```
+
+`reviewer add` writes this key whenever the file lists no `reviewers`. Its
+entries take the schema of `reviewers` entries; `null` and `[]` add nothing.
+Either file may hold it, and the extras join the panel after it:
+
+| The panel is | When |
+| --- | --- |
+| the project file's `reviewers`, then the project file's extras | the project file lists `reviewers` |
+| the global file's `reviewers`, then the global extras, then the project extras | otherwise, when the global file lists `reviewers` |
+| the preset's fit, then the global extras, then the project extras | otherwise |
+
+`reviewers: []` counts as a list.
+
+**Ids.** The panel the extras join keeps every id. An extra whose id is already
+taken -- by the fit, a listed reviewer or an earlier extra -- runs under a new
+one, with a note under `Preset:` in `config show` and under Notes in `doctor`:
+`reviewers_extra[0] in the project file: id codex-general is taken by the
+fitted panel; it runs as codex-general-2 (reviewer set codex-general-2 --id
+<name> keeps a name)`. So `--only <fitted id>` always selects the fitted seat;
+and since the fit follows what is installed, installing Codex can move an extra
+to a new id. An extra is never dropped for anything else, so one that the fit
+later covers runs twice until it is removed.
+
+**What is checked.** Each file's extras are checked entry by entry -- the id,
+the role, the provider and model, `when`, and ids unique within that file --
+whether or not they join the panel, as `reviewers_extra[0] in the global file:
+...`. The rules of the whole panel, at least one reviewer that always runs
+among them, apply with the extras in it. `reviewer remove`, `reviewer set` and
+`config set reviewers_extra[<n>].<key>` edit one of the file's own extras in
+place, a renamed one found by the id it runs under, and copy nothing.
+
+**Where each one came from.** A project extra meets every refusal a project
+`reviewers` list does: one on agy, or one with `options.args`, is refused
+([below](#role-options)). A global extra on agy runs, warned. `config show`
+marks each extra (`(extra, project file)`) and its JSON adds
+`reviewer_origins`, parallel to `config.reviewers`; `reviewer list` marks them
+`(extra: project)`, and its JSON and `doctor`'s give each reviewer an `origin`:
+`fit`, `global`, `project`, `global extra` or `project extra`. `config prune`
+keeps extras, and `config reset` clears them with the other overrides and says
+how many. When a small change runs a single reviewer, it is the first `general`
+one in panel order, so an extra is chosen only when the panel it joins has no
+`general` seat.
+
+**A list that holds the inherited panel plus more** -- what `reviewer add` left
+before this key existed -- gets a note in `doctor`: `reviewers in <file>: holds
+the inherited panel plus <ids>; move <ids> to reviewers_extra and remove
+reviewers to keep following it`. Files are never rewritten.
+
+An older dev-orchestra ignores `reviewers_extra`: the panel runs without the
+extras, and its `config validate` does not report the key.
 
 ## Schema (version 1)
 
@@ -312,6 +394,7 @@ workspace:
 | `reviewers[].id` | string | Unique, matching `[a-z0-9][a-z0-9._-]*`. Names the report file. |
 | `reviewers[].role` | string | Built-in or your own; see `references/reviews.md`. |
 | `reviewers[].when` | `always` \| `high-risk` \| mapping with `paths` | When the reviewer runs on a **code** review round (default `always`). `high-risk` joins only the rounds judged high-risk; a mapping with `paths` joins only the rounds whose change matches one of its own patterns. The design review ignores both and runs every reviewer. At least one reviewer must stay `always`. See [Reviewers that run only on high-risk changes](#reviewers-that-run-only-on-high-risk-changes) and [Reviewers scoped to paths](#reviewers-scoped-to-paths). |
+| `reviewers_extra` | list \| null | Reviewers added beside the panel the file inherits, with the schema of `reviewers` entries; in either file. Renamed when an id is taken, never dropped. See [Adding reviewers beside the panel](#adding-reviewers-beside-the-panel-reviewers_extra). |
 | `review.max_review_iterations` | int ≥ 0 | Rounds per review, not per project: the count restarts on a new branch, a new `--base`, or `budget reset`. `0` disables re-review entirely. |
 | `review.parallel` | bool | `false` runs reviewers one at a time (easier to debug). |
 | `review.re_review_severities` | list | Severities that count as blocking. |
@@ -397,7 +480,8 @@ and `review run`. The same seat from the project file is refused: `run` exits
 2, the reviewer fails in its round while the others run, and `config validate`
 and `doctor` report it (so `doctor --strict` fails). `config set --scope
 project architect.provider agy` (and `orchestrator.provider`,
-`<role>.model_tiers.<tier>.provider`, `reviewers[<n>].provider`), `reviewer add
+`<role>.model_tiers.<tier>.provider`, `reviewers[<n>].provider`,
+`reviewers_extra[<n>].provider`), `reviewer add
 --scope project --provider agy` and `reviewer set --scope project --provider
 agy` exit 2 without writing. The refusal names the command that sets the seat
 globally:
@@ -410,8 +494,9 @@ dev-orchestra reviewer add --scope global --provider agy
 A project file that sets any `reviewers[i].<key>` holds the whole panel (the
 list is replaced whole), so a global agy reviewer copied into it becomes a
 project one and is refused, with the same message. An agy seat that came from
-the preset's fit, with no reviewers in the global file, is not copied: the
-writer leaves it out and says so ([Presets](#presets)).
+the preset's fit, or a global extra on agy, with no reviewers in the global
+file, is not copied: the writer leaves it out and says so ([Presets](#presets)).
+A project file's `reviewers_extra` is refused the same way as its `reviewers`.
 
 **Options that would loosen a read-only stage are ignored or refused.** The
 orchestrator, the architect and every reviewer always run read-only, whatever
@@ -847,6 +932,10 @@ all copy the rest of the list from the layer below first -- the built-in
 defaults and the preset's fit for the global layer, the global layer for a
 project one. A project's panel therefore never ends up in your global file. An
 index past the end of the list is an error (exit 2), not a new entry.
+`reviewers_extra[0].role` is the exception: it edits the file's own extra and
+copies nothing. A `reviewers[...]` or `reviewers_extra[...]` path is checked
+before anything is written, and a panel problem it would introduce is refused
+(exit 2) instead of written and warned about.
 
 ### The wizard
 
@@ -908,6 +997,15 @@ The file's other settings are kept as they were, a value equal to a default
 included.
 `customise each role` is the wizard as it was before presets: every answer is
 saved. A project file is never asked the preset question.
+
+The wizard never asks about `reviewers_extra` and never writes it: the file
+keeps the key as it held it, when a preset is chosen too, and a line before the
+reviewer questions says so (`This file's reviewers_extra (<ids>) is kept as it
+is; reviewer add/remove manage it.`). Every summary before saving is the
+configuration `load()` will resolve, the extras marked `(extra, global file)`.
+Answers to the reviewer questions are still saved as `reviewers`, which the
+panel then follows; to add a reviewer and keep following the inherited panel,
+use `reviewer add`.
 
 Files the wizard wrote before presets existed list every role and the panel, so
 a `preset:` added to one reaches only what they do not set. `config reset`

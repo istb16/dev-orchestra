@@ -63,8 +63,6 @@ from .cli_config import (
     _prune_value,
     _redacted_reviewer,
     _render_layer,
-    _reviewer_problems,
-    _unindexed,
     _warn_unresolvable,
     cmd_config_path,
     cmd_config_prune,
