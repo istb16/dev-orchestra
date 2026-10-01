@@ -69,6 +69,22 @@ The public surface covered by that promise is: the configuration schema, the
   deadlines are unchanged. See "What the runtime budget counts" in
   `references/limits.md` (#191).
 
+- **Presets fit more review roles.** `standard`, the implicit preset, adds a
+  security and a test reviewer on Claude sonnet, plus a security reviewer on the
+  full model that runs only on high-risk changes. Codex and user adapters get
+  the high-risk one but no sonnet seats, because no cheap model of theirs can be
+  named offline. On agy alone the panel is unchanged, since agy cannot be held
+  to reading. `quality` adds a test reviewer (not on agy), and `fast` is
+  unchanged. Small-change rounds still run one reviewer. A file that lists
+  `reviewers` keeps exactly those seats and gets none of the new ones; `config
+  show` prints the panel in force. An extra whose id a new seat now holds
+  (`claude-security`, `claude-test`) runs under the id its note gives.
+  `reviewer remove`/`set` with the old id are refused and name the new one.
+  With `optimization.high_risk_paths: []` and no `extra_high_risk_paths`, the
+  fitted high-risk seat stays and runs only on rounds declared with `review run
+  --high-risk`; a `when: high-risk` reviewer a file writes is still refused.
+  See "Presets" in `references/configuration.md` (#183).
+
 ## [0.15.0] - 2026-09-30
 
 ### Added

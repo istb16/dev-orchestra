@@ -786,7 +786,9 @@ is fitted only where the built-in CLIs are missing:
   `read_only_enforcement()` of `verified` or `partial`. A report that needs a
   subprocess -- one that reads `--help`, say -- never qualifies, whatever it
   would say, because fitting must not start a CLI. Otherwise those seats go to
-  agy when it is installed, or expand as written.
+  agy when it is installed, or expand as written. Every seat it takes gets its
+  declared family: it gets no cheap seat, such as `standard`'s sonnet security
+  and test reviewers, which go to Claude alone.
 
 ```python
 class MyCliProvider(Provider):

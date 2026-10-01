@@ -821,6 +821,9 @@ class TestReviewAccounting(IsolatedCase):
         run_cli("config", "setup", "--defaults")
         run_cli("reviewer", "remove", "claude-general")
         run_cli("reviewer", "remove", "codex-general")
+        run_cli("reviewer", "remove", "claude-security-2")
+        run_cli("reviewer", "remove", "claude-security")
+        run_cli("reviewer", "remove", "claude-test")
         run_cli("reviewer", "add", "--provider", "mock", "--id", "m1", "--role", "general")
         run_cli("reviewer", "add", "--provider", "mock", "--id", "m2", "--role", "security")
         # The duplication is the subject here, so keep both reviewers: at

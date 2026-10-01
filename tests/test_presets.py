@@ -9,7 +9,7 @@ from typing import Any, List, Tuple
 from helpers import IsolatedCase, user_adapter_source
 
 from orchestrator import config as config_mod
-from orchestrator import doctor, presets
+from orchestrator import doctor, optimization, presets
 from orchestrator.providers import get_provider
 
 BOTH = ["claude", "codex"]
@@ -18,32 +18,43 @@ CODEX = "recommended-coding"
 
 #: (id, provider, family, role, when) for every preset in every environment.
 #: Neither CLI installed expands as written, which is the two-vendor panel.
+#: The sonnet seats are cheap ones, which only Claude can take.
 PANELS = {
     ("quality", "both"): [
         ("claude-general", "claude", "fable", "general", None),
         ("codex-security", "codex", CODEX, "security", None),
         ("claude-architecture", "claude", "opus", "architecture", None),
+        ("codex-test", "codex", CODEX, "test", None),
     ],
     ("quality", "claude"): [
         ("claude-general", "claude", "fable", "general", None),
         ("claude-security", "claude", "opus", "security", None),
         ("claude-architecture", "claude", "opus", "architecture", None),
+        ("claude-test", "claude", "opus", "test", None),
     ],
     ("quality", "codex"): [
         ("codex-general", "codex", CODEX, "general", None),
         ("codex-security", "codex", CODEX, "security", None),
         ("codex-architecture", "codex", CODEX, "architecture", None),
+        ("codex-test", "codex", CODEX, "test", None),
     ],
     ("standard", "both"): [
         ("claude-general", "claude", "opus", "general", None),
         ("codex-general", "codex", CODEX, "general", None),
+        ("claude-security", "claude", "sonnet", "security", None),
+        ("claude-test", "claude", "sonnet", "test", None),
+        ("claude-security-2", "claude", "opus", "security", "high-risk"),
     ],
     ("standard", "claude"): [
         ("claude-general", "claude", "opus", "general", None),
         ("claude-general-2", "claude", "sonnet", "general", None),
+        ("claude-security", "claude", "sonnet", "security", None),
+        ("claude-test", "claude", "sonnet", "test", None),
+        ("claude-security-2", "claude", "opus", "security", "high-risk"),
     ],
     ("standard", "codex"): [
         ("codex-general", "codex", CODEX, "general", None),
+        ("codex-security", "codex", CODEX, "security", "high-risk"),
     ],
     ("fast", "both"): [
         ("codex-general", "codex", CODEX, "general", None),
@@ -121,6 +132,20 @@ class TestExpansion(unittest.TestCase):
         self.assertEqual((fit.notes, name, source), ([], "standard", "implicit"))
         self.assertEqual(config_mod.compose({}, {}, [])[0], config_mod.default_config())
 
+    def test_standard_reads_the_defaults_back_with_cheap_and_held_seats(self):
+        Seat = presets.Seat
+        self.assertEqual(
+            presets.PRESETS["standard"].seats,
+            (
+                Seat("general", "opus", "always"),
+                Seat("general", "sonnet", "always"),
+                Seat("security", "sonnet", "always", cheap=True, held=True),
+                Seat("test", "sonnet", "always", cheap=True, held=True),
+                Seat("security", "opus", "high-risk", held=True),
+            ),
+        )
+        self.assertEqual(presets.PRESETS["quality"].seats[3], Seat("test", "opus", "always", held=True))
+
     def test_fast_keeps_one_reviewer_always_and_one_on_high_risk(self):
         for env, installed in ENVIRONMENTS.items():
             with self.subTest(environment=env):
@@ -163,6 +188,31 @@ class TestNotes(unittest.TestCase):
             fit.notes,
         )
         self.assertEqual(len(fit.notes), len(fit.subjects))
+
+    def test_codex_alone_takes_no_cheap_seat_and_keeps_the_other_ids(self):
+        fit = presets.expand("standard", ["codex"])
+        skipped = [note for note in fit.notes if "no cheap model" in note]
+        self.assertEqual(
+            skipped,
+            [
+                "claude not found on PATH: reviewer seat 3 (security) was not added; codex has no cheap "
+                "model named offline",
+                "claude not found on PATH: reviewer seat 4 (test) was not added; codex has no cheap "
+                "model named offline",
+            ],
+        )
+        for note in skipped:
+            self.assertEqual(fit.subjects[fit.notes.index(note)], "reviewers")
+        self.assertEqual([seat[0] for seat in panel(fit)], ["codex-general", "codex-security"])
+        self.assertIn(
+            "claude not found on PATH: reviewer seat 5 (security) went to codex as codex-security "
+            "(recommended-coding)",
+            fit.notes,
+        )
+
+    def test_a_cheap_seat_that_is_added_gets_no_note(self):
+        notes = presets.expand("standard", ["claude"]).notes
+        self.assertFalse([note for note in notes if "seat 3" in note or "seat 4" in note], notes)
 
     def test_render_notes(self):
         self.assertEqual(presets.render_notes(presets.expand("standard", BOTH)), "")
@@ -436,7 +486,30 @@ class TestUserAdaptersInPresets(IsolatedCase):
                 self.assertEqual(presets.expand(preset, ["beta", "alpha"]), in_order)
         fit = presets.expand("standard", ["beta", "alpha"])
         self.assertEqual(fit.values["architect"]["provider"], "alpha")
-        self.assertEqual([seat[1] for seat in panel(fit)], ["alpha", "beta"])
+        self.assertEqual([seat[1] for seat in panel(fit)], ["alpha", "beta", "alpha"])
+
+    def test_an_eligible_adapter_takes_every_full_seat_and_no_cheap_one(self):
+        self.adapter(enforcement="partial")
+        self.assertEqual(
+            panel(presets.expand("quality", ["mycli"])),
+            [
+                ("mycli-general", "mycli", "default", "general", None),
+                ("mycli-security", "mycli", "default", "security", None),
+                ("mycli-architecture", "mycli", "default", "architecture", None),
+                ("mycli-test", "mycli", "default", "test", None),
+            ],
+        )
+        fit = presets.expand("standard", ["mycli"])
+        self.assertEqual(
+            panel(fit),
+            [
+                ("mycli-general", "mycli", "default", "general", None),
+                ("mycli-security", "mycli", "default", "security", "high-risk"),
+            ],
+        )
+        for index, role in ((3, "security"), (4, "test")):
+            note = "claude, codex not found on PATH: reviewer seat %d (%s) was not added; " % (index, role)
+            self.assertIn(note + "mycli has no cheap model named offline", fit.notes)
 
     def test_a_project_implementer_rotates_the_panel_between_eligible_adapters(self):
         """The one influence a project file has, as between Claude and Codex."""
@@ -568,6 +641,95 @@ class TestTheImplementersVendor(unittest.TestCase):
         reviewers = config_mod.compose(layer, {}, BOTH)[0]["reviewers"]
         always = [(r["provider"], r["role"]) for r in reviewers if not r.get("when")]
         self.assertEqual(always, [("claude", "general")])
+
+    def test_the_cheap_seats_stay_on_claude_when_the_full_ones_rotate(self):
+        implementer = {"implementer": {"provider": "codex", "model": {"family": CODEX, "version": "latest"}}}
+        expected = {
+            "standard": [
+                ("codex-general", "codex", CODEX, "general", None),
+                ("claude-general", "claude", "sonnet", "general", None),
+                ("claude-security", "claude", "sonnet", "security", None),
+                ("claude-test", "claude", "sonnet", "test", None),
+                ("codex-security", "codex", CODEX, "security", "high-risk"),
+            ],
+            "quality": [
+                ("codex-general", "codex", CODEX, "general", None),
+                ("claude-security", "claude", "opus", "security", None),
+                ("codex-architecture", "codex", CODEX, "architecture", None),
+                ("claude-test", "claude", "opus", "test", None),
+            ],
+        }
+        for name, seats in expected.items():
+            with self.subTest(preset=name):
+                reviewers = config_mod.compose({"preset": name, **implementer}, {}, BOTH)[0]["reviewers"]
+                listed = [
+                    (r["id"], r["provider"], r["model"]["family"], r["role"], r.get("when"))
+                    for r in reviewers
+                ]
+                self.assertEqual(listed, seats)
+
+
+class TestNoRiskPatterns(IsolatedCase):
+    """A fitted high-risk seat stays when the files empty the patterns; a written one is refused."""
+
+    def assert_seat_kept(self, global_layer, project_layer):
+        data, fit, _, _ = config_mod.compose(global_layer, project_layer, BOTH)
+        seat = next(r for r in data["reviewers"] if r["id"] == "claude-security-2")
+        self.assertEqual(seat["when"], "high-risk")
+        self.assertFalse(any("was not added: optimization.high_risk_paths" in n for n in fit.notes))
+        problems = config_mod.validate(
+            data, project_layer=project_layer, global_layer=global_layer, origins=fit.origins
+        )
+        self.assertEqual(problems, [])
+        # With no pattern to match, a declared round is how the seat runs.
+        records = optimization.condition_reviewers(data["reviewers"], [], declared=True)
+        self.assertIn(
+            {
+                "id": "claude-security-2",
+                "when": "high-risk",
+                "runs": True,
+                "reason": "declared with --high-risk",
+            },
+            records,
+        )
+
+    def test_the_global_file_keeps_the_fitted_seat(self):
+        self.assert_seat_kept({"version": 1, "optimization": {"high_risk_paths": []}}, {})
+
+    def test_the_project_file_keeps_the_fitted_seat(self):
+        self.assert_seat_kept({}, {"version": 1, "optimization": {"high_risk_paths": []}})
+
+    def test_an_extra_high_risk_reviewer_is_refused(self):
+        project_layer = {
+            "version": 1,
+            "optimization": {"high_risk_paths": []},
+            "reviewers_extra": [
+                config_mod.make_reviewer("x", "claude", "opus", "security", when="high-risk")
+            ],
+        }
+        data, fit, _, _ = config_mod.compose({}, project_layer, BOTH)
+        ids = [r["id"] for r in data["reviewers"]]
+        self.assertIn("claude-security-2", ids)
+        self.assertEqual(ids[-1], "x")
+        problems = config_mod.validate(data, project_layer=project_layer, origins=fit.origins)
+        self.assertIn(
+            "optimization.high_risk_paths: no pattern in force, but reviewers_extra[0] in the project "
+            "file is when: high-risk and would never run; add patterns to high_risk_paths or "
+            "extra_high_risk_paths",
+            problems,
+        )
+
+    def test_a_listed_high_risk_reviewer_is_still_refused(self):
+        global_layer = {
+            "version": 1,
+            "optimization": {"high_risk_paths": []},
+            "reviewers": [
+                config_mod.make_reviewer("a", "claude", "opus", "general"),
+                config_mod.make_reviewer("b", "claude", "opus", "security", when="high-risk"),
+            ],
+        }
+        data, _, _, _ = config_mod.compose(global_layer, {}, BOTH)
+        self.assertTrue(any("no pattern in force" in p for p in config_mod.validate(data)))
 
 
 if __name__ == "__main__":

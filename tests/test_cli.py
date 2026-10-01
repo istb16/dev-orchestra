@@ -174,7 +174,10 @@ class TestReviewerCommands(IsolatedCase):
         self.assertEqual(code, 0)
         self.assertIn("Removed reviewer codex-general", out)
         _, listing, _ = run_cli("reviewer", "list", "--json")
-        self.assertEqual([r["id"] for r in json.loads(listing)], ["claude-general"])
+        self.assertEqual(
+            [r["id"] for r in json.loads(listing)],
+            ["claude-general", "claude-security", "claude-test", "claude-security-2"],
+        )
 
     def test_remove_unknown_reviewer_fails_cleanly(self):
         code, _, err = run_cli("reviewer", "remove", "ghost")
@@ -184,6 +187,9 @@ class TestReviewerCommands(IsolatedCase):
     def test_removing_every_reviewer_is_allowed(self):
         run_cli("reviewer", "remove", "claude-general")
         run_cli("reviewer", "remove", "codex-general")
+        run_cli("reviewer", "remove", "claude-security-2")
+        run_cli("reviewer", "remove", "claude-security")
+        run_cli("reviewer", "remove", "claude-test")
         _, out, _ = run_cli("reviewer", "list")
         self.assertIn("No reviewers configured", out)
 
@@ -226,7 +232,8 @@ class TestReviewerCommands(IsolatedCase):
         self.assertNotIn("when", self.listed("sec"))
 
     def test_the_only_reviewer_cannot_become_conditional(self):
-        run_cli("reviewer", "remove", "codex-general")
+        for reviewer_id in ("codex-general", "claude-security", "claude-test"):
+            run_cli("reviewer", "remove", reviewer_id)
         code, _, err = run_cli("reviewer", "set", "claude-general", "--when", "high-risk")
         self.assertEqual(code, 2)
         self.assertIn("reviewers: at least one reviewer must run always", err)
@@ -234,6 +241,8 @@ class TestReviewerCommands(IsolatedCase):
 
     def test_removing_the_last_unconditional_reviewer_is_refused(self):
         run_cli("reviewer", "set", "codex-general", "--when", "high-risk")
+        for reviewer_id in ("claude-security", "claude-test"):
+            run_cli("reviewer", "remove", reviewer_id)
         code, _, err = run_cli("reviewer", "remove", "claude-general")
         self.assertEqual(code, 2)
         self.assertIn("at least one reviewer must run always", err)
@@ -340,7 +349,8 @@ class TestReviewerCommands(IsolatedCase):
         self.assertTrue(line.endswith("general (when: paths *.sql) (extra: global)"), line)
 
     def test_removing_the_last_unconditional_reviewer_is_refused_when_the_rest_are_path_scoped(self):
-        run_cli("reviewer", "remove", "codex-general")
+        for reviewer_id in ("codex-general", "claude-security", "claude-test"):
+            run_cli("reviewer", "remove", reviewer_id)
         self.add_db("*.sql")
         code, _, err = run_cli("reviewer", "remove", "claude-general")
         self.assertEqual(code, 2)
@@ -485,6 +495,9 @@ class TestDoctor(IsolatedCase):
         run_cli("config", "setup", "--defaults")
         run_cli("reviewer", "remove", "claude-general")
         run_cli("reviewer", "remove", "codex-general")
+        run_cli("reviewer", "remove", "claude-security-2")
+        run_cli("reviewer", "remove", "claude-security")
+        run_cli("reviewer", "remove", "claude-test")
         code, _, _ = run_cli("doctor", "--fast", "--strict")
         self.assertEqual(code, 1)
 
@@ -1847,6 +1860,9 @@ class TestReviewPipeline(IsolatedCase):
         run_cli("config", "setup", "--defaults")
         run_cli("reviewer", "remove", "claude-general")
         run_cli("reviewer", "remove", "codex-general")
+        run_cli("reviewer", "remove", "claude-security-2")
+        run_cli("reviewer", "remove", "claude-security")
+        run_cli("reviewer", "remove", "claude-test")
         run_cli("reviewer", "add", "--provider", "mock", "--id", "m1", "--role", "general")
         run_cli("reviewer", "add", "--provider", "mock", "--id", "m2", "--role", "security")
         # These are about the fan-out: two reviewers, one of them failing, the
@@ -2351,6 +2367,9 @@ class TestTheScorecardThroughTheCli(IsolatedCase):
         run_cli("config", "setup", "--defaults")
         run_cli("reviewer", "remove", "claude-general")
         run_cli("reviewer", "remove", "codex-general")
+        run_cli("reviewer", "remove", "claude-security-2")
+        run_cli("reviewer", "remove", "claude-security")
+        run_cli("reviewer", "remove", "claude-test")
         run_cli("reviewer", "add", "--provider", "mock", "--id", "m1", "--role", "general")
         run_cli("reviewer", "add", "--provider", "mock", "--id", "m2", "--role", "security")
         # Both reviewers on every round: the panel reduction has its own tests.
@@ -2743,6 +2762,12 @@ class TestUserAdapterResume(IsolatedCase):
 
 
 FROZEN = "now lists the reviewers; the panel no longer follows preset standard's fit (recorded %s)"
+#: Preset standard's panel with Claude alone installed, and as the frozen note records it.
+CLAUDE_FIT = ["claude-general", "claude-general-2", "claude-security", "claude-test", "claude-security-2"]
+RECORDED = (
+    "claude-general opus, claude-general-2 sonnet, claude-security sonnet, claude-test sonnet, "
+    "claude-security-2 opus"
+)
 CODEX_IMPLEMENTER = {"provider": "codex", "model": {"family": "recommended-coding", "version": "latest"}}
 
 
@@ -2771,13 +2796,13 @@ class TestPresetWriters(PresetCase):
         code, _, _ = run_cli("config", "set", "review.parallel", "false")
         self.assertEqual(code, 0)
         self.assertEqual(self.global_layer(), {"version": 1, "review": {"parallel": False}})
-        self.assertEqual(self.ids(), ["claude-general", "claude-general-2"])
+        self.assertEqual(self.ids(), CLAUDE_FIT)
 
     def test_reset_on_a_fresh_machine_keeps_the_fit(self):
         code, out, _ = run_cli("config", "reset", "--scope", "global")
         self.assertEqual(code, 0)
         self.assertEqual(self.global_layer(), {"version": 1})
-        self.assertEqual(self.ids(), ["claude-general", "claude-general-2"])
+        self.assertEqual(self.ids(), CLAUDE_FIT)
         self.assertIn("claude-general-2", out)
 
     def add_security(self):
@@ -2788,46 +2813,48 @@ class TestPresetWriters(PresetCase):
         self.assertEqual(code, 0)
         layer = self.global_layer()
         self.assertNotIn("reviewers", layer)
-        self.assertEqual(self.ids(layer["reviewers_extra"]), ["claude-security"])
+        self.assertEqual(self.ids(layer["reviewers_extra"]), ["claude-security-3"])
         self.assertIn("as an extra; the panel still follows preset standard's fit", out)
         self.assertNotIn("now lists the reviewers", out)
-        self.assertEqual(self.ids(), ["claude-general", "claude-general-2", "claude-security"])
+        self.assertEqual(self.ids(), [*CLAUDE_FIT, "claude-security-3"])
 
     def test_adding_a_reviewer_with_both_clis_keeps_both_vendors(self):
         self.fake_clis(claude=True, codex=True)
         self.add_security()
         self.assertNotIn("reviewers", self.global_layer())
-        self.assertEqual(self.ids(), ["claude-general", "codex-general", "claude-security"])
+        both = ["claude-general", "codex-general", "claude-security", "claude-test", "claude-security-2"]
+        self.assertEqual(self.ids(), [*both, "claude-security-3"])
 
     def test_adding_a_reviewer_keeps_the_panel_dealt_around_the_files_implementer(self):
         self.fake_clis(claude=True, codex=True)
         self.write_global({"version": 1, "implementer": CODEX_IMPLEMENTER})
         in_force = self.ids()
         self.add_security()
-        self.assertEqual(self.ids(self.global_layer()["reviewers_extra"]), ["claude-security"])
-        self.assertEqual(self.ids(), [*in_force, "claude-security"])
+        self.assertEqual(self.ids(self.global_layer()["reviewers_extra"]), ["claude-security-2"])
+        self.assertEqual(self.ids(), [*in_force, "claude-security-2"])
 
     def test_removing_a_reviewer_records_the_rest(self):
         code, out, _ = run_cli("reviewer", "remove", "claude-general-2")
         self.assertEqual(code, 0)
-        self.assertEqual(self.ids(self.global_layer()["reviewers"]), ["claude-general"])
-        self.assertIn(FROZEN % "claude-general opus, claude-general-2 sonnet", out)
+        kept = [reviewer_id for reviewer_id in CLAUDE_FIT if reviewer_id != "claude-general-2"]
+        self.assertEqual(self.ids(self.global_layer()["reviewers"]), kept)
+        self.assertIn(FROZEN % RECORDED, out)
 
     def test_setting_a_reviewer_records_the_panel(self):
         code, out, _ = run_cli("reviewer", "set", "claude-general-2", "--role", "test")
         self.assertEqual(code, 0)
         reviewers = self.global_layer()["reviewers"]
-        self.assertEqual(self.ids(reviewers), ["claude-general", "claude-general-2"])
+        self.assertEqual(self.ids(reviewers), CLAUDE_FIT)
         self.assertEqual(reviewers[1]["role"], "test")
-        self.assertIn(FROZEN % "claude-general opus, claude-general-2 sonnet", out)
+        self.assertIn(FROZEN % RECORDED, out)
 
     def test_an_indexed_set_records_the_panel(self):
         code, out, _ = run_cli("config", "set", "reviewers[0].role", "security")
         self.assertEqual(code, 0)
         reviewers = self.global_layer()["reviewers"]
-        self.assertEqual(self.ids(reviewers), ["claude-general", "claude-general-2"])
+        self.assertEqual(self.ids(reviewers), CLAUDE_FIT)
         self.assertEqual(reviewers[0]["role"], "security")
-        self.assertIn(FROZEN % "claude-general opus, claude-general-2 sonnet", out)
+        self.assertIn(FROZEN % RECORDED, out)
 
     def test_a_global_edit_inside_a_project_that_lists_reviewers_says_so(self):
         project_path = os.path.join(self.project, ".dev-orchestra.yaml")
@@ -2835,7 +2862,7 @@ class TestPresetWriters(PresetCase):
         config_mod.write_config_file(project_path, {"version": 1, "reviewers": mine}, "project")
         code, out, _ = run_cli("reviewer", "remove", "--scope", "global", "claude-general-2")
         self.assertEqual(code, 0)
-        self.assertIn(FROZEN % "claude-general opus, claude-general-2 sonnet", out)
+        self.assertIn(FROZEN % RECORDED, out)
 
     def test_a_second_edit_says_nothing_more(self):
         run_cli("reviewer", "remove", "claude-general-2")
@@ -3031,7 +3058,12 @@ class TestPresetCommands(PresetCase):
         self.assertIn("Preset: quality (global; fitted to claude)", out)
         self.assertIn("note: %s" % note, out)
         payload = json.loads(run_cli("config", "show", "--json")[1])
-        self.assertEqual(payload["preset"], {"name": "quality", "source": "global", "notes": [note]})
+        self.assertEqual(payload["preset"]["name"], "quality")
+        self.assertEqual(payload["preset"]["source"], "global")
+        self.assertEqual(
+            payload["preset"]["notes"],
+            [note, "codex not found on PATH: reviewer seat 4 (test) went to claude as claude-test (opus)"],
+        )
         _, out, _ = run_cli("doctor", "--fast")
         self.assertIn("Preset: quality (global; fitted to claude)", out)
         self.assertIn("  - %s" % note, out)

@@ -510,6 +510,33 @@ class TestDecidingTheConditionalPanel(unittest.TestCase):
         self.assertEqual(plan.conditional_notes(), [])
 
 
+class TestTheDefaultPanelsRounds(unittest.TestCase):
+    """Who of the built-in panel runs, as ``review run`` picks them."""
+
+    def running(self, paths, lines):
+        panel = config_mod.default_config()["reviewers"]
+        plan = decide_panel(panel=panel, paths=paths, lines=lines)
+        reviewers = [r for r in panel if opt.qualifies(r, plan.conditional)]
+        return plan, [r["id"] for r in opt.choose_reviewers(reviewers, plan.reviewer_limit)]
+
+    def test_a_high_risk_change_runs_both_security_seats(self):
+        plan, ids = self.running(["app/auth.py"], 10)
+        self.assertIn(("app/auth.py", "*auth*"), plan.high_risk)
+        self.assertTrue(opt.qualifies({"id": "claude-security-2", "when": "high-risk"}, plan.conditional))
+        self.assertIsNone(plan.reviewer_limit)
+        self.assertIn("claude-security", ids)
+        self.assertIn("claude-security-2", ids)
+
+    def test_an_ordinary_small_change_keeps_one_general_reviewer(self):
+        plan, ids = self.running(["app.py"], 10)
+        self.assertFalse(opt.qualifies({"id": "claude-security-2", "when": "high-risk"}, plan.conditional))
+        self.assertEqual(ids, ["claude-general"])
+
+    def test_an_ordinary_large_change_runs_the_four_that_always_run(self):
+        _plan, ids = self.running(["app.py"], 500)
+        self.assertEqual(ids, ["claude-general", "codex-general", "claude-security", "claude-test"])
+
+
 # --------------------------------------------------------------------------- path-scoped reviewers
 
 
@@ -745,6 +772,8 @@ class TestDecidingThePathScopedPanel(unittest.TestCase):
 class TestConfiguration(IsolatedCase):
     def check(self, section):
         data = config_mod.default_config()
+        # Only the always-running seats: the high-risk one has a test of its own.
+        data["reviewers"] = [r for r in data["reviewers"] if "when" not in r]
         data["optimization"].update(section)
         return config_mod.validate(data)
 
@@ -823,6 +852,9 @@ class TestTheGateInThePipeline(IsolatedCase):
         run_cli("config", "setup", "--defaults")
         run_cli("reviewer", "remove", "claude-general")
         run_cli("reviewer", "remove", "codex-general")
+        run_cli("reviewer", "remove", "claude-security-2")
+        run_cli("reviewer", "remove", "claude-security")
+        run_cli("reviewer", "remove", "claude-test")
         run_cli("reviewer", "add", "--provider", "mock", "--id", "sec", "--role", "security")
         run_cli("reviewer", "add", "--provider", "mock", "--id", "gen", "--role", "general")
 
@@ -988,6 +1020,9 @@ class TestConditionalReviewersInThePipeline(IsolatedCase):
         run_cli("config", "setup", "--defaults")
         run_cli("reviewer", "remove", "claude-general")
         run_cli("reviewer", "remove", "codex-general")
+        run_cli("reviewer", "remove", "claude-security-2")
+        run_cli("reviewer", "remove", "claude-security")
+        run_cli("reviewer", "remove", "claude-test")
         run_cli("reviewer", "add", "--provider", "mock", "--id", "gen", "--role", "general")
         conditional = ("--role", "security", "--when", "high-risk")
         run_cli("reviewer", "add", "--provider", "mock", "--id", "sec", *conditional)
@@ -1216,6 +1251,9 @@ class TestPathScopedReviewersInThePipeline(IsolatedCase):
         run_cli("config", "setup", "--defaults")
         run_cli("reviewer", "remove", "claude-general")
         run_cli("reviewer", "remove", "codex-general")
+        run_cli("reviewer", "remove", "claude-security-2")
+        run_cli("reviewer", "remove", "claude-security")
+        run_cli("reviewer", "remove", "claude-test")
         run_cli("reviewer", "add", "--provider", "mock", "--id", "gen", "--role", "general")
         high_risk = ("--role", "security", "--when", "high-risk")
         run_cli("reviewer", "add", "--provider", "mock", "--id", "sec", *high_risk)
