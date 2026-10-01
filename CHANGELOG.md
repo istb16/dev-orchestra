@@ -25,6 +25,13 @@ The public surface covered by that promise is: the configuration schema, the
   bypassPermissions`). See "Role options" in `references/configuration.md`
   (#195).
 
+### Fixed
+
+- **The warning for a read-only seat on agy no longer says it was your choice
+  in the global config** when the seat came from the preset's fit on a machine
+  with only agy installed. It now names both sources and says how to keep the
+  seat off agy.
+
 ## [0.16.0] - 2026-10-01
 
 ### Added
