@@ -212,6 +212,11 @@ class ClaudeProvider(Provider):
     )
     fallback_updated = "2026-09-10"
     option_keys = ("args", "permission_mode", "output_format", "idle_timeout")
+    #: ``permission_mode`` can turn every prompt off (``bypassPermissions``),
+    #: and the project file can come with the branch under review, so a write
+    #: role takes it -- and raw arguments, which can spell the same -- only
+    #: from the global config or --extra, as agy's ``skip_permissions``.
+    local_only_options = ("permission_mode",)
     # Measured: the streaming format emits thinking_tokens events while the
     # model works, so a no-output deadline can tell wedged from busy. The text
     # format cannot -- see the module docstring.

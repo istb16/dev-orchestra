@@ -205,10 +205,10 @@ so the user confirms it before moving on.
 | check the environment | `doctor` |
 
 Roles: `orchestrator`, `architect`, `implementer`, `review_fixer`. Changing a
-role's provider means also setting a family that provider accepts. An agent
-that cannot run the project's tests usually needs `config set
+role's provider means also setting a family it accepts. An agent
+that cannot run the project's tests usually needs `config set --scope global
 implementer.options.permission_mode bypassPermissions`, or the command
-allow-listed in that CLI's own settings. Schema and worked examples:
+allow-listed in that CLI's settings. Schema and worked examples:
 `references/configuration.md`.
 
 **First run.** With a terminal, `config setup` and let the user answer the
