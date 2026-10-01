@@ -336,7 +336,9 @@ preference:
 
 1. Allow-list the commands in the project's own `.claude/settings.json`
    (`permissions.allow`: `Bash(pytest:*)`). Narrow, and it lives with the project.
-2. Set a looser mode for that role only:
+2. Set a looser mode for that role only, in the **global** config
+   (`config set --scope global implementer.options.permission_mode
+   bypassPermissions`):
 
 ```yaml
 implementer:
@@ -344,6 +346,14 @@ implementer:
   options:
     permission_mode: bypassPermissions
 ```
+
+A write role takes `options.permission_mode` and `options.args` only from the
+global config or from `--extra`, as agy's `skip_permissions`: the project file
+can come with the branch under review, and a branch must not turn its own
+implementer's prompts off. A project file that names `options.permission_mode`
+(whatever its value) or sets any `options.args` on the implementer, the review
+fixer or one of their tiers has that role's `implement` runs refused before
+anything is spent, and `config validate` and `doctor` say so.
 
 Or ad hoc, for one run:
 
@@ -377,7 +387,13 @@ Verified against `codex` 0.156.x.
 
 Role options: `sandbox` (`read-only` / `workspace-write` / `danger-full-access`)
 and `approve` (`false` drops `--approve-for-me`). Both are ignored for `plan`
-and `review`, which always use `-s read-only`.
+and `review`, which always use `-s read-only`. On a
+write role both, and any `options.args`, are taken only from the global config
+or from `--extra`: `sandbox: danger-full-access` runs with no sandbox at all,
+and the project file can come with the branch under review. A project file
+that names either, or sets any `options.args`, on the implementer, the review
+fixer or one of their tiers has that role's `implement` runs refused, whatever
+the value.
 
 The read-only sandbox was measured refusing a shell write ("Access to the path
 ... is denied", Windows). Its MCP servers were not examined, so external side
@@ -596,8 +612,8 @@ tiers has that role's `implement` runs refused before anything is spent, and
 `config validate` and `doctor` say so. No flag spelling is inspected, so
 `--dangerously-skip-permissions=true` and `-dangerously-skip-permissions` in
 the project's `options.args` are refused like anything else. This is the same
-reasoning as Claude's read-only raw arguments; Claude's own
-`permission_mode: bypassPermissions` is not affected. On `plan` and `review`
+reasoning as Claude's read-only raw arguments, and Claude's
+`permission_mode` and Codex's `sandbox` / `approve` are taken the same way. On `plan` and `review`
 `skip_permissions` is ignored, and `doctor` reports it as ignored.
 
 ## Mock adapter

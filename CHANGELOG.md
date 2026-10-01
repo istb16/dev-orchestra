@@ -10,6 +10,21 @@ The public surface covered by that promise is: the configuration schema, the
 
 ## [Unreleased]
 
+### Changed
+
+- **Claude's `permission_mode` and Codex's `sandbox` / `approve` on a write
+  role are taken only from the global config or `--extra`**, as agy's
+  `skip_permissions` already was (was: from either file). The project file can
+  come with the branch under review, and `bypassPermissions` or
+  `danger-full-access` there would turn its own implementer's safeguards off. A
+  project file that names one of them (whatever the value) or sets any
+  `options.args` on the implementer, the review fixer or one of their tiers now
+  has that role's `implement` runs refused before anything is spent, and
+  `config validate` and `doctor` say so. Move the setting to the global file
+  (`config set --scope global implementer.options.permission_mode
+  bypassPermissions`). See "Role options" in `references/configuration.md`
+  (#195).
+
 ## [0.16.0] - 2026-10-01
 
 ### Added

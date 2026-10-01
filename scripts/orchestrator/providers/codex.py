@@ -151,6 +151,11 @@ class CodexProvider(Provider):
     )
     fallback_updated = "2026-09-10"
     option_keys = ("args", "sandbox", "approve")
+    #: ``sandbox: danger-full-access`` runs with no sandbox at all, and the
+    #: project file can come with the branch under review, so a write role
+    #: takes ``sandbox``, ``approve`` and raw arguments only from the global
+    #: config or --extra, as agy's ``skip_permissions``.
+    local_only_options = ("sandbox", "approve")
     #: Turned on once ``python scripts/smoke_live.py --provider codex`` passed
     #: every check in :attr:`required_resume_checks` and its entry went into
     #: :data:`VERIFIED_RESUME`.

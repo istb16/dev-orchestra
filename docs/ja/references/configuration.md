@@ -1,4 +1,4 @@
-<!-- translated-from: references/configuration.md sha256:1289abd76b45bc70af8e9cda43474830e0d8d72d447fe409c21f3ffa8d6e0eb0 -->
+<!-- translated-from: references/configuration.md sha256:af4541cd1a714a8bda9712890b99b2875602dbfd92a48432c3f8ac7e1b73ab96 -->
 
 > この文書は [references/configuration.md](../../../references/configuration.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -469,13 +469,14 @@ Codex の sandbox ポリシーに正直に対応付ける方法はないので�
 | --- | --- | --- |
 | any | `args` | 追加の CLI 引数のリスト。そのまま末尾に追加されます |
 | `claude` | `output_format` | `stream-json`（デフォルト）、`text`、`json`。`text` にすると stall 検出が無効になります |
-| `claude` | `permission_mode` | インストールされている CLI が `--permission-mode` に対して提示するもの（`dev-orchestra model list` とは別に、`claude --help` を実行して確認してください） |
-| `codex` | `sandbox` | `read-only`、`workspace-write`、`danger-full-access` |
-| `codex` | `approve` | `true`（デフォルト）は `--approve-for-me` を渡し、`false` は省略します |
+| `claude` | `permission_mode` | インストールされている CLI が `--permission-mode` に対して提示するもの（`dev-orchestra model list` とは別に、`claude --help` を実行して確認してください）。書き込みロールでは global 設定（または `--extra`）からだけ受け付けます |
+| `codex` | `sandbox` | `read-only`、`workspace-write`、`danger-full-access`。書き込みロールでは global 設定（または `--extra`）からだけ受け付けます |
+| `codex` | `approve` | `true`（デフォルト）は `--approve-for-me` を渡し、`false` は省略します。書き込みロールでは global 設定（または `--extra`）からだけ受け付けます |
 | `agy` | `skip_permissions` | `true` にすると `implement` の実行で `--dangerously-skip-permissions` を渡し、implementer がコマンドを実行できるようになります。デフォルトは `false`。global 設定（または `--extra --dangerously-skip-permissions`）からだけ受け付けます |
 | any | `idle_timeout` | このロールの無出力期限を上書きします |
 
 ```yaml
+# In the global config: the project file's permission_mode and args are refused.
 implementer:
   provider: claude
   model:
@@ -494,14 +495,15 @@ Claude が受け付ける生引数は `--add-dir <path>` だけで、Codex は�
 それも global 設定か `--extra` からだけ受け付けます。同じ `args` を project ファイルに
 書くと、中身を問わずそのロールの実行は拒否されます。project ファイルはレビュー対象の
 ブランチと一緒に持ち込まれうるもので、自分のレビュアーのディレクトリを指定できる
-ブランチは、レビュアーが読める範囲を広げられてしまうからです。implementer と
-review fixer は、これまでどおりどちらのファイルからも `args` を受け取ります -- ただし
-`agy` は例外で、その書き込みロールは `options.skip_permissions` も `options.args` も
+ブランチは、レビュアーが読める範囲を広げられてしまうからです。`claude`・`codex`・`agy`
+以外の CLI では、implementer と review fixer はどちらのファイルからも `args` を受け取ります。
+この 3 つでは、書き込みロールはパーミッションのオプション -- Claude の `permission_mode`、
+Codex の `sandbox` と `approve`、agy の `skip_permissions` -- も `options.args` も
 project ファイルからは受け取りません。project ファイルが implementer、review fixer、
-またはそのいずれかの tier でどちらかを挙げると、値を問わずそのロールの `implement` の
-実行は拒否され、`config validate` と `doctor` がそう伝えます。パーミッションのバイパスは
-global 設定から、1 回の実行だけなら `--extra --dangerously-skip-permissions` で指定します。
-（Claude の `permission_mode: bypassPermissions` は影響を受けません。）
+またはそのいずれかの tier でそのどれかを挙げると、値を問わずそのロールの `implement` の
+実行は拒否され、`config validate` と `doctor` がそう伝えます。これらは global 設定から、
+1 回の実行だけなら `--extra` で指定します（`--extra --permission-mode bypassPermissions`、
+`--extra --dangerously-skip-permissions`）。
 
 **agy の読み取り専用の席は global 設定からだけ受け付けます。** agy には読み取り専用の
 モードがないので、agy での plan や review の実行は、作業ツリー、`.ai/`（承認記録を含む）、
@@ -969,7 +971,7 @@ codex: installed
 | 「どのモデルが使える？」 | `model list` |
 | 「実装には Claude Opus を使って」 | `config set implementer.model.family opus` |
 | 「architect に Codex を使わせて」 | `config set architect.provider codex` **と**、Codex が受け付ける family |
-| 「implementer がテストを実行できない」 | `config set implementer.options.permission_mode bypassPermissions`（agy では `config set --scope global implementer.options.skip_permissions true`）、またはその CLI 自身の設定でコマンドを許可リストに入れる |
+| 「implementer がテストを実行できない」 | `config set --scope global implementer.options.permission_mode bypassPermissions`（agy では `config set --scope global implementer.options.skip_permissions true`）、またはその CLI 自身の設定でコマンドを許可リストに入れる |
 | 「設計もレビューして」／「設計は必ずレビューして」 | `config set review.design.enabled true` |
 | 「設計はレビューしないで」 | `config set review.design.enabled false` |
 | 「plan の承認を求めないで」/ CI で実行する | `config set design.require_approval false` |

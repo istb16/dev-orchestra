@@ -1,4 +1,4 @@
-<!-- translated-from: references/providers.md sha256:861d236e2969b55255f1c934804b06e6d47f12e10fc74eba009dddde862a3cb1 -->
+<!-- translated-from: references/providers.md sha256:50587b6a81a66231f37e1ca4bc4c506ee17ea1f796b8430fe2c61d0fb05c64a2 -->
 
 > この文書は [references/providers.md](../../../references/providers.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -178,7 +178,7 @@ built-in の各アダプタが何を、何によって強制しているか:
 `acceptEdits` はファイル編集を自動承認しますが、シェルコマンドは承認しません。そのため、テストスイートの実行を求められた Implementer が実行できないことがあります。回避策は 2 つあり、推奨順に次のとおりです。
 
 1. プロジェクト自身の `.claude/settings.json` でコマンドを許可リストに入れる（`permissions.allow`: `Bash(pytest:*)`）。範囲が狭く、設定がプロジェクトとともに管理されます。
-2. そのロールだけ、より緩いモードを設定する:
+2. そのロールだけ、より緩いモードを **global** 設定で設定する（`config set --scope global implementer.options.permission_mode bypassPermissions`）:
 
 ```yaml
 implementer:
@@ -186,6 +186,8 @@ implementer:
   options:
     permission_mode: bypassPermissions
 ```
+
+書き込みロールは、`options.permission_mode` と `options.args` を agy の `skip_permissions` と同じく global 設定か `--extra` からだけ受け取ります。project ファイルはレビュー対象のブランチと一緒に持ち込まれうるもので、ブランチが自分の implementer の確認を切れてはいけないからです。project ファイルが implementer、review fixer、またはそのいずれかの tier で `options.permission_mode` を（値を問わず）挙げるか、何らかの `options.args` を設定すると、そのロールの `implement` の実行は何も消費する前に拒否され、`config validate` と `doctor` がそう伝えます。
 
 または、1 回の実行だけその場で指定します。
 
@@ -213,7 +215,7 @@ dev-orchestra run implementer --prompt-file plan.md --extra --permission-mode by
 | 継続（`run architect --resume`） | 後述の fork。`VERIFIED_RESUME` にある版（codex-cli 0.156.1）か、Claude と同じ決まりでそれより新しい版でのみ |
 | 認証 | 環境を継承。`OPENAI_API_KEY` または `$CODEX_HOME/auth.json` で有無を検出 |
 
-ロールのオプション: `sandbox`（`read-only` / `workspace-write` / `danger-full-access`）と `approve`（`false` にすると `--approve-for-me` を外します）。どちらも `plan` と `review` では無視され、これらは常に `-s read-only` を使います。
+ロールのオプション: `sandbox`（`read-only` / `workspace-write` / `danger-full-access`）と `approve`（`false` にすると `--approve-for-me` を外します）。どちらも `plan` と `review` では無視され、これらは常に `-s read-only` を使います。書き込みロールでは、どちらも、また `options.args` も、global 設定か `--extra` からだけ受け取ります。`sandbox: danger-full-access` は sandbox なしで動き、project ファイルはレビュー対象のブランチと一緒に持ち込まれうるからです。project ファイルが implementer、review fixer、またはそのいずれかの tier でどちらかを挙げるか、`options.args` を書くと、値を問わずそのロールの `implement` の実行は拒否されます。
 
 読み取り専用サンドボックスがシェルでの書き込みを拒否することは実測しました（「Access to the path ... is denied」、Windows）。MCP サーバーは確認していないため、外部への副作用は対象外です。`doctor` は Codex を `partial` と報告します。`plan` や `review` の実行は生引数を一切受け付けません。`-s`、`-sdanger-full-access`、`-c sandbox_mode=...`、`--profile` は、どう綴っても拒否されます。アダプタ自身が付ける `-o` は生引数ではありません。
 
@@ -308,7 +310,7 @@ implementer:
     skip_permissions: true
 ```
 
-agy の書き込みロールでは、`options` の何ひとつとして project ファイルからは受け取りません。project ファイルが implementer、review fixer、またはそのいずれかの tier で `options.skip_permissions` を（値を問わず）挙げるか、何らかの `options.args` を設定すると、そのロールの `implement` の実行は何も消費する前に拒否され、`config validate` と `doctor` がそう伝えます。フラグの綴りは調べないので、project の `options.args` にある `--dangerously-skip-permissions=true` や `-dangerously-skip-permissions` も他のものと同様に拒否されます。これは Claude の読み取り専用の生引数と同じ理屈です。Claude 自身の `permission_mode: bypassPermissions` は影響を受けません。`plan` と `review` では `skip_permissions` は無視され、`doctor` はそれを無視されたものとして報告します。
+agy の書き込みロールでは、`options` の何ひとつとして project ファイルからは受け取りません。project ファイルが implementer、review fixer、またはそのいずれかの tier で `options.skip_permissions` を（値を問わず）挙げるか、何らかの `options.args` を設定すると、そのロールの `implement` の実行は何も消費する前に拒否され、`config validate` と `doctor` がそう伝えます。フラグの綴りは調べないので、project の `options.args` にある `--dangerously-skip-permissions=true` や `-dangerously-skip-permissions` も他のものと同様に拒否されます。これは Claude の読み取り専用の生引数と同じ理屈で、Claude の `permission_mode` と Codex の `sandbox` / `approve` も同じように扱います。`plan` と `review` では `skip_permissions` は無視され、`doctor` はそれを無視されたものとして報告します。
 
 <a id="mock-adapter"></a>
 
