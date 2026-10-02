@@ -12,8 +12,9 @@ from typing import Any, ClassVar, Dict, Optional
 
 from helpers import CLAUDE_HELP, CLAUDE_HELP_NO_FORK, CLAUDE_HELP_OLD, TEST_WORKFLOW, IsolatedCase, has_git
 
-from orchestrator import cli, providers
+from orchestrator import cli, cli_workflow, providers
 from orchestrator import config as config_mod
+from orchestrator import ledger as ledger_mod
 from orchestrator import workspace as ws
 
 FINDING = """## Finding
@@ -1658,6 +1659,39 @@ class TestStatusVerdict(IsolatedCase):
         self.assertIn("Verdict:", out)
         self.assertIn("Review:", out)
 
+    def status_payload(self):
+        """The verdict as `_status_payload` builds it, without printing anything."""
+        loaded = config_mod.load(self.project, validate_result=False)
+        workspace = self.cli_workspace()
+        book = ledger_mod.Ledger(workspace, ledger_mod.budget_settings(loaded.data))
+        return cli_workflow._status_payload(loaded, workspace, book).payload
+
+    def test_the_payload_of_a_fresh_workflow_says_continue(self):
+        payload = self.status_payload()
+        self.assertEqual(payload["verdict"], "continue")
+        self.assertEqual(payload["reasons"], [])
+
+    def test_the_payload_names_a_spent_budget_as_its_reason(self):
+        run_cli("config", "set", "budgets.test", "1")
+        run_cli("budget", "consume", "test")
+        payload = self.status_payload()
+        self.assertEqual(payload["verdict"], "stop-and-report")
+        self.assertEqual(payload["reasons"], ["test has no attempts left"])
+
+    def test_the_text_and_the_json_agree_on_the_verdict_and_the_reasons(self):
+        run_cli("config", "set", "budgets.test", "1")
+        run_cli("budget", "consume", "test")
+        payload = json.loads(run_cli("status", "--json")[1])
+        lines = run_cli("status")[1].splitlines()
+        self.assertEqual(lines[0], "Verdict: %s" % payload["verdict"].upper())
+        reasons = []
+        for line in lines[1:]:
+            if not line.startswith("  - "):
+                break
+            reasons.append(line[len("  - ") :])
+        self.assertEqual(reasons, payload["reasons"])
+        self.assertTrue(reasons)
+
 
 class TestStallReporting(IsolatedCase):
     def setUp(self):
@@ -2055,6 +2089,12 @@ class TestReviewPipeline(IsolatedCase):
         payload = self.status()
         self.assertEqual(payload["verdict"], "continue")
         self.assertIs(payload["review"]["final_fix_pending"], True)
+        self.assertTrue(self.review_line().endswith("-- final fix pending (fix, re-test, do not re-review)"))
+
+    def review_line(self):
+        """The `Review:` line of the text view."""
+        out = run_cli("status")[1]
+        return next(line for line in out.splitlines() if line.startswith("Review: "))
 
     def test_a_fix_after_the_last_round_waits_for_the_re_test(self):
         self.last_round()
@@ -2063,6 +2103,9 @@ class TestReviewPipeline(IsolatedCase):
         self.assertIn("re-run the tests", run_cli("review", "status")[1])
         payload = self.status()
         self.assertEqual((payload["verdict"], payload["reasons"]), ("continue", []))
+        self.assertTrue(
+            self.review_line().endswith("-- final fix done, re-test pending (record it, do not re-review)")
+        )
 
     def test_the_last_fixer_attempt_does_not_stop_the_re_test(self):
         self.last_round()
@@ -2114,6 +2157,9 @@ class TestReviewPipeline(IsolatedCase):
         payload = self.status()
         self.assertEqual((payload["verdict"], payload["reasons"]), ("continue", []))
         self.assertEqual(payload["review"]["identical_rounds"], 2)
+        self.assertTrue(
+            self.review_line().endswith("(fix, re-test, do not re-review); identical to the previous round")
+        )
         self.fix()
         run_cli("state", "record", "test", "ok")
         payload = self.status()
