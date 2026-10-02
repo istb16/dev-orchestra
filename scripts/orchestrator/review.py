@@ -33,10 +33,10 @@ from .review_common import (
     SEVERITIES,
     SEVERITY_RANK,
     TRIAGE_STATUSES,
+    accepted_findings,
 )
 from .review_consolidation import (
     _counts,
-    accepted_findings,
     are_duplicates,
     build_consolidation,
     code_tokens,

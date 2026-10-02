@@ -9,6 +9,7 @@ from helpers import IsolatedCase
 from orchestrator import cli, cli_common
 from orchestrator import config as config_mod
 from orchestrator import presets as presets_mod
+from orchestrator import summary as summary_mod
 from orchestrator import wizard as wizard_mod
 
 
@@ -175,7 +176,7 @@ class TestWizard(IsolatedCase):
     def test_render_summary_marks_pinned_models(self):
         data = config_mod.default_config()
         data["implementer"]["model"] = {"family": "opus", "version": "pinned", "id": "claude-opus-x"}
-        self.assertIn("claude-opus-x / pinned", wizard_mod.render_summary(data))
+        self.assertIn("claude-opus-x / pinned", summary_mod.render_summary(data))
 
 
 class TestWhatTheWizardReturns(IsolatedCase):

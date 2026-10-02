@@ -5,6 +5,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence
 
+from . import config as config_mod
 from . import context as context_mod
 from . import workspace as ws
 from .providers import MODE_REVIEW, ModelResolutionError, Usage, get_provider
@@ -16,6 +17,13 @@ from .review_common import (
     MAX_FIX_LINES,
     REVIEW_PROMPT_TEMPLATE,
     ROLE_GUIDANCE,
+)
+from .review_parsing import parse_findings, unparsed_report_warning
+from .review_snapshot import (
+    ReviewError,
+    render_design_round_context,
+    render_round_context,
+    render_withheld,
 )
 
 # --------------------------------------------------------------------------- fan-out
@@ -78,13 +86,10 @@ def default_inline_chars() -> int:
     Every default this tool has lives in ``default_config``, and this one is
     read from there rather than copied next to the code that applies it: two
     spellings of the same number are two answers the moment either moves.
-    Imported inside the function because ``config`` reaches back into this
-    module for ``DEFAULT_EXCLUDE``. A caller holding a configuration passes
-    its own number and never comes here.
+    A caller holding a configuration passes its own number and never comes
+    here.
     """
-    from .config import default_config
-
-    return int(default_config()["review"]["context"]["inline_chars"])
+    return int(config_mod.default_config()["review"]["context"]["inline_chars"])
 
 
 def _inline_limit(inline_chars: Optional[int]) -> int:
@@ -671,15 +676,3 @@ def _stamp(meta: Dict[str, Any]) -> str:
     and not three spellings of it.
     """
     return str(meta.get("sha256", ""))[:12] or "unknown"
-
-
-# Imported last: review_snapshot imports this one back, through
-# review_consolidation; review_parsing does not, and sits here with it. Every
-# use is inside a function, so the names only have to exist by the first call.
-from .review_parsing import parse_findings, unparsed_report_warning  # noqa: E402
-from .review_snapshot import (  # noqa: E402
-    ReviewError,
-    render_design_round_context,
-    render_round_context,
-    render_withheld,
-)

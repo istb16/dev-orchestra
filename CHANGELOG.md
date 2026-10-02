@@ -46,6 +46,10 @@ The public surface covered by that promise is: the configuration schema, the
 - **Claude's resume verification asks a record for the checks the adapter
   requires**, as Codex's does, and **agy reads a negative token count as
   unreported**, as Claude and Codex do.
+- **A user's own adapter can import `orchestrator.config`, `presets`,
+  `optimization` or `review_common` at its top** (was: it failed to load with
+  a circular-import error, because the adapters ran while `optimization` was
+  still being imported).
 
 ## [0.16.0] - 2026-10-01
 

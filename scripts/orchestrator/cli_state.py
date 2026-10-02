@@ -8,53 +8,13 @@ from typing import Any, Dict, List, Optional
 
 from . import jobs as jobs_mod
 from . import ledger as ledger_mod
-from . import optimization as opt_mod
+from . import optimization_report as opt_report
 from . import review as review_mod
 from . import workflow as workflow_mod
 from . import workspace as ws
-from .cli_common import _emit_json, _err, _out, _workspace
+from .cli_common import _emit_json, _err, _ledger, _out, _workspace, _wrote_plan
 
 # --------------------------------------------------------------------------- state
-
-
-def _detached_argv(args: argparse.Namespace, role: str) -> List[str]:
-    """Rebuild this invocation for the worker, prompt now coming from a file.
-
-    The prompt's text is deliberately absent: ``jobs.start`` writes it to a
-    file of its own, because only it knows the job id the path is built from.
-    What goes here is the placeholder it substitutes -- placed, not appended,
-    so it lands where this command line has room for it. This used to say
-    ``--prompt-file -`` while the worker's stdin was ``DEVNULL``, so every
-    detached run delegated an empty prompt -- invisible under the mock
-    provider, which does not read one.
-    """
-    argv = ["run", role, "--force"]
-    if args.tier:
-        # Left out, the worker ran the role's default model: a more expensive
-        # run than the one asked for, recorded without the label a tier exists
-        # to be read by.
-        argv += ["--tier", args.tier]
-    if args.mode:
-        argv += ["--mode", args.mode]
-    if args.output:
-        argv += ["--output", os.path.abspath(args.output)]
-    if args.timeout:
-        argv += ["--timeout", str(args.timeout)]
-    if args.idle_timeout is not None:
-        argv += ["--idle-timeout", str(args.idle_timeout)]
-    # Ahead of --extra, which is nargs=REMAINDER and takes everything after it.
-    # Both used to be appended by `jobs.start`, past the end of a command whose
-    # shape only this function knows, and a detached run carrying --extra
-    # reached the provider with the two paths as provider arguments.
-    argv += ["--prompt-file", jobs_mod.PROMPT_FILE, "--job-file", jobs_mod.JOB_FILE]
-    if getattr(args, "resume", False):
-        # The worker reads the copy `jobs.start` makes, as it does the fresh
-        # prompt, so an edit to the file after this parent checked it does not
-        # reach the continued session.
-        argv += ["--resume", "--resume-prompt-file", jobs_mod.RESUME_PROMPT_FILE]
-    if args.extra:
-        argv += ["--extra", *args.extra]
-    return argv
 
 
 def cmd_jobs_list(args: argparse.Namespace) -> int:
@@ -291,13 +251,6 @@ def cmd_tokens_show(args: argparse.Namespace) -> int:
 
 _OPT_ROW = "  %-22s %s"
 
-#: What each ``refused_by`` means to somebody reading the final report, since
-#: the two ask for different things: fix the tests, or make the change smaller.
-_REFUSAL_CAUSE = {
-    "gate": "tests recorded as failing",
-    "context": "change over review.context.max_chars",
-}
-
 
 def _workflows_recorded(args: argparse.Namespace, workspace: ws.Workspace) -> List[Dict[str, Any]]:
     """Each workflow's run log, with the workspace its review reports are in.
@@ -374,11 +327,11 @@ def cmd_optimization_report(args: argparse.Namespace) -> int:
     workspace = _workspace(args)
     workflows = _workflows_recorded(args, workspace)
     events, source = _rounds_recorded(args, workspace, workflows)
-    report = opt_mod.summarise_rounds(events)
+    report = opt_report.summarise_rounds(events)
     # Beside the event summary rather than inside it: that one reads the run
     # log alone, and what a round found is only in the round's report.
-    report["scorecard"] = opt_mod.reviewer_scorecard(_scorecard_inputs(workflows))
-    report["architect_revisions"] = opt_mod.architect_revisions(
+    report["scorecard"] = opt_report.reviewer_scorecard(_scorecard_inputs(workflows))
+    report["architect_revisions"] = opt_report.architect_revisions(
         [(item["events"], _wrote_plan(item["workspace"])) for item in workflows]
     )
     if args.json:
@@ -595,7 +548,7 @@ def _figure(value: Any) -> str:
 
 
 def _scorecard_inputs(workflows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """One entry per workflow and stage, for ``opt_mod.reviewer_scorecard``.
+    """One entry per workflow and stage, for ``opt_report.reviewer_scorecard``.
 
     Per workflow, because a round is matched to its report by a sha and an
     iteration, and both repeat across workflows. Per stage, because the design
@@ -709,7 +662,7 @@ def _scorecard_spend(group: Dict[str, Any], panel: bool) -> str:
 def _scorecard_per_accepted(group: Dict[str, Any]) -> str:
     per = group.get("billed_per_accepted")
     if per is None:
-        return "per accepted withheld under %d accepted" % opt_mod.SCORECARD_MIN_DECIDED
+        return "per accepted withheld under %d accepted" % opt_report.SCORECARD_MIN_DECIDED
     cost = group.get("cost_per_accepted")
     if cost is None:
         # Said, not left out: a reviewer that prices nothing did not find its
@@ -722,7 +675,7 @@ def _scorecard_rates(group: Dict[str, Any]) -> str:
     rate = group.get("rejection_rate")
     if rate is None:
         # Accepted is a part of decided, so under this threshold both are.
-        return "rates withheld under %d decided" % opt_mod.SCORECARD_MIN_DECIDED
+        return "rates withheld under %d decided" % opt_report.SCORECARD_MIN_DECIDED
     return "%.0f%% rejected, %s" % (rate * 100, _scorecard_per_accepted(group))
 
 
@@ -768,7 +721,7 @@ def _scorecard_rows(scorecard: Dict[str, Any]) -> List[str]:
         rerun = int(block.get("rerun_rounds") or 0)
         if rerun:
             lines.extend((_SCORECARD_PAIRS % (rerun, "was" if rerun == 1 else "were")).splitlines())
-        lines.extend((_SCORECARD_ALONE % opt_mod.SCORECARD_MIN_DECIDED).splitlines())
+        lines.extend((_SCORECARD_ALONE % opt_report.SCORECARD_MIN_DECIDED).splitlines())
     if not lines:
         return lines
     total = scorecard.get("total") or {}
@@ -970,9 +923,3 @@ def cmd_progress_record(args: argparse.Namespace) -> int:
     else:
         _out("%s outcome recorded (seen %d time(s))." % (args.stage, repeats))
     return 0
-
-
-# Imported last: these modules import this one back, and every use
-# is inside a function, so the names only have to exist by the first call.
-from .cli_review import _ledger  # noqa: E402
-from .cli_workflow import _wrote_plan  # noqa: E402

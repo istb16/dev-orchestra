@@ -30,6 +30,7 @@ import ast
 import re
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
+from . import config as config_mod
 from . import workspace as ws
 
 SURROUNDING_MODES = ("none", "enclosing")
@@ -690,9 +691,7 @@ def _contains(outer: Dict[str, Any], inner: Dict[str, Any]) -> bool:
 
 
 def _default_surrounding_chars() -> int:
-    from .config import default_config
-
-    return int(default_config()["review"]["context"]["surrounding_chars"])
+    return int(config_mod.default_config()["review"]["context"]["surrounding_chars"])
 
 
 # --------------------------------------------------------------------------- words

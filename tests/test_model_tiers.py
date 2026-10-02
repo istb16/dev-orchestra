@@ -28,7 +28,7 @@ from helpers import IsolatedCase, has_git, present
 from orchestrator import cli
 from orchestrator import config as config_mod
 from orchestrator import ledger as ledger_mod
-from orchestrator import wizard as wizard_mod
+from orchestrator import summary as summary_mod
 
 
 def run_cli(*argv):
@@ -194,7 +194,7 @@ class TestValidation(unittest.TestCase):
 class TestItIsVisible(unittest.TestCase):
     def test_config_show_lists_every_tier_with_the_model_it_would_use(self):
         """A tier nobody can see is a tier nobody uses."""
-        summary = wizard_mod.render_summary(
+        summary = summary_mod.render_summary(
             configured(light={"model": {"family": "sonnet", "version": "latest"}})
         )
         self.assertIn("--tier light", summary)
@@ -202,7 +202,7 @@ class TestItIsVisible(unittest.TestCase):
 
     def test_a_malformed_tier_does_not_break_the_summary(self):
         """`config show` is where someone goes to find out what is wrong."""
-        summary = wizard_mod.render_summary(configured(broken="not a mapping"))
+        summary = summary_mod.render_summary(configured(broken="not a mapping"))
         self.assertIn("--tier broken", summary)
 
 

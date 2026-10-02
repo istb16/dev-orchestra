@@ -9,12 +9,15 @@ import json
 import os
 import re
 import sys
-from typing import Any, Dict, List, Optional, Tuple, overload
+from typing import Any, Callable, Dict, List, Optional, Tuple, overload
 
 from . import config as config_mod
+from . import ledger as ledger_mod
+from . import presets as presets_mod
 from . import workflow as workflow_mod
 from . import workspace as ws
 from .providers import MODE_IMPLEMENT, MODE_PLAN
+from .summary import render_summary
 
 DEFAULT_MODES = {
     "orchestrator": MODE_PLAN,
@@ -177,9 +180,7 @@ def _fitted_base(scope: str, layer: Optional[Dict[str, Any]] = None) -> Dict[str
     ``load()`` without the project file. The panel is still dealt around the
     implementer ``layer`` -- the one being edited -- sets, as it is in force.
     """
-    from . import presets
-
-    installed = presets.installed_providers()
+    installed = presets_mod.installed_providers()
     if scope == "global":
         return config_mod.compose({"preset": _global_file().get("preset")}, {}, installed, layer)[0]
     return config_mod.compose(_global_file(), {}, installed, layer)[0]
@@ -253,9 +254,7 @@ def _seed_list(layer: Dict[str, Any], list_path: str, base: Dict[str, Any]) -> b
 
 def _compose_preview(scope: str, layer: Dict[str, Any]) -> Tuple[Any, ...]:
     """``config.compose`` of this layer as it would be saved: ``(data, fit, preset, source)``."""
-    from . import presets
-
-    installed = presets.installed_providers()
+    installed = presets_mod.installed_providers()
     if scope == "global":
         return config_mod.compose(layer, {}, installed)
     return config_mod.compose(_global_file(), layer, installed)
@@ -478,15 +477,12 @@ def _first_run_summary(loaded: config_mod.LoadedConfig) -> None:
     Nothing is saved and nothing is asked: these commands run under an agent
     with no terminal. The choice belongs to ``config setup``.
     """
-    from . import presets
-    from .wizard import render_summary  # late: wizard imports cli
-
     _err(render_summary(loaded.data))
     for note in loaded.preset_notes:
         _err("note: %s" % note)
     _err(
         "Save it with config setup --preset %s, or choose another with config setup."
-        % (loaded.preset or presets.DEFAULT)
+        % (loaded.preset or presets_mod.DEFAULT)
     )
 
 
@@ -540,10 +536,49 @@ def _load_or_die(start: Optional[str] = None) -> config_mod.LoadedConfig:
         raise SystemExit(2) from exc
     if loaded.used_defaults:
         # One line: every `run` is its own process, and a workflow has many.
-        from . import presets
-
         _err(
             "note: no config file; running preset %s fitted to %s (config setup --preset <name> saves one)"
-            % (loaded.preset, presets.describe_installed(presets.installed_providers()))
+            % (loaded.preset, presets_mod.describe_installed(presets_mod.installed_providers()))
         )
     return loaded
+
+
+def _ledger(args: argparse.Namespace, workspace: Optional[ws.Workspace] = None) -> ledger_mod.Ledger:
+    workspace = workspace or _workspace(args)
+    loaded = config_mod.load(getattr(args, "cwd", None), validate_result=False)
+    return ledger_mod.Ledger(workspace, ledger_mod.budget_settings(loaded.data))
+
+
+def _refuse_if_exhausted(book: ledger_mod.Ledger, stage: str, force: bool) -> Optional[int]:
+    """Stop a loop at the action, not with advice from a query command."""
+    if force:
+        return None
+    reasons = book.check(stage)
+    if not reasons:
+        return None
+    _err("refusing to run %s:" % stage)
+    for reason in reasons:
+        _err("  - %s" % reason)
+    _err("Report what is unresolved instead of retrying, or pass --force to override.")
+    return ledger_mod.EXIT_BUDGET_EXHAUSTED
+
+
+def _wrote_plan(workspace: ws.Workspace) -> Callable[[Dict[str, Any]], bool]:
+    """Whether an architect run event wrote its answer to this workflow's plan.
+
+    Only such a run is a revision of the plan: an architect run asked
+    something else, or left on stdout, is not the revision a round is owed.
+    """
+    # Resolved, not just made absolute: one plan has more than one spelling
+    # when a directory on its path is a link -- macOS's temporary directories
+    # live under /var, which is /private/var -- and a correct --output must not
+    # be refused for the spelling it was given in.
+    plan = os.path.normcase(os.path.realpath(workspace.plan_path))
+
+    def counts(event: Dict[str, Any]) -> bool:
+        output = event.get("output")
+        if not isinstance(output, str) or not output or output == "-":
+            return False
+        return os.path.normcase(os.path.realpath(_in_workflow(workspace, output) or output)) == plan
+
+    return counts

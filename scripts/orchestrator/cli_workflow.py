@@ -4,16 +4,27 @@ from __future__ import annotations
 
 import argparse
 import os
-from typing import Any, Callable, Dict, List, Optional, Tuple, cast
+import shutil
+from typing import Any, Dict, List, Optional, cast
 
 from . import approval as approval_mod
 from . import config as config_mod
 from . import optimization as opt_mod
+from . import optimization_report as opt_report
 from . import review as review_mod
-from . import wizard as wizard_mod
 from . import workflow as workflow_mod
 from . import workspace as ws
-from .cli_common import _container, _emit_json, _err, _in_workflow, _out, _workspace
+from .cli_common import _container, _emit_json, _err, _ledger, _out, _workspace, _wrote_plan
+from .cli_review import (
+    _approved_as_recorded,
+    _code_final_pass,
+    _design_decision,
+    _design_final_pass,
+    _ran_since_last_round,
+    _reviewed_something,
+    _round_plan,
+)
+from .summary import ROLE_TITLES
 
 # --------------------------------------------------------------------------- workflow
 
@@ -115,8 +126,6 @@ def cmd_workflow_use(args: argparse.Namespace) -> int:
 
 def cmd_workflow_remove(args: argparse.Namespace) -> int:
     """Delete one workflow's artifacts. The reports are work; ask first."""
-    import shutil
-
     _, container = _container(args)
     try:
         workflow = workflow_mod.normalise(args.id)
@@ -139,157 +148,12 @@ def cmd_workflow_remove(args: argparse.Namespace) -> int:
     return 0
 
 
-def _reviewed_something(event: Dict[str, Any]) -> bool:
-    """Whether this event is a round that put the change in front of a panel.
-
-    The one positive mark such a round leaves is a reviewer that actually
-    started: an entry with ``invoked`` true. Nothing else on the stage leaves
-    one -- a refusal of either kind records an empty list, and ``clear_stalls``
-    records a reason. The entries alone are not the mark: a reviewer that dies
-    on provider startup or model resolution is recorded too, with ``invoked``
-    false, and a round where every entry is one of those put the change in
-    front of nobody. Asked this way round rather than by naming the statuses
-    that do not count, so the next bookkeeping status added to the ledger
-    cannot quietly become one that clears a refusal.
-    """
-    reviewers = event.get("reviewers")
-    if not isinstance(reviewers, list):
-        return False
-    return any(isinstance(run, dict) and run.get("invoked") for run in reviewers)
-
-
-def _ran_since_last_round(
-    events: List[Dict[str, Any]],
-    review_stage: str,
-    run_stage: str,
-    then_stages: Tuple[str, ...] = (),
-    counts: Optional[Callable[[Dict[str, Any]], bool]] = None,
-) -> Tuple[bool, bool]:
-    """Whether ``run_stage`` answered after the last round that reviewed something.
-
-    The first value: an ``ok`` run of ``run_stage`` with a usable result since
-    that round, and one ``counts`` accepts when it is given. An event without
-    ``answered`` predates the key and counts; an ``ok`` over silence saved
-    nothing and does not. The second: whether any ``then_stages`` event,
-    whatever its status, follows that run. Rounds that reviewed nothing --
-    refusals, abandoned entries -- are not the round.
-    """
-    ran = False
-    then = False
-    for event in reversed(events):
-        if not isinstance(event, dict):
-            continue
-        stage = event.get("stage")
-        if stage == review_stage and _reviewed_something(event):
-            break
-        if (
-            stage == run_stage
-            and event.get("status") == "ok"
-            and event.get("answered", True) is not False
-            and (counts is None or counts(event))
-        ):
-            ran = True
-            break
-        if stage in then_stages:
-            then = True
-    return ran, ran and then
-
-
-def _wrote_plan(workspace: ws.Workspace) -> Callable[[Dict[str, Any]], bool]:
-    """Whether an architect run event wrote its answer to this workflow's plan.
-
-    Only such a run is a revision of the plan: an architect run asked
-    something else, or left on stdout, is not the revision a round is owed.
-    """
-    # Resolved, not just made absolute: one plan has more than one spelling
-    # when a directory on its path is a link -- macOS's temporary directories
-    # live under /var, which is /private/var -- and a correct --output must not
-    # be refused for the spelling it was given in.
-    plan = os.path.normcase(os.path.realpath(workspace.plan_path))
-
-    def counts(event: Dict[str, Any]) -> bool:
-        output = event.get("output")
-        if not isinstance(output, str) or not output or output == "-":
-            return False
-        return os.path.normcase(os.path.realpath(_in_workflow(workspace, output) or output)) == plan
-
-    return counts
-
-
-def _approved_as_recorded(info: Dict[str, Any]) -> bool:
-    """Whether the recorded approval covers this plan and this design round.
-
-    Read from the record rather than from ``state``: with
-    ``design.require_approval`` off the state is ``not-required`` whatever was
-    recorded, and a plan the user did approve is still one they approved.
-    """
-    return info.get("matches_current_plan") is True and info.get("reviewed_since_approval") is False
-
-
-def _design_final_pass(
-    blocking: List[Dict[str, Any]],
-    iteration: int,
-    max_iterations: int,
-    of_current_plan: Optional[bool],
-    ran_since: bool,
-    architect_left: Optional[int],
-    approved: bool,
-    implemented: bool,
-    accepted: bool,
-) -> Dict[str, Any]:
-    """Where the one revision the round that reached the limit still gets stands.
-
-    The limit counts reviews, not revisions: the last round's findings are
-    folded in once more, and only the re-review of that revision is refused.
-    ``status`` and ``review status --design`` both read this, so they cannot
-    disagree about it. With none of the findings accepted there is nothing to
-    fold in, and the spent budget is the stop it always was (``unaccepted``).
-    """
-    plan_changed = None
-    if not blocking or iteration < max_iterations:
-        state = None
-    elif approved:
-        state = "approved"
-    elif implemented:
-        # A plan already built on is not asked to change under the code.
-        state = "implemented"
-    elif of_current_plan is False or ran_since or of_current_plan is None:
-        state = "done"
-        plan_changed = True if of_current_plan is False else (None if of_current_plan is None else False)
-    elif not accepted:
-        state = "unaccepted"
-    elif architect_left == 0:
-        state = "blocked"
-    else:
-        state = "pending"
-    return {"state": state, "pending": state == "pending", "plan_changed": plan_changed}
-
-
-def _code_final_pass(
-    blocking: List[Dict[str, Any]],
-    iteration: int,
-    max_iterations: int,
-    fixed_since: bool,
-    retested_since: bool,
-    fixer_left: Optional[int],
-    accepted: bool,
-) -> Dict[str, Any]:
-    """The code review's counterpart: the last round gets its fix and re-test.
-
-    Only accepted findings are fixed, so with none accepted the spent budget
-    stops as it always did (``unaccepted``).
-    """
-    if not blocking or iteration < max_iterations:
-        state = None
-    elif fixed_since:
-        state = "done" if retested_since else "retest"
-    elif not accepted:
-        state = "unaccepted"
-    elif fixer_left == 0:
-        state = "blocked"
-    else:
-        state = "pending"
-    return {"state": state, "pending": state == "pending"}
+#: What each ``refused_by`` means to somebody reading the final report, since
+#: the two ask for different things: fix the tests, or make the change smaller.
+_REFUSAL_CAUSE = {
+    "gate": "tests recorded as failing",
+    "context": "change over review.context.max_chars",
+}
 
 
 def _context_refusal(events: List[Dict[str, Any]], stage: str) -> Optional[Dict[str, Any]]:
@@ -851,7 +715,7 @@ def cmd_summary(args: argparse.Namespace) -> int:
         )
     lines.append("")
     lines.append("Models:")
-    for key, title in wizard_mod.ROLE_TITLES:
+    for key, title in ROLE_TITLES:
         spec = loaded.data.get(key) or {}
         model = spec.get("model") or {}
         lines.append(
@@ -876,7 +740,7 @@ def cmd_summary(args: argparse.Namespace) -> int:
     # A round the gate refused is recorded but ran nothing, so it appears in
     # no other part of this report -- and "what you skipped" is exactly what
     # the final report is required to name.
-    decided = opt_mod.summarise_rounds(state.get("events") or [])
+    decided = opt_report.summarise_rounds(state.get("events") or [])
     if decided["refused"] or decided["panel_reduced"] or decided["design_refused"]:
         lines.append("")
         lines.append("Optimization:")
@@ -922,9 +786,3 @@ def cmd_summary(args: argparse.Namespace) -> int:
         return 0
     _out("\n".join(lines))
     return 0
-
-
-# Imported last: these modules import this one back, and every use
-# is inside a function, so the names only have to exist by the first call.
-from .cli_review import _design_decision, _ledger, _round_plan  # noqa: E402
-from .cli_state import _REFUSAL_CAUSE  # noqa: E402

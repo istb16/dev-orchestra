@@ -16,7 +16,18 @@ from . import config as config_mod
 from . import jobs as jobs_mod
 from . import ledger as ledger_mod
 from . import workspace as ws
-from .cli_common import DEFAULT_MODES, _emit_json, _err, _in_workflow, _load_or_die, _out, _workspace
+from .cli_common import (
+    DEFAULT_MODES,
+    _emit_json,
+    _err,
+    _in_workflow,
+    _ledger,
+    _load_or_die,
+    _out,
+    _refuse_if_exhausted,
+    _workspace,
+    _wrote_plan,
+)
 from .providers import (
     MODE_IMPLEMENT,
     MODE_PLAN,
@@ -30,6 +41,7 @@ from .providers import (
     redact,
     unenforced_warning,
 )
+from .summary import _describe as _describe_spec
 
 # --------------------------------------------------------------------------- run
 
@@ -818,9 +830,41 @@ def _announce_resume(session_id: Optional[str], detail: Dict[str, Any], note: st
         _err("note: %s" % note)
 
 
-# Imported last, like the other command modules' cross-imports. None of these
-# modules imports this one, so no cycle needs it; every use is inside a function.
-from .cli_config import _describe_spec  # noqa: E402
-from .cli_review import _ledger, _refuse_if_exhausted  # noqa: E402
-from .cli_state import _detached_argv  # noqa: E402
-from .cli_workflow import _wrote_plan  # noqa: E402
+def _detached_argv(args: argparse.Namespace, role: str) -> List[str]:
+    """Rebuild this invocation for the worker, prompt now coming from a file.
+
+    The prompt's text is deliberately absent: ``jobs.start`` writes it to a
+    file of its own, because only it knows the job id the path is built from.
+    What goes here is the placeholder it substitutes -- placed, not appended,
+    so it lands where this command line has room for it. This used to say
+    ``--prompt-file -`` while the worker's stdin was ``DEVNULL``, so every
+    detached run delegated an empty prompt -- invisible under the mock
+    provider, which does not read one.
+    """
+    argv = ["run", role, "--force"]
+    if args.tier:
+        # Left out, the worker ran the role's default model: a more expensive
+        # run than the one asked for, recorded without the label a tier exists
+        # to be read by.
+        argv += ["--tier", args.tier]
+    if args.mode:
+        argv += ["--mode", args.mode]
+    if args.output:
+        argv += ["--output", os.path.abspath(args.output)]
+    if args.timeout:
+        argv += ["--timeout", str(args.timeout)]
+    if args.idle_timeout is not None:
+        argv += ["--idle-timeout", str(args.idle_timeout)]
+    # Ahead of --extra, which is nargs=REMAINDER and takes everything after it.
+    # Both used to be appended by `jobs.start`, past the end of a command whose
+    # shape only this function knows, and a detached run carrying --extra
+    # reached the provider with the two paths as provider arguments.
+    argv += ["--prompt-file", jobs_mod.PROMPT_FILE, "--job-file", jobs_mod.JOB_FILE]
+    if getattr(args, "resume", False):
+        # The worker reads the copy `jobs.start` makes, as it does the fresh
+        # prompt, so an edit to the file after this parent checked it does not
+        # reach the continued session.
+        argv += ["--resume", "--resume-prompt-file", jobs_mod.RESUME_PROMPT_FILE]
+    if args.extra:
+        argv += ["--extra", *args.extra]
+    return argv

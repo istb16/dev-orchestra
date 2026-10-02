@@ -19,6 +19,7 @@ from helpers import IsolatedCase, has_git
 
 from orchestrator import cli
 from orchestrator import optimization as opt_mod
+from orchestrator import optimization_report as opt_report
 from orchestrator import review as review_mod
 from orchestrator import workspace as ws
 from orchestrator.providers import mock as mock_mod
@@ -160,7 +161,7 @@ class TestTheCodeRound(MockPanelCase):
         self.assertIsInstance(event.get("optimization"), dict)
         self.assertEqual(event["context"], {"chars": LIMIT + 1, "max_chars": LIMIT})
 
-        report = opt_mod.summarise_rounds(self.events())
+        report = opt_report.summarise_rounds(self.events())
         self.assertEqual((report["rounds"], report["ran"], report["refused"]), (1, 0, 1))
         self.assertEqual(report["refused_by"], {"context": 1})
 
@@ -467,7 +468,7 @@ class TestTheDesignRound(MockPanelCase):
         self.set_limit(10)
         self.write_plan()
         run_cli("review", "run", "--design")
-        report = opt_mod.summarise_rounds(self.events())
+        report = opt_report.summarise_rounds(self.events())
         self.assertEqual(report["design_rounds"], 0)
         self.assertEqual(report["design_refused"], 1)
 

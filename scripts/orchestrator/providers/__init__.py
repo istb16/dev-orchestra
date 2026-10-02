@@ -21,6 +21,7 @@ import re
 import sys
 from typing import Any, Callable, Dict, List, NamedTuple, Optional, Tuple, cast
 
+from .. import config as config_mod
 from .base import (  # noqa: F401 - re-exported as the adapter interface
     MODE_IMPLEMENT,
     MODE_PLAN,
@@ -166,8 +167,6 @@ def adapter_failure(name: str, exc: BaseException) -> str:
 
 
 def _user_providers_dir() -> str:
-    from .. import config as config_mod
-
     return config_mod.user_providers_dir()
 
 
@@ -343,6 +342,8 @@ def _restore(snapshot: Tuple[Dict[str, ProviderFactory], Dict[str, ProviderOrigi
 
 def _bootstrap() -> None:
     global _BOOTSTRAPPED
+    # The plugin-loading step: built-ins are imported, registered and marked
+    # _BOOTSTRAPPED here, before user modules load.
     from . import agy, claude, codex, mock
 
     built_ins = (

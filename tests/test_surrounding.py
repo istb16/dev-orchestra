@@ -25,7 +25,7 @@ from helpers import IsolatedCase, has_git
 from orchestrator import cli, review_fanout, review_snapshot
 from orchestrator import config as config_mod
 from orchestrator import context as context_mod
-from orchestrator import optimization as opt_mod
+from orchestrator import optimization_report as opt_report
 from orchestrator import review as review_mod
 from orchestrator import workspace as ws
 
@@ -883,7 +883,7 @@ class TestEndToEnd(GitCase):
         event = self.last_review_event()
         self.assertEqual([run["status"] for run in event["reviewers"]], ["failed"])
         self.assertNotIn("surrounding", event)
-        self.assertFalse(opt_mod._with_context(event))
+        self.assertFalse(opt_report._with_context(event))
 
     def test_a_file_not_extracted_is_named_in_the_report_and_status(self):
         self.write("bad.py", "def ok():\n    return 1\n")

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -11,6 +12,28 @@ import time
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Sequence
+
+_SECRET_PATTERNS = (
+    re.compile(r"\b(sk-[A-Za-z0-9_\-]{12,})"),
+    re.compile(r"\b(sk-ant-[A-Za-z0-9_\-]{12,})"),
+    re.compile(r"\b(gh[pousr]_[A-Za-z0-9]{16,})"),
+    re.compile(r"\b(ey[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,})"),
+    re.compile(r"(?i)\bbearer\s+([A-Za-z0-9_\-\.]{12,})"),
+    re.compile(
+        r"(?i)\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|authorization|secret)"
+        r"\s*[:=]\s*[\"']?([A-Za-z0-9_\-\.]{12,})"
+    ),
+)
+
+
+def redact(text: str) -> str:
+    """Strip credential-shaped substrings from anything we log or persist."""
+    if not text:
+        return text
+    cleaned = text
+    for pattern in _SECRET_PATTERNS:
+        cleaned = pattern.sub(lambda m: m.group(0).replace(m.group(1), "[redacted]"), cleaned)
+    return cleaned
 
 
 def utcnow() -> str:
@@ -299,6 +322,7 @@ def _read_shared(path: str) -> str:
         with open(path, "r", encoding="utf-8") as handle:
             return handle.read()
 
+    # Windows only: msvcrt does not exist on POSIX, and windll exists nowhere else.
     import ctypes
     import ctypes.wintypes
     import msvcrt

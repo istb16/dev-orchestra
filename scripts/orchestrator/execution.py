@@ -23,6 +23,7 @@ format it was asked for -- see ``references/providers.md``.
 from __future__ import annotations
 
 import os
+import signal
 import subprocess
 import sys
 import threading
@@ -183,8 +184,6 @@ def kill_tree(pid: int, grace: float = KILL_GRACE_SECONDS) -> bool:
             time.sleep(_POLL_SECONDS)
 
     def kill() -> None:
-        import signal
-
         try:
             os.kill(pid, signal.SIGTERM if IS_WINDOWS else signal.SIGKILL)
         except OSError:
@@ -211,8 +210,6 @@ def _end_tree(pid: int, grace: float, exited: Callable[[float], bool], kill: Cal
         except (OSError, subprocess.SubprocessError):
             pass
     else:
-        import signal
-
         for sig in (signal.SIGTERM, signal.SIGKILL):
             try:
                 os.killpg(os.getpgid(pid), sig)
@@ -371,6 +368,7 @@ def pid_alive(pid: int) -> bool:
     if pid <= 0:
         return False
     if IS_WINDOWS:
+        # Windows only: ctypes.windll exists nowhere else.
         import ctypes
 
         SYNCHRONIZE = 0x00100000

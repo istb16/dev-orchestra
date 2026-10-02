@@ -15,6 +15,7 @@ half the work reads exactly like one that did all of it.
 
 from __future__ import annotations
 
+import ast
 import io
 import json
 import os
@@ -28,6 +29,7 @@ from orchestrator import cli
 from orchestrator import config as config_mod
 from orchestrator import ledger as ledger_mod
 from orchestrator import optimization as opt
+from orchestrator import optimization_report as opt_report
 from orchestrator import review as review_mod
 from orchestrator import workspace as ws
 
@@ -1513,21 +1515,21 @@ class TestTheReport(unittest.TestCase):
     round nobody ran."""
 
     def test_nothing_recorded_reports_nothing_rather_than_zeroes(self):
-        report = opt.summarise_rounds([])
+        report = opt_report.summarise_rounds([])
         self.assertEqual(report["rounds"], 0)
         self.assertEqual(report["billed_per_round"], None)
 
     def test_events_from_other_stages_are_not_rounds(self):
         events = [{"stage": "test", "status": "ok"}, {"stage": "implementer", "status": "ok"}]
-        self.assertEqual(opt.summarise_rounds(events)["rounds"], 0)
+        self.assertEqual(opt_report.summarise_rounds(events)["rounds"], 0)
 
     def test_a_review_without_a_plan_is_not_counted(self):
         """Rounds recorded before the level existed have nothing to say about
         it, and counting them would dilute every rate below."""
-        self.assertEqual(opt.summarise_rounds([{"stage": "review", "status": "ok"}])["rounds"], 0)
+        self.assertEqual(opt_report.summarise_rounds([{"stage": "review", "status": "ok"}])["rounds"], 0)
 
     def test_a_refused_round_is_counted_but_spent_nothing(self):
-        report = opt.summarise_rounds([round_event(status=opt.REFUSED, reviewers=0, gate="refuse")])
+        report = opt_report.summarise_rounds([round_event(status=opt.REFUSED, reviewers=0, gate="refuse")])
         self.assertEqual((report["rounds"], report["ran"], report["refused"]), (1, 0, 1))
         self.assertEqual(report["billed_tokens"], 0)
 
@@ -1539,7 +1541,7 @@ class TestTheReport(unittest.TestCase):
             round_event(reviewers=2, billed=1000),
             round_event(status=opt.REFUSED, reviewers=0, gate="refuse"),
         ]
-        report = opt.summarise_rounds(events)
+        report = opt_report.summarise_rounds(events)
         self.assertEqual(report["billed_per_round"], 2000)
         self.assertEqual(report["estimated_saving"], 2000)
 
@@ -1551,7 +1553,7 @@ class TestTheReport(unittest.TestCase):
         gate["refused_by"] = "gate"
         context = round_event(status=opt.REFUSED, reviewers=0)
         context["refused_by"] = "context"
-        report = opt.summarise_rounds([round_event(reviewers=2, billed=1000), gate, context])
+        report = opt_report.summarise_rounds([round_event(reviewers=2, billed=1000), gate, context])
         self.assertEqual(report["refused"], 2)
         self.assertEqual(report["refused_by"], {"gate": 1, "context": 1})
         self.assertEqual(report["billed_per_round"], 2000)
@@ -1560,20 +1562,20 @@ class TestTheReport(unittest.TestCase):
     def test_a_refusal_recorded_before_the_reason_existed_is_the_gates(self):
         """Nothing else refused a round then, so reading it as the gate's is
         reading it as what it was."""
-        report = opt.summarise_rounds([round_event(status=opt.REFUSED, reviewers=0, gate="refuse")])
+        report = opt_report.summarise_rounds([round_event(status=opt.REFUSED, reviewers=0, gate="refuse")])
         self.assertEqual(report["refused_by"], {"gate": 1})
 
     def test_a_refused_design_round_is_counted_apart_from_the_ones_that_ran(self):
         """The design tally counts rounds that ran, so a refused one would
         otherwise be invisible in the one report that says what review cost."""
-        report = opt.summarise_rounds([design_event(), design_event(status=opt.REFUSED, reviewers=0)])
+        report = opt_report.summarise_rounds([design_event(), design_event(status=opt.REFUSED, reviewers=0)])
         self.assertEqual(report["design_rounds"], 1)
         self.assertEqual(report["design_refused"], 1)
 
     def test_no_round_ever_ran_means_no_estimate_rather_than_zero(self):
         """Two refusals and nothing to compare them against is not a saving of
         zero; it is a saving nobody can size yet."""
-        report = opt.summarise_rounds([round_event(status=opt.REFUSED, reviewers=0)] * 2)
+        report = opt_report.summarise_rounds([round_event(status=opt.REFUSED, reviewers=0)] * 2)
         self.assertIsNone(report["billed_per_round"])
         self.assertEqual(report["estimated_saving"], 0)
 
@@ -1583,7 +1585,7 @@ class TestTheReport(unittest.TestCase):
             round_event(level="aggressive", gate="warn"),
             round_event(level="quality", gate="allow", escalated=True),
         ]
-        report = opt.summarise_rounds(events)
+        report = opt_report.summarise_rounds(events)
         self.assertEqual(report["levels"], {"aggressive": 2, "quality": 1})
         self.assertEqual(report["gates"], {"allow": 2, "warn": 1})
         self.assertEqual(report["escalated"], 1)
@@ -1598,36 +1600,36 @@ class TestTheReport(unittest.TestCase):
             {"path": "infra/dns.tf", "pattern": "*.tf"},
             {"path": ".github/workflows/ci.yml", "pattern": ".github/workflows/*"},
         ]
-        report = opt.summarise_rounds([event])
+        report = opt_report.summarise_rounds([event])
         self.assertEqual(report["escalation_patterns"], {"*.tf": 2, ".github/workflows/*": 1})
 
     def test_every_round_escalating_is_reported_as_such(self):
         """Measured on a real repository: `aggressive` was configured and the
         level never once applied, because terraform is touched constantly."""
-        report = opt.summarise_rounds([round_event(escalated=True)] * 3)
+        report = opt_report.summarise_rounds([round_event(escalated=True)] * 3)
         self.assertTrue(report["always_escalated"])
 
     def test_one_round_escaping_escalation_is_not_always(self):
-        report = opt.summarise_rounds([round_event(escalated=True), round_event()])
+        report = opt_report.summarise_rounds([round_event(escalated=True), round_event()])
         self.assertFalse(report["always_escalated"])
 
     def test_no_rounds_at_all_is_not_always_escalated(self):
-        self.assertFalse(opt.summarise_rounds([])["always_escalated"])
+        self.assertFalse(opt_report.summarise_rounds([])["always_escalated"])
 
     def test_a_reduced_panel_is_counted(self):
         events = [round_event(reviewer_limit=1), round_event(reviewer_limit=None)]
-        self.assertEqual(opt.summarise_rounds(events)["panel_reduced"], 1)
+        self.assertEqual(opt_report.summarise_rounds(events)["panel_reduced"], 1)
 
     def test_rounds_with_no_test_result_are_counted_apart(self):
         """The difference between "the level had no effect" and "the gate was
         never given anything to act on", which the totals alone hide."""
         events = [round_event(test_status=""), round_event(test_status="ok")]
-        self.assertEqual(opt.summarise_rounds(events)["rounds_without_a_test_result"], 1)
+        self.assertEqual(opt_report.summarise_rounds(events)["rounds_without_a_test_result"], 1)
 
     def test_a_reviewer_that_reported_no_usage_is_counted_but_not_summed(self):
         event = round_event(reviewers=0)
         event["reviewers"] = [{"usage": {}}, {"usage": {"billed_tokens": 500}}]
-        report = opt.summarise_rounds([event])
+        report = opt_report.summarise_rounds([event])
         self.assertEqual((report["reviewer_runs"], report["measured_runs"]), (2, 1))
         self.assertEqual(report["billed_tokens"], 500)
 
@@ -1635,7 +1637,7 @@ class TestTheReport(unittest.TestCase):
         """It is read from a file other processes append to; a report that
         crashes on one bad entry is a report nobody trusts."""
         events = ["not an event", None, {"stage": "review"}, round_event()]
-        self.assertEqual(opt.summarise_rounds(events)["rounds"], 1)
+        self.assertEqual(opt_report.summarise_rounds(events)["rounds"], 1)
 
     def test_a_design_round_is_counted_apart_from_a_code_round(self):
         """Measured on one workflow: two design rounds and 350,429 billed
@@ -1645,7 +1647,7 @@ class TestTheReport(unittest.TestCase):
             design_event(reviewers=2, billed=1000),
             round_event(reviewers=2, billed=500),
         ]
-        report = opt.summarise_rounds(events)
+        report = opt_report.summarise_rounds(events)
         self.assertEqual(report["design_rounds"], 2)
         self.assertEqual((report["design_reviewer_runs"], report["design_measured_runs"]), (4, 4))
         self.assertEqual(report["design_billed_tokens"], 4000)
@@ -1656,8 +1658,8 @@ class TestTheReport(unittest.TestCase):
         --json` is a public format, so the new cost arrives as new keys. A
         figure that silently grew would be a different bug, not a fix."""
         code = [round_event(reviewers=2, billed=500), round_event(reviewers=2, billed=500)]
-        alone = opt.summarise_rounds(code)
-        beside = opt.summarise_rounds([*code, design_event(reviewers=2, billed=9000)])
+        alone = opt_report.summarise_rounds(code)
+        beside = opt_report.summarise_rounds([*code, design_event(reviewers=2, billed=9000)])
         for key in ("rounds", "ran", "reviewer_runs", "measured_runs", "billed_tokens"):
             self.assertEqual(beside[key], alone[key], key)
         self.assertEqual(beside["reviewer_runs"], 4)
@@ -1666,7 +1668,7 @@ class TestTheReport(unittest.TestCase):
     def test_design_rounds_alone_leave_the_code_figures_at_zero(self):
         """Nothing was reviewed against a diff, so no level was asked anything
         -- and the levels tally has to stay empty rather than claim one."""
-        report = opt.summarise_rounds([design_event(reviewers=2, billed=700)])
+        report = opt_report.summarise_rounds([design_event(reviewers=2, billed=700)])
         self.assertEqual((report["rounds"], report["ran"], report["reviewer_runs"]), (0, 0, 0))
         self.assertEqual(report["billed_tokens"], 0)
         self.assertIsNone(report["billed_per_round"])
@@ -1676,12 +1678,12 @@ class TestTheReport(unittest.TestCase):
     def test_a_design_run_that_reported_no_usage_is_counted_but_not_summed(self):
         event = design_event(reviewers=0)
         event["reviewers"] = [{"usage": {}}, {"usage": {"billed_tokens": 500}}]
-        report = opt.summarise_rounds([event])
+        report = opt_report.summarise_rounds([event])
         self.assertEqual((report["design_reviewer_runs"], report["design_measured_runs"]), (2, 1))
         self.assertEqual(report["design_billed_tokens"], 500)
 
     def test_no_design_round_reports_no_design_spend(self):
-        report = opt.summarise_rounds([round_event(reviewers=2, billed=500)])
+        report = opt_report.summarise_rounds([round_event(reviewers=2, billed=500)])
         self.assertEqual(report["design_rounds"], 0)
         self.assertEqual(report["design_reviewer_runs"], 0)
         self.assertEqual(report["design_billed_tokens"], 0)
@@ -1696,7 +1698,7 @@ class TestTheReport(unittest.TestCase):
             {"stage": "design_review", "status": "failed", "error": "boom"},
             {"stage": "design_review", "status": "abandoned", "reason": "killed"},
         ]
-        report = opt.summarise_rounds(events)
+        report = opt_report.summarise_rounds(events)
         self.assertEqual(report["design_rounds"], 1)
         self.assertEqual(report["design_billed_tokens"], 350_428)
         self.assertEqual(report["design_billed_per_round"], 350_428)
@@ -1704,7 +1706,7 @@ class TestTheReport(unittest.TestCase):
     def test_a_round_where_every_reviewer_failed_still_ran(self):
         """It cost its attempt: a round with zero runs, not a round that did
         not happen -- and the one worth printing, since it produced nothing."""
-        report = opt.summarise_rounds([design_event(reviewers=0)])
+        report = opt_report.summarise_rounds([design_event(reviewers=0)])
         self.assertEqual((report["design_rounds"], report["design_reviewer_runs"]), (1, 0))
         self.assertIsNone(report["design_billed_per_round"])
 
@@ -1727,28 +1729,30 @@ class TestConditionalCounters(unittest.TestCase):
             refused,
             round_event(conditional=[left_out()]),
         ]
-        report = opt.summarise_rounds(events)
+        report = opt_report.summarise_rounds(events)
         self.assertEqual(report["conditional"], {"added": 1, "left_out": 2, "declared_rounds": 2})
 
     def test_an_old_event_counts_as_no_conditional_reviewer(self):
-        report = opt.summarise_rounds([round_event()])
+        report = opt_report.summarise_rounds([round_event()])
         self.assertEqual(report["conditional"], {"added": 0, "left_out": 0, "declared_rounds": 0})
 
     def test_a_declaration_is_not_an_escalation(self):
-        report = opt.summarise_rounds([round_event(conditional=[added()], declared=True)] * 2)
+        report = opt_report.summarise_rounds([round_event(conditional=[added()], declared=True)] * 2)
         self.assertEqual(report["escalated"], 0)
         self.assertEqual(report["escalation_patterns"], {})
         self.assertFalse(report["always_escalated"])
 
     def test_an_extra_pattern_hit_is_counted_like_any_other(self):
         hit = [{"path": "lib/providers/x.py", "pattern": "*/providers/*"}]
-        report = opt.summarise_rounds([round_event(escalated=True, level="quality", high_risk=hit)])
+        report = opt_report.summarise_rounds([round_event(escalated=True, level="quality", high_risk=hit)])
         self.assertEqual(report["escalation_patterns"], {"*/providers/*": 1})
         self.assertTrue(report["always_escalated"])
 
     def test_a_path_scoped_record_counts_like_any_other(self):
         scoped = dict(added("db", "q.sql matches *.sql"), when="paths")
-        report = opt.summarise_rounds([round_event(conditional=[scoped, dict(left_out("db"), when="paths")])])
+        report = opt_report.summarise_rounds(
+            [round_event(conditional=[scoped, dict(left_out("db"), when="paths")])]
+        )
         self.assertEqual(report["conditional"], {"added": 1, "left_out": 1, "declared_rounds": 0})
 
 
@@ -1777,7 +1781,7 @@ class TestToolActivityInTheReport(unittest.TestCase):
 
     def test_a_silent_reviewer_stays_out_of_the_denominator(self):
         events = [round_with([{"tool_uses": 4, "tool_output_chars": 900}, {"billed_tokens": 100}])]
-        report = opt.summarise_rounds(events)
+        report = opt_report.summarise_rounds(events)
         self.assertEqual(report["reviewer_runs"], 2)
         self.assertEqual(report["tool_reported_runs"], 1)
         self.assertEqual(report["tool_uses"], 4)
@@ -1787,23 +1791,23 @@ class TestToolActivityInTheReport(unittest.TestCase):
     def test_a_reviewer_that_used_no_tools_is_in_it(self):
         """A measured zero is the result this counting exists to find."""
         events = [round_with([{"tool_uses": 6, "tool_output_chars": 600}, {"tool_uses": 0}])]
-        report = opt.summarise_rounds(events)
+        report = opt_report.summarise_rounds(events)
         self.assertEqual(report["tool_reported_runs"], 2)
         self.assertEqual(report["tool_uses_per_run"], 3.0)
 
     def test_nobody_reporting_gives_no_average_rather_than_zero(self):
-        report = opt.summarise_rounds([round_event(reviewers=2, billed=500)])
+        report = opt_report.summarise_rounds([round_event(reviewers=2, billed=500)])
         self.assertEqual(report["tool_reported_runs"], 0)
         self.assertIsNone(report["tool_uses_per_run"])
         self.assertIsNone(report["tool_output_chars_per_run"])
 
     def test_a_refused_round_contributes_nothing(self):
         events = [round_with([{"tool_uses": 4}], status=opt.REFUSED)]
-        self.assertEqual(opt.summarise_rounds(events)["tool_reported_runs"], 0)
+        self.assertEqual(opt_report.summarise_rounds(events)["tool_reported_runs"], 0)
 
     def test_a_boolean_is_not_a_count(self):
         """``True`` is an ``int`` in Python, and would report one tool use."""
-        report = opt.summarise_rounds([round_with([{"tool_uses": True}])])
+        report = opt_report.summarise_rounds([round_with([{"tool_uses": True}])])
         self.assertEqual(report["tool_reported_runs"], 0)
 
     def test_design_rounds_are_counted_under_their_own_keys(self):
@@ -1813,7 +1817,7 @@ class TestToolActivityInTheReport(unittest.TestCase):
             round_with([{"tool_uses": 2, "tool_output_chars": 100}]),
             design_with([{"tool_uses": 10, "tool_output_chars": 5000}]),
         ]
-        report = opt.summarise_rounds(events)
+        report = opt_report.summarise_rounds(events)
         self.assertEqual(report["tool_uses_per_run"], 2.0)
         self.assertEqual(report["design_tool_uses_per_run"], 10.0)
         self.assertEqual(report["design_tool_output_chars_per_run"], 5000.0)
@@ -1916,6 +1920,8 @@ class TestTheReportCommand(IsolatedCase):
         _, out, _ = run_cli("summary")
         self.assertIn("Optimization:", out)
         self.assertIn("1 round(s) not run", out)
+        # Recorded with no refused_by, which reads as the gate's.
+        self.assertIn("tests recorded as failing", out)
 
     def test_a_reduced_panel_shows_up_in_the_summary(self):
         """One reviewer is one opinion. A report that does not say so reads
@@ -2071,7 +2077,7 @@ class TestRoundsWithAndWithoutContext(unittest.TestCase):
     """
 
     def test_a_round_is_split_on_its_own_summary(self):
-        report = opt.summarise_rounds(
+        report = opt_report.summarise_rounds(
             [
                 context_round(1000, [{"billed_tokens": 100}], adopted=50),
                 context_round(1000, [{"billed_tokens": 100}]),
@@ -2084,14 +2090,14 @@ class TestRoundsWithAndWithoutContext(unittest.TestCase):
     def test_without_a_summary_the_reviewer_entries_decide(self):
         event = context_round(1000, [{"billed_tokens": 100}])
         event["reviewers"][0]["surrounding"] = {"mode": "enclosing", "adopted_chars": 70, "trimmed_chars": 0}
-        report = opt.summarise_rounds([event])
+        report = opt_report.summarise_rounds([event])
         self.assertEqual(report["by_context"]["with"]["rounds"], 1)
         self.assertEqual(report["by_context"]["with"]["adopted_chars"], 70)
 
     def test_a_round_that_adopted_nothing_is_a_round_without(self):
         """File delivery, or a budget already spent: the setting was on and
         no reviewer was shown any context."""
-        report = opt.summarise_rounds([context_round(1000, [{"billed_tokens": 100}], trimmed=900)])
+        report = opt_report.summarise_rounds([context_round(1000, [{"billed_tokens": 100}], trimmed=900)])
         self.assertEqual(report["by_context"]["with"]["rounds"], 0)
         self.assertEqual(report["by_context"]["without"]["rounds"], 1)
         self.assertEqual(report["by_context"]["without"]["trimmed_chars"], 900)
@@ -2101,12 +2107,12 @@ class TestRoundsWithAndWithoutContext(unittest.TestCase):
         refused["status"] = opt.REFUSED
         design = design_event()
         design["surrounding"] = {"adopted_chars": 50}
-        report = opt.summarise_rounds([refused, design])
+        report = opt_report.summarise_rounds([refused, design])
         for name in ("with", "without"):
             self.assertEqual(report["by_context"][name]["rounds"], 0)
 
     def test_nobody_reporting_tools_gives_no_tool_figures(self):
-        report = opt.summarise_rounds([context_round(1000, [{"billed_tokens": 100}], adopted=5)])
+        report = opt_report.summarise_rounds([context_round(1000, [{"billed_tokens": 100}], adopted=5)])
         group = report["by_context"]["with"]
         self.assertIsNone(group["tool_uses_per_run"])
         self.assertIsNone(group["tool_output_chars_per_run"])
@@ -2114,7 +2120,7 @@ class TestRoundsWithAndWithoutContext(unittest.TestCase):
         self.assertEqual(group["billed_per_run_per_1k_change_chars"], 100.0)
 
     def test_a_round_with_no_recorded_size_is_left_out_of_the_normalised_figures(self):
-        report = opt.summarise_rounds(
+        report = opt_report.summarise_rounds(
             [
                 context_round(1000, [{"billed_tokens": 100}], adopted=5),
                 context_round(None, [{"billed_tokens": 900}], adopted=5),
@@ -2131,7 +2137,7 @@ class TestRoundsWithAndWithoutContext(unittest.TestCase):
         """A panel cut to one reviewer is ordinary for a small change, and
         must not read as the context halving what a round costs."""
         usage = {"billed_tokens": 1000, "tool_uses": 3, "tool_output_chars": 600}
-        report = opt.summarise_rounds(
+        report = opt_report.summarise_rounds(
             [
                 context_round(2000, [usage, usage], adopted=100),
                 context_round(2000, [usage]),
@@ -2149,7 +2155,7 @@ class TestRoundsWithAndWithoutContext(unittest.TestCase):
         )
 
     def test_a_run_that_billed_nothing_is_not_in_the_billed_weight(self):
-        report = opt.summarise_rounds([context_round(1000, [{"billed_tokens": 400}, {}], adopted=5)])
+        report = opt_report.summarise_rounds([context_round(1000, [{"billed_tokens": 400}, {}], adopted=5)])
         group = report["by_context"]["with"]
         self.assertEqual(group["billed_run_change_chars"], 1000)
         self.assertEqual(group["sized_billed_runs"], 1)
@@ -2159,7 +2165,8 @@ class TestRoundsWithAndWithoutContext(unittest.TestCase):
         """Codex reports billed tokens and no tool activity at all."""
         claude = {"billed_tokens": 100, "tool_uses": 2, "tool_output_chars": 300}
         codex = {"billed_tokens": 100}
-        group = opt.summarise_rounds([context_round(1000, [claude, codex], adopted=5)])["by_context"]["with"]
+        report = opt_report.summarise_rounds([context_round(1000, [claude, codex], adopted=5)])
+        group = report["by_context"]["with"]
         self.assertEqual(group["billed_run_change_chars"], 2000)
         self.assertEqual(group["tool_run_change_chars"], 1000)
         self.assertEqual(group["tool_output_chars_per_run_per_1k_change_chars"], 300.0)
@@ -2214,7 +2221,7 @@ class TestPairedOnOneSnapshot(unittest.TestCase):
     """
 
     def paired(self, *events):
-        return opt.summarise_rounds(list(events))["paired"]
+        return opt_report.summarise_rounds(list(events))["paired"]
 
     def test_the_two_sides_of_one_snapshot_are_a_pair(self):
         paired = self.paired(
@@ -2236,7 +2243,7 @@ class TestPairedOnOneSnapshot(unittest.TestCase):
         self.assertEqual(paired["with"]["billed_per_run"], 1000.0)
         self.assertEqual(paired["without"]["billed_per_run"], 1200.0)
         self.assertEqual(paired["delta"]["billed_per_run"], -200.0)
-        self.assertEqual(paired["note"], opt.PAIRED_NOTE)
+        self.assertEqual(paired["note"], opt_report.PAIRED_NOTE)
 
     def test_another_tree_or_workflow_is_not_the_same_snapshot(self):
         for other in ({"tree": "u" * 40}, {"workflow": "elsewhere"}, {"snapshot": "x" * 64}):
@@ -2353,7 +2360,8 @@ class TestPairedOnOneSnapshot(unittest.TestCase):
         events = [paired_round("none", [CLAUDE]), paired_round("enclosing", [CLAUDE])]
         plain = [context_round(1000, [CLAUDE]), context_round(1000, [CLAUDE], adopted=100)]
         self.assertEqual(
-            opt.summarise_rounds(events)["by_context"], opt.summarise_rounds(plain)["by_context"]
+            opt_report.summarise_rounds(events)["by_context"],
+            opt_report.summarise_rounds(plain)["by_context"],
         )
 
 
@@ -2456,7 +2464,9 @@ def scored_round(findings=(), sha=SHA, round_id="r1", iteration=1, live=True, at
 
 
 def scorecard(events, rounds, stage="code"):
-    return opt.reviewer_scorecard([{"workflow": "w", "stage": stage, "events": events, "rounds": rounds}])
+    return opt_report.reviewer_scorecard(
+        [{"workflow": "w", "stage": stage, "events": events, "rounds": rounds}]
+    )
 
 
 class TestMatchingEventsToRounds(unittest.TestCase):
@@ -2759,7 +2769,7 @@ class TestScorecardFigures(unittest.TestCase):
             "events": [scored_event([scored_run("a", billed=20)], stage="design_review")],
             "rounds": [scored_round([scored_finding("F1", "k", ["a"], "accepted")])],
         }
-        card = opt.reviewer_scorecard([code, design])
+        card = opt_report.reviewer_scorecard([code, design])
         self.assertEqual(card["code"]["panel"]["billed_tokens"], 10)
         self.assertEqual(card["design"]["panel"]["billed_tokens"], 20)
         self.assertEqual(card["total"]["billed_tokens"], 30)
@@ -2773,7 +2783,7 @@ class TestScorecardFigures(unittest.TestCase):
             "events": [scored_event([scored_run("a", billed=10)])],
             "rounds": [scored_round([scored_finding("F1", "k", ["a"], "rejected")])],
         }
-        card = opt.reviewer_scorecard([code])
+        card = opt_report.reviewer_scorecard([code])
         for field in ("billed_tokens", "runs", "reported", "rejected"):
             self.assertEqual(card["total"][field], card["code"]["panel"][field])
         self.assertEqual(card["total"]["rounds_recorded"], card["code"]["rounds_recorded"])
@@ -2881,7 +2891,7 @@ class TestScorecardLeftOutRounds(unittest.TestCase):
             ],
             "rounds": [scored_round()],
         }
-        group = opt.reviewer_scorecard([newer, older])["code"]["reviewers"]["s"]
+        group = opt_report.reviewer_scorecard([newer, older])["code"]["reviewers"]["s"]
         self.assertEqual((group["when"], group["left_out_rounds"]), ("paths", 2))
 
     def test_an_event_with_no_time_loses_to_one_with(self):
@@ -2901,7 +2911,7 @@ class TestScorecardLeftOutRounds(unittest.TestCase):
             "events": [conditional_event([scored_run("a")], [condition("s", False)])],
             "rounds": [scored_round()],
         }
-        group = opt.reviewer_scorecard([dated, undated])["code"]["reviewers"]["s"]
+        group = opt_report.reviewer_scorecard([dated, undated])["code"]["reviewers"]["s"]
         self.assertEqual(group["when"], "paths")
 
     def test_an_unconditional_reviewer_is_unchanged(self):
@@ -3106,7 +3116,7 @@ class TestArchitectRevisions(unittest.TestCase):
             plan_run(cost=0.5),
             plan_run(cost=9.0, output=".ai/execution/other.md"),
         ]
-        report = opt.architect_revisions([(events, writes_plan)])
+        report = opt_report.architect_revisions([(events, writes_plan)])
         self.assertEqual(report["attempts"], 5)
         group = report["resumed"]
         self.assertEqual(group["runs"], 2)
@@ -3127,7 +3137,7 @@ class TestArchitectRevisions(unittest.TestCase):
         for cost in (0.0, None, -1.0, True):
             with self.subTest(cost=cost):
                 events = [plan_run(cost=cost), plan_run(cost=0.2, resume=resumed())]
-                group = opt.architect_revisions([(events, writes_plan)])["resumed"]
+                group = opt_report.architect_revisions([(events, writes_plan)])["resumed"]
                 self.assertEqual(group["runs"], 1)
                 self.assertEqual(group["priced_runs"], 1)
                 self.assertEqual(group["ratio_runs"], 0)
@@ -3136,14 +3146,14 @@ class TestArchitectRevisions(unittest.TestCase):
 
     def test_a_group_with_nothing_completed_has_no_ratio(self):
         events = [plan_run(cost=1.0), plan_run(status="stalled", cost=0.4, resume=resumed(outcome=None))]
-        group = opt.architect_revisions([(events, writes_plan)])["resumed"]
+        group = opt_report.architect_revisions([(events, writes_plan)])["resumed"]
         self.assertEqual(group["runs"], 0)
         self.assertIsNone(group["cost_per_completed_ratio"])
         self.assertEqual(group["failed_attempts"]["ratio_attempts"], 1)
 
     def test_no_initial_run_means_no_attempts(self):
         events = [plan_run(status="failed", cost=1.0)]
-        self.assertEqual(opt.architect_revisions([(events, writes_plan)])["attempts"], 0)
+        self.assertEqual(opt_report.architect_revisions([(events, writes_plan)])["attempts"], 0)
 
 
 class TestArchitectRevisionsReport(IsolatedCase):
@@ -3366,6 +3376,153 @@ class TestDecideDesign(unittest.TestCase):
         self.assertEqual(decision.reason, "touches config/[redacted].sql (Files to Modify)")
         self.assertNotIn(TOKEN, decision.label())
         self.assertNotIn(TOKEN, json.dumps(decision.to_dict()))
+
+
+#: What ``optimization`` defines: the decisions a review round is run under.
+DECISION_NAMES = {
+    # Constants.
+    "LEVELS",
+    "DEFAULT_LEVEL",
+    "MAX_FINDINGS_BY_LEVEL",
+    "DEFAULT_LOW_RISK_MAX_FILES",
+    "DEFAULT_LOW_RISK_MAX_LINES",
+    "DEFAULT_HIGH_RISK_PATHS",
+    "GATE_REFUSE",
+    "GATE_WARN",
+    "GATE_ALLOW",
+    "WHEN_ALWAYS",
+    "WHEN_HIGH_RISK",
+    "WHEN_PATHS",
+    "REVIEWER_CONDITIONS",
+    "DESIGN_LARGE_PLAN_FILES",
+    "DESIGN_DOCS_PREFIXES",
+    "DESIGN_TESTS_PREFIXES",
+    "_GLOB_CHARS",
+    "_EXTENSION_RE",
+    "REFUSED",
+    # Functions and classes.
+    "normalise_level",
+    "at_least",
+    "high_risk_matches",
+    "is_paths_condition",
+    "reviewer_condition",
+    "reviewer_paths",
+    "condition_label",
+    "risk_patterns",
+    "default_patterns_only",
+    "_and_more",
+    "_finding_order",
+    "condition_reviewers",
+    "_left_out",
+    "qualifies",
+    "Plan",
+    "decide",
+    "DesignDecision",
+    "_plan_path",
+    "_has_extension",
+    "_risk_candidates",
+    "decide_design",
+    "findings_cap",
+    "_positive",
+    "choose_reviewers",
+}
+
+#: What ``optimization_report`` defines: what the rounds cost and found.
+REPORT_NAMES = {
+    # Constants.
+    "_INPUT_NAMES",
+    "PAIRED_NOTE",
+    "SCORECARD_MIN_DECIDED",
+    "_REVIEWED",
+    "_EXPLICIT_TRIAGE",
+    "_SCORE_SPEND",
+    "_SCORE_FINDINGS",
+    "_SCORE_ROUNDS",
+    # Rounds and pairs.
+    "summarise_rounds",
+    "_pair_rounds",
+    "_pair_key",
+    "_pair_side",
+    "_panel",
+    "_undelivered",
+    "_inputs_differ",
+    "_pair",
+    "_pair_group",
+    "_finish_pair_group",
+    "_pair_side_figures",
+    "_pair_delta",
+    # Context.
+    "_with_context",
+    "_round_change_chars",
+    "_round_context_chars",
+    "_int",
+    "_context_group",
+    "_add_to_context_group",
+    "_finish_context_group",
+    "_per_1k",
+    "_per_run",
+    "_reviewer_tools",
+    "_reviewer_spend",
+    "_bump",
+    # Scorecard.
+    "reviewer_scorecard",
+    "_round_key_of_event",
+    "_match_rounds",
+    "_explicit_triage",
+    "_unique_findings",
+    "_alone_pairs",
+    "_score_group",
+    "_score_reviewer",
+    "_add_spend",
+    "_add_left_out",
+    "_final_triage",
+    "_score_finding",
+    "_finish_score",
+    # Architect revisions.
+    "architect_revisions",
+    "_completed",
+    "_money",
+    "_count_of",
+    "_revision_group",
+    "_add_revision",
+    "_finish_revision_group",
+}
+
+
+def _parsed(module):
+    with open(module.__file__, encoding="utf-8") as handle:
+        return ast.parse(handle.read())
+
+
+def _top_level_names(module):
+    """Every name a module's own top level defines, its imports aside."""
+    names = set()
+    for node in _parsed(module).body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.add(node.name)
+        elif isinstance(node, ast.Assign):
+            names.update(target.id for target in node.targets if isinstance(target, ast.Name))
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            names.add(node.target.id)
+    return names
+
+
+class TestTheSplit(unittest.TestCase):
+    """``optimization`` decides and ``optimization_report`` reports; the
+    deciding half must never need the reporting one."""
+
+    def test_the_split_partitions_the_old_module(self):
+        self.assertEqual((len(DECISION_NAMES), len(REPORT_NAMES)), (43, 52))
+        self.assertEqual(_top_level_names(opt), DECISION_NAMES)
+        self.assertEqual(_top_level_names(opt_report), REPORT_NAMES)
+        imported = set()
+        for node in ast.walk(_parsed(opt)):
+            if isinstance(node, ast.Import):
+                imported.update(alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom):
+                imported.add(node.module or "")
+                imported.update(alias.name for alias in node.names)
+        self.assertFalse([name for name in imported if "optimization_report" in name], imported)
 
 
 if __name__ == "__main__":
