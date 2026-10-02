@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import os
 import platform
-from typing import Any, Dict, List, Optional, Tuple, cast
+from typing import Any, Dict, List, Optional, Tuple
 
 from . import config as config_mod
 from . import hosts, verified
@@ -203,18 +203,11 @@ def collect(start: Optional[str] = None, probe_models: bool = True) -> Dict[str,
             # provider's enforcement, not the base role's. One that keeps the
             # provider is refused for the same reason the role already was, so
             # it is not reported a second time.
-            tiers = spec.get("model_tiers") if isinstance(spec, dict) else None
-            tier_items = tiers.items() if isinstance(tiers, dict) else ()
-            for tier, tier_entry in tier_items:
-                if isinstance(tier_entry, dict):
-                    # A tier is only read from a spec that is a mapping.
-                    base = cast(Dict[str, Any], spec)
-                    merged = config_mod.merge_tier(base, tier_entry)
-                    if merged.get("provider") == base.get("provider"):
-                        continue
-                    tier_label = "%s (tier %s)" % (label, tier)
-                    tier_refused = "%s.model_tiers.%s" % (key, tier) in refused
-                    _enforcement_report(tier_label, merged, report, None, tier_refused)
+            for seat in config_mod.role_seats(loaded.data, (key,)):
+                if seat.kind != "tier" or seat.same_provider:
+                    continue
+                tier_label = "%s (tier %s)" % (label, seat.tier)
+                _enforcement_report(tier_label, seat.spec, report, None, seat.label in refused)
 
     for index, reviewer in enumerate(loaded.reviewers()):
         label = "Reviewer %s" % reviewer.get("id")
