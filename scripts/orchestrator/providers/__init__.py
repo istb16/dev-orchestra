@@ -28,6 +28,7 @@ from .base import (  # noqa: F401 - re-exported as the adapter interface
     MODES,
     READ_ONLY_MODES,
     REFUSED_ENFORCEMENT,
+    SESSION_ID_RE,
     WARNED_ENFORCEMENT,
     Detection,
     ModelCandidate,

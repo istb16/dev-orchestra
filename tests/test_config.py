@@ -317,6 +317,32 @@ class TestLayering(IsolatedCase):
             handle.write("version: 1\n")
         self.assertIsNone(config_mod.find_project_config(self.project))
 
+    def test_search_stops_at_a_worktree_or_submodule_root(self):
+        """There `.git` is a file, not a directory, and it is the root all the same."""
+        with open(os.path.join(self.project, ".git"), "w", encoding="utf-8") as handle:
+            handle.write("gitdir: /elsewhere/.git/worktrees/project\n")
+        outside = os.path.join(self.tmp, ".dev-orchestra.yaml")
+        with open(outside, "w", encoding="utf-8") as handle:
+            handle.write("version: 1\n")
+        nested = os.path.join(self.project, "src")
+        os.makedirs(nested)
+        self.assertIsNone(config_mod.find_project_config(nested))
+        self.write(".dev-orchestra.yaml", "version: 1\n")
+        self.assertEqual(os.path.dirname(present(config_mod.find_project_config(nested))), self.project)
+
+    def test_search_stops_at_a_dangling_git_symlink(self):
+        """Even a `.git` link that points nowhere marks the root."""
+        try:
+            os.symlink(os.path.join(self.tmp, "missing-git-dir"), os.path.join(self.project, ".git"))
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest("symlinks are unavailable here: %s" % exc)
+        outside = os.path.join(self.tmp, ".dev-orchestra.yaml")
+        with open(outside, "w", encoding="utf-8") as handle:
+            handle.write("version: 1\n")
+        nested = os.path.join(self.project, "src")
+        os.makedirs(nested)
+        self.assertIsNone(config_mod.find_project_config(nested))
+
     def test_empty_config_file_is_tolerated(self):
         self.write(".dev-orchestra.yaml", "")
         loaded = config_mod.load(self.project)

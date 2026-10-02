@@ -48,6 +48,7 @@ from .base import (
     ResolvedModel,
     RunResult,
     Usage,
+    token_count,
 )
 
 DEFAULT_FAMILIES = ("default", "", "recommended", "auto")
@@ -125,11 +126,6 @@ class AgyProvider(Provider):
     #: under verified.resume_trust() with ``required_resume_checks =
     #: ("reports a missing session",)``.
     supports_resume = False
-
-    def __init__(self, executable: Optional[str] = None) -> None:
-        super().__init__(executable)
-        #: The value ``-p`` gets, set by ``_launch`` for the one run it starts.
-        self._prompt_argument: Optional[str] = None
 
     def validate_options(self, options: Optional[Dict[str, Any]]) -> List[str]:
         problems = super().validate_options(options)
@@ -225,8 +221,9 @@ class AgyProvider(Provider):
         cwd: str,
         extra_args: Sequence[str] = (),
         options: Optional[Dict[str, Any]] = None,
+        prompt_file: Optional[str] = None,
     ) -> List[str]:
-        """``-p`` last, naming the prompt file once ``_launch`` has written
+        """``-p`` last, naming ``prompt_file`` once ``_launch`` has written
         it, and a placeholder for it before (``--print-command``).
 
         No ``--mode``: plan mode was measured to write all the same, and to
@@ -242,11 +239,24 @@ class AgyProvider(Provider):
                 command.append("--dangerously-skip-permissions")
             command += self.option_args(options)
             command += list(extra_args)
-        prompt = self._prompt_argument
-        if prompt is None:
-            prompt = PROMPT_FILE_INSTRUCTION % PROMPT_FILE_PLACEHOLDER
-        command += ["-p", prompt]
+        command += ["-p", PROMPT_FILE_INSTRUCTION % (prompt_file or PROMPT_FILE_PLACEHOLDER)]
         return command
+
+    def command_line(
+        self,
+        mode: str,
+        resolved: ResolvedModel,
+        cwd: str,
+        extra_args: Sequence[str] = (),
+        options: Optional[Dict[str, Any]] = None,
+        resume_session: Optional[str] = None,
+        prompt_file: Optional[str] = None,
+    ) -> List[str]:
+        """The base command, naming the prompt file one run wrote. No resume:
+        ``supports_resume`` is False, so the base never asks for one."""
+        if resume_session is not None:
+            return super().command_line(mode, resolved, cwd, extra_args, options, resume_session)
+        return self.build_command(mode, resolved, cwd, extra_args, options, prompt_file=prompt_file)
 
     def read_only_enforcement(self) -> Dict[str, Any]:
         """Static: measured, and nothing needs asking."""
@@ -268,6 +278,7 @@ class AgyProvider(Provider):
         options: Optional[Dict[str, Any]] = None,
         idle_timeout: Optional[float] = None,
         resume_session: Optional[str] = None,
+        command_kwargs: Optional[Dict[str, Any]] = None,
     ) -> RunResult:
         """Put the prompt where agy reads it: in a file ``-p`` names.
 
@@ -286,7 +297,8 @@ class AgyProvider(Provider):
                     path = _write_prompt_file(cwd, prompt)
                 except OSError as exc:
                     return RunResult(False, 2, "", "agy: %s" % exc, [self.executable], 0.0, invoked=False)
-                self._prompt_argument = PROMPT_FILE_INSTRUCTION % os.path.basename(path)
+            # Passed with the call, not kept on the instance: reviewers run
+            # in parallel on one adapter, and each names its own file.
             result = super()._launch(
                 prompt="",
                 mode=mode,
@@ -298,13 +310,16 @@ class AgyProvider(Provider):
                 options=options,
                 idle_timeout=idle_timeout,
                 resume_session=resume_session,
+                command_kwargs={
+                    **(command_kwargs or {}),
+                    "prompt_file": os.path.basename(path) if path is not None else None,
+                },
             )
             if result.usage.prompt_chars is not None:
                 # The base measures what went on stdin, and that was nothing.
                 result.usage.prompt_chars = len(prompt)
             return result
         finally:
-            self._prompt_argument = None
             if path is not None:
                 try:
                     os.unlink(path)
@@ -360,7 +375,7 @@ class AgyProvider(Provider):
         if not isinstance(usage, dict):
             return None
         keys = ("input_tokens", "output_tokens", "cache_read_tokens")
-        counts = {key: _count(usage.get(key)) for key in keys}
+        counts = {key: token_count(usage.get(key)) for key in keys}
         if all(value is None for value in counts.values()):
             return None
         return Usage(
@@ -422,12 +437,6 @@ def _newest(listed: Sequence[ModelCandidate], kind: str, effort: Optional[str]) 
         key = (-int(match.group(1)), -int(match.group(2)), _EFFORT_ORDER.get(found, 9))
         ranked.append((key, candidate.value))
     return min(ranked)[1] if ranked else None
-
-
-def _count(value: Any) -> Optional[int]:
-    if isinstance(value, bool) or not isinstance(value, int):
-        return None
-    return value
 
 
 def _prompt_directory(cwd: str) -> str:

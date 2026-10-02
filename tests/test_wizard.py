@@ -222,11 +222,34 @@ class TestTheWizardsBase(IsolatedCase):
         layer below has it on -- and the summary is what the user says yes to."""
         layer = {"version": 1, "review": {"design": {"enabled": True}}}
         config_mod.write_config_file(config_mod.global_config_path(), layer, "global")
-        base = cli_common._fitted_base("project", self.project)
+        base = cli_common._fitted_base("project")
         prompter = ScriptedPrompter(accept_all(customise=False))
         data, _ = wizard_mod.run(prompter, None, base, scope="project")
         self.assertIn("design review: on", "\n".join(prompter.output))
         self.assertNotIn("review", data)
+
+    def test_the_global_base_reads_the_preset_name_as_load_does(self):
+        """No name, or `null`, means `standard`; an unknown one -- `""`
+        included -- fits nothing, and the wizard's base must not read it as
+        `standard`."""
+        self.addCleanup(setattr, presets_mod, "installed_providers", presets_mod.installed_providers)
+        setattr(presets_mod, "installed_providers", lambda: ["codex"])
+        self.addCleanup(setattr, cli_common, "_global_file", cli_common._global_file)
+        default = config_mod.default_config()["implementer"]["provider"]
+        standard = presets_mod.expand("standard", ["codex"]).values["implementer"]["provider"]
+        self.assertNotEqual(default, standard)
+        for layer, expected in (
+            ({"version": 1}, standard),
+            ({"version": 1, "preset": None}, standard),
+            ({"version": 1, "preset": "standard"}, standard),
+            ({"version": 1, "preset": ""}, default),
+            ({"version": 1, "preset": "nope"}, default),
+        ):
+            with self.subTest(layer=layer):
+                setattr(cli_common, "_global_file", lambda layer=layer: layer)
+                base = cli_common._fitted_base("global")
+                self.assertEqual(base, config_mod.compose({"preset": layer.get("preset")}, {}, ["codex"])[0])
+                self.assertEqual(base["implementer"]["provider"], expected)
 
     def test_the_summary_shows_the_default_design_review_as_auto(self):
         prompter = ScriptedPrompter(accept_all())

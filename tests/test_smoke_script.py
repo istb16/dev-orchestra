@@ -21,7 +21,7 @@ import shutil
 import unittest
 import uuid
 from contextlib import redirect_stderr, redirect_stdout
-from typing import Optional
+from typing import Optional, Sequence
 
 from helpers import REPO_ROOT, IsolatedCase, present
 
@@ -410,6 +410,7 @@ class _Resumer(_Reader):
     """A CLI that resumes, with whatever init it is told to report."""
 
     supports_resume = True
+    required_resume_checks: Sequence[str] = smoke_live.verified.REQUIRED_RESUME_CHECKS
 
     def __init__(
         self, init=None, fork=True, parent: Optional[str] = PARENT, rejects=True, hooks_on_resume=False
@@ -426,6 +427,12 @@ class _Resumer(_Reader):
 
     def read_only_enforcement(self):
         return {"status": "verified", "mechanism": "--fake-read-only"}
+
+    def resume_mechanism(self) -> str:
+        return "--fake-read-only"
+
+    def resume_args(self, session_id):
+        return ["--resume=%s" % session_id]
 
     def run(self, prompt, mode, cwd, **kwargs):
         read = super().run(prompt, mode, cwd, **kwargs)
@@ -460,6 +467,42 @@ class TestTheResumeChecks(IsolatedCase):
 
     def test_an_adapter_that_does_not_resume_is_not_asked(self):
         self.assertEqual(smoke_live.check_resume(_FakeProvider(), "fake", self.project), [])
+
+    def test_the_switch_does_not_decide_but_the_resume_arguments_do(self):
+        """Any adapter with ``resume_args`` of its own is checked while its
+        resume is off; one that only says it resumes is not."""
+        provider = _Resumer()
+        setattr(provider, "supports_resume", False)
+        checks = self.checks(provider)
+        self.assertEqual(sorted(checks), sorted(smoke_live.resume_labels("claude")))
+        self.assertTrue(all(check.ok for check in checks.values()), checks)
+
+        class _OnlySaysSo(_FakeProvider):
+            supports_resume = True
+
+        self.assertEqual(smoke_live.check_resume(_OnlySaysSo(), "claude", self.project), [])
+
+    def test_an_adapter_with_only_a_resume_command_is_asked_too(self):
+        """An adapter may resume with a command of another shape instead."""
+
+        class _ResumesByCommand(_FakeProvider):
+            def resume_command(self, mode, resolved, cwd, extra_args, options, session_id):
+                return ["fake", "resume", session_id]
+
+        self.assertTrue(smoke_live.resumes(_ResumesByCommand()))
+        self.assertFalse(smoke_live.resumes(_FakeProvider()))
+
+    def test_every_shipped_adapter_has_what_the_record_reads(self):
+        """``record_resume`` reads these directly, without a fallback."""
+        from orchestrator.providers.agy import AgyProvider
+        from orchestrator.providers.claude import ClaudeProvider
+        from orchestrator.providers.codex import CodexProvider
+
+        for cls in (ClaudeProvider, CodexProvider, AgyProvider):
+            with self.subTest(provider=cls.__name__):
+                provider = cls()
+                self.assertIsInstance(tuple(provider.required_resume_checks), tuple)
+                self.assertIsInstance(provider.resume_mechanism(), str)
 
     def test_a_read_only_resumed_session_passes_everything(self):
         provider = _Resumer()

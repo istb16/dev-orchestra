@@ -55,12 +55,16 @@ from .base import (
     MODE_IMPLEMENT,
     MODE_PLAN,
     READ_ONLY_MODES,
+    SESSION_ID_RE,
     ModelCandidate,
     ModelResolutionError,
     Provider,
     ResolvedModel,
     RunResult,
     Usage,
+    json_lines,
+    redact,
+    token_count,
 )
 
 RECOMMENDED_FAMILIES = ("recommended-coding", "recommended", "default", "auto", "latest", "")
@@ -93,9 +97,6 @@ SANDBOX_POLICIES = ("read-only", "workspace-write", "danger-full-access")
 
 _TOML_MODEL_RE = re.compile(r"^\s*model\s*=\s*[\"']([^\"']+)[\"']", re.MULTILINE)
 
-#: Only a UUID goes on the command line after ``fork``, or into a glob: the
-#: id is read from the run log or from the CLI's own output.
-_SESSION_ID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 #: What ``codex exec fork --help`` has to list before a session is resumed.
 _FORK_FLAGS = ("-c", "-m", "--json", "-o", "--skip-git-repo-check", "--ignore-user-config")
 #: The ``-c`` override a fork runs under, quotes included: a TOML string.
@@ -349,7 +350,7 @@ class CodexProvider(Provider):
         are recorded as ``total_tokens`` and never split into an input/output
         pair we would be inventing.
         """
-        usage = _usage_from_events(_json_events(outcome.stdout)) if mode == MODE_PLAN else None
+        usage = _usage_from_events(json_lines(outcome.stdout)) if mode == MODE_PLAN else None
         if usage is not None:
             return usage
         return parse_usage_text(outcome.stdout, outcome.stderr)
@@ -358,11 +359,11 @@ class CodexProvider(Provider):
         """The session a ``--json`` run ended in: the first ``thread.started``
         event's ``thread_id``, and only a UUID. Reads stdout only: a fresh run
         never touches the sessions tree."""
-        for event in _json_events(outcome.stdout):
+        for event in json_lines(outcome.stdout):
             if event.get("type") != "thread.started":
                 continue
             thread_id = event.get("thread_id")
-            if isinstance(thread_id, str) and _SESSION_ID_RE.match(thread_id):
+            if isinstance(thread_id, str) and SESSION_ID_RE.match(thread_id):
                 return {"session_id": thread_id}
             return {}
         return {}
@@ -374,10 +375,7 @@ class CodexProvider(Provider):
         return self._cached("fork_help_text", self._read_fork_help)
 
     def _read_fork_help(self) -> Optional[str]:
-        completed = self._capture([self.executable, "exec", "fork", "--help"], timeout=45)
-        if completed is None or completed.returncode != 0:
-            return None
-        return completed.stdout or ""
+        return self._help_output("exec", "fork", "--help")
 
     def resume_mechanism(self) -> str:
         return _FORK_MECHANISM
@@ -421,7 +419,7 @@ class CodexProvider(Provider):
         return self.resume_report(version, trust)
 
     def resume_args(self, session_id: str) -> List[str]:
-        if not isinstance(session_id, str) or not _SESSION_ID_RE.match(session_id):
+        if not isinstance(session_id, str) or not SESSION_ID_RE.match(session_id):
             raise ValueError("a session to resume must be named by a UUID")
         return ["fork", session_id, "-"]
 
@@ -473,7 +471,7 @@ class CodexProvider(Provider):
         """
         if outcome.exit_code == 0 or outcome.timed_out or outcome.stalled:
             return False
-        if any(event.get("type") == "thread.started" for event in _json_events(outcome.stdout)):
+        if any(event.get("type") == "thread.started" for event in json_lines(outcome.stdout)):
             return False
         expected = _MISSING_THREAD + session_id
         return any(expected in line for line in (outcome.stderr or "").splitlines())
@@ -506,6 +504,7 @@ class CodexProvider(Provider):
         options: Optional[Dict[str, Any]] = None,
         idle_timeout: Optional[float] = None,
         resume_session: Optional[str] = None,
+        command_kwargs: Optional[Dict[str, Any]] = None,
     ) -> RunResult:
         """Capture the agent's final message via ``-o`` instead of scraping logs.
 
@@ -545,6 +544,7 @@ class CodexProvider(Provider):
                 options=options,
                 idle_timeout=idle_timeout,
                 resume_session=resume_session,
+                command_kwargs=command_kwargs,
             )
             final = _read_text(last_message_path)
             if final.strip():
@@ -644,22 +644,6 @@ def parse_usage_text(*streams: str) -> Optional[Usage]:
     return None
 
 
-def _json_events(stdout: str) -> List[Dict[str, Any]]:
-    """Every JSON object on its own line, skipping anything unparseable."""
-    events: List[Dict[str, Any]] = []
-    for line in (stdout or "").splitlines():
-        line = line.strip()
-        if not line.startswith("{"):
-            continue
-        try:
-            event = json.loads(line)
-        except ValueError:
-            continue
-        if isinstance(event, dict):
-            events.append(event)
-    return events
-
-
 def _usage_from_events(events: List[Dict[str, Any]]) -> Optional[Usage]:
     """The last ``turn.completed`` event's usage, cache reads kept apart."""
     for event in reversed(events):
@@ -668,23 +652,16 @@ def _usage_from_events(events: List[Dict[str, Any]]) -> Optional[Usage]:
         usage = event.get("usage")
         if not isinstance(usage, dict):
             return None
-        total_input = _count(usage.get("input_tokens"))
-        cached = _count(usage.get("cached_input_tokens"))
+        total_input = token_count(usage.get("input_tokens"))
+        cached = token_count(usage.get("cached_input_tokens"))
         parsed = Usage(
             input_tokens=max(0, total_input - (cached or 0)) if total_input is not None else None,
-            output_tokens=_count(usage.get("output_tokens")),
+            output_tokens=token_count(usage.get("output_tokens")),
             cache_read_tokens=cached,
             source="codex json events",
         )
         return parsed if parsed.measured else None
     return None
-
-
-def _count(value: Any) -> Optional[int]:
-    """A token count, or None. A bool is not a count; neither is a string."""
-    if isinstance(value, bool) or not isinstance(value, int):
-        return None
-    return value if value >= 0 else None
 
 
 def _advertises(help_text: str, option: str) -> bool:
@@ -717,7 +694,7 @@ def _find_rollout(thread_id: str, walk: bool) -> Optional[str]:
     the whole sessions tree after that. The id is a UUID and is escaped
     before it becomes part of a pattern.
     """
-    if not isinstance(thread_id, str) or not _SESSION_ID_RE.match(thread_id):
+    if not isinstance(thread_id, str) or not SESSION_ID_RE.match(thread_id):
         return None
     sessions = os.path.join(codex_home(), "sessions")
     name = "rollout-*-%s.jsonl" % glob.escape(thread_id)
@@ -739,7 +716,7 @@ def _rollout_records(path: str) -> List[Dict[str, Any]]:
     """Every JSON object in a rollout; nothing when it cannot be read."""
     try:
         with open(path, "r", encoding="utf-8", errors="replace") as handle:
-            return _json_events(handle.read())
+            return json_lines(handle.read())
     except OSError:
         return []
 
@@ -786,8 +763,6 @@ def _read_text(path: str) -> str:
 
 
 def _redacted(text: str) -> str:
-    from .base import redact
-
     return redact(text)
 
 

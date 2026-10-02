@@ -7,8 +7,9 @@ Design rules enforced here:
 * reviewers run read-only; a reviewer that edits files is a configuration bug
 * one reviewer failing does not fail the batch
 
-The same fan-out reviews a plan before implementation (``create_design_snapshot``),
-under those same rules and with its own artifacts and round counter.
+The same fan-out reviews a plan before implementation (``design_digest``, then
+``write_design_snapshot``), under those same rules and with its own artifacts
+and round counter.
 
 Deduplication is deliberately split in two. Auto-merge only collapses findings
 whose wording is near-identical, because collapsing two distinct bugs hides one.
@@ -20,21 +21,6 @@ matched on the code they quote, for the orchestrator to confirm during triage.
 
 from __future__ import annotations
 
-import difflib
-import fnmatch
-import hashlib
-import os
-import posixpath
-import re
-import tempfile
-import uuid
-from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Set, Tuple
-
-from . import context as context_mod
-from . import workspace as ws
-from .optimization import DEFAULT_LEVEL, MAX_FINDINGS_BY_LEVEL
-from .providers import MODE_REVIEW, ModelResolutionError, Usage, get_provider
 from .review_common import (
     DEFAULT_EXCLUDE,
     DEFAULT_MAX_FINDINGS,
@@ -49,30 +35,7 @@ from .review_common import (
     TRIAGE_STATUSES,
 )
 from .review_consolidation import (
-    _BACKTICK_RE,
-    _CODEISH_RE,
-    _REPORT_SNAPSHOT_RE,
-    _STOPWORDS,
-    _WORD_RE,
-    _absorb,
-    _branch,
-    _budget_chars,
-    _built_for_another_round,
     _counts,
-    _coverage,
-    _coverage_line,
-    _current_runs,
-    _fingerprint,
-    _line_number,
-    _note_suffix,
-    _over_budget_line,
-    _reviewer_lines,
-    _same_locus,
-    _surrounding,
-    _surrounding_line,
-    _surrounding_names,
-    _surrounding_section,
-    _tally,
     accepted_findings,
     are_duplicates,
     build_consolidation,
@@ -103,12 +66,6 @@ from .review_consolidation import (
 from .review_fanout import (
     BuiltPrompt,
     ReviewerRun,
-    _delivery_of,
-    _forced_consequence,
-    _handover_note,
-    _inline_limit,
-    _snapshot_sha,
-    _stamp,
     build_design_review_prompt,
     build_review_prompt,
     coverage_unverified_error,
@@ -122,18 +79,6 @@ from .review_fanout import (
     snapshot_chars,
 )
 from .review_parsing import (
-    _FIELD_ALIASES,
-    _FIELD_RE,
-    _HEADER_MARKER,
-    _HEADER_RE,
-    _NO_FINDINGS_RE,
-    _SEVERITY_LINE_RE,
-    _join,
-    _normalise_path,
-    _normalise_severity,
-    _parse_block,
-    _split_blocks,
-    _strip_report_header,
     parse_findings,
     unparsed_report_warning,
 )
@@ -145,21 +90,9 @@ from .review_snapshot import (
     PlanScan,
     PlanToken,
     ReviewError,
-    _count_lines,
     _diff,
-    _diff_line_counts,
-    _head,
-    _is_orchestrator_artifact,
-    _maybe_int,
-    _not_under_review,
-    _numstat,
     _parse_numstat,
-    _pathspecs,
     _reviewed_files,
-    _reviewed_tree,
-    _touched_paths,
-    _untracked_paths,
-    _withheld_entry,
     _write_tree,
     added_in_revision,
     carried_findings,

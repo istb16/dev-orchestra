@@ -24,6 +24,10 @@ The public surface covered by that promise is: the configuration schema, the
   (`config set --scope global implementer.options.permission_mode
   bypassPermissions`). See "Role options" in `references/configuration.md`
   (#195).
+- **The search for the project file stops at a worktree's or a submodule's
+  root**, where `.git` is a file (was: only at a `.git` directory, so it went
+  on into the parent directories and could load a `.dev-orchestra.yaml` that
+  belongs to another checkout). A checkout is configured by its own file only.
 
 ### Fixed
 
@@ -31,6 +35,17 @@ The public surface covered by that promise is: the configuration schema, the
   in the global config** when the seat came from the preset's fit on a machine
   with only agy installed. It now names both sources and says how to keep the
   seat off agy.
+- **`jobs cancel` reports a worker stopped only once it has exited.** It now
+  escalates as a timed-out run does (on POSIX, `SIGKILL` after `SIGTERM`) and
+  says the worker may still be running when it is still there. On POSIX it
+  signals the recorded pid only while that pid still leads its own process
+  group, as a worker does, so a reused pid is left alone; and the last-resort
+  kill of the bare pid is skipped once the tree is already gone.
+- **An agy run names its prompt file without keeping it on the adapter**, so
+  two runs sharing one adapter can no longer send each other's prompt.
+- **Claude's resume verification asks a record for the checks the adapter
+  requires**, as Codex's does, and **agy reads a negative token count as
+  unreported**, as Claude and Codex do.
 
 ## [0.16.0] - 2026-10-01
 

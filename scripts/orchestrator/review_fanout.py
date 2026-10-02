@@ -105,21 +105,18 @@ def prompt_delivery(change_text: str, inline_chars: Optional[int] = None) -> str
     name. ``None`` means the shipped default, which is what an explicit
     ``null`` in the configuration means too.
     """
-    return _delivery_of(len(change_text), inline_chars)
+    return delivery_of(len(change_text), inline_chars)
 
 
-def _delivery_of(change_chars: int, inline_chars: Optional[int] = None) -> str:
+def delivery_of(change_chars: int, inline_chars: Optional[int] = None) -> str:
     """The same rule, for a caller that holds a size rather than the text.
 
     Split out for the refusal below, which has to say what forcing the round
-    would get without building a 400,000-character string to ask.
+    would get without building a 400,000-character string to ask. Public for
+    ``review run``, which has to know the delivery before any prompt is
+    built: the surrounding context is budgeted against it.
     """
     return "inline" if change_chars <= _inline_limit(inline_chars) else "file"
-
-
-#: Public for ``review run``, which has to know the delivery before any prompt
-#: is built: the surrounding context is budgeted against it.
-delivery_of = _delivery_of
 
 
 def over_context(change_chars: int, max_chars: int) -> bool:
@@ -208,7 +205,7 @@ def _forced_consequence(delivery_chars: int, inline_chars: Optional[int] = None)
     plan that fits inline is delivered inline however far the pair went over.
     """
     limit = "{:,}".format(_inline_limit(inline_chars))
-    if _delivery_of(delivery_chars, inline_chars) == "file":
+    if delivery_of(delivery_chars, inline_chars) == "file":
         return (
             "The round is then recorded as over budget, and every reviewer comes back "
             "partial: the body is over review.context.inline_chars (%s), so it goes over "
@@ -474,7 +471,6 @@ def run_reviews(
     parallel: bool = True,
     timeout: int = 1800,
     extra_context: str = "",
-    template: Optional[str] = None,
     idle_timeout: Optional[float] = None,
     max_findings: int = DEFAULT_MAX_FINDINGS,
     prompt_for: Optional[Callable[[Dict[str, Any]], BuiltPrompt]] = None,
@@ -552,7 +548,7 @@ def run_reviews(
             built = prompt_for(reviewer)
         else:
             built = build_review_prompt(
-                reviewer, workspace, diff_text, extra_context, template, max_findings, limit, context
+                reviewer, workspace, diff_text, extra_context, None, max_findings, limit, context
             )
         # Every run from here on knows what it was handed, and which snapshot it
         # was handed, failures included: a round is judged on what it sent, not
@@ -677,8 +673,9 @@ def _stamp(meta: Dict[str, Any]) -> str:
     return str(meta.get("sha256", ""))[:12] or "unknown"
 
 
-# Imported last: these modules import this one back, and every use
-# is inside a function, so the names only have to exist by the first call.
+# Imported last: review_snapshot imports this one back, through
+# review_consolidation; review_parsing does not, and sits here with it. Every
+# use is inside a function, so the names only have to exist by the first call.
 from .review_parsing import parse_findings, unparsed_report_warning  # noqa: E402
 from .review_snapshot import (  # noqa: E402
     ReviewError,

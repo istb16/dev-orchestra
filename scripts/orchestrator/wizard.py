@@ -186,9 +186,8 @@ def run(
     prompter.say("AI Development Orchestrator setup")
     prompter.say("")
     prompter.say("Detected CLIs:")
-    for name, label, installed in providers:
+    for name, _label, installed in providers:
         prompter.say("  %-8s %s" % (name + ":", "installed" if installed else "not found"))
-        del label
     for name, reason in failures:
         prompter.say("  %-8s %s" % (name + ":", reason))
     prompter.say("")
@@ -602,13 +601,14 @@ def _approval_required(data: Dict[str, Any]) -> bool:
 
 
 def merged(spec: Dict[str, Any], tier: Dict[str, Any]) -> Dict[str, Any]:
-    """Late import: the config module imports this one for its prompts."""
+    """The role ``spec`` with ``tier`` merged over it, as ``config.merge_tier`` resolves a tier."""
     from .config import merge_tier
 
     return merge_tier(spec, tier)
 
 
 def _describe(spec: Dict[str, Any]) -> str:
+    """provider / family / version, the way `config show` says it."""
     model = spec.get("model") or {}
     version = model.get("version", "latest")
     family = model.get("id") if version == "pinned" else model.get("family", "default")

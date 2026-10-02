@@ -1,4 +1,4 @@
-<!-- translated-from: references/providers.md sha256:50587b6a81a66231f37e1ca4bc4c506ee17ea1f796b8430fe2c61d0fb05c64a2 -->
+<!-- translated-from: references/providers.md sha256:5f2b49eeece6b22d6c2abfc0a7e53ba401e39669af86bf3991b3eaed81a78dc3 -->
 
 > この文書は [references/providers.md](../../../references/providers.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -221,7 +221,7 @@ dev-orchestra run implementer --prompt-file plan.md --extra --permission-mode by
 
 `plan` の実行は `--json` を足し、JSONL のイベントを出力させます（0.156.1 で実測）。セッション id は最初の `thread.started` イベントの `thread_id` で、UUID のときだけ受け付けます。使用量は `turn.completed` から取ります。その `input_tokens` は `cached_input_tokens` を含むので、キャッシュの読み込みを差し引いて `cache_read_tokens` として記録します。`output_tokens` は出力されたままです。`--json` のもとでは散文のフッターは出力されず、イベントストリームを回答とみなすことはありません。`-o` のファイルが空の `plan` の実行は失敗します。`review` と `implement` の実行は変わりません。
 
-Codex は、セッションを fork して継続します。`python scripts/smoke_live.py --provider codex` が確認（`stays read-only`、`resumes read-only`、`forks the session`、`reports a missing session`、`ignores repository config on resume`）に合格し、その版が `providers/codex.py` の `VERIFIED_RESUME` に入ると、その版を信用します（codex-cli 0.156.1、2026-09-30）。同じメジャー版でそれより新しい版は、上の決まりで信用します。スクリプトは `supports_resume` の値にかかわらずこれらの確認を行う（`scripts/smoke_live.py` の `RESUME_PENDING`）ので、adapter で継続を切っても、版の確認は止まりません。組み立てるコマンドは次のとおりです。
+Codex は、セッションを fork して継続します。`python scripts/smoke_live.py --provider codex` が確認（`stays read-only`、`resumes read-only`、`forks the session`、`reports a missing session`、`ignores repository config on resume`）に合格し、その版が `providers/codex.py` の `VERIFIED_RESUME` に入ると、その版を信用します（codex-cli 0.156.1、2026-09-30）。同じメジャー版でそれより新しい版は、上の決まりで信用します。スクリプトは、クラスが `resume_args` を上書きしている adapter すべてに、`supports_resume` の値にかかわらずこれらの確認を行うので、adapter で継続を切っても、版の確認は止まりません。組み立てるコマンドは次のとおりです。
 
 ```bash
 codex exec fork <id> - --skip-git-repo-check --ignore-user-config -c 'sandbox_mode="read-only"' -m <model> --json -o <file>

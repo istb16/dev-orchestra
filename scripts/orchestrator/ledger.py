@@ -386,6 +386,10 @@ class Ledger:
             # format -- and used in no budget calculation: the runtime budget
             # measures delegated work, not how long the ledger has existed,
             # which is the whole of issue #40.
+            #
+            # Both ``*_monotonic`` keys hold ``time.time()``, wall-clock seconds:
+            # another process compares them, which a monotonic clock cannot be
+            # compared across. The names are on disk, so they stay.
             "started_monotonic": now,
             "last_activity_monotonic": now,
             "attempts": {},
@@ -597,6 +601,7 @@ class Ledger:
         entry = {
             "stage": stage,
             "started_at": ws.utcnow(),
+            # Wall-clock seconds despite the name, like the ledger's own key.
             "started_monotonic": time.time(),
             "pid": os.getpid(),
             "deadline_seconds": deadline,

@@ -558,18 +558,7 @@ def cmd_status(args: argparse.Namespace) -> int:
     # here rather than by being refused. Cheap: the snapshot meta is already
     # on disk, and nothing is delegated to work it out.
     meta = ws.read_json(workspace.snapshot_meta_path, {}) or {}
-    plan = opt_mod.decide(
-        loaded.optimization_settings(),
-        settings,
-        _risk_paths(meta),
-        int(meta.get("lines_added") or 0) + int(meta.get("lines_deleted") or 0),
-        workspace.last_status("test"),
-        len(loaded.reviewers()),
-        reviewed_files=len(meta.get("files") or []),
-        panel=loaded.reviewers(),
-        carried=review_mod.carried_findings(workspace, meta),
-        condition_paths=_condition_paths(meta),
-    )
+    plan = _round_plan(loaded, settings, workspace, meta, loaded.reviewers())
     if plan.gate == opt_mod.GATE_REFUSE:
         reasons.append("the last recorded test run failed; fix it before reviewing")
 
@@ -937,5 +926,5 @@ def cmd_summary(args: argparse.Namespace) -> int:
 
 # Imported last: these modules import this one back, and every use
 # is inside a function, so the names only have to exist by the first call.
-from .cli_review import _condition_paths, _design_decision, _ledger, _risk_paths  # noqa: E402
+from .cli_review import _design_decision, _ledger, _round_plan  # noqa: E402
 from .cli_state import _REFUSAL_CAUSE  # noqa: E402

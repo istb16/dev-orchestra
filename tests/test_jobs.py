@@ -137,6 +137,68 @@ class TestCancel(JobCase):
             if child.poll() is None:  # pragma: no cover - safety net
                 child.kill()
 
+    def test_a_worker_still_there_after_the_kill_is_not_reported_stopped(self):
+        """The kill is confirmed, not assumed: every signal is sent and lands
+        nowhere, and the job says the worker may still be running."""
+        import signal
+
+        from orchestrator import execution
+
+        self.record("a-1", pid=4242, status="running")
+        sent = []
+        with (
+            mock.patch.object(execution, "pid_alive", lambda pid: True),
+            mock.patch.object(execution, "KILL_GRACE_SECONDS", 0.2),
+            mock.patch.object(
+                execution.subprocess, "run", lambda args, **kwargs: sent.append(("run", args[0]))
+            ),
+            mock.patch.object(execution.os, "kill", lambda pid, sig: sent.append(("kill", sig))),
+            mock.patch.object(execution.os, "getpgid", lambda pid: pid, create=True),
+            mock.patch.object(
+                execution.os, "killpg", lambda pgid, sig: sent.append(("killpg", sig)), create=True
+            ),
+        ):
+            job = jobs_mod.cancel(self.workspace, "a-1")
+        self.assertEqual(job["status"], "cancelled")
+        self.assertEqual(job["error"], "cancelled by request (the worker may still be running)")
+        # It escalates like a timed-out run: the whole tree, then the pid alone.
+        if execution.IS_WINDOWS:
+            self.assertEqual(sent, [("run", "taskkill"), ("kill", signal.SIGTERM)])
+        else:
+            self.assertEqual(
+                sent, [("killpg", signal.SIGTERM), ("killpg", signal.SIGKILL), ("kill", signal.SIGKILL)]
+            )
+
+    def test_a_worker_that_exits_on_the_first_signal_is_reported_plainly(self):
+        import signal
+
+        from orchestrator import execution
+
+        self.record("a-1", pid=4242, status="running")
+        sent = []
+        alive = [True]
+
+        def stop(*args, **kwargs):
+            sent.append(args)
+            alive[0] = False
+
+        with (
+            mock.patch.object(execution, "pid_alive", lambda pid: alive[0]),
+            mock.patch.object(execution, "KILL_GRACE_SECONDS", 0.2),
+            mock.patch.object(execution.subprocess, "run", stop),
+            mock.patch.object(execution.os, "kill", stop),
+            mock.patch.object(execution.os, "getpgid", lambda pid: pid, create=True),
+            mock.patch.object(execution.os, "killpg", stop, create=True),
+        ):
+            job = jobs_mod.cancel(self.workspace, "a-1")
+        self.assertEqual(job["status"], "cancelled")
+        self.assertEqual(job["error"], "cancelled by request")
+        if execution.IS_WINDOWS:
+            self.assertEqual(len(sent), 1)
+            self.assertEqual(sent[0][0][0], "taskkill")
+        else:
+            self.assertEqual(sent, [(4242, signal.SIGTERM)])
+
     def test_cancelling_a_job_whose_worker_is_already_gone_says_abandoned(self):
         """Reporting "cancelled" would claim credit for something that already happened."""
         self.record("a-1", pid=999_999, status="running")

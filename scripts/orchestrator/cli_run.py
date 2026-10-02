@@ -23,6 +23,7 @@ from .providers import (
     MODE_REVIEW,
     READ_ONLY_MODES,
     REFUSED_ENFORCEMENT,
+    SESSION_ID_RE,
     WARNED_ENFORCEMENT,
     ModelResolutionError,
     get_provider,
@@ -180,7 +181,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             _err("--tier applies to %s, not to a reviewer" % ", ".join(config_mod.KNOWN_ROLES))
             return 2
         else:
-            reviewer_index, spec = _reviewer_spec(loaded, role)
+            reviewer_index, spec = config_mod.find_reviewer(loaded.data, role)
     except config_mod.ConfigError as exc:
         _err(str(exc))
         return 2
@@ -642,13 +643,13 @@ def _refuse_unless_approved(
     # The whole refusal, not its first line: the instruction to ask the user
     # is the part a worker's reader most needs, and the job is all it has.
     if args.job_file:
-        _record_worker_refusal(args, workspace, role, "\n".join(lines))
+        _record_worker_refusal(args, "\n".join(lines))
     for line in lines:
         _err(line)
     return approval_mod.EXIT_APPROVAL_REQUIRED
 
 
-def _record_worker_refusal(args: argparse.Namespace, workspace: ws.Workspace, role: str, error: str) -> None:
+def _record_worker_refusal(args: argparse.Namespace, error: str) -> None:
     """Record a worker's refusal in its job record, the only place it can say so."""
     jobs_mod.finish(args.job_file, "failed", error=error)
 
@@ -687,9 +688,6 @@ _RESUME_REASONS = (
     _RESUME_REJECTED,
 )
 _RESUME_NO_BUDGET = _RESUME_REJECTED + "; running fresh would spend an attempt"
-
-#: A session id goes on a command line; only a UUID may.
-_SESSION_ID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 
 
 def _resume_refusal(args: argparse.Namespace, role: str, mode: str, workspace: ws.Workspace) -> Optional[str]:
@@ -765,7 +763,8 @@ def _resume_candidate(
     session_id = last.get("session_id")
     if not session_id:
         return fresh("the last architect run is not resumable: it has no session id")
-    if not isinstance(session_id, str) or not _SESSION_ID_RE.match(session_id):
+    # A session id goes on a command line; only a UUID may.
+    if not isinstance(session_id, str) or not SESSION_ID_RE.match(session_id):
         return fresh("the last architect run is not resumable: its session id is not a UUID")
     if last.get("mode") != MODE_PLAN:
         return fresh("the last architect run is not resumable: its recorded mode is not plan")
@@ -819,12 +818,8 @@ def _announce_resume(session_id: Optional[str], detail: Dict[str, Any], note: st
         _err("note: %s" % note)
 
 
-def _reviewer_spec(loaded: config_mod.LoadedConfig, selector: str) -> Tuple[int, Dict[str, Any]]:
-    return config_mod.find_reviewer(loaded.data, selector)
-
-
-# Imported last: these modules import this one back, and every use
-# is inside a function, so the names only have to exist by the first call.
+# Imported last, like the other command modules' cross-imports. None of these
+# modules imports this one, so no cycle needs it; every use is inside a function.
 from .cli_config import _describe_spec  # noqa: E402
 from .cli_review import _ledger, _refuse_if_exhausted  # noqa: E402
 from .cli_state import _detached_argv  # noqa: E402
