@@ -19,6 +19,7 @@ from orchestrator import cli, doctor, execution, miniyaml, presets
 from orchestrator import config as config_mod
 from orchestrator import review as review_mod
 from orchestrator.providers.agy import AgyProvider
+from orchestrator.providers.base import Detection, Provider
 from orchestrator.providers.mock import MockProvider
 
 AGY_MODELS = (
@@ -79,14 +80,21 @@ class _GateCase(IsolatedCase):
 
         execution.execute = execute
 
-    def unenforced_mock(self):
-        """Mock, reporting ``unenforced`` from a report that is not static --
+    def unenforced_mock(self, status="unenforced", detail="measured to write"):
+        """Mock, reporting ``status`` from a report that is not static --
         as a user adapter that reads ``--help`` would."""
-        report = {"status": "unenforced", "mechanism": "none", "detail": "measured to write"}
+        report = {"status": status, "mechanism": "none", "detail": detail}
         self.assertFalse(MockProvider.static_enforcement)
         original = MockProvider.read_only_enforcement
         self.addCleanup(setattr, MockProvider, "read_only_enforcement", original)
         setattr(MockProvider, "read_only_enforcement", lambda provider: dict(report))
+
+    def used(self, role="architect"):
+        return json.loads(run_cli("budget", "show", "--json")[1])["budgets"][role]["used"]
+
+    def events(self, stage="architect"):
+        state = self.cli_workspace().read_state()
+        return [event for event in state.get("events") or [] if event.get("stage") == stage]
 
 
 AGY_ROLE = "  provider: agy\n  model:\n    family: default\n"
@@ -252,6 +260,8 @@ class TestLiveUnenforcedFromTheProject(_GateCase):
         code, _, err = run_cli("run", "architect", "--prompt", "x")
         self.assertEqual(code, 2)
         self.assertIn("architect: provider mock is set in the project config", err)
+        self.assertEqual(self.used(), 0)
+        self.assertEqual(self.events(), [])
 
     def test_the_same_seat_from_the_global_file_runs_warned(self):
         self.unenforced_mock()
@@ -278,6 +288,92 @@ class TestLiveUnenforcedFromTheProject(_GateCase):
         _, out, err = run_cli("review", "run")
         self.assertIn("reviewers on mock are taken only from the global config", out + err)
         self.assertEqual(calls, [], "a refused reviewer must not run")
+
+
+class TestRunChecksEnforcementInOrder(_GateCase):
+    """Where `run` reads the enforcement report, relative to what else it does."""
+
+    def seat(self, layer):
+        for path in (config_mod.global_config_path(), self.project_file()):
+            if os.path.exists(path):
+                os.remove(path)
+        write = self.write_global if layer == "global" else self.write_project
+        write("architect:\n  provider: mock\n")
+
+    def test_the_command_is_printed_before_enforcement_is_checked(self):
+        asked = []
+
+        def counted():
+            # unenforced_mock restores the original in its own cleanup.
+            reported = MockProvider.read_only_enforcement
+
+            def recorded(provider):
+                asked.append(provider)
+                return reported(provider)
+
+            setattr(MockProvider, "read_only_enforcement", recorded)
+
+        for layer, report in (("global", ("unsupported", "X")), ("global", ()), ("project", ())):
+            with self.subTest(layer=layer, report=report):
+                self.unenforced_mock(*report)
+                counted()
+                self.seat(layer)
+                code, out, err = run_cli("run", "architect", "--print-command")
+                self.assertEqual(code, 0, err)
+                self.assertTrue(out.startswith("mock "), out)
+                self.assertNotIn("warning:", err)
+                self.assertNotIn("refused", err)
+                self.assertEqual(asked, [])
+        self.seat("global")
+        code, _, err = run_cli("run", "architect", "--print-command", "--prompt-file", "missing.md")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(asked, [])
+        # The wrapper is live: a real run asks it.
+        code, _, err = run_cli("run", "architect", "--prompt", "x")
+        self.assertTrue(asked, err)
+
+    def test_a_refused_report_is_refused_by_run(self):
+        self.unenforced_mock("unsupported", "X")
+        self.write_global("architect:\n  provider: mock\n")
+        code, _, err = run_cli("run", "architect", "--prompt", "x")
+        self.assertEqual(code, 2)
+        self.assertIn("architect: refused -- X", err)
+        self.assertEqual(self.used(), 0)
+        self.assertEqual(self.events(), [])
+
+    def test_a_cli_that_is_not_installed_is_not_refused(self):
+        self.unenforced_mock("unsupported", "X")
+        asked = []
+        reported = MockProvider.read_only_enforcement
+
+        def recorded(provider):
+            asked.append(provider)
+            return reported(provider)
+
+        setattr(MockProvider, "read_only_enforcement", recorded)
+        for name, value in (
+            ("detect", lambda provider: Detection(False, error="mock is not installed")),
+            # The mock's own launch never looks for its CLI; the base one does.
+            ("_launch", Provider._launch),
+        ):
+            self.addCleanup(setattr, MockProvider, name, getattr(MockProvider, name))
+            setattr(MockProvider, name, value)
+        self.write_global("architect:\n  provider: mock\n")
+        code, _, err = run_cli("run", "architect", "--prompt", "x")
+        # 127 is the run's own exit code; `run` reports it and exits 1.
+        self.assertEqual(code, 1)
+        self.assertIn("architect failed (exit 127): mock is not installed", err)
+        self.assertNotIn("refused --", err)
+        self.assertEqual(asked, [])
+
+    def test_the_warning_is_said_before_the_prompt_is_read(self):
+        self.unenforced_mock()
+        self.write_global("architect:\n  provider: mock\n")
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err), self.assertRaises(SystemExit) as raised:
+            cli.main(["run", "architect", "--prompt-file", "missing.md"])
+        self.assertIn("prompt file does not exist", str(raised.exception))
+        self.assertIn("read-only is NOT enforced by mock", err.getvalue())
 
 
 class TestEnforcementWarningIsSaidOnce(_GateCase):

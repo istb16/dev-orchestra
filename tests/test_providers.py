@@ -607,6 +607,74 @@ class TestCodexReadOnlyArguments(IsolatedCase):
                 self.assertIn("read-only codex runs accept no raw arguments", problems[0])
 
 
+class TestReadOnlyArgProblems(IsolatedCase):
+    """The one list of raw-argument problems, and the refusal built from it."""
+
+    def setUp(self):
+        super().setUp()
+        self.provider = CodexProvider()
+        self.options = {"args": ["--full-auto"]}
+        self.extra = ["-s", "workspace-write"]
+
+    def test_options_args_come_before_extra(self):
+        for mode in base.READ_ONLY_MODES:
+            with self.subTest(mode=mode):
+                problems = self.provider.read_only_arg_problems(mode, self.extra, self.options)
+                self.assertEqual(
+                    problems,
+                    self.provider.refused_read_only_args(["--full-auto"], "options.args")
+                    + self.provider.refused_read_only_args(self.extra, "--extra"),
+                )
+                self.assertIn("in options.args", problems[0])
+                self.assertIn("in --extra", problems[-1])
+
+    def test_only_extra_offends_with_no_options(self):
+        # The common path: a seat with no options passes None.
+        expected = self.provider.refused_read_only_args(self.extra, "--extra")
+        self.assertTrue(expected)
+        for mode in base.READ_ONLY_MODES:
+            for options in (None, {}, {"args": []}):
+                with self.subTest(mode=mode, options=options):
+                    problems = self.provider.read_only_arg_problems(mode, self.extra, options)
+                    self.assertEqual(problems, expected)
+                    self.assertTrue(all("in --extra" in problem for problem in problems))
+            with self.subTest(mode=mode, options="omitted"):
+                self.assertEqual(self.provider.read_only_arg_problems(mode, self.extra), expected)
+
+    def test_only_options_offend_with_no_extra(self):
+        expected = self.provider.refused_read_only_args(["--full-auto"], "options.args")
+        self.assertTrue(expected)
+        for mode in base.READ_ONLY_MODES:
+            for extra in ([], ()):
+                with self.subTest(mode=mode, extra=extra):
+                    problems = self.provider.read_only_arg_problems(mode, extra, self.options)
+                    self.assertEqual(problems, expected)
+                    self.assertTrue(all("in options.args" in problem for problem in problems))
+            with self.subTest(mode=mode, extra="omitted"):
+                self.assertEqual(self.provider.read_only_arg_problems(mode, options=self.options), expected)
+
+    def test_the_refusal_says_the_same_problems_on_one_line(self):
+        for mode in base.READ_ONLY_MODES:
+            with self.subTest(mode=mode):
+                problems = self.provider.read_only_arg_problems(mode, self.extra, self.options)
+                refusal = present(self.provider.read_only_refusal(mode, self.extra, self.options))
+                self.assertEqual(refusal.stderr, "; ".join(problems))
+
+    def test_clean_arguments_have_no_problems(self):
+        for mode in base.READ_ONLY_MODES:
+            for options in (None, {}):
+                with self.subTest(mode=mode, options=options):
+                    self.assertEqual(self.provider.read_only_arg_problems(mode, [], options), [])
+                    self.assertIsNone(self.provider.read_only_refusal(mode, [], options))
+            with self.subTest(mode=mode, arguments="omitted"):
+                self.assertEqual(self.provider.read_only_arg_problems(mode), [])
+                self.assertIsNone(self.provider.read_only_refusal(mode))
+
+    def test_an_implement_run_is_not_held_to_the_allowlist(self):
+        self.assertEqual(self.provider.read_only_arg_problems("implement", self.extra, self.options), [])
+        self.assertIsNone(self.provider.read_only_refusal("implement", self.extra, self.options))
+
+
 class TestDescribeRawArgument(unittest.TestCase):
     def test_naming_rules(self):
         describe = base.Provider.describe_raw_argument

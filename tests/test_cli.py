@@ -10,7 +10,7 @@ import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from typing import Any, ClassVar, Dict, Optional
 
-from helpers import CLAUDE_HELP, CLAUDE_HELP_NO_FORK, CLAUDE_HELP_OLD, IsolatedCase, has_git
+from helpers import CLAUDE_HELP, CLAUDE_HELP_NO_FORK, CLAUDE_HELP_OLD, TEST_WORKFLOW, IsolatedCase, has_git
 
 from orchestrator import cli, providers
 from orchestrator import config as config_mod
@@ -1177,9 +1177,18 @@ class TestReadOnlyRuns(IsolatedCase):
     def write_project(self, text):
         self.write(".dev-orchestra.yaml", "version: 1\n" + text)
 
+    def tree(self):
+        walked = os.walk(self.project)
+        return sorted(os.path.join(top, name) for top, dirs, files in walked for name in dirs + files)
+
     def test_implement_mode_is_refused_for_a_read_only_role(self):
-        code, _, err = run_cli("run", "architect", "--mode", "implement", "--prompt", "x")
+        before = self.tree()
+        code, out, err = run_cli("run", "architect", "--mode", "implement", "--prompt", "x")
+        # Before `used()`, which opens the workspace itself.
+        self.assertEqual(self.tree(), before)
+        self.assertFalse(os.path.exists(ws.Workspace(self.project, workflow=TEST_WORKFLOW).state_path))
         self.assertEqual(code, 2)
+        self.assertEqual(out, "")
         self.assertIn("--mode implement is not accepted", err)
         self.assertEqual(self.used(), 0)
 
@@ -1200,6 +1209,19 @@ class TestReadOnlyRuns(IsolatedCase):
         self.assertEqual(code, 2)
         self.assertIn("'--tools'", err)
         self.assertIn("in --extra", err)
+        self.assertEqual(self.used(), 0)
+
+    def test_global_args_and_extra_are_each_refused_on_their_own_line(self):
+        run_cli("config", "set", "architect.options.args", '["--restricted"]')
+        extra = ["--extra", "--dangerously-skip-permissions"]
+        code, _, err = run_cli("run", "architect", "--prompt", "x", *extra)
+        self.assertEqual(code, 2)
+        lines = [line for line in err.splitlines() if line.startswith("architect: refused -- ")]
+        self.assertEqual(len(lines), 2, err)
+        self.assertIn("'--restricted'", lines[0])
+        self.assertIn("in options.args", lines[0])
+        self.assertIn("'--dangerously-skip-permissions'", lines[1])
+        self.assertIn("in --extra", lines[1])
         self.assertEqual(self.used(), 0)
 
     def test_a_refused_value_is_never_printed(self):
@@ -1223,10 +1245,13 @@ class TestReadOnlyRuns(IsolatedCase):
 
     def test_project_args_are_refused_even_when_they_are_add_dir(self):
         self.write_project('architect:\n  options:\n    args: ["--add-dir", "../x"]\n')
-        code, _, err = run_cli("run", "architect", "--prompt", "x")
+        code, _, err = run_cli("run", "architect", "--prompt", "x", "--extra", "--tools", "default")
         self.assertEqual(code, 2)
         self.assertIn("set in the project config (.dev-orchestra.yaml)", err)
         self.assertNotIn("../x", err)
+        # The first check that refuses is the only one said.
+        self.assertEqual(err.count("refused --"), 1, err)
+        self.assertNotIn("in --extra", err)
         self.assertEqual(self.used(), 0)
         self.assertEqual(run_cli("run", "architect", "--print-command")[0], 2)
 
@@ -1701,6 +1726,7 @@ class TestOutputGuard(IsolatedCase):
                 timed_out=fields.get("timed_out", False),
                 stalled=fields.get("stalled", False),
                 idle_for=fields.get("idle_for", 0.0),
+                orphans_possible=fields.get("orphans_possible", False),
             )
 
         original = mock_mod.MockProvider.run
@@ -1776,6 +1802,48 @@ class TestOutputGuard(IsolatedCase):
         self.assertEqual(read_file(self.target), self.PLAN)
         self.assertIn("boom", err)
         self.assertIn("half a plan", err)
+
+    def test_a_refused_write_in_a_worker_is_reported_in_order(self):
+        """The outcome first, then the refusal, then the second job update."""
+        from unittest import mock
+
+        from orchestrator import jobs as jobs_mod
+
+        os.makedirs(self.rejected)
+        self.patch_run(ok=False, exit_code=1, stdout="half a plan\n", stderr="boom", orphans_possible=True)
+        workspace = self.cli_workspace()
+        jobs_mod.write_job(workspace, {"id": "w-1", "stage": "implementer", "status": "running"})
+        job_file = jobs_mod.job_path(workspace, "w-1")
+        out, err = io.StringIO(), io.StringIO()
+        finished = []
+        finish = jobs_mod.finish
+
+        def recording(*args, **kwargs):
+            finished.append((args, kwargs, len(err.getvalue())))
+            finish(*args, **kwargs)
+
+        argv = ["run", "implementer", "--prompt", "go", "--output", self.target, "--job-file", job_file]
+        with mock.patch.object(jobs_mod, "finish", recording), redirect_stdout(out), redirect_stderr(err):
+            code = cli.main(argv)
+        self.assertEqual(code, 1)
+        self.assertEqual(len(finished), 2, finished)
+        (first_args, first, _), (second_args, second, printed) = finished
+        self.assertEqual(first_args[1], "failed")
+        self.assertEqual(first["output"], "half a plan\n")
+        self.assertEqual(first["error"], "boom")
+        self.assertEqual(second_args[1], "failed")
+        detail = {"output_written": False, "output_target": self.target, "rejected_file": None}
+        self.assertEqual(second, {"detail": detail})
+        text = err.getvalue()
+        failed = text.index("implementer failed (exit 1): boom")
+        refused = text.index("produced nothing usable")
+        unsaved = text.index("half a plan")
+        orphans = text.index("may have left orphans")
+        self.assertLess(failed, refused)
+        self.assertLess(refused, unsaved)
+        self.assertLess(unsaved, orphans)
+        self.assertLess(unsaved, printed)
+        self.assertLessEqual(printed, orphans)
 
     def test_a_run_without_output_still_prints_what_it_produced(self):
         """The guard protects a file from a bad result; a bare run has none."""
