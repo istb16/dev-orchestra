@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import os
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple, Union
 
 from . import approval as approval_mod
 from . import config as config_mod
@@ -295,6 +295,70 @@ def _measurement_block(
     }
 
 
+def _refuse_incremental_measurement(override: Optional[str], meta: Dict[str, Any]) -> Optional[int]:
+    """``--surrounding`` on an incremental round. Nothing without the flag."""
+    if not (override and meta.get("incremental_from")):
+        return None
+    # Refused on the first run as well as the second: the premise section
+    # is built from the consolidated report of the moment a run starts, and
+    # the first run rewrites it, so no pair on this snapshot would differ
+    # in the context alone.
+    _err(
+        "refusing to run: --surrounding %s on an incremental round (fix diff since %s). The prompt of "
+        "a re-review carries the accepted findings of the moment it runs, so two runs on it would "
+        "differ in more than the surrounding context. Measure on a whole-change snapshot: the first "
+        "round of a change, or a round after a clean or all-rejected review."
+        % (override, meta.get("incremental_from"))
+    )
+    return 2
+
+
+def _refuse_unmeasurable(
+    override: Optional[str], adoption: context_mod.Adoption, workspace: ws.Workspace, meta: Dict[str, Any]
+) -> Optional[int]:
+    """A ``--surrounding`` run that would measure nothing or lose a decision. Nothing without it."""
+    # Before anything is charged: an asked-for measurement that would measure
+    # nothing, or that would throw away a decision made on this snapshot, is
+    # refused rather than billed. Without the flag neither check runs.
+    if override == "enclosing" and not adoption.adopted:
+        _err(
+            "refusing to run: --surrounding enclosing was asked for but nothing would be adopted (%s); "
+            "the run would measure nothing and still bill the whole panel." % adoption.reason
+        )
+        if adoption.reason == context_mod.NOT_FROZEN:
+            _err("Run `review snapshot --surrounding enclosing` first.")
+        else:
+            _err('See references/limits.md, "Measuring what surrounding context does".')
+        return 2
+    # On the snapshot alone, not on ``rerun``: a lineage change between the two
+    # runs makes the second no rerun, but it still rebuilds the same findings.
+    previous = _same_snapshot_report(workspace, meta) if override is not None else {}
+    if previous:
+        changed = _triage_changed_since_build(previous)
+        if changed:
+            _err(
+                "refusing to run: --surrounding %s would rebuild the findings of a snapshot that has been "
+                "triaged since its last run (%d of %d with a new decision or note), and a decision on a "
+                "finding that does not come back would be lost. Take the pair before triage, or take a new "
+                "snapshot." % (override, len(changed), len(previous.get("findings") or []))
+            )
+            return 2
+    return None
+
+
+def _record_triage_at_build(data: Dict[str, Any], override: Optional[str], rerun: bool) -> None:
+    """Put the ``measurement`` record on a ``--surrounding`` run's report. Nothing without the flag."""
+    if not override:
+        return
+    # The triage as this run built it, so the second run of a pair can tell
+    # a decision made on this snapshot from one carried in with a finding.
+    data["measurement"] = {
+        "surrounding": override,
+        "rerun": rerun,
+        "triage_at_build": {entry["key"]: _triage_record(entry) for entry in data["findings"]},
+    }
+
+
 def _adoption_line(adoption: context_mod.Adoption) -> str:
     """``review run``'s one line on the surrounding context it handed over."""
     record = adoption.record()
@@ -308,6 +372,23 @@ def _adoption_line(adoption: context_mod.Adoption) -> str:
     if adoption.trimmed:
         line += "; %d left out (%s)" % (len(adoption.trimmed), context_mod.trim_reasons(record))
     return line
+
+
+def _surrounding_run_lines(
+    adoption: context_mod.Adoption, override: Optional[str], context_on: bool
+) -> List[str]:
+    """``review run``'s Surrounding line: when the context was on, or when the flag turned it off."""
+    if context_on:
+        line = "Surrounding context: %s" % _adoption_line(adoption)
+        if override:
+            line += " (--surrounding enclosing for this run)"
+        return [line]
+    if override:
+        return [
+            "Surrounding context: none (--surrounding none for this run; "
+            "review.context.surrounding unchanged)"
+        ]
+    return []
 
 
 def _reviewer_line(run: review_mod.ReviewerRun) -> str:
@@ -333,6 +414,248 @@ def _panel_summary(ok: int, failed: int, partial: int) -> str:
     if partial:
         line += ", %d partial (change handed over as a file)" % partial
     return line
+
+
+class _ReviewKind(NamedTuple):
+    """What a code round and a design round say and record differently."""
+
+    #: The ledger and run-log stage.
+    stage: str
+    #: What the refusals call the round.
+    label: str
+    #: The setting the round budget is read from.
+    budget_setting: str
+    #: What the round that reached the limit still gets.
+    leftover: str
+    #: What the identical-findings note calls a round, and what came between two.
+    round_word: str
+    change_word: str
+    #: What a stale report has no report for.
+    subject: str
+    #: Put before a reviewer's id in its usage label.
+    usage_prefix: str
+
+
+_CODE = _ReviewKind(
+    stage="review",
+    label="review",
+    budget_setting="review.max_review_iterations",
+    leftover="fix and re-test",
+    round_word="round",
+    change_word="fix",
+    subject="snapshot",
+    usage_prefix="",
+)
+
+_DESIGN = _ReviewKind(
+    stage="design_review",
+    label="design review",
+    budget_setting="review.design.max_iterations",
+    leftover="revision",
+    round_word="design round",
+    change_word="revision",
+    subject="plan",
+    usage_prefix="design:",
+)
+
+
+def _only_reviewers(configured: List[Dict[str, Any]], only: List[str]) -> List[Dict[str, Any]]:
+    """The configured reviewers ``--only`` names, by id or by role."""
+    wanted = set(only)
+    return [r for r in configured if r.get("id") in wanted or r.get("role") in wanted]
+
+
+def _refuse_unmatched_only(only: List[str]) -> int:
+    _err("--only %s matched no configured reviewer" % " ".join(only))
+    return 2
+
+
+def _refuse_if_rounds_spent(
+    kind: _ReviewKind, iteration: int, max_iterations: int, force: bool
+) -> Optional[int]:
+    """The round budget, refused in ``kind``'s words. Each caller reads its own setting."""
+    if iteration <= max_iterations or force:
+        return None
+    _err(
+        "refusing to run %s round %d: the budget is %d rounds (%s)."
+        % (kind.label, iteration, max_iterations, kind.budget_setting)
+    )
+    _err(
+        "The round that reached the limit still gets its %s; only the re-review is refused. "
+        "Report what is still open, or pass --force to override." % kind.leftover
+    )
+    return ledger_mod.EXIT_BUDGET_EXHAUSTED
+
+
+def _open_ledger(args: argparse.Namespace, workspace: ws.Workspace) -> ledger_mod.Ledger:
+    """The ledger a round is charged to, with its stalls cleared for the runtime refusal to read."""
+    book = _ledger(args, workspace)
+    # Before the refusal decides: a stage whose process is gone has no charge
+    # to answer for, and its absence is part of what the runtime budget says.
+    book.clear_stalls()
+    return book
+
+
+class _RoundContext(NamedTuple):
+    """What every step of one review round reads, once it is allowed to run."""
+
+    args: argparse.Namespace
+    loaded: config_mod.LoadedConfig
+    settings: Dict[str, Any]
+    workspace: ws.Workspace
+    book: ledger_mod.Ledger
+    kind: _ReviewKind
+    iteration: int
+
+
+class _PanelRun(NamedTuple):
+    """A panel that ran: its in-flight token, its runs, and the warnings already printed."""
+
+    token: str
+    runs: List[review_mod.ReviewerRun]
+    warned: Dict[str, str]
+
+
+def _run_panel(
+    ctx: _RoundContext,
+    reviewers: List[Dict[str, Any]],
+    *,
+    max_findings: int,
+    over_budget: bool,
+    budget_chars: int,
+    inline_chars: int,
+    extra_context: str = "",
+    prompt_for: Optional[Callable[[Dict[str, Any]], review_mod.BuiltPrompt]] = None,
+    surrounding: Optional[context_mod.Adoption] = None,
+) -> Union[int, _PanelRun]:
+    """Open the round's ledger entry and run the panel, or the exit code of a round that could not."""
+    args, settings, book = ctx.args, ctx.settings, ctx.book
+    batch_timeout = args.timeout or int(settings.get("timeout_seconds", 1800))
+    token = book.begin(
+        ctx.kind.stage,
+        {"iteration": ctx.iteration, "reviewers": [str(r.get("id")) for r in reviewers]},
+        deadline=batch_timeout,
+    )
+    idle_timeout = args.idle_timeout
+    if idle_timeout is None:
+        idle_timeout = settings.get("idle_timeout_seconds")
+    warned = _warn_unenforced(ctx.loaded, reviewers)
+    try:
+        runs = review_mod.run_reviews(
+            reviewers,
+            ctx.workspace,
+            parallel=not args.sequential and bool(settings.get("parallel", True)),
+            timeout=batch_timeout,
+            extra_context=extra_context,
+            idle_timeout=idle_timeout,
+            max_findings=max_findings,
+            over_budget=over_budget,
+            budget_chars=budget_chars,
+            # The same number to both: `prompt_for` decides the delivery and
+            # `run_reviews` records and words it, and a round that took them
+            # from two places would sooner or later take two different ones.
+            inline_chars=inline_chars,
+            prompt_for=prompt_for,
+            surrounding=surrounding,
+            refusals=_reviewer_refusals(ctx.loaded, reviewers),
+        )
+    except review_mod.ReviewError as exc:
+        book.end(token, "failed", {"error": str(exc)})
+        _err(str(exc))
+        return 2
+    return _PanelRun(token, runs, warned)
+
+
+def _account_runs(ctx: _RoundContext, panel: _PanelRun) -> List[Dict[str, Any]]:
+    """Record what each run used and say what its adapter said; the runs as recorded."""
+    for run in panel.runs:
+        if run.invoked:
+            # Prefixed, so a reviewer's design cost never merges into its code
+            # cost in `tokens show` -- the same reasoning as `role:tier`.
+            label = ctx.kind.usage_prefix + str(run.reviewer.get("id") or "reviewer")
+            ctx.book.record_usage(ctx.kind.stage, run.usage.to_dict(), label=label)
+    _report_run_warnings(panel.runs, panel.warned)
+    return [run.to_dict() for run in panel.runs]
+
+
+def _round_repeats(ctx: _RoundContext, data: Dict[str, Any], rerun: bool = False) -> int:
+    """How many rounds in a row have produced these findings."""
+    # The second run of a pair is the same snapshot reviewed again on purpose,
+    # not a fix that changed nothing, so it registers no signature: the pair's
+    # signature is its first run's.
+    if rerun:
+        return ctx.book.repeats(ctx.kind.stage)
+    return ctx.book.register_signature(ctx.kind.stage, review_mod.findings_signature(data))
+
+
+def _end_round(
+    ctx: _RoundContext, token: str, detail: Dict[str, Any], runs: List[review_mod.ReviewerRun]
+) -> None:
+    """Close the round's ledger entry with ``detail``, charged for the panel."""
+    ctx.book.end(
+        token,
+        "ok",
+        detail,
+        # Summed over the panel, not the wall clock of the batch: three
+        # reviewers running in parallel for 25 minutes delegated 75 minutes of
+        # execution, and the budget is on delegated execution. Less what each
+        # run spent with the machine asleep. The panel is the unit that was
+        # delegated.
+        charged_seconds=sum(run.duration - run.suspended for run in runs),
+        suspended_seconds=sum(run.suspended for run in runs),
+    )
+
+
+def _round_notes(ctx: _RoundContext, repeats: int, stale: List[str], rerun: bool = False) -> None:
+    """What the round found out about itself: nothing changed, or a report was left out."""
+    kind = ctx.kind
+    if repeats > 1 and not rerun:
+        _err(
+            "note: %s %d produced the same findings as the previous round -- "
+            "the last %s changed nothing that the reviewers can see."
+            % (kind.round_word, ctx.iteration, kind.change_word)
+        )
+    for reviewer_id in stale:
+        _err(
+            "note: %s has no report for this %s; its earlier report was ignored" % (reviewer_id, kind.subject)
+        )
+
+
+def _print_round(
+    ctx: _RoundContext,
+    runs: List[review_mod.ReviewerRun],
+    run_dicts: List[Dict[str, Any]],
+    data: Dict[str, Any],
+    payload_extra: Dict[str, Any],
+    extra_lines: Sequence[str] = (),
+) -> int:
+    """The round's report, as JSON or as text, and the exit code it ends with.
+
+    ``payload_extra`` follows the keys every round has, in its own order, and
+    ``extra_lines`` goes between the tally and the report's path.
+    """
+    ok, failed, partial = review_mod.summarise_runs(runs)
+    if ctx.args.json:
+        payload: Dict[str, Any] = {
+            "ok": ok,
+            "failed": failed,
+            "partial": partial,
+            "reviewers": run_dicts,
+            "counts": data["counts"],
+        }
+        payload.update(payload_extra)
+        _emit_json(payload)
+    else:
+        for run in runs:
+            _out(_reviewer_line(run))
+        _out("")
+        _out(_panel_summary(ok, failed, partial))
+        for line in extra_lines:
+            _out(line)
+        _out("Consolidated: %s" % ctx.workspace.relative(ctx.workspace.consolidated_md_path))
+    if ok == 0 and (failed or partial):
+        return 1
+    return 0
 
 
 def _risk_paths(meta: Dict[str, Any]) -> List[str]:
@@ -556,11 +879,9 @@ def _run_design_review(args: argparse.Namespace, loaded: config_mod.LoadedConfig
     configured = loaded.reviewers()
     reviewers = configured
     if args.only:
-        wanted = set(args.only)
-        reviewers = [r for r in configured if r.get("id") in wanted or r.get("role") in wanted]
+        reviewers = _only_reviewers(configured, args.only)
         if not reviewers:
-            _err("--only %s matched no configured reviewer" % " ".join(args.only))
-            return 2
+            return _refuse_unmatched_only(args.only)
 
     request_path = _design_request_path(args, workspace)
     if not os.path.isfile(request_path):
@@ -584,21 +905,11 @@ def _run_design_review(args: argparse.Namespace, loaded: config_mod.LoadedConfig
     lineage = _lineage(args, workspace)
     iteration = _iteration(args, workspace, lineage, digest)
     max_iterations = int(design.get("max_iterations", 2))
-    if iteration > max_iterations and not args.force:
-        _err(
-            "refusing to run design review round %d: the budget is %d rounds "
-            "(review.design.max_iterations)." % (iteration, max_iterations)
-        )
-        _err(
-            "The round that reached the limit still gets its revision; only the re-review "
-            "is refused. Report what is still open, or pass --force to override."
-        )
-        return ledger_mod.EXIT_BUDGET_EXHAUSTED
+    refusal = _refuse_if_rounds_spent(_DESIGN, iteration, max_iterations, args.force)
+    if refusal is not None:
+        return refusal
 
-    book = _ledger(args, workspace)
-    # Before the refusal decides: a stage whose process is gone has no charge
-    # to answer for, and its absence is part of what the runtime budget says.
-    book.clear_stalls()
+    book = _open_ledger(args, workspace)
     refusal = _refuse_if_runtime_spent(book, "design review", args.force)
     if refusal is not None:
         return refusal
@@ -650,54 +961,29 @@ def _run_design_review(args: argparse.Namespace, loaded: config_mod.LoadedConfig
     # the design stage is where the specialists were measured to pay off.
     max_findings = opt_mod.findings_cap(loaded.optimization_settings(), settings)
 
-    batch_timeout = args.timeout or int(settings.get("timeout_seconds", 1800))
-    token = book.begin(
-        "design_review",
-        {"iteration": iteration, "reviewers": [str(r.get("id")) for r in reviewers]},
-        deadline=batch_timeout,
-    )
-    idle_timeout = args.idle_timeout
-    if idle_timeout is None:
-        idle_timeout = settings.get("idle_timeout_seconds")
-    warned = _warn_unenforced(loaded, reviewers)
-    try:
-        runs = review_mod.run_reviews(
-            reviewers,
+    ctx = _RoundContext(args, loaded, settings, workspace, book, _DESIGN, iteration)
+    panel = _run_panel(
+        ctx,
+        reviewers,
+        max_findings=max_findings,
+        over_budget=over_budget,
+        budget_chars=budget_chars,
+        inline_chars=inline_chars,
+        prompt_for=lambda reviewer: review_mod.build_design_review_prompt(
+            reviewer,
             workspace,
-            parallel=not args.sequential and bool(settings.get("parallel", True)),
-            timeout=batch_timeout,
-            idle_timeout=idle_timeout,
-            max_findings=max_findings,
-            over_budget=over_budget,
-            budget_chars=budget_chars,
-            # The same number to both: `prompt_for` decides the delivery and
-            # `run_reviews` records and words it, and a round that took them
-            # from two places would sooner or later take two different ones.
-            inline_chars=inline_chars,
-            prompt_for=lambda reviewer: review_mod.build_design_review_prompt(
-                reviewer,
-                workspace,
-                plan_text,
-                request_text,
-                args.context or "",
-                max_findings,
-                inline_chars,
-            ),
-            refusals=_reviewer_refusals(loaded, reviewers),
-        )
-    except review_mod.ReviewError as exc:
-        book.end(token, "failed", {"error": str(exc)})
-        _err(str(exc))
-        return 2
+            plan_text,
+            request_text,
+            args.context or "",
+            max_findings,
+            inline_chars,
+        ),
+    )
+    if isinstance(panel, int):
+        return panel
+    runs = panel.runs
 
-    for run in runs:
-        if run.invoked:
-            # Prefixed, so a reviewer's design cost never merges into its code
-            # cost in `tokens show` -- the same reasoning as `role:tier`.
-            label = "design:%s" % (run.reviewer.get("id") or "reviewer")
-            book.record_usage("design_review", run.usage.to_dict(), label=label)
-    _report_run_warnings(runs, warned)
-    run_dicts = [run.to_dict() for run in runs]
+    run_dicts = _account_runs(ctx, panel)
     stamp = review_mod.current_snapshot_stamp(workspace)
     findings, stale = review_mod.read_reports(workspace, [str(r.get("id")) for r in configured], stamp)
     # Every reviewer of this round has returned, so this is the report the
@@ -715,56 +1001,20 @@ def _run_design_review(args: argparse.Namespace, loaded: config_mod.LoadedConfig
         unreviewed_round=None if reviewed else meta.get("round_id"),
     )
     review_mod.save_consolidation(workspace, data)
-    repeats = book.register_signature("design_review", review_mod.findings_signature(data))
-    book.end(
-        token,
-        "ok",
-        {
-            "iteration": iteration,
-            # Which freeze this event paid for. The sha repeats when a plan is
-            # reviewed again; this does not, and it names the archived report
-            # the findings of this round are in.
-            "round_id": meta.get("round_id") or "",
-            "reviewers": run_dicts,
-            "findings": data["counts"].get("findings_total"),
-            "identical_rounds": repeats,
-        },
-        # Summed over the panel, not the wall clock of the batch: three
-        # reviewers running in parallel for 25 minutes delegated 75 minutes of
-        # execution, and the budget is on delegated execution. Less what each
-        # run spent with the machine asleep.
-        charged_seconds=sum(run.duration - run.suspended for run in runs),
-        suspended_seconds=sum(run.suspended for run in runs),
-    )
-    if repeats > 1:
-        _err(
-            "note: design round %d produced the same findings as the previous round -- "
-            "the last revision changed nothing that the reviewers can see." % iteration
-        )
-    for reviewer_id in stale:
-        _err("note: %s has no report for this plan; its earlier report was ignored" % reviewer_id)
-
-    ok, failed, partial = review_mod.summarise_runs(runs)
-    if args.json:
-        _emit_json(
-            {
-                "ok": ok,
-                "failed": failed,
-                "partial": partial,
-                "reviewers": run_dicts,
-                "counts": data["counts"],
-                "plan": meta["plan"],
-            }
-        )
-    else:
-        for run in runs:
-            _out(_reviewer_line(run))
-        _out("")
-        _out(_panel_summary(ok, failed, partial))
-        _out("Consolidated: %s" % workspace.relative(workspace.consolidated_md_path))
-    if ok == 0 and (failed or partial):
-        return 1
-    return 0
+    repeats = _round_repeats(ctx, data)
+    detail = {
+        "iteration": iteration,
+        # Which freeze this event paid for. The sha repeats when a plan is
+        # reviewed again; this does not, and it names the archived report
+        # the findings of this round are in.
+        "round_id": meta.get("round_id") or "",
+        "reviewers": run_dicts,
+        "findings": data["counts"].get("findings_total"),
+        "identical_rounds": repeats,
+    }
+    _end_round(ctx, panel.token, detail, runs)
+    _round_notes(ctx, repeats, stale)
+    return _print_round(ctx, runs, run_dicts, data, {"plan": meta["plan"]})
 
 
 def cmd_review_run(args: argparse.Namespace) -> int:
@@ -786,8 +1036,7 @@ def cmd_review_run(args: argparse.Namespace) -> int:
     configured = loaded.reviewers()
     reviewers = configured
     if args.only:
-        wanted = set(args.only)
-        reviewers = [r for r in configured if r.get("id") in wanted or r.get("role") in wanted]
+        reviewers = _only_reviewers(configured, args.only)
     if not reviewers and not args.only:
         _out("No reviewers configured -- skipping the independent-review stage.")
         lineage = _lineage(args, workspace)
@@ -803,8 +1052,7 @@ def cmd_review_run(args: argparse.Namespace) -> int:
         review_mod.save_consolidation(workspace, data)
         return 0
     if not reviewers:
-        _err("--only %s matched no configured reviewer" % " ".join(args.only))
-        return 2
+        return _refuse_unmatched_only(args.only)
 
     settings = loaded.review_settings()
     context_settings = dict(loaded.context_settings())
@@ -825,31 +1073,14 @@ def cmd_review_run(args: argparse.Namespace) -> int:
     lineage = _lineage(args, workspace)
     iteration = _iteration(args, workspace, lineage)
     max_iterations = int(settings.get("max_review_iterations", 2))
-    if iteration > max_iterations and not args.force:
-        _err(
-            "refusing to run review round %d: the budget is %d rounds "
-            "(review.max_review_iterations)." % (iteration, max_iterations)
-        )
-        _err(
-            "The round that reached the limit still gets its fix and re-test; only the "
-            "re-review is refused. Report what is still open, or pass --force to override."
-        )
-        return ledger_mod.EXIT_BUDGET_EXHAUSTED
+    refusal = _refuse_if_rounds_spent(_CODE, iteration, max_iterations, args.force)
+    if refusal is not None:
+        return refusal
 
     meta = ws.read_json(workspace.snapshot_meta_path, {}) or {}
-    if override and meta.get("incremental_from"):
-        # Refused on the first run as well as the second: the premise section
-        # is built from the consolidated report of the moment a run starts, and
-        # the first run rewrites it, so no pair on this snapshot would differ
-        # in the context alone.
-        _err(
-            "refusing to run: --surrounding %s on an incremental round (fix diff since %s). The prompt of "
-            "a re-review carries the accepted findings of the moment it runs, so two runs on it would "
-            "differ in more than the surrounding context. Measure on a whole-change snapshot: the first "
-            "round of a change, or a round after a clean or all-rejected review."
-            % (override, meta.get("incremental_from"))
-        )
-        return 2
+    refusal = _refuse_incremental_measurement(override, meta)
+    if refusal is not None:
+        return refusal
     plan = _round_plan(loaded, settings, workspace, meta, reviewers, declared, bool(args.only))
     if plan.escalated:
         _err("note: %s" % plan.escalation_note())
@@ -919,33 +1150,10 @@ def cmd_review_run(args: argparse.Namespace) -> int:
     )
     if refusal is not None:
         return refusal
-    # Before anything is charged: an asked-for measurement that would measure
-    # nothing, or that would throw away a decision made on this snapshot, is
-    # refused rather than billed. Without the flag neither check runs.
     rerun = override is not None and _measurement_rerun(workspace, meta, lineage, iteration)
-    if override == "enclosing" and not adoption.adopted:
-        _err(
-            "refusing to run: --surrounding enclosing was asked for but nothing would be adopted (%s); "
-            "the run would measure nothing and still bill the whole panel." % adoption.reason
-        )
-        if adoption.reason == context_mod.NOT_FROZEN:
-            _err("Run `review snapshot --surrounding enclosing` first.")
-        else:
-            _err('See references/limits.md, "Measuring what surrounding context does".')
-        return 2
-    # On the snapshot alone, not on ``rerun``: a lineage change between the two
-    # runs makes the second no rerun, but it still rebuilds the same findings.
-    previous = _same_snapshot_report(workspace, meta) if override is not None else {}
-    if previous:
-        changed = _triage_changed_since_build(previous)
-        if changed:
-            _err(
-                "refusing to run: --surrounding %s would rebuild the findings of a snapshot that has been "
-                "triaged since its last run (%d of %d with a new decision or note), and a decision on a "
-                "finding that does not come back would be lost. Take the pair before triage, or take a new "
-                "snapshot." % (override, len(changed), len(previous.get("findings") or []))
-            )
-            return 2
+    refusal = _refuse_unmeasurable(override, adoption, workspace, meta)
+    if refusal is not None:
+        return refusal
     # Forced past it: the round runs, and every record of it says so.
     over_budget = review_mod.over_context(budget_chars, max_chars)
 
@@ -959,49 +1167,28 @@ def cmd_review_run(args: argparse.Namespace) -> int:
             % (plan.reviewer_note(), ", ".join(str(r.get("id")) for r in reviewers))
         )
 
-    book = _ledger(args, workspace)
-    book.clear_stalls()
+    book = _open_ledger(args, workspace)
     refusal = _refuse_if_runtime_spent(book, "review", args.force)
     if refusal is not None:
         return refusal
-    batch_timeout = args.timeout or int(settings.get("timeout_seconds", 1800))
-    token = book.begin(
-        "review",
-        {"iteration": iteration, "reviewers": [str(r.get("id")) for r in reviewers]},
-        deadline=batch_timeout,
-    )
-
-    idle_timeout = args.idle_timeout
-    if idle_timeout is None:
-        idle_timeout = settings.get("idle_timeout_seconds")
     max_findings = plan.max_findings
-    warned = _warn_unenforced(loaded, reviewers)
-    try:
-        runs = review_mod.run_reviews(
-            reviewers,
-            workspace,
-            parallel=not args.sequential and bool(settings.get("parallel", True)),
-            timeout=batch_timeout,
-            extra_context=args.context or "",
-            idle_timeout=idle_timeout,
-            max_findings=max_findings,
-            over_budget=over_budget,
-            budget_chars=budget_chars,
-            inline_chars=inline_chars,
-            surrounding=adoption,
-            refusals=_reviewer_refusals(loaded, reviewers),
-        )
-    except review_mod.ReviewError as exc:
-        book.end(token, "failed", {"error": str(exc)})
-        _err(str(exc))
-        return 2
+    ctx = _RoundContext(args, loaded, settings, workspace, book, _CODE, iteration)
+    panel = _run_panel(
+        ctx,
+        reviewers,
+        max_findings=max_findings,
+        over_budget=over_budget,
+        budget_chars=budget_chars,
+        inline_chars=inline_chars,
+        extra_context=args.context or "",
+        surrounding=adoption,
+    )
+    if isinstance(panel, int):
+        return panel
+    runs = panel.runs
     context_on = adoption.mode != "none"
 
-    for run in runs:
-        if run.invoked:
-            book.record_usage("review", run.usage.to_dict(), label=str(run.reviewer.get("id") or "reviewer"))
-    _report_run_warnings(runs, warned)
-    run_dicts = [run.to_dict() for run in runs]
+    run_dicts = _account_runs(ctx, panel)
     # Consolidate from every configured reviewer's report, not only the ones
     # that just ran: with --only that would otherwise overwrite the report with
     # a subset and discard the other reviewers' findings and triage. Reports
@@ -1021,22 +1208,9 @@ def cmd_review_run(args: argparse.Namespace) -> int:
         lineage,
         completed_round=meta.get("round_id"),
     )
-    if override:
-        # The triage as this run built it, so the second run of a pair can tell
-        # a decision made on this snapshot from one carried in with a finding.
-        data["measurement"] = {
-            "surrounding": override,
-            "rerun": rerun,
-            "triage_at_build": {entry["key"]: _triage_record(entry) for entry in data["findings"]},
-        }
+    _record_triage_at_build(data, override, rerun)
     review_mod.save_consolidation(workspace, data)
-    # The second run of a pair is the same snapshot reviewed again on purpose,
-    # not a fix that changed nothing, so it registers no signature: the pair's
-    # signature is its first run's.
-    if rerun:
-        repeats = book.repeats("review")
-    else:
-        repeats = book.register_signature("review", review_mod.findings_signature(data))
+    repeats = _round_repeats(ctx, data, rerun)
     detail = {
         "iteration": iteration,
         # Which freeze this event paid for: the sha repeats when the same tree
@@ -1060,21 +1234,8 @@ def cmd_review_run(args: argparse.Namespace) -> int:
         # fell over first showed no one any context, and must not be counted
         # as a round with it.
         detail["surrounding"] = adoption.summary()
-    book.end(
-        token,
-        "ok",
-        detail,
-        # Per reviewer, as above: the panel is the unit that was delegated.
-        charged_seconds=sum(run.duration - run.suspended for run in runs),
-        suspended_seconds=sum(run.suspended for run in runs),
-    )
-    if repeats > 1 and not rerun:
-        _err(
-            "note: round %d produced the same findings as the previous round -- "
-            "the last fix changed nothing that the reviewers can see." % iteration
-        )
-    for reviewer_id in stale:
-        _err("note: %s has no report for this snapshot; its earlier report was ignored" % reviewer_id)
+    _end_round(ctx, panel.token, detail, runs)
+    _round_notes(ctx, repeats, stale, rerun)
     if max_findings:
         for run in runs:
             if run.findings > max_findings:
@@ -1084,40 +1245,14 @@ def cmd_review_run(args: argparse.Namespace) -> int:
                     % (run.reviewer.get("id"), run.findings, max_findings)
                 )
 
-    ok, failed, partial = review_mod.summarise_runs(runs)
-    if args.json:
-        payload = {
-            "ok": ok,
-            "failed": failed,
-            "partial": partial,
-            "reviewers": run_dicts,
-            "counts": data["counts"],
-            "optimization": plan.to_dict(),
-        }
-        if context_on:
-            payload["surrounding"] = adoption.record()
-        if measurement is not None:
-            payload["measurement"] = measurement
-        _emit_json(payload)
-    else:
-        for run in runs:
-            _out(_reviewer_line(run))
-        _out("")
-        _out(_panel_summary(ok, failed, partial))
-        if context_on:
-            line = "Surrounding context: %s" % _adoption_line(adoption)
-            if override:
-                line += " (--surrounding enclosing for this run)"
-            _out(line)
-        elif override:
-            _out(
-                "Surrounding context: none (--surrounding none for this run; "
-                "review.context.surrounding unchanged)"
-            )
-        _out("Consolidated: %s" % workspace.relative(workspace.consolidated_md_path))
-    if ok == 0 and (failed or partial):
-        return 1
-    return 0
+    payload_extra: Dict[str, Any] = {"optimization": plan.to_dict()}
+    if context_on:
+        payload_extra["surrounding"] = adoption.record()
+    if measurement is not None:
+        payload_extra["measurement"] = measurement
+    return _print_round(
+        ctx, runs, run_dicts, data, payload_extra, _surrounding_run_lines(adoption, override, context_on)
+    )
 
 
 def _condition_excluded(workspace: ws.Workspace) -> set:
