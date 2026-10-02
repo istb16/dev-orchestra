@@ -580,6 +580,19 @@ class Provider:
             return "a bare value"
         return "'%s'" % name[:_RAW_ARGUMENT_NAME_LIMIT]
 
+    def read_only_arg_problems(
+        self, mode: str, extra_args: Sequence[str] = (), options: Optional[Dict[str, Any]] = None
+    ) -> List[str]:
+        """Every problem with the caller's raw arguments on a ``mode`` run:
+        ``options.args`` first, then ``--extra``; none outside a read-only mode,
+        where the allowlist does not apply. The one list of what is checked;
+        each caller says it in its own words."""
+        if mode not in READ_ONLY_MODES:
+            return []
+        problems = self.refused_read_only_args(self.option_args(options), "options.args")
+        problems += self.refused_read_only_args(list(extra_args), "--extra")
+        return problems
+
     def read_only_refusal(
         self, mode: str, extra_args: Sequence[str] = (), options: Optional[Dict[str, Any]] = None
     ) -> Optional[RunResult]:
@@ -588,10 +601,7 @@ class Provider:
         Only the caller's arguments are looked at, before an adapter adds its
         own: those are the ones a config file or a command line put there.
         """
-        if mode not in READ_ONLY_MODES:
-            return None
-        problems = self.refused_read_only_args(self.option_args(options), "options.args")
-        problems += self.refused_read_only_args(list(extra_args), "--extra")
+        problems = self.read_only_arg_problems(mode, extra_args, options)
         if not problems:
             return None
         # One line: the review path reports the last line of stderr as the

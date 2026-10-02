@@ -9,7 +9,7 @@ import shlex
 import subprocess
 import sys
 import time
-from typing import Any, Dict, List, NamedTuple, Optional, Tuple, cast
+from typing import Any, Dict, List, NamedTuple, Optional, Tuple, Union, cast
 
 from . import approval as approval_mod
 from . import config as config_mod
@@ -37,6 +37,7 @@ from .providers import (
     SESSION_ID_RE,
     WARNED_ENFORCEMENT,
     ModelResolutionError,
+    Provider,
     get_provider,
     redact,
     unenforced_warning,
@@ -180,8 +181,139 @@ def _save_output(role: str, path: str, result: Any) -> Optional[_Refused]:
     return _Refused(message + " Its partial output is in %s." % sidecar, rejected_file=sidecar)
 
 
+class _Seat(NamedTuple):
+    """The configured seat a `run` delegates to, before anything is opened."""
+
+    role: str
+    tier: Optional[str]
+    reviewer_index: Optional[int]
+    spec: Dict[str, Any]
+    mode: str
+    provider_name: str
+    #: How the project-file checks name the seat: "reviewers[N]",
+    #: "<role>.model_tiers.<tier>" or the role.
+    label: str
+
+
+class _Run(NamedTuple):
+    """What every launch of one `run` shares, once the books are open."""
+
+    args: argparse.Namespace
+    seat: _Seat
+    provider: Provider
+    workspace: ws.Workspace
+    book: ledger_mod.Ledger
+    timeout: int
+    idle_timeout: Optional[float]
+
+
+class _Attempt(NamedTuple):
+    """One launch: its in-flight token and result, and what it was asked to continue."""
+
+    token: str
+    result: Any
+    #: The ``resume_session`` passed to ``_run_once``: None for a fresh run and
+    #: for the retry. Never ``result.session_id`` -- this is what the retry
+    #: condition and the ``:resumed`` usage label read.
+    session_id: Optional[str]
+    resume_detail: Optional[Dict[str, Any]]
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     loaded = _load_or_die(args.cwd)
+    seat = _resolve_seat(args, loaded)
+    if seat is None:
+        return 2
+    # Refused before anything is printed, spent or started, and into the job
+    # record as well as onto stderr, for the reason `_read_prompts` gives.
+    # None of these messages carries an argument's value.
+    problem = _mode_refusal(args, seat)
+    if problem:
+        return _refuse_run(args, [problem])
+    workspace = _workspace(args)
+    # Before the provider is known: these depend on the arguments alone.
+    problem = _resume_refusal(args, seat.role, seat.mode, workspace)
+    if problem:
+        return _refuse_run(args, [problem])
+    try:
+        provider = get_provider(seat.provider_name)
+    except ValueError as exc:
+        _err(str(exc))
+        return 2
+    refused = _preflight_refusals(args, loaded, seat, provider)
+    if refused:
+        return _refuse_run(args, refused)
+    if args.print_command:
+        return _print_command(args, loaded, seat, provider, workspace)
+    refused, warned_before = _enforcement_refusal(loaded, seat, provider)
+    if refused:
+        return _refuse_run(args, refused)
+    if warned_before:
+        _err("warning: %s: %s" % (seat.role, warned_before))
+    prompt, resume_prompt = _read_prompts(args, workspace)
+    # The approval gate. Before the ledger is opened and before the budget is
+    # consumed: a refused run must cost nothing, and before --detach: a worker
+    # must never be the process that finds out first. The worker checks again
+    # all the same -- --job-file is a flag on a public parser, and a worker
+    # that trusted its parent would be the way round the gate; its refusal
+    # goes into the job record, for the reason `_read_prompts` gives about stderr. That
+    # refusal costs the attempt the parent consumed before handing over: it
+    # is not given back.
+    # --force is deliberately not honoured here. It overrides a budget, which
+    # is a resource; approval is the user's consent, and the human who would
+    # force past it is the human who can say yes, which `design approve`
+    # records.
+    if seat.role == "implementer":
+        refusal = _refuse_unless_approved(loaded, workspace, args, seat.role)
+        if refusal is not None:
+            return refusal
+    settings = loaded.review_settings()
+    timeout = args.timeout or int(settings.get("timeout_seconds", 1800))
+    idle_timeout = args.idle_timeout
+    if idle_timeout is None:
+        idle_timeout = settings.get("idle_timeout_seconds")
+    book = _ledger(args, workspace)
+    refusal = _spend_attempt(args, book, seat)
+    if refusal is not None:
+        return refusal
+    if args.detach:
+        return _detach(args, workspace, seat.role, prompt, resume_prompt, timeout)
+    session_id: Optional[str] = None
+    resume_detail: Optional[Dict[str, Any]] = None
+    if args.resume:
+        session_id, resume_detail = _choose_resume(loaded, workspace, provider, seat.provider_name)
+    # Written down before the call, so a stall is visible from outside this
+    # process and survives it dying. The record is kept: whether the user
+    # forced this run is in it, and the worker's own --force says nothing.
+    job = jobs_mod.claim(args.job_file) if args.job_file else None
+    run = _Run(args, seat, provider, workspace, book, timeout, idle_timeout)
+    # `resume_prompt` is read whenever --resume is given, and a session id is
+    # only ever found under --resume.
+    attempt = _run_once(
+        run, cast(str, resume_prompt) if session_id is not None else prompt, session_id, resume_detail
+    )
+    if attempt is None:
+        return 2
+    if (
+        attempt.session_id is not None
+        and attempt.resume_detail is not None
+        and attempt.result.resume_rejected
+    ):
+        retried = _retry_fresh_after_rejection(run, job, attempt, prompt)
+        if isinstance(retried, int):
+            return retried
+        attempt = retried
+    _record_outcome(run, attempt)
+    # Printed last, and after the books are closed. Showing the output used to
+    # come first, so a console that could not encode one character of it took
+    # the accounting and the in-flight entry down with it: the tokens went
+    # unrecorded and the next command reported this finished run as abandoned.
+    # Nothing below this line is allowed to decide whether the run happened.
+    return _report_outcome(run, attempt, warned_before)
+
+
+def _resolve_seat(args: argparse.Namespace, loaded: config_mod.LoadedConfig) -> Optional[_Seat]:
+    """The seat ``args.role`` names; None, with the reason on stderr, if there is none."""
     role = args.role
     tier = args.tier
     reviewer_index = None
@@ -191,314 +323,315 @@ def cmd_run(args: argparse.Namespace) -> int:
         elif tier:
             # Reviewers are already one model each; the panel is the routing.
             _err("--tier applies to %s, not to a reviewer" % ", ".join(config_mod.KNOWN_ROLES))
-            return 2
+            return None
         else:
             reviewer_index, spec = config_mod.find_reviewer(loaded.data, role)
     except config_mod.ConfigError as exc:
         _err(str(exc))
-        return 2
+        return None
 
     mode = args.mode or DEFAULT_MODES.get(role, MODE_REVIEW)
-    # Refused before anything is printed, spent or started, and into the job
-    # record as well as onto stderr, for the reason `_read_prompt` below gives.
-    # None of these messages carries an argument's value.
-    read_only_role = role not in config_mod.KNOWN_ROLES or DEFAULT_MODES[role] in READ_ONLY_MODES
-    if read_only_role and args.mode == MODE_IMPLEMENT:
-        message = (
-            "%s: refused -- %s runs are read-only (plan or review); --mode implement is not "
-            "accepted for this role" % (role, role)
-        )
-        return _refuse_run(args, [message])
-    workspace = _workspace(args)
-    # Before the provider is known: these depend on the arguments alone.
-    resume_problem = _resume_refusal(args, role, mode, workspace)
-    if resume_problem:
-        return _refuse_run(args, [resume_problem])
     provider_name = str(spec.get("provider"))
-    try:
-        provider = get_provider(provider_name)
-    except ValueError as exc:
-        _err(str(exc))
-        return 2
-
     if reviewer_index is not None:
         label = "reviewers[%d]" % reviewer_index
     elif tier:
         label = "%s.model_tiers.%s" % (role, tier)
     else:
         label = role
-    if mode == MODE_IMPLEMENT:
+    return _Seat(role, tier, reviewer_index, spec, mode, provider_name, label)
+
+
+def _mode_refusal(args: argparse.Namespace, seat: _Seat) -> Optional[str]:
+    """Why ``--mode`` cannot go on this seat, as a fixed sentence."""
+    read_only_role = seat.role not in config_mod.KNOWN_ROLES or DEFAULT_MODES[seat.role] in READ_ONLY_MODES
+    if read_only_role and args.mode == MODE_IMPLEMENT:
+        return (
+            "%s: refused -- %s runs are read-only (plan or review); --mode implement is not "
+            "accepted for this role" % (seat.role, seat.role)
+        )
+    return None
+
+
+def _preflight_refusals(
+    args: argparse.Namespace, loaded: config_mod.LoadedConfig, seat: _Seat, provider: Provider
+) -> List[str]:
+    """The lines of the first check that refuses this seat its arguments; none if all pass."""
+    if seat.mode == MODE_IMPLEMENT:
         # The same reasoning for a write role on a provider whose permission
         # bypass is local-only: nothing of it is taken from the project file.
-        from_project = config_mod.project_write_refusals(loaded).get(label)
+        from_project = config_mod.project_write_refusals(loaded).get(seat.label)
         if from_project:
-            return _refuse_run(args, ["refused -- %s" % from_project])
-    if mode in READ_ONLY_MODES:
+            return ["refused -- %s" % from_project]
+    if seat.mode in READ_ONLY_MODES:
         # Raw arguments, and a seat on a provider that cannot be held to
         # reading, that came with the project file.
-        from_project = config_mod.project_raw_arg_refusals(loaded).get(label)
+        from_project = config_mod.project_raw_arg_refusals(loaded).get(seat.label)
         if from_project:
-            return _refuse_run(args, ["refused -- %s" % from_project])
-        problems = provider.refused_read_only_args(provider.option_args(spec.get("options")), "options.args")
-        problems += provider.refused_read_only_args(args.extra or [], "--extra")
-        if problems:
-            return _refuse_run(args, ["%s: refused -- %s" % (role, problem) for problem in problems])
+            return ["refused -- %s" % from_project]
+        problems = provider.read_only_arg_problems(seat.mode, args.extra or [], seat.spec.get("options"))
+        return ["%s: refused -- %s" % (seat.role, problem) for problem in problems]
+    return []
 
-    if args.print_command:
-        try:
-            resolved = provider.resolve_model(spec.get("model"))
-        except ModelResolutionError as exc:
-            _err(str(exc))
-            return 2
-        # Looked up without opening the ledger, so printing spends nothing.
-        session_id = None
-        if args.resume:
-            session_id, detail, note = _resume_candidate(
-                workspace,
-                list(workspace.read_state().get("events") or []),
-                provider,
-                provider_name,
-                loaded.design_settings(),
-            )
-            _announce_resume(session_id, detail, note)
-        command = provider.command_line(
-            mode, resolved, workspace.root, args.extra or [], spec.get("options"), resume_session=session_id
-        )
-        _out(" ".join(_quoted(token) for token in command))
-        return 0
 
+def _print_command(
+    args: argparse.Namespace,
+    loaded: config_mod.LoadedConfig,
+    seat: _Seat,
+    provider: Provider,
+    workspace: ws.Workspace,
+) -> int:
+    """``--print-command``: print the command the run would start, and start nothing."""
+    try:
+        resolved = provider.resolve_model(seat.spec.get("model"))
+    except ModelResolutionError as exc:
+        _err(str(exc))
+        return 2
+    # Looked up without opening the ledger, so printing spends nothing.
+    session_id = None
+    if args.resume:
+        session_id, _ = _choose_resume(loaded, workspace, provider, seat.provider_name)
+    command = provider.command_line(
+        seat.mode,
+        resolved,
+        workspace.root,
+        args.extra or [],
+        seat.spec.get("options"),
+        resume_session=session_id,
+    )
+    _out(" ".join(_quoted(token) for token in command))
+    return 0
+
+
+def _enforcement_refusal(
+    loaded: config_mod.LoadedConfig, seat: _Seat, provider: Provider
+) -> Tuple[List[str], str]:
+    """The provider's read-only enforcement, judged before anything is spent.
+
+    Returns ``(refusal lines, warning)``: the lines when the seat is refused,
+    otherwise the warning to print once, if any.
+    """
     # Only for a CLI that is there: a missing one is reported by the run as
     # missing (127), not as one whose enforcement could not be read.
-    warned_before = ""
-    if mode in READ_ONLY_MODES and provider.detect().installed:
+    if seat.mode in READ_ONLY_MODES and provider.detect().installed:
         enforcement = provider.read_only_enforcement()
         if enforcement.get("status") in REFUSED_ENFORCEMENT:
-            return _refuse_run(args, ["%s: refused -- %s" % (role, enforcement.get("detail"))])
+            return ["%s: refused -- %s" % (seat.role, enforcement.get("detail"))], ""
         if enforcement.get("status") in WARNED_ENFORCEMENT:
             # The live report, for an adapter whose report is not static and
             # so was not asked above: a project file does not choose it either.
-            from_project = config_mod.project_provider_refusals(loaded).get(label)
+            from_project = config_mod.project_provider_refusals(loaded).get(seat.label)
             if from_project:
-                return _refuse_run(args, ["refused -- %s" % from_project])
-            warned_before = unenforced_warning(provider_name, enforcement)
-            _err("warning: %s: %s" % (role, warned_before))
+                return ["refused -- %s" % from_project], ""
+            return [], unenforced_warning(seat.provider_name, enforcement)
+    return [], ""
 
+
+def _read_prompts(args: argparse.Namespace, workspace: ws.Workspace) -> Tuple[str, Optional[str]]:
+    """The fresh prompt and, under ``--resume``, the resumed one; SystemExit if either is missing."""
     try:
         prompt = _read_prompt(args, workspace)
         # Both prompts are read before anything is spent: which one is sent
-        # is only known once the run log has been read, below.
+        # is only known once `cmd_run` has read the run log.
         resume_prompt = _read_prompt_file(args.resume_prompt_file, workspace) if args.resume else None
     except SystemExit as exc:
         # A worker's stderr is DEVNULL, so a reason left there reaches nobody:
-        # every exit this function can take before the outcome is written has
+        # every exit `run` can take before the outcome is written has
         # to put its message in the job record, or the run is reported only as
         # a worker that vanished having recorded no outcome -- which is also
         # what is said about one that was killed. The same goes for the
-        # ModelResolutionError exit below. The foreground call keeps the
+        # ModelResolutionError exit in `_run_once`. The foreground call keeps the
         # message on stderr, where its caller is watching.
-        if args.job_file:
-            jobs_mod.finish(args.job_file, "failed", error=str(exc))
+        _fail_job(args, str(exc))
         raise
-    # The approval gate. Before the ledger is opened and before the budget is
-    # consumed: a refused run must cost nothing, and before --detach: a worker
-    # must never be the process that finds out first. The worker checks again
-    # all the same -- --job-file is a flag on a public parser, and a worker
-    # that trusted its parent would be the way round the gate; its refusal
-    # goes into the job record, for the reason given above about stderr. That
-    # refusal costs the attempt the parent consumed before handing over: it
-    # is not given back.
-    # --force is deliberately not honoured here. It overrides a budget, which
-    # is a resource; approval is the user's consent, and the human who would
-    # force past it is the human who can say yes, which `design approve`
-    # records.
-    if role == "implementer":
-        refusal = _refuse_unless_approved(loaded, workspace, args, role)
-        if refusal is not None:
-            return refusal
-    settings = loaded.review_settings()
-    timeout = args.timeout or int(settings.get("timeout_seconds", 1800))
-    idle_timeout = args.idle_timeout
-    if idle_timeout is None:
-        idle_timeout = settings.get("idle_timeout_seconds")
+    return prompt, resume_prompt
 
-    book = _ledger(args, workspace)
+
+def _spend_attempt(args: argparse.Namespace, book: ledger_mod.Ledger, seat: _Seat) -> Optional[int]:
+    """Take this run's attempt from the budget; the exit code if it is refused one."""
     book.clear_stalls()
-    if tier:
-        _err("note: running %s on its %r tier (%s)" % (role, tier, _describe_spec(spec)))
-    refusal = _refuse_if_exhausted(book, role, args.force)
+    if seat.tier:
+        _err("note: running %s on its %r tier (%s)" % (seat.role, seat.tier, _describe_spec(seat.spec)))
+    refusal = _refuse_if_exhausted(book, seat.role, args.force)
     if refusal is not None:
         return refusal
     try:
         if not args.job_file:
-            book.consume(role, force=args.force)
+            book.consume(seat.role, force=args.force)
     except ledger_mod.BudgetExhausted as exc:
         _err(str(exc))
         return ledger_mod.EXIT_BUDGET_EXHAUSTED
+    return None
 
-    if args.detach:
-        # Hand the work to a detached worker so this call cannot block. The
-        # budget was already consumed above, so the worker must not do it again.
-        passthrough = _detached_argv(args, role)
-        job = jobs_mod.start(
-            workspace,
-            role,
-            passthrough,
-            prompt=prompt,
-            timeout=timeout,
-            resume_prompt=resume_prompt,
-            force=bool(args.force),
+
+def _detach(
+    args: argparse.Namespace,
+    workspace: ws.Workspace,
+    role: str,
+    prompt: str,
+    resume_prompt: Optional[str],
+    timeout: int,
+) -> int:
+    """``--detach``: start a worker for the run and return at once."""
+    # Hand the work to a detached worker so this call cannot block. The
+    # budget was already consumed above, so the worker must not do it again.
+    passthrough = _detached_argv(args, role)
+    job = jobs_mod.start(
+        workspace,
+        role,
+        passthrough,
+        prompt=prompt,
+        timeout=timeout,
+        resume_prompt=resume_prompt,
+        force=bool(args.force),
+    )
+    if args.json:
+        _emit_json(job)
+    else:
+        _out("started %s as job %s" % (role, job["id"]))
+        _out("follow it with: dev-orchestra jobs wait %s" % job["id"])
+    return 0 if job.get("status") != "failed" else 1
+
+
+def _run_once(
+    run: _Run, text: str, resume_session: Optional[str], resume_detail: Optional[Dict[str, Any]]
+) -> Optional[_Attempt]:
+    """Start one in-flight entry and run the provider on ``text``.
+
+    None when the model cannot be resolved: that entry is ended, the job is
+    failed and the reason is on stderr.
+    """
+    args, seat, book = run.args, run.seat, run.book
+    begun: Dict[str, Any] = {
+        "mode": seat.mode,
+        "provider": seat.provider_name,
+        "command": run.provider.executable,
+        "job": args.job_file,
+        "tier": seat.tier or None,
+    }
+    if resume_detail is not None:
+        begun["resume"] = dict(resume_detail)
+    token = book.begin(seat.role, begun, deadline=run.timeout)
+    # The keyword only when there is a session: an adapter that cannot
+    # resume is called exactly as it was before resuming existed.
+    resuming: Dict[str, Any] = {"resume_session": resume_session} if resume_session is not None else {}
+    try:
+        result = run.provider.run(
+            text,
+            seat.mode,
+            run.workspace.root,
+            seat.spec.get("model"),
+            timeout=run.timeout,
+            extra_args=args.extra or [],
+            options=seat.spec.get("options"),
+            idle_timeout=run.idle_timeout,
+            **resuming,
         )
-        if args.json:
-            _emit_json(job)
-        else:
-            _out("started %s as job %s" % (role, job["id"]))
-            _out("follow it with: dev-orchestra jobs wait %s" % job["id"])
-        return 0 if job.get("status") != "failed" else 1
+    except ModelResolutionError as exc:
+        book.end(token, "failed", {"error": str(exc)})
+        _fail_job(args, str(exc))
+        _err(str(exc))
+        return None
+    return _Attempt(token, result, resume_session, resume_detail)
 
-    session_id: Optional[str] = None
-    resume_detail: Optional[Dict[str, Any]] = None
-    if args.resume:
-        session_id, resume_detail, note = _resume_candidate(
-            workspace,
-            list(workspace.read_state().get("events") or []),
-            provider,
-            provider_name,
-            loaded.design_settings(),
-        )
-        _announce_resume(session_id, resume_detail, note)
 
-    # Written down before the call, so a stall is visible from outside this
-    # process and survives it dying. The record is kept: whether the user
-    # forced this run is in it, and the worker's own --force says nothing.
-    job = jobs_mod.claim(args.job_file) if args.job_file else None
+def _end_detail(run: _Run, result: Any, resume_detail: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """The detail of a run's end event."""
+    seat = run.seat
+    detail: Dict[str, Any] = {
+        "mode": seat.mode,
+        "provider": seat.provider_name,
+        # Recorded on the *end* event, not only on the start: the start
+        # entry is dropped from the ledger when the stage finishes, and
+        # the run log is what a report is written from.
+        "tier": seat.tier or None,
+        "model": result.resolved.display if result.resolved else None,
+        "model_source": result.resolved.source if result.resolved else None,
+        "duration_seconds": round(result.duration, 2),
+        "timed_out": result.timed_out,
+        "stalled": result.stalled,
+        "output": run.args.output,
+        "billed_tokens": result.usage.billed_tokens,
+        # Whether the run left a usable result: an ``ok`` over silence
+        # saved nothing, and `status` must not count it as the revision
+        # or fix that was asked for. Pure, so the order below stands.
+        "answered": _answered(result),
+        # The session this run ended in is what the next --resume
+        # continues; the rest is what comparing resumed and fresh
+        # revisions needs.
+        "session_id": result.session_id,
+        "context_tokens": result.context_tokens,
+        "cost_usd": result.usage.cost_usd,
+        "cache_read_tokens": result.usage.cache_read_tokens,
+    }
+    if resume_detail is not None:
+        detail["resume"] = dict(resume_detail, outcome="ok" if result.ok else None)
+    # Only when there are some, so a run's event is what it always was.
+    if result.warnings:
+        detail["warnings"] = list(result.warnings)
+    return detail
 
-    def launch(text: str, resume_session: Optional[str]) -> Tuple[str, Any]:
-        begun = {
-            "mode": mode,
-            "provider": provider_name,
-            "command": provider.executable,
-            "job": args.job_file,
-            "tier": tier or None,
-        }
-        if resume_detail is not None:
-            begun["resume"] = dict(resume_detail)
-        token = book.begin(role, begun, deadline=timeout)
-        # The keyword only when there is a session: an adapter that cannot
-        # resume is called exactly as it was before resuming existed.
-        resuming: Dict[str, Any] = {"resume_session": resume_session} if resume_session is not None else {}
-        try:
-            return token, provider.run(
-                text,
-                mode,
-                workspace.root,
-                spec.get("model"),
-                timeout=timeout,
-                extra_args=args.extra or [],
-                options=spec.get("options"),
-                idle_timeout=idle_timeout,
-                **resuming,
-            )
-        except ModelResolutionError as exc:
-            book.end(token, "failed", {"error": str(exc)})
-            if args.job_file:
-                jobs_mod.finish(args.job_file, "failed", error=str(exc))
-            _err(str(exc))
-            return token, None
 
-    def end_detail(result: Any) -> Dict[str, Any]:
-        detail = {
-            "mode": mode,
-            "provider": provider_name,
-            # Recorded on the *end* event, not only on the start: the start
-            # entry is dropped from the ledger when the stage finishes, and
-            # the run log is what a report is written from.
-            "tier": tier or None,
-            "model": result.resolved.display if result.resolved else None,
-            "model_source": result.resolved.source if result.resolved else None,
-            "duration_seconds": round(result.duration, 2),
-            "timed_out": result.timed_out,
-            "stalled": result.stalled,
-            "output": args.output,
-            "billed_tokens": result.usage.billed_tokens,
-            # Whether the run left a usable result: an ``ok`` over silence
-            # saved nothing, and `status` must not count it as the revision
-            # or fix that was asked for. Pure, so the order below stands.
-            "answered": _answered(result),
-            # The session this run ended in is what the next --resume
-            # continues; the rest is what comparing resumed and fresh
-            # revisions needs.
-            "session_id": result.session_id,
-            "context_tokens": result.context_tokens,
-            "cost_usd": result.usage.cost_usd,
-            "cache_read_tokens": result.usage.cache_read_tokens,
-        }
-        if resume_detail is not None:
-            detail["resume"] = dict(resume_detail, outcome="ok" if result.ok else None)
-        # Only when there are some, so a run's event is what it always was.
-        if result.warnings:
-            detail["warnings"] = list(result.warnings)
-        return detail
-
-    # `resume_prompt` is read whenever --resume is given, and a session id is
-    # only ever found under --resume.
-    token, result = launch(cast(str, resume_prompt) if session_id is not None else prompt, session_id)
-    if result is None:
-        return 2
-
-    if session_id is not None and resume_detail is not None and result.resume_rejected:
-        # The session is gone (the CLI said so, naming it). That run is
-        # recorded as the failure it was, without its stderr, and not in the
-        # job: the job's outcome is the fresh run's.
+def _retry_fresh_after_rejection(
+    run: _Run, job: Optional[Dict[str, Any]], rejected: _Attempt, prompt: str
+) -> Union[_Attempt, int]:
+    """Record the rejected resumed run and run fresh once; the exit code if that cannot happen."""
+    args, role, book = run.args, run.seat.role, run.book
+    result = rejected.result
+    # The session is gone (the CLI said so, naming it). That run is
+    # recorded as the failure it was, without its stderr, and not in the
+    # job: the job's outcome is the fresh run's.
+    if result.invoked:
+        book.record_usage(role, result.usage.to_dict())
+    rejected_detail = _end_detail(run, result, rejected.resume_detail)
+    rejected_detail["context_tokens"] = None
+    rejected_detail["resume"] = dict(cast(Dict[str, Any], rejected.resume_detail), outcome="rejected")
+    book.end(
+        rejected.token,
+        "failed",
+        rejected_detail,
+        charged_seconds=result.duration - result.suspended,
+        suspended_seconds=result.suspended,
+    )
+    _err("note: %s" % _RESUME_REJECTED)
+    if not result.invoked:
+        # The adapter refused to start it, so nothing came from the CLI:
+        # its reason is said here, and still not recorded.
+        refused = (result.stderr or "").strip().splitlines()
+        if refused:
+            _err("note: %s" % refused[-1])
+    # Running fresh is another attempt, so it asks the budget as any run
+    # does -- as the user asked it, not as the worker was started. A
+    # refusal ran nothing, so the attempt already taken is the fresh one's.
+    user_force = bool(job.get("force", False)) if job is not None else bool(args.force)
+    if result.invoked and not user_force and book.check(role):
+        _err(_RESUME_NO_BUDGET)
+        _refuse_if_exhausted(book, role, user_force)
+        _fail_job(args, _RESUME_NO_BUDGET)
+        return ledger_mod.EXIT_BUDGET_EXHAUSTED
+    try:
         if result.invoked:
-            book.record_usage(role, result.usage.to_dict())
-        rejected = end_detail(result)
-        rejected["context_tokens"] = None
-        rejected["resume"] = dict(resume_detail, outcome="rejected")
-        book.end(
-            token,
-            "failed",
-            rejected,
-            charged_seconds=result.duration - result.suspended,
-            suspended_seconds=result.suspended,
-        )
-        _err("note: %s" % _RESUME_REJECTED)
-        if not result.invoked:
-            # The adapter refused to start it, so nothing came from the CLI:
-            # its reason is said here, and still not recorded.
-            refused = (result.stderr or "").strip().splitlines()
-            if refused:
-                _err("note: %s" % refused[-1])
-        # Running fresh is another attempt, so it asks the budget as any run
-        # does -- as the user asked it, not as the worker was started. A
-        # refusal ran nothing, so the attempt already taken is the fresh one's.
-        user_force = bool(job.get("force", False)) if job is not None else bool(args.force)
-        if result.invoked and not user_force and book.check(role):
-            _err(_RESUME_NO_BUDGET)
-            _refuse_if_exhausted(book, role, user_force)
-            if args.job_file:
-                jobs_mod.finish(args.job_file, "failed", error=_RESUME_NO_BUDGET)
-            return ledger_mod.EXIT_BUDGET_EXHAUSTED
-        try:
-            if result.invoked:
-                book.consume(role, force=user_force)
-        except ledger_mod.BudgetExhausted as exc:
-            _err(_RESUME_NO_BUDGET)
-            _err(str(exc))
-            if args.job_file:
-                jobs_mod.finish(args.job_file, "failed", error=_RESUME_NO_BUDGET)
-            return ledger_mod.EXIT_BUDGET_EXHAUSTED
-        session_id = None
-        resume_detail = {
-            "requested": True,
-            "mode": "fresh",
-            "resumed_from": None,
-            "reason": _RESUME_REJECTED,
-            "outcome": None,
-        }
-        token, result = launch(prompt, None)
-        if result is None:
-            return 2
+            book.consume(role, force=user_force)
+    except ledger_mod.BudgetExhausted as exc:
+        _err(_RESUME_NO_BUDGET)
+        _err(str(exc))
+        _fail_job(args, _RESUME_NO_BUDGET)
+        return ledger_mod.EXIT_BUDGET_EXHAUSTED
+    retried = _run_once(run, prompt, None, _fresh_resume_detail(_RESUME_REJECTED))
+    if retried is None:
+        return 2
+    return retried
 
+
+def _record_outcome(run: _Run, attempt: _Attempt) -> None:
+    """Close the books on the run, then say in the job how it finished."""
+    # The books are closed before the job says it finished. `jobs wait`
+    # returns on that status, and a caller that reads `tokens show` next used
+    # to find the run's usage not yet written: the worker recorded "succeeded"
+    # first and the account a moment later. A failure in the accounting still
+    # finishes the job -- as failed, naming it -- rather than leaving a worker
+    # that vanished, or a success whose usage is nowhere.
+    args, seat, book = run.args, run.seat, run.book
+    result = attempt.result
     finished = {
         "exit_code": result.exit_code,
         "stalled": result.stalled,
@@ -507,19 +640,13 @@ def cmd_run(args: argparse.Namespace) -> int:
         "model": result.resolved.display if result.resolved else None,
         "session_id": result.session_id,
     }
-    if resume_detail is not None:
-        finished["resume"] = dict(resume_detail, outcome="ok" if result.ok else None)
+    if attempt.resume_detail is not None:
+        finished["resume"] = dict(attempt.resume_detail, outcome="ok" if result.ok else None)
     if result.warnings:
         finished["warnings"] = list(result.warnings)
     if result.suspended:
         finished["suspended_seconds"] = round(result.suspended, 2)
 
-    # The books are closed before the job says it finished. `jobs wait`
-    # returns on that status, and a caller that reads `tokens show` next used
-    # to find the run's usage not yet written: the worker recorded "succeeded"
-    # first and the account a moment later. A failure in the accounting still
-    # finishes the job -- as failed, naming it -- rather than leaving a worker
-    # that vanished, or a success whose usage is nowhere.
     try:
         # Recorded whatever the outcome -- a failed run still spent what it spent.
         # A run that never started one is a different thing, and counting it as
@@ -530,15 +657,15 @@ def cmd_run(args: argparse.Namespace) -> int:
             # question a tier exists to raise: did the cheaper one cost less. A
             # continued session is labelled too, to be read against fresh runs.
             label = ""
-            if tier:
-                label = "%s:%s" % (role, tier)
-            elif session_id is not None:
-                label = "%s:resumed" % role
-            book.record_usage(role, result.usage.to_dict(), label=label)
+            if seat.tier:
+                label = "%s:%s" % (seat.role, seat.tier)
+            elif attempt.session_id is not None:
+                label = "%s:resumed" % seat.role
+            book.record_usage(seat.role, result.usage.to_dict(), label=label)
         book.end(
-            token,
+            attempt.token,
             "ok" if result.ok else ("stalled" if result.stalled else "failed"),
-            end_detail(result),
+            _end_detail(run, result, attempt.resume_detail),
             # What the child was measured to take, whatever it exited with. A run
             # killed at its deadline spent the time it spent; so did a failed one.
             # The time the machine slept through is not execution.
@@ -550,9 +677,8 @@ def cmd_run(args: argparse.Namespace) -> int:
             # Its own guard, so a job file that cannot be written does not
             # take the place of the failure that brought us here.
             try:
-                jobs_mod.finish(
-                    args.job_file,
-                    "failed",
+                _fail_job(
+                    args,
                     output=result.stdout,
                     error=redact(
                         "the run finished (exit %s) but recording it failed: %s" % (result.exit_code, exc)
@@ -571,16 +697,16 @@ def cmd_run(args: argparse.Namespace) -> int:
             detail=finished,
         )
 
-    # Printed last, and after the books are closed. Showing the output used to
-    # come first, so a console that could not encode one character of it took
-    # the accounting and the in-flight entry down with it: the tokens went
-    # unrecorded and the next command reported this finished run as abandoned.
-    # Nothing below this line is allowed to decide whether the run happened.
+
+def _report_outcome(run: _Run, attempt: _Attempt, warned_before: str) -> int:
+    """Save or print the run's output, say how it went, and return the exit code."""
+    args, role = run.args, run.seat.role
+    result = attempt.result
     refused = None
     answered_nothing = False
     target = ""
     if args.output:
-        target = _in_workflow(workspace, str(args.output))
+        target = _in_workflow(run.workspace, str(args.output))
         refused = _save_output(role, target, result)
     elif not args.job_file:
         _out(result.stdout)
@@ -601,7 +727,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             % (role, result.idle_for)
         )
     elif result.timed_out:
-        _err("%s hit its %ss deadline and was killed." % (role, timeout))
+        _err("%s hit its %ss deadline and was killed." % (role, run.timeout))
     elif not result.ok:
         _err("%s failed (exit %s): %s" % (role, result.exit_code, result.stderr.strip()[:500]))
     elif answered_nothing:
@@ -654,22 +780,25 @@ def _refuse_unless_approved(
     lines = approval_mod.refusal_lines(info, workspace.relative(workspace.plan_path))
     # The whole refusal, not its first line: the instruction to ask the user
     # is the part a worker's reader most needs, and the job is all it has.
-    if args.job_file:
-        _record_worker_refusal(args, "\n".join(lines))
+    _fail_job(args, "\n".join(lines))
     for line in lines:
         _err(line)
     return approval_mod.EXIT_APPROVAL_REQUIRED
 
 
-def _record_worker_refusal(args: argparse.Namespace, error: str) -> None:
-    """Record a worker's refusal in its job record, the only place it can say so."""
-    jobs_mod.finish(args.job_file, "failed", error=error)
+def _fail_job(args: argparse.Namespace, error: str, **fields: Any) -> None:
+    """Record a worker's failure in its job record, the only place it can say so.
+
+    ``error`` goes in as given: a caller whose message may carry a secret
+    redacts it first.
+    """
+    if args.job_file:
+        jobs_mod.finish(args.job_file, "failed", error=error, **fields)
 
 
 def _refuse_run(args: argparse.Namespace, lines: List[str]) -> int:
     """Refuse a run before it starts: exit 2, said on stderr and in the job."""
-    if args.job_file:
-        jobs_mod.finish(args.job_file, "failed", error="\n".join(lines))
+    _fail_job(args, "\n".join(lines))
     for line in lines:
         _err(line)
     return 2
@@ -753,8 +882,7 @@ def _resume_candidate(
     """
 
     def fresh(reason: str, note: str = "") -> Tuple[None, Dict[str, Any], str]:
-        detail = {"requested": True, "mode": "fresh", "resumed_from": None, "reason": reason, "outcome": None}
-        return None, detail, note
+        return None, _fresh_resume_detail(reason), note
 
     if not getattr(provider, "supports_resume", False):
         return fresh(_RESUME_NOT_SUPPORTED)
@@ -817,6 +945,26 @@ def _resume_candidate(
         detail["trust"] = "newer"
         return session_id, detail, str(support.get("detail") or "")
     return session_id, detail, ""
+
+
+def _fresh_resume_detail(reason: str) -> Dict[str, Any]:
+    """The ``resume`` detail of a ``--resume`` run that runs fresh, and why."""
+    return {"requested": True, "mode": "fresh", "resumed_from": None, "reason": reason, "outcome": None}
+
+
+def _choose_resume(
+    loaded: config_mod.LoadedConfig, workspace: ws.Workspace, provider: Any, provider_name: str
+) -> Tuple[Optional[str], Dict[str, Any]]:
+    """Look up the session ``--resume`` continues and say which it is on stderr."""
+    session_id, detail, note = _resume_candidate(
+        workspace,
+        list(workspace.read_state().get("events") or []),
+        provider,
+        provider_name,
+        loaded.design_settings(),
+    )
+    _announce_resume(session_id, detail, note)
+    return session_id, detail
 
 
 def _announce_resume(session_id: Optional[str], detail: Dict[str, Any], note: str) -> None:

@@ -19,8 +19,9 @@ from test_cli import run_cli
 
 from orchestrator import cli
 from orchestrator import jobs as jobs_mod
+from orchestrator import ledger as ledger_mod
 from orchestrator import workspace as ws
-from orchestrator.providers.base import RunResult
+from orchestrator.providers.base import ModelResolutionError, RunResult
 from orchestrator.providers.mock import MockProvider
 
 FRESH = "Revise the plan: the original request, in full, and the findings.\n"
@@ -218,6 +219,7 @@ class TestResumingAndChaining(ResumeCase):
         self.assertIn("running fresh: no earlier architect run in this workflow", err)
         self.assertIsNone(self.trace()[-1]["resume_session"])
         self.assertEqual(self.trace()[-1]["prompt_chars"], len(FRESH))
+        self.assertNotIn("architect:resumed", self.tokens()["by_label"])
 
     def test_later_revisions_resume_and_chain(self):
         self.revise()
@@ -371,6 +373,22 @@ class TestTheCliRejectsTheSession(ResumeCase):
         self.assertTrue(os.path.isfile(self.cli_workspace().plan_path))
         self.assertNotIn("No conversation found", json.dumps(self.events()))
         self.assertIn("the CLI rejected the session", err)
+        # Neither the first revision nor the retry continued a session.
+        self.assertNotIn("architect:resumed", self.tokens()["by_label"])
+
+    def worker_job(self):
+        """A job record as a parent writes it. The worker itself is started
+        with --force (see `_detached_argv`); the record says the user did not."""
+        job_file = os.path.join(jobs_mod.jobs_dir(self.cli_workspace()), "manual.json")
+        jobs_mod.write_job(self.cli_workspace(), {"id": "manual", "stage": "architect", "status": "running"})
+        return job_file
+
+    def assert_failed_for_no_budget(self, job_file):
+        job = ws.read_json(job_file)
+        self.assertEqual(job["status"], "failed")
+        self.assertEqual(job["error"], cli._RESUME_NO_BUDGET)
+        book = ledger_mod.Ledger(self.cli_workspace(), dict(ledger_mod.DEFAULT_BUDGETS))
+        self.assertEqual(book.summary()["in_flight"], {})
 
     def test_no_budget_left_means_no_second_run(self):
         run_cli("config", "set", "budgets.architect", "2")
@@ -380,6 +398,59 @@ class TestTheCliRejectsTheSession(ResumeCase):
         self.assertEqual(self.last()["resume"]["outcome"], "rejected")
         self.assertIn("running fresh would spend an attempt", err)
         self.assertEqual(len(self.trace()), 2)
+        rejected = err.index("note: %s" % cli._RESUME_REJECTED)
+        no_budget = err.index(cli._RESUME_NO_BUDGET)
+        self.assertLess(rejected, no_budget)
+        self.assertLess(no_budget, err.index("refusing to run architect:"))
+
+    def test_a_budget_spent_between_check_and_consume_still_says_why(self):
+        os.environ["DEV_ORCHESTRA_MOCK_RESUME"] = "reject"
+        consumed = []
+        original = cli.ledger_mod.Ledger.consume
+
+        def consume(book, stage, force=False):
+            consumed.append(stage)
+            # The first is this run's own attempt; the second is the retry's.
+            if len(consumed) == 2:
+                raise cli.ledger_mod.BudgetExhausted("spent elsewhere")
+            return original(book, stage, force=force)
+
+        self.addCleanup(setattr, cli.ledger_mod.Ledger, "consume", original)
+        setattr(cli.ledger_mod.Ledger, "consume", consume)
+        code, _, err = self.revise()
+        self.assertEqual(code, cli.ledger_mod.EXIT_BUDGET_EXHAUSTED)
+        rejected = err.index("note: %s" % cli._RESUME_REJECTED)
+        no_budget = err.index(cli._RESUME_NO_BUDGET)
+        self.assertLess(rejected, no_budget)
+        self.assertLess(no_budget, err.index("spent elsewhere"))
+        self.assertEqual(self.last()["resume"]["outcome"], "rejected")
+
+    def test_a_worker_with_no_budget_left_fails_its_job(self):
+        run_cli("config", "set", "budgets.architect", "2")
+        os.environ["DEV_ORCHESTRA_MOCK_RESUME"] = "reject"
+        # The parent spends the attempt before handing over; a worker does not.
+        run_cli("budget", "consume", "architect")
+        job_file = self.worker_job()
+        code, _, _ = self.revise("--force", "--job-file", job_file)
+        self.assertEqual(code, cli.ledger_mod.EXIT_BUDGET_EXHAUSTED)
+        self.assert_failed_for_no_budget(job_file)
+        self.assertEqual(self.last()["resume"]["outcome"], "rejected")
+
+    def test_a_worker_whose_budget_is_spent_before_the_retry_fails_its_job(self):
+        os.environ["DEV_ORCHESTRA_MOCK_RESUME"] = "reject"
+        original = cli.ledger_mod.Ledger.consume
+
+        def consume(book, stage, force=False):
+            # A worker skips the run's own attempt, so this is the retry's.
+            raise cli.ledger_mod.BudgetExhausted("spent elsewhere")
+
+        self.addCleanup(setattr, cli.ledger_mod.Ledger, "consume", original)
+        setattr(cli.ledger_mod.Ledger, "consume", consume)
+        job_file = self.worker_job()
+        code, _, err = self.revise("--force", "--job-file", job_file)
+        self.assertEqual(code, cli.ledger_mod.EXIT_BUDGET_EXHAUSTED)
+        self.assert_failed_for_no_budget(job_file)
+        self.assertIn("spent elsewhere", err)
 
     def test_force_runs_fresh_past_the_budget(self):
         run_cli("config", "set", "budgets.architect", "2")
@@ -485,12 +556,14 @@ class TestTheAdapterJudgesTheResumedRun(ResumeCase):
         super().setUp()
         self.revise()
 
-    def resumed_returns(self, result):
+    def resumed_returns(self, result, fresh=None):
         original = MockProvider._launch
 
         def launch(provider, prompt, mode, cwd, **kwargs):
             if kwargs.get("resume_session") is not None:
                 return result
+            if fresh is not None:
+                return fresh()
             return original(provider, prompt, mode, cwd, **kwargs)
 
         self.addCleanup(setattr, MockProvider, "_launch", original)
@@ -521,6 +594,10 @@ class TestTheAdapterJudgesTheResumedRun(ResumeCase):
         self.assertEqual(retried["status"], "ok")
         self.assertEqual(retried["resume"]["reason"], cli._RESUME_REJECTED)
         self.assertIn("note: %s\nnote: %s" % (cli._RESUME_REJECTED, REFUSED), err)
+        self.assertLess(
+            err.index("note: resuming the last architect session"),
+            err.index("note: %s\nnote: %s" % (cli._RESUME_REJECTED, REFUSED)),
+        )
         self.assertNotIn(REFUSED, json.dumps(self.events()))
         # Nothing ran for the refusal, so the fresh run spends its attempt.
         self.assertEqual(self.attempts(), 2)
@@ -534,6 +611,37 @@ class TestTheAdapterJudgesTheResumedRun(ResumeCase):
         self.assertEqual(code, 0, err)
         self.assertNotIn("running fresh would spend an attempt", err)
         self.assertEqual(self.last()["status"], "ok")
+        self.assertEqual(self.attempts(), 2)
+
+    def test_a_fresh_retry_whose_model_cannot_be_resolved_fails_once(self):
+        rejected = RunResult(
+            False, 1, "", "No conversation found", ["mock"], 0.1, invoked=True, resume_rejected=True
+        )
+
+        def unresolvable():
+            raise ModelResolutionError("no model for the fresh run")
+
+        self.resumed_returns(rejected, fresh=unresolvable)
+        job_file = os.path.join(jobs_mod.jobs_dir(self.cli_workspace()), "manual.json")
+        jobs_mod.write_job(self.cli_workspace(), {"id": "manual", "stage": "architect", "status": "running"})
+        before = len(self.events())
+        code, _, err = self.revise("--job-file", job_file)
+        self.assertEqual(code, 2)
+        added = self.events()[before:]
+        self.assertEqual([event["status"] for event in added], ["failed", "failed"])
+        self.assertEqual(added[0]["resume"]["outcome"], "rejected")
+        self.assertEqual(added[1]["error"], "no model for the fresh run")
+        for event in added:
+            self.assertNotIn("charge_skipped", event)
+        book = ledger_mod.Ledger(self.cli_workspace(), dict(ledger_mod.DEFAULT_BUDGETS))
+        self.assertEqual(book.summary()["in_flight"], {})
+        job = ws.read_json(job_file)
+        self.assertEqual(job["status"], "failed")
+        self.assertEqual(job["error"], "no model for the fresh run")
+        self.assertLess(err.index("note: %s" % cli._RESUME_REJECTED), err.index("no model for the fresh run"))
+        # setUp's foreground run spent one. A worker does not consume its first
+        # attempt -- its parent did -- but the retry asks the budget like any
+        # run, and the job carries no `force`, so it spent the second.
         self.assertEqual(self.attempts(), 2)
 
 
@@ -631,6 +739,14 @@ class TestDetached(ResumeCase):
         self.write("resume.md", RESUME * 10)
         self.wait(job["id"])
         self.assertEqual(self.trace()[-1]["prompt_chars"], len(RESUME))
+
+    def test_the_parent_does_not_look_up_the_session(self):
+        self.revise()
+        code, out, err = self.revise("--detach", "--json")
+        self.assertEqual(code, 0, err)
+        self.wait(json.loads(out)["id"])
+        self.assertNotIn("note: resuming", err)
+        self.assertNotIn("note: --resume requested", err)
 
     def test_force_is_recorded(self):
         self.revise()

@@ -315,9 +315,12 @@ class TestRunningOnATier(IsolatedCase):
         from unittest import mock
 
         from orchestrator import jobs as jobs_mod
+        from orchestrator import workspace as ws
 
+        # Credential-shaped, so the job's error shows whether it was redacted.
+        secret = "sk-ant-" + "x" * 20
         workspace, job_file = self.worker_job()
-        with mock.patch.object(ledger_mod.Ledger, "record_usage", side_effect=OSError("disk full")):
+        with mock.patch.object(ledger_mod.Ledger, "record_usage", side_effect=OSError("disk full " + secret)):
             with self.assertRaises(OSError) as raised:
                 run_cli("run", "implementer", "--prompt", "hi", "--job-file", job_file)
         self.assertIn("disk full", str(raised.exception))
@@ -326,6 +329,12 @@ class TestRunningOnATier(IsolatedCase):
         self.assertEqual(job["status"], "failed")
         self.assertIn("recording it failed", job["error"])
         self.assertIn("disk full", job["error"])
+        self.assertNotIn(secret, job["error"])
+        self.assertIn("[redacted]", job["error"])
+        self.assertEqual(
+            job["error"],
+            ws.redact("the run finished (exit 0) but recording it failed: disk full " + secret)[:2000],
+        )
         self.assertEqual(job["exit_code"], 0)
 
     def test_a_job_file_that_cannot_be_written_does_not_hide_the_accounting_failure(self):

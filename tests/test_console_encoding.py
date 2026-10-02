@@ -297,6 +297,26 @@ class TestTheBooksAreClosedBeforeAnythingIsPrinted(IsolatedCase):
         events = self.cli_workspace().read_state().get("events") or []
         self.assertEqual([event["status"] for event in events], ["ok"])
 
+    def test_saving_the_output_comes_after_the_books_are_closed_too(self):
+        from unittest import mock
+
+        from orchestrator import jobs as jobs_mod
+
+        workspace = self.cli_workspace()
+        jobs_mod.write_job(workspace, {"id": "w-1", "stage": "implementer", "status": "running"})
+        job_file = jobs_mod.job_path(workspace, "w-1")
+        target = os.path.join(self.project, "plan.md")
+        with mock.patch.object(cli_run, "_save_output", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                run_cli("run", "implementer", "--prompt", "go", "--output", target, "--job-file", job_file)
+        events = self.cli_workspace().read_state().get("events") or []
+        self.assertEqual([event["status"] for event in events], ["ok"])
+        self.assertFalse(self.ledger().summary()["in_flight"])
+        self.assertEqual(self.ledger().token_report()["totals"]["runs"], 1)
+        job = jobs_mod.read_job(workspace, "w-1")
+        assert job is not None
+        self.assertEqual(job["status"], "succeeded")
+
     def test_and_with_the_console_relaxed_it_simply_works(self):
         """The two halves together, which is what the user sees."""
         cli_run._out = self.original

@@ -423,7 +423,7 @@ class TestDetachedRun(IsolatedCase):
         """Its stderr is DEVNULL, so a complaint left there is a lost cause."""
         workspace = self.cli_workspace()
         jobs_mod.write_job(workspace, {"id": "p-1", "stage": "implementer", "status": "running"})
-        with self.assertRaises(SystemExit):
+        with self.assertRaises(SystemExit) as raised:
             self.run_cli(
                 "run",
                 "implementer",
@@ -438,6 +438,8 @@ class TestDetachedRun(IsolatedCase):
         self.assertEqual(job["status"], "failed")
         self.assertIn("gone.md", job["error"])
         self.assertIn("does not exist", job["error"])
+        # Passed through as it was raised: a path is not a credential.
+        self.assertEqual(job["error"], str(raised.exception))
 
     def test_the_detached_worker_does_not_double_spend_the_budget(self):
         self.run_cli("config", "set", "budgets.implementer", "5")
