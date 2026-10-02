@@ -474,7 +474,7 @@ def _detach(
     """``--detach``: start a worker for the run and return at once."""
     # Hand the work to a detached worker so this call cannot block. The
     # budget was already consumed above, so the worker must not do it again.
-    passthrough = _detached_argv(args, role)
+    passthrough = _detached_argv(args, role, workspace.workflow)
     job = jobs_mod.start(
         workspace,
         role,
@@ -978,7 +978,7 @@ def _announce_resume(session_id: Optional[str], detail: Dict[str, Any], note: st
         _err("note: %s" % note)
 
 
-def _detached_argv(args: argparse.Namespace, role: str) -> List[str]:
+def _detached_argv(args: argparse.Namespace, role: str, workflow: str) -> List[str]:
     """Rebuild this invocation for the worker, prompt now coming from a file.
 
     The prompt's text is deliberately absent: ``jobs.start`` writes it to a
@@ -988,8 +988,13 @@ def _detached_argv(args: argparse.Namespace, role: str) -> List[str]:
     ``--prompt-file -`` while the worker's stdin was ``DEVNULL``, so every
     detached run delegated an empty prompt -- invisible under the mock
     provider, which does not read one.
+
+    ``workflow`` is the one the parent resolved. The worker resolves its own
+    otherwise, from the environment or the session, and its ledger, its run
+    log and its own approval check then belong to a workflow the parent was
+    never in.
     """
-    argv = ["run", role, "--force"]
+    argv = ["--workflow", workflow, "run", role, "--force"]
     if args.tier:
         # Left out, the worker ran the role's default model: a more expensive
         # run than the one asked for, recorded without the label a tier exists

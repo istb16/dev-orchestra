@@ -449,6 +449,56 @@ class TestDetachedRun(IsolatedCase):
         payload = json.loads(self.run_cli("budget", "show", "--json")[1])
         self.assertEqual(payload["budgets"]["implementer"]["used"], 1)
 
+    def test_the_worker_records_into_the_workflow_it_was_started_in(self):
+        """The worker resolves its workflow again; left to itself it picks the
+        environment's or the session's, not the one the parent was told."""
+        self.assertNotEqual(os.environ.get("DEV_ORCHESTRA_WORKFLOW"), "named")
+        code, out, _ = self.run_cli(
+            "--workflow", "named", "run", "implementer", "--prompt", "go", "--detach", "--json"
+        )
+        self.assertEqual(code, 0)
+        job = json.loads(out)
+        code, out, err = self.run_cli(
+            "--workflow", "named", "jobs", "wait", job["id"], "--timeout", "60", "--json"
+        )
+        self.assertEqual(code, 0, err)
+        self.assertEqual(json.loads(out)["status"], "succeeded")
+        for workflow, used in (("named", 1), ("", 0)):
+            prefix = ["--workflow", workflow] if workflow else []
+            budget = json.loads(self.run_cli(*prefix, "budget", "show", "--json")[1])
+            self.assertEqual(budget["budgets"]["implementer"]["used"], used, workflow)
+        state = json.loads(self.run_cli("--workflow", "named", "state", "show", "--json")[1])
+        ended = [e for e in state.get("events") or [] if e.get("stage") == "implementer"]
+        self.assertEqual([e.get("status") for e in ended], ["ok"])
+        elsewhere = json.loads(self.run_cli("state", "show", "--json")[1])
+        self.assertEqual([e for e in elsewhere.get("events") or [] if e.get("stage") == "implementer"], [])
+        self.assertEqual(job["command"][:3], ["--workflow", "named", "run"])
+
+    def test_a_worker_leaves_the_current_workflow_alone(self):
+        """The pointer may have moved on since the parent returned."""
+        from orchestrator import workflow as workflow_mod
+
+        container = self.cli_workspace().container
+        workflow_mod.write_pointer(container, "elsewhere", "requested")
+        named = ws.Workspace(self.cli_workspace().root, container, "named").ensure()
+        jobs_mod.write_job(named, {"id": "w-1", "stage": "implementer", "status": "running"})
+        code, _, err = self.run_cli(
+            "--workflow",
+            "named",
+            "run",
+            "implementer",
+            "--force",
+            "--prompt",
+            "go",
+            "--job-file",
+            jobs_mod.job_path(named, "w-1"),
+        )
+        self.assertEqual(code, 0, err)
+        record = jobs_mod.read_job(named, "w-1")
+        assert record is not None
+        self.assertEqual(record["status"], "succeeded")
+        self.assertEqual(workflow_mod.read_pointer(container), "elsewhere")
+
     def test_a_detached_failure_is_recorded_as_failed(self):
         os.environ["DEV_ORCHESTRA_MOCK_FAIL"] = "1"
         _, out, _ = self.run_cli("run", "implementer", "--prompt", "go", "--detach", "--json")
