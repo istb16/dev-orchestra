@@ -715,7 +715,7 @@ class TestDetached(ResumeCase):
                 "/x",
             ]
         )
-        argv = cli._detached_argv(args, "architect")
+        argv = cli._detached_argv(args, "architect", "named")
         self.assertLess(argv.index("--resume"), argv.index("--extra"))
         self.assertLess(argv.index("--resume-prompt-file"), argv.index("--extra"))
         copy = "/jobs/1.resume-prompt"
@@ -724,6 +724,8 @@ class TestDetached(ResumeCase):
         self.assertEqual(parsed.resume_prompt_file, copy)
         self.assertTrue(parsed.resume)
         self.assertEqual(parsed.extra, ["--add-dir", "/x"])
+        self.assertEqual(parsed.workflow, "named")
+        self.assertEqual(parsed.command, "run")
 
     def test_a_detached_revision_resumes(self):
         self.revise()

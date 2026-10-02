@@ -46,6 +46,11 @@ The public surface covered by that promise is: the configuration schema, the
 - **Claude's resume verification asks a record for the checks the adapter
   requires**, as Codex's does, and **agy reads a negative token count as
   unreported**, as Claude and Codex do.
+- **A `run --detach` worker records into the workflow its parent was given**
+  (was: it resolved its own, from the environment or the session, so with
+  `--workflow` its ledger, run log and token account went to another
+  workflow, and its own approval check read that workflow's plan). It also
+  no longer changes which workflow is current.
 - **A user's own adapter can import `orchestrator.config`, `presets`,
   `optimization` or `review_common` at its top** (was: it failed to load with
   a circular-import error, because the adapters ran while `optimization` was

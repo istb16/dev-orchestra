@@ -454,7 +454,13 @@ def _workspace(args: argparse.Namespace) -> ws.Workspace:
     others that went quiet are noted.
     """
     root, container, loaded = _container_and_config(args)
-    workflow = workflow_mod.ensure(container, getattr(args, "workflow", "") or "")
+    requested = getattr(args, "workflow", "") or ""
+    if getattr(args, "job_file", None):
+        # A detached worker is told its parent's workflow; it does not get to
+        # move the pointer, which may have moved on since the parent returned.
+        workflow, _ = workflow_mod.resolve(container, requested)
+    else:
+        workflow = workflow_mod.ensure(container, requested)
     # Before migrate(), which would otherwise create the directory itself.
     fresh = workflow_mod.create_dir(container, workflow)
     moved = workflow_mod.migrate(container, workflow)
