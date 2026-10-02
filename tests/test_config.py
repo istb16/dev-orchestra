@@ -589,6 +589,233 @@ class TestValidation(IsolatedCase):
             config_mod.load(self.project)
 
 
+class TestValidateOrder(IsolatedCase):
+    """The whole list ``validate`` returns, in the order it says it."""
+
+    def test_every_integer_and_flag_wrong_at_once(self):
+        data = config_mod.default_config()
+        data["reviewers"] = []
+        data["review"] = {
+            "max_review_iterations": -1,
+            "timeout_seconds": 0,
+            "idle_timeout_seconds": 0,
+            "incremental_rounds": "yes",
+            "max_findings": True,
+            "design": {"enabled": "maybe", "max_iterations": -1},
+            "context": {
+                "max_chars": 0,
+                "inline_chars": "x",
+                "surrounding_chars": False,
+                "surrounding": True,
+            },
+            "exclude": ["", 3],
+        }
+        data["design"] = {
+            "require_approval": "yes",
+            "resume": {"max_age_seconds": -1, "max_context_tokens": 0},
+        }
+        data["optimization"] = {
+            "level": "x",
+            "high_risk_paths": "x",
+            "extra_high_risk_paths": ["", 3],
+            "low_risk_max_files": -1,
+            "low_risk_max_lines": True,
+        }
+        data["budgets"] = {"implementer": -1, "test": "2", "architect": None}
+        data["workspace"] = {"stale_notice_days": True}
+        self.assertEqual(
+            config_mod.validate(data),
+            [
+                "review.max_review_iterations: must be a non-negative integer",
+                "review.timeout_seconds: must be a positive integer",
+                "review.idle_timeout_seconds: must be a positive integer or null",
+                "review.incremental_rounds: must be true or false",
+                "review.max_findings: must be a non-negative integer (0 = no cap)",
+                "review.design.enabled: must be true, false or auto",
+                "review.design.max_iterations: must be a non-negative integer",
+                "review.context.max_chars: must be a positive integer",
+                "review.context.inline_chars: must be a positive integer",
+                "review.context.surrounding_chars: must be a positive integer",
+                "review.context.surrounding: must be one of enclosing, none",
+                "review.exclude[0]: must be a non-empty string (got '')",
+                "review.exclude[1]: must be a non-empty string (got 3)",
+                "design.require_approval: must be true or false",
+                "design.resume.max_age_seconds: must be a non-negative integer",
+                "design.resume.max_context_tokens: must be a positive integer or null",
+                "optimization.level: must be one of aggressive, balanced, quality",
+                "optimization.high_risk_paths: must be a list of glob patterns (use [] for none)",
+                "optimization.extra_high_risk_paths[0]: must be a non-empty string (got '')",
+                "optimization.extra_high_risk_paths[1]: must be a non-empty string (got 3)",
+                "optimization.low_risk_max_files: must be a non-negative integer",
+                "optimization.low_risk_max_lines: must be a non-negative integer",
+                "budgets.implementer: must be a non-negative integer or null",
+                "budgets.test: must be a non-negative integer or null",
+                "workspace.stale_notice_days: must be a non-negative integer (0 = off)",
+            ],
+        )
+
+    def test_each_section_wrong_type_in_order(self):
+        from orchestrator import presets
+
+        data = config_mod.default_config()
+        data["version"] = 2
+        data["preset"] = "nope"
+        del data["architect"]
+        data["reviewers"] = "x"
+        for key in ("review", "design", "optimization", "budgets", "workspace"):
+            data[key] = 3
+        problems = config_mod.validate(
+            data,
+            project_layer={"preset": "quality", "reviewers_extra": 3},
+            global_layer={"reviewers_extra": 3},
+        )
+        self.assertEqual(
+            problems,
+            [
+                "version must be 1 (got 2)",
+                "preset: unknown 'nope' (known: %s)" % ", ".join(presets.NAMES),
+                "preset: only the global file can name a preset for now",
+                "architect: missing role definition",
+                "reviewers: must be a list (use [] for none)",
+                "reviewers_extra in the global file: must be a list (use [] for none)",
+                "reviewers_extra in the project file: must be a list (use [] for none)",
+                "review: must be a mapping",
+                "design: must be a mapping",
+                "optimization: must be a mapping",
+                "budgets: must be a mapping",
+                "workspace: must be a mapping",
+            ],
+        )
+
+    def test_a_valid_panel_keeps_its_rules_before_the_extras(self):
+        data = config_mod.default_config()
+        data["reviewers"] = [
+            {"id": "a", "provider": "mock", "when": "high-risk"},
+            {"id": "a", "provider": "mock", "when": {"paths": ["src/**"]}},
+        ]
+        problems = config_mod.validate(
+            data,
+            global_layer={"reviewers_extra": [{"id": "g", "provider": "mock", "when": "sometimes"}]},
+            project_layer={"reviewers_extra": [{"id": "p"}]},
+        )
+        self.assertEqual(
+            problems,
+            [
+                "reviewers[1]: duplicate reviewer id 'a'",
+                "reviewers: at least one reviewer must run always; every reviewer is conditional "
+                "(when: high-risk or when: paths)",
+                "reviewers_extra[0] in the global file: when: must be one of always, high-risk, "
+                "or a mapping with paths",
+                "reviewers_extra[0] in the project file: provider is required",
+            ],
+        )
+
+    def test_the_lowest_accepted_values_pass(self):
+        data = config_mod.default_config()
+        review = data["review"]
+        review.update(max_review_iterations=0, timeout_seconds=1, idle_timeout_seconds=1, max_findings=0)
+        review["design"]["max_iterations"] = 0
+        review["context"].update(max_chars=1, inline_chars=1, surrounding_chars=1)
+        data["design"]["resume"] = {"max_age_seconds": 0, "max_context_tokens": 1}
+        data["optimization"].update(low_risk_max_files=0, low_risk_max_lines=0)
+        data["budgets"] = dict.fromkeys(data["budgets"], 0)
+        data["workspace"]["stale_notice_days"] = 0
+        self.assertEqual(config_mod.validate(data), [])
+        review.update(idle_timeout_seconds=None, incremental_rounds=None, max_findings=None)
+        review["design"].update(enabled=None, max_iterations=None)
+        review["context"].update(max_chars=None, inline_chars=None, surrounding_chars=None)
+        review["context"]["surrounding"] = None
+        data["design"] = {
+            "require_approval": None,
+            "resume": {"max_age_seconds": None, "max_context_tokens": None},
+        }
+        data["optimization"].update(low_risk_max_files=None, low_risk_max_lines=None)
+        data["budgets"] = dict.fromkeys(data["budgets"])
+        data["workspace"]["stale_notice_days"] = None
+        self.assertEqual(config_mod.validate(data), [])
+
+    def test_null_is_refused_where_only_a_missing_key_defaults(self):
+        data = config_mod.default_config()
+        data["review"].update(max_review_iterations=None, timeout_seconds=None)
+        self.assertEqual(
+            config_mod.validate(data),
+            [
+                "review.max_review_iterations: must be a non-negative integer",
+                "review.timeout_seconds: must be a positive integer",
+            ],
+        )
+        del data["review"]["max_review_iterations"]
+        del data["review"]["timeout_seconds"]
+        self.assertEqual(config_mod.validate(data), [])
+
+    def test_the_ceiling_follows_the_lower_bound(self):
+        data = config_mod.default_config()
+        data["workspace"]["stale_notice_days"] = 36501
+        self.assertEqual(
+            config_mod.validate(data), ["workspace.stale_notice_days: must be 36500 or less (100 years)"]
+        )
+        data["workspace"]["stale_notice_days"] = 36500
+        self.assertEqual(config_mod.validate(data), [])
+        # Below the floor, or not an integer at all, is the floor's message, not the ceiling's.
+        for days in (-1, True):
+            with self.subTest(days=days):
+                data["workspace"]["stale_notice_days"] = days
+                self.assertEqual(
+                    config_mod.validate(data),
+                    ["workspace.stale_notice_days: must be a non-negative integer (0 = off)"],
+                )
+
+    def test_every_integer_field_refuses_a_bool_and_a_float(self):
+        fields = [
+            ("review.max_review_iterations", "must be a non-negative integer"),
+            ("review.timeout_seconds", "must be a positive integer"),
+            ("review.idle_timeout_seconds", "must be a positive integer or null"),
+            ("review.max_findings", "must be a non-negative integer (0 = no cap)"),
+            ("review.design.max_iterations", "must be a non-negative integer"),
+            ("review.context.max_chars", "must be a positive integer"),
+            ("review.context.inline_chars", "must be a positive integer"),
+            ("review.context.surrounding_chars", "must be a positive integer"),
+            ("design.resume.max_age_seconds", "must be a non-negative integer"),
+            ("design.resume.max_context_tokens", "must be a positive integer or null"),
+            ("optimization.low_risk_max_files", "must be a non-negative integer"),
+            ("optimization.low_risk_max_lines", "must be a non-negative integer"),
+            ("budgets.implementer", "must be a non-negative integer or null"),
+            ("workspace.stale_notice_days", "must be a non-negative integer (0 = off)"),
+        ]
+        for path, message in fields:
+            for value in (True, 1.5):
+                with self.subTest(path=path, value=value):
+                    data = config_mod.default_config()
+                    *parents, leaf = path.split(".")
+                    block = data
+                    for key in parents:
+                        block = block.setdefault(key, {})
+                    block[leaf] = value
+                    self.assertEqual(config_mod.validate(data), ["%s: %s" % (path, message)])
+
+    def test_every_known_preset_validates(self):
+        from orchestrator import presets
+
+        for name in presets.NAMES:
+            with self.subTest(preset=name):
+                data = config_mod.default_config()
+                data["preset"] = name
+                self.assertEqual(config_mod.validate(data), [])
+
+    def test_a_preset_that_is_not_a_string_is_unknown(self):
+        from orchestrator import presets
+
+        # A list is unhashable: it must be reported, not raise on the lookup.
+        for preset in (3, ["quality"]):
+            with self.subTest(preset=preset):
+                data = config_mod.default_config()
+                data["preset"] = preset
+                self.assertEqual(
+                    config_mod.validate(data),
+                    ["preset: unknown %r (known: %s)" % (preset, ", ".join(presets.NAMES))],
+                )
+
+
 class TestReviewerConditions(IsolatedCase):
     """`reviewers[].when`, and what a panel of conditional reviewers needs."""
 

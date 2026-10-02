@@ -18,6 +18,7 @@ from helpers import IsolatedCase, has_git
 from orchestrator import cli, doctor, execution, miniyaml, presets
 from orchestrator import config as config_mod
 from orchestrator import review as review_mod
+from orchestrator.providers import get_provider, unenforced_warning
 from orchestrator.providers.agy import AgyProvider
 from orchestrator.providers.base import Detection, Provider
 from orchestrator.providers.mock import MockProvider
@@ -159,6 +160,228 @@ class TestProjectSeatRefusals(_GateCase):
         self.assertEqual(config_mod.reviewer_raw_arg_refusals(loaded), {})
         warned = config_mod.reviewer_enforcement_warnings(loaded.data)
         self.assertEqual(list(warned), ["gem"])
+
+    def test_run_refuses_a_project_tier_on_agy(self):
+        self.write_project("architect:\n" + AGY_TIER)
+        self.answer()
+        code, _, err = run_cli("run", "architect", "--tier", "light", "--prompt", "x")
+        self.assertEqual(code, 2)
+        self.assertIn("architect (tier light): provider agy is set in the project config", err)
+        self.assertEqual(self.started, [])
+
+
+#: Every kind of read-only seat at once: roles, tiers with and without options,
+#: tier keys that are not plain names, and broken entries that are skipped.
+SEAT_WALK_GLOBAL = (
+    "architect:\n" + AGY_ROLE + "  model_tiers:\n    keep:\n      model:\n        family: other\n"
+    "orchestrator:\n  model_tiers:\n    g:\n      provider: agy\n      model:\n        family: default\n"
+)
+SEAT_WALK_NOPE = "  - nope\n"
+SEAT_WALK_PROJECT = (
+    "orchestrator:\n"
+    "  provider: mock\n"
+    '  options:\n    args: ["--add-dir", "o"]\n'
+    "  model_tiers:\n"
+    '    own:\n      options:\n        args: ["--add-dir", "t"]\n'
+    "    0:\n      model:\n        family: other\n"
+    "    a.b:\n      provider: agy\n      model:\n        family: default\n"
+    "    broken: 3\n"
+    "reviewers:\n"
+    "%s"
+    "  - id: r-args\n    provider: mock\n    role: general\n"
+    '    options:\n      args: ["--add-dir", "r"]\n'
+    "  - id: r-agy\n    provider: agy\n    role: general\n    model:\n      family: default\n"
+)
+PROJECT_ARGS = (
+    "%s: options.args is set in the project config (.dev-orchestra.yaml); read-only roles take raw "
+    "arguments only from the global config or from --extra"
+)
+SEAT_WALK_REFUSALS = [
+    ("orchestrator", PROJECT_ARGS % "orchestrator"),
+    ("orchestrator.model_tiers.own", PROJECT_ARGS % "orchestrator (tier own)"),
+    ("orchestrator.model_tiers.0", PROJECT_ARGS % "orchestrator (tier 0)"),
+    ("reviewers[1]", PROJECT_ARGS % "reviewer r-args"),
+    (
+        "orchestrator.model_tiers.a.b",
+        "orchestrator (tier a.b): provider agy is set in the project config (.dev-orchestra.yaml); "
+        "a read-only seat on agy is taken only from the global config -- if this is intended, run "
+        "`dev-orchestra config set --scope global orchestrator.model_tiers.a.b.provider agy` and "
+        "remove it from .dev-orchestra.yaml",
+    ),
+    (
+        "reviewers[2]",
+        "reviewer r-agy: the reviewers list comes from the project config (.dev-orchestra.yaml) and "
+        "this reviewer is on agy; reviewers on agy are taken only from the global config -- if this "
+        "is intended, add it there with `dev-orchestra reviewer add --scope global --provider agy` "
+        "and remove it from .dev-orchestra.yaml",
+    ),
+]
+
+
+class TestSeatWalks(_GateCase):
+    """The order and the labels of every walk over the read-only seats."""
+
+    def unenforced(self):
+        report = get_provider("agy").read_only_enforcement()
+        return unenforced_warning("agy", report), report["detail"]
+
+    def load_walk(self, nope=SEAT_WALK_NOPE):
+        self.write_global(SEAT_WALK_GLOBAL)
+        self.write_project(SEAT_WALK_PROJECT % nope)
+        return config_mod.load(self.project, validate_result=False)
+
+    def test_every_walk_in_order(self):
+        loaded = self.load_walk()
+        self.assertEqual(
+            [tuple(entry) for entry in config_mod.read_only_raw_args(loaded)],
+            [
+                ("orchestrator", "orchestrator", "", "mock", ["--add-dir", "o"], "project", "project"),
+                ("orchestrator.model_tiers.g", "orchestrator (tier g)", "", "agy", [], "project", "global"),
+                (
+                    "orchestrator.model_tiers.own",
+                    "orchestrator (tier own)",
+                    "",
+                    "mock",
+                    ["--add-dir", "t"],
+                    "project",
+                    "project",
+                ),
+                (
+                    "orchestrator.model_tiers.0",
+                    "orchestrator (tier 0)",
+                    "",
+                    "mock",
+                    ["--add-dir", "o"],
+                    "project",
+                    "project",
+                ),
+                (
+                    "orchestrator.model_tiers.a.b",
+                    "orchestrator (tier a.b)",
+                    "",
+                    "agy",
+                    [],
+                    "project",
+                    "project",
+                ),
+                ("architect", "architect", "", "agy", [], "default", "global"),
+                ("architect.model_tiers.keep", "architect (tier keep)", "", "agy", [], "default", "global"),
+                (
+                    "reviewers[1]",
+                    "reviewer r-args",
+                    "r-args",
+                    "mock",
+                    ["--add-dir", "r"],
+                    "project",
+                    "project",
+                ),
+                ("reviewers[2]", "reviewer r-agy", "r-agy", "agy", [], "default", "project"),
+            ],
+        )
+        refusals = config_mod.project_raw_arg_refusals(loaded)
+        self.assertEqual(list(refusals.items()), SEAT_WALK_REFUSALS)
+        self.assertEqual(
+            list(config_mod.project_provider_refusals(loaded)),
+            [
+                "orchestrator",
+                "orchestrator.model_tiers.own",
+                "orchestrator.model_tiers.0",
+                "orchestrator.model_tiers.a.b",
+                "reviewers[1]",
+                "reviewers[2]",
+            ],
+        )
+        self.assertEqual(list(config_mod.reviewer_raw_arg_refusals(loaded)), ["r-args", "r-agy"])
+        self.assertEqual(
+            config_mod.read_only_arg_warnings(loaded), [message for _, message in SEAT_WALK_REFUSALS]
+        )
+        self.assertEqual(
+            [label for label, _, _ in config_mod._enforcement_warned_seats(loaded.data)],
+            ["orchestrator.model_tiers.g", "orchestrator.model_tiers.a.b", "architect", "reviewers[2]"],
+        )
+        unenforced, _ = self.unenforced()
+        self.assertEqual(
+            config_mod._enforcement_warned_seats(loaded.data, list(refusals)),
+            [
+                ("orchestrator.model_tiers.g", "", "orchestrator (tier g): " + unenforced),
+                ("architect", "", "architect: " + unenforced),
+            ],
+        )
+
+    def test_an_int_tier_key_and_a_broken_role_in_scratch_data(self):
+        architect = {"provider": "mock", "model_tiers": {0: {"provider": "agy"}}}
+        data = {"orchestrator": 3, "architect": architect}
+        unenforced, _ = self.unenforced()
+        self.assertEqual(
+            config_mod._enforcement_warned_seats(data),
+            [("architect.model_tiers.0", "", "architect (tier 0): " + unenforced)],
+        )
+        self.assertEqual(config_mod.read_only_enforcement_warnings(data, ["architect.model_tiers.0"]), [])
+
+    def test_doctor_on_the_same_files(self):
+        # Without the non-mapping reviewer: doctor does not skip one.
+        self.load_walk(nope="")
+        report = doctor.collect(self.project, probe_models=False)
+        self.assertEqual(
+            [p for p in report["problems"] if "project config (.dev-orchestra.yaml)" in p],
+            [message for _, message in SEAT_WALK_REFUSALS],
+        )
+        _, detail = self.unenforced()
+        note = "%s: read-only runs are NOT enforced by agy (allowed, warned) -- %s"
+        self.assertEqual(
+            [n for n in report["notes"] if "read-only runs" in n],
+            [note % ("Orchestrator (tier g)", detail), note % ("Architect", detail)],
+        )
+        self.assertEqual(report["roles"]["architect"]["read_only"], "unenforced")
+        self.assertNotIn("read_only", report["roles"]["orchestrator"])
+        self.assertEqual([r.get("read_only") for r in report["reviewers"]], [None, "unenforced"])
+
+    def test_extras_take_the_layer_of_their_own_file(self):
+        """An extra's layer is its file's, and its label is its place in the folded panel."""
+        self.write_global(
+            "reviewers:\n  - id: base\n    provider: mock\n    role: general\n"
+            "reviewers_extra:\n"
+            "  - id: g-args\n    provider: mock\n    role: general\n"
+            '    options:\n      args: ["--add-dir", "g"]\n'
+            "  - id: g-plain\n    provider: mock\n    role: general\n"
+        )
+        # The non-mapping entry is not folded, so p-args is reviewers[3] at position 1.
+        self.write_project(
+            "reviewers_extra:\n"
+            "  - nope\n"
+            "  - id: p-args\n    provider: mock\n    role: general\n"
+            '    options:\n      args: ["--add-dir", "p"]\n'
+            "  - id: p-plain\n    provider: mock\n    role: general\n"
+        )
+        loaded = config_mod.load(self.project, validate_result=False)
+        self.assertEqual(
+            [tuple(entry) for entry in config_mod.read_only_raw_args(loaded) if entry.reviewer_id],
+            [
+                ("reviewers[0]", "reviewer base", "base", "mock", [], "default", "global"),
+                ("reviewers[1]", "reviewer g-args", "g-args", "mock", ["--add-dir", "g"], "global", "global"),
+                ("reviewers[2]", "reviewer g-plain", "g-plain", "mock", [], "default", "global"),
+                (
+                    "reviewers[3]",
+                    "reviewer p-args",
+                    "p-args",
+                    "mock",
+                    ["--add-dir", "p"],
+                    "project",
+                    "project",
+                ),
+                ("reviewers[4]", "reviewer p-plain", "p-plain", "mock", [], "default", "project"),
+            ],
+        )
+        refusals = config_mod.project_raw_arg_refusals(loaded)
+        self.assertEqual(list(refusals.items()), [("reviewers[3]", PROJECT_ARGS % "reviewer p-args")])
+        self.assertEqual(list(config_mod.project_provider_refusals(loaded)), ["reviewers[3]", "reviewers[4]"])
+
+    def test_doctor_on_a_role_that_is_not_a_mapping(self):
+        self.write_global("architect: 3\n")
+        report = doctor.collect(self.project, probe_models=False)
+        self.assertEqual(report["roles"]["architect"]["status"], "missing")
+        self.assertIn("Architect: not configured", report["problems"])
+        self.assertEqual([n for n in report["notes"] if n.startswith("Architect")], [])
 
 
 class TestProjectWriteRefusals(_GateCase):

@@ -112,6 +112,56 @@ class TestClaude(_Case):
         )
         self.assertEqual(list(self.refusals()), ["implementer.model_tiers.light"])
 
+    def test_run_refuses_a_tier_with_a_project_permission_mode(self):
+        self.write_project(
+            "implementer:\n"
+            + CLAUDE_ROLE
+            + "  model_tiers:\n    light:\n      model:\n        family: sonnet\n"
+            "      options:\n        permission_mode: bypassPermissions\n"
+        )
+        self.assert_run_refused("implementer", "--tier", "light", "--prompt", "x")
+
+    def test_the_write_walk_in_order(self):
+        # ``away`` switches to agy without options of its own: were it read
+        # through the role's options, the project skip_permissions would
+        # refuse it.
+        self.write_project(
+            "implementer:\n"
+            + CLAUDE_ROLE
+            + "  options:\n    permission_mode: acceptEdits\n    skip_permissions: true\n"
+            "  model_tiers:\n"
+            "    own:\n      model:\n        family: sonnet\n"
+            "      options:\n        permission_mode: plan\n"
+            "    away:\n      provider: agy\n      model:\n        family: default\n"
+            "    0:\n      model:\n        family: sonnet\n"
+            "    a.b:\n      provider: codex\n      model:\n        family: recommended-coding\n"
+            "      options:\n        sandbox: read-only\n"
+            "    broken: 3\n"
+        )
+        refusals = config_mod.project_write_refusals(config_mod.load(self.project, validate_result=False))
+        self.assertEqual(
+            list(refusals),
+            [
+                "implementer",
+                "implementer.model_tiers.own",
+                "implementer.model_tiers.0",
+                "implementer.model_tiers.a.b",
+            ],
+        )
+        claude = (
+            "%s: options.permission_mode / options.args is set in the project config "
+            "(.dev-orchestra.yaml); on claude the permission bypass and raw arguments are taken only "
+            "from the global config or from --extra"
+        )
+        self.assertEqual(refusals["implementer.model_tiers.own"], claude % "implementer (tier own)")
+        self.assertEqual(refusals["implementer.model_tiers.0"], claude % "implementer (tier 0)")
+        self.assertEqual(
+            refusals["implementer.model_tiers.a.b"],
+            "implementer (tier a.b): options.sandbox / options.approve / options.args is set in the "
+            "project config (.dev-orchestra.yaml); on codex the permission bypass and raw arguments are "
+            "taken only from the global config or from --extra",
+        )
+
     def test_a_tier_inherits_the_project_permission_mode_of_its_role(self):
         self.write_project(
             "implementer:\n" + CLAUDE_ROLE + "  options:\n    permission_mode: bypassPermissions\n"

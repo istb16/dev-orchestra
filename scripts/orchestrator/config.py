@@ -946,6 +946,11 @@ def load(start: Optional[str] = None, validate_result: bool = True) -> LoadedCon
 # --------------------------------------------------------------------------- validation
 
 
+def _int_at_least(value: Any, minimum: int) -> bool:
+    """An int, not a bool, and at least ``minimum``."""
+    return isinstance(value, int) and not isinstance(value, bool) and value >= minimum
+
+
 def validate(
     data: Dict[str, Any],
     known_providers: Optional[List[str]] = None,
@@ -967,18 +972,40 @@ def validate(
     from .providers import available_providers
 
     providers = known_providers if known_providers is not None else available_providers()
-    problems: List[str] = []
+    problems = _validate_version_and_preset(data, project_layer, presets.NAMES)
+    problems.extend(_validate_roles(data, providers))
+    problems.extend(_validate_reviewers(data, providers, origins, global_layer, project_layer))
+    for key, check in (
+        ("review", _validate_review),
+        ("design", _validate_design),
+        ("optimization", _validate_optimization),
+        ("budgets", _validate_budgets),
+        ("workspace", _validate_workspace),
+    ):
+        block = data.get(key)
+        if block is not None:
+            problems.extend(check(block))
+    return problems
 
+
+def _validate_version_and_preset(
+    data: Dict[str, Any], project_layer: Optional[Dict[str, Any]], preset_names: Sequence[str]
+) -> List[str]:
+    problems: List[str] = []
     version = data.get("version")
     if version != CONFIG_VERSION:
         problems.append("version must be %d (got %r)" % (CONFIG_VERSION, version))
 
     preset = data.get("preset")
-    if preset is not None and not (isinstance(preset, str) and preset in presets.PRESETS):
-        problems.append("preset: unknown %r (known: %s)" % (preset, ", ".join(presets.NAMES)))
+    if preset is not None and not (isinstance(preset, str) and preset in preset_names):
+        problems.append("preset: unknown %r (known: %s)" % (preset, ", ".join(preset_names)))
     if project_layer and project_layer.get("preset") is not None:
         problems.append("preset: only the global file can name a preset for now")
+    return problems
 
+
+def _validate_roles(data: Dict[str, Any], providers: List[str]) -> List[str]:
+    problems: List[str] = []
     for role in KNOWN_ROLES:
         spec = data.get(role)
         if not isinstance(spec, dict):
@@ -986,7 +1013,17 @@ def validate(
             continue
         problems.extend("%s: %s" % (role, msg) for msg in _validate_role(spec, providers))
         problems.extend(_validate_tiers(spec, role, providers))
+    return problems
 
+
+def _validate_reviewers(
+    data: Dict[str, Any],
+    providers: List[str],
+    origins: Optional[Sequence[ReviewerOrigin]],
+    global_layer: Optional[Dict[str, Any]],
+    project_layer: Optional[Dict[str, Any]],
+) -> List[str]:
+    problems: List[str] = []
     reviewers = data.get("reviewers")
     if reviewers is None:
         reviewers = []
@@ -1016,132 +1053,134 @@ def validate(
     for name, layer in (("global", global_layer), ("project", project_layer)):
         if layer:
             problems.extend(_validate_extras_file(layer, name, providers))
+    return problems
 
-    review = data.get("review")
-    if review is not None:
-        if not isinstance(review, dict):
-            problems.append("review: must be a mapping")
-        else:
-            iterations = review.get("max_review_iterations", 2)
-            if not isinstance(iterations, int) or isinstance(iterations, bool) or iterations < 0:
-                problems.append("review.max_review_iterations: must be a non-negative integer")
-            timeout = review.get("timeout_seconds", 1800)
-            if not isinstance(timeout, int) or isinstance(timeout, bool) or timeout <= 0:
-                problems.append("review.timeout_seconds: must be a positive integer")
-            idle = review.get("idle_timeout_seconds")
-            if idle is not None and (not isinstance(idle, int) or isinstance(idle, bool) or idle <= 0):
-                problems.append("review.idle_timeout_seconds: must be a positive integer or null")
-            incremental = review.get("incremental_rounds")
-            if incremental is not None and not isinstance(incremental, bool):
-                problems.append("review.incremental_rounds: must be true or false")
-            findings_cap = review.get("max_findings")
-            if findings_cap is not None and (
-                not isinstance(findings_cap, int) or isinstance(findings_cap, bool) or findings_cap < 0
-            ):
-                problems.append("review.max_findings: must be a non-negative integer (0 = no cap)")
-            design = review.get("design")
-            if design is not None:
-                if not isinstance(design, dict):
-                    problems.append("review.design: must be a mapping")
-                else:
-                    enabled = design.get("enabled")
-                    if isinstance(enabled, str):
-                        known = enabled.strip().lower() == "auto"
-                    else:
-                        known = enabled is None or isinstance(enabled, bool)
-                    if not known:
-                        problems.append("review.design.enabled: must be true, false or auto")
-                    rounds = design.get("max_iterations")
-                    if rounds is not None and (
-                        not isinstance(rounds, int) or isinstance(rounds, bool) or rounds < 0
-                    ):
-                        problems.append("review.design.max_iterations: must be a non-negative integer")
-            context = review.get("context")
-            if context is not None:
-                if not isinstance(context, dict):
-                    problems.append("review.context: must be a mapping")
-                else:
-                    # No cross-check between the two. `inline_chars` above
-                    # `max_chars` only says "nothing is ever handed over as a
-                    # file except a forced round", and below it says "I will
-                    # not pay for a prompt that large" -- both are things
-                    # somebody means, and neither is a mistake to warn about.
-                    for key in ("max_chars", "inline_chars", "surrounding_chars"):
-                        value = context.get(key)
-                        if value is not None and (
-                            not isinstance(value, int) or isinstance(value, bool) or value < 1
-                        ):
-                            problems.append("review.context.%s: must be a positive integer" % key)
-                    # `off` is read as false by YAML, so false means none too;
-                    # true names no mode and is refused rather than guessed at.
-                    surrounding = context.get("surrounding")
-                    if isinstance(surrounding, str):
-                        known = surrounding.strip().lower() in ("none", "enclosing")
-                    else:
-                        known = surrounding is None or surrounding is False
-                    if not known:
-                        problems.append("review.context.surrounding: must be one of enclosing, none")
-            exclude = review.get("exclude")
-            if exclude is not None:
-                if not isinstance(exclude, list):
-                    problems.append("review.exclude: must be a list of glob patterns (use [] for none)")
-                else:
-                    for index, pattern in enumerate(exclude):
-                        if not isinstance(pattern, str) or not pattern.strip():
-                            problems.append(
-                                "review.exclude[%d]: must be a non-empty string (got %r)" % (index, pattern)
-                            )
 
-    design = data.get("design")
+def _validate_review(review: Any) -> List[str]:
+    if not isinstance(review, dict):
+        return ["review: must be a mapping"]
+    problems: List[str] = []
+    iterations = review.get("max_review_iterations", 2)
+    if not _int_at_least(iterations, 0):
+        problems.append("review.max_review_iterations: must be a non-negative integer")
+    timeout = review.get("timeout_seconds", 1800)
+    if not _int_at_least(timeout, 1):
+        problems.append("review.timeout_seconds: must be a positive integer")
+    idle = review.get("idle_timeout_seconds")
+    if idle is not None and not _int_at_least(idle, 1):
+        problems.append("review.idle_timeout_seconds: must be a positive integer or null")
+    incremental = review.get("incremental_rounds")
+    if incremental is not None and not isinstance(incremental, bool):
+        problems.append("review.incremental_rounds: must be true or false")
+    findings_cap = review.get("max_findings")
+    if findings_cap is not None and not _int_at_least(findings_cap, 0):
+        problems.append("review.max_findings: must be a non-negative integer (0 = no cap)")
+    design = review.get("design")
     if design is not None:
-        if not isinstance(design, dict):
-            problems.append("design: must be a mapping")
+        problems.extend(_validate_review_design(design))
+    context = review.get("context")
+    if context is not None:
+        problems.extend(_validate_review_context(context))
+    exclude = review.get("exclude")
+    if exclude is not None:
+        if not isinstance(exclude, list):
+            problems.append("review.exclude: must be a list of glob patterns (use [] for none)")
         else:
-            approval = design.get("require_approval")
-            if approval is not None and not isinstance(approval, bool):
-                problems.append("design.require_approval: must be true or false")
-            resume = design.get("resume")
-            if resume is not None:
-                if not isinstance(resume, dict):
-                    problems.append("design.resume: must be a mapping")
-                else:
-                    age = resume.get("max_age_seconds")
-                    if age is not None and (not isinstance(age, int) or isinstance(age, bool) or age < 0):
-                        problems.append("design.resume.max_age_seconds: must be a non-negative integer")
-                    cap = resume.get("max_context_tokens")
-                    if cap is not None and (not isinstance(cap, int) or isinstance(cap, bool) or cap < 1):
-                        problems.append(
-                            "design.resume.max_context_tokens: must be a positive integer or null"
-                        )
-
-    optimization = data.get("optimization")
-    if optimization is not None:
-        problems.extend(_validate_optimization(optimization))
-
-    budgets = data.get("budgets")
-    if budgets is not None:
-        if not isinstance(budgets, dict):
-            problems.append("budgets: must be a mapping")
-        else:
-            for key, value in budgets.items():
-                if value is None:
-                    continue
-                if not isinstance(value, int) or isinstance(value, bool) or value < 0:
-                    problems.append("budgets.%s: must be a non-negative integer or null" % key)
-
-    workspace = data.get("workspace")
-    if workspace is not None:
-        if not isinstance(workspace, dict):
-            problems.append("workspace: must be a mapping")
-        else:
-            days = workspace.get("stale_notice_days")
-            if days is not None:
-                if not isinstance(days, int) or isinstance(days, bool) or days < 0:
-                    problems.append("workspace.stale_notice_days: must be a non-negative integer (0 = off)")
-                elif days > STALE_NOTICE_MAX_DAYS:
+            for index, pattern in enumerate(exclude):
+                if not isinstance(pattern, str) or not pattern.strip():
                     problems.append(
-                        "workspace.stale_notice_days: must be %d or less (100 years)" % STALE_NOTICE_MAX_DAYS
+                        "review.exclude[%d]: must be a non-empty string (got %r)" % (index, pattern)
                     )
+    return problems
+
+
+def _validate_review_design(design: Any) -> List[str]:
+    if not isinstance(design, dict):
+        return ["review.design: must be a mapping"]
+    problems: List[str] = []
+    enabled = design.get("enabled")
+    if isinstance(enabled, str):
+        known = enabled.strip().lower() == "auto"
+    else:
+        known = enabled is None or isinstance(enabled, bool)
+    if not known:
+        problems.append("review.design.enabled: must be true, false or auto")
+    rounds = design.get("max_iterations")
+    if rounds is not None and not _int_at_least(rounds, 0):
+        problems.append("review.design.max_iterations: must be a non-negative integer")
+    return problems
+
+
+def _validate_review_context(context: Any) -> List[str]:
+    if not isinstance(context, dict):
+        return ["review.context: must be a mapping"]
+    problems: List[str] = []
+    # No cross-check between the two. `inline_chars` above
+    # `max_chars` only says "nothing is ever handed over as a
+    # file except a forced round", and below it says "I will
+    # not pay for a prompt that large" -- both are things
+    # somebody means, and neither is a mistake to warn about.
+    for key in ("max_chars", "inline_chars", "surrounding_chars"):
+        value = context.get(key)
+        if value is not None and not _int_at_least(value, 1):
+            problems.append("review.context.%s: must be a positive integer" % key)
+    # `off` is read as false by YAML, so false means none too;
+    # true names no mode and is refused rather than guessed at.
+    surrounding = context.get("surrounding")
+    if isinstance(surrounding, str):
+        known = surrounding.strip().lower() in ("none", "enclosing")
+    else:
+        known = surrounding is None or surrounding is False
+    if not known:
+        problems.append("review.context.surrounding: must be one of enclosing, none")
+    return problems
+
+
+def _validate_design(design: Any) -> List[str]:
+    if not isinstance(design, dict):
+        return ["design: must be a mapping"]
+    problems: List[str] = []
+    approval = design.get("require_approval")
+    if approval is not None and not isinstance(approval, bool):
+        problems.append("design.require_approval: must be true or false")
+    resume = design.get("resume")
+    if resume is not None:
+        if not isinstance(resume, dict):
+            problems.append("design.resume: must be a mapping")
+        else:
+            age = resume.get("max_age_seconds")
+            if age is not None and not _int_at_least(age, 0):
+                problems.append("design.resume.max_age_seconds: must be a non-negative integer")
+            cap = resume.get("max_context_tokens")
+            if cap is not None and not _int_at_least(cap, 1):
+                problems.append("design.resume.max_context_tokens: must be a positive integer or null")
+    return problems
+
+
+def _validate_budgets(budgets: Any) -> List[str]:
+    if not isinstance(budgets, dict):
+        return ["budgets: must be a mapping"]
+    problems: List[str] = []
+    for key, value in budgets.items():
+        if value is None:
+            continue
+        if not _int_at_least(value, 0):
+            problems.append("budgets.%s: must be a non-negative integer or null" % key)
+    return problems
+
+
+def _validate_workspace(workspace: Any) -> List[str]:
+    if not isinstance(workspace, dict):
+        return ["workspace: must be a mapping"]
+    problems: List[str] = []
+    days = workspace.get("stale_notice_days")
+    if days is not None:
+        if not _int_at_least(days, 0):
+            problems.append("workspace.stale_notice_days: must be a non-negative integer (0 = off)")
+        elif days > STALE_NOTICE_MAX_DAYS:
+            problems.append(
+                "workspace.stale_notice_days: must be %d or less (100 years)" % STALE_NOTICE_MAX_DAYS
+            )
     return problems
 
 
@@ -1288,7 +1327,7 @@ def _validate_optimization(data: Any) -> List[str]:
                 )
     for key in ("low_risk_max_files", "low_risk_max_lines"):
         value = data.get(key)
-        if value is not None and (not isinstance(value, int) or isinstance(value, bool) or value < 0):
+        if value is not None and not _int_at_least(value, 0):
             problems.append("optimization.%s: must be a non-negative integer" % key)
     return problems
 
@@ -1342,69 +1381,117 @@ def _string_args(spec: Dict[str, Any]) -> List[str]:
     return [str(item) for item in args] if isinstance(args, list) else []
 
 
+class SeatRun(NamedTuple):
+    """One run a role, one of its tiers or a reviewer would make."""
+
+    #: ``role``, ``tier`` or ``reviewer``: what every consumer dispatches on.
+    kind: str
+    #: ``architect``, ``architect.model_tiers.light`` or ``reviewers[0]``.
+    label: str
+    #: ``architect``, ``architect (tier light)`` or ``reviewer <id>``.
+    display: str
+    #: Set for a reviewer only.
+    reviewer_id: str
+    #: The role's spec, the tier merged onto it, or the reviewer.
+    spec: Dict[str, Any]
+    #: For a role or a tier.
+    role: str = ""
+    #: A tier's key as written: not ``str()``'d, as ``layer_of`` takes it literally.
+    tier: Any = None
+    #: A tier's own entry.
+    entry: Optional[Dict[str, Any]] = None
+    #: A reviewer's place in the panel, non-mappings counted.
+    position: int = -1
+    #: A tier that keeps its role's provider.
+    same_provider: bool = False
+
+
+def role_seats(data: Dict[str, Any], roles: Sequence[str]) -> List[SeatRun]:
+    """For each role in ``roles``: the role, then its mapping tiers in written order.
+
+    Broken entries are skipped: ``validate`` reports those already.
+    """
+    seats: List[SeatRun] = []
+    for role in roles:
+        spec = data.get(role)
+        if not isinstance(spec, dict):
+            continue
+        seats.append(SeatRun("role", role, role, "", spec, role=role))
+        tiers = spec.get("model_tiers")
+        for tier, entry in tiers.items() if isinstance(tiers, dict) else ():
+            if not isinstance(entry, dict):
+                continue
+            merged = merge_tier(spec, entry)
+            seats.append(
+                SeatRun(
+                    "tier",
+                    "%s.model_tiers.%s" % (role, tier),
+                    "%s (tier %s)" % (role, tier),
+                    "",
+                    merged,
+                    role=role,
+                    tier=tier,
+                    entry=entry,
+                    same_provider=merged.get("provider") == spec.get("provider"),
+                )
+            )
+    return seats
+
+
+def _reviewer_seats(data: Dict[str, Any]) -> List[SeatRun]:
+    """Each mapping reviewer, at its place in the panel: a non-mapping before it still counts."""
+    seats: List[SeatRun] = []
+    reviewers = data.get("reviewers")
+    for index, reviewer in enumerate(reviewers if isinstance(reviewers, list) else []):
+        if not isinstance(reviewer, dict):
+            continue
+        reviewer_id = str(reviewer.get("id") or "")
+        display = "reviewer %s" % (reviewer_id or index + 1)
+        label = "reviewers[%d]" % index
+        seats.append(SeatRun("reviewer", label, display, reviewer_id, reviewer, position=index))
+    return seats
+
+
+def _read_only_seats(data: Dict[str, Any]) -> List[SeatRun]:
+    """The read-only roles and their tiers, then every reviewer."""
+    return role_seats(data, READ_ONLY_ROLES) + _reviewer_seats(data)
+
+
 def read_only_raw_args(loaded: LoadedConfig) -> List[RawArgs]:
     """Every read-only run's configured ``options.args``, with its layer.
 
     Broken entries are skipped: ``validate`` reports those already.
     """
     found: List[RawArgs] = []
-    for role in READ_ONLY_ROLES:
-        spec = loaded.data.get(role)
-        if not isinstance(spec, dict):
-            continue
-        key = "%s.options.args" % role
-        provider = str(spec.get("provider") or "")
-        provider_layer = loaded.layer_of([role, "provider"])
-        found.append(
-            RawArgs(role, role, "", provider, _string_args(spec), loaded.layer_of(key), provider_layer)
-        )
-        tiers = spec.get("model_tiers")
-        tier_items = tiers.items() if isinstance(tiers, dict) else ()
-        for tier, entry in tier_items:
-            if not isinstance(entry, dict):
-                continue
-            merged = merge_tier(spec, entry)
+    for seat in _read_only_seats(loaded.data):
+        args = _string_args(seat.spec)
+        if seat.kind == "role":
+            layer = loaded.layer_of("%s.options.args" % seat.role)
+            provider_layer = loaded.layer_of([seat.role, "provider"])
+        elif seat.kind == "tier":
+            entry = seat.entry or {}
             # A tier's ``options`` replaces the role's whole, so the args are
             # the tier's own when it has options at all.
-            tier_key = [role, "model_tiers", tier, "options", "args"] if "options" in entry else key
-            found.append(
-                RawArgs(
-                    "%s.model_tiers.%s" % (role, tier),
-                    "%s (tier %s)" % (role, tier),
-                    "",
-                    str(merged.get("provider") or ""),
-                    _string_args(merged),
-                    loaded.layer_of(tier_key),
-                    loaded.layer_of(_tier_provider_path(role, tier, entry)),
-                )
-            )
-    reviewers = loaded.data.get("reviewers")
-    for index, reviewer in enumerate(reviewers if isinstance(reviewers, list) else []):
-        if not isinstance(reviewer, dict):
-            continue
-        reviewer_id = str(reviewer.get("id") or "")
-        args = _string_args(reviewer)
-        origin = loaded.reviewer_origin(index)
-        if origin.key == "reviewers":
-            layer = loaded.layer_of("reviewers[%d].options.args" % index)
-            # The list is replaced whole, so every reviewer in it came
-            # with the file that set it.
-            provider_layer = loaded.layer_of("reviewers")
+            if "options" in entry:
+                layer = loaded.layer_of([seat.role, "model_tiers", seat.tier, "options", "args"])
+            else:
+                layer = loaded.layer_of("%s.options.args" % seat.role)
+            provider_layer = loaded.layer_of(_tier_provider_path(seat.role, seat.tier, entry))
         else:
-            # An extra is the one file's whole entry; ``layer_of`` would ask
-            # the project file first for an index into the global list.
-            layer = origin.layer if args else "default"
-            provider_layer = origin.layer
+            origin = loaded.reviewer_origin(seat.position)
+            if origin.key == "reviewers":
+                layer = loaded.layer_of("reviewers[%d].options.args" % seat.position)
+                # The list is replaced whole, so every reviewer in it came
+                # with the file that set it.
+                provider_layer = loaded.layer_of("reviewers")
+            else:
+                # An extra is the one file's whole entry; ``layer_of`` would ask
+                # the project file first for an index into the global list.
+                layer = origin.layer if args else "default"
+                provider_layer = origin.layer
+        provider = str(seat.spec.get("provider") or "")
         found.append(
-            RawArgs(
-                "reviewers[%d]" % index,
-                "reviewer %s" % (reviewer_id or index + 1),
-                reviewer_id,
-                str(reviewer.get("provider") or ""),
-                args,
-                layer,
-                provider_layer,
-            )
+            RawArgs(seat.label, seat.display, seat.reviewer_id, provider, args, layer, provider_layer)
         )
     return found
 
@@ -1590,36 +1677,16 @@ def _enforcement_warned_seats(
     # lazy: the provider registry; see the note at the top of this module
     from .providers import unenforced_warning
 
-    seats: List[Tuple[str, str, str, Any]] = []
-    for role in READ_ONLY_ROLES:
-        spec = data.get(role)
-        if not isinstance(spec, dict):
-            continue
-        seats.append((role, role, "", spec.get("provider")))
-        tiers = spec.get("model_tiers")
-        for tier, entry in tiers.items() if isinstance(tiers, dict) else ():
-            if not isinstance(entry, dict):
-                continue
-            merged = merge_tier(spec, entry)
-            if merged.get("provider") == spec.get("provider"):
-                continue
-            label = "%s.model_tiers.%s" % (role, tier)
-            seats.append((label, "%s (tier %s)" % (role, tier), "", merged.get("provider")))
-    reviewers = data.get("reviewers")
-    for index, reviewer in enumerate(reviewers if isinstance(reviewers, list) else []):
-        if not isinstance(reviewer, dict):
-            continue
-        reviewer_id = str(reviewer.get("id") or "")
-        display = "reviewer %s" % (reviewer_id or index + 1)
-        seats.append(("reviewers[%d]" % index, display, reviewer_id, reviewer.get("provider")))
+    seats = [seat for seat in _read_only_seats(data) if not seat.same_provider]
     found: List[Tuple[str, str, str]] = []
-    for label, display, reviewer_id, provider in seats:
-        if label in refused:
+    for seat in seats:
+        if seat.label in refused:
             continue
-        name = str(provider or "")
+        name = str(seat.spec.get("provider") or "")
         enforcement = _warned_provider(name)
         if enforcement is not None:
-            found.append((label, reviewer_id, "%s: %s" % (display, unenforced_warning(name, enforcement))))
+            line = "%s: %s" % (seat.display, unenforced_warning(name, enforcement))
+            found.append((seat.label, seat.reviewer_id, line))
     return found
 
 
@@ -1649,45 +1716,34 @@ def project_write_refusals(loaded: LoadedConfig) -> Dict[str, str]:
 
     name = os.path.basename(loaded.project_path or "") or "the project file"
     refused: Dict[str, str] = {}
-    for role in WRITE_ROLES:
-        spec = loaded.data.get(role)
-        if not isinstance(spec, dict):
+    for seat in role_seats(loaded.data, WRITE_ROLES):
+        if seat.kind == "role":
+            options_path: List[Any] = [seat.role, "options"]
+        # A tier's ``options`` replaces the role's whole; one that changes
+        # provider without any has none at all.
+        elif "options" in (seat.entry or {}):
+            options_path = [seat.role, "model_tiers", seat.tier, "options"]
+        elif not seat.same_provider:
             continue
-        role_options: List[Any] = [role, "options"]
-        candidates = [(role, role, spec, role_options)]
-        tiers = spec.get("model_tiers")
-        for tier, entry in tiers.items() if isinstance(tiers, dict) else ():
-            if not isinstance(entry, dict):
-                continue
-            merged = merge_tier(spec, entry)
-            # A tier's ``options`` replaces the role's whole; one that changes
-            # provider without any has none at all.
-            if "options" in entry:
-                options_path: List[Any] = [role, "model_tiers", tier, "options"]
-            elif merged.get("provider") != spec.get("provider"):
-                continue
-            else:
-                options_path = [role, "options"]
-            label = "%s.model_tiers.%s" % (role, tier)
-            candidates.append((label, "%s (tier %s)" % (role, tier), merged, options_path))
-        for label, display, run_spec, options_path in candidates:
-            provider = str(run_spec.get("provider") or "")
-            try:
-                local_only = list(get_provider(provider).local_only_options) if provider else []
-            except Exception:
-                continue  # an unknown provider or a broken adapter is validate's to report
-            if not local_only:
-                continue
-            named = [key for key in local_only if loaded.layer_of([*options_path, key]) == "project"]
-            args = loaded.layer_of([*options_path, "args"]) == "project" and bool(_string_args(run_spec))
-            if not named and not args:
-                continue
-            keys = " / ".join(["options.%s" % key for key in local_only] + ["options.args"])
-            refused[label] = (
-                "%s: %s is set in the project config (%s); on %s the permission bypass and raw "
-                "arguments are taken only from the global config or from --extra"
-                % (display, keys, name, provider)
-            )
+        else:
+            options_path = [seat.role, "options"]
+        provider = str(seat.spec.get("provider") or "")
+        try:
+            local_only = list(get_provider(provider).local_only_options) if provider else []
+        except Exception:
+            continue  # an unknown provider or a broken adapter is validate's to report
+        if not local_only:
+            continue
+        named = [key for key in local_only if loaded.layer_of([*options_path, key]) == "project"]
+        args = loaded.layer_of([*options_path, "args"]) == "project" and bool(_string_args(seat.spec))
+        if not named and not args:
+            continue
+        keys = " / ".join(["options.%s" % key for key in local_only] + ["options.args"])
+        refused[seat.label] = (
+            "%s: %s is set in the project config (%s); on %s the permission bypass and raw "
+            "arguments are taken only from the global config or from --extra"
+            % (seat.display, keys, name, provider)
+        )
     return refused
 
 
