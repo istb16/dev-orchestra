@@ -5,10 +5,11 @@ from __future__ import annotations
 import argparse
 import os
 import shutil
-from typing import Any, Dict, List, Optional, cast
+from typing import Any, Dict, List, NamedTuple, Optional, cast
 
 from . import approval as approval_mod
 from . import config as config_mod
+from . import ledger as ledger_mod
 from . import optimization as opt_mod
 from . import optimization_report as opt_report
 from . import review as review_mod
@@ -283,11 +284,33 @@ def _approval_advice(info: Dict[str, Any], plan_relative: str, design_pass: Dict
     return "no plan"
 
 
+class _Status(NamedTuple):
+    """The `status` verdict: the `--json` payload, and what only the text view reads."""
+
+    payload: Dict[str, Any]
+    plan: opt_mod.Plan
+    design_decision: opt_mod.DesignDecision
+    design_pass: Dict[str, Any]
+    architect_left: Optional[int]
+
+
 def cmd_status(args: argparse.Namespace) -> int:
     """One verdict the orchestrator can act on: continue, or stop and report."""
     loaded = config_mod.load(args.cwd, validate_result=False)
     workspace = _workspace(args)
     book = _ledger(args, workspace)
+    status = _status_payload(loaded, workspace, book)
+    if args.json:
+        _emit_json(status.payload)
+        return 0
+    _render_status(status, workspace)
+    return 0
+
+
+def _status_payload(
+    loaded: config_mod.LoadedConfig, workspace: ws.Workspace, book: ledger_mod.Ledger
+) -> _Status:
+    """Everything the verdict is built from, read once; nothing is printed."""
     abandoned = book.clear_stalls()
 
     review_data = ws.read_json(workspace.consolidated_json_path, {}) or {}
@@ -480,60 +503,71 @@ def cmd_status(args: argparse.Namespace) -> int:
         if workspace.workflow
         else [],
     }
-    if args.json:
-        _emit_json(payload)
-        return 0
+    return _Status(payload, plan, design_decision, design_pass, architect_left)
 
+
+def _render_status(status: _Status, workspace: ws.Workspace) -> None:
+    """The text view of `status`, read from the payload wherever it holds the value."""
+    payload = status.payload
+    plan = status.plan
+    review = payload["review"]
+    design = payload["design_review"]
     _out("Verdict: %s" % payload["verdict"].upper())
-    for reason in reasons:
+    for reason in payload["reasons"]:
         _out("  - %s" % reason)
     for line in _workflow_warning(workspace):
         _out("  ! %s" % line)
-    if summary["stalls"]:
+    if payload["stalls"]:
         _out("")
         _out("Stalled stages:")
-        for stall in summary["stalls"]:
+        for stall in payload["stalls"]:
             _out(
                 "  %s started %s (%.0fs ago) -- %s"
                 % (stall["stage"], stall["started_at"], stall["elapsed_seconds"], stall["reason"])
             )
+    abandoned = payload["abandoned_stages"]
     if abandoned:
         _out("")
         _out("Cleared %d stage(s) whose process is gone: %s" % (len(abandoned), ", ".join(abandoned)))
-    if summary["in_flight"]:
+    if payload["in_flight"]:
         _out("")
         _out("In flight:")
-        for token, entry in summary["in_flight"].items():
+        for token, entry in payload["in_flight"].items():
             _out("  %s (%s) since %s" % (entry.get("stage"), token, entry.get("started_at")))
     _out("")
     line = "Review: round %d/%d, %d accepted, %d blocking" % (
-        iteration,
-        max_iterations,
-        payload["review"]["accepted"],
-        len(blocking),
+        review["iteration"],
+        review["max_review_iterations"],
+        review["accepted"],
+        len(review["blocking"]),
     )
-    if review_pass["state"] == "pending":
+    if review["final_fix"] == "pending":
         line += " -- final fix pending (fix, re-test, do not re-review)"
-    elif review_pass["state"] == "retest":
+    elif review["final_fix"] == "retest":
         line += " -- final fix done, re-test pending (record it, do not re-review)"
-    if review_pass["state"] in ("pending", "retest") and review_repeats > 1:
+    if review["final_fix"] in ("pending", "retest") and review["identical_rounds"] > 1:
         line += "; identical to the previous round"
     _out(line)
     line = "Design review: %s, round %d/%d, %d accepted, %d blocking" % (
-        design_decision.label(),
-        design_iteration,
-        design_max,
-        payload["design_review"]["accepted"],
-        len(design_blocking),
+        status.design_decision.label(),
+        design["iteration"],
+        design["max_iterations"],
+        design["accepted"],
+        len(design["blocking"]),
     )
-    if design_pass["pending"]:
+    if design["final_revision_pending"]:
         line += " -- final revision pending (fold the findings in, do not re-review)"
-        if design_repeats > 1:
+        if design["identical_rounds"] > 1:
             line += "; identical to the previous round"
     _out(line)
     _out(
         "Plan approval: %s"
-        % _approval_line(approval_info, workspace.relative(workspace.plan_path), design_pass, architect_left)
+        % _approval_line(
+            payload["design_approval"],
+            workspace.relative(workspace.plan_path),
+            status.design_pass,
+            status.architect_left,
+        )
     )
     line = "Optimization: %s" % plan.level
     if plan.escalated:
@@ -544,22 +578,21 @@ def cmd_status(args: argparse.Namespace) -> int:
     for record in plan.conditional:
         line += "; %s %s (%s)" % (record["id"], "added" if record["runs"] else "left out", record["reason"])
     _out(line)
-    tokens = summary["tokens"]["totals"]
+    tokens = payload["tokens"]["totals"]
     if tokens["runs"]:
         _out(
             "Tokens: %s billed over %d run(s)%s (dev-orchestra tokens show)"
             % (
                 "{:,}".format(int(tokens["billed_tokens"] or 0)) or "0",
                 tokens["runs"],
-                "" if summary["tokens"]["complete"] else ", partially reported",
+                "" if payload["tokens"]["complete"] else ", partially reported",
             )
         )
-    if summary["runtime"]["suspended"]:
+    if payload["runtime"]["suspended"]:
         _out(
             "Runtime: %.0fs of delegated run time spent asleep was not charged (dev-orchestra budget show)"
-            % summary["runtime"]["suspended"]
+            % payload["runtime"]["suspended"]
         )
-    return 0
 
 
 def cmd_design_approve(args: argparse.Namespace) -> int:
