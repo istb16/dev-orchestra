@@ -10,6 +10,8 @@ The public surface covered by that promise is: the configuration schema, the
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-10-02
+
 ### Changed
 
 - **Claude's `permission_mode` and Codex's `sandbox` / `approve` on a write
@@ -2162,7 +2164,8 @@ First release.
   none of which invoke a real CLI.
 - CI on Linux, macOS and Windows: lint, tests, skill validation.
 
-[Unreleased]: https://github.com/istb16/dev-orchestra/compare/v0.16.0...HEAD
+[Unreleased]: https://github.com/istb16/dev-orchestra/compare/v0.17.0...HEAD
+[0.17.0]: https://github.com/istb16/dev-orchestra/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/istb16/dev-orchestra/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/istb16/dev-orchestra/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/istb16/dev-orchestra/compare/v0.13.2...v0.14.0
