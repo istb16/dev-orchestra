@@ -417,8 +417,8 @@ Codex resumes a session by forking it. A version is trusted once
 missing session`, `ignores repository config on resume`) and its entry is in
 `VERIFIED_RESUME` in `providers/codex.py` (codex-cli 0.156.1, 2026-09-30); a
 newer version of the same major is trusted by the rule above. The script runs
-those checks whatever `supports_resume` says (`RESUME_PENDING` in
-`scripts/smoke_live.py`), so turning resume off in the adapter does not stop a
+those checks for every adapter whose class overrides `resume_args`, whatever
+`supports_resume` says, so turning resume off in the adapter does not stop a
 version from being checked. The command:
 
 ```bash

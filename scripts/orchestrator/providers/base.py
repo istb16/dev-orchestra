@@ -7,6 +7,7 @@ returns a resolution that lets the CLI pick its own default.
 
 from __future__ import annotations
 
+import json
 import math
 import os
 import re
@@ -90,6 +91,36 @@ def _prefixed(notes: Sequence[str], stderr: str) -> str:
     if not notes:
         return stderr
     return "\n".join([*notes, stderr])
+
+
+#: Only a UUID names a session on a command line or in a glob: the id is read
+#: from a run log or from the CLI's own output, and anything else could smuggle
+#: in a flag.
+SESSION_ID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+
+
+def json_lines(text: str) -> List[Dict[str, Any]]:
+    """Every JSON object on its own line, skipping anything unparseable."""
+    events: List[Dict[str, Any]] = []
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(event, dict):
+            events.append(event)
+    return events
+
+
+def token_count(value: Any) -> Optional[int]:
+    """A token count, or None. A bool is not a count; neither is a string or
+    a negative number."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value if value >= 0 else None
 
 
 class Detection:
@@ -752,7 +783,8 @@ class Provider:
         resume_session: Optional[str] = None,
     ) -> List[str]:
         """The command a run starts. Adapters override :meth:`build_command`,
-        :meth:`resume_args` and :meth:`resume_command`, not this.
+        :meth:`resume_args` and :meth:`resume_command`, not this -- unless a
+        run passes a keyword of its own through ``_launch(command_kwargs=)``.
 
         The resume arguments are the adapter's own, so they never pass
         through the caller's raw-argument gate, which :meth:`run` applies
@@ -823,7 +855,12 @@ class Provider:
         options: Optional[Dict[str, Any]] = None,
         idle_timeout: Optional[float] = None,
         resume_session: Optional[str] = None,
+        command_kwargs: Optional[Dict[str, Any]] = None,
     ) -> RunResult:
+        """``command_kwargs`` go to :meth:`command_line` as they are: what an
+        adapter's override decides for one run before its command is built
+        travels with the call, never on the instance, which parallel runs share.
+        """
         detection = self.detect()
         if not detection.installed:
             return RunResult(
@@ -848,7 +885,9 @@ class Provider:
                 warnings.append(unenforced_warning(self.name, enforcement))
 
         resolved = self.resolve_model(model_spec)
-        command = self.command_line(mode, resolved, cwd, extra_args, options, resume_session)
+        command = self.command_line(
+            mode, resolved, cwd, extra_args, options, resume_session, **(command_kwargs or {})
+        )
         outcome = execution.execute(
             command,
             cwd=cwd,
@@ -988,6 +1027,13 @@ class Provider:
         return env
 
     # -- helpers -----------------------------------------------------------
+
+    def _help_output(self, *args: str) -> Optional[str]:
+        """What ``<executable> <args>`` prints, or None if it could not be read."""
+        completed = self._capture([self.executable, *args], timeout=45)
+        if completed is None or completed.returncode != 0:
+            return None
+        return completed.stdout or ""
 
     def _capture(self, command: Sequence[str], timeout: int = 30) -> Optional[subprocess.CompletedProcess]:
         try:

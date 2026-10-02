@@ -518,18 +518,20 @@ class TestCommand(CliCase):
         self.assertEqual(code, 0, err)
         self.assertIn("(refused from here: %s is not at %s)" % (stray, self.project), out)
 
-    def test_a_project_file_above_the_root_refuses_write(self):
+    def test_a_project_file_above_a_worktree_root_is_not_in_force(self):
         repo = os.path.join(self.project, "inner")
         os.makedirs(os.path.join(repo, "db", "migrations"))
         self.touch("inner/db/migrations/1.sql", "inner/db/migrations/2.sql")
-        # A worktree's `.git` is a file, which find_project_config walks past.
+        # A worktree's `.git` is a file, and it ends the search for the
+        # project file as it ends the listing's.
         self.write("inner/.git", "gitdir: elsewhere\n")
         self.fake_git(out="db/migrations/1.sql\0db/migrations/2.sql\0" + "".join(p + "\0" for p in FILLER))
         config_mod.write_config_file(self.project_file(), {"version": 1}, "project")
-        code, out, err = run_cli("--cwd", repo, "config", "suggest-roles", "--write")
-        self.assertEqual(code, 2)
-        self.assertEqual(out, "")
-        self.assertIn("but the files are listed from %s" % repo, err)
+        code, out, err = run_cli("--cwd", repo, "config", "suggest-roles")
+        self.assertEqual(code, 0, err)
+        target = os.path.join(repo, config_mod.PROJECT_CONFIG_NAMES[0])
+        self.assertIn("--write adds them to %s's reviewers_extra" % target, out)
+        self.assertNotIn("refused from here", out)
 
     def test_write_into_a_file_that_lists_reviewers(self):
         self.database_tree()

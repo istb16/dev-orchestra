@@ -27,7 +27,7 @@ import subprocess
 import sys
 import threading
 import time
-from typing import IO, Any, Dict, List, Optional, Sequence, cast
+from typing import IO, Any, Callable, Dict, List, Optional, Sequence, cast
 
 from . import clocks
 
@@ -120,22 +120,90 @@ class _Drain:
             return self.last_output_at
 
 
-def _spawn_kwargs() -> Dict[str, Any]:
+def spawn_kwargs() -> Dict[str, Any]:
     """Put the child in its own group so the whole tree can be signalled."""
     if IS_WINDOWS:
         return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
     return {"start_new_session": True}
 
 
+#: The name the tests have always used.
+_spawn_kwargs = spawn_kwargs
+
+
 def terminate_tree(proc: subprocess.Popen, grace: float = KILL_GRACE_SECONDS) -> bool:
     """Kill the child *and its descendants*. True if everything exited."""
     if proc.poll() is not None:
         return True
+
+    def exited(timeout: float) -> bool:
+        try:
+            proc.wait(timeout=timeout)
+            return True
+        except subprocess.TimeoutExpired:
+            return False
+
+    def kill() -> None:
+        try:
+            proc.kill()
+        except OSError:
+            pass
+
+    return _end_tree(proc.pid, grace, exited, kill)
+
+
+def kill_tree(pid: int, grace: float = KILL_GRACE_SECONDS) -> bool:
+    """:func:`terminate_tree` for a process known only by its pid, such as a
+    detached worker. True once it is confirmed gone, not when it was signalled.
+
+    The pid is only a number read back from a record, so on POSIX it is
+    signalled only while it still leads its own group, as a worker started by
+    :func:`spawn_kwargs` does; anything else is more likely a reused pid than
+    our worker, and is left alone (False).
+    """
+    if not pid_alive(pid):
+        return True
+    if not IS_WINDOWS:
+        try:
+            if os.getpgid(pid) != pid:
+                return False
+        except ProcessLookupError:
+            return True
+        except OSError:
+            return False
+
+    def exited(timeout: float) -> bool:
+        deadline = time.monotonic() + timeout
+        while True:
+            _reap(pid)
+            if not pid_alive(pid):
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(_POLL_SECONDS)
+
+    def kill() -> None:
+        import signal
+
+        try:
+            os.kill(pid, signal.SIGTERM if IS_WINDOWS else signal.SIGKILL)
+        except OSError:
+            pass
+
+    return _end_tree(pid, grace, exited, kill)
+
+
+def _end_tree(pid: int, grace: float, exited: Callable[[float], bool], kill: Callable[[], None]) -> bool:
+    """Signal ``pid``'s whole tree, escalating, until ``exited`` says it is gone.
+
+    ``exited(timeout)`` waits up to ``timeout`` for the process to exit and
+    says whether it did; ``kill`` is the last resort, for the process alone.
+    """
     if IS_WINDOWS:
         # taskkill is the only reliable way to reach grandchildren on Windows.
         try:
             subprocess.run(
-                ["taskkill", "/T", "/F", "/PID", str(proc.pid)],
+                ["taskkill", "/T", "/F", "/PID", str(pid)],
                 capture_output=True,
                 timeout=grace,
                 check=False,
@@ -147,23 +215,28 @@ def terminate_tree(proc: subprocess.Popen, grace: float = KILL_GRACE_SECONDS) ->
 
         for sig in (signal.SIGTERM, signal.SIGKILL):
             try:
-                os.killpg(os.getpgid(proc.pid), sig)
+                os.killpg(os.getpgid(pid), sig)
             except (ProcessLookupError, PermissionError, OSError):
                 break
-            try:
-                proc.wait(timeout=grace / 2)
+            if exited(grace / 2):
                 return True
-            except subprocess.TimeoutExpired:
-                continue
-    try:
-        proc.kill()
-    except OSError:
-        pass
-    try:
-        proc.wait(timeout=grace)
+    # The tree may already be gone (taskkill done, or the group no longer
+    # there to signal); then the pid may be someone else's by now.
+    if exited(0):
         return True
-    except subprocess.TimeoutExpired:
-        return False
+    kill()
+    return exited(grace)
+
+
+def _reap(pid: int) -> None:
+    """Collect ``pid`` if it is a child of this process that has exited: until
+    then it is a zombie, which still answers as alive."""
+    if IS_WINDOWS:
+        return
+    try:
+        os.waitpid(pid, os.WNOHANG)
+    except OSError:  # not our child, or already collected
+        pass
 
 
 def execute(
@@ -196,7 +269,7 @@ def execute(
             errors="replace",
             bufsize=1,
             env=env,
-            **_spawn_kwargs(),
+            **spawn_kwargs(),
         )
     except OSError as exc:
         return ExecOutcome(EXIT_SPAWN_FAILED, "", str(exc), time.monotonic() - started)

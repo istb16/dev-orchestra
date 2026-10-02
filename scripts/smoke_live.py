@@ -64,6 +64,7 @@ from orchestrator.providers import (
     MODE_REVIEW,
     OFFLINE,
     WARNED_ENFORCEMENT,
+    Provider,
     available_providers,
     get_provider,
     redact,
@@ -155,11 +156,6 @@ HOOKED = ("claude",)
 #: Providers whose resumed runs are checked against a repository config that
 #: loosens the sandbox (``.codex/config.toml``).
 REPO_CONFIGURED = ("codex",)
-
-#: Providers whose resume is checked here before the adapter turns it on:
-#: ``supports_resume`` stays off until these checks pass, so it cannot be
-#: what decides whether they run.
-RESUME_PENDING = ("codex",)
 
 #: What the repository-config check writes: every way ``config.toml`` names
 #: a sandbox, all of them loose.
@@ -609,13 +605,26 @@ def _check_hooks(provider: Any, name: str, root: str, parent: str) -> List[Check
     return checks
 
 
+def resumes(provider: Any) -> bool:
+    """Whether the adapter's class builds a resumed command of its own --
+    through ``resume_args`` or a whole ``resume_command`` -- rather than the
+    base methods that refuse to."""
+    cls = type(provider)
+    return any(
+        getattr(cls, attr, getattr(Provider, attr)) is not getattr(Provider, attr)
+        for attr in ("resume_args", "resume_command")
+    )
+
+
 def check_resume(provider: Any, name: str, root: str) -> List[Check]:
     """Does a resumed session keep every restriction a fresh read-only run has?
 
-    One parent session, and every check forks it. Not asked of an adapter
-    that does not resume, unless it is one waiting on these checks.
+    One parent session, and every check forks it. Asked of every adapter that
+    has resume arguments of its own, whatever ``supports_resume`` says: an
+    adapter keeps resume off until these checks pass, so the switch cannot be
+    what decides whether they run.
     """
-    if not getattr(provider, "supports_resume", False) and name not in RESUME_PENDING:
+    if not resumes(provider):
         return []
     labels = resume_labels(name)
     parent_result, reason = _plan_run(provider, READY_PROMPT, root)
@@ -750,7 +759,7 @@ def record_resume(provider: Any, name: str, checks: List[Check], model: str) -> 
     nothing, and nothing is written; nor is anything for an adapter that
     requires no check.
     """
-    required = tuple(getattr(provider, "required_resume_checks", verified.REQUIRED_RESUME_CHECKS))
+    required = tuple(provider.required_resume_checks)
     if not required:
         return []
     by_name = {check.name: check for check in checks if check.provider == name}
@@ -773,10 +782,7 @@ def record_resume(provider: Any, name: str, checks: List[Check], model: str) -> 
             return [Check(name, "resume recorded as failed", False, detail)]
         before, _ = verified.read(name, root)
         known = version in ((before or {}).get("versions") or {})
-        if hasattr(provider, "resume_mechanism"):
-            mechanism = provider.resume_mechanism()
-        else:
-            mechanism = provider.read_only_enforcement()["mechanism"]
+        mechanism = provider.resume_mechanism()
         ok_checks = [label for label, check in by_name.items() if check.ok]
         path = verified.record_pass(name, version, mechanism, ok_checks, model, root)
     except verified.VerifiedRecordError:

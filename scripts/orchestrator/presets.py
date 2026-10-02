@@ -233,6 +233,17 @@ def user_fit(provider: Any) -> UserFit:
     return UserFit(family, False, "family %s; %s: %s, and %s" % (family, _WRITE_ONLY, reason, _SEAT_BAR))
 
 
+def _named_fit(name: str) -> UserFit:
+    """:func:`user_fit` of the adapter called ``name``; not fitted when the
+    name is unknown or its factory fails."""
+    from .providers import get_provider
+
+    try:
+        return user_fit(get_provider(name))
+    except Exception:  # an unknown name, or a factory that failed: not fitted
+        return UserFit("", False, "")
+
+
 def installed_providers() -> List[str]:
     """Each fitted provider whose CLI is on PATH: the built-ins in fitting
     order, then each opted-in user adapter by name."""
@@ -268,16 +279,10 @@ def suggestion_provider(installed: Sequence[str]) -> Optional[str]:
     for name in SEAT_PROVIDERS:
         if name in installed:
             return name
-    from .providers import get_provider
-
     for name in installed:
         if name in FITTED_PROVIDERS:
             continue
-        try:
-            seats = user_fit(get_provider(name)).seats
-        except Exception:  # an adapter that fails is not fitted
-            continue
-        if seats and not config_mod.warned_provider(name):
+        if _named_fit(name).seats and not config_mod.warned_provider(name):
             return name
     return None
 
@@ -289,13 +294,7 @@ def cheap_family(provider: str) -> str:
         return _CHEAP_FAMILY[provider]
     if provider in _OFFLINE_FAMILY:
         return _OFFLINE_FAMILY[provider]
-    try:
-        from .providers import get_provider
-
-        declared = user_fit(get_provider(provider)).family
-    except Exception:  # an unknown name, or a factory that failed
-        declared = ""
-    return declared or config_mod.default_reviewer_family(provider)
+    return _named_fit(provider).family or config_mod.default_reviewer_family(provider)
 
 
 def describe_installed(installed: Sequence[str]) -> str:
@@ -397,14 +396,7 @@ def expand(name: str, installed: Sequence[str], implementer: Optional[str] = Non
     """
     preset = PRESETS[name]
     users = sorted({provider for provider in installed if provider not in FITTED_PROVIDERS})
-    fits: Dict[str, UserFit] = {}
-    for user in users:
-        try:
-            from .providers import get_provider
-
-            fits[user] = user_fit(get_provider(user))
-        except Exception:  # an unknown name, or a factory that failed: not fitted
-            fits[user] = UserFit("", False, "")
+    fits = {user: _named_fit(user) for user in users}
     fitted_users = [user for user in users if fits[user].family]
     builtin_pool = [provider for provider in FITTED_PROVIDERS if provider in installed]
     pool = builtin_pool or fitted_users or list(FITTED_PROVIDERS)

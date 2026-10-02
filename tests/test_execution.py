@@ -160,6 +160,93 @@ class TestProcessTree(IsolatedCase):
         proc.wait(timeout=30)
         self.assertTrue(execution.terminate_tree(proc))
 
+    def test_kill_tree_by_pid_returns_once_the_process_is_gone(self):
+        proc = subprocess.Popen(python_code(SILENT_HANG), **execution.spawn_kwargs())
+        try:
+            self.assertTrue(execution.kill_tree(proc.pid))
+            self.assertFalse(execution.pid_alive(proc.pid))
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=30)
+
+    def test_kill_tree_stops_a_detached_worker_and_its_child(self):
+        """The real shape: the worker is not our child, so nothing here can
+        reap it, and its own child is reached only through the tree."""
+        import os
+
+        pids_file = os.path.join(self.project, "pids.txt")
+        launcher = (
+            "import os, subprocess, sys\n"
+            "kw = {'creationflags': subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == 'nt'"
+            " else {'start_new_session': True}\n"
+            "subprocess.Popen([sys.executable, '-c', sys.argv[1], sys.argv[2]],"
+            " stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **kw)\n"
+        )
+        worker = (
+            "import os, subprocess, sys, time\n"
+            "child = subprocess.Popen([sys.executable, '-c', %r])\n"
+            "with open(sys.argv[1] + '.tmp', 'w') as f: f.write('%%d %%d' %% (os.getpid(), child.pid))\n"
+            "os.replace(sys.argv[1] + '.tmp', sys.argv[1])\n"
+            "while True: time.sleep(0.05)\n"
+        ) % SILENT_HANG
+        subprocess.run([*python_code(launcher), worker, pids_file], check=True, timeout=30)
+        deadline = time.monotonic() + 30
+        while not os.path.exists(pids_file):
+            self.assertLess(time.monotonic(), deadline, "the worker never started")
+            time.sleep(0.05)
+        with open(pids_file) as f:
+            worker_pid, grandchild_pid = (int(part) for part in f.read().split())
+        try:
+            self.assertTrue(execution.kill_tree(worker_pid))
+            self.assertFalse(execution.pid_alive(worker_pid))
+            deadline = time.monotonic() + 10
+            while execution.pid_alive(grandchild_pid) and time.monotonic() < deadline:
+                time.sleep(0.05)
+            self.assertFalse(execution.pid_alive(grandchild_pid))
+        finally:
+            for pid in (worker_pid, grandchild_pid):  # pragma: no cover - safety net
+                if execution.pid_alive(pid):
+                    try:
+                        os.kill(pid, 9 if os.name != "nt" else 15)
+                    except OSError:
+                        pass
+
+    def test_kill_tree_on_an_already_dead_pid_is_fine(self):
+        proc = subprocess.Popen(python_code("pass"), **execution.spawn_kwargs())
+        proc.wait(timeout=30)
+        self.assertTrue(execution.kill_tree(proc.pid))
+
+    @unittest.skipIf(execution.IS_WINDOWS, "process groups are POSIX")
+    def test_kill_tree_leaves_a_pid_that_does_not_lead_its_group_alone(self):
+        """A recorded pid that is not a group leader is not a worker we spawned,
+        most likely a reused pid: nothing is signalled and it is not reported gone."""
+        sent = []
+        with (
+            mock.patch.object(execution, "pid_alive", lambda pid: True),
+            mock.patch.object(execution.os, "getpgid", lambda pid: pid + 1),
+            mock.patch.object(execution.os, "killpg", lambda pgid, sig: sent.append(("killpg", sig))),
+            mock.patch.object(execution.os, "kill", lambda pid, sig: sent.append(("kill", sig))),
+        ):
+            self.assertFalse(execution.kill_tree(4242, grace=0.2))
+        self.assertEqual(sent, [])
+
+    def test_the_last_resort_is_not_used_once_the_tree_is_gone(self):
+        """After taskkill, or a group that is no longer there, the bare pid may
+        already belong to someone else."""
+
+        def gone(*args, **kwargs):
+            raise ProcessLookupError
+
+        kills = []
+        with (
+            mock.patch.object(execution.subprocess, "run", lambda *args, **kwargs: None),
+            mock.patch.object(execution.os, "getpgid", gone, create=True),
+            mock.patch.object(execution.os, "killpg", gone, create=True),
+        ):
+            self.assertTrue(execution._end_tree(4242, 0.2, lambda timeout: True, lambda: kills.append(1)))
+        self.assertEqual(kills, [])
+
 
 class TestPidLiveness(IsolatedCase):
     def test_our_own_pid_is_alive(self):

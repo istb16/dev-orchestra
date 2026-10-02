@@ -378,6 +378,37 @@ def _condition_paths(meta: Dict[str, Any]) -> List[str]:
     return list(meta.get("files") or []) + [str(entry.get("path")) for entry in (meta.get("withheld") or [])]
 
 
+def _round_plan(
+    loaded: config_mod.LoadedConfig,
+    settings: Dict[str, Any],
+    workspace: ws.Workspace,
+    meta: Dict[str, Any],
+    panel: List[Dict[str, Any]],
+    declared: bool = False,
+    only: bool = False,
+) -> opt_mod.Plan:
+    """What a review round on the snapshot ``meta`` decides.
+
+    Built here for both `review run` and the `status` preview, so the
+    preview cannot drift from the run. The preview passes the whole panel,
+    and neither ``--only`` nor ``--high-risk``.
+    """
+    return opt_mod.decide(
+        loaded.optimization_settings(),
+        settings,
+        _risk_paths(meta),
+        int(meta.get("lines_added") or 0) + int(meta.get("lines_deleted") or 0),
+        workspace.last_status("test"),
+        len(panel),
+        reviewed_files=len(meta.get("files") or []),
+        panel=panel,
+        declared=declared,
+        carried=review_mod.carried_findings(workspace, meta),
+        only=only,
+        condition_paths=_condition_paths(meta),
+    )
+
+
 def cmd_review_snapshot(args: argparse.Namespace) -> int:
     loaded = config_mod.load(args.cwd, validate_result=False)
     workspace = _workspace(args)
@@ -829,20 +860,7 @@ def cmd_review_run(args: argparse.Namespace) -> int:
             % (override, meta.get("incremental_from"))
         )
         return 2
-    plan = opt_mod.decide(
-        loaded.optimization_settings(),
-        settings,
-        _risk_paths(meta),
-        int(meta.get("lines_added") or 0) + int(meta.get("lines_deleted") or 0),
-        workspace.last_status("test"),
-        len(reviewers),
-        reviewed_files=len(meta.get("files") or []),
-        panel=reviewers,
-        declared=declared,
-        carried=review_mod.carried_findings(workspace, meta),
-        only=bool(args.only),
-        condition_paths=_condition_paths(meta),
-    )
+    plan = _round_plan(loaded, settings, workspace, meta, reviewers, declared, bool(args.only))
     if plan.escalated:
         _err("note: %s" % plan.escalation_note())
     for line in plan.conditional_notes():

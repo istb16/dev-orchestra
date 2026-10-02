@@ -572,7 +572,7 @@ class TestTheWizard(ExtrasCase):
 
     def run_wizard(self, answers, existing, scope="global"):
         prompter = ScriptedPrompter(answers)
-        base = cli_common._fitted_base(scope, self.project, existing)
+        base = cli_common._fitted_base(scope, existing)
         data, save = wizard_mod.run(prompter, existing, base, scope=scope)
         return data, save, "\n".join(prompter.output)
 

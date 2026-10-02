@@ -749,13 +749,12 @@ def findings_cap(
     after any escalation has been settled; a caller with no change to judge
     leaves it out and gets the configured level.
     """
-    configured = review_settings.get("max_findings")
-    if isinstance(configured, int) and not isinstance(configured, bool) and configured >= 0:
-        return configured
-    return MAX_FINDINGS_BY_LEVEL[normalise_level(level if level is not None else settings.get("level"))]
+    by_level = MAX_FINDINGS_BY_LEVEL[normalise_level(level if level is not None else settings.get("level"))]
+    return _positive(review_settings.get("max_findings"), by_level)
 
 
 def _positive(value: Any, fallback: int) -> int:
+    """``value`` when it is a non-negative int (a bool is not one), else ``fallback``."""
     if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
         return value
     return fallback

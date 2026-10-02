@@ -66,7 +66,6 @@ no failure it has not since passed.
 
 from __future__ import annotations
 
-import json
 import os
 import re
 from typing import Any, Dict, List, Optional, Sequence, cast
@@ -76,11 +75,14 @@ from ..execution import ExecOutcome
 from .base import (
     MODE_IMPLEMENT,
     READ_ONLY_MODES,
+    SESSION_ID_RE,
     ModelCandidate,
     ModelResolutionError,
     Provider,
     ResolvedModel,
     Usage,
+    json_lines,
+    token_count,
 )
 
 _ALIAS_RE = re.compile(r"'([a-z][a-z0-9.\-]*)'")
@@ -96,9 +98,6 @@ READ_ONLY_MECHANISM = (
 )
 #: What ``--help`` has to list before a session is resumed.
 _RESUME_FLAGS = ("--resume", "--fork-session")
-#: Only a UUID goes on the command line after ``--resume=``: the id is read
-#: from the run log, and anything else could smuggle in a flag.
-_SESSION_ID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 #: How the CLI says a resumed session does not exist, before the id.
 _MISSING_SESSION = "No conversation found with session ID: "
 #: Streams the answer while it is written; asked for only when advertised.
@@ -247,10 +246,7 @@ class ClaudeProvider(Provider):
         return self._cached("help_text", self._read_help)
 
     def _read_help(self) -> Optional[str]:
-        completed = self._capture([self.executable, "--help"], timeout=45)
-        if completed is None or completed.returncode != 0:
-            return None
-        return completed.stdout or ""
+        return self._help_output("--help")
 
     def _discover_permission_modes(self) -> List[str]:
         text = self.help_text()
@@ -352,11 +348,13 @@ class ClaudeProvider(Provider):
         if not version:
             report["detail"] = "could not read 'claude --version'"
             return report
-        trust = verified.resume_trust(self.name, version, self.resume_mechanism(), root, VERIFIED_RESUME)
+        trust = verified.resume_trust(
+            self.name, version, self.resume_mechanism(), root, VERIFIED_RESUME, self.required_resume_checks
+        )
         return self.resume_report(version, trust)
 
     def resume_args(self, session_id: str) -> List[str]:
-        if not isinstance(session_id, str) or not _SESSION_ID_RE.match(session_id):
+        if not isinstance(session_id, str) or not SESSION_ID_RE.match(session_id):
             raise ValueError("a session to resume must be named by a UUID")
         return ["--resume=%s" % session_id, "--fork-session"]
 
@@ -380,7 +378,7 @@ class ClaudeProvider(Provider):
             return False
         if outcome.exit_code == 0 or outcome.timed_out or outcome.stalled:
             return False
-        events = _stream_events(outcome.stdout)
+        events = json_lines(outcome.stdout)
         # A ``stream_event`` is a message being written, so a turn happened.
         if any(event.get("type") in (*_STREAM_EVENT_TYPES, "stream_event") for event in events):
             return False
@@ -407,7 +405,7 @@ class ClaudeProvider(Provider):
         The context is the last ``assistant`` event's input: the ``result``
         usage adds up every turn, so it is the run's cost, not its size.
         """
-        events = _stream_events(outcome.stdout)
+        events = json_lines(outcome.stdout)
         session_id = None
         for kind in ("result", "system"):
             event = next((item for item in reversed(events) if item.get("type") == kind), None)
@@ -420,7 +418,7 @@ class ClaudeProvider(Provider):
         usage = message.get("usage") if isinstance(message, dict) else None
         if isinstance(usage, dict):
             parts = [
-                _count(usage.get(key))
+                token_count(usage.get(key))
                 for key in ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
             ]
             if all(part is not None for part in parts):
@@ -584,7 +582,7 @@ class ClaudeProvider(Provider):
         a field serialised into every run's event that can never be read back
         is a cost with no reader. The characters are one total.
         """
-        events = _stream_events(outcome.stdout)
+        events = json_lines(outcome.stdout)
         usage = _usage_from_events(events)
         tools = _tools_from_events(events)
         if tools is None:
@@ -597,22 +595,6 @@ class ClaudeProvider(Provider):
         return usage
 
 
-def _stream_events(stdout: str) -> List[Dict[str, Any]]:
-    """Every JSON object on its own line, skipping anything unparseable."""
-    events: List[Dict[str, Any]] = []
-    for line in stdout.splitlines():
-        line = line.strip()
-        if not line.startswith("{"):
-            continue
-        try:
-            event = json.loads(line)
-        except ValueError:
-            continue
-        if isinstance(event, dict):
-            events.append(event)
-    return events
-
-
 def parse_stream_json(stdout: str) -> "tuple[Optional[str], str]":
     """Extract the final answer from a stream-json run.
 
@@ -620,7 +602,7 @@ def parse_stream_json(stdout: str) -> "tuple[Optional[str], str]":
     stream at all -- in which case the caller keeps the raw output rather than
     discarding it, so an unrecognised format degrades instead of losing work.
     """
-    events = _stream_events(stdout)
+    events = json_lines(stdout)
     if not events:
         return None, ""
 
@@ -691,7 +673,7 @@ def parse_stream_usage(stdout: str) -> Optional[Usage]:
     Takes the raw output; :func:`_usage_from_events` is the same reader over an
     already-decoded stream, for the caller that needs both readers at once.
     """
-    return _usage_from_events(_stream_events(stdout))
+    return _usage_from_events(json_lines(stdout))
 
 
 def _usage_from_events(events: List[Dict[str, Any]]) -> Optional[Usage]:
@@ -705,10 +687,10 @@ def _usage_from_events(events: List[Dict[str, Any]]) -> Optional[Usage]:
         cost = event.get("total_cost_usd")
         measured_cost = isinstance(cost, (int, float)) and not isinstance(cost, bool)
         parsed = Usage(
-            input_tokens=_count(usage.get("input_tokens")),
-            output_tokens=_count(usage.get("output_tokens")),
-            cache_read_tokens=_count(usage.get("cache_read_input_tokens")),
-            cache_write_tokens=_count(usage.get("cache_creation_input_tokens")),
+            input_tokens=token_count(usage.get("input_tokens")),
+            output_tokens=token_count(usage.get("output_tokens")),
+            cache_read_tokens=token_count(usage.get("cache_read_input_tokens")),
+            cache_write_tokens=token_count(usage.get("cache_creation_input_tokens")),
             cost_usd=float(cast(float, cost)) if measured_cost else None,
             source="claude result event",
         )
@@ -746,7 +728,7 @@ def parse_stream_tools(stdout: str) -> Optional[Dict[str, Any]]:
     Takes the raw output; :func:`_tools_from_events` is the same reader over an
     already-decoded stream, for the caller that needs both readers at once.
     """
-    return _tools_from_events(_stream_events(stdout))
+    return _tools_from_events(json_lines(stdout))
 
 
 def _tools_from_events(events: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
@@ -826,13 +808,6 @@ def _text_length(content: Any) -> int:
             if isinstance(text, str):
                 total += len(text)
     return total
-
-
-def _count(value: Any) -> Optional[int]:
-    """A token count, or None. A bool is not a count; neither is a string."""
-    if isinstance(value, bool) or not isinstance(value, int):
-        return None
-    return value if value >= 0 else None
 
 
 def _permission_args(mode: str, requested: Optional[str] = None) -> List[str]:

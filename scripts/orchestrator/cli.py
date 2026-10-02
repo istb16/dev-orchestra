@@ -38,7 +38,6 @@ from .cli_common import (
     _UNSET,
     DEFAULT_MODES,
     _container,
-    _effective_preview,
     _emit_json,
     _encodes_everything,
     _err,
@@ -56,7 +55,6 @@ from .cli_common import (
     tolerate_console_encoding,
 )
 from .cli_config import (
-    _below,
     _both_conditions,
     _describe_referenced_provider,
     _describe_spec,
@@ -120,13 +118,11 @@ from .cli_run import (
     _RESUME_NOT_SUPPORTED,
     _RESUME_REASONS,
     _RESUME_REJECTED,
-    _SESSION_ID_RE,
     _announce_resume,
     _answered,
     _both_paths,
     _read_prompt,
     _read_prompt_file,
-    _record_worker_refusal,
     _refuse_run,
     _refuse_unless_approved,
     _Refused,
@@ -134,7 +130,6 @@ from .cli_run import (
     _require_prompt,
     _resume_candidate,
     _resume_refusal,
-    _reviewer_spec,
     _save_output,
     cmd_run,
 )

@@ -170,9 +170,6 @@ def default_config() -> Dict[str, Any]:
             # re-review sees the fix instead of the whole change again. The
             # findings the fix was meant to address ride along with it.
             "incremental_rounds": True,
-            # How many findings a reviewer is asked for. Output is billed at
-            # several times the input rate, and a reviewer's output is billed
-            # again as the fixer's brief, so an uncapped reviewer costs twice
             # How many findings each reviewer is asked for. Output costs several
             # times what input does, and a reviewer's output is billed again as
             # the fixer's brief, so an uncapped reviewer costs twice over. 0
@@ -318,14 +315,19 @@ def global_config_path() -> str:
 
 
 def find_project_config(start: Optional[str] = None) -> Optional[str]:
-    """Walk up from ``start`` looking for a project override file."""
+    """Walk up from ``start`` looking for a project override file.
+
+    The walk stops at the repository root: any ``.git`` entry, so a
+    worktree's or a submodule's ``.git`` file ends it too, rather than
+    letting a parent directory's file configure the checkout.
+    """
     current = os.path.abspath(start or os.getcwd())
     while True:
         for name in PROJECT_CONFIG_NAMES:
             candidate = os.path.join(current, name)
             if os.path.isfile(candidate):
                 return candidate
-        if os.path.isdir(os.path.join(current, ".git")):
+        if os.path.lexists(os.path.join(current, ".git")):
             return None
         parent = os.path.dirname(current)
         if parent == current:
@@ -1014,11 +1016,7 @@ def validate(
                 seen.add(rid)
             if extra:
                 continue
-            role_name = reviewer.get("role", "general")
-            if not isinstance(role_name, str) or not role_name.strip():
-                problems.append("%s: role must be a non-empty string" % label)
-            problems.extend("%s: %s" % (label, msg) for msg in _validate_role(reviewer, providers))
-            problems.extend(_validate_when(reviewer.get("when"), label))
+            problems.extend(_validate_reviewer_entry(reviewer, label, label + ".", providers))
         problems.extend(_validate_conditions(reviewers, data.get("optimization"), origins))
     for name, layer in (("global", global_layer), ("project", project_layer)):
         if layer:
@@ -1152,12 +1150,30 @@ def validate(
     return problems
 
 
-def _validate_when(when: Any, label: str) -> List[str]:
+def _validate_reviewer_entry(
+    reviewer: Dict[str, Any], label: str, when_prefix: str, providers: List[str]
+) -> List[str]:
+    """One reviewer entry's role, provider, model and ``when``.
+
+    Its id is the caller's to check, against the list it is unique in.
+    ``when_prefix`` is what goes before the ``when`` key in a message.
+    """
+    problems: List[str] = []
+    role_name = reviewer.get("role", "general")
+    if not isinstance(role_name, str) or not role_name.strip():
+        problems.append("%s: role must be a non-empty string" % label)
+    problems.extend("%s: %s" % (label, msg) for msg in _validate_role(reviewer, providers))
+    problems.extend(_validate_when(reviewer.get("when"), when_prefix))
+    return problems
+
+
+def _validate_when(when: Any, prefix: str) -> List[str]:
     """A reviewer's ``when``: one of the strings, or a mapping with ``paths``.
 
     Refuses exactly the forms ``optimization.reviewer_condition`` reads as
     ``always``, by asking the same predicate, so a config that validates is
-    never read differently from how it was written.
+    never read differently from how it was written. ``prefix`` goes before
+    the key in each message.
     """
     opt = _optimization()
     if when is None:
@@ -1170,17 +1186,17 @@ def _validate_when(when: Any, label: str) -> List[str]:
             return []
         if set(when) != {"paths"}:
             keys = ", ".join(sorted(str(key) for key in when)) or "none"
-            return ["%s.when: a when mapping takes paths only (got keys: %s)" % (label, keys)]
+            return ["%swhen: a when mapping takes paths only (got keys: %s)" % (prefix, keys)]
         patterns = when.get("paths")
         if not isinstance(patterns, list) or not patterns:
-            return ["%s.when.paths: must be a non-empty list of glob patterns" % label]
+            return ["%swhen.paths: must be a non-empty list of glob patterns" % prefix]
         return [
-            "%s.when.paths[%d]: must be a non-empty string (got %r)" % (label, index, pattern)
+            "%swhen.paths[%d]: must be a non-empty string (got %r)" % (prefix, index, pattern)
             for index, pattern in enumerate(patterns)
             if not isinstance(pattern, str) or not pattern.strip()
         ]
     return [
-        "%s.when: must be one of %s, or a mapping with paths" % (label, ", ".join(opt.REVIEWER_CONDITIONS))
+        "%swhen: must be one of %s, or a mapping with paths" % (prefix, ", ".join(opt.REVIEWER_CONDITIONS))
     ]
 
 
@@ -1209,13 +1225,8 @@ def _validate_extras_file(layer: Dict[str, Any], name: str, providers: List[str]
             problems.append("%s: duplicate reviewer id %r" % (label, rid))
         else:
             seen.add(rid)
-        role_name = reviewer.get("role", "general")
-        if not isinstance(role_name, str) or not role_name.strip():
-            problems.append("%s: role must be a non-empty string" % label)
-        problems.extend("%s: %s" % (label, msg) for msg in _validate_role(reviewer, providers))
-        # ``_validate_when`` names the key after its label; here the file
-        # does, so the key is said after it.
-        problems.extend("%s: %s" % (label, msg[1:]) for msg in _validate_when(reviewer.get("when"), ""))
+        # The label names the file, so the key is said after it.
+        problems.extend(_validate_reviewer_entry(reviewer, label, label + ": ", providers))
     return problems
 
 

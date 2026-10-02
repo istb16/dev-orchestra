@@ -168,22 +168,20 @@ def _global_file() -> Dict[str, Any]:
     return config_mod.read_config_file(path) if os.path.isfile(path) else {}
 
 
-def _fitted_base(
-    scope: str, start: Optional[str] = None, layer: Optional[Dict[str, Any]] = None
-) -> Dict[str, Any]:
+def _fitted_base(scope: str, layer: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """What ``load()`` gives without this layer, the preset's fit included.
 
     The global layer's base is the defaults plus the expansion of its own
-    preset (``standard`` when it names none); a project layer's is ``load()``
-    without the project file. The panel is still dealt around the implementer
-    ``layer`` -- the one being edited -- sets, as it is in force.
+    preset, read as ``config.compose`` reads it (``standard`` when it names
+    none, nothing for a name it does not know); a project layer's is
+    ``load()`` without the project file. The panel is still dealt around the
+    implementer ``layer`` -- the one being edited -- sets, as it is in force.
     """
     from . import presets
 
     installed = presets.installed_providers()
     if scope == "global":
-        preset = _global_file().get("preset")
-        return config_mod.compose({"preset": preset or presets.DEFAULT}, {}, installed, layer)[0]
+        return config_mod.compose({"preset": _global_file().get("preset")}, {}, installed, layer)[0]
     return config_mod.compose(_global_file(), {}, installed, layer)[0]
 
 
@@ -213,13 +211,13 @@ def _prune_base(scope: str, start: Optional[str], layer: Dict[str, Any]) -> Dict
     for the global layer the fit that project sees has to agree as well.
     """
     roles = config_mod.KNOWN_ROLES
-    base = _agreed(_layer_base(scope, start), _fitted_base(scope, start, layer), roles)
+    base = _agreed(_layer_base(scope, start), _fitted_base(scope, layer), roles)
     if scope == "global":
         project_path = config_mod.find_project_config(start)
         project = config_mod.read_config_file(project_path) if project_path else {}
         if config_mod.mentions(project, "implementer"):
             with_project = config_mod.deep_merge(layer, project)
-            base = _agreed(base, _fitted_base(scope, start, with_project), roles)
+            base = _agreed(base, _fitted_base(scope, with_project), roles)
     return base
 
 
@@ -253,7 +251,7 @@ def _seed_list(layer: Dict[str, Any], list_path: str, base: Dict[str, Any]) -> b
     return False
 
 
-def _compose_preview(scope: str, layer: Dict[str, Any], start: Optional[str] = None) -> Tuple[Any, ...]:
+def _compose_preview(scope: str, layer: Dict[str, Any]) -> Tuple[Any, ...]:
     """``config.compose`` of this layer as it would be saved: ``(data, fit, preset, source)``."""
     from . import presets
 
@@ -261,11 +259,6 @@ def _compose_preview(scope: str, layer: Dict[str, Any], start: Optional[str] = N
     if scope == "global":
         return config_mod.compose(layer, {}, installed)
     return config_mod.compose(_global_file(), layer, installed)
-
-
-def _effective_preview(scope: str, layer: Dict[str, Any], start: Optional[str] = None) -> Dict[str, Any]:
-    """What ``load()`` will resolve once this layer is saved, mention rule included."""
-    return _compose_preview(scope, layer, start)[0]
 
 
 #: The one panel-wide problem that names an entry only as an example: which
@@ -277,11 +270,9 @@ _NO_RISK_PATTERN = "optimization.high_risk_paths: no pattern in force"
 _ENTRY_LABEL = re.compile(r"reviewers_extra\[(\d+)\] in the (global|project) file|reviewers\[(\d+)\]")
 
 
-def _panel_problems(
-    scope: str, layer: Dict[str, Any], start: Optional[str] = None
-) -> Tuple[List[str], List[Optional[str]]]:
+def _panel_problems(scope: str, layer: Dict[str, Any]) -> Tuple[List[str], List[Optional[str]]]:
     """The panel problems ``load()`` would raise with this layer saved, and the panel's ids."""
-    data, fit, _preset, _source = _compose_preview(scope, layer, start)
+    data, fit, _preset, _source = _compose_preview(scope, layer)
     global_layer, project_layer = (layer, None) if scope == "global" else (_global_file(), layer)
     problems = config_mod.validate(
         data, project_layer=project_layer, global_layer=global_layer, origins=fit.origins
@@ -328,7 +319,6 @@ def _panel_write_problems(
     scope: str,
     before: Dict[str, Any],
     after: Dict[str, Any],
-    start: Optional[str] = None,
     removed: Any = None,
 ) -> List[str]:
     """The panel problems a write from ``before`` to ``after`` would introduce.
@@ -341,8 +331,8 @@ def _panel_write_problems(
     same entry, so the same mistake made on another one is still refused.
     ``removed`` is the origin of an extra the write took out of its file.
     """
-    old_problems, old_ids = _panel_problems(scope, before, start)
-    new_problems, new_ids = _panel_problems(scope, after, start)
+    old_problems, old_ids = _panel_problems(scope, before)
+    new_problems, new_ids = _panel_problems(scope, after)
     # A reviewer renamed in place is still the one it was.
     kept = set(new_ids)
     names = [

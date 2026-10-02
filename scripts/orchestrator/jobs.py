@@ -150,7 +150,8 @@ def start(
         "started_at": ws.utcnow(),
         "command": list(argv),
         "timeout_seconds": timeout,
-        "output": ws.read_text(output_path(workspace, job_id), ""),
+        # The id is new, so there is no output yet to read.
+        "output": "",
         "prompt_file": prompt_file,
         "output_file": output_path(workspace, job_id),
         "force": bool(force),
@@ -170,7 +171,7 @@ def start(
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            **execution._spawn_kwargs(),
+            **execution.spawn_kwargs(),
         )
     except OSError as exc:
         job["status"] = "failed"
@@ -226,37 +227,13 @@ def cancel(workspace: ws.Workspace, job_id: str) -> Dict[str, Any]:
     pid = int(job.get("pid") or 0)
     killed = False
     if pid and execution.pid_alive(pid):
-        killed = _kill_pid(pid)
+        killed = execution.kill_tree(pid, execution.KILL_GRACE_SECONDS)
     job = dict(job)
     job["status"] = "cancelled"
     job["finished_at"] = ws.utcnow()
     job["error"] = "cancelled by request%s" % ("" if killed else " (the worker may still be running)")
     write_job(workspace, job)
     return job
-
-
-def _kill_pid(pid: int) -> bool:
-    if execution.IS_WINDOWS:
-        try:
-            subprocess.run(
-                ["taskkill", "/T", "/F", "/PID", str(pid)],
-                capture_output=True,
-                timeout=execution.KILL_GRACE_SECONDS,
-                check=False,
-            )
-        except (OSError, subprocess.SubprocessError):
-            return False
-        return True
-    import signal
-
-    try:
-        os.killpg(os.getpgid(pid), signal.SIGTERM)
-    except OSError:
-        try:
-            os.kill(pid, signal.SIGKILL)
-        except OSError:
-            return False
-    return True
 
 
 # --------------------------------------------------------------------------- worker side

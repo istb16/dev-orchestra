@@ -9,6 +9,7 @@ import re
 import shutil
 import sys
 import textwrap
+import threading
 import time
 import unittest
 from typing import Optional
@@ -886,6 +887,15 @@ class TestClaudeResume(IsolatedCase):
         self.assertEqual(self.status(), "unverified")
         self.record_pass(checks=verified.REQUIRED_RESUME_CHECKS[:6])
         self.assertEqual(self.status(), "unverified")
+
+    def test_a_record_is_held_to_the_checks_the_adapter_requires(self):
+        """As for Codex: ``required_resume_checks`` is what a record has to
+        list, not the module default."""
+        fewer = verified.REQUIRED_RESUME_CHECKS[:6]
+        self.record_pass(checks=fewer)
+        self.assertEqual(self.status(), "unverified")
+        setattr(self.provider, "required_resume_checks", fewer)
+        self.assertEqual(self.status(), "verified")
 
     def test_the_help_has_to_list_both_flags(self):
         self.help(CLAUDE_HELP_NO_FORK)
@@ -1952,6 +1962,40 @@ class TestAgyPromptFile(_AgyCase):
         self.assertEqual(result.exit_code, 127)
         self.assertEqual(sorted(os.listdir(self.ai)), ["agy-prompt-stale.md", "keep.md"])
 
+    def test_parallel_runs_on_one_adapter_each_name_their_own_file(self):
+        """Reviewers share one adapter across threads. Both runs write their
+        file before either builds its command, and each command must still
+        name the file its own run wrote."""
+        self.installed()
+        barrier = threading.Barrier(2, timeout=10)
+        resolve = self.provider.resolve_model
+
+        def resolve_together(model_spec=None):
+            barrier.wait()
+            return resolve(model_spec)
+
+        setattr(self.provider, "resolve_model", resolve_together)
+        read = []
+
+        def execute(command, cwd, prompt="", timeout=None, idle_timeout=None, env=None):
+            match = re.search(r"\.ai/(agy-prompt-[^ ]+\.md)", command[-1])
+            assert match is not None, command[-1]
+            with open(os.path.join(cwd, ".ai", match.group(1)), encoding="utf-8") as handle:
+                read.append(handle.read())
+            return execution.ExecOutcome(0, agy_result(), "", 0.5)
+
+        execution.execute = execute
+        prompts = ["%s, the first" % LONG_PROMPT, "%s, the second" % LONG_PROMPT]
+        threads = [
+            threading.Thread(target=self.provider.run, args=(prompt, base.MODE_REVIEW, self.project))
+            for prompt in prompts
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(30)
+        self.assertEqual(sorted(read), sorted(prompts))
+
 
 class TestAgyOutput(_AgyCase):
     def setUp(self):
@@ -2021,6 +2065,14 @@ class TestAgyOutput(_AgyCase):
     def test_a_result_without_usage_is_unmeasured(self):
         self.answer(agy_result())
         self.assertFalse(self.run_agy().usage.measured)
+
+    def test_a_negative_count_is_not_a_count(self):
+        """As for Claude and Codex: a count below zero is unreported, not
+        subtracted from a total."""
+        self.answer(agy_result(usage=dict(AGY_USAGE, input_tokens=-5)))
+        usage = self.run_agy().usage
+        self.assertIsNone(usage.input_tokens)
+        self.assertEqual(usage.output_tokens, 215)
 
     def test_a_review_run_is_not_refused_and_says_so(self):
         self.answer()

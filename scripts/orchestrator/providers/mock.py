@@ -105,13 +105,16 @@ class MockProvider(Provider):
         options: Optional[Dict[str, Any]] = None,
         idle_timeout: Optional[float] = None,
         resume_session: Optional[str] = None,
+        command_kwargs: Optional[Dict[str, Any]] = None,
     ) -> RunResult:
         watch = Stopwatch()
         started = time.monotonic()
         watch.start()
 
         resolved = self.resolve_model(model_spec)
-        command = self.command_line(mode, resolved, cwd, extra_args, options, resume_session)
+        command = self.command_line(
+            mode, resolved, cwd, extra_args, options, resume_session, **(command_kwargs or {})
+        )
         _trace(mode, command, resume_session, prompt)
         time.sleep(_mock_delay())
         # Measured the way ``execution.execute`` measures a real child, with a
