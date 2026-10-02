@@ -23,9 +23,18 @@ import sys
 from typing import TYPE_CHECKING, Any, Dict, List, NamedTuple, Optional, Sequence, Tuple, Union
 
 from . import miniyaml
+from . import optimization as opt_mod
+from .review_common import DEFAULT_EXCLUDE
 
 if TYPE_CHECKING:
     from .presets import Fit
+
+# Two imports stay inside the functions that need them, and each one points
+# back here. The provider registry: importing it runs its bootstrap, which asks
+# this module for ``user_providers_dir`` and imports every user adapter, and
+# configuration must stay loadable without the provider registry. Presets:
+# ``presets`` builds its presets from ``default_config`` when it is imported,
+# so it can only be imported once this module is complete.
 
 CONFIG_VERSION = 1
 #: Ceiling on ``workspace.stale_notice_days`` (100 years). Commands load the
@@ -61,24 +70,6 @@ BUILTIN_ROLES = (
 )
 
 _ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
-
-
-def _default_exclude() -> Tuple[str, ...]:
-    """The review module owns the list; this module only persists it.
-
-    Imported late because :mod:`orchestrator.review` imports the provider
-    registry, and configuration must stay loadable without it.
-    """
-    from .review import DEFAULT_EXCLUDE
-
-    return DEFAULT_EXCLUDE
-
-
-def _optimization():
-    """Late, for the same reason as ``_default_exclude``."""
-    from . import optimization
-
-    return optimization
 
 
 def is_valid_reviewer_id(value: Any) -> bool:
@@ -165,7 +156,7 @@ def default_config() -> Dict[str, Any]:
             # Generated and vendored files whose diff body is withheld from
             # reviewers. A list replaces this wholesale, so [] reviews
             # everything; see review.DEFAULT_EXCLUDE for why these.
-            "exclude": list(_default_exclude()),
+            "exclude": list(DEFAULT_EXCLUDE),
             # A second round diffs against what the first round reviewed, so
             # re-review sees the fix instead of the whole change again. The
             # findings the fix was meant to address ride along with it.
@@ -242,14 +233,14 @@ def default_config() -> Dict[str, Any]:
         # change touching a high-risk path escalates to `quality` whatever is
         # configured here -- that part is not negotiable, only its patterns.
         "optimization": {
-            "level": _optimization().DEFAULT_LEVEL,
-            "high_risk_paths": list(_optimization().DEFAULT_HIGH_RISK_PATHS),
+            "level": opt_mod.DEFAULT_LEVEL,
+            "high_risk_paths": list(opt_mod.DEFAULT_HIGH_RISK_PATHS),
             # Added to high_risk_paths rather than replacing it, so a
             # repository can name the one path the defaults miss. Its hits
             # escalate exactly as the others do.
             "extra_high_risk_paths": [],
-            "low_risk_max_files": _optimization().DEFAULT_LOW_RISK_MAX_FILES,
-            "low_risk_max_lines": _optimization().DEFAULT_LOW_RISK_MAX_LINES,
+            "low_risk_max_files": opt_mod.DEFAULT_LOW_RISK_MAX_FILES,
+            "low_risk_max_lines": opt_mod.DEFAULT_LOW_RISK_MAX_LINES,
         },
         "budgets": {
             "architect": 3,
@@ -299,6 +290,7 @@ def user_providers_dir() -> str:
 
 def user_providers_hint() -> str:
     """Where a missing provider's adapter would come from, and whether it can."""
+    # lazy: the provider registry; see the note at the top of this module
     from .providers import USER_PROVIDERS_DISABLED_ENV, user_providers_disabled
 
     hint = "user adapters load from %s" % user_providers_dir()
@@ -858,6 +850,7 @@ def compose(
     counts when the panel is dealt: a writer's base is composed without the
     layer it edits, but the panel it copies is the one in force with it.
     """
+    # lazy: presets; see the note at the top of this module
     from . import presets
 
     named = global_layer.get("preset")
@@ -915,6 +908,7 @@ def compose(
 
 def load(start: Optional[str] = None, validate_result: bool = True) -> LoadedConfig:
     """Load the layered configuration for the project rooted at ``start``."""
+    # lazy: presets; see the note at the top of this module
     from . import presets
 
     gpath = global_config_path()
@@ -968,6 +962,7 @@ def validate(
     parallel to the folded ``reviewers``: an extra's entry is checked there
     and not again here, while the panel-wide rules cover it.
     """
+    # lazy: presets and the provider registry; see the note at the top of this module
     from . import presets
     from .providers import available_providers
 
@@ -1175,14 +1170,13 @@ def _validate_when(when: Any, prefix: str) -> List[str]:
     never read differently from how it was written. ``prefix`` goes before
     the key in each message.
     """
-    opt = _optimization()
     if when is None:
         return []
     if isinstance(when, str):
-        if when.strip().lower() in opt.REVIEWER_CONDITIONS:
+        if when.strip().lower() in opt_mod.REVIEWER_CONDITIONS:
             return []
     elif isinstance(when, dict):
-        if opt.is_paths_condition(when):
+        if opt_mod.is_paths_condition(when):
             return []
         if set(when) != {"paths"}:
             keys = ", ".join(sorted(str(key) for key in when)) or "none"
@@ -1195,9 +1189,8 @@ def _validate_when(when: Any, prefix: str) -> List[str]:
             for index, pattern in enumerate(patterns)
             if not isinstance(pattern, str) or not pattern.strip()
         ]
-    return [
-        "%swhen: must be one of %s, or a mapping with paths" % (prefix, ", ".join(opt.REVIEWER_CONDITIONS))
-    ]
+    conditions = ", ".join(opt_mod.REVIEWER_CONDITIONS)
+    return ["%swhen: must be one of %s, or a mapping with paths" % (prefix, conditions)]
 
 
 def _validate_extras_file(layer: Dict[str, Any], name: str, providers: List[str]) -> List[str]:
@@ -1247,14 +1240,13 @@ def _validate_conditions(
     declared with ``review run --high-risk``; without ``origins`` every
     reviewer counts as written.
     """
-    opt = _optimization()
     entries = [(index, reviewer) for index, reviewer in enumerate(reviewers) if isinstance(reviewer, dict)]
-    always = opt.WHEN_ALWAYS
-    conditional = [index for index, reviewer in entries if opt.reviewer_condition(reviewer) != always]
+    always = opt_mod.WHEN_ALWAYS
+    conditional = [index for index, reviewer in entries if opt_mod.reviewer_condition(reviewer) != always]
     high_risk = [
         index
         for index, reviewer in entries
-        if opt.reviewer_condition(reviewer) == opt.WHEN_HIGH_RISK
+        if opt_mod.reviewer_condition(reviewer) == opt_mod.WHEN_HIGH_RISK
         and not (origins is not None and index < len(origins) and origins[index].layer == "default")
     ]
     problems: List[str] = []
@@ -1263,7 +1255,7 @@ def _validate_conditions(
             "reviewers: at least one reviewer must run always; every reviewer is conditional "
             "(when: high-risk or when: paths)"
         )
-    if high_risk and isinstance(optimization, dict) and not opt.risk_patterns(optimization):
+    if high_risk and isinstance(optimization, dict) and not opt_mod.risk_patterns(optimization):
         first = high_risk[0]
         origin = origins[first] if origins is not None and first < len(origins) else None
         label = _origin_label(origin, first) if origin is not None else "reviewers[%d]" % first
@@ -1278,7 +1270,7 @@ def _validate_optimization(data: Any) -> List[str]:
     problems: List[str] = []
     if not isinstance(data, dict):
         return ["optimization: must be a mapping"]
-    levels = _optimization().LEVELS
+    levels = opt_mod.LEVELS
     level = data.get("level")
     if level is not None and (not isinstance(level, str) or level.strip().lower() not in levels):
         problems.append("optimization.level: must be one of %s" % ", ".join(sorted(levels)))
@@ -1450,6 +1442,7 @@ def _warned_provider(name: str) -> Optional[Dict[str, Any]]:
     never start a CLI: Claude's report reads ``--help``. An unknown provider
     is None, for ``validate`` to report.
     """
+    # lazy: the provider registry; see the note at the top of this module
     from .providers import WARNED_ENFORCEMENT, get_provider
 
     if not name:
@@ -1594,6 +1587,7 @@ def _enforcement_warned_seats(
     The seats ``doctor`` reports enforcement for: the read-only roles, their
     tiers that change provider, and every reviewer.
     """
+    # lazy: the provider registry; see the note at the top of this module
     from .providers import unenforced_warning
 
     seats: List[Tuple[str, str, str, Any]] = []
@@ -1650,6 +1644,7 @@ def project_write_refusals(loaded: LoadedConfig) -> Dict[str, str]:
     value, nor any raw argument, whatever it is. No flag spelling is looked
     at, so none can slip past.
     """
+    # lazy: the provider registry; see the note at the top of this module
     from .providers import get_provider
 
     name = os.path.basename(loaded.project_path or "") or "the project file"
@@ -1712,6 +1707,7 @@ def read_only_arg_warnings(loaded: LoadedConfig) -> List[str]:
     a read-only seat on a warned provider, and a write role's options on a
     provider that takes them only from the global config.
     """
+    # lazy: the provider registry; see the note at the top of this module
     from .providers import get_provider
 
     warnings = [message for _entry, message in _all_refused(loaded)]
@@ -1807,6 +1803,7 @@ def _validate_role_options(spec: Dict[str, Any], provider: Any, providers: List[
         return []
     if not isinstance(provider, str) or provider not in providers:
         return []
+    # lazy: the provider registry; see the note at the top of this module
     from .providers import get_provider
 
     try:
@@ -1919,7 +1916,7 @@ def make_reviewer(
     # reviewer stays byte-identical to the one the defaults describe.
     if paths:
         reviewer["when"] = {"paths": list(paths)}
-    elif when and when != _optimization().WHEN_ALWAYS:
+    elif when and when != opt_mod.WHEN_ALWAYS:
         reviewer["when"] = when
     return reviewer
 

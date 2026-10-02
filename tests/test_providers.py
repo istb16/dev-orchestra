@@ -2195,26 +2195,21 @@ class TestMeasurementSurvivesABrokenAdapter(IsolatedCase):
 
 
 class TestRedaction(IsolatedCase):
-    def test_credential_shaped_strings_are_scrubbed(self):
-        samples = [
-            "key sk-abcdefghijklmnop123",
-            "ANTHROPIC_API_KEY=sk-ant-abcdefghijklmnopqrs",
-            "token: ghp_abcdefghijklmnopqrstuvwxyz01",
-            "Authorization: Bearer abcdefghijklmnopqrstuv",
-            "jwt eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NX0.dBjftJeZ4CVPmB92K27u",
-        ]
-        for sample in samples:
-            cleaned = base.redact(sample)
-            self.assertIn("[redacted]", cleaned, sample)
-
-    def test_ordinary_text_is_untouched(self):
-        text = "implementer finished in 12 seconds using opus"
-        self.assertEqual(base.redact(text), text)
+    """The patterns themselves are tested with ``workspace.redact``."""
 
     def test_run_results_redact_both_streams(self):
-        result = base.RunResult(True, 0, "sk-ant-abcdefghijklmnopqrs", "sk-abcdefghijklmnop123", [], 0.0)
+        result = base.RunResult(
+            True,
+            0,
+            "sk-ant-abcdefghijklmnopqrs",
+            "sk-abcdefghijklmnop123",
+            [],
+            0.0,
+            warnings=["token ghp_abcdefghijklmnopqrstuvwxyz01"],
+        )
         self.assertNotIn("abcdefghijklmnopqrs", result.stdout)
         self.assertNotIn("abcdefghijklmnop123", result.stderr)
+        self.assertEqual(result.warnings, ["token [redacted]"])
 
 
 if __name__ == "__main__":

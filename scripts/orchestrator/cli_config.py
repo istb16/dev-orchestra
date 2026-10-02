@@ -43,13 +43,9 @@ from .providers import (
     provider_origin,
     redact,
 )
+from .summary import render_summary
 
 # --------------------------------------------------------------------------- config
-
-
-#: provider / family / version, the way `config show` says it: the wizard's
-#: summary and this module describe a role the same way.
-_describe_spec = wizard_mod._describe
 
 
 def _render_layer(path: str, data: Dict[str, Any], exists: bool) -> str:
@@ -123,7 +119,7 @@ def cmd_config_show(args: argparse.Namespace) -> int:
     if scoped:
         _out(_render_layer(path, data, exists))
     else:
-        summary = wizard_mod.render_summary(data, loaded.reviewer_origins)
+        summary = render_summary(data, loaded.reviewer_origins)
         _out(summary if "orchestrator" in data else "(empty layer)")
     if referenced:
         _out("Providers: %s" % ", ".join(_describe_referenced_provider(name) for name in referenced))
@@ -209,7 +205,7 @@ def cmd_config_setup(args: argparse.Namespace) -> int:
         return 2
     config_mod.write_config_file(path, data, scope)
     if args.preset:
-        _out(wizard_mod.render_summary(preview, fit.origins))
+        _out(render_summary(preview, fit.origins))
         notes = presets_mod.render_notes(fit)
         if notes:
             _out(notes)
@@ -269,7 +265,7 @@ def cmd_config_reset(args: argparse.Namespace) -> int:
     except config_mod.ConfigError as exc:
         _err(str(exc))  # the other layer does not parse; the reset itself is done
         return 0
-    _out(wizard_mod.render_summary(loaded.data, loaded.reviewer_origins))
+    _out(render_summary(loaded.data, loaded.reviewer_origins))
     for note in loaded.preset_notes:
         _out("note: %s" % note)
     return 0

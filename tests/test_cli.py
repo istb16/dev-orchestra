@@ -1463,6 +1463,7 @@ class TestBudgetsStopLoops(IsolatedCase):
         code, _, err = run_cli("run", "implementer", "--prompt", "go")
         self.assertEqual(code, 3)
         self.assertIn("refusing to run implementer", err)
+        self.assertIn("Report what is unresolved instead of retrying, or pass --force to override.", err)
 
     def test_run_records_its_attempt_in_the_budget(self):
         run_cli("run", "implementer", "--prompt", "go")

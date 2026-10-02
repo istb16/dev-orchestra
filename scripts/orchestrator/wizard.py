@@ -15,11 +15,12 @@ what that layer would inherit.
 from __future__ import annotations
 
 import copy
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, cast
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from . import config as config_mod
 from . import presets as presets_mod
-from .optimization import WHEN_ALWAYS, WHEN_HIGH_RISK, condition_label, reviewer_condition, risk_patterns
+from .cli_common import _compose_preview, _out
+from .optimization import WHEN_HIGH_RISK, reviewer_condition, risk_patterns
 from .providers import (
     ModelResolutionError,
     adapter_failure,
@@ -28,6 +29,7 @@ from .providers import (
     describe_origin,
     get_provider,
 )
+from .summary import ROLE_TITLES, render_summary
 
 #: Per-role recommended defaults, expressed as families only: the ``standard``
 #: preset as written, so the wizard and the preset cannot disagree.
@@ -44,25 +46,16 @@ PRESET_CHOICES = (
     ("fast", "fast     -- lighter models, one reviewer plus a security one on high-risk changes"),
 )
 CUSTOMISE = "customise each role"
-ROLE_TITLES = (
-    ("orchestrator", "Orchestrator"),
-    ("architect", "Architect"),
-    ("implementer", "Implementer"),
-    ("review_fixer", "Review Fixer"),
-)
 
 
 def _say(text: str) -> None:
     """Print through the CLI's writer rather than through ``print``.
 
-    ``cli._out`` degrades a character the console cannot encode instead of
+    ``_out`` degrades a character the console cannot encode instead of
     letting it kill the message, and a console that cannot encode one is
-    exactly where the wizard is asked to echo config values and paths. Imported
-    late because ``cli`` imports this module.
+    exactly where the wizard is asked to echo config values and paths.
     """
-    from . import cli
-
-    cli._out(text)
+    _out(text)
 
 
 class Prompter:
@@ -264,9 +257,7 @@ def run(
         # Composed as `load()` will compose it once saved, so what is shown
         # before saving is what is in force afterwards -- the layer alone would
         # report a design review as off while the global layer has it on, and
-        # would leave out the extras it keeps. Imported late, as `_say` does.
-        from .cli_common import _compose_preview
-
+        # would leave out the extras it keeps.
         preview, fit, _name, _source = _compose_preview(scope, data)
         prompter.say(render_summary(preview, fit.origins))
     save = prompter.ask_yes_no("Save configuration?", True)
@@ -520,96 +511,3 @@ def _default_reviewer_provider(providers: Sequence[Tuple[str, str, bool]]) -> st
             if name in pool:
                 return name
     return providers[0][0]
-
-
-def render_summary(data: Dict[str, Any], origins: Sequence[config_mod.ReviewerOrigin] = ()) -> str:
-    """``origins``, parallel to the panel, marks each extra with the file it came from."""
-    lines = ["Configuration", ""]
-    for key, title in ROLE_TITLES:
-        spec = data.get(key) or {}
-        lines.append("  %s" % title)
-        lines.append("    %s" % _describe(spec))
-        # Shown because a tier is invisible until somebody routes work to it,
-        # and an unused tier is usually one nobody remembered was there.
-        tiers = spec.get("model_tiers") if isinstance(spec, dict) else None
-        for name in sorted(tiers) if isinstance(tiers, dict) else []:
-            entry = cast(Dict[str, Any], tiers)[name]
-            described = _describe(merged(spec, entry)) if isinstance(entry, dict) else "(invalid)"
-            lines.append("      --tier %-10s %s" % (name, described))
-    reviewers = data.get("reviewers") or []
-    lines.append("  Reviews")
-    if not reviewers:
-        lines.append("    (none configured)")
-    for index, reviewer in enumerate(reviewers, 1):
-        when = condition_label(reviewer)
-        origin = origins[index - 1] if index <= len(origins) else None
-        mark = ""
-        if origin is not None and origin.key == "reviewers_extra":
-            mark = " (extra, %s file)" % origin.layer
-        lines.append(
-            "    %d. %s / %s / %s%s%s"
-            % (
-                index,
-                _describe(reviewer),
-                reviewer.get("role", "general"),
-                reviewer.get("id"),
-                "" if when == WHEN_ALWAYS else " (when: %s)" % when,
-                mark,
-            )
-        )
-    # Shown rather than asked: the wizard settles who does which job, and this
-    # is a behaviour knob like `max_review_iterations`. But it decides whether
-    # a whole stage runs, so leaving it out of the summary entirely would make
-    # it the one stage nobody can see the state of.
-    lines.append("    design review: %s  (review.design.enabled)" % _design_review_mode(data))
-    lines.append("    optimization level: %s  (optimization.level)" % _optimization_level(data))
-    lines.append(
-        "    plan approval: %s  (design.require_approval)"
-        % ("required" if _approval_required(data) else "not required")
-    )
-    for warning in config_mod.read_only_enforcement_warnings(data):
-        lines.append("  Warning: %s" % warning)
-    lines.append("")
-    return "\n".join(lines)
-
-
-def _design_review_mode(data: Dict[str, Any]) -> str:
-    """``on``, ``off`` or ``auto``; falls back to the built-in default, since a
-    layer may name no `review` at all."""
-    review = data.get("review")
-    design = review.get("design") if isinstance(review, dict) else None
-    if isinstance(design, dict) and "enabled" in design:
-        return config_mod.design_review_mode(design["enabled"])
-    return config_mod.design_review_mode(config_mod.default_config()["review"]["design"]["enabled"])
-
-
-def _optimization_level(data: Dict[str, Any]) -> str:
-    """Falls back to the built-in default: a layer may name no `optimization`."""
-    optimization = data.get("optimization")
-    level = optimization.get("level") if isinstance(optimization, dict) else None
-    return str(level or config_mod.default_config()["optimization"]["level"])
-
-
-def _approval_required(data: Dict[str, Any]) -> bool:
-    """Falls back to the built-in default: a layer may name no `design` at all,
-    or name the key with no value, which means the default as it does in
-    ``LoadedConfig.design_settings``."""
-    design = data.get("design")
-    if isinstance(design, dict) and design.get("require_approval") is not None:
-        return bool(design["require_approval"])
-    return bool(config_mod.default_config()["design"]["require_approval"])
-
-
-def merged(spec: Dict[str, Any], tier: Dict[str, Any]) -> Dict[str, Any]:
-    """The role ``spec`` with ``tier`` merged over it, as ``config.merge_tier`` resolves a tier."""
-    from .config import merge_tier
-
-    return merge_tier(spec, tier)
-
-
-def _describe(spec: Dict[str, Any]) -> str:
-    """provider / family / version, the way `config show` says it."""
-    model = spec.get("model") or {}
-    version = model.get("version", "latest")
-    family = model.get("id") if version == "pinned" else model.get("family", "default")
-    return "%s / %s / %s" % (spec.get("provider", "?"), family or "default", version)

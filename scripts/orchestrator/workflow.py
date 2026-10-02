@@ -36,6 +36,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import time
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple, Union
@@ -247,8 +248,6 @@ def active_elsewhere(container: str, workflow: str, idle_seconds: float = 900.0)
     warning that separated artifacts would otherwise suppress. "Looks like":
     a stage recorded as in flight, or activity within ``idle_seconds``.
     """
-    import time
-
     now = time.time()
     names = []
     for entry in listing(container):

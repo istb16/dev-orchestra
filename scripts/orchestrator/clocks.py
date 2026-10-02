@@ -34,6 +34,7 @@ _chosen = False
 def _windows_awake_clock() -> Optional[Callable[[], float]]:
     if sys.platform != "win32":
         return None
+    # Windows only: ctypes.WinDLL exists nowhere else.
     import ctypes
 
     try:

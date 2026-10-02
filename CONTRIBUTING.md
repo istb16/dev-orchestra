@@ -186,6 +186,12 @@ define, so `cli.name` and `review.name` keep working. A test that replaces a
 function has to replace it where it is looked up: `cli_run._out`, not
 `cli._out`.
 
+Imports go at the top of the module. `tests/test_skill.py` fails on an import
+inside a function unless it is on its allow-list with a comment saying why
+(Windows-only modules, the provider registry), and on any import cycle at
+module level. When two modules need the same helper, move it down to a module
+both can import.
+
 `skills/dev-orchestra/SKILL.md` is the single source of truth for skill content.
 Installers point at it; they never copy it. It sits under `skills/` because
 that is the only place Codex looks — a `SKILL.md` at the repository root would

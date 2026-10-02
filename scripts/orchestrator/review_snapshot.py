@@ -13,7 +13,8 @@ from typing import Any, Dict, List, NamedTuple, Optional, Sequence, Set, Tuple
 
 from . import context as context_mod
 from . import workspace as ws
-from .review_common import DEFAULT_EXCLUDE
+from .config import PROJECT_CONFIG_NAMES
+from .review_common import DEFAULT_EXCLUDE, accepted_findings
 
 # --------------------------------------------------------------------------- snapshot
 
@@ -335,8 +336,6 @@ def _is_orchestrator_artifact(name: str, workspace: ws.Workspace) -> bool:
     workspace_prefix = workspace.relative(workspace.dir).rstrip("/") + "/"
     if normalised == workspace_prefix.rstrip("/") or normalised.startswith(workspace_prefix):
         return True
-    from .config import PROJECT_CONFIG_NAMES
-
     return os.path.basename(normalised) in PROJECT_CONFIG_NAMES
 
 
@@ -1018,8 +1017,3 @@ def create_design_snapshot(
     """Hash the plan and freeze it in one step, for a caller with no gate."""
     plan_text, _, digest = design_digest(workspace, plan_path, request_path)
     return write_design_snapshot(workspace, plan_path, request_path, plan_text, digest)
-
-
-# Imported last: these modules import this one back, and every use
-# is inside a function, so the names only have to exist by the first call.
-from .review_consolidation import accepted_findings  # noqa: E402

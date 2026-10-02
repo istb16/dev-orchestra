@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Dict
+from typing import Any, Dict, List
 
 from .optimization import DEFAULT_LEVEL, MAX_FINDINGS_BY_LEVEL
 
@@ -230,3 +230,7 @@ One block per issue, exactly this shape:
 
 {limits}
 """
+
+
+def accepted_findings(data: Dict[str, Any]) -> List[Dict[str, Any]]:
+    return [f for f in data.get("findings", []) if f.get("triage") == "accepted"]

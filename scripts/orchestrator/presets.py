@@ -202,6 +202,7 @@ def user_fit(provider: Any) -> UserFit:
     The report is asked only when it is static: fitting runs at every load
     and must not start a CLI.
     """
+    # lazy: importing the registry runs the user adapters, and presets must be complete first
     from .providers import describe_exception
 
     cls = type(provider)
@@ -236,6 +237,7 @@ def user_fit(provider: Any) -> UserFit:
 def _named_fit(name: str) -> UserFit:
     """:func:`user_fit` of the adapter called ``name``; not fitted when the
     name is unknown or its factory fails."""
+    # lazy: importing the registry runs the user adapters, and presets must be complete first
     from .providers import get_provider
 
     try:
@@ -247,6 +249,7 @@ def _named_fit(name: str) -> UserFit:
 def installed_providers() -> List[str]:
     """Each fitted provider whose CLI is on PATH: the built-ins in fitting
     order, then each opted-in user adapter by name."""
+    # lazy: importing the registry runs the user adapters, and presets must be complete first
     from .providers import available_providers, get_provider, provider_origin
 
     found: List[str] = []

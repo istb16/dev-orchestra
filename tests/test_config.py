@@ -9,7 +9,7 @@ from typing import Any, ClassVar, Dict
 from helpers import IsolatedCase, present
 
 from orchestrator import config as config_mod
-from orchestrator import wizard
+from orchestrator import summary
 
 DESIGN_DEFAULTS = {
     "require_approval": True,
@@ -95,8 +95,8 @@ class TestDefaults(IsolatedCase):
         loaded = config_mod.load(self.project)
         self.assertEqual(config_mod.validate(loaded.data), [])
         self.assertEqual(loaded.design_settings(), DESIGN_DEFAULTS)
-        self.assertTrue(wizard._approval_required({"design": {"require_approval": None}}))
-        self.assertFalse(wizard._approval_required({"design": {"require_approval": False}}))
+        self.assertTrue(summary._approval_required({"design": {"require_approval": None}}))
+        self.assertFalse(summary._approval_required({"design": {"require_approval": False}}))
 
     def test_the_approval_setting_must_be_a_boolean(self):
         data = config_mod.default_config()

@@ -16,6 +16,7 @@ import subprocess
 from typing import Any, Dict, List, Optional, Sequence
 
 from .. import execution, verified
+from ..workspace import redact
 
 # Execution modes shared by every adapter.
 MODE_PLAN = "plan"  # investigate / design, must not modify files
@@ -48,19 +49,6 @@ WARNED_ENFORCEMENT = ("unenforced",)
 _RAW_ARGUMENT_NAME_LIMIT = 40
 
 
-_SECRET_PATTERNS = (
-    re.compile(r"\b(sk-[A-Za-z0-9_\-]{12,})"),
-    re.compile(r"\b(sk-ant-[A-Za-z0-9_\-]{12,})"),
-    re.compile(r"\b(gh[pousr]_[A-Za-z0-9]{16,})"),
-    re.compile(r"\b(ey[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,})"),
-    re.compile(r"(?i)\bbearer\s+([A-Za-z0-9_\-\.]{12,})"),
-    re.compile(
-        r"(?i)\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|authorization|secret)"
-        r"\s*[:=]\s*[\"']?([A-Za-z0-9_\-\.]{12,})"
-    ),
-)
-
-
 #: Discovery results are stable for the lifetime of a process, and both the
 #: doctor and the wizard ask for them repeatedly. Keyed by (adapter, executable).
 _DISCOVERY_CACHE: Dict[tuple, Any] = {}
@@ -69,16 +57,6 @@ _DISCOVERY_CACHE: Dict[tuple, Any] = {}
 def clear_discovery_cache() -> None:
     """Forget cached CLI discovery (used by tests)."""
     _DISCOVERY_CACHE.clear()
-
-
-def redact(text: str) -> str:
-    """Strip credential-shaped substrings from anything we log or persist."""
-    if not text:
-        return text
-    cleaned = text
-    for pattern in _SECRET_PATTERNS:
-        cleaned = pattern.sub(lambda m: m.group(0).replace(m.group(1), "[redacted]"), cleaned)
-    return cleaned
 
 
 def unenforced_warning(name: str, enforcement: Dict[str, Any]) -> str:

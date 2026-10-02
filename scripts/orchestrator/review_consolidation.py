@@ -10,7 +10,10 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple, cast
 
 from . import context as context_mod
 from . import workspace as ws
-from .review_common import SEVERITIES, SEVERITY_RANK, TRIAGE_STATUSES
+from .review_common import SEVERITIES, SEVERITY_RANK, TRIAGE_STATUSES, accepted_findings
+from .review_fanout import ReviewerRun, _snapshot_sha, _stamp
+from .review_parsing import _HEADER_MARKER, parse_findings
+from .review_snapshot import ReviewError
 
 # --------------------------------------------------------------------------- consolidation
 
@@ -1060,10 +1063,6 @@ def recorded_rounds(workspace: ws.Workspace) -> List[Dict[str, Any]]:
     return list(rounds.values())
 
 
-def accepted_findings(data: Dict[str, Any]) -> List[Dict[str, Any]]:
-    return [f for f in data.get("findings", []) if f.get("triage") == "accepted"]
-
-
 def unresolved_blocking(
     data: Dict[str, Any], severities: Sequence[str] = ("critical", "high")
 ) -> List[Dict[str, Any]]:
@@ -1130,10 +1129,3 @@ def summarise_runs(runs: Sequence[ReviewerRun]) -> Tuple[int, int, int]:
     ok = sum(1 for run in runs if run.status == "ok")
     partial = sum(1 for run in runs if run.status == "partial")
     return ok, len(runs) - ok - partial, partial
-
-
-# Imported last: these modules import this one back, and every use
-# is inside a function, so the names only have to exist by the first call.
-from .review_fanout import ReviewerRun, _snapshot_sha, _stamp  # noqa: E402
-from .review_parsing import _HEADER_MARKER, parse_findings  # noqa: E402
-from .review_snapshot import ReviewError  # noqa: E402
