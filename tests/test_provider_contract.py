@@ -22,10 +22,11 @@ it without starting a process.
 from __future__ import annotations
 
 import inspect
+import os
 import unittest
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from helpers import CLAUDE_HELP, IsolatedCase
+from helpers import CLAUDE_HELP, IsolatedCase, usage_dict
 
 from orchestrator import execution, providers, verified
 from orchestrator.providers import base
@@ -608,7 +609,8 @@ class TestResumingThroughTheBase(IsolatedCase):
         self.assertEqual(result.context_tokens, 123)
         self.assertEqual(result.session_init, {"tools": ["Read"]})
         self.assertEqual(self.seen["command"][-1], "--resume=%s" % SESSION)
-        self.assertIs(provider.rejected_calls[0]["options"], CALL["options"])
+        # The checked copy taken before around_launch, equal to what was passed.
+        self.assertEqual(provider.rejected_calls[0]["options"], CALL["options"])
         self.assertEqual(provider.rejected_calls[0]["session_id"], SESSION)
 
     def test_a_rejected_resume_survives_an_unreadable_answer(self):
@@ -667,6 +669,320 @@ class TestResumingThroughTheBase(IsolatedCase):
         data = result.to_dict()
         for key in ("session_id", "context_tokens", "session_init", "resume_rejected"):
             self.assertIn(key, data)
+
+
+class _HookedAdapter(_ResumingAdapter):
+    """Every hook the base calls after the run, recorded, and each made to
+    fail or to answer None on request."""
+
+    def __init__(self):
+        super().__init__()
+        self.calls = []
+        self.unenforced = False
+        self.warnings: Any = ["a run warning"]
+        self.session: Any = {"session_id": PARSED_SESSION}
+        self.raise_in_usage = False
+
+    def read_only_enforcement(self) -> Dict[str, Any]:
+        if not self.unenforced:
+            return super().read_only_enforcement()
+        return {"status": "unenforced", "mechanism": "none", "detail": "it writes"}
+
+    def resume_rejected(self, outcome, mode, options, session_id):
+        self.calls.append("resume_rejected")
+        return super().resume_rejected(outcome, mode, options, session_id)
+
+    def parse_session(self, outcome):
+        self.calls.append("parse_session")
+        if self.raise_in_parse:
+            raise RuntimeError("session reader broke")
+        return self.session
+
+    def run_warnings(self, outcome, mode):
+        self.calls.append("run_warnings")
+        return self.warnings
+
+    def postprocess(self, outcome, mode):
+        self.calls.append("postprocess")
+        if self.raise_in_postprocess:
+            raise ValueError("boom")
+        return outcome.stdout, outcome.stderr
+
+    def parse_usage(self, outcome, mode):
+        self.calls.append("parse_usage")
+        if self.raise_in_usage:
+            raise ValueError("boom")
+        return None
+
+
+UNENFORCED = "read-only is NOT enforced by resuming -- it writes"
+#: What a plan run with every note says above its stderr, in order.
+NOTES = [UNENFORCED, "a run warning", "RuntimeError: session reader broke"]
+
+
+class TestWhatTheBaseMakesOfTheHooks(IsolatedCase):
+    """The order the hooks run in, and what a failing one leaves behind."""
+
+    def setUp(self):
+        super().setUp()
+        self.outcome: Any = _Outcome()
+        self.outcome.stderr = "err"
+        self.addCleanup(setattr, execution, "execute", execution.execute)
+        execution.execute = lambda command, cwd, **kwargs: self.outcome
+        self.provider = _HookedAdapter()
+
+    def run_plan(self, **kwargs):
+        return self.provider.run("prompt", base.MODE_PLAN, self.project, **kwargs)
+
+    def test_the_hooks_run_in_order(self):
+        self.outcome = _RejectedOutcome()
+        self.run_plan(resume_session=SESSION)
+        expected = ["resume_rejected", "parse_session", "run_warnings", "postprocess", "parse_usage"]
+        self.assertEqual(self.provider.calls, expected)
+
+    def test_an_unreadable_answer_names_every_failure_in_order(self):
+        self.provider.unenforced = True
+        self.provider.raise_in_parse = True
+        self.provider.raise_in_postprocess = True
+        result = self.run_plan()
+        self.assertEqual(result.stderr, "\n".join([*NOTES, "ValueError: boom\nerr"]))
+        self.assertEqual(result.warnings, [UNENFORCED, "a run warning"])
+        self.assertIsNone(result.usage.prompt_chars)
+        self.assertEqual(self.provider.calls, ["parse_session", "run_warnings", "postprocess"])
+
+    def test_an_unreadable_invoice_is_named_below_the_notes(self):
+        self.provider.unenforced = True
+        self.provider.raise_in_parse = True
+        self.provider.raise_in_usage = True
+        result = self.run_plan()
+        self.assertEqual(result.stderr, "\n".join([*NOTES, "ValueError: boom\nerr"]))
+        self.assertEqual(result.usage.prompt_chars, len("prompt"))
+
+    def test_run_warnings_that_fail_part_way_keep_what_came_before(self):
+        def warnings():
+            yield "first"
+            raise RuntimeError("late")
+
+        self.provider.warnings = warnings()
+        result = self.run_plan()
+        self.assertEqual(result.warnings, ["first"])
+        self.assertEqual(result.stderr, "first\nRuntimeError: late\nerr")
+
+    def test_a_failing_rejection_reader_is_named_above_stderr(self):
+        self.provider.raise_in_rejected = True
+        self.provider.warnings = []
+        self.outcome = _RejectedOutcome()
+        result = self.run_plan(resume_session=SESSION)
+        self.assertFalse(result.resume_rejected)
+        expected = "RuntimeError: rejected reader broke\nNo conversation found with session ID: " + SESSION
+        self.assertEqual(result.stderr, expected)
+
+    def test_hooks_that_answer_none(self):
+        self.provider.session = None
+        self.provider.warnings = None
+        result = self.run_plan()
+        session = (result.session_id, result.context_tokens, result.session_init)
+        self.assertEqual(session, (None, None, None))
+        self.assertEqual(result.warnings, [])
+        self.assertEqual(result.stderr, "err")
+
+
+def _measured_outcome():
+    """An outcome with no field left at its default."""
+    return execution.ExecOutcome(
+        3,
+        "out",
+        "err",
+        5.0,
+        timed_out=True,
+        stalled=True,
+        idle_for=4.0,
+        orphans_possible=True,
+        suspended=2.0,
+    )
+
+
+class TestBothResultsCarryTheMeasurement(IsolatedCase):
+    """The result of a run whose answer could not be read, and of one whose
+    answer could, field by field."""
+
+    def setUp(self):
+        super().setUp()
+        self.addCleanup(setattr, execution, "execute", execution.execute)
+        execution.execute = lambda command, cwd, **kwargs: _measured_outcome()
+
+    def expected(self, prompt_chars):
+        return {
+            "ok": False,
+            "exit_code": 3,
+            "timed_out": True,
+            "stalled": True,
+            "idle_for_seconds": 4.0,
+            "orphans_possible": True,
+            "duration_seconds": 5.0,
+            "suspended_seconds": 2.0,
+            "command": ["bare", base.MODE_IMPLEMENT],
+            "model": {
+                "provider": "bare",
+                "family": "",
+                "version_policy": "latest",
+                "argument": None,
+                "display": "default",
+                "source": "cli-default",
+                "note": "",
+            },
+            "invoked": True,
+            "usage": usage_dict(prompt_chars=prompt_chars),
+            "session_id": None,
+            "context_tokens": None,
+            "session_init": None,
+            "resume_rejected": False,
+            "warnings": [],
+        }
+
+    def test_an_unreadable_answer(self):
+        class Unreadable(_BareAdapter):
+            def postprocess(self, outcome, mode):
+                raise ValueError("boom")
+
+        ran = Unreadable().run("prompt", base.MODE_IMPLEMENT, self.project)
+        self.assertEqual(ran.to_dict(), self.expected(None))
+        self.assertEqual((ran.stdout, ran.stderr, ran.suspended), ("out", "ValueError: boom\nerr", 2.0))
+
+    def test_a_readable_answer(self):
+        result = _BareAdapter().run("prompt", base.MODE_IMPLEMENT, self.project)
+        self.assertEqual(result.to_dict(), self.expected(len("prompt")))
+        self.assertEqual((result.stdout, result.stderr, result.suspended), ("out", "err", 2.0))
+
+
+class _Changing(_BareAdapter):
+    """An adapter whose ``around_launch`` changes the run it was handed."""
+
+    def __init__(self, **changes: Any):
+        super().__init__()
+        self.changes = changes
+
+    def around_launch(self, launch, proceed):
+        return proceed(launch._replace(**self.changes))
+
+
+class TestAroundLaunchCannotUndoTheGate(IsolatedCase):
+    """``run`` gates the caller's arguments before ``around_launch`` sees
+    them, so what it gated may not change on the way to the CLI."""
+
+    def setUp(self):
+        super().setUp()
+        self.seen = {}
+        self.addCleanup(setattr, execution, "execute", execution.execute)
+
+        def execute(command, cwd, prompt="", timeout=None, idle_timeout=None, env=None):
+            self.seen["command"] = list(command)
+            return _Outcome()
+
+        execution.execute = execute
+
+    def test_a_gated_field_may_not_change(self):
+        cases: List[Tuple[str, Dict[str, Any]]] = [
+            ("extra_args", {"extra_args": ["--yolo"]}),
+            ("mode", {"mode": base.MODE_IMPLEMENT}),
+            ("resume_session", {"resume_session": SESSION}),
+            ("options", {"options": {"args": ["--yolo"]}}),
+        ]
+        for field, changes in cases:
+            with self.subTest(field=field):
+                with self.assertRaisesRegex(ValueError, "^around_launch may not change %s$" % field):
+                    _Changing(**changes).run("prompt", base.MODE_REVIEW, self.project, options={})
+                self.assertNotIn("command", self.seen)
+
+    def test_a_gated_field_may_not_change_in_place(self):
+        class Appending(_BareAdapter):
+            def __init__(self, change):
+                super().__init__()
+                self.change = change
+
+            def around_launch(self, launch, proceed):
+                self.change(launch)
+                return proceed(launch)
+
+        cases: List[Tuple[str, Callable[[Any], None]]] = [
+            ("extra_args", lambda launch: launch.extra_args.append("--yolo")),
+            ("options", lambda launch: launch.options["args"].append("--yolo")),
+        ]
+        for field, change in cases:
+            with self.subTest(field=field):
+                extra_args: List[str] = []
+                options: Dict[str, Any] = {"args": []}
+                with self.assertRaisesRegex(ValueError, "^around_launch may not change %s$" % field):
+                    Appending(change).run(
+                        "prompt", base.MODE_REVIEW, self.project, extra_args=extra_args, options=options
+                    )
+                self.assertNotIn("command", self.seen)
+
+    def test_the_adapters_own_arguments_follow_the_callers(self):
+        provider = _Changing(own_args=("--own", "value"))
+        result = provider.run("prompt", base.MODE_IMPLEMENT, self.project, extra_args=["--x"])
+        self.assertTrue(result.ok)
+        self.assertEqual(self.seen["command"], ["bare", base.MODE_IMPLEMENT, "--x", "--own", "value"])
+        self.assertEqual(result.command, self.seen["command"])
+
+
+class TestLaunchReachesTheStart(IsolatedCase):
+    """Every field of the run reaches the base's start as ``_launch`` was
+    called, except what a built-in ``around_launch`` changes on purpose."""
+
+    def setUp(self):
+        super().setUp()
+        self.received = []
+
+        def start(provider, called, launch):
+            self.received.append((called, launch))
+            return base.RunResult(True, 0, "", "", [provider.executable], 0.0)
+
+        self.addCleanup(setattr, base.Provider, "_start", base.Provider._start)
+        setattr(base.Provider, "_start", start)
+
+    def launched(self, name):
+        provider = providers.get_provider(name)
+        provider.which = lambda: provider.executable
+        provider.version = lambda: ("test 1", None)
+        provider._launch(
+            "the prompt",
+            base.MODE_IMPLEMENT,
+            self.project,
+            model_spec={"family": "default"},
+            timeout=99,
+            extra_args=["--x"],
+            env={"A": "1"},
+            options={"args": ["--y"]},
+            idle_timeout=7.0,
+            resume_session=None,
+            command_kwargs={"marker": 1},
+        )
+        self.assertEqual(len(self.received), 1)
+        return self.received.pop()
+
+    def test_claude_and_mycli_change_nothing(self):
+        self.write_user_provider("mycli")
+        providers.load_user_providers()
+        for name in ("claude", "mycli"):
+            with self.subTest(provider=name):
+                called, launch = self.launched(name)
+                self.assertEqual(launch, called)
+
+    def test_codex_adds_only_its_answer_file(self):
+        called, launch = self.launched("codex")
+        self.assertEqual(launch._replace(own_args=()), called)
+        self.assertEqual(launch.own_args[0], "-o")
+        self.assertTrue(os.path.basename(launch.own_args[1]).startswith("codex-last-"))
+        self.assertEqual(len(launch.own_args), 2)
+
+    def test_agy_changes_only_the_prompt_and_names_its_file(self):
+        called, launch = self.launched("agy")
+        self.assertEqual(launch._replace(prompt="the prompt", command_kwargs={"marker": 1}), called)
+        self.assertEqual(launch.prompt, "")
+        kwargs = dict(launch.command_kwargs or {})
+        self.assertTrue(str(kwargs.pop("prompt_file")).startswith("agy-prompt-%d-" % os.getpid()))
+        self.assertEqual(kwargs, {"marker": 1})
 
 
 if __name__ == "__main__":

@@ -47,7 +47,7 @@ import json
 import os
 import re
 import tempfile
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from .. import activity
 from ..execution import ExecOutcome
@@ -56,14 +56,17 @@ from .base import (
     MODE_PLAN,
     READ_ONLY_MODES,
     SESSION_ID_RE,
+    Launch,
     ModelCandidate,
     ModelResolutionError,
     Provider,
     ResolvedModel,
     RunResult,
     Usage,
+    event_of_type,
     json_lines,
     redact,
+    stdout_events,
     token_count,
 )
 
@@ -350,7 +353,7 @@ class CodexProvider(Provider):
         are recorded as ``total_tokens`` and never split into an input/output
         pair we would be inventing.
         """
-        usage = _usage_from_events(json_lines(outcome.stdout)) if mode == MODE_PLAN else None
+        usage = _usage_from_events(stdout_events(outcome)) if mode == MODE_PLAN else None
         if usage is not None:
             return usage
         return parse_usage_text(outcome.stdout, outcome.stderr)
@@ -359,7 +362,7 @@ class CodexProvider(Provider):
         """The session a ``--json`` run ended in: the first ``thread.started``
         event's ``thread_id``, and only a UUID. Reads stdout only: a fresh run
         never touches the sessions tree."""
-        for event in json_lines(outcome.stdout):
+        for event in stdout_events(outcome):
             if event.get("type") != "thread.started":
                 continue
             thread_id = event.get("thread_id")
@@ -415,7 +418,7 @@ class CodexProvider(Provider):
 
         No ``-s``, ``-C`` or ``--color``: ``fork`` does not take them, and
         the process runs in ``cwd``. With no model to pass, ``-m`` is left
-        out here and :meth:`_launch` refuses the run.
+        out here and :meth:`around_launch` refuses the run.
         """
         command = [
             self.executable,
@@ -450,7 +453,7 @@ class CodexProvider(Provider):
         """
         if outcome.exit_code == 0 or outcome.timed_out or outcome.stalled:
             return False
-        if any(event.get("type") == "thread.started" for event in json_lines(outcome.stdout)):
+        if any(event.get("type") == "thread.started" for event in stdout_events(outcome)):
             return False
         expected = _MISSING_THREAD + session_id
         return any(expected in line for line in (outcome.stderr or "").splitlines())
@@ -482,13 +485,8 @@ class CodexProvider(Provider):
         Measured shapes on 0.156.1; the synthetic fixtures in
         ``tests/fixtures/codex/`` keep them.
         """
-        if '"item.started"' not in line:
-            return activity.NOTHING
-        try:
-            event = json.loads(line)
-        except ValueError:
-            return activity.NOTHING
-        item = event.get("item") if isinstance(event, dict) and event.get("type") == "item.started" else None
+        event = event_of_type(line, "item.started")
+        item = event.get("item") if event is not None else None
         if not isinstance(item, dict):
             return activity.NOTHING
         kind = item.get("type")
@@ -509,31 +507,16 @@ class CodexProvider(Provider):
             lines.append("web_search")
         return activity.Activity(lines, None)
 
-    def _launch(
-        self,
-        prompt: str,
-        mode: str,
-        cwd: str,
-        model_spec: Optional[Dict[str, str]] = None,
-        timeout: int = 1800,
-        extra_args: Sequence[str] = (),
-        env: Optional[Dict[str, str]] = None,
-        options: Optional[Dict[str, Any]] = None,
-        idle_timeout: Optional[float] = None,
-        resume_session: Optional[str] = None,
-        command_kwargs: Optional[Dict[str, Any]] = None,
-    ) -> RunResult:
+    def around_launch(self, launch: Launch, proceed: Callable[[Launch], RunResult]) -> RunResult:
         """Capture the agent's final message via ``-o`` instead of scraping logs.
 
-        Overrides ``_launch`` rather than ``run`` so that ``-o`` is added after
+        Overrides ``around_launch`` rather than ``run`` so that ``-o`` is added after
         the read-only gate has looked at the caller's arguments; it is this
         adapter's own argument, not a raw one.
 
-        Every keyword the base method takes has to be named here *and* passed
-        on. An override that quietly drops one is worse than no override: the
-        caller's request disappears with nothing raised, or -- for a keyword
-        this signature never learned about -- the call fails with a TypeError
-        that looks like a bug in the caller.
+        The run is handed on as ``launch._replace(...)`` through
+        ``super().around_launch``, which calls ``proceed``; only fields the
+        base lets change are replaced.
 
         A resumed run is refused before it starts when there is no model to
         pass or the parent is not this workspace's, and failed after it ends
@@ -541,8 +524,9 @@ class CodexProvider(Provider):
         not installed is reported as missing by the base method, not as a
         refused session.
         """
+        resume_session = launch.resume_session
         if resume_session is not None and self.detect().installed:
-            refusal = self._fork_refusal(resume_session, cwd, model_spec)
+            refusal = self._fork_refusal(resume_session, launch.cwd, launch.model_spec)
             if refusal:
                 return RunResult(
                     False, 2, "", refusal, [self.executable], 0.0, invoked=False, resume_rejected=True
@@ -550,23 +534,13 @@ class CodexProvider(Provider):
         handle, last_message_path = tempfile.mkstemp(prefix="codex-last-", suffix=".txt")
         os.close(handle)
         try:
-            result = super()._launch(
-                prompt,
-                mode,
-                cwd,
-                model_spec=model_spec,
-                timeout=timeout,
-                extra_args=[*list(extra_args), "-o", last_message_path],
-                env=env,
-                options=options,
-                idle_timeout=idle_timeout,
-                resume_session=resume_session,
-                command_kwargs=command_kwargs,
+            result = super().around_launch(
+                launch._replace(own_args=(*launch.own_args, "-o", last_message_path)), proceed
             )
             final = _read_text(last_message_path)
             if final.strip():
                 result.stdout = _redacted(final)
-            elif mode == MODE_PLAN and result.invoked:
+            elif launch.mode == MODE_PLAN and result.invoked:
                 # Under --json stdout is the event stream, never the answer.
                 result.stdout = ""
                 result.ok = False
@@ -661,7 +635,7 @@ def parse_usage_text(*streams: str) -> Optional[Usage]:
     return None
 
 
-def _usage_from_events(events: List[Dict[str, Any]]) -> Optional[Usage]:
+def _usage_from_events(events: Sequence[Dict[str, Any]]) -> Optional[Usage]:
     """The last ``turn.completed`` event's usage, cache reads kept apart."""
     for event in reversed(events):
         if event.get("type") != "turn.completed":

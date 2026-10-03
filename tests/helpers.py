@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import atexit
+import contextlib
 import os
 import shutil
 import stat
@@ -11,7 +12,8 @@ import sys
 import tempfile
 import textwrap
 import unittest
-from typing import Optional, TypeVar
+from typing import Any, Dict, List, Optional, Sequence, TypeVar
+from unittest import mock
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCRIPTS_DIR = os.path.join(REPO_ROOT, "scripts")
@@ -388,6 +390,46 @@ def present(value: Optional[_T]) -> _T:
     if value is None:
         raise AssertionError("expected a value, got None")
     return value
+
+
+def usage_dict(**fields: Any) -> Dict[str, Any]:
+    """``Usage.to_dict()`` of a run whose prompt was ``"prompt"``, written
+    out key by key, with ``fields`` changed."""
+    expected: Dict[str, Any] = {
+        "input_tokens": None,
+        "output_tokens": None,
+        "total_tokens": None,
+        "cache_read_tokens": None,
+        "cache_write_tokens": None,
+        "cost_usd": None,
+        "billed_tokens": None,
+        "prompt_chars": len("prompt"),
+        "tool_uses": None,
+        "tool_uses_by_name": None,
+        "tool_output_chars": None,
+        "source": "unreported",
+        "measured": False,
+    }
+    expected.update(fields)
+    return expected
+
+
+def count_decoding(stack: contextlib.ExitStack, stdout: str, modules: Sequence[Any]) -> List[str]:
+    """Every call of ``json_lines`` on ``stdout``, through any of ``modules``,
+    until ``stack`` closes. A module that has no ``json_lines`` of its own
+    cannot call it, so it is passed over."""
+    calls: List[str] = []
+    for module in modules:
+        if not hasattr(module, "json_lines"):
+            continue
+
+        def counting(text, original=module.json_lines):
+            if text == stdout:
+                calls.append(text)
+            return original(text)
+
+        stack.enter_context(mock.patch.object(module, "json_lines", counting))
+    return calls
 
 
 def has_git() -> bool:

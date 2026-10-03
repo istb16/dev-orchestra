@@ -51,6 +51,7 @@ class Provider:
     def command_line(mode, resolved, cwd, extra_args, options, resume_session) -> list[str]   # do not override
     def run(prompt, mode, cwd, model_spec, timeout, extra_args, resume_session) -> RunResult  # do not override
     def _launch(prompt, mode, cwd, model_spec, timeout, extra_args, resume_session) -> RunResult
+    def around_launch(launch, proceed) -> RunResult             # default: proceed(launch)
     def refused_read_only_args(raw_args, source) -> list[str]   # default: refuse all
     def read_only_enforcement() -> dict                         # default: "unspecified"
     static_enforcement: bool                                    # default: False
@@ -75,17 +76,40 @@ class Provider:
     def resume_command(mode, resolved, cwd, extra_args, options, session_id) -> list[str]  # default: build_command + resume_args
     def resume_rejected(outcome, mode, options, session_id) -> bool   # default: False
     def parse_session(outcome) -> dict                          # session_id, context_tokens, init
+
+class Launch(NamedTuple):     # one run, as around_launch is handed it
+    prompt, mode, cwd, model_spec, timeout, extra_args, env, options,
+    idle_timeout, resume_session, command_kwargs
+    own_args: tuple[str, ...] = ()   # the adapter's own arguments, after the caller's
+
+def stdout_events(outcome) -> tuple[dict, ...]   # stdout's JSON lines, decoded once per run
 ```
 
 `detect`, `version` and `list_models` are memoised per process, so the doctor and
 the wizard can ask repeatedly without re-spawning the CLI.
 
+The hooks that read a finished run (`resume_rejected`, `parse_session`,
+`run_warnings`, `postprocess`, `parse_usage`) can take its JSON lines from
+`stdout_events(outcome)`, which decodes `outcome.stdout` once and hands every
+hook the same events. They are shared, so a hook must not change them.
+
 `run` is the gate every adapter shares: on a `plan` or `review` run it holds the
 caller's raw arguments (`options.args` and `--extra`) to the adapter's
 allowlist, before the adapter adds its own, and then calls `_launch`, which
-starts the CLI. An adapter that needs to change how the CLI is started
-overrides `_launch`; one that overrides `run` bypasses the gate and has to
-carry it itself.
+hands the run to `around_launch` as a `Launch`. For work before or after the
+CLI runs (a temporary file, a prompt file, a check of the output), an adapter
+overrides `around_launch` and passes `launch._replace(...)` to `proceed`, which
+starts the CLI. Only `prompt`, `cwd`, `model_spec`, `timeout`, `env`,
+`idle_timeout`, `command_kwargs` and `own_args` may change: `run` has already
+gated `mode`, `resume_session`, `extra_args` and `options`, so changing any of
+them raises `ValueError` before anything is built. The adapter's own arguments
+go in `own_args`, which follow the caller's and are never gated. An override in
+a subclass of a built-in adapter must chain through
+`super().around_launch(launch, proceed)`; otherwise Codex's workspace and
+read-only fork checks, or agy's prompt file, are skipped. `_launch` can still be
+overridden, and an override that calls `super()._launch(...)` still goes
+through `around_launch`, but it has to name and pass on every keyword. One
+that overrides `run` bypasses the gate and has to carry it itself.
 
 Continuing a session (`run architect --resume`) is opt-in per adapter.
 `resume_session` travels as a keyword from `run` through `_launch` to
@@ -115,9 +139,9 @@ mechanism unless the resumed command differs -- and its
 `required_resume_checks`, the checks a version must pass (every check
 `verified.py` names unless it names fewer), and turns the answer into the
 report with `resume_report(version, trust)`. An adapter may also refuse to
-start a resumed run: `_launch` returns a result with `resume_rejected=True`
-and `invoked=False`, and the orchestrator runs fresh once, as for a rejection
-by the CLI. After the run
+start a resumed run: `around_launch` returns a result with
+`resume_rejected=True` and `invoked=False` without calling `proceed`, and the
+orchestrator runs fresh once, as for a rejection by the CLI. After the run
 the base asks `parse_session(outcome)` for the session the run ended in, the
 context it last had (`context_tokens`) and what the CLI reported when the
 session started (`init`), and, for a resumed run only,
@@ -670,9 +694,16 @@ your own without editing the plugin, see
    how adapters rot. Record the version you verified against in the module
    docstring.
 3. Implement `_discover_models`, `_resolve_latest`, `build_command`, and
-   `auth_status`. Override `_launch` only if the CLI needs special output
-   capture. **Override `_launch`, not `run`**: an adapter that overrides `run`
-   carries the read-only raw-argument gate itself.
+   `auth_status`. Override `around_launch` only for work before or after the
+   CLI runs, such as special output capture: pass `launch._replace(...)` to
+   `proceed`, changing only `prompt`, `cwd`, `model_spec`, `timeout`, `env`,
+   `idle_timeout`, `command_kwargs` or `own_args` (changing `mode`,
+   `resume_session`, `extra_args` or `options` raises, because `run` has
+   already gated them), and add the adapter's own arguments with `own_args`.
+   In a subclass of a built-in adapter, chain through
+   `super().around_launch(launch, proceed)`. **Override `around_launch`, not
+   `run`**: an adapter that overrides `run` carries the read-only raw-argument
+   gate itself.
 4. Make sure `plan` and `review` map to a genuinely read-only mode: one the CLI
    enforces without the model's cooperation. Implement
    `refused_read_only_args` if a read-only run needs any raw argument (the
@@ -880,7 +911,8 @@ clears the memoised discovery results, so an edited adapter is detected afresh.
 `RunResult`, `Usage`, `Detection`) are internal to the plugin and may change
 between minor versions. Pin the plugin version, or run `dev-orchestra doctor`
 after an update to check that your adapter still loads. The signatures of
-`run()` and `_launch()` are the surface most likely to move;
+`run()`, `_launch()` and `around_launch()`, and the fields of `Launch`, are the
+surface most likely to move;
 `tests/test_provider_contract.py` holds every adapter, including the example
 above, to them.
 

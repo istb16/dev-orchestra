@@ -32,22 +32,23 @@ this machine. Nothing here enumerates model ids from memory.
 from __future__ import annotations
 
 import glob
-import json
 import os
 import re
 import tempfile
 import time
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from .. import execution
 from .base import (
     MODE_IMPLEMENT,
+    Launch,
     ModelCandidate,
     ModelResolutionError,
     Provider,
     ResolvedModel,
     RunResult,
     Usage,
+    stdout_events,
     token_count,
 )
 
@@ -223,7 +224,7 @@ class AgyProvider(Provider):
         options: Optional[Dict[str, Any]] = None,
         prompt_file: Optional[str] = None,
     ) -> List[str]:
-        """``-p`` last, naming ``prompt_file`` once ``_launch`` has written
+        """``-p`` last, naming ``prompt_file`` once ``around_launch`` has written
         it, and a placeholder for it before (``--print-command``).
 
         No ``--mode``: plan mode was measured to write all the same, and to
@@ -266,20 +267,7 @@ class AgyProvider(Provider):
             "detail": AGY_UNENFORCED,
         }
 
-    def _launch(
-        self,
-        prompt: str,
-        mode: str,
-        cwd: str,
-        model_spec: Optional[Dict[str, Any]] = None,
-        timeout: int = 1800,
-        extra_args: Sequence[str] = (),
-        env: Optional[Dict[str, str]] = None,
-        options: Optional[Dict[str, Any]] = None,
-        idle_timeout: Optional[float] = None,
-        resume_session: Optional[str] = None,
-        command_kwargs: Optional[Dict[str, Any]] = None,
-    ) -> RunResult:
+    def around_launch(self, launch: Launch, proceed: Callable[[Launch], RunResult]) -> RunResult:
         """Put the prompt where agy reads it: in a file ``-p`` names.
 
         agy does not read stdin, so none is sent, and the prompt is never an
@@ -294,30 +282,24 @@ class AgyProvider(Provider):
             # base as missing, and nothing is written for a run never started.
             if self.detect().installed:
                 try:
-                    path = _write_prompt_file(cwd, prompt)
+                    path = _write_prompt_file(launch.cwd, launch.prompt)
                 except OSError as exc:
                     return RunResult(False, 2, "", "agy: %s" % exc, [self.executable], 0.0, invoked=False)
             # Passed with the call, not kept on the instance: reviewers run
             # in parallel on one adapter, and each names its own file.
-            result = super()._launch(
-                prompt="",
-                mode=mode,
-                cwd=cwd,
-                model_spec=model_spec,
-                timeout=timeout,
-                extra_args=extra_args,
-                env=env,
-                options=options,
-                idle_timeout=idle_timeout,
-                resume_session=resume_session,
-                command_kwargs={
-                    **(command_kwargs or {}),
-                    "prompt_file": os.path.basename(path) if path is not None else None,
-                },
+            result = super().around_launch(
+                launch._replace(
+                    prompt="",
+                    command_kwargs={
+                        **(launch.command_kwargs or {}),
+                        "prompt_file": os.path.basename(path) if path is not None else None,
+                    },
+                ),
+                proceed,
             )
             if result.usage.prompt_chars is not None:
                 # The base measures what went on stdin, and that was nothing.
-                result.usage.prompt_chars = len(prompt)
+                result.usage.prompt_chars = len(launch.prompt)
             return result
         finally:
             if path is not None:
@@ -331,7 +313,7 @@ class AgyProvider(Provider):
     def postprocess(self, outcome, mode: str) -> "tuple[str, str]":
         """The ``response`` field as stdout; ``AGY_ERROR`` lines and the
         ``error`` field onto stderr. Anything else passes through."""
-        payload = result_object(outcome.stdout)
+        payload = _result_event(stdout_events(outcome))
         if payload is None:
             return outcome.stdout, outcome.stderr
         response = payload.get("response")
@@ -344,7 +326,7 @@ class AgyProvider(Provider):
         return stdout, stderr
 
     def run_warnings(self, outcome, mode: str) -> List[str]:
-        payload = result_object(outcome.stdout)
+        payload = _result_event(stdout_events(outcome))
         if payload is None:
             return []
         warnings: List[str] = []
@@ -370,7 +352,7 @@ class AgyProvider(Provider):
         """``usage`` from the JSON result. ``output_tokens`` already counts
         ``thinking_tokens`` (measured), so thinking is not added; no cost is
         reported, and ``total_tokens`` is left for a CLI that reports only one."""
-        payload = result_object(outcome.stdout)
+        payload = _result_event(stdout_events(outcome))
         usage = payload.get("usage") if payload else None
         if not isinstance(usage, dict):
             return None
@@ -386,7 +368,7 @@ class AgyProvider(Provider):
         )
 
     def parse_session(self, outcome) -> Dict[str, Any]:
-        payload = result_object(outcome.stdout)
+        payload = _result_event(stdout_events(outcome))
         conversation = payload.get("conversation_id") if payload else None
         if isinstance(conversation, str) and conversation:
             return {"session_id": conversation}
@@ -408,19 +390,12 @@ def parse_models(text: str) -> List[ModelCandidate]:
     return candidates
 
 
-def result_object(stdout: str) -> Optional[Dict[str, Any]]:
-    """The JSON result: the last stdout line starting with ``{`` that decodes
-    to an object carrying ``status`` or ``response``."""
-    for line in reversed((stdout or "").splitlines()):
-        stripped = line.strip()
-        if not stripped.startswith("{"):
-            continue
-        try:
-            payload = json.loads(stripped)
-        except ValueError:
-            continue
-        if isinstance(payload, dict) and ("status" in payload or "response" in payload):
-            return payload
+def _result_event(events: Sequence[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """The JSON result: the last object of stdout's JSON lines carrying
+    ``status`` or ``response``."""
+    for event in reversed(events):
+        if "status" in event or "response" in event:
+            return event
     return None
 
 

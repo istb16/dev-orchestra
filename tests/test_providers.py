@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import datetime
 import json
 import os
@@ -12,7 +13,8 @@ import textwrap
 import threading
 import time
 import unittest
-from typing import NoReturn, Optional
+from typing import Any, ClassVar, Dict, NoReturn, Optional
+from unittest import mock
 
 from helpers import (
     CLAUDE_HELP,
@@ -22,9 +24,11 @@ from helpers import (
     CLAUDE_HELP_OLD,
     CLAUDE_HELP_RESUME_ONLY,
     IsolatedCase,
+    count_decoding,
     make_dir_link,
     present,
     remove_link,
+    usage_dict,
 )
 
 from orchestrator import activity, execution, providers, verified
@@ -36,6 +40,9 @@ from orchestrator.providers.agy import AgyProvider
 from orchestrator.providers.claude import READ_ONLY_MECHANISM, ClaudeProvider, _parse_model_aliases
 from orchestrator.providers.codex import CodexProvider
 from orchestrator.providers.mock import MockProvider
+
+#: Every adapter module that could decode a run's stdout.
+DECODERS = (base, agy_module, claude_module, codex_module)
 
 
 class _FakeCompleted:
@@ -1349,8 +1356,9 @@ class _CodexExecute:
         return execution.ExecOutcome(self.exit_code, self.stdout, self.stderr, 0.1)
 
 
-class TestCodexResume(IsolatedCase):
-    """Forking a Codex session: the command, the refusals and the verdict."""
+class _CodexHome(IsolatedCase):
+    """A Codex adapter with a ``CODEX_HOME`` of its own, and the rollouts a
+    fork is checked against."""
 
     def setUp(self):
         super().setUp()
@@ -1358,7 +1366,11 @@ class TestCodexResume(IsolatedCase):
         saved = os.environ.get("CODEX_HOME")
         self.addCleanup(self.restore_codex_home, saved)
         os.environ["CODEX_HOME"] = self.codex_home
-        self.provider = CodexProvider()
+        self.installed(CodexProvider())
+
+    def installed(self, provider: CodexProvider) -> None:
+        """``provider`` as this test's adapter, its CLI faked."""
+        self.provider = provider
         self.provider.which = lambda: "codex"
         self.provider.version = lambda: ("codex-cli 0.156.1", None)
         self.provider.configured_model = lambda: "gpt-6-sol"
@@ -1422,6 +1434,10 @@ class TestCodexResume(IsolatedCase):
 
     def fork(self, **kwargs):
         return self.run_codex(resume_session=CODEX_PARENT, **kwargs)
+
+
+class TestCodexResume(_CodexHome):
+    """Forking a Codex session: the command, the refusals and the verdict."""
 
     # -- the command -------------------------------------------------------
 
@@ -1739,6 +1755,272 @@ class TestCodexResume(IsolatedCase):
         )
         fresh = self.provider.read_only_enforcement()["mechanism"]
         self.assertNotEqual(self.provider.resume_mechanism(), fresh)
+
+
+#: What ``exec-json-ready.jsonl`` reports for a plan run.
+CODEX_READY_USAGE = usage_dict(
+    input_tokens=3523,
+    output_tokens=5,
+    cache_read_tokens=11904,
+    billed_tokens=3528,
+    source="codex json events",
+    measured=True,
+)
+
+
+class TestCodexRecordedRuns(_CodexHome):
+    """Whole runs over the recordings, through ``run`` and every parse hook,
+    pinned field by field."""
+
+    def recorded(self, run, stdout="", **kwargs):
+        executed = _CodexExecute(self, stdout=stdout, **kwargs)
+        result = run()
+        self.assertTrue(result.invoked)
+        self.assertEqual(len(executed.commands), 1)
+        return result
+
+    def assert_parsed(self, result, session_id, usage, session_init=None):
+        self.assertEqual((result.ok, result.exit_code), (True, 0))
+        self.assertEqual((result.stdout, result.stderr), ("READY", ""))
+        self.assertEqual((result.warnings, result.resume_rejected), ([], False))
+        session = (result.session_id, result.context_tokens, result.session_init)
+        self.assertEqual(session, (session_id, None, session_init))
+        self.assertEqual(result.usage.to_dict(), usage)
+
+    def test_a_plan_run(self):
+        result = self.recorded(self.run_codex, codex_fixture("exec-json-ready.jsonl"))
+        self.assert_parsed(result, CODEX_PARENT, CODEX_READY_USAGE)
+
+    def test_a_review_run_reads_no_json_usage(self):
+        stdout = codex_fixture("exec-json-ready.jsonl")
+        result = self.recorded(lambda: self.run_codex(base.MODE_REVIEW), stdout)
+        self.assert_parsed(result, CODEX_PARENT, usage_dict())
+
+    def test_a_plan_run_that_used_tools(self):
+        result = self.recorded(self.run_codex, codex_fixture("exec-json-tools.jsonl"))
+        usage = usage_dict(
+            input_tokens=3830,
+            output_tokens=212,
+            cache_read_tokens=20480,
+            billed_tokens=4042,
+            source="codex json events",
+            measured=True,
+        )
+        self.assert_parsed(result, "11111111-1111-4111-8111-111111111111", usage)
+
+    def test_an_implement_run_that_changed_a_file(self):
+        stdout = codex_fixture("exec-json-file-change.jsonl")
+        result = self.recorded(lambda: self.run_codex(base.MODE_IMPLEMENT), stdout)
+        self.assert_parsed(result, "22222222-2222-4222-8222-222222222222", usage_dict())
+
+    def test_a_fork_is_a_parsed_run(self):
+        self.parent_here()
+        self.rollout("fork-rollout-read-only.jsonl", CODEX_FORK)
+        result = self.recorded(self.fork, self.fork_output())
+        usage = usage_dict(
+            input_tokens=19001,
+            output_tokens=105,
+            cache_read_tokens=11904,
+            billed_tokens=19106,
+            source="codex json events",
+            measured=True,
+        )
+        init = {"sandbox_policy": "read-only", "approval_policy": "never"}
+        self.assert_parsed(result, CODEX_FORK, usage, init)
+
+    def test_a_rejected_fork(self):
+        self.parent_here()
+        stderr = codex_fixture("fork-missing-session.stderr").replace(CODEX_MISSING, CODEX_PARENT)
+        result = self.recorded(self.fork, "", answer="", exit_code=1, stderr=stderr)
+        self.assertEqual((result.ok, result.exit_code, result.stdout), (False, 1, ""))
+        self.assertEqual(result.stderr, "codex printed no final message (-o was empty)\n" + stderr)
+        self.assertEqual((result.warnings, result.resume_rejected), ([], True))
+        session = (result.session_id, result.context_tokens, result.session_init)
+        self.assertEqual(session, (None, None, None))
+        self.assertEqual(result.usage.to_dict(), usage_dict())
+
+    def test_the_stream_is_decoded_once(self):
+        for mode in (base.MODE_PLAN, base.MODE_REVIEW):
+            with self.subTest(mode=mode):
+                stdout = codex_fixture("exec-json-tools.jsonl")
+                with contextlib.ExitStack() as stack:
+                    calls = count_decoding(stack, stdout, DECODERS)
+                    self.recorded(lambda mode=mode: self.run_codex(mode), stdout)
+                self.assertEqual(len(calls), 1)
+
+    def test_an_implement_run_decodes_its_stream_at_most_once(self):
+        stdout = codex_fixture("exec-json-file-change.jsonl")
+        with contextlib.ExitStack() as stack:
+            calls = count_decoding(stack, stdout, DECODERS)
+            self.recorded(lambda: self.run_codex(base.MODE_IMPLEMENT), stdout)
+        self.assertLessEqual(len(calls), 1)
+
+    def test_a_fork_decodes_its_stream_once(self):
+        stdout = self.fork_output()
+        self.parent_here()
+        self.rollout("fork-rollout-read-only.jsonl", CODEX_FORK)
+        with contextlib.ExitStack() as stack:
+            calls = count_decoding(stack, stdout, DECODERS)
+            result = self.recorded(self.fork, stdout)
+        self.assertTrue(result.ok, result.stderr)
+        self.assertEqual(len(calls), 1)
+
+
+class TestCodexAroundTheRun(_CodexHome):
+    """What the adapter does before and after the CLI runs: the ``-o`` file,
+    the fork refusal and the fork check."""
+
+    def test_o_follows_the_callers_arguments_and_is_removed(self):
+        executed = _CodexExecute(self)
+        self.run_codex(base.MODE_IMPLEMENT, extra_args=["--x"])
+        command = executed.commands[0]
+        self.assertEqual(command[-3:-1], ["--x", "-o"])
+        self.assertFalse(os.path.exists(command[-1]))
+
+    def test_an_empty_answer_fails_a_plan_run(self):
+        _CodexExecute(self, stdout=codex_fixture("exec-json-ready.jsonl"), answer="")
+        result = self.run_codex()
+        self.assertEqual((result.stdout, result.ok), ("", False))
+        self.assertTrue(result.stderr.startswith("codex printed no final message (-o was empty)"))
+
+    def test_a_failed_fork_is_not_checked(self):
+        confirmed = []
+        setattr(self.provider, "_confirm_fork", lambda result, parent: confirmed.append(parent))
+        _CodexExecute(self, stdout=self.fork_output(), exit_code=1)
+        self.parent_here()
+        result = self.fork()
+        self.assertEqual(confirmed, [])
+        self.assertFalse(result.ok)
+        self.assertIsNone(result.session_init)
+
+    def test_the_answer_file_is_removed_when_the_run_raises(self):
+        paths = []
+
+        def execute(command, cwd, prompt="", timeout=None, idle_timeout=None, env=None):
+            paths.append(command[command.index("-o") + 1])
+            raise RuntimeError("child exploded")
+
+        self.addCleanup(setattr, execution, "execute", execution.execute)
+        execution.execute = execute
+        with self.assertRaises(RuntimeError):
+            self.run_codex()
+        self.assertEqual(len(paths), 1)
+        self.assertFalse(os.path.exists(paths[0]))
+
+    def test_a_refused_fork_makes_no_answer_file(self):
+        executed = _CodexExecute(self)
+        made = mock.Mock(wraps=codex_module.tempfile.mkstemp)
+        with mock.patch.object(codex_module.tempfile, "mkstemp", made):
+            result = self.fork()
+        self.assertTrue(result.resume_rejected)
+        self.assertFalse(result.invoked)
+        self.assertEqual(made.call_count, 0)
+        self.assertEqual(executed.commands, [])
+
+    def test_a_subclass_that_overrides_launch_keeps_the_answer_file(self):
+        class Subclass(CodexProvider):
+            # Takes whatever the base passes, as a user's subclass may.
+            def _launch(self, prompt, mode, cwd, **kwargs):  # pyright: ignore[reportIncompatibleMethodOverride]
+                return super()._launch(prompt, mode, cwd, **kwargs)
+
+        self.installed(Subclass())
+        executed = _CodexExecute(self, stdout=codex_fixture("exec-json-ready.jsonl"))
+        result = self.run_codex()
+        self.assertEqual((result.ok, result.stdout), (True, "READY"))
+        command = executed.commands[0]
+        self.assertEqual(command.count("-o"), 1)
+        self.assertFalse(os.path.exists(command[command.index("-o") + 1]))
+
+    def test_a_subclass_that_overrides_around_launch_keeps_the_fork_checks(self):
+        seen = []
+
+        class Subclass(CodexProvider):
+            def around_launch(self, launch, proceed):
+                seen.append(launch.resume_session)
+                return super().around_launch(launch, proceed)
+
+        self.installed(Subclass())
+        executed = _CodexExecute(self, stdout=self.fork_output())
+        refused = self.fork()
+        self.assertEqual((refused.resume_rejected, refused.invoked), (True, False))
+        self.assertEqual(executed.commands, [])
+        self.parent_here()
+        result = self.fork()
+        self.assertFalse(result.ok)
+        self.assertIn("could not be confirmed read-only (no rollout for the fork)", result.stderr)
+        self.assertEqual(len(executed.commands), 1)
+        self.assertEqual(seen, [CODEX_PARENT, CODEX_PARENT])
+
+
+class TestCodexRecordedActivity(unittest.TestCase):
+    """What ``activity_of`` shows for each line of the recordings: every line
+    not listed shows nothing, and none gives a context size."""
+
+    CASES: ClassVar[Dict[str, Any]] = {
+        "exec-json-ready.jsonl": ("/sandbox/probe181", {}),
+        "exec-json-tools.jsonl": ("/sandbox/probe213", {4: ["Bash: git status"], 6: ["Bash: Get-Content"]}),
+        "exec-json-file-change.jsonl": (
+            "/sandbox/probe214",
+            {4: ["Bash: Set-Content"], 6: ["Edit notes/hello.txt"]},
+        ),
+        "fork-json-read-only.jsonl": ("/sandbox/probe181", {}),
+    }
+
+    def test_every_line_of_every_recording(self):
+        provider = CodexProvider()
+        for name, (cwd, shown) in self.CASES.items():
+            for number, line in enumerate(codex_fixture(name).splitlines(keepends=True), start=1):
+                with self.subTest(fixture=name, line=number):
+                    act = provider.activity_of(line, cwd)
+                    self.assertEqual((list(act.lines), act.context_tokens), (shown.get(number, []), None))
+
+
+_CLAUDE_TOOL_LINE = json.dumps(
+    {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Read", "input": {}}]}}
+)
+_CODEX_TOOL_LINE = json.dumps({"type": "item.started", "item": {"type": "web_search"}})
+
+#: Lines at the edge of what ``activity_of`` reads, and the tool lines each
+#: shows: None for nothing at all.
+ACTIVITY_EDGES = {
+    "claude": [
+        ("   " + _CLAUDE_TOOL_LINE, ["Read"]),
+        ('["assistant"]', None),
+        ('{"type":"assistant"', None),
+        ('{"type":"user","role":"assistant"}', None),
+    ],
+    "codex": [
+        ("   " + _CODEX_TOOL_LINE, ["web_search"]),
+        ('"item.started"', None),
+        ('{"type":"item.started"', None),
+        ('{"type":"item.completed","was":"item.started"}', None),
+        ('{"type":"item.started","item":"x"}', None),
+    ],
+}
+
+
+class TestActivityEdges(unittest.TestCase):
+    def test_each_adapter(self):
+        for provider in (ClaudeProvider(), CodexProvider()):
+            for line, shown in ACTIVITY_EDGES[provider.name]:
+                with self.subTest(provider=provider.name, line=line):
+                    act = provider.activity_of(line, "/sandbox/x")
+                    if shown is None:
+                        self.assertEqual(act, activity.NOTHING)
+                    else:
+                        self.assertEqual((list(act.lines), act.context_tokens), (shown, None))
+
+    def test_the_shared_line_filter(self):
+        """The same lines through ``event_of_type``: an event of the kind
+        asked for comes back whole, whatever the hook then finds in it."""
+        kinds = {"claude": "assistant", "codex": "item.started"}
+        decoded = ("   " + _CLAUDE_TOOL_LINE, "   " + _CODEX_TOOL_LINE, '{"type":"item.started","item":"x"}')
+        for name, rows in ACTIVITY_EDGES.items():
+            for line, _ in rows:
+                with self.subTest(provider=name, line=line):
+                    expected = json.loads(line) if line in decoded else None
+                    self.assertEqual(base.event_of_type(line, kinds[name]), expected)
+        self.assertIsNone(base.event_of_type('{"type": "assistant"}', "item.started"))
 
 
 #: The keys of a full resume report, in the order every adapter gives them.
@@ -2517,6 +2799,239 @@ class TestAgyOutput(_AgyCase):
     def test_an_implement_run_has_no_enforcement_warning(self):
         self.answer()
         self.assertEqual(self.run_agy(base.MODE_IMPLEMENT).warnings, [])
+
+
+class TestAgyRecordedRuns(_AgyCase):
+    """Whole runs through ``run`` and every parse hook, pinned field by field."""
+
+    def setUp(self):
+        super().setUp()
+        self.installed()
+
+    def recorded(self, stdout, mode):
+        self.answer(stdout)
+        result = self.provider.run("prompt", mode, self.project)
+        self.assertTrue(result.invoked)
+        self.assertIn("command", self.seen)
+        self.assertEqual((result.ok, result.exit_code), (True, 0))
+        self.assertFalse(result.resume_rejected)
+        return result
+
+    def test_a_result_with_usage(self):
+        result = self.recorded(agy_result(usage=AGY_USAGE), base.MODE_IMPLEMENT)
+        self.assertEqual((result.stdout, result.stderr, result.warnings), ("READY", "", []))
+        session = (result.session_id, result.context_tokens, result.session_init)
+        self.assertEqual(session, ("conv-1", None, None))
+        expected = usage_dict(
+            input_tokens=12527,
+            output_tokens=215,
+            cache_read_tokens=300,
+            billed_tokens=12742,
+            source="agy json result",
+            measured=True,
+        )
+        self.assertEqual(result.usage.to_dict(), expected)
+
+    def test_the_last_result_object_wins(self):
+        fields = {"status": "ERROR", "response": "SECOND", "error": "it broke", "usage": {"input_tokens": 5}}
+        second = agy_result(conversation_id="conv-2", **fields)
+        stdout = agy_result(response="FIRST") + second + json.dumps({"progress": 1}) + "\nAGY_ERROR: quota\n"
+        result = self.recorded(stdout, base.MODE_REVIEW)
+        unenforced = "read-only is NOT enforced by agy -- " + agy_module.AGY_UNENFORCED
+        warnings = [unenforced, "agy reported status ERROR"]
+        self.assertEqual(result.stdout, "SECOND")
+        self.assertEqual(result.warnings, warnings)
+        self.assertEqual(result.stderr, "\n".join([*warnings, "AGY_ERROR: quota\nit broke"]))
+        session = (result.session_id, result.context_tokens, result.session_init)
+        self.assertEqual(session, ("conv-2", None, None))
+        expected = usage_dict(input_tokens=5, billed_tokens=5, source="agy json result", measured=True)
+        self.assertEqual(result.usage.to_dict(), expected)
+
+    def test_the_result_is_decoded_once(self):
+        stdout = agy_result(usage=AGY_USAGE) + "plain words\n" + agy_result(response="LAST")
+        loads = mock.Mock(wraps=json.loads)
+        with mock.patch.object(json, "loads", loads):
+            self.recorded(stdout, base.MODE_IMPLEMENT)
+        braced = [line for line in stdout.splitlines() if line.startswith("{")]
+        self.assertEqual(loads.call_count, len(braced))
+
+
+#: Where ``-p`` says the prompt is: a file this process wrote in ``.ai/``.
+_AGY_PROMPT_FILE = re.compile(r"\.ai/(agy-prompt-%d-[^ /]+\.md)" % os.getpid())
+
+
+class TestAgyAroundTheRun(_AgyCase):
+    """What the adapter does before and after the CLI runs: the prompt file."""
+
+    def setUp(self):
+        super().setUp()
+        self.installed()
+
+    def test_the_child_gets_no_stdin_and_the_files_name(self):
+        self.answer()
+        self.provider.run("prompt", base.MODE_IMPLEMENT, self.project)
+        self.assertEqual(self.seen["stdin"], "")
+        self.assertRegex(self.seen["command"][-1], _AGY_PROMPT_FILE)
+
+    def test_command_kwargs_of_a_subclass_travel_with_the_prompt_file(self):
+        received = []
+
+        class Marked(AgyProvider):
+            def command_line(
+                self,
+                mode,
+                resolved,
+                cwd,
+                extra_args=(),
+                options=None,
+                resume_session=None,
+                prompt_file=None,
+                marker=None,
+            ):
+                received.append((marker, prompt_file))
+                return super().command_line(
+                    mode, resolved, cwd, extra_args, options, resume_session, prompt_file=prompt_file
+                )
+
+        self.provider = Marked()
+        self.installed()
+        self.answer()
+        result = self.provider._launch("prompt", "implement", self.project, command_kwargs={"marker": 1})
+        self.assertTrue(result.ok)
+        self.assertEqual(len(received), 1)
+        marker, prompt_file = received[0]
+        self.assertEqual(marker, 1)
+        self.assertTrue(str(prompt_file).startswith("agy-prompt-%d-" % os.getpid()))
+
+    def test_an_unreadable_answer_leaves_the_prompt_unmeasured(self):
+        class Unreadable(AgyProvider):
+            def postprocess(self, outcome, mode):
+                raise ValueError("boom")
+
+        self.provider = Unreadable()
+        self.installed()
+        self.answer()
+        result = self.provider.run("prompt", base.MODE_IMPLEMENT, self.project)
+        self.assertFalse(result.ok)
+        self.assertIsNone(result.usage.prompt_chars)
+
+    def test_a_subclass_that_overrides_launch_keeps_the_prompt_file(self):
+        class Subclass(AgyProvider):
+            # Takes whatever the base passes, as a user's subclass may.
+            def _launch(self, prompt, mode, cwd, **kwargs):  # pyright: ignore[reportIncompatibleMethodOverride]
+                return super()._launch(prompt, mode, cwd, **kwargs)
+
+        self.provider = Subclass()
+        self.installed()
+        during = {}
+
+        def observe(command, cwd):
+            match = _AGY_PROMPT_FILE.search(command[-1])
+            assert match is not None, command[-1]
+            during["path"] = os.path.join(cwd, ".ai", match.group(1))
+            during["there"] = os.path.exists(during["path"])
+
+        self.answer(observe=observe)
+        result = self.provider.run("prompt", base.MODE_IMPLEMENT, self.project)
+        self.assertTrue(result.ok)
+        self.assertEqual(sum("agy-prompt-" in token for token in self.seen["command"]), 1)
+        self.assertTrue(during["there"])
+        self.assertFalse(os.path.exists(during["path"]))
+        self.assertEqual((self.seen["stdin"], result.usage.prompt_chars), ("", len("prompt")))
+
+    def test_a_subclass_that_overrides_around_launch_keeps_the_prompt_file(self):
+        seen = []
+
+        class Subclass(AgyProvider):
+            def around_launch(self, launch, proceed):
+                seen.append(launch.prompt)
+                return super().around_launch(launch, proceed)
+
+        self.provider = Subclass()
+        self.installed()
+        during = {}
+
+        def observe(command, cwd):
+            match = _AGY_PROMPT_FILE.search(command[-1])
+            assert match is not None, command[-1]
+            during["path"] = os.path.join(cwd, ".ai", match.group(1))
+            with open(during["path"], encoding="utf-8") as handle:
+                during["text"] = handle.read()
+
+        self.answer(observe=observe)
+        result = self.provider.run(LONG_PROMPT, base.MODE_IMPLEMENT, self.project)
+        self.assertTrue(result.ok)
+        self.assertEqual(seen, [LONG_PROMPT])
+        self.assertEqual(during["text"], LONG_PROMPT)
+        self.assertFalse(os.path.exists(during["path"]))
+        self.assertEqual((self.seen["stdin"], result.usage.prompt_chars), ("", len(LONG_PROMPT)))
+
+
+def _fixture_text(kind, name):
+    with open(os.path.join(FIXTURES, kind, name), encoding="utf-8") as handle:
+        return handle.read()
+
+
+class TestStdoutEvents(IsolatedCase):
+    """The decoded stdout every hook of one run shares."""
+
+    def test_it_is_decoded_again_once_stdout_is_replaced(self):
+        outcome = execution.ExecOutcome(0, '{"a": 1}\n', "", 0.1)
+        first = base.stdout_events(outcome)
+        self.assertEqual(first, ({"a": 1},))
+        self.assertIs(base.stdout_events(outcome), first)
+        outcome.stdout = 'prose\n{"b": 2}\n'
+        self.assertEqual(base.stdout_events(outcome), ({"b": 2},))
+
+    def test_an_outcome_that_cannot_keep_it_is_decoded_each_time(self):
+        class Slotted:
+            __slots__ = ("stdout",)
+
+            def __init__(self, stdout):
+                self.stdout = stdout
+
+        outcome = Slotted('{"a": 1}\n')
+        for _ in range(2):
+            self.assertEqual(base.stdout_events(outcome), ({"a": 1},))
+        self.assertFalse(hasattr(outcome, "cache"))
+
+    def test_the_built_in_hooks_leave_the_events_as_decoded(self):
+        runs = [
+            (ClaudeProvider(), _fixture_text("claude", "partial-messages-tool.jsonl")),
+            (ClaudeProvider(), _fixture_text("claude", "implement-tools.jsonl")),
+            (CodexProvider(), codex_fixture("exec-json-tools.jsonl")),
+            (AgyProvider(), agy_result(usage=AGY_USAGE)),
+        ]
+        for provider, stdout in runs:
+            for mode in base.MODES:
+                with self.subTest(provider=provider.name, mode=mode):
+                    outcome = execution.ExecOutcome(1, stdout, "", 0.1)
+                    provider.resume_rejected(outcome, mode, {}, CODEX_MISSING)
+                    provider.parse_session(outcome)
+                    provider.run_warnings(outcome, mode)
+                    provider.postprocess(outcome, mode)
+                    provider.parse_usage(outcome, mode)
+                    self.assertEqual(list(base.stdout_events(outcome)), base.json_lines(stdout))
+
+    def test_the_decoded_copy_never_leaves_the_outcome(self):
+        stdout = _fixture_text("claude", "partial-messages-tool.jsonl")
+        outcome = execution.ExecOutcome(3, stdout, "err", 5.0, timed_out=True)
+        before = outcome.to_dict()
+        base.stdout_events(outcome)
+        self.assertEqual(outcome.to_dict(), before)
+        self.addCleanup(setattr, execution, "execute", execution.execute)
+        provider = ClaudeProvider()
+        provider.which = lambda: "claude"
+        provider.version = lambda: ("2.1.283 (Claude Code)", None)
+        setattr(provider, "_capture", lambda command, timeout=30: _FakeCompleted(CLAUDE_HELP))
+        results = []
+        for primed in (False, True):
+            outcome = execution.ExecOutcome(0, stdout, "", 0.5)
+            if primed:
+                base.stdout_events(outcome)
+            execution.execute = lambda *args, outcome=outcome, **kwargs: outcome
+            results.append(provider.run("prompt", base.MODE_REVIEW, self.project).to_dict())
+        self.assertEqual(results[0], results[1])
 
 
 class TestRunWarnings(IsolatedCase):
