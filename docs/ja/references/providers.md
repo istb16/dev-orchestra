@@ -1,4 +1,4 @@
-<!-- translated-from: references/providers.md sha256:10b418c5cd08cd97578947ff56434fac72280077edca9632ffa8ec405ec029e3 -->
+<!-- translated-from: references/providers.md sha256:8b73e89d2bf0ac597aae9ed31bc135310126fcaf7e6805a243208a602be51b6e -->
 
 > この文書は [references/providers.md](../../../references/providers.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -55,6 +55,7 @@ class Provider:
     def command_line(mode, resolved, cwd, extra_args, options, resume_session) -> list[str]   # do not override
     def run(prompt, mode, cwd, model_spec, timeout, extra_args, resume_session) -> RunResult  # do not override
     def _launch(prompt, mode, cwd, model_spec, timeout, extra_args, resume_session) -> RunResult
+    def around_launch(launch, proceed) -> RunResult             # default: proceed(launch)
     def refused_read_only_args(raw_args, source) -> list[str]   # default: refuse all
     def read_only_enforcement() -> dict                         # default: "unspecified"
     static_enforcement: bool                                    # default: False
@@ -79,13 +80,22 @@ class Provider:
     def resume_command(mode, resolved, cwd, extra_args, options, session_id) -> list[str]  # default: build_command + resume_args
     def resume_rejected(outcome, mode, options, session_id) -> bool   # default: False
     def parse_session(outcome) -> dict                          # session_id, context_tokens, init
+
+class Launch(NamedTuple):     # one run, as around_launch is handed it
+    prompt, mode, cwd, model_spec, timeout, extra_args, env, options,
+    idle_timeout, resume_session, command_kwargs
+    own_args: tuple[str, ...] = ()   # the adapter's own arguments, after the caller's
+
+def stdout_events(outcome) -> tuple[dict, ...]   # stdout's JSON lines, decoded once per run
 ```
 
 `detect`、`version`、`list_models` はプロセスごとにメモ化されるため、doctor やウィザードは CLI を再起動することなく何度でも問い合わせられます。
 
-`run` はすべてのアダプタが共有するゲートです。`plan` または `review` の実行では、呼び出し元の生引数（`options.args` と `--extra`）を、アダプタが自分の引数を足す前にアダプタの許可リストと照合し、そのうえで CLI を起動する `_launch` を呼びます。CLI の起動方法を変える必要があるアダプタは `_launch` をオーバーライドします。`run` をオーバーライドしたアダプタはこのゲートを通らないため、ゲートを自分で持たなければなりません。
+終わった実行を読むフック（`resume_rejected`、`parse_session`、`run_warnings`、`postprocess`、`parse_usage`）は、その JSON 行を `stdout_events(outcome)` から受け取れます。これは `outcome.stdout` を 1 回だけデコードし、どのフックにも同じイベントを渡します。イベントは共有されるので、フックはそれを書き換えてはなりません。
 
-セッションの継続（`run architect --resume`）はアダプタごとのオプトインです。`resume_session` はキーワード引数として `run` から `_launch` を経て `command_line` に渡され、`command_line` は `resume_command(...)` を呼びます。既定ではこれまでどおり `build_command` を呼び、その後ろにアダプタ自身の `resume_args(session_id)` を足します。CLI が別の形のコマンドで継続するアダプタ（Codex）はこれをオーバーライドします。これは生引数ではないので、コマンドを組み立てる前に `run` がかける許可リストを通ることはなく、`implement` の実行では `run` が拒否します。オーケストレーターがこれを送るのは、`supports_resume` を宣言し、かつ `resume_support(root)` が `verified`、または `trusted`（合格した版より新しく、メジャー版が同じ版で、それを `newer_than` が示す。その版自体は確認されていない）を報告するアダプタに対してだけです。`run` は値があるときだけキーワードを `_launch` に渡すので、以前のシグネチャで `_launch` をオーバーライドしているアダプタでも新規の実行はこれまでどおり動きます。継続に対応するアダプタは、このキーワードを受け取って base に渡さなければなりません。共通のルールで継続するアダプタは、`resume_support` を base に任せます。オーバーライドするのは、モジュールの `VERIFIED_RESUME` を返さなければならない `verified_resume()`（`smoke_live.py` がこの名前で表を探すため）、フラグを挙げているはずのヘルプを返す `resume_help_text()`、そのヘルプに合わせた自前の照合である `resume_advertises(help_text, flag)`（base のものは False を返すため）です。空でない `resume_flags` を設定し、報告の文言として `resume_help_unread`、`resume_flags_missing`、`resume_version_unread` を設定することもできます。すべてのフラグが挙がっていて版が読めたら、base は `verified.resume_trust(...)` に表と、アダプタの `resume_mechanism()`（記録が保証するフラグ。継続のコマンドが新規と異なるのでなければ、新規の読み取り専用の仕組み）と `required_resume_checks`（版が合格しなければならない確認。これより少なく挙げない限り `verified.py` が挙げるすべて）を渡し、その答えを `resume_report(version, trust)` で報告にします。アダプタは継続の実行を自分で始めないこともできます。その場合 `_launch` は `resume_rejected=True` かつ `invoked=False` の結果を返し、オーケストレーターは CLI による拒否と同じく新規で 1 回だけ走らせます。実行後、base は `parse_session(outcome)` に、実行が終わったセッション、最後の文脈の大きさ（`context_tokens`）、セッション開始時に CLI が報告した内容（`init`）を問い合わせます。継続した実行に限り `resume_rejected(outcome, mode, options, session_id)` も問い合わせます。これは、求めたセッションが存在しないという正の兆候があるときだけ True を返さなければなりません。オーケストレーターはその場合、新規の実行に試行を 1 回使うからです。結果は `RunResult.session_id`、`context_tokens`、`session_init`、`resume_rejected` に入ります。
+`run` はすべてのアダプタが共有するゲートです。`plan` または `review` の実行では、呼び出し元の生引数（`options.args` と `--extra`）を、アダプタが自分の引数を足す前にアダプタの許可リストと照合し、そのうえで `_launch` を呼びます。`_launch` は実行を `Launch` として `around_launch` に渡します。CLI の実行の前後に行う作業（一時ファイル、プロンプトのファイル、出力の確認）があるアダプタは、`around_launch` をオーバーライドし、`launch._replace(...)` を `proceed` に渡します。CLI を起動するのは `proceed` です。変えてよいのは `prompt`、`cwd`、`model_spec`、`timeout`、`env`、`idle_timeout`、`command_kwargs`、`own_args` だけです。`mode`、`resume_session`、`extra_args`、`options` は `run` がすでにゲートにかけているため、どれかを変えると何かを組み立てる前に `ValueError` になります。アダプタ自身の引数は `own_args` に入れます。これは呼び出し元の引数の後に続き、ゲートにはかかりません。組み込みアダプタのサブクラスでのオーバーライドは、`super().around_launch(launch, proceed)` を通さなければなりません。そうしないと、Codex のワークスペースと読み取り専用のフォークの確認や、agy のプロンプトのファイルが飛ばされます。`_launch` も引き続きオーバーライドでき、`super()._launch(...)` を呼ぶオーバーライドは `around_launch` を通りますが、すべてのキーワードを挙げて渡さなければなりません。`run` をオーバーライドしたアダプタはこのゲートを通らないため、ゲートを自分で持たなければなりません。
+
+セッションの継続（`run architect --resume`）はアダプタごとのオプトインです。`resume_session` はキーワード引数として `run` から `_launch` を経て `command_line` に渡され、`command_line` は `resume_command(...)` を呼びます。既定ではこれまでどおり `build_command` を呼び、その後ろにアダプタ自身の `resume_args(session_id)` を足します。CLI が別の形のコマンドで継続するアダプタ（Codex）はこれをオーバーライドします。これは生引数ではないので、コマンドを組み立てる前に `run` がかける許可リストを通ることはなく、`implement` の実行では `run` が拒否します。オーケストレーターがこれを送るのは、`supports_resume` を宣言し、かつ `resume_support(root)` が `verified`、または `trusted`（合格した版より新しく、メジャー版が同じ版で、それを `newer_than` が示す。その版自体は確認されていない）を報告するアダプタに対してだけです。`run` は値があるときだけキーワードを `_launch` に渡すので、以前のシグネチャで `_launch` をオーバーライドしているアダプタでも新規の実行はこれまでどおり動きます。継続に対応するアダプタは、このキーワードを受け取って base に渡さなければなりません。共通のルールで継続するアダプタは、`resume_support` を base に任せます。オーバーライドするのは、モジュールの `VERIFIED_RESUME` を返さなければならない `verified_resume()`（`smoke_live.py` がこの名前で表を探すため）、フラグを挙げているはずのヘルプを返す `resume_help_text()`、そのヘルプに合わせた自前の照合である `resume_advertises(help_text, flag)`（base のものは False を返すため）です。空でない `resume_flags` を設定し、報告の文言として `resume_help_unread`、`resume_flags_missing`、`resume_version_unread` を設定することもできます。すべてのフラグが挙がっていて版が読めたら、base は `verified.resume_trust(...)` に表と、アダプタの `resume_mechanism()`（記録が保証するフラグ。継続のコマンドが新規と異なるのでなければ、新規の読み取り専用の仕組み）と `required_resume_checks`（版が合格しなければならない確認。これより少なく挙げない限り `verified.py` が挙げるすべて）を渡し、その答えを `resume_report(version, trust)` で報告にします。アダプタは継続の実行を自分で始めないこともできます。その場合 `around_launch` は `proceed` を呼ばずに `resume_rejected=True` かつ `invoked=False` の結果を返し、オーケストレーターは CLI による拒否と同じく新規で 1 回だけ走らせます。実行後、base は `parse_session(outcome)` に、実行が終わったセッション、最後の文脈の大きさ（`context_tokens`）、セッション開始時に CLI が報告した内容（`init`）を問い合わせます。継続した実行に限り `resume_rejected(outcome, mode, options, session_id)` も問い合わせます。これは、求めたセッションが存在しないという正の兆候があるときだけ True を返さなければなりません。オーケストレーターはその場合、新規の実行に試行を 1 回使うからです。結果は `RunResult.session_id`、`context_tokens`、`session_init`、`resume_rejected` に入ります。
 
 `run_warnings(outcome, mode)` は、終わった実行について結果にかかわらず伝えるべきこと（拒否されたツール、成功でない status など）です。base はこの一覧を `RunResult.warnings` に保持し、stderr の先頭にも置きます。`run` と `review run` は stderr が表示されない成功時にもこれを表示し、実行ログとジョブの記録に残します。`activity_of(line, cwd)` は、CLI の実行中に stdout の 1 行が示すもの（`jobs wait`、`review run --progress`）で、`Activity(lines, context_tokens)` を返します。聞き手がいるときだけ呼ばれるので、そうでなければ `execute` はこれまでとまったく同じに呼ばれます。各行は入力から自分で組み立てず、`activity.tool_line(name, input, cwd)` で作ってください。モデルのテキストや自由記述の引数を締め出すのはこの許可リストです。返した行はその後も整形と伏せ字の処理を受けますが、それは二重の備えにすぎません。このフックは CLI の出力を読むスレッドとは別のスレッドで呼ばれ、例外を出してもその行が失われるだけです。不具合のあるフックで失うのはアクティビティだけで、実行そのものは失いません。デフォルトでは何も示しません。`static_enforcement = True` は、`read_only_enforcement()` がサブプロセスを必要としない定数であることを示します。そのため `doctor` は `--fast` のときも CLI がインストールされていないときもそれを報告し、設定コマンドは CLI を探さずにそれをもとに警告します。`preset_family` は、プリセットがそのアダプタをフィットできるようにします（[Taking part in preset fitting](#taking-part-in-preset-fitting) を参照）。どちらもクラスから読まれるので、インスタンスに設定した値は無視されます。プリセットから読み取り専用の席を得るには静的な報告が必要です。フィットは読み込みのたびに行われ、CLI を起動してはならないからです。`preset_family`、`static_enforcement`、`which()` は宣言どおりに信頼されます。`which()` は PATH の検索のままでなければならず、静的な報告はプロセスを起動してはなりません。フィットの側ではそれを見分けられないからです。見分けられるもの（例外、マッピングでない報告、未知の status）は、アダプタを席から外します。`local_only_options` は、書き込みロールが global 設定か `--extra` からだけ受け取るオプションを挙げます。そうしたアダプタでは、書き込みロールの project ファイルのオプションは一切使われません（[Antigravity CLI adapter](#antigravity-cli-adapter) を参照）。`config_families()` は、一覧に出るモデルが日付入りの id で、いずれ古くなる CLI のために、設定に書くべき family を `(family, 今それが解決される先)` の形で返します。`dev-orchestra model list` はこれをモデルの後に表示します。
 
@@ -344,7 +354,7 @@ agy の書き込みロールでは、`options` の何ひとつとして project 
 
 1. 出発点として `providers/codex.py` をコピーします。
 2. **実際の CLI の `--help` を読みます。** フラグを記憶に頼って書かないでください。それがアダプタが腐っていく原因です。検証したバージョンをモジュールの docstring に記録します。
-3. `_discover_models`、`_resolve_latest`、`build_command`、`auth_status` を実装します。`_launch` をオーバーライドするのは、CLI が特別な出力の取得を必要とする場合だけです。**`run` ではなく `_launch` をオーバーライドしてください**。`run` をオーバーライドしたアダプタは、読み取り専用の生引数ゲートを自分で持つことになります。
+3. `_discover_models`、`_resolve_latest`、`build_command`、`auth_status` を実装します。`around_launch` をオーバーライドするのは、特別な出力の取得のように、CLI の実行の前後に作業がある場合だけです。`launch._replace(...)` を `proceed` に渡し、変えるのは `prompt`、`cwd`、`model_spec`、`timeout`、`env`、`idle_timeout`、`command_kwargs`、`own_args` だけにしてください（`mode`、`resume_session`、`extra_args`、`options` は `run` がすでにゲートにかけているため、変えると例外になります）。アダプタ自身の引数は `own_args` で足します。組み込みアダプタのサブクラスでは `super().around_launch(launch, proceed)` を通してください。**`run` ではなく `around_launch` をオーバーライドしてください**。`run` をオーバーライドしたアダプタは、読み取り専用の生引数ゲートを自分で持つことになります。
 4. `plan` と `review` が本当に読み取り専用のモード、つまりモデルの協力なしに CLI が強制するモードに対応付けられていることを確認します。読み取り専用の実行に生引数が必要なら `refused_read_only_args` を実装し（既定ではすべて拒否）、CLI が何を強制するかを示す `read_only_enforcement` を実装します。実装しなければ `doctor` は `not reported by this adapter` と表示します。
 5. 登録します:
 
@@ -495,7 +505,7 @@ class MyCliProvider(Provider):
 
 ### インターフェースの安定性
 
-`base.Provider` とその周辺の型（`ModelCandidate`、`ResolvedModel`、`RunResult`、`Usage`、`Detection`）はプラグインの内部のものであり、マイナーバージョン間で変更される可能性があります。プラグインのバージョンを固定するか、更新後に `dev-orchestra doctor` を実行して、アダプタがまだ読み込めることを確認してください。`run()` と `_launch()` のシグネチャは最も変わりやすい部分です。`tests/test_provider_contract.py` は、上記の例を含むすべてのアダプタがこれらに従っていることを検証します。
+`base.Provider` とその周辺の型（`ModelCandidate`、`ResolvedModel`、`RunResult`、`Usage`、`Detection`）はプラグインの内部のものであり、マイナーバージョン間で変更される可能性があります。プラグインのバージョンを固定するか、更新後に `dev-orchestra doctor` を実行して、アダプタがまだ読み込めることを確認してください。`run()`、`_launch()`、`around_launch()` のシグネチャと `Launch` のフィールドは最も変わりやすい部分です。`tests/test_provider_contract.py` は、上記の例を含むすべてのアダプタがこれらに従っていることを検証します。
 
 上記の例は `build_command` しか実装していませんが、それでも読み取り専用のゲートは効きます。ゲートはアダプタが継承する `run` にあるので、生引数を伴う `plan` や `review` の実行は拒否され（base の許可リストは空）、`read_only_enforcement` を実装するまで `doctor` は `not reported by this adapter` と報告します。その `--read-only` フラグが本当に書き込みを止めるかどうかはアダプタの責任で、ここでは何も検証しません。
 

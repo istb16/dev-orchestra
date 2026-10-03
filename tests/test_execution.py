@@ -16,7 +16,7 @@ import sys
 import threading
 import time
 import unittest
-from typing import List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 from unittest import mock
 
 from helpers import SCRIPTS_DIR, IsolatedCase
@@ -611,9 +611,8 @@ class TestStopOnSigterm(IsolatedCase):
         self.ended: List[Tuple[int, float]] = []
         self.notes: List[str] = []
         self.group_ends = True
-        self.enterContext(mock.patch.object(execution, "_active", []))
-        self.enterContext(mock.patch.object(execution, "_spawning", False))
-        self.enterContext(mock.patch.object(execution, "_stop_requested", False))
+        execution._stop.reset()
+        self.addCleanup(execution._stop.reset)
         self.enterContext(mock.patch.object(execution, "_stop_group", self.record_end))
         self.enterContext(mock.patch.object(execution, "_note", self.notes.append))
         self.enterContext(mock.patch.object(execution.os, "_exit", self.fake_exit))
@@ -631,11 +630,11 @@ class TestStopOnSigterm(IsolatedCase):
         return mock.Mock(pid=pid, returncode=None)
 
     def assert_left_clean(self) -> None:
-        self.assertEqual(execution._active, [])
-        self.assertIs(execution._spawning, False)
+        self.assertEqual(execution._stop.active, [])
+        self.assertIs(execution._stop.spawning, False)
 
     def test_sigterm_ends_the_active_cli_then_exits(self):
-        execution._active.append(self.running_cli())
+        execution._stop.active.append(self.running_cli())
         with self.assertRaises(_Exited) as caught:
             execution._on_sigterm(signal.SIGTERM, None)
         self.assertEqual(self.ended, [(4242, execution._STOP_GRACE_SECONDS)])
@@ -644,7 +643,7 @@ class TestStopOnSigterm(IsolatedCase):
 
     def test_a_cli_group_that_cannot_be_ended_is_noted_before_exiting(self):
         self.group_ends = False
-        execution._active.append(self.running_cli())
+        execution._stop.active.append(self.running_cli())
         with self.assertRaises(_Exited) as caught:
             execution._on_sigterm(signal.SIGTERM, None)
         self.assertEqual(caught.exception.code, 128 + signal.SIGTERM)
@@ -654,7 +653,7 @@ class TestStopOnSigterm(IsolatedCase):
 
     def test_a_reaped_cli_is_not_signalled(self):
         """Its pid may be someone else's by now."""
-        execution._active.append(mock.Mock(pid=4242, returncode=0))
+        execution._stop.active.append(mock.Mock(pid=4242, returncode=0))
         with self.assertRaises(_Exited):
             execution._on_sigterm(signal.SIGTERM, None)
         self.assertEqual(self.ended, [])
@@ -673,8 +672,8 @@ class TestStopOnSigterm(IsolatedCase):
         self.assertEqual(self.ended, [(4242, execution._STOP_GRACE_SECONDS)])
         # The real os._exit never returns, so the CLI is still registered here
         # only because the fake one raised; the flag is what must be reset.
-        self.assertEqual(execution._active, [fake])
-        self.assertIs(execution._spawning, False)
+        self.assertEqual(execution._stop.active, [fake])
+        self.assertIs(execution._stop.spawning, False)
 
     def test_sigterm_during_a_failed_spawn_is_honoured(self):
         def popen(*args, **kwargs):
@@ -686,6 +685,40 @@ class TestStopOnSigterm(IsolatedCase):
         self.assertEqual(caught.exception.code, 128 + signal.SIGTERM)
         self.assertEqual(self.ended, [])
         self.assert_left_clean()
+
+    def test_a_spawn_error_other_than_oserror_is_not_turned_into_a_stop(self):
+        """Only the finally runs: the pending stop is not honoured on the way out."""
+
+        def popen(*args, **kwargs):
+            execution._on_sigterm(signal.SIGTERM, None)
+            raise ValueError("bad argument")
+
+        with mock.patch.object(execution.subprocess, "Popen", popen), self.assertRaises(ValueError):
+            execution.execute(["cli"], cwd=self.project, timeout=5)
+        self.assertEqual(self.ended, [])
+        self.assert_left_clean()
+
+    def test_the_cli_is_registered_while_spawning_and_honoured_after(self):
+        """A SIGTERM between Popen and the registration is still deferred."""
+        seen: List[Tuple[str, bool]] = []
+
+        class Recording(list):
+            def append(self, item):
+                seen.append(("append", execution._stop.spawning))
+                super().append(item)
+
+        def honour():
+            seen.append(("honour", execution._stop.spawning))
+            raise _Exited(0)
+
+        with (
+            mock.patch.object(execution._stop, "active", Recording()),
+            mock.patch.object(execution, "_honour_stop", honour),
+            mock.patch.object(execution.subprocess, "Popen", lambda *a, **k: self.running_cli()),
+            self.assertRaises(_Exited),
+        ):
+            execution.execute(["cli"], cwd=self.project, timeout=5)
+        self.assertEqual(seen, [("append", True), ("honour", False)])
 
     def test_a_failed_spawn_with_no_sigterm_leaves_nothing_behind(self):
         with mock.patch.object(execution.subprocess, "Popen", mock.Mock(side_effect=OSError("nope"))):
@@ -744,11 +777,11 @@ class TestStopOnSigterm(IsolatedCase):
         note = os.path.join(self.project, "a-1.stop")
         with (
             mock.patch.object(execution, "IS_WINDOWS", False),
-            mock.patch.object(execution, "_stop_note_path", None),
+            mock.patch.object(execution._stop, "note_path", None),
             mock.patch.object(execution.signal, "signal"),
         ):
             execution.end_children_on_sigterm(note)
-            self.assertEqual(execution._stop_note_path, note)
+            self.assertEqual(execution._stop.note_path, note)
 
 
 class TestStopNote(IsolatedCase):
@@ -758,7 +791,7 @@ class TestStopNote(IsolatedCase):
     def test_each_line_is_appended_to_the_note_file(self):
         note = os.path.join(self.project, "a-1.stop")
         with (
-            mock.patch.object(execution, "_stop_note_path", note),
+            mock.patch.object(execution._stop, "note_path", note),
             mock.patch.object(execution.os, "write", wraps=os.write) as wrote,
         ):
             execution._note("first\n")
@@ -770,7 +803,7 @@ class TestStopNote(IsolatedCase):
 
     def test_no_note_file_outside_a_worker(self):
         with (
-            mock.patch.object(execution, "_stop_note_path", None),
+            mock.patch.object(execution._stop, "note_path", None),
             mock.patch.object(execution.os, "open") as opened,
         ):
             execution._note("x\n")
@@ -778,7 +811,7 @@ class TestStopNote(IsolatedCase):
 
     def test_an_unwritable_note_file_is_ignored(self):
         missing = os.path.join(self.project, "no-such-dir", "a-1.stop")
-        with mock.patch.object(execution, "_stop_note_path", missing):
+        with mock.patch.object(execution._stop, "note_path", missing):
             execution._note("x\n")
         self.assertFalse(os.path.exists(missing))
 
@@ -844,7 +877,7 @@ class TestStopGroup(IsolatedCase):
         proc = mock.Mock(pid=4242, returncode=None)
         self.killpg(alive_after=signal.SIGTERM)
         with (
-            mock.patch.object(execution, "_active", [proc]),
+            mock.patch.object(execution._stop, "active", [proc]),
             mock.patch.object(execution.os, "_exit", TestStopOnSigterm.fake_exit),
             self.assertRaises(_Exited),
         ):
@@ -1099,6 +1132,62 @@ class TestOutcomeReporting(IsolatedCase):
         assert isinstance(idle, (int, float))
         self.assertGreaterEqual(idle, 1)
         self.assertIn("orphans_possible", payload)
+
+
+class _Polled:
+    """A child that ``_verdict`` asks only for its exit code."""
+
+    def __init__(self, code: Optional[int]):
+        self.code = code
+
+    def poll(self) -> Optional[int]:
+        return self.code
+
+
+ORPHANS = "\nwarning: the process group did not exit after being killed; check for orphans\n"
+
+
+class TestVerdict(unittest.TestCase):
+    """The exit code ``execute`` reports, and what it puts around stderr."""
+
+    def verdict(self, code, watched, orphans=False):
+        proc: Any = _Polled(code)
+        return execution._verdict(proc, watched, "err", 7.4, 2.0, orphans)
+
+    def test_a_timed_out_run(self):
+        verdict = self.verdict(-9, execution._Watched(True, False, 0))
+        self.assertEqual(verdict, (execution.EXIT_TOTAL_TIMEOUT, "timed out after 7s\nerr"))
+
+    def test_a_stalled_run(self):
+        verdict = self.verdict(-9, execution._Watched(False, True, 3.0))
+        expected = "no output for 3s (idle limit 2s); treated as stalled\nerr"
+        self.assertEqual(verdict, (execution.EXIT_IDLE_STALL, expected))
+
+    def test_a_stall_reported_over_a_timeout(self):
+        verdict = self.verdict(-9, execution._Watched(True, True, 3.0))
+        self.assertEqual(verdict[0], execution.EXIT_IDLE_STALL)
+        self.assertTrue(verdict[1].startswith("no output for 3s"))
+
+    def test_orphans_follow_the_prefix(self):
+        cases = [
+            (execution._Watched(True, False, 0), execution.EXIT_TOTAL_TIMEOUT, "timed out after 7s\nerr"),
+            (
+                execution._Watched(False, True, 3.0),
+                execution.EXIT_IDLE_STALL,
+                "no output for 3s (idle limit 2s); treated as stalled\nerr",
+            ),
+            (execution._Watched(False, False, 0), 1, "err"),
+        ]
+        for watched, code, text in cases:
+            with self.subTest(watched=watched):
+                self.assertEqual(self.verdict(1, watched, orphans=True), (code, text + ORPHANS))
+
+    def test_a_finished_run_keeps_its_code_and_stderr(self):
+        self.assertEqual(self.verdict(3, execution._Watched(False, False, 0)), (3, "err"))
+
+    def test_a_child_with_no_exit_code_failed_to_start(self):
+        verdict = self.verdict(None, execution._Watched(False, False, 0))
+        self.assertEqual(verdict, (execution.EXIT_SPAWN_FAILED, "err"))
 
 
 class TestSuspendedTime(IsolatedCase):

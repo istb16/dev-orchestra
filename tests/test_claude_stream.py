@@ -9,16 +9,21 @@ schema change would be a worse bug than the one being fixed.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
 import unittest
 from typing import Any, ClassVar, Dict
 
-from helpers import CLAUDE_HELP, IsolatedCase, present
+from helpers import CLAUDE_HELP, IsolatedCase, count_decoding, present, usage_dict
 
+from orchestrator import execution
 from orchestrator.execution import ExecOutcome
+from orchestrator.providers import agy as agy_module
 from orchestrator.providers import base
+from orchestrator.providers import claude as claude_module
+from orchestrator.providers import codex as codex_module
 from orchestrator.providers.claude import (
     ClaudeProvider,
     parse_stream_json,
@@ -686,6 +691,245 @@ class TestPartialMessages(IsolatedCase):
         ]
         self.assertEqual(text, "\n".join(answers))
         self.assertEqual(note, "no result event; reconstructed from assistant messages")
+
+
+class _Execute:
+    """``execution.execute`` replaced by a run that prints ``stdout``."""
+
+    def __init__(self, case, stdout, exit_code=0, stderr=""):
+        self.stdout = stdout
+        self.exit_code = exit_code
+        self.stderr = stderr
+        self.commands = []
+        case.addCleanup(setattr, execution, "execute", execution.execute)
+        execution.execute = self
+
+    def __call__(self, command, cwd, prompt="", timeout=None, idle_timeout=None, env=None):
+        self.commands.append(list(command))
+        return ExecOutcome(self.exit_code, self.stdout, self.stderr, 0.1)
+
+
+def _tool_output(stdout):
+    """What the ``tool_result`` blocks of a recording printed back, counted
+    from the recording itself."""
+    return sum(
+        len(block["content"])
+        for event in (json.loads(line) for line in stdout.splitlines())
+        if event["type"] == "user"
+        for block in event["message"]["content"]
+        if block["type"] == "tool_result"
+    )
+
+
+READ_ONLY_INIT = {"tools": ["Glob", "Grep", "Read"], "mcp_servers": [], "permission_mode": "plan"}
+
+
+class TestRecordedRuns(IsolatedCase):
+    """Whole runs over the recordings, through ``run`` and every parse hook,
+    pinned field by field."""
+
+    def setUp(self):
+        super().setUp()
+        self.provider = self.installed(ClaudeProvider())
+
+    @staticmethod
+    def installed(provider):
+        setattr(provider, "which", lambda: "claude")
+        setattr(provider, "version", lambda: ("2.1.283", None))
+        help_output = _Help()
+        help_output.stdout = CLAUDE_HELP
+        setattr(provider, "_capture", lambda command, timeout=30: help_output)
+        return provider
+
+    def run_recording(self, mode, stdout, exit_code=0, stderr="", resume_session=None):
+        executed = _Execute(self, stdout, exit_code, stderr)
+        result = self.provider.run("prompt", mode, self.project, resume_session=resume_session)
+        self.assertTrue(result.invoked)
+        self.assertEqual(len(executed.commands), 1)
+        return result
+
+    def assert_session(self, result, session_id, context_tokens, init):
+        session = (result.session_id, result.context_tokens, result.session_init)
+        self.assertEqual(session, (session_id, context_tokens, init))
+
+    def test_an_implement_run_that_used_four_tools(self):
+        result = self.run_recording(base.MODE_IMPLEMENT, fixture("implement-tools.jsonl"))
+        self.assertEqual((result.ok, result.exit_code), (True, 0))
+        self.assertEqual((result.stdout, result.stderr), ("hello.txt now says hello.", ""))
+        self.assertEqual((result.warnings, result.resume_rejected), ([], False))
+        init = {
+            "tools": ["Edit", "PowerShell", "Read", "Write"],
+            "mcp_servers": [],
+            "permission_mode": "acceptEdits",
+            "version": "2.1.285",
+        }
+        self.assert_session(result, "dddddddd-dddd-4ddd-8ddd-dddddddddddd", 13558, init)
+        expected = usage_dict(
+            input_tokens=18,
+            output_tokens=312,
+            cache_read_tokens=74530,
+            cache_write_tokens=4650,
+            cost_usd=0.0412,
+            billed_tokens=4980,
+            tool_uses=4,
+            tool_uses_by_name={"PowerShell": 1, "Write": 1, "Edit": 1, "Read": 1},
+            tool_output_chars=170,
+            source="claude result event",
+            measured=True,
+        )
+        self.assertEqual(result.usage.to_dict(), expected)
+
+    def test_a_review_run_with_partial_messages(self):
+        stdout = fixture("partial-messages-tool.jsonl")
+        result = self.run_recording(base.MODE_REVIEW, stdout)
+        self.assertEqual((result.ok, result.exit_code), (True, 0))
+        answer = (
+            "The first line of `probe.py` is:\n\n`import json, subprocess, sys, time`\n\n"
+            "No plan or changes are needed for this read-only request."
+        )
+        self.assertEqual((result.stdout, result.stderr), (answer, ""))
+        self.assertEqual((result.warnings, result.resume_rejected), ([], False))
+        init = dict(READ_ONLY_INIT, version="2.1.283")
+        self.assert_session(result, "cccccccc-cccc-4ccc-8ccc-cccccccccccc", 11548, init)
+        expected = usage_dict(
+            input_tokens=6,
+            output_tokens=565,
+            cache_read_tokens=27770,
+            cache_write_tokens=5167,
+            cost_usd=0.031884,
+            billed_tokens=5738,
+            tool_uses=2,
+            tool_uses_by_name={"Read": 1, "ExitPlanMode": 1},
+            tool_output_chars=_tool_output(stdout),
+            source="claude result event",
+            measured=True,
+        )
+        self.assertEqual(result.usage.to_dict(), expected)
+
+    def test_a_plan_run_that_wrote_nothing(self):
+        stdout = fixture("resume-write-probe.jsonl")
+        result = self.run_recording(base.MODE_PLAN, stdout)
+        self.assertEqual((result.ok, result.exit_code), (True, 0))
+        answer = json.loads(stdout.splitlines()[-1])["result"]
+        self.assertEqual((result.stdout, result.stderr), (answer, ""))
+        self.assertEqual((result.warnings, result.resume_rejected), ([], False))
+        init = dict(READ_ONLY_INIT, version="2.1.283")
+        self.assert_session(result, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", 11336, init)
+        expected = usage_dict(
+            input_tokens=2,
+            output_tokens=504,
+            cache_read_tokens=10936,
+            cache_write_tokens=398,
+            cost_usd=0.037491,
+            billed_tokens=904,
+            tool_uses=0,
+            tool_uses_by_name={},
+            tool_output_chars=0,
+            source="claude result event",
+            measured=True,
+        )
+        self.assertEqual(result.usage.to_dict(), expected)
+
+    def rejected_run(self, stdout):
+        stderr = fixture("resume-rejected.stderr")
+        result = self.run_recording(base.MODE_PLAN, stdout, REJECTED_EXIT, stderr, resume_session=MISSING)
+        self.assertEqual((result.ok, result.exit_code), (False, REJECTED_EXIT))
+        self.assertEqual((result.stdout, result.stderr), (stdout, stderr))
+        self.assertEqual(result.warnings, [])
+        self.assert_session(result, "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", None, None)
+        expected = usage_dict(
+            input_tokens=0,
+            output_tokens=0,
+            cache_read_tokens=0,
+            cache_write_tokens=0,
+            cost_usd=0.0,
+            billed_tokens=0,
+            source="claude result event",
+            measured=True,
+        )
+        self.assertEqual(result.usage.to_dict(), expected)
+        return result
+
+    def test_a_rejected_resume(self):
+        self.assertTrue(self.rejected_run(fixture("resume-rejected.stdout")).resume_rejected)
+
+    def test_another_error_before_the_first_turn(self):
+        self.assertFalse(self.rejected_run(fixture("resume-rejected-other-error.stdout")).resume_rejected)
+
+    def test_the_stream_is_decoded_once(self):
+        rejected = {
+            "exit_code": REJECTED_EXIT,
+            "stderr": fixture("resume-rejected.stderr"),
+            "resume_session": MISSING,
+        }
+        runs = [
+            ("partial-messages-tool.jsonl", base.MODE_REVIEW, {}),
+            ("resume-write-probe.jsonl", base.MODE_PLAN, {}),
+            # Every hook reads a rejected resume, resume_rejected first.
+            ("resume-rejected.stdout", base.MODE_PLAN, rejected),
+        ]
+        for name, mode, kwargs in runs:
+            with self.subTest(fixture=name):
+                stdout = fixture(name)
+                with contextlib.ExitStack() as stack:
+                    calls = count_decoding(stack, stdout, (base, agy_module, claude_module, codex_module))
+                    self.run_recording(mode, stdout, **kwargs)
+                self.assertEqual(len(calls), 1)
+
+    def test_a_hook_cannot_change_what_the_next_one_reads(self):
+        class Popping(ClaudeProvider):
+            def parse_session(self, outcome):
+                base.stdout_events(outcome).pop()  # pyright: ignore[reportAttributeAccessIssue]
+                return {}
+
+        stdout = fixture("partial-messages-tool.jsonl")
+        usual = self.run_recording(base.MODE_REVIEW, stdout)
+        self.provider = self.installed(Popping())
+        result = self.run_recording(base.MODE_REVIEW, stdout)
+        self.assertEqual(result.stderr, "AttributeError: 'tuple' object has no attribute 'pop'\n")
+        self.assertEqual(result.stdout, usual.stdout)
+        self.assertEqual(result.usage.to_dict(), usual.usage.to_dict())
+
+
+class TestRecordedActivity(IsolatedCase):
+    """What ``activity_of`` shows for each line of the recordings: every line
+    not listed shows nothing."""
+
+    CASES: ClassVar[Dict[str, Any]] = {
+        "implement-tools.jsonl": (
+            "/sandbox/probe215",
+            {
+                3: ([], 13103),
+                4: (["Bash: git status"], 13103),
+                7: (["Write hello.txt"], 13283),
+                9: ([], 13378),
+                10: (["Edit hello.txt"], 13378),
+                12: (["Read hello.txt"], 13498),
+                14: ([], 13558),
+            },
+        ),
+        "partial-messages-tool.jsonl": (
+            "/sandbox/probe138",
+            {
+                11: ([], 10076),
+                15: (["Read probe.py"], 10076),
+                35: ([], 11319),
+                39: (["ExitPlanMode"], 11319),
+                55: ([], 11548),
+            },
+        ),
+        "resume-write-probe.jsonl": ("/sandbox/gate137", {2: ([], 11336)}),
+        "resume-rejected.stdout": ("/sandbox/gate137", {}),
+        "resume-rejected-other-error.stdout": ("/sandbox/gate137", {}),
+    }
+
+    def test_every_line_of_every_recording(self):
+        provider = ClaudeProvider()
+        for name, (cwd, shown) in self.CASES.items():
+            for number, line in enumerate(fixture(name).splitlines(keepends=True), start=1):
+                with self.subTest(fixture=name, line=number):
+                    act = provider.activity_of(line, cwd)
+                    self.assertEqual((list(act.lines), act.context_tokens), shown.get(number, ([], None)))
 
 
 if __name__ == "__main__":
