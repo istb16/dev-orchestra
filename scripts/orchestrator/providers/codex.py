@@ -49,7 +49,6 @@ import re
 import tempfile
 from typing import Any, Dict, List, Optional, Sequence
 
-from .. import verified
 from ..execution import ExecOutcome
 from .base import (
     MODE_IMPLEMENT,
@@ -380,43 +379,22 @@ class CodexProvider(Provider):
     def resume_mechanism(self) -> str:
         return _FORK_MECHANISM
 
-    def resume_support(self, root: str) -> Dict[str, Any]:
-        """Whether this version's forked sessions are known to stay read-only.
+    # Whether this version's forked sessions are known to stay read-only: the
+    # same rule as Claude's (:func:`verified.resume_trust`), over this
+    # adapter's own checks and mechanism, run by Provider.resume_support.
+    resume_flags = _FORK_FLAGS
+    resume_help_unread = "could not read 'codex exec fork --help', so forking a session is unverified"
+    resume_flags_missing = "codex exec fork does not advertise %s"
+    resume_version_unread = "could not read 'codex --version'"
 
-        The same rule as Claude's (:func:`verified.resume_trust`), over this
-        adapter's own checks and mechanism. Not memoised, so a record
-        smoke_live.py just wrote is read.
-        """
-        if not self.supports_resume:
-            return super().resume_support(root)
-        report: Dict[str, Any] = {
-            "status": "unverified",
-            "detail": "",
-            "version": None,
-            "source": None,
-            "record": verified.record_path(self.name),
-            "verified_at": None,
-            "newer_than": None,
-            "missing": [],
-        }
-        text = self.fork_help_text()
-        if text is None:
-            report["detail"] = "could not read 'codex exec fork --help', so forking a session is unverified"
-            return report
-        missing = [flag for flag in _FORK_FLAGS if not _advertises(text, flag)]
-        if missing:
-            report["status"] = "unsupported"
-            report["missing"] = missing
-            report["detail"] = "codex exec fork does not advertise %s" % ", ".join(missing)
-            return report
-        version = self.version()[0]
-        if not version:
-            report["detail"] = "could not read 'codex --version'"
-            return report
-        trust = verified.resume_trust(
-            self.name, version, self.resume_mechanism(), root, VERIFIED_RESUME, self.required_resume_checks
-        )
-        return self.resume_report(version, trust)
+    def verified_resume(self) -> Dict[str, Dict[str, Any]]:
+        return VERIFIED_RESUME
+
+    def resume_help_text(self) -> Optional[str]:
+        return self.fork_help_text()
+
+    def resume_advertises(self, help_text: str, flag: str) -> bool:
+        return _advertises(help_text, flag)
 
     def resume_args(self, session_id: str) -> List[str]:
         if not isinstance(session_id, str) or not SESSION_ID_RE.match(session_id):

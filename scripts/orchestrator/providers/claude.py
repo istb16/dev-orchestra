@@ -70,7 +70,6 @@ import os
 import re
 from typing import Any, Dict, List, Optional, Sequence, cast
 
-from .. import verified
 from ..execution import ExecOutcome
 from .base import (
     MODE_IMPLEMENT,
@@ -317,41 +316,18 @@ class ClaudeProvider(Provider):
 
     # -- resuming a session ------------------------------------------------
 
-    def resume_support(self, root: str) -> Dict[str, Any]:
-        """Whether this version's resumed sessions are known to stay read-only.
+    resume_flags = _RESUME_FLAGS
+    resume_help_unread = "could not read 'claude --help', so --resume / --fork-session are unverified"
+    resume_version_unread = "could not read 'claude --version'"
 
-        A failure recorded on this machine outranks the built-in table: a
-        regression seen here is not overruled by a release that saw none.
-        Not memoised, so a record smoke_live.py just wrote is read.
-        """
-        report: Dict[str, Any] = {
-            "status": "unverified",
-            "detail": "",
-            "version": None,
-            "source": None,
-            "record": verified.record_path(self.name),
-            "verified_at": None,
-            "newer_than": None,
-            "missing": [],
-        }
-        text = self.help_text()
-        if text is None:
-            report["detail"] = "could not read 'claude --help', so --resume / --fork-session are unverified"
-            return report
-        missing = [flag for flag in _RESUME_FLAGS if not _advertises(text, flag)]
-        if missing:
-            report["status"] = "unsupported"
-            report["missing"] = missing
-            report["detail"] = "%s not advertised" % ", ".join(missing)
-            return report
-        version = self.version()[0]
-        if not version:
-            report["detail"] = "could not read 'claude --version'"
-            return report
-        trust = verified.resume_trust(
-            self.name, version, self.resume_mechanism(), root, VERIFIED_RESUME, self.required_resume_checks
-        )
-        return self.resume_report(version, trust)
+    def verified_resume(self) -> Dict[str, Dict[str, Any]]:
+        return VERIFIED_RESUME
+
+    def resume_help_text(self) -> Optional[str]:
+        return self.help_text()
+
+    def resume_advertises(self, help_text: str, flag: str) -> bool:
+        return _advertises(help_text, flag)
 
     def resume_args(self, session_id: str) -> List[str]:
         if not isinstance(session_id, str) or not SESSION_ID_RE.match(session_id):

@@ -12,13 +12,15 @@ import textwrap
 import threading
 import time
 import unittest
-from typing import Optional
+from typing import NoReturn, Optional
 
 from helpers import (
     CLAUDE_HELP,
+    CLAUDE_HELP_FORK,
     CLAUDE_HELP_NO_FORK,
     CLAUDE_HELP_NO_RESUME,
     CLAUDE_HELP_OLD,
+    CLAUDE_HELP_RESUME_ONLY,
     IsolatedCase,
     make_dir_link,
     present,
@@ -1632,6 +1634,261 @@ class TestCodexResume(IsolatedCase):
         )
         fresh = self.provider.read_only_enforcement()["mechanism"]
         self.assertNotEqual(self.provider.resume_mechanism(), fresh)
+
+
+#: The keys of a full resume report, in the order every adapter gives them.
+RESUME_KEYS = ["status", "detail", "version", "source", "record", "verified_at", "newer_than", "missing"]
+
+#: The six flags a fork needs, laid out as ``codex exec fork --help`` lays
+#: them out: two-letter options beside their long names, the rest indented.
+CODEX_FORK_FLAGS_HELP = """\
+Options:
+  -c, --config <key=value>
+          Override a configuration value
+
+  -m, --model <MODEL>
+          Model the agent should use
+
+      --skip-git-repo-check
+          Allow running Codex outside a Git repository
+
+      --ignore-user-config
+          Do not load the user's config.toml
+
+      --json
+          Print events to stdout as JSONL
+
+  -o, --output-last-message <FILE>
+          Specifies file where the last message from the agent should be written
+"""
+
+#: A ``--continue`` entry whose continuation line names ``--fork-session``.
+CLAUDE_HELP_CONTINUE = (
+    "  --continue    Continue the most recent conversation\n" + 40 * " " + "(pair with --fork-session)\n"
+)
+
+
+class _Untouchable(dict):
+    """A resume table that fails the test when anything reads it: it may
+    only be handed on to ``verified.resume_trust``."""
+
+    def __init__(self, case: unittest.TestCase) -> None:
+        super().__init__()
+        self.case = case
+
+    def touched(self, *args, **kwargs) -> NoReturn:
+        self.case.fail("the resume table was read")
+
+    def __getitem__(self, *args, **kwargs) -> NoReturn:
+        self.touched()
+
+    def get(self, *args, **kwargs) -> NoReturn:
+        self.touched()
+
+    def __contains__(self, *args, **kwargs) -> NoReturn:
+        self.touched()
+
+    def __iter__(self, *args, **kwargs) -> NoReturn:
+        self.touched()
+
+    def __len__(self, *args, **kwargs) -> NoReturn:
+        self.touched()
+
+    def keys(self, *args, **kwargs) -> NoReturn:
+        self.touched()
+
+    def items(self, *args, **kwargs) -> NoReturn:
+        self.touched()
+
+    def values(self, *args, **kwargs) -> NoReturn:
+        self.touched()
+
+
+class _RenamedClaude(ClaudeProvider):
+    name = "renamed"
+
+
+class _RenamedCodex(CodexProvider):
+    name = "renamed"
+
+
+class TestResumeSupportShape(IsolatedCase):
+    """What ``resume_support`` reports before trust is asked, pinned exactly
+    for Claude and Codex: the keys, their order and every sentence."""
+
+    CLAUDE_HELP_UNREAD = "could not read 'claude --help', so --resume / --fork-session are unverified"
+    CODEX_HELP_UNREAD = "could not read 'codex exec fork --help', so forking a session is unverified"
+
+    def refuse(self, what):
+        def refused(*args, **kwargs):
+            self.fail("%s was called" % what)
+
+        return refused
+
+    def nothing_is_trusted(self):
+        """Both tables untouchable and ``verified.resume_trust`` failing: a
+        report made here was decided before either was consulted."""
+        for module in (claude_module, codex_module):
+            self.addCleanup(setattr, module, "VERIFIED_RESUME", module.VERIFIED_RESUME)
+            setattr(module, "VERIFIED_RESUME", _Untouchable(self))
+        self.addCleanup(setattr, verified, "resume_trust", verified.resume_trust)
+        setattr(verified, "resume_trust", self.refuse("verified.resume_trust"))
+
+    def prepared(self, provider, help_text, version=None):
+        """``provider`` reading ``help_text`` (None: unreadable) for every
+        help, and ``version`` for its version (None: failing if asked)."""
+        base.clear_discovery_cache()
+
+        def capture(command, timeout=30):
+            return None if help_text is None else _FakeCompleted(help_text, "", 0)
+
+        setattr(provider, "_capture", capture)
+        setattr(provider, "version", self.refuse("version") if version is None else (lambda: version))
+        return provider
+
+    def unverified(self, provider, detail, **fields):
+        report = {
+            "status": "unverified",
+            "detail": detail,
+            "version": None,
+            "source": None,
+            "record": verified.record_path(provider.name),
+            "verified_at": None,
+            "newer_than": None,
+            "missing": [],
+        }
+        report.update(fields)
+        return report
+
+    def report(self, provider):
+        report = provider.resume_support(self.project)
+        self.assertEqual(list(report), RESUME_KEYS)
+        return report
+
+    def test_unreadable_help(self):
+        self.nothing_is_trusted()
+        for provider, detail in (
+            (ClaudeProvider(), self.CLAUDE_HELP_UNREAD),
+            (CodexProvider(), self.CODEX_HELP_UNREAD),
+        ):
+            with self.subTest(provider=provider.name):
+                self.prepared(provider, None)
+                self.assertEqual(self.report(provider), self.unverified(provider, detail))
+
+    def test_missing_flags(self):
+        self.nothing_is_trusted()
+        codex_without_c = CODEX_FORK_FLAGS_HELP.replace("  -c, --config", "      --config")
+        cases = (
+            (ClaudeProvider(), CLAUDE_HELP_NO_FORK, ["--fork-session"], "--fork-session not advertised"),
+            # --resume appears only in the --fork-session description.
+            (
+                ClaudeProvider(),
+                CLAUDE_HELP_NO_RESUME + CLAUDE_HELP_FORK,
+                ["--resume"],
+                "--resume not advertised",
+            ),
+            # --fork-session appears only on a continuation line.
+            (
+                ClaudeProvider(),
+                CLAUDE_HELP_NO_RESUME + CLAUDE_HELP_RESUME_ONLY + CLAUDE_HELP_CONTINUE,
+                ["--fork-session"],
+                "--fork-session not advertised",
+            ),
+            # -c is not found inside --config or --ignore-user-config.
+            (CodexProvider(), codex_without_c, ["-c"], "codex exec fork does not advertise -c"),
+        )
+        for provider, help_text, missing, detail in cases:
+            with self.subTest(provider=provider.name, missing=missing):
+                self.prepared(provider, help_text)
+                report = self.report(provider)
+                expected = self.unverified(provider, detail, status="unsupported", missing=missing)
+                self.assertEqual(report, expected)
+
+    def test_unreadable_version(self):
+        self.nothing_is_trusted()
+        cases = (
+            (ClaudeProvider(), CLAUDE_HELP, "could not read 'claude --version'"),
+            (ClaudeProvider("C:/tools/claude.exe"), CLAUDE_HELP, "could not read 'claude --version'"),
+            (_RenamedClaude(), CLAUDE_HELP, "could not read 'claude --version'"),
+            # The recorded help: -c beside --config and a six-space --json count.
+            (CodexProvider(), CODEX_FORK_HELP, "could not read 'codex --version'"),
+            (CodexProvider("C:/tools/codex.exe"), CODEX_FORK_FLAGS_HELP, "could not read 'codex --version'"),
+            (_RenamedCodex(), CODEX_FORK_FLAGS_HELP, "could not read 'codex --version'"),
+        )
+        for provider, help_text, detail in cases:
+            for version in ((None, "boom"), ("", None)):
+                with self.subTest(provider=provider.name, executable=provider.executable, version=version):
+                    self.prepared(provider, help_text, version)
+                    self.assertEqual(self.report(provider), self.unverified(provider, detail))
+
+    def test_a_report_keeps_its_key_order(self):
+        provider = ClaudeProvider()
+        for version, status in (
+            ("2.1.283 (Claude Code)", "verified"),
+            ("2.1.286 (Claude Code)", "trusted"),
+            (UNLISTED, "unverified"),
+        ):
+            with self.subTest(version=version):
+                self.prepared(provider, CLAUDE_HELP, (version, None))
+                self.assertEqual(self.report(provider)["status"], status)
+
+    def test_trust_is_asked_with_the_adapters_own_table_and_mechanism(self):
+        calls = []
+
+        def recorder(*args, **kwargs):
+            calls.append((args, kwargs))
+            return {"status": "unverified"}
+
+        self.addCleanup(setattr, verified, "resume_trust", verified.resume_trust)
+        setattr(verified, "resume_trust", recorder)
+        tables = {}
+        for module in (claude_module, codex_module):
+            self.addCleanup(setattr, module, "VERIFIED_RESUME", module.VERIFIED_RESUME)
+            tables[module] = {}
+            setattr(module, "VERIFIED_RESUME", tables[module])
+        cases = (
+            (ClaudeProvider(), CLAUDE_HELP, claude_module),
+            (CodexProvider(), CODEX_FORK_FLAGS_HELP, codex_module),
+        )
+        for provider, help_text, module in cases:
+            with self.subTest(provider=provider.name):
+                del calls[:]
+                self.prepared(provider, help_text, (UNLISTED, None))
+                self.assertEqual(self.report(provider)["status"], "unverified")
+                self.assertEqual(len(calls), 1)
+                args, kwargs = calls[0]
+                self.assertEqual(kwargs, {})
+                expected = (
+                    provider.name,
+                    UNLISTED,
+                    provider.resume_mechanism(),
+                    self.project,
+                    tables[module],
+                    provider.required_resume_checks,
+                )
+                self.assertEqual(args, expected)
+                self.assertIs(args[4], tables[module])
+                self.assertIs(args[5], provider.required_resume_checks)
+        self.assertEqual(cases[1][0].resume_mechanism(), codex_module._FORK_MECHANISM)
+        self.assertNotEqual(cases[0][0].resume_mechanism(), codex_module._FORK_MECHANISM)
+
+    def test_codex_with_resume_off_reads_nothing(self):
+        self.nothing_is_trusted()
+        provider = CodexProvider()
+        setattr(provider, "supports_resume", False)
+        for name in ("_capture", "fork_help_text", "version", "verified_resume"):
+            setattr(provider, name, self.refuse(name))
+        report = provider.resume_support(self.project)
+        self.assertEqual(report, {"status": "unsupported", "detail": "codex does not resume sessions"})
+
+    def test_claude_with_resume_off_reads_nothing(self):
+        self.nothing_is_trusted()
+        provider = ClaudeProvider()
+        setattr(provider, "supports_resume", False)
+        for name in ("_capture", "help_text", "version", "verified_resume"):
+            setattr(provider, name, self.refuse(name))
+        report = provider.resume_support(self.project)
+        self.assertEqual(report, {"status": "unsupported", "detail": "claude does not resume sessions"})
 
 
 #: ``agy models`` as 1.2.13 prints it: a progress line, then ``id<TAB>name``.

@@ -61,7 +61,14 @@ class Provider:
 
     supports_resume: bool                                       # default: False
     required_resume_checks: Sequence[str]                       # default: every check verified.py names
+    resume_flags: Sequence[str]                                 # default: ()
+    resume_help_unread: str                                     # detail when resume_help_text() is None
+    resume_flags_missing: str                                   # detail when flags are missing; default: "%s not advertised"
+    resume_version_unread: str                                  # detail when version() gives nothing
     def resume_support(root) -> dict                            # default: "unsupported" / "unspecified"
+    def verified_resume() -> dict | None                        # default: None (off the shared rule)
+    def resume_help_text() -> str | None                        # default: None
+    def resume_advertises(help_text, flag) -> bool              # default: False
     def resume_mechanism() -> str                               # default: read_only_enforcement()["mechanism"]
     def resume_args(session_id) -> list[str]                    # default: NotImplementedError
     def resume_command(mode, resolved, cwd, extra_args, options, session_id) -> list[str]  # default: build_command + resume_args
@@ -93,11 +100,19 @@ named in `newer_than`, not checked itself); `run` passes the keyword on
 to `_launch` only when there is one, so an adapter that overrides `_launch`
 with the signature from before still runs fresh runs unchanged. An adapter
 that resumes has to accept the keyword and pass it to the base. An adapter
-that resumes on the shared rule passes `verified.resume_trust(...)` its
+that resumes on the shared rule leaves `resume_support` to the base. It
+overrides `verified_resume()`, which must return its module-level
+`VERIFIED_RESUME`, because `smoke_live.py` finds the table by that name;
+`resume_help_text()`, the help that has to list its flags; and
+`resume_advertises(help_text, flag)`, its own matcher for that help, because
+the base's returns False. It sets a non-empty `resume_flags`, and may set
+`resume_help_unread`, `resume_flags_missing` and `resume_version_unread` to
+word its report. Once every flag is listed and the version is read, the base
+passes `verified.resume_trust(...)` the table, the adapter's
 `resume_mechanism()` -- the flags a record vouches for, the fresh read-only
 mechanism unless the resumed command differs -- and its
 `required_resume_checks`, the checks a version must pass (every check
-`verified.py` names unless it names fewer), and turns the answer into its
+`verified.py` names unless it names fewer), and turns the answer into the
 report with `resume_report(version, trust)`. An adapter may also refuse to
 start a resumed run: `_launch` returns a result with `resume_rejected=True`
 and `invoked=False`, and the orchestrator runs fresh once, as for a rejection
@@ -583,9 +598,9 @@ session keeps read-only, and agy's plan runs are `unenforced`, so a version
 gate would protect nothing. `--conversation <id>` continues the original
 conversation with no fork, the architect on agy is a warned, global-config-only
 seat, and enabling it would cost three live checks at 12k-25k tokens each.
-If it is wanted later, it fits under the same rule
-(`verified.resume_trust()`) with `required_resume_checks = ("reports a missing
-session",)`.
+If it is wanted later, agy would override `verified_resume()`,
+`resume_help_text()` and `resume_advertises()`, set `resume_flags`, and set
+`required_resume_checks = ("reports a missing session",)`.
 
 **Permissions on the implementer.** Without `--dangerously-skip-permissions`,
 file edits ran and shell commands were refused in headless mode, so an
