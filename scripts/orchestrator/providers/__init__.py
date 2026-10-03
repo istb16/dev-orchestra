@@ -162,6 +162,31 @@ def adapter_failure(name: str, exc: BaseException) -> str:
     return "%s adapter failed (%s): %s" % (name, describe_origin(name), describe_exception(exc))
 
 
+def _warned_provider(name: str) -> Optional[Dict[str, Any]]:
+    """The enforcement report of a provider whose read-only runs are warned
+    about, or None.
+
+    Asked only of an adapter whose report is static, so configuration checks
+    never start a CLI: Claude's report reads ``--help``. An unknown provider
+    is None, for ``validate`` to report.
+    """
+    if not name:
+        return None
+    try:
+        provider = get_provider(name)
+        if not type(provider).static_enforcement:
+            return None
+        enforcement = provider.read_only_enforcement()
+    except Exception:
+        return None
+    return dict(enforcement) if enforcement.get("status") in WARNED_ENFORCEMENT else None
+
+
+def warned_provider(name: str) -> bool:
+    """True when read-only runs on ``name`` go ahead only with a warning."""
+    return _warned_provider(name) is not None
+
+
 # --------------------------------------------------------------------------- user adapters
 
 

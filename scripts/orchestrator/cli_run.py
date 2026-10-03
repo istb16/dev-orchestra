@@ -14,6 +14,7 @@ from typing import Any, Dict, List, NamedTuple, Optional, Tuple, Union, cast
 from . import activity, execution
 from . import approval as approval_mod
 from . import config as config_mod
+from . import config_policy as policy_mod
 from . import jobs as jobs_mod
 from . import ledger as ledger_mod
 from . import workspace as ws
@@ -370,13 +371,13 @@ def _preflight_refusals(
     if seat.mode == MODE_IMPLEMENT:
         # The same reasoning for a write role on a provider whose permission
         # bypass is local-only: nothing of it is taken from the project file.
-        from_project = config_mod.project_write_refusals(loaded).get(seat.label)
+        from_project = policy_mod.project_write_refusals(loaded).get(seat.label)
         if from_project:
             return ["refused -- %s" % from_project]
     if seat.mode in READ_ONLY_MODES:
         # Raw arguments, and a seat on a provider that cannot be held to
         # reading, that came with the project file.
-        from_project = config_mod.project_raw_arg_refusals(loaded).get(seat.label)
+        from_project = policy_mod.project_raw_arg_refusals(loaded).get(seat.label)
         if from_project:
             return ["refused -- %s" % from_project]
         problems = provider.read_only_arg_problems(seat.mode, args.extra or [], seat.spec.get("options"))
@@ -430,7 +431,7 @@ def _enforcement_refusal(
         if enforcement.get("status") in WARNED_ENFORCEMENT:
             # The live report, for an adapter whose report is not static and
             # so was not asked above: a project file does not choose it either.
-            from_project = config_mod.project_provider_refusals(loaded).get(seat.label)
+            from_project = policy_mod.project_provider_refusals(loaded).get(seat.label)
             if from_project:
                 return ["refused -- %s" % from_project], ""
             return [], unenforced_warning(seat.provider_name, enforcement)

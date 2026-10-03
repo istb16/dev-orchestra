@@ -11,6 +11,7 @@ from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tu
 from . import activity
 from . import approval as approval_mod
 from . import config as config_mod
+from . import config_policy as policy_mod
 from . import context as context_mod
 from . import ledger as ledger_mod
 from . import optimization as opt_mod
@@ -62,8 +63,8 @@ def _warn_unenforced(loaded: config_mod.LoadedConfig, reviewers: List[Dict[str, 
     A reviewer refused for coming with the project file is not warned about:
     it does not run. Returns the lines printed, by reviewer id.
     """
-    refused = list(config_mod.project_raw_arg_refusals(loaded))
-    lines = config_mod.reviewer_enforcement_warnings(loaded.data, refused)
+    refused = list(policy_mod.project_raw_arg_refusals(loaded))
+    lines = policy_mod.reviewer_enforcement_warnings(loaded.data, refused)
     printed: Dict[str, str] = {}
     for reviewer in reviewers:
         reviewer_id = str(reviewer.get("id") or "")
@@ -82,8 +83,8 @@ def _reviewer_refusals(loaded: config_mod.LoadedConfig, reviewers: List[Dict[str
     it cannot be held to reading -- one whose report is not static, which the
     configuration's refusals never ask.
     """
-    refusals = dict(config_mod.reviewer_raw_arg_refusals(loaded))
-    from_project = config_mod.reviewer_provider_refusals(loaded)
+    refusals = dict(policy_mod.reviewer_raw_arg_refusals(loaded))
+    from_project = policy_mod.reviewer_provider_refusals(loaded)
     for reviewer in reviewers:
         reviewer_id = str(reviewer.get("id") or "")
         if reviewer_id in refusals or reviewer_id not in from_project:

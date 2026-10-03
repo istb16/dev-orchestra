@@ -178,6 +178,7 @@ still carries the allowlist and `--restricted`.
 | Plugin packaging | `.claude-plugin/`, `.codex-plugin/`, `.agents/plugins/`, and the root `plugin.json` for Antigravity |
 | A new CLI | `scripts/orchestrator/providers/` + `register()` — see `references/providers.md` (a user's own adapter goes in `<config dir>/providers/` instead, without a change here) |
 | Config schema | `config.py` (defaults **and** `validate`) + `references/configuration.md` |
+| Read-only seat / write-role refusals and enforcement warnings | `config_policy.py` |
 | A command | its `cli_*.py` module (`cli_review.py` for `review …`, `cli_state.py` for `state`/`budget`/`tokens`, …), and its arguments in `cli.py` |
 | The wording of `optimization report` | `optimization_render.py`, which builds the lines; the figures come from `optimization_report.py`, and `cli_state.py` reads the run logs and prints |
 | Review snapshot, fan-out, parsing, consolidation, coverage wording | `review_snapshot.py`, `review_fanout.py`, `review_parsing.py`, `review_consolidation.py`, `review_coverage.py`; constants and prompt templates in `review_common.py` |

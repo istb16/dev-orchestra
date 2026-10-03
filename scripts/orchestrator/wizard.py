@@ -18,6 +18,7 @@ import copy
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from . import config as config_mod
+from . import config_policy as policy_mod
 from . import presets as presets_mod
 from .cli_common import _compose_preview, _out
 from .optimization import WHEN_HIGH_RISK, reviewer_condition, risk_patterns
@@ -28,6 +29,7 @@ from .providers import (
     describe_exception,
     describe_origin,
     get_provider,
+    warned_provider,
 )
 from .summary import ROLE_TITLES, render_summary
 
@@ -307,18 +309,18 @@ def _ask_role(
             prompter, providers, "   CLI:", default_provider, lambda _name: default_family, note_missing=True
         )
         spec = {"provider": provider_name, "model": model}
-        if seat and config_mod.warned_provider(provider_name):
+        if seat and warned_provider(provider_name):
             if scope == "project":
                 name = config_mod.PROJECT_CONFIG_NAMES[0]
                 path = "%s.provider" % seat
-                prompter.say("   %s" % config_mod.project_seat_refusal(seat, provider_name, name, path))
+                prompter.say("   %s" % policy_mod.project_seat_refusal(seat, provider_name, name, path))
                 continue
             _say_unenforced(prompter, {seat: spec})
         return spec
 
 
 def _say_unenforced(prompter: Prompter, data: Dict[str, Any]) -> None:
-    for line in config_mod.read_only_enforcement_warnings(data):
+    for line in policy_mod.read_only_enforcement_warnings(data):
         prompter.say("   Warning: %s" % line)
 
 
@@ -457,12 +459,12 @@ def _ask_reviewer(
         provider_name, model = _ask_cli_and_model(
             prompter, providers, "     CLI:", default_provider, family_for
         )
-        if scope != "project" or not config_mod.warned_provider(provider_name):
+        if scope != "project" or not warned_provider(provider_name):
             break
         # Refused in a project layer, as a run of it would be; asked again.
         shown = template.get("id") or config_mod.suggest_reviewer_id(scratch, provider_name, "general")
         name = config_mod.PROJECT_CONFIG_NAMES[0]
-        refusal = config_mod.project_reviewer_refusal("reviewer %s" % shown, provider_name, name)
+        refusal = policy_mod.project_reviewer_refusal("reviewer %s" % shown, provider_name, name)
         prompter.say("     %s" % refusal)
 
     role_options = [*list(config_mod.BUILTIN_ROLES), "custom role"]

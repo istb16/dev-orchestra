@@ -18,6 +18,7 @@ from helpers import IsolatedCase
 
 from orchestrator import cli, doctor, execution
 from orchestrator import config as config_mod
+from orchestrator import config_policy as policy_mod
 from orchestrator.providers.claude import ClaudeProvider
 
 CLAUDE_ROLE = "  provider: claude\n  model:\n    family: opus\n"
@@ -59,7 +60,7 @@ class _Case(IsolatedCase):
         self.write(".dev-orchestra.yaml", "version: 1\n" + text)
 
     def refusals(self):
-        return config_mod.project_write_refusals(config_mod.load(self.project))
+        return policy_mod.project_write_refusals(config_mod.load(self.project))
 
     def assert_run_refused(self, *argv):
         code, _, err = run_cli("run", *argv)
@@ -138,7 +139,7 @@ class TestClaude(_Case):
             "      options:\n        sandbox: read-only\n"
             "    broken: 3\n"
         )
-        refusals = config_mod.project_write_refusals(config_mod.load(self.project, validate_result=False))
+        refusals = policy_mod.project_write_refusals(config_mod.load(self.project, validate_result=False))
         self.assertEqual(
             list(refusals),
             [

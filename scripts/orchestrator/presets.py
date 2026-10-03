@@ -285,7 +285,10 @@ def suggestion_provider(installed: Sequence[str]) -> Optional[str]:
     for name in installed:
         if name in FITTED_PROVIDERS:
             continue
-        if _named_fit(name).seats and not config_mod.warned_provider(name):
+        # lazy: importing the registry runs the user adapters, and presets must be complete first
+        from .providers import warned_provider
+
+        if _named_fit(name).seats and not warned_provider(name):
             return name
     return None
 

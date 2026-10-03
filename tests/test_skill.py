@@ -21,10 +21,12 @@ from helpers import (
     make_dir_link,
     present,
     remove_link,
+    user_adapter_source,
 )
 
 import orchestrator
 from orchestrator import miniyaml
+from orchestrator.providers import USER_MODULE_PREFIX
 
 # Imported by name rather than with a plain `import`: it lives in scripts/,
 # which only goes on sys.path when helpers is imported above. An import
@@ -450,6 +452,7 @@ _REGISTRY_FREE = (
     "context",
     "review_snapshot",
     "review_coverage",
+    "summary",
 )
 
 #: Imports allowed inside a function, as ``(file, outermost function, module
@@ -472,15 +475,14 @@ _ALLOWED = {
     ("config.py", "load", ".presets"),
     ("config.py", "validate", ".presets"),
     ("config.py", "validate", ".providers"),
-    ("config.py", "_warned_provider", ".providers"),
-    ("config.py", "_enforcement_warned_seats", ".providers"),
-    ("config.py", "project_write_refusals", ".providers"),
-    ("config.py", "read_only_arg_warnings", ".providers"),
     ("config.py", "_validate_role_options", ".providers"),
     # Initialisation order: the registry runs the user adapters.
     ("presets.py", "user_fit", ".providers"),
     ("presets.py", "_named_fit", ".providers"),
     ("presets.py", "installed_providers", ".providers"),
+    ("presets.py", "suggestion_provider", ".providers"),
+    # The policy loads the registry; summary must import without it.
+    ("summary.py", "render_summary", ".config_policy"),
 }
 
 
@@ -704,6 +706,30 @@ assert "mycli" in providers.available_providers(), providers.user_provider_repor
 assert not providers.user_provider_report()["errors"]
 """
 
+#: Run in a child with user adapters enabled: ``summary`` imports without the registry.
+_SUMMARY_ALONE = """\
+import sys; sys.path.insert(0, %r)
+import orchestrator.summary
+assert "orchestrator.providers" not in sys.modules
+assert not [name for name in sys.modules if name.startswith(%r)]
+"""
+
+#: Run in a child with user adapters enabled: ``presets`` imports without the
+#: registry, and ``suggestion_provider`` reaches it only when asked about a user
+#: adapter -- never for no candidate or a fitted one.
+_PRESETS_ALONE = """\
+import sys; sys.path.insert(0, %r)
+from orchestrator import presets
+assert "orchestrator.providers" not in sys.modules
+assert presets.suggestion_provider(["claude"]) == "claude"
+assert presets.suggestion_provider([]) is None
+assert presets.suggestion_provider(["agy"]) is None
+assert "orchestrator.providers" not in sys.modules
+assert presets.suggestion_provider(["seated"]) == "seated"
+assert "orchestrator.providers" in sys.modules
+assert "orchestrator.config_policy" not in sys.modules
+"""
+
 
 class TestImportLayering(IsolatedCase):
     """Which module may import which, and when."""
@@ -729,11 +755,27 @@ class TestImportLayering(IsolatedCase):
         source = USER_ADAPTER_SOURCE.replace(_FUTURE, _FUTURE + _ADAPTER_IMPORTS, 1)
         self.assertIn("_USED", source)
         self.write_user_provider("layering", source)
-        env = {key: value for key, value in os.environ.items() if key != "DEV_ORCHESTRA_NO_USER_PROVIDERS"}
-        env["DEV_ORCHESTRA_HOME"] = self.config_home
-        for entry in ("cli", "doctor", "wizard"):
+        env = self.user_adapter_env()
+        for entry in ("cli", "doctor", "wizard", "cli_config", "cli_run", "cli_review"):
             result = _python(_LOAD_USER_ADAPTER % (SCRIPTS_DIR, entry), env)
             self.assertEqual(result.returncode, 0, "%s: %s" % (entry, result.stderr))
+
+    def user_adapter_env(self):
+        """The environment of a child that loads the user adapters in the config home."""
+        env = {key: value for key, value in os.environ.items() if key != "DEV_ORCHESTRA_NO_USER_PROVIDERS"}
+        env["DEV_ORCHESTRA_HOME"] = self.config_home
+        return env
+
+    def test_summary_leaves_the_user_adapters_alone(self):
+        self.write_user_provider("layering")
+        result = _python(_SUMMARY_ALONE % (SCRIPTS_DIR, USER_MODULE_PREFIX), self.user_adapter_env())
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_presets_reaches_the_policy_only_for_a_user_adapter(self):
+        source = user_adapter_source("seated", 'preset_family = "big"', "verified")
+        self.write_user_provider("seated", source)
+        result = _python(_PRESETS_ALONE % SCRIPTS_DIR, self.user_adapter_env())
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_no_cycle_at_module_level(self):
         graph = _import_graph()
@@ -754,7 +796,10 @@ class TestImportLayering(IsolatedCase):
             cli_run,
             cli_state,
             cli_workflow,
+            config,
+            config_policy,
             optimization_render,
+            providers,
             review,
             review_common,
             review_consolidation,
@@ -842,6 +887,43 @@ class TestImportLayering(IsolatedCase):
             self.assertFalse(hasattr(review_consolidation, name), name)
         for name in ("_stamp", "_snapshot_sha"):
             self.assertFalse(hasattr(review_fanout, name), name)
+        policy = (
+            "RawArgs",
+            "_string_args",
+            "read_only_raw_args",
+            "_tier_provider_path",
+            "_project_refused",
+            "_project_seat_refused",
+            "_project_provider_seats",
+            "project_provider_refusals",
+            "reviewer_provider_refusals",
+            "project_seat_refusal",
+            "project_reviewer_refusal",
+            "_seat_provider_path",
+            "_all_refused",
+            "_by_key",
+            "project_raw_arg_refusals",
+            "reviewer_raw_arg_refusals",
+            "read_only_enforcement_warnings",
+            "_enforcement_warned_seats",
+            "reviewer_enforcement_warnings",
+            "project_write_refusals",
+            "read_only_arg_warnings",
+        )
+        for name in policy:
+            self.assertEqual(getattr(config_policy, name).__module__, "orchestrator.config_policy", name)
+            self.assertFalse(hasattr(config, name), name)
+        # The seat walk is configuration shape, so it stays with ``merge_tier``.
+        for name in ("SeatRun", "role_seats", "_reviewer_seats", "_read_only_seats"):
+            self.assertEqual(getattr(config, name).__module__, "orchestrator.config", name)
+        self.assertEqual(config.WRITE_ROLES, ("implementer", "review_fixer"))
+        # The warned-provider predicate reads only the registry.
+        for name in ("_warned_provider", "warned_provider"):
+            self.assertEqual(getattr(providers, name).__module__, "orchestrator.providers", name)
+            self.assertFalse(hasattr(config, name), name)
+        self.assertFalse(hasattr(config_policy, "warned_provider"))
+        self.assertEqual(config.default_reviewer_family.__module__, "orchestrator.config")
+        self.assertFalse(hasattr(config_policy, "default_reviewer_family"))
 
 
 def _source(relative, text):

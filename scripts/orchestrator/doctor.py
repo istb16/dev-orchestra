@@ -12,6 +12,7 @@ import platform
 from typing import Any, Dict, List, Optional, Tuple
 
 from . import config as config_mod
+from . import config_policy as policy_mod
 from . import hosts, verified
 from . import optimization as opt_mod
 from . import presets as presets_mod
@@ -176,13 +177,13 @@ def collect(start: Optional[str] = None, probe_models: bool = True) -> Dict[str,
     report["notes"].extend(loaded.preset_notes)
     # Problems for doctor, warnings for `config validate`: either way these
     # runs are refused, and --strict should say so before one is attempted.
-    warnings = config_mod.read_only_arg_warnings(loaded)
+    warnings = policy_mod.read_only_arg_warnings(loaded)
     report["config"]["warnings"] = warnings
     report["problems"].extend(warnings)
     # A seat refused for coming with the project file is a problem above, and
     # not also a note below.
-    refused = config_mod.project_raw_arg_refusals(loaded)
-    reviewer_refused = config_mod.reviewer_raw_arg_refusals(loaded)
+    refused = policy_mod.project_raw_arg_refusals(loaded)
+    reviewer_refused = policy_mod.reviewer_raw_arg_refusals(loaded)
 
     layers = (loaded.global_layer, loaded.project_layer)
     for key, label in ROLE_LABELS:

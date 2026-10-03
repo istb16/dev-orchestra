@@ -43,7 +43,7 @@ flowchart TD
 | --- | --- | --- |
 | Skill | `skills/dev-orchestra/SKILL.md`, `references/` | What the orchestrator decides and when |
 | CLI | `scripts/dev_orchestra.py`, `scripts/orchestrator/cli.py` (parser and entry point) and `cli_*.py` (one module per group of commands) | Deterministic operations an agent can call |
-| Domain | `config.py`, `review_*.py` (re-exported by `review.py`), `workspace.py`, `wizard.py`, `doctor.py` | Config layering, snapshotting, parsing, dedupe, triage, diagnostics |
+| Domain | `config.py`, `config_policy.py`, `review_*.py` (re-exported by `review.py`), `workspace.py`, `wizard.py`, `doctor.py` | Config layering, refusal policy for project-file seats and write options, snapshotting, parsing, dedupe, triage, diagnostics |
 | Providers | `scripts/orchestrator/providers/` | The only code that knows CLI syntax and model names |
 
 Nothing above the provider layer knows that `claude` uses `--model` and `codex`
