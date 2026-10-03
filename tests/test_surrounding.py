@@ -756,9 +756,11 @@ class TestTheSettingOffChangesNothing(AdoptCase):
         runs = review_mod.run_reviews(
             [reviewer("r1")],
             self.workspace,
-            parallel=False,
-            prompt_for=lambda r: review_mod.BuiltPrompt("design prompt", "inline", 9),
-            surrounding=self.adopt(),
+            review_mod.FanoutOptions(
+                parallel=False,
+                prompt_for=lambda r: review_mod.BuiltPrompt("design prompt", "inline", 9),
+                surrounding=self.adopt(),
+            ),
         )
         self.assertNotIn("surrounding", runs[0].to_dict())
 
@@ -994,8 +996,8 @@ class TestFrozenAtTheSnapshot(GitCase):
         self.commit_all("lib")
         self.edit_add()
         self.write("lib.py", "def mul(a, b):\n    return b * a\n")
-        tree = review_mod._write_tree(self.project)
-        _, diff, _ = review_mod._diff(self.project, ["HEAD"], [])
+        tree = review_snapshot._write_tree(self.project)
+        _, diff, _ = review_snapshot._diff(self.project, ["HEAD"], [])
         self.edit_add("return 0")
         frozen = context_mod.extract(self.project, tree, diff, ["app.py", "lib.py"], working_tree_diff=True)
         self.assertEqual(frozen["skipped"], [{"path": "app.py", "reason": context_mod.DRIFTED}])
@@ -1142,8 +1144,7 @@ class TestReviewersThatDisagree(GitCase):
         runs = review_mod.run_reviews(
             [reviewer("m1"), reviewer("m2", provider="no-such-provider")],
             self.workspace,
-            parallel=False,
-            surrounding=adoption,
+            review_mod.FanoutOptions(parallel=False, surrounding=adoption),
         )
         entries = [run.to_dict() for run in runs]
         self.assertEqual(entries[1]["status"], "failed")

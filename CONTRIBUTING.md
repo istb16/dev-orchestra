@@ -180,12 +180,14 @@ still carries the allowlist and `--restricted`.
 | Config schema | `config.py` (defaults **and** `validate`) + `references/configuration.md` |
 | A command | its `cli_*.py` module (`cli_review.py` for `review …`, `cli_state.py` for `state`/`budget`/`tokens`, …), and its arguments in `cli.py` |
 | The wording of `optimization report` | `optimization_render.py`, which builds the lines; the figures come from `optimization_report.py`, and `cli_state.py` reads the run logs and prints |
-| Review snapshot, fan-out, parsing, consolidation | `review_snapshot.py`, `review_fanout.py`, `review_parsing.py`, `review_consolidation.py`; constants and prompt templates in `review_common.py` |
+| Review snapshot, fan-out, parsing, consolidation, coverage wording | `review_snapshot.py`, `review_fanout.py`, `review_parsing.py`, `review_consolidation.py`, `review_coverage.py`; constants and prompt templates in `review_common.py` |
 
-`cli.py` and `review.py` re-export every name the modules split out of them
-define, so `cli.name` and `review.name` keep working. A test that replaces a
-function has to replace it where it is looked up: `cli_run._out`, not
-`cli._out`.
+`cli.py` re-exports every name its command modules define, so `cli.name`
+keeps working. `review.py` re-exports the public names of the `review_*`
+modules, so `review.name` keeps working for those; a test imports an
+underscore helper from its own module: `review_snapshot._diff`, not
+`review._diff`. A test that replaces a function has to replace it where it is
+looked up: `cli_run._out`, not `cli._out`.
 
 Imports go at the top of the module. `tests/test_skill.py` fails on an import
 inside a function unless it is on its allow-list with a comment saying why

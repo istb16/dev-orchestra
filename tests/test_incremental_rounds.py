@@ -21,10 +21,11 @@ import os
 import subprocess
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
+from unittest import mock
 
 from helpers import IsolatedCase, has_git
 
-from orchestrator import cli
+from orchestrator import cli, review_snapshot
 from orchestrator import config as config_mod
 from orchestrator import review as review_mod
 from orchestrator import workspace as ws
@@ -135,7 +136,7 @@ class TestWorkingTreeObject(RoundCase):
         subprocess.run(["git", "init", "-q"], cwd=fresh, check=True, capture_output=True)
         with open(os.path.join(fresh, "a.py"), "w", encoding="utf-8") as handle:
             handle.write("x = 1\n")
-        self.assertRegex(review_mod._write_tree(fresh), r"^[0-9a-f]{40}$")
+        self.assertRegex(review_snapshot._write_tree(fresh), r"^[0-9a-f]{40}$")
 
 
 # --------------------------------------------------------------------------- scope
@@ -426,7 +427,7 @@ class TestUnresolvableRevision(RoundCase):
         with open(os.path.join(fresh, "a.py"), "w", encoding="utf-8") as handle:
             handle.write("x = 1\n")
         meta = review_mod.create_snapshot(ws.Workspace(fresh).ensure())
-        self.assertIn("no HEAD commit", meta["strategy"])
+        self.assertEqual(meta["strategy"], "untracked-only (no HEAD commit)")
         self.assertIn("a.py", meta["untracked_included"])
 
     def test_exclusions_still_apply_to_an_incremental_round(self):
@@ -444,6 +445,197 @@ class TestUnresolvableRevision(RoundCase):
         self.fix()
         review_mod.create_snapshot(self.workspace)
         self.assertEqual(review_mod.next_iteration(self.workspace), 2)
+
+
+# --------------------------------------------------------------------------- what a snapshot records
+
+#: A snapshot's metadata, in order, with the context off.
+META_KEYS = [
+    "generated_at",
+    "round_id",
+    "strategy",
+    "base",
+    "head",
+    "tree",
+    "incremental_from",
+    "full_diff",
+    "files",
+    "changed_paths",
+    "condition_paths",
+    "untracked_included",
+    "withheld",
+    "exclude_patterns",
+    "bytes",
+    "lines_added",
+    "lines_deleted",
+    "sha256",
+    "empty",
+]
+
+
+class TestSnapshotPinning(RoundCase):
+    """What ``create_snapshot`` writes and refuses, on every path through it."""
+
+    def failing(self, when):
+        """``_diff`` answering as an old git does whenever ``when(revisions, pathspecs)`` holds."""
+        original = review_snapshot._diff
+
+        def diff(root, revisions, pathspecs):
+            if when(revisions, pathspecs):
+                return 128, "", "fatal"
+            return original(root, revisions, pathspecs)
+
+        return mock.patch.object(review_snapshot, "_diff", side_effect=diff)
+
+    def lockfile(self):
+        """A committed lockfile, changed: withheld by the default exclusions."""
+        self.write("poetry.lock", "version = 1\n")
+        self.commit_all("lock")
+        self.write("poetry.lock", "version = 2\n")
+
+    def test_the_order_of_the_metadata(self):
+        self.implement()
+        self.assertEqual(list(review_mod.create_snapshot(self.workspace)), META_KEYS)
+        meta = review_mod.create_snapshot(self.workspace, surrounding="enclosing")
+        self.assertEqual(list(meta), [*META_KEYS, "surrounding"])
+        frozen = ["mode", "path", "tree", "candidates", "chars", "skipped"]
+        self.assertEqual(list(meta["surrounding"]), frozen)
+        self.assertEqual(list(ws.read_json(self.workspace.snapshot_meta_path, {})), list(meta))
+
+    def test_old_git_on_a_first_round_sends_everything(self):
+        self.lockfile()
+        self.implement()
+        with self.failing(lambda revisions, pathspecs: bool(pathspecs)):
+            meta = review_mod.create_snapshot(self.workspace)
+        self.assertEqual(meta["strategy"], "git diff HEAD (exclusions unsupported by this git)")
+        self.assertEqual(meta["withheld"], [])
+        for key in ("files", "changed_paths", "condition_paths"):
+            self.assertEqual(meta[key], ["poetry.lock", "service.py"], key)
+        self.assertIn("+version = 2", ws.read_text(self.workspace.snapshot_path))
+
+    def test_old_git_on_an_incremental_round_sends_everything(self):
+        """The orchestrator's config changes between rounds, so the fix diff has a path to suppress."""
+        self.write(".dev-orchestra.yaml", "version: 1\n")
+        self.first_round()
+        self.fix()
+        self.write(".dev-orchestra.yaml", "version: 1\nreview:\n  timeout_seconds: 900\n")
+        with self.failing(lambda revisions, pathspecs: bool(pathspecs)):
+            meta = review_mod.create_snapshot(self.workspace)
+        strategy = "git diff <previous round> <now> (exclusions unsupported by this git)"
+        self.assertEqual(meta["strategy"], strategy)
+        self.assertEqual(meta["withheld"], [])
+        self.assertEqual(meta["condition_paths"], meta["changed_paths"])
+        self.assertIn(".dev-orchestra.yaml", meta["files"])
+        diff = ws.read_text(self.workspace.snapshot_path)
+        self.assertIn("diff --git a/.dev-orchestra.yaml b/.dev-orchestra.yaml", diff)
+        self.assertIn("timeout_seconds", diff)
+
+    def test_old_git_writes_no_whole_change(self):
+        """The whole-change file has no fallback: an excluded diff that fails writes nothing."""
+        self.lockfile()
+        self.first_round()
+        self.fix()
+        with self.failing(lambda revisions, pathspecs: len(revisions) == 1 and bool(pathspecs)):
+            meta = review_mod.create_snapshot(self.workspace)
+        self.assertTrue(meta["incremental_from"])
+        self.assertEqual(meta["full_diff"], "")
+        self.assertFalse(os.path.exists(self.workspace.full_snapshot_path))
+
+    def test_a_failed_whole_change_listing_writes_no_whole_change(self):
+        self.first_round()
+        self.fix()
+        original = review_snapshot._numstat
+
+        def numstat(root, revisions, patterns):
+            if len(revisions) == 1:
+                return [], 128, "fatal"
+            return original(root, revisions, patterns)
+
+        with mock.patch.object(review_snapshot, "_numstat", side_effect=numstat):
+            meta = review_mod.create_snapshot(self.workspace)
+        self.assertTrue(meta["incremental_from"])
+        self.assertEqual(meta["full_diff"], "")
+        self.assertFalse(os.path.exists(self.workspace.full_snapshot_path))
+
+    def test_a_blank_whole_change_writes_no_whole_change(self):
+        self.first_round()
+        self.fix()
+        original = review_snapshot._diff
+
+        def diff(root, revisions, pathspecs):
+            if len(revisions) == 1:
+                return 0, " \n\n", ""
+            return original(root, revisions, pathspecs)
+
+        with mock.patch.object(review_snapshot, "_diff", side_effect=diff):
+            meta = review_mod.create_snapshot(self.workspace)
+        self.assertTrue(meta["incremental_from"])
+        self.assertEqual(meta["full_diff"], "")
+        self.assertFalse(os.path.exists(self.workspace.full_snapshot_path))
+
+    def test_a_snapshot_with_the_context_off_removes_the_old_context(self):
+        self.implement()
+        review_mod.create_snapshot(self.workspace, surrounding="enclosing")
+        self.assertTrue(os.path.isfile(self.workspace.surrounding_path))
+        meta = review_mod.create_snapshot(self.workspace)
+        self.assertNotIn("surrounding", meta)
+        self.assertFalse(os.path.exists(self.workspace.surrounding_path))
+
+    def test_the_strategies(self):
+        self.implement()
+        self.assertEqual(review_mod.create_snapshot(self.workspace)["strategy"], "git diff HEAD")
+        head = self.git("rev-parse", "HEAD").stdout.strip()
+        meta = review_mod.create_snapshot(self.workspace, base=head)
+        self.assertEqual(meta["strategy"], "git diff %s" % head)
+
+    def test_an_incremental_round_keeps_the_whole_change_on_disk(self):
+        self.first_round()
+        self.fix()
+        meta = review_mod.create_snapshot(self.workspace)
+        self.assertEqual(meta["strategy"], "git diff <previous round> <now>")
+        self.assertEqual(meta["full_diff"], self.workspace.relative(self.workspace.full_snapshot_path))
+        self.assertTrue(os.path.isfile(self.workspace.full_snapshot_path))
+
+    def test_the_untracked_scan(self):
+        self.write("b.py", "B = 1\n")
+        self.write("a.py", "A = 1\n")
+        self.write("package-lock.json", "{\n}\n\n")
+        self.write("big.py", "#" * (review_snapshot.MAX_UNTRACKED_BYTES + 1))
+        if not os.path.exists(os.path.join(self.project, ".dev-orchestra.yaml")):
+            self.write(".dev-orchestra.yaml", "version: 1\n")
+        meta = review_mod.create_snapshot(self.workspace, surrounding="enclosing")
+        self.assertEqual(meta["untracked_included"], ["a.py", "b.py"])
+        lock = {"path": "package-lock.json", "pattern": "package-lock.json", "added": 3, "deleted": 0}
+        self.assertEqual(meta["withheld"], [lock])
+        diff = ws.read_text(self.workspace.snapshot_path)
+        self.assertNotIn("package-lock.json", diff)
+        frozen = ws.read_json(self.workspace.surrounding_path, {})
+        named = [entry["path"] for entry in frozen["candidates"] + frozen["skipped"]]
+        self.assertNotIn("package-lock.json", named)
+        for name in ("big.py", ".dev-orchestra.yaml"):
+            self.assertNotIn(name, diff)
+            for key in ("files", "changed_paths", "condition_paths", "untracked_included"):
+                self.assertNotIn(name, meta[key], key)
+            self.assertNotIn(name, [entry["path"] for entry in meta["withheld"]])
+
+    def test_a_file_the_fix_created_is_diffed_once(self):
+        self.first_round()
+        self.write("helper.py", "def help():\n    return 1\n")
+        meta = review_mod.create_snapshot(self.workspace)
+        self.assertTrue(meta["incremental_from"])
+        self.assertEqual(meta["untracked_included"], [])
+        diff = ws.read_text(self.workspace.snapshot_path)
+        self.assertEqual(diff.count("diff --git a/helper.py b/helper.py"), 1)
+
+    def test_git_diff_failed(self):
+        self.implement()
+        with self.assertRaises(review_mod.ReviewError) as raised:
+            review_mod.create_snapshot(self.workspace, base="no-such-branch")
+        self.assertTrue(str(raised.exception).startswith("git diff failed: "), str(raised.exception))
+        with self.failing(lambda revisions, pathspecs: True):
+            with self.assertRaises(review_mod.ReviewError) as raised:
+                review_mod.create_snapshot(self.workspace)
+        self.assertEqual(str(raised.exception), "git diff failed: fatal")
 
 
 # --------------------------------------------------------------------------- premise
