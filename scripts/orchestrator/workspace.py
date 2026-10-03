@@ -46,8 +46,14 @@ def fmt_int(value: int) -> str:
 
 
 def fmt_size(chars: Any) -> str:
-    """A recorded size in chars, or ``size unrecorded`` where it is 0 or missing."""
-    return fmt_int(chars) if chars else "size unrecorded"
+    """A recorded size in chars, or ``size unrecorded`` where it is 0, missing or not an integer.
+
+    A hand-edited report can hold a string or a bool here, and ``{:,}`` raises
+    on the first and prints the second as ``1``.
+    """
+    if isinstance(chars, int) and not isinstance(chars, bool) and chars:
+        return fmt_int(chars)
+    return "size unrecorded"
 
 
 def fmt_usd(value: float) -> str:

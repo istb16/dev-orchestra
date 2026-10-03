@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence
+from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple
 
 from . import activity
 from . import config as config_mod
 from . import context as context_mod
 from . import workspace as ws
-from .providers import MODE_REVIEW, ModelResolutionError, Usage, get_provider
+from .providers import MODE_REVIEW, ModelResolutionError, RunResult, Usage, get_provider
 from .review_common import (
     DEFAULT_MAX_FINDINGS,
     DESIGN_REVIEW_PROMPT_TEMPLATE,
@@ -22,6 +22,7 @@ from .review_common import (
 from .review_parsing import parse_findings, unparsed_report_warning
 from .review_snapshot import (
     ReviewError,
+    current_snapshot_stamp,
     render_design_round_context,
     render_round_context,
     render_withheld,
@@ -361,11 +362,34 @@ def build_design_review_prompt(
     return BuiltPrompt(prompt, delivery, len(plan_text))
 
 
+class RoundStamp(NamedTuple):
+    """What a run was handed and which round it answers for, as its entry records it.
+
+    Every run that got as far as a built prompt carries one; ``ReviewerRun``
+    describes each field.
+    """
+
+    delivery: str
+    change_chars: int
+    inline_chars: int
+    snapshot: str
+    over_budget: bool
+    budget_chars: int
+    surrounding: Optional[Dict[str, Any]] = None
+
+    @classmethod
+    def empty(cls) -> RoundStamp:
+        """The stamp of a run that fell over before there was a prompt to build."""
+        return cls("", 0, 0, "", False, 0, None)
+
+
 class ReviewerRun:
     def __init__(
         self,
         reviewer: Dict[str, Any],
         status: str,
+        *,
+        stamp: Optional[RoundStamp] = None,
         report_path: Optional[str] = None,
         error: str = "",
         model_display: str = "",
@@ -373,16 +397,11 @@ class ReviewerRun:
         findings: int = 0,
         usage: Optional[Usage] = None,
         invoked: bool = False,
-        delivery: str = "",
-        change_chars: int = 0,
-        inline_chars: int = 0,
-        snapshot: str = "",
-        over_budget: bool = False,
-        budget_chars: int = 0,
-        surrounding: Optional[Dict[str, Any]] = None,
         warnings: Optional[Sequence[str]] = None,
         suspended: float = 0.0,
     ) -> None:
+        if stamp is None:
+            stamp = RoundStamp.empty()
         self.reviewer = reviewer
         # ok | partial | failed | stalled | unparsed. Only "ok" counts as a
         # delivered review; "unparsed" means the CLI succeeded but its report
@@ -407,36 +426,36 @@ class ReviewerRun:
         self.invoked = invoked
         #: How much of the change this reviewer was handed: see ``BuiltPrompt``.
         #: "" for a run that fell over before there was a prompt to build.
-        self.delivery = delivery
-        self.change_chars = change_chars
+        self.delivery = stamp.delivery
+        self.change_chars = stamp.change_chars
         #: What ``review.context.inline_chars`` was when ``delivery`` above was
         #: decided. Recorded for the reason ``budget_chars`` is: the limit is
         #: configuration and the shipped default is not the only answer, so a
         #: reader of a ``partial`` round who has only the size cannot tell
         #: whether it was a large change or a low limit that made it one.
         #: 0 for a run that fell over before there was a prompt to build.
-        self.inline_chars = inline_chars
+        self.inline_chars = stamp.inline_chars
         #: Which snapshot this run was handed, stamped the way the reports are
         #: stamped and for the same reason: the reviewer table outlives the
         #: round it was written in, so an entry has to say what it answers for.
         #: "" for a run that fell over before there was a prompt to build.
-        self.snapshot = snapshot
+        self.snapshot = stamp.snapshot
         #: Whether this round was sent past ``review.context.max_chars`` by
         #: ``--force``. Recorded here, and in the consolidation derived from
         #: here, for the reason ``BuiltPrompt`` gives about delivery: the
         #: limit and the flag belong to the run, not to the frozen file.
-        self.over_budget = over_budget
+        self.over_budget = stamp.over_budget
         #: What ``review.context.max_chars`` measured for this round, which is
         #: not always ``change_chars``: on the design path the budget counts
         #: the plan and the request together while the body handed over is the
         #: plan alone. Recorded so the report can print the number the refusal
         #: would have used rather than the one delivery was decided by.
-        self.budget_chars = budget_chars
+        self.budget_chars = stamp.budget_chars
         #: The surrounding context this reviewer was handed and what was left
         #: out of it, as ``Adoption.record`` gives it. None when the setting
         #: was off, and for a run that fell over before there was a prompt:
         #: only a built prompt is ever recorded as carrying context.
-        self.surrounding = surrounding
+        self.surrounding = stamp.surrounding
         #: What the adapter said about the run whatever its outcome, as
         #: ``RunResult.warnings`` carries it.
         self.warnings = list(warnings or ())
@@ -471,23 +490,31 @@ class ReviewerRun:
         return entry
 
 
+class FanoutOptions(NamedTuple):
+    """How ``run_reviews`` runs a round; each option is described there."""
+
+    parallel: bool = True
+    timeout: int = 1800
+    extra_context: str = ""
+    idle_timeout: Optional[float] = None
+    max_findings: int = DEFAULT_MAX_FINDINGS
+    prompt_for: Optional[Callable[[Dict[str, Any]], BuiltPrompt]] = None
+    over_budget: bool = False
+    budget_chars: int = 0
+    inline_chars: Optional[int] = None
+    surrounding: Optional[context_mod.Adoption] = None
+    refusals: Optional[Dict[str, str]] = None
+    activity_for: Optional[Callable[[str], Optional[activity.Sink]]] = None
+
+
 def run_reviews(
     reviewers: Sequence[Dict[str, Any]],
     workspace: ws.Workspace,
-    parallel: bool = True,
-    timeout: int = 1800,
-    extra_context: str = "",
-    idle_timeout: Optional[float] = None,
-    max_findings: int = DEFAULT_MAX_FINDINGS,
-    prompt_for: Optional[Callable[[Dict[str, Any]], BuiltPrompt]] = None,
-    over_budget: bool = False,
-    budget_chars: int = 0,
-    inline_chars: Optional[int] = None,
-    surrounding: Optional[context_mod.Adoption] = None,
-    refusals: Optional[Dict[str, str]] = None,
-    activity_for: Optional[Callable[[str], Optional[activity.Sink]]] = None,
+    options: Optional[FanoutOptions] = None,
 ) -> List[ReviewerRun]:
     """Run every configured reviewer against the frozen snapshot.
+
+    ``options`` is a ``FanoutOptions``, every default when None.
 
     ``prompt_for`` replaces the code-review prompt with one built per
     reviewer, which is how the design review reuses this whole function --
@@ -525,9 +552,11 @@ def run_reviews(
     """
     if not reviewers:
         return []
+    if options is None:
+        options = FanoutOptions()
     diff_text = ws.read_text(workspace.snapshot_path)
     if not diff_text.strip():
-        if prompt_for is not None:
+        if options.prompt_for is not None:
             raise ReviewError("nothing to review at %s" % workspace.relative(workspace.snapshot_path))
         meta = workspace.read_snapshot_meta()
         if meta.get("withheld"):
@@ -543,157 +572,212 @@ def run_reviews(
 
     # Read once, before the fan-out: every run in this round answers for the
     # same snapshot, and its entry and its report are stamped with it alike.
-    stamp = _snapshot_sha(workspace)
+    stamp = current_snapshot_stamp(workspace)
     # Resolved once too, and for the same reason: every entry of this round
     # records the limit it was measured against, and they must all record one.
-    limit = _inline_limit(inline_chars)
+    limit = _inline_limit(options.inline_chars)
+    prompt_for, surrounding = options.prompt_for, options.surrounding
     # The design path builds its own prompt and never carries context.
     context = surrounding if (prompt_for is None and surrounding and surrounding.mode != "none") else None
-
-    def attempt(reviewer: Dict[str, Any], sink: Optional[activity.Sink]) -> ReviewerRun:
-        reviewer_id = str(reviewer.get("id") or "reviewer")
-        try:
-            provider = get_provider(str(reviewer.get("provider")))
-        except Exception as exc:
-            return ReviewerRun(reviewer, "failed", error=str(exc))
-        if prompt_for is not None:
-            built = prompt_for(reviewer)
-        else:
-            built = build_review_prompt(
-                reviewer, workspace, diff_text, extra_context, None, max_findings, limit, context
-            )
-        # Every run from here on knows what it was handed, and which snapshot it
-        # was handed, failures included: a round is judged on what it sent, not
-        # on what came back, and the entry has to say which round that was.
-        carried = {
-            "delivery": built.delivery,
-            "change_chars": built.change_chars,
-            "inline_chars": limit,
-            "snapshot": stamp,
-            "over_budget": over_budget,
-            "budget_chars": budget_chars,
-        }
-        if context is not None:
-            carried["surrounding"] = context.record()
-        if refusals and reviewer_id in refusals:
-            return ReviewerRun(reviewer, "failed", error=refusals[reviewer_id], **carried)
-        try:
-            with activity.recording(sink):
-                result = provider.run(
-                    built.text,
-                    MODE_REVIEW,
-                    workspace.root,
-                    reviewer.get("model"),
-                    timeout=timeout,
-                    options=reviewer.get("options"),
-                    idle_timeout=idle_timeout,
-                )
-        except ModelResolutionError as exc:
-            return ReviewerRun(reviewer, "failed", error=str(exc), **carried)
-        except Exception as exc:
-            # No duration, deliberately. Everything that reaches here was
-            # raised before ``provider.run`` had a ``RunResult`` to hand back
-            # -- ``detect``, a non-``ModelResolutionError`` from
-            # ``resolve_model``, ``build_command``, ``_child_env`` -- so no
-            # child was started, or none whose lifetime we were told. Reading
-            # the output is no longer one of these: an adapter that raises
-            # while parsing returns a measured failure instead, which lands in
-            # the ``not result.ok`` branch below with its duration intact. What
-            # cannot be known is not billed, and ``invoked`` stays False.
-            return ReviewerRun(reviewer, "failed", error="%s: %s" % (type(exc).__name__, exc), **carried)
-
-        model_display = result.resolved.display if result.resolved else ""
-        if not result.ok:
-            detail = (result.stderr or result.stdout or "").strip().splitlines()
-            if result.stalled:
-                status, error = "stalled", "no output for %.0fs; treated as wedged" % result.idle_for
-            elif result.timed_out:
-                status, error = "stalled", "hit its %.0fs deadline" % result.duration
-            else:
-                status = "failed"
-                error = detail[-1] if detail else "exit code %s" % result.exit_code
-            return ReviewerRun(
-                reviewer,
-                status,
-                error=error,
-                model_display=model_display,
-                duration=result.duration,
-                suspended=result.suspended,
-                # A failed review is not a free one: whatever it burned before
-                # falling over still has to appear in the account.
-                usage=result.usage,
-                invoked=result.invoked,
-                warnings=result.warnings,
-                **carried,
-            )
-        body = result.stdout.strip() or "NO_FINDINGS"
-        header = (
-            "# Review\n\n"
-            "- Reviewer: %s\n- Provider: %s\n- Model: %s\n- Role: %s\n- Snapshot: %s\n\n---\n\n"
-            % (
-                reviewer_id,
-                reviewer.get("provider"),
-                model_display or "unknown",
-                reviewer.get("role", "general"),
-                stamp,
-            )
-        )
-        path = workspace.reviewer_report_path(reviewer_id)
-        ws.write_text(path, header + body + "\n")
-        findings = parse_findings(body, reviewer_id)
-        warning = unparsed_report_warning(body, findings)
-        # "unparsed" wins: both are not-ok, but a report nobody can read is
-        # the more specific fact about this run, and the one that says the
-        # delegated cost bought nothing at all.
-        if warning:
-            status, error = "unparsed", warning
-        elif built.delivery == "file":
-            status, error = "partial", coverage_unverified_error(built.change_chars, limit)
-        else:
-            status, error = "ok", ""
-        return ReviewerRun(
-            reviewer,
-            status,
-            report_path=workspace.relative(path),
-            error=error,
-            model_display=model_display,
-            duration=result.duration,
-            suspended=result.suspended,
-            findings=len(findings),
-            usage=result.usage,
-            invoked=result.invoked,
-            warnings=result.warnings,
-            **carried,
-        )
+    fan = _Fanout(
+        workspace=workspace,
+        diff_text=diff_text,
+        extra_context=options.extra_context,
+        max_findings=options.max_findings,
+        prompt_for=prompt_for,
+        limit=limit,
+        context=context,
+        stamp=stamp,
+        over_budget=options.over_budget,
+        budget_chars=options.budget_chars,
+        refusals=options.refusals,
+        timeout=options.timeout,
+        idle_timeout=options.idle_timeout,
+    )
+    activity_for = options.activity_for
 
     def run_one(reviewer: Dict[str, Any]) -> ReviewerRun:
         sink = activity_for(str(reviewer.get("id") or "reviewer")) if activity_for is not None else None
         if sink is None:
-            return attempt(reviewer, None)
+            return _attempt(fan, reviewer, None)
         status = "failed"
         try:
-            outcome = attempt(reviewer, sink)
+            outcome = _attempt(fan, reviewer, sink)
             status = outcome.status
             return outcome
         finally:
             # However the run ended, a raise included.
             sink.say("done: %s" % status)
 
-    if parallel and len(reviewers) > 1:
+    if options.parallel and len(reviewers) > 1:
         with ThreadPoolExecutor(max_workers=min(len(reviewers), 8)) as pool:
             return list(pool.map(run_one, reviewers))
     return [run_one(reviewer) for reviewer in reviewers]
 
 
-def _snapshot_sha(workspace: ws.Workspace) -> str:
-    return _stamp(workspace.read_snapshot_meta())
+class _Fanout(NamedTuple):
+    """What every run of one round reads, resolved once before the fan-out."""
+
+    workspace: ws.Workspace
+    diff_text: str
+    extra_context: str
+    max_findings: int
+    prompt_for: Optional[Callable[[Dict[str, Any]], BuiltPrompt]]
+    #: ``review.context.inline_chars``, resolved.
+    limit: int
+    #: The round's adopted context, or None when no prompt carries one.
+    context: Optional[context_mod.Adoption]
+    #: The snapshot stamp every entry and report of the round carries.
+    stamp: str
+    over_budget: bool
+    budget_chars: int
+    refusals: Optional[Dict[str, str]]
+    timeout: int
+    idle_timeout: Optional[float]
 
 
-def _stamp(meta: Dict[str, Any]) -> str:
-    """A snapshot's stamp, in the one form everything that records one uses.
+def _attempt(fan: _Fanout, reviewer: Dict[str, Any], sink: Optional[activity.Sink]) -> ReviewerRun:
+    """One reviewer's run, whatever becomes of it."""
+    reviewer_id = str(reviewer.get("id") or "reviewer")
+    try:
+        provider = get_provider(str(reviewer.get("provider")))
+    except Exception as exc:
+        return ReviewerRun(reviewer, "failed", error=str(exc))
+    if fan.prompt_for is not None:
+        built = fan.prompt_for(reviewer)
+    else:
+        built = build_review_prompt(
+            reviewer,
+            fan.workspace,
+            fan.diff_text,
+            fan.extra_context,
+            None,
+            fan.max_findings,
+            fan.limit,
+            fan.context,
+        )
+    # Every run from here on knows what it was handed, and which snapshot it
+    # was handed, failures included: a round is judged on what it sent, not
+    # on what came back, and the entry has to say which round that was.
+    carried = RoundStamp(
+        delivery=built.delivery,
+        change_chars=built.change_chars,
+        inline_chars=fan.limit,
+        snapshot=fan.stamp,
+        over_budget=fan.over_budget,
+        budget_chars=fan.budget_chars,
+        surrounding=fan.context.record() if fan.context is not None else None,
+    )
+    if fan.refusals and reviewer_id in fan.refusals:
+        return ReviewerRun(reviewer, "failed", stamp=carried, error=fan.refusals[reviewer_id])
+    try:
+        with activity.recording(sink):
+            result = provider.run(
+                built.text,
+                MODE_REVIEW,
+                fan.workspace.root,
+                reviewer.get("model"),
+                timeout=fan.timeout,
+                options=reviewer.get("options"),
+                idle_timeout=fan.idle_timeout,
+            )
+    except ModelResolutionError as exc:
+        return ReviewerRun(reviewer, "failed", stamp=carried, error=str(exc))
+    except Exception as exc:
+        # No duration, deliberately. Everything that reaches here was
+        # raised before ``provider.run`` had a ``RunResult`` to hand back
+        # -- ``detect``, a non-``ModelResolutionError`` from
+        # ``resolve_model``, ``build_command``, ``_child_env`` -- so no
+        # child was started, or none whose lifetime we were told. Reading
+        # the output is no longer one of these: an adapter that raises
+        # while parsing returns a measured failure instead, which lands in
+        # the ``not result.ok`` branch below with its duration intact. What
+        # cannot be known is not billed, and ``invoked`` stays False.
+        return ReviewerRun(reviewer, "failed", stamp=carried, error="%s: %s" % (type(exc).__name__, exc))
 
-    Report headers, ``current_snapshot_stamp`` and the reviewer entries all go
-    through here, so "this was written against that snapshot" is one comparison
-    and not three spellings of it.
-    """
-    return str(meta.get("sha256", ""))[:12] or "unknown"
+    if not result.ok:
+        status, error = _failure(result)
+        return _finished(reviewer, status, error, result, carried)
+    model_display = result.resolved.display if result.resolved else ""
+    body = result.stdout.strip() or "NO_FINDINGS"
+    header = _report_header(reviewer_id, reviewer, model_display, fan.stamp)
+    path = fan.workspace.reviewer_report_path(reviewer_id)
+    ws.write_text(path, header + body + "\n")
+    findings = parse_findings(body, reviewer_id)
+    status, error = _verdict(body, findings, built, fan.limit)
+    return _finished(
+        reviewer,
+        status,
+        error,
+        result,
+        carried,
+        report_path=fan.workspace.relative(path),
+        findings=len(findings),
+    )
+
+
+def _finished(
+    reviewer: Dict[str, Any],
+    status: str,
+    error: str,
+    result: RunResult,
+    stamp: RoundStamp,
+    **fields: Any,
+) -> ReviewerRun:
+    """The entry of a run that has a ``RunResult``, read off it; ``fields`` adds the report."""
+    return ReviewerRun(
+        reviewer,
+        status,
+        stamp=stamp,
+        error=error,
+        model_display=result.resolved.display if result.resolved else "",
+        duration=result.duration,
+        suspended=result.suspended,
+        # A failed review is not a free one: whatever it burned before
+        # falling over still has to appear in the account.
+        usage=result.usage,
+        invoked=result.invoked,
+        warnings=result.warnings,
+        **fields,
+    )
+
+
+def _failure(result: RunResult) -> Tuple[str, str]:
+    """``(status, error)`` for a run whose CLI did not come back ok."""
+    detail = (result.stderr or result.stdout or "").strip().splitlines()
+    if result.stalled:
+        return "stalled", "no output for %.0fs; treated as wedged" % result.idle_for
+    if result.timed_out:
+        return "stalled", "hit its %.0fs deadline" % result.duration
+    error = detail[-1] if detail else "exit code %s" % result.exit_code
+    return "failed", error
+
+
+def _report_header(reviewer_id: str, reviewer: Dict[str, Any], model_display: str, stamp: str) -> str:
+    """What a reviewer's report opens with, the snapshot stamp included."""
+    return (
+        "# Review\n\n"
+        "- Reviewer: %s\n- Provider: %s\n- Model: %s\n- Role: %s\n- Snapshot: %s\n\n---\n\n"
+        % (
+            reviewer_id,
+            reviewer.get("provider"),
+            model_display or "unknown",
+            reviewer.get("role", "general"),
+            stamp,
+        )
+    )
+
+
+def _verdict(
+    body: str, findings: Sequence[Dict[str, Any]], built: BuiltPrompt, limit: int
+) -> Tuple[str, str]:
+    """``(status, error)`` for a run that came back with a report."""
+    warning = unparsed_report_warning(body, findings)
+    # "unparsed" wins: both are not-ok, but a report nobody can read is
+    # the more specific fact about this run, and the one that says the
+    # delegated cost bought nothing at all.
+    if warning:
+        return "unparsed", warning
+    if built.delivery == "file":
+        return "partial", coverage_unverified_error(built.change_chars, limit)
+    return "ok", ""

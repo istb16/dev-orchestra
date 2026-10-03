@@ -353,24 +353,26 @@ def _status_payload(
     design_accepted = bool(review_mod.accepted_findings(design_data))
     design_pass = _design_final_pass(
         design_blocking,
-        design_iteration,
-        design_max,
-        of_current_plan,
-        _ran_since_last_round(events, "design_review", "architect", counts=_wrote_plan(workspace))[0],
-        architect_left,
-        plan_approved,
-        approval_mod.implemented_since_plan(workspace, events),
-        design_accepted,
+        iteration=design_iteration,
+        max_iterations=design_max,
+        of_current_plan=of_current_plan,
+        ran_since=_ran_since_last_round(events, "design_review", "architect", counts=_wrote_plan(workspace))[
+            0
+        ],
+        architect_left=architect_left,
+        approved=plan_approved,
+        implemented=approval_mod.implemented_since_plan(workspace, events),
+        accepted=design_accepted,
     )
     fixed, retested = _ran_since_last_round(events, "review", "review_fixer", ("test", "re-test"))
     review_pass = _code_final_pass(
         blocking,
-        iteration,
-        max_iterations,
-        fixed,
-        retested,
-        summary["budgets"].get("review_fixer", {}).get("remaining"),
-        bool(review_mod.accepted_findings(review_data)),
+        iteration=iteration,
+        max_iterations=max_iterations,
+        fixed_since=fixed,
+        retested_since=retested,
+        fixer_left=summary["budgets"].get("review_fixer", {}).get("remaining"),
+        accepted=bool(review_mod.accepted_findings(review_data)),
     )
     review_repeats = int((summary["signatures"] or {}).get("review") or 0)
     design_repeats = int((summary["signatures"] or {}).get("design_review") or 0)

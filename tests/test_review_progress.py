@@ -140,7 +140,8 @@ class TestFanOutSinks(_SnapshotCase):
 
     def run_one(self) -> review_fanout.ReviewerRun:
         reviewer = config_mod.make_reviewer("solo", "mock", "small", "general")
-        runs = review_mod.run_reviews([reviewer], self.workspace, parallel=False, activity_for=self.sinks)
+        options = review_mod.FanoutOptions(parallel=False, activity_for=self.sinks)
+        runs = review_mod.run_reviews([reviewer], self.workspace, options)
         return runs[0]
 
     def test_a_raising_provider_still_says_done_and_leaves_no_sink_behind(self):

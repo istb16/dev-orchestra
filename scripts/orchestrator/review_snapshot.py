@@ -18,6 +18,9 @@ from .review_common import DEFAULT_EXCLUDE, accepted_findings
 
 # --------------------------------------------------------------------------- snapshot
 
+#: An untracked file larger than this is left out of the snapshot unread.
+MAX_UNTRACKED_BYTES = 512_000
+
 
 def create_snapshot(
     workspace: ws.Workspace,
@@ -50,7 +53,75 @@ def create_snapshot(
             "Initialise a repo or review a specific set of files manually." % root
         )
     patterns = list(DEFAULT_EXCLUDE if exclude is None else exclude)
+    context_on = context_mod.surrounding_mode(surrounding) == "enclosing"
 
+    head, frozen_tree, tree, previous_tree, revisions, strategy = _revisions(
+        workspace, root, base, incremental, context_on
+    )
+
+    tracked, withheld, suppressed, diff, strategy = _tracked_diff(
+        workspace, root, revisions, strategy, head, patterns, include_untracked, previous_tree
+    )
+
+    untracked_diff, untracked, untracked_withheld = _untracked_diff(
+        workspace, root, patterns, include_untracked, previous_tree
+    )
+    diff += untracked_diff
+    withheld.extend(untracked_withheld)
+
+    ws.write_text(workspace.snapshot_path, diff)
+    full_diff_path = ""
+    if previous_tree:
+        full_diff_path = _write_full_diff(workspace, root, base, patterns, include_untracked)
+    meta = _snapshot_meta(
+        diff,
+        strategy,
+        base,
+        head,
+        tree,
+        previous_tree,
+        full_diff_path,
+        tracked,
+        withheld,
+        suppressed,
+        untracked,
+        patterns,
+    )
+    if context_on:
+        _freeze_surrounding(workspace, root, frozen_tree, diff, meta["files"], previous_tree, meta)
+    elif os.path.isfile(workspace.surrounding_path):
+        # A snapshot taken with the setting off has no context, and an older
+        # file left beside it would describe a diff that is no longer there.
+        try:
+            os.unlink(workspace.surrounding_path)
+        except OSError:
+            pass
+    ws.write_json(workspace.snapshot_meta_path, meta)
+    return meta
+
+
+class _Revisions(NamedTuple):
+    """What a snapshot is taken between, and the trees written to decide it."""
+
+    head: str
+    #: The tree the surrounding context is read from, "" when none was written.
+    frozen_tree: str
+    #: The tree this round records for the next one to narrow from.
+    tree: str
+    #: The tree of the reviewed round this one narrows to, "" for the whole change.
+    previous_tree: str
+    revisions: List[str]
+    strategy: str
+
+
+def _revisions(
+    workspace: ws.Workspace,
+    root: str,
+    base: Optional[str],
+    incremental: bool,
+    context_on: bool,
+) -> _Revisions:
+    """Whether this round diffs against the last reviewed tree or against ``base``."""
     head = _head(root)
     # Writing the tree means hashing every untracked-but-not-ignored file into
     # the object database, which on a repository with a large directory nobody
@@ -66,7 +137,6 @@ def create_snapshot(
     # 3,228 lines while the findings fell 11 -> 6 -> 5, and the cost per
     # finding went from $0.20 to $1.00.
     wanted = bool(incremental)
-    context_on = context_mod.surrounding_mode(surrounding) == "enclosing"
     # Written before the diff whenever context is on, incremental or not: only
     # then does "the working tree still matches this tree" imply "and the diff
     # taken after it". ``meta["tree"]`` keeps its meaning either way -- it is
@@ -81,13 +151,40 @@ def create_snapshot(
         revisions = [base or "HEAD"]
         strategy = "git diff %s" % revisions[0]
         previous_tree = ""
+    return _Revisions(head, frozen_tree, tree, previous_tree, revisions, strategy)
 
+
+class _TrackedDiff(NamedTuple):
+    """The tracked side of a snapshot: git's listing, what is kept out of the diff, and the diff."""
+
+    tracked: List[Dict[str, Any]]
+    withheld: List[Dict[str, Any]]
+    suppressed: List[str]
+    diff: str
+    strategy: str
+
+
+def _tracked_diff(
+    workspace: ws.Workspace,
+    root: str,
+    revisions: List[str],
+    strategy: str,
+    head: str,
+    patterns: List[str],
+    include_untracked: bool,
+    previous_tree: str,
+) -> _TrackedDiff:
+    """Diff the tracked change between ``revisions``, less what is withheld or not under review.
+
+    On a git that refuses the exclusions the whole diff is taken instead, and
+    nothing is reported withheld or suppressed: both lists are emptied.
+    """
     # Which files changed, before asking for the diff itself: the exclusion is
     # decided from this cheap listing, so the expensive call is made once and
     # already filtered.
     tracked, listed_code, listed_err = _numstat(root, revisions, patterns)
     withheld = [entry for entry in tracked if entry.get("pattern")]
-    # A tree-to-tree diff skips the untracked pass below, which is where the
+    # A tree-to-tree diff skips the untracked pass (``_untracked_diff``), which is where the
     # rules about what is not part of the change at all normally get applied.
     # They have to be applied here instead, or they hold in round 1 and lapse
     # in round 2.
@@ -115,8 +212,24 @@ def create_snapshot(
         raise ReviewError("git diff failed: %s" % (listed_err.strip() or listed_code))
     if code != 0:
         raise ReviewError("git diff failed: %s" % (err.strip() or code))
+    return _TrackedDiff(tracked, withheld, suppressed, diff, strategy)
 
+
+def _untracked_diff(
+    workspace: ws.Workspace,
+    root: str,
+    patterns: List[str],
+    include_untracked: bool,
+    previous_tree: str,
+) -> Tuple[str, List[str], List[Dict[str, Any]]]:
+    """The untracked files' diff, the names it covers, and the ones withheld, in git's order.
+
+    A file is skipped before anything is read from it when it is too large,
+    or one of the orchestrator's own, and withheld before it is diffed.
+    """
+    diff = ""
     untracked: List[str] = []
+    withheld: List[Dict[str, Any]] = []
     # An incremental diff is tree-to-tree, and both trees already contain the
     # untracked files: adding them again would duplicate every hunk.
     if include_untracked and not previous_tree:
@@ -124,7 +237,7 @@ def create_snapshot(
         if ucode == 0:
             for name in [line.strip() for line in uout.splitlines() if line.strip()]:
                 path = os.path.join(root, name)
-                if not os.path.isfile(path) or os.path.getsize(path) > 512_000:
+                if not os.path.isfile(path) or os.path.getsize(path) > MAX_UNTRACKED_BYTES:
                     continue
                 if _is_orchestrator_artifact(name, workspace):
                     continue
@@ -137,29 +250,58 @@ def create_snapshot(
                 if dcode in (0, 1) and dout.strip():
                     diff += dout
                     untracked.append(name)
+    return diff, untracked, withheld
 
-    ws.write_text(workspace.snapshot_path, diff)
-    full_diff_path = ""
-    if previous_tree:
-        # Leave the whole change somewhere the reviewer can look. This costs a
-        # git call and no tokens: it is read only if a reviewer needs it.
-        #
-        # The exclusions are recomputed against *this* range: the incremental
-        # round's withheld list only covers what the fix touched, and reusing
-        # it would write the very lockfile round 1 withheld into the file the
-        # prompt invites a reviewer to open.
-        full_tracked, full_code, _ = _numstat(root, [base or "HEAD"], patterns)
-        if full_code == 0:
-            full_withheld = [entry for entry in full_tracked if entry.get("pattern")]
-            full_suppressed = _not_under_review(full_tracked, workspace, root, include_untracked)
-            fcode, full, _ = _diff(
-                root,
-                [base or "HEAD"],
-                _pathspecs(full_withheld) + [":(exclude,literal)%s" % p for p in full_suppressed],
-            )
-            if fcode == 0 and full.strip():
-                ws.write_text(workspace.full_snapshot_path, full)
-                full_diff_path = workspace.relative(workspace.full_snapshot_path)
+
+def _write_full_diff(
+    workspace: ws.Workspace,
+    root: str,
+    base: Optional[str],
+    patterns: List[str],
+    include_untracked: bool,
+) -> str:
+    """Freeze the whole change beside an incremental round's fix; its path, or "" when none was written.
+
+    Its own diff, with no fallback: when git refuses the exclusions, nothing
+    is written rather than a file with the withheld bodies in it.
+    """
+    # Leave the whole change somewhere the reviewer can look. This costs a
+    # git call and no tokens: it is read only if a reviewer needs it.
+    #
+    # The exclusions are recomputed against *this* range: the incremental
+    # round's withheld list only covers what the fix touched, and reusing
+    # it would write the very lockfile round 1 withheld into the file the
+    # prompt invites a reviewer to open.
+    full_tracked, full_code, _ = _numstat(root, [base or "HEAD"], patterns)
+    if full_code == 0:
+        full_withheld = [entry for entry in full_tracked if entry.get("pattern")]
+        full_suppressed = _not_under_review(full_tracked, workspace, root, include_untracked)
+        fcode, full, _ = _diff(
+            root,
+            [base or "HEAD"],
+            _pathspecs(full_withheld) + [":(exclude,literal)%s" % p for p in full_suppressed],
+        )
+        if fcode == 0 and full.strip():
+            ws.write_text(workspace.full_snapshot_path, full)
+            return workspace.relative(workspace.full_snapshot_path)
+    return ""
+
+
+def _snapshot_meta(
+    diff: str,
+    strategy: str,
+    base: Optional[str],
+    head: str,
+    tree: str,
+    previous_tree: str,
+    full_diff_path: str,
+    tracked: Sequence[Dict[str, Any]],
+    withheld: Sequence[Dict[str, Any]],
+    suppressed: Sequence[str],
+    untracked: List[str],
+    patterns: List[str],
+) -> Dict[str, Any]:
+    """What the snapshot froze, from which revisions, and every path it touches."""
     added_lines, deleted_lines = _diff_line_counts(diff)
     reviewed = _reviewed_files(tracked, withheld, suppressed, untracked)
     # Two different lists, for two different questions.
@@ -179,7 +321,7 @@ def create_snapshot(
     # happens only on an incremental round; on a first round the two lists
     # are the same.
     condition_paths = _touched_paths(reviewed, tracked, withheld, untracked, skip=set(suppressed))
-    meta = {
+    return {
         "generated_at": ws.utcnow(),
         # New with every freeze, as for a design round: the sha repeats when
         # the same tree is frozen again, and the archived report of each round
@@ -205,28 +347,33 @@ def create_snapshot(
         "sha256": hashlib.sha256(diff.encode("utf-8")).hexdigest(),
         "empty": not diff.strip(),
     }
-    if context_on:
-        frozen = context_mod.extract(root, frozen_tree, diff, reviewed, working_tree_diff=not previous_tree)
-        frozen["sha256"] = meta["sha256"]
-        frozen["generated_at"] = ws.utcnow()
-        ws.write_json(workspace.surrounding_path, frozen)
-        meta["surrounding"] = {
-            "mode": "enclosing",
-            "path": workspace.relative(workspace.surrounding_path),
-            "tree": frozen_tree,
-            "candidates": len(frozen["candidates"]),
-            "chars": sum(int(c["chars"]) for c in frozen["candidates"]),
-            "skipped": len(frozen["skipped"]),
-        }
-    elif os.path.isfile(workspace.surrounding_path):
-        # A snapshot taken with the setting off has no context, and an older
-        # file left beside it would describe a diff that is no longer there.
-        try:
-            os.unlink(workspace.surrounding_path)
-        except OSError:
-            pass
-    ws.write_json(workspace.snapshot_meta_path, meta)
-    return meta
+
+
+def _freeze_surrounding(
+    workspace: ws.Workspace,
+    root: str,
+    frozen_tree: str,
+    diff: str,
+    reviewed: List[str],
+    previous_tree: str,
+    meta: Dict[str, Any],
+) -> None:
+    """Freeze the symbol around every hunk of ``reviewed``, read from ``frozen_tree``.
+
+    Written to ``review-surrounding.json``, and summarised into ``meta``.
+    """
+    frozen = context_mod.extract(root, frozen_tree, diff, reviewed, working_tree_diff=not previous_tree)
+    frozen["sha256"] = meta["sha256"]
+    frozen["generated_at"] = ws.utcnow()
+    ws.write_json(workspace.surrounding_path, frozen)
+    meta["surrounding"] = {
+        "mode": "enclosing",
+        "path": workspace.relative(workspace.surrounding_path),
+        "tree": frozen_tree,
+        "candidates": len(frozen["candidates"]),
+        "chars": sum(int(c["chars"]) for c in frozen["candidates"]),
+        "skipped": len(frozen["skipped"]),
+    }
 
 
 def _diff(root: str, revisions: Sequence[str], pathspecs: Sequence[str]) -> "tuple[int, str, str]":
@@ -1017,3 +1164,18 @@ def create_design_snapshot(
     """Hash the plan and freeze it in one step, for a caller with no gate."""
     plan_text, _, digest = design_digest(workspace, plan_path, request_path)
     return write_design_snapshot(workspace, plan_path, request_path, plan_text, digest)
+
+
+def current_snapshot_stamp(workspace: ws.Workspace) -> str:
+    """The stamp reports are compared against -- same form as the header."""
+    return snapshot_stamp(workspace.read_snapshot_meta())
+
+
+def snapshot_stamp(meta: Dict[str, Any]) -> str:
+    """A snapshot's stamp, in the one form everything that records one uses.
+
+    Report headers, ``current_snapshot_stamp`` and the reviewer entries all go
+    through here, so "this was written against that snapshot" is one comparison
+    and not three spellings of it.
+    """
+    return str(meta.get("sha256", ""))[:12] or "unknown"

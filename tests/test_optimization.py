@@ -25,7 +25,7 @@ from typing import Optional
 
 from helpers import IsolatedCase, has_git
 
-from orchestrator import cli
+from orchestrator import cli, review_snapshot
 from orchestrator import config as config_mod
 from orchestrator import ledger as ledger_mod
 from orchestrator import optimization as opt
@@ -147,7 +147,7 @@ class TestTheReviewedFileList(unittest.TestCase):
     """
 
     def reviewed(self, tracked, withheld=(), suppressed=(), untracked=()):
-        return review_mod._reviewed_files(tracked, withheld, suppressed, untracked)
+        return review_snapshot._reviewed_files(tracked, withheld, suppressed, untracked)
 
     def test_a_mode_only_change_is_counted(self):
         """`0\t0\trun.sh`: git reports it, and the diff for it is `old mode` /

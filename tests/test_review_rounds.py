@@ -12,7 +12,6 @@ import unittest
 
 from helpers import IsolatedCase, has_git
 
-from orchestrator import cli as cli_mod
 from orchestrator import review as review_mod
 from orchestrator import workspace as ws
 
@@ -642,7 +641,7 @@ class TestTheTwoReadersDescribeOneSnapshot(IsolatedCase):
         """What each command puts in front of a reader, for one report."""
         return (
             review_mod.render_consolidation(data),
-            "\n".join(cli_mod._coverage_advice(data["coverage"], data["counts"], False, 400_000, design)),
+            "\n".join(review_mod.coverage_advice(data["coverage"], data["counts"], False, 400_000, design)),
         )
 
     def test_a_snapshot_nobody_ran_against_names_the_missing_reviewer(self):
@@ -687,6 +686,79 @@ class TestTheTwoReadersDescribeOneSnapshot(IsolatedCase):
         self.assertEqual(data["counts"]["reviewers_partial"], 2)
         _, advice = self.both(data)
         self.assertIn("1 reviewer(s) partial", advice)
+
+
+class TestTheDesignHeadline(IsolatedCase):
+    """A design round's ``- Coverage:`` line, which keeps the code review's wording.
+
+    Only ``review status`` words a design round differently; the headline in
+    ``consolidated.md`` has no design flag to fork on.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.workspace = ws.Workspace(self.tmp).design_review().ensure()
+        self.freeze("# Plan\n\nAdd a column.\n")
+
+    def freeze(self, plan):
+        ws.write_text(self.workspace.plan_path, plan)
+        review_mod.create_design_snapshot(self.workspace, self.workspace.plan_path)
+        return str(self.workspace.read_snapshot_meta()["sha256"])[:12]
+
+    def headline(self, data):
+        text = review_mod.render_consolidation(data)
+        (coverage,) = [line for line in text.splitlines() if line.startswith("- Coverage:")]
+        return coverage
+
+    def first_round(self):
+        """A plan handed over as a file: the round, and the change, are unverified."""
+        stamp = str(self.workspace.read_snapshot_meta()["sha256"])[:12]
+        data = review_mod.build_consolidation(
+            self.workspace, [run("partial", "file", 130_412, snapshot=stamp)], [], 1
+        )
+        ws.write_json(self.workspace.consolidated_json_path, data)
+        return data
+
+    def test_a_round_handed_over_as_a_file(self):
+        expected = (
+            "- Coverage: round unverified -- the change body (130,412 chars) was handed over as a file; "
+            "not a clean review"
+        )
+        self.assertEqual(self.headline(self.first_round()), expected)
+
+    def test_a_revised_plan_no_reviewer_ran_against(self):
+        self.first_round()
+        self.freeze("# Plan\n\nAdd a column, nullable.\n")
+        data = review_mod.build_consolidation(self.workspace, [], [], 2)
+        expected = (
+            "- Coverage: change unverified since round 1 -- no reviewer has run against this snapshot; "
+            "run the reviewers against it with review run"
+        )
+        self.assertEqual(self.headline(data), expected)
+
+    def test_a_revised_plan_no_reviewer_came_back_ok_for(self):
+        self.first_round()
+        stamp = self.freeze("# Plan\n\nAdd a column, nullable.\n")
+        data = review_mod.build_consolidation(
+            self.workspace, [run("failed", "inline", 400, snapshot=stamp)], [], 2
+        )
+        expected = (
+            "- Coverage: change unverified since round 1 -- no reviewer came back ok for this snapshot; "
+            "re-run the reviewers that did not"
+        )
+        self.assertEqual(self.headline(data), expected)
+
+    def test_a_fix_only_coverage(self):
+        """Not reachable on a design snapshot, which has no ``incremental_from``:
+        an ok inline round clears the mark. Pinned on a hand-set block."""
+        data = self.first_round()
+        data["coverage"] = {"round": "complete", "change": "unverified", "unverified_since": 1}
+        data["counts"]["snapshot_reviewers_ok"] = 1
+        expected = (
+            "- Coverage: change unverified since round 1 -- this round inlined the fix only; "
+            "snapshot --full once the whole change fits inline"
+        )
+        self.assertEqual(self.headline(data), expected)
 
 
 if __name__ == "__main__":

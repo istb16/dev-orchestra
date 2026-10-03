@@ -21,7 +21,7 @@ from contextlib import redirect_stderr, redirect_stdout
 
 from helpers import IsolatedCase, has_git
 
-from orchestrator import cli
+from orchestrator import cli, review_snapshot
 from orchestrator import config as config_mod
 from orchestrator import review as review_mod
 from orchestrator import workspace as ws
@@ -84,10 +84,10 @@ class TestPatternMatching(unittest.TestCase):
 
 class TestNumstatParsing(unittest.TestCase):
     def test_a_plain_change(self):
-        self.assertEqual(review_mod._parse_numstat("3\t1\tapp.py\0"), [(3, 1, "app.py", "")])
+        self.assertEqual(review_snapshot._parse_numstat("3\t1\tapp.py\0"), [(3, 1, "app.py", "")])
 
     def test_a_binary_file_has_no_counts_and_is_not_counted_as_zero(self):
-        self.assertEqual(review_mod._parse_numstat("-\t-\tlogo.png\0"), [(None, None, "logo.png", "")])
+        self.assertEqual(review_snapshot._parse_numstat("-\t-\tlogo.png\0"), [(None, None, "logo.png", "")])
 
     def test_a_rename_reports_both_paths(self):
         """The readable form is ``src/{old => new}.py``, which cannot be
@@ -95,16 +95,16 @@ class TestNumstatParsing(unittest.TestCase):
         name a file was renamed *from* is what the risk check needs, since the
         diff itself only carries where it landed."""
         self.assertEqual(
-            review_mod._parse_numstat("0\t0\t\0src/old.py\0src/new.py\0"),
+            review_snapshot._parse_numstat("0\t0\t\0src/old.py\0src/new.py\0"),
             [(0, 0, "src/new.py", "src/old.py")],
         )
 
     def test_records_after_a_rename_are_still_read(self):
-        parsed = review_mod._parse_numstat("0\t0\t\0a.py\0b.py\0" + "5\t2\tc.py\0")
+        parsed = review_snapshot._parse_numstat("0\t0\t\0a.py\0b.py\0" + "5\t2\tc.py\0")
         self.assertEqual(parsed, [(0, 0, "b.py", "a.py"), (5, 2, "c.py", "")])
 
     def test_empty_output_is_no_records_rather_than_an_error(self):
-        self.assertEqual(review_mod._parse_numstat(""), [])
+        self.assertEqual(review_snapshot._parse_numstat(""), [])
 
 
 class TestWithheldRendering(unittest.TestCase):

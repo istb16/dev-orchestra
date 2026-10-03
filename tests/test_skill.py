@@ -448,6 +448,8 @@ _REGISTRY_FREE = (
     "presets",
     "verified",
     "context",
+    "review_snapshot",
+    "review_coverage",
 )
 
 #: Imports allowed inside a function, as ``(file, outermost function, module
@@ -754,6 +756,10 @@ class TestImportLayering(IsolatedCase):
             cli_workflow,
             review,
             review_common,
+            review_consolidation,
+            review_coverage,
+            review_fanout,
+            review_snapshot,
             summary,
             wizard,
         )
@@ -782,6 +788,26 @@ class TestImportLayering(IsolatedCase):
         self.assertIs(cli_run._describe_spec, summary._describe)
         for name in ("_describe", "merged"):
             self.assertFalse(hasattr(wizard, name), name)
+        moved = {
+            review_coverage: (
+                "snapshot_reviewers",
+                "coverage_state",
+                "unverified_phrase",
+                "coverage_headline",
+                "coverage_advice",
+            ),
+            review_snapshot: ("snapshot_stamp", "current_snapshot_stamp"),
+        }
+        for home, names in moved.items():
+            for name in names:
+                self.assertIs(getattr(review, name), getattr(home, name), name)
+                self.assertEqual(getattr(home, name).__module__, home.__name__, name)
+        self.assertFalse(hasattr(cli, "_coverage_advice"))
+        self.assertFalse(hasattr(cli_review, "_coverage_advice"))
+        for name in ("_coverage_line", "snapshot_reviewers", "current_snapshot_stamp"):
+            self.assertFalse(hasattr(review_consolidation, name), name)
+        for name in ("_stamp", "_snapshot_sha"):
+            self.assertFalse(hasattr(review_fanout, name), name)
 
 
 def _source(relative, text):
