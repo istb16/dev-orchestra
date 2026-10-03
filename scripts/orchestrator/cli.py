@@ -240,6 +240,43 @@ def _bounded_int(low: int, high: int) -> Callable[[str], int]:
     return parse
 
 
+def _add_design_flag(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--design",
+        action="store_true",
+        help="the design review of .ai/plan.md instead of the code review",
+    )
+
+
+def _add_activity_flags(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--since",
+        type=_bounded_int(0, activity_mod.SINCE_MAX),
+        default=0,
+        help="only tool uses after this one (the cursor `next:` prints)",
+    )
+    parser.add_argument(
+        "--activity",
+        type=_bounded_int(0, activity_mod.LATEST_MAX),
+        default=10,
+        help="how many of the latest tool uses to show (default 10)",
+    )
+
+
+def _add_json_flag(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--json", action="store_true")
+
+
+def _add_scope_flag(parser: argparse.ArgumentParser, default: Optional[str] = None) -> None:
+    parser.add_argument("--scope", choices=["global", "project"], default=default)
+
+
+def _add_command_group(
+    subparsers: argparse._SubParsersAction[argparse.ArgumentParser], name: str, help: str
+) -> argparse._SubParsersAction[argparse.ArgumentParser]:
+    return subparsers.add_parser(name, help=help).add_subparsers(dest="subcommand", required=True)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="dev-orchestra",
@@ -256,19 +293,54 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     # config -----------------------------------------------------------------
-    config_parser = subparsers.add_parser("config", help="show and edit configuration")
-    config_sub = config_parser.add_subparsers(dest="subcommand", required=True)
+    _add_config_parsers(subparsers)
+
+    # model ------------------------------------------------------------------
+    _add_model_parsers(subparsers)
+
+    # reviewer ---------------------------------------------------------------
+    _add_reviewer_parsers(subparsers)
+
+    # doctor -----------------------------------------------------------------
+    _add_doctor_parser(subparsers)
+
+    # run --------------------------------------------------------------------
+    _add_run_parser(subparsers)
+
+    # review -----------------------------------------------------------------
+    _add_review_parsers(subparsers)
+
+    # design -----------------------------------------------------------------
+    _add_design_parsers(subparsers)
+
+    # state ------------------------------------------------------------------
+    _add_state_parsers(subparsers)
+
+    _add_jobs_parsers(subparsers)
+    _add_budget_parsers(subparsers)
+    _add_tokens_parsers(subparsers)
+    _add_optimization_parsers(subparsers)
+    _add_progress_parsers(subparsers)
+    _add_workflow_parsers(subparsers)
+    _add_status_parser(subparsers)
+    _add_summary_parser(subparsers)
+
+    return parser
+
+
+def _add_config_parsers(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    config_sub = _add_command_group(subparsers, "config", "show and edit configuration")
 
     show = config_sub.add_parser("show", help="show the effective configuration")
     show.add_argument("--scope", choices=["global", "project", "effective"], default="effective")
-    show.add_argument("--json", action="store_true")
+    _add_json_flag(show)
     show.set_defaults(func=cmd_config_show)
 
     path_parser = config_sub.add_parser("path", help="print config file locations")
     path_parser.set_defaults(func=cmd_config_path)
 
     setup = config_sub.add_parser("setup", help="run the setup wizard")
-    setup.add_argument("--scope", choices=["global", "project"], default="global")
+    _add_scope_flag(setup, default="global")
     setup_choice = setup.add_mutually_exclusive_group()
     setup_choice.add_argument(
         "--preset",
@@ -286,24 +358,24 @@ def build_parser() -> argparse.ArgumentParser:
         help="clear this layer's overrides (the file keeps only version, and the global file its "
         "preset); --delete removes it",
     )
-    reset.add_argument("--scope", choices=["global", "project"], default=None)
+    _add_scope_flag(reset)
     reset.add_argument("--delete", action="store_true", help="delete the config file instead of clearing it")
     reset.set_defaults(func=cmd_config_reset)
 
     prune = config_sub.add_parser("prune", help="drop values equal to what the layer inherits")
-    prune.add_argument("--scope", choices=["global", "project"], default=None)
+    _add_scope_flag(prune)
     prune.add_argument("--dry-run", action="store_true", help="list what would be dropped, write nothing")
     prune.set_defaults(func=cmd_config_prune)
 
     set_parser = config_sub.add_parser("set", help="set one value, e.g. implementer.model.family opus")
     set_parser.add_argument("path")
     set_parser.add_argument("value")
-    set_parser.add_argument("--scope", choices=["global", "project"], default=None)
+    _add_scope_flag(set_parser)
     set_parser.add_argument("--raw", action="store_true", help="keep the value as a string")
     set_parser.set_defaults(func=cmd_config_set)
 
     validate = config_sub.add_parser("validate", help="validate the effective configuration")
-    validate.add_argument("--json", action="store_true")
+    _add_json_flag(validate)
     validate.set_defaults(func=cmd_config_validate)
 
     suggest_roles = config_sub.add_parser(
@@ -313,7 +385,7 @@ def build_parser() -> argparse.ArgumentParser:
     suggest_roles.add_argument(
         "--write", action="store_true", help="add them to the project file's reviewers_extra"
     )
-    suggest_roles.add_argument("--json", action="store_true")
+    _add_json_flag(suggest_roles)
     suggest_roles.add_argument(
         "--provider",
         choices=available_providers(),
@@ -325,20 +397,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     suggest_roles.set_defaults(func=cmd_config_suggest_roles)
 
-    # model ------------------------------------------------------------------
-    model_parser = subparsers.add_parser("model", help="inspect available models")
-    model_sub = model_parser.add_subparsers(dest="subcommand", required=True)
+
+def _add_model_parsers(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    model_sub = _add_command_group(subparsers, "model", "inspect available models")
     model_list = model_sub.add_parser("list", help="list models the installed CLIs advertise")
     model_list.add_argument("--provider", choices=available_providers(), default=None)
-    model_list.add_argument("--json", action="store_true")
+    _add_json_flag(model_list)
     model_list.set_defaults(func=cmd_model_list)
 
-    # reviewer ---------------------------------------------------------------
-    reviewer_parser = subparsers.add_parser("reviewer", help="manage the review panel")
-    reviewer_sub = reviewer_parser.add_subparsers(dest="subcommand", required=True)
+
+def _add_reviewer_parsers(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    reviewer_sub = _add_command_group(subparsers, "reviewer", "manage the review panel")
 
     r_list = reviewer_sub.add_parser("list", help="list configured reviewers")
-    r_list.add_argument("--json", action="store_true")
+    _add_json_flag(r_list)
     r_list.set_defaults(func=cmd_reviewer_list)
 
     r_add = reviewer_sub.add_parser("add", help="add a reviewer")
@@ -360,12 +432,12 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="GLOB",
         help="run on a code review only when a changed path matches one of these (quote each)",
     )
-    r_add.add_argument("--scope", choices=["global", "project"], default=None)
+    _add_scope_flag(r_add)
     r_add.set_defaults(func=cmd_reviewer_add)
 
     r_remove = reviewer_sub.add_parser("remove", help="remove a reviewer by id, role, or position")
     r_remove.add_argument("selector")
-    r_remove.add_argument("--scope", choices=["global", "project"], default=None)
+    _add_scope_flag(r_remove)
     r_remove.set_defaults(func=cmd_reviewer_remove)
 
     r_set = reviewer_sub.add_parser("set", help="change an existing reviewer")
@@ -383,17 +455,19 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="GLOB",
         help="replace the condition with these patterns (quote each)",
     )
-    r_set.add_argument("--scope", choices=["global", "project"], default=None)
+    _add_scope_flag(r_set)
     r_set.set_defaults(func=cmd_reviewer_set)
 
-    # doctor -----------------------------------------------------------------
+
+def _add_doctor_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     doctor_parser = subparsers.add_parser("doctor", help="diagnose CLIs, auth and configuration")
-    doctor_parser.add_argument("--json", action="store_true")
+    _add_json_flag(doctor_parser)
     doctor_parser.add_argument("--fast", action="store_true", help="skip model discovery")
     doctor_parser.add_argument("--strict", action="store_true", help="exit non-zero when problems are found")
     doctor_parser.set_defaults(func=cmd_doctor)
 
-    # run --------------------------------------------------------------------
+
+def _add_run_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     run_parser = subparsers.add_parser("run", help="run one configured role against a prompt")
     run_parser.add_argument(
         "role", help="orchestrator | architect | implementer | review_fixer | <reviewer id>"
@@ -440,9 +514,9 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--extra", nargs=argparse.REMAINDER, help="extra args passed to the provider CLI")
     run_parser.set_defaults(func=cmd_run)
 
-    # review -----------------------------------------------------------------
-    review_parser = subparsers.add_parser("review", help="independent multi-model review pipeline")
-    review_sub = review_parser.add_subparsers(dest="subcommand", required=True)
+
+def _add_review_parsers(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    review_sub = _add_command_group(subparsers, "review", "independent multi-model review pipeline")
 
     snapshot = review_sub.add_parser("snapshot", help="freeze the change under review")
     snapshot.add_argument("--base", default=None, help="revision to diff against (default: HEAD)")
@@ -463,15 +537,8 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="override review.context.surrounding for this snapshot only",
     )
-    snapshot.add_argument("--json", action="store_true")
+    _add_json_flag(snapshot)
     snapshot.set_defaults(func=cmd_review_snapshot)
-
-    def _add_design_flag(parser: argparse.ArgumentParser) -> None:
-        parser.add_argument(
-            "--design",
-            action="store_true",
-            help="the design review of .ai/plan.md instead of the code review",
-        )
 
     review_run = review_sub.add_parser("run", help="run every reviewer against the frozen snapshot")
     review_run.add_argument(
@@ -512,17 +579,17 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="echo each reviewer's tool uses to stderr while the round runs",
     )
-    review_run.add_argument("--json", action="store_true")
+    _add_json_flag(review_run)
     review_run.set_defaults(func=cmd_review_run)
 
     consolidate = review_sub.add_parser("consolidate", help="re-parse reports and dedupe findings")
     consolidate.add_argument("--iteration", type=int, default=None)
-    consolidate.add_argument("--json", action="store_true")
+    _add_json_flag(consolidate)
     consolidate.set_defaults(func=cmd_review_consolidate)
 
     review_show = review_sub.add_parser("show", help="show the consolidated review")
     review_show.add_argument("--accepted", action="store_true", help="only accepted findings")
-    review_show.add_argument("--json", action="store_true")
+    _add_json_flag(review_show)
     review_show.set_defaults(func=cmd_review_show)
 
     triage = review_sub.add_parser("triage", help="record a triage decision for findings")
@@ -536,26 +603,26 @@ def build_parser() -> argparse.ArgumentParser:
     fix_brief.set_defaults(func=cmd_review_fix_brief)
 
     status = review_sub.add_parser("status", help="report whether a re-review is warranted")
-    status.add_argument("--json", action="store_true")
+    _add_json_flag(status)
     status.set_defaults(func=cmd_review_status)
 
     for parser_with_scope in (review_run, consolidate, review_show, triage, fix_brief, status):
         _add_design_flag(parser_with_scope)
 
-    # design -----------------------------------------------------------------
-    design_parser = subparsers.add_parser("design", help="the user's approval of the plan")
-    design_sub = design_parser.add_subparsers(dest="subcommand", required=True)
+
+def _add_design_parsers(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    design_sub = _add_command_group(subparsers, "design", "the user's approval of the plan")
     design_approve = design_sub.add_parser(
         "approve", help="record the user's approval of the plan as it is now (only after their yes)"
     )
-    design_approve.add_argument("--json", action="store_true")
+    _add_json_flag(design_approve)
     design_approve.set_defaults(func=cmd_design_approve)
 
-    # state ------------------------------------------------------------------
-    state_parser = subparsers.add_parser("state", help="inspect or append run state")
-    state_sub = state_parser.add_subparsers(dest="subcommand", required=True)
+
+def _add_state_parsers(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    state_sub = _add_command_group(subparsers, "state", "inspect or append run state")
     state_show = state_sub.add_parser("show")
-    state_show.add_argument("--json", action="store_true")
+    _add_json_flag(state_show)
     state_show.set_defaults(func=cmd_state_show)
     state_record = state_sub.add_parser("record")
     state_record.add_argument("stage")
@@ -563,47 +630,35 @@ def build_parser() -> argparse.ArgumentParser:
     state_record.add_argument("--detail", nargs="*", default=None, help="key=value pairs")
     state_record.set_defaults(func=cmd_state_record)
 
-    jobs_parser = subparsers.add_parser("jobs", help="detached runs, so no call blocks forever")
-    jobs_sub = jobs_parser.add_subparsers(dest="subcommand", required=True)
-    jobs_list = jobs_sub.add_parser("list", help="every recorded job, newest first")
-    jobs_list.add_argument("--json", action="store_true")
-    jobs_list.set_defaults(func=cmd_jobs_list)
 
-    def _add_activity_flags(parser: argparse.ArgumentParser) -> None:
-        parser.add_argument(
-            "--since",
-            type=_bounded_int(0, activity_mod.SINCE_MAX),
-            default=0,
-            help="only tool uses after this one (the cursor `next:` prints)",
-        )
-        parser.add_argument(
-            "--activity",
-            type=_bounded_int(0, activity_mod.LATEST_MAX),
-            default=10,
-            help="how many of the latest tool uses to show (default 10)",
-        )
+def _add_jobs_parsers(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    jobs_sub = _add_command_group(subparsers, "jobs", "detached runs, so no call blocks forever")
+    jobs_list = jobs_sub.add_parser("list", help="every recorded job, newest first")
+    _add_json_flag(jobs_list)
+    jobs_list.set_defaults(func=cmd_jobs_list)
 
     jobs_show = jobs_sub.add_parser("show", help="one job")
     jobs_show.add_argument("job_id")
     jobs_show.add_argument("--output", action="store_true", help="also print its output")
-    jobs_show.add_argument("--json", action="store_true")
+    _add_json_flag(jobs_show)
     _add_activity_flags(jobs_show)
     jobs_show.set_defaults(func=cmd_jobs_show)
     jobs_wait = jobs_sub.add_parser("wait", help="wait for a job, with a deadline of your own")
     jobs_wait.add_argument("job_id")
     jobs_wait.add_argument("--timeout", type=float, default=60.0)
     jobs_wait.add_argument("--poll", type=float, default=1.0)
-    jobs_wait.add_argument("--json", action="store_true")
+    _add_json_flag(jobs_wait)
     _add_activity_flags(jobs_wait)
     jobs_wait.set_defaults(func=cmd_jobs_wait)
     jobs_cancel = jobs_sub.add_parser("cancel", help="stop a running job")
     jobs_cancel.add_argument("job_id")
     jobs_cancel.set_defaults(func=cmd_jobs_cancel)
 
-    budget_parser = subparsers.add_parser("budget", help="attempt budgets that stop runaway loops")
-    budget_sub = budget_parser.add_subparsers(dest="subcommand", required=True)
+
+def _add_budget_parsers(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    budget_sub = _add_command_group(subparsers, "budget", "attempt budgets that stop runaway loops")
     budget_show = budget_sub.add_parser("show", help="what has been spent")
-    budget_show.add_argument("--json", action="store_true")
+    _add_json_flag(budget_show)
     budget_show.set_defaults(func=cmd_budget_show)
     budget_consume = budget_sub.add_parser("consume", help="claim an attempt at a stage")
     budget_consume.add_argument("stage", help="a stage the orchestrator runs itself, e.g. test")
@@ -612,15 +667,18 @@ def build_parser() -> argparse.ArgumentParser:
     budget_reset = budget_sub.add_parser("reset", help="start the budgets again, keeping the token account")
     budget_reset.set_defaults(func=cmd_budget_reset)
 
+
+def _add_tokens_parsers(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     # Separate from `budget` on purpose: attempts are enforced, tokens are only
     # counted, and putting them under one command invites reading one as the
     # other.
-    tokens_parser = subparsers.add_parser("tokens", help="what the workflow has spent, per stage")
-    tokens_sub = tokens_parser.add_subparsers(dest="subcommand", required=True)
+    tokens_sub = _add_command_group(subparsers, "tokens", "what the workflow has spent, per stage")
     tokens_show = tokens_sub.add_parser("show", help="the token account (reported, never enforced)")
-    tokens_show.add_argument("--json", action="store_true")
+    _add_json_flag(tokens_show)
     tokens_show.set_defaults(func=cmd_tokens_show)
 
+
+def _add_optimization_parsers(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     optimization_parser = subparsers.add_parser(
         "optimization", help="what optimization.level has decided, over time"
     )
@@ -628,26 +686,28 @@ def build_parser() -> argparse.ArgumentParser:
     optimization_report = optimization_sub.add_parser(
         "report", help="rounds refused, panels cut, and what that came to"
     )
-    optimization_report.add_argument("--json", action="store_true")
+    _add_json_flag(optimization_report)
     optimization_report.set_defaults(func=cmd_optimization_report)
 
-    progress_parser = subparsers.add_parser("progress", help="detect a loop that is going nowhere")
-    progress_sub = progress_parser.add_subparsers(dest="subcommand", required=True)
+
+def _add_progress_parsers(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    progress_sub = _add_command_group(subparsers, "progress", "detect a loop that is going nowhere")
     progress_record = progress_sub.add_parser("record", help="record a stage outcome signature")
     progress_record.add_argument("stage")
     progress_record.add_argument("--signature", required=True, help="e.g. the failing test summary")
-    progress_record.add_argument("--json", action="store_true")
+    _add_json_flag(progress_record)
     progress_record.set_defaults(func=cmd_progress_record)
 
-    workflow_parser = subparsers.add_parser(
-        "workflow", help="the workflows in this project and which one is yours"
+
+def _add_workflow_parsers(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    workflow_sub = _add_command_group(
+        subparsers, "workflow", "the workflows in this project and which one is yours"
     )
-    workflow_sub = workflow_parser.add_subparsers(dest="subcommand", required=True)
     workflow_list = workflow_sub.add_parser("list", help="every workflow here, most recent first")
-    workflow_list.add_argument("--json", action="store_true")
+    _add_json_flag(workflow_list)
     workflow_list.set_defaults(func=cmd_workflow_list)
     workflow_show = workflow_sub.add_parser("show", help="which workflow this command is in, and why")
-    workflow_show.add_argument("--json", action="store_true")
+    _add_json_flag(workflow_show)
     workflow_show.set_defaults(func=cmd_workflow_show)
     workflow_use = workflow_sub.add_parser("use", help="remember an id for this directory")
     workflow_use.add_argument("id")
@@ -657,17 +717,19 @@ def build_parser() -> argparse.ArgumentParser:
     workflow_remove.add_argument("--yes", action="store_true", help="do not ask")
     workflow_remove.set_defaults(func=cmd_workflow_remove)
 
+
+def _add_status_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     status_parser = subparsers.add_parser(
         "status", help="continue or stop: budgets, stalls and open findings in one verdict"
     )
-    status_parser.add_argument("--json", action="store_true")
+    _add_json_flag(status_parser)
     status_parser.set_defaults(func=cmd_status)
 
-    summary = subparsers.add_parser("summary", help="print the end-of-run summary")
-    summary.add_argument("--json", action="store_true")
-    summary.set_defaults(func=cmd_summary)
 
-    return parser
+def _add_summary_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    summary = subparsers.add_parser("summary", help="print the end-of-run summary")
+    _add_json_flag(summary)
+    summary.set_defaults(func=cmd_summary)
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
