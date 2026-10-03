@@ -40,6 +40,21 @@ def utcnow() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def fmt_int(value: int) -> str:
+    """A count with thousands separators: ``1,234``."""
+    return "{:,}".format(value)
+
+
+def fmt_size(chars: Any) -> str:
+    """A recorded size in chars, or ``size unrecorded`` where it is 0 or missing."""
+    return fmt_int(chars) if chars else "size unrecorded"
+
+
+def fmt_usd(value: float) -> str:
+    """Dollars to four decimals, as ``tokens show`` prints a run's cost."""
+    return "$%.4f" % value
+
+
 def git(
     args: Sequence[str],
     cwd: str,
@@ -154,6 +169,14 @@ class Workspace:
     @property
     def snapshot_meta_path(self) -> str:
         return os.path.join(self.reviews_dir, "review-target.json")
+
+    def read_snapshot_meta(self) -> Any:
+        """The snapshot's metadata, or ``{}`` when there is none to read.
+
+        ``Any``, not a dict: a hand-edited file can hold any JSON, and a
+        non-empty value that is not a mapping is handed back as it was read.
+        """
+        return read_json(self.snapshot_meta_path, {}) or {}
 
     @property
     def surrounding_path(self) -> str:

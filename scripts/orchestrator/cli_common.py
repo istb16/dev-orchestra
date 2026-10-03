@@ -549,6 +549,16 @@ def _load_or_die(start: Optional[str] = None) -> config_mod.LoadedConfig:
     return loaded
 
 
+def _load_lenient(start: Optional[str] = None) -> config_mod.LoadedConfig:
+    """The configuration as its files say, *not validated*: for reporting and display only.
+
+    ``validate_result=False`` skips ``config.validate`` and with it the
+    refusals a project file is held to. Anything that starts a provider run
+    loads through :func:`_load_or_die`.
+    """
+    return config_mod.load(start, validate_result=False)
+
+
 def _ledger(args: argparse.Namespace, workspace: Optional[ws.Workspace] = None) -> ledger_mod.Ledger:
     workspace = workspace or _workspace(args)
     loaded = config_mod.load(getattr(args, "cwd", None), validate_result=False)

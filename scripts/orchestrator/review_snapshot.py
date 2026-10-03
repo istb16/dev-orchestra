@@ -311,7 +311,7 @@ def _reviewed_tree(workspace: ws.Workspace, base: Optional[str] = None) -> str:
     for the previous definition would answer the old question quietly. Same
     base, including no base at all, means the same change.
     """
-    meta = ws.read_json(workspace.snapshot_meta_path, {}) or {}
+    meta = workspace.read_snapshot_meta()
     tree = str(meta.get("tree") or "")
     if not tree:
         return ""
@@ -376,7 +376,7 @@ def withheld_lines(withheld: Sequence[Dict[str, Any]]) -> str:
                 total += value
             elif value is None:
                 exact = False  # a binary file, which git does not count
-    return "{:,}".format(total) + ("" if exact else "+")
+    return ws.fmt_int(total) + ("" if exact else "+")
 
 
 def render_round_context(workspace: ws.Workspace, meta: Dict[str, Any]) -> str:

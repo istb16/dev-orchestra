@@ -3559,12 +3559,54 @@ class TestParserShape(IsolatedCase):
         "summary",
     }
 
+    #: The commands that take ``--json``, as registered today.
+    JSON_COMMANDS: ClassVar[set] = {
+        "budget show",
+        "config show",
+        "config suggest-roles",
+        "config validate",
+        "design approve",
+        "doctor",
+        "jobs list",
+        "jobs show",
+        "jobs wait",
+        "model list",
+        "optimization report",
+        "progress record",
+        "review consolidate",
+        "review run",
+        "review show",
+        "review snapshot",
+        "review status",
+        "reviewer list",
+        "run",
+        "state show",
+        "status",
+        "summary",
+        "tokens show",
+        "workflow list",
+        "workflow show",
+    }
+
     def setUp(self):
         super().setUp()
         self.parser = cli.build_parser()
 
     def parse(self, *argv):
         return self.parser.parse_args(list(argv))
+
+    def test_json_flag(self):
+        found = set()
+        for path, leaf in parser_leaves(self.parser):
+            if "--json" not in leaf._option_string_actions:
+                continue
+            name = " ".join(path)
+            found.add(name)
+            with self.subTest(command=name):
+                argv = minimal_argv(path, leaf)
+                self.assertIs(self.parse(*argv).json, False)
+                self.assertIs(self.parse(*argv, "--json").json, True)
+        self.assertEqual(found, self.JSON_COMMANDS)
 
     def assert_usage_error(self, *argv):
         with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as caught:

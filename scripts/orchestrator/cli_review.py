@@ -21,6 +21,7 @@ from .cli_common import (
     _err,
     _in_workflow,
     _ledger,
+    _load_lenient,
     _load_or_die,
     _out,
     _review_workspace,
@@ -367,7 +368,7 @@ def _adoption_line(adoption: context_mod.Adoption) -> str:
     if adoption.adopted:
         line = "%d symbol(s), %s chars adopted" % (
             len(adoption.adopted),
-            "{:,}".format(adoption.adopted_chars),
+            ws.fmt_int(adoption.adopted_chars),
         )
     else:
         line = "nothing adopted -- %s" % adoption.reason
@@ -743,7 +744,7 @@ def _round_plan(
 
 
 def cmd_review_snapshot(args: argparse.Namespace) -> int:
-    loaded = config_mod.load(args.cwd, validate_result=False)
+    loaded = _load_lenient(args.cwd)
     workspace = _workspace(args)
     settings = loaded.review_settings()
     exclude = () if args.no_exclude else settings.get("exclude")
@@ -797,7 +798,7 @@ def cmd_review_snapshot(args: argparse.Namespace) -> int:
     if over_context:
         _out(
             "  WARNING:  %s chars is over review.context.max_chars (%s) -- review run will "
-            "refuse this change." % ("{:,}".format(change_chars), "{:,}".format(max_chars))
+            "refuse this change." % (ws.fmt_int(change_chars), ws.fmt_int(max_chars))
         )
         _out("            Narrow it with --base or review.exclude, or split the change.")
     withheld = meta.get("withheld") or []
@@ -828,13 +829,13 @@ def _surrounding_snapshot_lines(
     tree = str(block.get("tree") or "")
     frozen = "  context:  enclosing -- %d symbol(s), %s chars frozen from tree %s at %s" % (
         int(block.get("candidates") or 0),
-        "{:,}".format(int(block.get("chars") or 0)),
+        ws.fmt_int(int(block.get("chars") or 0)),
         (tree[:7] + "...") if tree else "(none)",
         block.get("path"),
     )
     cap = context_settings.get("surrounding_chars")
     if isinstance(cap, int) and not isinstance(cap, bool):
-        cap = "{:,}".format(cap)
+        cap = ws.fmt_int(cap)
     later = "            adopted at review run within review.context.surrounding_chars (%s)" % cap
     skipped = (ws.read_json(workspace.surrounding_path, {}) or {}).get("skipped") or []
     note = context_mod.not_extracted(skipped)
@@ -1060,7 +1061,7 @@ def cmd_review_run(args: argparse.Namespace) -> int:
     if not reviewers and not args.only:
         _out("No reviewers configured -- skipping the independent-review stage.")
         lineage = _lineage(args, workspace)
-        meta = ws.read_json(workspace.snapshot_meta_path, {}) or {}
+        meta = workspace.read_snapshot_meta()
         data = review_mod.build_consolidation(
             workspace,
             [],
@@ -1097,7 +1098,7 @@ def cmd_review_run(args: argparse.Namespace) -> int:
     if refusal is not None:
         return refusal
 
-    meta = ws.read_json(workspace.snapshot_meta_path, {}) or {}
+    meta = workspace.read_snapshot_meta()
     refusal = _refuse_incremental_measurement(override, meta)
     if refusal is not None:
         return refusal
@@ -1282,7 +1283,7 @@ def _condition_excluded(workspace: ws.Workspace) -> set:
     the round did and no others: a left-out reviewer's report from an earlier
     run of the same snapshot is not brought back by rebuilding.
     """
-    meta = ws.read_json(workspace.snapshot_meta_path, {}) or {}
+    meta = workspace.read_snapshot_meta()
     round_id = str(meta.get("round_id") or "")
     if not round_id:
         return set()
@@ -1322,7 +1323,7 @@ def _broken_panel(loaded: config_mod.LoadedConfig) -> List[str]:
 
 
 def cmd_review_consolidate(args: argparse.Namespace) -> int:
-    loaded = config_mod.load(args.cwd, validate_result=False)
+    loaded = _load_lenient(args.cwd)
     broken = _broken_panel(loaded)
     if broken:
         _err("refusing to consolidate: the reviewers panel is invalid:")
@@ -1409,7 +1410,7 @@ def cmd_review_fix_brief(args: argparse.Namespace) -> int:
 
 
 def cmd_review_status(args: argparse.Namespace) -> int:
-    loaded = config_mod.load(args.cwd, validate_result=False)
+    loaded = _load_lenient(args.cwd)
     workspace = _review_workspace(args)
     # The ledger, the run log and the plan belong to the workflow, not to the
     # review directory `--design` points at.
@@ -1689,8 +1690,8 @@ def _coverage_advice(
     """
     lines = []
     chars = coverage.get("change_chars")
-    size = "{:,}".format(chars) if chars else "size unrecorded"
-    limit = "{:,}".format(inline_chars)
+    size = ws.fmt_size(chars)
+    limit = ws.fmt_int(inline_chars)
     # Counted over this snapshot, like the coverage value it is quoted beside.
     partial = review_mod.snapshot_reviewers(counts, "partial")
     state = review_mod.coverage_state(coverage, counts)

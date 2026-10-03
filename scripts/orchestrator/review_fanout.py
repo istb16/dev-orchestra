@@ -183,7 +183,7 @@ def over_budget_note(
         )
     return [
         "refusing to review a change body of %s chars: the limit is %s "
-        "(review.context.max_chars)." % ("{:,}".format(budget_chars), "{:,}".format(max_chars)),
+        "(review.context.max_chars)." % (ws.fmt_int(budget_chars), ws.fmt_int(max_chars)),
         narrow,
         "Nothing was reviewed, and in an automated workflow that is the answer to report: "
         "this change was not reviewed. Saying so is the point of the limit -- the "
@@ -210,7 +210,7 @@ def _forced_consequence(delivery_chars: int, inline_chars: Optional[int] = None)
     alone on the design path, where the budget counted the request too. A
     plan that fits inline is delivered inline however far the pair went over.
     """
-    limit = "{:,}".format(_inline_limit(inline_chars))
+    limit = ws.fmt_int(_inline_limit(inline_chars))
     if delivery_of(delivery_chars, inline_chars) == "file":
         return (
             "The round is then recorded as over budget, and every reviewer comes back "
@@ -287,7 +287,7 @@ def build_review_prompt(
             "    %s\n\nReview only what that diff contains." % workspace.relative(workspace.snapshot_path)
         )
         diff_section += "\n\n" + _handover_note(len(diff_text), inline_chars)
-    meta = ws.read_json(workspace.snapshot_meta_path, {}) or {}
+    meta = workspace.read_snapshot_meta()
     for note in (
         render_withheld(meta.get("withheld") or []),
         render_round_context(workspace, meta),
@@ -338,7 +338,7 @@ def build_design_review_prompt(
             "    %s\n\nReview only what that plan contains." % workspace.relative(workspace.snapshot_path)
         )
         plan_section += "\n\n" + _handover_note(len(plan_text), inline_chars)
-    meta = ws.read_json(workspace.snapshot_meta_path, {}) or {}
+    meta = workspace.read_snapshot_meta()
     note = render_design_round_context(workspace, meta, plan_text)
     if note:
         plan_section += "\n\n" + note
@@ -529,7 +529,7 @@ def run_reviews(
     if not diff_text.strip():
         if prompt_for is not None:
             raise ReviewError("nothing to review at %s" % workspace.relative(workspace.snapshot_path))
-        meta = ws.read_json(workspace.snapshot_meta_path, {}) or {}
+        meta = workspace.read_snapshot_meta()
         if meta.get("withheld"):
             raise ReviewError(
                 "review snapshot is empty because every changed file was withheld as "
@@ -686,7 +686,7 @@ def run_reviews(
 
 
 def _snapshot_sha(workspace: ws.Workspace) -> str:
-    return _stamp(ws.read_json(workspace.snapshot_meta_path, {}) or {})
+    return _stamp(workspace.read_snapshot_meta())
 
 
 def _stamp(meta: Dict[str, Any]) -> str:
