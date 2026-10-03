@@ -1066,7 +1066,7 @@ still the only thing that deletes a workflow.
 | --- | --- |
 | `state show [--json]` | The recorded stage events for this project. |
 | `state record <stage> <status> [--detail k=v …]` | Append a stage outcome (for stages not run through `run`). `state record test ok\|failed` is what the review gate reads; record a re-test the same way. |
-| `summary [--json]` | The end-of-run stage + model summary, including `design_approval` once a plan was approved. |
+| `summary [--json]` | The end-of-run stage + model summary, including `design_approval` once a plan was approved. `--json` holds `stages`, `counts` and `tokens`, and what the text shows besides: `design_counts` (`reviewers_ok`, `reviewers_total`; `{}` without a design report), `models` (per role: `provider`, `family`, `version`), `reviewers` (`id`, `provider`, `model` as the text prints it, `status`, in the text's order) and `skipped` (`refused`, `refused_by`, `design_refused`, `panel_reduced`, named as `optimization report --json` names them). |
 
 ## Environment variables
 

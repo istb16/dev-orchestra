@@ -25,6 +25,7 @@ from orchestrator import (
     cli_review,
     cli_state,
     cli_workflow,
+    optimization_render,
     review_consolidation,
     review_coverage,
     review_snapshot,
@@ -94,6 +95,16 @@ class TestFormatHelpers(unittest.TestCase):
         self.assertEqual(ws.fmt_usd(0.0123), "$0.0123")
         self.assertEqual(ws.fmt_usd(0.00004), "$0.0000")
         self.assertEqual(ws.fmt_usd(1234.5), "$1234.5000")
+
+    def test_per_run_figure(self):
+        """An int goes through ``fmt_int``, a float keeps one place, and nothing is a dash."""
+        figure = optimization_render._figure
+        self.assertEqual(figure(None), "-")
+        self.assertEqual(figure(0), "0")
+        self.assertEqual(figure(-1234), "-1,234")
+        self.assertEqual(figure(1234), "1,234")
+        self.assertEqual(figure(1234.5), "1,234.5")
+        self.assertEqual(figure(0.0), "0.0")
 
 
 class TestReadSnapshotMeta(IsolatedCase):
@@ -220,16 +231,18 @@ class TestOptimizationReportFigures(unittest.TestCase):
     def test_scorecard_spend(self):
         group = {"runs": 2, "measured_runs": 2, "billed_tokens": 12345, "priced_runs": 1, "cost_usd": 0.5}
         expected = "2 run(s), 12,345 billed, $0.50 over 1 of 2 run(s)"
-        self.assertEqual(cli_state._scorecard_spend(group, True), expected)
+        self.assertEqual(optimization_render._scorecard_spend(group, True), expected)
         unpriced = dict(group, priced_runs=0)
         expected = "2 run(s), 12,345 billed, no cost reported"
-        self.assertEqual(cli_state._scorecard_spend(unpriced, False), expected)
+        self.assertEqual(optimization_render._scorecard_spend(unpriced, False), expected)
 
     def test_scorecard_per_accepted_priced_and_unpriced(self):
         priced = {"billed_per_accepted": 12345, "cost_per_accepted": 0.25}
-        self.assertEqual(cli_state._scorecard_per_accepted(priced), "12,345 billed / $0.25 per accepted")
+        expected = "12,345 billed / $0.25 per accepted"
+        self.assertEqual(optimization_render._scorecard_per_accepted(priced), expected)
         unpriced = {"billed_per_accepted": 12345, "cost_per_accepted": None}
-        self.assertEqual(cli_state._scorecard_per_accepted(unpriced), "12,345 billed per accepted, $ -")
+        expected = "12,345 billed per accepted, $ -"
+        self.assertEqual(optimization_render._scorecard_per_accepted(unpriced), expected)
 
     def test_scorecard_effort_line(self):
         scorecard = {
@@ -237,7 +250,7 @@ class TestOptimizationReportFigures(unittest.TestCase):
             "total": {"accepted": 3, "rounds_read": 1, "rounds_recorded": 1, "billed_tokens": 12345},
         }
         expected = "Review effort, code and design together: 3 accepted over 1 of 1 recorded round(s); "
-        self.assertIn(expected + "12,345 billed,", cli_state._scorecard_rows(scorecard))
+        self.assertIn(expected + "12,345 billed,", optimization_render._scorecard_rows(scorecard))
 
     def test_paired_head_line(self):
         pair = {
@@ -255,7 +268,7 @@ class TestOptimizationReportFigures(unittest.TestCase):
             "  abcdef012345   change 5,000 chars; panel ; 1,234 context chars adopted (2,345 as carried), "
             "3,456 left out"
         )
-        self.assertEqual(cli_state._paired_rows({"pairs": [pair], "pairs_total": 1})[1], expected)
+        self.assertEqual(optimization_render._paired_rows({"pairs": [pair], "pairs_total": 1})[1], expected)
 
     def test_context_row(self):
         group = {
@@ -270,11 +283,11 @@ class TestOptimizationReportFigures(unittest.TestCase):
             "2 round(s), 3 run(s), 12,345 billed, 6,172 per round; - use(s)/run, - observed output chars/run "
             "(0 of 3 run(s) reported); 1,234 context chars adopted, 5,678 left out"
         )
-        self.assertEqual(cli_state._context_row(group, True), expected)
+        self.assertEqual(optimization_render._context_row(group, True), expected)
 
     def test_runs_row_with_a_per_round_figure(self):
         expected = "4 (4 reported usage), 12,345 billed over 2 round(s), 6,172 each"
-        self.assertEqual(cli_state._runs_row(4, 4, 12345, 2, 6172), expected)
+        self.assertEqual(optimization_render._runs_row(4, 4, 12345, 2, 6172), expected)
 
 
 def round_event(status: str = "ok", billed: int = 1000) -> Dict[str, Any]:

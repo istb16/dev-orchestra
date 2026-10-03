@@ -577,6 +577,19 @@ def _live_check_line(version: Any, status: Dict[str, Any]) -> str:
 
 
 def render(report: Dict[str, Any]) -> str:
+    lines = _environment_lines(report)
+    for name, entry in report["providers"].items():
+        lines += _provider_lines(name, entry)
+    lines += _user_provider_lines(report.get("user_providers") or {})
+    lines.append("")
+    lines += _config_lines(report["config"])
+    lines += _roles_lines(report)
+    lines += _closing_lines(report)
+    return "\n".join(lines) + "\n"
+
+
+def _environment_lines(report: Dict[str, Any]) -> List[str]:
+    """The title and the platform, each followed by a blank line."""
     lines: List[str] = ["AI Development Orchestrator -- doctor", ""]
     platform_info = report["platform"]
     lines.append(
@@ -584,53 +597,56 @@ def render(report: Dict[str, Any]) -> str:
         % (platform_info["system"], platform_info["release"], platform_info["python"])
     )
     lines.append("")
+    return lines
 
-    for name, entry in report["providers"].items():
-        lines.append("%s (%s)" % (entry.get("display_name", name), name))
-        if entry.get("adapter_error"):
-            lines.append("  Installed: unknown (adapter failed)")
-        else:
-            lines.append("  Installed: %s" % ("yes" if entry.get("installed") else "no"))
-        lines.append("  Source: %s" % describe_origin(name))
-        if entry.get("adapter_error"):
-            lines.append("  Adapter error: %s" % entry["adapter_error"])
-        elif entry.get("installed"):
-            lines.append("  Version: %s" % (entry.get("version") or "unknown"))
-            lines.append(
-                "  Authentication: %s (credential presence only, not verified)"
-                % entry.get("authentication", "unknown")
-            )
-            lines.append("  Model selection: %s" % entry.get("model_selection", "unknown"))
-            models = entry.get("models") or []
-            if models:
-                shown = ", ".join(m["label"] for m in models[:6])
-                lines.append("  Models (%s): %s" % (entry.get("model_discovery", "?"), shown))
-            if entry.get("read_only_enforcement"):
-                lines.append("  Read-only runs: %s" % _enforcement_line(entry["read_only_enforcement"]))
-            if entry.get("resume_support"):
-                lines.append("  Resume: %s" % _resume_line(name, entry["resume_support"]))
-            if entry.get("live_check"):
-                live = _live_check_line(entry.get("version"), entry["live_check"])
-                lines.append("  Live check: %s" % live)
-        else:
-            if entry.get("error"):
-                lines.append("  Detail: %s" % entry["error"])
-            # Only a static report reaches here: what an absent CLI's
-            # enforcement would be is otherwise not known.
-            enforcement = entry.get("read_only_enforcement") or {}
-            if enforcement.get("status") not in (None, "not-checked"):
-                lines.append("  Read-only runs: %s" % _enforcement_line(enforcement))
-        # A user adapter's declaration, known whether or not its CLI is there.
-        fit_note = (entry.get("preset_fit") or {}).get("note")
-        if fit_note:
-            lines.append("  Preset fitting: %s" % fit_note)
-        lines.append("")
 
-    lines += _user_provider_lines(report.get("user_providers") or {})
+def _provider_lines(name: str, entry: Dict[str, Any]) -> List[str]:
+    """One provider's block, ending in a blank line."""
+    lines = ["%s (%s)" % (entry.get("display_name", name), name)]
+    if entry.get("adapter_error"):
+        lines.append("  Installed: unknown (adapter failed)")
+    else:
+        lines.append("  Installed: %s" % ("yes" if entry.get("installed") else "no"))
+    lines.append("  Source: %s" % describe_origin(name))
+    if entry.get("adapter_error"):
+        lines.append("  Adapter error: %s" % entry["adapter_error"])
+    elif entry.get("installed"):
+        lines.append("  Version: %s" % (entry.get("version") or "unknown"))
+        lines.append(
+            "  Authentication: %s (credential presence only, not verified)"
+            % entry.get("authentication", "unknown")
+        )
+        lines.append("  Model selection: %s" % entry.get("model_selection", "unknown"))
+        models = entry.get("models") or []
+        if models:
+            shown = ", ".join(m["label"] for m in models[:6])
+            lines.append("  Models (%s): %s" % (entry.get("model_discovery", "?"), shown))
+        if entry.get("read_only_enforcement"):
+            lines.append("  Read-only runs: %s" % _enforcement_line(entry["read_only_enforcement"]))
+        if entry.get("resume_support"):
+            lines.append("  Resume: %s" % _resume_line(name, entry["resume_support"]))
+        if entry.get("live_check"):
+            live = _live_check_line(entry.get("version"), entry["live_check"])
+            lines.append("  Live check: %s" % live)
+    else:
+        if entry.get("error"):
+            lines.append("  Detail: %s" % entry["error"])
+        # Only a static report reaches here: what an absent CLI's
+        # enforcement would be is otherwise not known.
+        enforcement = entry.get("read_only_enforcement") or {}
+        if enforcement.get("status") not in (None, "not-checked"):
+            lines.append("  Read-only runs: %s" % _enforcement_line(enforcement))
+    # A user adapter's declaration, known whether or not its CLI is there.
+    fit_note = (entry.get("preset_fit") or {}).get("note")
+    if fit_note:
+        lines.append("  Preset fitting: %s" % fit_note)
     lines.append("")
+    return lines
 
-    config_info = report["config"]
-    lines.append("Config")
+
+def _config_lines(config_info: Dict[str, Any]) -> List[str]:
+    """The config files, the preset in force and any pinned values, ending in a blank line."""
+    lines = ["Config"]
     lines.append("  Global: %s" % config_info.get("global"))
     lines.append("  Project override: %s" % config_info.get("project_override"))
     preset = config_info.get("preset") or {}
@@ -651,8 +667,12 @@ def render(report: Dict[str, Any]) -> str:
         lines.append("    older default, so these are reported and never rewritten.")
         lines.append("    config prune drops the values equal to the current default, on request.")
     lines.append("")
+    return lines
 
-    lines.append("Roles")
+
+def _roles_lines(report: Dict[str, Any]) -> List[str]:
+    """Each role, its options, and the reviewer panel."""
+    lines = ["Roles"]
     for key, _label in ROLE_LABELS:
         entry = report["roles"].get(key, {})
         lines.append("  %-13s %s" % (entry.get("label", key) + ":", _role_line(entry)))
@@ -670,7 +690,12 @@ def render(report: Dict[str, Any]) -> str:
         if origin.endswith(" extra"):
             role += " (extra: %s)" % origin[: -len(" extra")]
         lines.append("    %d. %s / %s / %s" % (index, entry.get("id"), _role_line(entry), role))
+    return lines
 
+
+def _closing_lines(report: Dict[str, Any]) -> List[str]:
+    """The problems, or that there are none, then any notes; each after a blank line."""
+    lines: List[str] = []
     if report["problems"]:
         lines += ["", "Problems"]
         for problem in report["problems"]:
@@ -681,7 +706,7 @@ def render(report: Dict[str, Any]) -> str:
         lines += ["", "Notes"]
         for note in report["notes"]:
             lines.append("  - %s" % note)
-    return "\n".join(lines) + "\n"
+    return lines
 
 
 def _user_provider_lines(info: Dict[str, Any]) -> List[str]:

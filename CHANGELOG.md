@@ -33,6 +33,14 @@ The public surface covered by that promise is: the configuration schema, the
   streams tool uses only on architect runs, the ones run with `--json`.
   Results, ledgers, budgets, run logs, `.out` files and `review run` without
   `--progress` are unchanged.
+- **`summary --json` holds what the text shows** (#230). Beside `stages`,
+  `counts` and `tokens` it now has `design_counts` (`reviewers_ok`,
+  `reviewers_total`), `models` (each role's `provider`, `family` and
+  `version`), `reviewers` (each entry's `id`, `provider`, `model` as the text
+  prints it, and `status`) and `skipped` (`refused`, `refused_by`,
+  `design_refused` and `panel_reduced`, named as in `optimization report
+  --json`). Nothing else of a recorded reviewer entry is copied. The text and
+  the three existing keys are unchanged.
 
 ### Changed
 
