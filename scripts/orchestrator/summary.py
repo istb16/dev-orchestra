@@ -29,11 +29,18 @@ def render_summary(data: Dict[str, Any], origins: Sequence[config_mod.ReviewerOr
             entry = cast(Dict[str, Any], tiers)[name]
             described = _describe(merged(spec, entry)) if isinstance(entry, dict) else "(invalid)"
             lines.append("      --tier %-10s %s" % (name, described))
-    reviewers = data.get("reviewers") or []
+    # A panel that is not a list, or holds no mapping, shows as none: the
+    # problems `config validate` reports name what is wrong with it.
+    reviewers = data.get("reviewers")
+    if not isinstance(reviewers, list):
+        reviewers = []
     lines.append("  Reviews")
-    if not reviewers:
+    if not any(isinstance(reviewer, dict) for reviewer in reviewers):
         lines.append("    (none configured)")
     for index, reviewer in enumerate(reviewers, 1):
+        # Skipped but counted, so the numbers and origins stay aligned.
+        if not isinstance(reviewer, dict):
+            continue
         when = condition_label(reviewer)
         origin = origins[index - 1] if index <= len(origins) else None
         mark = ""

@@ -21,6 +21,16 @@ The public surface covered by that promise is: the configuration schema, the
 
 ### Fixed
 
+- **`doctor`, `reviewer list`, `config show` and `summary` no longer crash on
+  a `reviewers` entry that is not a mapping, or on `reviewers` that is not a
+  list** (#222). They skip the broken entry and keep the rest's origins; an
+  all-broken or non-list panel reads as none configured, `doctor` leaves the
+  problem to `config validate`'s message instead of adding "no reviewers
+  configured", and `reviewer list --json` shows a broken entry as
+  `"[invalid entry]"` rather than its contents. `summary` falls back to the
+  configured panel when the recorded one is not a list. `review
+  consolidate` refuses such a panel (exit 2) instead of crashing, and leaves
+  the last consolidation as it was.
 - **Stopping a run's process tree on POSIX now waits for its whole process
   group**, not just its leader (was: once the worker or CLI exited on
   `SIGTERM`, a child that ignored it was never sent `SIGKILL`, so a timed-out
