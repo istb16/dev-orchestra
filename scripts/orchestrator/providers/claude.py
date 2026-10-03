@@ -66,7 +66,6 @@ no failure it has not since passed.
 
 from __future__ import annotations
 
-import json
 import os
 import re
 from typing import Any, Dict, List, Optional, Sequence, cast
@@ -82,7 +81,9 @@ from .base import (
     Provider,
     ResolvedModel,
     Usage,
+    event_of_type,
     json_lines,
+    stdout_events,
     token_count,
 )
 
@@ -351,12 +352,11 @@ class ClaudeProvider(Provider):
         the wording changes, a rejection is reported as an ordinary failure
         and not retried -- never the other way round.
         """
-        output_format = str((options or {}).get("output_format") or self.default_output_format)
-        if output_format != "stream-json":
+        if self._output_format(options) != "stream-json":
             return False
         if outcome.exit_code == 0 or outcome.timed_out or outcome.stalled:
             return False
-        events = json_lines(outcome.stdout)
+        events = stdout_events(outcome)
         # A ``stream_event`` is a message being written, so a turn happened.
         if any(event.get("type") in (*_STREAM_EVENT_TYPES, "stream_event") for event in events):
             return False
@@ -383,7 +383,7 @@ class ClaudeProvider(Provider):
         The context is the last ``assistant`` event's input: the ``result``
         usage adds up every turn, so it is the run's cost, not its size.
         """
-        events = json_lines(outcome.stdout)
+        events = stdout_events(outcome)
         session_id = None
         for kind in ("result", "system"):
             event = next((item for item in reversed(events) if item.get("type") == kind), None)
@@ -421,13 +421,8 @@ class ClaudeProvider(Provider):
         never shown and are the largest lines. Every assistant event carries
         usage, text-only ones included, so each updates the context.
         """
-        if '"assistant"' not in line:
-            return activity.NOTHING
-        try:
-            event = json.loads(line)
-        except ValueError:
-            return activity.NOTHING
-        if not isinstance(event, dict) or event.get("type") != "assistant":
+        event = event_of_type(line, "assistant")
+        if event is None:
             return activity.NOTHING
         lines = [
             activity.tool_line(block.get("name"), block.get("input"), cwd)
@@ -518,7 +513,7 @@ class ClaudeProvider(Provider):
         options: Optional[Dict[str, Any]] = None,
     ) -> List[str]:
         options = options or {}
-        output_format = str(options.get("output_format") or self.default_output_format)
+        output_format = self._output_format(options)
         command = [self.executable, "-p", "--output-format", output_format]
         if output_format == "stream-json":
             # The CLI requires --verbose with the streaming format.
@@ -543,14 +538,17 @@ class ClaudeProvider(Provider):
         self, options: Optional[Dict[str, Any]] = None, requested: Optional[float] = None
     ) -> Optional[float]:
         """No idle deadline unless the format actually streams progress."""
-        output_format = str((options or {}).get("output_format") or self.default_output_format)
-        if output_format != "stream-json":
+        if self._output_format(options) != "stream-json":
             return None
         return super().idle_timeout(options, requested)
 
+    def _output_format(self, options: Optional[Dict[str, Any]]) -> str:
+        """The ``--output-format`` a run asks for: the role's, or the default."""
+        return str((options or {}).get("output_format") or self.default_output_format)
+
     def postprocess(self, outcome: ExecOutcome, mode: str) -> "tuple[str, str]":
         """Reduce a stream-json run to its final answer."""
-        text, note = parse_stream_json(outcome.stdout)
+        text, note = _answer_from_events(stdout_events(outcome))
         if text is None:
             return outcome.stdout, outcome.stderr
         stderr = outcome.stderr
@@ -575,7 +573,7 @@ class ClaudeProvider(Provider):
         a field serialised into every run's event that can never be read back
         is a cost with no reader. The characters are one total.
         """
-        events = json_lines(outcome.stdout)
+        events = stdout_events(outcome)
         usage = _usage_from_events(events)
         tools = _tools_from_events(events)
         if tools is None:
@@ -595,7 +593,11 @@ def parse_stream_json(stdout: str) -> "tuple[Optional[str], str]":
     stream at all -- in which case the caller keeps the raw output rather than
     discarding it, so an unrecognised format degrades instead of losing work.
     """
-    events = json_lines(stdout)
+    return _answer_from_events(json_lines(stdout))
+
+
+def _answer_from_events(events: Sequence[Dict[str, Any]]) -> "tuple[Optional[str], str]":
+    """:func:`parse_stream_json` over decoded events."""
     if not events:
         return None, ""
 
@@ -669,7 +671,7 @@ def parse_stream_usage(stdout: str) -> Optional[Usage]:
     return _usage_from_events(json_lines(stdout))
 
 
-def _usage_from_events(events: List[Dict[str, Any]]) -> Optional[Usage]:
+def _usage_from_events(events: Sequence[Dict[str, Any]]) -> Optional[Usage]:
     """:func:`parse_stream_usage` over decoded events."""
     for event in reversed(events):
         if event.get("type") != "result":
@@ -724,7 +726,7 @@ def parse_stream_tools(stdout: str) -> Optional[Dict[str, Any]]:
     return _tools_from_events(json_lines(stdout))
 
 
-def _tools_from_events(events: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+def _tools_from_events(events: Sequence[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     """:func:`parse_stream_tools` over decoded events."""
     # What was actually seen, not "did anything parse". ``output_format: json``
     # is a documented, validated option, and it prints one compact ``result``

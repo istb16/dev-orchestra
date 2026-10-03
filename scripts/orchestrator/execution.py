@@ -29,7 +29,7 @@ import subprocess
 import sys
 import threading
 import time
-from typing import IO, Any, Callable, Dict, List, Optional, Sequence, cast
+from typing import IO, Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple, cast
 
 from . import clocks
 
@@ -49,19 +49,30 @@ _ON_LINE_GRACE_SECONDS = 2.0
 
 IS_WINDOWS = sys.platform.startswith("win")
 
-#: The CLIs :func:`execute` is running now, for the SIGTERM handler a detached
-#: worker installs. A worker runs one CLI at a time from its main thread, where
-#: signal handlers also run, so the handler only ever runs between this
-#: module's bytecodes, never alongside them. No lock: a handler waiting on a
-#: lock held by the code it interrupted would deadlock.
-_active: List[subprocess.Popen] = []
-#: Set while a CLI is being started and not yet in ``_active``.
-_spawning = False
-_stop_requested = False
-#: Where the handler says which CLI group it could not end: a file beside the
-#: job record, which ``jobs cancel`` reads once the worker has gone. None
-#: outside a worker.
-_stop_note_path: Optional[str] = None
+
+class _StopState:
+    """What the SIGTERM handler a detached worker installs needs to know."""
+
+    def __init__(self) -> None:
+        self.reset()
+
+    def reset(self) -> None:
+        #: The CLIs :func:`execute` is running now. A worker runs one CLI at a
+        #: time from its main thread, where
+        #: signal handlers also run, so the handler only ever runs between this
+        #: module's bytecodes, never alongside them. No lock: a handler waiting on a
+        #: lock held by the code it interrupted would deadlock.
+        self.active: List[subprocess.Popen] = []
+        #: Set while a CLI is being started and not yet in ``active``.
+        self.spawning = False
+        self.requested = False
+        #: Where the handler says which CLI group it could not end: a file beside the
+        #: job record, which ``jobs cancel`` reads once the worker has gone. None
+        #: outside a worker.
+        self.note_path: Optional[str] = None
+
+
+_stop = _StopState()
 #: The worker's own budget for its CLI. ``_stop_group`` spends at most this
 #: plus one poll interval for each of its two steps, about 1s for the default
 #: 5s grace: well inside kill_tree's SIGTERM window (grace/2, 2.5s), so the
@@ -97,6 +108,9 @@ class ExecOutcome:
         self.idle_for = idle_for
         #: The group did not fully exit after being killed.
         self.orphans_possible = orphans_possible
+        #: Free for readers of this outcome to keep what they derive from it.
+        #: Never serialised.
+        self.cache: Dict[str, Any] = {}
 
     @property
     def ok(self) -> bool:
@@ -217,17 +231,15 @@ def end_children_on_sigterm(note_path: Optional[str] = None) -> None:
     not confirmed gone is named in ``note_path``, since a worker's stderr goes
     nowhere.
     """
-    global _stop_note_path
     if IS_WINDOWS:
         return
-    _stop_note_path = note_path
+    _stop.note_path = note_path
     signal.signal(signal.SIGTERM, _on_sigterm)
 
 
 def _on_sigterm(signum: int, frame: Any) -> None:
-    global _stop_requested
-    _stop_requested = True
-    if _spawning:
+    _stop.requested = True
+    if _stop.spawning:
         # execute() registers the new CLI, then honours the request.
         return
     _stop_now()
@@ -235,12 +247,12 @@ def _on_sigterm(signum: int, frame: Any) -> None:
 
 def _honour_stop() -> None:
     """Act on a SIGTERM that arrived while a CLI was being started."""
-    if _stop_requested:
+    if _stop.requested:
         _stop_now()
 
 
 def _stop_now() -> None:
-    for proc in _active[:]:
+    for proc in _stop.active[:]:
         # Already reaped: taken as gone, as terminate_tree does.
         if proc.returncode is None and not _stop_group(proc.pid, _STOP_GRACE_SECONDS):
             _note("warning: the CLI's process group (pid %d) may still be running\n" % proc.pid)
@@ -284,10 +296,10 @@ def _note(text: str) -> None:
         os.write(2, data)
     except OSError:
         pass
-    if not _stop_note_path:
+    if not _stop.note_path:
         return
     try:
-        fd = os.open(_stop_note_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        fd = os.open(_stop.note_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
         try:
             os.write(fd, data)
         finally:
@@ -485,37 +497,15 @@ def execute(
     and a callback that falls far behind misses lines rather than slowing the
     run (see :class:`_Drain`).
     """
-    global _spawning
     # Only the charge reads this clock; the deadlines below stay on
     # ``time.monotonic()``.
     watch = clocks.Stopwatch()
     started = time.monotonic()
     watch.start()
-    # A SIGTERM that arrives before the CLI is registered is deferred to
-    # _honour_stop() below, so it cannot miss the CLI being started.
-    _spawning = True
     try:
-        proc = subprocess.Popen(
-            list(command),
-            cwd=cwd,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            bufsize=1,
-            env=env,
-            **spawn_kwargs(),
-        )
-        _active.append(proc)
+        proc = _spawn(command, cwd, env)
     except OSError as exc:
-        _spawning = False
-        _honour_stop()
         return ExecOutcome(EXIT_SPAWN_FAILED, "", str(exc), time.monotonic() - started)
-    finally:
-        _spawning = False
-    _honour_stop()
 
     try:
         out, err = _Drain(on_line), _Drain()
@@ -530,24 +520,10 @@ def execute(
         for thread in threads:
             thread.start()
 
-        timed_out = stalled = False
-        idle_for = 0.0
-        while True:
-            if proc.poll() is not None:
-                break
-            now = time.monotonic()
-            if timeout is not None and now - started >= timeout:
-                timed_out = True
-                break
-            if idle_timeout is not None:
-                idle_for = now - max(out.last_seen(), err.last_seen())
-                if idle_for >= idle_timeout:
-                    stalled = True
-                    break
-            time.sleep(_POLL_SECONDS)
+        watched = _watch(proc, started, timeout, idle_timeout, out, err)
 
         orphans = False
-        if timed_out or stalled:
+        if watched.timed_out or watched.stalled:
             orphans = not terminate_tree(proc)
 
         # Bounded join: if a survivor still holds a pipe, abandon the readers
@@ -557,46 +533,131 @@ def execute(
         # So whoever reads the sink next sees every line it is going to see.
         out.finish(_ON_LINE_GRACE_SECONDS)
 
-        for pipe in (proc.stdin, proc.stdout, proc.stderr):
-            try:
-                if pipe is not None and not pipe.closed:
-                    pipe.close()
-            except (OSError, ValueError):
-                pass
+        _close_pipes(proc)
 
         duration = time.monotonic() - started
         suspended = watch.read(duration)
-        exit_code = proc.poll()
-        if stalled:
-            exit_code = EXIT_IDLE_STALL
-        elif timed_out:
-            exit_code = EXIT_TOTAL_TIMEOUT
-        elif exit_code is None:
-            exit_code = EXIT_SPAWN_FAILED
-
-        stderr = err.text()
-        if stalled:
-            stderr = (
-                "no output for %.0fs (idle limit %.0fs); treated as stalled\n" % (idle_for, idle_timeout)
-            ) + stderr
-        elif timed_out:
-            stderr = ("timed out after %.0fs\n" % duration) + stderr
-        if orphans:
-            stderr += "\nwarning: the process group did not exit after being killed; check for orphans\n"
+        exit_code, stderr = _verdict(proc, watched, err.text(), duration, idle_timeout, orphans)
 
         return ExecOutcome(
             exit_code,
             out.text(),
             stderr,
             duration,
-            timed_out=timed_out,
-            stalled=stalled,
-            idle_for=idle_for,
+            timed_out=watched.timed_out,
+            stalled=watched.stalled,
+            idle_for=watched.idle_for,
             orphans_possible=orphans,
             suspended=suspended,
         )
     finally:
-        _active.remove(proc)
+        _stop.active.remove(proc)
+
+
+def _spawn(command: Sequence[str], cwd: str, env: Optional[Dict[str, str]]) -> subprocess.Popen:
+    """Start ``command`` in a group of its own and register it for the SIGTERM
+    handler. An ``OSError`` from ``Popen`` is raised once a pending stop has
+    been honoured."""
+    # A SIGTERM that arrives before the CLI is registered is deferred to
+    # _honour_stop() below, so it cannot miss the CLI being started.
+    _stop.spawning = True
+    try:
+        proc = subprocess.Popen(
+            list(command),
+            cwd=cwd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=1,
+            env=env,
+            **spawn_kwargs(),
+        )
+        _stop.active.append(proc)
+    except OSError:
+        _stop.spawning = False
+        _honour_stop()
+        raise
+    finally:
+        _stop.spawning = False
+    _honour_stop()
+    return proc
+
+
+class _Watched(NamedTuple):
+    """How waiting for a child ended."""
+
+    timed_out: bool
+    stalled: bool
+    idle_for: float
+
+
+def _watch(
+    proc: subprocess.Popen,
+    started: float,
+    timeout: Optional[float],
+    idle_timeout: Optional[float],
+    out: _Drain,
+    err: _Drain,
+) -> _Watched:
+    """Wait for ``proc`` to exit, or for one of its deadlines to pass."""
+    timed_out = stalled = False
+    idle_for = 0.0
+    while True:
+        if proc.poll() is not None:
+            break
+        now = time.monotonic()
+        if timeout is not None and now - started >= timeout:
+            timed_out = True
+            break
+        if idle_timeout is not None:
+            idle_for = now - max(out.last_seen(), err.last_seen())
+            if idle_for >= idle_timeout:
+                stalled = True
+                break
+        time.sleep(_POLL_SECONDS)
+    return _Watched(timed_out, stalled, idle_for)
+
+
+def _close_pipes(proc: subprocess.Popen) -> None:
+    for pipe in (proc.stdin, proc.stdout, proc.stderr):
+        try:
+            if pipe is not None and not pipe.closed:
+                pipe.close()
+        except (OSError, ValueError):
+            pass
+
+
+def _verdict(
+    proc: subprocess.Popen,
+    watched: _Watched,
+    stderr: str,
+    duration: float,
+    idle_timeout: Optional[float],
+    orphans: bool,
+) -> Tuple[int, str]:
+    """The exit code to report, and ``stderr`` with what this module decided
+    put around it."""
+    timed_out, stalled, idle_for = watched
+    exit_code = proc.poll()
+    if stalled:
+        exit_code = EXIT_IDLE_STALL
+    elif timed_out:
+        exit_code = EXIT_TOTAL_TIMEOUT
+    elif exit_code is None:
+        exit_code = EXIT_SPAWN_FAILED
+
+    if stalled:
+        stderr = (
+            "no output for %.0fs (idle limit %.0fs); treated as stalled\n" % (idle_for, idle_timeout)
+        ) + stderr
+    elif timed_out:
+        stderr = ("timed out after %.0fs\n" % duration) + stderr
+    if orphans:
+        stderr += "\nwarning: the process group did not exit after being killed; check for orphans\n"
+    return exit_code, stderr
 
 
 def _feed_stdin(proc: subprocess.Popen, prompt: str) -> None:

@@ -7,13 +7,15 @@ returns a resolution that lets the CLI pick its own default.
 
 from __future__ import annotations
 
+import copy
+import functools
 import json
 import math
 import os
 import re
 import shutil
 import subprocess
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple, TypeVar
 
 from .. import activity, execution, verified
 from ..workspace import redact
@@ -64,6 +66,10 @@ def unenforced_warning(name: str, enforcement: Dict[str, Any]) -> str:
     return "read-only is NOT enforced by %s -- %s" % (name, enforcement.get("detail") or "")
 
 
+def describe_exception(exc: BaseException) -> str:
+    return "%s: %s" % (type(exc).__name__, exc)
+
+
 def _prefixed(notes: Sequence[str], stderr: str) -> str:
     """``stderr`` with an adapter's own failures named above it."""
     if not notes:
@@ -91,6 +97,53 @@ def json_lines(text: str) -> List[Dict[str, Any]]:
         if isinstance(event, dict):
             events.append(event)
     return events
+
+
+#: Where :func:`stdout_events` keeps its decoded copy in ``outcome.cache``.
+_EVENTS_KEY = "stdout_events"
+
+
+def stdout_events(outcome: Any) -> Tuple[Dict[str, Any], ...]:
+    """:func:`json_lines` of ``outcome.stdout``, decoded once per run and
+    shared by every hook that reads it.
+
+    A tuple, so that no hook can reorder or drop what the next one reads.
+    The events themselves are shared as well: a hook must treat them as
+    read-only. Copying them for each caller would cost more than the
+    decoding it saves. The decoded copy is kept in ``outcome.cache``; an
+    outcome that cannot have one (one with ``__slots__``, a NamedTuple) is
+    decoded again on each call.
+    """
+    stdout = outcome.stdout
+    cache = getattr(outcome, "cache", None)
+    if not isinstance(cache, dict):
+        try:
+            outcome.cache = cache = {}
+        except AttributeError:
+            return tuple(json_lines(stdout))
+    cached = cache.get(_EVENTS_KEY)
+    if cached is not None and cached[0] is stdout:
+        return cached[1]
+    events = tuple(json_lines(stdout))
+    cache[_EVENTS_KEY] = (stdout, events)
+    return events
+
+
+def event_of_type(line: str, kind: str) -> Optional[Dict[str, Any]]:
+    """The JSON object on one stdout ``line``, if its ``type`` is ``kind``.
+
+    For an ``activity_of`` hook, which sees every line while the CLI runs: a
+    line that does not name ``kind`` in quotes is never decoded.
+    """
+    if '"%s"' % kind not in line:
+        return None
+    try:
+        event = json.loads(line)
+    except ValueError:
+        return None
+    if not isinstance(event, dict) or event.get("type") != kind:
+        return None
+    return event
 
 
 def token_count(value: Any) -> Optional[int]:
@@ -368,6 +421,36 @@ class RunResult:
             "resume_rejected": self.resume_rejected,
             "warnings": list(self.warnings),
         }
+
+
+class Launch(NamedTuple):
+    """One run as :meth:`Provider._launch` was called for it, which
+    :meth:`Provider.around_launch` may change before it starts."""
+
+    prompt: str
+    mode: str
+    cwd: str
+    model_spec: Optional[Dict[str, Any]]
+    timeout: int
+    extra_args: Sequence[str]
+    env: Optional[Dict[str, str]]
+    options: Optional[Dict[str, Any]]
+    idle_timeout: Optional[float]
+    resume_session: Optional[str]
+    command_kwargs: Optional[Dict[str, Any]]
+    #: The adapter's own arguments, after the caller's; never gated.
+    own_args: Tuple[str, ...] = ()
+
+
+#: What :meth:`Provider.run` gated before ``around_launch`` saw the run.
+#: ``options`` carries ``args``, which the gate checked too.
+_GATED_FIELDS = ("mode", "resume_session", "extra_args", "options")
+
+
+def _gated(launch: Launch, name: str) -> Any:
+    """A gated field of ``launch``, comparable: ``extra_args`` as a list."""
+    value = getattr(launch, name)
+    return list(value) if name == "extra_args" else value
 
 
 class Provider:
@@ -818,7 +901,7 @@ class Provider:
 
         An adapter may also refuse to start a resumed run itself, returning a
         result with ``resume_rejected=True`` and ``invoked=False`` from
-        :meth:`_launch`; the orchestrator runs fresh once, as for a rejection
+        :meth:`around_launch`; the orchestrator runs fresh once, as for a rejection
         by the CLI.
         """
         return False
@@ -865,7 +948,7 @@ class Provider:
         idle_timeout: Optional[float] = None,
         resume_session: Optional[str] = None,
     ) -> RunResult:
-        """Run the CLI once. Adapters override :meth:`_launch`, not this.
+        """Run the CLI once. Adapters override :meth:`around_launch`, not this.
 
         The raw-argument gate lives here so that every adapter passes through
         it, including one whose ``build_command`` never calls the base, and so
@@ -915,17 +998,133 @@ class Provider:
         """``command_kwargs`` go to :meth:`command_line` as they are: what an
         adapter's override decides for one run before its command is built
         travels with the call, never on the instance, which parallel runs share.
+
+        The run goes through :meth:`around_launch`, which an adapter overrides
+        for work before or after the CLI runs.
         """
+        called = Launch(
+            prompt,
+            mode,
+            cwd,
+            model_spec,
+            timeout,
+            extra_args,
+            env,
+            options,
+            idle_timeout,
+            resume_session,
+            command_kwargs,
+        )
+        # A copy of what the gate saw: ``launch.options["args"].append(...)``
+        # inside around_launch changes the caller's own objects, so comparing
+        # against those would find nothing changed.
+        checked = called._replace(extra_args=list(extra_args), options=copy.deepcopy(options))
+        return self.around_launch(called, functools.partial(self._start, checked))
+
+    def around_launch(self, launch: Launch, proceed: Callable[[Launch], RunResult]) -> RunResult:
+        """Start the run ``launch`` describes by calling ``proceed``.
+
+        An adapter overrides this for work before or after the CLI runs (a
+        temporary file, a check of the output), passing ``proceed`` a
+        ``launch._replace(...)``. ``prompt``, ``cwd``, ``model_spec``,
+        ``timeout``, ``env``, ``idle_timeout``, ``command_kwargs`` and
+        ``own_args`` may change; ``mode``, ``resume_session``, ``extra_args``
+        and ``options`` may not, since :meth:`run` has already gated them, and
+        ``proceed`` raises ``ValueError`` if they did. A subclass of an adapter
+        that overrides this calls ``super().around_launch(launch, proceed)``.
+        """
+        return proceed(launch)
+
+    def _start(self, checked: Launch, launch: Launch) -> RunResult:
+        """The run itself: preflight, command, CLI, and its output read.
+
+        ``checked`` holds copies of the gated fields as :meth:`run` gated them.
+        """
+        # around_launch runs after run()'s gate, so it may not change what the
+        # gate decided on, whether by _replace or in place.
+        changed = [name for name in _GATED_FIELDS if _gated(launch, name) != _gated(checked, name)]
+        if changed:
+            raise ValueError("around_launch may not change %s" % ", ".join(changed))
+        # From here on the command is built from the copies that were checked.
+        launch = launch._replace(**{name: getattr(checked, name) for name in _GATED_FIELDS})
+        mode = launch.mode
+        refusal, warnings = self._preflight(mode)
+        if refusal is not None:
+            return refusal
+
+        resolved = self.resolve_model(launch.model_spec)
+        extra_args = [*launch.extra_args, *launch.own_args]
+        command = self.command_line(
+            mode,
+            resolved,
+            launch.cwd,
+            extra_args,
+            launch.options,
+            launch.resume_session,
+            **(launch.command_kwargs or {}),
+        )
+        outcome = execution.execute(
+            command,
+            cwd=launch.cwd,
+            prompt=launch.prompt,
+            timeout=launch.timeout,
+            idle_timeout=self.idle_timeout(launch.options, launch.idle_timeout),
+            env=self._child_env(launch.env),
+            **self._streaming(launch.cwd),
+        )
+        ran = _Ran(command, resolved, outcome)
+        # Read before postprocess, which keeps only the final answer, and on
+        # both paths below: a rejected resume is also a run whose output an
+        # adapter may fail to read.
+        session_fields, notes = self._read_session(outcome, launch, warnings)
+        try:
+            stdout, stderr = self.postprocess(outcome, mode)
+        except Exception as exc:
+            # The child ran and was measured; only the reading of its output
+            # failed. A failed run is not a free one, so the measurement
+            # travels with the failure instead of dying with the exception --
+            # an adapter raising here used to reach the caller as a run of
+            # unknown length, and the review path recorded it as taking 0s.
+            # ``ok`` is False whatever the child exited with: what we cannot
+            # read, we cannot use.
+            stderr = _prefixed(notes, "%s\n%s" % (describe_exception(exc), outcome.stderr))
+            # Nothing was parsed, so the account reports this run as one it
+            # could not measure rather than as one that cost nothing.
+            return _finished(ran, False, outcome.stdout, stderr, Usage(), session_fields)
+        # Read from the raw output, before postprocess narrows it to the final
+        # answer: the accounting the CLI prints is not part of it. Apart from
+        # postprocess, because the two failures are not the same failure -- an
+        # unreadable answer is a failed run, an unreadable invoice is a run
+        # whose cost is unknown, and the account already has a word for that.
+        # Some adapters read the invoice out of prose, so it is the fragile one.
+        try:
+            usage = self.parse_usage(outcome, mode) or Usage()
+        except Exception as exc:
+            # An invoice this adapter can no longer read looks exactly like a
+            # CLI that reports none, so name it where the run's output is kept:
+            # otherwise a parser broken by a CLI's output drifting degrades
+            # every run to "unmeasured" with nothing to diagnose it from.
+            usage = Usage()
+            stderr = "%s\n%s" % (describe_exception(exc), stderr)
+        usage.prompt_chars = len(launch.prompt)
+        return _finished(ran, outcome.ok, stdout, _prefixed(notes, stderr), usage, session_fields)
+
+    def _preflight(self, mode: str) -> Tuple[Optional[RunResult], List[str]]:
+        """A run refused before anything is built, or None and the warnings
+        it starts with."""
         detection = self.detect()
         if not detection.installed:
-            return RunResult(
-                False,
-                127,
-                "",
-                detection.error or "CLI not installed",
-                [self.executable],
-                0.0,
-                invoked=False,
+            return (
+                RunResult(
+                    False,
+                    127,
+                    "",
+                    detection.error or "CLI not installed",
+                    [self.executable],
+                    0.0,
+                    invoked=False,
+                ),
+                [],
             )
         # After detection: a CLI that is not there is reported as missing, not
         # as one whose enforcement could not be read.
@@ -935,14 +1134,13 @@ class Provider:
             status = enforcement.get("status")
             if status in REFUSED_ENFORCEMENT:
                 detail = enforcement.get("detail") or "read-only enforcement is %s" % status
-                return RunResult(False, 2, "", str(detail), [self.executable], 0.0, invoked=False)
+                return RunResult(False, 2, "", str(detail), [self.executable], 0.0, invoked=False), []
             if status in WARNED_ENFORCEMENT:
                 warnings.append(unenforced_warning(self.name, enforcement))
+        return None, warnings
 
-        resolved = self.resolve_model(model_spec)
-        command = self.command_line(
-            mode, resolved, cwd, extra_args, options, resume_session, **(command_kwargs or {})
-        )
+    def _streaming(self, cwd: str) -> Dict[str, Any]:
+        """The keywords :func:`execution.execute` is given for the activity sink."""
         # ``on_line`` only when someone is listening: a run with no sink calls
         # ``execute`` exactly as it always did, stand-ins in tests included.
         streaming: Dict[str, Any] = {}
@@ -959,34 +1157,27 @@ class Provider:
                 sink.add(act)
 
             streaming["on_line"] = on_line
-        outcome = execution.execute(
-            command,
-            cwd=cwd,
-            prompt=prompt,
-            timeout=timeout,
-            idle_timeout=self.idle_timeout(options, idle_timeout),
-            env=self._child_env(env),
-            **streaming,
-        )
-        # Read before postprocess, which keeps only the final answer, and on
-        # both paths below: a rejected resume is also a run whose output an
-        # adapter may fail to read.
+        return streaming
+
+    def _read_session(
+        self, outcome: "execution.ExecOutcome", launch: Launch, warnings: List[str]
+    ) -> Tuple[Dict[str, Any], List[str]]:
+        """The session fields of a finished run, and the notes to put above
+        its stderr. ``warnings`` gains what :meth:`run_warnings` says."""
+        mode, options = launch.mode, launch.options
         notes: List[str] = []
         rejected = False
-        if resume_session is not None:
-            try:
-                rejected = bool(self.resume_rejected(outcome, mode, options, resume_session))
-            except Exception as exc:
-                notes.append("%s: %s" % (type(exc).__name__, exc))
-        try:
-            session = self.parse_session(outcome) or {}
-        except Exception as exc:
-            session = {}
-            notes.append("%s: %s" % (type(exc).__name__, exc))
-        try:
-            warnings.extend(str(warning) for warning in self.run_warnings(outcome, mode) or ())
-        except Exception as exc:
-            notes.append("%s: %s" % (type(exc).__name__, exc))
+        if launch.resume_session is not None:
+            session_id = launch.resume_session
+            rejected = _guarded(
+                notes, lambda: bool(self.resume_rejected(outcome, mode, options, session_id)), False
+            )
+        session = _guarded(notes, lambda: self.parse_session(outcome) or {}, {})
+        _guarded(
+            notes,
+            lambda: warnings.extend(str(warning) for warning in self.run_warnings(outcome, mode) or ()),
+            None,
+        )
         # Said above the adapter's own failures, as those are: on success the
         # caller shows ``warnings`` and drops stderr.
         notes = [*warnings, *notes]
@@ -997,67 +1188,7 @@ class Provider:
             "resume_rejected": rejected,
             "warnings": warnings,
         }
-        try:
-            stdout, stderr = self.postprocess(outcome, mode)
-        except Exception as exc:
-            # The child ran and was measured; only the reading of its output
-            # failed. A failed run is not a free one, so the measurement
-            # travels with the failure instead of dying with the exception --
-            # an adapter raising here used to reach the caller as a run of
-            # unknown length, and the review path recorded it as taking 0s.
-            # ``ok`` is False whatever the child exited with: what we cannot
-            # read, we cannot use.
-            return RunResult(
-                False,
-                outcome.exit_code,
-                outcome.stdout,
-                _prefixed(notes, "%s: %s\n%s" % (type(exc).__name__, exc, outcome.stderr)),
-                command,
-                outcome.duration,
-                resolved,
-                timed_out=outcome.timed_out,
-                stalled=outcome.stalled,
-                idle_for=outcome.idle_for,
-                orphans_possible=outcome.orphans_possible,
-                # Nothing was parsed, so the account reports this run as one it
-                # could not measure rather than as one that cost nothing.
-                usage=Usage(),
-                invoked=True,
-                suspended=_suspended_of(outcome),
-                **session_fields,
-            )
-        # Read from the raw output, before postprocess narrows it to the final
-        # answer: the accounting the CLI prints is not part of it. Apart from
-        # postprocess, because the two failures are not the same failure -- an
-        # unreadable answer is a failed run, an unreadable invoice is a run
-        # whose cost is unknown, and the account already has a word for that.
-        # Some adapters read the invoice out of prose, so it is the fragile one.
-        try:
-            usage = self.parse_usage(outcome, mode) or Usage()
-        except Exception as exc:
-            # An invoice this adapter can no longer read looks exactly like a
-            # CLI that reports none, so name it where the run's output is kept:
-            # otherwise a parser broken by a CLI's output drifting degrades
-            # every run to "unmeasured" with nothing to diagnose it from.
-            usage = Usage()
-            stderr = "%s: %s\n%s" % (type(exc).__name__, exc, stderr)
-        usage.prompt_chars = len(prompt)
-        return RunResult(
-            outcome.ok,
-            outcome.exit_code,
-            stdout,
-            _prefixed(notes, stderr),
-            command,
-            outcome.duration,
-            resolved,
-            timed_out=outcome.timed_out,
-            stalled=outcome.stalled,
-            idle_for=outcome.idle_for,
-            orphans_possible=outcome.orphans_possible,
-            usage=usage,
-            suspended=_suspended_of(outcome),
-            **session_fields,
-        )
+        return session_fields, notes
 
     def idle_timeout(
         self, options: Optional[Dict[str, Any]] = None, requested: Optional[float] = None
@@ -1152,3 +1283,54 @@ def _suspended_of(outcome: Any) -> float:
     if not (math.isfinite(suspended) and math.isfinite(duration)):
         return 0.0
     return min(max(suspended, 0.0), max(duration, 0.0))
+
+
+class _Ran(NamedTuple):
+    """A CLI that was started: the command, the model it ran under, and what
+    became of it."""
+
+    command: List[str]
+    resolved: ResolvedModel
+    outcome: "execution.ExecOutcome"
+
+
+_T = TypeVar("_T")
+
+
+def _guarded(notes: List[str], read: Callable[[], _T], default: _T) -> _T:
+    """``read()``, or ``default`` once what it raised is added to ``notes``."""
+    try:
+        return read()
+    except Exception as exc:
+        notes.append(describe_exception(exc))
+        return default
+
+
+def _finished(
+    ran: _Ran,
+    ok: bool,
+    stdout: str,
+    stderr: str,
+    usage: Usage,
+    session_fields: Dict[str, Any],
+) -> RunResult:
+    """The result of a run that was started, carrying its measurement
+    whatever could be read of its output."""
+    outcome = ran.outcome
+    return RunResult(
+        ok,
+        outcome.exit_code,
+        stdout,
+        stderr,
+        ran.command,
+        outcome.duration,
+        ran.resolved,
+        timed_out=outcome.timed_out,
+        stalled=outcome.stalled,
+        idle_for=outcome.idle_for,
+        orphans_possible=outcome.orphans_possible,
+        usage=usage,
+        invoked=True,
+        suspended=_suspended_of(outcome),
+        **session_fields,
+    )
