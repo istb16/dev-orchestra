@@ -624,6 +624,33 @@ class Provider:
 
     # -- resuming a session ------------------------------------------------
 
+    #: Flags :meth:`resume_help_text` must list before a session is resumed
+    #: on the shared rule.
+    resume_flags: Sequence[str] = ()
+    #: ``detail`` when :meth:`resume_help_text` cannot be read.
+    resume_help_unread = "could not read the help that lists the resume flags, so resuming is unverified"
+    #: ``detail`` when flags are missing; ``%s`` is the missing ones, comma-joined.
+    resume_flags_missing = "%s not advertised"
+    #: ``detail`` when :meth:`version` gives nothing.
+    resume_version_unread = "could not read the CLI's --version"
+
+    def verified_resume(self) -> Optional[Dict[str, Dict[str, Any]]]:
+        """The adapter's module-level ``VERIFIED_RESUME`` (smoke_live.py finds
+        it by that name); None, the default, keeps the adapter off the shared
+        rule. A method, so a table rebound on the module is read at call time."""
+        return None
+
+    def resume_help_text(self) -> Optional[str]:
+        """The help that has to list :attr:`resume_flags`; None if it could
+        not be read, which leaves resuming unverified."""
+        return None
+
+    def resume_advertises(self, help_text: str, flag: str) -> bool:
+        """Whether ``help_text`` lists ``flag`` as an option of its own. False
+        here: what counts depends on the CLI's help layout (descriptions name
+        other options), so an adapter on the shared rule must supply its matcher."""
+        return False
+
     def resume_support(self, root: str) -> Dict[str, Any]:
         """Whether a resumed session of this CLI is known to stay read-only.
 
@@ -633,13 +660,48 @@ class Provider:
         passed (``newer_than``), not checked itself. ``root`` is the
         workspace, which a per-machine record must lie outside of to be
         trusted. Not memoised: a record written a moment ago has to be read.
+
+        An adapter that names a table (:meth:`verified_resume`) is judged by
+        :func:`verified.resume_trust` once its help lists every one of
+        :attr:`resume_flags` and its version can be read. A failure recorded
+        on this machine outranks the built-in table: a regression seen here
+        is not overruled by a release that saw none.
         """
         if not self.supports_resume:
             return {"status": "unsupported", "detail": "%s does not resume sessions" % self.name}
-        return {
-            "status": "unspecified",
-            "detail": "this adapter does not report whether a resumed session stays read-only",
-        }
+        table = self.verified_resume()
+        # An empty table is still a table: every version is then unverified.
+        if table is None:
+            return {
+                "status": "unspecified",
+                "detail": "this adapter does not report whether a resumed session stays read-only",
+            }
+        report = self._resume_skeleton(None)
+        if not self.resume_flags:
+            report["detail"] = (
+                "this adapter names no resume flags to look for in its help, so resuming is unverified"
+            )
+            return report
+        text = self.resume_help_text()
+        if text is None:
+            report["detail"] = self.resume_help_unread
+            return report
+        missing = [flag for flag in self.resume_flags if not self.resume_advertises(text, flag)]
+        if missing:
+            report["status"] = "unsupported"
+            report["missing"] = missing
+            # Plain replacement, not %: an adapter's wording may hold a literal
+            # % or no %s at all, and must not break doctor over it.
+            report["detail"] = str(self.resume_flags_missing).replace("%s", ", ".join(missing))
+            return report
+        version = self.version()[0]
+        if not version:
+            report["detail"] = self.resume_version_unread
+            return report
+        trust = verified.resume_trust(
+            self.name, version, self.resume_mechanism(), root, table, self.required_resume_checks
+        )
+        return self.resume_report(version, trust)
 
     def resume_mechanism(self) -> str:
         """The flags a resume record vouches for. A record made under other
@@ -652,16 +714,7 @@ class Provider:
         report, in the same sentences for every adapter."""
         smoke = "python scripts/smoke_live.py --provider %s" % self.name
         entry = trust.get("entry") or {}
-        report: Dict[str, Any] = {
-            "status": "unverified",
-            "detail": "",
-            "version": version,
-            "source": None,
-            "record": verified.record_path(self.name),
-            "verified_at": None,
-            "newer_than": None,
-            "missing": [],
-        }
+        report = self._resume_skeleton(version)
         status = trust.get("status")
         if status in ("passed", "newer"):
             verified_at = str(entry.get("verified_at") or "")
@@ -715,6 +768,20 @@ class Provider:
                 detail += unread % (verified.RECORD, trust["problem"])
             report["detail"] = detail
         return report
+
+    def _resume_skeleton(self, version: Optional[str]) -> Dict[str, Any]:
+        """A full :meth:`resume_support` report that has decided nothing yet:
+        ``unverified``, with every key in the order every adapter gives it."""
+        return {
+            "status": "unverified",
+            "detail": "",
+            "version": version,
+            "source": None,
+            "record": verified.record_path(self.name),
+            "verified_at": None,
+            "newer_than": None,
+            "missing": [],
+        }
 
     def resume_args(self, session_id: str) -> List[str]:
         """The arguments that continue ``session_id``; appended after the

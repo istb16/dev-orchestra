@@ -2631,6 +2631,27 @@ def record_resume_pass(root, version=UNLISTED_CLAUDE, mechanism=None):
     )
 
 
+#: A user adapter that is the claude adapter under another name, resuming nothing.
+CLAUDE_OFF_ADAPTER = '''\
+"""The claude adapter under another name, without resumed sessions."""
+
+from __future__ import annotations
+
+from typing import Optional
+
+from orchestrator.providers.claude import ClaudeProvider
+
+
+class ClaudeOffProvider(ClaudeProvider):
+    name = "claude-off"
+    supports_resume = False
+
+
+def build_provider(executable: Optional[str] = None) -> ClaudeOffProvider:
+    return ClaudeOffProvider(executable)
+'''
+
+
 class TestDoctorResume(IsolatedCase):
     def setUp(self):
         super().setUp()
@@ -2638,6 +2659,19 @@ class TestDoctorResume(IsolatedCase):
 
     def support(self, *argv):
         return json.loads(run_cli("doctor", "--json", *argv)[1])["providers"]["claude"]["resume_support"]
+
+    def test_a_claude_subclass_with_resume_off_does_not_resume(self):
+        pretend_claude_is_installed(self)
+        self.write_user_provider("claude_off", CLAUDE_OFF_ADAPTER)
+        self.load_user_providers()
+        found = json.loads(run_cli("doctor", "--json")[1])["providers"]
+        expected = {"status": "unsupported", "detail": "claude-off does not resume sessions"}
+        self.assertEqual(found["claude-off"]["resume_support"], expected)
+        self.assertEqual(found["claude"]["resume_support"]["status"], "verified")
+        _, out, _ = run_cli("doctor")
+        self.assertIn("Resume: NOT SUPPORTED -- claude-off does not resume sessions", out)
+        fast = json.loads(run_cli("doctor", "--fast", "--json")[1])["providers"]
+        self.assertEqual(fast["claude-off"]["resume_support"], {"status": "not-checked"})
 
     def test_an_unlisted_version_is_unverified_until_recorded(self):
         pretend_claude_is_installed(self)

@@ -10,6 +10,15 @@ The public surface covered by that promise is: the configuration schema, the
 
 ## [Unreleased]
 
+### Changed
+
+- **Adapter contract:** `resume_support` is one method on `Provider`; an
+  adapter opts in with `verified_resume()` (its module's `VERIFIED_RESUME`),
+  `resume_help_text()`, `resume_advertises()`, `resume_flags` and the wording
+  attributes. A `ClaudeProvider` subclass with `supports_resume = False` now
+  reports `unsupported` in `doctor`, as a Codex one did; its runs were already
+  fresh.
+
 ## [0.17.0] - 2026-10-02
 
 ### Changed

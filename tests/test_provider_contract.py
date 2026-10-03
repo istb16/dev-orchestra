@@ -23,10 +23,11 @@ from __future__ import annotations
 
 import inspect
 import unittest
+from typing import Any, Dict, Optional
 
 from helpers import CLAUDE_HELP, IsolatedCase
 
-from orchestrator import execution, providers
+from orchestrator import execution, providers, verified
 from orchestrator.providers import base
 
 
@@ -436,6 +437,136 @@ class TestResumingThroughTheBase(IsolatedCase):
             supports_resume = True
 
         self.assertEqual(Declares().resume_support(self.project)["status"], "unspecified")
+
+    def test_an_adapter_that_names_no_table_gets_the_two_key_report(self):
+        unspecified = {
+            "status": "unspecified",
+            "detail": "this adapter does not report whether a resumed session stays read-only",
+        }
+        self.assertEqual(
+            base.Provider().resume_support(self.project),
+            {"status": "unsupported", "detail": "base does not resume sessions"},
+        )
+
+        class Declares(base.Provider):
+            supports_resume = True
+
+        self.assertEqual(Declares().resume_support(self.project), unspecified)
+
+        class DeclaresHooks(base.Provider):
+            supports_resume = True
+            resume_flags = ("--x",)
+
+            def resume_help_text(self) -> Optional[str]:
+                raise AssertionError("the help was read")
+
+            def version(self) -> "tuple[Optional[str], Optional[str]]":
+                raise AssertionError("the version was read")
+
+        self.assertEqual(DeclaresHooks().resume_support(self.project), unspecified)
+
+    def test_a_table_with_no_flags_to_look_for_is_unverified(self):
+        class NoFlags(base.Provider):
+            name = "noflags"
+            supports_resume = True
+
+            def verified_resume(self) -> Optional[Dict[str, Dict[str, Any]]]:
+                return {}
+
+            def resume_help_text(self) -> Optional[str]:
+                raise AssertionError("the help was read")
+
+            def version(self) -> "tuple[Optional[str], Optional[str]]":
+                raise AssertionError("the version was read")
+
+        report = NoFlags().resume_support(self.project)
+        keys = ["status", "detail", "version", "source", "record", "verified_at", "newer_than", "missing"]
+        self.assertEqual(list(report), keys)
+        self.assertEqual(
+            report,
+            {
+                "status": "unverified",
+                "detail": (
+                    "this adapter names no resume flags to look for in its help, so resuming is unverified"
+                ),
+                "version": None,
+                "source": None,
+                "record": verified.record_path("noflags"),
+                "verified_at": None,
+                "newer_than": None,
+                "missing": [],
+            },
+        )
+
+    def bare_table_adapter(
+        self, help_text: Optional[str] = "--x", version_output: Any = ("1.0.0", None), **attrs: Any
+    ):
+        """A plain base.Provider subclass with a table and flags, and none of
+        the base's resume defaults overridden except what ``attrs`` sets."""
+
+        class BareTable(base.Provider):
+            name = "baretable"
+            supports_resume = True
+            resume_flags = ("--x",)
+
+            def verified_resume(self) -> Optional[Dict[str, Dict[str, Any]]]:
+                return {}
+
+            def resume_help_text(self) -> Optional[str]:
+                return help_text
+
+            def version(self) -> "tuple[Optional[str], Optional[str]]":
+                return version_output
+
+        for key, value in attrs.items():
+            setattr(BareTable, key, value)
+        return BareTable()
+
+    def unverified(self, detail, **fields):
+        report = {
+            "status": "unverified",
+            "detail": detail,
+            "version": None,
+            "source": None,
+            "record": verified.record_path("baretable"),
+            "verified_at": None,
+            "newer_than": None,
+            "missing": [],
+        }
+        report.update(fields)
+        return report
+
+    def test_the_base_matcher_advertises_nothing(self):
+        report = self.bare_table_adapter().resume_support(self.project)
+        expected = self.unverified("--x not advertised", status="unsupported", missing=["--x"])
+        self.assertEqual(report, expected)
+        self.assertEqual(list(report), list(expected))
+
+    def test_the_base_wording_for_unread_help_and_version(self):
+        report = self.bare_table_adapter(help_text=None).resume_support(self.project)
+        self.assertEqual(
+            report,
+            self.unverified("could not read the help that lists the resume flags, so resuming is unverified"),
+        )
+        advertised: Dict[str, Any] = {"resume_advertises": lambda self, help_text, flag: True}
+        for version in ((None, "boom"), ("", None)):
+            with self.subTest(version=version):
+                provider = self.bare_table_adapter(version_output=version, **advertised)
+                report = provider.resume_support(self.project)
+                self.assertEqual(report, self.unverified("could not read the CLI's --version"))
+
+    def test_an_adapters_missing_flags_wording_cannot_break_the_report(self):
+        cases = (
+            ("fork flags missing", "fork flags missing"),
+            ("100% required: %s", "100% required: --x, --y"),
+            ("%s missing (%d)", "--x, --y missing (%d)"),
+        )
+        for wording, detail in cases:
+            with self.subTest(wording=wording):
+                provider = self.bare_table_adapter(resume_flags=("--x", "--y"), resume_flags_missing=wording)
+                report = provider.resume_support(self.project)
+                expected = self.unverified(detail, status="unsupported", missing=["--x", "--y"])
+                self.assertEqual(report, expected)
 
     def test_codex_and_mock_say_what_they_do(self):
         codex = providers.get_provider("codex")
