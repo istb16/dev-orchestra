@@ -1309,13 +1309,16 @@ class TestDesignApproveText(ApprovalCase):
         """
         self.write_plan()
         run_cli("review", "run", "--design")
-        target = self.design.consolidated_json_path
+        # Compared as real paths: on macOS the temporary directory is reached
+        # through a symlink (/var -> /private/var), and the command resolves
+        # the repository root while the test's workspace does not.
+        target = os.path.realpath(self.design.consolidated_json_path)
         original = ws.read_json
         started: List[bool] = []
 
         def read_json(path: str, default: Any = None) -> Any:
             data = original(path, default)
-            if path == target and not started:
+            if os.path.realpath(path) == target and not started:
                 started.append(True)
                 review_mod.write_design_snapshot(
                     self.design, self.workspace.plan_path, "", PLAN, "digest-of-the-next-round"
