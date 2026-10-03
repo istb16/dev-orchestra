@@ -752,12 +752,32 @@ class TestImportLayering(IsolatedCase):
             cli_run,
             cli_state,
             cli_workflow,
+            optimization_render,
             review,
             review_common,
             summary,
             wizard,
         )
 
+        rendered = (
+            "_revision_rows",
+            "_counts",
+            "_figure",
+            "_usd",
+            "_scorecard_counts",
+            "_scorecard_spend",
+            "_scorecard_per_accepted",
+            "_scorecard_rates",
+            "_scorecard_cost_row",
+            "_scorecard_rows",
+            "_paired_rows",
+            "_panel_names",
+            "_pair_exclusions",
+            "_context_row",
+            "_context_per_run_row",
+            "_runs_row",
+            "_tools_row",
+        )
         homes = {
             cli_common: ("_ledger", "_refuse_if_exhausted", "_wrote_plan"),
             cli_review: (
@@ -768,13 +788,27 @@ class TestImportLayering(IsolatedCase):
                 "_code_final_pass",
             ),
             cli_run: ("_detached_argv",),
+            optimization_render: rendered,
         }
         for home, names in homes.items():
             for name in names:
                 self.assertIs(getattr(cli, name), getattr(home, name), name)
                 self.assertEqual(getattr(home, name).__module__, home.__name__, name)
+        # Constants carry no __module__, so only where cli finds them is checked.
+        constants = (
+            "_OPT_ROW",
+            "_SCORECARD_OUTCOMES",
+            "_SCORECARD_BIAS",
+            "_SCORECARD_FLOORS",
+            "_SCORECARD_PAIRS",
+            "_SCORECARD_ALONE",
+            "_SCORECARD_EFFORT",
+            "_SCORECARD_TOTAL",
+        )
+        for name in constants:
+            self.assertIs(getattr(cli, name), getattr(optimization_render, name), name)
         self.assertIs(cli._REFUSAL_CAUSE, cli_workflow._REFUSAL_CAUSE)
-        for name in ("_REFUSAL_CAUSE", "_detached_argv"):
+        for name in ("_REFUSAL_CAUSE", "_detached_argv", *rendered, *constants):
             self.assertFalse(hasattr(cli_state, name), name)
         self.assertEqual(review_common.accepted_findings.__module__, "orchestrator.review_common")
         self.assertIs(review.accepted_findings, review_common.accepted_findings)

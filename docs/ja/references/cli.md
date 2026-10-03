@@ -1,4 +1,4 @@
-<!-- translated-from: references/cli.md sha256:788638fa9adc808c5bff8b1650687eb98b4c8efd2dfed04a169dbcfc306b07e5 -->
+<!-- translated-from: references/cli.md sha256:6220dc74949f8430792de47e0ab53d90b4c7465c5622eb2b954b656ee30149f8 -->
 
 > この文書は [references/cli.md](../../../references/cli.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -978,7 +978,7 @@ stderr に一度だけ知らせます。実行中のステージがあるワー�
 | --- | --- |
 | `state show [--json]` | このプロジェクトで記録されたステージのイベントを表示します。 |
 | `state record <stage> <status> [--detail k=v …]` | ステージの結果を追記します（`run` を通して実行されないステージ用）。`state record test ok\|failed` はレビューゲートが読むものです。再テストも同じ方法で記録してください。 |
-| `summary [--json]` | 実行終了時のステージとモデルのサマリーを表示します。plan が承認されていれば `design_approval` も含みます。 |
+| `summary [--json]` | 実行終了時のステージとモデルのサマリーを表示します。plan が承認されていれば `design_approval` も含みます。`--json` は `stages`、`counts`、`tokens` に加えて、テキストに出る内容を持ちます。`design_counts`（`reviewers_ok`、`reviewers_total`。design のレポートがなければ `{}`）、`models`（ロールごとの `provider`、`family`、`version`）、`reviewers`（`id`、`provider`、テキストに出るとおりの `model`、`status`。並びはテキストと同じ）、`skipped`（`refused`、`refused_by`、`design_refused`、`panel_reduced`。名前は `optimization report --json` と同じ）です。 |
 
 <a id="environment-variables"></a>
 

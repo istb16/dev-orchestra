@@ -303,7 +303,9 @@ def cmd_status(args: argparse.Namespace) -> int:
     if args.json:
         _emit_json(status.payload)
         return 0
-    _render_status(status, workspace)
+    warning = _workflow_warning(workspace)
+    for line in _status_lines(status, workspace.relative(workspace.plan_path), warning):
+        _out(line)
     return 0
 
 
@@ -506,35 +508,38 @@ def _status_payload(
     return _Status(payload, plan, design_decision, design_pass, architect_left)
 
 
-def _render_status(status: _Status, workspace: ws.Workspace) -> None:
-    """The text view of `status`, read from the payload wherever it holds the value."""
+def _status_lines(status: _Status, plan_relative: str, warning: List[str]) -> List[str]:
+    """The text view of `status`, read from the payload wherever it holds the value.
+
+    ``warning`` is what ``_workflow_warning`` said about this working tree.
+    """
     payload = status.payload
     plan = status.plan
     review = payload["review"]
     design = payload["design_review"]
-    _out("Verdict: %s" % payload["verdict"].upper())
+    lines = ["Verdict: %s" % payload["verdict"].upper()]
     for reason in payload["reasons"]:
-        _out("  - %s" % reason)
-    for line in _workflow_warning(workspace):
-        _out("  ! %s" % line)
+        lines.append("  - %s" % reason)
+    for line in warning:
+        lines.append("  ! %s" % line)
     if payload["stalls"]:
-        _out("")
-        _out("Stalled stages:")
+        lines.append("")
+        lines.append("Stalled stages:")
         for stall in payload["stalls"]:
-            _out(
+            lines.append(
                 "  %s started %s (%.0fs ago) -- %s"
                 % (stall["stage"], stall["started_at"], stall["elapsed_seconds"], stall["reason"])
             )
     abandoned = payload["abandoned_stages"]
     if abandoned:
-        _out("")
-        _out("Cleared %d stage(s) whose process is gone: %s" % (len(abandoned), ", ".join(abandoned)))
+        lines.append("")
+        lines.append("Cleared %d stage(s) whose process is gone: %s" % (len(abandoned), ", ".join(abandoned)))
     if payload["in_flight"]:
-        _out("")
-        _out("In flight:")
+        lines.append("")
+        lines.append("In flight:")
         for token, entry in payload["in_flight"].items():
-            _out("  %s (%s) since %s" % (entry.get("stage"), token, entry.get("started_at")))
-    _out("")
+            lines.append("  %s (%s) since %s" % (entry.get("stage"), token, entry.get("started_at")))
+    lines.append("")
     line = "Review: round %d/%d, %d accepted, %d blocking" % (
         review["iteration"],
         review["max_review_iterations"],
@@ -547,7 +552,7 @@ def _render_status(status: _Status, workspace: ws.Workspace) -> None:
         line += " -- final fix done, re-test pending (record it, do not re-review)"
     if review["final_fix"] in ("pending", "retest") and review["identical_rounds"] > 1:
         line += "; identical to the previous round"
-    _out(line)
+    lines.append(line)
     line = "Design review: %s, round %d/%d, %d accepted, %d blocking" % (
         status.design_decision.label(),
         design["iteration"],
@@ -559,12 +564,12 @@ def _render_status(status: _Status, workspace: ws.Workspace) -> None:
         line += " -- final revision pending (fold the findings in, do not re-review)"
         if design["identical_rounds"] > 1:
             line += "; identical to the previous round"
-    _out(line)
-    _out(
+    lines.append(line)
+    lines.append(
         "Plan approval: %s"
         % _approval_line(
             payload["design_approval"],
-            workspace.relative(workspace.plan_path),
+            plan_relative,
             status.design_pass,
             status.architect_left,
         )
@@ -577,10 +582,10 @@ def _render_status(status: _Status, workspace: ws.Workspace) -> None:
         line += ", %d reviewer" % plan.reviewer_limit
     for record in plan.conditional:
         line += "; %s %s (%s)" % (record["id"], "added" if record["runs"] else "left out", record["reason"])
-    _out(line)
+    lines.append(line)
     tokens = payload["tokens"]["totals"]
     if tokens["runs"]:
-        _out(
+        lines.append(
             "Tokens: %s billed over %d run(s)%s (dev-orchestra tokens show)"
             % (
                 ws.fmt_int(int(tokens["billed_tokens"] or 0)) or "0",
@@ -589,10 +594,11 @@ def _render_status(status: _Status, workspace: ws.Workspace) -> None:
             )
         )
     if payload["runtime"]["suspended"]:
-        _out(
+        lines.append(
             "Runtime: %.0fs of delegated run time spent asleep was not charged (dev-orchestra budget show)"
             % payload["runtime"]["suspended"]
         )
+    return lines
 
 
 def cmd_design_approve(args: argparse.Namespace) -> int:
@@ -619,26 +625,16 @@ def cmd_design_approve(args: argparse.Namespace) -> int:
     # in between is refused too, and one that starts after this makes the
     # recorded approval stale.
     design_data = ws.read_json(workspace.design_review().consolidated_json_path, {}) or {}
-    round_id = approval_mod.reported_round(design_data)
     latest = approval_mod.design_round(workspace)
-    unreviewed = (
-        latest is not None and latest != round_id and latest == approval_mod.unreviewed_round(design_data)
-    )
-    if unreviewed:
-        # The round ran to the end and nobody reviewed it: there is nothing
-        # left to wait for, and refusing would leave the user no way to go
-        # ahead once the design review budget is spent. The approval is given
-        # over that round, so it is not stale the moment it is recorded. Its
-        # report has no findings -- nobody reviewed it -- which the note below
-        # says, so an empty list does not read as a clean review.
-        round_id = latest
-    elif latest != round_id:
+    approval_round = _approval_round(design_data, latest)
+    if approval_round.refused:
         _err(
             "not recording an approval: the latest design review round has no report yet -- "
             "it is still running or did not finish. Wait for it (or run `review run --design` "
             "again), present its findings, and ask again."
         )
         return 2
+    round_id, unreviewed = approval_round.round_id, approval_round.unreviewed
     open_findings = [str(f.get("id")) for f in approval_mod.open_findings(design_data)]
     of_current_plan = approval_mod.findings_of_current_plan(workspace, plan_text) if open_findings else None
 
@@ -662,26 +658,69 @@ def cmd_design_approve(args: argparse.Namespace) -> int:
             "%s %s (sha256 %s) for workflow %s"
             % ("already approved" if already else "approved", plan_relative, digest[:12], workspace.workflow)
         )
-    if not loaded.design_settings().get("require_approval"):
-        _err("note: design.require_approval is false; recorded anyway")
+    require_approval = bool(loaded.design_settings().get("require_approval"))
+    for note in _approval_notes(require_approval, unreviewed, open_findings, of_current_plan):
+        _err(note)
+    return 0
+
+
+class _ApprovalRound(NamedTuple):
+    """The design round an approval is given over, and whether it may be given at all."""
+
+    round_id: Optional[str]
+    #: The latest round ran to the end with no reviewer's review.
+    unreviewed: bool
+    #: The latest round has no report yet: nothing is recorded.
+    refused: bool
+
+
+def _approval_round(design_data: Dict[str, Any], latest: Optional[str]) -> _ApprovalRound:
+    """The round to approve over, from the design report and the latest round id.
+
+    Both are read by the caller, the report first; this only compares them.
+    """
+    round_id = approval_mod.reported_round(design_data)
+    unreviewed = (
+        latest is not None and latest != round_id and latest == approval_mod.unreviewed_round(design_data)
+    )
     if unreviewed:
-        _err(
+        # The round ran to the end and nobody reviewed it: there is nothing
+        # left to wait for, and refusing would leave the user no way to go
+        # ahead once the design review budget is spent. The approval is given
+        # over that round, so it is not stale the moment it is recorded. Its
+        # report has no findings -- nobody reviewed it -- which the note in
+        # `_approval_notes` says, so an empty list does not read as a clean review.
+        round_id = latest
+    elif latest != round_id:
+        return _ApprovalRound(round_id, False, True)
+    return _ApprovalRound(round_id, unreviewed, False)
+
+
+def _approval_notes(
+    require_approval: bool, unreviewed: bool, open_findings: List[str], of_current_plan: Optional[bool]
+) -> List[str]:
+    """The notes `design approve` prints to stderr after recording, in this order."""
+    notes: List[str] = []
+    if not require_approval:
+        notes.append("note: design.require_approval is false; recorded anyway")
+    if unreviewed:
+        notes.append(
             "note: the latest design review round ended with no reviewer's review (every reviewer "
             "failed), so this plan has no design review findings at all; the approval goes ahead "
             "without one -- say so in the report"
         )
     if open_findings and of_current_plan is False:
-        _err(
+        notes.append(
             "note: %d design finding(s) open from a review of an earlier revision of this plan: %s "
             "-- the revision may already address them; say so in the report"
             % (len(open_findings), ", ".join(open_findings))
         )
     elif open_findings:
-        _err(
+        notes.append(
             "note: %d design finding(s) still open: %s -- approving over them is the user's call; "
             "name them in the report" % (len(open_findings), ", ".join(open_findings))
         )
-    return 0
+    return notes
 
 
 def cmd_state_show(args: argparse.Namespace) -> int:
@@ -716,13 +755,94 @@ def cmd_state_record(args: argparse.Namespace) -> int:
 def cmd_summary(args: argparse.Namespace) -> int:
     loaded = _load_lenient(args.cwd)
     workspace = _workspace(args)
+    payload = _summary_payload(args, loaded, workspace)
+    if args.json:
+        _emit_json(payload)
+        return 0
+    _out("\n".join(_summary_lines(payload)))
+    return 0
+
+
+def _shown(value: Any) -> Any:
+    """``value`` as the text prints it with ``%s``: kept if a string or None, else ``str()``."""
+    return value if value is None or isinstance(value, str) else str(value)
+
+
+def _summary_payload(
+    args: argparse.Namespace, loaded: config_mod.LoadedConfig, workspace: ws.Workspace
+) -> Dict[str, Any]:
+    """Everything `summary` reports, read once; the text and `--json` both come from it."""
     state = workspace.read_state()
     review_data = ws.read_json(workspace.consolidated_json_path, {}) or {}
 
-    lines = ["Workflow:"]
     seen: Dict[str, str] = {}
     for event in state.get("events", []):
         seen[str(event.get("stage"))] = str(event.get("status"))
+    design_counts = (ws.read_json(workspace.design_review().consolidated_json_path, {}) or {}).get("counts")
+    design_tallies: Dict[str, Any] = {}
+    if design_counts:
+        design_tallies = {
+            "reviewers_ok": design_counts.get("reviewers_ok"),
+            "reviewers_total": design_counts.get("reviewers_total"),
+        }
+    counts = review_data.get("counts", {})
+    models: Dict[str, Dict[str, Any]] = {}
+    for key, _title in ROLE_TITLES:
+        spec = loaded.data.get(key) or {}
+        model = spec.get("model") or {}
+        models[key] = {
+            "provider": _shown(spec.get("provider")),
+            "family": _shown(model.get("family", "default")),
+            "version": _shown(model.get("version", "latest")),
+        }
+    # Prefer the models actually resolved during the run; fall back to config.
+    # Either may be malformed: a recorded panel that is not a non-empty list
+    # falls back to config, a configured one that is not a list lists
+    # nothing, and a non-mapping entry is skipped.
+    listed = review_data.get("reviewers")
+    if not isinstance(listed, list) or not listed:
+        listed = loaded.data.get("reviewers")
+    reviewers: List[Dict[str, Any]] = []
+    for reviewer in listed if isinstance(listed, list) else []:
+        if not isinstance(reviewer, dict):
+            continue
+        model = reviewer.get("model")
+        if isinstance(model, dict):
+            model = model.get("family", "default")
+        reviewers.append(
+            {
+                "id": _shown(reviewer.get("id")),
+                "provider": _shown(reviewer.get("provider")),
+                "model": _shown(model or "default"),
+                "status": _shown(reviewer.get("status", "ok")),
+            }
+        )
+    # A round the gate refused is recorded but ran nothing, so it appears in
+    # no other part of this report -- and "what you skipped" is exactly what
+    # the final report is required to name.
+    decided = opt_report.summarise_rounds(state.get("events") or [])
+
+    book = _ledger(args, workspace)
+    return {
+        "stages": seen,
+        "counts": counts,
+        "tokens": book.token_report(),
+        "design_counts": design_tallies,
+        "models": models,
+        "reviewers": reviewers,
+        "skipped": {
+            "refused": decided["refused"],
+            "refused_by": decided["refused_by"],
+            "design_refused": decided["design_refused"],
+            "panel_reduced": decided["panel_reduced"],
+        },
+    }
+
+
+def _summary_lines(payload: Dict[str, Any]) -> List[str]:
+    """The text of `summary`, read from the payload alone."""
+    lines = ["Workflow:"]
+    seen = payload["stages"]
     for stage in (
         "architect",
         "design_review",
@@ -735,13 +855,13 @@ def cmd_summary(args: argparse.Namespace) -> int:
     ):
         if stage in seen:
             lines.append("  %-14s %s" % (stage, "OK" if seen[stage] == "ok" else seen[stage].upper()))
-    design_counts = (ws.read_json(workspace.design_review().consolidated_json_path, {}) or {}).get("counts")
+    design_counts = payload["design_counts"]
     if design_counts:
         lines.append(
             "  %-14s %s/%s ok"
             % ("design reviews", design_counts.get("reviewers_ok"), design_counts.get("reviewers_total"))
         )
-    counts = review_data.get("counts", {})
+    counts = payload["counts"]
     if counts:
         lines.append(
             "  %-14s %s/%s ok" % ("reviews", counts.get("reviewers_ok"), counts.get("reviewers_total"))
@@ -749,62 +869,42 @@ def cmd_summary(args: argparse.Namespace) -> int:
     lines.append("")
     lines.append("Models:")
     for key, title in ROLE_TITLES:
-        spec = loaded.data.get(key) or {}
-        model = spec.get("model") or {}
-        lines.append(
-            "  %-14s %s / %s / %s"
-            % (title, spec.get("provider"), model.get("family", "default"), model.get("version", "latest"))
-        )
+        model = payload["models"][key]
+        lines.append("  %-14s %s / %s / %s" % (title, model["provider"], model["family"], model["version"]))
     lines.append("Review:")
-    # Prefer the models actually resolved during the run; fall back to config.
-    # Either may be malformed: a recorded panel that is not a non-empty list
-    # falls back to config, a configured one that is not a list lists
-    # nothing, and a non-mapping entry is skipped.
-    listed = review_data.get("reviewers")
-    if not isinstance(listed, list) or not listed:
-        listed = loaded.data.get("reviewers")
-    for reviewer in listed if isinstance(listed, list) else []:
-        if not isinstance(reviewer, dict):
-            continue
-        model = reviewer.get("model")
-        if isinstance(model, dict):
-            model = model.get("family", "default")
+    for reviewer in payload["reviewers"]:
         lines.append(
             "  %-14s %s / %s%s"
             % (
-                reviewer.get("id"),
-                reviewer.get("provider"),
-                model or "default",
-                "" if reviewer.get("status", "ok") == "ok" else " (FAILED)",
+                reviewer["id"],
+                reviewer["provider"],
+                reviewer["model"],
+                "" if reviewer["status"] == "ok" else " (FAILED)",
             )
         )
-    # A round the gate refused is recorded but ran nothing, so it appears in
-    # no other part of this report -- and "what you skipped" is exactly what
-    # the final report is required to name.
-    decided = opt_report.summarise_rounds(state.get("events") or [])
-    if decided["refused"] or decided["panel_reduced"] or decided["design_refused"]:
+    skipped = payload["skipped"]
+    if skipped["refused"] or skipped["panel_reduced"] or skipped["design_refused"]:
         lines.append("")
         lines.append("Optimization:")
         # One line per reason, because "what you skipped" is only useful if it
         # says what would make the round run: fixing the tests, or narrowing
         # the change. A single total says neither.
-        for reason, count in sorted(decided["refused_by"].items()):
+        for reason, count in sorted(skipped["refused_by"].items()):
             cause = _REFUSAL_CAUSE.get(reason, reason)
             lines.append("  %-14s %d round(s) not run: %s" % (reason, count, cause))
-        if decided["design_refused"]:
+        if skipped["design_refused"]:
             lines.append(
                 "  %-14s %d design round(s) not run: plan over review.context.max_chars"
-                % ("context", decided["design_refused"])
+                % ("context", skipped["design_refused"])
             )
-        if decided["panel_reduced"]:
+        if skipped["panel_reduced"]:
             lines.append(
                 "  %-14s %d round(s) cut to one reviewer -- one opinion, not an independent second"
-                % ("panel", decided["panel_reduced"])
+                % ("panel", skipped["panel_reduced"])
             )
         lines.append("  %-14s dev-orchestra optimization report" % "detail")
 
-    book = _ledger(args, workspace)
-    report = book.token_report()
+    report = payload["tokens"]
     if report["totals"]["runs"]:
         lines.append("")
         lines.append("Tokens:")
@@ -822,8 +922,4 @@ def cmd_summary(args: argparse.Namespace) -> int:
                 "" if report["complete"] else " (partially reported: a floor)",
             )
         )
-    if args.json:
-        _emit_json({"stages": seen, "counts": counts, "tokens": report})
-        return 0
-    _out("\n".join(lines))
-    return 0
+    return lines
