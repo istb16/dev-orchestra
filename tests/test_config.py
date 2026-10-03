@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import os
 import unittest
+from types import SimpleNamespace
 from typing import Any, ClassVar, Dict
+from unittest import mock
 
 from helpers import IsolatedCase, present
 
 from orchestrator import config as config_mod
-from orchestrator import summary
+from orchestrator import config_policy as policy_mod
+from orchestrator import providers, summary
 
 DESIGN_DEFAULTS = {
     "require_approval": True,
@@ -362,7 +365,7 @@ class TestReadOnlyRawArgs(IsolatedCase):
         self.write(".dev-orchestra.yaml", "version: 1\n" + text)
 
     def entries(self, loaded):
-        return {entry.label: entry for entry in config_mod.read_only_raw_args(loaded)}
+        return {entry.label: entry for entry in policy_mod.read_only_raw_args(loaded)}
 
     def test_layer_of_names_the_file_that_set_the_key(self):
         self.write_global('architect:\n  options:\n    args: ["--add-dir", "g"]\n')
@@ -414,7 +417,7 @@ class TestReadOnlyRawArgs(IsolatedCase):
         loaded = config_mod.load(self.project)
         label = "architect.model_tiers.light.v2"
         self.assertEqual(self.entries(loaded)[label].layer, "project")
-        self.assertEqual(list(config_mod.project_raw_arg_refusals(loaded)), [label])
+        self.assertEqual(list(policy_mod.project_raw_arg_refusals(loaded)), [label])
 
     def test_project_args_are_refused_whatever_they_are(self):
         self.write_project(
@@ -423,17 +426,17 @@ class TestReadOnlyRawArgs(IsolatedCase):
             'reviewers:\n  - id: mine\n    provider: claude\n    options:\n      args: ["--add-dir", "x"]\n'
         )
         loaded = config_mod.load(self.project)
-        refusals = config_mod.project_raw_arg_refusals(loaded)
+        refusals = policy_mod.project_raw_arg_refusals(loaded)
         self.assertEqual(sorted(refusals), ["architect", "reviewers[0]"])
         self.assertIn("set in the project config (.dev-orchestra.yaml)", refusals["architect"])
         self.assertNotIn("../x", refusals["architect"])
-        self.assertEqual(list(config_mod.reviewer_raw_arg_refusals(loaded)), ["mine"])
+        self.assertEqual(list(policy_mod.reviewer_raw_arg_refusals(loaded)), ["mine"])
 
     def test_global_args_are_allowed_when_the_adapter_accepts_them(self):
         self.write_global('architect:\n  options:\n    args: ["--add-dir", "../x"]\n')
         loaded = config_mod.load(self.project)
-        self.assertEqual(config_mod.project_raw_arg_refusals(loaded), {})
-        self.assertEqual(config_mod.read_only_arg_warnings(loaded), [])
+        self.assertEqual(policy_mod.project_raw_arg_refusals(loaded), {})
+        self.assertEqual(policy_mod.read_only_arg_warnings(loaded), [])
 
     def test_warnings_cover_both_layers_and_skip_implement_roles(self):
         self.write_global(
@@ -441,13 +444,54 @@ class TestReadOnlyRawArgs(IsolatedCase):
             'implementer:\n  options:\n    args: ["--tools", "default"]\n'
         )
         self.write_project('orchestrator:\n  options:\n    args: ["--add-dir", "x"]\n')
-        warnings = config_mod.read_only_arg_warnings(config_mod.load(self.project))
+        warnings = policy_mod.read_only_arg_warnings(config_mod.load(self.project))
         self.assertEqual(len(warnings), 3, warnings)
         self.assertTrue(warnings[0].startswith("orchestrator: options.args is set in the project config"))
         expected = "architect: read-only run: '--permission-mode' (token 1 of 2 in options.args)"
         self.assertIn(expected, warnings[1])
         self.assertNotIn("acceptEdits", " ".join(warnings))
         self.assertFalse(any(w.startswith("implementer") for w in warnings))
+
+    def test_warnings_come_in_a_fixed_order(self):
+        """Seat-walk refusals, then write refusals, then each global entry's problems."""
+        self.write_global('architect:\n  options:\n    args: ["--permission-mode", "acceptEdits"]\n')
+        self.write_project(
+            'orchestrator:\n  options:\n    args: ["--add-dir", "x"]\n'
+            "implementer:\n  provider: claude\n  model:\n    family: opus\n"
+            "  options:\n    permission_mode: acceptEdits\n"
+        )
+        warnings = policy_mod.read_only_arg_warnings(config_mod.load(self.project))
+        # The global args are two tokens, so the architect has two problems.
+        raw = (
+            "architect: read-only run: %s (token %d of 2 in options.args) is not accepted; "
+            "read-only claude runs accept only --add-dir <path>"
+        )
+        self.assertEqual(
+            warnings,
+            [
+                "orchestrator: options.args is set in the project config (.dev-orchestra.yaml); read-only "
+                "roles take raw arguments only from the global config or from --extra",
+                "implementer: options.permission_mode / options.args is set in the project config "
+                "(.dev-orchestra.yaml); on claude the permission bypass and raw arguments are taken only "
+                "from the global config or from --extra",
+                raw % ("'--permission-mode'", 1),
+                raw % ("a bare value", 2),
+            ],
+        )
+
+    def test_the_write_refusal_asks_the_policys_provider_lookup(self):
+        """A test replaces ``config_policy.get_provider``, as it does
+        ``review_fanout.get_provider``, and the refusal follows it."""
+        self.write_project(
+            "implementer:\n  provider: claude\n  model:\n    family: opus\n"
+            "  options:\n    permission_mode: acceptEdits\n"
+        )
+        loaded = config_mod.load(self.project)
+        self.assertEqual(list(policy_mod.project_write_refusals(loaded)), ["implementer"])
+        with mock.patch.object(
+            policy_mod, "get_provider", return_value=SimpleNamespace(local_only_options=())
+        ):
+            self.assertEqual(policy_mod.project_write_refusals(loaded), {})
 
     def test_none_of_this_makes_load_raise_or_validate_complain(self):
         self.write_global('architect:\n  options:\n    args: ["--permission-mode", "acceptEdits"]\n')
@@ -1000,8 +1044,6 @@ class TestRoleOptions(IsolatedCase):
 
     def test_absent_options_need_no_provider_lookup(self):
         # The common case must not consult an adapter at all.
-        from orchestrator import providers
-
         original = providers.get_provider
         providers.get_provider = lambda *a, **k: self.fail("provider was consulted")
         try:

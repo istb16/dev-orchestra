@@ -16,7 +16,7 @@ from . import ledger as ledger_mod
 from . import presets as presets_mod
 from . import workflow as workflow_mod
 from . import workspace as ws
-from .providers import MODE_IMPLEMENT, MODE_PLAN
+from .providers import MODE_IMPLEMENT, MODE_PLAN, warned_provider
 from .summary import render_summary
 
 DEFAULT_MODES = {
@@ -389,7 +389,7 @@ def _seed_panel(
         kept: List[Any] = []
         for reviewer in reviewers:
             provider = str(reviewer.get("provider") or "") if isinstance(reviewer, dict) else ""
-            if config_mod.warned_provider(provider):
+            if warned_provider(provider):
                 dropped.append((str(reviewer.get("id")), provider))
             else:
                 kept.append(reviewer)

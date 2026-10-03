@@ -55,6 +55,10 @@ The public surface covered by that promise is: the configuration schema, the
   the adapter's own arguments with `own_args`; changing a field `run` gated
   raises `ValueError`. Hooks can read stdout's JSON lines, decoded once per
   run, from `stdout_events(outcome)` (#233). Overriding `_launch` still works.
+- The read-only seat and write-role refusal policy moves from `config.py` to
+  `config_policy.py`, and `warned_provider` to `providers`, with no change in
+  behaviour; code that calls or replaces those functions has to find them
+  there (#234).
 
 ### Fixed
 

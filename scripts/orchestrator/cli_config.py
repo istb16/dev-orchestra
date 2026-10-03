@@ -10,6 +10,7 @@ import sys
 from typing import Any, Dict, List, Optional, Tuple
 
 from . import config as config_mod
+from . import config_policy as policy_mod
 from . import doctor as doctor_mod
 from . import miniyaml
 from . import optimization as opt_mod
@@ -43,6 +44,7 @@ from .providers import (
     origin_payload,
     provider_origin,
     redact,
+    warned_provider,
 )
 from .summary import render_summary
 
@@ -350,7 +352,7 @@ def cmd_config_set(args: argparse.Namespace) -> int:
     )
     for problem in problems:
         _err("warning: %s" % problem)
-    for warning in config_mod.read_only_arg_warnings(reloaded):
+    for warning in policy_mod.read_only_arg_warnings(reloaded):
         _err("warning: %s" % warning)
     _warn_unenforced(reloaded)
     _warn_unresolvable(effective, args.path.split(".")[0])
@@ -369,7 +371,7 @@ _SEAT_PROVIDER_PATHS = (
 def _project_seat_write_refusal(dotted: str, value: Any, layer: Dict[str, Any], path: str) -> str:
     """Why ``dotted = value`` is not written to the project file, or ""."""
     provider = str(value) if isinstance(value, str) else ""
-    if not provider or not config_mod.warned_provider(provider):
+    if not provider or not warned_provider(provider):
         return ""
     name = os.path.basename(path)
     for pattern in _SEAT_PROVIDER_PATHS:
@@ -383,17 +385,17 @@ def _project_seat_write_refusal(dotted: str, value: Any, layer: Dict[str, Any], 
             entry = reviewers[index] if isinstance(reviewers, list) and index < len(reviewers) else {}
             reviewer_id = entry.get("id") if isinstance(entry, dict) else None
             display = "reviewer %s" % (reviewer_id or index + 1)
-            return config_mod.project_reviewer_refusal(display, provider, name)
+            return policy_mod.project_reviewer_refusal(display, provider, name)
         role, tier = found["role"], found.get("tier")
         display = "%s (tier %s)" % (role, tier) if tier else role
-        return config_mod.project_seat_refusal(display, provider, name, dotted)
+        return policy_mod.project_seat_refusal(display, provider, name, dotted)
     return ""
 
 
 def _warn_unenforced(loaded: config_mod.LoadedConfig) -> None:
     """One ``warning:`` line per read-only seat that cannot be held to reading."""
-    refused = list(config_mod.project_raw_arg_refusals(loaded))
-    for line in config_mod.read_only_enforcement_warnings(loaded.data, refused):
+    refused = list(policy_mod.project_raw_arg_refusals(loaded))
+    for line in policy_mod.read_only_enforcement_warnings(loaded.data, refused):
         _err("warning: %s" % line)
 
 
@@ -488,9 +490,9 @@ def cmd_config_validate(args: argparse.Namespace) -> int:
         origins=loaded.reviewer_origins,
     )
     # Warnings, not problems: they refuse one role's runs, not the file.
-    warnings = config_mod.read_only_arg_warnings(loaded)
-    refused = list(config_mod.project_raw_arg_refusals(loaded))
-    warnings += config_mod.read_only_enforcement_warnings(loaded.data, refused)
+    warnings = policy_mod.read_only_arg_warnings(loaded)
+    refused = list(policy_mod.project_raw_arg_refusals(loaded))
+    warnings += policy_mod.read_only_enforcement_warnings(loaded.data, refused)
     if args.json:
         _emit_json({"valid": not problems, "problems": problems, "warnings": warnings})
     else:
@@ -541,9 +543,9 @@ def cmd_config_suggest_roles(args: argparse.Namespace) -> int:
     outside = found is not None and os.path.normcase(os.path.dirname(found)) != os.path.normcase(root)
 
     # Every refusal comes before git runs.
-    if args.provider and config_mod.warned_provider(args.provider):
+    if args.provider and warned_provider(args.provider):
         display = "suggested reviewers"
-        _err(config_mod.project_reviewer_refusal(display, args.provider, os.path.basename(target)))
+        _err(policy_mod.project_reviewer_refusal(display, args.provider, os.path.basename(target)))
         return 2
     installed = presets_mod.installed_providers()
     provider = args.provider or presets_mod.suggestion_provider(installed)
@@ -779,10 +781,10 @@ def cmd_reviewer_add(args: argparse.Namespace) -> int:
     preview, _fit, preset, _source = _compose_preview(scope, layer)
     role = args.role or "general"
     reviewer_id = args.id or config_mod.suggest_reviewer_id(preview, args.provider, role)
-    if scope == "project" and config_mod.warned_provider(args.provider):
+    if scope == "project" and warned_provider(args.provider):
         # Nothing written: the same refusal a run of this reviewer would meet.
         name = os.path.basename(path)
-        _err(config_mod.project_reviewer_refusal("reviewer %s" % reviewer_id, args.provider, name))
+        _err(policy_mod.project_reviewer_refusal("reviewer %s" % reviewer_id, args.provider, name))
         return 2
     panel = preview.get("reviewers")
     if args.id and any(isinstance(r, dict) and r.get("id") == args.id for r in panel or []):
@@ -914,7 +916,7 @@ def _warn_unenforced_after_write(cwd: Any) -> None:
         return  # the other layer does not parse; the write itself is done
     # The refusals too, as `config set` prints them: a project panel copied
     # from the global one can hold a seat the project file may not set.
-    for warning in config_mod.read_only_arg_warnings(loaded):
+    for warning in policy_mod.read_only_arg_warnings(loaded):
         _err("warning: %s" % warning)
     _warn_unenforced(loaded)
 
@@ -980,9 +982,9 @@ def cmd_reviewer_set(args: argparse.Namespace) -> int:
         _err(str(exc))
         return 2
     # Before either edit path: an extra of the project file is held to it too.
-    if args.provider and scope == "project" and config_mod.warned_provider(args.provider):
+    if args.provider and scope == "project" and warned_provider(args.provider):
         display = "reviewer %s" % (args.id or found.get("id") or index + 1)
-        _err(config_mod.project_reviewer_refusal(display, args.provider, os.path.basename(path)))
+        _err(policy_mod.project_reviewer_refusal(display, args.provider, os.path.basename(path)))
         return 2
     if args.id and _id_taken(preview, index, args.id):
         _err("reviewer id %r already exists" % args.id)

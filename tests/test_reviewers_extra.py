@@ -18,6 +18,7 @@ from test_wizard import ScriptedPrompter, accept_all
 
 from orchestrator import cli, cli_common, doctor, execution, presets
 from orchestrator import config as config_mod
+from orchestrator import config_policy as policy_mod
 from orchestrator import optimization as opt_mod
 from orchestrator import review as review_mod
 from orchestrator import wizard as wizard_mod
@@ -367,25 +368,25 @@ class TestProjectRefusals(ExtrasCase):
     def test_a_project_extra_on_agy_is_refused(self):
         self.write_project({"reviewers_extra": [agy("gem")]})
         loaded = self.loaded()
-        refusals = config_mod.project_raw_arg_refusals(loaded)
+        refusals = policy_mod.project_raw_arg_refusals(loaded)
         position = "reviewers[%d]" % len(FITTED)
         self.assertEqual(list(refusals), [position])
         self.assertIn("reviewers on agy are taken only from the global config", refusals[position])
-        self.assertEqual(list(config_mod.reviewer_raw_arg_refusals(loaded)), ["gem"])
-        self.assertEqual(list(config_mod.reviewer_provider_refusals(loaded)), ["gem"])
+        self.assertEqual(list(policy_mod.reviewer_raw_arg_refusals(loaded)), ["gem"])
+        self.assertEqual(list(policy_mod.reviewer_provider_refusals(loaded)), ["gem"])
 
     def test_a_project_extra_with_raw_arguments_is_refused(self):
         self.write_project({"reviewers_extra": [mock("p1", options={"args": ["--add-dir", "x"]})]})
-        refusals = config_mod.reviewer_raw_arg_refusals(self.loaded())
+        refusals = policy_mod.reviewer_raw_arg_refusals(self.loaded())
         self.assertEqual(list(refusals), ["p1"])
         self.assertIn("options.args is set in the project config", refusals["p1"])
 
     def test_a_global_extra_on_agy_is_warned_and_runs(self):
         self.write_global({"reviewers_extra": [agy("gem")]})
         loaded = self.loaded()
-        self.assertEqual(config_mod.reviewer_raw_arg_refusals(loaded), {})
-        self.assertEqual(config_mod.reviewer_provider_refusals(loaded), {})
-        self.assertEqual(list(config_mod.reviewer_enforcement_warnings(loaded.data)), ["gem"])
+        self.assertEqual(policy_mod.reviewer_raw_arg_refusals(loaded), {})
+        self.assertEqual(policy_mod.reviewer_provider_refusals(loaded), {})
+        self.assertEqual(list(policy_mod.reviewer_enforcement_warnings(loaded.data)), ["gem"])
 
     def test_the_writers_refuse_agy_in_the_project_file(self):
         self.write_project({"reviewers_extra": [mock("p1")]})

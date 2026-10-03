@@ -10,6 +10,7 @@ from helpers import IsolatedCase, user_adapter_source
 
 from orchestrator import config as config_mod
 from orchestrator import doctor, optimization, presets
+from orchestrator import providers as providers_mod
 from orchestrator.providers import get_provider
 
 BOTH = ["claude", "codex"]
@@ -396,7 +397,7 @@ class TestUserAdaptersInPresets(IsolatedCase):
         # is not a constant, so none of them asks it.
         entry = report["providers"]["mycli"]
         self.assertEqual(entry["read_only_enforcement"], {"status": "not-checked"})
-        self.assertIsNone(config_mod._warned_provider("mycli"))
+        self.assertIsNone(providers_mod._warned_provider("mycli"))
 
     def test_a_static_report_may_be_any_mapping(self):
         attributes = (

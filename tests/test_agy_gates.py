@@ -17,6 +17,7 @@ from helpers import IsolatedCase, has_git
 
 from orchestrator import cli, doctor, execution, miniyaml, presets
 from orchestrator import config as config_mod
+from orchestrator import config_policy as policy_mod
 from orchestrator import review as review_mod
 from orchestrator.providers import get_provider, unenforced_warning
 from orchestrator.providers.agy import AgyProvider
@@ -109,18 +110,18 @@ class TestProjectSeatRefusals(_GateCase):
     def test_a_role_on_agy_from_the_project_is_refused(self):
         self.write_project("architect:\n" + AGY_ROLE)
         loaded = config_mod.load(self.project)
-        refusals = config_mod.project_raw_arg_refusals(loaded)
+        refusals = policy_mod.project_raw_arg_refusals(loaded)
         self.assertEqual(list(refusals), ["architect"])
         self.assertIn("taken only from the global config", refusals["architect"])
         self.assertIn("config set --scope global architect.provider agy", refusals["architect"])
-        warnings = config_mod.read_only_enforcement_warnings(loaded.data, list(refusals))
+        warnings = policy_mod.read_only_enforcement_warnings(loaded.data, list(refusals))
         self.assertEqual([line for line in warnings if line.startswith("architect:")], [])
 
     def test_the_same_role_from_the_global_file_is_warned_not_refused(self):
         self.write_global("architect:\n" + AGY_ROLE)
         loaded = config_mod.load(self.project)
-        self.assertEqual(config_mod.project_raw_arg_refusals(loaded), {})
-        warnings = config_mod.read_only_enforcement_warnings(loaded.data)
+        self.assertEqual(policy_mod.project_raw_arg_refusals(loaded), {})
+        warnings = policy_mod.read_only_enforcement_warnings(loaded.data)
         architect = [line for line in warnings if line.startswith("architect:")]
         self.assertEqual(len(architect), 1, warnings)
         self.assertTrue(architect[0].startswith("architect: %s" % UNENFORCED))
@@ -128,7 +129,7 @@ class TestProjectSeatRefusals(_GateCase):
     def test_a_tier_that_names_agy_in_the_project_is_refused_alone(self):
         self.write_project("architect:\n" + AGY_TIER)
         loaded = config_mod.load(self.project, validate_result=False)
-        refusals = config_mod.project_raw_arg_refusals(loaded)
+        refusals = policy_mod.project_raw_arg_refusals(loaded)
         self.assertEqual(list(refusals), ["architect.model_tiers.light"])
         self.assertIn("architect.model_tiers.light.provider", refusals["architect.model_tiers.light"])
 
@@ -139,26 +140,26 @@ class TestProjectSeatRefusals(_GateCase):
         )
         loaded = config_mod.load(self.project, validate_result=False)
         self.assertEqual(
-            sorted(config_mod.project_raw_arg_refusals(loaded)), ["architect", "architect.model_tiers.light"]
+            sorted(policy_mod.project_raw_arg_refusals(loaded)), ["architect", "architect.model_tiers.light"]
         )
 
     def test_a_global_tier_on_agy_is_not_refused(self):
         self.write_global("architect:\n" + AGY_TIER)
         loaded = config_mod.load(self.project, validate_result=False)
-        self.assertEqual(config_mod.project_raw_arg_refusals(loaded), {})
+        self.assertEqual(policy_mod.project_raw_arg_refusals(loaded), {})
 
     def test_a_project_panel_with_an_agy_reviewer_is_refused(self):
         self.write_project("reviewers:\n" + AGY_REVIEWER)
         loaded = config_mod.load(self.project)
-        refusals = config_mod.reviewer_raw_arg_refusals(loaded)
+        refusals = policy_mod.reviewer_raw_arg_refusals(loaded)
         self.assertEqual(list(refusals), ["gem"])
         self.assertIn("reviewers on agy are taken only from the global config", refusals["gem"])
 
     def test_a_global_panel_with_an_agy_reviewer_is_warned(self):
         self.write_global("reviewers:\n" + AGY_REVIEWER)
         loaded = config_mod.load(self.project)
-        self.assertEqual(config_mod.reviewer_raw_arg_refusals(loaded), {})
-        warned = config_mod.reviewer_enforcement_warnings(loaded.data)
+        self.assertEqual(policy_mod.reviewer_raw_arg_refusals(loaded), {})
+        warned = policy_mod.reviewer_enforcement_warnings(loaded.data)
         self.assertEqual(list(warned), ["gem"])
 
     def test_run_refuses_a_project_tier_on_agy(self):
@@ -233,7 +234,7 @@ class TestSeatWalks(_GateCase):
     def test_every_walk_in_order(self):
         loaded = self.load_walk()
         self.assertEqual(
-            [tuple(entry) for entry in config_mod.read_only_raw_args(loaded)],
+            [tuple(entry) for entry in policy_mod.read_only_raw_args(loaded)],
             [
                 ("orchestrator", "orchestrator", "", "mock", ["--add-dir", "o"], "project", "project"),
                 ("orchestrator.model_tiers.g", "orchestrator (tier g)", "", "agy", [], "project", "global"),
@@ -278,10 +279,10 @@ class TestSeatWalks(_GateCase):
                 ("reviewers[2]", "reviewer r-agy", "r-agy", "agy", [], "default", "project"),
             ],
         )
-        refusals = config_mod.project_raw_arg_refusals(loaded)
+        refusals = policy_mod.project_raw_arg_refusals(loaded)
         self.assertEqual(list(refusals.items()), SEAT_WALK_REFUSALS)
         self.assertEqual(
-            list(config_mod.project_provider_refusals(loaded)),
+            list(policy_mod.project_provider_refusals(loaded)),
             [
                 "orchestrator",
                 "orchestrator.model_tiers.own",
@@ -291,17 +292,17 @@ class TestSeatWalks(_GateCase):
                 "reviewers[2]",
             ],
         )
-        self.assertEqual(list(config_mod.reviewer_raw_arg_refusals(loaded)), ["r-args", "r-agy"])
+        self.assertEqual(list(policy_mod.reviewer_raw_arg_refusals(loaded)), ["r-args", "r-agy"])
         self.assertEqual(
-            config_mod.read_only_arg_warnings(loaded), [message for _, message in SEAT_WALK_REFUSALS]
+            policy_mod.read_only_arg_warnings(loaded), [message for _, message in SEAT_WALK_REFUSALS]
         )
         self.assertEqual(
-            [label for label, _, _ in config_mod._enforcement_warned_seats(loaded.data)],
+            [label for label, _, _ in policy_mod._enforcement_warned_seats(loaded.data)],
             ["orchestrator.model_tiers.g", "orchestrator.model_tiers.a.b", "architect", "reviewers[2]"],
         )
         unenforced, _ = self.unenforced()
         self.assertEqual(
-            config_mod._enforcement_warned_seats(loaded.data, list(refusals)),
+            policy_mod._enforcement_warned_seats(loaded.data, list(refusals)),
             [
                 ("orchestrator.model_tiers.g", "", "orchestrator (tier g): " + unenforced),
                 ("architect", "", "architect: " + unenforced),
@@ -313,10 +314,10 @@ class TestSeatWalks(_GateCase):
         data = {"orchestrator": 3, "architect": architect}
         unenforced, _ = self.unenforced()
         self.assertEqual(
-            config_mod._enforcement_warned_seats(data),
+            policy_mod._enforcement_warned_seats(data),
             [("architect.model_tiers.0", "", "architect (tier 0): " + unenforced)],
         )
-        self.assertEqual(config_mod.read_only_enforcement_warnings(data, ["architect.model_tiers.0"]), [])
+        self.assertEqual(policy_mod.read_only_enforcement_warnings(data, ["architect.model_tiers.0"]), [])
 
     def test_doctor_on_the_same_files(self):
         # Without the non-mapping reviewer: doctor does not skip one.
@@ -355,7 +356,7 @@ class TestSeatWalks(_GateCase):
         )
         loaded = config_mod.load(self.project, validate_result=False)
         self.assertEqual(
-            [tuple(entry) for entry in config_mod.read_only_raw_args(loaded) if entry.reviewer_id],
+            [tuple(entry) for entry in policy_mod.read_only_raw_args(loaded) if entry.reviewer_id],
             [
                 ("reviewers[0]", "reviewer base", "base", "mock", [], "default", "global"),
                 ("reviewers[1]", "reviewer g-args", "g-args", "mock", ["--add-dir", "g"], "global", "global"),
@@ -372,9 +373,9 @@ class TestSeatWalks(_GateCase):
                 ("reviewers[4]", "reviewer p-plain", "p-plain", "mock", [], "default", "project"),
             ],
         )
-        refusals = config_mod.project_raw_arg_refusals(loaded)
+        refusals = policy_mod.project_raw_arg_refusals(loaded)
         self.assertEqual(list(refusals.items()), [("reviewers[3]", PROJECT_ARGS % "reviewer p-args")])
-        self.assertEqual(list(config_mod.project_provider_refusals(loaded)), ["reviewers[3]", "reviewers[4]"])
+        self.assertEqual(list(policy_mod.project_provider_refusals(loaded)), ["reviewers[3]", "reviewers[4]"])
 
     def test_doctor_on_a_role_that_is_not_a_mapping(self):
         self.write_global("architect: 3\n")
@@ -387,19 +388,19 @@ class TestSeatWalks(_GateCase):
 class TestProjectWriteRefusals(_GateCase):
     def test_the_bypass_from_the_project_is_refused(self):
         self.write_project("implementer:\n" + AGY_ROLE + "  options:\n    skip_permissions: false\n")
-        refusals = config_mod.project_write_refusals(config_mod.load(self.project))
+        refusals = policy_mod.project_write_refusals(config_mod.load(self.project))
         self.assertEqual(list(refusals), ["implementer"])
         self.assertIn("taken only from the global config or from --extra", refusals["implementer"])
 
     def test_raw_arguments_from_the_project_are_refused_on_agy(self):
         self.write_project("review_fixer:\n" + AGY_ROLE + '  options:\n    args: ["--x"]\n')
-        refusals = config_mod.project_write_refusals(config_mod.load(self.project))
+        refusals = policy_mod.project_write_refusals(config_mod.load(self.project))
         self.assertEqual(list(refusals), ["review_fixer"])
 
     def test_agy_itself_and_the_global_bypass_are_allowed(self):
         self.write_global("implementer:\n  options:\n    skip_permissions: true\n")
         self.write_project("implementer:\n" + AGY_ROLE)
-        self.assertEqual(config_mod.project_write_refusals(config_mod.load(self.project)), {})
+        self.assertEqual(policy_mod.project_write_refusals(config_mod.load(self.project)), {})
 
     def test_a_project_bypass_is_refused_by_run_before_anything_is_started(self):
         self.write_project("implementer:\n" + AGY_ROLE + "  options:\n    skip_permissions: true\n")
@@ -689,7 +690,7 @@ class TestTheFitOnAgyAlone(_GateCase):
         for seat in self.FITTED:
             self.assertEqual(len([w for w in warnings if w.startswith("%s: %s" % (seat, UNENFORCED))]), 1)
         loaded = config_mod.load(self.project)
-        self.assertEqual(list(config_mod.reviewer_enforcement_warnings(loaded.data)), ["agy-general"])
+        self.assertEqual(list(policy_mod.reviewer_enforcement_warnings(loaded.data)), ["agy-general"])
 
     def test_doctor_notes_the_seats_and_finds_no_problem(self):
         report = doctor.collect(self.project, probe_models=False)
@@ -716,9 +717,9 @@ class TestTheFitOnAgyAlone(_GateCase):
         self.write_project("architect:\n" + AGY_ROLE)
         loaded = config_mod.load(self.project)
         self.assertEqual(loaded.data["orchestrator"]["provider"], "agy")
-        refusals = config_mod.project_raw_arg_refusals(loaded)
+        refusals = policy_mod.project_raw_arg_refusals(loaded)
         self.assertEqual(list(refusals), ["architect"])
-        warnings = config_mod.read_only_enforcement_warnings(loaded.data, list(refusals))
+        warnings = policy_mod.read_only_enforcement_warnings(loaded.data, list(refusals))
         self.assertTrue([w for w in warnings if w.startswith("orchestrator: %s" % UNENFORCED)], warnings)
         report = doctor.collect(self.project, probe_models=False)
         problems = " ".join(report["problems"])
@@ -747,8 +748,8 @@ class TestSeedingTheFittedPanel(_GateCase):
         self.assertNotIn("not copied", out)
         loaded = config_mod.load(self.project)
         self.assertEqual([reviewer["id"] for reviewer in loaded.reviewers()], ["agy-general", "m1"])
-        self.assertEqual(config_mod.reviewer_raw_arg_refusals(loaded), {})
-        self.assertEqual(list(config_mod.reviewer_enforcement_warnings(loaded.data)), ["agy-general"])
+        self.assertEqual(policy_mod.reviewer_raw_arg_refusals(loaded), {})
+        self.assertEqual(list(policy_mod.reviewer_enforcement_warnings(loaded.data)), ["agy-general"])
         self.assertIn("warning: reviewer agy-general: %s" % UNENFORCED, err)
         self.assertNotIn("comes from the project config", err)
 

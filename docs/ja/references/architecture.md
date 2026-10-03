@@ -1,4 +1,4 @@
-<!-- translated-from: references/architecture.md sha256:c1110243c62a02d857d94e18dabb537947d9948071137bca590abc16b8d57450 -->
+<!-- translated-from: references/architecture.md sha256:b6d80f740dc3b4777db0630b7b811642bc931aeb0ca8a2ca08cfdd6ead369930 -->
 
 > この文書は [references/architecture.md](../../../references/architecture.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -52,7 +52,7 @@ flowchart TD
 | --- | --- | --- |
 | スキル | `skills/dev-orchestra/SKILL.md`, `references/` | オーケストレーターが何をいつ決めるか |
 | CLI | `scripts/dev_orchestra.py`、`scripts/orchestrator/cli.py`（引数の解析と入口）と `cli_*.py`（コマンドのまとまりごとのモジュール） | エージェントが呼び出せる決定的な操作 |
-| ドメイン | `config.py`、`review_*.py`（`review.py` が再公開する）、`workspace.py`、`wizard.py`、`doctor.py` | 設定のレイヤリング、スナップショット取得、パース、重複排除、トリアージ、診断 |
+| ドメイン | `config.py`、`config_policy.py`、`review_*.py`（`review.py` が再公開する）、`workspace.py`、`wizard.py`、`doctor.py` | 設定のレイヤリング、プロジェクトファイル由来の席と書き込みオプションを拒否する方針、スナップショット取得、パース、重複排除、トリアージ、診断 |
 | provider | `scripts/orchestrator/providers/` | CLI の構文とモデル名を知っている唯一のコード |
 
 provider レイヤーより上のコードは、`claude` が `--model` を使い `codex` が `-m` を使うことを一切知りません。スキルレイヤーより下のコードは、設計ステージが必要かどうかを一切判断しません。

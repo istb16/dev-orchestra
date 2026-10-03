@@ -17,6 +17,10 @@ ROLE_TITLES = (
 
 def render_summary(data: Dict[str, Any], origins: Sequence[config_mod.ReviewerOrigin] = ()) -> str:
     """``origins``, parallel to the panel, marks each extra with the file it came from."""
+    # lazy: config_policy loads the provider registry, which runs the user adapters;
+    # summary must import without it
+    from .config_policy import read_only_enforcement_warnings
+
     lines = ["Configuration", ""]
     for key, title in ROLE_TITLES:
         spec = data.get(key) or {}
@@ -67,7 +71,7 @@ def render_summary(data: Dict[str, Any], origins: Sequence[config_mod.ReviewerOr
         "    plan approval: %s  (design.require_approval)"
         % ("required" if _approval_required(data) else "not required")
     )
-    for warning in config_mod.read_only_enforcement_warnings(data):
+    for warning in read_only_enforcement_warnings(data):
         lines.append("  Warning: %s" % warning)
     lines.append("")
     return "\n".join(lines)
