@@ -117,6 +117,7 @@ def _report_run_warnings(runs: List[Any], warned: Optional[Dict[str, str]] = Non
 def _refuse_if_over_context(
     workspace: ws.Workspace,
     stage: str,
+    *,
     budget_chars: int,
     max_chars: int,
     delivery_chars: int,
@@ -462,6 +463,19 @@ _DESIGN = _ReviewKind(
 )
 
 
+#: What both paths print when there is no panel to run.
+_NO_REVIEWERS = "No reviewers configured -- skipping the independent-review stage."
+
+
+def _save_skipped_round(
+    workspace: ws.Workspace, iteration: int, lineage: str, round_id: Optional[str]
+) -> int:
+    """Record a round with no panel against the freeze it occupies. Exits 0."""
+    data = review_mod.build_consolidation(workspace, [], [], iteration, lineage, completed_round=round_id)
+    review_mod.save_consolidation(workspace, data)
+    return 0
+
+
 def _only_reviewers(configured: List[Dict[str, Any]], only: List[str]) -> List[Dict[str, Any]]:
     """The configured reviewers ``--only`` names, by id or by role."""
     wanted = set(only)
@@ -547,21 +561,23 @@ def _run_panel(
         runs = review_mod.run_reviews(
             reviewers,
             ctx.workspace,
-            parallel=not args.sequential and bool(settings.get("parallel", True)),
-            timeout=batch_timeout,
-            extra_context=extra_context,
-            idle_timeout=idle_timeout,
-            max_findings=max_findings,
-            over_budget=over_budget,
-            budget_chars=budget_chars,
-            # The same number to both: `prompt_for` decides the delivery and
-            # `run_reviews` records and words it, and a round that took them
-            # from two places would sooner or later take two different ones.
-            inline_chars=inline_chars,
-            prompt_for=prompt_for,
-            surrounding=surrounding,
-            refusals=_reviewer_refusals(ctx.loaded, reviewers),
-            activity_for=_progress_echo() if getattr(args, "progress", False) else None,
+            review_mod.FanoutOptions(
+                parallel=not args.sequential and bool(settings.get("parallel", True)),
+                timeout=batch_timeout,
+                extra_context=extra_context,
+                idle_timeout=idle_timeout,
+                max_findings=max_findings,
+                over_budget=over_budget,
+                budget_chars=budget_chars,
+                # The same number to both: `prompt_for` decides the delivery and
+                # `run_reviews` records and words it, and a round that took them
+                # from two places would sooner or later take two different ones.
+                inline_chars=inline_chars,
+                prompt_for=prompt_for,
+                surrounding=surrounding,
+                refusals=_reviewer_refusals(ctx.loaded, reviewers),
+                activity_for=_progress_echo() if getattr(args, "progress", False) else None,
+            ),
         )
     except review_mod.ReviewError as exc:
         book.end(token, "failed", {"error": str(exc)})
@@ -950,13 +966,13 @@ def _run_design_review(args: argparse.Namespace, loaded: config_mod.LoadedConfig
     refusal = _refuse_if_over_context(
         workspace,
         "design_review",
-        budget_chars,
-        max_chars,
-        len(plan_text),
-        inline_chars,
-        args.force,
-        iteration,
-        {"plan_chars": len(plan_text), "request_chars": len(request_text)},
+        budget_chars=budget_chars,
+        max_chars=max_chars,
+        delivery_chars=len(plan_text),
+        inline_chars=inline_chars,
+        force=args.force,
+        iteration=iteration,
+        detail={"plan_chars": len(plan_text), "request_chars": len(request_text)},
     )
     if refusal is not None:
         return refusal
@@ -968,12 +984,8 @@ def _run_design_review(args: argparse.Namespace, loaded: config_mod.LoadedConfig
         # Recorded against the plan that was actually frozen, so the round this
         # skip occupies is the one the next real round continues from rather
         # than a phantom that quietly spends the budget.
-        _out("No reviewers configured -- skipping the independent-review stage.")
-        data = review_mod.build_consolidation(
-            workspace, [], [], iteration, lineage, completed_round=meta.get("round_id")
-        )
-        review_mod.save_consolidation(workspace, data)
-        return 0
+        _out(_NO_REVIEWERS)
+        return _save_skipped_round(workspace, iteration, lineage, meta.get("round_id"))
 
     # No gate and no panel reduction. There is no test result to judge a plan
     # by and no diff to measure, and a design decision is precisely where
@@ -1038,47 +1050,46 @@ def _run_design_review(args: argparse.Namespace, loaded: config_mod.LoadedConfig
     return _print_round(ctx, runs, run_dicts, data, {"plan": meta["plan"]})
 
 
-def cmd_review_run(args: argparse.Namespace) -> int:
-    loaded = _load_or_die(args.cwd)
-    # One run's override of review.context.surrounding, for measuring what the
-    # context does on one snapshot. None when not given, and then nothing below
-    # differs from a run without the flag.
-    override = getattr(args, "surrounding", None)
+def _refuse_design_only_flags(
+    args: argparse.Namespace, override: Optional[str], declared: bool
+) -> Optional[int]:
+    """The code review's flags on a design round, which has no use for either."""
     if args.design and override:
         _err("--surrounding applies to the code review only: a design round carries no surrounding context.")
         return 2
-    declared = bool(getattr(args, "high_risk", False))
     if args.design and declared:
         _err("--high-risk applies to the code review only: a design round runs every configured reviewer.")
         return 2
-    if args.design:
-        return _run_design_review(args, loaded)
-    workspace = _workspace(args)
+    return None
+
+
+def _code_panel(
+    args: argparse.Namespace, loaded: config_mod.LoadedConfig, workspace: ws.Workspace
+) -> Union[int, Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]]:
+    """``(configured, reviewers)`` for a code round, or the exit code of one with no panel to run."""
     configured = loaded.reviewers()
     reviewers = configured
     if args.only:
         reviewers = _only_reviewers(configured, args.only)
     if not reviewers and not args.only:
-        _out("No reviewers configured -- skipping the independent-review stage.")
+        _out(_NO_REVIEWERS)
         lineage = _lineage(args, workspace)
         meta = workspace.read_snapshot_meta()
-        data = review_mod.build_consolidation(
-            workspace,
-            [],
-            [],
-            _iteration(args, workspace, lineage),
-            lineage,
-            completed_round=meta.get("round_id"),
+        return _save_skipped_round(
+            workspace, _iteration(args, workspace, lineage), lineage, meta.get("round_id")
         )
-        review_mod.save_consolidation(workspace, data)
-        return 0
     if not reviewers:
         return _refuse_unmatched_only(args.only)
+    return configured, reviewers
 
-    settings = loaded.review_settings()
-    context_settings = dict(loaded.context_settings())
-    if override:
-        context_settings["surrounding"] = override
+
+def _ensure_snapshot(
+    args: argparse.Namespace,
+    workspace: ws.Workspace,
+    settings: Dict[str, Any],
+    context_settings: Dict[str, Any],
+) -> Optional[int]:
+    """Take the snapshot a round with none on disk reviews, or the exit code of a failed one."""
     if not os.path.isfile(workspace.snapshot_path):
         try:
             review_mod.create_snapshot(
@@ -1091,17 +1102,31 @@ def cmd_review_run(args: argparse.Namespace) -> int:
         except review_mod.ReviewError as exc:
             _err(str(exc))
             return 2
-    lineage = _lineage(args, workspace)
-    iteration = _iteration(args, workspace, lineage)
-    max_iterations = int(settings.get("max_review_iterations", 2))
-    refusal = _refuse_if_rounds_spent(_CODE, iteration, max_iterations, args.force)
-    if refusal is not None:
-        return refusal
+    return None
 
-    meta = workspace.read_snapshot_meta()
-    refusal = _refuse_incremental_measurement(override, meta)
-    if refusal is not None:
-        return refusal
+
+class _GatedPanel(NamedTuple):
+    """A code round the gate let through: its plan, who runs, and who sat it out."""
+
+    plan: opt_mod.Plan
+    reviewers: List[Dict[str, Any]]
+    excluded: set
+
+
+def _plan_and_gate(
+    args: argparse.Namespace,
+    loaded: config_mod.LoadedConfig,
+    settings: Dict[str, Any],
+    workspace: ws.Workspace,
+    meta: Dict[str, Any],
+    reviewers: List[Dict[str, Any]],
+    declared: bool,
+    iteration: int,
+) -> Union[int, _GatedPanel]:
+    """Decide the round and say what it decided, or the exit code of the gate's refusal.
+
+    The refusal is recorded before any ledger entry exists.
+    """
     plan = _round_plan(loaded, settings, workspace, meta, reviewers, declared, bool(args.only))
     if plan.escalated:
         _err("note: %s" % plan.escalation_note())
@@ -1135,9 +1160,36 @@ def cmd_review_run(args: argparse.Namespace) -> int:
         )
         _err(plan.gate_note())
         return ledger_mod.EXIT_BUDGET_EXHAUSTED
+    return _GatedPanel(plan, reviewers, excluded)
 
-    # After the gate, because a round the gate already refused has no reason to
-    # be measured, and before anything is charged or run.
+
+class _RoundSize(NamedTuple):
+    """What a code round measured before it was allowed to run."""
+
+    max_chars: int
+    inline_chars: int
+    adoption: context_mod.Adoption
+    budget_chars: int
+    #: Whether ``--force`` sent the round past ``review.context.max_chars``.
+    over_budget: bool
+    #: Whether this ``--surrounding`` run is the second of a pair.
+    rerun: bool
+
+
+def _size_round(
+    args: argparse.Namespace,
+    workspace: ws.Workspace,
+    meta: Dict[str, Any],
+    context_settings: Dict[str, Any],
+    plan: opt_mod.Plan,
+    override: Optional[str],
+    lineage: str,
+    iteration: int,
+) -> Union[int, _RoundSize]:
+    """Adopt the context and measure the round, or the exit code of a refusal for its size.
+
+    The context refusal is recorded before any ledger entry exists.
+    """
     max_chars = int(context_settings.get("max_chars") or 0)
     inline_chars = int(context_settings.get("inline_chars") or 0)
     change_chars = review_mod.snapshot_chars(workspace)
@@ -1161,13 +1213,13 @@ def cmd_review_run(args: argparse.Namespace) -> int:
     refusal = _refuse_if_over_context(
         workspace,
         "review",
-        budget_chars,
-        max_chars,
-        change_chars,
-        inline_chars,
-        args.force,
-        iteration,
-        {"optimization": plan.to_dict()},
+        budget_chars=budget_chars,
+        max_chars=max_chars,
+        delivery_chars=change_chars,
+        inline_chars=inline_chars,
+        force=args.force,
+        iteration=iteration,
+        detail={"optimization": plan.to_dict()},
     )
     if refusal is not None:
         return refusal
@@ -1177,7 +1229,99 @@ def cmd_review_run(args: argparse.Namespace) -> int:
         return refusal
     # Forced past it: the round runs, and every record of it says so.
     over_budget = review_mod.over_context(budget_chars, max_chars)
+    return _RoundSize(max_chars, inline_chars, adoption, budget_chars, over_budget, rerun)
 
+
+def cmd_review_run(args: argparse.Namespace) -> int:
+    loaded = _load_or_die(args.cwd)
+    # One run's override of review.context.surrounding, for measuring what the
+    # context does on one snapshot. None when not given, and then nothing below
+    # differs from a run without the flag.
+    override = getattr(args, "surrounding", None)
+    declared = bool(getattr(args, "high_risk", False))
+    refusal = _refuse_design_only_flags(args, override, declared)
+    if refusal is not None:
+        return refusal
+    if args.design:
+        return _run_design_review(args, loaded)
+    workspace = _workspace(args)
+    found = _code_panel(args, loaded, workspace)
+    if isinstance(found, int):
+        return found
+    configured, reviewers = found
+
+    settings = loaded.review_settings()
+    context_settings = dict(loaded.context_settings())
+    if override:
+        context_settings["surrounding"] = override
+    refusal = _ensure_snapshot(args, workspace, settings, context_settings)
+    if refusal is not None:
+        return refusal
+    lineage = _lineage(args, workspace)
+    iteration = _iteration(args, workspace, lineage)
+    max_iterations = int(settings.get("max_review_iterations", 2))
+    refusal = _refuse_if_rounds_spent(_CODE, iteration, max_iterations, args.force)
+    if refusal is not None:
+        return refusal
+
+    meta = workspace.read_snapshot_meta()
+    refusal = _refuse_incremental_measurement(override, meta)
+    if refusal is not None:
+        return refusal
+    gated = _plan_and_gate(args, loaded, settings, workspace, meta, reviewers, declared, iteration)
+    if isinstance(gated, int):
+        return gated
+    plan, reviewers, excluded = gated
+
+    # After the gate, because a round the gate already refused has no reason to
+    # be measured, and before anything is charged or run.
+    size = _size_round(args, workspace, meta, context_settings, plan, override, lineage, iteration)
+    if isinstance(size, int):
+        return size
+    reviewers = _warn_and_limit(args, plan, reviewers)
+
+    book = _open_ledger(args, workspace)
+    refusal = _refuse_if_runtime_spent(book, "review", args.force)
+    if refusal is not None:
+        return refusal
+    ctx = _RoundContext(args, loaded, settings, workspace, book, _CODE, iteration)
+    panel = _run_panel(
+        ctx,
+        reviewers,
+        max_findings=plan.max_findings,
+        over_budget=size.over_budget,
+        budget_chars=size.budget_chars,
+        inline_chars=size.inline_chars,
+        extra_context=args.context or "",
+        surrounding=size.adoption,
+    )
+    if isinstance(panel, int):
+        return panel
+    runs = panel.runs
+    context_on = size.adoption.mode != "none"
+
+    data, detail, measurement, stale = _consolidate_code_round(
+        ctx, panel, meta, plan, size, excluded, configured, override, lineage
+    )
+    run_dicts = detail["reviewers"]
+    _end_round(ctx, panel.token, detail, runs)
+    _round_notes(ctx, detail["identical_rounds"], stale, size.rerun)
+    _cap_notes(runs, plan.max_findings)
+
+    return _print_round(
+        ctx,
+        runs,
+        run_dicts,
+        data,
+        _code_payload_extra(plan, size.adoption, context_on, measurement),
+        _surrounding_run_lines(size.adoption, override, context_on),
+    )
+
+
+def _warn_and_limit(
+    args: argparse.Namespace, plan: opt_mod.Plan, reviewers: List[Dict[str, Any]]
+) -> List[Dict[str, Any]]:
+    """Print the gate's warning and apply the plan's reviewer limit, returning who runs."""
     if plan.gate == opt_mod.GATE_WARN:
         _err(plan.gate_note())
     if plan.reviewer_limit is not None and not args.only:
@@ -1187,28 +1331,29 @@ def cmd_review_run(args: argparse.Namespace) -> int:
             "raise optimization.level or the low_risk thresholds to keep it."
             % (plan.reviewer_note(), ", ".join(str(r.get("id")) for r in reviewers))
         )
+    return reviewers
 
-    book = _open_ledger(args, workspace)
-    refusal = _refuse_if_runtime_spent(book, "review", args.force)
-    if refusal is not None:
-        return refusal
-    max_findings = plan.max_findings
-    ctx = _RoundContext(args, loaded, settings, workspace, book, _CODE, iteration)
-    panel = _run_panel(
-        ctx,
-        reviewers,
-        max_findings=max_findings,
-        over_budget=over_budget,
-        budget_chars=budget_chars,
-        inline_chars=inline_chars,
-        extra_context=args.context or "",
-        surrounding=adoption,
-    )
-    if isinstance(panel, int):
-        return panel
-    runs = panel.runs
+
+def _consolidate_code_round(
+    ctx: _RoundContext,
+    panel: _PanelRun,
+    meta: Dict[str, Any],
+    plan: opt_mod.Plan,
+    size: _RoundSize,
+    excluded: set,
+    configured: List[Dict[str, Any]],
+    override: Optional[str],
+    lineage: str,
+) -> Tuple[Dict[str, Any], Dict[str, Any], Optional[Dict[str, Any]], List[str]]:
+    """Account, consolidate and save a code round that ran.
+
+    Returns ``(data, detail, measurement, stale)``: the saved consolidation,
+    the round's event detail, its measurement block (None without
+    ``--surrounding``), and the reviewers whose reports were stale.
+    """
+    workspace, iteration = ctx.workspace, ctx.iteration
+    adoption, rerun = size.adoption, size.rerun
     context_on = adoption.mode != "none"
-
     run_dicts = _account_runs(ctx, panel)
     # Consolidate from every configured reviewer's report, not only the ones
     # that just ran: with --only that would otherwise overwrite the report with
@@ -1232,7 +1377,7 @@ def cmd_review_run(args: argparse.Namespace) -> int:
     _record_triage_at_build(data, override, rerun)
     review_mod.save_consolidation(workspace, data)
     repeats = _round_repeats(ctx, data, rerun)
-    detail = {
+    detail: Dict[str, Any] = {
         "iteration": iteration,
         # Which freeze this event paid for: the sha repeats when the same tree
         # is frozen again, this does not. See ``review_mod.round_key``.
@@ -1245,7 +1390,12 @@ def cmd_review_run(args: argparse.Namespace) -> int:
     measurement = None
     if override:
         measurement = _measurement_block(
-            meta, workspace, book, override, rerun, _measurement_inputs(args, plan, inline_chars, max_chars)
+            meta,
+            workspace,
+            ctx.book,
+            override,
+            rerun,
+            _measurement_inputs(ctx.args, plan, size.inline_chars, size.max_chars),
         )
         detail["measurement"] = measurement
     if context_on and any("surrounding" in run for run in run_dicts):
@@ -1255,8 +1405,11 @@ def cmd_review_run(args: argparse.Namespace) -> int:
         # fell over first showed no one any context, and must not be counted
         # as a round with it.
         detail["surrounding"] = adoption.summary()
-    _end_round(ctx, panel.token, detail, runs)
-    _round_notes(ctx, repeats, stale, rerun)
+    return data, detail, measurement, stale
+
+
+def _cap_notes(runs: List[review_mod.ReviewerRun], max_findings: int) -> None:
+    """Note each reviewer that returned more findings than the plan's cap."""
     if max_findings:
         for run in runs:
             if run.findings > max_findings:
@@ -1266,14 +1419,20 @@ def cmd_review_run(args: argparse.Namespace) -> int:
                     % (run.reviewer.get("id"), run.findings, max_findings)
                 )
 
+
+def _code_payload_extra(
+    plan: opt_mod.Plan,
+    adoption: context_mod.Adoption,
+    context_on: bool,
+    measurement: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """The code round's keys beside the common ones in its printed payload."""
     payload_extra: Dict[str, Any] = {"optimization": plan.to_dict()}
     if context_on:
         payload_extra["surrounding"] = adoption.record()
     if measurement is not None:
         payload_extra["measurement"] = measurement
-    return _print_round(
-        ctx, runs, run_dicts, data, payload_extra, _surrounding_run_lines(adoption, override, context_on)
-    )
+    return payload_extra
 
 
 def _condition_excluded(workspace: ws.Workspace) -> set:
@@ -1424,6 +1583,39 @@ def cmd_review_status(args: argparse.Namespace) -> int:
     # Read only: stalls are `status`'s to clear.
     book = _ledger(args, base)
     events = [event for event in (base.read_state().get("events") or []) if isinstance(event, dict)]
+    budget = _status_budget(args, loaded, settings, base, book, events, blocking, iteration, accepted)
+    coverage = _status_coverage(data)
+    payload, decision = _status_payload(args, loaded, base, data, budget, blocking, iteration, coverage)
+    if args.json:
+        _emit_json(payload)
+    else:
+        _print_status(
+            args, loaded, data, payload, decision, budget, severities, blocking, iteration, coverage
+        )
+    return 0
+
+
+class _StatusBudget(NamedTuple):
+    """The round budget ``review status`` reports, and the final pass it allows."""
+
+    key: str
+    max_iterations: int
+    final: Dict[str, Any]
+    repeats: int
+
+
+def _status_budget(
+    args: argparse.Namespace,
+    loaded: config_mod.LoadedConfig,
+    settings: Dict[str, Any],
+    base: ws.Workspace,
+    book: ledger_mod.Ledger,
+    events: List[Dict[str, Any]],
+    blocking: List[Dict[str, Any]],
+    iteration: int,
+    accepted: bool,
+) -> _StatusBudget:
+    """The budget of the review ``--design`` picks, and where its final pass stands."""
     # Each budget is reported under the name of the setting it came from, so a
     # consumer holding both payloads can tell which one it was handed. The code
     # review's key is what it always was; only --design carries the other name.
@@ -1432,16 +1624,18 @@ def cmd_review_status(args: argparse.Namespace) -> int:
         max_iterations = int(loaded.design_review_settings().get("max_iterations", 2))
         final = _design_final_pass(
             blocking,
-            iteration,
-            max_iterations,
-            approval_mod.findings_of_current_plan(base, approval_mod.read_plan(base)[0]),
-            _ran_since_last_round(events, "design_review", "architect", counts=_wrote_plan(base))[0],
-            book.remaining("architect"),
-            _approved_as_recorded(
+            iteration=iteration,
+            max_iterations=max_iterations,
+            of_current_plan=approval_mod.findings_of_current_plan(base, approval_mod.read_plan(base)[0]),
+            ran_since=_ran_since_last_round(events, "design_review", "architect", counts=_wrote_plan(base))[
+                0
+            ],
+            architect_left=book.remaining("architect"),
+            approved=_approved_as_recorded(
                 approval_mod.current(base, bool(loaded.design_settings().get("require_approval")))
             ),
-            approval_mod.implemented_since_plan(base, events),
-            accepted,
+            implemented=approval_mod.implemented_since_plan(base, events),
+            accepted=accepted,
         )
         repeats = book.repeats("design_review")
     else:
@@ -1449,10 +1643,20 @@ def cmd_review_status(args: argparse.Namespace) -> int:
         max_iterations = int(settings.get("max_review_iterations", 2))
         fixed, retested = _ran_since_last_round(events, "review", "review_fixer", ("test", "re-test"))
         final = _code_final_pass(
-            blocking, iteration, max_iterations, fixed, retested, book.remaining("review_fixer"), accepted
+            blocking,
+            iteration=iteration,
+            max_iterations=max_iterations,
+            fixed_since=fixed,
+            retested_since=retested,
+            fixer_left=book.remaining("review_fixer"),
+            accepted=accepted,
         )
         repeats = book.repeats("review")
-    counts = data.get("counts", {})
+    return _StatusBudget(budget_key, max_iterations, final, repeats)
+
+
+def _status_coverage(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """The ``coverage`` ``review status`` reports for this consolidated report."""
     # No consolidated report at all is the only real "none": nothing has been
     # reviewed. A report with no `coverage` block is a round that happened
     # before coverage was recorded, and calling that `round none, change none`
@@ -1470,9 +1674,25 @@ def cmd_review_status(args: argparse.Namespace) -> int:
         }
     elif not isinstance(coverage, dict):
         coverage = None
-    payload = {
+    return coverage
+
+
+def _status_payload(
+    args: argparse.Namespace,
+    loaded: config_mod.LoadedConfig,
+    base: ws.Workspace,
+    data: Dict[str, Any],
+    budget: _StatusBudget,
+    blocking: List[Dict[str, Any]],
+    iteration: int,
+    coverage: Optional[Dict[str, Any]],
+) -> Tuple[Dict[str, Any], Optional[opt_mod.DesignDecision]]:
+    """``review status --json``'s payload, and the design decision a ``--design`` one names."""
+    max_iterations, final = budget.max_iterations, budget.final
+    counts = data.get("counts", {})
+    payload: Dict[str, Any] = {
         "iteration": iteration,
-        budget_key: max_iterations,
+        budget.key: max_iterations,
         "blocking": [f["id"] for f in blocking],
         "blocking_count": len(blocking),
         "accepted_count": len(review_mod.accepted_findings(data)),
@@ -1505,54 +1725,66 @@ def cmd_review_status(args: argparse.Namespace) -> int:
     else:
         payload["final_fix"] = final["state"]
         payload["final_fix_pending"] = final["pending"]
-    if args.json:
-        _emit_json(payload)
+    return payload, decision
+
+
+def _print_status(
+    args: argparse.Namespace,
+    loaded: config_mod.LoadedConfig,
+    data: Dict[str, Any],
+    payload: Dict[str, Any],
+    decision: Optional[opt_mod.DesignDecision],
+    budget: _StatusBudget,
+    severities: Tuple[str, ...],
+    blocking: List[Dict[str, Any]],
+    iteration: int,
+    coverage: Optional[Dict[str, Any]],
+) -> None:
+    """``review status`` without ``--json``."""
+    counts = data.get("counts", {})
+    surrounding = data.get("surrounding")
+    if decision is not None:
+        _out("design review: %s" % decision.label())
+    _out("iteration %d/%d" % (iteration, budget.max_iterations))
+    _out("accepted findings: %d" % payload["accepted_count"])
+    _out("blocking (%s): %d %s" % ("/".join(severities), len(blocking), ", ".join(payload["blocking"])))
+    _out("re-review recommended: %s" % ("yes" if payload["re_review_recommended"] else "no"))
+    if coverage is None:
+        _out("coverage: not recorded -- this report predates it")
     else:
-        if decision is not None:
-            _out("design review: %s" % decision.label())
-        _out("iteration %d/%d" % (iteration, max_iterations))
-        _out("accepted findings: %d" % payload["accepted_count"])
-        _out("blocking (%s): %d %s" % ("/".join(severities), len(blocking), ", ".join(payload["blocking"])))
-        _out("re-review recommended: %s" % ("yes" if payload["re_review_recommended"] else "no"))
-        if coverage is None:
-            _out("coverage: not recorded -- this report predates it")
-        else:
-            _out("coverage: round %s, change %s" % (coverage.get("round"), coverage.get("change")))
-        if payload["over_budget"]:
-            _out(
-                "over budget: this round was sent past review.context.max_chars by --force; "
-                "say so when you report it"
-            )
-        if isinstance(surrounding, dict):
-            for line in _surrounding_status_lines(surrounding):
-                _out(line)
-        for line in _coverage_advice(
-            coverage or {},
-            counts,
-            payload["iteration_budget_exhausted"],
-            _configured_inline_chars(loaded),
-            args.design,
-        ):
+        _out("coverage: round %s, change %s" % (coverage.get("round"), coverage.get("change")))
+    if payload["over_budget"]:
+        _out(
+            "over budget: this round was sent past review.context.max_chars by --force; "
+            "say so when you report it"
+        )
+    if isinstance(surrounding, dict):
+        for line in _surrounding_status_lines(surrounding):
             _out(line)
-        if payload["iteration_budget_exhausted"] and blocking:
-            _out("iteration budget exhausted -- %s" % _final_pass_advice(args.design, final, repeats))
-    return 0
+    for line in review_mod.coverage_advice(
+        coverage or {},
+        counts,
+        payload["iteration_budget_exhausted"],
+        _configured_inline_chars(loaded),
+        args.design,
+    ):
+        _out(line)
+    if payload["iteration_budget_exhausted"] and blocking:
+        _out(
+            "iteration budget exhausted -- %s" % _final_pass_advice(args.design, budget.final, budget.repeats)
+        )
 
 
 def _surrounding_status_lines(block: Dict[str, Any]) -> List[str]:
     """The context this snapshot's reviewers were shown, and what was left out by name."""
-    if block.get("shared") is False:
-        records = list((block.get("by_reviewer") or {}).items())
-    else:
-        records = [("", block)]
     lines = []
-    for reviewer_id, record in records:
+    for reviewer_id, record in review_mod.surrounding_records(block):
         label = "surrounding context (%s)" % reviewer_id if reviewer_id else "surrounding context"
         if not isinstance(record, dict):
             lines.append("%s: none (ran with review.context.surrounding none)" % label)
             continue
         lines.append("%s: %s" % (label, context_mod.status_line(record)))
-        trimmed = [c for c in record.get("trimmed") or [] if isinstance(c, dict)]
+        trimmed = review_mod.listed(record, "trimmed")
         for candidate in trimmed[:5]:
             lines.append(
                 "  left out: %s:%s-%s %s"
@@ -1565,7 +1797,7 @@ def _surrounding_status_lines(block: Dict[str, Any]) -> List[str]:
             )
         if len(trimmed) > 5:
             lines.append("  and %d more" % (len(trimmed) - 5))
-        skipped = [entry for entry in record.get("skipped") or [] if isinstance(entry, dict)]
+        skipped = review_mod.listed(record, "skipped")
         for entry in skipped[:5]:
             lines.append("  not extracted: %s -- %s" % (entry.get("path"), entry.get("reason") or "?"))
         if len(skipped) > 5:
@@ -1648,118 +1880,6 @@ def _configured_inline_chars(loaded: config_mod.LoadedConfig) -> int:
     return review_mod.default_inline_chars()
 
 
-def _coverage_advice(
-    coverage: Dict[str, Any],
-    counts: Dict[str, Any],
-    budget_spent: bool,
-    inline_chars: int,
-    design: bool = False,
-) -> List[str]:
-    """What to do about an unverified coverage, if anything.
-
-    Each line names the one action that changes the answer. Another round is
-    never it: the snapshot is frozen, so re-running it sends the same prompt
-    and gets the same verdict. Narrowing what the round *shows* is never it
-    either, which is why ``--base`` is not named here: a smaller diff is a
-    smaller round, not a reviewed change, and pointing at the flag that moves
-    the mark without moving the change is pointing at the way around it.
-
-    The state is ``review_mod.coverage_state``, the same classification
-    ``consolidated.md`` words: the two commands read one file and must not
-    describe it differently -- an advice line telling the reader to re-snapshot
-    with ``--full`` when what is missing is a reviewer sends them to redo the
-    thing they just did.
-
-    A design round is judged on ``.ai/plan.md`` itself, and none of the
-    code-review remedies can be aimed at it -- ``review snapshot`` writes the
-    code snapshot and there is no ``--design`` form of it. The only thing that
-    makes an oversize plan reviewable is a shorter plan.
-
-    ``inline_chars`` is the *configured* limit, not the one the round in the
-    report was measured against, because these lines are about the next run
-    and not the last one. It is also the second way out, and the one the
-    report itself cannot name: a limit is a setting, and a reader who decides
-    the prompt is worth paying for raises it rather than cutting the change up.
-
-    The recorded limit is read too, through the size beside it. A body handed
-    over as a file was over the limit of its own round, so a recorded size
-    that fits the configured one says the limit has been raised since -- and
-    then "the same snapshot gives the same answer" is false, splitting a
-    change that already fits is wasted work, and raising a limit the reader
-    has just raised is worse than saying nothing. That case gets its own line.
-    """
-    lines = []
-    chars = coverage.get("change_chars")
-    size = ws.fmt_size(chars)
-    limit = ws.fmt_int(inline_chars)
-    # Counted over this snapshot, like the coverage value it is quoted beside.
-    partial = review_mod.snapshot_reviewers(counts, "partial")
-    state = review_mod.coverage_state(coverage, counts)
-    mark = review_mod.unverified_phrase(coverage)
-    if state == "round_unverified":
-        # ``coverage.change_chars`` is recorded for precisely this comparison.
-        # No check that the recorded limit differs is needed: the body went
-        # over as a file, so it was over the limit of its round, and a size at
-        # or under the configured one says that limit is not this one.
-        raised = isinstance(chars, int) and bool(chars) and inline_chars > 0 and chars <= inline_chars
-        if raised and design:
-            lines.append(
-                "not a clean review: %d reviewer(s) partial, the plan (%s chars) was handed over as "
-                "a file under a lower review.context.inline_chars. The limit is %s chars now, so "
-                "the plan fits inline: run the design round again." % (partial, size, limit)
-            )
-        elif raised:
-            lines.append(
-                "not a clean review: %d reviewer(s) partial, the change body (%s chars) was handed "
-                "over as a file under a lower review.context.inline_chars. The limit is %s chars now, "
-                "so this snapshot fits inline: run review run against it again." % (partial, size, limit)
-            )
-        elif design:
-            lines.append(
-                "not a clean review: %d reviewer(s) partial, the plan (%s chars) was handed over "
-                "as a file. Re-running the same plan gives the same answer: shorten .ai/plan.md "
-                "to fit inline (<= %s chars), or raise review.context.inline_chars, then run the "
-                "design round again." % (partial, size, limit)
-            )
-        else:
-            lines.append(
-                "not a clean review: %d reviewer(s) partial, the change body (%s chars) was handed "
-                "over as a file. Re-running the same snapshot gives the same answer: split the "
-                "change and review the parts, so each part fits inline (<= %s chars), or raise "
-                "review.context.inline_chars, then snapshot again." % (partial, size, limit)
-            )
-    elif state == "no_reviewer":
-        if design:
-            lines.append("%s -- no reviewer has run against this plan; run the design round." % mark)
-        else:
-            lines.append(
-                "%s -- no reviewer has run against this snapshot; run the reviewers against it "
-                "with review run." % mark
-            )
-    elif state == "none_ok":
-        if design:
-            lines.append(
-                "%s -- no reviewer came back ok for this plan; re-run the reviewers that did not." % mark
-            )
-        else:
-            lines.append(
-                "%s -- no reviewer came back ok for this snapshot; re-run the reviewers that did not." % mark
-            )
-    elif state == "fix_only":
-        if design:
-            lines.append(
-                "%s -- no round has shown a reviewer the whole plan; shorten .ai/plan.md until it "
-                "fits inline, then run the design round again." % mark
-            )
-        else:
-            lines.append(
-                "%s -- re-snapshot with --full once the whole change fits inline, then run again." % mark
-            )
-    if budget_spent and coverage.get("change") == "unverified":
-        lines.append("iteration budget exhausted -- report the change as not reviewed in full")
-    return lines
-
-
 def _reviewed_something(event: Dict[str, Any]) -> bool:
     """Whether this event is a round that put the change in front of a panel.
 
@@ -1828,6 +1948,7 @@ def _approved_as_recorded(info: Dict[str, Any]) -> bool:
 
 def _design_final_pass(
     blocking: List[Dict[str, Any]],
+    *,
     iteration: int,
     max_iterations: int,
     of_current_plan: Optional[bool],
@@ -1867,6 +1988,7 @@ def _design_final_pass(
 
 def _code_final_pass(
     blocking: List[Dict[str, Any]],
+    *,
     iteration: int,
     max_iterations: int,
     fixed_since: bool,

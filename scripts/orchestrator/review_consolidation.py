@@ -11,9 +11,10 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple, cast
 from . import context as context_mod
 from . import workspace as ws
 from .review_common import SEVERITIES, SEVERITY_RANK, TRIAGE_STATUSES, accepted_findings
-from .review_fanout import ReviewerRun, _snapshot_sha, _stamp
+from .review_coverage import coverage_headline
+from .review_fanout import ReviewerRun
 from .review_parsing import _HEADER_MARKER, parse_findings
-from .review_snapshot import ReviewError
+from .review_snapshot import ReviewError, snapshot_stamp
 
 # --------------------------------------------------------------------------- consolidation
 
@@ -208,11 +209,6 @@ def collect_reports(
     return read_reports(workspace, reviewer_ids, expected_snapshot)[0]
 
 
-def current_snapshot_stamp(workspace: ws.Workspace) -> str:
-    """The stamp reports are compared against -- same form as the header."""
-    return _snapshot_sha(workspace)
-
-
 def review_lineage(workspace: ws.Workspace, workflow: str = "") -> str:
     """What makes a round a continuation of the last one rather than a new one.
 
@@ -309,6 +305,31 @@ def build_consolidation(
     completed_round: Optional[str] = None,
     unreviewed_round: Optional[str] = None,
 ) -> Dict[str, Any]:
+    """``consolidation_from`` the snapshot on disk and the last report written."""
+    meta = workspace.read_snapshot_meta()
+    last = ws.read_json(workspace.consolidated_json_path, {}) or {}
+    return consolidation_from(
+        meta,
+        last,
+        runs,
+        findings,
+        iteration,
+        lineage,
+        completed_round=completed_round,
+        unreviewed_round=unreviewed_round,
+    )
+
+
+def consolidation_from(
+    meta: Dict[str, Any],
+    last: Dict[str, Any],
+    runs: Sequence[Dict[str, Any]],
+    findings: Sequence[Dict[str, Any]],
+    iteration: int = 1,
+    lineage: str = "",
+    completed_round: Optional[str] = None,
+    unreviewed_round: Optional[str] = None,
+) -> Dict[str, Any]:
     """The round's report: consolidated findings, counts, and its coverage.
 
     ``completed_round`` is the round whose reviewers have all returned, passed
@@ -332,8 +353,6 @@ def build_consolidation(
     is not the whole change's, and ``coverage_lineage`` for the key the whole
     change's answer carries on.
     """
-    meta = workspace.read_snapshot_meta()
-    last = ws.read_json(workspace.consolidated_json_path, {}) or {}
     # Keyed by content, never by id: ids are positional (F1..Fn, severity
     # ordered) and get reassigned every round, so an id-keyed lookup silently
     # drops a decision -- or applies it to a different finding -- as soon as the
@@ -597,7 +616,7 @@ def _current_runs(runs: Sequence[Dict[str, Any]], meta: Dict[str, Any]) -> List[
     ``snapshot_`` counts both read this subset, so that the coverage line and
     the tally printed beside it describe the same snapshot.
     """
-    return [run for run in runs if str(run.get("snapshot") or "") == _stamp(meta)]
+    return [run for run in runs if str(run.get("snapshot") or "") == snapshot_stamp(meta)]
 
 
 def _counts(
@@ -636,108 +655,6 @@ def _counts(
             1 for run in entries if run.get("status") not in ("ok", "partial")
         )
     return counts
-
-
-def snapshot_reviewers(counts: Dict[str, Any], column: str) -> int:
-    """One reviewer column, counted over this snapshot's entries.
-
-    Falls back to the table's column for a report written before the scoped
-    counts existed: it is the better of the two answers available there, and
-    the alternative is reading every such report as a round nobody ran.
-    """
-    scoped = counts.get("snapshot_reviewers_%s" % column)
-    return int((counts.get("reviewers_%s" % column) if scoped is None else scoped) or 0)
-
-
-def coverage_state(coverage: Dict[str, Any], counts: Dict[str, Any]) -> str:
-    """Which unclean state a report's coverage is in, or ``""`` for none.
-
-    ``consolidated.md`` and ``review status`` word the answer differently --
-    one is a line in a report, the other names the action that changes it --
-    but they read the same file and must not disagree about which state it
-    describes. So the state is decided once, here, and each of them words the
-    answer it is given.
-
-    * ``round_unverified``: this round handed the change body over as a file.
-    * ``no_reviewer``: the mark is carried and no reviewer ran against this
-      snapshot. Nothing was inlined this round, because nothing ran.
-    * ``none_ok``: reviewers ran against this snapshot and none came back
-      ``ok``, so the round cleared nothing and neither would re-snapshotting.
-    * ``fix_only``: the round's body was inlined and read, and the mark is
-      still carried -- which, since ``_coverage`` clears it for exactly a
-      non-incremental round with a reviewer ``ok``, means the body was the fix
-      alone.
-    """
-    this_round = str(coverage.get("round") or "none")
-    if this_round == "unverified":
-        return "round_unverified"
-    if str(coverage.get("change") or "none") != "unverified":
-        return ""
-    if this_round == "none":
-        return "no_reviewer"
-    if snapshot_reviewers(counts, "ok") == 0:
-        return "none_ok"
-    return "fix_only"
-
-
-def unverified_phrase(coverage: Dict[str, Any]) -> str:
-    """The mark in words, with the round it started at when there is one.
-
-    The mark carries across a change of base and the round number cannot --
-    see ``coverage.unverified_since`` in ``_coverage``. Both readers state the
-    mark either way rather than print a round number that is not in the count
-    beside it.
-    """
-    since = coverage.get("unverified_since")
-    if isinstance(since, int) and not isinstance(since, bool):
-        return "change unverified since round %d" % since
-    return "change unverified"
-
-
-def _coverage_line(coverage: Dict[str, Any], counts: Dict[str, Any]) -> str:
-    """The headline form of the two coverage values.
-
-    An unverified round is the more urgent of the two and is stated on its
-    own; a clean round carrying an older mark says what is missing, because
-    the answer is not "run it again" -- the same snapshot gives the same
-    answer. Each state names the one thing that is missing and nothing else:
-    sending a reader to re-snapshot a snapshot that already holds the whole
-    change inline points them away from the reviewer they actually lack.
-    """
-    state = coverage_state(coverage, counts)
-    if state == "round_unverified":
-        chars = coverage.get("change_chars")
-        size = ws.fmt_size(chars)
-        # The limit rides along when the round recorded one, because it is
-        # configuration: "handed over as a file" says nothing on its own once
-        # the reader cannot assume which number decided that.
-        limit = coverage.get("inline_chars")
-        against = ""
-        if isinstance(limit, int) and limit:
-            against = " (review.context.inline_chars %s)" % ws.fmt_int(limit)
-        return (
-            "- Coverage: round unverified -- the change body (%s chars) was handed over "
-            "as a file%s; not a clean review" % (size, against)
-        )
-    if state == "no_reviewer":
-        return (
-            "- Coverage: %s -- no reviewer has run against this snapshot; run the reviewers "
-            "against it with review run" % unverified_phrase(coverage)
-        )
-    if state == "none_ok":
-        return (
-            "- Coverage: %s -- no reviewer came back ok for this snapshot; re-run the reviewers "
-            "that did not" % unverified_phrase(coverage)
-        )
-    if state == "fix_only":
-        return (
-            "- Coverage: %s -- this round inlined the fix only; snapshot --full once the whole "
-            "change fits inline" % unverified_phrase(coverage)
-        )
-    return "- Coverage: round %s, change %s" % (
-        str(coverage.get("round") or "none"),
-        str(coverage.get("change") or "none"),
-    )
 
 
 def _over_budget_line(snapshot: Dict[str, Any]) -> str:
@@ -784,6 +701,22 @@ def _tally(counts: Dict[str, Any], prefix: str) -> str:
 
 
 def render_consolidation(data: Dict[str, Any]) -> str:
+    lines = _summary_lines(data)
+    lines += _reviewer_table(data.get("reviewers", []))
+    surrounding = data.get("surrounding")
+    if isinstance(surrounding, dict):
+        lines += _surrounding_section(surrounding)
+    lines += _duplicates_section(data.get("duplicate_candidates") or [])
+    lines += ["", "## Findings", ""]
+    if not data.get("findings"):
+        lines.append("No findings were reported.")
+    for finding in data.get("findings", []):
+        lines += _finding_block(finding)
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _summary_lines(data: Dict[str, Any]) -> List[str]:
+    """The report's head: the round, its tallies, and what was measured about it."""
     counts = data.get("counts", {})
     lines = [
         "# Consolidated review",
@@ -798,7 +731,7 @@ def render_consolidation(data: Dict[str, Any]) -> str:
     # had been measured and found empty.
     coverage = data.get("coverage")
     if isinstance(coverage, dict):
-        lines.append(_coverage_line(coverage, counts))
+        lines.append(coverage_headline(coverage, counts))
     # Only when recorded, for the reason coverage is: a report from before the
     # setting, or with it off, measured nothing about context.
     surrounding = data.get("surrounding")
@@ -810,14 +743,17 @@ def render_consolidation(data: Dict[str, Any]) -> str:
     snapshot = data.get("snapshot") or {}
     if snapshot.get("over_budget"):
         lines.append(_over_budget_line(snapshot))
-    lines += [
+    lines.append(
         "- Findings: %s (%s duplicate report(s) merged)"
-        % (counts.get("findings_total"), counts.get("duplicates_merged")),
-        "",
-        "## Reviewers",
-        "",
-    ]
-    for run in data.get("reviewers", []):
+        % (counts.get("findings_total"), counts.get("duplicates_merged"))
+    )
+    return lines
+
+
+def _reviewer_table(runs: Sequence[Dict[str, Any]]) -> List[str]:
+    """The Reviewers section: one line per entry in the reviewer table."""
+    lines = ["", "## Reviewers", ""]
+    for run in runs:
         status = run.get("status")
         mark = "ok" if status == "ok" else ("PARTIAL" if status == "partial" else "FAILED")
         lines.append(
@@ -831,56 +767,75 @@ def render_consolidation(data: Dict[str, Any]) -> str:
                 (run.get("error") or "%s finding(s)" % run.get("findings", 0)),
             )
         )
-    if isinstance(surrounding, dict):
-        lines += _surrounding_section(surrounding)
-    candidates = data.get("duplicate_candidates") or []
-    if candidates:
-        lines += [
-            "",
-            "## Possible duplicates (confirm during triage)",
-            "",
-            "Different reviewers quoting the same code. Auto-merge stays conservative on",
-            "purpose -- collapsing two distinct bugs hides one -- so these are suggestions.",
-            "Mark a confirmed one with `review triage <id> --status duplicate`.",
-            "",
-        ]
-        for pair in candidates:
-            lines.append(
-                "- %s  (`%s`, shared: %s)"
-                % (
-                    " ~ ".join(pair["ids"]),
-                    pair.get("file", "?"),
-                    ", ".join("`%s`" % c for c in pair["shared_code"]),
-                )
+    return lines
+
+
+def _duplicates_section(candidates: Sequence[Dict[str, Any]]) -> List[str]:
+    """The possible duplicates for triage to confirm, or nothing when there are none."""
+    if not candidates:
+        return []
+    lines = [
+        "",
+        "## Possible duplicates (confirm during triage)",
+        "",
+        "Different reviewers quoting the same code. Auto-merge stays conservative on",
+        "purpose -- collapsing two distinct bugs hides one -- so these are suggestions.",
+        "Mark a confirmed one with `review triage <id> --status duplicate`.",
+        "",
+    ]
+    for pair in candidates:
+        lines.append(
+            "- %s  (`%s`, shared: %s)"
+            % (
+                " ~ ".join(pair["ids"]),
+                pair.get("file", "?"),
+                ", ".join("`%s`" % c for c in pair["shared_code"]),
             )
-    lines += ["", "## Findings", ""]
-    if not data.get("findings"):
-        lines.append("No findings were reported.")
-    for finding in data.get("findings", []):
-        lines += [
-            "### %s [%s] %s"
-            % (finding["id"], finding["severity"].upper(), finding.get("category", "general")),
-            "",
-            "- Location: `%s`:%s" % (finding.get("file", "?"), finding.get("line", "n/a")),
-            "- Reported by: %s" % ", ".join(finding.get("reported_by", [])),
-            "- Possible duplicate of: %s"
-            % (", ".join(dict.fromkeys(finding.get("possible_duplicates", []))) or "none"),
-            "- Triage: %s%s"
-            % (finding.get("triage", "needs-triage"), _note_suffix(finding.get("triage_note", ""))),
-            "- Problem: %s" % finding.get("problem", ""),
-            "- Impact: %s" % finding.get("impact", ""),
-            "- Evidence: %s" % finding.get("evidence", ""),
-            "- Recommended fix: %s" % finding.get("recommended_fix", ""),
-            "",
-        ]
-    return "\n".join(lines).rstrip() + "\n"
+        )
+    return lines
+
+
+def _finding_block(finding: Dict[str, Any]) -> List[str]:
+    """One finding, as its own subsection."""
+    return [
+        "### %s [%s] %s" % (finding["id"], finding["severity"].upper(), finding.get("category", "general")),
+        "",
+        "- Location: `%s`:%s" % (finding.get("file", "?"), finding.get("line", "n/a")),
+        "- Reported by: %s" % ", ".join(finding.get("reported_by", [])),
+        "- Possible duplicate of: %s"
+        % (", ".join(dict.fromkeys(finding.get("possible_duplicates", []))) or "none"),
+        "- Triage: %s%s"
+        % (finding.get("triage", "needs-triage"), _note_suffix(finding.get("triage_note", ""))),
+        "- Problem: %s" % finding.get("problem", ""),
+        "- Impact: %s" % finding.get("impact", ""),
+        "- Evidence: %s" % finding.get("evidence", ""),
+        "- Recommended fix: %s" % finding.get("recommended_fix", ""),
+        "",
+    ]
+
+
+def surrounding_records(block: Dict[str, Any]) -> List[Tuple[str, Any]]:
+    """``(reviewer id, record)`` for every record a surrounding block holds.
+
+    One ``("", block)`` when the block is shared. Otherwise one pair per
+    reviewer, whose record is None where that reviewer ran with the setting
+    off. ``consolidated.md`` and ``review status`` both walk a block this way.
+    """
+    if block.get("shared") is False:
+        return list((block.get("by_reviewer") or {}).items())
+    return [("", block)]
+
+
+def listed(record: Dict[str, Any], key: str) -> List[Dict[str, Any]]:
+    """The mappings under ``record[key]``, and nothing else that list holds."""
+    return [entry for entry in record.get(key) or [] if isinstance(entry, dict)]
 
 
 def _surrounding_line(block: Dict[str, Any]) -> str:
     """The headline form of the context this snapshot's reviewers were shown."""
     if block.get("shared") is False:
         parts = []
-        for reviewer_id, record in (block.get("by_reviewer") or {}).items():
+        for reviewer_id, record in surrounding_records(block):
             if isinstance(record, dict):
                 parts.append("%s: %s" % (reviewer_id, context_mod.brief(record)))
             else:
@@ -896,15 +851,15 @@ def _surrounding_section(block: Dict[str, Any]) -> List[str]:
     prompt was built is not here: the Reviewers table already says it failed.
     """
     if block.get("shared") is False:
-        records = block.get("by_reviewer") or {}
+        records = surrounding_records(block)
         if not any(
             isinstance(record, dict)
             and (record.get("adopted") or record.get("trimmed") or record.get("skipped"))
-            for record in records.values()
+            for _, record in records
         ):
             return []
         lines = ["", "## Surrounding context"]
-        for reviewer_id, record in records.items():
+        for reviewer_id, record in records:
             lines += ["", "### %s" % reviewer_id, ""]
             if not isinstance(record, dict):
                 lines.append("None (ran with review.context.surrounding none).")
@@ -918,8 +873,8 @@ def _surrounding_section(block: Dict[str, Any]) -> List[str]:
 
 def _surrounding_names(record: Dict[str, Any], shown: str) -> List[str]:
     lines: List[str] = []
-    adopted = [c for c in record.get("adopted") or [] if isinstance(c, dict)]
-    trimmed = [c for c in record.get("trimmed") or [] if isinstance(c, dict)]
+    adopted = listed(record, "adopted")
+    trimmed = listed(record, "trimmed")
     if adopted:
         lines.append(
             "%s (%d symbol(s), %s chars):"
@@ -934,7 +889,7 @@ def _surrounding_names(record: Dict[str, Any], shown: str) -> List[str]:
     for reason, members in groups.items():
         lines += ["", "Left out (%s):" % reason]
         lines += ["- %s" % context_mod.describe(c) for c in members]
-    skipped = [entry for entry in record.get("skipped") or [] if isinstance(entry, dict)]
+    skipped = listed(record, "skipped")
     if skipped:
         lines += ["", "Not extracted (%d file(s)):" % len(skipped)]
         lines += ["- `%s` -- %s" % (entry.get("path"), entry.get("reason") or "?") for entry in skipped]
@@ -995,7 +950,7 @@ def round_key(data: Dict[str, Any]) -> Tuple[str, str]:
     sha = str(snapshot.get("sha256") or "")
     if not sha:
         return "", ""
-    return _stamp(snapshot), str(snapshot.get("round_id") or "")
+    return snapshot_stamp(snapshot), str(snapshot.get("round_id") or "")
 
 
 def save_consolidation(workspace: ws.Workspace, data: Dict[str, Any]) -> str:
@@ -1028,7 +983,7 @@ def _built_for_another_round(workspace: ws.Workspace, data: Dict[str, Any]) -> b
 
     A design round no reviewer returned a review for, and a re-consolidation
     before the round's reviewers are back, keep the round id of the last
-    report (see ``build_consolidation``) over the current freeze's content.
+    report (see ``consolidation_from``) over the current freeze's content.
     When the same plan or tree was frozen again, that is the older round's
     key, and filing the report under it would replace that round's findings
     and triage. A report built before the freeze -- the previous round's,

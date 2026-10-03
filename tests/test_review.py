@@ -12,7 +12,7 @@ from helpers import IsolatedCase, has_git, present
 from orchestrator import config as config_mod
 from orchestrator import optimization as opt
 from orchestrator import review as review_mod
-from orchestrator import review_fanout
+from orchestrator import review_consolidation, review_fanout
 from orchestrator import workspace as ws
 
 FINDING_A = """## Finding
@@ -468,9 +468,8 @@ class TestFanOut(IsolatedCase):
 
         setattr(MockProvider, "_launch", record)
         self.addCleanup(setattr, MockProvider, "_launch", original)
-        runs = review_mod.run_reviews(
-            [reviewer("r1"), reviewer("r2")], self.workspace, refusals={"r2": "reviewer r2: refused here"}
-        )
+        options = review_mod.FanoutOptions(refusals={"r2": "reviewer r2: refused here"})
+        runs = review_mod.run_reviews([reviewer("r1"), reviewer("r2")], self.workspace, options)
         self.assertEqual([run.status for run in runs], ["ok", "failed"])
         self.assertEqual(runs[1].error, "reviewer r2: refused here")
         self.assertFalse(runs[1].invoked)
@@ -506,8 +505,9 @@ class TestFanOut(IsolatedCase):
             review_mod.run_reviews([reviewer("r1")], self.workspace)
 
     def test_sequential_matches_parallel(self):
-        parallel = review_mod.run_reviews([reviewer("r1"), reviewer("r2")], self.workspace, parallel=True)
-        sequential = review_mod.run_reviews([reviewer("r1"), reviewer("r2")], self.workspace, parallel=False)
+        both = [reviewer("r1"), reviewer("r2")]
+        parallel = review_mod.run_reviews(both, self.workspace, review_mod.FanoutOptions(parallel=True))
+        sequential = review_mod.run_reviews(both, self.workspace, review_mod.FanoutOptions(parallel=False))
         self.assertEqual([r.status for r in parallel], [r.status for r in sequential])
 
     def test_findings_from_reports_are_deduplicated(self):
@@ -630,7 +630,8 @@ class TestCoverageOfTheChangeBody(IsolatedCase):
         from the shipped default would make them a test of that number too.
         """
         kwargs.setdefault("inline_chars", self.LIMIT)
-        return review_mod.run_reviews(reviewers or [reviewer("r1")], self.workspace, **kwargs)[0]
+        options = review_mod.FanoutOptions(**kwargs)
+        return review_mod.run_reviews(reviewers or [reviewer("r1")], self.workspace, options)[0]
 
     def prompt_for(self, body):
         """One reviewer's prompt for this body, at this class's limit."""
@@ -806,7 +807,8 @@ class TestCoverageOfTheChangeBody(IsolatedCase):
 
     def test_the_consolidation_carries_the_limit_beside_the_size(self):
         self.oversize()
-        runs = review_mod.run_reviews([reviewer("r1")], self.workspace, inline_chars=self.LIMIT)
+        options = review_mod.FanoutOptions(inline_chars=self.LIMIT)
+        runs = review_mod.run_reviews([reviewer("r1")], self.workspace, options)
         data = review_mod.build_consolidation(self.workspace, [r.to_dict() for r in runs], [])
         self.assertEqual(data["coverage"]["round"], "unverified")
         self.assertEqual(data["coverage"]["change_chars"], self.LIMIT + 1)
@@ -842,7 +844,7 @@ class TestCoverageOfTheChangeBody(IsolatedCase):
             {"id": "r2", "status": "partial"},
             {"id": "r3", "status": "failed"},
         ]
-        counts = review_mod._counts([], runs, runs)
+        counts = review_consolidation._counts([], runs, runs)
         self.assertEqual(counts["reviewers_ok"], 1)
         self.assertEqual(counts["reviewers_partial"], 1)
         self.assertEqual(counts["reviewers_failed"], 1)

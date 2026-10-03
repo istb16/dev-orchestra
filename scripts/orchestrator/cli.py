@@ -87,7 +87,6 @@ from .cli_review import (
     _condition_excluded,
     _condition_paths,
     _configured_inline_chars,
-    _coverage_advice,
     _design_final_pass,
     _design_request_path,
     _final_pass_advice,
