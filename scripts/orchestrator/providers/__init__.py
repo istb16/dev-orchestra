@@ -32,6 +32,7 @@ from .base import (  # noqa: F401 - re-exported as the adapter interface
     SESSION_ID_RE,
     WARNED_ENFORCEMENT,
     Detection,
+    Launch,
     ModelCandidate,
     ModelResolutionError,
     Provider,
@@ -39,7 +40,9 @@ from .base import (  # noqa: F401 - re-exported as the adapter interface
     RunResult,
     Usage,
     clear_discovery_cache,
+    describe_exception,
     redact,
+    stdout_events,
     unenforced_warning,
 )
 
@@ -152,10 +155,6 @@ def origin_payload(name: str) -> Optional[Dict[str, Optional[str]]]:
     """The origin as ``--json`` output carries it."""
     origin = _ORIGINS.get(name)
     return {"kind": origin.kind, "path": origin.path} if origin else None
-
-
-def describe_exception(exc: BaseException) -> str:
-    return "%s: %s" % (type(exc).__name__, exc)
 
 
 def adapter_failure(name: str, exc: BaseException) -> str:

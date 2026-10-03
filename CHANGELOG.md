@@ -50,6 +50,11 @@ The public surface covered by that promise is: the configuration schema, the
   attributes. A `ClaudeProvider` subclass with `supports_resume = False` now
   reports `unsupported` in `doctor`, as a Codex one did; its runs were already
   fresh.
+- **Adapter contract:** work before or after the CLI runs goes in
+  `around_launch(launch, proceed)`, which gets the run as a `Launch` and adds
+  the adapter's own arguments with `own_args`; changing a field `run` gated
+  raises `ValueError`. Hooks can read stdout's JSON lines, decoded once per
+  run, from `stdout_events(outcome)` (#233). Overriding `_launch` still works.
 
 ### Fixed
 
