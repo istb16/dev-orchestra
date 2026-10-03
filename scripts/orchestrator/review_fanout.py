@@ -5,6 +5,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence
 
+from . import activity
 from . import config as config_mod
 from . import context as context_mod
 from . import workspace as ws
@@ -484,6 +485,7 @@ def run_reviews(
     inline_chars: Optional[int] = None,
     surrounding: Optional[context_mod.Adoption] = None,
     refusals: Optional[Dict[str, str]] = None,
+    activity_for: Optional[Callable[[str], Optional[activity.Sink]]] = None,
 ) -> List[ReviewerRun]:
     """Run every configured reviewer against the frozen snapshot.
 
@@ -515,6 +517,11 @@ def run_reviews(
     ``refusals`` maps a reviewer id to why that reviewer is not run at all --
     its raw arguments came from the project file. The reviewer fails and the
     round goes on, as it does for any one reviewer that fails.
+
+    ``activity_for`` maps a reviewer id to the sink its run reports its tool
+    uses to (``review run --progress``), or None. The sink is installed in the
+    thread that runs the reviewer, and told ``done: <status>`` however the
+    run ends.
     """
     if not reviewers:
         return []
@@ -543,7 +550,7 @@ def run_reviews(
     # The design path builds its own prompt and never carries context.
     context = surrounding if (prompt_for is None and surrounding and surrounding.mode != "none") else None
 
-    def run_one(reviewer: Dict[str, Any]) -> ReviewerRun:
+    def attempt(reviewer: Dict[str, Any], sink: Optional[activity.Sink]) -> ReviewerRun:
         reviewer_id = str(reviewer.get("id") or "reviewer")
         try:
             provider = get_provider(str(reviewer.get("provider")))
@@ -571,15 +578,16 @@ def run_reviews(
         if refusals and reviewer_id in refusals:
             return ReviewerRun(reviewer, "failed", error=refusals[reviewer_id], **carried)
         try:
-            result = provider.run(
-                built.text,
-                MODE_REVIEW,
-                workspace.root,
-                reviewer.get("model"),
-                timeout=timeout,
-                options=reviewer.get("options"),
-                idle_timeout=idle_timeout,
-            )
+            with activity.recording(sink):
+                result = provider.run(
+                    built.text,
+                    MODE_REVIEW,
+                    workspace.root,
+                    reviewer.get("model"),
+                    timeout=timeout,
+                    options=reviewer.get("options"),
+                    idle_timeout=idle_timeout,
+                )
         except ModelResolutionError as exc:
             return ReviewerRun(reviewer, "failed", error=str(exc), **carried)
         except Exception as exc:
@@ -657,6 +665,19 @@ def run_reviews(
             warnings=result.warnings,
             **carried,
         )
+
+    def run_one(reviewer: Dict[str, Any]) -> ReviewerRun:
+        sink = activity_for(str(reviewer.get("id") or "reviewer")) if activity_for is not None else None
+        if sink is None:
+            return attempt(reviewer, None)
+        status = "failed"
+        try:
+            outcome = attempt(reviewer, sink)
+            status = outcome.status
+            return outcome
+        finally:
+            # However the run ended, a raise included.
+            sink.say("done: %s" % status)
 
     if parallel and len(reviewers) > 1:
         with ThreadPoolExecutor(max_workers=min(len(reviewers), 8)) as pool:

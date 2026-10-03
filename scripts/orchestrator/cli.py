@@ -20,6 +20,7 @@ import sys
 import time
 from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple
 
+from . import activity as activity_mod
 from . import approval as approval_mod
 from . import config as config_mod
 from . import context as context_mod
@@ -221,6 +222,22 @@ __version__ = "0.17.0"
 
 
 # --------------------------------------------------------------------------- parser
+
+
+def _bounded_int(low: int, high: int) -> Callable[[str], int]:
+    """An argparse type: a whole number from ``low`` to ``high``. Anything
+    else is a usage error (exit 2)."""
+
+    def parse(text: str) -> int:
+        try:
+            value = int(text)
+        except ValueError:
+            raise argparse.ArgumentTypeError("%r is not a whole number" % text) from None
+        if not low <= value <= high:
+            raise argparse.ArgumentTypeError("%d is not from %d to %d" % (value, low, high))
+        return value
+
+    return parse
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -490,6 +507,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="declare the change high-risk: adds when: high-risk reviewers; level and gate are unchanged",
     )
+    review_run.add_argument(
+        "--progress",
+        action="store_true",
+        help="echo each reviewer's tool uses to stderr while the round runs",
+    )
     review_run.add_argument("--json", action="store_true")
     review_run.set_defaults(func=cmd_review_run)
 
@@ -546,16 +568,33 @@ def build_parser() -> argparse.ArgumentParser:
     jobs_list = jobs_sub.add_parser("list", help="every recorded job, newest first")
     jobs_list.add_argument("--json", action="store_true")
     jobs_list.set_defaults(func=cmd_jobs_list)
+
+    def _add_activity_flags(parser: argparse.ArgumentParser) -> None:
+        parser.add_argument(
+            "--since",
+            type=_bounded_int(0, activity_mod.SINCE_MAX),
+            default=0,
+            help="only tool uses after this one (the cursor `next:` prints)",
+        )
+        parser.add_argument(
+            "--activity",
+            type=_bounded_int(0, activity_mod.LATEST_MAX),
+            default=10,
+            help="how many of the latest tool uses to show (default 10)",
+        )
+
     jobs_show = jobs_sub.add_parser("show", help="one job")
     jobs_show.add_argument("job_id")
     jobs_show.add_argument("--output", action="store_true", help="also print its output")
     jobs_show.add_argument("--json", action="store_true")
+    _add_activity_flags(jobs_show)
     jobs_show.set_defaults(func=cmd_jobs_show)
     jobs_wait = jobs_sub.add_parser("wait", help="wait for a job, with a deadline of your own")
     jobs_wait.add_argument("job_id")
     jobs_wait.add_argument("--timeout", type=float, default=60.0)
     jobs_wait.add_argument("--poll", type=float, default=1.0)
     jobs_wait.add_argument("--json", action="store_true")
+    _add_activity_flags(jobs_wait)
     jobs_wait.set_defaults(func=cmd_jobs_wait)
     jobs_cancel = jobs_sub.add_parser("cancel", help="stop a running job")
     jobs_cancel.add_argument("job_id")

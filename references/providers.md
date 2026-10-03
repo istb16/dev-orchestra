@@ -57,6 +57,7 @@ class Provider:
     preset_family: str | None                                   # default: None (not fitted to presets)
     local_only_options: Sequence[str]                           # default: ()
     def run_warnings(outcome, mode) -> list[str]                # default: []
+    def activity_of(line, cwd) -> Activity                      # default: nothing
     def config_families() -> list[tuple[str, str]]              # default: []
 
     supports_resume: bool                                       # default: False
@@ -130,7 +131,16 @@ the orchestrator then spends an attempt on a fresh run. The results are on
 outcome -- a refused tool, a status that is not success. The base keeps the
 list in `RunResult.warnings` and puts it above stderr; `run` and `review run`
 print it on success too, where stderr is not shown, and record it in the run
-log and the job record. `static_enforcement = True` says
+log and the job record. `activity_of(line, cwd)` is what one line of the CLI's
+stdout shows while it runs (`jobs wait`, `review run --progress`): an
+`Activity(lines, context_tokens)`. It is called only when someone is listening,
+so `execute` is called exactly as before otherwise. Build each line with
+`activity.tool_line(name, input, cwd)` rather than from the input yourself:
+that is the allowlist that keeps the model's text and free-text arguments out.
+Every line is also cleaned and redacted after you return it, but only as a
+second line of defence. It runs on a thread apart from the one reading the
+CLI's output, and what it raises loses that line and nothing else: a faulty
+hook costs the activity, never the run. The default shows nothing. `static_enforcement = True` says
 `read_only_enforcement()` is a constant that needs no subprocess, so `doctor`
 reports it in `--fast` mode and for an uninstalled CLI, and the config
 commands warn from it without looking for the CLI. `preset_family` lets

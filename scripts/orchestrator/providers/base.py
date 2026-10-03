@@ -15,7 +15,7 @@ import shutil
 import subprocess
 from typing import Any, Dict, List, Optional, Sequence
 
-from .. import execution, verified
+from .. import activity, execution, verified
 from ..workspace import redact
 
 # Execution modes shared by every adapter.
@@ -943,6 +943,22 @@ class Provider:
         command = self.command_line(
             mode, resolved, cwd, extra_args, options, resume_session, **(command_kwargs or {})
         )
+        # ``on_line`` only when someone is listening: a run with no sink calls
+        # ``execute`` exactly as it always did, stand-ins in tests included.
+        streaming: Dict[str, Any] = {}
+        sink = activity.current()
+        if sink is not None:
+
+            def on_line(line: str) -> None:
+                # A faulty hook, ours or a third party's, loses its activity
+                # and nothing else: the run's result must not depend on it.
+                try:
+                    act = self.activity_of(line, cwd)
+                except Exception:
+                    return
+                sink.add(act)
+
+            streaming["on_line"] = on_line
         outcome = execution.execute(
             command,
             cwd=cwd,
@@ -950,6 +966,7 @@ class Provider:
             timeout=timeout,
             idle_timeout=self.idle_timeout(options, idle_timeout),
             env=self._child_env(env),
+            **streaming,
         )
         # Read before postprocess, which keeps only the final answer, and on
         # both paths below: a rejected resume is also a run whose output an
@@ -1056,6 +1073,17 @@ class Provider:
         if isinstance(options, dict) and options.get("idle_timeout") is not None:
             return float(options["idle_timeout"])
         return requested
+
+    def activity_of(self, line: str, cwd: str) -> activity.Activity:
+        """Tool uses one stdout line shows, and the context size if it says. Never model text.
+
+        Called for each line while the CLI runs, only when a sink is
+        installed (:mod:`orchestrator.activity`). Pick fields through
+        :func:`activity.tool_line` rather than building lines from the
+        input: every line is clipped and redacted afterwards, but only the
+        allowlist keeps free text out. Nothing, by default.
+        """
+        return activity.NOTHING
 
     def postprocess(self, outcome: "execution.ExecOutcome", mode: str) -> "tuple[str, str]":
         """Turn raw child output into (stdout, stderr) for the caller."""

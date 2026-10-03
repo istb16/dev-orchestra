@@ -10,6 +10,30 @@ The public surface covered by that promise is: the configuration schema, the
 
 ## [Unreleased]
 
+### Added
+
+- **What a running job or review is doing** (#220). While a detached job
+  runs, `jobs wait` and `jobs show` print `elapsed:` and, once its CLI has
+  used a tool, how many tool uses, the context tokens the CLI last reported
+  (Claude; Codex reports usage only when its turn ends), the latest tool lines
+  and a `next:` cursor. New flags on both: `--since <n>` (0 to 10^9) and
+  `--activity <m>` (0 to 100, default 10); `--json` gains an `activity` key
+  only when the job has activity. The worker keeps the lines in
+  `.ai/jobs/<id>.activity`, at most 500 before it is rotated to `.1`.
+  `review run --progress` echoes each reviewer's tool lines to stderr as
+  `[<reviewer> +mm:ss] <line>`, then `done: <status>`. A line names the tool
+  and, through an allowlist, a relative path, a program (with its subcommand
+  only for a known set such as `git` and `npm`; unwrapped from the shell Codex
+  runs it in), a `Glob` pattern that stays inside the project, or a URL's
+  scheme, host and port; never the model's text or a tool's free-text
+  arguments, and every line is cleaned and redacted. Adapters gain
+  `activity_of(line, cwd)`, which shows nothing by default, and
+  `execution.execute` an optional `on_line`, called from a thread of its own
+  so a slow one never holds up reading the CLI's output. Codex
+  streams tool uses only on architect runs, the ones run with `--json`.
+  Results, ledgers, budgets, run logs, `.out` files and `review run` without
+  `--progress` are unchanged.
+
 ### Changed
 
 - **Adapter contract:** `resume_support` is one method on `Provider`; an

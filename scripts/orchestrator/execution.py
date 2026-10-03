@@ -23,6 +23,7 @@ format it was asked for -- see ``references/providers.md``.
 from __future__ import annotations
 
 import os
+import queue
 import signal
 import subprocess
 import sys
@@ -41,6 +42,10 @@ EXIT_SPAWN_FAILED = 126
 #: How long to let a killed group settle before abandoning its reader threads.
 KILL_GRACE_SECONDS = 5.0
 _POLL_SECONDS = 0.2
+#: Stdout lines waiting for ``on_line`` before further ones are dropped.
+_LINE_QUEUE_SIZE = 1000
+#: How long a finished run waits for ``on_line`` to catch up.
+_ON_LINE_GRACE_SECONDS = 2.0
 
 IS_WINDOWS = sys.platform.startswith("win")
 
@@ -110,12 +115,29 @@ class ExecOutcome:
 
 
 class _Drain:
-    """Reads one stream, remembering when the last byte arrived."""
+    """Reads one stream, remembering when the last byte arrived.
 
-    def __init__(self) -> None:
+    ``on_line`` sees each line after it is recorded, on a thread of its own
+    fed through a bounded queue: the reader never waits on it, so a slow or
+    failing callback can neither block the child on a full pipe, nor hold
+    back the idle deadline, nor fail the run. A line that finds the queue
+    full is not handed on, only counted in ``dropped``.
+    """
+
+    def __init__(self, on_line: Optional[Callable[[str], None]] = None) -> None:
         self.chunks: List[str] = []
         self.last_output_at = time.monotonic()
+        #: Lines ``on_line`` never saw because its queue was full.
+        self.dropped = 0
         self._lock = threading.Lock()
+        self._on_line = on_line
+        self._lines: "queue.Queue[str]" = queue.Queue(maxsize=_LINE_QUEUE_SIZE)
+        self._closed = threading.Event()
+        self._abandoned = False
+        self._handler: Optional[threading.Thread] = None
+        if on_line is not None:
+            self._handler = threading.Thread(target=self._hand_on, daemon=True)
+            self._handler.start()
 
     def pump(self, stream) -> None:
         try:
@@ -123,13 +145,47 @@ class _Drain:
                 with self._lock:
                     self.chunks.append(line)
                     self.last_output_at = time.monotonic()
+                if self._handler is not None:
+                    try:
+                        self._lines.put_nowait(line)
+                    except queue.Full:
+                        self.dropped += 1
         except (OSError, ValueError):
             pass
         finally:
+            self._closed.set()
             try:
                 stream.close()
             except (OSError, ValueError):
                 pass
+
+    def _hand_on(self) -> None:
+        on_line = cast(Callable[[str], None], self._on_line)
+        while not self._abandoned:
+            try:
+                line = self._lines.get(timeout=_POLL_SECONDS)
+            except queue.Empty:
+                # ``_closed`` is set only after the last put, so a closed
+                # drain with an empty queue has nothing more coming.
+                if self._closed.is_set() and self._lines.empty():
+                    return
+                continue
+            if self._abandoned:
+                return
+            try:
+                on_line(line)
+            except Exception:
+                pass
+
+    def finish(self, timeout: float) -> None:
+        """Wait up to ``timeout`` for ``on_line`` to see the lines queued so
+        far, then stop handing any on: a callback still behind by then loses
+        the rest rather than running after the run is over."""
+        if self._handler is None:
+            return
+        self._closed.set()
+        self._handler.join(timeout=timeout)
+        self._abandoned = True
 
     def text(self) -> str:
         with self._lock:
@@ -419,11 +475,15 @@ def execute(
     timeout: Optional[float] = 1800.0,
     idle_timeout: Optional[float] = None,
     env: Optional[Dict[str, str]] = None,
+    on_line: Optional[Callable[[str], None]] = None,
 ) -> ExecOutcome:
     """Run ``command``, feeding ``prompt`` on stdin, and always return.
 
     ``idle_timeout`` is only meaningful for a command that streams progress;
-    pass ``None`` to disable it.
+    pass ``None`` to disable it. ``on_line`` is called with each line of
+    stdout, never stderr, on a thread of its own; what it raises is ignored,
+    and a callback that falls far behind misses lines rather than slowing the
+    run (see :class:`_Drain`).
     """
     global _spawning
     # Only the charge reads this clock; the deadlines below stay on
@@ -458,7 +518,7 @@ def execute(
     _honour_stop()
 
     try:
-        out, err = _Drain(), _Drain()
+        out, err = _Drain(on_line), _Drain()
         threads = [
             threading.Thread(target=out.pump, args=(proc.stdout,), daemon=True),
             threading.Thread(target=err.pump, args=(proc.stderr,), daemon=True),
@@ -494,6 +554,8 @@ def execute(
         # rather than waiting on them. They are daemons and cannot outlive us.
         for thread in threads:
             thread.join(timeout=KILL_GRACE_SECONDS / len(threads))
+        # So whoever reads the sink next sees every line it is going to see.
+        out.finish(_ON_LINE_GRACE_SECONDS)
 
         for pipe in (proc.stdin, proc.stdout, proc.stderr):
             try:

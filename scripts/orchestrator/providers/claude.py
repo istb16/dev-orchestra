@@ -66,10 +66,12 @@ no failure it has not since passed.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 from typing import Any, Dict, List, Optional, Sequence, cast
 
+from .. import activity
 from ..execution import ExecOutcome
 from .base import (
     MODE_IMPLEMENT,
@@ -388,17 +390,8 @@ class ClaudeProvider(Provider):
             if event is not None and isinstance(event.get("session_id"), str):
                 session_id = event["session_id"]
                 break
-        context_tokens = None
         last = next((item for item in reversed(events) if item.get("type") == "assistant"), None)
-        message = last.get("message") if last is not None else None
-        usage = message.get("usage") if isinstance(message, dict) else None
-        if isinstance(usage, dict):
-            parts = [
-                token_count(usage.get(key))
-                for key in ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
-            ]
-            if all(part is not None for part in parts):
-                context_tokens = sum(cast(List[int], parts))
+        context_tokens = _context_tokens(last) if last is not None else None
         init = None
         start = next(
             (item for item in events if item.get("type") == "system" and item.get("subtype") == "init"),
@@ -418,6 +411,30 @@ class ClaudeProvider(Provider):
                 "version": version if isinstance(version, str) else None,
             }
         return {"session_id": session_id, "context_tokens": context_tokens, "init": init}
+
+    def activity_of(self, line: str, cwd: str) -> activity.Activity:
+        """The tool uses of one ``assistant`` event, and the context it reports.
+
+        Only ``assistant`` events are read: with ``--include-partial-messages``
+        the same ``tool_use`` also arrives earlier as a ``stream_event`` with
+        an empty input, and ``user`` events carry tool results, which are
+        never shown and are the largest lines. Every assistant event carries
+        usage, text-only ones included, so each updates the context.
+        """
+        if '"assistant"' not in line:
+            return activity.NOTHING
+        try:
+            event = json.loads(line)
+        except ValueError:
+            return activity.NOTHING
+        if not isinstance(event, dict) or event.get("type") != "assistant":
+            return activity.NOTHING
+        lines = [
+            activity.tool_line(block.get("name"), block.get("input"), cwd)
+            for block in _content_blocks(event)
+            if block.get("type") == "tool_use"
+        ]
+        return activity.Activity(lines, _context_tokens(event))
 
     def validate_options(self, options: Optional[Dict[str, Any]]) -> List[str]:
         problems = super().validate_options(options)
@@ -746,6 +763,22 @@ def _tools_from_events(events: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]
         "tool_uses_by_name": uses_by_name,
         "tool_output_chars": chars,
     }
+
+
+def _context_tokens(event: Dict[str, Any]) -> Optional[int]:
+    """The context an ``assistant`` event's message saw: its three input
+    counts, or None unless all three are there."""
+    message = event.get("message")
+    usage = message.get("usage") if isinstance(message, dict) else None
+    if not isinstance(usage, dict):
+        return None
+    parts = [
+        token_count(usage.get(key))
+        for key in ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
+    ]
+    if any(part is None for part in parts):
+        return None
+    return sum(cast(List[int], parts))
 
 
 def _content_blocks(event: Dict[str, Any]) -> List[Dict[str, Any]]:

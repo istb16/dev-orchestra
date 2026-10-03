@@ -49,6 +49,7 @@ import re
 import tempfile
 from typing import Any, Dict, List, Optional, Sequence
 
+from .. import activity
 from ..execution import ExecOutcome
 from .base import (
     MODE_IMPLEMENT,
@@ -469,6 +470,44 @@ class CodexProvider(Provider):
                 "examined, so external side effects are not covered"
             ),
         }
+
+    def activity_of(self, line: str, cwd: str) -> activity.Activity:
+        """The tool use an ``item.started`` event announces.
+
+        Only ``item.started``: each command and file change arrives again as
+        ``item.completed``, with its output, and one line per use is enough.
+        A command is shown unwrapped from the shell Codex runs it in
+        (``pwsh -Command '...'``, ``bash -lc '...'``). Codex reports usage only
+        when the turn ends, so there is never a context size while it runs.
+        Measured shapes on 0.156.1; the synthetic fixtures in
+        ``tests/fixtures/codex/`` keep them.
+        """
+        if '"item.started"' not in line:
+            return activity.NOTHING
+        try:
+            event = json.loads(line)
+        except ValueError:
+            return activity.NOTHING
+        item = event.get("item") if isinstance(event, dict) and event.get("type") == "item.started" else None
+        if not isinstance(item, dict):
+            return activity.NOTHING
+        kind = item.get("type")
+        lines: List[str] = []
+        if kind == "command_execution":
+            lines.append(activity.show_command(item.get("command")))
+        elif kind == "file_change" and isinstance(item.get("changes"), list):
+            for change in item["changes"]:
+                path = activity.show_path(change.get("path"), cwd) if isinstance(change, dict) else ""
+                lines.append("Edit %s" % path if path else "Edit")
+        elif kind == "mcp_tool_call":
+            server, tool = item.get("server"), item.get("tool")
+            if isinstance(server, str) and isinstance(tool, str) and server and tool:
+                lines.append("%s.%s" % (server, tool))
+            else:
+                lines.append("mcp")
+        elif kind == "web_search":
+            lines.append("web_search")
+        return activity.Activity(lines, None)
 
     def _launch(
         self,

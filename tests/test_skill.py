@@ -439,6 +439,7 @@ ORCHESTRATOR_DIR = os.path.join(SCRIPTS_DIR, "orchestrator")
 #: Modules that must import without loading the provider registry, whose
 #: bootstrap runs the user's adapters.
 _REGISTRY_FREE = (
+    "activity",
     "workspace",
     "optimization",
     "review_common",

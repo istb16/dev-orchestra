@@ -11,9 +11,9 @@ import sys
 import time
 from typing import Any, Dict, List, NamedTuple, Optional, Tuple, Union, cast
 
+from . import activity, execution
 from . import approval as approval_mod
 from . import config as config_mod
-from . import execution
 from . import jobs as jobs_mod
 from . import ledger as ledger_mod
 from . import workspace as ws
@@ -292,22 +292,28 @@ def cmd_run(args: argparse.Namespace) -> int:
     # forced this run is in it, and the worker's own --force says nothing.
     job = jobs_mod.claim(args.job_file) if args.job_file else None
     run = _Run(args, seat, provider, workspace, book, timeout, idle_timeout)
-    # `resume_prompt` is read whenever --resume is given, and a session id is
-    # only ever found under --resume.
-    attempt = _run_once(
-        run, cast(str, resume_prompt) if session_id is not None else prompt, session_id, resume_detail
-    )
-    if attempt is None:
-        return 2
-    if (
-        attempt.session_id is not None
-        and attempt.resume_detail is not None
-        and attempt.result.resume_rejected
-    ):
-        retried = _retry_fresh_after_rejection(run, job, attempt, prompt)
-        if isinstance(retried, int):
-            return retried
-        attempt = retried
+    # Every run a worker makes reports its tool uses beside the job, the fresh
+    # retry after a rejected resume included, so `n` carries on. Installed for
+    # this call only: a worker run in-process, as the tests do, must not leave
+    # its sink on the thread.
+    sink = activity.Sink(jobs_mod.activity_path(args.job_file)) if args.job_file else None
+    with activity.recording(sink):
+        # `resume_prompt` is read whenever --resume is given, and a session id
+        # is only ever found under --resume.
+        attempt = _run_once(
+            run, cast(str, resume_prompt) if session_id is not None else prompt, session_id, resume_detail
+        )
+        if attempt is None:
+            return 2
+        if (
+            attempt.session_id is not None
+            and attempt.resume_detail is not None
+            and attempt.result.resume_rejected
+        ):
+            retried = _retry_fresh_after_rejection(run, job, attempt, prompt)
+            if isinstance(retried, int):
+                return retried
+            attempt = retried
     _record_outcome(run, attempt)
     # Printed last, and after the books are closed. Showing the output used to
     # come first, so a console that could not encode one character of it took

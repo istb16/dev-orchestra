@@ -17,6 +17,10 @@ UUID otherwise), ``$DEV_ORCHESTRA_MOCK_CONTEXT_TOKENS`` its context size, and
 does for a missing session (``reject``) or stall (``stall``).
 ``$DEV_ORCHESTRA_MOCK_TRACE`` names a file each run appends one JSON line to:
 its mode, command, the session it resumed and the prompt's length.
+
+``$DEV_ORCHESTRA_MOCK_ACTIVITY`` is the tool lines a run reports to the
+installed activity sink, ``|``-separated; ``<marker>=>line`` reports a line
+only from a run whose prompt contains the marker.
 """
 
 from __future__ import annotations
@@ -28,6 +32,7 @@ import time
 import uuid
 from typing import Any, Dict, List, Optional, Sequence
 
+from .. import activity
 from ..clocks import Stopwatch
 from ..execution import EXIT_IDLE_STALL
 from .base import ModelCandidate, ModelResolutionError, Provider, ResolvedModel, RunResult, Usage
@@ -116,6 +121,12 @@ class MockProvider(Provider):
             mode, resolved, cwd, extra_args, options, resume_session, **(command_kwargs or {})
         )
         _trace(mode, command, resume_session, prompt)
+        # Before the delay and every early return, so a test can watch a
+        # running job's activity, and a failed run's.
+        sink = activity.current()
+        lines = _mock_activity(prompt)
+        if sink is not None and lines:
+            sink.add(activity.Activity(lines, None))
         time.sleep(_mock_delay())
         # Measured the way ``execution.execute`` measures a real child, with a
         # simulated sleep added to the duration and excluded from the charge.
@@ -271,6 +282,26 @@ def _mock_suspended() -> float:
     if not math.isfinite(value) or value < 0:
         return 0.0
     return value
+
+
+def _mock_activity(prompt: str) -> List[str]:
+    """The tool lines ``DEV_ORCHESTRA_MOCK_ACTIVITY`` asks a run to report.
+
+    Entries are separated by ``|``. One written ``<marker>=>line`` applies
+    only to a run whose prompt contains the marker, as for
+    ``DEV_ORCHESTRA_MOCK_FAIL``, so each reviewer can get its own lines.
+    """
+    raw = os.environ.get("DEV_ORCHESTRA_MOCK_ACTIVITY")
+    if not raw:
+        return []
+    lines: List[str] = []
+    for entry in raw.split("|"):
+        marker, arrow, line = entry.partition("=>")
+        if not arrow:
+            lines.append(entry)
+        elif marker and marker in prompt:
+            lines.append(line)
+    return lines
 
 
 def _should_fail(prompt: str) -> bool:

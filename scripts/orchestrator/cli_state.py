@@ -40,14 +40,23 @@ def cmd_jobs_show(args: argparse.Namespace) -> int:
     if job is None:
         _err("no such job: %s" % args.job_id)
         return 2
+    act = jobs_mod.read_activity(workspace, job, args.since, args.activity)
     if args.json:
-        _emit_json(job)
+        _emit_json(_with_activity(job, act))
         return 0
-    _out(jobs_mod.render(job))
+    _out(jobs_mod.render(job, act))
     if args.output and job.get("output_file"):
         _out("")
         _out(ws.read_text(str(job["output_file"])))
     return 0
+
+
+def _with_activity(job: Dict[str, Any], act: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """``job`` as ``--json`` prints it: with an ``activity`` key only when the
+    job has an activity file. The record on disk is not changed."""
+    if act is None:
+        return job
+    return {**job, "activity": act}
 
 
 def cmd_jobs_wait(args: argparse.Namespace) -> int:
@@ -57,10 +66,11 @@ def cmd_jobs_wait(args: argparse.Namespace) -> int:
         _err("no such job: %s" % args.job_id)
         return 2
     job = jobs_mod.wait(workspace, args.job_id, timeout=args.timeout, poll=args.poll)
+    act = jobs_mod.read_activity(workspace, job, args.since, args.activity)
     if args.json:
-        _emit_json(job)
+        _emit_json(_with_activity(job, act))
     else:
-        _out(jobs_mod.render(job))
+        _out(jobs_mod.render(job, act))
         if job.get("status") == "succeeded" and job.get("output_file"):
             _out("")
             _out(ws.read_text(str(job["output_file"])))
