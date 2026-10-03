@@ -209,7 +209,12 @@ def collect(start: Optional[str] = None, probe_models: bool = True) -> Dict[str,
                 tier_label = "%s (tier %s)" % (label, seat.tier)
                 _enforcement_report(tier_label, seat.spec, report, None, seat.label in refused)
 
-    for index, reviewer in enumerate(loaded.reviewers()):
+    # A broken entry is skipped, but still counted, so each valid one keeps
+    # the origin of its own position.
+    panel = loaded.data.get("reviewers")
+    for index, reviewer in enumerate(loaded.reviewers() if isinstance(panel, list) else []):
+        if not isinstance(reviewer, dict):
+            continue
         label = "Reviewer %s" % reviewer.get("id")
         entry = _describe_role(label, reviewer, detections, report["problems"], adapter_errors, load_errors)
         entry["id"] = reviewer.get("id")
@@ -227,7 +232,9 @@ def collect(start: Optional[str] = None, probe_models: bool = True) -> Dict[str,
         from_project = str(reviewer.get("id") or "") in reviewer_refused
         _enforcement_report(label, reviewer, report, entry, from_project)
 
-    if not report["reviewers"]:
+    # A non-list or all-broken panel is already one of validate's problems
+    # above, and `review run` refuses it rather than skipping the stage.
+    if panel is None or panel == []:
         report["problems"].append("no reviewers configured: the independent-review stage will be skipped")
     _default_patterns_note(report, loaded.optimization_settings())
     _frozen_panel_notes(report, loaded, installed)

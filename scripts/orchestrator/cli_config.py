@@ -710,7 +710,9 @@ def _redacted_reviewer(reviewer: Any) -> Any:
     prints the entry itself, so it is redacted here instead.
     """
     if not isinstance(reviewer, dict):
-        return reviewer
+        # A broken entry keeps its place, but never its contents: it may be a
+        # secret pasted in the wrong place, in a shape `redact` does not know.
+        return "[invalid entry]"
     shown = copy.deepcopy(reviewer)
     when = shown.get("when")
     if isinstance(when, dict) and isinstance(when.get("paths"), list):
@@ -720,7 +722,9 @@ def _redacted_reviewer(reviewer: Any) -> Any:
 
 def cmd_reviewer_list(args: argparse.Namespace) -> int:
     loaded = config_mod.load(args.cwd, validate_result=False)
-    reviewers = loaded.reviewers()
+    # A panel that is not a list is listed as none; `config validate` names it.
+    panel = loaded.data.get("reviewers")
+    reviewers = loaded.reviewers() if isinstance(panel, list) else []
     if args.json:
         listed: List[Any] = []
         for index, reviewer in enumerate(reviewers):
@@ -730,10 +734,14 @@ def cmd_reviewer_list(args: argparse.Namespace) -> int:
             listed.append(shown)
         _emit_json(listed)
         return 0
-    if not reviewers:
+    if not any(isinstance(reviewer, dict) for reviewer in reviewers):
         _out("No reviewers configured.")
         return 0
+    # A broken entry is skipped but keeps its number, so each valid one is
+    # numbered, and its origin read, by its position in the panel.
     for index, reviewer in enumerate(reviewers, 1):
+        if not isinstance(reviewer, dict):
+            continue
         model = reviewer.get("model") or {}
         when = opt_mod.condition_label(reviewer)
         origin = loaded.reviewer_origin(index - 1)
