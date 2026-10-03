@@ -444,6 +444,265 @@ class TestMalformedPathConditions(IsolatedCase):
                 self.assertIn(problem, out + err)
 
 
+class TestNonMappingReviewers(IsolatedCase):
+    """`doctor`, `reviewer list`, `config show` and `summary` read the config
+    unvalidated, so a `reviewers` entry that is not a mapping, or a panel that
+    is not a list, must reach them as a skipped entry; `config validate` names
+    the problem. `review consolidate` refuses it instead."""
+
+    MIXED = "version: 1\nreviewers:\n  - 3\n  - id: ok\n    provider: mock\n"
+    NOT_A_LIST = "version: 1\nreviewers: x\n"
+    A_MAPPING = "version: 1\nreviewers:\n  id: a\n  provider: mock\n"
+    ALL_BROKEN = "version: 1\nreviewers:\n  - 3\n"
+    EMPTY = "version: 1\nreviewers: []\n"
+    EXTRA_PROJECT = "version: 1\nreviewers_extra:\n  - id: extra\n    provider: mock\n"
+    BROKEN_EXTRA_PROJECT = "version: 1\nreviewers_extra:\n  - 3\n  - id: extra\n    provider: mock\n"
+    BROKEN_PROJECT = "version: 1\nreviewers:\n  - 3\n  - id: mine\n    provider: mock\n"
+    VALID = "version: 1\nreviewers:\n  - id: valid\n    provider: mock\n"
+
+    NOT_A_MAPPING = "reviewers[0]: must be a mapping"
+    NOT_LISTED = "reviewers: must be a list (use [] for none)"
+    NONE_CONFIGURED = "no reviewers configured: the independent-review stage will be skipped"
+
+    def write_global(self, text):
+        path = config_mod.global_config_path()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(text)
+
+    def panel_problems(self, payload):
+        return [
+            problem
+            for problem in payload["problems"]
+            if problem.startswith("reviewers") or problem.startswith("no reviewers")
+        ]
+
+    def doctor_json(self):
+        code, out, err = run_cli("doctor", "--fast", "--json")
+        self.assertEqual(code, 0, err)
+        return json.loads(out)
+
+    def test_doctor_text_lists_the_valid_reviewer(self):
+        for text in (self.MIXED, self.NOT_A_LIST, self.A_MAPPING, self.ALL_BROKEN, self.EMPTY):
+            with self.subTest(config=text):
+                self.write_global(text)
+                code, _, err = run_cli("doctor", "--fast")
+                self.assertEqual(code, 0, err)
+        self.write_global(self.MIXED)
+        _, out, _ = run_cli("doctor", "--fast")
+        self.assertIn("%-13s %d" % ("Reviewers:", 1), out)
+        self.assertIn("    1. ok / mock / default", out)
+        self.assertIn("  - %s" % self.NOT_A_MAPPING, out)
+        self.assertNotIn("no reviewers configured", out)
+        self.write_global(self.NOT_A_LIST)
+        _, out, _ = run_cli("doctor", "--fast")
+        self.assertIn("  - %s" % self.NOT_LISTED, out)
+        self.assertNotIn("no reviewers configured", out)
+
+    def test_doctor_strict_exits_one_on_a_broken_panel(self):
+        for text in (self.MIXED, self.NOT_A_LIST, self.A_MAPPING, self.ALL_BROKEN, self.EMPTY):
+            with self.subTest(config=text):
+                self.write_global(text)
+                code, _, _ = run_cli("doctor", "--fast", "--strict")
+                self.assertEqual(code, 1)
+
+    def test_doctor_json_names_only_validates_problem(self):
+        cases = (
+            (self.MIXED, [("ok", "global")], [self.NOT_A_MAPPING]),
+            (self.NOT_A_LIST, [], [self.NOT_LISTED]),
+            (self.A_MAPPING, [], [self.NOT_LISTED]),
+            (self.ALL_BROKEN, [], [self.NOT_A_MAPPING]),
+            (self.EMPTY, [], [self.NONE_CONFIGURED]),
+        )
+        for text, reviewers, problems in cases:
+            with self.subTest(config=text):
+                self.write_global(text)
+                payload = self.doctor_json()
+                listed = [(entry["id"], entry["origin"]) for entry in payload["reviewers"]]
+                self.assertEqual(listed, reviewers)
+                self.assertEqual(self.panel_problems(payload), problems)
+
+    def test_reviewer_list_skips_the_broken_entry(self):
+        self.write_global(self.MIXED)
+        code, out, err = run_cli("reviewer", "list")
+        self.assertEqual(code, 0, err)
+        self.assertIn("2. %-18s %-8s" % ("ok", "mock"), out)
+        numbered = [line for line in out.splitlines() if line.split(".", 1)[0].isdigit()]
+        self.assertEqual(len(numbered), 1, out)
+        self.assertNotIn("1. ", out)
+        for text in (self.NOT_A_LIST, self.A_MAPPING, self.ALL_BROKEN):
+            with self.subTest(config=text):
+                self.write_global(text)
+                code, out, err = run_cli("reviewer", "list")
+                self.assertEqual(code, 0, err)
+                self.assertEqual(out.strip(), "No reviewers configured.")
+
+    def test_reviewer_list_json(self):
+        self.write_global(self.MIXED)
+        _, out, _ = run_cli("reviewer", "list", "--json")
+        listed = json.loads(out)
+        self.assertEqual(listed[0], "[invalid entry]")
+        self.assertEqual(listed[1]["id"], "ok")
+        self.assertEqual(listed[1]["origin"], "global")
+        for text in (self.NOT_A_LIST, self.A_MAPPING):
+            with self.subTest(config=text):
+                self.write_global(text)
+                _, out, _ = run_cli("reviewer", "list", "--json")
+                self.assertEqual(json.loads(out), [])
+        # No entry that is not a mapping shows its contents, whatever it holds:
+        # `redact` does not know every credential's shape.
+        broken = (
+            '"sk-supersecretvalue"',
+            '"xoxb-slacktokenvalue"',
+            '"AKIAEXAMPLEKEYVALUE"',
+            "[nestedsecretvalue]",
+            "987654321",
+        )
+        for entry in broken:
+            with self.subTest(entry=entry):
+                self.write_global("version: 1\nreviewers:\n  - %s\n  - id: ok\n    provider: mock\n" % entry)
+                _, out, _ = run_cli("reviewer", "list", "--json")
+                self.assertEqual(json.loads(out)[0], "[invalid entry]")
+                self.assertNotIn(entry.strip('"[]'), out)
+
+    def test_config_show_skips_the_broken_entry(self):
+        cases = (
+            (self.MIXED, ["    2. mock / default / latest / general / ok", "  - %s" % self.NOT_A_MAPPING]),
+            (self.NOT_A_LIST, ["    (none configured)", "  - %s" % self.NOT_LISTED]),
+            (self.A_MAPPING, ["    (none configured)", "  - %s" % self.NOT_LISTED]),
+            (self.ALL_BROKEN, ["    (none configured)", "  - %s" % self.NOT_A_MAPPING]),
+            (self.EMPTY, ["    (none configured)"]),
+        )
+        for text, expected in cases:
+            with self.subTest(config=text):
+                self.write_global(text)
+                code, out, err = run_cli("config", "show")
+                self.assertEqual(code, 0, err)
+                for line in expected:
+                    self.assertIn(line, out)
+                if text == self.EMPTY:
+                    self.assertNotIn(self.NOT_LISTED, out)
+                    self.assertNotIn(self.NOT_A_MAPPING, out)
+
+    def test_layered_extra_keeps_its_origin(self):
+        self.write_global(self.MIXED)
+        self.write(".dev-orchestra.yaml", self.EXTRA_PROJECT)
+        payload = self.doctor_json()
+        self.assertEqual([entry["id"] for entry in payload["reviewers"]], ["ok", "extra"])
+        self.assertEqual([entry["origin"] for entry in payload["reviewers"]], ["global", "project extra"])
+        _, out, _ = run_cli("doctor", "--fast")
+        line = next(line for line in out.splitlines() if line.startswith("    2. extra / mock / default"))
+        self.assertTrue(line.endswith("general (extra: project)"), line)
+        _, out, _ = run_cli("reviewer", "list")
+        line = next(line for line in out.splitlines() if line.startswith("3. %-18s" % "extra"))
+        self.assertTrue(line.endswith("(extra: project)"), line)
+        _, out, _ = run_cli("config", "show")
+        self.assertIn("    3. mock / default / latest / general / extra (extra, project file)", out)
+
+    def test_broken_extra_keeps_its_origin(self):
+        # A broken extra is not folded into the panel, so the valid one after
+        # it still sits third, after the global file's two entries.
+        self.write_global(self.MIXED)
+        self.write(".dev-orchestra.yaml", self.BROKEN_EXTRA_PROJECT)
+        payload = self.doctor_json()
+        listed = [(entry["id"], entry["origin"]) for entry in payload["reviewers"]]
+        self.assertEqual(listed, [("ok", "global"), ("extra", "project extra")])
+        self.assertIn("reviewers_extra[0] in the project file: must be a mapping", payload["problems"])
+        _, out, _ = run_cli("doctor", "--fast")
+        line = next(line for line in out.splitlines() if line.startswith("    2. extra / mock / default"))
+        self.assertTrue(line.endswith("general (extra: project)"), line)
+        _, out, _ = run_cli("reviewer", "list")
+        line = next(line for line in out.splitlines() if line.startswith("3. %-18s" % "extra"))
+        self.assertTrue(line.endswith("(extra: project)"), line)
+        _, out, _ = run_cli("config", "show")
+        self.assertIn("    3. mock / default / latest / general / extra (extra, project file)", out)
+
+    def test_broken_project_entry_keeps_its_origin(self):
+        self.write_global(self.VALID)
+        self.write(".dev-orchestra.yaml", self.BROKEN_PROJECT)
+        payload = self.doctor_json()
+        listed = [(entry["id"], entry["origin"]) for entry in payload["reviewers"]]
+        self.assertEqual(listed, [("mine", "project")])
+        self.assertIn(self.NOT_A_MAPPING, payload["problems"])
+        _, out, _ = run_cli("reviewer", "list")
+        line = next(line for line in out.splitlines() if line.startswith("2. %-18s" % "mine"))
+        self.assertNotIn("(extra:", line)
+        self.assertNotIn("valid", out)
+        _, out, _ = run_cli("config", "show")
+        self.assertIn("    2. mock / default / latest / general / mine\n", out)
+
+    def review_lines(self, out):
+        """The lines listed under `Review:` in the summary."""
+        lines = out.splitlines()
+        start = lines.index("Review:") + 1
+        listed = []
+        for line in lines[start:]:
+            if not line.startswith("  "):
+                break
+            listed.append(line)
+        return listed
+
+    def test_summary_skips_the_broken_entry(self):
+        self.write_global(self.MIXED)
+        code, out, err = run_cli("summary")
+        self.assertEqual(code, 0, err)
+        self.assertIn("  %-14s mock / default" % "ok", out)
+        self.write_global(self.NOT_A_LIST)
+        code, out, err = run_cli("summary")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.review_lines(out), [])
+        self.write_global(self.VALID)
+        recorded = {"reviewers": [3, {"id": "ok", "provider": "mock", "model": "fam"}]}
+        ws.write_json(self.cli_workspace().consolidated_json_path, recorded)
+        code, out, err = run_cli("summary")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.review_lines(out), ["  %-14s mock / fam" % "ok"])
+
+    def test_summary_falls_back_from_a_recorded_non_list(self):
+        # A recorded panel that is not a list is treated as missing, so the
+        # configured one is listed instead.
+        self.write_global(self.VALID)
+        for recorded in ({"reviewers": "x"}, {"reviewers": {"id": "ok", "provider": "mock"}}):
+            with self.subTest(recorded=recorded):
+                ws.write_json(self.cli_workspace().consolidated_json_path, recorded)
+                code, out, err = run_cli("summary")
+                self.assertEqual(code, 0, err)
+                listed = self.review_lines(out)
+                self.assertEqual(len(listed), 1, listed)
+                self.assertTrue(listed[0].startswith("  %-14s mock / " % "valid"), listed)
+
+    def test_review_consolidate_refuses_a_broken_panel(self):
+        cases = (
+            (self.MIXED, self.NOT_A_MAPPING),
+            (self.ALL_BROKEN, self.NOT_A_MAPPING),
+            (self.NOT_A_LIST, self.NOT_LISTED),
+            (self.A_MAPPING, self.NOT_LISTED),
+        )
+        for text, problem in cases:
+            with self.subTest(config=text):
+                self.write_global(text)
+                path = self.cli_workspace().consolidated_json_path
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                with open(path, "wb") as handle:
+                    handle.write(b'{"sentinel": true}')
+                code, _, err = run_cli("review", "consolidate")
+                self.assertEqual(code, 2)
+                self.assertIn("refusing to consolidate", err)
+                self.assertIn(problem, err)
+                with open(path, "rb") as handle:
+                    self.assertEqual(handle.read(), b'{"sentinel": true}')
+
+    def test_review_consolidate_takes_a_sound_panel(self):
+        # No panel, an empty one and a valid one are not the guard's to refuse,
+        # whatever consolidating them then does without any reports.
+        for text in ("version: 1\n", self.EMPTY, self.VALID):
+            with self.subTest(config=text):
+                self.write_global(text)
+                code, _, err = run_cli("review", "consolidate")
+                self.assertNotEqual(code, 2, err)
+                self.assertNotIn("refusing to consolidate", err)
+
+
 class TestDoctor(IsolatedCase):
     def test_doctor_runs_and_reports_roles(self):
         code, out, _ = run_cli("doctor", "--fast")

@@ -757,7 +757,15 @@ def cmd_summary(args: argparse.Namespace) -> int:
         )
     lines.append("Review:")
     # Prefer the models actually resolved during the run; fall back to config.
-    for reviewer in review_data.get("reviewers") or loaded.reviewers():
+    # Either may be malformed: a recorded panel that is not a non-empty list
+    # falls back to config, a configured one that is not a list lists
+    # nothing, and a non-mapping entry is skipped.
+    listed = review_data.get("reviewers")
+    if not isinstance(listed, list) or not listed:
+        listed = loaded.data.get("reviewers")
+    for reviewer in listed if isinstance(listed, list) else []:
+        if not isinstance(reviewer, dict):
+            continue
         model = reviewer.get("model")
         if isinstance(model, dict):
             model = model.get("family", "default")

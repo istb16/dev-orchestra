@@ -1282,8 +1282,33 @@ def _condition_excluded(workspace: ws.Workspace) -> set:
     return set()
 
 
+def _broken_panel(loaded: config_mod.LoadedConfig) -> List[str]:
+    """validate's ``reviewers`` problems, when the panel is not a list of mappings.
+
+    `review run` refuses such a config. Consolidating it would read no
+    reports and save a finding-free round over the last one, which
+    `review status` would then pass. An absent panel is not broken.
+    """
+    panel = loaded.data.get("reviewers")
+    if panel is None or (isinstance(panel, list) and all(isinstance(r, dict) for r in panel)):
+        return []
+    problems = config_mod.validate(
+        loaded.data,
+        project_layer=loaded.project_layer,
+        global_layer=loaded.global_layer,
+        origins=loaded.reviewer_origins,
+    )
+    return [problem for problem in problems if problem.startswith(("reviewers:", "reviewers["))]
+
+
 def cmd_review_consolidate(args: argparse.Namespace) -> int:
     loaded = config_mod.load(args.cwd, validate_result=False)
+    broken = _broken_panel(loaded)
+    if broken:
+        _err("refusing to consolidate: the reviewers panel is invalid:")
+        for problem in broken:
+            _err("  - %s" % problem)
+        return 2
     workspace = _review_workspace(args)
     reviewer_ids = [str(r.get("id")) for r in loaded.reviewers()]
     excluded: set = set()
