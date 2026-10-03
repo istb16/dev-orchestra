@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import io
 import json
 import os
@@ -12,6 +13,7 @@ from typing import Any, ClassVar, Dict, Optional
 
 from helpers import CLAUDE_HELP, CLAUDE_HELP_NO_FORK, CLAUDE_HELP_OLD, TEST_WORKFLOW, IsolatedCase, has_git
 
+from orchestrator import activity as activity_mod
 from orchestrator import cli, cli_workflow, providers
 from orchestrator import config as config_mod
 from orchestrator import ledger as ledger_mod
@@ -3507,6 +3509,157 @@ class TestPresetCommands(PresetCase):
         self.assertEqual(second.count("note: no config file"), 1)
         self.assertNotIn("optimization level:", second)
         self.assertNotIn("Save it with", second)
+
+
+def parser_leaves(parser, path=()):
+    """Every runnable command under ``parser`` as (path, leaf parser)."""
+    groups = [action for action in parser._actions if isinstance(action, argparse._SubParsersAction)]
+    if not groups:
+        yield path, parser
+        return
+    for name, child in groups[0].choices.items():
+        yield from parser_leaves(child, (*path, name))
+
+
+def minimal_argv(path, leaf):
+    """The shortest argv that ``leaf`` accepts: one value per required argument."""
+    argv = list(path)
+    for action in leaf._actions:
+        if isinstance(action, argparse._HelpAction):
+            continue
+        value = str(next(iter(action.choices))) if action.choices else "x"
+        if not action.option_strings:
+            if action.nargs in (None, "+"):
+                argv.append(value)
+        elif action.required:
+            argv.extend([action.option_strings[0], value])
+    return argv
+
+
+class TestParserShape(IsolatedCase):
+    """What ``build_parser`` registers, pinned at parse level so a command
+    that drops out of the tree, or loses its handler, fails here."""
+
+    TOP_LEVEL: ClassVar[set] = {
+        "config",
+        "model",
+        "reviewer",
+        "doctor",
+        "run",
+        "review",
+        "design",
+        "state",
+        "jobs",
+        "budget",
+        "tokens",
+        "optimization",
+        "progress",
+        "workflow",
+        "status",
+        "summary",
+    }
+
+    def setUp(self):
+        super().setUp()
+        self.parser = cli.build_parser()
+
+    def parse(self, *argv):
+        return self.parser.parse_args(list(argv))
+
+    def assert_usage_error(self, *argv):
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as caught:
+            self.parse(*argv)
+        self.assertEqual(caught.exception.code, 2, argv)
+
+    def test_top_level_commands(self):
+        groups = [a for a in self.parser._actions if isinstance(a, argparse._SubParsersAction)]
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(set(groups[0].choices), self.TOP_LEVEL)
+
+    def test_every_leaf_parses_to_its_handler(self):
+        leaves = list(parser_leaves(self.parser))
+        self.assertTrue(
+            {
+                ("workflow", "use"),
+                ("workflow", "remove"),
+                ("budget", "consume"),
+                ("budget", "reset"),
+                ("progress", "record"),
+                ("state", "record"),
+                ("review", "triage"),
+                ("review", "fix-brief"),
+                ("review", "consolidate"),
+                ("config", "suggest-roles"),
+                ("config", "prune"),
+                ("config", "setup"),
+            }
+            <= {path for path, _ in leaves}
+        )
+        for path, leaf in leaves:
+            with self.subTest(command=" ".join(path)):
+                func = leaf.get_default("func")
+                self.assertIsNotNone(func)
+                self.assertEqual(func.__name__, "cmd_" + "_".join(path).replace("-", "_"))
+                self.assertIs(self.parse(*minimal_argv(path, leaf)).func, func)
+
+    def test_activity_flags_on_jobs_show_and_wait(self):
+        for sub in ("show", "wait"):
+            with self.subTest(sub=sub):
+                args = self.parse("jobs", sub, "J")
+                self.assertEqual((args.since, args.activity), (0, 10))
+                args = self.parse(
+                    "jobs",
+                    sub,
+                    "J",
+                    "--since",
+                    str(activity_mod.SINCE_MAX),
+                    "--activity",
+                    str(activity_mod.LATEST_MAX),
+                )
+                self.assertEqual(
+                    (args.since, args.activity), (activity_mod.SINCE_MAX, activity_mod.LATEST_MAX)
+                )
+                args = self.parse("jobs", sub, "J", "--since", "0", "--activity", "0")
+                self.assertEqual((args.since, args.activity), (0, 0))
+                for flag, bad in (
+                    ("--since", "-1"),
+                    ("--since", str(activity_mod.SINCE_MAX + 1)),
+                    ("--since", "abc"),
+                    ("--activity", "-1"),
+                    ("--activity", str(activity_mod.LATEST_MAX + 1)),
+                    ("--activity", "abc"),
+                ):
+                    self.assert_usage_error("jobs", sub, "J", "%s=%s" % (flag, bad))
+
+    def test_scope_defaults(self):
+        self.assertEqual(self.parse("config", "setup").scope, "global")
+        self.assertEqual(self.parse("config", "show").scope, "effective")
+        self.assertEqual(self.parse("config", "show", "--scope", "effective").scope, "effective")
+        self.assert_usage_error("config", "setup", "--scope", "effective")
+        for argv in (
+            ("config", "set", "a.b", "c"),
+            ("config", "reset"),
+            ("config", "prune"),
+            ("reviewer", "add", "--provider", providers.available_providers()[0]),
+            ("reviewer", "remove", "1"),
+            ("reviewer", "set", "1"),
+        ):
+            with self.subTest(argv=argv):
+                self.assertIsNone(self.parse(*argv).scope)
+
+    def test_design_flag_on_review_subcommands(self):
+        for argv in (
+            ("review", "run"),
+            ("review", "consolidate"),
+            ("review", "show"),
+            ("review", "triage", "F1", "--status", "accepted"),
+            ("review", "fix-brief"),
+            ("review", "status"),
+        ):
+            with self.subTest(argv=argv):
+                self.assertIs(self.parse(*argv).design, False)
+                self.assertIs(self.parse(*argv, "--design").design, True)
+        self.assert_usage_error("review", "snapshot", "--design")
 
 
 if __name__ == "__main__":
