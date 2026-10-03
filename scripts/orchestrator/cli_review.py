@@ -5,8 +5,10 @@ from __future__ import annotations
 import argparse
 import hashlib
 import os
+import time
 from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple, Union
 
+from . import activity
 from . import approval as approval_mod
 from . import config as config_mod
 from . import context as context_mod
@@ -558,12 +560,30 @@ def _run_panel(
             prompt_for=prompt_for,
             surrounding=surrounding,
             refusals=_reviewer_refusals(ctx.loaded, reviewers),
+            activity_for=_progress_echo() if getattr(args, "progress", False) else None,
         )
     except review_mod.ReviewError as exc:
         book.end(token, "failed", {"error": str(exc)})
         _err(str(exc))
         return 2
     return _PanelRun(token, runs, warned)
+
+
+def _progress_echo() -> Callable[[str], activity.Sink]:
+    """``review run --progress``: a sink per reviewer that echoes its tool uses
+    to stderr as ``[<reviewer> +mm:ss] <line>``. Nothing is written to a file."""
+
+    def sink_for(reviewer_id: str) -> activity.Sink:
+        tag = activity.clip(reviewer_id) or "reviewer"
+        started = time.monotonic()
+
+        def echo(line: str) -> None:
+            minutes, seconds = divmod(int(time.monotonic() - started), 60)
+            _err("[%s +%02d:%02d] %s" % (tag, minutes, seconds, line))
+
+        return activity.Sink(echo=echo)
+
+    return sink_for
 
 
 def _account_runs(ctx: _RoundContext, panel: _PanelRun) -> List[Dict[str, Any]]:

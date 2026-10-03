@@ -11,6 +11,7 @@ the repository: they carry machine-specific values.
 | `resume-rejected-other-error.stdout` | The same line with a different `errors` entry, to show that only the missing-session sentence counts as a rejection. Not a recording. |
 | `resume-write-probe.jsonl` | A forked, resumed session asked to write a file. It called no tool and wrote nothing. |
 | `partial-messages-tool.jsonl` | A read-only run with `--include-partial-messages` that called `Read` once, so its `stream_event` lines include a `tool_use` block start and `text_delta` chunks. Run with `--model haiku`: its `init` event names `claude-haiku-4-5-20251001` while every message and `modelUsage` name `claude-sonnet-5`, both as the CLI printed them; no test reads either. |
+| `implement-tools.jsonl` | **Synthetic, not a recording.** Written from the event shapes of an implement-mode run on claude 2.1.285 (Windows), which used `PowerShell`, `Write`, `Edit` and `Read`. Every value is invented: the id, the paths (under `/sandbox/probe215`), the texts and the usage numbers. It keeps the event `type` and `subtype`, block `type` and `name`, the tool input keys the run had (`PowerShell`: `command`, `description`; `Write`: `file_path`, `content`; `Edit`: `file_path`, `old_string`, `new_string`, `replace_all`; `Read`: `file_path`) and every key of `message.usage`. The `system` `task_summary` and `post_turn_summary` events and `rate_limit_event` keep only their type. |
 
 ## Redaction
 

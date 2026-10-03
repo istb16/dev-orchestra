@@ -89,6 +89,14 @@ stage detail: `references/workflow.md`.
 A role with `model_tiers` (`config show`) runs on one: `run implementer --tier
 light`; an unknown tier is refused.
 
+**Long stages.** Run implementer, review_fixer and big architect runs with
+`--detach`; wait with `jobs wait <id> --timeout 180 --since <n>`. On each exit
+4 tell the user in a line or two: elapsed time, tool count, **context tokens**
+(never "tokens so far"), the last few tool lines; then wait again from `next:`.
+Only a background `review run` gets `--progress > .ai/execution/review-run.log
+2>&1`: relay its new lines every few minutes. Never relay or guess what the
+model wrote.
+
 **Design.** Architect must not change code. On Claude it has only Read, Grep
 and Glob (no shell, git, subagents or files outside the project): put what it
 would have run -- `git log --oneline`, blame -- in the request. You write the

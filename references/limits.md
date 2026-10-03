@@ -591,6 +591,23 @@ dead worker must never look like one that is still working.
 Detaching is optional. It costs a round trip per poll and is worth it for the
 long stages (implementation, a big review) rather than every call.
 
+A bounded wait still leaves the user looking at nothing for minutes, so each
+wait also says what the job is doing. While it runs, `jobs wait` and `jobs
+show` print the elapsed time and, once the CLI has used a tool, how many tool
+uses and the **context tokens** -- the size of the context the model last saw,
+not a running total -- with the latest tool lines and a `next:` cursor:
+`jobs wait <id> --since <n>` lists only what is new, `--activity <m>` (0 to
+100) how many lines. A line says which tool, and only through an allowlist what
+it touched: a path relative to the project, a program (and the subcommand of
+a few, such as `git`), a URL's host. The model's text and a tool's free-text
+arguments are never shown, and every line is cut, stripped of control characters and
+redacted before it is written and again when it is read. The file holds at most
+500 lines before it is rotated, so it cannot grow without bound; a gap in the
+numbering is reported as dropped lines. For a review round the orchestrator
+runs in the background, `review run --progress` echoes the same lines to
+stderr, one tagged line per tool use and reviewer. The flags, the JSON and the
+allowlist are in [the CLI reference](cli.md#jobs).
+
 ## The verdict
 
 `dev-orchestra status` folds all of it into one answer:

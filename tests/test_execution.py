@@ -8,10 +8,12 @@ pipe, a wedged child producing no output) cannot be faked with a stub.
 from __future__ import annotations
 
 import errno
+import io
 import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 import unittest
 from typing import List, Optional, Tuple
@@ -212,6 +214,132 @@ class TestIdleDeadline(IsolatedCase):
             python_code("print('fast')"), cwd=self.project, timeout=60, idle_timeout=1
         )
         self.assertTrue(outcome.ok)
+
+
+#: Three stdout lines, the last without a newline, with stderr between them.
+MIXED_OUTPUT = (
+    "import sys\n"
+    "sys.stdout.write('one\\n'); sys.stdout.flush()\n"
+    "sys.stderr.write('err one\\n'); sys.stderr.flush()\n"
+    "sys.stdout.write('two\\n'); sys.stdout.flush()\n"
+    "sys.stderr.write('err two\\n'); sys.stderr.flush()\n"
+    "sys.stdout.write('three')\n"
+)
+
+#: A line every 0.2s for about two seconds.
+STEADY_OUTPUT = "import sys, time\nfor i in range(10):\n    print(i, flush=True); time.sleep(0.2)\n"
+
+
+class TestOnLine(IsolatedCase):
+    def test_only_stdout_lines_reach_the_callback(self):
+        seen: List[str] = []
+        outcome = execution.execute(
+            python_code(MIXED_OUTPUT), cwd=self.project, timeout=60, on_line=seen.append
+        )
+        self.assertTrue(outcome.ok, outcome.stderr)
+        self.assertEqual([line.rstrip("\r\n") for line in seen], ["one", "two", "three"])
+        self.assertIn("err two", outcome.stderr)
+
+    def test_a_callback_that_raises_changes_nothing(self):
+        def broken(line: str) -> None:
+            raise RuntimeError("sink broke")
+
+        outcome = execution.execute(python_code(MIXED_OUTPUT), cwd=self.project, timeout=60, on_line=broken)
+        self.assertTrue(outcome.ok, outcome.stderr)
+        self.assertEqual(outcome.stdout.splitlines(), ["one", "two", "three"])
+
+    def test_the_callback_runs_after_the_line_is_recorded_and_outside_the_lock(self):
+        observed: List[Tuple[float, int]] = []
+
+        def check(line: str) -> None:
+            # Takes the drain's lock: called under it, this would never return.
+            observed.append((drain.last_seen(), len(drain.text())))
+
+        drain = execution._Drain(check)
+        before = drain.last_seen()
+        thread = threading.Thread(target=drain.pump, args=(io.StringIO("a\nb\n"),), daemon=True)
+        thread.start()
+        thread.join(timeout=10)
+        drain.finish(10)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(len(observed), 2, "the callback deadlocked on the drain's lock")
+        # The callback runs on its own thread, so by the time it sees "a" the
+        # reader may already have recorded "b" too.
+        self.assertIn(observed[0][1], (2, 4))
+        self.assertEqual(observed[1][1], 4)
+        self.assertTrue(all(seen >= before for seen, _ in observed))
+
+    def test_a_callback_slower_than_the_idle_deadline_does_not_stall_a_healthy_run(self):
+        # The reader keeps reading, and so keeps the idle clock fresh, while
+        # the callback is still on the first line. Were the callback called
+        # from the reader, nothing would be read for 1.5s and a run whose
+        # child prints every 0.2s would be killed as stalled at 1s.
+        slow = threading.Event()
+
+        def on_line(line: str) -> None:
+            if not slow.is_set():
+                slow.set()
+                time.sleep(1.5)
+
+        outcome = execution.execute(
+            python_code(STEADY_OUTPUT), cwd=self.project, timeout=60, idle_timeout=1, on_line=on_line
+        )
+        self.assertTrue(slow.is_set())
+        self.assertFalse(outcome.stalled, outcome.stderr)
+        self.assertTrue(outcome.ok, outcome.stderr)
+        self.assertEqual(len(outcome.stdout.splitlines()), 10)
+
+    def test_every_line_reaches_a_callback_that_keeps_up(self):
+        seen: List[str] = []
+        outcome = execution.execute(
+            python_code(STEADY_OUTPUT), cwd=self.project, timeout=60, on_line=seen.append
+        )
+        self.assertTrue(outcome.ok, outcome.stderr)
+        # execute() returns only once the callback has caught up.
+        self.assertEqual([line.strip() for line in seen], [str(i) for i in range(10)])
+
+    def test_a_full_queue_drops_lines_and_never_blocks_the_reader(self):
+        release = threading.Event()
+        seen: List[str] = []
+
+        def stuck(line: str) -> None:
+            release.wait(10)
+            seen.append(line)
+
+        with mock.patch.object(execution, "_LINE_QUEUE_SIZE", 2):
+            drain = execution._Drain(stuck)
+        text = "".join("%d\n" % i for i in range(20))
+        thread = threading.Thread(target=drain.pump, args=(io.StringIO(text),), daemon=True)
+        thread.start()
+        thread.join(timeout=5)
+        self.assertFalse(thread.is_alive(), "the reader waited on the callback")
+        self.assertEqual(drain.text(), text)
+        self.assertGreater(drain.dropped, 0)
+        release.set()
+        drain.finish(10)
+        self.assertEqual(len(seen) + drain.dropped, 20)
+
+    def test_a_callback_still_behind_at_the_end_is_abandoned(self):
+        calls: List[str] = []
+
+        def slow(line: str) -> None:
+            calls.append(line)
+            time.sleep(0.5)
+
+        drain = execution._Drain(slow)
+        drain.pump(io.StringIO("a\nb\nc\nd\n"))
+        drain.finish(0.1)
+        time.sleep(1.5)
+        # The line in hand when it was abandoned may finish; no later one starts.
+        self.assertLessEqual(len(calls), 2)
+
+    def test_a_silent_child_still_stalls(self):
+        seen: List[str] = []
+        outcome = execution.execute(
+            python_code(SILENT_HANG), cwd=self.project, timeout=120, idle_timeout=1, on_line=seen.append
+        )
+        self.assertTrue(outcome.stalled)
+        self.assertEqual(seen, [])
 
 
 class TestProcessTree(IsolatedCase):

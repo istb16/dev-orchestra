@@ -1,0 +1,9 @@
+{"type":"thread.started","thread_id":"11111111-1111-4111-8111-111111111111"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"Checking the working tree before reading the README."}}
+{"type":"item.started","item":{"id":"item_1","type":"command_execution","command":"\"C:\\Program Files\\PowerShell\\7\\pwsh.exe\" -Command 'git status'","aggregated_output":"","exit_code":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_1","type":"command_execution","command":"\"C:\\Program Files\\PowerShell\\7\\pwsh.exe\" -Command 'git status'","aggregated_output":"On branch main\nnothing to commit, working tree clean\n","exit_code":0,"status":"completed"}}
+{"type":"item.started","item":{"id":"item_2","type":"command_execution","command":"\"C:\\Program Files\\PowerShell\\7\\pwsh.exe\" -NoProfile -Command 'Get-Content -LiteralPath README.md'","aggregated_output":"","exit_code":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_2","type":"command_execution","command":"\"C:\\Program Files\\PowerShell\\7\\pwsh.exe\" -NoProfile -Command 'Get-Content -LiteralPath README.md'","aggregated_output":"# probe\n","exit_code":0,"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_3","type":"agent_message","text":"The tree is clean and README.md holds one heading."}}
+{"type":"turn.completed","usage":{"input_tokens":24310,"cached_input_tokens":20480,"cache_write_input_tokens":0,"output_tokens":212,"reasoning_output_tokens":64}}

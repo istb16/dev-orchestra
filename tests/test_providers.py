@@ -27,7 +27,7 @@ from helpers import (
     remove_link,
 )
 
-from orchestrator import execution, providers, verified
+from orchestrator import activity, execution, providers, verified
 from orchestrator.providers import agy as agy_module
 from orchestrator.providers import base
 from orchestrator.providers import claude as claude_module
@@ -692,18 +692,123 @@ class TestDescribeRawArgument(unittest.TestCase):
         self.assertEqual(base.Provider.describe_raw_argument("--" + "x" * 80), "'%s'" % ("--" + "x" * 38))
 
 
-class _Recorder:
-    """`execution.execute` replaced by a recording, for runs through `Provider.run`."""
+_NO_ON_LINE = object()
 
-    def __init__(self, case):
+
+class _Recorder:
+    """`execution.execute` replaced by a recording, for runs through `Provider.run`.
+
+    ``lines`` are fed to ``on_line`` when the run passes one, as a CLI's
+    stdout would be; ``on_line_passed`` says, per call, whether it did.
+    """
+
+    def __init__(self, case, lines=()):
         self.commands = []
+        self.lines = list(lines)
+        self.on_line_passed = []
         original = execution.execute
         case.addCleanup(setattr, execution, "execute", original)
         execution.execute = self
 
-    def __call__(self, command, cwd, prompt="", timeout=None, idle_timeout=None, env=None):
+    def __call__(
+        self, command, cwd, prompt="", timeout=None, idle_timeout=None, env=None, on_line=_NO_ON_LINE
+    ):
         self.commands.append(list(command))
+        self.on_line_passed.append(on_line is not _NO_ON_LINE)
+        if callable(on_line):
+            for line in self.lines:
+                on_line(line)
         return execution.ExecOutcome(0, "done", "", 0.1)
+
+
+FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
+
+
+class TestActivityWiring(IsolatedCase):
+    """`Provider.run` hands each stdout line to the adapter's hook, and the
+    hook's lines to the installed sink, only when a sink is installed."""
+
+    def fixture_lines(self, kind, name, recorded_cwd):
+        with open(os.path.join(FIXTURES, kind, name), encoding="utf-8") as handle:
+            text = handle.read()
+        # Forward slashes, so the path needs no escaping inside the JSON.
+        return text.replace(recorded_cwd, self.project.replace("\\", "/")).splitlines(keepends=True)
+
+    def claude(self):
+        provider = ClaudeProvider()
+        provider.which = lambda: "claude"
+        provider.version = lambda: ("2.1.283 (Claude Code)", None)
+        setattr(provider, "_capture", lambda command, timeout=30: _FakeCompleted(CLAUDE_HELP))
+        return provider
+
+    def codex(self):
+        provider = CodexProvider()
+        provider.which = lambda: "codex"
+        provider.configured_model = lambda: "gpt-example-1"
+        setattr(provider, "_capture", lambda command, timeout=30: None)
+        return provider
+
+    def run_claude(self):
+        return self.claude().run("prompt", base.MODE_REVIEW, self.project, model_spec={"family": "opus"})
+
+    def test_claude_through_run(self):
+        lines = self.fixture_lines("claude", "partial-messages-tool.jsonl", "/sandbox/probe138")
+        recorder = _Recorder(self, lines)
+        seen = []
+        sink = activity.Sink(echo=seen.append)
+        with activity.recording(sink):
+            result = self.run_claude()
+        self.assertTrue(result.ok, result.stderr)
+        self.assertEqual(recorder.on_line_passed, [True])
+        self.assertEqual(seen, ["Read probe.py", "ExitPlanMode"])
+        self.assertIsNotNone(sink.context_tokens)
+
+    def test_codex_through_run(self):
+        lines = self.fixture_lines("codex", "exec-json-file-change.jsonl", "/sandbox/probe214")
+        recorder = _Recorder(self, lines)
+        seen = []
+        spec = {"family": "recommended-coding"}
+        sink = activity.Sink(echo=seen.append)
+        with activity.recording(sink):
+            self.codex().run("prompt", base.MODE_PLAN, self.project, model_spec=spec)
+        self.assertEqual(recorder.on_line_passed, [True])
+        self.assertEqual(seen, ["Bash: Set-Content", "Edit notes/hello.txt"])
+        # Codex reports usage only when its turn ends.
+        self.assertIsNone(sink.context_tokens)
+
+    def test_a_hook_that_raises_fails_nothing(self):
+        lines = self.fixture_lines("claude", "partial-messages-tool.jsonl", "/sandbox/probe138")
+        recorder = _Recorder(self, lines)
+        provider = self.claude()
+        calls = []
+
+        def broken(line, cwd):
+            calls.append(line)
+            raise RuntimeError("adapter bug")
+
+        setattr(provider, "activity_of", broken)
+        seen = []
+        sink = activity.Sink(echo=seen.append)
+        with activity.recording(sink):
+            result = provider.run("prompt", base.MODE_REVIEW, self.project, model_spec={"family": "opus"})
+        self.assertTrue(result.ok, result.stderr)
+        self.assertEqual(recorder.on_line_passed, [True])
+        self.assertEqual(len(calls), len(lines))
+        self.assertEqual(seen, [])
+        self.assertEqual(sink.n, 0)
+        # The same run without a sink gives the same answer.
+        _Recorder(self, lines)
+        plain = self.run_claude()
+        self.assertEqual(
+            (plain.ok, plain.exit_code, plain.stdout), (result.ok, result.exit_code, result.stdout)
+        )
+
+    def test_without_a_sink_execute_is_called_as_before(self):
+        lines = self.fixture_lines("claude", "partial-messages-tool.jsonl", "/sandbox/probe138")
+        recorder = _Recorder(self, lines)
+        self.assertIsNone(activity.current())
+        self.assertTrue(self.run_claude().ok)
+        self.assertEqual(recorder.on_line_passed, [False])
 
 
 class TestClaudeReadOnlyRun(IsolatedCase):

@@ -14,6 +14,8 @@ The thread ids are kept; they belonged to throwaway conversations.
 | `fork-rollout-workspace-write.jsonl` | The rollout of a second fork of the same parent under `-c 'sandbox_mode="workspace-write"'`, asked to reply `READY`. |
 | `parent-rollout.jsonl` | The parent's rollout: the fresh run in `exec-json-ready.jsonl`. |
 | `fork-help.txt` | `codex exec fork --help`. Verbatim. |
+| `exec-json-tools.jsonl` | **Synthetic, not a recording.** Written from the event shapes of a `codex exec -s read-only --json` run (codex-cli 0.156.1, Windows) that ran a command and read a file. The commands keep the form the CLI printed, wrapped in `"<pwsh.exe>" -Command '...'` and `-NoProfile -Command '...'`; ids, texts, output and usage numbers are invented. It keeps the event `type`, the item `id`, `type`, `text`, `command`, `aggregated_output`, `exit_code` and `status`, and every `turn.completed` usage key. |
+| `exec-json-file-change.jsonl` | **Synthetic, not a recording.** Written from the event shapes of a `codex exec -s workspace-write --json` run (same CLI) that created a file. Same fields as above, plus the `file_change` item's `changes[].path` (an absolute path, invented under `/sandbox/probe214`) and `changes[].kind`. |
 | `fork-rollout-parent-history.jsonl` | Not a recording. A rollout under the fork's name holding only the parent's history: its `session_meta` names the parent, and its only `turn_context` is a read-only one the fork did not write. A fork's read-only verdict must not rest on it. |
 
 ## Redaction

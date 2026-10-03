@@ -51,7 +51,12 @@ a doc comment" is a useful sentence; silently skipping is not.
         │   ├── design-revise-request.md
         │   ├── design-resume-request.md
         │   ├── implement-request.md
-        │   └── fix-brief.md        # generated from accepted findings
+        │   ├── fix-brief.md        # generated from accepted findings
+        │   └── review-run.log      # only if you redirect `review run --progress` here
+        ├── jobs/
+        │   ├── <id>.json           # a detached run (`run --detach`)
+        │   ├── <id>.out            # its output
+        │   └── <id>.activity       # its tool uses, one line each; .activity.1 after 500
         ├── reviews/
         │   ├── review-target.diff  # frozen snapshot
         │   ├── review-target.json  # strategy, files, sha256, round_id
@@ -133,6 +138,15 @@ readable.
 the user's commits. Teams who want them reviewable can delete that file and
 commit the directory; teams who never want it can add `.ai/` to the repo's own
 `.gitignore`. Say which you did if you change it.
+
+`jobs/<id>.activity` (and `.activity.1`, once a run passes 500 tool uses) is
+what `jobs wait` reports while a detached run works, and
+`execution/review-run.log` exists only when you redirect a background
+`review run --progress` there. The tool lines in both went through the same
+allowlist and cleaning -- no model text, no free-text arguments -- and the rest
+of the log is `review run`'s usual output. Both are under `.ai/`, which ignores
+itself; a team that deleted `.ai/.gitignore` has to ignore them in its own
+`.gitignore`.
 
 Nothing in `.ai/`, and no `.dev-orchestra.yaml`, ever enters a review
 snapshot — the skill's own files are not the change under review.

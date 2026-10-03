@@ -763,6 +763,18 @@ class TestDetached(ResumeCase):
         self.assertNotIn("No conversation found", json.dumps(job))
         self.assertEqual(len(self.events()), 3)
 
+    def test_activity_carries_on_across_the_fresh_retry(self):
+        self.revise()
+        os.environ["DEV_ORCHESTRA_MOCK_RESUME"] = "reject"
+        os.environ["DEV_ORCHESTRA_MOCK_ACTIVITY"] = "Read plan.md|Bash: git status"
+        job = self.wait(self.detach()["id"])
+        self.assertEqual(job["status"], "succeeded")
+        path = jobs_mod.activity_path(jobs_mod.job_path(self.cli_workspace(), job["id"]))
+        with open(path, encoding="utf-8") as handle:
+            entries = [json.loads(line) for line in handle]
+        self.assertEqual([entry["n"] for entry in entries], [1, 2, 3, 4])
+        self.assertEqual([entry["line"] for entry in entries], ["Read plan.md", "Bash: git status"] * 2)
+
     def test_a_rejection_without_budget_fails_the_job(self):
         self.revise()
         run_cli("config", "set", "budgets.architect", "2")

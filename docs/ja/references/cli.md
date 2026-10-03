@@ -1,4 +1,4 @@
-<!-- translated-from: references/cli.md sha256:2649f747030d46cbb63ad491b83036c9bc3448a8705fe0068b93d5d2f0994dc8 -->
+<!-- translated-from: references/cli.md sha256:788638fa9adc808c5bff8b1650687eb98b4c8efd2dfed04a169dbcfc306b07e5 -->
 
 > この文書は [references/cli.md](../../../references/cli.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -373,7 +373,7 @@ echo "explain the failure" | dev-orchestra run orchestrator
 | コマンド | 説明 |
 | --- | --- |
 | `review snapshot [--base <rev>] [--no-untracked] [--surrounding none\|enclosing] [--json]` | レビュー対象の変更を固定します。空の場合は終了コード 1 です。`review.context.max_chars` を超える変更には警告が出ますが、それでも書き込まれます。スナップショットを取ること自体は何も消費せず、拒否するのは消費するコマンドの役目だからです。`--json` は同じことを数値で示します: `change_chars`、`max_chars`、`over_context`。`review.context.surrounding: enclosing` のときは、各 hunk を囲むシンボルも、diff を取ったツリーから `review-surrounding.json` に固定し、固定したシンボル数と文字数、抽出しなかったファイルの数とその理由を示す `context:` 行を出力します。メタデータには `surrounding` ブロックが加わります。`--surrounding` はこのスナップショットに限って設定を上書きします: **`enclosing` は設定が `none` でもこのスナップショットについて候補を凍結します**。この凍結が無いと `review run --surrounding enclosing` は拒否されます。`none` は何も凍結せず、古い凍結ファイルを削除します。設定そのものは変わりません。`references/reviews.md` と [周辺コンテキストの効果を測る](limits.md#measuring-what-surrounding-context-does) を参照してください。 |
-| `review run [--design] [--request <path>] [--iteration N] [--only <ids/roles>] [--sequential] [--context <text>] [--base <rev>] [--timeout <s>] [--idle-timeout <s>] [--force] [--surrounding none\|enclosing] [--high-risk] [--json]` | スナップショットに対してすべてのレビュアーを実行し、レポートと統合結果を書き込みます。終了コード 1 になるのは、`ok` で戻ったレビュアーが 1 人もいない場合だけです。すべてのレビュアーが失敗した場合や、変更本体が大きすぎてインライン化できずファイルとして渡されたラウンドがこれにあたり、後者はクリーンではなく `partial` として記録されます。ラウンドは `--iteration` が指定されない限りスナップショットから導出され、`review.max_review_iterations` を超えるラウンドは `--force` がない限り拒否されます（終了コード 3）。上限に達したラウンドでも fix と再テストは行われ、拒否されるのは再レビューだけです。最適化ゲートに拒否されたラウンド（テストが失敗として記録されている）も終了コード 3 で終了し、`optimization report` が数えられるよう `refused` として記録されます。`review.context.max_chars`（400,000）を超える変更本体も同様です。何もレビューされず、メッセージはサイズ、上限、上限内に収める方法を示し、ラウンドは `refused_by: "context"` として記録されます。`--force` を付けると構わず実行し、そのラウンドは報告されるすべての場所で `over_budget` として記録されます。本体をプロンプトに入れるかパスとして渡すかは `review.context.inline_chars`（400,000。デフォルトでは同じ数値）で決まり、各レビュアーのエントリには判断に使われた値が記録されます。`budgets.max_runtime_seconds` 分の委譲実行時間を使い切った場合も同様にラウンドは拒否され（パネルはその最大の消費者です）、メッセージはどの予算だったかを示します。`--only` は一部だけを実行しますが、統合はすべてのレビュアーの現在のレポートに対して行うので、何も失われません — ただし、このラウンドで外された条件付きのレビュアーのレポートは統合されません。条件付きのレビュアーはそれぞれ、理由（高リスクなパス、またはパスで絞り込んだレビュアーなら自分のパターンの 1 つ、`when: high-risk` のレビュアーなら `--high-risk`、差分ラウンドでの自身の未解決の accepted の指摘、`--only` での指名）を示す `note:` とともに加えられるか外され、その判断はイベントと `--json` の `optimization.conditional` に `optimization.declared` とともに記録されます。`--high-risk` は変更を高リスクと宣言します。`when: high-risk` のレビュアーを加えてパネルを縮小させませんが、レベル・指摘の上限・ゲートは決して変えないので、red のツリーに対する宣言付きのラウンドは他と同じように拒否されます。`--design` と一緒に使うと終了コード 2 で拒否されます。`review.context.surrounding: enclosing` のときは、固定されたシンボルを `review.context.surrounding_chars` と、diff が両方の上限の下に残す分の範囲で採用し、`Surrounding context:` 行が採用した数と除外した数とその理由を示し、`--json` にはラウンドの `surrounding` レコードが入ります。上限が計測するサイズは、diff に採用したコンテキストを足したものになります。`--surrounding none\|enclosing` は、1 つのスナップショットをコンテキストあり・なしでレビューするために、この run に限って `review.context.surrounding` を上書きします（[周辺コンテキストの効果を測る](limits.md#measuring-what-surrounding-context-does) を参照してください）。設定は変わらず、行は `(--surrounding enclosing for this run)` または `Surrounding context: none (--surrounding none for this run; review.context.surrounding unchanged)` となります。次の場合は何も課金される前に終了コード 2 で拒否されます: `--design` と併用したとき。incremental ラウンド（再レビューのプロンプトには実行時点の accepted findings が載るので、2 本の run はコンテキスト以外でも違ってしまう）。`enclosing` で何も採用されないとき（理由を問わない: `review snapshot --surrounding enclosing` で凍結していないスナップショット、候補なし、ファイル渡し、予算なし）。同じスナップショットに対する 2 本目の run（間に `budget reset` を挟んでも同じ）で、前回の run が組み立てた後に finding のトリアージまたはトリアージのメモが設定されたとき（前のラウンドから引き継がれたものは数えない）。同じスナップショットの再実行はラウンドを進めず、findings の署名を登録しないので、ペアが「何も変えなかった修正」に見えることはありません。1 本目は通常どおり登録します。lineage が変わった後の run や、`--iteration` で別のラウンドを指定した run は再実行ではなく、署名を登録します。run のイベントと `--json` には `measurement` ブロック（`surrounding`、完全な `snapshot` sha256、凍結した `tree`、`head`、`base`、`workflow` ディレクトリ、予算の `epoch`、`rerun`、そして `inputs`: `context_sha256`、`max_findings`、`inline_chars`、`max_chars`、`force`）が加わり、`consolidated.json` には `triage_at_build`（キーごとの各 finding の `triage` と `triage_note`）を持つ `measurement` が加わります。フラグが無ければ、これらは何も書かれません。 |
+| `review run [--design] [--request <path>] [--iteration N] [--only <ids/roles>] [--sequential] [--context <text>] [--base <rev>] [--timeout <s>] [--idle-timeout <s>] [--force] [--surrounding none\|enclosing] [--high-risk] [--progress] [--json]` | スナップショットに対してすべてのレビュアーを実行し、レポートと統合結果を書き込みます。終了コード 1 になるのは、`ok` で戻ったレビュアーが 1 人もいない場合だけです。すべてのレビュアーが失敗した場合や、変更本体が大きすぎてインライン化できずファイルとして渡されたラウンドがこれにあたり、後者はクリーンではなく `partial` として記録されます。ラウンドは `--iteration` が指定されない限りスナップショットから導出され、`review.max_review_iterations` を超えるラウンドは `--force` がない限り拒否されます（終了コード 3）。上限に達したラウンドでも fix と再テストは行われ、拒否されるのは再レビューだけです。最適化ゲートに拒否されたラウンド（テストが失敗として記録されている）も終了コード 3 で終了し、`optimization report` が数えられるよう `refused` として記録されます。`review.context.max_chars`（400,000）を超える変更本体も同様です。何もレビューされず、メッセージはサイズ、上限、上限内に収める方法を示し、ラウンドは `refused_by: "context"` として記録されます。`--force` を付けると構わず実行し、そのラウンドは報告されるすべての場所で `over_budget` として記録されます。本体をプロンプトに入れるかパスとして渡すかは `review.context.inline_chars`（400,000。デフォルトでは同じ数値）で決まり、各レビュアーのエントリには判断に使われた値が記録されます。`budgets.max_runtime_seconds` 分の委譲実行時間を使い切った場合も同様にラウンドは拒否され（パネルはその最大の消費者です）、メッセージはどの予算だったかを示します。`--only` は一部だけを実行しますが、統合はすべてのレビュアーの現在のレポートに対して行うので、何も失われません — ただし、このラウンドで外された条件付きのレビュアーのレポートは統合されません。条件付きのレビュアーはそれぞれ、理由（高リスクなパス、またはパスで絞り込んだレビュアーなら自分のパターンの 1 つ、`when: high-risk` のレビュアーなら `--high-risk`、差分ラウンドでの自身の未解決の accepted の指摘、`--only` での指名）を示す `note:` とともに加えられるか外され、その判断はイベントと `--json` の `optimization.conditional` に `optimization.declared` とともに記録されます。`--high-risk` は変更を高リスクと宣言します。`when: high-risk` のレビュアーを加えてパネルを縮小させませんが、レベル・指摘の上限・ゲートは決して変えないので、red のツリーに対する宣言付きのラウンドは他と同じように拒否されます。`--design` と一緒に使うと終了コード 2 で拒否されます。`review.context.surrounding: enclosing` のときは、固定されたシンボルを `review.context.surrounding_chars` と、diff が両方の上限の下に残す分の範囲で採用し、`Surrounding context:` 行が採用した数と除外した数とその理由を示し、`--json` にはラウンドの `surrounding` レコードが入ります。上限が計測するサイズは、diff に採用したコンテキストを足したものになります。`--surrounding none\|enclosing` は、1 つのスナップショットをコンテキストあり・なしでレビューするために、この run に限って `review.context.surrounding` を上書きします（[周辺コンテキストの効果を測る](limits.md#measuring-what-surrounding-context-does) を参照してください）。設定は変わらず、行は `(--surrounding enclosing for this run)` または `Surrounding context: none (--surrounding none for this run; review.context.surrounding unchanged)` となります。次の場合は何も課金される前に終了コード 2 で拒否されます: `--design` と併用したとき。incremental ラウンド（再レビューのプロンプトには実行時点の accepted findings が載るので、2 本の run はコンテキスト以外でも違ってしまう）。`enclosing` で何も採用されないとき（理由を問わない: `review snapshot --surrounding enclosing` で凍結していないスナップショット、候補なし、ファイル渡し、予算なし）。同じスナップショットに対する 2 本目の run（間に `budget reset` を挟んでも同じ）で、前回の run が組み立てた後に finding のトリアージまたはトリアージのメモが設定されたとき（前のラウンドから引き継がれたものは数えない）。同じスナップショットの再実行はラウンドを進めず、findings の署名を登録しないので、ペアが「何も変えなかった修正」に見えることはありません。1 本目は通常どおり登録します。lineage が変わった後の run や、`--iteration` で別のラウンドを指定した run は再実行ではなく、署名を登録します。run のイベントと `--json` には `measurement` ブロック（`surrounding`、完全な `snapshot` sha256、凍結した `tree`、`head`、`base`、`workflow` ディレクトリ、予算の `epoch`、`rerun`、そして `inputs`: `context_sha256`、`max_findings`、`inline_chars`、`max_chars`、`force`）が加わり、`consolidated.json` には `triage_at_build`（キーごとの各 finding の `triage` と `triage_note`）を持つ `measurement` が加わります。フラグが無ければ、これらは何も書かれません。`--progress` は、ラウンドの実行中に各レビュアーのツール使用を `[<reviewer> +mm:ss] <line>` の形で stderr に出します。行の中身と規則はジョブの activity と同じで（[jobs](#jobs) を参照）、レビュアーごとに 300 行までです。実行がどう終わっても最後に `[<reviewer> +mm:ss] done: <status>` を出します。ファイルには何も書かず、stdout（`--json` を含む）は変わりません。出力をリダイレクトしてバックグラウンドで実行するラウンド向けで、付けなければ stderr はこれまでどおりです。 |
 | `review consolidate [--design] [--iteration N] [--json]` | 既存のレポートを再解析し、統合結果を再構築します。コードレビューでは、現在のスナップショットに対する直近のラウンドが外した条件付きのレビュアーのレポートを除くので、そのラウンドが読んだレポートを読みます。 |
 | `review show [--design] [--accepted] [--json]` | 統合されたレビューを表示します。 |
 | `review triage [--design] <ids…> --status <status> [--note <text>]` | トリアージの判断を記録します。判断のたびに、`needs-triage` も含めて指摘に `triage_set_at` を刻むので、指摘を戻したことと一度も判断していないことが区別できます。 |
@@ -534,8 +534,8 @@ detach された実行です。期限はエージェントが異常な振る舞�
 | コマンド | 説明 |
 | --- | --- |
 | `jobs list [--json]` | 記録されているすべてのジョブを新しい順に表示します。 |
-| `jobs show <id> [--output] [--json]` | 1 つのジョブを表示します。オプションでその出力も表示します。 |
-| `jobs wait <id> [--timeout <s>] [--poll <s>] [--json]` | 待機しますが、`--timeout`（デフォルト 60 秒）より長くは待ちません。待機が終わった時点でジョブがまだ実行中であれば終了コード 4 で終了します。これはエラーではなく通常の結果です。ジョブが `--output` の書き込みを拒否した場合は、フォアグラウンドの実行と同様に終了コード 1 で終了します。 |
+| `jobs show <id> [--output] [--since <n>] [--activity <m>] [--json]` | 1 つのジョブを表示します。オプションでその出力も表示し、ジョブが何をしているかも示します（下記）。 |
+| `jobs wait <id> [--timeout <s>] [--poll <s>] [--since <n>] [--activity <m>] [--json]` | 待機しますが、`--timeout`（デフォルト 60 秒）より長くは待ちません。待機が終わった時点でジョブがまだ実行中であれば終了コード 4 で終了します。これはエラーではなく通常の結果です。ジョブが `--output` の書き込みを拒否した場合は、フォアグラウンドの実行と同様に終了コード 1 で終了します。 |
 | `jobs cancel <id>` | 実行中のジョブとそのプロセスツリーを停止します。 |
 
 ```bash
@@ -547,6 +547,39 @@ dev-orchestra jobs show "$id" --output
 ジョブの一生は `.ai/jobs/` の下にある 1 つの JSON ファイルで表され、ワーカーが書き込みます。そのため、
 親プロセスが終了しても進捗は失われません。結果を記録せずにワーカープロセスがなくなったジョブは、永遠に
 実行中に見えるのではなく `abandoned` として報告されます。
+
+ジョブが終わっていない間、`jobs show` と `jobs wait` は `elapsed:`（ワーカーがジョブを引き受けてからの
+時間）を表示します。ワーカーは CLI が報告したツール使用を 1 回につき 1 行、`.ai/jobs/<id>.activity` にも
+書き残します。このファイルができると、両コマンドは `activity:` 行を加えます。ツール使用の回数と、CLI が
+報告する場合は **コンテキストトークン**（モデルが最後に見たコンテキストの大きさで、累計ではありません）
+です。続いて最新の行を開始からの時間つきで並べ、ジョブが実行中なら、次の待機に渡す `--since` の
+カーソルを示す `next:` 行を出します。`--since <n>`（0 から 1,000,000,000）は `n` 回目より後のツール使用だけを
+並べ、`--activity <m>`（0 から 100、デフォルト 10）は最新から何行並べるかで、残りは
+`(K earlier lines not shown)` として数だけ示します。`(some lines were dropped)` は番号の抜けがあるという
+意味です。ファイルは 500 件を保持すると `<id>.activity.1` に移して書き直すので、長い実行では古い行から
+なくなります。また Windows でリーダーがファイルを開いている間に書かれた行は捨てられます。どちらのフラグも
+これ以外の値は使い方の誤り（終了コード 2）です。`--json` では、ファイルがある場合に限り、ジョブに
+`activity` キー（`count`、`context_tokens`、`elapsed_seconds`、`lines`（`n`、`s`、`line`）、`dropped`、
+`omitted`）が加わります。ジョブのレコード自体は変わりません。
+
+1 行に書けることは許可リストで決まっており、モデルのテキストやツールの自由記述の引数は決して含みません。
+
+| ツール | 行 |
+| --- | --- |
+| `Read`、`Edit`、`Write`、`NotebookEdit` | ツールとパス。パスはプロジェクトからの相対パス、外なら `<outside>/<ファイル名>` |
+| `Glob` | パターン（相対で `..` を含まないときだけ）と、`Read` と同じ扱いの検索パス。`Glob src/**/*.py`、`Glob src/**/*.py in src`、または `Glob` だけ |
+| `Grep` | 検索したパス。パターンは決して出しません |
+| `Bash`、`PowerShell`、Codex のコマンド | `Bash: <プログラム>`（ディレクトリと `.exe` は除く）。`Bash: <プログラム> <サブコマンド>` になるのは `git`、`gh`、`npm`、`pnpm`、`yarn`、`npx`、`cargo`、`go`、`docker`、`kubectl`、`pip`、`uv`、`poetry`、`make`、`dotnet`、`terraform` だけです。先頭の変数代入（`FOO=1`、`$env:FOO='x';`）は飛ばし、プログラム名がただの単語でなければ `Bash` だけになります。Codex がシェルで包んだコマンド（`pwsh -Command '...'`、`bash -lc '...'`）は先に包みを外します |
+| `WebFetch` | スキーム、ホスト、指定があればポート。多くの API がトークンを置くパスは出しません |
+| MCP のツール | `<サーバー>.<ツール>` |
+| Codex のファイル変更 | ファイルごとに 1 行の `Edit <パス>` |
+| それ以外（`Task` と Codex の `web_search` を含む） | 名前だけ |
+
+どの行も最初の改行と 100 文字で切り、エスケープシーケンスと制御文字を除き、伏せ字にしてから書き込み、
+読むときにも同じ処理をします。Claude はメッセージごとにコンテキストを報告します。Codex は使用量をターンの
+終わりにしか報告しないので、Codex のジョブにはコンテキストトークンが出ません。また Codex がツール使用を
+流すのは `--json` で実行する architect の実行だけなので、Codex の implementer や fixer のジョブには
+`elapsed:` しか出ません。
 
 <a id="budget"></a>
 
@@ -960,6 +993,7 @@ stderr に一度だけ知らせます。実行中のステージがあるワー�
 | `DEV_ORCHESTRA_MOCK_DIR` | mock provider 用の定型応答 |
 | `DEV_ORCHESTRA_MOCK_RESPONSE` | mock provider 用のインラインの定型応答 |
 | `DEV_ORCHESTRA_MOCK_FAIL` | mock の実行を失敗させます（`1` = すべて、それ以外はプロンプトの部分文字列） |
+| `DEV_ORCHESTRA_MOCK_ACTIVITY` | mock の実行がジョブの activity や `review run --progress` に報告するツール行。`\|` 区切りで、`<部分文字列>=>行` はその部分文字列を含むプロンプトのときだけ |
 | `CODEX_HOME` | Codex CLI の設定と認証情報を探すときに考慮されます |
 | `DEV_ORCHESTRA_TEST_ASSUME_NO_CLI` | テスト専用: 両方の provider CLI を隠し、CI を再現します |
 

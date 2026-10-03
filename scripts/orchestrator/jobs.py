@@ -23,9 +23,10 @@ import subprocess
 import sys
 import time
 import uuid
+from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
-from . import execution
+from . import activity, execution
 from . import workspace as ws
 
 #: Terminal states. Anything else means the job is still supposed to be running.
@@ -55,6 +56,52 @@ def job_path(workspace: ws.Workspace, job_id: str) -> str:
 def stop_note_path(job_file: str) -> str:
     """Where a worker stopped by SIGTERM names a CLI group it could not end."""
     return os.path.splitext(job_file)[0] + ".stop"
+
+
+def activity_path(job_file: str) -> str:
+    """Where a worker keeps the tool lines of its run (see :mod:`orchestrator.activity`)."""
+    return os.path.splitext(job_file)[0] + ".activity"
+
+
+def read_activity(
+    workspace: ws.Workspace, job: Dict[str, Any], since: int = 0, latest: int = 10
+) -> Optional[Dict[str, Any]]:
+    """The job's activity as ``jobs show/wait --json`` reports it, or None
+    when the job has no activity file."""
+    act = activity.read(activity_path(job_path(workspace, str(job.get("id")))), since, latest)
+    if act is not None:
+        act["elapsed_seconds"] = elapsed_seconds(job)
+    return act
+
+
+def _epoch(stamp: Any) -> Optional[float]:
+    try:
+        return datetime.strptime(str(stamp), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).timestamp()
+    except ValueError:
+        return None
+
+
+def elapsed_seconds(job: Dict[str, Any]) -> Optional[int]:
+    """Seconds since the worker claimed the job (or it was started), up to
+    when it finished or now; None when neither time can be read."""
+    begun = _epoch(job.get("claimed_at"))
+    if begun is None:
+        begun = _epoch(job.get("started_at"))
+    if begun is None:
+        return None
+    end = _epoch(job.get("finished_at")) if job.get("finished_at") else time.time()
+    if end is None:
+        return None
+    return max(int(end - begun), 0)
+
+
+def _duration(seconds: float) -> str:
+    seconds = int(seconds)
+    hours, rest = divmod(seconds, 3600)
+    minutes, seconds = divmod(rest, 60)
+    if hours:
+        return "%dh%02dm%02ds" % (hours, minutes, seconds)
+    return "%dm%02ds" % (minutes, seconds)
 
 
 def output_path(workspace: ws.Workspace, job_id: str) -> str:
@@ -307,12 +354,19 @@ def finish(
     update(job_file, finished)
 
 
-def render(job: Dict[str, Any]) -> str:
+def render(job: Dict[str, Any], act: Optional[Dict[str, Any]] = None) -> str:
+    """A job as text. ``act`` is what :func:`read_activity` returned for it;
+    without one a finished job reads exactly as it did before activity."""
+    running = job.get("status") not in FINISHED
     lines = [
         "%s  %s" % (job.get("id"), str(job.get("status", "?")).upper()),
         "  stage:    %s" % job.get("stage"),
         "  started:  %s" % job.get("started_at"),
     ]
+    if running:
+        elapsed = elapsed_seconds(job)
+        if elapsed is not None:
+            lines.append("  elapsed:  %s" % _duration(elapsed))
     if job.get("finished_at"):
         lines.append("  finished: %s" % job["finished_at"])
     if job.get("pid"):
@@ -329,4 +383,27 @@ def render(job: Dict[str, Any]) -> str:
             lines.append("  rejected: %s" % job["rejected_file"])
     if job.get("waited_out"):
         lines.append("  note:     still running when the wait timed out")
+    if act is not None:
+        lines += _render_activity(job, act, running)
     return "\n".join(lines)
+
+
+def _render_activity(job: Dict[str, Any], act: Dict[str, Any], running: bool) -> List[str]:
+    count = int(act.get("count") or 0)
+    summary = "  activity: %d tool use%s" % (count, "" if count == 1 else "s")
+    tokens = act.get("context_tokens")
+    if isinstance(tokens, int):
+        summary += ", context {:,} tokens".format(tokens)
+    lines = [summary]
+    for entry in act.get("lines") or ():
+        seconds = entry.get("s")
+        stamp = "+%02d:%02d" % divmod(int(seconds), 60) if isinstance(seconds, (int, float)) else "+--:--"
+        lines.append("    %s  %s" % (stamp, entry.get("line")))
+    omitted = int(act.get("omitted") or 0)
+    if omitted:
+        lines.append("    (%d earlier line%s not shown)" % (omitted, "" if omitted == 1 else "s"))
+    if act.get("dropped"):
+        lines.append("    (some lines were dropped)")
+    if running:
+        lines.append("  next:     jobs wait %s --since %d" % (job.get("id"), count))
+    return lines

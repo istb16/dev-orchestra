@@ -58,7 +58,12 @@ MAX_SKILL_LINES = 500
 #: Raised again from 13,000 for the approval stage, the same way: five
 #: passages were compressed to pay for about half of it, and the ceiling
 #: moved for the rest, with the same room above the document as before.
-MAX_SKILL_CHARS = 13_500
+#:
+#: Raised again from 13,500, which the document was within two characters
+#: of, for the rule on relaying a long stage's progress to the user: the
+#: paragraph was cut to the facts the orchestrator acts on, and the ceiling
+#: moved by about that much.
+MAX_SKILL_CHARS = 14_000
 MAX_DESCRIPTION_CHARS = 1024
 REQUIRED_FRONTMATTER = ("name", "description")
 REQUIRED_FILES = (

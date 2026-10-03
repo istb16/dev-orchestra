@@ -1,4 +1,4 @@
-<!-- translated-from: references/workflow.md sha256:05b43c891db5b426761ff404fe3aec770fcd3b79817fd713ece84a8cde88b948 -->
+<!-- translated-from: references/workflow.md sha256:de7d9ffad7bca78e9a1d6fe4b6d1989dbb1ae70306dd0170810107963a958ace -->
 
 > この文書は [references/workflow.md](../../../references/workflow.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -61,7 +61,12 @@
         │   ├── design-revise-request.md
         │   ├── design-resume-request.md
         │   ├── implement-request.md
-        │   └── fix-brief.md        # generated from accepted findings
+        │   ├── fix-brief.md        # generated from accepted findings
+        │   └── review-run.log      # only if you redirect `review run --progress` here
+        ├── jobs/
+        │   ├── <id>.json           # a detached run (`run --detach`)
+        │   ├── <id>.out            # its output
+        │   └── <id>.activity       # its tool uses, one line each; .activity.1 after 500
         ├── reviews/
         │   ├── review-target.diff  # frozen snapshot
         │   ├── review-target.json  # strategy, files, sha256, round_id
@@ -139,6 +144,13 @@ git worktree add ../feature-x feature-x
 commit に入りません。成果物をレビュー可能にしたいチームはこのファイルを削除して
 ディレクトリを commit できますし、決して含めたくないチームはリポジトリ自身の
 `.gitignore` に `.ai/` を追加できます。変更した場合は、どちらにしたかを伝えてください。
+
+`jobs/<id>.activity`（実行のツール使用が 500 回を超えると `.activity.1` も）は、detach した実行の
+作業中に `jobs wait` が報告する内容です。`execution/review-run.log` は、バックグラウンドの
+`review run --progress` の出力をそこへリダイレクトしたときにだけできます。どちらのツール行も同じ
+許可リストと整形を通っており（モデルのテキストも自由記述の引数もありません）、ログの残りは
+`review run` のいつもの出力です。どちらも自分自身を無視する `.ai/` の下にあります。`.ai/.gitignore` を
+削除したチームは、自分の `.gitignore` でこれらを無視する必要があります。
 
 `.ai/` 内のものも `.dev-orchestra.yaml` も、レビューのスナップショットに入ることは
 ありません。スキル自身のファイルはレビュー対象の変更ではないからです。

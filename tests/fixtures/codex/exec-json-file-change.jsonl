@@ -1,0 +1,9 @@
+{"type":"thread.started","thread_id":"22222222-2222-4222-8222-222222222222"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"Writing the file, then reading it back."}}
+{"type":"item.started","item":{"id":"item_1","type":"command_execution","command":"\"C:\\Program Files\\PowerShell\\7\\pwsh.exe\" -Command \"Set-Content -LiteralPath 'hello.txt' -Value 'hi' -NoNewline; Get-Content -LiteralPath 'hello.txt'\"","aggregated_output":"","exit_code":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_1","type":"command_execution","command":"\"C:\\Program Files\\PowerShell\\7\\pwsh.exe\" -Command \"Set-Content -LiteralPath 'hello.txt' -Value 'hi' -NoNewline; Get-Content -LiteralPath 'hello.txt'\"","aggregated_output":"hi","exit_code":0,"status":"completed"}}
+{"type":"item.started","item":{"id":"item_2","type":"file_change","changes":[{"path":"/sandbox/probe214/notes/hello.txt","kind":"add"}],"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_2","type":"file_change","changes":[{"path":"/sandbox/probe214/notes/hello.txt","kind":"add"}],"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_3","type":"agent_message","text":"Created notes/hello.txt."}}
+{"type":"turn.completed","usage":{"input_tokens":31877,"cached_input_tokens":27136,"cache_write_input_tokens":0,"output_tokens":388,"reasoning_output_tokens":120}}
