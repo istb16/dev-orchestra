@@ -19,6 +19,18 @@ The public surface covered by that promise is: the configuration schema, the
   reports `unsupported` in `doctor`, as a Codex one did; its runs were already
   fresh.
 
+### Fixed
+
+- **Stopping a run's process tree on POSIX now waits for its whole process
+  group**, not just its leader (was: once the worker or CLI exited on
+  `SIGTERM`, a child that ignored it was never sent `SIGKILL`, so a timed-out
+  run could leave e.g. a test server behind). **`jobs cancel` now also stops
+  the CLI a worker is running**, and what that CLI started (was: the worker
+  died on `SIGTERM` and its CLI, in a session of its own, ran on). When the
+  worker's own process group cannot be confirmed gone, `jobs cancel` says the
+  worker may still be running, and when the worker could not end its CLI's
+  group, the job's error names that group (#214).
+
 ## [0.17.0] - 2026-10-02
 
 ### Changed

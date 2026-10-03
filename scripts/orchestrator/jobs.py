@@ -52,6 +52,11 @@ def job_path(workspace: ws.Workspace, job_id: str) -> str:
     return os.path.join(jobs_dir(workspace), "%s.json" % job_id)
 
 
+def stop_note_path(job_file: str) -> str:
+    """Where a worker stopped by SIGTERM names a CLI group it could not end."""
+    return os.path.splitext(job_file)[0] + ".stop"
+
+
 def output_path(workspace: ws.Workspace, job_id: str) -> str:
     return os.path.join(jobs_dir(workspace), "%s.out" % job_id)
 
@@ -232,8 +237,22 @@ def cancel(workspace: ws.Workspace, job_id: str) -> Dict[str, Any]:
     job["status"] = "cancelled"
     job["finished_at"] = ws.utcnow()
     job["error"] = "cancelled by request%s" % ("" if killed else " (the worker may still be running)")
+    # Written by the worker's SIGTERM handler before it exited, so it is there
+    # by now when the kill was confirmed.
+    left = _read_stop_note(stop_note_path(job_path(workspace, job_id)))
+    if left:
+        job["error"] += "; %s" % "; ".join(left)
     write_job(workspace, job)
     return job
+
+
+def _read_stop_note(path: str) -> List[str]:
+    try:
+        with open(path, encoding="utf-8", errors="replace") as handle:
+            lines = handle.read().splitlines()
+    except OSError:
+        return []
+    return [line.strip().removeprefix("warning: ") for line in lines if line.strip()]
 
 
 # --------------------------------------------------------------------------- worker side
