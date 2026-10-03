@@ -605,17 +605,13 @@ def reviewers_for(
 # --------------------------------------------------------------------------- output
 
 
-def _count(number: int) -> str:
-    return "{:,}".format(number)
-
-
 def render(result: Result) -> str:
     """The text report: what was listed, each proposal, and every role skipped."""
     listing = result.listing
     how = "git ls-files" if listing.source == "git" else "a walk"
-    lines = ["Listed %s files in %s (%s)." % (_count(len(listing.listed)), listing.root, how)]
+    lines = ["Listed %s files in %s (%s)." % (ws.fmt_int(len(listing.listed)), listing.root, how)]
     lines += ["note: %s" % note for note in listing.notes]
-    total = _count(len(listing.listed))
+    total = ws.fmt_int(len(listing.listed))
     if result.suggestions:
         lines += ["", "Proposed:"]
         for suggestion, reviewer in zip(result.suggestions, result.reviewers, strict=True):
@@ -625,11 +621,11 @@ def render(result: Result) -> str:
             lines.append("    when.paths: %s" % ", ".join(suggestion.paths))
             for line in suggestion.evidence:
                 lines.append("    evidence: %s" % line)
-            matched = "    matches %s of %s files" % (_count(suggestion.matches), total)
+            matched = "    matches %s of %s files" % (ws.fmt_int(suggestion.matches), total)
             withheld = suggestion.withheld_matches
             if withheld:
                 verb = "is" if withheld == 1 else "are"
-                matched += "; %s of them %s withheld by review.exclude" % (_count(withheld), verb)
+                matched += "; %s of them %s withheld by review.exclude" % (ws.fmt_int(withheld), verb)
                 matched += ", and those still bring it in"
             lines.append(matched)
         lines.append(FOOTER)

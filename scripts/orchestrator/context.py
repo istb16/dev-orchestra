@@ -699,7 +699,7 @@ def _default_surrounding_chars() -> int:
 
 def describe(candidate: Dict[str, Any]) -> str:
     """``path:start-end symbol (kind, N chars[; includes ...][; adjacent ...])``."""
-    detail = "%s, %s chars" % (candidate.get("kind"), "{:,}".format(int(candidate.get("chars") or 0)))
+    detail = "%s, %s chars" % (candidate.get("kind"), ws.fmt_int(int(candidate.get("chars") or 0)))
     if candidate.get("includes"):
         detail += "; includes %s" % ", ".join(candidate["includes"])
     if candidate.get("relation") == "adjacent":
@@ -726,12 +726,12 @@ def summary(record: Dict[str, Any]) -> str:
     if adopted:
         line = "%d symbol(s), %s chars adopted" % (
             len(adopted),
-            "{:,}".format(int(record.get("adopted_chars") or 0)),
+            ws.fmt_int(int(record.get("adopted_chars") or 0)),
         )
         if trimmed:
             line += "; %d left out (%s chars, %s)" % (
                 len(trimmed),
-                "{:,}".format(int(record.get("trimmed_chars") or 0)),
+                ws.fmt_int(int(record.get("trimmed_chars") or 0)),
                 trim_reasons(record),
             )
         return line
@@ -749,14 +749,14 @@ def brief(record: Dict[str, Any]) -> str:
         return "nothing adopted" + (", %d left out" % len(trimmed) if trimmed else "")
     line = "%d symbol(s), %s chars adopted" % (
         len(adopted),
-        "{:,}".format(int(record.get("adopted_chars") or 0)),
+        ws.fmt_int(int(record.get("adopted_chars") or 0)),
     )
     return line + (", %d left out" % len(trimmed) if trimmed else "")
 
 
 def status_line(record: Dict[str, Any]) -> str:
     """``review status``'s form, which leads with the size."""
-    line = "enclosing, %s chars adopted" % "{:,}".format(int(record.get("adopted_chars") or 0))
+    line = "enclosing, %s chars adopted" % ws.fmt_int(int(record.get("adopted_chars") or 0))
     trimmed = record.get("trimmed") or []
     if trimmed:
         line += ", %d symbol(s) left out (%s)" % (len(trimmed), trim_reasons(record))

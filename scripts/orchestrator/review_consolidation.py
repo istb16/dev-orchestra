@@ -233,7 +233,7 @@ def review_lineage(workspace: ws.Workspace, workflow: str = "") -> str:
     The coverage mark is carried on the first two alone -- the same key is not
     right for both questions, and ``coverage_lineage`` says why.
     """
-    meta = ws.read_json(workspace.snapshot_meta_path, {}) or {}
+    meta = workspace.read_snapshot_meta()
     return "|".join([workflow or "", _branch(workspace.root), str(meta.get("base") or "")])
 
 
@@ -294,7 +294,7 @@ def next_iteration(workspace: ws.Workspace, lineage: str = "", current_sha: Opti
     recorded = int(previous.get("iteration", 0) or 0)
     previous_sha = str((previous.get("snapshot") or {}).get("sha256") or "")
     if current_sha is None:
-        current_sha = str((ws.read_json(workspace.snapshot_meta_path, {}) or {}).get("sha256") or "")
+        current_sha = str(workspace.read_snapshot_meta().get("sha256") or "")
     if previous_sha and current_sha and previous_sha == current_sha:
         return max(recorded, 1)
     return recorded + 1
@@ -332,7 +332,7 @@ def build_consolidation(
     is not the whole change's, and ``coverage_lineage`` for the key the whole
     change's answer carries on.
     """
-    meta = ws.read_json(workspace.snapshot_meta_path, {}) or {}
+    meta = workspace.read_snapshot_meta()
     last = ws.read_json(workspace.consolidated_json_path, {}) or {}
     # Keyed by content, never by id: ids are positional (F1..Fn, severity
     # ordered) and get reassigned every round, so an id-keyed lookup silently
@@ -707,14 +707,14 @@ def _coverage_line(coverage: Dict[str, Any], counts: Dict[str, Any]) -> str:
     state = coverage_state(coverage, counts)
     if state == "round_unverified":
         chars = coverage.get("change_chars")
-        size = "{:,}".format(chars) if chars else "size unrecorded"
+        size = ws.fmt_size(chars)
         # The limit rides along when the round recorded one, because it is
         # configuration: "handed over as a file" says nothing on its own once
         # the reader cannot assume which number decided that.
         limit = coverage.get("inline_chars")
         against = ""
         if isinstance(limit, int) and limit:
-            against = " (review.context.inline_chars %s)" % "{:,}".format(limit)
+            against = " (review.context.inline_chars %s)" % ws.fmt_int(limit)
         return (
             "- Coverage: round unverified -- the change body (%s chars) was handed over "
             "as a file%s; not a clean review" % (size, against)
@@ -752,7 +752,7 @@ def _over_budget_line(snapshot: Dict[str, Any]) -> str:
     """
     chars = snapshot.get("budget_chars")
     return "- Change: %s chars, over review.context.max_chars -- reviewed only because --force was given" % (
-        "{:,}".format(chars) if chars else "size unrecorded"
+        ws.fmt_size(chars)
     )
 
 
@@ -923,7 +923,7 @@ def _surrounding_names(record: Dict[str, Any], shown: str) -> List[str]:
     if adopted:
         lines.append(
             "%s (%d symbol(s), %s chars):"
-            % (shown, len(adopted), "{:,}".format(int(record.get("adopted_chars") or 0)))
+            % (shown, len(adopted), ws.fmt_int(int(record.get("adopted_chars") or 0)))
         )
         lines += ["- %s" % context_mod.describe(c) for c in adopted]
     else:
@@ -1034,7 +1034,7 @@ def _built_for_another_round(workspace: ws.Workspace, data: Dict[str, Any]) -> b
     and triage. A report built before the freeze -- the previous round's,
     triaged since -- is still its own round's.
     """
-    meta = ws.read_json(workspace.snapshot_meta_path, {}) or {}
+    meta = workspace.read_snapshot_meta()
     current = str(meta.get("round_id") or "")
     if not current or str((data.get("snapshot") or {}).get("round_id") or "") == current:
         return False

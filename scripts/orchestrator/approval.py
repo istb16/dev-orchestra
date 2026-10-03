@@ -59,7 +59,7 @@ def design_round(workspace: ws.Workspace) -> Optional[str]:
     and the first round that does carry an id makes it stale -- the safe side
     of not knowing whether the review came after the approval.
     """
-    meta = ws.read_json(workspace.design_review().snapshot_meta_path, {}) or {}
+    meta = workspace.design_review().read_snapshot_meta()
     round_id = meta.get("round_id") if isinstance(meta, dict) else None
     return str(round_id) if round_id else None
 

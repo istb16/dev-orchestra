@@ -23,6 +23,7 @@ from .cli_common import (
     _fitted_base,
     _global_file,
     _layer_path,
+    _load_lenient,
     _out,
     _panel_write_problems,
     _prune_base,
@@ -69,7 +70,7 @@ def _render_layer(path: str, data: Dict[str, Any], exists: bool) -> str:
 
 
 def cmd_config_show(args: argparse.Namespace) -> int:
-    loaded = config_mod.load(args.cwd, validate_result=False)
+    loaded = _load_lenient(args.cwd)
     scoped = args.scope in ("global", "project")
     exists = False
     path = ""
@@ -143,7 +144,7 @@ def _describe_referenced_provider(name: str) -> str:
 
 
 def cmd_config_path(args: argparse.Namespace) -> int:
-    loaded = config_mod.load(args.cwd, validate_result=False)
+    loaded = _load_lenient(args.cwd)
     _out("global:  %s%s" % (config_mod.global_config_path(), "" if loaded.global_path else "  (not created)"))
     _out(
         "project: %s"
@@ -261,7 +262,7 @@ def cmd_config_reset(args: argparse.Namespace) -> int:
         following = "this project now follows the global layer"
     _out("Reset %s configuration: overrides cleared, %s (%s)" % (scope, following, path))
     try:
-        loaded = config_mod.load(args.cwd, validate_result=False)
+        loaded = _load_lenient(args.cwd)
     except config_mod.ConfigError as exc:
         _err(str(exc))  # the other layer does not parse; the reset itself is done
         return 0
@@ -283,7 +284,7 @@ def cmd_config_set(args: argparse.Namespace) -> int:
     else:
         scope = _resolve_scope(args.scope, args.cwd)
     path, layer = _read_layer(scope, args.cwd)
-    before = config_mod.load(args.cwd, validate_result=False) if role_key in config_mod.KNOWN_ROLES else None
+    before = _load_lenient(args.cwd) if role_key in config_mod.KNOWN_ROLES else None
     # A panel path is checked as the panel it leaves, before anything is written.
     panel_before = copy.deepcopy(layer) if role_key in ("reviewers", "reviewers_extra") else None
     frozen = left_out = None
@@ -337,7 +338,7 @@ def cmd_config_set(args: argparse.Namespace) -> int:
     _out("%s = %r  (%s: %s)" % (args.path, value, scope, path))
     if frozen:
         _out(frozen)
-    reloaded = config_mod.load(args.cwd, validate_result=False)
+    reloaded = _load_lenient(args.cwd)
     effective = reloaded.data
     if before is not None:
         _left_the_fit_note(before, reloaded, role_key, path)
@@ -479,7 +480,7 @@ def _warn_unresolvable(effective: Dict[str, Any], role_key: str) -> None:
 
 
 def cmd_config_validate(args: argparse.Namespace) -> int:
-    loaded = config_mod.load(args.cwd, validate_result=False)
+    loaded = _load_lenient(args.cwd)
     problems = config_mod.validate(
         loaded.data,
         project_layer=loaded.project_layer,
@@ -721,7 +722,7 @@ def _redacted_reviewer(reviewer: Any) -> Any:
 
 
 def cmd_reviewer_list(args: argparse.Namespace) -> int:
-    loaded = config_mod.load(args.cwd, validate_result=False)
+    loaded = _load_lenient(args.cwd)
     # A panel that is not a list is listed as none; `config validate` names it.
     panel = loaded.data.get("reviewers")
     reviewers = loaded.reviewers() if isinstance(panel, list) else []
@@ -908,7 +909,7 @@ def _seat_selector(reviewer: Any, selector: str) -> str:
 def _warn_unenforced_after_write(cwd: Any) -> None:
     """The enforcement warnings of the configuration a write left in force."""
     try:
-        loaded = config_mod.load(cwd, validate_result=False)
+        loaded = _load_lenient(cwd)
     except config_mod.ConfigError:
         return  # the other layer does not parse; the write itself is done
     # The refusals too, as `config set` prints them: a project panel copied

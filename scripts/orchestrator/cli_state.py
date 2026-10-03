@@ -156,7 +156,7 @@ _TOKEN_ROW = "  %-18s %5s %9s %9s %9s %9s %9s %7s %9s"
 def _token_row(name: str, account: Dict[str, Any]) -> str:
     def num(field: str) -> str:
         value = int(account.get(field) or 0)
-        return "{:,}".format(value) if value else "-"
+        return ws.fmt_int(value) if value else "-"
 
     def tool(field: str) -> str:
         """Unreported prints ``-``; a measured zero prints ``0``.
@@ -168,7 +168,7 @@ def _token_row(name: str, account: Dict[str, Any]) -> str:
         """
         if not int(account.get("tool_reported_runs") or 0):
             return "-"
-        return "{:,}".format(int(account.get(field) or 0))
+        return ws.fmt_int(int(account.get(field) or 0))
 
     runs = "%s/%s" % (account.get("measured_runs") or 0, account.get("runs") or 0)
     cost = float(account.get("cost_usd") or 0.0)
@@ -179,7 +179,7 @@ def _token_row(name: str, account: Dict[str, Any]) -> str:
         num("output_tokens"),
         num("total_tokens"),
         num("billed_tokens"),
-        ("$%.4f" % cost) if cost else "-",
+        ws.fmt_usd(cost) if cost else "-",
         tool("tool_uses"),
         tool("tool_output_chars"),
     )
@@ -214,7 +214,7 @@ def cmd_tokens_show(args: argparse.Namespace) -> int:
     if chars:
         _out(
             "Prompt text this repo composed: %s chars over %d run(s). "
-            "That is the part it can shorten." % ("{:,}".format(chars), totals["runs"])
+            "That is the part it can shorten." % (ws.fmt_int(chars), totals["runs"])
         )
     reported_tools = int(totals.get("tool_reported_runs") or 0)
     if reported_tools:
@@ -405,7 +405,7 @@ def cmd_optimization_report(args: argparse.Namespace) -> int:
     total_billed = report["billed_tokens"] + report["design_billed_tokens"]
     _out(
         "Reviewer runs: %d (%d reported usage), %s billed"
-        % (total_runs, total_reported, "{:,}".format(total_billed))
+        % (total_runs, total_reported, ws.fmt_int(total_billed))
     )
     if report["design_rounds"]:
         # The total above was code review only, so the one command asked what
@@ -432,7 +432,7 @@ def cmd_optimization_report(args: argparse.Namespace) -> int:
         )
         _out(_OPT_ROW % ("design review", design_row))
     elif report["billed_per_round"]:
-        _out("  %s billed per round that ran" % "{:,}".format(report["billed_per_round"]))
+        _out("  %s billed per round that ran" % ws.fmt_int(report["billed_per_round"]))
     if report["tool_reported_runs"] or report["design_tool_reported_runs"]:
         _out("")
         _out("Tool activity, per run and only over the runs that reported it:")
@@ -483,7 +483,7 @@ def cmd_optimization_report(args: argparse.Namespace) -> int:
         _out("")
         _out(
             "Estimated saving from %d gate-refused round(s): ~%s billed tokens."
-            % (report["refused_by"].get("gate", 0), "{:,}".format(report["estimated_saving"]))
+            % (report["refused_by"].get("gate", 0), ws.fmt_int(report["estimated_saving"]))
         )
         _out("An estimate: what a round that did not happen would have cost is")
         _out("unknowable, so this is the mean of the %d that did." % report["ran"])
@@ -660,7 +660,7 @@ def _scorecard_spend(group: Dict[str, Any], panel: bool) -> str:
     billed = int(group.get("billed_tokens") or 0)
     if not group.get("measured_runs") and not billed:
         return row + ", nothing reported"
-    row += ", %s billed" % "{:,}".format(billed)
+    row += ", %s billed" % ws.fmt_int(billed)
     priced = int(group.get("priced_runs") or 0)
     if not priced:
         return row + ", no cost reported"
@@ -677,8 +677,8 @@ def _scorecard_per_accepted(group: Dict[str, Any]) -> str:
     if cost is None:
         # Said, not left out: a reviewer that prices nothing did not find its
         # findings for free, and a missing column reads as if it had.
-        return "%s billed per accepted, $ -" % "{:,}".format(per)
-    return "%s billed / %s per accepted" % ("{:,}".format(per), _usd(cost))
+        return "%s billed per accepted, $ -" % ws.fmt_int(per)
+    return "%s billed / %s per accepted" % (ws.fmt_int(per), _usd(cost))
 
 
 def _scorecard_rates(group: Dict[str, Any]) -> str:
@@ -743,7 +743,7 @@ def _scorecard_rows(scorecard: Dict[str, Any]) -> List[str]:
         int(total.get("accepted") or 0),
         int(total.get("rounds_read") or 0),
         int(total.get("rounds_recorded") or 0),
-        "{:,}".format(int(total.get("billed_tokens") or 0)),
+        ws.fmt_int(int(total.get("billed_tokens") or 0)),
     )
     lines.append("")
     lines.append(_SCORECARD_EFFORT % counts)
@@ -765,9 +765,9 @@ def _paired_rows(paired: Dict[str, Any]) -> List[str]:
         head += "   change %s chars; panel %s; %s context chars adopted (%s as carried), %s left out" % (
             _figure(pair.get("change_chars")),
             _panel_names(pair.get("panel") or []),
-            "{:,}".format(int(pair.get("adopted_chars") or 0)),
-            "{:,}".format(int(pair.get("context_chars") or 0)),
-            "{:,}".format(int(pair.get("trimmed_chars") or 0)),
+            ws.fmt_int(int(pair.get("adopted_chars") or 0)),
+            ws.fmt_int(int(pair.get("context_chars") or 0)),
+            ws.fmt_int(int(pair.get("trimmed_chars") or 0)),
         )
         for reason in _pair_exclusions(pair):
             head += "; " + reason
@@ -780,7 +780,7 @@ def _paired_rows(paired: Dict[str, Any]) -> List[str]:
                 % (
                     name + ":",
                     int(side.get("reviewer_runs") or 0),
-                    "{:,}".format(int(side.get("billed_tokens") or 0)),
+                    ws.fmt_int(int(side.get("billed_tokens") or 0)),
                     _figure(side.get("billed_per_run")),
                     _figure(side.get("tool_uses_per_run")),
                     _figure(side.get("tool_output_chars_per_run")),
@@ -856,7 +856,7 @@ def _context_row(group: Dict[str, Any], adopted: bool) -> str:
     row = "%d round(s), %d run(s), %s billed, %s per round" % (
         int(group.get("rounds") or 0),
         int(group.get("reviewer_runs") or 0),
-        "{:,}".format(int(group.get("billed_tokens") or 0)),
+        ws.fmt_int(int(group.get("billed_tokens") or 0)),
         _figure(group.get("billed_per_round")),
     )
     row += "; %s use(s)/run, %s observed output chars/run (%d of %d run(s) reported)" % (
@@ -867,8 +867,8 @@ def _context_row(group: Dict[str, Any], adopted: bool) -> str:
     )
     if adopted:
         row += "; %s context chars adopted, %s left out" % (
-            "{:,}".format(int(group.get("adopted_chars") or 0)),
-            "{:,}".format(int(group.get("trimmed_chars") or 0)),
+            ws.fmt_int(int(group.get("adopted_chars") or 0)),
+            ws.fmt_int(int(group.get("trimmed_chars") or 0)),
         )
     return row
 
@@ -880,7 +880,7 @@ def _context_per_run_row(group: Dict[str, Any]) -> str:
         "%s observed output chars over %d reporting run(s)"
         % (
             int(group.get("sized_rounds") or 0),
-            "{:,}".format(int(group.get("change_chars") or 0)),
+            ws.fmt_int(int(group.get("change_chars") or 0)),
             _figure(group.get("billed_per_run_per_1k_change_chars")),
             int(group.get("sized_billed_runs") or 0),
             _figure(group.get("tool_output_chars_per_run_per_1k_change_chars")),
@@ -894,11 +894,11 @@ def _runs_row(runs: int, reported: int, billed: int, rounds: int, per_round: Opt
     row = "%d (%d reported usage), %s billed over %d round(s)" % (
         runs,
         reported,
-        "{:,}".format(billed),
+        ws.fmt_int(billed),
         rounds,
     )
     if per_round:
-        row += ", %s each" % "{:,}".format(per_round)
+        row += ", %s each" % ws.fmt_int(per_round)
     return row
 
 

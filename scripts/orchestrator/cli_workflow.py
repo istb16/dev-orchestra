@@ -15,7 +15,7 @@ from . import optimization_report as opt_report
 from . import review as review_mod
 from . import workflow as workflow_mod
 from . import workspace as ws
-from .cli_common import _container, _emit_json, _err, _ledger, _out, _workspace, _wrote_plan
+from .cli_common import _container, _emit_json, _err, _ledger, _load_lenient, _out, _workspace, _wrote_plan
 from .cli_review import (
     _approved_as_recorded,
     _code_final_pass,
@@ -296,7 +296,7 @@ class _Status(NamedTuple):
 
 def cmd_status(args: argparse.Namespace) -> int:
     """One verdict the orchestrator can act on: continue, or stop and report."""
-    loaded = config_mod.load(args.cwd, validate_result=False)
+    loaded = _load_lenient(args.cwd)
     workspace = _workspace(args)
     book = _ledger(args, workspace)
     status = _status_payload(loaded, workspace, book)
@@ -444,7 +444,7 @@ def _status_payload(
     # What the next `review run` would decide, so the orchestrator finds out
     # here rather than by being refused. Cheap: the snapshot meta is already
     # on disk, and nothing is delegated to work it out.
-    meta = ws.read_json(workspace.snapshot_meta_path, {}) or {}
+    meta = workspace.read_snapshot_meta()
     plan = _round_plan(loaded, settings, workspace, meta, loaded.reviewers())
     if plan.gate == opt_mod.GATE_REFUSE:
         reasons.append("the last recorded test run failed; fix it before reviewing")
@@ -583,7 +583,7 @@ def _render_status(status: _Status, workspace: ws.Workspace) -> None:
         _out(
             "Tokens: %s billed over %d run(s)%s (dev-orchestra tokens show)"
             % (
-                "{:,}".format(int(tokens["billed_tokens"] or 0)) or "0",
+                ws.fmt_int(int(tokens["billed_tokens"] or 0)) or "0",
                 tokens["runs"],
                 "" if payload["tokens"]["complete"] else ", partially reported",
             )
@@ -603,7 +603,7 @@ def cmd_design_approve(args: argparse.Namespace) -> int:
     one. What it adds is whether the findings are about this plan or about an
     earlier revision of it, which the report has to say.
     """
-    loaded = config_mod.load(args.cwd, validate_result=False)
+    loaded = _load_lenient(args.cwd)
     workspace = _workspace(args)
     plan_relative = workspace.relative(workspace.plan_path)
     plan_text, digest = approval_mod.read_plan(workspace)
@@ -714,7 +714,7 @@ def cmd_state_record(args: argparse.Namespace) -> int:
 
 
 def cmd_summary(args: argparse.Namespace) -> int:
-    loaded = config_mod.load(args.cwd, validate_result=False)
+    loaded = _load_lenient(args.cwd)
     workspace = _workspace(args)
     state = workspace.read_state()
     review_data = ws.read_json(workspace.consolidated_json_path, {}) or {}
@@ -809,16 +809,16 @@ def cmd_summary(args: argparse.Namespace) -> int:
         lines.append("")
         lines.append("Tokens:")
         for stage, account in sorted(report["by_stage"].items()):
-            lines.append("  %-14s %s billed" % (stage, "{:,}".format(int(account.get("billed_tokens") or 0))))
+            lines.append("  %-14s %s billed" % (stage, ws.fmt_int(int(account.get("billed_tokens") or 0))))
         total = report["totals"]
         cost = float(total.get("cost_usd") or 0.0)
         lines.append(
             "  %-14s %s billed over %d run(s)%s%s"
             % (
                 "total",
-                "{:,}".format(int(total.get("billed_tokens") or 0)),
+                ws.fmt_int(int(total.get("billed_tokens") or 0)),
                 total["runs"],
-                (" -- $%.4f" % cost) if cost else "",
+                (" -- %s" % ws.fmt_usd(cost)) if cost else "",
                 "" if report["complete"] else " (partially reported: a floor)",
             )
         )
