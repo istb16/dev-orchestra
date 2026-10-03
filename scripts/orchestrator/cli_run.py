@@ -13,6 +13,7 @@ from typing import Any, Dict, List, NamedTuple, Optional, Tuple, Union, cast
 
 from . import approval as approval_mod
 from . import config as config_mod
+from . import execution
 from . import jobs as jobs_mod
 from . import ledger as ledger_mod
 from . import workspace as ws
@@ -278,6 +279,10 @@ def cmd_run(args: argparse.Namespace) -> int:
         return refusal
     if args.detach:
         return _detach(args, workspace, seat.role, prompt, resume_prompt, timeout)
+    if args.job_file:
+        # A detached worker: `jobs cancel` must reach the CLI it runs, which is
+        # in a session of its own.
+        execution.end_children_on_sigterm(jobs_mod.stop_note_path(args.job_file))
     session_id: Optional[str] = None
     resume_detail: Optional[Dict[str, Any]] = None
     if args.resume:

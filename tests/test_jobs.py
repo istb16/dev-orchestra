@@ -118,6 +118,40 @@ class TestBoundedWait(JobCase):
 
 
 class TestCancel(JobCase):
+    def cancel_a_stopped_worker(self, note=None):
+        """Cancel a job whose worker the kill confirmed gone, after its
+        SIGTERM handler wrote ``note`` (None: nothing) beside the record."""
+        from orchestrator import execution
+
+        self.record("a-1", pid=4242, status="running")
+        if note is not None:
+            with open(jobs_mod.stop_note_path(jobs_mod.job_path(self.workspace, "a-1")), "w") as handle:
+                handle.write(note)
+        with (
+            mock.patch.object(execution, "pid_alive", lambda pid: True),
+            mock.patch.object(execution, "kill_tree", lambda pid, grace: True),
+        ):
+            return jobs_mod.cancel(self.workspace, "a-1")
+
+    def test_a_cli_group_the_worker_could_not_end_is_recorded(self):
+        job = self.cancel_a_stopped_worker(
+            "warning: the CLI's process group (pid 77) may still be running\n"
+            "warning: the CLI's process group (pid 78) may still be running\n"
+        )
+        self.assertEqual(job["status"], "cancelled")
+        self.assertEqual(
+            job["error"],
+            "cancelled by request; the CLI's process group (pid 77) may still be running; "
+            "the CLI's process group (pid 78) may still be running",
+        )
+        recorded = jobs_mod.read_job(self.workspace, "a-1")
+        assert recorded is not None
+        self.assertEqual(recorded["error"], job["error"])
+
+    def test_a_worker_that_ended_its_cli_leaves_the_plain_message(self):
+        self.assertEqual(self.cancel_a_stopped_worker()["error"], "cancelled by request")
+        self.assertEqual(self.cancel_a_stopped_worker("")["error"], "cancelled by request")
+
     def test_cancelling_a_live_worker_stops_it(self):
         import subprocess
         import sys
@@ -182,13 +216,19 @@ class TestCancel(JobCase):
             sent.append(args)
             alive[0] = False
 
+        def killpg(pgid, sig):
+            # The group went with its leader.
+            if sig == 0 and not alive[0]:
+                raise ProcessLookupError
+            stop(pgid, sig)
+
         with (
             mock.patch.object(execution, "pid_alive", lambda pid: alive[0]),
             mock.patch.object(execution, "KILL_GRACE_SECONDS", 0.2),
             mock.patch.object(execution.subprocess, "run", stop),
             mock.patch.object(execution.os, "kill", stop),
             mock.patch.object(execution.os, "getpgid", lambda pid: pid, create=True),
-            mock.patch.object(execution.os, "killpg", stop, create=True),
+            mock.patch.object(execution.os, "killpg", killpg, create=True),
         ):
             job = jobs_mod.cancel(self.workspace, "a-1")
         self.assertEqual(job["status"], "cancelled")
@@ -198,6 +238,38 @@ class TestCancel(JobCase):
             self.assertEqual(sent[0][0][0], "taskkill")
         else:
             self.assertEqual(sent, [(4242, signal.SIGTERM)])
+
+    def test_a_group_that_outlives_the_kill_is_reported_may_still_be_running(self):
+        """The worker exits on SIGTERM, but its group never reads gone: the
+        kill is not confirmed. Driven as POSIX on every OS."""
+        import signal
+
+        from orchestrator import execution
+
+        self.record("a-1", pid=4242, status="running")
+        sent = []
+        alive = [True]
+
+        def killpg(pgid, sig):
+            if sig == 0:
+                return
+            sent.append(("killpg", sig))
+            alive[0] = False
+
+        with (
+            mock.patch.object(execution, "IS_WINDOWS", False),
+            mock.patch.object(execution, "_reap", lambda pid: None),
+            mock.patch.object(execution, "pid_alive", lambda pid: alive[0]),
+            mock.patch.object(execution, "KILL_GRACE_SECONDS", 0.2),
+            mock.patch.object(execution.signal, "SIGKILL", 9, create=True),
+            mock.patch.object(execution.os, "kill", lambda pid, sig: sent.append(("kill", sig))),
+            mock.patch.object(execution.os, "getpgid", lambda pid: pid, create=True),
+            mock.patch.object(execution.os, "killpg", killpg, create=True),
+        ):
+            job = jobs_mod.cancel(self.workspace, "a-1")
+        self.assertEqual(job["status"], "cancelled")
+        self.assertEqual(job["error"], "cancelled by request (the worker may still be running)")
+        self.assertEqual(sent, [("killpg", signal.SIGTERM), ("killpg", 9)])
 
     def test_cancelling_a_job_whose_worker_is_already_gone_says_abandoned(self):
         """Reporting "cancelled" would claim credit for something that already happened."""
@@ -363,7 +435,12 @@ class TestDetachedRun(IsolatedCase):
         super().setUp()
         from test_cli import run_cli
 
+        from orchestrator import execution
+
         self.run_cli = run_cli
+        # A worker run in this process would otherwise install its SIGTERM
+        # handler into the test runner.
+        self.installed = self.enterContext(mock.patch.object(execution, "end_children_on_sigterm"))
         run_cli("config", "setup", "--defaults")
         run_cli("config", "set", "implementer.provider", "mock")
 
@@ -440,6 +517,25 @@ class TestDetachedRun(IsolatedCase):
         self.assertIn("does not exist", job["error"])
         # Passed through as it was raised: a path is not a credential.
         self.assertEqual(job["error"], str(raised.exception))
+
+    def test_only_a_worker_makes_sigterm_end_its_cli(self):
+        """`jobs cancel` reaches a worker's CLI only through this handler; the
+        parent that detached it, or a plain run, keeps the default action."""
+        code, _, err = self.run_cli("run", "implementer", "--prompt", "go")
+        self.assertEqual(code, 0, err)
+        self.installed.assert_not_called()
+
+        code, out, err = self.run_cli("run", "implementer", "--prompt", "go", "--detach", "--json")
+        self.assertEqual(code, 0, err)
+        self.installed.assert_not_called()
+        self._wait_for(json.loads(out)["id"])
+
+        workspace = self.cli_workspace()
+        jobs_mod.write_job(workspace, {"id": "w-1", "stage": "implementer", "status": "running"})
+        job_file = jobs_mod.job_path(workspace, "w-1")
+        code, _, err = self.run_cli("run", "implementer", "--force", "--prompt", "go", "--job-file", job_file)
+        self.assertEqual(code, 0, err)
+        self.installed.assert_called_once_with(jobs_mod.stop_note_path(job_file))
 
     def test_the_detached_worker_does_not_double_spend_the_budget(self):
         self.run_cli("config", "set", "budgets.implementer", "5")
