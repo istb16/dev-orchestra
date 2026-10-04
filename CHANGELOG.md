@@ -10,6 +10,8 @@ The public surface covered by that promise is: the configuration schema, the
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-10-04
+
 ### Changed
 
 - **SKILL.md is a fifth smaller.** 14,653 characters down to 11,934, and
@@ -17,6 +19,11 @@ The public surface covered by that promise is: the configuration schema, the
   now said once; detail the references already held is left to them, with a
   pointer. The margin above the document is for wording: a new rule is paid
   for by cutting elsewhere first.
+
+- **claude 2.1.289 and codex-cli 0.160.0 resume the architect's session**:
+  both are added to the verified table after passing every required check on
+  2026-10-04 (claude's two symlink checks were skipped, as before; they are
+  not required).
 
 ### Fixed
 
@@ -2279,7 +2286,8 @@ First release.
   none of which invoke a real CLI.
 - CI on Linux, macOS and Windows: lint, tests, skill validation.
 
-[Unreleased]: https://github.com/istb16/dev-orchestra/compare/v0.18.0...HEAD
+[Unreleased]: https://github.com/istb16/dev-orchestra/compare/v0.19.0...HEAD
+[0.19.0]: https://github.com/istb16/dev-orchestra/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/istb16/dev-orchestra/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/istb16/dev-orchestra/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/istb16/dev-orchestra/compare/v0.15.0...v0.16.0
