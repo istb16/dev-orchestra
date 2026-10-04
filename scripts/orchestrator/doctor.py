@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import os
 import platform
-from typing import Any, Dict, List, Optional, Tuple
+import sys
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from . import config as config_mod
 from . import config_policy as policy_mod
@@ -55,6 +56,70 @@ def user_home() -> str:
     return os.path.expanduser("~")
 
 
+def store_python() -> bool:
+    """Whether this is the Microsoft Store package of Python; tests replace it."""
+    return config_mod.on_windows() and _is_store_path((sys.executable, sys.base_prefix))
+
+
+def _is_store_path(values: Iterable[Optional[str]]) -> bool:
+    """Whether any of ``values`` is inside a WindowsApps folder.
+
+    ``sys.executable`` is the Store package's ``...\\Microsoft\\WindowsApps\\...``
+    alias, and ``sys.base_prefix`` is under ``C:\\Program Files\\WindowsApps``,
+    which also holds for a venv made from it. A Python from any other package
+    there counts too: Windows redirects every packaged app's AppData writes the
+    same way, and the note still waits for a redirect ``stored_elsewhere`` finds.
+    """
+    return any("\\windowsapps\\" in (value or "").lower().replace("/", "\\") for value in values)
+
+
+def _add_real(target: Dict[str, Any], key: str, path: Any) -> None:
+    """``target[key]``: where ``path`` really is, only when Windows keeps it elsewhere."""
+    if not isinstance(path, str) or not path:
+        return
+    real = config_mod.stored_elsewhere(path)
+    if real is not None:
+        target[key] = real
+
+
+def _stored_elsewhere_report(report: Dict[str, Any]) -> None:
+    """Where this Python's files really are, and the note that says so (#235).
+
+    A file read only, before the config is loaded, so a parse error does not
+    hide it.
+    """
+    store = store_python()
+    if store:
+        report["platform"]["store_python"] = True
+    user = report["user_providers"]
+    _add_real(user, "directory_real", user.get("directory"))
+    for item in [*(user.get("loaded") or []), *(user.get("errors") or [])]:
+        _add_real(item, "path_real", item.get("path"))
+    directory = config_mod.global_config_dir()
+    real = config_mod.stored_elsewhere(directory)
+    if real is None:
+        return
+    if not store:
+        report["notes"].append(
+            "%s is stored at %s; programs other than this Python open the files there." % (directory, real)
+        )
+        return
+    message = (
+        "This Python is the Microsoft Store package (%s). Windows keeps the files it writes under your "
+        "AppData in the package's own folder: %s is really at %s. Explorer, editors and other Pythons "
+        "don't see those files. Adapters and records in the package folder take precedence over "
+        "same-named files in the real %%APPDATA%%, so inspect %s to see the adapter code that runs. "
+        "To fix this, either use a python.org Python (`py`), or set DEV_ORCHESTRA_HOME to a trusted "
+        "folder you control, outside %%USERPROFILE%%\\AppData and outside any project checkout.%s "
+        "Review providers\\*.py before moving them, because they are code that is imported at "
+        "startup. Let scripts/smoke_live.py regenerate the verified\\ records instead of copying them."
+    )
+    # DEV_ORCHESTRA_CONFIG names the global file, which is then not in this folder.
+    copy = "" if os.environ.get("DEV_ORCHESTRA_CONFIG") else " Then copy only config.yaml from %s." % real
+    providers = os.path.join(real, "providers")
+    report["notes"].append(message % (sys.executable, directory, real, providers, copy))
+
+
 def collect(start: Optional[str] = None, probe_models: bool = True) -> Dict[str, Any]:
     report: Dict[str, Any] = {
         "platform": {
@@ -73,6 +138,7 @@ def collect(start: Optional[str] = None, probe_models: bool = True) -> Dict[str,
     report["user_providers"] = user_provider_report()
     for failure in report["user_providers"]["errors"]:
         report["problems"].append("user provider %s: %s" % (failure["path"], failure["error"]))
+    _stored_elsewhere_report(report)
 
     detections = {}
     adapter_errors: Dict[str, str] = {}
@@ -116,6 +182,7 @@ def collect(start: Optional[str] = None, probe_models: bool = True) -> Dict[str,
                     # A static report was read above, and would be the same.
                     entry["read_only_enforcement"] = dict(provider.read_only_enforcement())
                 entry["resume_support"] = dict(provider.resume_support(root))
+                _add_real(entry["resume_support"], "record_real", entry["resume_support"].get("record"))
             elif not probe_models:
                 # --fast skips this probe. It does not promise that no --help
                 # is read: validating options.permission_mode reads one.
@@ -145,7 +212,17 @@ def collect(start: Optional[str] = None, probe_models: bool = True) -> Dict[str,
     try:
         loaded = config_mod.load(start, validate_result=False)
     except config_mod.ConfigError as exc:
-        report["config"] = {"status": "error", "error": str(exc)}
+        global_path = config_mod.global_config_path()
+        exists = os.path.isfile(global_path)
+        # The error may be in either file; both are named, as when it loads.
+        report["config"] = {
+            "status": "error",
+            "error": str(exc),
+            "global": global_path if exists else "not found",
+            "project_override": config_mod.find_project_config(start) or "none",
+        }
+        if exists:
+            _add_real(report["config"], "global_real", global_path)
         report["problems"].append(str(exc))
         return report
 
@@ -173,6 +250,8 @@ def collect(start: Optional[str] = None, probe_models: bool = True) -> Dict[str,
         # the files alone: a preset's own values are not something pinned.
         "pinned": config_mod.pinned_differences(loaded.files_data),
     }
+    # A missing file has no real location to report; the note names its folder.
+    _add_real(report["config"], "global_real", loaded.global_path)
     report["problems"].extend(problems)
     report["notes"].extend(loaded.preset_notes)
     # Problems for doctor, warnings for `config validate`: either way these
@@ -533,11 +612,11 @@ def _resume_line(name: str, support: Dict[str, Any]) -> str:
     if status == "verified":
         if not support.get("version"):
             return "verified (%s)" % detail
-        where = "built-in" if support.get("source") == "built-in" else "record: %s" % support.get("record")
+        where = "built-in" if support.get("source") == "built-in" else "record: %s" % _record(support)
         version, verified_at = support["version"], support.get("verified_at")
         return "verified for %s %s on %s (%s)" % (name, version, verified_at, where)
     if status == "trusted":
-        where = "built-in" if support.get("source") == "built-in" else "record: %s" % support.get("record")
+        where = "built-in" if support.get("source") == "built-in" else "record: %s" % _record(support)
         version, newer_than = support.get("version"), support.get("newer_than")
         smoke = "python scripts/smoke_live.py --provider %s" % name
         return "trusted for %s %s as newer than %s (verified on %s, %s); not verified itself -- run %s" % (
@@ -555,6 +634,10 @@ def _resume_line(name: str, support: Dict[str, Any]) -> str:
     if status == "not-checked":
         return "not checked (--fast)"
     return "not reported by this adapter"
+
+
+def _record(support: Dict[str, Any]) -> str:
+    return config_mod.describe_location(support.get("record"), support.get("record_real"))
 
 
 def _live_check_line(version: Any, status: Dict[str, Any]) -> str:
@@ -581,7 +664,8 @@ def render(report: Dict[str, Any]) -> str:
     lines = _environment_lines(report)
     for name, entry in report["providers"].items():
         lines += _provider_lines(name, entry)
-    lines += _user_provider_lines(report.get("user_providers") or {})
+    store = bool(report["platform"].get("store_python"))
+    lines += _user_provider_lines(report.get("user_providers") or {}, store)
     lines.append("")
     lines += _config_lines(report["config"])
     lines += _roles_lines(report)
@@ -594,8 +678,13 @@ def _environment_lines(report: Dict[str, Any]) -> List[str]:
     lines: List[str] = ["AI Development Orchestrator -- doctor", ""]
     platform_info = report["platform"]
     lines.append(
-        "Environment: %s %s / Python %s"
-        % (platform_info["system"], platform_info["release"], platform_info["python"])
+        "Environment: %s %s / Python %s%s"
+        % (
+            platform_info["system"],
+            platform_info["release"],
+            platform_info["python"],
+            " (Microsoft Store package)" if platform_info.get("store_python") else "",
+        )
     )
     lines.append("")
     return lines
@@ -648,7 +737,8 @@ def _provider_lines(name: str, entry: Dict[str, Any]) -> List[str]:
 def _config_lines(config_info: Dict[str, Any]) -> List[str]:
     """The config files, the preset in force and any pinned values, ending in a blank line."""
     lines = ["Config"]
-    lines.append("  Global: %s" % config_info.get("global"))
+    real = config_info.get("global_real")
+    lines.append("  Global: %s" % config_mod.describe_location(config_info.get("global"), real))
     lines.append("  Project override: %s" % config_info.get("project_override"))
     preset = config_info.get("preset") or {}
     preset_name = preset.get("name")
@@ -710,26 +800,38 @@ def _closing_lines(report: Dict[str, Any]) -> List[str]:
     return lines
 
 
-def _user_provider_lines(info: Dict[str, Any]) -> List[str]:
-    """Always shown, so the extension point and its path are never a secret."""
+def _user_provider_lines(info: Dict[str, Any], store: bool = False) -> List[str]:
+    """Always shown, so the extension point and its path are never a secret.
+
+    ``store``: a Microsoft Store Python, whose private copy is merged with the
+    directory; any other redirect, such as a link, simply moves it.
+    """
     lines = ["User providers"]
     directory = info.get("directory")
+    real = info.get("directory_real")
     if not info.get("enabled", True):
-        lines.append("  Directory: %s" % directory)
+        lines.append("  Directory: %s" % config_mod.describe_location(directory, real))
         lines.append("  Disabled by %s; nothing imported" % USER_PROVIDERS_DISABLED_ENV)
         return lines
     if not info.get("present"):
-        lines.append("  Directory: %s (not present; nothing imported)" % directory)
+        shown = config_mod.describe_location(directory, real)
+        lines.append("  Directory: %s (not present; nothing imported)" % shown)
         return lines
-    lines.append("  Directory: %s" % directory)
+    if real is not None and store:
+        merged = "merged with this Python's private copy at %s (the private copy wins for a name in both)"
+        lines.append("  Directory: %s, %s" % (directory, merged % real))
+    else:
+        lines.append("  Directory: %s" % config_mod.describe_location(directory, real))
     lines.append("  Code in this directory is imported at startup, from outside the plugin.")
     loaded = info.get("loaded") or []
     if not loaded:
         lines.append("  Imported: none")
     for item in loaded:
-        lines.append("  Imported: %s  <- %s" % (item["name"], item["path"]))
+        path = config_mod.describe_location(item["path"], item.get("path_real"))
+        lines.append("  Imported: %s  <- %s" % (item["name"], path))
     for failure in info.get("errors") or []:
-        lines.append("  Failed:   %s -- %s" % (failure["path"], failure["error"]))
+        path = config_mod.describe_location(failure["path"], failure.get("path_real"))
+        lines.append("  Failed:   %s -- %s" % (path, failure["error"]))
     return lines
 
 

@@ -1,4 +1,4 @@
-<!-- translated-from: references/workflow.md sha256:de7d9ffad7bca78e9a1d6fe4b6d1989dbb1ae70306dd0170810107963a958ace -->
+<!-- translated-from: references/workflow.md sha256:64ebb7fae7c4ed681c9c65d37e3b674759122c4f2e9fa00a13a8a0500857c702 -->
 
 > この文書は [references/workflow.md](../../../references/workflow.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -138,7 +138,8 @@ git worktree add ../feature-x feature-x
 済まない変更は互換性を壊す変更として扱い（メジャーリリース、1.0 より前はマイナーリリース）、
 0.4.0 の置き場所の変更と同じように、古い形式を新しい形式に移す処理を付けて出します。そのため
 ファイルには形式のバージョンを書いていません。読むものがなく、古いワークフローを読めるように
-しているのは上の決まりだからです。
+しているのは上の決まりだからです。コマンドの `--json` 出力も同じように変わります。たとえば
+`*_real` キーは、パスが別の場所に保存されているときにだけ現れます。
 
 `.ai/` には初回使用時に `*` を含む `.gitignore` が作られるので、成果物はユーザーの
 commit に入りません。成果物をレビュー可能にしたいチームはこのファイルを削除して

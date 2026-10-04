@@ -296,7 +296,7 @@ def user_providers_hint() -> str:
     # lazy: the provider registry; see the note at the top of this module
     from .providers import USER_PROVIDERS_DISABLED_ENV, user_providers_disabled
 
-    hint = "user adapters load from %s" % user_providers_dir()
+    hint = "user adapters load from %s" % shown_location(user_providers_dir())
     if user_providers_disabled():
         hint += " (disabled by %s)" % USER_PROVIDERS_DISABLED_ENV
     return hint
@@ -307,6 +307,73 @@ def global_config_path() -> str:
     if explicit:
         return os.path.abspath(os.path.expanduser(explicit))
     return os.path.join(global_config_dir(), "config.yaml")
+
+
+def on_windows() -> bool:
+    """Whether this process runs on Windows; tests replace it."""
+    return sys.platform.startswith("win")
+
+
+def real_location(path: str) -> str:
+    """Where ``path`` really is on disk; tests replace it."""
+    return os.path.realpath(path)
+
+
+def _path_key(path: str) -> str:
+    # Windows paths compare case-insensitively and either separator works;
+    # spelled out rather than ``normcase`` so it does not depend on the host.
+    return path.lower().replace("/", "\\")
+
+
+_PACKAGES_KEY = "\\appdata\\local\\packages\\"
+
+
+def stored_elsewhere(path: str) -> Optional[str]:
+    """The real location of ``path`` when Windows keeps it somewhere else.
+
+    A Microsoft Store Python has the files it writes under the user's AppData
+    quietly redirected into its package folder, so the path we built is only
+    right from inside this process. ``None`` off Windows and whenever the file
+    is where it seems to be. Links that merely rename a folder above the file,
+    such as 8.3 short names, cancel out: the comparison is against the real
+    location of an anchor -- the user profile, which is never redirected, or
+    the file's own folder when it sits outside the profile.
+    """
+    if not on_windows():
+        return None
+    home = os.path.expanduser("~")
+    try:
+        rel = os.path.relpath(path, home)
+    except ValueError:  # another drive
+        rel = os.pardir
+    if rel == os.pardir or rel.startswith(os.pardir + os.sep):
+        anchor = os.path.dirname(path)
+        try:
+            rel = os.path.relpath(path, anchor)
+        except ValueError:
+            rel = os.path.basename(path)
+    else:
+        anchor = home
+    expected = real_location(anchor) if rel == os.curdir else os.path.join(real_location(anchor), rel)
+    real = real_location(path)
+    if _path_key(real) != _path_key(expected):
+        return real
+    if _PACKAGES_KEY in _path_key(real) and _PACKAGES_KEY not in _path_key(path):
+        return real
+    return None
+
+
+def shown_location(path: str) -> str:
+    """``path`` as printed: with its real location when that differs."""
+    return describe_location(path, stored_elsewhere(path))
+
+
+def describe_location(path: Any, real: Optional[str]) -> str:
+    """``path``, and ``real`` beside it when there is one; for a renderer that
+    reads a location ``stored_elsewhere`` already found."""
+    if real is None:
+        return str(path)
+    return "%s (stored at %s)" % (path, real)
 
 
 def find_project_config(start: Optional[str] = None) -> Optional[str]:

@@ -10,6 +10,7 @@ import sys
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from typing import Any, ClassVar, Dict, Optional
+from unittest import mock
 
 from helpers import CLAUDE_HELP, CLAUDE_HELP_NO_FORK, CLAUDE_HELP_OLD, TEST_WORKFLOW, IsolatedCase, has_git
 
@@ -145,6 +146,179 @@ class TestConfigCommands(IsolatedCase):
         _, out, _ = run_cli("config", "show", "--json")
         payload = json.loads(out)
         self.assertEqual(payload["config"]["version"], 1)
+
+    def test_nothing_redirected_adds_no_keys(self):
+        run_cli("config", "setup", "--defaults")
+        for scope in ("global", "effective", "project"):
+            payload = json.loads(run_cli("config", "show", "--scope", scope, "--json")[1])
+            self.assertNotIn("source_real", payload, scope)
+            self.assertNotIn("global_real", payload, scope)
+        self.assertNotIn("stored at", run_cli("config", "path")[1])
+
+
+#: ``(name, global file before, installed CLIs, argv)``: every command that
+#: writes the global file and names it. A file is a layer, raw text, or absent.
+STORED_AT_WRITES = (
+    ("setup --defaults", None, ("claude",), ("config", "setup", "--defaults")),
+    ("setup --preset", None, ("claude",), ("config", "setup", "--preset", "standard")),
+    (
+        "reset",
+        {"version": 1, "review": {"parallel": False}},
+        ("claude",),
+        ("config", "reset", "--scope", "global"),
+    ),
+    ("reset --delete", {"version": 1}, ("claude",), ("config", "reset", "--scope", "global", "--delete")),
+    ("reset --delete, no file", None, ("claude",), ("config", "reset", "--scope", "global", "--delete")),
+    ("set", {"version": 1}, ("claude",), ("config", "set", "--scope", "global", "review.parallel", "false")),
+    (
+        "role set",
+        None,
+        ("codex",),
+        ("config", "set", "--scope", "global", "implementer.model.family", "sonnet"),
+    ),
+    (
+        "set, panel recorded",
+        None,
+        ("claude",),
+        ("config", "set", "--scope", "global", "reviewers[0].role", "security"),
+    ),
+    (
+        "prune --dry-run",
+        {"version": 1, "preset": "standard", "optimization": {"level": "balanced"}},
+        ("claude",),
+        ("config", "prune", "--scope", "global", "--dry-run"),
+    ),
+    (
+        "prune, nothing to drop",
+        {"version": 1, "optimization": {"low_risk_max_files": 7}},
+        ("claude",),
+        ("config", "prune", "--scope", "global"),
+    ),
+    (
+        "prune, version recorded",
+        "optimization:\n  low_risk_max_files: 7\n",
+        ("claude",),
+        ("config", "prune", "--scope", "global"),
+    ),
+    (
+        "prune, dropped",
+        {"version": 1, "preset": "standard", "optimization": {"level": "balanced"}},
+        ("claude",),
+        ("config", "prune", "--scope", "global"),
+    ),
+    (
+        "reviewer add, listed",
+        {"version": 1, "reviewers": [config_mod.make_reviewer("mine", "mock", "small")]},
+        ("claude",),
+        ("reviewer", "add", "--scope", "global", "--provider", "mock", "--id", "m1"),
+    ),
+    (
+        "reviewer add, extra",
+        {"version": 1},
+        ("claude",),
+        ("reviewer", "add", "--scope", "global", "--provider", "claude", "--role", "security"),
+    ),
+    ("reviewer remove", None, ("claude",), ("reviewer", "remove", "--scope", "global", "claude-general-2")),
+    (
+        "reviewer set",
+        None,
+        ("claude",),
+        ("reviewer", "set", "--scope", "global", "claude-general-2", "--role", "test"),
+    ),
+)
+
+
+#: The rows whose message carries a note naming the file a second time.
+STORED_AT_NOTES = {
+    "role set": "note: implementer is now set by %s (provider ",
+    "set, panel recorded": "note: %s now lists the reviewers; ",
+}
+
+
+class TestStoredAtMessages(IsolatedCase):
+    """Under a Microsoft Store Python, each message that names the global file
+    also says where Windows really keeps it, and nothing else in it moves (#235)."""
+
+    def setUp(self):
+        super().setUp()
+        self.real = self.redirect_config_home()
+        self.path = config_mod.global_config_path()
+        self.real_path = os.path.join(self.real, "config.yaml")
+
+    def put_global(self, layer):
+        if os.path.isfile(self.path):
+            os.remove(self.path)
+        if isinstance(layer, str):
+            with open(self.path, "w", encoding="utf-8", newline="\n") as handle:
+                handle.write(layer)
+        elif layer is not None:
+            config_mod.write_config_file(self.path, layer, "global")
+
+    def test_each_write_message_names_where_the_file_really_is(self):
+        shown = "%s (stored at %s)" % (self.path, self.real_path)
+        self.assertEqual(config_mod.shown_location(self.path), shown)
+        for name, layer, clis, argv in STORED_AT_WRITES:
+            with self.subTest(name):
+                self.fake_clis(**dict.fromkeys(clis, True))
+                self.put_global(layer)
+                with mock.patch.object(config_mod, "real_location", lambda path: path):
+                    plain_code, plain, _ = run_cli(*argv)
+                self.put_global(layer)
+                code, out, _ = run_cli(*argv)
+                self.assertEqual((plain_code, code), (0, 0))
+                self.assertIn(self.path, plain)
+                self.assertNotIn("stored at", plain)
+                if name in STORED_AT_NOTES:
+                    self.assertIn(STORED_AT_NOTES[name] % self.path, plain)
+                self.assertEqual(out, plain.replace(self.path, shown))
+                # Every mention, not just one of them, says where it really is.
+                self.assertEqual(out.count("stored at"), plain.count(self.path))
+
+    def test_a_project_write_says_nothing_about_it(self):
+        self.fake_clis(claude=True)
+        code, out, _ = run_cli("config", "set", "--scope", "project", "review.parallel", "false")
+        self.assertEqual(code, 0)
+        self.assertNotIn("stored at", out)
+
+    def test_config_path(self):
+        out = run_cli("config", "path")[1]
+        self.assertIn("global:  %s  (not created)\n" % self.path, out)
+        self.assertNotIn("stored at", out)
+        self.put_global({"version": 1})
+        out = run_cli("config", "path")[1]
+        self.assertIn("global:  %s (stored at %s)\n" % (self.path, self.real_path), out)
+
+    def test_config_show(self):
+        self.put_global({"version": 1})
+        out = run_cli("config", "show", "--scope", "global")[1]
+        self.assertIn("Source: %s (stored at %s)\n" % (self.path, self.real_path), out)
+        payload = json.loads(run_cli("config", "show", "--scope", "global", "--json")[1])
+        self.assertEqual(payload["source"], self.path)
+        self.assertEqual(payload["source_real"], self.real_path)
+        self.assertNotIn("global_real", payload)
+        effective = json.loads(run_cli("config", "show", "--json")[1])
+        self.assertEqual(effective["global_real"], self.real_path)
+        self.assertNotIn("source_real", effective)
+        self.assertIn("global: %s)" % self.path, effective["source"])
+        # The path ``global_real`` describes is a key of its own.
+        self.assertEqual(effective["global"], self.path)
+        self.assertIsNone(effective["project"])
+        # The effective view's text names the real place too; its JSON keeps
+        # ``source`` as it was.
+        out = run_cli("config", "show")[1]
+        self.assertIn("global: %s (stored at %s))\n" % (self.path, self.real_path), out)
+        project = json.loads(run_cli("config", "show", "--scope", "project", "--json")[1])
+        self.assertNotIn("source_real", project)
+        self.assertNotIn("global_real", project)
+
+    def test_config_show_of_a_missing_file_adds_nothing(self):
+        out = run_cli("config", "show", "--scope", "global")[1]
+        self.assertIn("Source: %s (not created yet)\n" % self.path, out)
+        for scope in ("global", "effective"):
+            payload = json.loads(run_cli("config", "show", "--scope", scope, "--json")[1])
+            self.assertNotIn("source_real", payload)
+            self.assertNotIn("global_real", payload)
+        self.assertIsNone(payload["global"])
 
 
 class TestReviewerCommands(IsolatedCase):
@@ -908,8 +1082,6 @@ class TestDoctorLiveCheck(IsolatedCase):
         config_mod.write_config_file(config_mod.global_config_path(), data)
 
     def record(self, version, failed=(), skipped=(), at="2026-09-01T00:00:00Z"):
-        from unittest import mock
-
         from orchestrator import verified
 
         with mock.patch.object(verified.ws, "utcnow", return_value=at):
@@ -2100,8 +2272,6 @@ class TestOutputGuard(IsolatedCase):
 
     def test_a_refused_write_in_a_worker_is_reported_in_order(self):
         """The outcome first, then the refusal, then the second job update."""
-        from unittest import mock
-
         from orchestrator import jobs as jobs_mod
 
         os.makedirs(self.rejected)

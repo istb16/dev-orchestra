@@ -22,6 +22,7 @@ import unittest
 import uuid
 from contextlib import redirect_stderr, redirect_stdout
 from typing import Optional, Sequence
+from unittest import mock
 
 from helpers import REPO_ROOT, IsolatedCase, present
 
@@ -703,6 +704,21 @@ class TestTheResumeRecord(IsolatedCase):
         found = smoke_live.verified.lookup("claude", "9.9.9 (Fake)", "--fake-read-only", self.project)
         self.assertEqual(found["status"], "passed")
 
+    def test_the_message_names_the_record(self):
+        with mock.patch.object(smoke_live.config_mod, "on_windows", return_value=False):
+            lines = self.record(self.checks())
+        path = smoke_live.verified.record_path("claude")
+        self.assertEqual(lines[0].detail, "recorded 9.9.9 (Fake) in %s" % path)
+        self.assertEqual(present(lines[0].record)["path"], path)
+
+    def test_the_message_says_where_a_store_python_really_keeps_it(self):
+        real = self.redirect_config_home()
+        lines = self.record(self.checks())
+        path = smoke_live.verified.record_path("claude")
+        moved = os.path.join(real, "verified", "claude-resume.json")
+        self.assertEqual(lines[0].detail, "recorded 9.9.9 (Fake) in %s (stored at %s)" % (path, moved))
+        self.assertEqual(present(lines[0].record)["path"], path)
+
     def test_a_failure_is_recorded(self):
         lines = self.record(self.checks(**{"ignores repository hooks on resume": "fail"}))
         self.assertFalse(lines[0].ok)
@@ -822,8 +838,6 @@ class TestTheLiveCheckRecord(IsolatedCase):
 
     def test_a_write_that_fails_is_a_failed_check_not_a_crash(self):
         """The tokens are spent by then: the run still reports."""
-        from unittest import mock
-
         error = PermissionError(13, "Access is denied", "C:/cfg/secret=abc")
         with mock.patch.object(smoke_live.verified.ws, "write_json", side_effect=error):
             checks = self.run_provider(_FakeProvider(usage=Usage()))

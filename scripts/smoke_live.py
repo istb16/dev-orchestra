@@ -56,6 +56,7 @@ from typing import Any, Dict, List, Optional, cast
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from orchestrator import config as config_mod
 from orchestrator import verified
 from orchestrator import workspace as ws
 from orchestrator.providers import (
@@ -790,7 +791,7 @@ def record_resume(provider: Any, name: str, checks: List[Check], model: str) -> 
             "the verification record would land inside this checkout (DEV_ORCHESTRA_HOME); nothing recorded"
         )
         return [Check(name, label, False, detail)]
-    check = Check(name, label, True, "recorded %s in %s" % (version, path))
+    check = Check(name, label, True, "recorded %s in %s" % (version, config_mod.shown_location(path)))
     check.record = {"version": version, "path": path, "new": not known}
     table = getattr(sys.modules.get(type(provider).__module__), "VERIFIED_RESUME", None)
     if isinstance(table, dict) and version not in table:

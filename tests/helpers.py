@@ -347,6 +347,51 @@ class IsolatedCase(unittest.TestCase):
 
         return providers.load_user_providers()
 
+    def set_env(self, key: str, value: str) -> None:
+        """Set ``key`` for this test only; for variables ENV_KEYS does not restore."""
+        saved = os.environ.get(key)
+        os.environ[key] = value
+        if saved is None:
+            self.addCleanup(os.environ.pop, key, None)
+        else:
+            self.addCleanup(os.environ.__setitem__, key, saved)
+
+    def redirect_config_home(self) -> str:
+        """Act as a Microsoft Store Python would, and return where files really go.
+
+        The config home moves to ``<profile>/AppData/Roaming/dev-orchestra``,
+        and ``real_location`` maps it and everything below it into
+        ``<profile>/AppData/Local/Packages/X/LocalCache/Roaming/dev-orchestra``;
+        the profile and AppData stay where they are. Nothing on disk is moved.
+        """
+        from orchestrator import config as config_mod
+
+        profile = os.path.join(self.tmp, "profile")
+        roaming = os.path.join(profile, "AppData", "Roaming")
+        home = os.path.join(roaming, config_mod.APP_DIR_NAME)
+        packages = os.path.join(profile, "AppData", "Local", "Packages", "X", "LocalCache")
+        real = os.path.join(packages, "Roaming", config_mod.APP_DIR_NAME)
+        os.makedirs(home, exist_ok=True)
+        self.set_env("HOME", profile)
+        self.set_env("USERPROFILE", profile)
+        os.environ["APPDATA"] = roaming
+        os.environ["DEV_ORCHESTRA_HOME"] = home
+        self.config_home = home
+
+        def key(path: str) -> str:
+            return path.lower().replace("/", "\\")
+
+        def fake_real_location(path: str) -> str:
+            if key(path) == key(home) or key(path).startswith(key(home) + "\\"):
+                return real + path[len(home) :]
+            return path
+
+        for name, value in (("on_windows", lambda: True), ("real_location", fake_real_location)):
+            patcher = mock.patch.object(config_mod, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        return real
+
     def cli_workspace(self, workflow: str = TEST_WORKFLOW):
         """The workspace the CLI writes to in this test.
 
