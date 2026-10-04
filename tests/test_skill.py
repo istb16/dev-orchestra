@@ -98,6 +98,7 @@ class TestSkillDocument(IsolatedCase):
         one line each and price very differently -- so the real ceiling is in
         characters. This document is resident in every session."""
         self.assertLess(len(self.text), validate_skill.MAX_SKILL_CHARS)
+        self.assertLess(validate_skill.MAX_SKILL_CHARS, 12_000)
 
     def test_the_pipeline_can_be_run_without_opening_a_reference(self):
         """The document was compressed by cutting words, not steps. A reader
@@ -111,6 +112,7 @@ class TestSkillDocument(IsolatedCase):
             "review run --design",
             "design approve",
             "review triage",
+            "review triage --design",
             "review fix-brief",
             "run review_fixer",
             "review status",
@@ -186,6 +188,88 @@ class TestSkillDocument(IsolatedCase):
         start = self.body.index("**Approval.**")
         approval = self.body[start : self.body.index("**Implement.**", start)]
         self.assertIn("plan's file", " ".join(approval.split()))
+
+    def rules(self):
+        """Rule number -> its text, with the line breaks taken out.
+
+        Each rule opens with a bold lead, so a wrapped line that happens to
+        start with a number is not taken for a rule of its own."""
+        start = self.body.index("## Rules that do not bend")
+        block = self.body[start : self.body.index("## References", start)]
+        parts = re.split(r"(?m)^(\d+)\. (?=\*\*)", block)[1:]
+        numbers = [int(n) for n in parts[::2]]
+        self.assertEqual(numbers, list(range(1, len(numbers) + 1)), "rules are not numbered 1, 2, 3, ...")
+        return {n: " ".join(text.split()) for n, text in zip(numbers, parts[1::2], strict=True)}
+
+    def section(self, start, end):
+        """The body from ``start`` up to ``end``, with the line breaks taken out."""
+        begin = self.body.index(start)
+        return " ".join(self.body[begin : self.body.index(end, begin)].split())
+
+    def test_what_the_trim_moved_is_still_said_where_it_went(self):
+        """#246 cut the document by a fifth by saying each thing once. These
+        are the instructions that moved or were tightened, each checked in the
+        section it now lives in, on text with its line breaks taken out so a
+        re-wrap cannot break a pin."""
+        sections = {
+            ("| Design review |", "| Approval |"): (
+                "`review fix-brief --design --output .ai/execution/design-fix-brief.md`",
+                "--prompt-file <full> --resume-prompt-file <short>",
+            ),
+            ("| Test |", "| Reviews |"): ("then `state record test ok\\|failed`",),
+            ("## 1. Classify", "## 2. The pipeline"): ("`review run --high-risk`",),
+            ("## 2. The pipeline", "| Stage |"): ("which ignores itself",),
+            ("**Long stages.**", "**Design.**"): ("with `--detach`", "wait with `jobs wait <id>"),
+            ("**Design.**", "**Approval.**"): (
+                "still gets one revision (no re-review), made before you ask for approval",
+            ),
+            ("**Approval.**", "**Implement.**"): ("Changes requested → revise with `--resume`",),
+            ("**Test.**", "**Reviews.**"): (
+                "Record the outcome even if none ran this session",
+                "`review run` refuses a tree recorded as failing",
+            ),
+            ("**Reviews.**", "**Triage.**"): (
+                "Every reviewer judges the same frozen diff",
+                "re-snapshot `--no-exclude` if the change turns on one",
+            ),
+            ("**Triage.**", "**Fix.**"): ("raw findings never reach the fixer",),
+            ("**Re-test.**", "## 3. Delegation"): ("`--full` re-sends the lot",),
+        }
+        for (start, end), phrases in sections.items():
+            text = self.section(start, end)
+            for phrase in phrases:
+                self.assertIn(phrase, text, "%s: %s" % (start, phrase))
+        rules = self.rules()
+        self.assertEqual(sorted(rules), list(range(1, 12)))
+        self.assertIn("no shared context", rules[3].lower())
+        self.assertIn("no reviewer sees another", rules[3].lower())
+        for phrase in ("Read, Grep, Glob", "no MCP", "`--restricted`", "not examined"):
+            self.assertIn(phrase, rules[3], phrase)
+        self.assertIn("`N successful, M failed`", rules[6])
+        self.assertIn("all failing does", rules[6])
+        for phrase in ("never on your own judgement", "never to unblock yourself", "exit 5"):
+            self.assertIn(phrase, rules[10], phrase)
+        # The relays, the approval question and the report lean on rule 11
+        # rather than each saying which language to use.
+        for phrase in ("progress", "questions", "approvals", "findings", "the report"):
+            self.assertIn(phrase, rules[11], phrase)
+        self.assertIn("(rule 11)", self.section("## 4. Final report", "## Configuration"))
+        unparsed = next(line for line in self.body.splitlines() if "`unparsed`" in line)
+        self.assertIn("**never** a clean review", unparsed)
+
+    def test_what_the_trim_left_to_the_references_is_there(self):
+        """SKILL.md now points at references/configuration.md for the
+        configuration commands; the detail it dropped has to be found there."""
+        self.assertIn("`references/configuration.md`", self.section("## Configuration", "## Rules"))
+        reference = " ".join(read("references/configuration.md").split())
+        for phrase in (
+            "--scope project",
+            "reviewer add",
+            "config set --scope global implementer.options.permission_mode bypassPermissions",
+            "run implementer --tier light",
+            "An unknown tier is an error, never a fallback.",
+        ):
+            self.assertIn(phrase, reference, phrase)
 
     def test_says_what_holds_reviewers_to_reading(self):
         """Read-only is a claim about what the CLI enforces, and the one

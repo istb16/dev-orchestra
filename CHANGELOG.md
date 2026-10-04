@@ -10,6 +10,14 @@ The public surface covered by that promise is: the configuration schema, the
 
 ## [Unreleased]
 
+### Changed
+
+- **SKILL.md is a fifth smaller.** 14,653 characters down to 11,934, and
+  the `validate_skill.py` ceiling from 14,750 to 11,950. Each instruction is
+  now said once; detail the references already held is left to them, with a
+  pointer. The margin above the document is for wording: a new rule is paid
+  for by cutting elsewhere first.
+
 ### Fixed
 
 - **Under the Microsoft Store Python, the global config's real location is
