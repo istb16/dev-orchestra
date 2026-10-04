@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
 import unittest
 from types import SimpleNamespace
 from typing import Any, ClassVar, Dict
 from unittest import mock
 
-from helpers import IsolatedCase, present
+from helpers import IsolatedCase, make_dir_link, present, remove_link
 
 from orchestrator import config as config_mod
 from orchestrator import config_policy as policy_mod
@@ -1200,6 +1202,179 @@ class TestPaths(IsolatedCase):
         data = config_mod.default_config()
         config_mod.write_config_file(path, data)
         self.assertEqual(config_mod.read_config_file(path), data)
+
+
+class TestStoredElsewhere(IsolatedCase):
+    """Where a Microsoft Store Python really keeps a file (#235)."""
+
+    def windows(self):
+        patcher = mock.patch.object(config_mod, "on_windows", return_value=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_nothing_redirected_is_none(self):
+        self.windows()
+        with mock.patch.object(config_mod, "real_location", lambda path: path):
+            self.assertIsNone(config_mod.stored_elsewhere(config_mod.global_config_path()))
+            self.assertEqual(config_mod.shown_location(self.tmp), self.tmp)
+
+    def test_redirected_file_reports_where_it_really_is(self):
+        real = self.redirect_config_home()
+        path = config_mod.global_config_path()
+        expected = os.path.join(real, "config.yaml")
+        self.assertEqual(config_mod.stored_elsewhere(path), expected)
+        self.assertEqual(config_mod.shown_location(path), "%s (stored at %s)" % (path, expected))
+        self.assertEqual(config_mod.stored_elsewhere(config_mod.global_config_dir()), real)
+        # The profile and AppData itself are where they seem to be.
+        self.assertIsNone(config_mod.stored_elsewhere(os.environ["APPDATA"]))
+
+    def test_user_adapter_hint_names_the_real_folder(self):
+        real = self.redirect_config_home()
+        expected = "user adapters load from %s (stored at %s)" % (
+            config_mod.user_providers_dir(),
+            os.path.join(real, "providers"),
+        )
+        self.assertTrue(config_mod.user_providers_hint().startswith(expected))
+
+    def test_a_redirected_anchor_is_caught_by_the_packages_folder(self):
+        """DEV_ORCHESTRA_HOME outside the profile, under a folder that is
+        itself redirected: the anchor moves with the file, so only the
+        Packages signal sees it."""
+        self.windows()
+        self.set_env("HOME", os.path.join(self.tmp, "profile"))
+        self.set_env("USERPROFILE", os.path.join(self.tmp, "profile"))
+        local = os.path.join(self.tmp, "elsewhere", "AppData", "Local")
+        home = os.path.join(local, "dev-orchestra")
+        os.environ["DEV_ORCHESTRA_HOME"] = home
+        packages = os.path.join(local, "Packages", "X", "LocalCache", "Local")
+
+        def fake(path):
+            if path.startswith(local) and not path.startswith(os.path.join(local, "Packages")):
+                return packages + path[len(local) :]
+            return path
+
+        with mock.patch.object(config_mod, "real_location", fake):
+            path = config_mod.global_config_path()
+            self.assertEqual(config_mod.stored_elsewhere(path), fake(path))
+
+    def test_explicit_config_outside_the_profile(self):
+        self.windows()
+        self.set_env("HOME", os.path.join(self.tmp, "profile"))
+        self.set_env("USERPROFILE", os.path.join(self.tmp, "profile"))
+        explicit = os.path.join(self.tmp, "outside", "explicit.yaml")
+        os.environ["DEV_ORCHESTRA_CONFIG"] = explicit
+        with mock.patch.object(config_mod, "real_location", lambda path: path):
+            self.assertIsNone(config_mod.stored_elsewhere(config_mod.global_config_path()))
+        moved = os.path.join(self.tmp, "moved", "explicit.yaml")
+        with mock.patch.object(config_mod, "real_location", lambda p: moved if p == explicit else p):
+            self.assertEqual(config_mod.stored_elsewhere(explicit), moved)
+
+    def test_another_drive_falls_back_to_the_files_folder(self):
+        self.windows()
+        path = os.path.join(self.tmp, "other-drive", "config.yaml")
+        moved = os.path.join(self.tmp, "moved", "config.yaml")
+        with mock.patch("os.path.relpath", side_effect=ValueError("path is on mount 'D:'")):
+            with mock.patch.object(config_mod, "real_location", lambda p: p):
+                self.assertIsNone(config_mod.stored_elsewhere(path))
+            with mock.patch.object(config_mod, "real_location", lambda p: moved if p == path else p):
+                self.assertEqual(config_mod.stored_elsewhere(path), moved)
+
+    def test_off_windows_nothing_is_reported_even_through_a_link(self):
+        target = os.path.join(self.tmp, "target")
+        os.makedirs(target)
+        link = os.path.join(self.config_home, "linked")
+        try:
+            make_dir_link(link, target)
+        except (OSError, subprocess.CalledProcessError, NotImplementedError) as exc:
+            self.skipTest("cannot make a link here: %s" % exc)
+        # tearDown, which runs first, may already have removed it with the tree.
+        self.addCleanup(lambda: os.path.lexists(link) and remove_link(link))
+        with mock.patch.object(config_mod, "on_windows", return_value=False):
+            self.assertIsNone(config_mod.stored_elsewhere(os.path.join(link, "config.yaml")))
+            self.assertEqual(config_mod.shown_location(link), link)
+
+
+class TestStoredElsewhereOnDisk(IsolatedCase):
+    """The real ``realpath``, only the platform forced: temp folders come with
+    their own renames (``/var`` -> ``/private/var`` on macOS, 8.3 short names
+    on Windows runners), which must not read as "stored elsewhere"."""
+
+    def setUp(self):
+        super().setUp()
+        patcher = mock.patch.object(config_mod, "on_windows", return_value=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        # The temp folder is the profile, so the anchor is the same on every runner.
+        self.set_env("HOME", self.tmp)
+        self.set_env("USERPROFILE", self.tmp)
+        packages = "\\appdata\\local\\packages\\"
+        real = os.path.realpath(self.tmp).lower().replace("/", "\\")
+        if packages in real and packages not in self.tmp.lower().replace("/", "\\"):
+            self.skipTest("this Python's temp folder is itself redirected into its package")
+
+    def link(self, link, target):
+        try:
+            make_dir_link(link, target)
+        except (OSError, subprocess.CalledProcessError, NotImplementedError) as exc:
+            self.skipTest("cannot make a link here: %s" % exc)
+        # tearDown, which runs first, may already have removed it with the tree.
+        self.addCleanup(lambda: os.path.lexists(link) and remove_link(link))
+
+    def test_a_plain_temp_folder_is_not_reported(self):
+        path = config_mod.global_config_path()
+        config_mod.write_config_file(path, config_mod.default_config())
+        self.assertIsNone(config_mod.stored_elsewhere(path))
+        self.assertIsNone(config_mod.stored_elsewhere(config_mod.global_config_dir()))
+        self.assertEqual(config_mod.shown_location(path), path)
+
+    def test_a_linked_folder_above_the_profile_is_not_reported(self):
+        target = os.path.join(self.tmp, "target")
+        os.makedirs(os.path.join(target, "profile", "dev-orchestra"))
+        link = os.path.join(self.tmp, "linked")
+        self.link(link, target)
+        self.set_env("HOME", os.path.join(link, "profile"))
+        self.set_env("USERPROFILE", os.path.join(link, "profile"))
+        os.environ["DEV_ORCHESTRA_HOME"] = os.path.join(link, "profile", "dev-orchestra")
+        path = config_mod.global_config_path()
+        config_mod.write_config_file(path, config_mod.default_config())
+        self.assertIsNone(config_mod.stored_elsewhere(path))
+
+    @unittest.skipUnless(sys.platform.startswith("win"), "8.3 short names are a Windows thing")
+    def test_a_profile_spelled_by_its_short_name_is_not_reported(self):
+        # Windows only: ctypes.windll exists nowhere else.
+        import ctypes
+
+        def spelled(function, path):
+            size = function(path, None, 0)
+            if not size:
+                self.skipTest("cannot spell %s another way here" % path)
+            buffer = ctypes.create_unicode_buffer(size)
+            function(path, buffer, size)
+            return buffer.value
+
+        kernel32 = ctypes.windll.kernel32
+        short = spelled(kernel32.GetShortPathNameW, self.tmp)
+        long = spelled(kernel32.GetLongPathNameW, self.tmp)
+        if short.lower() == long.lower():
+            self.skipTest("no 8.3 short name for %s" % self.tmp)
+        self.set_env("HOME", short)
+        self.set_env("USERPROFILE", short)
+        for base in (short, long):
+            with self.subTest(base):
+                os.environ["DEV_ORCHESTRA_HOME"] = os.path.join(base, "cfg")
+                path = config_mod.global_config_path()
+                config_mod.write_config_file(path, config_mod.default_config())
+                self.assertIsNone(config_mod.stored_elsewhere(path))
+                self.assertIsNone(config_mod.stored_elsewhere(config_mod.global_config_dir()))
+
+    def test_a_link_inside_the_config_folder_is_reported(self):
+        target = os.path.join(self.tmp, "target")
+        os.makedirs(target)
+        link = os.path.join(self.config_home, "providers")
+        self.link(link, target)
+        reported = present(config_mod.stored_elsewhere(os.path.join(link, "x.py")))
+        expected = os.path.join(os.path.realpath(target), "x.py")
+        self.assertEqual(os.path.normcase(reported), os.path.normcase(expected))
 
 
 class TestPresetLayering(IsolatedCase):

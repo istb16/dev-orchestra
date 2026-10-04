@@ -1,4 +1,4 @@
-<!-- translated-from: references/configuration.md sha256:af4541cd1a714a8bda9712890b99b2875602dbfd92a48432c3f8ac7e1b73ab96 -->
+<!-- translated-from: references/configuration.md sha256:4be44e1a59df6a237a809c5c88d85e1da9aac2ab6235cc38a13b68be1695c386 -->
 
 > この文書は [references/configuration.md](../../../references/configuration.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -60,6 +60,22 @@ adapter を置きます（Windows では `%APPDATA%\dev-orchestra\providers\`、
 | Linux / BSD | `$XDG_CONFIG_HOME/dev-orchestra/config.yaml`、なければ `~/.config/dev-orchestra/config.yaml` |
 | macOS | `~/.config/dev-orchestra/config.yaml` |
 | Windows | `%APPDATA%\dev-orchestra\config.yaml` |
+
+**Microsoft Store 版の Python。** Microsoft Store 版の Python では、この Python が
+AppData の下に書くファイルを、Windows がパッケージ専用のフォルダー
+（`%LOCALAPPDATA%\Packages\PythonSoftwareFoundation.Python.<version>_…\LocalCache\Roaming\dev-orchestra\`）
+に置きます。dev-orchestra が読み書きするファイルは変わりませんが、エクスプローラーやエディター、
+ほかの Python からはそのファイルが見えません。表示したパスとは別の場所に保存されているパスには、
+後ろに `(stored at <実際のパス>)` が付きます。対象は `config path`、`config show --scope global`、
+グローバルファイルに書き込むコマンドのメッセージ、そして `doctor` です。`doctor` は Store 版の
+Python を使っていることも示し、直し方を note に書きます（`--json` には、そのときだけ、該当する
+パスの隣に `*_real` キーが加わります）。パッケージのフォルダーにある adapter と記録は、実際の
+`%APPDATA%` にある同じ名前のファイルより優先されます。直すには、python.org 版の Python（`py`）を
+使うか、`DEV_ORCHESTRA_HOME` を `%USERPROFILE%\AppData` の外で、どのプロジェクトのチェックアウトの
+中でもない、自分で管理する信頼できるフォルダーに設定してください。そのうえで、パッケージの
+フォルダーから `config.yaml` だけをコピーします。`providers\*.py` は起動時に import されるコードなので、
+移す前に中身を確認してください。`verified\` の記録はコピーせず、
+`python scripts/smoke_live.py` に作り直させてください。
 
 環境変数による上書き:
 

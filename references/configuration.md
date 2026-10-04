@@ -56,6 +56,24 @@ Global config path by platform:
 | macOS | `~/.config/dev-orchestra/config.yaml` |
 | Windows | `%APPDATA%\dev-orchestra\config.yaml` |
 
+**Microsoft Store Python.** The Python from the Microsoft Store has Windows
+keep the files it writes under your AppData in its own package folder
+(`%LOCALAPPDATA%\Packages\PythonSoftwareFoundation.Python.<version>_…\LocalCache\Roaming\dev-orchestra\`).
+dev-orchestra still reads and writes the same files, but Explorer, editors and
+other Pythons do not see them. Wherever a path is stored somewhere other than
+where it is printed, it is followed by `(stored at <real path>)`: in
+`config path`, `config show --scope global`, the messages of the commands that
+write the global file, and `doctor`, which also says that the Store Python is
+in use and adds a note on how to fix it (`--json` gains a `*_real` key beside
+each such path, only then). Adapters and records in the package folder take
+precedence over same-named files in the real `%APPDATA%`. To fix this, either
+use a python.org Python (`py`), or set `DEV_ORCHESTRA_HOME` to a trusted
+folder you control, outside `%USERPROFILE%\AppData` and outside any project
+checkout. Then copy only `config.yaml` from the package folder. Review
+`providers\*.py` before moving them, because they are code that is imported at
+startup. Let `python scripts/smoke_live.py` regenerate the `verified\` records
+instead of copying them.
+
 Environment overrides:
 
 - `DEV_ORCHESTRA_CONFIG` — use this exact file as the global layer.

@@ -1,4 +1,4 @@
-<!-- translated-from: references/cli.md sha256:6220dc74949f8430792de47e0ab53d90b4c7465c5622eb2b954b656ee30149f8 -->
+<!-- translated-from: references/cli.md sha256:0842146fdafbac431ec822c06fd274d73b0a467c80b3b8d4b8bade107a7a82c3 -->
 
 > この文書は [references/cli.md](../../../references/cli.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -58,7 +58,7 @@ Microsoft Store のエイリアスだからです。
 
 | コマンド | 説明 |
 | --- | --- |
-| `config show [--scope effective\|global\|project] [--json]` | 設定を表示します。デフォルトは `effective`（マージ済み）です。スコープを指定すると、そのレイヤーをディスク上にあるとおりに表示し、たいていはずっと短くなります。effective の表示では `Source:` の後に有効なプリセット（`Preset: quality (global; fitted to claude, codex)`）を示し、フィットし直した点ごとに `note:` 行を出します。`--json` では `preset`（`name`、`source`、`notes`）に入ります。`Providers:` 行は、参照している各 provider がどこから来ているか（built-in、ユーザーモジュールのパス、または adapter なし）を示します。`--json` では同じ内容が `providers` の下に入ります。 |
+| `config show [--scope effective\|global\|project] [--json]` | 設定を表示します。デフォルトは `effective`（マージ済み）です。スコープを指定すると、そのレイヤーをディスク上にあるとおりに表示し、たいていはずっと短くなります。effective の表示では `Source:` の後に有効なプリセット（`Preset: quality (global; fitted to claude, codex)`）を示し、フィットし直した点ごとに `note:` 行を出します。`--json` では `preset`（`name`、`source`、`notes`）に入ります。effective の `--json` には、`Source:` に並ぶファイルが `project` と `global` として入ります（ないときは `null`）。`Providers:` 行は、参照している各 provider がどこから来ているか（built-in、ユーザーモジュールのパス、または adapter なし）を示します。`--json` では同じ内容が `providers` の下に入ります。 |
 | `config path` | 両方のレイヤーの場所を表示します。 |
 | `config setup [--scope global\|project] [--preset quality\|standard\|fast \| --defaults] [--force]` | セットアップウィザードです。グローバルファイルでは最初の質問がプリセットです。`--preset` は何も尋ねません: `version` と `preset` を書き込み、プリセットが決めるキー以外にファイルが持っていた値は残し（ロールは `options` と `model_tiers` を残し、そのためフィットされません）、そのプリセットがこのマシンで解決される設定を note とともに表示します（`references/configuration.md` のプリセットを参照）。プリセットを指定できるのはグローバルファイルだけで、`--scope project` では拒否され（exit 2）、何も書き込みません。`--defaults` は何も上書きしないため、ファイルには `version: 1` だけが入り、プリセット `standard` で動きます。`--force` は TTY がなくてもプロンプトを表示します。 |
 | `config reset [--scope …] [--delete]` | このレイヤーの上書きを消去し（ファイルは残り、`version` だけ、グローバルファイルなら既知の `preset` も入った状態になります。知らないプリセット名は `note:` を表示して消します）、残った設定を表示します。`--delete` を付けるとファイルを削除し、グローバルレイヤーは `standard` で動きます。 |
@@ -1011,6 +1011,7 @@ stderr に一度だけ知らせます。実行中のステージがあるワー�
 | `codex: … does not vouch for …` | この Codex CLI が提供していない family です。`dev-orchestra model list` で確認し、`recommended-coding` を使うか、正確な id を pin してください。 |
 | `claude: cannot resolve model family 'x'` | 提示されている alias ではありません。`dev-orchestra model list`。 |
 | `Installed: no` | CLI が PATH にありません。自分でインストールしてください。スキルはインストールしません。 |
+| パスの後ろに `(stored at …\Packages\…)` | Microsoft Store 版の Python です。この Python が AppData の下に書くファイルを、Windows はパッケージ専用のフォルダーに置きます。そこにあるファイルは、エクスプローラーやエディター、ほかの Python からは見えません。python.org 版の Python（`py`）を使うか、`DEV_ORCHESTRA_HOME` を `%USERPROFILE%\AppData` の外で、どのプロジェクトのチェックアウトの中でもない、自分で管理する信頼できるフォルダーに設定し、そこへ `config.yaml` だけをコピーしてください。詳しくは `doctor` が示し、残りは `references/configuration.md`（「置き場所」）にあります。 |
 | 委譲先の CLI から `Failed to authenticate` | その CLI で直接ログインしてください（`claude`、`codex login`）。`doctor` が報告するのは認証情報の *存在* で、有効かどうかではありません。 |
 | `review snapshot` が empty と言う | `HEAD` から何も変わっていません。`--base <rev>` を使うか、実装が動いたかを確認してください。 |
 | `not a git repository` | スナップショットには git が必要です。`git init` するか、commit のあるリポジトリをレビューしてください。 |

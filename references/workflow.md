@@ -132,7 +132,8 @@ release, or a minor one while the version is below 1.0 -- and it ships with a
 migration that moves the old form into the new, as the 0.4.0 layout change
 did. The files carry no format version for that
 reason: nothing reads one, and the rule above is what keeps an older workflow
-readable.
+readable. The `--json` output of the commands changes the same way, as with the
+`*_real` keys that appear only when a path is stored somewhere else.
 
 `.ai/` gets a `.gitignore` containing `*` on first use, so artifacts stay out of
 the user's commits. Teams who want them reviewable can delete that file and

@@ -365,7 +365,7 @@ def _frozen_panel_note(
         if isinstance(reviewer, dict)
     )
     message = "note: %s now lists the reviewers; the panel no longer follows preset %s's fit (recorded %s)"
-    return message % (path, loaded.preset, recorded or "none")
+    return message % (config_mod.shown_location(path), loaded.preset, recorded or "none")
 
 
 def _seed_panel(

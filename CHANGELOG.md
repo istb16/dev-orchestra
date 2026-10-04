@@ -10,6 +10,29 @@ The public surface covered by that promise is: the configuration schema, the
 
 ## [Unreleased]
 
+### Fixed
+
+- **Under the Microsoft Store Python, the global config's real location is
+  printed** (#235). That Python has Windows keep the files it writes under
+  AppData in its package folder, so `%APPDATA%\dev-orchestra` looked empty to
+  Explorer, editors and other Pythons. On Windows, a path that is really
+  stored elsewhere is now followed by `(stored at <real path>)` in
+  `config path`, `config show --scope global`, the messages of the commands
+  that write the global file, `doctor` (the global file, the user adapter
+  directory and each adapter, the resume record) and
+  `scripts/smoke_live.py`. `doctor` also marks the Environment line
+  `(Microsoft Store package)` and adds a note on how to move off it.
+  `--json` gains, only when a path is redirected, `source_real` and
+  `global_real` (`config show`) and `platform.store_python`,
+  `config.global_real`, `user_providers.directory_real`, `path_real` on each
+  `user_providers.loaded[]` and `errors[]` entry, and
+  `providers.<name>.resume_support.record_real` (`doctor`). Which files are
+  read and written does not change.
+- **`config show --json` names the files of the effective view** as
+  `project` and `global` (`null` when there is none), beside `source`. When
+  the config cannot be read, `doctor` now still names the global file and the
+  project override.
+
 ## [0.18.0] - 2026-10-03
 
 ### Added
