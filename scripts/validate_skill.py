@@ -48,22 +48,12 @@ MAX_SKILL_LINES = 500
 #: SKILL.md is resident for the whole session, in every session, so its size
 #: is a running cost rather than a one-off. Lines are a poor proxy for that --
 #: a table row and a paragraph cost very differently -- so the budget is in
-#: characters, roughly four to a token. The ceiling has room above the current
-#: document for a rule worth adding; it is not a target to grow into.
+#: characters, roughly four to a token. The margin above the document is for
+#: wording; a new rule is paid for by cutting elsewhere first, not by raising it.
 #:
-#: Raised from 12,500, which the document was within twelve characters of: a
-#: new pipeline stage was the rule worth adding, and five paragraphs were
-#: compressed to pay for most of it before the ceiling moved for the rest.
-#:
-#: Raised again from 13,000 for the approval stage, the same way: five
-#: passages were compressed to pay for about half of it, and the ceiling
-#: moved for the rest, with the same room above the document as before.
-#:
-#: Raised again from 13,500, which the document was within two characters
-#: of, for the rule on relaying a long stage's progress to the user: the
-#: paragraph was cut to the facts the orchestrator acts on, and the ceiling
-#: moved by about that much.
-MAX_SKILL_CHARS = 14_000
+#: Lowered from 14,750, after four raises, once the document said each thing
+#: once and left detail it only sometimes needs to the references.
+MAX_SKILL_CHARS = 11_950
 MAX_DESCRIPTION_CHARS = 1024
 REQUIRED_FRONTMATTER = ("name", "description")
 REQUIRED_FILES = (
