@@ -95,7 +95,7 @@ light`; an unknown tier is refused.
 (never "tokens so far"), the last few tool lines; then wait again from `next:`.
 Only a background `review run` gets `--progress > .ai/execution/review-run.log
 2>&1`: relay its new lines every few minutes. Never relay or guess what the
-model wrote.
+model wrote. Frame each relay in the user's language; tool lines go as they are.
 
 **Design.** Architect must not change code. On Claude it has only Read, Grep
 and Glob (no shell, git, subagents or files outside the project): put what it
@@ -112,7 +112,9 @@ request, after the last round too; re-review only when `review status --design`
 says so. No design stage, no design review.
 
 **Approval.** Before implementing, give the user the plan's Goal, Proposed
-Change, Files to Modify, Risks and any open design findings, and ask. Only
+Change, Files to Modify, Risks and any open design findings, name the
+plan's file (`plan.md` under `workflow show`'s `Artifacts:`) as the text
+being approved, and ask. Only
 their explicit yes lets you run `design approve` -- never on your own
 judgement, never to unblock yourself. Changes requested → revise, `--resume`
 too (re-review if `status` says run), ask again. A spent design review budget still gets one revision
@@ -122,7 +124,7 @@ revise. `run implementer` refuses an unapproved plan (exit 5) while
 
 **Implement.** Require: existing conventions, minimal change, no unrelated
 refactoring, tests added or updated and run, and — plan wrong — stop and
-report instead of redesigning. Implementer failure is fatal.
+report instead of redesigning.
 
 **Test.** The project's documented commands only; never invent one. A red
 suite stops the pipeline. Record the outcome — `state record test ok|failed` —
@@ -161,7 +163,7 @@ first, or the fixer gets the same defect twice: auto-merge leaves those pairs
 to you.
 
 **Fix.** Require: verify each finding against current code first, fix only what
-is valid, add a failing test or say why none can; rerun tests, lint, types. Fixer failure is fatal.
+is valid, add a failing test or say why none can; rerun tests, lint, types.
 
 **Re-test, and re-review only if told to.** Re-run the tests (a new one
 must fail with the fix reversed), then `review status`;
@@ -181,7 +183,7 @@ definition of done, output format.
 ## 4. Final report
 
 One line per stage with its outcome, then the models used, the files
-changed, and anything left unresolved:
+changed, and anything left unresolved, labels in the user's language (rule 11):
 
 ```
 Tests      ✓ 12 passed
@@ -191,6 +193,8 @@ Models     architect Claude/fable, implementer Claude/opus, fixer Claude/opus
 Changed    app/models/order.rb, app/services/pricing.rb
 Remaining  F4 (medium, deferred — .ai/reviews/consolidated.md)
 ```
+
+(The labels above are the shape; write them in the user's language.)
 
 `summary` prints stage, model and token totals; `tokens show` breaks the cost
 down per stage and reviewer. When some runs reported nothing, report the total
@@ -247,6 +251,12 @@ for anything else.
 9. **Keep the source tree clean.** Orchestration artifacts live in `.ai/`.
 10. **Approval is the user's.** `design approve` records their yes; without one
     it is not yours to run, and exit 5 means ask, not retry.
+11. **Talk to the user in their language** — the one they asked for, else
+    the one they write in; not the one you just read, nor pasted issues
+    or logs. That covers progress, questions, approvals, findings, the
+    report and your tool-call descriptions. Restate prose in full, never
+    dropping or softening a finding or risk; ids, severities, paths, commands,
+    code and quoted text stay as written. Agent prompts and `.ai/` stay English.
 
 ## References
 

@@ -156,8 +156,36 @@ class TestSkillDocument(IsolatedCase):
             "fix only triaged-accepted findings",
             "never print or store credentials",
             "approval is the user's",
+            "failures *are* fatal",
+            "talk to the user in their language",
         ):
             self.assertIn(rule, body)
+
+    def test_the_language_rule_is_rule_11(self):
+        """#244: after reading English plans, findings and CLI output, the
+        orchestrator drifted into English. The rule belongs with the rules
+        that do not bend, not in a paragraph it could be compressed out of."""
+        start = self.body.index("## Rules that do not bend")
+        rules = self.body[start : self.body.index("## References", start)]
+        self.assertRegex(rules, r"(?m)^11\. \*\*Talk to the user")
+        lowered = rules.lower()
+        for phrase in (
+            "not the one you just read",
+            "that covers progress, questions, approvals, findings",
+            "tool-call descriptions",
+            "restate prose in full",
+            "ids, severities, paths, commands",
+            "agent prompts and `.ai/` stay english",
+        ):
+            self.assertIn(phrase, lowered, phrase)
+        start = self.body.index("## 4. Final report")
+        report = self.body[start : self.body.index("## Configuration", start)]
+        self.assertIn("(rule 11)", report)
+        self.assertIn("write them in the user's language", report)
+        self.assertIn("tool lines go as they are", self.body)
+        start = self.body.index("**Approval.**")
+        approval = self.body[start : self.body.index("**Implement.**", start)]
+        self.assertIn("plan's file", " ".join(approval.split()))
 
     def test_says_what_holds_reviewers_to_reading(self):
         """Read-only is a claim about what the CLI enforces, and the one

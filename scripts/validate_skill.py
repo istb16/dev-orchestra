@@ -63,7 +63,13 @@ MAX_SKILL_LINES = 500
 #: of, for the rule on relaying a long stage's progress to the user: the
 #: paragraph was cut to the facts the orchestrator acts on, and the ceiling
 #: moved by about that much.
-MAX_SKILL_CHARS = 14_000
+#:
+#: Raised again from 14,000, which the document was within twenty characters
+#: of, for the rule on writing to the user in their language (#244) and the
+#: lines in the relay, approval and report that point at it: two sentences
+#: repeating rule 6 were cut to pay for 54 of its 727 characters, and the
+#: ceiling moved for the rest.
+MAX_SKILL_CHARS = 14_750
 MAX_DESCRIPTION_CHARS = 1024
 REQUIRED_FRONTMATTER = ("name", "description")
 REQUIRED_FILES = (

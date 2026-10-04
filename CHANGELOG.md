@@ -32,6 +32,16 @@ The public surface covered by that promise is: the configuration schema, the
   `project` and `global` (`null` when there is none), beside `source`. When
   the config cannot be read, `doctor` now still names the global file and the
   project override.
+- **The orchestrator answers in the user's language** (#244). After reading
+  English material (the skill, the plan, review findings, agents' reports,
+  CLI output), its progress notes, questions, final report and tool-call
+  descriptions drifted into English, even against a standing instruction.
+  SKILL.md now makes this a rule: messages to the user are in the language
+  the user asked for, else the one they write in. English plans and findings
+  are restated in full, never dropping or softening one. Ids, severities,
+  paths, commands, code and quoted text stay as written, as do relayed tool
+  lines. Approval names `.ai/plan.md` as the text being approved. Prompts to
+  delegated agents, CLI output and `.ai/` formats stay English.
 
 ## [0.18.0] - 2026-10-03
 
