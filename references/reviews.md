@@ -447,7 +447,8 @@ crypto, deploy config -- escalates to `quality` whatever the level says: full
 panel, full findings budget, no gate. A high-risk hit also keeps every role
 (see [Roles a round does not need](#roles-a-round-does-not-need)), and a
 seat with a `high_risk_model` runs that model instead of its usual one; its
-reviewer entry in the round's event says `model_slot: high-risk`. The patterns
+reviewer entry in the round's event says `model_slot: high-risk`, and
+`optimization report` scores the two slots apart. The patterns
 are yours to replace, or to add to with `optimization.extra_high_risk_paths`;
 the escalation is not yours to switch off.
 

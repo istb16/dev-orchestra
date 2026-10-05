@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Sequence, Tuple, cast
 
-from .optimization import REFUSED, WHEN_RELEVANCE
+from .optimization import HIGH_RISK_SLOT, REFUSED, USUAL_SLOT, WHEN_RELEVANCE
 from .review_consolidation import round_key
 
 
@@ -637,6 +637,8 @@ _EXPLICIT_TRIAGE = ("accepted", "rejected", "duplicate", "needs-investigation")
 _SCORE_SPEND = ("runs", "failed_runs", "measured_runs", "priced_runs", "billed_tokens", "cost_usd")
 _SCORE_FINDINGS = ("reported", "accepted", "rejected", "duplicate", "open")
 _SCORE_ROUNDS = ("rounds_recorded", "rounds_read", "rounds_unreviewed", "rerun_rounds")
+#: The model slots a seat's figures are split by, in the order they print.
+_SLOTS = (USUAL_SLOT, HIGH_RISK_SLOT)
 
 
 def reviewer_scorecard(inputs: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
@@ -684,7 +686,7 @@ def reviewer_scorecard(inputs: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
             for event in group["events"]:
                 _add_spend(stage, event)
         _add_left_out(stage, sorted(counted, key=lambda group: group["order"]))
-        for finding in _unique_findings([group["round"] for group in read]):
+        for finding in _unique_findings(read):
             _score_finding(stage, finding)
     for stage in stages.values():
         stage["findings"] = stage["panel"]["reported"]
@@ -801,26 +803,33 @@ def _explicit_triage(finding: Dict[str, Any]) -> bool:
     return bool(finding.get("triage_set_at")) or finding.get("triage") in _EXPLICIT_TRIAGE
 
 
-def _unique_findings(rounds: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _unique_findings(groups: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """One record per finding ``key`` over one workflow's rounds of one stage.
 
-    ``rounds`` in the order they ran, oldest first. The last *explicit* triage
-    wins: a finding the carry missed comes back as ``needs-triage`` by
-    default, and that default must not undo an acceptance made in the round
-    before. A candidate duplicate link is resolved inside the round that made
-    it, since ids are positions renumbered every round.
+    ``groups`` are the read rounds of ``_match_rounds``, in the order they
+    ran, oldest first. The last *explicit* triage wins: a finding the carry
+    missed comes back as ``needs-triage`` by default, and that default must
+    not undo an acceptance made in the round before. A candidate duplicate
+    link is resolved inside the round that made it, since ids are positions
+    renumbered every round.
+
+    Each reporter's model slot is the one its run had in the first round that
+    named it, and ``usual`` when that round has no run of it.
     """
     unique: Dict[str, Dict[str, Any]] = {}
-    for position, report in enumerate(rounds):
+    for position, group in enumerate(groups):
+        report = group["round"]
+        slots = _round_slots(group["events"])
         findings = [finding for finding in report.get("findings") or [] if isinstance(finding, dict)]
         by_id = {str(finding.get("id") or ""): finding for finding in findings}
         for finding in findings:
             key = str(finding.get("key") or "") or "%d:%s" % (position, finding.get("id"))
-            record = unique.setdefault(key, {"reported_by": [], "triage": None, "paired": False})
+            record = unique.setdefault(key, {"reported_by": [], "slots": {}, "triage": None, "paired": False})
             ours = [str(name) for name in finding.get("reported_by") or []]
             for name in ours:
                 if name not in record["reported_by"]:
                     record["reported_by"].append(name)
+                    record["slots"][name] = slots.get(name, USUAL_SLOT)
             if _explicit_triage(finding):
                 record["triage"] = finding.get("triage")
             if _alone_pairs(finding, by_id, ours):
@@ -857,12 +866,47 @@ def _score_reviewer(stage: Dict[str, Any], name: str) -> Dict[str, Any]:
     group = stage["reviewers"].get(name)
     if group is None:
         group = stage["reviewers"][name] = _score_group()
-        group.update(alone=0, alone_accepted=0)
+        group.update(alone=0, alone_accepted=0, models={})
     return group
 
 
+def _slot_of(run: Dict[str, Any]) -> str:
+    """The model slot a run took its model from; a record without one is ``usual``."""
+    return HIGH_RISK_SLOT if run.get("model_slot") == HIGH_RISK_SLOT else USUAL_SLOT
+
+
+def _round_slots(events: Sequence[Dict[str, Any]]) -> Dict[str, str]:
+    """Each reviewer id of a round to its run's slot; a later event of the round wins.
+
+    A run that did not review returned no findings, so it sets the slot only
+    while no run of that reviewer in the round did.
+    """
+    slots: Dict[str, str] = {}
+    reviewed: set = set()
+    for event in events:
+        for run in event.get("reviewers") or []:
+            if not isinstance(run, dict):
+                continue
+            name = str(run.get("id") or "?")
+            if run.get("status") in _REVIEWED:
+                reviewed.add(name)
+            elif name in reviewed:
+                continue
+            slots[name] = _slot_of(run)
+    return slots
+
+
+def _score_slot(group: Dict[str, Any], slot: str) -> Dict[str, Any]:
+    """A reviewer's figures on one model slot, created on first use."""
+    models = group["models"]
+    if slot not in models:
+        models[slot] = _score_group()
+        models[slot].update(alone=0, alone_accepted=0, by_model={})
+    return models[slot]
+
+
 def _add_spend(stage: Dict[str, Any], event: Dict[str, Any]) -> None:
-    """One event's runs, added to each reviewer and to the panel.
+    """One event's runs, added to each reviewer, its slot, and to the panel.
 
     A run that reported nothing still ran, and adds nothing to the totals --
     which is why they are floors.
@@ -875,7 +919,10 @@ def _add_spend(stage: Dict[str, Any], event: Dict[str, Any]) -> None:
         billed = _int(usage.get("billed_tokens"))
         cost = usage.get("cost_usd")
         priced = isinstance(cost, (int, float)) and not isinstance(cost, bool)
-        for group in (_score_reviewer(stage, str(run.get("id") or "?")), stage["panel"]):
+        reviewer = _score_reviewer(stage, str(run.get("id") or "?"))
+        slot = _score_slot(reviewer, _slot_of(run))
+        _bump(slot["by_model"], str(run.get("model") or "?"))
+        for group in (reviewer, slot, stage["panel"]):
             group["runs"] += 1
             if run.get("status") not in _REVIEWED:
                 group["failed_runs"] += 1
@@ -945,13 +992,14 @@ def _score_finding(stage: Dict[str, Any], record: Dict[str, Any]) -> None:
     # counted here, which is what makes this an upper bound.
     alone = len(reporters) == 1 and not record["paired"]
     for name in reporters:
-        group = _score_reviewer(stage, name)
-        group["reported"] += 1
-        group[outcome] += 1
-        if alone:
-            group["alone"] += 1
-            if outcome == "accepted":
-                group["alone_accepted"] += 1
+        reviewer = _score_reviewer(stage, name)
+        for group in (reviewer, _score_slot(reviewer, record["slots"].get(name, USUAL_SLOT))):
+            group["reported"] += 1
+            group[outcome] += 1
+            if alone:
+                group["alone"] += 1
+                if outcome == "accepted":
+                    group["alone_accepted"] += 1
     stage["panel"]["reported"] += 1
     stage["panel"][outcome] += 1
 
@@ -962,8 +1010,15 @@ def _finish_score(group: Dict[str, Any], alone: bool) -> Dict[str, Any]:
     ``cost_per_accepted`` is None as well where no run was priced: a panel of
     reviewers that report no price has not found findings for free.
     """
-    finished: Dict[str, Any] = {field: group[field] for field in _SCORE_SPEND + _SCORE_FINDINGS}
+    finished: Dict[str, Any] = {}
+    if "by_model" in group:
+        finished["by_model"] = dict(group["by_model"])
+    finished.update((field, group[field]) for field in _SCORE_SPEND + _SCORE_FINDINGS)
     finished["cost_usd"] = round(float(group["cost_usd"]), 4)
+    measured = group["measured_runs"]
+    priced = group["priced_runs"]
+    finished["billed_per_run"] = group["billed_tokens"] // measured if measured else None
+    finished["cost_per_run"] = round(group["cost_usd"] / priced, 4) if priced else None
     if alone:
         finished["alone"] = group.get("alone", 0)
         finished["alone_accepted"] = group.get("alone_accepted", 0)
@@ -981,6 +1036,10 @@ def _finish_score(group: Dict[str, Any], alone: bool) -> Dict[str, Any]:
     finished["cost_per_accepted"] = (
         round(group["cost_usd"] / accepted, 4) if enough and group["priced_runs"] else None
     )
+    # Only a reviewer has them: the panel and the total are not split by slot.
+    if "models" in group:
+        models = group["models"]
+        finished["models"] = {slot: _finish_score(models[slot], True) for slot in _SLOTS if slot in models}
     return finished
 
 

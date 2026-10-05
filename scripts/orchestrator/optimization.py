@@ -164,6 +164,7 @@ OPT_IN_RELEVANCE = ("security",)
 #: The model slot a run took its model from when the round was high-risk and
 #: the seat has a ``high_risk_model``. A run record without one is ``usual``.
 HIGH_RISK_SLOT = "high-risk"
+USUAL_SLOT = "usual"
 
 #: Paths a security reviewer has something to read in. Deliberately broad:
 #: the rule only ever leaves the seat out when nothing changed matches, and a

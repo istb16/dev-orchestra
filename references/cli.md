@@ -940,6 +940,10 @@ the cost from the run log, and the two are matched round by round:
 Reviewer scorecard, code review: 18 of 27 recorded round(s) had a report to read.
   claude-general         49 reported: 43 accepted, 1 rejected, 4 duplicate, 1 open; 37 found alone (33 accepted)
                          18 run(s), 2,794,838 billed, $42.07 over 18 priced run(s); 2% rejected, 64,996 billed / $0.98 per accepted
+    usual (sonnet)       30 reported: 27 accepted, 0 rejected, 2 duplicate, 1 open; 23 found alone (21 accepted)
+                         12 run(s), 1,394,838 billed, 116,236 per run, $12.07 over 12 priced run(s), $1.01 per run; 0% rejected, 51,660 billed / $0.45 per accepted
+    high-risk (opus)     19 reported: 16 accepted, 1 rejected, 2 duplicate, 0 open; 14 found alone (12 accepted)
+                         6 run(s), 1,400,000 billed, 233,333 per run, $30.00 over 6 priced run(s), $5.00 per run; 5% rejected, 87,500 billed / $1.88 per accepted
   codex-general          25 reported: 15 accepted, 2 rejected, 6 duplicate, 2 open; 16 found alone (11 accepted)
                          17 run(s), 1,166,386 billed, no cost reported; 9% rejected, 77,759 billed per accepted, $ -
   localllm-qwen          22 reported: 1 accepted, 19 rejected, 2 duplicate, 0 open; 20 found alone (1 accepted)
@@ -1008,6 +1012,21 @@ told apart, and how its events find its report:
   with `when` showing `relevance`; design rounds count too, once their events
   carry an `optimization` block. Events from before conditional reviewers, and
   design events from before that block, record none.
+- **A seat that ran its `high_risk_model` gets a row per model slot** under its
+  own two lines, `usual` then `high-risk`, each with its runs, cost, cost per
+  run, findings and rates, the thresholds applied to each slot alone. A seat
+  that only ever ran its usual model adds no rows. A run's slot is the one its
+  entry recorded in `model_slot`; an entry without one, every run from before
+  the high-risk model included, is `usual`. The slot is the seat's configured
+  slot at the time, not a model: the label names the models the slot ran,
+  `usual (sonnet x6, opus x4)` when it ran several, as a usual slot did across
+  a change of preset. A finding counts for the slot of the run that first
+  reported it, each reporter of a merged finding for its own; a reporter with
+  no run in that round counts as `usual`. When two events of one round ran a
+  seat on different slots (`--high-risk` on a `--only` re-run), each run's
+  cost goes to its own slot and the findings to the later one that reviewed:
+  a run that failed or timed out returned none. A label wider than the column
+  goes on a line of its own above its figures.
 
 It says what review bought, not whether review got worse. A higher cost per
 accepted finding is what better code under review looks like, and also what a
@@ -1020,13 +1039,20 @@ always present, with `code`, `design` and `total`. Each stage has
 `--surrounding` pairs among the rounds whose cost is in), `workflows_read`,
 `findings`, `reviewers` (by id) and `panel`. A reviewer carries `runs`,
 `failed_runs`, `measured_runs`, `priced_runs`, `billed_tokens`, `cost_usd`,
-`reported`, `accepted`, `rejected`, `duplicate`, `open`, `alone`,
+`billed_per_run` (over the measured runs), `cost_per_run` (over the priced
+runs), `reported`, `accepted`, `rejected`, `duplicate`, `open`, `alone`,
 `alone_accepted`, `rejection_rate`, `billed_per_accepted` and
-`cost_per_accepted`, the last three `null` below their threshold. A reviewer
-some counted round recorded as conditional also carries `when` (`high-risk`,
-`paths` or `relevance`, from the latest such round) and `left_out_rounds`; `panel` and
-`total` the same without the `alone` pair, a finding reported by two reviewers
-counted once. `total` also sums the four round counts.
+`cost_per_accepted`, the per-run pair `null` with nothing to divide by and the
+last three `null` below their threshold. A reviewer some counted round
+recorded as conditional also carries `when` (`high-risk`, `paths` or
+`relevance`, from the latest such round) and `left_out_rounds`. Every reviewer
+carries `models`, keyed by slot (`usual`, `high-risk`) and holding only the
+slots it ran or reported on -- `{}` for a seat that never ran: each slot has the
+same figures as a reviewer without `when` and `left_out_rounds`, plus
+`by_model`, its runs counted by the model each one ran. `panel` and `total`
+are the same as a reviewer without the `alone` pair and without `models`, a
+finding reported by two reviewers counted once. `total` also sums the four
+round counts.
 
 When every round escalated, the report says so outright: the level as
 configured never applied, and the patterns that did it are named. A dial

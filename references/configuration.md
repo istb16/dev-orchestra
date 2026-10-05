@@ -532,7 +532,8 @@ with an `id`) it runs instead of `model` on a round with a high-risk hit or
 risk; `high_risk_model` changes a seat's model; the two can coexist. Each
 switched seat prints `note: high-risk round (<path> matches <pattern>): <id>
 runs opus instead of sonnet`, and its run record gains `model_slot:
-high-risk` (a record without it is the usual slot). `reviewer add|set
+high-risk` (a record without it is the usual slot), and `optimization
+report` scores the two slots apart. `reviewer add|set
 --high-risk-model FAMILY` sets it, `reviewer set --clear-high-risk-model`
 removes it, and `reviewer set --provider` to another CLI removes it with a
 note, with or without `--model`; `--high-risk-model` beside it sets the new

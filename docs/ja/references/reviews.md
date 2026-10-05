@@ -1,4 +1,4 @@
-<!-- translated-from: references/reviews.md sha256:b168d3b3124aa3c8456a88a5e7e3c30996b74bddbbac2e460a559e81ed840a40 -->
+<!-- translated-from: references/reviews.md sha256:4adb2f96b044d57d358be405af53147af9cf9063713feb8cf5ae8d9c90be7bcd -->
 
 > この文書は [references/reviews.md](../../../references/reviews.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -463,7 +463,7 @@ plan が凍結される前です。収まるように切り詰めることだけ
 陣は全員、指摘の予算も満額、ゲートなしです。高リスクへの一致はすべてのロールも残し
 （[ラウンドが必要としないロール](#roles-a-round-does-not-need)を参照）、`high_risk_model` を
 持つ席は普段のモデルの代わりにそのモデルを使います。ラウンドのイベントのそのレビュアーの
-エントリには `model_slot: high-risk` と記されます。パターンは自由に置き換えたり、
+エントリには `model_slot: high-risk` と記され、`optimization report` は 2 つの枠を分けて採点します。パターンは自由に置き換えたり、
 `optimization.extra_high_risk_paths` で追加したりできますが、エスカレーションを
 無効にすることはできません。
 

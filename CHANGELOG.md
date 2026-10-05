@@ -65,12 +65,21 @@ The public surface covered by that promise is: the configuration schema, the
   `high_risk_model` is kept on Claude only; one dealt elsewhere loses it, and
   its note ends `; no high-risk model on <cli>`.
 
+- **`optimization report` scores each seat's usual and high-risk model
+  apart** (#248). A seat that ran its `high_risk_model` gets a row per slot
+  under its own, labelled with the models the slot ran (`usual (sonnet)`,
+  `high-risk (opus)`), with runs, cost, cost per run, findings and rates; a
+  finding counts for the slot of the run that first reported it. A seat that
+  only ran its usual model prints as before.
+
 - **Records, additive**: a reviewer entry that ran on its high-risk model
   carries `model_slot: high-risk` (an entry without it is the usual slot); a
   design round's event carries an `optimization` block (`level`,
   `high_risk`, `declared`, `conditional`, `files`); `optimization report
-  --json` gains `relevance` and `design_relevance`. Records written before
-  read as they did.
+  --json` gains `relevance` and `design_relevance`, and each scorecard
+  reviewer gains `models` (per slot, each with `by_model`) while every
+  scorecard group gains `billed_per_run` and `cost_per_run`. Records written
+  before read as they did, a run without a slot as `usual`.
 
 ### Changed
 

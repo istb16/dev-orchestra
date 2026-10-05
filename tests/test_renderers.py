@@ -179,6 +179,34 @@ def _full_scorecard() -> Dict[str, Any]:
         priced_runs=1,
         cost_usd=0.5,
     )
+    usual = _score(
+        by_model={"sonnet": 1},
+        reported=1,
+        accepted=1,
+        alone=1,
+        alone_accepted=1,
+        runs=1,
+        failed_runs=1,
+        measured_runs=1,
+        billed_tokens=2345,
+        billed_per_run=2345,
+    )
+    high_risk = _score(
+        by_model={"opus": 1},
+        reported=2,
+        accepted=1,
+        rejected=1,
+        alone=1,
+        alone_accepted=0,
+        runs=1,
+        measured_runs=1,
+        billed_tokens=10000,
+        billed_per_run=10000,
+        priced_runs=1,
+        cost_usd=0.5,
+        cost_per_run=0.5,
+    )
+    m1["models"] = {"usual": usual, "high-risk": high_risk}
     sec = _score(alone=0, alone_accepted=0, runs=1, rejection_rate=0.25, when="risk: auth", left_out_rounds=2)
     panel = _score(
         reported=3,
@@ -290,6 +318,14 @@ FULL_TEXT = [
     "2 found alone (1 accepted)",
     "                         2 run(s) (1 failed), 12,345 billed, $0.50 over 1 priced run(s); "
     "rates withheld under 10 decided",
+    "    usual (sonnet)       1 reported: 1 accepted, 0 rejected, 0 duplicate, 0 open; "
+    "1 found alone (1 accepted)",
+    "                         1 run(s) (1 failed), 2,345 billed, 2,345 per run, no cost reported; "
+    "rates withheld under 10 decided",
+    "    high-risk (opus)     2 reported: 1 accepted, 1 rejected, 0 duplicate, 0 open; "
+    "1 found alone (0 accepted)",
+    "                         1 run(s), 10,000 billed, 10,000 per run, $0.50 over 1 priced run(s), "
+    "$0.50 per run; rates withheld under 10 decided",
     "  sec                    0 reported: 0 accepted, 0 rejected, 0 duplicate, 0 open; "
     "0 found alone (0 accepted)",
     "                         1 run(s), nothing reported; 25% rejected, "
@@ -310,6 +346,8 @@ FULL_TEXT = [
     "  Found alone is an upper bound on what dropping the reviewer would lose: a duplicate no",
     "  candidate link joined is counted as found alone.",
     "  Rates are printed from 10 decided findings; below that the counts stand alone.",
+    "  A seat that ran its high-risk model gets a row per slot; a finding counts for the slot that",
+    "  first reported it, and a record without a slot is the usual one.",
     "",
     "Review effort, code and design together: 2 accepted over 2 of 4 recorded round(s); 12,345 billed,",
     "  $0.50 over 1 priced run(s); per accepted withheld under 10 accepted",

@@ -1,4 +1,4 @@
-<!-- translated-from: references/cli.md sha256:7efaf58d09938ac7671e9378536d4fa3b35d5486af33ef7a9e5a8f0b36cd30c7 -->
+<!-- translated-from: references/cli.md sha256:f7ea2950f93b7c1921b9bdacd0b1600e98961988aba9cac0fbe5a0859b1e693c -->
 
 > この文書は [references/cli.md](../../../references/cli.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -854,6 +854,10 @@ run とコストは run ログから読み、両者をラウンドごとに突�
 Reviewer scorecard, code review: 18 of 27 recorded round(s) had a report to read.
   claude-general         49 reported: 43 accepted, 1 rejected, 4 duplicate, 1 open; 37 found alone (33 accepted)
                          18 run(s), 2,794,838 billed, $42.07 over 18 priced run(s); 2% rejected, 64,996 billed / $0.98 per accepted
+    usual (sonnet)       30 reported: 27 accepted, 0 rejected, 2 duplicate, 1 open; 23 found alone (21 accepted)
+                         12 run(s), 1,394,838 billed, 116,236 per run, $12.07 over 12 priced run(s), $1.01 per run; 0% rejected, 51,660 billed / $0.45 per accepted
+    high-risk (opus)     19 reported: 16 accepted, 1 rejected, 2 duplicate, 0 open; 14 found alone (12 accepted)
+                         6 run(s), 1,400,000 billed, 233,333 per run, $30.00 over 6 priced run(s), $5.00 per run; 5% rejected, 87,500 billed / $1.88 per accepted
   codex-general          25 reported: 15 accepted, 2 rejected, 6 duplicate, 2 open; 16 found alone (11 accepted)
                          17 run(s), 1,166,386 billed, no cost reported; 9% rejected, 77,759 billed per accepted, $ -
   localllm-qwen          22 reported: 1 accepted, 19 rejected, 2 duplicate, 0 open; 20 found alone (1 accepted)
@@ -911,6 +915,18 @@ Review effort, code and design together: 128 accepted over 28 of 46 recorded rou
   ラウンドに見るもののなかったロールも同じように数え、`when` は `relevance` と示します。design
   ラウンドも、そのイベントが `optimization` ブロックを持つようになってからは数えます。条件付きレビュアー
   より前のイベントと、そのブロックより前の design のイベントは何も記録していません。
+- **`high_risk_model` を走らせた席には、モデルの枠ごとの行が付きます。** 席自身の 2 行の下に
+  `usual`、`high-risk` の順で、それぞれの run、コスト、run あたりのコスト、指摘、率を出し、閾値は
+  枠ごとに単独で当てはめます。通常のモデルしか走らせたことのない席は行を足しません。run の
+  枠はそのエントリが `model_slot` に記録したもので、それが無いエントリは、high-risk モデルより前の
+  run もすべて含めて `usual` です。枠はその時点で席に設定されていた枠であってモデルでは
+  ありません。ラベルはその枠が走らせたモデルを示し、複数あれば `usual (sonnet x6, opus x4)` の
+  ようになります。プリセットが変わる前後で通常の枠がそうなったようにです。指摘は、それを最初に
+  報告した run の枠に数え、統合された指摘は報告者ごとにその報告者の枠に数えます。その
+  ラウンドに run の無い報告者は `usual` と数えます。1 ラウンドの 2 つのイベントが席を別々の枠で
+  走らせた場合（`--only` の再実行に `--high-risk` を付けたとき）、各 run のコストはそれぞれの枠に、
+  指摘はレビューを終えた後のほうの run の枠に入ります。失敗やタイムアウトに終わった run は指摘を
+  返していないからです。列に収まらないラベルは、数字の上に 1 行で出します。
 
 これはレビューが何を買ったかを言うものであって、レビューが悪くなったかどうかを言うものではありません。
 1 採用あたりのコストが上がるのは、レビュー対象のコードが良くなったときの姿でもあり、レビュアーが欠陥を
@@ -920,11 +936,16 @@ Review effort, code and design together: 128 accepted over 28 of 46 recorded rou
 `design`、`total` を持ちます。各 stage は `rounds_recorded`、`rounds_read`、`rounds_unreviewed`、
 `rerun_rounds`（コストが入っているラウンドのうち `--surrounding` の対の数）、`workflows_read`、
 `findings`、`reviewers`（id ごと）、`panel` を持ちます。レビュアーは `runs`、`failed_runs`、
-`measured_runs`、`priced_runs`、`billed_tokens`、`cost_usd`、`reported`、`accepted`、`rejected`、
+`measured_runs`、`priced_runs`、`billed_tokens`、`cost_usd`、`billed_per_run`（計測された run
+あたり）、`cost_per_run`（価格の付いた run あたり）、`reported`、`accepted`、`rejected`、
 `duplicate`、`open`、`alone`、`alone_accepted`、`rejection_rate`、`billed_per_accepted`、
-`cost_per_accepted` を持ち、最後の 3 つは閾値未満で `null` です。数えたラウンドのどれかで条件付きと
+`cost_per_accepted` を持ち、run あたりの 2 つは割るものが無ければ `null`、最後の 3 つは閾値未満で
+`null` です。数えたラウンドのどれかで条件付きと
 記録されたレビュアーは、さらに `when`（`high-risk`、`paths`、`relevance` のいずれか。そう記録された最新のラウンドの値）と
-`left_out_rounds` を持ちます。`panel` と `total` は `alone` の 2 つを
+`left_out_rounds` を持ちます。どのレビュアーも `models` を持ち、枠（`usual`、`high-risk`）を
+キーとして、走ったか報告した枠だけを持ちます -- 一度も走らなかった席は `{}` です。各枠は
+`when` と `left_out_rounds` を除いたレビュアーと同じ数字に加え、`by_model`（run を走らせたモデルごとに
+数えたもの）を持ちます。`panel` と `total` は `alone` の 2 つと `models` を
 除いた同じ列で、2 人のレビュアーが報告した指摘は 1 回と数えます。`total` は 4 つのラウンド数の和も
 持ちます。
 
