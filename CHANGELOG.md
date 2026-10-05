@@ -10,6 +10,8 @@ The public surface covered by that promise is: the configuration schema, the
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-10-06
+
 ### Added
 
 - **`smoke_live.py --model <provider>=<model>` runs a provider's checks on
@@ -2480,7 +2482,8 @@ First release.
   none of which invoke a real CLI.
 - CI on Linux, macOS and Windows: lint, tests, skill validation.
 
-[Unreleased]: https://github.com/istb16/dev-orchestra/compare/v0.19.0...HEAD
+[Unreleased]: https://github.com/istb16/dev-orchestra/compare/v0.20.0...HEAD
+[0.20.0]: https://github.com/istb16/dev-orchestra/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/istb16/dev-orchestra/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/istb16/dev-orchestra/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/istb16/dev-orchestra/compare/v0.16.0...v0.17.0
