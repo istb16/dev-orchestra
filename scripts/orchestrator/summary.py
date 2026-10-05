@@ -19,6 +19,7 @@ ROLE_TITLES = (
 #: ``LoadedConfig.design_panel_source``.
 DESIGN_PANEL_SOURCES = {
     "code": "the code panel; when conditions ignored",
+    "fit": "the preset's fit",
     "global": "global file",
     "project": "project file",
 }

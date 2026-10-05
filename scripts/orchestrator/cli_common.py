@@ -200,8 +200,8 @@ def _agreed(first: Dict[str, Any], second: Dict[str, Any], whole: Tuple[str, ...
     return agreed
 
 
-def _prune_base(scope: str, start: Optional[str], layer: Dict[str, Any]) -> Dict[str, Any]:
-    """What ``config prune`` compares ``layer`` against.
+def _prune_base(scope: str, start: Optional[str], layer: Dict[str, Any]) -> Tuple[Dict[str, Any], List[str]]:
+    """What ``config prune`` compares ``layer`` against: ``(base, held)``.
 
     A value may go only when the built-in defaults and the preset's fit both
     say it: a governed key the file stops setting falls through to the fit,
@@ -210,6 +210,10 @@ def _prune_base(scope: str, start: Optional[str], layer: Dict[str, Any]) -> Dict
 
     A project file that sets the implementer deals the panel around it, so
     for the global layer the fit that project sees has to agree as well.
+
+    Nor may ``reviewers`` go while it is what keeps the design rounds off
+    the preset's design panel (``_reviewers_hold_design_panel``): it governs
+    that panel too. ``held`` names it when it would otherwise have gone.
     """
     roles = config_mod.KNOWN_ROLES
     base = _agreed(_layer_base(scope, start), _fitted_base(scope, layer), roles)
@@ -219,7 +223,23 @@ def _prune_base(scope: str, start: Optional[str], layer: Dict[str, Any]) -> Dict
         if config_mod.mentions(project, "implementer"):
             with_project = config_mod.deep_merge(layer, project)
             base = _agreed(base, _fitted_base(scope, with_project), roles)
-    return base
+    held: List[str] = []
+    if _reviewers_hold_design_panel(scope, layer) and base.pop("reviewers", None) == layer["reviewers"]:
+        held.append("reviewers")
+    return base, held
+
+
+def _reviewers_hold_design_panel(scope: str, layer: Dict[str, Any]) -> bool:
+    """Whether this layer's ``reviewers`` is all that keeps design rounds off the fit's design panel.
+
+    Without it the design panel would be the preset's
+    (``config.design_panel_follows_fit``), so writing or dropping it moves
+    the design rounds as well as the code rounds.
+    """
+    if layer.get("reviewers") is None:
+        return False
+    without = {key: value for key, value in layer.items() if key != "reviewers"}
+    return config_mod.design_panel_is_fit(_compose_preview(scope, without)[1].design_origins)
 
 
 #: Sentinel for "the layer holds nothing here at all", which ``get_path`` cannot
@@ -377,27 +397,45 @@ def _panel_write_problems(
 
 
 def _frozen_panel_note(
-    seeded: bool, path: str, base: Dict[str, Any], scope: str, start: Optional[str] = None
+    seeded: bool,
+    path: str,
+    base: Dict[str, Any],
+    scope: str,
+    start: Optional[str] = None,
+    layer: Optional[Dict[str, Any]] = None,
 ) -> Optional[str]:
     """What a writer says when seeding ``reviewers`` took the panel off the fit.
 
     Only when no file under the written one listed the reviewers before:
     copying a list another file already chose freezes nothing that was
     following a preset. A project file is not under the global one.
+
+    ``layer`` is the file as seeded. When the list is all that keeps the
+    design rounds off the preset's design panel, it moved them as well, and
+    the note says so.
     """
     if not seeded:
         return None
     loaded = config_mod.load(start, validate_result=False)
     layers = (loaded.global_layer, loaded.project_layer) if scope == "project" else (loaded.global_layer,)
-    if not loaded.preset or any(layer.get("reviewers") is not None for layer in layers):
+    if not loaded.preset or any(listed.get("reviewers") is not None for listed in layers):
         return None
+    message = "note: %s now lists the reviewers; the panel no longer follows preset %s's fit (recorded %s)"
+    note = message % (config_mod.shown_location(path), loaded.preset, _recorded(base.get("reviewers")))
+    if layer is not None and _reviewers_hold_design_panel(scope, layer):
+        moved = "; design rounds now run this list without when, not preset %s's design panel"
+        note += moved % loaded.preset
+    return note
+
+
+def _recorded(reviewers: Any) -> str:
+    """``claude-general opus, codex-general recommended-coding``: what a frozen note says was copied."""
     recorded = ", ".join(
         "%s %s" % (reviewer.get("id"), (reviewer.get("model") or {}).get("family", "default"))
-        for reviewer in base.get("reviewers") or []
+        for reviewer in reviewers or []
         if isinstance(reviewer, dict)
     )
-    message = "note: %s now lists the reviewers; the panel no longer follows preset %s's fit (recorded %s)"
-    return message % (config_mod.shown_location(path), loaded.preset, recorded or "none")
+    return recorded or "none"
 
 
 #: What a writer says of the seats it left out of a panel copied into a project file.
@@ -461,7 +499,7 @@ def _seed_panel(
         kept, dropped = _without_warned_seats(reviewers, scope, lambda _index: listed)
         base = dict(base, reviewers=kept)
     seeded = _seed_list(layer, "reviewers", base)
-    frozen = _frozen_panel_note(seeded, path, base, scope, start)
+    frozen = _frozen_panel_note(seeded, path, base, scope, start, layer)
     if not (seeded and dropped):
         return frozen, None
     left_out = _not_copied(path, dropped)

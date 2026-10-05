@@ -100,9 +100,10 @@ your global architect. **Lists replace wholesale**: a project file that defines
 `reviewers` defines the entire panel for that project. That is deliberate —
 "this repo reviews with security + database only" must be expressible.
 
-The preset layer reaches only the roles and the reviewer panel that no file
+The preset layer reaches only the roles and the reviewer panels that no file
 sets ([Presets](#presets)). With both Claude Code and Codex installed, or
-none of the fitted CLIs, the default preset is the built-in defaults exactly.
+none of the fitted CLIs, the default preset is the built-in defaults exactly,
+plus its design panel.
 
 ## Presets
 
@@ -135,14 +136,26 @@ without running the CLI):
 | `architect` | fable | fable | opus |
 | `implementer` | fable | opus | sonnet |
 | `review_fixer` | fable | opus | sonnet |
-| reviewer seats (role / Claude family) | general / fable, security / opus, architecture / opus, test / opus | general / opus, general / sonnet, security / sonnet, test / sonnet; security / opus, `when: high-risk` | general / opus; security / opus, `when: high-risk` |
-| `review.design.enabled` | `true` | not set (`auto`) | not set (`auto`) |
+| reviewer seats (role / Claude family) | general / fable [Claude], general [Codex], security / opus [Claude], security [Codex], architecture / opus [Claude], test / opus [Claude] | general / opus, general / sonnet, security / sonnet→opus [Claude], test / sonnet | general / opus; security / sonnet, `when: high-risk` |
+| design reviewer seats (`review.design.reviewers`) | general / sonnet→opus [Claude], general [Codex], security / opus [Claude], test / sonnet [Claude], architecture / opus [Claude] | general / sonnet→opus [Claude], security / sonnet [Claude], test / sonnet [Claude] | general / sonnet [Claude] |
+| `review.design.enabled` | `auto` | not set (`auto`) | `false` |
 | `optimization.level` | `quality` | not set (`balanced`) | `aggressive` |
 
-Those seven keys are the ones a preset governs. Everything else — budgets,
+`→opus` is `high_risk_model: {family: opus}`: the seat runs opus on a
+high-risk round and its own family on the rest. `[Claude]` and `[Codex]` mark
+a seat placed on that vendor rather than dealt (step 2 below).
+
+Those eight keys are the ones a preset governs. Everything else — budgets,
 timeouts, `review.max_review_iterations`, `design.require_approval` — is the
-built-in default unless a file sets it. `standard` is read from the built-in
-defaults, so the two cannot drift apart.
+built-in default unless a file sets it. `standard`'s code panel is read from
+the built-in defaults, so the two cannot drift apart; its design panel is the
+preset's own, since the defaults have none.
+
+No preset sets `relevance`, so every preset security seat runs on every round
+it is in, the design ones included: `quality`'s opus design security seat runs
+on each design round `auto` lets through. To have it sit out a plan with no
+security-relevant token, opt it in: `reviewer set claude-security --design
+--relevance security` (which copies the design panel into the file, below).
 
 **Fitting.** `claude`, `codex` and `agy` take part, and a user adapter only
 when it declares `preset_family` (see
@@ -164,49 +177,84 @@ a PATH lookup, with no CLI started:
 2. Reviewer seats are dealt round the same CLIs as the orchestrator's --
    `claude`, `codex`; else the eligible user adapters; else agy -- in turn,
    starting with the implementer's -- the provider a file puts it on, when a file sets it -- so
-   with two vendors every panel holds both. Only full seats are dealt and
-   counted here; cheap seats are step 4. A preset with one full
-   reviewer that always runs (`fast`) starts with the other vendor: one
-   always-running reviewer from the implementer's own vendor is not an
-   independent review. A seat keeps its `when` wherever it lands. Between
-   two eligible user adapters the round works the same way, so a project file
-   that sets `implementer` to the second one gives it the first seat under
-   `quality` and `standard`, and gives the one always-running seat of `fast`
-   to the first.
-3. A seat that would repeat an earlier one exactly (provider, family, role,
-   condition) is not added. Ids come from the provider and the role, so a
-   second Claude seat of the same role is `claude-general-2`.
-4. `standard`'s sonnet seats are cheap seats: they go to Claude alone, the one
-   CLI with a cheap model that can be named offline, and are not added where
-   Claude is not installed (`claude not found on PATH: reviewer seat 3
-   (security) was not added; codex has no cheap model named offline`). Codex
-   and user adapters therefore get no cheap seat. Every seat of `standard` but
-   a general one, and `test` in `quality`, is a held seat, never put on agy
-   (`...; agy cannot be held to reading`), so agy alone keeps `standard` at
-   `agy-general` and `quality` at three seats. A skipped seat moves no other
-   seat and changes no id. When the files leave no risk pattern in force
+   with two vendors every panel holds both. Each panel, code and design, is
+   fitted on its own the same way. Only full seats without a vendor are dealt
+   and counted here; vendor seats are placed, and cheap seats are step 4. A
+   panel with one dealt reviewer that always runs (`fast`'s code panel) starts
+   with the other vendor: one always-running reviewer from the implementer's
+   own vendor is not an independent review. A seat keeps its `when` wherever
+   it lands. Between two eligible user adapters the round works the same way,
+   so a project file that sets `implementer` to the second one gives it the
+   first seat under `standard`, and gives the one always-running seat of
+   `fast` to the first.
+
+   A vendor seat is placed instead of dealt, so the implementer moves none of
+   them. A Claude seat sits on Claude whenever Claude is installed, and is
+   dealt with the untagged seats where it is not. A Codex seat sits on Codex,
+   else on the first other CLI of the seat pool (an eligible user adapter, or
+   agy), else it is not added: `codex not found on PATH: reviewer seat 2
+   (general) was not added; it is a second vendor's opinion and nothing
+   installed stands in for one`. A seat with a `high_risk_model` keeps it on
+   Claude only, the one CLI whose second model can be named offline; one dealt
+   elsewhere drops it, and its note ends `; no high-risk model on codex`.
+   `standard`'s security seat carries one, so it is a Claude seat.
+3. A seat that would repeat an earlier one exactly (provider, family,
+   high-risk family, role, condition) is not added. Ids come from the provider
+   and the role, so a second Claude seat of the same role is
+   `claude-general-2`.
+4. A cheap seat -- a Claude sonnet seat with no `high_risk_model`, the `test`
+   seats here -- goes to Claude alone, the one CLI with a cheap model that can
+   be named offline, and is not added where Claude is not installed (`claude
+   not found on PATH: reviewer seat 4 (test) was not added; codex has no cheap
+   model named offline`). Codex and user adapters therefore get no cheap seat.
+   `standard`'s security seat is a full seat, so Codex alone keeps one; there
+   it runs every round. Every seat of `standard` but a general one, `test` in
+   `quality`'s code panel, and every design seat but a general one, is a held
+   seat, never put on agy (`...; agy cannot be held to reading`), so agy alone
+   keeps `standard` at `agy-general`, `quality`'s code panel at three seats and
+   every design panel at `agy-general`. A skipped seat moves no other seat and
+   changes no id. Design seat notes say `design reviewer seat`, and on agy end
+   `-- list review.design.reviewers in the global file to keep them off agy`.
+   When the files leave no risk pattern in force
    (`optimization.high_risk_paths: []` and no `extra_high_risk_paths`), a
    fitted `when: high-risk` seat stays and runs only on rounds declared with
    `review run --high-risk`; a `when: high-risk` reviewer a file writes, in
    `reviewers` or `reviewers_extra`, is still refused, and the wizard does not
-   offer the built-in one.
+   offer one a file holds. Only `fast` fits a `when: high-risk` seat.
 5. With none of Claude, Codex, an opted-in user adapter or agy installed,
    every role and the panel expand as written; `doctor` reports the missing
    CLIs. With agy alone every role and seat goes to agy, each with a note
    (`claude, codex not found on PATH: implementer went to agy (default)`).
 
+The code panel:
+
 | Preset | Claude + Codex | Claude only | Codex only | agy only |
 | --- | --- | --- | --- | --- |
-| `quality` | claude-general fable, codex-security, claude-architecture opus, codex-test | claude-general fable, claude-security opus, claude-architecture opus, claude-test opus | codex-general, codex-security, codex-architecture, codex-test | agy-general, agy-security, agy-architecture |
-| `standard` | claude-general opus, codex-general, claude-security sonnet, claude-test sonnet; claude-security-2 opus (high-risk) (the built-in defaults) | claude-general opus, claude-general-2 sonnet, claude-security sonnet, claude-test sonnet; claude-security-2 opus (high-risk) | codex-general; codex-security (high-risk) | agy-general |
-| `fast` | codex-general; claude-security opus (high-risk) | claude-general opus; claude-security opus (high-risk) | codex-general; codex-security (high-risk) | agy-general; agy-security (high-risk) |
+| `quality` | claude-general fable, codex-general, claude-security opus, codex-security, claude-architecture opus, claude-test opus | claude-general fable, claude-security opus, claude-architecture opus, claude-test opus | codex-general, codex-security, codex-architecture, codex-test | agy-general, agy-security, agy-architecture |
+| `standard` | claude-general opus, codex-general, claude-security sonnet→opus, claude-test sonnet (the built-in defaults) | claude-general opus, claude-general-2 sonnet, claude-security sonnet→opus, claude-test sonnet | codex-general, codex-security | agy-general |
+| `fast` | codex-general; claude-security sonnet (high-risk) | claude-general opus; claude-security sonnet (high-risk) | codex-general; codex-security (high-risk) | agy-general; agy-security (high-risk) |
+
+The design panel:
+
+| Preset | Claude + Codex | Claude only | Codex only | agy only |
+| --- | --- | --- | --- | --- |
+| `quality` | claude-general sonnet→opus, codex-general, claude-security opus, claude-test sonnet, claude-architecture opus | as Claude + Codex without codex-general | codex-general, codex-security, codex-architecture | agy-general |
+| `standard` | claude-general sonnet→opus, claude-security sonnet, claude-test sonnet | the same | codex-general, codex-security | agy-general |
+| `fast` (`enabled: false`) | claude-general sonnet | the same | codex-general | agy-general |
+
+With Claude and Codex, a project file that puts the implementer on Codex
+deals `standard`'s code panel as codex-general, claude-general sonnet,
+claude-security sonnet→opus, claude-test sonnet; the vendor seats of
+`quality` and the design panels stay where they are.
 
 agy beside Claude or Codex changes nothing: with Claude, Codex and agy
 installed every preset is what it is with Claude and Codex, the built-in
 defaults included; Claude + agy is Claude only, and Codex + agy is Codex only.
 On a machine with agy alone, keep it off the read-only seats by setting the
 orchestrator and the architect, or listing `reviewers`, in the global file: a
-role a file sets, and a panel a file lists, are not fitted (below).
+role a file sets, and a panel a file lists, are not fitted (below). A listed
+`reviewers` takes the fitted design panel with it; `review.design.reviewers`
+alone keeps only the design rounds off agy.
 
 The fit is worked out again on every load: install Codex later and the next
 command's panel has it. Reviewer ids can therefore differ between teammates'
@@ -228,13 +276,18 @@ role out of the fit and so changes its provider says so.
 
 The panel follows the same rule: a `reviewers` list in any file replaces the
 fitted panel whole, and a reviewer you listed whose CLI is absent still fails
-in every round, because you listed it.
+in every round, because you listed it. A file that lists `reviewers` also
+takes the fitted design panel out, and its fit notes with it: its design
+rounds run that list without `when`, as they did before presets had a design
+panel. A `review.design.reviewers` list in any file replaces the fitted design
+panel whole; `review.design.reviewers_extra` alone joins it
+([A design panel of its own](#a-design-panel-of-its-own-reviewdesignreviewers)).
 
 **`reviewer add` adds beside the panel; the other writers record it.** In a
 file that lists no `reviewers`, `reviewer add` writes the new reviewer to that
 file's `reviewers_extra` and copies nothing, so the panel keeps following the
 fit -- or, in a project, the global file's list -- and the command says so:
-`Added reviewer claude-security-3 (claude / opus / security) to <path> as an
+`Added reviewer claude-security-2 (claude / opus / security) to <path> as an
 extra; the panel still follows preset standard's fit`. In a file that lists
 `reviewers` it appends there, as before ([below](#adding-reviewers-beside-the-panel-reviewers_extra)).
 `reviewer remove` and `reviewer set` find their reviewer in the panel in force
@@ -246,8 +299,15 @@ always started from the inherited list. From then on the file's list is the
 panel, on this machine and any other that reads the file, and the command says
 so once: `note: <path> now lists the reviewers; the panel no longer follows
 preset standard's fit (recorded claude-general opus, claude-general-2 sonnet,
-claude-security sonnet, claude-test sonnet, claude-security-2 opus)`.
-Roles, the design review and the optimization level keep following the preset.
+claude-security sonnet, claude-test sonnet)`.
+Roles, the design review and the optimization level keep following the preset;
+the fitted design panel does not, since the file now lists `reviewers`. When no
+file lists `review.design.reviewers` either, the design rounds move with it, and
+the note ends `; design rounds now run this list without when, not preset
+standard's design panel`. For the same reason `config prune` keeps a
+`reviewers` list equal to the fit when it is all that keeps the design rounds
+off the preset's design panel, and says `Kept reviewers in <file>: dropping it
+would move design reviews to the preset's design panel.`
 In project scope, when the global file lists no reviewers -- so what is copied
 is the fit and the global extras -- a seat on agy is left out of the copy,
 since the project file may not hold it, and the note ends `; not copied into
@@ -337,8 +397,8 @@ place, a renamed one found by the id it runs under, and copy nothing. Given a
 renamed extra's old id, `reviewer remove` and `reviewer set` refuse (exit 2,
 nothing written), since that id now selects another seat, and the message
 names the id the extra runs under: `reviewer claude-security:
-reviewers_extra[0] in the project file runs as claude-security-3, since
-claude-security is taken; use claude-security-3 (select the other seat by its
+reviewers_extra[0] in the project file runs as claude-security-2, since
+claude-security is taken; use claude-security-2 (select the other seat by its
 position in reviewer list)`.
 
 **Where each one came from.** A project extra meets every refusal a project
@@ -356,7 +416,20 @@ one in panel order, so an extra is chosen only when the panel it joins has no
 **A list that holds the inherited panel plus more** -- what `reviewer add` left
 before this key existed -- gets a note in `doctor`: `reviewers in <file>: holds
 the inherited panel plus <ids>; move <ids> to reviewers_extra and remove
-reviewers to keep following it`. Files are never rewritten.
+reviewers to keep following it`. A design list that holds the inherited design
+panel plus more, in a file that lists no `reviewers`, gets the same note for
+`review.design.reviewers` (`holds the inherited design panel plus <ids>; move
+<ids> to review.design.reviewers_extra ...`). The inherited design panel is the
+one below the file, or -- in a project file under a global `reviewers` list --
+that list without `when`. Files are never rewritten.
+
+**Code extras and the preset's design panel.** While the design rounds run
+the preset's design panel, `reviewers_extra` -- from `reviewer add` or
+`suggest-roles --write` -- reviews code only; before, design rounds ran a copy
+of the code panel and the extras came with it. `doctor` notes each one:
+`reviewers_extra in <file>: <ids> review code only; design rounds run preset
+standard's design panel (add them to review.design.reviewers_extra as well to
+review designs too)`.
 
 **A file that lists `reviewers` keeps exactly those seats.** When a preset
 gains seats, a listed panel -- a copy a writer once seeded from an older fit
@@ -367,10 +440,12 @@ extras, and its `config validate` does not report the key.
 
 ### A design panel of its own (`review.design.reviewers`)
 
-The design review runs the code panel, with every `when` ignored, until a file
-gives it a panel of its own. `review.design.reviewers` replaces the code panel
-for design rounds only, and `review.design.reviewers_extra` adds to whichever
-design panel is inherited, as `reviewers_extra` does for the code panel:
+The design review runs the preset's fitted design panel ([Presets](#presets))
+until a file gives it one of its own; a file that lists the code panel
+(`reviewers`) runs that panel instead, with every `when` ignored.
+`review.design.reviewers` replaces the inherited design panel for design
+rounds only, and `review.design.reviewers_extra` adds to whichever design
+panel is inherited, as `reviewers_extra` does for the code panel:
 
 ```yaml
 review:
@@ -397,10 +472,11 @@ review:
 
 | The design panel is | When |
 | --- | --- |
-| none: design rounds run the code panel, `when` ignored | no file sets `review.design.reviewers` or `review.design.reviewers_extra` |
+| none: design rounds run the code panel, `when` ignored | no file sets `review.design.reviewers` or `review.design.reviewers_extra`, and a file lists `reviewers` or the global file names an unknown preset |
 | the project file's design list, then the project file's design extras | the project file lists `review.design.reviewers` |
 | the global file's design list, then the global design extras, then the project design extras | otherwise, when the global file lists one |
-| the code panel in force with every `when` removed, then the global design extras, then the project design extras | otherwise (a file sets design extras only) |
+| the preset's fitted design panel, then the global design extras, then the project design extras | otherwise, when no file lists `reviewers` |
+| the code panel in force with every `when` removed, then the global design extras, then the project design extras | otherwise (a file lists `reviewers` and a file sets design extras only) |
 
 The same id may name a seat in both panels (`claude-general`): rounds, reports
 and usage labels are kept apart by stage, so its history stays continuous.
@@ -420,22 +496,30 @@ code seat's rule.
 **Editing it.** `reviewer list|add|remove|set --design` act on the design
 panel. `reviewer add --design` writes to the file's `review.design.reviewers`
 when the file lists one, and otherwise to `review.design.reviewers_extra`,
-saying what the design panel still follows (`the code panel` or `the global
-file's design reviewers`). `reviewer set|remove --design` on an inherited seat
-copy the design panel in force into the file first; copied from the code
-panel, the seats lose their `when`, and the note says so. In project scope
+saying what the design panel still follows (`preset standard's fit`, `the
+code panel` or `the global file's design reviewers`). `reviewer set|remove
+--design` on an inherited seat copy the design panel in force into the file
+first; copied from the code panel, the seats lose their `when`, and the note
+says so. Copied from the fit, the note says `copied from preset standard's
+fit` and adds `; the design panel no longer follows preset standard's fit
+(recorded claude-general sonnet, claude-security sonnet, claude-test sonnet)`,
+in either file. In project scope
 the copy follows the code panel's rule: a seat on agy is left out, with the
 same `not copied into` note, unless the global file lists the panel it came
 from -- its design list for a design seat, its `reviewers` for a seat of the
 code panel -- in which case it is copied whole. `--when-paths` with
 `--design` exits 2. `reviewer list --design` names the source on its first
-line: `(design panel: the code panel; when conditions ignored)`,
-`(design panel: global file)` or `(design panel: project file)`.
+line: `(design panel: the preset's fit)`, `(design panel: the code panel;
+when conditions ignored)`, `(design panel: global file)` or `(design panel:
+project file)`; `review status --design` names it the same way.
 
 **Where it shows.** `config show` has a `Design reviews` block, and its JSON
-adds `design_reviewer_origins` when there is a design panel; `doctor` reports
-`design_reviewers` and `design_panel_source`, and diagnoses each design seat a
-file wrote as it does a code seat. `review status --design` lists the design
+adds `design_reviewer_origins` when there is a design panel (`fit design` for
+a fitted seat); `doctor` reports `design_reviewers` and `design_panel_source`
+(`fit`, `global`, `project` or `code`), prints `Design: 3 (the preset's fit)`
+unless the design panel is only a copy of the code panel, and diagnoses each design seat
+the fit or a file wrote as it does a code seat. On agy alone `agy-general` is
+therefore warned twice, once per panel. `review status --design` lists the design
 panel and the seats the next round would leave out. `review run --design
 --only <id>` selects from the design panel; `run <reviewer id>` always runs
 the code panel's seat.
@@ -456,7 +540,7 @@ CLI's instead.
 
 An older dev-orchestra ignores `review.design.reviewers`, `reviewers_extra`
 under it, `high_risk_model` and `relevance`: design rounds run the code panel
-and every seat its usual model.
+and every seat its usual model. It also has no fitted design panel.
 
 ## Schema (version 1)
 
@@ -487,7 +571,7 @@ review_fixer:                 # fixes accepted findings
     family: opus
     version: latest
 
-reviewers:                    # 0..n independent reviewers; two or more recommended
+reviewers:                    # 0..n independent reviewers; two or more recommended; listed, design rounds run it too
   - id: claude-general
     provider: claude
     model:
@@ -505,6 +589,9 @@ reviewers:                    # 0..n independent reviewers; two or more recommen
     model:
       family: sonnet
       version: latest
+    high_risk_model:           # the full model on a high-risk change
+      family: opus
+      version: latest
     role: security
   - id: claude-test
     provider: claude
@@ -512,13 +599,6 @@ reviewers:                    # 0..n independent reviewers; two or more recommen
       family: sonnet
       version: latest
     role: test
-  - id: claude-security-2      # the full model, on high-risk changes only
-    provider: claude
-    model:
-      family: opus
-      version: latest
-    role: security
-    when: high-risk
 
 review:
   max_review_iterations: 2            # hard stop on review→fix→re-review loops
@@ -528,7 +608,7 @@ review:
   design:
     enabled: auto                     # review .ai/plan.md before implementing (true, false or auto)
     max_iterations: 2                 # design review -> revise -> re-review
-    # reviewers: [...]                # a design panel of its own; unset, design rounds run the code panel
+    # reviewers: [...]                # a design panel of its own; unset, the preset's fitted one
 
 optimization:
   skip_unneeded_roles: true           # a test/architecture seat sits out a round with nothing for it
@@ -558,8 +638,8 @@ workspace:
 | `reviewers[].high_risk_model` | mapping | The model block the seat runs instead of `model` on a high-risk round (a high-risk hit or `--high-risk`), in either panel: `family` and `version`, or `version: pinned` with an `id`. No `provider` or `options`: those stay the seat's. See [A design panel of its own](#a-design-panel-of-its-own-reviewdesignreviewers). |
 | `reviewers[].relevance` | `security` \| `test` \| `architecture` \| `always` | The role rule that may leave the seat out of a round with nothing for it. Unset, a `test` or `architecture` seat is judged by its own role's rule and any other role -- `security` included, since its rule reads path names alone -- is never judged; `security` opts a security seat in. `always` keeps the seat out of the judgement. A rule on a `general` seat is refused: `general` is never left out. See `references/reviews.md` ("Roles a round does not need"). |
 | `reviewers_extra` | list \| null | Reviewers added beside the panel the file inherits, with the schema of `reviewers` entries; in either file. Renamed when an id is taken, never dropped. See [Adding reviewers beside the panel](#adding-reviewers-beside-the-panel-reviewers_extra). |
-| `review.design.reviewers` | list \| null | The design review's own panel, with the schema of `reviewers` entries (no `when: paths`). Unset in every file, design rounds run the code panel with `when` ignored. See [A design panel of its own](#a-design-panel-of-its-own-reviewdesignreviewers). |
-| `review.design.reviewers_extra` | list \| null | Design reviewers added beside the design panel the file inherits -- the code panel without `when`, when no file lists a design panel. |
+| `review.design.reviewers` | list \| null | The design review's own panel, with the schema of `reviewers` entries (no `when: paths`). Unset in every file, design rounds run the preset's fitted design panel, or the code panel with `when` ignored when a file lists `reviewers`. A preset governs it: `config setup --preset` replaces it. See [A design panel of its own](#a-design-panel-of-its-own-reviewdesignreviewers). |
+| `review.design.reviewers_extra` | list \| null | Design reviewers added beside the design panel the file inherits -- the fitted one, or the code panel without `when` when a file lists `reviewers`, when no file lists a design panel. |
 | `review.max_review_iterations` | int ≥ 0 | Rounds per review, not per project: the count restarts on a new branch, a new `--base`, or `budget reset`. `0` disables re-review entirely. |
 | `review.parallel` | bool | `false` runs reviewers one at a time (easier to debug). |
 | `review.re_review_severities` | list | Severities that count as blocking. |
@@ -571,7 +651,7 @@ workspace:
 | `review.context.inline_chars` | int ≥ 1 \| null | How much of the change body goes into the reviewer's prompt (default 400,000, the same number as `max_chars`). At or under it the body is inlined and the round can be clean; over it the reviewer is handed the path of the frozen snapshot and the round is recorded `partial` — coverage unverified — whatever comes back. **Setting it below `max_chars` opens a band between the two where rounds run and are recorded `partial`**: that is the explicit choice of somebody who will not pay for very large prompts, and `partial` is what it costs. Setting it *above* `max_chars` is also allowed and is not a mistake — it means the body is only ever handed over as a file on a round a human forced. `null` means the default. Every round records the number it was measured against, so a `partial` round says which limit made it one. See `references/limits.md`. |
 | `review.context.surrounding` | `none` \| `enclosing` | `enclosing` also hands every code reviewer the Python function, method or class enclosing each hunk, extracted from the snapshot's git tree when the snapshot is taken (default `none`: the diff alone). Off, because measured on one snapshot it did not make a review cheaper — `optimization report` compares rounds with and without it. `false` and `null` mean `none` (`off` reads as `false`); `true` is refused. See `references/reviews.md`. |
 | `review.context.surrounding_chars` | int ≥ 1 \| null | The most surrounding context a round may add (default 15,000: measured on one snapshot, it left the cost per run where it was, while 60,000 added what it carried). Capped further by what the diff leaves under `max_chars` and `inline_chars`, so context never refuses a round or sends a diff over as a file. What does not fit is left out by name, in the prompt and in every report. `null` means the default. See `references/limits.md`. |
-| `review.design.enabled` | bool \| `auto` \| null | Whether `.ai/plan.md` goes in front of the design panel (the code panel unless a file sets `review.design.reviewers`) before implementation; the stage costs a reviewer run per panel member per round. `true` always, `false` never. `auto` (default) decides from the plan, and `status` prints the answer and its reason: every backticked token anywhere in the plan, and every path-shaped word under the plan's `Files to Modify` heading whether backticked or not (a fenced block there included), is checked against the high-risk patterns (`optimization.high_risk_paths` plus `extra_high_risk_paths`) ignoring case, and a hit means run — a name with a `/` and no extension, such as `db/migrate`, is also checked as a directory; the size counts the filename-shaped tokens (a `/` or a file extension) under `Files to Modify` outside fenced blocks, `docs/`, `references/`, `tests/` and `.md`, `.rst` and `.txt` files, without looking at the disk, and 6 or more means run; a glob, a directory, a name with a `/` and no extension, or a path through `..` there means run (code such as `payload["mode"]` is not read as a glob); an unreadable plan, no `Files to Modify` section or one that names no file means run; before a plan is written the answer is `auto -> run (once a plan is written)`; and once a design round has run for the workflow the answer stays run, so a revision cannot switch the loop off half way. `null` means the default, `auto`. |
+| `review.design.enabled` | bool \| `auto` \| null | Whether `.ai/plan.md` goes in front of the design panel (see `review.design.reviewers`) before implementation; the stage costs a reviewer run per panel member per round. `true` always, `false` never. `auto` (default) decides from the plan, and `status` prints the answer and its reason: every backticked token anywhere in the plan, and every path-shaped word under the plan's `Files to Modify` heading whether backticked or not (a fenced block there included), is checked against the high-risk patterns (`optimization.high_risk_paths` plus `extra_high_risk_paths`) ignoring case, and a hit means run — a name with a `/` and no extension, such as `db/migrate`, is also checked as a directory; the size counts the filename-shaped tokens (a `/` or a file extension) under `Files to Modify` outside fenced blocks, `docs/`, `references/`, `tests/` and `.md`, `.rst` and `.txt` files, without looking at the disk, and 6 or more means run; a glob, a directory, a name with a `/` and no extension, or a path through `..` there means run (code such as `payload["mode"]` is not read as a glob); an unreadable plan, no `Files to Modify` section or one that names no file means run; before a plan is written the answer is `auto -> run (once a plan is written)`; and once a design round has run for the workflow the answer stays run, so a revision cannot switch the loop off half way. `null` means the default, `auto`. |
 | `review.design.max_iterations` | int ≥ 0 | Design review rounds (review → triage → revise), counted apart from `max_review_iterations` (default 2). The round that reaches the limit still gets its revision; the limit refuses only the re-review after it. `1`: one round, one revision, then ask. `0`: no design review. `budgets.architect` (default 3) covers the design plus one revision per round at the default; raise it with `max_iterations`, and by one more if changes asked for at approval are expected. |
 | `design.require_approval` | bool | `true` (default) makes `run implementer` refuse (exit 5) while `.ai/plan.md` exists and the plan as it is now has not been approved with `design approve` -- after the user said yes. `false` is for runs nobody is watching (CI, batch), and restores the behaviour from before the gate existed. Top-level rather than under `review.design`: approval matters whether or not the panel reviewed the plan. `--force` does not bypass it; only this setting does. |
 | `design.resume.max_age_seconds` | int ≥ 0 \| null | How old the last architect run may be for `run architect --resume` to continue its session (default 3600, how long the CLI kept its prompt cache when this was measured). Older, the revision runs fresh with the full prompt. `0` always runs fresh; `null` means the default. |
@@ -1158,7 +1238,9 @@ was current the day you ran setup. `config setup --defaults` therefore writes
 `version: 1` and nothing else: choosing the recommended configuration is
 choosing to override nothing, and such a file runs under preset `standard`.
 `config setup --preset <name>` writes `version` and `preset`, and keeps what
-the file already held beside the keys a preset governs. Of a role it removes
+the file already held beside the keys a preset governs; a
+`review.design.reviewers` list goes, and `review.design.reviewers_extra`
+stays. Of a role it removes
 only `provider` and `model`: a role that still holds `options` or `model_tiers`
 stays set, is therefore not fitted, and the printed notes say so.
 `config show --scope global|project` prints the
@@ -1218,9 +1300,9 @@ Detected CLIs:
   codex:   installed
 
 Preset (fitted to the CLIs found above):
-  1) quality  -- strongest models, four reviewers, design review always on
-  2) standard -- the built-in defaults: general reviewers, security and test on Claude sonnet, security on high-risk changes (recommended)
-  3) fast     -- lighter models, one reviewer plus a security one on high-risk changes
+  1) quality  -- strongest models, Codex beside Claude on both panels, design review auto
+  2) standard -- the built-in defaults: general on Claude and Codex, security on sonnet (opus on high-risk changes), test on sonnet (recommended)
+  3) fast     -- lighter models, one reviewer plus a sonnet security one on high-risk changes; design review off
   4) customise each role
 Choice [2]: 4
 
@@ -1235,12 +1317,11 @@ Choice [2]: 4
      4) custom (type a family or exact model id)
 ...
 5. External Reviewers
-   How many reviewers? [5]
+   How many reviewers? [4]
    reviewer #1  CLI / Model / Review role / id
    reviewer #2  CLI / Model / Review role / id
    reviewer #3  CLI / Model / Review role / id
    reviewer #4  CLI / Model / Review role / id
-   reviewer #5  CLI / Model / Review role / id
    Add another reviewer? [y/N]
 
 Configuration
@@ -1251,9 +1332,8 @@ Configuration
   Reviews
     1. claude / opus / latest / general / claude-general
     2. codex / recommended-coding / latest / general / codex-general
-    3. claude / sonnet / latest / security / claude-security
+    3. claude / sonnet / latest / security / claude-security (opus when high-risk)
     4. claude / sonnet / latest / test / claude-test
-    5. claude / opus / latest / security / claude-security-2 (when: high-risk)
     design review: auto  (review.design.enabled)
     optimization level: balanced  (optimization.level)
     skip unneeded roles: on  (optimization.skip_unneeded_roles)
@@ -1264,13 +1344,29 @@ Configuration
 Save configuration? [Y/n]
 ```
 
+The design panel there is the code panel's copy because the answers are saved
+as `reviewers`; a preset saved as is shows its fitted design panel instead.
+
 For the global file the first question is the preset. Choosing one shows the
-configuration it resolves to on this machine, with any notes on what was
-refitted, and asks `Save as is?`: yes saves `version` and `preset` beside what
-the file held apart from the keys a preset governs. No goes through the role and
+configuration it resolves to on this machine, with its fitted design panel and
+any notes on what was refitted, and asks `Save as is?`: yes saves `version`
+and `preset` beside what the file held apart from the keys a preset governs,
+`review.design.reviewers` included. No goes through the role and
 reviewer questions starting from the preset's fit, and saves only what you
 changed from it: a role you changed is saved whole, a panel you changed is
 saved as a list, and everything you left as offered keeps following the preset.
+A code panel saved as a list takes the design rounds off the preset's design
+panel as well, and the wizard says so (`note: the reviewers differ from preset
+standard's fit, so they are saved; design rounds then run them without when,
+not the preset's design panel`).
+A reviewer question keeps the seat's `high_risk_model` while you keep its CLI;
+picking another CLI drops it with a line (`note: provider is now codex; its
+high_risk_model was removed (reviewer set --high-risk-model sets another)`), as
+`reviewer set --provider` does. It keeps the seat's `relevance` while you keep
+its role (`always` whatever the role); picking another role drops it with a
+line (`note: role is now general; its relevance security was removed (reviewer
+set --relevance sets another)`), since a rule is about one role's work and a
+general seat takes none.
 The file's other settings are kept as they were, a value equal to a default
 included.
 `customise each role` is the wizard as it was before presets: every answer is

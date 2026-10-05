@@ -333,6 +333,7 @@ def collect(start: Optional[str] = None, probe_models: bool = True) -> Dict[str,
     seats = [*loaded.reviewers(), *loaded.design_reviewers()]
     _role_patterns_problems(report, loaded.optimization_settings(), seats)
     _frozen_panel_notes(report, loaded, installed)
+    _code_extras_note(report, loaded)
     return report
 
 
@@ -423,11 +424,15 @@ def _seat(reviewer: Dict[str, Any]) -> Tuple[Any, ...]:
 def _frozen_panel_notes(
     report: Dict[str, Any], loaded: config_mod.LoadedConfig, installed: List[str]
 ) -> None:
-    """A ``reviewers`` list that is the panel its file would inherit, plus more.
+    """A panel list that is the panel its file would inherit, plus more.
 
     The shape an older ``reviewer add`` left: the inherited panel copied in,
-    then the addition. Moving the additions to ``reviewers_extra`` keeps them
+    then the addition. Moving the additions to the panel's extras keeps them
     and lets the panel follow the fit again. A note, and never a rewrite.
+    The design panel the same way, for a file that lists no code panel: one
+    that does inherits a copy of its own list, not the fit's design panel.
+    What it inherits is the design panel below it, else -- the global file
+    lists ``reviewers`` -- the code panel below it, without ``when``.
     """
     if not loaded.preset:
         return
@@ -436,30 +441,73 @@ def _frozen_panel_notes(
         (loaded.project_path, loaded.project_layer, loaded.global_layer),
     )
     for path, layer, below in files:
-        listed = layer.get("reviewers")
-        if not path or not isinstance(listed, list):
+        if not path:
             continue
         # Dealt around the implementer the file sets, as its writers deal it.
-        inherited = config_mod.compose(below, {}, installed, layer)[0].get("reviewers")
-        if not isinstance(inherited, list):
-            continue
-        rest = [reviewer for reviewer in listed if isinstance(reviewer, dict)]
-        matched = True
-        for seat in inherited:
-            if not isinstance(seat, dict):
+        composed = config_mod.compose(below, {}, installed, layer)[0]
+        notes = [(config_mod.CODE_PANEL, "panel")]
+        if layer.get("reviewers") is None:
+            notes.append((config_mod.DESIGN_PANEL, "design panel"))
+        for keys, noun in notes:
+            inherited = config_mod.get_path(composed, keys.reviewers)
+            code = composed.get("reviewers")
+            if inherited is None and keys == config_mod.DESIGN_PANEL and isinstance(code, list):
+                # No design panel below this file: its design rounds would
+                # run the code panel in force, without ``when``.
+                inherited = [config_mod.without_when(seat) for seat in code]
+            rest = _beyond_inherited(config_mod.get_path(layer, keys.reviewers), inherited)
+            if not rest:
                 continue
-            match = next((reviewer for reviewer in rest if _seat(reviewer) == _seat(seat)), None)
-            if match is None:
-                matched = False
-                break
-            rest.remove(match)
-        if not matched or not rest:
+            ids = ", ".join(str(reviewer.get("id")) for reviewer in rest)
+            report["notes"].append(
+                "%s in %s: holds the inherited %s plus %s; move %s to %s and remove %s to keep following it"
+                % (keys.reviewers, path, noun, ids, ids, keys.extras, keys.reviewers)
+            )
+
+
+def _code_extras_note(report: Dict[str, Any], loaded: config_mod.LoadedConfig) -> None:
+    """Code extras that do not review designs, because the fit's design panel does.
+
+    A design round with no design panel runs the code panel, extras
+    included; one on the preset's design panel runs that panel alone. A
+    note, since an extra meant for code review alone is a fine choice.
+    """
+    if loaded.design_panel_source != "fit":
+        return
+    designing = {reviewer.get("id") for reviewer in loaded.design_reviewers() if isinstance(reviewer, dict)}
+    files = ((loaded.global_path, loaded.global_layer), (loaded.project_path, loaded.project_layer))
+    for path, layer in files:
+        extras = layer.get(config_mod.CODE_PANEL.extras)
+        if not path or not isinstance(extras, list):
             continue
-        ids = ", ".join(str(reviewer.get("id")) for reviewer in rest)
-        report["notes"].append(
-            "reviewers in %s: holds the inherited panel plus %s; move %s to reviewers_extra and "
-            "remove reviewers to keep following it" % (path, ids, ids)
+        ids = [
+            str(extra.get("id"))
+            for extra in extras
+            if isinstance(extra, dict) and extra.get("id") not in designing
+        ]
+        if not ids:
+            continue
+        message = (
+            "%s in %s: %s review code only; design rounds run preset %s's design panel "
+            "(add them to %s as well to review designs too)"
         )
+        keys = config_mod.CODE_PANEL.extras, config_mod.DESIGN_PANEL.extras
+        report["notes"].append(message % (keys[0], path, ", ".join(ids), loaded.preset, keys[1]))
+
+
+def _beyond_inherited(listed: Any, inherited: Any) -> List[Dict[str, Any]]:
+    """The seats ``listed`` holds beyond every seat of ``inherited``; empty unless it holds them all."""
+    if not isinstance(listed, list) or not isinstance(inherited, list):
+        return []
+    rest = [reviewer for reviewer in listed if isinstance(reviewer, dict)]
+    for seat in inherited:
+        if not isinstance(seat, dict):
+            continue
+        match = next((reviewer for reviewer in rest if _seat(reviewer) == _seat(seat)), None)
+        if match is None:
+            return []
+        rest.remove(match)
+    return rest
 
 
 def _antigravity_live(

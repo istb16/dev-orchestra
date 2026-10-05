@@ -899,8 +899,10 @@ is fitted only where the built-in CLIs are missing:
   subprocess -- one that reads `--help`, say -- never qualifies, whatever it
   would say, because fitting must not start a CLI. Otherwise those seats go to
   agy when it is installed, or expand as written. Every seat it takes gets its
-  declared family: it gets no cheap seat, such as `standard`'s sonnet security
-  and test reviewers, which go to Claude alone.
+  declared family, and no `high_risk_model`: it gets no cheap seat, such as
+  the sonnet `test` reviewers, which go to Claude alone, and it stands in for
+  a Codex seat, such as `quality`'s second general reviewer, which is not
+  added where nothing but Claude is installed.
 
 ```python
 class MyCliProvider(Provider):

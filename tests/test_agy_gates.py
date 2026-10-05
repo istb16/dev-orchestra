@@ -52,6 +52,9 @@ def agy_fixture(name):
 #: What a fit note on a read-only seat that went to agy ends with.
 ROLE_OPT_OUT = "; agy cannot be held to reading -- set %s in the global file to keep it off agy"
 SEAT_OPT_OUT = "; agy cannot be held to reading -- list reviewers in the global file to keep them off agy"
+DESIGN_SEAT_OPT_OUT = (
+    "; agy cannot be held to reading -- list review.design.reviewers in the global file to keep them off agy"
+)
 
 
 def run_cli(*argv):
@@ -896,14 +899,18 @@ class TestPresetsWithAgy(unittest.TestCase):
                     if role in config_mod.READ_ONLY_ROLES:
                         note += ROLE_OPT_OUT % role
                     self.assertIn(note, fit.notes)
-                seats = [note for note in fit.notes if "reviewer seat" in note]
-                self.assertTrue(seats)
-                for note in seats:
-                    self.assertTrue(note.startswith("claude, codex not found on PATH: reviewer seat"), note)
-                    if "was not added" in note:
-                        self.assertNotIn(SEAT_OPT_OUT, note)
-                    else:
-                        self.assertTrue(note.endswith(SEAT_OPT_OUT), note)
+                for subject, word, opt_out in (
+                    ("reviewers", "reviewer seat", SEAT_OPT_OUT),
+                    ("review.design.reviewers", "design reviewer seat", DESIGN_SEAT_OPT_OUT),
+                ):
+                    seats = [n for n, s in zip(fit.notes, fit.subjects, strict=True) if s == subject]
+                    self.assertTrue(seats)
+                    for note in seats:
+                        self.assertTrue(note.startswith("claude, codex not found on PATH: %s" % word), note)
+                        if "was not added" in note:
+                            self.assertNotIn(opt_out, note)
+                        else:
+                            self.assertTrue(note.endswith(opt_out), note)
                 self.assertFalse([note for note in fit.notes if UNENFORCED in note])
                 self.assertEqual(len(fit.notes), len(fit.subjects))
         self.assertIn(
@@ -918,17 +925,35 @@ class TestPresetsWithAgy(unittest.TestCase):
         cheap = skip + "agy has no cheap model named offline"
         held = skip + "agy cannot be held to reading"
         expected = {
-            "standard": [cheap % (3, "security"), cheap % (4, "test"), held % (5, "security")],
-            "quality": [held % (4, "test")],
+            "standard": [held % (3, "security"), cheap % (4, "test")],
+            "quality": [held % (6, "test")],
+            "fast": [],
+        }
+        for name, skipped in expected.items():
+            with self.subTest(preset=name):
+                self.assertEqual(self.skipped(presets.expand(name, ["agy"]), "reviewers"), skipped)
+
+    def skipped(self, fit, subject):
+        """The notes of the seats not added to the panel at ``subject``, repeats aside."""
+        return [
+            note
+            for note, about in zip(fit.notes, fit.subjects, strict=True)
+            if about == subject and "was not added" in note and "would repeat" not in note
+        ]
+
+    def test_the_design_seats_agy_does_not_take_are_named(self):
+        skip = "claude, codex not found on PATH: design reviewer seat %d (%s) was not added; "
+        cheap = skip + "agy has no cheap model named offline"
+        held = skip + "agy cannot be held to reading"
+        expected = {
+            "standard": [held % (2, "security"), cheap % (3, "test")],
+            "quality": [held % (3, "security"), cheap % (4, "test"), held % (5, "architecture")],
             "fast": [],
         }
         for name, skipped in expected.items():
             with self.subTest(preset=name):
                 fit = presets.expand(name, ["agy"])
-                notes = [note for note in fit.notes if "was not added" in note and "would repeat" not in note]
-                self.assertEqual(notes, skipped)
-                for note in notes:
-                    self.assertEqual(fit.subjects[fit.notes.index(note)], "reviewers")
+                self.assertEqual(self.skipped(fit, "review.design.reviewers"), skipped)
 
     def test_with_claude_there_agy_takes_nothing(self):
         for name in presets.NAMES:

@@ -521,13 +521,16 @@ class TestTheDefaultPanelsRounds(unittest.TestCase):
         reviewers = [r for r in panel if opt.qualifies(r, plan.conditional)]
         return plan, [r["id"] for r in opt.choose_reviewers(reviewers, plan.reviewer_limit)]
 
-    def test_a_high_risk_change_runs_both_security_seats(self):
+    def test_a_high_risk_change_runs_the_security_seat_on_its_high_risk_model(self):
         plan, ids = self.running(["app/auth.py"], 10)
         self.assertIn(("app/auth.py", "*auth*"), plan.high_risk)
-        self.assertTrue(opt.qualifies({"id": "claude-security-2", "when": "high-risk"}, plan.conditional))
         self.assertIsNone(plan.reviewer_limit)
+        security = [r for r in config_mod.default_config()["reviewers"] if r["role"] == "security"]
+        self.assertEqual([r["id"] for r in security], ["claude-security"])
         self.assertIn("claude-security", ids)
-        self.assertIn("claude-security-2", ids)
+        seat, switched = opt.risk_model(security[0], bool(plan.high_risk))
+        self.assertTrue(switched)
+        self.assertEqual(seat["model"], {"family": "opus", "version": "latest"})
 
     def test_an_ordinary_small_change_keeps_one_general_reviewer(self):
         plan, ids = self.running(["app.py"], 10)
@@ -854,7 +857,6 @@ class TestTheGateInThePipeline(IsolatedCase):
         run_cli("config", "setup", "--defaults")
         run_cli("reviewer", "remove", "claude-general")
         run_cli("reviewer", "remove", "codex-general")
-        run_cli("reviewer", "remove", "claude-security-2")
         run_cli("reviewer", "remove", "claude-security")
         run_cli("reviewer", "remove", "claude-test")
         run_cli("reviewer", "add", "--provider", "mock", "--id", "sec", "--role", "security")
@@ -1022,7 +1024,6 @@ class TestConditionalReviewersInThePipeline(IsolatedCase):
         run_cli("config", "setup", "--defaults")
         run_cli("reviewer", "remove", "claude-general")
         run_cli("reviewer", "remove", "codex-general")
-        run_cli("reviewer", "remove", "claude-security-2")
         run_cli("reviewer", "remove", "claude-security")
         run_cli("reviewer", "remove", "claude-test")
         run_cli("reviewer", "add", "--provider", "mock", "--id", "gen", "--role", "general")
@@ -1253,7 +1254,6 @@ class TestPathScopedReviewersInThePipeline(IsolatedCase):
         run_cli("config", "setup", "--defaults")
         run_cli("reviewer", "remove", "claude-general")
         run_cli("reviewer", "remove", "codex-general")
-        run_cli("reviewer", "remove", "claude-security-2")
         run_cli("reviewer", "remove", "claude-security")
         run_cli("reviewer", "remove", "claude-test")
         run_cli("reviewer", "add", "--provider", "mock", "--id", "gen", "--role", "general")

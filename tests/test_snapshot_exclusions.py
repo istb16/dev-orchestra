@@ -317,7 +317,6 @@ class TestSnapshotCommand(IsolatedCase):
         """The implicit snapshot must not review more than the explicit one."""
         run_cli("reviewer", "remove", "claude-general")
         run_cli("reviewer", "remove", "codex-general")
-        run_cli("reviewer", "remove", "claude-security-2")
         run_cli("reviewer", "remove", "claude-security")
         run_cli("reviewer", "remove", "claude-test")
         run_cli("reviewer", "add", "--provider", "mock", "--id", "m1", "--role", "general")

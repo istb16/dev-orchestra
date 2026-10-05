@@ -2,8 +2,9 @@
 
 `review.design.reviewers` replaces the code panel for design rounds, and
 `review.design.reviewers_extra` adds to whichever design panel is inherited.
-With neither, a design round runs the code panel with every `when` removed,
-as it always has. A seat's `high_risk_model` is the model it runs on a round
+With neither, a design round runs the preset's fitted design panel; a file
+that lists its own code panel runs that panel with every `when` removed, as
+it always has. A seat's `high_risk_model` is the model it runs on a round
 with a high-risk hit or `--high-risk`, in either panel.
 """
 
@@ -37,6 +38,13 @@ def ids(reviewers):
     return [reviewer["id"] for reviewer in reviewers]
 
 
+#: ``standard``'s design panel fitted to Claude alone, as ``ExtrasCase`` installs.
+FIT_DESIGN = ["claude-general", "claude-security", "claude-test"]
+
+#: A written code panel, with a seat that runs on high-risk changes only.
+WRITTEN = {"reviewers": [mock("m1"), mock("m2", role="security", when="high-risk")]}
+
+
 RISKY_PLAN = """# Plan
 
 ## Proposed Change
@@ -60,15 +68,26 @@ Round the total in `src/calc.py`.
 
 
 class TestComposition(ExtrasCase):
-    def test_no_design_keys_design_uses_code_panel_and_ignores_when(self):
+    def test_no_design_keys_design_uses_the_fit_design_panel(self):
+        loaded = config_mod.load(self.project)
+        self.assertTrue(loaded.has_design_panel())
+        self.assertEqual(loaded.design_panel_source, "fit")
+        self.assertEqual(ids(loaded.design_reviewers()), FIT_DESIGN)
+        labels = [origin.label() for origin in loaded.design_reviewer_origins]
+        self.assertEqual(labels, ["fit design"] * len(FIT_DESIGN))
+        self.assertEqual(loaded.design_reviewers()[0]["high_risk_model"]["family"], "opus")
+
+    def test_listed_code_panel_without_design_keys_uses_code_copy(self):
+        self.write_global(WRITTEN)
         loaded = config_mod.load(self.project)
         self.assertFalse(loaded.has_design_panel())
         self.assertNotIn("reviewers", loaded.data["review"]["design"])
         self.assertEqual(loaded.design_panel_source, "code")
-        self.assertEqual(ids(loaded.design_reviewers()), FITTED)
+        self.assertEqual(ids(loaded.design_reviewers()), ["m1", "m2"])
         self.assertEqual(loaded.design_reviewers()[-1], config_mod.without_when(loaded.reviewers()[-1]))
         self.assertTrue([reviewer for reviewer in loaded.reviewers() if "when" in reviewer])
         self.assertFalse([reviewer for reviewer in loaded.design_reviewers() if "when" in reviewer])
+        self.assertFalse([note for note in loaded.preset_notes if "design reviewer seat" in note])
 
     def test_design_reviewers_replace_code_panel_for_design_only(self):
         self.write_global(design(reviewers=[mock("d1"), mock("d2", role="security")]))
@@ -79,24 +98,39 @@ class TestComposition(ExtrasCase):
         labels = [origin.label() for origin in loaded.design_reviewer_origins]
         self.assertEqual(labels, ["global design", "global design"])
 
-    def test_design_extras_join_code_panel_for_design_only(self):
+    def test_design_extras_join_the_fit_design_panel_for_design_only(self):
         self.write_global(design(reviewers_extra=[mock("x1")]))
         loaded = config_mod.load(self.project)
-        self.assertEqual(ids(loaded.design_reviewers()), [*FITTED, "x1"])
+        self.assertEqual(ids(loaded.design_reviewers()), [*FIT_DESIGN, "x1"])
         self.assertEqual(ids(loaded.reviewers()), FITTED)
-        self.assertEqual(loaded.design_panel_source, "code")
+        self.assertEqual(loaded.design_panel_source, "fit")
         labels = [origin.label() for origin in loaded.design_reviewer_origins]
-        # The copied seats keep the code panel's origins: the fit, here.
-        self.assertEqual(labels, [*(["fit"] * len(FITTED)), "global design extra"])
+        self.assertEqual(labels, [*(["fit design"] * len(FIT_DESIGN)), "global design extra"])
         self.assertNotIn("reviewers_extra", loaded.data["review"]["design"])
 
+    def test_design_extras_join_a_listed_code_panel_copy(self):
+        self.write_global({**WRITTEN, **design(reviewers_extra=[mock("x1")])})
+        loaded = config_mod.load(self.project)
+        self.assertEqual(ids(loaded.design_reviewers()), ["m1", "m2", "x1"])
+        self.assertEqual(loaded.design_panel_source, "code")
+        labels = [origin.label() for origin in loaded.design_reviewer_origins]
+        # The copied seats keep the code panel's origins: the global file, here.
+        self.assertEqual(labels, ["global", "global", "global design extra"])
+
     def test_design_origins_follow_code_extras(self):
+        code = {"reviewers": [mock("base")], "reviewers_extra": [mock("cx")]}
+        self.write_global({**code, **design(reviewers_extra=[mock("x1")])})
+        loaded = config_mod.load(self.project)
+        self.assertEqual(ids(loaded.design_reviewers()), ["base", "cx", "x1"])
+        labels = [origin.label() for origin in loaded.design_reviewer_origins]
+        self.assertEqual(labels, ["global", "global extra", "global design extra"])
+        self.assertEqual(len(loaded.design_reviewers()), len(loaded.design_reviewer_origins))
+
+    def test_code_extras_do_not_join_the_fit_design_panel(self):
         self.write_global({"reviewers_extra": [mock("cx")], **design(reviewers_extra=[mock("x1")])})
         loaded = config_mod.load(self.project)
-        self.assertEqual(ids(loaded.design_reviewers()), [*FITTED, "cx", "x1"])
-        labels = [origin.label() for origin in loaded.design_reviewer_origins]
-        self.assertEqual(labels, [*(["fit"] * len(FITTED)), "global extra", "global design extra"])
-        self.assertEqual(len(loaded.design_reviewers()), len(loaded.design_reviewer_origins))
+        self.assertEqual(ids(loaded.design_reviewers()), [*FIT_DESIGN, "x1"])
+        self.assertEqual(ids(loaded.reviewers()), [*FITTED, "cx"])
 
     def test_a_project_code_list_under_global_design_extras(self):
         self.write_global(design(reviewers_extra=[mock("x1")]))
@@ -131,12 +165,12 @@ class TestComposition(ExtrasCase):
         )
 
     def test_inherited_code_seats_lose_when_in_design_panel(self):
-        self.write_global(design(reviewers_extra=[mock("x1")]))
+        self.write_global({**WRITTEN, **design(reviewers_extra=[mock("x1")])})
         loaded = config_mod.load(self.project)
         code = {reviewer["id"]: reviewer for reviewer in loaded.reviewers()}
         copied = {reviewer["id"]: reviewer for reviewer in loaded.design_reviewers()}
-        self.assertEqual(code["claude-security-2"]["when"], "high-risk")
-        self.assertNotIn("when", copied["claude-security-2"])
+        self.assertEqual(code["m2"]["when"], "high-risk")
+        self.assertNotIn("when", copied["m2"])
 
     def test_the_same_id_may_sit_in_both_panels(self):
         self.write_global(design(reviewers=[mock("claude-general")]))
@@ -269,14 +303,21 @@ class TestReviewerCommands(ExtrasCase):
         argv = ("--scope", "global", "--design", "--provider", "mock", "--id", reviewer_id)
         return run_cli("reviewer", "add", *argv)
 
-    def test_reviewer_add_design_goes_to_design_extra(self):
+    def test_reviewer_add_design_says_follows_preset_fit(self):
         code, out, err = self.add_design("d1")
         self.assertEqual(code, 0, err)
         self.assertIn("Added design reviewer d1 (mock / ", out)
-        self.assertIn("as a design extra; the design panel still follows the code panel", out)
+        self.assertIn("as a design extra; the design panel still follows preset standard's fit", out)
         self.assertEqual(ids(self.global_layer()["review"]["design"]["reviewers_extra"]), ["d1"])
-        self.assertEqual(self.design_ids(), [*FITTED, "d1"])
+        self.assertEqual(self.design_ids(), [*FIT_DESIGN, "d1"])
         self.assertEqual(self.ids(), FITTED)
+
+    def test_reviewer_add_design_beside_a_listed_code_panel_says_code_panel(self):
+        self.write_global(WRITTEN)
+        code, out, err = self.add_design("d1")
+        self.assertEqual(code, 0, err)
+        self.assertIn("as a design extra; the design panel still follows the code panel", out)
+        self.assertEqual(self.design_ids(), ["m1", "m2", "d1"])
 
     def test_reviewer_add_design_to_listed_design_panel(self):
         self.write_global(design(reviewers=[mock("d1")]))
@@ -286,27 +327,71 @@ class TestReviewerCommands(ExtrasCase):
         self.assertEqual(ids(self.global_layer()["review"]["design"]["reviewers"]), ["d1", "d2"])
         self.assertEqual(self.design_ids(), ["d1", "d2"])
 
-    def test_reviewer_set_design_seeds_and_drops_when_note(self):
+    def test_reviewer_set_design_seeds_fit_panel_with_frozen_note(self):
         argv = ("--scope", "global", "--design", "claude-test", "--role", "architecture")
         code, out, err = run_cli("reviewer", "set", *argv)
         self.assertEqual(code, 0, err)
-        self.assertIn("copied from the code panel, without its when conditions", out + err)
+        self.assertIn(
+            "now lists the design reviewers (review.design.reviewers), copied from preset standard's fit; "
+            "the design panel no longer follows preset standard's fit (recorded claude-general sonnet, "
+            "claude-security sonnet, claude-test sonnet)",
+            out + err,
+        )
         listed = self.global_layer()["review"]["design"]["reviewers"]
-        self.assertEqual(ids(listed), FITTED)
-        self.assertFalse([reviewer for reviewer in listed if "when" in reviewer])
+        self.assertEqual(ids(listed), FIT_DESIGN)
+        self.assertEqual(listed[0]["high_risk_model"]["family"], "opus")
         roles = {reviewer["id"]: reviewer["role"] for reviewer in listed}
         self.assertEqual(roles["claude-test"], "architecture")
         # The code panel is not touched.
         code_roles = {reviewer["id"]: reviewer["role"] for reviewer in self.loaded().reviewers()}
         self.assertEqual(code_roles["claude-test"], "test")
 
+    def test_reviewer_set_design_seeds_and_drops_when_note(self):
+        self.write_global(WRITTEN)
+        argv = ("--scope", "global", "--design", "m2", "--role", "architecture")
+        code, out, err = run_cli("reviewer", "set", *argv)
+        self.assertEqual(code, 0, err)
+        self.assertIn("copied from the code panel, without its when conditions", out + err)
+        self.assertNotIn("no longer follows", out + err)
+        listed = self.global_layer()["review"]["design"]["reviewers"]
+        self.assertEqual(ids(listed), ["m1", "m2"])
+        self.assertFalse([reviewer for reviewer in listed if "when" in reviewer])
+        roles = {reviewer["id"]: reviewer["role"] for reviewer in listed}
+        self.assertEqual(roles["m2"], "architecture")
+        # The code panel is not touched.
+        code_roles = {reviewer["id"]: reviewer["role"] for reviewer in self.loaded().reviewers()}
+        self.assertEqual(code_roles["m2"], "security")
+
+    def test_seeding_the_code_panel_says_it_moved_the_design_rounds(self):
+        """The list is all that takes the design rounds off the fit's design panel."""
+        code, out, err = run_cli("reviewer", "remove", "--scope", "global", "claude-test")
+        self.assertEqual(code, 0, err)
+        self.assertIn(
+            "the panel no longer follows preset standard's fit (recorded claude-general opus, "
+            "claude-general-2 sonnet, claude-security sonnet, claude-test sonnet); design rounds now run "
+            "this list without when, not preset standard's design panel",
+            out,
+        )
+        self.assertEqual(self.loaded().design_panel_source, "code")
+
+    def test_seeding_the_code_panel_beside_a_design_list_leaves_the_design_rounds(self):
+        self.write_global(design(reviewers=[mock("d1")]))
+        code, out, err = run_cli("reviewer", "remove", "--scope", "global", "claude-test")
+        self.assertEqual(code, 0, err)
+        self.assertIn("the panel no longer follows preset standard's fit", out)
+        self.assertNotIn("design rounds now run", out)
+        self.assertEqual(self.design_ids(), ["d1"])
+
     def test_reviewer_remove_design(self):
         code, _, err = run_cli("reviewer", "remove", "--scope", "global", "--design", "claude-test")
         self.assertEqual(code, 0, err)
-        self.assertEqual(self.design_ids(), [name for name in FITTED if name != "claude-test"])
+        self.assertEqual(self.design_ids(), [name for name in FIT_DESIGN if name != "claude-test"])
         self.assertEqual(self.ids(), FITTED)
 
     def test_reviewer_list_design_source(self):
+        _, out, _ = run_cli("reviewer", "list", "--design")
+        self.assertEqual(out.splitlines()[0], "(design panel: the preset's fit)")
+        self.write_global(WRITTEN)
         _, out, _ = run_cli("reviewer", "list", "--design")
         self.assertEqual(out.splitlines()[0], "(design panel: the code panel; when conditions ignored)")
         self.write_global(design(reviewers=[mock("d1")]))
@@ -436,8 +521,8 @@ class TestDesignEditsInAProjectFile(ExtrasCase):
         return self.project_layer()["review"]["design"]
 
     def test_a_fitted_panels_agy_seat_is_left_out_of_the_copy(self):
-        """No file lists the code panel: its global extra on agy is left out, as `_seed_panel` does."""
-        self.write_global({"reviewers_extra": [agy("agy-x")]})
+        """No file lists the design panel: its global design extra on agy is left out, as `_seed_panel`."""
+        self.write_global(design(reviewers_extra=[agy("agy-x")]))
         code, out, err = run_cli("reviewer", "remove", "--scope", "project", "--design", "claude-test")
         self.assertEqual(code, 0, err)
         left_out = (
@@ -445,7 +530,15 @@ class TestDesignEditsInAProjectFile(ExtrasCase):
             "the global config"
         )
         self.assertIn(left_out, out)
-        self.assertEqual(ids(self.project_design()["reviewers"]), [n for n in FITTED if n != "claude-test"])
+        self.assertIn("copied from preset standard's fit", out)
+        # A project file takes the design panel off the fit as a global one does.
+        self.assertIn(
+            "; the design panel no longer follows preset standard's fit (recorded claude-general sonnet, "
+            "claude-security sonnet, claude-test sonnet); not copied",
+            out,
+        )
+        kept = [name for name in FIT_DESIGN if name != "claude-test"]
+        self.assertEqual(ids(self.project_design()["reviewers"]), kept)
 
     def test_a_design_panel_the_global_file_lists_is_copied_whole(self):
         """The user chose those seats: copied as they are, agy included, as `_seed_panel` copies."""
@@ -465,8 +558,9 @@ class TestDesignEditsInAProjectFile(ExtrasCase):
 
     def test_the_project_files_own_agy_seat_is_kept_in_the_copy(self):
         """It is the file's own, so the copy changes nothing about where it comes from."""
+        self.write_global({"reviewers": [mock("g1"), mock("g2")]})
         self.write_project({"reviewers_extra": [agy("pa")]})
-        code, out, err = run_cli("reviewer", "remove", "--scope", "project", "--design", "claude-test")
+        code, out, err = run_cli("reviewer", "remove", "--scope", "project", "--design", "g2")
         self.assertEqual(code, 0, err)
         self.assertIn("pa", ids(self.project_design()["reviewers"]))
         self.assertNotIn("not copied", out + err)
@@ -532,6 +626,12 @@ OPUS_ON_RISK = mock("d1", high_risk_model={"family": "opus", "version": "latest"
 class TestShowingIt(ExtrasCase):
     def test_config_show_design_block_fallback_and_set(self):
         _, out, _ = run_cli("config", "show")
+        block = out.split("  Design reviews\n", 1)[1]
+        self.assertIn("claude-general (opus when high-risk)", block.splitlines()[0])
+        payload = json.loads(run_cli("config", "show", "--json")[1])
+        self.assertEqual(payload["design_reviewer_origins"], ["fit design"] * len(FIT_DESIGN))
+        self.write_global(WRITTEN)
+        _, out, _ = run_cli("config", "show")
         fallback = "(the code panel; when conditions ignored)  (review.design.reviewers)"
         self.assertIn("  Design reviews\n    %s" % fallback, out)
         self.write_global(design(reviewers=[mock("d1")]))
@@ -551,10 +651,27 @@ class TestShowingIt(ExtrasCase):
         self.write_global({"optimization": {"skip_unneeded_roles": False}})
         self.assertIn(line % "off", run_cli("config", "show")[1])
 
+    def test_design_panel_source_fit_in_show_doctor_list_and_status(self):
+        report = doctor.collect(self.project, probe_models=False)
+        self.assertEqual(report["design_panel_source"], "fit")
+        self.assertEqual(ids(report["design_reviewers"]), FIT_DESIGN)
+        self.assertEqual({entry["origin"] for entry in report["design_reviewers"]}, {"fit design"})
+        self.assertTrue(all("status" in entry for entry in report["design_reviewers"]))
+        self.assertIn("  Design:       3 (the preset's fit)", doctor.render(report))
+        listing = run_cli("reviewer", "list", "--design")[1]
+        self.assertEqual(listing.splitlines()[0], "(design panel: the preset's fit)")
+        first = "Design reviews\n    1. claude / sonnet / latest / general"
+        self.assertIn(first, run_cli("config", "show")[1])
+        payload = json.loads(run_cli("review", "status", "--design", "--json")[1])
+        self.assertEqual((payload["reviewers"], payload["panel_source"]), (FIT_DESIGN, "fit"))
+        line = "design panel: %s (the preset's fit)" % ", ".join(FIT_DESIGN)
+        self.assertIn(line, run_cli("review", "status", "--design")[1])
+
     def test_doctor_json_design_reviewers(self):
+        self.write_global(WRITTEN)
         report = doctor.collect(self.project, probe_models=False)
         self.assertEqual(report["design_panel_source"], "code")
-        self.assertEqual(ids(report["design_reviewers"]), FITTED)
+        self.assertEqual(ids(report["design_reviewers"]), ["m1", "m2"])
         self.assertNotIn("Design:", doctor.render(report))
         self.write_global(design(reviewers=[OPUS_ON_RISK]))
         report = doctor.collect(self.project, probe_models=False)
@@ -592,6 +709,54 @@ class TestShowingIt(ExtrasCase):
         self.write_global({"optimization": {"security_paths": [], "architecture_paths": []}})
         problems = doctor.collect(self.project, probe_models=False)["problems"]
         self.assertFalse([problem for problem in problems if "_paths: no pattern" in problem], problems)
+
+    def design_notes(self):
+        notes = doctor.collect(self.project, probe_models=False)["notes"]
+        return [note for note in notes if note.startswith("review.design.reviewers in ")]
+
+    def test_doctor_notes_a_design_list_holding_the_fit_plus_more(self):
+        fitted = self.loaded().design_reviewers()
+        self.write_global(design(reviewers=[*fitted, mock("d9")]))
+        (note,) = self.design_notes()
+        self.assertIn(
+            ": holds the inherited design panel plus d9; move d9 to review.design.reviewers_extra and "
+            "remove review.design.reviewers to keep following it",
+            note,
+        )
+
+    def test_doctor_has_no_design_note_for_a_file_listing_reviewers(self):
+        """Its design rounds inherit its own code list, not the fit's design panel."""
+        fitted = self.loaded().design_reviewers()
+        self.write_global({**WRITTEN, **design(reviewers=[*fitted, mock("d9")])})
+        self.assertEqual(self.design_notes(), [])
+
+    def test_doctor_has_no_design_note_for_a_list_missing_a_fit_seat(self):
+        fitted = self.loaded().design_reviewers()
+        self.write_global(design(reviewers=[*fitted[:-1], mock("d9")]))
+        self.assertEqual(self.design_notes(), [])
+
+    def test_doctor_notes_a_project_design_list_holding_the_global_code_copy_plus_more(self):
+        """The global file lists reviewers, so the project inherits a copy of them without when."""
+        self.write_global(WRITTEN)
+        copied = [config_mod.without_when(seat) for seat in WRITTEN["reviewers"]]
+        self.write_project(design(reviewers=[*copied, mock("d9")]))
+        (note,) = self.design_notes()
+        self.assertIn(".dev-orchestra.yaml: ", note)
+        self.assertIn("holds the inherited design panel plus d9", note)
+
+    def test_doctor_notes_code_extras_left_out_of_the_fit_design_panel(self):
+        self.write_global({"reviewers_extra": [mock("cx")]})
+        notes = doctor.collect(self.project, probe_models=False)["notes"]
+        self.assertIn(
+            "reviewers_extra in %s: cx review code only; design rounds run preset standard's design panel "
+            "(add them to review.design.reviewers_extra as well to review designs too)"
+            % config_mod.global_config_path(),
+            notes,
+        )
+        # Beside a listed code panel the design rounds copy it, extras included.
+        self.write_global({**WRITTEN, "reviewers_extra": [mock("cx")]})
+        notes = doctor.collect(self.project, probe_models=False)["notes"]
+        self.assertFalse([note for note in notes if "review code only" in note], notes)
 
     def test_doctor_reports_an_empty_rule_a_design_seat_opts_into(self):
         seat = mock("d1", role="security", relevance="security")
@@ -898,7 +1063,7 @@ FINDING = """## Finding
 
 
 #: The panel `config setup --defaults` writes, which each round test replaces.
-FITTED_DEFAULTS = ("claude-general", "codex-general", "claude-security-2", "claude-security", "claude-test")
+FITTED_DEFAULTS = ("claude-general", "codex-general", "claude-security", "claude-test")
 
 
 @unittest.skipUnless(has_git(), "git is required")

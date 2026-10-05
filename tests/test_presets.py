@@ -17,61 +17,126 @@ BOTH = ["claude", "codex"]
 ENVIRONMENTS = {"both": BOTH, "claude": ["claude"], "codex": ["codex"], "neither": []}
 CODEX = "recommended-coding"
 
-#: (id, provider, family, role, when) for every preset in every environment.
-#: Neither CLI installed expands as written, which is the two-vendor panel.
-#: The sonnet seats are cheap ones, which only Claude can take.
+#: (id, provider, family, role, when, high-risk family) for every preset in
+#: every environment. Neither CLI installed expands as written, which is the
+#: two-vendor panel. The sonnet test seat is a cheap one, which only Claude can
+#: take, and a high-risk family is kept on Claude only.
 PANELS = {
     ("quality", "both"): [
-        ("claude-general", "claude", "fable", "general", None),
-        ("codex-security", "codex", CODEX, "security", None),
-        ("claude-architecture", "claude", "opus", "architecture", None),
-        ("codex-test", "codex", CODEX, "test", None),
+        ("claude-general", "claude", "fable", "general", None, None),
+        ("codex-general", "codex", CODEX, "general", None, None),
+        ("claude-security", "claude", "opus", "security", None, None),
+        ("codex-security", "codex", CODEX, "security", None, None),
+        ("claude-architecture", "claude", "opus", "architecture", None, None),
+        ("claude-test", "claude", "opus", "test", None, None),
     ],
     ("quality", "claude"): [
-        ("claude-general", "claude", "fable", "general", None),
-        ("claude-security", "claude", "opus", "security", None),
-        ("claude-architecture", "claude", "opus", "architecture", None),
-        ("claude-test", "claude", "opus", "test", None),
+        ("claude-general", "claude", "fable", "general", None, None),
+        ("claude-security", "claude", "opus", "security", None, None),
+        ("claude-architecture", "claude", "opus", "architecture", None, None),
+        ("claude-test", "claude", "opus", "test", None, None),
     ],
     ("quality", "codex"): [
-        ("codex-general", "codex", CODEX, "general", None),
-        ("codex-security", "codex", CODEX, "security", None),
-        ("codex-architecture", "codex", CODEX, "architecture", None),
-        ("codex-test", "codex", CODEX, "test", None),
+        ("codex-general", "codex", CODEX, "general", None, None),
+        ("codex-security", "codex", CODEX, "security", None, None),
+        ("codex-architecture", "codex", CODEX, "architecture", None, None),
+        ("codex-test", "codex", CODEX, "test", None, None),
+    ],
+    ("quality", "agy"): [
+        ("agy-general", "agy", "default", "general", None, None),
+        ("agy-security", "agy", "default", "security", None, None),
+        ("agy-architecture", "agy", "default", "architecture", None, None),
     ],
     ("standard", "both"): [
-        ("claude-general", "claude", "opus", "general", None),
-        ("codex-general", "codex", CODEX, "general", None),
-        ("claude-security", "claude", "sonnet", "security", None),
-        ("claude-test", "claude", "sonnet", "test", None),
-        ("claude-security-2", "claude", "opus", "security", "high-risk"),
+        ("claude-general", "claude", "opus", "general", None, None),
+        ("codex-general", "codex", CODEX, "general", None, None),
+        ("claude-security", "claude", "sonnet", "security", None, "opus"),
+        ("claude-test", "claude", "sonnet", "test", None, None),
     ],
     ("standard", "claude"): [
-        ("claude-general", "claude", "opus", "general", None),
-        ("claude-general-2", "claude", "sonnet", "general", None),
-        ("claude-security", "claude", "sonnet", "security", None),
-        ("claude-test", "claude", "sonnet", "test", None),
-        ("claude-security-2", "claude", "opus", "security", "high-risk"),
+        ("claude-general", "claude", "opus", "general", None, None),
+        ("claude-general-2", "claude", "sonnet", "general", None, None),
+        ("claude-security", "claude", "sonnet", "security", None, "opus"),
+        ("claude-test", "claude", "sonnet", "test", None, None),
     ],
     ("standard", "codex"): [
-        ("codex-general", "codex", CODEX, "general", None),
-        ("codex-security", "codex", CODEX, "security", "high-risk"),
+        ("codex-general", "codex", CODEX, "general", None, None),
+        ("codex-security", "codex", CODEX, "security", None, None),
+    ],
+    ("standard", "agy"): [
+        ("agy-general", "agy", "default", "general", None, None),
     ],
     ("fast", "both"): [
-        ("codex-general", "codex", CODEX, "general", None),
-        ("claude-security", "claude", "opus", "security", "high-risk"),
+        ("codex-general", "codex", CODEX, "general", None, None),
+        ("claude-security", "claude", "sonnet", "security", "high-risk", None),
     ],
     ("fast", "claude"): [
-        ("claude-general", "claude", "opus", "general", None),
-        ("claude-security", "claude", "opus", "security", "high-risk"),
+        ("claude-general", "claude", "opus", "general", None, None),
+        ("claude-security", "claude", "sonnet", "security", "high-risk", None),
     ],
     ("fast", "codex"): [
-        ("codex-general", "codex", CODEX, "general", None),
-        ("codex-security", "codex", CODEX, "security", "high-risk"),
+        ("codex-general", "codex", CODEX, "general", None, None),
+        ("codex-security", "codex", CODEX, "security", "high-risk", None),
+    ],
+    ("fast", "agy"): [
+        ("agy-general", "agy", "default", "general", None, None),
+        ("agy-security", "agy", "default", "security", "high-risk", None),
+    ],
+}
+
+#: The same for the design panel.
+DESIGN_PANELS = {
+    ("quality", "both"): [
+        ("claude-general", "claude", "sonnet", "general", None, "opus"),
+        ("codex-general", "codex", CODEX, "general", None, None),
+        ("claude-security", "claude", "opus", "security", None, None),
+        ("claude-test", "claude", "sonnet", "test", None, None),
+        ("claude-architecture", "claude", "opus", "architecture", None, None),
+    ],
+    ("quality", "claude"): [
+        ("claude-general", "claude", "sonnet", "general", None, "opus"),
+        ("claude-security", "claude", "opus", "security", None, None),
+        ("claude-test", "claude", "sonnet", "test", None, None),
+        ("claude-architecture", "claude", "opus", "architecture", None, None),
+    ],
+    ("quality", "codex"): [
+        ("codex-general", "codex", CODEX, "general", None, None),
+        ("codex-security", "codex", CODEX, "security", None, None),
+        ("codex-architecture", "codex", CODEX, "architecture", None, None),
+    ],
+    ("quality", "agy"): [
+        ("agy-general", "agy", "default", "general", None, None),
+    ],
+    ("standard", "both"): [
+        ("claude-general", "claude", "sonnet", "general", None, "opus"),
+        ("claude-security", "claude", "sonnet", "security", None, None),
+        ("claude-test", "claude", "sonnet", "test", None, None),
+    ],
+    ("standard", "codex"): [
+        ("codex-general", "codex", CODEX, "general", None, None),
+        ("codex-security", "codex", CODEX, "security", None, None),
+    ],
+    ("standard", "agy"): [
+        ("agy-general", "agy", "default", "general", None, None),
+    ],
+    ("fast", "both"): [
+        ("claude-general", "claude", "sonnet", "general", None, None),
+    ],
+    ("fast", "codex"): [
+        ("codex-general", "codex", CODEX, "general", None, None),
+    ],
+    ("fast", "agy"): [
+        ("agy-general", "agy", "default", "general", None, None),
     ],
 }
 for _name in presets.NAMES:
     PANELS[(_name, "neither")] = PANELS[(_name, "both")]
+    DESIGN_PANELS[(_name, "neither")] = DESIGN_PANELS[(_name, "both")]
+for _name in ("standard", "fast"):
+    DESIGN_PANELS[(_name, "claude")] = DESIGN_PANELS[(_name, "both")]
+
+#: Every environment the matrices cover, agy alone included.
+MATRIX_ENVIRONMENTS = {**ENVIRONMENTS, "agy": ["agy"]}
 
 #: Claude family per role as the preset is written: orchestrator, architect,
 #: implementer, review_fixer.
@@ -82,18 +147,68 @@ ROLE_FAMILIES = {
 }
 
 
-def panel(fit):
+def seats(reviewers):
     return [
-        (r["id"], r["provider"], r["model"]["family"], r["role"], r.get("when"))
-        for r in fit.values["reviewers"]
+        (
+            r["id"],
+            r["provider"],
+            r["model"]["family"],
+            r["role"],
+            r.get("when"),
+            (r.get("high_risk_model") or {}).get("family"),
+        )
+        for r in reviewers
     ]
 
 
+def panel(fit):
+    return seats(fit.values["reviewers"])
+
+
+def design_panel(fit):
+    return seats(config_mod.get_path(fit.values, config_mod.DESIGN_PANEL.reviewers) or [])
+
+
 class TestExpansion(unittest.TestCase):
-    def test_every_panel_in_every_environment(self):
+    def test_fit_matrix_code(self):
         for (name, env), expected in PANELS.items():
             with self.subTest(preset=name, environment=env):
-                self.assertEqual(panel(presets.expand(name, ENVIRONMENTS[env])), expected)
+                self.assertEqual(panel(presets.expand(name, MATRIX_ENVIRONMENTS[env])), expected)
+
+    def test_fit_matrix_design(self):
+        for (name, env), expected in DESIGN_PANELS.items():
+            with self.subTest(preset=name, environment=env):
+                self.assertEqual(design_panel(presets.expand(name, MATRIX_ENVIRONMENTS[env])), expected)
+
+    def test_vendor_seats_do_not_rotate_with_the_implementer(self):
+        rotated = presets.expand("quality", BOTH, "codex")
+        self.assertEqual(panel(rotated), PANELS[("quality", "both")])
+        self.assertEqual(design_panel(rotated), DESIGN_PANELS[("quality", "both")])
+        self.assertEqual(rotated.notes, [])
+
+    def test_high_risk_seat_is_full_not_cheap(self):
+        """The merged security seat is dealt, so Codex alone keeps one; the test seat is cheap."""
+        fit = presets.expand("standard", ["codex"])
+        self.assertIn("codex-security", [seat[0] for seat in panel(fit)])
+        self.assertNotIn("codex-test", [seat[0] for seat in panel(fit)])
+
+    def test_claude_seat_is_dealt_when_claude_absent(self):
+        fit = presets.expand("quality", ["codex"])
+        self.assertEqual({seat[1] for seat in panel(fit)}, {"codex"})
+        self.assertEqual(design_panel(fit)[0][:2], ("codex-general", "codex"))
+
+    def test_presets_never_set_relevance(self):
+        for name in presets.NAMES:
+            for env, installed in MATRIX_ENVIRONMENTS.items():
+                with self.subTest(preset=name, environment=env):
+                    values = presets.expand(name, installed).values
+                    design = config_mod.get_path(values, config_mod.DESIGN_PANEL.reviewers) or []
+                    for reviewer in [*values["reviewers"], *design]:
+                        self.assertNotIn("relevance", reviewer)
+                    self.assertNotIn("skip_unneeded_roles", values.get("optimization") or {})
+
+    def test_governed_includes_design_reviewers(self):
+        self.assertIn("review.design.reviewers", presets.GOVERNED)
 
     def test_roles_go_to_the_first_installed_cli(self):
         for name in presets.NAMES:
@@ -118,34 +233,46 @@ class TestExpansion(unittest.TestCase):
 
     def test_the_other_keys_each_preset_sets(self):
         quality = presets.expand("quality", BOTH).values
-        self.assertEqual(quality["review"], {"design": {"enabled": True}})
+        self.assertEqual(set(quality["review"]["design"]), {"enabled", "reviewers"})
         self.assertEqual(quality["optimization"], {"level": "quality"})
         fast = presets.expand("fast", BOTH).values
-        self.assertNotIn("review", fast)
+        self.assertEqual(set(fast["review"]["design"]), {"enabled", "reviewers"})
         self.assertEqual(fast["optimization"], {"level": "aggressive"})
         standard = presets.expand("standard", BOTH).values
-        self.assertNotIn("review", standard)
+        self.assertEqual(set(standard["review"]), {"design"})
+        self.assertEqual(set(standard["review"]["design"]), {"reviewers"})
         self.assertNotIn("optimization", standard)
 
-    def test_standard_on_two_clis_is_the_built_in_defaults_exactly(self):
-        data, fit, name, source = config_mod.compose({}, {}, BOTH)
-        self.assertEqual(data, config_mod.default_config())
-        self.assertEqual((fit.notes, name, source), ([], "standard", "implicit"))
-        self.assertEqual(config_mod.compose({}, {}, [])[0], config_mod.default_config())
+    def test_quality_design_auto(self):
+        self.assertEqual(presets.expand("quality", BOTH).values["review"]["design"]["enabled"], "auto")
 
-    def test_standard_reads_the_defaults_back_with_cheap_and_held_seats(self):
+    def test_fast_design_review_off(self):
+        self.assertIs(presets.expand("fast", BOTH).values["review"]["design"]["enabled"], False)
+
+    def test_standard_matches_default_config_plus_design_panel(self):
+        for installed in (BOTH, []):
+            with self.subTest(installed=installed):
+                data, fit, name, source = config_mod.compose({}, {}, installed)
+                design = data["review"]["design"].pop("reviewers")
+                self.assertEqual(data, config_mod.default_config())
+                self.assertEqual(seats(design), DESIGN_PANELS[("standard", "both")])
+                self.assertEqual((fit.notes, name, source), ([], "standard", "implicit"))
+                self.assertEqual([o.label() for o in fit.design_origins], ["fit design"] * 3)
+
+    def test_standard_reads_back_high_risk_family_as_claude_seat(self):
         Seat = presets.Seat
         self.assertEqual(
             presets.PRESETS["standard"].seats,
             (
                 Seat("general", "opus", "always"),
                 Seat("general", "sonnet", "always"),
-                Seat("security", "sonnet", "always", cheap=True, held=True),
+                Seat("security", "sonnet", "always", held=True, high_risk_family="opus", vendor="claude"),
                 Seat("test", "sonnet", "always", cheap=True, held=True),
-                Seat("security", "opus", "high-risk", held=True),
             ),
         )
-        self.assertEqual(presets.PRESETS["quality"].seats[3], Seat("test", "opus", "always", held=True))
+        self.assertEqual(
+            presets.PRESETS["quality"].seats[5], Seat("test", "opus", "always", held=True, vendor="claude")
+        )
 
     def test_fast_keeps_one_reviewer_always_and_one_on_high_risk(self):
         for env, installed in ENVIRONMENTS.items():
@@ -196,18 +323,56 @@ class TestNotes(unittest.TestCase):
         self.assertEqual(
             skipped,
             [
-                "claude not found on PATH: reviewer seat 3 (security) was not added; codex has no cheap "
-                "model named offline",
                 "claude not found on PATH: reviewer seat 4 (test) was not added; codex has no cheap "
+                "model named offline",
+                "claude not found on PATH: design reviewer seat 3 (test) was not added; codex has no cheap "
                 "model named offline",
             ],
         )
-        for note in skipped:
-            self.assertEqual(fit.subjects[fit.notes.index(note)], "reviewers")
+        subjects = [fit.subjects[fit.notes.index(note)] for note in skipped]
+        self.assertEqual(subjects, ["reviewers", "review.design.reviewers"])
         self.assertEqual([seat[0] for seat in panel(fit)], ["codex-general", "codex-security"])
+
+    def test_high_risk_family_dropped_off_claude_note(self):
+        fit = presets.expand("standard", ["codex"])
         self.assertIn(
-            "claude not found on PATH: reviewer seat 5 (security) went to codex as codex-security "
-            "(recommended-coding)",
+            "claude not found on PATH: reviewer seat 3 (security) went to codex as codex-security "
+            "(recommended-coding); no high-risk model on codex",
+            fit.notes,
+        )
+        self.assertIn(
+            "claude not found on PATH: design reviewer seat 1 (general) went to codex as codex-general "
+            "(recommended-coding); no high-risk model on codex",
+            fit.notes,
+        )
+        self.assertNotIn("high_risk_model", fit.values["reviewers"][1])
+
+    def test_second_vendor_seat_not_added_note(self):
+        fit = presets.expand("quality", ["claude"])
+        reason = "it is a second vendor's opinion and nothing installed stands in for one"
+        self.assertEqual(
+            list(zip(fit.notes, fit.subjects, strict=True)),
+            [
+                ("codex not found on PATH: reviewer seat 2 (general) was not added; " + reason, "reviewers"),
+                ("codex not found on PATH: reviewer seat 4 (security) was not added; " + reason, "reviewers"),
+                (
+                    "codex not found on PATH: design reviewer seat 2 (general) was not added; " + reason,
+                    "review.design.reviewers",
+                ),
+            ],
+        )
+
+    def test_agy_design_seat_names_the_design_list_to_keep_it_off_agy(self):
+        fit = presets.expand("standard", ["agy"])
+        self.assertIn(
+            "claude, codex not found on PATH: design reviewer seat 1 (general) went to agy as agy-general "
+            "(default); no high-risk model on agy; agy cannot be held to reading -- list "
+            "review.design.reviewers in the global file to keep them off agy",
+            fit.notes,
+        )
+        self.assertIn(
+            "claude, codex not found on PATH: design reviewer seat 2 (security) was not added; "
+            "agy cannot be held to reading",
             fit.notes,
         )
 
@@ -228,14 +393,23 @@ class TestEveryExpansionWorks(IsolatedCase):
 
     def test_every_expansion_validates_and_resolves_offline(self):
         for name in presets.NAMES:
-            for env, installed in {**ENVIRONMENTS, "agy": ["agy"]}.items():
+            for env, installed in MATRIX_ENVIRONMENTS.items():
                 with self.subTest(preset=name, environment=env):
                     data = config_mod.compose({"preset": name}, {}, installed)[0]
                     self.assertEqual(config_mod.validate(data), [])
-                    specs = [data[role] for role in config_mod.KNOWN_ROLES]
-                    specs.extend(data["reviewers"])
-                    for spec in specs:
-                        get_provider(spec["provider"]).resolve_model(spec["model"])
+                    assert_resolves_offline(data)
+
+
+def assert_resolves_offline(data):
+    """Every role and every seat of both panels, its high-risk model included."""
+    specs = [data[role] for role in config_mod.KNOWN_ROLES]
+    design = config_mod.get_path(data, config_mod.DESIGN_PANEL.reviewers) or []
+    for reviewer in [*data["reviewers"], *design]:
+        specs.append(reviewer)
+        if "high_risk_model" in reviewer:
+            specs.append({"provider": reviewer["provider"], "model": reviewer["high_risk_model"]})
+    for spec in specs:
+        get_provider(spec["provider"]).resolve_model(spec["model"])
 
 
 class TestInstalledProviders(IsolatedCase):
@@ -336,12 +510,10 @@ class TestUserAdaptersInPresets(IsolatedCase):
                     fit.notes,
                 )
                 self.assertFalse([note for note in fit.notes if "agy cannot be held" in note])
+                self.assertEqual({seat[1] for seat in design_panel(fit)}, {"mycli"})
                 data = config_mod.compose({"preset": preset}, {}, ["mycli"])[0]
                 self.assertEqual(config_mod.validate(data), [])
-                specs = [data[role] for role in config_mod.KNOWN_ROLES]
-                specs.extend(data["reviewers"])
-                for spec in specs:
-                    get_provider(spec["provider"]).resolve_model(spec["model"])
+                assert_resolves_offline(data)
         report, lines = self.fit_line()
         self.assertTrue(report["providers"]["mycli"]["preset_fit"]["seats"])
         self.assertEqual(report["providers"]["mycli"]["preset_fit"]["family"], "default")
@@ -491,26 +663,44 @@ class TestUserAdaptersInPresets(IsolatedCase):
 
     def test_an_eligible_adapter_takes_every_full_seat_and_no_cheap_one(self):
         self.adapter(enforcement="partial")
+        quality = presets.expand("quality", ["mycli"])
         self.assertEqual(
-            panel(presets.expand("quality", ["mycli"])),
+            panel(quality),
             [
-                ("mycli-general", "mycli", "default", "general", None),
-                ("mycli-security", "mycli", "default", "security", None),
-                ("mycli-architecture", "mycli", "default", "architecture", None),
-                ("mycli-test", "mycli", "default", "test", None),
+                ("mycli-general", "mycli", "default", "general", None, None),
+                ("mycli-security", "mycli", "default", "security", None, None),
+                ("mycli-architecture", "mycli", "default", "architecture", None, None),
+                ("mycli-test", "mycli", "default", "test", None, None),
+            ],
+        )
+        self.assertEqual(
+            design_panel(quality),
+            [
+                ("mycli-general", "mycli", "default", "general", None, None),
+                ("mycli-security", "mycli", "default", "security", None, None),
+                ("mycli-architecture", "mycli", "default", "architecture", None, None),
             ],
         )
         fit = presets.expand("standard", ["mycli"])
         self.assertEqual(
             panel(fit),
             [
-                ("mycli-general", "mycli", "default", "general", None),
-                ("mycli-security", "mycli", "default", "security", "high-risk"),
+                ("mycli-general", "mycli", "default", "general", None, None),
+                ("mycli-security", "mycli", "default", "security", None, None),
             ],
         )
-        for index, role in ((3, "security"), (4, "test")):
-            note = "claude, codex not found on PATH: reviewer seat %d (%s) was not added; " % (index, role)
-            self.assertIn(note + "mycli has no cheap model named offline", fit.notes)
+        self.assertEqual(design_panel(fit), panel(fit))
+        self.assertIn(
+            "claude, codex not found on PATH: reviewer seat 4 (test) was not added; "
+            "mycli has no cheap model named offline",
+            fit.notes,
+        )
+        self.assertIn(
+            "claude, codex not found on PATH: reviewer seat 3 (security) went to mycli as mycli-security "
+            "(default); no high-risk model on mycli",
+            fit.notes,
+        )
+        self.assertFalse([note for note in fit.notes if "reviewer seat 3 (security) was not added" in note])
 
     def test_a_project_implementer_rotates_the_panel_between_eligible_adapters(self):
         """The one influence a project file has, as between Claude and Codex."""
@@ -545,6 +735,24 @@ class TestUserAdaptersInPresets(IsolatedCase):
         _, lines = self.fit_line()
         self.assertIn("when neither Claude nor Codex is installed", lines[0])
 
+    def test_beside_claude_a_codex_seat_goes_to_no_other_tier(self):
+        """Claude fills the seat pool, so neither an adapter nor agy is in it:
+        a Codex seat finds no provider but Claude there, and is not added."""
+        self.adapter(enforcement="partial")
+        skipped = (
+            "codex not found on PATH: %s %d (%s) was not added; it is a second vendor's opinion "
+            "and nothing installed stands in for one"
+        )
+        for other in ("mycli", "agy"):
+            with self.subTest(other=other):
+                fit = presets.expand("quality", ["claude", other])
+                self.assertEqual({seat[1] for seat in panel(fit)}, {"claude"})
+                self.assertEqual({seat[1] for seat in design_panel(fit)}, {"claude"})
+                self.assertIn(skipped % ("reviewer seat", 2, "general"), fit.notes)
+                self.assertIn(skipped % ("reviewer seat", 4, "security"), fit.notes)
+                self.assertIn(skipped % ("design reviewer seat", 2, "general"), fit.notes)
+                self.assertFalse([note for note in fit.notes if "went to %s" % other in note], fit.notes)
+
     def test_eligible_adapter_and_agy_share_the_roles(self):
         self.adapter(enforcement="partial")
         for preset in presets.NAMES:
@@ -572,10 +780,7 @@ class TestUserAdaptersInPresets(IsolatedCase):
                 with self.subTest(enforcement=enforcement, preset=preset):
                     data = config_mod.compose({"preset": preset}, {}, ["agy", "mycli"])[0]
                     self.assertEqual(config_mod.validate(data), [])
-                    specs = [data[role] for role in config_mod.KNOWN_ROLES]
-                    specs.extend(data["reviewers"])
-                    for spec in specs:
-                        get_provider(spec["provider"]).resolve_model(spec["model"])
+                    assert_resolves_offline(data)
 
     def test_turning_user_adapters_off_turns_them_out_of_the_fit(self):
         self.adapter(enforcement="partial")
@@ -632,6 +837,146 @@ class TestWithPreset(unittest.TestCase):
             {"version": 1, "preset": "fast", "implementer": {"options": options}},
         )
 
+    def test_with_preset_strips_design_list_keeps_design_extras(self):
+        extra = config_mod.make_reviewer("x", "claude", "opus", "security")
+        layer = {
+            "version": 1,
+            "review": {"design": {"reviewers": [extra], "reviewers_extra": [extra], "max_iterations": 3}},
+        }
+        self.assertEqual(
+            presets.with_preset(layer, "quality"),
+            {
+                "version": 1,
+                "preset": "quality",
+                "review": {"design": {"reviewers_extra": [extra], "max_iterations": 3}},
+            },
+        )
+
+
+class TestComposingTheFitDesignPanel(unittest.TestCase):
+    def test_file_reviewers_drop_fit_design_panel_and_notes(self):
+        reviewers = [config_mod.make_reviewer("m1", "mock", None)]
+        for layers in (({"reviewers": reviewers}, {}), ({}, {"reviewers": reviewers})):
+            with self.subTest(layers=layers):
+                data, fit, _, _ = config_mod.compose(*layers, ["codex"])
+                self.assertIsNone(config_mod.get_path(data, config_mod.DESIGN_PANEL.reviewers))
+                self.assertNotIn("review.design.reviewers", fit.subjects)
+                self.assertNotIn("reviewers", (fit.values.get("review") or {}).get("design") or {})
+                self.assertEqual(fit.design_origins, ())
+
+    def test_file_reviewers_keep_the_presets_design_switch(self):
+        reviewers = [config_mod.make_reviewer("m1", "mock", None)]
+        fit = config_mod.compose({"preset": "fast", "reviewers": reviewers}, {}, BOTH)[1]
+        self.assertEqual(fit.values["review"], {"design": {"enabled": False}})
+        fit = config_mod.compose({"reviewers": reviewers}, {}, BOTH)[1]
+        self.assertNotIn("review", fit.values)
+
+    def test_file_design_list_drops_fit_design_notes(self):
+        listed = [config_mod.make_reviewer("d1", "codex", "recommended-coding")]
+        layer = {"review": {"design": {"reviewers": listed}}}
+        data, fit, _, _ = config_mod.compose(layer, {}, ["codex"])
+        self.assertEqual(config_mod.get_path(data, config_mod.DESIGN_PANEL.reviewers), listed)
+        self.assertNotIn("review.design.reviewers", fit.subjects)
+        self.assertIn("reviewers", fit.subjects)
+        self.assertEqual([o.label() for o in fit.design_origins], ["global design"])
+
+    def test_design_extras_join_fit_design_panel(self):
+        extra = config_mod.make_reviewer("x", "claude", "opus", "security")
+        layer = {"review": {"design": {"reviewers_extra": [extra]}}}
+        data, fit, _, _ = config_mod.compose(layer, {}, ["codex"])
+        ids = [r["id"] for r in config_mod.get_path(data, config_mod.DESIGN_PANEL.reviewers)]
+        self.assertEqual(ids, ["codex-general", "codex-security", "x"])
+        labels = [o.label() for o in fit.design_origins]
+        self.assertEqual(labels, ["fit design", "fit design", "global design extra"])
+        # The fit is still the base, so its notes still apply.
+        self.assertIn("review.design.reviewers", fit.subjects)
+
+    def test_listed_code_panel_without_design_keys_uses_code_copy(self):
+        layer = {"reviewers": [config_mod.make_reviewer("a", "claude", "opus", "security", when="high-risk")]}
+        loaded = config_mod.LoadedConfig(config_mod.compose(layer, {}, BOTH)[0], None, None, False, layer)
+        self.assertFalse(loaded.has_design_panel())
+        self.assertEqual(loaded.design_panel_source, "code")
+        self.assertNotIn("when", loaded.design_reviewers()[0])
+
+    def loaded(self, global_layer, project_layer, installed):
+        data, fit, _, _ = config_mod.compose(global_layer, project_layer, installed)
+        loaded = config_mod.LoadedConfig(
+            data,
+            None,
+            None,
+            False,
+            global_layer,
+            project_layer,
+            design_reviewer_origins=fit.design_origins,
+        )
+        return data, fit, loaded
+
+    def test_a_project_design_list_over_a_global_preset(self):
+        listed = [config_mod.make_reviewer("d1", "codex", "recommended-coding")]
+        project = {"review": {"design": {"reviewers": listed}}}
+        data, fit, loaded = self.loaded({}, project, ["codex"])
+        self.assertEqual(config_mod.get_path(data, config_mod.DESIGN_PANEL.reviewers), listed)
+        self.assertNotIn("review.design.reviewers", fit.subjects)
+        self.assertIn("reviewers", fit.subjects)
+        self.assertEqual([o.label() for o in fit.design_origins], ["project design"])
+        self.assertEqual(loaded.design_panel_source, "project")
+        # What the fit contributed: its design list went, as for a listed code panel.
+        self.assertIsNone(config_mod.get_path(fit.values, config_mod.DESIGN_PANEL.reviewers))
+
+    def test_a_global_design_list_beside_a_project_code_list(self):
+        listed = [config_mod.make_reviewer("d1", "codex", "recommended-coding")]
+        reviewers = [config_mod.make_reviewer("m1", "mock", None)]
+        global_layer = {"review": {"design": {"reviewers": listed}}}
+        data, fit, loaded = self.loaded(global_layer, {"reviewers": reviewers}, ["codex"])
+        self.assertEqual(config_mod.get_path(data, config_mod.DESIGN_PANEL.reviewers), listed)
+        self.assertEqual(data["reviewers"], reviewers)
+        self.assertNotIn("review.design.reviewers", fit.subjects)
+        self.assertNotIn("reviewers", fit.subjects)
+        self.assertEqual([o.label() for o in fit.design_origins], ["global design"])
+        self.assertEqual(loaded.design_panel_source, "global")
+
+    def test_the_one_rule_for_following_the_fit(self):
+        reviewers = [config_mod.make_reviewer("m1", "mock", None)]
+        design_list = {"review": {"design": {"reviewers": reviewers}}}
+        design_extras = {"review": {"design": {"reviewers_extra": reviewers}}}
+        follows = config_mod.design_panel_follows_fit
+        self.assertTrue(follows({}, {}))
+        self.assertTrue(follows(design_extras, {"reviewers_extra": reviewers}))
+        for layer in ({"reviewers": reviewers}, design_list):
+            with self.subTest(layer=layer):
+                self.assertFalse(follows(layer, {}))
+                self.assertFalse(follows({}, layer))
+
+
+class TestSeatTags(unittest.TestCase):
+    def test_no_cheap_seat_names_a_vendor(self):
+        for name, preset in presets.PRESETS.items():
+            for seat in (*preset.seats, *preset.design_seats):
+                with self.subTest(preset=name, seat=seat):
+                    self.assertFalse(seat.cheap and seat.vendor is not None)
+
+    def test_a_cheap_seat_with_a_vendor_is_refused(self):
+        seat = presets.Seat("test", "sonnet", "always", cheap=True, vendor=presets.CODEX)
+        with self.assertRaises(ValueError):
+            presets._fit_panel((seat,), ["claude"], None, {}, "", "reviewer seat", "reviewers")
+
+
+class TestPopPath(unittest.TestCase):
+    def test_it_removes_the_key_and_the_parents_it_empties(self):
+        data = {"review": {"design": {"reviewers": [], "enabled": True}, "parallel": False}}
+        config_mod.pop_path(data, "review.design.reviewers")
+        self.assertEqual(data, {"review": {"design": {"enabled": True}, "parallel": False}})
+        config_mod.pop_path(data, "review.design.enabled")
+        self.assertEqual(data, {"review": {"parallel": False}})
+        config_mod.pop_path(data, "review.parallel")
+        self.assertEqual(data, {})
+
+    def test_a_path_that_is_not_there_is_left_alone(self):
+        data = {"review": ["not", "a", "mapping"]}
+        config_mod.pop_path(data, "review.design.reviewers")
+        config_mod.pop_path(data, "optimization.level")
+        self.assertEqual(data, {"review": ["not", "a", "mapping"]})
+
 
 class TestTheImplementersVendor(unittest.TestCase):
     def test_the_panel_is_dealt_around_the_implementer_a_file_set(self):
@@ -647,35 +992,29 @@ class TestTheImplementersVendor(unittest.TestCase):
         implementer = {"implementer": {"provider": "codex", "model": {"family": CODEX, "version": "latest"}}}
         expected = {
             "standard": [
-                ("codex-general", "codex", CODEX, "general", None),
-                ("claude-general", "claude", "sonnet", "general", None),
-                ("claude-security", "claude", "sonnet", "security", None),
-                ("claude-test", "claude", "sonnet", "test", None),
-                ("codex-security", "codex", CODEX, "security", "high-risk"),
+                ("codex-general", "codex", CODEX, "general", None, None),
+                ("claude-general", "claude", "sonnet", "general", None, None),
+                ("claude-security", "claude", "sonnet", "security", None, "opus"),
+                ("claude-test", "claude", "sonnet", "test", None, None),
             ],
-            "quality": [
-                ("codex-general", "codex", CODEX, "general", None),
-                ("claude-security", "claude", "opus", "security", None),
-                ("codex-architecture", "codex", CODEX, "architecture", None),
-                ("claude-test", "claude", "opus", "test", None),
-            ],
+            # Vendor seats: the implementer moves none of them.
+            "quality": PANELS[("quality", "both")],
         }
-        for name, seats in expected.items():
+        for name, panel_seats in expected.items():
             with self.subTest(preset=name):
                 reviewers = config_mod.compose({"preset": name, **implementer}, {}, BOTH)[0]["reviewers"]
-                listed = [
-                    (r["id"], r["provider"], r["model"]["family"], r["role"], r.get("when"))
-                    for r in reviewers
-                ]
-                self.assertEqual(listed, seats)
+                self.assertEqual(seats(reviewers), panel_seats)
 
 
 class TestNoRiskPatterns(IsolatedCase):
-    """A fitted high-risk seat stays when the files empty the patterns; a written one is refused."""
+    """A fitted high-risk seat stays when the files empty the patterns; a written one is refused.
+
+    ``fast`` is the preset with a fitted ``when: high-risk`` seat.
+    """
 
     def assert_seat_kept(self, global_layer, project_layer):
         data, fit, _, _ = config_mod.compose(global_layer, project_layer, BOTH)
-        seat = next(r for r in data["reviewers"] if r["id"] == "claude-security-2")
+        seat = next(r for r in data["reviewers"] if r["id"] == "claude-security")
         self.assertEqual(seat["when"], "high-risk")
         self.assertFalse(any("was not added: optimization.high_risk_paths" in n for n in fit.notes))
         problems = config_mod.validate(
@@ -686,7 +1025,7 @@ class TestNoRiskPatterns(IsolatedCase):
         records = optimization.condition_reviewers(data["reviewers"], [], declared=True)
         self.assertIn(
             {
-                "id": "claude-security-2",
+                "id": "claude-security",
                 "when": "high-risk",
                 "runs": True,
                 "reason": "declared with --high-risk",
@@ -695,10 +1034,10 @@ class TestNoRiskPatterns(IsolatedCase):
         )
 
     def test_the_global_file_keeps_the_fitted_seat(self):
-        self.assert_seat_kept({"version": 1, "optimization": {"high_risk_paths": []}}, {})
+        self.assert_seat_kept({"version": 1, "preset": "fast", "optimization": {"high_risk_paths": []}}, {})
 
     def test_the_project_file_keeps_the_fitted_seat(self):
-        self.assert_seat_kept({}, {"version": 1, "optimization": {"high_risk_paths": []}})
+        self.assert_seat_kept({"preset": "fast"}, {"version": 1, "optimization": {"high_risk_paths": []}})
 
     def test_an_extra_high_risk_reviewer_is_refused(self):
         project_layer = {
@@ -708,9 +1047,9 @@ class TestNoRiskPatterns(IsolatedCase):
                 config_mod.make_reviewer("x", "claude", "opus", "security", when="high-risk")
             ],
         }
-        data, fit, _, _ = config_mod.compose({}, project_layer, BOTH)
+        data, fit, _, _ = config_mod.compose({"preset": "fast"}, project_layer, BOTH)
         ids = [r["id"] for r in data["reviewers"]]
-        self.assertIn("claude-security-2", ids)
+        self.assertIn("claude-security", ids)
         self.assertEqual(ids[-1], "x")
         problems = config_mod.validate(data, project_layer=project_layer, origins=fit.origins)
         self.assertIn(

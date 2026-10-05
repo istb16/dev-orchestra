@@ -20,7 +20,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from helpers import IsolatedCase, has_git
 from test_design_review import DesignReviewCase
 
-from orchestrator import cli, cli_review, optimization_render
+from orchestrator import cli, cli_review, optimization_render, presets
 from orchestrator import config as config_mod
 from orchestrator import optimization as opt
 from orchestrator import optimization_report as opt_report
@@ -601,9 +601,35 @@ class TestSummarisingRounds(unittest.TestCase):
         self.assertEqual(opt_report.summarise_rounds([old])["design_relevance"]["judged"], 0)
 
 
+# --------------------------------------------------------------------------- the presets' panels
+
+
+class TestThePresetPanels(unittest.TestCase):
+    """What the fitted panels run: no preset opts a security seat in to its rule."""
+
+    def test_standard_high_risk_round_runs_security_on_opus_once(self):
+        panel = presets.expand("standard", ["claude", "codex"]).values["reviewers"]
+        security = [reviewer for reviewer in panel if reviewer["role"] == "security"]
+        self.assertEqual([reviewer["id"] for reviewer in security], ["claude-security"])
+        self.assertFalse([reviewer for reviewer in panel if "when" in reviewer])
+        switched, changed = opt.risk_model(security[0], True)
+        self.assertTrue(changed)
+        self.assertEqual(switched["model"]["family"], "opus")
+        self.assertEqual(opt.risk_model(security[0], False)[0]["model"]["family"], "sonnet")
+
+    def test_quality_preset_docs_only_round_leaves_out_test_and_architecture(self):
+        """Its security seats do not opt in, so they run on a docs-only round too."""
+        values = presets.expand("quality", ["claude", "codex"]).values
+        left_out = {"claude-test": False, "claude-architecture": False}
+        code = code_records(values["reviewers"], ["docs/guide.md"])
+        self.assertEqual({record["id"]: record["runs"] for record in code}, left_out)
+        design = design_records(values["review"]["design"]["reviewers"], plan(["docs/guide.md"]))
+        self.assertEqual({record["id"]: record["runs"] for record in design}, left_out)
+
+
 # --------------------------------------------------------------------------- through the CLI
 
-DEFAULT_PANEL = ("claude-general", "codex-general", "claude-security-2", "claude-security", "claude-test")
+DEFAULT_PANEL = ("claude-general", "codex-general", "claude-security", "claude-test")
 
 
 @unittest.skipUnless(has_git(), "git is required")
