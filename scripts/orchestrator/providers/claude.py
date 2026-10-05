@@ -76,10 +76,12 @@ from .base import (
     MODE_IMPLEMENT,
     READ_ONLY_MODES,
     SESSION_ID_RE,
+    TOOL_ACTIVITY_OUTPUT,
     ModelCandidate,
     ModelResolutionError,
     Provider,
     ResolvedModel,
+    RunResult,
     Usage,
     event_of_type,
     json_lines,
@@ -92,6 +94,10 @@ _READ_ONLY_DENY = "Edit,Write,NotebookEdit"
 #: The only tools a read-only session has. ``--disallowed-tools`` above is
 #: redundant with it and kept anyway: this pair is the combination measured.
 _READ_ONLY_TOOLS = "Read,Grep,Glob"
+#: What a resumed read-only session may be offered, per its init event. A
+#: constant of its own: the live check reads it, and it must not follow
+#: ``_READ_ONLY_TOOLS`` if that changes.
+_RESUMED_TOOLS = frozenset({"Read", "Grep", "Glob"})
 #: What ``--help`` has to list before a read-only run is started.
 _READ_ONLY_FLAGS = ("--tools", "--strict-mcp-config", "--restricted")
 READ_ONLY_MECHANISM = (
@@ -249,6 +255,38 @@ class ClaudeProvider(Provider):
     #: What the adapter asks for unless a role overrides it.
     default_output_format = "stream-json"
     supports_resume = True
+
+    # What the live check asks (base.py, "live check"). ``--restricted``
+    # confines a read-only run and ``--add-dir`` widens it; the repository's
+    # settings file can carry command hooks; the stream pairs every tool call
+    # with its result.
+    confines_read_only = True
+    repository_hooks_file = ".claude/settings.json"
+    tool_activity_reported = TOOL_ACTIVITY_OUTPUT
+
+    def read_only_widening_args(self, directory: str) -> List[str]:
+        return ["--add-dir", directory]
+
+    def resumed_session_problem(self, result: RunResult) -> Optional[str]:
+        """Read from the init event the resumed run reported."""
+        init = getattr(result, "session_init", None)
+        if not isinstance(init, dict):
+            return "the resumed run reported no init event"
+        tools = init.get("tools")
+        if not isinstance(tools, list):
+            return "the resumed run reported no tool list"
+        if not all(isinstance(tool, str) for tool in tools):
+            return "the resumed run reported a malformed tool list"
+        extra = sorted(set(tools) - _RESUMED_TOOLS)
+        if extra:
+            return "the resumed session was offered tools outside Read/Grep/Glob: %s" % ", ".join(extra)
+        servers = init.get("mcp_servers")
+        if servers != []:
+            count = len(servers) if isinstance(servers, list) else "an unknown number of"
+            return "the resumed session had %s MCP server(s)" % count
+        if init.get("permission_mode") != "plan":
+            return "the resumed session's permission mode was not plan"
+        return None
 
     def auth_status(self) -> "tuple[str, str]":
         for variable in ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_AUTH_TOKEN"):

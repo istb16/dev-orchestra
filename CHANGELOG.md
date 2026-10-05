@@ -10,7 +10,19 @@ The public surface covered by that promise is: the configuration schema, the
 
 ## [Unreleased]
 
+### Added
+
+- **`smoke_live.py --model <provider>=<model>` runs a provider's checks on
+  another model.** That provider writes no live-check record and no resume
+  pass, but a resume failure is still recorded. `--json` carries the note
+  that says so under `notes`.
+
 ### Changed
+
+- **Adapters declare what `smoke_live.py` checks** (`confines_read_only`,
+  `repository_hooks_file`, `tool_activity_reported`, `denied_action_items`,
+  `resumed_session_problem`, ...). A user adapter that sets none is checked
+  as before; see `references/providers.md` (#211).
 
 - **agy runs read `--output-format stream-json`** (#193). They report tool
   activity in `jobs wait`, `jobs show` and `review run --progress`, the

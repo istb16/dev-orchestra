@@ -69,11 +69,12 @@ import os
 import re
 import tempfile
 import time
-from typing import Any, Callable, Dict, Iterator, List, NamedTuple, Optional, Sequence, Tuple
+from typing import Any, Callable, ClassVar, Dict, Iterator, List, NamedTuple, Optional, Sequence, Tuple
 
 from .. import activity, execution
 from .base import (
     MODE_IMPLEMENT,
+    TOOL_ACTIVITY_CALLS,
     Launch,
     ModelCandidate,
     ModelResolutionError,
@@ -98,9 +99,12 @@ AGY_UNENFORCED = (
     "the global config to keep it off agy."
 )
 
-#: How the denied-actions warning starts; :func:`denied_actions` reads it back.
+#: How the denied-actions warning starts; :meth:`AgyProvider.denied_action_items`
+#: reads it back.
 DENIED_PREFIX = "agy denied "
 _DENIED_RE = re.compile(r"^%s\d+ action\(s\): (.*?); set " % re.escape(DENIED_PREFIX))
+#: One ``<display name> (<action>)`` item of that warning's list.
+_DENIED_ITEM_RE = re.compile(r"(.+?) \(([^()]*)\)(?:, |$)")
 
 #: An id ``agy models`` lists: ``gemini-<major>.<minor>-<kind>[-<effort>]``.
 _MODEL_ID_RE = re.compile(r"^gemini-(\d+)\.(\d+)-(flash|pro)(?:-(low|medium|high))?$")
@@ -185,6 +189,44 @@ class AgyProvider(Provider):
     #: under verified.resume_trust() with ``required_resume_checks =
     #: ("reports a missing session",)``.
     supports_resume = False
+
+    # What the live check asks (base.py, "live check"). The stream counts
+    # tool steps but not what they printed; a headless run is denied shell
+    # commands, so the tool check asks for the file-viewing tool by name, and
+    # ``skip_permissions`` is the bypass whose counterpart is a named denial.
+    tool_activity_reported = TOOL_ACTIVITY_CALLS
+    file_read_tool = "view_file"
+    implement_write_checked = True
+    permission_bypass_options: ClassVar[Optional[Dict[str, Any]]] = {"skip_permissions": True}
+
+    def denied_action_items(self, warning: str) -> Optional[List[Tuple[str, str]]]:
+        """The items of a warning :func:`_denied_warning` wrote; the whole list
+        as one item of no kind when no item in it parses.
+
+        An entry agy gave as something other than an object has no
+        ``(action)``. Where one follows the last item that parses, each of its
+        ``", "``-separated pieces is kept as an item of no kind; one before an
+        item that parses joins that item's name, since nothing in the text
+        tells the two apart.
+        """
+        match = _DENIED_RE.match(str(warning))
+        if not match:
+            return None
+        listed = match.group(1)
+        items: List[Tuple[str, str]] = []
+        position = 0
+        while position < len(listed):
+            item = _DENIED_ITEM_RE.match(listed, position)
+            if not item:
+                if not items:
+                    return [(listed, "")]
+                # Nothing after this point parses at all: the match is lazy
+                # across ", ", so any later item would have matched here.
+                items.extend((piece, "") for piece in listed[position:].split(", ") if piece)
+                break
+            items.append((item.group(1), item.group(2)))
+            position = item.end()
+        return items or [(listed, "")]
 
     def validate_options(self, options: Optional[Dict[str, Any]]) -> List[str]:
         problems = super().validate_options(options)
@@ -620,13 +662,6 @@ def _denied_warning(result: Dict[str, Any]) -> Optional[str]:
         "or pass --extra --dangerously-skip-permissions, for the implementer to run commands"
         % (len(denied), ", ".join(named))
     )
-
-
-def denied_actions(warning: Any) -> Optional[str]:
-    """The action list of a warning :func:`_denied_warning` wrote; None for
-    any other warning."""
-    match = _DENIED_RE.match(str(warning))
-    return match.group(1) if match else None
 
 
 def _tool_name(step: Dict[str, Any]) -> str:

@@ -18,6 +18,7 @@
   - [The contract](#the-contract)
   - [Rules](#rules)
   - [Taking part in preset fitting](#taking-part-in-preset-fitting)
+  - [Taking part in the live check](#taking-part-in-the-live-check)
   - [When it goes wrong](#when-it-goes-wrong)
   - [Interface stability](#interface-stability)
 - [Failure semantics](#failure-semantics)
@@ -76,6 +77,18 @@ class Provider:
     def resume_command(mode, resolved, cwd, extra_args, options, session_id) -> list[str]  # default: build_command + resume_args
     def resume_rejected(outcome, mode, options, session_id) -> bool   # default: False
     def parse_session(outcome) -> dict                          # session_id, context_tokens, init
+
+    # Live check only: read by scripts/smoke_live.py, never by a run or the orchestrator.
+    confines_read_only: bool                                    # default: False
+    repository_hooks_file: str                                  # default: ""
+    repository_sandbox_config_file: str                         # default: ""
+    tool_activity_reported: str                                 # default: "none"
+    file_read_tool: str                                         # default: ""
+    implement_write_checked: bool                               # default: False
+    permission_bypass_options: dict | None                      # default: None
+    def read_only_widening_args(directory) -> list[str]         # default: []
+    def denied_action_items(warning) -> list[tuple[str, str]] | None   # default: None
+    def resumed_session_problem(result) -> str | None           # default: names no reading
 
 class Launch(NamedTuple):     # one run, as around_launch is handed it
     prompt, mode, cwd, model_spec, timeout, extra_args, env, options,
@@ -137,7 +150,9 @@ passes `verified.resume_trust(...)` the table, the adapter's
 `resume_mechanism()` -- the flags a record vouches for, the fresh read-only
 mechanism unless the resumed command differs -- and its
 `required_resume_checks`, the checks a version must pass (every check
-`verified.py` names unless it names fewer), and turns the answer into the
+`verified.py` names unless it names fewer; that set includes the confinement
+and hooks checks, so an adapter that declares neither for the live check
+names its own), and turns the answer into the
 report with `resume_report(version, trust)`. An adapter may also refuse to
 start a resumed run: `around_launch` returns a result with
 `resume_rejected=True` and `invoked=False` without calling `proceed`, and the
@@ -907,6 +922,85 @@ prints a `Preset fitting:` line in the adapter's block saying which roles it
 can take and why, and `doctor --json` has it as `providers.<name>.preset_fit`.
 `DEV_ORCHESTRA_NO_USER_PROVIDERS=1` takes every user adapter out of the fit,
 as it takes it out of everything else.
+
+### Taking part in the live check
+
+`scripts/smoke_live.py --provider <name>` runs the installed CLI for real and
+checks that the adapter still fits it. Every adapter is asked the same core
+checks: it is installed, it resolves a model, it answers a review prompt, it
+reports what it spent, its tool activity, and whether a review run stays
+read-only (or, for an `unenforced` adapter, whether that status matches what
+the run did). Whatever else it is asked, the adapter declares on its class --
+the script names no CLI. Each member's default is "not asked", so an adapter
+that sets none is checked exactly as before. The check names are fixed: an
+adapter decides which checks run, never what they are called.
+
+| Member | Default | Set it to opt in to |
+| --- | --- | --- |
+| `confines_read_only` | `False` | `True`: `stays confined (absolute)`, `stays confined (symlink)`, `--add-dir widens`, and, for an adapter that resumes, `resumes confined (absolute/symlink)`. A read-only run must not read a file outside its working directory. |
+| `read_only_widening_args(directory)` | `[]` | The raw arguments that let a read-only run also read `directory`; asked by `--add-dir widens`, which needs it. |
+| `repository_hooks_file` | `""` | A repository-relative path the CLI reads command hooks from: `ignores repository hooks` and `ignores repository hooks on resume`. |
+| `repository_sandbox_config_file` | `""` | A repository-relative path the CLI reads a sandbox setting from: `ignores repository config on resume`. |
+| `tool_activity_reported` | `"none"` | What `parse_usage` fills in about tools: `"calls"` (`tool_uses` and `tool_uses_by_name`) or `"calls and output"` (those and `tool_output_chars`). `"none"` reports the check as not reported by design; any other value fails it without a run. |
+| `file_read_tool` | `""` | The tool the CLI reads a file with, for a CLI whose read-only run may also reach a shell: the tool check asks for that tool by name and for README.md's content in the reply. |
+| `denied_action_items(warning)` | `None` | `(display name, kind)` for each action a `run_warnings` warning names as denied, and `None` for any other warning. |
+| `implement_write_checked` | `False` | `True`: `writes a file in implement mode`. |
+| `permission_bypass_options` | `None` | The role options that let a write run run shell commands without asking: `names a denied command` (without them) and `runs a command with skip_permissions` (with them). |
+| `resumed_session_problem(result)` | names no reading | The first way a resumed session falls short of read-only, or `None`. |
+
+Some members are only half of a pair:
+
+- `confines_read_only` without `read_only_widening_args`: `--add-dir widens`
+  fails with "the adapter declares no read-only widening arguments", and
+  nothing is run for it. The widening arguments go through the adapter's own
+  read-only gate (`read_only_arg_problems`) first, as a caller's would; if it
+  refuses them, the check fails naming the flags, never their values.
+- `permission_bypass_options` without `denied_action_items`: `names a denied
+  command` fails with "the adapter declares no denied_action_items, so a
+  denied command cannot be read", with no run; the bypass check still runs,
+  and fails on any warning that contains the word "denied". With
+  `denied_action_items`, the bypass check fails only on a warning the method
+  reads as a denial, like every other check. The options must be a mapping
+  of keys in `option_keys`, or the bypass check fails without a run ("names
+  ..., not options this adapter takes"); so must values `validate_options`
+  accepts ("is refused by the adapter: ..."). Opting in runs a shell command
+  (`echo true`) with the bypass, under your account, inside the temporary
+  sandbox repository the script makes.
+- `denied_action_items` without `permission_bypass_options`: neither command
+  check is asked, since there is no bypass whose counterpart a denial would
+  prove. The method still serves the tool check.
+- `tool_activity_reported = "calls"` without `denied_action_items`: the tool
+  check cannot see a denial, so a denied-looking warning does not fail it;
+  only a run that did not complete and the `file_read_tool` requirements do.
+
+`kind` is the CLI's own word for the action. The script relies on one value,
+`"command"`: a shell command, which is what `names a denied command` passes
+on. Anything else is reported as denied, not a command.
+
+The fixtures are the script's own, each in one CLI's format whatever path the
+adapter names: the hooks file is Claude's `settings.json` hooks format, and
+the sandbox config is Codex's `config.toml`. A path must be relative and inside
+the repository: one that is empty, absolute, has a drive (`C:x` included) or a
+leading separator, has a `..` component, or resolves outside the repository
+through a symlink fails every check that member asks, with "`<member>` ... is
+not a path inside the repository", and nothing is written. A file already at
+the path is not overwritten, and the check fails. The script removes the file,
+and any directory it made for it, whether the run passed, failed or raised.
+
+`resumed_session_problem` is asked of every adapter that has resume arguments
+of its own. Override it only to read restrictions the CLI itself reported --
+an init event, a rollout -- and return `None` only when those show the session
+started read-only, never because no file was written: a model that chose not
+to write proves nothing about a CLI that dropped a flag on resume. The default
+names no reading, so `resumes read-only` fails until an adapter has one.
+
+A resume pass is recorded only when every check in `required_resume_checks`
+passed. The default set includes `resumes confined (absolute)` and both hooks
+checks, which only `confines_read_only` and `repository_hooks_file` ask for.
+An adapter that resumes without them names its own set (as Codex does);
+otherwise the run ends with a failed `resume verified` line, "required_resume_checks
+names ..., which the live check does not ask of this adapter; nothing
+recorded". A failed check is still recorded as a failure.
 
 ### When it goes wrong
 

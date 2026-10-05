@@ -139,14 +139,27 @@ things:
 ```bash
 python scripts/smoke_live.py            # every installed CLI
 python scripts/smoke_live.py --provider codex
+python scripts/smoke_live.py --model agy=<id agy models lists>
 ```
 
 It spends a small number of real tokens on the questions only a real process
 can answer: does the command line still work, does the CLI still report what a
 run cost in a shape the parser reads, and does a read-only mode still actually
 refuse to write -- checked by asking for a file and then looking for it, not by
-believing what the agent said about itself -- and, for Claude, does a read-only
-run still stay inside its working directory while `--add-dir` still widens it.
+believing what the agent said about itself -- and, for an adapter that declares
+its read-only runs confined (Claude), does a run still stay inside its working
+directory while the widening arguments still widen it. Which checks an adapter
+is asked is declared on the adapter, not listed in the script; see "Taking part
+in the live check" in `references/providers.md`.
+
+`--model <provider>=<model>` runs that provider's checks on a model you name
+instead of the CLI default -- a Claude model inside agy, say -- while every
+other provider in the run uses its default. The model is checked before any
+token is spent only as strictly as the adapter resolves it: claude passes any
+`claude-*` id through, so a typo there fails at the first run. A provider named
+in `--model` writes no live-check record and no resume pass, since both vouch
+for the CLI's default model; a resume failure is still recorded, because a
+breach is evidence whatever the model.
 
 Run it before a release, after touching an adapter, and after bumping a CLI. A
 failure there is the adapter and the CLI having drifted apart: read the CLI's
@@ -266,7 +279,10 @@ needs, is under "How the formats change" in `references/workflow.md`.
    entry into `VERIFIED_RESUME` in that adapter's
    `scripts/orchestrator/providers/<name>.py`: the version string, the date,
    the read-only mechanism, the check names, and in `source` the date and the
-   environment it was run in. Never add a version that failed. A user on a
+   environment it was run in. Entries come only from runs on the CLI's default
+   model, the only runs that write a resume pass: a model that declines to read
+   or write passes "not read" and "refused to write" on the filesystem alone.
+   Never add a version that failed. A user on a
    version older than every entry has every `--resume` run fresh until they run
    the script themselves; one on a newer version resumes on trust.
 3. Changing a value in `default_config()` is a change to the effective

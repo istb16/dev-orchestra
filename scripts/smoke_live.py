@@ -26,17 +26,24 @@ that only a real process can answer:
 * does it still report what the agent did with its tools, in the same sense
 * does a read-only mode still actually refuse to write -- or, for a CLI
   reported as having none, does it still write
-* does agy's implement mode write, does a command it may not run come back
-  named as denied, and does its permission bypass let a command run
-* does a read-only Claude run still stay inside its working directory, and
-  does ``--add-dir`` still widen it
-* does a resumed Claude session keep all of that: the same tools, no MCP
-  servers, plan mode, no repository hooks, the same confinement -- and does a
-  missing session still fail in the shape the adapter recognises
-* does a forked Codex session stay read-only, as its rollout states -- under
-  a repository ``.codex/config.toml`` that loosens the sandbox too -- does the
-  fork get a new thread id, and does a missing thread still fail in the
+* for an adapter that says so, does implement mode write, does a command it
+  may not run come back named as denied, and does its permission bypass let
+  a command run
+* for an adapter that says its read-only runs are confined, does a run still
+  stay inside its working directory, and do its widening arguments still
+  widen it
+* does a resumed session keep all of that, as far as the CLI reports its
+  restrictions -- under the repository hooks or sandbox config the adapter
+  names, too -- does it fork, and does a missing session still fail in the
   shape the adapter recognises
+
+Which of these an adapter is asked is its own declaration (the "live check"
+members of ``Provider``), not a list of CLI names here; the prompts and the
+fixtures are this script's.
+
+``--model <provider>=<model>`` runs one provider's checks on another model.
+That provider writes no live-check record and no resume pass, since both
+vouch for the CLI's default; a resume failure is still recorded.
 
 Run it before a release, and after touching an adapter or bumping a CLI. It is
 not part of ``unittest discover`` and never should be.
@@ -45,14 +52,16 @@ not part of ``unittest discover`` and never should be.
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
 import uuid
-from typing import Any, Dict, List, Optional, cast
+from typing import Any, Dict, List, Optional, Tuple, cast
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -64,13 +73,15 @@ from orchestrator.providers import (
     MODE_PLAN,
     MODE_REVIEW,
     OFFLINE,
+    TOOL_ACTIVITY_CALLS,
+    TOOL_ACTIVITY_NONE,
+    TOOL_ACTIVITY_OUTPUT,
     WARNED_ENFORCEMENT,
     Provider,
     available_providers,
     get_provider,
     redact,
 )
-from orchestrator.providers.agy import denied_actions
 
 #: Short enough to cost almost nothing, specific enough that a wrong answer is
 #: obvious rather than arguable.
@@ -97,19 +108,22 @@ WRITE_TARGET = "breach.txt"
 #: -l``) and no ``Read`` at all, which is exactly why every tool is counted.
 TOOL_PROMPT = "Count the lines in README.md in this directory. Reply with only the number."
 
-#: Providers whose read-only runs are confined to the working directory by
-#: the CLI (``--restricted``). Codex is absent: its sandbox stops writes, and
-#: what it lets a run read was not measured.
-CONFINES = ("claude",)
+#: The tool prompt for an adapter that names its file-reading tool
+#: (``file_read_tool``), where ``TOOL_PROMPT`` would not tell that tool from a
+#: shell: it asks for the file-viewing tool, and for the file's content, which
+#: is not in the prompt.
+FILE_TOOL_PROMPT = (
+    "Open README.md in this directory with your file-viewing tool, without running any shell "
+    "command, and reply with its contents verbatim."
+)
+
+#: What ``sandbox()`` writes in README.md, and what a reply to
+#: ``FILE_TOOL_PROMPT`` must carry.
+README_TEXT = "smoke"
 
 #: The symlink half of the confinement check: a link inside the working
 #: directory to the file outside it.
 LINK_PROMPT = "Read the file `link.txt` in the current directory and reply with its contents verbatim."
-
-#: Providers whose write roles are checked too: that implement mode writes, and
-#: that ``options.skip_permissions`` lets a shell command run. agy is the one
-#: whose command line depends on it.
-IMPLEMENT_CHECKED = ("agy",)
 
 #: The implement-mode write check's file, and its prompt.
 IMPLEMENT_TARGET = "implement.txt"
@@ -121,42 +135,13 @@ IMPLEMENT_PROMPT = (
 #: The command check's prompt: a shell is the only way to answer it.
 COMMAND_PROMPT = "Run the shell command `echo true` and reply with exactly what it printed."
 
-#: Providers whose adapter reports tool activity: Claude from its stream's
-#: tool blocks, agy from its stream's tool steps. Codex is absent on purpose:
-#: it hands back only its final message and its usage comes from a prose
-#: footer, so counting tool calls from it would mean matching prose -- which
-#: matches the code under review as readily as the CLI's own output.
-REPORTS_TOOLS = ("claude", "agy")
-
-#: Providers that count tool calls but not what the tools printed back. Only
-#: the output requirement is skipped for them; the reply and the tool names
-#: are checked instead.
-TOOL_OUTPUT_UNREPORTED = ("agy",)
-
-#: A provider's own tool prompt, where ``TOOL_PROMPT`` would not tell a tool
-#: from a shell: agy runs a command denied in headless mode, so its prompt
-#: asks for the file-viewing tool, and for the file's content, which is not
-#: in the prompt.
-TOOL_PROMPTS = {
-    "agy": (
-        "Open README.md in this directory with your file-viewing tool, without running any shell "
-        "command, and reply with its contents verbatim."
-    ),
-}
-
-#: What the reply to a provider's tool prompt must carry: README.md's content.
-EXPECTED_REPLY = {"agy": "smoke"}
-
-#: The tools a provider's tool prompt must have been answered with.
-EXPECTED_TOOLS = {"agy": ("view_file",)}
+#: What ``tool_activity_reported`` may say; anything else fails the check.
+TOOL_ACTIVITY_VALUES = (TOOL_ACTIVITY_NONE, TOOL_ACTIVITY_CALLS, TOOL_ACTIVITY_OUTPUT)
 
 TIMEOUT = 180
 
 #: A session id nothing will ever have been given, for the rejection check.
 MISSING_SESSION = "00000000-0000-4000-8000-000000000000"
-
-#: What a resumed read-only session may be offered, per its init event.
-RESUMED_TOOLS = {"Read", "Grep", "Glob"}
 
 #: The file a command hook from the repository's settings would create.
 HOOK_TARGET = "hook-ran.txt"
@@ -174,22 +159,23 @@ RESUME_CHECKS = (
     "ignores repository config on resume",
 )
 
-#: Providers whose read-only runs are held against command hooks in the
-#: repository's ``.claude/settings.json``. Only Claude reads that file.
-HOOKED = ("claude",)
-
-#: Providers whose resumed runs are checked against a repository config that
-#: loosens the sandbox (``.codex/config.toml``).
-REPO_CONFIGURED = ("codex",)
-
-#: What the repository-config check writes: every way ``config.toml`` names
-#: a sandbox, all of them loose.
+#: What the repository-config check writes at ``repository_sandbox_config_file``,
+#: in Codex's ``config.toml`` format: every way it names a sandbox, all of
+#: them loose.
 REPO_CONFIG = (
     'sandbox_mode = "danger-full-access"\n'
     'profile = "loose"\n'
     "\n"
     "[profiles.loose]\n"
     'sandbox_mode = "danger-full-access"\n'
+)
+
+#: What ``--model`` takes after ``<provider>=``. A leading letter or digit, so
+#: no value can be read as a flag.
+MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,99}$")
+MODEL_SYNTAX = (
+    "--model takes <provider>=<model>; the model starts with a letter or digit and has up to 100 "
+    "letters, digits or . _ : / -"
 )
 
 
@@ -234,38 +220,71 @@ def sandbox() -> str:
     ):
         subprocess.run(["git", *args], cwd=path, capture_output=True, check=False)
     with open(os.path.join(path, "README.md"), "w", encoding="utf-8") as handle:
-        handle.write("smoke\n")
+        handle.write(README_TEXT + "\n")
     return path
 
 
-def check_provider(name: str, root: str) -> List[Check]:
+def _model_of(model_spec: Optional[Dict[str, Any]]) -> Optional[str]:
+    """The model ``--model`` named in ``model_spec``, or None without one."""
+    if not model_spec:
+        return None
+    return str(model_spec.get("family") or "")
+
+
+def check_provider(
+    name: str, root: str, model_spec: Optional[Dict[str, Any]] = None, record: bool = True
+) -> List[Check]:
+    """Every check for ``name``. ``model_spec`` goes to every run; ``record``
+    False writes no live-check record and no resume pass, which vouch for
+    the CLI's default model, and still writes a resume failure."""
     provider = get_provider(name)
+    model = _model_of(model_spec)
 
     detection = provider.detect()
     if not detection.installed:
-        return [Check(name, "installed", False, detection.error or "not on PATH")]
-    checks = [Check(name, "installed", True, detection.version or "")]
-    checks.extend(_installed_checks(provider, name, root))
-    if detection.version:
+        check = Check(name, "installed", False, detection.error or "not on PATH")
+        if model is not None:
+            check.notes.append(
+                "note: %s: --model %s=%s was not used: the CLI is not installed" % (name, name, model)
+            )
+        return [check]
+    installed = Check(name, "installed", True, detection.version or "")
+    if model is not None:
+        installed.notes.append(
+            "note: %s: no live-check record and no resume pass written -- --model %s=%s overrides the "
+            "CLI default; a resume failure is still recorded. Run without --model to record this "
+            "version." % (name, name, model)
+        )
+    checks = [installed]
+    checks.extend(_installed_checks(provider, name, root, model_spec=model_spec, record=record))
+    if detection.version and record:
         checks.extend(record_smoke(name, detection.version, checks))
     return checks
 
 
-def _installed_checks(provider: Any, name: str, root: str) -> List[Check]:
+def _installed_checks(
+    provider: Any,
+    name: str,
+    root: str,
+    *,
+    model_spec: Optional[Dict[str, Any]] = None,
+    record: bool = True,
+) -> List[Check]:
     checks: List[Check] = []
+    model = _model_of(model_spec)
     try:
-        resolved = provider.resolve_model(None)
-        checks.append(Check(name, "resolves a model", True, resolved.display))
+        resolved = provider.resolve_model(model_spec)
+        detail = resolved.display if model is None else "%s (--model %s)" % (resolved.display, model)
+        checks.append(Check(name, "resolves a model", True, detail))
     except Exception as exc:
         checks.append(Check(name, "resolves a model", False, "%s: %s" % (type(exc).__name__, exc)))
         return checks
 
     # One call, two questions: does it answer, and does it say what it cost.
-    try:
-        result = provider.run(READY_PROMPT, MODE_REVIEW, root, timeout=TIMEOUT, idle_timeout=60.0)
-    except Exception as exc:
+    result, why = _run(provider, READY_PROMPT, MODE_REVIEW, root, model_spec=model_spec)
+    if result is None:
         # The TypeError this script exists for lands here.
-        checks.append(Check(name, "answers a review prompt", False, "%s: %s" % (type(exc).__name__, exc)))
+        checks.append(Check(name, "answers a review prompt", False, why or ""))
         return checks
 
     answer = (result.stdout or "").strip()
@@ -290,15 +309,37 @@ def _installed_checks(provider: Any, name: str, root: str) -> List[Check]:
             )
         )
 
-    checks.append(check_tool_activity(provider, name, root))
-    checks.append(check_read_only(provider, name, root))
-    checks.extend(check_implement(provider, name, root))
-    checks.extend(check_confined(provider, name, root))
-    resume_checks = check_resume(provider, name, root)
+    checks.append(check_tool_activity(provider, name, root, model_spec=model_spec))
+    checks.append(check_read_only(provider, name, root, model_spec=model_spec))
+    checks.extend(check_implement(provider, name, root, model_spec=model_spec))
+    checks.extend(check_confined(provider, name, root, model_spec=model_spec))
+    resume_checks = check_resume(provider, name, root, model_spec=model_spec)
     checks.extend(resume_checks)
     if resume_checks:
-        checks.extend(record_resume(provider, name, checks, resolved.display))
+        checks.extend(record_resume(provider, name, checks, resolved.display, record_pass=record))
     return checks
+
+
+def _run(
+    provider: Any,
+    prompt: str,
+    mode: str,
+    root: str,
+    model_spec: Optional[Dict[str, Any]] = None,
+    **kwargs: Any,
+) -> "tuple[Any, Optional[str]]":
+    """Run ``prompt``: (result or None, why it cannot be judged).
+
+    None means the run raised. ``model_spec`` is passed only when there is
+    one, so every other run is called exactly as it always was.
+    """
+    if model_spec is not None:
+        kwargs["model_spec"] = model_spec
+    try:
+        result = provider.run(prompt, mode, root, timeout=TIMEOUT, idle_timeout=60.0, **kwargs)
+    except Exception as exc:
+        return None, "%s: %s" % (type(exc).__name__, exc)
+    return result, _did_not_run(result)
 
 
 def _did_not_run(result: Any) -> Optional[str]:
@@ -316,7 +357,9 @@ def _did_not_run(result: Any) -> Optional[str]:
     return None
 
 
-def check_tool_activity(provider: Any, name: str, root: str) -> Check:
+def check_tool_activity(
+    provider: Any, name: str, root: str, *, model_spec: Optional[Dict[str, Any]] = None
+) -> Check:
     """Does a real run still report what it did with its tools?
 
     The shape these counts are read from -- ``tool_use`` blocks on one event,
@@ -326,15 +369,23 @@ def check_tool_activity(provider: Any, name: str, root: str) -> Check:
     catch that drift, and the cost of missing it is a measurement that reads as
     "this reviewer opened nothing" when it means "we stopped being able to
     tell".
+
+    What is asked follows ``tool_activity_reported``: nothing for an adapter
+    that reports none; the calls, the reply and the tool for one that counts
+    calls only; the calls and their output for one that reports both. An
+    adapter that names its ``file_read_tool`` is asked to read with it.
     """
     label = "reports its tool activity"
-    if name not in REPORTS_TOOLS:
+    reported = provider.tool_activity_reported
+    if reported not in TOOL_ACTIVITY_VALUES:
+        return Check(name, label, False, "unknown tool_activity_reported %r" % (reported,))
+    if reported == TOOL_ACTIVITY_NONE:
         return Check(name, label, True, "not reported by this adapter, by design")
-    try:
-        prompt = TOOL_PROMPTS.get(name, TOOL_PROMPT)
-        result = provider.run(prompt, MODE_REVIEW, root, timeout=TIMEOUT, idle_timeout=60.0)
-    except Exception as exc:
-        return Check(name, label, False, "%s: %s" % (type(exc).__name__, exc))
+    tool = provider.file_read_tool
+    prompt = FILE_TOOL_PROMPT if tool else TOOL_PROMPT
+    result, why = _run(provider, prompt, MODE_REVIEW, root, model_spec=model_spec)
+    if result is None:
+        return Check(name, label, False, why or "")
     usage = result.usage
     if usage.tool_uses is None:
         return Check(name, label, False, "no tool activity parsed -- the event shape may have changed")
@@ -343,8 +394,8 @@ def check_tool_activity(provider: Any, name: str, root: str) -> Check:
         # check: the prompt cannot be answered without a tool, so zero means
         # the pairing stopped working rather than that the agent used nothing.
         return Check(name, label, False, "the run reported 0 tool uses for a prompt that needs one")
-    if name in TOOL_OUTPUT_UNREPORTED:
-        return _check_named_tools(name, label, result)
+    if reported == TOOL_ACTIVITY_CALLS:
+        return _check_named_tools(provider, name, label, result)
     chars = usage.tool_output_chars
     if not isinstance(chars, int) or chars <= 0:
         # Calls and results are read from different events and paired by
@@ -353,47 +404,73 @@ def check_tool_activity(provider: Any, name: str, root: str) -> Check:
         # becomes zero. This prompt makes the agent read a file, so it has
         # output; checking only the calls would have passed that.
         return Check(name, label, False, "%d tool use(s) and no output to pair with them" % usage.tool_uses)
-    names = ", ".join("%s x%d" % item for item in sorted((usage.tool_uses_by_name or {}).items()))
+    by_name = usage.tool_uses_by_name or {}
+    names = ", ".join("%s x%d" % item for item in sorted(by_name.items()))
+    problem = _file_tool_problem(tool, result, by_name, names)
+    if problem:
+        return Check(name, label, False, problem)
     detail = "%d use(s) [%s], %s observed output chars" % (usage.tool_uses, names or "unnamed", chars)
     return Check(name, label, True, detail)
 
 
-def _check_named_tools(name: str, label: str, result: Any) -> Check:
+def _file_tool_problem(tool: str, result: Any, by_name: Dict[str, int], names: str) -> Optional[str]:
+    """For an adapter that names its ``file_read_tool``: whether the reply
+    carried README.md's content, and that tool read it."""
+    if not tool:
+        return None
+    if README_TEXT not in (result.stdout or ""):
+        return "the reply did not carry README.md's content"
+    if tool not in by_name:
+        return "expected %s in tool_uses_by_name, got %s" % (tool, names or "none")
+    return None
+
+
+def _check_named_tools(provider: Any, name: str, label: str, result: Any) -> Check:
     """The tool check for a provider that reports no tool output: with no
     output count to show a tool returned something, the run must have been
-    answered, with the file's content, by the tool expected, and nothing denied."""
+    answered, with the file's content, by the tool expected, and nothing denied.
+
+    A denial is seen only through the adapter's ``denied_action_items``."""
     usage = result.usage
     warnings = getattr(result, "warnings", None) or []
-    denied = [warning for warning in warnings if denied_actions(warning) is not None]
+    denied = [warning for warning in warnings if provider.denied_action_items(warning) is not None]
     if denied:
         return Check(name, label, False, '"%s"' % denied[0][:160])
     reason = _did_not_run(result)
     if reason:
         return Check(name, label, False, reason)
-    expected = EXPECTED_REPLY.get(name)
-    if expected and expected not in (result.stdout or ""):
-        return Check(name, label, False, "the reply did not carry README.md's content")
     by_name = usage.tool_uses_by_name or {}
     names = ", ".join("%s x%d" % item for item in sorted(by_name.items()))
-    for tool in EXPECTED_TOOLS.get(name, ()):
-        if tool not in by_name:
-            detail = "expected %s in tool_uses_by_name, got %s" % (tool, names or "none")
-            return Check(name, label, False, detail)
+    problem = _file_tool_problem(provider.file_read_tool, result, by_name, names)
+    if problem:
+        return Check(name, label, False, problem)
     detail = "%d use(s) [%s]; output chars not reported by %s" % (usage.tool_uses, names or "unnamed", name)
     return Check(name, label, True, detail)
 
 
-def _denied_actions(warnings: Any) -> List[str]:
-    """The action lists of agy's denied-actions warnings."""
-    found: List[str] = []
+def _denied_actions(provider: Any, warnings: Any) -> List[List[Tuple[str, str]]]:
+    """The ``(display name, kind)`` items of each warning the adapter reads
+    as a denial."""
+    found: List[List[Tuple[str, str]]] = []
     for warning in warnings or ():
-        actions = denied_actions(warning)
-        if actions is not None:
-            found.append(actions)
+        items = provider.denied_action_items(warning)
+        if items is not None:
+            found.append(list(items))
     return found
 
 
-def check_read_only(provider: Any, name: str, root: str) -> Check:
+def _denied_text(found: List[List[Tuple[str, str]]]) -> str:
+    """The denials as the adapter worded them: ``name (kind)``, comma-joined
+    within a warning and ``; ``-joined across them."""
+    return "; ".join(
+        ", ".join("%s (%s)" % (display, kind) if kind else display for display, kind in items)
+        for items in found
+    )
+
+
+def check_read_only(
+    provider: Any, name: str, root: str, *, model_spec: Optional[Dict[str, Any]] = None
+) -> Check:
     """The invariant the whole review design rests on, tested against reality.
 
     ``review`` is a read-only mode: the adapters ask for it (``-s read-only``
@@ -414,16 +491,14 @@ def check_read_only(provider: Any, name: str, root: str) -> Check:
     target = os.path.join(root, WRITE_TARGET)
     if os.path.exists(target):
         os.unlink(target)
-    try:
-        result = provider.run(WRITE_PROMPT, MODE_REVIEW, root, timeout=TIMEOUT, idle_timeout=60.0)
-    except Exception as exc:
-        return Check(name, label, False, "%s: %s" % (type(exc).__name__, exc))
+    result, reason = _run(provider, WRITE_PROMPT, MODE_REVIEW, root, model_spec=model_spec)
+    if result is None:
+        return Check(name, label, False, reason or "")
     if os.path.exists(target):
         os.unlink(target)
         check = Check(name, label, warned, "it wrote %s in review mode" % WRITE_TARGET)
         check.observed["read_only"] = "wrote"
         return check
-    reason = _did_not_run(result)
     if reason:
         return Check(name, label, False, reason)
     if warned:
@@ -443,71 +518,104 @@ def _enforcement_status(provider: Any) -> Optional[str]:
         return None
 
 
-def check_implement(provider: Any, name: str, root: str) -> List[Check]:
-    """Does implement mode write, does a command without ``skip_permissions``
-    come back named as denied, and does ``skip_permissions`` let it run?
+def check_implement(
+    provider: Any, name: str, root: str, *, model_spec: Optional[Dict[str, Any]] = None
+) -> List[Check]:
+    """Does implement mode write, does a command without the permission
+    bypass come back named as denied, and does the bypass let it run?
 
-    Only for ``IMPLEMENT_CHECKED``. The write is judged on the filesystem;
-    the denied command by the warning that names it, which is the live check
-    that ``-p`` gives the shape the adapter's denied fixture was recorded in;
-    the bypassed command by its output and by the CLI naming no denied action.
+    The write only for an adapter with ``implement_write_checked``, and the
+    two commands only for one that names ``permission_bypass_options``. The
+    write is judged on the filesystem; the denied command by the warning
+    that names it, as the adapter's ``denied_action_items`` reads it; the
+    bypassed command by its output and by the CLI naming no denied action.
     """
-    if name not in IMPLEMENT_CHECKED:
-        return []
     checks: List[Check] = []
+    if provider.implement_write_checked:
+        checks.append(_check_implement_write(provider, name, root, model_spec))
+    bypass = provider.permission_bypass_options
+    if bypass is None:
+        # Nothing to bypass, so no denial whose counterpart could be proven.
+        return checks
+    checks.append(_check_denied_command(provider, name, root, model_spec))
+    checks.append(_check_bypass(provider, name, root, bypass, model_spec))
+    return checks
+
+
+def _check_implement_write(
+    provider: Any, name: str, root: str, model_spec: Optional[Dict[str, Any]]
+) -> Check:
     label = "writes a file in implement mode"
     target = os.path.join(root, IMPLEMENT_TARGET)
     if os.path.exists(target):
         os.unlink(target)
-    try:
-        result = provider.run(IMPLEMENT_PROMPT, MODE_IMPLEMENT, root, timeout=TIMEOUT, idle_timeout=60.0)
-    except Exception as exc:
-        checks.append(Check(name, label, False, "%s: %s" % (type(exc).__name__, exc)))
-    else:
-        if os.path.exists(target):
-            os.unlink(target)
-            checks.append(Check(name, label, True, "wrote %s" % IMPLEMENT_TARGET))
-        else:
-            checks.append(Check(name, label, False, _did_not_run(result) or "no file was written"))
+    result, why = _run(provider, IMPLEMENT_PROMPT, MODE_IMPLEMENT, root, model_spec=model_spec)
+    if result is None:
+        return Check(name, label, False, why or "")
+    if os.path.exists(target):
+        os.unlink(target)
+        return Check(name, label, True, "wrote %s" % IMPLEMENT_TARGET)
+    return Check(name, label, False, why or "no file was written")
 
+
+def _check_denied_command(provider: Any, name: str, root: str, model_spec: Optional[Dict[str, Any]]) -> Check:
     label = "names a denied command"
-    try:
-        result = provider.run(COMMAND_PROMPT, MODE_IMPLEMENT, root, timeout=TIMEOUT, idle_timeout=60.0)
-    except Exception as exc:
-        checks.append(Check(name, label, False, "%s: %s" % (type(exc).__name__, exc)))
-    else:
-        denied = _denied_actions(getattr(result, "warnings", None))
-        if result.invoked and any("(command)" in listed for listed in denied):
-            checks.append(Check(name, label, True, "denied %s" % "; ".join(denied)[:120]))
-        elif denied:
-            checks.append(Check(name, label, False, "denied %s, not a command" % "; ".join(denied)[:120]))
-        else:
-            checks.append(Check(name, label, False, _did_not_run(result) or "no action was denied"))
+    if type(provider).denied_action_items is Provider.denied_action_items:
+        detail = "the adapter declares no denied_action_items, so a denied command cannot be read"
+        return Check(name, label, False, detail)
+    result, why = _run(provider, COMMAND_PROMPT, MODE_IMPLEMENT, root, model_spec=model_spec)
+    if result is None:
+        return Check(name, label, False, why or "")
+    found = _denied_actions(provider, getattr(result, "warnings", None))
+    text = _denied_text(found)
+    if result.invoked and any(kind == "command" for items in found for _, kind in items):
+        return Check(name, label, True, "denied %s" % text[:120])
+    if found:
+        return Check(name, label, False, "denied %s, not a command" % text[:120])
+    return Check(name, label, False, why or "no action was denied")
 
+
+def _bypass_problem(provider: Any, bypass: Any) -> Optional[str]:
+    """Why ``permission_bypass_options`` cannot go on a run, or None."""
+    keys = list(bypass) if isinstance(bypass, dict) else []
+    if not isinstance(bypass, dict) or not set(keys) <= set(provider.option_keys):
+        named = ", ".join(str(key) for key in keys) or repr(bypass)
+        return "permission_bypass_options names %s, not options this adapter takes" % named
+    problems = provider.validate_options(copy.deepcopy(bypass))
+    if problems:
+        return "permission_bypass_options is refused by the adapter: %s" % "; ".join(problems)
+    return None
+
+
+def _check_bypass(
+    provider: Any, name: str, root: str, bypass: Any, model_spec: Optional[Dict[str, Any]]
+) -> Check:
     label = "runs a command with skip_permissions"
-    try:
-        result = provider.run(
-            COMMAND_PROMPT,
-            MODE_IMPLEMENT,
-            root,
-            timeout=TIMEOUT,
-            idle_timeout=60.0,
-            options={"skip_permissions": True},
-        )
-    except Exception as exc:
-        checks.append(Check(name, label, False, "%s: %s" % (type(exc).__name__, exc)))
-        return checks
-    reason = _did_not_run(result)
-    denied = [warning for warning in getattr(result, "warnings", []) or [] if "denied" in warning]
+    problem = _bypass_problem(provider, bypass)
+    if problem:
+        return Check(name, label, False, problem)
+    result, reason = _run(
+        provider, COMMAND_PROMPT, MODE_IMPLEMENT, root, model_spec=model_spec, options=copy.deepcopy(bypass)
+    )
+    if result is None:
+        return Check(name, label, False, reason or "")
+    denied = _denial_warnings(provider, getattr(result, "warnings", None))
     if reason:
-        checks.append(Check(name, label, False, reason))
-    elif denied:
-        checks.append(Check(name, label, False, denied[0][:160]))
-    elif "true" not in (result.stdout or "").lower():
-        checks.append(Check(name, label, False, "the reply did not carry the command's output"))
-    else:
-        checks.append(Check(name, label, True, "ran, no denied action"))
-    return checks
+        return Check(name, label, False, reason)
+    if denied:
+        return Check(name, label, False, denied[0][:160])
+    if "true" not in (result.stdout or "").lower():
+        return Check(name, label, False, "the reply did not carry the command's output")
+    return Check(name, label, True, "ran, no denied action")
+
+
+def _denial_warnings(provider: Any, warnings: Any) -> List[str]:
+    """The warnings that say an action was denied: as the adapter's
+    ``denied_action_items`` reads them, or, for an adapter with no reading,
+    any that says "denied"."""
+    if type(provider).denied_action_items is Provider.denied_action_items:
+        return [warning for warning in warnings or () if "denied" in warning]
+    return [warning for warning in warnings or () if provider.denied_action_items(warning) is not None]
 
 
 def _outside_prompt(path: str, directory: str, marker: str) -> str:
@@ -519,18 +627,21 @@ def _outside_prompt(path: str, directory: str, marker: str) -> str:
 
 
 def _reads_marker(
-    provider: Any, prompt: str, root: str, marker: str, mode: str = MODE_REVIEW, **kwargs: Any
+    provider: Any,
+    prompt: str,
+    root: str,
+    marker: str,
+    mode: str = MODE_REVIEW,
+    *,
+    model_spec: Optional[Dict[str, Any]] = None,
+    **kwargs: Any,
 ) -> "tuple[Optional[str], bool]":
     """Run ``prompt``: (why it could not be judged, or None; whether ``marker`` came back).
 
     Only the first eight characters of the marker are in any prompt, so the
     whole of it in the answer means the file was read.
     """
-    try:
-        result = provider.run(prompt, mode, root, timeout=TIMEOUT, idle_timeout=60.0, **kwargs)
-    except Exception as exc:
-        return "%s: %s" % (type(exc).__name__, exc), False
-    reason = _did_not_run(result)
+    result, reason = _run(provider, prompt, mode, root, model_spec=model_spec, **kwargs)
     if reason:
         return reason, False
     return None, marker in (result.stdout or "")
@@ -544,9 +655,11 @@ def _stays_confined(
     root: str,
     marker: str,
     mode: str = MODE_REVIEW,
+    *,
+    model_spec: Optional[Dict[str, Any]] = None,
     **kwargs: Any,
 ) -> Check:
-    failure, read = _reads_marker(provider, prompt, root, marker, mode, **kwargs)
+    failure, read = _reads_marker(provider, prompt, root, marker, mode, model_spec=model_spec, **kwargs)
     if failure:
         return Check(name, label, False, failure)
     if read:
@@ -554,16 +667,43 @@ def _stays_confined(
     return Check(name, label, True, "not read")
 
 
-def check_confined(provider: Any, name: str, root: str) -> List[Check]:
+def _check_widening(
+    provider: Any, name: str, prompt: str, root: str, marker: str, outside: str, model_spec: Any
+) -> Check:
+    """Do the adapter's widening arguments let a read-only run read ``outside``?
+
+    They are put through the adapter's own read-only gate first, as a
+    caller's would be; a refusal names flags, never values.
+    """
+    label = "--add-dir widens"
+    args = list(provider.read_only_widening_args(outside) or [])
+    if not args:
+        return Check(name, label, False, "the adapter declares no read-only widening arguments")
+    problems = provider.read_only_arg_problems(MODE_REVIEW, extra_args=args)
+    if problems:
+        detail = "the adapter's read-only gate refuses its widening arguments: %s" % "; ".join(problems)
+        return Check(name, label, False, detail)
+    failure, read = _reads_marker(provider, prompt, root, marker, model_spec=model_spec, extra_args=args)
+    if failure:
+        return Check(name, label, False, failure)
+    if not read:
+        return Check(name, label, False, "--add-dir did not widen what it read")
+    return Check(name, label, True, "read the added directory")
+
+
+def check_confined(
+    provider: Any, name: str, root: str, *, model_spec: Optional[Dict[str, Any]] = None
+) -> List[Check]:
     """Does a read-only run stay inside its working directory?
 
-    Measured by hand on claude 2.1.283 for an absolute path, and not for a
-    symlink: this is where the symlink answer comes from. ``--add-dir`` is
-    checked the other way round, since it is the one way out a read-only run is
+    Asked of an adapter with ``confines_read_only``. Measured by hand on
+    claude 2.1.283 for an absolute path, and not for a symlink: this is where
+    the symlink answer comes from. The widening arguments are checked the
+    other way round, since they are the one way out a read-only run is
     allowed, and a check that only ever expects refusals would pass on a CLI
     that read nothing at all.
     """
-    if name not in CONFINES:
+    if not provider.confines_read_only:
         return []
     outside = tempfile.mkdtemp(prefix="dev-orchestra-smoke-outside-")
     marker = uuid.uuid4().hex
@@ -574,7 +714,8 @@ def check_confined(provider: Any, name: str, root: str) -> List[Check]:
     checks: List[Check] = []
     try:
         prompt = _outside_prompt(secret, outside, marker)
-        checks.append(_stays_confined(provider, name, "stays confined (absolute)", prompt, root, marker))
+        label = "stays confined (absolute)"
+        checks.append(_stays_confined(provider, name, label, prompt, root, marker, model_spec=model_spec))
         try:
             os.symlink(secret, link)
         except OSError as exc:
@@ -585,14 +726,10 @@ def check_confined(provider: Any, name: str, root: str) -> List[Check]:
             checks.append(Check(name, "stays confined (symlink)", False, detail, skipped=True))
         else:
             label = "stays confined (symlink)"
-            checks.append(_stays_confined(provider, name, label, LINK_PROMPT, root, marker))
-        failure, read = _reads_marker(provider, prompt, root, marker, extra_args=["--add-dir", outside])
-        if failure:
-            checks.append(Check(name, "--add-dir widens", False, failure))
-        elif not read:
-            checks.append(Check(name, "--add-dir widens", False, "--add-dir did not widen what it read"))
-        else:
-            checks.append(Check(name, "--add-dir widens", True, "read the added directory"))
+            checks.append(
+                _stays_confined(provider, name, label, LINK_PROMPT, root, marker, model_spec=model_spec)
+            )
+        checks.append(_check_widening(provider, name, prompt, root, marker, outside, model_spec))
     finally:
         if os.path.lexists(link):
             os.unlink(link)
@@ -600,88 +737,110 @@ def check_confined(provider: Any, name: str, root: str) -> List[Check]:
     return checks
 
 
-def _plan_run(provider: Any, prompt: str, root: str, **kwargs: Any) -> "tuple[Any, Optional[str]]":
-    """Run ``prompt`` in plan mode: (result or None, why it cannot be judged)."""
-    try:
-        result = provider.run(prompt, MODE_PLAN, root, timeout=TIMEOUT, idle_timeout=60.0, **kwargs)
-    except Exception as exc:
-        return None, "%s: %s" % (type(exc).__name__, exc)
-    return result, _did_not_run(result)
+def _repo_path(root: str, relative: Any) -> "tuple[Optional[str], Optional[str]]":
+    """``relative`` inside the repository at ``root``: (the path, None), or
+    (None, why not).
 
-
-def _resumed_restrictions(result: Any, name: str) -> Optional[str]:
-    """The first way a resumed session's init falls short of read-only, or None.
-
-    Read from what the CLI said it started the session with, not from what
-    the model chose to do: a model that simply did not write proves nothing
-    about a CLI that dropped ``--tools`` on resume. Codex's init is the
-    sandbox policy its adapter read from the fork's rollout. A provider with
-    no such reading here never passes on the filesystem alone.
+    Refused: an empty path, an absolute one, one with a drive (``C:x``
+    included) or a leading separator, any ``..`` component, and anything
+    that resolves outside ``root`` -- through a symlink, say. A file already
+    there is not overwritten.
     """
-    init = getattr(result, "session_init", None)
-    if name == "codex":
-        if not isinstance(init, dict) or init.get("sandbox_policy") != "read-only":
-            return "the resumed session's sandbox policy was not confirmed read-only"
-        return None
-    if name != "claude":
-        return "no reading of a resumed session's restrictions is known for %s" % name
-    if not isinstance(init, dict):
-        return "the resumed run reported no init event"
-    tools = init.get("tools")
-    if not isinstance(tools, list):
-        return "the resumed run reported no tool list"
-    extra = sorted(set(tools) - RESUMED_TOOLS)
-    if extra:
-        return "the resumed session was offered tools outside Read/Grep/Glob: %s" % ", ".join(extra)
-    servers = init.get("mcp_servers")
-    if servers != []:
-        count = len(servers) if isinstance(servers, list) else "an unknown number of"
-        return "the resumed session had %s MCP server(s)" % count
-    if init.get("permission_mode") != "plan":
-        return "the resumed session's permission mode was not plan"
-    return None
+    text = relative if isinstance(relative, str) else ""
+    parts = [part for part in re.split(r"[\\/]", text) if part not in ("", ".")]
+    if (
+        not parts
+        or os.path.isabs(text)
+        or os.path.splitdrive(text)[0]
+        or re.match(r"^[A-Za-z]:", text)
+        or text[0] in "/\\"
+        or ".." in parts
+    ):
+        return None, "is not a path inside the repository"
+    path = os.path.join(root, *parts)
+    if verified.outside(path, root):
+        return None, "is not a path inside the repository"
+    if os.path.lexists(path):
+        return None, "is already in the repository, and is not overwritten"
+    return path, None
 
 
-def _check_hooks(provider: Any, name: str, root: str, parent: str) -> List[Check]:
+def _write_fixture(
+    root: str, member: str, relative: Any, content: str
+) -> "tuple[Optional[str], Optional[str], Optional[str]]":
+    """Write ``content`` where the adapter's ``member`` says the CLI reads it:
+    (the file, the topmost directory made for it, why nothing was written).
+    :func:`_remove_fixture` takes the first two back out."""
+    path, problem = _repo_path(root, relative)
+    if path is None:
+        return None, None, "%s %r %s" % (member, relative, problem)
+    parent = os.path.dirname(path)
+    top = None
+    directory = parent
+    while not os.path.isdir(directory) and os.path.dirname(directory) != directory:
+        top = directory
+        directory = os.path.dirname(directory)
+    os.makedirs(parent, exist_ok=True)
+    if verified.outside(parent, root):
+        _remove_fixture(None, top)
+        return None, None, "%s %r is not a path inside the repository" % (member, relative)
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write(content)
+    return path, top, None
+
+
+def _remove_fixture(path: Optional[str], top: Optional[str]) -> None:
+    if path and os.path.lexists(path):
+        os.unlink(path)
+    if top:
+        shutil.rmtree(top, ignore_errors=True)
+
+
+def _check_hooks(
+    provider: Any, name: str, root: str, parent: str, *, model_spec: Optional[Dict[str, Any]] = None
+) -> List[Check]:
     """Does a command hook in the repository's settings stay silent, fresh and resumed?
 
-    Three events, because the prompt calls no tool, so a ``PreToolUse`` hook
-    would prove nothing; any one firing leaves the marker.
+    The settings go where the adapter's ``repository_hooks_file`` says, in
+    Claude's ``settings.json`` hooks format. Three events, because the prompt
+    calls no tool, so a ``PreToolUse`` hook would prove nothing; any one
+    firing leaves the marker.
     """
+    labels = ("ignores repository hooks", "ignores repository hooks on resume")
+    relative = provider.repository_hooks_file
     marker = os.path.join(root, HOOK_TARGET)
     script = os.path.join(root, "hook.py")
-    settings_dir = os.path.join(root, ".claude")
     # Forward slashes and double quotes read the same in bash and in cmd.
-    with open(script, "w", encoding="utf-8") as handle:
-        handle.write("open(%r, 'w').close()\n" % marker.replace("\\", "/"))
     command = '"%s" "%s"' % (sys.executable.replace("\\", "/"), script.replace("\\", "/"))
     hook = [{"hooks": [{"type": "command", "command": command}]}]
-    os.makedirs(settings_dir, exist_ok=True)
-    with open(os.path.join(settings_dir, "settings.json"), "w", encoding="utf-8") as handle:
-        json.dump({"hooks": {"SessionStart": hook, "UserPromptSubmit": hook, "Stop": hook}}, handle)
+    settings = json.dumps({"hooks": {"SessionStart": hook, "UserPromptSubmit": hook, "Stop": hook}})
     checks: List[Check] = []
+    path = top = None
     try:
+        with open(script, "w", encoding="utf-8") as handle:
+            handle.write("open(%r, 'w').close()\n" % marker.replace("\\", "/"))
+        path, top, problem = _write_fixture(root, "repository_hooks_file", relative, settings)
+        if problem:
+            return [Check(name, label, False, problem) for label in labels]
         for label, mode, kwargs in (
-            ("ignores repository hooks", MODE_REVIEW, {}),
-            ("ignores repository hooks on resume", MODE_PLAN, {"resume_session": parent}),
+            (labels[0], MODE_REVIEW, {}),
+            (labels[1], MODE_PLAN, {"resume_session": parent}),
         ):
             if os.path.exists(marker):
                 os.unlink(marker)
-            try:
-                result = provider.run(READY_PROMPT, mode, root, timeout=TIMEOUT, idle_timeout=60.0, **kwargs)
-            except Exception as exc:
-                checks.append(Check(name, label, False, "%s: %s" % (type(exc).__name__, exc)))
+            result, reason = _run(provider, READY_PROMPT, mode, root, model_spec=model_spec, **kwargs)
+            if result is None:
+                checks.append(Check(name, label, False, reason or ""))
                 continue
             if os.path.exists(marker):
-                checks.append(Check(name, label, False, "a command hook from .claude/settings.json ran"))
+                checks.append(Check(name, label, False, "a command hook from %s ran" % relative))
                 continue
-            reason = _did_not_run(result)
             checks.append(Check(name, label, not reason, reason or "no hook ran"))
     finally:
-        shutil.rmtree(settings_dir, ignore_errors=True)
-        for path in (script, marker):
-            if os.path.exists(path):
-                os.unlink(path)
+        _remove_fixture(path, top)
+        for leftover in (script, marker):
+            if os.path.exists(leftover):
+                os.unlink(leftover)
     return checks
 
 
@@ -696,18 +855,21 @@ def resumes(provider: Any) -> bool:
     )
 
 
-def check_resume(provider: Any, name: str, root: str) -> List[Check]:
+def check_resume(
+    provider: Any, name: str, root: str, *, model_spec: Optional[Dict[str, Any]] = None
+) -> List[Check]:
     """Does a resumed session keep every restriction a fresh read-only run has?
 
     One parent session, and every check forks it. Asked of every adapter that
     has resume arguments of its own, whatever ``supports_resume`` says: an
     adapter keeps resume off until these checks pass, so the switch cannot be
-    what decides whether they run.
+    what decides whether they run. Whether the session started read-only is
+    the adapter's ``resumed_session_problem`` reading.
     """
     if not resumes(provider):
         return []
-    labels = resume_labels(name)
-    parent_result, reason = _plan_run(provider, READY_PROMPT, root)
+    labels = resume_labels(provider)
+    parent_result, reason = _run(provider, READY_PROMPT, MODE_PLAN, root, model_spec=model_spec)
     parent = getattr(parent_result, "session_id", None) if not reason else None
     if not parent:
         # Nothing was resumed, so nothing was shown to break: skipped, not
@@ -719,13 +881,15 @@ def check_resume(provider: Any, name: str, root: str) -> List[Check]:
     target = os.path.join(root, WRITE_TARGET)
     if os.path.exists(target):
         os.unlink(target)
-    resumed, reason = _plan_run(provider, WRITE_PROMPT, root, resume_session=parent)
+    resumed, reason = _run(
+        provider, WRITE_PROMPT, MODE_PLAN, root, model_spec=model_spec, resume_session=parent
+    )
     if os.path.exists(target):
         os.unlink(target)
         detail = "it wrote %s in a resumed session" % WRITE_TARGET
         checks.append(Check(name, "resumes read-only", False, detail))
     else:
-        problem = reason or _resumed_restrictions(resumed, name)
+        problem = reason or provider.resumed_session_problem(resumed)
         detail = problem or "refused to write; started read-only"
         checks.append(Check(name, "resumes read-only", not problem, detail))
 
@@ -738,7 +902,9 @@ def check_resume(provider: Any, name: str, root: str) -> List[Check]:
     else:
         checks.append(Check(name, "forks the session", True, "a new session id"))
 
-    missing, _ = _plan_run(provider, READY_PROMPT, root, resume_session=MISSING_SESSION)
+    missing, _ = _run(
+        provider, READY_PROMPT, MODE_PLAN, root, model_spec=model_spec, resume_session=MISSING_SESSION
+    )
     if missing is not None and missing.invoked and missing.resume_rejected:
         checks.append(Check(name, "reports a missing session", True, "rejected as the adapter expects"))
     elif missing is not None and missing.resume_rejected:
@@ -750,58 +916,65 @@ def check_resume(provider: Any, name: str, root: str) -> List[Check]:
         detail = "a missing session was not reported in the shape the adapter recognises"
         checks.append(Check(name, "reports a missing session", False, detail))
 
-    if name in CONFINES:
-        checks.extend(_check_resumed_confinement(provider, name, root, parent))
-    if name in HOOKED:
-        checks.extend(_check_hooks(provider, name, root, parent))
-    if name in REPO_CONFIGURED:
-        checks.append(_check_repository_config(provider, name, root, parent))
+    if provider.confines_read_only:
+        checks.extend(_check_resumed_confinement(provider, name, root, parent, model_spec=model_spec))
+    if provider.repository_hooks_file:
+        checks.extend(_check_hooks(provider, name, root, parent, model_spec=model_spec))
+    if provider.repository_sandbox_config_file:
+        checks.append(_check_repository_config(provider, name, root, parent, model_spec=model_spec))
     return checks
 
 
-def resume_labels(name: str) -> List[str]:
-    """The resume checks asked of ``name``, in the order they run."""
+def resume_labels(provider: Any) -> List[str]:
+    """The resume checks asked of ``provider``, in the order they run."""
     labels: List[str] = []
     for label in RESUME_CHECKS:
-        if "confined" in label and name not in CONFINES:
+        if "confined" in label and not provider.confines_read_only:
             continue
-        if "hooks" in label and name not in HOOKED:
+        if "hooks" in label and not provider.repository_hooks_file:
             continue
-        if "repository config" in label and name not in REPO_CONFIGURED:
+        if "repository config" in label and not provider.repository_sandbox_config_file:
             continue
         labels.append(label)
     return labels
 
 
-def _check_repository_config(provider: Any, name: str, root: str, parent: str) -> Check:
-    """Does a resumed session stay read-only under a ``.codex/config.toml``
-    in the repository that loosens the sandbox?
+def _check_repository_config(
+    provider: Any, name: str, root: str, parent: str, *, model_spec: Optional[Dict[str, Any]] = None
+) -> Check:
+    """Does a resumed session stay read-only under a repository config that
+    loosens the sandbox, written where ``repository_sandbox_config_file`` says?
 
     The throwaway repository is not one the user marked trusted in Codex, so
     this shows the untrusted case only.
     """
     label = "ignores repository config on resume"
-    config_dir = os.path.join(root, ".codex")
+    relative = provider.repository_sandbox_config_file
     target = os.path.join(root, WRITE_TARGET)
-    os.makedirs(config_dir, exist_ok=True)
-    with open(os.path.join(config_dir, "config.toml"), "w", encoding="utf-8") as handle:
-        handle.write(REPO_CONFIG)
-    if os.path.exists(target):
-        os.unlink(target)
+    path = top = None
     try:
-        result, reason = _plan_run(provider, WRITE_PROMPT, root, resume_session=parent)
+        path, top, problem = _write_fixture(root, "repository_sandbox_config_file", relative, REPO_CONFIG)
+        if problem:
+            return Check(name, label, False, problem)
         if os.path.exists(target):
-            detail = "it wrote %s under the repository's .codex/config.toml" % WRITE_TARGET
+            os.unlink(target)
+        result, reason = _run(
+            provider, WRITE_PROMPT, MODE_PLAN, root, model_spec=model_spec, resume_session=parent
+        )
+        if os.path.exists(target):
+            detail = "it wrote %s under the repository's %s" % (WRITE_TARGET, relative)
             return Check(name, label, False, detail)
-        problem = reason or _resumed_restrictions(result, name)
+        problem = reason or provider.resumed_session_problem(result)
         return Check(name, label, not problem, problem or "wrote nothing; the fork ran read-only")
     finally:
-        shutil.rmtree(config_dir, ignore_errors=True)
+        _remove_fixture(path, top)
         if os.path.exists(target):
             os.unlink(target)
 
 
-def _check_resumed_confinement(provider: Any, name: str, root: str, parent: str) -> List[Check]:
+def _check_resumed_confinement(
+    provider: Any, name: str, root: str, parent: str, *, model_spec: Optional[Dict[str, Any]] = None
+) -> List[Check]:
     """``check_confined`` for a resumed session. ``--add-dir`` is not repeated:
     widening is not what keeps a run read-only."""
     outside = tempfile.mkdtemp(prefix="dev-orchestra-smoke-outside-")
@@ -812,8 +985,10 @@ def _check_resumed_confinement(provider: Any, name: str, root: str, parent: str)
     link = os.path.join(root, "link.txt")
     checks: List[Check] = []
 
+    resumed: Dict[str, Any] = {"model_spec": model_spec, "resume_session": parent}
+
     def confined(label: str, prompt: str) -> Check:
-        return _stays_confined(provider, name, label, prompt, root, marker, MODE_PLAN, resume_session=parent)
+        return _stays_confined(provider, name, label, prompt, root, marker, MODE_PLAN, **resumed)
 
     try:
         checks.append(confined("resumes confined (absolute)", _outside_prompt(secret, outside, marker)))
@@ -831,13 +1006,19 @@ def _check_resumed_confinement(provider: Any, name: str, root: str, parent: str)
     return checks
 
 
-def record_resume(provider: Any, name: str, checks: List[Check], model: str) -> List[Check]:
+def record_resume(
+    provider: Any, name: str, checks: List[Check], model: str, record_pass: bool = True
+) -> List[Check]:
     """Write down whether this CLI version passed, so ``--resume`` can trust it.
 
     Passed: every check the adapter requires ok and no resume check failed.
     Failed: any of them failed outright. A check only skipped decides
     nothing, and nothing is written; nor is anything for an adapter that
-    requires no check.
+    requires no check. A required check the adapter's declarations never
+    ask fails a line of its own, since no run could ever pass it, and a
+    failure is still recorded. ``record_pass`` False writes a failure only: a
+    run on a model ``--model`` named does not vouch for the CLI's default,
+    while a breach is evidence whatever the model.
     """
     required = tuple(provider.required_resume_checks)
     if not required:
@@ -847,10 +1028,18 @@ def record_resume(provider: Any, name: str, checks: List[Check], model: str) -> 
     failed = [
         label for label, check in by_name.items() if label in watched and not check.ok and not check.skipped
     ]
-    passed = all(label in by_name and by_name[label].ok for label in required)
-    if not failed and not passed:
-        return []
     label = "resume verified"
+    never_asked = [required_label for required_label in required if required_label not in by_name]
+    if never_asked and not failed:
+        # Not a skip: no run of this script could ever write a pass.
+        detail = (
+            "required_resume_checks names %s, which the live check does not ask of this adapter; "
+            "nothing recorded" % ", ".join(never_asked)
+        )
+        return [Check(name, label, False, detail)]
+    passed = all(label in by_name and by_name[label].ok for label in required)
+    if not failed and (not passed or not record_pass):
+        return []
     version = provider.version()[0]
     if not version:
         return [Check(name, label, False, "could not read the CLI version; nothing recorded")]
@@ -917,16 +1106,70 @@ def checkout_root() -> str:
     return ws.repo_root(os.getcwd())
 
 
+def _model_specs(
+    overrides: List[Tuple[str, str]], wanted: List[str]
+) -> "tuple[Dict[str, Dict[str, Any]], Optional[str]]":
+    """The model spec for each provider ``--model`` named, or why the run
+    cannot start: a provider this run does not check, one named twice, or a
+    model its installed CLI does not resolve. A CLI that is not installed
+    resolves nothing, and its ``installed`` check reports that."""
+    specs: Dict[str, Dict[str, Any]] = {}
+    for name, model in overrides:
+        if name not in wanted:
+            return {}, "--model names %s, which this run does not check; add --provider %s" % (name, name)
+        if name in specs:
+            return {}, "--model names %s more than once" % name
+        specs[name] = {"family": model}
+    for name, model in overrides:
+        provider = get_provider(name)
+        try:
+            detection = provider.detect()
+        except Exception as exc:
+            return {}, "--model %s=%s: could not check the CLI: %s" % (name, model, exc)
+        if not detection.installed:
+            continue
+        try:
+            provider.resolve_model(specs[name])
+        except Exception as exc:
+            return {}, "--model %s=%s: %s" % (name, model, exc)
+    return specs, None
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=cast(str, __doc__).splitlines()[0])
     parser.add_argument("--provider", action="append", help="only this provider (repeatable)")
+    parser.add_argument(
+        "--model",
+        action="append",
+        metavar="PROVIDER=MODEL",
+        help=(
+            "run PROVIDER's checks on MODEL, a family or id its adapter resolves (repeatable). Checked "
+            "before tokens are spent only as strictly as the adapter resolves: claude passes any "
+            "claude-* id through, which then fails at its first run. A provider named here writes no "
+            "live-check record and no resume pass; a resume failure is still recorded."
+        ),
+    )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
 
-    wanted = args.provider or [n for n in available_providers() if n not in OFFLINE]
-    unknown = [n for n in wanted if n not in available_providers()]
+    overrides: List[Tuple[str, str]] = []
+    for value in args.model or []:
+        provider_name, separator, model = value.partition("=")
+        if not separator or not provider_name or not MODEL_RE.fullmatch(model):
+            print(MODEL_SYNTAX, file=sys.stderr)
+            return 2
+        overrides.append((provider_name, model))
+
+    known = available_providers()
+    wanted = args.provider or [n for n in known if n not in OFFLINE]
+    named = [n for n, _ in overrides]
+    unknown = list(dict.fromkeys(n for n in [*wanted, *named] if n not in known))
     if unknown:
         print("unknown provider(s): %s" % ", ".join(unknown), file=sys.stderr)
+        return 2
+    specs, problem = _model_specs(overrides, wanted)
+    if problem:
+        print(problem, file=sys.stderr)
         return 2
 
     if not args.json:
@@ -937,7 +1180,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     try:
         checks: List[Check] = []
         for name in wanted:
-            checks.extend(check_provider(name, root))
+            if name in specs:
+                checks.extend(check_provider(name, root, model_spec=specs[name], record=False))
+            else:
+                checks.extend(check_provider(name, root, model_spec=None, record=True))
     finally:
         shutil.rmtree(root, ignore_errors=True)
 
@@ -947,6 +1193,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.json:
         payload = {"checks": [c.to_dict() for c in checks], "failed": len(failed), "skipped": len(skipped)}
         payload["record"] = records[0] if records else None
+        payload["notes"] = [note for check in checks for note in check.notes]
         print(json.dumps(payload, indent=2))
         return 1 if failed or skipped else 0
 

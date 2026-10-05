@@ -1,4 +1,4 @@
-<!-- translated-from: references/providers.md sha256:c43b7de3caaeb3d316e21fcea7385be72c02a7686cc003ebbc10df318a91052f -->
+<!-- translated-from: references/providers.md sha256:978071c1d40715ecfdc0036a6439f6b6ea1721df6bc4ee1722f217734c6f6059 -->
 
 > この文書は [references/providers.md](../../../references/providers.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -24,6 +24,7 @@
   - [契約](#the-contract)
   - [ルール](#rules)
   - [プリセットのフィットに加わる](#taking-part-in-preset-fitting)
+  - [ライブチェックに加わる](#taking-part-in-the-live-check)
   - [うまくいかないとき](#when-it-goes-wrong)
   - [インターフェースの安定性](#interface-stability)
 - [失敗時の挙動](#failure-semantics)
@@ -81,6 +82,18 @@ class Provider:
     def resume_rejected(outcome, mode, options, session_id) -> bool   # default: False
     def parse_session(outcome) -> dict                          # session_id, context_tokens, init
 
+    # Live check only: read by scripts/smoke_live.py, never by a run or the orchestrator.
+    confines_read_only: bool                                    # default: False
+    repository_hooks_file: str                                  # default: ""
+    repository_sandbox_config_file: str                         # default: ""
+    tool_activity_reported: str                                 # default: "none"
+    file_read_tool: str                                         # default: ""
+    implement_write_checked: bool                               # default: False
+    permission_bypass_options: dict | None                      # default: None
+    def read_only_widening_args(directory) -> list[str]         # default: []
+    def denied_action_items(warning) -> list[tuple[str, str]] | None   # default: None
+    def resumed_session_problem(result) -> str | None           # default: names no reading
+
 class Launch(NamedTuple):     # one run, as around_launch is handed it
     prompt, mode, cwd, model_spec, timeout, extra_args, env, options,
     idle_timeout, resume_session, command_kwargs
@@ -95,7 +108,7 @@ def stdout_events(outcome) -> tuple[dict, ...]   # stdout's JSON lines, decoded 
 
 `run` はすべてのアダプタが共有するゲートです。`plan` または `review` の実行では、呼び出し元の生引数（`options.args` と `--extra`）を、アダプタが自分の引数を足す前にアダプタの許可リストと照合し、そのうえで `_launch` を呼びます。`_launch` は実行を `Launch` として `around_launch` に渡します。CLI の実行の前後に行う作業（一時ファイル、プロンプトのファイル、出力の確認）があるアダプタは、`around_launch` をオーバーライドし、`launch._replace(...)` を `proceed` に渡します。CLI を起動するのは `proceed` です。変えてよいのは `prompt`、`cwd`、`model_spec`、`timeout`、`env`、`idle_timeout`、`command_kwargs`、`own_args` だけです。`mode`、`resume_session`、`extra_args`、`options` は `run` がすでにゲートにかけているため、どれかを変えると何かを組み立てる前に `ValueError` になります。アダプタ自身の引数は `own_args` に入れます。これは呼び出し元の引数の後に続き、ゲートにはかかりません。組み込みアダプタのサブクラスでのオーバーライドは、`super().around_launch(launch, proceed)` を通さなければなりません。そうしないと、Codex のワークスペースと読み取り専用のフォークの確認や、agy のプロンプトのファイルが飛ばされます。`_launch` も引き続きオーバーライドでき、`super()._launch(...)` を呼ぶオーバーライドは `around_launch` を通りますが、すべてのキーワードを挙げて渡さなければなりません。`run` をオーバーライドしたアダプタはこのゲートを通らないため、ゲートを自分で持たなければなりません。
 
-セッションの継続（`run architect --resume`）はアダプタごとのオプトインです。`resume_session` はキーワード引数として `run` から `_launch` を経て `command_line` に渡され、`command_line` は `resume_command(...)` を呼びます。既定ではこれまでどおり `build_command` を呼び、その後ろにアダプタ自身の `resume_args(session_id)` を足します。CLI が別の形のコマンドで継続するアダプタ（Codex）はこれをオーバーライドします。これは生引数ではないので、コマンドを組み立てる前に `run` がかける許可リストを通ることはなく、`implement` の実行では `run` が拒否します。オーケストレーターがこれを送るのは、`supports_resume` を宣言し、かつ `resume_support(root)` が `verified`、または `trusted`（合格した版より新しく、メジャー版が同じ版で、それを `newer_than` が示す。その版自体は確認されていない）を報告するアダプタに対してだけです。`run` は値があるときだけキーワードを `_launch` に渡すので、以前のシグネチャで `_launch` をオーバーライドしているアダプタでも新規の実行はこれまでどおり動きます。継続に対応するアダプタは、このキーワードを受け取って base に渡さなければなりません。共通のルールで継続するアダプタは、`resume_support` を base に任せます。オーバーライドするのは、モジュールの `VERIFIED_RESUME` を返さなければならない `verified_resume()`（`smoke_live.py` がこの名前で表を探すため）、フラグを挙げているはずのヘルプを返す `resume_help_text()`、そのヘルプに合わせた自前の照合である `resume_advertises(help_text, flag)`（base のものは False を返すため）です。空でない `resume_flags` を設定し、報告の文言として `resume_help_unread`、`resume_flags_missing`、`resume_version_unread` を設定することもできます。すべてのフラグが挙がっていて版が読めたら、base は `verified.resume_trust(...)` に表と、アダプタの `resume_mechanism()`（記録が保証するフラグ。継続のコマンドが新規と異なるのでなければ、新規の読み取り専用の仕組み）と `required_resume_checks`（版が合格しなければならない確認。これより少なく挙げない限り `verified.py` が挙げるすべて）を渡し、その答えを `resume_report(version, trust)` で報告にします。アダプタは継続の実行を自分で始めないこともできます。その場合 `around_launch` は `proceed` を呼ばずに `resume_rejected=True` かつ `invoked=False` の結果を返し、オーケストレーターは CLI による拒否と同じく新規で 1 回だけ走らせます。実行後、base は `parse_session(outcome)` に、実行が終わったセッション、最後の文脈の大きさ（`context_tokens`）、セッション開始時に CLI が報告した内容（`init`）を問い合わせます。継続した実行に限り `resume_rejected(outcome, mode, options, session_id)` も問い合わせます。これは、求めたセッションが存在しないという正の兆候があるときだけ True を返さなければなりません。オーケストレーターはその場合、新規の実行に試行を 1 回使うからです。結果は `RunResult.session_id`、`context_tokens`、`session_init`、`resume_rejected` に入ります。
+セッションの継続（`run architect --resume`）はアダプタごとのオプトインです。`resume_session` はキーワード引数として `run` から `_launch` を経て `command_line` に渡され、`command_line` は `resume_command(...)` を呼びます。既定ではこれまでどおり `build_command` を呼び、その後ろにアダプタ自身の `resume_args(session_id)` を足します。CLI が別の形のコマンドで継続するアダプタ（Codex）はこれをオーバーライドします。これは生引数ではないので、コマンドを組み立てる前に `run` がかける許可リストを通ることはなく、`implement` の実行では `run` が拒否します。オーケストレーターがこれを送るのは、`supports_resume` を宣言し、かつ `resume_support(root)` が `verified`、または `trusted`（合格した版より新しく、メジャー版が同じ版で、それを `newer_than` が示す。その版自体は確認されていない）を報告するアダプタに対してだけです。`run` は値があるときだけキーワードを `_launch` に渡すので、以前のシグネチャで `_launch` をオーバーライドしているアダプタでも新規の実行はこれまでどおり動きます。継続に対応するアダプタは、このキーワードを受け取って base に渡さなければなりません。共通のルールで継続するアダプタは、`resume_support` を base に任せます。オーバーライドするのは、モジュールの `VERIFIED_RESUME` を返さなければならない `verified_resume()`（`smoke_live.py` がこの名前で表を探すため）、フラグを挙げているはずのヘルプを返す `resume_help_text()`、そのヘルプに合わせた自前の照合である `resume_advertises(help_text, flag)`（base のものは False を返すため）です。空でない `resume_flags` を設定し、報告の文言として `resume_help_unread`、`resume_flags_missing`、`resume_version_unread` を設定することもできます。すべてのフラグが挙がっていて版が読めたら、base は `verified.resume_trust(...)` に表と、アダプタの `resume_mechanism()`（記録が保証するフラグ。継続のコマンドが新規と異なるのでなければ、新規の読み取り専用の仕組み）と `required_resume_checks`（版が合格しなければならない確認。これより少なく挙げない限り `verified.py` が挙げるすべて。その中には閉じ込めとフックの確認も入るので、ライブチェックにそのどちらも宣言しないアダプタは自分で挙げる）を渡し、その答えを `resume_report(version, trust)` で報告にします。アダプタは継続の実行を自分で始めないこともできます。その場合 `around_launch` は `proceed` を呼ばずに `resume_rejected=True` かつ `invoked=False` の結果を返し、オーケストレーターは CLI による拒否と同じく新規で 1 回だけ走らせます。実行後、base は `parse_session(outcome)` に、実行が終わったセッション、最後の文脈の大きさ（`context_tokens`）、セッション開始時に CLI が報告した内容（`init`）を問い合わせます。継続した実行に限り `resume_rejected(outcome, mode, options, session_id)` も問い合わせます。これは、求めたセッションが存在しないという正の兆候があるときだけ True を返さなければなりません。オーケストレーターはその場合、新規の実行に試行を 1 回使うからです。結果は `RunResult.session_id`、`context_tokens`、`session_init`、`resume_rejected` に入ります。
 
 `run_warnings(outcome, mode)` は、終わった実行について結果にかかわらず伝えるべきこと（拒否されたツール、成功でない status など）です。base はこの一覧を `RunResult.warnings` に保持し、stderr の先頭にも置きます。`run` と `review run` は stderr が表示されない成功時にもこれを表示し、実行ログとジョブの記録に残します。`activity_of(line, cwd)` は、CLI の実行中に stdout の 1 行が示すもの（`jobs wait`、`review run --progress`）で、`Activity(lines, context_tokens)` を返します。聞き手がいるときだけ呼ばれるので、そうでなければ `execute` はこれまでとまったく同じに呼ばれます。各行は入力から自分で組み立てず、`activity.tool_line(name, input, cwd)` で作ってください。モデルのテキストや自由記述の引数を締め出すのはこの許可リストです。返した行はその後も整形と伏せ字の処理を受けますが、それは二重の備えにすぎません。このフックは CLI の出力を読むスレッドとは別のスレッドで呼ばれ、例外を出してもその行が失われるだけです。不具合のあるフックで失うのはアクティビティだけで、実行そのものは失いません。デフォルトでは何も示しません。`static_enforcement = True` は、`read_only_enforcement()` がサブプロセスを必要としない定数であることを示します。そのため `doctor` は `--fast` のときも CLI がインストールされていないときもそれを報告し、設定コマンドは CLI を探さずにそれをもとに警告します。`preset_family` は、プリセットがそのアダプタをフィットできるようにします（[Taking part in preset fitting](#taking-part-in-preset-fitting) を参照）。どちらもクラスから読まれるので、インスタンスに設定した値は無視されます。プリセットから読み取り専用の席を得るには静的な報告が必要です。フィットは読み込みのたびに行われ、CLI を起動してはならないからです。`preset_family`、`static_enforcement`、`which()` は宣言どおりに信頼されます。`which()` は PATH の検索のままでなければならず、静的な報告はプロセスを起動してはなりません。フィットの側ではそれを見分けられないからです。見分けられるもの（例外、マッピングでない報告、未知の status）は、アダプタを席から外します。`local_only_options` は、書き込みロールが global 設定か `--extra` からだけ受け取るオプションを挙げます。そうしたアダプタでは、書き込みロールの project ファイルのオプションは一切使われません（[Antigravity CLI adapter](#antigravity-cli-adapter) を参照）。`config_families()` は、一覧に出るモデルが日付入りの id で、いずれ古くなる CLI のために、設定に書くべき family を `(family, 今それが解決される先)` の形で返します。`dev-orchestra model list` はこれをモデルの後に表示します。
 
@@ -493,6 +506,40 @@ class MyCliProvider(Provider):
 ```
 
 席に就けるアダプタが複数あれば名前順に扱われ、レビュアーの席は Claude と Codex のときと同じように順に配られます。そのため、project ファイルが `implementer` をそのうちの 1 つにすると、どれから配り始めるかが決まります。ファイルの内容でアダプタをオプトインさせたり、その強制の度合いを上げたりすることはできません。どちらもクラスから来ます。空でない文字列でない `preset_family` は、書き込みロールも含めてアダプタをすべてのプリセットから外します。前後の空白は取り除かれます。`doctor` はアダプタのブロックに `Preset fitting:` の行を出し、どのロールに就けるか、その理由を示します。`doctor --json` では `providers.<name>.preset_fit` です。`DEV_ORCHESTRA_NO_USER_PROVIDERS=1` は、他のすべてからと同じく、フィットからもすべてのユーザーアダプタを外します。
+
+<a id="taking-part-in-the-live-check"></a>
+
+### ライブチェックに加わる
+
+`scripts/smoke_live.py --provider <name>` は、インストールされた CLI を実際に動かし、アダプタがまだその CLI に合っているかを確かめます。どのアダプタにも同じ基本のチェックが行われます。インストールされているか、モデルを解決できるか、レビューのプロンプトに答えるか、使った量を報告するか、ツールの使用状況、そしてレビューの実行が読み取り専用に留まるか（`unenforced` のアダプタでは、その状態が実際の実行と一致するか）です。それ以外に何を確かめるかはアダプタがクラスで宣言し、スクリプトは CLI の名前を一切持ちません。どのメンバーも既定値は「確かめない」なので、何も設定しないアダプタは以前とまったく同じように確かめられます。チェックの名前は固定です。アダプタが決めるのはどのチェックを行うかで、チェックの呼び名ではありません。
+
+| メンバー | 既定値 | 設定すると加わるもの |
+| --- | --- | --- |
+| `confines_read_only` | `False` | `True` で `stays confined (absolute)`、`stays confined (symlink)`、`--add-dir widens`、セッションを継続するアダプタでは `resumes confined (absolute/symlink)`。読み取り専用の実行は作業ディレクトリの外のファイルを読んではなりません。 |
+| `read_only_widening_args(directory)` | `[]` | 読み取り専用の実行が `directory` も読めるようにする生引数。`--add-dir widens` が使い、これがないと成り立ちません。 |
+| `repository_hooks_file` | `""` | CLI がコマンドフックを読む、リポジトリ相対のパス。`ignores repository hooks` と `ignores repository hooks on resume`。 |
+| `repository_sandbox_config_file` | `""` | CLI がサンドボックスの設定を読む、リポジトリ相対のパス。`ignores repository config on resume`。 |
+| `tool_activity_reported` | `"none"` | `parse_usage` がツールについて埋めるもの。`"calls"`（`tool_uses` と `tool_uses_by_name`）か `"calls and output"`（それに加えて `tool_output_chars`）。`"none"` ではチェックを「設計上報告しない」とし、それ以外の値では実行せずにチェックを失敗にします。 |
+| `file_read_tool` | `""` | 読み取り専用の実行からシェルにも届き得る CLI で、ファイルを読むのに使うツール。ツールのチェックはそのツールを名指しで求め、返答に README.md の内容があることも求めます。 |
+| `denied_action_items(warning)` | `None` | `run_warnings` の警告が拒否されたと示す各操作の `(表示名, 種類)`。それ以外の警告では `None`。 |
+| `implement_write_checked` | `False` | `True` で `writes a file in implement mode`。 |
+| `permission_bypass_options` | `None` | 書き込みの実行が確認なしにシェルコマンドを実行できるようにするロールのオプション。`names a denied command`（オプションなし）と `runs a command with skip_permissions`（オプションあり）。 |
+| `resumed_session_problem(result)` | 読み方を示さない | 継続したセッションが読み取り専用に届かない最初の点。届いていれば `None`。 |
+
+一部のメンバーは対の片方にすぎません。
+
+- `read_only_widening_args` のない `confines_read_only`: `--add-dir widens` は「the adapter declares no read-only widening arguments」で失敗し、そのための実行は行いません。広げる引数は、呼び出し側の引数と同じく、まずアダプタ自身の読み取り専用のゲート（`read_only_arg_problems`）を通ります。ゲートが拒めば、チェックはフラグの名前だけを挙げて失敗し、値は出しません。
+- `denied_action_items` のない `permission_bypass_options`: `names a denied command` は「the adapter declares no denied_action_items, so a denied command cannot be read」で失敗し、実行は行いません。バイパスのチェックは行い、「denied」という語を含む警告があれば失敗にします。`denied_action_items` があれば、バイパスのチェックも他のチェックと同じく、このメソッドが拒否と読む警告でだけ失敗にします。オプションは `option_keys` にあるキーのマッピングでなければならず、そうでなければバイパスのチェックは実行せずに失敗します（「names ..., not options this adapter takes」）。値も `validate_options` が受け付けるものでなければなりません（「is refused by the adapter: ...」）。これを有効にすると、スクリプトが作る一時的なサンドボックスのリポジトリの中で、あなたのアカウントのもと、バイパスを付けてシェルコマンド（`echo true`）が実行されます。
+- `permission_bypass_options` のない `denied_action_items`: どちらのコマンドのチェックも行いません。拒否が対になって裏付けるバイパスがないからです。このメソッドはツールのチェックでは引き続き使われます。
+- `denied_action_items` のない `tool_activity_reported = "calls"`: ツールのチェックは拒否を見分けられないので、拒否らしい警告があっても失敗にはなりません。失敗にするのは、完了しなかった実行と `file_read_tool` の要件だけです。
+
+`kind` は、その操作を表す CLI 自身の言葉です。スクリプトが頼るのは `"command"`（シェルコマンド）という 1 つの値だけで、`names a denied command` はこの値で合格します。それ以外は、拒否されたがコマンドではない、と報告されます。
+
+フィクスチャはスクリプト自身のもので、アダプタがどのパスを示しても、それぞれ 1 つの CLI の形式です。フックのファイルは Claude の `settings.json` のフック形式、サンドボックスの設定は Codex の `config.toml` です。パスは相対で、リポジトリの中になければなりません。空のもの、絶対パス、ドライブを含むもの（`C:x` も含む）、区切り文字で始まるもの、`..` の要素を持つもの、シンボリックリンクを通ってリポジトリの外を指すものは、そのメンバーが加えるすべてのチェックを「`<member>` ... is not a path inside the repository」で失敗にし、何も書き込みません。そのパスにすでにファイルがあれば上書きせず、チェックは失敗します。スクリプトは、実行が合格しても失敗しても例外を送出しても、そのファイルと、そのために作ったディレクトリを取り除きます。
+
+`resumed_session_problem` は、独自の継続の引数を持つすべてのアダプタに問われます。オーバーライドするのは、CLI 自身が報告した制限（init イベントやロールアウト）を読むときだけにし、それがセッションの読み取り専用での開始を示すときにだけ `None` を返してください。ファイルが書かれなかったことを理由にしてはいけません。書かないことを選んだモデルは、継続時にフラグを落とした CLI について何も証明しないからです。既定値は読み方を示さないので、アダプタが読み方を持つまで `resumes read-only` は失敗します。
+
+継続の合格が記録されるのは、`required_resume_checks` のすべてのチェックに合格したときだけです。既定の一覧には `resumes confined (absolute)` と 2 つのフックのチェックが入っており、これらを問うのは `confines_read_only` と `repository_hooks_file` だけです。それらなしで継続するアダプタは（Codex のように）自分の一覧を挙げます。そうしないと、実行は失敗した `resume verified` の行「required_resume_checks names ..., which the live check does not ask of this adapter; nothing recorded」で終わります。失敗したチェックがあれば、失敗は引き続き記録されます。
 
 <a id="when-it-goes-wrong"></a>
 

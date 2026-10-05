@@ -998,5 +998,28 @@ class TestLaunchReachesTheStart(IsolatedCase):
         self.assertEqual(kwargs, {"marker": 1})
 
 
+class TestTheLiveCheckDefaults(unittest.TestCase):
+    """An adapter that declares nothing for scripts/smoke_live.py is asked
+    what it was asked before the declarations existed."""
+
+    def test_the_live_check_defaults(self):
+        for provider in (base.Provider(), _BareAdapter()):
+            with self.subTest(provider=type(provider).__name__):
+                self.assertFalse(provider.confines_read_only)
+                self.assertEqual(provider.read_only_widening_args("/elsewhere"), [])
+                self.assertEqual(provider.repository_hooks_file, "")
+                self.assertEqual(provider.repository_sandbox_config_file, "")
+                self.assertEqual(provider.tool_activity_reported, base.TOOL_ACTIVITY_NONE)
+                self.assertEqual(provider.file_read_tool, "")
+                self.assertIsNone(provider.denied_action_items("bare denied x (command)"))
+                self.assertFalse(provider.implement_write_checked)
+                self.assertIsNone(provider.permission_bypass_options)
+                result = base.RunResult(True, 0, "", "", [], 0.0, session_init={"anything": True})
+                self.assertEqual(
+                    provider.resumed_session_problem(result),
+                    "no reading of a resumed session's restrictions is known for %s" % provider.name,
+                )
+
+
 if __name__ == "__main__":
     unittest.main()

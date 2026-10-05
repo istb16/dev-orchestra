@@ -3625,5 +3625,114 @@ class TestRedaction(IsolatedCase):
         self.assertEqual(result.warnings, ["token [redacted]"])
 
 
+def _resumed(init: Any) -> base.RunResult:
+    return base.RunResult(True, 0, "", "", [], 0.0, session_init=init)
+
+
+class TestTheLiveCheckReadings(unittest.TestCase):
+    """What smoke_live.py reads through an adapter, read by the adapter itself."""
+
+    def test_claudes_reading_of_a_resumed_init(self):
+        read_only = {"tools": ["Glob", "Grep", "Read"], "mcp_servers": [], "permission_mode": "plan"}
+        cases = [
+            (read_only, None),
+            (None, "the resumed run reported no init event"),
+            ({}, "the resumed run reported no tool list"),
+            (
+                dict(read_only, tools=["Bash", "Read"]),
+                "the resumed session was offered tools outside Read/Grep/Glob: Bash",
+            ),
+            (
+                dict(read_only, tools=[{"name": "Bash"}, "Read"]),
+                "the resumed run reported a malformed tool list",
+            ),
+            (dict(read_only, tools=["Read", None]), "the resumed run reported a malformed tool list"),
+            (dict(read_only, mcp_servers=[{"name": "slack"}]), "the resumed session had 1 MCP server(s)"),
+            (
+                dict(read_only, mcp_servers=None),
+                "the resumed session had an unknown number of MCP server(s)",
+            ),
+            (
+                dict(read_only, permission_mode="default"),
+                "the resumed session's permission mode was not plan",
+            ),
+        ]
+        for init, problem in cases:
+            with self.subTest(init=init):
+                self.assertEqual(ClaudeProvider().resumed_session_problem(_resumed(init)), problem)
+
+    def test_codexs_reading_of_a_resumed_rollout(self):
+        loose = "the resumed session's sandbox policy was not confirmed read-only"
+        cases = [
+            ({"sandbox_policy": "read-only"}, None),
+            ({"sandbox_policy": "workspace-write"}, loose),
+            ({}, loose),
+            (None, loose),
+        ]
+        for init, problem in cases:
+            with self.subTest(init=init):
+                self.assertEqual(CodexProvider().resumed_session_problem(_resumed(init)), problem)
+
+    def test_agys_denied_items_round_trip_its_own_warning(self):
+        one = [{"action": "command", "display_name": "RunCommand"}]
+        two = [*one, {"action": "write", "display_name": "Write file"}]
+        for denied, items in (
+            (one, [("RunCommand", "command")]),
+            (two, [("RunCommand", "command"), ("Write file", "write")]),
+        ):
+            with self.subTest(items=items):
+                warning = agy_module._denied_warning({"denied_actions": denied})
+                assert warning is not None
+                self.assertEqual(AgyProvider().denied_action_items(warning), items)
+
+    def test_display_names_with_parentheses_or_commas_round_trip(self):
+        def item(name, action="command"):
+            return {"action": action, "display_name": name}
+
+        for denied, items in (
+            ([item("Run (bash)")], [("Run (bash)", "command")]),
+            ([item("a, b")], [("a, b", "command")]),
+            ([item("Run (bash)"), item("a, b", "write")], [("Run (bash)", "command"), ("a, b", "write")]),
+            ([item("a, b", "write"), item("Run (bash)")], [("a, b", "write"), ("Run (bash)", "command")]),
+        ):
+            with self.subTest(items=items):
+                warning = agy_module._denied_warning({"denied_actions": denied})
+                assert warning is not None
+                self.assertEqual(AgyProvider().denied_action_items(warning), items)
+
+    def test_a_name_that_reads_as_two_items_keeps_the_command(self):
+        """``x (y), z (command)`` is one name or two items; the text cannot
+        say which. Read as two, and the command is still seen."""
+        denied = [{"action": "command", "display_name": "x (y), z"}]
+        warning = agy_module._denied_warning({"denied_actions": denied})
+        assert warning is not None
+        self.assertEqual(AgyProvider().denied_action_items(warning), [("x", "y"), ("z", "command")])
+
+    def test_an_empty_kind_is_an_item_of_no_kind(self):
+        warning = agy_module.DENIED_PREFIX + "1 action(s): Name (); set it"
+        self.assertEqual(AgyProvider().denied_action_items(warning), [("Name", "")])
+
+    def test_an_unparseable_list_is_one_item_of_no_kind(self):
+        warning = agy_module._denied_warning({"denied_actions": ["something odd"]})
+        assert warning is not None
+        self.assertEqual(AgyProvider().denied_action_items(warning), [("something odd", "")])
+
+    def test_an_entry_that_is_not_an_object_keeps_the_items_around_it(self):
+        command = {"action": "command", "display_name": "RunCommand"}
+        for denied, items in (
+            ([command, "odd"], [("RunCommand", "command"), ("odd", "")]),
+            ([command, "odd", "more"], [("RunCommand", "command"), ("odd", ""), ("more", "")]),
+            (["odd", command], [("odd, RunCommand", "command")]),
+        ):
+            with self.subTest(denied=denied):
+                warning = agy_module._denied_warning({"denied_actions": denied})
+                assert warning is not None
+                self.assertEqual(AgyProvider().denied_action_items(warning), items)
+
+    def test_another_warning_is_not_a_denial(self):
+        warning = agy_module.NO_ANSWER + agy_module.EMPTY_RESPONSE
+        self.assertIsNone(AgyProvider().denied_action_items(warning))
+
+
 if __name__ == "__main__":
     unittest.main()

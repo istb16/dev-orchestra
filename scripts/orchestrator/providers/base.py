@@ -15,7 +15,7 @@ import os
 import re
 import shutil
 import subprocess
-from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple, TypeVar
+from typing import Any, Callable, ClassVar, Dict, List, NamedTuple, Optional, Sequence, Tuple, TypeVar
 
 from .. import activity, execution, verified
 from ..workspace import redact
@@ -44,6 +44,12 @@ REFUSED_ENFORCEMENT = ("unsupported", "unverified")
 #: The statuses a read-only run goes ahead under, warned about wherever the
 #: seat is configured or run. Nothing checks afterwards what such a run did.
 WARNED_ENFORCEMENT = ("unenforced",)
+
+#: What ``Provider.tool_activity_reported`` may say ``parse_usage`` fills in:
+#: nothing, the tool calls only, or the calls and what the tools printed back.
+TOOL_ACTIVITY_NONE = "none"
+TOOL_ACTIVITY_CALLS = "calls"
+TOOL_ACTIVITY_OUTPUT = "calls and output"
 
 #: A raw argument is named in a refusal by its flag, never by its value: the
 #: value of ``--settings`` or ``-c`` can be a credential, and a refusal is
@@ -482,7 +488,11 @@ class Provider:
     supports_resume = False
 
     #: The checks a version must pass before this adapter's resumed sessions
-    #: are trusted. The strictest set unless an adapter names its own.
+    #: are trusted. The strictest set unless an adapter names its own. That
+    #: set includes the confinement and hooks checks, which the live check
+    #: asks only of an adapter that sets ``confines_read_only`` and
+    #: ``repository_hooks_file``; one that sets neither names its own, or no
+    #: pass is ever recorded (the live check says which it never asked).
     required_resume_checks: Sequence[str] = verified.REQUIRED_RESUME_CHECKS
 
     #: True when :meth:`read_only_enforcement` is a constant that needs no
@@ -916,6 +926,66 @@ class Provider:
         """``session_id``, ``context_tokens`` and ``init`` of a finished run,
         as far as the CLI printed them. Empty when it says nothing."""
         return {}
+
+    # -- live check (scripts/smoke_live.py) --------------------------------
+    #
+    # What the live check may ask of this CLI, as measured. Each default is
+    # "not asked": an adapter that sets none is checked as before. Only the
+    # live check reads these; no run, and nothing the orchestrator decides,
+    # depends on them, so ``confines_read_only`` is a claim to be checked,
+    # not a guarantee anything enforces.
+
+    #: True when the CLI confines a read-only run to its working directory.
+    #: Asks ``stays confined (absolute/symlink)``, ``--add-dir widens`` and,
+    #: for a resuming adapter, ``resumes confined (...)``.
+    confines_read_only = False
+
+    #: A repository-relative path the CLI reads command hooks from (Claude's
+    #: ``settings.json`` hooks format). Non-empty asks ``ignores repository
+    #: hooks`` and ``... on resume``.
+    repository_hooks_file = ""
+
+    #: A repository-relative path the CLI reads a sandbox setting from
+    #: (Codex's ``config.toml`` format). Non-empty asks ``ignores repository
+    #: config on resume``.
+    repository_sandbox_config_file = ""
+
+    #: What :meth:`parse_usage` fills in about tools: one of
+    #: :data:`TOOL_ACTIVITY_NONE`, :data:`TOOL_ACTIVITY_CALLS` and
+    #: :data:`TOOL_ACTIVITY_OUTPUT`.
+    tool_activity_reported = TOOL_ACTIVITY_NONE
+
+    #: The tool the CLI reads a file with, when a read-only run may also reach
+    #: a shell; the tool check then asks for that tool by name.
+    file_read_tool = ""
+
+    #: True when implement mode is checked to write a file.
+    implement_write_checked = False
+
+    #: The role options that let a write run run a shell command without
+    #: asking; non-None asks ``names a denied command`` and ``runs a command
+    #: with skip_permissions``.
+    permission_bypass_options: ClassVar[Optional[Dict[str, Any]]] = None
+
+    def read_only_widening_args(self, directory: str) -> List[str]:
+        """The raw arguments that let a read-only run also read ``directory``;
+        they must pass this adapter's own read-only gate. None by default."""
+        return []
+
+    def denied_action_items(self, warning: str) -> Optional[List[Tuple[str, str]]]:
+        """``(display name, kind)`` of each action a warning from
+        :meth:`run_warnings` names as denied; None for any other warning.
+        ``kind`` is the CLI's own word, and ``"command"`` is a shell command."""
+        return None
+
+    def resumed_session_problem(self, result: RunResult) -> Optional[str]:
+        """The first way a resumed session falls short of read-only, or None.
+
+        Read only from restrictions the CLI itself reported (an init event, a
+        rollout), never from a run that simply did not write: a model that
+        chose not to write proves nothing about a CLI that dropped a flag.
+        """
+        return "no reading of a resumed session's restrictions is known for %s" % self.name
 
     def command_line(
         self,
