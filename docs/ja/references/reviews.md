@@ -1,4 +1,4 @@
-<!-- translated-from: references/reviews.md sha256:937ef98d4db8958e86958317de43874e7952fbbbab55c29112d4d920f072d03b -->
+<!-- translated-from: references/reviews.md sha256:a7fe53967d9d2814e98d8f8b34343a426ea8d330a2fdd5e1e17a76df1a244639 -->
 
 > この文書は [references/reviews.md](../../../references/reviews.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -16,6 +16,7 @@
 - [周辺コンテキスト](#surrounding-context)
 - [設計レビュー](#design-review)
 - [レビューが実行されない場合、または縮小して実行される場合](#when-a-review-does-not-run-or-runs-smaller)
+  - [ラウンドが必要としないロール](#roles-a-round-does-not-need)
 - [ロール](#roles)
 - [出力スキーマ](#output-schema)
   - [出力の上限](#output-limits)
@@ -320,7 +321,9 @@ complete のままで、diff がファイルとして渡されたラウンドは
 
 ## 設計レビュー
 
-間違えうるコードがまだ存在しない段階での、同じレビュアー陣によるレビューです。
+間違えうるコードがまだ存在しない段階で、レビュアー陣が plan を評価します。いずれかの
+ファイルが設計パネル（`review.design.reviewers`）を設定していればそれが、なければ従来どおり
+すべての `when` を無視したコードレビューのレビュアー陣が評価します（`references/configuration.md` を参照）。
 orchestrator がこれを実行するかどうかは `review.design.enabled` が決めます。`true` は常に、
 `false` は決して実行せず、`auto`（デフォルト）は plan のどこかで高リスクのパスを挙げているか、
 `Files to Modify` で 6 個以上のコードファイル（docs・tests・`.md` ファイルは数えません）を挙げる plan のとき、
@@ -348,8 +351,10 @@ dev-orchestra review fix-brief --design --output .ai/execution/design-fix-brief.
 **プロンプトは別の問いを投げかけます。**「このコードは正しいか」ではなく、「これに
 従えば正しいものができるか」です。plan が挙げるファイルやシンボルは存在するか、
 現在の挙動についての記述は正しいか、すべての呼び出し元をカバーしているか、
-Test Strategy は十分か、といった点です。各組み込みロールも同じように向け直され、
-`security` は diff が何をするかではなく、提案が何を通してしまうかを問います。
+Test Strategy は十分か、といった点です。`general` は「チームがこの plan に従えば、
+正しいものを作ることになるか」を最初に問います。各組み込みロールも同じように向け直され、
+`security` は diff が何をするかではなく、提案が何を通してしまうかを問い、`architecture` は
+互換性（既存の呼び出し元、設定とレコードの形式、CLI の表面）も確認します。
 そのため `File:` には plan のセクション（`plan.md#Proposed Change`）か、plan が
 見誤っているリポジトリのパスを指定し、`Line:` は通常 `n/a` になります。
 
@@ -365,19 +370,36 @@ Test Strategy は十分か、といった点です。各組み込みロールも
 
 **最適化ゲートとレビュアー陣の縮小は適用されません。** plan について何かを語る
 テスト結果はなく、測るべき diff もありません。そして設計上の判断こそ、モデル間の
-意見の相違がそのコストに見合う場面なので、毎ラウンド、レビュアー陣全員が実行
-されます。`when: high-risk` と設定されたレビュアーや、`paths` で絞り込んだレビュアーも
-含みます。plan には判定すべきパスがなく、設計ステージこそそうしたスペシャリストが元を
-取ると計測された場面なので、どちらの条件もコードレビュー専用です（`review run --design --high-risk` は何かを判断した
-ふりをせず、終了コード 2 で終了します）。`auto` が高リスクパターンを借りるのは、ステージを
-そもそも実行するかどうかを決めるためだけです。判定は plan がバッククォートで挙げるすべてのトークンから
-行い、規模は Files to Modify から取ります。実行するとなれば、やはりレビュアー陣全員が実行されます。
+意見の相違がそのコストに見合う場面なので、どのレベルも設計ラウンドをゲートで
+止めたり、そのレビュアー陣を削ったりはしません。誰が席に着くかは、代わりに plan から
+決まります。コードレビューと同じ高リスクパターンを、plan がバッククォートで挙げるすべての
+トークンに対して、大文字小文字を区別せずに照合します。
+
+- 設定された設計パネルのうち `when: high-risk` の席は、高リスクに一致した plan、
+  `review run --design --high-risk` で宣言されたラウンド、または設計レポートにある
+  自分自身の未解決の accepted の指摘を確認し直すときに加わります。同じ plan でも、
+  その改訂版でも同じです。改訂はその指摘に応えるためのものだからです。指摘を引き継が
+  ないのは、新しい系列（`budget reset`）だけです。
+  設計パネルでは `when: paths` は拒否されます。plan には変更されたパスがないからです。
+  コードレビューのレビュアー陣で代用するときは、これまでどおりすべての `when` が無視されます。
+- `high_risk_model` を持つ席は、同じラウンド（一致があるか `--high-risk`）でそのモデルを
+  使い、note を出します:
+  `note: high-risk round (src/auth.py matches *auth*): claude-general runs opus instead of sonnet`。
+- plan に見るものがない `security`、`test`、`architecture` の席は、そのラウンドを
+  休みます。[ラウンドが必要としないロール](#roles-a-round-does-not-need)を参照してください。
+
+`review run --design` は、コードのラウンドと同じく、規則が決めた席ごとに note を 1 つ
+出力し、その判断をラウンドのイベントの `optimization` の下（`level`、`high_risk`、
+`declared`、`conditional`、`files`）に記録します。`auto` はステージをそもそも実行するか
+どうかを決めるのに同じ走査を使い、規模は Files to Modify から取ります。その判断は別物で、
+`review.design.enabled: true` や `false` は、実行されるラウンドに誰が着くかを変えません。
 `review.max_findings` は引き続き適用され、それが未設定の場合は
 `optimization.level` が上限を決めます。設計ラウンドは、`optimization report` が
 出力するあらゆる率（有効だったレベル、ゲートの判定、レビュアー陣の縮小、エスカ
 レーション）から意図的に除外されています。どのレベルも設計ラウンドについて何も
 決めていないからです。その**コスト**は、コードレビューの行の隣に独立した行として
-報告され、コードレビューと平均されることはありません。
+報告され、コードレビューと平均されることはありません。設計ラウンドが休ませたロールも
+同様です。
 
 **指摘の反映**は architect の再実行であり、新しいステージではありません。修正
 リクエスト（元のリクエスト、ブリーフ、そして「`.ai/plan.md` を読み、すべての
@@ -437,7 +459,10 @@ plan が凍結される前です。収まるように切り詰めることだけ
 **高リスクの変更を安くすることはできません。** `optimization.high_risk_paths` に
 マッチするもの（認証、シークレット、決済、マイグレーション、SQL、暗号、デプロイ
 設定）は、レベルの設定にかかわらず `quality` にエスカレーションされます。レビュアー
-陣は全員、指摘の予算も満額、ゲートなしです。パターンは自由に置き換えたり、
+陣は全員、指摘の予算も満額、ゲートなしです。高リスクへの一致はすべてのロールも残し
+（[ラウンドが必要としないロール](#roles-a-round-does-not-need)を参照）、`high_risk_model` を
+持つ席は普段のモデルの代わりにそのモデルを使います。ラウンドのイベントのそのレビュアーの
+エントリには `model_slot: high-risk` と記されます。パターンは自由に置き換えたり、
 `optimization.extra_high_risk_paths` で追加したりできますが、エスカレーションを
 無効にすることはできません。
 
@@ -495,6 +520,96 @@ rejected やトリアージ前の指摘は未解決ではなく、再び報告�
 自分が動作したことを隠すことです。すべての判断は出力され、実行状態に記録され、
 `review run --json` と `status --json` の `optimization` の下で返されます。
 
+<a id="roles-a-round-does-not-need"></a>
+
+### ラウンドが必要としないロール
+
+常に実行される `test`、`architecture` のレビュアーには、コードレビューでも
+設計レビューでも、`quality` を含むどの `optimization.level` でも、毎ラウンドもう 1 つ
+問いが投げかけられます。このラウンドに、そのレビュアーが見るものはあるか、です。
+外されるのは、見るものがないという根拠があるときだけです。
+
+`security` のレビュアーには、その席が `relevance: security` でオプトインしない限り、
+この問いは投げかけられません。その規則が読むのはパスの名前だけで、変更が何をするかは
+読みません。`src/utils.py` に加えられたインジェクションやパストラバーサルはどのパターンにも
+一致しないので、まさにその変更から security のレビュアーを外すのは、既定ではなく自分で
+選ぶ引き換えです。
+
+| ロール | コードレビュー: 実行される条件 | 設計レビュー: 実行される条件 |
+| --- | --- | --- |
+| `security`（`relevance: security` のとき） | 変更されたパスが高リスクパターンか `optimization.security_paths`（リクエスト処理と入力、ファイル・URL・クライアント・クエリ・データベースへのアクセス、実行とデシリアライゼーション、設定、依存関係のマニフェストとロックファイル、そしてすべての高リスクパターン）に一致する | plan のどこかのトークンがそのどれかに、大文字小文字を区別せずに一致する |
+| `test` | レビューされるファイルにドキュメント（`.md`、`.rst`、`.txt`、または `docs/` か `references/` の配下）でないものがある。テストだけからなる変更でも残る -- テストこそが読む対象だから | Files to Modify がコードファイルかテストファイルを挙げている |
+| `architecture` | レビューされるファイルが 6 個以上ある、ドキュメントでないファイルが 2 つ以上のトップレベルディレクトリにまたがる（ルート直下のファイルは 1 つと数える）、または変更されたパスが `optimization.architecture_paths`（契約とスキーマ、モジュールの表面、設定とレコードの形式、CLI、ビルド）に一致する | Files to Modify に対する同じ 3 つの判定 |
+
+それ以外では、そのラウンドを休みます。理由と戻し方を示す note が出ます。1 行目は `claude-security` の席が `relevance: security` を設定したときに出るものです。標準パネルの席は設定していないので、この行は出ません:
+
+```
+note: claude-security (when: relevance) left out: no security-relevant path changed (optimization.security_paths); --only claude-security to include it
+note: claude-test (when: relevance) left out: docs-only change: every reviewed file is documentation; --only claude-test to include it
+note: claude-architecture (when: relevance) left out: 1 directory, 3 file(s), no contract, schema, config or CLI path (optimization.architecture_paths); --only claude-architecture to include it
+```
+
+`--only` の案内は note のものです。`status` や `optimization report` が読み返す記録の
+`reason` は、規則の答えだけです。
+
+規則に問う前の順序は次のとおりです。
+
+- **高リスクへの一致はすべてのロールを残します。** 理由はその一致です。コードの
+  ラウンドではその一致が `quality` へのエスカレーションにもなるので、リスクのある変更には
+  すべてのロールと満額の指摘の予算がそろって与えられます。
+- **`--high-risk` はすべてのロールを残します**（`declared with --high-risk`）。どちらの
+  ステージでも同じです。
+- **その席が報告した未解決の accepted の指摘があれば残ります**
+  （`has open accepted finding F3`）。確認し直しが飛ばされることはありません。設計
+  ラウンドでは、改訂された plan でも、現在の設計レポートの accepted の指摘すべてが
+  これにあたります。新しい系列（`budget reset`）は何も引き継ぎません。
+- **`--only` で名前を挙げれば実行されます**（`named by --only`）。`--only` が名前を
+  挙げない席は、そもそもそのラウンドにいません。
+
+これらのどれか、または自分の規則によって残された席には、そう示す記録（`added: ...`）が
+付くので、レポートは規則が問われたラウンドを数えられます。`general` は判定されません。
+`when: high-risk` や `when: paths` の席は、その条件だけで判定されます。`security` の席と、
+それ以外のロール（`performance`、`database`、`frontend`、`backend`、独自のロール）は、
+`relevance: security|test|architecture` でオプトインしたときにだけ判定されます。`relevance: always` は
+どのロールの席も判定の対象から外します。疑わしければ実行します。レビューされるファイルを
+スナップショットが 1 つも挙げていないコードのラウンドや、読めない plan、Files to Modify
+セクションのない plan、そこでグロブ、ディレクトリ、`..` を経由するパスを挙げる plan では、
+何も判定しません。規則によって誰もいなくなる場合は、低リスクの縮小が残すはずの席
+（`general` が優先）が、`kept: no other reviewer would run` とともにそれでも実行されます。
+
+**`quality` を含むどのレベルでも。** レベルは、読むもののないロールを残しません。見るものの
+ないスペシャリストは、高価なラウンドでも安価なラウンドと同じく役に立たないからです。
+`quality` が今も買うのは、満額の指摘の予算、ゲートなし、低リスクの縮小なしです。低リスクの
+縮小は別物で、カバレッジとコストの引き換えなので `quality` より下にとどまります。一方、
+ロールの規則は不在の判定です。規則が根拠を見つけたロールは、加わった条件付きのレビュアーとは
+違い、小さな変更のレビュアー陣をその縮小から守りません。守るのは引き継がれた指摘だけです。
+
+外されたロールは、外された条件付きのレビュアーと同じくそのラウンドの統合から外され、
+`optimization.conditional` の下に `when: relevance` として記録されます。設計ラウンドでも
+同じで、イベントの `optimization` ブロックに記録されます。`status` は、次のラウンドが外す
+席を Optimization の行に、設計パネルについては Design review の行に加えます。
+`optimization report` は、規則が決めたことをステージごと、レベルごとに数え、外された席を
+ステージのレビュアー実行 1 回あたりの平均課金トークンで見積もった推定削減量を添えます
+（`roles skipped`。`--json` では `relevance` と `design_relevance`）。
+
+**無効にする方法は 2 つ。** `config set optimization.skip_unneeded_roles false` は、常時
+実行の席をすべて毎ラウンドに戻します。`reviewer set claude-test --relevance always`
+（設計パネルには `--design` を付ける）は 1 つの席を戻します。パターンのリストは、
+`high_risk_paths` と同じく、丸ごと置き換える（`optimization.security_paths`、
+`optimization.architecture_paths`）ことも、追加する（`extra_security_paths`、
+`extra_architecture_paths`）こともできます。
+
+**既存の設定で何が変わるか。** `general` の席、`relevance: security` を書いていない
+`security` の席、`when: high-risk` や `when: paths` の席、高リスクに一致したラウンドや
+`--high-risk` のラウンドでは何も変わりません。それ以外では、0.19.0 より後、`quality`
+プリセットを含むどのレベルでも、常時実行の `test`、`architecture` の席が休むことが
+あります。コードレビューでは、docs だけである（test）、または 1 つのディレクトリ内で
+6 ファイル未満かつ契約のパスがない（architecture）ラウンドです。設計レビューでは、plan に
+対する同じ規則によって、初めて休むことがあります。影響を受けるのは、デフォルトの
+`standard` のレビュアー陣では `claude-test` の席で、`quality` プリセットの利用者では
+`architecture`、`test` の席も同様です。security の席が休むのは、その席に
+`relevance: security` を設定したときだけで、そのときはパスのパターンだけで判定されます。
+
 <a id="roles"></a>
 
 ## ロール
@@ -523,7 +638,8 @@ rejected やトリアージ前の指摘は未解決ではなく、再び報告�
 
 一部の変更でしかコストに見合わないスペシャリスト（よくあるのは `security`）は
 `when: high-risk` と設定できます。そうすると、高リスクと判定されたラウンドでだけ
-コードレビューに加わり、plan は引き続きすべてレビューします。関心がファイルの集まりに
+コードレビューに加わり、コードレビューのレビュアー陣がレビューする plan は引き続きすべて
+レビューします（独自の設計パネルでは、それはそのパネル自身が決めます）。関心がファイルの集まりに
 あるスペシャリスト（`database`、`frontend`）は、代わりに `paths` で絞り込めます。その横には
 無条件の `general` レビュアーを置いておいてください。
 [レビューが実行されない場合、または縮小して実行される場合](#when-a-review-does-not-run-or-runs-smaller)

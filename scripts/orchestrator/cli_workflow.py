@@ -21,6 +21,9 @@ from .cli_review import (
     _code_final_pass,
     _design_decision,
     _design_final_pass,
+    _design_lineage,
+    _design_round_plan,
+    _left_out_suffix,
     _ran_since_last_round,
     _reviewed_something,
     _round_plan,
@@ -452,6 +455,10 @@ def _status_payload(
     plan = _round_plan(loaded, settings, workspace, meta, loaded.reviewers())
     if plan.gate == opt_mod.GATE_REFUSE:
         reasons.append("the last recorded test run failed; fix it before reviewing")
+    # And what the next `review run --design` would decide about its panel.
+    design_plan = _design_round_plan(
+        loaded, workspace, loaded.design_reviewers(), lineage=_design_lineage(workspace, book)
+    )
 
     payload = {
         "verdict": "stop-and-report" if reasons else "continue",
@@ -486,6 +493,7 @@ def _status_payload(
             "identical_rounds": design_repeats,
             "final_revision": design_pass["state"],
             "final_revision_pending": design_pass["pending"],
+            "optimization": design_plan.to_dict(),
         },
         # Not a reason and not a verdict: `run implementer` enforces it, and a
         # stop-and-report here would read as "give up" where the answer is to
@@ -566,6 +574,7 @@ def _status_lines(status: _Status, plan_relative: str, warning: List[str]) -> Li
         line += " -- final revision pending (fold the findings in, do not re-review)"
         if design["identical_rounds"] > 1:
             line += "; identical to the previous round"
+    line += _left_out_suffix((design.get("optimization") or {}).get("conditional") or [])
     lines.append(line)
     lines.append(
         "Plan approval: %s"

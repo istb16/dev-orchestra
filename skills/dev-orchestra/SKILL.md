@@ -88,8 +88,8 @@ model wrote; tool lines go as they are.
 template, with the history it cannot fetch (`git log --oneline`, blame): on
 Claude it has only Read, Grep and Glob. Vague or contradicted by the
 codebase → send back once; do not paper over it later. **Design review**:
-the same panel and rules, on `.ai/plan.md` and the request instead of a
-diff; triage as for code. Accepted findings go into a revision request. A
+`review.design.reviewers`, else the code panel; on `.ai/plan.md` and the
+request; triage as for code. Accepted findings go into a revision request. A
 spent design review budget still gets one revision (no re-review), made
 before you ask for approval. Re-review only when `review status --design`
 says so. No design stage, no design review.
@@ -122,8 +122,8 @@ files (`review.exclude`) but names them: pass that on; re-snapshot
 - `partial`: the findings are real, the review is not clean. If `review
   status` says `coverage` is `unverified`, report "not reviewed in full" and
   do not re-run that snapshot.
-- `review run` may shrink the panel (small change, or a conditional reviewer
-  left out) and prints why. Say so in the report.
+- `review run` may shrink the panel (small change; a conditional reviewer
+  or unneeded role left out) and prints why. Report it.
 
 **Triage.** **You** decide what is real; raw findings never reach the fixer.
 Per finding in `consolidated.md`: read the cited code, decide, record it;

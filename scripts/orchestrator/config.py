@@ -210,7 +210,10 @@ def default_config() -> Dict[str, Any]:
             # is skipped for the rest. Measured, the
             # design loop was 40-50% of each workflow that had one, which a
             # risky or large plan earns and a small, contained one does not.
-            # `true` always reviews the plan, `false` never does.
+            # `true` always reviews the plan, `false` never does. A file may
+            # give the design round a panel of its own with `reviewers` here,
+            # or add to the one it inherits with `reviewers_extra`; with
+            # neither, a design round runs the code panel, `when` ignored.
             "design": {"enabled": "auto", "max_iterations": 2},
         },
         # Implementation waits for the user's explicit approval of the plan.
@@ -244,6 +247,16 @@ def default_config() -> Dict[str, Any]:
             "extra_high_risk_paths": [],
             "low_risk_max_files": opt_mod.DEFAULT_LOW_RISK_MAX_FILES,
             "low_risk_max_lines": opt_mod.DEFAULT_LOW_RISK_MAX_LINES,
+            # A security, test or architecture reviewer sits out a round with
+            # nothing for it, in both stages and at every level -- see
+            # optimization.relevance_records. false runs every seat as before.
+            "skip_unneeded_roles": True,
+            # What the security and architecture rules look for. Replaced whole
+            # by a list, or added to by the extra_ keys, as high_risk_paths is.
+            "security_paths": list(opt_mod.DEFAULT_SECURITY_PATHS),
+            "extra_security_paths": [],
+            "architecture_paths": list(opt_mod.DEFAULT_ARCHITECTURE_PATHS),
+            "extra_architecture_paths": [],
         },
         "budgets": {
             "architect": 3,
@@ -470,33 +483,74 @@ def deep_merge(base: Any, override: Any) -> Any:
     return copy.deepcopy(override)
 
 
+class PanelKeys(NamedTuple):
+    """Where one reviewer panel is written in a file."""
+
+    #: The dotted key of the panel's list.
+    reviewers: str
+    #: The dotted key of the reviewers added to whatever panel is inherited.
+    extras: str
+
+
+#: The code review panel, and the design review's own.
+CODE_PANEL = PanelKeys("reviewers", "reviewers_extra")
+DESIGN_PANEL = PanelKeys("review.design.reviewers", "review.design.reviewers_extra")
+
+
 class ReviewerOrigin(NamedTuple):
     """Where one reviewer of the effective panel was written."""
 
     #: ``default`` (the fit, or the built-in panel), ``global`` or ``project``.
     layer: str
-    #: ``reviewers`` or ``reviewers_extra``.
+    #: ``reviewers`` or ``reviewers_extra``, or the design panel's
+    #: ``review.design.reviewers`` or ``review.design.reviewers_extra``.
     key: str
     #: The index in that file's list. Not ``index``, which ``tuple`` owns.
     position: int
 
+    @property
+    def extra(self) -> bool:
+        """Whether this reviewer is one of a file's extras, of either panel."""
+        return self.key in (CODE_PANEL.extras, DESIGN_PANEL.extras)
+
+    @property
+    def design(self) -> bool:
+        """Whether this reviewer was written under ``review.design``."""
+        return self.key in DESIGN_PANEL
+
     def label(self) -> str:
-        """``fit``, ``global``, ``project``, ``global extra`` or ``project extra``."""
-        if self.key == "reviewers_extra":
+        """``fit``, ``global``, ``project``, ``global extra`` or ``project extra``.
+
+        A design panel's own entries read ``global design``, ``project design
+        extra`` and so on; a seat it copied from the code panel keeps that
+        seat's label.
+        """
+        if self.design:
+            if self.extra:
+                return "%s design extra" % self.layer
+            return "%s design" % ("fit" if self.layer == "default" else self.layer)
+        if self.extra:
             return "%s extra" % self.layer
         return "fit" if self.layer == "default" else self.layer
 
 
 def fold_extras(
-    base: Any, global_layer: Dict[str, Any], project_layer: Dict[str, Any]
+    base: Any,
+    global_layer: Dict[str, Any],
+    project_layer: Dict[str, Any],
+    panel_keys: PanelKeys = CODE_PANEL,
+    base_origins: Optional[Sequence[ReviewerOrigin]] = None,
 ) -> Tuple[Any, List[ReviewerOrigin], List[str]]:
-    """The panel with each file's ``reviewers_extra`` after it: ``(reviewers, origins, notes)``.
+    """The panel with each file's extras after it: ``(reviewers, origins, notes)``.
 
-    ``base`` is the merged ``reviewers``: the project file's list, else the
-    global file's, else the fit. A project list replaces the global extras
-    along with the global list; otherwise the global extras come first, then
-    the project's. Only mapping entries are folded, and only from a file whose
-    key is a list: ``validate`` reports the rest, once, per file.
+    ``base`` is the merged list at ``panel_keys.reviewers``: the project
+    file's, else the global file's, else the fit. A project list replaces the
+    global extras along with the global list; otherwise the global extras
+    come first, then the project's. Only mapping entries are folded, and only
+    from a file whose key is a list: ``validate`` reports the rest, once, per
+    file. ``base_origins`` is where each base entry was written when no file
+    lists the panel -- the design panel copied from the code panel keeps the
+    code panel's.
 
     The base keeps every id. An extra whose id is already taken runs under a
     new one, with a note, and is never dropped for anything else.
@@ -506,35 +560,41 @@ def fold_extras(
         base = []
     if not isinstance(base, list):
         return original, [], []
-    if project_layer.get("reviewers") is not None:
+    if get_path(project_layer, panel_keys.reviewers) is not None:
         base_layer, sources = "project", (("project", project_layer),)
     else:
-        base_layer = "global" if global_layer.get("reviewers") is not None else "default"
+        base_layer = "global" if get_path(global_layer, panel_keys.reviewers) is not None else "default"
         sources = (("global", global_layer), ("project", project_layer))
-    origins = [ReviewerOrigin(base_layer, "reviewers", index) for index in range(len(base))]
+    if base_layer == "default" and base_origins is not None:
+        origins = list(base_origins)[: len(base)]
+        origins += [
+            ReviewerOrigin("default", CODE_PANEL.reviewers, i) for i in range(len(origins), len(base))
+        ]
+    else:
+        origins = [ReviewerOrigin(base_layer, panel_keys.reviewers, index) for index in range(len(base))]
     panel = list(base)
     notes: List[str] = []
     owners: Dict[str, ReviewerOrigin] = {}
     for origin, reviewer in zip(origins, panel, strict=True):
         if isinstance(reviewer, dict) and isinstance(reviewer.get("id"), str):
             owners.setdefault(reviewer["id"], origin)
+    layer_extras = [(name, get_path(layer, panel_keys.extras)) for name, layer in sources]
     # Every id an extra writes, folded yet or not: a new name never takes one,
     # or the extra that wrote it would be renamed in turn.
     written = [
         {"id": extra["id"]}
-        for _name, layer in sources
-        if isinstance(layer.get("reviewers_extra"), list)
-        for extra in layer["reviewers_extra"]
+        for _name, extras in layer_extras
+        if isinstance(extras, list)
+        for extra in extras
         if isinstance(extra, dict) and isinstance(extra.get("id"), str)
     ]
-    for layer_name, layer in sources:
-        extras = layer.get("reviewers_extra")
+    for layer_name, extras in layer_extras:
         if not isinstance(extras, list):
             continue
         for index, extra in enumerate(extras):
             if not isinstance(extra, dict):
                 continue
-            origin = ReviewerOrigin(layer_name, "reviewers_extra", index)
+            origin = ReviewerOrigin(layer_name, panel_keys.extras, index)
             entry = copy.deepcopy(extra)
             taken = entry.get("id")
             if isinstance(taken, str) and taken in owners:
@@ -542,9 +602,9 @@ def fold_extras(
                 renamed = suggest_reviewer_id({"reviewers": panel + written}, provider, role)
                 entry["id"] = renamed
                 notes.append(
-                    "reviewers_extra[%d] in the %s file: id %s is taken by %s; it runs as %s "
+                    "%s[%d] in the %s file: id %s is taken by %s; it runs as %s "
                     "(reviewer set %s --id <name> keeps a name)"
-                    % (index, layer_name, taken, _owner(owners[taken]), renamed, renamed)
+                    % (panel_keys.extras, index, layer_name, taken, _owner(owners[taken]), renamed, renamed)
                 )
             if isinstance(entry.get("id"), str):
                 owners.setdefault(entry["id"], origin)
@@ -557,18 +617,80 @@ def fold_extras(
 
 def _owner(origin: ReviewerOrigin) -> str:
     """The entry an id belongs to, the way a fold note names it."""
-    if origin.key == "reviewers_extra":
-        return "reviewers_extra[%d] in the %s file" % (origin.position, origin.layer)
+    if origin.extra:
+        return "%s[%d] in the %s file" % (origin.key, origin.position, origin.layer)
     if origin.layer == "default":
         return "the fitted panel"
+    if origin.design:
+        return "the %s file's design reviewers" % origin.layer
     return "the %s file's reviewers" % origin.layer
 
 
 def _origin_label(origin: ReviewerOrigin, index: int) -> str:
     """How a problem names a panel entry: its file for an extra, else ``reviewers[i]``."""
-    if origin.key == "reviewers_extra":
-        return "reviewers_extra[%d] in the %s file" % (origin.position, origin.layer)
+    if origin.extra:
+        return "%s[%d] in the %s file" % (origin.key, origin.position, origin.layer)
+    if origin.design:
+        return "%s[%d]" % (DESIGN_PANEL.reviewers, index)
     return "reviewers[%d]" % index
+
+
+def without_when(reviewer: Any) -> Any:
+    """A copy of a code panel seat for a design panel: its ``when`` removed.
+
+    A design round that has no panel of its own runs every code seat, so a
+    seat copied from there keeps running every round instead of silently
+    becoming conditional.
+    """
+    if not isinstance(reviewer, dict):
+        return copy.deepcopy(reviewer)
+    return {key: copy.deepcopy(value) for key, value in reviewer.items() if key != "when"}
+
+
+def sets_design_panel(layer: Dict[str, Any]) -> bool:
+    """Whether a file writes ``review.design.reviewers`` or ``reviewers_extra``."""
+    return any(get_path(layer, key) is not None for key in DESIGN_PANEL)
+
+
+def compose_design_panel(
+    data: Dict[str, Any],
+    code_origins: Sequence[ReviewerOrigin],
+    global_layer: Dict[str, Any],
+    project_layer: Dict[str, Any],
+) -> Tuple[List[ReviewerOrigin], List[str]]:
+    """Put the design panel into ``data`` when a file sets one: ``(origins, notes)``.
+
+    With no file setting ``review.design.reviewers`` or ``reviewers_extra``
+    there is no design panel, and nothing is written: a design round runs the
+    code panel with ``when`` ignored, as it always has. Otherwise the base is
+    the project file's list, else the global file's, else a copy of the
+    composed code panel with every ``when`` removed; then each file's design
+    extras are folded in, as ``fold_extras`` folds the code panel's.
+    """
+    if not (sets_design_panel(global_layer) or sets_design_panel(project_layer)):
+        return [], []
+    review = data.setdefault("review", {})
+    if not isinstance(review, dict):
+        return [], []
+    design = review.get("design")
+    if design is None:
+        design = review["design"] = {}
+    elif not isinstance(design, dict):
+        # Left as it is, for validation to report: replacing it would hide
+        # the mistake along with the design panel another file set.
+        return [], []
+    design.pop("reviewers_extra", None)
+    base_origins: Optional[Sequence[ReviewerOrigin]] = None
+    layers = (global_layer, project_layer)
+    if any(get_path(layer, DESIGN_PANEL.reviewers) is not None for layer in layers):
+        base = design.get("reviewers")
+    else:
+        code = data.get("reviewers")
+        base = [without_when(reviewer) for reviewer in code] if isinstance(code, list) else []
+        base_origins = code_origins
+    panel, origins, notes = fold_extras(base, global_layer, project_layer, DESIGN_PANEL, base_origins)
+    design["reviewers"] = panel if panel is not None else []
+    return origins, notes
 
 
 class LoadedConfig:
@@ -587,6 +709,7 @@ class LoadedConfig:
         preset_notes: Optional[List[str]] = None,
         files_data: Optional[Dict[str, Any]] = None,
         reviewer_origins: Optional[Sequence[ReviewerOrigin]] = None,
+        design_reviewer_origins: Optional[Sequence[ReviewerOrigin]] = None,
     ) -> None:
         self.data = data
         self.global_path = global_path
@@ -606,6 +729,8 @@ class LoadedConfig:
         self.files_data = files_data if files_data is not None else data
         #: Parallel to ``reviewers()``: where each one was written.
         self.reviewer_origins = list(reviewer_origins or [])
+        #: Parallel to ``design_reviewers()`` when there is a design panel.
+        self.design_reviewer_origins = list(design_reviewer_origins or [])
 
     @property
     def exists(self) -> bool:
@@ -675,6 +800,41 @@ class LoadedConfig:
         if 0 <= index < len(self.reviewer_origins):
             return self.reviewer_origins[index]
         return ReviewerOrigin(self.layer_of("reviewers"), "reviewers", index)
+
+    def has_design_panel(self) -> bool:
+        """Whether a file set a design panel, so ``review.design.reviewers`` is composed."""
+        design = (self.data.get("review") or {}).get("design")
+        return isinstance(design, dict) and design.get("reviewers") is not None
+
+    def design_reviewers(self) -> List[Dict[str, Any]]:
+        """The panel a design round runs.
+
+        The composed ``review.design.reviewers`` when a file sets a design
+        panel; otherwise the code panel, each seat copied without its
+        ``when``, which is what a design round has always run.
+        """
+        if self.has_design_panel():
+            panel = self.data["review"]["design"]["reviewers"]
+            return list(panel) if isinstance(panel, list) else []
+        return [without_when(reviewer) for reviewer in self.reviewers()]
+
+    def design_reviewer_origin(self, index: int) -> ReviewerOrigin:
+        """Where design reviewer ``index`` was written; a copied code seat keeps its own origin."""
+        if not self.has_design_panel():
+            return self.reviewer_origin(index)
+        if 0 <= index < len(self.design_reviewer_origins):
+            return self.design_reviewer_origins[index]
+        return ReviewerOrigin(self.layer_of(DESIGN_PANEL.reviewers), DESIGN_PANEL.reviewers, index)
+
+    @property
+    def design_panel_source(self) -> str:
+        """Where the design panel's base comes from: ``project``, ``global`` or ``code``.
+
+        ``code`` is the code panel, copied without ``when``: the case with no
+        design panel at all, and the one where a file adds design extras only.
+        """
+        layer = self.layer_of(DESIGN_PANEL.reviewers)
+        return layer if layer in ("project", "global") else "code"
 
     def review_settings(self) -> Dict[str, Any]:
         settings = default_config()["review"]
@@ -764,7 +924,11 @@ _TASTE = ("version", "reviewers", "workspace")
 #: Settings whose default is empty and which only ever add to another one, so
 #: any value in a file was put there by someone. No release ever seeded a file
 #: with them, which is the one thing a pinned report is looking for.
-_ADDITIONS = ("optimization.extra_high_risk_paths",)
+_ADDITIONS = (
+    "optimization.extra_high_risk_paths",
+    "optimization.extra_security_paths",
+    "optimization.extra_architecture_paths",
+)
 
 
 def pinned_differences(data: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -825,16 +989,17 @@ def pinned_differences(data: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 
 def referenced_providers(data: Dict[str, Any]) -> List[str]:
-    """Every provider name a configuration refers to: roles, tiers and reviewers."""
+    """Every provider name a configuration refers to: roles, tiers and both reviewer panels."""
     names = set()
     specs: List[Any] = [data.get(role) for role in KNOWN_ROLES]
     for spec in list(specs):
         tiers = spec.get("model_tiers") if isinstance(spec, dict) else None
         if isinstance(tiers, dict):
             specs.extend(tiers.values())
-    reviewers = data.get("reviewers")
-    if isinstance(reviewers, list):
-        specs.extend(reviewers)
+    for key in (CODE_PANEL.reviewers, DESIGN_PANEL.reviewers):
+        reviewers = get_path(data, key)
+        if isinstance(reviewers, list):
+            specs.extend(reviewers)
     for spec in specs:
         provider = spec.get("provider") if isinstance(spec, dict) else None
         if isinstance(provider, str) and provider:
@@ -972,7 +1137,17 @@ def compose(
     if reviewers is not data.get("reviewers"):
         data["reviewers"] = reviewers
     kept += [(note, "reviewers_extra") for note in folded]
-    fit = presets.Fit(values, [note for note, _ in kept], [subject for _, subject in kept], tuple(origins))
+    # The design panel, when a file sets one; built on the code panel just
+    # composed, so a design panel that copies it copies the one in force.
+    design_origins, design_folded = compose_design_panel(data, origins, global_layer, project_layer)
+    kept += [(note, DESIGN_PANEL.extras) for note in design_folded]
+    fit = presets.Fit(
+        values,
+        [note for note, _ in kept],
+        [subject for _, subject in kept],
+        tuple(origins),
+        tuple(design_origins),
+    )
     return data, fit, name, source
 
 
@@ -1005,9 +1180,16 @@ def load(start: Optional[str] = None, validate_result: bool = True) -> LoadedCon
         preset_notes=fit.notes,
         files_data=deep_merge(deep_merge(default_config(), global_layer), project_layer),
         reviewer_origins=fit.origins,
+        design_reviewer_origins=fit.design_origins,
     )
     if validate_result:
-        problems = validate(data, project_layer=project_layer, global_layer=global_layer, origins=fit.origins)
+        problems = validate(
+            data,
+            project_layer=project_layer,
+            global_layer=global_layer,
+            origins=fit.origins,
+            design_origins=fit.design_origins,
+        )
         if problems:
             raise ConfigError("invalid configuration:\n  - " + "\n  - ".join(problems))
     return loaded
@@ -1027,6 +1209,7 @@ def validate(
     project_layer: Optional[Dict[str, Any]] = None,
     global_layer: Optional[Dict[str, Any]] = None,
     origins: Optional[Sequence[ReviewerOrigin]] = None,
+    design_origins: Optional[Sequence[ReviewerOrigin]] = None,
 ) -> List[str]:
     """Return a list of human-readable problems; empty means valid.
 
@@ -1036,6 +1219,8 @@ def validate(
     entry, whether or not the extras made it into the panel. ``origins`` is
     parallel to the folded ``reviewers``: an extra's entry is checked there
     and not again here, while the panel-wide rules cover it.
+    ``design_origins`` is the same for ``review.design.reviewers``, whose
+    design extras are checked per file too.
     """
     # lazy: presets and the provider registry; see the note at the top of this module
     from . import presets
@@ -1045,6 +1230,7 @@ def validate(
     problems = _validate_version_and_preset(data, project_layer, presets.NAMES)
     problems.extend(_validate_roles(data, providers))
     problems.extend(_validate_reviewers(data, providers, origins, global_layer, project_layer))
+    problems.extend(_validate_design_panel(data, providers, design_origins, global_layer, project_layer))
     for key, check in (
         ("review", _validate_review),
         ("design", _validate_design),
@@ -1100,29 +1286,80 @@ def _validate_reviewers(
     if not isinstance(reviewers, list):
         problems.append("reviewers: must be a list (use [] for none)")
     else:
-        seen = set()
-        for index, reviewer in enumerate(reviewers):
-            origin = origins[index] if origins is not None and index < len(origins) else None
-            extra = origin is not None and origin.key == "reviewers_extra"
-            label = _origin_label(origin, index) if origin is not None else "reviewers[%d]" % index
-            if not isinstance(reviewer, dict):
-                problems.append("%s: must be a mapping" % label)
-                continue
-            rid = reviewer.get("id")
-            if not isinstance(rid, str) or not _ID_RE.match(rid):
-                if not extra:
-                    problems.append("%s: id must match [a-z0-9][a-z0-9._-]* (got %r)" % (label, rid))
-            elif rid in seen:
-                problems.append("%s: duplicate reviewer id %r" % (label, rid))
-            else:
-                seen.add(rid)
-            if extra:
-                continue
-            problems.extend(_validate_reviewer_entry(reviewer, label, label + ".", providers))
+        problems.extend(_validate_panel_entries(reviewers, origins, providers, CODE_PANEL))
         problems.extend(_validate_conditions(reviewers, data.get("optimization"), origins))
     for name, layer in (("global", global_layer), ("project", project_layer)):
         if layer:
             problems.extend(_validate_extras_file(layer, name, providers))
+    return problems
+
+
+def _validate_panel_entries(
+    reviewers: List[Any],
+    origins: Optional[Sequence[ReviewerOrigin]],
+    providers: List[str],
+    keys: PanelKeys,
+) -> List[str]:
+    """Each entry of a composed panel: its shape, its id, and the entry itself.
+
+    Every id counts toward the duplicates. Only the panel's own entries are
+    checked further, by their origin: an extra is checked in its file, and a
+    design panel's seat copied from the code panel was checked with the code
+    panel. Without origins -- data that was never composed -- every entry is
+    the panel's own, as a file wrote it.
+    """
+    design = keys == DESIGN_PANEL
+    problems: List[str] = []
+    seen = set()
+    for index, reviewer in enumerate(reviewers):
+        origin = origins[index] if origins is not None and index < len(origins) else None
+        own = origin is None or (not origin.extra and origin.design == design)
+        if origin is not None and origin.extra:
+            label = _origin_label(origin, index)
+        else:
+            label = "%s[%d]" % (keys.reviewers, index)
+        if not isinstance(reviewer, dict):
+            if own:
+                problems.append("%s: must be a mapping" % label)
+            continue
+        rid = reviewer.get("id")
+        if not isinstance(rid, str) or not _ID_RE.match(rid):
+            if own:
+                problems.append("%s: id must match [a-z0-9][a-z0-9._-]* (got %r)" % (label, rid))
+        elif rid in seen:
+            problems.append("%s: duplicate reviewer id %r" % (label, rid))
+        else:
+            seen.add(rid)
+        if own:
+            problems.extend(_validate_reviewer_entry(reviewer, label, label + ".", providers, design=design))
+    return problems
+
+
+def _validate_design_panel(
+    data: Dict[str, Any],
+    providers: List[str],
+    origins: Optional[Sequence[ReviewerOrigin]],
+    global_layer: Optional[Dict[str, Any]],
+    project_layer: Optional[Dict[str, Any]],
+) -> List[str]:
+    """The design panel, when a file sets one: what ``_validate_reviewers`` checks of the code panel.
+
+    Its own entries are checked here; a seat it copied from the code panel was
+    checked there, and a design extra in its file -- both known by their
+    origin (``_validate_panel_entries``). A plan has no changed paths, so
+    ``when: paths`` is refused; and one seat must always run.
+    """
+    problems: List[str] = []
+    review = data.get("review")
+    design = review.get("design") if isinstance(review, dict) else None
+    reviewers = design.get("reviewers") if isinstance(design, dict) else None
+    # A design panel that is not a list is ``_validate_review_design``'s to report.
+    if isinstance(reviewers, list):
+        problems.extend(_validate_panel_entries(reviewers, origins, providers, DESIGN_PANEL))
+        problems.extend(_validate_conditions(reviewers, data.get("optimization"), origins, design=True))
+    for name, layer in (("global", global_layer), ("project", project_layer)):
+        if layer:
+            problems.extend(_validate_extras_file(layer, name, providers, DESIGN_PANEL))
     return problems
 
 
@@ -1178,6 +1415,12 @@ def _validate_review_design(design: Any) -> List[str]:
     rounds = design.get("max_iterations")
     if rounds is not None and not _int_at_least(rounds, 0):
         problems.append("review.design.max_iterations: must be a non-negative integer")
+    # The entries are checked with the panel; here only the shape, for data
+    # validated without being composed.
+    for key in ("reviewers", "reviewers_extra"):
+        value = design.get(key)
+        if value is not None and not isinstance(value, list):
+            problems.append("review.design.%s: must be a list (use [] for none)" % key)
     return problems
 
 
@@ -1255,20 +1498,67 @@ def _validate_workspace(workspace: Any) -> List[str]:
 
 
 def _validate_reviewer_entry(
-    reviewer: Dict[str, Any], label: str, when_prefix: str, providers: List[str]
+    reviewer: Dict[str, Any], label: str, when_prefix: str, providers: List[str], design: bool = False
 ) -> List[str]:
-    """One reviewer entry's role, provider, model and ``when``.
+    """One reviewer entry's role, provider, model, ``high_risk_model``, ``relevance`` and ``when``.
 
     Its id is the caller's to check, against the list it is unique in.
     ``when_prefix`` is what goes before the ``when`` key in a message.
+    ``design`` is a design panel's entry, which may not be ``when: paths``.
     """
     problems: List[str] = []
     role_name = reviewer.get("role", "general")
     if not isinstance(role_name, str) or not role_name.strip():
         problems.append("%s: role must be a non-empty string" % label)
     problems.extend("%s: %s" % (label, msg) for msg in _validate_role(reviewer, providers))
-    problems.extend(_validate_when(reviewer.get("when"), when_prefix))
+    if "high_risk_model" in reviewer:
+        found = _validate_high_risk_model(reviewer["high_risk_model"])
+        problems.extend("%s: %s" % (label, msg) for msg in found)
+    problems.extend(_validate_relevance(reviewer, when_prefix))
+    when = reviewer.get("when")
+    if design and opt_mod.is_paths_condition(when):
+        problems.append(
+            "%swhen: a design reviewer cannot be when: paths -- a plan has no changed paths "
+            "(use when: high-risk, or list it under reviewers for the code review)" % when_prefix
+        )
+    else:
+        problems.extend(_validate_when(when, when_prefix))
     return problems
+
+
+def _validate_high_risk_model(model: Any) -> List[str]:
+    """A seat's ``high_risk_model``: a model block, as ``model`` is, and nothing else.
+
+    The provider never changes on a high-risk round and the options stay the
+    seat's, so a ``provider`` or ``options`` inside it is refused rather than
+    ignored.
+    """
+    if not isinstance(model, dict):
+        return ["high_risk_model must be a mapping with 'family' and 'version'"]
+    problems = [
+        "high_risk_model.%s: not allowed -- the provider and options stay the seat's own" % key
+        for key in ("provider", "options")
+        if key in model
+    ]
+    problems.extend("high_risk_" + message for message in _validate_model(model))
+    return problems
+
+
+def _validate_relevance(reviewer: Dict[str, Any], prefix: str) -> List[str]:
+    """A seat's ``relevance``: one of the rules or ``always``, and no rule on a general seat."""
+    if "relevance" not in reviewer:
+        return []
+    value = reviewer.get("relevance")
+    choices = (*opt_mod.RELEVANCE_RULES, opt_mod.RELEVANCE_ALWAYS)
+    if not isinstance(value, str) or value.strip().lower() not in choices:
+        return ["%srelevance: must be one of %s (got %r)" % (prefix, ", ".join(choices), value)]
+    role = reviewer.get("role", "general")
+    if value.strip().lower() != opt_mod.RELEVANCE_ALWAYS and str(role).strip().lower() == "general":
+        return [
+            "%srelevance: a general reviewer is never skipped, so it takes no relevance rule (got %s)"
+            % (prefix, value)
+        ]
+    return []
 
 
 def _validate_when(when: Any, prefix: str) -> List[str]:
@@ -1302,21 +1592,24 @@ def _validate_when(when: Any, prefix: str) -> List[str]:
     return ["%swhen: must be one of %s, or a mapping with paths" % (prefix, conditions)]
 
 
-def _validate_extras_file(layer: Dict[str, Any], name: str, providers: List[str]) -> List[str]:
-    """One file's ``reviewers_extra``, entry by entry: the only check of an extra's entry.
+def _validate_extras_file(
+    layer: Dict[str, Any], name: str, providers: List[str], panel_keys: PanelKeys = CODE_PANEL
+) -> List[str]:
+    """One file's extras of one panel, entry by entry: the only check of an extra's entry.
 
     Run on each file whether or not its extras joined the panel, so a global
     list that a project ``reviewers`` list replaces is still checked.
     """
-    extras = layer.get("reviewers_extra")
+    extras = get_path(layer, panel_keys.extras)
     if extras is None:
         return []
     if not isinstance(extras, list):
-        return ["reviewers_extra in the %s file: must be a list (use [] for none)" % name]
+        return ["%s in the %s file: must be a list (use [] for none)" % (panel_keys.extras, name)]
+    design = panel_keys == DESIGN_PANEL
     problems: List[str] = []
     seen = set()
     for index, reviewer in enumerate(extras):
-        label = "reviewers_extra[%d] in the %s file" % (index, name)
+        label = "%s[%d] in the %s file" % (panel_keys.extras, index, name)
         if not isinstance(reviewer, dict):
             problems.append("%s: must be a mapping" % label)
             continue
@@ -1328,12 +1621,15 @@ def _validate_extras_file(layer: Dict[str, Any], name: str, providers: List[str]
         else:
             seen.add(rid)
         # The label names the file, so the key is said after it.
-        problems.extend(_validate_reviewer_entry(reviewer, label, label + ": ", providers))
+        problems.extend(_validate_reviewer_entry(reviewer, label, label + ": ", providers, design=design))
     return problems
 
 
 def _validate_conditions(
-    reviewers: List[Any], optimization: Any, origins: Optional[Sequence[ReviewerOrigin]] = None
+    reviewers: List[Any],
+    optimization: Any,
+    origins: Optional[Sequence[ReviewerOrigin]] = None,
+    design: bool = False,
 ) -> List[str]:
     """What a panel of conditional reviewers needs to be able to run at all.
 
@@ -1347,7 +1643,7 @@ def _validate_conditions(
     The second rule holds only for a reviewer a file wrote. A seat from the
     fit or the built-in panel stays without patterns and runs on the rounds
     declared with ``review run --high-risk``; without ``origins`` every
-    reviewer counts as written.
+    reviewer counts as written. ``design`` checks a design panel, named as such.
     """
     entries = [(index, reviewer) for index, reviewer in enumerate(reviewers) if isinstance(reviewer, dict)]
     always = opt_mod.WHEN_ALWAYS
@@ -1359,15 +1655,19 @@ def _validate_conditions(
         and not (origins is not None and index < len(origins) and origins[index].layer == "default")
     ]
     problems: List[str] = []
+    key = DESIGN_PANEL.reviewers if design else CODE_PANEL.reviewers
     if entries and len(conditional) == len(entries):
         problems.append(
-            "reviewers: at least one reviewer must run always; every reviewer is conditional "
-            "(when: high-risk or when: paths)"
+            "%s: at least one reviewer must run always; every reviewer is conditional "
+            "(when: high-risk or when: paths)" % key
         )
     if high_risk and isinstance(optimization, dict) and not opt_mod.risk_patterns(optimization):
         first = high_risk[0]
         origin = origins[first] if origins is not None and first < len(origins) else None
-        label = _origin_label(origin, first) if origin is not None else "reviewers[%d]" % first
+        if origin is not None and (origin.extra or not design):
+            label = _origin_label(origin, first)
+        else:
+            label = "%s[%d]" % (key, first)
         problems.append(
             "optimization.high_risk_paths: no pattern in force, but %s is when: high-risk "
             "and would never run; add patterns to high_risk_paths or extra_high_risk_paths" % label
@@ -1383,7 +1683,17 @@ def _validate_optimization(data: Any) -> List[str]:
     level = data.get("level")
     if level is not None and (not isinstance(level, str) or level.strip().lower() not in levels):
         problems.append("optimization.level: must be one of %s" % ", ".join(sorted(levels)))
-    for key in ("high_risk_paths", "extra_high_risk_paths"):
+    skip = data.get("skip_unneeded_roles")
+    if skip is not None and not isinstance(skip, bool):
+        problems.append("optimization.skip_unneeded_roles: must be true or false")
+    for key in (
+        "high_risk_paths",
+        "extra_high_risk_paths",
+        "security_paths",
+        "extra_security_paths",
+        "architecture_paths",
+        "extra_architecture_paths",
+    ):
         patterns = data.get(key)
         if patterns is None:
             continue
@@ -1448,6 +1758,8 @@ class SeatRun(NamedTuple):
     position: int = -1
     #: A tier that keeps its role's provider.
     same_provider: bool = False
+    #: ``code`` or ``design``: the reviewer panel a reviewer seat is in.
+    panel: str = "code"
 
 
 def role_seats(data: Dict[str, Any], roles: Sequence[str]) -> List[SeatRun]:
@@ -1482,23 +1794,63 @@ def role_seats(data: Dict[str, Any], roles: Sequence[str]) -> List[SeatRun]:
     return seats
 
 
-def _reviewer_seats(data: Dict[str, Any]) -> List[SeatRun]:
-    """Each mapping reviewer, at its place in the panel: a non-mapping before it still counts."""
+def _reviewer_seats(
+    data: Dict[str, Any], design_origins: Optional[Sequence[ReviewerOrigin]] = None
+) -> List[SeatRun]:
+    """Each mapping reviewer, at its place in the panel: a non-mapping before it still counts.
+
+    The code panel, then the design panel when a file sets one. A design seat
+    copied from the code panel that runs as the code seat of its id does --
+    the same provider and options -- is that seat's run and is not listed
+    twice; it is refused and warned about as that seat. A seat a file wrote
+    under ``review.design`` is always listed, so it meets its own layer's
+    rules whatever code seat it resembles. ``design_origins`` says which is
+    which; without them (data never composed by ``load``) a design seat that
+    runs as its code seat is taken for a copy.
+    """
     seats: List[SeatRun] = []
     reviewers = data.get("reviewers")
+    code: Dict[str, Dict[str, Any]] = {}
     for index, reviewer in enumerate(reviewers if isinstance(reviewers, list) else []):
         if not isinstance(reviewer, dict):
             continue
         reviewer_id = str(reviewer.get("id") or "")
+        code.setdefault(reviewer_id, reviewer)
         display = "reviewer %s" % (reviewer_id or index + 1)
         label = "reviewers[%d]" % index
         seats.append(SeatRun("reviewer", label, display, reviewer_id, reviewer, position=index))
+    design = get_path(data, DESIGN_PANEL.reviewers)
+    for index, reviewer in enumerate(design if isinstance(design, list) else []):
+        if not isinstance(reviewer, dict):
+            continue
+        reviewer_id = str(reviewer.get("id") or "")
+        if design_origins is None:
+            copied = True
+        else:
+            origin = design_origins[index] if index < len(design_origins) else None
+            copied = origin is not None and not origin.design
+        if copied and same_run(reviewer, code.get(reviewer_id)):
+            continue
+        display = "design reviewer %s" % (reviewer_id or index + 1)
+        label = "%s[%d]" % (DESIGN_PANEL.reviewers, index)
+        seat = SeatRun("reviewer", label, display, reviewer_id, reviewer, position=index, panel="design")
+        seats.append(seat)
     return seats
 
 
-def _read_only_seats(data: Dict[str, Any]) -> List[SeatRun]:
-    """The read-only roles and their tiers, then every reviewer."""
-    return role_seats(data, READ_ONLY_ROLES) + _reviewer_seats(data)
+def same_run(reviewer: Any, other: Any) -> bool:
+    """Whether two reviewer entries run on the same provider with the same options."""
+    if not isinstance(reviewer, dict) or not isinstance(other, dict):
+        return False
+    same_provider = reviewer.get("provider") == other.get("provider")
+    return same_provider and reviewer.get("options") == other.get("options")
+
+
+def _read_only_seats(
+    data: Dict[str, Any], design_origins: Optional[Sequence[ReviewerOrigin]] = None
+) -> List[SeatRun]:
+    """The read-only roles and their tiers, then every reviewer (``_reviewer_seats``)."""
+    return role_seats(data, READ_ONLY_ROLES) + _reviewer_seats(data, design_origins)
 
 
 def default_reviewer_family(provider: str) -> str:
@@ -1565,6 +1917,13 @@ def _validate_role(spec: Dict[str, Any], providers: List[str]) -> List[str]:
     if not isinstance(model, dict):
         problems.append("model must be a mapping with 'family' and 'version'")
         return problems
+    problems.extend(_validate_model(model))
+    return problems
+
+
+def _validate_model(model: Dict[str, Any]) -> List[str]:
+    """A model block's family and version; each message starts ``model``."""
+    problems: List[str] = []
     family = model.get("family")
     if family is not None and (not isinstance(family, str) or not family.strip()):
         problems.append("model.family must be a non-empty string")
@@ -1685,6 +2044,8 @@ def make_reviewer(
     model_id: Optional[str] = None,
     when: Optional[str] = None,
     paths: Optional[Sequence[str]] = None,
+    high_risk_family: Optional[str] = None,
+    relevance: Optional[str] = None,
 ) -> Dict[str, Any]:
     reviewer: Dict[str, Any] = {"id": reviewer_id, "provider": provider}
     model: Dict[str, Any] = {}
@@ -1694,9 +2055,13 @@ def make_reviewer(
     if model_id:
         model["id"] = model_id
     reviewer["model"] = model
+    # Each written only when it says something, so a panel with no
+    # conditional reviewer stays byte-identical to the one the defaults describe.
+    if high_risk_family:
+        reviewer["high_risk_model"] = {"family": high_risk_family, "version": "latest"}
     reviewer["role"] = role
-    # Written only when it says something, so a panel with no conditional
-    # reviewer stays byte-identical to the one the defaults describe.
+    if relevance:
+        reviewer["relevance"] = relevance
     if paths:
         reviewer["when"] = {"paths": list(paths)}
     elif when and when != opt_mod.WHEN_ALWAYS:
@@ -1704,43 +2069,55 @@ def make_reviewer(
     return reviewer
 
 
-def add_reviewer(data: Dict[str, Any], reviewer: Dict[str, Any]) -> Dict[str, Any]:
-    reviewers = data.setdefault("reviewers", [])
+def add_reviewer(
+    data: Dict[str, Any], reviewer: Dict[str, Any], panel_keys: PanelKeys = CODE_PANEL
+) -> Dict[str, Any]:
+    reviewers = get_path(data, panel_keys.reviewers)
+    if reviewers is None:
+        reviewers = []
+        set_path(data, panel_keys.reviewers, reviewers)
     if not isinstance(reviewers, list):
-        raise ConfigError("reviewers: must be a list")
+        raise ConfigError("%s: must be a list" % panel_keys.reviewers)
     if any(isinstance(item, dict) and item.get("id") == reviewer.get("id") for item in reviewers):
         raise ConfigError("reviewer id %r already exists" % reviewer.get("id"))
     reviewers.append(reviewer)
     return data
 
 
-def add_extra_reviewer(data: Dict[str, Any], reviewer: Dict[str, Any]) -> Dict[str, Any]:
-    """``add_reviewer`` for ``reviewers_extra``: beside the inherited panel, not instead of it."""
-    extras = data.get("reviewers_extra")
+def add_extra_reviewer(
+    data: Dict[str, Any], reviewer: Dict[str, Any], panel_keys: PanelKeys = CODE_PANEL
+) -> Dict[str, Any]:
+    """``add_reviewer`` for a panel's extras: beside the inherited panel, not instead of it."""
+    extras = get_path(data, panel_keys.extras)
     if extras is None:
-        extras = data["reviewers_extra"] = []
+        extras = []
+        set_path(data, panel_keys.extras, extras)
     if not isinstance(extras, list):
-        raise ConfigError("reviewers_extra: must be a list")
+        raise ConfigError("%s: must be a list" % panel_keys.extras)
     if any(isinstance(item, dict) and item.get("id") == reviewer.get("id") for item in extras):
         raise ConfigError("reviewer id %r already exists" % reviewer.get("id"))
     extras.append(reviewer)
     return data
 
 
-def remove_reviewer(data: Dict[str, Any], selector: str) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+def remove_reviewer(
+    data: Dict[str, Any], selector: str, panel_keys: PanelKeys = CODE_PANEL
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """Remove a reviewer by id, by ``role`` name, or by 1-based position."""
-    reviewers = data.get("reviewers") or []
+    reviewers = get_path(data, panel_keys.reviewers) or []
     if not isinstance(reviewers, list):
-        raise ConfigError("reviewers: must be a list")
+        raise ConfigError("%s: must be a list" % panel_keys.reviewers)
 
     index = _find_reviewer_index(reviewers, selector)
     removed = reviewers.pop(index)
-    data["reviewers"] = reviewers
+    set_path(data, panel_keys.reviewers, reviewers)
     return data, removed
 
 
-def find_reviewer(data: Dict[str, Any], selector: str) -> Tuple[int, Dict[str, Any]]:
-    reviewers = data.get("reviewers") or []
+def find_reviewer(
+    data: Dict[str, Any], selector: str, panel_keys: PanelKeys = CODE_PANEL
+) -> Tuple[int, Dict[str, Any]]:
+    reviewers = get_path(data, panel_keys.reviewers) or []
     index = _find_reviewer_index(reviewers, selector)
     return index, reviewers[index]
 

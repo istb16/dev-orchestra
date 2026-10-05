@@ -17,7 +17,72 @@ The public surface covered by that promise is: the configuration schema, the
   pass, but a resume failure is still recorded. `--json` carries the note
   that says so under `notes`.
 
+- **A design review panel of its own** (#248). `review.design.reviewers`
+  replaces the code panel for design rounds, and `review.design.reviewers_extra`
+  adds to whichever design panel is inherited; with neither, design rounds
+  run the code panel with `when` ignored, as before. A design seat may be
+  `when: high-risk` (it joins a plan with a high-risk hit) but not
+  `when: paths`. `reviewer list|add|remove|set --design` manage it, and
+  `config show`, `doctor` and `review status --design` show it.
+
+- **`high_risk_model` per seat**, in either panel: the model a seat runs on a
+  round with a high-risk hit or `--high-risk`, with a note saying so. The
+  provider and options stay the seat's. `reviewer add|set --high-risk-model`,
+  `reviewer set --clear-high-risk-model`; `reviewer set --provider` to another
+  CLI removes it, with a note, unless `--high-risk-model` names the new one.
+
+- **`review run --design --high-risk`** is accepted: it adds the design
+  panel's `when: high-risk` seats, keeps every role and switches seats to
+  their `high_risk_model`.
+
+- **`reviewer add|set --relevance security|test|architecture|always`**
+  (`set` also takes `default`), and the settings
+  `optimization.skip_unneeded_roles`, `security_paths`,
+  `extra_security_paths`, `architecture_paths` and
+  `extra_architecture_paths` (see Changed).
+
+- **Records, additive**: a reviewer entry that ran on its high-risk model
+  carries `model_slot: high-risk` (an entry without it is the usual slot); a
+  design round's event carries an `optimization` block (`level`,
+  `high_risk`, `declared`, `conditional`, `files`); `optimization report
+  --json` gains `relevance` and `design_relevance`. Records written before
+  read as they did.
+
 ### Changed
+
+- **A `test` or `architecture` seat sits out a round with nothing for it**,
+  in code review and design review and at every optimization level,
+  `quality` included. On code review: a docs-only change (test), or one that
+  stays in one directory under 6 files with no contract, schema, config or
+  CLI path (`optimization.architecture_paths`); on design review, the same
+  rules on the plan -- the first time a design round leaves anyone out.
+  Nothing changes for a `general` seat, a `when: high-risk` or `when: paths`
+  seat, or a round with a high-risk hit or `--high-risk`; a carried finding
+  or `--only` also keeps the role -- on a design round, an accepted finding
+  of the live design report keeps its seat on a revised plan too. The
+  default `standard` panel's `claude-test` is the seat affected; a `quality`
+  preset user's `architecture` and `test` seats are too.
+  `config set optimization.skip_unneeded_roles false` restores the previous
+  behaviour whole; `reviewer set claude-test --relevance always` restores
+  one seat. `review run` prints a note for each seat left out and the way back
+  in (`--only <id>`), `status` adds them to its Optimization and Design review
+  lines, and `optimization report` prints a `roles skipped` row per stage with
+  the count by level and an estimated saving.
+
+- **A `security` seat keeps running every round unless it opts in** with
+  `relevance: security`. Its rule reads changed path names, never what the
+  change does, so a vulnerability added to an ordinarily named file would
+  miss it; opting in trades that security coverage for cost. Opted in, it
+  sits out a change matching none of `optimization.security_paths` plus every
+  high-risk pattern, a list that also covers file, path, URL, fetch, client,
+  query, SQL and database names.
+
+- **A configured design panel honours `when: high-risk`** against the plan.
+
+- **The design review guidance for `general` and `architecture` is reworded**:
+  `general` leads with whether following the plan builds the right thing, and
+  `architecture` also checks compatibility -- existing callers, config and
+  record formats, and the CLI surface.
 
 - **Adapters declare what `smoke_live.py` checks** (`confines_read_only`,
   `repository_hooks_file`, `tool_activity_reported`, `denied_action_items`,

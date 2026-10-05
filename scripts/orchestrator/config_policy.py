@@ -8,9 +8,16 @@ Importing this module loads the provider registry.
 from __future__ import annotations
 
 import os
-from typing import Any, Dict, List, NamedTuple, Sequence, Tuple
+from typing import Any, Dict, List, NamedTuple, Optional, Sequence, Tuple
 
-from .config import WRITE_ROLES, LoadedConfig, _read_only_seats, role_seats
+from .config import (
+    WRITE_ROLES,
+    LoadedConfig,
+    ReviewerOrigin,
+    _read_only_seats,
+    _reviewer_seats,
+    role_seats,
+)
 from .providers import _warned_provider, get_provider, unenforced_warning
 
 # --------------------------------------------------------------------------- read-only raw arguments
@@ -31,6 +38,8 @@ class RawArgs(NamedTuple):
     layer: str
     #: The layer ``provider`` came from, by the same rule.
     provider_layer: str = "default"
+    #: ``design`` for a design panel seat, else ``code`` (``SeatRun.panel``).
+    panel: str = "code"
 
 
 def _string_args(spec: Dict[str, Any]) -> List[str]:
@@ -45,7 +54,7 @@ def read_only_raw_args(loaded: LoadedConfig) -> List[RawArgs]:
     Broken entries are skipped: ``validate`` reports those already.
     """
     found: List[RawArgs] = []
-    for seat in _read_only_seats(loaded.data):
+    for seat in _read_only_seats(loaded.data, loaded.design_reviewer_origins):
         args = _string_args(seat.spec)
         if seat.kind == "role":
             layer = loaded.layer_of("%s.options.args" % seat.role)
@@ -60,12 +69,15 @@ def read_only_raw_args(loaded: LoadedConfig) -> List[RawArgs]:
                 layer = loaded.layer_of("%s.options.args" % seat.role)
             provider_layer = loaded.layer_of(_tier_provider_path(seat.role, seat.tier, entry))
         else:
-            origin = loaded.reviewer_origin(seat.position)
-            if origin.key == "reviewers":
-                layer = loaded.layer_of("reviewers[%d].options.args" % seat.position)
+            if seat.panel == "design":
+                origin = loaded.design_reviewer_origin(seat.position)
+            else:
+                origin = loaded.reviewer_origin(seat.position)
+            if not origin.extra:
+                layer = loaded.layer_of("%s[%d].options.args" % (origin.key, origin.position))
                 # The list is replaced whole, so every reviewer in it came
                 # with the file that set it.
-                provider_layer = loaded.layer_of("reviewers")
+                provider_layer = loaded.layer_of(origin.key)
             else:
                 # An extra is the one file's whole entry; ``layer_of`` would ask
                 # the project file first for an index into the global list.
@@ -73,7 +85,9 @@ def read_only_raw_args(loaded: LoadedConfig) -> List[RawArgs]:
                 provider_layer = origin.layer
         provider = str(seat.spec.get("provider") or "")
         found.append(
-            RawArgs(seat.label, seat.display, seat.reviewer_id, provider, args, layer, provider_layer)
+            RawArgs(
+                seat.label, seat.display, seat.reviewer_id, provider, args, layer, provider_layer, seat.panel
+            )
         )
     return found
 
@@ -125,7 +139,7 @@ def _project_provider_seats(loaded: LoadedConfig) -> List[Tuple[RawArgs, str]]:
     for entry in read_only_raw_args(loaded):
         if entry.provider_layer != "project":
             continue
-        if entry.reviewer_id or entry.label.startswith("reviewers["):
+        if entry.reviewer_id or entry.label.startswith(("reviewers[", "review.design.reviewers[")):
             message = project_reviewer_refusal(entry.display, entry.provider, name)
         else:
             path = _seat_provider_path(loaded, entry.label)
@@ -146,11 +160,29 @@ def project_provider_refusals(loaded: LoadedConfig) -> Dict[str, str]:
     return {entry.label: message for entry, message in _project_provider_seats(loaded)}
 
 
-def reviewer_provider_refusals(loaded: LoadedConfig) -> Dict[str, str]:
-    """The same, by reviewer id, for the review path."""
-    return {
-        entry.reviewer_id: message for entry, message in _project_provider_seats(loaded) if entry.reviewer_id
-    }
+def reviewer_provider_refusals(loaded: LoadedConfig, panel: str = "code") -> Dict[str, str]:
+    """The same, by reviewer id, for the review path of ``panel`` (``code`` or ``design``)."""
+    return _panel_view(loaded, panel, _project_provider_seats(loaded))
+
+
+def _panel_view(loaded: LoadedConfig, panel: str, pairs: Sequence[Tuple[RawArgs, str]]) -> Dict[str, str]:
+    """``pairs`` by reviewer id, over the seats of one panel.
+
+    Ids repeat across the two panels, so a refusal is looked up in the panel
+    that runs. A design seat copied from the code panel that runs as the code
+    seat of its id does has no seat of its own (``config._reviewer_seats``),
+    and meets that code seat's refusal; a seat a file wrote under
+    ``review.design`` always has its own.
+    """
+    code = _by_key([(entry.reviewer_id, message) for entry, message in pairs if entry.panel == "code"])
+    if panel != "design":
+        return {key: message for key, message in code.items() if key}
+    own = _by_key([(entry.reviewer_id, message) for entry, message in pairs if entry.panel == "design"])
+    seats = _reviewer_seats(loaded.data, loaded.design_reviewer_origins)
+    seated = {seat.reviewer_id for seat in seats if seat.panel == "design"}
+    view = {key: message for key, message in code.items() if key and key not in seated}
+    view.update((key, message) for key, message in own.items() if key)
+    return view
 
 
 def project_seat_refusal(display: str, provider: str, file_name: str, provider_path: str) -> str:
@@ -201,34 +233,40 @@ def project_raw_arg_refusals(loaded: LoadedConfig) -> Dict[str, str]:
     return _by_key([(entry.label, message) for entry, message in _all_refused(loaded)])
 
 
-def reviewer_raw_arg_refusals(loaded: LoadedConfig) -> Dict[str, str]:
-    """The same refusals, by reviewer id, for the review path."""
-    return _by_key(
-        [(entry.reviewer_id, message) for entry, message in _all_refused(loaded) if entry.reviewer_id]
-    )
+def reviewer_raw_arg_refusals(loaded: LoadedConfig, panel: str = "code") -> Dict[str, str]:
+    """The same refusals, by reviewer id, for the review path of ``panel``."""
+    return _panel_view(loaded, panel, _all_refused(loaded))
 
 
-def read_only_enforcement_warnings(data: Dict[str, Any], refused: Sequence[str] = ()) -> List[str]:
+def read_only_enforcement_warnings(
+    data: Dict[str, Any],
+    refused: Sequence[str] = (),
+    design_origins: Optional[Sequence[ReviewerOrigin]] = None,
+) -> List[str]:
     """One line per read-only seat whose provider cannot be held to reading.
 
     ``data`` is merged configuration, so the wizard can ask about its scratch.
     ``which()`` is not asked: such a provider's status is static, so the line
     is the same whether or not its CLI is installed. ``refused`` holds the
     labels already refused (``project_raw_arg_refusals``), which are not also
-    warned about.
+    warned about. ``design_origins`` tells a design seat a file wrote from a
+    copy of its code seat (``_reviewer_seats``).
     """
-    return [line for _label, _reviewer_id, line in _enforcement_warned_seats(data, refused)]
+    warned = _enforcement_warned_seats(data, refused, design_origins)
+    return [line for _label, _reviewer_id, line in warned]
 
 
 def _enforcement_warned_seats(
-    data: Dict[str, Any], refused: Sequence[str] = ()
+    data: Dict[str, Any],
+    refused: Sequence[str] = (),
+    design_origins: Optional[Sequence[ReviewerOrigin]] = None,
 ) -> List[Tuple[str, str, str]]:
     """``(label, reviewer id, line)`` for every warned read-only seat.
 
     The seats ``doctor`` reports enforcement for: the read-only roles, their
-    tiers that change provider, and every reviewer.
+    tiers that change provider, and every reviewer of either panel.
     """
-    seats = [seat for seat in _read_only_seats(data) if not seat.same_provider]
+    seats = [seat for seat in _read_only_seats(data, design_origins) if not seat.same_provider]
     found: List[Tuple[str, str, str]] = []
     for seat in seats:
         if seat.label in refused:
@@ -241,13 +279,27 @@ def _enforcement_warned_seats(
     return found
 
 
-def reviewer_enforcement_warnings(data: Dict[str, Any], refused: Sequence[str] = ()) -> Dict[str, str]:
-    """The warned reviewers' lines by reviewer id, for the review path."""
-    return {
-        reviewer_id: line
-        for _label, reviewer_id, line in _enforcement_warned_seats(data, refused)
-        if reviewer_id
-    }
+def reviewer_enforcement_warnings(
+    data: Dict[str, Any],
+    refused: Sequence[str] = (),
+    panel: str = "code",
+    design_origins: Optional[Sequence[ReviewerOrigin]] = None,
+) -> Dict[str, str]:
+    """The warned reviewers' lines by reviewer id, for the review path of ``panel``.
+
+    A design seat with no seat of its own warns as its code seat does; see
+    ``_panel_view``.
+    """
+    warned = [entry for entry in _enforcement_warned_seats(data, refused, design_origins) if entry[1]]
+    design_seats = [seat for seat in _reviewer_seats(data, design_origins) if seat.panel == "design"]
+    design_labels = {seat.label for seat in design_seats}
+    code = {reviewer_id: line for label, reviewer_id, line in warned if label not in design_labels}
+    if panel != "design":
+        return code
+    seated = {seat.reviewer_id for seat in design_seats}
+    lines = {reviewer_id: line for reviewer_id, line in code.items() if reviewer_id not in seated}
+    lines.update((reviewer_id, line) for label, reviewer_id, line in warned if label in design_labels)
+    return lines
 
 
 def project_write_refusals(loaded: LoadedConfig) -> Dict[str, str]:

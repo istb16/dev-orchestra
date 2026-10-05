@@ -8,6 +8,7 @@
 - [Precedence](#precedence)
 - [Presets](#presets)
   - [Adding reviewers beside the panel (`reviewers_extra`)](#adding-reviewers-beside-the-panel-reviewers_extra)
+  - [A design panel of its own (`review.design.reviewers`)](#a-design-panel-of-its-own-reviewdesignreviewers)
 - [Schema (version 1)](#schema-version-1)
   - [Field reference](#field-reference)
   - [Role options](#role-options)
@@ -364,6 +365,99 @@ included -- gets none of them. `config show` prints the panel in force.
 An older dev-orchestra ignores `reviewers_extra`: the panel runs without the
 extras, and its `config validate` does not report the key.
 
+### A design panel of its own (`review.design.reviewers`)
+
+The design review runs the code panel, with every `when` ignored, until a file
+gives it a panel of its own. `review.design.reviewers` replaces the code panel
+for design rounds only, and `review.design.reviewers_extra` adds to whichever
+design panel is inherited, as `reviewers_extra` does for the code panel:
+
+```yaml
+review:
+  design:
+    reviewers:
+      - id: claude-general
+        provider: claude
+        model:
+          family: sonnet
+          version: latest
+        high_risk_model:           # opus on a high-risk plan
+          family: opus
+          version: latest
+        role: general
+      - id: claude-security
+        provider: claude
+        model:
+          family: sonnet
+          version: latest
+        role: security
+        relevance: always          # never judged by the role rules (a security seat's default)
+    reviewers_extra: []
+```
+
+| The design panel is | When |
+| --- | --- |
+| none: design rounds run the code panel, `when` ignored | no file sets `review.design.reviewers` or `review.design.reviewers_extra` |
+| the project file's design list, then the project file's design extras | the project file lists `review.design.reviewers` |
+| the global file's design list, then the global design extras, then the project design extras | otherwise, when the global file lists one |
+| the code panel in force with every `when` removed, then the global design extras, then the project design extras | otherwise (a file sets design extras only) |
+
+The same id may name a seat in both panels (`claude-general`): rounds, reports
+and usage labels are kept apart by stage, so its history stays continuous.
+An extra whose id is taken is renamed with a note, as in the code panel.
+
+**What a design seat may be.** The schema of a `reviewers` entry, checked the
+same way (`review.design.reviewers[0]: ...`), with two differences: `when:
+paths` is refused, since a plan has no changed paths; and `when: high-risk`
+is honoured -- the seat joins a plan with a high-risk hit or a round declared
+with `review run --design --high-risk` -- so one seat must still run always. A
+project file's design seat on agy, or with `options.args`, is refused like a
+project `reviewers` entry -- also one that repeats the id, provider and
+options of a global code seat: a seat a file wrote under `review.design` is
+always judged as its own. Only a seat copied from the code panel meets that
+code seat's rule.
+
+**Editing it.** `reviewer list|add|remove|set --design` act on the design
+panel. `reviewer add --design` writes to the file's `review.design.reviewers`
+when the file lists one, and otherwise to `review.design.reviewers_extra`,
+saying what the design panel still follows (`the code panel` or `the global
+file's design reviewers`). `reviewer set|remove --design` on an inherited seat
+copy the design panel in force into the file first; copied from the code
+panel, the seats lose their `when`, and the note says so. In project scope
+the copy follows the code panel's rule: a seat on agy is left out, with the
+same `not copied into` note, unless the global file lists the panel it came
+from -- its design list for a design seat, its `reviewers` for a seat of the
+code panel -- in which case it is copied whole. `--when-paths` with
+`--design` exits 2. `reviewer list --design` names the source on its first
+line: `(design panel: the code panel; when conditions ignored)`,
+`(design panel: global file)` or `(design panel: project file)`.
+
+**Where it shows.** `config show` has a `Design reviews` block, and its JSON
+adds `design_reviewer_origins` when there is a design panel; `doctor` reports
+`design_reviewers` and `design_panel_source`, and diagnoses each design seat a
+file wrote as it does a code seat. `review status --design` lists the design
+panel and the seats the next round would leave out. `review run --design
+--only <id>` selects from the design panel; `run <reviewer id>` always runs
+the code panel's seat.
+
+**Model on a high-risk round.** Any seat, in either panel, may set
+`high_risk_model`: a model block (`family` plus `version: latest`, or pinned
+with an `id`) it runs instead of `model` on a round with a high-risk hit or
+`--high-risk`. The provider and `options` stay the seat's own, so a
+`provider` or `options` inside it is refused. `when: high-risk` adds a seat on
+risk; `high_risk_model` changes a seat's model; the two can coexist. Each
+switched seat prints `note: high-risk round (<path> matches <pattern>): <id>
+runs opus instead of sonnet`, and its run record gains `model_slot:
+high-risk` (a record without it is the usual slot). `reviewer add|set
+--high-risk-model FAMILY` sets it, `reviewer set --clear-high-risk-model`
+removes it, and `reviewer set --provider` to another CLI removes it with a
+note, with or without `--model`; `--high-risk-model` beside it sets the new
+CLI's instead.
+
+An older dev-orchestra ignores `review.design.reviewers`, `reviewers_extra`
+under it, `high_risk_model` and `relevance`: design rounds run the code panel
+and every seat its usual model.
+
 ## Schema (version 1)
 
 ```yaml
@@ -434,6 +528,10 @@ review:
   design:
     enabled: auto                     # review .ai/plan.md before implementing (true, false or auto)
     max_iterations: 2                 # design review -> revise -> re-review
+    # reviewers: [...]                # a design panel of its own; unset, design rounds run the code panel
+
+optimization:
+  skip_unneeded_roles: true           # a test/architecture seat sits out a round with nothing for it
 
 design:
   require_approval: true              # implementer waits for the user's yes (design approve)
@@ -456,8 +554,12 @@ workspace:
 | `<role>.model.id` | string | Exact model id, only with `version: pinned`. |
 | `reviewers[].id` | string | Unique, matching `[a-z0-9][a-z0-9._-]*`. Names the report file. |
 | `reviewers[].role` | string | Built-in or your own; see `references/reviews.md`. |
-| `reviewers[].when` | `always` \| `high-risk` \| mapping with `paths` | When the reviewer runs on a **code** review round (default `always`). `high-risk` joins only the rounds judged high-risk; a mapping with `paths` joins only the rounds whose change matches one of its own patterns. The design review ignores both and runs every reviewer. At least one reviewer must stay `always`. See [Reviewers that run only on high-risk changes](#reviewers-that-run-only-on-high-risk-changes) and [Reviewers scoped to paths](#reviewers-scoped-to-paths). |
+| `reviewers[].when` | `always` \| `high-risk` \| mapping with `paths` | When the reviewer runs on a **code** review round (default `always`). `high-risk` joins only the rounds judged high-risk; a mapping with `paths` joins only the rounds whose change matches one of its own patterns. A design round on the code panel ignores both and runs every reviewer; a design panel of its own honours `high-risk` and refuses `paths`. At least one reviewer must stay `always`. See [Reviewers that run only on high-risk changes](#reviewers-that-run-only-on-high-risk-changes) and [Reviewers scoped to paths](#reviewers-scoped-to-paths). |
+| `reviewers[].high_risk_model` | mapping | The model block the seat runs instead of `model` on a high-risk round (a high-risk hit or `--high-risk`), in either panel: `family` and `version`, or `version: pinned` with an `id`. No `provider` or `options`: those stay the seat's. See [A design panel of its own](#a-design-panel-of-its-own-reviewdesignreviewers). |
+| `reviewers[].relevance` | `security` \| `test` \| `architecture` \| `always` | The role rule that may leave the seat out of a round with nothing for it. Unset, a `test` or `architecture` seat is judged by its own role's rule and any other role -- `security` included, since its rule reads path names alone -- is never judged; `security` opts a security seat in. `always` keeps the seat out of the judgement. A rule on a `general` seat is refused: `general` is never left out. See `references/reviews.md` ("Roles a round does not need"). |
 | `reviewers_extra` | list \| null | Reviewers added beside the panel the file inherits, with the schema of `reviewers` entries; in either file. Renamed when an id is taken, never dropped. See [Adding reviewers beside the panel](#adding-reviewers-beside-the-panel-reviewers_extra). |
+| `review.design.reviewers` | list \| null | The design review's own panel, with the schema of `reviewers` entries (no `when: paths`). Unset in every file, design rounds run the code panel with `when` ignored. See [A design panel of its own](#a-design-panel-of-its-own-reviewdesignreviewers). |
+| `review.design.reviewers_extra` | list \| null | Design reviewers added beside the design panel the file inherits -- the code panel without `when`, when no file lists a design panel. |
 | `review.max_review_iterations` | int ≥ 0 | Rounds per review, not per project: the count restarts on a new branch, a new `--base`, or `budget reset`. `0` disables re-review entirely. |
 | `review.parallel` | bool | `false` runs reviewers one at a time (easier to debug). |
 | `review.re_review_severities` | list | Severities that count as blocking. |
@@ -469,7 +571,7 @@ workspace:
 | `review.context.inline_chars` | int ≥ 1 \| null | How much of the change body goes into the reviewer's prompt (default 400,000, the same number as `max_chars`). At or under it the body is inlined and the round can be clean; over it the reviewer is handed the path of the frozen snapshot and the round is recorded `partial` — coverage unverified — whatever comes back. **Setting it below `max_chars` opens a band between the two where rounds run and are recorded `partial`**: that is the explicit choice of somebody who will not pay for very large prompts, and `partial` is what it costs. Setting it *above* `max_chars` is also allowed and is not a mistake — it means the body is only ever handed over as a file on a round a human forced. `null` means the default. Every round records the number it was measured against, so a `partial` round says which limit made it one. See `references/limits.md`. |
 | `review.context.surrounding` | `none` \| `enclosing` | `enclosing` also hands every code reviewer the Python function, method or class enclosing each hunk, extracted from the snapshot's git tree when the snapshot is taken (default `none`: the diff alone). Off, because measured on one snapshot it did not make a review cheaper — `optimization report` compares rounds with and without it. `false` and `null` mean `none` (`off` reads as `false`); `true` is refused. See `references/reviews.md`. |
 | `review.context.surrounding_chars` | int ≥ 1 \| null | The most surrounding context a round may add (default 15,000: measured on one snapshot, it left the cost per run where it was, while 60,000 added what it carried). Capped further by what the diff leaves under `max_chars` and `inline_chars`, so context never refuses a round or sends a diff over as a file. What does not fit is left out by name, in the prompt and in every report. `null` means the default. See `references/limits.md`. |
-| `review.design.enabled` | bool \| `auto` \| null | Whether `.ai/plan.md` goes in front of the same panel before implementation; the stage costs a reviewer run per panel member per round. `true` always, `false` never. `auto` (default) decides from the plan, and `status` prints the answer and its reason: every backticked token anywhere in the plan, and every path-shaped word under the plan's `Files to Modify` heading whether backticked or not (a fenced block there included), is checked against the high-risk patterns (`optimization.high_risk_paths` plus `extra_high_risk_paths`) ignoring case, and a hit means run — a name with a `/` and no extension, such as `db/migrate`, is also checked as a directory; the size counts the filename-shaped tokens (a `/` or a file extension) under `Files to Modify` outside fenced blocks, `docs/`, `references/`, `tests/` and `.md` files, without looking at the disk, and 6 or more means run; a glob, a directory, a name with a `/` and no extension, or a path through `..` there means run (code such as `payload["mode"]` is not read as a glob); an unreadable plan, no `Files to Modify` section or one that names no file means run; before a plan is written the answer is `auto -> run (once a plan is written)`; and once a design round has run for the workflow the answer stays run, so a revision cannot switch the loop off half way. `null` means the default, `auto`. |
+| `review.design.enabled` | bool \| `auto` \| null | Whether `.ai/plan.md` goes in front of the design panel (the code panel unless a file sets `review.design.reviewers`) before implementation; the stage costs a reviewer run per panel member per round. `true` always, `false` never. `auto` (default) decides from the plan, and `status` prints the answer and its reason: every backticked token anywhere in the plan, and every path-shaped word under the plan's `Files to Modify` heading whether backticked or not (a fenced block there included), is checked against the high-risk patterns (`optimization.high_risk_paths` plus `extra_high_risk_paths`) ignoring case, and a hit means run — a name with a `/` and no extension, such as `db/migrate`, is also checked as a directory; the size counts the filename-shaped tokens (a `/` or a file extension) under `Files to Modify` outside fenced blocks, `docs/`, `references/`, `tests/` and `.md`, `.rst` and `.txt` files, without looking at the disk, and 6 or more means run; a glob, a directory, a name with a `/` and no extension, or a path through `..` there means run (code such as `payload["mode"]` is not read as a glob); an unreadable plan, no `Files to Modify` section or one that names no file means run; before a plan is written the answer is `auto -> run (once a plan is written)`; and once a design round has run for the workflow the answer stays run, so a revision cannot switch the loop off half way. `null` means the default, `auto`. |
 | `review.design.max_iterations` | int ≥ 0 | Design review rounds (review → triage → revise), counted apart from `max_review_iterations` (default 2). The round that reaches the limit still gets its revision; the limit refuses only the re-review after it. `1`: one round, one revision, then ask. `0`: no design review. `budgets.architect` (default 3) covers the design plus one revision per round at the default; raise it with `max_iterations`, and by one more if changes asked for at approval are expected. |
 | `design.require_approval` | bool | `true` (default) makes `run implementer` refuse (exit 5) while `.ai/plan.md` exists and the plan as it is now has not been approved with `design approve` -- after the user said yes. `false` is for runs nobody is watching (CI, batch), and restores the behaviour from before the gate existed. Top-level rather than under `review.design`: approval matters whether or not the panel reviewed the plan. `--force` does not bypass it; only this setting does. |
 | `design.resume.max_age_seconds` | int ≥ 0 \| null | How old the last architect run may be for `run architect --resume` to continue its session (default 3600, how long the CLI kept its prompt cache when this was measured). Older, the revision runs fresh with the full prompt. `0` always runs fresh; `null` means the default. |
@@ -479,6 +581,11 @@ workspace:
 | `optimization.extra_high_risk_paths` | list | Globs added to `high_risk_paths` rather than replacing it (default `[]`). A hit escalates exactly as a `high_risk_paths` hit does. Like every list, a project value replaces a global one. |
 | `optimization.low_risk_max_files` | int | Below `quality`, at most this many files still counts as a small change (default 5). |
 | `optimization.low_risk_max_lines` | int | And at most this many changed lines (default 150). |
+| `optimization.skip_unneeded_roles` | bool | `true` (default): a `test` or `architecture` seat that always runs sits out a round with nothing for it, in code review and design review and at every level, `quality` included -- and so does a `security` seat that opts in with `relevance: security`; one that does not always runs. `false` runs every such seat every round, as before. See `references/reviews.md` ("Roles a round does not need"). |
+| `optimization.security_paths` | list | What the `security` rule looks for, for a seat with `relevance: security`, beside the high-risk patterns: request handling and input, file, URL, client, query and database access, execution and deserialisation, configuration and dependency manifests, plus every default high-risk pattern. Replaces the default list wholesale; `[]` leaves only the high-risk patterns (`doctor` reports that). |
+| `optimization.extra_security_paths` | list | Globs added to `security_paths` (default `[]`). |
+| `optimization.architecture_paths` | list | What the `architecture` rule looks for: contracts and schemas, module surface, configuration and record formats, the CLI, the build. Replaces the default list wholesale; `[]` leaves only the size and directory tests (`doctor` reports that). |
+| `optimization.extra_architecture_paths` | list | Globs added to `architecture_paths` (default `[]`). |
 | `workspace.dir` | string | Where `.ai/` artifacts go. |
 | `workspace.stale_notice_days` | int 0–36500 | When a new workflow starts, its first command notes, once and on stderr, the other workflows whose last activity (`updated_at`, else `started_at`, in `state.json`) is this many days old or more (default 30). The current workflow is left out, and so is any workflow with a stage in flight: that mark clears only when that workflow itself runs `status`, so a workflow abandoned mid-stage is never named here; `workflow list` shows it as `in flight`. A workflow with no usable timestamp, or an unreadable `state.json`, is not counted. Nothing is deleted: `workflow remove <id> --yes` is still the only thing that deletes one. `0` turns the note off; `null` means the default. The note never changes what the command does. |
 | `<role>.options` | mapping | Provider-specific knobs; see below. |
@@ -634,7 +741,11 @@ panel was reduced zero times, and no round came close to the old 2 file / 50
 line thresholds either. Both were raised at the same time.
 
 `quality` is now the only level that always pays for the whole panel, which is
-what that level means.
+what that level means -- the whole panel of roles this round has something
+for: at every level, `quality` included, a `test` or `architecture` seat --
+or a `security` seat that opts in with `relevance: security` -- with nothing
+to read sits out unless the round is high-risk (`optimization.skip_unneeded_roles`; see `references/reviews.md`,
+"Roles a round does not need").
 
 **Size is never the only test.** The reduced panel needs the change to be
 under both thresholds *and* to touch nothing high-risk, because one line in an
@@ -660,7 +771,7 @@ reviewers:
   - id: claude-security
     provider: claude
     role: security
-    when: high-risk          # always (default) | high-risk; code review only
+    when: high-risk          # always (default) | high-risk; code review, and a design panel of its own
 optimization:
   extra_high_risk_paths: ["*/providers/*", "*/config.py"]   # added to high_risk_paths; default []
 ```
@@ -669,8 +780,10 @@ optimization:
 high-risk path, when the orchestrator declares the round high-risk with
 `review run --high-risk`, or when it must re-check its own open accepted
 finding on an incremental round or a re-run of the same snapshot. Otherwise it
-is left out.** On the design
-review it always runs, and `--only` naming it runs it. The judgement is the one
+is left out.** A design round on the code panel always runs it; a seat of a
+design panel of its own joins a plan by the same judgement, on the plan's
+tokens ([above](#a-design-panel-of-its-own-reviewdesignreviewers)).
+`--only` naming it runs it. The judgement is the one
 that escalates a round to `quality`; every decision to add or leave out a
 conditional reviewer is printed and recorded with its reason. See
 `references/reviews.md` for how a round decides.
@@ -1007,6 +1120,9 @@ The skill carries the command grammar; this is the phrasebook.
 | "don't ask me to approve plans" / running in CI | `config set design.require_approval false` |
 | "add a Codex security reviewer" | `reviewer add --provider codex --role security` |
 | "run the security reviewer only on risky changes" | `reviewer set <id> --when high-risk` (see [above](#reviewers-that-run-only-on-high-risk-changes)) |
+| "use opus on risky changes" | `reviewer set <id> --high-risk-model opus` (add `--design` for the design panel) |
+| "review plans with a different panel" | `reviewer add --design …` (see [A design panel of its own](#a-design-panel-of-its-own-reviewdesignreviewers)), then `reviewer list --design` |
+| "always run the security reviewer" | It does: a security seat sits out only with `relevance: security`, which `reviewer set <id> --relevance default` removes; any seat: `reviewer set <id> --relevance always`; every role every round: `config set optimization.skip_unneeded_roles false` |
 | "make it three reviewers" | `reviewer add …` again, then `reviewer list` |
 | "remove the performance reviewer" | `reviewer remove performance` |
 | "change the second reviewer" | `reviewer set 2 --provider … --role …` |
@@ -1085,9 +1201,10 @@ defaults and the preset's fit for the global layer, the global layer for a
 project one. A project's panel therefore never ends up in your global file. An
 index past the end of the list is an error (exit 2), not a new entry.
 `reviewers_extra[0].role` is the exception: it edits the file's own extra and
-copies nothing. A `reviewers[...]` or `reviewers_extra[...]` path is checked
-before anything is written, and a panel problem it would introduce is refused
-(exit 2) instead of written and warned about.
+copies nothing. A `reviewers[...]`, `reviewers_extra[...]` or
+`review.design.reviewers...` path is checked before anything is written, and a
+panel problem it would introduce is refused (exit 2) instead of written and
+warned about.
 
 ### The wizard
 
@@ -1139,7 +1256,10 @@ Configuration
     5. claude / opus / latest / security / claude-security-2 (when: high-risk)
     design review: auto  (review.design.enabled)
     optimization level: balanced  (optimization.level)
+    skip unneeded roles: on  (optimization.skip_unneeded_roles)
     plan approval: required  (design.require_approval)
+  Design reviews
+    (the code panel; when conditions ignored)  (review.design.reviewers)
 
 Save configuration? [Y/n]
 ```
@@ -1159,8 +1279,13 @@ saved. A project file is never asked the preset question.
 The wizard never asks about `reviewers_extra` and never writes it: the file
 keeps the key as it held it, when a preset is chosen too, and a line before the
 reviewer questions says so (`This file's reviewers_extra (<ids>) is kept as it
-is; reviewer add/remove manage it.`). Every summary before saving is the
-configuration `load()` will resolve, the extras marked `(extra, global file)`.
+is; reviewer add/remove manage it.`). Nor does it ask about the design panel:
+`review.design.reviewers` and its extras are kept as the file held them, and a
+line says so (`This file's review.design.reviewers is kept as it is; reviewer
+add/set/remove --design manage it.`). Every summary before saving is the
+configuration `load()` will resolve, the extras marked `(extra, global file)`,
+with the design panel under `Design reviews`; a seat with a high-risk model
+shows `(opus when high-risk)`, and one with a `relevance` shows it.
 Answers to the reviewer questions are still saved as `reviewers`, which the
 panel then follows; to add a reviewer and keep following the inherited panel,
 use `reviewer add`.

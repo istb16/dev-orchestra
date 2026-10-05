@@ -39,11 +39,20 @@ from orchestrator.providers.mock import MockProvider
 #: Every event a ledger entry closes starts with these, in this order.
 EVENT_HEAD = ["stage", "status", "at", "charged_seconds"]
 
-#: The keys of an ok design round's event after the charge.
-DESIGN_TAIL = ["elapsed_seconds", "iteration", "round_id", "reviewers", "findings", "identical_rounds"]
+#: The keys of an ok round's event after the charge, on either path: a design
+#: round records who sat on it under ``optimization`` too.
+CODE_TAIL = [
+    "elapsed_seconds",
+    "iteration",
+    "round_id",
+    "reviewers",
+    "findings",
+    "identical_rounds",
+    "optimization",
+]
 
-#: The same for a code round.
-CODE_TAIL = [*DESIGN_TAIL, "optimization"]
+#: The same for a design round.
+DESIGN_TAIL = CODE_TAIL
 
 #: The keys every round's JSON payload starts with.
 PAYLOAD_HEAD = ["ok", "failed", "partial", "reviewers", "counts"]
@@ -250,7 +259,7 @@ class TestDesignRoundPinning(_Pinning, DesignReviewCase):
         self.write_plan()
         code, out, _ = self.design_run("--json")
         self.assertEqual(code, 0)
-        self.assert_payload_keys(out, ["plan"])
+        self.assert_payload_keys(out, ["plan", "optimization"])
         self.assert_event_keys(self.last_event("design_review"), DESIGN_TAIL)
 
         code, out, _ = self.design_run()
@@ -834,6 +843,9 @@ DESIGN_STATUS = [
     "enabled",
     "mode",
     "reason",
+    "reviewers",
+    "panel_source",
+    "optimization",
 ]
 
 

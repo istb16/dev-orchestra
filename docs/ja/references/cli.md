@@ -1,4 +1,4 @@
-<!-- translated-from: references/cli.md sha256:60159ea45ba2bd6906f91568885f2c2ffd48df662a5a82e58ba77f45a7ed4ce2 -->
+<!-- translated-from: references/cli.md sha256:19f4e0c57f4ae57bdcdad8e46059413a9a158bf6c6ac2012a16ca3fc99de7503 -->
 
 > この文書は [references/cli.md](../../../references/cli.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -58,14 +58,14 @@ Microsoft Store のエイリアスだからです。
 
 | コマンド | 説明 |
 | --- | --- |
-| `config show [--scope effective\|global\|project] [--json]` | 設定を表示します。デフォルトは `effective`（マージ済み）です。スコープを指定すると、そのレイヤーをディスク上にあるとおりに表示し、たいていはずっと短くなります。effective の表示では `Source:` の後に有効なプリセット（`Preset: quality (global; fitted to claude, codex)`）を示し、フィットし直した点ごとに `note:` 行を出します。`--json` では `preset`（`name`、`source`、`notes`）に入ります。effective の `--json` には、`Source:` に並ぶファイルが `project` と `global` として入ります（ないときは `null`）。`Providers:` 行は、参照している各 provider がどこから来ているか（built-in、ユーザーモジュールのパス、または adapter なし）を示します。`--json` では同じ内容が `providers` の下に入ります。 |
+| `config show [--scope effective\|global\|project] [--json]` | 設定を表示します。デフォルトは `effective`（マージ済み）です。スコープを指定すると、そのレイヤーをディスク上にあるとおりに表示し、たいていはずっと短くなります。effective の表示では `Source:` の後に有効なプリセット（`Preset: quality (global; fitted to claude, codex)`）を示し、フィットし直した点ごとに `note:` 行を出します。`--json` では `preset`（`name`、`source`、`notes`）に入ります。effective の `--json` には、`Source:` に並ぶファイルが `project` と `global` として入ります（ないときは `null`）。`Providers:` 行は、参照している各 provider がどこから来ているか（built-in、ユーザーモジュールのパス、または adapter なし）を示します。`--json` では同じ内容が `providers` の下に入ります。サマリーには、各席の高リスク用のモデル（`(opus when high-risk)`）と `relevance`、最適化レベルの下の `skip unneeded roles: on\|off  (optimization.skip_unneeded_roles)` 行、そして `Design reviews` ブロックが表示されます。このブロックは、ファイルが design パネルを設定していればそれを、なければ `(the code panel; when conditions ignored)` を示します。design パネルがあるときは、effective の `--json` に `design_reviewer_origins` が加わります。 |
 | `config path` | 両方のレイヤーの場所を表示します。 |
 | `config setup [--scope global\|project] [--preset quality\|standard\|fast \| --defaults] [--force]` | セットアップウィザードです。グローバルファイルでは最初の質問がプリセットです。`--preset` は何も尋ねません: `version` と `preset` を書き込み、プリセットが決めるキー以外にファイルが持っていた値は残し（ロールは `options` と `model_tiers` を残し、そのためフィットされません）、そのプリセットがこのマシンで解決される設定を note とともに表示します（`references/configuration.md` のプリセットを参照）。プリセットを指定できるのはグローバルファイルだけで、`--scope project` では拒否され（exit 2）、何も書き込みません。`--defaults` は何も上書きしないため、ファイルには `version: 1` だけが入り、プリセット `standard` で動きます。`--force` は TTY がなくてもプロンプトを表示します。 |
 | `config reset [--scope …] [--delete]` | このレイヤーの上書きを消去し（ファイルは残り、`version` だけ、グローバルファイルなら既知の `preset` も入った状態になります。知らないプリセット名は `note:` を表示して消します）、残った設定を表示します。`--delete` を付けるとファイルを削除し、グローバルレイヤーは `standard` で動きます。 |
 | `config prune [--scope …] [--dry-run]` | レイヤーが持つ値のうち、継承される値と等しいものを削除します。すべてのデフォルトを保持している 0.6.0 より前に書かれたファイル向けです。値を削除するのは組み込みのデフォルトとプリセットのフィットがどちらもその値で一致するときだけなので、prune で有効な設定が変わることはありません。`--dry-run` は書き込まずに一覧表示します。 |
-| `config set <path> <value> [--scope …] [--raw]` | 値を 1 つ設定します。パスは `a.b.c` と `reviewers[0].role` をサポートします。インデックス付きの編集では、リストの残りを下のレイヤーからコピーします。末尾を超えたインデックスは終了コード 2 で終了します。`preset` は、プロジェクトファイルがあってもグローバルファイルに書き込みます。`--scope project` を付けると終了コード 2 で終了し、何も書き込みません。読み取り専用の席の provider（`orchestrator.provider`、`architect.provider`、`<role>.model_tiers.<tier>.provider`、`reviewers[<n>].provider`）を project ファイルで `agy` にすると、終了コード 2 で終了して何も書き込まず、代わりに `--scope global` のコマンドを示します。global ファイルでは書き込んだうえで警告します。 |
+| `config set <path> <value> [--scope …] [--raw]` | 値を 1 つ設定します。パスは `a.b.c` と `reviewers[0].role` をサポートします。インデックス付きの編集では、リストの残りを下のレイヤーからコピーします。末尾を超えたインデックスは終了コード 2 で終了します。`preset` は、プロジェクトファイルがあってもグローバルファイルに書き込みます。`--scope project` を付けると終了コード 2 で終了し、何も書き込みません。読み取り専用の席の provider（`orchestrator.provider`、`architect.provider`、`<role>.model_tiers.<tier>.provider`、`reviewers[<n>].provider`、`review.design.reviewers[<n>].provider`）を project ファイルで `agy` にすると、終了コード 2 で終了して何も書き込まず、代わりに `--scope global` のコマンドを示します。global ファイルでは書き込んだうえで警告します。 |
 | `config suggest-roles [--write] [--json] [--provider P] [--model F]` | プロジェクトのファイル名とルートの `package.json` から、パスで絞り込む `database`、`frontend`、`backend` のレビュアーを提案します。モデルは呼びません。提案ごとに id、プロバイダー、family、`when.paths`、根拠、一覧のファイルのうち何件に一致するか（そのうち何件を `review.exclude` が withheld にするか）を表示し、続いて提案しなかったロールをすべて理由とともに表示します。git リポジトリの中では `git ls-files` だけを読み、一覧の取得に失敗したときや大きすぎるときは終了コード 2 です。`--write` は一覧のルートにあるプロジェクトファイルの `reviewers_extra` に追記し、有効なプロジェクトファイルが別の場所にあるときは拒否します（終了コード 2、何も書き込みません）。`--json` は 1 つのオブジェクト（`root`、`source`、`files`、`truncated`、`notes`、`suggestions`、`skipped`、`written`）を表示し、注記は stderr に出します。`references/configuration.md` の「パスで絞り込むレビュアーを提案させる」を参照。 |
-| `config validate [--json]` | 有効な設定を検証します。無効な場合は終了コード 1 です。`Warnings:` セクション（`--json` では `warnings`）には、読み取り専用のロールの実行が拒否することになる生引数 — project ファイルにある `options.args` のすべてと、アダプタの許可リストが受け付けないもの — 、project ファイルから来た `agy` の読み取り専用の席、agy の書き込みロールが project ファイルから受け取ることになる `options.skip_permissions` や `options.args`、そして global ファイルから来た agy の読み取り専用の席ごとに 1 行の `<seat>: read-only is NOT enforced by agy -- ...` が一覧表示されますが、終了コードは変わりません。`config set` も同じものを `warning:` 行として表示します。 |
+| `config validate [--json]` | 有効な設定を、design パネルと各席の `high_risk_model` と `relevance` も含めて検証します。無効な場合は終了コード 1 です。`Warnings:` セクション（`--json` では `warnings`）には、読み取り専用のロールの実行が拒否することになる生引数 — project ファイルにある `options.args` のすべてと、アダプタの許可リストが受け付けないもの — 、project ファイルから来た `agy` の読み取り専用の席、agy の書き込みロールが project ファイルから受け取ることになる `options.skip_permissions` や `options.args`、そして global ファイルから来た agy の読み取り専用の席ごとに 1 行の `<seat>: read-only is NOT enforced by agy -- ...` が一覧表示されますが、終了コードは変わりません。`config set` も同じものを `warning:` 行として表示します。 |
 
 ```bash
 dev-orchestra config set implementer.model.family opus
@@ -94,10 +94,10 @@ dev-orchestra config set --raw review.note "3 reviewers"
 
 | コマンド | 説明 |
 | --- | --- |
-| `reviewer list [--json]` | 設定されているパネルを一覧表示します。 |
-| `reviewer add --provider <p> [--model <family>] [--role <r>] [--id <id>] [--pin <model-id>] [--when always\|high-risk \| --when-paths GLOB [GLOB ...]] [--scope …]` | レビュアーを追加します。id を省略すると生成されます（`codex-security`、`codex-security-2`、…）。`--when high-risk` にすると、高リスクと判定されたラウンドでだけコードレビューに加わります。`--when-paths "*migrate*/*" "*.sql"` にすると、変更されたパスがそれらのパターンのどれかに一致したときだけ加わり、`paths` を持つ `when:` のマッピングとしてブロック形式で書き込まれます（`references/configuration.md` を参照）。シェルに展開されないよう、各パターンは引用符で囲んでください。デフォルトの `always` ではキーを書きません。`--when` と `--when-paths` を同時に指定すると終了コード 2 になります。 |
-| `reviewer remove <id\|role\|position> [--scope …]` | id、一意なロール、または 1 始まりの位置で削除します。条件付き（`when: high-risk` またはパスで絞り込んだもの）のレビュアーだけが残る場合は拒否されます（exit 2）。 |
-| `reviewer set <selector> [--provider] [--model] [--role] [--id] [--pin] [--when always\|high-risk \| --when-paths GLOB [GLOB ...]] [--scope …]` | 既存のレビュアーを変更します。`--when always` は条件を外します。`--when high-risk` と `--when-paths` はどちらも条件を丸ごと置き換えるので、`--when-paths` はリストに追加するのではなく置き換えます。常に走る最後のレビュアーを条件付きにする変更は拒否され（exit 2）、`--when` と `--when-paths` の同時指定も同様です。 |
+| `reviewer list [--design] [--json]` | 設定されているパネルを一覧表示します。各席には、設定されていれば `(opus when high-risk)` と `(relevance: always)` が表示されます。`--design` は design パネルを一覧表示し、最初にその出どころを示します: `(design panel: the code panel; when conditions ignored)`、`(design panel: global file)`、または `(design panel: project file)`。 |
+| `reviewer add --provider <p> [--model <family>] [--role <r>] [--id <id>] [--pin <model-id>] [--when always\|high-risk \| --when-paths GLOB [GLOB ...]] [--high-risk-model FAMILY] [--relevance security\|test\|architecture\|always] [--design] [--scope …]` | レビュアーを追加します。id を省略すると生成されます（`codex-security`、`codex-security-2`、…）。`--when high-risk` にすると、高リスクと判定されたラウンドでだけコードレビューに加わります。`--when-paths "*migrate*/*" "*.sql"` にすると、変更されたパスがそれらのパターンのどれかに一致したときだけ加わり、`paths` を持つ `when:` のマッピングとしてブロック形式で書き込まれます（`references/configuration.md` を参照）。シェルに展開されないよう、各パターンは引用符で囲んでください。デフォルトの `always` ではキーを書きません。`--when` と `--when-paths` を同時に指定すると終了コード 2 になります。`--high-risk-model` は `high_risk_model`（`version: latest`）、つまり高リスクのラウンドで使うモデルを書き込みます。`--relevance` は、見るもののないラウンドからそのレビュアーを外しうるロールの規則を指定し（`security` の席が判定されるのは `--relevance security` のときだけです）、`always` なら規則なしです。`general` の席に規則を指定すると終了コード 2 になります。`--design` は design パネルに追加します。ファイルが `review.design.reviewers` を並べていればそこへ、なければ `review.design.reviewers_extra` へ書き込み、design パネルが引き続き何に従うかを示します。`--design` と `--when-paths` を同時に指定すると終了コード 2 になります。 |
+| `reviewer remove <id\|role\|position> [--design] [--scope …]` | id、一意なロール、または 1 始まりの位置で削除します。条件付き（`when: high-risk` またはパスで絞り込んだもの）のレビュアーだけが残る場合は拒否されます（exit 2）。`--design` は design パネルから削除します。その席が継承されたものなら、まず有効な design パネルをファイルにコピーします（コードのパネルからなら `when` を外し、note を出します）。project スコープでは、このコピーはコードのパネルと同じく agy の席を `not copied into` の note とともに外します。ただし、その席の出どころのパネルを global ファイルが並べている場合は外しません。 |
+| `reviewer set <selector> [--provider] [--model] [--role] [--id] [--pin] [--when always\|high-risk \| --when-paths GLOB [GLOB ...]] [--high-risk-model FAMILY \| --clear-high-risk-model] [--relevance security\|test\|architecture\|always\|default] [--design] [--scope …]` | 既存のレビュアーを変更します。`--when always` は条件を外します。`--when high-risk` と `--when-paths` はどちらも条件を丸ごと置き換えるので、`--when-paths` はリストに追加するのではなく置き換えます。常に走る最後のレビュアーを条件付きにする変更は拒否され（exit 2）、`--when` と `--when-paths` の同時指定も同様です。`--clear-high-risk-model` は `high_risk_model` を外し、`--provider` で別の CLI にしたときも、`--model` の有無にかかわらず note を出して外します。一緒に `--high-risk-model` を指定すれば新しいものを書きます。`--relevance default` は `relevance` を外すので、その席は自分のロールの規則に従います。`--design` は、`remove --design` と同じように design パネルを編集します。 |
 
 `--model` なしの `reviewer add` は CLI の既定の family（Claude では `opus`、agy では `default`、それ以外では
 `recommended-coding`）を書き、`--model` も `--pin` もない `reviewer set --provider <other>` は family を新しい CLI の
@@ -169,6 +169,16 @@ agy の読み取り専用の席です。1 つは、このマシンでまだ live
 条件付きのレビュアーの **Roles** の行は `(when: high-risk)` または `(when: paths *migrate*/*, *.sql)` で終わり、
 `--json` のエントリには `always` 以外のとき `when`（`high-risk` または `paths`）と `condition`（行と同じ
 ラベル）が入り、パスで絞り込んだレビュアーではさらにそのパターンの `paths` が入ります。
+`high_risk_model` を持つレビュアーはそのモデルも解決されます -- 解決できない family は、席自身の
+モデルと同じく問題です -- そしてそのエントリには `high_risk_model`（`family`、および席自身が解決できた
+ときは `status` と `resolved`）が入ります。`relevance` を持つレビュアーにはそれが入ります。
+`design_reviewers` と `design_panel_source`（`code`、`global`、`project`）は design パネルを
+表します。ファイルが `review.design` の下に書いた各席はレビュアーと同じように `Design reviewer <id>` として
+診断され、コードのパネルからコピーされた席には `id`、`role`、`origin` だけが入ります。ファイルが
+design パネルを設定していれば、テキストのレポートは Roles の下に `Design:` 行を加えます。
+`optimization.skip_unneeded_roles` が on のとき、`optimization.security_paths` や
+`optimization.architecture_paths` が（その `extra_` のリストと合わせて）有効なパターンを 1 つも
+残さず、しかもどちらかのパネルにその規則で判断される席があるなら問題です。そうなると、規則はその席を残す理由を何も見つけられないからです。
 
 Antigravity の入れ先（`~/.gemini/config/plugins/dev-orchestra`、または `doctor` を実行したリポジトリの
 `.agents/plugins/dev-orchestra`）がこのチェックアウトそのもの（リンクやジャンクション経由でも、チェックアウト
@@ -378,15 +388,15 @@ echo "explain the failure" | dev-orchestra run orchestrator
 | コマンド | 説明 |
 | --- | --- |
 | `review snapshot [--base <rev>] [--no-untracked] [--surrounding none\|enclosing] [--json]` | レビュー対象の変更を固定します。空の場合は終了コード 1 です。`review.context.max_chars` を超える変更には警告が出ますが、それでも書き込まれます。スナップショットを取ること自体は何も消費せず、拒否するのは消費するコマンドの役目だからです。`--json` は同じことを数値で示します: `change_chars`、`max_chars`、`over_context`。`review.context.surrounding: enclosing` のときは、各 hunk を囲むシンボルも、diff を取ったツリーから `review-surrounding.json` に固定し、固定したシンボル数と文字数、抽出しなかったファイルの数とその理由を示す `context:` 行を出力します。メタデータには `surrounding` ブロックが加わります。`--surrounding` はこのスナップショットに限って設定を上書きします: **`enclosing` は設定が `none` でもこのスナップショットについて候補を凍結します**。この凍結が無いと `review run --surrounding enclosing` は拒否されます。`none` は何も凍結せず、古い凍結ファイルを削除します。設定そのものは変わりません。`references/reviews.md` と [周辺コンテキストの効果を測る](limits.md#measuring-what-surrounding-context-does) を参照してください。 |
-| `review run [--design] [--request <path>] [--iteration N] [--only <ids/roles>] [--sequential] [--context <text>] [--base <rev>] [--timeout <s>] [--idle-timeout <s>] [--force] [--surrounding none\|enclosing] [--high-risk] [--progress] [--json]` | スナップショットに対してすべてのレビュアーを実行し、レポートと統合結果を書き込みます。終了コード 1 になるのは、`ok` で戻ったレビュアーが 1 人もいない場合だけです。すべてのレビュアーが失敗した場合や、変更本体が大きすぎてインライン化できずファイルとして渡されたラウンドがこれにあたり、後者はクリーンではなく `partial` として記録されます。ラウンドは `--iteration` が指定されない限りスナップショットから導出され、`review.max_review_iterations` を超えるラウンドは `--force` がない限り拒否されます（終了コード 3）。上限に達したラウンドでも fix と再テストは行われ、拒否されるのは再レビューだけです。最適化ゲートに拒否されたラウンド（テストが失敗として記録されている）も終了コード 3 で終了し、`optimization report` が数えられるよう `refused` として記録されます。`review.context.max_chars`（400,000）を超える変更本体も同様です。何もレビューされず、メッセージはサイズ、上限、上限内に収める方法を示し、ラウンドは `refused_by: "context"` として記録されます。`--force` を付けると構わず実行し、そのラウンドは報告されるすべての場所で `over_budget` として記録されます。本体をプロンプトに入れるかパスとして渡すかは `review.context.inline_chars`（400,000。デフォルトでは同じ数値）で決まり、各レビュアーのエントリには判断に使われた値が記録されます。`budgets.max_runtime_seconds` 分の委譲実行時間を使い切った場合も同様にラウンドは拒否され（パネルはその最大の消費者です）、メッセージはどの予算だったかを示します。`--only` は一部だけを実行しますが、統合はすべてのレビュアーの現在のレポートに対して行うので、何も失われません — ただし、このラウンドで外された条件付きのレビュアーのレポートは統合されません。条件付きのレビュアーはそれぞれ、理由（高リスクなパス、またはパスで絞り込んだレビュアーなら自分のパターンの 1 つ、`when: high-risk` のレビュアーなら `--high-risk`、差分ラウンドでの自身の未解決の accepted の指摘、`--only` での指名）を示す `note:` とともに加えられるか外され、その判断はイベントと `--json` の `optimization.conditional` に `optimization.declared` とともに記録されます。`--high-risk` は変更を高リスクと宣言します。`when: high-risk` のレビュアーを加えてパネルを縮小させませんが、レベル・指摘の上限・ゲートは決して変えないので、red のツリーに対する宣言付きのラウンドは他と同じように拒否されます。`--design` と一緒に使うと終了コード 2 で拒否されます。`review.context.surrounding: enclosing` のときは、固定されたシンボルを `review.context.surrounding_chars` と、diff が両方の上限の下に残す分の範囲で採用し、`Surrounding context:` 行が採用した数と除外した数とその理由を示し、`--json` にはラウンドの `surrounding` レコードが入ります。上限が計測するサイズは、diff に採用したコンテキストを足したものになります。`--surrounding none\|enclosing` は、1 つのスナップショットをコンテキストあり・なしでレビューするために、この run に限って `review.context.surrounding` を上書きします（[周辺コンテキストの効果を測る](limits.md#measuring-what-surrounding-context-does) を参照してください）。設定は変わらず、行は `(--surrounding enclosing for this run)` または `Surrounding context: none (--surrounding none for this run; review.context.surrounding unchanged)` となります。次の場合は何も課金される前に終了コード 2 で拒否されます: `--design` と併用したとき。incremental ラウンド（再レビューのプロンプトには実行時点の accepted findings が載るので、2 本の run はコンテキスト以外でも違ってしまう）。`enclosing` で何も採用されないとき（理由を問わない: `review snapshot --surrounding enclosing` で凍結していないスナップショット、候補なし、ファイル渡し、予算なし）。同じスナップショットに対する 2 本目の run（間に `budget reset` を挟んでも同じ）で、前回の run が組み立てた後に finding のトリアージまたはトリアージのメモが設定されたとき（前のラウンドから引き継がれたものは数えない）。同じスナップショットの再実行はラウンドを進めず、findings の署名を登録しないので、ペアが「何も変えなかった修正」に見えることはありません。1 本目は通常どおり登録します。lineage が変わった後の run や、`--iteration` で別のラウンドを指定した run は再実行ではなく、署名を登録します。run のイベントと `--json` には `measurement` ブロック（`surrounding`、完全な `snapshot` sha256、凍結した `tree`、`head`、`base`、`workflow` ディレクトリ、予算の `epoch`、`rerun`、そして `inputs`: `context_sha256`、`max_findings`、`inline_chars`、`max_chars`、`force`）が加わり、`consolidated.json` には `triage_at_build`（キーごとの各 finding の `triage` と `triage_note`）を持つ `measurement` が加わります。フラグが無ければ、これらは何も書かれません。`--progress` は、ラウンドの実行中に各レビュアーのツール使用を `[<reviewer> +mm:ss] <line>` の形で stderr に出します。行の中身と規則はジョブの activity と同じで（[jobs](#jobs) を参照）、レビュアーごとに 300 行までです。実行がどう終わっても最後に `[<reviewer> +mm:ss] done: <status>` を出します。ファイルには何も書かず、stdout（`--json` を含む）は変わりません。出力をリダイレクトしてバックグラウンドで実行するラウンド向けで、付けなければ stderr はこれまでどおりです。 |
-| `review consolidate [--design] [--iteration N] [--json]` | 既存のレポートを再解析し、統合結果を再構築します。コードレビューでは、現在のスナップショットに対する直近のラウンドが外した条件付きのレビュアーのレポートを除くので、そのラウンドが読んだレポートを読みます。 |
+| `review run [--design] [--request <path>] [--iteration N] [--only <ids/roles>] [--sequential] [--context <text>] [--base <rev>] [--timeout <s>] [--idle-timeout <s>] [--force] [--surrounding none\|enclosing] [--high-risk] [--progress] [--json]` | スナップショットに対してすべてのレビュアーを実行し、レポートと統合結果を書き込みます。終了コード 1 になるのは、`ok` で戻ったレビュアーが 1 人もいない場合だけです。すべてのレビュアーが失敗した場合や、変更本体が大きすぎてインライン化できずファイルとして渡されたラウンドがこれにあたり、後者はクリーンではなく `partial` として記録されます。ラウンドは `--iteration` が指定されない限りスナップショットから導出され、`review.max_review_iterations` を超えるラウンドは `--force` がない限り拒否されます（終了コード 3）。上限に達したラウンドでも fix と再テストは行われ、拒否されるのは再レビューだけです。最適化ゲートに拒否されたラウンド（テストが失敗として記録されている）も終了コード 3 で終了し、`optimization report` が数えられるよう `refused` として記録されます。`review.context.max_chars`（400,000）を超える変更本体も同様です。何もレビューされず、メッセージはサイズ、上限、上限内に収める方法を示し、ラウンドは `refused_by: "context"` として記録されます。`--force` を付けると構わず実行し、そのラウンドは報告されるすべての場所で `over_budget` として記録されます。本体をプロンプトに入れるかパスとして渡すかは `review.context.inline_chars`（400,000。デフォルトでは同じ数値）で決まり、各レビュアーのエントリには判断に使われた値が記録されます。`budgets.max_runtime_seconds` 分の委譲実行時間を使い切った場合も同様にラウンドは拒否され（パネルはその最大の消費者です）、メッセージはどの予算だったかを示します。`--only` は一部だけを実行しますが、統合はすべてのレビュアーの現在のレポートに対して行うので、何も失われません — ただし、このラウンドで外された条件付きのレビュアーのレポートは統合されません。条件付きのレビュアーはそれぞれ、理由（高リスクなパス、またはパスで絞り込んだレビュアーなら自分のパターンの 1 つ、`when: high-risk` のレビュアーなら `--high-risk`、差分ラウンドでの自身の未解決の accepted の指摘、`--only` での指名）を示す `note:` とともに加えられるか外され、その判断はイベントと `--json` の `optimization.conditional` に `optimization.declared` とともに記録されます。ラウンドに見るものがない `test`、`architecture` のレビュアー（および `relevance: security` でオプトインした `security` のレビュアー）も、どのレベルでも同じように外され、`note: <id> (when: relevance) left out: <reason>; --only <id> to include it` と `when: relevance` の記録が残ります（`references/reviews.md` の「ラウンドが必要としないロール」を参照）。`--high-risk` は変更を高リスクと宣言します。`when: high-risk` のレビュアーを加え、パネルを縮小させず、すべてのロールを残しますが、レベル・指摘の上限・ゲートは決して変えないので、red のツリーに対する宣言付きのラウンドは他と同じように拒否されます。`--design` と一緒に使うと、design パネルの `when: high-risk` の席を加え、すべてのロールを残します。高リスクへの一致があるか `--high-risk` のラウンドでは、`high_risk_model` を持つ席はそのモデルを使い、`note: high-risk round (<why>): <id> runs <model> instead of <model>` を出し、そのレビュアーのエントリに `model_slot: high-risk` が加わります。`review.context.surrounding: enclosing` のときは、固定されたシンボルを `review.context.surrounding_chars` と、diff が両方の上限の下に残す分の範囲で採用し、`Surrounding context:` 行が採用した数と除外した数とその理由を示し、`--json` にはラウンドの `surrounding` レコードが入ります。上限が計測するサイズは、diff に採用したコンテキストを足したものになります。`--surrounding none\|enclosing` は、1 つのスナップショットをコンテキストあり・なしでレビューするために、この run に限って `review.context.surrounding` を上書きします（[周辺コンテキストの効果を測る](limits.md#measuring-what-surrounding-context-does) を参照してください）。設定は変わらず、行は `(--surrounding enclosing for this run)` または `Surrounding context: none (--surrounding none for this run; review.context.surrounding unchanged)` となります。次の場合は何も課金される前に終了コード 2 で拒否されます: `--design` と併用したとき。incremental ラウンド（再レビューのプロンプトには実行時点の accepted findings が載るので、2 本の run はコンテキスト以外でも違ってしまう）。`enclosing` で何も採用されないとき（理由を問わない: `review snapshot --surrounding enclosing` で凍結していないスナップショット、候補なし、ファイル渡し、予算なし）。同じスナップショットに対する 2 本目の run（間に `budget reset` を挟んでも同じ）で、前回の run が組み立てた後に finding のトリアージまたはトリアージのメモが設定されたとき（前のラウンドから引き継がれたものは数えない）。同じスナップショットの再実行はラウンドを進めず、findings の署名を登録しないので、ペアが「何も変えなかった修正」に見えることはありません。1 本目は通常どおり登録します。lineage が変わった後の run や、`--iteration` で別のラウンドを指定した run は再実行ではなく、署名を登録します。run のイベントと `--json` には `measurement` ブロック（`surrounding`、完全な `snapshot` sha256、凍結した `tree`、`head`、`base`、`workflow` ディレクトリ、予算の `epoch`、`rerun`、そして `inputs`: `context_sha256`、`max_findings`、`inline_chars`、`max_chars`、`force`）が加わり、`consolidated.json` には `triage_at_build`（キーごとの各 finding の `triage` と `triage_note`）を持つ `measurement` が加わります。フラグが無ければ、これらは何も書かれません。`--progress` は、ラウンドの実行中に各レビュアーのツール使用を `[<reviewer> +mm:ss] <line>` の形で stderr に出します。行の中身と規則はジョブの activity と同じで（[jobs](#jobs) を参照）、レビュアーごとに 300 行までです。実行がどう終わっても最後に `[<reviewer> +mm:ss] done: <status>` を出します。ファイルには何も書かず、stdout（`--json` を含む）は変わりません。出力をリダイレクトしてバックグラウンドで実行するラウンド向けで、付けなければ stderr はこれまでどおりです。 |
+| `review consolidate [--design] [--iteration N] [--json]` | 既存のレポートを再解析し、そのステージのパネル（`--design` なら design パネル）について統合結果を再構築します。現在のスナップショットまたは plan に対する直近のラウンドが外したレビュアー -- 条件付きのレビュアーや、見るもののなかったロール -- のレポートを除くので、そのラウンドが読んだレポートを読みます。design ラウンドが誰を外したかを記録するようになる前に記録された design ラウンドでは、誰も除きません。 |
 | `review show [--design] [--accepted] [--json]` | 統合されたレビューを表示します。 |
 | `review triage [--design] <ids…> --status <status> [--note <text>]` | トリアージの判断を記録します。判断のたびに、`needs-triage` も含めて指摘に `triage_set_at` を刻むので、指摘を戻したことと一度も判断していないことが区別できます。 |
 | `review fix-brief [--design] [--output <path>]` | fixer 向けに、受け入れた指摘のブリーフを出力します。 |
-| `review status [--design] [--json]` | 再レビューが必要かどうか、イテレーション予算、そしてラウンドの `coverage` を示します。`coverage` には `round`、`change`、ラウンドの計測に使われた `inline_chars` に加え、`unverified` を解消するための操作が含まれます。変更を絞るか `review.context.inline_chars` を引き上げ、その後スナップショットを取り直すことです。また、その上限がラウンドに記録されたサイズを超えて引き上げられた後は、同じスナップショットが今ならインライン化されるので、それに対して `review run` を実行すればよいだけだということも示します。`over_budget` は、そのラウンドが `--force` で `review.context.max_chars` を超えて送られたためにだけ実行されたことを示します。周辺コンテキストを運んだラウンドでは `surrounding context:` 行が加わり（レビュアーごとに渡されたものが違う場合はレビュアーごとに 1 行）、除外されたシンボルを最大 5 つまで名前で示します。`--json` にはレポートの `surrounding` ブロックが入ります。ラウンドの予算を使い切った後は、そのラウンドの最後のパスがどこまで進んでいるかも示します。これは台帳、実行ログ、承認状態から読み取られます（何も消去されません）。`final_fix` は `pending`（もう一度 fix する）、`retest`（fix 済み。再テストを記録する）、`done`、`blocked`（`review_fixer` の試行が残っていない）、`--design` の場合の `final_revision` は `pending`（もう一度修正する）、`done`、`blocked`（`architect` の試行が残っていない）、`approved`、`implemented` のいずれかです。どちらも上限に達する前は `null` で、`final_fix_pending` / `final_revision_pending` フラグを伴います。最後の行は次のステップを示し、前のラウンドの指摘を繰り返したラウンドについて注記します。`--design` を付けると最初の行は `design review: <label>` になります。ラベルは `on`、`off`、`auto -> run (<reason>)`、`auto -> skip (<reason>)` のいずれかで、`status` と同じ答えです。`--json` には `enabled`（そのステージを実行するかどうか）、`mode`（`on`、`off`、`auto`）、`reason`（`on` と `off` では `null`）が加わります。`references/reviews.md` を参照してください。 |
+| `review status [--design] [--json]` | 再レビューが必要かどうか、イテレーション予算、そしてラウンドの `coverage` を示します。`coverage` には `round`、`change`、ラウンドの計測に使われた `inline_chars` に加え、`unverified` を解消するための操作が含まれます。変更を絞るか `review.context.inline_chars` を引き上げ、その後スナップショットを取り直すことです。また、その上限がラウンドに記録されたサイズを超えて引き上げられた後は、同じスナップショットが今ならインライン化されるので、それに対して `review run` を実行すればよいだけだということも示します。`over_budget` は、そのラウンドが `--force` で `review.context.max_chars` を超えて送られたためにだけ実行されたことを示します。周辺コンテキストを運んだラウンドでは `surrounding context:` 行が加わり（レビュアーごとに渡されたものが違う場合はレビュアーごとに 1 行）、除外されたシンボルを最大 5 つまで名前で示します。`--json` にはレポートの `surrounding` ブロックが入ります。ラウンドの予算を使い切った後は、そのラウンドの最後のパスがどこまで進んでいるかも示します。これは台帳、実行ログ、承認状態から読み取られます（何も消去されません）。`final_fix` は `pending`（もう一度 fix する）、`retest`（fix 済み。再テストを記録する）、`done`、`blocked`（`review_fixer` の試行が残っていない）、`--design` の場合の `final_revision` は `pending`（もう一度修正する）、`done`、`blocked`（`architect` の試行が残っていない）、`approved`、`implemented` のいずれかです。どちらも上限に達する前は `null` で、`final_fix_pending` / `final_revision_pending` フラグを伴います。最後の行は次のステップを示し、前のラウンドの指摘を繰り返したラウンドについて注記します。`--design` を付けると最初の行は `design review: <label>` になります。ラベルは `on`、`off`、`auto -> run (<reason>)`、`auto -> skip (<reason>)` のいずれかで、`status` と同じ答えです。2 行目は `design panel: <ids> (<source>)` で、次のラウンドが外す席ごとに `; <id> left out (<reason>)` が続きます。`--json` には `enabled`（そのステージを実行するかどうか）、`mode`（`on`、`off`、`auto`）、`reason`（`on` と `off` では `null`）、`reviewers`（design パネルの id）、`panel_source`（`code`、`global`、`project`）、`optimization`（次の design ラウンドが決めること）が加わります。`references/reviews.md` を参照してください。 |
 
 `--design` を付けると、これらすべてが *design* レビューに切り替わります。実装前に `.ai/plan.md` を
-同じパネルで評価するもので、独自のレポート、ラウンドカウンター、トリアージが `.ai/reviews/design/`
+design パネル（`review.design.reviewers`、なければコードのパネル）で評価するもので、独自のレポート、ラウンドカウンター、トリアージが `.ai/reviews/design/`
 の下にあります。`review run --design` は diff ではなく plan そのものを固定し（`review snapshot --design`
 はなく、git も必要ありません）、plan が応えるリクエスト（`--request <path>`、デフォルトは
 `.ai/execution/design-request.md`。存在しない場合は注記されるだけで致命的ではありません）と一緒に
@@ -395,8 +405,11 @@ echo "explain the failure" | dev-orchestra run orchestrator
 だけです）、すべてのレビュアーが失敗した場合は終了コード 1 です。`review.context.max_chars` は plan
 *と* リクエストを合わせて計測されます。どちらもすべてのレビュアーのプロンプトに入るからです。また、
 ラウンドは plan が固定される前に拒否されるので、前のラウンドのレポートとトリアージは報告のために
-そのまま残ります。最適化ゲートとパネルの削減は適用されず、`when` にかかわらずすべてのレビュアーが
-走り、`--high-risk` は拒否され（終了コード 2）、`--base` は無視されます。
+そのまま残ります。最適化ゲートとパネルの削減は適用されません。コードのパネルでは `when` にかかわらず
+すべてのレビュアーが走り、独自の design パネルは plan に対して `when: high-risk` を尊重します。どちらでも、
+plan に見るもののないロールは休み、`--high-risk` は `when: high-risk` の席を加え、すべてのロールを残し、
+席を `high_risk_model` に切り替えます。各判断は `note:` になり、ラウンドのイベントには `optimization`
+ブロック（`level`、`high_risk`、`declared`、`conditional`、`files`）が加わります。`--base` は無視されます。
 `review.design.enabled` が false のとき、または `auto` でこの plan ならスキップされるときに実行すると、
 注記（`note: review.design.enabled is auto and this plan would be skipped (<reason>); running
 because you asked`）を表示したうえで続行します。この設定は orchestrator がそのステージを実行するか
@@ -471,7 +484,8 @@ id のまま作られたレポート -- どのレビュアーもレビューを�
 `; claude-security left out (no high-risk path matched)`、
 `; claude-security added (has open accepted finding F3)`、または
 `; codex-database left out (no path matches *migrate*/*, *.sql)`。`--json` では同じ内容を
-`optimization.conditional` に持ちます。これは予測にすぎません。`status` は設定を検証せずに読むので、
+`optimization.conditional` に持ち、ラウンドに見るもののないロールもそこに含まれます
+（`; claude-test left out (docs-only change: ...)`）。これは予測にすぎません。`status` は設定を検証せずに読むので、
 `review run` が拒否するようなパネルは、ここではなく `config validate` と `doctor` が報告します。
 
 `Design review:` 行は、この plan でそのステージを実行するかどうかから始まります。`on`、`off`、
@@ -479,7 +493,9 @@ id のまま作られたレポート -- どのレビュアーもレビューを�
 `Design review: auto -> skip (5 code files, none high-risk), round 0/2, 0 accepted, 0 blocking`
 のようになります。`--json` では `design_review.enabled` がその答え（ステージを実行するかどうか）、
 `design_review.mode` が `on`、`off`、`auto` のいずれか、`design_review.reason` が理由で、`on` と
-`off` では `null` です。スキップは理由ではなく、判定も変えません。
+`off` では `null` です。スキップは理由ではなく、判定も変えません。行の末尾には、次の design
+ラウンドが外す席ごとに `; <id> left out (<reason>)` が付き、`design_review.optimization` にはその
+ラウンドの判断が入ります。
 
 `design_approval` と `Plan approval:` 行は、plan をまだユーザーに提示する必要があるかどうかを示します
 （`references/workflow.md`）。これらは理由ではなく、判定も変えません。それを強制するのは
@@ -707,7 +723,14 @@ unknowable, so this is the mean of the 12 that did.
 続きます -- `added x3, left out x7`、どこかのラウンドが宣言されていればさらに
 `declared with --high-risk x2` -- 拒否されたラウンドも含め、すべてのコードラウンドについて数えます。
 `--json` では `conditional`（`added`、`left_out`、`declared_rounds`）です。そうした判断が 1 つもない
-ログでは、この行は表示されません。宣言されたラウンドはエスカレーションではなく、
+ログでは、この行は表示されません。ラウンドに見るもののなかったロールはそこでは数えず、その隣の
+`roles skipped` の行で数えます -- `left out x12 of 40 judged (balanced x7, quality
+x5), est. 1,200,000 tokens` -- 対象は実行されたコードラウンドで、有効だったレベルごとに分け、推定削減量は
+外された各席をレビュアー実行 1 回あたりの平均課金トークンで見積もります。design ラウンドにも同じ行があり、
+費用のブロックで `design review` の下に字下げして表示されます。`--json` では `relevance` と
+`design_relevance`（`judged`、`added`、`left_out`、`left_out_by_level`、`estimated_saving`）です。
+そうした判断が 1 つもないログでは、この行は表示されません。`left_out_by_level` は、誤って外した場合の
+損失が最も大きい `quality` のラウンドから、削減量のどれだけが来ているかを示します。宣言されたラウンドはエスカレーションではなく、
 `escalated (high risk)` には決して現れません。`optimization.extra_high_risk_paths` のパターンへの一致は
 エスカレーションであり、そのパターンも他と同じように一覧されます。すべてのラウンドがエスカレーション
 された場合の助言は、`optimization.high_risk_paths` と `optimization.extra_high_risk_paths` の両方を
@@ -884,7 +907,9 @@ Review effort, code and design together: 128 accepted over 28 of 46 recorded rou
   1 ラウンドにイベントがいくつあっても外れたのは 1 回と数え、そのうちの 1 つ（`--only` の再実行など）
   がそのレビュアーを走らせていれば外れたとは数えません。すべてのラウンドで外れたレビュアーも、件数
   ゼロの行として出ます。外れたラウンドには run が無いので、1 採用あたりのコストはそれで薄まりません。
-  design レビューは条件を無視し、条件付きレビュアーより前のイベントは何も記録していません。
+  ラウンドに見るもののなかったロールも同じように数え、`when` は `relevance` と示します。design
+  ラウンドも、そのイベントが `optimization` ブロックを持つようになってからは数えます。条件付きレビュアー
+  より前のイベントと、そのブロックより前の design のイベントは何も記録していません。
 
 これはレビューが何を買ったかを言うものであって、レビューが悪くなったかどうかを言うものではありません。
 1 採用あたりのコストが上がるのは、レビュー対象のコードが良くなったときの姿でもあり、レビュアーが欠陥を
@@ -897,7 +922,7 @@ Review effort, code and design together: 128 accepted over 28 of 46 recorded rou
 `measured_runs`、`priced_runs`、`billed_tokens`、`cost_usd`、`reported`、`accepted`、`rejected`、
 `duplicate`、`open`、`alone`、`alone_accepted`、`rejection_rate`、`billed_per_accepted`、
 `cost_per_accepted` を持ち、最後の 3 つは閾値未満で `null` です。数えたラウンドのどれかで条件付きと
-記録されたレビュアーは、さらに `when`（`high-risk` か `paths`。そう記録された最新のラウンドの値）と
+記録されたレビュアーは、さらに `when`（`high-risk`、`paths`、`relevance` のいずれか。そう記録された最新のラウンドの値）と
 `left_out_rounds` を持ちます。`panel` と `total` は `alone` の 2 つを
 除いた同じ列で、2 人のレビュアーが報告した指摘は 1 回と数えます。`total` は 4 つのラウンド数の和も
 持ちます。

@@ -170,8 +170,8 @@ class TestRunningIt(DesignReviewCase):
         self.assertIn("2 successful, 0 failed", out)
 
     def test_a_conditional_reviewer_runs_on_every_plan(self):
-        """`when` is a code review condition: a plan has no paths to judge,
-        and the design stage is where the specialists paid off."""
+        """A design round on the code panel ignores `when`: the code panel's
+        conditions are about changed paths, which a plan does not have."""
         self.assertEqual(run_cli("reviewer", "set", "m2", "--when", "high-risk")[0], 0)
         self.write_plan()
         code, out, err = run_cli("review", "run", "--design")
@@ -180,8 +180,11 @@ class TestRunningIt(DesignReviewCase):
         self.assertNotIn("left out", err)
         events = ws.read_json(self.workspace.state_path, {}).get("events") or []
         design = [e for e in events if e.get("stage") == "design_review"][-1]
-        for key in ("optimization", "conditional", "declared"):
+        for key in ("conditional", "declared"):
             self.assertNotIn(key, design)
+        # Who sat on the round is recorded, and nobody was conditional.
+        self.assertEqual(design["optimization"]["conditional"], [])
+        self.assertFalse(design["optimization"]["declared"])
 
     def test_a_path_scoped_reviewer_runs_on_every_plan(self):
         self.assertEqual(run_cli("reviewer", "set", "m2", "--when-paths", "*.sql")[0], 0)
@@ -191,13 +194,17 @@ class TestRunningIt(DesignReviewCase):
         self.assertIn("2 successful, 0 failed", out)
         self.assertNotIn("left out", err)
 
-    def test_a_declaration_is_refused_on_the_design_review(self):
+    def test_a_declaration_is_accepted_on_the_design_review(self):
+        """`--high-risk` on a design round keeps every role and switches
+        seats to their high-risk model; it is no longer refused."""
         self.write_plan()
-        code, _, err = run_cli("review", "run", "--design", "--high-risk")
-        self.assertEqual(code, 2)
-        self.assertIn("--high-risk applies to the code review only", err)
-        self.assertIn("a design round runs every configured reviewer.", err)
-        self.assertFalse(os.path.isfile(self.design.snapshot_path))
+        code, out, err = run_cli("review", "run", "--design", "--high-risk")
+        self.assertEqual(code, 0, err)
+        self.assertIn("2 successful, 0 failed", out)
+        self.assertNotIn("applies to the code review only", err)
+        events = ws.read_json(self.workspace.state_path, {}).get("events") or []
+        design = [e for e in events if e.get("stage") == "design_review"][-1]
+        self.assertTrue(design["optimization"]["declared"])
 
     def test_the_setting_being_off_notes_but_does_not_refuse(self):
         """The setting says whether the orchestrator runs this stage, not

@@ -1,4 +1,4 @@
-<!-- translated-from: references/configuration.md sha256:4be44e1a59df6a237a809c5c88d85e1da9aac2ab6235cc38a13b68be1695c386 -->
+<!-- translated-from: references/configuration.md sha256:77d29734da77186132c038ee9a301361132dbb1c6a591be2e9311e8f509c8e12 -->
 
 > この文書は [references/configuration.md](../../../references/configuration.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -14,6 +14,7 @@
 - [優先順位](#precedence)
 - [プリセット](#presets)
   - [パネルの横にレビュアーを足す（`reviewers_extra`）](#adding-reviewers-beside-the-panel-reviewers_extra)
+  - [独自の設計パネル（`review.design.reviewers`）](#a-design-panel-of-its-own-reviewdesignreviewers)
 - [スキーマ（version 1）](#schema-version-1)
   - [フィールドリファレンス](#field-reference)
   - [ロールのオプション](#role-options)
@@ -348,6 +349,93 @@ list)`。
 古い dev-orchestra は `reviewers_extra` を無視します。パネルは extra なしで走り、その
 `config validate` もこのキーを報告しません。
 
+<a id="a-design-panel-of-its-own-reviewdesignreviewers"></a>
+
+### 独自の設計パネル（`review.design.reviewers`）
+
+設計レビューは、いずれかのファイルが独自のパネルを与えるまで、すべての `when` を無視した
+コードのパネルで走ります。`review.design.reviewers` は設計ラウンドに限ってコードのパネルを
+置き換え、`review.design.reviewers_extra` は、`reviewers_extra` がコードのパネルに対してするのと
+同じように、継承される設計パネルがどれであってもそれに足されます:
+
+```yaml
+review:
+  design:
+    reviewers:
+      - id: claude-general
+        provider: claude
+        model:
+          family: sonnet
+          version: latest
+        high_risk_model:           # opus on a high-risk plan
+          family: opus
+          version: latest
+        role: general
+      - id: claude-security
+        provider: claude
+        model:
+          family: sonnet
+          version: latest
+        role: security
+        relevance: always          # never judged by the role rules (a security seat's default)
+    reviewers_extra: []
+```
+
+| 設計パネル | 条件 |
+| --- | --- |
+| なし: 設計ラウンドはコードのパネルで走り、`when` は無視される | どのファイルも `review.design.reviewers` も `review.design.reviewers_extra` も設定していない |
+| project ファイルの設計用のリスト、次に project ファイルの設計用の extra | project ファイルが `review.design.reviewers` を並べている |
+| グローバルファイルの設計用のリスト、次にグローバルの設計用の extra、次に project の設計用の extra | それ以外で、グローバルファイルがそれを並べている |
+| 有効なコードのパネルからすべての `when` を外したもの、次にグローバルの設計用の extra、次に project の設計用の extra | それ以外（ファイルが設計用の extra だけを設定している） |
+
+同じ id が両方のパネルの席を指してもかまいません（`claude-general`）。ラウンド、レポート、
+使用量のラベルはステージごとに分けて保たれるので、その履歴は途切れません。id が使われている
+extra は、コードのパネルと同じく note を出して別の id になります。
+
+**設計パネルの席になれるもの。** `reviewers` のエントリと同じスキーマで、同じように検査されます
+（`review.design.reviewers[0]: ...`）。違いは 2 つです。`when: paths` は拒否されます。plan には
+変更されたパスがないからです。そして `when: high-risk` は尊重されます -- その席は、高リスクに
+一致した plan や、`review run --design --high-risk` で宣言されたラウンドに加わります -- ので、
+やはり 1 つの席は常に走らなければなりません。project ファイルの設計用の席が agy であるか、
+`options.args` を持つ場合は、project の `reviewers` のエントリと同じく拒否されます。global の
+コードの席と id・provider・options が同じ席でも同じです。ファイルが `review.design` の下に書いた
+席は、常にそれ自身として判定されます。そのコードの席の規則に従うのは、コードのパネルから
+コピーされた席だけです。
+
+**編集する。** `reviewer list|add|remove|set --design` は設計パネルに対して働きます。
+`reviewer add --design` は、ファイルが `review.design.reviewers` を並べていればそこへ、なければ
+`review.design.reviewers_extra` へ書き込み、設計パネルが引き続き何に従うか（`the code panel` または
+`the global file's design reviewers`）を示します。継承された席に対する `reviewer set|remove
+--design` は、まず有効な設計パネルをファイルにコピーします。コードのパネルからコピーした席は
+`when` を失い、note がそう伝えます。project スコープでは、このコピーはコードのパネルと同じ規則に
+従います。agy の席は同じ `not copied into` の note とともにコピーから外されますが、その席の
+出どころのパネルを global ファイルが並べている場合 -- 設計用の席なら設計のリスト、コードのパネルの
+席なら `reviewers` -- は、そのままコピーされます。`--design` と `--when-paths` を一緒に使うと exit 2 で
+終わります。`reviewer list --design` は最初の行で出どころを示します:
+`(design panel: the code panel; when conditions ignored)`、
+`(design panel: global file)`、または `(design panel: project file)`。
+
+**どこに現れるか。** `config show` には `Design reviews` ブロックがあり、設計パネルがあるときは
+その JSON に `design_reviewer_origins` が加わります。`doctor` は `design_reviewers` と
+`design_panel_source` を報告し、ファイルが書いた設計用の各席を、コードの席と同じように診断します。
+`review status --design` は設計パネルと、次のラウンドが外す席を挙げます。`review run --design
+--only <id>` は設計パネルから選びます。`run <reviewer id>` は常にコードのパネルの席を実行します。
+
+**高リスクのラウンドでのモデル。** どちらのパネルのどの席も `high_risk_model` を設定できます。
+これはモデルのブロック（`family` と `version: latest`、または `id` で固定）で、高リスクに一致した
+ラウンドや `--high-risk` のラウンドでは `model` の代わりにそれを使います。provider と `options` は
+席自身のもののままなので、その中の `provider` や `options` は拒否されます。`when: high-risk` は
+リスクに応じて席を加え、`high_risk_model` は席のモデルを変えます。この 2 つは併用できます。
+切り替えた席ごとに `note: high-risk round (<path> matches <pattern>): <id>
+runs opus instead of sonnet` が出力され、その実行記録に `model_slot:
+high-risk` が加わります（これのない記録は通常の枠です）。`reviewer add|set
+--high-risk-model FAMILY` で設定し、`reviewer set --clear-high-risk-model` で外します。
+`reviewer set --provider` で別の CLI にすると、`--model` の有無にかかわらず、note を出して
+外されます。一緒に `--high-risk-model` を指定すれば、新しい CLI のものが書かれます。
+
+古い dev-orchestra は `review.design.reviewers`、その下の `reviewers_extra`、`high_risk_model`、
+`relevance` を無視します。設計ラウンドはコードのパネルで走り、どの席も普段のモデルを使います。
+
 <a id="schema-version-1"></a>
 
 ## スキーマ（version 1）
@@ -420,6 +508,10 @@ review:
   design:
     enabled: auto                     # review .ai/plan.md before implementing (true, false or auto)
     max_iterations: 2                 # design review -> revise -> re-review
+    # reviewers: [...]                # a design panel of its own; unset, design rounds run the code panel
+
+optimization:
+  skip_unneeded_roles: true           # a test/architecture seat sits out a round with nothing for it
 
 design:
   require_approval: true              # implementer waits for the user's yes (design approve)
@@ -444,8 +536,12 @@ workspace:
 | `<role>.model.id` | string | 正確なモデル id。`version: pinned` のときのみ。 |
 | `reviewers[].id` | string | 一意で、`[a-z0-9][a-z0-9._-]*` に一致すること。レポートファイルの名前になります。 |
 | `reviewers[].role` | string | 組み込みのもの、または独自のもの。`references/reviews.md` を参照。 |
-| `reviewers[].when` | `always` \| `high-risk` \| `paths` を持つマッピング | **コード**レビューのラウンドでそのレビュアーがいつ走るか（デフォルト `always`）。`high-risk` は高リスクと判定されたラウンドにだけ加わります。`paths` を持つマッピングは、変更が自分のパターンのどれかに一致したラウンドにだけ加わります。設計レビューはどちらも無視し、すべてのレビュアーを走らせます。少なくとも 1 人は `always` のままでなければなりません。[高リスクな変更でだけ走るレビュアー](#reviewers-that-run-only-on-high-risk-changes)と[パスで絞り込むレビュアー](#reviewers-scoped-to-paths)を参照。 |
+| `reviewers[].when` | `always` \| `high-risk` \| `paths` を持つマッピング | **コード**レビューのラウンドでそのレビュアーがいつ走るか（デフォルト `always`）。`high-risk` は高リスクと判定されたラウンドにだけ加わります。`paths` を持つマッピングは、変更が自分のパターンのどれかに一致したラウンドにだけ加わります。コードのパネルで走る設計ラウンドはどちらも無視し、すべてのレビュアーを走らせます。独自の設計パネルは `high-risk` を尊重し、`paths` を拒否します。少なくとも 1 人は `always` のままでなければなりません。[高リスクな変更でだけ走るレビュアー](#reviewers-that-run-only-on-high-risk-changes)と[パスで絞り込むレビュアー](#reviewers-scoped-to-paths)を参照。 |
+| `reviewers[].high_risk_model` | mapping | 高リスクのラウンド（高リスクへの一致か `--high-risk`）で、その席が `model` の代わりに使うモデルのブロック。どちらのパネルでも使えます。`family` と `version`、または `version: pinned` と `id`。`provider` や `options` は持てません。それらは席のもののままです。[独自の設計パネル](#a-design-panel-of-its-own-reviewdesignreviewers)を参照。 |
+| `reviewers[].relevance` | `security` \| `test` \| `architecture` \| `always` | 見るもののないラウンドからその席を外しうるロールの規則。未設定なら、`test`、`architecture` の席は自分のロールの規則で判定され、それ以外のロールは判定されません。`security` もこれに含まれます。その規則はパスの名前しか読まないからです。`security` を設定すると security の席がオプトインします。`always` はその席を判定の対象から外します。`general` の席に規則を設定すると拒否されます。`general` が外されることはありません。`references/reviews.md`（「ラウンドが必要としないロール」）を参照。 |
 | `reviewers_extra` | list \| null | ファイルが継承するパネルの横に足すレビュアー。`reviewers` のエントリと同じスキーマで、どちらのファイルにも置けます。id が使われていれば別の id になり、外されることはありません。[パネルの横にレビュアーを足す](#adding-reviewers-beside-the-panel-reviewers_extra)を参照。 |
+| `review.design.reviewers` | list \| null | 設計レビュー独自のパネル。`reviewers` のエントリと同じスキーマです（`when: paths` は不可）。どのファイルでも未設定なら、設計ラウンドは `when` を無視したコードのパネルで走ります。[独自の設計パネル](#a-design-panel-of-its-own-reviewdesignreviewers)を参照。 |
+| `review.design.reviewers_extra` | list \| null | ファイルが継承する設計パネルの横に足す設計レビュアー。どのファイルも設計パネルを並べていなければ、継承するのは `when` を外したコードのパネルです。 |
 | `review.max_review_iterations` | int ≥ 0 | プロジェクト単位ではなくレビュー単位のラウンド数です。新しいブランチ、新しい `--base`、または `budget reset` でカウントはリセットされます。`0` で再レビューを完全に無効にします。 |
 | `review.parallel` | bool | `false` にするとレビュアーを 1 つずつ実行します（デバッグしやすくなります）。 |
 | `review.re_review_severities` | list | ブロッキングとみなす severity。 |
@@ -457,7 +553,7 @@ workspace:
 | `review.context.inline_chars` | int ≥ 1 \| null | 変更本文のうちどれだけをレビュアーのプロンプトに含めるか（デフォルト 400,000、`max_chars` と同じ数値）。これ以下なら本文はインラインで渡され、ラウンドは clean になり得ます。これを超えると、レビュアーには凍結されたスナップショットのパスが渡され、何が返ってきてもラウンドは `partial` — カバレッジ未検証 — として記録されます。**`max_chars` より小さく設定すると、両者の間に、ラウンドは実行されるものの `partial` として記録される帯域が生まれます**: これは非常に大きなプロンプトに費用をかけたくない人が明示的に選ぶもので、`partial` はその代償です。`max_chars` *より大きく*設定することも許されており、誤りではありません — その場合、本文がファイルとして渡されるのは人間が強制したラウンドだけになります。`null` はデフォルトを意味します。各ラウンドは比較に使った数値を記録するので、`partial` のラウンドはどの上限によってそうなったのかがわかります。`references/limits.md` を参照。 |
 | `review.context.surrounding` | `none` \| `enclosing` | `enclosing` にすると、各 hunk を囲む Python の関数・メソッド・クラスも、すべてのコードレビュアーに渡します。スナップショットの取得時に、その git ツリーから抽出します（デフォルト `none`: diff だけ）。1 つのスナップショットで計測したところレビューが安くならなかったため、off です — `optimization report` が、これを使ったラウンドと使わなかったラウンドを比較します。`false` と `null` は `none` を意味します（`off` は `false` として読まれます）。`true` は拒否されます。`references/reviews.md` を参照。 |
 | `review.context.surrounding_chars` | int ≥ 1 \| null | 1 つのラウンドが追加できる周辺コンテキストの最大量（デフォルト 15,000: 1 つのスナップショットで計測したところ、実行あたりの費用は変わらず、60,000 では渡した分がそのまま上乗せされました）。さらに、diff が `max_chars` と `inline_chars` の下に残す分で上限がかかるので、コンテキストがラウンドを拒否させたり、diff をファイル渡しにしたりすることはありません。収まらなかったものは、プロンプトとすべてのレポートで名前を挙げて除外されます。`null` はデフォルトを意味します。`references/limits.md` を参照。 |
-| `review.design.enabled` | bool \| `auto` \| null | 実装の前に `.ai/plan.md` を同じパネルにかけるかどうか。このステージはラウンドごとにパネルのメンバー 1 人につきレビュアー実行 1 回分のコストがかかります。`true` は常に実行、`false` は実行しません。`auto`（デフォルト）は計画書から判断し、その答えと理由を `status` が表示します。計画書のどこにあってもバッククォートで囲まれたトークンと、計画書の `Files to Modify` 見出しの下にあるパスらしい語（バッククォートの有無を問わず、そこにあるフェンスブロックも含む）はすべて、大文字小文字を区別せずに高リスクパターン（`optimization.high_risk_paths` と `extra_high_risk_paths`）と照合され、一致すれば実行します。`db/migrate` のように `/` を含み拡張子のない名前はディレクトリとしても照合します。規模は、`Files to Modify` の下にあるファイル名らしいトークン（`/` かファイル拡張子を含むもの）のうち、フェンスブロックの中、`docs/`・`references/`・`tests/` と `.md` ファイルを除いたものを、ディスクを見ずに数え、6 個以上なら実行します。そこにグロブ、ディレクトリ、`/` を含み拡張子のない名前、`..` を通るパスがあれば実行します（`payload["mode"]` のようなコードはグロブとして読みません）。計画書が読めない、`Files to Modify` セクションがない、あってもファイルを 1 つも挙げていない場合も実行します。計画書がまだないときの答えは `auto -> run (once a plan is written)` です。そしてワークフローで設計レビューのラウンドが一度でも走ったら答えは実行のままなので、改訂によってループが途中で止まることはありません。`null` はデフォルトの `auto` を意味します。 |
+| `review.design.enabled` | bool \| `auto` \| null | 実装の前に `.ai/plan.md` を設計パネル（ファイルが `review.design.reviewers` を設定していなければコードのパネル）にかけるかどうか。このステージはラウンドごとにパネルのメンバー 1 人につきレビュアー実行 1 回分のコストがかかります。`true` は常に実行、`false` は実行しません。`auto`（デフォルト）は計画書から判断し、その答えと理由を `status` が表示します。計画書のどこにあってもバッククォートで囲まれたトークンと、計画書の `Files to Modify` 見出しの下にあるパスらしい語（バッククォートの有無を問わず、そこにあるフェンスブロックも含む）はすべて、大文字小文字を区別せずに高リスクパターン（`optimization.high_risk_paths` と `extra_high_risk_paths`）と照合され、一致すれば実行します。`db/migrate` のように `/` を含み拡張子のない名前はディレクトリとしても照合します。規模は、`Files to Modify` の下にあるファイル名らしいトークン（`/` かファイル拡張子を含むもの）のうち、フェンスブロックの中、`docs/`・`references/`・`tests/` と `.md`・`.rst`・`.txt` ファイルを除いたものを、ディスクを見ずに数え、6 個以上なら実行します。そこにグロブ、ディレクトリ、`/` を含み拡張子のない名前、`..` を通るパスがあれば実行します（`payload["mode"]` のようなコードはグロブとして読みません）。計画書が読めない、`Files to Modify` セクションがない、あってもファイルを 1 つも挙げていない場合も実行します。計画書がまだないときの答えは `auto -> run (once a plan is written)` です。そしてワークフローで設計レビューのラウンドが一度でも走ったら答えは実行のままなので、改訂によってループが途中で止まることはありません。`null` はデフォルトの `auto` を意味します。 |
 | `review.design.max_iterations` | int ≥ 0 | 設計レビューのラウンド数（レビュー → トリアージ → 修正）。`max_review_iterations` とは別にカウントされます（デフォルト 2）。上限に達したラウンドでも修正は行われます。上限が拒否するのはその後の再レビューだけです。`1`: 1 ラウンド、1 回の修正、その後ユーザーに確認。`0`: 設計レビューなし。`budgets.architect`（デフォルト 3）は、デフォルトでは設計とラウンドごとに 1 回の修正をまかないます。`max_iterations` に合わせて引き上げ、承認時に変更を求められることが予想される場合はさらに 1 つ増やしてください。 |
 | `design.require_approval` | bool | `true`（デフォルト）にすると、`.ai/plan.md` が存在し、現時点の plan が `design approve` で承認されていない間は -- ユーザーが了承した後に承認するものです -- `run implementer` が拒否します（exit 5）。`false` は誰も見ていない実行（CI、バッチ）向けで、このゲートが導入される前の挙動に戻します。`review.design` の下ではなくトップレベルにあるのは、パネルが plan をレビューしたかどうかにかかわらず承認が重要だからです。`--force` ではバイパスできず、この設定だけがバイパスできます。 |
 | `design.resume.max_age_seconds` | int ≥ 0 \| null | `run architect --resume` がセッションを継続できる、直前の architect の実行の古さの上限です（デフォルト 3600。測定時に CLI がプロンプトキャッシュを保持していた時間）。これより古ければ、改訂は全文プロンプトで新規に走ります。`0` は常に新規、`null` はデフォルトの意味です。 |
@@ -467,6 +563,11 @@ workspace:
 | `optimization.extra_high_risk_paths` | list | `high_risk_paths` を置き換えずに、それに追加する glob（デフォルト `[]`）。一致すると `high_risk_paths` の一致とまったく同じように引き上げられます。他のリストと同様、project の値は global の値を置き換えます。 |
 | `optimization.low_risk_max_files` | int | `quality` 未満のレベルで、小さな変更とみなすファイル数の上限（デフォルト 5）。 |
 | `optimization.low_risk_max_lines` | int | さらに、変更行数の上限（デフォルト 150）。 |
+| `optimization.skip_unneeded_roles` | bool | `true`（デフォルト）: 常に走る `test`、`architecture` の席は、見るもののないラウンドを休みます。コードレビューでも設計レビューでも、`quality` を含むどのレベルでもそうです。`relevance: security` でオプトインした `security` の席も同じで、オプトインしていない席は常に走ります。`false` にすると、そうした席を従来どおり毎ラウンドすべて走らせます。`references/reviews.md`（「ラウンドが必要としないロール」）を参照。 |
+| `optimization.security_paths` | list | `relevance: security` の席について、`security` の規則が高リスクパターンのほかに探すもの: リクエスト処理と入力、ファイル・URL・クライアント・クエリ・データベースへのアクセス、実行とデシリアライゼーション、設定と依存関係のマニフェスト、そしてデフォルトの高リスクパターンすべて。デフォルトのリストを丸ごと置き換えます。`[]` にすると高リスクパターンだけが残ります（`doctor` がそれを報告します）。 |
+| `optimization.extra_security_paths` | list | `security_paths` に追加する glob（デフォルト `[]`）。 |
+| `optimization.architecture_paths` | list | `architecture` の規則が探すもの: 契約とスキーマ、モジュールの表面、設定とレコードの形式、CLI、ビルド。デフォルトのリストを丸ごと置き換えます。`[]` にすると規模とディレクトリの判定だけが残ります（`doctor` がそれを報告します）。 |
+| `optimization.extra_architecture_paths` | list | `architecture_paths` に追加する glob（デフォルト `[]`）。 |
 | `workspace.dir` | string | `.ai/` の成果物を置く場所。 |
 | `workspace.stale_notice_days` | int 0–36500 | 新しいワークフローが始まったとき、その最初のコマンドが、最後の活動（`state.json` の `updated_at`、なければ `started_at`）からこの日数以上たったほかのワークフローを、stderr に一度だけ知らせます（デフォルト 30）。現在のワークフローは含めず、実行中のステージがあるワークフローも含めません。その印はそのワークフロー自身で `status` を実行したときにしか消えないため、ステージの途中で放置されたワークフローがここで名前を挙げられることはありません。`workflow list` では `in flight` と表示されます。使えるタイムスタンプがないワークフローや、`state.json` が読めないワークフローは数えません。何も削除しません。ワークフローを削除するのは、これまでどおり `workflow remove <id> --yes` だけです。`0` でこの通知を止め、`null` はデフォルトを意味します。通知がコマンドの動作を変えることはありません。 |
 | `<role>.options` | mapping | provider 固有の設定項目。下記を参照。 |
@@ -618,7 +719,10 @@ architect やレビュアーの実行には効きません。管理設定（mana
 2 ファイル / 50 行のしきい値に近づいたラウンドもありませんでした。両方が同時に引き上げられました。
 
 いまでは、常にパネル全体の費用を払うレベルは `quality` だけであり、それがこのレベルの
-意味するところです。
+意味するところです -- ただし、そのラウンドに見るもののあるロールのパネル全体です。`quality` を
+含むどのレベルでも、読むもののない `test`、`architecture` の席 -- および `relevance: security`
+でオプトインした `security` の席 -- は、ラウンドが高リスクでない限り休みます（`optimization.skip_unneeded_roles`。`references/reviews.md` の
+「ラウンドが必要としないロール」を参照）。
 
 **サイズだけが判定基準になることはありません。** 縮小されたパネルになるには、変更が
 両方のしきい値を下回り、*かつ*高リスクなものに何も触れていない必要があります。auth ファイルの
@@ -646,7 +750,7 @@ reviewers:
   - id: claude-security
     provider: claude
     role: security
-    when: high-risk          # always (default) | high-risk; code review only
+    when: high-risk          # always (default) | high-risk; code review, and a design panel of its own
 optimization:
   extra_high_risk_paths: ["*/providers/*", "*/config.py"]   # added to high_risk_paths; default []
 ```
@@ -654,7 +758,9 @@ optimization:
 **`when: high-risk` のレビュアーがコードのラウンドで走るのは、変更が高リスクなパスに
 一致したとき、オーケストレーターが `review run --high-risk` でそのラウンドを高リスクと
 宣言したとき、または差分ラウンドか同じスナップショットの再実行で、自分自身の未解決の
-accepted の指摘を確認し直す必要があるときです。それ以外では外されます。** 設計レビューでは常に走り、`--only` で名前を
+accepted の指摘を確認し直す必要があるときです。それ以外では外されます。** コードのパネルで走る設計ラウンドでは常に走ります。独自の
+設計パネルの席は、同じ判定で、plan のトークンに対して plan に加わります
+（[上記](#a-design-panel-of-its-own-reviewdesignreviewers)）。`--only` で名前を
 挙げれば走ります。判定はラウンドを `quality` に引き上げるのと同じものです。条件付きの
 レビュアーを加えたり外したりする判断は、すべて理由とともに表示され記録されます。ラウンドが
 どう判断するかは `references/reviews.md` を参照してください。
@@ -993,6 +1099,9 @@ codex: installed
 | 「plan の承認を求めないで」/ CI で実行する | `config set design.require_approval false` |
 | 「Codex のセキュリティレビュアーを追加して」 | `reviewer add --provider codex --role security` |
 | 「セキュリティレビュアーはリスクのある変更のときだけ走らせて」 | `reviewer set <id> --when high-risk`（[上記](#reviewers-that-run-only-on-high-risk-changes)を参照） |
+| 「リスクのある変更では opus を使って」 | `reviewer set <id> --high-risk-model opus`（設計パネルには `--design` を付ける） |
+| 「計画書は別のパネルでレビューして」 | `reviewer add --design …`（[独自の設計パネル](#a-design-panel-of-its-own-reviewdesignreviewers)を参照）、その後 `reviewer list --design` |
+| 「セキュリティレビュアーは常に走らせて」 | 既定でそうなります。security の席が休むのは `relevance: security` のときだけで、`reviewer set <id> --relevance default` で外せます。どの席でも `reviewer set <id> --relevance always`。毎ラウンドすべてのロールを走らせるなら `config set optimization.skip_unneeded_roles false` |
 | 「レビュアーを 3 人にして」 | もう一度 `reviewer add …`、その後 `reviewer list` |
 | 「パフォーマンスのレビュアーを外して」 | `reviewer remove performance` |
 | 「2 番目のレビュアーを変えて」 | `reviewer set 2 --provider … --role …` |
@@ -1068,7 +1177,8 @@ prune されます。そのため、グローバルの値を打ち消すため�
 プリセットのフィットから、プロジェクトレイヤーならグローバルレイヤーから。そのため、プロジェクトのパネルがあなたの
 グローバルファイルに入り込むことはありません。リストの末尾を超えるインデックスは新しいエントリには
 ならず、エラー（exit 2）になります。`reviewers_extra[0].role` は例外で、ファイル自身の extra を
-編集し、何もコピーしません。`reviewers[...]` や `reviewers_extra[...]` のパスは書き込む前に検査され、
+編集し、何もコピーしません。`reviewers[...]`、`reviewers_extra[...]`、
+`review.design.reviewers...` のパスは書き込む前に検査され、
 新たに生じるパネルの問題は、書き込んで警告するのではなく拒否されます（exit 2）。
 
 <a id="the-wizard"></a>
@@ -1123,7 +1233,10 @@ Configuration
     5. claude / opus / latest / security / claude-security-2 (when: high-risk)
     design review: auto  (review.design.enabled)
     optimization level: balanced  (optimization.level)
+    skip unneeded roles: on  (optimization.skip_unneeded_roles)
     plan approval: required  (design.require_approval)
+  Design reviews
+    (the code panel; when conditions ignored)  (review.design.reviewers)
 
 Save configuration? [Y/n]
 ```
@@ -1140,8 +1253,11 @@ no なら、プリセットのフィットを出発点にロールとレビュ�
 ウィザードは `reviewers_extra` について尋ねず、書き込みもしません: プリセットを選んだときも含めて、
 ファイルはこのキーを持っていたとおりに残し、レビュアーの質問の前の 1 行がその旨を伝えます
 （`This file's reviewers_extra (<ids>) is kept as it is; reviewer add/remove manage it.`）。
-保存前のサマリーはどれも `load()` が解決する設定で、extra には `(extra, global file)` の印が
-付きます。レビュアーの質問への回答はこれまでどおり `reviewers` として保存され、パネルはそれに
+設計パネルについても尋ねません: `review.design.reviewers` とその extra はファイルが持っていた
+とおりに残し、1 行がその旨を伝えます（`This file's review.design.reviewers is kept as it is; reviewer
+add/set/remove --design manage it.`）。保存前のサマリーはどれも `load()` が解決する設定で、extra には
+`(extra, global file)` の印が付き、設計パネルは `Design reviews` の下に表示されます。高リスク用の
+モデルを持つ席は `(opus when high-risk)` と表示され、`relevance` を持つ席はそれが表示されます。レビュアーの質問への回答はこれまでどおり `reviewers` として保存され、パネルはそれに
 従います。継承するパネルに従い続けたままレビュアーを足すには `reviewer add` を使ってください。
 
 プリセット導入前にウィザードが書き込んだファイルには、すべてのロールとパネルが入っているので、

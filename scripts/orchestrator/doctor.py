@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 import platform
 import sys
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from . import config as config_mod
 from . import config_policy as policy_mod
@@ -35,6 +35,7 @@ from .providers import (
     user_provider_report,
     user_providers_disabled,
 )
+from .summary import DESIGN_PANEL_SOURCES
 
 ROLE_LABELS = (
     ("orchestrator", "Orchestrator"),
@@ -231,6 +232,7 @@ def collect(start: Optional[str] = None, probe_models: bool = True) -> Dict[str,
         project_layer=loaded.project_layer,
         global_layer=loaded.global_layer,
         origins=loaded.reviewer_origins,
+        design_origins=loaded.design_reviewer_origins,
     )
     installed = presets_mod.installed_providers()
     report["config"] = {
@@ -296,20 +298,31 @@ def collect(start: Optional[str] = None, probe_models: bool = True) -> Dict[str,
         if not isinstance(reviewer, dict):
             continue
         label = "Reviewer %s" % reviewer.get("id")
-        entry = _describe_role(label, reviewer, detections, report["problems"], adapter_errors, load_errors)
-        entry["id"] = reviewer.get("id")
-        entry["role"] = reviewer.get("role", "general")
+        entry = _reviewer_entry(label, reviewer, detections, report, adapter_errors, load_errors)
         entry["origin"] = loaded.reviewer_origin(index).label()
-        when = opt_mod.reviewer_condition(reviewer)
-        if when != opt_mod.WHEN_ALWAYS:
-            entry["when"] = when
-            # The label is kept on the entry, so the renderer never has to
-            # rebuild one from the bare kind.
-            entry["condition"] = opt_mod.condition_label(reviewer)
-            if when == opt_mod.WHEN_PATHS:
-                entry["paths"] = [redact(pattern) for pattern in opt_mod.reviewer_paths(reviewer)]
         report["reviewers"].append(entry)
         from_project = str(reviewer.get("id") or "") in reviewer_refused
+        _enforcement_report(label, reviewer, report, entry, from_project)
+
+    # The design panel: its own seats, when a file sets one, are diagnosed as
+    # the code seats are; a copy of a code seat was diagnosed above.
+    report["design_panel_source"] = loaded.design_panel_source
+    report["design_reviewers"] = []
+    design_refused = policy_mod.reviewer_raw_arg_refusals(loaded, "design")
+    for index, reviewer in enumerate(loaded.design_reviewers()):
+        if not isinstance(reviewer, dict):
+            continue
+        origin = loaded.design_reviewer_origin(index)
+        if not origin.design:
+            entry = {"id": reviewer.get("id"), "role": reviewer.get("role", "general")}
+            entry["origin"] = origin.label()
+            report["design_reviewers"].append(entry)
+            continue
+        label = "Design reviewer %s" % reviewer.get("id")
+        entry = _reviewer_entry(label, reviewer, detections, report, adapter_errors, load_errors)
+        entry["origin"] = origin.label()
+        report["design_reviewers"].append(entry)
+        from_project = str(reviewer.get("id") or "") in design_refused
         _enforcement_report(label, reviewer, report, entry, from_project)
 
     # A non-list or all-broken panel is already one of validate's problems
@@ -317,8 +330,83 @@ def collect(start: Optional[str] = None, probe_models: bool = True) -> Dict[str,
     if panel is None or panel == []:
         report["problems"].append("no reviewers configured: the independent-review stage will be skipped")
     _default_patterns_note(report, loaded.optimization_settings())
+    seats = [*loaded.reviewers(), *loaded.design_reviewers()]
+    _role_patterns_problems(report, loaded.optimization_settings(), seats)
     _frozen_panel_notes(report, loaded, installed)
     return report
+
+
+def _reviewer_entry(
+    label: str,
+    reviewer: Dict[str, Any],
+    detections: Dict[str, Any],
+    report: Dict[str, Any],
+    adapter_errors: Dict[str, str],
+    load_errors: int,
+) -> Dict[str, Any]:
+    """One reviewer as doctor reports it, of either panel.
+
+    Its model is resolved as a role's is, and so is its ``high_risk_model``,
+    against the same provider: a family that will not resolve fails the
+    high-risk rounds, which are the ones that matter most.
+    """
+    entry = _describe_role(label, reviewer, detections, report["problems"], adapter_errors, load_errors)
+    entry["id"] = reviewer.get("id")
+    entry["role"] = reviewer.get("role", "general")
+    when = opt_mod.reviewer_condition(reviewer)
+    if when != opt_mod.WHEN_ALWAYS:
+        entry["when"] = when
+        # The label is kept on the entry, so the renderer never has to
+        # rebuild one from the bare kind.
+        entry["condition"] = opt_mod.condition_label(reviewer)
+        if when == opt_mod.WHEN_PATHS:
+            entry["paths"] = [redact(pattern) for pattern in opt_mod.reviewer_paths(reviewer)]
+    if reviewer.get("relevance") is not None:
+        entry["relevance"] = reviewer.get("relevance")
+    risk_model = reviewer.get("high_risk_model")
+    if isinstance(risk_model, dict):
+        shown: Dict[str, Any] = {"family": risk_model.get("family", "")}
+        # Only once the seat itself resolved: a missing CLI or a broken
+        # adapter is already a problem above, and would only be said twice.
+        if entry.get("status") == "ok":
+            switched = {"provider": reviewer.get("provider"), "model": risk_model}
+            described = _describe_role(
+                "%s (high-risk model)" % label,
+                switched,
+                detections,
+                report["problems"],
+                adapter_errors,
+                load_errors,
+            )
+            shown.update({key: described[key] for key in ("status", "resolved") if key in described})
+        entry["high_risk_model"] = shown
+    return entry
+
+
+def _role_patterns_problems(report: Dict[str, Any], settings: Dict[str, Any], seats: Sequence[Any]) -> None:
+    """A role relevance rule with no pattern of its own to judge by.
+
+    ``config validate`` accepts ``security_paths: []`` -- a list replaced on
+    purpose may be empty -- but with the rule on, it leaves a security seat
+    that opts in (``relevance: security``) out of every round no high-risk
+    path reaches, which is worth a problem
+    here as no high-risk pattern at all is for a ``when: high-risk`` seat.
+    A rule no seat of either panel is judged by leaves nobody out, so its
+    empty list is no problem.
+    """
+    if not opt_mod.skip_unneeded_roles(settings):
+        return
+    rules = {opt_mod.relevance_rule(seat) for seat in seats}
+    for key, patterns in (
+        ("security_paths", opt_mod.security_patterns(settings)),
+        ("architecture_paths", opt_mod.architecture_patterns(settings)),
+    ):
+        if key.split("_")[0] in rules and not patterns:
+            report["problems"].append(
+                "optimization.%s: no pattern in force, so the %s rule finds nothing to keep its seat "
+                "for; add patterns to %s or extra_%s, or set optimization.skip_unneeded_roles false"
+                % (key, key.split("_")[0], key, key)
+            )
 
 
 def _seat(reviewer: Dict[str, Any]) -> Tuple[Any, ...]:
@@ -781,6 +869,18 @@ def _roles_lines(report: Dict[str, Any]) -> List[str]:
         if origin.endswith(" extra"):
             role += " (extra: %s)" % origin[: -len(" extra")]
         lines.append("    %d. %s / %s / %s" % (index, entry.get("id"), _role_line(entry), role))
+    # Only once a file sets a design panel: without one a design round runs
+    # the panel listed above, and saying so on every report is noise. Read
+    # with .get, as a report built before the design panel had neither key.
+    design = report.get("design_reviewers") or []
+    source = str(report.get("design_panel_source") or "code")
+    if source != "code" or any("status" in entry for entry in design):
+        lines.append("  %-13s %d (%s)" % ("Design:", len(design), DESIGN_PANEL_SOURCES.get(source, source)))
+        for index, entry in enumerate(design, 1):
+            # A seat copied from the code panel is that seat, diagnosed above.
+            seat = _role_line(entry) if "status" in entry else "as in Reviewers"
+            role = entry.get("role", "general")
+            lines.append("    %d. %s / %s / %s" % (index, entry.get("id"), seat, role))
     return lines
 
 

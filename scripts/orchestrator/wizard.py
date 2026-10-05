@@ -201,7 +201,7 @@ def run(
             preset = names[picked]
             data = presets_mod.with_preset(existing, preset)
             preview, fit, _name, _source = config_mod.compose(data, {}, on_path)
-            prompter.say(render_summary(preview, fit.origins))
+            prompter.say(render_summary(preview, fit.origins, fit.design_origins))
             notes = presets_mod.render_notes(fit)
             if notes:
                 prompter.say(notes)
@@ -244,13 +244,20 @@ def run(
         prompter.say(
             "   This file's reviewers_extra (%s) is kept as it is; reviewer add/remove manage it." % ids
         )
+    # Nor is the design panel: these questions are about the code review's.
+    design_keys = [key for key in config_mod.DESIGN_PANEL if config_mod.get_path(data, key) is not None]
+    if design_keys:
+        prompter.say(
+            "   This file's %s is kept as it is; reviewer add/set/remove --design manage it."
+            % " and ".join(design_keys)
+        )
     data["reviewers"] = _ask_reviewers(prompter, providers, effective, scope)
     prompter.say("")
 
     if preset is not None:
         data = _differences_from_fit(data, base, preset)
         preview, fit, _name, _source = config_mod.compose(data, {}, on_path)
-        prompter.say(render_summary(preview, fit.origins))
+        prompter.say(render_summary(preview, fit.origins, fit.design_origins))
         notes = presets_mod.render_notes(fit)
         if notes:
             prompter.say(notes)
@@ -261,7 +268,7 @@ def run(
         # report a design review as off while the global layer has it on, and
         # would leave out the extras it keeps.
         preview, fit, _name, _source = _compose_preview(scope, data)
-        prompter.say(render_summary(preview, fit.origins))
+        prompter.say(render_summary(preview, fit.origins, fit.design_origins))
     save = prompter.ask_yes_no("Save configuration?", True)
     return data, save
 
