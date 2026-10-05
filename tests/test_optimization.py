@@ -2560,10 +2560,15 @@ class TestThePairedBlockInTheReport(IsolatedCase):
 SHA = "a" * 64
 
 
-def scored_run(reviewer_id, status="ok", billed=100, cost=None, snapshot=SHA[:12]):
+def scored_run(reviewer_id, status="ok", billed=100, cost=None, snapshot=SHA[:12], slot=None, model=None):
     """A reviewer entry as a review event records it."""
     usage = {"billed_tokens": billed, "cost_usd": cost, "measured": bool(billed)}
-    return {"id": reviewer_id, "status": status, "snapshot": snapshot, "usage": usage}
+    run = {"id": reviewer_id, "status": status, "snapshot": snapshot, "usage": usage}
+    if slot:
+        run["model_slot"] = slot
+    if model:
+        run["model"] = model
+    return run
 
 
 def scored_event(runs, round_id="r1", iteration=1, surrounding=None, rerun=False, stage="review"):
@@ -3074,6 +3079,287 @@ class TestScorecardLeftOutRounds(unittest.TestCase):
         self.assertEqual(card["reviewers"]["s"]["left_out_rounds"], 1)
 
 
+HIGH = opt.HIGH_RISK_SLOT
+SCORE_ROW = "  %-22s %s"
+
+
+def slot_rounds(*findings):
+    """One report per round, ``r1`` onwards, the last one live."""
+    last = len(findings)
+    return [
+        scored_round(list(found), round_id="r%d" % number, live=number == last)
+        for number, found in enumerate(findings, 1)
+    ]
+
+
+class TestScorecardModelSlots(unittest.TestCase):
+    """A seat's usual and high-risk model are scored apart, so a cheap model on
+    ordinary rounds can be read against an expensive one on risky ones."""
+
+    def two_slots(self):
+        events = [
+            scored_event([scored_run("a", billed=100, cost=0.5, model="sonnet")], round_id="r1"),
+            scored_event([scored_run("a", billed=300, cost=1.5, slot=HIGH, model="opus")], round_id="r2"),
+        ]
+        rounds = slot_rounds(
+            [scored_finding("F1", "k1", ["a"], "accepted")],
+            [scored_finding("F1", "k1", ["a"], "accepted"), scored_finding("F2", "k2", ["a"], "rejected")],
+        )
+        return scorecard(events, rounds)["code"]
+
+    def test_runs_are_summed_per_slot_and_add_up_to_the_reviewer(self):
+        group = self.two_slots()["reviewers"]["a"]
+        usual, high = group["models"]["usual"], group["models"]["high-risk"]
+        self.assertEqual(list(group["models"]), ["usual", "high-risk"])
+        for field in ("runs", "measured_runs", "priced_runs", "billed_tokens", "reported", "accepted"):
+            self.assertEqual(usual[field] + high[field], group[field], field)
+        self.assertAlmostEqual(usual["cost_usd"] + high["cost_usd"], group["cost_usd"])
+        self.assertEqual(usual["alone"] + high["alone"], group["alone"])
+        self.assertEqual((usual["billed_tokens"], high["billed_tokens"]), (100, 300))
+
+    def test_old_records_without_a_slot_count_as_usual(self):
+        events = [scored_event([scored_run("a", billed=100, cost=0.5)])]
+        group = scorecard(events, [scored_round([scored_finding("F1", "k1", ["a"], "accepted")])])["code"]
+        group = group["reviewers"]["a"]
+        self.assertEqual(list(group["models"]), ["usual"])
+        usual = group["models"]["usual"]
+        for field, value in group.items():
+            if field != "models":
+                self.assertEqual(usual[field], value, field)
+        self.assertEqual(usual["by_model"], {"?": 1})
+
+    def test_a_finding_is_attributed_to_the_slot_of_the_run_that_first_reported_it(self):
+        models = self.two_slots()["reviewers"]["a"]["models"]
+        self.assertEqual((models["usual"]["reported"], models["usual"]["accepted"]), (1, 1))
+        self.assertEqual((models["high-risk"]["reported"], models["high-risk"]["rejected"]), (1, 1))
+
+    def test_a_seat_that_ran_on_both_slots_across_rounds(self):
+        events = [
+            scored_event([scored_run("a", billed=100, cost=0.5)], round_id="r1"),
+            scored_event([scored_run("a", billed=300, cost=1.5, slot=HIGH)], round_id="r2"),
+            scored_event([scored_run("a", billed=100, cost=0.5)], round_id="r3"),
+        ]
+        first = [scored_finding("F%d" % n, "u%d" % n, ["a"], "accepted") for n in range(10)]
+        risky = [scored_finding("F%d" % n, "h%d" % n, ["a"], "accepted") for n in range(3)]
+        risky.append(scored_finding("F3", "h3", ["a"], "rejected"))
+        rounds = slot_rounds(first, risky, [scored_finding("F1", "u10", ["a"], "accepted")])
+        group = scorecard(events, rounds)["code"]["reviewers"]["a"]
+        usual, high = group["models"]["usual"], group["models"]["high-risk"]
+        self.assertEqual((usual["runs"], usual["billed_tokens"], usual["cost_usd"]), (2, 200, 1.0))
+        self.assertEqual((high["runs"], high["billed_tokens"], high["cost_usd"]), (1, 300, 1.5))
+        self.assertEqual((usual["reported"], usual["accepted"]), (11, 11))
+        self.assertEqual((usual["alone"], usual["alone_accepted"]), (11, 11))
+        self.assertEqual((high["reported"], high["rejected"]), (4, 1))
+        self.assertEqual((high["alone"], high["alone_accepted"]), (4, 3))
+        # Eleven accepted on the usual slot are enough for its rates; four decided on the other are not.
+        self.assertEqual((usual["rejection_rate"], usual["billed_per_accepted"]), (0.0, 18))
+        self.assertEqual(usual["cost_per_accepted"], 0.0909)
+        self.assertIsNone(high["rejection_rate"])
+        self.assertIsNone(high["billed_per_accepted"])
+        self.assertEqual((group["rejection_rate"], group["billed_per_accepted"]), (0.067, 35))
+
+    def test_a_merged_finding_credits_each_reporter_s_own_slot(self):
+        events = [scored_event([scored_run("a"), scored_run("b", slot=HIGH)])]
+        merged = scored_finding("F1", "k1", ["a", "b"], "accepted")
+        card = scorecard(events, [scored_round([merged])])["code"]
+        a, b = card["reviewers"]["a"]["models"], card["reviewers"]["b"]["models"]
+        self.assertEqual((list(a), list(b)), (["usual"], ["high-risk"]))
+        self.assertEqual((a["usual"]["accepted"], a["usual"]["alone"]), (1, 0))
+        self.assertEqual((b["high-risk"]["accepted"], b["high-risk"]["alone"]), (1, 0))
+
+    def test_a_reporter_with_no_run_in_the_round_counts_as_usual(self):
+        """A stale report consolidated into a round its reviewer did not run in."""
+        events = [scored_event([scored_run("a", slot=HIGH)])]
+        merged = scored_finding("F1", "k1", ["a", "z"], "accepted")
+        card = scorecard(events, [scored_round([merged])])["code"]
+        z = card["reviewers"]["z"]["models"]
+        self.assertEqual(list(z), ["usual"])
+        self.assertEqual((z["usual"]["runs"], z["usual"]["reported"], z["usual"]["by_model"]), (0, 1, {}))
+        self.assertEqual(card["reviewers"]["a"]["models"]["high-risk"]["reported"], 1)
+
+    def test_a_later_event_of_the_round_decides_the_slot(self):
+        """``--high-risk`` on an ``--only`` re-run: each run's spend stays with its own slot."""
+        events = [
+            scored_event([scored_run("a", billed=100)]),
+            scored_event([scored_run("a", billed=300, slot=HIGH)]),
+        ]
+        card = scorecard(events, [scored_round([scored_finding("F1", "k1", ["a"], "accepted")])])["code"]
+        models = card["reviewers"]["a"]["models"]
+        self.assertEqual((models["usual"]["runs"], models["usual"]["billed_tokens"]), (1, 100))
+        self.assertEqual((models["high-risk"]["runs"], models["high-risk"]["billed_tokens"]), (1, 300))
+        self.assertEqual((models["usual"]["reported"], models["high-risk"]["reported"]), (0, 1))
+
+    def test_a_later_run_that_did_not_review_does_not_take_the_findings(self):
+        """A failed re-run returned nothing; what was reported came from the run that reviewed."""
+        events = [
+            scored_event([scored_run("a", billed=100)]),
+            scored_event([scored_run("a", status="failed", billed=300, slot=HIGH)]),
+        ]
+        card = scorecard(events, [scored_round([scored_finding("F1", "k1", ["a"], "accepted")])])["code"]
+        models = card["reviewers"]["a"]["models"]
+        self.assertEqual((models["usual"]["reported"], models["high-risk"]["reported"]), (1, 0))
+        self.assertEqual((models["high-risk"]["runs"], models["high-risk"]["failed_runs"]), (1, 1))
+
+    def test_a_later_run_that_reviewed_wins_over_an_earlier_failure(self):
+        events = [
+            scored_event([scored_run("a", status="failed")]),
+            scored_event([scored_run("a", slot=HIGH)]),
+        ]
+        card = scorecard(events, [scored_round([scored_finding("F1", "k1", ["a"], "accepted")])])["code"]
+        models = card["reviewers"]["a"]["models"]
+        self.assertEqual((models["usual"]["reported"], models["high-risk"]["reported"]), (0, 1))
+
+    def test_a_finding_carried_into_a_risky_round_stays_with_its_first_slot(self):
+        """Usual in r1, high-risk in r2: ``k1`` counts once, for the slot that found it."""
+        events = [
+            scored_event([scored_run("a")], round_id="r1"),
+            scored_event([scored_run("a", slot=HIGH), scored_run("b", slot=HIGH)], round_id="r2"),
+        ]
+        rounds = slot_rounds(
+            [scored_finding("F1", "k1", ["a"], "accepted")],
+            [scored_finding("F1", "k1", ["a", "b"], "accepted")],
+        )
+        card = scorecard(events, rounds)["code"]
+        a, b = card["reviewers"]["a"]["models"], card["reviewers"]["b"]["models"]
+        self.assertEqual((a["usual"]["reported"], a["high-risk"]["reported"]), (1, 0))
+        self.assertEqual(a["usual"]["accepted"], 1)
+        self.assertEqual(list(b), ["high-risk"])
+        self.assertEqual((b["high-risk"]["reported"], b["high-risk"]["accepted"]), (1, 1))
+
+    def test_an_unknown_slot_value_counts_as_usual(self):
+        bogus = scored_run("a")
+        bogus["model_slot"] = "bogus"
+        empty = scored_run("a")
+        empty["model_slot"] = None
+        card = scorecard([scored_event([bogus, empty])], [scored_round()])["code"]
+        models = card["reviewers"]["a"]["models"]
+        self.assertEqual(list(models), ["usual"])
+        self.assertEqual(models["usual"]["runs"], 2)
+
+    def test_by_model_counts_runs_per_model_display(self):
+        """Before the presets changed, a usual slot could run opus; the count says so."""
+        events = [
+            scored_event([scored_run("a", model="opus")], round_id="r1"),
+            scored_event([scored_run("a", model="sonnet")], round_id="r2"),
+            scored_event([scored_run("a", model="sonnet")], round_id="r3"),
+        ]
+        card = scorecard(events, slot_rounds([], [], []))["code"]
+        self.assertEqual(card["reviewers"]["a"]["models"]["usual"]["by_model"], {"opus": 1, "sonnet": 2})
+
+    def test_per_run_figures_are_none_without_a_divisor(self):
+        unmeasured = scorecard([scored_event([scored_run("a", billed=0)])], [scored_round()])["code"]
+        group = unmeasured["reviewers"]["a"]
+        usual = group["models"]["usual"]
+        self.assertEqual((group["billed_per_run"], group["cost_per_run"]), (None, None))
+        self.assertEqual((usual["billed_per_run"], usual["cost_per_run"]), (None, None))
+        events = [scored_event([scored_run("a", billed=100, cost=0.5), scored_run("a", billed=300)])]
+        group = scorecard(events, [scored_round()])["code"]["reviewers"]["a"]
+        self.assertEqual((group["billed_per_run"], group["cost_per_run"]), (200, 0.5))
+
+    def test_per_run_figures_floor_the_tokens_and_round_the_cost(self):
+        events = [
+            scored_event(
+                [
+                    scored_run("a", billed=100, cost=0.1),
+                    scored_run("a", billed=301, cost=0.2),
+                    scored_run("a", billed=0, cost=0.4),
+                ]
+            )
+        ]
+        group = scorecard(events, [scored_round()])["code"]["reviewers"]["a"]
+        usual = group["models"]["usual"]
+        for figures in (group, usual):
+            self.assertEqual(figures["billed_per_run"], 200)
+            self.assertIsInstance(figures["billed_per_run"], int)
+            self.assertEqual(figures["cost_per_run"], 0.2333)
+
+    def test_panel_and_total_carry_no_models(self):
+        events = [conditional_event([scored_run("a", slot=HIGH)], [condition("s", False)])]
+        card = scorecard(events, [scored_round()])
+        self.assertNotIn("models", card["code"]["panel"])
+        self.assertNotIn("models", card["total"])
+        self.assertIn("billed_per_run", card["code"]["panel"])
+        # A seat that sat every round out ran on no slot.
+        self.assertEqual(card["code"]["reviewers"]["s"]["models"], {})
+
+    def test_render_prints_no_slot_rows_for_a_usual_only_seat(self):
+        events = [scored_event([scored_run("a", billed=100, cost=0.5, model="sonnet")])]
+        card = scorecard(events, [scored_round([scored_finding("F1", "k1", ["a"], "accepted")])])["code"]
+        rows = cli._scorecard_rows({"code": card})
+        self.assertFalse(any("usual" in line for line in rows))
+        self.assertFalse(any("per run" in line for line in rows))
+
+    def test_render_prints_a_row_per_slot_with_model_label(self):
+        rows = cli._scorecard_rows({"code": self.two_slots()})
+        withheld = "; rates withheld under 10 decided"
+        counts = "%d reported: %d accepted, %d rejected, 0 duplicate, 0 open; %d found alone (%d accepted)"
+        per_run = "1 run(s), %d billed, %d per run, $%.2f over 1 priced run(s), $%.2f per run" + withheld
+        expected = [
+            ("a", counts % (2, 1, 1, 2, 1)),
+            ("", "2 run(s), 400 billed, $2.00 over 2 priced run(s)" + withheld),
+            ("  usual (sonnet)", counts % (1, 1, 0, 1, 1)),
+            ("", per_run % (100, 100, 0.5, 0.5)),
+            ("  high-risk (opus)", counts % (1, 0, 1, 1, 0)),
+            ("", per_run % (300, 300, 1.5, 1.5)),
+        ]
+        index = rows.index(SCORE_ROW % expected[0])
+        self.assertEqual(rows[index : index + 6], [SCORE_ROW % row for row in expected])
+        self.assertTrue(rows[index + 2].startswith("    usual (sonnet)       1 reported"))
+        self.assertIn(optimization_render._SCORECARD_SLOTS.splitlines()[0], rows)
+
+    def test_render_label_lists_several_models(self):
+        label = optimization_render._slot_label
+        self.assertEqual(label("usual", {"by_model": {"opus": 4, "sonnet": 6}}), "usual (sonnet x6, opus x4)")
+        self.assertEqual(label("high-risk", {"by_model": {"opus": 3}}), "high-risk (opus)")
+        self.assertEqual(label("usual", {"by_model": {}}), "usual")
+
+    def test_render_label_breaks_a_tie_by_model_name(self):
+        label = optimization_render._slot_label
+        for by_model in ({"sonnet": 2, "opus": 2}, {"opus": 2, "sonnet": 2}):
+            self.assertEqual(label("usual", {"by_model": by_model}), "usual (opus x2, sonnet x2)")
+
+    def test_render_prints_slot_rows_for_a_high_risk_only_seat(self):
+        """Every round was risky: the seat never ran its usual model, and its one slot is still shown."""
+        events = [scored_event([scored_run("a", billed=100, slot=HIGH, model="opus")])]
+        card = scorecard(events, [scored_round([scored_finding("F1", "k1", ["a"], "accepted")])])["code"]
+        self.assertEqual(list(card["reviewers"]["a"]["models"]), ["high-risk"])
+        rows = cli._scorecard_rows({"code": card})
+        counts = "1 reported: 1 accepted, 0 rejected, 0 duplicate, 0 open; 1 found alone (1 accepted)"
+        index = rows.index(SCORE_ROW % ("  high-risk (opus)", counts))
+        spend = "1 run(s), 100 billed, 100 per run, no cost reported; rates withheld under 10 decided"
+        self.assertEqual(rows[index + 1], SCORE_ROW % ("", spend))
+        self.assertIn(optimization_render._SCORECARD_SLOTS.splitlines()[0], rows)
+
+    def test_render_a_slot_with_no_runs_and_only_reported_findings(self):
+        """``z`` ran high-risk in r1 and was only named as a reporter in r2."""
+        events = [
+            scored_event([scored_run("z", slot=HIGH, model="opus")], round_id="r1"),
+            scored_event([scored_run("a")], round_id="r2"),
+        ]
+        carried = scored_finding("F1", "k1", ["z"], "accepted")
+        rounds = slot_rounds([carried], [carried, scored_finding("F2", "k2", ["a", "z"], "accepted")])
+        card = scorecard(events, rounds)["code"]
+        rows = cli._scorecard_rows({"code": card})
+        counts = "1 reported: 1 accepted, 0 rejected, 0 duplicate, 0 open; %d found alone (%d accepted)"
+        index = rows.index(SCORE_ROW % ("  usual", counts % (0, 0)))
+        spend = "0 run(s), nothing reported; rates withheld under 10 decided"
+        self.assertEqual(rows[index + 1], SCORE_ROW % ("", spend))
+        self.assertEqual(rows[index + 2], SCORE_ROW % ("  high-risk (opus)", counts % (1, 1)))
+
+    def test_render_puts_a_label_wider_than_the_column_on_its_own_line(self):
+        events = [
+            scored_event([scored_run("a", model="opus")], round_id="r1"),
+            scored_event([scored_run("a", model="sonnet")], round_id="r2"),
+            scored_event([scored_run("a", slot=HIGH, model="opus")], round_id="r3"),
+        ]
+        card = scorecard(events, slot_rounds([], [], []))["code"]
+        rows = cli._scorecard_rows({"code": card})
+        index = rows.index("    usual (opus x1, sonnet x1)")
+        counts = "0 reported: 0 accepted, 0 rejected, 0 duplicate, 0 open; 0 found alone (0 accepted)"
+        self.assertEqual(rows[index + 1], SCORE_ROW % ("", counts))
+        self.assertEqual(rows[index + 3], SCORE_ROW % ("  high-risk (opus)", counts))
+
+
 @unittest.skipUnless(has_git(), "git is required")
 class TestWhatTheSnapshotReportsAsChanged(IsolatedCase):
     """The lists the risk check and the size threshold are computed from."""
@@ -3532,6 +3818,7 @@ DECISION_NAMES = {
     "RELEVANCE_ALWAYS",
     "OPT_IN_RELEVANCE",
     "HIGH_RISK_SLOT",
+    "USUAL_SLOT",
     "DEFAULT_SECURITY_PATHS",
     "DEFAULT_ARCHITECTURE_PATHS",
     "DOC_SUFFIXES",
@@ -3613,6 +3900,7 @@ REPORT_NAMES = {
     "_SCORE_SPEND",
     "_SCORE_FINDINGS",
     "_SCORE_ROUNDS",
+    "_SLOTS",
     # Rounds and pairs.
     "summarise_rounds",
     "_pair_rounds",
@@ -3650,6 +3938,9 @@ REPORT_NAMES = {
     "_alone_pairs",
     "_score_group",
     "_score_reviewer",
+    "_slot_of",
+    "_round_slots",
+    "_score_slot",
     "_add_spend",
     "_add_left_out",
     "_final_triage",
@@ -3689,7 +3980,7 @@ class TestTheSplit(unittest.TestCase):
     deciding half must never need the reporting one."""
 
     def test_the_split_partitions_the_old_module(self):
-        self.assertEqual((len(DECISION_NAMES), len(REPORT_NAMES)), (84, 54))
+        self.assertEqual((len(DECISION_NAMES), len(REPORT_NAMES)), (85, 58))
         self.assertEqual(_top_level_names(opt), DECISION_NAMES)
         self.assertEqual(_top_level_names(opt_report), REPORT_NAMES)
         imported = set()

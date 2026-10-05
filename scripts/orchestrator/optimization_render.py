@@ -12,7 +12,8 @@ from typing import Any, Dict, List, Optional
 from . import optimization_report as opt_report
 from . import workspace as ws
 
-_OPT_ROW = "  %-22s %s"
+_OPT_LABEL_WIDTH = 22
+_OPT_ROW = "  %%-%ds %%s" % _OPT_LABEL_WIDTH
 
 
 def report_lines(report: Dict[str, Any], source: str) -> List[str]:
@@ -316,6 +317,12 @@ _SCORECARD_ALONE = (
     "  Rates are printed from %d decided findings; below that the counts stand alone."
 )
 
+#: Under a stage where some seat ran its high-risk model.
+_SCORECARD_SLOTS = (
+    "  A seat that ran its high-risk model gets a row per slot; a finding counts for the slot that\n"
+    "  first reported it, and a record without a slot is the usual one."
+)
+
 _SCORECARD_EFFORT = (
     "Review effort, code and design together: %d accepted over %d of %d recorded round(s); %s billed,"
 )
@@ -343,8 +350,11 @@ def _scorecard_counts(group: Dict[str, Any], alone: bool) -> str:
     return row
 
 
-def _scorecard_spend(group: Dict[str, Any], panel: bool) -> str:
-    """Runs and what they cost; the panel says how many of its runs were priced."""
+def _scorecard_spend(group: Dict[str, Any], panel: bool, per_run: bool = False) -> str:
+    """Runs and what they cost; the panel says how many of its runs were priced.
+
+    ``per_run`` adds the figures per run, which only a slot row prints.
+    """
     runs = int(group.get("runs") or 0)
     row = "%d run(s)" % runs
     if group.get("failed_runs"):
@@ -353,12 +363,28 @@ def _scorecard_spend(group: Dict[str, Any], panel: bool) -> str:
     if not group.get("measured_runs") and not billed:
         return row + ", nothing reported"
     row += ", %s billed" % ws.fmt_int(billed)
+    if per_run and group.get("billed_per_run") is not None:
+        row += ", %s per run" % ws.fmt_int(int(group["billed_per_run"]))
     priced = int(group.get("priced_runs") or 0)
     if not priced:
         return row + ", no cost reported"
     if panel:
         return row + ", %s over %d of %d run(s)" % (_usd(group.get("cost_usd")), priced, runs)
-    return row + ", %s over %d priced run(s)" % (_usd(group.get("cost_usd")), priced)
+    row += ", %s over %d priced run(s)" % (_usd(group.get("cost_usd")), priced)
+    if per_run and group.get("cost_per_run") is not None:
+        row += ", %s per run" % _usd(group["cost_per_run"])
+    return row
+
+
+def _slot_label(slot: str, group: Dict[str, Any]) -> str:
+    """``usual (sonnet)``, or ``usual (sonnet x6, opus x4)`` when the slot ran several models."""
+    by_model = group.get("by_model") or {}
+    if not by_model:
+        return slot
+    if len(by_model) == 1:
+        return "%s (%s)" % (slot, next(iter(by_model)))
+    ranked = sorted(by_model.items(), key=lambda item: (-int(item[1]), item[0]))
+    return "%s (%s)" % (slot, ", ".join("%s x%d" % (model, int(count)) for model, count in ranked))
 
 
 def _scorecard_per_accepted(group: Dict[str, Any]) -> str:
@@ -405,6 +431,7 @@ def _scorecard_rows(scorecard: Dict[str, Any]) -> List[str]:
         if unreviewed:
             head += "; %d round(s) no reviewer reviewed" % unreviewed
         lines.extend(["", head + "."])
+        slot_rows = False
         for name, group in sorted((block.get("reviewers") or {}).items()):
             lines.append(_OPT_ROW % (name, _scorecard_counts(group, True)))
             cost_row = _scorecard_cost_row(group, False)
@@ -414,6 +441,22 @@ def _scorecard_rows(scorecard: Dict[str, Any]) -> List[str]:
                     int(group.get("left_out_rounds") or 0),
                 )
             lines.append(_OPT_ROW % ("", cost_row))
+            models = group.get("models") or {}
+            # A seat that only ever ran its usual model adds no lines.
+            if not models or set(models) == {opt_report.USUAL_SLOT}:
+                continue
+            slot_rows = True
+            # In slot order already, as the report writes them.
+            for slot, figures in models.items():
+                label = "  " + _slot_label(slot, figures)
+                # A label wider than the column goes on a line of its own, so
+                # the figures stay aligned with the rows around them.
+                if len(label) > _OPT_LABEL_WIDTH:
+                    lines.append("  " + label)
+                    label = ""
+                lines.append(_OPT_ROW % (label, _scorecard_counts(figures, True)))
+                spend = _scorecard_spend(figures, False, per_run=True)
+                lines.append(_OPT_ROW % ("", "%s; %s" % (spend, _scorecard_rates(figures))))
         panel = block.get("panel") or {}
         lines.append(_OPT_ROW % ("panel", _scorecard_counts(panel, False)))
         lines.append(_OPT_ROW % ("", _scorecard_cost_row(panel, True)))
@@ -424,6 +467,8 @@ def _scorecard_rows(scorecard: Dict[str, Any]) -> List[str]:
         if rerun:
             lines.extend((_SCORECARD_PAIRS % (rerun, "was" if rerun == 1 else "were")).splitlines())
         lines.extend((_SCORECARD_ALONE % opt_report.SCORECARD_MIN_DECIDED).splitlines())
+        if slot_rows:
+            lines.extend(_SCORECARD_SLOTS.splitlines())
     if not lines:
         return lines
     total = scorecard.get("total") or {}

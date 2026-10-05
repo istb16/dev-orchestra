@@ -1,4 +1,4 @@
-<!-- translated-from: references/configuration.md sha256:354217152c056416caf05c47f9256bf11e2806c048e806f735e0833459bfc9c4 -->
+<!-- translated-from: references/configuration.md sha256:0163cda90c75815b7876195c4a64c0c7d029fd1ebb475625bcbf1ae263b5a0b5 -->
 
 > この文書は [references/configuration.md](../../../references/configuration.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -504,7 +504,8 @@ standard's fit (recorded claude-general sonnet, claude-security sonnet, claude-t
 リスクに応じて席を加え、`high_risk_model` は席のモデルを変えます。この 2 つは併用できます。
 切り替えた席ごとに `note: high-risk round (<path> matches <pattern>): <id>
 runs opus instead of sonnet` が出力され、その実行記録に `model_slot:
-high-risk` が加わります（これのない記録は通常の枠です）。`reviewer add|set
+high-risk` が加わり（これのない記録は通常の枠です）、`optimization report` は 2 つの枠を
+分けて採点します。`reviewer add|set
 --high-risk-model FAMILY` で設定し、`reviewer set --clear-high-risk-model` で外します。
 `reviewer set --provider` で別の CLI にすると、`--model` の有無にかかわらず、note を出して
 外されます。一緒に `--high-risk-model` を指定すれば、新しい CLI のものが書かれます。

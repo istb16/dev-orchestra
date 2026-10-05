@@ -1022,6 +1022,23 @@ class TestRunningADesignRound(DesignReviewCase):
         kept = (records["m2"]["runs"], records["m2"]["reason"])
         self.assertEqual(kept, (True, "src/auth.py matches *auth*"))
 
+    def test_optimization_report_scores_design_slots_apart(self):
+        usual = {entry["id"]: entry for entry in self.loaded_reviewers()}["m1"]["model"]["family"]
+        self.assertEqual(run_cli("reviewer", "set", "m1", "--high-risk-model", "opus")[0], 0)
+        self.write_plan(PLAIN_PLAN)
+        self.assertEqual(run_cli("review", "run", "--design")[0], 0)
+        self.write_plan(RISKY_PLAN)
+        self.assertEqual(run_cli("review", "run", "--design")[0], 0)
+        card = json.loads(run_cli("optimization", "report", "--json")[1])["scorecard"]["design"]
+        self.assertEqual(card["rounds_read"], 2)
+        models = card["reviewers"]["m1"]["models"]
+        self.assertEqual(list(models), ["usual", "high-risk"])
+        self.assertEqual((models["usual"]["runs"], models["usual"]["by_model"]), (1, {usual: 1}))
+        self.assertEqual((models["high-risk"]["runs"], models["high-risk"]["by_model"]), (1, {"opus": 1}))
+        self.assertNotIn("models", card["panel"])
+        _, out, _ = run_cli("optimization", "report")
+        self.assertIn("    high-risk (opus)", out)
+
     def test_consolidate_design_uses_design_panel_and_excludes_left_out(self):
         argv = ("--design", "--provider", "mock", "--id", "d3", "--role", "general")
         self.assertEqual(run_cli("reviewer", "add", *argv)[0], 0)
