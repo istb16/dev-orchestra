@@ -1,4 +1,4 @@
-<!-- translated-from: references/providers.md sha256:978071c1d40715ecfdc0036a6439f6b6ea1721df6bc4ee1722f217734c6f6059 -->
+<!-- translated-from: references/providers.md sha256:be9e5bb97c438f6947bb08c5651ea8845505a7df2e27d3e2823d6f0dcc7d5821 -->
 
 > この文書は [references/providers.md](../../../references/providers.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -493,7 +493,7 @@ reviewers:
 ユーザーアダプタは、クラスが `preset_family` を宣言しない限り [プリセット](configuration.md#presets) から外されます。`preset_family` は、プリセットがそのアダプタに与えるすべての枠で使う family です。フィットは読み込みのたびに行われるので、この family は上の例の `default` のように、CLI を起動せずに解決できなければなりません。宣言があれば、アダプタは built-in の CLI が欠けているところにだけフィットされます。
 
 - **implementer と review fixer**: Claude も Codex も agy も PATH にないとき。
-- **orchestrator、architect、レビュアーの席**: Claude も Codex も PATH になく、かつ `static_enforcement = True` で `read_only_enforcement()` が `verified` か `partial` のときだけ。サブプロセスを必要とする報告（たとえば `--help` を読むもの）は、何を報告するとしても条件を満たしません。フィットは CLI を起動してはならないからです。満たさなければ、これらの席は agy がインストールされていれば agy へ、そうでなければ書かれたとおりに展開されます。アダプタが受け取る席はどれも宣言した family になるので、安い枠（`standard` の sonnet の security と test のレビュアー）は受け取りません。安い枠は Claude にだけ配られます。
+- **orchestrator、architect、レビュアーの席**: Claude も Codex も PATH になく、かつ `static_enforcement = True` で `read_only_enforcement()` が `verified` か `partial` のときだけ。サブプロセスを必要とする報告（たとえば `--help` を読むもの）は、何を報告するとしても条件を満たしません。フィットは CLI を起動してはならないからです。満たさなければ、これらの席は agy がインストールされていれば agy へ、そうでなければ書かれたとおりに展開されます。アダプタが受け取る席はどれも宣言した family になり、`high_risk_model` は付きません。安い枠（sonnet の `test` のレビュアー）は受け取りません。安い枠は Claude にだけ配られます。Codex の枠（`quality` の2つ目の general のレビュアーなど）の代わりには就きます。Codex の枠は、Claude 以外に何もインストールされていないところには追加されません。
 
 ```python
 class MyCliProvider(Provider):

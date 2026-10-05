@@ -56,24 +56,32 @@ class TestWizard(IsolatedCase):
         self.assertEqual(data["architect"]["model"]["family"], "fable")
         self.assertEqual(data["implementer"]["model"]["family"], "opus")
         self.assertEqual(data["review_fixer"]["model"]["family"], "opus")
-        self.assertEqual(len(data["reviewers"]), 5)
+        self.assertEqual(len(data["reviewers"]), 4)
         self.assertEqual(config_mod.validate(data), [])
 
-    def test_enter_through_the_reviewers_keeps_the_five_defaults(self):
+    def test_enter_through_the_reviewers_keeps_the_four_defaults(self):
         prompter = ScriptedPrompter(accept_all())
         data, _ = wizard_mod.run(prompter)
-        self.assertIn("   How many reviewers? [5]: ", prompter.questions)
+        self.assertIn("   How many reviewers? [4]: ", prompter.questions)
         self.assertEqual(data["reviewers"], config_mod.default_config()["reviewers"])
         ids = [r["id"] for r in data["reviewers"]]
         self.assertEqual(len(ids), len(set(ids)))
-        self.assertEqual(data["reviewers"][4]["id"], "claude-security-2")
-        self.assertEqual(data["reviewers"][4]["when"], "high-risk")
+        self.assertEqual(data["reviewers"][2]["id"], "claude-security")
+        self.assertEqual(data["reviewers"][2]["high_risk_model"], {"family": "opus", "version": "latest"})
 
     def test_no_risk_pattern_leaves_the_high_risk_seat_unoffered(self):
-        existing = {"version": 1, "optimization": {"high_risk_paths": []}}
+        # A written seat: the built-in panel has no when: high-risk seat.
+        existing = {
+            "version": 1,
+            "optimization": {"high_risk_paths": []},
+            "reviewers": [
+                config_mod.make_reviewer("claude-general", "claude", "opus"),
+                config_mod.make_reviewer("claude-security-2", "claude", "opus", "security", when="high-risk"),
+            ],
+        }
         prompter = ScriptedPrompter(accept_all())
         data, _ = wizard_mod.run(prompter, existing)
-        self.assertIn("   How many reviewers? [4]: ", prompter.questions)
+        self.assertIn("   How many reviewers? [1]: ", prompter.questions)
         self.assertIn(
             "   Not offered: claude-security-2 (when: high-risk); optimization.high_risk_paths "
             "has no pattern in force.",
@@ -90,16 +98,83 @@ class TestWizard(IsolatedCase):
         setattr(presets_mod, "installed_providers", installed)
         self.assertEqual(wizard_mod.default_reviewer_config(), config_mod.default_config()["reviewers"])
 
-    def test_the_preset_labels_give_the_new_panels(self):
+    def test_wizard_menu_text(self):
         prompter = ScriptedPrompter(["", ""])
         wizard_mod.run(prompter)
         said = "\n".join(prompter.output)
-        self.assertIn("quality  -- strongest models, four reviewers, design review always on", said)
         self.assertIn(
-            "standard -- the built-in defaults: general reviewers, security and test on Claude sonnet, "
-            "security on high-risk changes",
+            "quality  -- strongest models, Codex beside Claude on both panels, design review auto", said
+        )
+        self.assertIn(
+            "standard -- the built-in defaults: general on Claude and Codex, security on sonnet "
+            "(opus on high-risk changes), test on sonnet",
             said,
         )
+        self.assertIn(
+            "fast     -- lighter models, one reviewer plus a sonnet security one on high-risk changes; "
+            "design review off",
+            said,
+        )
+
+    def test_wizard_preset_summary_shows_design_panel(self):
+        prompter = ScriptedPrompter(["", ""])
+        wizard_mod.run(prompter)
+        said = "\n".join(prompter.output)
+        design = said[said.index("  Design reviews") :]
+        self.assertNotIn("(the code panel; when conditions ignored)", design)
+        self.assertIn("/ general / claude-general (opus when high-risk)", design)
+        self.assertIn("/ test / claude-test", design)
+
+    def test_wizard_keeps_high_risk_model_when_provider_kept(self):
+        template = dict(config_mod.default_config()["reviewers"][2], relevance="security")
+        providers = [("claude", "Claude", True), ("mock", "Mock", True)]
+        prompter = ScriptedPrompter(["", "", "", ""])
+        reviewer = wizard_mod._ask_reviewer(prompter, providers, template, {"reviewers": []})
+        self.assertEqual(reviewer, template)
+
+    def test_wizard_drops_high_risk_model_on_provider_change_with_note(self):
+        template = dict(config_mod.default_config()["reviewers"][2], relevance="security")
+        providers = [("claude", "Claude", True), ("mock", "Mock", True)]
+        prompter = ScriptedPrompter(["2", "", "", ""])
+        reviewer = wizard_mod._ask_reviewer(prompter, providers, template, {"reviewers": []})
+        self.assertEqual(reviewer["provider"], "mock")
+        self.assertNotIn("high_risk_model", reviewer)
+        self.assertEqual(reviewer["relevance"], "security")
+        self.assertIn(
+            "     note: provider is now mock; its high_risk_model was removed "
+            "(reviewer set --high-risk-model sets another)",
+            prompter.output,
+        )
+
+    def ask_with_role(self, template, role):
+        """``_ask_reviewer`` over ``template``, answering only the role question."""
+        providers = [("claude", "Claude", True), ("mock", "Mock", True)]
+        prompter = ScriptedPrompter(["", "", str(config_mod.BUILTIN_ROLES.index(role) + 1), ""])
+        return wizard_mod._ask_reviewer(prompter, providers, template, {"reviewers": []}), prompter
+
+    def test_a_relevance_rule_goes_when_the_seat_becomes_general(self):
+        template = dict(config_mod.default_config()["reviewers"][2], relevance="security")
+        reviewer, prompter = self.ask_with_role(template, "general")
+        self.assertEqual(reviewer["role"], "general")
+        self.assertNotIn("relevance", reviewer)
+        self.assertEqual(config_mod.validate({**config_mod.default_config(), "reviewers": [reviewer]}), [])
+        self.assertIn(
+            "     note: role is now general; its relevance security was removed "
+            "(reviewer set --relevance sets another)",
+            prompter.output,
+        )
+
+    def test_a_relevance_rule_goes_when_the_seat_takes_another_role(self):
+        template = dict(config_mod.default_config()["reviewers"][2], relevance="security")
+        reviewer, _prompter = self.ask_with_role(template, "test")
+        self.assertEqual(reviewer["role"], "test")
+        self.assertNotIn("relevance", reviewer)
+
+    def test_relevance_always_stays_whatever_the_role(self):
+        template = dict(config_mod.default_config()["reviewers"][2], relevance="always")
+        reviewer, prompter = self.ask_with_role(template, "general")
+        self.assertEqual(reviewer["relevance"], "always")
+        self.assertFalse([line for line in prompter.output if "relevance" in line])
 
     def test_saved_config_stores_families_not_snapshot_ids(self):
         data, _ = wizard_mod.run(ScriptedPrompter(accept_all()))
@@ -334,18 +409,28 @@ class TestThePresetQuestion(IsolatedCase):
         self.assertEqual(loaded.role("orchestrator"), opus)
         self.assertEqual(
             [r["id"] for r in loaded.reviewers()],
-            ["claude-general", "claude-general-2", "claude-security", "claude-test", "claude-security-2"],
+            ["claude-general", "claude-general-2", "claude-security", "claude-test"],
         )
 
     def test_changing_a_reviewer_saves_the_whole_panel(self):
         security = str(config_mod.BUILTIN_ROLES.index("security") + 1)
         # Preset, adjust, eight role answers, the count, then CLI, model, role.
         answers = ["", "n", *[""] * 8, "", "", "", security, *accept_all(customise=False)]
-        data, _ = wizard_mod.run(ScriptedPrompter(answers))
+        prompter = ScriptedPrompter(answers)
+        data, _ = wizard_mod.run(prompter)
         self.assertEqual(sorted(data), ["preset", "reviewers", "version"])
-        self.assertEqual(
-            [r["role"] for r in data["reviewers"]], ["security", "general", "security", "test", "security"]
+        self.assertEqual([r["role"] for r in data["reviewers"]], ["security", "general", "security", "test"])
+        # The saved list takes the design rounds with it, and the wizard says so.
+        self.assertIn(
+            "   note: the reviewers differ from preset standard's fit, so they are saved; design rounds "
+            "then run them without when, not the preset's design panel",
+            prompter.output,
         )
+
+    def test_adjusting_nothing_says_nothing_of_the_design_panel(self):
+        prompter = ScriptedPrompter(["", "n", *accept_all(customise=False)])
+        wizard_mod.run(prompter)
+        self.assertFalse([line for line in prompter.output if "design rounds then run" in line])
 
     def test_a_chosen_preset_replaces_what_it_governs_and_keeps_the_rest(self):
         existing = {"version": 1, "implementer": {"provider": "claude"}, "review": {"parallel": False}}

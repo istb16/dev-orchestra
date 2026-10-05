@@ -23,9 +23,9 @@ from orchestrator import optimization as opt_mod
 from orchestrator import review as review_mod
 from orchestrator import wizard as wizard_mod
 
-FITTED = ["claude-general", "claude-general-2", "claude-security", "claude-test", "claude-security-2"]
+FITTED = ["claude-general", "claude-general-2", "claude-security", "claude-test"]
 FIT_LABELS = ["fit"] * len(FITTED)
-BOTH_FITTED = ["claude-general", "codex-general", "claude-security", "claude-test", "claude-security-2"]
+BOTH_FITTED = ["claude-general", "codex-general", "claude-security", "claude-test"]
 AGY_FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "agy")
 
 
@@ -53,7 +53,7 @@ EXTRAS = [mock("x")]
 
 class ExtrasCase(IsolatedCase):
     """Claude alone installed: the fit is claude-general opus, claude-general-2 sonnet,
-    claude-security and claude-test on sonnet, and claude-security-2 opus on high-risk changes."""
+    claude-security on sonnet (opus on high-risk changes) and claude-test on sonnet."""
 
     def setUp(self):
         super().setUp()
@@ -130,7 +130,9 @@ class TestLayering(ExtrasCase):
         self.assertEqual(self.ids(), [*BOTH_FITTED, "m1"])
 
     def test_with_no_extras_the_defaults_compose_unchanged(self):
-        self.assertEqual(config_mod.compose({}, {}, ["claude", "codex"])[0], config_mod.default_config())
+        data = config_mod.compose({}, {}, ["claude", "codex"])[0]
+        data["review"]["design"].pop("reviewers")
+        self.assertEqual(data, config_mod.default_config())
 
 
 class TestCollisions(ExtrasCase):
@@ -191,7 +193,7 @@ class TestCollisions(ExtrasCase):
         self.assertEqual(self.ids(reviewers), [*BOTH_FITTED[1:], "codex-general-2"])
         self.assertEqual(
             [reviewer["role"] for reviewer in reviewers],
-            ["security", "security", "test", "security", "general"],
+            ["security", "security", "test", "general"],
         )
 
 
@@ -199,8 +201,8 @@ class TestAnIdANewSeatTook(ExtrasCase):
     """An extra written as claude-security before the fit held a seat by that id."""
 
     REFUSAL = (
-        "reviewer claude-security: reviewers_extra[0] in the %s file runs as claude-security-3, since "
-        "claude-security is taken; use claude-security-3 (select the other seat by its position in "
+        "reviewer claude-security: reviewers_extra[0] in the %s file runs as claude-security-2, since "
+        "claude-security is taken; use claude-security-2 (select the other seat by its position in "
         "reviewer list)"
     )
 
@@ -210,7 +212,7 @@ class TestAnIdANewSeatTook(ExtrasCase):
     def test_it_runs_renamed_and_the_fitted_seat_keeps_the_id(self):
         self.write_project({"reviewers_extra": [self.extra()]})
         reviewers = self.loaded().reviewers()
-        self.assertEqual(self.ids(reviewers), [*FITTED, "claude-security-3"])
+        self.assertEqual(self.ids(reviewers), [*FITTED, "claude-security-2"])
         self.assertEqual(reviewers[FITTED.index("claude-security")]["model"]["family"], "sonnet")
 
     def test_editing_it_by_its_old_id_is_refused_and_writes_nothing(self):
@@ -236,7 +238,7 @@ class TestAnIdANewSeatTook(ExtrasCase):
 
     def test_it_is_removed_in_place_by_the_id_it_runs_under(self):
         self.write_project({"reviewers_extra": [self.extra()]})
-        code, out, err = run_cli("reviewer", "remove", "--scope", "project", "claude-security-3")
+        code, out, err = run_cli("reviewer", "remove", "--scope", "project", "claude-security-2")
         self.assertEqual(code, 0, err)
         self.assertNotIn("now lists the reviewers", out)
         self.assertEqual(self.project_layer(), {"version": 1, "reviewers_extra": []})

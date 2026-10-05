@@ -20,7 +20,8 @@ The public surface covered by that promise is: the configuration schema, the
 - **A design review panel of its own** (#248). `review.design.reviewers`
   replaces the code panel for design rounds, and `review.design.reviewers_extra`
   adds to whichever design panel is inherited; with neither, design rounds
-  run the code panel with `when` ignored, as before. A design seat may be
+  run the preset's fitted design panel (below), or the code panel with `when`
+  ignored where a file lists `reviewers`, as before. A design seat may be
   `when: high-risk` (it joins a plan with a high-risk hit) but not
   `when: paths`. `reviewer list|add|remove|set --design` manage it, and
   `config show`, `doctor` and `review status --design` show it.
@@ -40,6 +41,29 @@ The public surface covered by that promise is: the configuration schema, the
   `optimization.skip_unneeded_roles`, `security_paths`,
   `extra_security_paths`, `architecture_paths` and
   `extra_architecture_paths` (see Changed).
+
+- **Each preset fits a design panel** (#248), to the installed CLIs as the
+  code panel is: `standard` general sonnet (opus on a high-risk plan),
+  security sonnet and test sonnet, all on Claude; `quality` adds a Codex
+  general seat, security on opus and architecture on opus; `fast` general
+  sonnet. A config that names no panel runs it on design rounds.
+  `review.design.reviewers` is a key a preset governs. A design seat that is
+  refitted gets a note naming `design reviewer seat <n>`. The design panel's
+  source reads `the preset's fit` (`fit` in JSON) in `reviewer list
+  --design`, `review status --design` and `doctor`, whose `Design:` line now
+  shows it; fitted seats are labelled `fit design`. `reviewer add --design`
+  says the design panel still follows `preset standard's fit`, and `reviewer
+  set|remove --design` say they copied it, recording the seats, in either
+  file. `doctor` notes a design list that holds the inherited design panel
+  plus more -- in a project file under a global `reviewers` list, that is the
+  global code panel without `when`.
+
+- **Vendor seats in presets.** A Claude seat sits on Claude whenever it is
+  installed; a Codex seat sits on Codex, else on another installed CLI, else
+  is not added with a note (`it is a second vendor's opinion and nothing
+  installed stands in for one`). Neither moves with the implementer. A seat's
+  `high_risk_model` is kept on Claude only; one dealt elsewhere loses it, and
+  its note ends `; no high-risk model on <cli>`.
 
 - **Records, additive**: a reviewer entry that ran on its high-risk model
   carries `model_slot: high-risk` (an entry without it is the usual slot); a
@@ -78,6 +102,58 @@ The public surface covered by that promise is: the configuration schema, the
   query, SQL and database names.
 
 - **A configured design panel honours `when: high-risk`** against the plan.
+
+- **New preset defaults, and who they reach** (#248). A config that names no
+  panel -- the implicit `standard` included -- gets the new code and design
+  panels below. A file that lists `reviewers` keeps exactly that code panel,
+  and its design rounds keep running a copy of it without `when`, with no new
+  fit notes; a file that lists `review.design.reviewers` keeps that design
+  panel. `claude-security-2` is no longer a built-in seat: a script that
+  names it in `--only`, or a `reviewer remove claude-security-2`, has nothing
+  to find.
+  - **The built-in security seats merge into one.** `claude-security` runs
+    sonnet, and opus on a high-risk change (`high_risk_model`), in place of
+    sonnet plus a second opus seat on high-risk changes. The default code
+    panel is four seats; a high-risk round runs security once, on opus.
+  - **`standard`'s design rounds** run three seats -- general sonnet (opus on
+    a risky plan), security sonnet, test sonnet -- instead of the five-seat
+    code copy: no Codex design seat, and general on sonnet unless the plan is
+    high-risk. `reviewer add --design` or `config set
+    review.design.reviewers ...` brings a seat back.
+  - **`quality`** keeps its specialists on Claude and adds Codex general and
+    security seats beside them, so it no longer rotates with a project
+    implementer on Codex; its design review is `auto` instead of `true`.
+    Preset security seats set no `relevance`, so they run every round,
+    including `quality`'s opus design security seat on each design round
+    `auto` lets through; `reviewer set claude-security --design --relevance
+    security` trades that for cost.
+  - **`fast`** turns the design review off and its high-risk security seat is
+    sonnet instead of opus.
+  - **Codex alone under `standard`** keeps `codex-security` on every round,
+    where it was `when: high-risk`; the sonnet test seat is still not added
+    there.
+  - **`reviewers_extra` no longer joins design rounds under the preset's
+    design panel.** Code extras -- from `reviewer add` or `suggest-roles
+    --write` -- joined design rounds when those ran a copy of the code panel;
+    a file that lists no `reviewers` now runs the fit's design panel there,
+    and code extras review code only. `doctor` notes each such extra; adding
+    it to `review.design.reviewers_extra` as well brings it back to design
+    rounds.
+  - **Listing `reviewers` also takes the design rounds off the preset's
+    design panel**, onto a copy of that list without `when`. A writer that
+    first copies the panel into a file (`reviewer set|remove`, `config set
+    reviewers[n]...`) says so on its `now lists the reviewers` note; `config
+    prune` keeps such a list even when it equals the fit (`Kept reviewers in
+    <file>: ...`), and the wizard says so when an adjusted preset saves one.
+  - **`config setup --preset`** now also removes a `review.design.reviewers`
+    list from the file, keeping `review.design.reviewers_extra`.
+  - **The wizard** describes the presets as they now are, offers the merged
+    four-seat panel, and keeps a seat's `high_risk_model` and `relevance`
+    through its reviewer questions while the CLI stays, so pressing enter
+    through setup keeps the security seat's opus escalation; picking another
+    CLI drops `high_risk_model` with a note, as `reviewer set --provider`
+    does. A `relevance` rule stays only while the seat keeps its role
+    (`always` stays whatever the role); another role drops it with a note.
 
 - **The design review guidance for `general` and `architecture` is reworded**:
   `general` leads with whether following the plan builds the right thing, and

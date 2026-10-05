@@ -303,7 +303,8 @@ added to the cost, so priorities 2 to 6, which would add more, are not pursued.
 ## Design review
 
 A panel judges the plan before any code exists to be wrong: the design panel
-(`review.design.reviewers`) when a file sets one, else the code panel with
+(`review.design.reviewers`) when a file sets one, else the preset's fitted
+design panel, else -- when a file lists `reviewers` -- the code panel with
 every `when` ignored, as before (see `references/configuration.md`).
 `review.design.enabled`
 decides whether the orchestrator runs it: `true` always, `false` never, and

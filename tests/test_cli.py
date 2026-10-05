@@ -353,7 +353,7 @@ class TestReviewerCommands(IsolatedCase):
         _, listing, _ = run_cli("reviewer", "list", "--json")
         self.assertEqual(
             [r["id"] for r in json.loads(listing)],
-            ["claude-general", "claude-security", "claude-test", "claude-security-2"],
+            ["claude-general", "claude-security", "claude-test"],
         )
 
     def test_remove_unknown_reviewer_fails_cleanly(self):
@@ -364,7 +364,6 @@ class TestReviewerCommands(IsolatedCase):
     def test_removing_every_reviewer_is_allowed(self):
         run_cli("reviewer", "remove", "claude-general")
         run_cli("reviewer", "remove", "codex-general")
-        run_cli("reviewer", "remove", "claude-security-2")
         run_cli("reviewer", "remove", "claude-security")
         run_cli("reviewer", "remove", "claude-test")
         _, out, _ = run_cli("reviewer", "list")
@@ -931,7 +930,6 @@ class TestDoctor(IsolatedCase):
         run_cli("config", "setup", "--defaults")
         run_cli("reviewer", "remove", "claude-general")
         run_cli("reviewer", "remove", "codex-general")
-        run_cli("reviewer", "remove", "claude-security-2")
         run_cli("reviewer", "remove", "claude-security")
         run_cli("reviewer", "remove", "claude-test")
         code, _, _ = run_cli("doctor", "--fast", "--strict")
@@ -2394,7 +2392,6 @@ class TestReviewPipeline(IsolatedCase):
         run_cli("config", "setup", "--defaults")
         run_cli("reviewer", "remove", "claude-general")
         run_cli("reviewer", "remove", "codex-general")
-        run_cli("reviewer", "remove", "claude-security-2")
         run_cli("reviewer", "remove", "claude-security")
         run_cli("reviewer", "remove", "claude-test")
         run_cli("reviewer", "add", "--provider", "mock", "--id", "m1", "--role", "general")
@@ -2913,7 +2910,6 @@ class TestTheScorecardThroughTheCli(IsolatedCase):
         run_cli("config", "setup", "--defaults")
         run_cli("reviewer", "remove", "claude-general")
         run_cli("reviewer", "remove", "codex-general")
-        run_cli("reviewer", "remove", "claude-security-2")
         run_cli("reviewer", "remove", "claude-security")
         run_cli("reviewer", "remove", "claude-test")
         run_cli("reviewer", "add", "--provider", "mock", "--id", "m1", "--role", "general")
@@ -3343,11 +3339,8 @@ class TestUserAdapterResume(IsolatedCase):
 
 FROZEN = "now lists the reviewers; the panel no longer follows preset standard's fit (recorded %s)"
 #: Preset standard's panel with Claude alone installed, and as the frozen note records it.
-CLAUDE_FIT = ["claude-general", "claude-general-2", "claude-security", "claude-test", "claude-security-2"]
-RECORDED = (
-    "claude-general opus, claude-general-2 sonnet, claude-security sonnet, claude-test sonnet, "
-    "claude-security-2 opus"
-)
+CLAUDE_FIT = ["claude-general", "claude-general-2", "claude-security", "claude-test"]
+RECORDED = "claude-general opus, claude-general-2 sonnet, claude-security sonnet, claude-test sonnet"
 CODEX_IMPLEMENTER = {"provider": "codex", "model": {"family": "recommended-coding", "version": "latest"}}
 
 
@@ -3393,17 +3386,17 @@ class TestPresetWriters(PresetCase):
         self.assertEqual(code, 0)
         layer = self.global_layer()
         self.assertNotIn("reviewers", layer)
-        self.assertEqual(self.ids(layer["reviewers_extra"]), ["claude-security-3"])
+        self.assertEqual(self.ids(layer["reviewers_extra"]), ["claude-security-2"])
         self.assertIn("as an extra; the panel still follows preset standard's fit", out)
         self.assertNotIn("now lists the reviewers", out)
-        self.assertEqual(self.ids(), [*CLAUDE_FIT, "claude-security-3"])
+        self.assertEqual(self.ids(), [*CLAUDE_FIT, "claude-security-2"])
 
     def test_adding_a_reviewer_with_both_clis_keeps_both_vendors(self):
         self.fake_clis(claude=True, codex=True)
         self.add_security()
         self.assertNotIn("reviewers", self.global_layer())
-        both = ["claude-general", "codex-general", "claude-security", "claude-test", "claude-security-2"]
-        self.assertEqual(self.ids(), [*both, "claude-security-3"])
+        both = ["claude-general", "codex-general", "claude-security", "claude-test"]
+        self.assertEqual(self.ids(), [*both, "claude-security-2"])
 
     def test_adding_a_reviewer_keeps_the_panel_dealt_around_the_files_implementer(self):
         self.fake_clis(claude=True, codex=True)
@@ -3435,6 +3428,8 @@ class TestPresetWriters(PresetCase):
         self.assertEqual(self.ids(reviewers), CLAUDE_FIT)
         self.assertEqual(reviewers[0]["role"], "security")
         self.assertIn(FROZEN % RECORDED, out)
+        # The list takes the design rounds off the fit's design panel too.
+        self.assertIn("design rounds now run this list without when, not preset standard's design panel", out)
 
     def test_a_global_edit_inside_a_project_that_lists_reviewers_says_so(self):
         project_path = os.path.join(self.project, ".dev-orchestra.yaml")
@@ -3559,6 +3554,22 @@ class TestPresetCommands(PresetCase):
         self.assertEqual(code, 0)
         self.assertEqual(self.global_layer(), {"version": 1, "preset": "fast", "review": {"parallel": False}})
 
+    def test_setup_preset_replaces_design_reviewers(self):
+        extra = config_mod.make_reviewer("x", "mock", "small")
+        listed = config_mod.make_reviewer("mine", "mock", "small")
+        self.write_global(
+            {"version": 1, "review": {"design": {"reviewers": [listed], "reviewers_extra": [extra]}}}
+        )
+        code, _, err = run_cli("config", "setup", "--preset", "quality")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(
+            self.global_layer(),
+            {"version": 1, "preset": "quality", "review": {"design": {"reviewers_extra": [extra]}}},
+        )
+        loaded = config_mod.load(self.project)
+        self.assertEqual(loaded.design_panel_source, "fit")
+        self.assertEqual(loaded.design_reviewers()[-1]["id"], "x")
+
     def test_an_unknown_preset_is_refused_by_the_parser(self):
         with self.assertRaises(SystemExit) as caught:
             run_cli("config", "setup", "--preset", "nope")
@@ -3633,7 +3644,8 @@ class TestPresetCommands(PresetCase):
     def test_show_and_doctor_name_the_preset_and_the_fit(self):
         self.fake_clis(claude=True)
         self.write_global({"version": 1, "preset": "quality"})
-        note = "codex not found on PATH: reviewer seat 2 (security) went to claude as claude-security (opus)"
+        why = "was not added; it is a second vendor's opinion and nothing installed stands in for one"
+        note = "codex not found on PATH: reviewer seat 2 (general) %s" % why
         _, out, _ = run_cli("config", "show")
         self.assertIn("Preset: quality (global; fitted to claude)", out)
         self.assertIn("note: %s" % note, out)
@@ -3642,7 +3654,11 @@ class TestPresetCommands(PresetCase):
         self.assertEqual(payload["preset"]["source"], "global")
         self.assertEqual(
             payload["preset"]["notes"],
-            [note, "codex not found on PATH: reviewer seat 4 (test) went to claude as claude-test (opus)"],
+            [
+                note,
+                "codex not found on PATH: reviewer seat 4 (security) %s" % why,
+                "codex not found on PATH: design reviewer seat 2 (general) %s" % why,
+            ],
         )
         _, out, _ = run_cli("doctor", "--fast")
         self.assertIn("Preset: quality (global; fitted to claude)", out)

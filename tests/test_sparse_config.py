@@ -462,11 +462,45 @@ class TestPrune(IsolatedCase):
         self.assertEqual(code, 0)
         self.assertEqual(
             config_mod.read_config_file(path),
-            {"version": 1, "optimization": {"low_risk_max_files": 2}},
+            {
+                "version": 1,
+                "optimization": {"low_risk_max_files": 2},
+                "reviewers": config_mod.default_config()["reviewers"],
+            },
         )
         self.assertEqual(config_mod.load(self.project).data, before)
-        self.assertIn("reviewers", out)
         self.assertIn("Dropped", out)
+
+    def test_a_panel_the_design_rounds_copy_is_kept(self):
+        """A file's own code panel keeps the design rounds on its copy, so
+        dropping one equal to the default would move them to the preset's
+        design panel: a change to the effective configuration."""
+        path = self.write_old_format()
+        before = config_mod.load(self.project).data
+        code, out, _ = run_cli("config", "prune")
+        self.assertEqual(code, 0)
+        self.assertIn("Kept reviewers", out)
+        self.assertIn("design panel", out)
+        layer = config_mod.read_config_file(path)
+        self.assertEqual(layer["reviewers"], config_mod.default_config()["reviewers"])
+        self.assertEqual(config_mod.load(self.project).data, before)
+
+    def test_a_panel_is_dropped_when_the_file_lists_its_design_panel(self):
+        """With a design panel of its own the file's design rounds do not
+        depend on its code panel, so an inherited one goes as before."""
+        design = [config_mod.default_config()["reviewers"][0]]
+        path = self.write_old_format()
+        layer = config_mod.read_config_file(path)
+        layer["review"]["design"]["reviewers"] = design
+        config_mod.write_config_file(path, layer)
+        before = config_mod.load(self.project).data
+        code, out, _ = run_cli("config", "prune")
+        self.assertEqual(code, 0)
+        self.assertNotIn("Kept reviewers", out)
+        pruned = config_mod.read_config_file(path)
+        self.assertNotIn("reviewers", pruned)
+        self.assertEqual(pruned["review"]["design"]["reviewers"], design)
+        self.assertEqual(config_mod.load(self.project).data, before)
 
     def test_a_dry_run_writes_nothing(self):
         path = self.write_old_format()
@@ -474,7 +508,40 @@ class TestPrune(IsolatedCase):
         code, out, _ = run_cli("config", "prune", "--dry-run")
         self.assertEqual(code, 0)
         self.assertIn("dry run", out)
+        self.assertIn("Kept reviewers in", out)
         self.assertEqual(open(path, "rb").read(), before)
+
+    def project_path(self):
+        return os.path.join(self.project, ".dev-orchestra.yaml")
+
+    def test_a_project_panel_the_design_rounds_copy_is_kept(self):
+        """No global file lists reviewers: dropping the project's would hand
+        its design rounds to the preset's design panel."""
+        default_panel = config_mod.default_config()["reviewers"]
+        config_mod.write_config_file(
+            self.project_path(), {"version": 1, "reviewers": default_panel}, "project"
+        )
+        before = config_mod.load(self.project).data
+        code, out, err = run_cli("config", "prune", "--scope", "project")
+        self.assertEqual(code, 0, err)
+        self.assertIn("Kept reviewers in", out)
+        self.assertEqual(config_mod.read_config_file(self.project_path())["reviewers"], default_panel)
+        self.assertEqual(config_mod.load(self.project).data, before)
+
+    def test_a_project_panel_equal_to_the_global_one_is_dropped(self):
+        """The global file lists reviewers, so the design rounds copy those either way."""
+        config_mod.write_config_file(
+            config_mod.global_config_path(), {"version": 1, "reviewers": PROJECT_PANEL}, "global"
+        )
+        config_mod.write_config_file(
+            self.project_path(), {"version": 1, "reviewers": PROJECT_PANEL}, "project"
+        )
+        before = config_mod.load(self.project).data
+        code, out, err = run_cli("config", "prune", "--scope", "project")
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("Kept reviewers", out)
+        self.assertNotIn("reviewers", config_mod.read_config_file(self.project_path()))
+        self.assertEqual(config_mod.load(self.project).data, before)
 
     def test_settings_the_defaults_do_not_mention_are_kept(self):
         path = self.write_old_format()
@@ -509,7 +576,10 @@ class TestPrune(IsolatedCase):
         del data["version"]
         config_mod.write_config_file(config_mod.global_config_path(), data)
         run_cli("config", "prune")
-        self.assertEqual(config_mod.read_config_file(config_mod.global_config_path()), {"version": 1})
+        self.assertEqual(
+            config_mod.read_config_file(config_mod.global_config_path()),
+            {"version": 1, "reviewers": data["reviewers"]},
+        )
 
     def test_a_versionless_file_with_nothing_to_drop_gains_one_too(self):
         """Dropping values is not the only thing pruning does. Returning on an

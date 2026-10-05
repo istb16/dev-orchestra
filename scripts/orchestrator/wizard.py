@@ -20,8 +20,8 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 from . import config as config_mod
 from . import config_policy as policy_mod
 from . import presets as presets_mod
-from .cli_common import _compose_preview, _out
-from .optimization import WHEN_HIGH_RISK, reviewer_condition, risk_patterns
+from .cli_common import _compose_preview, _out, _reviewers_hold_design_panel
+from .optimization import RELEVANCE_ALWAYS, WHEN_HIGH_RISK, reviewer_condition, risk_patterns
 from .providers import (
     ModelResolutionError,
     adapter_failure,
@@ -39,13 +39,17 @@ RECOMMENDED = {role: ("claude", family) for role, family in presets_mod.PRESETS[
 
 #: The preset question's menu, in the order it is offered.
 PRESET_CHOICES = (
-    ("quality", "quality  -- strongest models, four reviewers, design review always on"),
+    ("quality", "quality  -- strongest models, Codex beside Claude on both panels, design review auto"),
     (
         "standard",
-        "standard -- the built-in defaults: general reviewers, security and test on Claude sonnet, "
-        "security on high-risk changes",
+        "standard -- the built-in defaults: general on Claude and Codex, security on sonnet "
+        "(opus on high-risk changes), test on sonnet",
     ),
-    ("fast", "fast     -- lighter models, one reviewer plus a security one on high-risk changes"),
+    (
+        "fast",
+        "fast     -- lighter models, one reviewer plus a sonnet security one on high-risk changes; "
+        "design review off",
+    ),
 )
 CUSTOMISE = "customise each role"
 
@@ -256,6 +260,13 @@ def run(
 
     if preset is not None:
         data = _differences_from_fit(data, base, preset)
+        if _reviewers_hold_design_panel(scope, data):
+            # A saved code panel takes the design panel with it: say so, as
+            # the reviewer writers do, before the summary shows the result.
+            prompter.say(
+                "   note: the reviewers differ from preset %s's fit, so they are saved; design rounds "
+                "then run them without when, not the preset's design panel" % preset
+            )
         preview, fit, _name, _source = config_mod.compose(data, {}, on_path)
         prompter.say(render_summary(preview, fit.origins, fit.design_origins))
         notes = presets_mod.render_notes(fit)
@@ -498,9 +509,32 @@ def _ask_reviewer(
             prompter.say("     Ids must look like %s (lowercase, digits, . _ -)." % suggested)
             continue
         break
-    reviewer: Dict[str, Any] = {"id": reviewer_id, "provider": provider_name, "model": model, "role": role}
-    # Not asked, so kept: a preset's high-risk seat stays high-risk when its
-    # other answers are taken as offered.
+    reviewer: Dict[str, Any] = {"id": reviewer_id, "provider": template.get("provider"), "model": model}
+    # Not asked, so kept: a seat's high-risk model stays while it stays on the
+    # CLI that model belongs to, and goes with a line when it moves, by the
+    # rule `reviewer set --provider` follows.
+    if template.get("high_risk_model") is not None:
+        reviewer["high_risk_model"] = copy.deepcopy(template["high_risk_model"])
+    if config_mod.move_reviewer_provider(reviewer, provider_name):
+        prompter.say(
+            "     note: provider is now %s; %s (reviewer set --high-risk-model sets another)"
+            % (provider_name, config_mod.HIGH_RISK_MODEL_REMOVED)
+        )
+    reviewer["role"] = role
+    # Likewise a relevance rule, while the seat keeps the role it was written
+    # for: a rule is about one role's work, and a general seat takes none.
+    # ``always`` holds for any role.
+    relevance = template.get("relevance")
+    if relevance is not None:
+        if role == template.get("role", "general") or str(relevance).strip().lower() == RELEVANCE_ALWAYS:
+            reviewer["relevance"] = copy.deepcopy(relevance)
+        else:
+            prompter.say(
+                "     note: role is now %s; its relevance %s was removed "
+                "(reviewer set --relevance sets another)" % (role, relevance)
+            )
+    # Likewise: a preset's high-risk seat stays high-risk when its other
+    # answers are taken as offered.
     if template.get("when") is not None:
         reviewer["when"] = copy.deepcopy(template["when"])
     _say_unenforced(prompter, {"reviewers": [reviewer]})

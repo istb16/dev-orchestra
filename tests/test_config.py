@@ -22,7 +22,7 @@ DESIGN_DEFAULTS = {
 }
 
 #: Preset standard's panel with Claude alone installed.
-CLAUDE_FIT = ["claude-general", "claude-general-2", "claude-security", "claude-test", "claude-security-2"]
+CLAUDE_FIT = ["claude-general", "claude-general-2", "claude-security", "claude-test"]
 
 
 class TestDefaults(IsolatedCase):
@@ -34,7 +34,7 @@ class TestDefaults(IsolatedCase):
         self.assertEqual(loaded.role("architect")["model"]["family"], "fable")
         self.assertEqual(loaded.role("implementer")["model"]["family"], "opus")
         self.assertEqual(loaded.role("review_fixer")["model"]["family"], "opus")
-        self.assertEqual(len(loaded.reviewers()), 5)
+        self.assertEqual(len(loaded.reviewers()), 4)
 
     def test_defaults_never_pin_a_dated_model_id(self):
         from orchestrator import presets
@@ -65,7 +65,10 @@ class TestDefaults(IsolatedCase):
     def test_design_settings_are_filled_in_for_a_config_that_omits_them(self):
         self.write(".dev-orchestra.yaml", "version: 1\nreview:\n  max_review_iterations: 1\n")
         loaded = config_mod.load(self.project)
-        self.assertEqual(loaded.design_review_settings(), {"enabled": "auto", "max_iterations": 2})
+        settings = loaded.design_review_settings()
+        # The fitted design panel rides along under the same key.
+        settings.pop("reviewers")
+        self.assertEqual(settings, {"enabled": "auto", "max_iterations": 2})
 
     def test_the_design_review_mode_keeps_the_old_truth_test(self):
         """Null is the default; anything else not `auto` reads as the truth
@@ -1079,9 +1082,7 @@ class TestReviewerManagement(IsolatedCase):
 
         _, removed = config_mod.remove_reviewer(data, "general")
         self.assertEqual(removed["id"], "claude-general")
-        self.assertEqual(
-            [r["id"] for r in data["reviewers"]], ["claude-security", "claude-test", "claude-security-2"]
-        )
+        self.assertEqual([r["id"] for r in data["reviewers"]], ["claude-security", "claude-test"])
 
     def test_remove_ambiguous_role_raises_with_guidance(self):
         data = config_mod.default_config()
@@ -1394,10 +1395,19 @@ class TestPresetLayering(IsolatedCase):
         self.assertEqual((loaded.preset, loaded.preset_source), ("quality", "global"))
         self.assertEqual(loaded.role("implementer")["model"]["family"], "fable")
         self.assertEqual(
-            self.ids(loaded), ["claude-general", "codex-security", "claude-architecture", "codex-test"]
+            self.ids(loaded),
+            [
+                "claude-general",
+                "codex-general",
+                "claude-security",
+                "codex-security",
+                "claude-architecture",
+                "claude-test",
+            ],
         )
         self.assertEqual(loaded.optimization_settings()["level"], "quality")
-        self.assertIs(loaded.design_review_settings()["enabled"], True)
+        self.assertEqual(loaded.design_review_settings()["enabled"], "auto")
+        self.assertEqual(loaded.design_panel_source, "fit")
 
     def test_a_global_override_survives_the_expansion(self):
         self.fake_clis(claude=True, codex=True)

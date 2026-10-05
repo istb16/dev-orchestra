@@ -1,4 +1,4 @@
-<!-- translated-from: references/configuration.md sha256:77d29734da77186132c038ee9a301361132dbb1c6a591be2e9311e8f509c8e12 -->
+<!-- translated-from: references/configuration.md sha256:354217152c056416caf05c47f9256bf11e2806c048e806f735e0833459bfc9c4 -->
 
 > この文書は [references/configuration.md](../../../references/configuration.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -108,7 +108,8 @@ project config  →  global config  →  the global file's preset, fitted to the
 
 プリセットのレイヤーが届くのは、どのファイルも設定していないロールとレビュアーパネルだけです
 （[プリセット](#presets)）。Claude Code と Codex が両方インストールされているとき、またはフィットの
-対象の CLI がどれも無いとき、デフォルトのプリセットは組み込みデフォルトとまったく同じです。
+対象の CLI がどれも無いとき、デフォルトのプリセットは組み込みデフォルトとまったく同じで、それに
+設計パネルが加わります。
 
 <a id="presets"></a>
 
@@ -140,14 +141,25 @@ preset: quality
 | `architect` | fable | fable | opus |
 | `implementer` | fable | opus | sonnet |
 | `review_fixer` | fable | opus | sonnet |
-| レビュアーの枠（role / Claude の family） | general / fable、security / opus、architecture / opus、test / opus | general / opus、general / sonnet、security / sonnet、test / sonnet; security / opus、`when: high-risk` | general / opus; security / opus、`when: high-risk` |
-| `review.design.enabled` | `true` | 設定しない（`auto`） | 設定しない（`auto`） |
+| レビュアーの枠（role / Claude の family） | general / fable [Claude]、general [Codex]、security / opus [Claude]、security [Codex]、architecture / opus [Claude]、test / opus [Claude] | general / opus、general / sonnet、security / sonnet→opus [Claude]、test / sonnet | general / opus; security / sonnet、`when: high-risk` |
+| 設計レビュアーの枠（`review.design.reviewers`） | general / sonnet→opus [Claude]、general [Codex]、security / opus [Claude]、test / sonnet [Claude]、architecture / opus [Claude] | general / sonnet→opus [Claude]、security / sonnet [Claude]、test / sonnet [Claude] | general / sonnet [Claude] |
+| `review.design.enabled` | `auto` | 設定しない（`auto`） | `false` |
 | `optimization.level` | `quality` | 設定しない（`balanced`） | `aggressive` |
 
-プリセットが決めるのはこの7つのキーです。それ以外 — budgets、タイムアウト、
+`→opus` は `high_risk_model: {family: opus}` のことです: その枠は high-risk のラウンドでは opus で、
+それ以外では自分の family で動きます。`[Claude]` と `[Codex]` は、配るのではなくそのベンダーに置く
+枠を表します（下の手順 2）。
+
+プリセットが決めるのはこの8つのキーです。それ以外 — budgets、タイムアウト、
 `review.max_review_iterations`、`design.require_approval` — は、ファイルが設定しない限り
-組み込みデフォルトのままです。`standard` は組み込みデフォルトから読み取って作るので、両者が
-ずれることはありません。
+組み込みデフォルトのままです。`standard` のコードパネルは組み込みデフォルトから読み取って作るので、
+両者がずれることはありません。設計パネルはデフォルトに無いので、プリセット自身が持っています。
+
+どのプリセットも `relevance` を設定しないので、プリセットの security の枠は、設計の枠も含めて、
+入っているすべてのラウンドで動きます。`quality` の opus の設計 security の枠は、`auto` が通す設計
+ラウンドのたびに動きます。security に関係するトークンの無い計画で外したいときは、オプトインします:
+`reviewer set claude-security --design --relevance security`（設計パネルをファイルにコピーします。
+下記）。
 
 **フィット。** 対象は `claude`、`codex`、`agy` と、`preset_family` を宣言したユーザー adapter です
 （[Taking part in preset fitting](providers.md#taking-part-in-preset-fitting) を参照）。それ以外の
@@ -167,42 +179,75 @@ CLI は起動しません:
 2. レビュアーの枠は、orchestrator と同じ CLI（`claude`、`codex`、無ければ席に就けるユーザー
    adapter、それも無ければ agy）に implementer の CLI（ファイルが implementer を
    設定していれば、ファイルが指定した provider）から順に配ります。そのため
-   2社あれば、どのパネルにも両方が入ります。ここで配って数えるのは通常の枠だけで、安い枠は
-   手順 4 で扱います。常に走る通常のレビュアーが1人だけのプリセット（`fast`）は、
-   もう一方のベンダーから始めます: implementer と同じベンダーの常時レビュアー1人では、独立した
-   レビューにならないからです。枠の `when` は、どこに配られても維持されます。席に就けるユーザー
-   adapter が2つあるときも同じように配るので、project ファイルが `implementer` を2つ目にすると、
-   `quality` と `standard` では2つ目が最初の枠を取り、`fast` の常に走る1つの枠は1つ目が取ります。
-3. 前の枠とまったく同じになる枠（provider、family、role、条件）は追加しません。id は provider と
-   role から作るので、同じ role の2人目の Claude の枠は `claude-general-2` になります。
-4. `standard` の sonnet の枠は安い枠です。オフラインで名前を挙げられる安いモデルを持つ CLI は
-   Claude だけなので、安い枠は Claude にだけ配り、Claude が無いところには追加しません
-   （`claude not found on PATH: reviewer seat 3 (security) was not added; codex has no cheap
-   model named offline`）。そのため Codex とユーザー adapter は安い枠を受け取りません。`standard`
-   の general 以外のすべての枠と `quality` の `test` は、読み取り専用に保てる相手にだけ置く枠で、
-   agy には置きません（`...; agy cannot be held to reading`）。そのため agy だけのときの `standard`
-   は `agy-general` のまま、`quality` は3つの枠のままです。追加しなかった枠が、ほかの枠を動かしたり
-   id を変えたりすることはありません。ファイルが危険なパスのパターンを1つも残していないとき
+   2社あれば、どのパネルにも両方が入ります。コードパネルと設計パネルは、それぞれ同じやり方で別々に
+   フィットします。ここで配って数えるのはベンダーの付いていない通常の枠だけで、ベンダーの枠は置き、
+   安い枠は手順 4 で扱います。配る枠のうち常に走るレビュアーが1人だけのパネル（`fast` のコード
+   パネル）は、もう一方のベンダーから始めます: implementer と同じベンダーの常時レビュアー1人では、
+   独立したレビューにならないからです。枠の `when` は、どこに配られても維持されます。席に就ける
+   ユーザー adapter が2つあるときも同じように配るので、project ファイルが `implementer` を2つ目に
+   すると、`standard` では2つ目が最初の枠を取り、`fast` の常に走る1つの枠は1つ目が取ります。
+
+   ベンダーの枠は配らずに置くので、implementer によって動くことはありません。Claude の枠は Claude が
+   インストールされていれば必ず Claude に置き、無ければベンダーの無い枠と一緒に配ります。Codex の枠は
+   Codex に、無ければ席のプールのうち Claude 以外で最初の CLI（席に就けるユーザー adapter か agy）に
+   置き、それも無ければ追加しません: `codex not found on PATH: reviewer seat 2 (general) was not
+   added; it is a second vendor's opinion and nothing installed stands in for one`。
+   `high_risk_model` を持つ枠がそれを保つのは Claude の上だけです。2つ目のモデルをオフラインで
+   名前を挙げられる CLI は Claude だけだからです。ほかに配られた枠はそれを失い、note の末尾は
+   `; no high-risk model on codex` になります。`standard` の security の枠はこれを持つので、
+   Claude の枠です。
+3. 前の枠とまったく同じになる枠（provider、family、high-risk の family、role、条件）は追加しません。
+   id は provider と role から作るので、同じ role の2人目の Claude の枠は `claude-general-2` に
+   なります。
+4. 安い枠（`high_risk_model` の無い Claude の sonnet の枠。ここでは `test` の枠）は Claude にだけ
+   配ります。オフラインで名前を挙げられる安いモデルを持つ CLI は Claude だけなので、Claude が無い
+   ところには追加しません（`claude not found on PATH: reviewer seat 4 (test) was not added; codex
+   has no cheap model named offline`）。そのため Codex とユーザー adapter は安い枠を受け取りません。
+   `standard` の security の枠は通常の枠なので、Codex だけでも残り、そこでは毎回のラウンドで動きます。
+   `standard` の general 以外のすべての枠、`quality` のコードパネルの `test`、設計パネルの general
+   以外のすべての枠は、読み取り専用に保てる相手にだけ置く枠で、agy には置きません（`...; agy
+   cannot be held to reading`）。そのため agy だけのときの `standard` は `agy-general` のまま、
+   `quality` のコードパネルは3つの枠のまま、どの設計パネルも `agy-general` だけです。追加しなかった
+   枠が、ほかの枠を動かしたり id を変えたりすることはありません。設計の枠の note は `design reviewer
+   seat` と書き、agy では `-- list review.design.reviewers in the global file to keep them off agy`
+   で終わります。ファイルが危険なパスのパターンを1つも残していないとき
    （`optimization.high_risk_paths: []` で `extra_high_risk_paths` もない）も、組み替えで入る
    `when: high-risk` の枠は残り、`review run --high-risk` で宣言したラウンドでだけ動きます。
    ファイルが `reviewers` や `reviewers_extra` に書いた `when: high-risk` のレビュアーは、
-   これまでどおり断ります。ウィザードも、組み込みの high-risk の枠は勧めません。
+   これまでどおり断ります。ウィザードも、ファイルが持つ high-risk の枠は勧めません。
+   `when: high-risk` の枠をフィットするのは `fast` だけです。
 5. Claude も Codex もオプトインしたユーザー adapter も agy も無いときは、すべてのロールとパネルを
    書かれたとおりに展開します。CLI が無いことは `doctor` が報告します。agy だけのときは、すべての
    ロールと枠を agy に割り当て、それぞれ note を出します（`claude, codex not found on PATH:
    implementer went to agy (default)`）。
 
+コードパネル:
+
 | プリセット | Claude + Codex | Claude のみ | Codex のみ | agy のみ |
 | --- | --- | --- | --- | --- |
-| `quality` | claude-general fable、codex-security、claude-architecture opus、codex-test | claude-general fable、claude-security opus、claude-architecture opus、claude-test opus | codex-general、codex-security、codex-architecture、codex-test | agy-general、agy-security、agy-architecture |
-| `standard` | claude-general opus、codex-general、claude-security sonnet、claude-test sonnet; claude-security-2 opus（high-risk）（組み込みデフォルト） | claude-general opus、claude-general-2 sonnet、claude-security sonnet、claude-test sonnet; claude-security-2 opus（high-risk） | codex-general; codex-security（high-risk） | agy-general |
-| `fast` | codex-general; claude-security opus（high-risk） | claude-general opus; claude-security opus（high-risk） | codex-general; codex-security（high-risk） | agy-general; agy-security（high-risk） |
+| `quality` | claude-general fable、codex-general、claude-security opus、codex-security、claude-architecture opus、claude-test opus | claude-general fable、claude-security opus、claude-architecture opus、claude-test opus | codex-general、codex-security、codex-architecture、codex-test | agy-general、agy-security、agy-architecture |
+| `standard` | claude-general opus、codex-general、claude-security sonnet→opus、claude-test sonnet（組み込みデフォルト） | claude-general opus、claude-general-2 sonnet、claude-security sonnet→opus、claude-test sonnet | codex-general、codex-security | agy-general |
+| `fast` | codex-general; claude-security sonnet（high-risk） | claude-general opus; claude-security sonnet（high-risk） | codex-general; codex-security（high-risk） | agy-general; agy-security（high-risk） |
+
+設計パネル:
+
+| プリセット | Claude + Codex | Claude のみ | Codex のみ | agy のみ |
+| --- | --- | --- | --- | --- |
+| `quality` | claude-general sonnet→opus、codex-general、claude-security opus、claude-test sonnet、claude-architecture opus | Claude + Codex から codex-general を除いたもの | codex-general、codex-security、codex-architecture | agy-general |
+| `standard` | claude-general sonnet→opus、claude-security sonnet、claude-test sonnet | 同じ | codex-general、codex-security | agy-general |
+| `fast`（`enabled: false`） | claude-general sonnet | 同じ | codex-general | agy-general |
+
+Claude と Codex があるとき、project ファイルが implementer を Codex にすると、`standard` のコード
+パネルは codex-general、claude-general sonnet、claude-security sonnet→opus、claude-test sonnet と
+配られます。`quality` のベンダーの枠と設計パネルはそのままです。
 
 Claude や Codex と並んで agy があっても何も変わりません。Claude、Codex、agy がそろっていれば、
 どのプリセットも Claude と Codex のときと同じで、組み込みデフォルトもそのままです。Claude + agy は
 Claude のみと、Codex + agy は Codex のみと同じです。agy だけのマシンで読み取り専用の席から agy を
 外すには、global ファイルで orchestrator と architect を設定するか、`reviewers` を並べます。
-ファイルが設定したロールと、ファイルが並べたパネルはフィットされません（下記）。
+ファイルが設定したロールと、ファイルが並べたパネルはフィットされません（下記）。並べた `reviewers`
+はフィットした設計パネルも一緒に外します。`review.design.reviewers` だけなら、外れるのは設計
+ラウンドだけです。
 
 フィットは読み込むたびにやり直されます: 後から Codex を入れれば、次のコマンドのパネルに
 入ります。そのため、レビュアーの id はチームメンバーのマシンごとに違うことがあり、`--only` で
@@ -223,12 +268,17 @@ claude-general-2 (sonnet)`。
 
 パネルも同じ規則です: どれかのファイルの `reviewers` リストはフィットしたパネルを丸ごと置き換え、
 自分で並べたレビュアーの CLI が無ければ、並べたのは自分なので、毎回のラウンドで失敗し続けます。
+`reviewers` を並べたファイルは、フィットした設計パネルとそのフィットの note も外します: その設計
+ラウンドは、プリセットが設計パネルを持つ前と同じく、そのリストを `when` 抜きで動かします。どれかの
+ファイルの `review.design.reviewers` リストはフィットした設計パネルを丸ごと置き換え、
+`review.design.reviewers_extra` だけならそれに加わります
+（[独自の設計パネル](#a-design-panel-of-its-own-reviewdesignreviewers)）。
 
 **`reviewer add` はパネルの横に足し、ほかの書き込みコマンドはパネルを記録します。**
 `reviewers` を並べていないファイルでは、`reviewer add` は新しいレビュアーをそのファイルの
 `reviewers_extra` に書き、何もコピーしません。そのためパネルはフィット（project では
 グローバルファイルのリスト）に従い続け、コマンドはその旨を表示します: `Added reviewer
-claude-security-3 (claude / opus / security) to <path> as an extra; the panel still follows preset
+claude-security-2 (claude / opus / security) to <path> as an extra; the panel still follows preset
 standard's fit`。`reviewers` を並べたファイルでは、これまでどおりそこへ追加します
 （[下記](#adding-reviewers-beside-the-panel-reviewers_extra)）。`reviewer remove` と
 `reviewer set` は、有効なパネル（`reviewer list` が示す id と位置）から対象を探し、ファイル自身の
@@ -238,8 +288,14 @@ extra ならその場で編集します。それ以外の枠（フィットし�
 同じです。それ以降はファイルのリストがパネルになり、このマシンでも、そのファイルを読む他のマシンでも
 同じです。コマンドは一度だけその旨を表示します: `note: <path> now lists the reviewers; the panel no
 longer follows preset standard's fit (recorded claude-general opus, claude-general-2 sonnet,
-claude-security sonnet, claude-test sonnet, claude-security-2 opus)`。
-ロール、設計レビュー、最適化レベルは引き続きプリセットに従います。project スコープで、グローバル
+claude-security sonnet, claude-test sonnet)`。
+ロール、設計レビュー、最適化レベルは引き続きプリセットに従います。フィットした設計パネルは、
+ファイルが `reviewers` を並べたので従わなくなります。`review.design.reviewers` を並べたファイルも
+ないときは、設計ラウンドもこのリストに移り、note の末尾に `; design rounds now run this list
+without when, not preset standard's design panel` が付きます。同じ理由で `config prune` は、
+フィットと等しい `reviewers` のリストでも、それが設計ラウンドをプリセットの設計パネルから外して
+いる唯一のものであれば残し、`Kept reviewers in <file>: dropping it would move design reviews to
+the preset's design panel.` と表示します。project スコープで、グローバル
 ファイルがレビュアーを並べていない（つまりコピーするのがフィットしたパネルとグローバルの extra
 である）ときは、agy の枠はコピーから外します。project ファイルはその枠を持てないからです。note の
 末尾は `; not copied into .dev-orchestra.yaml: agy-general -- a reviewer on agy is taken only from
@@ -323,8 +379,8 @@ extra の id が変わることがあります。extra がそれ以外の理由�
 extra をその場で編集し（新しい id で走っている extra もその id で見つかります）、何もコピーしません。
 新しい id で走っている extra を元の id で指すと、その id は今は別の枠を選ぶので、`reviewer remove` と
 `reviewer set` は何も書かずに拒否し（exit 2）、メッセージは extra が走っている id を示します:
-`reviewer claude-security: reviewers_extra[0] in the project file runs as claude-security-3, since
-claude-security is taken; use claude-security-3 (select the other seat by its position in reviewer
+`reviewer claude-security: reviewers_extra[0] in the project file runs as claude-security-2, since
+claude-security is taken; use claude-security-2 (select the other seat by its position in reviewer
 list)`。
 
 **それぞれの出どころ。** project の extra は、project の `reviewers` リストが受けるのと同じ拒否を
@@ -339,8 +395,19 @@ list)`。
 
 **継承するパネルにさらに足したものを持つリスト**（このキーができる前の `reviewer add` が残した
 形）には、`doctor` が note を出します: `reviewers in <file>: holds the inherited panel plus
-<ids>; move <ids> to reviewers_extra and remove reviewers to keep following it`。ファイルを
-書き換えることはありません。
+<ids>; move <ids> to reviewers_extra and remove reviewers to keep following it`。`reviewers` を
+並べていないファイルで、継承する設計パネルにさらに足したものを持つ設計用のリストにも、
+`review.design.reviewers` について同じ note が出ます（`holds the inherited design panel plus
+<ids>; move <ids> to review.design.reviewers_extra ...`）。継承する設計パネルは、そのファイルの
+下にある設計パネルです。グローバルファイルが `reviewers` を並べている下の project ファイルでは、
+そのリストから `when` を除いたものです。ファイルを書き換えることはありません。
+
+**コードの extra とプリセットの設計パネル。** 設計ラウンドがプリセットの設計パネルで走る間、
+`reviewers_extra`（`reviewer add` や `suggest-roles --write` が書いたもの）はコードだけを
+レビューします。以前は設計ラウンドがコードのパネルのコピーで走り、extra も一緒に加わっていました。
+`doctor` はそれぞれに note を出します: `reviewers_extra in <file>: <ids> review code only; design
+rounds run preset standard's design panel (add them to review.design.reviewers_extra as well to
+review designs too)`。
 
 **`reviewers` を並べたファイルは、並べた枠だけを持ち続けます。** プリセットの枠が増えても、
 並べたパネル（書き込みコマンドが以前のフィットからコピーしたものも含む）には1つも加わりません。
@@ -353,10 +420,11 @@ list)`。
 
 ### 独自の設計パネル（`review.design.reviewers`）
 
-設計レビューは、いずれかのファイルが独自のパネルを与えるまで、すべての `when` を無視した
-コードのパネルで走ります。`review.design.reviewers` は設計ラウンドに限ってコードのパネルを
-置き換え、`review.design.reviewers_extra` は、`reviewers_extra` がコードのパネルに対してするのと
-同じように、継承される設計パネルがどれであってもそれに足されます:
+設計レビューは、いずれかのファイルが独自のパネルを与えるまで、プリセットがフィットした設計パネル
+（[プリセット](#presets)）で走ります。コードのパネル（`reviewers`）を並べたファイルでは、代わりに
+そのパネルが、すべての `when` を無視して走ります。`review.design.reviewers` は設計ラウンドに
+限って継承される設計パネルを置き換え、`review.design.reviewers_extra` は、`reviewers_extra` が
+コードのパネルに対してするのと同じように、継承される設計パネルがどれであってもそれに足されます:
 
 ```yaml
 review:
@@ -383,10 +451,11 @@ review:
 
 | 設計パネル | 条件 |
 | --- | --- |
-| なし: 設計ラウンドはコードのパネルで走り、`when` は無視される | どのファイルも `review.design.reviewers` も `review.design.reviewers_extra` も設定していない |
+| なし: 設計ラウンドはコードのパネルで走り、`when` は無視される | どのファイルも `review.design.reviewers` も `review.design.reviewers_extra` も設定しておらず、ファイルが `reviewers` を並べているか、グローバルファイルが知らないプリセットを指定している |
 | project ファイルの設計用のリスト、次に project ファイルの設計用の extra | project ファイルが `review.design.reviewers` を並べている |
 | グローバルファイルの設計用のリスト、次にグローバルの設計用の extra、次に project の設計用の extra | それ以外で、グローバルファイルがそれを並べている |
-| 有効なコードのパネルからすべての `when` を外したもの、次にグローバルの設計用の extra、次に project の設計用の extra | それ以外（ファイルが設計用の extra だけを設定している） |
+| プリセットがフィットした設計パネル、次にグローバルの設計用の extra、次に project の設計用の extra | それ以外で、どのファイルも `reviewers` を並べていない |
+| 有効なコードのパネルからすべての `when` を外したもの、次にグローバルの設計用の extra、次に project の設計用の extra | それ以外（ファイルが `reviewers` を並べ、ファイルが設計用の extra だけを設定している） |
 
 同じ id が両方のパネルの席を指してもかまいません（`claude-general`）。ラウンド、レポート、
 使用量のラベルはステージごとに分けて保たれるので、その履歴は途切れません。id が使われている
@@ -404,20 +473,27 @@ extra は、コードのパネルと同じく note を出して別の id にな�
 
 **編集する。** `reviewer list|add|remove|set --design` は設計パネルに対して働きます。
 `reviewer add --design` は、ファイルが `review.design.reviewers` を並べていればそこへ、なければ
-`review.design.reviewers_extra` へ書き込み、設計パネルが引き続き何に従うか（`the code panel` または
-`the global file's design reviewers`）を示します。継承された席に対する `reviewer set|remove
---design` は、まず有効な設計パネルをファイルにコピーします。コードのパネルからコピーした席は
-`when` を失い、note がそう伝えます。project スコープでは、このコピーはコードのパネルと同じ規則に
+`review.design.reviewers_extra` へ書き込み、設計パネルが引き続き何に従うか（`preset standard's
+fit`、`the code panel` または `the global file's design reviewers`）を示します。継承された席に対する
+`reviewer set|remove --design` は、まず有効な設計パネルをファイルにコピーします。コードのパネルから
+コピーした席は `when` を失い、note がそう伝えます。フィットからコピーしたときは、note が `copied from
+preset standard's fit` と書き、どちらのファイルでも `; the design panel no longer follows preset
+standard's fit (recorded claude-general sonnet, claude-security sonnet, claude-test sonnet)` を
+足します。project スコープでは、このコピーはコードのパネルと同じ規則に
 従います。agy の席は同じ `not copied into` の note とともにコピーから外されますが、その席の
 出どころのパネルを global ファイルが並べている場合 -- 設計用の席なら設計のリスト、コードのパネルの
 席なら `reviewers` -- は、そのままコピーされます。`--design` と `--when-paths` を一緒に使うと exit 2 で
 終わります。`reviewer list --design` は最初の行で出どころを示します:
-`(design panel: the code panel; when conditions ignored)`、
-`(design panel: global file)`、または `(design panel: project file)`。
+`(design panel: the preset's fit)`、`(design panel: the code panel; when conditions ignored)`、
+`(design panel: global file)`、または `(design panel: project file)`。`review status --design` も
+同じように示します。
 
 **どこに現れるか。** `config show` には `Design reviews` ブロックがあり、設計パネルがあるときは
-その JSON に `design_reviewer_origins` が加わります。`doctor` は `design_reviewers` と
-`design_panel_source` を報告し、ファイルが書いた設計用の各席を、コードの席と同じように診断します。
+その JSON に `design_reviewer_origins` が加わります（フィットした席は `fit design`）。`doctor` は
+`design_reviewers` と `design_panel_source`（`fit`、`global`、`project`、`code`）を報告し、設計
+パネルがコードのパネルのコピーだけでなければ `Design: 3 (the preset's fit)` を表示し、フィットや
+ファイルが書いた設計用の各席を、コードの席と同じように診断します。そのため agy だけのときは
+`agy-general` が、パネルごとに1回ずつ、2回警告されます。
 `review status --design` は設計パネルと、次のラウンドが外す席を挙げます。`review run --design
 --only <id>` は設計パネルから選びます。`run <reviewer id>` は常にコードのパネルの席を実行します。
 
@@ -435,6 +511,7 @@ high-risk` が加わります（これのない記録は通常の枠です）。
 
 古い dev-orchestra は `review.design.reviewers`、その下の `reviewers_extra`、`high_risk_model`、
 `relevance` を無視します。設計ラウンドはコードのパネルで走り、どの席も普段のモデルを使います。
+フィットした設計パネルもありません。
 
 <a id="schema-version-1"></a>
 
@@ -467,7 +544,7 @@ review_fixer:                 # fixes accepted findings
     family: opus
     version: latest
 
-reviewers:                    # 0..n independent reviewers; two or more recommended
+reviewers:                    # 0..n independent reviewers; two or more recommended; listed, design rounds run it too
   - id: claude-general
     provider: claude
     model:
@@ -485,6 +562,9 @@ reviewers:                    # 0..n independent reviewers; two or more recommen
     model:
       family: sonnet
       version: latest
+    high_risk_model:           # the full model on a high-risk change
+      family: opus
+      version: latest
     role: security
   - id: claude-test
     provider: claude
@@ -492,13 +572,6 @@ reviewers:                    # 0..n independent reviewers; two or more recommen
       family: sonnet
       version: latest
     role: test
-  - id: claude-security-2      # the full model, on high-risk changes only
-    provider: claude
-    model:
-      family: opus
-      version: latest
-    role: security
-    when: high-risk
 
 review:
   max_review_iterations: 2            # hard stop on review→fix→re-review loops
@@ -508,7 +581,7 @@ review:
   design:
     enabled: auto                     # review .ai/plan.md before implementing (true, false or auto)
     max_iterations: 2                 # design review -> revise -> re-review
-    # reviewers: [...]                # a design panel of its own; unset, design rounds run the code panel
+    # reviewers: [...]                # a design panel of its own; unset, the preset's fitted one
 
 optimization:
   skip_unneeded_roles: true           # a test/architecture seat sits out a round with nothing for it
@@ -540,8 +613,8 @@ workspace:
 | `reviewers[].high_risk_model` | mapping | 高リスクのラウンド（高リスクへの一致か `--high-risk`）で、その席が `model` の代わりに使うモデルのブロック。どちらのパネルでも使えます。`family` と `version`、または `version: pinned` と `id`。`provider` や `options` は持てません。それらは席のもののままです。[独自の設計パネル](#a-design-panel-of-its-own-reviewdesignreviewers)を参照。 |
 | `reviewers[].relevance` | `security` \| `test` \| `architecture` \| `always` | 見るもののないラウンドからその席を外しうるロールの規則。未設定なら、`test`、`architecture` の席は自分のロールの規則で判定され、それ以外のロールは判定されません。`security` もこれに含まれます。その規則はパスの名前しか読まないからです。`security` を設定すると security の席がオプトインします。`always` はその席を判定の対象から外します。`general` の席に規則を設定すると拒否されます。`general` が外されることはありません。`references/reviews.md`（「ラウンドが必要としないロール」）を参照。 |
 | `reviewers_extra` | list \| null | ファイルが継承するパネルの横に足すレビュアー。`reviewers` のエントリと同じスキーマで、どちらのファイルにも置けます。id が使われていれば別の id になり、外されることはありません。[パネルの横にレビュアーを足す](#adding-reviewers-beside-the-panel-reviewers_extra)を参照。 |
-| `review.design.reviewers` | list \| null | 設計レビュー独自のパネル。`reviewers` のエントリと同じスキーマです（`when: paths` は不可）。どのファイルでも未設定なら、設計ラウンドは `when` を無視したコードのパネルで走ります。[独自の設計パネル](#a-design-panel-of-its-own-reviewdesignreviewers)を参照。 |
-| `review.design.reviewers_extra` | list \| null | ファイルが継承する設計パネルの横に足す設計レビュアー。どのファイルも設計パネルを並べていなければ、継承するのは `when` を外したコードのパネルです。 |
+| `review.design.reviewers` | list \| null | 設計レビュー独自のパネル。`reviewers` のエントリと同じスキーマです（`when: paths` は不可）。どのファイルでも未設定なら、設計ラウンドはプリセットがフィットした設計パネルで、ファイルが `reviewers` を並べていれば `when` を無視したコードのパネルで走ります。プリセットが決めるキーなので、`config setup --preset` はこれを置き換えます。[独自の設計パネル](#a-design-panel-of-its-own-reviewdesignreviewers)を参照。 |
+| `review.design.reviewers_extra` | list \| null | ファイルが継承する設計パネルの横に足す設計レビュアー。どのファイルも設計パネルを並べていなければ、継承するのはフィットした設計パネルで、ファイルが `reviewers` を並べていれば `when` を外したコードのパネルです。 |
 | `review.max_review_iterations` | int ≥ 0 | プロジェクト単位ではなくレビュー単位のラウンド数です。新しいブランチ、新しい `--base`、または `budget reset` でカウントはリセットされます。`0` で再レビューを完全に無効にします。 |
 | `review.parallel` | bool | `false` にするとレビュアーを 1 つずつ実行します（デバッグしやすくなります）。 |
 | `review.re_review_severities` | list | ブロッキングとみなす severity。 |
@@ -553,7 +626,7 @@ workspace:
 | `review.context.inline_chars` | int ≥ 1 \| null | 変更本文のうちどれだけをレビュアーのプロンプトに含めるか（デフォルト 400,000、`max_chars` と同じ数値）。これ以下なら本文はインラインで渡され、ラウンドは clean になり得ます。これを超えると、レビュアーには凍結されたスナップショットのパスが渡され、何が返ってきてもラウンドは `partial` — カバレッジ未検証 — として記録されます。**`max_chars` より小さく設定すると、両者の間に、ラウンドは実行されるものの `partial` として記録される帯域が生まれます**: これは非常に大きなプロンプトに費用をかけたくない人が明示的に選ぶもので、`partial` はその代償です。`max_chars` *より大きく*設定することも許されており、誤りではありません — その場合、本文がファイルとして渡されるのは人間が強制したラウンドだけになります。`null` はデフォルトを意味します。各ラウンドは比較に使った数値を記録するので、`partial` のラウンドはどの上限によってそうなったのかがわかります。`references/limits.md` を参照。 |
 | `review.context.surrounding` | `none` \| `enclosing` | `enclosing` にすると、各 hunk を囲む Python の関数・メソッド・クラスも、すべてのコードレビュアーに渡します。スナップショットの取得時に、その git ツリーから抽出します（デフォルト `none`: diff だけ）。1 つのスナップショットで計測したところレビューが安くならなかったため、off です — `optimization report` が、これを使ったラウンドと使わなかったラウンドを比較します。`false` と `null` は `none` を意味します（`off` は `false` として読まれます）。`true` は拒否されます。`references/reviews.md` を参照。 |
 | `review.context.surrounding_chars` | int ≥ 1 \| null | 1 つのラウンドが追加できる周辺コンテキストの最大量（デフォルト 15,000: 1 つのスナップショットで計測したところ、実行あたりの費用は変わらず、60,000 では渡した分がそのまま上乗せされました）。さらに、diff が `max_chars` と `inline_chars` の下に残す分で上限がかかるので、コンテキストがラウンドを拒否させたり、diff をファイル渡しにしたりすることはありません。収まらなかったものは、プロンプトとすべてのレポートで名前を挙げて除外されます。`null` はデフォルトを意味します。`references/limits.md` を参照。 |
-| `review.design.enabled` | bool \| `auto` \| null | 実装の前に `.ai/plan.md` を設計パネル（ファイルが `review.design.reviewers` を設定していなければコードのパネル）にかけるかどうか。このステージはラウンドごとにパネルのメンバー 1 人につきレビュアー実行 1 回分のコストがかかります。`true` は常に実行、`false` は実行しません。`auto`（デフォルト）は計画書から判断し、その答えと理由を `status` が表示します。計画書のどこにあってもバッククォートで囲まれたトークンと、計画書の `Files to Modify` 見出しの下にあるパスらしい語（バッククォートの有無を問わず、そこにあるフェンスブロックも含む）はすべて、大文字小文字を区別せずに高リスクパターン（`optimization.high_risk_paths` と `extra_high_risk_paths`）と照合され、一致すれば実行します。`db/migrate` のように `/` を含み拡張子のない名前はディレクトリとしても照合します。規模は、`Files to Modify` の下にあるファイル名らしいトークン（`/` かファイル拡張子を含むもの）のうち、フェンスブロックの中、`docs/`・`references/`・`tests/` と `.md`・`.rst`・`.txt` ファイルを除いたものを、ディスクを見ずに数え、6 個以上なら実行します。そこにグロブ、ディレクトリ、`/` を含み拡張子のない名前、`..` を通るパスがあれば実行します（`payload["mode"]` のようなコードはグロブとして読みません）。計画書が読めない、`Files to Modify` セクションがない、あってもファイルを 1 つも挙げていない場合も実行します。計画書がまだないときの答えは `auto -> run (once a plan is written)` です。そしてワークフローで設計レビューのラウンドが一度でも走ったら答えは実行のままなので、改訂によってループが途中で止まることはありません。`null` はデフォルトの `auto` を意味します。 |
+| `review.design.enabled` | bool \| `auto` \| null | 実装の前に `.ai/plan.md` を設計パネル（`review.design.reviewers` を参照）にかけるかどうか。このステージはラウンドごとにパネルのメンバー 1 人につきレビュアー実行 1 回分のコストがかかります。`true` は常に実行、`false` は実行しません。`auto`（デフォルト）は計画書から判断し、その答えと理由を `status` が表示します。計画書のどこにあってもバッククォートで囲まれたトークンと、計画書の `Files to Modify` 見出しの下にあるパスらしい語（バッククォートの有無を問わず、そこにあるフェンスブロックも含む）はすべて、大文字小文字を区別せずに高リスクパターン（`optimization.high_risk_paths` と `extra_high_risk_paths`）と照合され、一致すれば実行します。`db/migrate` のように `/` を含み拡張子のない名前はディレクトリとしても照合します。規模は、`Files to Modify` の下にあるファイル名らしいトークン（`/` かファイル拡張子を含むもの）のうち、フェンスブロックの中、`docs/`・`references/`・`tests/` と `.md`・`.rst`・`.txt` ファイルを除いたものを、ディスクを見ずに数え、6 個以上なら実行します。そこにグロブ、ディレクトリ、`/` を含み拡張子のない名前、`..` を通るパスがあれば実行します（`payload["mode"]` のようなコードはグロブとして読みません）。計画書が読めない、`Files to Modify` セクションがない、あってもファイルを 1 つも挙げていない場合も実行します。計画書がまだないときの答えは `auto -> run (once a plan is written)` です。そしてワークフローで設計レビューのラウンドが一度でも走ったら答えは実行のままなので、改訂によってループが途中で止まることはありません。`null` はデフォルトの `auto` を意味します。 |
 | `review.design.max_iterations` | int ≥ 0 | 設計レビューのラウンド数（レビュー → トリアージ → 修正）。`max_review_iterations` とは別にカウントされます（デフォルト 2）。上限に達したラウンドでも修正は行われます。上限が拒否するのはその後の再レビューだけです。`1`: 1 ラウンド、1 回の修正、その後ユーザーに確認。`0`: 設計レビューなし。`budgets.architect`（デフォルト 3）は、デフォルトでは設計とラウンドごとに 1 回の修正をまかないます。`max_iterations` に合わせて引き上げ、承認時に変更を求められることが予想される場合はさらに 1 つ増やしてください。 |
 | `design.require_approval` | bool | `true`（デフォルト）にすると、`.ai/plan.md` が存在し、現時点の plan が `design approve` で承認されていない間は -- ユーザーが了承した後に承認するものです -- `run implementer` が拒否します（exit 5）。`false` は誰も見ていない実行（CI、バッチ）向けで、このゲートが導入される前の挙動に戻します。`review.design` の下ではなくトップレベルにあるのは、パネルが plan をレビューしたかどうかにかかわらず承認が重要だからです。`--force` ではバイパスできず、この設定だけがバイパスできます。 |
 | `design.resume.max_age_seconds` | int ≥ 0 \| null | `run architect --resume` がセッションを継続できる、直前の architect の実行の古さの上限です（デフォルト 3600。測定時に CLI がプロンプトキャッシュを保持していた時間）。これより古ければ、改訂は全文プロンプトで新規に走ります。`0` は常に新規、`null` はデフォルトの意味です。 |
@@ -1138,7 +1211,8 @@ dev-orchestra config validate
 `config setup --defaults` は `version: 1` だけを書き込みます: 推奨設定を選ぶということは、
 何も上書きしないことを選ぶということで、そのファイルはプリセット `standard` で動きます。
 `config setup --preset <name>` は `version` と `preset` を書き込み、プリセットが決めるキー以外に
-ファイルが持っていた値は残します。ロールから消すのは `provider` と `model` だけです:
+ファイルが持っていた値は残します。`review.design.reviewers` のリストは消え、
+`review.design.reviewers_extra` は残ります。ロールから消すのは `provider` と `model` だけです:
 `options` や `model_tiers` が残るロールは設定されたままなのでフィットされず、表示される note が
 その旨を伝えます。`config show --scope global|project` はそのレイヤーを
 ディスク上にあるとおりに表示し、`config show` は解決された結果の設定を表示します。
@@ -1195,9 +1269,9 @@ Detected CLIs:
   codex:   installed
 
 Preset (fitted to the CLIs found above):
-  1) quality  -- strongest models, four reviewers, design review always on
-  2) standard -- the built-in defaults: general reviewers, security and test on Claude sonnet, security on high-risk changes (recommended)
-  3) fast     -- lighter models, one reviewer plus a security one on high-risk changes
+  1) quality  -- strongest models, Codex beside Claude on both panels, design review auto
+  2) standard -- the built-in defaults: general on Claude and Codex, security on sonnet (opus on high-risk changes), test on sonnet (recommended)
+  3) fast     -- lighter models, one reviewer plus a sonnet security one on high-risk changes; design review off
   4) customise each role
 Choice [2]: 4
 
@@ -1212,12 +1286,11 @@ Choice [2]: 4
      4) custom (type a family or exact model id)
 ...
 5. External Reviewers
-   How many reviewers? [5]
+   How many reviewers? [4]
    reviewer #1  CLI / Model / Review role / id
    reviewer #2  CLI / Model / Review role / id
    reviewer #3  CLI / Model / Review role / id
    reviewer #4  CLI / Model / Review role / id
-   reviewer #5  CLI / Model / Review role / id
    Add another reviewer? [y/N]
 
 Configuration
@@ -1228,9 +1301,8 @@ Configuration
   Reviews
     1. claude / opus / latest / general / claude-general
     2. codex / recommended-coding / latest / general / codex-general
-    3. claude / sonnet / latest / security / claude-security
+    3. claude / sonnet / latest / security / claude-security (opus when high-risk)
     4. claude / sonnet / latest / test / claude-test
-    5. claude / opus / latest / security / claude-security-2 (when: high-risk)
     design review: auto  (review.design.enabled)
     optimization level: balanced  (optimization.level)
     skip unneeded roles: on  (optimization.skip_unneeded_roles)
@@ -1241,12 +1313,25 @@ Configuration
 Save configuration? [Y/n]
 ```
 
+ここでの設計パネルがコードのパネルのコピーなのは、回答が `reviewers` として保存されるからです。
+プリセットをそのまま保存すれば、フィットした設計パネルが表示されます。
+
 グローバルファイルでは、最初の質問がプリセットです。プリセットを選ぶと、それがこのマシンで
-解決される設定と、フィットし直した点の note を表示して `Save as is?` と尋ねます: yes なら、
-プリセットが決めるキー以外にファイルが持っていた値と一緒に `version` と `preset` を保存します。
+解決される設定（フィットした設計パネルを含む）と、フィットし直した点の note を表示して
+`Save as is?` と尋ねます: yes なら、プリセットが決めるキー（`review.design.reviewers` を含む）
+以外にファイルが持っていた値と一緒に `version` と `preset` を保存します。
 no なら、プリセットのフィットを出発点にロールとレビュアーの質問に進み、そこから変えた点だけを
 保存します: 変えたロールは丸ごと、変えたパネルはリストとして保存され、提示されたままにした
-ものはすべてプリセットに従い続けます。ファイルのそれ以外の設定は、デフォルトと等しい値も含めて
+ものはすべてプリセットに従い続けます。リストとして保存したコードのパネルは、設計ラウンドも
+プリセットの設計パネルから外すので、ウィザードはそう伝えます（`note: the reviewers differ from
+preset standard's fit, so they are saved; design rounds then run them without when, not the
+preset's design panel`）。レビュアーの質問は、CLI を変えない限りその席の `high_risk_model` を
+残します。別の CLI を選ぶと、`reviewer set --provider` と同じく、1 行（`note: provider is now
+codex; its high_risk_model was removed (reviewer set --high-risk-model sets another)`）を出して
+high-risk のモデルを外します。`relevance` はロールを変えない限り残します（`always` はどのロールでも
+残ります）。別のロールを選ぶと、1 行（`note: role is now general; its relevance security was
+removed (reviewer set --relevance sets another)`）を出して外します。規則は 1 つのロールの仕事に
+ついてのもので、general の席は規則を持たないからです。ファイルのそれ以外の設定は、デフォルトと等しい値も含めて
 そのまま残ります。`customise each role` はプリセット導入前のウィザードと
 同じで、すべての回答が保存されます。プロジェクトファイルでは、プリセットの質問はしません。
 

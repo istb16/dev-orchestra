@@ -1,4 +1,4 @@
-<!-- translated-from: references/reviews.md sha256:a7fe53967d9d2814e98d8f8b34343a426ea8d330a2fdd5e1e17a76df1a244639 -->
+<!-- translated-from: references/reviews.md sha256:b168d3b3124aa3c8456a88a5e7e3c30996b74bddbbac2e460a559e81ed840a40 -->
 
 > この文書は [references/reviews.md](../../../references/reviews.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -322,8 +322,9 @@ complete のままで、diff がファイルとして渡されたラウンドは
 ## 設計レビュー
 
 間違えうるコードがまだ存在しない段階で、レビュアー陣が plan を評価します。いずれかの
-ファイルが設計パネル（`review.design.reviewers`）を設定していればそれが、なければ従来どおり
-すべての `when` を無視したコードレビューのレビュアー陣が評価します（`references/configuration.md` を参照）。
+ファイルが設計パネル（`review.design.reviewers`）を設定していればそれが、なければプリセットが
+フィットした設計パネルが、ファイルが `reviewers` を並べていれば従来どおりすべての `when` を無視した
+コードレビューのレビュアー陣が評価します（`references/configuration.md` を参照）。
 orchestrator がこれを実行するかどうかは `review.design.enabled` が決めます。`true` は常に、
 `false` は決して実行せず、`auto`（デフォルト）は plan のどこかで高リスクのパスを挙げているか、
 `Files to Modify` で 6 個以上のコードファイル（docs・tests・`.md` ファイルは数えません）を挙げる plan のとき、

@@ -7,7 +7,7 @@ import copy
 import os
 import re
 import sys
-from typing import Any, Callable, Dict, List, NamedTuple, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple, Union
 
 from . import config as config_mod
 from . import config_policy as policy_mod
@@ -31,6 +31,7 @@ from .cli_common import (
     _panel_write_problems,
     _prune_base,
     _read_layer,
+    _recorded,
     _resolve_scope,
     _seed_list,
     _seed_panel,
@@ -468,7 +469,8 @@ def cmd_config_prune(args: argparse.Namespace) -> int:
         _err("no %s configuration file at %s" % (scope, path))
         return 2
     layer = config_mod.read_config_file(path)
-    pruned, dropped = config_mod.prune_layer(layer, _prune_base(scope, args.cwd, layer))
+    base, held = _prune_base(scope, args.cwd, layer)
+    pruned, dropped = config_mod.prune_layer(layer, base)
     if _compose_preview(scope, pruned)[0] != _compose_preview(scope, layer)[0]:
         # Nothing should be able to get here. It is checked anyway because the
         # failure would be a configuration quietly changing underneath someone
@@ -477,6 +479,11 @@ def cmd_config_prune(args: argparse.Namespace) -> int:
         return 2
 
     shown = config_mod.shown_location(path)
+    if "reviewers" in held:
+        _out(
+            "Kept reviewers in %s: dropping it would move design reviews to the preset's design panel."
+            % shown
+        )
     if not dropped:
         _out("Nothing to drop from %s: it already holds only its own decisions." % shown)
         # Dropping values is not the only thing pruning does: `prune_layer` also
@@ -833,8 +840,8 @@ def _design_flags(args: argparse.Namespace) -> Tuple[bool, Optional[int]]:
 def _panel_in_force(preview: Dict[str, Any], fit: Any, design: bool) -> Tuple[List[Any], List[Any]]:
     """``(panel, origins)`` a composed preview runs on one stage.
 
-    The design panel is the preview's own when a file sets one, else the code
-    panel without ``when``, each seat keeping its code origin.
+    The design panel is the preview's own when a file or the fit sets one,
+    else the code panel without ``when``, each seat keeping its code origin.
     """
     if not design:
         panel = preview.get("reviewers")
@@ -847,11 +854,24 @@ def _panel_in_force(preview: Dict[str, Any], fit: Any, design: bool) -> Tuple[Li
     return copies, list(fit.origins)
 
 
-def _inherited_design_panel(scope: str) -> str:
-    """What a file that lists no design reviewers takes its design panel from."""
+def _fit_design_preset(preset: Any, origins: Sequence[Any]) -> Optional[str]:
+    """The preset whose fit the design panel follows, or None when it follows a file or the code panel."""
+    if not preset or not config_mod.design_panel_is_fit(origins):
+        return None
+    return str(preset)
+
+
+def _inherited_design_panel(scope: str, preset: Any = None, origins: Sequence[Any] = ()) -> str:
+    """What a file that lists no design reviewers takes its design panel from.
+
+    ``origins`` are the design panel's in force, which say whether it is the fit's.
+    """
     below = _global_file() if scope == "project" else {}
     if config_mod.get_path(below, config_mod.DESIGN_PANEL.reviewers) is not None:
         return "the global file's design reviewers"
+    fit_preset = _fit_design_preset(preset, origins)
+    if fit_preset:
+        return "preset %s's fit" % fit_preset
     return "the code panel"
 
 
@@ -874,7 +894,7 @@ def cmd_reviewer_add(args: argparse.Namespace) -> int:
     path, layer = _read_layer(scope, args.cwd)
     before = copy.deepcopy(layer)
     preview, fit, preset, _source = _compose_preview(scope, layer)
-    panel, _origins = _panel_in_force(preview, fit, design)
+    panel, origins = _panel_in_force(preview, fit, design)
     role = args.role or "general"
     reviewer_id = args.id or config_mod.suggest_reviewer_id({"reviewers": panel}, args.provider, role)
     if scope == "project" and warned_provider(args.provider):
@@ -925,7 +945,7 @@ def cmd_reviewer_add(args: argparse.Namespace) -> int:
     if listed:
         _out(added)
     elif design:
-        follows = _inherited_design_panel(scope)
+        follows = _inherited_design_panel(scope, preset, origins)
         _out("%s as a design extra; the design panel still follows %s" % (added, follows))
     else:
         _out("%s as an extra; the panel still follows %s" % (added, _inherited_panel(scope, preset)))
@@ -1013,7 +1033,13 @@ def _id_taken(panel: List[Any], index: Optional[int], reviewer_id: Any) -> bool:
 
 
 def _seed_design_panel(
-    scope: str, layer: Dict[str, Any], panel: List[Any], origins: List[Any], from_code: bool, path: str
+    scope: str,
+    layer: Dict[str, Any],
+    panel: List[Any],
+    origins: List[Any],
+    from_code: bool,
+    path: str,
+    fit_preset: Optional[str] = None,
 ) -> Tuple[Optional[str], Optional[str]]:
     """Copy the design panel in force into the file before one seat of it is edited.
 
@@ -1021,12 +1047,14 @@ def _seed_design_panel(
     below it whole, so changing one seat is a decision about the others. The
     file's own design extras stay extras. A seat copied from the code panel
     loses its ``when``, as it never had one on a design round, and the note
-    says so. In a project file a seat on a warned provider is left out by
-    the rule ``_seed_panel`` follows (``_without_warned_seats``): unless the
-    global file lists the panel the seat came from -- the design panel for a
-    design seat, the code panel for one copied from it -- or it is the
-    project file's own. Returns the notes for a write that succeeds and for
-    one that fails.
+    says so. ``fit_preset`` names the preset whose fit is copied; a file
+    that takes it off the fit says what it recorded, as
+    ``_frozen_panel_note`` does for the code panel. In a project file a seat
+    on a warned provider is left out by the rule ``_seed_panel`` follows
+    (``_without_warned_seats``): unless the global file lists the panel the
+    seat came from -- the design panel for a design seat, the code panel for
+    one copied from it -- or it is the project file's own. Returns the notes
+    for a write that succeeds and for one that fails.
     """
     if config_mod.get_path(layer, config_mod.DESIGN_PANEL.reviewers) is not None:
         return None, None
@@ -1049,11 +1077,23 @@ def _seed_design_panel(
 
     copied, dropped = _without_warned_seats([reviewer for reviewer, _origin in seats], scope, chosen)
     config_mod.set_path(layer, config_mod.DESIGN_PANEL.reviewers, copy.deepcopy(copied))
-    source = "the code panel, without its when conditions" if from_code else "the design panel in force"
+    if from_code:
+        source = "the code panel, without its when conditions"
+    elif fit_preset:
+        source = "preset %s's fit" % fit_preset
+    else:
+        source = "the design panel in force"
     frozen = "note: %s now lists the design reviewers (review.design.reviewers), copied from %s" % (
         config_mod.shown_location(path),
         source,
     )
+    if fit_preset:
+        # The fit's design panel is in force only where no file lists one, so
+        # a project file copying it takes it off the fit too.
+        frozen += "; the design panel no longer follows preset %s's fit (recorded %s)" % (
+            fit_preset,
+            _recorded(copied),
+        )
     if not dropped:
         return frozen, None
     left_out = _not_copied(path, dropped)
@@ -1093,6 +1133,8 @@ class _FoundSeat(NamedTuple):
     reviewer: Dict[str, Any]
     #: A design panel that is the code panel without ``when``: no file lists one.
     from_code: bool
+    #: The preset whose fit the design panel is, or None.
+    fit_preset: Optional[str] = None
 
 
 def _seed_for_edit(
@@ -1104,7 +1146,9 @@ def _seed_for_edit(
 ) -> Tuple[Optional[str], Optional[str]]:
     """Copy the panel the found seat is in into the file, as an edit of an inherited seat needs."""
     if found.design:
-        return _seed_design_panel(scope, layer, found.panel, found.origins, found.from_code, path)
+        return _seed_design_panel(
+            scope, layer, found.panel, found.origins, found.from_code, path, found.fit_preset
+        )
     return _seed_panel(scope, layer, _fitted_base(scope, layer), path, args.cwd)
 
 
@@ -1119,7 +1163,7 @@ def _find_seat(args: argparse.Namespace, scope: str, layer: Dict[str, Any]) -> U
     if refusal is not None:
         return refusal
     keys = config_mod.DESIGN_PANEL if design else config_mod.CODE_PANEL
-    preview, fit, _preset, _source = _compose_preview(scope, layer)
+    preview, fit, preset, _source = _compose_preview(scope, layer)
     panel, origins = _panel_in_force(preview, fit, design)
     if _refuse_renamed_own_extra(layer, panel, origins, scope, args.selector, keys):
         return 2
@@ -1129,7 +1173,8 @@ def _find_seat(args: argparse.Namespace, scope: str, layer: Dict[str, Any]) -> U
         _err(str(exc))
         return 2
     from_code = design and config_mod.get_path(preview, keys.reviewers) is None
-    return _FoundSeat(design, keys, panel, origins, index, reviewer, from_code)
+    fit_preset = _fit_design_preset(preset, origins) if design else None
+    return _FoundSeat(design, keys, panel, origins, index, reviewer, from_code, fit_preset)
 
 
 def cmd_reviewer_remove(args: argparse.Namespace) -> int:
@@ -1207,9 +1252,9 @@ def cmd_reviewer_set(args: argparse.Namespace) -> int:
             return 2
     family_note = ""
     if args.provider:
-        previous = reviewer.get("provider")
-        reviewer["provider"] = args.provider
-        changed = args.provider != previous
+        changed = args.provider != reviewer.get("provider")
+        keep_high_risk = bool(getattr(args, "high_risk_model", None))
+        risk_removed = config_mod.move_reviewer_provider(reviewer, args.provider, keep_high_risk)
         if changed and not (args.model or args.pin):
             # A family is the old CLI's word for a model; the new one would
             # not resolve it, so it gets its own default instead.
@@ -1218,11 +1263,9 @@ def cmd_reviewer_set(args: argparse.Namespace) -> int:
             reviewer["model"] = {"family": new_family, "version": "latest"}
             message = "note: model family reset from %r to %r for provider %s (--model picks another)"
             family_note = message % (old_family, new_family, args.provider)
-        if changed and "high_risk_model" in reviewer and not getattr(args, "high_risk_model", None):
-            # The same holds for the high-risk model, whatever --model says:
-            # it has no default to reset to, so it goes.
-            reviewer.pop("high_risk_model")
-            removed = "its high_risk_model was removed (--high-risk-model sets another)"
+        if risk_removed:
+            # Whatever --model says: the high-risk model has no default to reset to.
+            removed = "%s (--high-risk-model sets another)" % config_mod.HIGH_RISK_MODEL_REMOVED
             family_note = (
                 family_note + "; " + removed
                 if family_note

@@ -131,6 +131,7 @@ def default_config() -> Dict[str, Any]:
                 "id": "claude-security",
                 "provider": "claude",
                 "model": {"family": "sonnet", "version": "latest"},
+                "high_risk_model": {"family": "opus", "version": "latest"},
                 "role": "security",
             },
             {
@@ -138,13 +139,6 @@ def default_config() -> Dict[str, Any]:
                 "provider": "claude",
                 "model": {"family": "sonnet", "version": "latest"},
                 "role": "test",
-            },
-            {
-                "id": "claude-security-2",
-                "provider": "claude",
-                "model": {"family": "opus", "version": "latest"},
-                "role": "security",
-                "when": "high-risk",
             },
         ],
         "review": {
@@ -213,7 +207,8 @@ def default_config() -> Dict[str, Any]:
             # `true` always reviews the plan, `false` never does. A file may
             # give the design round a panel of its own with `reviewers` here,
             # or add to the one it inherits with `reviewers_extra`; with
-            # neither, a design round runs the code panel, `when` ignored.
+            # neither, a design round runs the preset's fitted design panel,
+            # or the code panel with `when` ignored where a file lists one.
             "design": {"enabled": "auto", "max_iterations": 2},
         },
         # Implementation waits for the user's explicit approval of the plan.
@@ -652,22 +647,66 @@ def sets_design_panel(layer: Dict[str, Any]) -> bool:
     return any(get_path(layer, key) is not None for key in DESIGN_PANEL)
 
 
+def design_panel_follows_fit(global_layer: Dict[str, Any], project_layer: Dict[str, Any]) -> bool:
+    """Whether the preset's design panel, when it has one, is the design panel's base.
+
+    The one rule for it: a file that lists ``reviewers`` keeps the design
+    rounds on its copy of them, as before presets had a design panel, and a
+    file that lists ``review.design.reviewers`` replaces the fit's list. So
+    either list, in either file, takes the fit's design panel out.
+    """
+    return not any(
+        layer.get("reviewers") is not None or get_path(layer, DESIGN_PANEL.reviewers) is not None
+        for layer in (global_layer, project_layer)
+    )
+
+
+def design_panel_is_fit(origins: Sequence["ReviewerOrigin"]) -> bool:
+    """Whether a composed design panel's ``origins`` say its base is the preset's fit."""
+    return any(origin.layer == "default" and origin.key == DESIGN_PANEL.reviewers for origin in origins)
+
+
+#: What a note says when a seat moved to another CLI lost its high-risk model.
+HIGH_RISK_MODEL_REMOVED = "its high_risk_model was removed"
+
+
+def move_reviewer_provider(reviewer: Dict[str, Any], provider: str, keep_high_risk: bool = False) -> bool:
+    """Put ``reviewer`` on ``provider``; True when its ``high_risk_model`` went with the move.
+
+    A high-risk model is the old CLI's word for a model, as a family is, and
+    has no default to reset to, so it goes when the provider changes --
+    unless ``keep_high_risk``: the caller is setting another.
+    """
+    previous = reviewer.get("provider")
+    reviewer["provider"] = provider
+    if provider == previous or keep_high_risk or "high_risk_model" not in reviewer:
+        return False
+    reviewer.pop("high_risk_model")
+    return True
+
+
 def compose_design_panel(
     data: Dict[str, Any],
     code_origins: Sequence[ReviewerOrigin],
     global_layer: Dict[str, Any],
     project_layer: Dict[str, Any],
 ) -> Tuple[List[ReviewerOrigin], List[str]]:
-    """Put the design panel into ``data`` when a file sets one: ``(origins, notes)``.
+    """Put the design panel into ``data`` when there is one: ``(origins, notes)``.
 
     With no file setting ``review.design.reviewers`` or ``reviewers_extra``
-    there is no design panel, and nothing is written: a design round runs the
-    code panel with ``when`` ignored, as it always has. Otherwise the base is
-    the project file's list, else the global file's, else a copy of the
-    composed code panel with every ``when`` removed; then each file's design
-    extras are folded in, as ``fold_extras`` folds the code panel's.
+    and no design list from the fit there is no design panel, and nothing is
+    written: a design round runs the code panel with ``when`` ignored, as it
+    always has. Otherwise the base is the project file's list, else the
+    global file's, else the fit's, else a copy of the composed code panel
+    with every ``when`` removed; then each file's design extras are folded
+    in, as ``fold_extras`` folds the code panel's.
     """
-    if not (sets_design_panel(global_layer) or sets_design_panel(project_layer)):
+    layers = (global_layer, project_layer)
+    file_listed = any(get_path(layer, DESIGN_PANEL.reviewers) is not None for layer in layers)
+    fitted = design_panel_follows_fit(global_layer, project_layer) and isinstance(
+        get_path(data, DESIGN_PANEL.reviewers), list
+    )
+    if not (fitted or sets_design_panel(global_layer) or sets_design_panel(project_layer)):
         return [], []
     review = data.setdefault("review", {})
     if not isinstance(review, dict):
@@ -681,8 +720,8 @@ def compose_design_panel(
         return [], []
     design.pop("reviewers_extra", None)
     base_origins: Optional[Sequence[ReviewerOrigin]] = None
-    layers = (global_layer, project_layer)
-    if any(get_path(layer, DESIGN_PANEL.reviewers) is not None for layer in layers):
+    if file_listed or fitted:
+        # The fit's list has no file origins, so ``fold_extras`` labels it the fit's.
         base = design.get("reviewers")
     else:
         code = data.get("reviewers")
@@ -802,15 +841,15 @@ class LoadedConfig:
         return ReviewerOrigin(self.layer_of("reviewers"), "reviewers", index)
 
     def has_design_panel(self) -> bool:
-        """Whether a file set a design panel, so ``review.design.reviewers`` is composed."""
+        """Whether a file or the fit set a design panel, so ``review.design.reviewers`` is composed."""
         design = (self.data.get("review") or {}).get("design")
         return isinstance(design, dict) and design.get("reviewers") is not None
 
     def design_reviewers(self) -> List[Dict[str, Any]]:
         """The panel a design round runs.
 
-        The composed ``review.design.reviewers`` when a file sets a design
-        panel; otherwise the code panel, each seat copied without its
+        The composed ``review.design.reviewers`` when a file or the fit sets
+        a design panel; otherwise the code panel, each seat copied without its
         ``when``, which is what a design round has always run.
         """
         if self.has_design_panel():
@@ -828,13 +867,18 @@ class LoadedConfig:
 
     @property
     def design_panel_source(self) -> str:
-        """Where the design panel's base comes from: ``project``, ``global`` or ``code``.
+        """Where the design panel's base comes from: ``project``, ``global``, ``fit`` or ``code``.
 
+        ``fit`` is the preset's design panel, when no file lists either panel.
         ``code`` is the code panel, copied without ``when``: the case with no
         design panel at all, and the one where a file adds design extras only.
         """
         layer = self.layer_of(DESIGN_PANEL.reviewers)
-        return layer if layer in ("project", "global") else "code"
+        if layer in ("project", "global"):
+            return layer
+        if design_panel_is_fit(self.design_reviewer_origins):
+            return "fit"
+        return "code"
 
     def review_settings(self) -> Dict[str, Any]:
         settings = default_config()["review"]
@@ -1112,8 +1156,12 @@ def compose(
 
     values = copy.deepcopy(fit.values)
     listed = any(layer.get("reviewers") is not None for _label, layer in layers)
+    follows_fit = design_panel_follows_fit(global_layer, project_layer)
     if listed:
         values.pop("reviewers", None)
+    if not follows_fit:
+        # Either list, in either file, takes the fit's design panel out.
+        pop_path(values, DESIGN_PANEL.reviewers)
     defaults = default_config()
     unfitted: List[str] = []
     for role in KNOWN_ROLES:
@@ -1124,10 +1172,16 @@ def compose(
         if values.pop(role) != defaults[role]:
             fit.notes.append("%s is set by %s and was not fitted" % (role, where))
             fit.subjects.append("")
+    dropped = set(unfitted)
+    if listed:
+        dropped.add("reviewers")
+    if not follows_fit:
+        # The fit's design panel went, and its notes with it.
+        dropped.add(DESIGN_PANEL.reviewers)
     kept = [
         (note, subject)
         for note, subject in zip(fit.notes, fit.subjects, strict=True)
-        if subject not in unfitted and not (listed and subject == "reviewers")
+        if subject not in dropped
     ]
     data = deep_merge(deep_merge(deep_merge(defaults, values), global_layer), project_layer)
     # Each file's extras join the panel it inherits, so every reader of
@@ -1137,7 +1191,7 @@ def compose(
     if reviewers is not data.get("reviewers"):
         data["reviewers"] = reviewers
     kept += [(note, "reviewers_extra") for note in folded]
-    # The design panel, when a file sets one; built on the code panel just
+    # The design panel, when a file or the fit sets one; built on the code panel just
     # composed, so a design panel that copies it copies the one in force.
     design_origins, design_folded = compose_design_panel(data, origins, global_layer, project_layer)
     kept += [(note, DESIGN_PANEL.extras) for note in design_folded]
@@ -1973,6 +2027,25 @@ def set_path(data: Dict[str, Any], dotted: str, value: Any) -> Dict[str, Any]:
             raise ConfigError("%s: not a mapping" % dotted)
         node[last] = value
     return data
+
+
+def pop_path(data: Dict[str, Any], dotted: str) -> None:
+    """Remove the mapping key at ``a.b.c`` in place, and each parent it leaves empty.
+
+    A path that is not there, or runs through something other than a
+    mapping, is left as it is.
+    """
+    parts = dotted.split(".")
+    parents = [data]
+    for part in parts[:-1]:
+        child = parents[-1].get(part)
+        if not isinstance(child, dict):
+            return
+        parents.append(child)
+    parents[-1].pop(parts[-1], None)
+    for depth in range(len(parents) - 1, 0, -1):
+        if not parents[depth]:
+            parents[depth - 1].pop(parts[depth - 1], None)
 
 
 def get_path(data: Dict[str, Any], dotted: str, default: Any = None) -> Any:
