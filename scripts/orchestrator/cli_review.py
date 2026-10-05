@@ -30,6 +30,7 @@ from .cli_common import (
     _wrote_plan,
 )
 from .providers import WARNED_ENFORCEMENT, get_provider
+from .summary import DESIGN_PANEL_SOURCES
 
 # --------------------------------------------------------------------------- review
 
@@ -57,14 +58,19 @@ def _refuse_if_runtime_spent(book: ledger_mod.Ledger, stage: str, force: bool) -
     return ledger_mod.EXIT_BUDGET_EXHAUSTED
 
 
-def _warn_unenforced(loaded: config_mod.LoadedConfig, reviewers: List[Dict[str, Any]]) -> Dict[str, str]:
+def _warn_unenforced(
+    loaded: config_mod.LoadedConfig, reviewers: List[Dict[str, Any]], panel: str = "code"
+) -> Dict[str, str]:
     """One line per reviewer about to run on a provider that cannot be held to reading.
 
     A reviewer refused for coming with the project file is not warned about:
-    it does not run. Returns the lines printed, by reviewer id.
+    it does not run. Returns the lines printed, by reviewer id. ``panel`` is
+    the panel the round runs, since an id can name a seat in each.
     """
     refused = list(policy_mod.project_raw_arg_refusals(loaded))
-    lines = policy_mod.reviewer_enforcement_warnings(loaded.data, refused)
+    lines = policy_mod.reviewer_enforcement_warnings(
+        loaded.data, refused, panel, design_origins=loaded.design_reviewer_origins
+    )
     printed: Dict[str, str] = {}
     for reviewer in reviewers:
         reviewer_id = str(reviewer.get("id") or "")
@@ -75,16 +81,18 @@ def _warn_unenforced(loaded: config_mod.LoadedConfig, reviewers: List[Dict[str, 
     return printed
 
 
-def _reviewer_refusals(loaded: config_mod.LoadedConfig, reviewers: List[Dict[str, Any]]) -> Dict[str, str]:
-    """Why each reviewer about to run is not run, by reviewer id.
+def _reviewer_refusals(
+    loaded: config_mod.LoadedConfig, reviewers: List[Dict[str, Any]], panel: str = "code"
+) -> Dict[str, str]:
+    """Why each reviewer about to run is not run, by reviewer id, in ``panel``.
 
     The configuration's refusals, and one decided on the live report: a
     reviewer from the project file whose adapter reports, when asked now, that
     it cannot be held to reading -- one whose report is not static, which the
     configuration's refusals never ask.
     """
-    refusals = dict(policy_mod.reviewer_raw_arg_refusals(loaded))
-    from_project = policy_mod.reviewer_provider_refusals(loaded)
+    refusals = dict(policy_mod.reviewer_raw_arg_refusals(loaded, panel))
+    from_project = policy_mod.reviewer_provider_refusals(loaded, panel)
     for reviewer in reviewers:
         reviewer_id = str(reviewer.get("id") or "")
         if reviewer_id in refusals or reviewer_id not in from_project:
@@ -439,6 +447,8 @@ class _ReviewKind(NamedTuple):
     subject: str
     #: Put before a reviewer's id in its usage label.
     usage_prefix: str
+    #: The reviewer panel the round runs: ``code`` or ``design``.
+    panel: str
 
 
 _CODE = _ReviewKind(
@@ -450,6 +460,7 @@ _CODE = _ReviewKind(
     change_word="fix",
     subject="snapshot",
     usage_prefix="",
+    panel="code",
 )
 
 _DESIGN = _ReviewKind(
@@ -461,6 +472,7 @@ _DESIGN = _ReviewKind(
     change_word="revision",
     subject="plan",
     usage_prefix="design:",
+    panel="design",
 )
 
 
@@ -557,7 +569,7 @@ def _run_panel(
     idle_timeout = args.idle_timeout
     if idle_timeout is None:
         idle_timeout = settings.get("idle_timeout_seconds")
-    warned = _warn_unenforced(ctx.loaded, reviewers)
+    warned = _warn_unenforced(ctx.loaded, reviewers, ctx.kind.panel)
     try:
         runs = review_mod.run_reviews(
             reviewers,
@@ -576,7 +588,7 @@ def _run_panel(
                 inline_chars=inline_chars,
                 prompt_for=prompt_for,
                 surrounding=surrounding,
-                refusals=_reviewer_refusals(ctx.loaded, reviewers),
+                refusals=_reviewer_refusals(ctx.loaded, reviewers, ctx.kind.panel),
                 activity_for=_progress_echo() if getattr(args, "progress", False) else None,
             ),
         )
@@ -604,8 +616,12 @@ def _progress_echo() -> Callable[[str], activity.Sink]:
     return sink_for
 
 
-def _account_runs(ctx: _RoundContext, panel: _PanelRun) -> List[Dict[str, Any]]:
-    """Record what each run used and say what its adapter said; the runs as recorded."""
+def _account_runs(ctx: _RoundContext, panel: _PanelRun, switched: Sequence[str] = ()) -> List[Dict[str, Any]]:
+    """Record what each run used and say what its adapter said; the runs as recorded.
+
+    ``switched`` holds the ids that ran on their ``high_risk_model``: their
+    entries say so with ``model_slot``. An entry without it is the usual slot.
+    """
     for run in panel.runs:
         if run.invoked:
             # Prefixed, so a reviewer's design cost never merges into its code
@@ -613,7 +629,29 @@ def _account_runs(ctx: _RoundContext, panel: _PanelRun) -> List[Dict[str, Any]]:
             label = ctx.kind.usage_prefix + str(run.reviewer.get("id") or "reviewer")
             ctx.book.record_usage(ctx.kind.stage, run.usage.to_dict(), label=label)
     _report_run_warnings(panel.runs, panel.warned)
-    return [run.to_dict() for run in panel.runs]
+    entries = [run.to_dict() for run in panel.runs]
+    for entry in entries:
+        if str(entry.get("id")) in switched:
+            entry["model_slot"] = opt_mod.HIGH_RISK_SLOT
+    return entries
+
+
+def _risk_models(
+    reviewers: List[Dict[str, Any]], high_risk: bool, why: str
+) -> Tuple[List[Dict[str, Any]], List[str]]:
+    """Each seat on its ``high_risk_model`` on a high-risk round: ``(reviewers, switched ids)``.
+
+    One note per seat that switched, saying why and from what to what.
+    """
+    chosen: List[Dict[str, Any]] = []
+    switched: List[str] = []
+    for reviewer in reviewers:
+        run, moved = opt_mod.risk_model(reviewer, high_risk)
+        if moved:
+            switched.append(str(reviewer.get("id")))
+            _err("note: %s" % opt_mod.risk_model_note(reviewer, run, why))
+        chosen.append(run)
+    return chosen, switched
 
 
 def _round_repeats(ctx: _RoundContext, data: Dict[str, Any], rerun: bool = False) -> int:
@@ -742,8 +780,11 @@ def _round_plan(
 
     Built here for both `review run` and the `status` preview, so the
     preview cannot drift from the run. The preview passes the whole panel,
-    and neither ``--only`` nor ``--high-risk``.
+    and neither ``--only`` nor ``--high-risk``. The reviewed files go in by
+    name, for the role relevance rules; a snapshot without the list (or no
+    snapshot yet) has nothing for them to judge.
     """
+    files = meta.get("files")
     return opt_mod.decide(
         loaded.optimization_settings(),
         settings,
@@ -757,6 +798,7 @@ def _round_plan(
         carried=review_mod.carried_findings(workspace, meta),
         only=only,
         condition_paths=_condition_paths(meta),
+        reviewed=[str(path) for path in files] if isinstance(files, list) else None,
     )
 
 
@@ -881,26 +923,83 @@ def _design_decision(loaded: config_mod.LoadedConfig, workspace: ws.Workspace) -
     round_ran = (
         int(design_data.get("iteration", 0) or 0) > 0 or approval_mod.design_round(workspace) is not None
     )
-    text = ws.read_text_strict(workspace.plan_path)
-    if text is None:
-        plan_state, scan = "unreadable", None
-    elif not text.strip():
-        # Blank is no plan, as approval.read_plan reads it.
-        plan_state, scan = "missing", None
-    else:
-        plan_state, scan = "ok", review_mod.plan_tokens(text)
+    plan_state, scan = _plan_scan(workspace)
     return opt_mod.decide_design(
         mode, loaded.optimization_settings(), scan, plan_state=plan_state, round_ran=round_ran
     )
 
 
-def _run_design_review(args: argparse.Namespace, loaded: config_mod.LoadedConfig) -> int:
-    """Run the panel against `.ai/plan.md` instead of against a diff.
+def _plan_scan(workspace: ws.Workspace) -> Tuple[str, Any]:
+    """``(plan_state, scan)`` of the workflow's plan, read strictly.
 
-    Same reviewers, same fan-out, same read-only mode. What differs is the
-    input, the prompt, and where the results land -- and the last of those is
-    what keeps a design round from advancing or exhausting the code review's
-    counter.
+    ``ok`` with ``review.plan_tokens()`` of it; ``missing`` for no plan or a
+    blank one, as approval.read_plan reads it; ``unreadable`` otherwise.
+    """
+    text = ws.read_text_strict(workspace.plan_path)
+    if text is None:
+        return "unreadable", None
+    if not text.strip():
+        return "missing", None
+    return "ok", review_mod.plan_tokens(text)
+
+
+def _design_carried(workspace: ws.Workspace, lineage: str) -> List[Dict[str, Any]]:
+    """The accepted findings of the live design report, unless its lineage was reset.
+
+    The design round's analogue of ``review.carried_findings``: a seat that
+    reported one of these is kept to re-check it. Whatever plan the report
+    reviewed -- a revision is meant to address them, so a revised plan is
+    exactly the round that must re-check them. Empty when no design round
+    exists, or when ``lineage`` is given and the report belongs to another.
+    """
+    consolidated = ws.read_json(workspace.design_review().consolidated_json_path, {}) or {}
+    if not consolidated:
+        return []
+    if lineage and str(consolidated.get("lineage") or "") != lineage:
+        return []
+    return review_mod.accepted_findings(consolidated)
+
+
+def _design_lineage(workspace: ws.Workspace, book: ledger_mod.Ledger) -> str:
+    """The lineage the next design round of this workflow would record."""
+    return review_mod.review_lineage(workspace.design_review(), book.workflow_id())
+
+
+def _design_round_plan(
+    loaded: config_mod.LoadedConfig,
+    workspace: ws.Workspace,
+    panel: List[Dict[str, Any]],
+    *,
+    lineage: str,
+    declared: bool = False,
+    only: bool = False,
+) -> opt_mod.DesignPlan:
+    """What a design round on this workflow's plan decides about its panel.
+
+    Built here for `review run --design`, `review status --design` and the
+    `status` preview, so the previews cannot drift from the run. A preview
+    passes the whole design panel and neither ``--only`` nor ``--high-risk``.
+    """
+    plan_state, scan = _plan_scan(workspace)
+    return opt_mod.decide_design_round(
+        loaded.optimization_settings(),
+        scan,
+        plan_state,
+        panel,
+        declared=declared,
+        carried=_design_carried(workspace, lineage),
+        only=only,
+    )
+
+
+def _run_design_review(args: argparse.Namespace, loaded: config_mod.LoadedConfig, declared: bool) -> int:
+    """Run the design panel against `.ai/plan.md` instead of against a diff.
+
+    The design panel (``review.design.reviewers`` when a file sets one, else
+    the code panel with ``when`` ignored), the same fan-out, the same
+    read-only mode. What differs is the input, the prompt, who sits on the
+    panel, and where the results land -- and the last of those is what keeps
+    a design round from advancing or exhausting the code review's counter.
     """
     workspace = _workspace(args).design_review().ensure()
     settings = loaded.review_settings()
@@ -914,7 +1013,7 @@ def _run_design_review(args: argparse.Namespace, loaded: config_mod.LoadedConfig
             "running because you asked" % decision.reason
         )
 
-    configured = loaded.reviewers()
+    configured = loaded.design_reviewers()
     reviewers = configured
     if args.only:
         reviewers = _only_reviewers(configured, args.only)
@@ -979,6 +1078,11 @@ def _run_design_review(args: argparse.Namespace, loaded: config_mod.LoadedConfig
         return refusal
     over_budget = review_mod.over_context(budget_chars, max_chars)
 
+    # Decided before the round is saved: the carried findings are read off
+    # the live report of this lineage.
+    design_plan = _design_round_plan(
+        loaded, workspace, reviewers, lineage=lineage, declared=declared, only=bool(args.only)
+    )
     meta = review_mod.write_design_snapshot(workspace, workspace.plan_path, request_path, plan_text, digest)
 
     if not reviewers:
@@ -990,9 +1094,17 @@ def _run_design_review(args: argparse.Namespace, loaded: config_mod.LoadedConfig
 
     # No gate and no panel reduction. There is no test result to judge a plan
     # by and no diff to measure, and a design decision is precisely where
-    # cross-model disagreement earns its cost -- so the whole panel runs. A
-    # reviewer's `when` is ignored here too: a plan has no paths to judge, and
-    # the design stage is where the specialists were measured to pay off.
+    # cross-model disagreement earns its cost. What does decide who sits:
+    # a `when: high-risk` seat of a configured design panel joins on a plan
+    # that names a high-risk path, and a specialist with nothing in the plan
+    # to read sits out (`optimization.relevance_records`). Under --only every
+    # named reviewer runs, and its record says so.
+    for line in design_plan.conditional_notes():
+        _err("note: %s" % line)
+    excluded = {str(record["id"]) for record in design_plan.left_out()}
+    if not args.only:
+        reviewers = [r for r in reviewers if opt_mod.qualifies(r, design_plan.conditional)]
+    reviewers, switched = _risk_models(reviewers, design_plan.is_high_risk, design_plan.risk_reason())
     max_findings = opt_mod.findings_cap(loaded.optimization_settings(), settings)
 
     ctx = _RoundContext(args, loaded, settings, workspace, book, _DESIGN, iteration)
@@ -1017,9 +1129,12 @@ def _run_design_review(args: argparse.Namespace, loaded: config_mod.LoadedConfig
         return panel
     runs = panel.runs
 
-    run_dicts = _account_runs(ctx, panel)
+    run_dicts = _account_runs(ctx, panel, switched)
     stamp = review_mod.current_snapshot_stamp(workspace)
-    findings, stale = review_mod.read_reports(workspace, [str(r.get("id")) for r in configured], stamp)
+    # A seat this round left out is left out of its consolidation too, as on
+    # the code path: its report from an earlier run of this plan is not news.
+    ids = [str(r.get("id")) for r in configured if str(r.get("id")) not in excluded]
+    findings, stale = review_mod.read_reports(workspace, ids, stamp)
     # Every reviewer of this round has returned, so this is the report the
     # round's id may be published in -- and the only place that says so. Not
     # when none of them came back with a review: a round nobody reviewed has
@@ -1027,7 +1142,7 @@ def _run_design_review(args: argparse.Namespace, loaded: config_mod.LoadedConfig
     reviewed = any(run.status in ("ok", "partial") for run in runs)
     data = review_mod.build_consolidation(
         workspace,
-        _merge_runs(workspace, run_dicts),
+        [entry for entry in _merge_runs(workspace, run_dicts) if str(entry.get("id")) not in excluded],
         findings,
         iteration,
         lineage,
@@ -1045,21 +1160,21 @@ def _run_design_review(args: argparse.Namespace, loaded: config_mod.LoadedConfig
         "reviewers": run_dicts,
         "findings": data["counts"].get("findings_total"),
         "identical_rounds": repeats,
+        # Who sat on the round and why, read back by the report and by a
+        # re-consolidation as the code round's block is.
+        "optimization": design_plan.to_dict(),
     }
     _end_round(ctx, panel.token, detail, runs)
     _round_notes(ctx, repeats, stale)
-    return _print_round(ctx, runs, run_dicts, data, {"plan": meta["plan"]})
+    return _print_round(
+        ctx, runs, run_dicts, data, {"plan": meta["plan"], "optimization": design_plan.to_dict()}
+    )
 
 
-def _refuse_design_only_flags(
-    args: argparse.Namespace, override: Optional[str], declared: bool
-) -> Optional[int]:
-    """The code review's flags on a design round, which has no use for either."""
+def _refuse_design_only_flags(args: argparse.Namespace, override: Optional[str]) -> Optional[int]:
+    """The code review's flag on a design round, which has no use for it."""
     if args.design and override:
         _err("--surrounding applies to the code review only: a design round carries no surrounding context.")
-        return 2
-    if args.design and declared:
-        _err("--high-risk applies to the code review only: a design round runs every configured reviewer.")
         return 2
     return None
 
@@ -1240,11 +1355,11 @@ def cmd_review_run(args: argparse.Namespace) -> int:
     # differs from a run without the flag.
     override = getattr(args, "surrounding", None)
     declared = bool(getattr(args, "high_risk", False))
-    refusal = _refuse_design_only_flags(args, override, declared)
+    refusal = _refuse_design_only_flags(args, override)
     if refusal is not None:
         return refusal
     if args.design:
-        return _run_design_review(args, loaded)
+        return _run_design_review(args, loaded, declared)
     workspace = _workspace(args)
     found = _code_panel(args, loaded, workspace)
     if isinstance(found, int):
@@ -1280,6 +1395,7 @@ def cmd_review_run(args: argparse.Namespace) -> int:
     if isinstance(size, int):
         return size
     reviewers = _warn_and_limit(args, plan, reviewers)
+    reviewers, switched = _risk_models(reviewers, bool(plan.risk_reason()), plan.risk_reason())
 
     book = _open_ledger(args, workspace)
     refusal = _refuse_if_runtime_spent(book, "review", args.force)
@@ -1302,7 +1418,7 @@ def cmd_review_run(args: argparse.Namespace) -> int:
     context_on = size.adoption.mode != "none"
 
     data, detail, measurement, stale = _consolidate_code_round(
-        ctx, panel, meta, plan, size, excluded, configured, override, lineage
+        ctx, panel, meta, plan, size, excluded, configured, override, lineage, switched
     )
     run_dicts = detail["reviewers"]
     _end_round(ctx, panel.token, detail, runs)
@@ -1345,17 +1461,19 @@ def _consolidate_code_round(
     configured: List[Dict[str, Any]],
     override: Optional[str],
     lineage: str,
+    switched: Sequence[str] = (),
 ) -> Tuple[Dict[str, Any], Dict[str, Any], Optional[Dict[str, Any]], List[str]]:
     """Account, consolidate and save a code round that ran.
 
     Returns ``(data, detail, measurement, stale)``: the saved consolidation,
     the round's event detail, its measurement block (None without
     ``--surrounding``), and the reviewers whose reports were stale.
+    ``switched`` holds the ids that ran on their ``high_risk_model``.
     """
     workspace, iteration = ctx.workspace, ctx.iteration
     adoption, rerun = size.adoption, size.rerun
     context_on = adoption.mode != "none"
-    run_dicts = _account_runs(ctx, panel)
+    run_dicts = _account_runs(ctx, panel, switched)
     # Consolidate from every configured reviewer's report, not only the ones
     # that just ran: with --only that would otherwise overwrite the report with
     # a subset and discard the other reviewers' findings and triage. Reports
@@ -1436,12 +1554,15 @@ def _code_payload_extra(
     return payload_extra
 
 
-def _condition_excluded(workspace: ws.Workspace) -> set:
-    """The conditional reviewers the last code round on this snapshot left out.
+def _condition_excluded(workspace: ws.Workspace, stage: str = "review") -> set:
+    """The reviewers the last round of ``stage`` on this snapshot left out.
 
-    Read off that round's own event, so a re-consolidation reads the reports
-    the round did and no others: a left-out reviewer's report from an earlier
-    run of the same snapshot is not brought back by rebuilding.
+    ``review`` or ``design_review``: a conditional reviewer that did not
+    qualify, or a role the round had nothing for. Read off that round's own
+    event, so a re-consolidation reads the reports the round did and no
+    others: a left-out reviewer's report from an earlier run of the same
+    snapshot is not brought back by rebuilding. A design event from before
+    design rounds recorded who sat out carries no block, and leaves no one out.
     """
     meta = workspace.read_snapshot_meta()
     round_id = str(meta.get("round_id") or "")
@@ -1449,7 +1570,7 @@ def _condition_excluded(workspace: ws.Workspace) -> set:
         return set()
     events = workspace.read_state().get("events") or []
     for event in reversed(events if isinstance(events, list) else []):
-        if not isinstance(event, dict) or event.get("stage") != "review" or event.get("status") != "ok":
+        if not isinstance(event, dict) or event.get("stage") != stage or event.get("status") != "ok":
             continue
         if str(event.get("round_id") or "") != round_id:
             continue
@@ -1463,14 +1584,16 @@ def _condition_excluded(workspace: ws.Workspace) -> set:
     return set()
 
 
-def _broken_panel(loaded: config_mod.LoadedConfig) -> List[str]:
-    """validate's ``reviewers`` problems, when the panel is not a list of mappings.
+def _broken_panel(loaded: config_mod.LoadedConfig, design: bool = False) -> List[str]:
+    """validate's problems with the panel, when it is not a list of mappings.
 
     `review run` refuses such a config. Consolidating it would read no
     reports and save a finding-free round over the last one, which
     `review status` would then pass. An absent panel is not broken.
+    ``design`` asks of the design panel, when a file sets one.
     """
-    panel = loaded.data.get("reviewers")
+    key = config_mod.DESIGN_PANEL.reviewers if design and loaded.has_design_panel() else "reviewers"
+    panel = config_mod.get_path(loaded.data, key)
     if panel is None or (isinstance(panel, list) and all(isinstance(r, dict) for r in panel)):
         return []
     problems = config_mod.validate(
@@ -1478,24 +1601,24 @@ def _broken_panel(loaded: config_mod.LoadedConfig) -> List[str]:
         project_layer=loaded.project_layer,
         global_layer=loaded.global_layer,
         origins=loaded.reviewer_origins,
+        design_origins=loaded.design_reviewer_origins,
     )
-    return [problem for problem in problems if problem.startswith(("reviewers:", "reviewers["))]
+    return [problem for problem in problems if problem.startswith((key + ":", key + "["))]
 
 
 def cmd_review_consolidate(args: argparse.Namespace) -> int:
     loaded = _load_lenient(args.cwd)
-    broken = _broken_panel(loaded)
+    design = bool(getattr(args, "design", False))
+    broken = _broken_panel(loaded, design)
     if broken:
         _err("refusing to consolidate: the reviewers panel is invalid:")
         for problem in broken:
             _err("  - %s" % problem)
         return 2
     workspace = _review_workspace(args)
-    reviewer_ids = [str(r.get("id")) for r in loaded.reviewers()]
-    excluded: set = set()
-    if not getattr(args, "design", False):
-        excluded = _condition_excluded(workspace)
-        reviewer_ids = [name for name in reviewer_ids if name not in excluded]
+    panel = loaded.design_reviewers() if design else loaded.reviewers()
+    excluded = _condition_excluded(workspace, _DESIGN.stage if design else _CODE.stage)
+    reviewer_ids = [str(r.get("id")) for r in panel if str(r.get("id")) not in excluded]
     stamp = review_mod.current_snapshot_stamp(workspace)
     findings, stale = review_mod.read_reports(workspace, reviewer_ids, stamp)
     previous = ws.read_json(workspace.consolidated_json_path, {}) or {}
@@ -1723,6 +1846,13 @@ def _status_payload(
         payload["enabled"] = decision.run
         payload["mode"] = decision.mode
         payload["reason"] = decision.reason or None
+        # The panel the next design round would run, and who it would leave
+        # out: the same inputs `review run --design` uses, the whole panel.
+        panel = loaded.design_reviewers()
+        payload["reviewers"] = [str(r.get("id")) for r in panel if isinstance(r, dict)]
+        payload["panel_source"] = loaded.design_panel_source
+        lineage = _design_lineage(base, _ledger(args, base))
+        payload["optimization"] = _design_round_plan(loaded, base, panel, lineage=lineage).to_dict()
     else:
         payload["final_fix"] = final["state"]
         payload["final_fix_pending"] = final["pending"]
@@ -1746,6 +1876,7 @@ def _print_status(
     surrounding = data.get("surrounding")
     if decision is not None:
         _out("design review: %s" % decision.label())
+        _out("design panel: %s" % _design_panel_line(payload))
     _out("iteration %d/%d" % (iteration, budget.max_iterations))
     _out("accepted findings: %d" % payload["accepted_count"])
     _out("blocking (%s): %d %s" % ("/".join(severities), len(blocking), ", ".join(payload["blocking"])))
@@ -1774,6 +1905,24 @@ def _print_status(
         _out(
             "iteration budget exhausted -- %s" % _final_pass_advice(args.design, budget.final, budget.repeats)
         )
+
+
+def _design_panel_line(payload: Dict[str, Any]) -> str:
+    """``a, b (the code panel; when conditions ignored); b left out (reason)``."""
+    line = "%s (%s)" % (
+        ", ".join(payload.get("reviewers") or []) or "none",
+        DESIGN_PANEL_SOURCES.get(str(payload.get("panel_source")), str(payload.get("panel_source"))),
+    )
+    return line + _left_out_suffix((payload.get("optimization") or {}).get("conditional") or [])
+
+
+def _left_out_suffix(records: Sequence[Dict[str, Any]]) -> str:
+    """``; <id> left out (<reason>)`` for each record of a seat a round would leave out."""
+    return "".join(
+        "; %s left out (%s)" % (record.get("id"), record.get("reason"))
+        for record in records
+        if isinstance(record, dict) and not record.get("runs")
+    )
 
 
 def _surrounding_status_lines(block: Dict[str, Any]) -> List[str]:

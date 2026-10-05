@@ -411,6 +411,7 @@ def _add_reviewer_parsers(subparsers: argparse._SubParsersAction[argparse.Argume
     reviewer_sub = _add_command_group(subparsers, "reviewer", "manage the review panel")
 
     r_list = reviewer_sub.add_parser("list", help="list configured reviewers")
+    _add_design_panel_flag(r_list)
     _add_json_flag(r_list)
     r_list.set_defaults(func=cmd_reviewer_list)
 
@@ -424,7 +425,7 @@ def _add_reviewer_parsers(subparsers: argparse._SubParsersAction[argparse.Argume
         "--when",
         choices=list(opt_mod.REVIEWER_CONDITIONS),
         default=None,
-        help="when it runs on a code review (default: always; design reviews run every reviewer)",
+        help="when it runs (default: always; a design round on the code panel runs every reviewer)",
     )
     r_add.add_argument(
         "--when-paths",
@@ -433,11 +434,20 @@ def _add_reviewer_parsers(subparsers: argparse._SubParsersAction[argparse.Argume
         metavar="GLOB",
         help="run on a code review only when a changed path matches one of these (quote each)",
     )
+    r_add.add_argument(
+        "--high-risk-model",
+        default=None,
+        metavar="FAMILY",
+        help="the model family it runs on a high-risk round",
+    )
+    _add_relevance_flag(r_add, "")
+    _add_design_panel_flag(r_add)
     _add_scope_flag(r_add)
     r_add.set_defaults(func=cmd_reviewer_add)
 
     r_remove = reviewer_sub.add_parser("remove", help="remove a reviewer by id, role, or position")
     r_remove.add_argument("selector")
+    _add_design_panel_flag(r_remove)
     _add_scope_flag(r_remove)
     r_remove.set_defaults(func=cmd_reviewer_remove)
 
@@ -456,8 +466,38 @@ def _add_reviewer_parsers(subparsers: argparse._SubParsersAction[argparse.Argume
         metavar="GLOB",
         help="replace the condition with these patterns (quote each)",
     )
+    risk_model = r_set.add_mutually_exclusive_group()
+    risk_model.add_argument(
+        "--high-risk-model",
+        default=None,
+        metavar="FAMILY",
+        help="the model family it runs on a high-risk round",
+    )
+    risk_model.add_argument(
+        "--clear-high-risk-model", action="store_true", help="run the usual model on high-risk rounds too"
+    )
+    _add_relevance_flag(r_set, "default")
+    _add_design_panel_flag(r_set)
     _add_scope_flag(r_set)
     r_set.set_defaults(func=cmd_reviewer_set)
+
+
+def _add_design_panel_flag(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--design",
+        action="store_true",
+        help="the design review's panel (review.design.reviewers) instead of the code review's",
+    )
+
+
+def _add_relevance_flag(parser: argparse.ArgumentParser, default_choice: str) -> None:
+    """``--relevance``: the rule that may leave the seat out of a round with nothing for it."""
+    choices = [*opt_mod.RELEVANCE_RULES, opt_mod.RELEVANCE_ALWAYS]
+    text = "the rule that may leave it out of a round with nothing for it; always: never"
+    if default_choice:
+        choices.append(default_choice)
+        text += "; %s: its role's own" % default_choice
+    parser.add_argument("--relevance", choices=choices, default=None, help=text)
 
 
 def _add_doctor_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -573,7 +613,8 @@ def _add_review_parsers(subparsers: argparse._SubParsersAction[argparse.Argument
     review_run.add_argument(
         "--high-risk",
         action="store_true",
-        help="declare the change high-risk: adds when: high-risk reviewers; level and gate are unchanged",
+        help="declare the change high-risk: adds when: high-risk reviewers and keeps every role; "
+        "level and gate are unchanged",
     )
     review_run.add_argument(
         "--progress",

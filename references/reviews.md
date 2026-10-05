@@ -10,6 +10,7 @@
 - [Surrounding context](#surrounding-context)
 - [Design review](#design-review)
 - [When a review does not run, or runs smaller](#when-a-review-does-not-run-or-runs-smaller)
+  - [Roles a round does not need](#roles-a-round-does-not-need)
 - [Roles](#roles)
 - [Output schema](#output-schema)
   - [Output limits](#output-limits)
@@ -301,7 +302,10 @@ added to the cost, so priorities 2 to 6, which would add more, are not pursued.
 
 ## Design review
 
-The same panel, before any code exists to be wrong. `review.design.enabled`
+A panel judges the plan before any code exists to be wrong: the design panel
+(`review.design.reviewers`) when a file sets one, else the code panel with
+every `when` ignored, as before (see `references/configuration.md`).
+`review.design.enabled`
 decides whether the orchestrator runs it: `true` always, `false` never, and
 `auto` (the default) for a plan that names a high-risk path anywhere in the
 plan, or 6 or more code files in `Files to Modify` (docs, tests and `.md`
@@ -330,9 +334,11 @@ convention.
 **The prompt asks a different question.** Not "is this code correct" but
 "would following this produce something correct": do the files and symbols the
 plan names exist, is its account of the current behaviour true, does it cover
-every caller, is the Test Strategy enough. Each built-in role is re-pointed the
-same way — `security` asks what the proposal would let through rather than what
-the diff does. `File:` therefore takes a plan section
+every caller, is the Test Strategy enough; `general` leads with "if the team
+follows this plan, do they build the right thing?". Each built-in role is
+re-pointed the same way — `security` asks what the proposal would let through
+rather than what the diff does, and `architecture` also checks compatibility:
+existing callers, config and record formats, and the CLI surface. `File:` therefore takes a plan section
 (`plan.md#Proposed Change`) or the repository path the plan misjudges, and
 `Line:` is usually `n/a`.
 
@@ -348,20 +354,37 @@ read that copy instead; without the flag they never see a design finding.
 
 **The optimization gate and panel reduction do not apply.** There is no test
 result that says anything about a plan and no diff to measure, and a design
-decision is precisely where cross-model disagreement earns its cost, so the
-whole panel runs every round. That includes a reviewer configured
-`when: high-risk` or scoped to `paths`: a plan has no paths to judge, and the
-design stage is where such specialists were measured to pay off, so both
-conditions are code review ones only (`review run --design --high-risk` exits 2 rather than pretending to
-decide anything). `auto` borrows the high-risk patterns only to decide whether
-the stage runs at all, judged from every token the plan names in backticks,
-with the size taken from Files to Modify; once it runs, the whole panel still
-does. `review.max_findings` still applies, and
+decision is precisely where cross-model disagreement earns its cost, so no
+level gates a design round or cuts its panel. Who sits on it is decided from
+the plan instead, with the same high-risk patterns the code review uses,
+matched against every token the plan names in backticks, in any case:
+
+- A seat of a configured design panel with `when: high-risk` joins a plan with
+  a high-risk hit, a round declared with `review run --design --high-risk`, or
+  a re-check of its own open accepted finding in the design report -- on the
+  same plan or on a revision of it, since a revision is meant to address it.
+  Only a new lineage (`budget reset`) carries no finding.
+  `when: paths` is refused in a design panel: a plan has no changed paths. On
+  the code panel fallback every `when` is ignored, as it always was.
+- A seat with a `high_risk_model` runs that model on the same rounds -- a hit
+  or `--high-risk` -- with a note:
+  `note: high-risk round (src/auth.py matches *auth*): claude-general runs opus instead of sonnet`.
+- A `security`, `test` or `architecture` seat with nothing in the plan for it
+  sits the round out; see [Roles a round does not need](#roles-a-round-does-not-need).
+
+`review run --design` prints one note per seat a rule decided, as a code round
+does, and records the decision under `optimization` in the round's event
+(`level`, `high_risk`, `declared`, `conditional`, `files`). `auto` uses the
+same scan to decide whether the stage runs at all, with the size taken from
+Files to Modify; that decision is separate, and `review.design.enabled: true`
+or `false` does not change who sits on a round that does run.
+`review.max_findings` still applies, and
 `optimization.level` still sets the cap when it is unset. Design rounds are
 deliberately absent from every rate `optimization report` prints -- the levels
 in force, the gate verdicts, the panel reduction, the escalations -- because no
 level decided anything for them. Their **cost** is reported, in a row of its
-own beside code review's, and is never averaged with it.
+own beside code review's, and is never averaged with it, and so are the roles
+they skipped.
 
 **Reflecting the findings** is a re-run of the architect, not a new stage:
 write a revision request (the original request, plus the brief, plus "read
@@ -420,9 +443,12 @@ printed with the counts that produced it.
 **It cannot make a high-risk change cheap.** Anything matching
 `optimization.high_risk_paths` -- auth, secrets, payments, migrations, SQL,
 crypto, deploy config -- escalates to `quality` whatever the level says: full
-panel, full findings budget, no gate. The patterns are yours to replace, or to
-add to with `optimization.extra_high_risk_paths`; the escalation is not yours
-to switch off.
+panel, full findings budget, no gate. A high-risk hit also keeps every role
+(see [Roles a round does not need](#roles-a-round-does-not-need)), and a
+seat with a `high_risk_model` runs that model instead of its usual one; its
+reviewer entry in the round's event says `model_slot: high-risk`. The patterns
+are yours to replace, or to add to with `optimization.extra_high_risk_paths`;
+the escalation is not yours to switch off.
 
 **It decides who of the conditional reviewers joins.** A reviewer configured
 `when: high-risk` runs on a code round when the change matches a high-risk
@@ -482,6 +508,102 @@ What it never does is drop findings, merge reviewers' reports, or hide that
 it acted. Every decision is printed, recorded in the run state, and returned
 by `review run --json` and `status --json` under `optimization`.
 
+### Roles a round does not need
+
+A `test` or `architecture` reviewer that always runs is asked one more
+question every round, in code review and design review alike and at every
+`optimization.level`, `quality` included: does this round have anything for
+it? Only evidence of absence leaves it out.
+
+A `security` reviewer is not asked unless its seat opts in with
+`relevance: security`. Its rule reads path names, never what the change does:
+an injection or a path traversal added to `src/utils.py` matches no pattern,
+and leaving the security reviewer out of exactly that change is a trade to
+make by hand, not by default.
+
+| Role | Code review: runs when | Design review: runs when |
+| --- | --- | --- |
+| `security` (with `relevance: security`) | a changed path matches a high-risk pattern or `optimization.security_paths` -- request handling and input, file, URL, client, query and database access, execution and deserialisation, configuration, dependency manifests and lockfiles, plus every high-risk pattern | a token anywhere in the plan matches one of those, in any case |
+| `test` | a reviewed file is not documentation (`.md`, `.rst`, `.txt`, or under `docs/` or `references/`); a change made only of tests keeps it -- tests are what it reads | Files to Modify names a code file or a test file |
+| `architecture` | 6 or more files reviewed; non-documentation files in 2 or more top-level directories (files at the root count as one); or a changed path matching `optimization.architecture_paths` -- contracts and schemas, module surface, configuration and record formats, the CLI, the build | the same three tests on Files to Modify |
+
+Otherwise it sits the round out, with a note that says why and how to bring it
+back. The first line is what a `claude-security` seat gets once it sets
+`relevance: security`; the standard panel's does not, so it never sees it:
+
+```
+note: claude-security (when: relevance) left out: no security-relevant path changed (optimization.security_paths); --only claude-security to include it
+note: claude-test (when: relevance) left out: docs-only change: every reviewed file is documentation; --only claude-test to include it
+note: claude-architecture (when: relevance) left out: 1 directory, 3 file(s), no contract, schema, config or CLI path (optimization.architecture_paths); --only claude-architecture to include it
+```
+
+The `--only` hint is the note's: the recorded `reason`, which `status` and
+`optimization report` read back, is the rule's answer alone.
+
+The order, before a rule is asked:
+
+- **A high-risk hit keeps every role**, with the hit as its reason. On a code
+  round that hit also escalates to `quality`, so a risky change gets every
+  role and the full findings budget together.
+- **`--high-risk` keeps every role** (`declared with --high-risk`), on either
+  stage.
+- **An open accepted finding the seat reported keeps it**
+  (`has open accepted finding F3`), so a re-check is never skipped. On a
+  design round that is any accepted finding of the live design report, on a
+  revised plan too; a new lineage (`budget reset`) carries none.
+- **`--only` naming it runs it** (`named by --only`); a seat `--only` does not
+  name is not in the round at all.
+
+A seat kept by one of these, or by its rule, gets a record that says so
+(`added: ...`), so the report can count the rounds a rule was asked. `general`
+is never judged. A `when: high-risk` or `when: paths` seat is judged by its
+condition alone. A `security` seat, and any other role -- `performance`,
+`database`, `frontend`, `backend`, your own -- is judged only when it opts in
+with `relevance: security|test|architecture`; `relevance: always` keeps a seat
+of any role out of the judgement. Doubt means run: nothing is judged on a code round whose
+snapshot lists no reviewed file, or on a plan that could not be read, has no
+Files to Modify section, or names a glob, a directory or a path through `..`
+there. If the rules would leave nobody, the seat the low-risk cut would keep
+(a `general` one first) runs anyway, with `kept: no other reviewer would run`.
+
+**At every level, `quality` included.** The level never keeps a role with
+nothing to read: a specialist with nothing to look at is no more useful on a
+dear round than on a cheap one. What `quality` still buys is the full findings
+budget, no gate and no low-risk cut. The low-risk cut is a different thing --
+a trade of coverage for cost, so it stays below `quality` -- while a role rule
+is a judgement of absence. A role a rule found evidence for does not keep a
+small change's panel whole against that cut, as a conditional reviewer that
+joins does; only a carried finding does.
+
+A left-out role is left out of the round's consolidation, as a left-out
+conditional reviewer is, and recorded under `optimization.conditional` with
+`when: relevance` -- on a design round too, in the event's `optimization`
+block. `status` adds the seats the next round would leave out to its
+Optimization line, and to its Design review line for the design panel.
+`optimization report` counts what the rules decided per stage, by level, with
+an estimated saving that prices each seat left out at the stage's mean billed
+tokens per reviewer run (`roles skipped`; `--json` `relevance` and
+`design_relevance`).
+
+**Two off switches.** `config set optimization.skip_unneeded_roles false`
+restores every always-on seat to every round; `reviewer set claude-test
+--relevance always` (add `--design` for the design panel) restores one seat.
+The pattern lists are yours to replace whole (`optimization.security_paths`,
+`optimization.architecture_paths`) or add to (`extra_security_paths`,
+`extra_architecture_paths`), as `high_risk_paths` is.
+
+**What changes for an existing config.** Nothing changes for a `general` seat,
+a `security` seat that does not name `relevance: security`, a `when:
+high-risk` or `when: paths` seat, or a round with a high-risk hit or
+`--high-risk`. Otherwise, after 0.19.0 and at every level -- the `quality`
+preset included -- an always-on `test` or `architecture` seat may sit out: on
+code review, a round that is docs-only (test), or stays in one directory under
+6 files with no contract path (architecture); on design review, a round for
+the first time at all, by the same rules on the plan. The default `standard`
+panel's `claude-test` is the seat affected; a `quality` preset user's
+`architecture` and `test` seats are too. A security seat sits out only once
+you set `relevance: security` on it, and then by its path patterns alone.
+
 ## Roles
 
 Built-in roles get sharper guidance in the prompt:
@@ -506,7 +628,8 @@ returns four naming nits and misses a null-pointer path is a failed review.
 
 A specialist that is only worth its cost on some changes -- `security` is the
 usual one -- can be configured `when: high-risk`, so it joins the code review
-only on rounds judged high-risk and still reviews every plan. A specialist
+only on rounds judged high-risk and still reviews every plan the code panel
+reviews (a design panel of your own decides that for itself). A specialist
 whose interest is a set of files -- `database`, `frontend` -- can instead be
 scoped to `paths`. Keep a `general` reviewer unconditional beside it. See
 [When a review does not run, or runs smaller](#when-a-review-does-not-run-or-runs-smaller).

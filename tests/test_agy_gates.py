@@ -250,7 +250,7 @@ class TestSeatWalks(_GateCase):
     def test_every_walk_in_order(self):
         loaded = self.load_walk()
         self.assertEqual(
-            [tuple(entry) for entry in policy_mod.read_only_raw_args(loaded)],
+            [tuple(entry)[:7] for entry in policy_mod.read_only_raw_args(loaded)],
             [
                 ("orchestrator", "orchestrator", "", "mock", ["--add-dir", "o"], "project", "project"),
                 ("orchestrator.model_tiers.g", "orchestrator (tier g)", "", "agy", [], "project", "global"),
@@ -372,7 +372,7 @@ class TestSeatWalks(_GateCase):
         )
         loaded = config_mod.load(self.project, validate_result=False)
         self.assertEqual(
-            [tuple(entry) for entry in policy_mod.read_only_raw_args(loaded) if entry.reviewer_id],
+            [tuple(entry)[:7] for entry in policy_mod.read_only_raw_args(loaded) if entry.reviewer_id],
             [
                 ("reviewers[0]", "reviewer base", "base", "mock", [], "default", "global"),
                 ("reviewers[1]", "reviewer g-args", "g-args", "mock", ["--add-dir", "g"], "global", "global"),

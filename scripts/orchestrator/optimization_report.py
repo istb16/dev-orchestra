@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Sequence, Tuple, cast
 
-from .optimization import REFUSED
+from .optimization import REFUSED, WHEN_RELEVANCE
 from .review_consolidation import round_key
 
 
@@ -29,9 +29,10 @@ def summarise_rounds(events: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
     which is the closest honest stand-in.
 
     Design rounds are counted under their own keys and nowhere else. A plan has
-    no diff to measure and no test result to gate on, so a design round carries
-    no ``optimization`` block and no level decided anything for it -- which is
-    why it cannot join the figures above. Counting it nowhere at all is what
+    no diff to measure and no test result to gate on, so no level decided
+    anything for a design round -- its ``optimization`` block, where it has
+    one, records only who sat on the panel -- which is why it cannot join the
+    figures above. Counting it nowhere at all is what
     shipped, and it hid a real cost from the one command whose job is to say
     what review cost: measured on one workflow, two design rounds and 350,429
     billed tokens sat in ``tokens show`` and appeared in this report as zero.
@@ -101,9 +102,10 @@ def summarise_rounds(events: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
         if not str(plan.get("test_status") or ""):
             unrecorded += 1
         # Refused rounds too: the decision was made and recorded either way.
-        # An event from before conditional reviewers carries neither key.
+        # An event from before conditional reviewers carries neither key. A
+        # role relevance record is counted under `relevance` instead.
         for record in plan.get("conditional") or []:
-            if isinstance(record, dict):
+            if isinstance(record, dict) and record.get("when") != WHEN_RELEVANCE:
                 conditional["added" if record.get("runs") else "left_out"] += 1
         if plan.get("declared"):
             conditional["declared_rounds"] += 1
@@ -144,6 +146,10 @@ def summarise_rounds(events: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
 
     ran = len(rounds) - refused
     per_round = billed // ran if (ran and billed) else None
+    relevance = _relevance_counts([event for event in rounds if event.get("status") != REFUSED])
+    relevance["estimated_saving"] = _relevance_saving(relevance, billed, reviewer_runs)
+    design_relevance = _relevance_counts(design)
+    design_relevance["estimated_saving"] = _relevance_saving(design_relevance, design_billed, design_runs)
     # Its own number, never averaged with the code figure above: a plan and a
     # diff are not the same unit of work, and a mean of the two sizes neither.
     design_per_round = design_billed // len(design) if (design and design_billed) else None
@@ -159,6 +165,11 @@ def summarise_rounds(events: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
         "always_escalated": bool(rounds) and escalated == len(rounds),
         "panel_reduced": reduced,
         "conditional": conditional,
+        # Seats a role relevance rule was asked about, in the rounds that ran.
+        # The saving prices each seat left out at the stage's mean billed
+        # tokens per reviewer run: an estimate, labelled as the gate's is.
+        "relevance": relevance,
+        "design_relevance": design_relevance,
         "rounds_without_a_test_result": unrecorded,
         "reviewer_runs": reviewer_runs,
         "measured_runs": measured_runs,
@@ -572,6 +583,40 @@ def _reviewer_spend(event: Dict[str, Any]) -> Tuple[int, int, int]:
 
 def _bump(counter: Dict[str, int], key: str) -> None:
     counter[key] = counter.get(key, 0) + 1
+
+
+def _relevance_counts(events: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+    """What the role relevance rules decided over ``events``, from their ``relevance`` records.
+
+    ``left_out_by_level`` is by the level the round's ``optimization`` block
+    records -- the level in force on a code round, the configured one on a
+    design round -- so it shows how much of the saving came from ``quality``
+    rounds, where a wrong skip would cost most. An event from before the
+    rules carries no such record, and adds nothing.
+    """
+    counts: Dict[str, Any] = {"judged": 0, "added": 0, "left_out": 0, "left_out_by_level": {}}
+    for event in events:
+        plan = event.get("optimization")
+        if not isinstance(plan, dict):
+            continue
+        level = str(plan.get("level") or "?")
+        for record in plan.get("conditional") or []:
+            if not isinstance(record, dict) or record.get("when") != WHEN_RELEVANCE:
+                continue
+            counts["judged"] += 1
+            if record.get("runs"):
+                counts["added"] += 1
+            else:
+                counts["left_out"] += 1
+                _bump(counts["left_out_by_level"], level)
+    return counts
+
+
+def _relevance_saving(counts: Dict[str, Any], billed: int, runs: int) -> int:
+    """Each seat left out, at the stage's mean billed tokens per reviewer run; 0 with no mean."""
+    if not (billed and runs):
+        return 0
+    return int(counts["left_out"]) * (billed // runs)
 
 
 #: Below this many decided findings no rate is printed, and below this many

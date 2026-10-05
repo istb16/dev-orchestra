@@ -95,7 +95,8 @@ ROLE_GUIDANCE: Dict[str, str] = {
 #: not the hard part.
 DESIGN_ROLE_GUIDANCE: Dict[str, str] = {
     "general": (
-        "Does the plan meet the stated goal? Is the root cause right, or is it treating a "
+        "If the team follows this plan, do they build the right thing? Does the plan meet the "
+        "stated goal? Is the root cause right, or is it treating a "
         "symptom? Do the files and symbols it names exist, and does it cover every caller? "
         "Is it the minimal change? Does it break an existing contract? Is the Test Strategy "
         "enough to catch a regression? Name any assumption it leaves unstated."
@@ -118,7 +119,8 @@ DESIGN_ROLE_GUIDANCE: Dict[str, str] = {
     "architecture": (
         "Focus: where the plan puts each responsibility, the layers it crosses, the coupling it "
         "adds, the shape of any new API or module boundary, and whether it fits the conventions "
-        "already in this codebase or invents a parallel one."
+        "already in this codebase or invents a parallel one. Check compatibility too: what the "
+        "plan changes for existing callers, config and record formats, and the CLI surface."
     ),
     "database": (
         "Focus: any proposed schema change -- migration safety (locking, backfills, "

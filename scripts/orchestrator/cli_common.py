@@ -9,7 +9,7 @@ import json
 import os
 import re
 import sys
-from typing import Any, Callable, Dict, List, Optional, Tuple, overload
+from typing import Any, Callable, Dict, List, NamedTuple, Optional, Tuple, overload
 
 from . import config as config_mod
 from . import ledger as ledger_mod
@@ -265,29 +265,51 @@ def _compose_preview(scope: str, layer: Dict[str, Any]) -> Tuple[Any, ...]:
 _NO_RISK_PATTERN = "optimization.high_risk_paths: no pattern in force"
 
 #: How a problem names a panel entry: an extra by its file and position, any
-#: other reviewer by its place in the panel.
-_ENTRY_LABEL = re.compile(r"reviewers_extra\[(\d+)\] in the (global|project) file|reviewers\[(\d+)\]")
+#: other reviewer by its place in the panel -- the design panel's first, so
+#: ``review.design.reviewers[2]`` is not read as the code panel's entry.
+_ENTRY_LABEL = re.compile(
+    r"(review\.design\.)?(?:reviewers_extra\[(\d+)\] in the (global|project) file|reviewers\[(\d+)\])"
+)
+
+#: Where a panel problem starts: either panel, or the high-risk patterns rule.
+_PANEL_PROBLEMS = ("reviewers", config_mod.DESIGN_PANEL.reviewers, _NO_RISK_PATTERN)
 
 
-def _panel_problems(scope: str, layer: Dict[str, Any]) -> Tuple[List[str], List[Optional[str]]]:
-    """The panel problems ``load()`` would raise with this layer saved, and the panel's ids."""
-    data, fit, _preset, _source = _compose_preview(scope, layer)
-    global_layer, project_layer = (layer, None) if scope == "global" else (_global_file(), layer)
-    problems = config_mod.validate(
-        data, project_layer=project_layer, global_layer=global_layer, origins=fit.origins
-    )
-    panel = data.get("reviewers")
-    ids = [
+class _PanelIds(NamedTuple):
+    """Each panel's ids, by position, as a problem's entry labels count them."""
+
+    code: List[Optional[str]]
+    design: List[Optional[str]]
+
+
+def _ids(panel: Any) -> List[Optional[str]]:
+    return [
         reviewer.get("id") if isinstance(reviewer, dict) and isinstance(reviewer.get("id"), str) else None
         for reviewer in (panel if isinstance(panel, list) else [])
     ]
-    return [problem for problem in problems if problem.startswith(("reviewers", _NO_RISK_PATTERN))], ids
 
 
-def _problem_key(problem: str, ids: List[Optional[str]], removed: Any = None) -> Optional[str]:
+def _panel_problems(scope: str, layer: Dict[str, Any]) -> Tuple[List[str], _PanelIds]:
+    """The panel problems ``load()`` would raise with this layer saved, and the panels' ids."""
+    data, fit, _preset, _source = _compose_preview(scope, layer)
+    global_layer, project_layer = (layer, None) if scope == "global" else (_global_file(), layer)
+    problems = config_mod.validate(
+        data,
+        project_layer=project_layer,
+        global_layer=global_layer,
+        origins=fit.origins,
+        design_origins=fit.design_origins,
+    )
+    ids = _PanelIds(
+        _ids(data.get("reviewers")), _ids(config_mod.get_path(data, config_mod.DESIGN_PANEL.reviewers))
+    )
+    return [problem for problem in problems if problem.startswith(_PANEL_PROBLEMS)], ids
+
+
+def _problem_key(problem: str, ids: _PanelIds, removed: Any = None) -> Optional[str]:
     """A problem with each entry it names said by what stays the same across a write.
 
-    A reviewer of the panel by its id, which a removal or a seeded list does
+    A reviewer of a panel by its id, which a removal or a seeded list does
     not move; an extra by its file and position, less one past an extra the
     write ``removed`` -- and None for a problem of that extra itself, which
     the write took away.
@@ -298,20 +320,34 @@ def _problem_key(problem: str, ids: List[Optional[str]], removed: Any = None) ->
 
     def entry(match: "re.Match[str]") -> str:
         nonlocal gone
-        if match.group(3) is not None:
-            index = int(match.group(3))
-            name = ids[index] if index < len(ids) else None
-            return "reviewers{%s}" % (name if name is not None else "#%d" % index)
-        position, layer = int(match.group(1)), match.group(2)
-        if removed is not None and removed.key == "reviewers_extra" and removed.layer == layer:
+        prefix = match.group(1) or ""
+        if match.group(4) is not None:
+            index = int(match.group(4))
+            panel = ids.design if prefix else ids.code
+            name = panel[index] if index < len(panel) else None
+            return "%sreviewers{%s}" % (prefix, name if name is not None else "#%d" % index)
+        position, layer = int(match.group(2)), match.group(3)
+        key = prefix + "reviewers_extra"
+        if removed is not None and removed.key == key and removed.layer == layer:
             if position == removed.position:
                 gone = True
             elif position > removed.position:
                 position -= 1
-        return "reviewers_extra[%d] in the %s file" % (position, layer)
+        return "%s[%d] in the %s file" % (key, position, layer)
 
     key = _ENTRY_LABEL.sub(entry, problem)
     return None if gone else key
+
+
+def _renamed_in_place(old_ids: List[Optional[str]], new_ids: List[Optional[str]]) -> List[Optional[str]]:
+    """``new_ids`` with a reviewer renamed in place called by its old id: it is still the one it was."""
+    kept = set(new_ids)
+    return [
+        old_ids[index]
+        if name not in old_ids and index < len(old_ids) and old_ids[index] not in kept
+        else name
+        for index, name in enumerate(new_ids)
+    ]
 
 
 def _panel_write_problems(
@@ -333,13 +369,9 @@ def _panel_write_problems(
     old_problems, old_ids = _panel_problems(scope, before)
     new_problems, new_ids = _panel_problems(scope, after)
     # A reviewer renamed in place is still the one it was.
-    kept = set(new_ids)
-    names = [
-        old_ids[index]
-        if name not in old_ids and index < len(old_ids) and old_ids[index] not in kept
-        else name
-        for index, name in enumerate(new_ids)
-    ]
+    names = _PanelIds(
+        _renamed_in_place(old_ids.code, new_ids.code), _renamed_in_place(old_ids.design, new_ids.design)
+    )
     known = {_problem_key(problem, old_ids, removed) for problem in old_problems}
     return [problem for problem in new_problems if _problem_key(problem, names) not in known]
 
@@ -368,6 +400,46 @@ def _frozen_panel_note(
     return message % (config_mod.shown_location(path), loaded.preset, recorded or "none")
 
 
+#: What a writer says of the seats it left out of a panel copied into a project file.
+_NOT_COPIED = "not copied into %s: %s -- a reviewer on %s is taken only from the global config"
+
+
+def _global_lists(key: str) -> bool:
+    """Whether the global file lists the panel at ``key`` itself."""
+    return config_mod.get_path(_global_file(), key) is not None
+
+
+def _without_warned_seats(
+    reviewers: List[Any], scope: str, chosen: Callable[[int], bool]
+) -> Tuple[List[Any], List[Tuple[str, str]]]:
+    """``(kept, dropped)``: the seats copied into a file, and ``(id, provider)`` of those left out.
+
+    The one rule both panels' seeding follows. A project file may not hold a
+    reviewer on a warned provider, so a seat on one is left out of a copy into
+    a project file -- unless ``chosen(index)`` says a file listed it: the user
+    chose that seat, it is copied whole, and the write's warnings say the
+    project file will have it refused. Every seat is kept in global scope.
+    """
+    if scope != "project":
+        return list(reviewers), []
+    kept: List[Any] = []
+    dropped: List[Tuple[str, str]] = []
+    for index, reviewer in enumerate(reviewers):
+        provider = str(reviewer.get("provider") or "") if isinstance(reviewer, dict) else ""
+        if warned_provider(provider) and not chosen(index):
+            dropped.append((str(reviewer.get("id")), provider))
+        else:
+            kept.append(reviewer)
+    return kept, dropped
+
+
+def _not_copied(path: str, dropped: List[Tuple[str, str]]) -> str:
+    """``_NOT_COPIED`` for the seats ``_without_warned_seats`` left out of ``path``."""
+    ids = ", ".join(reviewer_id for reviewer_id, _provider in dropped)
+    providers = ", ".join(sorted({provider for _id, provider in dropped}))
+    return _NOT_COPIED % (os.path.basename(path), ids, providers)
+
+
 def _seed_panel(
     scope: str, layer: Dict[str, Any], base: Dict[str, Any], path: str, start: Optional[str] = None
 ) -> Tuple[Optional[str], Optional[str]]:
@@ -376,8 +448,7 @@ def _seed_panel(
     A project file may not hold a reviewer on a warned provider, so when the
     panel copied into one is the global preset's fit -- the global file lists
     no reviewers -- those seats are left out of the copy and named. A panel
-    the global file lists is copied whole: the user chose those seats, and the
-    write says which of them the project file will have refused.
+    the global file lists is copied whole (``_without_warned_seats``).
 
     Returns the note for a write that succeeds, and the note for one that
     fails -- a selector or an index that named a seat left out would
@@ -385,23 +456,15 @@ def _seed_panel(
     """
     dropped: List[Tuple[str, str]] = []
     reviewers = base.get("reviewers")
-    if scope == "project" and _global_file().get("reviewers") is None and isinstance(reviewers, list):
-        kept: List[Any] = []
-        for reviewer in reviewers:
-            provider = str(reviewer.get("provider") or "") if isinstance(reviewer, dict) else ""
-            if warned_provider(provider):
-                dropped.append((str(reviewer.get("id")), provider))
-            else:
-                kept.append(reviewer)
+    if scope == "project" and isinstance(reviewers, list):
+        listed = _global_lists(config_mod.CODE_PANEL.reviewers)
+        kept, dropped = _without_warned_seats(reviewers, scope, lambda _index: listed)
         base = dict(base, reviewers=kept)
     seeded = _seed_list(layer, "reviewers", base)
     frozen = _frozen_panel_note(seeded, path, base, scope, start)
     if not (seeded and dropped):
         return frozen, None
-    message = "not copied into %s: %s -- a reviewer on %s is taken only from the global config"
-    ids = ", ".join(reviewer_id for reviewer_id, _provider in dropped)
-    providers = ", ".join(sorted({provider for _id, provider in dropped}))
-    left_out = message % (os.path.basename(path), ids, providers)
+    left_out = _not_copied(path, dropped)
     if frozen:
         frozen += "; " + left_out
     return frozen, "note: " + left_out

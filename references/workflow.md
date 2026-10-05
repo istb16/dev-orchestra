@@ -206,8 +206,11 @@ still weak, say so in the report rather than quietly improvising.
 
 Runs when `review.design.enabled` is `true`, or `auto` (the default) and the
 plan is risky or large or a round has already run; `status` says which and
-why. The same panel judges `.ai/plan.md` against the codebase before any code
-is written. A design mistake otherwise costs an implementation and a review to
+why. The design panel -- `review.design.reviewers` when a file sets one, else
+the code panel with `when` ignored -- judges `.ai/plan.md` against the
+codebase before any code is written, and a specialist role the plan has
+nothing for sits the round out with a note saying why (report it, as for a
+code round). A design mistake otherwise costs an implementation and a review to
 find, so this is the cheapest place to catch one -- but it is a reviewer run
 per panel member per round, which is why `auto` spends it only where the plan
 calls for it.

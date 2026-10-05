@@ -77,6 +77,9 @@ def _level_lines(report: Dict[str, Any]) -> List[str]:
         if conditional.get("declared_rounds"):
             row += ", declared with --high-risk x%d" % conditional["declared_rounds"]
         lines.append(_OPT_ROW % ("conditional reviewers", row))
+    relevance = report.get("relevance") or {}
+    if relevance.get("judged"):
+        lines.append(_OPT_ROW % ("roles skipped", _relevance_row(relevance)))
     lines.append(_OPT_ROW % ("escalated (high risk)", report["escalated"]))
     if report["escalation_patterns"]:
         lines.append(_OPT_ROW % ("  caused by", _counts(report["escalation_patterns"])))
@@ -123,9 +126,23 @@ def _spend_lines(report: Dict[str, Any]) -> List[str]:
             report["design_billed_per_round"],
         )
         lines.append(_OPT_ROW % ("design review", design_row))
+        design_relevance = report.get("design_relevance") or {}
+        if design_relevance.get("judged"):
+            lines.append(_OPT_ROW % ("  roles skipped", _relevance_row(design_relevance)))
     elif report["billed_per_round"]:
         lines.append("  %s billed per round that ran" % ws.fmt_int(report["billed_per_round"]))
     return lines
+
+
+def _relevance_row(relevance: Dict[str, Any]) -> str:
+    """``left out x12 of 40 judged (quality x5), est. 1,200,000 tokens``."""
+    row = "left out x%d of %d judged" % (relevance.get("left_out", 0), relevance.get("judged", 0))
+    by_level = relevance.get("left_out_by_level") or {}
+    if by_level:
+        row += " (%s)" % _counts(by_level)
+    if relevance.get("estimated_saving"):
+        row += ", est. %s tokens" % ws.fmt_int(relevance["estimated_saving"])
+    return row
 
 
 def _tool_lines(report: Dict[str, Any]) -> List[str]:

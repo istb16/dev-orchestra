@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, Sequence, cast
+from typing import Any, Dict, List, Sequence, cast
 
 from . import config as config_mod
-from .optimization import WHEN_ALWAYS, condition_label
+from .optimization import WHEN_ALWAYS, condition_label, model_label, skip_unneeded_roles
 
 ROLE_TITLES = (
     ("orchestrator", "Orchestrator"),
@@ -15,8 +15,67 @@ ROLE_TITLES = (
 )
 
 
-def render_summary(data: Dict[str, Any], origins: Sequence[config_mod.ReviewerOrigin] = ()) -> str:
-    """``origins``, parallel to the panel, marks each extra with the file it came from."""
+#: How a listing says where the design panel's base comes from, by
+#: ``LoadedConfig.design_panel_source``.
+DESIGN_PANEL_SOURCES = {
+    "code": "the code panel; when conditions ignored",
+    "global": "global file",
+    "project": "project file",
+}
+
+
+def seat_notes(reviewer: Dict[str, Any]) -> str:
+    """`` (opus when high-risk)`` and `` (relevance: always)`` where a seat sets them."""
+    notes = ""
+    risk_model = reviewer.get("high_risk_model")
+    if isinstance(risk_model, dict):
+        notes += " (%s when high-risk)" % model_label(risk_model)
+    relevance = reviewer.get("relevance")
+    if relevance is not None:
+        notes += " (relevance: %s)" % relevance
+    return notes
+
+
+def _panel_lines(reviewers: Any, origins: Sequence[config_mod.ReviewerOrigin]) -> List[str]:
+    """One line per mapping reviewer, numbered by its place in the panel."""
+    # A panel that is not a list, or holds no mapping, shows as none: the
+    # problems `config validate` reports name what is wrong with it.
+    if not isinstance(reviewers, list):
+        reviewers = []
+    lines: List[str] = []
+    if not any(isinstance(reviewer, dict) for reviewer in reviewers):
+        lines.append("    (none configured)")
+    for index, reviewer in enumerate(reviewers, 1):
+        # Skipped but counted, so the numbers and origins stay aligned.
+        if not isinstance(reviewer, dict):
+            continue
+        when = condition_label(reviewer)
+        origin = origins[index - 1] if index <= len(origins) else None
+        mark = ""
+        if origin is not None and origin.extra:
+            mark = " (extra, %s file)" % origin.layer
+        lines.append(
+            "    %d. %s / %s / %s%s%s%s"
+            % (
+                index,
+                _describe(reviewer),
+                reviewer.get("role", "general"),
+                reviewer.get("id"),
+                "" if when == WHEN_ALWAYS else " (when: %s)" % when,
+                seat_notes(reviewer),
+                mark,
+            )
+        )
+    return lines
+
+
+def render_summary(
+    data: Dict[str, Any],
+    origins: Sequence[config_mod.ReviewerOrigin] = (),
+    design_origins: Sequence[config_mod.ReviewerOrigin] = (),
+) -> str:
+    """``origins``, parallel to the panel, marks each extra with the file it came from;
+    ``design_origins`` does the same for the design panel, when a file sets one."""
     # lazy: config_policy loads the provider registry, which runs the user adapters;
     # summary must import without it
     from .config_policy import read_only_enforcement_warnings
@@ -33,34 +92,8 @@ def render_summary(data: Dict[str, Any], origins: Sequence[config_mod.ReviewerOr
             entry = cast(Dict[str, Any], tiers)[name]
             described = _describe(merged(spec, entry)) if isinstance(entry, dict) else "(invalid)"
             lines.append("      --tier %-10s %s" % (name, described))
-    # A panel that is not a list, or holds no mapping, shows as none: the
-    # problems `config validate` reports name what is wrong with it.
-    reviewers = data.get("reviewers")
-    if not isinstance(reviewers, list):
-        reviewers = []
     lines.append("  Reviews")
-    if not any(isinstance(reviewer, dict) for reviewer in reviewers):
-        lines.append("    (none configured)")
-    for index, reviewer in enumerate(reviewers, 1):
-        # Skipped but counted, so the numbers and origins stay aligned.
-        if not isinstance(reviewer, dict):
-            continue
-        when = condition_label(reviewer)
-        origin = origins[index - 1] if index <= len(origins) else None
-        mark = ""
-        if origin is not None and origin.key == "reviewers_extra":
-            mark = " (extra, %s file)" % origin.layer
-        lines.append(
-            "    %d. %s / %s / %s%s%s"
-            % (
-                index,
-                _describe(reviewer),
-                reviewer.get("role", "general"),
-                reviewer.get("id"),
-                "" if when == WHEN_ALWAYS else " (when: %s)" % when,
-                mark,
-            )
-        )
+    lines.extend(_panel_lines(data.get("reviewers"), origins))
     # Shown rather than asked: the wizard settles who does which job, and this
     # is a behaviour knob like `max_review_iterations`. But it decides whether
     # a whole stage runs, so leaving it out of the summary entirely would make
@@ -68,13 +101,33 @@ def render_summary(data: Dict[str, Any], origins: Sequence[config_mod.ReviewerOr
     lines.append("    design review: %s  (review.design.enabled)" % _design_review_mode(data))
     lines.append("    optimization level: %s  (optimization.level)" % _optimization_level(data))
     lines.append(
+        "    skip unneeded roles: %s  (optimization.skip_unneeded_roles)"
+        % ("on" if _skip_unneeded_roles(data) else "off")
+    )
+    lines.append(
         "    plan approval: %s  (design.require_approval)"
         % ("required" if _approval_required(data) else "not required")
     )
-    for warning in read_only_enforcement_warnings(data):
+    # The design panel, under its own heading: which seats a design round
+    # runs is as much a part of the setup as who reviews the code.
+    design = config_mod.get_path(data, config_mod.DESIGN_PANEL.reviewers)
+    lines.append("  Design reviews")
+    if design is None:
+        lines.append("    (the code panel; when conditions ignored)  (review.design.reviewers)")
+    else:
+        lines.extend(_panel_lines(design, design_origins))
+    # With no origins (data never composed by ``load``), a design seat that
+    # runs as its code seat is taken for a copy, as ``_reviewer_seats`` says.
+    for warning in read_only_enforcement_warnings(data, design_origins=list(design_origins) or None):
         lines.append("  Warning: %s" % warning)
     lines.append("")
     return "\n".join(lines)
+
+
+def _skip_unneeded_roles(data: Dict[str, Any]) -> bool:
+    """Falls back to the built-in default: a layer may name no `optimization`."""
+    optimization = data.get("optimization")
+    return skip_unneeded_roles(optimization if isinstance(optimization, dict) else {})
 
 
 def _design_review_mode(data: Dict[str, Any]) -> str:

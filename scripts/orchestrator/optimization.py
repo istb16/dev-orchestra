@@ -37,14 +37,23 @@ re-checking an accepted finding it reported, or when ``--only`` names it, and
 nothing else adds it -- not a high-risk hit, not a declaration. Its patterns
 say what the reviewer knows about, not how dangerous the change is, so a match
 never moves the level or the gate either.
+
+A ``security``, ``test`` or ``architecture`` reviewer that always runs is
+asked one more question, in both stages and at every level: whether this round
+has anything for it (``relevance_records``). Only evidence of absence leaves
+one out -- no security-relevant path, a docs-only change, one small module
+with no contract path -- and a high-risk hit, a declaration, a carried finding
+or ``--only`` keeps it before the question is asked. Doubt about the evidence
+means run.
 """
 
 from __future__ import annotations
 
+import copy
 import fnmatch
 import posixpath
 import re
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, NamedTuple, Optional, Sequence, Tuple
 
 from .workspace import redact
 
@@ -132,11 +141,159 @@ GATE_ALLOW = "allow"
 #: what a reviewer with no ``when`` means; ``high-risk`` joins only the rounds
 #: ``condition_reviewers`` says qualify. ``paths`` is not a string value but
 #: the kind of a ``when`` mapping holding the reviewer's own patterns, so it
-#: is not in ``REVIEWER_CONDITIONS``. The design review ignores all three.
+#: is not in ``REVIEWER_CONDITIONS``. A configured design panel honours
+#: ``high-risk`` against the plan and may not use ``paths``; a design round
+#: that falls back to the code panel ignores ``when`` altogether.
 WHEN_ALWAYS = "always"
 WHEN_HIGH_RISK = "high-risk"
 WHEN_PATHS = "paths"
 REVIEWER_CONDITIONS = (WHEN_ALWAYS, WHEN_HIGH_RISK)
+
+#: The kind of a conditional record written by ``relevance_records``. Not a
+#: ``when`` value anyone writes: it is how a round says it judged a seat.
+WHEN_RELEVANCE = "relevance"
+
+#: The rules a seat's ``relevance`` may name, one per built-in role they are
+#: for; ``always`` keeps the seat out of the judgement.
+RELEVANCE_RULES = ("security", "test", "architecture")
+RELEVANCE_ALWAYS = "always"
+#: The roles whose own rule is never applied unless the seat names it in
+#: ``relevance``: the security rule judges by path names alone.
+OPT_IN_RELEVANCE = ("security",)
+
+#: The model slot a run took its model from when the round was high-risk and
+#: the seat has a ``high_risk_model``. A run record without one is ``usual``.
+HIGH_RISK_SLOT = "high-risk"
+
+#: Paths a security reviewer has something to read in. Deliberately broad:
+#: the rule only ever leaves the seat out when nothing changed matches, and a
+#: miss there is a missed finding rather than a saving. Same two-form
+#: directory convention as ``DEFAULT_HIGH_RISK_PATHS``, every one of which is
+#: included, so replacing ``high_risk_paths`` cannot drop security coverage.
+DEFAULT_SECURITY_PATHS = (
+    # Request handling and input.
+    "*api*",
+    "*route*",
+    "*router*",
+    "*controller*",
+    "*handler*",
+    "*endpoint*",
+    "*middleware*",
+    "*http*",
+    "*request*",
+    "*cookie*",
+    "*cors*",
+    "*header*",
+    "*token*",
+    "*jwt*",
+    "*oauth*",
+    "*upload*",
+    "*download*",
+    "*input*",
+    "*valid*",
+    "*sanitiz*",
+    "*escape*",
+    "*template*",
+    # Files, network and data access.
+    "*file*",
+    "*path*",
+    "*url*",
+    "*fetch*",
+    "*client*",
+    "*query*",
+    "*sql*",
+    "*db*",
+    # Execution and deserialisation.
+    "*exec*",
+    "*shell*",
+    "*subprocess*",
+    "*command*",
+    "*serial*",
+    "*pickle*",
+    "*yaml*",
+    "*xml*",
+    "*eval*",
+    # Configuration and supply chain.
+    "*config*",
+    "*setting*",
+    "*.env*",
+    "*.ini",
+    "*.toml",
+    "*.cfg",
+    "requirements*.txt",
+    "package.json",
+    "package-lock.json",
+    "yarn.lock",
+    "pnpm-lock.yaml",
+    "go.mod",
+    "go.sum",
+    "Cargo.toml",
+    "Cargo.lock",
+    "Gemfile*",
+    "*.lock",
+    "composer.json",
+    "*.csproj",
+    "*.gradle",
+    "pom.xml",
+    *DEFAULT_HIGH_RISK_PATHS,
+)
+
+#: Paths that are a contract, a module surface, a configuration or record
+#: format, the CLI, or the build: what an architecture reviewer reads for.
+#: Conservative too: in a repository whose names match these on most changes,
+#: the seat sits out only single-module changes that touch none of them.
+DEFAULT_ARCHITECTURE_PATHS = (
+    # Contracts and schemas.
+    "*schema*",
+    "*.proto",
+    "*openapi*",
+    "*swagger*",
+    "*.graphql",
+    "*api*",
+    "*interface*",
+    "*contract*",
+    "*types*",
+    "*migration*/*",
+    "*/migration*/*",
+    "*.sql",
+    # Module surface.
+    "__init__.py",
+    "index.ts",
+    "index.js",
+    "mod.rs",
+    "lib.rs",
+    "*public*",
+    "*export*",
+    # Configuration and formats.
+    "*config*",
+    "*setting*",
+    "*format*",
+    "*record*",
+    "*state*",
+    "*ledger*",
+    "*.json",
+    "*.yaml",
+    "*.yml",
+    "*.toml",
+    # CLI surface.
+    "*cli*",
+    "*command*",
+    "*arg*",
+    "*option*",
+    # Build.
+    "pyproject.toml",
+    "setup.py",
+    "setup.cfg",
+    "package.json",
+    "Makefile",
+    "*.gradle",
+    "CMakeLists.txt",
+    "Dockerfile*",
+)
+
+#: A reviewed file with one of these basename suffixes is documentation, as is
+#: one under ``DESIGN_DOCS_PREFIXES``.
+DOC_SUFFIXES = (".md", ".rst", ".txt")
 
 
 def normalise_level(value: Any) -> str:
@@ -240,10 +397,25 @@ def risk_patterns(settings: Dict[str, Any]) -> List[str]:
     plus ``extra_high_risk_paths`` -- so a repository can add the one path
     the defaults miss without copying the thirty they already cover.
     """
-    patterns = settings.get("high_risk_paths")
+    return _patterns(settings, "high_risk_paths", DEFAULT_HIGH_RISK_PATHS)
+
+
+def security_patterns(settings: Dict[str, Any]) -> List[str]:
+    """``security_paths`` or the defaults, plus ``extra_security_paths``."""
+    return _patterns(settings, "security_paths", DEFAULT_SECURITY_PATHS)
+
+
+def architecture_patterns(settings: Dict[str, Any]) -> List[str]:
+    """``architecture_paths`` or the defaults, plus ``extra_architecture_paths``."""
+    return _patterns(settings, "architecture_paths", DEFAULT_ARCHITECTURE_PATHS)
+
+
+def _patterns(settings: Dict[str, Any], key: str, defaults: Sequence[str]) -> List[str]:
+    """``settings[key]`` when a list, else ``defaults``; plus ``extra_<key>``; usable entries only."""
+    patterns = settings.get(key)
     if not isinstance(patterns, (list, tuple)):
-        patterns = DEFAULT_HIGH_RISK_PATHS
-    extra = settings.get("extra_high_risk_paths")
+        patterns = defaults
+    extra = settings.get("extra_" + key)
     if not isinstance(extra, (list, tuple)):
         extra = ()
     combined = list(patterns) + list(extra)
@@ -357,11 +529,337 @@ def _left_out(reviewer: Dict[str, Any], hits: Sequence[Tuple[str, str]], declare
 
 
 def qualifies(reviewer: Dict[str, Any], records: Sequence[Dict[str, Any]]) -> bool:
-    """Whether a reviewer runs this round, by its ``condition_reviewers`` record."""
-    if reviewer_condition(reviewer) == WHEN_ALWAYS:
-        return True
+    """Whether a reviewer runs this round, by its conditional records.
+
+    A conditional reviewer runs only on a record that says so. One that
+    always runs does unless a record -- ``relevance_records`` writes the only
+    kind it can have -- says it sits this round out.
+    """
     name = str(reviewer.get("id") or "")
-    return any(record.get("id") == name and record.get("runs") for record in records)
+    mine = [record for record in records if record.get("id") == name]
+    if reviewer_condition(reviewer) == WHEN_ALWAYS:
+        return not mine or any(record.get("runs") for record in mine)
+    return any(record.get("runs") for record in mine)
+
+
+def risk_model(reviewer: Dict[str, Any], high_risk: bool) -> Tuple[Dict[str, Any], bool]:
+    """``(reviewer, switched)``: the seat on its ``high_risk_model`` on a high-risk round.
+
+    A deep copy with ``model`` replaced, when the round is high-risk and the
+    seat has one; the reviewer itself, unchanged, otherwise. Only the model
+    moves: the provider and ``options`` stay, so the read-only and refusal
+    rules that hold for the seat hold for the switched run too.
+    """
+    model = reviewer.get("high_risk_model") if isinstance(reviewer, dict) else None
+    if not high_risk or not isinstance(model, dict):
+        return reviewer, False
+    switched = copy.deepcopy(reviewer)
+    switched["model"] = copy.deepcopy(model)
+    return switched, True
+
+
+def model_label(model: Any) -> str:
+    """A model block the way a note names it: its pinned id, else its family."""
+    if not isinstance(model, dict):
+        return "default"
+    if model.get("version") == "pinned" and model.get("id"):
+        return str(model["id"])
+    return str(model.get("family") or "default")
+
+
+def risk_model_note(reviewer: Dict[str, Any], switched: Dict[str, Any], why: str) -> str:
+    """``high-risk round (<why>): <id> runs <model> instead of <model>``, redacted."""
+    return redact(
+        "high-risk round (%s): %s runs %s instead of %s"
+        % (why, reviewer.get("id"), model_label(switched.get("model")), model_label(reviewer.get("model")))
+    )
+
+
+# --------------------------------------------------------------------------- role relevance
+
+
+class Evidence(NamedTuple):
+    """What a stage knows about its change, for ``relevance_records`` to judge from."""
+
+    #: What the security patterns are matched against: a code round's changed
+    #: paths, withheld ones included; every token of a plan.
+    touched: Sequence[str]
+    #: What size and directories are read from: a code round's reviewed files;
+    #: a plan's code files in Files to Modify.
+    files: Sequence[str]
+    #: What the architecture patterns are matched against: a code round's
+    #: changed paths; every file-shaped entry in a plan's Files to Modify.
+    named: Sequence[str]
+    #: A plan's Files to Modify entries under ``DESIGN_TESTS_PREFIXES``.
+    tests: Sequence[str] = ()
+    #: Why the evidence cannot be judged at all, or "". Doubt means run.
+    doubt: str = ""
+
+
+def relevance_rule(reviewer: Any) -> Optional[str]:
+    """The rule a seat is judged by, or None for one that is never judged.
+
+    A ``general`` seat is never judged. Otherwise ``relevance`` names the
+    rule, or ``always`` keeps the seat out; unset, a ``test`` or
+    ``architecture`` seat is judged by its own role's rule and any other
+    role is never judged. A ``security`` seat is judged only when it names
+    ``relevance: security`` itself: the rule reads path names, not what the
+    change does, so a vulnerability in an ordinary file would miss it, and
+    leaving the security reviewer out on that is a choice to make by hand.
+    A value validation would refuse is read as ``always``: a seat that runs
+    is the careful answer.
+    """
+    if not isinstance(reviewer, dict):
+        return None
+    role = str(reviewer.get("role") or "general").strip().lower()
+    if role == "general":
+        return None
+    value = reviewer.get("relevance")
+    if value is not None:
+        named = value.strip().lower() if isinstance(value, str) else ""
+        return named if named in RELEVANCE_RULES else None
+    return role if role in RELEVANCE_RULES and role not in OPT_IN_RELEVANCE else None
+
+
+def skip_unneeded_roles(settings: Dict[str, Any]) -> bool:
+    """``optimization.skip_unneeded_roles``: on unless it is ``false``."""
+    return settings.get("skip_unneeded_roles") is not False
+
+
+def is_doc(path: str) -> bool:
+    """A ``.md``, ``.rst`` or ``.txt`` file, or one under ``DESIGN_DOCS_PREFIXES``."""
+    normal = _plan_path(str(path))
+    base = posixpath.basename(normal).lower()
+    return normal.startswith(DESIGN_DOCS_PREFIXES) or base.endswith(DOC_SUFFIXES)
+
+
+def _top_dirs(paths: Sequence[str]) -> List[str]:
+    """The first path component of each path, ``.`` for a root file; once each, in order."""
+    dirs: List[str] = []
+    for path in paths:
+        normal = _plan_path(str(path))
+        top = normal.split("/", 1)[0] if "/" in normal else "."
+        if top not in dirs:
+            dirs.append(top)
+    return dirs
+
+
+def _matches(stage: str, paths: Sequence[str], patterns: Sequence[str]) -> List[Tuple[str, str]]:
+    """``high_risk_matches`` on a diff's paths; case-insensitive on a plan's tokens."""
+    if stage == "design":
+        return _token_matches(paths, patterns)
+    return high_risk_matches(paths, patterns)
+
+
+def _hit_reason(hits: Sequence[Tuple[str, str]]) -> str:
+    return "%s matches %s%s" % (hits[0][0], hits[0][1], _and_more(len(hits) - 1))
+
+
+def _security_needed(stage: str, evidence: Evidence, settings: Dict[str, Any]) -> Tuple[bool, str]:
+    hits = _matches(stage, evidence.touched, risk_patterns(settings) + security_patterns(settings))
+    if hits:
+        return True, _hit_reason(hits)
+    if stage == "design":
+        return False, "no security-relevant token in the plan (optimization.security_paths)"
+    return False, "no security-relevant path changed (optimization.security_paths)"
+
+
+def _test_needed(stage: str, evidence: Evidence) -> Tuple[bool, str]:
+    if stage == "design":
+        if evidence.files:
+            return True, "Files to Modify names code: %s" % evidence.files[0]
+        if evidence.tests:
+            return True, "Files to Modify names a test: %s" % evidence.tests[0]
+        return False, "docs-only plan: Files to Modify names no code or test file"
+    code = [path for path in evidence.files if not is_doc(path)]
+    if code:
+        return True, "%s is not documentation" % code[0]
+    return False, "docs-only change: every reviewed file is documentation"
+
+
+def _architecture_needed(stage: str, evidence: Evidence, settings: Dict[str, Any]) -> Tuple[bool, str]:
+    count = len(evidence.files)
+    design = stage == "design"
+    if count >= DESIGN_LARGE_PLAN_FILES:
+        return True, "%d %s" % (count, "code files in Files to Modify" if design else "files reviewed")
+    dirs = _top_dirs([path for path in evidence.files if not is_doc(path)])
+    if len(dirs) >= 2:
+        return True, "spans %d directories (%s)" % (len(dirs), ", ".join(dirs))
+    hits = _matches(stage, evidence.named, architecture_patterns(settings))
+    if hits:
+        return True, _hit_reason(hits)
+    where = "%d director%s" % (len(dirs), "y" if len(dirs) == 1 else "ies")
+    reason = "%s, %d %s, no contract, schema, config or CLI path" % (
+        where,
+        count,
+        "code file(s)" if design else "file(s)",
+    )
+    return False, reason + " (optimization.architecture_paths)"
+
+
+def _rule_answer(rule: str, stage: str, evidence: Evidence, settings: Dict[str, Any]) -> Tuple[bool, str]:
+    if rule == "security":
+        return _security_needed(stage, evidence, settings)
+    if rule == "test":
+        return _test_needed(stage, evidence)
+    return _architecture_needed(stage, evidence, settings)
+
+
+#: The reason a carried finding keeps a seat; it alone of the keep reasons
+#: also keeps a code panel whole against the low-risk cut.
+_CARRIED = "has open accepted finding"
+
+
+def relevance_records(
+    stage: str,
+    panel: Sequence[Dict[str, Any]],
+    evidence: Evidence,
+    settings: Dict[str, Any],
+    *,
+    hits: Sequence[Tuple[str, str]] = (),
+    declared: bool = False,
+    carried: Sequence[Dict[str, Any]] = (),
+    only: bool = False,
+) -> List[Dict[str, Any]]:
+    """One ``relevance`` record per seat judged this round: whether it runs, and why.
+
+    ``stage`` is ``code`` or ``design``. Judged: a seat that always runs
+    (``when`` seats already have a record), is not ``general``, and has a
+    rule (``relevance_rule``). Nothing is judged when
+    ``optimization.skip_unneeded_roles`` is false or the evidence is in doubt.
+    The level is not asked: it never changes the answer.
+
+    Before its rule, a seat is kept, in this order, by a high-risk hit, a
+    declaration, an open accepted finding it reported, or ``--only``. A kept
+    seat gets a record that says so, which the report counts as a round the
+    rule was asked.
+
+    Every reason is the rule's bare answer, redacted; how to include a seat
+    left out is ``conditional_notes``'s to say. The empty-panel guard is not
+    applied here: ``join_relevance`` applies it once a round's records are
+    joined.
+    """
+    if not skip_unneeded_roles(settings) or evidence.doubt:
+        return []
+    records: List[Dict[str, Any]] = []
+    for reviewer in panel:
+        if not isinstance(reviewer, dict) or reviewer_condition(reviewer) != WHEN_ALWAYS:
+            continue
+        rule = relevance_rule(reviewer)
+        if rule is None:
+            continue
+        name = str(reviewer.get("id") or "")
+        own = [
+            finding
+            for finding in carried
+            if isinstance(finding, dict) and name in [str(r) for r in finding.get("reported_by") or []]
+        ]
+        own.sort(key=_finding_order)
+        if hits:
+            runs, reason = True, _hit_reason(hits)
+        elif declared:
+            runs, reason = True, "declared with --high-risk"
+        elif own:
+            runs, reason = True, "%s %s%s" % (_CARRIED, own[0].get("id"), _and_more(len(own) - 1))
+        elif only:
+            runs, reason = True, "named by --only"
+        else:
+            runs, reason = _rule_answer(rule, stage, evidence, settings)
+        records.append({"id": name, "when": WHEN_RELEVANCE, "runs": runs, "reason": redact(reason)})
+    return records
+
+
+def join_relevance(
+    panel: Sequence[Dict[str, Any]],
+    conditional: Sequence[Dict[str, Any]],
+    relevance: Sequence[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """A round's ``when`` records and its ``relevance`` records, as one new list.
+
+    Copies of both, so neither input is changed. When relevance judged a
+    seat and no seat would run, the one ``choose_reviewers`` keeps does, its
+    record rewritten to say why (``_keep_one``).
+    """
+    joined = [dict(record) for record in (*conditional, *relevance)]
+    if relevance:
+        _keep_one(panel, joined)
+    return joined
+
+
+def _keep_one(panel: Sequence[Dict[str, Any]], records: Sequence[Dict[str, Any]]) -> None:
+    """The empty-panel guard: when no seat would run, the one ``choose_reviewers`` keeps does.
+
+    Its record in ``records`` -- a list ``join_relevance`` owns -- is
+    rewritten in place, whatever kind it is.
+    """
+    members = [reviewer for reviewer in panel if isinstance(reviewer, dict)]
+    if not members or any(qualifies(reviewer, records) for reviewer in members):
+        return
+    name = str(choose_reviewers(members, 1)[0].get("id") or "")
+    for record in records:
+        if record.get("id") == name:
+            record["runs"] = True
+            record["reason"] = "kept: no other reviewer would run"
+
+
+def keeps_whole(records: Sequence[Dict[str, Any]]) -> bool:
+    """Whether a record that ran should keep a code panel whole against the low-risk cut.
+
+    A ``when`` seat that qualified does; a relevance answer does only when a
+    carried finding kept the seat. A rule finding its evidence is not a
+    reason to pay for two reviewers to agree that a small change is small.
+    """
+    for record in records:
+        if not record.get("runs"):
+            continue
+        if record.get("when") != WHEN_RELEVANCE or str(record.get("reason") or "").startswith(_CARRIED):
+            return True
+    return False
+
+
+def code_evidence(paths: Sequence[str], reviewed: Optional[Sequence[str]]) -> Evidence:
+    """A code round's evidence: ``paths`` the whole change, ``reviewed`` the
+    snapshot's ``files`` (None when it has none)."""
+    if reviewed is None:
+        return Evidence((), (), (), doubt="the snapshot lists no reviewed files")
+    if not reviewed:
+        return Evidence((), (), (), doubt="no file was reviewed")
+    touched = [str(path) for path in paths]
+    return Evidence(touched, [str(path) for path in reviewed], touched)
+
+
+def design_evidence(scan: Any, plan_state: str) -> Evidence:
+    """A plan's evidence, from ``review.plan_tokens()``; doubt when the plan
+    was not read or its Files to Modify cannot be judged."""
+    if plan_state != "ok" or scan is None:
+        return Evidence((), (), (), doubt="plan could not be read")
+    files = plan_files(scan)
+    if files.doubt:
+        return Evidence((), (), (), doubt=files.doubt)
+    tests = [path for path in files.shaped if path.startswith(DESIGN_TESTS_PREFIXES)]
+    return Evidence([item.token for item in scan.tokens], files.code, files.shaped, tests)
+
+
+def conditional_notes(records: Sequence[Dict[str, Any]]) -> List[str]:
+    """One line per conditional record, saying whether its reviewer runs and why.
+
+    A seat a relevance rule left out is told how to include it.
+    """
+    notes: List[str] = []
+    for record in records:
+        verdict = "added" if record["runs"] else "left out"
+        line = "%s (when: %s) %s: %s" % (record["id"], record["when"], verdict, record["reason"])
+        if record["when"] == WHEN_RELEVANCE and not record["runs"]:
+            line += "; --only %s to include it" % redact(str(record["id"]))
+        notes.append(line)
+    return notes
+
+
+def risk_reason(high_risk: Sequence[Tuple[str, str]], declared: bool) -> str:
+    """Why a round is high-risk, for the model-switch note; "" when it is not."""
+    if high_risk:
+        return redact(_hit_reason(high_risk))
+    return "declared with --high-risk" if declared else ""
 
 
 class Plan:
@@ -448,11 +946,15 @@ class Plan:
 
     def conditional_notes(self) -> List[str]:
         """One line per conditional reviewer, saying whether it runs and why."""
-        notes: List[str] = []
-        for record in self.conditional:
-            verdict = "added" if record["runs"] else "left out"
-            notes.append("%s (when: %s) %s: %s" % (record["id"], record["when"], verdict, record["reason"]))
-        return notes
+        return conditional_notes(self.conditional)
+
+    def risk_reason(self) -> str:
+        """Why the round is high-risk, for the model-switch note; "" when it is not.
+
+        A high-risk path hit, or ``--high-risk``: the two that switch a seat
+        to its ``high_risk_model``.
+        """
+        return risk_reason(self.high_risk, self.declared)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -485,6 +987,7 @@ def decide(
     carried: Sequence[Dict[str, Any]] = (),
     only: bool = False,
     condition_paths: Optional[Sequence[str]] = None,
+    reviewed: Optional[Sequence[str]] = None,
 ) -> Plan:
     """Work out what this round should cost, from the change and the config.
 
@@ -508,6 +1011,11 @@ def decide(
     against: the change as a reviewer sees it, without the files that are in
     neither the diff nor the withheld notice. It defaults to ``paths``. It
     decides membership only; risk is still judged from ``paths``.
+
+    ``reviewed`` is the snapshot's list of reviewed files, for the role
+    relevance rules (``relevance_records``), which judge the panel at every
+    level. Without it nothing is judged: a caller that has no list has no
+    evidence of absence either.
     """
     requested = normalise_level(settings.get("level"))
     hits = high_risk_matches(paths, risk_patterns(settings))
@@ -534,13 +1042,27 @@ def decide(
             only=only,
             paths=paths if condition_paths is None else condition_paths,
         )
+        # At every level, `quality` included: the level never keeps a role
+        # with nothing to read. A high-risk hit does, as it escalates.
+        relevance = relevance_records(
+            "code",
+            panel,
+            code_evidence(paths, reviewed),
+            settings,
+            hits=hits,
+            declared=declared,
+            carried=carried,
+            only=only,
+        )
+        conditional = join_relevance(panel, conditional, relevance)
         members = [reviewer for reviewer in panel if isinstance(reviewer, dict)]
         reviewers = sum(1 for reviewer in members if qualifies(reviewer, conditional))
     # A conditional reviewer that qualified keeps the panel whole. A high-risk
     # path hit already does, through `quality`; a declaration, a carried
     # finding or a reviewer's own path does not move the level, and the cut
-    # would drop the very reviewer that just qualified.
-    keep_whole = declared or any(record["runs"] for record in conditional)
+    # would drop the very reviewer that just qualified. A role relevance rule
+    # that found its evidence does not: see `keeps_whole`.
+    keep_whole = declared or keeps_whole(conditional)
     limit = None
     # Any level short of `quality`, which is the level that means "spend what
     # it takes". Restricting this to `aggressive` made it unreachable in the
@@ -650,6 +1172,102 @@ def _risk_candidates(token: str) -> List[str]:
     return [path]
 
 
+def _folded_patterns(patterns: Sequence[str]) -> Dict[str, str]:
+    """Each pattern lower-cased, mapped back to the first one written that way."""
+    folded: Dict[str, str] = {}
+    for pattern in patterns:
+        folded.setdefault(pattern.lower(), pattern)
+    return folded
+
+
+def _token_matches(tokens: Sequence[str], patterns: Sequence[str]) -> List[Tuple[str, str]]:
+    """``(token, pattern)`` for each plan token one of ``patterns`` matches.
+
+    Case-insensitive, through ``_risk_candidates``: the plan's spelling of a
+    path says nothing about what it is. Each token is matched once.
+    """
+    folded = _folded_patterns(patterns)
+    seen = set()
+    hits: List[Tuple[str, str]] = []
+    for token in tokens:
+        if token in seen:
+            continue
+        seen.add(token)
+        matched = high_risk_matches(_risk_candidates(token), list(folded))
+        if matched:
+            hits.append((token, folded[matched[0][1]]))
+    return hits
+
+
+def design_risk(settings: Dict[str, Any], scan: Any) -> List[Tuple[str, str, str]]:
+    """``(token, section, pattern)`` for every plan token matching a high-risk pattern.
+
+    The whole plan, not only Files to Modify, in any case. Apart from
+    ``decide_design`` so that a design round can ask it whatever
+    ``review.design.enabled`` is: it decides a seat's ``high_risk_model`` and
+    who sits on the panel as well as whether the stage runs. ``scan`` is
+    ``review.plan_tokens()`` of the plan, or None for a plan not read.
+    """
+    if scan is None:
+        return []
+    sections: Dict[str, str] = {}
+    for item in scan.tokens:
+        sections.setdefault(item.token, item.section)
+    return [
+        (token, sections.get(token, ""), pattern)
+        for token, pattern in _token_matches([item.token for item in scan.tokens], risk_patterns(settings))
+    ]
+
+
+class PlanFiles(NamedTuple):
+    """What a plan's Files to Modify names, shaped as ``decide_design`` reads it."""
+
+    #: Every file-shaped entry, normalised, in order and once each.
+    shaped: List[str]
+    #: The entries that are neither docs nor tests.
+    code: List[str]
+    #: Why the section cannot be judged (no section, a glob, a directory, a
+    #: path through ``..``, a name that may be a directory, no file), or "".
+    doubt: str
+
+
+def plan_files(scan: Any) -> PlanFiles:
+    """The Files to Modify section of ``scan``, and whether it can be judged at all.
+
+    Only file-shaped tokens (a ``/`` or an extension) are judged as globs or
+    directories, so ``payload["mode"]`` there is code, not a pattern. The
+    first doubt found is the one reported.
+    """
+    if scan is None:
+        return PlanFiles([], [], "plan could not be read")
+    if not scan.has_files_section:
+        return PlanFiles([], [], "no Files to Modify section")
+    shaped: List[str] = []
+    for item in scan.tokens:
+        if not item.in_files:
+            continue
+        path = _plan_path(item.token)
+        extension = _has_extension(path)
+        if "/" not in path and not extension:
+            continue
+        if any(ch in path for ch in _GLOB_CHARS):
+            return PlanFiles(shaped, [], "names a glob: %s" % item.token)
+        if path.endswith("/"):
+            return PlanFiles(shaped, [], "names a directory: %s" % item.token)
+        if ".." in path.split("/"):
+            return PlanFiles(shaped, [], "names a path through ..: %s" % item.token)
+        if not extension:
+            if item.prose:
+                continue
+            return PlanFiles(shaped, [], "may name a directory: %s" % item.token)
+        if path not in shaped:
+            shaped.append(path)
+    if not shaped:
+        return PlanFiles(shaped, [], "Files to Modify names no file")
+    code = [path for path in shaped if not path.startswith(DESIGN_TESTS_PREFIXES) and not is_doc(path)]
+    return PlanFiles(shaped, code, "")
+
+
 def decide_design(
     mode: str,
     settings: Dict[str, Any],
@@ -682,18 +1300,7 @@ def decide_design(
     if plan_state != "ok" or scan is None:
         return DesignDecision(mode, True, "plan could not be read")
 
-    folded: Dict[str, str] = {}
-    for pattern in risk_patterns(settings):
-        folded.setdefault(pattern.lower(), pattern)
-    seen = set()
-    hits: List[Tuple[str, str, str]] = []
-    for item in scan.tokens:
-        if item.token in seen:
-            continue
-        seen.add(item.token)
-        matched = high_risk_matches(_risk_candidates(item.token), list(folded))
-        if matched:
-            hits.append((item.token, item.section, folded[matched[0][1]]))
+    hits = design_risk(settings, scan)
     if hits:
         token, section, _ = hits[0]
         where = " (%s)" % section if section else ""
@@ -702,40 +1309,107 @@ def decide_design(
             mode, True, "touches %s%s%s" % (token, where, more), high_risk=[(t, p) for t, _, p in hits]
         )
 
-    if not scan.has_files_section:
-        return DesignDecision(mode, True, "no Files to Modify section")
-    listed = [item for item in scan.tokens if item.in_files]
-    shaped: List[str] = []
-    for item in listed:
-        path = _plan_path(item.token)
-        extension = _has_extension(path)
-        if "/" not in path and not extension:
-            continue
-        if any(ch in path for ch in _GLOB_CHARS):
-            return DesignDecision(mode, True, "names a glob: %s" % item.token)
-        if path.endswith("/"):
-            return DesignDecision(mode, True, "names a directory: %s" % item.token)
-        if ".." in path.split("/"):
-            return DesignDecision(mode, True, "names a path through ..: %s" % item.token)
-        if not extension:
-            if item.prose:
-                continue
-            return DesignDecision(mode, True, "may name a directory: %s" % item.token)
-        if path not in shaped:
-            shaped.append(path)
-    if not shaped:
-        return DesignDecision(mode, True, "Files to Modify names no file")
-    code = [
-        path
-        for path in shaped
-        if not path.startswith(DESIGN_DOCS_PREFIXES + DESIGN_TESTS_PREFIXES)
-        and not posixpath.basename(path).lower().endswith(".md")
-    ]
-    count = len(code)
+    files = plan_files(scan)
+    if files.doubt:
+        return DesignDecision(mode, True, files.doubt)
+    count = len(files.code)
     if count >= DESIGN_LARGE_PLAN_FILES:
         return DesignDecision(mode, True, "%d code files" % count, files=count)
     noun = "code file" if count == 1 else "code files"
     return DesignDecision(mode, False, "%d %s, none high-risk" % (count, noun), files=count)
+
+
+class DesignPlan:
+    """Who sits on a design round, and what it was decided from.
+
+    A design round has no gate, no panel cut and no escalation: the level is
+    the configured one, recorded for the report only. What it does have is
+    the plan's high-risk hits -- a ``when: high-risk`` seat joins on them and
+    a seat with a ``high_risk_model`` switches to it -- and the conditional
+    records of ``condition_reviewers`` and ``relevance_records``.
+    """
+
+    def __init__(
+        self,
+        level: str,
+        high_risk: Sequence[Tuple[str, str]] = (),
+        conditional: Sequence[Dict[str, Any]] = (),
+        declared: bool = False,
+        files: int = 0,
+    ) -> None:
+        self.level = level
+        #: ``(token, pattern)`` for every plan token matching a high-risk pattern.
+        self.high_risk = list(high_risk)
+        self.conditional = [dict(record) for record in conditional]
+        self.declared = declared
+        #: Code files counted in Files to Modify.
+        self.files = files
+
+    @property
+    def is_high_risk(self) -> bool:
+        return bool(self.high_risk) or self.declared
+
+    def risk_reason(self) -> str:
+        """Why the round is high-risk, for the model-switch note; "" when it is not."""
+        return risk_reason(self.high_risk, self.declared)
+
+    def conditional_notes(self) -> List[str]:
+        return conditional_notes(self.conditional)
+
+    def left_out(self) -> List[Dict[str, Any]]:
+        """The records of the seats this round leaves out."""
+        return [record for record in self.conditional if not record.get("runs")]
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "level": self.level,
+            "high_risk": [{"path": redact(p), "pattern": redact(q)} for p, q in self.high_risk],
+            "declared": self.declared,
+            "conditional": [dict(record) for record in self.conditional],
+            "files": self.files,
+        }
+
+
+def decide_design_round(
+    settings: Dict[str, Any],
+    scan: Any,
+    plan_state: str,
+    panel: Sequence[Dict[str, Any]],
+    *,
+    declared: bool = False,
+    carried: Sequence[Dict[str, Any]] = (),
+    only: bool = False,
+) -> DesignPlan:
+    """Who sits on this design round, from the plan the architect wrote.
+
+    Whether the stage runs at all is ``decide_design``'s; this is asked once
+    it does. ``panel`` is the design panel in force (``LoadedConfig.
+    design_reviewers``), ``scan`` the plan's ``review.plan_tokens()`` when
+    ``plan_state`` is ``"ok"``. ``carried`` is the accepted findings the
+    design review still has open.
+    """
+    hits = design_risk(settings, scan) if plan_state == "ok" else []
+    pairs = [(token, pattern) for token, _section, pattern in hits]
+    conditional = condition_reviewers(panel, pairs, declared=declared, carried=carried, only=only)
+    relevance = relevance_records(
+        "design",
+        panel,
+        design_evidence(scan, plan_state),
+        settings,
+        hits=pairs,
+        declared=declared,
+        carried=carried,
+        only=only,
+    )
+    conditional = join_relevance(panel, conditional, relevance)
+    files = plan_files(scan) if plan_state == "ok" else PlanFiles([], [], "")
+    return DesignPlan(
+        normalise_level(settings.get("level")),
+        pairs,
+        conditional,
+        declared=bool(declared),
+        files=len(files.code),
+    )
 
 
 def findings_cap(
