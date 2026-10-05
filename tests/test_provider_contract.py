@@ -296,6 +296,19 @@ class TestOptionsReachTheCommand(IsolatedCase):
         )
         self.assertIsNone(self.seen["idle_timeout"])
 
+    def test_agy_asks_for_no_idle_deadline_whatever_is_requested(self):
+        """agy reports activity, but prints nothing while the model thinks or
+        writes a tool call's arguments: no idle deadline is claimed."""
+        provider = self.capture(providers.get_provider("agy"))
+        provider.run(
+            "prompt",
+            base.MODE_IMPLEMENT,
+            self.project,
+            model_spec={"family": "default", "version": "latest"},
+            idle_timeout=5.0,
+        )
+        self.assertIsNone(self.seen["idle_timeout"])
+
     def test_claude_does_honour_the_idle_deadline(self):
         """The other half of the same rule: Claude streams, so the deadline
         is real there. Without this the test above would pass on an adapter
@@ -983,6 +996,29 @@ class TestLaunchReachesTheStart(IsolatedCase):
         kwargs = dict(launch.command_kwargs or {})
         self.assertTrue(str(kwargs.pop("prompt_file")).startswith("agy-prompt-%d-" % os.getpid()))
         self.assertEqual(kwargs, {"marker": 1})
+
+
+class TestTheLiveCheckDefaults(unittest.TestCase):
+    """An adapter that declares nothing for scripts/smoke_live.py is asked
+    what it was asked before the declarations existed."""
+
+    def test_the_live_check_defaults(self):
+        for provider in (base.Provider(), _BareAdapter()):
+            with self.subTest(provider=type(provider).__name__):
+                self.assertFalse(provider.confines_read_only)
+                self.assertEqual(provider.read_only_widening_args("/elsewhere"), [])
+                self.assertEqual(provider.repository_hooks_file, "")
+                self.assertEqual(provider.repository_sandbox_config_file, "")
+                self.assertEqual(provider.tool_activity_reported, base.TOOL_ACTIVITY_NONE)
+                self.assertEqual(provider.file_read_tool, "")
+                self.assertIsNone(provider.denied_action_items("bare denied x (command)"))
+                self.assertFalse(provider.implement_write_checked)
+                self.assertIsNone(provider.permission_bypass_options)
+                result = base.RunResult(True, 0, "", "", [], 0.0, session_init={"anything": True})
+                self.assertEqual(
+                    provider.resumed_session_problem(result),
+                    "no reading of a resumed session's restrictions is known for %s" % provider.name,
+                )
 
 
 if __name__ == "__main__":

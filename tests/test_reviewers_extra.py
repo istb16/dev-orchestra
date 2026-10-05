@@ -26,6 +26,7 @@ from orchestrator import wizard as wizard_mod
 FITTED = ["claude-general", "claude-general-2", "claude-security", "claude-test", "claude-security-2"]
 FIT_LABELS = ["fit"] * len(FITTED)
 BOTH_FITTED = ["claude-general", "codex-general", "claude-security", "claude-test", "claude-security-2"]
+AGY_FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "agy")
 
 
 def run_cli(*argv):
@@ -424,6 +425,43 @@ class TestProjectRefusals(ExtrasCase):
         _, out, err = run_cli("review", "run")
         self.assertIn("reviewers on agy are taken only from the global config", out + err)
         self.assertEqual(len(started), 1, "only the fitted agy-general runs")
+
+    def agy_review(self, printed):
+        """``review run`` with a global panel of one agy reviewer whose CLI
+        prints ``printed``; that reviewer's entry in the round's event."""
+        self.fake_clis(agy=True)
+        self.init_git_repo()
+        self.write("app.py", "a = 1\n")
+        self.commit_all("init")
+        self.write("app.py", "a = 2\n")
+        self.write_global({"optimization": {"level": "quality"}, "reviewers": [agy("gem")]})
+        review_mod.create_snapshot(self.cli_workspace())
+        self.addCleanup(setattr, execution, "execute", execution.execute)
+
+        def execute(command, cwd, prompt="", timeout=None, idle_timeout=None, env=None):
+            return execution.ExecOutcome(0, printed, "", 0.1)
+
+        execution.execute = execute
+        run_cli("review", "run")
+        events = self.cli_workspace().read_state()["events"]
+        entries = [entry for event in events for entry in event.get("reviewers") or []]
+        entries = [entry for entry in entries if entry.get("id") == "gem"]
+        self.assertTrue(entries, events)
+        return entries[-1]
+
+    @unittest.skipUnless(has_git(), "git not available")
+    def test_a_denied_agy_reviewer_is_not_a_clean_review(self):
+        with open(os.path.join(AGY_FIXTURES, "stream-json-denied.jsonl"), encoding="utf-8") as handle:
+            entry = self.agy_review(handle.read())
+        self.assertEqual(entry["status"], "failed")
+        self.assertIsNone(entry["report"])
+        self.assertFalse(os.path.exists(self.cli_workspace().reviewer_report_path("gem")))
+
+    @unittest.skipUnless(has_git(), "git not available")
+    def test_a_non_success_agy_reviewer_fails(self):
+        result = {"status": "ERROR", "response": "### F1 [high] app.py:1 -- a finding\n"}
+        entry = self.agy_review(json.dumps({"event": "result", "result": result}) + "\n")
+        self.assertEqual(entry["status"], "failed")
 
 
 class TestGlobalAgyExtraFromProjectScope(ExtrasCase):

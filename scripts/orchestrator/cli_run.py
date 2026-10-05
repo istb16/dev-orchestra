@@ -159,6 +159,8 @@ def _save_output(role: str, path: str, result: Any) -> Optional[_Refused]:
     survive by landing in the target, and it is often the only account of what
     the run did instead of the work. The same ``strip()`` decides there is
     anything to keep -- a sidecar holding two newlines is a file to delete.
+    A failed run's ``partial_output``, which its adapter kept out of stdout,
+    goes there too, and only there.
     """
     sidecar = path + ".rejected"
     # An earlier attempt's sidecar is not this run's account of itself, and the
@@ -169,16 +171,17 @@ def _save_output(role: str, path: str, result: Any) -> Optional[_Refused]:
         ws.write_text(path, result.stdout)
         return None
     message = "%s produced nothing usable; %s is unchanged." % (role, path)
-    if not result.stdout.strip():
+    kept = result.stdout if result.stdout.strip() else result.partial_output
+    if not kept.strip():
         return _Refused(message)
     try:
-        ws.write_text(sidecar, result.stdout)
+        ws.write_text(sidecar, kept)
     except OSError as exc:
         # Keeping the output is the convenience; failing at it must cost only
         # the convenience, not the output and not the report of the run itself.
         return _Refused(
             message + " It could not be kept in %s (%s), so it follows here." % (sidecar, exc),
-            unsaved_output=result.stdout,
+            unsaved_output=kept,
         )
     return _Refused(message + " Its partial output is in %s." % sidecar, rejected_file=sidecar)
 

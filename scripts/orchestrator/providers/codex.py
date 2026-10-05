@@ -194,6 +194,17 @@ class CodexProvider(Provider):
         "reports a missing session",
         "ignores repository config on resume",
     )
+    #: What the live check asks (base.py, "live check"): a repository config
+    #: that loosens the sandbox. Tool activity is not reported: the CLI hands
+    #: back its final message only, and its usage comes from a prose footer.
+    repository_sandbox_config_file = ".codex/config.toml"
+
+    def resumed_session_problem(self, result: RunResult) -> Optional[str]:
+        """Read from the sandbox policy the adapter read from the fork's rollout."""
+        init = getattr(result, "session_init", None)
+        if not isinstance(init, dict) or init.get("sandbox_policy") != "read-only":
+            return "the resumed session's sandbox policy was not confirmed read-only"
+        return None
 
     def validate_options(self, options: Optional[Dict[str, Any]]) -> List[str]:
         problems = super().validate_options(options)

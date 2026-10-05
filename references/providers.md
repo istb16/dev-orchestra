@@ -18,6 +18,7 @@
   - [The contract](#the-contract)
   - [Rules](#rules)
   - [Taking part in preset fitting](#taking-part-in-preset-fitting)
+  - [Taking part in the live check](#taking-part-in-the-live-check)
   - [When it goes wrong](#when-it-goes-wrong)
   - [Interface stability](#interface-stability)
 - [Failure semantics](#failure-semantics)
@@ -76,6 +77,18 @@ class Provider:
     def resume_command(mode, resolved, cwd, extra_args, options, session_id) -> list[str]  # default: build_command + resume_args
     def resume_rejected(outcome, mode, options, session_id) -> bool   # default: False
     def parse_session(outcome) -> dict                          # session_id, context_tokens, init
+
+    # Live check only: read by scripts/smoke_live.py, never by a run or the orchestrator.
+    confines_read_only: bool                                    # default: False
+    repository_hooks_file: str                                  # default: ""
+    repository_sandbox_config_file: str                         # default: ""
+    tool_activity_reported: str                                 # default: "none"
+    file_read_tool: str                                         # default: ""
+    implement_write_checked: bool                               # default: False
+    permission_bypass_options: dict | None                      # default: None
+    def read_only_widening_args(directory) -> list[str]         # default: []
+    def denied_action_items(warning) -> list[tuple[str, str]] | None   # default: None
+    def resumed_session_problem(result) -> str | None           # default: names no reading
 
 class Launch(NamedTuple):     # one run, as around_launch is handed it
     prompt, mode, cwd, model_spec, timeout, extra_args, env, options,
@@ -137,7 +150,9 @@ passes `verified.resume_trust(...)` the table, the adapter's
 `resume_mechanism()` -- the flags a record vouches for, the fresh read-only
 mechanism unless the resumed command differs -- and its
 `required_resume_checks`, the checks a version must pass (every check
-`verified.py` names unless it names fewer), and turns the answer into the
+`verified.py` names unless it names fewer; that set includes the confinement
+and hooks checks, so an adapter that declares neither for the live check
+names its own), and turns the answer into the
 report with `resume_report(version, trust)`. An adapter may also refuse to
 start a resumed run: `around_launch` returns a result with
 `resume_rejected=True` and `invoked=False` without calling `proceed`, and the
@@ -226,12 +241,16 @@ static, `run` and `review run` refuse the project-file seat on the live report.
 
 An adapter sets `streams_progress = True` only when a healthy run of the command
 it builds emits output *while working*. That must be measured, not assumed:
-claiming it falsely turns a slow but working agent into a killed one. The
-Claude and Codex adapters stream, for different reasons -- Codex does so
-natively, Claude because its adapter asks for `stream-json`. The agy adapter
-does not: `--output-format json` prints once, at the end, so an agy run has
-the total deadline only. A role can override the deadline with
-`options.idle_timeout`. See `references/limits.md` for the measurements.
+claiming it falsely turns a slow but working agent into a killed one. Only
+the Claude adapter sets it, because it asks for `stream-json`, and only Claude
+takes an idle deadline. The Codex and agy adapters set no `streams_progress`
+and take none, so their runs have the total deadline only. agy reports tool
+activity from its `stream-json` output, but prints nothing while the model
+thinks, nor during a model step that is not the last (generating a tool
+call's arguments included), so its silence says nothing about whether it is
+wedged. A Claude role can override the deadline with `options.idle_timeout`;
+the option is Claude's alone. See `references/limits.md` for the
+measurements.
 
 ### Model resolution contract
 
@@ -552,20 +571,21 @@ reviewers:
 
 ## Antigravity CLI adapter
 
-Verified against `agy` 1.2.13 on Windows. Meant for the implementer and the
-review fixer.
+Verified against `agy` 1.2.13 on Windows, and its `stream-json` output
+against 1.2.16. Meant for the implementer and the review fixer.
 
 | Aspect | How |
 | --- | --- |
-| Non-interactive run | `agy --output-format json [--model <id>] -p "Read the file .ai/agy-prompt-<pid>-<random>.md ..."`, `-p` last; one JSON object at the end |
+| Non-interactive run | `agy --output-format stream-json [--model <id>] -p "Read the file .ai/agy-prompt-<pid>-<random>.md ..."`, `-p` last; JSON lines as the run goes, the `result` last |
 | Model | `--model <id>`, **omitted** for the `default` family |
 | Model discovery | `agy models` (needs the network): the `id<TAB>name` lines it prints; nothing else is read |
 | `plan` / `review` | the same command: agy has no read-only mode, so these runs are **not enforced** |
 | `implement` | the same command, plus `--dangerously-skip-permissions` when `options.skip_permissions: true` comes from the global config |
-| Final answer | the `response` field of the JSON object; `AGY_ERROR` lines and the `error` field go to stderr |
-| Usage | `usage.input_tokens`, `output_tokens` and `cache_read_tokens` of the JSON object; no cost |
+| Final answer | the `response` of the `result` line. No result, a status other than `SUCCESS` or an empty response fails the run (`agy: no answer: ...` warnings); the partial text of such a run goes only to `run --output`'s `.rejected` file, never into the answer. Stdout lines that are not JSON, and the result's `error`, go to stderr |
+| Usage | `usage.input_tokens`, `output_tokens` and `cache_read_tokens` of the result; `tool_uses` and `tool_uses_by_name` from the tool steps; no output chars, no cost |
 | Resume | left out: `--resume` runs fresh (below) |
-| Progress | none until the end (`streams_progress = False`), so no idle deadline |
+| Progress | tool activity and context size, yes; idle deadline, no (`streams_progress = False`) |
+| Tool activity | `view_file` as `Read <path>`, `write_to_file` as `Write <path>`, `run_command` as `Bash: <program>`; any other plain name as itself, `mcp__s__t` as `s.t`, and a name that is not plain as `tool` |
 | Auth | not detected; run `agy` once to sign in if runs fail |
 
 Families are names, never ids; the id comes from what `agy models` lists on
@@ -606,6 +626,24 @@ home. `usage.output_tokens` already includes
 215, thinking 212, total 12742, which is input plus output), so thinking is
 not added on top. A trivial prompt costs about 12k-25k input tokens.
 
+On 1.2.16, `stream-json` prints one JSON object per line: `init`, then a
+`step_update` per step (a tool step once when it starts and once when it
+ends, a model step's last line with that step's usage, the answer as
+`text_delta` chunks), then `result`, the object `json` prints. The result's
+usage equals the sum of the steps', so tokens are read from the result alone.
+A model step's `input_tokens` is the part not read from cache, so its
+`input_tokens + cache_read_tokens` is the context size: 13671, 14125 and 14517
+over one run. Nothing is printed while the model thinks; the runs measured had
+gaps of up to six seconds, which is too short a sample to set an idle deadline
+on. A tool step's `output` is a summary (`4 lines, 17 bytes`), so no output
+chars are counted. A shell command denied in headless mode ends with status
+`SUCCESS`, an empty `response` and `denied_actions`. That run was recorded
+over stdin without `-p`; the smoke check "names a denied command" confirms
+the same shape under `-p`. The format is not documented, so every rename
+fails closed: no answer is taken from anything but the `result`. Nothing
+checks agy's version; an older CLI that rejects `stream-json` fails the run
+with its own error in stderr.
+
 **Read-only runs are not enforced.** On agy 1.2.13, `--mode plan`, `--mode plan
 --sandbox` and `--agent research` each wrote a file and read outside the
 workspace, and plan mode moved the answer out of the reply. So no `--mode` is
@@ -639,8 +677,10 @@ If it is wanted later, agy would override `verified_resume()`,
 **Permissions on the implementer.** Without `--dangerously-skip-permissions`,
 file edits ran and shell commands were refused in headless mode, so an
 implementer on agy cannot run the tests unless the bypass is on; with it, a
-command ran. `denied_actions` in the JSON result becomes a run warning, shown
-on success too, that says how to turn it on. The bypass is
+command ran. `denied_actions` in the result becomes a run warning, shown
+on success too, that says how to turn it on. Denied actions alone do not fail
+the run, since an implementer may finish its task despite one; the denied
+run's empty response does. The bypass is
 `options.skip_permissions: true` (default `false`) in the **global** config,
 or `--extra --dangerously-skip-permissions` for one run:
 
@@ -882,6 +922,85 @@ prints a `Preset fitting:` line in the adapter's block saying which roles it
 can take and why, and `doctor --json` has it as `providers.<name>.preset_fit`.
 `DEV_ORCHESTRA_NO_USER_PROVIDERS=1` takes every user adapter out of the fit,
 as it takes it out of everything else.
+
+### Taking part in the live check
+
+`scripts/smoke_live.py --provider <name>` runs the installed CLI for real and
+checks that the adapter still fits it. Every adapter is asked the same core
+checks: it is installed, it resolves a model, it answers a review prompt, it
+reports what it spent, its tool activity, and whether a review run stays
+read-only (or, for an `unenforced` adapter, whether that status matches what
+the run did). Whatever else it is asked, the adapter declares on its class --
+the script names no CLI. Each member's default is "not asked", so an adapter
+that sets none is checked exactly as before. The check names are fixed: an
+adapter decides which checks run, never what they are called.
+
+| Member | Default | Set it to opt in to |
+| --- | --- | --- |
+| `confines_read_only` | `False` | `True`: `stays confined (absolute)`, `stays confined (symlink)`, `--add-dir widens`, and, for an adapter that resumes, `resumes confined (absolute/symlink)`. A read-only run must not read a file outside its working directory. |
+| `read_only_widening_args(directory)` | `[]` | The raw arguments that let a read-only run also read `directory`; asked by `--add-dir widens`, which needs it. |
+| `repository_hooks_file` | `""` | A repository-relative path the CLI reads command hooks from: `ignores repository hooks` and `ignores repository hooks on resume`. |
+| `repository_sandbox_config_file` | `""` | A repository-relative path the CLI reads a sandbox setting from: `ignores repository config on resume`. |
+| `tool_activity_reported` | `"none"` | What `parse_usage` fills in about tools: `"calls"` (`tool_uses` and `tool_uses_by_name`) or `"calls and output"` (those and `tool_output_chars`). `"none"` reports the check as not reported by design; any other value fails it without a run. |
+| `file_read_tool` | `""` | The tool the CLI reads a file with, for a CLI whose read-only run may also reach a shell: the tool check asks for that tool by name and for README.md's content in the reply. |
+| `denied_action_items(warning)` | `None` | `(display name, kind)` for each action a `run_warnings` warning names as denied, and `None` for any other warning. |
+| `implement_write_checked` | `False` | `True`: `writes a file in implement mode`. |
+| `permission_bypass_options` | `None` | The role options that let a write run run shell commands without asking: `names a denied command` (without them) and `runs a command with skip_permissions` (with them). |
+| `resumed_session_problem(result)` | names no reading | The first way a resumed session falls short of read-only, or `None`. |
+
+Some members are only half of a pair:
+
+- `confines_read_only` without `read_only_widening_args`: `--add-dir widens`
+  fails with "the adapter declares no read-only widening arguments", and
+  nothing is run for it. The widening arguments go through the adapter's own
+  read-only gate (`read_only_arg_problems`) first, as a caller's would; if it
+  refuses them, the check fails naming the flags, never their values.
+- `permission_bypass_options` without `denied_action_items`: `names a denied
+  command` fails with "the adapter declares no denied_action_items, so a
+  denied command cannot be read", with no run; the bypass check still runs,
+  and fails on any warning that contains the word "denied". With
+  `denied_action_items`, the bypass check fails only on a warning the method
+  reads as a denial, like every other check. The options must be a mapping
+  of keys in `option_keys`, or the bypass check fails without a run ("names
+  ..., not options this adapter takes"); so must values `validate_options`
+  accepts ("is refused by the adapter: ..."). Opting in runs a shell command
+  (`echo true`) with the bypass, under your account, inside the temporary
+  sandbox repository the script makes.
+- `denied_action_items` without `permission_bypass_options`: neither command
+  check is asked, since there is no bypass whose counterpart a denial would
+  prove. The method still serves the tool check.
+- `tool_activity_reported = "calls"` without `denied_action_items`: the tool
+  check cannot see a denial, so a denied-looking warning does not fail it;
+  only a run that did not complete and the `file_read_tool` requirements do.
+
+`kind` is the CLI's own word for the action. The script relies on one value,
+`"command"`: a shell command, which is what `names a denied command` passes
+on. Anything else is reported as denied, not a command.
+
+The fixtures are the script's own, each in one CLI's format whatever path the
+adapter names: the hooks file is Claude's `settings.json` hooks format, and
+the sandbox config is Codex's `config.toml`. A path must be relative and inside
+the repository: one that is empty, absolute, has a drive (`C:x` included) or a
+leading separator, has a `..` component, or resolves outside the repository
+through a symlink fails every check that member asks, with "`<member>` ... is
+not a path inside the repository", and nothing is written. A file already at
+the path is not overwritten, and the check fails. The script removes the file,
+and any directory it made for it, whether the run passed, failed or raised.
+
+`resumed_session_problem` is asked of every adapter that has resume arguments
+of its own. Override it only to read restrictions the CLI itself reported --
+an init event, a rollout -- and return `None` only when those show the session
+started read-only, never because no file was written: a model that chose not
+to write proves nothing about a CLI that dropped a flag on resume. The default
+names no reading, so `resumes read-only` fails until an adapter has one.
+
+A resume pass is recorded only when every check in `required_resume_checks`
+passed. The default set includes `resumes confined (absolute)` and both hooks
+checks, which only `confines_read_only` and `repository_hooks_file` ask for.
+An adapter that resumes without them names its own set (as Codex does);
+otherwise the run ends with a failed `resume verified` line, "required_resume_checks
+names ..., which the live check does not ask of this adapter; nothing
+recorded". A failed check is still recorded as a failure.
 
 ### When it goes wrong
 

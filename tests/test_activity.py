@@ -148,6 +148,24 @@ class TestShowCommand(unittest.TestCase):
             for secret in ("hunter2xyz", "two", "words", "abc", "never"):
                 self.assertNotIn(secret, shown, command)
 
+    def test_a_quoted_semicolon_does_not_end_a_powershell_assignment(self):
+        cases = {
+            "$env:TOKEN='ab; hunter2 x'; npm test": "Bash: npm test",
+            '$env:TOKEN="ab; hunter2 x"; npm test': "Bash: npm test",
+            "$env:TOKEN='ab; hunter2 x' npm test": "Bash",
+            PWSH + " -Command \"$env:TOKEN='ab; hunter2 x'; npm test\"": "Bash: npm test",
+            '$env:TOKEN="a`"; hunter2 x"; npm test': "Bash",
+            "$t = $(get; hunter2 x); npm test": "Bash",
+            "$t = { a; hunter2 x }; npm test": "Bash",
+        }
+        for command, expected in cases.items():
+            shown = activity.show_command(command)
+            self.assertEqual(shown, expected, command)
+            self.assertNotIn("hunter2", shown, command)
+        # Every adapter's shell tool reads the command the same way.
+        line = activity.tool_line("PowerShell", {"command": "$env:TOKEN='ab; hunter2 x'; npm test"}, "/x")
+        self.assertEqual(line, "Bash: npm test")
+
     def test_a_program_name_that_is_not_a_plain_word_is_bash_alone(self):
         for command in ("$(cat key) status", "`whoami`", "a;b status", "{x} y", "%SECRET% go"):
             self.assertEqual(activity.show_command(command), "Bash", command)

@@ -192,14 +192,16 @@ def _without_assignments(words: List[str]) -> List[str]:
     A POSIX ``NAME=value`` may have a quoted value with spaces in it, so its
     words run to the closing quote. A PowerShell statement that starts with a
     variable (``$env:NAME = 'value';``) runs to the word that ends it with
-    ``;``. An assignment that never ends leaves nothing.
+    ``;`` outside quotes, so a quoted ``'a; b'`` does not end it early. One
+    holding a backtick, ``(`` or ``{`` (an escape, a subexpression, a block)
+    cannot be read that way, and neither can one that never ends: either
+    leaves nothing.
     """
     words = list(words)
     while words:
         word = words[0]
         if word.startswith("$"):
-            while words and not words.pop(0).endswith(";"):
-                pass
+            words = _after_statement(words)
         elif _ASSIGNMENT.match(word):
             value = words.pop(0).split("=", 1)[1]
             quote = value[:1]
@@ -209,6 +211,24 @@ def _without_assignments(words: List[str]) -> List[str]:
         else:
             break
     return words
+
+
+def _after_statement(words: List[str]) -> List[str]:
+    """The words after the PowerShell statement that ``words`` starts with;
+    see :func:`_without_assignments`."""
+    quote = ""
+    for index, word in enumerate(words):
+        for char in word:
+            if char in "`({":
+                return []
+            if quote:
+                if char == quote:
+                    quote = ""
+            elif char in "'\"":
+                quote = char
+        if not quote and word.endswith(";"):
+            return words[index + 1 :]
+    return []
 
 
 def _shell_name(token: str) -> str:

@@ -80,7 +80,7 @@ def summarise_rounds(events: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
     escalated = reduced = refused = unrecorded = 0
     conditional = {"added": 0, "left_out": 0, "declared_rounds": 0}
     reviewer_runs = measured_runs = billed = 0
-    tool_runs = tool_uses = tool_chars = 0
+    tool_runs = tool_uses = tool_chars = tool_output_runs = 0
     measured: List[Dict[str, Any]] = []
 
     for event in rounds:
@@ -115,30 +115,32 @@ def summarise_rounds(events: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
         reviewer_runs += runs
         measured_runs += reported
         billed += spent
-        said, called, printed = _reviewer_tools(event)
+        said, called, printed, printed_runs = _reviewer_tools(event)
         tool_runs += said
         tool_uses += called
         tool_chars += printed
+        tool_output_runs += printed_runs
         _add_to_context_group(
             by_context["with" if _with_context(event) else "without"],
             event,
             (runs, reported, spent),
-            (said, called, printed),
+            (said, called, printed, printed_runs),
         )
         if isinstance(event.get("measurement"), dict):
             measured.append(event)
 
     design_runs = design_measured = design_billed = 0
-    design_tool_runs = design_tool_uses = design_tool_chars = 0
+    design_tool_runs = design_tool_uses = design_tool_chars = design_tool_output_runs = 0
     for event in design:
         runs, reported, spent = _reviewer_spend(event)
         design_runs += runs
         design_measured += reported
         design_billed += spent
-        said, called, printed = _reviewer_tools(event)
+        said, called, printed, printed_runs = _reviewer_tools(event)
         design_tool_runs += said
         design_tool_uses += called
         design_tool_chars += printed
+        design_tool_output_runs += printed_runs
 
     ran = len(rounds) - refused
     per_round = billed // ran if (ran and billed) else None
@@ -173,17 +175,20 @@ def summarise_rounds(events: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
         "design_billed_per_round": design_per_round,
         # Per *run*, over the runs that reported -- never over ``reviewer_runs``.
         # None rather than zero where nothing reported: a panel of CLIs that do
-        # not count tools has not measured no tool use.
+        # not count tools has not measured no tool use. Output chars are over
+        # the runs that reported them: agy counts calls and not their output.
         "tool_reported_runs": tool_runs,
+        "tool_output_reported_runs": tool_output_runs,
         "tool_uses": tool_uses,
         "tool_output_chars": tool_chars,
         "tool_uses_per_run": _per_run(tool_uses, tool_runs),
-        "tool_output_chars_per_run": _per_run(tool_chars, tool_runs),
+        "tool_output_chars_per_run": _per_run(tool_chars, tool_output_runs),
         "design_tool_reported_runs": design_tool_runs,
+        "design_tool_output_reported_runs": design_tool_output_runs,
         "design_tool_uses": design_tool_uses,
         "design_tool_output_chars": design_tool_chars,
         "design_tool_uses_per_run": _per_run(design_tool_uses, design_tool_runs),
-        "design_tool_output_chars_per_run": _per_run(design_tool_chars, design_tool_runs),
+        "design_tool_output_chars_per_run": _per_run(design_tool_chars, design_tool_output_runs),
         # Code rounds that ran, split on whether a reviewer was handed
         # surrounding context -- see ``_with_context``.
         "by_context": {name: _finish_context_group(group) for name, group in by_context.items()},
@@ -339,7 +344,10 @@ def _pair(key: Tuple[Any, ...], with_event: Dict[str, Any], without_event: Dict[
 
 
 def _pair_group() -> Dict[str, int]:
-    keys = "reviewer_runs measured_runs billed_tokens tool_reported_runs tool_uses tool_output_chars"
+    keys = (
+        "reviewer_runs measured_runs billed_tokens tool_reported_runs tool_output_reported_runs "
+        "tool_uses tool_output_chars"
+    )
     return dict.fromkeys(keys.split(), 0)
 
 
@@ -347,18 +355,21 @@ def _finish_pair_group(group: Dict[str, int]) -> Dict[str, Any]:
     finished: Dict[str, Any] = dict(group)
     finished["billed_per_run"] = _per_run(group["billed_tokens"], group["measured_runs"])
     finished["tool_uses_per_run"] = _per_run(group["tool_uses"], group["tool_reported_runs"])
-    finished["tool_output_chars_per_run"] = _per_run(group["tool_output_chars"], group["tool_reported_runs"])
+    finished["tool_output_chars_per_run"] = _per_run(
+        group["tool_output_chars"], group["tool_output_reported_runs"]
+    )
     return finished
 
 
 def _pair_side_figures(event: Dict[str, Any]) -> Dict[str, Any]:
     runs, reported, billed = _reviewer_spend(event)
-    said, called, printed = _reviewer_tools(event)
+    said, called, printed, printed_runs = _reviewer_tools(event)
     group = {
         "reviewer_runs": runs,
         "measured_runs": reported,
         "billed_tokens": billed,
         "tool_reported_runs": said,
+        "tool_output_reported_runs": printed_runs,
         "tool_uses": called,
         "tool_output_chars": printed,
     }
@@ -427,9 +438,9 @@ def _int(value: Any) -> int:
 
 def _context_group() -> Dict[str, int]:
     keys = (
-        "rounds reviewer_runs measured_runs billed_tokens tool_reported_runs tool_uses "
-        "tool_output_chars sized_rounds change_chars sized_billed_tokens billed_run_change_chars "
-        "sized_tool_output_chars tool_run_change_chars sized_billed_runs sized_tool_runs "
+        "rounds reviewer_runs measured_runs billed_tokens tool_reported_runs tool_output_reported_runs "
+        "tool_uses tool_output_chars sized_rounds change_chars sized_billed_tokens billed_run_change_chars "
+        "sized_tool_output_chars output_run_change_chars sized_billed_runs sized_output_runs "
         "adopted_chars trimmed_chars"
     )
     return dict.fromkeys(keys.split(), 0)
@@ -439,7 +450,7 @@ def _add_to_context_group(
     group: Dict[str, int],
     event: Dict[str, Any],
     spend: Tuple[int, int, int],
-    tools: Tuple[int, int, int],
+    tools: Tuple[int, int, int, int],
 ) -> None:
     """Add one round to a group, weighting its size by the runs that reported.
 
@@ -448,15 +459,17 @@ def _add_to_context_group(
     small change to get. Dividing by "size times reporting runs" instead
     gives what one run spent per 1k chars of change, which neither moves.
     Only rounds that recorded their size count toward the normalised
-    figures, numerator and denominator alike.
+    figures, numerator and denominator alike. Output chars are weighted by
+    the runs that reported output, not every run that reported tools.
     """
     runs, reported, billed = spend
-    said, called, printed = tools
+    said, called, printed, printed_runs = tools
     group["rounds"] += 1
     group["reviewer_runs"] += runs
     group["measured_runs"] += reported
     group["billed_tokens"] += billed
     group["tool_reported_runs"] += said
+    group["tool_output_reported_runs"] += printed_runs
     group["tool_uses"] += called
     group["tool_output_chars"] += printed
     adopted, trimmed = _round_context_chars(event)
@@ -471,8 +484,8 @@ def _add_to_context_group(
     group["billed_run_change_chars"] += size * reported
     group["sized_billed_runs"] += reported
     group["sized_tool_output_chars"] += printed
-    group["tool_run_change_chars"] += size * said
-    group["sized_tool_runs"] += said
+    group["output_run_change_chars"] += size * printed_runs
+    group["sized_output_runs"] += printed_runs
 
 
 def _finish_context_group(group: Dict[str, int]) -> Dict[str, Any]:
@@ -480,12 +493,14 @@ def _finish_context_group(group: Dict[str, int]) -> Dict[str, Any]:
     rounds, billed = group["rounds"], group["billed_tokens"]
     finished["billed_per_round"] = billed // rounds if (rounds and billed) else None
     finished["tool_uses_per_run"] = _per_run(group["tool_uses"], group["tool_reported_runs"])
-    finished["tool_output_chars_per_run"] = _per_run(group["tool_output_chars"], group["tool_reported_runs"])
+    finished["tool_output_chars_per_run"] = _per_run(
+        group["tool_output_chars"], group["tool_output_reported_runs"]
+    )
     finished["billed_per_run_per_1k_change_chars"] = _per_1k(
         group["sized_billed_tokens"], group["billed_run_change_chars"]
     )
     finished["tool_output_chars_per_run_per_1k_change_chars"] = _per_1k(
-        group["sized_tool_output_chars"], group["tool_run_change_chars"]
+        group["sized_tool_output_chars"], group["output_run_change_chars"]
     )
     return finished
 
@@ -504,19 +519,22 @@ def _per_run(total: int, runs: int) -> Optional[float]:
     return round(total / float(runs), 1)
 
 
-def _reviewer_tools(event: Dict[str, Any]) -> Tuple[int, int, int]:
-    """One round's reported tool activity: runs that said, calls, output chars.
+def _reviewer_tools(event: Dict[str, Any]) -> Tuple[int, int, int, int]:
+    """One round's reported tool activity: runs that said, calls, output
+    chars, and runs that said how much output.
 
-    The first figure is the denominator, and it is not ``reviewer_runs``.
-    Codex reports no tool activity at all, so dividing a Claude reviewer's
-    tool calls by a mixed panel halves the figure for no reason but the
-    panel's composition -- and the comparison this exists for would then move
-    whenever a reviewer is added or dropped.
+    The first figure is the denominator of calls, and it is not
+    ``reviewer_runs``. Codex reports no tool activity at all, so dividing a
+    Claude reviewer's tool calls by a mixed panel halves the figure for no
+    reason but the panel's composition -- and the comparison this exists for
+    would then move whenever a reviewer is added or dropped. The last is the
+    denominator of output chars, for the same reason: agy counts calls but
+    not their output.
 
     An ``int`` is a report, zero included: a reviewer that opened nothing is
     the result this measurement is looking for.
     """
-    reported = uses = chars = 0
+    reported = uses = chars = printed_runs = 0
     for run in event.get("reviewers") or []:
         if not isinstance(run, dict):
             continue
@@ -529,7 +547,8 @@ def _reviewer_tools(event: Dict[str, Any]) -> Tuple[int, int, int]:
         output = usage.get("tool_output_chars")
         if isinstance(output, int) and not isinstance(output, bool):
             chars += output
-    return reported, uses, chars
+            printed_runs += 1
+    return reported, uses, chars, printed_runs
 
 
 def _reviewer_spend(event: Dict[str, Any]) -> Tuple[int, int, int]:

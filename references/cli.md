@@ -257,10 +257,16 @@ when the run asks it, including one whose report is not static and so is not
 refused by the config commands. An `implement` run on agy is refused the same
 way when the project file names `options.skip_permissions` or sets any
 `options.args` for that role. Whatever the outcome, the adapter's run warnings
--- an agy status that is not success, the actions agy denied -- are printed as
-`warning: <role>: ...` lines, and recorded as `warnings` in the run log's end
-event and the job record; the enforcement warning is recorded there too, and
-printed only the once, before the run.
+-- the actions agy denied, agy stdout lines that could not be read as JSON,
+and the `agy: no answer: ...` warnings -- are printed as `warning: <role>: ...`
+lines, and recorded as `warnings` in the run log's end event and the job
+record; the enforcement warning is recorded there too, and printed only the
+once, before the run. An `agy: no answer:` warning (no result in agy's output,
+a status other than `SUCCESS`, an empty response, output that could not be
+read) means the run failed, whatever agy exited with: `--output` is left as it
+was, and any partial text agy streamed goes only to `<output>.rejected`. Stdout
+lines of agy's that are not JSON are copied to the run's stderr, clipped and at
+most 20; JSON lines never are.
 
 A prompt that arrives empty is refused (exit 1) before anything is delegated,
 so it costs no attempt: a `--prompt-file` that does not exist, one that is
@@ -272,9 +278,10 @@ complaining about its own stdin.
 
 `--timeout` is the total deadline. `--idle-timeout` is the *no output* deadline:
 a wedged agent goes quiet while a slow one keeps producing, so this catches a
-stall in minutes rather than at the total deadline. It only applies to providers
-that stream progress (the Claude and Codex adapters do, agy's does not; see `references/providers.md`), and is
-ignored elsewhere rather than guessed at.
+stall in minutes rather than at the total deadline. It applies to Claude only:
+the Codex and agy adapters claim no progress stream (agy reports tool activity,
+but is silent while its model thinks; see `references/providers.md`), and it is
+ignored there rather than guessed at.
 
 `--output` writes the run's stdout only when the run succeeded and printed
 something; a stalled, timed-out or failed run leaves the existing file exactly
@@ -619,18 +626,23 @@ free-text arguments:
 | `Read`, `Edit`, `Write`, `NotebookEdit` | the tool and the path, relative to the project, or `<outside>/<file name>` |
 | `Glob` | the pattern, only when it is relative and has no `..`, and the path searched as for `Read`: `Glob src/**/*.py`, `Glob src/**/*.py in src`, or `Glob` alone |
 | `Grep` | the path searched, never the pattern |
-| `Bash`, `PowerShell`, a Codex command | `Bash: <program>`, without its directory or `.exe`; `Bash: <program> <subcommand>` only for `git`, `gh`, `npm`, `pnpm`, `yarn`, `npx`, `cargo`, `go`, `docker`, `kubectl`, `pip`, `uv`, `poetry`, `make`, `dotnet` and `terraform`. Leading variable assignments (`FOO=1`, `$env:FOO='x';`) are skipped, and a program name that is not a plain word gives `Bash` alone. A command Codex wraps in a shell (`pwsh -Command '...'`, `bash -lc '...'`) is unwrapped first |
+| `Bash`, `PowerShell`, a Codex command | `Bash: <program>`, without its directory or `.exe`; `Bash: <program> <subcommand>` only for `git`, `gh`, `npm`, `pnpm`, `yarn`, `npx`, `cargo`, `go`, `docker`, `kubectl`, `pip`, `uv`, `poetry`, `make`, `dotnet` and `terraform`. Leading variable assignments (`FOO=1`, `$env:FOO='x';`) are skipped; a `;` inside quotes does not end one, and a `$` statement holding a backtick, `(` or `{` gives `Bash` alone. A program name that is not a plain word gives `Bash` alone. A command Codex wraps in a shell (`pwsh -Command '...'`, `bash -lc '...'`) is unwrapped first |
 | `WebFetch` | scheme, host and port if given; never the path, where many APIs carry a token |
 | an MCP tool | `<server>.<tool>` |
 | a Codex file change | `Edit <path>`, one line per file |
+| agy `view_file`, `write_to_file` | `Read <path>`, `Write <path>`, the path as for `Read` |
+| agy `run_command` | as `Bash` |
+| any other agy tool | the name alone when it is a plain name (a letter, then up to 63 letters, digits, `_`, `.` or `-`), `<server>.<tool>` for `mcp__<server>__<tool>`, and `tool` for any other name |
 | anything else, including `Task` and Codex `web_search` | the name alone |
 
 Every line is cut at its first line break and to 100 characters, stripped of
 escape sequences and control characters, and redacted, before it is written
 and again when it is read. Claude reports the context with every message.
-Codex reports usage only when its turn ends, so a Codex job shows no context
-tokens, and it streams its tool uses only on architect runs, the ones run with
-`--json`: a Codex implementer or fixer job shows `elapsed:` and nothing more.
+agy shows each tool use when the step starts, and the context of each model
+step when it finishes. Codex reports usage only when its turn ends, so a Codex
+job shows no context tokens, and it streams its tool uses only on architect
+runs, the ones run with `--json`: a Codex implementer or fixer job shows
+`elapsed:` and nothing more.
 
 ## budget
 
@@ -683,6 +695,11 @@ says how many runs the columns cover. In these two columns `-` means *the run
 did not report* and `0` means *the run reported using no tools* — a distinction
 the token columns do not make, and the one that makes a reviewer which opened
 nothing visible.
+
+agy counts tool calls, from its stream's tool steps, but not their output. The
+account keeps only sums, so a row that only agy ran shows `tool out 0`, which
+is not a measurement: read it as unreported. A row agy shares with Claude
+counts Claude's output alone.
 
 **`tool out` is observed tool output, not source read.** A reviewer that runs
 `wc -l` on a two-hundred-line file is counted three characters; one that runs
@@ -798,11 +815,18 @@ printed for that reason: Codex reports no tool activity, so dividing by the
 whole panel would halve the figure for no reason but the panel's composition —
 and the comparison these numbers exist for would move whenever a reviewer is
 added or dropped. Nothing reported means no row rather than a row of zeroes.
+Output chars per run are divided by `tool_output_reported_runs`, the runs that
+reported output: agy counts its calls but not their output. When that count
+differs from the runs that reported tools, the row adds `, output chars over K
+run(s)`; when no run reported output, the figure shows `-`.
 
 **Observed output is what the tools printed back, not source read**; `wc -l`
 returns three characters for a two-hundred-line file. In `--json`:
-`tool_reported_runs`, `tool_uses`, `tool_output_chars`, `tool_uses_per_run`,
-`tool_output_chars_per_run`, and the `design_`-prefixed five beside them.
+`tool_reported_runs`, `tool_output_reported_runs`, `tool_uses`,
+`tool_output_chars`, `tool_uses_per_run`, `tool_output_chars_per_run`, and the
+`design_`-prefixed six beside them. The context groups and each side of a
+paired run carry `tool_output_reported_runs` too, and their per-1k output
+figure is weighted by the runs that reported output.
 
 Once a code round has carried [surrounding context](reviews.md#surrounding-context),
 the code rounds that ran are split in two:
@@ -821,14 +845,14 @@ line of each, not the first.** The raw figures move with the size of each
 change and with the size of the panel -- a small change is routinely cut to one
 reviewer -- so the second divides by the change's size weighted by the runs
 that reported each figure: billed over `change_chars × runs that reported
-billed`, tool output over `change_chars × runs that reported tools`, both over
+billed`, tool output over `change_chars × runs that reported output`, both over
 the rounds that recorded their size. Nothing is printed until a round with
 context exists. In `--json`, `by_context.with` and `by_context.without` are
 always present, each with `rounds`, `reviewer_runs`, `measured_runs`,
 `billed_tokens`, `billed_per_round`, the tool figures, `sized_rounds`,
 `change_chars`, `sized_billed_tokens`, `billed_run_change_chars`,
-`sized_billed_runs`, `sized_tool_output_chars`, `tool_run_change_chars`,
-`sized_tool_runs`, `billed_per_run_per_1k_change_chars`,
+`sized_billed_runs`, `sized_tool_output_chars`, `output_run_change_chars`,
+`sized_output_runs`, `billed_per_run_per_1k_change_chars`,
 `tool_output_chars_per_run_per_1k_change_chars`, `adopted_chars` and
 `trimmed_chars`. `tokens show` is a ledger total and cannot split rounds, so it
 is unchanged; the round-by-round comparison is this one.
@@ -1015,7 +1039,9 @@ at all otherwise. In `--json` it is `architect_revisions`: `attempts`,
 `duration_seconds`, `context_runs`, `context_tokens`, the means
 `billed_per_run`, `cost_per_run`, `cost_ratio_mean`, `duration_per_run`,
 `context_per_run`, `failed_attempts` and `cost_per_completed_ratio`), and
-`fallbacks` (`total`, `reasons`).
+`fallbacks` (`total`, `reasons`). The context figures count every run whose
+CLI reported its context: Claude's, and agy's (the last model step's
+`input_tokens + cache_read_tokens`); Codex reports none.
 
 ## progress
 

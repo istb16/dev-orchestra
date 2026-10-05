@@ -76,6 +76,7 @@ assumed:
 | `claude -p --output-format stream-json` | 2.5s of a 6.5s run | `thinking_tokens` events until the answer starts, then nothing until it is finished |
 | `claude -p --output-format stream-json --include-partial-messages` | — | ≤1.7s gaps, the answer included |
 | `claude -p --output-format text` | **8.1s of an 8.9s run** | nothing until the end |
+| `agy --output-format stream-json -p` | at once (`init`, the prompt step) | a line per tool step and per answer chunk, nothing while the model thinks (≤6s gaps on a 12s run) |
 
 The `thinking_tokens` events stop once the model starts writing its answer, and
 the answer arrives in one piece when it is finished. On a 17k-character answer
@@ -90,6 +91,12 @@ An idle deadline on the text row would kill healthy runs, so an adapter must
 declare `streams_progress = True` before one is applied to it, and only on
 evidence. Where it does not apply, the total deadline is the only protection —
 which is exactly why the observability below matters.
+
+agy takes no idle deadline until a long run is measured. Its stream reports
+tool activity, but a model step that is not the last prints a single line when
+it ends, so generating a tool call's arguments — a large `write_to_file`
+included — is silent, and only short runs were measured. A wedged agy run
+surfaces at the total deadline.
 
 A killed run is reported as `stalled` rather than merely failed, and if the
 process group did not fully exit you are warned that orphans may remain.
@@ -349,7 +356,8 @@ dev-orchestra optimization report --json   # paired.pairs[*], paired.delta
   run to run on identical input, and nothing here holds that equal. Take pairs on
   three to five different changes before letting the figures decide anything.
   Codex reports no tool activity, so the tool figures are the reporting runs'
-  (Claude's) alone.
+  (Claude's and agy's) alone. agy counts calls but not their output, so output
+  chars per run are divided by the runs that reported output.
 - **Cost.** One pair runs the snapshot's panel twice. The billed tokens and the
   runtime budget (`charged_seconds`) are each run's measured values added as they
   are; the two prompts and their durations differ, so the total is not exactly
@@ -475,10 +483,13 @@ would be inventing them.
 
 ### What a delegated run's tool activity can and cannot say
 
-Nothing here bounds what a delegated agent reads — neither CLI accepts a limit
-on it — but a Claude run can be counted afterwards, from the events it already
+Nothing here bounds what a delegated agent reads — no CLI accepts a limit on
+it — but a Claude run can be counted afterwards, from the events it already
 streams. `tokens show` and `optimization report` report two figures per run:
 how many tool calls it made, and how many characters those tools printed back.
+An agy run reports the first and not the second: its stream names each tool
+step, and gives only a summary of what the tool returned (`4 lines, 17
+bytes`).
 
 **Every tool call is counted, not just `Read`.** A read-only Claude run has
 `Read`, `Grep` and `Glob` and nothing else -- no `Bash` -- and `Grep` and
@@ -502,7 +513,9 @@ Three consequences worth keeping in mind:
   and reads usage from a prose footer; counting tool calls out of prose would
   match the code under review as readily as the CLI's own output. Its runs are
   unreported, which is why every per-run figure is divided by the runs that
-  reported rather than by every run.
+  reported rather than by every run. Output chars per run are divided by the
+  runs that reported output, so agy's calls count toward uses per run and not
+  toward chars per run; where only agy reported, that figure prints `-`.
 * **Unreported is not zero.** A run that used no tools reports `0`; a run that
   could not say reports nothing, and the output prints `-`. A role set to
   `options.output_format: json` cannot say — that format prints one `result`
@@ -526,6 +539,8 @@ what can be said about it:
   three characters and `cat`'s whole file are not an amount read. **A re-fetch
   of source the prompt already carried is not something these counts can
   see.**
+* **agy's count is calls alone.** `tool_uses` and `tool_uses_by_name` come from
+  its tool steps; there is no output count.
 * **Codex has no proxy at all.** Its usage comes from a prose footer, and there
   are no tool events to count.
 * **Nothing limits it.** The adapters pass

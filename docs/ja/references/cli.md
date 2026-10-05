@@ -1,4 +1,4 @@
-<!-- translated-from: references/cli.md sha256:0842146fdafbac431ec822c06fd274d73b0a467c80b3b8d4b8bade107a7a82c3 -->
+<!-- translated-from: references/cli.md sha256:60159ea45ba2bd6906f91568885f2c2ffd48df662a5a82e58ba77f45a7ed4ce2 -->
 
 > この文書は [references/cli.md](../../../references/cli.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -245,9 +245,13 @@ project ファイルから来ていれば拒否されます（終了コード 2�
 実行時に問い合わせたインストール済みの CLI が `unenforced` を報告するアダプタも同じで、報告が静的でないため
 設定コマンドでは拒否されないものも含みます。agy での `implement` の実行も、project ファイルがそのロールの
 `options.skip_permissions` を挙げるか何らかの `options.args` を設定していれば、同じように拒否されます。
-結果にかかわらず、adapter の実行の警告（成功でない agy の status、agy が拒否した操作）は
-`warning: <role>: ...` の行として表示され、実行ログの終了イベントとジョブレコードに `warnings` として
-記録されます。強制の警告もそこに記録されますが、表示は実行の前の 1 回だけです。
+結果にかかわらず、adapter の実行の警告（agy が拒否した操作、JSON として読めなかった agy の stdout の行、
+`agy: no answer: ...` の警告）は `warning: <role>: ...` の行として表示され、実行ログの終了イベントと
+ジョブレコードに `warnings` として記録されます。強制の警告もそこに記録されますが、表示は実行の前の
+1 回だけです。`agy: no answer:` の警告（agy の出力に結果がない、状態が `SUCCESS` でない、応答が空、
+出力が読めない）は、agy の終了コードにかかわらず、その実行が失敗したことを意味します。`--output` は
+そのまま残り、agy がストリームした途中までのテキストは `<output>.rejected` にだけ入ります。JSON でない
+agy の stdout の行は、短く切って最大 20 行まで実行の stderr に写します。JSON の行は写しません。
 
 空のプロンプトは、何かが委譲される前に拒否されます（終了コード 1）。そのため試行は消費されません。
 対象は、存在しない `--prompt-file`、存在するが空のもの、明示的な `--prompt ""`、そして何も運ばなかった
@@ -257,8 +261,9 @@ project ファイルから来ていれば拒否されます（終了コード 2�
 
 `--timeout` は全体の期限です。`--idle-timeout` は *出力がない* 状態の期限です。固まったエージェントは
 静かになり、遅いだけのエージェントは出力を続けるので、これを使えば stall を全体の期限ではなく数分で
-検出できます。これは進捗をストリームする provider にのみ適用され（Claude と Codex の adapter が該当し、
-agy の adapter は該当しません。`references/providers.md` を参照）、それ以外では推測せずに無視されます。
+検出できます。これが適用されるのは Claude だけです。Codex と agy の adapter は進捗のストリームを
+主張せず（agy はツールの動きを報告しますが、モデルが考えている間は黙ります。`references/providers.md` を
+参照）、そこでは推測せずに無視されます。
 
 `--output` は、実行が成功して何かを出力した場合にのみ、実行の stdout を書き込みます。stall した、
 タイムアウトした、または失敗した実行では既存のファイルはまったくそのまま残り、その旨が stderr に
@@ -569,14 +574,18 @@ dev-orchestra jobs show "$id" --output
 | `Read`、`Edit`、`Write`、`NotebookEdit` | ツールとパス。パスはプロジェクトからの相対パス、外なら `<outside>/<ファイル名>` |
 | `Glob` | パターン（相対で `..` を含まないときだけ）と、`Read` と同じ扱いの検索パス。`Glob src/**/*.py`、`Glob src/**/*.py in src`、または `Glob` だけ |
 | `Grep` | 検索したパス。パターンは決して出しません |
-| `Bash`、`PowerShell`、Codex のコマンド | `Bash: <プログラム>`（ディレクトリと `.exe` は除く）。`Bash: <プログラム> <サブコマンド>` になるのは `git`、`gh`、`npm`、`pnpm`、`yarn`、`npx`、`cargo`、`go`、`docker`、`kubectl`、`pip`、`uv`、`poetry`、`make`、`dotnet`、`terraform` だけです。先頭の変数代入（`FOO=1`、`$env:FOO='x';`）は飛ばし、プログラム名がただの単語でなければ `Bash` だけになります。Codex がシェルで包んだコマンド（`pwsh -Command '...'`、`bash -lc '...'`）は先に包みを外します |
+| `Bash`、`PowerShell`、Codex のコマンド | `Bash: <プログラム>`（ディレクトリと `.exe` は除く）。`Bash: <プログラム> <サブコマンド>` になるのは `git`、`gh`、`npm`、`pnpm`、`yarn`、`npx`、`cargo`、`go`、`docker`、`kubectl`、`pip`、`uv`、`poetry`、`make`、`dotnet`、`terraform` だけです。先頭の変数代入（`FOO=1`、`$env:FOO='x';`）は飛ばします。引用符の中の `;` では代入は終わらず、バッククォート、`(`、`{` を含む `$` の文は `Bash` だけになります。プログラム名がただの単語でなければ `Bash` だけになります。Codex がシェルで包んだコマンド（`pwsh -Command '...'`、`bash -lc '...'`）は先に包みを外します |
 | `WebFetch` | スキーム、ホスト、指定があればポート。多くの API がトークンを置くパスは出しません |
 | MCP のツール | `<サーバー>.<ツール>` |
 | Codex のファイル変更 | ファイルごとに 1 行の `Edit <パス>` |
+| agy の `view_file`、`write_to_file` | `Read <パス>`、`Write <パス>`。パスは `Read` と同じ扱い |
+| agy の `run_command` | `Bash` と同じ扱い |
+| そのほかの agy のツール | 素直な名前（英字 1 文字のあとに、英数字、`_`、`.`、`-` が 63 文字まで）なら名前だけ、`mcp__<サーバー>__<ツール>` は `<サーバー>.<ツール>`、それ以外の名前は `tool` |
 | それ以外（`Task` と Codex の `web_search` を含む） | 名前だけ |
 
 どの行も最初の改行と 100 文字で切り、エスケープシーケンスと制御文字を除き、伏せ字にしてから書き込み、
-読むときにも同じ処理をします。Claude はメッセージごとにコンテキストを報告します。Codex は使用量をターンの
+読むときにも同じ処理をします。Claude はメッセージごとにコンテキストを報告します。agy はツールの使用を
+ステップの始まりに、モデルの各ステップのコンテキストをその終わりに示します。Codex は使用量をターンの
 終わりにしか報告しないので、Codex のジョブにはコンテキストトークンが出ません。また Codex がツール使用を
 流すのは `--json` で実行する architect の実行だけなので、Codex の implementer や fixer のジョブには
 `elapsed:` しか出ません。
@@ -631,6 +640,10 @@ Codex は合計を 1 つだけ文章で出力し、言い回しが変わると�
 この 2 つの列では、`-` は *実行が報告しなかった* ことを、`0` は *実行がツールを使わなかったと報告した*
 ことを意味します。これはトークンの列にはない区別であり、何も開かなかったレビュアーを見えるようにする
 区別です。
+
+agy はストリームのツールのステップからツール呼び出しを数えますが、その出力は数えません。勘定には
+合計しか残らないので、agy だけが走った行は `tool out 0` と表示されますが、これは測定値ではありません。
+未報告として読んでください。agy と Claude が一緒に走った行は、Claude の出力だけを数えています。
 
 **`tool out` は観測されたツールの出力であり、読んだソースではありません。** 200 行のファイルに `wc -l`
 を実行したレビュアーは 3 文字と数えられ、同じファイルに `cat` を実行したレビュアーはその全体が数えられ
@@ -737,10 +750,15 @@ Tool activity, per run and only over the runs that reported it:
 ツールの活動を報告しないので、パネル全体で割ると、パネルの構成以外に理由もなく数値が半分になってしまい
 ます。そして、これらの数値が存在する目的である比較が、レビュアーが追加または削除されるたびに動いて
 しまいます。何も報告されていなければ、ゼロの並んだ行ではなく行そのものがありません。
+実行あたりの出力文字数は、出力を報告した実行の数 `tool_output_reported_runs` で割ります。agy は呼び出しを
+数えますが、その出力は数えないからです。この数がツールを報告した実行の数と違うときは、行に
+`, output chars over K run(s)` が加わります。出力を報告した実行がなければ、その数値は `-` と表示されます。
 
 **観測された出力はツールが返したものであり、読んだソースではありません**。`wc -l` は 200 行のファイルに
-対して 3 文字を返します。`--json` では `tool_reported_runs`、`tool_uses`、`tool_output_chars`、
-`tool_uses_per_run`、`tool_output_chars_per_run`、そしてその隣に `design_` を前に付けた 5 つがあります。
+対して 3 文字を返します。`--json` では `tool_reported_runs`、`tool_output_reported_runs`、`tool_uses`、
+`tool_output_chars`、`tool_uses_per_run`、`tool_output_chars_per_run`、そしてその隣に `design_` を前に
+付けた 6 つがあります。コンテキストのグループとペアの各側にも `tool_output_reported_runs` があり、その
+1k あたりの出力の数値は、出力を報告した実行の数で重み付けされます。
 
 コードラウンドが一度でも[周辺コンテキスト](reviews.md#surrounding-context)を運ぶと、実行されたコード
 ラウンドが 2 つに分かれて表示されます。
@@ -757,12 +775,12 @@ Surrounding context (review.context.surrounding), code review rounds only:
 何も採用しなかったラウンドは `without` です。**比べるのは各群の 2 行目で、1 行目ではありません。**
 生の数値は変更ごとの大きさとパネルの大きさに連動して動きます — 小さな変更はレビュアー 1 人に削減される
 のが普通です — そのため 2 行目は、変更のサイズを各数値を報告した実行数で重み付けしたもので割ります。
-課金は `change_chars × 課金を報告した実行数` で、ツール出力は `change_chars × ツールを報告した実行数`
+課金は `change_chars × 課金を報告した実行数` で、ツール出力は `change_chars × 出力を報告した実行数`
 で割り、どちらもサイズを記録したラウンドだけを対象にします。コンテキストを運んだラウンドが存在する
 までは何も表示されません。`--json` には `by_context.with` と `by_context.without` が常に含まれ、それぞれ
 `rounds`、`reviewer_runs`、`measured_runs`、`billed_tokens`、`billed_per_round`、ツールの数値、
 `sized_rounds`、`change_chars`、`sized_billed_tokens`、`billed_run_change_chars`、`sized_billed_runs`、
-`sized_tool_output_chars`、`tool_run_change_chars`、`sized_tool_runs`、
+`sized_tool_output_chars`、`output_run_change_chars`、`sized_output_runs`、
 `billed_per_run_per_1k_change_chars`、`tool_output_chars_per_run_per_1k_change_chars`、`adopted_chars`、
 `trimmed_chars` を持ちます。`tokens show` は台帳の累計なのでラウンドを分けられず、変更はありません。
 ラウンドごとの比較はこちらで行います。
@@ -924,6 +942,8 @@ Architect revisions (cost against each workflow's initial design run):
 `billed_tokens`、`cost_usd`、`cost_ratio_sum`、`duration_seconds`、`context_runs`、`context_tokens`、
 平均の `billed_per_run`、`cost_per_run`、`cost_ratio_mean`、`duration_per_run`、`context_per_run`、
 `failed_attempts`、`cost_per_completed_ratio`）、そして `fallbacks`（`total`、`reasons`）を持ちます。
+コンテキストの数値は、CLI がコンテキストを報告したすべての実行を数えます。Claude と agy（最後のモデルの
+ステップの `input_tokens + cache_read_tokens`）で、Codex は報告しません。
 
 <a id="progress"></a>
 

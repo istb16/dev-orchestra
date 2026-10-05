@@ -451,7 +451,7 @@ def _paired_rows(paired: Dict[str, Any]) -> List[str]:
             side = pair.get(name) or {}
             lines.append(
                 "      %-8s %d run(s), %s billed, %s per run; %s use(s)/run, %s observed output chars/run "
-                "(%d of %d run(s) reported)"
+                "(%d of %d run(s) reported%s)"
                 % (
                     name + ":",
                     int(side.get("reviewer_runs") or 0),
@@ -461,6 +461,7 @@ def _paired_rows(paired: Dict[str, Any]) -> List[str]:
                     _figure(side.get("tool_output_chars_per_run")),
                     int(side.get("tool_reported_runs") or 0),
                     int(side.get("reviewer_runs") or 0),
+                    _output_runs(side.get("tool_output_reported_runs"), side.get("tool_reported_runs")),
                 )
             )
         delta = pair.get("delta") or {}
@@ -534,11 +535,12 @@ def _context_row(group: Dict[str, Any], adopted: bool) -> str:
         ws.fmt_int(int(group.get("billed_tokens") or 0)),
         _figure(group.get("billed_per_round")),
     )
-    row += "; %s use(s)/run, %s observed output chars/run (%d of %d run(s) reported)" % (
+    row += "; %s use(s)/run, %s observed output chars/run (%d of %d run(s) reported%s)" % (
         _figure(group.get("tool_uses_per_run")),
         _figure(group.get("tool_output_chars_per_run")),
         int(group.get("tool_reported_runs") or 0),
         int(group.get("reviewer_runs") or 0),
+        _output_runs(group.get("tool_output_reported_runs"), group.get("tool_reported_runs")),
     )
     if adopted:
         row += "; %s context chars adopted, %s left out" % (
@@ -559,7 +561,7 @@ def _context_per_run_row(group: Dict[str, Any]) -> str:
             _figure(group.get("billed_per_run_per_1k_change_chars")),
             int(group.get("sized_billed_runs") or 0),
             _figure(group.get("tool_output_chars_per_run_per_1k_change_chars")),
-            int(group.get("sized_tool_runs") or 0),
+            int(group.get("sized_output_runs") or 0),
         )
     )
 
@@ -584,9 +586,21 @@ def _tools_row(report: Dict[str, Any], prefix: str, runs: int) -> str:
     uses/run" over half a panel is a different claim from the same figure over
     all of it, and only the count says which.
     """
-    return "%s use(s)/run, %s observed output chars/run (%d of %d run(s) reported)" % (
+    tool_runs = report["%stool_reported_runs" % prefix]
+    return "%s use(s)/run, %s observed output chars/run (%d of %d run(s) reported%s)" % (
         report["%stool_uses_per_run" % prefix],
-        "{:,.1f}".format(report["%stool_output_chars_per_run" % prefix]),
-        report["%stool_reported_runs" % prefix],
+        _figure(report["%stool_output_chars_per_run" % prefix]),
+        tool_runs,
         runs,
+        _output_runs(report.get("%stool_output_reported_runs" % prefix), tool_runs),
     )
+
+
+def _output_runs(printed_runs: Any, tool_runs: Any) -> str:
+    """``, output chars over K run(s)`` when fewer runs reported output than
+    reported tools (agy counts calls, not their output); "" otherwise, and
+    where none did, as the figure then shows ``-``."""
+    printed = int(printed_runs or 0)
+    if printed and printed != int(tool_runs or 0):
+        return ", output chars over %d run(s)" % printed
+    return ""

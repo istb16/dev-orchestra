@@ -35,6 +35,20 @@ AGY_MODELS = (
 
 UNENFORCED = "read-only is NOT enforced by agy"
 
+AGY_FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "agy")
+
+#: The recorded tool run's answer, which it also streamed whole.
+AGY_TOOLS_RESPONSE = (
+    "[output.txt](file:///C:/sandbox/agy193/output.txt) has been created with the lines of "
+    "`input.txt` in reverse order (`gamma`, `beta`, `alpha`).\n"
+)
+
+
+def agy_fixture(name):
+    with open(os.path.join(AGY_FIXTURES, name), encoding="utf-8") as handle:
+        return handle.read()
+
+
 #: What a fit note on a read-only seat that went to agy ends with.
 ROLE_OPT_OUT = "; agy cannot be held to reading -- set %s in the global file to keep it off agy"
 SEAT_OPT_OUT = "; agy cannot be held to reading -- list reviewers in the global file to keep them off agy"
@@ -71,9 +85,11 @@ class _GateCase(IsolatedCase):
     def project_file(self):
         return os.path.join(self.project, ".dev-orchestra.yaml")
 
-    def answer(self, response="READY"):
-        """Replace every child process with agy printing one JSON result."""
-        printed = json.dumps({"conversation_id": "c", "status": "SUCCESS", "response": response}) + "\n"
+    def answer(self, response="READY", stdout=None):
+        """Replace every child process with agy printing one stream ``result``
+        line, or ``stdout`` when given."""
+        result = {"conversation_id": "c", "status": "SUCCESS", "response": response}
+        printed = json.dumps({"event": "result", "result": result}) + "\n" if stdout is None else stdout
         self.started = []
 
         def execute(command, cwd, prompt="", timeout=None, idle_timeout=None, env=None):
@@ -493,6 +509,52 @@ class TestLiveUnenforcedFromTheProject(_GateCase):
         code, _, err = run_cli("run", "architect", "--prompt", "x")
         self.assertEqual(code, 0, err)
         self.assertIn("read-only is NOT enforced by mock", err)
+
+    def run_agy_architect(self, stdout):
+        """``run architect --output plan.md`` on a global agy architect whose
+        CLI prints ``stdout``; the exit code, stderr and the plan's path."""
+        self.write_global("architect:\n" + AGY_ROLE)
+        plan = os.path.join(self.project, "plan.md")
+        with open(plan, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write("# Old plan\n")
+        self.answer(stdout=stdout)
+        code, _, err = run_cli("run", "architect", "--prompt", "x", "--output", plan)
+        return code, err, plan
+
+    def read(self, path):
+        with open(path, encoding="utf-8") as handle:
+            return handle.read()
+
+    def test_an_agy_plan_with_no_answer_leaves_output_unchanged(self):
+        code, err, plan = self.run_agy_architect(agy_fixture("stream-json-denied.jsonl"))
+        self.assertEqual(code, 1, err)
+        self.assertEqual(self.read(plan), "# Old plan\n")
+        self.assertFalse(os.path.exists(plan + ".rejected"))
+        self.assertIn("agy: no answer:", err)
+
+    def test_partial_agy_text_goes_to_the_rejected_file(self):
+        lines = agy_fixture("stream-json-tools.jsonl").splitlines(keepends=True)
+        code, err, plan = self.run_agy_architect("".join(lines[:30]))
+        self.assertEqual(code, 1, err)
+        self.assertEqual(self.read(plan), "# Old plan\n")
+        self.assertEqual(self.read(plan + ".rejected"), AGY_TOOLS_RESPONSE)
+
+    def test_partial_agy_text_is_never_printed_as_the_answer(self):
+        self.write_global("architect:\n" + AGY_ROLE)
+        lines = agy_fixture("stream-json-tools.jsonl").splitlines(keepends=True)
+        self.answer(stdout="".join(lines[:30]))
+        code, out, err = run_cli("run", "architect", "--prompt", "x")
+        self.assertEqual(code, 1, err)
+        self.assertNotIn(AGY_TOOLS_RESPONSE.strip()[:40], out + err)
+        self.assertIn("agy: no answer:", err)
+
+    def test_the_end_event_records_agy_context(self):
+        code, err, _ = self.run_agy_architect(agy_fixture("stream-json-tools.jsonl"))
+        self.assertEqual(code, 0, err)
+        ended = [event for event in self.events("architect") if "answered" in event]
+        self.assertEqual(len(ended), 1, ended)
+        self.assertEqual(ended[0]["context_tokens"], 14517)
+        self.assertIs(ended[0]["answered"], True)
 
     @unittest.skipUnless(has_git(), "git not available")
     def test_review_run_refuses_project_reviewers_whose_adapter_reports_unenforced(self):
