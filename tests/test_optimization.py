@@ -25,7 +25,7 @@ from typing import Optional
 
 from helpers import IsolatedCase, has_git
 
-from orchestrator import cli, review_snapshot
+from orchestrator import cli, optimization_render, review_snapshot
 from orchestrator import config as config_mod
 from orchestrator import ledger as ledger_mod
 from orchestrator import optimization as opt
@@ -1823,6 +1823,139 @@ class TestToolActivityInTheReport(unittest.TestCase):
         self.assertEqual(report["design_tool_output_chars_per_run"], 5000.0)
 
 
+#: A Claude reviewer counts tools and their output; an agy reviewer counts
+#: tools only.
+CLAUDE_TOOLS = {"tool_uses": 4, "tool_output_chars": 1000}
+AGY_TOOLS = {"tool_uses": 2, "tool_output_chars": None}
+
+
+def sized_round(*usages):
+    """A code round of 2,000 changed chars whose reviewers reported ``usages``."""
+    event = round_with(usages)
+    for run in event["reviewers"]:
+        run["change_chars"] = 2000
+    return event
+
+
+class TestOutputCharsPerRun(unittest.TestCase):
+    """Output chars are divided by the runs that reported output, not by every
+    run that reported tools: agy counts calls but not what they printed."""
+
+    def test_output_chars_are_divided_by_the_runs_that_report_them(self):
+        event = sized_round(CLAUDE_TOOLS, AGY_TOOLS)
+        report = opt_report.summarise_rounds([event])
+        self.assertEqual(report["tool_reported_runs"], 2)
+        self.assertEqual(report["tool_uses_per_run"], 3.0)
+        self.assertEqual(report["tool_output_reported_runs"], 1)
+        self.assertEqual(report["tool_output_chars_per_run"], 1000.0)
+        group = report["by_context"]["without"]
+        self.assertEqual(group["tool_output_reported_runs"], 1)
+        self.assertEqual(group["sized_output_runs"], 1)
+        self.assertEqual(group["output_run_change_chars"], 2000)
+        self.assertNotIn("sized_tool_runs", group)
+        self.assertNotIn("tool_run_change_chars", group)
+        self.assertEqual(group["tool_output_chars_per_run_per_1k_change_chars"], 500.0)
+        self.assertEqual(group["tool_output_chars_per_run"], 1000.0)
+        side = opt_report._pair_side_figures(event)
+        self.assertEqual(side["tool_output_reported_runs"], 1)
+        self.assertEqual(side["tool_uses_per_run"], 3.0)
+        self.assertEqual(side["tool_output_chars_per_run"], 1000.0)
+
+    def test_the_design_side_counts_output_runs(self):
+        report = opt_report.summarise_rounds([design_with([CLAUDE_TOOLS, AGY_TOOLS])])
+        self.assertEqual(report["design_tool_output_reported_runs"], 1)
+        self.assertEqual(report["design_tool_output_chars_per_run"], 1000.0)
+
+    def test_the_rows_say_how_many_runs_reported_output(self):
+        report = dict(
+            opt_report.summarise_rounds([sized_round(CLAUDE_TOOLS, AGY_TOOLS)]),
+            scorecard=opt_report.reviewer_scorecard([]),
+            architect_revisions=opt_report.architect_revisions([]),
+        )
+        text = "\n".join(optimization_render.report_lines(report, ".ai"))
+        self.assertIn(", output chars over 1 run(s)", text)
+        self.assertEqual(
+            optimization_render._tools_row(report, "", report["reviewer_runs"]),
+            "3.0 use(s)/run, 1,000.0 observed output chars/run "
+            "(2 of 2 run(s) reported, output chars over 1 run(s))",
+        )
+
+    def test_a_round_of_claude_alone_has_no_output_suffix(self):
+        event = sized_round(CLAUDE_TOOLS, dict(CLAUDE_TOOLS, tool_output_chars=3000))
+        report = opt_report.summarise_rounds([event])
+        self.assertEqual(report["tool_output_reported_runs"], report["tool_reported_runs"])
+        group = report["by_context"]["without"]
+        side = opt_report._pair_side_figures(event)
+        rows = [
+            optimization_render._tools_row(report, "", report["reviewer_runs"]),
+            optimization_render._context_row(group, False),
+        ]
+        paired = {"pairs": [{"with": side, "without": side, "delta": {}}], "with": side, "without": side}
+        rows.extend(optimization_render._paired_rows(paired))
+        self.assertEqual(
+            rows[0], "4.0 use(s)/run, 2,000.0 observed output chars/run (2 of 2 run(s) reported)"
+        )
+        for row in rows:
+            self.assertNotIn("output chars over", row)
+
+    def test_a_zero_output_count_is_a_report(self):
+        """A Claude run that printed nothing has measured 0; agy has measured nothing."""
+        report = opt_report.summarise_rounds(
+            [sized_round(dict(CLAUDE_TOOLS, tool_output_chars=0), AGY_TOOLS)]
+        )
+        self.assertEqual(report["tool_output_reported_runs"], 1)
+        self.assertEqual(report["tool_output_chars_per_run"], 0.0)
+        self.assertEqual(report["by_context"]["without"]["tool_output_chars_per_run"], 0.0)
+        self.assertIn(
+            "0.0 observed output chars/run (2 of 2 run(s) reported, output chars over 1 run(s))",
+            optimization_render._tools_row(report, "", report["reviewer_runs"]),
+        )
+
+    def test_pairs_sum_output_runs_over_a_mixed_panel(self):
+        claude = dict(CLAUDE_TOOLS, billed_tokens=100)
+        agy = dict(AGY_TOOLS, billed_tokens=100)
+        events = []
+        for snapshot, chars in (("a" * 64, 1000), ("b" * 64, 3000)):
+            usages = [dict(claude, tool_output_chars=chars), agy]
+            events.append(paired_round("none", usages, snapshot=snapshot))
+            events.append(paired_round("enclosing", usages, snapshot=snapshot))
+        report = opt_report.summarise_rounds(events)
+        paired = report["paired"]
+        self.assertEqual(paired["pairs_total"], 2)
+        for name in ("with", "without"):
+            side = paired[name]
+            self.assertEqual(side["tool_reported_runs"], 4, name)
+            self.assertEqual(side["tool_output_reported_runs"], 2, name)
+            self.assertEqual(side["tool_output_chars_per_run"], 2000.0, name)
+            self.assertEqual(side["tool_uses_per_run"], 3.0, name)
+        text = "\n".join(optimization_render._paired_rows(paired))
+        self.assertEqual(text.count("(2 of 2 run(s) reported, output chars over 1 run(s))"), 4)
+        self.assertIn("3.0 use(s)/run, 2,000.0 observed output chars/run; without:", text)
+        group = report["by_context"]["with"]
+        self.assertEqual(group["tool_output_reported_runs"], 2)
+        self.assertIn(
+            "(4 of 4 run(s) reported, output chars over 2 run(s))",
+            optimization_render._context_row(group, True),
+        )
+
+    def test_a_round_of_agy_alone_has_no_output_figure(self):
+        event = sized_round(AGY_TOOLS)
+        report = opt_report.summarise_rounds([event])
+        self.assertIsNone(report["tool_output_chars_per_run"])
+        group = report["by_context"]["without"]
+        side = opt_report._pair_side_figures(event)
+        rows = [
+            optimization_render._tools_row(report, "", report["reviewer_runs"]),
+            optimization_render._context_row(group, False),
+            optimization_render._context_per_run_row(group),
+        ]
+        for row in rows:
+            self.assertIn(" - observed output chars", row)
+        paired = {"pairs": [{"with": side, "without": side, "delta": {}}], "with": side, "without": side}
+        paired_text = "\n".join(optimization_render._paired_rows(paired))
+        self.assertIn("- observed output chars/run", paired_text)
+
+
 @unittest.skipUnless(has_git(), "git is required")
 class TestTheReportCommand(IsolatedCase):
     def setUp(self):
@@ -2168,7 +2301,7 @@ class TestRoundsWithAndWithoutContext(unittest.TestCase):
         report = opt_report.summarise_rounds([context_round(1000, [claude, codex], adopted=5)])
         group = report["by_context"]["with"]
         self.assertEqual(group["billed_run_change_chars"], 2000)
-        self.assertEqual(group["tool_run_change_chars"], 1000)
+        self.assertEqual(group["output_run_change_chars"], 1000)
         self.assertEqual(group["tool_output_chars_per_run_per_1k_change_chars"], 300.0)
 
 

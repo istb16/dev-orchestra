@@ -1,4 +1,4 @@
-<!-- translated-from: references/providers.md sha256:8b73e89d2bf0ac597aae9ed31bc135310126fcaf7e6805a243208a602be51b6e -->
+<!-- translated-from: references/providers.md sha256:c43b7de3caaeb3d316e21fcea7385be72c02a7686cc003ebbc10df318a91052f -->
 
 > この文書は [references/providers.md](../../../references/providers.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -128,7 +128,7 @@ built-in の各アダプタが何を、何によって強制しているか:
 
 ### 進捗とアイドル期限
 
-アダプタが `streams_progress = True` を設定するのは、そのアダプタが組み立てたコマンドの正常な実行が、*作業中に*出力を出す場合だけです。これは想定ではなく、測定して確かめなければなりません。誤ってそう宣言すると、遅いながらも動いているエージェントが強制終了されてしまいます。Claude と Codex のアダプタはストリーミングしますが、理由は異なります。Codex はネイティブにストリーミングし、Claude はアダプタが `stream-json` を要求しているためです。agy のアダプタはストリーミングしません。`--output-format json` は最後に 1 回だけ出力するので、agy の実行には全体の期限しかありません。ロールごとに `options.idle_timeout` で期限を上書きできます。測定結果については `references/limits.md` を参照してください。
+アダプタが `streams_progress = True` を設定するのは、そのアダプタが組み立てたコマンドの正常な実行が、*作業中に*出力を出す場合だけです。これは想定ではなく、測定して確かめなければなりません。誤ってそう宣言すると、遅いながらも動いているエージェントが強制終了されてしまいます。これを設定するのは、`stream-json` を要求している Claude のアダプタだけで、アイドル期限を取るのも Claude だけです。Codex と agy のアダプタは `streams_progress` を設定せず、アイドル期限を取らないので、その実行には全体の期限しかありません。agy は `stream-json` の出力からツールの動きを報告しますが、モデルが考えている間も、最後ではないモデルのステップの間（ツール呼び出しの引数を生成している間も含む）も何も出力しないので、黙っていることは止まっていることを意味しません。Claude のロールは `options.idle_timeout` で期限を上書きできます。このオプションは Claude だけのものです。測定結果については `references/limits.md` を参照してください。
 
 <a id="model-resolution-contract"></a>
 
@@ -284,19 +284,20 @@ reviewers:
 
 ## Antigravity CLI アダプタ
 
-Windows 上の `agy` 1.2.13 で検証済みです。implementer と review fixer 向けです。
+Windows 上の `agy` 1.2.13 で検証済みで、`stream-json` の出力は 1.2.16 で検証済みです。implementer と review fixer 向けです。
 
 | 項目 | 方法 |
 | --- | --- |
-| 非対話実行 | `agy --output-format json [--model <id>] -p "Read the file .ai/agy-prompt-<pid>-<random>.md ..."`。`-p` は最後。最後に JSON オブジェクトを 1 つ出力する |
+| 非対話実行 | `agy --output-format stream-json [--model <id>] -p "Read the file .ai/agy-prompt-<pid>-<random>.md ..."`。`-p` は最後。実行の進行に合わせて JSON の行を出力し、最後に `result` を出す |
 | モデル | `--model <id>`。`default` family の場合は**省略** |
 | モデルの検出 | `agy models`（ネットワークが必要）が出力する `id<TAB>name` の行。それ以外は読まない |
 | `plan` / `review` | 同じコマンド。agy には読み取り専用のモードがないので、これらの実行は**強制されない** |
 | `implement` | 同じコマンドに、global 設定の `options.skip_permissions: true` があれば `--dangerously-skip-permissions` を足したもの |
-| 最終的な回答 | JSON オブジェクトの `response` フィールド。`AGY_ERROR` の行と `error` フィールドは stderr へ |
-| 使用量 | JSON オブジェクトの `usage.input_tokens`、`output_tokens`、`cache_read_tokens`。費用はない |
+| 最終的な回答 | `result` の行の `response`。結果がない、状態が `SUCCESS` でない、または応答が空のときは、実行は失敗になる（`agy: no answer: ...` の警告）。そうした実行の途中までのテキストは `run --output` の `.rejected` ファイルにだけ入り、回答にはならない。JSON でない stdout の行と、結果の `error` は stderr へ |
+| 使用量 | 結果の `usage.input_tokens`、`output_tokens`、`cache_read_tokens`。`tool_uses` と `tool_uses_by_name` はツールのステップから。出力の文字数と費用はない |
 | 継続 | 外している。`--resume` は新規に走る（後述） |
-| 進捗 | 最後まで出力がない（`streams_progress = False`）ので、アイドル期限はない |
+| 進捗 | ツールの動きとコンテキストの大きさは出る。アイドル期限はない（`streams_progress = False`） |
+| ツールの動き | `view_file` は `Read <path>`、`write_to_file` は `Write <path>`、`run_command` は `Bash: <program>`。そのほかの素直な名前はそのまま、`mcp__s__t` は `s.t`、素直でない名前は `tool` |
 | 認証 | 検出しない。実行が失敗するなら一度 `agy` を起動してサインインする |
 
 family は名前であって id ではありません。id は、実行を解決するときにこのマシンで `agy models` が出力したものから選びます。
@@ -312,11 +313,13 @@ family は名前であって id ではありません。id は、実行を解決
 
 **実測したこと。** `-p` はプロンプトを値として取ります。`-p` の後に何もないと exit 2 になります。stdin は読まれません。`-p -` は文字どおりの `-` を送り、`-p ""` は、`status` が `ERROR` で `error` が空のプロンプトを示す JSON オブジェクトを出して exit 1 になります。そこでプロンプトは常にワークスペースの中のファイル `.ai/agy-prompt-<pid>-<random>.md`（モードのあるプラットフォームでは所有者だけが読める）に書き、`-p` にはそれを読むよう指示する文だけを載せます。プロンプトそのものは載せません。コマンドラインはローカルのどのプロセスからも読めるからです。`run --print-command` は同じコマンドを、ファイル名をプレースホルダーにして表示します。`.ai` がリンクであるか、ほかの場所に解決される場合は拒否されます（exit 2、何も起動しない）。このファイルは実行の終わりに削除されます。実行の前に削除されるのは、プロセス id がもう動いていないファイルだけです。このプロセスのもの（レビュアーは並列に走る）や、動いている別の実行のもの、名前にプロセス id のないものは削除しません。したがって外から kill された実行は、そのプロンプト（計画、差分、その他プロンプトに入っていたもの）を、後の実行がそのプロセスの終了に気づくか、手で削除するまで `.ai/` に残します。`.ai/` は既定で git から外されています。ユーザーのホームの下には何も書きません。`usage.output_tokens` にはすでに `thinking_tokens` が含まれているので（`gemini-3.1-pro-high` の実行で input 12527、output 215、thinking 212、total 12742。これは input と output の和）、thinking は上乗せしません。些細なプロンプトでも入力は約 12k〜25k トークンかかります。
 
+1.2.16 では、`stream-json` は 1 行に 1 つの JSON オブジェクトを出力します。`init`、続いてステップごとの `step_update`（ツールのステップは始まりと終わりに 1 回ずつ、モデルのステップは最後の行にそのステップの使用量、回答は `text_delta` の断片として）、最後に `json` が出力するのと同じオブジェクトである `result` です。結果の使用量はステップの合計に等しいので、トークンは結果だけから読みます。モデルのステップの `input_tokens` はキャッシュから読まなかった部分なので、`input_tokens + cache_read_tokens` がコンテキストの大きさです。1 回の実行で 13671、14125、14517 と増えました。モデルが考えている間は何も出力されません。測った実行では間隔は最大 6 秒でしたが、アイドル期限を決めるには標本が短すぎます。ツールのステップの `output` は要約（`4 lines, 17 bytes`）なので、出力の文字数は数えません。ヘッドレスモードで拒否されたシェルコマンドは、状態 `SUCCESS`、空の `response`、`denied_actions` で終わります。この実行は `-p` を使わず stdin 経由で記録したもので、`-p` でも同じ形になることはスモークチェック「names a denied command」が確かめます。この形式は文書化されていないので、名前が変わればどれも安全側に倒れます。`result` 以外から回答を取ることはありません。agy の版は確かめません。`stream-json` を受け付けない古い CLI では、実行は失敗し、stderr に CLI 自身のエラーが残ります。
+
 **読み取り専用の実行は強制されません。** agy 1.2.13 では、`--mode plan`、`--mode plan --sandbox`、`--agent research` のいずれもファイルを書き、ワークスペースの外を読みました。plan モードでは回答が返答から外れました。そのため `--mode` は渡さず、`read_only_enforcement()` は `unenforced` を報告します。agy での plan や review の実行（orchestrator、architect、そのいずれかの tier、レビュアー）は、**作業ツリー、`.ai/`（`state.json` の承認記録、計画、スナップショット、他のレビュアーのレポートを含む）、`.git/`、リポジトリの外のファイルを変更でき、dev-orchestra はその実行が何をしたかを後から確かめません。** そうした席は global 設定からだけ受け付けられ（あなた自身の選択として、またはフィットの対象の CLI が agy だけのマシンでの global のプリセットのフィットとして）、設定する場所と実行する場所のすべてで警告されます。`config set`、`reviewer add`、`reviewer set`、`config validate`、セットアップウィザード、`doctor`（注記として）、`run`、`review run`、`review run --design`、そして実行の記録です。同じ席が project ファイルにあれば拒否されます（`run` では exit 2、ラウンドでは失敗したレビュアー、`doctor` では問題）。project ファイルはレビュー対象のブランチと一緒にやってくることがあり、そのブランチが書き込みのできるレビュアーを自分で選べてしまうからです。ウィザードの既定値は、agy をこれらの席に置きません。プリセットが置くのは、Claude も Codex も、席に就けるユーザーアダプタも PATH にないときだけで、そこへ置くフィットの注記はどれも、外す方法（そのロールを設定するか、`reviewers` を並べるかを global ファイルで行う）で終わります。
 
 **継続は意図して外しています。** 継続のルールが問うのは継続したセッションが読み取り専用を保つかどうかですが、agy の plan の実行は `unenforced` なので、版で絞っても何も守れません。`--conversation <id>` は fork せずに元の会話を続けます。agy の architect は警告付きの、global 設定だけの席です。そして有効にするには、1 回 12k〜25k トークンの実機確認が 3 つ要ります。後で必要になれば、agy は `verified_resume()`、`resume_help_text()`、`resume_advertises()` をオーバーライドし、`resume_flags` を設定し、`required_resume_checks = ("reports a missing session",)` を設定することになります。
 
-**implementer のパーミッション。** `--dangerously-skip-permissions` なしでは、ヘッドレスモードでファイルの編集は走り、シェルコマンドは拒否されました。そのため、バイパスを有効にしない限り、agy の implementer はテストを実行できません。有効にするとコマンドが走りました。JSON の結果の `denied_actions` は実行の警告になり、成功時にも表示されて、有効にする方法を示します。バイパスは **global** 設定の `options.skip_permissions: true`（既定は `false`）か、1 回の実行だけなら `--extra --dangerously-skip-permissions` です。
+**implementer のパーミッション。** `--dangerously-skip-permissions` なしでは、ヘッドレスモードでファイルの編集は走り、シェルコマンドは拒否されました。そのため、バイパスを有効にしない限り、agy の implementer はテストを実行できません。有効にするとコマンドが走りました。結果の `denied_actions` は実行の警告になり、成功時にも表示されて、有効にする方法を示します。拒否された操作があるだけでは実行は失敗になりません。implementer は拒否があってもタスクを終えられることがあるからです。拒否された実行が失敗になるのは、応答が空だからです。バイパスは **global** 設定の `options.skip_permissions: true`（既定は `false`）か、1 回の実行だけなら `--extra --dangerously-skip-permissions` です。
 
 ```yaml
 implementer:

@@ -10,6 +10,38 @@ The public surface covered by that promise is: the configuration schema, the
 
 ## [Unreleased]
 
+### Changed
+
+- **agy runs read `--output-format stream-json`** (#193). They report tool
+  activity in `jobs wait`, `jobs show` and `review run --progress`, the
+  context size (live and in the run's end event), and `usage.tool_uses`.
+  agy still takes no idle deadline: it prints nothing while its model thinks.
+  `run --print-command` shows `stream-json`.
+
+- **An agy run whose result is missing, is not `SUCCESS` or has an empty
+  response is now a failed run**, warned as `agy: no answer: ...`, and agy's
+  raw output is never taken as the answer. Before, raw JSON could become the
+  answer, and a non-`SUCCESS` status was only a warning. Partial text goes
+  only to `run --output`'s `.rejected` file. Denied actions alone remain a
+  warning. A bare `run` prints none of that text and a detached job records
+  none of it as output.
+
+- **The optimization report divides output chars by the runs that reported
+  them**, not by every run that reported tools: agy counts its calls but not
+  their output. `--json` gains `tool_output_reported_runs` and
+  `design_tool_output_reported_runs` (and `tool_output_reported_runs` in the
+  context groups and the pair sides). Where no run reported output, the
+  figure shows `-`. In `by_context`, `sized_tool_runs` and
+  `tool_run_change_chars` are renamed `sized_output_runs` and
+  `output_run_change_chars`, as they now count the runs that reported output.
+
+### Fixed
+
+- **A quoted `;` no longer ends a PowerShell assignment in the activity
+  line.** `$env:TOKEN='ab; cd'; npm test` showed `Bash: cd`, a word of the
+  value; it now shows `Bash: npm test`, for every adapter's shell tool. A
+  `$` statement holding a backtick, `(` or `{` shows `Bash` alone.
+
 ## [0.19.0] - 2026-10-04
 
 ### Changed

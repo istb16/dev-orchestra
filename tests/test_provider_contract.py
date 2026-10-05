@@ -296,6 +296,19 @@ class TestOptionsReachTheCommand(IsolatedCase):
         )
         self.assertIsNone(self.seen["idle_timeout"])
 
+    def test_agy_asks_for_no_idle_deadline_whatever_is_requested(self):
+        """agy reports activity, but prints nothing while the model thinks or
+        writes a tool call's arguments: no idle deadline is claimed."""
+        provider = self.capture(providers.get_provider("agy"))
+        provider.run(
+            "prompt",
+            base.MODE_IMPLEMENT,
+            self.project,
+            model_spec={"family": "default", "version": "latest"},
+            idle_timeout=5.0,
+        )
+        self.assertIsNone(self.seen["idle_timeout"])
+
     def test_claude_does_honour_the_idle_deadline(self):
         """The other half of the same rule: Claude streams, so the deadline
         is real there. Without this the test above would pass on an adapter

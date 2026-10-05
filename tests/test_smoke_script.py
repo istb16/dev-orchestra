@@ -17,6 +17,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import re
 import shutil
 import unittest
 import uuid
@@ -32,6 +33,7 @@ from helpers import REPO_ROOT, IsolatedCase, present
 # provider registry -- which would otherwise import the real user's adapters.
 import smoke_live
 
+from orchestrator.providers import agy as agy_module
 from orchestrator.providers.base import Detection, ResolvedModel, RunResult, Usage
 
 
@@ -359,6 +361,119 @@ class TestTheToolActivityCheck(IsolatedCase):
         check = smoke_live.check_tool_activity(provider, "fake", self.project)
         self.assertFalse(check.ok)
         self.assertIn("TypeError", check.detail)
+
+
+#: What agy's adapter warns when the CLI denied an action.
+AGY_DENIED_COMMAND = (
+    "agy denied 1 action(s): RunCommand (command); set options.skip_permissions: true in the global "
+    "config, or pass --extra --dangerously-skip-permissions, for the implementer to run commands"
+)
+
+
+def agy_run(stdout="smoke", ok=True, tool_uses: Optional[int] = 1, by_name=None, warnings=()):
+    """A finished agy run: tools counted, their output not."""
+    usage = Usage(
+        input_tokens=10,
+        source="agy stream-json result",
+        tool_uses=tool_uses,
+        tool_uses_by_name={"view_file": 1} if by_name is None else by_name,
+    )
+    return RunResult(ok, 0, stdout, "", ["agy"], 0.1, usage=usage, warnings=list(warnings))
+
+
+class TestTheAgyToolActivityCheck(IsolatedCase):
+    """agy counts tool calls but not their output: the reply and the tool
+    names stand in for the output count, and nothing may have been denied."""
+
+    def check(self, result):
+        provider = _FakeProvider(result=result)
+        return smoke_live.check_tool_activity(provider, "agy", self.project), provider
+
+    def test_each_way_to_fail(self):
+        cases = [
+            (agy_run(tool_uses=None, by_name={}), "no tool activity parsed"),
+            (agy_run(tool_uses=0, by_name={}), "0 tool uses"),
+            (agy_run(warnings=[AGY_DENIED_COMMAND]), '"agy denied 1 action(s): RunCommand (command)'),
+            (agy_run(stdout="", ok=False), "did not complete"),
+            (agy_run(stdout="README.md has 1 line"), "did not carry README.md's content"),
+            (agy_run(by_name={"run_command": 1}), "expected view_file in tool_uses_by_name, got run_comm"),
+        ]
+        for result, detail in cases:
+            with self.subTest(detail=detail):
+                check, _ = self.check(result)
+                self.assertFalse(check.ok)
+                self.assertIn(detail, check.detail)
+
+    def test_agy_passes_with_view_file_and_no_output_chars(self):
+        check, _ = self.check(agy_run())
+        self.assertTrue(check.ok, check.detail)
+        self.assertIn("view_file x1", check.detail)
+        self.assertIn("output chars not reported by agy", check.detail)
+
+    def test_only_the_chars_requirement_is_skipped(self):
+        original = smoke_live.REPORTS_TOOLS
+        smoke_live.REPORTS_TOOLS = ("fake",)
+        self.addCleanup(setattr, smoke_live, "REPORTS_TOOLS", original)
+        provider = _FakeProvider(result=agy_run())
+        check = smoke_live.check_tool_activity(provider, "fake", self.project)
+        self.assertFalse(check.ok)
+        self.assertIn("no output to pair", check.detail)
+
+    def test_agy_uses_its_own_tool_prompt(self):
+        _, provider = self.check(agy_run())
+        self.assertEqual(provider.calls[0]["prompt"], smoke_live.TOOL_PROMPTS["agy"])
+        self.assertNotIn("smoke", provider.calls[0]["prompt"])
+
+
+class TestTheDeniedCommandCheck(IsolatedCase):
+    """The live check that ``-p`` gives the shape of the denied recording."""
+
+    def denied_check(self, warnings):
+        provider = _FakeProvider(result=agy_run(stdout="", warnings=warnings))
+        checks = smoke_live.check_implement(provider, "agy", self.project)
+        return verdict(checks, "names a denied command"), provider
+
+    def test_a_named_command_passes(self):
+        check, _ = self.denied_check([AGY_DENIED_COMMAND])
+        self.assertTrue(check.ok, check.detail)
+        self.assertIn("RunCommand (command)", check.detail)
+
+    def test_the_warning_is_read_by_the_adapters_own_wording(self):
+        """The smoke script holds no copy of the wording: one the adapter
+        writes is the one both checks read."""
+        denied = [{"action": "command", "display_name": "Run"}]
+        warning = agy_module._denied_warning({"denied_actions": denied})
+        assert warning is not None
+        self.assertEqual(smoke_live._denied_actions([warning]), ["Run (command)"])
+        reworded = "agy refused Run (command); set it"
+        with mock.patch.object(agy_module, "_DENIED_RE", re.compile(r"^agy refused (.*?); set ")):
+            self.assertEqual(smoke_live._denied_actions([reworded]), ["Run (command)"])
+            provider = _FakeProvider(result=agy_run(warnings=[reworded]))
+            check = smoke_live.check_tool_activity(provider, "agy", self.project)
+        self.assertFalse(check.ok)
+        self.assertIn('"agy refused Run (command)', check.detail)
+
+    def test_another_denied_action_fails(self):
+        warning = (
+            "agy denied 1 action(s): WriteFile (write); set options.skip_permissions: true in the global "
+            "config, or pass --extra --dangerously-skip-permissions, for the implementer to run commands"
+        )
+        check, _ = self.denied_check([warning])
+        self.assertFalse(check.ok)
+        self.assertIn("WriteFile (write)", check.detail)
+
+    def test_no_warning_fails(self):
+        check, _ = self.denied_check([])
+        self.assertFalse(check.ok)
+        self.assertIn("no action was denied", check.detail)
+
+    def test_it_runs_the_command_prompt_without_the_bypass(self):
+        _, provider = self.denied_check([AGY_DENIED_COMMAND])
+        calls = [call for call in provider.calls if call["prompt"] == smoke_live.COMMAND_PROMPT]
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0]["mode"], "implement")
+        self.assertNotIn("options", calls[0]["kwargs"])
+        self.assertEqual(calls[1]["kwargs"]["options"], {"skip_permissions": True})
 
 
 class TestTheCommandLine(IsolatedCase):

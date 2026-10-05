@@ -175,8 +175,116 @@ class TestCodexHook(unittest.TestCase):
         self.assertEqual(self.provider.activity_of('["item.started"]', "/x"), activity.NOTHING)
 
 
+def agy_lines(name: str, raw: bool = False) -> List[str]:
+    """A recording; unless ``raw``, its sandbox rewritten to ``/sandbox/agy193/``."""
+    lines = fixture("agy", name)
+    if raw:
+        return lines
+    return [line.replace("C:\\\\sandbox\\\\agy193\\\\", "/sandbox/agy193/") for line in lines]
+
+
+def agy_tool(name: Any = None, parameters: Any = None, state: str = "ACTIVE") -> str:
+    """One tool step; no ``tool_name`` when ``name`` is None."""
+    step: Dict[str, Any] = {"step_index": 2, "state": state, "step_type": "tool"}
+    if name is not None:
+        step["tool_name"] = name
+    if parameters is not None:
+        step["tool_info"] = {"name": name, "parameters": parameters}
+    return json.dumps({"event": "step_update", "step_update": step})
+
+
+class TestAgyHook(unittest.TestCase):
+    cwd = "/sandbox/agy193"
+
+    def setUp(self):
+        self.provider = AgyProvider()
+
+    def shown(self, lines, cwd=None):
+        return [self.provider.activity_of(line, cwd or self.cwd) for line in lines]
+
+    def line_of(self, step_line):
+        return list(self.provider.activity_of(step_line, self.cwd).lines)
+
+    def test_the_recorded_tool_run(self):
+        acts = self.shown(agy_lines("stream-json-tools.jsonl"))
+        self.assertEqual([line for act in acts for line in act.lines], ["Read input.txt", "Write output.txt"])
+        # Lines 5 and 8 end those steps and repeat them: nothing.
+        self.assertEqual(acts[4], activity.NOTHING)
+        self.assertEqual(acts[7], activity.NOTHING)
+
+    def test_the_recorded_denied_run(self):
+        acts = self.shown(agy_lines("stream-json-denied.jsonl"))
+        self.assertEqual([line for act in acts for line in act.lines], ["Bash"])
+        self.assertEqual(acts[4], activity.NOTHING)
+
+    def test_model_text_and_tool_output_never_appear(self):
+        lines = agy_lines("stream-json-tools.jsonl") + agy_lines("stream-json-denied.jsonl")
+        shown = " ".join(line for act in self.shown(lines) for line in act.lines)
+        for secret in ("reverse ord", "gamma", "4 lines, 17 bytes", "Get-Content input.txt", "Count"):
+            self.assertNotIn(secret, shown)
+
+    def test_the_parameter_mapping(self):
+        replace = agy_tool("replace_file_content", {"TargetFile": "/sandbox/agy193/a.py"})
+        cases = [
+            (agy_tool("view_file", {"AbsolutePath": "/etc/passwd"}), ["Read <outside>/passwd"]),
+            (agy_tool("run_command", {"CommandLine": "git status && rm -rf /"}), ["Bash: git status"]),
+            (replace, ["replace_file_content"]),
+            (agy_tool("view_file", "x"), ["Read"]),
+            (agy_tool("view_file", ["/sandbox/agy193/a.py"]), ["Read"]),
+        ]
+        for line, expected in cases:
+            self.assertEqual(self.line_of(line), expected, line)
+        text = {"step_index": 5, "state": "ACTIVE", "step_type": "agent_response", "text_delta": "tool"}
+        line = json.dumps({"event": "step_update", "step_update": text})
+        self.assertEqual(self.provider.activity_of(line, self.cwd), activity.NOTHING)
+
+    def test_powershell_commands(self):
+        """A quoted value holding ``; `` does not end a ``$`` assignment
+        early, so no word of it shows as the program."""
+        cases = {
+            "$env:TOKEN='ab; hunter2 x'; npm test": "Bash: npm test",
+            "$env:K='s'; npm test": "Bash: npm test",
+            "$t = 'abc def'\nnpm test": "Bash",
+            "& 'C:\\x\\tool.exe' --token abc": "Bash",
+        }
+        shown = []
+        for command, expected in cases.items():
+            lines = self.line_of(agy_tool("run_command", {"CommandLine": command}))
+            self.assertEqual(lines, [expected], command)
+            shown += lines
+        lines = self.line_of(agy_tool("run_command", {"CommandLine": ".\\run.ps1 s3cr3t"}))
+        self.assertEqual(lines, ["Bash: run.ps1"])
+        shown += lines
+        for secret in ("hunter2", "abc", "s3cr3t"):
+            self.assertFalse(any(secret in line for line in shown), secret)
+
+    def test_unmapped_names_must_be_plain(self):
+        cases = [
+            ("grep_search", ["grep_search"]),
+            ("mcp__github__get_issue", ["github.get_issue"]),
+            ("say hunter2 now", ["tool"]),
+            ("x" * 65, ["tool"]),
+            ("1abc", ["tool"]),
+        ]
+        for name, expected in cases:
+            self.assertEqual(self.line_of(agy_tool(name, {"Query": "secret"})), expected, name)
+        for line in (agy_tool(""), agy_tool(None)):
+            self.assertEqual(self.provider.activity_of(line, self.cwd), activity.NOTHING, line)
+
+    def test_usage_without_both_counts_is_no_context(self):
+        step = {"step_index": 1, "state": "DONE", "step_type": "agent_response", "usage": {"input_tokens": 5}}
+        line = json.dumps({"event": "step_update", "step_update": step})
+        self.assertEqual(self.provider.activity_of(line, self.cwd), activity.NOTHING)
+
+    @unittest.skipUnless(os.name == "nt", "Windows paths")
+    def test_windows_paths(self):
+        acts = self.shown(agy_lines("stream-json-tools.jsonl", raw=True), "C:\\sandbox\\agy193")
+        self.assertEqual([line for act in acts for line in act.lines], ["Read input.txt", "Write output.txt"])
+
+
 class TestOtherAdapters(IsolatedCase):
     def test_agy_and_the_base_show_nothing(self):
+        """agy shows nothing for a line of another CLI."""
         line = assistant([tool_use("Read", {"file_path": "/x/a.py"})])
         self.assertEqual(AgyProvider().activity_of(line, "/x"), activity.NOTHING)
         self.assertEqual(MockProvider().activity_of(line, "/x"), activity.NOTHING)

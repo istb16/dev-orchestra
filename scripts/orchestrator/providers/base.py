@@ -129,8 +129,9 @@ def stdout_events(outcome: Any) -> Tuple[Dict[str, Any], ...]:
     return events
 
 
-def event_of_type(line: str, kind: str) -> Optional[Dict[str, Any]]:
-    """The JSON object on one stdout ``line``, if its ``type`` is ``kind``.
+def event_of_type(line: str, kind: str, key: str = "type") -> Optional[Dict[str, Any]]:
+    """The JSON object on one stdout ``line``, if its ``key`` (``type`` unless
+    named) is ``kind``.
 
     For an ``activity_of`` hook, which sees every line while the CLI runs: a
     line that does not name ``kind`` in quotes is never decoded.
@@ -141,7 +142,7 @@ def event_of_type(line: str, kind: str) -> Optional[Dict[str, Any]]:
         event = json.loads(line)
     except ValueError:
         return None
-    if not isinstance(event, dict) or event.get("type") != kind:
+    if not isinstance(event, dict) or event.get(key) != kind:
         return None
     return event
 
@@ -360,10 +361,15 @@ class RunResult:
         resume_rejected: bool = False,
         warnings: Optional[Sequence[str]] = None,
         suspended: float = 0.0,
+        partial_output: str = "",
     ) -> None:
         self.ok = ok
         self.exit_code = exit_code
         self.stdout = redact(stdout)
+        #: Text a failed run produced that is not its answer, which an adapter
+        #: keeps out of ``stdout``: only ``run --output``'s ``.rejected`` file
+        #: receives it, never the print, the job or a review report.
+        self.partial_output = redact(partial_output)
         self.stderr = redact(stderr)
         self.command = list(command)
         self.duration = duration

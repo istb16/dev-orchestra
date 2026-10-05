@@ -40,6 +40,7 @@ from orchestrator.providers.agy import AgyProvider
 from orchestrator.providers.claude import READ_ONLY_MECHANISM, ClaudeProvider, _parse_model_aliases
 from orchestrator.providers.codex import CodexProvider
 from orchestrator.providers.mock import MockProvider
+from orchestrator.workspace import redact
 
 #: Every adapter module that could decode a run's stdout.
 DECODERS = (base, agy_module, claude_module, codex_module)
@@ -1975,10 +1976,34 @@ class TestCodexRecordedActivity(unittest.TestCase):
                     self.assertEqual((list(act.lines), act.context_tokens), (shown.get(number, []), None))
 
 
+class TestAgyRecordedActivity(unittest.TestCase):
+    """What ``activity_of`` shows for each line of the recordings: tool lines
+    and context sizes; every line not listed shows neither."""
+
+    CASES: ClassVar[Dict[str, Any]] = {
+        "stream-json-tools.jsonl": (
+            {4: ["Read input.txt"], 7: ["Write output.txt"]},
+            {3: 13671, 6: 14125, 30: 14517},
+        ),
+        "stream-json-denied.jsonl": ({4: ["Bash"]}, {3: 13659}),
+    }
+
+    def test_every_line_of_every_recording(self):
+        provider = AgyProvider()
+        for name, (shown, context) in self.CASES.items():
+            for number, line in enumerate(agy_fixture(name).splitlines(keepends=True), start=1):
+                with self.subTest(fixture=name, line=number):
+                    act = provider.activity_of(line, "/sandbox/agy193")
+                    expected = (shown.get(number, []), context.get(number))
+                    self.assertEqual((list(act.lines), act.context_tokens), expected)
+
+
 _CLAUDE_TOOL_LINE = json.dumps(
     {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Read", "input": {}}]}}
 )
 _CODEX_TOOL_LINE = json.dumps({"type": "item.started", "item": {"type": "web_search"}})
+_AGY_TOOL_STEP = {"state": "ACTIVE", "step_type": "tool", "tool_name": "view_file"}
+_AGY_TOOL_LINE = json.dumps({"event": "step_update", "step_update": _AGY_TOOL_STEP})
 
 #: Lines at the edge of what ``activity_of`` reads, and the tool lines each
 #: shows: None for nothing at all.
@@ -1996,12 +2021,19 @@ ACTIVITY_EDGES = {
         ('{"type":"item.completed","was":"item.started"}', None),
         ('{"type":"item.started","item":"x"}', None),
     ],
+    "agy": [
+        ("   " + _AGY_TOOL_LINE, ["Read"]),
+        ('"step_update"', None),
+        ('{"event":"step_update"', None),
+        ('{"event":"result","was":"step_update"}', None),
+        ('{"event":"step_update","step_update":"x"}', None),
+    ],
 }
 
 
 class TestActivityEdges(unittest.TestCase):
     def test_each_adapter(self):
-        for provider in (ClaudeProvider(), CodexProvider()):
+        for provider in (ClaudeProvider(), CodexProvider(), AgyProvider()):
             for line, shown in ACTIVITY_EDGES[provider.name]:
                 with self.subTest(provider=provider.name, line=line):
                     act = provider.activity_of(line, "/sandbox/x")
@@ -2013,13 +2045,24 @@ class TestActivityEdges(unittest.TestCase):
     def test_the_shared_line_filter(self):
         """The same lines through ``event_of_type``: an event of the kind
         asked for comes back whole, whatever the hook then finds in it."""
-        kinds = {"claude": "assistant", "codex": "item.started"}
-        decoded = ("   " + _CLAUDE_TOOL_LINE, "   " + _CODEX_TOOL_LINE, '{"type":"item.started","item":"x"}')
+        kinds = {
+            "claude": ("assistant", "type"),
+            "codex": ("item.started", "type"),
+            "agy": ("step_update", "event"),
+        }
+        decoded = (
+            "   " + _CLAUDE_TOOL_LINE,
+            "   " + _CODEX_TOOL_LINE,
+            '{"type":"item.started","item":"x"}',
+            "   " + _AGY_TOOL_LINE,
+            '{"event":"step_update","step_update":"x"}',
+        )
         for name, rows in ACTIVITY_EDGES.items():
             for line, _ in rows:
                 with self.subTest(provider=name, line=line):
+                    kind, key = kinds[name]
                     expected = json.loads(line) if line in decoded else None
-                    self.assertEqual(base.event_of_type(line, kinds[name]), expected)
+                    self.assertEqual(base.event_of_type(line, kind, key=key), expected)
         self.assertIsNone(base.event_of_type('{"type": "assistant"}', "item.started"))
 
 
@@ -2293,11 +2336,52 @@ AGY_MODELS = (
 )
 
 
-def agy_result(**fields):
-    """One JSON result line, as ``agy --output-format json`` prints it."""
+def agy_result(stream=True, **fields):
+    """One result line: as ``--output-format stream-json`` prints it, or with
+    ``stream=False`` the flat object ``--output-format json`` prints."""
     payload = {"conversation_id": "conv-1", "status": "SUCCESS", "response": "READY"}
     payload.update(fields)
+    if stream:
+        payload = {"event": "result", "result": payload}
     return json.dumps(payload) + "\n"
+
+
+AGY_FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "agy")
+
+
+def agy_fixture(name):
+    """A recording, with its Windows sandbox rewritten to ``/sandbox/agy193/``
+    so that paths read the same on every platform."""
+    with open(os.path.join(AGY_FIXTURES, name), encoding="utf-8") as handle:
+        return handle.read().replace("C:\\\\sandbox\\\\agy193\\\\", "/sandbox/agy193/")
+
+
+def agy_lines(name, first, last):
+    """Lines ``first`` to ``last`` of a recording, numbered from 1, as stdout."""
+    return "".join(agy_fixture(name).splitlines(keepends=True)[first - 1 : last])
+
+
+def agy_events(name):
+    """A recording's lines as objects, for a test to change and print again."""
+    return [json.loads(line) for line in agy_fixture(name).splitlines()]
+
+
+def agy_stdout(events):
+    return "".join(json.dumps(event) + "\n" for event in events)
+
+
+def agy_step(**body):
+    """One ``step_update`` line with ``body`` under its key."""
+    return json.dumps({"event": "step_update", "step_update": body}) + "\n"
+
+
+#: The recordings, and the tool run's answer, which it also streamed whole.
+AGY_TOOLS = "stream-json-tools.jsonl"
+AGY_DENIED = "stream-json-denied.jsonl"
+AGY_TOOLS_RESPONSE = (
+    "[output.txt](file:///C:/sandbox/agy193/output.txt) has been created with the lines of "
+    "`input.txt` in reverse order (`gamma`, `beta`, `alpha`).\n"
+)
 
 
 #: A thinking model's measured usage: total = input + output, with the
@@ -2333,16 +2417,18 @@ class _AgyCase(IsolatedCase):
 
         setattr(self.provider, "_capture", capture)
 
-    def answer(self, stdout=None, exit_code=0, stderr="", observe=None):
-        """Replace the child process with one that prints ``stdout``."""
+    def answer(self, stdout=None, exit_code=0, stderr="", observe=None, timed_out=False):
+        """Replace the child process with one that prints ``stdout``. A run
+        killed at the total deadline, agy's only kill, is ``timed_out``."""
         printed = agy_result() if stdout is None else stdout
 
         def execute(command, cwd, prompt="", timeout=None, idle_timeout=None, env=None):
             self.seen["command"] = list(command)
             self.seen["stdin"] = prompt
+            self.seen["idle_timeout"] = idle_timeout
             if observe is not None:
                 observe(command, cwd)
-            return execution.ExecOutcome(exit_code, printed, stderr, 0.5)
+            return execution.ExecOutcome(exit_code, printed, stderr, 0.5, timed_out=timed_out)
 
         execution.execute = execute
 
@@ -2449,9 +2535,9 @@ class TestAgyRoleOptions(_AgyCase):
         super().setUp()
         self.resolved = self.resolve("default")
 
-    def test_implement_asks_for_json_with_p_last(self):
+    def test_implement_asks_for_stream_json_with_p_last(self):
         command = self.provider.build_command(base.MODE_IMPLEMENT, self.resolved, self.project)
-        self.assertEqual(command[:3], ["agy", "--output-format", "json"])
+        self.assertEqual(command[:3], ["agy", "--output-format", "stream-json"])
         self.assertEqual(command[-2], "-p")
         for flag in ("--mode", "--sandbox", "--dangerously-skip-permissions"):
             self.assertNotIn(flag, command)
@@ -2496,7 +2582,7 @@ class TestAgyRoleOptions(_AgyCase):
                 command = self.provider.build_command(
                     mode, self.resolved, self.project, options={"skip_permissions": True}
                 )
-                self.assertEqual(command[:-1], ["agy", "--output-format", "json", "-p"])
+                self.assertEqual(command[:-1], ["agy", "--output-format", "stream-json", "-p"])
 
     def test_raw_arguments_on_a_read_only_run_are_refused(self):
         self.installed()
@@ -2730,8 +2816,10 @@ class TestAgyOutput(_AgyCase):
         self.assertEqual(usage.cache_read_tokens, 300)
         self.assertIsNone(usage.total_tokens)
         self.assertIsNone(usage.cost_usd)
-        self.assertEqual(usage.source, "agy json result")
+        self.assertEqual(usage.source, "agy stream-json result")
         self.assertEqual(usage.billed_tokens, 12527 + 215)
+        # A result alone carries no step_update, so no tool count is measured.
+        self.assertIsNone(usage.tool_uses)
 
     def test_denied_actions_are_a_warning_on_success_too(self):
         denied = [{"action": "run_command", "display_name": "Run command"}]
@@ -2752,27 +2840,34 @@ class TestAgyOutput(_AgyCase):
         self.answer(printed, exit_code=3)
         result = self.run_agy()
         self.assertFalse(result.ok)
-        self.assertEqual(result.stdout, "partial answer")
+        self.assertEqual((result.stdout, result.partial_output), ("", "partial answer"))
         self.assertIn("AGY_ERROR: the tool call failed", result.stderr)
         self.assertTrue(result.stderr.strip().endswith("Error: tool failed"))
-        self.assertIn("agy reported status ERROR", result.warnings)
+        self.assertIn(agy_module.NO_ANSWER + agy_module.BAD_STATUS % "ERROR", result.warnings)
 
-    def test_an_empty_response_keeps_the_raw_output(self):
-        printed = agy_result(conversation_id="", status="ERROR", response="", error="Error: empty prompt.")
-        self.answer(printed, exit_code=1, stderr="error: Error: empty prompt.\n")
-        result = self.run_agy()
-        self.assertFalse(result.ok)
-        self.assertEqual(result.stdout, printed)
-        self.assertEqual(result.stderr.count("Error: empty prompt."), 1)
-        self.assertIsNone(result.session_id)
+    def test_an_empty_response_is_no_answer_in_either_shape(self):
+        for stream in (True, False):
+            with self.subTest(stream=stream):
+                printed = agy_result(
+                    stream, conversation_id="", status="ERROR", response="", error="Error: empty prompt."
+                )
+                self.answer(printed, exit_code=1, stderr="error: Error: empty prompt.\n")
+                result = self.run_agy()
+                self.assertFalse(result.ok)
+                self.assertEqual(result.stdout, "")
+                self.assertEqual(result.warnings, [agy_module.NO_ANSWER + agy_module.BAD_STATUS % "ERROR"])
+                self.assertEqual(result.stderr.count("Error: empty prompt."), 1)
+                self.assertIsNone(result.session_id)
 
-    def test_output_that_is_not_json_passes_through(self):
+    def test_plain_text_is_no_answer(self):
         self.answer("plain words\n", stderr="some noise\n")
         result = self.run_agy()
-        self.assertEqual(result.stdout, "plain words\n")
-        self.assertEqual(result.stderr, "some noise\n")
+        self.assertFalse(result.ok)
+        self.assertEqual(result.stdout, "")
+        self.assertIn("plain words", result.stderr)
+        self.assertIn("some noise", result.stderr)
         self.assertFalse(result.usage.measured)
-        self.assertEqual(result.warnings, [])
+        self.assertEqual(result.warnings, [agy_module.NO_ANSWER + agy_module.NO_RESULT])
 
     def test_a_result_without_usage_is_unmeasured(self):
         self.answer(agy_result())
@@ -2808,52 +2903,425 @@ class TestAgyRecordedRuns(_AgyCase):
         super().setUp()
         self.installed()
 
-    def recorded(self, stdout, mode):
-        self.answer(stdout)
+    def recorded(self, stdout, mode, ok=True, exit_code=0):
+        self.answer(stdout, exit_code=exit_code)
         result = self.provider.run("prompt", mode, self.project)
         self.assertTrue(result.invoked)
         self.assertIn("command", self.seen)
-        self.assertEqual((result.ok, result.exit_code), (True, 0))
+        self.assertEqual((result.ok, result.exit_code), (ok, exit_code))
         self.assertFalse(result.resume_rejected)
+        if not ok:
+            # A failed run's text is partial output, never its answer.
+            self.assertEqual(result.stdout, "")
         return result
 
     def test_a_result_with_usage(self):
-        result = self.recorded(agy_result(usage=AGY_USAGE), base.MODE_IMPLEMENT)
-        self.assertEqual((result.stdout, result.stderr, result.warnings), ("READY", "", []))
-        session = (result.session_id, result.context_tokens, result.session_init)
-        self.assertEqual(session, ("conv-1", None, None))
-        expected = usage_dict(
-            input_tokens=12527,
-            output_tokens=215,
-            cache_read_tokens=300,
-            billed_tokens=12742,
-            source="agy json result",
-            measured=True,
-        )
-        self.assertEqual(result.usage.to_dict(), expected)
+        for stream, source in ((True, "agy stream-json result"), (False, "agy json result")):
+            with self.subTest(stream=stream):
+                result = self.recorded(agy_result(stream, usage=AGY_USAGE), base.MODE_IMPLEMENT)
+                self.assertEqual((result.stdout, result.stderr, result.warnings), ("READY", "", []))
+                session = (result.session_id, result.context_tokens, result.session_init)
+                self.assertEqual(session, ("conv-1", None, None))
+                expected = usage_dict(
+                    input_tokens=12527,
+                    output_tokens=215,
+                    cache_read_tokens=300,
+                    billed_tokens=12742,
+                    source=source,
+                    measured=True,
+                )
+                self.assertEqual(result.usage.to_dict(), expected)
 
     def test_the_last_result_object_wins(self):
         fields = {"status": "ERROR", "response": "SECOND", "error": "it broke", "usage": {"input_tokens": 5}}
         second = agy_result(conversation_id="conv-2", **fields)
         stdout = agy_result(response="FIRST") + second + json.dumps({"progress": 1}) + "\nAGY_ERROR: quota\n"
-        result = self.recorded(stdout, base.MODE_REVIEW)
+        result = self.recorded(stdout, base.MODE_REVIEW, ok=False)
         unenforced = "read-only is NOT enforced by agy -- " + agy_module.AGY_UNENFORCED
-        warnings = [unenforced, "agy reported status ERROR"]
-        self.assertEqual(result.stdout, "SECOND")
+        warnings = [unenforced, agy_module.NO_ANSWER + "status ERROR"]
+        self.assertEqual(result.partial_output, "SECOND")
         self.assertEqual(result.warnings, warnings)
         self.assertEqual(result.stderr, "\n".join([*warnings, "AGY_ERROR: quota\nit broke"]))
         session = (result.session_id, result.context_tokens, result.session_init)
         self.assertEqual(session, ("conv-2", None, None))
-        expected = usage_dict(input_tokens=5, billed_tokens=5, source="agy json result", measured=True)
+        expected = usage_dict(input_tokens=5, billed_tokens=5, source="agy stream-json result", measured=True)
         self.assertEqual(result.usage.to_dict(), expected)
 
     def test_the_result_is_decoded_once(self):
         stdout = agy_result(usage=AGY_USAGE) + "plain words\n" + agy_result(response="LAST")
         loads = mock.Mock(wraps=json.loads)
         with mock.patch.object(json, "loads", loads):
-            self.recorded(stdout, base.MODE_IMPLEMENT)
+            result = self.recorded(stdout, base.MODE_IMPLEMENT)
         braced = [line for line in stdout.splitlines() if line.startswith("{")]
         self.assertEqual(loads.call_count, len(braced))
+        self.assertEqual(result.stdout, "LAST")
+        self.assertIn("plain words", result.stderr)
+
+    def test_the_stream_is_decoded_once(self):
+        stdout = agy_fixture(AGY_TOOLS)
+        with contextlib.ExitStack() as stack:
+            calls = count_decoding(stack, stdout, DECODERS)
+            self.recorded(stdout, base.MODE_IMPLEMENT)
+        self.assertEqual(len(calls), 1)
+
+    def test_the_recorded_tool_run(self):
+        result = self.recorded(agy_fixture(AGY_TOOLS), base.MODE_IMPLEMENT)
+        self.assertEqual(result.stdout, AGY_TOOLS_RESPONSE)
+        self.assertEqual(result.warnings, [])
+        self.assertEqual(result.session_id, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+        self.assertEqual(result.context_tokens, 14517)
+        usage = result.usage
+        tokens = (usage.input_tokens, usage.output_tokens, usage.cache_read_tokens)
+        self.assertEqual(tokens, (5822, 525, 36491))
+        self.assertIsNone(usage.total_tokens)
+        self.assertEqual(usage.source, "agy stream-json result")
+        self.assertEqual(usage.tool_uses, 2)
+        self.assertEqual(usage.tool_uses_by_name, {"view_file": 1, "write_to_file": 1})
+        self.assertIsNone(usage.tool_output_chars)
+
+    def test_the_recorded_denied_run(self):
+        """The fixture was recorded with ``--input-format stream-json`` and no
+        ``-p``. The output is assumed to match what ``-p`` prints; the smoke
+        check "names a denied command" verifies it against the live CLI."""
+        result = self.recorded(agy_fixture(AGY_DENIED), base.MODE_IMPLEMENT, ok=False)
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(len(result.warnings), 2)
+        self.assertEqual(result.warnings[0], agy_module.NO_ANSWER + agy_module.EMPTY_RESPONSE)
+        self.assertTrue(result.warnings[1].startswith("agy denied 1 action(s): RunCommand (command); set "))
+        usage = result.usage
+        self.assertEqual(usage.tool_uses, 1)
+        tokens = (usage.input_tokens, usage.output_tokens, usage.cache_read_tokens)
+        self.assertEqual(tokens, (4209, 232, 9450))
+        self.assertEqual(result.context_tokens, 13659)
+
+    def test_a_denied_implementer_with_an_answer_stays_ok(self):
+        denied = [{"action": "command", "display_name": "RunCommand"}]
+        result = self.recorded(agy_result(denied_actions=denied), base.MODE_IMPLEMENT)
+        self.assertEqual(result.stdout, "READY")
+        self.assertEqual(len(result.warnings), 1)
+        self.assertTrue(result.warnings[0].startswith("agy denied 1 action(s): RunCommand (command)"))
+
+    def test_a_non_success_status_keeps_its_response_as_partial_output(self):
+        printed = agy_result(status="ERROR", response="half", error="boom")
+        result = self.recorded(printed, base.MODE_IMPLEMENT, ok=False)
+        self.assertEqual(result.partial_output, "half")
+        self.assertIn(agy_module.NO_ANSWER + "status ERROR", result.warnings)
+        self.assertTrue(result.stderr.strip().endswith("boom"))
+
+    def test_a_missing_status_fails(self):
+        printed = json.dumps({"event": "result", "result": {"response": "x"}}) + "\n"
+        result = self.recorded(printed, base.MODE_IMPLEMENT, ok=False)
+        self.assertEqual(result.warnings, [agy_module.NO_ANSWER + "status missing"])
+
+    def test_an_empty_response_ignores_earlier_streamed_text(self):
+        lines = agy_fixture(AGY_DENIED).splitlines(keepends=True)
+        early = agy_step(step_index=1, state="ACTIVE", step_type="agent_response", text_delta="Let me check")
+        result = self.recorded("".join([*lines[:2], early, *lines[2:]]), base.MODE_IMPLEMENT, ok=False)
+        self.assertEqual(result.stdout, "")
+        self.assertNotIn("Let me check", json.dumps(result.to_dict()) + result.stdout + result.stderr)
+
+    # -- a stream without a usable result (case C) ---------------------------
+
+    def test_a_killed_stream_has_tools_and_no_tokens(self):
+        self.answer(agy_lines(AGY_TOOLS, 1, 30), exit_code=execution.EXIT_TOTAL_TIMEOUT, timed_out=True)
+        result = self.provider.run("prompt", base.MODE_IMPLEMENT, self.project)
+        self.assertFalse(result.ok)
+        self.assertEqual(result.exit_code, 124)
+        self.assertFalse(result.usage.measured)
+        self.assertEqual(result.usage.tool_uses, 2)
+        self.assertEqual(result.usage.source, "agy stream events")
+        self.assertIsNone(result.session_id)
+        self.assertEqual(result.context_tokens, 14517)
+        self.assertEqual((result.stdout, result.partial_output), ("", AGY_TOOLS_RESPONSE))
+        self.assertEqual(result.warnings, [agy_module.NO_ANSWER + agy_module.NO_RESULT_STREAM])
+
+    def test_a_zero_exit_without_a_result_is_not_ok(self):
+        result = self.recorded(agy_lines(AGY_TOOLS, 1, 30), base.MODE_IMPLEMENT, ok=False)
+        self.assertEqual(result.warnings, [agy_module.NO_ANSWER + agy_module.NO_RESULT_STREAM])
+        self.assertEqual(result.partial_output, AGY_TOOLS_RESPONSE)
+
+    def test_a_stream_cut_mid_answer(self):
+        stdout = agy_lines(AGY_TOOLS, 1, 20)
+        deltas = [json.loads(line)["step_update"]["text_delta"] for line in stdout.splitlines()[8:20]]
+        result = self.recorded(stdout, base.MODE_IMPLEMENT, ok=False)
+        partial = result.partial_output
+        self.assertEqual(partial, "".join(deltas))
+        self.assertTrue(partial.startswith("[output.txt](file:///C:/sandbox/agy193/output.txt) "))
+        self.assertTrue(partial.endswith("created with the lines o"))
+
+    def test_reconstruction_takes_the_last_step_with_text(self):
+        stdout = "".join(
+            [
+                agy_step(step_index=3, state="ACTIVE", step_type="agent_response", text_delta="A"),
+                agy_step(step_index=4, state="ACTIVE", step_type="tool", tool_name="view_file"),
+                agy_step(step_index=5, state="ACTIVE", step_type="agent_response", text_delta=""),
+            ]
+        )
+        result = self.recorded(stdout, base.MODE_IMPLEMENT, ok=False)
+        self.assertEqual(result.partial_output, "A")
+
+    def test_a_stream_cut_before_any_text_gives_empty_stdout(self):
+        result = self.recorded(agy_lines(AGY_TOOLS, 1, 5), base.MODE_IMPLEMENT, ok=False)
+        self.assertEqual(result.stdout, "")
+
+    # -- diagnostics --------------------------------------------------------
+
+    def test_agy_error_without_a_result_reaches_stderr(self):
+        stdout = agy_lines(AGY_TOOLS, 1, 30) + "AGY_ERROR: quota\n"
+        result = self.recorded(stdout, base.MODE_IMPLEMENT, ok=False)
+        self.assertIn("AGY_ERROR: quota", result.stderr)
+
+    def test_json_lines_are_never_diagnostics(self):
+        lines = agy_fixture(AGY_TOOLS).splitlines(keepends=True)
+        secret = agy_step(
+            step_index=5, state="ACTIVE", step_type="agent_response", text_delta="AGY_ERROR: secret text"
+        )
+        result = self.recorded("".join([*lines[:29], secret, *lines[29:]]), base.MODE_IMPLEMENT)
+        self.assertNotIn("AGY_ERROR", result.stderr)
+        self.assertNotIn("secret text", result.stderr)
+
+    def test_a_plain_line_beside_a_valid_result_does_not_fail(self):
+        result = self.recorded(agy_fixture(AGY_TOOLS) + "AGY_ERROR: x\n", base.MODE_IMPLEMENT)
+        self.assertEqual(result.stdout, AGY_TOOLS_RESPONSE)
+        self.assertEqual(result.usage.tool_uses, 2)
+        self.assertEqual(result.context_tokens, 14517)
+        self.assertEqual(result.warnings, [])
+        self.assertIn("AGY_ERROR: x", result.stderr)
+
+    def test_diagnostics_are_clipped(self):
+        noise = "".join(("line %d " % number) + "word " * 60 + "\n" for number in range(25))
+        result = self.recorded(agy_fixture(AGY_TOOLS) + noise, base.MODE_IMPLEMENT)
+        lines = result.stderr.splitlines()
+        self.assertEqual(len(lines), 21)
+        for line in lines[:20]:
+            self.assertLessEqual(len(line), activity.LINE_LIMIT)
+        self.assertEqual(lines[20], "agy: 5 more stdout line(s) not shown")
+
+    def test_torn_json_is_reported_not_copied(self):
+        torn = '{"event": "step_update", "step_update": {"text_delta": "secret\n'
+        result = self.recorded(agy_fixture(AGY_TOOLS) + torn, base.MODE_IMPLEMENT)
+        self.assertEqual(result.stdout, AGY_TOOLS_RESPONSE)
+        self.assertEqual(result.warnings, ["agy: 1 stdout line(s) could not be read as JSON"])
+        self.assertNotIn("secret", json.dumps(result.to_dict()) + result.stdout + result.stderr)
+
+    # -- drift --------------------------------------------------------------
+
+    def test_renamed_events_never_return_the_stream(self):
+        stdout = (
+            agy_fixture(AGY_TOOLS)
+            .replace('"event": "step_update", "step_update":', '"event": "step", "step":')
+            .replace('"event": "result", "result":', '"event": "final", "final":')
+        )
+        result = self.recorded(stdout, base.MODE_IMPLEMENT, ok=False)
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(result.warnings, [agy_module.NO_ANSWER + agy_module.NO_RESULT_STREAM])
+        self.assertIsNone(result.usage.tool_uses)
+
+    def test_a_renamed_outer_key_is_no_answer(self):
+        stdout = agy_fixture(AGY_TOOLS).replace('{"event": ', '{"type": ')
+        result = self.recorded(stdout, base.MODE_IMPLEMENT, ok=False)
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(result.warnings, [agy_module.NO_ANSWER + agy_module.NO_RESULT])
+        self.assertEqual(result.stderr.strip(), agy_module.NO_ANSWER + agy_module.NO_RESULT)
+
+    def test_a_stream_cut_inside_its_first_line(self):
+        first = agy_fixture(AGY_TOOLS).splitlines()[0][:40]
+        result = self.recorded(first, base.MODE_IMPLEMENT, ok=False)
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(result.warnings[0], agy_module.NO_ANSWER + agy_module.NO_RESULT)
+        self.assertNotIn("conversation_id", result.stderr)
+
+    def test_plain_text_only(self):
+        result = self.recorded("Error: quota exceeded\n", base.MODE_IMPLEMENT, ok=False)
+        self.assertEqual(result.stdout, "")
+        self.assertIn("Error: quota exceeded", result.stderr)
+
+    def test_a_result_body_that_is_not_an_object(self):
+        stdout = agy_lines(AGY_TOOLS, 1, 30) + '{"event":"result","result":"x"}\n'
+        result = self.recorded(stdout, base.MODE_IMPLEMENT, ok=False)
+        self.assertEqual(result.partial_output, AGY_TOOLS_RESPONSE)
+        self.assertEqual(result.warnings, [agy_module.NO_ANSWER + agy_module.NO_RESULT_STREAM])
+        self.assertFalse(result.usage.measured)
+        self.assertEqual(result.usage.tool_uses, 2)
+
+    def test_a_renamed_step_update_reports_no_tool_count(self):
+        stdout = agy_fixture(AGY_TOOLS).replace('"step_update": {', '"step": {')
+        result = self.recorded(stdout, base.MODE_IMPLEMENT)
+        self.assertEqual(result.stdout, AGY_TOOLS_RESPONSE)
+        self.assertIsNone(result.usage.tool_uses)
+
+    def test_malformed_step_bodies_never_raise(self):
+        lines = [
+            agy_step(step_index=2, state="ACTIVE", step_type="tool", tool_name="view_file", tool_info="x"),
+            agy_step(step_index=3, state="ACTIVE", step_type="tool", tool_info={"parameters": []}),
+            agy_step(step_index=4, state="DONE", step_type="agent_response", usage="x"),
+            agy_step(step_index=5, state="ACTIVE", step_type="agent_response", text_delta=5),
+            agy_step(step_index="1", state="ACTIVE", step_type="agent_response", text_delta="hi"),
+        ]
+        for line in lines:
+            self.provider.activity_of(line, "/sandbox/agy193")
+        result = self.recorded("".join(lines), base.MODE_IMPLEMENT, ok=False)
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(result.warnings, [agy_module.NO_ANSWER + agy_module.NO_RESULT_STREAM])
+
+    def test_a_failing_reader_never_returns_the_output(self):
+        with mock.patch.object(agy_module, "_answer", side_effect=RuntimeError("boom")):
+            result = self.recorded(agy_fixture(AGY_TOOLS), base.MODE_IMPLEMENT, ok=False)
+        self.assertEqual(result.stdout, "")
+        note = "agy: no answer: the output could not be read (RuntimeError: boom)"
+        self.assertEqual(result.stderr.count(note), 1)
+
+    def test_a_failing_reader_adds_no_blank_line_to_stderr(self):
+        with mock.patch.object(agy_module, "_answer", side_effect=RuntimeError("boom")):
+            for stderr, expected in (("", ""), ("agy said\n", "agy said\n")):
+                with self.subTest(stderr=stderr):
+                    outcome = execution.ExecOutcome(0, agy_fixture(AGY_TOOLS), stderr, 0.1)
+                    shown = self.provider.postprocess(outcome, base.MODE_IMPLEMENT)
+                    note = "agy: no answer: the output could not be read (RuntimeError: boom)"
+                    self.assertEqual(shown, ("", expected + note))
+
+    def test_a_failing_warning_reader_fails_closed(self):
+        parse = agy_module._parse
+
+        def failing_in_warnings(events):
+            if sys._getframe(1).f_code.co_name == "_warnings":
+                raise RuntimeError("boom")
+            return parse(events)
+
+        stdout = agy_fixture(AGY_TOOLS)
+        with mock.patch.object(agy_module, "_parse", failing_in_warnings):
+            outcome = execution.ExecOutcome(0, stdout, "", 0.1)
+            warnings = self.provider.run_warnings(outcome, base.MODE_IMPLEMENT)
+            result = self.recorded(stdout, base.MODE_IMPLEMENT, ok=False)
+        self.assertEqual(warnings, [agy_module.NO_ANSWER + agy_module.UNREADABLE])
+        self.assertEqual(result.warnings, warnings)
+        self.assertEqual((result.stdout, result.partial_output), ("", AGY_TOOLS_RESPONSE))
+
+    # -- shapes -------------------------------------------------------------
+
+    def test_the_legacy_shape_has_unmeasured_tool_uses_and_json_source(self):
+        result = self.recorded(agy_result(False, usage=AGY_USAGE), base.MODE_IMPLEMENT)
+        self.assertEqual(result.usage.source, "agy json result")
+        self.assertIsNone(result.usage.tool_uses)
+
+    def test_a_step_update_is_never_taken_as_the_result(self):
+        stdout = agy_fixture(AGY_TOOLS) + '{"event":"step_update","status":"X","response":"y"}\n'
+        result = self.recorded(stdout, base.MODE_IMPLEMENT)
+        self.assertEqual(result.stdout, AGY_TOOLS_RESPONSE)
+        self.assertFalse(any("status X" in warning for warning in result.warnings))
+
+    def test_a_flat_object_inside_a_stream_is_not_the_result(self):
+        stdout = agy_fixture(AGY_TOOLS) + '{"status":"ERROR","response":"z"}\n'
+        result = self.recorded(stdout, base.MODE_IMPLEMENT)
+        self.assertEqual(result.stdout, AGY_TOOLS_RESPONSE)
+
+    # -- the ok rule --------------------------------------------------------
+
+    def test_no_answer_warnings_survive_redact(self):
+        texts = (
+            agy_module.NO_RESULT_STREAM,
+            agy_module.NO_RESULT,
+            agy_module.EMPTY_RESPONSE,
+            agy_module.BAD_STATUS % "ERROR",
+            agy_module.BAD_STATUS % "missing",
+            agy_module.UNREADABLE,
+        )
+        for text in texts:
+            with self.subTest(text=text):
+                warning = agy_module.NO_ANSWER + text
+                self.assertEqual(redact(warning), warning)
+                kept = base.RunResult(True, 0, "", "", [], 0.0, warnings=[warning]).warnings
+                self.assertEqual(kept, [warning])
+
+    def test_case_d_empty_exit_0(self):
+        result = self.recorded("", base.MODE_IMPLEMENT, ok=False)
+        self.assertEqual(result.stderr.count(agy_module.NO_ANSWER + agy_module.NO_RESULT), 1)
+        self.assertNotIn("agy printed no answer", result.stderr)
+
+    def test_a_missing_cli_is_left_alone(self):
+        base.clear_discovery_cache()
+        self.provider.which = lambda: None
+        result = self.provider.run("prompt", base.MODE_IMPLEMENT, self.project)
+        self.assertEqual((result.exit_code, result.invoked), (127, False))
+        self.assertEqual(result.stderr, "agy not found on PATH")
+
+    def test_a_failed_run_gets_no_note(self):
+        result = self.recorded(agy_lines(AGY_TOOLS, 1, 5), base.MODE_IMPLEMENT, ok=False, exit_code=3)
+        self.assertEqual(result.stderr.count(agy_module.NO_ANSWER + agy_module.NO_RESULT_STREAM), 1)
+        self.assertNotIn("agy printed no answer", result.stderr)
+
+    def test_an_empty_stdout_without_a_warning_gets_the_note(self):
+        with mock.patch.object(agy_module, "_answer", return_value=("", "")):
+            result = self.recorded(agy_fixture(AGY_TOOLS), base.MODE_IMPLEMENT, ok=False)
+        self.assertTrue(result.stderr.startswith("agy printed no answer"))
+        self.assertEqual(result.stderr.count("agy printed no answer"), 1)
+
+    # -- tool counts and context --------------------------------------------
+
+    def usage_of(self, stdout):
+        usage = self.provider.parse_usage(execution.ExecOutcome(0, stdout, "", 0.1), base.MODE_IMPLEMENT)
+        assert usage is not None
+        return usage
+
+    def test_an_active_only_tool_still_counts(self):
+        self.assertEqual(self.usage_of(agy_lines(AGY_TOOLS, 1, 7)).tool_uses, 2)
+
+    def test_a_done_only_tool_counts_once(self):
+        done = agy_step(step_index=9, state="DONE", step_type="tool", tool_name="view_file")
+        self.assertEqual(self.usage_of(agy_lines(AGY_TOOLS, 1, 2) + done).tool_uses, 1)
+
+    def test_a_tool_without_an_index(self):
+        cases = (
+            (agy_step(state="ACTIVE", step_type="tool", tool_name="view_file"), 1),
+            (agy_step(state="DONE", step_type="tool", tool_name="view_file"), 0),
+            (agy_step(step_index=True, state="ACTIVE", step_type="tool", tool_name="view_file"), 1),
+        )
+        for line, count in cases:
+            with self.subTest(line=line):
+                self.assertEqual(self.usage_of(agy_lines(AGY_TOOLS, 1, 2) + line).tool_uses, count)
+
+    def test_the_tool_name_fallbacks(self):
+        cases = (
+            ({"tool_info": {"name": "view_file"}}, "view_file"),
+            ({}, "unknown"),
+            ({"tool_name": ""}, "unknown"),
+            ({"tool_name": "bad name!"}, "tool"),
+        )
+        for fields, name in cases:
+            with self.subTest(fields=fields):
+                line = agy_step(step_index=2, state="ACTIVE", step_type="tool", **fields)
+                usage = self.usage_of(agy_lines(AGY_TOOLS, 1, 2) + line)
+                self.assertEqual(usage.tool_uses_by_name, {name: 1})
+
+    def context_of(self, stdout):
+        return self.provider.parse_session(execution.ExecOutcome(0, stdout, "", 0.1))["context_tokens"]
+
+    def test_context_keeps_the_last_readable_step(self):
+        edits = (
+            lambda usage: "x",
+            lambda usage: {key: value for key, value in usage.items() if key != "cache_read_tokens"},
+            lambda usage: dict(usage, input_tokens=True),
+        )
+        for edit in edits:
+            events = agy_events(AGY_TOOLS)
+            step = events[29]["step_update"]
+            step["usage"] = edit(step["usage"])
+            with self.subTest(usage=step["usage"]):
+                self.assertEqual(self.context_of(agy_stdout(events)), 14125)
+
+    def test_no_readable_context_is_none(self):
+        events = agy_events(AGY_TOOLS)
+        for event in events:
+            step = event.get("step_update") or {}
+            if step.get("step_type") == "agent_response" and "usage" in step:
+                step["usage"] = "x"
+        result = self.recorded(agy_stdout(events), base.MODE_IMPLEMENT)
+        self.assertIsNone(result.context_tokens)
+
+    def test_no_idle_deadline_whatever_is_asked(self):
+        self.assertIsNone(self.provider.idle_timeout({}, 300))
+        self.assertIsNone(self.provider.idle_timeout({"idle_timeout": 60}, 300))
+        self.assertIsNone(self.provider.idle_timeout(None, None))
 
 
 #: Where ``-p`` says the prompt is: a file this process wrote in ``.ai/``.

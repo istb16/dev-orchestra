@@ -226,12 +226,16 @@ static, `run` and `review run` refuse the project-file seat on the live report.
 
 An adapter sets `streams_progress = True` only when a healthy run of the command
 it builds emits output *while working*. That must be measured, not assumed:
-claiming it falsely turns a slow but working agent into a killed one. The
-Claude and Codex adapters stream, for different reasons -- Codex does so
-natively, Claude because its adapter asks for `stream-json`. The agy adapter
-does not: `--output-format json` prints once, at the end, so an agy run has
-the total deadline only. A role can override the deadline with
-`options.idle_timeout`. See `references/limits.md` for the measurements.
+claiming it falsely turns a slow but working agent into a killed one. Only
+the Claude adapter sets it, because it asks for `stream-json`, and only Claude
+takes an idle deadline. The Codex and agy adapters set no `streams_progress`
+and take none, so their runs have the total deadline only. agy reports tool
+activity from its `stream-json` output, but prints nothing while the model
+thinks, nor during a model step that is not the last (generating a tool
+call's arguments included), so its silence says nothing about whether it is
+wedged. A Claude role can override the deadline with `options.idle_timeout`;
+the option is Claude's alone. See `references/limits.md` for the
+measurements.
 
 ### Model resolution contract
 
@@ -552,20 +556,21 @@ reviewers:
 
 ## Antigravity CLI adapter
 
-Verified against `agy` 1.2.13 on Windows. Meant for the implementer and the
-review fixer.
+Verified against `agy` 1.2.13 on Windows, and its `stream-json` output
+against 1.2.16. Meant for the implementer and the review fixer.
 
 | Aspect | How |
 | --- | --- |
-| Non-interactive run | `agy --output-format json [--model <id>] -p "Read the file .ai/agy-prompt-<pid>-<random>.md ..."`, `-p` last; one JSON object at the end |
+| Non-interactive run | `agy --output-format stream-json [--model <id>] -p "Read the file .ai/agy-prompt-<pid>-<random>.md ..."`, `-p` last; JSON lines as the run goes, the `result` last |
 | Model | `--model <id>`, **omitted** for the `default` family |
 | Model discovery | `agy models` (needs the network): the `id<TAB>name` lines it prints; nothing else is read |
 | `plan` / `review` | the same command: agy has no read-only mode, so these runs are **not enforced** |
 | `implement` | the same command, plus `--dangerously-skip-permissions` when `options.skip_permissions: true` comes from the global config |
-| Final answer | the `response` field of the JSON object; `AGY_ERROR` lines and the `error` field go to stderr |
-| Usage | `usage.input_tokens`, `output_tokens` and `cache_read_tokens` of the JSON object; no cost |
+| Final answer | the `response` of the `result` line. No result, a status other than `SUCCESS` or an empty response fails the run (`agy: no answer: ...` warnings); the partial text of such a run goes only to `run --output`'s `.rejected` file, never into the answer. Stdout lines that are not JSON, and the result's `error`, go to stderr |
+| Usage | `usage.input_tokens`, `output_tokens` and `cache_read_tokens` of the result; `tool_uses` and `tool_uses_by_name` from the tool steps; no output chars, no cost |
 | Resume | left out: `--resume` runs fresh (below) |
-| Progress | none until the end (`streams_progress = False`), so no idle deadline |
+| Progress | tool activity and context size, yes; idle deadline, no (`streams_progress = False`) |
+| Tool activity | `view_file` as `Read <path>`, `write_to_file` as `Write <path>`, `run_command` as `Bash: <program>`; any other plain name as itself, `mcp__s__t` as `s.t`, and a name that is not plain as `tool` |
 | Auth | not detected; run `agy` once to sign in if runs fail |
 
 Families are names, never ids; the id comes from what `agy models` lists on
@@ -606,6 +611,24 @@ home. `usage.output_tokens` already includes
 215, thinking 212, total 12742, which is input plus output), so thinking is
 not added on top. A trivial prompt costs about 12k-25k input tokens.
 
+On 1.2.16, `stream-json` prints one JSON object per line: `init`, then a
+`step_update` per step (a tool step once when it starts and once when it
+ends, a model step's last line with that step's usage, the answer as
+`text_delta` chunks), then `result`, the object `json` prints. The result's
+usage equals the sum of the steps', so tokens are read from the result alone.
+A model step's `input_tokens` is the part not read from cache, so its
+`input_tokens + cache_read_tokens` is the context size: 13671, 14125 and 14517
+over one run. Nothing is printed while the model thinks; the runs measured had
+gaps of up to six seconds, which is too short a sample to set an idle deadline
+on. A tool step's `output` is a summary (`4 lines, 17 bytes`), so no output
+chars are counted. A shell command denied in headless mode ends with status
+`SUCCESS`, an empty `response` and `denied_actions`. That run was recorded
+over stdin without `-p`; the smoke check "names a denied command" confirms
+the same shape under `-p`. The format is not documented, so every rename
+fails closed: no answer is taken from anything but the `result`. Nothing
+checks agy's version; an older CLI that rejects `stream-json` fails the run
+with its own error in stderr.
+
 **Read-only runs are not enforced.** On agy 1.2.13, `--mode plan`, `--mode plan
 --sandbox` and `--agent research` each wrote a file and read outside the
 workspace, and plan mode moved the answer out of the reply. So no `--mode` is
@@ -639,8 +662,10 @@ If it is wanted later, agy would override `verified_resume()`,
 **Permissions on the implementer.** Without `--dangerously-skip-permissions`,
 file edits ran and shell commands were refused in headless mode, so an
 implementer on agy cannot run the tests unless the bypass is on; with it, a
-command ran. `denied_actions` in the JSON result becomes a run warning, shown
-on success too, that says how to turn it on. The bypass is
+command ran. `denied_actions` in the result becomes a run warning, shown
+on success too, that says how to turn it on. Denied actions alone do not fail
+the run, since an implementer may finish its task despite one; the denied
+run's empty response does. The bypass is
 `options.skip_permissions: true` (default `false`) in the **global** config,
 or `--extra --dangerously-skip-permissions` for one run:
 

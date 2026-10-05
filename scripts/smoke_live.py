@@ -26,8 +26,8 @@ that only a real process can answer:
 * does it still report what the agent did with its tools, in the same sense
 * does a read-only mode still actually refuse to write -- or, for a CLI
   reported as having none, does it still write
-* does agy's implement mode write, and does its permission bypass let a
-  command run
+* does agy's implement mode write, does a command it may not run come back
+  named as denied, and does its permission bypass let a command run
 * does a read-only Claude run still stay inside its working directory, and
   does ``--add-dir`` still widen it
 * does a resumed Claude session keep all of that: the same tools, no MCP
@@ -70,6 +70,7 @@ from orchestrator.providers import (
     get_provider,
     redact,
 )
+from orchestrator.providers.agy import denied_actions
 
 #: Short enough to cost almost nothing, specific enough that a wrong answer is
 #: obvious rather than arguable.
@@ -120,11 +121,34 @@ IMPLEMENT_PROMPT = (
 #: The command check's prompt: a shell is the only way to answer it.
 COMMAND_PROMPT = "Run the shell command `echo true` and reply with exactly what it printed."
 
-#: Providers whose adapter reports tool activity. Codex is absent on purpose:
+#: Providers whose adapter reports tool activity: Claude from its stream's
+#: tool blocks, agy from its stream's tool steps. Codex is absent on purpose:
 #: it hands back only its final message and its usage comes from a prose
 #: footer, so counting tool calls from it would mean matching prose -- which
 #: matches the code under review as readily as the CLI's own output.
-REPORTS_TOOLS = ("claude",)
+REPORTS_TOOLS = ("claude", "agy")
+
+#: Providers that count tool calls but not what the tools printed back. Only
+#: the output requirement is skipped for them; the reply and the tool names
+#: are checked instead.
+TOOL_OUTPUT_UNREPORTED = ("agy",)
+
+#: A provider's own tool prompt, where ``TOOL_PROMPT`` would not tell a tool
+#: from a shell: agy runs a command denied in headless mode, so its prompt
+#: asks for the file-viewing tool, and for the file's content, which is not
+#: in the prompt.
+TOOL_PROMPTS = {
+    "agy": (
+        "Open README.md in this directory with your file-viewing tool, without running any shell "
+        "command, and reply with its contents verbatim."
+    ),
+}
+
+#: What the reply to a provider's tool prompt must carry: README.md's content.
+EXPECTED_REPLY = {"agy": "smoke"}
+
+#: The tools a provider's tool prompt must have been answered with.
+EXPECTED_TOOLS = {"agy": ("view_file",)}
 
 TIMEOUT = 180
 
@@ -307,7 +331,8 @@ def check_tool_activity(provider: Any, name: str, root: str) -> Check:
     if name not in REPORTS_TOOLS:
         return Check(name, label, True, "not reported by this adapter, by design")
     try:
-        result = provider.run(TOOL_PROMPT, MODE_REVIEW, root, timeout=TIMEOUT, idle_timeout=60.0)
+        prompt = TOOL_PROMPTS.get(name, TOOL_PROMPT)
+        result = provider.run(prompt, MODE_REVIEW, root, timeout=TIMEOUT, idle_timeout=60.0)
     except Exception as exc:
         return Check(name, label, False, "%s: %s" % (type(exc).__name__, exc))
     usage = result.usage
@@ -318,6 +343,8 @@ def check_tool_activity(provider: Any, name: str, root: str) -> Check:
         # check: the prompt cannot be answered without a tool, so zero means
         # the pairing stopped working rather than that the agent used nothing.
         return Check(name, label, False, "the run reported 0 tool uses for a prompt that needs one")
+    if name in TOOL_OUTPUT_UNREPORTED:
+        return _check_named_tools(name, label, result)
     chars = usage.tool_output_chars
     if not isinstance(chars, int) or chars <= 0:
         # Calls and results are read from different events and paired by
@@ -329,6 +356,41 @@ def check_tool_activity(provider: Any, name: str, root: str) -> Check:
     names = ", ".join("%s x%d" % item for item in sorted((usage.tool_uses_by_name or {}).items()))
     detail = "%d use(s) [%s], %s observed output chars" % (usage.tool_uses, names or "unnamed", chars)
     return Check(name, label, True, detail)
+
+
+def _check_named_tools(name: str, label: str, result: Any) -> Check:
+    """The tool check for a provider that reports no tool output: with no
+    output count to show a tool returned something, the run must have been
+    answered, with the file's content, by the tool expected, and nothing denied."""
+    usage = result.usage
+    warnings = getattr(result, "warnings", None) or []
+    denied = [warning for warning in warnings if denied_actions(warning) is not None]
+    if denied:
+        return Check(name, label, False, '"%s"' % denied[0][:160])
+    reason = _did_not_run(result)
+    if reason:
+        return Check(name, label, False, reason)
+    expected = EXPECTED_REPLY.get(name)
+    if expected and expected not in (result.stdout or ""):
+        return Check(name, label, False, "the reply did not carry README.md's content")
+    by_name = usage.tool_uses_by_name or {}
+    names = ", ".join("%s x%d" % item for item in sorted(by_name.items()))
+    for tool in EXPECTED_TOOLS.get(name, ()):
+        if tool not in by_name:
+            detail = "expected %s in tool_uses_by_name, got %s" % (tool, names or "none")
+            return Check(name, label, False, detail)
+    detail = "%d use(s) [%s]; output chars not reported by %s" % (usage.tool_uses, names or "unnamed", name)
+    return Check(name, label, True, detail)
+
+
+def _denied_actions(warnings: Any) -> List[str]:
+    """The action lists of agy's denied-actions warnings."""
+    found: List[str] = []
+    for warning in warnings or ():
+        actions = denied_actions(warning)
+        if actions is not None:
+            found.append(actions)
+    return found
 
 
 def check_read_only(provider: Any, name: str, root: str) -> Check:
@@ -382,10 +444,13 @@ def _enforcement_status(provider: Any) -> Optional[str]:
 
 
 def check_implement(provider: Any, name: str, root: str) -> List[Check]:
-    """Does implement mode write, and does ``skip_permissions`` let a command run?
+    """Does implement mode write, does a command without ``skip_permissions``
+    come back named as denied, and does ``skip_permissions`` let it run?
 
     Only for ``IMPLEMENT_CHECKED``. The write is judged on the filesystem;
-    the command by its output and by the CLI naming no denied action.
+    the denied command by the warning that names it, which is the live check
+    that ``-p`` gives the shape the adapter's denied fixture was recorded in;
+    the bypassed command by its output and by the CLI naming no denied action.
     """
     if name not in IMPLEMENT_CHECKED:
         return []
@@ -404,6 +469,20 @@ def check_implement(provider: Any, name: str, root: str) -> List[Check]:
             checks.append(Check(name, label, True, "wrote %s" % IMPLEMENT_TARGET))
         else:
             checks.append(Check(name, label, False, _did_not_run(result) or "no file was written"))
+
+    label = "names a denied command"
+    try:
+        result = provider.run(COMMAND_PROMPT, MODE_IMPLEMENT, root, timeout=TIMEOUT, idle_timeout=60.0)
+    except Exception as exc:
+        checks.append(Check(name, label, False, "%s: %s" % (type(exc).__name__, exc)))
+    else:
+        denied = _denied_actions(getattr(result, "warnings", None))
+        if result.invoked and any("(command)" in listed for listed in denied):
+            checks.append(Check(name, label, True, "denied %s" % "; ".join(denied)[:120]))
+        elif denied:
+            checks.append(Check(name, label, False, "denied %s, not a command" % "; ".join(denied)[:120]))
+        else:
+            checks.append(Check(name, label, False, _did_not_run(result) or "no action was denied"))
 
     label = "runs a command with skip_permissions"
     try:
