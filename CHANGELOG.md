@@ -10,7 +10,7 @@ The public surface covered by that promise is: the configuration schema, the
 
 ## [Unreleased]
 
-## [0.20.0] - 2026-10-05
+## [0.20.0] - 2026-10-06
 
 ### Added
 
