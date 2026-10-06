@@ -86,6 +86,10 @@ Environment overrides:
 
 The project file is found by walking up from the current directory and stopping
 at the git root, so running the CLI from a subdirectory still finds it.
+Every command starts that walk from the same place, the directory it was run
+from (or `--cwd`), and a `run --detach` worker is handed it: a subdirectory
+with a file of its own sets the roles, the budgets and `workspace.dir` alike,
+foreground or detached. `.ai/` itself still sits at the git root.
 Accepted names, in order: `.dev-orchestra.yaml`, `.dev-orchestra.yml`,
 `.dev-orchestra.json`.
 A command that writes to a `.json` file (`config set`, `reviewer add` and the

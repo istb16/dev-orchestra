@@ -509,9 +509,16 @@ def _seed_panel(
 
 
 def _container_and_config(args: argparse.Namespace) -> "tuple[str, str, config_mod.LoadedConfig]":
-    """The project root, its ``.ai/``, and the configuration they came from."""
-    root = ws.repo_root(getattr(args, "cwd", None) or os.getcwd())
-    loaded = config_mod.load(root, validate_result=False)
+    """The project root, its ``.ai/``, and the configuration they came from.
+
+    The configuration is read from the working directory, as every other
+    command reads it, not from ``root``: run from a subdirectory holding its
+    own project file, ``.ai/`` used to follow the root's file while the run
+    and its budgets followed the subdirectory's.
+    """
+    start = getattr(args, "cwd", None) or os.getcwd()
+    root = ws.repo_root(start)
+    loaded = config_mod.load(start, validate_result=False)
     return root, loaded.workspace_dir(root), loaded
 
 

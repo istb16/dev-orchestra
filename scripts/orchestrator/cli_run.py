@@ -1034,8 +1034,14 @@ def _detached_argv(args: argparse.Namespace, role: str, workflow: str) -> List[s
     otherwise, from the environment or the session, and its ledger, its run
     log and its own approval check then belong to a workflow the parent was
     never in.
+
+    ``--cwd`` is this process's directory. The worker starts in the
+    repository root, and the project file it found from there could be
+    another than the one this run found from a subdirectory: the detached
+    run then used a model the foreground one would not have.
     """
-    argv = ["--workflow", workflow, "run", role, "--force"]
+    start = getattr(args, "cwd", None) or os.getcwd()
+    argv = ["--cwd", start, "--workflow", workflow, "run", role, "--force"]
     if args.tier:
         # Left out, the worker ran the role's default model: a more expensive
         # run than the one asked for, recorded without the label a tier exists

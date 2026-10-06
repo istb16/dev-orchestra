@@ -78,6 +78,15 @@ below begins **User adapters** so adapter authors can find it.
 - **`config set language.reply no` saves the tag `no`** (Norwegian) rather
   than `false`. In a file, a bare `no` is still read as false and refused;
   the message now says to quote it (#281).
+### Changed
+
+- **Run from a subdirectory holding its own `.dev-orchestra.yaml`, every
+  command now reads that file.** `workspace.dir` used to be read from the
+  repository root's file while roles and budgets came from the
+  subdirectory's, and a `run --detach` worker, started in the root, ran the
+  model the root's file named rather than the one the foreground run would
+  have used. The worker is now given the parent's directory, and `.ai/` is
+  placed by the same file as everything else (#282).
 
 ## [0.22.0] - 2026-10-06
 
