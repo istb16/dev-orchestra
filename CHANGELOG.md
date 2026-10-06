@@ -30,6 +30,21 @@ below begins **User adapters** so adapter authors can find it.
   added is left in place. A link to another checkout or to nothing is now
   left in place too, with the command to remove it by hand, and a run from
   the checkout that is itself the destination stops and says so (#290).
+### Changed
+
+- **`workflow remove` refuses a workflow that is still in use** (exit 2):
+  one with a stage in flight, or one active in the last 15 minutes, perhaps
+  in another session. It used to delete it, and a detached worker finishing
+  afterwards wrote its state back, leaving a workflow with an empty record,
+  the job's files and empty `execution/` and `reviews/`. `--force` deletes it
+  anyway, for an in-flight mark a crashed stage left behind (#285).
+
+### Fixed
+
+- **A `workflow remove` stopped part way no longer ends on a traceback.** When
+  the delete fails -- on Windows, a file another process holds open -- it
+  exits 1, names the error and says how many files are left, so it can be run
+  again once they are closed (#285).
 
 ## [0.22.0] - 2026-10-06
 

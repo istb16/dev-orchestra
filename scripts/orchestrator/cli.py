@@ -802,6 +802,9 @@ def _add_workflow_parsers(subparsers: argparse._SubParsersAction[argparse.Argume
     workflow_remove = workflow_sub.add_parser("remove", help="delete one finished workflow's artifacts")
     workflow_remove.add_argument("id")
     workflow_remove.add_argument("--yes", action="store_true", help="do not ask")
+    workflow_remove.add_argument(
+        "--force", action="store_true", help="delete it even with a stage in flight or recent activity"
+    )
     workflow_remove.set_defaults(func=cmd_workflow_remove)
 
 

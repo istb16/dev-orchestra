@@ -1190,7 +1190,7 @@ still the only thing that deletes a workflow.
 | `workflow list [--json]` | Every workflow here, most recently active first, marking the current one and any stage in flight. |
 | `workflow show [--json]` | Which workflow this command is in, where its artifacts are, and which rule chose it. |
 | `workflow use <id>` | Remember an id for this directory (`current.json`). For hosts that export no session id; a host that does export one still wins. |
-| `workflow remove <id> --yes` | Delete one workflow's artifacts. Refuses without `--yes`, and refuses the workflow you are in. |
+| `workflow remove <id> --yes [--force]` | Delete one workflow's artifacts. Refuses without `--yes`, and refuses the workflow you are in. Also refuses (exit 2) a workflow with a stage in flight, or one active in the last 15 minutes -- perhaps in another session -- since a detached worker that finishes after the delete writes its state back into an otherwise empty workflow; `--force` deletes it anyway, for a mark a crashed stage left behind. A delete stopped part way, e.g. by a file another process holds open on Windows, exits 1 and says how many files are left. |
 
 ## state / summary
 

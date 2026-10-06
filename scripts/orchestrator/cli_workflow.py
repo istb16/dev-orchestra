@@ -157,9 +157,46 @@ def cmd_workflow_remove(args: argparse.Namespace) -> int:
     if workflow == current:
         _err("Refusing to delete the workflow this session is in (%s)" % workflow)
         return 2
-    shutil.rmtree(directory)
+    busy = _busy_reason(container, workflow, current)
+    if busy and not args.force:
+        # A detached worker that finishes after the delete writes its state
+        # back, and leaves a workflow with an empty record and no reports.
+        _err(
+            "Refusing to delete %s: %s. Wait for it to finish, or pass --force if nothing "
+            "runs there any more" % (workflow, busy)
+        )
+        return 2
+    try:
+        shutil.rmtree(directory)
+    except OSError as exc:
+        # On Windows a file another process holds open stops the delete part
+        # way through; say what is left rather than end on a traceback.
+        _err("Could not finish deleting %s: %s" % (directory, exc))
+        _err(_left_behind(directory))
+        return 1
     _out("Removed %s" % directory)
     return 0
+
+
+def _busy_reason(container: str, workflow: str, current: str) -> str:
+    """Why ``workflow`` looks like it is still in use, or "" when it does not."""
+    for entry in workflow_mod.listing(container):
+        if entry["workflow"] == workflow and entry["in_flight"]:
+            return "a stage is in flight there (%s)" % ", ".join(entry["in_flight"])
+    if workflow in workflow_mod.active_elsewhere(container, current):
+        return "it was active in the last 15 minutes, perhaps in another session"
+    return ""
+
+
+def _left_behind(directory: str) -> str:
+    """How far an interrupted delete got, counted from what is still there."""
+    if not os.path.isdir(directory):
+        return "%s is gone after all" % directory
+    left = sum(len(files) for _, _, files in os.walk(directory))
+    return "%d file(s) are left under %s; close whatever holds them and run `workflow remove` again" % (
+        left,
+        directory,
+    )
 
 
 #: What each ``refused_by`` means to somebody reading the final report, since
