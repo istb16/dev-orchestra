@@ -1,4 +1,4 @@
-<!-- translated-from: references/reviews.md sha256:71f448f955e065dd479247bc5f54281d829317163b561c0f3642a66d39b90aaa -->
+<!-- translated-from: references/reviews.md sha256:322c56022622336951452f2528cf1766659d0f116c88f921720ea88e883420bf -->
 
 > この文書は [references/reviews.md](../../../references/reviews.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -701,8 +701,9 @@ note: claude-architecture (when: relevance) left out: 1 directory, 3 file(s), no
 超えたレビュアーは stderr に報告されます。どの指摘を捨てるかを決めるのは
 トリアージであり、トリアージはプロンプトではなくオーケストレーターの仕事です。
 
-認識できる形式の指摘も `NO_FINDINGS` も返さなかったレビュアーは、ステータス
-`unparsed` として記録され、**failed** として数えられます。読めないレポートは
+認識できる形式の指摘も `NO_FINDINGS` も返さなかったレビュアーは（CLI が
+正常終了して何も出さなかった場合も含めて）、ステータス `unparsed` として記録され、
+**failed** として数えられます。読めないレポートは
 コードに問題がないことの証拠ではなく、それをそう扱うことは、レビューツールに
 とって最悪の失敗の仕方です。
 

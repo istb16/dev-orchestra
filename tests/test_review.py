@@ -765,6 +765,18 @@ class TestCoverageOfTheChangeBody(IsolatedCase):
         self.assertEqual(run.delivery, "file")
         self.assertIn("could not be parsed", run.error)
 
+    def test_an_empty_report_is_a_failed_reviewer_not_a_clean_one(self):
+        """A CLI that exits 0 having said nothing used to have its silence
+        written down as NO_FINDINGS and recorded ok (#261)."""
+        self.answers(" \n")
+        runs = review_mod.run_reviews([reviewer("r1")], self.workspace, review_mod.FanoutOptions())
+        run = runs[0]
+        self.assertEqual(run.status, "unparsed")
+        self.assertIn("report was empty", run.error)
+        self.assertEqual(review_mod.summarise_runs(runs), (0, 1, 0))
+        report = ws.read_text(self.workspace.reviewer_report_path("r1"))
+        self.assertNotIn("NO_FINDINGS", report)
+
     def test_an_inlined_round_is_recorded_exactly_as_before(self):
         run = self.run_one()
         self.assertEqual(run.status, "ok")

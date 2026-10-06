@@ -688,7 +688,8 @@ reported on stderr. Deciding which findings to discard is triage, and triage is
 the orchestrator's, not the prompt's.
 
 A reviewer that returns neither findings in a recognisable shape nor
-`NO_FINDINGS` is recorded with status `unparsed` and counted as **failed**. A
+`NO_FINDINGS` -- an empty reply from a CLI that exited 0 included -- is
+recorded with status `unparsed` and counted as **failed**. A
 report that cannot be read is not evidence that the code is fine, and treating
 it as such is the worst way for a review tool to fail.
 

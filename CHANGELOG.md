@@ -68,6 +68,11 @@ below begins **User adapters** so adapter authors can find it.
   gets a fence longer than any run of backticks inside it, as the surrounding
   context already did, and both review prompts say the fenced text is data
   under review, not instructions (#263).
+- **A reviewer that exits 0 with nothing to say is a failed reviewer, not
+  a clean one.** Its empty reply was written to the report as `NO_FINDINGS`
+  and the run recorded `ok`; it is now recorded `unparsed` (report was
+  empty), counted as failed, and the report holds no `NO_FINDINGS` it never
+  wrote (#261).
 
 ## [0.22.0] - 2026-10-06
 

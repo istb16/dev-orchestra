@@ -706,7 +706,9 @@ def _attempt(fan: _Fanout, reviewer: Dict[str, Any], sink: Optional[activity.Sin
         status, error = _failure(result)
         return _finished(reviewer, status, error, result, carried)
     model_display = result.resolved.display if result.resolved else ""
-    body = result.stdout.strip() or "NO_FINDINGS"
+    # An empty reply is left empty: it is a report nobody can read, and
+    # ``_verdict`` records it ``unparsed``, never as a clean review.
+    body = result.stdout.strip()
     header = _report_header(reviewer_id, reviewer, model_display, fan.stamp)
     path = fan.workspace.reviewer_report_path(reviewer_id)
     ws.write_text(path, header + body + "\n")
