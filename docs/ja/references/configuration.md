@@ -1,4 +1,4 @@
-<!-- translated-from: references/configuration.md sha256:6c064557f47ff42b00d0654b4f2a6708fe0ad0591c89a889a7786b1d7023fa1b -->
+<!-- translated-from: references/configuration.md sha256:d6d25d7709db542c733190e4fc8bfd41da2de28e5b1bd4fa0a6e12714acbfbed -->
 
 > この文書は [references/configuration.md](../../../references/configuration.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
