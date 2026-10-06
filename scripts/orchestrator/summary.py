@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Sequence, cast
+from typing import Any, Dict, List, Optional, Sequence, cast
 
 from . import config as config_mod
 from .optimization import WHEN_ALWAYS, condition_label, model_label, skip_unneeded_roles
@@ -74,9 +74,12 @@ def render_summary(
     data: Dict[str, Any],
     origins: Sequence[config_mod.ReviewerOrigin] = (),
     design_origins: Sequence[config_mod.ReviewerOrigin] = (),
+    loaded: Optional[config_mod.LoadedConfig] = None,
 ) -> str:
     """``origins``, parallel to the panel, marks each extra with the file it came from;
-    ``design_origins`` does the same for the design panel, when a file sets one."""
+    ``design_origins`` does the same for the design panel, when a file sets one.
+    ``loaded``, the configuration ``data`` was loaded as, adds where each
+    deadline was set; a preview has no files to name."""
     # lazy: config_policy loads the provider registry, which runs the user adapters;
     # summary must import without it
     from .config_policy import read_only_enforcement_warnings
@@ -117,6 +120,7 @@ def render_summary(
         lines.append("    (the code panel; when conditions ignored)  (review.design.reviewers)")
     else:
         lines.extend(_panel_lines(design, design_origins))
+    lines.extend(_deadline_lines(data, loaded))
     lines.append("  Reply language: %s  (language.reply)" % _reply_language(data))
     # With no origins (data never composed by ``load``), a design seat that
     # runs as its code seat is taken for a copy, as ``_reviewer_seats`` says.
@@ -124,6 +128,24 @@ def render_summary(
         lines.append("  Warning: %s" % warning)
     lines.append("")
     return "\n".join(lines)
+
+
+def _deadline_lines(data: Dict[str, Any], loaded: Optional[config_mod.LoadedConfig]) -> List[str]:
+    """Each role's run deadline, then the reviewers', with the layer that set each when it is known.
+
+    Shown because the two keys split: a reviewer's deadline no longer says
+    anything about a run's, and a cap somebody set on one is not on the other.
+    """
+    known = loaded if loaded is not None else config_mod.LoadedConfig(data, None, None, False)
+    lines = ["  Deadlines"]
+    for key, title in ROLE_TITLES:
+        deadline = config_mod.run_timeout(known, key)
+        source = " (%s)" % deadline.source if loaded is not None else ""
+        lines.append("    %s: %ds%s  (run.timeout_seconds.%s)" % (title, deadline.seconds, source, key))
+    review = config_mod.review_timeout(known)
+    source = " (%s)" % review.source if loaded is not None else ""
+    lines.append("    Reviewers: %ds%s  (review.timeout_seconds)" % (review.seconds, source))
+    return lines
 
 
 def _skip_unneeded_roles(data: Dict[str, Any]) -> bool:

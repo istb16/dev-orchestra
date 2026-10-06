@@ -702,6 +702,17 @@ class TestCodeRoundPinning(_Pinning, MeasuringCase):
             self.code_run()
         self.assertEqual(captured["arguments"]["idle_timeout"], 42)
 
+    def test_review_batch_deadline_ignores_run_timeout(self):
+        """``run.timeout_seconds`` is the deadline of a `run`; a review round keeps its own (#258)."""
+        self.snapshot()
+        run_cli("config", "set", "review.timeout_seconds", "900")
+        for role in config_mod.KNOWN_ROLES:
+            run_cli("config", "set", "run.timeout_seconds.%s" % role, "60")
+        with self.capture_run_reviews() as captured:
+            self.code_run()
+        self.assertEqual(captured["arguments"]["timeout"], 900)
+        self.assertEqual(captured["in_flight"]["deadline_seconds"], 900)
+
     def conditional_panel(self, level):
         """Two specialists and a conditional generalist.
 

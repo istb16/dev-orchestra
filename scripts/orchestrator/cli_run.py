@@ -210,6 +210,8 @@ class _Run(NamedTuple):
     book: ledger_mod.Ledger
     timeout: int
     idle_timeout: Optional[float]
+    #: Where ``timeout`` came from, as the kill message names it.
+    timeout_origin: str
 
 
 class _Attempt(NamedTuple):
@@ -273,7 +275,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         if refusal is not None:
             return refusal
     settings = loaded.review_settings()
-    timeout = args.timeout or int(settings.get("timeout_seconds", 1800))
+    timeout, timeout_origin = _deadline(args, loaded, seat)
     idle_timeout = args.idle_timeout
     if idle_timeout is None:
         idle_timeout = settings.get("idle_timeout_seconds")
@@ -295,7 +297,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     # process and survives it dying. The record is kept: whether the user
     # forced this run is in it, and the worker's own --force says nothing.
     job = jobs_mod.claim(args.job_file) if args.job_file else None
-    run = _Run(args, seat, provider, workspace, book, timeout, idle_timeout)
+    run = _Run(args, seat, provider, workspace, book, timeout, idle_timeout, timeout_origin)
     # Every run a worker makes reports its tool uses beside the job, the fresh
     # retry after a rejected resume included, so `n` carries on. Installed for
     # this call only: a worker run in-process, as the tests do, must not leave
@@ -354,6 +356,30 @@ def _resolve_seat(args: argparse.Namespace, loaded: config_mod.LoadedConfig) -> 
     else:
         label = role
     return _Seat(role, tier, reviewer_index, spec, mode, provider_name, label)
+
+
+def _deadline(args: argparse.Namespace, loaded: config_mod.LoadedConfig, seat: _Seat) -> Tuple[int, str]:
+    """The run's total deadline in seconds, and where it came from.
+
+    ``--timeout`` first; then ``run.timeout_seconds.<role>`` for a role, or
+    ``review.timeout_seconds`` for a reviewer, as ``review run`` reads it. A
+    detached worker comes back here, so parent and worker agree.
+    """
+    if args.timeout:
+        return args.timeout, "--timeout"
+    if seat.reviewer_index is not None:
+        review = config_mod.review_timeout(loaded)
+        return review.seconds, "review.timeout_seconds, %s" % review.source
+    deadline = config_mod.run_timeout(loaded, seat.role)
+    return deadline.seconds, "run.timeout_seconds.%s, %s" % (seat.role, deadline.source)
+
+
+def _timeout_message(role: str, seconds: int, origin: str) -> str:
+    """What stderr says about a run killed at its deadline: the number, and the key that raises it."""
+    if origin == "--timeout":
+        return "%s hit its %ss deadline (--timeout) and was killed." % (role, seconds)
+    message = "%s hit its %ss deadline (%s) and was killed; --timeout raises it for one run."
+    return message % (role, seconds, origin)
 
 
 def _mode_refusal(args: argparse.Namespace, seat: _Seat) -> Optional[str]:
@@ -742,7 +768,7 @@ def _report_outcome(run: _Run, attempt: _Attempt, warned_before: str) -> int:
             % (role, result.idle_for)
         )
     elif result.timed_out:
-        _err("%s hit its %ss deadline and was killed." % (role, run.timeout))
+        _err(_timeout_message(role, run.timeout, run.timeout_origin))
     elif not result.ok:
         _err("%s failed (exit %s): %s" % (role, result.exit_code, result.stderr.strip()[:500]))
     elif answered_nothing:

@@ -668,6 +668,58 @@ class TestDetachedRun(IsolatedCase):
         self.assertIn("no such job", err)
 
 
+class TestDetachedDeadline(IsolatedCase):
+    """The deadline a detached `run` records, by role (#258); no worker is started."""
+
+    def setUp(self):
+        super().setUp()
+        from test_cli import run_cli
+
+        self.run_cli = run_cli
+        run_cli("config", "setup", "--defaults")
+        for role in ("architect", "implementer"):
+            run_cli("config", "set", "%s.provider" % role, "mock")
+        run_cli("reviewer", "add", "--provider", "mock", "--id", "m1", "--role", "general")
+
+    def recorded(self, *argv):
+        with spawning(_Spawned):
+            code, out, err = self.run_cli("run", *argv, "--prompt", "go", "--detach", "--json")
+        self.assertEqual(code, 0, err)
+        job = json.loads(out)
+        on_disk = ws.read_json(jobs_mod.job_path(self.cli_workspace(), job["id"]))
+        self.assertEqual(on_disk["timeout_seconds"], job["timeout_seconds"])
+        return job
+
+    def test_detached_implementer_records_3600_by_default(self):
+        job = self.recorded("implementer")
+        self.assertEqual(job["timeout_seconds"], 3600)
+        # The worker works it out again from the same key, not from a flag.
+        self.assertNotIn("--timeout", job["command"])
+        self.assertEqual(self.recorded("architect")["timeout_seconds"], 1800)
+
+    def test_run_timeout_key_sets_job_deadline(self):
+        self.run_cli("config", "set", "run.timeout_seconds.architect", "900")
+        self.assertEqual(self.recorded("architect")["timeout_seconds"], 900)
+        self.assertEqual(self.recorded("implementer")["timeout_seconds"], 3600)
+
+    def test_timeout_flag_overrides_key(self):
+        self.run_cli("config", "set", "run.timeout_seconds.implementer", "5000")
+        job = self.recorded("implementer", "--timeout", "120")
+        self.assertEqual(job["timeout_seconds"], 120)
+        self.assertIn("--timeout", job["command"])
+
+    def test_run_reviewer_id_keeps_review_timeout(self):
+        self.run_cli("config", "set", "review.timeout_seconds", "700")
+        self.run_cli("config", "set", "run.timeout_seconds.implementer", "5000")
+        self.assertEqual(self.recorded("m1")["timeout_seconds"], 700)
+
+    def test_review_timeout_no_longer_bounds_run(self):
+        self.run_cli("config", "set", "review.timeout_seconds", "900")
+        self.assertEqual(self.recorded("implementer")["timeout_seconds"], 3600)
+        self.assertEqual(self.recorded("architect")["timeout_seconds"], 1800)
+        self.assertEqual(self.recorded("m1")["timeout_seconds"], 900)
+
+
 class TestDetachedRuntimeCharges(IsolatedCase):
     """What a worker in another process may charge the ledger it shares.
 

@@ -155,7 +155,7 @@ def cmd_config_show(args: argparse.Namespace) -> int:
     if scoped:
         _out(_render_layer(path, data, exists))
     else:
-        summary = render_summary(data, loaded.reviewer_origins, loaded.design_reviewer_origins)
+        summary = render_summary(data, loaded.reviewer_origins, loaded.design_reviewer_origins, loaded)
         _out(summary if "orchestrator" in data else "(empty layer)")
     if referenced:
         _out("Providers: %s" % ", ".join(_describe_referenced_provider(name) for name in referenced))
@@ -350,7 +350,7 @@ def cmd_config_reset(args: argparse.Namespace) -> int:
     except config_mod.ConfigError as exc:
         _err(str(exc))  # the other layer does not parse; the reset itself is done
         return 0
-    _out(render_summary(loaded.data, loaded.reviewer_origins, loaded.design_reviewer_origins))
+    _out(render_summary(loaded.data, loaded.reviewer_origins, loaded.design_reviewer_origins, loaded))
     for note in loaded.preset_notes:
         _out("note: %s" % note)
     return 0

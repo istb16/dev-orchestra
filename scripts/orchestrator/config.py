@@ -55,6 +55,16 @@ READ_ONLY_ROLES = ("orchestrator", "architect")
 #: The write roles, which ``project_write_refusals`` looks at.
 WRITE_ROLES = tuple(role for role in KNOWN_ROLES if role not in READ_ONLY_ROLES)
 
+#: The total deadline of one ``run`` of each role, in seconds. The implementer
+#: gets an hour: measured implementer runs went past half an hour, and one was
+#: killed at 1800. Reviewers are bounded by ``review.timeout_seconds`` instead.
+RUN_TIMEOUT_DEFAULTS = {
+    "orchestrator": 1800,
+    "architect": 1800,
+    "implementer": 3600,
+    "review_fixer": 1800,
+}
+
 _MISSING = object()
 
 #: Tier names are typed on a command line and read in a report, so they are
@@ -171,14 +181,20 @@ def default_config() -> Dict[str, Any]:
                 "role": "test",
             },
         ],
+        # The total deadline of one `run`, per role. Top-level rather than in
+        # the role's block: a preset owns those blocks whole, and a deadline is
+        # not what a preset chooses.
+        "run": {"timeout_seconds": dict(RUN_TIMEOUT_DEFAULTS)},
         "review": {
             "max_review_iterations": 2,
             "parallel": True,
             "re_review_severities": ["critical", "high"],
+            # Reviewers only: `review run` and `run <reviewer-id>`.
             "timeout_seconds": 1800,
             # A wedged agent stops producing output while a slow one keeps
             # ticking, so this catches a stall in minutes instead of half an
             # hour -- but only for providers that stream progress at all.
+            # Shared with `run`: silence does not grow with the task.
             "idle_timeout_seconds": 300,
             # Generated and vendored files whose diff body is withheld from
             # reviewers. A list replaces this wholesale, so [] reviews
@@ -1039,6 +1055,44 @@ class LoadedConfig:
         return value
 
 
+class RunTimeout(NamedTuple):
+    """The total deadline of one ``run`` of a role, and where it was set."""
+
+    seconds: int
+    #: ``project``, ``global`` or ``default``.
+    source: str
+
+
+def run_timeout(loaded: LoadedConfig, role: str) -> RunTimeout:
+    """``run.timeout_seconds.<role>``, from the project file, else the global one, else the default.
+
+    A value ``validate`` would refuse reads as the default: ``config show``
+    loads unvalidated, and must not report a deadline no run would get. A
+    null in a file merges to the default, and reads as one.
+    """
+    return _timeout_at(loaded, ["run", "timeout_seconds", role], RUN_TIMEOUT_DEFAULTS[role])
+
+
+def review_timeout(loaded: LoadedConfig) -> RunTimeout:
+    """``review.timeout_seconds``: the deadline of a review round, and of ``run <reviewer>``.
+
+    Read the way ``run_timeout`` reads a role's, so a value ``validate``
+    would refuse -- or a ``review`` that is not a mapping -- reads as the
+    default rather than reaching a deadline or a summary line.
+    """
+    return _timeout_at(loaded, ["review", "timeout_seconds"], default_config()["review"]["timeout_seconds"])
+
+
+def _timeout_at(loaded: LoadedConfig, key: List[str], fallback: int) -> RunTimeout:
+    value = _get_parts(loaded.data, key, None)
+    if not _int_at_least(value, 1):
+        return RunTimeout(fallback, "default")
+    for name, layer in (("project", loaded.project_layer), ("global", loaded.global_layer)):
+        if _get_parts(layer, key, None) is not None:
+            return RunTimeout(value, name)
+    return RunTimeout(value, "default")
+
+
 #: Settings whose value is a matter of taste rather than a recommendation, so
 #: a difference from the default says nothing worth reporting.
 _TASTE = ("version", "reviewers", "workspace", "language")
@@ -1364,6 +1418,7 @@ def validate(
     problems.extend(_validate_reviewers(data, providers, origins, global_layer, project_layer))
     problems.extend(_validate_design_panel(data, providers, design_origins, global_layer, project_layer))
     for key, check in (
+        ("run", _validate_run),
         ("review", _validate_review),
         ("design", _validate_design),
         ("optimization", _validate_optimization),
@@ -1493,6 +1548,23 @@ def _validate_design_panel(
     for name, layer in (("global", global_layer), ("project", project_layer)):
         if layer:
             problems.extend(_validate_extras_file(layer, name, providers, DESIGN_PANEL))
+    return problems
+
+
+def _validate_run(run: Any) -> List[str]:
+    if not isinstance(run, dict):
+        return ["run: must be a mapping"]
+    timeouts = run.get("timeout_seconds", {})
+    if not isinstance(timeouts, dict):
+        return ["run.timeout_seconds: must be a mapping of role to seconds"]
+    problems: List[str] = []
+    for role, value in timeouts.items():
+        if role not in KNOWN_ROLES:
+            problems.append(
+                "run.timeout_seconds.%s: unknown role (known: %s)" % (role, ", ".join(KNOWN_ROLES))
+            )
+        elif not _int_at_least(value, 1):
+            problems.append("run.timeout_seconds.%s: must be a positive integer" % role)
     return problems
 
 

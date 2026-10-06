@@ -1,4 +1,4 @@
-<!-- translated-from: references/cli.md sha256:6427bcba1dd5720e8435368cf9733fde96b9f19ceef3aa16f37f089f6ff7a1f0 -->
+<!-- translated-from: references/cli.md sha256:268b3b5956db97438b9a3d2e1530940a47056deee4f722d36329684453a6ff44 -->
 
 > この文書は [references/cli.md](../../../references/cli.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -305,7 +305,12 @@ agy の stdout の行は、短く切って最大 20 行まで実行の stderr �
 示します。以前は読み込めない `--prompt-file` が空のプロンプトとして読まれ、それが委譲され、provider CLI
 が自分の stdin について文句を言う応答が返っていました。
 
-`--timeout` は全体の期限です。`--idle-timeout` は *出力がない* 状態の期限です。固まったエージェントは
+`--timeout` は全体の期限です。指定しなければ、ロールの実行は `run.timeout_seconds.<role>`
+（implementer は 3600、ほかは 1800）を、`run <reviewer-id>` は `review run` と同じく
+`review.timeout_seconds`（1800）を使います。期限で止められた実行は、どちらに当たったかと、
+それがどこで設定されたかを伝えます。`config show` は、すべての期限を設定したファイルとともに並べます。
+`--idle-timeout` は *出力がない* 状態の期限です（指定しなければ、どの実行でも
+`review.idle_timeout_seconds`）。固まったエージェントは
 静かになり、遅いだけのエージェントは出力を続けるので、これを使えば stall を全体の期限ではなく数分で
 検出できます。これが適用されるのは Claude だけです。Codex と agy の adapter は進捗のストリームを
 主張せず（agy はツールの動きを報告しますが、モデルが考えている間は黙ります。`references/providers.md` を
@@ -1121,6 +1126,7 @@ stderr に一度だけ知らせます。実行中のステージがあるワー�
 | レビュアーが 1 人失敗した | 想定内で、処理は続きます。理由はワークフローの `reviews/consolidated.md` にあります。 |
 | implementer がテストを実行できない | `acceptEdits` が自動承認するのは編集で、シェルコマンドではありません。プロジェクト自身の CLI 設定でそのコマンドを許可リストに入れるか、`implementer.options.permission_mode` を設定してください。 |
 | 明らかに同じ finding が 2 件ある | 自動統合は意図的に保守的です。「Possible duplicates」の一覧を確認し、片方を `duplicate` としてトリアージしてください。 |
-| レビューが終わらない | `review.timeout_seconds` を下げるか、`--sequential` でどのレビュアーが止まっているかを確かめてください。 |
+| レビューが終わらない | `review.timeout_seconds` を下げるか、`--sequential` でどのレビュアーが止まっているかを確かめてください。`review.timeout_seconds` が効くのはレビュアーだけです。ロールの `run` には `run.timeout_seconds.<role>` があります。 |
+| `… hit its Ns deadline (run.timeout_seconds.<role>, …) and was killed` | 実行がロールの期限より長くかかりました。1 回だけなら `--timeout` で、ずっとなら `config set run.timeout_seconds.<role> N` で引き上げてください。 |
 | 設定のパースエラー | 内蔵の YAML パーサは anchor、alias、ブロックスカラーを拒否します。簡素にするか、PyYAML を入れてください。 |
 | `—` が `\u2014` と表示される | コンソールがその文字を表現できません（日本語 Windows の cp932 など）。落としたり止まったりせず、エスケープして表示します。`chcp 65001` か `PYTHONIOENCODING=utf-8` で正しく表示されます。 |

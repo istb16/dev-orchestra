@@ -1,4 +1,4 @@
-<!-- translated-from: references/configuration.md sha256:b5d916744364933084c8ad123e60403199ae64b50741ab66a3c6d570891aceb5 -->
+<!-- translated-from: references/configuration.md sha256:7228991c62d950a029cfb41b58de22225b6cf92af5c9e5900f1bc3a1a7b6d6ce -->
 
 > この文書は [references/configuration.md](../../../references/configuration.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -574,11 +574,19 @@ reviewers:                    # 0..n independent reviewers; two or more recommen
       version: latest
     role: test
 
+run:
+  timeout_seconds:                    # total deadline of one `run`, per role
+    orchestrator: 1800
+    architect: 1800
+    implementer: 3600                 # implementers measured past 30 min
+    review_fixer: 1800
+
 review:
   max_review_iterations: 2            # hard stop on review→fix→re-review loops
   parallel: true                      # run reviewers concurrently
   re_review_severities: [critical, high]
-  timeout_seconds: 1800               # per delegated CLI run
+  timeout_seconds: 1800               # reviewers only: `review run` and `run <reviewer-id>`
+  idle_timeout_seconds: 300           # no output for this long: wedged; `run` too
   design:
     enabled: auto                     # review .ai/plan.md before implementing (true, false or auto)
     max_iterations: 2                 # design review -> revise -> re-review
@@ -623,7 +631,9 @@ language:
 | `review.max_review_iterations` | int ≥ 0 | プロジェクト単位ではなくレビュー単位のラウンド数です。新しいブランチ、新しい `--base`、または `budget reset` でカウントはリセットされます。`0` で再レビューを完全に無効にします。 |
 | `review.parallel` | bool | `false` にするとレビュアーを 1 つずつ実行します（デバッグしやすくなります）。 |
 | `review.re_review_severities` | list | ブロッキングとみなす severity。 |
-| `review.timeout_seconds` | int > 0 | 実行ごとのタイムアウト。タイムアウトは報告されるだけで、例外にはなりません。 |
+| `run.timeout_seconds.<role>` | int > 0 | `orchestrator`、`architect`、`implementer`、`review_fixer` の `run` 1 回の合計の締め切り（デフォルトは implementer が 3600、ほかは 1800）。`--timeout` で 1 回だけ上書きできます。ほかのキーは拒否されます。ロールのブロックの外にあるので、設定してもそのロールはプリセットのフィットから外れず、`config setup --preset` もこれを残します。この締め切りで止められた実行は、キーの名前を挙げてそう伝えます。 |
+| `review.timeout_seconds` | int > 0 | 各レビュアーの合計の締め切り。`review run` のラウンドのレビュアーと `run <reviewer-id>` に効きます（デフォルト 1800）。ロールの `run` にはもう効きません。そちらは `run.timeout_seconds.<role>` です。タイムアウトは報告されるだけで、例外にはなりません。 |
+| `review.idle_timeout_seconds` | int > 0 \| null | この時間出力がなければ、実行は固まったものとして扱われます（デフォルト 300。ストリーミングする provider のみ）。レビュアーとすべてのロールの `run` で共通です。沈黙の長さはタスクの大きさでは伸びないからです。ロールごとには `options.idle_timeout` で上書きできます。 |
 | `review.exclude` | list | diff 本文をレビュアーに渡さない glob パターン。デフォルトのリストを丸ごと置き換えます。`[]` ですべてをレビューします。 |
 | `review.incremental_rounds` | bool | `true`（デフォルト）にすると、2 回目のラウンドは 1 回目のラウンドがレビューした内容に対する diff になり、修正が対処しようとした指摘を引き継ぎます。`false` にすると毎ラウンド変更全体の diff を取り直します。 |
 | `review.max_findings` | int \| null | 各レビュアーに求める指摘の数。`null`（デフォルト）は `optimization.level` に任せ、`0` は上限を外します。上限を超えて返ってきた指摘は保持され、切り捨てられることはありません。 |

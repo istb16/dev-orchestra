@@ -1,4 +1,4 @@
-<!-- translated-from: references/limits.md sha256:44bfca770062b1eba64cc7918ff527a772cebe58489bd76c00298eeac913ae3b -->
+<!-- translated-from: references/limits.md sha256:77fe7416d91d9355daaebbb41b3148212440e84b6cfb5345e9814643b9dea44c -->
 
 > この文書は [references/limits.md](../../../references/limits.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -75,8 +75,14 @@
 
 | 期限 | 設定 | 意味 |
 | --- | --- | --- |
-| 合計 | `review.timeout_seconds` (1800) | 委譲した 1 回の実行の上限 |
-| アイドル | `review.idle_timeout_seconds` (300) | この時間出力がない → 固まった |
+| 合計、`run` | `run.timeout_seconds.<role>`（implementer 3600、ほか 1800） | ロールの `run` 1 回の上限 |
+| 合計、レビュー | `review.timeout_seconds` (1800) | 各レビュアーの上限: `review run` と `run <reviewer-id>` |
+| アイドル | `review.idle_timeout_seconds` (300) | この時間出力がない → 固まった。`run` とレビューで共通 |
+
+`--timeout` は 1 回の呼び出しに限ってどちらの合計も置き換えます。implementer に
+1 時間あるのは、計測した implementer の実行が 30 分を超え、1 回は 1800s で
+止められたからです。アイドル期限は共通のままです。これは沈黙を測るもので、
+沈黙の長さはタスクの大きさでは伸びません。
 
 役に立つのはアイドル期限の方です。動いているエージェントは出力を出し続け、
 固まったエージェントは沈黙するので、stall が 30 分ではなく数分で表面化します。
@@ -487,7 +493,8 @@ stall した実行は、いずれも費やした分を費やしており、す�
 **ワークフローが上限をどこまで超え得るか。** 拒否は実行の開始前に起こり、実行中に
 起こることはなく、実行中の作業は数えられません — したがって超過分は、最後の
 チェックを通過した後に始まったすべてです。`D` をエントリーに記録された期限
-（`--timeout`、または上限のない `review.timeout_seconds`）、`G` を kill の猶予と
+（`--timeout`、なければ実行には `run.timeout_seconds.<role>`、レビュアーには
+`review.timeout_seconds`。どちらも上限はありません）、`G` を kill の猶予と
 出力の読み出し（`KILL_GRACE_SECONDS` の 5s に少し足したもの）とすると、次の
 ようになります。
 
@@ -498,7 +505,7 @@ overshoot ≤ Σ over in-flight runs (D + G)  +  Σ over in-flight review batche
 `N` はバッチに*受け入れられた*すべてのレビュアーで、まだ待機中のものも含みます。
 パネルは同時に最大 8 つまで実行し、バッチ内には予算チェックがないため、2 回目の
 波に入った 9 人目のレビュアーも期限まで実行されます。ステージを 1 つずつ進める
-場合、これは 1 回の実行（≤ 1805s）または 2 レビュアーのラウンド 1 回
+場合、これは 1 回の実行（≤ 1805s、implementer なら ≤ 3605s）または 2 レビュアーのラウンド 1 回
 （≤ 3610s）です。デタッチしたワーカーを重ねると、それぞれ項が 1 つ増えます。
 
 これが計測に基づく予算になる前に書かれた台帳は、ゼロから始まります。その台帳が

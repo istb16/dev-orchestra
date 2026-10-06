@@ -257,8 +257,8 @@ Antigravity は `./install/uninstall.sh --antigravity`（Windows は `-Antigravi
 1.0.0 から[セマンティックバージョニング](https://semver.org/lang/ja/)に従います。約束の対象に
 挙げたものを壊す変更はメジャー、追加はマイナー、修正はパッチです。対応が必要な変更は `CHANGELOG.md`
 （[Keep a Changelog](https://keepachangelog.com/ja/1.1.0/)）に明記します。1.0.0 より前はマイナー
-リリースでもこれらを壊すことがありました。0.4.0 より前の `.ai/` の取り込みの廃止（CHANGELOG の
-Removed）を、その最後にするつもりです。
+リリースでもこれらを壊すことがあり、そのときは `CHANGELOG.md` の Changed に、何をすればよいかと
+ともにそう書きます。`review.timeout_seconds` をレビュアーだけに狭めたリリースがそうしたようにです。
 
 約束の対象:
 

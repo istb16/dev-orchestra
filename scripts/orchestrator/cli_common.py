@@ -578,7 +578,7 @@ def _first_run_summary(loaded: config_mod.LoadedConfig) -> None:
     Nothing is saved and nothing is asked: these commands run under an agent
     with no terminal. The choice belongs to ``config setup``.
     """
-    _err(render_summary(loaded.data))
+    _err(render_summary(loaded.data, loaded=loaded))
     for note in loaded.preset_notes:
         _err("note: %s" % note)
     _err(
