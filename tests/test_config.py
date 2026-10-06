@@ -337,6 +337,15 @@ class TestLayering(IsolatedCase):
         self.assertIsNone(config_mod.find_project_config(nested))
         self.write(".dev-orchestra.yaml", "version: 1\n")
         self.assertEqual(os.path.dirname(present(config_mod.find_project_config(nested))), self.project)
+        # The same walk names the repository root, which the plugin hooks use.
+        self.assertEqual(config_mod.repository_root(nested), self.project)
+
+    def test_repository_root_is_none_outside_a_repository(self):
+        nested = os.path.join(self.project, "src")
+        os.makedirs(nested)
+        found = config_mod.repository_root(nested)
+        # The temporary directory may itself sit inside a checkout; never below it.
+        self.assertTrue(found is None or not found.startswith(self.project), found)
 
     def test_search_stops_at_a_dangling_git_symlink(self):
         """Even a `.git` link that points nowhere marks the root."""
@@ -1122,6 +1131,90 @@ class TestPathEditing(IsolatedCase):
         self.assertIs(config_mod.coerce_scalar("true"), True)
         self.assertEqual(config_mod.coerce_scalar("opus"), "opus")
         self.assertEqual(config_mod.coerce_scalar("[a, b]"), ["a", "b"])
+
+
+class TestLanguage(IsolatedCase):
+    """``language.reply`` and ``language.rewrite`` (#254)."""
+
+    def run_cli(self, *argv):
+        import io
+        from contextlib import redirect_stderr, redirect_stdout
+
+        from orchestrator import cli
+
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            code = cli.main(list(argv))
+        return code, out.getvalue(), err.getvalue()
+
+    def problems(self, language):
+        data = config_mod.default_config()
+        data["language"] = language
+        return config_mod.validate(data)
+
+    def test_language_validation(self):
+        for tag in ("ja", "JA", "zh-TW", "zh-Hant-TW", "ko", "en", "en-GB", "sr-Latn", "tlh", None):
+            self.assertEqual(self.problems({"reply": tag}), [], tag)
+        for tag in ("japanese", "j", "日本語", "ja_JP", "ja-", "-ja", "", 1, True, ["ja"]):
+            self.assertEqual(
+                self.problems({"reply": tag}),
+                ["language.reply: must be a language tag such as ja, zh-TW, ko or en, or null"],
+                tag,
+            )
+        for rewrite in (True, False, None):
+            self.assertEqual(self.problems({"reply": "ja", "rewrite": rewrite}), [], rewrite)
+        for rewrite in ("false", 0, 1, "no"):
+            self.assertEqual(
+                self.problems({"rewrite": rewrite}), ["language.rewrite: must be true or false"], rewrite
+            )
+        self.assertEqual(self.problems("ja"), ["language: must be a mapping"])
+        self.assertEqual(self.problems(None), [])
+
+    def test_language_settings_fill_in_and_normalise(self):
+        settings = config_mod.language_settings_of
+        self.assertEqual(settings({}), {"reply": None, "rewrite": True})
+        self.assertEqual(settings({"language": None}), {"reply": None, "rewrite": True})
+        self.assertEqual(settings({"language": {"reply": "JA"}}), {"reply": "ja", "rewrite": True})
+        self.assertEqual(settings({"language": {"reply": "ZH-TW"}})["reply"], "zh-TW")
+        self.assertEqual(settings({"language": {"reply": "japanese"}})["reply"], None)
+        self.assertEqual(settings({"language": {"reply": "ko", "rewrite": None}})["rewrite"], True)
+        self.assertEqual(settings({"language": {"reply": "ko", "rewrite": False}})["rewrite"], False)
+        # Only an explicit false turns the check off; an invalid value does not.
+        self.assertEqual(settings({"language": {"rewrite": "false"}})["rewrite"], True)
+        self.assertEqual(config_mod.load(self.project).language_settings(), {"reply": None, "rewrite": True})
+
+    def test_language_not_reported_as_pinned(self):
+        data = config_mod.default_config()
+        data["language"] = {"reply": "ja", "rewrite": False}
+        self.assertEqual(config_mod.pinned_differences(data), [])
+
+    def test_config_set_language_reply(self):
+        code, _, err = self.run_cli("config", "set", "language.reply", "ko")
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("language", err)
+        self.assertEqual(config_mod.load(self.project).language_settings()["reply"], "ko")
+        code, _, err = self.run_cli("config", "set", "language.reply", "korean")
+        self.assertEqual(code, 0)
+        self.assertIn("warning: language.reply: must be a language tag", err)
+        code, _, err = self.run_cli("config", "set", "language.reply", "null")
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("language", err)
+        self.assertIsNone(config_mod.load(self.project).language_settings()["reply"])
+
+    def test_a_project_null_undoes_a_global_reply_language(self):
+        code, _, err = self.run_cli("config", "set", "language.reply", "ja", "--scope", "global")
+        self.assertEqual(code, 0, err)
+        code, _, err = self.run_cli("config", "set", "language.reply", "null", "--scope", "project")
+        self.assertEqual(code, 0, err)
+        loaded = config_mod.load(self.project)
+        self.assertIsNone(loaded.language_settings()["reply"])
+        self.assertEqual(loaded.layer_of("language.reply"), "project")
+        # Only that key: any other null still keeps the value below.
+        merged = config_mod.deep_merge(
+            {"language": {"reply": "ja", "rewrite": False}, "workspace": {"dir": "w"}},
+            {"language": {"reply": None, "rewrite": None}, "workspace": {"dir": None}},
+        )
+        self.assertEqual(merged, {"language": {"reply": None, "rewrite": False}, "workspace": {"dir": "w"}})
 
 
 class TestPruneLayer(IsolatedCase):

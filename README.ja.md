@@ -180,6 +180,12 @@ dev-orchestra run orchestrator --prompt-file .ai/analysis-request.md --output .a
 `dev-orchestra config show` で結果を表示し、`config set` で値を1つ変更します。スキーマ、全フィールド、
 設定例は [設定](docs/ja/references/configuration.md)（[英語版](references/configuration.md)）にあります。
 
+`dev-orchestra config set language.reply ja`（`ko`、`zh-TW`、`es`、`fr` など、任意の言語タグ）で、
+オーケストレーターが答える言語を固定できます。Claude Code ではプラグインのフックが、プロンプトのたびに
+その言語を思い出させ、明らかに別の言語で書かれた返答を一度だけ書き直させます。ほかのホストでは
+`doctor` がこの設定をスキルに伝えます。何を判定し、どこまでできるかは
+[プラグインのフック](docs/ja/references/architecture.md#plugin-hooks) にあります。
+
 ## モデル選択
 
 ロールには family と `version: latest`（または正確なIDを指定した `pinned`）を保存し、実行のたびに
@@ -268,6 +274,10 @@ Removed）を、その最後にするつもりです。
   対象外です。
 - **built-in のアダプタがすること**（claude、codex、agy、mock）: モード、読み取り専用の強制、
   再開、実行が記録するもの。各 CLI に渡すフラグは対象外です。
+- **プラグインのフックがすること**（[プラグインのフック](docs/ja/references/architecture.md#plugin-hooks)）:
+  `language.reply` が設定されているときだけ、dev-orchestra を使ったセッションでだけ動き、
+  委譲した実行の中では動かないこと。1 つの返答をブロックするのは多くても 1 回であること。
+  どんなエラーでも何も出力せずに終わること。しきい値、判定の前に取り除くもの、理由の文面は対象外です。
 - **必要な Python の最低バージョンと対応プラットフォーム**: 引き上げたり外したりするのは
   メジャーバージョンです。
 
@@ -285,6 +295,8 @@ Removed）を、その最後にするつもりです。
 - **`skills/dev-orchestra/SKILL.md` の文面**とプロンプトのテンプレート。それらが実行する
   コマンドは上のとおり対象です。
 - **`DEV_ORCHESTRA_MOCK_*`** と `DEV_ORCHESTRA_TEST_ASSUME_NO_CLI`。テスト用の仕組みです。
+- **`DEV_ORCHESTRA_DELEGATED`**。provider が起動するプロセスに付けて、プラグインのフックを委譲した
+  実行から外すための内部の仕組みです。
 
 ## アーキテクチャ
 

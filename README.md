@@ -190,6 +190,13 @@ Precedence is **project → global → built-in defaults**:
 prints the result; `config set` changes one value. The schema, every field and
 worked examples: [configuration](references/configuration.md).
 
+`dev-orchestra config set language.reply ja` (or `ko`, `zh-TW`, `es`, `fr`, any
+language tag) fixes the language the orchestrator answers in. In Claude Code
+the plugin's hooks then remind it before each prompt and ask once for a reply
+clearly in another language to be written again; elsewhere `doctor` passes the
+setting on to the skill. What is checked and its limits:
+[Plugin hooks](references/architecture.md#plugin-hooks).
+
 ## Model selection
 
 A role stores a family and `version: latest` (or `pinned` with an exact id),
@@ -288,6 +295,11 @@ Covered:
 - **What the built-in adapters do** (claude, codex, agy, mock): the modes, the
   read-only enforcement, resuming, what a run records. The flags they pass to
   their CLIs are not.
+- **What the plugin's hooks do** ([Plugin hooks](references/architecture.md#plugin-hooks)):
+  they act only with `language.reply` set, only in a session that used
+  dev-orchestra and never in a run it delegated; they block a reply at most
+  once; and they fail open, printing nothing on any error. Their thresholds,
+  what they strip before judging and the wording of the reason are not.
 - **The minimum Python version and the supported platforms**: raising or
   dropping one is a major version.
 
@@ -309,6 +321,8 @@ Not covered, and may change in a minor version:
   The commands they invoke are covered above.
 - **`DEV_ORCHESTRA_MOCK_*`** and `DEV_ORCHESTRA_TEST_ASSUME_NO_CLI`, which are
   test instruments.
+- **`DEV_ORCHESTRA_DELEGATED`**, which the providers set on the processes they
+  start so the plugin's hooks stay out of delegated runs: internal.
 
 ## Architecture
 

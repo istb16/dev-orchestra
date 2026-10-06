@@ -30,6 +30,11 @@ CODEX_PLUGIN = ".codex-plugin/plugin.json"
 CODEX_MARKETPLACE = ".agents/plugins/marketplace.json"
 ANTIGRAVITY_PLUGIN = "plugin.json"
 
+#: The hooks file only Claude Code is pointed at; defined in hosts.py.
+CLAUDE_HOOKS = hosts.CLAUDE_HOOKS
+#: What every hook command must run: the wrapper that exits 0 without Python.
+HOOK_RUNNER = "${CLAUDE_PLUGIN_ROOT}/hooks/run"
+
 #: The only top-level fields Antigravity's published manifest schema allows.
 #: It sets ``additionalProperties: false``, so anything else, such as the
 #: ``author`` and ``homepage`` the other hosts take, is invalid, not merely
@@ -60,6 +65,7 @@ REQUIRED_FILES = (
     SKILL_PATH,
     CLAUDE_PLUGIN,
     CLAUDE_MARKETPLACE,
+    CLAUDE_HOOKS,
     CODEX_PLUGIN,
     CODEX_MARKETPLACE,
     ANTIGRAVITY_PLUGIN,
@@ -248,6 +254,47 @@ def check_manifests(version: str = "") -> List[str]:
     return problems
 
 
+def check_claude_hooks() -> List[str]:
+    """The hooks file ``.claude-plugin/plugin.json`` names: there, JSON, and run through the wrapper.
+
+    Every command goes through ``hooks/run``, which exits 0 when no Python
+    3.11+ is found, so no hook can fail a session over a missing interpreter.
+    """
+    try:
+        manifest = _load_json(CLAUDE_PLUGIN)
+    except (OSError, ValueError):
+        return []  # check_manifests reports it
+    if not isinstance(manifest, dict):
+        return []
+    hooks_path = manifest.get("hooks")
+    if hooks_path is None:
+        return ["%s must point at %s with a hooks path" % (CLAUDE_PLUGIN, CLAUDE_HOOKS)]
+    if not isinstance(hooks_path, str):
+        kind = type(hooks_path).__name__
+        return ["%s: hooks must be a single path string, not %s" % (CLAUDE_PLUGIN, kind)]
+    relative = os.path.normpath(hooks_path).replace(os.sep, "/")
+    if relative != CLAUDE_HOOKS:
+        return ["%s: hooks points at %r; expected ./%s" % (CLAUDE_PLUGIN, hooks_path, CLAUDE_HOOKS)]
+    try:
+        hooks = _load_json(relative)
+    except OSError:
+        return ["%s points at a missing hooks file: %s" % (CLAUDE_PLUGIN, hooks_path)]
+    except ValueError as exc:
+        return ["%s is not valid JSON: %s" % (relative, exc)]
+    events = hooks.get("hooks") if isinstance(hooks, dict) else None
+    if not isinstance(events, dict) or not events:
+        return ["%s must hold a non-empty hooks object" % relative]
+    problems: List[str] = []
+    for event, groups in sorted(events.items()):
+        for group in groups if isinstance(groups, list) else [None]:
+            entries = group.get("hooks") if isinstance(group, dict) else None
+            for entry in entries if isinstance(entries, list) else [None]:
+                command = entry.get("command") if isinstance(entry, dict) else None
+                if not isinstance(command, str) or HOOK_RUNNER not in command:
+                    problems.append("%s: every %s hook must run %s" % (relative, event, HOOK_RUNNER))
+    return problems
+
+
 def check_antigravity(root: str = REPO_ROOT) -> List[str]:
     """The root ``plugin.json`` Antigravity reads, and what else it would load.
 
@@ -382,6 +429,7 @@ def check() -> List[str]:
             problems.append("CHANGELOG.md has no entry for version %s" % declared)
 
     problems.extend(check_manifests(declared))
+    problems.extend(check_claude_hooks())
     problems.extend(check_antigravity())
 
     # The translated README must not silently drift out of the doc set.

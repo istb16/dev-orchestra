@@ -51,7 +51,7 @@ plan is not approved and `design.require_approval` is on, `130` interrupted.
 
 | Command | Description |
 | --- | --- |
-| `config show [--scope effective\|global\|project] [--json]` | Show the configuration. Default `effective` (merged); a scope shows that layer exactly as it is on disk, which is usually much shorter. The effective view names the preset in force after `Source:` (`Preset: quality (global; fitted to claude, codex)`) with a `note:` line for each thing that was refitted; `--json` has them under `preset` (`name`, `source`, `notes`), and the effective view's `--json` names the files `Source:` lists as `project` and `global` (`null` when there is none). A `Providers:` line says where each provider it refers to comes from (built-in, a user module's path, or no adapter); `--json` has the same under `providers`. The summary shows each seat's high-risk model (`(opus when high-risk)`) and `relevance`, a `skip unneeded roles: on\|off  (optimization.skip_unneeded_roles)` line under the optimization level, and a `Design reviews` block: the design panel when the fit or a file sets one, else `(the code panel; when conditions ignored)`; with a design panel the effective view's `--json` adds `design_reviewer_origins` (`fit design` for a fitted seat). |
+| `config show [--scope effective\|global\|project] [--json]` | Show the configuration. Default `effective` (merged); a scope shows that layer exactly as it is on disk, which is usually much shorter. The effective view names the preset in force after `Source:` (`Preset: quality (global; fitted to claude, codex)`) with a `note:` line for each thing that was refitted; `--json` has them under `preset` (`name`, `source`, `notes`), and the effective view's `--json` names the files `Source:` lists as `project` and `global` (`null` when there is none). A `Providers:` line says where each provider it refers to comes from (built-in, a user module's path, or no adapter); `--json` has the same under `providers`. The summary shows each seat's high-risk model (`(opus when high-risk)`) and `relevance`, a `skip unneeded roles: on\|off  (optimization.skip_unneeded_roles)` line under the optimization level, and a `Design reviews` block: the design panel when the fit or a file sets one, else `(the code panel; when conditions ignored)`; with a design panel the effective view's `--json` adds `design_reviewer_origins` (`fit design` for a fitted seat). A `Reply language: <tag>  (language.reply)` line follows, `not set` without one and with `(no rewrite: language.rewrite false)` after the tag when the Stop-hook check is off. |
 | `config path` | Print both layer locations. |
 | `config setup [--scope global\|project] [--preset quality\|standard\|fast \| --defaults] [--force]` | Setup wizard; for the global file its first question is the preset. `--preset` asks nothing: it writes `version` and `preset`, keeps what the file held apart from the keys a preset governs (a role keeps its `options` and `model_tiers` and is then not fitted), and prints the configuration that preset resolves to on this machine with its notes (see `references/configuration.md`, Presets). Only the global file can name a preset: with `--scope project` it is refused (exit 2) and nothing is written. `--defaults` overrides nothing, so the file holds only `version: 1` and runs under preset `standard`. `--force` prompts even without a TTY. |
 | `config reset [--scope …] [--delete]` | Clear this layer's overrides (the file stays, holding only `version`, and the global file its `preset` too when it names a known one; an unknown name is cleared with a `note:`), then print the configuration that is left. `--delete` removes the file; the global layer then runs under `standard`. |
@@ -151,6 +151,28 @@ identical on disk. `config prune` drops the ones equal to the current default,
 on request. It says nothing about `reviewers` -- a panel is nobody's default
 -- nor about `optimization.extra_high_risk_paths`, which no release ever wrote
 into a file, so a value there is always one somebody added.
+
+The Config block's `Reply language:` line is `language.reply` and what holds a
+reply to it on each host: `not set (language.reply; replies follow the user's
+language)`, or `<tag> (<layer>) -- Claude Code: <what>; Codex, Antigravity:
+rule 11 only`, where `<what>` is `Stop-hook rewrite + reminder`, `reminder
+only` (`language.rewrite: false`, or a tag whose script the check does not
+know), or `rule 11 only (<why>)` when this install carries no hooks, Claude
+Code's own `~/.claude/settings.json` sets `disableAllHooks`, or it has the
+plugin disabled. That file is Claude Code's, read best effort: anything
+missing or unreadable is left out, never a problem. In `--json` it is
+`language`: `reply` (the tag, primary subtag in lower case, or `null`),
+`rewrite`, `layer` (`project`, `global` or `default`: the file that names
+`language.reply`, a project `null` included), `check` (`script`,
+`words`, `latin` or `none`) and `hosts` -- `claude` with `status`
+(`hook-shipped` or `not-shipped`) and, when that file says, `plugin_enabled`
+and `hooks_disabled`; `codex` and `agy` with `status: not-enforced`. A
+`words` check (English, Spanish, French, German, Portuguese, Italian) gets a
+note saying it tells those languages apart by their common words only and
+passes a short reply; a `latin` check one saying it cannot tell one
+Latin-script language from another; a `none` check one saying that no reply
+is checked. See
+`references/architecture.md` ("Plugin hooks").
 
 A **Notes** block follows the problems when there is something worth knowing
 that is not wrong; notes never count towards `--strict`, and in `--json` they

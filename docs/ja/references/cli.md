@@ -1,4 +1,4 @@
-<!-- translated-from: references/cli.md sha256:f7ea2950f93b7c1921b9bdacd0b1600e98961988aba9cac0fbe5a0859b1e693c -->
+<!-- translated-from: references/cli.md sha256:2a038e1ddbd05d24cf31259305321e2aa810eacdc8cad4d0127e25cadbc748a0 -->
 
 > この文書は [references/cli.md](../../../references/cli.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -58,7 +58,7 @@ Microsoft Store のエイリアスだからです。
 
 | コマンド | 説明 |
 | --- | --- |
-| `config show [--scope effective\|global\|project] [--json]` | 設定を表示します。デフォルトは `effective`（マージ済み）です。スコープを指定すると、そのレイヤーをディスク上にあるとおりに表示し、たいていはずっと短くなります。effective の表示では `Source:` の後に有効なプリセット（`Preset: quality (global; fitted to claude, codex)`）を示し、フィットし直した点ごとに `note:` 行を出します。`--json` では `preset`（`name`、`source`、`notes`）に入ります。effective の `--json` には、`Source:` に並ぶファイルが `project` と `global` として入ります（ないときは `null`）。`Providers:` 行は、参照している各 provider がどこから来ているか（built-in、ユーザーモジュールのパス、または adapter なし）を示します。`--json` では同じ内容が `providers` の下に入ります。サマリーには、各席の高リスク用のモデル（`(opus when high-risk)`）と `relevance`、最適化レベルの下の `skip unneeded roles: on\|off  (optimization.skip_unneeded_roles)` 行、そして `Design reviews` ブロックが表示されます。このブロックは、フィットかファイルが design パネルを設定していればそれを、なければ `(the code panel; when conditions ignored)` を示します。design パネルがあるときは、effective の `--json` に `design_reviewer_origins`（フィットした席は `fit design`）が加わります。 |
+| `config show [--scope effective\|global\|project] [--json]` | 設定を表示します。デフォルトは `effective`（マージ済み）です。スコープを指定すると、そのレイヤーをディスク上にあるとおりに表示し、たいていはずっと短くなります。effective の表示では `Source:` の後に有効なプリセット（`Preset: quality (global; fitted to claude, codex)`）を示し、フィットし直した点ごとに `note:` 行を出します。`--json` では `preset`（`name`、`source`、`notes`）に入ります。effective の `--json` には、`Source:` に並ぶファイルが `project` と `global` として入ります（ないときは `null`）。`Providers:` 行は、参照している各 provider がどこから来ているか（built-in、ユーザーモジュールのパス、または adapter なし）を示します。`--json` では同じ内容が `providers` の下に入ります。サマリーには、各席の高リスク用のモデル（`(opus when high-risk)`）と `relevance`、最適化レベルの下の `skip unneeded roles: on\|off  (optimization.skip_unneeded_roles)` 行、そして `Design reviews` ブロックが表示されます。このブロックは、フィットかファイルが design パネルを設定していればそれを、なければ `(the code panel; when conditions ignored)` を示します。design パネルがあるときは、effective の `--json` に `design_reviewer_origins`（フィットした席は `fit design`）が加わります。続いて `Reply language: <tag>  (language.reply)` の行が出ます。設定がなければ `not set`、Stop フックの判定を止めているときはタグの後に `(no rewrite: language.rewrite false)` が付きます。 |
 | `config path` | 両方のレイヤーの場所を表示します。 |
 | `config setup [--scope global\|project] [--preset quality\|standard\|fast \| --defaults] [--force]` | セットアップウィザードです。グローバルファイルでは最初の質問がプリセットです。`--preset` は何も尋ねません: `version` と `preset` を書き込み、プリセットが決めるキー以外にファイルが持っていた値は残し（ロールは `options` と `model_tiers` を残し、そのためフィットされません）、そのプリセットがこのマシンで解決される設定を note とともに表示します（`references/configuration.md` のプリセットを参照）。プリセットを指定できるのはグローバルファイルだけで、`--scope project` では拒否され（exit 2）、何も書き込みません。`--defaults` は何も上書きしないため、ファイルには `version: 1` だけが入り、プリセット `standard` で動きます。`--force` は TTY がなくてもプロンプトを表示します。 |
 | `config reset [--scope …] [--delete]` | このレイヤーの上書きを消去し（ファイルは残り、`version` だけ、グローバルファイルなら既知の `preset` も入った状態になります。知らないプリセット名は `note:` を表示して消します）、残った設定を表示します。`--delete` を付けるとファイルを削除し、グローバルレイヤーは `standard` で動きます。 |
@@ -154,6 +154,21 @@ dev-orchestra reviewer remove db-review
 求められれば、現在のデフォルトと等しいものを削除します。`reviewers` については何も言いません。
 パネルは誰のデフォルトでもないからです。`optimization.extra_high_risk_paths` についても何も
 言いません。どの版もこの設定をファイルに書き込んだことはないので、値があれば必ず誰かが足したものだからです。
+
+Config ブロックの `Reply language:` の行は、`language.reply` と、ホストごとに何が返答をその言語に
+保つかを示します。`not set (language.reply; replies follow the user's language)`、または
+`<tag> (<layer>) -- Claude Code: <what>; Codex, Antigravity: rule 11 only` です。`<what>` は
+`Stop-hook rewrite + reminder`、`reminder only`（`language.rewrite: false` のとき、または判定が文字体系を
+知らないタグのとき）、または `rule 11 only (<why>)` です。最後のものは、このインストールにフックがないとき、
+Claude Code 自身の `~/.claude/settings.json` が `disableAllHooks` を設定しているとき、またはそこで
+プラグインが無効になっているときに出ます。このファイルは Claude Code のもので、読めた範囲でだけ使います。
+ないものや読めないものは省き、問題にはしません。`--json` では `language` に入ります: `reply`（タグ。主タグは
+小文字。なければ `null`）、`rewrite`、`layer`（`project`、`global`、`default`。`language.reply` を書いたファイルで、プロジェクトの `null` も数えます）、`check`（`script`、
+`words`、`latin`、`none`）、`hosts`。`hosts` の `claude` には `status`（`hook-shipped` か `not-shipped`）と、
+そのファイルに書かれていれば `plugin_enabled` と `hooks_disabled` が入り、`codex` と `agy` は
+`status: not-enforced` です。`check` が `words`（英語、スペイン語、フランス語、ドイツ語、ポルトガル語、
+イタリア語）なら、これらの言語をよく使う語だけで見分け、短い返答は通すという注記が、`latin` なら、
+ラテン文字の言語どうしは区別できないという注記が、`none` なら、どの返答も判定しないという注記が付きます。`references/architecture.md`（「プラグインのフック」）を参照。
 
 誤りではないが知っておくべきことがあると、問題の後に **Notes** ブロックが表示されます。注記は
 `--strict` の判定に数えられず、`--json` では `notes` に入ります（ないときは `[]`）。1 種類は、上で述べた

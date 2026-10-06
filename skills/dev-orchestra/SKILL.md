@@ -113,7 +113,7 @@ Before each *retry*: `budget consume test`, then `progress record test
 signature (the last fix changed nothing) is a refusal.
 
 **Reviews.** Every reviewer judges the same frozen diff. A new snapshot
-is a new round: never track rounds by hand, and
+is a new round: never track rounds by hand;
 never re-snapshot mid-round. `snapshot` withholds generated and vendored
 files (`review.exclude`) but names them: pass that on; re-snapshot
 `--no-exclude` if the change turns on one.
@@ -152,7 +152,7 @@ definition of done, output format.
 ## 4. Final report
 
 One line per stage with its outcome, then models used, files changed and
-anything left unresolved. The labels below are the shape:
+anything left unresolved. The labels are the shape:
 write them in the user's language (rule 11).
 
 ```
@@ -165,7 +165,7 @@ Remaining  F4 (medium, deferred — .ai/reviews/consolidated.md)
 ```
 
 Totals: `summary` (stage, model, tokens); cost per stage and reviewer:
-`tokens show`. When some runs reported nothing, report the total as a floor.
+`tokens show`. If a run reported nothing, the total is a floor.
 Always name what failed and what you skipped.
 
 ## Configuration
@@ -206,12 +206,13 @@ what to run for the user's words, roles, schema:
     never on your own judgement, never to unblock yourself. `run implementer`
     refusing an unapproved plan (exit 5) means ask, do not retry. No plan,
     no approval.
-11. **Talk to the user in their language** — the one they asked for, else
-    the one they write in; not the one you just read, nor pasted issues
-    or logs. That covers progress, questions, approvals, findings, the
-    report and your tool-call descriptions. Restate prose in full, never
-    dropping or softening a finding or risk; ids, severities, paths, commands,
-    code and quoted text stay as written. Agent prompts and `.ai/` stay English.
+11. **Talk to the user in their language** — the one they asked for
+    (`doctor`'s *Reply language*), else the one they write in;
+    not the one you just read, nor pasted issues or logs.
+    That covers progress, questions, approvals, findings, the report and
+    tool-call descriptions. Restate prose in full, never dropping or
+    softening a finding or risk; ids, severities, paths, commands, code and
+    quoted text stay as written. Agent prompts and `.ai/` stay English.
 
 ## References
 

@@ -94,6 +94,36 @@ def design_review_mode(value: Any) -> str:
     return "on" if value else "off"
 
 
+#: A BCP 47 language tag, loosely: a primary subtag of two or three letters
+#: and any number of further subtags. Enough to refuse a sentence or a typo
+#: such as ``japanese``, without a registry to check every subtag against.
+_LANGUAGE_TAG_RE = re.compile(r"^[A-Za-z]{2,3}(-[A-Za-z0-9]{1,8})*$")
+
+
+def normalise_language_tag(value: Any) -> Optional[str]:
+    """``value`` as a tag with its primary subtag in lower case, or None if it is not one."""
+    if not isinstance(value, str) or not _LANGUAGE_TAG_RE.match(value):
+        return None
+    primary, _sep, rest = value.partition("-")
+    return primary.lower() + ("-" + rest if rest else "")
+
+
+def language_settings_of(data: Dict[str, Any]) -> Dict[str, Any]:
+    """The ``language`` block of ``data``, with anything absent filled in.
+
+    An explicit null means the default, as it does in ``design_settings``. A
+    ``reply`` that is not a tag reads as unset, and only ``rewrite: false``
+    turns the check off: commands and the hooks read the files unvalidated,
+    and a value ``validate`` would refuse must not switch anything on.
+    """
+    settings = default_config()["language"]
+    configured = data.get("language")
+    if isinstance(configured, dict):
+        settings["reply"] = normalise_language_tag(configured.get("reply"))
+        settings["rewrite"] = configured.get("rewrite") is not False
+    return settings
+
+
 def default_config() -> Dict[str, Any]:
     """Recommended out-of-the-box configuration."""
     return {
@@ -268,6 +298,12 @@ def default_config() -> Dict[str, Any]:
             # this many days or more. Nothing is deleted; 0 turns it off.
             "stale_notice_days": 30,
         },
+        # The language the orchestrator answers the user in, as a BCP 47 tag
+        # (`ja`, `zh-TW`, `ko`, `en`). Null leaves it to SKILL.md rule 11 and
+        # keeps the Claude Code plugin's hooks silent. ``rewrite: false`` keeps
+        # the reminders and drops the Stop-hook check, for a check that
+        # misjudges someone's replies.
+        "language": {"reply": None, "rewrite": True},
     }
 
 
@@ -391,18 +427,34 @@ def find_project_config(start: Optional[str] = None) -> Optional[str]:
     worktree's or a submodule's ``.git`` file ends it too, rather than
     letting a parent directory's file configure the checkout.
     """
-    current = os.path.abspath(start or os.getcwd())
-    while True:
+    for current in _up_to_repository_root(start):
         for name in PROJECT_CONFIG_NAMES:
             candidate = os.path.join(current, name)
             if os.path.isfile(candidate):
                 return candidate
-        if os.path.lexists(os.path.join(current, ".git")):
-            return None
+    return None
+
+
+def _up_to_repository_root(start: Optional[str] = None) -> List[str]:
+    """``start`` and each parent up to the first holding a ``.git`` entry, or to the
+    filesystem root when none does. A walk rather than ``git rev-parse``: a
+    plugin hook runs it on every prompt."""
+    current = os.path.abspath(start or os.getcwd())
+    walked = [current]
+    while not os.path.lexists(os.path.join(current, ".git")):
         parent = os.path.dirname(current)
         if parent == current:
-            return None
+            break
         current = parent
+        walked.append(current)
+    return walked
+
+
+def repository_root(start: Optional[str] = None) -> Optional[str]:
+    """The nearest directory up from ``start`` holding a ``.git`` entry, as
+    ``find_project_config`` stops at; None outside a repository."""
+    top = _up_to_repository_root(start)[-1]
+    return top if os.path.lexists(os.path.join(top, ".git")) else None
 
 
 def project_config_path(start: Optional[str] = None) -> str:
@@ -462,19 +514,30 @@ def write_config_file(path: str, data: Dict[str, Any], scope: str = "") -> None:
 # --------------------------------------------------------------------------- merge
 
 
-def deep_merge(base: Any, override: Any) -> Any:
+#: Keys an explicit null in the higher layer sets to null, where any other
+#: null keeps the value below. A project's ``language.reply: null`` must undo
+#: a global tag, so replies there follow the user's language again; this is
+#: also why ``layer_of`` counts that null as the project's value.
+_NULL_REPLACES = frozenset({("language", "reply")})
+
+
+def deep_merge(base: Any, override: Any, _path: Tuple[str, ...] = ()) -> Any:
     """Merge ``override`` onto ``base``.
 
     Mappings merge key-by-key. Lists (notably ``reviewers``) replace wholesale,
-    so a project override can define a completely different review panel.
+    so a project override can define a completely different review panel. A
+    null keeps ``base``, except at a key in ``_NULL_REPLACES``.
     """
     if isinstance(base, dict) and isinstance(override, dict):
         merged = dict(base)
         for key, value in override.items():
-            merged[key] = deep_merge(base.get(key), value) if key in base else copy.deepcopy(value)
+            if key in base:
+                merged[key] = deep_merge(base.get(key), value, (*_path, key))
+            else:
+                merged[key] = copy.deepcopy(value)
         return merged
     if override is None:
-        return copy.deepcopy(base)
+        return None if _path in _NULL_REPLACES else copy.deepcopy(base)
     return copy.deepcopy(override)
 
 
@@ -793,10 +856,9 @@ class LoadedConfig:
         that ask this are unaffected.
         """
         parts = _split_path(path) if isinstance(path, str) else list(path)
-        if _get_parts(self.project_layer, parts, _MISSING) is not _MISSING:
-            return "project"
-        if _get_parts(self.global_layer, parts, _MISSING) is not _MISSING:
-            return "global"
+        for name, layer in (("project", self.project_layer), ("global", self.global_layer)):
+            if _get_parts(layer, parts, _MISSING) is not _MISSING or _names_null(layer, parts):
+                return name
         return "default"
 
     def role(self, name: str, tier: Optional[str] = None) -> Dict[str, Any]:
@@ -937,6 +999,10 @@ class LoadedConfig:
             settings.update({key: value for key, value in configured.items() if value is not None})
         return settings
 
+    def language_settings(self) -> Dict[str, Any]:
+        """The ``language`` block, with anything absent filled in; see ``language_settings_of``."""
+        return language_settings_of(self.data)
+
     def optimization_settings(self) -> Dict[str, Any]:
         settings = default_config()["optimization"]
         settings.update(self.data.get("optimization") or {})
@@ -963,7 +1029,7 @@ class LoadedConfig:
 
 #: Settings whose value is a matter of taste rather than a recommendation, so
 #: a difference from the default says nothing worth reporting.
-_TASTE = ("version", "reviewers", "workspace")
+_TASTE = ("version", "reviewers", "workspace", "language")
 
 #: Settings whose default is empty and which only ever add to another one, so
 #: any value in a file was put there by someone. No release ever seeded a file
@@ -1291,6 +1357,7 @@ def validate(
         ("optimization", _validate_optimization),
         ("budgets", _validate_budgets),
         ("workspace", _validate_workspace),
+        ("language", _validate_language),
     ):
         block = data.get(key)
         if block is not None:
@@ -1548,6 +1615,19 @@ def _validate_workspace(workspace: Any) -> List[str]:
             problems.append(
                 "workspace.stale_notice_days: must be %d or less (100 years)" % STALE_NOTICE_MAX_DAYS
             )
+    return problems
+
+
+def _validate_language(language: Any) -> List[str]:
+    if not isinstance(language, dict):
+        return ["language: must be a mapping"]
+    problems: List[str] = []
+    reply = language.get("reply")
+    if reply is not None and normalise_language_tag(reply) is None:
+        problems.append("language.reply: must be a language tag such as ja, zh-TW, ko or en, or null")
+    rewrite = language.get("rewrite")
+    if rewrite is not None and not isinstance(rewrite, bool):
+        problems.append("language.rewrite: must be true or false")
     return problems
 
 
@@ -2054,6 +2134,14 @@ def get_path(data: Dict[str, Any], dotted: str, default: Any = None) -> Any:
     except ConfigError:
         return default
     return _get_parts(data, parts, default)
+
+
+def _names_null(data: Dict[str, Any], parts: Sequence[Any]) -> bool:
+    """Whether ``data`` writes a null at ``parts``, for a key whose null replaces."""
+    if tuple(parts) not in _NULL_REPLACES:
+        return False
+    parent = _get_parts(data, parts[:-1], _MISSING)
+    return isinstance(parent, dict) and parts[-1] in parent and parent[parts[-1]] is None
 
 
 def _get_parts(data: Dict[str, Any], parts: Sequence[Any], default: Any) -> Any:

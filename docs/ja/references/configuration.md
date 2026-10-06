@@ -1,4 +1,4 @@
-<!-- translated-from: references/configuration.md sha256:0163cda90c75815b7876195c4a64c0c7d029fd1ebb475625bcbf1ae263b5a0b5 -->
+<!-- translated-from: references/configuration.md sha256:58ac968b403b79c7846f5ed9fb108e2afb59dfdaffbdd8d1897681697a51ac8d -->
 
 > この文書は [references/configuration.md](../../../references/configuration.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -595,6 +595,10 @@ design:
 
 workspace:
   dir: .ai                            # relative to the repo root, or absolute
+
+language:
+  reply: null                         # a language tag (ja, zh-TW, ko, en): the language to answer in
+  rewrite: true                       # false: Claude Code reminds, but never asks for a rewrite
 ```
 
 <a id="field-reference"></a>
@@ -644,6 +648,8 @@ workspace:
 | `optimization.extra_architecture_paths` | list | `architecture_paths` に追加する glob（デフォルト `[]`）。 |
 | `workspace.dir` | string | `.ai/` の成果物を置く場所。 |
 | `workspace.stale_notice_days` | int 0–36500 | 新しいワークフローが始まったとき、その最初のコマンドが、最後の活動（`state.json` の `updated_at`、なければ `started_at`）からこの日数以上たったほかのワークフローを、stderr に一度だけ知らせます（デフォルト 30）。現在のワークフローは含めず、実行中のステージがあるワークフローも含めません。その印はそのワークフロー自身で `status` を実行したときにしか消えないため、ステージの途中で放置されたワークフローがここで名前を挙げられることはありません。`workflow list` では `in flight` と表示されます。使えるタイムスタンプがないワークフローや、`state.json` が読めないワークフローは数えません。何も削除しません。ワークフローを削除するのは、これまでどおり `workflow remove <id> --yes` だけです。`0` でこの通知を止め、`null` はデフォルトを意味します。通知がコマンドの動作を変えることはありません。 |
+| `language.reply` | string \| null | オーケストレーターがユーザーに答える言語を、言語タグで指定します: `ja`、`zh-TW`、`ko`、`ru`、`en`、`es`、`fr` など（2〜3 文字の主タグに、任意の数の副タグが続く形。主タグは小文字として読みます）。`null`（デフォルト）は SKILL.md のルール 11 に任せます。ユーザーが頼んだ言語、なければユーザーが書いている言語です。ほかのキーと違い、プロジェクトのファイルの `null` は下の層を引き継がず、グローバルのファイルで設定したタグをそのプロジェクトでだけ取り消します。設定すると、どのホストでも `doctor` が *Reply language* として表示します。Claude Code ではプラグインのフックが、プロンプトのたびにその言語を思い出させ、判定できる言語（文字体系で判定する言語と、よく使う語で判定する英語・スペイン語・フランス語・ドイツ語・ポルトガル語・イタリア語）なら、明らかに別の言語で書かれた返答を一度だけ書き直させます。ホストごとの扱いと、判定で区別できること・できないことは `references/architecture.md`（「プラグインのフック」）を参照。 |
+| `language.rewrite` | bool \| null | `true`（デフォルト）: Claude Code の Stop フックによる判定が有効です。`false` にすると、リマインダーは残したまま判定を止めます。判定があなたの返答を誤判定するときのためのものです。`null` はデフォルトを意味します。 |
 | `<role>.options` | mapping | provider 固有の設定項目。下記を参照。 |
 | `<role>.model_tiers` | mapping | このロールのモデルに対する名前付きの代替。下記を参照。省略可。 |
 
@@ -1184,6 +1190,8 @@ codex: installed
 | 「このプロジェクトの上書きを捨てて」 | `config reset --scope project`（以後そのプロジェクトはグローバルレイヤーとそのプリセットに従います） |
 | 「設定が古いバージョンのものだ」 | `config prune --dry-run`、その後 `config prune` |
 | 「環境をチェックして」 | `doctor` |
+| 「いつも日本語で返事して」（ほかの言語でも） | `config set language.reply ja`。その言語のタグで指定します（`ko`、`zh-TW`、`fr` など）。`config set language.reply null` で、ユーザーが書いている言語に戻ります |
+| 「返答を書き直させないで」 | `config set language.rewrite false`（リマインダーは残ります） |
 
 書き込みの後は必ず結果の設定を表示し、ユーザーが確認できるようにしてください。
 

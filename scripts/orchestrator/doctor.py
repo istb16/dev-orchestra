@@ -14,7 +14,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from . import config as config_mod
 from . import config_policy as policy_mod
-from . import hosts, verified
+from . import hosts, reply_language, verified
 from . import optimization as opt_mod
 from . import presets as presets_mod
 from . import workspace as ws
@@ -334,7 +334,42 @@ def collect(start: Optional[str] = None, probe_models: bool = True) -> Dict[str,
     _role_patterns_problems(report, loaded.optimization_settings(), seats)
     _frozen_panel_notes(report, loaded, installed)
     _code_extras_note(report, loaded)
+    _language_report(report, loaded)
     return report
+
+
+def _language_report(report: Dict[str, Any], loaded: config_mod.LoadedConfig) -> None:
+    """``language.reply``, and what enforces it on each host."""
+    settings = loaded.language_settings()
+    tag = settings["reply"]
+    shipped = hosts.claude_hooks_shipped(PLUGIN_ROOT)
+    claude: Dict[str, Any] = {"status": "hook-shipped" if shipped else "not-shipped"}
+    claude.update(hosts.claude_settings(user_home()))
+    check = reply_language.check_kind(tag)
+    report["language"] = {
+        "reply": tag,
+        "rewrite": settings["rewrite"],
+        "layer": loaded.layer_of("language.reply"),
+        "check": check,
+        "hosts": {"claude": claude, "codex": {"status": "not-enforced"}, "agy": {"status": "not-enforced"}},
+    }
+    if tag and check == "words":
+        report["notes"].append(
+            "language.reply %s (%s) is written in the Latin script: the Stop-hook check tells %s apart by "
+            "their common words only, and passes a short reply"
+            % (tag, reply_language.language_name(tag), ", ".join(reply_language.word_languages()))
+        )
+    elif tag and check == "latin":
+        report["notes"].append(
+            "language.reply %s (%s) is written in the Latin script: the Stop-hook check only catches a "
+            "reply mostly in another script, and cannot tell one Latin-script language (English, French, "
+            "German, ...) from another" % (tag, reply_language.language_name(tag))
+        )
+    elif tag and check == "none":
+        report["notes"].append(
+            "language.reply %s is not a language the Stop-hook check knows the script of: Claude Code gets "
+            "the reminder only, and no reply is checked" % tag
+        )
 
 
 def _reviewer_entry(
@@ -803,7 +838,7 @@ def render(report: Dict[str, Any]) -> str:
     store = bool(report["platform"].get("store_python"))
     lines += _user_provider_lines(report.get("user_providers") or {}, store)
     lines.append("")
-    lines += _config_lines(report["config"])
+    lines += _config_lines(report["config"], report.get("language"))
     lines += _roles_lines(report)
     lines += _closing_lines(report)
     return "\n".join(lines) + "\n"
@@ -870,8 +905,32 @@ def _provider_lines(name: str, entry: Dict[str, Any]) -> List[str]:
     return lines
 
 
-def _config_lines(config_info: Dict[str, Any]) -> List[str]:
-    """The config files, the preset in force and any pinned values, ending in a blank line."""
+def _language_line(language: Dict[str, Any]) -> str:
+    """``ja (global) -- Claude Code: Stop-hook rewrite + reminder; Codex, Antigravity: rule 11 only``."""
+    tag = language.get("reply")
+    if not tag:
+        return "not set (language.reply; replies follow the user's language)"
+    claude = (language.get("hosts") or {}).get("claude") or {}
+    if claude.get("status") != "hook-shipped":
+        enforced = "rule 11 only (this install carries no hooks)"
+    elif claude.get("hooks_disabled"):
+        enforced = "rule 11 only (disableAllHooks is set)"
+    elif claude.get("plugin_enabled") is False:
+        enforced = "rule 11 only (the plugin is disabled)"
+    elif language.get("rewrite") and language.get("check") != "none":
+        enforced = "Stop-hook rewrite + reminder"
+    else:
+        enforced = "reminder only"
+    return "%s (%s) -- Claude Code: %s; Codex, Antigravity: rule 11 only" % (
+        tag,
+        language.get("layer", "default"),
+        enforced,
+    )
+
+
+def _config_lines(config_info: Dict[str, Any], language: Optional[Dict[str, Any]] = None) -> List[str]:
+    """The config files, the preset in force, the reply language and any pinned values,
+    ending in a blank line."""
     lines = ["Config"]
     real = config_info.get("global_real")
     lines.append("  Global: %s" % config_mod.describe_location(config_info.get("global"), real))
@@ -885,6 +944,8 @@ def _config_lines(config_info: Dict[str, Any]) -> List[str]:
     if config_info.get("using_builtin_defaults"):
         source = "built-in defaults, fitted as preset %s" % (preset_name or presets_mod.DEFAULT)
         lines.append("  Source: %s (`config setup --preset <name>` saves one)" % source)
+    if language is not None:
+        lines.append("  Reply language: %s" % _language_line(language))
     pinned = config_info.get("pinned") or []
     if pinned:
         lines.append("  Pinned at a value the built-in default has moved off:")

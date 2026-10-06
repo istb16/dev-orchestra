@@ -14,6 +14,30 @@ below begins **User adapters** so adapter authors can find it.
 
 ## [Unreleased]
 
+### Added
+
+- **`language.reply`: the language the orchestrator answers in**, as a
+  language tag (`ja`, `ko`, `zh-TW`, `ru`, `es`, `fr`, ...; default `null`, which
+  leaves it to rule 11 as before). `doctor` prints it as *Reply language*,
+  which the skill reads as the language the user asked for on every host. In
+  Claude Code the plugin now ships hooks (`hooks/claude-code.json`, pointed at
+  from `.claude-plugin/plugin.json`): a short reminder naming the language
+  before each prompt and after a compaction or a resume, and a Stop-hook check
+  that asks once for a reply clearly in another language to be written again.
+  The check judges by script: the languages written in their own script are
+  checked against Latin text and other scripts (a Japanese reply fails under
+  `zh`, a Chinese one under `ja`, a Korean one under either); English,
+  Spanish, French, German, Portuguese and Italian are told apart by their
+  common words; any other Latin-script language is checked only against a
+  reply mostly in another script; and a tag it does not know gets the
+  reminder alone. The hooks act only in sessions that used dev-orchestra, never in a
+  run it delegated (the providers mark their children with
+  `DEV_ORCHESTRA_DELEGATED`), and print nothing on any error.
+  `language.rewrite: false` keeps the reminders and turns the check off.
+  Codex and Antigravity get the setting through `doctor` and rule 11 only.
+  `doctor --json` has it under `language`, and `config show` adds a
+  `Reply language:` line (#254).
+
 ### Changed
 
 - **The compatibility promise is written down once**, under "Compatibility"

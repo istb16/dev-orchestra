@@ -11,5 +11,6 @@
   "repository": "https://github.com/istb16/dev-orchestra",
   "license": "MIT",
   "keywords": ["orchestration", "code-review", "multi-model", "workflow", "codex"],
-  "skills": "./skills/"
+  "skills": "./skills/",
+  "hooks": "./hooks/claude-code.json"
 }

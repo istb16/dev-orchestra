@@ -622,6 +622,10 @@ design:
 
 workspace:
   dir: .ai                            # relative to the repo root, or absolute
+
+language:
+  reply: null                         # a language tag (ja, zh-TW, ko, en): the language to answer in
+  rewrite: true                       # false: Claude Code reminds, but never asks for a rewrite
 ```
 
 ### Field reference
@@ -669,6 +673,8 @@ workspace:
 | `optimization.extra_architecture_paths` | list | Globs added to `architecture_paths` (default `[]`). |
 | `workspace.dir` | string | Where `.ai/` artifacts go. |
 | `workspace.stale_notice_days` | int 0–36500 | When a new workflow starts, its first command notes, once and on stderr, the other workflows whose last activity (`updated_at`, else `started_at`, in `state.json`) is this many days old or more (default 30). The current workflow is left out, and so is any workflow with a stage in flight: that mark clears only when that workflow itself runs `status`, so a workflow abandoned mid-stage is never named here; `workflow list` shows it as `in flight`. A workflow with no usable timestamp, or an unreadable `state.json`, is not counted. Nothing is deleted: `workflow remove <id> --yes` is still the only thing that deletes one. `0` turns the note off; `null` means the default. The note never changes what the command does. |
+| `language.reply` | string \| null | The language the orchestrator answers the user in, as a language tag: `ja`, `zh-TW`, `ko`, `ru`, `en`, `es`, `fr` and so on (a primary subtag of two or three letters, then any further subtags; the primary one is read in lower case). `null` (default) leaves the choice to SKILL.md rule 11: the language the user asked for, else the one they write in. Unlike other keys, a `null` in the project file is not inherited through: it undoes a tag the global file sets, for that project only. Set, `doctor` prints it as *Reply language* on every host, and in Claude Code the plugin's hooks remind the orchestrator of it before each prompt and, for a language they can judge (by its script, or for English, Spanish, French, German, Portuguese and Italian by their common words), ask once for a reply clearly in another language to be written again. What each host does with it, and what the check can and cannot tell apart: `references/architecture.md` ("Plugin hooks"). |
+| `language.rewrite` | bool \| null | `true` (default): the Stop-hook check in Claude Code is on. `false` keeps the reminders and turns the check off, for a check that misjudges your replies. `null` means the default. |
 | `<role>.options` | mapping | Provider-specific knobs; see below. |
 | `<role>.model_tiers` | mapping | Named alternatives for this role's model; see below. Optional. |
 
@@ -1212,6 +1218,8 @@ The skill carries the command grammar; this is the phrasebook.
 | "drop this project's overrides" | `config reset --scope project` (the project then follows the global layer and its preset) |
 | "my config is from an old version" | `config prune --dry-run`, then `config prune` |
 | "check my environment" | `doctor` |
+| "always reply in Japanese" (or any language) | `config set language.reply ja`, with that language's tag (`ko`, `zh-TW`, `fr`, ...); `config set language.reply null` goes back to the language the user writes in |
+| "stop asking for my replies to be rewritten" | `config set language.rewrite false` (the reminders stay) |
 
 Show the resulting configuration after any write, so the user can confirm it.
 
