@@ -630,7 +630,7 @@ language:
 | `review.design.reviewers_extra` | list \| null | ファイルが継承する設計パネルの横に足す設計レビュアー。どのファイルも設計パネルを並べていなければ、継承するのはフィットした設計パネルで、ファイルが `reviewers` を並べていれば `when` を外したコードのパネルです。 |
 | `review.max_review_iterations` | int ≥ 0 | プロジェクト単位ではなくレビュー単位のラウンド数です。新しいブランチ、新しい `--base`、または `budget reset` でカウントはリセットされます。`0` で再レビューを完全に無効にします。 |
 | `review.parallel` | bool | `false` にするとレビュアーを 1 つずつ実行します（デバッグしやすくなります）。 |
-| `review.re_review_severities` | list | ブロッキングとみなす severity。 |
+| `review.re_review_severities` | list | ブロッキングとみなす severity。`critical`、`high`、`medium`、`low` から選んだ空でないリストで、大文字小文字は問いません（デフォルトは `[critical, high]`）。リストにしない 1 つの名前、知らない名前、`[]` は断られます。検査せずにファイルを読むコマンドは、代わりにデフォルトでブロックします。 |
 | `run.timeout_seconds.<role>` | int > 0 | `orchestrator`、`architect`、`implementer`、`review_fixer` の `run` 1 回の合計の締め切り（デフォルトは implementer が 3600、ほかは 1800）。`--timeout` で 1 回だけ上書きできます。ほかのキーは拒否されます。ロールのブロックの外にあるので、設定してもそのロールはプリセットのフィットから外れず、`config setup --preset` もこれを残します。この締め切りで止められた実行は、キーの名前を挙げてそう伝えます。 |
 | `review.timeout_seconds` | int > 0 | 各レビュアーの合計の締め切り。`review run` のラウンドのレビュアーと `run <reviewer-id>` に効きます（デフォルト 1800）。ロールの `run` にはもう効きません。そちらは `run.timeout_seconds.<role>` です。タイムアウトは報告されるだけで、例外にはなりません。 |
 | `review.idle_timeout_seconds` | int > 0 \| null | この時間出力がなければ、実行は固まったものとして扱われます（デフォルト 300。ストリーミングする provider のみ）。レビュアーとすべてのロールの `run` で共通です。沈黙の長さはタスクの大きさでは伸びないからです。ロールごとには `options.idle_timeout` で上書きできます。 |

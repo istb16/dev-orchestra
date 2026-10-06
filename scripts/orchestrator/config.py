@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, NamedTuple, Optional, Sequenc
 
 from . import miniyaml
 from . import optimization as opt_mod
-from .review_common import DEFAULT_EXCLUDE
+from .review_common import DEFAULT_EXCLUDE, SEVERITIES
 
 if TYPE_CHECKING:
     from .presets import Fit
@@ -977,6 +977,23 @@ class LoadedConfig:
         settings.update(self.data.get("review") or {})
         return settings
 
+    def blocking_severities(self) -> Tuple[str, ...]:
+        """``review.re_review_severities`` in lower case, or the default for anything unusable.
+
+        Commands load unvalidated, and a value ``validate`` would refuse must
+        not stop gating: a scalar ``critical`` would otherwise be iterated a
+        letter at a time, and ``[crit]`` would match no finding at all.
+        """
+        fallback = tuple(default_config()["review"]["re_review_severities"])
+        review = self.data.get("review")
+        value = review.get("re_review_severities") if isinstance(review, dict) else None
+        if not isinstance(value, list) or not value:
+            return fallback
+        names = tuple(item.strip().lower() if isinstance(item, str) else item for item in value)
+        if not all(name in SEVERITIES for name in names):
+            return fallback
+        return names
+
     def design_review_settings(self) -> Dict[str, Any]:
         """The ``review.design`` block, with anything absent filled in.
 
@@ -1577,6 +1594,10 @@ def _validate_review(review: Any) -> List[str]:
     iterations = review.get("max_review_iterations", 2)
     if not _int_at_least(iterations, 0):
         problems.append("review.max_review_iterations: must be a non-negative integer")
+    parallel = review.get("parallel")
+    if parallel is not None and not isinstance(parallel, bool):
+        problems.append("review.parallel: must be true or false")
+    problems.extend(_validate_severities(review.get("re_review_severities")))
     timeout = review.get("timeout_seconds", 1800)
     if not _int_at_least(timeout, 1):
         problems.append("review.timeout_seconds: must be a positive integer")
@@ -1606,6 +1627,26 @@ def _validate_review(review: Any) -> List[str]:
                         "review.exclude[%d]: must be a non-empty string (got %r)" % (index, pattern)
                     )
     return problems
+
+
+def _validate_severities(severities: Any) -> List[str]:
+    """``review.re_review_severities``: a non-empty list drawn from ``SEVERITIES``, in any case.
+
+    ``[]`` is refused rather than read as "block nothing": a review that
+    blocks on nothing is not one somebody should get from an empty list.
+    """
+    if severities is None:
+        return []
+    choices = ", ".join(SEVERITIES)
+    if not isinstance(severities, list):
+        return ["review.re_review_severities: must be a list of %s (got %r)" % (choices, severities)]
+    if not severities:
+        return ["review.re_review_severities: must name at least one severity; [] would block nothing"]
+    return [
+        "review.re_review_severities[%d]: must be one of %s (got %r)" % (index, choices, name)
+        for index, name in enumerate(severities)
+        if not isinstance(name, str) or name.strip().lower() not in SEVERITIES
+    ]
 
 
 def _validate_review_design(design: Any) -> List[str]:

@@ -14,6 +14,20 @@ below begins **User adapters** so adapter authors can find it.
 
 ## [Unreleased]
 
+### Changed
+
+- **`review.re_review_severities` and `review.parallel` are validated.** A
+  mistake in the severities used to leave nothing blocking while `config
+  validate` answered valid: a single `critical` not in a list was read a
+  letter at a time, `[crit]` matched no finding, and a number crashed. The
+  list must now name at least one of `critical`, `high`, `medium` and `low`;
+  a single name, an unknown name, a non-string and `[]` are refused, and
+  `review.parallel` must be `true` or `false`. Names are read in any case,
+  so `[Critical, High]`, which used to block nothing, now blocks as written.
+  `status` and `review status`, which read the file without validating it,
+  block on the default `[critical, high]` for a value that would be refused
+  (#277).
+
 ### Fixed
 
 - **Without PyYAML, a Windows path or a string of digits written to a config

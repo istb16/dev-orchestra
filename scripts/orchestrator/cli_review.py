@@ -1700,7 +1700,7 @@ def cmd_review_status(args: argparse.Namespace) -> int:
     base = _workspace(args)
     data = ws.read_json(workspace.consolidated_json_path, {}) or {}
     settings = loaded.review_settings()
-    severities = tuple(settings.get("re_review_severities") or ("critical", "high"))
+    severities = loaded.blocking_severities()
     blocking = review_mod.unresolved_blocking(data, severities)
     accepted = bool(review_mod.accepted_findings(data))
     iteration = int(data.get("iteration", 0) or 0)

@@ -573,6 +573,68 @@ class TestValidation(IsolatedCase):
         data["reviewers"] = []
         self.assertEqual(config_mod.validate(data), [])
 
+    def test_re_review_severities_must_be_a_list_of_known_severities(self):
+        """A mistake here used to stop every finding from blocking, unreported (#277)."""
+
+        def problems(value):
+            data = config_mod.default_config()
+            data["review"]["re_review_severities"] = value
+            return config_mod.validate(data)
+
+        for value in (["critical"], ["Critical", "HIGH"], [" medium "], ["low", "critical"], None):
+            self.assertEqual(problems(value), [], value)
+        choices = "critical, high, medium, low"
+        self.assertEqual(
+            problems("critical"),
+            ["review.re_review_severities: must be a list of %s (got 'critical')" % choices],
+        )
+        self.assertEqual(problems(3), ["review.re_review_severities: must be a list of %s (got 3)" % choices])
+        self.assertEqual(
+            problems([]),
+            ["review.re_review_severities: must name at least one severity; [] would block nothing"],
+        )
+        self.assertEqual(
+            problems(["critical", "crit", 1]),
+            [
+                "review.re_review_severities[1]: must be one of %s (got 'crit')" % choices,
+                "review.re_review_severities[2]: must be one of %s (got 1)" % choices,
+            ],
+        )
+
+    def test_a_refused_re_review_severities_still_blocks_on_the_default(self):
+        """Commands load unvalidated, so the gate reads the default rather than nothing."""
+        from orchestrator import review as review_mod
+
+        finding = {"id": "F1", "severity": "critical", "triage": "accepted"}
+        for value, expected in (
+            (None, ("critical", "high")),
+            (["Critical"], ("critical",)),
+            ([" High ", "medium"], ("high", "medium")),
+            ("critical", ("critical", "high")),
+            (["Critical", "crit"], ("critical", "high")),
+            (["crit"], ("critical", "high")),
+            ([], ("critical", "high")),
+            (5, ("critical", "high")),
+        ):
+            data = config_mod.default_config()
+            data["review"]["re_review_severities"] = value
+            loaded = config_mod.LoadedConfig(data, None, None, True)
+            self.assertEqual(loaded.blocking_severities(), expected, value)
+            blocking = review_mod.unresolved_blocking({"findings": [finding]}, loaded.blocking_severities())
+            self.assertEqual([f["id"] for f in blocking], ["F1"] if "critical" in expected else [], value)
+        loaded = config_mod.LoadedConfig({"review": "broken"}, None, None, True)
+        self.assertEqual(loaded.blocking_severities(), ("critical", "high"))
+
+    def test_review_parallel_must_be_a_boolean(self):
+        for value in (True, False, None):
+            data = config_mod.default_config()
+            data["review"]["parallel"] = value
+            self.assertEqual(config_mod.validate(data), [], value)
+        for value in ("sometimes", "false", 0, 1):
+            data = config_mod.default_config()
+            data["review"]["parallel"] = value
+            self.assertEqual(config_mod.validate(data), ["review.parallel: must be true or false"], value)
+
     def test_pinned_model_without_id_is_rejected(self):
         data = config_mod.default_config()
         data["implementer"]["model"] = {"family": "opus", "version": "pinned"}
