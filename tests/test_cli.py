@@ -2071,10 +2071,8 @@ class TestStatusVerdict(IsolatedCase):
 
     def test_status_reports_and_clears_a_stage_whose_process_died(self):
         from orchestrator import ledger as ledger_mod
-        from orchestrator import workspace as workspace_mod
 
-        workspace = workspace_mod.Workspace(self.project).ensure()
-        book = ledger_mod.Ledger(workspace, dict(ledger_mod.DEFAULT_BUDGETS))
+        book = ledger_mod.Ledger(self.cli_workspace(), dict(ledger_mod.DEFAULT_BUDGETS))
         token = book.begin("implementer", deadline=3600)
         ledger = book.load()
         ledger["in_flight"][token]["pid"] = 999_999

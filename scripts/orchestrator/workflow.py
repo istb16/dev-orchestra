@@ -62,12 +62,16 @@ POINTER = "current.json"
 #: (`--workflow auth-fix`); nothing that could escape the container is.
 _VALID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
-#: Artifacts of the pre-0.4.0 layout, moved into a workflow directory once.
+#: Artifacts of the pre-0.4.0 layout, which this version refuses to run beside.
 LEGACY_ENTRIES = ("plan.md", "state.json", "execution", "reviews", "jobs")
 
 
 class WorkflowError(ValueError):
-    """An id that cannot be used as a directory name."""
+    """An id that cannot be used as a directory name, or a container that cannot be used."""
+
+
+class LegacyLayoutError(WorkflowError):
+    """A flat `.ai/` from before 0.4.0, which this version no longer adopts."""
 
 
 def normalise(value: str) -> str:
@@ -171,8 +175,8 @@ def create_dir(container: str, workflow: str) -> bool:
 
     The filesystem picks exactly one creator when two commands race, which is
     what makes "a new workflow starts here" a fact rather than a guess. A
-    directory made some other way (``Workspace.ensure()`` called directly, or
-    ``migrate()`` reached first) is simply not seen as a start.
+    directory made some other way (``Workspace.ensure()`` called directly) is
+    simply not seen as a start.
     """
     os.makedirs(workflows_dir(container), exist_ok=True)
     try:
@@ -296,7 +300,7 @@ def stale_elsewhere(container: str, workflow: str, days: int, now: Optional[date
     return [name for _, name in found]
 
 
-# --------------------------------------------------------------------------- migration
+# --------------------------------------------------------------------------- old layout
 
 
 def legacy_artifacts(container: str) -> List[str]:
@@ -306,28 +310,25 @@ def legacy_artifacts(container: str) -> List[str]:
     return [name for name in LEGACY_ENTRIES if os.path.exists(os.path.join(container, name))]
 
 
-def migrate(container: str, workflow: str) -> List[str]:
-    """Move a flat `.ai/` into `.ai/workflows/<id>/`, once.
+LEGACY_REFUSAL = (
+    "%s holds artifacts in the layout dev-orchestra used before 0.4.0 (%s), "
+    "which this version no longer adopts into a workflow. Nothing was changed. "
+    "To keep them, move them aside (for example into %s) and run the command "
+    "again; a dev-orchestra up to 0.20.0, run once here first, adopts them into "
+    "a workflow instead, except a file that workflow already holds, which it "
+    'leaves here. To drop them, delete them. "workflow list" still runs.'
+)
 
-    Adopting the old layout rather than ignoring it: a workflow interrupted by
-    an upgrade keeps its plan, its review reports and its budget. Nothing is
-    deleted and nothing is merged -- if the destination already holds a file of
-    that name, the old one is left where it is for someone to look at.
+
+def refuse_legacy(container: str) -> None:
+    """Raise rather than run beside a flat `.ai/`; touch nothing.
+
+    Ignoring the old files would leave a plan and a budget orphaned next to a
+    new workflow directory, and moving them is what 0.20.0 and earlier did. The
+    user decides where they go.
     """
-    moved: List[str] = []
     names = legacy_artifacts(container)
-    if not names:
-        return moved
-    destination = workflow_dir(container, workflow)
-    os.makedirs(destination, exist_ok=True)
-    for name in names:
-        source = os.path.join(container, name)
-        target = os.path.join(destination, name)
-        if os.path.exists(target):
-            continue
-        try:
-            os.replace(source, target)
-        except OSError:
-            continue
-        moved.append(name)
-    return moved
+    if names:
+        raise LegacyLayoutError(
+            LEGACY_REFUSAL % (container, ", ".join(names), os.path.join(container, "pre-0.4.0"))
+        )

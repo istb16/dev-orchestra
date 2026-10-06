@@ -58,6 +58,12 @@ def cmd_workflow_list(args: argparse.Namespace) -> int:
     _, container = _container(args)
     entries = workflow_mod.listing(container)
     current, _ = workflow_mod.resolve(container, getattr(args, "workflow", "") or "")
+    legacy = workflow_mod.legacy_artifacts(container)
+    if legacy:
+        _err(
+            "note: %s also holds %s from the layout used before 0.4.0; the other commands "
+            "refuse here until they are moved aside or deleted." % (container, ", ".join(legacy))
+        )
     if args.json:
         _emit_json({"current": current, "workflows": entries})
         return 0
@@ -115,6 +121,9 @@ def cmd_workflow_use(args: argparse.Namespace) -> int:
     _, container = _container(args)
     try:
         workflow = workflow_mod.normalise(args.id)
+        # A pointer written beside the old layout would name a workflow the
+        # refusing commands then cannot reach.
+        workflow_mod.refuse_legacy(container)
     except workflow_mod.WorkflowError as exc:
         _err(str(exc))
         return 2
@@ -133,6 +142,7 @@ def cmd_workflow_remove(args: argparse.Namespace) -> int:
     _, container = _container(args)
     try:
         workflow = workflow_mod.normalise(args.id)
+        workflow_mod.refuse_legacy(container)
     except workflow_mod.WorkflowError as exc:
         _err(str(exc))
         return 2

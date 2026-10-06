@@ -238,8 +238,9 @@ codex plugin add dev-orchestra@dev-orchestra   # so add it again to install it
 
 A checkout install upgrades with `git pull` ([details](references/workflow.md#installing-from-a-skill-checkout)).
 Antigravity: `git pull` in the checkout, then restart Antigravity.
-Configuration is forward-compatible within a major version, and `CHANGELOG.md`
-calls out anything that needs action.
+Configuration, artifacts and commands are compatible within a major version
+([Compatibility](#compatibility)); `CHANGELOG.md` calls out anything that needs
+action.
 
 ## Uninstalling
 
@@ -253,12 +254,61 @@ Configuration stays unless you remove it; delete `.ai/` in a project to drop
 its artifacts. A checkout install has `install/uninstall.sh` (`.ps1` on Windows).
 Antigravity: `./install/uninstall.sh --antigravity` (`-Antigravity` on Windows), then restart it.
 
-## Versioning and changelog
+## Compatibility
 
-[Semantic versioning](https://semver.org/) over the config schema, the CLI
-commands and flags, and the `.ai/` artifact formats: major for a breaking
-change, minor for new commands, providers, roles or fields, patch for fixes and
-documentation. `CHANGELOG.md` follows [Keep a Changelog](https://keepachangelog.com/).
+[Semantic versioning](https://semver.org/) from 1.0.0: a breaking change to
+anything listed as covered is a major version, an addition is a minor version,
+a fix is a patch. `CHANGELOG.md` ([Keep a Changelog](https://keepachangelog.com/))
+calls out anything that needs action. Before 1.0.0 a minor release could still
+break these; the removal of the pre-0.4.0 `.ai/` adoption (CHANGELOG, Removed)
+is meant to be the last such change.
+
+Covered:
+
+- **The configuration schema** (`version: 1`): every documented key of
+  `config.yaml` and `.dev-orchestra.yaml` and the values it accepts. A key may
+  be added; a key is not removed, renamed or given a new meaning or type, and a
+  file that validates keeps validating. A built-in default may change in a
+  minor version and is listed under Changed with the old and the new value.
+- **The `dev-orchestra` commands, their flags and their exit codes**
+  ([cli](references/cli.md)). A command, a flag or an exit code may be added;
+  none is removed or changes meaning.
+- **The environment variables** `DEV_ORCHESTRA_CONFIG`, `DEV_ORCHESTRA_HOME`,
+  `DEV_ORCHESTRA_WORKFLOW`, `DEV_ORCHESTRA_SESSION` and
+  `DEV_ORCHESTRA_NO_USER_PROVIDERS`.
+- **The `--json` output of every command**: a key may be added; a key is not
+  removed, renamed or given a new meaning or type. The documented values of a
+  field that takes one of a list (`status`, `coverage`, `resume.reason`) are
+  kept; the sentences inside `notes` and `warnings` are text and are not.
+- **The `.ai/` artifact formats**: what dev-orchestra writes under
+  `.ai/workflows/<id>/` and `.ai/current.json`, by the rule under "How the
+  formats change" in [workflow](references/workflow.md#artifacts). A reviewer
+  or architect report is the model's own text: its path is covered, its
+  wording is not.
+- **What the built-in adapters do** (claude, codex, agy, mock): the modes, the
+  read-only enforcement, resuming, what a run records. The flags they pass to
+  their CLIs are not.
+- **The minimum Python version and the supported platforms**: raising or
+  dropping one is a major version.
+
+Not covered, and may change in a minor version:
+
+- **The `Provider` base class** a user adapter subclasses, with the types
+  around it ([providers](references/providers.md#interface-stability)). Such
+  a change is listed in `CHANGELOG.md` in an entry that begins
+  **User adapters**.
+- **The human-readable output** of every command. Read `--json` where a
+  program needs it.
+- **`scripts/smoke_live.py` and the other maintenance scripts**
+  (`stamp_translation.py`, `doc_contents.py`, `validate_skill.py`), their
+  `--json`, and the `verified/` records they write in the config directory:
+  per-machine records with a `schema` number, reported by `doctor` and remade
+  by running the script again when the schema moves.
+- **The modules under `scripts/orchestrator/`** as a Python API.
+- **The wording of `skills/dev-orchestra/SKILL.md`** and the prompt templates.
+  The commands they invoke are covered above.
+- **`DEV_ORCHESTRA_MOCK_*`** and `DEV_ORCHESTRA_TEST_ASSUME_NO_CLI`, which are
+  test instruments.
 
 ## Architecture
 

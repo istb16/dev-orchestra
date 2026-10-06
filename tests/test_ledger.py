@@ -8,8 +8,10 @@ anything. These tests assert the *refusal*, not the advice.
 from __future__ import annotations
 
 import json
+import os
 import time
 import unittest
+from typing import Any, ClassVar, Dict
 
 from helpers import IsolatedCase, present
 
@@ -441,6 +443,83 @@ class TestInFlightHeartbeat(LedgerCase):
         ws.write_json(self.workspace.state_path, {"version": 1, "runs": []})
         book = self.book()
         self.assertEqual(book.remaining("test"), ledger_mod.DEFAULT_BUDGETS["test"])
+
+    TOKENS: ClassVar[Dict[str, Any]] = {
+        "by_stage": {"architect": {"runs": 1, "input_tokens": 100}},
+        "by_label": {},
+    }
+
+    def write_old_ledger(self, **extra: Any) -> None:
+        """A ledger ``_fresh`` wrote between 0.4.0 and the 0.4.2 rename."""
+        ledger = {
+            "workflow": "old",
+            "started_at": "2026-09-16T00:00:00+00:00",
+            "last_activity_monotonic": time.time(),
+            "attempts": {"test": 1},
+            "tokens": self.TOKENS,
+        }
+        ledger.update(extra)
+        ws.write_json(self.workspace.state_path, {"version": 1, "runs": [], "ledger": ledger})
+
+    def test_a_ledger_with_only_the_old_workflow_key_keeps_its_identity(self):
+        """The key was renamed ``epoch`` in 0.4.2; the old one is renamed on load.
+
+        Keyed on that identity: the review lineage, whose round counter would
+        otherwise start again from zero, and the in-flight stamps.
+        """
+        self.write_old_ledger()
+        book = self.book()
+        self.assertEqual(book.workflow_id(), "old")
+        stored = self.workspace.read_state()["ledger"]
+        self.assertEqual(stored["epoch"], "old")
+        self.assertNotIn("workflow", stored)
+        self.assertEqual(book.workflow_id(), "old")
+        self.assertEqual(book.load()["attempts"], {"test": 1})
+        self.assertEqual(book.load()["tokens"], self.TOKENS)
+
+    def test_a_stage_in_flight_across_the_upgrade_is_still_charged(self):
+        """0.20.0 stamped the entry with the old key's value."""
+        entry = {
+            "stage": "implementer",
+            "started_monotonic": time.time(),
+            "pid": os.getpid(),
+            "epoch": "old",
+        }
+        self.write_old_ledger(in_flight={"implementer-1": entry})
+        book = self.book()
+        book.end("implementer-1", "ok", charged_seconds=30)
+        event = self.workspace.read_state()["events"][-1]
+        self.assertEqual(event["charged_seconds"], 30)
+        self.assertNotIn("charge_skipped", event)
+        self.assertEqual(book.load()["runtime_seconds"], 30)
+
+    def test_a_reset_of_an_old_ledger_writes_epoch_and_no_workflow_key(self):
+        self.write_old_ledger()
+        book = self.book()
+        book.reset()
+        stored = self.workspace.read_state()["ledger"]
+        self.assertTrue(stored["epoch"])
+        self.assertNotEqual(stored["epoch"], "old")
+        self.assertNotIn("workflow", stored)
+        self.assertEqual(book.load()["tokens"], self.TOKENS)
+
+    def test_a_ledger_with_neither_key_is_identified_by_its_start_time(self):
+        started = "2026-09-16T00:00:00+00:00"
+        ws.write_json(
+            self.workspace.state_path,
+            {
+                "version": 1,
+                "runs": [],
+                "ledger": {
+                    "started_at": started,
+                    "last_activity_monotonic": time.time(),
+                    "attempts": {"test": 1},
+                },
+            },
+        )
+        book = self.book()
+        self.assertEqual(book.workflow_id(), started)
+        self.assertEqual(book.load()["attempts"], {"test": 1})
 
 
 class TestSummary(LedgerCase):

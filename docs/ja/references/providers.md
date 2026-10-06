@@ -1,4 +1,4 @@
-<!-- translated-from: references/providers.md sha256:be9e5bb97c438f6947bb08c5651ea8845505a7df2e27d3e2823d6f0dcc7d5821 -->
+<!-- translated-from: references/providers.md sha256:88d8693efa2328744a0eec31f4a65d553864b9d07b2366ef06142c355388c914 -->
 
 > この文書は [references/providers.md](../../../references/providers.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -555,7 +555,7 @@ class MyCliProvider(Provider):
 
 ### インターフェースの安定性
 
-`base.Provider` とその周辺の型（`ModelCandidate`、`ResolvedModel`、`RunResult`、`Usage`、`Detection`）はプラグインの内部のものであり、マイナーバージョン間で変更される可能性があります。プラグインのバージョンを固定するか、更新後に `dev-orchestra doctor` を実行して、アダプタがまだ読み込めることを確認してください。`run()`、`_launch()`、`around_launch()` のシグネチャと `Launch` のフィールドは最も変わりやすい部分です。`tests/test_provider_contract.py` は、上記の例を含むすべてのアダプタがこれらに従っていることを検証します。
+`base.Provider` とその周辺の型（`ModelCandidate`、`ResolvedModel`、`RunResult`、`Usage`、`Detection`、`Launch`）は互換性の約束（README の「互換性」）の対象外です。マイナーバージョンで変わることがあり、そのときの `CHANGELOG.md` の項目は見つけやすいよう **User adapters** で始まります。約束の対象は built-in のアダプタが何をするかであって、サブクラスが頼りにしているものではありません。プラグインのバージョンを固定するか、更新後に `dev-orchestra doctor` を実行して、アダプタがまだ読み込めることを確認してください。`run()`、`_launch()`、`around_launch()` のシグネチャ、`Launch` のフィールド、`resume_support()`、ライブチェック関連のメンバーは最も変わりやすい部分です。`tests/test_provider_contract.py` は、上記の例を含むすべてのアダプタがこれらに従っていることを検証します。`run` が `resume_session` を `_launch` に渡すのはそれがあるときだけなので、再開の機能より前に書かれたアダプタも動き続けますが、これは配慮であって約束ではありません。
 
 上記の例は `build_command` しか実装していませんが、それでも読み取り専用のゲートは効きます。ゲートはアダプタが継承する `run` にあるので、生引数を伴う `plan` や `review` の実行は拒否され（base の許可リストは空）、`read_only_enforcement` を実装するまで `doctor` は `not reported by this adapter` と報告します。その `--read-only` フラグが本当に書き込みを止めるかどうかはアダプタの責任で、ここでは何も検証しません。
 

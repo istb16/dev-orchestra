@@ -18,6 +18,8 @@ from orchestrator import miniyaml
 from orchestrator.miniyaml import _parse_node, _read_lines
 
 JA_REFERENCES = pathlib.Path(REPO_ROOT) / "docs" / "ja" / "references"
+JA_WORKFLOW = "docs/ja/references/workflow.md"
+JA_PROVIDERS = "docs/ja/references/providers.md"
 
 YAML_FENCE = re.compile(r"^```ya?ml\s*$(.*?)^```\s*$", re.MULTILINE | re.DOTALL)
 
@@ -200,6 +202,82 @@ class TestReadmeLinks(unittest.TestCase):
                     continue
                 with self.subTest(readme=readme, target=target):
                     self.assertTrue((pathlib.Path(REPO_ROOT) / target).exists(), target)
+
+
+class TestCompatibilityPromise(unittest.TestCase):
+    """The promise is written once, in the README, and the rest point to it."""
+
+    def read(self, relative: str) -> str:
+        return (pathlib.Path(REPO_ROOT) / relative).read_text(encoding="utf-8")
+
+    def section(self, text: str, heading: str) -> str:
+        """From ``heading`` to the next heading of the same or a higher level."""
+        level = len(heading) - len(heading.lstrip("#"))
+        start = text.index(heading + "\n")
+        following = re.compile(r"^#{1,%d} " % level, re.MULTILINE)
+        found = following.search(text, start + len(heading))
+        return text[start : found.start() if found else len(text)]
+
+    def paragraph(self, text: str, opening: str) -> str:
+        """The paragraph that begins with ``opening``, up to the next blank line."""
+        start = text.index(opening)
+        end = text.find("\n\n", start)
+        return text[start : end if end != -1 else len(text)]
+
+    def test_the_compatibility_promise_is_stated_once_and_pointed_to(self):
+        self.assertIn("\n## Compatibility\n", self.read("README.md"))
+        self.assertIn("\n## 互換性\n", self.read("README.ja.md"))
+        changelog = self.read("CHANGELOG.md")
+        preamble = changelog[: changelog.index("## [Unreleased]")]
+        releases = self.section(self.read("CONTRIBUTING.md"), "## Releases")
+        stability = self.section(self.read("references/providers.md"), "### Interface stability")
+        ja_stability = self.section(self.read(JA_PROVIDERS), "### インターフェースの安定性")
+        formats = self.paragraph(self.read("references/workflow.md"), "**How the formats change.**")
+        ja_formats = self.paragraph(self.read(JA_WORKFLOW), "**形式の変え方。**")
+        upgrading = self.section(self.read("README.md"), "## Upgrading")
+        ja_upgrading = self.section(self.read("README.ja.md"), "## アップグレード")
+        # The pointer itself, not the word: "Compatibility" turns up elsewhere
+        # (a plan template heading), which would pass with the pointer gone.
+        pointers = {
+            "CHANGELOG.md preamble": (preamble, '"Compatibility" in `README.md`'),
+            "CONTRIBUTING.md Releases": (releases, '"Compatibility" in `README.md`'),
+            "workflow.md formats": (formats, '"Compatibility" in the README'),
+            "providers.md Interface stability": (stability, '("Compatibility" in the README)'),
+            "README.md Upgrading": (upgrading, "(#compatibility)"),
+            "ja workflow.md formats": (ja_formats, "README の「互換性」"),
+            "ja providers.md interface stability": (ja_stability, "（README の「互換性」）"),  # noqa: RUF001
+            "README.ja.md upgrading": (ja_upgrading, "(#互換性)"),
+        }
+        for name, (text, pointer) in pointers.items():
+            with self.subTest(document=name):
+                self.assertIn(pointer, text)
+        adapters = (
+            ("CHANGELOG.md preamble", preamble),
+            ("providers.md", stability),
+            ("ja providers.md", ja_stability),
+        )
+        for name, text in adapters:
+            with self.subTest(document=name):
+                self.assertIn("User adapters", text)
+
+    def test_no_doc_describes_the_removed_adoption(self):
+        """CHANGELOG.md is left out: the released entries stay as they were."""
+        stale = (
+            "adopts the flat",
+            "ships with a migration",
+            "Adopted the previous",
+            "migrate()",
+            "is adopted into",
+            "ワークフローに引き継がれる",
+        )
+        paths = [pathlib.Path(REPO_ROOT) / name for name in ("README.md", "README.ja.md", "CONTRIBUTING.md")]
+        paths += sorted((pathlib.Path(REPO_ROOT) / "references").glob("*.md"))
+        paths += sorted(JA_REFERENCES.glob("*.md"))
+        for path in paths:
+            text = path.read_text(encoding="utf-8")
+            for phrase in stale:
+                with self.subTest(document=path.name, phrase=phrase):
+                    self.assertNotIn(phrase, text)
 
 
 class TestJapaneseReferences(unittest.TestCase):

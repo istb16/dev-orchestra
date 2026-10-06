@@ -1029,13 +1029,18 @@ clears the memoised discovery results, so an edited adapter is detected afresh.
 ### Interface stability
 
 `base.Provider` and the types around it (`ModelCandidate`, `ResolvedModel`,
-`RunResult`, `Usage`, `Detection`) are internal to the plugin and may change
-between minor versions. Pin the plugin version, or run `dev-orchestra doctor`
-after an update to check that your adapter still loads. The signatures of
-`run()`, `_launch()` and `around_launch()`, and the fields of `Launch`, are the
-surface most likely to move;
+`RunResult`, `Usage`, `Detection`, `Launch`) are not covered by the
+compatibility promise ("Compatibility" in the README): they may change in a
+minor version, and the `CHANGELOG.md` entry begins **User adapters** so it can
+be found. What is covered is what a built-in adapter does, not what a subclass
+relies on. Pin the plugin version, or run `dev-orchestra doctor` after an
+update to check that your adapter still loads. The signatures of `run()`,
+`_launch()` and `around_launch()`, the fields of `Launch`, `resume_support()`
+and the live-check members are the surface most likely to move;
 `tests/test_provider_contract.py` holds every adapter, including the example
-above, to them.
+above, to them. That `run` passes `resume_session` to `_launch` only when
+there is one, so an adapter written before resuming keeps working, is a
+courtesy, not a promise.
 
 The example implements only `build_command`, and still gets the read-only gate:
 it lives in the `run` the adapter inherits, so a `plan` or `review` run with
