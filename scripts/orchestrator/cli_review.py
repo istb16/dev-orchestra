@@ -654,6 +654,80 @@ def _risk_models(
     return chosen, switched
 
 
+def _consolidate_round(
+    workspace: ws.Workspace,
+    panel: Sequence[Dict[str, Any]],
+    excluded: set,
+    run_dicts: Optional[List[Dict[str, Any]]],
+    iteration: int,
+    lineage: str,
+    *,
+    completed_round: Optional[str] = None,
+    unreviewed_round: Optional[str] = None,
+    amend: Optional[Callable[[Dict[str, Any]], None]] = None,
+) -> Tuple[Dict[str, Any], List[str]]:
+    """Build the round's report from the panel's reports and save it.
+
+    The one place a code round, a design round and ``review consolidate``
+    decide which reports and which reviewer entries a report is built from.
+    Returns ``(data, stale)``: the saved report and the reviewers whose
+    reports were written against another snapshot.
+
+    Every reviewer of ``panel`` is read, not only the ones that just ran:
+    with --only that would otherwise overwrite the report with a subset and
+    discard the other reviewers' findings and triage. A reviewer in
+    ``excluded`` sat the round out and is left out of the findings and of the
+    reviewer table alike, or it would be listed and counted again.
+
+    ``run_dicts`` is the runs this round recorded, merged into the last
+    report's table (``_merge_runs``); None rebuilds without a run, and keeps
+    that table as it stands. ``amend`` sees the report before it is saved.
+    """
+    ids = [str(r.get("id")) for r in panel if str(r.get("id")) not in excluded]
+    findings, stale = review_mod.read_reports(workspace, ids, review_mod.current_snapshot_stamp(workspace))
+    if run_dicts is None:
+        entries = (ws.read_json(workspace.consolidated_json_path, {}) or {}).get("reviewers", [])
+    else:
+        entries = _merge_runs(workspace, run_dicts)
+    data = review_mod.build_consolidation(
+        workspace,
+        [entry for entry in entries if str(entry.get("id")) not in excluded],
+        findings,
+        iteration,
+        lineage,
+        completed_round=completed_round,
+        unreviewed_round=unreviewed_round,
+    )
+    if amend is not None:
+        amend(data)
+    review_mod.save_consolidation(workspace, data)
+    return data, stale
+
+
+def _round_detail(
+    ctx: _RoundContext,
+    meta: Dict[str, Any],
+    data: Dict[str, Any],
+    run_dicts: List[Dict[str, Any]],
+    optimization: Dict[str, Any],
+    rerun: bool = False,
+) -> Dict[str, Any]:
+    """The event detail a round that ran closes its ledger entry with."""
+    return {
+        "iteration": ctx.iteration,
+        # Which freeze this event paid for: the sha repeats when the same plan
+        # or tree is frozen again, this does not, and it names the archived
+        # report the findings of this round are in. See ``review_mod.round_key``.
+        "round_id": meta.get("round_id") or "",
+        "reviewers": run_dicts,
+        "findings": data["counts"].get("findings_total"),
+        "identical_rounds": _round_repeats(ctx, data, rerun),
+        # Who sat on the round and why, read back by the report and by a
+        # re-consolidation.
+        "optimization": optimization,
+    }
+
+
 def _round_repeats(ctx: _RoundContext, data: Dict[str, Any], rerun: bool = False) -> int:
     """How many rounds in a row have produced these findings."""
     # The second run of a pair is the same snapshot reviewed again on purpose,
@@ -1130,42 +1204,26 @@ def _run_design_review(args: argparse.Namespace, loaded: config_mod.LoadedConfig
     runs = panel.runs
 
     run_dicts = _account_runs(ctx, panel, switched)
-    stamp = review_mod.current_snapshot_stamp(workspace)
-    # A seat this round left out is left out of its consolidation too, as on
-    # the code path: its report from an earlier run of this plan is not news.
-    ids = [str(r.get("id")) for r in configured if str(r.get("id")) not in excluded]
-    findings, stale = review_mod.read_reports(workspace, ids, stamp)
     # Every reviewer of this round has returned, so this is the report the
     # round's id may be published in -- and the only place that says so. Not
     # when none of them came back with a review: a round nobody reviewed has
-    # no findings to show, and approving over it would look clean.
+    # no findings to show, and approving over it would look clean. A seat this
+    # round left out is left out of its consolidation too, as on the code
+    # path: its report from an earlier run of this plan is not news.
     reviewed = any(run.status in ("ok", "partial") for run in runs)
-    data = review_mod.build_consolidation(
+    data, stale = _consolidate_round(
         workspace,
-        [entry for entry in _merge_runs(workspace, run_dicts) if str(entry.get("id")) not in excluded],
-        findings,
+        configured,
+        excluded,
+        run_dicts,
         iteration,
         lineage,
         completed_round=meta.get("round_id") if reviewed else None,
         unreviewed_round=None if reviewed else meta.get("round_id"),
     )
-    review_mod.save_consolidation(workspace, data)
-    repeats = _round_repeats(ctx, data)
-    detail = {
-        "iteration": iteration,
-        # Which freeze this event paid for. The sha repeats when a plan is
-        # reviewed again; this does not, and it names the archived report
-        # the findings of this round are in.
-        "round_id": meta.get("round_id") or "",
-        "reviewers": run_dicts,
-        "findings": data["counts"].get("findings_total"),
-        "identical_rounds": repeats,
-        # Who sat on the round and why, read back by the report and by a
-        # re-consolidation as the code round's block is.
-        "optimization": design_plan.to_dict(),
-    }
+    detail = _round_detail(ctx, meta, data, run_dicts, design_plan.to_dict())
     _end_round(ctx, panel.token, detail, runs)
-    _round_notes(ctx, repeats, stale)
+    _round_notes(ctx, detail["identical_rounds"], stale)
     return _print_round(
         ctx, runs, run_dicts, data, {"plan": meta["plan"], "optimization": design_plan.to_dict()}
     )
@@ -1470,42 +1528,23 @@ def _consolidate_code_round(
     ``--surrounding``), and the reviewers whose reports were stale.
     ``switched`` holds the ids that ran on their ``high_risk_model``.
     """
-    workspace, iteration = ctx.workspace, ctx.iteration
+    workspace = ctx.workspace
     adoption, rerun = size.adoption, size.rerun
     context_on = adoption.mode != "none"
     run_dicts = _account_runs(ctx, panel, switched)
-    # Consolidate from every configured reviewer's report, not only the ones
-    # that just ran: with --only that would otherwise overwrite the report with
-    # a subset and discard the other reviewers' findings and triage. Reports
-    # from an earlier snapshot are skipped rather than mixed in, and so are
-    # those of a conditional reviewer this round left out.
-    stamp = review_mod.current_snapshot_stamp(workspace)
-    findings, stale = review_mod.read_reports(
-        workspace, [str(r.get("id")) for r in configured if str(r.get("id")) not in excluded], stamp
-    )
     # Passed whether or not anyone returned: nothing is approved over a code
     # round, so the id only has to name the round this report was built for.
-    data = review_mod.build_consolidation(
+    data, stale = _consolidate_round(
         workspace,
-        [entry for entry in _merge_runs(workspace, run_dicts) if str(entry.get("id")) not in excluded],
-        findings,
-        iteration,
+        configured,
+        excluded,
+        run_dicts,
+        ctx.iteration,
         lineage,
         completed_round=meta.get("round_id"),
+        amend=lambda built: _record_triage_at_build(built, override, rerun),
     )
-    _record_triage_at_build(data, override, rerun)
-    review_mod.save_consolidation(workspace, data)
-    repeats = _round_repeats(ctx, data, rerun)
-    detail: Dict[str, Any] = {
-        "iteration": iteration,
-        # Which freeze this event paid for: the sha repeats when the same tree
-        # is frozen again, this does not. See ``review_mod.round_key``.
-        "round_id": meta.get("round_id") or "",
-        "reviewers": run_dicts,
-        "findings": data["counts"].get("findings_total"),
-        "identical_rounds": repeats,
-        "optimization": plan.to_dict(),
-    }
+    detail = _round_detail(ctx, meta, data, run_dicts, plan.to_dict(), rerun)
     measurement = None
     if override:
         measurement = _measurement_block(
@@ -1618,20 +1657,12 @@ def cmd_review_consolidate(args: argparse.Namespace) -> int:
     workspace = _review_workspace(args)
     panel = loaded.design_reviewers() if design else loaded.reviewers()
     excluded = _condition_excluded(workspace, _DESIGN.stage if design else _CODE.stage)
-    reviewer_ids = [str(r.get("id")) for r in panel if str(r.get("id")) not in excluded]
-    stamp = review_mod.current_snapshot_stamp(workspace)
-    findings, stale = review_mod.read_reports(workspace, reviewer_ids, stamp)
-    previous = ws.read_json(workspace.consolidated_json_path, {}) or {}
-    # The same reviewers left out of the table as out of the findings, or one
-    # the round sat out would be listed and counted again.
-    entries = [entry for entry in previous.get("reviewers", []) if str(entry.get("id")) not in excluded]
     lineage = _lineage(args, workspace)
-    data = review_mod.build_consolidation(
-        workspace, entries, findings, _iteration(args, workspace, lineage), lineage
+    data, stale = _consolidate_round(
+        workspace, panel, excluded, None, _iteration(args, workspace, lineage), lineage
     )
     for reviewer_id in stale:
         _err("note: %s's report predates the current snapshot and was ignored" % reviewer_id)
-    review_mod.save_consolidation(workspace, data)
     if args.json:
         _emit_json(data)
     else:
