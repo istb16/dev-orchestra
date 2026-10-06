@@ -548,13 +548,14 @@ def _stale_notice(container: str, workflow: str, days: int) -> None:
 def _workspace(args: argparse.Namespace) -> ws.Workspace:
     """The workspace for the workflow this invocation belongs to.
 
-    Every command goes through here, which is why the layout change is one
-    function: resolve the id, adopt any pre-0.4.0 artifacts into it, and hand
-    back a workspace pointed at that workflow's directory. The call that
-    creates the directory is the start of a new workflow, and the one place the
-    others that went quiet are noted.
+    Every command that uses a workflow goes through here: refuse a container
+    still in the pre-0.4.0 layout before anything is written, resolve the id,
+    and hand back a workspace pointed at that workflow's directory. The call
+    that creates the directory is the start of a new workflow, and the one
+    place the others that went quiet are noted.
     """
     root, container, loaded = _container_and_config(args)
+    workflow_mod.refuse_legacy(container)
     requested = getattr(args, "workflow", "") or ""
     if getattr(args, "job_file", None):
         # A detached worker is told its parent's workflow; it does not get to
@@ -562,14 +563,7 @@ def _workspace(args: argparse.Namespace) -> ws.Workspace:
         workflow, _ = workflow_mod.resolve(container, requested)
     else:
         workflow = workflow_mod.ensure(container, requested)
-    # Before migrate(), which would otherwise create the directory itself.
     fresh = workflow_mod.create_dir(container, workflow)
-    moved = workflow_mod.migrate(container, workflow)
-    if moved:
-        _err(
-            "Adopted the previous %s into workflow %s: %s"
-            % (os.path.basename(container), workflow, ", ".join(moved))
-        )
     workspace = ws.Workspace(root, container, workflow).ensure()
     if fresh:
         _stale_notice(container, workflow, loaded.stale_notice_days())

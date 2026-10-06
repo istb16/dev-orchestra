@@ -143,7 +143,7 @@ def _accumulate(account: Dict[str, Any], usage: Dict[str, Any]) -> Dict[str, Any
     # creates that key nothing else remembers them.
     #
     # The key is created here rather than left to the first *counted* run, so
-    # the migration happens once. Stamping without creating it closed nothing:
+    # the stamp happens once. Stamping without creating it closed nothing:
     # the next unreported run -- a Codex run, or Claude under
     # ``output_format: json`` -- found the key still absent, re-stamped the
     # larger run count over the saved one, and was itself reported as
@@ -250,8 +250,8 @@ def _carried_account(previous: Optional[Dict[str, Any]]) -> Dict[str, Any]:
 
 
 def _epoch(ledger: Dict[str, Any]) -> str:
-    """The budget epoch of a ledger, whichever key it was written with."""
-    return str(ledger.get("epoch") or ledger.get("workflow") or "")
+    """The budget epoch of a ledger."""
+    return str(ledger.get("epoch") or "")
 
 
 def _seconds(value: Any) -> float:
@@ -328,6 +328,15 @@ class Ledger:
         ledger = state.get("ledger")
         if not isinstance(ledger, dict) or not ledger:
             return self._fresh()
+        if "epoch" not in ledger and ledger.get("workflow"):
+            # Written between 0.4.0 and 0.4.2, under the old name. Renamed
+            # rather than dropped: the identity is what the review lineage and
+            # every in-flight stamp are keyed on, so losing it would reset the
+            # round counters and leave a running stage unbilled. The first
+            # write after this stores ``epoch`` and nothing reads the old key
+            # again.
+            ledger = dict(ledger)
+            ledger["epoch"] = str(ledger.pop("workflow"))
         idle_limit = float(self.settings.get("session_idle_reset_seconds") or 0)
         last = float(ledger.get("last_activity_monotonic") or 0)
         if idle_limit and last and time.time() - last > idle_limit:
@@ -342,7 +351,8 @@ class Ledger:
         two identifiers sharing one word cost a real analysis an hour: a
         ledger whose ``workflow`` did not match the directory holding it read
         as a ledger carried between directories, when it was only the other
-        namespace. A ledger written before the rename is read as it stands.
+        namespace. A ledger still carrying only ``workflow`` has it renamed on
+        load, so its identity survives the upgrade.
 
         Which is what ``budget reset`` and the idle reset both do. Anything
         counting *per workflow* has to be keyed on this, or the reset says it

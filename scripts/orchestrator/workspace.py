@@ -120,8 +120,8 @@ class Workspace:
 
     ``container`` is the ``.ai/`` directory itself, shared by the project;
     ``dir`` is this workflow's own directory inside it. Constructed without a
-    workflow the two are the same, which is the pre-0.4.0 layout and what a
-    caller that has no workflow to name still gets.
+    workflow the two are the same, which is what a caller that has no workflow
+    to name gets.
 
     ``review_scope`` narrows only the review artifacts to a sub-directory. The
     plan, the execution prompts, the run state and the ledger stay where they

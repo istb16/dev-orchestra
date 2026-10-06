@@ -5,10 +5,39 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-The public surface covered by that promise is: the configuration schema, the
-`dev-orchestra` commands and flags, and the `.ai/` artifact formats.
+What that promise covers -- the configuration schema, the `dev-orchestra`
+commands, flags, exit codes and `--json` output, the `.ai/` artifact formats
+and what the built-in adapters do -- and what it does not, is under
+"Compatibility" in `README.md`. The `Provider` base class a user adapter
+subclasses is not covered and may change in a minor version; such an entry
+below begins **User adapters** so adapter authors can find it.
 
 ## [Unreleased]
+
+### Changed
+
+- **The compatibility promise is written down once**, under "Compatibility"
+  in `README.md`: what 1.0 covers (the configuration schema, commands, flags,
+  exit codes and `--json` output, the `.ai/` artifacts, what the built-in
+  adapters do) and what it does not (the `Provider` base class, text output,
+  the maintenance scripts and their `verified/` records, module APIs). A
+  `--json` key is never removed, renamed or retyped. The preamble above,
+  CONTRIBUTING, `references/workflow.md` and `references/providers.md` point
+  to it (#242).
+
+### Removed
+
+- **The adoption of a flat `.ai/` written before 0.4.0.** A command run where
+  `.ai/` still holds `plan.md`, `state.json`, `execution/`, `reviews/` or
+  `jobs/` at the top level refuses (exit 2), names them and says what to do:
+  move them aside or delete them, or run dev-orchestra 0.20.0 once first,
+  which adopts them. Nothing is moved or deleted; `workflow list` notes them.
+  Meant as the last breaking change before 1.0 (#242).
+- **The `workflow` key of the budget ledger**, renamed `epoch` in 0.4.2, is no
+  longer read as such. A ledger with only the old key has it renamed `epoch`
+  when it is loaded, keeping the same value, so the review round counters and
+  a stage in flight across the upgrade carry on as before; its budgets, its
+  token account and the events are untouched (#242).
 
 ## [0.20.0] - 2026-10-06
 

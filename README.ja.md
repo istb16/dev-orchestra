@@ -225,7 +225,8 @@ codex plugin add dev-orchestra@dev-orchestra   # so add it again to install it
 
 チェックアウト導入は `git pull` で更新します（[詳細](docs/ja/references/workflow.md#installing-from-a-skill-checkout)）。
 Antigravity はチェックアウトで `git pull` し、Antigravity を再起動します。
-設定はメジャーバージョン内で前方互換です。対応が必要な変更は `CHANGELOG.md` に明記します。
+設定、成果物、コマンドはメジャーバージョン内で互換を保ちます（[互換性](#互換性)）。対応が必要な変更は
+`CHANGELOG.md` に明記します。
 
 ## アンインストール
 
@@ -239,12 +240,51 @@ dev-orchestra config reset --scope global --delete   # optional: your configurat
 チェックアウト導入には `install/uninstall.sh`（Windows は `.ps1`）があります。
 Antigravity は `./install/uninstall.sh --antigravity`（Windows は `-Antigravity`）のあと、再起動します。
 
-## バージョニングと変更履歴
+## 互換性
 
-[セマンティックバージョニング](https://semver.org/lang/ja/)に従い、設定スキーマ、CLIのコマンドとフラグ、
-`.ai/` の成果物フォーマットを公開APIとみなします。破壊的変更は major、コマンド・provider・ロール・
-フィールドの追加は minor、修正とドキュメントは patch です。`CHANGELOG.md` は
-[Keep a Changelog](https://keepachangelog.com/ja/1.1.0/) に従います。
+1.0.0 から[セマンティックバージョニング](https://semver.org/lang/ja/)に従います。約束の対象に
+挙げたものを壊す変更はメジャー、追加はマイナー、修正はパッチです。対応が必要な変更は `CHANGELOG.md`
+（[Keep a Changelog](https://keepachangelog.com/ja/1.1.0/)）に明記します。1.0.0 より前はマイナー
+リリースでもこれらを壊すことがありました。0.4.0 より前の `.ai/` の取り込みの廃止（CHANGELOG の
+Removed）を、その最後にするつもりです。
+
+約束の対象:
+
+- **設定スキーマ**（`version: 1`）: `config.yaml` と `.dev-orchestra.yaml` の、文書に書かれた
+  すべてのキーと、それが受け付ける値。キーは追加されることがありますが、消したり、名前を変えたり、
+  意味や型を変えたりはせず、検証を通るファイルは通り続けます。built-in の既定値はマイナー
+  バージョンで変わることがあり、そのときは Changed に旧い値と新しい値を書きます。
+- **`dev-orchestra` のコマンド、そのフラグと終了コード**（[cli](docs/ja/references/cli.md)）。
+  コマンド、フラグ、終了コードは追加されることがありますが、消えたり意味が変わったりはしません。
+- **環境変数** `DEV_ORCHESTRA_CONFIG`、`DEV_ORCHESTRA_HOME`、`DEV_ORCHESTRA_WORKFLOW`、
+  `DEV_ORCHESTRA_SESSION`、`DEV_ORCHESTRA_NO_USER_PROVIDERS`。
+- **すべてのコマンドの `--json` 出力**: キーは追加されることがありますが、消したり、名前を
+  変えたり、意味や型を変えたりはしません。決まった値のどれかを取るフィールド（`status`、
+  `coverage`、`resume.reason`）の、文書に書かれた値は保ちます。`notes` と `warnings` の中の
+  文は文章であり、対象外です。
+- **`.ai/` の成果物の形式**: dev-orchestra が `.ai/workflows/<id>/` と `.ai/current.json` に
+  書くもの。[workflow](docs/ja/references/workflow.md#artifacts) の「形式の変え方」の決まりに
+  従います。レビュアーや architect のレポートはモデル自身の文章なので、置き場所は対象、文面は
+  対象外です。
+- **built-in のアダプタがすること**（claude、codex、agy、mock）: モード、読み取り専用の強制、
+  再開、実行が記録するもの。各 CLI に渡すフラグは対象外です。
+- **必要な Python の最低バージョンと対応プラットフォーム**: 引き上げたり外したりするのは
+  メジャーバージョンです。
+
+対象外で、マイナーバージョンで変わることがあるもの:
+
+- **ユーザーのアダプタが継承する `Provider` 基底クラス**とその周辺の型
+  （[providers](docs/ja/references/providers.md#interface-stability)）。この変更は
+  `CHANGELOG.md` で **User adapters** から始まる項目に書きます。
+- **すべてのコマンドの人向けの出力**。プログラムから使うときは `--json` を読んでください。
+- **`scripts/smoke_live.py` とその他の保守用スクリプト**（`stamp_translation.py`、
+  `doc_contents.py`、`validate_skill.py`）、その `--json`、それらが設定ディレクトリに書く
+  `verified/` の記録。記録はマシンごとのもので `schema` 番号を持ち、`doctor` が報告し、
+  schema が変わったらスクリプトをもう一度実行して作り直します。
+- **`scripts/orchestrator/` 以下のモジュール**の Python API としての使い方。
+- **`skills/dev-orchestra/SKILL.md` の文面**とプロンプトのテンプレート。それらが実行する
+  コマンドは上のとおり対象です。
+- **`DEV_ORCHESTRA_MOCK_*`** と `DEV_ORCHESTRA_TEST_ASSUME_NO_CLI`。テスト用の仕組みです。
 
 ## アーキテクチャ
 

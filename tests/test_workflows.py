@@ -20,7 +20,7 @@ import os
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict
+from typing import Any, ClassVar, Dict
 
 from helpers import IsolatedCase, has_git
 
@@ -117,52 +117,160 @@ class TestTheLayout(IsolatedCase):
         self.assertTrue(os.path.isfile(os.path.join(workspace.container, ".gitignore")))
         self.assertFalse(os.path.isfile(os.path.join(workspace.dir, ".gitignore")))
 
-    def test_no_workflow_is_the_flat_layout(self):
+    def test_no_workflow_uses_the_container_itself(self):
         """A caller with no workflow to name still gets a usable workspace."""
         workspace = ws.Workspace(self.project)
         self.assertEqual(workspace.dir, workspace.container)
 
 
-class TestAdoptingTheOldLayout(IsolatedCase):
-    """An upgrade must not strand a workflow that was already running."""
+class TestRefusingTheOldLayout(IsolatedCase):
+    """A flat `.ai/` from before 0.4.0 is no longer adopted, and never touched.
+
+    The refusal is the whole of the way through: it names what it found and
+    says what to do, and it moves nothing -- where the files go is the user's
+    call.
+    """
+
+    PLAN = "# the plan"
+    STATE: ClassVar[Dict[str, Any]] = {"version": 1, "runs": []}
 
     def setUp(self):
         super().setUp()
         self.container = os.path.join(self.project, ".ai")
-        os.makedirs(os.path.join(self.container, "reviews"))
+        os.makedirs(self.container)
         with open(os.path.join(self.container, "plan.md"), "w", encoding="utf-8") as handle:
-            handle.write("# the plan")
-        ws.write_json(os.path.join(self.container, "state.json"), {"version": 1, "runs": []})
+            handle.write(self.PLAN)
+        ws.write_json(os.path.join(self.container, "state.json"), self.STATE)
 
-    def test_the_artifacts_move_into_the_workflow(self):
-        moved = wf.migrate(self.container, "w1")
-        self.assertIn("plan.md", moved)
-        destination = os.path.join(self.container, "workflows", "w1", "plan.md")
-        with open(destination, encoding="utf-8") as handle:
-            self.assertEqual(handle.read(), "# the plan")
+    def assert_untouched(self):
+        with open(os.path.join(self.container, "plan.md"), encoding="utf-8") as handle:
+            self.assertEqual(handle.read(), self.PLAN)
+        self.assertEqual(ws.read_json(os.path.join(self.container, "state.json")), self.STATE)
 
-    def test_nothing_is_left_behind_at_the_top_level(self):
-        wf.migrate(self.container, "w1")
-        self.assertFalse(os.path.exists(os.path.join(self.container, "plan.md")))
+    def test_a_flat_layout_is_refused_before_anything_is_written(self):
+        code, _, err = run_cli("state", "show")
+        self.assertEqual(code, 2)
+        self.assertIn("before 0.4.0", err)
+        self.assertIn("(plan.md, state.json)", err)
+        self.assertIn("0.20.0", err)
+        self.assertIn(os.path.join(".ai", "pre-0.4.0"), err)
+        self.assertFalse(os.path.exists(os.path.join(self.container, "workflows")))
+        self.assertFalse(os.path.exists(wf.pointer_path(self.container)))
+        self.assert_untouched()
 
-    def test_it_happens_once(self):
-        wf.migrate(self.container, "w1")
-        self.assertEqual(wf.migrate(self.container, "w2"), [])
+    def test_every_command_that_uses_a_workflow_is_refused(self):
+        """The guard is in ``_workspace``; each of these reaches it its own way."""
+        self.write("fresh.md", "do it\n")
+        commands = (
+            ("status",),
+            ("summary",),
+            ("budget", "show"),
+            ("budget", "consume", "test"),
+            ("budget", "reset"),
+            ("tokens", "show"),
+            ("jobs", "list"),
+            ("state", "record", "test", "ok"),
+            ("progress", "record", "test", "--signature", "same"),
+            ("optimization", "report"),
+            ("design", "approve"),
+            ("review", "show"),
+            ("run", "implementer", "--prompt-file", "fresh.md"),
+        )
+        for command in commands:
+            with self.subTest(command=command):
+                code, out, err = run_cli(*command)
+                self.assertEqual(code, 2, out + err)
+                self.assertIn("before 0.4.0", err)
+                self.assertFalse(os.path.exists(os.path.join(self.container, "workflows")))
+                self.assertFalse(os.path.exists(wf.pointer_path(self.container)))
+        self.assert_untouched()
 
-    def test_an_existing_file_is_not_overwritten(self):
+    def test_workflow_use_writes_no_pointer(self):
+        code, _, err = run_cli("workflow", "use", "w1")
+        self.assertEqual(code, 2)
+        self.assertIn("before 0.4.0", err)
+        self.assertFalse(os.path.exists(wf.pointer_path(self.container)))
+        self.assert_untouched()
+
+    def test_workflow_remove_deletes_nothing(self):
+        kept = os.path.join(self.container, "workflows", "w1")
+        os.makedirs(kept)
+        code, _, err = run_cli("--workflow", "w2", "workflow", "remove", "w1", "--yes")
+        self.assertEqual(code, 2)
+        self.assertIn("before 0.4.0", err)
+        self.assertTrue(os.path.isdir(kept))
+        self.assert_untouched()
+
+    def test_leftovers_beside_a_workflow_directory_are_refused_too(self):
+        """What a 0.20.0 adoption left behind when the destination had the file."""
         destination = os.path.join(self.container, "workflows", "w1")
         os.makedirs(destination)
         with open(os.path.join(destination, "plan.md"), "w", encoding="utf-8") as handle:
             handle.write("# the newer plan")
-        wf.migrate(self.container, "w1")
+        code, _, err = run_cli("--workflow", "w1", "state", "show")
+        self.assertEqual(code, 2)
+        self.assertIn("(plan.md, state.json)", err)
         with open(os.path.join(destination, "plan.md"), encoding="utf-8") as handle:
             self.assertEqual(handle.read(), "# the newer plan")
+        self.assertEqual(os.listdir(destination), ["plan.md"])
+        self.assert_untouched()
 
-    def test_a_fresh_project_has_nothing_to_adopt(self):
-        import shutil
+    def test_a_lone_empty_directory_is_refused(self):
+        for name in ("plan.md", "state.json"):
+            os.remove(os.path.join(self.container, name))
+        for name in ("jobs", "reviews"):
+            with self.subTest(entry=name):
+                os.makedirs(os.path.join(self.container, name))
+                code, _, err = run_cli("state", "show")
+                self.assertEqual(code, 2)
+                self.assertIn("(%s)" % name, err)
+                self.assertTrue(os.path.isdir(os.path.join(self.container, name)))
+                os.rmdir(os.path.join(self.container, name))
 
-        shutil.rmtree(self.container)
-        self.assertEqual(wf.migrate(self.container, "w1"), [])
+    def test_the_refusal_names_every_entry_found(self):
+        for name in ("execution", "reviews", "jobs"):
+            os.makedirs(os.path.join(self.container, name))
+        code, _, err = run_cli("state", "show")
+        self.assertEqual(code, 2)
+        self.assertIn("(%s)" % ", ".join(wf.LEGACY_ENTRIES), err)
+
+    def test_workflow_list_still_runs_and_notes_the_entries(self):
+        code, out, err = run_cli("workflow", "list", "--json")
+        self.assertEqual(code, 0)
+        self.assertEqual(set(json.loads(out)), {"current", "workflows"})
+        self.assertIn("also holds plan.md, state.json from the layout used before 0.4.0", err)
+        code, _, err = run_cli("workflow", "list")
+        self.assertEqual(code, 0)
+        self.assertIn("before 0.4.0", err)
+        self.assert_untouched()
+
+    def test_config_and_workflow_show_still_run(self):
+        for command in (("config", "show"), ("workflow", "show")):
+            with self.subTest(command=command):
+                code, out, err = run_cli(*command)
+                self.assertEqual(code, 0, out + err)
+        self.assert_untouched()
+
+    def test_moving_them_aside_lifts_the_refusal(self):
+        aside = os.path.join(self.container, "pre-0.4.0")
+        os.makedirs(aside)
+        for name in ("plan.md", "state.json"):
+            os.replace(os.path.join(self.container, name), os.path.join(aside, name))
+        code, out, err = run_cli("state", "show")
+        self.assertEqual(code, 0, out + err)
+        with open(os.path.join(aside, "plan.md"), encoding="utf-8") as handle:
+            self.assertEqual(handle.read(), self.PLAN)
+        self.assertEqual(ws.read_json(os.path.join(aside, "state.json")), self.STATE)
+
+    def test_a_detached_worker_is_refused_the_same_way(self):
+        self.write("fresh.md", "plan it\n")
+        job_file = os.path.join(self.container, "workflows", "test", "jobs", "manual.json")
+        argv = ["run", "architect", "--prompt-file", "fresh.md", "--output", ".ai/plan.md"]
+        code, _, err = run_cli(*argv, "--job-file", job_file)
+        self.assertEqual(code, 2)
+        self.assertIn("before 0.4.0", err)
+        self.assertFalse(os.path.exists(os.path.join(self.container, "workflows")))
+        self.assert_untouched()
 
 
 class TestSayingTheTreeIsStillShared(IsolatedCase):
@@ -405,20 +513,6 @@ class TestTheStaleNoteThroughTheCli(StaleCase):
         self.assertIn("note: 1 workflow has not been active for 30 days or more (old)", err)
         _, out, _ = run_cli("config", "validate")
         self.assertIn("workspace.stale_notice_days: must be 36500 or less (100 years)", out)
-
-    def test_an_adopted_flat_layout_is_announced_before_the_note(self):
-        """The probe must run before migrate(), which creates the directory too."""
-        self.seed("old", updated_at=self.ago(40))
-        with open(os.path.join(self.container, "plan.md"), "w", encoding="utf-8") as handle:
-            handle.write("# the plan")
-        ws.write_json(os.path.join(self.container, "state.json"), {"version": 1, "runs": []})
-        code, _, err = run_cli("--workflow", "w1", "state", "show")
-        self.assertEqual(code, 0)
-        self.assertLess(
-            err.index("Adopted the previous .ai into workflow w1"),
-            err.index("note: 1 workflow has not been active"),
-        )
-        self.assertTrue(os.path.isfile(os.path.join(self.container, "workflows", "w1", "plan.md")))
 
 
 @unittest.skipUnless(has_git(), "git is required")

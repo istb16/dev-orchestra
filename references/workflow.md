@@ -118,9 +118,14 @@ which is a different repository root, and therefore a different `.ai/`.
 `workflow list` names any other workflow that looks live here, and the
 commands say so rather than let the separate directories imply otherwise.
 
-An upgrade from a version before 0.4.0 adopts the flat `.ai/` into the first
-workflow that runs, so an interrupted workflow keeps its plan, its reports and
-its budget.
+A flat `.ai/` written before 0.4.0 -- `plan.md`, `state.json`, `execution/`,
+`reviews/` or `jobs/` directly in `.ai/` -- is no longer adopted. Every
+command that uses the workflow refuses (exit 2), names the entries and says
+what to do: move them aside or delete them, or run dev-orchestra 0.20.0 once
+in the checkout first, which adopts them into a workflow -- except a file that
+workflow already holds, which 0.20.0 leaves where it is, so such leftovers
+are refused again until they are moved aside or deleted. `workflow list`
+notes them. Nothing is moved or deleted.
 
 **How the formats change.** The `.ai/` artifacts are part of the public
 surface, and they change by addition only: a new version adds a key or a file,
@@ -128,12 +133,15 @@ a reader skips a key it does not know, and a key an older version never wrote
 reads as what that older file meant -- which is "unknown" rather than zero
 where zero would be a claim, as with `priced_runs` in the token ledger. A key is not removed, renamed or given a new meaning.
 A change that cannot be made by addition is a breaking change -- a major
-release, or a minor one while the version is below 1.0 -- and it ships with a
-migration that moves the old form into the new, as the 0.4.0 layout change
-did. The files carry no format version for that
+release -- and it ships with a way through: a migration that moves the old
+form into the new, or a refusal that names the old form and says what to do
+with it, as the removal of the 0.4.0 adoption does (CHANGELOG, Removed). The
+files carry no format version for that
 reason: nothing reads one, and the rule above is what keeps an older workflow
-readable. The `--json` output of the commands changes the same way, as with the
-`*_real` keys that appear only when a path is stored somewhere else.
+readable. The `--json` output of the commands changes the same way: a key may
+be added, as the `*_real` keys that appear only when a path is stored
+elsewhere; a key is not removed, renamed or given a new meaning or type. The
+whole of what is covered is under "Compatibility" in the README.
 
 `.ai/` gets a `.gitignore` containing `*` on first use, so artifacts stay out of
 the user's commits. Teams who want them reviewable can delete that file and

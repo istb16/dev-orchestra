@@ -311,7 +311,7 @@ class TestDocumentation(IsolatedCase):
             "Supported platforms",
             "Upgrading",
             "Uninstalling",
-            "Versioning",
+            "Compatibility",
             "Contributing",
             "License",
         ):

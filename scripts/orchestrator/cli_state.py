@@ -297,7 +297,7 @@ def _workflows_recorded(args: argparse.Namespace, workspace: ws.Workspace) -> Li
                 }
             )
     if not any(item["events"] for item in found):
-        # A flat `.ai/` that has not been adopted yet, or nothing recorded.
+        # Nothing recorded in any workflow: this one's own state, empty or not.
         events = [item for item in (workspace.read_state().get("events") or []) if isinstance(item, dict)]
         found = [{"workflow": workspace.workflow, "workspace": workspace, "events": events}]
     return found

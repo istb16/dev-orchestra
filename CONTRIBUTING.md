@@ -267,10 +267,12 @@ default, which is what "recommended-coding, latest" actually means.
 
 ## Releases
 
-[Semantic versioning](https://semver.org/). The public surface is the config
-schema, the CLI commands and flags, and the `.ai/` artifact formats. The
-artifacts change by addition only; the rule, and what a change that breaks it
-needs, is under "How the formats change" in `references/workflow.md`.
+[Semantic versioning](https://semver.org/) over the surface listed under
+"Compatibility" in `README.md`. The `.ai/` artifacts change by addition only;
+the rule, and what a change that breaks it needs, is under "How the formats
+change" in `references/workflow.md`. A change to the `Provider` base class is
+not covered: it may ship in a minor version, and its entry begins
+**User adapters**.
 
 1. Run `python scripts/smoke_live.py` against the installed CLIs. The suite
    cannot tell you an adapter has drifted; this can.
