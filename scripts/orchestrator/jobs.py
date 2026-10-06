@@ -149,13 +149,41 @@ def _reconcile(workspace: ws.Workspace, job: Dict[str, Any]) -> Dict[str, Any]:
     if job.get("status") in FINISHED:
         return job
     pid = int(job.get("pid") or 0)
-    if pid and not execution.pid_alive(pid):
+    if pid and _worker_alive(pid, job) is False:
         job = dict(job)
         job["status"] = "abandoned"
         job["error"] = "the worker process (pid %d) is gone and recorded no outcome" % pid
         job["finished_at"] = ws.utcnow()
         write_job(workspace, job)
     return job
+
+
+def _worker_alive(pid: int, job: Dict[str, Any]) -> Optional[bool]:
+    """Whether ``pid`` is the job's worker and still running; None when it is
+    running but nothing recorded says whose it is.
+
+    A pid is reused once its process is gone, and a worker that vanished
+    without a word -- with a reboot, say -- leaves one that may be anyone's.
+    So the pid is checked against the start time recorded with it, and a
+    different start is a different process: the worker is gone. A record
+    without one (written before it was kept, or on macOS, where none can be
+    read) is None.
+    """
+    if not execution.pid_alive(pid):
+        return False
+    started = job.get("pid_started")
+    if not started:
+        return None
+    return execution.process_started(pid) == started
+
+
+def _record_pid(job: Dict[str, Any], pid: int, started: Optional[str]) -> None:
+    job["pid"] = pid
+    # Never left behind from an earlier pid: it would vouch for the wrong one.
+    if started:
+        job["pid_started"] = started
+    else:
+        job.pop("pid_started", None)
 
 
 def start(
@@ -231,12 +259,14 @@ def start(
         job["finished_at"] = ws.utcnow()
         write_job(workspace, job)
         return job
+    started = execution.process_started(proc.pid)
 
     def spawned(current: Dict[str, Any]) -> None:
         # Merged into what is on disk, not written over it: a fast worker can
         # already have claimed the job or finished it, and none of that may be
         # put back to how it looked before the spawn.
-        current.setdefault("pid", proc.pid)
+        if "pid" not in current:
+            _record_pid(current, proc.pid, started)
         if current.get("status") == "starting":
             current["status"] = "running"
 
@@ -277,13 +307,20 @@ def cancel(workspace: ws.Workspace, job_id: str) -> Dict[str, Any]:
     if job.get("status") in FINISHED:
         return job
     pid = int(job.get("pid") or 0)
+    alive = _worker_alive(pid, job) if pid else False
     killed = False
-    if pid and execution.pid_alive(pid):
+    note = " (the worker may still be running)"
+    if alive or (alive is None and not execution.IS_WINDOWS):
+        # Unconfirmed on POSIX, kill_tree still signals the pid only while it
+        # leads its own group, as the worker does. Windows has no such check,
+        # and taskkill /T /F there would end whatever tree now has the pid.
         killed = execution.kill_tree(pid, execution.KILL_GRACE_SECONDS)
+    elif alive is None:
+        note = " (pid %d was not stopped: it may no longer be the worker, which may still be running)" % pid
     job = dict(job)
     job["status"] = "cancelled"
     job["finished_at"] = ws.utcnow()
-    job["error"] = "cancelled by request%s" % ("" if killed else " (the worker may still be running)")
+    job["error"] = "cancelled by request%s" % ("" if killed else note)
     # Written by the worker's SIGTERM handler before it exited, so it is there
     # by now when the kill was confirmed.
     left = _read_stop_note(stop_note_path(job_path(workspace, job_id)))
@@ -328,8 +365,10 @@ def update(
 def claim(job_file: str) -> Dict[str, Any]:
     """Called by the worker: record that it owns this job."""
 
+    started = execution.process_started(os.getpid())
+
     def claimed(job: Dict[str, Any]) -> None:
-        job["pid"] = os.getpid()
+        _record_pid(job, os.getpid(), started)
         job["status"] = "running"
         job["claimed_at"] = ws.utcnow()
 

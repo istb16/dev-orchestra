@@ -123,12 +123,13 @@ class TestCancel(JobCase):
         SIGTERM handler wrote ``note`` (None: nothing) beside the record."""
         from orchestrator import execution
 
-        self.record("a-1", pid=4242, status="running")
+        self.record("a-1", pid=4242, pid_started="t0", status="running")
         if note is not None:
             with open(jobs_mod.stop_note_path(jobs_mod.job_path(self.workspace, "a-1")), "w") as handle:
                 handle.write(note)
         with (
             mock.patch.object(execution, "pid_alive", lambda pid: True),
+            mock.patch.object(execution, "process_started", lambda pid: "t0"),
             mock.patch.object(execution, "kill_tree", lambda pid, grace: True),
         ):
             return jobs_mod.cancel(self.workspace, "a-1")
@@ -163,7 +164,9 @@ class TestCancel(JobCase):
             **execution._spawn_kwargs(),
         )
         try:
-            self.record("a-1", pid=child.pid, status="running")
+            self.record(
+                "a-1", pid=child.pid, pid_started=execution.process_started(child.pid), status="running"
+            )
             job = jobs_mod.cancel(self.workspace, "a-1")
             self.assertEqual(job["status"], "cancelled")
             child.wait(timeout=30)
@@ -178,10 +181,11 @@ class TestCancel(JobCase):
 
         from orchestrator import execution
 
-        self.record("a-1", pid=4242, status="running")
+        self.record("a-1", pid=4242, pid_started="t0", status="running")
         sent = []
         with (
             mock.patch.object(execution, "pid_alive", lambda pid: True),
+            mock.patch.object(execution, "process_started", lambda pid: "t0"),
             mock.patch.object(execution, "KILL_GRACE_SECONDS", 0.2),
             mock.patch.object(
                 execution.subprocess, "run", lambda args, **kwargs: sent.append(("run", args[0]))
@@ -208,7 +212,7 @@ class TestCancel(JobCase):
 
         from orchestrator import execution
 
-        self.record("a-1", pid=4242, status="running")
+        self.record("a-1", pid=4242, pid_started="t0", status="running")
         sent = []
         alive = [True]
 
@@ -224,6 +228,7 @@ class TestCancel(JobCase):
 
         with (
             mock.patch.object(execution, "pid_alive", lambda pid: alive[0]),
+            mock.patch.object(execution, "process_started", lambda pid: "t0"),
             mock.patch.object(execution, "KILL_GRACE_SECONDS", 0.2),
             mock.patch.object(execution.subprocess, "run", stop),
             mock.patch.object(execution.os, "kill", stop),
@@ -285,6 +290,113 @@ class TestCancel(JobCase):
             jobs_mod.cancel(self.workspace, "nope")
 
 
+class TestReusedPid(JobCase):
+    """A worker that vanished without a word, with a reboot say, leaves a pid
+    the system may hand to anyone. It is told apart by its start time (#268)."""
+
+    def bystander(self):
+        """A process that has nothing to do with any job, ended after the test."""
+        import sys
+
+        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+
+        def end():
+            if child.poll() is None:
+                child.kill()
+            child.wait(timeout=30)
+
+        self.addCleanup(end)
+        return child
+
+    def test_a_pid_another_process_now_has_is_not_stopped(self):
+        child = self.bystander()
+        self.record("a-1", pid=child.pid, pid_started="the worker's", status="running")
+        job = jobs_mod.cancel(self.workspace, "a-1")
+        self.assertEqual(job["status"], "abandoned")
+        self.assertIn("is gone", job["error"])
+        time.sleep(0.5)
+        self.assertIsNone(child.poll())
+
+    def test_a_pid_another_process_now_has_marks_the_job_abandoned(self):
+        self.record("a-1", pid=os.getpid(), pid_started="the worker's")
+        job = present(jobs_mod.read_job(self.workspace, "a-1"))
+        self.assertEqual(job["status"], "abandoned")
+        self.assertEqual(ws.read_json(jobs_mod.job_path(self.workspace, "a-1"))["status"], "abandoned")
+
+    def test_the_worker_it_was_recorded_for_is_left_running(self):
+        from orchestrator import execution
+
+        started = execution.process_started(os.getpid())
+        if started is None:
+            self.skipTest("no start time to read on this platform")
+        self.record("a-1", pid=os.getpid(), pid_started=started)
+        self.assertEqual(present(jobs_mod.read_job(self.workspace, "a-1"))["status"], "running")
+
+    def cancel_an_unverified_worker(self, windows):
+        """Cancel a job recorded without a start time, its pid alive."""
+        from orchestrator import execution
+
+        self.record("a-1", pid=4242, status="running")
+        killed = []
+        with (
+            mock.patch.object(execution, "IS_WINDOWS", windows),
+            mock.patch.object(execution, "pid_alive", lambda pid: True),
+            mock.patch.object(execution, "kill_tree", lambda pid, grace: killed.append(pid) or True),
+        ):
+            return jobs_mod.cancel(self.workspace, "a-1"), killed
+
+    def test_an_older_record_is_not_force_killed_on_windows(self):
+        """taskkill /T /F would end whatever tree has the pid by now."""
+        job, killed = self.cancel_an_unverified_worker(windows=True)
+        self.assertEqual(killed, [])
+        self.assertEqual(job["status"], "cancelled")
+        self.assertIn("pid 4242 was not stopped", job["error"])
+
+    def test_an_older_record_is_left_to_the_group_check_on_posix(self):
+        job, killed = self.cancel_an_unverified_worker(windows=False)
+        self.assertEqual(killed, [4242])
+        self.assertEqual(job["error"], "cancelled by request")
+
+    @unittest.skipUnless(os.name == "nt", "the case the issue measured")
+    def test_an_older_record_leaves_a_live_bystander_running_on_windows(self):
+        child = self.bystander()
+        self.record("a-1", pid=child.pid, status="running")
+        job = jobs_mod.cancel(self.workspace, "a-1")
+        self.assertEqual(job["status"], "cancelled")
+        time.sleep(0.5)
+        self.assertIsNone(child.poll())
+
+
+class TestProcessStarted(unittest.TestCase):
+    def setUp(self):
+        from orchestrator import execution
+
+        self.execution = execution
+        if execution.process_started(os.getpid()) is None:
+            self.skipTest("no start time to read on this platform")
+
+    def test_it_is_the_same_each_time_it_is_read(self):
+        self.assertEqual(
+            self.execution.process_started(os.getpid()), self.execution.process_started(os.getpid())
+        )
+
+    def test_another_process_reads_differently(self):
+        import sys
+
+        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        try:
+            self.assertNotEqual(
+                self.execution.process_started(child.pid), self.execution.process_started(os.getpid())
+            )
+        finally:
+            child.kill()
+            child.wait(timeout=30)
+
+    def test_no_process_reads_as_none(self):
+        self.assertIsNone(self.execution.process_started(0))
+        self.assertIsNone(self.execution.process_started(999_999))
+
+
 class TestWorkerSide(JobCase):
     def test_claim_records_the_worker_pid(self):
         self.record("a-1", status="starting")
@@ -294,6 +406,19 @@ class TestWorkerSide(JobCase):
         assert job is not None
         self.assertEqual(job["pid"], os.getpid())
         self.assertEqual(job["status"], "running")
+
+    def test_claim_records_when_the_worker_started_in_place_of_the_launchers(self):
+        """The parent recorded the process it spawned, which on Windows can be
+        a launcher in front of the worker; nothing of it may vouch for the
+        worker's pid."""
+        from orchestrator import execution
+
+        self.record("a-1", status="running", pid=4242, pid_started="the launcher's")
+        path = jobs_mod.job_path(self.workspace, "a-1")
+        with mock.patch.object(execution, "process_started", lambda pid: "w" if pid == os.getpid() else None):
+            self.assertEqual(jobs_mod.claim(path)["pid_started"], "w")
+        with mock.patch.object(execution, "process_started", lambda pid: None):
+            self.assertNotIn("pid_started", jobs_mod.claim(path))
 
     def test_finish_writes_the_outcome_and_the_output(self):
         self.record("a-1")
@@ -370,6 +495,13 @@ class TestStartAgainstAFastWorker(JobCase):
             )
         on_disk = ws.read_json(jobs_mod.job_path(self.workspace, job["id"]))
         self.assertEqual((on_disk["status"], on_disk["pid"]), ("running", 4242))
+
+    def test_the_spawned_process_is_recorded_with_when_it_started(self):
+        from orchestrator import execution
+
+        with spawning(_Spawned), mock.patch.object(execution, "process_started", lambda pid: "s%d" % pid):
+            job = jobs_mod.start(self.workspace, "implementer", WORKER_ARGV)
+        self.assertEqual(ws.read_json(jobs_mod.job_path(self.workspace, job["id"]))["pid_started"], "s4242")
 
 
 class _Spawned:

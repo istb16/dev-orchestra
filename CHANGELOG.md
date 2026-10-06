@@ -51,6 +51,16 @@ below begins **User adapters** so adapter authors can find it.
   the delete fails -- on Windows, a file another process holds open -- it
   exits 1, names the error and says how many files are left, so it can be run
   again once they are closed (#285).
+- **`jobs cancel` no longer stops a process that was handed a vanished
+  worker's pid.** A worker gone without a word (after a reboot, say) left a
+  pid that `jobs cancel` force-killed on Windows with `taskkill /T /F`,
+  whatever tree had it by then, and that kept the job from being marked
+  `abandoned`. A job now records the worker's start time with its pid
+  (Windows and Linux) and checks it first: a different process marks the job
+  `abandoned` and is left alone. A job recorded by an earlier version, or on
+  macOS, has no start time; on Windows its pid is no longer stopped, and the
+  job says so, while POSIX keeps stopping it only while it leads its own
+  process group (#268).
 
 ## [0.22.0] - 2026-10-06
 
