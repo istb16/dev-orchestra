@@ -14,6 +14,21 @@ below begins **User adapters** so adapter authors can find it.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Two findings from one reviewer are no longer merged into one.** Two
+  near-identical findings a few lines apart from the same reviewer (the
+  `timeout` and the `retries` argument not being validated, say) became one
+  finding with `duplicate_count: 2`, which read as two reviewers agreeing,
+  and the other finding was gone. Only findings from different reviewers are
+  merged now, and a finding with no line number (`n/a`) is no longer merged
+  with a finding that has one anywhere in its file; that pair is left to the
+  possible duplicates. Two findings without a line number, such as design
+  findings on one plan section, can still be merged. A
+  merged finding keeps each report as its reviewer wrote it in
+  `merged_reports`, listed under it in `consolidated.md`, and
+  `duplicate_count` is the number of reviewers who reported it (#259).
+
 ## [0.22.0] - 2026-10-06
 
 ### Added

@@ -36,16 +36,37 @@ def _line_number(value: str) -> Optional[int]:
 
 
 def _same_locus(left: Dict[str, Any], right: Dict[str, Any]) -> bool:
+    """Same file, and line numbers within 10 of each other -- or neither has one.
+
+    A finding without a line number is about the file as a whole, which is
+    not the same as being at every line in it: it used to match any finding
+    in its file, and so absorbed a finding 300 lines away. Two without one
+    are at the same place -- a design finding names a plan section as its
+    file and has no line -- but one with a line and one without are not, and
+    such a pair is left to ``duplicate_candidates`` to suggest.
+    """
     if left["file"] != right["file"]:
         return False
     lnum, rnum = _line_number(left.get("line", "")), _line_number(right.get("line", ""))
     if lnum is None or rnum is None:
-        return True
+        return lnum is None and rnum is None
     return abs(lnum - rnum) <= 10
 
 
+def _reporters(finding: Dict[str, Any]) -> set:
+    """Who reported a finding: a parsed one's reviewer, or a merged one's list."""
+    return set(finding.get("reported_by") or [finding.get("reviewer", "unknown")])
+
+
 def are_duplicates(left: Dict[str, Any], right: Dict[str, Any], threshold: float = 0.72) -> bool:
-    """Two findings are the same issue when they sit at the same place and say the same thing."""
+    """Two findings are the same issue when they sit at the same place and say the same thing.
+
+    Never two from one reviewer, for the reason ``duplicate_candidates`` never
+    pairs them: reviewers are told not to report an issue twice, so two of
+    theirs are two issues, and merging them loses one.
+    """
+    if _reporters(left) & _reporters(right):
+        return False
     if not _same_locus(left, right):
         return False
     left_text = _fingerprint("%s %s" % (left.get("problem", ""), left.get("recommended_fix", "")))
@@ -149,11 +170,31 @@ def consolidate_findings(findings: Sequence[Dict[str, Any]], threshold: float = 
     return merged
 
 
+#: What ``merged_reports`` keeps of each report a merged finding came from.
+_REPORT_FIELDS = ("severity", "line", "problem", "impact", "evidence", "recommended_fix")
+
+
+def _report_record(finding: Dict[str, Any], reviewer: str) -> Dict[str, Any]:
+    record: Dict[str, Any] = {"reviewer": reviewer}
+    record.update({field: finding.get(field, "") for field in _REPORT_FIELDS})
+    return record
+
+
 def _absorb(target: Dict[str, Any], other: Dict[str, Any]) -> None:
+    """Fold ``other`` into ``target``: the highest severity, the longest of each text.
+
+    Each report as its reviewer wrote it is kept in ``merged_reports``, the
+    first one included, because the longest-of-each-field result is no one
+    report: a field the other wording had is otherwise gone.
+    """
+    if "merged_reports" not in target:
+        target["merged_reports"] = [_report_record(target, target["reported_by"][0])]
     reviewer = other.get("reviewer", "unknown")
-    if reviewer not in target["reported_by"]:
-        target["reported_by"].append(reviewer)
-    target["duplicate_count"] = target.get("duplicate_count", 1) + 1
+    target["merged_reports"].append(_report_record(other, reviewer))
+    target["reported_by"].append(reviewer)
+    # How many reviewers agree, which is what the count is read as. A reviewer
+    # is never merged with itself, so this is also the number of reports.
+    target["duplicate_count"] = len(target["reported_by"])
     if SEVERITY_RANK.get(other.get("severity", "medium"), 2) < SEVERITY_RANK.get(
         target.get("severity", "medium"), 2
     ):
@@ -161,8 +202,6 @@ def _absorb(target: Dict[str, Any], other: Dict[str, Any]) -> None:
     for field in ("problem", "impact", "evidence", "recommended_fix"):
         if len(other.get(field, "")) > len(target.get(field, "")):
             target[field] = other[field]
-    if target.get("line") in ("", "n/a") and other.get("line") not in ("", "n/a"):
-        target["line"] = other["line"]
 
 
 _REPORT_SNAPSHOT_RE = re.compile(r"^-\s*Snapshot:\s*(\S+)\s*$", re.MULTILINE | re.IGNORECASE)
@@ -810,8 +849,26 @@ def _finding_block(finding: Dict[str, Any]) -> List[str]:
         "- Impact: %s" % finding.get("impact", ""),
         "- Evidence: %s" % finding.get("evidence", ""),
         "- Recommended fix: %s" % finding.get("recommended_fix", ""),
+        *_merged_report_lines(finding),
         "",
     ]
+
+
+def _merged_report_lines(finding: Dict[str, Any]) -> List[str]:
+    """Each report a merged finding came from, in its own words. Nothing for one report."""
+    reports = [entry for entry in finding.get("merged_reports") or [] if isinstance(entry, dict)]
+    if not reports:
+        return []
+    lines = ["- Merged from:"]
+    for entry in reports:
+        lines.append(
+            "  - %s (%s, line %s): %s"
+            % (entry.get("reviewer"), entry.get("severity"), entry.get("line") or "n/a", entry.get("problem"))
+        )
+        fix = str(entry.get("recommended_fix") or "").strip()
+        if fix:
+            lines.append("    Fix: %s" % fix)
+    return lines
 
 
 def surrounding_records(block: Dict[str, Any]) -> List[Tuple[str, Any]]:

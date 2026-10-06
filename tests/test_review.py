@@ -132,6 +132,67 @@ class TestConsolidation(IsolatedCase):
         findings = review_mod.parse_findings(FINDING_A, "r1") + review_mod.parse_findings(other, "r2")
         self.assertEqual(len(review_mod.consolidate_findings(findings)), 2)
 
+    def test_two_findings_from_one_reviewer_are_never_merged(self):
+        """#259: the same reviewer's two near-identical findings are two issues."""
+        timeout = FINDING_A.replace("- Line: 42", "- Line: 10").replace(
+            "the nil guard is missing before calling profile.name",
+            "The timeout argument is not validated before it is used",
+        )
+        retries = FINDING_A.replace("- Line: 42", "- Line: 14").replace(
+            "the nil guard is missing before calling profile.name",
+            "The retries argument is not validated before it is used",
+        )
+        findings = review_mod.parse_findings(timeout + retries, "claude")
+        self.assertTrue(review_mod.are_duplicates(findings[0], dict(findings[1], reviewer="codex")))
+        merged = review_mod.consolidate_findings(findings)
+        self.assertEqual(len(merged), 2)
+        self.assertEqual([f["duplicate_count"] for f in merged], [1, 1])
+        problems = sorted(f["problem"] for f in merged)
+        self.assertIn("retries", problems[0])
+        self.assertIn("timeout", problems[1])
+
+    def test_a_finding_without_a_line_is_not_merged_into_one_with_a_line(self):
+        """#259: `n/a` is no line in particular, not every line."""
+        far = FINDING_A.replace("- Line: 42", "- Line: 300")
+        no_line = FINDING_A_REWORDED.replace("- Line: 43", "- Line: n/a")
+        findings = review_mod.parse_findings(far, "claude") + review_mod.parse_findings(no_line, "codex")
+        merged = review_mod.consolidate_findings(findings)
+        self.assertEqual(len(merged), 2)
+        self.assertEqual([f["reported_by"] for f in merged], [["codex"], ["claude"]])
+
+    def test_two_findings_without_a_line_can_still_be_merged(self):
+        """A design finding names a plan section and has no line; two reviewers
+        saying the same about one section are still one finding."""
+        first = FINDING_A.replace("- Line: 42", "- Line: n/a")
+        second = FINDING_A_REWORDED.replace("- Line: 43", "- Line: n/a")
+        findings = review_mod.parse_findings(first, "claude") + review_mod.parse_findings(second, "codex")
+        merged = review_mod.consolidate_findings(findings)
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(sorted(merged[0]["reported_by"]), ["claude", "codex"])
+
+    def test_a_merge_keeps_every_report_as_written(self):
+        """#259: the longest-of-each-field result is no one report, so each is kept."""
+        findings = review_mod.parse_findings(FINDING_A, "r1") + review_mod.parse_findings(
+            FINDING_A_REWORDED, "r2"
+        )
+        merged = review_mod.consolidate_findings(findings)[0]
+        reports = merged["merged_reports"]
+        self.assertEqual([r["reviewer"] for r in reports], ["r2", "r1"])
+        by_reviewer = {r["reviewer"]: r for r in reports}
+        self.assertEqual(by_reviewer["r1"]["impact"], "NoMethodError for users without a profile")
+        self.assertEqual(by_reviewer["r1"]["line"], "42")
+        self.assertEqual(by_reviewer["r1"]["severity"], "high")
+        self.assertEqual(by_reviewer["r2"]["severity"], "critical")
+        self.assertEqual(merged["duplicate_count"], len(merged["reported_by"]))
+        rendered = review_mod.render_consolidation({"findings": [dict(merged, id="F1")]})
+        self.assertIn("- Merged from:", rendered)
+        self.assertIn("  - r1 (high, line 42): the nil guard is missing", rendered)
+
+    def test_an_unmerged_finding_has_no_merged_reports(self):
+        merged = review_mod.consolidate_findings(review_mod.parse_findings(FINDING_A, "r1"))
+        self.assertNotIn("merged_reports", merged[0])
+        self.assertNotIn("Merged from", review_mod.render_consolidation({"findings": merged}))
+
     def test_ordering_is_by_severity(self):
         findings = review_mod.parse_findings(FINDING_B, "r1") + review_mod.parse_findings(FINDING_A, "r2")
         merged = review_mod.consolidate_findings(findings)

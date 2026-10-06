@@ -1,4 +1,4 @@
-<!-- translated-from: references/reviews.md sha256:4adb2f96b044d57d358be405af53147af9cf9063713feb8cf5ae8d9c90be7bcd -->
+<!-- translated-from: references/reviews.md sha256:b1b94b69996ed19122576f6e54387355f8d534a56751c0cf0bf6200fc2b1a4f7 -->
 
 > この文書は [references/reviews.md](../../../references/reviews.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -906,12 +906,19 @@ plan とリクエストの合計で測られます。どちらもプロンプト
 
 ## 重複排除
 
-2 つの指摘は、**同じ箇所**（同じファイルで、行番号の差が 10 以内、または行番号が
-ない）にあり、problem と推奨修正のテキストが類似度 0.72 以上で一致する場合に
-マージされます。
+2 つの指摘は、**異なるレビュアー**からのもので、**同じ箇所**（同じファイルで、
+行番号の差が 10 以内、またはどちらにも行番号がない）にあり、problem と推奨修正の
+テキストが類似度 0.72 以上で一致する場合にマージされます。同じレビュアーの 2 つの
+指摘は、下でペアにされないのと同じ理由でマージされません。行番号のない指摘は
+ファイル（設計レビューではプランの節）全体についての指摘であり、その中のすべての
+行についての指摘ではないので、行番号のある指摘とはマージされません。その組は
+重複の可能性の提案に任せます。
 
 マージでは、**最も高い**重大度と、各テキストフィールドの**最も長い**版が残され、
-それを報告したすべてのレビュアーが記録されます。
+それを報告したすべてのレビュアーが記録されます。`duplicate_count` は、それを
+報告したレビュアーの数です。各レビュアーが書いたとおりの報告は `merged_reports`
+（レビュアー、重大度、行、各テキストフィールド）に残り、`consolidated.md` にも
+指摘の下に並ぶので、マージで残すテキストから外れた内容も失われません。
 
 ```json
 {
@@ -922,6 +929,10 @@ plan とリクエストの合計で測られます。どちらもプロンプト
   "category": "correctness",
   "reported_by": ["claude-general", "codex-security"],
   "duplicate_count": 2,
+  "merged_reports": [
+    {"reviewer": "claude-general", "severity": "high", "line": "42", "problem": "…", "…": "…"},
+    {"reviewer": "codex-security", "severity": "critical", "line": "44", "problem": "…", "…": "…"}
+  ],
   "triage": "needs-triage",
   "triage_note": ""
 }
