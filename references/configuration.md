@@ -979,8 +979,9 @@ The patterns are matched the way `high_risk_paths` is:
 
 Write the mapping in block form, as above, one pattern per line and every
 pattern that starts with `*` in quotes. An unquoted `*.sql` is read as a YAML
-alias by PyYAML, and without PyYAML the bundled parser refuses an inline
-mapping and any pattern containing `[` inside a flow list, quoted or not:
+alias by PyYAML and refused by the bundled parser used without PyYAML, which
+also refuses an inline mapping and any pattern containing `[` inside a flow
+list, quoted or not:
 
 ```yaml
 when:
@@ -1535,8 +1536,11 @@ dev-orchestra reviewer remove 1
 Config files are parsed by PyYAML when it is installed, and otherwise by a
 built-in parser covering block mappings, block sequences, inline empty
 collections, inline scalar lists, comments, and quoted strings. Anchors,
-aliases, multi-document streams, and block scalars (`|`, `>`) are rejected with
-a clear error. JSON is always accepted.
+aliases, tags, merge keys (`<<`), multi-document streams, and block scalars
+(`|`, `>`) are rejected with a clear error, and so is an unquoted value that
+starts with a character YAML reserves (`*.sql`, `&x`, `!x`, `@x`): quote it.
+A sequence item may put any number of spaces after its `-`, as long as the
+item's other lines line up with its first. JSON is always accepted.
 
 Inside double quotes a backslash starts an escape, as in YAML: write a Windows
 path as `"C:\\work\\new"` or in single quotes (`'C:\work\new'`). An escape YAML

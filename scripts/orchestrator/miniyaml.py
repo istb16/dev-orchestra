@@ -9,8 +9,9 @@ Supported: nested block mappings, block sequences (``- item`` and ``- key: v``),
 inline empty collections (``[]`` / ``{}``), inline scalar lists (``[a, b]``),
 ``#`` comments, single/double quoted strings, int/float/bool/null scalars.
 
-Not supported (raises ``YamlError``): anchors, aliases, multi-document streams,
-block scalars (``|`` / ``>``), complex keys, nested flow collections.
+Not supported (raises ``YamlError``): anchors, aliases, tags, merge keys,
+multi-document streams, block scalars (``|`` / ``>``), complex keys, nested flow
+collections, tabs in indentation.
 """
 
 from __future__ import annotations
@@ -92,12 +93,22 @@ def _strip_comment(raw: str) -> str:
 
 def _read_lines(text: str) -> List[_Line]:
     lines: List[_Line] = []
+    started = ended = False
     for lineno, raw in enumerate(text.splitlines(), 1):
-        if raw.strip() in ("---", "..."):
-            continue
         stripped = _strip_comment(raw)
         if not stripped.strip():
             continue
+        if stripped[:3] in ("---", "...") and stripped[3:4] in ("", " ", "\t"):
+            # One document: a "---" before it and a "..." after it are fine.
+            if stripped[:3] == "---" and (started or lines):
+                raise YamlError("multi-document streams are not supported (line %d)" % lineno)
+            if stripped[3:].strip():
+                raise YamlError("put the document on the line after %r (line %d)" % (stripped[:3], lineno))
+            started = True
+            ended = ended or stripped == "..."
+            continue
+        if ended:
+            raise YamlError("text after the end of the document '...' (line %d)" % lineno)
         body = stripped.lstrip(" ")
         if body.startswith("\t"):
             # YAML forbids tabs in indentation; a tab anywhere else is kept as is.
@@ -155,6 +166,32 @@ def _parse_quoted(token: str) -> str:
     return body.replace("''", "'")
 
 
+# What a plain value cannot start with in YAML, and why PyYAML would read it
+# differently or not at all.
+_INDICATORS = {
+    "&": "anchors are not supported",
+    "*": "aliases are not supported",
+    "!": "tags are not supported",
+    "|": "block scalars are not supported",
+    ">": "block scalars are not supported",
+    "[": "unclosed inline list",
+    "%": "a value cannot start with '%'",
+    "@": "a value cannot start with '@'",
+    "`": "a value cannot start with '`'",
+    ",": "a value cannot start with ','",
+    "]": "a value cannot start with ']'",
+    "}": "a value cannot start with '}'",
+}
+
+
+def _refuse_indicator(token: str) -> None:
+    reason = _INDICATORS.get(token[0])
+    if token[:2] in ("? ", "?\t") or token == "?":
+        reason = "complex keys are not supported"
+    if reason:
+        raise YamlError("%s; quote the value if it is text: %r" % (reason, token))
+
+
 def _parse_scalar(token: str, strict: bool = True) -> Any:
     """Read one scalar or inline list; ``strict=False`` is for command-line values.
 
@@ -182,6 +219,8 @@ def _parse_scalar(token: str, strict: bool = True) -> Any:
         return {}
     if token.startswith("{"):
         raise YamlError("inline mappings are not supported: %r" % token)
+    if strict:
+        _refuse_indicator(token)
     lowered = token.lower()
     if lowered in ("null", "~"):
         return None
@@ -222,8 +261,8 @@ def _parse_node(lines: List[_Line], i: int) -> Tuple[Any, int]:
 def _parse_seq(lines: List[_Line], i: int, indent: int) -> Tuple[List[Any], int]:
     items: List[Any] = []
     while i < len(lines) and lines[i].indent == indent and _is_seq_line(lines[i]):
-        rest = lines[i].content[1:].strip()
-        child_indent = indent + 2
+        line = lines[i]
+        rest = line.content[1:].strip()
         if not rest:
             i += 1
             if i < len(lines) and lines[i].indent > indent:
@@ -233,19 +272,29 @@ def _parse_seq(lines: List[_Line], i: int, indent: int) -> Tuple[List[Any], int]
             items.append(value)
             continue
         if not _split_key(rest)[1] and not _is_seq_line(_Line(0, rest, 0)):
-            items.append(_parse_scalar(rest))
+            items.append(_parse_value(rest, line))
             i += 1
             continue
-        sub: List[_Line] = [_Line(child_indent, rest, lines[i].lineno)]
+        # The item's first line starts where the text after "-" does, however
+        # many blanks that is; the lines below it keep their own columns.
+        sub: List[_Line] = [_Line(indent + len(line.content) - len(rest), rest, line.lineno)]
         j = i + 1
         while j < len(lines) and lines[j].indent > indent:
-            shifted = child_indent + (lines[j].indent - indent - 2)
-            sub.append(_Line(max(shifted, child_indent), lines[j].content, lines[j].lineno))
+            sub.append(lines[j])
             j += 1
-        value, _ = _parse_node(sub, 0)
+        value, used = _parse_node(sub, 0)
+        if used != len(sub):
+            raise YamlError("unexpected indentation at line %d: %r" % (sub[used].lineno, sub[used].content))
         items.append(value)
         i = j
     return items, i
+
+
+def _parse_value(token: str, line: _Line) -> Any:
+    try:
+        return _parse_scalar(token)
+    except YamlError as exc:
+        raise YamlError("%s (line %d)" % (exc, line.lineno)) from None
 
 
 def _parse_map(lines: List[_Line], i: int, indent: int) -> Tuple[dict, int]:
@@ -255,17 +304,17 @@ def _parse_map(lines: List[_Line], i: int, indent: int) -> Tuple[dict, int]:
         if _is_seq_line(line):
             break
         content = line.content
-        if content.endswith("|") or content.endswith(">"):
-            raise YamlError("block scalars are not supported (line %d)" % line.lineno)
         key_part, sep, rest = _split_key(content)
         if not sep:
             raise YamlError("expected 'key: value' (line %d): %r" % (line.lineno, content))
-        key = _parse_scalar(key_part)
+        if key_part.strip() == "<<":
+            raise YamlError("merge keys ('<<') are not supported (line %d)" % line.lineno)
+        key = _parse_value(key_part, line)
         if not isinstance(key, str):
             key = str(key)
         rest = rest.strip()
         if rest:
-            out[key] = _parse_scalar(rest)
+            out[key] = _parse_value(rest, line)
             i += 1
             continue
         i += 1

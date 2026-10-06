@@ -26,6 +26,15 @@ below begins **User adapters** so adapter authors can find it.
   a number; a tab inside a value is kept instead of becoming two spaces, a
   tab in the indentation is refused, and an apostrophe in an unquoted value
   (`it's`) no longer hides the comment after it.
+- **Without PyYAML, YAML the bundled parser cannot read is refused instead of
+  read wrongly** (#278). A sequence item with more than one space after its
+  `-` (`-   id: a`) lost every key after the first, which surfaced as an
+  unrelated "provider is required"; any spacing now reads, and an item line
+  out of column is an error naming the line. Anchors, aliases (including an
+  unquoted `- *.sql`), tags, merge keys, every block scalar form (`|-`,
+  `>2`, `- |`) and a second document after `---` or `...` are refused with
+  the line number, where they were taken as plain text or joined into one
+  document. On the command line, `config set` still takes `*.sql` as text.
 
 ## [0.22.0] - 2026-10-06
 
