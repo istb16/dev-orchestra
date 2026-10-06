@@ -26,70 +26,6 @@ below begins **User adapters** so adapter authors can find it.
   adapter's own keys included), tier names and `budgets` take keys of their
   own and are not checked (#281).
 
-### Changed
-
-- **`review.re_review_severities` and `review.parallel` are validated.** A
-  mistake in the severities used to leave nothing blocking while `config
-  validate` answered valid: a single `critical` not in a list was read a
-  letter at a time, `[crit]` matched no finding, and a number crashed. The
-  list must now name at least one of `critical`, `high`, `medium` and `low`;
-  a single name, an unknown name, a non-string and `[]` are refused, and
-  `review.parallel` must be `true` or `false`. Names are read in any case,
-  so `[Critical, High]`, which used to block nothing, now blocks as written.
-  `status` and `review status`, which read the file without validating it,
-  block on the default `[critical, high]` for a value that would be refused
-  (#277).
-- **`workspace.dir` must be a non-empty string.** `dir: 5` was valid and
-  crashed `status`; it is now refused, and a command that reads the file
-  without validating it uses `.ai`, as `config suggest-roles` already did
-  (#281).
-
-- **Run from a subdirectory holding its own `.dev-orchestra.yaml`, every
-  command now reads that file.** `workspace.dir` used to be read from the
-  repository root's file while roles and budgets came from the
-  subdirectory's, and a `run --detach` worker, started in the root, ran the
-  model the root's file named rather than the one the foreground run would
-  have used. The worker is now given the parent's directory, and `.ai/` is
-  placed by the same file as everything else (#282).
-- **Without PyYAML, a config file indented with tabs, or using anchors,
-  aliases, tags or block scalars, is refused with the line number.** It used
-  to be read, sometimes wrongly; write it with spaces and plain values (#275,
-  #278).
-
-### Fixed
-
-- **Without PyYAML, a Windows path or a string of digits written to a config
-  reads back unchanged** (#275). The bundled parser decoded `\\n` in a
-  double-quoted string as a backslash and a newline, so `C:\work\new` came
-  back as `C:\work\` and `ew` on a new line; it now decodes every escape in
-  one pass, refuses one YAML does not define, and refuses text after a closing
-  quote. A string that looks like a number or a date (`"123"`, `"1.0"`,
-  `".5"`, `"2026-10-06"`) is written in quotes, so it no longer comes back as
-  a number; a tab inside a value is kept instead of becoming two spaces, a
-  tab in the indentation is refused, and an apostrophe in an unquoted value
-  (`it's`) no longer hides the comment after it.
-- **Without PyYAML, YAML the bundled parser cannot read is refused instead of
-  read wrongly** (#278). A sequence item with more than one space after its
-  `-` (`-   id: a`) lost every key after the first, which surfaced as an
-  unrelated "provider is required"; any spacing now reads, and an item line
-  out of column is an error naming the line. Anchors, aliases (including an
-  unquoted `- *.sql`), tags, merge keys, every block scalar form (`|-`,
-  `>2`, `- |`) and a second document after `---` or `...` are refused with
-  the line number, where they were taken as plain text or joined into one
-  document. On the command line, `config set` still takes `*.sql` as text.
-- **A configuration file saved as UTF-8 with a BOM keeps its first key.**
-  Notepad and PowerShell 5's `Out-File -Encoding utf8` start the file with
-  one, and it became part of the first key: `review:` was read as another
-  key, ignored, and `config validate` still answered valid. Every file is now
-  read with the BOM dropped, YAML and JSON alike (#276).
-- **Writing to a `.dev-orchestra.json` keeps it JSON.** `config set --scope
-  project`, `reviewer add` and every other writer wrote YAML with `#`
-  comments into it, which dev-orchestra still read but editors, `jq` and CI
-  checks did not. A file whose name ends in `.json` is now written as
-  indented JSON, without the header comment (#280).
-- **`config set language.reply no` saves the tag `no`** (Norwegian) rather
-  than `false`. In a file, a bare `no` is still read as false and refused;
-  the message now says to quote it (#281).
 - **A project file that loosens a review gate is reported.** The project file
   can come with the branch under review, so when it makes `reviewers`,
   `review.design.reviewers`, `review.max_review_iterations`,
@@ -106,6 +42,36 @@ below begins **User adapters** so adapter authors can find it.
 
 ### Changed
 
+- **`review.re_review_severities` and `review.parallel` are validated.** A
+  mistake in the severities used to leave nothing blocking while `config
+  validate` answered valid: a single `critical` not in a list was read a
+  letter at a time, `[crit]` matched no finding, and a number crashed. The
+  list must now name at least one of `critical`, `high`, `medium` and `low`;
+  a single name, an unknown name, a non-string and `[]` are refused, and
+  `review.parallel` must be `true` or `false`. Names are read in any case,
+  so `[Critical, High]`, which used to block nothing, now blocks as written.
+  `status` and `review status`, which read the file without validating it,
+  block on the default `[critical, high]` for a value that would be refused
+  (#277).
+
+- **`workspace.dir` must be a non-empty string.** `dir: 5` was valid and
+  crashed `status`; it is now refused, and a command that reads the file
+  without validating it uses `.ai`, as `config suggest-roles` already did
+  (#281).
+
+- **Run from a subdirectory holding its own `.dev-orchestra.yaml`, every
+  command now reads that file.** `workspace.dir` used to be read from the
+  repository root's file while roles and budgets came from the
+  subdirectory's, and a `run --detach` worker, started in the root, ran the
+  model the root's file named rather than the one the foreground run would
+  have used. The worker is now given the parent's directory, and `.ai/` is
+  placed by the same file as everything else (#282).
+
+- **Without PyYAML, a config file indented with tabs, or using anchors,
+  aliases, tags or block scalars, is refused with the line number.** It used
+  to be read, sometimes wrongly; write it with spaces and plain values (#275,
+  #278).
+
 - **`design.require_approval`, and a `workspace.dir` outside the repository,
   are taken only from the global config.** In the project file they are now
   ignored: the global value or the default is used, `config validate` and
@@ -120,6 +86,44 @@ below begins **User adapters** so adapter authors can find it.
   `dev-orchestra config set --scope global design.require_approval false`
   (#279).
 
+### Fixed
+
+- **Without PyYAML, a Windows path or a string of digits written to a config
+  reads back unchanged** (#275). The bundled parser decoded `\\n` in a
+  double-quoted string as a backslash and a newline, so `C:\work\new` came
+  back as `C:\work\` and `ew` on a new line; it now decodes every escape in
+  one pass, refuses one YAML does not define, and refuses text after a closing
+  quote. A string that looks like a number or a date (`"123"`, `"1.0"`,
+  `".5"`, `"2026-10-06"`) is written in quotes, so it no longer comes back as
+  a number; a tab inside a value is kept instead of becoming two spaces, a
+  tab in the indentation is refused, and an apostrophe in an unquoted value
+  (`it's`) no longer hides the comment after it.
+
+- **Without PyYAML, YAML the bundled parser cannot read is refused instead of
+  read wrongly** (#278). A sequence item with more than one space after its
+  `-` (`-   id: a`) lost every key after the first, which surfaced as an
+  unrelated "provider is required"; any spacing now reads, and an item line
+  out of column is an error naming the line. Anchors, aliases (including an
+  unquoted `- *.sql`), tags, merge keys, every block scalar form (`|-`,
+  `>2`, `- |`) and a second document after `---` or `...` are refused with
+  the line number, where they were taken as plain text or joined into one
+  document. On the command line, `config set` still takes `*.sql` as text.
+
+- **A configuration file saved as UTF-8 with a BOM keeps its first key.**
+  Notepad and PowerShell 5's `Out-File -Encoding utf8` start the file with
+  one, and it became part of the first key: `review:` was read as another
+  key, ignored, and `config validate` still answered valid. Every file is now
+  read with the BOM dropped, YAML and JSON alike (#276).
+
+- **Writing to a `.dev-orchestra.json` keeps it JSON.** `config set --scope
+  project`, `reviewer add` and every other writer wrote YAML with `#`
+  comments into it, which dev-orchestra still read but editors, `jq` and CI
+  checks did not. A file whose name ends in `.json` is now written as
+  indented JSON, without the header comment (#280).
+
+- **`config set language.reply no` saves the tag `no`** (Norwegian) rather
+  than `false`. In a file, a bare `no` is still read as false and refused;
+  the message now says to quote it (#281).
 ## [0.22.0] - 2026-10-06
 
 ### Added
