@@ -14,6 +14,8 @@ below begins **User adapters** so adapter authors can find it.
 
 ## [Unreleased]
 
+## [0.22.0] - 2026-10-06
+
 ### Added
 
 - **`run.timeout_seconds.<role>`: the total deadline of one `run`**, per role
@@ -2593,7 +2595,8 @@ First release.
   none of which invoke a real CLI.
 - CI on Linux, macOS and Windows: lint, tests, skill validation.
 
-[Unreleased]: https://github.com/istb16/dev-orchestra/compare/v0.21.0...HEAD
+[Unreleased]: https://github.com/istb16/dev-orchestra/compare/v0.22.0...HEAD
+[0.22.0]: https://github.com/istb16/dev-orchestra/compare/v0.21.0...v0.22.0
 [0.21.0]: https://github.com/istb16/dev-orchestra/compare/v0.20.0...v0.21.0
 [0.20.0]: https://github.com/istb16/dev-orchestra/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/istb16/dev-orchestra/compare/v0.18.0...v0.19.0
