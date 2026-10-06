@@ -88,6 +88,9 @@ The project file is found by walking up from the current directory and stopping
 at the git root, so running the CLI from a subdirectory still finds it.
 Accepted names, in order: `.dev-orchestra.yaml`, `.dev-orchestra.yml`,
 `.dev-orchestra.json`.
+A command that writes to a `.json` file (`config set`, `reviewer add` and the
+other writers) writes it back as JSON, without the header comment a YAML file
+gets.
 
 ## Precedence
 

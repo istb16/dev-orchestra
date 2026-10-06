@@ -17,6 +17,7 @@ keeps following whatever the CLI currently considers "latest".
 from __future__ import annotations
 
 import copy
+import json
 import os
 import re
 import sys
@@ -530,6 +531,12 @@ def write_config_file(path: str, data: Dict[str, Any], scope: str = "") -> None:
     parent = os.path.dirname(os.path.abspath(path))
     if parent:
         os.makedirs(parent, exist_ok=True)
+    if path.lower().endswith(".json"):
+        # A `.dev-orchestra.json` is also read by editors, jq and CI checks,
+        # none of which take YAML or a comment; so JSON, and no header.
+        with open(path, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+        return
     text = miniyaml.dumps(data)
     header = (
         "# dev-orchestra configuration\n"

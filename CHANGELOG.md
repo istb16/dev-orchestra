@@ -54,6 +54,11 @@ below begins **User adapters** so adapter authors can find it.
   one, and it became part of the first key: `review:` was read as another
   key, ignored, and `config validate` still answered valid. Every file is now
   read with the BOM dropped, YAML and JSON alike (#276).
+- **Writing to a `.dev-orchestra.json` keeps it JSON.** `config set --scope
+  project`, `reviewer add` and every other writer wrote YAML with `#`
+  comments into it, which dev-orchestra still read but editors, `jq` and CI
+  checks did not. A file whose name ends in `.json` is now written as
+  indented JSON, without the header comment (#280).
 
 ## [0.22.0] - 2026-10-06
 

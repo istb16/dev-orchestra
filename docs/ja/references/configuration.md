@@ -91,6 +91,8 @@ Python を使っていることも示し、直し方を note に書きます（`
 止まって探索されます。そのため、サブディレクトリから CLI を実行しても見つかります。
 受け付けるファイル名は次の順です: `.dev-orchestra.yaml`、`.dev-orchestra.yml`、
 `.dev-orchestra.json`。
+`.json` のファイルに書き込むコマンド（`config set`、`reviewer add` などの書き込み）は、
+JSON のまま書き戻し、YAML のファイルに付ける先頭のコメントは付けません。
 
 <a id="precedence"></a>
 
