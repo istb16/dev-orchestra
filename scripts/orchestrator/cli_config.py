@@ -384,7 +384,11 @@ def cmd_config_set(args: argparse.Namespace) -> int:
             frozen, left_out = _seed_panel(scope, layer, base, path, args.cwd)
         else:
             _seed_list(layer, list_path, base)
-    value = args.value if args.raw else config_mod.coerce_scalar(args.value)
+    if args.raw or (args.path == "language.reply" and config_mod.normalise_language_tag(args.value)):
+        # A tag stays a string: YAML would read `no`, Norwegian, as false.
+        value: Any = args.value
+    else:
+        value = config_mod.coerce_scalar(args.value)
     if scope == "project":
         # From the arguments alone, before anything is written: the same
         # refusal a run of that seat would meet.
@@ -442,6 +446,11 @@ def cmd_config_set(args: argparse.Namespace) -> int:
         _err("warning: %s" % problem)
     for warning in policy_mod.read_only_arg_warnings(reloaded):
         _err("warning: %s" % warning)
+    for key, close in config_mod.unknown_keys(layer):
+        # Only the key just written: the file's other ones are `config validate`'s to list.
+        if key == args.path or args.path.startswith(key + ".") or key.startswith(args.path + "."):
+            hint = " (did you mean %s?)" % close if close else ""
+            _err("warning: %s is not a key dev-orchestra reads; it was saved but is ignored%s" % (key, hint))
     _warn_unenforced(reloaded)
     _warn_unresolvable(effective, args.path.split(".")[0])
     if language_before is not None:
@@ -590,11 +599,13 @@ def cmd_config_validate(args: argparse.Namespace) -> int:
         origins=loaded.reviewer_origins,
         design_origins=loaded.design_reviewer_origins,
     )
-    # Warnings, not problems: they refuse one role's runs, not the file.
+    # Warnings, not problems: they refuse one role's runs, not the file. An
+    # unknown key refuses nothing at all; it is only never read.
     warnings = policy_mod.read_only_arg_warnings(loaded)
     refused = list(policy_mod.project_raw_arg_refusals(loaded))
     origins = loaded.design_reviewer_origins
     warnings += policy_mod.read_only_enforcement_warnings(loaded.data, refused, origins)
+    warnings += config_mod.unknown_key_warnings(loaded.global_layer, loaded.project_layer)
     if args.json:
         _emit_json({"valid": not problems, "problems": problems, "warnings": warnings})
     else:
@@ -624,7 +635,7 @@ def _preview_inputs(preview: Any, notes: List[str]) -> Tuple[List[str], str, Opt
         exclude = list(config_mod.default_config()["review"]["exclude"])
     workspace = preview.get("workspace") if isinstance(preview, dict) else None
     directory = workspace.get("dir") if isinstance(workspace, dict) else None
-    if not (isinstance(directory, str) and directory):
+    if not (isinstance(directory, str) and directory.strip()):
         notes.append("workspace.dir is not a non-empty string; .ai was used")
         directory = ".ai"
     panel = preview.get("reviewers") if isinstance(preview, dict) else None

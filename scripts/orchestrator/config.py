@@ -17,6 +17,7 @@ keeps following whatever the CLI currently considers "latest".
 from __future__ import annotations
 
 import copy
+import difflib
 import json
 import os
 import re
@@ -133,6 +134,17 @@ def language_settings_of(data: Dict[str, Any]) -> Dict[str, Any]:
         settings["reply"] = normalise_language_tag(configured.get("reply"))
         settings["rewrite"] = configured.get("rewrite") is not False
     return settings
+
+
+def workspace_dir_of(data: Dict[str, Any]) -> str:
+    """``workspace.dir`` as written, or ``.ai`` for anything but a non-empty string.
+
+    Commands and the hooks read the files unvalidated, and a ``dir: 5`` that
+    ``validate`` refuses must not reach ``os.path`` and crash them.
+    """
+    workspace = data.get("workspace")
+    directory = workspace.get("dir") if isinstance(workspace, dict) else None
+    return directory if isinstance(directory, str) and directory.strip() else ".ai"
 
 
 def default_config() -> Dict[str, Any]:
@@ -1063,7 +1075,7 @@ class LoadedConfig:
         return settings
 
     def workspace_dir(self, root: str) -> str:
-        workspace = (self.data.get("workspace") or {}).get("dir") or ".ai"
+        workspace = workspace_dir_of(self.data)
         if os.path.isabs(workspace):
             return workspace
         return os.path.join(root, workspace)
@@ -1458,6 +1470,82 @@ def validate(
     return problems
 
 
+#: A mapping whose keys are the user's own: provider options, which the
+#: adapter validates, tier names, budgets, and run timeouts, whose keys
+#: ``validate`` already checks as roles.
+_FREE = "free"
+
+
+def _key_schema() -> Dict[str, Any]:
+    """The keys a file may hold, as nested mappings; None is a leaf, ``_FREE`` any keys.
+
+    A list of reviewer entries is ``[schema]``. Built from ``default_config``,
+    so a key added there is known here without a second list to keep.
+    """
+
+    def shape(value: Any) -> Any:
+        return {key: shape(item) for key, item in value.items()} if isinstance(value, dict) else None
+
+    model = {"family": None, "version": None, "id": None}
+    role = {"provider": None, "model": model, "options": _FREE, "model_tiers": _FREE}
+    # high_risk_model and when are leaves: their keys are validate's to refuse.
+    reviewer = {
+        "id": None,
+        "provider": None,
+        "model": model,
+        "options": _FREE,
+        "role": None,
+        "high_risk_model": None,
+        "when": None,
+        "relevance": None,
+    }
+    schema = shape(default_config())
+    schema.update(dict.fromkeys(KNOWN_ROLES, role))
+    schema.update({"preset": None, "reviewers": [reviewer], "reviewers_extra": [reviewer], "budgets": _FREE})
+    schema["run"]["timeout_seconds"] = _FREE
+    schema["review"]["design"].update({"reviewers": [reviewer], "reviewers_extra": [reviewer]})
+    return schema
+
+
+def unknown_keys(layer: Dict[str, Any]) -> List[Tuple[str, Optional[str]]]:
+    """Each key in ``layer`` nothing reads, dotted, with the known key it most resembles.
+
+    A typo such as ``reveiw`` or ``review.timout_seconds`` is otherwise valid
+    and silently ignored. Reported, never refused: a key a later release adds
+    must not make an older one reject the file. Only mappings are walked; a
+    value of the wrong type is ``validate``'s to report.
+    """
+    found: List[Tuple[str, Optional[str]]] = []
+
+    def walk(node: Any, schema: Any, path: str) -> None:
+        if isinstance(schema, list) and isinstance(node, list):
+            for index, entry in enumerate(node):
+                walk(entry, schema[0], "%s[%d]" % (path, index))
+            return
+        if not isinstance(schema, dict) or not isinstance(node, dict):
+            return
+        for key, value in node.items():
+            name = "%s.%s" % (path, key) if path else str(key)
+            if key in schema:
+                walk(value, schema[key], name)
+                continue
+            close = difflib.get_close_matches(str(key), [str(known) for known in schema], n=1, cutoff=0.75)
+            found.append((name, ("%s.%s" % (path, close[0]) if path else close[0]) if close else None))
+
+    walk(layer, _key_schema(), "")
+    return found
+
+
+def unknown_key_warnings(global_layer: Dict[str, Any], project_layer: Dict[str, Any]) -> List[str]:
+    """``unknown_keys`` of each file, one line apiece, naming the file."""
+    warnings: List[str] = []
+    for name, layer in (("global", global_layer), ("project", project_layer)):
+        for key, close in unknown_keys(layer):
+            hint = " (did you mean %s?)" % close if close else ""
+            warnings.append("%s in the %s file: unknown key, ignored%s" % (key, name, hint))
+    return warnings
+
+
 def _validate_version_and_preset(
     data: Dict[str, Any], project_layer: Optional[Dict[str, Any]], preset_names: Sequence[str]
 ) -> List[str]:
@@ -1741,6 +1829,9 @@ def _validate_workspace(workspace: Any) -> List[str]:
     if not isinstance(workspace, dict):
         return ["workspace: must be a mapping"]
     problems: List[str] = []
+    directory = workspace.get("dir")
+    if directory is not None and not (isinstance(directory, str) and directory.strip()):
+        problems.append("workspace.dir: must be a non-empty string (got %r)" % (directory,))
     days = workspace.get("stale_notice_days")
     if days is not None:
         if not _int_at_least(days, 0):
@@ -1758,7 +1849,11 @@ def _validate_language(language: Any) -> List[str]:
     problems: List[str] = []
     reply = language.get("reply")
     if reply is not None and normalise_language_tag(reply) is None:
-        problems.append("language.reply: must be a language tag such as ja, zh-TW, ko or en, or null")
+        message = "language.reply: must be a language tag such as ja, zh-TW, ko or en, or null"
+        if isinstance(reply, bool):
+            # YAML reads a bare no, yes, on or off as a boolean; `no` is Norwegian.
+            message += ' (got %s: quote a tag such as "no" to keep it a string)' % str(reply).lower()
+        problems.append(message)
     rewrite = language.get("rewrite")
     if rewrite is not None and not isinstance(rewrite, bool):
         problems.append("language.rewrite: must be true or false")

@@ -691,8 +691,7 @@ def transcript_marks_session(path: str) -> bool:
 
 def workflow_marker(cwd: str, session: str, data: Dict[str, Any]) -> str:
     """Where this session's workflow directory is, had it run a dev-orchestra command."""
-    workspace = data.get("workspace")
-    container = (workspace.get("dir") if isinstance(workspace, dict) else None) or ".ai"
+    container = config_mod.workspace_dir_of(data)
     if not os.path.isabs(container):
         container = os.path.join(config_mod.repository_root(cwd) or os.path.abspath(cwd), container)
     return workflow.workflow_dir(container, workflow.from_session(session))

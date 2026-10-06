@@ -1238,11 +1238,20 @@ class TestLanguage(IsolatedCase):
     def test_language_validation(self):
         for tag in ("ja", "JA", "zh-TW", "zh-Hant-TW", "ko", "en", "en-GB", "sr-Latn", "tlh", None):
             self.assertEqual(self.problems({"reply": tag}), [], tag)
-        for tag in ("japanese", "j", "日本語", "ja_JP", "ja-", "-ja", "", 1, True, ["ja"]):
+        for tag in ("japanese", "j", "日本語", "ja_JP", "ja-", "-ja", "", 1, ["ja"]):
             self.assertEqual(
                 self.problems({"reply": tag}),
                 ["language.reply: must be a language tag such as ja, zh-TW, ko or en, or null"],
                 tag,
+            )
+        # A bare `no` in a file is YAML's false; the message says how to keep the tag (#281).
+        for value, shown in ((False, "false"), (True, "true")):
+            self.assertEqual(
+                self.problems({"reply": value}),
+                [
+                    "language.reply: must be a language tag such as ja, zh-TW, ko or en, or null "
+                    '(got %s: quote a tag such as "no" to keep it a string)' % shown
+                ],
             )
         for rewrite in (True, False, None):
             self.assertEqual(self.problems({"reply": "ja", "rewrite": rewrite}), [], rewrite)
@@ -1283,6 +1292,18 @@ class TestLanguage(IsolatedCase):
         self.assertEqual(code, 0, err)
         self.assertNotIn("language", err)
         self.assertIsNone(config_mod.load(self.project).language_settings()["reply"])
+
+    def test_config_set_keeps_norwegian_a_tag(self):
+        """`no` is a language tag, not YAML's false (#281); `true` still is not a tag."""
+        code, _, err = self.run_cli("config", "set", "language.reply", "no")
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("warning", err)
+        layer = config_mod.read_config_file(config_mod.global_config_path())
+        self.assertEqual(layer["language"], {"reply": "no"})
+        self.assertEqual(config_mod.load(self.project).language_settings()["reply"], "no")
+        code, _, err = self.run_cli("config", "set", "language.reply", "true")
+        self.assertEqual(code, 0)
+        self.assertIn("warning: language.reply: must be a language tag", err)
 
     def test_a_project_null_undoes_a_global_reply_language(self):
         code, _, err = self.run_cli("config", "set", "language.reply", "ja", "--scope", "global")
@@ -1768,6 +1789,146 @@ class TestPresetLayering(IsolatedCase):
         self.assertEqual(config_mod.pinned_differences(loaded.files_data), [])
         pinned = [entry["setting"] for entry in config_mod.pinned_differences(loaded.data)]
         self.assertIn("optimization.level", pinned)
+
+
+class TestWhatValidateUsedToMiss(IsolatedCase):
+    """``workspace.dir`` of the wrong type, and keys nothing reads (#281)."""
+
+    def run_cli(self, *argv):
+        import io
+        from contextlib import redirect_stderr, redirect_stdout
+
+        from orchestrator import cli
+
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            code = cli.main(list(argv))
+        return code, out.getvalue(), err.getvalue()
+
+    def test_workspace_dir_must_be_a_non_empty_string(self):
+        for value in (".ai", "work/.ai", os.path.join(self.tmp, "abs"), None):
+            data = config_mod.default_config()
+            data["workspace"]["dir"] = value
+            self.assertEqual(config_mod.validate(data), [], value)
+        for value in (5, "", "  ", ["a"], True):
+            data = config_mod.default_config()
+            data["workspace"]["dir"] = value
+            self.assertEqual(
+                config_mod.validate(data), ["workspace.dir: must be a non-empty string (got %r)" % (value,)]
+            )
+
+    def test_a_refused_workspace_dir_reads_as_the_default(self):
+        """`status` used to crash in os.path.isabs on `dir: 5`."""
+        for value, expected in ((5, ".ai"), ("", ".ai"), (None, ".ai"), ("work", "work")):
+            loaded = config_mod.LoadedConfig({"workspace": {"dir": value}}, None, None, True)
+            self.assertEqual(loaded.workspace_dir(self.project), os.path.join(self.project, expected))
+        self.assertEqual(config_mod.workspace_dir_of({"workspace": "broken"}), ".ai")
+
+    def test_unknown_keys_are_found_with_the_key_they_resemble(self):
+        layer = {
+            "version": 1,
+            "reveiw": {"max_review_iterations": 3},
+            "review": {"timout_seconds": 60, "context": {"max_char": 5}, "design": {"enabeld": True}},
+            "implementer": {"provder": "claude", "model": {"famly": "opus"}},
+            "reviewers_extra": [{"id": "x", "provider": "mock", "relevence": "test"}],
+            "workspace": {"zzz": 1},
+        }
+        self.assertEqual(
+            config_mod.unknown_keys(layer),
+            [
+                ("reveiw", "review"),
+                ("review.timout_seconds", "review.timeout_seconds"),
+                ("review.context.max_char", "review.context.max_chars"),
+                ("review.design.enabeld", "review.design.enabled"),
+                ("implementer.provder", "implementer.provider"),
+                ("implementer.model.famly", "implementer.model.family"),
+                ("reviewers_extra[0].relevence", "reviewers_extra[0].relevance"),
+                ("workspace.zzz", None),
+            ],
+        )
+
+    def test_keys_that_are_the_users_own_are_not_unknown(self):
+        """Provider options belong to the adapter, user adapters' included; tier
+        names, budgets and run timeouts are checked by validate, or free."""
+        layer = {
+            "version": 1,
+            "preset": "fast",
+            "implementer": {
+                "provider": "mycli",
+                "model": {"family": "big", "version": "pinned", "id": "big-1"},
+                "options": {"my_knob": 1, "args": ["--x"]},
+                "model_tiers": {"light": {"provider": "mock", "options": {"anything": True}}},
+            },
+            "budgets": {"session_idle_reset_seconds": 60, "made_up": 1},
+            "run": {"timeout_seconds": {"implementer": 60}},
+            "reviewers": [
+                {
+                    "id": "a",
+                    "provider": "mycli",
+                    "model": {"family": "x"},
+                    "options": {"temperature": 0},
+                    "role": "security",
+                    "high_risk_model": {"family": "y"},
+                    "when": {"paths": ["src/**"]},
+                    "relevance": "security",
+                }
+            ],
+            "review": {
+                "design": {"reviewers": [], "reviewers_extra": []},
+                "context": {"surrounding": "none"},
+            },
+            "design": {"resume": {"max_age_seconds": 1}},
+            "optimization": {"extra_security_paths": []},
+            "language": {"reply": "ja", "rewrite": True},
+        }
+        self.assertEqual(config_mod.unknown_keys(layer), [])
+        self.assertEqual(config_mod.unknown_keys(config_mod.default_config()), [])
+
+    def test_config_validate_warns_and_still_answers_valid(self):
+        self.write(".dev-orchestra.yaml", "version: 1\nreveiw:\n  max_review_iterations: 3\n")
+        code, out, err = self.run_cli("config", "validate")
+        self.assertEqual(code, 0, out + err)
+        self.assertIn("Configuration is valid.", out)
+        self.assertIn(
+            "reveiw in the project file: unknown key, ignored (did you mean review?)",
+            out.split("Warnings:")[1],
+        )
+        import json
+
+        code, out, _ = self.run_cli("config", "validate", "--json")
+        payload = json.loads(out)
+        self.assertTrue(payload["valid"])
+        self.assertEqual(payload["problems"], [])
+        self.assertIn(
+            "reveiw in the project file: unknown key, ignored (did you mean review?)", payload["warnings"]
+        )
+
+    def test_doctor_notes_an_unknown_key_without_making_it_a_problem(self):
+        from orchestrator import doctor as doctor_mod
+
+        self.write(".dev-orchestra.yaml", "version: 1\nreview:\n  timout_seconds: 60\n")
+        report = doctor_mod.collect(self.project, probe_models=False)
+        expected = (
+            "review.timout_seconds in the project file: unknown key, ignored "
+            "(did you mean review.timeout_seconds?)"
+        )
+        self.assertIn(expected, report["notes"])
+        self.assertNotIn(expected, report["problems"])
+
+    def test_config_set_warns_about_the_key_it_wrote(self):
+        self.write(".dev-orchestra.yaml", "version: 1\nworkspace:\n  zzz: 1\n")
+        code, _, err = self.run_cli("config", "set", "--scope", "project", "implementer.provder", "codex")
+        self.assertEqual(code, 0, err)
+        self.assertIn(
+            "warning: implementer.provder is not a key dev-orchestra reads; it was saved but is ignored "
+            "(did you mean implementer.provider?)",
+            err,
+        )
+        # The file's other unknown keys are config validate's to list.
+        self.assertNotIn("zzz", err)
+        code, _, err = self.run_cli("config", "set", "--scope", "project", "review.max_findings", "3")
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("not a key", err)
 
 
 if __name__ == "__main__":

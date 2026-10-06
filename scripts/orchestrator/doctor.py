@@ -260,6 +260,9 @@ def collect(start: Optional[str] = None, probe_models: bool = True) -> Dict[str,
     warnings = policy_mod.read_only_arg_warnings(loaded)
     report["config"]["warnings"] = warnings
     report["problems"].extend(warnings)
+    # A note, not a problem: an unknown key changes nothing, so --strict
+    # passes a file it would have passed before such keys were reported.
+    report["notes"].extend(config_mod.unknown_key_warnings(loaded.global_layer, loaded.project_layer))
     # A seat refused for coming with the project file is a problem above, and
     # not also a note below.
     refused = policy_mod.project_raw_arg_refusals(loaded)

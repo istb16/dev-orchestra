@@ -14,6 +14,18 @@ below begins **User adapters** so adapter authors can find it.
 
 ## [Unreleased]
 
+### Added
+
+- **Keys nothing reads are reported.** A misspelt `reveiw:`,
+  `review.timout_seconds` or `implementer.provder` used to pass as valid and
+  be ignored. `config validate` now lists each one under *Warnings*
+  (`warnings` in `--json`) with the file it is in and the known key it
+  resembles, `doctor` lists them as notes, and `config set` warns when the
+  key it writes is one. A warning, not a problem: the exit status, `doctor
+  --strict` and every command go on as before. Provider `options` (a user
+  adapter's own keys included), tier names and `budgets` take keys of their
+  own and are not checked (#281).
+
 ### Changed
 
 - **`review.re_review_severities` and `review.parallel` are validated.** A
@@ -27,6 +39,10 @@ below begins **User adapters** so adapter authors can find it.
   `status` and `review status`, which read the file without validating it,
   block on the default `[critical, high]` for a value that would be refused
   (#277).
+- **`workspace.dir` must be a non-empty string.** `dir: 5` was valid and
+  crashed `status`; it is now refused, and a command that reads the file
+  without validating it uses `.ai`, as `config suggest-roles` already did
+  (#281).
 
 ### Fixed
 
@@ -59,6 +75,9 @@ below begins **User adapters** so adapter authors can find it.
   comments into it, which dev-orchestra still read but editors, `jq` and CI
   checks did not. A file whose name ends in `.json` is now written as
   indented JSON, without the header comment (#280).
+- **`config set language.reply no` saves the tag `no`** (Norwegian) rather
+  than `false`. In a file, a bare `no` is still read as false and refused;
+  the message now says to quote it (#281).
 
 ## [0.22.0] - 2026-10-06
 
