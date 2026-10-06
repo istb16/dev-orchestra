@@ -35,6 +35,14 @@ below begins **User adapters** so adapter authors can find it.
   `review run` and `review consolidate` build and save it under the same
   lock, so a decision made while a round is being consolidated is carried
   into it (#262).
+- **`review run --base` is no longer ignored when a snapshot is already on
+  disk.** The base was used only to take a missing snapshot, so a snapshot
+  left from earlier was reviewed instead -- an empty one failed with
+  `review snapshot is empty … or pass --base`, and passing `--base` failed
+  the same way. A snapshot taken against another base is now retaken
+  against the one given, with a `note:` saying so, and the round count
+  starts again as it does after `review snapshot --base`. Without `--base`
+  the snapshot on disk is reviewed as before (#264).
 
 ## [0.22.0] - 2026-10-06
 

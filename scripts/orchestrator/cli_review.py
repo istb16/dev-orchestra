@@ -1268,8 +1268,28 @@ def _ensure_snapshot(
     settings: Dict[str, Any],
     context_settings: Dict[str, Any],
 ) -> Optional[int]:
-    """Take the snapshot a round with none on disk reviews, or the exit code of a failed one."""
-    if not os.path.isfile(workspace.snapshot_path):
+    """Take the snapshot a round reviews, or the exit code of a failed one.
+
+    Taken when none is on disk, and again when ``--base`` names another base
+    than the one on disk was taken against. It used to be honoured only in the
+    first case, so a snapshot left from earlier -- an empty one included --
+    was reviewed instead and the flag was dropped without a word. A different
+    base is a different change (see ``review_lineage``), so the round that
+    follows counts from one, as it does after ``review snapshot --base``.
+    Without ``--base`` the snapshot on disk is kept, whatever it was taken
+    against.
+    """
+    retake = False
+    if os.path.isfile(workspace.snapshot_path) and args.base:
+        taken = workspace.read_snapshot_meta().get("base") or None
+        retake = taken != args.base
+        if retake:
+            _err(
+                "note: retaking the snapshot against --base %s (the one on disk was taken against %s); "
+                "`review snapshot --base %s` takes it with other options"
+                % (args.base, taken or "HEAD", args.base)
+            )
+    if retake or not os.path.isfile(workspace.snapshot_path):
         try:
             review_mod.create_snapshot(
                 workspace,
