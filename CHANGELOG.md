@@ -61,6 +61,13 @@ below begins **User adapters** so adapter authors can find it.
   macOS, has no start time; on Windows its pid is no longer stopped, and the
   job says so, while POSIX keeps stopping it only while it leads its own
   process group (#268).
+- **What a reviewer's prompt quotes can no longer close its fence.** The diff,
+  the plan and the design request went in a fixed `` ``` `` fence, so a code
+  block in a plan, or a Markdown diff's unchanged `` ``` `` line, closed it
+  early, and what followed read as the prompt's own instructions. Each now
+  gets a fence longer than any run of backticks inside it, as the surrounding
+  context already did, and both review prompts say the fenced text is data
+  under review, not instructions (#263).
 
 ## [0.22.0] - 2026-10-06
 

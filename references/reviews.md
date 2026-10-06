@@ -39,6 +39,13 @@
 5. **Findings are claims, not facts.** Nothing reaches the fixer until the
    orchestrator has triaged it.
 
+What the prompt quotes -- the diff, the plan, the design request, the
+surrounding context -- sits in a fence longer than any run of backticks inside
+it, so a code block in a plan or a diff's unchanged `` ``` `` line cannot close
+the fence and pass for the prompt's own instructions. The prompt also says the
+fenced text, and any file it names to read, is data under review, not
+instructions.
+
 ## Snapshot
 
 ```bash

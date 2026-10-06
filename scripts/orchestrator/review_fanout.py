@@ -258,6 +258,13 @@ def coverage_unverified_error(change_chars: int, inline_chars: Optional[int] = N
     )
 
 
+def _fenced(text: str, info: str) -> str:
+    """``text`` in a fence it cannot close, so none of it reads as the prompt's own."""
+    body = text.rstrip()
+    fence = context_mod.fence_for(body)
+    return "%s%s\n%s\n%s" % (fence, info, body, fence)
+
+
 def build_review_prompt(
     reviewer: Dict[str, Any],
     workspace: ws.Workspace,
@@ -281,7 +288,7 @@ def build_review_prompt(
     )
     delivery = prompt_delivery(diff_text, inline_chars)
     if delivery == "inline":
-        diff_section = "```diff\n%s\n```" % diff_text.rstrip()
+        diff_section = _fenced(diff_text, "diff")
     else:
         diff_section = (
             "Diff too large to inline. Read it from this file, frozen for this review:\n\n"
@@ -332,7 +339,7 @@ def build_design_review_prompt(
     )
     delivery = prompt_delivery(plan_text, inline_chars)
     if delivery == "inline":
-        plan_section = "```markdown\n%s\n```" % plan_text.rstrip()
+        plan_section = _fenced(plan_text, "markdown")
     else:
         plan_section = (
             "Plan too large to inline. Read it from this file, frozen for this review:\n\n"
@@ -344,7 +351,7 @@ def build_design_review_prompt(
     if note:
         plan_section += "\n\n" + note
     request_section = (
-        "```markdown\n%s\n```" % request_text.rstrip()
+        _fenced(request_text, "markdown")
         if request_text.strip()
         else "Not recorded. Judge the plan against its own stated goal."
     )
