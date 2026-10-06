@@ -1,4 +1,4 @@
-<!-- translated-from: references/configuration.md sha256:7228991c62d950a029cfb41b58de22225b6cf92af5c9e5900f1bc3a1a7b6d6ce -->
+<!-- translated-from: references/configuration.md sha256:ccd8aa343a68cb40eb27907fdab465f139794833f1acb6b2a9a0da31b9a15e49 -->
 
 > この文書は [references/configuration.md](../../../references/configuration.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -1498,3 +1498,10 @@ dev-orchestra reviewer remove 1
 空コレクション、インラインのスカラーリスト、コメント、クォートされた文字列に対応しています。
 アンカー、エイリアス、複数ドキュメントのストリーム、ブロックスカラー（`|`、`>`）は、わかりやすい
 エラーとともに拒否されます。JSON は常に受け付けます。
+
+ダブルクォートの中では、YAML と同じくバックスラッシュがエスケープの始まりです。Windows の
+パスは `"C:\\work\\new"` と書くか、シングルクォート（`'C:\work\new'`）で囲んでください。
+`"C:\work"` の `\w` のように YAML が定めていないエスケープは、そのまま残さずに拒否されます。
+インデントには空白を使ってください。インデントのタブは拒否され、値の中のタブはそのまま残ります。
+設定を書き出すコマンドは、数字や日付に見える文字列（`"123"`、`"1.0"`、`"2026-10-06"`）を
+クォートするので、読み戻しても文字列のままです。

@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, List, Tuple
+from typing import Any, Iterator, List, Tuple
 
 try:  # pragma: no cover - exercised only where PyYAML is installed
     import yaml as _pyyaml
@@ -41,58 +41,143 @@ class _Line:
         return "_Line(%d, %r, line %d)" % (self.indent, self.content, self.lineno)
 
 
+def _quote_end(text: str, idx: int) -> int:
+    """Index just past the quoted string that opens at ``text[idx]``; -1 if unclosed.
+
+    Inside double quotes a backslash escapes the next character; inside single
+    quotes ``''`` is a quote, not the end.
+    """
+    quote = text[idx]
+    j = idx + 1
+    while j < len(text):
+        ch = text[j]
+        if quote == '"' and ch == "\\":
+            j += 2
+            continue
+        if ch == quote:
+            if quote == "'" and text[j + 1 : j + 2] == "'":
+                j += 2
+                continue
+            return j + 1
+        j += 1
+    return -1
+
+
+def _unquoted(text: str) -> Iterator[Tuple[int, str]]:
+    """Yield ``(index, char)`` for each character outside quoted strings.
+
+    A quote opens a string only where a scalar can start (line start, after a
+    blank, ``[`` or ``,``), so the apostrophe in ``it's`` is an ordinary
+    character. An unclosed quote runs to the end of the text.
+    """
+    idx = 0
+    while idx < len(text):
+        ch = text[idx]
+        if ch in "\"'" and (idx == 0 or text[idx - 1] in " \t[,"):
+            end = _quote_end(text, idx)
+            if end < 0:
+                return
+            idx = end
+            continue
+        yield idx, ch
+        idx += 1
+
+
 def _strip_comment(raw: str) -> str:
-    out: List[str] = []
-    quote = ""
-    for idx, ch in enumerate(raw):
-        if quote:
-            out.append(ch)
-            if ch == quote:
-                quote = ""
-            continue
-        if ch in "\"'":
-            quote = ch
-            out.append(ch)
-            continue
+    for idx, ch in _unquoted(raw):
         if ch == "#" and (idx == 0 or raw[idx - 1] in " \t"):
-            break
-        out.append(ch)
-    return "".join(out).rstrip()
+            return raw[:idx].rstrip()
+    return raw.rstrip()
 
 
 def _read_lines(text: str) -> List[_Line]:
     lines: List[_Line] = []
-    for lineno, raw in enumerate(text.replace("\t", "  ").splitlines(), 1):
+    for lineno, raw in enumerate(text.splitlines(), 1):
         if raw.strip() in ("---", "..."):
             continue
         stripped = _strip_comment(raw)
         if not stripped.strip():
             continue
-        indent = len(stripped) - len(stripped.lstrip(" "))
-        lines.append(_Line(indent, stripped.strip(), lineno))
+        body = stripped.lstrip(" ")
+        if body.startswith("\t"):
+            # YAML forbids tabs in indentation; a tab anywhere else is kept as is.
+            raise YamlError("tabs cannot be used for indentation (line %d)" % lineno)
+        lines.append(_Line(len(stripped) - len(body), body.strip(), lineno))
     return lines
 
 
 _INT_RE = re.compile(r"^[+-]?\d+$")
 _FLOAT_RE = re.compile(r"^[+-]?(\d+\.\d*|\.\d+)([eE][+-]?\d+)?$")
 
+# The escapes of a double-quoted string, decoded in one pass so that the ``\\``
+# of ``C:\\new`` is a backslash and never leaves a ``\n`` behind.
+_ESCAPE_RE = re.compile(r"\\(x[0-9A-Fa-f]{2}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|.?)", re.DOTALL)
+_ESCAPES = {
+    "0": "\0",
+    "a": "\a",
+    "b": "\b",
+    "t": "\t",
+    "\t": "\t",
+    "n": "\n",
+    "v": "\v",
+    "f": "\f",
+    "r": "\r",
+    "e": "\x1b",
+    " ": " ",
+    '"': '"',
+    "/": "/",
+    "\\": "\\",
+    "N": "\x85",
+    "_": "\xa0",
+    "L": "\u2028",
+    "P": "\u2029",
+}
 
-def _parse_scalar(token: str) -> Any:
+
+def _unescape(match: "re.Match[str]") -> str:
+    code = match.group(1)
+    if len(code) > 1:
+        return chr(int(code[1:], 16))
+    if code in _ESCAPES:
+        return _ESCAPES[code]
+    raise YamlError(
+        "unknown escape %r in a double-quoted string; write \\\\ for a backslash "
+        "or use single quotes" % match.group(0)
+    )
+
+
+def _parse_quoted(token: str) -> str:
+    if _quote_end(token, 0) != len(token):
+        raise YamlError("malformed quoted string: %r" % token)
+    body = token[1:-1]
+    if token[0] == '"':
+        return _ESCAPE_RE.sub(_unescape, body)
+    return body.replace("''", "'")
+
+
+def _parse_scalar(token: str, strict: bool = True) -> Any:
+    """Read one scalar or inline list; ``strict=False`` is for command-line values.
+
+    Not strict, a value this parser would refuse in a file for how it starts
+    (an unclosed quote, say) is taken as the plain string it was typed as.
+    """
     token = token.strip()
     if token == "":
         return None
-    if len(token) >= 2 and token[0] == token[-1] and token[0] in "\"'":
-        body = token[1:-1]
-        if token[0] == '"':
-            return body.replace('\\"', '"').replace("\\n", "\n").replace("\\\\", "\\")
-        return body.replace("''", "'")
+    if token[0] in "\"'":
+        try:
+            return _parse_quoted(token)
+        except YamlError:
+            if strict:
+                raise
+            return token
     if token.startswith("[") and token.endswith("]"):
         inner = token[1:-1].strip()
         if not inner:
             return []
         if "[" in inner or "{" in inner:
             raise YamlError("nested flow collections are not supported: %r" % token)
-        return [_parse_scalar(part) for part in _split_flow(inner)]
+        return [_parse_scalar(part, strict) for part in _split_flow(inner)]
     if token == "{}":
         return {}
     if token.startswith("{"):
@@ -104,6 +189,8 @@ def _parse_scalar(token: str) -> Any:
         return True
     if lowered in ("false", "no", "off"):
         return False
+    if lowered in (".inf", "+.inf", "-.inf", ".nan"):
+        return float(lowered.replace(".", ""))
     if _INT_RE.match(token):
         return int(token)
     if _FLOAT_RE.match(token):
@@ -113,30 +200,17 @@ def _parse_scalar(token: str) -> Any:
 
 def _split_flow(inner: str) -> List[str]:
     parts: List[str] = []
-    buf: List[str] = []
-    quote = ""
-    for ch in inner:
-        if quote:
-            buf.append(ch)
-            if ch == quote:
-                quote = ""
-            continue
-        if ch in "\"'":
-            quote = ch
-            buf.append(ch)
-            continue
+    start = 0
+    for idx, ch in _unquoted(inner):
         if ch == ",":
-            parts.append("".join(buf))
-            buf = []
-            continue
-        buf.append(ch)
-    if buf:
-        parts.append("".join(buf))
+            parts.append(inner[start:idx])
+            start = idx + 1
+    parts.append(inner[start:])
     return [p.strip() for p in parts if p.strip()]
 
 
 def _is_seq_line(line: _Line) -> bool:
-    return line.content == "-" or line.content.startswith("- ")
+    return line.content == "-" or line.content[:2] in ("- ", "-\t")
 
 
 def _parse_node(lines: List[_Line], i: int) -> Tuple[Any, int]:
@@ -205,15 +279,7 @@ def _parse_map(lines: List[_Line], i: int, indent: int) -> Tuple[dict, int]:
 
 
 def _split_key(content: str) -> Tuple[str, str, str]:
-    quote = ""
-    for idx, ch in enumerate(content):
-        if quote:
-            if ch == quote:
-                quote = ""
-            continue
-        if ch in "\"'":
-            quote = ch
-            continue
+    for idx, ch in _unquoted(content):
         if ch == ":" and (idx + 1 == len(content) or content[idx + 1] in " \t"):
             return content[:idx], ":", content[idx + 1 :]
     return content, "", ""
@@ -241,10 +307,25 @@ def loads(text: str) -> Any:
 
 def parse_scalar(text: str) -> Any:
     """Parse a single scalar token (``opus``, ``2``, ``true``, ``[a, b]``)."""
-    return _parse_scalar(text)
+    return _parse_scalar(text, strict=False)
 
 
 _PLAIN_RE = re.compile(r"^[A-Za-z0-9_.][A-Za-z0-9_./@ +-]*$")
+# PyYAML reads more plain forms as numbers or dates than this parser does
+# (``0x1F``, ``1_000``, ``2026-10-06``), so a string that starts like a number
+# is quoted: the file then reads the same with or without PyYAML.
+_NUMBERISH_RE = re.compile(r"^\.?\d")
+_EMIT_ESCAPES = {"\\": "\\\\", '"': '\\"', "\n": "\\n", "\t": "\\t", "\r": "\\r"}
+
+
+def _escape_char(ch: str) -> str:
+    if ch in _EMIT_ESCAPES:
+        return _EMIT_ESCAPES[ch]
+    code = ord(ch)
+    # Other control characters, and the ones splitlines() breaks a line at.
+    if code < 0x20 or code == 0x7F or ch in "\x85\u2028\u2029":
+        return "\\x%02x" % code if code < 0x100 else "\\u%04x" % code
+    return ch
 
 
 def _emit_scalar(value: Any) -> str:
@@ -252,14 +333,26 @@ def _emit_scalar(value: Any) -> str:
         return "null"
     if isinstance(value, bool):
         return "true" if value else "false"
-    if isinstance(value, (int, float)):
+    if isinstance(value, float):
+        if value != value:
+            return ".nan"
+        if value in (float("inf"), float("-inf")):
+            return ".inf" if value > 0 else "-.inf"
+        text = repr(value)
+        # ``1e+20`` has no dot, and would read back as a string.
+        return text if "." in text else text.replace("e", ".0e")
+    if isinstance(value, int):
         return str(value)
     text = str(value)
-    reserved = text.lower() in ("true", "false", "yes", "no", "on", "off", "null", "~", "")
-    if reserved or not _PLAIN_RE.match(text) or text != text.strip():
-        escaped = text.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
-        return '"' + escaped + '"'
-    return text
+    plain = (
+        _PLAIN_RE.match(text)
+        and text == text.strip()
+        and not _NUMBERISH_RE.match(text)
+        and isinstance(_parse_scalar(text), str)
+    )
+    if plain:
+        return text
+    return '"' + "".join(_escape_char(ch) for ch in text) + '"'
 
 
 def _emit_inline(value: Any) -> str:

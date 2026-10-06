@@ -14,6 +14,19 @@ below begins **User adapters** so adapter authors can find it.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Without PyYAML, a Windows path or a string of digits written to a config
+  reads back unchanged** (#275). The bundled parser decoded `\\n` in a
+  double-quoted string as a backslash and a newline, so `C:\work\new` came
+  back as `C:\work\` and `ew` on a new line; it now decodes every escape in
+  one pass, refuses one YAML does not define, and refuses text after a closing
+  quote. A string that looks like a number or a date (`"123"`, `"1.0"`,
+  `".5"`, `"2026-10-06"`) is written in quotes, so it no longer comes back as
+  a number; a tab inside a value is kept instead of becoming two spaces, a
+  tab in the indentation is refused, and an apostrophe in an unquoted value
+  (`it's`) no longer hides the comment after it.
+
 ## [0.22.0] - 2026-10-06
 
 ### Added

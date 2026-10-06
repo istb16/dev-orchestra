@@ -1537,3 +1537,10 @@ built-in parser covering block mappings, block sequences, inline empty
 collections, inline scalar lists, comments, and quoted strings. Anchors,
 aliases, multi-document streams, and block scalars (`|`, `>`) are rejected with
 a clear error. JSON is always accepted.
+
+Inside double quotes a backslash starts an escape, as in YAML: write a Windows
+path as `"C:\\work\\new"` or in single quotes (`'C:\work\new'`). An escape YAML
+does not define, such as the `\w` of `"C:\work"`, is refused rather than kept.
+Indent with spaces; a tab in the indentation is refused, a tab inside a value
+is kept. The commands that write a config quote a string that looks like a
+number or a date (`"123"`, `"1.0"`, `"2026-10-06"`), so it reads back as text.
