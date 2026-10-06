@@ -117,6 +117,7 @@ def render_summary(
         lines.append("    (the code panel; when conditions ignored)  (review.design.reviewers)")
     else:
         lines.extend(_panel_lines(design, design_origins))
+    lines.append("  Reply language: %s  (language.reply)" % _reply_language(data))
     # With no origins (data never composed by ``load``), a design seat that
     # runs as its code seat is taken for a copy, as ``_reviewer_seats`` says.
     for warning in read_only_enforcement_warnings(data, design_origins=list(design_origins) or None):
@@ -146,6 +147,14 @@ def _optimization_level(data: Dict[str, Any]) -> str:
     optimization = data.get("optimization")
     level = optimization.get("level") if isinstance(optimization, dict) else None
     return str(level or config_mod.default_config()["optimization"]["level"])
+
+
+def _reply_language(data: Dict[str, Any]) -> str:
+    """The tag, with the Stop-hook check's state when it is off; ``not set`` without one."""
+    settings = config_mod.language_settings_of(data)
+    if not settings["reply"]:
+        return "not set"
+    return settings["reply"] + ("" if settings["rewrite"] else " (no rewrite: language.rewrite false)")
 
 
 def _approval_required(data: Dict[str, Any]) -> bool:

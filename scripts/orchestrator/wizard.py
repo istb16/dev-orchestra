@@ -53,6 +53,10 @@ PRESET_CHOICES = (
 )
 CUSTOMISE = "customise each role"
 
+LANGUAGE_QUESTION = "Reply language (a tag such as ja, ko, zh-TW; blank: the language you write in)"
+#: Typed to the language question, these drop a ``language.reply`` the file held.
+LANGUAGE_CLEAR = ("none", "null", "-")
+
 
 def _say(text: str) -> None:
     """Print through the CLI's writer rather than through ``print``.
@@ -160,8 +164,12 @@ def run(
     existing: Optional[Dict[str, Any]] = None,
     base: Optional[Dict[str, Any]] = None,
     scope: str = "global",
+    reply: Optional[str] = None,
 ) -> Tuple[Dict[str, Any], bool]:
     """Drive the wizard. Returns (layer, save?).
+
+    The reply language is asked last, just before saving; ``reply`` is the
+    answer offered, and without one the layer's own ``language.reply``.
 
     ``base`` is what would be in force without the layer being edited; it falls
     back to the built-in defaults, which is what the global layer inherits.
@@ -210,6 +218,7 @@ def run(
             if notes:
                 prompter.say(notes)
                 prompter.say("")
+            data = _ask_language(prompter, data, reply)
             if prompter.ask_yes_no("Save as is?", True):
                 return data, True
             prompter.say("")
@@ -257,6 +266,10 @@ def run(
         )
     data["reviewers"] = _ask_reviewers(prompter, providers, effective, scope)
     prompter.say("")
+    if preset is None:
+        # Asked already, before "Save as is?", when a preset was picked.
+        data = _ask_language(prompter, data, reply)
+        prompter.say("")
 
     if preset is not None:
         data = _differences_from_fit(data, base, preset)
@@ -309,6 +322,30 @@ def _differences_from_fit(data: Dict[str, Any], fit: Dict[str, Any], preset: str
     pruned.pop("version")
     kept = config_mod.deep_merge(presets_mod.with_preset(data, preset), pruned)
     return {**kept, **roles}
+
+
+def _ask_language(prompter: Prompter, data: Dict[str, Any], offered: Optional[str]) -> Dict[str, Any]:
+    """``data`` with the answer to the reply-language question, asked until it is a tag or blank.
+
+    The answer offered is ``offered``, or the layer's own value; blank keeps
+    that, and with neither sets nothing.
+    """
+    current = offered or config_mod.normalise_language_tag(config_mod.get_path(data, "language.reply"))
+    question = LANGUAGE_QUESTION
+    if current:
+        question = question[:-1] + "; none: clear it)"
+    while True:
+        answer = prompter.ask_text(question, current or "")
+        if not answer:
+            return data
+        if answer.lower() in LANGUAGE_CLEAR:
+            config_mod.pop_path(data, "language.reply")
+            return data
+        tag = config_mod.normalise_language_tag(answer)
+        if tag is not None:
+            config_mod.set_path(data, "language.reply", tag)
+            return data
+        prompter.say("   %r is not a language tag such as ja, ko, zh-TW or en." % answer)
 
 
 def _ask_role(

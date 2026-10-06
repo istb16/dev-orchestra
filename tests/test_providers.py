@@ -433,6 +433,18 @@ class TestClaudeAdapter(IsolatedCase):
         with self.assertRaises(base.ModelResolutionError):
             self.provider.resolve_model({"family": "opus", "version": "pinned"})
 
+    def test_child_env_sets_delegated(self):
+        """The reply-language hooks stay silent inside a delegated run (#254)."""
+        for provider in (self.provider, CodexProvider(), MockProvider()):
+            env = provider._child_env(None)
+            self.assertEqual(env[execution.DELEGATED_ENV], "1")
+            self.assertEqual(env.get("PATH"), os.environ.get("PATH"))
+            self.assertEqual(provider._child_env({"EXTRA": "x"})["EXTRA"], "x")
+            # No override can clear the marker.
+            for value in ("", "0"):
+                env = provider._child_env({execution.DELEGATED_ENV: value})
+                self.assertEqual(env[execution.DELEGATED_ENV], "1", value)
+
     def test_unknown_family_is_refused_rather_than_guessed(self):
         with self.assertRaises(base.ModelResolutionError) as ctx:
             self.provider.resolve_model({"family": "recommended-coding", "version": "latest"})

@@ -98,6 +98,44 @@ class TestManifests(IsolatedCase):
             self.assertEqual(load(relative)["name"], "dev-orchestra", relative)
 
 
+class TestNoPluginHooks(IsolatedCase):
+    """No host loads hooks from the plugin: dev-orchestra installs its own into
+    the user's Claude Code settings (#254)."""
+
+    def test_claude_manifest_has_no_hooks(self):
+        self.assertNotIn("hooks", load(validate_skill.CLAUDE_PLUGIN))
+        self.assertEqual(validate_skill.check_no_plugin_hooks(), [])
+
+    def test_no_hooks_dir_at_plugin_root(self):
+        self.assertFalse(os.path.lexists(os.path.join(REPO_ROOT, "hooks")))
+        root = os.path.join(self.tmp, "plugin")
+        os.makedirs(os.path.join(root, "hooks"))
+        self.assertEqual(
+            validate_skill.check_no_plugin_hooks(root),
+            ["hooks/ must not exist at the plugin root; no hooks ship with the plugin"],
+        )
+
+    def test_a_manifest_hooks_key_is_reported(self):
+        """The manifest is read from the root checked, not from this repository."""
+        root = os.path.join(self.tmp, "plugin")
+        path = os.path.join(root, validate_skill.CLAUDE_PLUGIN)
+        os.makedirs(os.path.dirname(path))
+        manifest = dict(load(validate_skill.CLAUDE_PLUGIN), hooks="./hooks/claude-code.json")
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(manifest, handle)
+        plugin = validate_skill.CLAUDE_PLUGIN
+        expected = "%s must not name hooks; `dev-orchestra hooks install` adds them" % plugin
+        self.assertEqual(validate_skill.check_no_plugin_hooks(root), [expected])
+        self.assertEqual(validate_skill.check_no_plugin_hooks(), [])
+
+    def test_no_root_hooks_json(self):
+        """Antigravity loads a root hooks.json by itself; Codex is not pointed at any."""
+        self.assertFalse(os.path.lexists(os.path.join(REPO_ROOT, "hooks.json")))
+        self.assertFalse(os.path.lexists(os.path.join(REPO_ROOT, "hooks", "hooks.json")))
+        self.assertNotIn("hooks", load(validate_skill.CODEX_PLUGIN))
+        self.assertNotIn("hooks", load(validate_skill.ANTIGRAVITY_PLUGIN))
+
+
 class TestMalformedManifests(IsolatedCase):
     """A broken manifest must be reported, not raise part way through."""
 

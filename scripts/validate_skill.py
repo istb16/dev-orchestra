@@ -248,6 +248,28 @@ def check_manifests(version: str = "") -> List[str]:
     return problems
 
 
+def check_no_plugin_hooks(root: str = REPO_ROOT) -> List[str]:
+    """No hooks ship with the plugin: ``dev-orchestra hooks install`` adds them
+    to the user's Claude Code settings instead.
+
+    A plugin hook runs its command through a shell, which a Windows machine
+    without Git Bash does not have, and it would start Python in every
+    session of users who never set a reply language. ``root`` is the plugin
+    directory; tests pass a throwaway one.
+    """
+    problems: List[str] = []
+    try:
+        with open(os.path.join(root, CLAUDE_PLUGIN), encoding="utf-8") as handle:
+            manifest = json.load(handle)
+    except (OSError, ValueError):
+        manifest = None  # check_manifests reports it
+    if isinstance(manifest, dict) and "hooks" in manifest:
+        problems.append("%s must not name hooks; `dev-orchestra hooks install` adds them" % CLAUDE_PLUGIN)
+    if os.path.lexists(os.path.join(root, "hooks")):
+        problems.append("hooks/ must not exist at the plugin root; no hooks ship with the plugin")
+    return problems
+
+
 def check_antigravity(root: str = REPO_ROOT) -> List[str]:
     """The root ``plugin.json`` Antigravity reads, and what else it would load.
 
@@ -382,6 +404,7 @@ def check() -> List[str]:
             problems.append("CHANGELOG.md has no entry for version %s" % declared)
 
     problems.extend(check_manifests(declared))
+    problems.extend(check_no_plugin_hooks())
     problems.extend(check_antigravity())
 
     # The translated README must not silently drift out of the doc set.

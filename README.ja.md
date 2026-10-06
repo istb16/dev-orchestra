@@ -180,6 +180,16 @@ dev-orchestra run orchestrator --prompt-file .ai/analysis-request.md --output .a
 `dev-orchestra config show` で結果を表示し、`config set` で値を1つ変更します。スキーマ、全フィールド、
 設定例は [設定](docs/ja/references/configuration.md)（[英語版](references/configuration.md)）にあります。
 
+`dev-orchestra config set language.reply ja`（`ko`、`zh-TW`、`es`、`fr` など、任意の言語タグ）で、
+オーケストレーターが答える言語を固定できます。dev-orchestra は Claude Code のユーザー設定
+（`~/.claude/settings.json`。書き換える前に元のファイルを控えます）に 3 つのフックを加え、
+プロンプトのたびにその言語を思い出させ、明らかに別の言語で書かれた返答を一度だけ書き直させます。
+ほかのホストでは `doctor` がこの設定をスキルに伝えます。`--no-hooks` を付けると設定だけを保存し、
+`dev-orchestra hooks status` でフックの状態を確かめられます。設定を消すとフックも外れます。
+プロジェクトの `.dev-orchestra.yaml` が言語を設定していても、それだけでフックが入ることはありません。
+何を判定するか、フックをどう書き込むか、どこまでできるかは
+[返答の言語のフック](docs/ja/references/architecture.md#reply-language-hooks) にあります。
+
 ## モデル選択
 
 ロールには family と `version: latest`（または正確なIDを指定した `pinned`）を保存し、実行のたびに
@@ -231,12 +241,14 @@ Antigravity はチェックアウトで `git pull` し、Antigravity を再起�
 ## アンインストール
 
 ```bash
+dev-orchestra hooks uninstall   # the reply-language hooks in your Claude Code settings, if any
 claude plugin uninstall dev-orchestra
 codex plugin remove dev-orchestra@dev-orchestra
 dev-orchestra config reset --scope global --delete   # optional: your configuration
 ```
 
-設定は消さない限り残ります。成果物も消す場合は、プロジェクトごとに `.ai/` を削除してください。
+返答の言語のフックを入れていれば、プラグインを外す前に `dev-orchestra hooks uninstall` で
+Claude Code の設定から外してください。設定は消さない限り残ります。成果物も消す場合は、プロジェクトごとに `.ai/` を削除してください。
 チェックアウト導入には `install/uninstall.sh`（Windows は `.ps1`）があります。
 Antigravity は `./install/uninstall.sh --antigravity`（Windows は `-Antigravity`）のあと、再起動します。
 
@@ -268,6 +280,13 @@ Removed）を、その最後にするつもりです。
   対象外です。
 - **built-in のアダプタがすること**（claude、codex、agy、mock）: モード、読み取り専用の強制、
   再開、実行が記録するもの。各 CLI に渡すフラグは対象外です。
+- **返答の言語のフックがすること**（[返答の言語のフック](docs/ja/references/architecture.md#reply-language-hooks)）:
+  dev-orchestra がこれを Claude Code のユーザー設定に加えるのは、`language.reply` を設定したときか
+  `hooks install` を実行したときだけです。そこでは自分のエントリだけを変え、`hooks uninstall` か
+  `language.reply` を消したときに外します。フックは `language.reply` が設定されているときだけ、
+  dev-orchestra を使ったセッションでだけ動き、委譲した実行の中では動きません。1 つの返答を
+  ブロックするのは多くても 1 回で、どんなエラーでも何も出力せずに終わります。対象外: しきい値、
+  判定の前に取り除くもの、理由の文面、中継のスクリプトとその記録、エントリの `command`/`args` の中身。
 - **必要な Python の最低バージョンと対応プラットフォーム**: 引き上げたり外したりするのは
   メジャーバージョンです。
 
@@ -285,6 +304,8 @@ Removed）を、その最後にするつもりです。
 - **`skills/dev-orchestra/SKILL.md` の文面**とプロンプトのテンプレート。それらが実行する
   コマンドは上のとおり対象です。
 - **`DEV_ORCHESTRA_MOCK_*`** と `DEV_ORCHESTRA_TEST_ASSUME_NO_CLI`。テスト用の仕組みです。
+- **`DEV_ORCHESTRA_DELEGATED`**。provider が起動するプロセスに付けて、フックを委譲した
+  実行から外すための内部の仕組みです。
 
 ## アーキテクチャ
 

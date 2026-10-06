@@ -32,6 +32,10 @@ ignore = [
 # A test replaces a function with setattr() so the checker sees a deliberate
 # swap rather than an assignment to a method.
 "tests/**" = ["B010"]
+# Each language is named in its own script, which holds letters that look
+# like Latin ones (Cyrillic, Greek) on purpose.
+"scripts/orchestrator/reply_language.py" = ["RUF001"]
+"tests/test_reply_language.py" = ["RUF001"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["orchestrator"]

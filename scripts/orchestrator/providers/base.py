@@ -1310,10 +1310,16 @@ class Provider:
         return None
 
     def _child_env(self, overrides: Optional[Dict[str, str]]) -> Dict[str, str]:
-        """Inherit the user's environment so existing CLI auth keeps working."""
+        """Inherit the user's environment so existing CLI auth keeps working.
+
+        Every child is marked as delegated, so dev-orchestra's own hooks stay
+        silent inside a run that loads the user's settings. The marker is set
+        last, so no override can clear it.
+        """
         env = dict(os.environ)
         if overrides:
             env.update(overrides)
+        env[execution.DELEGATED_ENV] = "1"
         return env
 
     # -- helpers -----------------------------------------------------------

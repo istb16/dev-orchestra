@@ -1,4 +1,4 @@
-<!-- translated-from: references/cli.md sha256:f7ea2950f93b7c1921b9bdacd0b1600e98961988aba9cac0fbe5a0859b1e693c -->
+<!-- translated-from: references/cli.md sha256:6427bcba1dd5720e8435368cf9733fde96b9f19ceef3aa16f37f089f6ff7a1f0 -->
 
 > この文書は [references/cli.md](../../../references/cli.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -14,6 +14,7 @@
 - [model](#model)
 - [reviewer](#reviewer)
 - [doctor](#doctor)
+- [hooks](#hooks)
 - [run](#run)
   - [architect 自身のセッションで plan を改訂する（`--resume`）](#revising-the-plan-in-the-architects-own-session---resume)
 - [review](#review)
@@ -58,12 +59,12 @@ Microsoft Store のエイリアスだからです。
 
 | コマンド | 説明 |
 | --- | --- |
-| `config show [--scope effective\|global\|project] [--json]` | 設定を表示します。デフォルトは `effective`（マージ済み）です。スコープを指定すると、そのレイヤーをディスク上にあるとおりに表示し、たいていはずっと短くなります。effective の表示では `Source:` の後に有効なプリセット（`Preset: quality (global; fitted to claude, codex)`）を示し、フィットし直した点ごとに `note:` 行を出します。`--json` では `preset`（`name`、`source`、`notes`）に入ります。effective の `--json` には、`Source:` に並ぶファイルが `project` と `global` として入ります（ないときは `null`）。`Providers:` 行は、参照している各 provider がどこから来ているか（built-in、ユーザーモジュールのパス、または adapter なし）を示します。`--json` では同じ内容が `providers` の下に入ります。サマリーには、各席の高リスク用のモデル（`(opus when high-risk)`）と `relevance`、最適化レベルの下の `skip unneeded roles: on\|off  (optimization.skip_unneeded_roles)` 行、そして `Design reviews` ブロックが表示されます。このブロックは、フィットかファイルが design パネルを設定していればそれを、なければ `(the code panel; when conditions ignored)` を示します。design パネルがあるときは、effective の `--json` に `design_reviewer_origins`（フィットした席は `fit design`）が加わります。 |
+| `config show [--scope effective\|global\|project] [--json]` | 設定を表示します。デフォルトは `effective`（マージ済み）です。スコープを指定すると、そのレイヤーをディスク上にあるとおりに表示し、たいていはずっと短くなります。effective の表示では `Source:` の後に有効なプリセット（`Preset: quality (global; fitted to claude, codex)`）を示し、フィットし直した点ごとに `note:` 行を出します。`--json` では `preset`（`name`、`source`、`notes`）に入ります。effective の `--json` には、`Source:` に並ぶファイルが `project` と `global` として入ります（ないときは `null`）。`Providers:` 行は、参照している各 provider がどこから来ているか（built-in、ユーザーモジュールのパス、または adapter なし）を示します。`--json` では同じ内容が `providers` の下に入ります。サマリーには、各席の高リスク用のモデル（`(opus when high-risk)`）と `relevance`、最適化レベルの下の `skip unneeded roles: on\|off  (optimization.skip_unneeded_roles)` 行、そして `Design reviews` ブロックが表示されます。このブロックは、フィットかファイルが design パネルを設定していればそれを、なければ `(the code panel; when conditions ignored)` を示します。design パネルがあるときは、effective の `--json` に `design_reviewer_origins`（フィットした席は `fit design`）が加わります。続いて `Reply language: <tag>  (language.reply)` の行が出ます。設定がなければ `not set`、Stop フックの判定を止めているときはタグの後に `(no rewrite: language.rewrite false)` が付きます。 |
 | `config path` | 両方のレイヤーの場所を表示します。 |
-| `config setup [--scope global\|project] [--preset quality\|standard\|fast \| --defaults] [--force]` | セットアップウィザードです。グローバルファイルでは最初の質問がプリセットです。`--preset` は何も尋ねません: `version` と `preset` を書き込み、プリセットが決めるキー以外にファイルが持っていた値は残し（ロールは `options` と `model_tiers` を残し、そのためフィットされません）、そのプリセットがこのマシンで解決される設定を note とともに表示します（`references/configuration.md` のプリセットを参照）。プリセットを指定できるのはグローバルファイルだけで、`--scope project` では拒否され（exit 2）、何も書き込みません。`--defaults` は何も上書きしないため、ファイルには `version: 1` だけが入り、プリセット `standard` で動きます。`--force` は TTY がなくてもプロンプトを表示します。 |
-| `config reset [--scope …] [--delete]` | このレイヤーの上書きを消去し（ファイルは残り、`version` だけ、グローバルファイルなら既知の `preset` も入った状態になります。知らないプリセット名は `note:` を表示して消します）、残った設定を表示します。`--delete` を付けるとファイルを削除し、グローバルレイヤーは `standard` で動きます。 |
+| `config setup [--scope global\|project] [--preset quality\|standard\|fast \| --defaults] [--language TAG] [--no-hooks] [--force]` | セットアップウィザードです。グローバルファイルでは最初の質問がプリセットで、最後の質問（保存の直前）が返答の言語です（`ja` のようなタグ。タグか空欄になるまで聞き直し、空欄ならファイルの値を残し、`none` で消します）。`--language TAG` は `--preset` や `--defaults` と一緒に使うと `language.reply` を書き込み、ウィザードでは最初に示す答えになります。タグでない値なら、何も書かずに終了コード 2 で終わります。保存のあと、`config set language.reply` と同じように、このファイルの保存前と保存後の値をもとに Claude Code のユーザー設定に返答の言語のフックを入れたり外したりします。`--no-hooks` を付けるとそれをしません。`--preset` は何も尋ねません: `version` と `preset` を書き込み、プリセットが決めるキー以外にファイルが持っていた値は残し（ロールは `options` と `model_tiers` を残し、そのためフィットされません）、そのプリセットがこのマシンで解決される設定を note とともに表示します（`references/configuration.md` のプリセットを参照）。プリセットを指定できるのはグローバルファイルだけで、`--scope project` では拒否され（exit 2）、何も書き込みません。`--defaults` は何も上書きしないため、ファイルには `version: 1` だけが入り、プリセット `standard` で動きます。`--force` は TTY がなくてもプロンプトを表示します。 |
+| `config reset [--scope …] [--delete]` | このレイヤーの上書きを消去し（ファイルは残り、`version` だけ、グローバルファイルなら既知の `preset` も入った状態になります。知らないプリセット名は `note:` を表示して消します）、残った設定を表示します。`--delete` を付けるとファイルを削除し、グローバルレイヤーは `standard` で動きます。リセットでこのファイルの `language.reply` が消え、グローバルのファイルにもこのプロジェクトのファイルにも設定がなくなれば、返答の言語のフックを外します。リセットでフックを入れることはありません。 |
 | `config prune [--scope …] [--dry-run]` | レイヤーが持つ値のうち、継承される値と等しいものを削除します。すべてのデフォルトを保持している 0.6.0 より前に書かれたファイル向けです。値を削除するのは組み込みのデフォルトとプリセットのフィットがどちらもその値で一致するときだけなので、prune で有効な設定が変わることはありません。同じ理由で、`reviewers` を削除すると設計レビューがファイルのパネルのコピーからプリセットの設計パネルに移ってしまう場合は、`reviewers` を残し、その理由を 1 行で表示します。`--dry-run` は書き込まずに一覧表示します。 |
-| `config set <path> <value> [--scope …] [--raw]` | 値を 1 つ設定します。パスは `a.b.c` と `reviewers[0].role` をサポートします。インデックス付きの編集では、リストの残りを下のレイヤーからコピーします。末尾を超えたインデックスは終了コード 2 で終了します。`preset` は、プロジェクトファイルがあってもグローバルファイルに書き込みます。`--scope project` を付けると終了コード 2 で終了し、何も書き込みません。読み取り専用の席の provider（`orchestrator.provider`、`architect.provider`、`<role>.model_tiers.<tier>.provider`、`reviewers[<n>].provider`、`review.design.reviewers[<n>].provider`）を project ファイルで `agy` にすると、終了コード 2 で終了して何も書き込まず、代わりに `--scope global` のコマンドを示します。global ファイルでは書き込んだうえで警告します。 |
+| `config set <path> <value> [--scope …] [--raw] [--no-hooks]` | 値を 1 つ設定します。タグのなかったファイルで `language.reply` をタグにすると、Claude Code のユーザー設定へ返答の言語のフックを入れます。入れるのは設定ディレクトリがあるときだけで、なければ `note:` で `hooks install` を案内します。どのタグを設定しても、入っているが古いフックは直します。すでにタグのあったファイルでタグを変えたとき、フックが入っていなければ入れず、`note:` で `hooks install` を案内します。プロジェクトのファイルなど、ほかのファイルだけが設定しているタグでフックを入れることはありません。ファイルから消して、グローバルのファイルにもこのプロジェクトのファイルにも設定がない状態にするとフックを外し、ほかのプロジェクトでファイルに設定していればそこでも判定が止まると伝えます。グローバルのタグの上にプロジェクトで `null` を設定しても外しません。`--no-hooks` を付けると値だけを保存し、Claude Code には触れません。委譲された実行の中でも触れません。編集できない設定ファイルは `warning:` になるだけで、値は保存され、終了コードは 0 のままです（[hooks](#hooks) を参照）。パスは `a.b.c` と `reviewers[0].role` をサポートします。インデックス付きの編集では、リストの残りを下のレイヤーからコピーします。末尾を超えたインデックスは終了コード 2 で終了します。`preset` は、プロジェクトファイルがあってもグローバルファイルに書き込みます。`--scope project` を付けると終了コード 2 で終了し、何も書き込みません。読み取り専用の席の provider（`orchestrator.provider`、`architect.provider`、`<role>.model_tiers.<tier>.provider`、`reviewers[<n>].provider`、`review.design.reviewers[<n>].provider`）を project ファイルで `agy` にすると、終了コード 2 で終了して何も書き込まず、代わりに `--scope global` のコマンドを示します。global ファイルでは書き込んだうえで警告します。 |
 | `config suggest-roles [--write] [--json] [--provider P] [--model F]` | プロジェクトのファイル名とルートの `package.json` から、パスで絞り込む `database`、`frontend`、`backend` のレビュアーを提案します。モデルは呼びません。提案ごとに id、プロバイダー、family、`when.paths`、根拠、一覧のファイルのうち何件に一致するか（そのうち何件を `review.exclude` が withheld にするか）を表示し、続いて提案しなかったロールをすべて理由とともに表示します。git リポジトリの中では `git ls-files` だけを読み、一覧の取得に失敗したときや大きすぎるときは終了コード 2 です。`--write` は一覧のルートにあるプロジェクトファイルの `reviewers_extra` に追記し、有効なプロジェクトファイルが別の場所にあるときは拒否します（終了コード 2、何も書き込みません）。`--json` は 1 つのオブジェクト（`root`、`source`、`files`、`truncated`、`notes`、`suggestions`、`skipped`、`written`）を表示し、注記は stderr に出します。`references/configuration.md` の「パスで絞り込むレビュアーを提案させる」を参照。 |
 | `config validate [--json]` | 有効な設定を、design パネルと各席の `high_risk_model` と `relevance` も含めて検証します。無効な場合は終了コード 1 です。`Warnings:` セクション（`--json` では `warnings`）には、読み取り専用のロールの実行が拒否することになる生引数 — project ファイルにある `options.args` のすべてと、アダプタの許可リストが受け付けないもの — 、project ファイルから来た `agy` の読み取り専用の席、agy の書き込みロールが project ファイルから受け取ることになる `options.skip_permissions` や `options.args`、そして global ファイルから来た agy の読み取り専用の席ごとに 1 行の `<seat>: read-only is NOT enforced by agy -- ...` が一覧表示されますが、終了コードは変わりません。`config set` も同じものを `warning:` 行として表示します。 |
 
@@ -155,6 +156,24 @@ dev-orchestra reviewer remove db-review
 パネルは誰のデフォルトでもないからです。`optimization.extra_high_risk_paths` についても何も
 言いません。どの版もこの設定をファイルに書き込んだことはないので、値があれば必ず誰かが足したものだからです。
 
+Config ブロックの `Reply language:` の行は、`language.reply` と、ホストごとに何が返答をその言語に
+保つかを示します。`not set (language.reply; replies follow the user's language)`、または
+`<tag> (<layer>) -- Claude Code: <what>; Codex, Antigravity: rule 11 only` です。`<what>` は
+`Stop-hook rewrite + reminder (hooks in ~/.claude/settings.json)`、`reminder only (hooks in …)`
+（`language.rewrite: false` のとき、または判定が文字体系を知らないタグのとき）、
+`hooks out of date (<reasons>) -- run: dev-orchestra hooks install`、または `rule 11 only (<why>)` です。
+最後のものは、フックが入っていないとき、設定ファイルを解析できないとき、またはそれが `disableAllHooks` を
+設定しているときに出ます。`--json` では `language` に入ります: `reply`（タグ。主タグは
+小文字。なければ `null`）、`rewrite`、`layer`（`project`、`global`、`default`。`language.reply` を書いたファイルで、プロジェクトの `null` も数えます）、`check`（`script`、
+`words`、`latin`、`none`）、`hosts`。`hosts` の `claude` は `hooks status --json` が出すオブジェクトそのもので、
+`codex` と `agy` は `status: not-enforced` です。`check` が `words`（英語、スペイン語、フランス語、ドイツ語、ポルトガル語、
+イタリア語）なら、これらの言語をよく使う語だけで見分け、短い返答は通すという注記が、`latin` なら、
+ラテン文字の言語どうしは区別できないという注記が、`none` なら、どの返答も判定しないという注記が付きます。
+ほかにも、問題ではなく注記として次のものが出ます。言語を設定しているのにフックが入っていないか古いとき
+（理由と直すコマンド付き）、設定ファイルを解析できないとき（ファイルには触れていません）、`disableAllHooks`、
+言語を設定していないのにフックが入っているとき（フックは黙ったままで、`hooks uninstall` で外せます）。
+`references/architecture.md`（「返答の言語のフック」）を参照。
+
 誤りではないが知っておくべきことがあると、問題の後に **Notes** ブロックが表示されます。注記は
 `--strict` の判定に数えられず、`--json` では `notes` に入ります（ないときは `[]`）。1 種類は、上で述べた
 agy の読み取り専用の席です。1 つは、このマシンでまだ live check していないインストール済み CLI のバージョンを挙げるものです（後述の
@@ -228,6 +247,22 @@ itself -- run python scripts/smoke_live.py --provider claude`（または `recor
 照らし合わせるバージョンがないからです。
 `--json` では `providers.<name>.live_check`（`status` は `passed`、`failed`、`absent`、`version-unavailable` のいずれか。
 `entry`、`last_passed`、`problem`）です。これは決して問題として扱われません。
+
+<a id="hooks"></a>
+
+## hooks
+
+Claude Code のユーザー設定（`$CLAUDE_CONFIG_DIR/settings.json`、なければ `~/.claude/settings.json`。
+プロジェクトのものには入れません）にある、返答の言語のフックを扱います。どう書き込み、何を実行し、
+いつ動くかは `references/architecture.md`（「返答の言語のフック」）にあります。
+
+| コマンド | 説明 |
+| --- | --- |
+| `hooks install [--dry-run]` | 中継スクリプトとその記録を `<config dir>/hooks/` に書き、イベントごと（`UserPromptSubmit`、`compact\|resume` の `SessionStart`、`Stop`）にマッチャーのグループを 1 つ設定ファイルに加えます。ファイルがなければ作ります。設定ファイルのパス、加えたエントリ（`+ Stop: <python> -I <relay> stop`）と外したエントリ、元のファイルの控えを表示し、Claude Code はセッションの開始時にフックを読むと伝えます。`<python>` は dev-orchestra を動かしている Python で、仮想環境の中ではその環境の元になった Python です（そのときはそう表示します）。それが見つからなければ拒否します（終了コード 2）。`language.reply` を設定していなければ、設定するまでフックは黙ったままだと付け加えます。すでに入っていれば `already installed` と表示し、何も書きません。解析できない設定ファイルや形の違う設定ファイル、Microsoft Store 版の Python では Claude Code の読まない場所に書かれてしまう設定ファイルは拒否します（終了コード 2、何も書きません）。`--dry-run` は同じ内容を表示するだけで、設定ファイルも中継スクリプトも書きません。`hooks` のコマンドは、Claude Code の中で実行したほかのコマンドと違い、中継スクリプトの記録を実行中のチェックアウトに移しません（`references/architecture.md` の「返答の言語のフック」を参照）。`install` 自身はそれを記録します。 |
+| `hooks uninstall [--dry-run]` | dev-orchestra のエントリを外し、それで空になったグループ、イベントの一覧、`hooks` オブジェクトも外して、中継スクリプトとその記録を消します。拒否したときは `install` と同じく終了コード 2 です。 |
+| `hooks status [--json]` | フックが入っていて最新かどうかを示し、言語を設定しているのにフックが古いかないときは直すコマンドも示します。終了コードは 0 です。`--json`: `settings_path`、`status`（`installed`、`stale`、`not-installed`、`unreadable`）、`reasons`（`python-differs`、`python-missing`、`relay-missing`、`relay-outdated`、`plugin-root-differs`（記録が別のチェックアウトを指す）、`record-differs`（記録がないか、別の設定ディレクトリや設定ファイルを指す）、`events-missing`（あるイベントにこちらのフックがないか 2 つ以上ある）、`entries-differ`（`install` が書く形の専用グループに入っていない。マッチャー・タイムアウト・引数が違う、または別のイベントにある）のどれか）、`python`（エントリが実行するコマンド）、`relay`、`plugin_root`（記録から）、`events`、`hooks_disabled`、`error`。 |
+
+このうち何を約束しているかは README の「互換性」にあります。
 
 <a id="run"></a>
 
@@ -1062,6 +1097,7 @@ stderr に一度だけ知らせます。実行中のステージがあるワー�
 | `DEV_ORCHESTRA_MOCK_FAIL` | mock の実行を失敗させます（`1` = すべて、それ以外はプロンプトの部分文字列） |
 | `DEV_ORCHESTRA_MOCK_ACTIVITY` | mock の実行がジョブの activity や `review run --progress` に報告するツール行。`\|` 区切りで、`<部分文字列>=>行` はその部分文字列を含むプロンプトのときだけ |
 | `CODEX_HOME` | Codex CLI の設定と認証情報を探すときに考慮されます |
+| `CLAUDE_CONFIG_DIR` | Claude Code のユーザー設定の場所。`hooks install` と、フックを入れたり外したりするコマンドが使います |
 | `DEV_ORCHESTRA_TEST_ASSUME_NO_CLI` | テスト専用: 両方の provider CLI を隠し、CI を再現します |
 
 <a id="troubleshooting"></a>

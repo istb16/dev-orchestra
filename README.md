@@ -190,6 +190,17 @@ Precedence is **project → global → built-in defaults**:
 prints the result; `config set` changes one value. The schema, every field and
 worked examples: [configuration](references/configuration.md).
 
+`dev-orchestra config set language.reply ja` (or `ko`, `zh-TW`, `es`, `fr`, any
+language tag) fixes the language the orchestrator answers in. dev-orchestra
+adds three hooks to your Claude Code user settings (`~/.claude/settings.json`,
+backed up first) that remind it before each prompt and ask once for a reply
+clearly in another language to be written again; elsewhere `doctor` passes the
+setting on to the skill. `--no-hooks` saves the setting alone, `dev-orchestra
+hooks status` shows them, and clearing the setting removes them. A project's
+`.dev-orchestra.yaml` that sets a language never installs them by itself. What is
+checked, how the hooks are written and their limits:
+[Reply-language hooks](references/architecture.md#reply-language-hooks).
+
 ## Model selection
 
 A role stores a family and `version: latest` (or `pinned` with an exact id),
@@ -245,6 +256,7 @@ action.
 ## Uninstalling
 
 ```bash
+dev-orchestra hooks uninstall   # the reply-language hooks in your Claude Code settings, if any
 claude plugin uninstall dev-orchestra
 codex plugin remove dev-orchestra@dev-orchestra
 dev-orchestra config reset --scope global --delete   # optional: your configuration
@@ -288,6 +300,15 @@ Covered:
 - **What the built-in adapters do** (claude, codex, agy, mock): the modes, the
   read-only enforcement, resuming, what a run records. The flags they pass to
   their CLIs are not.
+- **What the reply-language hooks do** ([Reply-language hooks](references/architecture.md#reply-language-hooks)):
+  dev-orchestra adds them to your Claude Code user settings only when you set
+  `language.reply` or run `hooks install`. It changes only its own entries
+  there and removes them with `hooks uninstall` or when `language.reply` is
+  cleared. They act only with `language.reply` set, only in a session that
+  used dev-orchestra, and never in a run it delegated. They block a reply at
+  most once, and they fail open, printing nothing on any error. Not covered:
+  the thresholds, what is stripped before judging, the reason wording, the
+  relay script and its record, and the exact `command`/`args` of the entries.
 - **The minimum Python version and the supported platforms**: raising or
   dropping one is a major version.
 
@@ -309,6 +330,8 @@ Not covered, and may change in a minor version:
   The commands they invoke are covered above.
 - **`DEV_ORCHESTRA_MOCK_*`** and `DEV_ORCHESTRA_TEST_ASSUME_NO_CLI`, which are
   test instruments.
+- **`DEV_ORCHESTRA_DELEGATED`**, which the providers set on the processes they
+  start so the hooks stay out of delegated runs: internal.
 
 ## Architecture
 

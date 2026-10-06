@@ -15,6 +15,10 @@ from typing import List, NamedTuple, Tuple
 
 PLUGIN_NAME = "dev-orchestra"
 
+#: The directory two levels above skills/dev-orchestra/SKILL.md, which is what
+#: Antigravity loads. realpath: launched through a link, this is the checkout.
+PLUGIN_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
+
 #: Entries at a plugin root that Antigravity loads on its own when the plugin
 #: is enabled, and ``plugins.json``, which would make the root a customization
 #: root. A linked checkout exposes its working tree, so none may exist here.

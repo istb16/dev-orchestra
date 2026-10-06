@@ -22,12 +22,12 @@ from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tu
 
 from . import activity as activity_mod
 from . import approval as approval_mod
+from . import claude_hooks, hosts, miniyaml
 from . import config as config_mod
 from . import context as context_mod
 from . import doctor as doctor_mod
 from . import jobs as jobs_mod
 from . import ledger as ledger_mod
-from . import miniyaml
 from . import optimization as opt_mod
 from . import presets as presets_mod
 from . import review as review_mod
@@ -80,6 +80,7 @@ from .cli_config import (
     cmd_reviewer_remove,
     cmd_reviewer_set,
 )
+from .cli_hooks import cmd_hooks_install, cmd_hooks_status, cmd_hooks_uninstall
 from .cli_review import (
     _adoption_line,
     _approved_as_recorded,
@@ -278,6 +279,18 @@ def _add_command_group(
     return subparsers.add_parser(name, help=help).add_subparsers(dest="subcommand", required=True)
 
 
+def _add_no_hooks_flag(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--no-hooks",
+        action="store_true",
+        help="save language.reply without adding or removing the Claude Code hooks",
+    )
+
+
+def _add_dry_run_flag(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--dry-run", action="store_true", help="print what would change, write nothing")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="dev-orchestra",
@@ -304,6 +317,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     # doctor -----------------------------------------------------------------
     _add_doctor_parser(subparsers)
+
+    # hooks ------------------------------------------------------------------
+    _add_hooks_parsers(subparsers)
 
     # run --------------------------------------------------------------------
     _add_run_parser(subparsers)
@@ -352,6 +368,13 @@ def _add_config_parsers(subparsers: argparse._SubParsersAction[argparse.Argument
         "--defaults", action="store_true", help="write the recommended config without prompting"
     )
     setup.add_argument("--force", action="store_true", help="prompt even without a TTY")
+    setup.add_argument(
+        "--language",
+        default=None,
+        metavar="TAG",
+        help="the language replies are written in (language.reply), e.g. ja, ko, zh-TW",
+    )
+    _add_no_hooks_flag(setup)
     setup.set_defaults(func=cmd_config_setup)
 
     reset = config_sub.add_parser(
@@ -373,6 +396,7 @@ def _add_config_parsers(subparsers: argparse._SubParsersAction[argparse.Argument
     set_parser.add_argument("value")
     _add_scope_flag(set_parser)
     set_parser.add_argument("--raw", action="store_true", help="keep the value as a string")
+    _add_no_hooks_flag(set_parser)
     set_parser.set_defaults(func=cmd_config_set)
 
     validate = config_sub.add_parser("validate", help="validate the effective configuration")
@@ -506,6 +530,21 @@ def _add_doctor_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentP
     doctor_parser.add_argument("--fast", action="store_true", help="skip model discovery")
     doctor_parser.add_argument("--strict", action="store_true", help="exit non-zero when problems are found")
     doctor_parser.set_defaults(func=cmd_doctor)
+
+
+def _add_hooks_parsers(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    hooks_sub = _add_command_group(
+        subparsers, "hooks", "the reply-language hooks in Claude Code's user settings"
+    )
+    hooks_install = hooks_sub.add_parser("install", help="add them, or bring them up to date")
+    _add_dry_run_flag(hooks_install)
+    hooks_install.set_defaults(func=cmd_hooks_install)
+    hooks_uninstall = hooks_sub.add_parser("uninstall", help="remove them, the relay and its record")
+    _add_dry_run_flag(hooks_uninstall)
+    hooks_uninstall.set_defaults(func=cmd_hooks_uninstall)
+    hooks_status = hooks_sub.add_parser("status", help="whether they are installed and current")
+    _add_json_flag(hooks_status)
+    hooks_status.set_defaults(func=cmd_hooks_status)
 
 
 def _add_run_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -784,6 +823,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         # be applied a second time against the directory we just moved into.
         args.cwd = os.path.abspath(args.cwd)
         os.chdir(args.cwd)
+    if args.command != "hooks":
+        # Keeps an installed hook relay on this checkout; never changes the outcome.
+        # Not for `hooks`: its dry runs and status write nothing, and report what is there.
+        try:
+            claude_hooks.refresh(hosts.PLUGIN_ROOT, os.environ)
+        except Exception:
+            pass
     try:
         return int(args.func(args) or 0)
     except config_mod.ConfigError as exc:

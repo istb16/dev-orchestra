@@ -426,7 +426,7 @@ class TestSetupPassesTheLayerBase(IsolatedCase):
     def captured_base(self, *argv):
         seen = {}
 
-        def fake(prompter, existing=None, base=None, scope="global"):
+        def fake(prompter, existing=None, base=None, scope="global", **_kwargs):
             seen["base"] = base
             seen["scope"] = scope
             return {"version": 1}, True
