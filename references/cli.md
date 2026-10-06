@@ -330,7 +330,13 @@ as well as where it was looked for. An unreadable `--prompt-file` used to read
 as an empty prompt, which was delegated and answered by the provider CLI
 complaining about its own stdin.
 
-`--timeout` is the total deadline. `--idle-timeout` is the *no output* deadline:
+`--timeout` is the total deadline. Without it, a role's run takes
+`run.timeout_seconds.<role>` (3600 for the implementer, 1800 for the others) and
+`run <reviewer-id>` takes `review.timeout_seconds` (1800), as `review run` does.
+A run killed at its deadline says which of the two it hit and where it was set.
+`config show` lists every deadline with the file that set it.
+`--idle-timeout` is the *no output* deadline (`review.idle_timeout_seconds`
+without it, for every run):
 a wedged agent goes quiet while a slow one keeps producing, so this catches a
 stall in minutes rather than at the total deadline. It applies to Claude only:
 the Codex and agy adapters claim no progress stream (agy reports tool activity,
@@ -1229,6 +1235,7 @@ version of all of this.
 | One reviewer failed | Expected to be survivable. The workflow's `reviews/consolidated.md` gives the reason. |
 | The implementer cannot run tests | `acceptEdits` auto-approves edits, not shell commands. Allow-list the command in the project's own CLI settings, or set `implementer.options.permission_mode`. |
 | Two findings are obviously the same | Auto-merge is conservative by design. Check the "Possible duplicates" list and triage one as `duplicate`. |
-| Reviews never finish | Lower `review.timeout_seconds`, or use `--sequential` to see which reviewer hangs. |
+| Reviews never finish | Lower `review.timeout_seconds`, or use `--sequential` to see which reviewer hangs. `review.timeout_seconds` bounds reviewers only; a role's `run` has `run.timeout_seconds.<role>`. |
+| `… hit its Ns deadline (run.timeout_seconds.<role>, …) and was killed` | The run needed longer than its role's deadline. Raise it for one run with `--timeout`, or for good with `config set run.timeout_seconds.<role> N`. |
 | Config parse error | The built-in YAML parser rejects anchors, aliases and block scalars. Simplify, or install PyYAML. |
 | `—` appears as `\u2014` | The console cannot encode it -- cp932 on Japanese Windows, for instance. The character is escaped rather than dropped or fatal. `chcp 65001`, or `PYTHONIOENCODING=utf-8`, shows it properly. |

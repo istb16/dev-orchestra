@@ -52,6 +52,41 @@ class TestConfigCommands(IsolatedCase):
         self.assertIn("showing preset standard fitted to the installed CLIs", out)
         self.assertIn("claude / sonnet / latest", out)
 
+    def test_config_show_lists_run_deadlines_with_source(self):
+        run_cli("config", "set", "run.timeout_seconds.architect", "900", "--scope", "global")
+        run_cli("config", "set", "review.timeout_seconds", "600", "--scope", "global")
+        self.write(".dev-orchestra.yaml", "version: 1\nrun:\n  timeout_seconds:\n    implementer: 5400\n")
+        code, out, err = run_cli("config", "show")
+        self.assertEqual(code, 0, err)
+        lines = out.splitlines()
+        start = lines.index("  Deadlines")
+        self.assertEqual(
+            lines[start + 1 : start + 6],
+            [
+                "    Orchestrator: 1800s (default)  (run.timeout_seconds.orchestrator)",
+                "    Architect: 900s (global)  (run.timeout_seconds.architect)",
+                "    Implementer: 5400s (project)  (run.timeout_seconds.implementer)",
+                "    Review Fixer: 1800s (default)  (run.timeout_seconds.review_fixer)",
+                "    Reviewers: 600s (global)  (review.timeout_seconds)",
+            ],
+        )
+        # A preview names no file, so it says no source.
+        from orchestrator import summary as summary_mod
+
+        preview = summary_mod.render_summary(config_mod.default_config())
+        self.assertIn("    Implementer: 3600s  (run.timeout_seconds.implementer)", preview)
+
+    def test_config_show_reads_a_broken_review_deadline_as_the_default(self):
+        """``config show`` loads unvalidated: a bad ``review`` must show, not crash the summary."""
+        from orchestrator import summary as summary_mod
+
+        for review in (5, [1, 2], {"timeout_seconds": "abc"}, {"timeout_seconds": 0}):
+            with self.subTest(review=review):
+                data = config_mod.default_config()
+                data["review"] = review
+                preview = summary_mod.render_summary(data)
+                self.assertIn("    Reviewers: 1800s  (review.timeout_seconds)", preview)
+
     def test_setup_defaults_writes_a_config(self):
         code, out, _ = run_cli("config", "setup", "--defaults")
         self.assertEqual(code, 0)
@@ -2220,6 +2255,30 @@ class TestOutputGuard(IsolatedCase):
         code, _, _ = self.run_returning(ok=False, exit_code=124, stdout="...", timed_out=True)
         self.assertEqual(code, 1)
         self.assertEqual(read_file(self.target), self.PLAN)
+
+    def test_timeout_message_names_the_key(self):
+        """A run killed sooner than it used to be says which key raises it (#258)."""
+        run_cli("config", "set", "run.timeout_seconds.implementer", "1200")
+        _, _, err = self.run_returning(ok=False, exit_code=124, timed_out=True)
+        self.assertIn(
+            "implementer hit its 1200s deadline (run.timeout_seconds.implementer, global) and was killed; "
+            "--timeout raises it for one run.",
+            err,
+        )
+        _, _, err = run_cli("run", "implementer", "--prompt", "go", "--timeout", "5")
+        self.assertIn("implementer hit its 5s deadline (--timeout) and was killed.", err)
+
+    def test_a_reviewer_timeout_message_names_the_review_key(self):
+        """A reviewer run is bounded by ``review.timeout_seconds``, and says so with its layer."""
+        run_cli("reviewer", "add", "--provider", "mock", "--id", "m1", "--role", "general")
+        run_cli("config", "set", "--scope", "project", "review.timeout_seconds", "900")
+        self.patch_run(ok=False, exit_code=124, timed_out=True)
+        _, _, err = run_cli("run", "m1", "--prompt", "go")
+        self.assertIn(
+            "m1 hit its 900s deadline (review.timeout_seconds, project) and was killed; "
+            "--timeout raises it for one run.",
+            err,
+        )
 
     def test_an_ok_run_that_printed_only_whitespace_writes_nothing(self):
         """A run exiting 0 is not the same as the artifact having been produced."""

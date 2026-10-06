@@ -601,11 +601,19 @@ reviewers:                    # 0..n independent reviewers; two or more recommen
       version: latest
     role: test
 
+run:
+  timeout_seconds:                    # total deadline of one `run`, per role
+    orchestrator: 1800
+    architect: 1800
+    implementer: 3600                 # implementers measured past 30 min
+    review_fixer: 1800
+
 review:
   max_review_iterations: 2            # hard stop on review→fix→re-review loops
   parallel: true                      # run reviewers concurrently
   re_review_severities: [critical, high]
-  timeout_seconds: 1800               # per delegated CLI run
+  timeout_seconds: 1800               # reviewers only: `review run` and `run <reviewer-id>`
+  idle_timeout_seconds: 300           # no output for this long: wedged; `run` too
   design:
     enabled: auto                     # review .ai/plan.md before implementing (true, false or auto)
     max_iterations: 2                 # design review -> revise -> re-review
@@ -648,7 +656,9 @@ language:
 | `review.max_review_iterations` | int ≥ 0 | Rounds per review, not per project: the count restarts on a new branch, a new `--base`, or `budget reset`. `0` disables re-review entirely. |
 | `review.parallel` | bool | `false` runs reviewers one at a time (easier to debug). |
 | `review.re_review_severities` | list | Severities that count as blocking. |
-| `review.timeout_seconds` | int > 0 | Per-run timeout; a timeout is reported, not raised. |
+| `run.timeout_seconds.<role>` | int > 0 | The total deadline of one `run` of `orchestrator`, `architect`, `implementer` or `review_fixer` (default 3600 for the implementer, 1800 for the others). `--timeout` overrides it for one run. Any other key is refused. Not part of a role's block, so setting it never takes the role out of the preset's fit, and `config setup --preset` keeps it. A run killed at it says so, naming the key. |
+| `review.timeout_seconds` | int > 0 | The total deadline of each reviewer: of a `review run` round's reviewers and of `run <reviewer-id>` (default 1800). It no longer bounds `run` of a role; that is `run.timeout_seconds.<role>`. A timeout is reported, not raised. |
+| `review.idle_timeout_seconds` | int > 0 \| null | No output for this long, and the run is treated as wedged (default 300; streaming providers only). Shared by reviewers and `run` of every role: silence does not grow with the task. A role can override it with `options.idle_timeout`. |
 | `review.exclude` | list | Glob patterns whose diff body is withheld from reviewers. Replaces the default list wholesale; `[]` reviews everything. |
 | `review.incremental_rounds` | bool | `true` (default) makes a second round diff against what the first round reviewed, carrying the findings the fix was meant to address. `false` re-diffs the whole change every round. |
 | `review.max_findings` | int \| null | How many findings each reviewer is asked for. `null` (default) lets `optimization.level` decide, `0` lifts the cap. Findings that come back over the cap are kept, never trimmed. |

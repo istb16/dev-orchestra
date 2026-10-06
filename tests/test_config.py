@@ -825,6 +825,7 @@ class TestValidateOrder(IsolatedCase):
 
     def test_every_integer_field_refuses_a_bool_and_a_float(self):
         fields = [
+            ("run.timeout_seconds.implementer", "must be a positive integer"),
             ("review.max_review_iterations", "must be a non-negative integer"),
             ("review.timeout_seconds", "must be a positive integer"),
             ("review.idle_timeout_seconds", "must be a positive integer or null"),
@@ -1215,6 +1216,109 @@ class TestLanguage(IsolatedCase):
             {"language": {"reply": None, "rewrite": None}, "workspace": {"dir": None}},
         )
         self.assertEqual(merged, {"language": {"reply": None, "rewrite": False}, "workspace": {"dir": "w"}})
+
+
+class TestRunTimeout(IsolatedCase):
+    """``run.timeout_seconds.<role>``, the total deadline of one `run` (#258)."""
+
+    def run_cli(self, *argv):
+        import io
+        from contextlib import redirect_stderr, redirect_stdout
+
+        from orchestrator import cli
+
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            code = cli.main(list(argv))
+        return code, out.getvalue(), err.getvalue()
+
+    def write_global(self, text):
+        path = config_mod.global_config_path()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write("version: 1\n" + text)
+
+    def problems(self, run):
+        data = config_mod.default_config()
+        data["run"] = run
+        return config_mod.validate(data)
+
+    def test_run_timeout_defaults_per_role(self):
+        loaded = config_mod.load(self.project)
+        for role in config_mod.KNOWN_ROLES:
+            expected = 3600 if role == "implementer" else 1800
+            self.assertEqual(config_mod.run_timeout(loaded, role), (expected, "default"), role)
+        self.assertEqual(loaded.review_settings()["timeout_seconds"], 1800)
+
+    def test_run_timeout_project_overrides_global(self):
+        self.write_global("run:\n  timeout_seconds:\n    implementer: 5000\n    architect: 900\n")
+        self.write(".dev-orchestra.yaml", "version: 1\nrun:\n  timeout_seconds:\n    implementer: 4000\n")
+        loaded = config_mod.load(self.project)
+        self.assertEqual(config_mod.run_timeout(loaded, "implementer"), (4000, "project"))
+        self.assertEqual(config_mod.run_timeout(loaded, "architect"), (900, "global"))
+        self.assertEqual(config_mod.run_timeout(loaded, "review_fixer"), (1800, "default"))
+        self.assertEqual(loaded.layer_of("run.timeout_seconds.implementer"), "project")
+        self.assertEqual(loaded.layer_of("run.timeout_seconds.architect"), "global")
+        # A null in a file keeps what is below it, and reads as that.
+        self.write(".dev-orchestra.yaml", "version: 1\nrun:\n  timeout_seconds:\n    architect: null\n")
+        loaded = config_mod.load(self.project)
+        self.assertEqual(config_mod.run_timeout(loaded, "architect"), (900, "global"))
+
+    def test_run_timeout_refuses_bad_values(self):
+        message = "run.timeout_seconds.architect: must be a positive integer"
+        for value in (0, -1, True, 1.5, "900", None):
+            with self.subTest(value=value):
+                self.assertEqual(self.problems({"timeout_seconds": {"architect": value}}), [message])
+        unknown = (
+            "run.timeout_seconds.reviewer: unknown role "
+            "(known: orchestrator, architect, implementer, review_fixer)"
+        )
+        self.assertEqual(self.problems({"timeout_seconds": {"reviewer": 900}}), [unknown])
+        self.assertEqual(self.problems(3), ["run: must be a mapping"])
+        for timeouts in (900, None):
+            with self.subTest(timeouts=timeouts):
+                self.assertEqual(
+                    self.problems({"timeout_seconds": timeouts}),
+                    ["run.timeout_seconds: must be a mapping of role to seconds"],
+                )
+        # An invalid value the files hold reads as the default where nothing validates.
+        self.write(".dev-orchestra.yaml", "version: 1\nrun:\n  timeout_seconds:\n    architect: 0\n")
+        loaded = config_mod.load(self.project, validate_result=False)
+        self.assertEqual(config_mod.run_timeout(loaded, "architect"), (1800, "default"))
+        with self.assertRaises(config_mod.ConfigError):
+            config_mod.load(self.project)
+
+    def test_run_timeout_lowest_accepted_value_passes(self):
+        self.assertEqual(self.problems({"timeout_seconds": dict.fromkeys(config_mod.KNOWN_ROLES, 1)}), [])
+        self.assertEqual(self.problems({"timeout_seconds": {}}), [])
+        self.assertEqual(self.problems({}), [])
+
+    def test_run_timeout_is_not_governed(self):
+        self.fake_clis(claude=True, codex=True)
+        self.write_global("run:\n  timeout_seconds:\n    architect: 900\n")
+        code, _, err = self.run_cli("config", "setup", "--preset", "fast")
+        self.assertEqual(code, 0, err)
+        loaded = config_mod.load(self.project)
+        self.assertEqual(loaded.preset, "fast")
+        self.assertEqual(config_mod.run_timeout(loaded, "architect"), (900, "global"))
+        self.assertFalse(any("not fitted" in note for note in loaded.preset_notes), loaded.preset_notes)
+
+    def test_config_set_run_timeout_role(self):
+        code, _, err = self.run_cli(
+            "config", "set", "run.timeout_seconds.architect", "900", "--scope", "project"
+        )
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("warning", err)
+        loaded = config_mod.load(self.project)
+        self.assertEqual(config_mod.run_timeout(loaded, "architect"), (900, "project"))
+        self.assertEqual(config_mod.run_timeout(loaded, "implementer"), (3600, "default"))
+        self.assertEqual(loaded.project_layer["run"], {"timeout_seconds": {"architect": 900}})
+        self.assertEqual(
+            config_mod.validate(
+                loaded.data, project_layer=loaded.project_layer, global_layer=loaded.global_layer
+            ),
+            [],
+        )
 
 
 class TestPruneLayer(IsolatedCase):

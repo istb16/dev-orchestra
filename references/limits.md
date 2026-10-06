@@ -61,8 +61,14 @@ diff is several times larger than a pipe buffer.
 
 | Deadline | Config | Meaning |
 | --- | --- | --- |
-| Total | `review.timeout_seconds` (1800) | Hard cap on one delegated run |
-| Idle | `review.idle_timeout_seconds` (300) | No output for this long → wedged |
+| Total, `run` | `run.timeout_seconds.<role>` (implementer 3600, others 1800) | Hard cap on one `run` of a role |
+| Total, review | `review.timeout_seconds` (1800) | Hard cap on each reviewer: `review run` and `run <reviewer-id>` |
+| Idle | `review.idle_timeout_seconds` (300) | No output for this long → wedged; shared by `run` and review |
+
+`--timeout` replaces either total for one call. The implementer has an hour
+because measured implementer runs went past half an hour and one was killed at
+1800s. The idle deadline stays shared: it measures silence, which does not
+grow with the task.
 
 The idle deadline is the useful one: a working agent keeps producing, a wedged
 one goes silent, so a stall surfaces in minutes instead of half an hour.
@@ -463,9 +469,9 @@ their own wall clock; the heaviest came to 5619s of delegated execution.
 **How far past the limit a workflow can get.** A refusal happens before a run
 starts, never during one, and work in flight is not counted — so the overshoot
 is everything that began after the last check passed. With `D` for an entry's
-recorded deadline (`--timeout`, or `review.timeout_seconds`, which has no upper
-bound) and `G` for the kill grace plus output drain (`KILL_GRACE_SECONDS`, 5s,
-plus a little):
+recorded deadline (`--timeout`, else `run.timeout_seconds.<role>` for a run and
+`review.timeout_seconds` for a reviewer — neither has an upper bound) and `G`
+for the kill grace plus output drain (`KILL_GRACE_SECONDS`, 5s, plus a little):
 
 ```
 overshoot ≤ Σ over in-flight runs (D + G)  +  Σ over in-flight review batches N × (D + G)
@@ -474,7 +480,8 @@ overshoot ≤ Σ over in-flight runs (D + G)  +  Σ over in-flight review batche
 `N` is every reviewer *admitted* to the batch, including the ones still waiting:
 a panel runs at most 8 at a time and there is no budget check inside a batch, so
 a ninth reviewer in a second wave still runs to its deadline. Driving stages one
-at a time, that is one run (≤ 1805s) or one two-reviewer round (≤ 3610s).
+at a time, that is one run (≤ 1805s, or ≤ 3605s for the implementer) or one
+two-reviewer round (≤ 3610s).
 Overlapping detached workers adds a term each.
 
 A ledger written before this became a measured budget starts it at zero: what

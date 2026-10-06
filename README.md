@@ -272,8 +272,8 @@ Antigravity: `./install/uninstall.sh --antigravity` (`-Antigravity` on Windows),
 anything listed as covered is a major version, an addition is a minor version,
 a fix is a patch. `CHANGELOG.md` ([Keep a Changelog](https://keepachangelog.com/))
 calls out anything that needs action. Before 1.0.0 a minor release could still
-break these; the removal of the pre-0.4.0 `.ai/` adoption (CHANGELOG, Removed)
-is meant to be the last such change.
+break these, and says so under Changed in `CHANGELOG.md` with what to do — as
+the release that narrowed `review.timeout_seconds` to reviewers did.
 
 Covered:
 

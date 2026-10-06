@@ -14,6 +14,37 @@ below begins **User adapters** so adapter authors can find it.
 
 ## [Unreleased]
 
+### Added
+
+- **`run.timeout_seconds.<role>`: the total deadline of one `run`**, per role
+  (`orchestrator`, `architect`, `implementer`, `review_fixer`; default 3600
+  for the implementer, 1800 for the others). `--timeout` still overrides it
+  for one run, and a detached worker resolves the same value. A top-level key
+  rather than part of the role's block, so setting it never takes a role out
+  of the preset's fit and `config setup --preset` keeps it. `config show`
+  lists every deadline under *Deadlines*, with the file that set it, and a
+  run killed at its deadline names the key and where it was set (#258).
+
+### Changed
+
+- **`review.timeout_seconds` no longer bounds `run`.** It bounds reviewers
+  only: `review run` and `run <reviewer-id>`. `review.idle_timeout_seconds`
+  is still shared by both (#258). What changes for `run`, by what the file
+  set:
+  - `review.timeout_seconds` raised, e.g. to 3600: the implementer keeps
+    3600 by default; architect, review_fixer and orchestrator runs drop to
+    1800.
+  - Set low, e.g. 900: runs lengthen to 1800, or 3600 for the implementer.
+  - Left at 1800: only the implementer changes, to 3600.
+
+  To keep a previous cap, set it per role, e.g.
+  `dev-orchestra config set run.timeout_seconds.architect 900`. Reviewers
+  keep whatever `review.timeout_seconds` says; lower it again if it was
+  raised for the implementer's sake.
+- **The implementer's default run deadline goes from 1800 to 3600 seconds.**
+  Measured implementer runs went past half an hour, and one was killed at
+  1800. Orchestrator, architect and review_fixer stay at 1800 (#258).
+
 ## [0.21.0] - 2026-10-06
 
 ### Added

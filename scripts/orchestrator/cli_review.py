@@ -560,7 +560,7 @@ def _run_panel(
 ) -> Union[int, _PanelRun]:
     """Open the round's ledger entry and run the panel, or the exit code of a round that could not."""
     args, settings, book = ctx.args, ctx.settings, ctx.book
-    batch_timeout = args.timeout or int(settings.get("timeout_seconds", 1800))
+    batch_timeout = args.timeout or config_mod.review_timeout(ctx.loaded).seconds
     token = book.begin(
         ctx.kind.stage,
         {"iteration": ctx.iteration, "reviewers": [str(r.get("id")) for r in reviewers]},

@@ -565,7 +565,13 @@ def _add_run_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPars
         default=None,
         help="write the response here instead of stdout; kept as it is when the run produced none",
     )
-    run_parser.add_argument("--timeout", type=int, default=None, help="total deadline in seconds")
+    run_parser.add_argument(
+        "--timeout",
+        type=int,
+        default=None,
+        help="total deadline in seconds (default: run.timeout_seconds.<role>; "
+        "review.timeout_seconds for a reviewer)",
+    )
     run_parser.add_argument(
         "--idle-timeout",
         type=float,
