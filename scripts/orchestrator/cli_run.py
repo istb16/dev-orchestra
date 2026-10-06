@@ -819,6 +819,9 @@ def _refuse_unless_approved(
     if info["state"] not in approval_mod.REFUSED:
         return None
     lines = approval_mod.refusal_lines(info, workspace.relative(workspace.plan_path))
+    ignored = policy_mod.approval_ignored_note(loaded)
+    if ignored:
+        lines.append(ignored)
     # The whole refusal, not its first line: the instruction to ask the user
     # is the part a worker's reader most needs, and the job is all it has.
     _fail_job(args, "\n".join(lines))

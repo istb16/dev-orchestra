@@ -1348,8 +1348,22 @@ def _size_round(
     return _RoundSize(max_chars, inline_chars, adoption, budget_chars, over_budget, rerun)
 
 
+def _warn_project_gates(loaded: config_mod.LoadedConfig) -> None:
+    """What the project file asked of the gates: what was ignored, and what it loosened.
+
+    Here as well as in ``doctor`` and ``config validate``: the project file can
+    come with the branch this round reviews, and this is the run that says so
+    while the round is still the user's to stop.
+    """
+    for line in policy_mod.project_ignored_warnings(loaded):
+        _err("warning: %s" % line)
+    for line in policy_mod.project_loosening_notices(loaded):
+        _err("warning: %s" % line)
+
+
 def cmd_review_run(args: argparse.Namespace) -> int:
     loaded = _load_or_die(args.cwd)
+    _warn_project_gates(loaded)
     # One run's override of review.context.surrounding, for measuring what the
     # context does on one snapshot. None when not given, and then nothing below
     # differs from a run without the flag.

@@ -90,6 +90,35 @@ below begins **User adapters** so adapter authors can find it.
 - **`config set language.reply no` saves the tag `no`** (Norwegian) rather
   than `false`. In a file, a bare `no` is still read as false and refused;
   the message now says to quote it (#281).
+- **A project file that loosens a review gate is reported.** The project file
+  can come with the branch under review, so when it makes `reviewers`,
+  `review.design.reviewers`, `review.max_review_iterations`,
+  `review.re_review_severities`, `review.exclude`, `review.max_findings`,
+  `review.design.enabled`, `review.design.max_iterations`,
+  `optimization.level`, the high-risk, security or architecture patterns,
+  the low-risk thresholds or `optimization.skip_unneeded_roles` looser than
+  the global config, its preset and the defaults would, `config validate`
+  warns, `doctor` notes it (`--strict` still passes; `config.loosened` in
+  `--json`) and `review run` prints a `warning:`. The values still take
+  effect. What counts as looser for each key is in
+  `references/configuration.md` ("What the project file may not loosen")
+  (#279).
+
+### Changed
+
+- **`design.require_approval`, and a `workspace.dir` outside the repository,
+  are taken only from the global config.** In the project file they are now
+  ignored: the global value or the default is used, `config validate` and
+  `review run` warn, `doctor` reports a problem, and a refused `run
+  implementer` says the project file's `false` was ignored. A `workspace.dir`
+  holds the approval record, so one pointed outside the repository by a
+  branch could bring an approval nobody gave; a relative one inside the
+  repository still works from the project file. `config set
+  design.require_approval false` now writes the global file even inside a
+  project that has its own, and `--scope project` with either key exits 2.
+  To keep running a project without plan approval, move the setting:
+  `dev-orchestra config set --scope global design.require_approval false`
+  (#279).
 
 ## [0.22.0] - 2026-10-06
 

@@ -90,6 +90,24 @@ class TestTheGate(ApprovalCase):
     def test_no_plan_means_no_gate(self):
         self.assertEqual(self.implement()[0], 0)
 
+    def test_a_project_file_cannot_turn_the_gate_off(self):
+        """It can come with the branch under review (#279)."""
+        self.write(".dev-orchestra.yaml", "version: 1\ndesign:\n  require_approval: false\n")
+        self.write_plan()
+        code, _, err = self.implement()
+        self.assertEqual(code, approval.EXIT_APPROVAL_REQUIRED)
+        self.assertIn("note: design.require_approval: false in the project config", err)
+        self.assertEqual(self.approval()["state"], "pending")
+
+    def test_a_project_workspace_outside_the_repository_cannot_move_the_record(self):
+        """An approval written elsewhere is not the one that counts (#279)."""
+        elsewhere = os.path.join(self.tmp, "elsewhere")
+        self.write(".dev-orchestra.yaml", "version: 1\nworkspace:\n  dir: %s\n" % json.dumps(elsewhere))
+        self.write_plan()
+        self.assertEqual(run_cli("design", "approve")[0], 0)
+        self.assertFalse(os.path.exists(elsewhere))
+        self.assertEqual(self.implement()[0], 0)
+
     def test_approving_lets_the_implementer_run(self):
         self.write_plan()
         code, out, _ = run_cli("design", "approve")

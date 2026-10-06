@@ -26,7 +26,7 @@ from collections import Counter
 from typing import Any, Dict, Iterable, List, Mapping, NamedTuple, Optional, Tuple
 
 from . import config as config_mod
-from . import workflow
+from . import config_trust, workflow
 from .execution import DELEGATED_ENV
 
 #: The command-line event name, and the ``hook_event_name`` it must arrive with.
@@ -713,12 +713,18 @@ def file_settings(cwd: str) -> Dict[str, Any]:
     """The global file with the project file over it, as read from disk.
 
     Not ``config.load``: that composes a preset, which imports the provider
-    registry and with it the user's adapters.
+    registry and with it the user's adapters. The project file is read as
+    ``compose`` reads it, so the workflow directory looked for is the one the
+    commands write.
     """
     data: Dict[str, Any] = {}
-    for path in layer_paths(cwd):
+    global_path, project_path = layer_paths(cwd)
+    for path in (global_path, project_path):
         if path and os.path.isfile(path):
-            data = config_mod.deep_merge(data, config_mod.read_config_file(path))
+            layer = config_mod.read_config_file(path)
+            if path == project_path:
+                layer = config_trust.without_ignored(layer)
+            data = config_mod.deep_merge(data, layer)
     return data
 
 

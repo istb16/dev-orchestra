@@ -263,6 +263,10 @@ def collect(start: Optional[str] = None, probe_models: bool = True) -> Dict[str,
     # A note, not a problem: an unknown key changes nothing, so --strict
     # passes a file it would have passed before such keys were reported.
     report["notes"].extend(config_mod.unknown_key_warnings(loaded.global_layer, loaded.project_layer))
+    # Notes, not problems: these take effect, and a repository may mean them.
+    loosened = policy_mod.project_loosening_notices(loaded)
+    report["config"]["loosened"] = loosened
+    report["notes"].extend(loosened)
     # A seat refused for coming with the project file is a problem above, and
     # not also a note below.
     refused = policy_mod.project_raw_arg_refusals(loaded)

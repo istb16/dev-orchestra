@@ -24,7 +24,7 @@ import re
 import sys
 from typing import TYPE_CHECKING, Any, Dict, List, NamedTuple, Optional, Sequence, Tuple, Union
 
-from . import miniyaml
+from . import config_trust, miniyaml
 from . import optimization as opt_mod
 from .review_common import DEFAULT_EXCLUDE, SEVERITIES
 
@@ -1353,7 +1353,10 @@ def compose(
         for note, subject in zip(fit.notes, fit.subjects, strict=True)
         if subject not in dropped
     ]
-    data = deep_merge(deep_merge(deep_merge(defaults, values), global_layer), project_layer)
+    # Without what only the global file may set: a project file can come with
+    # the branch under review (``config_trust``).
+    trusted = config_trust.without_ignored(project_layer)
+    data = deep_merge(deep_merge(deep_merge(defaults, values), global_layer), trusted)
     # Each file's extras join the panel it inherits, so every reader of
     # ``reviewers`` sees them; ``origins`` keeps whose each one is.
     reviewers, origins, folded = fold_extras(data.get("reviewers"), global_layer, project_layer)

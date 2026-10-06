@@ -12,6 +12,7 @@
 - [Schema (version 1)](#schema-version-1)
   - [Field reference](#field-reference)
   - [Role options](#role-options)
+  - [What the project file may not loosen](#what-the-project-file-may-not-loosen)
 - [Optimization level](#optimization-level)
   - [Reviewers that run only on high-risk changes](#reviewers-that-run-only-on-high-risk-changes)
 - [Model tiers](#model-tiers)
@@ -154,7 +155,8 @@ a seat placed on that vendor rather than dealt (step 2 below).
 
 Those eight keys are the ones a preset governs. Everything else — budgets,
 timeouts, `review.max_review_iterations`, `design.require_approval` — is the
-built-in default unless a file sets it. `standard`'s code panel is read from
+built-in default unless a file sets it (`design.require_approval` only the global
+file: [below](#what-the-project-file-may-not-loosen)). `standard`'s code panel is read from
 the built-in defaults, so the two cannot drift apart; its design panel is the
 preset's own, since the defaults have none.
 
@@ -675,7 +677,7 @@ language:
 | `review.context.surrounding_chars` | int ≥ 1 \| null | The most surrounding context a round may add (default 15,000: measured on one snapshot, it left the cost per run where it was, while 60,000 added what it carried). Capped further by what the diff leaves under `max_chars` and `inline_chars`, so context never refuses a round or sends a diff over as a file. What does not fit is left out by name, in the prompt and in every report. `null` means the default. See `references/limits.md`. |
 | `review.design.enabled` | bool \| `auto` \| null | Whether `.ai/plan.md` goes in front of the design panel (see `review.design.reviewers`) before implementation; the stage costs a reviewer run per panel member per round. `true` always, `false` never. `auto` (default) decides from the plan, and `status` prints the answer and its reason: every backticked token anywhere in the plan, and every path-shaped word under the plan's `Files to Modify` heading whether backticked or not (a fenced block there included), is checked against the high-risk patterns (`optimization.high_risk_paths` plus `extra_high_risk_paths`) ignoring case, and a hit means run — a name with a `/` and no extension, such as `db/migrate`, is also checked as a directory; the size counts the filename-shaped tokens (a `/` or a file extension) under `Files to Modify` outside fenced blocks, `docs/`, `references/`, `tests/` and `.md`, `.rst` and `.txt` files, without looking at the disk, and 6 or more means run; a glob, a directory, a name with a `/` and no extension, or a path through `..` there means run (code such as `payload["mode"]` is not read as a glob); an unreadable plan, no `Files to Modify` section or one that names no file means run; before a plan is written the answer is `auto -> run (once a plan is written)`; and once a design round has run for the workflow the answer stays run, so a revision cannot switch the loop off half way. `null` means the default, `auto`. |
 | `review.design.max_iterations` | int ≥ 0 | Design review rounds (review → triage → revise), counted apart from `max_review_iterations` (default 2). The round that reaches the limit still gets its revision; the limit refuses only the re-review after it. `1`: one round, one revision, then ask. `0`: no design review. `budgets.architect` (default 3) covers the design plus one revision per round at the default; raise it with `max_iterations`, and by one more if changes asked for at approval are expected. |
-| `design.require_approval` | bool | `true` (default) makes `run implementer` refuse (exit 5) while `.ai/plan.md` exists and the plan as it is now has not been approved with `design approve` -- after the user said yes. `false` is for runs nobody is watching (CI, batch), and restores the behaviour from before the gate existed. Top-level rather than under `review.design`: approval matters whether or not the panel reviewed the plan. `--force` does not bypass it; only this setting does. |
+| `design.require_approval` | bool | `true` (default) makes `run implementer` refuse (exit 5) while `.ai/plan.md` exists and the plan as it is now has not been approved with `design approve` -- after the user said yes. `false` is for runs nobody is watching (CI, batch), and restores the behaviour from before the gate existed. Top-level rather than under `review.design`: approval matters whether or not the panel reviewed the plan. `--force` does not bypass it; only this setting does. Taken only from the global config: in the project file it is ignored ([below](#what-the-project-file-may-not-loosen)). |
 | `design.resume.max_age_seconds` | int ≥ 0 \| null | How old the last architect run may be for `run architect --resume` to continue its session (default 3600, how long the CLI kept its prompt cache when this was measured). Older, the revision runs fresh with the full prompt. `0` always runs fresh; `null` means the default. |
 | `design.resume.max_context_tokens` | int > 0 \| null | The largest context, in tokens, a session may have ended with and still be continued (default `null`: no cap). Every run records its `context_tokens`, so a cap can be set from what was measured. Setting one of the two keeps the other's default. |
 | `optimization.level` | `aggressive` \| `balanced` \| `quality` | How hard to try to be cheap. Default `balanced`. See below. |
@@ -688,7 +690,7 @@ language:
 | `optimization.extra_security_paths` | list | Globs added to `security_paths` (default `[]`). |
 | `optimization.architecture_paths` | list | What the `architecture` rule looks for: contracts and schemas, module surface, configuration and record formats, the CLI, the build. Replaces the default list wholesale; `[]` leaves only the size and directory tests (`doctor` reports that). |
 | `optimization.extra_architecture_paths` | list | Globs added to `architecture_paths` (default `[]`). |
-| `workspace.dir` | string \| null | Where `.ai/` artifacts go (default `.ai`): relative to the repository root, or absolute. Anything but a non-empty string is refused; a command that reads the file without validating it uses `.ai` instead. |
+| `workspace.dir` | string | Where `.ai/` artifacts go, the approval record included; a relative path is joined to the repository root. One outside the repository -- absolute, rooted, or climbing out with `..` -- is taken only from the global config: in the project file it is ignored and `.ai` (or the global value) is used ([below](#what-the-project-file-may-not-loosen)). Anything but a non-empty string is refused; a command that reads the file without validating it uses `.ai` instead. |
 | `workspace.stale_notice_days` | int 0–36500 | When a new workflow starts, its first command notes, once and on stderr, the other workflows whose last activity (`updated_at`, else `started_at`, in `state.json`) is this many days old or more (default 30). The current workflow is left out, and so is any workflow with a stage in flight: that mark clears only when that workflow itself runs `status`, so a workflow abandoned mid-stage is never named here; `workflow list` shows it as `in flight`. A workflow with no usable timestamp, or an unreadable `state.json`, is not counted. Nothing is deleted: `workflow remove <id> --yes` is still the only thing that deletes one. `0` turns the note off; `null` means the default. The note never changes what the command does. |
 | `language.reply` | string \| null | The language the orchestrator answers the user in, as a language tag: `ja`, `zh-TW`, `ko`, `ru`, `en`, `es`, `fr` and so on (a primary subtag of two or three letters, then any further subtags; the primary one is read in lower case). `null` (default) leaves the choice to SKILL.md rule 11: the language the user asked for, else the one they write in. Write Norwegian as `"no"` in a file: a bare `no`, like `yes`, `on` and `off`, is read as true or false and refused, while `config set language.reply no` keeps it a tag. Unlike other keys, a `null` in the project file is not inherited through: it undoes a tag the global file sets, for that project only. Set, `doctor` prints it as *Reply language* on every host, and in Claude Code three hooks remind the orchestrator of it before each prompt and, for a language they can judge (by its script, or for English, Spanish, French, German, Portuguese and Italian by their common words), ask once for a reply clearly in another language to be written again. Setting it with `config set` or `config setup --language` in a file that held none also adds those hooks to Claude Code's user settings (`~/.claude/settings.json`, or under `$CLAUDE_CONFIG_DIR`) when that directory exists -- a value only a project's file holds never does -- and clearing it so that neither the global file nor the project's sets one removes them; `--no-hooks` leaves the settings alone, and `hooks install` / `hooks uninstall` do it by hand. What each host does with it, how the hooks are written, and what the check can and cannot tell apart: `references/architecture.md` ("Reply-language hooks"). |
 | `language.rewrite` | bool \| null | `true` (default): the Stop-hook check in Claude Code is on. `false` keeps the reminders and turns the check off, for a check that misjudges your replies. `null` means the default. |
@@ -801,6 +803,55 @@ to that role's `options.args` in the global config, or pass it with `--extra`.
 `mock` is a real, registered provider: an offline adapter used by the tests and
 useful for dry-running the pipeline without spending tokens. It is hidden from
 the setup wizard.
+
+### What the project file may not loosen
+
+The project file can come with the branch under review, so the gates a branch
+could use to wave itself through are treated apart.
+
+**Plan approval and a workspace outside the repository come only from the
+global config.** `design.require_approval` in the project file, whatever its
+value, and a `workspace.dir` there that is absolute or resolves outside the
+repository (`/srv/ai`, `C:i`, `../ai`) are ignored: the global value, or the
+default, is used. A `workspace.dir` holds the approval record, so a project file
+pointing it elsewhere could bring an approval nobody gave. A relative
+`workspace.dir` inside the repository is still the project's to choose, and a
+`null` approval means the default, which is required. `config validate` (as a
+warning), `doctor` (as a problem, so `--strict` fails) and `review run` (as a
+`warning:`) say what was ignored and name the `--scope global` command; a
+refused `run implementer` adds a `note:` when the project file tried to turn
+approval off. `config set design.require_approval false` writes the global
+file even inside a project that has its own, as `preset` does, and so does
+`config set workspace.dir <outside>`; `--scope project` with either exits 2
+and writes nothing.
+
+**The other review gates still take effect from the project file**, since a
+repository may mean to review less, but when the project file makes one looser
+than the configuration without it -- the global file, its preset's fit and the
+defaults -- `config validate` warns, `doctor` notes it (`--strict` still
+passes; `--json` lists them under `config.loosened`) and `review run` prints a
+`warning:` before the round. Only a gate the project file writes is compared,
+read as a run reads it. Looser means:
+
+| Gate | Looser when the project file |
+| --- | --- |
+| `reviewers` | leaves out a reviewer id the code panel would otherwise have (`[]` leaves out all) |
+| `review.design.reviewers` | leaves out a reviewer id the design panel would otherwise have; set by its own list, or by a `reviewers` list that takes the fitted design panel out |
+| `review.max_review_iterations` | lowers it |
+| `review.re_review_severities` | leaves out a severity (an empty list reads as the default, `critical` and `high`) |
+| `review.exclude` | adds a pattern, withholding more of the diff |
+| `review.max_findings` | asks each reviewer for fewer findings, counting `null` as the level's cap and `0` as none |
+| `review.design.enabled` | moves it down `true` → `auto` → `false` |
+| `review.design.max_iterations` | lowers it |
+| `optimization.level` | moves it down `quality` → `balanced` → `aggressive` |
+| `optimization.high_risk_paths` | leaves out a pattern, counting `extra_high_risk_paths` with it |
+| `optimization.low_risk_max_files`, `optimization.low_risk_max_lines` | raises it |
+| `optimization.skip_unneeded_roles` | turns it on over a `false` |
+| `optimization.security_paths`, `optimization.architecture_paths` | leaves out a pattern, counting its `extra_` list with it |
+
+A `reviewers_extra` only adds, so it is never one. A stricter value is not
+reported, and neither is a panel dealt differently because the project file
+sets the implementer.
 
 ## Optimization level
 

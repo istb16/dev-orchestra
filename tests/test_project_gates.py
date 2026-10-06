@@ -1,0 +1,302 @@
+"""What a project file may do to the review and approval gates (#279).
+
+The project file can come with the branch under review. Plan approval and a
+workspace outside the repository -- where the approval is recorded -- are
+taken from the global config alone; the other gates still take effect from
+the project file, and `doctor`, `config validate` and `review run` say when
+the project file makes one looser than the global config and the defaults.
+"""
+
+from __future__ import annotations
+
+import io
+import json
+import os
+import unittest
+from contextlib import redirect_stderr, redirect_stdout
+
+from helpers import IsolatedCase
+
+from orchestrator import cli, config_trust, doctor, reply_language
+from orchestrator import config as config_mod
+from orchestrator import config_policy as policy_mod
+
+
+def run_cli(*argv):
+    """Run the CLI, returning (exit_code, stdout, stderr)."""
+    out, err = io.StringIO(), io.StringIO()
+    with redirect_stdout(out), redirect_stderr(err):
+        code = cli.main(list(argv))
+    return code, out.getvalue(), err.getvalue()
+
+
+class _Case(IsolatedCase):
+    def setUp(self):
+        super().setUp()
+        # No CLI installed, so the preset's fit is the built-in defaults.
+        self.fake_clis()
+
+    def write_global(self, text):
+        path = config_mod.global_config_path()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write("version: 1\n" + text)
+
+    def write_project(self, text):
+        self.write(".dev-orchestra.yaml", "version: 1\n" + text)
+
+    def loaded(self):
+        return config_mod.load(self.project, validate_result=False)
+
+    def notices(self):
+        return policy_mod.project_loosening_notices(self.loaded())
+
+    def ignored(self):
+        return policy_mod.project_ignored_warnings(self.loaded())
+
+
+class TestOutsideTheRepository(unittest.TestCase):
+    def test_what_leaves_the_repository(self):
+        for value in ("/srv/ai", "C:\\ai", "C:ai", "\\ai", "../ai", "..", "a/../../ai", "..\\ai"):
+            with self.subTest(value=value):
+                self.assertTrue(config_trust.outside_repository(value))
+
+    def test_what_stays_inside(self):
+        for value in (".ai", "work/.ai", "a/../ai", "./ai", "..ai", "", None, 3):
+            with self.subTest(value=value):
+                self.assertFalse(config_trust.outside_repository(value))
+
+    def test_a_layer_with_nothing_to_drop_is_returned_as_it_is(self):
+        layer = {"design": {"require_approval": None}, "workspace": {"dir": ".agent-work"}}
+        self.assertIs(config_trust.without_ignored(layer), layer)
+
+    def test_only_the_ignored_keys_are_dropped(self):
+        layer = {
+            "design": {"require_approval": False, "resume": {"max_age_seconds": 60}},
+            "workspace": {"dir": "/elsewhere", "stale_notice_days": 7},
+        }
+        kept = config_trust.without_ignored(layer)
+        self.assertEqual(
+            kept,
+            {"design": {"resume": {"max_age_seconds": 60}}, "workspace": {"stale_notice_days": 7}},
+        )
+        # The layer as read is left alone: it is what the warnings are made from.
+        self.assertIs(layer["design"]["require_approval"], False)
+
+
+class TestGlobalOnly(_Case):
+    def test_a_project_file_cannot_turn_approval_off(self):
+        self.write_project("design:\n  require_approval: false\n")
+        loaded = self.loaded()
+        self.assertIs(loaded.design_settings()["require_approval"], True)
+        [line] = policy_mod.project_ignored_warnings(loaded)
+        self.assertIn("design.require_approval: false is set in the project config", line)
+        self.assertIn("so it stays required", line)
+        self.assertIn("config set --scope global design.require_approval false", line)
+
+    def test_the_global_file_still_can(self):
+        self.write_global("design:\n  require_approval: false\n")
+        self.write_project("review:\n  max_review_iterations: 2\n")
+        loaded = self.loaded()
+        self.assertIs(loaded.design_settings()["require_approval"], False)
+        self.assertEqual(self.ignored(), [])
+
+    def test_a_project_value_over_a_global_false_is_ignored_too(self):
+        self.write_global("design:\n  require_approval: false\n")
+        self.write_project("design:\n  require_approval: true\n")
+        self.assertIs(self.loaded().design_settings()["require_approval"], False)
+        self.assertIn("so it stays not required", self.ignored()[0])
+
+    def test_a_project_null_is_the_default_and_not_reported(self):
+        self.write_project("design:\n  require_approval: null\n")
+        self.assertIs(self.loaded().design_settings()["require_approval"], True)
+        self.assertEqual(self.ignored(), [])
+
+    def test_a_project_workspace_outside_the_repository_is_ignored(self):
+        elsewhere = os.path.join(self.tmp, "elsewhere")
+        for value in (elsewhere, "../elsewhere"):
+            with self.subTest(value=value):
+                self.write_project("workspace:\n  dir: %s\n" % json.dumps(value))
+                loaded = self.loaded()
+                self.assertEqual(loaded.workspace_dir(self.project), os.path.join(self.project, ".ai"))
+                [line] = policy_mod.project_ignored_warnings(loaded)
+                self.assertIn("workspace.dir: %s is set in the project config" % value, line)
+                self.assertIn("so .ai is used", line)
+
+    def test_a_project_workspace_inside_the_repository_is_kept(self):
+        self.write_project("workspace:\n  dir: .agent-work\n")
+        loaded = self.loaded()
+        self.assertEqual(loaded.workspace_dir(self.project), os.path.join(self.project, ".agent-work"))
+        self.assertEqual(policy_mod.project_ignored_warnings(loaded), [])
+
+    def test_a_global_workspace_outside_the_repository_is_kept(self):
+        elsewhere = os.path.join(self.tmp, "elsewhere")
+        self.write_global("workspace:\n  dir: %s\n" % json.dumps(elsewhere))
+        self.write_project("workspace:\n  dir: %s\n" % json.dumps(os.path.join(self.tmp, "other")))
+        self.assertEqual(self.loaded().workspace_dir(self.project), elsewhere)
+
+    def test_the_hook_looks_for_the_workspace_the_commands_use(self):
+        self.write_project("workspace:\n  dir: %s\n" % json.dumps(os.path.join(self.tmp, "elsewhere")))
+        self.assertNotIn("dir", reply_language.file_settings(self.project).get("workspace", {}))
+
+    def test_config_validate_and_doctor_report_it(self):
+        self.write_project("design:\n  require_approval: false\n")
+        code, out, _ = run_cli("config", "validate", "--json")
+        self.assertEqual(code, 0)
+        self.assertTrue(any("design.require_approval" in line for line in json.loads(out)["warnings"]))
+        report = doctor.collect(self.project, probe_models=False)
+        self.assertTrue(any("design.require_approval" in line for line in report["problems"]))
+
+    def test_config_set_writes_it_to_the_global_file(self):
+        self.write_project("review:\n  max_review_iterations: 2\n")
+        code, _, err = run_cli("config", "set", "design.require_approval", "false")
+        self.assertEqual(code, 0, err)
+        self.assertIs(self.loaded().design_settings()["require_approval"], False)
+        project = config_mod.read_config_file(os.path.join(self.project, ".dev-orchestra.yaml"))
+        self.assertNotIn("design", project)
+
+    def test_config_set_refuses_the_project_scope(self):
+        self.write_project("review:\n  max_review_iterations: 2\n")
+        cases = (("design.require_approval", "false"), ("workspace.dir", "../elsewhere"))
+        for key, value in cases:
+            with self.subTest(key=key):
+                code, _, err = run_cli("config", "set", "--scope", "project", key, value)
+                self.assertEqual(code, 2)
+                self.assertIn("taken only from the global config", err)
+                self.assertIn("config set --scope global %s %s" % (key, value), err)
+        path = os.path.join(self.project, ".dev-orchestra.yaml")
+        unchanged = {"version": 1, "review": {"max_review_iterations": 2}}
+        self.assertEqual(config_mod.read_config_file(path), unchanged)
+        code, _, err = run_cli("config", "set", "--scope", "project", "workspace.dir", ".agent-work")
+        self.assertEqual(code, 0, err)
+
+
+class TestLoosened(_Case):
+    def assert_notice(self, key, *details):
+        notices = self.notices()
+        found = [line for line in notices if line.startswith(key + ": the project config")]
+        self.assertEqual(len(found), 1, notices)
+        for detail in details:
+            self.assertIn(detail, found[0])
+        self.assertIn("can come with the branch under review", found[0])
+
+    def test_each_gate_reports_a_looser_project_value(self):
+        cases = [
+            ("reviewers: []\n", "reviewers", "drops claude-general"),
+            (
+                "reviewers:\n  - id: claude-general\n    provider: claude\n"
+                "    model:\n      family: sonnet\n",
+                "reviewers",
+                "drops codex-general, claude-security, claude-test from the code review panel",
+            ),
+            (
+                "review:\n  max_review_iterations: 0\n",
+                "review.max_review_iterations",
+                "lowers it to 0 from 2",
+            ),
+            (
+                "review:\n  re_review_severities: [critical]\n",
+                "review.re_review_severities",
+                "over high findings",
+            ),
+            ('review:\n  exclude: ["src/*"]\n', "review.exclude", "also withholds the diff of src/*"),
+            ("review:\n  max_findings: 1\n", "review.max_findings", "at most 1 findings, not 6"),
+            ("review:\n  design:\n    enabled: false\n", "review.design.enabled", "turns it off from auto"),
+            (
+                "review:\n  design:\n    max_iterations: 1\n",
+                "review.design.max_iterations",
+                "lowers it to 1 from 2",
+            ),
+            ("optimization:\n  level: aggressive\n", "optimization.level", "to aggressive from balanced"),
+            (
+                "optimization:\n  high_risk_paths: []\n",
+                "optimization.high_risk_paths",
+                "drops the patterns *auth*",
+            ),
+            ("optimization:\n  low_risk_max_files: 50\n", "optimization.low_risk_max_files", "to 50 from 5"),
+            (
+                "optimization:\n  low_risk_max_lines: 900\n",
+                "optimization.low_risk_max_lines",
+                "to 900 from 150",
+            ),
+            ("optimization:\n  security_paths: []\n", "optimization.security_paths", "drops the patterns"),
+            (
+                "optimization:\n  architecture_paths: []\n",
+                "optimization.architecture_paths",
+                "drops the patterns",
+            ),
+        ]
+        for text, key, detail in cases:
+            with self.subTest(key=key, text=text):
+                self.write_project(text)
+                self.assert_notice(key, detail)
+
+    def test_the_baseline_is_the_global_file(self):
+        self.write_global("review:\n  max_review_iterations: 4\n  exclude: []\n")
+        self.write_project("review:\n  max_review_iterations: 3\n  exclude: []\n")
+        self.assert_notice("review.max_review_iterations", "lowers it to 3 from 4")
+        self.assertEqual(len(self.notices()), 1)
+
+    def test_a_global_skip_off_turned_on_by_the_project(self):
+        self.write_global("optimization:\n  skip_unneeded_roles: false\n")
+        self.write_project("optimization:\n  skip_unneeded_roles: true\n")
+        self.assert_notice("optimization.skip_unneeded_roles", "turns it on")
+
+    def test_a_global_extra_dropped_by_the_project(self):
+        self.write_global('optimization:\n  extra_high_risk_paths: ["billing/*"]\n')
+        self.write_project("optimization:\n  extra_high_risk_paths: []\n")
+        self.assert_notice("optimization.high_risk_paths", "drops the patterns billing/*")
+
+    def test_a_design_panel_shrunk_by_the_project(self):
+        self.write_global(
+            "review:\n  design:\n    reviewers:\n"
+            "      - id: d1\n        provider: claude\n        model:\n          family: sonnet\n"
+            "      - id: d2\n        provider: claude\n        model:\n          family: opus\n"
+        )
+        self.write_project(
+            "review:\n  design:\n    reviewers:\n"
+            "      - id: d1\n        provider: claude\n        model:\n          family: sonnet\n"
+        )
+        self.assert_notice("review.design.reviewers", "drops d2 from the design review panel")
+
+    def test_stricter_or_equal_values_are_not_reported(self):
+        self.write_project(
+            "review:\n  max_review_iterations: 5\n  re_review_severities: [critical, high, medium]\n"
+            "  exclude: []\n  max_findings: 0\n  design:\n    enabled: true\n    max_iterations: 2\n"
+            "optimization:\n  level: quality\n  low_risk_max_files: 1\n"
+            '  extra_high_risk_paths: ["billing/*"]\n  skip_unneeded_roles: false\n'
+            "reviewers_extra:\n  - id: extra\n    provider: claude\n    model:\n      family: sonnet\n"
+        )
+        self.assertEqual(self.notices(), [])
+
+    def test_an_empty_severity_list_reads_as_the_default(self):
+        self.write_project("review:\n  re_review_severities: []\n")
+        self.assertEqual(self.notices(), [])
+
+    def test_no_project_file_reports_nothing(self):
+        self.write_global("review:\n  max_review_iterations: 0\n")
+        self.assertEqual(self.notices(), [])
+
+    def test_doctor_notes_them_without_failing(self):
+        self.write_project("review:\n  max_review_iterations: 0\n")
+        report = doctor.collect(self.project, probe_models=False)
+        [line] = report["config"]["loosened"]
+        self.assertIn(line, report["notes"])
+        self.assertNotIn(line, report["problems"])
+
+    def test_config_validate_warns_without_failing(self):
+        self.write_project('review:\n  exclude: ["src/*"]\n')
+        code, out, _ = run_cli("config", "validate")
+        self.assertEqual(code, 0, out)
+        self.assertIn("Warnings:", out)
+        self.assertIn("review.exclude: the project config", out)
+
+    def test_review_run_warns(self):
+        self.write_project("review:\n  max_review_iterations: 0\n  re_review_severities: [critical]\n")
+        _, _, err = run_cli("review", "run")
+        self.assertIn("warning: review.max_review_iterations: the project config", err)
+        self.assertIn("warning: review.re_review_severities: the project config", err)
+
+
+if __name__ == "__main__":
+    unittest.main()

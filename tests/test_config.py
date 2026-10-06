@@ -143,7 +143,10 @@ class TestDefaults(IsolatedCase):
         )
 
     def test_the_approval_setting_alone_keeps_the_resume_defaults(self):
-        self.write(".dev-orchestra.yaml", "version: 1\ndesign:\n  require_approval: false\n")
+        # The global file: approval is not taken from a project file.
+        config_mod.write_config_file(
+            config_mod.global_config_path(), {"version": 1, "design": {"require_approval": False}}
+        )
         settings = config_mod.load(self.project).design_settings()
         self.assertIs(settings["require_approval"], False)
         self.assertEqual(settings["resume"], DESIGN_DEFAULTS["resume"])

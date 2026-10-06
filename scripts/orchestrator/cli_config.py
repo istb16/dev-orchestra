@@ -9,7 +9,7 @@ import re
 import sys
 from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple, Union
 
-from . import claude_hooks, hosts, miniyaml
+from . import claude_hooks, config_trust, hosts, miniyaml
 from . import config as config_mod
 from . import config_policy as policy_mod
 from . import doctor as doctor_mod
@@ -365,6 +365,9 @@ def cmd_config_set(args: argparse.Namespace) -> int:
             _err("preset: only the global file can name a preset for now (use --scope global)")
             return 2
         scope = "global"
+    elif args.scope is None and config_trust.refused_write(args.path, _set_value(args)):
+        # Likewise: only the global file can make it, so that is where it goes.
+        scope = "global"
     else:
         scope = _resolve_scope(args.scope, args.cwd)
     path, layer = _read_layer(scope, args.cwd)
@@ -384,15 +387,13 @@ def cmd_config_set(args: argparse.Namespace) -> int:
             frozen, left_out = _seed_panel(scope, layer, base, path, args.cwd)
         else:
             _seed_list(layer, list_path, base)
-    if args.raw or (args.path == "language.reply" and config_mod.normalise_language_tag(args.value)):
-        # A tag stays a string: YAML would read `no`, Norwegian, as false.
-        value: Any = args.value
-    else:
-        value = config_mod.coerce_scalar(args.value)
+    value = _set_value(args)
     if scope == "project":
         # From the arguments alone, before anything is written: the same
         # refusal a run of that seat would meet.
         refusal = _project_seat_write_refusal(args.path, value, layer, path)
+        name = os.path.basename(path)
+        refusal = refusal or policy_mod.project_ignored_write_refusal(args.path, value, name)
         if refusal:
             _err(refusal)
             return 2
@@ -456,6 +457,14 @@ def cmd_config_set(args: argparse.Namespace) -> int:
     if language_before is not None:
         _sync_hooks(args, scope, language_before)
     return 0
+
+
+def _set_value(args: argparse.Namespace) -> Any:
+    """The value ``config set`` writes."""
+    if args.raw or (args.path == "language.reply" and config_mod.normalise_language_tag(args.value)):
+        # A tag stays a string: YAML would read `no`, Norwegian, as false.
+        return args.value
+    return config_mod.coerce_scalar(args.value)
 
 
 #: The keys that name a read-only seat's provider.
@@ -606,6 +615,7 @@ def cmd_config_validate(args: argparse.Namespace) -> int:
     origins = loaded.design_reviewer_origins
     warnings += policy_mod.read_only_enforcement_warnings(loaded.data, refused, origins)
     warnings += config_mod.unknown_key_warnings(loaded.global_layer, loaded.project_layer)
+    warnings += policy_mod.project_loosening_notices(loaded)
     if args.json:
         _emit_json({"valid": not problems, "problems": problems, "warnings": warnings})
     else:
