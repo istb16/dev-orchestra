@@ -1,4 +1,4 @@
-<!-- translated-from: references/workflow.md sha256:6e3d6a4f09b9f306277d1f57f22d42767b7e39a19c5e6440cfbe9b47b1a8f575 -->
+<!-- translated-from: references/workflow.md sha256:94ff060d666db5b974f0f11edec6fa71c31a829fa65e3e93a607bd5ec3eb4c7b -->
 
 > この文書は [references/workflow.md](../../../references/workflow.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -770,6 +770,13 @@ cd dev-orchestra
 `.git/info/exclude` にも追加されるので、入れ子のチェックアウトが *相手の* `git status` に
 出ることも commit されることもありません（これがないと、そこでの `git add -A` が
 "does not have a commit checked out" で失敗します）。
+
+再実行とアンインストーラが置き換えるのは、インストーラが作ったものだけです。つまり、この
+チェックアウトを指すリンクか、`.dev-orchestra-install` というファイルの入ったコピーです。
+このファイルより前のインストーラが作ったコピーは、コピーに入るもの以外を含まないことで
+見分けます。別の場所を指すリンク、自分で置いたディレクトリ、クローンはそのまま残し、
+手で消す方法を表示します。skills ディレクトリに直接クローンしたものは、そのままで導入済み
+です。そこからインストーラを実行しても、クローンを消さずに止まります。
 
 Windows では、Git Bash で `install.sh` を動かすより `install.ps1` を使ってください。
 Git Bash は MSYS 形式のパス（`/c/...`）を書き込み、ネイティブの Python はそれを開けません。

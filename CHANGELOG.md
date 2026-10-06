@@ -14,6 +14,23 @@ below begins **User adapters** so adapter authors can find it.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The Claude Code install and uninstall no longer delete a directory they
+  did not make.** They removed whatever was at `.claude/skills/dev-orchestra`,
+  so running the installer from a clone made there deleted the clone itself,
+  and a directory of the user's own went the same way. They now apply the
+  Antigravity install's rule: a link is replaced only when it points at the
+  checkout being installed, a directory only when the installer wrote it and
+  it is not a clone. A Claude copy (`--copy`, or the fallback when a symlink
+  cannot be made) now carries a `.dev-orchestra-install` file, as an
+  Antigravity copy does. A copy from an earlier installer, which has no such
+  file, is still replaced or removed when it holds nothing but what a copy
+  carries, so `install --copy` keeps upgrading it; one with anything else
+  added is left in place. A link to another checkout or to nothing is now
+  left in place too, with the command to remove it by hand, and a run from
+  the checkout that is itself the destination stops and says so (#290).
+
 ## [0.22.0] - 2026-10-06
 
 ### Added

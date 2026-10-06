@@ -50,8 +50,8 @@ fi
 # What a copy install carries: the plugin payload, not .git, tests or CI.
 PAYLOAD="plugin.json skills .claude-plugin .codex-plugin README.md LICENSE references scripts bin agents examples"
 
-# Written into a copy made by the Antigravity install, so that a later run can
-# tell a directory it made from one it did not.
+# Written into every copy the installer makes, so that a later run can tell a
+# directory it made from one it did not.
 SENTINEL=.dev-orchestra-install
 
 # The project's .git/info/exclude gets the entry below this comment, and the
@@ -104,8 +104,8 @@ shell_quote() {
 
 # Clear the way for an install at $1, or stop. A link is removed only when it
 # resolves to this checkout, a directory only when this installer wrote it
-# (the sentinel is there and it is not a clone), and anything else is left
-# where it is.
+# (the sentinel is there, or it is an older Claude copy, and it is not a
+# clone or the checkout itself), and anything else is left where it is.
 release_destination() {
   dest=$1
   if [ -L "$dest" ]; then
@@ -119,15 +119,38 @@ release_destination() {
     printf 'Remove it by hand if it is no longer wanted:\n    rm -- %s\n' "$(shell_quote "$dest")" >&2
     exit 1
   fi
-  if [ -d "$dest" ] && [ -f "$dest/$SENTINEL" ] && [ ! -e "$dest/.git" ] && [ ! -L "$dest/.git" ]; then
-    rm -rf -- "$dest"
-    return 0
+  # The checkout itself, reached by its own path or through a link above it:
+  # removing it would remove the checkout, and the skill is already there.
+  if [ -d "$dest" ] && [ "$(cd -P -- "$dest" 2>/dev/null && pwd)" = "$(cd -P -- "$root" && pwd)" ]; then
+    printf '%s is this checkout itself; replacing it would delete the checkout.\n' "$dest" >&2
+    printf 'Nothing to install: it is already in place. To link or copy it, run the installer from a checkout somewhere else.\n' >&2
+    exit 1
+  fi
+  if [ -d "$dest" ] && [ ! -e "$dest/.git" ] && [ ! -L "$dest/.git" ]; then
+    if [ -f "$dest/$SENTINEL" ] || { [ "$mode" = claude ] && is_unmarked_copy "$dest"; }; then
+      rm -rf -- "$dest"
+      return 0
+    fi
   fi
   if [ -e "$dest" ]; then
     printf '%s exists and the installer did not write it; it was left in place.\n' "$dest" >&2
     printf 'Remove it by hand if it is no longer wanted, then re-run.\n' >&2
     exit 1
   fi
+}
+
+# A Claude copy made before the installer wrote the sentinel: the skill and
+# its CLI are there, and nothing at the top that a copy does not carry, so
+# removing it loses nothing the checkout does not have.
+is_unmarked_copy() {
+  [ -f "$1/skills/$SKILL_NAME/SKILL.md" ] && [ -f "$1/scripts/orchestrator/__init__.py" ] || return 1
+  for entry in "$1"/* "$1"/.[!.]* "$1"/..?*; do
+    [ -e "$entry" ] || [ -L "$entry" ] || continue
+    case " $PAYLOAD " in
+      *" ${entry##*/} "*) ;;
+      *) return 1 ;;
+    esac
+  done
 }
 
 # Entries at the checkout root that Antigravity would load along with the
@@ -175,12 +198,13 @@ install_claude() {
   dest="$skills_dir/$SKILL_NAME"
 
   if [ -e "$dest" ] || [ -L "$dest" ]; then
-    printf 'Replacing existing install at %s\n' "$dest"
-    rm -rf "$dest"
+    release_destination "$dest"
+    printf 'Replaced the existing install at %s\n' "$dest"
   fi
 
   if [ "$use_copy" -eq 1 ]; then
     copy_payload "$dest"
+    printf 'Installed by install/install.sh from %s\n' "$root" > "$dest/$SENTINEL"
     printf 'Copied the skill to %s\n' "$dest"
     printf 'Re-run this installer after `git pull` to upgrade.\n'
   elif ln -s "$root" "$dest" 2>/dev/null; then

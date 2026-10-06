@@ -755,6 +755,14 @@ checkout never appears in *their* `git status` and never gets committed
 (without it, `git add -A` there fails with "does not have a commit checked
 out").
 
+A re-run, and the uninstaller, replace only what the installer made: a link
+to this checkout, or a copy, which carries a `.dev-orchestra-install` file. A
+copy from an installer older than that file is recognised by holding nothing
+but what a copy carries. A link to somewhere else, a directory of your own or
+a clone is left in place, with a note on how to remove it by hand. A clone
+made directly into the skills directory is already installed; the installer
+run from it stops instead of deleting it.
+
 On Windows, prefer `install.ps1` over running `install.sh` in Git Bash: Git Bash
 writes MSYS-style paths (`/c/...`) that native Python cannot open. Symlinks need
 Developer Mode or an elevated shell; the installer falls back to a copy on its

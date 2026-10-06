@@ -42,8 +42,9 @@ if [ "$saw_codex" -eq 1 ] && [ "$saw_antigravity" -eq 1 ]; then
   exit 2
 fi
 
-# The same names install.sh writes.
+# The same names install.sh writes, and what its copy carries.
 SENTINEL=.dev-orchestra-install
+PAYLOAD="plugin.json skills .claude-plugin .codex-plugin README.md LICENSE references scripts bin agents examples"
 EXCLUDE_MARKER="# added by dev-orchestra install --antigravity"
 
 # $1 in single quotes, so that a printed command can be pasted as it is.
@@ -53,8 +54,8 @@ shell_quote() {
 
 # Remove the install at $1, or stop. A link is removed only when it resolves
 # to this checkout, a directory only when the installer wrote it (the
-# sentinel is there and it is not a clone), and anything else is left where
-# it is.
+# sentinel is there, or it is an older Claude copy, and it is not a clone or
+# the checkout itself), and anything else is left where it is.
 release_destination() {
   dest=$1
   if [ -L "$dest" ]; then
@@ -68,15 +69,37 @@ release_destination() {
     printf 'Remove it by hand if it is no longer wanted:\n    rm -- %s\n' "$(shell_quote "$dest")" >&2
     exit 1
   fi
-  if [ -d "$dest" ] && [ -f "$dest/$SENTINEL" ] && [ ! -e "$dest/.git" ] && [ ! -L "$dest/.git" ]; then
-    rm -rf -- "$dest"
-    return 0
+  # The checkout itself, reached by its own path or through a link above it.
+  if [ -d "$dest" ] && [ "$(cd -P -- "$dest" 2>/dev/null && pwd)" = "$(cd -P -- "$root" && pwd)" ]; then
+    printf '%s is this checkout itself; removing it would delete the checkout.\n' "$dest" >&2
+    printf 'The installer did not put it there. Delete the checkout by hand if it is no longer wanted.\n' >&2
+    exit 1
+  fi
+  if [ -d "$dest" ] && [ ! -e "$dest/.git" ] && [ ! -L "$dest/.git" ]; then
+    if [ -f "$dest/$SENTINEL" ] || { [ "$mode" = claude ] && is_unmarked_copy "$dest"; }; then
+      rm -rf -- "$dest"
+      return 0
+    fi
   fi
   if [ -e "$dest" ]; then
     printf '%s exists and the installer did not write it; it was left in place.\n' "$dest" >&2
     printf 'Remove it by hand if it is no longer wanted.\n' >&2
     exit 1
   fi
+}
+
+# A Claude copy made before the installer wrote the sentinel: the skill and
+# its CLI are there, and nothing at the top that a copy does not carry, so
+# removing it loses nothing the checkout does not have.
+is_unmarked_copy() {
+  [ -f "$1/skills/$SKILL_NAME/SKILL.md" ] && [ -f "$1/scripts/orchestrator/__init__.py" ] || return 1
+  for entry in "$1"/* "$1"/.[!.]* "$1"/..?*; do
+    [ -e "$entry" ] || [ -L "$entry" ] || continue
+    case " $PAYLOAD " in
+      *" ${entry##*/} "*) ;;
+      *) return 1 ;;
+    esac
+  done
 }
 
 # Drop the entry the installer added, and its marker. An entry without the
@@ -126,7 +149,7 @@ elif [ "$mode" = claude ]; then
     dest="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/skills/$SKILL_NAME"
   fi
   if [ -e "$dest" ] || [ -L "$dest" ]; then
-    rm -rf "$dest"
+    release_destination "$dest"
     printf 'Removed %s\n' "$dest"
   else
     printf 'Nothing installed at %s\n' "$dest"
