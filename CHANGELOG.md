@@ -14,6 +14,8 @@ below begins **User adapters** so adapter authors can find it.
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-10-06
+
 ### Added
 
 - **`language.reply`: the language the orchestrator answers in**, as a
@@ -60,6 +62,10 @@ below begins **User adapters** so adapter authors can find it.
   reply language (#254).
 
 ### Changed
+
+- **claude 2.1.290 resumes the architect's session**: it is added to the
+  verified table after passing every required check on 2026-10-06 (the two
+  symlink checks were skipped, as before; they are not required).
 
 - **The compatibility promise is written down once**, under "Compatibility"
   in `README.md`: what 1.0 covers (the configuration schema, commands, flags,
@@ -2556,7 +2562,8 @@ First release.
   none of which invoke a real CLI.
 - CI on Linux, macOS and Windows: lint, tests, skill validation.
 
-[Unreleased]: https://github.com/istb16/dev-orchestra/compare/v0.20.0...HEAD
+[Unreleased]: https://github.com/istb16/dev-orchestra/compare/v0.21.0...HEAD
+[0.21.0]: https://github.com/istb16/dev-orchestra/compare/v0.20.0...v0.21.0
 [0.20.0]: https://github.com/istb16/dev-orchestra/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/istb16/dev-orchestra/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/istb16/dev-orchestra/compare/v0.17.0...v0.18.0
