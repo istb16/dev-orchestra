@@ -38,6 +38,12 @@ below begins **User adapters** so adapter authors can find it.
   afterwards wrote its state back, leaving a workflow with an empty record,
   the job's files and empty `execution/` and `reviews/`. `--force` deletes it
   anyway, for an in-flight mark a crashed stage left behind (#285).
+- **`state record test` and `state record re-test` accept only `ok` and
+  `failed`** (exit 2 otherwise). Any other word was recorded, and the review
+  gate, which knows only `failed`, `fail`, `error` and `red` as failures, read
+  it as a pass: `failure` or `NG` sent red tests to review. Other stages
+  still take any status. `--detail` can no longer set `stage`, `status` or
+  `at`, which overwrote the event's own fields (exit 2) (#287).
 
 ### Fixed
 

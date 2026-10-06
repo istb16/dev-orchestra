@@ -839,6 +839,56 @@ class TestRecordedStages(IsolatedCase):
 # --------------------------------------------------------------------------- pipeline
 
 
+class TestRecordingATestResult(IsolatedCase):
+    """What the gate reads has to be something it can read.
+
+    It counts every status it does not know as a failure as a pass, so a
+    result recorded as `failure` or `NG` sent red tests to review.
+    """
+
+    def events(self):
+        return self.cli_workspace().read_state().get("events") or []
+
+    def test_ok_and_failed_are_recorded(self):
+        for stage in ("test", "re-test"):
+            for status in ("ok", "failed"):
+                with self.subTest(stage=stage, status=status):
+                    code, out, _ = run_cli("state", "record", stage, status)
+                    self.assertEqual(code, 0)
+                    self.assertEqual(out.strip(), "recorded %s=%s" % (stage, status))
+        self.assertEqual(len(self.events()), 4)
+
+    def test_any_other_test_result_is_refused(self):
+        for stage in ("test", "re-test"):
+            for status in ("failure", "NG", "passed", "OK", ""):
+                with self.subTest(stage=stage, status=status):
+                    code, out, err = run_cli("state", "record", stage, status)
+                    self.assertEqual(code, 2)
+                    self.assertEqual(out, "")
+                    self.assertIn("a test result is ok or failed", err)
+        self.assertEqual(self.events(), [])
+
+    def test_other_stages_keep_their_own_statuses(self):
+        code, _, _ = run_cli("state", "record", "lint", "warnings")
+        self.assertEqual(code, 0)
+        self.assertEqual(self.events()[-1]["status"], "warnings")
+
+    def test_a_detail_cannot_overwrite_the_event_itself(self):
+        for key in ("stage", "status", "at"):
+            with self.subTest(key=key):
+                code, _, err = run_cli("state", "record", "test", "failed", "--detail", "%s=ok" % key)
+                self.assertEqual(code, 2)
+                self.assertIn("--detail %s=" % key, err)
+        self.assertEqual(self.events(), [])
+
+    def test_a_detail_is_still_recorded_beside_the_result(self):
+        code, _, _ = run_cli("state", "record", "test", "ok", "--detail", "phase=re-test", "passed=128")
+        self.assertEqual(code, 0)
+        event = self.events()[-1]
+        self.assertEqual((event["stage"], event["status"]), ("test", "ok"))
+        self.assertEqual((event["phase"], event["passed"]), ("re-test", 128))
+
+
 @unittest.skipUnless(has_git(), "git is required")
 class TestTheGateInThePipeline(IsolatedCase):
     def setUp(self):

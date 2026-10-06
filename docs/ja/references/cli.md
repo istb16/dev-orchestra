@@ -1,4 +1,4 @@
-<!-- translated-from: references/cli.md sha256:d97dc7d749cbd52131227f22dde68f36255198d5bfd5d297488707b3d0763936 -->
+<!-- translated-from: references/cli.md sha256:2fe0857f7821651a82a33715a957631fb142d7642ee374273c759ab811d3ee29 -->
 
 > この文書は [references/cli.md](../../../references/cli.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -1084,7 +1084,7 @@ stderr に一度だけ知らせます。実行中のステージがあるワー�
 | コマンド | 説明 |
 | --- | --- |
 | `state show [--json]` | このプロジェクトで記録されたステージのイベントを表示します。 |
-| `state record <stage> <status> [--detail k=v …]` | ステージの結果を追記します（`run` を通して実行されないステージ用）。`state record test ok\|failed` はレビューゲートが読むものです。再テストも同じ方法で記録してください。 |
+| `state record <stage> <status> [--detail k=v …]` | ステージの結果を追記します（`run` を通して実行されないステージ用）。`state record test ok\|failed` はレビューゲートが読むものです。再テストも同じ方法で記録してください。`test` と `re-test` の status は `ok` か `failed` だけで、それ以外は拒否します（exit 2）。ゲートはほかの語を合格と読んでしまうためです。`--detail` でイベント自身の欄である `stage`、`status`、`at` は指定できません（exit 2）。 |
 | `summary [--json]` | 実行終了時のステージとモデルのサマリーを表示します。plan が承認されていれば `design_approval` も含みます。`--json` は `stages`、`counts`、`tokens` に加えて、テキストに出る内容を持ちます。`design_counts`（`reviewers_ok`、`reviewers_total`。design のレポートがなければ `{}`）、`models`（ロールごとの `provider`、`family`、`version`）、`reviewers`（`id`、`provider`、テキストに出るとおりの `model`、`status`。並びはテキストと同じ）、`skipped`（`refused`、`refused_by`、`design_refused`、`panel_reduced`。名前は `optimization report --json` と同じ）です。 |
 
 <a id="environment-variables"></a>

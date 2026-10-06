@@ -799,12 +799,32 @@ def cmd_state_show(args: argparse.Namespace) -> int:
     return 0
 
 
+#: The stages whose status the review gate and `status` read as a test result.
+_TEST_STAGES = ("test", "re-test")
+
+#: The only test results recorded. The gate counts anything it does not know
+#: as a failure as a pass, so `failure` or `NG` would send red tests to review.
+_TEST_STATUSES = ("ok", "failed")
+
+#: The event's own fields, which a ``--detail`` would otherwise overwrite.
+_RESERVED_DETAIL = ("stage", "status", "at")
+
+
 def cmd_state_record(args: argparse.Namespace) -> int:
-    workspace = _workspace(args)
+    if args.stage in _TEST_STAGES and args.status not in _TEST_STATUSES:
+        _err(
+            "Refusing to record %s=%s: a test result is %s"
+            % (args.stage, args.status, " or ".join(_TEST_STATUSES))
+        )
+        return 2
     detail: Dict[str, Any] = {}
     for item in args.detail or []:
         key, _, value = item.partition("=")
+        if key in _RESERVED_DETAIL:
+            _err("Refusing --detail %s=...: %s is the event's own field" % (key, key))
+            return 2
         detail[key] = config_mod.coerce_scalar(value)
+    workspace = _workspace(args)
     workspace.record_event(args.stage, args.status, detail)
     _out("recorded %s=%s" % (args.stage, args.status))
     return 0
