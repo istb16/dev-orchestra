@@ -312,6 +312,26 @@ class TestLayering(IsolatedCase):
         loaded = config_mod.load(self.project)
         self.assertEqual([r["id"] for r in loaded.reviewers()], ["only-one"])
 
+    def test_a_file_saved_with_a_bom_keeps_its_first_key(self):
+        """Notepad and PowerShell 5 start a UTF-8 file with a BOM (#276)."""
+        for name, text in (
+            (".dev-orchestra.yaml", "review:\n  max_review_iterations: 5\nversion: 1\n"),
+            (".dev-orchestra.json", '{"review": {"max_review_iterations": 5}, "version": 1}\n'),
+        ):
+            with self.subTest(name=name):
+                path = os.path.join(self.project, name)
+                with open(path, "wb") as handle:
+                    handle.write(b"\xef\xbb\xbf" + text.encode("utf-8"))
+                try:
+                    self.assertEqual(
+                        config_mod.read_config_file(path),
+                        {"review": {"max_review_iterations": 5}, "version": 1},
+                    )
+                    loaded = config_mod.load(self.project)
+                    self.assertEqual(loaded.review_settings()["max_review_iterations"], 5)
+                finally:
+                    os.remove(path)
+
     def test_project_config_is_found_from_a_subdirectory(self):
         self.write(".dev-orchestra.yaml", "version: 1\n")
         nested = os.path.join(self.project, "a", "b")

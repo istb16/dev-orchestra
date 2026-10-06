@@ -35,6 +35,11 @@ below begins **User adapters** so adapter authors can find it.
   `>2`, `- |`) and a second document after `---` or `...` are refused with
   the line number, where they were taken as plain text or joined into one
   document. On the command line, `config set` still takes `*.sql` as text.
+- **A configuration file saved as UTF-8 with a BOM keeps its first key.**
+  Notepad and PowerShell 5's `Out-File -Encoding utf8` start the file with
+  one, and it became part of the first key: `review:` was read as another
+  key, ignored, and `config validate` still answered valid. Every file is now
+  read with the BOM dropped, YAML and JSON alike (#276).
 
 ## [0.22.0] - 2026-10-06
 

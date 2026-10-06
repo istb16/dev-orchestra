@@ -497,7 +497,9 @@ def project_config_path(start: Optional[str] = None) -> str:
 
 
 def read_config_file(path: str) -> Dict[str, Any]:
-    with open(path, "r", encoding="utf-8") as handle:
+    # utf-8-sig: Notepad and PowerShell 5's `Out-File -Encoding utf8` start the
+    # file with a BOM, which would otherwise become part of the first key.
+    with open(path, "r", encoding="utf-8-sig") as handle:
         raw = handle.read()
     try:
         data = miniyaml.loads(raw)
