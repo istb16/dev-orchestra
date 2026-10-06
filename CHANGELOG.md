@@ -28,6 +28,13 @@ below begins **User adapters** so adapter authors can find it.
   merged finding keeps each report as its reviewer wrote it in
   `merged_reports`, listed under it in `consolidated.md`, and
   `duplicate_count` is the number of reviewers who reported it (#259).
+- **`review triage` run in parallel no longer loses decisions.** Each call
+  read `consolidated.json`, set its own decision and wrote the file back, so
+  a later write dropped an earlier decision while every call printed
+  `Triaged … as …`. Triage now reads and writes the report under a lock, and
+  `review run` and `review consolidate` build and save it under the same
+  lock, so a decision made while a round is being consolidated is carried
+  into it (#262).
 
 ## [0.22.0] - 2026-10-06
 

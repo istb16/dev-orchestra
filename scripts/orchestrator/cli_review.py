@@ -484,8 +484,9 @@ def _save_skipped_round(
     workspace: ws.Workspace, iteration: int, lineage: str, round_id: Optional[str]
 ) -> int:
     """Record a round with no panel against the freeze it occupies. Exits 0."""
-    data = review_mod.build_consolidation(workspace, [], [], iteration, lineage, completed_round=round_id)
-    review_mod.save_consolidation(workspace, data)
+    with ws.file_lock(workspace.consolidated_json_path):
+        data = review_mod.build_consolidation(workspace, [], [], iteration, lineage, completed_round=round_id)
+        review_mod.save_consolidation(workspace, data)
     return 0
 
 
@@ -685,22 +686,26 @@ def _consolidate_round(
     """
     ids = [str(r.get("id")) for r in panel if str(r.get("id")) not in excluded]
     findings, stale = review_mod.read_reports(workspace, ids, review_mod.current_snapshot_stamp(workspace))
-    if run_dicts is None:
-        entries = (ws.read_json(workspace.consolidated_json_path, {}) or {}).get("reviewers", [])
-    else:
-        entries = _merge_runs(workspace, run_dicts)
-    data = review_mod.build_consolidation(
-        workspace,
-        [entry for entry in entries if str(entry.get("id")) not in excluded],
-        findings,
-        iteration,
-        lineage,
-        completed_round=completed_round,
-        unreviewed_round=unreviewed_round,
-    )
-    if amend is not None:
-        amend(data)
-    review_mod.save_consolidation(workspace, data)
+    # The last report is read for its table and its triage, both inside the
+    # lock ``review triage`` takes, so a decision made while the round was
+    # being built is carried rather than written over.
+    with ws.file_lock(workspace.consolidated_json_path):
+        if run_dicts is None:
+            entries = (ws.read_json(workspace.consolidated_json_path, {}) or {}).get("reviewers", [])
+        else:
+            entries = _merge_runs(workspace, run_dicts)
+        data = review_mod.build_consolidation(
+            workspace,
+            [entry for entry in entries if str(entry.get("id")) not in excluded],
+            findings,
+            iteration,
+            lineage,
+            completed_round=completed_round,
+            unreviewed_round=unreviewed_round,
+        )
+        if amend is not None:
+            amend(data)
+        review_mod.save_consolidation(workspace, data)
     return data, stale
 
 
@@ -1692,17 +1697,21 @@ def cmd_review_show(args: argparse.Namespace) -> int:
 
 def cmd_review_triage(args: argparse.Namespace) -> int:
     workspace = _review_workspace(args)
-    data = ws.read_json(workspace.consolidated_json_path, {}) or {}
-    if not data:
-        _no_review_yet(args)
-        return 2
-    try:
-        for finding_id in args.ids:
-            review_mod.set_triage(data, finding_id, args.status, args.note or "")
-    except review_mod.ReviewError as exc:
-        _err(str(exc))
-        return 2
-    review_mod.save_consolidation(workspace, data)
+    # Read inside the lock: two triage calls run side by side each read the
+    # report, set their own decision and wrote it back, and the second write
+    # dropped the first decision while both printed success.
+    with ws.file_lock(workspace.consolidated_json_path):
+        data = ws.read_json(workspace.consolidated_json_path, {}) or {}
+        if not data:
+            _no_review_yet(args)
+            return 2
+        try:
+            for finding_id in args.ids:
+                review_mod.set_triage(data, finding_id, args.status, args.note or "")
+        except review_mod.ReviewError as exc:
+            _err(str(exc))
+            return 2
+        review_mod.save_consolidation(workspace, data)
     _out("Triaged %s as %s" % (", ".join(args.ids), args.status))
     return 0
 
