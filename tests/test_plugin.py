@@ -14,7 +14,7 @@ import os
 import re
 import shutil
 import unittest
-from typing import Any, Dict, List
+from typing import Any, Dict
 
 from helpers import REPO_ROOT, IsolatedCase, is_link, make_dir_link, remove_link
 
@@ -98,18 +98,35 @@ class TestManifests(IsolatedCase):
             self.assertEqual(load(relative)["name"], "dev-orchestra", relative)
 
 
-class TestClaudeHooks(IsolatedCase):
-    """The reply-language hooks reach Claude Code only, through its manifest (#254)."""
+class TestNoPluginHooks(IsolatedCase):
+    """No host loads hooks from the plugin: dev-orchestra installs its own into
+    the user's Claude Code settings (#254)."""
 
-    def test_claude_manifest_points_at_hooks_file(self):
-        self.assertEqual(load(validate_skill.CLAUDE_PLUGIN)["hooks"], "./" + validate_skill.CLAUDE_HOOKS)
-        self.assertEqual(validate_skill.check_claude_hooks(), [])
-        hooks = load(validate_skill.CLAUDE_HOOKS)["hooks"]
-        self.assertEqual(sorted(hooks), ["SessionStart", "Stop", "UserPromptSubmit"])
-        self.assertEqual(hooks["SessionStart"][0]["matcher"], "compact|resume")
-        for groups in hooks.values():
-            for entry in groups[0]["hooks"]:
-                self.assertTrue(entry["command"].startswith('sh "${CLAUDE_PLUGIN_ROOT}/hooks/run" '))
+    def test_claude_manifest_has_no_hooks(self):
+        self.assertNotIn("hooks", load(validate_skill.CLAUDE_PLUGIN))
+        self.assertEqual(validate_skill.check_no_plugin_hooks(), [])
+
+    def test_no_hooks_dir_at_plugin_root(self):
+        self.assertFalse(os.path.lexists(os.path.join(REPO_ROOT, "hooks")))
+        root = os.path.join(self.tmp, "plugin")
+        os.makedirs(os.path.join(root, "hooks"))
+        self.assertEqual(
+            validate_skill.check_no_plugin_hooks(root),
+            ["hooks/ must not exist at the plugin root; no hooks ship with the plugin"],
+        )
+
+    def test_a_manifest_hooks_key_is_reported(self):
+        """The manifest is read from the root checked, not from this repository."""
+        root = os.path.join(self.tmp, "plugin")
+        path = os.path.join(root, validate_skill.CLAUDE_PLUGIN)
+        os.makedirs(os.path.dirname(path))
+        manifest = dict(load(validate_skill.CLAUDE_PLUGIN), hooks="./hooks/claude-code.json")
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(manifest, handle)
+        plugin = validate_skill.CLAUDE_PLUGIN
+        expected = "%s must not name hooks; `dev-orchestra hooks install` adds them" % plugin
+        self.assertEqual(validate_skill.check_no_plugin_hooks(root), [expected])
+        self.assertEqual(validate_skill.check_no_plugin_hooks(), [])
 
     def test_no_root_hooks_json(self):
         """Antigravity loads a root hooks.json by itself; Codex is not pointed at any."""
@@ -117,159 +134,6 @@ class TestClaudeHooks(IsolatedCase):
         self.assertFalse(os.path.lexists(os.path.join(REPO_ROOT, "hooks", "hooks.json")))
         self.assertNotIn("hooks", load(validate_skill.CODEX_PLUGIN))
         self.assertNotIn("hooks", load(validate_skill.ANTIGRAVITY_PLUGIN))
-
-    def check_with(self, **files: Any) -> List[str]:
-        """``check_claude_hooks`` with ``manifest`` and ``hooks`` read as given:
-        a dict or list as JSON, a str as written, None as a missing file."""
-        original = validate_skill._read
-        paths = {"manifest": validate_skill.CLAUDE_PLUGIN, "hooks": validate_skill.CLAUDE_HOOKS}
-        replaced = {paths[key]: value for key, value in files.items()}
-
-        def fake(path):
-            if path not in replaced:
-                return original(path)
-            value = replaced[path]
-            if value is None:
-                raise FileNotFoundError(path)
-            return value if isinstance(value, str) else json.dumps(value)
-
-        setattr(validate_skill, "_read", fake)
-        try:
-            return validate_skill.check_claude_hooks()
-        finally:
-            setattr(validate_skill, "_read", original)
-
-    def test_a_hook_that_skips_the_wrapper_is_reported(self):
-        hooks = load(validate_skill.CLAUDE_HOOKS)
-        hooks["hooks"]["Stop"][0]["hooks"][0]["command"] = 'python "${CLAUDE_PLUGIN_ROOT}/scripts/hooks/x.py"'
-        expected = "hooks/claude-code.json: every Stop hook must run ${CLAUDE_PLUGIN_ROOT}/hooks/run"
-        self.assertEqual(self.check_with(hooks=hooks), [expected])
-
-    def test_each_broken_manifest_entry_is_reported(self):
-        manifest = load(validate_skill.CLAUDE_PLUGIN)
-        plugin = validate_skill.CLAUDE_PLUGIN
-        for label, data, message in (
-            (
-                "no hooks key",
-                {key: value for key, value in manifest.items() if key != "hooks"},
-                "%s must point at hooks/claude-code.json with a hooks path" % plugin,
-            ),
-            (
-                "a list",
-                dict(manifest, hooks=["./hooks/claude-code.json"]),
-                "%s: hooks must be a single path string, not list" % plugin,
-            ),
-            (
-                "another path",
-                dict(manifest, hooks="./hooks/other.json"),
-                "%s: hooks points at './hooks/other.json'; expected ./hooks/claude-code.json" % plugin,
-            ),
-        ):
-            self.assertEqual(self.check_with(manifest=data), [message], label)
-
-    def test_each_broken_hooks_file_is_reported(self):
-        relative = validate_skill.CLAUDE_HOOKS
-        good = load(relative)["hooks"]
-        self.assertEqual(
-            self.check_with(hooks=None),
-            ["%s points at a missing hooks file: ./%s" % (validate_skill.CLAUDE_PLUGIN, relative)],
-        )
-        problems = self.check_with(hooks="{not json")
-        self.assertEqual(len(problems), 1)
-        self.assertTrue(problems[0].startswith("%s is not valid JSON: " % relative), problems)
-        empty = "%s must hold a non-empty hooks object" % relative
-        for label, data in (("no events", {"hooks": {}}), ("not a mapping", {"hooks": []}), ("a list", [])):
-            self.assertEqual(self.check_with(hooks=data), [empty], label)
-        stop = "%s: every Stop hook must run ${CLAUDE_PLUGIN_ROOT}/hooks/run" % relative
-        for label, groups in (
-            ("groups not a list", {"hooks": []}),
-            ("a group not a mapping", ["x"]),
-            ("entries not a list", [{"hooks": "x"}]),
-            ("an entry not a mapping", [{"hooks": ["x"]}]),
-            ("a command not a string", [{"hooks": [{"type": "command", "command": 1}]}]),
-        ):
-            self.assertEqual(self.check_with(hooks={"hooks": dict(good, Stop=groups)}), [stop], label)
-
-    @unittest.skipIf(os.name == "nt", "POSIX sh and PATH semantics")
-    def test_hooks_run_wrapper_exits_0_without_python(self):
-        import subprocess
-
-        empty = os.path.join(self.tmp, "empty-bin")
-        os.makedirs(empty)
-        sh = shutil.which("sh") or "/bin/sh"
-        result = subprocess.run(
-            [sh, os.path.join(REPO_ROOT, "hooks", "run"), "stop"],
-            input=b'{"hook_event_name": "Stop"}',
-            capture_output=True,
-            env={"PATH": empty},
-            timeout=60,
-        )
-        self.assertEqual((result.returncode, result.stdout), (0, b""))
-
-    def run_wrapper(self, path: str, home: str) -> Any:
-        """``sh hooks/run prompt`` on PATH ``path``, in a session that typed the skill."""
-        import subprocess
-
-        sh = shutil.which("sh") or "/bin/sh"
-        payload = {
-            "hook_event_name": "UserPromptSubmit",
-            "session_id": "s",
-            "cwd": self.project,
-            "prompt": "/dev-orchestra:dev-orchestra go",
-        }
-        env = {"PATH": path, "HOME": home, "DEV_ORCHESTRA_HOME": self.config_home}
-        return subprocess.run(
-            [sh, os.path.join(REPO_ROOT, "hooks", "run"), "prompt"],
-            input=json.dumps(payload).encode("utf-8"),
-            capture_output=True,
-            env=env,
-            cwd=self.project,
-            timeout=60,
-        )
-
-    def write_reply_language(self, tag: str) -> None:
-        from orchestrator import config as config_mod
-
-        config_mod.write_config_file(
-            config_mod.global_config_path(), {"version": 1, "language": {"reply": tag}}, "global"
-        )
-
-    @unittest.skipIf(os.name == "nt", "POSIX sh and PATH semantics")
-    def test_hooks_run_wrapper_forwards_the_event_and_stdin(self):
-        import sys
-
-        self.write_reply_language("ko")
-        bin_dir = os.path.join(self.tmp, "bin")
-        os.makedirs(bin_dir)
-        os.symlink(sys.executable, os.path.join(bin_dir, "python3"))
-        result = self.run_wrapper(bin_dir, self.tmp)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        output = json.loads(result.stdout)
-        self.assertEqual(output["hookSpecificOutput"]["hookEventName"], "UserPromptSubmit")
-        self.assertIn("language.reply: ko.", output["hookSpecificOutput"]["additionalContext"])
-
-    @unittest.skipIf(os.name == "nt", "POSIX sh and PATH semantics")
-    def test_hooks_run_wrapper_skips_a_python3_that_is_too_old(self):
-        import sys
-
-        self.write_reply_language("ja")
-        bin_dir = os.path.join(self.tmp, "bin")
-        os.makedirs(bin_dir)
-        old = os.path.join(bin_dir, "python3")
-        with open(old, "w", encoding="utf-8", newline="\n") as handle:
-            # Fails the version probe, and would print if the wrapper ran it anyway.
-            handle.write("#!/bin/sh\necho old-python\nexit 1\n")
-        os.chmod(old, 0o755)
-        os.symlink(sys.executable, os.path.join(bin_dir, "python"))
-        result = self.run_wrapper(bin_dir, self.tmp)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertNotIn(b"old-python", result.stdout)
-        self.assertIn("Japanese", json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"])
-
-    def test_the_wrapper_keeps_lf_endings(self):
-        with open(os.path.join(REPO_ROOT, "hooks", "run"), "rb") as handle:
-            self.assertNotIn(b"\r\n", handle.read())
-        self.assertIn("hooks/run text eol=lf", read(".gitattributes"))
 
 
 class TestMalformedManifests(IsolatedCase):

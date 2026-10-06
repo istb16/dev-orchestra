@@ -434,7 +434,7 @@ class TestClaudeAdapter(IsolatedCase):
             self.provider.resolve_model({"family": "opus", "version": "pinned"})
 
     def test_child_env_sets_delegated(self):
-        """The plugin's reply-language hooks stay silent inside a delegated run (#254)."""
+        """The reply-language hooks stay silent inside a delegated run (#254)."""
         for provider in (self.provider, CodexProvider(), MockProvider()):
             env = provider._child_env(None)
             self.assertEqual(env[execution.DELEGATED_ENV], "1")

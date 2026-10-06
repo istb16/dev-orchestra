@@ -8,6 +8,7 @@
 - [model](#model)
 - [reviewer](#reviewer)
 - [doctor](#doctor)
+- [hooks](#hooks)
 - [run](#run)
   - [Revising the plan in the architect's own session (`--resume`)](#revising-the-plan-in-the-architects-own-session---resume)
 - [review](#review)
@@ -53,10 +54,10 @@ plan is not approved and `design.require_approval` is on, `130` interrupted.
 | --- | --- |
 | `config show [--scope effective\|global\|project] [--json]` | Show the configuration. Default `effective` (merged); a scope shows that layer exactly as it is on disk, which is usually much shorter. The effective view names the preset in force after `Source:` (`Preset: quality (global; fitted to claude, codex)`) with a `note:` line for each thing that was refitted; `--json` has them under `preset` (`name`, `source`, `notes`), and the effective view's `--json` names the files `Source:` lists as `project` and `global` (`null` when there is none). A `Providers:` line says where each provider it refers to comes from (built-in, a user module's path, or no adapter); `--json` has the same under `providers`. The summary shows each seat's high-risk model (`(opus when high-risk)`) and `relevance`, a `skip unneeded roles: on\|off  (optimization.skip_unneeded_roles)` line under the optimization level, and a `Design reviews` block: the design panel when the fit or a file sets one, else `(the code panel; when conditions ignored)`; with a design panel the effective view's `--json` adds `design_reviewer_origins` (`fit design` for a fitted seat). A `Reply language: <tag>  (language.reply)` line follows, `not set` without one and with `(no rewrite: language.rewrite false)` after the tag when the Stop-hook check is off. |
 | `config path` | Print both layer locations. |
-| `config setup [--scope global\|project] [--preset quality\|standard\|fast \| --defaults] [--force]` | Setup wizard; for the global file its first question is the preset. `--preset` asks nothing: it writes `version` and `preset`, keeps what the file held apart from the keys a preset governs (a role keeps its `options` and `model_tiers` and is then not fitted), and prints the configuration that preset resolves to on this machine with its notes (see `references/configuration.md`, Presets). Only the global file can name a preset: with `--scope project` it is refused (exit 2) and nothing is written. `--defaults` overrides nothing, so the file holds only `version: 1` and runs under preset `standard`. `--force` prompts even without a TTY. |
-| `config reset [--scope …] [--delete]` | Clear this layer's overrides (the file stays, holding only `version`, and the global file its `preset` too when it names a known one; an unknown name is cleared with a `note:`), then print the configuration that is left. `--delete` removes the file; the global layer then runs under `standard`. |
+| `config setup [--scope global\|project] [--preset quality\|standard\|fast \| --defaults] [--language TAG] [--no-hooks] [--force]` | Setup wizard; for the global file its first question is the preset, and its last, just before saving, the reply language (a tag such as `ja`, asked again until it is one or blank; blank keeps what the file held, `none` clears it). `--language TAG` writes `language.reply` with `--preset` or `--defaults` and is the wizard's offered answer; a value that is not a tag exits 2 before anything is written. After saving, the reply-language hooks are added to or removed from Claude Code's user settings as for `config set language.reply`, judged by what this file held before and after; `--no-hooks` leaves them alone. `--preset` asks nothing: it writes `version` and `preset`, keeps what the file held apart from the keys a preset governs (a role keeps its `options` and `model_tiers` and is then not fitted), and prints the configuration that preset resolves to on this machine with its notes (see `references/configuration.md`, Presets). Only the global file can name a preset: with `--scope project` it is refused (exit 2) and nothing is written. `--defaults` overrides nothing, so the file holds only `version: 1` and runs under preset `standard`. `--force` prompts even without a TTY. |
+| `config reset [--scope …] [--delete]` | Clear this layer's overrides (the file stays, holding only `version`, and the global file its `preset` too when it names a known one; an unknown name is cleared with a `note:`), then print the configuration that is left. `--delete` removes the file; the global layer then runs under `standard`. A reset that clears this file's `language.reply`, after which neither the global file nor this project's sets one, removes the reply-language hooks; a reset never installs them. |
 | `config prune [--scope …] [--dry-run]` | Drop values a layer holds that are equal to what it inherits -- for files written before 0.6.0, which hold every default. A value goes only when the built-in defaults and the preset's fit agree on it, so pruning never changes the configuration in force. For the same reason `reviewers` stays, with a line saying why, when dropping it would move design reviews from the file's copy of the panel to the preset's design panel. `--dry-run` lists them without writing. |
-| `config set <path> <value> [--scope …] [--raw]` | Set one value. Paths support `a.b.c` and `reviewers[0].role`; an indexed edit copies the rest of the list from the layer below, and an index past the end exits 2. `preset` is written to the global file even when a project file exists; `--scope project` with it exits 2 and writes nothing. Setting a read-only seat's provider (`orchestrator.provider`, `architect.provider`, `<role>.model_tiers.<tier>.provider`, `reviewers[<n>].provider`, `review.design.reviewers[<n>].provider`) to `agy` in the project file exits 2 and writes nothing, naming the `--scope global` command instead; in the global file it is written and warned about. |
+| `config set <path> <value> [--scope …] [--raw] [--no-hooks]` | Set one value. Setting `language.reply` to a tag in a file that held none adds the reply-language hooks to Claude Code's user settings -- only where its settings directory exists, else a `note:` names `hooks install` -- and setting any tag repairs hooks that are installed but out of date. Changing a tag the file already held while the hooks are not installed leaves them out with a `note:` naming `hooks install`. A tag only another file sets, such as a project's, never installs them. Clearing it from the file so that neither the global file nor this project's sets one removes them, with a note that other projects whose file sets it lose the check; a project's `null` over a global tag does not. `--no-hooks` saves the value and leaves Claude Code alone; a delegated run never touches it. A settings file it cannot edit is a `warning:`: the value is saved and the exit status stays 0 (see [hooks](#hooks)). Paths support `a.b.c` and `reviewers[0].role`; an indexed edit copies the rest of the list from the layer below, and an index past the end exits 2. `preset` is written to the global file even when a project file exists; `--scope project` with it exits 2 and writes nothing. Setting a read-only seat's provider (`orchestrator.provider`, `architect.provider`, `<role>.model_tiers.<tier>.provider`, `reviewers[<n>].provider`, `review.design.reviewers[<n>].provider`) to `agy` in the project file exits 2 and writes nothing, naming the `--scope global` command instead; in the global file it is written and warned about. |
 | `config suggest-roles [--write] [--json] [--provider P] [--model F]` | Propose path-scoped `database`, `frontend` and `backend` reviewers from the project's file names and the root `package.json`, with no model call. Prints each proposal's id, provider, family, `when.paths`, evidence, and how many listed files it matches (and how many of those `review.exclude` withholds), then every role not proposed with the reason. Inside a git repository only `git ls-files` is read; a failing or oversized listing exits 2. `--write` appends them to the `reviewers_extra` of the project file at the listing root and refuses (exit 2, nothing written) when the project file in force is elsewhere. `--json` prints one object (`root`, `source`, `files`, `truncated`, `notes`, `suggestions`, `skipped`, `written`), with notes on stderr. See `references/configuration.md`, "Suggesting path-scoped reviewers". |
 | `config validate [--json]` | Validate the effective configuration, the design panel and each seat's `high_risk_model` and `relevance` included. Exit 1 if invalid. A `Warnings:` section (`warnings` in `--json`) lists the raw arguments a read-only role's runs would refuse -- any `options.args` in the project file, and anything the adapter's allowlist does not take -- the read-only seats on `agy` that come from the project file, the `options.skip_permissions` or `options.args` an agy write role would take from the project file, and one `<seat>: read-only is NOT enforced by agy -- ...` line per read-only seat on agy from the global file, without changing the exit status. `config set` prints the same as `warning:` lines. |
 
@@ -155,24 +156,26 @@ into a file, so a value there is always one somebody added.
 The Config block's `Reply language:` line is `language.reply` and what holds a
 reply to it on each host: `not set (language.reply; replies follow the user's
 language)`, or `<tag> (<layer>) -- Claude Code: <what>; Codex, Antigravity:
-rule 11 only`, where `<what>` is `Stop-hook rewrite + reminder`, `reminder
-only` (`language.rewrite: false`, or a tag whose script the check does not
-know), or `rule 11 only (<why>)` when this install carries no hooks, Claude
-Code's own `~/.claude/settings.json` sets `disableAllHooks`, or it has the
-plugin disabled. That file is Claude Code's, read best effort: anything
-missing or unreadable is left out, never a problem. In `--json` it is
-`language`: `reply` (the tag, primary subtag in lower case, or `null`),
-`rewrite`, `layer` (`project`, `global` or `default`: the file that names
-`language.reply`, a project `null` included), `check` (`script`,
-`words`, `latin` or `none`) and `hosts` -- `claude` with `status`
-(`hook-shipped` or `not-shipped`) and, when that file says, `plugin_enabled`
-and `hooks_disabled`; `codex` and `agy` with `status: not-enforced`. A
-`words` check (English, Spanish, French, German, Portuguese, Italian) gets a
-note saying it tells those languages apart by their common words only and
-passes a short reply; a `latin` check one saying it cannot tell one
-Latin-script language from another; a `none` check one saying that no reply
-is checked. See
-`references/architecture.md` ("Plugin hooks").
+rule 11 only`, where `<what>` is `Stop-hook rewrite + reminder (hooks in
+~/.claude/settings.json)`, `reminder only (hooks in …)` (`language.rewrite:
+false`, or a tag whose script the check does not know), `hooks out of date
+(<reasons>) -- run: dev-orchestra hooks install`, or `rule 11 only (<why>)`
+when no hooks are installed, the settings file does not parse, or it sets
+`disableAllHooks`. In `--json` it is `language`: `reply` (the tag, primary
+subtag in lower case, or `null`), `rewrite`, `layer` (`project`, `global` or
+`default`: the file that names `language.reply`, a project `null` included),
+`check` (`script`, `words`, `latin` or `none`) and `hosts` -- `claude` is the
+object `hooks status --json` prints, and `codex` and `agy` have `status:
+not-enforced`. A `words` check (English, Spanish, French, German, Portuguese,
+Italian) gets a note saying it tells those languages apart by their common
+words only and passes a short reply; a `latin` check one saying it cannot
+tell one Latin-script language from another; a `none` check one saying that
+no reply is checked. Further notes, never problems: a language set while the
+hooks are not installed or out of date (with the reasons and the fix
+command), a settings file that does not parse (it was not touched),
+`disableAllHooks`, and hooks installed with no language set (they stay
+silent; `hooks uninstall` removes them). See
+`references/architecture.md` ("Reply-language hooks").
 
 A **Notes** block follows the problems when there is something worth knowing
 that is not wrong; notes never count towards `--strict`, and in `--json` they
@@ -261,6 +264,21 @@ version could not be read shows `version unavailable` and no note: there is no
 version to look up. In `--json` it is `providers.<name>.live_check` (`status`
 one of `passed`, `failed`, `absent`, `version-unavailable`; `entry`,
 `last_passed`, `problem`). It is never a problem.
+
+## hooks
+
+The reply-language hooks in Claude Code's user settings
+(`$CLAUDE_CONFIG_DIR/settings.json`, else `~/.claude/settings.json`; never a
+project's). How they are written, what they run and when they act:
+`references/architecture.md` ("Reply-language hooks").
+
+| Command | Description |
+| --- | --- |
+| `hooks install [--dry-run]` | Write the relay and its record into `<config dir>/hooks/`, then merge one matcher group per event (`UserPromptSubmit`, `SessionStart` on `compact\|resume`, `Stop`) into the settings file, creating it when there is none. Prints the settings path, each entry added (`+ Stop: <python> -I <relay> stop`) or removed, and the backup of the previous file, then that Claude Code picks up hooks at session start. `<python>` is the Python running dev-orchestra, or, in a virtual environment, the one the environment was made from, which a line then says; when that one is not found the install is refused (exit 2). With no `language.reply` set it adds that the hooks stay silent until one is. Already installed: `already installed`, nothing written. A settings file that does not parse or has another shape, or one a Microsoft Store Python would write somewhere Claude Code does not read, is refused: exit 2, nothing written. `--dry-run` prints the same and writes nothing, neither the settings nor the relay. The `hooks` commands never move the relay's record to the running checkout, as other commands run inside Claude Code may (see `references/architecture.md`, Reply-language hooks); `install` itself records it. |
+| `hooks uninstall [--dry-run]` | Remove dev-orchestra's entries, then any group, event list and `hooks` object left empty by that, and delete the relay and its record. Exit 2 on a refusal, as for `install`. |
+| `hooks status [--json]` | Whether they are installed and current, and the fix command when they are stale or missing while a language is set. Exit 0. `--json`: `settings_path`, `status` (`installed`, `stale`, `not-installed` or `unreadable`), `reasons` (any of `python-differs`, `python-missing`, `relay-missing`, `relay-outdated`, `plugin-root-differs` (the record names another checkout), `record-differs` (the record is missing or names another config directory or file), `events-missing` (an event has no hook of ours, or more than one), `entries-differ` (one is not in a group of its own as `install` writes it: another matcher, timeout or arguments, or under another event)), `python` (the command the entries run), `relay`, `plugin_root` (from the record), `events`, `hooks_disabled` and `error`. |
+
+What of this is promised: "Compatibility" in the README.
 
 ## run
 
@@ -1189,6 +1207,7 @@ still the only thing that deletes a workflow.
 | `DEV_ORCHESTRA_MOCK_FAIL` | Make mock runs fail (`1` = all, otherwise a prompt substring) |
 | `DEV_ORCHESTRA_MOCK_ACTIVITY` | Tool lines a mock run reports to a job's activity or `review run --progress`, `\|`-separated; `<substring>=>line` only for a prompt containing the substring |
 | `CODEX_HOME` | Respected when locating the Codex CLI's config and credentials |
+| `CLAUDE_CONFIG_DIR` | Where Claude Code's user settings are, for `hooks install` and the commands that install or remove the hooks |
 | `DEV_ORCHESTRA_TEST_ASSUME_NO_CLI` | Test-only: hides both provider CLIs, reproducing CI |
 
 ## Troubleshooting

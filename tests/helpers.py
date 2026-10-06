@@ -48,8 +48,18 @@ ENV_KEYS = (
     "DEV_ORCHESTRA_MOCK_TRACE",
     "DEV_ORCHESTRA_MOCK_ACTIVITY",
     "DEV_ORCHESTRA_NO_USER_PROVIDERS",
+    "DEV_ORCHESTRA_DELEGATED",
+    "CLAUDE_CONFIG_DIR",
     "XDG_CONFIG_HOME",
     "APPDATA",
+)
+
+# Claude Code's user settings are found through CLAUDE_CONFIG_DIR before the
+# home directory, so pointing it at a directory that is never created keeps
+# even a test outside IsolatedCase from reading or writing the developer's
+# own ~/.claude. IsolatedCase points it into each test's temporary directory.
+os.environ["CLAUDE_CONFIG_DIR"] = os.path.join(
+    tempfile.gettempdir(), "devorchestra-test-no-claude-%d" % os.getpid()
 )
 
 #: CI runs with neither claude nor codex on PATH, and the suite must pass there.
@@ -259,6 +269,10 @@ class IsolatedCase(unittest.TestCase):
         for key in ENV_KEYS:
             os.environ.pop(key, None)
         os.environ["DEV_ORCHESTRA_HOME"] = self.config_home
+        # Claude Code's user settings: named, not created, so the hooks are
+        # installed only where a test makes the directory first.
+        self.claude_dir = os.path.join(self.tmp, "claude")
+        os.environ["CLAUDE_CONFIG_DIR"] = self.claude_dir
         # Artifacts live in `.ai/workflows/<id>/`, and the id is resolved from
         # the environment. Pinning it keeps every test's paths predictable and
         # keeps the host session this suite runs under out of them; the tests

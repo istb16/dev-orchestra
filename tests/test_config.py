@@ -337,7 +337,7 @@ class TestLayering(IsolatedCase):
         self.assertIsNone(config_mod.find_project_config(nested))
         self.write(".dev-orchestra.yaml", "version: 1\n")
         self.assertEqual(os.path.dirname(present(config_mod.find_project_config(nested))), self.project)
-        # The same walk names the repository root, which the plugin hooks use.
+        # The same walk names the repository root, which the reply-language hooks use.
         self.assertEqual(config_mod.repository_root(nested), self.project)
 
     def test_repository_root_is_none_outside_a_repository(self):

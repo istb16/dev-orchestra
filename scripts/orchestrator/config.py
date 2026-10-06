@@ -300,7 +300,7 @@ def default_config() -> Dict[str, Any]:
         },
         # The language the orchestrator answers the user in, as a BCP 47 tag
         # (`ja`, `zh-TW`, `ko`, `en`). Null leaves it to SKILL.md rule 11 and
-        # keeps the Claude Code plugin's hooks silent. ``rewrite: false`` keeps
+        # keeps the Claude Code hooks silent. ``rewrite: false`` keeps
         # the reminders and drops the Stop-hook check, for a check that
         # misjudges someone's replies.
         "language": {"reply": None, "rewrite": True},
@@ -407,6 +407,18 @@ def stored_elsewhere(path: str) -> Optional[str]:
     return None
 
 
+def package_redirected(path: str) -> Optional[str]:
+    """``stored_elsewhere``, only when a Microsoft Store package is what moves it.
+
+    A link the user made leaves the real location elsewhere too, but a write
+    through it lands where they meant it to.
+    """
+    real = stored_elsewhere(path)
+    if real is not None and _PACKAGES_KEY in _path_key(real) and _PACKAGES_KEY not in _path_key(path):
+        return real
+    return None
+
+
 def shown_location(path: str) -> str:
     """``path`` as printed: with its real location when that differs."""
     return describe_location(path, stored_elsewhere(path))
@@ -438,7 +450,7 @@ def find_project_config(start: Optional[str] = None) -> Optional[str]:
 def _up_to_repository_root(start: Optional[str] = None) -> List[str]:
     """``start`` and each parent up to the first holding a ``.git`` entry, or to the
     filesystem root when none does. A walk rather than ``git rev-parse``: a
-    plugin hook runs it on every prompt."""
+    reply-language hook runs it on every prompt."""
     current = os.path.abspath(start or os.getcwd())
     walked = [current]
     while not os.path.lexists(os.path.join(current, ".git")):

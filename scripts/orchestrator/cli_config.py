@@ -9,10 +9,10 @@ import re
 import sys
 from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple, Union
 
+from . import claude_hooks, hosts, miniyaml
 from . import config as config_mod
 from . import config_policy as policy_mod
 from . import doctor as doctor_mod
-from . import miniyaml
 from . import optimization as opt_mod
 from . import presets as presets_mod
 from . import suggest as suggest_mod
@@ -37,6 +37,8 @@ from .cli_common import (
     _seed_panel,
     _without_warned_seats,
 )
+from .cli_hooks import LEFT_OUT_NOTE, OTHER_PROJECTS_NOTE, report_install, report_uninstall
+from .execution import DELEGATED_ENV
 from .providers import (
     ModelResolutionError,
     UnknownProviderError,
@@ -195,6 +197,13 @@ def cmd_config_setup(args: argparse.Namespace) -> int:
     scope = args.scope or "global"
     path = _layer_path(scope, args.cwd)
     existing = config_mod.read_config_file(path) if os.path.isfile(path) else None
+    language = None
+    if args.language is not None:
+        language = config_mod.normalise_language_tag(args.language)
+        if language is None:
+            _err("--language: %r is not a language tag such as ja, zh-TW, ko or en" % args.language)
+            return 2
+    before = claude_hooks.configured_layers(args.cwd)
 
     if args.preset:
         # The file names the preset and keeps what it held beside the keys a
@@ -217,11 +226,13 @@ def cmd_config_setup(args: argparse.Namespace) -> int:
             return 2
         try:
             data, save = wizard_mod.run(
-                wizard_mod.Prompter(), existing, _fitted_base(scope, existing), scope=scope
+                wizard_mod.Prompter(), existing, _fitted_base(scope, existing), scope=scope, reply=language
             )
         except EOFError:
             _err("input ended before setup finished; nothing was saved. Try --defaults instead.")
             return 2
+    if language is not None and (args.preset or args.defaults):
+        config_mod.set_path(data, "language.reply", language)
 
     if not save:
         _out("Not saved.")
@@ -254,18 +265,50 @@ def cmd_config_setup(args: argparse.Namespace) -> int:
         "It records only what you chose; everything else follows %s (config show)."
         % config_mod.layer_below(scope)
     )
+    _sync_hooks(args, scope, before)
     return 0
+
+
+def _sync_hooks(args: argparse.Namespace, scope: str, before: claude_hooks.Layers) -> None:
+    """Add or remove the Claude Code hooks after ``scope``'s file was written.
+
+    ``before`` is ``claude_hooks.configured_layers`` from before the write;
+    ``claude_hooks.sync`` decides, and this says what it did. Never from a
+    delegated run, and never with ``--no-hooks``. A refusal is a warning: the
+    configuration is saved either way.
+    """
+    if getattr(args, "no_hooks", False) or os.environ.get(DELEGATED_ENV):
+        return
+    after = claude_hooks.configured_layers(args.cwd)
+    command = claude_hooks.FIX_COMMAND if after.tag(scope) else claude_hooks.UNINSTALL_COMMAND
+    try:
+        synced = claude_hooks.sync(scope, before, after, hosts.PLUGIN_ROOT)
+    except claude_hooks.HooksError as exc:
+        _err("warning: %s" % exc)
+        _err("warning: the configuration is saved; run `%s` once that is fixed" % command)
+        return
+    if synced.change is not None and synced.action == claude_hooks.SYNC_INSTALLED:
+        report_install(synced.change)
+    elif synced.change is not None and synced.action == claude_hooks.SYNC_UNINSTALLED:
+        report_uninstall(synced.change)
+        _out("note: %s" % OTHER_PROJECTS_NOTE)
+    elif synced.action == claude_hooks.SYNC_NO_SETTINGS:
+        _out("note: Claude Code settings not found; `%s` creates them" % claude_hooks.FIX_COMMAND)
+    elif synced.action == claude_hooks.SYNC_LEFT_OUT:
+        _out("note: %s" % LEFT_OUT_NOTE)
 
 
 def cmd_config_reset(args: argparse.Namespace) -> int:
     scope = _resolve_scope(args.scope, args.cwd)
     path = _layer_path(scope, args.cwd)
+    language_before = claude_hooks.configured_layers(args.cwd)
     if args.delete:
         if os.path.isfile(path):
             os.remove(path)
             _out("Removed %s" % config_mod.shown_location(path))
         else:
             _out("Nothing to remove at %s" % config_mod.shown_location(path))
+        _sync_hooks(args, scope, language_before)
         return 0
     # Clearing the overrides, not restoring the defaults: for the global layer
     # those are the same thing, and for a project layer the difference matters
@@ -301,6 +344,7 @@ def cmd_config_reset(args: argparse.Namespace) -> int:
         following = "this project now follows the global layer"
     shown = config_mod.shown_location(path)
     _out("Reset %s configuration: overrides cleared, %s (%s)" % (scope, following, shown))
+    _sync_hooks(args, scope, language_before)
     try:
         loaded = _load_lenient(args.cwd)
     except config_mod.ConfigError as exc:
@@ -325,6 +369,9 @@ def cmd_config_set(args: argparse.Namespace) -> int:
         scope = _resolve_scope(args.scope, args.cwd)
     path, layer = _read_layer(scope, args.cwd)
     before = _load_lenient(args.cwd) if role_key in config_mod.KNOWN_ROLES else None
+    language_before = (
+        claude_hooks.configured_layers(args.cwd) if args.path in ("language", "language.reply") else None
+    )
     # A panel path is checked as the panel it leaves, before anything is written.
     design_path = args.path.startswith(config_mod.DESIGN_PANEL.reviewers)
     panel_path = role_key in ("reviewers", "reviewers_extra") or design_path
@@ -397,6 +444,8 @@ def cmd_config_set(args: argparse.Namespace) -> int:
         _err("warning: %s" % warning)
     _warn_unenforced(reloaded)
     _warn_unresolvable(effective, args.path.split(".")[0])
+    if language_before is not None:
+        _sync_hooks(args, scope, language_before)
     return 0
 
 

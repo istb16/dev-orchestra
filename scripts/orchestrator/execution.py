@@ -50,8 +50,8 @@ _ON_LINE_GRACE_SECONDS = 2.0
 IS_WINDOWS = sys.platform.startswith("win")
 
 #: Set by ``Provider._child_env`` for every process this tool starts, so a
-#: delegated Claude run that loads the user's plugins keeps the plugin's own
-#: hooks silent (``reply_language``).
+#: delegated Claude run that loads the user's settings keeps dev-orchestra's
+#: own hooks silent (``reply_language``, ``claude_hooks.refresh``).
 DELEGATED_ENV = "DEV_ORCHESTRA_DELEGATED"
 
 

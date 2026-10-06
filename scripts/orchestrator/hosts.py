@@ -2,9 +2,7 @@
 
 Shared by ``scripts/validate_skill.py`` (what is committed), ``doctor`` (what
 a live install would load now) and, by hand, the two installers (what they
-refuse to link). Claude Code's facts live here too: where its manifest points
-the plugin's hooks, and what its own settings file says about them. Standard
-library only.
+refuse to link). Standard library only.
 
 Named ``hosts`` rather than ``antigravity``: the standard library has an
 ``antigravity`` module, and importing that one opens a browser.
@@ -12,18 +10,14 @@ Named ``hosts`` rather than ``antigravity``: the standard library has an
 
 from __future__ import annotations
 
-import json
 import os
-from typing import Any, Dict, List, NamedTuple, Tuple
+from typing import List, NamedTuple, Tuple
 
 PLUGIN_NAME = "dev-orchestra"
 
-#: The key Claude Code's own settings file enables a marketplace plugin under.
-CLAUDE_PLUGIN_KEY = "dev-orchestra@dev-orchestra"
-#: The hooks file only Claude Code is pointed at, through its manifest. Not a
-#: root ``hooks.json``, which Antigravity would load on its own.
-CLAUDE_HOOKS = "hooks/claude-code.json"
-CLAUDE_MANIFEST = ".claude-plugin/plugin.json"
+#: The directory two levels above skills/dev-orchestra/SKILL.md, which is what
+#: Antigravity loads. realpath: launched through a link, this is the checkout.
+PLUGIN_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 
 #: Entries at a plugin root that Antigravity loads on its own when the plugin
 #: is enabled, and ``plugins.json``, which would make the root a customization
@@ -75,42 +69,6 @@ def resolves_to(path: str, root: str) -> bool:
         return os.path.normcase(os.path.realpath(path)) == os.path.normcase(os.path.realpath(root))
     except OSError:
         return False
-
-
-def claude_hooks_shipped(plugin_root: str) -> bool:
-    """Whether ``plugin_root`` carries the hooks file and its Claude Code manifest points at it."""
-    if not os.path.isfile(os.path.join(plugin_root, *CLAUDE_HOOKS.split("/"))):
-        return False
-    try:
-        with open(os.path.join(plugin_root, *CLAUDE_MANIFEST.split("/")), encoding="utf-8") as handle:
-            manifest = json.load(handle)
-    except (OSError, ValueError):
-        return False
-    hooks = manifest.get("hooks") if isinstance(manifest, dict) else None
-    return isinstance(hooks, str) and os.path.normpath(hooks) == os.path.normpath(CLAUDE_HOOKS)
-
-
-def claude_settings(home: str) -> Dict[str, Any]:
-    """What ``~/.claude/settings.json`` says about this plugin and hooks, best effort.
-
-    ``plugin_enabled`` and ``hooks_disabled``, each only when the file holds a
-    boolean for it. That file is Claude Code's own and not an interface it
-    promises, so anything unreadable or unexpected is simply left out.
-    """
-    try:
-        with open(os.path.join(home, ".claude", "settings.json"), encoding="utf-8") as handle:
-            settings = json.load(handle)
-    except (OSError, ValueError):
-        return {}
-    if not isinstance(settings, dict):
-        return {}
-    found: Dict[str, Any] = {}
-    enabled = settings.get("enabledPlugins")
-    if isinstance(enabled, dict) and isinstance(enabled.get(CLAUDE_PLUGIN_KEY), bool):
-        found["plugin_enabled"] = enabled[CLAUDE_PLUGIN_KEY]
-    if isinstance(settings.get("disableAllHooks"), bool):
-        found["hooks_disabled"] = settings["disableAllHooks"]
-    return found
 
 
 def antigravity_install_locations(project_root: str, home: str) -> List[Tuple[str, str]]:

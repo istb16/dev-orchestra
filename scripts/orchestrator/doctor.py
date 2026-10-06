@@ -12,9 +12,9 @@ import platform
 import sys
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
+from . import claude_hooks, hosts, reply_language, verified
 from . import config as config_mod
 from . import config_policy as policy_mod
-from . import hosts, reply_language, verified
 from . import optimization as opt_mod
 from . import presets as presets_mod
 from . import workspace as ws
@@ -47,9 +47,8 @@ ROLE_LABELS = (
 #: The live check, next to this package: the same file from a plugin install.
 SMOKE_SCRIPT = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "smoke_live.py")
 
-#: The directory two levels above skills/dev-orchestra/SKILL.md, which is what
-#: Antigravity loads. realpath: launched through a link, this is the checkout.
-PLUGIN_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
+#: Read through this name, which tests replace, rather than ``hosts.PLUGIN_ROOT``.
+PLUGIN_ROOT = hosts.PLUGIN_ROOT
 
 
 def user_home() -> str:
@@ -342,9 +341,7 @@ def _language_report(report: Dict[str, Any], loaded: config_mod.LoadedConfig) ->
     """``language.reply``, and what enforces it on each host."""
     settings = loaded.language_settings()
     tag = settings["reply"]
-    shipped = hosts.claude_hooks_shipped(PLUGIN_ROOT)
-    claude: Dict[str, Any] = {"status": "hook-shipped" if shipped else "not-shipped"}
-    claude.update(hosts.claude_settings(user_home()))
+    claude = claude_hooks.status(PLUGIN_ROOT)
     check = reply_language.check_kind(tag)
     report["language"] = {
         "reply": tag,
@@ -370,6 +367,32 @@ def _language_report(report: Dict[str, Any], loaded: config_mod.LoadedConfig) ->
             "language.reply %s is not a language the Stop-hook check knows the script of: Claude Code gets "
             "the reminder only, and no reply is checked" % tag
         )
+    _claude_hooks_notes(report, tag, claude)
+
+
+def _claude_hooks_notes(report: Dict[str, Any], tag: Optional[str], claude: Dict[str, Any]) -> None:
+    """Notes, not problems: the hooks are the user's to install, and replies work without them."""
+    state = claude["status"]
+    where = claude["settings_path"]
+    if state == claude_hooks.STATUS_UNREADABLE:
+        report["notes"].append("Claude Code settings: %s" % claude["error"])
+    elif tag and state == claude_hooks.STATUS_NOT_INSTALLED:
+        report["notes"].append(
+            "language.reply is set, but the reply-language hooks are not in %s; run: %s"
+            % (where, claude_hooks.FIX_COMMAND)
+        )
+    elif tag and state == claude_hooks.STATUS_STALE:
+        report["notes"].append(
+            "the reply-language hooks in %s are out of date (%s); run: %s"
+            % (where, ", ".join(claude["reasons"]), claude_hooks.FIX_COMMAND)
+        )
+    elif not tag and claude_hooks.installed(claude):
+        report["notes"].append(
+            "the reply-language hooks are in %s but no language.reply is set: they stay silent; "
+            "`%s` removes them" % (where, claude_hooks.UNINSTALL_COMMAND)
+        )
+    if claude.get("hooks_disabled"):
+        report["notes"].append("%s sets disableAllHooks: Claude Code runs none of its hooks" % where)
 
 
 def _reviewer_entry(
@@ -905,22 +928,36 @@ def _provider_lines(name: str, entry: Dict[str, Any]) -> List[str]:
     return lines
 
 
+def _home_relative(path: str) -> str:
+    """``path`` with the user's home spelled ``~``, and forward slashes."""
+    home = os.path.expanduser("~")
+    if os.path.normcase(path).startswith(os.path.normcase(home + os.sep)):
+        path = "~" + path[len(home) :]
+    return path.replace("\\", "/")
+
+
 def _language_line(language: Dict[str, Any]) -> str:
-    """``ja (global) -- Claude Code: Stop-hook rewrite + reminder; Codex, Antigravity: rule 11 only``."""
+    """``ja (global) -- Claude Code: Stop-hook rewrite + reminder (hooks in ~/.claude/settings.json);
+    Codex, Antigravity: rule 11 only``."""
     tag = language.get("reply")
     if not tag:
         return "not set (language.reply; replies follow the user's language)"
     claude = (language.get("hosts") or {}).get("claude") or {}
-    if claude.get("status") != "hook-shipped":
-        enforced = "rule 11 only (this install carries no hooks)"
+    status = claude.get("status")
+    where = "hooks in %s" % _home_relative(str(claude.get("settings_path") or "settings.json"))
+    if status == claude_hooks.STATUS_UNREADABLE:
+        enforced = "rule 11 only (its settings file does not parse)"
+    elif status == claude_hooks.STATUS_STALE:
+        reasons = ", ".join(claude.get("reasons") or [])
+        enforced = "hooks out of date (%s) -- run: %s" % (reasons, claude_hooks.FIX_COMMAND)
+    elif status != claude_hooks.STATUS_INSTALLED:
+        enforced = "rule 11 only (no hooks installed -- run: %s)" % claude_hooks.FIX_COMMAND
     elif claude.get("hooks_disabled"):
         enforced = "rule 11 only (disableAllHooks is set)"
-    elif claude.get("plugin_enabled") is False:
-        enforced = "rule 11 only (the plugin is disabled)"
     elif language.get("rewrite") and language.get("check") != "none":
-        enforced = "Stop-hook rewrite + reminder"
+        enforced = "Stop-hook rewrite + reminder (%s)" % where
     else:
-        enforced = "reminder only"
+        enforced = "reminder only (%s)" % where
     return "%s (%s) -- Claude Code: %s; Codex, Antigravity: rule 11 only" % (
         tag,
         language.get("layer", "default"),

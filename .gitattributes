@@ -13,7 +13,6 @@
 *.yml text eol=lf
 *.toml text eol=lf
 bin/dev-orchestra text eol=lf
-hooks/run text eol=lf
 
 # Keep test fixtures and docs out of GitHub's language statistics.
 tests/** linguist-language=Python

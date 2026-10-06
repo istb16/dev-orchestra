@@ -16,10 +16,12 @@ from orchestrator import wizard as wizard_mod
 class ScriptedPrompter(wizard_mod.Prompter):
     """Replays a list of answers; records everything that was printed."""
 
-    def __init__(self, answers, overrides=None):
+    def __init__(self, answers, overrides=None, ask_language=False):
         self.answers = list(answers)
         # Substring -> answer, for prompts whose position is not worth counting.
-        self.overrides = dict(overrides or {})
+        # The reply-language question is answered blank unless a test is about it.
+        self.overrides = {} if ask_language else {"Reply language": ""}
+        self.overrides.update(overrides or {})
         self.output = []
         self.questions = []
         super().__init__(reader=self._answer, writer=self.output.append)
@@ -544,6 +546,60 @@ class TestAUserAdapterFailingOnModels(IsolatedCase):
         prompter = ScriptedPrompter(["1"])
         spec = wizard_mod._ask_role(prompter, self.providers[:1], "flaky", "small")
         self.assertEqual(spec, {"provider": "flaky", "model": {"family": "small", "version": "latest"}})
+
+
+class TestLanguageQuestion(IsolatedCase):
+    def test_wizard_asks_language_and_validates(self):
+        """Asked once, last before saving, and again until it is a tag or blank."""
+        prompter = ScriptedPrompter(["", "japanese", "JA", ""], ask_language=True)
+        data, save = wizard_mod.run(prompter)
+        self.assertTrue(save)
+        self.assertEqual(data["language"], {"reply": "ja"})
+        asked = [question for question in prompter.questions if "Reply language" in question]
+        self.assertEqual(len(asked), 2)
+        self.assertIn("   'japanese' is not a language tag such as ja, ko, zh-TW or en.", prompter.output)
+        self.assertTrue(prompter.questions[-1].startswith("Save as is?"))
+
+    def test_blank_sets_nothing_and_keeps_what_the_file_held(self):
+        data, _ = wizard_mod.run(ScriptedPrompter(["", "", ""], ask_language=True))
+        self.assertNotIn("language", data)
+        existing = {"version": 1, "language": {"reply": "ko"}}
+        prompter = ScriptedPrompter(["", "", ""], ask_language=True)
+        data, _ = wizard_mod.run(prompter, existing)
+        self.assertEqual(data["language"], {"reply": "ko"})
+        self.assertIn("[ko]", next(q for q in prompter.questions if "Reply language" in q))
+
+    def test_none_clears_it_and_an_offered_tag_is_the_default(self):
+        existing = {"version": 1, "language": {"reply": "ko"}}
+        data, _ = wizard_mod.run(ScriptedPrompter(["", "none", ""], ask_language=True), existing)
+        self.assertNotIn("language", data)
+        data, _ = wizard_mod.run(ScriptedPrompter(["", "", ""], ask_language=True), existing, reply="zh-TW")
+        self.assertEqual(data["language"], {"reply": "zh-TW"})
+
+    def test_preset_path_asks_it_once_before_save_as_is(self):
+        overrides = {"Reply language": "ja", "Save as is?": ""}
+        prompter = ScriptedPrompter([""], overrides=overrides, ask_language=True)
+        data, save = wizard_mod.run(prompter)
+        self.assertTrue(save)
+        self.assertEqual(data["language"], {"reply": "ja"})
+        asked = [i for i, question in enumerate(prompter.questions) if "Reply language" in question]
+        self.assertEqual(len(asked), 1)
+        self.assertTrue(prompter.questions[asked[0] + 1].startswith("Save as is?"))
+
+    def test_adjusting_a_preset_keeps_the_language_and_asks_it_once(self):
+        """Declining "Save as is?" goes through the roles; the answer survives the fit comparison."""
+        overrides = {"Reply language": "ja", "Save as is?": "n"}
+        prompter = ScriptedPrompter(accept_all(customise=False), overrides=overrides, ask_language=True)
+        data, save = wizard_mod.run(prompter)
+        self.assertTrue(save)
+        self.assertEqual(data["language"], {"reply": "ja"})
+        self.assertEqual(len([q for q in prompter.questions if "Reply language" in q]), 1)
+
+    def test_customising_asks_it_once_before_saving(self):
+        prompter = ScriptedPrompter(accept_all(), overrides={"Reply language": "es"}, ask_language=True)
+        data, _ = wizard_mod.run(prompter)
+        self.assertEqual(data["language"], {"reply": "es"})
+        self.assertEqual(len([q for q in prompter.questions if "Reply language" in q]), 1)
 
 
 if __name__ == "__main__":

@@ -159,7 +159,7 @@ write them in the user's language (rule 11).
 Tests      ✓ 12 passed
 Reviews    2/3 ✓ (1 failed: codex-security — CLI timeout)
 Triage     4 findings → 2 accepted, 1 rejected, 1 duplicate
-Models     architect Claude/fable, implementer Claude/opus, fixer Claude/opus
+Models     architect Claude/fable, implementer + fixer Claude/opus
 Changed    app/models/order.rb, app/services/pricing.rb
 Remaining  F4 (medium, deferred — .ai/reviews/consolidated.md)
 ```
@@ -170,12 +170,12 @@ Always name what failed and what you skipped.
 
 ## Configuration
 
-Handle conversationally, ask only what you cannot infer, and have the user
-confirm the result before moving on. First run: with a terminal,
-`config setup` and let the user answer the wizard; otherwise show `config
-show`, ask which preset (quality, standard, fast), run `config setup
---preset <name>`. For `config set`, `reviewer add` and any other request,
-what to run for the user's words, roles, schema:
+Be conversational, ask only what you cannot infer, have the user confirm
+the result. First run: with a terminal, `config setup` and let the user
+answer the wizard; otherwise show `config show`, ask the preset (quality,
+standard, fast) and reply language, run `config setup --preset <name>
+--language <tag>`; say it edits their Claude Code user settings. Other
+requests (`config set`, `reviewer add`), roles, schema:
 `references/configuration.md`.
 
 ## Rules that do not bend

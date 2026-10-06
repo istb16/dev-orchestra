@@ -11,7 +11,6 @@ from __future__ import annotations
 import io
 import json
 import os
-import shutil
 import subprocess
 import sys
 import time
@@ -22,7 +21,7 @@ from unittest import mock
 
 from helpers import REPO_ROOT, SCRIPTS_DIR, IsolatedCase
 
-from orchestrator import cli, doctor, hosts, workflow
+from orchestrator import claude_hooks, cli, doctor, workflow
 from orchestrator import config as config_mod
 from orchestrator import reply_language as rl
 
@@ -695,15 +694,24 @@ class TestFailingOpen(HookCase):
             for entry in [user("again"), *english_turn()]:
                 handle.write(json.dumps(entry) + "\n")
         self.assertGreater(os.path.getsize(self.transcript), 20 * 1024 * 1024)
+        # Through the relay, as the installed Stop hook runs it.
+        claude_hooks.write_relay(REPO_ROOT)
         payload = json.dumps(self.payload("stop")).encode("utf-8")
         started = time.monotonic()
-        result = run_hook_process("stop", payload, cwd=self.project)
+        result = subprocess.run(
+            [sys.executable, "-I", claude_hooks.relay_path(), "stop"],
+            input=payload,
+            capture_output=True,
+            cwd=self.project,
+            env=hook_env(),
+            timeout=60,
+        )
         elapsed = time.monotonic() - started
         self.assertEqual(result.returncode, 0)
         self.assertEqual(json.loads(result.stdout)["decision"], "block")
-        with open(os.path.join(REPO_ROOT, "hooks", "claude-code.json"), encoding="utf-8") as handle:
-            timeout = json.load(handle)["hooks"]["Stop"][0]["hooks"][0]["timeout"]
-        self.assertLess(elapsed, timeout / 2)
+        # The whole timeout, not a share of it: this includes a cold interpreter
+        # start through the relay, which a loaded runner can stretch.
+        self.assertLess(elapsed, claude_hooks.HOOK_TIMEOUT)
 
 
 class TestDoctorLanguage(IsolatedCase):
@@ -714,27 +722,29 @@ class TestDoctorLanguage(IsolatedCase):
     def test_doctor_reports_language_and_hosts(self):
         _, out, _ = run_cli("doctor", "--fast")
         self.assertIn("Reply language: not set", out)
+        os.makedirs(self.claude_dir)
         self.set_language("language.reply", "ko")
+        where = doctor._home_relative(claude_hooks.settings_path())
         _, out, _ = run_cli("doctor", "--fast")
         self.assertIn(
-            "Reply language: ko (global) -- Claude Code: Stop-hook rewrite + reminder; "
-            "Codex, Antigravity: rule 11 only",
+            "Reply language: ko (global) -- Claude Code: Stop-hook rewrite + reminder (hooks in %s); "
+            "Codex, Antigravity: rule 11 only" % where,
             out,
         )
         self.set_language("language.rewrite", "false")
         _, out, _ = run_cli("doctor", "--fast")
-        self.assertIn("Reply language: ko (global) -- Claude Code: reminder only;", out)
+        self.assertIn("Reply language: ko (global) -- Claude Code: reminder only (hooks in %s);" % where, out)
 
     def test_doctor_json_language_block(self):
         self.set_language("language.reply", "fr")
         report = json.loads(run_cli("doctor", "--fast", "--json")[1])
-        hosts = {
-            "claude": {"status": "hook-shipped"},
-            "codex": {"status": "not-enforced"},
-            "agy": {"status": "not-enforced"},
-        }
+        language = dict(report["language"], hosts=dict(report["language"]["hosts"]))
+        claude = language["hosts"].pop("claude")
+        hosts = {"codex": {"status": "not-enforced"}, "agy": {"status": "not-enforced"}}
         expected = {"reply": "fr", "rewrite": True, "layer": "global", "check": "words", "hosts": hosts}
-        self.assertEqual(report["language"], expected)
+        self.assertEqual(language, expected)
+        self.assertEqual(claude, claude_hooks.status(REPO_ROOT))
+        self.assertEqual(claude["status"], "not-installed")
         notes = " ".join(report["notes"])
         self.assertIn("tells English, Spanish, French, German, Portuguese, Italian apart", notes)
         self.set_language("language.reply", "nl")
@@ -746,48 +756,33 @@ class TestDoctorLanguage(IsolatedCase):
         self.assertEqual(report["language"]["check"], "none")
         self.assertIn("tlh is not a language the Stop-hook check knows", " ".join(report["notes"]))
 
-    def test_doctor_reads_claude_settings_best_effort(self):
-        settings_dir = os.path.join(self.os_home, ".claude")
-        os.makedirs(settings_dir)
-        settings_file = os.path.join(settings_dir, "settings.json")
-        with open(settings_file, "w", encoding="utf-8") as handle:
-            json.dump({"enabledPlugins": {hosts.CLAUDE_PLUGIN_KEY: False}, "disableAllHooks": False}, handle)
-        self.set_language("language.reply", "ja")
-        report = json.loads(run_cli("doctor", "--fast", "--json")[1])
-        expected = {"status": "hook-shipped", "plugin_enabled": False, "hooks_disabled": False}
-        self.assertEqual(report["language"]["hosts"]["claude"], expected)
-        _, out, _ = run_cli("doctor", "--fast")
-        self.assertIn("Claude Code: rule 11 only (the plugin is disabled)", out)
-        with open(settings_file, "w", encoding="utf-8") as handle:
-            json.dump({"enabledPlugins": {hosts.CLAUDE_PLUGIN_KEY: True}, "disableAllHooks": True}, handle)
-        _, out, _ = run_cli("doctor", "--fast")
-        self.assertIn("Claude Code: rule 11 only (disableAllHooks is set);", out)
-        with open(settings_file, "w", encoding="utf-8") as handle:
-            handle.write("{not json")
-        report = json.loads(run_cli("doctor", "--fast", "--json")[1])
-        self.assertEqual(report["language"]["hosts"]["claude"], {"status": "hook-shipped"})
-
     def test_language_line_explains_each_unenforced_case(self):
         base = {"reply": "ja", "rewrite": True, "layer": "project", "check": "script"}
+        where = os.path.join(os.path.expanduser("~"), ".claude", "settings.json")
 
         def line(**claude: Any) -> str:
-            return doctor._language_line(dict(base, hosts={"claude": claude}))
+            return doctor._language_line(dict(base, hosts={"claude": dict(claude, settings_path=where)}))
 
         tail = "; Codex, Antigravity: rule 11 only"
+        lead = "ja (project) -- Claude Code: "
         self.assertEqual(
-            line(status="not-shipped"),
-            "ja (project) -- Claude Code: rule 11 only (this install carries no hooks)" + tail,
+            line(status="not-installed"),
+            lead + "rule 11 only (no hooks installed -- run: dev-orchestra hooks install)" + tail,
         )
         self.assertEqual(
-            line(status="hook-shipped", hooks_disabled=True),
-            "ja (project) -- Claude Code: rule 11 only (disableAllHooks is set)" + tail,
+            line(status="stale", reasons=["python-differs"]),
+            lead + "hooks out of date (python-differs) -- run: dev-orchestra hooks install" + tail,
         )
         self.assertEqual(
-            line(status="hook-shipped", plugin_enabled=False),
-            "ja (project) -- Claude Code: rule 11 only (the plugin is disabled)" + tail,
+            line(status="unreadable"), lead + "rule 11 only (its settings file does not parse)" + tail
         )
         self.assertEqual(
-            line(status="hook-shipped"), "ja (project) -- Claude Code: Stop-hook rewrite + reminder" + tail
+            line(status="installed", hooks_disabled=True),
+            lead + "rule 11 only (disableAllHooks is set)" + tail,
+        )
+        self.assertEqual(
+            line(status="installed"),
+            lead + "Stop-hook rewrite + reminder (hooks in ~/.claude/settings.json)" + tail,
         )
 
     def test_a_project_setting_is_reported_as_the_project_layer(self):
@@ -800,35 +795,6 @@ class TestDoctorLanguage(IsolatedCase):
         self.assertEqual(code, 0, err)
         report = json.loads(run_cli("doctor", "--fast", "--json")[1])
         self.assertEqual((report["language"]["reply"], report["language"]["layer"]), (None, "project"))
-
-    def copy_install(self, hooks_key: bool, hooks_file: bool) -> str:
-        """A plugin root with the Claude Code manifest, with or without its hooks."""
-        root = os.path.join(self.tmp, "copy-%s-%s" % (hooks_key, hooks_file))
-        os.makedirs(os.path.join(root, ".claude-plugin"))
-        with open(os.path.join(REPO_ROOT, ".claude-plugin", "plugin.json"), encoding="utf-8") as handle:
-            manifest = json.load(handle)
-        if not hooks_key:
-            del manifest["hooks"]
-        with open(os.path.join(root, ".claude-plugin", "plugin.json"), "w", encoding="utf-8") as handle:
-            json.dump(manifest, handle)
-        if hooks_file:
-            os.makedirs(os.path.join(root, "hooks"))
-            shutil.copy(os.path.join(REPO_ROOT, "hooks", "claude-code.json"), os.path.join(root, "hooks"))
-        return root
-
-    def test_an_install_without_the_hooks_says_so(self):
-        self.assertTrue(hosts.claude_hooks_shipped(REPO_ROOT))
-        self.assertTrue(hosts.claude_hooks_shipped(self.copy_install(hooks_key=True, hooks_file=True)))
-        self.set_language("language.reply", "ja")
-        for hooks_key, hooks_file in ((True, False), (False, True)):
-            root = self.copy_install(hooks_key, hooks_file)
-            self.assertFalse(hosts.claude_hooks_shipped(root), (hooks_key, hooks_file))
-            with mock.patch.object(doctor, "PLUGIN_ROOT", root):
-                _, out, _ = run_cli("doctor", "--fast")
-            expected = (
-                "Reply language: ja (global) -- Claude Code: rule 11 only (this install carries no hooks);"
-            )
-            self.assertIn(expected, out)
 
     def test_config_show_names_the_reply_language(self):
         _, out, _ = run_cli("config", "show")

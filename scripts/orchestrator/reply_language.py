@@ -717,11 +717,15 @@ def file_settings(cwd: str) -> Dict[str, Any]:
     registry and with it the user's adapters.
     """
     data: Dict[str, Any] = {}
-    paths = [config_mod.global_config_path(), config_mod.find_project_config(cwd)]
-    for path in paths:
+    for path in layer_paths(cwd):
         if path and os.path.isfile(path):
             data = config_mod.deep_merge(data, config_mod.read_config_file(path))
     return data
+
+
+def layer_paths(cwd: str) -> List[Optional[str]]:
+    """The global file, then the project file for ``cwd`` (None when there is none)."""
+    return [config_mod.global_config_path(), config_mod.find_project_config(cwd)]
 
 
 # --------------------------------------------------------------------------- hook

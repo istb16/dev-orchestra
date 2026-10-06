@@ -20,10 +20,24 @@ below begins **User adapters** so adapter authors can find it.
   language tag (`ja`, `ko`, `zh-TW`, `ru`, `es`, `fr`, ...; default `null`, which
   leaves it to rule 11 as before). `doctor` prints it as *Reply language*,
   which the skill reads as the language the user asked for on every host. In
-  Claude Code the plugin now ships hooks (`hooks/claude-code.json`, pointed at
-  from `.claude-plugin/plugin.json`): a short reminder naming the language
-  before each prompt and after a compaction or a resume, and a Stop-hook check
-  that asks once for a reply clearly in another language to be written again.
+  Claude Code, dev-orchestra adds three hooks to the user's settings
+  (`~/.claude/settings.json`, or under `$CLAUDE_CONFIG_DIR`; never a
+  project's): a short reminder naming the language before each prompt and
+  after a compaction or a resume, and a Stop-hook check that asks once for a
+  reply clearly in another language to be written again. They are added when
+  `config set language.reply` or `config setup --language` sets a tag in a
+  file that held none and Claude Code's settings directory exists -- never
+  because a project's file sets one -- and removed when neither the global
+  file nor the project's sets one any more; `--no-hooks` leaves the settings
+  alone. Only dev-orchestra's own entries are changed, the previous file is
+  kept as `settings.json.dev-orchestra-backup`, a linked settings file stays
+  linked, and a file it cannot parse is refused and left as it is. The
+  entries run the Python that runs dev-orchestra (the one a virtual
+  environment was made from, when it runs in one), with no shell, through a
+  small relay in the config directory that a dev-orchestra command run inside
+  Claude Code from a plugin Claude Code installed points at that checkout, so
+  they keep working across plugin updates and on Windows without Git Bash.
+  Users who never set a language get no hook at all.
   The check judges by script: the languages written in their own script are
   checked against Latin text and other scripts (a Japanese reply fails under
   `zh`, a Chinese one under `ja`, a Korean one under either); English,
@@ -35,8 +49,15 @@ below begins **User adapters** so adapter authors can find it.
   `DEV_ORCHESTRA_DELEGATED`), and print nothing on any error.
   `language.rewrite: false` keeps the reminders and turns the check off.
   Codex and Antigravity get the setting through `doctor` and rule 11 only.
-  `doctor --json` has it under `language`, and `config show` adds a
-  `Reply language:` line (#254).
+  `doctor --json` has it under `language`, with the hooks' state under
+  `language.hosts.claude`, and `config show` adds a `Reply language:` line
+  (#254).
+- **`dev-orchestra hooks install|uninstall|status`**: add, remove or inspect
+  the reply-language hooks by hand. `install` and `uninstall` take
+  `--dry-run`; `status --json` reports `installed`, `stale` with its reasons,
+  `not-installed` or `unreadable` (#254).
+- **`config setup --language <tag>`**, and a last wizard question for the
+  reply language (#254).
 
 ### Changed
 

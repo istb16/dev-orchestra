@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""Claude Code plugin hook: keep the orchestrator replying in ``language.reply``.
+"""Claude Code hook: keep the orchestrator replying in ``language.reply``.
 
-Run by ``hooks/run`` as ``python -I reply_language.py <prompt|session-start|stop>``
-with the hook's JSON on stdin. The logic is ``orchestrator.reply_language``.
+Run by the relay ``dev-orchestra hooks install`` writes into the config
+directory, through ``runpy`` in the same ``python -I`` process, as
+``reply_language.py <prompt|session-start|stop>`` with the hook's JSON on
+stdin. The logic is ``orchestrator.reply_language``.
 
 A hook must never break the session it runs in, so this fails open: any
 error at all, including one importing the package, prints nothing and exits 0.
