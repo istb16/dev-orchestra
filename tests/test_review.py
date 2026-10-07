@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import time
 import unittest
 from typing import Optional
@@ -100,6 +101,172 @@ class TestParsing(IsolatedCase):
         self.assertEqual(review_mod.parse_findings(text, "r1")[0]["file"], "app/models/user.rb")
 
 
+FENCED_FINDING = """## Finding
+- Severity: high
+- File: app/report.py
+- Line: 12
+- Category: correctness
+- Problem: the total skips the last row
+- Impact: every report is short by one row
+- Evidence:
+  ```python
+  # the last row is never added
+  for row in rows[:-1]:
+      total += row
+  fix: not a label inside code
+  ```
+- Fix: iterate over every row
+  ~~~~
+  for row in rows:
+  ~~~
+      total += **row
+  ~~~~
+"""
+
+
+class TestFencedEvidence(IsolatedCase):
+    """Code in a fence is read as code, not as labels and headings (#265)."""
+
+    def finding(self, text=FENCED_FINDING):
+        findings = review_mod.parse_findings(text, "r1")
+        self.assertEqual(len(findings), 1)
+        return findings[0]
+
+    def test_evidence_keeps_comment_lines_and_shape(self):
+        self.assertEqual(
+            self.finding()["evidence"],
+            "```python\n"
+            "# the last row is never added\n"
+            "for row in rows[:-1]:\n"
+            "    total += row\n"
+            "fix: not a label inside code\n"
+            "```",
+        )
+
+    def test_label_inside_a_fence_starts_no_field(self):
+        fix = self.finding()["recommended_fix"]
+        self.assertTrue(fix.startswith("iterate over every row\n"), fix)
+        self.assertNotIn("not a label", fix)
+
+    def test_only_a_matching_fence_closes_it(self):
+        # ``~~~`` is shorter than the ``~~~~`` that opened the fence, so it is
+        # code, and so is the ``**`` that bold-stripping would have eaten.
+        self.assertEqual(
+            self.finding()["recommended_fix"],
+            "iterate over every row\n~~~~\nfor row in rows:\n~~~\n    total += **row\n~~~~",
+        )
+
+    def test_single_line_fields_stay_single_line(self):
+        finding = self.finding()
+        for key in ("severity", "file", "line", "category", "problem", "impact"):
+            self.assertNotIn("\n", finding[key], key)
+        self.assertEqual(finding["line"], "12")
+
+    def test_an_unclosed_fence_is_read_as_ordinary_lines(self):
+        text = FENCED_FINDING.replace("  ```\n- Fix:", "- Fix:")
+        finding = self.finding(text)
+        self.assertNotIn("# the last row", finding["evidence"])
+        self.assertEqual(finding["recommended_fix"].splitlines()[0], "not a label inside code")
+
+    def test_a_code_line_that_looks_like_a_header_does_not_split_the_finding(self):
+        text = (
+            "## Finding\n- Severity: high\n- File: a.py\n- Line: 3\n- Problem: parsed twice\n"
+            "- Evidence:\n```python\nfor x in xs:\nfinding = parse(x)\n```\n- Fix: keep them\n"
+        )
+        finding = self.finding(text)
+        self.assertEqual(finding["evidence"], "```python\nfor x in xs:\nfinding = parse(x)\n```")
+        self.assertEqual(finding["recommended_fix"], "keep them")
+
+    def test_a_severity_line_in_a_fence_does_not_split_a_headerless_report(self):
+        text = (
+            "- Severity: high\n- File: a.py\n- Problem: the label is code here\n"
+            "- Evidence:\n  ~~~yaml\n  severity: low\n  ~~~\n- Fix: read it as code\n"
+            "- Severity: low\n- File: b.py\n- Problem: another one\n"
+        )
+        findings = review_mod.parse_findings(text, "r1")
+        self.assertEqual([f["file"] for f in findings], ["a.py", "b.py"])
+        self.assertEqual(findings[0]["evidence"], "~~~yaml\nseverity: low\n~~~")
+        self.assertEqual(findings[0]["recommended_fix"], "read it as code")
+
+    def test_a_header_after_an_unclosed_fence_still_starts_a_finding(self):
+        text = (
+            "## Finding\n- Severity: high\n- File: a.py\n- Problem: one\n- Evidence: ```python\n"
+            "## Finding\n- Severity: low\n- File: b.py\n- Problem: two\n"
+        )
+        self.assertEqual([f["file"] for f in review_mod.parse_findings(text, "r1")], ["a.py", "b.py"])
+
+    def test_fix_brief_hands_the_code_over_in_its_shape(self):
+        findings = review_mod.parse_findings(FENCED_FINDING, "r1")
+        data = {"findings": review_consolidation.consolidate_findings(findings)}
+        data["findings"][0]["triage"] = "accepted"
+        brief = review_mod.render_fix_brief(data)
+        code = "\n  # the last row is never added\n  for row in rows[:-1]:\n      total += row\n"
+        self.assertIn(code, brief)
+
+    def fence_depths(self, markdown):
+        """How deep each fence in ``markdown`` sits, failing on one that never closes.
+
+        A line inside a fence must be at least as deep as the fence. At column 0
+        a fence leaves the list item it belongs to, and with an odd number of
+        them the last one swallows the rest of the document.
+        """
+        lines = markdown.splitlines()
+        depths = []
+        index = 0
+        while index < len(lines):
+            match = re.match(r"( *)(`{3,}|~{3,})", lines[index])
+            if not match:
+                index += 1
+                continue
+            depth, fence = len(match.group(1)), match.group(2)
+            closer = index + 1
+            while closer < len(lines):
+                inner = lines[closer].strip()
+                if len(inner) >= len(fence) and inner == fence[0] * len(inner):
+                    break
+                self.assertTrue(not inner or lines[closer].startswith(" " * depth), lines[closer])
+                closer += 1
+            self.assertLess(closer, len(lines), "the fence on line %d never closes" % (index + 1))
+            self.assertTrue(lines[closer].startswith(" " * depth + fence[0]), lines[closer])
+            depths.append(depth)
+            index = closer + 1
+        return depths
+
+    def accepted(self, *reviewers):
+        findings = []
+        for reviewer_id in reviewers:
+            findings += review_mod.parse_findings(FENCED_FINDING, reviewer_id)
+        data = {"findings": review_consolidation.consolidate_findings(findings)}
+        data["findings"][0]["triage"] = "accepted"
+        return data
+
+    def test_fix_brief_keeps_the_fences_inside_the_list_item(self):
+        """At column 0 the code ended the list, and its closing fence was read
+        as opening a new one."""
+        brief = review_mod.render_fix_brief(self.accepted("r1"))
+        self.assertIn("- Evidence:\n  ```python\n", brief)
+        self.assertIn("- Fix:\n  iterate over every row\n  ~~~~\n", brief)
+        self.assertEqual(self.fence_depths(brief), [2, 2])
+
+    def test_consolidated_md_keeps_the_fences_inside_the_list_items(self):
+        """#259: with one merged report the fences no longer paired up, and
+        everything after them read as code."""
+        data = self.accepted("r1", "r2")
+        self.assertEqual(len(data["findings"][0]["merged_reports"]), 2)
+        rendered = review_mod.render_consolidation(data)
+        self.assertIn("- Evidence:\n  ```python\n  # the last row", rendered)
+        self.assertIn("- Recommended fix:\n  iterate over every row\n  ~~~~\n", rendered)
+        self.assertIn("    Fix:\n    iterate over every row\n    ~~~~\n", rendered)
+        self.assertEqual(self.fence_depths(rendered), [2, 2, 4, 4])
+
+    def test_a_single_line_value_stays_on_the_label_line(self):
+        findings = review_mod.parse_findings(FINDING_A, "r1")
+        data = {"findings": review_consolidation.consolidate_findings(findings)}
+        data["findings"][0]["triage"] = "accepted"
+        self.assertIn("- Evidence: user.profile.name\n", review_mod.render_fix_brief(data))
+        self.assertIn("- Evidence: user.profile.name\n", review_mod.render_consolidation(data))
+
+
 class TestConsolidation(IsolatedCase):
     def test_same_issue_from_two_reviewers_is_merged(self):
         findings = review_mod.parse_findings(FINDING_A, "r1") + review_mod.parse_findings(
@@ -131,6 +298,67 @@ class TestConsolidation(IsolatedCase):
         other = FINDING_A.replace("- Line: 42", "- Line: 900")
         findings = review_mod.parse_findings(FINDING_A, "r1") + review_mod.parse_findings(other, "r2")
         self.assertEqual(len(review_mod.consolidate_findings(findings)), 2)
+
+    def test_two_findings_from_one_reviewer_are_never_merged(self):
+        """#259: the same reviewer's two near-identical findings are two issues."""
+        timeout = FINDING_A.replace("- Line: 42", "- Line: 10").replace(
+            "the nil guard is missing before calling profile.name",
+            "The timeout argument is not validated before it is used",
+        )
+        retries = FINDING_A.replace("- Line: 42", "- Line: 14").replace(
+            "the nil guard is missing before calling profile.name",
+            "The retries argument is not validated before it is used",
+        )
+        findings = review_mod.parse_findings(timeout + retries, "claude")
+        self.assertTrue(review_mod.are_duplicates(findings[0], dict(findings[1], reviewer="codex")))
+        merged = review_mod.consolidate_findings(findings)
+        self.assertEqual(len(merged), 2)
+        self.assertEqual([f["duplicate_count"] for f in merged], [1, 1])
+        problems = sorted(f["problem"] for f in merged)
+        self.assertIn("retries", problems[0])
+        self.assertIn("timeout", problems[1])
+
+    def test_a_finding_without_a_line_is_not_merged_into_one_with_a_line(self):
+        """#259: `n/a` is no line in particular, not every line."""
+        far = FINDING_A.replace("- Line: 42", "- Line: 300")
+        no_line = FINDING_A_REWORDED.replace("- Line: 43", "- Line: n/a")
+        findings = review_mod.parse_findings(far, "claude") + review_mod.parse_findings(no_line, "codex")
+        merged = review_mod.consolidate_findings(findings)
+        self.assertEqual(len(merged), 2)
+        self.assertEqual([f["reported_by"] for f in merged], [["codex"], ["claude"]])
+
+    def test_two_findings_without_a_line_can_still_be_merged(self):
+        """A design finding names a plan section and has no line; two reviewers
+        saying the same about one section are still one finding."""
+        first = FINDING_A.replace("- Line: 42", "- Line: n/a")
+        second = FINDING_A_REWORDED.replace("- Line: 43", "- Line: n/a")
+        findings = review_mod.parse_findings(first, "claude") + review_mod.parse_findings(second, "codex")
+        merged = review_mod.consolidate_findings(findings)
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(sorted(merged[0]["reported_by"]), ["claude", "codex"])
+
+    def test_a_merge_keeps_every_report_as_written(self):
+        """#259: the longest-of-each-field result is no one report, so each is kept."""
+        findings = review_mod.parse_findings(FINDING_A, "r1") + review_mod.parse_findings(
+            FINDING_A_REWORDED, "r2"
+        )
+        merged = review_mod.consolidate_findings(findings)[0]
+        reports = merged["merged_reports"]
+        self.assertEqual([r["reviewer"] for r in reports], ["r2", "r1"])
+        by_reviewer = {r["reviewer"]: r for r in reports}
+        self.assertEqual(by_reviewer["r1"]["impact"], "NoMethodError for users without a profile")
+        self.assertEqual(by_reviewer["r1"]["line"], "42")
+        self.assertEqual(by_reviewer["r1"]["severity"], "high")
+        self.assertEqual(by_reviewer["r2"]["severity"], "critical")
+        self.assertEqual(merged["duplicate_count"], len(merged["reported_by"]))
+        rendered = review_mod.render_consolidation({"findings": [dict(merged, id="F1")]})
+        self.assertIn("- Merged from:", rendered)
+        self.assertIn("  - r1 (high, line 42): the nil guard is missing", rendered)
+
+    def test_an_unmerged_finding_has_no_merged_reports(self):
+        merged = review_mod.consolidate_findings(review_mod.parse_findings(FINDING_A, "r1"))
+        self.assertNotIn("merged_reports", merged[0])
+        self.assertNotIn("Merged from", review_mod.render_consolidation({"findings": merged}))
 
     def test_ordering_is_by_severity(self):
         findings = review_mod.parse_findings(FINDING_B, "r1") + review_mod.parse_findings(FINDING_A, "r2")
