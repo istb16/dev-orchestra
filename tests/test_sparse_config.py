@@ -140,6 +140,22 @@ class TestSparseWriters(IsolatedCase):
         self.assertFalse(os.path.exists(os.path.join(self.project, ".dev-orchestra.yaml")))
         self.assertEqual(config_mod.read_config_file(path), stored)
 
+    def test_a_json_file_refuses_an_infinite_or_nan_number(self):
+        """`Infinity` and `NaN` are not JSON: refused, and the file left as it was."""
+        path = os.path.join(self.project, ".dev-orchestra.json")
+        original = '{"version": 1, "review": {"max_review_iterations": 3}}\n'
+        write_raw(path, original)
+        for value in (".inf", ".nan"):
+            with self.subTest(value=value):
+                code, _, err = run_cli("config", "set", "--scope", "project", "review.max_findings", value)
+                self.assertEqual(code, 2, err)
+                self.assertIn("JSON has no infinite or not-a-number value", err)
+                with open(path, encoding="utf-8") as handle:
+                    self.assertEqual(handle.read(), original)
+        with self.assertRaises(config_mod.ConfigError):
+            config_mod.write_config_file(os.path.join(self.tmp, "c.json"), {"x": float("-inf")})
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "c.json")))
+
     def test_a_json_file_keeps_text_that_is_not_ascii(self):
         path = os.path.join(self.tmp, "config.json")
         config_mod.write_config_file(path, {"version": 1, "review": {"exclude": ["文書/*.md"]}})

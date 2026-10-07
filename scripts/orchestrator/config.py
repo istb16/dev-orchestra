@@ -566,8 +566,18 @@ def write_config_file(path: str, data: Dict[str, Any], scope: str = "") -> None:
     if path.lower().endswith(".json"):
         # A `.dev-orchestra.json` is also read by editors, jq and CI checks,
         # none of which take YAML or a comment; so JSON, and no header.
+        # Strict JSON: `Infinity` and `NaN` are Python's, and jq, editors and
+        # this tool's own reader would refuse the file. Checked before the
+        # file is opened, so a refusal leaves it as it was.
+        try:
+            text = json.dumps(data, indent=2, ensure_ascii=False, allow_nan=False)
+        except ValueError:
+            raise ConfigError(
+                "%s: JSON has no infinite or not-a-number value (.inf, .nan); "
+                "write a finite number, or keep the setting in a YAML file" % shown_location(path)
+            ) from None
         with open(path, "w", encoding="utf-8", newline="\n") as handle:
-            handle.write(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+            handle.write(text + "\n")
         return
     text = miniyaml.dumps(data)
     header = (

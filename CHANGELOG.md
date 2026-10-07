@@ -125,7 +125,8 @@ below begins **User adapters** so adapter authors can find it.
   project`, `reviewer add` and every other writer wrote YAML with `#`
   comments into it, which dev-orchestra still read but editors, `jq` and CI
   checks did not. A file whose name ends in `.json` is now written as
-  indented JSON, without the header comment (#280).
+  indented JSON, without the header comment. A value JSON cannot hold
+  (`.inf`, `.nan`) is refused, and the file left as it was (#280).
 
 - **`config set language.reply no` saves the tag `no`** (Norwegian) rather
   than `false`. In a file, a bare `no` is still read as false and refused;
