@@ -413,13 +413,15 @@ def project_ignored_warnings(loaded: LoadedConfig) -> List[str]:
 
 def project_ignored_write_refusal(dotted: str, value: Any, file_name: str) -> str:
     """Why ``config set --scope project <dotted> <value>`` writes nothing, or ""."""
-    if not config_trust.refused_write(dotted, value):
+    found = config_trust.written_ignored(dotted, value)
+    if not found:
         return ""
-    what = dotted if dotted == config_trust.APPROVAL else "a workspace.dir outside the repository"
+    key, ignored_value = found[0]
+    what = key if key == config_trust.APPROVAL else "a workspace.dir outside the repository"
     return (
         "%s is taken only from the global config: the project config (%s) can come with the branch "
         "under review -- run `dev-orchestra config set --scope global %s %s` instead"
-        % (what, file_name, dotted, _shown(value))
+        % (what, file_name, key, _shown(ignored_value))
     )
 
 

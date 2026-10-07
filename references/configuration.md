@@ -822,7 +822,8 @@ warning), `doctor` (as a problem, so `--strict` fails) and `review run` (as a
 refused `run implementer` adds a `note:` when the project file tried to turn
 approval off. `config set design.require_approval false` writes the global
 file even inside a project that has its own, as `preset` does, and so does
-`config set workspace.dir <outside>`; `--scope project` with either exits 2
+`config set workspace.dir <outside>`; `--scope project` with either, as the
+key itself or inside a `design` or `workspace` block written whole, exits 2
 and writes nothing.
 
 **The other review gates still take effect from the project file**, since a

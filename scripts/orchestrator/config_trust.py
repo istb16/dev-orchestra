@@ -69,8 +69,25 @@ def without_ignored(project_layer: Dict[str, Any]) -> Dict[str, Any]:
     return kept
 
 
+def written_ignored(dotted: str, value: Any) -> List[Tuple[str, Any]]:
+    """What ``ignored`` would drop of ``config set --scope project <dotted> <value>``.
+
+    Read from the write alone, so a whole block counts as well as one key:
+    ``design`` set to ``{require_approval: false}`` is the same write as
+    ``design.require_approval`` set to ``false``. A path into a list holds
+    neither setting.
+    """
+    if "[" in dotted:
+        return []
+    layer: Dict[str, Any] = {}
+    *blocks, last = dotted.split(".")
+    node = layer
+    for block in blocks:
+        node = node.setdefault(block, {})
+    node[last] = value
+    return ignored(layer)
+
+
 def refused_write(dotted: str, value: Any) -> bool:
     """Whether ``config set --scope project <dotted> <value>`` would write a value ``ignored`` drops."""
-    if dotted == APPROVAL:
-        return value is not None
-    return dotted == WORKSPACE_DIR and outside_repository(value)
+    return bool(written_ignored(dotted, value))

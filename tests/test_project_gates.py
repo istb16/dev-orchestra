@@ -170,6 +170,31 @@ class TestGlobalOnly(_Case):
         code, _, err = run_cli("config", "set", "--scope", "project", "workspace.dir", ".agent-work")
         self.assertEqual(code, 0, err)
 
+    def test_config_set_refuses_a_whole_block_holding_one(self):
+        """`design` or `workspace` written as a block is the same write as the key in it."""
+        self.write_project("review:\n  max_review_iterations: 2\n")
+        cases = (
+            ("design", "require_approval: false\n", "design.require_approval false"),
+            ("workspace", "dir: ../elsewhere\n", "workspace.dir ../elsewhere"),
+        )
+        for key, value, suggested in cases:
+            with self.subTest(key=key):
+                code, _, err = run_cli("config", "set", "--scope", "project", key, value)
+                self.assertEqual(code, 2, err)
+                self.assertIn("taken only from the global config", err)
+                self.assertIn("config set --scope global %s" % suggested, err)
+        path = os.path.join(self.project, ".dev-orchestra.yaml")
+        unchanged = {"version": 1, "review": {"max_review_iterations": 2}}
+        self.assertEqual(config_mod.read_config_file(path), unchanged)
+        # Without a scope it goes to the global file, as the key alone does.
+        code, _, err = run_cli("config", "set", "design", "require_approval: false\n")
+        self.assertEqual(code, 0, err)
+        self.assertIs(self.loaded().design_settings()["require_approval"], False)
+        self.assertEqual(config_mod.read_config_file(path), unchanged)
+        # A block that keeps inside the rules is written.
+        code, _, err = run_cli("config", "set", "--scope", "project", "workspace", "dir: .agent-work\n")
+        self.assertEqual(code, 0, err)
+
 
 class TestLoosened(_Case):
     def assert_notice(self, key, *details):

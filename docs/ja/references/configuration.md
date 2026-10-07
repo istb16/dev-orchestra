@@ -1,4 +1,4 @@
-<!-- translated-from: references/configuration.md sha256:81323dc5f3bd4cc9a9d0c1e895de7ad436a032b7890959685aacac981f198333 -->
+<!-- translated-from: references/configuration.md sha256:ac91bbc4438bbf87c628a4c37b6ce064d3db2835f87f4978c09ce8266c67d7e5 -->
 
 > この文書は [references/configuration.md](../../../references/configuration.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -793,7 +793,8 @@ project ファイルの `design.require_approval` は値にかかわらず、ま
 project ファイルが承認を切ろうとしていたときに `note:` を足します。
 `config set design.require_approval false` は、`preset` と同じく、プロジェクトに自分の
 ファイルがあっても global ファイルに書き込みます。`config set workspace.dir <外の場所>`
-も同じです。どちらも `--scope project` を付けると終了コード 2 で終了し、何も書き込みません。
+も同じです。どちらも、キーそのものでも、`design` や `workspace` のブロックをまるごと
+書く中に含めても、`--scope project` を付けると終了コード 2 で終了し、何も書き込みません。
 
 **ほかのレビューの関門は project ファイルからも効きます。** リポジトリがわざとレビューを
 減らすこともあるからです。ただし project ファイルが、それが無い場合の設定 -- global

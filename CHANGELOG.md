@@ -81,7 +81,8 @@ below begins **User adapters** so adapter authors can find it.
   branch could bring an approval nobody gave; a relative one inside the
   repository still works from the project file. `config set
   design.require_approval false` now writes the global file even inside a
-  project that has its own, and `--scope project` with either key exits 2.
+  project that has its own, and `--scope project` with either key, or with
+  a `design` or `workspace` block holding one, exits 2.
   To keep running a project without plan approval, move the setting:
   `dev-orchestra config set --scope global design.require_approval false`
   (#279).
