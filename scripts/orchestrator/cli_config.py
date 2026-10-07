@@ -461,9 +461,11 @@ def cmd_config_set(args: argparse.Namespace) -> int:
 
 def _set_value(args: argparse.Namespace) -> Any:
     """The value ``config set`` writes."""
-    if args.raw or (args.path == "language.reply" and config_mod.normalise_language_tag(args.value)):
-        # A tag stays a string: YAML would read `no`, Norwegian, as false.
-        return args.value
+    if args.raw or (args.path == "language.reply" and args.value.strip().lower() == "no"):
+        # `no`, Norwegian, stays a string: YAML would read it as false. The
+        # other words YAML reads as booleans (`off`, `yes`, `on`, ...) name no
+        # language, so they are coerced and `validate` says so.
+        return args.value.strip() if not args.raw else args.value
     return config_mod.coerce_scalar(args.value)
 
 

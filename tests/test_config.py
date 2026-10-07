@@ -1308,6 +1308,24 @@ class TestLanguage(IsolatedCase):
         self.assertEqual(code, 0)
         self.assertIn("warning: language.reply: must be a language tag", err)
 
+    def test_config_set_other_yaml_booleans_are_not_tags(self):
+        """Only `no` is kept as a tag: `off`, `yes`, `on` are booleans, and warned about."""
+        # Claude Code settings exist, so a tag would install the reply-language hooks.
+        os.makedirs(self.claude_dir)
+        settings = os.path.join(self.claude_dir, "settings.json")
+        with open(settings, "w", encoding="utf-8") as handle:
+            handle.write("{}\n")
+        for word, value in (("off", False), ("OFF", False), ("yes", True), ("on", True), ("true", True)):
+            with self.subTest(word=word):
+                code, _, err = self.run_cli("config", "set", "language.reply", word)
+                self.assertEqual(code, 0)
+                self.assertIn("warning: language.reply: must be a language tag", err)
+                layer = config_mod.read_config_file(config_mod.global_config_path())
+                self.assertIs(layer["language"]["reply"], value)
+                self.assertIsNone(config_mod.language_settings_of(layer)["reply"])
+                with open(settings, encoding="utf-8") as handle:
+                    self.assertNotIn("hooks", handle.read())
+
     def test_a_project_null_undoes_a_global_reply_language(self):
         code, _, err = self.run_cli("config", "set", "language.reply", "ja", "--scope", "global")
         self.assertEqual(code, 0, err)

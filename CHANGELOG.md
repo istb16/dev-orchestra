@@ -123,7 +123,10 @@ below begins **User adapters** so adapter authors can find it.
 
 - **`config set language.reply no` saves the tag `no`** (Norwegian) rather
   than `false`. In a file, a bare `no` is still read as false and refused;
-  the message now says to quote it (#281).
+  the message now says to quote it. `no` is the only such word kept as a
+  tag: `off`, `yes`, `on` and the like name no language, and are saved and
+  warned about as before (#281).
+
 ## [0.22.0] - 2026-10-06
 
 ### Added
