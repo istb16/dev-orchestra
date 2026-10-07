@@ -54,26 +54,43 @@ def _split_blocks(body: str) -> List[List[str]]:
     Headers are preferred, but a report that lost its headers entirely is still
     recoverable: each ``Severity:`` line starts a finding, since the required
     schema puts exactly one at the top of every block.
+
+    A line inside a fenced block is code, never a header or a ``Severity:``
+    line: ``finding = parse(x)`` there would otherwise cut the block in two and
+    drop everything after it.
     """
-    blocks: List[List[str]] = []
-    current: Optional[List[str]] = None
-    for line in body.splitlines():
-        if _HEADER_RE.match(line):
-            current = []
-            blocks.append(current)
-            continue
-        if current is not None:
-            current.append(line)
+    lines = body.splitlines()
+    blocks = _split_on(lines, _HEADER_RE, keep_marker=False)
     if blocks:
         return blocks
+    return _split_on(lines, _SEVERITY_LINE_RE, keep_marker=True)
 
-    for line in body.splitlines():
-        if _SEVERITY_LINE_RE.match(line):
-            current = []
-            blocks.append(current)
+
+def _split_on(lines: List[str], marker: "re.Pattern[str]", keep_marker: bool) -> List[List[str]]:
+    """Blocks starting at each line ``marker`` matches outside a fence."""
+    blocks: List[List[str]] = []
+    current: Optional[List[str]] = None
+    closer = -1
+    for index, line in enumerate(lines):
+        if index > closer:
+            if marker.match(line):
+                current = []
+                blocks.append(current)
+                if not keep_marker:
+                    continue
+            opener = _fence_opener(_field_text(line))
+            if opener:
+                closer = _closing_line(lines, index + 1, opener)
         if current is not None:
             current.append(line)
     return blocks
+
+
+def _field_text(line: str) -> str:
+    """``line`` as ``_parse_block`` reads it: without emphasis or a label."""
+    line = line.replace("**", "")
+    match = _FIELD_RE.match(line)
+    return match.group(2).strip() if match else line.strip()
 
 
 def unparsed_report_warning(text: str, parsed: Sequence[Dict[str, Any]]) -> str:

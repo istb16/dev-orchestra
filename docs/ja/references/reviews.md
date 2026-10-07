@@ -1,4 +1,4 @@
-<!-- translated-from: references/reviews.md sha256:aaede4dc2ca2f3feced026479751a6e5af7986a59d4275cff20591a0473b6f8d -->
+<!-- translated-from: references/reviews.md sha256:b1b53454f20ed4984308d2e5a5a5c41ad5f7e711686f8200b64b8382b75743e2 -->
 
 > この文書は [references/reviews.md](../../../references/reviews.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -905,7 +905,8 @@ plan とリクエストの合計で測られます。どちらもプロンプト
 フェンスで囲んだコード（```` ``` ```` または `~~~`。閉じるのは同じ文字で、開いた
 ときと同じかそれより長いフェンスだけ）はコードとして読みます。その中の行は書かれた
 とおりに残し、`#` で始まるコメントや、外にあれば新しい項目の始まりになる `fix: …`
-のような行もそのまま保ちます。`Evidence` と `Fix` は改行を保つので、fix brief は
+のような行もそのまま保ちます。`Finding` の見出しや `Severity:` の行に見える行が
+あっても、そこから新しい指摘は始めません。`Evidence` と `Fix` は改行を保つので、fix brief は
 コードを形のまま修正役に渡します。それ以外の項目は 1 行につなぎます。閉じられない
 フェンスは、ふつうの行として読みます。
 

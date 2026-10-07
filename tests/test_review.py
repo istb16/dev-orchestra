@@ -167,6 +167,33 @@ class TestFencedEvidence(IsolatedCase):
         self.assertNotIn("# the last row", finding["evidence"])
         self.assertEqual(finding["recommended_fix"].splitlines()[0], "not a label inside code")
 
+    def test_a_code_line_that_looks_like_a_header_does_not_split_the_finding(self):
+        text = (
+            "## Finding\n- Severity: high\n- File: a.py\n- Line: 3\n- Problem: parsed twice\n"
+            "- Evidence:\n```python\nfor x in xs:\nfinding = parse(x)\n```\n- Fix: keep them\n"
+        )
+        finding = self.finding(text)
+        self.assertEqual(finding["evidence"], "```python\nfor x in xs:\nfinding = parse(x)\n```")
+        self.assertEqual(finding["recommended_fix"], "keep them")
+
+    def test_a_severity_line_in_a_fence_does_not_split_a_headerless_report(self):
+        text = (
+            "- Severity: high\n- File: a.py\n- Problem: the label is code here\n"
+            "- Evidence:\n  ~~~yaml\n  severity: low\n  ~~~\n- Fix: read it as code\n"
+            "- Severity: low\n- File: b.py\n- Problem: another one\n"
+        )
+        findings = review_mod.parse_findings(text, "r1")
+        self.assertEqual([f["file"] for f in findings], ["a.py", "b.py"])
+        self.assertEqual(findings[0]["evidence"], "~~~yaml\nseverity: low\n~~~")
+        self.assertEqual(findings[0]["recommended_fix"], "read it as code")
+
+    def test_a_header_after_an_unclosed_fence_still_starts_a_finding(self):
+        text = (
+            "## Finding\n- Severity: high\n- File: a.py\n- Problem: one\n- Evidence: ```python\n"
+            "## Finding\n- Severity: low\n- File: b.py\n- Problem: two\n"
+        )
+        self.assertEqual([f["file"] for f in review_mod.parse_findings(text, "r1")], ["a.py", "b.py"])
+
     def test_fix_brief_hands_the_code_over_in_its_shape(self):
         findings = review_mod.parse_findings(FENCED_FINDING, "r1")
         data = {"findings": review_consolidation.consolidate_findings(findings)}
