@@ -900,8 +900,9 @@ line number on either — and their problem + recommended-fix text matches with 
 similarity ratio ≥ 0.72. Two findings from one reviewer are never merged, for
 the reason they are never paired below. A finding without a line number is
 about the file (or, in a design review, the plan section) as a whole, not about
-every line in it, so it is never merged with one that has a line number; that
-pair is left to the possible duplicates to suggest.
+every line in it, so it is never merged with one that has a line number; such
+a pair is listed as a possible duplicate (below) when the two quote the same
+code.
 
 Merging keeps the **highest** severity, the **longest** version of each text
 field, and records every reviewer that reported it. `duplicate_count` is the

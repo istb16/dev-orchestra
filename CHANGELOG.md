@@ -22,11 +22,11 @@ below begins **User adapters** so adapter authors can find it.
   finding with `duplicate_count: 2`, which read as two reviewers agreeing,
   and the other finding was gone. Only findings from different reviewers are
   merged now, and a finding with no line number (`n/a`) is no longer merged
-  with a finding that has one anywhere in its file; that pair is left to the
-  possible duplicates. Two findings without a line number, such as design
-  findings on one plan section, can still be merged. A
-  merged finding keeps each report as its reviewer wrote it in
-  `merged_reports`, listed under it in `consolidated.md`, and
+  with a finding that has one anywhere in its file; such a pair is listed as
+  a possible duplicate when the two quote the same code. Two findings
+  without a line number, such as design findings on one plan section, can
+  still be merged. A merged finding keeps each report as its reviewer wrote
+  it in `merged_reports`, listed under it in `consolidated.md`, and
   `duplicate_count` is the number of reviewers who reported it (#259).
 
 - **`review triage` run in parallel no longer loses decisions.** Each call
