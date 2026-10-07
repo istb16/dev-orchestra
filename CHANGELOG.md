@@ -76,6 +76,15 @@ below begins **User adapters** so adapter authors can find it.
   and the run recorded `ok`; it is now recorded `unparsed` (report was
   empty), counted as failed, and the report holds no `NO_FINDINGS` it never
   wrote (#261).
+
+- **A worker that finishes just as its job is checked or cancelled keeps
+  its outcome.** Reading a job whose worker had just exited, and `jobs
+  cancel` racing a worker that was finishing, wrote back the record as it
+  was first read, so a `succeeded` job turned `abandoned` or `cancelled` and
+  lost what the worker had added, such as `output_written`. Both now re-read
+  the record under the job's lock and change it only while it is still
+  unfinished (#271).
+
 ## [0.22.0] - 2026-10-06
 
 ### Added

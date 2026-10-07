@@ -367,6 +367,61 @@ class TestReusedPid(JobCase):
         self.assertIsNone(child.poll())
 
 
+class TestWriteBackUnderTheLock(JobCase):
+    """A worker that finishes between the parent's read and its write keeps
+    its outcome (#271): the parent re-reads the record under the lock."""
+
+    def finish_then(self, answer):
+        """A stand-in that lets the worker record success, then answers."""
+        job_file = jobs_mod.job_path(self.workspace, "a-1")
+
+        def stand_in(*args, **kwargs):
+            jobs_mod.finish(job_file, "succeeded", detail={"output_written": True})
+            return answer
+
+        return stand_in
+
+    def assert_succeeded_on_disk(self, job):
+        raw = ws.read_json(jobs_mod.job_path(self.workspace, "a-1"))
+        self.assertEqual(raw["status"], "succeeded")
+        self.assertTrue(raw["output_written"])
+        self.assertNotIn("error", raw)
+        self.assertEqual(job["status"], "succeeded")
+
+    def test_a_worker_that_finishes_during_the_check_is_not_marked_abandoned(self):
+        from orchestrator import execution
+
+        self.record("a-1", pid=999_999)
+        with mock.patch.object(execution, "pid_alive", self.finish_then(False)):
+            job = present(jobs_mod.read_job(self.workspace, "a-1"))
+        self.assert_succeeded_on_disk(job)
+
+    def test_a_worker_that_finishes_as_it_is_cancelled_keeps_its_outcome(self):
+        from orchestrator import execution
+
+        self.record("a-1", pid=4242)
+        with (
+            mock.patch.object(jobs_mod, "_worker_alive", lambda pid, job: True),
+            mock.patch.object(execution, "kill_tree", self.finish_then(True)),
+        ):
+            job = jobs_mod.cancel(self.workspace, "a-1")
+        self.assert_succeeded_on_disk(job)
+
+    def test_a_record_claimed_by_another_pid_meanwhile_is_left_alone(self):
+        from orchestrator import execution
+
+        self.record("a-1", pid=999_999)
+        job_file = jobs_mod.job_path(self.workspace, "a-1")
+
+        def reclaimed(pid):
+            jobs_mod.update(job_file, lambda job: job.update(pid=os.getpid()))
+            return False
+
+        with mock.patch.object(execution, "pid_alive", reclaimed):
+            jobs_mod.read_job(self.workspace, "a-1")
+        self.assertEqual(ws.read_json(job_file)["status"], "running")
+
+
 class TestProcessStarted(unittest.TestCase):
     def setUp(self):
         from orchestrator import execution

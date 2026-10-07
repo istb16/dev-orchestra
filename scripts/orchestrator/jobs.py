@@ -150,11 +150,18 @@ def _reconcile(workspace: ws.Workspace, job: Dict[str, Any]) -> Dict[str, Any]:
         return job
     pid = int(job.get("pid") or 0)
     if pid and _worker_alive(pid, job) is False:
-        job = dict(job)
-        job["status"] = "abandoned"
-        job["error"] = "the worker process (pid %d) is gone and recorded no outcome" % pid
-        job["finished_at"] = ws.utcnow()
-        write_job(workspace, job)
+
+        def abandoned(current: Dict[str, Any]) -> None:
+            # Read again under the lock: the worker may have written its
+            # outcome after ``job`` was read and then exited, and that outcome
+            # stands. A different pid is a worker this check never looked at.
+            if current.get("status") in FINISHED or int(current.get("pid") or 0) != pid:
+                return
+            current["status"] = "abandoned"
+            current["error"] = "the worker process (pid %d) is gone and recorded no outcome" % pid
+            current["finished_at"] = ws.utcnow()
+
+        job = update(job_path(workspace, str(job["id"])), abandoned, default=job)
     return job
 
 
@@ -317,17 +324,23 @@ def cancel(workspace: ws.Workspace, job_id: str) -> Dict[str, Any]:
         killed = execution.kill_tree(pid, execution.KILL_GRACE_SECONDS)
     elif alive is None:
         note = " (pid %d was not stopped: it may no longer be the worker, which may still be running)" % pid
-    job = dict(job)
-    job["status"] = "cancelled"
-    job["finished_at"] = ws.utcnow()
-    job["error"] = "cancelled by request%s" % ("" if killed else note)
+    error = "cancelled by request%s" % ("" if killed else note)
     # Written by the worker's SIGTERM handler before it exited, so it is there
     # by now when the kill was confirmed.
     left = _read_stop_note(stop_note_path(job_path(workspace, job_id)))
     if left:
-        job["error"] += "; %s" % "; ".join(left)
-    write_job(workspace, job)
-    return job
+        error += "; %s" % "; ".join(left)
+
+    def cancelled(current: Dict[str, Any]) -> None:
+        # Read again under the lock: a worker that finished before the kill
+        # reached it has written its outcome, and that outcome stands.
+        if current.get("status") in FINISHED:
+            return
+        current["status"] = "cancelled"
+        current["finished_at"] = ws.utcnow()
+        current["error"] = error
+
+    return update(job_path(workspace, job_id), cancelled, default=job)
 
 
 def _read_stop_note(path: str) -> List[str]:
