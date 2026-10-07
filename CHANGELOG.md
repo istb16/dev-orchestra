@@ -17,11 +17,14 @@ below begins **User adapters** so adapter authors can find it.
 ### Changed
 
 - **`workflow remove` refuses a workflow that is still in use** (exit 2):
-  one with a stage in flight, or one active in the last 15 minutes, perhaps
-  in another session. It used to delete it, and a detached worker finishing
+  one with a stage in flight, or with a detached job in its `jobs/` that has
+  not finished (a job whose worker is gone is marked `abandoned` first and
+  does not count). It used to delete it, and a detached worker finishing
   afterwards wrote its state back, leaving a workflow with an empty record,
-  the job's files and empty `execution/` and `reviews/`. `--force` deletes it
-  anyway, for an in-flight mark a crashed stage left behind (#285).
+  the job's files and empty `execution/` and `reviews/`. Recent activity
+  alone is no reason to refuse, so a workflow finished a moment ago is still
+  deleted. `--force` deletes it anyway, for an in-flight mark a crashed stage
+  left behind (#285).
 
 - **`state record test` and `state record re-test` accept only `ok` and
   `failed`** (exit 2 otherwise). Any other word was recorded, and the review

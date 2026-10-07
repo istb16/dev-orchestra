@@ -9,6 +9,7 @@ from typing import Any, Dict, List, NamedTuple, Optional, cast
 
 from . import approval as approval_mod
 from . import config as config_mod
+from . import jobs as jobs_mod
 from . import ledger as ledger_mod
 from . import optimization as opt_mod
 from . import optimization_report as opt_report
@@ -139,7 +140,7 @@ def cmd_workflow_use(args: argparse.Namespace) -> int:
 
 def cmd_workflow_remove(args: argparse.Namespace) -> int:
     """Delete one workflow's artifacts. The reports are work; ask first."""
-    _, container = _container(args)
+    root, container = _container(args)
     try:
         workflow = workflow_mod.normalise(args.id)
         workflow_mod.refuse_legacy(container)
@@ -157,7 +158,7 @@ def cmd_workflow_remove(args: argparse.Namespace) -> int:
     if workflow == current:
         _err("Refusing to delete the workflow this session is in (%s)" % workflow)
         return 2
-    busy = _busy_reason(container, workflow, current)
+    busy = _busy_reason(root, container, workflow)
     if busy and not args.force:
         # A detached worker that finishes after the delete writes its state
         # back, and leaves a workflow with an empty record and no reports.
@@ -178,13 +179,25 @@ def cmd_workflow_remove(args: argparse.Namespace) -> int:
     return 0
 
 
-def _busy_reason(container: str, workflow: str, current: str) -> str:
-    """Why ``workflow`` looks like it is still in use, or "" when it does not."""
+def _busy_reason(root: str, container: str, workflow: str) -> str:
+    """What could still write into ``workflow`` after a delete, or "" when nothing can.
+
+    Only what can write late counts: a stage recorded as in flight, or a
+    detached job not finished. Recent activity alone does not; a workflow
+    finished a minute ago is as safe to delete as one finished last month.
+    """
     for entry in workflow_mod.listing(container):
         if entry["workflow"] == workflow and entry["in_flight"]:
             return "a stage is in flight there (%s)" % ", ".join(entry["in_flight"])
-    if workflow in workflow_mod.active_elsewhere(container, current):
-        return "it was active in the last 15 minutes, perhaps in another session"
+    # Read through list_jobs, so that a job whose worker is gone is marked
+    # abandoned rather than counted as running.
+    running = [
+        str(job.get("id"))
+        for job in jobs_mod.list_jobs(ws.Workspace(root, container, workflow))
+        if job.get("status") not in jobs_mod.FINISHED
+    ]
+    if running:
+        return "a detached job has not finished there (%s)" % ", ".join(sorted(running))
     return ""
 
 

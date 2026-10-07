@@ -803,7 +803,7 @@ def _add_workflow_parsers(subparsers: argparse._SubParsersAction[argparse.Argume
     workflow_remove.add_argument("id")
     workflow_remove.add_argument("--yes", action="store_true", help="do not ask")
     workflow_remove.add_argument(
-        "--force", action="store_true", help="delete it even with a stage in flight or recent activity"
+        "--force", action="store_true", help="delete it even with a stage in flight or a job unfinished"
     )
     workflow_remove.set_defaults(func=cmd_workflow_remove)
 
