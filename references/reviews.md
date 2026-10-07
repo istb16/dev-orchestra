@@ -881,6 +881,13 @@ normalises paths (`./a\b.py` → `a/b.py`). Unknown severities become `medium`;
 `nit`, `minor`, `style`, `info` become `low`; `blocker` becomes `critical`. A
 block with neither a problem nor evidence is discarded.
 
+Code in a fenced block (```` ``` ```` or `~~~`, closed only by a fence of the
+same character at least as long) is read as code: its lines are kept as
+written, including `#` comments and lines such as `fix: …` that would
+otherwise start a new field. `Evidence` and `Fix` keep their line breaks, so
+the fix brief hands the fixer the code in its shape; the other fields are
+joined into one line. A fence that is never closed is read as ordinary lines.
+
 ## Deduplication
 
 Two findings are merged when they come from **different reviewers**, sit at the

@@ -1,4 +1,4 @@
-<!-- translated-from: references/reviews.md sha256:b1b94b69996ed19122576f6e54387355f8d534a56751c0cf0bf6200fc2b1a4f7 -->
+<!-- translated-from: references/reviews.md sha256:aaede4dc2ca2f3feced026479751a6e5af7986a59d4275cff20591a0473b6f8d -->
 
 > この文書は [references/reviews.md](../../../references/reviews.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -901,6 +901,13 @@ plan とリクエストの合計で測られます。どちらもプロンプト
 付け、パスを正規化します（`./a\b.py` → `a/b.py`）。不明な重大度は `medium` に
 なり、`nit`、`minor`、`style`、`info` は `low` に、`blocker` は `critical` に
 なります。problem も evidence もないブロックは破棄されます。
+
+フェンスで囲んだコード（```` ``` ```` または `~~~`。閉じるのは同じ文字で、開いた
+ときと同じかそれより長いフェンスだけ）はコードとして読みます。その中の行は書かれた
+とおりに残し、`#` で始まるコメントや、外にあれば新しい項目の始まりになる `fix: …`
+のような行もそのまま保ちます。`Evidence` と `Fix` は改行を保つので、fix brief は
+コードを形のまま修正役に渡します。それ以外の項目は 1 行につなぎます。閉じられない
+フェンスは、ふつうの行として読みます。
 
 <a id="deduplication"></a>
 

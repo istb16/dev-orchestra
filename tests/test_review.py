@@ -100,6 +100,81 @@ class TestParsing(IsolatedCase):
         self.assertEqual(review_mod.parse_findings(text, "r1")[0]["file"], "app/models/user.rb")
 
 
+FENCED_FINDING = """## Finding
+- Severity: high
+- File: app/report.py
+- Line: 12
+- Category: correctness
+- Problem: the total skips the last row
+- Impact: every report is short by one row
+- Evidence:
+  ```python
+  # the last row is never added
+  for row in rows[:-1]:
+      total += row
+  fix: not a label inside code
+  ```
+- Fix: iterate over every row
+  ~~~~
+  for row in rows:
+  ~~~
+      total += **row
+  ~~~~
+"""
+
+
+class TestFencedEvidence(IsolatedCase):
+    """Code in a fence is read as code, not as labels and headings (#265)."""
+
+    def finding(self, text=FENCED_FINDING):
+        findings = review_mod.parse_findings(text, "r1")
+        self.assertEqual(len(findings), 1)
+        return findings[0]
+
+    def test_evidence_keeps_comment_lines_and_shape(self):
+        self.assertEqual(
+            self.finding()["evidence"],
+            "```python\n"
+            "# the last row is never added\n"
+            "for row in rows[:-1]:\n"
+            "    total += row\n"
+            "fix: not a label inside code\n"
+            "```",
+        )
+
+    def test_label_inside_a_fence_starts_no_field(self):
+        fix = self.finding()["recommended_fix"]
+        self.assertTrue(fix.startswith("iterate over every row\n"), fix)
+        self.assertNotIn("not a label", fix)
+
+    def test_only_a_matching_fence_closes_it(self):
+        # ``~~~`` is shorter than the ``~~~~`` that opened the fence, so it is
+        # code, and so is the ``**`` that bold-stripping would have eaten.
+        self.assertEqual(
+            self.finding()["recommended_fix"],
+            "iterate over every row\n~~~~\nfor row in rows:\n~~~\n    total += **row\n~~~~",
+        )
+
+    def test_single_line_fields_stay_single_line(self):
+        finding = self.finding()
+        for key in ("severity", "file", "line", "category", "problem", "impact"):
+            self.assertNotIn("\n", finding[key], key)
+        self.assertEqual(finding["line"], "12")
+
+    def test_an_unclosed_fence_is_read_as_ordinary_lines(self):
+        text = FENCED_FINDING.replace("  ```\n- Fix:", "- Fix:")
+        finding = self.finding(text)
+        self.assertNotIn("# the last row", finding["evidence"])
+        self.assertEqual(finding["recommended_fix"].splitlines()[0], "not a label inside code")
+
+    def test_fix_brief_hands_the_code_over_in_its_shape(self):
+        findings = review_mod.parse_findings(FENCED_FINDING, "r1")
+        data = {"findings": review_consolidation.consolidate_findings(findings)}
+        data["findings"][0]["triage"] = "accepted"
+        brief = review_mod.render_fix_brief(data)
+        self.assertIn("\n# the last row is never added\nfor row in rows[:-1]:\n    total += row\n", brief)
+
+
 class TestConsolidation(IsolatedCase):
     def test_same_issue_from_two_reviewers_is_merged(self):
         findings = review_mod.parse_findings(FINDING_A, "r1") + review_mod.parse_findings(

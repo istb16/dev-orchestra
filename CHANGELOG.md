@@ -28,6 +28,7 @@ below begins **User adapters** so adapter authors can find it.
   merged finding keeps each report as its reviewer wrote it in
   `merged_reports`, listed under it in `consolidated.md`, and
   `duplicate_count` is the number of reviewers who reported it (#259).
+
 - **`review triage` run in parallel no longer loses decisions.** Each call
   read `consolidated.json`, set its own decision and wrote the file back, so
   a later write dropped an earlier decision while every call printed
@@ -35,6 +36,7 @@ below begins **User adapters** so adapter authors can find it.
   `review run` and `review consolidate` build and save it under the same
   lock, so a decision made while a round is being consolidated is carried
   into it (#262).
+
 - **`review run --base` is no longer ignored when a snapshot is already on
   disk.** The base was used only to take a missing snapshot, so a snapshot
   left from earlier was reviewed instead -- an empty one failed with
@@ -44,6 +46,13 @@ below begins **User adapters** so adapter authors can find it.
   starts again as it does after `review snapshot --base`. Without `--base`
   the snapshot on disk is reviewed as before (#264).
 
+- **Code in a finding's fenced block is read as code.** A `#` comment inside
+  ```` ``` ```` or `~~~` was dropped, a line such as `fix: …` started a new
+  field, and every line was joined with a space, so the fix brief handed the
+  fixer code without its comments or its shape. Lines inside a fence are now
+  kept as written, and `Evidence` and `Fix` keep their line breaks; the other
+  fields are still one line. A fence that is never closed is read as before.
+  (#265)
 ## [0.22.0] - 2026-10-06
 
 ### Added
