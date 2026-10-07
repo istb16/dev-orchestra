@@ -273,6 +273,16 @@ class TestLoosened(_Case):
         self.write_project("review:\n  re_review_severities: []\n")
         self.assertEqual(self.notices(), [])
 
+    def test_severities_are_compared_as_review_status_reads_them(self):
+        """Upper case and a bare name block as the default pair does: nothing is loosened."""
+        for text in ("[CRITICAL, HIGH]", "[Critical, High]", "critical", "[crit]"):
+            with self.subTest(text=text):
+                self.write_project("review:\n  re_review_severities: %s\n" % text)
+                self.assertEqual(self.notices(), [])
+        self.write_project("review:\n  re_review_severities: [CRITICAL]\n")
+        [line] = self.notices()
+        self.assertIn("over high findings", line)
+
     def test_no_project_file_reports_nothing(self):
         self.write_global("review:\n  max_review_iterations: 0\n")
         self.assertEqual(self.notices(), [])

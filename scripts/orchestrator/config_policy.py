@@ -509,9 +509,8 @@ def _higher(read: Callable[[LoadedConfig], Any]) -> Callable[[LoadedConfig, Load
 
 
 def _severities(loaded: LoadedConfig) -> List[str]:
-    """As ``review status`` reads them: an empty list is the default pair."""
-    configured = loaded.review_settings().get("re_review_severities") or ("critical", "high")
-    return [str(item) for item in configured] if isinstance(configured, (list, tuple)) else []
+    """As ``review status`` reads them: in lower case, the default pair for anything unusable."""
+    return list(loaded.blocking_severities())
 
 
 def _re_review(now: LoadedConfig, before: LoadedConfig) -> str:
