@@ -1,4 +1,4 @@
-<!-- translated-from: references/configuration.md sha256:ac91bbc4438bbf87c628a4c37b6ce064d3db2835f87f4978c09ce8266c67d7e5 -->
+<!-- translated-from: references/configuration.md sha256:80056b2df966a21ebd81e15460a3bd7e77354db640545ba0937ebe6b16cdf45b -->
 
 > この文書は [references/configuration.md](../../../references/configuration.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -783,18 +783,35 @@ architect やレビュアーの実行には効きません。管理設定（mana
 
 **plan の承認と、リポジトリの外のワークスペースは、global 設定からだけ受け付けます。**
 project ファイルの `design.require_approval` は値にかかわらず、また project ファイルの
-`workspace.dir` のうち絶対パスのものやリポジトリの外に出るもの（`/srv/ai`、`C:i`、
-`../ai`）は無視し、global の値かデフォルトを使います。`workspace.dir` には承認の記録が
-入るので、project ファイルがそれを別の場所に向けると、誰も出していない承認を持ち込めて
-しまいます。リポジトリの中を指す相対パスの `workspace.dir` はこれまでどおり project が
-決められ、`null` の承認はデフォルト（必須）を意味します。`config validate`（警告として）、
-`doctor`（問題として。`--strict` は失敗します）、`review run`（`warning:` として）が、
-無視したものと `--scope global` のコマンドを示します。拒否された `run implementer` は、
-project ファイルが承認を切ろうとしていたときに `note:` を足します。
+`workspace.dir` のうち絶対パスのものやリポジトリの外に出るもの（`/srv/ai`、`C:ai`、
+`../ai`）は無視し、global の値かデフォルトを使います。相対パスでも、リポジトリの中の
+シンボリックリンクやジャンクションをたどるとリポジトリの外に出るもの（`inner` が
+`/srv/ai` へのリンクのときの `dir: inner`）も同じです。ブランチはファイルと同じように
+リンクもコミットできるからです。`workspace.dir` には承認の記録が入るので、project
+ファイルがそれを別の場所に向けると、誰も出していない承認を持ち込めてしまいます。
+リポジトリの中を指す相対パスの `workspace.dir` はこれまでどおり project が決められ、
+`null` の承認はデフォルト（必須）を意味します。global の値とデフォルトはリンクを
+確かめません。自分で別の場所にリンクした `.ai` はそのまま使えます。`config validate`
+（警告として）と `review run`（`warning:` として）が、無視したものと `--scope global`
+のコマンドを示します。`doctor` は、それを受け付けていたら効いている設定がゆるんで
+いた場合 -- 必須の承認の上の project の `false` や、使われているのとは別の
+ワークスペース -- は問題として出し（`--strict` は失敗します）、そうでなければメモに
+出します。必須の承認の上の project の `design.require_approval: true` はメモです。
+拒否された `run implementer` は、project ファイルが承認を切ろうとしていたときに
+`note:` を足します。
 `config set design.require_approval false` は、`preset` と同じく、プロジェクトに自分の
 ファイルがあっても global ファイルに書き込みます。`config set workspace.dir <外の場所>`
 も同じです。どちらも、キーそのものでも、`design` や `workspace` のブロックをまるごと
 書く中に含めても、`--scope project` を付けると終了コード 2 で終了し、何も書き込みません。
+
+これで記録は自分のコマンドが置いた場所にとどまりますが、ブランチが記録を持ち込むことは
+防げません。`run implementer` が読む承認は、ワークスペースの下にあるワークフローの
+ディレクトリの `state.json` の `design_approval` で、その隣の plan と最後の設計レビューの
+ラウンドに照らして確かめます。そのため、ブランチがこれらのファイルをワークスペースの中に
+コミットすれば -- 確かめないコミットされた `.ai` のリンクを通しても -- 承認も持ち込めます。
+ワークスペース自身の `.gitignore` は dev-orchestra のファイルを自分のコミットから外すだけで、
+ブランチが足したものは外しません。ブランチがワークスペースの下に何をコミットしているかを
+確かめてください。
 
 **ほかのレビューの関門は project ファイルからも効きます。** リポジトリがわざとレビューを
 減らすこともあるからです。ただし project ファイルが、それが無い場合の設定 -- global
@@ -809,7 +826,7 @@ project ファイルが承認を切ろうとしていたときに `note:` を足
 | `reviewers` | それが無ければコードパネルにいるレビュアー id を外している（`[]` はすべて外す） |
 | `review.design.reviewers` | それが無ければ設計パネルにいるレビュアー id を外している。自身のリストのほか、フィットした設計パネルを外す `reviewers` のリストでも起きる |
 | `review.max_review_iterations` | 下げている |
-| `review.re_review_severities` | 重大度を外している（空のリストはデフォルトの `critical` と `high` として読む） |
+| `review.re_review_severities` | 重大度を外している。`review status` と同じく、大文字小文字を問わず読み、`config validate` が拒否する値（`[]`、リストでない名前ひとつ、知らない名前）はデフォルトの `critical` と `high` として読む |
 | `review.exclude` | パターンを足して、差分をより多く伏せている |
 | `review.max_findings` | 各レビュアーに求める指摘を減らしている（`null` はレベルの上限、`0` は上限なしとして数える） |
 | `review.design.enabled` | `true` → `auto` → `false` の順に下げている |

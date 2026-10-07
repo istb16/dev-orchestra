@@ -12,10 +12,11 @@ from __future__ import annotations
 import io
 import json
 import os
+import subprocess
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 
-from helpers import IsolatedCase
+from helpers import IsolatedCase, make_dir_link, remove_link
 
 from orchestrator import cli, config_trust, doctor, reply_language
 from orchestrator import config as config_mod
@@ -135,6 +136,85 @@ class TestGlobalOnly(_Case):
         self.write_project("workspace:\n  dir: %s\n" % json.dumps(os.path.join(self.tmp, "other")))
         self.assertEqual(self.loaded().workspace_dir(self.project), elsewhere)
 
+    def link_outside(self, name):
+        """``<project>/<name>``, a link to a directory outside the repository; that directory."""
+        elsewhere = os.path.join(self.tmp, "elsewhere-" + name.replace("/", "-"))
+        os.makedirs(elsewhere)
+        link = os.path.join(self.project, *name.split("/"))
+        os.makedirs(os.path.dirname(link), exist_ok=True)
+        self.link(link, elsewhere)
+        return elsewhere
+
+    def link(self, link, target):
+        try:
+            make_dir_link(link, target)
+        except (OSError, subprocess.CalledProcessError, NotImplementedError) as exc:
+            self.skipTest("cannot make a link here: %s" % exc)
+        # tearDown, which runs first, may already have removed it with the tree.
+        self.addCleanup(lambda: os.path.lexists(link) and remove_link(link))
+
+    def test_a_project_workspace_a_link_takes_outside_is_ignored(self):
+        """`dir: inner` with `inner` a committed link out of the repository moves the record too."""
+        self.init_git_repo()
+        self.link_outside("inner")
+        self.link_outside("deeper/link")
+        for value in ("inner", "inner/ai", "deeper/link/ai"):
+            with self.subTest(value=value):
+                self.write_project("workspace:\n  dir: %s\n" % value)
+                loaded = self.loaded()
+                self.assertEqual(loaded.workspace_dir(self.project), os.path.join(self.project, ".ai"))
+                [line] = policy_mod.project_ignored_warnings(loaded)
+                self.assertIn("workspace.dir: %s is set in the project config" % value, line)
+                self.assertIn("where a link takes it outside the repository", line)
+                self.assertIn("so .ai is used", line)
+                report = doctor.collect(self.project, probe_models=False)
+                self.assertTrue(any("workspace.dir: %s" % value in line for line in report["problems"]))
+                settings = reply_language.file_settings(self.project)
+                self.assertEqual(config_mod.workspace_dir_of(settings), ".ai")
+
+    def test_the_global_workspace_is_used_instead(self):
+        self.init_git_repo()
+        self.link_outside("inner")
+        self.write_global("workspace:\n  dir: .global-work\n")
+        self.write_project("workspace:\n  dir: inner\n")
+        loaded = self.loaded()
+        self.assertEqual(loaded.workspace_dir(self.project), os.path.join(self.project, ".global-work"))
+        self.assertIn("so .global-work is used", self.ignored()[0])
+
+    def test_a_link_the_global_config_or_the_default_goes_through_is_kept(self):
+        """The user's own value is not checked: a `.ai` linked elsewhere keeps working."""
+        self.init_git_repo()
+        self.link_outside(".ai")
+        self.link_outside("inner")
+        self.assertEqual(self.loaded().workspace_dir(self.project), os.path.join(self.project, ".ai"))
+        self.write_global("workspace:\n  dir: inner\n")
+        loaded = self.loaded()
+        self.assertEqual(loaded.workspace_dir(self.project), os.path.join(self.project, "inner"))
+        self.assertEqual(self.ignored(), [])
+        # The same value in the project file over it is the user's choice still.
+        self.write_project("workspace:\n  dir: inner\n")
+        self.assertEqual(self.loaded().workspace_dir(self.project), os.path.join(self.project, "inner"))
+        self.assertEqual(self.ignored(), [])
+
+    def test_a_link_inside_the_repository_is_kept(self):
+        self.init_git_repo()
+        os.makedirs(os.path.join(self.project, "real"))
+        self.link(os.path.join(self.project, "inner"), os.path.join(self.project, "real"))
+        self.write_project("workspace:\n  dir: inner\n")
+        loaded = self.loaded()
+        self.assertEqual(loaded.workspace_dir(self.project), os.path.join(self.project, "inner"))
+        self.assertEqual(self.ignored(), [])
+
+    def test_linked_outside(self):
+        self.link_outside("inner")
+        self.assertTrue(config_trust.linked_outside(self.project, "inner"))
+        self.assertTrue(config_trust.linked_outside(self.project, "inner/x/y"))
+        self.assertFalse(config_trust.linked_outside(self.project, ".ai"))
+        self.assertFalse(config_trust.linked_outside(self.project, "missing/x"))
+        # A value whose text leaves is `outside_repository`'s, and not this one's.
+        self.assertFalse(config_trust.linked_outside(self.project, "../x"))
+        self.assertFalse(config_trust.linked_outside(self.project, 5))
+
     def test_the_hook_looks_for_the_workspace_the_commands_use(self):
         self.write_project("workspace:\n  dir: %s\n" % json.dumps(os.path.join(self.tmp, "elsewhere")))
         self.assertNotIn("dir", reply_language.file_settings(self.project).get("workspace", {}))
@@ -146,6 +226,33 @@ class TestGlobalOnly(_Case):
         self.assertTrue(any("design.require_approval" in line for line in json.loads(out)["warnings"]))
         report = doctor.collect(self.project, probe_models=False)
         self.assertTrue(any("design.require_approval" in line for line in report["problems"]))
+
+    def test_doctor_notes_an_ignored_value_that_changes_nothing(self):
+        """Only a value that would loosen what is in force fails `doctor --strict`."""
+        cases = (
+            ("", "design:\n  require_approval: true\n"),
+            ("design:\n  require_approval: false\n", "design:\n  require_approval: false\n"),
+            ("design:\n  require_approval: false\n", "design:\n  require_approval: true\n"),
+        )
+        for global_text, project_text in cases:
+            with self.subTest(global_text=global_text, project_text=project_text):
+                self.write_global(global_text)
+                self.write_project(project_text)
+                report = doctor.collect(self.project, probe_models=False)
+                key = "design.require_approval"
+                self.assertFalse(any(key in line for line in report["problems"]))
+                self.assertFalse(any(key in line for line in report["config"]["warnings"]))
+                self.assertTrue(any(key in line for line in report["notes"]))
+                code, out, _ = run_cli("config", "validate", "--json")
+                self.assertEqual(code, 0)
+                self.assertTrue(any(key in line for line in json.loads(out)["warnings"]))
+
+    def test_the_workspace_named_is_the_one_used(self):
+        """A global `dir` no command can use is not named as the one in use (#279)."""
+        self.write_global("workspace:\n  dir: 5\n")
+        self.write_project("workspace:\n  dir: ../elsewhere\n")
+        [line] = self.ignored()
+        self.assertIn("so .ai is used", line)
 
     def test_config_set_writes_it_to_the_global_file(self):
         self.write_project("review:\n  max_review_iterations: 2\n")

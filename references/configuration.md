@@ -812,19 +812,37 @@ could use to wave itself through are treated apart.
 **Plan approval and a workspace outside the repository come only from the
 global config.** `design.require_approval` in the project file, whatever its
 value, and a `workspace.dir` there that is absolute or resolves outside the
-repository (`/srv/ai`, `C:i`, `../ai`) are ignored: the global value, or the
-default, is used. A `workspace.dir` holds the approval record, so a project file
-pointing it elsewhere could bring an approval nobody gave. A relative
-`workspace.dir` inside the repository is still the project's to choose, and a
-`null` approval means the default, which is required. `config validate` (as a
-warning), `doctor` (as a problem, so `--strict` fails) and `review run` (as a
-`warning:`) say what was ignored and name the `--scope global` command; a
-refused `run implementer` adds a `note:` when the project file tried to turn
-approval off. `config set design.require_approval false` writes the global
-file even inside a project that has its own, as `preset` does, and so does
-`config set workspace.dir <outside>`; `--scope project` with either, as the
-key itself or inside a `design` or `workspace` block written whole, exits 2
-and writes nothing.
+repository (`/srv/ai`, `C:ai`, `../ai`) are ignored: the global value, or the
+default, is used. So is a relative one that a symlink or junction in the
+repository takes outside it once followed (`dir: inner` with `inner` a link to
+`/srv/ai`), since a branch can commit the link as easily as the file. A
+`workspace.dir` holds the approval record, so a project file pointing it
+elsewhere could bring an approval nobody gave. A relative `workspace.dir`
+inside the repository is still the project's to choose, and a `null` approval
+means the default, which is required. The global value and the default are
+not checked for links: a `.ai` you link elsewhere keeps working. `config
+validate` (as a warning) and `review run` (as a `warning:`) say what was
+ignored and name the `--scope global` command. `doctor` reports it as a
+problem, so `--strict` fails, when taking it would have loosened what is in
+force -- a project `false` over a required approval, or a workspace other than
+the one used -- and as a note otherwise, as for a project
+`design.require_approval: true` over a required approval. A refused `run
+implementer` adds a `note:` when the project file tried to turn approval off.
+`config set design.require_approval false` writes the global file even inside
+a project that has its own, as `preset` does, and so does `config set
+workspace.dir <outside>`; `--scope project` with either, as the key itself or
+inside a `design` or `workspace` block written whole, exits 2 and writes
+nothing.
+
+This keeps the record where your own commands put it; it cannot keep a branch
+from bringing a record with it. The approval `run implementer` reads is the
+`design_approval` entry of `state.json` in the workflow's directory under the
+workspace, checked against the plan beside it and the last design review
+round, so a branch that commits those files inside the workspace -- through a
+committed `.ai` link as well, which is not checked -- brings an approval too.
+The workspace's own `.gitignore` keeps dev-orchestra's files out of your
+commits, not out of a branch that adds them; look at what a branch commits
+under the workspace.
 
 **The other review gates still take effect from the project file**, since a
 repository may mean to review less, but when the project file makes one looser
@@ -839,7 +857,7 @@ read as a run reads it. Looser means:
 | `reviewers` | leaves out a reviewer id the code panel would otherwise have (`[]` leaves out all) |
 | `review.design.reviewers` | leaves out a reviewer id the design panel would otherwise have; set by its own list, or by a `reviewers` list that takes the fitted design panel out |
 | `review.max_review_iterations` | lowers it |
-| `review.re_review_severities` | leaves out a severity (an empty list reads as the default, `critical` and `high`) |
+| `review.re_review_severities` | leaves out a severity, read as `review status` reads it: in any case, and a value `config validate` refuses (`[]`, a single name not in a list, an unknown name) as the default, `critical` and `high` |
 | `review.exclude` | adds a pattern, withholding more of the diff |
 | `review.max_findings` | asks each reviewer for fewer findings, counting `null` as the level's cap and `0` as none |
 | `review.design.enabled` | moves it down `true` → `auto` → `false` |

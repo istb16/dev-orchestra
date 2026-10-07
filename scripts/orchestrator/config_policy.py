@@ -23,7 +23,10 @@ from .config import (
     compose,
     design_review_mode,
     get_path,
+    repository_root,
     role_seats,
+    workspace_dir_in,
+    workspace_dir_of,
 )
 from .providers import _warned_provider, get_provider, unenforced_warning
 
@@ -384,31 +387,71 @@ def _shown(value: Any) -> str:
     return str(value).lower() if isinstance(value, bool) else str(value)
 
 
-def project_ignored_warnings(loaded: LoadedConfig) -> List[str]:
-    """One line per setting the project file makes that only the global config may.
+class Ignored(NamedTuple):
+    """A setting the project file makes that only the global config may, as reported."""
 
-    ``config.compose`` has already left them out (``config_trust``); this says
-    so, with what is in force instead and the command that would set it.
+    line: str
+    #: Whether, taken, it would have loosened what is in force: a ``false``
+    #: approval over a required one, or a workspace other than the one used.
+    #: ``doctor`` reports only these as problems; the rest change nothing.
+    loosens: bool
+
+
+def project_repository(loaded: LoadedConfig) -> Optional[str]:
+    """The repository the project file is in, or its directory outside one; None without one."""
+    if not loaded.project_path:
+        return None
+    directory = os.path.dirname(os.path.abspath(loaded.project_path))
+    return repository_root(directory) or directory
+
+
+def project_ignored(loaded: LoadedConfig) -> List[Ignored]:
+    """One entry per setting the project file makes that only the global config may.
+
+    ``config.compose`` has already left them out (``config_trust``), and
+    ``LoadedConfig.workspace_dir`` a ``workspace.dir`` a link takes out of the
+    repository; this says so, with what is in force instead and the command
+    that would set it.
     """
     name = os.path.basename(loaded.project_path or "") or "the project file"
-    lines: List[str] = []
-    for key, value in config_trust.ignored(loaded.project_layer):
+    used = workspace_dir_of(loaded.data)
+    found = [(key, value, "") for key, value in config_trust.ignored(loaded.project_layer)]
+    root = project_repository(loaded)
+    if root is not None:
+        workspace = loaded.project_layer.get("workspace")
+        value = workspace.get("dir") if isinstance(workspace, dict) else None
+        fallback = workspace_dir_in(root, loaded.data, loaded.global_layer, loaded.project_layer)
+        if value == used and fallback != used:
+            used = fallback
+            how = ", where a link takes it outside the repository,"
+            found.append((config_trust.WORKSPACE_DIR, value, how))
+    entries: List[Ignored] = []
+    for key, value, how in found:
         if key == config_trust.APPROVAL:
             required = bool(loaded.design_settings().get("require_approval"))
             why = "plan approval is taken only from the global config, so it stays %s" % (
                 "required" if required else "not required"
             )
+            loosens = required and not value
         else:
-            used = (loaded.data.get("workspace") or {}).get("dir") or ".ai"
             why = "a workspace outside the repository is taken only from the global config, so %s is used" % (
                 used
             )
-        lines.append(
-            "%s: %s is set in the project config (%s) and is ignored; %s -- if this is intended, run "
-            "`dev-orchestra config set --scope global %s %s` and remove it from %s"
-            % (key, _shown(value), name, why, key, _shown(value), name)
+            loosens = value != used
+        entries.append(
+            Ignored(
+                "%s: %s is set in the project config (%s)%s and is ignored; %s -- if this is intended, run "
+                "`dev-orchestra config set --scope global %s %s` and remove it from %s"
+                % (key, _shown(value), name, how, why, key, _shown(value), name),
+                loosens,
+            )
         )
-    return lines
+    return entries
+
+
+def project_ignored_warnings(loaded: LoadedConfig) -> List[str]:
+    """``project_ignored`` as lines: what ``config validate`` and ``review run`` warn about."""
+    return [entry.line for entry in project_ignored(loaded)]
 
 
 def project_ignored_write_refusal(dotted: str, value: Any, file_name: str) -> str:

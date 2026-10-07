@@ -75,11 +75,16 @@ below begins **User adapters** so adapter authors can find it.
 - **`design.require_approval`, and a `workspace.dir` outside the repository,
   are taken only from the global config.** In the project file they are now
   ignored: the global value or the default is used, `config validate` and
-  `review run` warn, `doctor` reports a problem, and a refused `run
-  implementer` says the project file's `false` was ignored. A `workspace.dir`
+  `review run` warn, and a refused `run implementer` says the project file's
+  `false` was ignored. `doctor` reports a problem when the ignored value would
+  have loosened what is in force, and a note otherwise, so a project
+  `design.require_approval: true` does not fail `--strict`. A `workspace.dir`
   holds the approval record, so one pointed outside the repository by a
   branch could bring an approval nobody gave; a relative one inside the
-  repository still works from the project file. `config set
+  repository still works from the project file, unless a symlink or junction
+  in the repository takes it outside. A record the branch commits inside the
+  workspace is not something this can refuse; `references/configuration.md`
+  says what the approval is read from. `config set
   design.require_approval false` now writes the global file even inside a
   project that has its own, and `--scope project` with either key, or with
   a `design` or `workspace` block holding one, exits 2.

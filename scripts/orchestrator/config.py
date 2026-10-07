@@ -147,6 +147,26 @@ def workspace_dir_of(data: Dict[str, Any]) -> str:
     return directory if isinstance(directory, str) and directory.strip() else ".ai"
 
 
+def workspace_dir_in(
+    root: str, data: Dict[str, Any], global_layer: Dict[str, Any], project_layer: Dict[str, Any]
+) -> str:
+    """``workspace.dir`` as the commands use it in ``root``, before it is joined to it.
+
+    ``workspace_dir_of(data)``, unless that is the project file's value and a
+    link takes it out of the repository (``config_trust.linked_outside``):
+    then the global file's value, or ``.ai``. ``compose`` has already dropped
+    a project value whose text leaves; this one needs the repository to tell.
+    The global file's value and the default are the user's own and are not
+    checked, so a ``.ai`` the user links elsewhere keeps working.
+    """
+    directory = workspace_dir_of(data)
+    workspace = project_layer.get("workspace")
+    project_dir = workspace.get("dir") if isinstance(workspace, dict) else None
+    if directory == project_dir and config_trust.linked_outside(root, directory):
+        return workspace_dir_of(global_layer)
+    return directory
+
+
 def default_config() -> Dict[str, Any]:
     """Recommended out-of-the-box configuration."""
     return {
@@ -1075,7 +1095,7 @@ class LoadedConfig:
         return settings
 
     def workspace_dir(self, root: str) -> str:
-        workspace = workspace_dir_of(self.data)
+        workspace = workspace_dir_in(root, self.data, self.global_layer, self.project_layer)
         if os.path.isabs(workspace):
             return workspace
         return os.path.join(root, workspace)

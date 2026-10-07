@@ -717,14 +717,16 @@ def file_settings(cwd: str) -> Dict[str, Any]:
     ``compose`` reads it, so the workflow directory looked for is the one the
     commands write.
     """
-    data: Dict[str, Any] = {}
-    global_path, project_path = layer_paths(cwd)
-    for path in (global_path, project_path):
-        if path and os.path.isfile(path):
-            layer = config_mod.read_config_file(path)
-            if path == project_path:
-                layer = config_trust.without_ignored(layer)
-            data = config_mod.deep_merge(data, layer)
+    layers: List[Dict[str, Any]] = []
+    for path in layer_paths(cwd):
+        layers.append(config_mod.read_config_file(path) if path and os.path.isfile(path) else {})
+    global_layer, project_layer = layers
+    data = config_mod.deep_merge(global_layer, config_trust.without_ignored(project_layer))
+    # And the workspace a link would take out of the repository, as the commands drop it.
+    root = config_mod.repository_root(cwd) or os.path.abspath(cwd)
+    used = config_mod.workspace_dir_in(root, data, global_layer, project_layer)
+    if used != config_mod.workspace_dir_of(data):
+        data = config_mod.deep_merge(data, {"workspace": {"dir": used}})
     return data
 
 

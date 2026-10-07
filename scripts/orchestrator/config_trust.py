@@ -7,7 +7,9 @@ anything is implemented, and a ``workspace.dir`` outside the repository,
 which moves the approval record -- ``state.json`` and the plan beside it -- to
 wherever the file points. Both are taken from the global config alone:
 ``config.compose`` merges the project layer without them, and
-``config_policy`` says what was left out.
+``config_policy`` says what was left out. A ``workspace.dir`` that leaves
+only through a link in the repository needs the repository to tell, so it is
+dropped where the workspace is resolved (``config.workspace_dir_in``).
 
 Nothing from this package is imported here: ``config`` asks while composing,
 and the reply-language hook on every prompt.
@@ -38,6 +40,25 @@ def outside_repository(directory: Any) -> bool:
         return True
     parts = os.path.normpath(directory).replace("\\", "/").split("/")
     return parts[0] == ".."
+
+
+def linked_outside(root: str, directory: Any) -> bool:
+    """Whether a relative ``workspace.dir`` leaves ``root`` once links are followed.
+
+    ``outside_repository`` reads the text; this follows a symlink or a
+    junction on the way, which a branch can commit as easily as the file
+    naming it: ``dir: inner`` with ``inner`` a link to ``/srv/ai`` is the same
+    move. Only for a value whose text stays inside, and only for ``root``,
+    the repository a command runs in.
+    """
+    if not isinstance(directory, str) or not directory.strip() or outside_repository(directory):
+        return False
+    real_root = os.path.normcase(os.path.realpath(root))
+    real = os.path.normcase(os.path.realpath(os.path.join(root, directory)))
+    try:
+        return os.path.commonpath([real_root, real]) != real_root
+    except ValueError:  # another drive
+        return True
 
 
 def ignored(project_layer: Dict[str, Any]) -> List[Tuple[str, Any]]:

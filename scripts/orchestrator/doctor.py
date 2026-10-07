@@ -255,11 +255,17 @@ def collect(start: Optional[str] = None, probe_models: bool = True) -> Dict[str,
     _add_real(report["config"], "global_real", loaded.global_path)
     report["problems"].extend(problems)
     report["notes"].extend(loaded.preset_notes)
-    # Problems for doctor, warnings for `config validate`: either way these
-    # runs are refused, and --strict should say so before one is attempted.
-    warnings = policy_mod.read_only_arg_warnings(loaded)
+    # Problems for doctor, warnings for `config validate`: these runs are
+    # refused, or a setting the project file makes is ignored where it would
+    # have loosened what is in force, and --strict should say so before a run
+    # is attempted. An ignored setting that would have changed nothing -- a
+    # project `design.require_approval: true` over a required approval -- is
+    # only a note: it is still left out, but --strict has nothing to fail on.
+    unchanged = [entry.line for entry in policy_mod.project_ignored(loaded) if not entry.loosens]
+    warnings = [line for line in policy_mod.read_only_arg_warnings(loaded) if line not in unchanged]
     report["config"]["warnings"] = warnings
     report["problems"].extend(warnings)
+    report["notes"].extend(unchanged)
     # A note, not a problem: an unknown key changes nothing, so --strict
     # passes a file it would have passed before such keys were reported.
     report["notes"].extend(config_mod.unknown_key_warnings(loaded.global_layer, loaded.project_layer))
