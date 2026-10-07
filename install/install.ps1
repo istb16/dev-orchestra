@@ -216,6 +216,22 @@ function Test-UnmarkedCopy {
     return $true
 }
 
+function Get-FullCopyNote {
+    # A full copy of a checkout, .git included, where the Claude install goes:
+    # what install.sh left under Git Bash, whose `ln -s` copies, before it
+    # checked for a link. It cannot be told from a clone, so it is explained,
+    # never removed.
+    param([string]$Path)
+
+    if ($Antigravity) { return }
+    if (-not (Get-Item -LiteralPath (Join-Path $Path '.git') -Force -ErrorAction SilentlyContinue)) { return }
+    if (-not (Test-Path -LiteralPath (Join-Path $Path "skills/$SkillName/SKILL.md") -PathType Leaf)) { return }
+    'If it is a full copy of a checkout, .git included, that an earlier install.sh'
+    'made under Git Bash, not a clone you work in, remove it once you have checked'
+    'it holds nothing of yours:'
+    "    Remove-Item -LiteralPath '$($Path -replace "'", "''")' -Recurse -Force"
+}
+
 function Stop-Refused {
     param([string[]]$Lines)
 
@@ -280,10 +296,10 @@ function Remove-OwnedDestination {
             return $true
         }
     }
-    Stop-Refused @(
+    Stop-Refused (@(
         "$Destination exists and the installer did not write it; it was left in place."
         'Remove it by hand if it is no longer wanted, then re-run.'
-    )
+    ) + @(Get-FullCopyNote $Destination))
 }
 
 function Get-AutoloadEntries {

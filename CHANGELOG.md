@@ -88,6 +88,17 @@ below begins **User adapters** so adapter authors can find it.
   the record under the job's lock and change it only while it is still
   unfinished (#271).
 
+- **The Claude Code install under Git Bash no longer says "Linked" over a
+  full copy.** Git Bash's `ln -s` copies the whole checkout, `.git`, `.venv`
+  and `.ai` included, and succeeds, so `install.sh` reported a link that
+  `git pull` would keep up to date and left a copy that never was. It now
+  checks that it got a link, and otherwise replaces the copy with what a copy
+  carries, with a warning, as the Antigravity install already did. A full
+  copy that an earlier `install.sh` left this way cannot be told from a
+  clone, so the installers leave it in place; the refusal now names it and
+  gives the command to remove it, once you have checked it holds nothing of
+  yours (#293).
+
 ## [0.22.0] - 2026-10-06
 
 ### Added

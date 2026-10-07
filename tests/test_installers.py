@@ -733,6 +733,32 @@ class TestClaudeInstallers(_InstallerCase):
                     self.assert_refused(code, output)
                     self.assertTrue(os.path.isfile(os.path.join(dest, "notes.txt")), action)
 
+    def test_a_full_copy_with_its_git_is_explained_not_removed(self):
+        """What an earlier install.sh left under Git Bash, whose `ln -s` copies
+        the whole checkout (#293). It looks like a clone, so it stays, and the
+        refusal says how to remove it."""
+        for shell in SHELLS:
+            with self.subTest(shell=shell.name):
+                project = self.fresh(shell, "full-copy")
+                dest = self.unmarked_copy(shell, project)
+                os.makedirs(os.path.join(dest, ".git"))
+                for action in ("install", "uninstall"):
+                    code, output = self.claude(shell, action, project, copy=action == "install")
+                    self.assert_refused(code, output)
+                    self.assertIn("made under Git Bash", output)
+                    self.assertIn("rm -rf --" if shell.posix else "Remove-Item -LiteralPath", output)
+                    self.assertTrue(os.path.isdir(os.path.join(dest, ".git")), action)
+
+    def test_a_clone_of_something_else_gets_no_full_copy_note(self):
+        for shell in SHELLS:
+            with self.subTest(shell=shell.name):
+                project = self.fresh(shell, "other-clone")
+                dest = self.claude_dest(project)
+                os.makedirs(os.path.join(dest, ".git"))
+                code, output = self.claude(shell, "install", project, copy=True)
+                self.assert_refused(code, output)
+                self.assertNotIn("made under Git Bash", output)
+
     def assert_checkout_refused(self, code: int, output: str, checkout: str) -> None:
         self.assertEqual(code, 1, output)
         self.assertIn("is this checkout itself", output)
@@ -890,6 +916,34 @@ class TestPosixAntigravityInstaller(_InstallerCase):
         self.assertFalse(os.path.exists(os.path.join(dest, ".git")))
         self.assertTrue(os.path.isfile(os.path.join(dest, SENTINEL)))
         code, output = self.run_installer(shell, "uninstall", project, env=env)
+        self.assertEqual(code, 0, output)
+        self.assertNotIn(SKILL_NAME, os.listdir(os.path.dirname(dest)))
+
+    def test_a_claude_ln_that_copies_instead_is_replaced_by_the_payload(self):
+        """Git Bash's `ln -s` copies the whole checkout and exits 0 (#293)."""
+        shell = POSIX_SHELLS[0]
+        stubs = os.path.join(self.tmp, "stubs")
+        os.makedirs(stubs)
+        ln = os.path.join(stubs, "ln")
+        with open(ln, "w", encoding="utf-8") as handle:
+            # Called as `ln -s <root> <dest>`: stand in for the copy with a .git.
+            handle.write('#!/bin/sh\nmkdir -p "$3/.git"\nexit 0\n')
+        os.chmod(ln, os.stat(ln).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+        env = dict(os.environ, HOME=self.home, PATH=stubs + os.pathsep + os.environ.get("PATH", ""))
+
+        project = self.git_project(self.tmp)
+        dest = os.path.join(project, ".claude", "skills", SKILL_NAME)
+        code, output = self.run_installer(shell, "install", project, env=env, mode="claude")
+        self.assertEqual(code, 0, output)
+        self.assertIn("ln -s made a copy, not a link", output)
+        self.assertNotIn("Linked", output)
+        self.assertIn("Re-run this installer", output)
+        self.assertFalse(is_link(dest))
+        self.assertFalse(os.path.exists(os.path.join(dest, ".git")))
+        for relative in ("plugin.json", "skills/dev-orchestra/SKILL.md", SENTINEL):
+            self.assertTrue(os.path.isfile(os.path.join(dest, relative)), relative)
+        self.assertEqual(self.exclude_lines(project).count(CLAUDE_ENTRY), 1)
+        code, output = self.run_installer(shell, "uninstall", project, env=env, mode="claude")
         self.assertEqual(code, 0, output)
         self.assertNotIn(SKILL_NAME, os.listdir(os.path.dirname(dest)))
 

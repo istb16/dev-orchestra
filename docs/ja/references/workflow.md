@@ -1,4 +1,4 @@
-<!-- translated-from: references/workflow.md sha256:94ff060d666db5b974f0f11edec6fa71c31a829fa65e3e93a607bd5ec3eb4c7b -->
+<!-- translated-from: references/workflow.md sha256:8326ca1e20d720823003191ad0c3c501fba6d0282c5c22f63770b3942542723b -->
 
 > この文書は [references/workflow.md](../../../references/workflow.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -781,7 +781,12 @@ cd dev-orchestra
 Windows では、Git Bash で `install.sh` を動かすより `install.ps1` を使ってください。
 Git Bash は MSYS 形式のパス（`/c/...`）を書き込み、ネイティブの Python はそれを開けません。
 シンボリックリンクには開発者モードか管理者権限が必要で、リンクできないときは
-インストーラが自動でコピーに切り替えます。
+インストーラが自動でコピーに切り替えます。Git Bash の `ln -s` は、リンクを作らずに
+`.git` まで含めてチェックアウト全体をコピーし、成功を返します。`install.sh` はリンクに
+ならなかったことに気づき、そのコピーを、コピーに入るものだけのコピーに置き換えて、
+そう伝えます。以前の `install.sh` がそこに残した全体のコピーはクローンと見分けがつかない
+ので、そのまま残します。断るときのメッセージに、自分のものが入っていないことを確かめて
+から消す方法を表示します。
 
 **Codex CLI:** Plugin を使わない場合、インストーラは `AGENTS.md` に、このチェックアウトを
 指す短いマーカー付きのブロックを追記します。

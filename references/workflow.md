@@ -766,7 +766,12 @@ run from it stops instead of deleting it.
 On Windows, prefer `install.ps1` over running `install.sh` in Git Bash: Git Bash
 writes MSYS-style paths (`/c/...`) that native Python cannot open. Symlinks need
 Developer Mode or an elevated shell; the installer falls back to a copy on its
-own if it cannot link.
+own if it cannot link. Git Bash's `ln -s` copies the whole checkout, `.git`
+included, and reports success; `install.sh` notices that it got no link,
+replaces the copy with what a copy carries, and says so. A full copy that an
+earlier `install.sh` left there looks like a clone, so it is left in place;
+the refusal says how to remove it once you have checked it holds nothing of
+yours.
 
 **Codex CLI:** without the plugin, the installer appends a short, marked
 pointer block to `AGENTS.md` referencing this checkout:

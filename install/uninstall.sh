@@ -47,6 +47,18 @@ SENTINEL=.dev-orchestra-install
 PAYLOAD="plugin.json skills .claude-plugin .codex-plugin README.md LICENSE references scripts bin agents examples"
 EXCLUDE_MARKER="# added by dev-orchestra install --antigravity"
 
+# A full copy of a checkout, .git included, where the Claude install goes:
+# what install.sh left under Git Bash, whose `ln -s` copies, before it
+# checked for a link. It cannot be told from a clone, so it is explained,
+# never removed.
+explain_full_copy() {
+  [ "$mode" = claude ] || return 0
+  [ -e "$1/.git" ] && [ -f "$1/skills/$SKILL_NAME/SKILL.md" ] || return 0
+  printf 'If it is a full copy of a checkout, .git included, that an earlier install.sh\n' >&2
+  printf 'made under Git Bash, not a clone you work in, remove it once you have checked\n' >&2
+  printf 'it holds nothing of yours:\n    rm -rf -- %s\n' "$(shell_quote "$1")" >&2
+}
+
 # $1 in single quotes, so that a printed command can be pasted as it is.
 shell_quote() {
   printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
@@ -84,6 +96,7 @@ release_destination() {
   if [ -e "$dest" ]; then
     printf '%s exists and the installer did not write it; it was left in place.\n' "$dest" >&2
     printf 'Remove it by hand if it is no longer wanted.\n' >&2
+    explain_full_copy "$dest"
     exit 1
   fi
 }
