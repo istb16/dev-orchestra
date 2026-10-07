@@ -43,8 +43,10 @@ below begins **User adapters** so adapter authors can find it.
   `review snapshot is empty … or pass --base`, and passing `--base` failed
   the same way. A snapshot taken against another base is now retaken
   against the one given, with a `note:` saying so, and the round count
-  starts again as it does after `review snapshot --base`. Without `--base`
-  the snapshot on disk is reviewed as before (#264).
+  starts again as it does after `review snapshot --base`. A snapshot taken
+  without a base counts as taken against `HEAD`, and one taken against a
+  name for the same commit as `--base` is kept. Without `--base` the
+  snapshot on disk is reviewed as before (#264).
 
 - **Code in a finding's fenced block is read as code.** A `#` comment inside
   ```` ``` ```` or `~~~` was dropped, a line such as `fix: …` started a new

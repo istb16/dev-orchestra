@@ -262,6 +262,28 @@ class TestTheCounterInThePipeline(IsolatedCase):
         self.assertNotIn("retaking", err)
         self.assertEqual(self.cli_workspace().read_snapshot_meta()["sha256"], before["sha256"])
 
+    def test_review_run_base_head_keeps_a_snapshot_taken_without_a_base(self):
+        """No base is HEAD: retaking it said it was moving from HEAD to HEAD
+        and started the round count again for the same change."""
+        self.round(2)
+        self.write("app.py", "a = 3\n")
+        run_cli("review", "snapshot")
+        before = self.cli_workspace().read_snapshot_meta()
+        code, _, err = run_cli("review", "run", "--base", "HEAD")
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("retaking", err)
+        self.assertEqual(self.cli_workspace().read_snapshot_meta()["round_id"], before["round_id"])
+        self.assertEqual(self.iteration(), 2)
+
+    def test_review_run_base_keeps_a_snapshot_taken_against_the_same_commit(self):
+        self.write("app.py", "a = 2\n")
+        run_cli("review", "snapshot", "--base", "HEAD")
+        head = self.git("rev-parse", "HEAD").stdout.strip()
+        code, _, err = run_cli("review", "run", "--base", head)
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("retaking", err)
+        self.assertEqual(self.cli_workspace().read_snapshot_meta()["base"], "HEAD")
+
     def test_review_run_without_base_keeps_the_snapshot_on_disk(self):
         self.write("app.py", "a = 2\n")
         run_cli("review", "snapshot", "--base", "HEAD")

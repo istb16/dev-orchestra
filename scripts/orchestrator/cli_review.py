@@ -1277,12 +1277,14 @@ def _ensure_snapshot(
     base is a different change (see ``review_lineage``), so the round that
     follows counts from one, as it does after ``review snapshot --base``.
     Without ``--base`` the snapshot on disk is kept, whatever it was taken
-    against.
+    against, and so is one taken against the commit ``--base`` names: a
+    snapshot taken with no base was taken against HEAD, and ``--base HEAD``
+    retaking it restarted the round count for the same change.
     """
     retake = False
     if os.path.isfile(workspace.snapshot_path) and args.base:
         taken = workspace.read_snapshot_meta().get("base") or None
-        retake = taken != args.base
+        retake = not _same_base(workspace.root, taken, args.base)
         if retake:
             _err(
                 "note: retaking the snapshot against --base %s (the one on disk was taken against %s); "
@@ -1302,6 +1304,24 @@ def _ensure_snapshot(
             _err(str(exc))
             return 2
     return None
+
+
+def _same_base(root: str, taken: Optional[str], wanted: str) -> bool:
+    """Whether a snapshot taken against ``taken`` is one against ``wanted``.
+
+    No base means HEAD. Two names are the same base when they name the same
+    commit; a name git cannot resolve is compared as written.
+    """
+    taken = taken or "HEAD"
+    if taken == wanted:
+        return True
+    commits = [_commit_of(root, name) for name in (taken, wanted)]
+    return bool(commits[0]) and commits[0] == commits[1]
+
+
+def _commit_of(root: str, name: str) -> str:
+    code, out, _ = ws.git(["rev-parse", "--verify", "--quiet", "%s^{commit}" % name], root)
+    return out.strip() if code == 0 else ""
 
 
 class _GatedPanel(NamedTuple):
