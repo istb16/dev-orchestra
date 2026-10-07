@@ -54,8 +54,12 @@ below begins **User adapters** so adapter authors can find it.
   dropped the rest of it, and every line was joined with a space, so the fix
   brief handed the fixer code without its comments or its shape. Lines inside
   a fence are now kept as written and never start a finding, and `Evidence`
-  and `Fix` keep their line breaks; the other fields are still one line. A fence that is never closed is read as before.
-  (#265)
+  and `Fix` keep their line breaks; the other fields are still one line. A
+  fence that is never closed is read as before. In the fix brief and in
+  `consolidated.md` such a value goes under its label, indented into the
+  list item, so its fences no longer leave the list and swallow the rest of
+  the document (#265).
+
 ## [0.22.0] - 2026-10-06
 
 ### Added

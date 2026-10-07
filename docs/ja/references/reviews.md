@@ -1,4 +1,4 @@
-<!-- translated-from: references/reviews.md sha256:b1b53454f20ed4984308d2e5a5a5c41ad5f7e711686f8200b64b8382b75743e2 -->
+<!-- translated-from: references/reviews.md sha256:14711ff1e15aec4aaf9164a26f2eb3c25cf83ea92d9076e8f0f7f89f0c974c3a -->
 
 > この文書は [references/reviews.md](../../../references/reviews.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -906,8 +906,10 @@ plan とリクエストの合計で測られます。どちらもプロンプト
 ときと同じかそれより長いフェンスだけ）はコードとして読みます。その中の行は書かれた
 とおりに残し、`#` で始まるコメントや、外にあれば新しい項目の始まりになる `fix: …`
 のような行もそのまま保ちます。`Finding` の見出しや `Severity:` の行に見える行が
-あっても、そこから新しい指摘は始めません。`Evidence` と `Fix` は改行を保つので、fix brief は
-コードを形のまま修正役に渡します。それ以外の項目は 1 行につなぎます。閉じられない
+あっても、そこから新しい指摘は始めません。`Evidence` と `Fix` は改行を保つので、
+fix brief はコードを形のまま修正役に渡します。fix brief と `consolidated.md` では、
+複数行の値を項目名の次の行から、リストの項目の中に収まるように字下げして書くので、
+フェンスがリストの外に出ません。それ以外の項目は 1 行につなぎます。閉じられない
 フェンスは、ふつうの行として読みます。
 
 <a id="deduplication"></a>

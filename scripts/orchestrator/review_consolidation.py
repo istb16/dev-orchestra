@@ -847,8 +847,8 @@ def _finding_block(finding: Dict[str, Any]) -> List[str]:
         % (finding.get("triage", "needs-triage"), _note_suffix(finding.get("triage_note", ""))),
         "- Problem: %s" % finding.get("problem", ""),
         "- Impact: %s" % finding.get("impact", ""),
-        "- Evidence: %s" % finding.get("evidence", ""),
-        "- Recommended fix: %s" % finding.get("recommended_fix", ""),
+        *_labelled("- ", "Evidence", finding.get("evidence", "")),
+        *_labelled("- ", "Recommended fix", finding.get("recommended_fix", "")),
         *_merged_report_lines(finding),
         "",
     ]
@@ -867,8 +867,24 @@ def _merged_report_lines(finding: Dict[str, Any]) -> List[str]:
         )
         fix = str(entry.get("recommended_fix") or "").strip()
         if fix:
-            lines.append("    Fix: %s" % fix)
+            lines += _labelled("    ", "Fix", fix)
     return lines
+
+
+def _labelled(prefix: str, label: str, value: Any) -> List[str]:
+    """``<prefix><label>: <value>`` as markdown lines.
+
+    A value of several lines -- code in a fence, as Evidence and a fix may
+    hold -- goes on the lines below the label, indented as far as the text
+    after ``prefix``. That keeps it inside the list item: at column 0 the
+    code ends the list, and its closing fence opens a new block that swallows
+    the rest of the document.
+    """
+    text = str(value or "")
+    if "\n" not in text:
+        return ["%s%s: %s" % (prefix, label, text)]
+    indent = " " * len(prefix)
+    return ["%s%s:" % (prefix, label)] + [indent + line if line.strip() else "" for line in text.splitlines()]
 
 
 def surrounding_records(block: Dict[str, Any]) -> List[Tuple[str, Any]]:
@@ -1125,7 +1141,7 @@ def render_fix_brief(data: Dict[str, Any], title: str = "Fix these accepted find
         ):
             value = str(finding.get(key) or "").strip()
             if value:
-                lines.append("- %s: %s" % (label, value))
+                lines += _labelled("- ", label, value)
         lines.append("")
     return "\n".join(lines)
 

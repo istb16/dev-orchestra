@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import time
 import unittest
 from typing import Optional
@@ -199,7 +200,71 @@ class TestFencedEvidence(IsolatedCase):
         data = {"findings": review_consolidation.consolidate_findings(findings)}
         data["findings"][0]["triage"] = "accepted"
         brief = review_mod.render_fix_brief(data)
-        self.assertIn("\n# the last row is never added\nfor row in rows[:-1]:\n    total += row\n", brief)
+        code = "\n  # the last row is never added\n  for row in rows[:-1]:\n      total += row\n"
+        self.assertIn(code, brief)
+
+    def fence_depths(self, markdown):
+        """How deep each fence in ``markdown`` sits, failing on one that never closes.
+
+        A line inside a fence must be at least as deep as the fence. At column 0
+        a fence leaves the list item it belongs to, and with an odd number of
+        them the last one swallows the rest of the document.
+        """
+        lines = markdown.splitlines()
+        depths = []
+        index = 0
+        while index < len(lines):
+            match = re.match(r"( *)(`{3,}|~{3,})", lines[index])
+            if not match:
+                index += 1
+                continue
+            depth, fence = len(match.group(1)), match.group(2)
+            closer = index + 1
+            while closer < len(lines):
+                inner = lines[closer].strip()
+                if len(inner) >= len(fence) and inner == fence[0] * len(inner):
+                    break
+                self.assertTrue(not inner or lines[closer].startswith(" " * depth), lines[closer])
+                closer += 1
+            self.assertLess(closer, len(lines), "the fence on line %d never closes" % (index + 1))
+            self.assertTrue(lines[closer].startswith(" " * depth + fence[0]), lines[closer])
+            depths.append(depth)
+            index = closer + 1
+        return depths
+
+    def accepted(self, *reviewers):
+        findings = []
+        for reviewer_id in reviewers:
+            findings += review_mod.parse_findings(FENCED_FINDING, reviewer_id)
+        data = {"findings": review_consolidation.consolidate_findings(findings)}
+        data["findings"][0]["triage"] = "accepted"
+        return data
+
+    def test_fix_brief_keeps_the_fences_inside_the_list_item(self):
+        """At column 0 the code ended the list, and its closing fence was read
+        as opening a new one."""
+        brief = review_mod.render_fix_brief(self.accepted("r1"))
+        self.assertIn("- Evidence:\n  ```python\n", brief)
+        self.assertIn("- Fix:\n  iterate over every row\n  ~~~~\n", brief)
+        self.assertEqual(self.fence_depths(brief), [2, 2])
+
+    def test_consolidated_md_keeps_the_fences_inside_the_list_items(self):
+        """#259: with one merged report the fences no longer paired up, and
+        everything after them read as code."""
+        data = self.accepted("r1", "r2")
+        self.assertEqual(len(data["findings"][0]["merged_reports"]), 2)
+        rendered = review_mod.render_consolidation(data)
+        self.assertIn("- Evidence:\n  ```python\n  # the last row", rendered)
+        self.assertIn("- Recommended fix:\n  iterate over every row\n  ~~~~\n", rendered)
+        self.assertIn("    Fix:\n    iterate over every row\n    ~~~~\n", rendered)
+        self.assertEqual(self.fence_depths(rendered), [2, 2, 4, 4])
+
+    def test_a_single_line_value_stays_on_the_label_line(self):
+        findings = review_mod.parse_findings(FINDING_A, "r1")
+        data = {"findings": review_consolidation.consolidate_findings(findings)}
+        data["findings"][0]["triage"] = "accepted"
+        self.assertIn("- Evidence: user.profile.name\n", review_mod.render_fix_brief(data))
+        self.assertIn("- Evidence: user.profile.name\n", review_mod.render_consolidation(data))
 
 
 class TestConsolidation(IsolatedCase):

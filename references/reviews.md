@@ -884,10 +884,13 @@ block with neither a problem nor evidence is discarded.
 Code in a fenced block (```` ``` ```` or `~~~`, closed only by a fence of the
 same character at least as long) is read as code: its lines are kept as
 written, including `#` comments and lines such as `fix: …` that would
-otherwise start a new field, and no line in it starts a new finding, even
-one that reads like a `Finding` heading or a `Severity:` line. `Evidence` and `Fix` keep their line breaks, so
-the fix brief hands the fixer the code in its shape; the other fields are
-joined into one line. A fence that is never closed is read as ordinary lines.
+otherwise start a new field, and no line in it starts a new finding, even one
+that reads like a `Finding` heading or a `Severity:` line. `Evidence` and `Fix`
+keep their line breaks, so the fix brief hands the fixer the code in its
+shape. There and in `consolidated.md` a value of several lines goes on the
+lines below its label, indented into the list item, so its fences stay inside
+it. The other fields are joined into one line. A fence that is never closed
+is read as ordinary lines.
 
 ## Deduplication
 
