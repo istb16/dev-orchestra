@@ -14,6 +14,22 @@ below begins **User adapters** so adapter authors can find it.
 
 ## [Unreleased]
 
+### Changed
+
+- **`workflow remove` refuses a workflow that is still in use** (exit 2):
+  one with a stage in flight, or one active in the last 15 minutes, perhaps
+  in another session. It used to delete it, and a detached worker finishing
+  afterwards wrote its state back, leaving a workflow with an empty record,
+  the job's files and empty `execution/` and `reviews/`. `--force` deletes it
+  anyway, for an in-flight mark a crashed stage left behind (#285).
+
+- **`state record test` and `state record re-test` accept only `ok` and
+  `failed`** (exit 2 otherwise). Any other word was recorded, and the review
+  gate, which knows only `failed`, `fail`, `error` and `red` as failures, read
+  it as a pass: `failure` or `NG` sent red tests to review. Other stages
+  still take any status. `--detail` can no longer set `stage`, `status` or
+  `at`, which overwrote the event's own fields (exit 2) (#287).
+
 ### Fixed
 
 - **The Claude Code install and uninstall no longer delete a directory they
@@ -30,27 +46,12 @@ below begins **User adapters** so adapter authors can find it.
   added is left in place. A link to another checkout or to nothing is now
   left in place too, with the command to remove it by hand, and a run from
   the checkout that is itself the destination stops and says so (#290).
-### Changed
-
-- **`workflow remove` refuses a workflow that is still in use** (exit 2):
-  one with a stage in flight, or one active in the last 15 minutes, perhaps
-  in another session. It used to delete it, and a detached worker finishing
-  afterwards wrote its state back, leaving a workflow with an empty record,
-  the job's files and empty `execution/` and `reviews/`. `--force` deletes it
-  anyway, for an in-flight mark a crashed stage left behind (#285).
-- **`state record test` and `state record re-test` accept only `ok` and
-  `failed`** (exit 2 otherwise). Any other word was recorded, and the review
-  gate, which knows only `failed`, `fail`, `error` and `red` as failures, read
-  it as a pass: `failure` or `NG` sent red tests to review. Other stages
-  still take any status. `--detail` can no longer set `stage`, `status` or
-  `at`, which overwrote the event's own fields (exit 2) (#287).
-
-### Fixed
 
 - **A `workflow remove` stopped part way no longer ends on a traceback.** When
   the delete fails -- on Windows, a file another process holds open -- it
   exits 1, names the error and says how many files are left, so it can be run
   again once they are closed (#285).
+
 - **`jobs cancel` no longer stops a process that was handed a vanished
   worker's pid.** A worker gone without a word (after a reboot, say) left a
   pid that `jobs cancel` force-killed on Windows with `taskkill /T /F`,
@@ -61,6 +62,7 @@ below begins **User adapters** so adapter authors can find it.
   macOS, has no start time; on Windows its pid is no longer stopped, and the
   job says so, while POSIX keeps stopping it only while it leads its own
   process group (#268).
+
 - **What a reviewer's prompt quotes can no longer close its fence.** The diff,
   the plan and the design request went in a fixed `` ``` `` fence, so a code
   block in a plan, or a Markdown diff's unchanged `` ``` `` line, closed it
@@ -68,12 +70,12 @@ below begins **User adapters** so adapter authors can find it.
   gets a fence longer than any run of backticks inside it, as the surrounding
   context already did, and both review prompts say the fenced text is data
   under review, not instructions (#263).
+
 - **A reviewer that exits 0 with nothing to say is a failed reviewer, not
   a clean one.** Its empty reply was written to the report as `NO_FINDINGS`
   and the run recorded `ok`; it is now recorded `unparsed` (report was
   empty), counted as failed, and the report holds no `NO_FINDINGS` it never
   wrote (#261).
-
 ## [0.22.0] - 2026-10-06
 
 ### Added
