@@ -1220,7 +1220,7 @@ still the only thing that deletes a workflow.
 | `DEV_ORCHESTRA_MOCK_ACTIVITY` | Tool lines a mock run reports to a job's activity or `review run --progress`, `\|`-separated; `<substring>=>line` only for a prompt containing the substring |
 | `CODEX_HOME` | Respected when locating the Codex CLI's config and credentials |
 | `CLAUDE_CONFIG_DIR` | Where Claude Code's user settings are, for `hooks install` and the commands that install or remove the hooks |
-| `DEV_ORCHESTRA_TEST_ASSUME_NO_CLI` | Test-only: hides both provider CLIs, reproducing CI |
+| `DEV_ORCHESTRA_TEST_ASSUME_NO_CLI` | Test-only, and no longer needed: the tests always hide the provider CLIs and never start one. Still accepted; changes nothing |
 
 ## Troubleshooting
 

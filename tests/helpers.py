@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import atexit
 import contextlib
+import importlib.util
 import os
 import shutil
 import stat
@@ -12,6 +13,7 @@ import sys
 import tempfile
 import textwrap
 import unittest
+from types import ModuleType
 from typing import Any, Dict, List, Optional, Sequence, TypeVar
 from unittest import mock
 
@@ -62,9 +64,44 @@ os.environ["CLAUDE_CONFIG_DIR"] = os.path.join(
     tempfile.gettempdir(), "devorchestra-test-no-claude-%d" % os.getpid()
 )
 
-#: CI runs with neither claude nor codex on PATH, and the suite must pass there.
-#: Set this locally to reproduce that without uninstalling anything.
+#: Once the switch that hid the provider CLIs, as CI has none installed. They
+#: are hidden whether it is set or not now; it is still accepted so an old
+#: command line keeps working, and changes nothing.
 ASSUME_NO_CLI = "DEV_ORCHESTRA_TEST_ASSUME_NO_CLI"
+
+#: No test may start a real claude, codex or agy: CI has none of them, and on
+#: a developer's machine it would really run, and could spend tokens. The guard
+#: in this directory refuses to, here and -- through PYTHONPATH, as their
+#: sitecustomize -- in the Python processes the tests start.
+CLI_GUARD_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cli_guard")
+
+
+def _load_cli_guard() -> ModuleType:
+    # A worker of the parallel runner has already loaded it as its sitecustomize.
+    loaded = sys.modules.get("sitecustomize")
+    if loaded is not None and os.path.normcase(os.path.dirname(getattr(loaded, "__file__", None) or "")) == (
+        os.path.normcase(CLI_GUARD_DIR)
+    ):
+        return loaded
+    spec = importlib.util.spec_from_file_location(
+        "dev_orchestra_cli_guard", os.path.join(CLI_GUARD_DIR, "sitecustomize.py")
+    )
+    if spec is None or spec.loader is None:
+        raise ImportError("cannot load %s" % CLI_GUARD_DIR)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+cli_guard = _load_cli_guard()
+if CLI_GUARD_DIR not in os.environ.get("PYTHONPATH", "").split(os.pathsep):
+    os.environ["PYTHONPATH"] = os.pathsep.join(filter(None, [CLI_GUARD_DIR, os.environ.get("PYTHONPATH")]))
+
+
+def refused_cli_launches() -> List[List[str]]:
+    """Every start of a provider CLI the guard refused in this process, oldest first."""
+    return list(cli_guard.refused)
+
 
 #: The workflow every test runs in unless it says otherwise.
 TEST_WORKFLOW = "test"
@@ -295,8 +332,9 @@ class IsolatedCase(unittest.TestCase):
         # Likewise user adapters: none unless the test writes and loads one.
         providers.unload_user_providers()
         self.addCleanup(providers.unload_user_providers)
-        if os.environ.get(ASSUME_NO_CLI):
-            self._hide_provider_clis()
+        # As on CI, none of the built-in CLIs is installed; fake_clis() says
+        # otherwise, and the guard above refuses to start one anyway.
+        self._hide_provider_clis()
 
     def _hide_provider_clis(self) -> None:
         from orchestrator.providers.agy import AgyProvider
@@ -329,6 +367,16 @@ class IsolatedCase(unittest.TestCase):
         from orchestrator.providers import base as provider_base
 
         provider_base.clear_discovery_cache()
+
+    def allow_cli(self, path: str) -> None:
+        """Let this test start the fake provider CLI it wrote at ``path``.
+
+        Only that file, named by its path: a bare ``claude`` stays refused even
+        with the fake first on PATH, since Windows may find the real
+        ``claude.exe`` instead. Processes the test starts allow it too.
+        """
+        allowed = [*cli_guard.allowed(), cli_guard.normalised(path)]
+        self.set_env(cli_guard.ALLOWED_ENV, os.pathsep.join(allowed))
 
     def tearDown(self) -> None:
         os.chdir(self._saved_cwd)

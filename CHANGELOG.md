@@ -262,6 +262,17 @@ below begins **User adapters** so adapter authors can find it.
   `consolidated.md` such a value goes under its label, indented into the
   list item, so its fences no longer leave the list and swallow the rest of
   the document (#265).
+
+- **The tests no longer start a real `claude`, `codex` or `agy`.** Without
+  `DEV_ORCHESTRA_TEST_ASSUME_NO_CLI`, about 150 tests ran the installed CLIs
+  (`--version`, `agy models`, `codex debug models`), one of them a real
+  `codex exec`, and some failed where `agy` was installed; even with the flag,
+  `claude --help` and `codex exec fork --help` ran. The provider CLIs are now
+  always hidden, and the tests refuse to start one, in the Python processes
+  they start too, just as a machine without them would. A test that needs a
+  CLI to answer allows its own fake by its path. The flag is still accepted
+  and changes nothing (#291).
+
 ## [0.22.0] - 2026-10-06
 
 ### Added

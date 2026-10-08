@@ -114,16 +114,17 @@ docstring, e.g. *"Verified against `codex` 0.154.x"*.
 the `mock` provider, or patch `_capture` / `which`. The suite has to pass on a
 machine with neither `claude` nor `codex` installed — that is what CI runs on.
 
-Your machine probably has them, so check before pushing:
-
-```bash
-DEV_ORCHESTRA_TEST_ASSUME_NO_CLI=1 python -m unittest discover -s tests -t tests
-```
-
-That hides both provider CLIs and is exactly what CI does. The `mock` provider
-has affordances for the awkward paths: always "installed",
-with `DEV_ORCHESTRA_MOCK_FAIL` for run failures and the `unresolvable` model
-family for resolution failures.
+Your machine probably has them, and the suite acts as if it did not:
+`tests/helpers.py` hides `claude`, `codex` and `agy` from every `IsolatedCase`,
+and `tests/cli_guard/` refuses to start any of them -- in the test processes and
+in the Python processes they start -- with the `FileNotFoundError` a machine
+without them gives. So plain `python -m unittest discover -s tests -t tests` is
+exactly what CI runs; `DEV_ORCHESTRA_TEST_ASSUME_NO_CLI` is still accepted and
+changes nothing. A test that needs a CLI to answer writes a fake, names it by
+its path in the command, and passes that path to `IsolatedCase.allow_cli()`; a
+bare `claude` stays refused. The `mock` provider has affordances for the awkward
+paths: always "installed", with `DEV_ORCHESTRA_MOCK_FAIL` for run failures and
+the `unresolvable` model family for resolution failures.
 
 Which leaves a gap, and it is worth naming: **nothing in the suite has ever run
 a real CLI.** That is not a hypothetical cost. `CodexProvider.run` raised
