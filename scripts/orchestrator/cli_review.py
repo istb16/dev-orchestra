@@ -940,17 +940,36 @@ def cmd_review_snapshot(args: argparse.Namespace) -> int:
         )
         _out("            Narrow it with --base or review.exclude, or split the change.")
     withheld = meta.get("withheld") or []
+    excluded = [entry for entry in withheld if not entry.get("reason")]
+    unread = [entry for entry in withheld if entry.get("reason")]
     if withheld:
         # Named, not merely counted: an exclusion nobody can see is an
         # exclusion nobody can correct.
-        lines = review_mod.withheld_lines(withheld)
-        _out("  withheld: %d file(s), %s changed line(s) not sent to reviewers" % (len(withheld), lines))
+        if excluded:
+            lines = review_mod.withheld_lines(excluded)
+            summary = "%d file(s), %s changed line(s) not sent to reviewers" % (len(withheld), lines)
+            if unread:
+                summary += " (%d not read, lines not counted)" % len(unread)
+        else:
+            summary = "%d file(s) not read, lines not counted" % len(unread)
+        _out("  withheld: " + summary)
         for entry in withheld:
-            _out("    %s (%s)" % (entry["path"], entry["pattern"]))
-        _out("    reviewers are told these changed; --no-exclude sends them in full")
+            _out("    %s (%s)" % (entry["path"], entry.get("pattern") or entry.get("reason") or "?"))
+        if excluded and unread:
+            _out("    reviewers are told these changed; --no-exclude sends the pattern-matched ones in full,")
+            _out("    the ones not read stay withheld")
+        elif excluded:
+            _out("    reviewers are told these changed; --no-exclude sends them in full")
+        else:
+            _out("    reviewers are told these changed")
     if meta["empty"]:
-        if withheld:
+        if excluded and not unread:
             _out("  WARNING: every changed file was withheld -- re-run with --no-exclude to review them.")
+        elif withheld:
+            _out("  WARNING: every changed file was withheld --")
+            if excluded:
+                _out("           re-run with --no-exclude to review the pattern-matched ones;")
+            _out("           the %d file(s) not read have to be reviewed by hand." % len(unread))
         else:
             _out("  WARNING: the snapshot is empty -- there is nothing to review.")
         return 1
