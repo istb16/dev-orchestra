@@ -236,6 +236,62 @@ class TestTheCounterInThePipeline(IsolatedCase):
         self.assertEqual(code, 0)
         self.assertEqual(self.iteration(), 1)
 
+    def test_review_run_base_retakes_a_snapshot_taken_against_another(self):
+        """#264: an empty snapshot on disk was reviewed instead, and the error
+        recommended the very --base that had just been dropped."""
+        self.write("app.py", "a = 2\n")
+        self.commit_all("second")
+        code, _, _ = run_cli("review", "snapshot")
+        self.assertEqual(code, 1)  # empty: nothing changed since HEAD
+        code, out, err = run_cli("review", "run", "--base", "HEAD~1")
+        self.assertEqual(code, 0, err)
+        self.assertIn("1 successful", out)
+        self.assertIn("retaking the snapshot against --base HEAD~1", err)
+        meta = self.cli_workspace().read_snapshot_meta()
+        self.assertEqual(meta["base"], "HEAD~1")
+        self.assertFalse(meta["empty"])
+        self.assertEqual(self.iteration(), 1)
+
+    def test_review_run_base_keeps_a_snapshot_taken_against_it(self):
+        self.write("app.py", "a = 2\n")
+        run_cli("review", "snapshot", "--base", "HEAD")
+        before = self.cli_workspace().read_snapshot_meta()
+        self.write("app.py", "a = 3\n")
+        code, _, err = run_cli("review", "run", "--base", "HEAD")
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("retaking", err)
+        self.assertEqual(self.cli_workspace().read_snapshot_meta()["sha256"], before["sha256"])
+
+    def test_review_run_base_head_keeps_a_snapshot_taken_without_a_base(self):
+        """No base is HEAD: retaking it said it was moving from HEAD to HEAD
+        and started the round count again for the same change."""
+        self.round(2)
+        self.write("app.py", "a = 3\n")
+        run_cli("review", "snapshot")
+        before = self.cli_workspace().read_snapshot_meta()
+        code, _, err = run_cli("review", "run", "--base", "HEAD")
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("retaking", err)
+        self.assertEqual(self.cli_workspace().read_snapshot_meta()["round_id"], before["round_id"])
+        self.assertEqual(self.iteration(), 2)
+
+    def test_review_run_base_keeps_a_snapshot_taken_against_the_same_commit(self):
+        self.write("app.py", "a = 2\n")
+        run_cli("review", "snapshot", "--base", "HEAD")
+        head = self.git("rev-parse", "HEAD").stdout.strip()
+        code, _, err = run_cli("review", "run", "--base", head)
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("retaking", err)
+        self.assertEqual(self.cli_workspace().read_snapshot_meta()["base"], "HEAD")
+
+    def test_review_run_without_base_keeps_the_snapshot_on_disk(self):
+        self.write("app.py", "a = 2\n")
+        run_cli("review", "snapshot", "--base", "HEAD")
+        code, _, err = run_cli("review", "run")
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("retaking", err)
+        self.assertEqual(self.cli_workspace().read_snapshot_meta()["base"], "HEAD")
+
     def test_coming_back_to_a_branch_does_not_resume_its_count(self):
         """Nothing tracks a count per branch -- only whether this round
         continues the last one. Returning after working elsewhere reviews
