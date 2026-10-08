@@ -22,6 +22,7 @@ format it was asked for -- see ``references/providers.md``.
 
 from __future__ import annotations
 
+import errno
 import math
 import os
 import queue
@@ -276,7 +277,12 @@ def launchable(command: Sequence[str]) -> Union[str, List[str]]:
     nothing changes there. Windows does not: ``CreateProcess`` only appends
     ``.exe``, so the ``claude.cmd`` and ``codex.cmd`` npm installs were found
     by ``doctor`` and then could not be started (#269). A bare name is
-    replaced with the path ``shutil.which`` finds. A batch file that is an
+    replaced with the absolute path :func:`find_program` finds on ``PATH``
+    -- never one in the current directory, which may be a repository under
+    review -- and one it does not find is not started at all, since
+    ``CreateProcess`` would look in the current directory for it. A
+    relative path is made absolute against this process's directory, where
+    ``doctor`` looked, not the child's. A batch file that is an
     npm shim is bypassed for the program it would run (``node`` and its
     script, or an ``.exe``), so no argument passes through cmd.exe; any other
     batch file runs under cmd.exe with every argument quoted, and refuses an
@@ -285,7 +291,51 @@ def launchable(command: Sequence[str]) -> Union[str, List[str]]:
     argv = [str(token) for token in command]
     if not IS_WINDOWS or not argv:
         return argv
-    return windows_launch(argv, shutil.which(argv[0]) if not _has_directory(argv[0]) else None)
+    if _has_directory(argv[0]):
+        return windows_launch([os.path.abspath(argv[0]), *argv[1:]], None)
+    found = find_program(argv[0])
+    if found is None:
+        raise FileNotFoundError(errno.ENOENT, "%s not found on PATH" % argv[0], argv[0])
+    return windows_launch(argv, found)
+
+
+def find_program(name: str) -> Optional[str]:
+    """``shutil.which(name)``, except that on Windows the current directory is never searched.
+
+    ``shutil.which`` on Windows looks in the current directory before
+    ``PATH`` (and returns a relative ``.\\name``), so a ``claude.cmd``
+    committed at the root of a repository would be found and run in place
+    of the installed CLI. Only the absolute directories on ``PATH`` are
+    searched here, with ``PATHEXT``, and the path returned is absolute.
+    """
+    if not IS_WINDOWS:
+        return shutil.which(name)
+    return search_path(name, os.environ.get("PATH", ""), os.environ.get("PATHEXT", ""))
+
+
+def search_path(name: str, path: str, pathext: str) -> Optional[str]:
+    """:func:`find_program` on Windows, with ``PATH`` and ``PATHEXT`` given; testable anywhere."""
+    exts = [ext for ext in (pathext or ".COM;.EXE;.BAT;.CMD").split(";") if ext]
+    if os.path.splitext(name)[1].lower() in (ext.lower() for ext in exts):
+        candidates = [name]
+    else:
+        candidates = [name + ext for ext in exts]
+    for entry in path.split(";"):
+        directory = entry.strip().strip('"')
+        # A relative entry (".", or the empty one) is the current directory
+        # by another name.
+        if not directory or not _is_absolute(directory):
+            continue
+        for candidate in candidates:
+            found = os.path.join(directory, candidate)
+            if os.path.isfile(found):
+                return found
+    return None
+
+
+def _is_absolute(directory: str) -> bool:
+    """A Windows path from a drive or share root, on any platform."""
+    return bool(re.match(r"^(?:[A-Za-z]:[\\/]|[\\/]{2})", directory)) or os.path.isabs(directory)
 
 
 def windows_launch(argv: List[str], found: Optional[str]) -> Union[str, List[str]]:
@@ -332,7 +382,7 @@ def npm_shim_target(batch: str) -> Optional[List[str]]:
         return None
     node = os.path.join(base, "node.exe")
     if not os.path.isfile(node):
-        node = shutil.which("node") or ""
+        node = find_program("node") or ""
     # Only a program: a `node.cmd` (a version manager's shim) would be the
     # batch file this is here to avoid, started without cmd.exe's quoting.
     if os.path.splitext(node)[1].lower() != ".exe":

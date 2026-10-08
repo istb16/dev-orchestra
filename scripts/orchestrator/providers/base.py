@@ -13,7 +13,6 @@ import json
 import math
 import os
 import re
-import shutil
 import subprocess
 from typing import Any, Callable, ClassVar, Dict, List, NamedTuple, Optional, Sequence, Tuple, TypeVar
 
@@ -518,7 +517,9 @@ class Provider:
     # -- discovery ---------------------------------------------------------
 
     def which(self) -> Optional[str]:
-        return shutil.which(self.executable)
+        # Where a run will start it from: on Windows never the current
+        # directory, which may be the repository under review.
+        return execution.find_program(self.executable)
 
     def _cached(self, kind: str, compute):
         key = (type(self).__module__, type(self).__name__, self.executable, kind)

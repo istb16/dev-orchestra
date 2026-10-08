@@ -1066,9 +1066,14 @@ responsibility; nothing here verifies it.
 Every captured stream passes through `redact()`, which scrubs
 credential-shaped substrings before anything reaches `.ai/` or the console.
 
-On Windows a CLI is started from the path `which()` found, so a `claude.cmd`
-or `codex.cmd` that npm installed runs as `doctor` reports it; `Popen` given
-the bare name looks only for an `.exe`. An npm shim is not run through cmd.exe
+On Windows a CLI is started from the absolute path `which()` found, so a
+`claude.cmd` or `codex.cmd` that npm installed runs as `doctor` reports it;
+`Popen` given the bare name looks only for an `.exe`. Only the absolute
+directories on PATH are searched, with PATHEXT, for both: never the current
+directory, which `shutil.which` and `CreateProcess` look in first on Windows
+and which may be a repository under review that carries a `claude.cmd` of its
+own. A name not found that way is not started (exit 126, "not found on
+PATH"). An npm shim is not run through cmd.exe
 at all: the `node` and script it would hand its arguments to (the `node.exe`
 beside it, else the one on PATH), or the `.exe` it wraps, are started
 directly. Any other `.cmd` or `.bat` runs under cmd.exe (`/d /v:off /s /c`)

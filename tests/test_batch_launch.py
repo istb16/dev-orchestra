@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import sys
 import unittest
 from unittest import mock
@@ -85,7 +84,7 @@ class TestHowABatchFileIsLaunched(_TempDir):
         shim = self.put("claude.cmd", NPM_SHIM)
         script = self.put(os.path.join("node_modules", "@scope", "cli", "cli.js"))
         node = os.path.join(self.tmp, "nodejs", "node.exe")
-        with mock.patch.object(execution.shutil, "which", return_value=node) as which:
+        with mock.patch.object(execution, "find_program", return_value=node) as which:
             launch = execution.windows_launch(["claude"], shim)
         which.assert_called_once_with("node")
         self.assertEqual(launch, [node, script])
@@ -95,7 +94,7 @@ class TestHowABatchFileIsLaunched(_TempDir):
         shim = self.put("claude.cmd", NPM_SHIM)
         self.put(os.path.join("node_modules", "@scope", "cli", "cli.js"))
         node = os.path.join(self.tmp, "nodejs", "node.cmd")
-        with mock.patch.object(execution.shutil, "which", return_value=node):
+        with mock.patch.object(execution, "find_program", return_value=node):
             launch = execution.windows_launch(["claude", "x&y"], shim)
         self.assertIsInstance(launch, str)
         self.assertIn('"%s" "x&y"' % shim, launch)
@@ -139,6 +138,58 @@ class TestHowABatchFileIsLaunched(_TempDir):
         self.assertEqual(execution.launchable(["claude", "a&b"]), ["claude", "a&b"])
 
 
+class TestThePathSearch(_TempDir):
+    """``shutil.which`` on Windows looks in the current directory first; this does not."""
+
+    def test_only_absolute_path_entries_are_searched(self):
+        here = os.path.join(self.tmp, "repo")
+        installed = os.path.join(self.tmp, "npm")
+        for directory in (here, installed):
+            os.makedirs(directory)
+            with open(os.path.join(directory, "claude.cmd"), "w") as handle:
+                handle.write("")
+        os.chdir(here)
+        # ".", "" and a relative entry all name the repository under review.
+        path = ";".join([".", "", "repo", installed])
+        found = execution.search_path("claude", path, ".com;.exe;.bat;.cmd")
+        self.assertEqual(found, os.path.join(installed, "claude.cmd"))
+        self.assertTrue(os.path.isabs(found or ""))
+        self.assertIsNone(execution.search_path("claude", ".;repo", ".com;.exe;.bat;.cmd"))
+
+    def test_pathext_is_tried_in_order_and_a_named_extension_is_kept(self):
+        installed = os.path.join(self.tmp, "npm")
+        os.makedirs(installed)
+        for name in ("codex.cmd", "codex.exe"):
+            with open(os.path.join(installed, name), "w") as handle:
+                handle.write("")
+        self.assertEqual(
+            execution.search_path("codex", installed, ".exe;.cmd"), os.path.join(installed, "codex.exe")
+        )
+        self.assertEqual(
+            execution.search_path("codex.cmd", installed, ".exe;.cmd"), os.path.join(installed, "codex.cmd")
+        )
+
+
+@unittest.skipUnless(os.name == "nt", "a .cmd only runs on Windows")
+class TestTheCurrentDirectoryOnWindows(_TempDir):
+    def test_a_cli_committed_to_the_repository_is_never_started(self):
+        marker = os.path.join(self.tmp, "ran")
+        with open(os.path.join(self.project, "planted.cmd"), "w", newline="") as handle:
+            handle.write('@echo off\r\necho planted> "%s"\r\n' % marker)
+        self.set_env("PATH", os.path.join(self.tmp, "empty"))
+        self.assertIsNone(execution.find_program("planted"))
+        outcome = execution.execute(["planted", "--version"], self.project, timeout=60)
+        self.assertEqual(outcome.exit_code, execution.EXIT_SPAWN_FAILED)
+        self.assertIn("not found on PATH", outcome.stderr)
+        self.assertFalse(os.path.exists(marker))
+
+    def test_doctor_does_not_find_it_either(self):
+        with open(os.path.join(self.project, "planted.cmd"), "w") as handle:
+            handle.write("@echo off\r\n")
+        self.set_env("PATH", os.path.join(self.tmp, "empty"))
+        self.assertIsNone(provider_base.Provider("planted").which())
+
+
 @unittest.skipUnless(os.name == "nt", "a .cmd only runs on Windows")
 class TestABatchFileOnWindows(_TempDir):
     def setUp(self):
@@ -174,7 +225,9 @@ class TestABatchFileOnWindows(_TempDir):
     def test_the_version_doctor_reads_is_the_installed_one(self):
         provider = ClaudeProvider("fakecli")
         # What `which()` finds unpatched; the suite may hide the built-in CLIs from it.
-        self.assertEqual(os.path.normcase(shutil.which("fakecli") or ""), os.path.normcase(self.batch))
+        self.assertEqual(
+            os.path.normcase(execution.find_program("fakecli") or ""), os.path.normcase(self.batch)
+        )
         version, error = provider.version()
         self.assertIsNone(error)
         self.assertEqual(version, 'ARGS:"--version"')

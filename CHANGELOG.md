@@ -143,7 +143,10 @@ below begins **User adapters** so adapter authors can find it.
   `doctor` found it through PATHEXT and reported it installed, but it was
   started by its bare name, which Windows looks up as an `.exe` only, so
   `--version` could not run and every run exited 126. A CLI is now started
-  from the path `doctor` found. An npm shim is bypassed for the `node` and
+  from the absolute path `doctor` found, and both look only in the absolute
+  directories on PATH: never in the current directory, which Windows
+  searches first and which may be a repository carrying a `claude.cmd` of
+  its own. A name not found there is not started. An npm shim is bypassed for the `node` and
   script (or the `.exe`) it would run, so no argument passes through
   cmd.exe; any other `.cmd` or `.bat` runs under cmd.exe with every argument
   quoted, and an argument holding `"`, `%`, `!` or a line break, which

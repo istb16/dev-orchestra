@@ -668,7 +668,7 @@ class TestStopOnSigterm(IsolatedCase):
             return fake
 
         with mock.patch.object(execution.subprocess, "Popen", popen), self.assertRaises(_Exited):
-            execution.execute(["cli"], cwd=self.project, timeout=5)
+            execution.execute([sys.executable], cwd=self.project, timeout=5)
         self.assertEqual(self.ended, [(4242, execution._STOP_GRACE_SECONDS)])
         # The real os._exit never returns, so the CLI is still registered here
         # only because the fake one raised; the flag is what must be reset.
@@ -681,7 +681,7 @@ class TestStopOnSigterm(IsolatedCase):
             raise OSError("no such file")
 
         with mock.patch.object(execution.subprocess, "Popen", popen), self.assertRaises(_Exited) as caught:
-            execution.execute(["cli"], cwd=self.project, timeout=5)
+            execution.execute([sys.executable], cwd=self.project, timeout=5)
         self.assertEqual(caught.exception.code, 128 + signal.SIGTERM)
         self.assertEqual(self.ended, [])
         self.assert_left_clean()
@@ -694,7 +694,7 @@ class TestStopOnSigterm(IsolatedCase):
             raise ValueError("bad argument")
 
         with mock.patch.object(execution.subprocess, "Popen", popen), self.assertRaises(ValueError):
-            execution.execute(["cli"], cwd=self.project, timeout=5)
+            execution.execute([sys.executable], cwd=self.project, timeout=5)
         self.assertEqual(self.ended, [])
         self.assert_left_clean()
 
@@ -717,12 +717,12 @@ class TestStopOnSigterm(IsolatedCase):
             mock.patch.object(execution.subprocess, "Popen", lambda *a, **k: self.running_cli()),
             self.assertRaises(_Exited),
         ):
-            execution.execute(["cli"], cwd=self.project, timeout=5)
+            execution.execute([sys.executable], cwd=self.project, timeout=5)
         self.assertEqual(seen, [("append", True), ("honour", False)])
 
     def test_a_failed_spawn_with_no_sigterm_leaves_nothing_behind(self):
         with mock.patch.object(execution.subprocess, "Popen", mock.Mock(side_effect=OSError("nope"))):
-            outcome = execution.execute(["cli"], cwd=self.project, timeout=5)
+            outcome = execution.execute([sys.executable], cwd=self.project, timeout=5)
         self.assertEqual(outcome.exit_code, execution.EXIT_SPAWN_FAILED)
         self.assert_left_clean()
 
