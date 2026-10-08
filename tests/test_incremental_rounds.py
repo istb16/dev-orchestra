@@ -259,6 +259,55 @@ class TestRulesThatMustNotLapseInRoundTwo(RoundCase):
         self.assertIn("大きい.py", meta["changed_paths"])
         self.assertNotIn("####", ws.read_text(self.workspace.snapshot_path))
 
+    def big(self, name):
+        self.write(name, "#" * (review_snapshot.MAX_UNTRACKED_BYTES + 1) + "\n" + "line\n" * 5000)
+
+    def assert_withheld_unread(self, meta, name):
+        self.assertTrue(meta["incremental_from"])
+        self.assertEqual(
+            [(entry["path"], entry["pattern"], entry.get("reason")) for entry in meta["withheld"]],
+            [(name, "", "over 512,000 bytes, not read")],
+        )
+        self.assertNotIn(name, meta["files"])
+        self.assertLess(meta["lines_deleted"], 10)  # the fix itself, not the blob
+        diff = ws.read_text(self.workspace.snapshot_path)
+        self.assertNotIn("####", diff)
+        self.assertNotIn("+line", diff)
+        self.assertNotIn("-line", diff)
+
+    def test_an_oversize_untracked_file_shrunk_after_round_one_stays_withheld(self):
+        """The old blob is over the limit: the diff would delete every line of it."""
+        self.big("data.txt")
+        self.first_round()
+        self.fix()
+        self.write("data.txt", "small now\n")
+        self.assert_withheld_unread(review_mod.create_snapshot(self.workspace), "data.txt")
+
+    def test_an_oversize_untracked_file_deleted_after_round_one_stays_withheld(self):
+        self.big("data.txt")
+        self.first_round()
+        self.fix()
+        os.remove(os.path.join(self.project, "data.txt"))
+        self.assert_withheld_unread(review_mod.create_snapshot(self.workspace), "data.txt")
+
+    def test_an_oversize_lockfile_is_withheld_for_its_size_in_round_two_too(self):
+        self.first_round()
+        self.fix()
+        self.big("yarn.lock")
+        self.assert_withheld_unread(review_mod.create_snapshot(self.workspace), "yarn.lock")
+
+    def test_a_large_tracked_file_is_still_diffed_in_round_two(self):
+        """The limit is for untracked files; a committed one is reviewed as before."""
+        self.big("data.txt")
+        self.commit_all("data")
+        self.first_round()
+        self.fix()
+        self.write("data.txt", "small now\n")
+        meta = review_mod.create_snapshot(self.workspace)
+        self.assertTrue(meta["incremental_from"])
+        self.assertEqual(meta["withheld"], [])
+        self.assertIn("data.txt", meta["files"])
+
     def test_no_untracked_holds_for_a_japanese_name_in_round_two(self):
         self.git("config", "core.quotePath", "true")
         self.first_round()

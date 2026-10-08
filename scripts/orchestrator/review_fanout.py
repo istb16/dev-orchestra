@@ -566,17 +566,23 @@ def run_reviews(
         if options.prompt_for is not None:
             raise ReviewError("nothing to review at %s" % workspace.relative(workspace.snapshot_path))
         meta = workspace.read_snapshot_meta()
-        if any(entry.get("pattern") for entry in meta.get("withheld") or []):
+        withheld = meta.get("withheld") or []
+        excluded = [str(entry.get("path")) for entry in withheld if not entry.get("reason")]
+        unread = [str(entry.get("path")) for entry in withheld if entry.get("reason")]
+        if withheld:
+            parts = []
+            if excluded:
+                parts.append(
+                    "as generated or vendored (%s) -- re-snapshot with --no-exclude to review them"
+                    % ", ".join(excluded[:5])
+                )
+            if unread:
+                parts.append(
+                    "unread (%s), too large, unreadable, or not a regular file -- review them by hand"
+                    % ", ".join(unread[:5])
+                )
             raise ReviewError(
-                "review snapshot is empty because every changed file was withheld as "
-                "generated or vendored (%s). Re-snapshot with --no-exclude to review them."
-                % ", ".join(str(entry.get("path")) for entry in meta["withheld"][:5])
-            )
-        if meta.get("withheld"):
-            raise ReviewError(
-                "review snapshot is empty because every changed file was withheld unread "
-                "(%s): too large, unreadable, or not a regular file. Review them by hand."
-                % ", ".join(str(entry.get("path")) for entry in meta["withheld"][:5])
+                "review snapshot is empty because every changed file was withheld: %s." % "; ".join(parts)
             )
         raise ReviewError(
             "review snapshot is empty -- run `review snapshot` after making changes, "

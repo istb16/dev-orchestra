@@ -16,6 +16,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import subprocess
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 
@@ -326,7 +327,6 @@ class TestUntrackedFileNames(IsolatedCase):
         self.assertNotIn("####", ws.read_text(self.workspace.snapshot_path))
         note = review_mod.render_withheld(meta["withheld"])
         self.assertIn("- 大きい ファイル.py (over 512,000 bytes, not read)", note)
-        self.assertEqual(review_mod.withheld_lines(meta["withheld"]), "0+")
 
     def test_a_file_at_the_limit_is_still_read(self):
         self.write("edge.py", "#" * (review_snapshot.MAX_UNTRACKED_BYTES - 1) + "\n")
@@ -338,13 +338,79 @@ class TestUntrackedFileNames(IsolatedCase):
         self.write("big.bin", "#" * (review_snapshot.MAX_UNTRACKED_BYTES + 1))
         code, out, _ = run_cli("review", "snapshot")
         self.assertEqual(code, 1)  # nothing else changed, so nothing to review
+        self.assertIn("withheld: 1 file(s) not read, lines not counted", out)
+        self.assertNotIn("changed line(s)", out)
         self.assertIn("big.bin (over 512,000 bytes, not read)", out)
         self.assertNotIn("--no-exclude", out)
-        self.assertIn("withheld unread", out)
+        self.assertIn("reviewed by hand", out)
         with self.assertRaises(review_mod.ReviewError) as ctx:
             review_mod.run_reviews([{"id": "r", "provider": "mock"}], self.workspace)
-        self.assertIn("withheld unread", str(ctx.exception))
+        self.assertIn("unread (big.bin)", str(ctx.exception))
         self.assertNotIn("--no-exclude", str(ctx.exception))
+
+    def test_excluded_and_unread_files_get_their_own_advice(self):
+        """--no-exclude brings back what a pattern withheld, never what was not read."""
+        self.write("big.bin", "#" * (review_snapshot.MAX_UNTRACKED_BYTES + 1))
+        self.write("yarn.lock", "# resolved\n" * 3)
+        code, out, _ = run_cli("review", "snapshot")
+        self.assertEqual(code, 1)
+        self.assertIn(
+            "withheld: 2 file(s), 3 changed line(s) not sent to reviewers (1 not read, lines not counted)",
+            out,
+        )
+        self.assertIn("--no-exclude sends the pattern-matched ones in full", out)
+        self.assertIn("re-run with --no-exclude to review the pattern-matched ones", out)
+        self.assertIn("the 1 file(s) not read have to be reviewed by hand", out)
+        with self.assertRaises(review_mod.ReviewError) as ctx:
+            review_mod.run_reviews([{"id": "r", "provider": "mock"}], self.workspace)
+        message = str(ctx.exception)
+        self.assertIn("as generated or vendored (yarn.lock) -- re-snapshot with --no-exclude", message)
+        self.assertIn("unread (big.bin)", message)
+
+    def test_an_oversize_file_a_pattern_matches_is_withheld_for_its_size(self):
+        """The same order as an incremental round: size first, then patterns."""
+        self.write("yarn.lock", "#" * (review_snapshot.MAX_UNTRACKED_BYTES + 1))
+        meta = review_mod.create_snapshot(self.workspace, incremental=False)
+        self.assertEqual(
+            [(entry["path"], entry["pattern"], entry.get("reason")) for entry in meta["withheld"]],
+            [("yarn.lock", "", "over 512,000 bytes, not read")],
+        )
+
+    def test_a_nested_repository_is_not_part_of_the_change(self):
+        """git lists it as ``sub/``: never content, so not withheld and not a path
+        that could make a round high-risk."""
+        nested = os.path.join(self.project, "auth-service")
+        os.makedirs(nested)
+        subprocess.run(["git", "init", "-q"], cwd=nested, check=True, capture_output=True)
+        meta = review_mod.create_snapshot(self.workspace, incremental=False)
+        self.assertTrue(meta["empty"])
+        self.assertEqual(meta["withheld"], [])
+        for key in ("files", "changed_paths", "condition_paths"):
+            self.assertEqual(meta[key], [], key)
+        code, out, _ = run_cli("review", "snapshot")
+        self.assertEqual(code, 1)
+        self.assertIn("the snapshot is empty -- there is nothing to review", out)
+
+    @unittest.skipIf(os.name == "nt", "Windows does not allow these bytes in a file name")
+    def test_a_carriage_return_or_a_byte_that_is_not_utf8_survives(self):
+        names = [b"cr\rname.py", b"latin\xe9.py"]
+        made = []
+        for raw in names:
+            try:
+                with open(os.path.join(os.fsencode(self.project), raw), "wb") as handle:
+                    handle.write(b"Z = 1\n")
+            except OSError:
+                continue  # a file system that insists on UTF-8 names
+            made.append(raw)
+        if not made:
+            self.skipTest("this file system refuses these names")
+        meta = review_mod.create_snapshot(self.workspace, incremental=False)
+        self.assertEqual(meta["withheld"], [])
+        self.assertEqual(len(meta["untracked_included"]), len(made))
+        if b"cr\rname.py" in made:
+            self.assertIn("cr\rname.py", meta["untracked_included"])
+        if b"latin\xe9.py" in made:
+            self.assertIn("latin\ufffd.py", meta["untracked_included"])
 
 
 # --------------------------------------------------------------------------- config

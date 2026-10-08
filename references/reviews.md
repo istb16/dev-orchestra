@@ -153,15 +153,24 @@ counts, since nothing was read to count them:
 | Reason | When |
 | --- | --- |
 | `over 512,000 bytes, not read` | Larger than the untracked-file limit |
-| `not a regular file` | A directory git lists as untracked (a nested repository), or a broken symlink |
+| `not a regular file` | A symlink to a directory, a broken symlink, or anything else that is not a plain file |
 | `unreadable` | Its size could not be read |
 | `git could not diff it` | `git diff --no-index` failed or printed nothing |
 
-It is named to reviewers and in `review snapshot` like any other withheld file,
-and it counts as part of the change for the risk check. `--no-exclude` does not
-bring it in: the limit is not a pattern. An incremental round applies the same
-limit, so a large untracked file the fix added is withheld there too rather
-than diffed whole.
+The size is checked before any pattern, so a lockfile over the limit is
+withheld for its size. It is named to reviewers and in `review snapshot` like
+any other withheld file, with `lines not counted` in place of a line count,
+and it counts as part of the change for the risk check. `--no-exclude` does
+not bring it in: the limit is not a pattern, and `review snapshot` and
+`review run` say which withheld files `--no-exclude` would bring back and
+which have to be reviewed by hand. An incremental round applies the same limit
+to a file in neither `HEAD` nor the index, measured on both sides of the
+round, so a large untracked file is withheld there too rather than diffed
+whole -- whether the fix added it, changed it, shrank it or deleted it.
+
+A nested repository, or a worktree placed inside this one, is not part of the
+change: git lists it as a directory, and it is left out of the snapshot as
+before, neither diffed nor withheld.
 
 If *every* changed file is withheld, the snapshot is empty and says so in those
 terms -- that is a different situation from "nothing changed", and `review run`

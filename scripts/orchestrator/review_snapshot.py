@@ -185,7 +185,7 @@ def _tracked_diff(
     # already filtered.
     tracked, listed_code, listed_err = _numstat(root, revisions, patterns)
     if previous_tree and include_untracked:
-        _mark_unread_untracked(tracked, root)
+        _mark_unread_untracked(tracked, root, revisions)
     withheld = [entry for entry in tracked if entry.get("pattern") or entry.get("reason")]
     # A tree-to-tree diff skips the untracked pass (``_untracked_diff``), which is where the
     # rules about what is not part of the change at all normally get applied.
@@ -227,10 +227,13 @@ def _untracked_diff(
 ) -> Tuple[str, List[str], List[Dict[str, Any]]]:
     """The untracked files' diff, the names it covers, and the ones withheld, in git's order.
 
-    The orchestrator's own files are skipped. A file too large to read, or one
-    that cannot be read or diffed, is withheld with a ``reason`` rather than
-    dropped: a change nobody is told about is the worst kind to lose. A file a
-    pattern matches is withheld before it is diffed.
+    The orchestrator's own files are skipped, and so is a directory git lists
+    on its own (a nested repository or a worktree), which is not content to
+    review. A file too large to read, or one that cannot be read or diffed, is
+    withheld with a ``reason`` rather than dropped: a change nobody is told
+    about is the worst kind to lose. That is decided before any pattern, as an
+    incremental round decides it, and a file a pattern matches is then
+    withheld before it is diffed.
     """
     diff = ""
     untracked: List[str] = []
@@ -239,39 +242,67 @@ def _untracked_diff(
     # untracked files: adding them again would duplicate every hunk.
     if include_untracked and not previous_tree:
         for name in _list_untracked(root) or []:
-            if _is_orchestrator_artifact(name, workspace):
+            # ``shown`` is what is recorded; ``name`` is what is on disk, and
+            # differs only for a name that is not UTF-8.
+            shown = _shown_name(name)
+            if _is_orchestrator_artifact(shown, workspace):
                 continue
             path = os.path.join(root, name)
             reason = _unread_reason(path)
             if reason:
-                withheld.append(_unread_entry(name, reason))
+                withheld.append(_unread_entry(shown, reason))
                 continue
-            pattern = withholds(name, patterns)
+            pattern = withholds(shown, patterns)
             if pattern:
-                withheld.append(_withheld_entry(name, pattern, added=_count_lines(path)))
+                withheld.append(_withheld_entry(shown, pattern, added=_count_lines(path)))
                 continue
             dcode, dout, _ = ws.git(["diff", "--no-color", "--no-index", "--", os.devnull, name], root)
             # --no-index exits 1 when files differ, which is the normal case.
             if dcode in (0, 1) and dout.strip():
                 diff += dout
-                untracked.append(name)
+                untracked.append(shown)
             else:
-                withheld.append(_unread_entry(name, "git could not diff it"))
+                withheld.append(_unread_entry(shown, "git could not diff it"))
     return diff, untracked, withheld
 
 
 def _list_untracked(root: str) -> Optional[List[str]]:
-    """Untracked, not ignored files in git's order, or None when git failed.
+    """Untracked, not ignored files in git's order, as named on disk, or None when git failed.
 
     ``-z`` because without it ``core.quotePath`` -- on by default -- hands back
     a non-ASCII or otherwise unusual name C-quoted (``"\\346\\227\\245.py"``),
-    which names no file on disk. Nothing is stripped: a name may begin or end
-    with a space.
+    which names no file on disk. Read as bytes and decoded the way the file
+    system does, so a carriage return or a byte that is not UTF-8 survives.
+    Nothing is stripped: a name may begin or end with a space.
+
+    A directory git lists on its own, with a trailing ``/``, is a nested
+    repository or a worktree inside this one. It is left out: it was never
+    content a reviewer could be shown.
     """
-    code, out, _ = ws.git(["ls-files", "-z", "--others", "--exclude-standard"], root)
+    code, out, _ = ws.git_bytes(["ls-files", "-z", "--others", "--exclude-standard"], root)
     if code != 0:
         return None
-    return [name for name in out.split("\0") if name]
+    names = []
+    for raw in out.split(b"\0"):
+        if not raw or raw.endswith(b"/"):
+            continue
+        try:
+            names.append(os.fsdecode(raw))
+        except UnicodeDecodeError:
+            names.append(raw.decode("utf-8", errors="replace"))
+    return names
+
+
+def _shown_name(name: str) -> str:
+    """``name`` as it can be recorded and printed: what git's own text output says.
+
+    The same as ``name`` unless it held a byte that is not UTF-8, which
+    becomes U+FFFD, as it does in every other path read from git here.
+    """
+    try:
+        return name.encode("utf-8", errors="surrogateescape").decode("utf-8", errors="replace")
+    except UnicodeEncodeError:
+        return name.encode("utf-8", errors="replace").decode("utf-8")
 
 
 def _unread_reason(path: str) -> str:
@@ -922,24 +953,66 @@ def _head(root: str) -> str:
 
 
 def _untracked_paths(root: str) -> "set[str]":
-    return set(_list_untracked(root) or [])
+    return {_shown_name(name) for name in _list_untracked(root) or []}
 
 
-def _mark_unread_untracked(tracked: Sequence[Dict[str, Any]], root: str) -> None:
-    """Give an untracked file the first round would not have read a ``reason``.
+def _mark_unread_untracked(tracked: Sequence[Dict[str, Any]], root: str, revisions: Sequence[str]) -> None:
+    """Withhold, unread, an untracked file too large for the first round to read.
 
     Both trees of an incremental round are written with ``git add -A``, so an
     untracked file over the size limit is in them, and without this its whole
-    body would reach the diff in round 2 when round 1 withheld it.
+    body would reach the diff in round 2 when round 1 withheld it -- as an
+    addition, or, once it is shrunk or deleted, as a deletion of every line.
+
+    Untracked means in neither ``HEAD`` nor the index, which is what round 1's
+    untracked pass covers; the file may be gone from the working tree by now.
+    The blob is measured on both sides, and either one over the limit
+    withholds it. The size is decided before any pattern, as in round 1.
     """
-    untracked = _untracked_paths(root)
-    for entry in tracked:
+    known = _listed_paths(root, ["ls-files", "-z"])
+    candidates = [
+        entry
+        for entry in tracked
+        if any(name and name not in known for name in (entry.get("path"), entry.get("previous")))
+    ]
+    if not candidates:
+        return
+    known |= _listed_paths(root, ["ls-tree", "-r", "-z", "--name-only", "HEAD"])
+    old_sizes = _blob_sizes(root, revisions[0])
+    new_sizes = _blob_sizes(root, revisions[-1])
+    reason = "over %s bytes, not read" % ws.fmt_int(MAX_UNTRACKED_BYTES)
+    for entry in candidates:
         path = str(entry.get("path") or "")
-        if entry.get("pattern") or path not in untracked:
-            continue
-        reason = _unread_reason(os.path.join(root, path))
-        if reason:
-            entry["reason"] = reason
+        previous = str(entry.get("previous") or path)
+        sizes: List[int] = []
+        if path not in known:
+            sizes += [new_sizes.get(path, 0), old_sizes.get(path, 0)]
+        if previous not in known:
+            sizes.append(old_sizes.get(previous, 0))
+        if any(size > MAX_UNTRACKED_BYTES for size in sizes):
+            entry.update(pattern="", reason=reason, added=None, deleted=None)
+
+
+def _listed_paths(root: str, args: Sequence[str]) -> "set[str]":
+    """The NUL-separated paths a git listing prints, or none when it fails."""
+    code, out, _ = ws.git(list(args), root)
+    if code != 0:
+        return set()
+    return {name for name in out.split("\0") if name}
+
+
+def _blob_sizes(root: str, tree: str) -> Dict[str, int]:
+    """Every blob in ``tree`` with its size in bytes; empty when git cannot list it."""
+    code, out, _ = ws.git(["ls-tree", "-r", "-l", "-z", tree], root)
+    if code != 0:
+        return {}
+    sizes: Dict[str, int] = {}
+    for record in out.split("\0"):
+        meta, tab, path = record.partition("\t")
+        fields = meta.split()
+        if tab and len(fields) == 4 and fields[1] == "blob" and fields[3].isdigit():
+            sizes[path] = int(fields[3])
+    return sizes
 
 
 def _not_under_review(
