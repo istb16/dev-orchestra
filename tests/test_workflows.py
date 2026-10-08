@@ -17,12 +17,13 @@ from __future__ import annotations
 import io
 import json
 import os
+import re
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime, timedelta, timezone
 from typing import Any, ClassVar, Dict
 
-from helpers import IsolatedCase, has_git
+from helpers import IsolatedCase, has_git, present
 
 from orchestrator import cli
 from orchestrator import workflow as wf
@@ -314,11 +315,18 @@ class TestAStrayExecutionDirectory(IsolatedCase):
         message = str(raised.exception)
         self.assertNotIn("before 0.4.0", message)
         self.assertIn("prompt file does not exist", message)
-        # realpath: on macOS the temporary directory is reached through the
-        # /var -> /private/var link, and the message names the resolved path.
-        container = os.path.realpath(self.container)
-        expected = os.path.join(container, "workflows", os.environ[wf.WORKFLOW_ENV], "execution")
-        self.assertIn("resolved to %s" % os.path.join(expected, "design-request.md"), message)
+        # Compared once both are resolved: the temporary directory has other
+        # spellings -- /var and /private/var on macOS, RUNNER~1 and its long
+        # name on Windows -- and the message may use either.
+        named = re.search(r"resolved to (.+?)\);", message)
+        self.assertIsNotNone(named, message)
+        expected = os.path.join(
+            self.container, "workflows", os.environ[wf.WORKFLOW_ENV], "execution", "design-request.md"
+        )
+        self.assertEqual(
+            os.path.normcase(os.path.realpath(present(named).group(1))),
+            os.path.normcase(os.path.realpath(expected)),
+        )
         self.assertIn("write the file at the resolved path", message)
 
     def test_no_hint_when_the_file_is_nowhere(self):
