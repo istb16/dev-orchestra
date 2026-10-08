@@ -774,6 +774,34 @@ class TestClaudeInstallers(_InstallerCase):
                 self.assertEqual(code, 0, output)
                 self.assertNotIn(SKILL_NAME, os.listdir(os.path.dirname(dest)))
 
+    def test_a_global_install_goes_into_claude_config_dir(self):
+        """Copy mode and the default, which links or, where it cannot, copies."""
+        for shell in SHELLS:
+            for copy in (True, False):
+                with self.subTest(shell=shell.name, copy=copy):
+                    base = self.fresh(shell, "global-%s" % copy)
+                    config_dir = os.path.join(base, "claude-config")
+                    env = dict(os.environ, HOME=self.home, USERPROFILE=self.home)
+                    env["CLAUDE_CONFIG_DIR"] = config_dir
+                    dest = os.path.join(config_dir, "skills", SKILL_NAME)
+                    code, output = self.run_installer(shell, "install", copy=copy, env=env, mode="claude")
+                    self.assertEqual(code, 0, output)
+                    # A re-run replaces what the first one made.
+                    code, output = self.run_installer(shell, "install", copy=copy, env=env, mode="claude")
+                    self.assertEqual(code, 0, output)
+                    skill = os.path.join(dest, "skills", SKILL_NAME, "SKILL.md")
+                    self.assertTrue(os.path.isfile(skill), output)
+                    if copy or not is_link(dest):
+                        self.assertFalse(is_link(dest), output)
+                        self.assertTrue(os.path.isfile(os.path.join(dest, SENTINEL)), output)
+                        self.assertFalse(os.path.exists(os.path.join(dest, ".git")), output)
+                    else:
+                        self.assertTrue(same_path(dest, REPO_ROOT), output)
+                    code, output = self.run_installer(shell, "uninstall", env=env, mode="claude")
+                    self.assertEqual(code, 0, output)
+                    self.assertNotIn(SKILL_NAME, os.listdir(os.path.dirname(dest)))
+                    self.assertFalse(os.path.exists(os.path.join(self.home, ".claude")), output)
+
     def test_what_the_installer_did_not_write_is_left_alone(self):
         """A directory of the user's, and a clone, the sentinel notwithstanding."""
         for shell in SHELLS:
