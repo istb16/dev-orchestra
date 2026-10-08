@@ -116,15 +116,26 @@ machine with neither `claude` nor `codex` installed — that is what CI runs on.
 
 Your machine probably has them, and the suite acts as if it did not:
 `tests/helpers.py` hides `claude`, `codex` and `agy` from every `IsolatedCase`,
-and `tests/cli_guard/` refuses to start any of them -- in the test processes and
-in the Python processes they start -- with the `FileNotFoundError` a machine
-without them gives. So plain `python -m unittest discover -s tests -t tests` is
-exactly what CI runs; `DEV_ORCHESTRA_TEST_ASSUME_NO_CLI` is still accepted and
-changes nothing. A test that needs a CLI to answer writes a fake, names it by
-its path in the command, and passes that path to `IsolatedCase.allow_cli()`; a
-bare `claude` stays refused. The `mock` provider has affordances for the awkward
-paths: always "installed", with `DEV_ORCHESTRA_MOCK_FAIL` for run failures and
-the `unresolvable` model family for resolution failures.
+and `tests/cli_guard/` refuses to start any of them, with the
+`FileNotFoundError` a machine without them gives. It finds where they are
+installed once (each hit on `PATH`, where its links lead, and for an npm shim
+the script and package it runs), and refuses a command that names one, runs one
+of those scripts through `node`, or reaches one through `cmd /c`, `sh -c`, `pwsh
+-Command`, `env`, `npx` or a `&&` list. It guards `subprocess`, `os.system`,
+`os.spawn*`, `os.posix_spawn*`, `os.exec*` and `os.startfile` in the test
+processes, and, as their `sitecustomize`, in the Python processes they start. It
+does not reach a launch through `_winapi.CreateProcess` or another direct system
+call, nor a Python process started with `-I`, `-E` or `-S` or with an
+environment that drops `PYTHONPATH`; a test that starts one of those must not
+let it run a CLI.
+
+So plain `python -m unittest discover -s tests -t tests` is exactly what CI
+runs; `DEV_ORCHESTRA_TEST_ASSUME_NO_CLI` is still accepted and changes nothing.
+A test that needs a CLI to answer writes a fake, names it by its path in the
+command, and passes that path to `IsolatedCase.allow_cli()`; a bare `claude`
+stays refused. The `mock` provider has affordances for the awkward paths: always
+"installed", with `DEV_ORCHESTRA_MOCK_FAIL` for run failures and the
+`unresolvable` model family for resolution failures.
 
 Which leaves a gap, and it is worth naming: **nothing in the suite has ever run
 a real CLI.** That is not a hypothetical cost. `CodexProvider.run` raised

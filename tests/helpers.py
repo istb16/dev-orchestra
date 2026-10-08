@@ -99,8 +99,12 @@ if CLI_GUARD_DIR not in os.environ.get("PYTHONPATH", "").split(os.pathsep):
 
 
 def refused_cli_launches() -> List[List[str]]:
-    """Every start of a provider CLI the guard refused in this process, oldest first."""
-    return list(cli_guard.refused)
+    """Every start of a provider CLI the guard refused in this process, oldest first.
+
+    Read from the guard that is installed, which is another checkout's when
+    its sitecustomize came first on PYTHONPATH.
+    """
+    return cli_guard.refused_launches()
 
 
 #: The workflow every test runs in unless it says otherwise.
