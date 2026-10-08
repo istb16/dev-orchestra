@@ -289,7 +289,14 @@ def collect(start: Optional[str] = None, probe_models: bool = True) -> Dict[str,
                 "preset %s's fit applies" % (key, loaded.preset)
             )
         report["roles"][key] = _describe_role(
-            label, spec, detections, report["problems"], adapter_errors, load_errors, missing_hint=hint
+            label,
+            spec,
+            detections,
+            report["problems"],
+            adapter_errors,
+            load_errors,
+            missing_hint=hint,
+            read_only=key in config_mod.READ_ONLY_ROLES,
         )
         if key in config_mod.READ_ONLY_ROLES:
             _enforcement_report(label, spec, report, report["roles"][key], key in refused)
@@ -422,7 +429,10 @@ def _reviewer_entry(
     against the same provider: a family that will not resolve fails the
     high-risk rounds, which are the ones that matter most.
     """
-    entry = _describe_role(label, reviewer, detections, report["problems"], adapter_errors, load_errors)
+    # Every seat of either panel runs read-only, whatever its label says.
+    entry = _describe_role(
+        label, reviewer, detections, report["problems"], adapter_errors, load_errors, read_only=True
+    )
     entry["id"] = reviewer.get("id")
     entry["role"] = reviewer.get("role", "general")
     when = opt_mod.reviewer_condition(reviewer)
@@ -449,6 +459,7 @@ def _reviewer_entry(
                 report["problems"],
                 adapter_errors,
                 load_errors,
+                read_only=True,
             )
             shown.update({key: described[key] for key in ("status", "resolved") if key in described})
         entry["high_risk_model"] = shown
@@ -666,7 +677,15 @@ def _describe_role(
     adapter_errors: Dict[str, str],
     load_errors: int,
     missing_hint: str = "",
+    read_only: bool = False,
 ) -> Dict[str, Any]:
+    """One seat as doctor reports it.
+
+    ``read_only`` is whether the seat always runs read-only -- the
+    orchestrator, the architect, and every seat of either review panel -- and
+    is passed by the caller, which knows what it is describing. It used to be
+    read off the label, which missed "Design reviewer ..." (#295).
+    """
     entry: Dict[str, Any] = {"label": label}
     if not isinstance(spec, dict):
         entry["status"] = "missing"
@@ -681,7 +700,7 @@ def _describe_role(
     # Reported before the CLI checks below: whether an option is going to be
     # ignored is a fact about the configuration, true whether or not the CLI
     # that would have honoured it happens to be installed.
-    _describe_options(entry, spec, label, problems)
+    _describe_options(entry, spec, label, problems, read_only)
 
     detection = detections.get(provider_name)
     if detection is None and provider_name in adapter_errors:
@@ -728,13 +747,15 @@ def _describe_role(
     return entry
 
 
-def _describe_options(entry: Dict[str, Any], spec: Dict[str, Any], label: str, problems: List[str]) -> None:
+def _describe_options(
+    entry: Dict[str, Any], spec: Dict[str, Any], label: str, problems: List[str], read_only: bool
+) -> None:
     options = spec.get("options")
     if not isinstance(options, dict):
         return
     entry["options"] = {key: value for key, value in options.items() if key != "args"}
     ignored = sorted(set(options) & READ_ONLY_IGNORED_OPTIONS)
-    if ignored and _is_read_only_role(label):
+    if ignored and read_only:
         entry["ignored_options"] = ignored
         problems.append(
             "%s: %s ignored -- planning and review stages always run read-only"
@@ -745,10 +766,6 @@ def _describe_options(entry: Dict[str, Any], spec: Dict[str, Any], label: str, p
 #: Options that would loosen a sandbox. Harmless on the implementer and fixer,
 #: silently overridden everywhere else -- so say so out loud instead.
 READ_ONLY_IGNORED_OPTIONS = {"permission_mode", "sandbox", "approve", "skip_permissions"}
-
-
-def _is_read_only_role(label: str) -> bool:
-    return label.startswith(("Orchestrator", "Architect", "Reviewer"))
 
 
 def _enforcement_report(

@@ -298,6 +298,13 @@ below begins **User adapters** so adapter authors can find it.
   and Markdown table rows are left out of the judgement like quotes; prose
   outside a table is judged as before (#288).
 
+- **`doctor` reports the options a design reviewer ignores.** Whether a seat
+  runs read-only was read off its label, which had to start with
+  `Orchestrator`, `Architect` or `Reviewer`, so an `options.sandbox` or
+  `options.permission_mode` on a `review.design.reviewers` seat was dropped
+  at run time without a word. The caller now says which seats are read-only
+  -- the orchestrator, the architect and every seat of either panel (#295).
+
 ## [0.22.0] - 2026-10-06
 
 ### Added

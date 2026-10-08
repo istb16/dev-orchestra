@@ -961,6 +961,22 @@ class TestDoctor(IsolatedCase):
         _, out, _ = run_cli("doctor", "--fast")
         self.assertNotIn("always run read-only", out)
 
+    def test_doctor_flags_ignored_options_on_both_panels(self):
+        """A design reviewer is read-only too, whatever its label starts with (#295)."""
+        data = config_mod.default_config()
+        code_seat = config_mod.make_reviewer("r1", "mock", "small")
+        design_seat = config_mod.make_reviewer("d1", "mock", "small")
+        for seat in (code_seat, design_seat):
+            seat["options"] = {"sandbox": "danger-full-access"}
+        data["reviewers"] = [code_seat]
+        data.setdefault("review", {}).setdefault("design", {})["reviewers"] = [design_seat]
+        config_mod.write_config_file(config_mod.global_config_path(), data)
+        _, out, _ = run_cli("doctor", "--fast", "--json")
+        problems = json.loads(out)["problems"]
+        for label in ("Reviewer r1", "Design reviewer d1"):
+            expected = "%s: options.sandbox ignored" % label
+            self.assertTrue(any(p.startswith(expected) for p in problems), problems)
+
     def test_strict_mode_exits_non_zero_on_problems(self):
         run_cli("config", "setup", "--defaults")
         run_cli("reviewer", "remove", "claude-general")
