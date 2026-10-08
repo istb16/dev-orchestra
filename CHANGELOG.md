@@ -277,6 +277,17 @@ below begins **User adapters** so adapter authors can find it.
   `jobs/` it is still named), and a `--prompt-file` that is missing where it
   resolves but present as written says so (#283).
 
+- **`run --json` prints JSON in the foreground too.** It only changed the
+  output with `--detach`; without it the model's raw answer was printed, so
+  a program reading the documented machine-readable output got text. It now
+  prints one object after the run, in the keys a finished job record uses
+  (`stage`, `status`, `exit_code`, `model`, `duration_seconds`, `session_id`,
+  …), with the answer under `output`, or `output_written` and
+  `output_target` when `--output` named a file. The exit code and stderr are
+  as before. `references/cli.md` now lists the commands that take `--json`;
+  the ones that only change something report by their exit code, and a test
+  keeps the list in step with the parser (#286).
+
 ## [0.22.0] - 2026-10-06
 
 ### Added

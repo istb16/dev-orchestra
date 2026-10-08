@@ -1,4 +1,4 @@
-<!-- translated-from: references/cli.md sha256:253c10508d32bd077d0c7666c6a4b610fe7dedce3a5b57941c1993cff195fd8e -->
+<!-- translated-from: references/cli.md sha256:7ee0e4d92240a4e385ff1ddf19d06aa4423947c4e5453669e4ee84f589bb421d -->
 
 > この文書は [references/cli.md](../../../references/cli.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -52,6 +52,21 @@ Microsoft Store のエイリアスだからです。
 すべてのレビュアーが失敗、ロールの実行が失敗）、`2` 使い方または設定のエラー、`3` 予算が尽きて
 コマンドが実行を拒否した、`4` ジョブがまだ実行中のまま `jobs wait` が戻った、`5` plan が承認されて
 おらず `design.require_approval` が有効、`130` 中断。
+
+`--json` は、文章の代わりに JSON のオブジェクトを 1 つ標準出力に出します。プログラムが読むのは
+こちらです（README の「Compatibility」）。`--json` を持つコマンドは次のとおりです。
+<!-- json-commands: start -->
+`config show`, `config validate`, `config suggest-roles`, `model list`,
+`reviewer list`, `doctor`, `hooks status`, `run`, `review snapshot`,
+`review run`, `review consolidate`, `review show`, `review status`,
+`design approve`, `state show`, `jobs list`, `jobs show`, `jobs wait`,
+`budget show`, `tokens show`, `optimization report`, `progress record`,
+`workflow list`, `workflow show`, `status`, `summary`.
+<!-- json-commands: end -->
+ほかのコマンドは何かを変えて、うまくいったかどうかだけを伝えます。それは終了コードで分かります。
+結果は対応する確認用のコマンドで読んでください（`review triage` のあとは `review show`、
+`state record` のあとは `state show`、`budget consume` のあとは `budget show`、`jobs cancel` の
+あとは `jobs show`、`workflow use` のあとは `workflow show`）。
 
 <a id="config"></a>
 
@@ -341,6 +356,15 @@ agy の stdout の行は、短く切って最大 20 行まで実行の stderr �
 
 `--detach` は実行を独自のプロセスで開始し、すぐにジョブ id を返すので、呼び出しがブロックすることは
 ありません。後述の `jobs` を参照してください。
+
+`--json` は、実行のあとに結果を 1 つのオブジェクトとして出します。キーは終わったジョブの記録と
+同じです。`stage`、`status`（`succeeded` か `failed`）、`exit_code`、`stalled`、`timed_out`、
+`duration_seconds`、`model`、`session_id`、失敗したときは `error`（当てはまるときは `resume`、
+`warnings`、`suspended_seconds`）。`--output` が無いときはモデルの答えを表示せず `output` に入れ、
+あるときは `output_written` と `output_target` で、保存したかどうかと保存先を示します（保存しな
+かったときは `rejected_file` も）。`answered` は上の判定です。診断はこれまでどおり標準エラーに出て、
+終了コードも `--json` が無いときと同じです。`--detach` と一緒のときは、これまでどおり開始した
+ジョブを出します。
 
 <a id="revising-the-plan-in-the-architects-own-session---resume"></a>
 

@@ -48,6 +48,22 @@ usage or configuration error, `3` a budget is exhausted and the command refused
 to run, `4` a `jobs wait` returned while the job was still running, `5` the
 plan is not approved and `design.require_approval` is on, `130` interrupted.
 
+`--json` prints one JSON object on stdout instead of the text, and is what a
+program should read (README, "Compatibility"). These commands take it:
+<!-- json-commands: start -->
+`config show`, `config validate`, `config suggest-roles`, `model list`,
+`reviewer list`, `doctor`, `hooks status`, `run`, `review snapshot`,
+`review run`, `review consolidate`, `review show`, `review status`,
+`design approve`, `state show`, `jobs list`, `jobs show`, `jobs wait`,
+`budget show`, `tokens show`, `optimization report`, `progress record`,
+`workflow list`, `workflow show`, `status`, `summary`.
+<!-- json-commands: end -->
+The others change something and report only whether it worked, which the exit
+code says; read the result with the matching query command (`review show`
+after `review triage`, `state show` after `state record`, `budget show` after
+`budget consume`, `jobs show` after `jobs cancel`, `workflow show` after
+`workflow use`).
+
 ## config
 
 | Command | Description |
@@ -371,6 +387,17 @@ from an exit 0 over silence.
 
 `--detach` starts the run in its own process and returns a job id immediately,
 so the call cannot block. See `jobs` below.
+
+`--json` prints the outcome as one object, after the run, in the keys a
+finished job record keeps it under: `stage`, `status` (`succeeded` or
+`failed`), `exit_code`, `stalled`, `timed_out`, `duration_seconds`, `model`,
+`session_id`, and `error` on a failed run (`resume`, `warnings` and
+`suspended_seconds` when they apply). Without `--output` the model's answer
+is in `output` rather than printed; with it, `output_written` and
+`output_target` say whether and where it was saved (`rejected_file` when it
+was not). `answered` is the judgement above. The diagnostics still go to
+stderr, and the exit code is the same as without `--json`. With `--detach`
+it prints the job as started instead, as before.
 
 ### Revising the plan in the architect's own session (`--resume`)
 

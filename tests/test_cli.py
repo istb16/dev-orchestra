@@ -3967,5 +3967,58 @@ class TestParserShape(IsolatedCase):
         self.assert_usage_error("review", "snapshot", "--design")
 
 
+class TestRunJsonInTheForeground(IsolatedCase):
+    """``run --json`` without ``--detach`` printed the model's raw text (#286).
+
+    Every role is on the mock adapter, so no real CLI is started.
+    """
+
+    def setUp(self):
+        super().setUp()
+        role = {"provider": "mock", "model": {"family": "small", "version": "latest"}}
+        data = config_mod.default_config()
+        data.update(orchestrator=role, architect=role, implementer=role, review_fixer=role)
+        data["reviewers"] = [config_mod.make_reviewer("mock-general", "mock", "small")]
+        config_mod.write_config_file(config_mod.global_config_path(), data)
+        self.set_env("DEV_ORCHESTRA_MOCK_RESPONSE", "the answer")
+
+    def test_stdout_is_one_object_with_the_output_inline(self):
+        code, out, err = run_cli("run", "orchestrator", "--prompt", "hi", "--json")
+        self.assertEqual(code, 0, err)
+        payload = json.loads(out)
+        self.assertEqual(payload["stage"], "orchestrator")
+        self.assertEqual(payload["status"], "succeeded")
+        self.assertEqual(payload["exit_code"], 0)
+        self.assertEqual(payload["output"].strip(), "the answer")
+        self.assertTrue(payload["answered"])
+        for key in ("model", "duration_seconds", "session_id", "stalled", "timed_out"):
+            self.assertIn(key, payload)
+        self.assertNotIn("output_written", payload)
+
+    def test_with_output_the_file_is_named_not_printed(self):
+        code, out, err = run_cli("run", "architect", "--prompt", "hi", "--output", ".ai/plan.md", "--json")
+        self.assertEqual(code, 0, err)
+        payload = json.loads(out)
+        self.assertNotIn("output", payload)
+        self.assertTrue(payload["output_written"])
+        self.assertTrue(payload["output_target"].endswith(os.path.join(TEST_WORKFLOW, "plan.md")))
+        with open(payload["output_target"], encoding="utf-8") as handle:
+            self.assertIn("the answer", handle.read())
+
+    def test_a_failed_run_is_still_one_object(self):
+        self.set_env("DEV_ORCHESTRA_MOCK_FAIL", "1")
+        code, out, _ = run_cli("run", "orchestrator", "--prompt", "hi", "--json")
+        self.assertEqual(code, 1)
+        payload = json.loads(out)
+        self.assertEqual(payload["status"], "failed")
+        self.assertIn("error", payload)
+        self.assertFalse(payload["answered"])
+
+    def test_without_json_the_output_is_printed_as_before(self):
+        code, out, _ = run_cli("run", "orchestrator", "--prompt", "hi")
+        self.assertEqual(code, 0)
+        self.assertEqual(out.strip(), "the answer")
+
+
 if __name__ == "__main__":
     unittest.main()
