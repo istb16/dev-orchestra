@@ -336,6 +336,14 @@ as well as where it was looked for. An unreadable `--prompt-file` used to read
 as an empty prompt, which was delegated and answered by the provider CLI
 complaining about its own stdin.
 
+A prompt is read as UTF-8, whether from a `--prompt-file`, `--prompt-file -`
+or a pipe, and a byte-order mark at its start is dropped. Stdin is not read in
+the console's code page: on a Japanese Windows that is cp932, and a UTF-8
+prompt piped in used to be delegated as mojibake. Piped bytes that are not
+UTF-8 but are valid in the console's code page (`type` of a file saved as
+cp932) are read in that code page; anything else keeps its readable text,
+with each undecodable byte replaced by U+FFFD.
+
 `--timeout` is the total deadline. Without it, a role's run takes
 `run.timeout_seconds.<role>` (3600 for the implementer, 1800 for the others) and
 `run <reviewer-id>` takes `review.timeout_seconds` (1800), as `review run` does.

@@ -1,4 +1,4 @@
-<!-- translated-from: references/cli.md sha256:ce9787c914b73b4a596d514240cc30243a6b8f287c427b53fcea066c2f15ca9f -->
+<!-- translated-from: references/cli.md sha256:85d01fc99724c878f3f2e3225932c350fcc33c7f45aa3046901fdda33345e9e2 -->
 
 > この文書は [references/cli.md](../../../references/cli.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -310,6 +310,13 @@ agy の stdout の行は、短く切って最大 20 行まで実行の stderr �
 パイプです。メッセージはそのどれだったかを示し、パスを書かれたとおりに示すとともに、どこを探したかも
 示します。以前は読み込めない `--prompt-file` が空のプロンプトとして読まれ、それが委譲され、provider CLI
 が自分の stdin について文句を言う応答が返っていました。
+
+プロンプトは、`--prompt-file`、`--prompt-file -`、パイプのどれから来ても UTF-8 として読み、先頭の
+BOM は取り除きます。標準入力はコンソールのコードページでは読みません。日本語版 Windows ではそれが
+cp932 で、以前はパイプで渡した UTF-8 のプロンプトが文字化けしたまま委譲されていました。パイプで
+渡されたバイト列が UTF-8 ではなく、コンソールのコードページとしては正しい場合（cp932 で保存した
+ファイルを `type` で渡した場合）は、そのコードページで読みます。どちらでもなければ、読める部分は
+そのままにし、読めないバイトを 1 つずつ U+FFFD に置き換えます。
 
 `--timeout` は全体の期限です。指定しなければ、ロールの実行は `run.timeout_seconds.<role>`
 （implementer は 3600、ほかは 1800）を、`run <reviewer-id>` は `review run` と同じく

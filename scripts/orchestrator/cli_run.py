@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import codecs
 import os
 import re
 import shlex
@@ -80,6 +81,44 @@ def _quoted(token: str) -> str:
     return subprocess.list2cmdline([token]) if os.name == "nt" else shlex.quote(token)
 
 
+def _read_stdin() -> str:
+    """Everything on stdin, as text a UTF-8 prompt survives.
+
+    ``sys.stdin.read()`` decodes with the console's code page, so on a
+    Japanese Windows a UTF-8 prompt piped in arrived as cp932 mojibake and
+    was delegated that way (#284). The bytes are read instead and decoded as
+    UTF-8 (a BOM dropped), as a ``--prompt-file`` is. Bytes that are not
+    UTF-8 but are the console's own encoding -- ``type`` of a file saved in
+    cp932 -- are decoded with that; anything else is UTF-8 with the
+    undecodable bytes replaced, rather than a traceback. Line endings are
+    read as text mode reads them.
+    """
+    stream = sys.stdin
+    raw_stream = getattr(stream, "buffer", None)
+    if raw_stream is None:  # already text: a StringIO under test, or a wrapper
+        return stream.read()
+    raw: bytes = raw_stream.read()
+    text = _decode_stdin(raw, getattr(stream, "encoding", None))
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _decode_stdin(raw: bytes, console: Optional[str]) -> str:
+    try:
+        return raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        pass
+    try:
+        fallback = codecs.lookup(console).name if console else None
+    except LookupError:
+        fallback = None
+    if fallback and fallback not in ("utf-8", "utf-8-sig"):
+        try:
+            return raw.decode(fallback)
+        except UnicodeDecodeError:
+            pass
+    return raw.decode("utf-8-sig", errors="replace")
+
+
 def _read_prompt(args: argparse.Namespace, workspace: Optional[ws.Workspace] = None) -> str:
     if args.prompt_file:
         return _read_prompt_file(args.prompt_file, workspace)
@@ -89,14 +128,14 @@ def _read_prompt(args: argparse.Namespace, workspace: Optional[ws.Workspace] = N
         # empty prompt and a terminal blamed a missing one.
         return _require_prompt(args.prompt, "--prompt was empty")
     if not sys.stdin.isatty():
-        return _require_prompt(sys.stdin.read(), "the piped stdin was empty")
+        return _require_prompt(_read_stdin(), "the piped stdin was empty")
     raise SystemExit("no prompt supplied: use --prompt, --prompt-file, or pipe one in")
 
 
 def _read_prompt_file(prompt_file: str, workspace: Optional[ws.Workspace] = None) -> str:
     """A prompt from a file (or ``-`` for stdin); SystemExit if there is none."""
     if prompt_file == "-":
-        return _require_prompt(sys.stdin.read(), "stdin carried nothing")
+        return _require_prompt(_read_stdin(), "stdin carried nothing")
     path = (_in_workflow(workspace, prompt_file) if workspace else prompt_file) or prompt_file
     named = _both_paths(prompt_file, path)
     # Deliberately not ws.read_text: its default is right for a report that
@@ -108,7 +147,7 @@ def _read_prompt_file(prompt_file: str, workspace: Optional[ws.Workspace] = None
         trouble = "does not exist" if not os.path.exists(path) else "is not a file"
         raise SystemExit("prompt file %s: %s" % (trouble, named))
     try:
-        with open(path, "r", encoding="utf-8", errors="replace") as handle:
+        with open(path, "r", encoding="utf-8-sig", errors="replace") as handle:
             text = handle.read()
     except OSError as exc:
         raise SystemExit("prompt file cannot be read: %s (%s)" % (named, exc)) from exc

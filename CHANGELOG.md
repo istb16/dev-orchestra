@@ -124,6 +124,15 @@ below begins **User adapters** so adapter authors can find it.
   back a result, the entry is ended as failed, and a detached job failed,
   before the error surfaces (#272).
 
+- **A prompt piped to `run` arrives as it was written on a Japanese
+  Windows.** `--prompt-file -` and a bare pipe read stdin in the console's
+  code page, cp932 there, so a UTF-8 prompt was delegated as mojibake. Stdin
+  is now read as UTF-8, as a `--prompt-file` is; bytes that are not UTF-8
+  but are valid in the console's code page (`type` of a file saved as cp932)
+  are read in that code page, and anything else has its undecodable bytes
+  replaced rather than raising. A byte-order mark at the start of a prompt,
+  piped or in a file, is dropped (#284).
+
 - **Without PyYAML, a Windows path or a string of digits written to a config
   reads back unchanged** (#275). The bundled parser decoded `\\n` in a
   double-quoted string as a backslash and a newline, so `C:\work\new` came
