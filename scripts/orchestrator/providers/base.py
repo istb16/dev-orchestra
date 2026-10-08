@@ -1334,7 +1334,7 @@ class Provider:
     def _capture(self, command: Sequence[str], timeout: int = 30) -> Optional[subprocess.CompletedProcess]:
         try:
             return subprocess.run(
-                list(command),
+                execution.launchable(command),
                 capture_output=True,
                 text=True,
                 encoding="utf-8",

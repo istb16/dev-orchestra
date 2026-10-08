@@ -24,12 +24,14 @@ from __future__ import annotations
 
 import os
 import queue
+import re
+import shutil
 import signal
 import subprocess
 import sys
 import threading
 import time
-from typing import IO, Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple, cast
+from typing import IO, Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple, Union, cast
 
 from . import clocks
 
@@ -224,6 +226,130 @@ def spawn_kwargs() -> Dict[str, Any]:
 
 #: The name the tests have always used.
 _spawn_kwargs = spawn_kwargs
+
+
+# --------------------------------------------------------------------------- launching on Windows
+
+#: What Windows starts through cmd.exe rather than as a program of its own.
+BATCH_SUFFIXES = (".bat", ".cmd")
+
+#: Characters cmd.exe acts on in an argument even inside double quotes, or
+#: that cannot be quoted for it at all: ``"`` ends the quoting, ``%`` and
+#: ``!`` expand variables, and a line break ends the command. Python passes a
+#: batch file's arguments through as it would a program's (the behaviour behind
+#: CVE-2024-24576 elsewhere), so an argument holding one of them could run a
+#: command of its own; a launch carrying one is refused instead.
+BATCH_UNSAFE = frozenset('"%!\r\n\x00')
+
+#: The program and script an npm ``.cmd`` shim hands its arguments to:
+#: ``"%dp0%\node_modules\...\cli.js" %*`` (``%~dp0\`` in older shims).
+_SHIM_TARGET = re.compile(r'"%(?:~dp0|dp0%)\\([^"%\r\n]+)"[ \t]*%\*')
+_NODE_SCRIPTS = (".js", ".cjs", ".mjs")
+
+
+class LaunchRefused(OSError):
+    """A command that cannot be started safely as it stands."""
+
+
+def launchable(command: Sequence[str]) -> Union[str, List[str]]:
+    """``command`` as ``Popen`` has to be given it to run what ``which`` found.
+
+    POSIX resolves a bare name on ``PATH`` the way ``shutil.which`` does, so
+    nothing changes there. Windows does not: ``CreateProcess`` only appends
+    ``.exe``, so the ``claude.cmd`` and ``codex.cmd`` npm installs were found
+    by ``doctor`` and then could not be started (#269). A bare name is
+    replaced with the path ``shutil.which`` finds. A batch file that is an
+    npm shim is bypassed for the program it would run (``node`` and its
+    script, or an ``.exe``), so no argument passes through cmd.exe; any other
+    batch file runs under cmd.exe with every argument quoted, and refuses an
+    argument cmd.exe would read as its own syntax (:data:`BATCH_UNSAFE`).
+    """
+    argv = [str(token) for token in command]
+    if not IS_WINDOWS or not argv:
+        return argv
+    return windows_launch(argv, shutil.which(argv[0]) if not _has_directory(argv[0]) else None)
+
+
+def windows_launch(argv: List[str], found: Optional[str]) -> Union[str, List[str]]:
+    """:func:`launchable` on Windows, with the ``which`` result given; testable anywhere."""
+    program = found or argv[0]
+    args = argv[1:]
+    if os.path.splitext(program)[1].lower() not in BATCH_SUFFIXES:
+        return [program, *args]
+    shim = npm_shim_target(program)
+    if shim is not None:
+        return [*shim, *args]
+    return batch_command_line(program, args)
+
+
+def _has_directory(program: str) -> bool:
+    return bool(os.path.dirname(program)) or "/" in program or "\\" in program
+
+
+def npm_shim_target(batch: str) -> Optional[List[str]]:
+    """The program an npm ``.cmd`` shim runs, as a command; None if it is not one.
+
+    Only a target that exists is taken: a ``.js`` script with the ``node.exe``
+    beside the shim or else on ``PATH`` (the shim's own order), or an
+    ``.exe``. Anything else, including a shim for a shell script, is left to
+    cmd.exe.
+    """
+    try:
+        with open(batch, "rb") as handle:
+            text = handle.read(64 * 1024).decode("utf-8", errors="replace")
+    except OSError:
+        return None
+    targets = _SHIM_TARGET.findall(text)
+    if not targets:
+        return None
+    base = os.path.dirname(os.path.abspath(batch))
+    # The separator spelled out, so this reads the same on any platform.
+    target = os.path.normpath(os.path.join(base, *targets[-1].split("\\")))
+    if not os.path.isfile(target):
+        return None
+    suffix = os.path.splitext(target)[1].lower()
+    if suffix == ".exe":
+        return [target]
+    if suffix not in _NODE_SCRIPTS:
+        return None
+    node = os.path.join(base, "node.exe")
+    if not os.path.isfile(node):
+        node = shutil.which("node") or ""
+    # Only a program: a `node.cmd` (a version manager's shim) would be the
+    # batch file this is here to avoid, started without cmd.exe's quoting.
+    if os.path.splitext(node)[1].lower() != ".exe":
+        return None
+    return [node, target]
+
+
+def batch_command_line(batch: str, args: Sequence[str]) -> str:
+    """The cmd.exe command line that runs ``batch`` with ``args`` and nothing else.
+
+    ``/d`` skips AutoRun, ``/v:off`` leaves ``!`` alone, and ``/s`` makes
+    cmd.exe drop exactly the outer pair of quotes. Every token is quoted, so
+    ``&``, ``|``, ``<``, ``>``, ``^`` and parentheses stay text; backslashes
+    before a closing quote are doubled for the program the batch file runs.
+    """
+    for token in (batch, *args):
+        unsafe = sorted(BATCH_UNSAFE.intersection(token))
+        if unsafe:
+            # The characters are named, never the argument: it may be a prompt
+            # or carry a secret.
+            raise LaunchRefused(
+                "refused to start %s: it is a batch file, run by cmd.exe, and an argument holds %s, "
+                "which cmd.exe would read as its own syntax. Install the CLI as an .exe, or pass the "
+                "value another way" % (os.path.basename(batch), ", ".join(repr(c) for c in unsafe))
+            )
+    comspec = os.environ.get("COMSPEC") or os.path.join(
+        os.environ.get("SystemRoot") or r"C:\Windows", "System32", "cmd.exe"
+    )
+    inner = " ".join(_batch_quoted(token) for token in (batch, *args))
+    return '"%s" /d /v:off /s /c "%s"' % (comspec, inner)
+
+
+def _batch_quoted(token: str) -> str:
+    trailing = len(token) - len(token.rstrip("\\"))
+    return '"%s%s"' % (token, "\\" * trailing)
 
 
 def end_children_on_sigterm(note_path: Optional[str] = None) -> None:
@@ -568,7 +694,7 @@ def _spawn(command: Sequence[str], cwd: str, env: Optional[Dict[str, str]]) -> s
     _stop.spawning = True
     try:
         proc = subprocess.Popen(
-            list(command),
+            launchable(command),
             cwd=cwd,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,

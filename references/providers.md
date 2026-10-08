@@ -1055,6 +1055,7 @@ responsibility; nothing here verifies it.
 | --- | --- |
 | CLI not on PATH | `RunResult(ok=False, exit_code=127)` with a clear message |
 | CLI cannot be executed | `exit_code=126` |
+| Batch-file CLI given an argument cmd.exe would read as syntax (Windows) | `exit_code=126`, nothing started, one line naming the characters but not the argument |
 | Timeout | `exit_code=124`, `timed_out=True` — reported, never raised |
 | Non-zero exit | `ok=False`, stderr captured and redacted |
 | Unresolvable model | `ModelResolutionError` before anything runs |
@@ -1064,3 +1065,20 @@ responsibility; nothing here verifies it.
 
 Every captured stream passes through `redact()`, which scrubs
 credential-shaped substrings before anything reaches `.ai/` or the console.
+
+On Windows a CLI is started from the path `which()` found, so a `claude.cmd`
+or `codex.cmd` that npm installed runs as `doctor` reports it; `Popen` given
+the bare name looks only for an `.exe`. An npm shim is not run through cmd.exe
+at all: the `node` and script it would hand its arguments to (the `node.exe`
+beside it, else the one on PATH), or the `.exe` it wraps, are started
+directly. Any other `.cmd` or `.bat` runs under cmd.exe (`/d /v:off /s /c`)
+with every argument quoted, so `&`, `|`, `<`, `>`, `^` and parentheses stay
+text; an argument holding `"`, `%`, `!` or a line break -- which cmd.exe would
+read as its own syntax whatever the quoting -- is refused before anything
+starts. No built-in adapter passes the prompt as an argument (Claude and
+Codex send it on stdin, agy names a file), so it never meets that rule; a raw
+argument from `options.args` or `--extra` does, and a user adapter that
+passed a prompt as one would get the refusal rather than a command line
+cmd.exe could be steered by. Codex's resumed read-only fork passes
+`-c sandbox_mode="read-only"`, so from a `codex.cmd` that is not an npm shim
+it is refused, and that run fails with the message.

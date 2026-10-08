@@ -1,4 +1,4 @@
-<!-- translated-from: references/providers.md sha256:88d8693efa2328744a0eec31f4a65d553864b9d07b2366ef06142c355388c914 -->
+<!-- translated-from: references/providers.md sha256:b44d82ddf8285d236f357618640c5165a34c0b9e10f96abc00642faebea560f7 -->
 
 > この文書は [references/providers.md](../../../references/providers.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -567,6 +567,7 @@ class MyCliProvider(Provider):
 | --- | --- |
 | CLI が PATH にない | 分かりやすいメッセージ付きの `RunResult(ok=False, exit_code=127)` |
 | CLI を実行できない | `exit_code=126` |
+| バッチファイルの CLI に、cmd.exe が構文として読む文字を含む引数を渡した（Windows） | `exit_code=126`。何も起動しない。文字は示すが引数は示さない 1 行 |
 | タイムアウト | `exit_code=124`、`timed_out=True` — 報告されるだけで、例外は送出されない |
 | 0 以外の終了コード | `ok=False`、stderr を取得して秘匿化 |
 | 解決できないモデル | 何かが実行される前に `ModelResolutionError` |
@@ -575,3 +576,5 @@ class MyCliProvider(Provider):
 | 読み取り専用の強制が `unenforced` | 実行は進む。警告は `RunResult.warnings` と stderr の先頭に入る |
 
 取得したすべてのストリームは `redact()` を通ります。これは、何かが `.ai/` やコンソールに届く前に、認証情報のような形の部分文字列を消去します。
+
+Windows では、CLI を `which()` が見つけたパスで起動します。そのため npm が入れた `claude.cmd` や `codex.cmd` も、`doctor` の報告どおりに動きます。素の名前を渡された `Popen` は `.exe` しか探しません。npm のシムは cmd.exe を通さずに起動します。シムが引数を渡す先の `node` とスクリプト（シムの隣の `node.exe`、なければ PATH 上のもの）か、シムが包む `.exe` を直接起動します。それ以外の `.cmd` や `.bat` は cmd.exe（`/d /v:off /s /c`）で、すべての引数を引用符で囲んで実行するので、`&`、`|`、`<`、`>`、`^`、かっこは文字のまま渡ります。`"`、`%`、`!`、改行を含む引数は、引用符で囲んでも cmd.exe が自分の構文として読むので、何も起動する前に拒否します。組み込みのアダプタはどれもプロンプトを引数で渡さないので（Claude と Codex は標準入力で渡し、agy はファイルを示します）、プロンプトがこの規則にかかることはありません。かかるのは `options.args` や `--extra` の生引数で、プロンプトを引数で渡すユーザーのアダプタも、cmd.exe に操られうるコマンドラインを作る代わりに拒否されます。Codex の再開した読み取り専用のフォークは `-c sandbox_mode="read-only"` を渡すので、npm のシムでない `codex.cmd` からは拒否され、その実行はそのメッセージとともに失敗します。

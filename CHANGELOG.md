@@ -133,6 +133,17 @@ below begins **User adapters** so adapter authors can find it.
   replaced rather than raising. A byte-order mark at the start of a prompt,
   piped or in a file, is dropped (#284).
 
+- **On Windows, a `claude.cmd` or `codex.cmd` installed by npm runs.**
+  `doctor` found it through PATHEXT and reported it installed, but it was
+  started by its bare name, which Windows looks up as an `.exe` only, so
+  `--version` could not run and every run exited 126. A CLI is now started
+  from the path `doctor` found. An npm shim is bypassed for the `node` and
+  script (or the `.exe`) it would run, so no argument passes through
+  cmd.exe; any other `.cmd` or `.bat` runs under cmd.exe with every argument
+  quoted, and an argument holding `"`, `%`, `!` or a line break, which
+  cmd.exe would read as its own syntax, is refused (exit 126) rather than
+  passed on (#269).
+
 - **Without PyYAML, a Windows path or a string of digits written to a config
   reads back unchanged** (#275). The bundled parser decoded `\\n` in a
   double-quoted string as a backslash and a newline, so `C:\work\new` came
