@@ -1,4 +1,4 @@
-<!-- translated-from: references/workflow.md sha256:8326ca1e20d720823003191ad0c3c501fba6d0282c5c22f63770b3942542723b -->
+<!-- translated-from: references/workflow.md sha256:0647d90a42895f9487f9aeefcc2b0a1b4877e2948d92e4b686c51ce62b43c9b6 -->
 
 > この文書は [references/workflow.md](../../../references/workflow.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -798,6 +798,11 @@ Git Bash は MSYS 形式のパス（`/c/...`）を書き込み、ネイティブ
 
 `skills/dev-orchestra/SKILL.md` が唯一の情報源であり続けます。ブロックはそれを参照する
 だけで、内容を複製しません。
+
+再実行するとブロックを置き換え、`uninstall --codex` で取り除きます。`AGENTS.md` の
+それ以外の部分は、文字も改行コードもそのまま残します。`install.ps1` は
+Windows PowerShell 5.1 でも PowerShell 7 でも、BOM なしの UTF-8 として読み書きします。
+UTF-8 でないファイルには手を付けず、先に UTF-8 で保存し直すよう表示します。
 
 **Antigravity:** インストーラはこのチェックアウトを Antigravity の plugins フォルダに
 リンクします。ディレクトリを Plugin にするのはルートの `plugin.json` で、その下の

@@ -262,14 +262,19 @@ install_codex() {
   end="<!-- END $SKILL_NAME -->"
 
   # Idempotent: drop any previous block before appending the current one.
+  # BINMODE: Git Bash's awk would otherwise drop the CR of every CRLF line.
   if grep -qF "$begin" "$agents_file" 2>/dev/null; then
     tmp="$agents_file.tmp.$$"
-    awk -v b="$begin" -v e="$end" '
+    awk -v BINMODE=3 -v b="$begin" -v e="$end" '
       index($0, b) { skip = 1 }
       !skip { print }
       index($0, e) { skip = 0 }
     ' "$agents_file" > "$tmp"
     mv "$tmp" "$agents_file"
+  fi
+  # A last line without a newline would otherwise run into the block.
+  if [ -s "$agents_file" ] && [ -n "$(tail -c 1 "$agents_file")" ]; then
+    printf '\n' >> "$agents_file"
   fi
 
   {

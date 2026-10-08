@@ -784,6 +784,12 @@ pointer block to `AGENTS.md` referencing this checkout:
 `skills/dev-orchestra/SKILL.md` stays the single source of truth — the pointer
 references it rather than duplicating it.
 
+A re-run replaces the block, and `uninstall --codex` removes it; the rest of
+`AGENTS.md` keeps its text and its line endings. `install.ps1` reads and
+writes it as UTF-8 without a BOM in Windows PowerShell 5.1 as in PowerShell 7,
+and leaves a file that is not UTF-8 untouched, with a note to save it as UTF-8
+first.
+
 **Antigravity:** the installer links this checkout into Antigravity's plugins
 folder. The root `plugin.json` is what makes the directory a plugin, and
 Antigravity finds `skills/` under it on its own:

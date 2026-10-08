@@ -213,6 +213,53 @@ function Remove-OwnedDestination {
     ) + @(Get-FullCopyNote $Destination))
 }
 
+# AGENTS.md and .git/info/exclude are read and written as UTF-8 without a
+# BOM, whichever PowerShell runs this: Windows PowerShell's Get-Content reads
+# them in the ANSI code page, and its `-Encoding utf8` writes a BOM, which
+# together garble every non-ASCII line. A file that is not UTF-8 is not
+# rewritten at all.
+function Read-TextLines {
+    # The lines of $Path, each with the line ending it has, so that what is
+    # written back keeps them; the last may have none. $null when the file is
+    # not UTF-8. A BOM is dropped.
+    param([string]$Path)
+
+    $strict = New-Object System.Text.UTF8Encoding($false, $true)
+    try { $text = [System.IO.File]::ReadAllText($Path, $strict) }
+    catch [System.Text.DecoderFallbackException] { return $null }
+    $lines = [regex]::Split($text, '(?<=\n)')
+    if ($lines[-1] -eq '') { $lines = @($lines | Select-Object -SkipLast 1) }
+    # The comma keeps an empty or one-line array an array.
+    return , [string[]]$lines
+}
+
+function Get-LineText {
+    # A line from Read-TextLines without its line ending.
+    param([string]$Line)
+
+    return $Line.TrimEnd([char[]]"`r`n")
+}
+
+function Write-TextLines {
+    # $Lines as Read-TextLines returned them, then $Added, each ending the way
+    # the file's lines already do. UTF-8 without a BOM.
+    param([string]$Path, [string[]]$Lines, [string[]]$Added)
+
+    $newline = [Environment]::NewLine
+    foreach ($line in $Lines) {
+        if ($line.EndsWith("`r`n")) { $newline = "`r`n"; break }
+        if ($line.EndsWith("`n")) { $newline = "`n"; break }
+    }
+    $builder = New-Object System.Text.StringBuilder
+    foreach ($line in $Lines) { [void]$builder.Append($line) }
+    if ($Added) {
+        # A last line without a line ending would otherwise run into the first added one.
+        if ($builder.Length -gt 0 -and -not $Lines[-1].EndsWith("`n")) { [void]$builder.Append($newline) }
+        foreach ($line in $Added) { [void]$builder.Append($line).Append($newline) }
+    }
+    [System.IO.File]::WriteAllText($Path, $builder.ToString(), (New-Object System.Text.UTF8Encoding($false)))
+}
+
 function Remove-MarkedGitExclude {
     # Drop the entry the installer added, and its marker. An entry without the
     # marker right above it was there before and stays.
@@ -222,11 +269,15 @@ function Remove-MarkedGitExclude {
     # A full path: the .NET call below does not follow Set-Location.
     $excludeFile = (Get-Item -LiteralPath $excludeFile -Force).FullName
 
-    $lines = @(Get-Content -LiteralPath $excludeFile)
+    $lines = Read-TextLines $excludeFile
+    if ($null -eq $lines) {
+        Write-Warning "$excludeFile is not UTF-8; remove $ExcludeEntry from it by hand if it is no longer wanted."
+        return
+    }
     $kept = New-Object System.Collections.Generic.List[string]
     $removed = $false
     for ($i = 0; $i -lt $lines.Count; $i++) {
-        if ($lines[$i] -eq $ExcludeMarker -and ($i + 1) -lt $lines.Count -and $lines[$i + 1] -eq $ExcludeEntry) {
+        if ((Get-LineText $lines[$i]) -eq $ExcludeMarker -and ($i + 1) -lt $lines.Count -and (Get-LineText $lines[$i + 1]) -eq $ExcludeEntry) {
             $removed = $true
             $i++
             continue
@@ -234,12 +285,7 @@ function Remove-MarkedGitExclude {
         $kept.Add($lines[$i])
     }
     if (-not $removed) { return }
-    if ($kept.Count -gt 0) {
-        [System.IO.File]::WriteAllLines($excludeFile, $kept.ToArray(), (New-Object System.Text.UTF8Encoding($false)))
-    }
-    else {
-        Clear-Content -LiteralPath $excludeFile
-    }
+    Write-TextLines $excludeFile $kept.ToArray()
     Write-Host "Removed $ExcludeEntry from .git/info/exclude"
 }
 
@@ -300,16 +346,26 @@ else {
         Write-Host "No pointer block found in $agentsFile"
     }
     else {
+        # A full path: the .NET calls below do not follow Set-Location.
+        $agentsFile = (Get-Item -LiteralPath $agentsFile -Force).FullName
+        $lines = Read-TextLines $agentsFile
+        if ($null -eq $lines) {
+            Stop-Refused @(
+                "$agentsFile is not UTF-8; it was left as it is."
+                'Save it as UTF-8, then re-run.'
+            )
+        }
+        # The lines kept are written back as they were read, line endings included.
         $kept = New-Object System.Collections.Generic.List[string]
         $skip = $false
         $found = $false
-        foreach ($line in @(Get-Content -LiteralPath $agentsFile)) {
-            if ($line -match [regex]::Escape($begin)) { $skip = $true; $found = $true }
+        foreach ($line in $lines) {
+            if ($line.Contains($begin)) { $skip = $true; $found = $true }
             if (-not $skip) { $kept.Add($line) }
-            if ($line -match [regex]::Escape($end)) { $skip = $false }
+            if ($line.Contains($end)) { $skip = $false }
         }
         if ($found) {
-            Set-Content -LiteralPath $agentsFile -Value $kept -Encoding utf8
+            Write-TextLines $agentsFile $kept.ToArray()
             Write-Host "Removed the pointer block from $agentsFile"
         }
         else {

@@ -1,10 +1,10 @@
 """The installers, run for real against temp directories.
 
-Mostly the Antigravity mode, and the Claude mode's link handling and exclude
-line. Nothing here needs Antigravity: an install is a link or a copy in a
-`plugins/` folder, and that is what these tests look at. Every shell found on
-PATH runs the same cases, one subtest each -- `sh` off Windows, and `pwsh` and
-Windows PowerShell wherever they are.
+Mostly the Antigravity mode, the Claude mode's link handling and exclude
+line, and the Codex mode's AGENTS.md block. Nothing here needs Antigravity:
+an install is a link or a copy in a `plugins/` folder, and that is what these
+tests look at. Every shell found on PATH runs the same cases, one subtest
+each -- `sh` off Windows, and `pwsh` and Windows PowerShell wherever they are.
 """
 
 from __future__ import annotations
@@ -102,6 +102,8 @@ class _InstallerCase(IsolatedCase):
         args: List[str] = []
         if mode == "antigravity":
             args.append("--antigravity" if shell.posix else "-Antigravity")
+        elif mode == "codex":
+            args.append("--codex" if shell.posix else "-Codex")
         if project is not None:
             args += ["--project" if shell.posix else "-Project", project]
         if copy:
@@ -690,6 +692,24 @@ class TestClaudeInstallers(_InstallerCase):
                 with open(exclude, "rb") as handle:
                     self.assertEqual(handle.read(), written)
 
+    def test_powershell_keeps_an_exclude_file_as_it_was_written(self):
+        """The Claude install's exclude line, after a non-ASCII pattern in a
+        file with LF line endings: both stay as they were."""
+        for shell in [s for s in SHELLS if not s.posix]:
+            with self.subTest(shell=shell.name):
+                original = "/ビルド\n".encode()
+                project = self.git_project(self.fresh(shell, "exclude-ja"))
+                exclude = os.path.join(project, ".git", "info", "exclude")
+                with open(exclude, "wb") as handle:
+                    handle.write(original)
+                code, output = self.claude(shell, "install", project, copy=True)
+                self.assertEqual(code, 0, output)
+                with open(exclude, "rb") as handle:
+                    written = handle.read()
+                self.assertTrue(written.startswith(original), written)
+                self.assertNotIn(b"\r", written)
+                self.assertIn(CLAUDE_ENTRY, written.decode("utf-8").splitlines())
+
     def test_a_copy_carries_the_sentinel(self):
         for shell in SHELLS:
             with self.subTest(shell=shell.name):
@@ -843,6 +863,126 @@ class TestClaudeInstallers(_InstallerCase):
             for suffix, expected in ((".sh", sh_list), (".ps1", ps1_list)):
                 relative = os.path.join("install", action + suffix)
                 self.assertIn(expected, read_text(os.path.join(REPO_ROOT, relative)), relative)
+
+
+BEGIN = "<!-- BEGIN dev-orchestra -->"
+END = "<!-- END dev-orchestra -->"
+#: Text that Windows PowerShell's Get-Content, reading in the ANSI code page,
+#: garbled, and that its `-Encoding utf8` then wrote back with a BOM (#292).
+JAPANESE = "# 開発ルール\n日本語の説明\n"
+
+
+@unittest.skipUnless(SHELLS, "needs sh (off Windows), pwsh or powershell")
+class TestCodexInstallers(_InstallerCase):
+    """Codex mode: the pointer block goes into AGENTS.md and comes out again,
+    and what was there before keeps every byte, whatever the shell."""
+
+    def codex(self, shell: Shell, action: str, project: Optional[str], **kwargs) -> Tuple[int, str]:
+        return self.run_installer(shell, action, project, mode="codex", **kwargs)
+
+    def read_bytes(self, path: str) -> bytes:
+        with open(path, "rb") as handle:
+            return handle.read()
+
+    def write_bytes(self, path: str, data: bytes) -> None:
+        with open(path, "wb") as handle:
+            handle.write(data)
+
+    def test_a_japanese_agents_md_survives_a_round_trip(self):
+        for shell in SHELLS:
+            for newline in ("\n", "\r\n"):
+                with self.subTest(shell=shell.name, newline=repr(newline)):
+                    project = self.fresh(shell, "ja-%d" % len(newline))
+                    agents = os.path.join(project, "AGENTS.md")
+                    original = JAPANESE.replace("\n", newline).encode("utf-8")
+                    self.write_bytes(agents, original)
+                    for _ in range(2):
+                        code, output = self.codex(shell, "install", project)
+                        self.assertEqual(code, 0, output)
+                    written = self.read_bytes(agents)
+                    self.assertTrue(written.startswith(original), written[:80])
+                    text = written.decode("utf-8")
+                    self.assertEqual(text.count(BEGIN), 1, text)
+                    self.assertEqual(text.count(END), 1, text)
+                    self.assertIn("skills/dev-orchestra/SKILL.md", text)
+                    if newline == "\r\n" and not shell.posix:
+                        # The block ends its lines the way the file does.
+                        self.assertNotIn(b"\n", written.replace(b"\r\n", b""), written)
+
+                    code, output = self.codex(shell, "uninstall", project)
+                    self.assertEqual(code, 0, output)
+                    self.assertIn("Removed the pointer block", output)
+                    self.assertEqual(self.read_bytes(agents), original)
+
+    def test_a_last_line_without_a_newline_keeps_its_text(self):
+        for shell in SHELLS:
+            with self.subTest(shell=shell.name):
+                project = self.fresh(shell, "no-eol")
+                agents = os.path.join(project, "AGENTS.md")
+                self.write_bytes(agents, "最後の行".encode())
+                code, output = self.codex(shell, "install", project)
+                self.assertEqual(code, 0, output)
+                lines = self.read_bytes(agents).decode("utf-8").splitlines()
+                self.assertEqual(lines[:2], ["最後の行", BEGIN], lines)
+                code, output = self.codex(shell, "uninstall", project)
+                self.assertEqual(code, 0, output)
+                self.assertEqual(self.read_bytes(agents).decode("utf-8").splitlines(), ["最後の行"])
+
+    def test_a_new_agents_md_has_no_bom(self):
+        for shell in SHELLS:
+            with self.subTest(shell=shell.name):
+                project = os.path.join(self.fresh(shell, "new"), "not", "there")
+                code, output = self.codex(shell, "install", project)
+                self.assertEqual(code, 0, output)
+                written = self.read_bytes(os.path.join(project, "AGENTS.md"))
+                self.assertFalse(written.startswith(codecs.BOM_UTF8), written[:20])
+                self.assertTrue(written.decode("utf-8").startswith(BEGIN), written[:80])
+
+    def test_a_relative_project_from_another_directory(self):
+        for shell in SHELLS:
+            with self.subTest(shell=shell.name):
+                base = self.fresh(shell, "relative")
+                project = os.path.join(base, "proj")
+                os.makedirs(project)
+                elsewhere = os.path.join(base, "elsewhere")
+                os.makedirs(elsewhere)
+                relative = os.path.relpath(project, elsewhere)
+                code, output = self.codex(shell, "install", relative, cwd=elsewhere)
+                self.assertEqual(code, 0, output)
+                self.assertIn(BEGIN, read_text(os.path.join(project, "AGENTS.md")))
+                self.assertFalse(os.path.exists(os.path.join(elsewhere, "AGENTS.md")))
+                code, output = self.codex(shell, "uninstall", relative, cwd=elsewhere)
+                self.assertEqual(code, 0, output)
+                self.assertNotIn(BEGIN, read_text(os.path.join(project, "AGENTS.md")))
+
+    def test_the_global_block_goes_into_codex_home(self):
+        for shell in SHELLS:
+            with self.subTest(shell=shell.name):
+                base = self.fresh(shell, "global")
+                codex_home = os.path.join(base, "codex")
+                env = dict(os.environ, HOME=self.home, USERPROFILE=self.home, CODEX_HOME=codex_home)
+                agents = os.path.join(codex_home, "AGENTS.md")
+                code, output = self.codex(shell, "install", None, env=env)
+                self.assertEqual(code, 0, output)
+                self.assertIn(BEGIN, read_text(agents))
+                code, output = self.codex(shell, "uninstall", None, env=env)
+                self.assertEqual(code, 0, output)
+                self.assertNotIn(BEGIN, read_text(agents))
+                self.assertFalse(os.path.exists(os.path.join(self.home, ".codex")), output)
+
+    def test_powershell_leaves_a_file_that_is_not_utf8_alone(self):
+        """Rewriting it would replace every byte it cannot read."""
+        for shell in [s for s in SHELLS if not s.posix]:
+            with self.subTest(shell=shell.name):
+                project = self.fresh(shell, "cp932")
+                agents = os.path.join(project, "AGENTS.md")
+                original = "# 開発ルール\n".encode("cp932")
+                self.write_bytes(agents, original)
+                for action in ("install", "uninstall"):
+                    code, output = self.codex(shell, action, project)
+                    self.assertEqual(code, 1, output)
+                    self.assertIn("is not UTF-8", output)
+                    self.assertEqual(self.read_bytes(agents), original, action)
 
 
 POSIX_SHELLS = [shell for shell in SHELLS if shell.posix]

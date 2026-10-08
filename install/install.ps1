@@ -83,10 +83,56 @@ function Test-Utf8Bom {
     return ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF)
 }
 
+# AGENTS.md and .git/info/exclude are read and written as UTF-8 without a
+# BOM, whichever PowerShell runs this: Windows PowerShell's Get-Content reads
+# them in the ANSI code page, and its `-Encoding utf8` writes a BOM, which
+# together garble every non-ASCII line. A file that is not UTF-8 is not
+# rewritten at all.
+function Read-TextLines {
+    # The lines of $Path, each with the line ending it has, so that what is
+    # written back keeps them; the last may have none. $null when the file is
+    # not UTF-8. A BOM is dropped.
+    param([string]$Path)
+
+    $strict = New-Object System.Text.UTF8Encoding($false, $true)
+    try { $text = [System.IO.File]::ReadAllText($Path, $strict) }
+    catch [System.Text.DecoderFallbackException] { return $null }
+    $lines = [regex]::Split($text, '(?<=\n)')
+    if ($lines[-1] -eq '') { $lines = @($lines | Select-Object -SkipLast 1) }
+    # The comma keeps an empty or one-line array an array.
+    return , [string[]]$lines
+}
+
+function Get-LineText {
+    # A line from Read-TextLines without its line ending.
+    param([string]$Line)
+
+    return $Line.TrimEnd([char[]]"`r`n")
+}
+
+function Write-TextLines {
+    # $Lines as Read-TextLines returned them, then $Added, each ending the way
+    # the file's lines already do. UTF-8 without a BOM.
+    param([string]$Path, [string[]]$Lines, [string[]]$Added)
+
+    $newline = [Environment]::NewLine
+    foreach ($line in $Lines) {
+        if ($line.EndsWith("`r`n")) { $newline = "`r`n"; break }
+        if ($line.EndsWith("`n")) { $newline = "`n"; break }
+    }
+    $builder = New-Object System.Text.StringBuilder
+    foreach ($line in $Lines) { [void]$builder.Append($line) }
+    if ($Added) {
+        # A last line without a line ending would otherwise run into the first added one.
+        if ($builder.Length -gt 0 -and -not $Lines[-1].EndsWith("`n")) { [void]$builder.Append($newline) }
+        foreach ($line in $Added) { [void]$builder.Append($line).Append($newline) }
+    }
+    [System.IO.File]::WriteAllText($Path, $builder.ToString(), (New-Object System.Text.UTF8Encoding($false)))
+}
+
 function Add-GitExcludeLines {
     # Append $Lines to <project>/.git/info/exclude unless $Entry is already a
-    # line there. No BOM: Windows PowerShell's utf8 writes one, and git would
-    # read it as part of the first pattern.
+    # line there. No BOM: git would read it as part of the first pattern.
     param([string]$Entry, [string[]]$Lines)
 
     $gitDir = Join-Path $Project '.git'
@@ -94,17 +140,21 @@ function Add-GitExcludeLines {
     # A full path: the .NET call below does not follow Set-Location.
     $infoDir = (New-Item -ItemType Directory -Force -Path (Join-Path $gitDir 'info')).FullName
     $excludeFile = Join-Path $infoDir 'exclude'
-    # @() around the whole if: assigning an if unrolls a one-line array into a
-    # string, and `+` would then join the lines into one.
-    $existing = @(if (Test-Path -LiteralPath $excludeFile) { Get-Content -LiteralPath $excludeFile })
-    $noBom = New-Object System.Text.UTF8Encoding($false)
-    if ($existing -notcontains $Entry) {
-        [System.IO.File]::WriteAllLines($excludeFile, [string[]]($existing + $Lines), $noBom)
+    $existing = [string[]]@()
+    if (Test-Path -LiteralPath $excludeFile) {
+        $existing = Read-TextLines $excludeFile
+        if ($null -eq $existing) {
+            Write-Warning "$excludeFile is not UTF-8; add $Entry to it by hand to keep the install out of git status."
+            return
+        }
+    }
+    if (@($existing | ForEach-Object { Get-LineText $_ }) -notcontains $Entry) {
+        Write-TextLines $excludeFile $existing $Lines
         Write-Host "Excluded $Entry via .git/info/exclude (local only)"
     }
     elseif (Test-Utf8Bom $excludeFile) {
         # An earlier installer wrote the entry with a BOM, which hides it from git.
-        [System.IO.File]::WriteAllLines($excludeFile, [string[]]$existing, $noBom)
+        Write-TextLines $excludeFile $existing
     }
 }
 
@@ -471,20 +521,32 @@ function Install-CodexPointer {
         $base = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $HOME '.codex' }
         $agentsFile = Join-Path $base 'AGENTS.md'
     }
-    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $agentsFile) | Out-Null
+    # The full path, because the .NET calls below do not follow Set-Location.
+    $agentsDir = (New-Item -ItemType Directory -Force -Path (Split-Path -Parent $agentsFile)).FullName
+    $agentsFile = Join-Path $agentsDir (Split-Path -Leaf $agentsFile)
 
     $begin = "<!-- BEGIN $SkillName -->"
     $end = "<!-- END $SkillName -->"
 
-    $lines = if (Test-Path -LiteralPath $agentsFile) { @(Get-Content -LiteralPath $agentsFile) } else { @() }
+    $lines = [string[]]@()
+    if (Test-Path -LiteralPath $agentsFile) {
+        $lines = Read-TextLines $agentsFile
+        if ($null -eq $lines) {
+            Stop-Refused @(
+                "$agentsFile is not UTF-8; it was left as it is."
+                'Save it as UTF-8, then re-run.'
+            )
+        }
+    }
 
     # Idempotent: strip any previous block before appending the current one.
+    # The lines kept are written back as they were read, line endings included.
     $kept = New-Object System.Collections.Generic.List[string]
     $skip = $false
     foreach ($line in $lines) {
-        if ($line -match [regex]::Escape($begin)) { $skip = $true }
+        if ($line.Contains($begin)) { $skip = $true }
         if (-not $skip) { $kept.Add($line) }
-        if ($line -match [regex]::Escape($end)) { $skip = $false }
+        if ($line.Contains($end)) { $skip = $false }
     }
 
     $block = @(
@@ -505,7 +567,7 @@ function Install-CodexPointer {
         $end
     )
 
-    Set-Content -LiteralPath $agentsFile -Value ($kept + $block) -Encoding utf8
+    Write-TextLines $agentsFile $kept.ToArray() $block
     Write-Host "Added the pointer block to $agentsFile"
 }
 

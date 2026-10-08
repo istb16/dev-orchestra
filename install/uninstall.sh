@@ -122,11 +122,13 @@ unexclude_marked() {
   exclude_file="$target_project/.git/info/exclude"
   [ -f "$exclude_file" ] || return 0
 
-  # No grep first: install.ps1 writes CRLF line endings, which awk strips and
-  # `grep -x` does not. awk exits non-zero when it removed nothing.
+  # No grep first: install.ps1 writes CRLF line endings, which awk strips for
+  # the comparison and `grep -x` does not. BINMODE keeps them in what is
+  # written back (Git Bash's awk would drop them). awk exits non-zero when it
+  # removed nothing.
   entry="/.agents/plugins/$SKILL_NAME"
   tmp="$exclude_file.tmp.$$"
-  awk -v m="$EXCLUDE_MARKER" -v e="$entry" '
+  awk -v BINMODE=3 -v m="$EXCLUDE_MARKER" -v e="$entry" '
     { line = $0; sub(/\r$/, "", line) }
     held { held = 0; if (line == e) { removed = 1; next } print m }
     line == m { held = 1; next }
@@ -177,7 +179,8 @@ else
   end="<!-- END $SKILL_NAME -->"
   if [ -f "$agents_file" ] && grep -qF "$begin" "$agents_file"; then
     tmp="$agents_file.tmp.$$"
-    awk -v b="$begin" -v e="$end" '
+    # BINMODE: Git Bash's awk would otherwise drop the CR of every CRLF line.
+    awk -v BINMODE=3 -v b="$begin" -v e="$end" '
       index($0, b) { skip = 1 }
       !skip { print }
       index($0, e) { skip = 0 }
