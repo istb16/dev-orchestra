@@ -1,4 +1,4 @@
-<!-- translated-from: references/configuration.md sha256:947030381b28b43750caa5f1e8d9e1564592e8869811f9ad96f6c1b1eee84e94 -->
+<!-- translated-from: references/configuration.md sha256:4cc46357ba597607869f3399f9d03b99d6ad841992fda9317782ec8d73d7358c -->
 
 > この文書は [references/configuration.md](../../../references/configuration.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -639,9 +639,9 @@ language:
 | `review.max_review_iterations` | int ≥ 0 | プロジェクト単位ではなくレビュー単位のラウンド数です。新しいブランチ、新しい `--base`、または `budget reset` でカウントはリセットされます。`0` で再レビューを完全に無効にします。 |
 | `review.parallel` | bool | `false` にするとレビュアーを 1 つずつ実行します（デバッグしやすくなります）。 |
 | `review.re_review_severities` | list | ブロッキングとみなす severity。`critical`、`high`、`medium`、`low` から選んだ空でないリストで、大文字小文字は問いません（デフォルトは `[critical, high]`）。リストにしない 1 つの名前、知らない名前、`[]` は断られます。検査せずにファイルを読むコマンドは、代わりにデフォルトでブロックします。 |
-| `run.timeout_seconds.<role>` | int > 0 | `orchestrator`、`architect`、`implementer`、`review_fixer` の `run` 1 回の合計の締め切り（デフォルトは implementer が 3600、ほかは 1800）。`--timeout` で 1 回だけ上書きできます。ほかのキーは拒否されます。ロールのブロックの外にあるので、設定してもそのロールはプリセットのフィットから外れず、`config setup --preset` もこれを残します。この締め切りで止められた実行は、キーの名前を挙げてそう伝えます。 |
-| `review.timeout_seconds` | int > 0 | 各レビュアーの合計の締め切り。`review run` のラウンドのレビュアーと `run <reviewer-id>` に効きます（デフォルト 1800）。ロールの `run` にはもう効きません。そちらは `run.timeout_seconds.<role>` です。タイムアウトは報告されるだけで、例外にはなりません。 |
-| `review.idle_timeout_seconds` | int > 0 \| null | この時間出力がなければ、実行は固まったものとして扱われます（デフォルト 300。ストリーミングする provider のみ）。レビュアーと、ファイルを変えない `run` で共通です。沈黙の長さはタスクの大きさでは伸びないからです。ファイルを変えうる実行（implementer、review fixer、`--mode implement`）には代わりに 1200 秒を当て、この値の方が大きければこの値を当てます。走らせるテストやビルドがそれより長く黙りうる一方、期限をまったく当てないと、固まった実行が全体の期限まで走り続けるからです。ロールごとには `options.idle_timeout` で設定・上書きできます。 |
+| `run.timeout_seconds.<role>` | int、1 から 1,000,000,000 | `orchestrator`、`architect`、`implementer`、`review_fixer` の `run` 1 回の合計の締め切り（デフォルトは implementer が 3600、ほかは 1800）。`--timeout` で 1 回だけ上書きできます。ほかのキーは拒否されます。ロールのブロックの外にあるので、設定してもそのロールはプリセットのフィットから外れず、`config setup --preset` もこれを残します。この締め切りで止められた実行は、キーの名前を挙げてそう伝えます。 |
+| `review.timeout_seconds` | int、1 から 1,000,000,000 | 各レビュアーの合計の締め切り。`review run` のラウンドのレビュアーと `run <reviewer-id>` に効きます（デフォルト 1800）。ロールの `run` にはもう効きません。そちらは `run.timeout_seconds.<role>` です。タイムアウトは報告されるだけで、例外にはなりません。 |
+| `review.idle_timeout_seconds` | int、1 から 1,000,000,000 \| null | この時間出力がなければ、実行は固まったものとして扱われます（デフォルト 300。ストリーミングする provider のみ）。レビュアーと、ファイルを変えない `run` で共通です。沈黙の長さはタスクの大きさでは伸びないからです。ファイルを変えうる実行（implementer、review fixer、`--mode implement`）には代わりに 1200 秒を当て、この値の方が大きければこの値を当てます。走らせるテストやビルドがそれより長く黙りうる一方、期限をまったく当てないと、固まった実行が全体の期限まで走り続けるからです。ロールごとには `options.idle_timeout` で設定・上書きできます。 |
 | `review.exclude` | list | diff 本文をレビュアーに渡さない glob パターン。デフォルトのリストを丸ごと置き換えます。`[]` ですべてをレビューします。 |
 | `review.incremental_rounds` | bool | `true`（デフォルト）にすると、2 回目のラウンドは 1 回目のラウンドがレビューした内容に対する diff になり、修正が対処しようとした指摘を引き継ぎます。`false` にすると毎ラウンド変更全体の diff を取り直します。 |
 | `review.max_findings` | int \| null | 各レビュアーに求める指摘の数。`null`（デフォルト）は `optimization.level` に任せ、`0` は上限を外します。上限を超えて返ってきた指摘は保持され、切り捨てられることはありません。 |
@@ -688,7 +688,7 @@ Codex の sandbox ポリシーに正直に対応付ける方法はないので�
 | `codex` | `sandbox` | `read-only`、`workspace-write`、`danger-full-access`。書き込みロールでは global 設定（または `--extra`）からだけ受け付けます |
 | `codex` | `approve` | `true`（デフォルト）は `--approve-for-me` を渡し、`false` は省略します。書き込みロールでは global 設定（または `--extra`）からだけ受け付けます |
 | `agy` | `skip_permissions` | `true` にすると `implement` の実行で `--dangerously-skip-permissions` を渡し、implementer がコマンドを実行できるようになります。デフォルトは `false`。global 設定（または `--extra --dangerously-skip-permissions`）からだけ受け付けます |
-| any | `idle_timeout` | このロールの無出力期限を上書きします |
+| `claude` | `idle_timeout` | このロールの無出力期限を上書きします。0 より大きく 1,000,000,000 以下の秒数か null です。`0`、負の値、`true`、それより大きい数、文字列は `config validate` で拒否されます。この確認は、このキーを取るすべてのアダプタに共通です（ユーザーのアダプタは `option_keys` に挙げます）。Codex と agy には無出力期限がなく、このキーを拒否します |
 
 ```yaml
 # In the global config: the project file's permission_mode and args are refused.

@@ -154,6 +154,48 @@ below begins **User adapters** so adapter authors can find it.
   timeout. They now go through the same process-group handling as a run,
   and a query that times out reads as one that could not be run (#274).
 
+- **Deadlines and poll intervals must be a number of seconds above zero.**
+  `run --timeout`, `run --idle-timeout`, the same two on `review run`, and
+  `jobs wait --poll` took anything: `0` or a negative stalled a run at once
+  after spending its attempt, `--timeout 0` quietly meant the configured
+  deadline, `--poll -1` ended `jobs wait` on a traceback and `--poll 0`
+  spun for the whole wait. They are now a usage error (exit 2), as are
+  `nan`, `inf` and anything over 1,000,000,000 seconds, which ended on an
+  overflow; `jobs wait --timeout 0` still looks once. `options.idle_timeout`
+  is held to the same rule by `config validate` for every adapter that takes
+  it, where `0`, `true` or `"abc"` used to pass and `"abc"` ended `run` on a
+  traceback that left its in-flight entry open, and the deadlines in the
+  configuration file get the same upper limit. Should a run still raise
+  before the provider hands back a result, Ctrl+C included, the entry is
+  ended as failed, and a detached job failed, before the error surfaces
+  (#272).
+
+- **A UTF-8 prompt piped to `run` is no longer read as cp932 on a Japanese
+  Windows.** `--prompt-file -` and a bare pipe read stdin in the encoding
+  Python gives a pipe there, the ANSI code page (cp932), so a UTF-8 prompt
+  was delegated as mojibake. Stdin is now read as UTF-8, as a
+  `--prompt-file` is. Bytes that are mostly not UTF-8 and read cleanly in
+  the code page (`type` of a file saved as cp932) are read in it; anything
+  else stays UTF-8 with its undecodable bytes replaced, so one stray byte
+  neither raises nor garbles the rest. A byte-order mark at the start of a
+  prompt, piped or in a file, is dropped. Windows PowerShell 5.1 still turns
+  non-ASCII text into `?` before it reaches the pipe unless
+  `$OutputEncoding` is set to UTF-8 (#284).
+
+- **On Windows, a `claude.cmd` or `codex.cmd` installed by npm runs.**
+  `doctor` found it through PATHEXT and reported it installed, but it was
+  started by its bare name, which Windows looks up as an `.exe` only, so
+  `--version` could not run and every run exited 126. A CLI is now started
+  from the absolute path `doctor` found, and both look only in the absolute
+  directories on PATH: never in the current directory, which Windows
+  searches first and which may be a repository carrying a `claude.cmd` of
+  its own. A name not found there is not started. An npm shim is bypassed for the `node` and
+  script (or the `.exe`) it would run, so no argument passes through
+  cmd.exe; any other `.cmd` or `.bat` runs under cmd.exe with every argument
+  quoted, and an argument holding `"`, `%`, `!` or a line break, which
+  cmd.exe would read as its own syntax, is refused (exit 126) rather than
+  passed on (#269).
+
 - **Without PyYAML, a Windows path or a string of digits written to a config
   reads back unchanged** (#275). The bundled parser decoded `\\n` in a
   double-quoted string as a backslash and a newline, so `C:\work\new` came
