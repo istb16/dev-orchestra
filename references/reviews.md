@@ -39,6 +39,13 @@
 5. **Findings are claims, not facts.** Nothing reaches the fixer until the
    orchestrator has triaged it.
 
+What the prompt quotes -- the diff, the plan, the design request, the
+surrounding context -- sits in a fence longer than any run of backticks inside
+it, so a code block in a plan or a diff's unchanged `` ``` `` line cannot close
+the fence and pass for the prompt's own instructions. The prompt also says the
+fenced text, and any file it names to read, is data under review, not
+instructions.
+
 ## Snapshot
 
 ```bash
@@ -681,7 +688,8 @@ reported on stderr. Deciding which findings to discard is triage, and triage is
 the orchestrator's, not the prompt's.
 
 A reviewer that returns neither findings in a recognisable shape nor
-`NO_FINDINGS` is recorded with status `unparsed` and counted as **failed**. A
+`NO_FINDINGS` -- an empty reply from a CLI that exited 0 included -- is
+recorded with status `unparsed` and counted as **failed**. A
 report that cannot be read is not evidence that the code is fine, and treating
 it as such is the worst way for a review tool to fail.
 

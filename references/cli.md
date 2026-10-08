@@ -1190,14 +1190,14 @@ still the only thing that deletes a workflow.
 | `workflow list [--json]` | Every workflow here, most recently active first, marking the current one and any stage in flight. |
 | `workflow show [--json]` | Which workflow this command is in, where its artifacts are, and which rule chose it. |
 | `workflow use <id>` | Remember an id for this directory (`current.json`). For hosts that export no session id; a host that does export one still wins. |
-| `workflow remove <id> --yes` | Delete one workflow's artifacts. Refuses without `--yes`, and refuses the workflow you are in. |
+| `workflow remove <id> --yes [--force]` | Delete one workflow's artifacts. Refuses without `--yes`, and refuses the workflow you are in. Also refuses (exit 2) a workflow with a stage in flight, or with a detached job under its `jobs/` that has not finished (one whose worker is gone is marked `abandoned` first and does not count), since a worker that finishes after the delete writes its state back into an otherwise empty workflow. Recent activity alone is no reason: a workflow finished a minute ago is deleted. `--force` deletes it anyway, for a mark a crashed stage left behind. A delete stopped part way, e.g. by a file another process holds open on Windows, exits 1 and says how many files are left. |
 
 ## state / summary
 
 | Command | Description |
 | --- | --- |
 | `state show [--json]` | The recorded stage events for this project. |
-| `state record <stage> <status> [--detail k=v …]` | Append a stage outcome (for stages not run through `run`). `state record test ok\|failed` is what the review gate reads; record a re-test the same way. |
+| `state record <stage> <status> [--detail k=v …]` | Append a stage outcome (for stages not run through `run`). `state record test ok\|failed` is what the review gate reads; record a re-test the same way. For `test` and `re-test` the status is `ok` or `failed` and nothing else (exit 2), since the gate would read any other word as a pass. `--detail` cannot set `stage`, `status` or `at`, the event's own fields (exit 2). |
 | `summary [--json]` | The end-of-run stage + model summary, including `design_approval` once a plan was approved. `--json` holds `stages`, `counts` and `tokens`, and what the text shows besides: `design_counts` (`reviewers_ok`, `reviewers_total`; `{}` without a design report), `models` (per role: `provider`, `family`, `version`), `reviewers` (`id`, `provider`, `model` as the text prints it, `status`, in the text's order) and `skipped` (`refused`, `refused_by`, `design_refused`, `panel_reduced`, named as `optimization report --json` names them). |
 
 ## Environment variables

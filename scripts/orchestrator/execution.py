@@ -713,3 +713,49 @@ def pid_alive(pid: int) -> bool:
     except OSError:
         return False
     return True
+
+
+def process_started(pid: int) -> Optional[str]:
+    """When the process ``pid`` started, as an opaque token, or None where that
+    cannot be read.
+
+    A pid alone is someone else's once it is reused; the pid with this token
+    is not. Tokens are only compared for equality, and only with one read on
+    the same machine: Windows gives the creation time, Linux the start tick
+    since boot together with the boot's id. Elsewhere (macOS) there is nothing
+    to read without spawning ``ps``, and the answer is None.
+    """
+    if pid <= 0:
+        return None
+    if IS_WINDOWS:
+        # Windows only: ctypes.windll exists nowhere else.
+        import ctypes
+
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        handle = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not handle:
+            return None
+        try:
+            # FILETIMEs, each read whole as a 64-bit count of 100ns.
+            created, exited, kernel, user = (ctypes.c_ulonglong() for _ in range(4))
+            if not ctypes.windll.kernel32.GetProcessTimes(
+                handle, ctypes.byref(created), ctypes.byref(exited), ctypes.byref(kernel), ctypes.byref(user)
+            ):
+                return None
+            return str(created.value)
+        finally:
+            ctypes.windll.kernel32.CloseHandle(handle)
+    try:
+        with open("/proc/%d/stat" % pid, encoding="ascii", errors="replace") as handle:
+            stat = handle.read()
+        with open("/proc/sys/kernel/random/boot_id", encoding="ascii", errors="replace") as handle:
+            boot = handle.read().strip()
+    except OSError:
+        return None
+    # The command name is in parentheses and may itself hold spaces or ")";
+    # the fields after its last ")" begin with the third, so the start time
+    # (the 22nd) is the 20th of them.
+    fields = stat.rpartition(")")[2].split()
+    if len(fields) < 20:
+        return None
+    return "%s/%s" % (boot, fields[19])

@@ -1224,11 +1224,11 @@ class TestFanoutEntries(IsolatedCase):
 
     def test_an_unresolved_model_and_an_empty_answer(self):
         entry = self.entry(result(stdout=""))
-        self.assert_entry(entry, "ok", "")
+        self.assert_entry(entry, "unparsed", review_mod.unparsed_report_warning("", []))
         self.assertEqual(entry["model"], "")
         expected = (
             "# Review\n\n- Reviewer: r1\n- Provider: mock\n- Model: unknown\n- Role: general\n"
-            "- Snapshot: %s\n\n---\n\nNO_FINDINGS\n" % self.stamp
+            "- Snapshot: %s\n\n---\n\n\n" % self.stamp
         )
         self.assertEqual(ws.read_text(self.workspace.reviewer_report_path("r1")), expected)
 

@@ -272,6 +272,21 @@ class TestAntigravityInstallers(_InstallerCase):
                     self.assert_refused(code, output)
                     self.assertTrue(os.path.isdir(os.path.join(dest, ".git")), action)
 
+    def test_a_copy_without_the_sentinel_is_left_alone(self):
+        """Every Antigravity copy had one, so the Claude mode's allowance for
+        older copies does not apply here."""
+        for shell in SHELLS:
+            with self.subTest(shell=shell.name):
+                project = self.fresh(shell, "unmarked")
+                dest = os.path.join(project, ".agents", "plugins", SKILL_NAME)
+                code, output = self.run_installer(shell, "install", project, copy=True)
+                self.assertEqual(code, 0, output)
+                os.remove(os.path.join(dest, SENTINEL))
+                for action in ("install", "uninstall"):
+                    code, output = self.run_installer(shell, action, project, copy=action == "install")
+                    self.assert_refused(code, output)
+                    self.assertTrue(os.path.isfile(os.path.join(dest, "plugin.json")), action)
+
     def test_a_link_to_another_directory_is_left_alone(self):
         for shell in SHELLS:
             with self.subTest(shell=shell.name):
@@ -477,8 +492,9 @@ CLAUDE_ENTRY = "/.claude/skills/dev-orchestra"
 
 @unittest.skipUnless(SHELLS, "needs sh (off Windows), pwsh or powershell")
 class TestClaudeInstallers(_InstallerCase):
-    """Claude mode: a link at the destination is removed as a link, and the
-    exclude line is written once the install succeeded, on a line of its own."""
+    """Claude mode: only what the installer made is removed, a link as a link,
+    and the exclude line is written once the install succeeded, on a line of
+    its own."""
 
     def claude_dest(self, project: str) -> str:
         return os.path.join(project, ".claude", "skills", SKILL_NAME)
@@ -541,7 +557,7 @@ class TestClaudeInstallers(_InstallerCase):
                 elsewhere = os.path.join(base, "elsewhere")
                 os.makedirs(elsewhere)
                 relative = os.path.relpath(project, elsewhere)
-                code, output = self.claude(shell, "uninstall", relative, cwd=elsewhere)
+                code, output = self.claude(shell, "uninstall", relative, cwd=elsewhere, root=checkout)
                 self.assertEqual(code, 0, output)
                 self.assertFalse(os.path.lexists(dest), output)
                 self.assert_checkout_intact(checkout)
@@ -550,7 +566,7 @@ class TestClaudeInstallers(_InstallerCase):
         for shell in SHELLS:
             with self.subTest(shell=shell.name):
                 project, dest, checkout = self.link_at_destination(self.fresh(shell, "replace"))
-                code, output = self.claude(shell, "install", project, copy=True)
+                code, output = self.claude(shell, "install", project, copy=True, root=checkout)
                 self.assertEqual(code, 0, output)
                 self.assertFalse(is_link(dest), output)
                 self.assertTrue(os.path.isfile(os.path.join(dest, "plugin.json")), output)
@@ -560,13 +576,54 @@ class TestClaudeInstallers(_InstallerCase):
         for shell in SHELLS:
             with self.subTest(shell=shell.name):
                 project, dest, checkout = self.link_at_destination(self.fresh(shell, "unlink"))
-                code, output = self.claude(shell, "uninstall", project)
+                code, output = self.claude(shell, "uninstall", project, root=checkout)
                 self.assertEqual(code, 0, output)
                 self.assertIn("Removed", output)
                 self.assertNotIn(SKILL_NAME, os.listdir(os.path.dirname(dest)))
                 self.assert_checkout_intact(checkout)
 
-    def test_a_dangling_link_is_removed(self):
+    def test_a_link_to_the_checkout_through_another_name_is_ours(self):
+        """A link made through a junction to the checkout, or an installer run
+        through one, still points at this checkout: both sides are compared
+        with their links followed, not as written."""
+        for shell in SHELLS:
+            for through in ("link", "root"):
+                with self.subTest(shell=shell.name, through=through):
+                    base = self.fresh(shell, "alias-%s" % through)
+                    project, dest, checkout = self.link_at_destination(base)
+                    alias = os.path.join(base, "alias")
+                    make_dir_link(alias, checkout)
+                    root = checkout
+                    if through == "link":
+                        remove_link(dest)
+                        make_dir_link(dest, alias)
+                    else:
+                        root = alias
+                    code, output = self.claude(shell, "uninstall", project, root=root)
+                    self.assertEqual(code, 0, output)
+                    self.assertIn("Removed", output)
+                    self.assertNotIn(SKILL_NAME, os.listdir(os.path.dirname(dest)))
+                    self.assert_checkout_intact(checkout)
+
+                    make_dir_link(dest, alias if through == "link" else checkout)
+                    code, output = self.claude(shell, "install", project, copy=True, root=root)
+                    self.assertEqual(code, 0, output)
+                    self.assertFalse(is_link(dest), output)
+                    self.assertTrue(os.path.isfile(os.path.join(dest, SENTINEL)), output)
+                    self.assert_checkout_intact(checkout)
+
+    def test_a_link_to_another_checkout_is_left_alone(self):
+        for shell in SHELLS:
+            with self.subTest(shell=shell.name):
+                project, dest, checkout = self.link_at_destination(self.fresh(shell, "other-link"))
+                for action in ("install", "uninstall"):
+                    code, output = self.claude(shell, action, project, copy=action == "install")
+                    self.assert_refused(code, output)
+                    self.assertTrue(is_link(dest), action)
+                    self.assertTrue(same_path(dest, checkout), action)
+                self.assert_checkout_intact(checkout)
+
+    def test_a_dangling_link_is_left_alone(self):
         for shell in SHELLS:
             with self.subTest(shell=shell.name):
                 base = self.fresh(shell, "dangling")
@@ -581,24 +638,14 @@ class TestClaudeInstallers(_InstallerCase):
                     os.rmdir(gone)
                 else:
                     os.symlink(gone, dest)
-                code, output = self.claude(shell, "uninstall", project)
-                self.assertEqual(code, 0, output)
-                self.assertIn("Removed", output)
-                self.assertFalse(os.path.lexists(dest), output)
+                for action in ("install", "uninstall"):
+                    code, output = self.claude(shell, action, project, copy=action == "install")
+                    self.assert_refused(code, output)
+                    self.assertIn(SKILL_NAME, os.listdir(os.path.dirname(dest)), action)
+                    # Nothing was copied through the link.
+                    self.assertFalse(os.path.exists(gone), action)
 
-                if os.name == "nt":
-                    os.makedirs(gone)
-                    make_dir_link(dest, gone)
-                    os.rmdir(gone)
-                else:
-                    os.symlink(gone, dest)
-                code, output = self.claude(shell, "install", project, copy=True)
-                self.assertEqual(code, 0, output)
-                self.assertFalse(is_link(dest), output)
-                self.assertTrue(os.path.isfile(os.path.join(dest, "plugin.json")), output)
-                self.assertFalse(os.path.exists(gone), output)
-
-    def test_a_file_symlink_is_removed_as_a_file(self):
+    def test_a_file_symlink_is_left_alone(self):
         for shell in SHELLS:
             with self.subTest(shell=shell.name):
                 base = self.fresh(shell, "file-link")
@@ -611,17 +658,11 @@ class TestClaudeInstallers(_InstallerCase):
                     os.symlink(target, dest)
                 except OSError as exc:
                     self.skipTest("cannot make a file symlink here: %s" % exc)
-                code, output = self.claude(shell, "uninstall", project)
-                self.assertEqual(code, 0, output)
-                self.assertIn("Removed", output)
-                self.assertFalse(os.path.lexists(dest), output)
-                self.assertEqual(read_text(target), "keep me\n")
-
-                os.symlink(target, dest)
-                code, output = self.claude(shell, "install", project, copy=True)
-                self.assertEqual(code, 0, output)
-                self.assertTrue(os.path.isfile(os.path.join(dest, "plugin.json")), output)
-                self.assertEqual(read_text(target), "keep me\n")
+                for action in ("install", "uninstall"):
+                    code, output = self.claude(shell, action, project, copy=action == "install")
+                    self.assert_refused(code, output)
+                    self.assertTrue(os.path.islink(dest), action)
+                    self.assertEqual(read_text(target), "keep me\n")
 
     def test_the_exclude_entry_is_written_once(self):
         for shell in SHELLS:
@@ -648,6 +689,160 @@ class TestClaudeInstallers(_InstallerCase):
                 self.assertEqual(code, 0, output)
                 with open(exclude, "rb") as handle:
                     self.assertEqual(handle.read(), written)
+
+    def test_a_copy_carries_the_sentinel(self):
+        for shell in SHELLS:
+            with self.subTest(shell=shell.name):
+                project = self.fresh(shell, "copy")
+                dest = self.claude_dest(project)
+                for _ in range(2):
+                    code, output = self.claude(shell, "install", project, copy=True)
+                    self.assertEqual(code, 0, output)
+                for relative in ("plugin.json", "skills/dev-orchestra/SKILL.md", SENTINEL):
+                    self.assertTrue(os.path.isfile(os.path.join(dest, relative)), relative)
+                self.assertFalse(os.path.exists(os.path.join(dest, ".git")))
+                code, output = self.claude(shell, "uninstall", project)
+                self.assertEqual(code, 0, output)
+                self.assertNotIn(SKILL_NAME, os.listdir(os.path.dirname(dest)))
+
+    def test_what_the_installer_did_not_write_is_left_alone(self):
+        """A directory of the user's, and a clone, the sentinel notwithstanding."""
+        for shell in SHELLS:
+            for label, planted in (("foreign-dir", "mine.txt"), ("clone", ".git")):
+                with self.subTest(shell=shell.name, case=label):
+                    project = self.git_project(self.fresh(shell, label))
+                    dest = self.claude_dest(project)
+                    os.makedirs(dest)
+                    if planted == ".git":
+                        os.makedirs(os.path.join(dest, planted))
+                        self.write_file(os.path.join(dest, SENTINEL))
+                    else:
+                        self.write_file(os.path.join(dest, planted))
+                    for action in ("install", "uninstall"):
+                        code, output = self.claude(shell, action, project, copy=action == "install")
+                        self.assert_refused(code, output)
+                        self.assertTrue(os.path.exists(os.path.join(dest, planted)), action)
+                    # A refused install leaves the exclude file as it was.
+                    self.assertEqual(self.exclude_lines(project), [])
+
+    def unmarked_copy(self, shell: Shell, project: str, plugin_json: bool = True) -> str:
+        """A copy as the installers wrote it before they added the sentinel."""
+        code, output = self.claude(shell, "install", project, copy=True)
+        self.assertEqual(code, 0, output)
+        dest = self.claude_dest(project)
+        os.remove(os.path.join(dest, SENTINEL))
+        if not plugin_json:
+            # The copies from before plugin.json was part of the payload.
+            os.remove(os.path.join(dest, "plugin.json"))
+        return dest
+
+    def test_an_older_copy_without_the_sentinel_is_still_replaced(self):
+        for shell in SHELLS:
+            for plugin_json in (True, False):
+                with self.subTest(shell=shell.name, plugin_json=plugin_json):
+                    project = self.fresh(shell, "older-%s" % plugin_json)
+                    dest = self.unmarked_copy(shell, project, plugin_json)
+                    code, output = self.claude(shell, "install", project, copy=True)
+                    self.assertEqual(code, 0, output)
+                    self.assertTrue(os.path.isfile(os.path.join(dest, SENTINEL)), output)
+                    self.assertTrue(os.path.isfile(os.path.join(dest, "plugin.json")), output)
+
+                    os.remove(os.path.join(dest, SENTINEL))
+                    code, output = self.claude(shell, "uninstall", project)
+                    self.assertEqual(code, 0, output)
+                    self.assertNotIn(SKILL_NAME, os.listdir(os.path.dirname(dest)))
+
+    def test_an_older_copy_with_something_added_is_left_alone(self):
+        for shell in SHELLS:
+            with self.subTest(shell=shell.name):
+                project = self.fresh(shell, "older-added")
+                dest = self.unmarked_copy(shell, project)
+                self.write_file(os.path.join(dest, "notes.txt"))
+                for action in ("install", "uninstall"):
+                    code, output = self.claude(shell, action, project, copy=action == "install")
+                    self.assert_refused(code, output)
+                    self.assertTrue(os.path.isfile(os.path.join(dest, "notes.txt")), action)
+
+    def test_a_full_copy_with_its_git_is_explained_not_removed(self):
+        """What an earlier install.sh left under Git Bash, whose `ln -s` copies
+        the whole checkout (#293). It looks like a clone, so it stays, and the
+        refusal says how to remove it."""
+        for shell in SHELLS:
+            with self.subTest(shell=shell.name):
+                project = self.fresh(shell, "full-copy")
+                dest = self.unmarked_copy(shell, project)
+                os.makedirs(os.path.join(dest, ".git"))
+                for action in ("install", "uninstall"):
+                    code, output = self.claude(shell, action, project, copy=action == "install")
+                    self.assert_refused(code, output)
+                    self.assertIn("made under Git Bash", output)
+                    self.assertIn("rm -rf --" if shell.posix else "Remove-Item -LiteralPath", output)
+                    self.assertTrue(os.path.isdir(os.path.join(dest, ".git")), action)
+
+    def test_a_clone_of_something_else_gets_no_full_copy_note(self):
+        for shell in SHELLS:
+            with self.subTest(shell=shell.name):
+                project = self.fresh(shell, "other-clone")
+                dest = self.claude_dest(project)
+                os.makedirs(os.path.join(dest, ".git"))
+                code, output = self.claude(shell, "install", project, copy=True)
+                self.assert_refused(code, output)
+                self.assertNotIn("made under Git Bash", output)
+
+    def assert_checkout_refused(self, code: int, output: str, checkout: str) -> None:
+        self.assertEqual(code, 1, output)
+        self.assertIn("is this checkout itself", output)
+        self.assert_checkout_intact(checkout)
+        self.assertTrue(os.path.isdir(os.path.join(checkout, "install")), output)
+
+    def test_a_checkout_at_the_destination_is_never_removed(self):
+        """Run from a clone made right where the skill goes. A sentinel in it
+        too, so that only the check for the checkout itself stands between it
+        and removal."""
+        for shell in SHELLS:
+            for clone in (True, False):
+                with self.subTest(shell=shell.name, clone=clone):
+                    base = self.fresh(shell, "self-%s" % clone)
+                    project = os.path.join(base, "proj")
+                    dest = self.claude_dest(project)
+                    os.makedirs(os.path.dirname(dest))
+                    os.rename(self.make_checkout(base), dest)
+                    self.write_file(os.path.join(dest, "mine.txt"))
+                    self.write_file(os.path.join(dest, SENTINEL))
+                    if clone:
+                        os.makedirs(os.path.join(dest, ".git"))
+                    for copy in (False, True):
+                        code, output = self.claude(shell, "install", project, copy=copy, root=dest)
+                        self.assert_checkout_refused(code, output, dest)
+                    code, output = self.claude(shell, "uninstall", project, root=dest)
+                    self.assert_checkout_refused(code, output, dest)
+
+    def test_a_checkout_reached_through_a_link_above_the_destination(self):
+        for shell in SHELLS:
+            with self.subTest(shell=shell.name):
+                base = self.fresh(shell, "self-linked")
+                real_skills = os.path.join(base, "real-skills")
+                os.makedirs(real_skills)
+                checkout = os.path.join(real_skills, SKILL_NAME)
+                os.rename(self.make_checkout(base), checkout)
+                self.write_file(os.path.join(checkout, "mine.txt"))
+                self.write_file(os.path.join(checkout, SENTINEL))
+                project = os.path.join(base, "proj")
+                os.makedirs(os.path.join(project, ".claude"))
+                make_dir_link(os.path.join(project, ".claude", "skills"), real_skills)
+                code, output = self.claude(shell, "install", project, copy=True, root=checkout)
+                self.assert_checkout_refused(code, output, checkout)
+                code, output = self.claude(shell, "uninstall", project, root=checkout)
+                self.assert_checkout_refused(code, output, checkout)
+
+    def test_the_scripts_agree_on_what_a_copy_carries(self):
+        """An older copy is recognised by it, in all four scripts alike."""
+        sh_list = 'PAYLOAD="%s"' % " ".join(PAYLOAD)
+        ps1_list = "$Payload = @(%s)" % ", ".join("'%s'" % item for item in PAYLOAD)
+        for action in ("install", "uninstall"):
+            for suffix, expected in ((".sh", sh_list), (".ps1", ps1_list)):
+                relative = os.path.join("install", action + suffix)
+                self.assertIn(expected, read_text(os.path.join(REPO_ROOT, relative)), relative)
 
 
 POSIX_SHELLS = [shell for shell in SHELLS if shell.posix]
@@ -751,6 +946,34 @@ class TestPosixAntigravityInstaller(_InstallerCase):
         self.assertFalse(os.path.exists(os.path.join(dest, ".git")))
         self.assertTrue(os.path.isfile(os.path.join(dest, SENTINEL)))
         code, output = self.run_installer(shell, "uninstall", project, env=env)
+        self.assertEqual(code, 0, output)
+        self.assertNotIn(SKILL_NAME, os.listdir(os.path.dirname(dest)))
+
+    def test_a_claude_ln_that_copies_instead_is_replaced_by_the_payload(self):
+        """Git Bash's `ln -s` copies the whole checkout and exits 0 (#293)."""
+        shell = POSIX_SHELLS[0]
+        stubs = os.path.join(self.tmp, "stubs")
+        os.makedirs(stubs)
+        ln = os.path.join(stubs, "ln")
+        with open(ln, "w", encoding="utf-8") as handle:
+            # Called as `ln -s <root> <dest>`: stand in for the copy with a .git.
+            handle.write('#!/bin/sh\nmkdir -p "$3/.git"\nexit 0\n')
+        os.chmod(ln, os.stat(ln).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+        env = dict(os.environ, HOME=self.home, PATH=stubs + os.pathsep + os.environ.get("PATH", ""))
+
+        project = self.git_project(self.tmp)
+        dest = os.path.join(project, ".claude", "skills", SKILL_NAME)
+        code, output = self.run_installer(shell, "install", project, env=env, mode="claude")
+        self.assertEqual(code, 0, output)
+        self.assertIn("ln -s made a copy, not a link", output)
+        self.assertNotIn("Linked", output)
+        self.assertIn("Re-run this installer", output)
+        self.assertFalse(is_link(dest))
+        self.assertFalse(os.path.exists(os.path.join(dest, ".git")))
+        for relative in ("plugin.json", "skills/dev-orchestra/SKILL.md", SENTINEL):
+            self.assertTrue(os.path.isfile(os.path.join(dest, relative)), relative)
+        self.assertEqual(self.exclude_lines(project).count(CLAUDE_ENTRY), 1)
+        code, output = self.run_installer(shell, "uninstall", project, env=env, mode="claude")
         self.assertEqual(code, 0, output)
         self.assertNotIn(SKILL_NAME, os.listdir(os.path.dirname(dest)))
 

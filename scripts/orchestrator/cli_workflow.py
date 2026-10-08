@@ -9,6 +9,7 @@ from typing import Any, Dict, List, NamedTuple, Optional, cast
 
 from . import approval as approval_mod
 from . import config as config_mod
+from . import jobs as jobs_mod
 from . import ledger as ledger_mod
 from . import optimization as opt_mod
 from . import optimization_report as opt_report
@@ -139,7 +140,7 @@ def cmd_workflow_use(args: argparse.Namespace) -> int:
 
 def cmd_workflow_remove(args: argparse.Namespace) -> int:
     """Delete one workflow's artifacts. The reports are work; ask first."""
-    _, container = _container(args)
+    root, container = _container(args)
     try:
         workflow = workflow_mod.normalise(args.id)
         workflow_mod.refuse_legacy(container)
@@ -157,9 +158,58 @@ def cmd_workflow_remove(args: argparse.Namespace) -> int:
     if workflow == current:
         _err("Refusing to delete the workflow this session is in (%s)" % workflow)
         return 2
-    shutil.rmtree(directory)
+    busy = _busy_reason(root, container, workflow)
+    if busy and not args.force:
+        # A detached worker that finishes after the delete writes its state
+        # back, and leaves a workflow with an empty record and no reports.
+        _err(
+            "Refusing to delete %s: %s. Wait for it to finish, or pass --force if nothing "
+            "runs there any more" % (workflow, busy)
+        )
+        return 2
+    try:
+        shutil.rmtree(directory)
+    except OSError as exc:
+        # On Windows a file another process holds open stops the delete part
+        # way through; say what is left rather than end on a traceback.
+        _err("Could not finish deleting %s: %s" % (directory, exc))
+        _err(_left_behind(directory))
+        return 1
     _out("Removed %s" % directory)
     return 0
+
+
+def _busy_reason(root: str, container: str, workflow: str) -> str:
+    """What could still write into ``workflow`` after a delete, or "" when nothing can.
+
+    Only what can write late counts: a stage recorded as in flight, or a
+    detached job not finished. Recent activity alone does not; a workflow
+    finished a minute ago is as safe to delete as one finished last month.
+    """
+    for entry in workflow_mod.listing(container):
+        if entry["workflow"] == workflow and entry["in_flight"]:
+            return "a stage is in flight there (%s)" % ", ".join(entry["in_flight"])
+    # Read through list_jobs, so that a job whose worker is gone is marked
+    # abandoned rather than counted as running.
+    running = [
+        str(job.get("id"))
+        for job in jobs_mod.list_jobs(ws.Workspace(root, container, workflow))
+        if job.get("status") not in jobs_mod.FINISHED
+    ]
+    if running:
+        return "a detached job has not finished there (%s)" % ", ".join(sorted(running))
+    return ""
+
+
+def _left_behind(directory: str) -> str:
+    """How far an interrupted delete got, counted from what is still there."""
+    if not os.path.isdir(directory):
+        return "%s is gone after all" % directory
+    left = sum(len(files) for _, _, files in os.walk(directory))
+    return "%d file(s) are left under %s; close whatever holds them and run `workflow remove` again" % (
+        left,
+        directory,
+    )
 
 
 #: What each ``refused_by`` means to somebody reading the final report, since
@@ -762,12 +812,32 @@ def cmd_state_show(args: argparse.Namespace) -> int:
     return 0
 
 
+#: The stages whose status the review gate and `status` read as a test result.
+_TEST_STAGES = ("test", "re-test")
+
+#: The only test results recorded. The gate counts anything it does not know
+#: as a failure as a pass, so `failure` or `NG` would send red tests to review.
+_TEST_STATUSES = ("ok", "failed")
+
+#: The event's own fields, which a ``--detail`` would otherwise overwrite.
+_RESERVED_DETAIL = ("stage", "status", "at")
+
+
 def cmd_state_record(args: argparse.Namespace) -> int:
-    workspace = _workspace(args)
+    if args.stage in _TEST_STAGES and args.status not in _TEST_STATUSES:
+        _err(
+            "Refusing to record %s=%s: a test result is %s"
+            % (args.stage, args.status, " or ".join(_TEST_STATUSES))
+        )
+        return 2
     detail: Dict[str, Any] = {}
     for item in args.detail or []:
         key, _, value = item.partition("=")
+        if key in _RESERVED_DETAIL:
+            _err("Refusing --detail %s=...: %s is the event's own field" % (key, key))
+            return 2
         detail[key] = config_mod.coerce_scalar(value)
+    workspace = _workspace(args)
     workspace.record_event(args.stage, args.status, detail)
     _out("recorded %s=%s" % (args.stage, args.status))
     return 0
