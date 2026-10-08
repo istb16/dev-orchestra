@@ -499,7 +499,7 @@ function Install-CodexPointer {
         ''
         'Its helper CLI is:'
         ''
-        "    $PythonCmd $root/scripts/dev_orchestra.py <command>"
+        "    $PythonCmd `"$root/scripts/dev_orchestra.py`" <command>"
         ''
         'That file is the single source of truth; do not rely on a copy of it.'
         $end

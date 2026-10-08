@@ -36,7 +36,10 @@ requirements:
   python: ">=3.11"
   tools:
     - git
+  # The built-in adapters' CLIs; scripts/validate_skill.py keeps this list
+  # in step with them.
   optional_clis:
+    - agy
     - claude
     - codex
 
@@ -60,7 +63,7 @@ roles:
   - id: architect
     description: Investigation and design. Never edits code.
     mode: plan
-    output: .ai/plan.md
+    output: plan.md  # under artifacts.directory
   - id: implementer
     description: Writes code and tests from the plan.
     mode: implement
@@ -73,31 +76,65 @@ roles:
     cardinality: 0..n
 
 commands:
+  # Every command `dev-orchestra --help` lists; scripts/validate_skill.py
+  # checks this list against the parser.
   - config show
+  - config path
   - config setup
   - config reset
+  - config prune
   - config set
+  - config validate
+  - config suggest-roles
   - model list
   - reviewer list
   - reviewer add
   - reviewer remove
+  - reviewer set
   - doctor
+  - hooks install
+  - hooks uninstall
+  - hooks status
   - run
   - review snapshot
   - review run
+  - review consolidate
+  - review show
   - review triage
   - review fix-brief
   - review status
+  - design approve
+  - state show
+  - state record
+  - jobs list
+  - jobs show
+  - jobs wait
+  - jobs cancel
+  - budget show
+  - budget consume
+  - budget reset
+  - tokens show
+  - optimization report
+  - progress record
+  - workflow list
+  - workflow show
+  - workflow use
+  - workflow remove
+  - status
   - summary
 
 artifacts:
-  directory: .ai
+  # One directory per workflow; `workflow show` prints it as `Artifacts:`.
+  # A `.ai/...` path in a command's arguments resolves inside it.
+  directory: .ai/workflows/<id>
   files:
     - plan.md
     - execution/
+    - jobs/
     - reviews/review-target.diff
     - reviews/consolidated.md
     - reviews/consolidated.json
+    - reviews/design/
     - state.json
 
 safety:

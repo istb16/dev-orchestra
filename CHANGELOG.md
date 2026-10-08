@@ -305,6 +305,18 @@ below begins **User adapters** so adapter authors can find it.
   at run time without a word. The caller now says which seats are read-only
   -- the orchestrator, the architect and every seat of either panel (#295).
 
+- **`agents/openai.yaml` and the other pointers name what there is now.** The
+  manifest listed a third of the commands, only `claude` and `codex` as
+  CLIs, and the artifacts as `.ai/plan.md` and `.ai/state.json`; it now
+  lists every command, adds `agy`, and puts the artifacts under
+  `.ai/workflows/<id>/`, and `scripts/validate_skill.py` checks the commands,
+  the CLIs and the directory against the code. `references/cli.md` shows
+  `review snapshot`'s `--no-exclude` and `--full`, with a test that every
+  signature there names each flag its command takes. The Codex pointer the
+  installers write quotes the script's path, so a checkout path with a space
+  works, and `doctor`'s `Resume:` line names the live check by its absolute
+  path, as its notes already did (#297).
+
 ## [0.22.0] - 2026-10-06
 
 ### Added

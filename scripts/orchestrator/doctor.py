@@ -641,12 +641,21 @@ def _live_check_note(name: str, version: str, status: Dict[str, Any], report: Di
     if status["status"] != "absent" or status.get("problem") == verified.SMOKE_INSIDE_WORKSPACE:
         return
     last = status.get("last_passed")
-    script = '"%s"' % SMOKE_SCRIPT if " " in SMOKE_SCRIPT else SMOKE_SCRIPT
     report["notes"].append(
         "%s %s has not been live-checked on this machine (last passed: %s); "
-        "run python %s --provider %s -- it spends a few real tokens"
-        % (name, version, last["version"] if last else "never", script, name)
+        "run %s -- it spends a few real tokens"
+        % (name, version, last["version"] if last else "never", _smoke(name))
     )
+
+
+def _smoke(name: str) -> str:
+    """The live check's command line for ``name``, by the script's absolute path.
+
+    ``scripts/smoke_live.py`` relative to the current directory exists only
+    in a checkout run from its root; an installed plugin is elsewhere (#297).
+    """
+    script = '"%s"' % SMOKE_SCRIPT if " " in SMOKE_SCRIPT else SMOKE_SCRIPT
+    return "python %s --provider %s" % (script, name)
 
 
 def _default_patterns_note(report: Dict[str, Any], settings: Dict[str, Any]) -> None:
@@ -842,7 +851,7 @@ def _resume_line(name: str, support: Dict[str, Any]) -> str:
     if status == "trusted":
         where = "built-in" if support.get("source") == "built-in" else "record: %s" % _record(support)
         version, newer_than = support.get("version"), support.get("newer_than")
-        smoke = "python scripts/smoke_live.py --provider %s" % name
+        smoke = _smoke(name)
         return "trusted for %s %s as newer than %s (verified on %s, %s); not verified itself -- run %s" % (
             name,
             version,

@@ -37,6 +37,13 @@ def read_file(path):
         return handle.read()
 
 
+def smoke_script() -> str:
+    """The live check's script as doctor names it: absolute, quoted if it has a space."""
+    from orchestrator import doctor
+
+    return '"%s"' % doctor.SMOKE_SCRIPT if " " in doctor.SMOKE_SCRIPT else doctor.SMOKE_SCRIPT
+
+
 def run_cli(*argv):
     """Run the CLI, returning (exit_code, stdout, stderr)."""
     out, err = io.StringIO(), io.StringIO()
@@ -3244,7 +3251,7 @@ class TestDoctorResume(IsolatedCase):
         _, out, _ = run_cli("doctor")
         trusted = "Resume: trusted for claude 2.1.286 (Claude Code) as newer than 2.1.285 (Claude Code) "
         self.assertIn(trusted + "(verified on ", out)
-        tail = ", built-in); not verified itself -- run python scripts/smoke_live.py --provider claude"
+        tail = ", built-in); not verified itself -- run python %s --provider claude" % smoke_script()
         self.assertIn(tail, out)
         self.assertEqual(run_cli("doctor", "--strict")[0], strict_verified)
 
@@ -3295,7 +3302,7 @@ class TestDoctorResume(IsolatedCase):
         self.assertIn(
             "Resume: trusted for codex codex-cli 0.157.0 as newer than codex-cli 0.156.1 "
             "(verified on 2026-10-01, built-in); not verified itself -- "
-            "run python scripts/smoke_live.py --provider codex",
+            "run python %s --provider codex" % smoke_script(),
             line()[0],
         )
         codex = json.loads(run_cli("doctor", "--json")[1])["providers"]["codex"]["resume_support"]

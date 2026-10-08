@@ -472,5 +472,36 @@ class TestTheJsonCommandList(unittest.TestCase):
                 self.assertEqual(sorted(self.documented(relative)), expected)
 
 
+class TestCliSignatures(unittest.TestCase):
+    """Every flag a command takes is in its signature in cli.md (#297)."""
+
+    ROW = re.compile(r"^\| `([^`]*)`", re.M)
+
+    def signatures(self, relative: str) -> List[str]:
+        text = (pathlib.Path(REPO_ROOT) / relative).read_text(encoding="utf-8")
+        return self.ROW.findall(text)
+
+    def test_each_signature_names_every_flag(self):
+        for relative in ("references/cli.md", "docs/ja/references/cli.md"):
+            signatures = self.signatures(relative)
+            for words, parser in leaf_commands().items():
+                command = " ".join(words)
+                with self.subTest(file=relative, command=command):
+                    mine = [sig for sig in signatures if re.match(r"%s(?=[ ]|$)" % re.escape(command), sig)]
+                    self.assertTrue(mine, "no signature row for %s" % command)
+                    joined = " ".join(mine)
+                    flags = {
+                        option
+                        for action in parser._actions
+                        if action.help != argparse.SUPPRESS
+                        for option in action.option_strings
+                        if option.startswith("--") and option != "--help"
+                    }
+                    missing = sorted(
+                        flag for flag in flags if not re.search(re.escape(flag) + r"(?![A-Za-z-])", joined)
+                    )
+                    self.assertEqual(missing, [])
+
+
 if __name__ == "__main__":
     unittest.main()
