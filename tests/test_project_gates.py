@@ -58,7 +58,18 @@ class _Case(IsolatedCase):
 
 class TestOutsideTheRepository(unittest.TestCase):
     def test_what_leaves_the_repository(self):
-        for value in ("/srv/ai", "C:\\ai", "C:ai", "\\ai", "../ai", "..", "a/../../ai", "..\\ai"):
+        for value in (
+            "/srv/ai",
+            "C:\\ai",
+            "C:ai",
+            "\\ai",
+            "../ai",
+            "..",
+            "a/../../ai",
+            "..\\ai",
+            "a\\..\\..\\ai",
+            "\\\\server\\share",
+        ):
             with self.subTest(value=value):
                 self.assertTrue(config_trust.outside_repository(value))
 

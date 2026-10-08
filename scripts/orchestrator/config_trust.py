@@ -17,7 +17,9 @@ and the reply-language hook on every prompt.
 
 from __future__ import annotations
 
+import ntpath
 import os
+import posixpath
 from typing import Any, Dict, List, Tuple
 
 APPROVAL = "design.require_approval"
@@ -35,10 +37,11 @@ def outside_repository(directory: Any) -> bool:
     """
     if not isinstance(directory, str) or not directory:
         return False
-    drive, rest = os.path.splitdrive(directory)
+    # By Windows' rules on every system: the file may be read on either.
+    drive, rest = ntpath.splitdrive(directory)
     if drive or os.path.isabs(directory) or rest.startswith(("/", "\\")):
         return True
-    parts = os.path.normpath(directory).replace("\\", "/").split("/")
+    parts = posixpath.normpath(directory.replace("\\", "/")).split("/")
     return parts[0] == ".."
 
 
