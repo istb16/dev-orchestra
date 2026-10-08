@@ -1297,15 +1297,26 @@ class TestPidLiveness(IsolatedCase):
         # the runner's group kills the test run itself.
         proc = subprocess.Popen(python_code(SILENT_HANG), **execution._spawn_kwargs())
         # A handle of our own keeps the pid from being handed to another
-        # process once Popen lets go of its own: on a busy Windows runner a
-        # recycled pid answered True here. It is also the case that matters --
-        # a dead process someone still holds open.
+        # process once Popen lets go of its own, and makes this the case that
+        # matters: a dead process someone still holds open.
         pinned = _pin_process(proc.pid)
         try:
             self.assertTrue(execution.pid_alive(proc.pid))
+            started = execution.process_started(proc.pid)
             execution.terminate_tree(proc)
             proc.wait(timeout=30)
-            self.assertFalse(execution.pid_alive(proc.pid))
+            # The bug was an answer that stayed True; a busy Windows runner has
+            # also been seen to answer True once, right after the wait. Asked
+            # again for a few seconds, the first is still caught.
+            deadline = time.monotonic() + 5
+            while execution.pid_alive(proc.pid) and time.monotonic() < deadline:
+                time.sleep(0.1)
+            alive = execution.pid_alive(proc.pid)
+            self.assertFalse(
+                alive and execution.process_started(proc.pid) in (started, None),
+                "pid %d still alive: started %r, now %r, pinned=%r"
+                % (proc.pid, started, execution.process_started(proc.pid), pinned),
+            )
         finally:
             _unpin_process(pinned)
             if proc.poll() is None:  # pragma: no cover - safety net
