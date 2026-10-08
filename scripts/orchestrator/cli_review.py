@@ -946,11 +946,16 @@ def cmd_review_snapshot(args: argparse.Namespace) -> int:
         lines = review_mod.withheld_lines(withheld)
         _out("  withheld: %d file(s), %s changed line(s) not sent to reviewers" % (len(withheld), lines))
         for entry in withheld:
-            _out("    %s (%s)" % (entry["path"], entry["pattern"]))
-        _out("    reviewers are told these changed; --no-exclude sends them in full")
+            _out("    %s (%s)" % (entry["path"], entry.get("pattern") or entry.get("reason") or "?"))
+        if any(entry.get("pattern") for entry in withheld):
+            _out("    reviewers are told these changed; --no-exclude sends them in full")
+        else:
+            _out("    reviewers are told these changed")
     if meta["empty"]:
-        if withheld:
+        if any(entry.get("pattern") for entry in withheld):
             _out("  WARNING: every changed file was withheld -- re-run with --no-exclude to review them.")
+        elif withheld:
+            _out("  WARNING: every changed file was withheld unread -- review them by hand.")
         else:
             _out("  WARNING: the snapshot is empty -- there is nothing to review.")
         return 1

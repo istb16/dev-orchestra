@@ -244,6 +244,31 @@ class TestRulesThatMustNotLapseInRoundTwo(RoundCase):
         meta = review_mod.create_snapshot(self.workspace, include_untracked=False)
         self.assertEqual([entry["path"] for entry in meta["withheld"]], [])
 
+    def test_an_oversize_untracked_file_stays_withheld_in_round_two(self):
+        """Both trees hold it, so the tree-to-tree diff would send it whole."""
+        self.first_round()
+        self.fix()
+        self.write("大きい.py", "#" * (review_snapshot.MAX_UNTRACKED_BYTES + 1))
+        meta = review_mod.create_snapshot(self.workspace)
+        self.assertTrue(meta["incremental_from"])
+        self.assertEqual(
+            [(entry["path"], entry.get("reason")) for entry in meta["withheld"]],
+            [("大きい.py", "over 512,000 bytes, not read")],
+        )
+        self.assertNotIn("大きい.py", meta["files"])
+        self.assertIn("大きい.py", meta["changed_paths"])
+        self.assertNotIn("####", ws.read_text(self.workspace.snapshot_path))
+
+    def test_no_untracked_holds_for_a_japanese_name_in_round_two(self):
+        self.git("config", "core.quotePath", "true")
+        self.first_round()
+        self.fix()
+        self.write("新規.py", "print('new')\n")
+        meta = review_mod.create_snapshot(self.workspace, include_untracked=False)
+        self.assertTrue(meta["incremental_from"])
+        self.assertNotIn("新規.py", meta["files"])
+        self.assertNotIn("print('new')", ws.read_text(self.workspace.snapshot_path))
+
     def test_the_orchestrators_own_config_stays_out_of_an_incremental_diff(self):
         """SKILL.md tells the orchestrator to run `config set` mid-workflow, so
         the config changing between rounds is a normal event, not an abuse."""
@@ -605,7 +630,7 @@ class TestSnapshotPinning(RoundCase):
         meta = review_mod.create_snapshot(self.workspace, surrounding="enclosing")
         self.assertEqual(meta["untracked_included"], ["a.py", "b.py"])
         lock = {"path": "package-lock.json", "pattern": "package-lock.json", "added": 3, "deleted": 0}
-        self.assertEqual(meta["withheld"], [lock])
+        self.assertEqual(meta["withheld"][1], lock)
         diff = ws.read_text(self.workspace.snapshot_path)
         self.assertNotIn("package-lock.json", diff)
         frozen = ws.read_json(self.workspace.surrounding_path, {})
@@ -613,9 +638,15 @@ class TestSnapshotPinning(RoundCase):
         self.assertNotIn("package-lock.json", named)
         for name in ("big.py", ".dev-orchestra.yaml"):
             self.assertNotIn(name, diff)
-            for key in ("files", "changed_paths", "condition_paths", "untracked_included"):
+            for key in ("files", "untracked_included"):
                 self.assertNotIn(name, meta[key], key)
-            self.assertNotIn(name, [entry["path"] for entry in meta["withheld"]])
+        # Too large to read is still part of the change, so it is named; the
+        # orchestrator's own config is not part of it at all.
+        self.assertIn("big.py", meta["changed_paths"])
+        self.assertEqual([entry["path"] for entry in meta["withheld"]], ["big.py", "package-lock.json"])
+        for key in ("changed_paths", "condition_paths"):
+            self.assertNotIn(".dev-orchestra.yaml", meta[key], key)
+        self.assertNotIn(".dev-orchestra.yaml", [entry["path"] for entry in meta["withheld"]])
 
     def test_a_file_the_fix_created_is_diffed_once(self):
         self.first_round()

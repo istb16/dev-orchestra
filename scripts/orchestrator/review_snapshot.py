@@ -18,7 +18,8 @@ from .review_common import DEFAULT_EXCLUDE, accepted_findings
 
 # --------------------------------------------------------------------------- snapshot
 
-#: An untracked file larger than this is left out of the snapshot unread.
+#: An untracked file larger than this is not read: it is named in ``withheld``
+#: with a reason instead of being diffed.
 MAX_UNTRACKED_BYTES = 512_000
 
 
@@ -183,7 +184,9 @@ def _tracked_diff(
     # decided from this cheap listing, so the expensive call is made once and
     # already filtered.
     tracked, listed_code, listed_err = _numstat(root, revisions, patterns)
-    withheld = [entry for entry in tracked if entry.get("pattern")]
+    if previous_tree and include_untracked:
+        _mark_unread_untracked(tracked, root)
+    withheld = [entry for entry in tracked if entry.get("pattern") or entry.get("reason")]
     # A tree-to-tree diff skips the untracked pass (``_untracked_diff``), which is where the
     # rules about what is not part of the change at all normally get applied.
     # They have to be applied here instead, or they hold in round 1 and lapse
@@ -224,8 +227,10 @@ def _untracked_diff(
 ) -> Tuple[str, List[str], List[Dict[str, Any]]]:
     """The untracked files' diff, the names it covers, and the ones withheld, in git's order.
 
-    A file is skipped before anything is read from it when it is too large,
-    or one of the orchestrator's own, and withheld before it is diffed.
+    The orchestrator's own files are skipped. A file too large to read, or one
+    that cannot be read or diffed, is withheld with a ``reason`` rather than
+    dropped: a change nobody is told about is the worst kind to lose. A file a
+    pattern matches is withheld before it is diffed.
     """
     diff = ""
     untracked: List[str] = []
@@ -233,24 +238,60 @@ def _untracked_diff(
     # An incremental diff is tree-to-tree, and both trees already contain the
     # untracked files: adding them again would duplicate every hunk.
     if include_untracked and not previous_tree:
-        ucode, uout, _ = ws.git(["ls-files", "--others", "--exclude-standard"], root)
-        if ucode == 0:
-            for name in [line.strip() for line in uout.splitlines() if line.strip()]:
-                path = os.path.join(root, name)
-                if not os.path.isfile(path) or os.path.getsize(path) > MAX_UNTRACKED_BYTES:
-                    continue
-                if _is_orchestrator_artifact(name, workspace):
-                    continue
-                pattern = withholds(name, patterns)
-                if pattern:
-                    withheld.append(_withheld_entry(name, pattern, added=_count_lines(path)))
-                    continue
-                dcode, dout, _ = ws.git(["diff", "--no-color", "--no-index", "--", os.devnull, name], root)
-                # --no-index exits 1 when files differ, which is the normal case.
-                if dcode in (0, 1) and dout.strip():
-                    diff += dout
-                    untracked.append(name)
+        for name in _list_untracked(root) or []:
+            if _is_orchestrator_artifact(name, workspace):
+                continue
+            path = os.path.join(root, name)
+            reason = _unread_reason(path)
+            if reason:
+                withheld.append(_unread_entry(name, reason))
+                continue
+            pattern = withholds(name, patterns)
+            if pattern:
+                withheld.append(_withheld_entry(name, pattern, added=_count_lines(path)))
+                continue
+            dcode, dout, _ = ws.git(["diff", "--no-color", "--no-index", "--", os.devnull, name], root)
+            # --no-index exits 1 when files differ, which is the normal case.
+            if dcode in (0, 1) and dout.strip():
+                diff += dout
+                untracked.append(name)
+            else:
+                withheld.append(_unread_entry(name, "git could not diff it"))
     return diff, untracked, withheld
+
+
+def _list_untracked(root: str) -> Optional[List[str]]:
+    """Untracked, not ignored files in git's order, or None when git failed.
+
+    ``-z`` because without it ``core.quotePath`` -- on by default -- hands back
+    a non-ASCII or otherwise unusual name C-quoted (``"\\346\\227\\245.py"``),
+    which names no file on disk. Nothing is stripped: a name may begin or end
+    with a space.
+    """
+    code, out, _ = ws.git(["ls-files", "-z", "--others", "--exclude-standard"], root)
+    if code != 0:
+        return None
+    return [name for name in out.split("\0") if name]
+
+
+def _unread_reason(path: str) -> str:
+    """Why an untracked file is not read into the snapshot, or "" when it can be."""
+    try:
+        if not os.path.isfile(path):
+            return "not a regular file"
+        size = os.path.getsize(path)
+    except OSError:
+        return "unreadable"
+    if size > MAX_UNTRACKED_BYTES:
+        return "over %s bytes, not read" % ws.fmt_int(MAX_UNTRACKED_BYTES)
+    return ""
+
+
+def _unread_entry(path: str, reason: str) -> Dict[str, Any]:
+    """A withheld file no pattern matched: named, with why, and its size not counted."""
+    entry = _withheld_entry(path, "", added=None, deleted=None)
+    entry["reason"] = reason
+    return entry
 
 
 def _write_full_diff(
@@ -835,10 +876,15 @@ def render_withheld(withheld: Sequence[Dict[str, Any]]) -> str:
     """
     if not withheld:
         return ""
-    lines = ["Changed, diff withheld (generated or vendored):"]
+    if any(entry.get("reason") for entry in withheld):
+        lines = ["Changed, diff withheld (generated, vendored, or not read):"]
+    else:
+        lines = ["Changed, diff withheld (generated or vendored):"]
     for entry in withheld:
         added, deleted = entry.get("added"), entry.get("deleted")
-        if added is None and deleted is None:
+        if entry.get("reason"):
+            size = str(entry["reason"])
+        elif added is None and deleted is None:
             size = "binary"
         else:
             size = "+%s -%s" % (added if added is not None else "?", deleted if deleted is not None else "?")
@@ -876,10 +922,24 @@ def _head(root: str) -> str:
 
 
 def _untracked_paths(root: str) -> "set[str]":
-    code, out, _ = ws.git(["ls-files", "--others", "--exclude-standard"], root)
-    if code != 0:
-        return set()
-    return {line.strip() for line in out.splitlines() if line.strip()}
+    return set(_list_untracked(root) or [])
+
+
+def _mark_unread_untracked(tracked: Sequence[Dict[str, Any]], root: str) -> None:
+    """Give an untracked file the first round would not have read a ``reason``.
+
+    Both trees of an incremental round are written with ``git add -A``, so an
+    untracked file over the size limit is in them, and without this its whole
+    body would reach the diff in round 2 when round 1 withheld it.
+    """
+    untracked = _untracked_paths(root)
+    for entry in tracked:
+        path = str(entry.get("path") or "")
+        if entry.get("pattern") or path not in untracked:
+            continue
+        reason = _unread_reason(os.path.join(root, path))
+        if reason:
+            entry["reason"] = reason
 
 
 def _not_under_review(

@@ -80,7 +80,11 @@ Writes `.ai/reviews/review-target.diff` plus metadata:
 [Surrounding context](#surrounding-context).
 
 Untracked files are included by default (up to 512 KB each) — a new module is
-usually the most important part of a change. The sha256 is stamped into every
+usually the most important part of a change. Names are taken from git as they
+are on disk, so a file named in Japanese, or with spaces in its name, is
+included like any other. An untracked file over the limit, or one that cannot
+be read or diffed, is not dropped: it is listed in `withheld` with a `reason`
+instead (see [Withheld files](#withheld-files)). The sha256 is stamped into every
 reviewer report so you can prove they judged the same thing.
 
 The skill's own files are never part of the snapshot: everything under the
@@ -136,6 +140,28 @@ minified output, source maps and `*.snap`. Anything ambiguous is deliberately
 left out: `build/` is conventionally output but is hand-written often enough
 that excluding it by default would sometimes hide real work. Quietly dropping a
 real change is a worse failure than paying for a lockfile.
+
+An untracked file is also withheld, without any pattern, when it is not read
+at all. Its entry has an empty `pattern` and a `reason` instead, and no line
+counts, since nothing was read to count them:
+
+```json
+{"path": "data/fixture.json", "pattern": "", "reason": "over 512,000 bytes, not read",
+ "added": null, "deleted": null}
+```
+
+| Reason | When |
+| --- | --- |
+| `over 512,000 bytes, not read` | Larger than the untracked-file limit |
+| `not a regular file` | A directory git lists as untracked (a nested repository), or a broken symlink |
+| `unreadable` | Its size could not be read |
+| `git could not diff it` | `git diff --no-index` failed or printed nothing |
+
+It is named to reviewers and in `review snapshot` like any other withheld file,
+and it counts as part of the change for the risk check. `--no-exclude` does not
+bring it in: the limit is not a pattern. An incremental round applies the same
+limit, so a large untracked file the fix added is withheld there too rather
+than diffed whole.
 
 If *every* changed file is withheld, the snapshot is empty and says so in those
 terms -- that is a different situation from "nothing changed", and `review run`

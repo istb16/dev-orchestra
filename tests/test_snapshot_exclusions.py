@@ -257,6 +257,96 @@ class TestSnapshotExclusions(IsolatedCase):
         self.assertNotIn("withheld", prompt)
 
 
+@unittest.skipUnless(has_git(), "git is required for review snapshots")
+class TestUntrackedFileNames(IsolatedCase):
+    """Untracked names reach the snapshot as they are on disk (#260).
+
+    ``core.quotePath`` is on by default, and without ``-z`` git hands back a
+    non-ASCII name C-quoted, which names no file -- so a new module with a
+    Japanese name vanished from the diff, the withheld list and the paths the
+    risk check reads, all at once.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.init_git_repo()
+        # Set here rather than relied on: a machine whose global config turns
+        # it off would otherwise pass this test without exercising anything.
+        self.git("config", "core.quotePath", "true")
+        self.write("app.py", "A = 1\n")
+        self.commit_all("init")
+        self.workspace = self.cli_workspace()
+
+    def test_japanese_names_and_spaces_are_diffed(self):
+        names = ["日本語.py", "a b.py", "ディレクトリ 名/モジュール.py", " leading.py"]
+        for index, name in enumerate(names):
+            self.write(name, "VALUE_%d = 1\n" % index)
+        meta = review_mod.create_snapshot(self.workspace, incremental=False)
+        self.assertEqual(sorted(meta["untracked_included"]), sorted(names))
+        for name in names:
+            self.assertIn(name, meta["files"])
+            self.assertIn(name, meta["changed_paths"])
+        diff = ws.read_text(self.workspace.snapshot_path)
+        for index in range(len(names)):
+            self.assertIn("+VALUE_%d = 1" % index, diff)
+        self.assertEqual(meta["withheld"], [])
+
+    @unittest.skipIf(os.name == "nt", "Windows does not allow a newline in a file name")
+    def test_a_newline_in_a_name_is_one_file_not_two(self):
+        self.write("two\nlines.py", "X = 1\n")
+        meta = review_mod.create_snapshot(self.workspace, incremental=False)
+        self.assertEqual(meta["untracked_included"], ["two\nlines.py"])
+
+    def test_a_japanese_name_is_withheld_by_pattern(self):
+        self.write("生成物/bundle.min.js", "var a=1;\n")
+        meta = review_mod.create_snapshot(self.workspace, incremental=False)
+        self.assertEqual([entry["path"] for entry in meta["withheld"]], ["生成物/bundle.min.js"])
+        self.assertEqual(meta["withheld"][0]["pattern"], "*.min.js")
+
+    def test_an_oversize_untracked_file_is_withheld_with_a_reason(self):
+        """Too large to read is still part of the change: named, never diffed."""
+        self.write("大きい ファイル.py", "#" * (review_snapshot.MAX_UNTRACKED_BYTES + 1))
+        self.write("small.py", "S = 1\n")
+        meta = review_mod.create_snapshot(self.workspace, incremental=False)
+        self.assertEqual(meta["untracked_included"], ["small.py"])
+        self.assertEqual(
+            meta["withheld"],
+            [
+                {
+                    "path": "大きい ファイル.py",
+                    "pattern": "",
+                    "reason": "over 512,000 bytes, not read",
+                    "added": None,
+                    "deleted": None,
+                }
+            ],
+        )
+        self.assertIn("大きい ファイル.py", meta["changed_paths"])
+        self.assertNotIn("大きい ファイル.py", meta["files"])
+        self.assertNotIn("####", ws.read_text(self.workspace.snapshot_path))
+        note = review_mod.render_withheld(meta["withheld"])
+        self.assertIn("- 大きい ファイル.py (over 512,000 bytes, not read)", note)
+        self.assertEqual(review_mod.withheld_lines(meta["withheld"]), "0+")
+
+    def test_a_file_at_the_limit_is_still_read(self):
+        self.write("edge.py", "#" * (review_snapshot.MAX_UNTRACKED_BYTES - 1) + "\n")
+        meta = review_mod.create_snapshot(self.workspace, incremental=False)
+        self.assertEqual(meta["untracked_included"], ["edge.py"])
+        self.assertEqual(meta["withheld"], [])
+
+    def test_the_snapshot_command_names_the_reason(self):
+        self.write("big.bin", "#" * (review_snapshot.MAX_UNTRACKED_BYTES + 1))
+        code, out, _ = run_cli("review", "snapshot")
+        self.assertEqual(code, 1)  # nothing else changed, so nothing to review
+        self.assertIn("big.bin (over 512,000 bytes, not read)", out)
+        self.assertNotIn("--no-exclude", out)
+        self.assertIn("withheld unread", out)
+        with self.assertRaises(review_mod.ReviewError) as ctx:
+            review_mod.run_reviews([{"id": "r", "provider": "mock"}], self.workspace)
+        self.assertIn("withheld unread", str(ctx.exception))
+        self.assertNotIn("--no-exclude", str(ctx.exception))
+
+
 # --------------------------------------------------------------------------- config
 
 
