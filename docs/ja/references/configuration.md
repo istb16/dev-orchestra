@@ -1,4 +1,4 @@
-<!-- translated-from: references/configuration.md sha256:80056b2df966a21ebd81e15460a3bd7e77354db640545ba0937ebe6b16cdf45b -->
+<!-- translated-from: references/configuration.md sha256:af74258562dbc9bb4e5169b0ba265887b85a90ff4a616cd41ac5cd533868656c -->
 
 > この文書は [references/configuration.md](../../../references/configuration.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -688,7 +688,7 @@ Codex の sandbox ポリシーに正直に対応付ける方法はないので�
 | `codex` | `sandbox` | `read-only`、`workspace-write`、`danger-full-access`。書き込みロールでは global 設定（または `--extra`）からだけ受け付けます |
 | `codex` | `approve` | `true`（デフォルト）は `--approve-for-me` を渡し、`false` は省略します。書き込みロールでは global 設定（または `--extra`）からだけ受け付けます |
 | `agy` | `skip_permissions` | `true` にすると `implement` の実行で `--dangerously-skip-permissions` を渡し、implementer がコマンドを実行できるようになります。デフォルトは `false`。global 設定（または `--extra --dangerously-skip-permissions`）からだけ受け付けます |
-| any | `idle_timeout` | このロールの無出力期限を上書きします |
+| any | `idle_timeout` | このロールの無出力期限を上書きします。0 より大きい秒数か null です。`0`、負の値、`true`、文字列は `config validate` で拒否されます |
 
 ```yaml
 # In the global config: the project file's permission_mode and args are refused.

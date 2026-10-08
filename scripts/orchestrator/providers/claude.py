@@ -66,6 +66,7 @@ no failure it has not since passed.
 
 from __future__ import annotations
 
+import math
 import os
 import re
 from typing import Any, Dict, List, Optional, Sequence, cast
@@ -524,6 +525,12 @@ class ClaudeProvider(Provider):
         output_format = options.get("output_format")
         if output_format is not None and output_format not in ("stream-json", "text", "json"):
             problems.append("options.output_format %r is not one of stream-json, text, json" % output_format)
+        idle = options.get("idle_timeout")
+        if idle is not None and not _positive_seconds(idle):
+            # Checked here because `run` and `review run` take it as it is:
+            # 0 or a negative stalled every run at once, `true` was one
+            # second, and a string ended `run` on a traceback.
+            problems.append("options.idle_timeout must be a number of seconds above 0, or null")
         requested = options.get("permission_mode")
         if requested is None:
             return problems
@@ -975,3 +982,10 @@ def _parse_model_aliases(help_text: str) -> List[str]:
 
 def build_provider(executable: Optional[str] = None) -> ClaudeProvider:
     return ClaudeProvider(executable)
+
+
+def _positive_seconds(value: Any) -> bool:
+    """A finite number above zero, and not a bool."""
+    return (
+        isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and value > 0
+    )

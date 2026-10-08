@@ -712,7 +712,7 @@ by `config validate`, not at run time.
 | `codex` | `sandbox` | `read-only`, `workspace-write`, `danger-full-access`. On a write role, taken only from the global config (or `--extra`) |
 | `codex` | `approve` | `true` (default) passes `--approve-for-me`; `false` omits it. On a write role, taken only from the global config (or `--extra`) |
 | `agy` | `skip_permissions` | `true` passes `--dangerously-skip-permissions` on `implement` runs, so the implementer can run commands; default `false`. Taken only from the global config (or `--extra --dangerously-skip-permissions`) |
-| any | `idle_timeout` | Override the no-output deadline for this role |
+| any | `idle_timeout` | Override the no-output deadline for this role: a number of seconds above 0, or null. `0`, a negative, `true` or a string is refused by `config validate` |
 
 ```yaml
 # In the global config: the project file's permission_mode and args are refused.
