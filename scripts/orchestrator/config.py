@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, NamedTuple, Optional, Sequenc
 
 from . import config_trust, miniyaml
 from . import optimization as opt_mod
+from .execution import MAX_SECONDS
 from .review_common import DEFAULT_EXCLUDE, SEVERITIES
 
 if TYPE_CHECKING:
@@ -66,6 +67,12 @@ RUN_TIMEOUT_DEFAULTS = {
     "implementer": 3600,
     "review_fixer": 1800,
 }
+
+#: The no-output deadline of a ``run`` that may change files, unless
+#: ``review.idle_timeout_seconds`` is larger. Such a run runs the tests or a
+#: build, which can be silent for longer than a reviewer ever is; with no
+#: deadline at all, a wedged implementer would run until its total one (#273).
+WRITE_RUN_IDLE_TIMEOUT_SECONDS = 1200
 
 _MISSING = object()
 
@@ -227,7 +234,8 @@ def default_config() -> Dict[str, Any]:
             # A wedged agent stops producing output while a slow one keeps
             # ticking, so this catches a stall in minutes instead of half an
             # hour -- but only for providers that stream progress at all.
-            # Shared with `run`: silence does not grow with the task.
+            # Shared with `run`; a run that may change files gets at least
+            # WRITE_RUN_IDLE_TIMEOUT_SECONDS (#273).
             "idle_timeout_seconds": 300,
             # Generated and vendored files whose diff body is withheld from
             # reviewers. A list replaces this wholesale, so [] reviews
@@ -1153,7 +1161,7 @@ def review_timeout(loaded: LoadedConfig) -> RunTimeout:
 
 def _timeout_at(loaded: LoadedConfig, key: List[str], fallback: int) -> RunTimeout:
     value = _get_parts(loaded.data, key, None)
-    if not _int_at_least(value, 1):
+    if not _whole_seconds(value):
         return RunTimeout(fallback, "default")
     for name, layer in (("project", loaded.project_layer), ("global", loaded.global_layer)):
         if _get_parts(layer, key, None) is not None:
@@ -1455,6 +1463,15 @@ def load(start: Optional[str] = None, validate_result: bool = True) -> LoadedCon
 # --------------------------------------------------------------------------- validation
 
 
+#: How a deadline too long to wait for is refused.
+_TOO_LONG = "must be %d or less" % MAX_SECONDS
+
+
+def _whole_seconds(value: Any) -> bool:
+    """A deadline in whole seconds: a positive int, not a bool, that a wait can hold."""
+    return _int_at_least(value, 1) and value <= MAX_SECONDS
+
+
 def _int_at_least(value: Any, minimum: int) -> bool:
     """An int, not a bool, and at least ``minimum``."""
     return isinstance(value, int) and not isinstance(value, bool) and value >= minimum
@@ -1712,6 +1729,8 @@ def _validate_run(run: Any) -> List[str]:
             )
         elif not _int_at_least(value, 1):
             problems.append("run.timeout_seconds.%s: must be a positive integer" % role)
+        elif not _whole_seconds(value):
+            problems.append("run.timeout_seconds.%s: %s" % (role, _TOO_LONG))
     return problems
 
 
@@ -1729,9 +1748,13 @@ def _validate_review(review: Any) -> List[str]:
     timeout = review.get("timeout_seconds", 1800)
     if not _int_at_least(timeout, 1):
         problems.append("review.timeout_seconds: must be a positive integer")
+    elif not _whole_seconds(timeout):
+        problems.append("review.timeout_seconds: %s" % _TOO_LONG)
     idle = review.get("idle_timeout_seconds")
     if idle is not None and not _int_at_least(idle, 1):
         problems.append("review.idle_timeout_seconds: must be a positive integer or null")
+    elif idle is not None and not _whole_seconds(idle):
+        problems.append("review.idle_timeout_seconds: %s" % _TOO_LONG)
     incremental = review.get("incremental_rounds")
     if incremental is not None and not isinstance(incremental, bool):
         problems.append("review.incremental_rounds: must be true or false")

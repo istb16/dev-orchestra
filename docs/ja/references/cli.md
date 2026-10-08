@@ -1,4 +1,4 @@
-<!-- translated-from: references/cli.md sha256:3303d2a6da8ca4071930dafa634cd481e2079400c873f3f1a177a6d26e381633 -->
+<!-- translated-from: references/cli.md sha256:43b29e870bd6ff1b0e5882f2214f1318f0a3468ab31b744bc265bf37140c5cd2 -->
 
 > この文書は [references/cli.md](../../../references/cli.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -326,16 +326,34 @@ agy の stdout の行は、短く切って最大 20 行まで実行の stderr �
 示します。以前は読み込めない `--prompt-file` が空のプロンプトとして読まれ、それが委譲され、provider CLI
 が自分の stdin について文句を言う応答が返っていました。
 
+プロンプトは、`--prompt-file`、`--prompt-file -`、パイプのどれから来ても UTF-8 として読み、先頭の
+BOM は取り除きます。標準入力は Python が与えるエンコーディングでは読みません。Windows のパイプでは
+それが ANSI コードページで、日本語版 Windows では cp932 です。以前はパイプで渡した UTF-8 のプロンプトが
+文字化けしたまま委譲されていました。パイプのバイト列をそのコードページで読むのは、大部分が UTF-8 では
+なく、そのコードページとしては正しく読める場合（cp932 で保存したファイルを `type` で渡した場合）だけ
+です。それ以外は UTF-8 のままにし、読めないバイトを 1 つずつ U+FFFD に置き換えるので、紛れ込んだ
+1 バイトのために残りが文字化けすることはありません。Python に届く前に失われたものは戻せません。
+Windows PowerShell 5.1 はプログラムへのパイプを `$OutputEncoding`（既定は ASCII）で符号化するので、
+ASCII 以外の文字はその時点で `?` になっています。先に `$OutputEncoding = [Text.UTF8Encoding]::new($false)`
+を設定するか、`--prompt-file <path>` を使ってください。
+
 `--timeout` は全体の期限です。指定しなければ、ロールの実行は `run.timeout_seconds.<role>`
 （implementer は 3600、ほかは 1800）を、`run <reviewer-id>` は `review run` と同じく
 `review.timeout_seconds`（1800）を使います。期限で止められた実行は、どちらに当たったかと、
 それがどこで設定されたかを伝えます。`config show` は、すべての期限を設定したファイルとともに並べます。
-`--idle-timeout` は *出力がない* 状態の期限です（指定しなければ、どの実行でも
-`review.idle_timeout_seconds`）。固まったエージェントは
+`--idle-timeout` は *出力がない* 状態の期限です（指定しなければ
+`review.idle_timeout_seconds`。ただしファイルを変えうる実行、つまり implementer、
+review fixer、`--mode implement` では 1200 秒で、その設定の方が大きければそちらです。
+走らせるテストスイートがそれより長く黙りうるからです。ロールの `options.idle_timeout`
+はどちらよりも優先されます）。固まったエージェントは
 静かになり、遅いだけのエージェントは出力を続けるので、これを使えば stall を全体の期限ではなく数分で
 検出できます。これが適用されるのは Claude だけです。Codex と agy の adapter は進捗のストリームを
 主張せず（agy はツールの動きを報告しますが、モデルが考えている間は黙ります。`references/providers.md` を
 参照）、そこでは推測せずに無視されます。
+どちらも 0 より大きく 1,000,000,000 以下の秒数を取り、`--timeout` は整数です。`0`、負の値、`nan`、`inf`、
+それより大きい数、数でない文字列は、
+何も消費しないうちに使い方の誤り（終了コード 2）になります。以前は `0` が設定された期限として扱われ、
+負の値ではすぐに stall として止められていました。`review run` も自分の 2 つを同じように確かめます。
 
 `--output` は、実行が成功して何かを出力した場合にのみ、実行の stdout を書き込みます。stall した、
 タイムアウトした、または失敗した実行では既存のファイルはまったくそのまま残り、その旨が stderr に
@@ -630,7 +648,7 @@ detach された実行です。期限はエージェントが異常な振る舞�
 | --- | --- |
 | `jobs list [--json]` | 記録されているすべてのジョブを新しい順に表示します。 |
 | `jobs show <id> [--output] [--since <n>] [--activity <m>] [--json]` | 1 つのジョブを表示します。オプションでその出力も表示し、ジョブが何をしているかも示します（下記）。 |
-| `jobs wait <id> [--timeout <s>] [--poll <s>] [--since <n>] [--activity <m>] [--json]` | 待機しますが、`--timeout`（デフォルト 60 秒）より長くは待ちません。待機が終わった時点でジョブがまだ実行中であれば終了コード 4 で終了します。これはエラーではなく通常の結果です。ジョブが `--output` の書き込みを拒否した場合は、フォアグラウンドの実行と同様に終了コード 1 で終了します。 |
+| `jobs wait <id> [--timeout <s>] [--poll <s>] [--since <n>] [--activity <m>] [--json]` | 待機しますが、`--timeout`（デフォルト 60 秒。`0` なら一度だけ確かめます）より長くは待ちません。確かめる間隔は `--poll` 秒です（デフォルト 1。0 より大きい値）。どちらも 1,000,000,000 以下で、負の値、`nan`、`inf`、それより大きい数、数でない文字列を渡すと使い方の誤り（終了コード 2）になります。待機が終わった時点でジョブがまだ実行中であれば終了コード 4 で終了します。これはエラーではなく通常の結果です。ジョブが `--output` の書き込みを拒否した場合は、フォアグラウンドの実行と同様に終了コード 1 で終了します。 |
 | `jobs cancel <id>` | 実行中のジョブとそのプロセスツリーを停止します。 |
 
 ```bash
@@ -1139,7 +1157,7 @@ stderr に一度だけ知らせます。実行中のステージがあるワー�
 | `DEV_ORCHESTRA_MOCK_ACTIVITY` | mock の実行がジョブの activity や `review run --progress` に報告するツール行。`\|` 区切りで、`<部分文字列>=>行` はその部分文字列を含むプロンプトのときだけ |
 | `CODEX_HOME` | Codex CLI の設定と認証情報を探すときに考慮されます |
 | `CLAUDE_CONFIG_DIR` | Claude Code のユーザー設定の場所。`hooks install` と、フックを入れたり外したりするコマンドが使います |
-| `DEV_ORCHESTRA_TEST_ASSUME_NO_CLI` | テスト専用: 両方の provider CLI を隠し、CI を再現します |
+| `DEV_ORCHESTRA_TEST_ASSUME_NO_CLI` | テスト専用で、今は不要です。テストは常に provider CLI を隠し、起動もしません。付けても受け付けますが、何も変わりません |
 
 <a id="troubleshooting"></a>
 

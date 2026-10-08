@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import codecs
 import os
 import re
 import shlex
@@ -95,6 +96,65 @@ def _quoted(token: str) -> str:
     return subprocess.list2cmdline([token]) if os.name == "nt" else shlex.quote(token)
 
 
+def _read_stdin() -> str:
+    """Everything on stdin, as text a UTF-8 prompt survives.
+
+    ``sys.stdin.read()`` decodes with the encoding Python gives stdin -- for
+    a pipe on Windows that is the ANSI code page, cp932 on a Japanese
+    Windows -- so a UTF-8 prompt piped in arrived as mojibake and was
+    delegated that way (#284). The bytes are read instead and decoded as
+    UTF-8 (a BOM dropped), as a ``--prompt-file`` is; see
+    :func:`_decode_stdin` for bytes that are not. Line endings are read as
+    text mode reads them.
+    """
+    stream = sys.stdin
+    raw_stream = getattr(stream, "buffer", None)
+    if raw_stream is None:  # already text: a StringIO under test, or a wrapper
+        return stream.read()
+    raw: bytes = raw_stream.read()
+    text = _decode_stdin(raw, getattr(stream, "encoding", None))
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+#: One well-formed UTF-8 sequence of two to four bytes.
+_UTF8_MULTIBYTE = re.compile(
+    rb"[\xc2-\xdf][\x80-\xbf]"
+    rb"|\xe0[\xa0-\xbf][\x80-\xbf]|[\xe1-\xec\xee\xef][\x80-\xbf]{2}|\xed[\x80-\x9f][\x80-\xbf]"
+    rb"|\xf0[\x90-\xbf][\x80-\xbf]{2}|[\xf1-\xf3][\x80-\xbf]{3}|\xf4[\x80-\x8f][\x80-\xbf]{2}"
+)
+
+
+def _decode_stdin(raw: bytes, fallback: Optional[str]) -> str:
+    """``raw`` as text: UTF-8 where it reads as UTF-8 at all.
+
+    Bytes that are not valid UTF-8 are read in ``fallback`` -- stdin's own
+    encoding, the ANSI code page for a pipe on Windows (``type`` of a file
+    saved in cp932) -- only when they look like it: when no more of them
+    are well-formed UTF-8 sequences than are bytes UTF-8 cannot read. A UTF-8
+    prompt with one stray byte stays UTF-8, with that byte replaced; reading
+    the whole prompt in cp932 for it would garble every other character.
+    Whatever neither reads cleanly is UTF-8 with the undecodable bytes
+    replaced, rather than a traceback.
+    """
+    try:
+        return raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        pass
+    replaced = raw.decode("utf-8-sig", errors="replace")
+    invalid = replaced.count("�")
+    valid = len(_UTF8_MULTIBYTE.findall(raw))
+    try:
+        codec = codecs.lookup(fallback).name if fallback else None
+    except LookupError:
+        codec = None
+    if codec and codec not in ("utf-8", "utf-8-sig") and valid < invalid:
+        try:
+            return raw.decode(codec)
+        except UnicodeDecodeError:
+            pass
+    return replaced
+
+
 def _read_prompt(args: argparse.Namespace, workspace: Optional[ws.Workspace] = None) -> str:
     if args.prompt_file:
         return _read_prompt_file(args.prompt_file, workspace)
@@ -104,14 +164,14 @@ def _read_prompt(args: argparse.Namespace, workspace: Optional[ws.Workspace] = N
         # empty prompt and a terminal blamed a missing one.
         return _require_prompt(args.prompt, "--prompt was empty")
     if not sys.stdin.isatty():
-        return _require_prompt(sys.stdin.read(), "the piped stdin was empty")
+        return _require_prompt(_read_stdin(), "the piped stdin was empty")
     raise SystemExit("no prompt supplied: use --prompt, --prompt-file, or pipe one in")
 
 
 def _read_prompt_file(prompt_file: str, workspace: Optional[ws.Workspace] = None) -> str:
     """A prompt from a file (or ``-`` for stdin); SystemExit if there is none."""
     if prompt_file == "-":
-        return _require_prompt(sys.stdin.read(), "stdin carried nothing")
+        return _require_prompt(_read_stdin(), "stdin carried nothing")
     path = (_in_workflow(workspace, prompt_file) if workspace else prompt_file) or prompt_file
     named = _both_paths(prompt_file, path)
     # Deliberately not ws.read_text: its default is right for a report that
@@ -123,7 +183,7 @@ def _read_prompt_file(prompt_file: str, workspace: Optional[ws.Workspace] = None
         trouble = "does not exist" if not os.path.exists(path) else "is not a file"
         raise SystemExit("prompt file %s: %s%s" % (trouble, named, _written_outside(prompt_file, path)))
     try:
-        with open(path, "r", encoding="utf-8", errors="replace") as handle:
+        with open(path, "r", encoding="utf-8-sig", errors="replace") as handle:
             text = handle.read()
     except OSError as exc:
         raise SystemExit("prompt file cannot be read: %s (%s)" % (named, exc)) from exc
@@ -291,9 +351,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             return refusal
     settings = loaded.review_settings()
     timeout, timeout_origin = _deadline(args, loaded, seat)
-    idle_timeout = args.idle_timeout
-    if idle_timeout is None:
-        idle_timeout = settings.get("idle_timeout_seconds")
+    idle_timeout = _idle_deadline(args, settings, seat)
     book = _ledger(args, workspace)
     refusal = _spend_attempt(args, book, seat)
     if refusal is not None:
@@ -387,6 +445,25 @@ def _deadline(args: argparse.Namespace, loaded: config_mod.LoadedConfig, seat: _
         return review.seconds, "review.timeout_seconds, %s" % review.source
     deadline = config_mod.run_timeout(loaded, seat.role)
     return deadline.seconds, "run.timeout_seconds.%s, %s" % (seat.role, deadline.source)
+
+
+def _idle_deadline(args: argparse.Namespace, settings: Dict[str, Any], seat: _Seat) -> Optional[float]:
+    """The run's no-output deadline, before the provider has its say.
+
+    ``--idle-timeout`` first. Otherwise ``review.idle_timeout_seconds``, and
+    for a run that may change files (the implementer, the review fixer, or
+    ``--mode implement``) at least ``config.WRITE_RUN_IDLE_TIMEOUT_SECONDS``:
+    such a run is expected to run the tests or a build, and Claude's stream
+    is silent until a command returns, so a suite longer than 300s would be
+    killed as a stall (#273). A role's ``options.idle_timeout`` still comes
+    before all of it.
+    """
+    if args.idle_timeout is not None:
+        return args.idle_timeout
+    shared = settings.get("idle_timeout_seconds")
+    if shared is None or seat.mode != MODE_IMPLEMENT:
+        return shared
+    return max(float(shared), float(config_mod.WRITE_RUN_IDLE_TIMEOUT_SECONDS))
 
 
 def _timeout_message(role: str, seconds: int, origin: str) -> str:
@@ -587,6 +664,15 @@ def _run_once(
         _fail_job(args, str(exc))
         _err(str(exc))
         return None
+    except BaseException as exc:
+        # Anything else raised before the provider had a result to hand
+        # back, Ctrl+C included -- it still surfaces, but the in-flight entry
+        # is closed and the job failed first, so the next command does not
+        # report this run as abandoned or still running.
+        error = redact("%s: %s" % (type(exc).__name__, exc))
+        book.end(token, "failed", {"error": error})
+        _fail_job(args, error)
+        raise
     return _Attempt(token, result, resume_session, resume_detail)
 
 

@@ -12,6 +12,7 @@ import json
 import os
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
+from pathlib import Path
 
 from helpers import IsolatedCase, has_git
 
@@ -470,9 +471,7 @@ class TestProjectScopeWrites(_GateCase):
         self.assertEqual(code, 0, err)
         self.assertIn("as an extra", out)
         self.assertNotIn("comes from the project config", err)
-        project = miniyaml.loads(
-            open(os.path.join(self.project, ".dev-orchestra.yaml"), encoding="utf-8").read()
-        )
+        project = miniyaml.loads(Path(self.project, ".dev-orchestra.yaml").read_text(encoding="utf-8"))
         self.assertEqual([entry["id"] for entry in project["reviewers_extra"]], ["m1"])
         self.assertNotIn("reviewers", project)
 

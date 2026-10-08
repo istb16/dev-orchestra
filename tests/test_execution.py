@@ -41,6 +41,40 @@ LEAKY_PARENT = (
     "while True: time.sleep(0.05)\n"
 )
 
+#: Writes its pid to ``argv[1]``, then sleeps for 90s holding the stdout and
+#: stderr it inherited.
+LINGERING_GRANDCHILD = (
+    "import os, sys, time\n"
+    "with open(sys.argv[1] + '.tmp', 'w') as f: f.write(str(os.getpid()))\n"
+    "os.replace(sys.argv[1] + '.tmp', sys.argv[1])\n"
+    "time.sleep(90)\n"
+)
+
+#: Leaves LINGERING_GRANDCHILD running with its stdout and stderr, then exits
+#: 0: a CLI that started a dev server in the background and finished.
+LINGERING_PARENT = (
+    "import os, subprocess, sys, time\n"
+    "subprocess.Popen([sys.executable, '-c', %r, sys.argv[1]], stdin=subprocess.DEVNULL,"
+    " stdout=sys.stdout, stderr=sys.stderr)\n"
+    "deadline = time.monotonic() + 30\n"
+    "while not os.path.exists(sys.argv[1]) and time.monotonic() < deadline: time.sleep(0.05)\n"
+    "sys.stdout.write('parent done\\n'); sys.stdout.flush()\n"
+) % LINGERING_GRANDCHILD
+
+#: Writes its pid to ``argv[1]``, stays quiet for 1.5s, then writes to the
+#: stdout it inherited without end: a dev server's log.
+FLOODING_GRANDCHILD = (
+    "import os, sys, time\n"
+    "with open(sys.argv[1] + '.tmp', 'w') as f: f.write(str(os.getpid()))\n"
+    "os.replace(sys.argv[1] + '.tmp', sys.argv[1])\n"
+    "time.sleep(1.5)\n"
+    "for _ in range(9000):\n"
+    "    sys.stdout.write('x' * 999 + '\\n'); sys.stdout.flush(); time.sleep(0.01)\n"
+)
+
+#: LINGERING_PARENT, with FLOODING_GRANDCHILD left behind.
+FLOODING_PARENT = LINGERING_PARENT.replace(repr(LINGERING_GRANDCHILD), repr(FLOODING_GRANDCHILD))
+
 #: Starts ``argv[1]`` (code, given ``argv[2]``) detached and returns at once,
 #: so the started process is not our child: the shape of a detached worker.
 LAUNCHER = (
@@ -113,6 +147,20 @@ def read_pids(case: unittest.TestCase, path: str) -> Tuple[int, ...]:
         return tuple(int(part) for part in f.read().split())
 
 
+def end_pid_in(path: str) -> None:
+    """Safety net: end the process whose pid a test script wrote to ``path``."""
+    try:
+        with open(path) as f:
+            pid = int(f.read())
+    except (OSError, ValueError):
+        return
+    if execution.pid_alive(pid):
+        try:
+            os.kill(pid, getattr(signal, "SIGKILL", signal.SIGTERM))
+        except OSError:
+            pass
+
+
 def kill_group(pgid: int) -> None:
     """Safety net: SIGKILL a whole group, never a bare pid."""
     try:
@@ -151,6 +199,18 @@ class TestNormalCompletion(IsolatedCase):
         )
         self.assertTrue(outcome.ok, outcome.stderr)
         self.assertEqual(outcome.stdout.strip(), str(len(big)))
+
+    def test_the_prompt_reaches_stdin_byte_for_byte(self):
+        # A diff of a CRLF file must not grow a second \r on Windows (#270).
+        prompt = "a\nb\r\nc\néあ\n"
+        outcome = execution.execute(
+            python_code("import sys; print(sys.stdin.buffer.read().hex())"),
+            cwd=self.project,
+            prompt=prompt,
+            timeout=60,
+        )
+        self.assertTrue(outcome.ok, outcome.stderr)
+        self.assertEqual(bytes.fromhex(outcome.stdout.strip()), prompt.encode("utf-8"))
 
     def test_a_child_that_never_reads_stdin_still_completes(self):
         outcome = execution.execute(
@@ -209,6 +269,18 @@ class TestIdleDeadline(IsolatedCase):
         self.assertTrue(outcome.timed_out)
         self.assertFalse(outcome.stalled)
 
+    def test_output_without_a_newline_counts_as_output(self):
+        # A dot every 0.3s and never a newline: alive, not stalled (#273).
+        dots = (
+            "import sys, time\n"
+            "for _ in range(8):\n"
+            "    sys.stdout.write('.'); sys.stdout.flush(); time.sleep(0.3)\n"
+        )
+        outcome = execution.execute(python_code(dots), cwd=self.project, timeout=60, idle_timeout=1)
+        self.assertFalse(outcome.stalled, outcome.stderr)
+        self.assertTrue(outcome.ok, outcome.stderr)
+        self.assertEqual(outcome.stdout, "." * 8)
+
     def test_a_quick_command_is_unaffected_by_a_short_idle_deadline(self):
         outcome = execution.execute(
             python_code("print('fast')"), cwd=self.project, timeout=60, idle_timeout=1
@@ -257,7 +329,7 @@ class TestOnLine(IsolatedCase):
 
         drain = execution._Drain(check)
         before = drain.last_seen()
-        thread = threading.Thread(target=drain.pump, args=(io.StringIO("a\nb\n"),), daemon=True)
+        thread = threading.Thread(target=drain.pump, args=(io.BytesIO(b"a\nb\n"),), daemon=True)
         thread.start()
         thread.join(timeout=10)
         drain.finish(10)
@@ -309,7 +381,7 @@ class TestOnLine(IsolatedCase):
         with mock.patch.object(execution, "_LINE_QUEUE_SIZE", 2):
             drain = execution._Drain(stuck)
         text = "".join("%d\n" % i for i in range(20))
-        thread = threading.Thread(target=drain.pump, args=(io.StringIO(text),), daemon=True)
+        thread = threading.Thread(target=drain.pump, args=(io.BytesIO(text.encode()),), daemon=True)
         thread.start()
         thread.join(timeout=5)
         self.assertFalse(thread.is_alive(), "the reader waited on the callback")
@@ -327,11 +399,26 @@ class TestOnLine(IsolatedCase):
             time.sleep(0.5)
 
         drain = execution._Drain(slow)
-        drain.pump(io.StringIO("a\nb\nc\nd\n"))
+        drain.pump(io.BytesIO(b"a\nb\nc\nd\n"))
         drain.finish(0.1)
         time.sleep(1.5)
         # The line in hand when it was abandoned may finish; no later one starts.
         self.assertLessEqual(len(calls), 2)
+
+    def test_lines_split_across_reads_reach_the_callback_whole(self):
+        # A line, a CRLF and a character may each arrive in pieces.
+        pieces = [b"on", b"e\r", b"\ntw", "o あ".encode()[:-1], "あ".encode()[-1:] + b"\nthr", b"ee"]
+
+        class Pieces(io.BytesIO):
+            def read1(self, size: Optional[int] = -1) -> bytes:
+                return pieces.pop(0) if pieces else b""
+
+        seen: List[str] = []
+        drain = execution._Drain(seen.append)
+        drain.pump(Pieces())
+        drain.finish(10)
+        self.assertEqual(seen, ["one\n", "two あ\n", "three"])
+        self.assertEqual(drain.text(), "one\ntwo あ\nthree")
 
     def test_a_silent_child_still_stalls(self):
         seen: List[str] = []
@@ -352,6 +439,106 @@ class TestProcessTree(IsolatedCase):
         # The grandchild sleeps for 20s; returning anywhere near that means we
         # waited for the pipe to close, which is the bug being prevented.
         self.assertLess(elapsed, 15, "returned only after the grandchild exited")
+
+    def test_a_grandchild_left_holding_the_output_after_a_clean_exit_does_not_block_the_return(self):
+        """The CLI exits 0, but what it left running still holds the pipes:
+        closing them would wait on the readers for as long as it lives."""
+        pid_file = os.path.join(self.project, "grandchild.pid")
+        self.addCleanup(end_pid_in, pid_file)
+        started = time.monotonic()
+        outcome = execution.execute([*python_code(LINGERING_PARENT), pid_file], cwd=self.project, timeout=120)
+        elapsed = time.monotonic() - started
+        self.assertLess(elapsed, 45, "returned only after the grandchild exited")
+        self.assertEqual(outcome.exit_code, 0, outcome.stderr)
+        self.assertFalse(outcome.timed_out)
+        self.assertIn("parent done", outcome.stdout)
+        (grandchild,) = read_pids(self, pid_file)
+        if execution.IS_WINDOWS:
+            # Its parent is gone, so taskkill /T has no tree to start from.
+            self.assertTrue(outcome.orphans_possible)
+            self.assertIn("may still be running", outcome.stderr)
+        else:
+            self.assertFalse(outcome.orphans_possible, outcome.stderr)
+            self.assertIn("it was stopped", outcome.stderr)
+            deadline = time.monotonic() + 10
+            while execution.pid_alive(grandchild) and time.monotonic() < deadline:
+                time.sleep(0.05)
+            self.assertFalse(execution.pid_alive(grandchild))
+
+    def test_what_a_leftover_writes_after_the_cli_exited_is_not_kept(self):
+        self.assertNotEqual(FLOODING_PARENT, LINGERING_PARENT)
+        pid_file = os.path.join(self.project, "grandchild.pid")
+        self.addCleanup(end_pid_in, pid_file)
+        outcome = execution.execute([*python_code(FLOODING_PARENT), pid_file], cwd=self.project, timeout=120)
+        self.assertEqual(outcome.exit_code, 0, outcome.stderr)
+        self.assertEqual(outcome.stdout, "parent done\n")
+        self.assertRegex(outcome.stderr, r"warning: [0-9]+ characters it wrote after the CLI exited")
+
+    def test_what_the_cli_wrote_last_is_kept_when_a_leftover_is_cut_off(self):
+        pid_file = os.path.join(self.project, "grandchild.pid")
+        self.addCleanup(end_pid_in, pid_file)
+        last_words = LINGERING_PARENT + "sys.stdout.write('z' * 300000); sys.stdout.flush()\n"
+        outcome = execution.execute([*python_code(last_words), pid_file], cwd=self.project, timeout=120)
+        self.assertEqual(outcome.exit_code, 0, outcome.stderr)
+        self.assertEqual(outcome.stdout, "parent done\n" + "z" * 300000)
+
+    def test_a_detached_drain_keeps_reading_and_keeps_nothing(self):
+        read_end, write_end = os.pipe()
+        reader, writer = os.fdopen(read_end, "rb"), os.fdopen(write_end, "wb")
+        self.addCleanup(writer.close)
+        seen: List[str] = []
+        drain = execution._Drain(seen.append)
+        thread = threading.Thread(target=drain.pump, args=(reader,), daemon=True)
+        thread.start()
+
+        def wait_for(text: str) -> None:
+            deadline = time.monotonic() + 10
+            while drain.text() != text:
+                self.assertLess(time.monotonic(), deadline, drain.text())
+                time.sleep(0.01)
+
+        writer.write(b"keep\n")
+        writer.flush()
+        wait_for("keep\n")
+        mark = drain.mark()
+        writer.write(b"drop\n")
+        writer.flush()
+        wait_for("keep\ndrop\n")
+        self.assertEqual(drain.detach(mark), 5)
+        self.assertEqual(drain.text(), "keep\n")
+        # Far more than a pipe buffer: the writer would block were it not read.
+        flood = threading.Thread(target=lambda: (writer.write(b"y" * 4_000_000), writer.flush()), daemon=True)
+        flood.start()
+        flood.join(timeout=30)
+        self.assertFalse(flood.is_alive(), "the writer blocked on a pipe nobody read")
+        writer.close()
+        thread.join(timeout=10)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(drain.text(), "keep\n")
+        self.assertEqual(drain.chunks, ["keep\n"])
+        drain.finish(5)
+        self.assertNotIn("y", "".join(seen))
+
+    def test_a_pipe_still_in_use_is_not_closed(self):
+        class Pipe:
+            closed = False
+
+            def __init__(self) -> None:
+                self.close = mock.Mock()
+
+        class Thread:
+            def __init__(self, alive: bool) -> None:
+                self.alive = alive
+
+            def is_alive(self) -> bool:
+                return self.alive
+
+        proc: Any = mock.Mock(stdout=Pipe(), stderr=Pipe(), stdin=Pipe())
+        threads: Any = [Thread(True), Thread(False), Thread(False)]
+        execution._close_pipes(proc, threads)
+        proc.stdout.close.assert_not_called()
+        proc.stderr.close.assert_called_once_with()
+        proc.stdin.close.assert_called_once_with()
 
     def test_terminate_tree_reports_whether_everything_exited(self):
         proc = subprocess.Popen(python_code(SILENT_HANG), **execution._spawn_kwargs())
@@ -668,7 +855,7 @@ class TestStopOnSigterm(IsolatedCase):
             return fake
 
         with mock.patch.object(execution.subprocess, "Popen", popen), self.assertRaises(_Exited):
-            execution.execute(["cli"], cwd=self.project, timeout=5)
+            execution.execute([sys.executable], cwd=self.project, timeout=5)
         self.assertEqual(self.ended, [(4242, execution._STOP_GRACE_SECONDS)])
         # The real os._exit never returns, so the CLI is still registered here
         # only because the fake one raised; the flag is what must be reset.
@@ -681,7 +868,7 @@ class TestStopOnSigterm(IsolatedCase):
             raise OSError("no such file")
 
         with mock.patch.object(execution.subprocess, "Popen", popen), self.assertRaises(_Exited) as caught:
-            execution.execute(["cli"], cwd=self.project, timeout=5)
+            execution.execute([sys.executable], cwd=self.project, timeout=5)
         self.assertEqual(caught.exception.code, 128 + signal.SIGTERM)
         self.assertEqual(self.ended, [])
         self.assert_left_clean()
@@ -694,7 +881,7 @@ class TestStopOnSigterm(IsolatedCase):
             raise ValueError("bad argument")
 
         with mock.patch.object(execution.subprocess, "Popen", popen), self.assertRaises(ValueError):
-            execution.execute(["cli"], cwd=self.project, timeout=5)
+            execution.execute([sys.executable], cwd=self.project, timeout=5)
         self.assertEqual(self.ended, [])
         self.assert_left_clean()
 
@@ -717,12 +904,12 @@ class TestStopOnSigterm(IsolatedCase):
             mock.patch.object(execution.subprocess, "Popen", lambda *a, **k: self.running_cli()),
             self.assertRaises(_Exited),
         ):
-            execution.execute(["cli"], cwd=self.project, timeout=5)
+            execution.execute([sys.executable], cwd=self.project, timeout=5)
         self.assertEqual(seen, [("append", True), ("honour", False)])
 
     def test_a_failed_spawn_with_no_sigterm_leaves_nothing_behind(self):
         with mock.patch.object(execution.subprocess, "Popen", mock.Mock(side_effect=OSError("nope"))):
-            outcome = execution.execute(["cli"], cwd=self.project, timeout=5)
+            outcome = execution.execute([sys.executable], cwd=self.project, timeout=5)
         self.assertEqual(outcome.exit_code, execution.EXIT_SPAWN_FAILED)
         self.assert_left_clean()
 
@@ -1181,6 +1368,17 @@ class TestVerdict(unittest.TestCase):
         for watched, code, text in cases:
             with self.subTest(watched=watched):
                 self.assertEqual(self.verdict(1, watched, orphans=True), (code, text + ORPHANS))
+
+    def test_a_lingering_process_is_named_whether_or_not_it_was_stopped(self):
+        watched = execution._Watched(False, False, 0)
+        proc: Any = _Polled(0)
+        code, stopped = execution._verdict(proc, watched, "err", 7.4, None, False, lingering=True)
+        self.assertEqual(code, 0)
+        self.assertTrue(stopped.startswith("err\nwarning: the CLI exited"), stopped)
+        self.assertIn("it was stopped", stopped)
+        _, running = execution._verdict(proc, watched, "err", 7.4, None, True, lingering=True)
+        self.assertIn("may still be running; check for orphans", running)
+        self.assertNotIn("after being killed", running)
 
     def test_a_finished_run_keeps_its_code_and_stderr(self):
         self.assertEqual(self.verdict(3, execution._Watched(False, False, 0)), (3, "err"))

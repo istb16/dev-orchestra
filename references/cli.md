@@ -352,18 +352,38 @@ as well as where it was looked for. An unreadable `--prompt-file` used to read
 as an empty prompt, which was delegated and answered by the provider CLI
 complaining about its own stdin.
 
+A prompt is read as UTF-8, whether from a `--prompt-file`, `--prompt-file -`
+or a pipe, and a byte-order mark at its start is dropped. Stdin is not read in
+the encoding Python gives it, which for a pipe on Windows is the ANSI code
+page: cp932 on a Japanese Windows, where a UTF-8 prompt piped in used to be
+delegated as mojibake. Piped bytes are read in that code page instead only
+when they are mostly not UTF-8 and read cleanly in it (`type` of a file saved
+as cp932); otherwise the prompt stays UTF-8, with each undecodable byte
+replaced by U+FFFD, so one stray byte does not garble the rest. What never
+reaches Python cannot be recovered: Windows PowerShell 5.1 encodes what it
+pipes to a program with `$OutputEncoding`, ASCII by default, so non-ASCII text
+is already `?` by then; set `$OutputEncoding = [Text.UTF8Encoding]::new($false)`
+first, or use `--prompt-file <path>`.
+
 `--timeout` is the total deadline. Without it, a role's run takes
 `run.timeout_seconds.<role>` (3600 for the implementer, 1800 for the others) and
 `run <reviewer-id>` takes `review.timeout_seconds` (1800), as `review run` does.
 A run killed at its deadline says which of the two it hit and where it was set.
 `config show` lists every deadline with the file that set it.
 `--idle-timeout` is the *no output* deadline (`review.idle_timeout_seconds`
-without it, for every run):
+without it; for a run that may change files -- the implementer, the review
+fixer, or `--mode implement` -- 1200s, or that setting if larger, since a
+test suite it runs can be silent for longer; a role's `options.idle_timeout`
+comes before both):
 a wedged agent goes quiet while a slow one keeps producing, so this catches a
 stall in minutes rather than at the total deadline. It applies to Claude only:
 the Codex and agy adapters claim no progress stream (agy reports tool activity,
 but is silent while its model thinks; see `references/providers.md`), and it is
 ignored there rather than guessed at.
+Both take a number of seconds above zero and at most 1,000,000,000,
+`--timeout` a whole one; `0`, a negative, `nan`, `inf`, a larger number or a
+word is a usage error (exit 2) before anything is spent, where `0` used to fall back to the configured deadline and a negative
+one stalled the run at once. `review run` checks its own two the same way.
 
 `--output` writes the run's stdout only when the run succeeded and printed
 something; a stalled, timed-out or failed run leaves the existing file exactly
@@ -694,7 +714,7 @@ that: the work runs elsewhere and the wait has a deadline of your own.
 | --- | --- |
 | `jobs list [--json]` | Every recorded job, newest first. |
 | `jobs show <id> [--output] [--since <n>] [--activity <m>] [--json]` | One job, optionally with its output, and what it is doing (below). |
-| `jobs wait <id> [--timeout <s>] [--poll <s>] [--since <n>] [--activity <m>] [--json]` | Wait, but never longer than `--timeout` (60s default). Exits 4 if the job was still running when the wait ended — a normal outcome, not an error. Exits 1 if the job refused its `--output` write, as the foreground run would. |
+| `jobs wait <id> [--timeout <s>] [--poll <s>] [--since <n>] [--activity <m>] [--json]` | Wait, but never longer than `--timeout` (60s default; `0` looks once), checking every `--poll` seconds (1 by default; above 0). Both are at most 1,000,000,000; a negative, `nan`, `inf`, a larger number or a word in either is a usage error (exit 2). Exits 4 if the job was still running when the wait ended — a normal outcome, not an error. Exits 1 if the job refused its `--output` write, as the foreground run would. |
 | `jobs cancel <id>` | Stop a running job and its process tree. |
 
 ```bash
@@ -1259,7 +1279,7 @@ still the only thing that deletes a workflow.
 | `DEV_ORCHESTRA_MOCK_ACTIVITY` | Tool lines a mock run reports to a job's activity or `review run --progress`, `\|`-separated; `<substring>=>line` only for a prompt containing the substring |
 | `CODEX_HOME` | Respected when locating the Codex CLI's config and credentials |
 | `CLAUDE_CONFIG_DIR` | Where Claude Code's user settings are, for `hooks install` and the commands that install or remove the hooks |
-| `DEV_ORCHESTRA_TEST_ASSUME_NO_CLI` | Test-only: hides both provider CLIs, reproducing CI |
+| `DEV_ORCHESTRA_TEST_ASSUME_NO_CLI` | Test-only, and no longer needed: the tests always hide the provider CLIs and never start one. Still accepted; changes nothing |
 
 ## Troubleshooting
 

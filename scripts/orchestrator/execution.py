@@ -22,14 +22,20 @@ format it was asked for -- see ``references/providers.md``.
 
 from __future__ import annotations
 
+import codecs
+import errno
+import io
+import math
 import os
 import queue
+import re
+import shutil
 import signal
 import subprocess
 import sys
 import threading
 import time
-from typing import IO, Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple, cast
+from typing import IO, Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple, Union, cast
 
 from . import clocks
 
@@ -39,11 +45,34 @@ EXIT_TOTAL_TIMEOUT = 124  # conventional timeout(1) code
 EXIT_IDLE_STALL = 125
 EXIT_SPAWN_FAILED = 126
 
+#: The longest deadline, idle limit or wait this tool takes: about 31 years.
+#: Past it a number of seconds overflows what ``time.sleep`` and a float
+#: deadline can hold, and only a mistake asks for more.
+MAX_SECONDS = 10**9
+
+
+def is_seconds(value: Any, allow_zero: bool = False) -> bool:
+    """A number of seconds a deadline can hold: a finite int or float, not a
+    bool, above zero (or zero with ``allow_zero``) and at most
+    :data:`MAX_SECONDS`."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    if isinstance(value, float) and not math.isfinite(value):
+        return False
+    return (value >= 0 if allow_zero else value > 0) and value <= MAX_SECONDS
+
+
 #: How long to let a killed group settle before abandoning its reader threads.
 KILL_GRACE_SECONDS = 5.0
 _POLL_SECONDS = 0.2
 #: Stdout lines waiting for ``on_line`` before further ones are dropped.
 _LINE_QUEUE_SIZE = 1000
+#: The most one read of a pipe takes; a read returns whatever has arrived.
+_READ_CHUNK = 65536
+#: After the child exits, how long its readers get to take in what it wrote
+#: last, and how long a quiet pipe must stay quiet to count as read.
+_SETTLE_SECONDS = 1.0
+_SETTLE_QUIET_SECONDS = 0.2
 #: How long a finished run waits for ``on_line`` to catch up.
 _ON_LINE_GRACE_SECONDS = 2.0
 
@@ -99,6 +128,7 @@ class ExecOutcome:
         idle_for: float = 0.0,
         orphans_possible: bool = False,
         suspended: float = 0.0,
+        started: bool = True,
     ) -> None:
         self.exit_code = exit_code
         self.stdout = stdout
@@ -111,8 +141,12 @@ class ExecOutcome:
         #: No output arrived for the idle deadline: the agent looks wedged.
         self.stalled = stalled
         self.idle_for = idle_for
-        #: The group did not fully exit after being killed.
+        #: The group did not fully exit after being killed, or something the
+        #: child started still held its output after it exited and could not
+        #: be confirmed stopped.
         self.orphans_possible = orphans_possible
+        #: False when the child could not be started at all.
+        self.started = started
         #: Free for readers of this outcome to keep what they derive from it.
         #: Never serialised.
         self.cache: Dict[str, Any] = {}
@@ -153,22 +187,56 @@ class _Drain:
         self._lines: "queue.Queue[str]" = queue.Queue(maxsize=_LINE_QUEUE_SIZE)
         self._closed = threading.Event()
         self._abandoned = False
+        #: Set by ``detach``: what is read from now on is read and dropped.
+        self._detached = False
         self._handler: Optional[threading.Thread] = None
         if on_line is not None:
             self._handler = threading.Thread(target=self._hand_on, daemon=True)
             self._handler.start()
 
-    def pump(self, stream) -> None:
+    def pump(self, stream: io.BufferedIOBase) -> None:
+        """Read ``stream`` to its end, a chunk at a time.
+
+        Whatever arrives counts as output, a newline or not: a CLI printing
+        dots, or a progress bar redrawn with ``\\r``, is alive. Read a line at
+        a time, it was taken for silent until it ended a line (#273). Bytes
+        are decoded as UTF-8 and newlines read as a text pipe would read them
+        (``\\r\\n`` and ``\\r`` become ``\\n``).
+        """
+        utf8 = codecs.getincrementaldecoder("utf-8")("replace")
+        decoder = io.IncrementalNewlineDecoder(utf8, translate=True)
+        # The pieces of a line not yet ended, joined once it is.
+        partial: List[str] = []
         try:
-            for line in iter(stream.readline, ""):
+            while True:
+                data = stream.read1(_READ_CHUNK)
+                if self._detached:
+                    # Keep the pipe drained, so its writer never blocks on
+                    # it, but keep nothing: no one will read it.
+                    if not data:
+                        break
+                    continue
+                text = decoder.decode(data, final=not data)
                 with self._lock:
-                    self.chunks.append(line)
-                    self.last_output_at = time.monotonic()
+                    if self._detached:
+                        continue
+                    if text:
+                        self.chunks.append(text)
+                    if data:
+                        self.last_output_at = time.monotonic()
                 if self._handler is not None:
-                    try:
-                        self._lines.put_nowait(line)
-                    except queue.Full:
-                        self.dropped += 1
+                    *complete, rest = text.split("\n")
+                    for line in complete:
+                        partial.append(line)
+                        self._hand("".join(partial) + "\n")
+                        partial = []
+                    if rest:
+                        partial.append(rest)
+                    if not data and partial:
+                        # The last line, which never ended.
+                        self._hand("".join(partial))
+                if not data:
+                    break
         except (OSError, ValueError):
             pass
         finally:
@@ -177,6 +245,35 @@ class _Drain:
                 stream.close()
             except (OSError, ValueError):
                 pass
+
+    def mark(self) -> int:
+        """Where the output recorded so far ends, for :meth:`detach`."""
+        with self._lock:
+            return len(self.chunks)
+
+    def detach(self, mark: int) -> int:
+        """Stop keeping output: drop what was recorded after ``mark`` and
+        everything still to come, and stop handing lines on. The reader goes
+        on reading, so whatever still writes to the pipe never blocks on it.
+        Returns how many characters were dropped.
+
+        For output that is no longer the run's -- what a process the CLI left
+        behind writes after the CLI exited -- which would otherwise collect
+        here for as long as that process lives.
+        """
+        with self._lock:
+            self._detached = True
+            dropped = sum(len(chunk) for chunk in self.chunks[mark:])
+            del self.chunks[mark:]
+        self._abandoned = True
+        return dropped
+
+    def _hand(self, line: str) -> None:
+        """Queue ``line`` for ``on_line``, or count it dropped if the queue is full."""
+        try:
+            self._lines.put_nowait(line)
+        except queue.Full:
+            self.dropped += 1
 
     def _hand_on(self) -> None:
         on_line = cast(Callable[[str], None], self._on_line)
@@ -224,6 +321,179 @@ def spawn_kwargs() -> Dict[str, Any]:
 
 #: The name the tests have always used.
 _spawn_kwargs = spawn_kwargs
+
+
+# --------------------------------------------------------------------------- launching on Windows
+
+#: What Windows starts through cmd.exe rather than as a program of its own.
+BATCH_SUFFIXES = (".bat", ".cmd")
+
+#: Characters cmd.exe acts on in an argument even inside double quotes, or
+#: that cannot be quoted for it at all: ``"`` ends the quoting, ``%`` and
+#: ``!`` expand variables, and a line break ends the command. Python passes a
+#: batch file's arguments through as it would a program's (the behaviour behind
+#: CVE-2024-24576 elsewhere), so an argument holding one of them could run a
+#: command of its own; a launch carrying one is refused instead.
+BATCH_UNSAFE = frozenset('"%!\r\n\x00')
+
+#: The program and script an npm ``.cmd`` shim hands its arguments to:
+#: ``"%dp0%\node_modules\...\cli.js" %*`` (``%~dp0\`` in older shims).
+_SHIM_TARGET = re.compile(r'"%(?:~dp0|dp0%)\\([^"%\r\n]+)"[ \t]*%\*')
+_NODE_SCRIPTS = (".js", ".cjs", ".mjs")
+
+
+class LaunchRefused(OSError):
+    """A command that cannot be started safely as it stands."""
+
+
+def launchable(command: Sequence[str]) -> Union[str, List[str]]:
+    """``command`` as ``Popen`` has to be given it to run what ``which`` found.
+
+    POSIX resolves a bare name on ``PATH`` the way ``shutil.which`` does, so
+    nothing changes there. Windows does not: ``CreateProcess`` only appends
+    ``.exe``, so the ``claude.cmd`` and ``codex.cmd`` npm installs were found
+    by ``doctor`` and then could not be started (#269). A bare name is
+    replaced with the absolute path :func:`find_program` finds on ``PATH``
+    -- never one in the current directory, which may be a repository under
+    review -- and one it does not find is not started at all, since
+    ``CreateProcess`` would look in the current directory for it. A
+    relative path is made absolute against this process's directory, where
+    ``doctor`` looked, not the child's. A batch file that is an
+    npm shim is bypassed for the program it would run (``node`` and its
+    script, or an ``.exe``), so no argument passes through cmd.exe; any other
+    batch file runs under cmd.exe with every argument quoted, and refuses an
+    argument cmd.exe would read as its own syntax (:data:`BATCH_UNSAFE`).
+    """
+    argv = [str(token) for token in command]
+    if not IS_WINDOWS or not argv:
+        return argv
+    if _has_directory(argv[0]):
+        return windows_launch([os.path.abspath(argv[0]), *argv[1:]], None)
+    found = find_program(argv[0])
+    if found is None:
+        raise FileNotFoundError(errno.ENOENT, "%s not found on PATH" % argv[0], argv[0])
+    return windows_launch(argv, found)
+
+
+def find_program(name: str) -> Optional[str]:
+    """``shutil.which(name)``, except that on Windows the current directory is never searched.
+
+    ``shutil.which`` on Windows looks in the current directory before
+    ``PATH`` (and returns a relative ``.\\name``), so a ``claude.cmd``
+    committed at the root of a repository would be found and run in place
+    of the installed CLI. Only the absolute directories on ``PATH`` are
+    searched here, with ``PATHEXT``, and the path returned is absolute.
+    """
+    if not IS_WINDOWS:
+        return shutil.which(name)
+    return search_path(name, os.environ.get("PATH", ""), os.environ.get("PATHEXT", ""))
+
+
+def search_path(name: str, path: str, pathext: str) -> Optional[str]:
+    """:func:`find_program` on Windows, with ``PATH`` and ``PATHEXT`` given; testable anywhere."""
+    exts = [ext for ext in (pathext or ".COM;.EXE;.BAT;.CMD").split(";") if ext]
+    if os.path.splitext(name)[1].lower() in (ext.lower() for ext in exts):
+        candidates = [name]
+    else:
+        candidates = [name + ext for ext in exts]
+    for entry in path.split(";"):
+        directory = entry.strip().strip('"')
+        # A relative entry (".", or the empty one) is the current directory
+        # by another name.
+        if not directory or not _is_absolute(directory):
+            continue
+        for candidate in candidates:
+            found = os.path.join(directory, candidate)
+            if os.path.isfile(found):
+                return found
+    return None
+
+
+def _is_absolute(directory: str) -> bool:
+    """A Windows path from a drive or share root, on any platform."""
+    return bool(re.match(r"^(?:[A-Za-z]:[\\/]|[\\/]{2})", directory)) or os.path.isabs(directory)
+
+
+def windows_launch(argv: List[str], found: Optional[str]) -> Union[str, List[str]]:
+    """:func:`launchable` on Windows, with the ``which`` result given; testable anywhere."""
+    program = found or argv[0]
+    args = argv[1:]
+    if os.path.splitext(program)[1].lower() not in BATCH_SUFFIXES:
+        return [program, *args]
+    shim = npm_shim_target(program)
+    if shim is not None:
+        return [*shim, *args]
+    return batch_command_line(program, args)
+
+
+def _has_directory(program: str) -> bool:
+    return bool(os.path.dirname(program)) or "/" in program or "\\" in program
+
+
+def npm_shim_target(batch: str) -> Optional[List[str]]:
+    """The program an npm ``.cmd`` shim runs, as a command; None if it is not one.
+
+    Only a target that exists is taken: a ``.js`` script with the ``node.exe``
+    beside the shim or else on ``PATH`` (the shim's own order), or an
+    ``.exe``. Anything else, including a shim for a shell script, is left to
+    cmd.exe.
+    """
+    try:
+        with open(batch, "rb") as handle:
+            text = handle.read(64 * 1024).decode("utf-8", errors="replace")
+    except OSError:
+        return None
+    targets = _SHIM_TARGET.findall(text)
+    if not targets:
+        return None
+    base = os.path.dirname(os.path.abspath(batch))
+    # The separator spelled out, so this reads the same on any platform.
+    target = os.path.normpath(os.path.join(base, *targets[-1].split("\\")))
+    if not os.path.isfile(target):
+        return None
+    suffix = os.path.splitext(target)[1].lower()
+    if suffix == ".exe":
+        return [target]
+    if suffix not in _NODE_SCRIPTS:
+        return None
+    node = os.path.join(base, "node.exe")
+    if not os.path.isfile(node):
+        node = find_program("node") or ""
+    # Only a program: a `node.cmd` (a version manager's shim) would be the
+    # batch file this is here to avoid, started without cmd.exe's quoting.
+    if os.path.splitext(node)[1].lower() != ".exe":
+        return None
+    return [node, target]
+
+
+def batch_command_line(batch: str, args: Sequence[str]) -> str:
+    """The cmd.exe command line that runs ``batch`` with ``args`` and nothing else.
+
+    ``/d`` skips AutoRun, ``/v:off`` leaves ``!`` alone, and ``/s`` makes
+    cmd.exe drop exactly the outer pair of quotes. Every token is quoted, so
+    ``&``, ``|``, ``<``, ``>``, ``^`` and parentheses stay text; backslashes
+    before a closing quote are doubled for the program the batch file runs.
+    """
+    for token in (batch, *args):
+        unsafe = sorted(BATCH_UNSAFE.intersection(token))
+        if unsafe:
+            # The characters are named, never the argument: it may be a prompt
+            # or carry a secret.
+            raise LaunchRefused(
+                "refused to start %s: it is a batch file, run by cmd.exe, and an argument holds %s, "
+                "which cmd.exe would read as its own syntax. Install the CLI as an .exe, or pass the "
+                "value another way" % (os.path.basename(batch), ", ".join(repr(c) for c in unsafe))
+            )
+    comspec = os.environ.get("COMSPEC") or os.path.join(
+        os.environ.get("SystemRoot") or r"C:\Windows", "System32", "cmd.exe"
+    )
+    inner = " ".join(_batch_quoted(token) for token in (batch, *args))
+    return '"%s" /d /v:off /s /c "%s"' % (comspec, inner)
+
+
+def _batch_quoted(token: str) -> str:
+    trailing = len(token) - len(token.rstrip("\\"))
+    return '"%s%s"' % (token, "\\" * trailing)
 
 
 def end_children_on_sigterm(note_path: Optional[str] = None) -> None:
@@ -510,7 +780,7 @@ def execute(
     try:
         proc = _spawn(command, cwd, env)
     except OSError as exc:
-        return ExecOutcome(EXIT_SPAWN_FAILED, "", str(exc), time.monotonic() - started)
+        return ExecOutcome(EXIT_SPAWN_FAILED, "", str(exc), time.monotonic() - started, started=False)
 
     try:
         out, err = _Drain(on_line), _Drain()
@@ -528,21 +798,49 @@ def execute(
         watched = _watch(proc, started, timeout, idle_timeout, out, err)
 
         orphans = False
-        if watched.timed_out or watched.stalled:
+        killed = watched.timed_out or watched.stalled
+        marks = (0, 0)
+        if killed:
             orphans = not terminate_tree(proc)
+        else:
+            # Where the CLI's own output ends, should something it started
+            # still be writing: what that writes later is not the run's.
+            _settle(threads[:2], out, err)
+            marks = out.mark(), err.mark()
 
         # Bounded join: if a survivor still holds a pipe, abandon the readers
         # rather than waiting on them. They are daemons and cannot outlive us.
-        for thread in threads:
-            thread.join(timeout=KILL_GRACE_SECONDS / len(threads))
+        _join(threads, KILL_GRACE_SECONDS)
+        readers = threads[:2]
+        lingering = not killed and any(t.is_alive() for t in readers)
+        discarded = 0
+        if lingering:
+            # The CLI exited, but something it started still holds its output:
+            # a dev server left running in the background, say. Nothing would
+            # ever end it, and nothing it writes now belongs to this run, so
+            # it is cut off and no longer kept.
+            discarded = out.detach(marks[0]) + err.detach(marks[1])
+            orphans = True
+            if _end_leftovers(proc):
+                _join(readers, KILL_GRACE_SECONDS)
+                orphans = any(t.is_alive() for t in readers)
         # So whoever reads the sink next sees every line it is going to see.
         out.finish(_ON_LINE_GRACE_SECONDS)
 
-        _close_pipes(proc)
+        _close_pipes(proc, threads)
 
         duration = time.monotonic() - started
         suspended = watch.read(duration)
-        exit_code, stderr = _verdict(proc, watched, err.text(), duration, idle_timeout, orphans)
+        exit_code, stderr = _verdict(
+            proc,
+            watched,
+            err.text(),
+            duration,
+            idle_timeout,
+            orphans,
+            lingering=lingering,
+            discarded=discarded,
+        )
 
         return ExecOutcome(
             exit_code,
@@ -568,15 +866,11 @@ def _spawn(command: Sequence[str], cwd: str, env: Optional[Dict[str, str]]) -> s
     _stop.spawning = True
     try:
         proc = subprocess.Popen(
-            list(command),
+            launchable(command),
             cwd=cwd,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            bufsize=1,
             env=env,
             **spawn_kwargs(),
         )
@@ -626,8 +920,59 @@ def _watch(
     return _Watched(timed_out, stalled, idle_for)
 
 
-def _close_pipes(proc: subprocess.Popen) -> None:
-    for pipe in (proc.stdin, proc.stdout, proc.stderr):
+def _settle(readers: Sequence[threading.Thread], out: _Drain, err: _Drain) -> None:
+    """After the child exits, let the readers take in what it wrote last.
+
+    Up to a pipe buffer of it may not have been read yet. Returns once both
+    readers are done -- at once, in the usual case -- or once nothing new has
+    arrived for a moment, or after ``_SETTLE_SECONDS``. The moment is
+    counted from no earlier than now, so a reader not yet scheduled when the
+    child exited still gets it.
+    """
+    settling = time.monotonic()
+    deadline = settling + _SETTLE_SECONDS
+    while any(thread.is_alive() for thread in readers):
+        now = time.monotonic()
+        quiet = now - max(out.last_seen(), err.last_seen(), settling)
+        if now >= deadline or quiet >= _SETTLE_QUIET_SECONDS:
+            return
+        time.sleep(_SETTLE_QUIET_SECONDS / 4)
+
+
+def _join(threads: Sequence[threading.Thread], budget: float) -> None:
+    """Wait for ``threads`` to end, spending at most ``budget`` seconds on them."""
+    for thread in threads:
+        thread.join(timeout=budget / len(threads))
+
+
+def _end_leftovers(proc: subprocess.Popen) -> bool:
+    """End what is left of the group of ``proc``, which has exited. True once
+    it is confirmed gone.
+
+    On POSIX the group outlives its leader and can still be signalled: its id
+    cannot be reused while it has members, and ``_stop_group`` checks that it
+    still has some before its SIGKILL. A holder that left the group (setsid)
+    is out of reach, and so is everything on Windows, where the tree hangs off
+    a process that no longer exists for ``taskkill /T`` to start from: both
+    answer False.
+    """
+    if IS_WINDOWS or not _group_alive(proc.pid):
+        return False
+    return _stop_group(proc.pid, KILL_GRACE_SECONDS)
+
+
+def _close_pipes(proc: subprocess.Popen, threads: Sequence[threading.Thread]) -> None:
+    """Close each pipe whose thread (stdout, stderr, stdin, in that order)
+    has finished with it.
+
+    A pipe whose thread is still blocked on it is left alone: ``close()``
+    waits for the stream's lock, which the blocked read or write holds until
+    the far end goes away -- for a process the CLI left running, perhaps
+    never. The daemon thread keeps it until we exit.
+    """
+    for pipe, thread in zip((proc.stdout, proc.stderr, proc.stdin), threads, strict=True):
+        if thread.is_alive():
+            continue
         try:
             if pipe is not None and not pipe.closed:
                 pipe.close()
@@ -642,9 +987,13 @@ def _verdict(
     duration: float,
     idle_timeout: Optional[float],
     orphans: bool,
+    lingering: bool = False,
+    discarded: int = 0,
 ) -> Tuple[int, str]:
     """The exit code to report, and ``stderr`` with what this module decided
-    put around it."""
+    put around it. ``lingering``: the child exited, but something it started
+    still held its output; ``discarded`` characters it wrote after the child
+    exited were dropped."""
     timed_out, stalled, idle_for = watched
     exit_code = proc.poll()
     if stalled:
@@ -660,17 +1009,35 @@ def _verdict(
         ) + stderr
     elif timed_out:
         stderr = ("timed out after %.0fs\n" % duration) + stderr
-    if orphans:
+    if lingering:
+        if orphans:
+            stderr += (
+                "\nwarning: the CLI exited but a process it started still holds its output and may"
+                " still be running; check for orphans\n"
+            )
+        else:
+            stderr += (
+                "\nwarning: the CLI exited but a process it started still held its output; it was stopped\n"
+            )
+        if discarded:
+            stderr += "warning: %d characters it wrote after the CLI exited were dropped\n" % discarded
+    elif orphans:
         stderr += "\nwarning: the process group did not exit after being killed; check for orphans\n"
     return exit_code, stderr
 
 
 def _feed_stdin(proc: subprocess.Popen, prompt: str) -> None:
-    # Every caller opens stdin as a text pipe.
-    stdin = cast(IO[str], proc.stdin)
+    """Write ``prompt`` to the child's stdin as UTF-8, its newlines as they are.
+
+    The pipes are binary: on Windows a text pipe turns every ``\\n`` into
+    ``\\r\\n``, so a diff of a CRLF file reached a reviewer as ``\\r\\r\\n``
+    (#270). agy's prompt file is written the same way.
+    """
+    # _spawn opens every pipe in binary mode.
+    stdin = cast(IO[bytes], proc.stdin)
     try:
         if prompt:
-            stdin.write(prompt)
+            stdin.write(prompt.encode("utf-8", "replace"))
         stdin.close()
     except (OSError, ValueError):
         pass

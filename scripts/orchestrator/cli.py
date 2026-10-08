@@ -22,7 +22,7 @@ from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tu
 
 from . import activity as activity_mod
 from . import approval as approval_mod
-from . import claude_hooks, hosts, miniyaml
+from . import claude_hooks, execution, hosts, miniyaml
 from . import config as config_mod
 from . import context as context_mod
 from . import doctor as doctor_mod
@@ -237,6 +237,28 @@ def _bounded_int(low: int, high: int) -> Callable[[str], int]:
             raise argparse.ArgumentTypeError("%r is not a whole number" % text) from None
         if not low <= value <= high:
             raise argparse.ArgumentTypeError("%d is not from %d to %d" % (value, low, high))
+        return value
+
+    return parse
+
+
+def _seconds(*, whole: bool = False, allow_zero: bool = False) -> Callable[[str], float]:
+    """An argparse type: a finite number of seconds, above zero unless
+    ``allow_zero``, at most ``execution.MAX_SECONDS``; a whole one when
+    ``whole``. Anything else -- a word, a negative, ``nan``, ``inf``, a
+    number too large to wait for -- is a usage error (exit 2), where it used
+    to reach a deadline that fired at once, never fired, or a traceback."""
+
+    def parse(text: str) -> float:
+        try:
+            value: float = int(text) if whole else float(text)
+        except ValueError:
+            kind = "a whole number of seconds" if whole else "a number of seconds"
+            raise argparse.ArgumentTypeError("%r is not %s" % (text, kind)) from None
+        if not execution.is_seconds(value, allow_zero=allow_zero):
+            rule = "from 0 to %d" if allow_zero else "above 0 and at most %d"
+            shown = text if len(text) <= 40 else text[:37] + "..."
+            raise argparse.ArgumentTypeError("%s seconds: must be %s" % (shown, rule % execution.MAX_SECONDS))
         return value
 
     return parse
@@ -567,14 +589,14 @@ def _add_run_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPars
     )
     run_parser.add_argument(
         "--timeout",
-        type=int,
+        type=_seconds(whole=True),
         default=None,
         help="total deadline in seconds (default: run.timeout_seconds.<role>; "
         "review.timeout_seconds for a reviewer)",
     )
     run_parser.add_argument(
         "--idle-timeout",
-        type=float,
+        type=_seconds(),
         default=None,
         help="treat as stalled after this long with no output (streaming providers only)",
     )
@@ -646,8 +668,8 @@ def _add_review_parsers(subparsers: argparse._SubParsersAction[argparse.Argument
     review_run.add_argument("--only", nargs="*", default=None, help="reviewer ids or roles to run")
     review_run.add_argument("--context", default=None, help="extra context for reviewers")
     review_run.add_argument("--base", default=None)
-    review_run.add_argument("--timeout", type=int, default=None)
-    review_run.add_argument("--idle-timeout", type=float, default=None)
+    review_run.add_argument("--timeout", type=_seconds(whole=True), default=None)
+    review_run.add_argument("--idle-timeout", type=_seconds(), default=None)
     review_run.add_argument(
         "--force",
         action="store_true",
@@ -736,8 +758,8 @@ def _add_jobs_parsers(subparsers: argparse._SubParsersAction[argparse.ArgumentPa
     jobs_show.set_defaults(func=cmd_jobs_show)
     jobs_wait = jobs_sub.add_parser("wait", help="wait for a job, with a deadline of your own")
     jobs_wait.add_argument("job_id")
-    jobs_wait.add_argument("--timeout", type=float, default=60.0)
-    jobs_wait.add_argument("--poll", type=float, default=1.0)
+    jobs_wait.add_argument("--timeout", type=_seconds(allow_zero=True), default=60.0)
+    jobs_wait.add_argument("--poll", type=_seconds(), default=1.0)
     _add_json_flag(jobs_wait)
     _add_activity_flags(jobs_wait)
     jobs_wait.set_defaults(func=cmd_jobs_wait)

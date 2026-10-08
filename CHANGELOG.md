@@ -109,7 +109,92 @@ below begins **User adapters** so adapter authors can find it.
   still take any status. `--detail` can no longer set `stage`, `status` or
   `at`, which overwrote the event's own fields (exit 2) (#287).
 
+- **A run that may change files gets a 1200s idle deadline instead of 300s.**
+  `review.idle_timeout_seconds` was applied to every `run`, so an implementer
+  on Claude running a test suite longer than five minutes, during which its
+  stream prints nothing, could be killed as stalled. The implementer, the
+  review fixer and any `run --mode implement` now get 1200s, or
+  `review.idle_timeout_seconds` if that is larger: a command silent for
+  longer is still killed, and a wedged run is still noticed well before its
+  total deadline. `--idle-timeout` or the role's `options.idle_timeout`
+  sets another value, and reviewers and read-only runs keep 300s. Output also
+  counts as it arrives rather than when a line ends, so a CLI printing dots
+  or redrawing a progress bar is no longer taken for silent (#273).
+
+- **User adapters:** `Provider._capture`, which asks the CLI for `--version`,
+  `--help` and its model list, now calls `execution.execute` instead of
+  `subprocess.run`, so a test double that replaces `execution.execute` also
+  receives those calls; replace `_capture` as well to keep them apart (#274).
+
 ### Fixed
+
+- **A run no longer hangs when the CLI exits but leaves a process holding its
+  output.** A CLI that finished while something it started (a dev server
+  left in the background, say) still held stdout made `run` and `review run`
+  wait for that process to end, past the total deadline: closing the pipe
+  waits for the reader still blocked on it, on every platform, and nothing
+  stopped such a process after a clean exit. A pipe still in use is now left
+  to its reader, which is abandoned after a few seconds and from then on
+  reads and drops what arrives, and what the process wrote after the CLI
+  exited is left out of the run's output, with a warning giving its size.
+  The process is then stopped on POSIX, with a warning; on Windows it cannot
+  be reached once the CLI has gone, so the run reports `orphans_possible`
+  and warns instead. The CLI's exit code is kept either way (#267).
+
+- **A prompt reaches the CLI with its line endings unchanged on Windows.**
+  stdin was written in text mode, which turns every `\n` into `\r\n`, so a
+  review of a change to a CRLF file handed the reviewer `\r\r\n` and invited
+  findings about mixed line endings that were not in the file. The prompt is
+  now written as UTF-8 bytes, as agy's prompt file already was (#270).
+
+- **Asking a CLI for its version, help or models can no longer hang.** These
+  queries ran through `subprocess.run(timeout=...)`, which on timeout kills
+  the CLI alone and then waits for its pipes, so a helper the CLI started
+  could keep `doctor` or the checks before a run waiting long past the
+  timeout. They now go through the same process-group handling as a run,
+  and a query that times out reads as one that could not be run (#274).
+
+- **Deadlines and poll intervals must be a number of seconds above zero.**
+  `run --timeout`, `run --idle-timeout`, the same two on `review run`, and
+  `jobs wait --poll` took anything: `0` or a negative stalled a run at once
+  after spending its attempt, `--timeout 0` quietly meant the configured
+  deadline, `--poll -1` ended `jobs wait` on a traceback and `--poll 0`
+  spun for the whole wait. They are now a usage error (exit 2), as are
+  `nan`, `inf` and anything over 1,000,000,000 seconds, which ended on an
+  overflow; `jobs wait --timeout 0` still looks once. `options.idle_timeout`
+  is held to the same rule by `config validate` for every adapter that takes
+  it, where `0`, `true` or `"abc"` used to pass and `"abc"` ended `run` on a
+  traceback that left its in-flight entry open, and the deadlines in the
+  configuration file get the same upper limit. Should a run still raise
+  before the provider hands back a result, Ctrl+C included, the entry is
+  ended as failed, and a detached job failed, before the error surfaces
+  (#272).
+
+- **A UTF-8 prompt piped to `run` is no longer read as cp932 on a Japanese
+  Windows.** `--prompt-file -` and a bare pipe read stdin in the encoding
+  Python gives a pipe there, the ANSI code page (cp932), so a UTF-8 prompt
+  was delegated as mojibake. Stdin is now read as UTF-8, as a
+  `--prompt-file` is. Bytes that are mostly not UTF-8 and read cleanly in
+  the code page (`type` of a file saved as cp932) are read in it; anything
+  else stays UTF-8 with its undecodable bytes replaced, so one stray byte
+  neither raises nor garbles the rest. A byte-order mark at the start of a
+  prompt, piped or in a file, is dropped. Windows PowerShell 5.1 still turns
+  non-ASCII text into `?` before it reaches the pipe unless
+  `$OutputEncoding` is set to UTF-8 (#284).
+
+- **On Windows, a `claude.cmd` or `codex.cmd` installed by npm runs.**
+  `doctor` found it through PATHEXT and reported it installed, but it was
+  started by its bare name, which Windows looks up as an `.exe` only, so
+  `--version` could not run and every run exited 126. A CLI is now started
+  from the absolute path `doctor` found, and both look only in the absolute
+  directories on PATH: never in the current directory, which Windows
+  searches first and which may be a repository carrying a `claude.cmd` of
+  its own. A name not found there is not started. An npm shim is bypassed for the `node` and
+  script (or the `.exe`) it would run, so no argument passes through
+  cmd.exe; any other `.cmd` or `.bat` runs under cmd.exe with every argument
+  quoted, and an argument holding `"`, `%`, `!` or a line break, which
+  cmd.exe would read as its own syntax, is refused (exit 126) rather than
+  passed on (#269).
 
 - **Without PyYAML, a Windows path or a string of digits written to a config
   reads back unchanged** (#275). The bundled parser decoded `\\n` in a
@@ -288,6 +373,19 @@ below begins **User adapters** so adapter authors can find it.
   list item, so its fences no longer leave the list and swallow the rest of
   the document (#265).
 
+- **The tests no longer start a real `claude`, `codex` or `agy`.** Without
+  `DEV_ORCHESTRA_TEST_ASSUME_NO_CLI`, about 150 tests ran the installed CLIs
+  (`--version`, `agy models`, `codex debug models`), one of them a real `codex
+  exec`, and some failed where `agy` was installed; even with the flag,
+  `claude --help` and `codex exec fork --help` ran. The provider CLIs are now
+  always hidden, and the tests refuse to start one, in the Python processes
+  they start too, just as a machine without them would: by name, by where it
+  is installed (an npm shim's script and package included), and behind `node`,
+  `cmd /c`, `sh -c`, `pwsh -Command`, `env` or `npx`. A test that needs a CLI
+  to answer allows its own fake by its path. A launch through
+  `_winapi.CreateProcess`, or from a Python process started with `-I`, `-E` or
+  `-S`, is not covered. The flag is still accepted and changes nothing (#291).
+
 - **Files the orchestrator writes itself go where they are read, and a stray
   `.ai/execution/` no longer stops every command.** The skill told the
   orchestrator to redirect a background review to
@@ -355,7 +453,6 @@ below begins **User adapters** so adapter authors can find it.
   works -- in single quotes from `install.sh`, so a `$` or a backtick in it
   is not expanded either -- and `doctor`'s `Resume:` line names the live check by its absolute
   path, as its notes already did (#297).
-
 ## [0.22.0] - 2026-10-06
 
 ### Added

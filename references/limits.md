@@ -55,7 +55,25 @@ Runs now go through `orchestrator/execution.py`, which gives the child its own
 process group, kills the whole group on a breach (`taskkill /T` on Windows,
 `killpg` elsewhere), and drains output with daemon threads it can abandon.
 stdin is written from its own thread because a review prompt with an inlined
-diff is several times larger than a pipe buffer.
+diff is several times larger than a pipe buffer. The short questions
+detection asks a CLI (`--version`, `--help`, `agy models`, `codex debug
+models`) go the same way, so `doctor` and the checks before a run cannot hang
+on a helper such a query started either.
+
+The same holds when the CLI exits cleanly but leaves something running that
+still holds its output -- a dev server the implementer started in the
+background, say. The readers get a few seconds to finish; a pipe whose reader
+is still blocked is never closed, because closing it waits for that reader,
+and so for the process holding the pipe, on any platform. From then on the
+reader drops what it reads, so a process that keeps writing neither blocks on
+a full pipe nor fills memory, and what it wrote after the CLI exited is left
+out of the run's output, with a warning giving its size. What is left is then
+stopped:
+on POSIX its process group is signalled as on a breach, and the run warns that
+it was stopped. On Windows it cannot be reached once the CLI has exited
+(`taskkill /T` needs the parent), so it is left running and the run reports
+`orphans_possible` with a warning to check for it. Either way the CLI's exit
+code stands.
 
 ### Two deadlines, because "slow" and "wedged" differ
 
@@ -63,12 +81,28 @@ diff is several times larger than a pipe buffer.
 | --- | --- | --- |
 | Total, `run` | `run.timeout_seconds.<role>` (implementer 3600, others 1800) | Hard cap on one `run` of a role |
 | Total, review | `review.timeout_seconds` (1800) | Hard cap on each reviewer: `review run` and `run <reviewer-id>` |
-| Idle | `review.idle_timeout_seconds` (300) | No output for this long → wedged; shared by `run` and review |
+| Idle | `review.idle_timeout_seconds` (300) | No output for this long → wedged; reviewers and read-only `run`s |
+| Idle, write `run` | 1200, or `review.idle_timeout_seconds` if larger | The same, for a `run` that may change files |
 
 `--timeout` replaces either total for one call. The implementer has an hour
 because measured implementer runs went past half an hour and one was killed at
 1800s. The idle deadline stays shared: it measures silence, which does not
 grow with the task.
+
+Except for a run that may change files -- the implementer, the review fixer,
+or any `run --mode implement` -- whose idle deadline is 1200s (20 minutes),
+or `review.idle_timeout_seconds` when that is larger. Such a run runs the
+tests or a build, and Claude's stream prints nothing while a command runs, so
+300s would kill a healthy run whose suite takes longer. No idle deadline at
+all would leave a wedged implementer running silently until its total
+deadline, an hour. 1200s is the trade: a command quiet for longer than that
+is still killed as a stall, and a wedged run is noticed in twenty minutes
+rather than sixty. `--idle-timeout` or the role's `options.idle_timeout`
+sets another value.
+
+Any output counts, not only a whole line: a CLI printing dots, or redrawing a
+progress bar, is not silent. Output is read as it arrives, not a line at a
+time.
 
 The idle deadline is the useful one: a working agent keeps producing, a wedged
 one goes silent, so a stall surfaces in minutes instead of half an hour.

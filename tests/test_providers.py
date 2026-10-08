@@ -8,6 +8,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import sys
 import textwrap
 import threading
@@ -51,6 +52,63 @@ class _FakeCompleted:
         self.stdout = stdout
         self.stderr = stderr
         self.returncode = returncode
+
+
+#: A CLI whose ``--help`` hangs after starting a helper that holds its stdout:
+#: the helper writes its pid to ``argv[1]`` and sleeps for a minute.
+_HANGING_QUERY = (
+    "import os, subprocess, sys, time\n"
+    'helper = ("import os, sys, time\\n"\n'
+    "          \"open(sys.argv[1], 'w').write(str(os.getpid()))\\n\"\n"
+    '          "time.sleep(60)\\n")\n'
+    "subprocess.Popen([sys.executable, '-c', helper, sys.argv[1]], stdin=subprocess.DEVNULL,"
+    " stdout=sys.stdout, stderr=sys.stderr)\n"
+    "while True: time.sleep(0.05)\n"
+)
+
+
+class TestCapture(IsolatedCase):
+    """``_capture`` asks a CLI a short question without ever hanging (#274)."""
+
+    def capture(self, command, timeout=30):
+        return MockProvider()._capture(command, timeout=timeout)
+
+    def test_output_and_exit_code_are_returned(self):
+        completed = self.capture([sys.executable, "-c", "import sys; print('1.2.3'); sys.exit(3)"])
+        assert completed is not None
+        self.assertEqual(completed.returncode, 3)
+        self.assertEqual(completed.stdout, "1.2.3\n")
+
+    def test_a_cli_that_cannot_be_started_is_none(self):
+        self.assertIsNone(self.capture(["definitely-not-a-real-binary-xyz", "--version"]))
+
+    def test_a_hanging_cli_whose_helper_holds_its_output_returns_none_promptly(self):
+        pid_file = os.path.join(self.project, "helper.pid")
+
+        def end_helper() -> None:
+            try:
+                with open(pid_file) as handle:
+                    pid = int(handle.read())
+            except (OSError, ValueError):
+                return
+            if execution.pid_alive(pid):
+                try:
+                    os.kill(pid, getattr(signal, "SIGKILL", signal.SIGTERM))
+                except OSError:
+                    pass
+
+        self.addCleanup(end_helper)
+        started = time.monotonic()
+        completed = self.capture([sys.executable, "-c", _HANGING_QUERY, pid_file], timeout=2)
+        self.assertIsNone(completed)
+        # The helper sleeps for a minute: returning near that means the call
+        # waited for the pipe it holds.
+        self.assertLess(time.monotonic() - started, 30)
+
+    def test_nothing_is_written_to_stdin(self):
+        completed = self.capture([sys.executable, "-c", "import sys; print(repr(sys.stdin.read()))"])
+        assert completed is not None
+        self.assertEqual(completed.stdout.strip(), "''")
 
 
 class TestRegistry(IsolatedCase):
