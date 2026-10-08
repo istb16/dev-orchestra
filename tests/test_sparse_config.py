@@ -22,6 +22,7 @@ import json
 import os
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
+from pathlib import Path
 from unittest import mock
 
 from helpers import REPO_ROOT, IsolatedCase, present
@@ -236,13 +237,13 @@ class TestGlobalWritesWithAProjectLayer(IsolatedCase):
         super().setUp()
         self.project_path = os.path.join(self.project, ".dev-orchestra.yaml")
         config_mod.write_config_file(self.project_path, {"version": 1, "reviewers": PROJECT_PANEL})
-        self.project_bytes = open(self.project_path, "rb").read()
+        self.project_bytes = Path(self.project_path).read_bytes()
 
     def global_layer(self):
         return config_mod.read_config_file(config_mod.global_config_path())
 
     def assertProjectFileUntouched(self):
-        self.assertEqual(open(self.project_path, "rb").read(), self.project_bytes)
+        self.assertEqual(Path(self.project_path).read_bytes(), self.project_bytes)
 
     def test_reviewer_add_goes_beside_the_default_panel(self):
         code, _, _ = run_cli(
@@ -545,12 +546,12 @@ class TestPrune(IsolatedCase):
 
     def test_a_dry_run_writes_nothing(self):
         path = self.write_old_format()
-        before = open(path, "rb").read()
+        before = Path(path).read_bytes()
         code, out, _ = run_cli("config", "prune", "--dry-run")
         self.assertEqual(code, 0)
         self.assertIn("dry run", out)
         self.assertIn("Kept reviewers in", out)
-        self.assertEqual(open(path, "rb").read(), before)
+        self.assertEqual(Path(path).read_bytes(), before)
 
     def project_path(self):
         return os.path.join(self.project, ".dev-orchestra.yaml")
@@ -637,11 +638,11 @@ class TestPrune(IsolatedCase):
 
     def test_a_dry_run_writes_no_version_either(self):
         write_raw(config_mod.global_config_path(), "optimization:\n  low_risk_max_files: 7\n")
-        before = open(config_mod.global_config_path(), "rb").read()
+        before = Path(config_mod.global_config_path()).read_bytes()
         code, out, _ = run_cli("config", "prune", "--dry-run")
         self.assertEqual(code, 0)
         self.assertIn("dry run", out)
-        self.assertEqual(open(config_mod.global_config_path(), "rb").read(), before)
+        self.assertEqual(Path(config_mod.global_config_path()).read_bytes(), before)
 
     def test_a_file_already_normalised_is_left_byte_for_byte(self):
         config_mod.write_config_file(
@@ -649,11 +650,11 @@ class TestPrune(IsolatedCase):
             {"version": 1, "optimization": {"low_risk_max_files": 7}},
             "global",
         )
-        before = open(config_mod.global_config_path(), "rb").read()
+        before = Path(config_mod.global_config_path()).read_bytes()
         code, out, _ = run_cli("config", "prune")
         self.assertEqual(code, 0)
         self.assertIn("Nothing to drop", out)
-        self.assertEqual(open(config_mod.global_config_path(), "rb").read(), before)
+        self.assertEqual(Path(config_mod.global_config_path()).read_bytes(), before)
 
 
 class TestTheFileHeader(IsolatedCase):
