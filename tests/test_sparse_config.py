@@ -123,6 +123,47 @@ class TestSparseWriters(IsolatedCase):
         self.assertEqual(project["implementer"]["model"]["family"], "opus")
         self.assertEqual(config_mod.load(self.project).role("implementer")["model"]["family"], "opus")
 
+    def test_a_json_project_file_is_written_back_as_json(self):
+        """Editors, jq and CI read it too, and none of them take YAML or a comment (#280)."""
+        path = os.path.join(self.project, ".dev-orchestra.json")
+        write_raw(path, '{"version": 1, "review": {"max_review_iterations": 3}}\n')
+        code, _, err = run_cli("config", "set", "--scope", "project", "review.max_findings", "5")
+        self.assertEqual(code, 0, err)
+        code, _, err = run_cli("reviewer", "add", "--scope", "project", "--provider", "mock")
+        self.assertEqual(code, 0, err)
+        with open(path, encoding="utf-8") as handle:
+            text = handle.read()
+        self.assertNotIn("#", text)
+        stored = json.loads(text)
+        self.assertEqual(stored["review"], {"max_review_iterations": 3, "max_findings": 5})
+        self.assertEqual([r["id"] for r in stored["reviewers_extra"]], ["mock-general"])
+        self.assertFalse(os.path.exists(os.path.join(self.project, ".dev-orchestra.yaml")))
+        self.assertEqual(config_mod.read_config_file(path), stored)
+
+    def test_a_json_file_refuses_an_infinite_or_nan_number(self):
+        """`Infinity` and `NaN` are not JSON: refused, and the file left as it was."""
+        path = os.path.join(self.project, ".dev-orchestra.json")
+        original = '{"version": 1, "review": {"max_review_iterations": 3}}\n'
+        write_raw(path, original)
+        for value in (".inf", ".nan"):
+            with self.subTest(value=value):
+                code, _, err = run_cli("config", "set", "--scope", "project", "review.max_findings", value)
+                self.assertEqual(code, 2, err)
+                self.assertIn("JSON has no infinite or not-a-number value", err)
+                with open(path, encoding="utf-8") as handle:
+                    self.assertEqual(handle.read(), original)
+        with self.assertRaises(config_mod.ConfigError):
+            config_mod.write_config_file(os.path.join(self.tmp, "c.json"), {"x": float("-inf")})
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "c.json")))
+
+    def test_a_json_file_keeps_text_that_is_not_ascii(self):
+        path = os.path.join(self.tmp, "config.json")
+        config_mod.write_config_file(path, {"version": 1, "review": {"exclude": ["文書/*.md"]}})
+        with open(path, encoding="utf-8") as handle:
+            text = handle.read()
+        self.assertIn("文書/*.md", text)
+        self.assertEqual(json.loads(text)["review"]["exclude"], ["文書/*.md"])
+
     def test_adding_a_reviewer_writes_the_reviewer_and_nothing_else(self):
         code, _, _ = run_cli("reviewer", "add", "--provider", "codex", "--role", "security")
         self.assertEqual(code, 0)

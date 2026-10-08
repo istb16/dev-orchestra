@@ -2,21 +2,31 @@
 
 What comes from the project file is refused where it could loosen a run; a
 read-only seat on a provider that cannot be held to reading is warned about.
+So is a project file that loosens a review or approval gate it may still set.
 Importing this module loads the provider registry.
 """
 
 from __future__ import annotations
 
+import math
 import os
-from typing import Any, Dict, List, NamedTuple, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple
 
+from . import config_trust, presets
+from . import optimization as opt_mod
 from .config import (
     WRITE_ROLES,
     LoadedConfig,
     ReviewerOrigin,
     _read_only_seats,
     _reviewer_seats,
+    compose,
+    design_review_mode,
+    get_path,
+    repository_root,
     role_seats,
+    workspace_dir_in,
+    workspace_dir_of,
 )
 from .providers import _warned_provider, get_provider, unenforced_warning
 
@@ -350,12 +360,14 @@ def read_only_arg_warnings(loaded: LoadedConfig) -> List[str]:
     every command -- ``status``, ``budget`` -- would stop over one role's raw
     arguments when only that role's runs are refused.
 
-    Also the refusals of the other two kinds that come from the project file:
-    a read-only seat on a warned provider, and a write role's options on a
-    provider that takes them only from the global config.
+    Also the refusals of the other kinds that come from the project file:
+    a read-only seat on a warned provider, a write role's options on a
+    provider that takes them only from the global config, and the settings
+    only the global config may make (``project_ignored_warnings``).
     """
     warnings = [message for _entry, message in _all_refused(loaded)]
     warnings.extend(project_write_refusals(loaded).values())
+    warnings.extend(project_ignored_warnings(loaded))
     for entry in read_only_raw_args(loaded):
         if entry.layer == "project" or not entry.args:
             continue
@@ -365,3 +377,349 @@ def read_only_arg_warnings(loaded: LoadedConfig) -> List[str]:
             continue  # an unknown provider or a broken adapter is validate's to report
         warnings.extend("%s: %s" % (entry.display, problem) for problem in problems)
     return warnings
+
+
+# --------------------------------------------------------------------------- global-only settings
+
+
+def _shown(value: Any) -> str:
+    """A value as it is written in YAML: ``false``, not ``False``."""
+    return str(value).lower() if isinstance(value, bool) else str(value)
+
+
+class Ignored(NamedTuple):
+    """A setting the project file makes that only the global config may, as reported."""
+
+    line: str
+    #: Whether, taken, it would have loosened what is in force: a ``false``
+    #: approval over a required one, or a workspace other than the one used.
+    #: ``doctor`` reports only these as problems; the rest change nothing.
+    loosens: bool
+
+
+def project_repository(loaded: LoadedConfig) -> Optional[str]:
+    """The repository the project file is in, or its directory outside one; None without one."""
+    if not loaded.project_path:
+        return None
+    directory = os.path.dirname(os.path.abspath(loaded.project_path))
+    return repository_root(directory) or directory
+
+
+def project_ignored(loaded: LoadedConfig) -> List[Ignored]:
+    """One entry per setting the project file makes that only the global config may.
+
+    ``config.compose`` has already left them out (``config_trust``), and
+    ``LoadedConfig.workspace_dir`` a ``workspace.dir`` a link takes out of the
+    repository; this says so, with what is in force instead and the command
+    that would set it.
+    """
+    name = os.path.basename(loaded.project_path or "") or "the project file"
+    used = workspace_dir_of(loaded.data)
+    found = [(key, value, "") for key, value in config_trust.ignored(loaded.project_layer)]
+    root = project_repository(loaded)
+    if root is not None:
+        workspace = loaded.project_layer.get("workspace")
+        value = workspace.get("dir") if isinstance(workspace, dict) else None
+        fallback = workspace_dir_in(root, loaded.data, loaded.global_layer, loaded.project_layer)
+        if value == used and fallback != used:
+            used = fallback
+            how = ", where a link takes it outside the repository,"
+            found.append((config_trust.WORKSPACE_DIR, value, how))
+    entries: List[Ignored] = []
+    for key, value, how in found:
+        if key == config_trust.APPROVAL:
+            required = bool(loaded.design_settings().get("require_approval"))
+            why = "plan approval is taken only from the global config, so it stays %s" % (
+                "required" if required else "not required"
+            )
+            loosens = required and not value
+        else:
+            why = "a workspace outside the repository is taken only from the global config, so %s is used" % (
+                used
+            )
+            loosens = value != used
+        entries.append(
+            Ignored(
+                "%s: %s is set in the project config (%s)%s and is ignored; %s -- if this is intended, run "
+                "`dev-orchestra config set --scope global %s %s` and remove it from %s"
+                % (key, _shown(value), name, how, why, key, _shown(value), name),
+                loosens,
+            )
+        )
+    return entries
+
+
+def project_ignored_warnings(loaded: LoadedConfig) -> List[str]:
+    """``project_ignored`` as lines: what ``config validate`` and ``review run`` warn about."""
+    return [entry.line for entry in project_ignored(loaded)]
+
+
+def project_ignored_write_refusal(dotted: str, value: Any, file_name: str) -> str:
+    """Why ``config set --scope project <dotted> <value>`` writes nothing, or ""."""
+    found = config_trust.written_ignored(dotted, value)
+    if not found:
+        return ""
+    key, ignored_value = found[0]
+    what = key if key == config_trust.APPROVAL else "a workspace.dir outside the repository"
+    return (
+        "%s is taken only from the global config: the project config (%s) can come with the branch "
+        "under review -- run `dev-orchestra config set --scope global %s %s` instead"
+        % (what, file_name, key, _shown(ignored_value))
+    )
+
+
+def approval_ignored_note(loaded: LoadedConfig) -> str:
+    """The ``note:`` a refused ``run implementer`` adds when the project file tried to turn approval off."""
+    for key, value in config_trust.ignored(loaded.project_layer):
+        if key == config_trust.APPROVAL and not value:
+            name = os.path.basename(loaded.project_path or "") or "the project file"
+            return (
+                "note: design.require_approval: %s in the project config (%s) is ignored; only the "
+                "global config can turn plan approval off" % (_shown(value), name)
+            )
+    return ""
+
+
+# --------------------------------------------------------------------------- loosened gates
+
+
+#: ``review.design.enabled`` from the least to the most careful.
+_DESIGN_MODES = ("off", "auto", "on")
+
+
+class _Gate(NamedTuple):
+    """One review or approval gate a project file may set, and how it gets looser."""
+
+    #: The key the notice names.
+    key: str
+    #: The keys a project file writes to move it; any one counts.
+    written: Tuple[str, ...]
+    #: ``(in force, without the project file)`` -> what got looser, or "".
+    looser: Callable[[LoadedConfig, LoadedConfig], str]
+
+
+def _ids(panel: Sequence[Any]) -> List[str]:
+    return [str(seat["id"]) for seat in panel if isinstance(seat, dict) and seat.get("id")]
+
+
+def _dropped(now: Sequence[Any], before: Sequence[Any]) -> List[Any]:
+    """What ``before`` held that ``now`` does not, in ``before``'s order."""
+    kept = set(now)
+    return [item for item in before if item not in kept]
+
+
+def _listed(items: Sequence[Any]) -> str:
+    shown = ", ".join(str(item) for item in items[:5])
+    return shown + (" (and %d more)" % (len(items) - 5) if len(items) > 5 else "")
+
+
+def _int(value: Any) -> Optional[int]:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _code_panel(now: LoadedConfig, before: LoadedConfig) -> str:
+    dropped = _dropped(_ids(now.reviewers()), _ids(before.reviewers()))
+    return "drops %s from the code review panel" % _listed(dropped) if dropped else ""
+
+
+def _design_panel(now: LoadedConfig, before: LoadedConfig) -> str:
+    if not (now.has_design_panel() or before.has_design_panel()):
+        return ""  # both run the code panel, which is reported on its own
+    dropped = _dropped(_ids(now.design_reviewers()), _ids(before.design_reviewers()))
+    return "drops %s from the design review panel" % _listed(dropped) if dropped else ""
+
+
+def _lower(read: Callable[[LoadedConfig], Any]) -> Callable[[LoadedConfig, LoadedConfig], str]:
+    """A count that lets more through as it goes down."""
+
+    def looser(now: LoadedConfig, before: LoadedConfig) -> str:
+        new, old = _int(read(now)), _int(read(before))
+        if new is None or old is None or new >= old:
+            return ""
+        return "lowers it to %d from %d" % (new, old)
+
+    return looser
+
+
+def _higher(read: Callable[[LoadedConfig], Any]) -> Callable[[LoadedConfig, LoadedConfig], str]:
+    """A threshold that lets more through as it goes up."""
+
+    def looser(now: LoadedConfig, before: LoadedConfig) -> str:
+        new, old = _int(read(now)), _int(read(before))
+        if new is None or old is None or new <= old:
+            return ""
+        return "raises it to %d from %d" % (new, old)
+
+    return looser
+
+
+def _severities(loaded: LoadedConfig) -> List[str]:
+    """As ``review status`` reads them: in lower case, the default pair for anything unusable."""
+    return list(loaded.blocking_severities())
+
+
+def _re_review(now: LoadedConfig, before: LoadedConfig) -> str:
+    dropped = _dropped(_severities(now), _severities(before))
+    return "no longer asks for a re-review over %s findings" % _listed(dropped) if dropped else ""
+
+
+def _exclude(loaded: LoadedConfig) -> List[str]:
+    configured = loaded.review_settings().get("exclude")
+    return [item for item in configured if isinstance(item, str)] if isinstance(configured, list) else []
+
+
+def _withheld(now: LoadedConfig, before: LoadedConfig) -> str:
+    added = _dropped(_exclude(before), _exclude(now))
+    return "also withholds the diff of %s from reviewers" % _listed(added) if added else ""
+
+
+def _design_mode(now: LoadedConfig, before: LoadedConfig) -> str:
+    new = design_review_mode(now.design_review_settings().get("enabled"))
+    old = design_review_mode(before.design_review_settings().get("enabled"))
+    if _DESIGN_MODES.index(new) >= _DESIGN_MODES.index(old):
+        return ""
+    return "turns it %s from %s" % (new, old)
+
+
+def _findings_cap(loaded: LoadedConfig) -> float:
+    """``review.max_findings`` as a run asks for it; 0 lifts the cap."""
+    cap = opt_mod.findings_cap(loaded.optimization_settings(), loaded.review_settings())
+    return math.inf if cap == 0 else cap
+
+
+def _fewer_findings(now: LoadedConfig, before: LoadedConfig) -> str:
+    new, old = _findings_cap(now), _findings_cap(before)
+    if new >= old:
+        return ""
+    return "asks each reviewer for at most %d findings, not %s" % (
+        new,
+        "any number" if old == math.inf else "%d" % old,
+    )
+
+
+def _level(now: LoadedConfig, before: LoadedConfig) -> str:
+    new = opt_mod.normalise_level(now.optimization_settings().get("level"))
+    old = opt_mod.normalise_level(before.optimization_settings().get("level"))
+    if opt_mod.LEVELS.index(new) >= opt_mod.LEVELS.index(old):
+        return ""
+    return "lowers it to %s from %s" % (new, old)
+
+
+def _patterns(read: Callable[[Dict[str, Any]], List[str]]) -> Callable[[LoadedConfig, LoadedConfig], str]:
+    """A pattern list, with its ``extra_`` list, that catches less as it loses entries."""
+
+    def looser(now: LoadedConfig, before: LoadedConfig) -> str:
+        dropped = _dropped(read(now.optimization_settings()), read(before.optimization_settings()))
+        return "drops the patterns %s" % _listed(dropped) if dropped else ""
+
+    return looser
+
+
+def _skips(now: LoadedConfig, before: LoadedConfig) -> str:
+    new = now.optimization_settings().get("skip_unneeded_roles") is not False
+    old = before.optimization_settings().get("skip_unneeded_roles") is not False
+    return "turns it on" if new and not old else ""
+
+
+#: Every review gate a project file may still set, and how it gets looser.
+#: Read through the accessors the runs read it through, so a value no run
+#: would take as written (a string count, an unknown level) is compared as
+#: the run would take it; ``validate`` reports the value itself.
+_GATES = (
+    _Gate("reviewers", ("reviewers",), _code_panel),
+    _Gate("review.design.reviewers", ("reviewers", "review.design.reviewers"), _design_panel),
+    _Gate(
+        "review.max_review_iterations",
+        ("review.max_review_iterations",),
+        _lower(lambda loaded: loaded.review_settings().get("max_review_iterations")),
+    ),
+    _Gate("review.re_review_severities", ("review.re_review_severities",), _re_review),
+    _Gate("review.exclude", ("review.exclude",), _withheld),
+    _Gate("review.max_findings", ("review.max_findings",), _fewer_findings),
+    _Gate("review.design.enabled", ("review.design.enabled",), _design_mode),
+    _Gate(
+        "review.design.max_iterations",
+        ("review.design.max_iterations",),
+        _lower(lambda loaded: loaded.design_review_settings().get("max_iterations")),
+    ),
+    _Gate("optimization.level", ("optimization.level",), _level),
+    _Gate(
+        "optimization.high_risk_paths",
+        ("optimization.high_risk_paths", "optimization.extra_high_risk_paths"),
+        _patterns(opt_mod.risk_patterns),
+    ),
+    _Gate(
+        "optimization.low_risk_max_files",
+        ("optimization.low_risk_max_files",),
+        _higher(lambda loaded: loaded.optimization_settings().get("low_risk_max_files")),
+    ),
+    _Gate(
+        "optimization.low_risk_max_lines",
+        ("optimization.low_risk_max_lines",),
+        _higher(lambda loaded: loaded.optimization_settings().get("low_risk_max_lines")),
+    ),
+    _Gate("optimization.skip_unneeded_roles", ("optimization.skip_unneeded_roles",), _skips),
+    _Gate(
+        "optimization.security_paths",
+        ("optimization.security_paths", "optimization.extra_security_paths"),
+        _patterns(opt_mod.security_patterns),
+    ),
+    _Gate(
+        "optimization.architecture_paths",
+        ("optimization.architecture_paths", "optimization.extra_architecture_paths"),
+        _patterns(opt_mod.architecture_patterns),
+    ),
+)
+
+
+def _without_project(loaded: LoadedConfig) -> Optional[LoadedConfig]:
+    """The configuration the global file, its preset's fit and the defaults give alone."""
+    try:
+        data, fit, preset, source = compose(loaded.global_layer, {}, presets.installed_providers())
+    except Exception:
+        return None  # a global file that does not compose is validate's to report
+    return LoadedConfig(
+        data,
+        loaded.global_path,
+        None,
+        not loaded.global_path,
+        global_layer=loaded.global_layer,
+        preset=preset,
+        preset_source=source,
+        reviewer_origins=fit.origins,
+        design_reviewer_origins=fit.design_origins,
+    )
+
+
+def project_loosening_notices(loaded: LoadedConfig) -> List[str]:
+    """One line per review gate the project file makes looser.
+
+    Looser than the same configuration without the project file: the global
+    file, the global preset's fit and the defaults. Only a gate the project
+    file writes is compared, so a panel dealt differently around a project's
+    implementer is not one. These still take effect -- a repository may
+    review less on purpose -- but the file can come with the branch under
+    review, so ``doctor``, ``config validate`` and ``review run`` say so.
+    """
+    project = loaded.project_layer
+    written = {key for gate in _GATES for key in gate.written if get_path(project, key) is not None}
+    if not written:
+        return []
+    before = _without_project(loaded)
+    if before is None:
+        return []
+    name = os.path.basename(loaded.project_path or "") or "the project file"
+    notices: List[str] = []
+    for gate in _GATES:
+        if not written.intersection(gate.written):
+            continue
+        try:
+            detail = gate.looser(loaded, before)
+        except Exception:
+            continue  # a value no run could read is validate's to report
+        if detail:
+            notices.append(
+                "%s: the project config (%s) %s; that file can come with the branch under review, "
+                "so check that this is intended" % (gate.key, name, detail)
+            )
+    return notices

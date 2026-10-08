@@ -58,7 +58,7 @@ flowchart TD
 | --- | --- | --- |
 | Skill | `skills/dev-orchestra/SKILL.md`, `references/` | What the orchestrator decides and when |
 | CLI | `scripts/dev_orchestra.py`, `scripts/orchestrator/cli.py` (parser and entry point) and `cli_*.py` (one module per group of commands) | Deterministic operations an agent can call |
-| Domain | `config.py`, `config_policy.py`, `review_*.py` (re-exported by `review.py`), `workspace.py`, `wizard.py`, `doctor.py` | Config layering, refusal policy for project-file seats and write options, snapshotting, parsing, dedupe, triage, diagnostics |
+| Domain | `config.py`, `config_policy.py`, `config_trust.py`, `review_*.py` (re-exported by `review.py`), `workspace.py`, `wizard.py`, `doctor.py` | Config layering, refusal policy for project-file seats and write options, the settings only the global config may make, snapshotting, parsing, dedupe, triage, diagnostics |
 | Providers | `scripts/orchestrator/providers/` | The only code that knows CLI syntax and model names |
 | Reply-language hooks | `claude_hooks.py`, `scripts/hooks/`, `reply_language.py` | Claude Code only: keep replies in `language.reply` ([below](#reply-language-hooks)) |
 

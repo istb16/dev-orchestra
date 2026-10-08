@@ -380,7 +380,7 @@ def _status_payload(
 
     review_data = ws.read_json(workspace.consolidated_json_path, {}) or {}
     settings = loaded.review_settings()
-    severities = tuple(settings.get("re_review_severities") or ("critical", "high"))
+    severities = loaded.blocking_severities()
     blocking = review_mod.unresolved_blocking(review_data, severities)
     iteration = int(review_data.get("iteration", 0) or 0)
     max_iterations = int(settings.get("max_review_iterations", 2))

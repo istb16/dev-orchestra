@@ -26,7 +26,7 @@ from collections import Counter
 from typing import Any, Dict, Iterable, List, Mapping, NamedTuple, Optional, Tuple
 
 from . import config as config_mod
-from . import workflow
+from . import config_trust, workflow
 from .execution import DELEGATED_ENV
 
 #: The command-line event name, and the ``hook_event_name`` it must arrive with.
@@ -691,8 +691,7 @@ def transcript_marks_session(path: str) -> bool:
 
 def workflow_marker(cwd: str, session: str, data: Dict[str, Any]) -> str:
     """Where this session's workflow directory is, had it run a dev-orchestra command."""
-    workspace = data.get("workspace")
-    container = (workspace.get("dir") if isinstance(workspace, dict) else None) or ".ai"
+    container = config_mod.workspace_dir_of(data)
     if not os.path.isabs(container):
         container = os.path.join(config_mod.repository_root(cwd) or os.path.abspath(cwd), container)
     return workflow.workflow_dir(container, workflow.from_session(session))
@@ -714,12 +713,20 @@ def file_settings(cwd: str) -> Dict[str, Any]:
     """The global file with the project file over it, as read from disk.
 
     Not ``config.load``: that composes a preset, which imports the provider
-    registry and with it the user's adapters.
+    registry and with it the user's adapters. The project file is read as
+    ``compose`` reads it, so the workflow directory looked for is the one the
+    commands write.
     """
-    data: Dict[str, Any] = {}
+    layers: List[Dict[str, Any]] = []
     for path in layer_paths(cwd):
-        if path and os.path.isfile(path):
-            data = config_mod.deep_merge(data, config_mod.read_config_file(path))
+        layers.append(config_mod.read_config_file(path) if path and os.path.isfile(path) else {})
+    global_layer, project_layer = layers
+    data = config_mod.deep_merge(global_layer, config_trust.without_ignored(project_layer))
+    # And the workspace a link would take out of the repository, as the commands drop it.
+    root = config_mod.repository_root(cwd) or os.path.abspath(cwd)
+    used = config_mod.workspace_dir_in(root, data, global_layer, project_layer)
+    if used != config_mod.workspace_dir_of(data):
+        data = config_mod.deep_merge(data, {"workspace": {"dir": used}})
     return data
 
 

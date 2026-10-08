@@ -17,7 +17,7 @@ import types
 import unittest
 from unittest import mock
 
-from helpers import IsolatedCase, present
+from helpers import IsolatedCase, has_git, present
 
 from orchestrator import jobs as jobs_mod
 from orchestrator import workspace as ws
@@ -755,7 +755,24 @@ class TestDetachedRun(IsolatedCase):
         self.assertEqual([e.get("status") for e in ended], ["ok"])
         elsewhere = json.loads(self.run_cli("state", "show", "--json")[1])
         self.assertEqual([e for e in elsewhere.get("events") or [] if e.get("stage") == "implementer"], [])
-        self.assertEqual(job["command"][:3], ["--workflow", "named", "run"])
+        self.assertEqual(job["command"][2:5], ["--workflow", "named", "run"])
+
+    @unittest.skipUnless(has_git(), "git is required")
+    def test_a_worker_reads_the_project_file_its_parent_read(self):
+        """From a subdirectory with a file of its own, the worker used to start in
+        the repository root and run the model the root's file names (#282)."""
+        self.run_cli("config", "set", "implementer.model.family", "small")
+        self.init_git_repo()
+        self.write("pkg/.dev-orchestra.yaml", "version: 1\nimplementer:\n  model:\n    family: large\n")
+        os.chdir(os.path.join(self.project, "pkg"))
+        code, _, err = self.run_cli("run", "implementer", "--prompt", "go")
+        self.assertEqual(code, 0, err)
+        code, out, err = self.run_cli("run", "implementer", "--prompt", "go", "--detach", "--json")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self._wait_for(json.loads(out)["id"])["status"], "succeeded")
+        state = json.loads(self.run_cli("state", "show", "--json")[1])
+        ran = [e.get("model") for e in state.get("events") or [] if e.get("stage") == "implementer"]
+        self.assertEqual(ran, ["large", "large"])
 
     def test_a_worker_leaves_the_current_workflow_alone(self):
         """The pointer may have moved on since the parent returned."""

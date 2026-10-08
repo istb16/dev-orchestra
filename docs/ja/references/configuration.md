@@ -1,4 +1,4 @@
-<!-- translated-from: references/configuration.md sha256:7228991c62d950a029cfb41b58de22225b6cf92af5c9e5900f1bc3a1a7b6d6ce -->
+<!-- translated-from: references/configuration.md sha256:80056b2df966a21ebd81e15460a3bd7e77354db640545ba0937ebe6b16cdf45b -->
 
 > この文書は [references/configuration.md](../../../references/configuration.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -18,6 +18,7 @@
 - [スキーマ（version 1）](#schema-version-1)
   - [フィールドリファレンス](#field-reference)
   - [ロールのオプション](#role-options)
+  - [プロジェクトファイルがゆるめられないもの](#what-the-project-file-may-not-loosen)
 - [最適化レベル](#optimization-level)
   - [高リスクな変更でだけ走るレビュアー](#reviewers-that-run-only-on-high-risk-changes)
 - [モデルティア](#model-tiers)
@@ -89,8 +90,14 @@ Python を使っていることも示し、直し方を note に書きます（`
 
 プロジェクトファイルは、カレントディレクトリから上にたどり、git のルートで
 止まって探索されます。そのため、サブディレクトリから CLI を実行しても見つかります。
+どのコマンドも、この探索を同じ場所、つまり実行したディレクトリ（または `--cwd`）から
+始め、`run --detach` のワーカーにもその場所を渡します。そのため、自分のファイルを持つ
+サブディレクトリでは、ロールも予算も `workspace.dir` も、前景でも detach でも同じ
+ファイルに従います。`.ai/` そのものは、引き続き git のルートに置かれます。
 受け付けるファイル名は次の順です: `.dev-orchestra.yaml`、`.dev-orchestra.yml`、
 `.dev-orchestra.json`。
+`.json` のファイルに書き込むコマンド（`config set`、`reviewer add` などの書き込み）は、
+JSON のまま書き戻し、YAML のファイルに付ける先頭のコメントは付けません。
 
 <a id="precedence"></a>
 
@@ -152,7 +159,8 @@ preset: quality
 
 プリセットが決めるのはこの8つのキーです。それ以外 — budgets、タイムアウト、
 `review.max_review_iterations`、`design.require_approval` — は、ファイルが設定しない限り
-組み込みデフォルトのままです。`standard` のコードパネルは組み込みデフォルトから読み取って作るので、
+組み込みデフォルトのままです（`design.require_approval` は global ファイルだけ:
+[下記](#what-the-project-file-may-not-loosen)）。`standard` のコードパネルは組み込みデフォルトから読み取って作るので、
 両者がずれることはありません。設計パネルはデフォルトに無いので、プリセット自身が持っています。
 
 どのプリセットも `relevance` を設定しないので、プリセットの security の枠は、設計の枠も含めて、
@@ -630,7 +638,7 @@ language:
 | `review.design.reviewers_extra` | list \| null | ファイルが継承する設計パネルの横に足す設計レビュアー。どのファイルも設計パネルを並べていなければ、継承するのはフィットした設計パネルで、ファイルが `reviewers` を並べていれば `when` を外したコードのパネルです。 |
 | `review.max_review_iterations` | int ≥ 0 | プロジェクト単位ではなくレビュー単位のラウンド数です。新しいブランチ、新しい `--base`、または `budget reset` でカウントはリセットされます。`0` で再レビューを完全に無効にします。 |
 | `review.parallel` | bool | `false` にするとレビュアーを 1 つずつ実行します（デバッグしやすくなります）。 |
-| `review.re_review_severities` | list | ブロッキングとみなす severity。 |
+| `review.re_review_severities` | list | ブロッキングとみなす severity。`critical`、`high`、`medium`、`low` から選んだ空でないリストで、大文字小文字は問いません（デフォルトは `[critical, high]`）。リストにしない 1 つの名前、知らない名前、`[]` は断られます。検査せずにファイルを読むコマンドは、代わりにデフォルトでブロックします。 |
 | `run.timeout_seconds.<role>` | int > 0 | `orchestrator`、`architect`、`implementer`、`review_fixer` の `run` 1 回の合計の締め切り（デフォルトは implementer が 3600、ほかは 1800）。`--timeout` で 1 回だけ上書きできます。ほかのキーは拒否されます。ロールのブロックの外にあるので、設定してもそのロールはプリセットのフィットから外れず、`config setup --preset` もこれを残します。この締め切りで止められた実行は、キーの名前を挙げてそう伝えます。 |
 | `review.timeout_seconds` | int > 0 | 各レビュアーの合計の締め切り。`review run` のラウンドのレビュアーと `run <reviewer-id>` に効きます（デフォルト 1800）。ロールの `run` にはもう効きません。そちらは `run.timeout_seconds.<role>` です。タイムアウトは報告されるだけで、例外にはなりません。 |
 | `review.idle_timeout_seconds` | int > 0 \| null | この時間出力がなければ、実行は固まったものとして扱われます（デフォルト 300。ストリーミングする provider のみ）。レビュアーとすべてのロールの `run` で共通です。沈黙の長さはタスクの大きさでは伸びないからです。ロールごとには `options.idle_timeout` で上書きできます。 |
@@ -643,7 +651,7 @@ language:
 | `review.context.surrounding_chars` | int ≥ 1 \| null | 1 つのラウンドが追加できる周辺コンテキストの最大量（デフォルト 15,000: 1 つのスナップショットで計測したところ、実行あたりの費用は変わらず、60,000 では渡した分がそのまま上乗せされました）。さらに、diff が `max_chars` と `inline_chars` の下に残す分で上限がかかるので、コンテキストがラウンドを拒否させたり、diff をファイル渡しにしたりすることはありません。収まらなかったものは、プロンプトとすべてのレポートで名前を挙げて除外されます。`null` はデフォルトを意味します。`references/limits.md` を参照。 |
 | `review.design.enabled` | bool \| `auto` \| null | 実装の前に `.ai/plan.md` を設計パネル（`review.design.reviewers` を参照）にかけるかどうか。このステージはラウンドごとにパネルのメンバー 1 人につきレビュアー実行 1 回分のコストがかかります。`true` は常に実行、`false` は実行しません。`auto`（デフォルト）は計画書から判断し、その答えと理由を `status` が表示します。計画書のどこにあってもバッククォートで囲まれたトークンと、計画書の `Files to Modify` 見出しの下にあるパスらしい語（バッククォートの有無を問わず、そこにあるフェンスブロックも含む）はすべて、大文字小文字を区別せずに高リスクパターン（`optimization.high_risk_paths` と `extra_high_risk_paths`）と照合され、一致すれば実行します。`db/migrate` のように `/` を含み拡張子のない名前はディレクトリとしても照合します。規模は、`Files to Modify` の下にあるファイル名らしいトークン（`/` かファイル拡張子を含むもの）のうち、フェンスブロックの中、`docs/`・`references/`・`tests/` と `.md`・`.rst`・`.txt` ファイルを除いたものを、ディスクを見ずに数え、6 個以上なら実行します。そこにグロブ、ディレクトリ、`/` を含み拡張子のない名前、`..` を通るパスがあれば実行します（`payload["mode"]` のようなコードはグロブとして読みません）。計画書が読めない、`Files to Modify` セクションがない、あってもファイルを 1 つも挙げていない場合も実行します。計画書がまだないときの答えは `auto -> run (once a plan is written)` です。そしてワークフローで設計レビューのラウンドが一度でも走ったら答えは実行のままなので、改訂によってループが途中で止まることはありません。`null` はデフォルトの `auto` を意味します。 |
 | `review.design.max_iterations` | int ≥ 0 | 設計レビューのラウンド数（レビュー → トリアージ → 修正）。`max_review_iterations` とは別にカウントされます（デフォルト 2）。上限に達したラウンドでも修正は行われます。上限が拒否するのはその後の再レビューだけです。`1`: 1 ラウンド、1 回の修正、その後ユーザーに確認。`0`: 設計レビューなし。`budgets.architect`（デフォルト 3）は、デフォルトでは設計とラウンドごとに 1 回の修正をまかないます。`max_iterations` に合わせて引き上げ、承認時に変更を求められることが予想される場合はさらに 1 つ増やしてください。 |
-| `design.require_approval` | bool | `true`（デフォルト）にすると、`.ai/plan.md` が存在し、現時点の plan が `design approve` で承認されていない間は -- ユーザーが了承した後に承認するものです -- `run implementer` が拒否します（exit 5）。`false` は誰も見ていない実行（CI、バッチ）向けで、このゲートが導入される前の挙動に戻します。`review.design` の下ではなくトップレベルにあるのは、パネルが plan をレビューしたかどうかにかかわらず承認が重要だからです。`--force` ではバイパスできず、この設定だけがバイパスできます。 |
+| `design.require_approval` | bool | `true`（デフォルト）にすると、`.ai/plan.md` が存在し、現時点の plan が `design approve` で承認されていない間は -- ユーザーが了承した後に承認するものです -- `run implementer` が拒否します（exit 5）。`false` は誰も見ていない実行（CI、バッチ）向けで、このゲートが導入される前の挙動に戻します。`review.design` の下ではなくトップレベルにあるのは、パネルが plan をレビューしたかどうかにかかわらず承認が重要だからです。`--force` ではバイパスできず、この設定だけがバイパスできます。global 設定からだけ受け付け、project ファイルにあっても無視します（[下記](#what-the-project-file-may-not-loosen)）。 |
 | `design.resume.max_age_seconds` | int ≥ 0 \| null | `run architect --resume` がセッションを継続できる、直前の architect の実行の古さの上限です（デフォルト 3600。測定時に CLI がプロンプトキャッシュを保持していた時間）。これより古ければ、改訂は全文プロンプトで新規に走ります。`0` は常に新規、`null` はデフォルトの意味です。 |
 | `design.resume.max_context_tokens` | int > 0 \| null | 継続を許す、セッション終了時の文脈の大きさ（トークン）の上限です（デフォルト `null`: 上限なし）。各実行は `context_tokens` を記録するので、測った値から上限を決められます。一方だけを設定しても、もう一方はデフォルトのままです。 |
 | `optimization.level` | `aggressive` \| `balanced` \| `quality` | どれだけ安く済ませようとするか。デフォルトは `balanced`。下記を参照。 |
@@ -656,9 +664,9 @@ language:
 | `optimization.extra_security_paths` | list | `security_paths` に追加する glob（デフォルト `[]`）。 |
 | `optimization.architecture_paths` | list | `architecture` の規則が探すもの: 契約とスキーマ、モジュールの表面、設定とレコードの形式、CLI、ビルド。デフォルトのリストを丸ごと置き換えます。`[]` にすると規模とディレクトリの判定だけが残ります（`doctor` がそれを報告します）。 |
 | `optimization.extra_architecture_paths` | list | `architecture_paths` に追加する glob（デフォルト `[]`）。 |
-| `workspace.dir` | string | `.ai/` の成果物を置く場所。 |
+| `workspace.dir` | string | `.ai/` の成果物を置く場所で、承認の記録もここに入ります。相対パスはリポジトリのルートにつなげます。リポジトリの外 -- 絶対パス、ルートからのパス、`..` で外に出るもの -- は global 設定からだけ受け付け、project ファイルにあっても無視して `.ai`（または global の値）を使います（[下記](#what-the-project-file-may-not-loosen)）。空でない文字列以外は断られます。検査せずにファイルを読むコマンドは、代わりに `.ai` を使います。 |
 | `workspace.stale_notice_days` | int 0–36500 | 新しいワークフローが始まったとき、その最初のコマンドが、最後の活動（`state.json` の `updated_at`、なければ `started_at`）からこの日数以上たったほかのワークフローを、stderr に一度だけ知らせます（デフォルト 30）。現在のワークフローは含めず、実行中のステージがあるワークフローも含めません。その印はそのワークフロー自身で `status` を実行したときにしか消えないため、ステージの途中で放置されたワークフローがここで名前を挙げられることはありません。`workflow list` では `in flight` と表示されます。使えるタイムスタンプがないワークフローや、`state.json` が読めないワークフローは数えません。何も削除しません。ワークフローを削除するのは、これまでどおり `workflow remove <id> --yes` だけです。`0` でこの通知を止め、`null` はデフォルトを意味します。通知がコマンドの動作を変えることはありません。 |
-| `language.reply` | string \| null | オーケストレーターがユーザーに答える言語を、言語タグで指定します: `ja`、`zh-TW`、`ko`、`ru`、`en`、`es`、`fr` など（2〜3 文字の主タグに、任意の数の副タグが続く形。主タグは小文字として読みます）。`null`（デフォルト）は SKILL.md のルール 11 に任せます。ユーザーが頼んだ言語、なければユーザーが書いている言語です。ほかのキーと違い、プロジェクトのファイルの `null` は下の層を引き継がず、グローバルのファイルで設定したタグをそのプロジェクトでだけ取り消します。設定すると、どのホストでも `doctor` が *Reply language* として表示します。Claude Code では 3 つのフックが、プロンプトのたびにその言語を思い出させ、判定できる言語（文字体系で判定する言語と、よく使う語で判定する英語・スペイン語・フランス語・ドイツ語・ポルトガル語・イタリア語）なら、明らかに別の言語で書かれた返答を一度だけ書き直させます。タグのなかったファイルに `config set` や `config setup --language` でこれを設定すると、Claude Code のユーザー設定（`~/.claude/settings.json`、または `$CLAUDE_CONFIG_DIR` の下）のディレクトリがあればそこにフックも加えます。プロジェクトのファイルだけにある値で加えることはありません。グローバルのファイルにもプロジェクトのファイルにも設定がない状態にすると外します。`--no-hooks` を付けるとユーザー設定には触れず、`hooks install` / `hooks uninstall` で手で入れたり外したりできます。ホストごとの扱い、フックの書き込み方、判定で区別できること・できないことは `references/architecture.md`（「返答の言語のフック」）を参照。 |
+| `language.reply` | string \| null | オーケストレーターがユーザーに答える言語を、言語タグで指定します: `ja`、`zh-TW`、`ko`、`ru`、`en`、`es`、`fr` など（2〜3 文字の主タグに、任意の数の副タグが続く形。主タグは小文字として読みます）。`null`（デフォルト）は SKILL.md のルール 11 に任せます。ユーザーが頼んだ言語、なければユーザーが書いている言語です。ノルウェー語はファイルに `"no"` と引用符付きで書きます。引用符のない `no` は `yes`、`on`、`off` と同じく true か false として読まれて断られます。`config set language.reply no` ならタグのまま保存されます。ほかのキーと違い、プロジェクトのファイルの `null` は下の層を引き継がず、グローバルのファイルで設定したタグをそのプロジェクトでだけ取り消します。設定すると、どのホストでも `doctor` が *Reply language* として表示します。Claude Code では 3 つのフックが、プロンプトのたびにその言語を思い出させ、判定できる言語（文字体系で判定する言語と、よく使う語で判定する英語・スペイン語・フランス語・ドイツ語・ポルトガル語・イタリア語）なら、明らかに別の言語で書かれた返答を一度だけ書き直させます。タグのなかったファイルに `config set` や `config setup --language` でこれを設定すると、Claude Code のユーザー設定（`~/.claude/settings.json`、または `$CLAUDE_CONFIG_DIR` の下）のディレクトリがあればそこにフックも加えます。プロジェクトのファイルだけにある値で加えることはありません。グローバルのファイルにもプロジェクトのファイルにも設定がない状態にすると外します。`--no-hooks` を付けるとユーザー設定には触れず、`hooks install` / `hooks uninstall` で手で入れたり外したりできます。ホストごとの扱い、フックの書き込み方、判定で区別できること・できないことは `references/architecture.md`（「返答の言語のフック」）を参照。 |
 | `language.rewrite` | bool \| null | `true`（デフォルト）: Claude Code の Stop フックによる判定が有効です。`false` にすると、リマインダーは残したまま判定を止めます。判定があなたの返答を誤判定するときのためのものです。`null` はデフォルトを意味します。 |
 | `<role>.options` | mapping | provider 固有の設定項目。下記を参照。 |
 | `<role>.model_tiers` | mapping | このロールのモデルに対する名前付きの代替。下記を参照。省略可。 |
@@ -765,6 +773,72 @@ architect やレビュアーの実行には効きません。管理設定（mana
 `mock` は実在する登録済みの provider です。テストで使われるオフラインの adapter で、
 トークンを消費せずにパイプラインを試運転するのにも便利です。セットアップウィザードには
 表示されません。
+
+<a id="what-the-project-file-may-not-loosen"></a>
+
+### プロジェクトファイルがゆるめられないもの
+
+プロジェクトファイルはレビュー対象のブランチと一緒に来ることがあります。そのため、
+ブランチが自分を素通りさせるのに使える関門は別に扱います。
+
+**plan の承認と、リポジトリの外のワークスペースは、global 設定からだけ受け付けます。**
+project ファイルの `design.require_approval` は値にかかわらず、また project ファイルの
+`workspace.dir` のうち絶対パスのものやリポジトリの外に出るもの（`/srv/ai`、`C:ai`、
+`../ai`）は無視し、global の値かデフォルトを使います。相対パスでも、リポジトリの中の
+シンボリックリンクやジャンクションをたどるとリポジトリの外に出るもの（`inner` が
+`/srv/ai` へのリンクのときの `dir: inner`）も同じです。ブランチはファイルと同じように
+リンクもコミットできるからです。`workspace.dir` には承認の記録が入るので、project
+ファイルがそれを別の場所に向けると、誰も出していない承認を持ち込めてしまいます。
+リポジトリの中を指す相対パスの `workspace.dir` はこれまでどおり project が決められ、
+`null` の承認はデフォルト（必須）を意味します。global の値とデフォルトはリンクを
+確かめません。自分で別の場所にリンクした `.ai` はそのまま使えます。`config validate`
+（警告として）と `review run`（`warning:` として）が、無視したものと `--scope global`
+のコマンドを示します。`doctor` は、それを受け付けていたら効いている設定がゆるんで
+いた場合 -- 必須の承認の上の project の `false` や、使われているのとは別の
+ワークスペース -- は問題として出し（`--strict` は失敗します）、そうでなければメモに
+出します。必須の承認の上の project の `design.require_approval: true` はメモです。
+拒否された `run implementer` は、project ファイルが承認を切ろうとしていたときに
+`note:` を足します。
+`config set design.require_approval false` は、`preset` と同じく、プロジェクトに自分の
+ファイルがあっても global ファイルに書き込みます。`config set workspace.dir <外の場所>`
+も同じです。どちらも、キーそのものでも、`design` や `workspace` のブロックをまるごと
+書く中に含めても、`--scope project` を付けると終了コード 2 で終了し、何も書き込みません。
+
+これで記録は自分のコマンドが置いた場所にとどまりますが、ブランチが記録を持ち込むことは
+防げません。`run implementer` が読む承認は、ワークスペースの下にあるワークフローの
+ディレクトリの `state.json` の `design_approval` で、その隣の plan と最後の設計レビューの
+ラウンドに照らして確かめます。そのため、ブランチがこれらのファイルをワークスペースの中に
+コミットすれば -- 確かめないコミットされた `.ai` のリンクを通しても -- 承認も持ち込めます。
+ワークスペース自身の `.gitignore` は dev-orchestra のファイルを自分のコミットから外すだけで、
+ブランチが足したものは外しません。ブランチがワークスペースの下に何をコミットしているかを
+確かめてください。
+
+**ほかのレビューの関門は project ファイルからも効きます。** リポジトリがわざとレビューを
+減らすこともあるからです。ただし project ファイルが、それが無い場合の設定 -- global
+ファイル、そのプリセットのフィット、デフォルト -- よりゆるめているときは、
+`config validate` が警告し、`doctor` がメモに出し（`--strict` は通ります。`--json` では
+`config.loosened` に並びます）、`review run` がラウンドの前に `warning:` を出します。
+比べるのは project ファイルが書いている関門だけで、実行が読むとおりに読みます。
+「ゆるい」とは次のことです:
+
+| 関門 | project ファイルが次のことをしていればゆるい |
+| --- | --- |
+| `reviewers` | それが無ければコードパネルにいるレビュアー id を外している（`[]` はすべて外す） |
+| `review.design.reviewers` | それが無ければ設計パネルにいるレビュアー id を外している。自身のリストのほか、フィットした設計パネルを外す `reviewers` のリストでも起きる |
+| `review.max_review_iterations` | 下げている |
+| `review.re_review_severities` | 重大度を外している。`review status` と同じく、大文字小文字を問わず読み、`config validate` が拒否する値（`[]`、リストでない名前ひとつ、知らない名前）はデフォルトの `critical` と `high` として読む |
+| `review.exclude` | パターンを足して、差分をより多く伏せている |
+| `review.max_findings` | 各レビュアーに求める指摘を減らしている（`null` はレベルの上限、`0` は上限なしとして数える） |
+| `review.design.enabled` | `true` → `auto` → `false` の順に下げている |
+| `review.design.max_iterations` | 下げている |
+| `optimization.level` | `quality` → `balanced` → `aggressive` の順に下げている |
+| `optimization.high_risk_paths` | パターンを外している（`extra_high_risk_paths` も合わせて数える） |
+| `optimization.low_risk_max_files`、`optimization.low_risk_max_lines` | 上げている |
+| `optimization.skip_unneeded_roles` | `false` の上で有効にしている |
+| `optimization.security_paths`、`optimization.architecture_paths` | パターンを外している（それぞれの `extra_` のリストも合わせて数える） |
+
+`reviewers_extra` は足すだけなので、これに当たることはありません。厳しくする値は報告せず、
+project ファイルが implementer を設定したためにパネルの配り方が変わった場合も報告しません。
 
 <a id="optimization-level"></a>
 
@@ -949,8 +1023,9 @@ reviewers:
 
 マッピングは上の例のようにブロック形式で書き、パターンは 1 行に 1 つ、`*` で始まる
 パターンはすべて引用符で囲んでください。引用符のない `*.sql` は PyYAML では YAML の
-エイリアスとして読まれ、PyYAML がない場合の同梱パーサーはインラインのマッピングと、
-フロー形式のリストの中で `[` を含むパターンを（引用符の有無にかかわらず）拒否します:
+エイリアスとして読まれ、PyYAML がない場合の同梱パーサーでは拒否されます。同梱パーサーは
+インラインのマッピングと、フロー形式のリストの中で `[` を含むパターンも（引用符の有無に
+かかわらず）拒否します:
 
 ```yaml
 when:
@@ -1496,5 +1571,15 @@ dev-orchestra reviewer remove 1
 設定ファイルは、PyYAML がインストールされていれば PyYAML で、そうでなければ組み込みの
 パーサーで解析されます。組み込みパーサーは、ブロックマッピング、ブロックシーケンス、インラインの
 空コレクション、インラインのスカラーリスト、コメント、クォートされた文字列に対応しています。
-アンカー、エイリアス、複数ドキュメントのストリーム、ブロックスカラー（`|`、`>`）は、わかりやすい
-エラーとともに拒否されます。JSON は常に受け付けます。
+アンカー、エイリアス、タグ、マージキー（`<<`）、複数ドキュメントのストリーム、ブロックスカラー
+（`|`、`>`）は、わかりやすいエラーとともに拒否されます。YAML が予約している文字で始まる
+引用符なしの値（`*.sql`、`&x`、`!x`、`@x`）も拒否されるので、引用符で囲んでください。
+シーケンスの項目は `-` の後ろに空白をいくつ置いてもかまいませんが、項目の 2 行目以降は
+1 行目と列を揃えてください。JSON は常に受け付けます。
+
+ダブルクォートの中では、YAML と同じくバックスラッシュがエスケープの始まりです。Windows の
+パスは `"C:\\work\\new"` と書くか、シングルクォート（`'C:\work\new'`）で囲んでください。
+`"C:\work"` の `\w` のように YAML が定めていないエスケープは、そのまま残さずに拒否されます。
+インデントには空白を使ってください。インデントのタブは拒否され、値の中のタブはそのまま残ります。
+設定を書き出すコマンドは、数字や日付に見える文字列（`"123"`、`"1.0"`、`"2026-10-06"`）を
+クォートするので、読み戻しても文字列のままです。

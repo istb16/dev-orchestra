@@ -9,7 +9,7 @@ import re
 import sys
 from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple, Union
 
-from . import claude_hooks, hosts, miniyaml
+from . import claude_hooks, config_trust, hosts, miniyaml
 from . import config as config_mod
 from . import config_policy as policy_mod
 from . import doctor as doctor_mod
@@ -365,6 +365,9 @@ def cmd_config_set(args: argparse.Namespace) -> int:
             _err("preset: only the global file can name a preset for now (use --scope global)")
             return 2
         scope = "global"
+    elif args.scope is None and config_trust.refused_write(args.path, _set_value(args)):
+        # Likewise: only the global file can make it, so that is where it goes.
+        scope = "global"
     else:
         scope = _resolve_scope(args.scope, args.cwd)
     path, layer = _read_layer(scope, args.cwd)
@@ -384,11 +387,13 @@ def cmd_config_set(args: argparse.Namespace) -> int:
             frozen, left_out = _seed_panel(scope, layer, base, path, args.cwd)
         else:
             _seed_list(layer, list_path, base)
-    value = args.value if args.raw else config_mod.coerce_scalar(args.value)
+    value = _set_value(args)
     if scope == "project":
         # From the arguments alone, before anything is written: the same
         # refusal a run of that seat would meet.
         refusal = _project_seat_write_refusal(args.path, value, layer, path)
+        name = os.path.basename(path)
+        refusal = refusal or policy_mod.project_ignored_write_refusal(args.path, value, name)
         if refusal:
             _err(refusal)
             return 2
@@ -442,11 +447,26 @@ def cmd_config_set(args: argparse.Namespace) -> int:
         _err("warning: %s" % problem)
     for warning in policy_mod.read_only_arg_warnings(reloaded):
         _err("warning: %s" % warning)
+    for key, close in config_mod.unknown_keys(layer):
+        # Only the key just written: the file's other ones are `config validate`'s to list.
+        if key == args.path or args.path.startswith(key + ".") or key.startswith(args.path + "."):
+            hint = " (did you mean %s?)" % close if close else ""
+            _err("warning: %s is not a key dev-orchestra reads; it was saved but is ignored%s" % (key, hint))
     _warn_unenforced(reloaded)
     _warn_unresolvable(effective, args.path.split(".")[0])
     if language_before is not None:
         _sync_hooks(args, scope, language_before)
     return 0
+
+
+def _set_value(args: argparse.Namespace) -> Any:
+    """The value ``config set`` writes."""
+    if args.raw or (args.path == "language.reply" and args.value.strip().lower() == "no"):
+        # `no`, Norwegian, stays a string: YAML would read it as false. The
+        # other words YAML reads as booleans (`off`, `yes`, `on`, ...) name no
+        # language, so they are coerced and `validate` says so.
+        return args.value.strip() if not args.raw else args.value
+    return config_mod.coerce_scalar(args.value)
 
 
 #: The keys that name a read-only seat's provider.
@@ -590,11 +610,14 @@ def cmd_config_validate(args: argparse.Namespace) -> int:
         origins=loaded.reviewer_origins,
         design_origins=loaded.design_reviewer_origins,
     )
-    # Warnings, not problems: they refuse one role's runs, not the file.
+    # Warnings, not problems: they refuse one role's runs, not the file. An
+    # unknown key refuses nothing at all; it is only never read.
     warnings = policy_mod.read_only_arg_warnings(loaded)
     refused = list(policy_mod.project_raw_arg_refusals(loaded))
     origins = loaded.design_reviewer_origins
     warnings += policy_mod.read_only_enforcement_warnings(loaded.data, refused, origins)
+    warnings += config_mod.unknown_key_warnings(loaded.global_layer, loaded.project_layer)
+    warnings += policy_mod.project_loosening_notices(loaded)
     if args.json:
         _emit_json({"valid": not problems, "problems": problems, "warnings": warnings})
     else:
@@ -624,7 +647,7 @@ def _preview_inputs(preview: Any, notes: List[str]) -> Tuple[List[str], str, Opt
         exclude = list(config_mod.default_config()["review"]["exclude"])
     workspace = preview.get("workspace") if isinstance(preview, dict) else None
     directory = workspace.get("dir") if isinstance(workspace, dict) else None
-    if not (isinstance(directory, str) and directory):
+    if not (isinstance(directory, str) and directory.strip()):
         notes.append("workspace.dir is not a non-empty string; .ai was used")
         directory = ".ai"
     panel = preview.get("reviewers") if isinstance(preview, dict) else None

@@ -17,14 +17,16 @@ keeps following whatever the CLI currently considers "latest".
 from __future__ import annotations
 
 import copy
+import difflib
+import json
 import os
 import re
 import sys
 from typing import TYPE_CHECKING, Any, Dict, List, NamedTuple, Optional, Sequence, Tuple, Union
 
-from . import miniyaml
+from . import config_trust, miniyaml
 from . import optimization as opt_mod
-from .review_common import DEFAULT_EXCLUDE
+from .review_common import DEFAULT_EXCLUDE, SEVERITIES
 
 if TYPE_CHECKING:
     from .presets import Fit
@@ -132,6 +134,37 @@ def language_settings_of(data: Dict[str, Any]) -> Dict[str, Any]:
         settings["reply"] = normalise_language_tag(configured.get("reply"))
         settings["rewrite"] = configured.get("rewrite") is not False
     return settings
+
+
+def workspace_dir_of(data: Dict[str, Any]) -> str:
+    """``workspace.dir`` as written, or ``.ai`` for anything but a non-empty string.
+
+    Commands and the hooks read the files unvalidated, and a ``dir: 5`` that
+    ``validate`` refuses must not reach ``os.path`` and crash them.
+    """
+    workspace = data.get("workspace")
+    directory = workspace.get("dir") if isinstance(workspace, dict) else None
+    return directory if isinstance(directory, str) and directory.strip() else ".ai"
+
+
+def workspace_dir_in(
+    root: str, data: Dict[str, Any], global_layer: Dict[str, Any], project_layer: Dict[str, Any]
+) -> str:
+    """``workspace.dir`` as the commands use it in ``root``, before it is joined to it.
+
+    ``workspace_dir_of(data)``, unless that is the project file's value and a
+    link takes it out of the repository (``config_trust.linked_outside``):
+    then the global file's value, or ``.ai``. ``compose`` has already dropped
+    a project value whose text leaves; this one needs the repository to tell.
+    The global file's value and the default are the user's own and are not
+    checked, so a ``.ai`` the user links elsewhere keeps working.
+    """
+    directory = workspace_dir_of(data)
+    workspace = project_layer.get("workspace")
+    project_dir = workspace.get("dir") if isinstance(workspace, dict) else None
+    if directory == project_dir and config_trust.linked_outside(root, directory):
+        return workspace_dir_of(global_layer)
+    return directory
 
 
 def default_config() -> Dict[str, Any]:
@@ -497,7 +530,9 @@ def project_config_path(start: Optional[str] = None) -> str:
 
 
 def read_config_file(path: str) -> Dict[str, Any]:
-    with open(path, "r", encoding="utf-8") as handle:
+    # utf-8-sig: Notepad and PowerShell 5's `Out-File -Encoding utf8` start the
+    # file with a BOM, which would otherwise become part of the first key.
+    with open(path, "r", encoding="utf-8-sig") as handle:
         raw = handle.read()
     try:
         data = miniyaml.loads(raw)
@@ -528,6 +563,22 @@ def write_config_file(path: str, data: Dict[str, Any], scope: str = "") -> None:
     parent = os.path.dirname(os.path.abspath(path))
     if parent:
         os.makedirs(parent, exist_ok=True)
+    if path.lower().endswith(".json"):
+        # A `.dev-orchestra.json` is also read by editors, jq and CI checks,
+        # none of which take YAML or a comment; so JSON, and no header.
+        # Strict JSON: `Infinity` and `NaN` are Python's, and jq, editors and
+        # this tool's own reader would refuse the file. Checked before the
+        # file is opened, so a refusal leaves it as it was.
+        try:
+            text = json.dumps(data, indent=2, ensure_ascii=False, allow_nan=False)
+        except ValueError:
+            raise ConfigError(
+                "%s: JSON has no infinite or not-a-number value (.inf, .nan); "
+                "write a finite number, or keep the setting in a YAML file" % shown_location(path)
+            ) from None
+        with open(path, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(text + "\n")
+        return
     text = miniyaml.dumps(data)
     header = (
         "# dev-orchestra configuration\n"
@@ -975,6 +1026,23 @@ class LoadedConfig:
         settings.update(self.data.get("review") or {})
         return settings
 
+    def blocking_severities(self) -> Tuple[str, ...]:
+        """``review.re_review_severities`` in lower case, or the default for anything unusable.
+
+        Commands load unvalidated, and a value ``validate`` would refuse must
+        not stop gating: a scalar ``critical`` would otherwise be iterated a
+        letter at a time, and ``[crit]`` would match no finding at all.
+        """
+        fallback = tuple(default_config()["review"]["re_review_severities"])
+        review = self.data.get("review")
+        value = review.get("re_review_severities") if isinstance(review, dict) else None
+        if not isinstance(value, list) or not value:
+            return fallback
+        names = tuple(item.strip().lower() if isinstance(item, str) else item for item in value)
+        if not all(name in SEVERITIES for name in names):
+            return fallback
+        return names
+
     def design_review_settings(self) -> Dict[str, Any]:
         """The ``review.design`` block, with anything absent filled in.
 
@@ -1037,7 +1105,7 @@ class LoadedConfig:
         return settings
 
     def workspace_dir(self, root: str) -> str:
-        workspace = (self.data.get("workspace") or {}).get("dir") or ".ai"
+        workspace = workspace_dir_in(root, self.data, self.global_layer, self.project_layer)
         if os.path.isabs(workspace):
             return workspace
         return os.path.join(root, workspace)
@@ -1315,7 +1383,10 @@ def compose(
         for note, subject in zip(fit.notes, fit.subjects, strict=True)
         if subject not in dropped
     ]
-    data = deep_merge(deep_merge(deep_merge(defaults, values), global_layer), project_layer)
+    # Without what only the global file may set: a project file can come with
+    # the branch under review (``config_trust``).
+    trusted = config_trust.without_ignored(project_layer)
+    data = deep_merge(deep_merge(deep_merge(defaults, values), global_layer), trusted)
     # Each file's extras join the panel it inherits, so every reader of
     # ``reviewers`` sees them; ``origins`` keeps whose each one is.
     reviewers, origins, folded = fold_extras(data.get("reviewers"), global_layer, project_layer)
@@ -1430,6 +1501,82 @@ def validate(
         if block is not None:
             problems.extend(check(block))
     return problems
+
+
+#: A mapping whose keys are the user's own: provider options, which the
+#: adapter validates, tier names, budgets, and run timeouts, whose keys
+#: ``validate`` already checks as roles.
+_FREE = "free"
+
+
+def _key_schema() -> Dict[str, Any]:
+    """The keys a file may hold, as nested mappings; None is a leaf, ``_FREE`` any keys.
+
+    A list of reviewer entries is ``[schema]``. Built from ``default_config``,
+    so a key added there is known here without a second list to keep.
+    """
+
+    def shape(value: Any) -> Any:
+        return {key: shape(item) for key, item in value.items()} if isinstance(value, dict) else None
+
+    model = {"family": None, "version": None, "id": None}
+    role = {"provider": None, "model": model, "options": _FREE, "model_tiers": _FREE}
+    # high_risk_model and when are leaves: their keys are validate's to refuse.
+    reviewer = {
+        "id": None,
+        "provider": None,
+        "model": model,
+        "options": _FREE,
+        "role": None,
+        "high_risk_model": None,
+        "when": None,
+        "relevance": None,
+    }
+    schema = shape(default_config())
+    schema.update(dict.fromkeys(KNOWN_ROLES, role))
+    schema.update({"preset": None, "reviewers": [reviewer], "reviewers_extra": [reviewer], "budgets": _FREE})
+    schema["run"]["timeout_seconds"] = _FREE
+    schema["review"]["design"].update({"reviewers": [reviewer], "reviewers_extra": [reviewer]})
+    return schema
+
+
+def unknown_keys(layer: Dict[str, Any]) -> List[Tuple[str, Optional[str]]]:
+    """Each key in ``layer`` nothing reads, dotted, with the known key it most resembles.
+
+    A typo such as ``reveiw`` or ``review.timout_seconds`` is otherwise valid
+    and silently ignored. Reported, never refused: a key a later release adds
+    must not make an older one reject the file. Only mappings are walked; a
+    value of the wrong type is ``validate``'s to report.
+    """
+    found: List[Tuple[str, Optional[str]]] = []
+
+    def walk(node: Any, schema: Any, path: str) -> None:
+        if isinstance(schema, list) and isinstance(node, list):
+            for index, entry in enumerate(node):
+                walk(entry, schema[0], "%s[%d]" % (path, index))
+            return
+        if not isinstance(schema, dict) or not isinstance(node, dict):
+            return
+        for key, value in node.items():
+            name = "%s.%s" % (path, key) if path else str(key)
+            if key in schema:
+                walk(value, schema[key], name)
+                continue
+            close = difflib.get_close_matches(str(key), [str(known) for known in schema], n=1, cutoff=0.75)
+            found.append((name, ("%s.%s" % (path, close[0]) if path else close[0]) if close else None))
+
+    walk(layer, _key_schema(), "")
+    return found
+
+
+def unknown_key_warnings(global_layer: Dict[str, Any], project_layer: Dict[str, Any]) -> List[str]:
+    """``unknown_keys`` of each file, one line apiece, naming the file."""
+    warnings: List[str] = []
+    for name, layer in (("global", global_layer), ("project", project_layer)):
+        for key, close in unknown_keys(layer):
+            hint = " (did you mean %s?)" % close if close else ""
+            warnings.append("%s in the %s file: unknown key, ignored%s" % (key, name, hint))
+    return warnings
 
 
 def _validate_version_and_preset(
@@ -1575,6 +1722,10 @@ def _validate_review(review: Any) -> List[str]:
     iterations = review.get("max_review_iterations", 2)
     if not _int_at_least(iterations, 0):
         problems.append("review.max_review_iterations: must be a non-negative integer")
+    parallel = review.get("parallel")
+    if parallel is not None and not isinstance(parallel, bool):
+        problems.append("review.parallel: must be true or false")
+    problems.extend(_validate_severities(review.get("re_review_severities")))
     timeout = review.get("timeout_seconds", 1800)
     if not _int_at_least(timeout, 1):
         problems.append("review.timeout_seconds: must be a positive integer")
@@ -1604,6 +1755,26 @@ def _validate_review(review: Any) -> List[str]:
                         "review.exclude[%d]: must be a non-empty string (got %r)" % (index, pattern)
                     )
     return problems
+
+
+def _validate_severities(severities: Any) -> List[str]:
+    """``review.re_review_severities``: a non-empty list drawn from ``SEVERITIES``, in any case.
+
+    ``[]`` is refused rather than read as "block nothing": a review that
+    blocks on nothing is not one somebody should get from an empty list.
+    """
+    if severities is None:
+        return []
+    choices = ", ".join(SEVERITIES)
+    if not isinstance(severities, list):
+        return ["review.re_review_severities: must be a list of %s (got %r)" % (choices, severities)]
+    if not severities:
+        return ["review.re_review_severities: must name at least one severity; [] would block nothing"]
+    return [
+        "review.re_review_severities[%d]: must be one of %s (got %r)" % (index, choices, name)
+        for index, name in enumerate(severities)
+        if not isinstance(name, str) or name.strip().lower() not in SEVERITIES
+    ]
 
 
 def _validate_review_design(design: Any) -> List[str]:
@@ -1691,6 +1862,9 @@ def _validate_workspace(workspace: Any) -> List[str]:
     if not isinstance(workspace, dict):
         return ["workspace: must be a mapping"]
     problems: List[str] = []
+    directory = workspace.get("dir")
+    if directory is not None and not (isinstance(directory, str) and directory.strip()):
+        problems.append("workspace.dir: must be a non-empty string (got %r)" % (directory,))
     days = workspace.get("stale_notice_days")
     if days is not None:
         if not _int_at_least(days, 0):
@@ -1708,7 +1882,11 @@ def _validate_language(language: Any) -> List[str]:
     problems: List[str] = []
     reply = language.get("reply")
     if reply is not None and normalise_language_tag(reply) is None:
-        problems.append("language.reply: must be a language tag such as ja, zh-TW, ko or en, or null")
+        message = "language.reply: must be a language tag such as ja, zh-TW, ko or en, or null"
+        if isinstance(reply, bool):
+            # YAML reads a bare no, yes, on or off as a boolean; `no` is Norwegian.
+            message += ' (got %s: quote a tag such as "no" to keep it a string)' % str(reply).lower()
+        problems.append(message)
     rewrite = language.get("rewrite")
     if rewrite is not None and not isinstance(rewrite, bool):
         problems.append("language.rewrite: must be true or false")

@@ -1603,6 +1603,24 @@ class TestRunCommand(IsolatedCase):
         self.assertEqual(code, 0)
         self.assertIn("NO_FINDINGS", out)
 
+    @unittest.skipUnless(has_git(), "git is required")
+    def test_a_subdirectory_file_places_the_workspace_as_it_sets_the_budget(self):
+        """`.ai/` used to follow the root's file while budgets followed this one (#282)."""
+        self.init_git_repo()
+        self.write(
+            "pkg/.dev-orchestra.yaml",
+            "version: 1\nworkspace:\n  dir: .agent-work\nbudgets:\n  implementer: 1\n",
+        )
+        os.chdir(os.path.join(self.project, "pkg"))
+        code, _, err = run_cli("run", "implementer", "--prompt", "go")
+        self.assertEqual(code, 0, err)
+        self.assertTrue(os.path.isdir(os.path.join(self.project, ".agent-work")))
+        self.assertFalse(os.path.exists(os.path.join(self.project, ".ai")))
+        budget = json.loads(run_cli("budget", "show", "--json")[1])["budgets"]["implementer"]
+        self.assertEqual((budget["used"], budget["limit"]), (1, 1))
+        code, _, err = run_cli("run", "implementer", "--prompt", "go")
+        self.assertEqual(code, ledger_mod.EXIT_BUDGET_EXHAUSTED, err)
+
 
 SECRET_SETTINGS = '--settings={"apiKeyHelper":"sk-ant-abcdefghijklmnopqrs"}'
 
