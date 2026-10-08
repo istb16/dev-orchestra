@@ -61,6 +61,20 @@ LINGERING_PARENT = (
     "sys.stdout.write('parent done\\n'); sys.stdout.flush()\n"
 ) % LINGERING_GRANDCHILD
 
+#: Writes its pid to ``argv[1]``, stays quiet for 1.5s, then writes to the
+#: stdout it inherited without end: a dev server's log.
+FLOODING_GRANDCHILD = (
+    "import os, sys, time\n"
+    "with open(sys.argv[1] + '.tmp', 'w') as f: f.write(str(os.getpid()))\n"
+    "os.replace(sys.argv[1] + '.tmp', sys.argv[1])\n"
+    "time.sleep(1.5)\n"
+    "for _ in range(9000):\n"
+    "    sys.stdout.write('x' * 999 + '\\n'); sys.stdout.flush(); time.sleep(0.01)\n"
+)
+
+#: LINGERING_PARENT, with FLOODING_GRANDCHILD left behind.
+FLOODING_PARENT = LINGERING_PARENT.replace(repr(LINGERING_GRANDCHILD), repr(FLOODING_GRANDCHILD))
+
 #: Starts ``argv[1]`` (code, given ``argv[2]``) detached and returns at once,
 #: so the started process is not our child: the shape of a detached worker.
 LAUNCHER = (
@@ -450,6 +464,60 @@ class TestProcessTree(IsolatedCase):
             while execution.pid_alive(grandchild) and time.monotonic() < deadline:
                 time.sleep(0.05)
             self.assertFalse(execution.pid_alive(grandchild))
+
+    def test_what_a_leftover_writes_after_the_cli_exited_is_not_kept(self):
+        self.assertNotEqual(FLOODING_PARENT, LINGERING_PARENT)
+        pid_file = os.path.join(self.project, "grandchild.pid")
+        self.addCleanup(end_pid_in, pid_file)
+        outcome = execution.execute([*python_code(FLOODING_PARENT), pid_file], cwd=self.project, timeout=120)
+        self.assertEqual(outcome.exit_code, 0, outcome.stderr)
+        self.assertEqual(outcome.stdout, "parent done\n")
+        self.assertRegex(outcome.stderr, r"warning: [0-9]+ characters it wrote after the CLI exited")
+
+    def test_what_the_cli_wrote_last_is_kept_when_a_leftover_is_cut_off(self):
+        pid_file = os.path.join(self.project, "grandchild.pid")
+        self.addCleanup(end_pid_in, pid_file)
+        last_words = LINGERING_PARENT + "sys.stdout.write('z' * 300000); sys.stdout.flush()\n"
+        outcome = execution.execute([*python_code(last_words), pid_file], cwd=self.project, timeout=120)
+        self.assertEqual(outcome.exit_code, 0, outcome.stderr)
+        self.assertEqual(outcome.stdout, "parent done\n" + "z" * 300000)
+
+    def test_a_detached_drain_keeps_reading_and_keeps_nothing(self):
+        read_end, write_end = os.pipe()
+        reader, writer = os.fdopen(read_end, "rb"), os.fdopen(write_end, "wb")
+        self.addCleanup(writer.close)
+        seen: List[str] = []
+        drain = execution._Drain(seen.append)
+        thread = threading.Thread(target=drain.pump, args=(reader,), daemon=True)
+        thread.start()
+
+        def wait_for(text: str) -> None:
+            deadline = time.monotonic() + 10
+            while drain.text() != text:
+                self.assertLess(time.monotonic(), deadline, drain.text())
+                time.sleep(0.01)
+
+        writer.write(b"keep\n")
+        writer.flush()
+        wait_for("keep\n")
+        mark = drain.mark()
+        writer.write(b"drop\n")
+        writer.flush()
+        wait_for("keep\ndrop\n")
+        self.assertEqual(drain.detach(mark), 5)
+        self.assertEqual(drain.text(), "keep\n")
+        # Far more than a pipe buffer: the writer would block were it not read.
+        flood = threading.Thread(target=lambda: (writer.write(b"y" * 4_000_000), writer.flush()), daemon=True)
+        flood.start()
+        flood.join(timeout=30)
+        self.assertFalse(flood.is_alive(), "the writer blocked on a pipe nobody read")
+        writer.close()
+        thread.join(timeout=10)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(drain.text(), "keep\n")
+        self.assertEqual(drain.chunks, ["keep\n"])
+        drain.finish(5)
+        self.assertNotIn("y", "".join(seen))
 
     def test_a_pipe_still_in_use_is_not_closed(self):
         class Pipe:

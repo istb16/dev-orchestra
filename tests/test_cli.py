@@ -2207,7 +2207,7 @@ class TestStallReporting(IsolatedCase):
 
 
 class TestRunIdleDeadline(IsolatedCase):
-    """``review.idle_timeout_seconds`` is not applied to a run that may change files (#273)."""
+    """A run that may change files gets a longer idle deadline than a reviewer (#273)."""
 
     def setUp(self):
         super().setUp()
@@ -2230,9 +2230,12 @@ class TestRunIdleDeadline(IsolatedCase):
         self.assertEqual(code, 0, err)
         return seen["idle_timeout"]
 
-    def test_a_run_that_may_change_files_has_no_idle_deadline_by_default(self):
-        self.assertIsNone(self.idle_deadline_of("implementer"))
-        self.assertIsNone(self.idle_deadline_of("review_fixer"))
+    def test_a_run_that_may_change_files_gets_the_longer_idle_deadline(self):
+        self.assertEqual(self.idle_deadline_of("implementer"), 1200)
+        self.assertEqual(self.idle_deadline_of("review_fixer"), 1200)
+        # A larger shared value is kept.
+        run_cli("config", "set", "review.idle_timeout_seconds", "1800", "--scope", "global")
+        self.assertEqual(self.idle_deadline_of("implementer"), 1800)
 
     def test_a_read_only_run_keeps_the_shared_idle_deadline(self):
         self.assertEqual(self.idle_deadline_of("architect"), 300)

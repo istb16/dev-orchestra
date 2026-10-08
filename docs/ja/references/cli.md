@@ -1,4 +1,4 @@
-<!-- translated-from: references/cli.md sha256:5694760647140a5bbb59b8da41d40a6e46f736b50e85897375b3d8a23d8e95e6 -->
+<!-- translated-from: references/cli.md sha256:9d7d4c256b9c22f2579b3804dc60d6adf0e030e91b4afc42ab78422f8d92120c -->
 
 > この文書は [references/cli.md](../../../references/cli.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -317,8 +317,9 @@ agy の stdout の行は、短く切って最大 20 行まで実行の stderr �
 それがどこで設定されたかを伝えます。`config show` は、すべての期限を設定したファイルとともに並べます。
 `--idle-timeout` は *出力がない* 状態の期限です（指定しなければ
 `review.idle_timeout_seconds`。ただしファイルを変えうる実行、つまり implementer、
-review fixer、`--mode implement` には、このフラグかロールの `options.idle_timeout` で
-設定しない限り期限はありません。走らせるテストスイートがそれより長く黙りうるからです）。固まったエージェントは
+review fixer、`--mode implement` では 1200 秒で、その設定の方が大きければそちらです。
+走らせるテストスイートがそれより長く黙りうるからです。ロールの `options.idle_timeout`
+はどちらよりも優先されます）。固まったエージェントは
 静かになり、遅いだけのエージェントは出力を続けるので、これを使えば stall を全体の期限ではなく数分で
 検出できます。これが適用されるのは Claude だけです。Codex と agy の adapter は進捗のストリームを
 主張せず（agy はツールの動きを報告しますが、モデルが考えている間は黙ります。`references/providers.md` を

@@ -67,6 +67,12 @@ RUN_TIMEOUT_DEFAULTS = {
     "review_fixer": 1800,
 }
 
+#: The no-output deadline of a ``run`` that may change files, unless
+#: ``review.idle_timeout_seconds`` is larger. Such a run runs the tests or a
+#: build, which can be silent for longer than a reviewer ever is; with no
+#: deadline at all, a wedged implementer would run until its total one (#273).
+WRITE_RUN_IDLE_TIMEOUT_SECONDS = 1200
+
 _MISSING = object()
 
 #: Tier names are typed on a command line and read in a report, so they are
@@ -227,8 +233,8 @@ def default_config() -> Dict[str, Any]:
             # A wedged agent stops producing output while a slow one keeps
             # ticking, so this catches a stall in minutes instead of half an
             # hour -- but only for providers that stream progress at all.
-            # Shared with `run`, except a run that may change files: the
-            # tests it runs can be silent for longer (#273).
+            # Shared with `run`; a run that may change files gets at least
+            # WRITE_RUN_IDLE_TIMEOUT_SECONDS (#273).
             "idle_timeout_seconds": 300,
             # Generated and vendored files whose diff body is withheld from
             # reviewers. A list replaces this wholesale, so [] reviews

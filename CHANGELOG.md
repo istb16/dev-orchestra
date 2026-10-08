@@ -109,27 +109,37 @@ below begins **User adapters** so adapter authors can find it.
   still take any status. `--detail` can no longer set `stage`, `status` or
   `at`, which overwrote the event's own fields (exit 2) (#287).
 
-- **A run that may change files no longer gets the 300s idle deadline.**
+- **A run that may change files gets a 1200s idle deadline instead of 300s.**
   `review.idle_timeout_seconds` was applied to every `run`, so an implementer
   on Claude running a test suite longer than five minutes, during which its
   stream prints nothing, could be killed as stalled. The implementer, the
-  review fixer and any `run --mode implement` now have only their total
-  deadline, unless `--idle-timeout` or the role's `options.idle_timeout`
-  sets one; reviewers and read-only runs keep it. Output also counts as it
-  arrives rather than when a line ends, so a CLI printing dots or redrawing
-  a progress bar is no longer taken for silent (#273).
+  review fixer and any `run --mode implement` now get 1200s, or
+  `review.idle_timeout_seconds` if that is larger: a command silent for
+  longer is still killed, and a wedged run is still noticed well before its
+  total deadline. `--idle-timeout` or the role's `options.idle_timeout`
+  sets another value, and reviewers and read-only runs keep 300s. Output also
+  counts as it arrives rather than when a line ends, so a CLI printing dots
+  or redrawing a progress bar is no longer taken for silent (#273).
+
+- **User adapters:** `Provider._capture`, which asks the CLI for `--version`,
+  `--help` and its model list, now calls `execution.execute` instead of
+  `subprocess.run`, so a test double that replaces `execution.execute` also
+  receives those calls; replace `_capture` as well to keep them apart (#274).
 
 ### Fixed
 
 - **A run no longer hangs when the CLI exits but leaves a process holding its
-  output.** On Windows, a CLI that finished while something it started (a dev
-  server left in the background, say) still held stdout made `run` and
-  `review run` wait for that process to end, past the total deadline, because
-  closing the pipe waited on the reader still blocked on it. A pipe still in
-  use is now left to its reader, which is abandoned after a few seconds. What
-  is left is stopped on POSIX, with a warning; on Windows it cannot be reached
-  once the CLI has gone, so the run reports `orphans_possible` and warns
-  instead. The CLI's exit code is kept either way (#267).
+  output.** A CLI that finished while something it started (a dev server
+  left in the background, say) still held stdout made `run` and `review run`
+  wait for that process to end, past the total deadline: closing the pipe
+  waits for the reader still blocked on it, on every platform, and nothing
+  stopped such a process after a clean exit. A pipe still in use is now left
+  to its reader, which is abandoned after a few seconds and from then on
+  reads and drops what arrives, and what the process wrote after the CLI
+  exited is left out of the run's output, with a warning giving its size.
+  The process is then stopped on POSIX, with a warning; on Windows it cannot
+  be reached once the CLI has gone, so the run reports `orphans_possible`
+  and warns instead. The CLI's exit code is kept either way (#267).
 
 - **A prompt reaches the CLI with its line endings unchanged on Windows.**
   stdin was written in text mode, which turns every `\n` into `\r\n`, so a

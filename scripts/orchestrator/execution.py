@@ -48,6 +48,10 @@ _POLL_SECONDS = 0.2
 _LINE_QUEUE_SIZE = 1000
 #: The most one read of a pipe takes; a read returns whatever has arrived.
 _READ_CHUNK = 65536
+#: After the child exits, how long its readers get to take in what it wrote
+#: last, and how long a quiet pipe must stay quiet to count as read.
+_SETTLE_SECONDS = 1.0
+_SETTLE_QUIET_SECONDS = 0.2
 #: How long a finished run waits for ``on_line`` to catch up.
 _ON_LINE_GRACE_SECONDS = 2.0
 
@@ -120,10 +124,10 @@ class ExecOutcome:
         #: child started still held its output after it exited and could not
         #: be confirmed stopped.
         self.orphans_possible = orphans_possible
-        #: Free for readers of this outcome to keep what they derive from it.
-        #: Never serialised.
         #: False when the child could not be started at all.
         self.started = started
+        #: Free for readers of this outcome to keep what they derive from it.
+        #: Never serialised.
         self.cache: Dict[str, Any] = {}
 
     @property
@@ -162,6 +166,8 @@ class _Drain:
         self._lines: "queue.Queue[str]" = queue.Queue(maxsize=_LINE_QUEUE_SIZE)
         self._closed = threading.Event()
         self._abandoned = False
+        #: Set by ``detach``: what is read from now on is read and dropped.
+        self._detached = False
         self._handler: Optional[threading.Thread] = None
         if on_line is not None:
             self._handler = threading.Thread(target=self._hand_on, daemon=True)
@@ -183,8 +189,16 @@ class _Drain:
         try:
             while True:
                 data = stream.read1(_READ_CHUNK)
+                if self._detached:
+                    # Keep the pipe drained, so its writer never blocks on
+                    # it, but keep nothing: no one will read it.
+                    if not data:
+                        break
+                    continue
                 text = decoder.decode(data, final=not data)
                 with self._lock:
+                    if self._detached:
+                        continue
                     if text:
                         self.chunks.append(text)
                     if data:
@@ -210,6 +224,28 @@ class _Drain:
                 stream.close()
             except (OSError, ValueError):
                 pass
+
+    def mark(self) -> int:
+        """Where the output recorded so far ends, for :meth:`detach`."""
+        with self._lock:
+            return len(self.chunks)
+
+    def detach(self, mark: int) -> int:
+        """Stop keeping output: drop what was recorded after ``mark`` and
+        everything still to come, and stop handing lines on. The reader goes
+        on reading, so whatever still writes to the pipe never blocks on it.
+        Returns how many characters were dropped.
+
+        For output that is no longer the run's -- what a process the CLI left
+        behind writes after the CLI exited -- which would otherwise collect
+        here for as long as that process lives.
+        """
+        with self._lock:
+            self._detached = True
+            dropped = sum(len(chunk) for chunk in self.chunks[mark:])
+            del self.chunks[mark:]
+        self._abandoned = True
+        return dropped
 
     def _hand(self, line: str) -> None:
         """Queue ``line`` for ``on_line``, or count it dropped if the queue is full."""
@@ -568,18 +604,28 @@ def execute(
         watched = _watch(proc, started, timeout, idle_timeout, out, err)
 
         orphans = False
-        if watched.timed_out or watched.stalled:
+        killed = watched.timed_out or watched.stalled
+        marks = (0, 0)
+        if killed:
             orphans = not terminate_tree(proc)
+        else:
+            # Where the CLI's own output ends, should something it started
+            # still be writing: what that writes later is not the run's.
+            _settle(threads[:2], out, err)
+            marks = out.mark(), err.mark()
 
         # Bounded join: if a survivor still holds a pipe, abandon the readers
         # rather than waiting on them. They are daemons and cannot outlive us.
         _join(threads, KILL_GRACE_SECONDS)
         readers = threads[:2]
-        lingering = not (watched.timed_out or watched.stalled) and any(t.is_alive() for t in readers)
+        lingering = not killed and any(t.is_alive() for t in readers)
+        discarded = 0
         if lingering:
             # The CLI exited, but something it started still holds its output:
             # a dev server left running in the background, say. Nothing would
-            # ever end it, and nothing it writes now belongs to this run.
+            # ever end it, and nothing it writes now belongs to this run, so
+            # it is cut off and no longer kept.
+            discarded = out.detach(marks[0]) + err.detach(marks[1])
             orphans = True
             if _end_leftovers(proc):
                 _join(readers, KILL_GRACE_SECONDS)
@@ -592,7 +638,14 @@ def execute(
         duration = time.monotonic() - started
         suspended = watch.read(duration)
         exit_code, stderr = _verdict(
-            proc, watched, err.text(), duration, idle_timeout, orphans, lingering=lingering
+            proc,
+            watched,
+            err.text(),
+            duration,
+            idle_timeout,
+            orphans,
+            lingering=lingering,
+            discarded=discarded,
         )
 
         return ExecOutcome(
@@ -673,6 +726,25 @@ def _watch(
     return _Watched(timed_out, stalled, idle_for)
 
 
+def _settle(readers: Sequence[threading.Thread], out: _Drain, err: _Drain) -> None:
+    """After the child exits, let the readers take in what it wrote last.
+
+    Up to a pipe buffer of it may not have been read yet. Returns once both
+    readers are done -- at once, in the usual case -- or once nothing new has
+    arrived for a moment, or after ``_SETTLE_SECONDS``. The moment is
+    counted from no earlier than now, so a reader not yet scheduled when the
+    child exited still gets it.
+    """
+    settling = time.monotonic()
+    deadline = settling + _SETTLE_SECONDS
+    while any(thread.is_alive() for thread in readers):
+        now = time.monotonic()
+        quiet = now - max(out.last_seen(), err.last_seen(), settling)
+        if now >= deadline or quiet >= _SETTLE_QUIET_SECONDS:
+            return
+        time.sleep(_SETTLE_QUIET_SECONDS / 4)
+
+
 def _join(threads: Sequence[threading.Thread], budget: float) -> None:
     """Wait for ``threads`` to end, spending at most ``budget`` seconds on them."""
     for thread in threads:
@@ -722,10 +794,12 @@ def _verdict(
     idle_timeout: Optional[float],
     orphans: bool,
     lingering: bool = False,
+    discarded: int = 0,
 ) -> Tuple[int, str]:
     """The exit code to report, and ``stderr`` with what this module decided
     put around it. ``lingering``: the child exited, but something it started
-    still held its output."""
+    still held its output; ``discarded`` characters it wrote after the child
+    exited were dropped."""
     timed_out, stalled, idle_for = watched
     exit_code = proc.poll()
     if stalled:
@@ -751,6 +825,8 @@ def _verdict(
             stderr += (
                 "\nwarning: the CLI exited but a process it started still held its output; it was stopped\n"
             )
+        if discarded:
+            stderr += "warning: %d characters it wrote after the CLI exited were dropped\n" % discarded
     elif orphans:
         stderr += "\nwarning: the process group did not exit after being killed; check for orphans\n"
     return exit_code, stderr

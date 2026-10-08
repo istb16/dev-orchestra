@@ -1,4 +1,4 @@
-<!-- translated-from: references/configuration.md sha256:175898815941681cafb3ee5f74736ae0c06072fe8a76ce3f568f16588a430437 -->
+<!-- translated-from: references/configuration.md sha256:947030381b28b43750caa5f1e8d9e1564592e8869811f9ad96f6c1b1eee84e94 -->
 
 > この文書は [references/configuration.md](../../../references/configuration.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -641,7 +641,7 @@ language:
 | `review.re_review_severities` | list | ブロッキングとみなす severity。`critical`、`high`、`medium`、`low` から選んだ空でないリストで、大文字小文字は問いません（デフォルトは `[critical, high]`）。リストにしない 1 つの名前、知らない名前、`[]` は断られます。検査せずにファイルを読むコマンドは、代わりにデフォルトでブロックします。 |
 | `run.timeout_seconds.<role>` | int > 0 | `orchestrator`、`architect`、`implementer`、`review_fixer` の `run` 1 回の合計の締め切り（デフォルトは implementer が 3600、ほかは 1800）。`--timeout` で 1 回だけ上書きできます。ほかのキーは拒否されます。ロールのブロックの外にあるので、設定してもそのロールはプリセットのフィットから外れず、`config setup --preset` もこれを残します。この締め切りで止められた実行は、キーの名前を挙げてそう伝えます。 |
 | `review.timeout_seconds` | int > 0 | 各レビュアーの合計の締め切り。`review run` のラウンドのレビュアーと `run <reviewer-id>` に効きます（デフォルト 1800）。ロールの `run` にはもう効きません。そちらは `run.timeout_seconds.<role>` です。タイムアウトは報告されるだけで、例外にはなりません。 |
-| `review.idle_timeout_seconds` | int > 0 \| null | この時間出力がなければ、実行は固まったものとして扱われます（デフォルト 300。ストリーミングする provider のみ）。レビュアーと、ファイルを変えない `run` で共通です。沈黙の長さはタスクの大きさでは伸びないからです。ファイルを変えうる実行（implementer、review fixer、`--mode implement`）にはこの値を当てません。走らせるテストやビルドがそれより長く黙りうるからです。ロールごとには `options.idle_timeout` で設定・上書きできます。 |
+| `review.idle_timeout_seconds` | int > 0 \| null | この時間出力がなければ、実行は固まったものとして扱われます（デフォルト 300。ストリーミングする provider のみ）。レビュアーと、ファイルを変えない `run` で共通です。沈黙の長さはタスクの大きさでは伸びないからです。ファイルを変えうる実行（implementer、review fixer、`--mode implement`）には代わりに 1200 秒を当て、この値の方が大きければこの値を当てます。走らせるテストやビルドがそれより長く黙りうる一方、期限をまったく当てないと、固まった実行が全体の期限まで走り続けるからです。ロールごとには `options.idle_timeout` で設定・上書きできます。 |
 | `review.exclude` | list | diff 本文をレビュアーに渡さない glob パターン。デフォルトのリストを丸ごと置き換えます。`[]` ですべてをレビューします。 |
 | `review.incremental_rounds` | bool | `true`（デフォルト）にすると、2 回目のラウンドは 1 回目のラウンドがレビューした内容に対する diff になり、修正が対処しようとした指摘を引き継ぎます。`false` にすると毎ラウンド変更全体の diff を取り直します。 |
 | `review.max_findings` | int \| null | 各レビュアーに求める指摘の数。`null`（デフォルト）は `optimization.level` に任せ、`0` は上限を外します。上限を超えて返ってきた指摘は保持され、切り捨てられることはありません。 |

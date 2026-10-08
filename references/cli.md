@@ -342,10 +342,10 @@ complaining about its own stdin.
 A run killed at its deadline says which of the two it hit and where it was set.
 `config show` lists every deadline with the file that set it.
 `--idle-timeout` is the *no output* deadline (`review.idle_timeout_seconds`
-without it, except for a run that may change files -- the implementer, the
-review fixer, or `--mode implement` -- which has none unless the flag or the
-role's `options.idle_timeout` sets one, since a test suite it runs can be
-silent for longer):
+without it; for a run that may change files -- the implementer, the review
+fixer, or `--mode implement` -- 1200s, or that setting if larger, since a
+test suite it runs can be silent for longer; a role's `options.idle_timeout`
+comes before both):
 a wedged agent goes quiet while a slow one keeps producing, so this catches a
 stall in minutes rather than at the total deadline. It applies to Claude only:
 the Codex and agy adapters claim no progress stream (agy reports tool activity,

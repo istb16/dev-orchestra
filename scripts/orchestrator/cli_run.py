@@ -375,19 +375,20 @@ def _deadline(args: argparse.Namespace, loaded: config_mod.LoadedConfig, seat: _
 def _idle_deadline(args: argparse.Namespace, settings: Dict[str, Any], seat: _Seat) -> Optional[float]:
     """The run's no-output deadline, before the provider has its say.
 
-    ``--idle-timeout`` first. Otherwise ``review.idle_timeout_seconds``, but
-    not for a run that may change files (the implementer, the review fixer,
-    or ``--mode implement``): such a run is expected to run the tests or a
-    build, and Claude's stream is silent until a command returns, so a suite
-    that takes longer than the deadline would be killed as a stall (#273).
-    Such a run has its total deadline; a role's ``options.idle_timeout``
-    still sets one.
+    ``--idle-timeout`` first. Otherwise ``review.idle_timeout_seconds``, and
+    for a run that may change files (the implementer, the review fixer, or
+    ``--mode implement``) at least ``config.WRITE_RUN_IDLE_TIMEOUT_SECONDS``:
+    such a run is expected to run the tests or a build, and Claude's stream
+    is silent until a command returns, so a suite longer than 300s would be
+    killed as a stall (#273). A role's ``options.idle_timeout`` still comes
+    before all of it.
     """
     if args.idle_timeout is not None:
         return args.idle_timeout
-    if seat.mode == MODE_IMPLEMENT:
-        return None
-    return settings.get("idle_timeout_seconds")
+    shared = settings.get("idle_timeout_seconds")
+    if shared is None or seat.mode != MODE_IMPLEMENT:
+        return shared
+    return max(float(shared), float(config_mod.WRITE_RUN_IDLE_TIMEOUT_SECONDS))
 
 
 def _timeout_message(role: str, seconds: int, origin: str) -> str:
