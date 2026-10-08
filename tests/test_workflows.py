@@ -314,7 +314,10 @@ class TestAStrayExecutionDirectory(IsolatedCase):
         message = str(raised.exception)
         self.assertNotIn("before 0.4.0", message)
         self.assertIn("prompt file does not exist", message)
-        expected = os.path.join(self.container, "workflows", os.environ[wf.WORKFLOW_ENV], "execution")
+        # realpath: on macOS the temporary directory is reached through the
+        # /var -> /private/var link, and the message names the resolved path.
+        container = os.path.realpath(self.container)
+        expected = os.path.join(container, "workflows", os.environ[wf.WORKFLOW_ENV], "execution")
         self.assertIn("resolved to %s" % os.path.join(expected, "design-request.md"), message)
         self.assertIn("write the file at the resolved path", message)
 
