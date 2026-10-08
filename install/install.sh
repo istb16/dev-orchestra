@@ -50,8 +50,8 @@ fi
 # What a copy install carries: the plugin payload, not .git, tests or CI.
 PAYLOAD="plugin.json skills .claude-plugin .codex-plugin README.md LICENSE references scripts bin agents examples"
 
-# Written into a copy made by the Antigravity install, so that a later run can
-# tell a directory it made from one it did not.
+# Written into every copy the installer makes, so that a later run can tell a
+# directory it made from one it did not.
 SENTINEL=.dev-orchestra-install
 
 # The project's .git/info/exclude gets the entry below this comment, and the
@@ -97,6 +97,18 @@ copy_payload() {
   done
 }
 
+# A full copy of a checkout, .git included, where the Claude install goes:
+# what install.sh left under Git Bash, whose `ln -s` copies, before it
+# checked for a link. It cannot be told from a clone, so it is explained,
+# never removed.
+explain_full_copy() {
+  [ "$mode" = claude ] || return 0
+  [ -e "$1/.git" ] && [ -f "$1/skills/$SKILL_NAME/SKILL.md" ] || return 0
+  printf 'If it is a full copy of a checkout, .git included, that an earlier install.sh\n' >&2
+  printf 'made under Git Bash, not a clone you work in, remove it once you have checked\n' >&2
+  printf 'it holds nothing of yours:\n    rm -rf -- %s\n' "$(shell_quote "$1")" >&2
+}
+
 # $1 in single quotes, so that a printed command can be pasted as it is.
 shell_quote() {
   printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
@@ -104,8 +116,8 @@ shell_quote() {
 
 # Clear the way for an install at $1, or stop. A link is removed only when it
 # resolves to this checkout, a directory only when this installer wrote it
-# (the sentinel is there and it is not a clone), and anything else is left
-# where it is.
+# (the sentinel is there, or it is an older Claude copy, and it is not a
+# clone or the checkout itself), and anything else is left where it is.
 release_destination() {
   dest=$1
   if [ -L "$dest" ]; then
@@ -119,15 +131,39 @@ release_destination() {
     printf 'Remove it by hand if it is no longer wanted:\n    rm -- %s\n' "$(shell_quote "$dest")" >&2
     exit 1
   fi
-  if [ -d "$dest" ] && [ -f "$dest/$SENTINEL" ] && [ ! -e "$dest/.git" ] && [ ! -L "$dest/.git" ]; then
-    rm -rf -- "$dest"
-    return 0
+  # The checkout itself, reached by its own path or through a link above it:
+  # removing it would remove the checkout, and the skill is already there.
+  if [ -d "$dest" ] && [ "$(cd -P -- "$dest" 2>/dev/null && pwd)" = "$(cd -P -- "$root" && pwd)" ]; then
+    printf '%s is this checkout itself; replacing it would delete the checkout.\n' "$dest" >&2
+    printf 'Nothing to install: it is already in place. To link or copy it, run the installer from a checkout somewhere else.\n' >&2
+    exit 1
+  fi
+  if [ -d "$dest" ] && [ ! -e "$dest/.git" ] && [ ! -L "$dest/.git" ]; then
+    if [ -f "$dest/$SENTINEL" ] || { [ "$mode" = claude ] && is_unmarked_copy "$dest"; }; then
+      rm -rf -- "$dest"
+      return 0
+    fi
   fi
   if [ -e "$dest" ]; then
     printf '%s exists and the installer did not write it; it was left in place.\n' "$dest" >&2
     printf 'Remove it by hand if it is no longer wanted, then re-run.\n' >&2
+    explain_full_copy "$dest"
     exit 1
   fi
+}
+
+# A Claude copy made before the installer wrote the sentinel: the skill and
+# its CLI are there, and nothing at the top that a copy does not carry, so
+# removing it loses nothing the checkout does not have.
+is_unmarked_copy() {
+  [ -f "$1/skills/$SKILL_NAME/SKILL.md" ] && [ -f "$1/scripts/orchestrator/__init__.py" ] || return 1
+  for entry in "$1"/* "$1"/.[!.]* "$1"/..?*; do
+    [ -e "$entry" ] || [ -L "$entry" ] || continue
+    case " $PAYLOAD " in
+      *" ${entry##*/} "*) ;;
+      *) return 1 ;;
+    esac
+  done
 }
 
 # Entries at the checkout root that Antigravity would load along with the
@@ -165,6 +201,13 @@ exclude_marked() {
   fi
 }
 
+copy_for_claude() {
+  copy_payload "$1"
+  printf 'Installed by install/install.sh from %s\n' "$root" > "$1/$SENTINEL"
+  printf 'Copied the skill to %s\n' "$1"
+  printf 'Re-run this installer after `git pull` to upgrade.\n'
+}
+
 install_claude() {
   if [ -n "$target_project" ]; then
     skills_dir="$target_project/.claude/skills"
@@ -175,17 +218,24 @@ install_claude() {
   dest="$skills_dir/$SKILL_NAME"
 
   if [ -e "$dest" ] || [ -L "$dest" ]; then
-    printf 'Replacing existing install at %s\n' "$dest"
-    rm -rf "$dest"
+    release_destination "$dest"
+    printf 'Replaced the existing install at %s\n' "$dest"
   fi
 
   if [ "$use_copy" -eq 1 ]; then
-    copy_payload "$dest"
-    printf 'Copied the skill to %s\n' "$dest"
-    printf 'Re-run this installer after `git pull` to upgrade.\n'
+    copy_for_claude "$dest"
   elif ln -s "$root" "$dest" 2>/dev/null; then
-    printf 'Linked %s -> %s\n' "$dest" "$root"
-    printf '`git pull` in the checkout now upgrades the skill in place.\n'
+    if [ -L "$dest" ]; then
+      printf 'Linked %s -> %s\n' "$dest" "$root"
+      printf '`git pull` in the checkout now upgrades the skill in place.\n'
+    else
+      # Git Bash on Windows answers `ln -s` with a full copy of the checkout,
+      # .git included, and success. The destination was empty a moment ago,
+      # so what is there now is that copy: replace it with the payload.
+      rm -rf -- "$dest"
+      printf 'warning: could not create a symlink (ln -s made a copy, not a link); copying instead.\n' >&2
+      copy_for_claude "$dest"
+    fi
   else
     echo "Could not create a symlink; re-run with --copy." >&2
     exit 1

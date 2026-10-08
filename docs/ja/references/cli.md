@@ -1,4 +1,4 @@
-<!-- translated-from: references/cli.md sha256:e2e27bb6f6de3f6810add4a6ccdaf6b38d0ed9f03f77a4bd5ed336a2ec374a7e -->
+<!-- translated-from: references/cli.md sha256:06991b93beb0784a407e07f346e9adea3da8f68a472a9cf409f530d9e703debb -->
 
 > この文書は [references/cli.md](../../../references/cli.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -1081,7 +1081,7 @@ stderr に一度だけ知らせます。実行中のステージがあるワー�
 | `workflow list [--json]` | ここにあるすべてのワークフローを、最近アクティブだった順に表示し、現在のものと実行中のステージに印を付けます。 |
 | `workflow show [--json]` | このコマンドがどのワークフローにいるか、その成果物がどこにあるか、どのルールでそれが選ばれたかを表示します。 |
 | `workflow use <id>` | このディレクトリ用に id を記憶します（`current.json`）。セッション id をエクスポートしないホスト向けです。セッション id をエクスポートするホストでは、引き続きそちらが優先されます。 |
-| `workflow remove <id> --yes` | 1 つのワークフローの成果物を削除します。`--yes` がなければ拒否し、現在いるワークフローも拒否します。 |
+| `workflow remove <id> --yes [--force]` | 1 つのワークフローの成果物を削除します。`--yes` がなければ拒否し、現在いるワークフローも拒否します。実行中のステージがあるワークフローや、`jobs/` に終わっていない detached のジョブがあるワークフローも拒否します（exit 2。ワーカーがもういないジョブは先に `abandoned` にされ、数えません）。削除のあとに終わったワーカーが、空になったワークフローへ状態を書き戻すためです。最近動いていたというだけでは拒否しません。1 分前に終わったワークフローも削除します。`--force` を付けると、それでも削除します。クラッシュしたステージが残した印を消すときに使います。Windows でほかのプロセスが開いているファイルなどのために削除が途中で止まったときは exit 1 で、残ったファイルの数を伝えます。 |
 
 <a id="state--summary"></a>
 
@@ -1090,7 +1090,7 @@ stderr に一度だけ知らせます。実行中のステージがあるワー�
 | コマンド | 説明 |
 | --- | --- |
 | `state show [--json]` | このプロジェクトで記録されたステージのイベントを表示します。 |
-| `state record <stage> <status> [--detail k=v …]` | ステージの結果を追記します（`run` を通して実行されないステージ用）。`state record test ok\|failed` はレビューゲートが読むものです。再テストも同じ方法で記録してください。 |
+| `state record <stage> <status> [--detail k=v …]` | ステージの結果を追記します（`run` を通して実行されないステージ用）。`state record test ok\|failed` はレビューゲートが読むものです。再テストも同じ方法で記録してください。`test` と `re-test` の status は `ok` か `failed` だけで、それ以外は拒否します（exit 2）。ゲートはほかの語を合格と読んでしまうためです。`--detail` でイベント自身の欄である `stage`、`status`、`at` は指定できません（exit 2）。 |
 | `summary [--json]` | 実行終了時のステージとモデルのサマリーを表示します。plan が承認されていれば `design_approval` も含みます。`--json` は `stages`、`counts`、`tokens` に加えて、テキストに出る内容を持ちます。`design_counts`（`reviewers_ok`、`reviewers_total`。design のレポートがなければ `{}`）、`models`（ロールごとの `provider`、`family`、`version`）、`reviewers`（`id`、`provider`、テキストに出るとおりの `model`、`status`。並びはテキストと同じ）、`skipped`（`refused`、`refused_by`、`design_refused`、`panel_reduced`。名前は `optimization report --json` と同じ）です。 |
 
 <a id="environment-variables"></a>

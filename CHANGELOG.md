@@ -92,6 +92,23 @@ below begins **User adapters** so adapter authors can find it.
   `dev-orchestra config set --scope global design.require_approval false`
   (#279).
 
+- **`workflow remove` refuses a workflow that is still in use** (exit 2):
+  one with a stage in flight, or with a detached job in its `jobs/` that has
+  not finished (a job whose worker is gone is marked `abandoned` first and
+  does not count). It used to delete it, and a detached worker finishing
+  afterwards wrote its state back, leaving a workflow with an empty record,
+  the job's files and empty `execution/` and `reviews/`. Recent activity
+  alone is no reason to refuse, so a workflow finished a moment ago is still
+  deleted. `--force` deletes it anyway, for an in-flight mark a crashed stage
+  left behind (#285).
+
+- **`state record test` and `state record re-test` accept only `ok` and
+  `failed`** (exit 2 otherwise). Any other word was recorded, and the review
+  gate, which knows only `failed`, `fail`, `error` and `red` as failures, read
+  it as a pass: `failure` or `NG` sent red tests to review. Other stages
+  still take any status. `--detail` can no longer set `stage`, `status` or
+  `at`, which overwrote the event's own fields (exit 2) (#287).
+
 ### Fixed
 
 - **Without PyYAML, a Windows path or a string of digits written to a config
@@ -133,6 +150,74 @@ below begins **User adapters** so adapter authors can find it.
   the message now says to quote it. `no` is the only such word kept as a
   tag: `off`, `yes`, `on` and the like name no language, and are saved and
   warned about as before (#281).
+
+- **The Claude Code install and uninstall no longer delete a directory they
+  did not make.** They removed whatever was at `.claude/skills/dev-orchestra`,
+  so running the installer from a clone made there deleted the clone itself,
+  and a directory of the user's own went the same way. They now apply the
+  Antigravity install's rule: a link is replaced only when it points at the
+  checkout being installed, a directory only when the installer wrote it and
+  it is not a clone. Where a link points is compared with every link and
+  junction followed on both sides, so `install.ps1` and `uninstall.ps1`,
+  which compared the paths as written, now also recognise a link made
+  through a junction to the checkout, or a checkout run through one (a
+  `subst` drive is still not followed). A Claude copy (`--copy`, or the fallback when a symlink
+  cannot be made) now carries a `.dev-orchestra-install` file, as an
+  Antigravity copy does. A copy from an earlier installer, which has no such
+  file, is still replaced or removed when it holds nothing but what a copy
+  carries, so `install --copy` keeps upgrading it; one with anything else
+  added is left in place. A link to another checkout or to nothing is now
+  left in place too, with the command to remove it by hand, and a run from
+  the checkout that is itself the destination stops and says so (#290).
+
+- **A `workflow remove` stopped part way no longer ends on a traceback.** When
+  the delete fails -- on Windows, a file another process holds open -- it
+  exits 1, names the error and says how many files are left, so it can be run
+  again once they are closed (#285).
+
+- **`jobs cancel` no longer stops a process that was handed a vanished
+  worker's pid.** A worker gone without a word (after a reboot, say) left a
+  pid that `jobs cancel` force-killed on Windows with `taskkill /T /F`,
+  whatever tree had it by then, and that kept the job from being marked
+  `abandoned`. A job now records the worker's start time with its pid
+  (Windows and Linux) and checks it first: a different process marks the job
+  `abandoned` and is left alone. A job recorded by an earlier version, or on
+  macOS, has no start time; on Windows its pid is no longer stopped, and the
+  job says so, while POSIX keeps stopping it only while it leads its own
+  process group (#268).
+
+- **What a reviewer's prompt quotes can no longer close its fence.** The diff,
+  the plan and the design request went in a fixed `` ``` `` fence, so a code
+  block in a plan, or a Markdown diff's unchanged `` ``` `` line, closed it
+  early, and what followed read as the prompt's own instructions. Each now
+  gets a fence longer than any run of backticks inside it, as the surrounding
+  context already did, and both review prompts say the fenced text is data
+  under review, not instructions (#263).
+
+- **A reviewer that exits 0 with nothing to say is a failed reviewer, not
+  a clean one.** Its empty reply was written to the report as `NO_FINDINGS`
+  and the run recorded `ok`; it is now recorded `unparsed` (report was
+  empty), counted as failed, and the report holds no `NO_FINDINGS` it never
+  wrote (#261).
+
+- **A worker that finishes just as its job is checked or cancelled keeps
+  its outcome.** Reading a job whose worker had just exited, and `jobs
+  cancel` racing a worker that was finishing, wrote back the record as it
+  was first read, so a `succeeded` job turned `abandoned` or `cancelled` and
+  lost what the worker had added, such as `output_written`. Both now re-read
+  the record under the job's lock and change it only while it is still
+  unfinished (#271).
+
+- **The Claude Code install under Git Bash no longer says "Linked" over a
+  full copy.** Git Bash's `ln -s` copies the whole checkout, `.git`, `.venv`
+  and `.ai` included, and succeeds, so `install.sh` reported a link that
+  `git pull` would keep up to date and left a copy that never was. It now
+  checks that it got a link, and otherwise replaces the copy with what a copy
+  carries, with a warning, as the Antigravity install already did. A full
+  copy that an earlier `install.sh` left this way cannot be told from a
+  clone, so the installers leave it in place; the refusal now names it and
+  gives the command to remove it, once you have checked it holds nothing of
+  yours (#293).
 
 - **Two findings from one reviewer are no longer merged into one.** Two
   near-identical findings a few lines apart from the same reviewer (the

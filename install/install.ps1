@@ -44,8 +44,8 @@ if ($Codex -and $Antigravity) {
 # What a copy install carries: the plugin payload, not .git, tests or CI.
 $Payload = @('plugin.json', 'skills', '.claude-plugin', '.codex-plugin', 'README.md', 'LICENSE', 'references', 'scripts', 'bin', 'agents', 'examples')
 
-# Written into a copy made by the Antigravity install, so that a later run can
-# tell a directory it made from one it did not.
+# Written into every copy the installer makes, so that a later run can tell a
+# directory it made from one it did not.
 $Sentinel = '.dev-orchestra-install'
 
 # The project's .git/info/exclude gets the entry below this comment, and the
@@ -170,6 +170,68 @@ function Get-LinkTarget {
     return $target.TrimEnd('\', '/')
 }
 
+function Resolve-RealPath {
+    # $Path with every link and junction along it followed, so that two
+    # names for one directory compare equal. What does not exist is kept as
+    # it is written.
+    param([string]$Path)
+
+    $full = [System.IO.Path]::GetFullPath($Path)
+    # A bound, in case two links point at each other.
+    for ($hop = 0; $hop -lt 40; $hop++) {
+        $followed = $false
+        $prefix = $full
+        while ($prefix) {
+            $item = Get-Item -LiteralPath $prefix -Force -ErrorAction SilentlyContinue
+            if ($item -and ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
+                $target = Get-LinkTarget $item
+                if ($target) {
+                    if (-not [System.IO.Path]::IsPathRooted($target)) {
+                        $target = [System.IO.Path]::Combine([System.IO.Path]::GetDirectoryName($prefix), $target)
+                    }
+                    $full = [System.IO.Path]::GetFullPath($target + $full.Substring($prefix.Length))
+                    $followed = $true
+                }
+                break
+            }
+            $prefix = [System.IO.Path]::GetDirectoryName($prefix)
+        }
+        if (-not $followed) { break }
+    }
+    return $full.TrimEnd('\', '/')
+}
+
+function Test-UnmarkedCopy {
+    # A Claude copy made before the installer wrote the sentinel: the skill
+    # and its CLI are there, and nothing at the top that a copy does not
+    # carry, so removing it loses nothing the checkout does not have.
+    param([string]$Path)
+
+    foreach ($relative in @("skills/$SkillName/SKILL.md", 'scripts/orchestrator/__init__.py')) {
+        if (-not (Test-Path -LiteralPath (Join-Path $Path $relative) -PathType Leaf)) { return $false }
+    }
+    foreach ($entry in @(Get-ChildItem -LiteralPath $Path -Force)) {
+        if ($Payload -notcontains $entry.Name) { return $false }
+    }
+    return $true
+}
+
+function Get-FullCopyNote {
+    # A full copy of a checkout, .git included, where the Claude install goes:
+    # what install.sh left under Git Bash, whose `ln -s` copies, before it
+    # checked for a link. It cannot be told from a clone, so it is explained,
+    # never removed.
+    param([string]$Path)
+
+    if ($Antigravity) { return }
+    if (-not (Get-Item -LiteralPath (Join-Path $Path '.git') -Force -ErrorAction SilentlyContinue)) { return }
+    if (-not (Test-Path -LiteralPath (Join-Path $Path "skills/$SkillName/SKILL.md") -PathType Leaf)) { return }
+    'If it is a full copy of a checkout, .git included, that an earlier install.sh'
+    'made under Git Bash, not a clone you work in, remove it once you have checked'
+    'it holds nothing of yours:'
+    "    Remove-Item -LiteralPath '$($Path -replace "'", "''")' -Recurse -Force"
+}
+
 function Stop-Refused {
     param([string[]]$Lines)
 
@@ -180,9 +242,10 @@ function Stop-Refused {
 function Remove-OwnedDestination {
     # Clear the way for an install at $Destination, or stop. A link is removed
     # only when it resolves to this checkout, and never recursively; a
-    # directory only when this installer wrote it (the sentinel is there and
-    # it is not a clone); anything else is left where it is. Returns $true
-    # when something was removed.
+    # directory only when this installer wrote it (the sentinel is there, or
+    # it is an older Claude copy, and it is not a clone or the checkout
+    # itself); anything else is left where it is. Returns $true when
+    # something was removed.
     param([string]$Destination)
 
     $item = Get-Item -LiteralPath $Destination -Force -ErrorAction SilentlyContinue
@@ -204,7 +267,11 @@ function Remove-OwnedDestination {
 
     if (Test-ReparsePoint $Destination) {
         $target = Get-LinkTarget $item
-        if ($target -and ($target -ieq $root.TrimEnd('\', '/'))) {
+        # Both sides with every link followed, so that a link made through a
+        # junction to the checkout, or a checkout run through one, still
+        # counts as this checkout. Following the link itself, rather than
+        # its target text, also places a relative target correctly.
+        if ($target -and ((Resolve-RealPath $Destination) -ieq (Resolve-RealPath $root))) {
             Remove-Link $Destination
             return $true
         }
@@ -216,16 +283,27 @@ function Remove-OwnedDestination {
         )
     }
 
-    $hasSentinel = Test-Path -LiteralPath (Join-Path $Destination $Sentinel) -PathType Leaf
-    $gitEntry = Get-Item -LiteralPath (Join-Path $Destination '.git') -Force -ErrorAction SilentlyContinue
-    if ($item.PSIsContainer -and $hasSentinel -and ($null -eq $gitEntry)) {
-        Remove-Item -LiteralPath $Destination -Recurse -Force -Confirm:$false
-        return $true
+    # The checkout itself, reached by its own path or through a link above it:
+    # removing it would remove the checkout, and the skill is already there.
+    if ($item.PSIsContainer -and ((Resolve-RealPath $Destination) -ieq (Resolve-RealPath $root))) {
+        Stop-Refused @(
+            "$Destination is this checkout itself; replacing it would delete the checkout."
+            'Nothing to install: it is already in place. To link or copy it, run the installer from a checkout somewhere else.'
+        )
     }
-    Stop-Refused @(
+
+    $gitEntry = Get-Item -LiteralPath (Join-Path $Destination '.git') -Force -ErrorAction SilentlyContinue
+    if ($item.PSIsContainer -and ($null -eq $gitEntry)) {
+        $hasSentinel = Test-Path -LiteralPath (Join-Path $Destination $Sentinel) -PathType Leaf
+        if ($hasSentinel -or (-not $Antigravity -and (Test-UnmarkedCopy $Destination))) {
+            Remove-Item -LiteralPath $Destination -Recurse -Force -Confirm:$false
+            return $true
+        }
+    }
+    Stop-Refused (@(
         "$Destination exists and the installer did not write it; it was left in place."
         'Remove it by hand if it is no longer wanted, then re-run.'
-    )
+    ) + @(Get-FullCopyNote $Destination))
 }
 
 function Get-AutoloadEntries {
@@ -357,15 +435,8 @@ function Install-ClaudeSkill {
     $skillsDir = (New-Item -ItemType Directory -Force -Path $skillsDir).FullName
     $dest = Join-Path $skillsDir $SkillName
 
-    # A link is removed as a link: recursing through it would empty whatever
-    # it points at.
-    if (Test-ReparsePoint $dest) {
-        Write-Host "Replacing existing install at $dest"
-        Remove-Link $dest
-    }
-    elseif (Test-Path -LiteralPath $dest) {
-        Write-Host "Replacing existing install at $dest"
-        Remove-Item -LiteralPath $dest -Recurse -Force -Confirm:$false
+    if (Remove-OwnedDestination -Destination $dest) {
+        Write-Host "Replaced the existing install at $dest"
     }
 
     $linked = $false
@@ -383,6 +454,7 @@ function Install-ClaudeSkill {
 
     if (-not $linked) {
         Copy-Payload -Destination $dest
+        Set-Content -LiteralPath (Join-Path $dest $Sentinel) -Value "Installed by install/install.ps1 from $root" -Encoding utf8
         Write-Host "Copied the skill to $dest"
         Write-Host 'Re-run this installer after `git pull` to upgrade.'
     }
