@@ -289,7 +289,14 @@ def collect(start: Optional[str] = None, probe_models: bool = True) -> Dict[str,
                 "preset %s's fit applies" % (key, loaded.preset)
             )
         report["roles"][key] = _describe_role(
-            label, spec, detections, report["problems"], adapter_errors, load_errors, missing_hint=hint
+            label,
+            spec,
+            detections,
+            report["problems"],
+            adapter_errors,
+            load_errors,
+            missing_hint=hint,
+            read_only=key in config_mod.READ_ONLY_ROLES,
         )
         if key in config_mod.READ_ONLY_ROLES:
             _enforcement_report(label, spec, report, report["roles"][key], key in refused)
@@ -298,10 +305,15 @@ def collect(start: Optional[str] = None, probe_models: bool = True) -> Dict[str,
             # provider is refused for the same reason the role already was, so
             # it is not reported a second time.
             for seat in config_mod.role_seats(loaded.data, (key,)):
-                if seat.kind != "tier" or seat.same_provider:
+                if seat.kind != "tier":
                     continue
                 tier_label = "%s (tier %s)" % (label, seat.tier)
-                _enforcement_report(tier_label, seat.spec, report, None, seat.label in refused)
+                # Only the tier's own options: the role's were reported above.
+                tier_options = (seat.entry or {}).get("options")
+                if isinstance(tier_options, dict):
+                    _ignored_options(tier_label, tier_options, report["problems"])
+                if not seat.same_provider:
+                    _enforcement_report(tier_label, seat.spec, report, None, seat.label in refused)
 
     # A broken entry is skipped, but still counted, so each valid one keeps
     # the origin of its own position.
@@ -422,7 +434,10 @@ def _reviewer_entry(
     against the same provider: a family that will not resolve fails the
     high-risk rounds, which are the ones that matter most.
     """
-    entry = _describe_role(label, reviewer, detections, report["problems"], adapter_errors, load_errors)
+    # Every seat of either panel runs read-only, whatever its label says.
+    entry = _describe_role(
+        label, reviewer, detections, report["problems"], adapter_errors, load_errors, read_only=True
+    )
     entry["id"] = reviewer.get("id")
     entry["role"] = reviewer.get("role", "general")
     when = opt_mod.reviewer_condition(reviewer)
@@ -449,6 +464,7 @@ def _reviewer_entry(
                 report["problems"],
                 adapter_errors,
                 load_errors,
+                read_only=True,
             )
             shown.update({key: described[key] for key in ("status", "resolved") if key in described})
         entry["high_risk_model"] = shown
@@ -630,12 +646,21 @@ def _live_check_note(name: str, version: str, status: Dict[str, Any], report: Di
     if status["status"] != "absent" or status.get("problem") == verified.SMOKE_INSIDE_WORKSPACE:
         return
     last = status.get("last_passed")
-    script = '"%s"' % SMOKE_SCRIPT if " " in SMOKE_SCRIPT else SMOKE_SCRIPT
     report["notes"].append(
         "%s %s has not been live-checked on this machine (last passed: %s); "
-        "run python %s --provider %s -- it spends a few real tokens"
-        % (name, version, last["version"] if last else "never", script, name)
+        "run %s -- it spends a few real tokens"
+        % (name, version, last["version"] if last else "never", _smoke(name))
     )
+
+
+def _smoke(name: str) -> str:
+    """The live check's command line for ``name``, by the script's absolute path.
+
+    ``scripts/smoke_live.py`` relative to the current directory exists only
+    in a checkout run from its root; an installed plugin is elsewhere (#297).
+    """
+    script = '"%s"' % SMOKE_SCRIPT if " " in SMOKE_SCRIPT else SMOKE_SCRIPT
+    return "python %s --provider %s" % (script, name)
 
 
 def _default_patterns_note(report: Dict[str, Any], settings: Dict[str, Any]) -> None:
@@ -666,7 +691,15 @@ def _describe_role(
     adapter_errors: Dict[str, str],
     load_errors: int,
     missing_hint: str = "",
+    read_only: bool = False,
 ) -> Dict[str, Any]:
+    """One seat as doctor reports it.
+
+    ``read_only`` is whether the seat always runs read-only -- the
+    orchestrator, the architect, and every seat of either review panel -- and
+    is passed by the caller, which knows what it is describing. It used to be
+    read off the label, which missed "Design reviewer ..." (#295).
+    """
     entry: Dict[str, Any] = {"label": label}
     if not isinstance(spec, dict):
         entry["status"] = "missing"
@@ -681,7 +714,7 @@ def _describe_role(
     # Reported before the CLI checks below: whether an option is going to be
     # ignored is a fact about the configuration, true whether or not the CLI
     # that would have honoured it happens to be installed.
-    _describe_options(entry, spec, label, problems)
+    _describe_options(entry, spec, label, problems, read_only)
 
     detection = detections.get(provider_name)
     if detection is None and provider_name in adapter_errors:
@@ -728,27 +761,38 @@ def _describe_role(
     return entry
 
 
-def _describe_options(entry: Dict[str, Any], spec: Dict[str, Any], label: str, problems: List[str]) -> None:
+def _describe_options(
+    entry: Dict[str, Any], spec: Dict[str, Any], label: str, problems: List[str], read_only: bool
+) -> None:
     options = spec.get("options")
     if not isinstance(options, dict):
         return
     entry["options"] = {key: value for key, value in options.items() if key != "args"}
+    if read_only:
+        ignored = _ignored_options(label, options, problems)
+        if ignored:
+            entry["ignored_options"] = ignored
+
+
+def _ignored_options(label: str, options: Dict[str, Any], problems: List[str]) -> List[str]:
+    """Report the options a read-only seat drops at run time; return their names.
+
+    For a role, a reviewer of either panel, and a read-only role's
+    ``model_tiers`` entry, whose ``options`` replace the role's for its runs
+    and are dropped the same way (#295).
+    """
     ignored = sorted(set(options) & READ_ONLY_IGNORED_OPTIONS)
-    if ignored and _is_read_only_role(label):
-        entry["ignored_options"] = ignored
+    if ignored:
         problems.append(
             "%s: %s ignored -- planning and review stages always run read-only"
             % (label, ", ".join("options.%s" % key for key in ignored))
         )
+    return ignored
 
 
 #: Options that would loosen a sandbox. Harmless on the implementer and fixer,
 #: silently overridden everywhere else -- so say so out loud instead.
 READ_ONLY_IGNORED_OPTIONS = {"permission_mode", "sandbox", "approve", "skip_permissions"}
-
-
-def _is_read_only_role(label: str) -> bool:
-    return label.startswith(("Orchestrator", "Architect", "Reviewer"))
 
 
 def _enforcement_report(
@@ -825,7 +869,7 @@ def _resume_line(name: str, support: Dict[str, Any]) -> str:
     if status == "trusted":
         where = "built-in" if support.get("source") == "built-in" else "record: %s" % _record(support)
         version, newer_than = support.get("version"), support.get("newer_than")
-        smoke = "python scripts/smoke_live.py --provider %s" % name
+        smoke = _smoke(name)
         return "trusted for %s %s as newer than %s (verified on %s, %s); not verified itself -- run %s" % (
             name,
             version,

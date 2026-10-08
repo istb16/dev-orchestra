@@ -287,6 +287,75 @@ below begins **User adapters** so adapter authors can find it.
   `consolidated.md` such a value goes under its label, indented into the
   list item, so its fences no longer leave the list and swallow the rest of
   the document (#265).
+
+- **Files the orchestrator writes itself go where they are read, and a stray
+  `.ai/execution/` no longer stops every command.** The skill told the
+  orchestrator to redirect a background review to
+  `.ai/execution/review-run.log`, and said `.ai/` paths resolve inside the
+  workflow -- which is true of command arguments only, so a request or a log
+  it wrote itself landed beside the workflow directories, and `run` and
+  `status` then refused the checkout as a layout from before 0.4.0. The
+  skill and the references now say to write such files under `workflow
+  show`'s `Artifacts:` directory, with the log redirect quoted. The prompt
+  templates that name the plan to the model -- the implementation request,
+  the design revision requests -- now name `<Artifacts>/plan.md`, since a
+  path inside a prompt is not resolved and `.ai/plan.md` sent the model to a
+  file that does not exist; the analysis example and the README's examples
+  write their requests there too, rather than in the repository root, where
+  `review snapshot` would pick them up. A lone `execution/` is no longer
+  taken for the old layout (beside `plan.md`, `state.json`, `reviews/` or
+  `jobs/` it is still named), and a `--prompt-file` that is missing where it
+  resolves but present as written says so (#283).
+
+- **`run --json` prints JSON in the foreground too.** It only changed the
+  output with `--detach`; without it the model's raw answer was printed, so
+  a program reading the documented machine-readable output got text. It now
+  prints one object after the run, in the keys a finished job record uses
+  (`stage`, `status`, `exit_code`, `model`, `duration_seconds`, `session_id`,
+  …) and under the same conditions -- `output_written: false`,
+  `output_target` and `rejected_file` only when an `--output` write was
+  refused -- plus the answer under `output` when there is no `--output`, and
+  `answered`. The exit code and stderr are as before; a run refused before it
+  starts prints nothing on stdout, and `--print-command` stays text. `references/cli.md` now lists the commands that take `--json`;
+  the ones that only change something report by their exit code, and a test
+  keeps the list in step with the parser (#286).
+
+- **The reply-language check leaves alone text the user asked for in another
+  language, and English table rows.** With `language.reply` set, a PR body
+  or commit message the user asked for in English was blocked and rewritten
+  in the reply language, since the Stop reason had no way out; and a report
+  whose table listed reviewers' English finding titles was blocked too. The
+  reason now says to end the turn as it is when the user asked for that text
+  in another language, the reminder says to put such text in a code block,
+  and Markdown table rows are left out of the judgement like quotes; prose
+  outside a table is judged as before. Only the short, label-like cells of a
+  table are left out: a cell that reads as prose (a sentence of 6 or more
+  words, 20 or more words, or 10 or more letters of another script) is still
+  judged, so a reply written in table cells does not get through, and a
+  table without its outer pipes is read the same way (#288).
+
+- **`doctor` reports the options a design reviewer ignores.** Whether a seat
+  runs read-only was read off its label, which had to start with
+  `Orchestrator`, `Architect` or `Reviewer`, so an `options.sandbox` or
+  `options.permission_mode` on a `review.design.reviewers` seat was dropped
+  at run time without a word. The caller now says which seats are read-only
+  -- the orchestrator, the architect and every seat of either panel -- and
+  the options of an orchestrator or architect `model_tiers` entry, which
+  are dropped the same way, are reported too (#295).
+
+- **`agents/openai.yaml` and the other pointers name what there is now.** The
+  manifest listed a third of the commands, only `claude` and `codex` as
+  CLIs, and the artifacts as `.ai/plan.md` and `.ai/state.json`; it now
+  lists every command, adds `agy`, and puts the artifacts under
+  `.ai/workflows/<id>/`, and `scripts/validate_skill.py` checks the commands,
+  the CLIs and the directory against the code. `references/cli.md` shows
+  `review snapshot`'s `--no-exclude` and `--full`, with a test that every
+  signature there names each flag its command takes. The Codex pointer the
+  installers write quotes the script's path, so a checkout path with a space
+  works -- in single quotes from `install.sh`, so a `$` or a backtick in it
+  is not expanded either -- and `doctor`'s `Resume:` line names the live check by its absolute
+  path, as its notes already did (#297).
+
 ## [0.22.0] - 2026-10-06
 
 ### Added

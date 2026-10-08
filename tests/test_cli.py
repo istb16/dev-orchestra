@@ -37,6 +37,13 @@ def read_file(path):
         return handle.read()
 
 
+def smoke_script() -> str:
+    """The live check's script as doctor names it: absolute, quoted if it has a space."""
+    from orchestrator import doctor
+
+    return '"%s"' % doctor.SMOKE_SCRIPT if " " in doctor.SMOKE_SCRIPT else doctor.SMOKE_SCRIPT
+
+
 def run_cli(*argv):
     """Run the CLI, returning (exit_code, stdout, stderr)."""
     out, err = io.StringIO(), io.StringIO()
@@ -960,6 +967,37 @@ class TestDoctor(IsolatedCase):
         run_cli("config", "set", "implementer.options.permission_mode", "bypassPermissions")
         _, out, _ = run_cli("doctor", "--fast")
         self.assertNotIn("always run read-only", out)
+
+    def test_doctor_flags_ignored_options_on_both_panels(self):
+        """A design reviewer is read-only too, whatever its label starts with (#295)."""
+        data = config_mod.default_config()
+        code_seat = config_mod.make_reviewer("r1", "mock", "small")
+        design_seat = config_mod.make_reviewer("d1", "mock", "small")
+        for seat in (code_seat, design_seat):
+            seat["options"] = {"sandbox": "danger-full-access"}
+        data["reviewers"] = [code_seat]
+        data.setdefault("review", {}).setdefault("design", {})["reviewers"] = [design_seat]
+        config_mod.write_config_file(config_mod.global_config_path(), data)
+        _, out, _ = run_cli("doctor", "--fast", "--json")
+        problems = json.loads(out)["problems"]
+        for label in ("Reviewer r1", "Design reviewer d1"):
+            expected = "%s: options.sandbox ignored" % label
+            self.assertTrue(any(p.startswith(expected) for p in problems), problems)
+
+    def test_doctor_flags_ignored_options_on_a_read_only_tier(self):
+        """A tier's own options replace the role's, and are dropped the same way."""
+        data = config_mod.default_config()
+        role = {"provider": "mock", "model": {"family": "small", "version": "latest"}}
+        tiers = {"light": {"model": {"family": "small", "version": "latest"}, "options": {"sandbox": "x"}}}
+        data["architect"] = dict(role, model_tiers=tiers)
+        data["implementer"] = dict(role, model_tiers=tiers)
+        config_mod.write_config_file(config_mod.global_config_path(), data)
+        _, out, _ = run_cli("doctor", "--fast", "--json")
+        problems = json.loads(out)["problems"]
+        self.assertTrue(
+            any(p.startswith("Architect (tier light): options.sandbox ignored") for p in problems), problems
+        )
+        self.assertFalse(any(p.startswith("Implementer (tier light)") for p in problems), problems)
 
     def test_strict_mode_exits_non_zero_on_problems(self):
         run_cli("config", "setup", "--defaults")
@@ -3228,7 +3266,7 @@ class TestDoctorResume(IsolatedCase):
         _, out, _ = run_cli("doctor")
         trusted = "Resume: trusted for claude 2.1.286 (Claude Code) as newer than 2.1.285 (Claude Code) "
         self.assertIn(trusted + "(verified on ", out)
-        tail = ", built-in); not verified itself -- run python scripts/smoke_live.py --provider claude"
+        tail = ", built-in); not verified itself -- run python %s --provider claude" % smoke_script()
         self.assertIn(tail, out)
         self.assertEqual(run_cli("doctor", "--strict")[0], strict_verified)
 
@@ -3279,7 +3317,7 @@ class TestDoctorResume(IsolatedCase):
         self.assertIn(
             "Resume: trusted for codex codex-cli 0.157.0 as newer than codex-cli 0.156.1 "
             "(verified on 2026-10-01, built-in); not verified itself -- "
-            "run python scripts/smoke_live.py --provider codex",
+            "run python %s --provider codex" % smoke_script(),
             line()[0],
         )
         codex = json.loads(run_cli("doctor", "--json")[1])["providers"]["codex"]["resume_support"]
@@ -3965,6 +4003,83 @@ class TestParserShape(IsolatedCase):
                 self.assertIs(self.parse(*argv).design, False)
                 self.assertIs(self.parse(*argv, "--design").design, True)
         self.assert_usage_error("review", "snapshot", "--design")
+
+
+class TestRunJsonInTheForeground(IsolatedCase):
+    """``run --json`` without ``--detach`` printed the model's raw text (#286).
+
+    Every role is on the mock adapter, so no real CLI is started.
+    """
+
+    def setUp(self):
+        super().setUp()
+        role = {"provider": "mock", "model": {"family": "small", "version": "latest"}}
+        data = config_mod.default_config()
+        data.update(orchestrator=role, architect=role, implementer=role, review_fixer=role)
+        data["reviewers"] = [config_mod.make_reviewer("mock-general", "mock", "small")]
+        config_mod.write_config_file(config_mod.global_config_path(), data)
+        self.set_env("DEV_ORCHESTRA_MOCK_RESPONSE", "the answer")
+
+    def test_stdout_is_one_object_with_the_output_inline(self):
+        code, out, err = run_cli("run", "orchestrator", "--prompt", "hi", "--json")
+        self.assertEqual(code, 0, err)
+        payload = json.loads(out)
+        self.assertEqual(payload["stage"], "orchestrator")
+        self.assertEqual(payload["status"], "succeeded")
+        self.assertEqual(payload["exit_code"], 0)
+        self.assertEqual(payload["output"].strip(), "the answer")
+        self.assertTrue(payload["answered"])
+        for key in ("model", "duration_seconds", "session_id", "stalled", "timed_out"):
+            self.assertIn(key, payload)
+        self.assertNotIn("output_written", payload)
+
+    def test_with_output_the_file_is_named_not_printed(self):
+        code, out, err = run_cli("run", "architect", "--prompt", "hi", "--output", ".ai/plan.md", "--json")
+        self.assertEqual(code, 0, err)
+        payload = json.loads(out)
+        self.assertNotIn("output", payload)
+        # As in a job record: these keys appear only when the write was refused.
+        for key in ("output_written", "output_target", "rejected_file"):
+            self.assertNotIn(key, payload)
+        plan = os.path.join(self.project, ".ai", "workflows", TEST_WORKFLOW, "plan.md")
+        with open(plan, encoding="utf-8") as handle:
+            self.assertIn("the answer", handle.read())
+
+    def test_a_refused_write_is_named_as_a_job_names_it(self):
+        self.set_env("DEV_ORCHESTRA_MOCK_FAIL", "1")
+        code, out, _ = run_cli("run", "architect", "--prompt", "hi", "--output", ".ai/plan.md", "--json")
+        self.assertEqual(code, 1)
+        payload = json.loads(out)
+        self.assertIs(payload["output_written"], False)
+        self.assertTrue(payload["output_target"].endswith(os.path.join(TEST_WORKFLOW, "plan.md")))
+        self.assertIn("rejected_file", payload)
+        self.assertNotIn("output", payload)
+
+    def test_a_run_refused_before_it_starts_prints_nothing_on_stdout(self):
+        code, out, err = run_cli("run", "architect", "--mode", "implement", "--prompt", "hi", "--json")
+        self.assertEqual(code, 2)
+        self.assertEqual(out, "")
+        self.assertTrue(err.strip())
+
+    def test_print_command_stays_text(self):
+        code, out, _ = run_cli("run", "orchestrator", "--print-command", "--json")
+        self.assertEqual(code, 0)
+        with self.assertRaises(ValueError):
+            json.loads(out)
+
+    def test_a_failed_run_is_still_one_object(self):
+        self.set_env("DEV_ORCHESTRA_MOCK_FAIL", "1")
+        code, out, _ = run_cli("run", "orchestrator", "--prompt", "hi", "--json")
+        self.assertEqual(code, 1)
+        payload = json.loads(out)
+        self.assertEqual(payload["status"], "failed")
+        self.assertIn("error", payload)
+        self.assertFalse(payload["answered"])
+
+    def test_without_json_the_output_is_printed_as_before(self):
+        code, out, _ = run_cli("run", "orchestrator", "--prompt", "hi")
+        self.assertEqual(code, 0)
+        self.assertEqual(out.strip(), "the answer")
 
 
 if __name__ == "__main__":

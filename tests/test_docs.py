@@ -8,13 +8,15 @@ machine without PyYAML installed.
 
 from __future__ import annotations
 
+import argparse
 import pathlib
 import re
 import unittest
+from typing import Dict, List, Tuple
 
 from helpers import REPO_ROOT, USER_ADAPTER_SOURCE, IsolatedCase
 
-from orchestrator import miniyaml
+from orchestrator import cli, miniyaml
 from orchestrator.miniyaml import _parse_node, _read_lines
 
 JA_REFERENCES = pathlib.Path(REPO_ROOT) / "docs" / "ja" / "references"
@@ -428,6 +430,77 @@ class TestReferenceContents(unittest.TestCase):
                     continue
                 with self.subTest(translation=name, heading=line):
                     self.assertRegex(lines[number - 2] if number >= 2 else "", r'^<a id="[^"]+"></a>$')
+
+
+def leaf_commands() -> Dict[Tuple[str, ...], argparse.ArgumentParser]:
+    """Every runnable command of the parser, as its words: ``("review", "run")``."""
+    found: Dict[Tuple[str, ...], argparse.ArgumentParser] = {}
+
+    def walk(parser: argparse.ArgumentParser, words: Tuple[str, ...]) -> None:
+        groups = [action for action in parser._actions if isinstance(action, argparse._SubParsersAction)]
+        if not groups:
+            found[words] = parser
+            return
+        for group in groups:
+            for name, child in group.choices.items():
+                walk(child, (*words, name))
+
+    walk(cli.build_parser(), ())
+    return found
+
+
+JSON_COMMANDS = re.compile(r"<!-- json-commands: start -->(.*?)<!-- json-commands: end -->", re.DOTALL)
+
+
+class TestTheJsonCommandList(unittest.TestCase):
+    """cli.md names the commands that take ``--json`` (#286); the parser decides."""
+
+    def documented(self, relative: str) -> List[str]:
+        text = (pathlib.Path(REPO_ROOT) / relative).read_text(encoding="utf-8")
+        match = JSON_COMMANDS.search(text)
+        assert match is not None, relative
+        return re.findall(r"`([a-z -]+)`", match.group(1))
+
+    def test_the_list_is_the_parsers(self):
+        expected = sorted(
+            " ".join(words)
+            for words, parser in leaf_commands().items()
+            if any("--json" in action.option_strings for action in parser._actions)
+        )
+        for relative in ("references/cli.md", "docs/ja/references/cli.md"):
+            with self.subTest(file=relative):
+                self.assertEqual(sorted(self.documented(relative)), expected)
+
+
+class TestCliSignatures(unittest.TestCase):
+    """Every flag a command takes is in its signature in cli.md (#297)."""
+
+    ROW = re.compile(r"^\| `([^`]*)`", re.M)
+
+    def signatures(self, relative: str) -> List[str]:
+        text = (pathlib.Path(REPO_ROOT) / relative).read_text(encoding="utf-8")
+        return self.ROW.findall(text)
+
+    def test_each_signature_names_every_flag(self):
+        for relative in ("references/cli.md", "docs/ja/references/cli.md"):
+            signatures = self.signatures(relative)
+            for words, parser in leaf_commands().items():
+                command = " ".join(words)
+                with self.subTest(file=relative, command=command):
+                    mine = [sig for sig in signatures if re.match(r"%s(?=[ ]|$)" % re.escape(command), sig)]
+                    self.assertTrue(mine, "no signature row for %s" % command)
+                    joined = " ".join(mine)
+                    flags = {
+                        option
+                        for action in parser._actions
+                        if action.help != argparse.SUPPRESS
+                        for option in action.option_strings
+                        if option.startswith("--") and option != "--help"
+                    }
+                    missing = sorted(
+                        flag for flag in flags if not re.search(re.escape(flag) + r"(?![A-Za-z-])", joined)
+                    )
+                    self.assertEqual(missing, [])
 
 
 if __name__ == "__main__":

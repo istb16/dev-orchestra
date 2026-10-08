@@ -17,9 +17,9 @@ Run every command from the target project's root, as:
 python "PLUGIN_ROOT/scripts/dev_orchestra.py" <command>
 ```
 
-Use `python3` where there is no `python`, or `bin/dev-orchestra[.ps1]` (it
-picks the interpreter). `PLUGIN_ROOT` is two levels above this file:
-`${CLAUDE_PLUGIN_ROOT}` as a plugin, else the checkout root.
+Use `python3` if no `python`, or `bin/dev-orchestra[.ps1]`.
+`PLUGIN_ROOT` is two levels above this file: `${CLAUDE_PLUGIN_ROOT}` as a
+plugin, else the checkout root.
 **Commands below are written bare: `review run` means
 `python "PLUGIN_ROOT/scripts/dev_orchestra.py" review run`.**
 
@@ -58,8 +58,9 @@ State the plan in one line first: *"Multi-file API change: design → implement
 
 Stages are skippable; their **order is not**: the table's.
 Never review before tests, never fix before triage. Artifacts go in `.ai/`,
-which ignores itself; write paths such as `.ai/plan.md`: they resolve inside
-your workflow's directory. Templates and stage detail: `references/workflow.md`.
+which ignores itself. In arguments `.ai/…` means your workflow's directory,
+`<Artifacts>` (`workflow show`); files you write and redirects need that path.
+Templates and stage detail: `references/workflow.md`.
 
 | Stage | Command |
 | --- | --- |
@@ -80,9 +81,9 @@ light`.
 `--detach`; wait with `jobs wait <id> --timeout 180 --since <n>`. On each exit
 4 tell the user in a line or two: elapsed time, tool count, **context tokens**
 (never "tokens so far"), the last few tool lines; then wait again from `next:`.
-Only a background `review run` gets `--progress > .ai/execution/review-run.log
-2>&1`: relay its new lines every few minutes. Never relay or guess what the
-model wrote; tool lines go as they are.
+Only a background `review run` gets `--progress >
+"<Artifacts>/execution/review-run.log" 2>&1`: relay its new lines every few
+minutes. Never relay or guess what the model wrote; tool lines go as they are.
 
 **Design.** The architect must not change code. Write its request from the
 template, with the history it cannot fetch (`git log --oneline`, blame): on
@@ -95,8 +96,8 @@ before you ask for approval. Re-review only when `review status --design`
 says so. No design stage, no design review.
 
 **Approval.** Give the user the plan's Goal, Proposed Change, Files to
-Modify, Risks and open design findings, name the plan's file (`plan.md`
-under `workflow show`'s `Artifacts:`) as the text being approved, and ask
+Modify, Risks and open design findings, name the plan's file
+(`<Artifacts>/plan.md`) as the text being approved, and ask
 (rule 10). Findings still open after the final revision: ask whether to
 approve over them or revise. Changes requested → revise with `--resume`,
 re-review if `status` says run, ask again.
@@ -161,7 +162,7 @@ Reviews    2/3 ✓ (1 failed: codex-security — CLI timeout)
 Triage     4 findings → 2 accepted, 1 rejected, 1 duplicate
 Models     architect Claude/fable, implementer + fixer Claude/opus
 Changed    app/models/order.rb, app/services/pricing.rb
-Remaining  F4 (medium, deferred — .ai/reviews/consolidated.md)
+Remaining  F4 (medium, deferred — reviews/consolidated.md)
 ```
 
 Totals: `summary` (stage, model, tokens); cost per stage and reviewer:

@@ -160,7 +160,8 @@ stage yourself, these are the commands the orchestrator issues underneath
 ([workflow](references/workflow.md) explains each one):
 
 ```bash
-dev-orchestra run architect --prompt-file .ai/request.md --output .ai/plan.md
+# first write the design request to <Artifacts>/execution/request.md (workflow show)
+dev-orchestra run architect --prompt-file .ai/execution/request.md --output .ai/plan.md
 dev-orchestra design approve            # after you have read the plan
 dev-orchestra run implementer --prompt-file .ai/plan.md
 # run the project's own tests, then record the outcome
@@ -179,7 +180,7 @@ For logs or a long spec, digest the bulk first and design from the summary
 ([Feeding it a lot of text](references/limits.md#feeding-it-a-lot-of-text)):
 
 ```bash
-dev-orchestra run orchestrator --prompt-file .ai/analysis-request.md --output .ai/analysis.md
+dev-orchestra run orchestrator --prompt-file .ai/execution/analysis-request.md --output .ai/analysis.md
 ```
 
 ## Configuration

@@ -104,6 +104,18 @@ Because commands name artifacts by their container-relative path, `--output
 .ai/plan.md` means *the plan of this workflow* and lands in its directory. A
 path outside `.ai/`, or one that already names a workflow, is used as written.
 
+Only a command's arguments are read that way. A file you write yourself -- the
+request a `--prompt-file` names -- and a shell redirect go where the path
+says, so write them under the directory `workflow show` prints as
+`Artifacts:` (`dir` in its `--json`): the request at
+`<Artifacts>/execution/design-request.md`, then pass `--prompt-file
+.ai/execution/design-request.md`, which resolves to it; a background review's
+log with `review run --progress > "<Artifacts>/execution/review-run.log"
+2>&1` (quoted: the path is absolute and may hold a space).
+A request written at `.ai/execution/` itself is not read: `run` says the file
+does not exist, names the path it resolved to, and says a file is there as
+written.
+
 **This separates the bookkeeping, not the work.** The implementer edits the
 working tree and the reviewers read `git diff` of that same tree, and there is
 one of those per checkout. Two workflows running at the same time here still
@@ -126,6 +138,15 @@ in the checkout first, which adopts them into a workflow -- except a file that
 workflow already holds, which 0.20.0 leaves where it is, so such leftovers
 are refused again until they are moved aside or deleted. `workflow list`
 notes them. Nothing is moved or deleted.
+
+A lone `execution/` is the exception: it is not taken for the old layout,
+not refused and not noted, because a request or a log the orchestrator writes
+at `.ai/execution/` today makes one. An old one held the requests, fix briefs
+and role outputs of the work it was for; no later stage reads them from
+there, so nothing a workflow needs is left behind, and it stays until you
+delete it. Beside any of the other entries it is named and refused with
+them, and when 0.20.0's leftovers come down to `execution/` alone, the
+refusal stops.
 
 **How the formats change.** The `.ai/` artifacts are part of the public
 surface, and they change by addition only: a new version adds a key or a file,
@@ -244,6 +265,10 @@ with the smallest change and to list what it added under `## Added in this
 revision`: in the recorded rounds most new high findings on a re-review came
 from what the revision itself added, so the re-review is pointed at that list.
 
+`<Artifacts>` in the templates is the directory `workflow show` prints:
+write it out in the prompt. The model reads files where they are, and
+`.ai/plan.md` resolves only in a command's arguments.
+
 `design-revise-request.md`, for a fresh run (the brief alone is not a prompt):
 
 ```markdown
@@ -251,9 +276,9 @@ from what the revision itself added, so the re-review is pointed at that list.
 
 <the original design request, unchanged>
 
-Read .ai/plan.md and revise it. Keep every section it already has.
+Read <Artifacts>/plan.md and revise it. Keep every section it already has.
 
-<paste .ai/execution/design-fix-brief.md here>
+<paste <Artifacts>/execution/design-fix-brief.md here>
 
 For each finding: say whether you addressed it and how, or why it is not a
 problem. Do not widen the scope beyond the original request.
@@ -277,12 +302,12 @@ have trimmed what the architect printed and the findings point into the file:
 # Revise the plan
 
 You are continuing the session in which you designed this plan. Read
-.ai/plan.md once before changing anything: it is the plan you printed, as
+<Artifacts>/plan.md once before changing anything: it is the plan you printed, as
 saved by the orchestrator, and the findings below refer to its sections.
 Do not re-read code you already read unless a finding contradicts what you
 remember.
 
-<paste .ai/execution/design-fix-brief.md here>
+<paste <Artifacts>/execution/design-fix-brief.md here>
 
 For each finding: say whether you addressed it and how, or why it is not a
 problem. Do not widen the scope beyond the original request.
@@ -389,7 +414,7 @@ words instead. `design-change-request.md`, for a fresh run:
 
 <the original design request, unchanged>
 
-Read .ai/plan.md and revise it. Keep every section it already has.
+Read <Artifacts>/plan.md and revise it. Keep every section it already has.
 
 The owner reviewed the plan and asked for these changes, in their words:
 
@@ -415,7 +440,7 @@ stdout. Do not write it to a file: this role runs in plan mode.
 # Revise the plan
 
 You are continuing the session in which you designed this plan. Read
-.ai/plan.md once before changing anything: it is the plan you printed, as
+<Artifacts>/plan.md once before changing anything: it is the plan you printed, as
 saved by the orchestrator. Do not re-read code you already read unless a
 change below contradicts what you remember.
 
@@ -494,7 +519,7 @@ implementer run never counts, and a plan written afterwards is asked about.
 ```markdown
 # Implementation request
 
-Follow the plan in .ai/plan.md.
+Follow the plan in <Artifacts>/plan.md.
 
 Rules:
 - Match the conventions already in this codebase; do not introduce new ones.

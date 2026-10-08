@@ -1,4 +1,4 @@
-<!-- translated-from: references/reviews.md sha256:4aabc2a78867451492bfe7eb8acb25d30f10ea81edb00007848d9a88025a846d -->
+<!-- translated-from: references/reviews.md sha256:e20d3804fddd026d98e8357401cd658992a325d4246b66447e99eedeaa9f5895 -->
 
 > この文書は [references/reviews.md](../../../references/reviews.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -410,7 +410,7 @@ Test Strategy は十分か、といった点です。`general` は「チーム�
 同様です。
 
 **指摘の反映**は architect の再実行であり、新しいステージではありません。修正
-リクエスト（元のリクエスト、ブリーフ、そして「`.ai/plan.md` を読み、すべての
+リクエスト（元のリクエスト、ブリーフ、そして「`<Artifacts>/plan.md` を読み、すべての
 セクションを残したまま書き直すこと。各指摘について、対処したか、しなかったなら
 その理由を述べること」）を書き、それに対して `run architect` を実行します。これは
 `budgets.architect` を消費するため、新しい予算キーは存在しません。残るのは直前の
