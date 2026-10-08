@@ -17,7 +17,7 @@ from contextlib import redirect_stderr, redirect_stdout
 
 from helpers import IsolatedCase, has_git
 
-from orchestrator import cli
+from orchestrator import cli, cli_review
 from orchestrator import workspace as ws
 
 #: `File:` names a plan section, which is what a design finding has instead of
@@ -910,7 +910,7 @@ class TestRanSinceLastRound(unittest.TestCase):
     ROUND = REVIEWED_ROUND
 
     def ran(self, *events):
-        return cli._ran_since_last_round(list(events), "review", "review_fixer", ("test", "re-test"))
+        return cli_review._ran_since_last_round(list(events), "review", "review_fixer", ("test", "re-test"))
 
     def test_a_run_after_the_round_counts(self):
         self.assertEqual(self.ran(self.ROUND, {"stage": "review_fixer", "status": "ok"}), (True, False))

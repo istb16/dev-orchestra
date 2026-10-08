@@ -16,7 +16,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from helpers import IsolatedCase, has_git
 from test_wizard import ScriptedPrompter, accept_all
 
-from orchestrator import cli, cli_common, doctor, execution, presets
+from orchestrator import cli, cli_config_layers, doctor, execution, presets
 from orchestrator import config as config_mod
 from orchestrator import config_policy as policy_mod
 from orchestrator import optimization as opt_mod
@@ -613,7 +613,7 @@ class TestTheWizard(ExtrasCase):
 
     def run_wizard(self, answers, existing, scope="global"):
         prompter = ScriptedPrompter(answers)
-        base = cli_common._fitted_base(scope, existing)
+        base = cli_config_layers._fitted_base(scope, existing)
         data, save = wizard_mod.run(prompter, existing, base, scope=scope)
         return data, save, "\n".join(prompter.output)
 

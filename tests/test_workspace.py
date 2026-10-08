@@ -7,7 +7,7 @@ import unittest
 
 from helpers import IsolatedCase
 
-from orchestrator import cli, providers
+from orchestrator import providers
 from orchestrator import workspace as ws
 from orchestrator.providers import base
 
@@ -33,7 +33,6 @@ class TestRedaction(IsolatedCase):
         """User adapters import it from ``providers.base``; it has one home."""
         self.assertIs(base.redact, ws.redact)
         self.assertIs(providers.redact, ws.redact)
-        self.assertIs(cli.redact, ws.redact)
         self.assertEqual(ws.redact.__module__, "orchestrator.workspace")
         self.assertFalse(hasattr(base, "_SECRET_PATTERNS"))
 

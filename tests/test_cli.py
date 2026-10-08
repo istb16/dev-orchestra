@@ -15,7 +15,7 @@ from unittest import mock
 from helpers import CLAUDE_HELP, CLAUDE_HELP_NO_FORK, CLAUDE_HELP_OLD, TEST_WORKFLOW, IsolatedCase, has_git
 
 from orchestrator import activity as activity_mod
-from orchestrator import cli, cli_workflow, providers
+from orchestrator import cli, cli_review, cli_workflow, providers
 from orchestrator import config as config_mod
 from orchestrator import ledger as ledger_mod
 from orchestrator import workspace as ws
@@ -606,15 +606,15 @@ class TestConditionPathsFallback(unittest.TestCase):
 
     def test_a_first_round_uses_the_whole_change_with_rename_sources(self):
         meta = dict(self.META, incremental_from="")
-        self.assertEqual(cli._condition_paths(meta), ["lib/x.rb", "db/migrate/x.rb", "gen/schema.rb"])
+        self.assertEqual(cli_review._condition_paths(meta), ["lib/x.rb", "db/migrate/x.rb", "gen/schema.rb"])
 
     def test_an_incremental_round_uses_the_reviewed_and_withheld_files(self):
         meta = dict(self.META, incremental_from="abc123")
-        self.assertEqual(cli._condition_paths(meta), ["lib/x.rb", "gen/schema.rb"])
+        self.assertEqual(cli_review._condition_paths(meta), ["lib/x.rb", "gen/schema.rb"])
 
     def test_a_recorded_list_is_used_as_it_is(self):
         meta = dict(self.META, incremental_from="", condition_paths=["lib/x.rb"])
-        self.assertEqual(cli._condition_paths(meta), ["lib/x.rb"])
+        self.assertEqual(cli_review._condition_paths(meta), ["lib/x.rb"])
 
 
 class TestMalformedPathConditions(IsolatedCase):

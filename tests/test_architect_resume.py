@@ -17,7 +17,7 @@ import unittest
 from helpers import IsolatedCase
 from test_cli import run_cli
 
-from orchestrator import cli
+from orchestrator import cli, cli_run, optimization_render
 from orchestrator import jobs as jobs_mod
 from orchestrator import ledger as ledger_mod
 from orchestrator import workspace as ws
@@ -268,7 +268,7 @@ class TestFallingBackToFresh(ResumeCase):
         event = self.last()
         self.assertEqual(event["resume"]["mode"], "fresh")
         self.assertEqual(event["resume"]["reason"], reason)
-        self.assertIn(reason, cli._RESUME_REASONS)
+        self.assertIn(reason, cli_run._RESUME_REASONS)
         self.assertIsNone(self.trace()[-1]["resume_session"])
         self.assertEqual(self.trace()[-1]["prompt_chars"], len(FRESH))
         return out, err
@@ -344,7 +344,7 @@ class TestFallingBackToFresh(ResumeCase):
         reasons = report["architect_revisions"]["fallbacks"]["reasons"]
         self.assertTrue(reasons)
         for reason in reasons:
-            self.assertIn(reason, cli._RESUME_REASONS)
+            self.assertIn(reason, cli_run._RESUME_REASONS)
 
 
 class TestTheCliRejectsTheSession(ResumeCase):
@@ -386,7 +386,7 @@ class TestTheCliRejectsTheSession(ResumeCase):
     def assert_failed_for_no_budget(self, job_file):
         job = ws.read_json(job_file)
         self.assertEqual(job["status"], "failed")
-        self.assertEqual(job["error"], cli._RESUME_NO_BUDGET)
+        self.assertEqual(job["error"], cli_run._RESUME_NO_BUDGET)
         book = ledger_mod.Ledger(self.cli_workspace(), dict(ledger_mod.DEFAULT_BUDGETS))
         self.assertEqual(book.summary()["in_flight"], {})
 
@@ -394,33 +394,33 @@ class TestTheCliRejectsTheSession(ResumeCase):
         run_cli("config", "set", "budgets.architect", "2")
         os.environ["DEV_ORCHESTRA_MOCK_RESUME"] = "reject"
         code, _, err = self.revise()
-        self.assertEqual(code, cli.ledger_mod.EXIT_BUDGET_EXHAUSTED)
+        self.assertEqual(code, ledger_mod.EXIT_BUDGET_EXHAUSTED)
         self.assertEqual(self.last()["resume"]["outcome"], "rejected")
         self.assertIn("running fresh would spend an attempt", err)
         self.assertEqual(len(self.trace()), 2)
-        rejected = err.index("note: %s" % cli._RESUME_REJECTED)
-        no_budget = err.index(cli._RESUME_NO_BUDGET)
+        rejected = err.index("note: %s" % cli_run._RESUME_REJECTED)
+        no_budget = err.index(cli_run._RESUME_NO_BUDGET)
         self.assertLess(rejected, no_budget)
         self.assertLess(no_budget, err.index("refusing to run architect:"))
 
     def test_a_budget_spent_between_check_and_consume_still_says_why(self):
         os.environ["DEV_ORCHESTRA_MOCK_RESUME"] = "reject"
         consumed = []
-        original = cli.ledger_mod.Ledger.consume
+        original = ledger_mod.Ledger.consume
 
         def consume(book, stage, force=False):
             consumed.append(stage)
             # The first is this run's own attempt; the second is the retry's.
             if len(consumed) == 2:
-                raise cli.ledger_mod.BudgetExhausted("spent elsewhere")
+                raise ledger_mod.BudgetExhausted("spent elsewhere")
             return original(book, stage, force=force)
 
-        self.addCleanup(setattr, cli.ledger_mod.Ledger, "consume", original)
-        setattr(cli.ledger_mod.Ledger, "consume", consume)
+        self.addCleanup(setattr, ledger_mod.Ledger, "consume", original)
+        setattr(ledger_mod.Ledger, "consume", consume)
         code, _, err = self.revise()
-        self.assertEqual(code, cli.ledger_mod.EXIT_BUDGET_EXHAUSTED)
-        rejected = err.index("note: %s" % cli._RESUME_REJECTED)
-        no_budget = err.index(cli._RESUME_NO_BUDGET)
+        self.assertEqual(code, ledger_mod.EXIT_BUDGET_EXHAUSTED)
+        rejected = err.index("note: %s" % cli_run._RESUME_REJECTED)
+        no_budget = err.index(cli_run._RESUME_NO_BUDGET)
         self.assertLess(rejected, no_budget)
         self.assertLess(no_budget, err.index("spent elsewhere"))
         self.assertEqual(self.last()["resume"]["outcome"], "rejected")
@@ -432,23 +432,23 @@ class TestTheCliRejectsTheSession(ResumeCase):
         run_cli("budget", "consume", "architect")
         job_file = self.worker_job()
         code, _, _ = self.revise("--force", "--job-file", job_file)
-        self.assertEqual(code, cli.ledger_mod.EXIT_BUDGET_EXHAUSTED)
+        self.assertEqual(code, ledger_mod.EXIT_BUDGET_EXHAUSTED)
         self.assert_failed_for_no_budget(job_file)
         self.assertEqual(self.last()["resume"]["outcome"], "rejected")
 
     def test_a_worker_whose_budget_is_spent_before_the_retry_fails_its_job(self):
         os.environ["DEV_ORCHESTRA_MOCK_RESUME"] = "reject"
-        original = cli.ledger_mod.Ledger.consume
+        original = ledger_mod.Ledger.consume
 
         def consume(book, stage, force=False):
             # A worker skips the run's own attempt, so this is the retry's.
-            raise cli.ledger_mod.BudgetExhausted("spent elsewhere")
+            raise ledger_mod.BudgetExhausted("spent elsewhere")
 
-        self.addCleanup(setattr, cli.ledger_mod.Ledger, "consume", original)
-        setattr(cli.ledger_mod.Ledger, "consume", consume)
+        self.addCleanup(setattr, ledger_mod.Ledger, "consume", original)
+        setattr(ledger_mod.Ledger, "consume", consume)
         job_file = self.worker_job()
         code, _, err = self.revise("--force", "--job-file", job_file)
-        self.assertEqual(code, cli.ledger_mod.EXIT_BUDGET_EXHAUSTED)
+        self.assertEqual(code, ledger_mod.EXIT_BUDGET_EXHAUSTED)
         self.assert_failed_for_no_budget(job_file)
         self.assertIn("spent elsewhere", err)
 
@@ -457,7 +457,7 @@ class TestTheCliRejectsTheSession(ResumeCase):
         os.environ["DEV_ORCHESTRA_MOCK_RESUME"] = "reject"
         code, _, _ = self.revise("--force")
         self.assertEqual(code, 0)
-        self.assertEqual(self.last()["resume"]["reason"], cli._RESUME_REJECTED)
+        self.assertEqual(self.last()["resume"]["reason"], cli_run._RESUME_REJECTED)
 
     def test_the_environment_is_cleaned_up_after_a_test(self):
         # Order-independent: whichever test ran before, nothing it set leaks.
@@ -592,11 +592,11 @@ class TestTheAdapterJudgesTheResumedRun(ResumeCase):
         self.assertEqual(rejected["status"], "failed")
         self.assertEqual(rejected["resume"]["outcome"], "rejected")
         self.assertEqual(retried["status"], "ok")
-        self.assertEqual(retried["resume"]["reason"], cli._RESUME_REJECTED)
-        self.assertIn("note: %s\nnote: %s" % (cli._RESUME_REJECTED, REFUSED), err)
+        self.assertEqual(retried["resume"]["reason"], cli_run._RESUME_REJECTED)
+        self.assertIn("note: %s\nnote: %s" % (cli_run._RESUME_REJECTED, REFUSED), err)
         self.assertLess(
             err.index("note: resuming the last architect session"),
-            err.index("note: %s\nnote: %s" % (cli._RESUME_REJECTED, REFUSED)),
+            err.index("note: %s\nnote: %s" % (cli_run._RESUME_REJECTED, REFUSED)),
         )
         self.assertNotIn(REFUSED, json.dumps(self.events()))
         # Nothing ran for the refusal, so the fresh run spends its attempt.
@@ -638,7 +638,9 @@ class TestTheAdapterJudgesTheResumedRun(ResumeCase):
         job = ws.read_json(job_file)
         self.assertEqual(job["status"], "failed")
         self.assertEqual(job["error"], "no model for the fresh run")
-        self.assertLess(err.index("note: %s" % cli._RESUME_REJECTED), err.index("no model for the fresh run"))
+        self.assertLess(
+            err.index("note: %s" % cli_run._RESUME_REJECTED), err.index("no model for the fresh run")
+        )
         # setUp's foreground run spent one. A worker does not consume its first
         # attempt -- its parent did -- but the retry asks the budget like any
         # run, and the job carries no `force`, so it spent the second.
@@ -681,7 +683,7 @@ class TestTheReport(ResumeCase):
             "failed_attempts": {"stalled": 2, "rejected": 1, "failed": 3, "priced": 4},
         }
         revisions = {"resumed": group, "fresh": dict(group), "fallbacks": {"reasons": {}}}
-        rows = cli._revision_rows(revisions)
+        rows = optimization_render._revision_rows(revisions)
         for row in rows[1:3]:
             self.assertIn("n/a", row)
             self.assertIn("2 stalled + 1 rejected + 3 failed attempts (4 priced)", row)
@@ -715,7 +717,7 @@ class TestDetached(ResumeCase):
                 "/x",
             ]
         )
-        argv = cli._detached_argv(args, "architect", "named")
+        argv = cli_run._detached_argv(args, "architect", "named")
         self.assertLess(argv.index("--resume"), argv.index("--extra"))
         self.assertLess(argv.index("--resume-prompt-file"), argv.index("--extra"))
         copy = "/jobs/1.resume-prompt"

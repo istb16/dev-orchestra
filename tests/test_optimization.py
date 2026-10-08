@@ -3010,7 +3010,7 @@ class TestScorecardLeftOutRounds(unittest.TestCase):
         card = self.three_rounds(events)
         group = card["reviewers"]["s"]
         self.assertEqual((group["runs"], group["left_out_rounds"], group["when"]), (1, 2, "high-risk"))
-        rows = "\n".join(cli._scorecard_rows({"code": card}))
+        rows = "\n".join(optimization_render._scorecard_rows({"code": card}))
         self.assertIn("(when: high-risk; left out of 2 round(s))", rows)
 
     def test_a_reviewer_left_out_of_every_round_still_has_a_row(self):
@@ -3021,7 +3021,7 @@ class TestScorecardLeftOutRounds(unittest.TestCase):
         card = self.three_rounds(events)
         group = card["reviewers"]["s"]
         self.assertEqual((group["runs"], group["reported"], group["left_out_rounds"]), (0, 0, 3))
-        rows = cli._scorecard_rows({"code": card})
+        rows = optimization_render._scorecard_rows({"code": card})
         self.assertTrue(any(line.lstrip().startswith("s ") for line in rows))
         self.assertIn("left out of 3 round(s)", "\n".join(rows))
 
@@ -3108,7 +3108,7 @@ class TestScorecardLeftOutRounds(unittest.TestCase):
         self.assertNotIn("when", card["reviewers"]["a"])
         self.assertNotIn("left_out_rounds", card["reviewers"]["a"])
         self.assertNotIn("when", card["panel"])
-        rows = cli._scorecard_rows({"code": card})
+        rows = optimization_render._scorecard_rows({"code": card})
         index = next(i for i, line in enumerate(rows) if line.lstrip().startswith("a "))
         self.assertNotIn("when:", rows[index + 1])
 
@@ -3335,12 +3335,12 @@ class TestScorecardModelSlots(unittest.TestCase):
     def test_render_prints_no_slot_rows_for_a_usual_only_seat(self):
         events = [scored_event([scored_run("a", billed=100, cost=0.5, model="sonnet")])]
         card = scorecard(events, [scored_round([scored_finding("F1", "k1", ["a"], "accepted")])])["code"]
-        rows = cli._scorecard_rows({"code": card})
+        rows = optimization_render._scorecard_rows({"code": card})
         self.assertFalse(any("usual" in line for line in rows))
         self.assertFalse(any("per run" in line for line in rows))
 
     def test_render_prints_a_row_per_slot_with_model_label(self):
-        rows = cli._scorecard_rows({"code": self.two_slots()})
+        rows = optimization_render._scorecard_rows({"code": self.two_slots()})
         withheld = "; rates withheld under 10 decided"
         counts = "%d reported: %d accepted, %d rejected, 0 duplicate, 0 open; %d found alone (%d accepted)"
         per_run = "1 run(s), %d billed, %d per run, $%.2f over 1 priced run(s), $%.2f per run" + withheld
@@ -3373,7 +3373,7 @@ class TestScorecardModelSlots(unittest.TestCase):
         events = [scored_event([scored_run("a", billed=100, slot=HIGH, model="opus")])]
         card = scorecard(events, [scored_round([scored_finding("F1", "k1", ["a"], "accepted")])])["code"]
         self.assertEqual(list(card["reviewers"]["a"]["models"]), ["high-risk"])
-        rows = cli._scorecard_rows({"code": card})
+        rows = optimization_render._scorecard_rows({"code": card})
         counts = "1 reported: 1 accepted, 0 rejected, 0 duplicate, 0 open; 1 found alone (1 accepted)"
         index = rows.index(SCORE_ROW % ("  high-risk (opus)", counts))
         spend = "1 run(s), 100 billed, 100 per run, no cost reported; rates withheld under 10 decided"
@@ -3389,7 +3389,7 @@ class TestScorecardModelSlots(unittest.TestCase):
         carried = scored_finding("F1", "k1", ["z"], "accepted")
         rounds = slot_rounds([carried], [carried, scored_finding("F2", "k2", ["a", "z"], "accepted")])
         card = scorecard(events, rounds)["code"]
-        rows = cli._scorecard_rows({"code": card})
+        rows = optimization_render._scorecard_rows({"code": card})
         counts = "1 reported: 1 accepted, 0 rejected, 0 duplicate, 0 open; %d found alone (%d accepted)"
         index = rows.index(SCORE_ROW % ("  usual", counts % (0, 0)))
         spend = "0 run(s), nothing reported; rates withheld under 10 decided"
@@ -3403,7 +3403,7 @@ class TestScorecardModelSlots(unittest.TestCase):
             scored_event([scored_run("a", slot=HIGH, model="opus")], round_id="r3"),
         ]
         card = scorecard(events, slot_rounds([], [], []))["code"]
-        rows = cli._scorecard_rows({"code": card})
+        rows = optimization_render._scorecard_rows({"code": card})
         index = rows.index("    usual (opus x1, sonnet x1)")
         counts = "0 reported: 0 accepted, 0 rejected, 0 duplicate, 0 open; 0 found alone (0 accepted)"
         self.assertEqual(rows[index + 1], SCORE_ROW % ("", counts))

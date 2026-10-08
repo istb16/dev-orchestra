@@ -22,7 +22,7 @@ from unittest import mock
 
 from helpers import IsolatedCase, has_git
 
-from orchestrator import cli, review_fanout, review_snapshot
+from orchestrator import cli, cli_common, review_fanout, review_snapshot
 from orchestrator import config as config_mod
 from orchestrator import context as context_mod
 from orchestrator import optimization_report as opt_report
@@ -1265,7 +1265,9 @@ class TestOnePairOnOneSnapshot(MeasuringCase):
         second = self.last_review_event()["measurement"]
         self.assertTrue(second["rerun"])
         self.assertEqual(second["workflow"], self.workspace.workflow)
-        self.assertEqual(second["epoch"], cli._ledger(argparse.Namespace(), self.workspace).workflow_id())
+        self.assertEqual(
+            second["epoch"], cli_common._ledger(argparse.Namespace(), self.workspace).workflow_id()
+        )
         self.assertEqual(second["snapshot"], self.meta()["sha256"])
         self.assertEqual(second["tree"], self.meta()["surrounding"]["tree"])
         self.assertEqual(second["inputs"], first["inputs"])
