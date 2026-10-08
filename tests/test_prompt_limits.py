@@ -166,8 +166,11 @@ class TestTheDiet(IsolatedCase):
 
     def test_the_fixed_part_of_the_prompt_stays_under_its_budget(self):
         """Every reviewer pays this, every round. The number is a ceiling with
-        room to add a rule, not a measurement to keep in step with the text."""
-        overhead = len(review_mod.build_review_prompt(reviewer("r1"), self.workspace, "").text) - len("")
+        room to add a rule, not a measurement to keep in step with the text.
+        The repository root is left out: its length is the test machine's
+        temporary directory, longer on macOS than elsewhere."""
+        text = review_mod.build_review_prompt(reviewer("r1"), self.workspace, "").text
+        overhead = len(text) - len(self.workspace.root)
         self.assertLess(overhead, 1400, "the review prompt has grown back")
 
     def test_the_role_guidance_stays_terse(self):
