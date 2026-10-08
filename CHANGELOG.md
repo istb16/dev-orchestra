@@ -111,6 +111,16 @@ below begins **User adapters** so adapter authors can find it.
 
 ### Fixed
 
+- **A run no longer hangs when the CLI exits but leaves a process holding its
+  output.** On Windows, a CLI that finished while something it started (a dev
+  server left in the background, say) still held stdout made `run` and
+  `review run` wait for that process to end, past the total deadline, because
+  closing the pipe waited on the reader still blocked on it. A pipe still in
+  use is now left to its reader, which is abandoned after a few seconds. What
+  is left is stopped on POSIX, with a warning; on Windows it cannot be reached
+  once the CLI has gone, so the run reports `orphans_possible` and warns
+  instead. The CLI's exit code is kept either way (#267).
+
 - **Without PyYAML, a Windows path or a string of digits written to a config
   reads back unchanged** (#275). The bundled parser decoded `\\n` in a
   double-quoted string as a backslash and a newline, so `C:\work\new` came

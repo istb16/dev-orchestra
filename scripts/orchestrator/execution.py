@@ -111,7 +111,9 @@ class ExecOutcome:
         #: No output arrived for the idle deadline: the agent looks wedged.
         self.stalled = stalled
         self.idle_for = idle_for
-        #: The group did not fully exit after being killed.
+        #: The group did not fully exit after being killed, or something the
+        #: child started still held its output after it exited and could not
+        #: be confirmed stopped.
         self.orphans_possible = orphans_possible
         #: Free for readers of this outcome to keep what they derive from it.
         #: Never serialised.
@@ -533,16 +535,27 @@ def execute(
 
         # Bounded join: if a survivor still holds a pipe, abandon the readers
         # rather than waiting on them. They are daemons and cannot outlive us.
-        for thread in threads:
-            thread.join(timeout=KILL_GRACE_SECONDS / len(threads))
+        _join(threads, KILL_GRACE_SECONDS)
+        readers = threads[:2]
+        lingering = not (watched.timed_out or watched.stalled) and any(t.is_alive() for t in readers)
+        if lingering:
+            # The CLI exited, but something it started still holds its output:
+            # a dev server left running in the background, say. Nothing would
+            # ever end it, and nothing it writes now belongs to this run.
+            orphans = True
+            if _end_leftovers(proc):
+                _join(readers, KILL_GRACE_SECONDS)
+                orphans = any(t.is_alive() for t in readers)
         # So whoever reads the sink next sees every line it is going to see.
         out.finish(_ON_LINE_GRACE_SECONDS)
 
-        _close_pipes(proc)
+        _close_pipes(proc, threads)
 
         duration = time.monotonic() - started
         suspended = watch.read(duration)
-        exit_code, stderr = _verdict(proc, watched, err.text(), duration, idle_timeout, orphans)
+        exit_code, stderr = _verdict(
+            proc, watched, err.text(), duration, idle_timeout, orphans, lingering=lingering
+        )
 
         return ExecOutcome(
             exit_code,
@@ -626,8 +639,40 @@ def _watch(
     return _Watched(timed_out, stalled, idle_for)
 
 
-def _close_pipes(proc: subprocess.Popen) -> None:
-    for pipe in (proc.stdin, proc.stdout, proc.stderr):
+def _join(threads: Sequence[threading.Thread], budget: float) -> None:
+    """Wait for ``threads`` to end, spending at most ``budget`` seconds on them."""
+    for thread in threads:
+        thread.join(timeout=budget / len(threads))
+
+
+def _end_leftovers(proc: subprocess.Popen) -> bool:
+    """End what is left of the group of ``proc``, which has exited. True once
+    it is confirmed gone.
+
+    On POSIX the group outlives its leader and can still be signalled: its id
+    cannot be reused while it has members, and ``_stop_group`` checks that it
+    still has some before its SIGKILL. A holder that left the group (setsid)
+    is out of reach, and so is everything on Windows, where the tree hangs off
+    a process that no longer exists for ``taskkill /T`` to start from: both
+    answer False.
+    """
+    if IS_WINDOWS or not _group_alive(proc.pid):
+        return False
+    return _stop_group(proc.pid, KILL_GRACE_SECONDS)
+
+
+def _close_pipes(proc: subprocess.Popen, threads: Sequence[threading.Thread]) -> None:
+    """Close each pipe whose thread (stdout, stderr, stdin, in that order)
+    has finished with it.
+
+    A pipe whose thread is still blocked on it is left alone: ``close()``
+    waits for the stream's lock, which the blocked read or write holds until
+    the far end goes away -- for a process the CLI left running, perhaps
+    never. The daemon thread keeps it until we exit.
+    """
+    for pipe, thread in zip((proc.stdout, proc.stderr, proc.stdin), threads, strict=True):
+        if thread.is_alive():
+            continue
         try:
             if pipe is not None and not pipe.closed:
                 pipe.close()
@@ -642,9 +687,11 @@ def _verdict(
     duration: float,
     idle_timeout: Optional[float],
     orphans: bool,
+    lingering: bool = False,
 ) -> Tuple[int, str]:
     """The exit code to report, and ``stderr`` with what this module decided
-    put around it."""
+    put around it. ``lingering``: the child exited, but something it started
+    still held its output."""
     timed_out, stalled, idle_for = watched
     exit_code = proc.poll()
     if stalled:
@@ -660,7 +707,17 @@ def _verdict(
         ) + stderr
     elif timed_out:
         stderr = ("timed out after %.0fs\n" % duration) + stderr
-    if orphans:
+    if lingering:
+        if orphans:
+            stderr += (
+                "\nwarning: the CLI exited but a process it started still holds its output and may"
+                " still be running; check for orphans\n"
+            )
+        else:
+            stderr += (
+                "\nwarning: the CLI exited but a process it started still held its output; it was stopped\n"
+            )
+    elif orphans:
         stderr += "\nwarning: the process group did not exit after being killed; check for orphans\n"
     return exit_code, stderr
 

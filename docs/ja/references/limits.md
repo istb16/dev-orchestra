@@ -1,4 +1,4 @@
-<!-- translated-from: references/limits.md sha256:0b15a5a24ff5194e6bf7804430598cd9fc8f3b5f139a91031f85949508379a97 -->
+<!-- translated-from: references/limits.md sha256:4115a2800d5754387e01fc583505440f5d52326eca25a3ef7572b63c5961fdbd -->
 
 > この文書は [references/limits.md](../../../references/limits.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -68,6 +68,16 @@
 `taskkill /T`、それ以外では `killpg`）、放棄可能な daemon スレッドで出力を
 読み出します。diff をインライン化したレビュープロンプトはパイプバッファの
 数倍の大きさになるため、stdin は専用のスレッドから書き込まれます。
+
+CLI が正常に終了しても、出力を握ったままのプロセスを残していった場合（たとえば
+実装役がバックグラウンドで起動した開発サーバー）も同じです。読み取りスレッドには
+数秒だけ終わる時間を与え、まだ読み取りで止まっているパイプは閉じません。Windows
+では、閉じる処理がその読み取りスレッドを、つまりパイプを握るプロセスを待って
+しまうためです。そのうえで残ったものを止めます。POSIX では超過時と同じように
+そのプロセスグループにシグナルを送り、止めたことを警告します。Windows では CLI が
+終了した後はそこへ届かない（`taskkill /T` には親プロセスが必要）ため、そのまま
+残し、`orphans_possible` を立てて確かめるよう警告します。どちらの場合も CLI の
+終了コードはそのまま使います。
 
 <a id="two-deadlines-because-slow-and-wedged-differ"></a>
 

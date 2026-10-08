@@ -41,6 +41,26 @@ LEAKY_PARENT = (
     "while True: time.sleep(0.05)\n"
 )
 
+#: Writes its pid to ``argv[1]``, then sleeps for 90s holding the stdout and
+#: stderr it inherited.
+LINGERING_GRANDCHILD = (
+    "import os, sys, time\n"
+    "with open(sys.argv[1] + '.tmp', 'w') as f: f.write(str(os.getpid()))\n"
+    "os.replace(sys.argv[1] + '.tmp', sys.argv[1])\n"
+    "time.sleep(90)\n"
+)
+
+#: Leaves LINGERING_GRANDCHILD running with its stdout and stderr, then exits
+#: 0: a CLI that started a dev server in the background and finished.
+LINGERING_PARENT = (
+    "import os, subprocess, sys, time\n"
+    "subprocess.Popen([sys.executable, '-c', %r, sys.argv[1]], stdin=subprocess.DEVNULL,"
+    " stdout=sys.stdout, stderr=sys.stderr)\n"
+    "deadline = time.monotonic() + 30\n"
+    "while not os.path.exists(sys.argv[1]) and time.monotonic() < deadline: time.sleep(0.05)\n"
+    "sys.stdout.write('parent done\\n'); sys.stdout.flush()\n"
+) % LINGERING_GRANDCHILD
+
 #: Starts ``argv[1]`` (code, given ``argv[2]``) detached and returns at once,
 #: so the started process is not our child: the shape of a detached worker.
 LAUNCHER = (
@@ -111,6 +131,20 @@ def read_pids(case: unittest.TestCase, path: str) -> Tuple[int, ...]:
         time.sleep(0.05)
     with open(path) as f:
         return tuple(int(part) for part in f.read().split())
+
+
+def end_pid_in(path: str) -> None:
+    """Safety net: end the process whose pid a test script wrote to ``path``."""
+    try:
+        with open(path) as f:
+            pid = int(f.read())
+    except (OSError, ValueError):
+        return
+    if execution.pid_alive(pid):
+        try:
+            os.kill(pid, getattr(signal, "SIGKILL", signal.SIGTERM))
+        except OSError:
+            pass
 
 
 def kill_group(pgid: int) -> None:
@@ -352,6 +386,52 @@ class TestProcessTree(IsolatedCase):
         # The grandchild sleeps for 20s; returning anywhere near that means we
         # waited for the pipe to close, which is the bug being prevented.
         self.assertLess(elapsed, 15, "returned only after the grandchild exited")
+
+    def test_a_grandchild_left_holding_the_output_after_a_clean_exit_does_not_block_the_return(self):
+        """The CLI exits 0, but what it left running still holds the pipes:
+        closing them would wait on the readers for as long as it lives."""
+        pid_file = os.path.join(self.project, "grandchild.pid")
+        self.addCleanup(end_pid_in, pid_file)
+        started = time.monotonic()
+        outcome = execution.execute([*python_code(LINGERING_PARENT), pid_file], cwd=self.project, timeout=120)
+        elapsed = time.monotonic() - started
+        self.assertLess(elapsed, 45, "returned only after the grandchild exited")
+        self.assertEqual(outcome.exit_code, 0, outcome.stderr)
+        self.assertFalse(outcome.timed_out)
+        self.assertIn("parent done", outcome.stdout)
+        (grandchild,) = read_pids(self, pid_file)
+        if execution.IS_WINDOWS:
+            # Its parent is gone, so taskkill /T has no tree to start from.
+            self.assertTrue(outcome.orphans_possible)
+            self.assertIn("may still be running", outcome.stderr)
+        else:
+            self.assertFalse(outcome.orphans_possible, outcome.stderr)
+            self.assertIn("it was stopped", outcome.stderr)
+            deadline = time.monotonic() + 10
+            while execution.pid_alive(grandchild) and time.monotonic() < deadline:
+                time.sleep(0.05)
+            self.assertFalse(execution.pid_alive(grandchild))
+
+    def test_a_pipe_still_in_use_is_not_closed(self):
+        class Pipe:
+            closed = False
+
+            def __init__(self) -> None:
+                self.close = mock.Mock()
+
+        class Thread:
+            def __init__(self, alive: bool) -> None:
+                self.alive = alive
+
+            def is_alive(self) -> bool:
+                return self.alive
+
+        proc: Any = mock.Mock(stdout=Pipe(), stderr=Pipe(), stdin=Pipe())
+        threads: Any = [Thread(True), Thread(False), Thread(False)]
+        execution._close_pipes(proc, threads)
+        proc.stdout.close.assert_not_called()
+        proc.stderr.close.assert_called_once_with()
+        proc.stdin.close.assert_called_once_with()
 
     def test_terminate_tree_reports_whether_everything_exited(self):
         proc = subprocess.Popen(python_code(SILENT_HANG), **execution._spawn_kwargs())
@@ -1181,6 +1261,17 @@ class TestVerdict(unittest.TestCase):
         for watched, code, text in cases:
             with self.subTest(watched=watched):
                 self.assertEqual(self.verdict(1, watched, orphans=True), (code, text + ORPHANS))
+
+    def test_a_lingering_process_is_named_whether_or_not_it_was_stopped(self):
+        watched = execution._Watched(False, False, 0)
+        proc: Any = _Polled(0)
+        code, stopped = execution._verdict(proc, watched, "err", 7.4, None, False, lingering=True)
+        self.assertEqual(code, 0)
+        self.assertTrue(stopped.startswith("err\nwarning: the CLI exited"), stopped)
+        self.assertIn("it was stopped", stopped)
+        _, running = execution._verdict(proc, watched, "err", 7.4, None, True, lingering=True)
+        self.assertIn("may still be running; check for orphans", running)
+        self.assertNotIn("after being killed", running)
 
     def test_a_finished_run_keeps_its_code_and_stderr(self):
         self.assertEqual(self.verdict(3, execution._Watched(False, False, 0)), (3, "err"))

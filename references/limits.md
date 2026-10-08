@@ -57,6 +57,17 @@ process group, kills the whole group on a breach (`taskkill /T` on Windows,
 stdin is written from its own thread because a review prompt with an inlined
 diff is several times larger than a pipe buffer.
 
+The same holds when the CLI exits cleanly but leaves something running that
+still holds its output -- a dev server the implementer started in the
+background, say. The readers get a few seconds to finish; a pipe whose reader
+is still blocked is never closed, because on Windows closing it waits for that
+reader, and so for the process holding the pipe. What is left is then stopped:
+on POSIX its process group is signalled as on a breach, and the run warns that
+it was stopped. On Windows it cannot be reached once the CLI has exited
+(`taskkill /T` needs the parent), so it is left running and the run reports
+`orphans_possible` with a warning to check for it. Either way the CLI's exit
+code stands.
+
 ### Two deadlines, because "slow" and "wedged" differ
 
 | Deadline | Config | Meaning |
