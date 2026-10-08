@@ -21,7 +21,7 @@ from . import config as config_mod
 from . import config_policy as policy_mod
 from . import presets as presets_mod
 from .cli_common import _out
-from .cli_config_layers import _compose_preview, _reviewers_hold_design_panel
+from .config_layers import _compose_preview, _reviewers_hold_design_panel
 from .optimization import RELEVANCE_ALWAYS, WHEN_HIGH_RISK, reviewer_condition, risk_patterns
 from .providers import (
     ModelResolutionError,

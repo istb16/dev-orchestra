@@ -244,28 +244,26 @@ def _untracked_diff(
     # An incremental diff is tree-to-tree, and both trees already contain the
     # untracked files: adding them again would duplicate every hunk.
     if include_untracked and not previous_tree:
+        # Names as they are on disk; ``_snapshot_meta`` records them shown.
         for name in _list_untracked(root) or []:
-            # ``shown`` is what is recorded; ``name`` is what is on disk, and
-            # differs only for a name that is not UTF-8.
-            shown = _shown_name(name)
-            if _is_orchestrator_artifact(shown, workspace):
+            if _is_orchestrator_artifact(name, workspace):
                 continue
             path = os.path.join(root, name)
             reason = _unread_reason(path)
             if reason:
-                withheld.append(_unread_entry(shown, reason))
+                withheld.append(_unread_entry(name, reason))
                 continue
-            pattern = withholds(shown, patterns)
+            pattern = withholds(name, patterns)
             if pattern:
-                withheld.append(_withheld_entry(shown, pattern, added=_count_lines(path)))
+                withheld.append(_withheld_entry(name, pattern, added=_count_lines(path)))
                 continue
             dcode, dout, _ = ws.git(["diff", "--no-color", "--no-index", "--", os.devnull, name], root)
             # --no-index exits 1 when files differ, which is the normal case.
             if dcode in (0, 1) and dout.strip():
                 diff += dout
-                untracked.append(shown)
+                untracked.append(name)
             else:
-                withheld.append(_unread_entry(shown, "git could not diff it"))
+                withheld.append(_unread_entry(name, "git could not diff it"))
     return diff, untracked, withheld
 
 
@@ -285,27 +283,43 @@ def _list_untracked(root: str) -> Optional[List[str]]:
     code, out, _ = ws.git_bytes(["ls-files", "-z", "--others", "--exclude-standard"], root)
     if code != 0:
         return None
-    names = []
-    for raw in out.split(b"\0"):
-        if not raw or raw.endswith(b"/"):
-            continue
-        try:
-            names.append(os.fsdecode(raw))
-        except UnicodeDecodeError:
-            names.append(raw.decode("utf-8", errors="replace"))
-    return names
+    return [_decode_name(raw) for raw in out.split(b"\0") if raw and not raw.endswith(b"/")]
+
+
+def _decode_name(raw: bytes) -> str:
+    """One path from git's ``-z`` output, decoded the way the file system does."""
+    try:
+        return os.fsdecode(raw)
+    except UnicodeDecodeError:
+        return raw.decode("utf-8", errors="replace")
+
+
+#: C0 and C1 controls and DEL: a name holding one is not printed as it is.
+_CONTROL_RE = re.compile("[\x00-\x1f\x7f-\x9f]")
 
 
 def _shown_name(name: str) -> str:
-    """``name`` as it can be recorded and printed: what git's own text output says.
+    """``name`` as it can be recorded, printed and put into a prompt.
 
     The same as ``name`` unless it held a byte that is not UTF-8, which
-    becomes U+FFFD, as it does in every other path read from git here.
+    becomes U+FFFD, or a control character, which becomes ``\\xNN``: a name
+    is the repository's to choose, and an escape sequence or a line break in
+    it must not rewrite the operator's terminal or add a line to a reviewer's
+    prompt. Files are still read by the name as it is on disk.
     """
     try:
-        return name.encode("utf-8", errors="surrogateescape").decode("utf-8", errors="replace")
+        text = name.encode("utf-8", errors="surrogateescape").decode("utf-8", errors="replace")
     except UnicodeEncodeError:
-        return name.encode("utf-8", errors="replace").decode("utf-8")
+        text = name.encode("utf-8", errors="replace").decode("utf-8")
+    return _CONTROL_RE.sub(lambda match: "\\x%02x" % ord(match.group()), text)
+
+
+def _shown_entry(entry: Dict[str, Any]) -> Dict[str, Any]:
+    """A withheld entry with its names as ``_shown_name`` records them."""
+    shown = dict(entry, path=_shown_name(str(entry.get("path") or "")))
+    if entry.get("previous"):
+        shown["previous"] = _shown_name(str(entry["previous"]))
+    return shown
 
 
 def _unread_reason(path: str) -> str:
@@ -377,7 +391,11 @@ def _snapshot_meta(
     untracked: List[str],
     patterns: List[str],
 ) -> Dict[str, Any]:
-    """What the snapshot froze, from which revisions, and every path it touches."""
+    """What the snapshot froze, from which revisions, and every path it touches.
+
+    Paths arrive as they are on disk and are recorded as ``_shown_name``
+    shows them.
+    """
     added_lines, deleted_lines = _diff_line_counts(diff)
     reviewed = _reviewed_files(tracked, withheld, suppressed, untracked)
     # Two different lists, for two different questions.
@@ -414,11 +432,13 @@ def _snapshot_meta(
         "tree": tree,
         "incremental_from": previous_tree,
         "full_diff": full_diff_path,
-        "files": reviewed,
-        "changed_paths": changed_paths,
-        "condition_paths": condition_paths,
-        "untracked_included": untracked,
-        "withheld": sorted(withheld, key=lambda entry: str(entry.get("path"))),
+        "files": [_shown_name(path) for path in reviewed],
+        "changed_paths": [_shown_name(path) for path in changed_paths],
+        "condition_paths": [_shown_name(path) for path in condition_paths],
+        "untracked_included": [_shown_name(path) for path in untracked],
+        "withheld": sorted(
+            (_shown_entry(entry) for entry in withheld), key=lambda entry: str(entry.get("path"))
+        ),
         "exclude_patterns": patterns,
         "bytes": len(diff.encode("utf-8")),
         "lines_added": added_lines,
@@ -907,6 +927,20 @@ def render_design_round_context(
     return "\n".join(lines)
 
 
+def partition_withheld(
+    withheld: Sequence[Dict[str, Any]],
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """``withheld`` split into ``(excluded, unread)``, each in its own order.
+
+    An entry with a ``reason`` was not read -- too large, not a regular file,
+    unreadable, or not diffable -- and only a person can review it. One
+    without was matched by a pattern, and ``--no-exclude`` brings it back.
+    """
+    excluded = [entry for entry in withheld if not entry.get("reason")]
+    unread = [entry for entry in withheld if entry.get("reason")]
+    return excluded, unread
+
+
 def render_withheld(withheld: Sequence[Dict[str, Any]]) -> str:
     """The note that tells a reviewer what it is not being shown.
 
@@ -915,7 +949,8 @@ def render_withheld(withheld: Sequence[Dict[str, Any]]) -> str:
     """
     if not withheld:
         return ""
-    if any(entry.get("reason") for entry in withheld):
+    _, unread = partition_withheld(withheld)
+    if unread:
         lines = ["Changed, diff withheld (generated, vendored, or not read):"]
     else:
         lines = ["Changed, diff withheld (generated or vendored):"]
@@ -941,9 +976,13 @@ def _numstat(
     caller has to tell "there is no HEAD yet", which is an ordinary state, from
     "that revision does not exist", which is a mistake worth reporting.
     """
-    code, out, err = ws.git(["diff", "--numstat", "-z", "-M", *revisions, "--"], root)
+    code, raw, err = ws.git_bytes(["diff", "--numstat", "-z", "-M", *revisions, "--"], root)
     if code != 0:
         return [], code, err
+    # Bytes, and each name decoded on its own, as ``_list_untracked`` does:
+    # text mode would turn a carriage return in a name into a newline, and the
+    # exclusion made from it would then name no file.
+    out = "\0".join(_decode_name(field) for field in raw.split(b"\0"))
     entries: List[Dict[str, Any]] = []
     for added, deleted, path, previous in _parse_numstat(out):
         entry = _withheld_entry(path, withholds(path, patterns), added, deleted)
@@ -991,7 +1030,7 @@ def same_base(root: str, meta: Dict[str, Any], wanted: Optional[str]) -> bool:
 
 
 def _untracked_paths(root: str) -> "set[str]":
-    return {_shown_name(name) for name in _list_untracked(root) or []}
+    return set(_list_untracked(root) or [])
 
 
 def _mark_unread_untracked(tracked: Sequence[Dict[str, Any]], root: str, revisions: Sequence[str]) -> None:
@@ -1016,8 +1055,11 @@ def _mark_unread_untracked(tracked: Sequence[Dict[str, Any]], root: str, revisio
     if not candidates:
         return
     known |= _listed_paths(root, ["ls-tree", "-r", "-z", "--name-only", "HEAD"])
-    old_sizes = _blob_sizes(root, revisions[0])
-    new_sizes = _blob_sizes(root, revisions[-1])
+    measured = sorted(
+        {str(name) for entry in candidates for name in (entry.get("path"), entry.get("previous")) if name}
+    )
+    old_sizes = _blob_sizes(root, revisions[0], measured)
+    new_sizes = _blob_sizes(root, revisions[-1], measured)
     reason = "over %s bytes, not read" % ws.fmt_int(MAX_UNTRACKED_BYTES)
     for entry in candidates:
         path = str(entry.get("path") or "")
@@ -1032,24 +1074,33 @@ def _mark_unread_untracked(tracked: Sequence[Dict[str, Any]], root: str, revisio
 
 
 def _listed_paths(root: str, args: Sequence[str]) -> "set[str]":
-    """The NUL-separated paths a git listing prints, or none when it fails."""
-    code, out, _ = ws.git(list(args), root)
+    """The NUL-separated paths a git listing prints, as named on disk, or none when it fails."""
+    code, out, _ = ws.git_bytes(list(args), root)
     if code != 0:
         return set()
-    return {name for name in out.split("\0") if name}
+    return {_decode_name(raw) for raw in out.split(b"\0") if raw}
 
 
-def _blob_sizes(root: str, tree: str) -> Dict[str, int]:
-    """Every blob in ``tree`` with its size in bytes; empty when git cannot list it."""
-    code, out, _ = ws.git(["ls-tree", "-r", "-l", "-z", tree], root)
+def _blob_sizes(root: str, tree: str, paths: Sequence[str]) -> Dict[str, int]:
+    """The blobs of ``tree`` at ``paths`` with their sizes in bytes; empty when git cannot list them.
+
+    Only ``paths`` are asked for: with ``-l`` git looks up the size of every
+    blob it lists, and a whole tree is every blob in the repository.
+    ``ls-tree`` matches its paths literally; the ``./`` keeps a name that
+    starts with ``:`` from being read as pathspec magic.
+    """
+    if not paths:
+        return {}
+    args = ["ls-tree", "-r", "-l", "-z", tree, "--", *("./" + path for path in paths)]
+    code, out, _ = ws.git_bytes(args, root)
     if code != 0:
         return {}
     sizes: Dict[str, int] = {}
-    for record in out.split("\0"):
-        meta, tab, path = record.partition("\t")
+    for record in out.split(b"\0"):
+        meta, tab, path = record.partition(b"\t")
         fields = meta.split()
-        if tab and len(fields) == 4 and fields[1] == "blob" and fields[3].isdigit():
-            sizes[path] = int(fields[3])
+        if tab and len(fields) == 4 and fields[1] == b"blob" and fields[3].isdigit():
+            sizes[_decode_name(path)] = int(fields[3])
     return sizes
 
 
@@ -1131,8 +1182,17 @@ def _pathspecs(withheld: Sequence[Dict[str, Any]]) -> List[str]:
     The pattern already did its matching here, so git is handed the exact names
     to leave out. ``literal`` keeps a path containing glob characters from
     being read as a glob by git in turn.
+
+    A renamed file is left out under both names: git pairs a rename after the
+    pathspec has filtered the change, so leaving out only where it landed
+    would show the name it came from deleted, every line of it.
     """
-    return [":(exclude,literal)%s" % entry["path"] for entry in withheld]
+    return [
+        ":(exclude,literal)%s" % name
+        for entry in withheld
+        for name in (entry["path"], entry.get("previous"))
+        if name
+    ]
 
 
 def _count_lines(path: str) -> Optional[int]:

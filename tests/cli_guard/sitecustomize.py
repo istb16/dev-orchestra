@@ -67,6 +67,12 @@ _PACKAGE_RUNNERS = ("npx", "bunx", "pnpx")
 _PREFIX_COMMANDS = ("env", "exec", "command", "nohup", "time", "nice")
 _SHELLS = ("sh", "bash", "dash", "zsh", "ksh", "ash", "fish")
 _POWERSHELLS = ("pwsh", "powershell")
+#: PowerShell's ``Start-Process`` and its aliases, which start their operand.
+_START_PROCESS = ("start-process", "saps", "start")
+#: ``Start-Process`` switches, which take no value; every other parameter does.
+_START_PROCESS_SWITCHES = ("-wait", "-nonewwindow", "-passthru", "-usenewenvironment", "-loaduserprofile")
+#: cmd.exe ``start`` switches followed by a value of their own.
+_CMD_START_VALUED = ("/d", "/node", "/affinity")
 _PROVIDER_PACKAGE = re.compile(
     r"(?:^|/)node_modules/(?:@anthropic-ai/claude-code|@openai/codex"
     r"|(?:@[^/]+/)?(?:claude|codex|agy|antigravity)(?:-[^/]*)?)(?:/|$)"
@@ -385,10 +391,63 @@ def _judge_powershell_script(script: str, depth: int) -> Optional[str]:
         except ValueError:
             words = segment.split()
         words = [word.strip("'\"") for word in words]
-        if words:
-            verdict = _judge(words, depth + 1)
-            if verdict:
-                return verdict
+        if words and words[0].lower() in _START_PROCESS:
+            verdict = _judge_start_process(words, depth + 1)
+        else:
+            verdict = _judge(words, depth + 1) if words else None
+        if verdict:
+            return verdict
+    return None
+
+
+def _judge_start_process(words: Sequence[str], depth: int) -> Optional[str]:
+    """``Start-Process [-FilePath] <program> [[-ArgumentList] <arguments>]``: what it starts.
+
+    A parameter may be shortened to any prefix, or given its value after a
+    ``:``; an argument list may be one word, or several separated by commas.
+    """
+    program: Optional[str] = None
+    arguments: List[str] = []
+    positional: List[str] = []
+    index = 1
+    while index < len(words):
+        word = words[index]
+        index += 1
+        if not word.startswith("-") or len(word) < 2:
+            positional.append(word)
+            continue
+        name, colon, _ = word.lower().partition(":")
+        if any(switch.startswith(name) for switch in _START_PROCESS_SWITCHES) and not colon:
+            continue
+        value = word[len(name) + 1 :] if colon else (words[index] if index < len(words) else "")
+        if not colon:
+            index += 1
+        if "-filepath".startswith(name) or name == "-path":
+            program = value
+        elif "-argumentlist".startswith(name) or name == "-args":
+            arguments += [part for part in value.split(",") if part]
+    if program is None and positional:
+        program, positional = positional[0], positional[1:]
+    if program is None:
+        return None
+    for word in positional:
+        arguments += [part for part in word.split(",") if part]
+    return _judge([program, *arguments], depth + 1)
+
+
+def _judge_cmd_start(words: Sequence[str], depth: int) -> Optional[str]:
+    """cmd.exe's ``start ["title"] [/switches] <program> [arguments]``: what it starts.
+
+    The quotes are gone by now, so a first word that may be the window title
+    is judged both ways: as the program, and as a title before it.
+    """
+    for skip in (0, 1):
+        tail = list(words[1 + skip :])
+        while tail and tail[0].startswith("/"):
+            tail = tail[2:] if tail[0].lower() in _CMD_START_VALUED else tail[1:]
+        verdict = _judge(tail, depth + 1) if tail else None
+        if verdict:
+            return verdict
     return None
 
 
@@ -459,6 +518,9 @@ def _judge(argv: Sequence[str], depth: int) -> Optional[str]:
             return words[index]
     elif stem in _POWERSHELLS:
         return _judge_powershell_args(words, depth)
+    elif stem == "start":
+        # Only cmd.exe has it: a builtin there, so this is a cmd.exe script.
+        return _judge_cmd_start(words, depth)
     elif stem == "cmd" or _is_comspec(program):
         line = subprocess.list2cmdline(words)
         return _judge_cmd_line(line, split_windows(line), depth)

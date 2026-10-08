@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import codecs
 import os
 import re
 import shlex
@@ -12,7 +11,7 @@ import sys
 import time
 from typing import Any, Dict, List, NamedTuple, Optional, Tuple, Union, cast
 
-from . import activity, execution
+from . import activity, clocks, execution
 from . import approval as approval_mod
 from . import config as config_mod
 from . import config_policy as policy_mod
@@ -27,6 +26,7 @@ from .cli_common import (
     _ledger,
     _load_or_die,
     _out,
+    _read_stdin,
     _refuse_if_exhausted,
     _workspace,
     _wrote_plan,
@@ -94,65 +94,6 @@ def _quoted(token: str) -> str:
     if not re.search(r"\s", token):
         return token
     return subprocess.list2cmdline([token]) if os.name == "nt" else shlex.quote(token)
-
-
-def _read_stdin() -> str:
-    """Everything on stdin, as text a UTF-8 prompt survives.
-
-    ``sys.stdin.read()`` decodes with the encoding Python gives stdin -- for
-    a pipe on Windows that is the ANSI code page, cp932 on a Japanese
-    Windows -- so a UTF-8 prompt piped in arrived as mojibake and was
-    delegated that way (#284). The bytes are read instead and decoded as
-    UTF-8 (a BOM dropped), as a ``--prompt-file`` is; see
-    :func:`_decode_stdin` for bytes that are not. Line endings are read as
-    text mode reads them.
-    """
-    stream = sys.stdin
-    raw_stream = getattr(stream, "buffer", None)
-    if raw_stream is None:  # already text: a StringIO under test, or a wrapper
-        return stream.read()
-    raw: bytes = raw_stream.read()
-    text = _decode_stdin(raw, getattr(stream, "encoding", None))
-    return text.replace("\r\n", "\n").replace("\r", "\n")
-
-
-#: One well-formed UTF-8 sequence of two to four bytes.
-_UTF8_MULTIBYTE = re.compile(
-    rb"[\xc2-\xdf][\x80-\xbf]"
-    rb"|\xe0[\xa0-\xbf][\x80-\xbf]|[\xe1-\xec\xee\xef][\x80-\xbf]{2}|\xed[\x80-\x9f][\x80-\xbf]"
-    rb"|\xf0[\x90-\xbf][\x80-\xbf]{2}|[\xf1-\xf3][\x80-\xbf]{3}|\xf4[\x80-\x8f][\x80-\xbf]{2}"
-)
-
-
-def _decode_stdin(raw: bytes, fallback: Optional[str]) -> str:
-    """``raw`` as text: UTF-8 where it reads as UTF-8 at all.
-
-    Bytes that are not valid UTF-8 are read in ``fallback`` -- stdin's own
-    encoding, the ANSI code page for a pipe on Windows (``type`` of a file
-    saved in cp932) -- only when they look like it: when no more of them
-    are well-formed UTF-8 sequences than are bytes UTF-8 cannot read. A UTF-8
-    prompt with one stray byte stays UTF-8, with that byte replaced; reading
-    the whole prompt in cp932 for it would garble every other character.
-    Whatever neither reads cleanly is UTF-8 with the undecodable bytes
-    replaced, rather than a traceback.
-    """
-    try:
-        return raw.decode("utf-8-sig")
-    except UnicodeDecodeError:
-        pass
-    replaced = raw.decode("utf-8-sig", errors="replace")
-    invalid = replaced.count("�")
-    valid = len(_UTF8_MULTIBYTE.findall(raw))
-    try:
-        codec = codecs.lookup(fallback).name if fallback else None
-    except LookupError:
-        codec = None
-    if codec and codec not in ("utf-8", "utf-8-sig") and valid < invalid:
-        try:
-            return raw.decode(codec)
-        except UnicodeDecodeError:
-            pass
-    return replaced
 
 
 def _read_prompt(args: argparse.Namespace, workspace: Optional[ws.Workspace] = None) -> str:
@@ -287,6 +228,8 @@ class _Run(NamedTuple):
     idle_timeout: Optional[float]
     #: Where ``timeout`` came from, as the kill message names it.
     timeout_origin: str
+    #: Where the idle deadline came from, as the stall message names it.
+    idle_origin: str = ""
 
 
 class _Attempt(NamedTuple):
@@ -349,9 +292,8 @@ def cmd_run(args: argparse.Namespace) -> int:
         refusal = _refuse_unless_approved(loaded, workspace, args, seat.role)
         if refusal is not None:
             return refusal
-    settings = loaded.review_settings()
     timeout, timeout_origin = _deadline(args, loaded, seat)
-    idle_timeout = _idle_deadline(args, settings, seat)
+    idle_timeout, idle_origin = _idle_deadline(args, loaded, seat)
     book = _ledger(args, workspace)
     refusal = _spend_attempt(args, book, seat)
     if refusal is not None:
@@ -370,7 +312,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     # process and survives it dying. The record is kept: whether the user
     # forced this run is in it, and the worker's own --force says nothing.
     job = jobs_mod.claim(args.job_file) if args.job_file else None
-    run = _Run(args, seat, provider, workspace, book, timeout, idle_timeout, timeout_origin)
+    run = _Run(args, seat, provider, workspace, book, timeout, idle_timeout, timeout_origin, idle_origin)
     # Every run a worker makes reports its tool uses beside the job, the fresh
     # retry after a rejected resume included, so `n` carries on. Installed for
     # this call only: a worker run in-process, as the tests do, must not leave
@@ -447,23 +389,34 @@ def _deadline(args: argparse.Namespace, loaded: config_mod.LoadedConfig, seat: _
     return deadline.seconds, "run.timeout_seconds.%s, %s" % (seat.role, deadline.source)
 
 
-def _idle_deadline(args: argparse.Namespace, settings: Dict[str, Any], seat: _Seat) -> Optional[float]:
-    """The run's no-output deadline, before the provider has its say.
+def _idle_deadline(
+    args: argparse.Namespace, loaded: config_mod.LoadedConfig, seat: _Seat
+) -> Tuple[Optional[float], str]:
+    """The run's no-output deadline, before the provider has its say, and where it came from.
 
-    ``--idle-timeout`` first. Otherwise ``review.idle_timeout_seconds``, and
-    for a run that may change files (the implementer, the review fixer, or
-    ``--mode implement``) at least ``config.WRITE_RUN_IDLE_TIMEOUT_SECONDS``:
-    such a run is expected to run the tests or a build, and Claude's stream
-    is silent until a command returns, so a suite longer than 300s would be
-    killed as a stall (#273). A role's ``options.idle_timeout`` still comes
-    before all of it.
+    ``--idle-timeout`` first, otherwise ``config.idle_timeout`` for the run's
+    mode -- so a run that may change files (the implementer, the review
+    fixer, or ``--mode implement``) gets the longer one. A role's
+    ``options.idle_timeout`` still comes before all of it, in the provider;
+    the origin names it then.
     """
+    options = seat.spec.get("options")
+    configured = options.get("idle_timeout") if isinstance(options, dict) else None
+    if configured is not None and clocks.is_seconds(configured):
+        origin = "%s options.idle_timeout" % seat.label
+    elif args.idle_timeout is not None:
+        origin = "--idle-timeout"
+    else:
+        origin = ""
     if args.idle_timeout is not None:
-        return args.idle_timeout
-    shared = settings.get("idle_timeout_seconds")
-    if shared is None or seat.mode != MODE_IMPLEMENT:
-        return shared
-    return max(float(shared), float(config_mod.WRITE_RUN_IDLE_TIMEOUT_SECONDS))
+        return args.idle_timeout, origin
+    idle = config_mod.idle_timeout(loaded, seat.mode)
+    if not origin:
+        if idle.source == config_mod.WRITE_RUN_MINIMUM:
+            origin = "the minimum for a run that may change files"
+        else:
+            origin = "review.idle_timeout_seconds, %s" % idle.source
+    return idle.seconds, origin
 
 
 def _timeout_message(role: str, seconds: int, origin: str) -> str:
@@ -908,9 +861,10 @@ def _report_outcome(run: _Run, attempt: _Attempt, warned_before: str) -> int:
         if warning != warned_before:
             _err("warning: %s: %s" % (role, warning))
     if result.stalled:
+        origin = "; its idle deadline is from %s" % run.idle_origin if run.idle_origin else ""
         _err(
-            "%s produced no output for %.0fs and was treated as stalled (not merely slow)."
-            % (role, result.idle_for)
+            "%s produced no output for %.0fs and was treated as stalled (not merely slow)%s."
+            % (role, result.idle_for, origin)
         )
     elif result.timed_out:
         _err(_timeout_message(role, run.timeout, run.timeout_origin))

@@ -6,8 +6,8 @@ import unittest
 
 from helpers import IsolatedCase
 
-from orchestrator import cli_config_layers
 from orchestrator import config as config_mod
+from orchestrator import config_layers
 from orchestrator import presets as presets_mod
 from orchestrator import summary as summary_mod
 from orchestrator import wizard as wizard_mod
@@ -300,7 +300,7 @@ class TestTheWizardsBase(IsolatedCase):
         layer below has it on -- and the summary is what the user says yes to."""
         layer = {"version": 1, "review": {"design": {"enabled": True}}}
         config_mod.write_config_file(config_mod.global_config_path(), layer, "global")
-        base = cli_config_layers._fitted_base("project")
+        base = config_layers._fitted_base("project")
         prompter = ScriptedPrompter(accept_all(customise=False))
         data, _ = wizard_mod.run(prompter, None, base, scope="project")
         self.assertIn("design review: on", "\n".join(prompter.output))
@@ -312,7 +312,7 @@ class TestTheWizardsBase(IsolatedCase):
         `standard`."""
         self.addCleanup(setattr, presets_mod, "installed_providers", presets_mod.installed_providers)
         setattr(presets_mod, "installed_providers", lambda: ["codex"])
-        self.addCleanup(setattr, cli_config_layers, "_global_file", cli_config_layers._global_file)
+        self.addCleanup(setattr, config_layers, "_global_file", config_layers._global_file)
         default = config_mod.default_config()["implementer"]["provider"]
         standard = presets_mod.expand("standard", ["codex"]).values["implementer"]["provider"]
         self.assertNotEqual(default, standard)
@@ -324,8 +324,8 @@ class TestTheWizardsBase(IsolatedCase):
             ({"version": 1, "preset": "nope"}, default),
         ):
             with self.subTest(layer=layer):
-                setattr(cli_config_layers, "_global_file", lambda layer=layer: layer)
-                base = cli_config_layers._fitted_base("global")
+                setattr(config_layers, "_global_file", lambda layer=layer: layer)
+                base = config_layers._fitted_base("global")
                 self.assertEqual(base, config_mod.compose({"preset": layer.get("preset")}, {}, ["codex"])[0])
                 self.assertEqual(base["implementer"]["provider"], expected)
 
@@ -355,7 +355,7 @@ class TestTheWizardsBase(IsolatedCase):
         config_mod.write_config_file(
             config_mod.global_config_path(), {"version": 1, "reviewers": []}, "global"
         )
-        base = cli_config_layers._layer_base("project", self.project)
+        base = config_layers._layer_base("project", self.project)
         self.assertEqual(base["reviewers"], [])
         prompter = ScriptedPrompter(accept_all())
         data, _ = wizard_mod.run(prompter, None, base)

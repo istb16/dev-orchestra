@@ -614,6 +614,7 @@ _ALLOWED = {
     ("config.py", "validate", ".presets"),
     ("config.py", "validate", ".providers"),
     ("config.py", "_validate_role_options", ".providers"),
+    ("config.py", "idle_timeout", ".providers"),
     # Initialisation order: the registry runs the user adapters.
     ("presets.py", "user_fit", ".providers"),
     ("presets.py", "_named_fit", ".providers"),

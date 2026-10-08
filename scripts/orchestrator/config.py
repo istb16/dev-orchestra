@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, List, NamedTuple, Optiona
 
 from . import config_trust, miniyaml
 from . import optimization as opt_mod
-from .execution import MAX_SECONDS
+from .clocks import MAX_SECONDS, is_seconds
 from .review_common import DEFAULT_EXCLUDE, SEVERITIES
 
 if TYPE_CHECKING:
@@ -1211,6 +1211,35 @@ def review_timeout(loaded: LoadedConfig) -> RunTimeout:
     return _timeout_at(loaded, ["review", "timeout_seconds"], default_config()["review"]["timeout_seconds"])
 
 
+#: The ``source`` of an idle deadline raised to ``WRITE_RUN_IDLE_TIMEOUT_SECONDS``.
+WRITE_RUN_MINIMUM = "write-run minimum"
+
+
+def idle_timeout(loaded: LoadedConfig, mode: str) -> RunTimeout:
+    """The no-output deadline of a run in ``mode``, and where it was set.
+
+    ``review.idle_timeout_seconds``, read as ``run_timeout`` reads a deadline:
+    a null in a file, or a value ``validate`` would refuse, reads as the
+    default. A run that may change files (``mode`` ``implement``) gets at least
+    ``WRITE_RUN_IDLE_TIMEOUT_SECONDS``, with ``WRITE_RUN_MINIMUM`` as its
+    source when that is what it got: such a run is expected to run the tests
+    or a build, and Claude's stream is silent until a command returns, so a
+    suite longer than the shared value would be killed as a stall (#273).
+
+    A role's ``options.idle_timeout`` and ``--idle-timeout`` come before this,
+    and are the caller's to apply.
+    """
+    # lazy: the provider registry; see the note at the top of this module
+    from .providers import MODE_IMPLEMENT
+
+    shared = _timeout_at(
+        loaded, ["review", "idle_timeout_seconds"], default_config()["review"]["idle_timeout_seconds"]
+    )
+    if mode == MODE_IMPLEMENT and shared.seconds < WRITE_RUN_IDLE_TIMEOUT_SECONDS:
+        return RunTimeout(WRITE_RUN_IDLE_TIMEOUT_SECONDS, WRITE_RUN_MINIMUM)
+    return shared
+
+
 def _timeout_at(loaded: LoadedConfig, key: List[str], fallback: int) -> RunTimeout:
     value = _get_parts(loaded.data, key, None)
     if not _whole_seconds(value):
@@ -1541,7 +1570,7 @@ _TOO_LONG = "must be %d or less" % MAX_SECONDS
 
 def _whole_seconds(value: Any) -> bool:
     """A deadline in whole seconds: a positive int, not a bool, that a wait can hold."""
-    return _int_at_least(value, 1) and value <= MAX_SECONDS
+    return isinstance(value, int) and is_seconds(value)
 
 
 def _int_at_least(value: Any, minimum: int) -> bool:

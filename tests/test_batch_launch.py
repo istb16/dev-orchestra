@@ -169,6 +169,42 @@ class TestThePathSearch(_TempDir):
             execution.search_path("codex.cmd", installed, ".exe;.cmd"), os.path.join(installed, "codex.cmd")
         )
 
+    def touch(self, *parts):
+        path = os.path.join(self.tmp, *parts)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as handle:
+            handle.write("")
+        return os.path.realpath(path)
+
+    def test_a_name_with_a_directory_is_looked_up_where_it_says_not_on_path(self):
+        tools = self.touch("tools", "claude.cmd")
+        self.touch("npm", "tools", "claude.cmd")  # what a PATH search would find
+        npm = os.path.join(self.tmp, "npm")
+        absolute = os.path.join(self.tmp, "tools", "claude")
+        # No absolute entry on PATH at all: the file is still where it says.
+        found = execution.search_path(absolute, ".", ".exe;.cmd")
+        self.assertEqual(os.path.realpath(found or ""), tools)
+        os.chdir(self.tmp)
+        found = execution.search_path(os.path.join("tools", "claude"), npm, ".exe;.cmd")
+        self.assertTrue(os.path.isabs(found or ""))
+        self.assertEqual(os.path.realpath(found or ""), tools)
+        self.assertIsNone(execution.search_path(os.path.join("missing", "claude"), npm, ".exe;.cmd"))
+
+    def test_launch_starts_the_file_the_search_found(self):
+        exe = self.touch("tools", "claude.exe")
+        os.chdir(self.tmp)
+        relative = os.path.join("tools", "claude")
+        with (
+            mock.patch.object(execution, "IS_WINDOWS", True),
+            mock.patch.dict(os.environ, {"PATHEXT": ".EXE;.CMD"}),
+        ):
+            found = execution.find_program(relative)
+            launch = execution.launchable([relative, "-p"])
+            with self.assertRaises(FileNotFoundError):
+                execution.launchable([os.path.join("missing", "claude")])
+        self.assertEqual(os.path.realpath(found or ""), exe)
+        self.assertEqual(launch, [found, "-p"])
+
 
 @unittest.skipUnless(os.name == "nt", "a .cmd only runs on Windows")
 class TestTheCurrentDirectoryOnWindows(_TempDir):

@@ -2341,6 +2341,71 @@ class TestRunIdleDeadline(IsolatedCase):
     def test_the_flag_still_sets_one_for_any_run(self):
         self.assertEqual(self.idle_deadline_of("implementer", "--idle-timeout", "60"), 60)
 
+    def test_a_null_shared_idle_deadline_reads_as_the_default(self):
+        """A null in a file keeps the default, so a write run still gets the minimum, never none."""
+        self.write(".dev-orchestra.yaml", "version: 1\nreview:\n  idle_timeout_seconds: null\n")
+        loaded = config_mod.load(self.project)
+        self.assertEqual(loaded.review_settings()["idle_timeout_seconds"], 300)
+        self.assertEqual(config_mod.idle_timeout(loaded, "implement"), (1200, config_mod.WRITE_RUN_MINIMUM))
+        self.assertEqual(self.idle_deadline_of("implementer"), 1200)
+        self.assertEqual(self.idle_deadline_of("architect"), 300)
+
+    def test_a_read_only_role_cannot_ask_for_the_write_run_deadline(self):
+        from orchestrator.providers import mock as mock_mod
+
+        with mock.patch.object(mock_mod.MockProvider, "run") as spy:
+            code, _, err = run_cli("run", "architect", "--mode", "implement", "--prompt", "go")
+        self.assertNotEqual(code, 0)
+        self.assertIn("--mode implement is not accepted", err)
+        spy.assert_not_called()
+
+    def test_a_roles_own_idle_timeout_comes_before_the_write_run_minimum(self):
+        """What the provider actually waits, not just what it was handed."""
+        from orchestrator.providers import mock as mock_mod
+
+        seen: Dict[str, Any] = {}
+        original = mock_mod.MockProvider.run
+
+        def recording_run(provider, *args, **kwargs):
+            seen["passed"] = kwargs.get("idle_timeout")
+            seen["effective"] = provider.idle_timeout(kwargs.get("options"), kwargs.get("idle_timeout"))
+            return original(provider, *args, **kwargs)
+
+        with (
+            mock.patch.object(mock_mod.MockProvider, "streams_progress", True),
+            mock.patch.object(mock_mod.MockProvider, "option_keys", ("args", "idle_timeout")),
+            mock.patch.object(mock_mod.MockProvider, "run", recording_run),
+        ):
+            run_cli("config", "set", "implementer.options.idle_timeout", "90")
+            code, _, err = run_cli("run", "implementer", "--prompt", "go")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(seen, {"passed": 1200, "effective": 90.0})
+
+    def test_config_resolves_the_idle_deadline_with_its_source(self):
+        loaded = config_mod.load(self.project)
+        self.assertEqual(config_mod.idle_timeout(loaded, "review"), (300, "default"))
+        self.assertEqual(config_mod.idle_timeout(loaded, "plan"), (300, "default"))
+        self.assertEqual(config_mod.idle_timeout(loaded, "implement"), (1200, config_mod.WRITE_RUN_MINIMUM))
+        run_cli("config", "set", "review.idle_timeout_seconds", "1800", "--scope", "project")
+        loaded = config_mod.load(self.project)
+        self.assertEqual(config_mod.idle_timeout(loaded, "implement"), (1800, "project"))
+
+    def test_a_stall_names_where_its_idle_deadline_came_from(self):
+        from orchestrator.providers import mock as mock_mod
+        from orchestrator.providers.base import RunResult
+
+        def stalled_run(provider, *args, **kwargs):
+            resolved = provider.resolve_model({"family": "small"})
+            return RunResult(False, 125, "", "", ["mock"], 1.0, resolved, stalled=True, idle_for=1200.0)
+
+        with mock.patch.object(mock_mod.MockProvider, "run", stalled_run):
+            _, _, err = run_cli("run", "implementer", "--prompt", "go")
+        self.assertIn(
+            "implementer produced no output for 1200s and was treated as stalled (not merely slow); "
+            "its idle deadline is from the minimum for a run that may change files.",
+            err,
+        )
+
 
 class TestOutputGuard(IsolatedCase):
     """``--output`` usually names the file the run was asked to revise.

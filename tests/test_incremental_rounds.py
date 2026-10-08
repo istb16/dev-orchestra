@@ -328,6 +328,35 @@ class TestRulesThatMustNotLapseInRoundTwo(RoundCase):
         self.big("yarn.lock")
         self.assert_withheld_unread(review_mod.create_snapshot(self.workspace), "yarn.lock")
 
+    def test_an_oversize_untracked_file_renamed_after_round_one_stays_withheld(self):
+        self.big("data.txt")
+        self.first_round()
+        self.fix()
+        os.rename(os.path.join(self.project, "data.txt"), os.path.join(self.project, "moved.txt"))
+        meta = review_mod.create_snapshot(self.workspace)
+        self.assert_withheld_unread(meta, "moved.txt")
+        self.assertEqual(meta["withheld"][0].get("previous"), "data.txt")
+        self.assertIn("data.txt", meta["changed_paths"])
+
+    def test_an_oversize_untracked_file_with_spaces_and_japanese_shrunk_stays_withheld(self):
+        """Its old blob is measured by name, so ``ls-tree`` has to be read exactly."""
+        self.big("大きな データ.txt")
+        self.first_round()
+        self.fix()
+        self.write("大きな データ.txt", "small now\n")
+        self.assert_withheld_unread(review_mod.create_snapshot(self.workspace), "大きな データ.txt")
+
+    @unittest.skipIf(os.name == "nt", "Windows does not allow a carriage return in a file name")
+    def test_an_oversize_untracked_file_with_a_carriage_return_stays_withheld(self):
+        """Read as text, the name came back with a newline and the exclusion named no file."""
+        self.first_round()
+        self.fix()
+        try:
+            self.big("big\rname.txt")
+        except OSError:
+            self.skipTest("this file system refuses this name")
+        self.assert_withheld_unread(review_mod.create_snapshot(self.workspace), "big\\x0dname.txt")
+
     def test_a_large_tracked_file_is_still_diffed_in_round_two(self):
         """The limit is for untracked files; a committed one is reviewed as before."""
         self.big("data.txt")
@@ -738,7 +767,8 @@ class TestSnapshotPinning(RoundCase):
         meta = review_mod.create_snapshot(self.workspace, surrounding="enclosing")
         self.assertEqual(meta["untracked_included"], ["a.py", "b.py"])
         lock = {"path": "package-lock.json", "pattern": "package-lock.json", "added": 3, "deleted": 0}
-        self.assertEqual(meta["withheld"][1], lock)
+        withheld = {entry["path"]: entry for entry in meta["withheld"]}
+        self.assertEqual(withheld["package-lock.json"], lock)
         diff = ws.read_text(self.workspace.snapshot_path)
         self.assertNotIn("package-lock.json", diff)
         frozen = ws.read_json(self.workspace.surrounding_path, {})
@@ -751,7 +781,7 @@ class TestSnapshotPinning(RoundCase):
         # Too large to read is still part of the change, so it is named; the
         # orchestrator's own config is not part of it at all.
         self.assertIn("big.py", meta["changed_paths"])
-        self.assertEqual([entry["path"] for entry in meta["withheld"]], ["big.py", "package-lock.json"])
+        self.assertEqual(sorted(withheld), ["big.py", "package-lock.json"])
         for key in ("changed_paths", "condition_paths"):
             self.assertNotIn(".dev-orchestra.yaml", meta[key], key)
         self.assertNotIn(".dev-orchestra.yaml", [entry["path"] for entry in meta["withheld"]])

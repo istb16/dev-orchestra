@@ -11,14 +11,17 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import os
+import time
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from typing import Tuple
 
 from helpers import IsolatedCase
 
-from orchestrator import cli, execution
+from orchestrator import cli, clocks
 from orchestrator import config as config_mod
+from orchestrator import jobs as jobs_mod
 from orchestrator import ledger as ledger_mod
 from orchestrator.providers.base import Provider
 from orchestrator.providers.claude import ClaudeProvider
@@ -87,13 +90,26 @@ class TestTheArgumentsAreChecked(IsolatedCase):
             with self.subTest(argv=argv[:-1]):
                 code, err = refusal(*argv)
                 self.assertEqual(code, 2)
-                self.assertIn(str(execution.MAX_SECONDS), err)
+                self.assertIn(str(clocks.MAX_SECONDS), err)
                 self.assertNotIn(huge, err)
-        self.assertEqual(parse("run", "implementer", "--timeout", str(execution.MAX_SECONDS)).timeout, 10**9)
+        self.assertEqual(parse("run", "implementer", "--timeout", str(clocks.MAX_SECONDS)).timeout, 10**9)
 
     def test_jobs_wait_may_look_once(self):
         args = parse("jobs", "wait", "j1", "--timeout", "0", "--poll", "0.25")
         self.assertEqual((args.timeout, args.poll), (0.0, 0.25))
+
+    def test_jobs_wait_with_no_time_looks_once_and_returns(self):
+        """A running job, looked at once: exit 4, at once, not a wait or a traceback."""
+        workspace = self.cli_workspace()
+        # This process stands in for the worker, so the job is not abandoned.
+        jobs_mod.write_job(
+            workspace, {"id": "j1", "stage": "implementer", "status": "running", "pid": os.getpid()}
+        )
+        started = time.monotonic()
+        code, out, err = run_cli("jobs", "wait", "j1", "--timeout", "0", "--poll", "30")
+        self.assertEqual(code, 4, err)
+        self.assertLess(time.monotonic() - started, 10)
+        self.assertIn("running", out)
 
 
 class TestClaudeIdleTimeoutOption(IsolatedCase):
@@ -163,6 +179,23 @@ class TestConfiguredDeadlinesAreChecked(IsolatedCase):
                     node[path[-1]] = value
                     problems = config_mod.validate(data)
                     self.assertTrue(any(p.startswith(key) for p in problems), problems)
+                    if isinstance(value, int) and not isinstance(value, bool) and value > clocks.MAX_SECONDS:
+                        self.assertIn("%s: must be 1000000000 or less" % key, problems)
+
+    def test_a_deadline_over_the_cap_reads_as_the_default(self):
+        """``config show`` loads unvalidated, and must not report a deadline no run would get."""
+        self.write(
+            ".dev-orchestra.yaml",
+            "version: 1\nreview:\n  timeout_seconds: 1000000001\n  idle_timeout_seconds: 1000000001\n"
+            "run:\n  timeout_seconds:\n    architect: 1000000001\n",
+        )
+        loaded = config_mod.load(self.project, validate_result=False)
+        self.assertEqual(config_mod.run_timeout(loaded, "architect"), (1800, "default"))
+        self.assertEqual(config_mod.review_timeout(loaded), (1800, "default"))
+        self.assertEqual(config_mod.idle_timeout(loaded, "review"), (300, "default"))
+        self.write(".dev-orchestra.yaml", "version: 1\nrun:\n  timeout_seconds:\n    architect: 1000000000\n")
+        loaded = config_mod.load(self.project, validate_result=False)
+        self.assertEqual(config_mod.run_timeout(loaded, "architect"), (10**9, "project"))
 
 
 class TestAnUnexpectedErrorClosesTheRun(IsolatedCase):
@@ -197,6 +230,18 @@ class TestAnUnexpectedErrorClosesTheRun(IsolatedCase):
         events = json.loads(run_cli("state", "show", "--json")[1])["events"]
         self.assertEqual(events[-1]["status"], "failed")
         self.assertIn("KeyboardInterrupt", events[-1]["error"])
+
+    def test_a_detached_worker_fails_its_job(self):
+        workspace = self.cli_workspace()
+        jobs_mod.write_job(workspace, {"id": "w-1", "stage": "implementer", "status": "starting"})
+        job_file = jobs_mod.job_path(workspace, "w-1")
+        with self.assertRaises(ValueError):
+            run_cli("run", "implementer", "--prompt", "go", "--job-file", job_file)
+        job = jobs_mod.read_job(workspace, "w-1") or {}
+        self.assertEqual(job.get("status"), "failed")
+        self.assertIn("ValueError", job.get("error", ""))
+        book = ledger_mod.Ledger(workspace, dict(ledger_mod.DEFAULT_BUDGETS))
+        self.assertEqual(book.summary()["in_flight"], {})
 
     def test_the_in_flight_entry_is_ended_and_the_error_still_surfaces(self):
         with self.assertRaises(ValueError):

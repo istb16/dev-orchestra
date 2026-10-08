@@ -23,6 +23,7 @@ from .review_parsing import parse_findings, unparsed_report_warning
 from .review_snapshot import (
     ReviewError,
     current_snapshot_stamp,
+    partition_withheld,
     render_design_round_context,
     render_round_context,
     render_withheld,
@@ -567,19 +568,18 @@ def run_reviews(
             raise ReviewError("nothing to review at %s" % workspace.relative(workspace.snapshot_path))
         meta = workspace.read_snapshot_meta()
         withheld = meta.get("withheld") or []
-        excluded = [str(entry.get("path")) for entry in withheld if not entry.get("reason")]
-        unread = [str(entry.get("path")) for entry in withheld if entry.get("reason")]
+        excluded, unread = partition_withheld(withheld)
         if withheld:
             parts = []
             if excluded:
                 parts.append(
                     "as generated or vendored (%s) -- re-snapshot with --no-exclude to review them"
-                    % ", ".join(excluded[:5])
+                    % ", ".join(str(entry.get("path")) for entry in excluded[:5])
                 )
             if unread:
                 parts.append(
-                    "unread (%s), too large, unreadable, or not a regular file -- review them by hand"
-                    % ", ".join(unread[:5])
+                    "unread -- review them by hand: %s"
+                    % ", ".join("%s (%s)" % (entry.get("path"), entry.get("reason")) for entry in unread[:5])
                 )
             raise ReviewError(
                 "review snapshot is empty because every changed file was withheld: %s." % "; ".join(parts)

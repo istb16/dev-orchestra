@@ -19,6 +19,7 @@ import os
 import subprocess
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
+from unittest import mock
 
 from helpers import IsolatedCase, has_git
 
@@ -296,7 +297,8 @@ class TestUntrackedFileNames(IsolatedCase):
     def test_a_newline_in_a_name_is_one_file_not_two(self):
         self.write("two\nlines.py", "X = 1\n")
         meta = review_mod.create_snapshot(self.workspace, incremental=False)
-        self.assertEqual(meta["untracked_included"], ["two\nlines.py"])
+        self.assertEqual(meta["untracked_included"], ["two\\x0alines.py"])
+        self.assertIn("+X = 1", ws.read_text(self.workspace.snapshot_path))
 
     def test_a_japanese_name_is_withheld_by_pattern(self):
         self.write("生成物/bundle.min.js", "var a=1;\n")
@@ -345,7 +347,9 @@ class TestUntrackedFileNames(IsolatedCase):
         self.assertIn("reviewed by hand", out)
         with self.assertRaises(review_mod.ReviewError) as ctx:
             review_mod.run_reviews([{"id": "r", "provider": "mock"}], self.workspace)
-        self.assertIn("unread (big.bin)", str(ctx.exception))
+        self.assertIn(
+            "unread -- review them by hand: big.bin (over 512,000 bytes, not read)", str(ctx.exception)
+        )
         self.assertNotIn("--no-exclude", str(ctx.exception))
 
     def test_excluded_and_unread_files_get_their_own_advice(self):
@@ -365,7 +369,7 @@ class TestUntrackedFileNames(IsolatedCase):
             review_mod.run_reviews([{"id": "r", "provider": "mock"}], self.workspace)
         message = str(ctx.exception)
         self.assertIn("as generated or vendored (yarn.lock) -- re-snapshot with --no-exclude", message)
-        self.assertIn("unread (big.bin)", message)
+        self.assertIn("unread -- review them by hand: big.bin (over 512,000 bytes, not read)", message)
 
     def test_an_oversize_file_a_pattern_matches_is_withheld_for_its_size(self):
         """The same order as an incremental round: size first, then patterns."""
@@ -408,9 +412,168 @@ class TestUntrackedFileNames(IsolatedCase):
         self.assertEqual(meta["withheld"], [])
         self.assertEqual(len(meta["untracked_included"]), len(made))
         if b"cr\rname.py" in made:
-            self.assertIn("cr\rname.py", meta["untracked_included"])
+            self.assertIn("cr\\x0dname.py", meta["untracked_included"])
         if b"latin\xe9.py" in made:
             self.assertIn("latin\ufffd.py", meta["untracked_included"])
+
+    def unread(self, name):
+        """The snapshot's entry for ``name``, and what ``review snapshot`` prints."""
+        meta = review_mod.create_snapshot(self.workspace, incremental=False)
+        entries = [entry for entry in meta["withheld"] if entry["path"] == name]
+        self.assertEqual(len(entries), 1, meta["withheld"])
+        self.assertNotIn(name, meta["untracked_included"])
+        self.assertIn(name, meta["changed_paths"])
+        _, out, _ = run_cli("review", "snapshot")
+        return entries[0], out
+
+    def symlink(self, target, name):
+        try:
+            os.symlink(target, os.path.join(self.project, name))
+        except (OSError, NotImplementedError):
+            self.skipTest("this machine cannot make a symbolic link")
+
+    def test_a_broken_symbolic_link_is_not_a_regular_file(self):
+        self.symlink(os.path.join(self.project, "missing.py"), "dangling.py")
+        entry, out = self.unread("dangling.py")
+        self.assertEqual(entry["reason"], "not a regular file")
+        self.assertIn("dangling.py (not a regular file)", out)
+
+    def test_a_link_to_a_directory_is_not_a_regular_file(self):
+        os.makedirs(os.path.join(self.project, "real"))
+        self.symlink(os.path.join(self.project, "real"), "linked")
+        entry, out = self.unread("linked")
+        self.assertEqual(entry["reason"], "not a regular file")
+        self.assertIn("linked (not a regular file)", out)
+
+    def test_a_file_that_cannot_be_measured_is_unreadable(self):
+        self.write("locked.py", "L = 1\n")
+        original = os.path.getsize
+
+        def getsize(path):
+            if os.path.basename(path) == "locked.py":
+                raise PermissionError(13, "denied", path)
+            return original(path)
+
+        with mock.patch("os.path.getsize", side_effect=getsize):
+            entry, out = self.unread("locked.py")
+        self.assertEqual(entry["reason"], "unreadable")
+        self.assertIn("locked.py (unreadable)", out)
+
+    def test_a_file_git_cannot_diff_is_withheld_with_that_reason(self):
+        self.write("odd.py", "O = 1\n")
+        original = ws.git
+
+        def git(args, *rest, **keywords):
+            if "--no-index" in args:
+                return 128, "", "fatal: cannot"
+            return original(args, *rest, **keywords)
+
+        with mock.patch.object(ws, "git", side_effect=git):
+            entry, out = self.unread("odd.py")
+        self.assertEqual(entry["reason"], "git could not diff it")
+        self.assertIn("odd.py (git could not diff it)", out)
+
+    def test_an_empty_untracked_file_is_part_of_the_diff(self):
+        """git still prints a header for it, so it is diffed, not withheld."""
+        self.write("empty.py", "")
+        meta = review_mod.create_snapshot(self.workspace, incremental=False)
+        self.assertEqual(meta["untracked_included"], ["empty.py"])
+        self.assertEqual(meta["withheld"], [])
+        self.assertIn("empty.py", ws.read_text(self.workspace.snapshot_path))
+
+    def test_a_control_character_in_a_name_is_escaped_wherever_it_is_shown(self):
+        """A name may carry an escape sequence or a line break; neither reaches the
+        operator's terminal or a reviewer's prompt as it is."""
+        name = "evil\x1b]0;owned\x07\nfake.py"
+        with mock.patch.object(review_snapshot, "_list_untracked", return_value=[name]):
+            meta = review_mod.create_snapshot(self.workspace, incremental=False)
+            _, out, _ = run_cli("review", "snapshot")
+        shown = "evil\\x1b]0;owned\\x07\\x0afake.py"
+        self.assertEqual([entry["path"] for entry in meta["withheld"]], [shown])
+        self.assertEqual(meta["withheld"][0]["reason"], "not a regular file")
+        self.assertIn(shown, meta["changed_paths"])
+        self.assertIn("    %s (not a regular file)" % shown, out)
+        note = review_mod.render_withheld(meta["withheld"])
+        for text in (out, note, json.dumps(meta)):
+            self.assertNotIn("\x1b", text)
+            self.assertNotIn("\x07", text)
+        self.assertEqual(len(note.splitlines()), 3)
+
+    @unittest.skipIf(os.name == "nt", "Windows does not allow these characters in a file name")
+    def test_a_control_character_in_a_name_on_disk_is_escaped_but_the_file_is_read(self):
+        name = "esc\x1b[31mred.py"
+        try:
+            self.write(name, "R = 1\n")
+        except OSError:
+            self.skipTest("this file system refuses this name")
+        meta = review_mod.create_snapshot(self.workspace, incremental=False)
+        self.assertEqual(meta["untracked_included"], ["esc\\x1b[31mred.py"])
+        self.assertIn("+R = 1", ws.read_text(self.workspace.snapshot_path))
+
+
+@unittest.skipUnless(has_git(), "git is required for review snapshots")
+class TestGitListingsKeepNamesExact(IsolatedCase):
+    """Path-bearing ``-z`` listings are read as bytes: text mode turns a carriage
+    return in a name into a newline, and the name then matches no file."""
+
+    NAME = "cr\rname.bin"
+
+    def setUp(self):
+        super().setUp()
+        self.init_git_repo()
+        self.write("app.py", "A = 1\n")
+        self.commit_all("init")
+        # Built as objects, not files: Windows allows no carriage return in a
+        # file name, and git's listings are what is under test.
+        small = self.blob(b"small\n")
+        large = self.blob(b"#" * 4000)
+        other = self.blob(b"other\n" * 50)
+        self.old = self.tree([("other.txt", other), (self.NAME, small)])
+        self.new = self.tree([("other.txt", other), (self.NAME, large)])
+
+    def blob(self, data):
+        done = subprocess.run(
+            ["git", "hash-object", "-w", "--stdin"],
+            cwd=self.project,
+            input=data,
+            capture_output=True,
+            check=True,
+        )
+        return done.stdout.decode().strip()
+
+    def tree(self, entries):
+        listing = b"".join(b"100644 blob %s\t%s\0" % (sha.encode(), name.encode()) for name, sha in entries)
+        done = subprocess.run(
+            ["git", "mktree", "-z"], cwd=self.project, input=listing, capture_output=True, check=True
+        )
+        return done.stdout.decode().strip()
+
+    def test_numstat_names_the_file_exactly(self):
+        entries, code, _ = review_snapshot._numstat(self.project, [self.old, self.new], [])
+        self.assertEqual(code, 0)
+        self.assertEqual([entry["path"] for entry in entries], [self.NAME])
+
+    def test_the_withheld_body_stays_out_of_the_diff(self):
+        entries, _, _ = review_snapshot._numstat(self.project, [self.old, self.new], [])
+        code, diff, _ = review_snapshot._diff(
+            self.project, [self.old, self.new], review_snapshot._pathspecs(entries)
+        )
+        self.assertEqual(code, 0)
+        self.assertNotIn("####", diff)
+
+    def test_blob_sizes_reads_the_name_exactly(self):
+        sizes = review_snapshot._blob_sizes(self.project, self.new, [self.NAME])
+        self.assertEqual(sizes, {self.NAME: 4000})
+
+    def test_blob_sizes_measures_only_the_paths_asked_for(self):
+        self.assertEqual(
+            review_snapshot._blob_sizes(self.project, self.old, ["other.txt"]), {"other.txt": 300}
+        )
+        self.assertEqual(review_snapshot._blob_sizes(self.project, self.old, []), {})
+
+    def test_a_listing_reads_the_name_exactly(self):
+        listed = review_snapshot._listed_paths(self.project, ["ls-tree", "-r", "-z", "--name-only", self.new])
+        self.assertEqual(listed, {"other.txt", self.NAME})
 
 
 # --------------------------------------------------------------------------- config

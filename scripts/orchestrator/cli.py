@@ -14,7 +14,7 @@ import os
 from typing import Callable, Dict, Optional, Sequence, Tuple
 
 from . import activity as activity_mod
-from . import claude_hooks, execution, hosts
+from . import claude_hooks, clocks, hosts
 from . import config as config_mod
 from . import context as context_mod
 from . import optimization as opt_mod
@@ -98,7 +98,7 @@ def _bounded_int(low: int, high: int) -> Callable[[str], int]:
 
 def _seconds(*, whole: bool = False, allow_zero: bool = False) -> Callable[[str], float]:
     """An argparse type: a finite number of seconds, above zero unless
-    ``allow_zero``, at most ``execution.MAX_SECONDS``; a whole one when
+    ``allow_zero``, at most ``clocks.MAX_SECONDS``; a whole one when
     ``whole``. Anything else -- a word, a negative, ``nan``, ``inf``, a
     number too large to wait for -- is a usage error (exit 2), where it used
     to reach a deadline that fired at once, never fired, or a traceback."""
@@ -109,10 +109,10 @@ def _seconds(*, whole: bool = False, allow_zero: bool = False) -> Callable[[str]
         except ValueError:
             kind = "a whole number of seconds" if whole else "a number of seconds"
             raise argparse.ArgumentTypeError("%r is not %s" % (text, kind)) from None
-        if not execution.is_seconds(value, allow_zero=allow_zero):
+        if not clocks.is_seconds(value, allow_zero=allow_zero):
             rule = "from 0 to %d" if allow_zero else "above 0 and at most %d"
             shown = text if len(text) <= 40 else text[:37] + "..."
-            raise argparse.ArgumentTypeError("%s seconds: must be %s" % (shown, rule % execution.MAX_SECONDS))
+            raise argparse.ArgumentTypeError("%s seconds: must be %s" % (shown, rule % clocks.MAX_SECONDS))
         return value
 
     return parse
