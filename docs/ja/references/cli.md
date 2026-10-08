@@ -1,4 +1,4 @@
-<!-- translated-from: references/cli.md sha256:f69e5386c88221dab67fb6905ce15f1660bc3a5066a42b5d0727a542e19d794e -->
+<!-- translated-from: references/cli.md sha256:9a71d95a29887dc7d08c19a419fcac6340f64d0ba905ca9db4490ca14e8c626e -->
 
 > この文書は [references/cli.md](../../../references/cli.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -1127,7 +1127,7 @@ stderr に一度だけ知らせます。実行中のステージがあるワー�
 | `DEV_ORCHESTRA_MOCK_ACTIVITY` | mock の実行がジョブの activity や `review run --progress` に報告するツール行。`\|` 区切りで、`<部分文字列>=>行` はその部分文字列を含むプロンプトのときだけ |
 | `CODEX_HOME` | Codex CLI の設定と認証情報を探すときに考慮されます |
 | `CLAUDE_CONFIG_DIR` | Claude Code のユーザー設定の場所。`hooks install` と、フックを入れたり外したりするコマンドが使います |
-| `DEV_ORCHESTRA_TEST_ASSUME_NO_CLI` | テスト専用: 両方の provider CLI を隠し、CI を再現します |
+| `DEV_ORCHESTRA_TEST_ASSUME_NO_CLI` | テスト専用で、今は不要です。テストは常に provider CLI を隠し、起動もしません。付けても受け付けますが、何も変わりません |
 
 <a id="troubleshooting"></a>
 
