@@ -582,6 +582,36 @@ class TestClaudeInstallers(_InstallerCase):
                 self.assertNotIn(SKILL_NAME, os.listdir(os.path.dirname(dest)))
                 self.assert_checkout_intact(checkout)
 
+    def test_a_link_to_the_checkout_through_another_name_is_ours(self):
+        """A link made through a junction to the checkout, or an installer run
+        through one, still points at this checkout: both sides are compared
+        with their links followed, not as written."""
+        for shell in SHELLS:
+            for through in ("link", "root"):
+                with self.subTest(shell=shell.name, through=through):
+                    base = self.fresh(shell, "alias-%s" % through)
+                    project, dest, checkout = self.link_at_destination(base)
+                    alias = os.path.join(base, "alias")
+                    make_dir_link(alias, checkout)
+                    root = checkout
+                    if through == "link":
+                        remove_link(dest)
+                        make_dir_link(dest, alias)
+                    else:
+                        root = alias
+                    code, output = self.claude(shell, "uninstall", project, root=root)
+                    self.assertEqual(code, 0, output)
+                    self.assertIn("Removed", output)
+                    self.assertNotIn(SKILL_NAME, os.listdir(os.path.dirname(dest)))
+                    self.assert_checkout_intact(checkout)
+
+                    make_dir_link(dest, alias if through == "link" else checkout)
+                    code, output = self.claude(shell, "install", project, copy=True, root=root)
+                    self.assertEqual(code, 0, output)
+                    self.assertFalse(is_link(dest), output)
+                    self.assertTrue(os.path.isfile(os.path.join(dest, SENTINEL)), output)
+                    self.assert_checkout_intact(checkout)
+
     def test_a_link_to_another_checkout_is_left_alone(self):
         for shell in SHELLS:
             with self.subTest(shell=shell.name):

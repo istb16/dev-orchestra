@@ -267,7 +267,11 @@ function Remove-OwnedDestination {
 
     if (Test-ReparsePoint $Destination) {
         $target = Get-LinkTarget $item
-        if ($target -and ($target -ieq $root.TrimEnd('\', '/'))) {
+        # Both sides with every link followed, so that a link made through a
+        # junction to the checkout, or a checkout run through one, still
+        # counts as this checkout. Following the link itself, rather than
+        # its target text, also places a relative target correctly.
+        if ($target -and ((Resolve-RealPath $Destination) -ieq (Resolve-RealPath $root))) {
             Remove-Link $Destination
             return $true
         }

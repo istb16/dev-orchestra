@@ -41,7 +41,11 @@ below begins **User adapters** so adapter authors can find it.
   and a directory of the user's own went the same way. They now apply the
   Antigravity install's rule: a link is replaced only when it points at the
   checkout being installed, a directory only when the installer wrote it and
-  it is not a clone. A Claude copy (`--copy`, or the fallback when a symlink
+  it is not a clone. Where a link points is compared with every link and
+  junction followed on both sides, so `install.ps1` and `uninstall.ps1`,
+  which compared the paths as written, now also recognise a link made
+  through a junction to the checkout, or a checkout run through one (a
+  `subst` drive is still not followed). A Claude copy (`--copy`, or the fallback when a symlink
   cannot be made) now carries a `.dev-orchestra-install` file, as an
   Antigravity copy does. A copy from an earlier installer, which has no such
   file, is still replaced or removed when it holds nothing but what a copy
