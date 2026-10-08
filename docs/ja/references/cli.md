@@ -1,4 +1,4 @@
-<!-- translated-from: references/cli.md sha256:138895726b77b6f3a0535ba95edb50804890f0770d0fd4776552688851cce594 -->
+<!-- translated-from: references/cli.md sha256:3303d2a6da8ca4071930dafa634cd481e2079400c873f3f1a177a6d26e381633 -->
 
 > この文書は [references/cli.md](../../../references/cli.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -357,14 +357,17 @@ agy の stdout の行は、短く切って最大 20 行まで実行の stderr �
 `--detach` は実行を独自のプロセスで開始し、すぐにジョブ id を返すので、呼び出しがブロックすることは
 ありません。後述の `jobs` を参照してください。
 
-`--json` は、実行のあとに結果を 1 つのオブジェクトとして出します。キーは終わったジョブの記録と
-同じです。`stage`、`status`（`succeeded` か `failed`）、`exit_code`、`stalled`、`timed_out`、
-`duration_seconds`、`model`、`session_id`、失敗したときは `error`（当てはまるときは `resume`、
-`warnings`、`suspended_seconds`）。`--output` が無いときはモデルの答えを表示せず `output` に入れ、
-あるときは `output_written` と `output_target` で、保存したかどうかと保存先を示します（保存しな
-かったときは `rejected_file` も）。`answered` は上の判定です。診断はこれまでどおり標準エラーに出て、
-終了コードも `--json` が無いときと同じです。`--detach` と一緒のときは、これまでどおり開始した
-ジョブを出します。
+`--json` は、実行のあとに結果を 1 つのオブジェクトとして出します。キーと、それが入る条件は、
+終わったジョブの記録と同じです。`stage`、`status`（`succeeded` か `failed`）、`exit_code`、
+`stalled`、`timed_out`、`duration_seconds`、`model`、`session_id`。失敗して何か出力していれば
+`error`。当てはまるときは `resume`、`warnings`、`suspended_seconds`。`--output` への書き込みを
+断ったときだけ `output_written: false`、`output_target`、`rejected_file`（何も残さなかったときは
+`null`）。ジョブの記録に無いキーが 2 つあります。`--output` が無いときに答えを表示する代わりに入れる
+`output`（ジョブでは `.out` ファイルに残ります）と、上の判定の `answered` です。診断はこれまでどおり
+標準エラーに出て、終了コードも `--json` が無いときと同じです。始まる前に断られた実行（引数の誤りや
+読み取り専用の拒否で exit 2、予算切れで exit 3、承認されていない plan で exit 5）は、標準出力に何も
+出しません。理由は終了コードと標準エラーで分かります。`--print-command` は `--json` があっても
+コマンド行を文章で出します。`--detach` と一緒のときは、これまでどおり開始したジョブを出します。
 
 <a id="revising-the-plan-in-the-architects-own-session---resume"></a>
 
@@ -1090,7 +1093,7 @@ dev-orchestra progress record test --signature "3 failed: test_totals, test_disc
 ワークフローの plan を意味します。`.ai/` の外のパスや、すでにワークフローを指定しているパスは、書かれた
 とおりに使われます。読み替えるのは引数だけです。自分で書くファイルやシェルのリダイレクトはパスのとおりの
 場所に書かれるので、`workflow show` の `Artifacts:` のディレクトリ（`--json` では `dir`）の下に置いて
-ください。たとえば `review run --progress > <Artifacts>/execution/review-run.log 2>&1` です。
+ください。たとえば `review run --progress > "<Artifacts>/execution/review-run.log" 2>&1` です（パスに空白があってもよいよう引用符で囲みます）。
 `--prompt-file` の解決した先に無く、書かれたとおりの場所にはあるときは、エラーがそのことを伝えます。
 
 これが分離するのは成果物であって、作業ツリーではありません。1 つのチェックアウトにはファイルの組が 1 つ

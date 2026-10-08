@@ -161,6 +161,40 @@ class TestJudgement(unittest.TestCase):
         self.assertFalse(rl.reply_fails(reply, "ja"))
         self.assertNotIn("handler", rl.strip_allowed(reply))
 
+    ENGLISH_SENTENCES = (
+        "I looked at every finding the reviewers reported and checked each one against the code.",
+        "The first one is real because the handler drops the error when the body is empty.",
+        "The second and the third are the same problem, so I marked them as duplicates of it.",
+        "I fixed the handler, added a test that fails without the fix, and ran the whole suite again.",
+        "Everything passes now, and there is nothing left that needs a decision from you.",
+    )
+
+    def test_a_reply_written_in_table_cells_is_still_judged(self):
+        """Wrapping English prose in pipes must not get it past the check."""
+        wrapped = "\n".join("| %s |" % sentence for sentence in self.ENGLISH_SENTENCES)
+        for tag in ("ja", "fr"):
+            self.assertTrue(rl.reply_fails(wrapped, tag), tag)
+        table = "| Step | What happened |\n| --- | --- |\n" + "\n".join(
+            "| %d | %s |" % (n, sentence) for n, sentence in enumerate(self.ENGLISH_SENTENCES, 1)
+        )
+        self.assertTrue(rl.reply_fails(table, "ja"))
+
+    def test_a_table_without_outer_pipes_is_read_the_same_way(self):
+        rows = "\n".join("%d | %s" % (n, sentence) for n, sentence in enumerate(self.ENGLISH_SENTENCES, 1))
+        self.assertTrue(rl.reply_fails("Step | What happened\n--- | ---\n" + rows, "ja"))
+        titles = "\n".join(
+            "F%d | high | The handler drops the error on an empty body" % n for n in range(1, 8)
+        )
+        reply = "結果をまとめました。\n\nID | Severity | Title\n--- | --- | ---\n%s\n\n" % titles
+        reply += "F1 と F3 を受け入れ、残りは重複として閉じました。"
+        self.assertFalse(rl.reply_fails(reply, "ja"))
+        self.assertNotIn("handler", rl.strip_allowed(reply))
+
+    def test_a_japanese_cell_stays_in_the_judgement(self):
+        stripped = rl.strip_allowed("| F1 | 空の本文でエラーを捨てていたので、直してテストを足しました。 |")
+        self.assertIn("直してテストを足しました", stripped)
+        self.assertNotIn("F1", stripped)
+
     def test_prose_outside_a_table_is_still_judged(self):
         prose = (
             "I accepted the first and the third finding because the handler really does drop the error "

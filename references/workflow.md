@@ -110,7 +110,8 @@ says, so write them under the directory `workflow show` prints as
 `Artifacts:` (`dir` in its `--json`): the request at
 `<Artifacts>/execution/design-request.md`, then pass `--prompt-file
 .ai/execution/design-request.md`, which resolves to it; a background review's
-log with `review run --progress > <Artifacts>/execution/review-run.log 2>&1`.
+log with `review run --progress > "<Artifacts>/execution/review-run.log"
+2>&1` (quoted: the path is absolute and may hold a space).
 A request written at `.ai/execution/` itself is not read: `run` says the file
 does not exist, names the path it resolved to, and says a file is there as
 written.
@@ -130,16 +131,22 @@ which is a different repository root, and therefore a different `.ai/`.
 commands say so rather than let the separate directories imply otherwise.
 
 A flat `.ai/` written before 0.4.0 -- `plan.md`, `state.json`, `execution/`,
-`reviews/` or `jobs/` directly in `.ai/` -- is no longer adopted. A lone
-`execution/` is not taken for one: it held only the prompts and logs the
-orchestrator wrote, and it is what a request written at `.ai/execution/`
-leaves today; beside any of the others it is named with them. Every
+`reviews/` or `jobs/` directly in `.ai/` -- is no longer adopted. Every
 command that uses the workflow refuses (exit 2), names the entries and says
 what to do: move them aside or delete them, or run dev-orchestra 0.20.0 once
 in the checkout first, which adopts them into a workflow -- except a file that
 workflow already holds, which 0.20.0 leaves where it is, so such leftovers
 are refused again until they are moved aside or deleted. `workflow list`
 notes them. Nothing is moved or deleted.
+
+A lone `execution/` is the exception: it is not taken for the old layout,
+not refused and not noted, because a request or a log the orchestrator writes
+at `.ai/execution/` today makes one. An old one held the requests, fix briefs
+and role outputs of the work it was for; no later stage reads them from
+there, so nothing a workflow needs is left behind, and it stays until you
+delete it. Beside any of the other entries it is named and refused with
+them, and when 0.20.0's leftovers come down to `execution/` alone, the
+refusal stops.
 
 **How the formats change.** The `.ai/` artifacts are part of the public
 surface, and they change by addition only: a new version adds a key or a file,
@@ -258,9 +265,9 @@ with the smallest change and to list what it added under `## Added in this
 revision`: in the recorded rounds most new high findings on a re-review came
 from what the revision itself added, so the re-review is pointed at that list.
 
-`<Artifacts>` in the templates is the directory `workflow show` prints: the
-architect reads files where they are, and `.ai/plan.md` resolves only in a
-command's arguments.
+`<Artifacts>` in the templates is the directory `workflow show` prints:
+write it out in the prompt. The model reads files where they are, and
+`.ai/plan.md` resolves only in a command's arguments.
 
 `design-revise-request.md`, for a fresh run (the brief alone is not a prompt):
 
@@ -512,7 +519,7 @@ implementer run never counts, and a plan written afterwards is asked about.
 ```markdown
 # Implementation request
 
-Follow the plan in .ai/plan.md.
+Follow the plan in <Artifacts>/plan.md.
 
 Rules:
 - Match the conventions already in this codebase; do not introduce new ones.

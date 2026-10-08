@@ -342,11 +342,19 @@ _RE_TOKEN = re.compile(r"[A-Za-z0-9_.:=#@-]+")
 _RE_MIXED_CASE = re.compile(r"(?<![A-Za-z])[A-Za-z]*[a-z][A-Z][A-Za-z]*")
 _RE_ALL_CAPS = re.compile(r"(?<![A-Za-z])[A-Z]{2,}s?(?![A-Za-z])")
 _RE_TABLE_SEPARATOR = re.compile(r"^[ \t]*\|?[ \t:|-]*-[ \t:|-]*$", re.M)
-#: A Markdown table row, between pipes. A table in a reply mostly carries
-#: what rule 11 keeps as written -- finding titles a reviewer wrote, ids,
-#: paths, model names -- so its rows are left out like a quote; prose belongs
-#: outside the table, where it is judged (#288).
-_RE_TABLE_ROW = re.compile(r"^[ \t]*\|.*\|[ \t]*$", re.M)
+#: A Markdown table row written between pipes.
+_RE_PIPED_ROW = re.compile(r"^[ \t]*\|.*\|[ \t]*$")
+#: A table's separator row, with at least one pipe: ``--- | :---:``.
+_RE_PIPED_SEPARATOR = re.compile(r"^[ \t]*\|?[ \t:-]*-[ \t:-]*(?:\|[ \t:-]*)+\|?[ \t]*$")
+_RE_CELL_SPLIT = re.compile(r"(?<!\\)\|")
+_RE_SENTENCE_END = re.compile(r"[.!?\u3002\uff01\uff1f](?:\s|$)")
+_RE_OTHER_LETTER = re.compile(r"[^\W\d_A-Za-z\u00c0-\u024f]")
+#: A cell is judged as prose at this many Latin words with a sentence end...
+CELL_SENTENCE_WORDS = 6
+#: ...or at this many without one...
+CELL_PROSE_WORDS = 20
+#: ...or at this many letters of a script other than Latin.
+CELL_OTHER_LETTERS = 10
 _RE_LATIN_WORD = re.compile(r"[A-Za-zÀ-ɏ]{2,}")
 _RE_PARAGRAPH_BREAK = re.compile(r"\n[ \t]*\n")
 _RE_WORD = re.compile(r"[^\W\d_]+")
@@ -360,12 +368,56 @@ def _drop_identifier(match: re.Match[str]) -> str:
     return token
 
 
+def _prose_cell(cell: str) -> bool:
+    """Whether a table cell reads as prose rather than a label, an id or a title."""
+    words = len(_RE_LATIN_WORD.findall(cell))
+    if words >= CELL_PROSE_WORDS or len(_RE_OTHER_LETTER.findall(cell)) >= CELL_OTHER_LETTERS:
+        return True
+    return words >= CELL_SENTENCE_WORDS and bool(_RE_SENTENCE_END.search(cell))
+
+
+def _table_prose(text: str) -> str:
+    """``text`` with each Markdown table reduced to its prose-like cells.
+
+    A table in a reply mostly carries what rule 11 keeps as written --
+    finding titles a reviewer wrote, ids, severities, paths, model names --
+    so those cells are left out like a quote. A cell that reads as prose (a
+    sentence, or a long run of words) stays in, one line each, so a reply
+    written in table cells is judged like any other (#288). A row between
+    pipes is a table row wherever it stands; rows without the outer pipes are
+    recognised by the separator row under their header.
+    """
+    lines = text.split("\n")
+    rows = [bool(_RE_PIPED_ROW.match(line)) for line in lines]
+    separators = [False] * len(lines)
+    for index, line in enumerate(lines):
+        if index and "|" in lines[index - 1] and _RE_PIPED_SEPARATOR.match(line):
+            separators[index] = True
+            rows[index - 1] = True
+            after = index + 1
+            while after < len(lines) and "|" in lines[after] and lines[after].strip():
+                rows[after] = True
+                after += 1
+    if not any(rows) and not any(separators):
+        return text
+    out: List[str] = []
+    for line, row, separator in zip(lines, rows, separators, strict=True):
+        if separator:
+            out.append("")
+        elif row:
+            cells = [cell.strip() for cell in _RE_CELL_SPLIT.split(line)]
+            out.append("\n".join(cell for cell in cells if cell and _prose_cell(cell)))
+        else:
+            out.append(line)
+    return "\n".join(out)
+
+
 def strip_allowed(text: str) -> str:
     """``text`` without what rule 11 lets stay as written, in the order the plan gives."""
     text = _RE_FENCE.sub("", text)
     text = _RE_HTML_COMMENT.sub("", text)
     text = _RE_QUOTE_LINE.sub("", text)
-    text = _RE_TABLE_ROW.sub("", text)
+    text = _table_prose(text)
     text = _RE_INLINE_CODE.sub(" ", text)
     text = _RE_LINK_TARGET.sub("] ", text)
     text = _RE_AUTOLINK.sub(" ", text)

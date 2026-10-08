@@ -273,9 +273,12 @@ answer in.
 first: fenced blocks, HTML comments, `>` quotes, inline code, link targets,
 URLs and e-mail addresses, paths, command lines and `--flags`, ASCII
 double-quoted text, tokens holding a digit, `_`, `.`, `:`, `=`, `#` or `@`,
-mixed-case and all-capital words, and Markdown table rows (a line that
-starts and ends with `|`), which mostly hold finding titles, ids and paths
-as written; prose outside a table is judged. The letters left
+mixed-case and all-capital words, and the short cells of a Markdown table
+(rows between `|`s, or under a `--- | ---` separator), which mostly hold
+finding titles, ids and paths as written. A cell that reads as prose -- 6 or
+more Latin words with a sentence end, 20 or more without one, or 10 or more
+letters of another script -- is judged like the text around it, so a reply
+written in table cells is not let through. The letters left
 are counted by script, the language's own against Latin, a Latin letter
 weighing a third of a kana, ideograph or Hangul letter and as much as one of
 an alphabet. Any reply fails when 60 or more letters are in scripts other

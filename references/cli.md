@@ -389,15 +389,21 @@ from an exit 0 over silence.
 so the call cannot block. See `jobs` below.
 
 `--json` prints the outcome as one object, after the run, in the keys a
-finished job record keeps it under: `stage`, `status` (`succeeded` or
-`failed`), `exit_code`, `stalled`, `timed_out`, `duration_seconds`, `model`,
-`session_id`, and `error` on a failed run (`resume`, `warnings` and
-`suspended_seconds` when they apply). Without `--output` the model's answer
-is in `output` rather than printed; with it, `output_written` and
-`output_target` say whether and where it was saved (`rejected_file` when it
-was not). `answered` is the judgement above. The diagnostics still go to
-stderr, and the exit code is the same as without `--json`. With `--detach`
-it prints the job as started instead, as before.
+finished job record keeps it under and when it keeps them: `stage`, `status`
+(`succeeded` or `failed`), `exit_code`, `stalled`, `timed_out`,
+`duration_seconds`, `model`, `session_id`; `error` on a failed run that said
+something; `resume`, `warnings` and `suspended_seconds` when they apply; and
+`output_written: false`, `output_target` and `rejected_file` (`null` when
+nothing was kept) only when an `--output` write was refused. Two keys a job
+record does not have: `output`, the model's answer, there instead of printed
+when there is no `--output` (a job keeps it in its `.out` file), and
+`answered`, the judgement above. The diagnostics still go to stderr, and the
+exit code is the same as without `--json`. A run refused before it starts --
+a bad argument or a read-only refusal (exit 2), a spent budget (exit 3), an
+unapproved plan (exit 5) -- prints nothing on stdout: the exit code and
+stderr say why. `--print-command` prints the command line as text, with or
+without `--json`. With `--detach` it prints the job as started instead, as
+before.
 
 ### Revising the plan in the architect's own session (`--resume`)
 
@@ -1209,7 +1215,8 @@ and paths that already name a workflow, are used as written. Only arguments
 are resolved: a file written by hand or a shell redirect goes where its path
 says, so put those under `workflow show`'s `Artifacts:` directory (`dir` in
 `--json`), for example `review run --progress >
-<Artifacts>/execution/review-run.log 2>&1`. A `--prompt-file` whose resolved
+"<Artifacts>/execution/review-run.log" 2>&1`, quoted because the path may
+hold a space. A `--prompt-file` whose resolved
 path is missing but which exists as written says so in the error.
 
 This separates the artifacts, not the working tree: one checkout has one set of

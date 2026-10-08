@@ -770,10 +770,12 @@ def _foreground_json(
 ) -> Dict[str, Any]:
     """``run --json`` without ``--detach``: the outcome as one object (#286).
 
-    The keys are a finished job's -- ``stage``, ``status``, ``error`` and the
-    ones :func:`_finished_fields` gives -- with the output inline under
-    ``output`` when it was not saved, and ``output_written`` and
-    ``output_target`` when ``--output`` named a file, as a job keeps them.
+    The outcome keys of a finished job record, set under the same conditions:
+    ``stage``, ``status``, the ones :func:`_finished_fields` gives, ``error``
+    on a failed run that said something, and ``output_written: false``,
+    ``output_target`` and ``rejected_file`` only when ``--output`` was refused.
+    Two keys a job does not have: ``output``, the answer inline when there was
+    no ``--output`` (a job keeps it in its ``.out`` file), and ``answered``.
     ``status`` says how the run went, as a job's does; the exit code also
     counts a refused write and an ``ok`` run that printed nothing, which
     ``answered: false`` names.
@@ -784,14 +786,12 @@ def _foreground_json(
         "status": "succeeded" if result.ok else "failed",
     }
     payload.update(_finished_fields(attempt))
-    if not result.ok:
-        payload["error"] = (result.stderr or "").strip()[:2000]
-    if target:
-        payload["output_written"] = refused is None
-        payload["output_target"] = target
-        if refused is not None and refused.rejected_file:
-            payload["rejected_file"] = refused.rejected_file
-    else:
+    error = "" if result.ok else (result.stderr or "").strip()[:2000]
+    if error:
+        payload["error"] = error
+    if refused is not None:
+        payload.update(output_written=False, output_target=target, rejected_file=refused.rejected_file)
+    if not target:
         payload["output"] = result.stdout
     payload["answered"] = _answered(result)
     return payload

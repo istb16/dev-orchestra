@@ -82,8 +82,8 @@ light`.
 4 tell the user in a line or two: elapsed time, tool count, **context tokens**
 (never "tokens so far"), the last few tool lines; then wait again from `next:`.
 Only a background `review run` gets `--progress >
-<Artifacts>/execution/review-run.log 2>&1`: relay its new lines every few minutes. Never relay or guess what the
-model wrote; tool lines go as they are.
+"<Artifacts>/execution/review-run.log" 2>&1`: relay its new lines every few
+minutes. Never relay or guess what the model wrote; tool lines go as they are.
 
 **Design.** The architect must not change code. Write its request from the
 template, with the history it cannot fetch (`git log --oneline`, blame): on
@@ -162,7 +162,7 @@ Reviews    2/3 ✓ (1 failed: codex-security — CLI timeout)
 Triage     4 findings → 2 accepted, 1 rejected, 1 duplicate
 Models     architect Claude/fable, implementer + fixer Claude/opus
 Changed    app/models/order.rb, app/services/pricing.rb
-Remaining  F4 (medium, deferred — .ai/reviews/consolidated.md)
+Remaining  F4 (medium, deferred — reviews/consolidated.md)
 ```
 
 Totals: `summary` (stage, model, tokens); cost per stage and reviewer:

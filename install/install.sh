@@ -280,7 +280,8 @@ install_codex() {
     printf 'the development agent configuration, read and follow:\n\n'
     printf '    %s/skills/dev-orchestra/SKILL.md\n\n' "$root"
     printf 'Its helper CLI is:\n\n'
-    printf '    %s "%s/scripts/dev_orchestra.py" <command>\n\n' "$python_cmd" "$root"
+    # Single quotes, so a `$` or a backtick in the path stays literal.
+    printf '    %s %s <command>\n\n' "$python_cmd" "$(shell_quote "$root/scripts/dev_orchestra.py")"
     printf 'That file is the single source of truth; do not rely on a copy of it.\n'
     printf '%s\n' "$end"
   } >> "$agents_file"

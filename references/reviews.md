@@ -396,7 +396,7 @@ they skipped.
 
 **Reflecting the findings** is a re-run of the architect, not a new stage:
 write a revision request (the original request, plus the brief, plus "read
-`.ai/plan.md` and rewrite it keeping every section; say for each finding
+`<Artifacts>/plan.md` and rewrite it keeping every section; say for each finding
 whether you addressed it or why not") and run `run architect` over it. That
 spends `budgets.architect`, which is why no new budget key exists. Only the
 immediately previous plan survives, frozen in `review-target.md`; a rewrite

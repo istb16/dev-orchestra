@@ -305,10 +305,15 @@ def collect(start: Optional[str] = None, probe_models: bool = True) -> Dict[str,
             # provider is refused for the same reason the role already was, so
             # it is not reported a second time.
             for seat in config_mod.role_seats(loaded.data, (key,)):
-                if seat.kind != "tier" or seat.same_provider:
+                if seat.kind != "tier":
                     continue
                 tier_label = "%s (tier %s)" % (label, seat.tier)
-                _enforcement_report(tier_label, seat.spec, report, None, seat.label in refused)
+                # Only the tier's own options: the role's were reported above.
+                tier_options = (seat.entry or {}).get("options")
+                if isinstance(tier_options, dict):
+                    _ignored_options(tier_label, tier_options, report["problems"])
+                if not seat.same_provider:
+                    _enforcement_report(tier_label, seat.spec, report, None, seat.label in refused)
 
     # A broken entry is skipped, but still counted, so each valid one keeps
     # the origin of its own position.
@@ -763,13 +768,26 @@ def _describe_options(
     if not isinstance(options, dict):
         return
     entry["options"] = {key: value for key, value in options.items() if key != "args"}
+    if read_only:
+        ignored = _ignored_options(label, options, problems)
+        if ignored:
+            entry["ignored_options"] = ignored
+
+
+def _ignored_options(label: str, options: Dict[str, Any], problems: List[str]) -> List[str]:
+    """Report the options a read-only seat drops at run time; return their names.
+
+    For a role, a reviewer of either panel, and a read-only role's
+    ``model_tiers`` entry, whose ``options`` replace the role's for its runs
+    and are dropped the same way (#295).
+    """
     ignored = sorted(set(options) & READ_ONLY_IGNORED_OPTIONS)
-    if ignored and read_only:
-        entry["ignored_options"] = ignored
+    if ignored:
         problems.append(
             "%s: %s ignored -- planning and review stages always run read-only"
             % (label, ", ".join("options.%s" % key for key in ignored))
         )
+    return ignored
 
 
 #: Options that would loosen a sandbox. Harmless on the implementer and fixer,

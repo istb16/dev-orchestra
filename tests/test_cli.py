@@ -984,6 +984,21 @@ class TestDoctor(IsolatedCase):
             expected = "%s: options.sandbox ignored" % label
             self.assertTrue(any(p.startswith(expected) for p in problems), problems)
 
+    def test_doctor_flags_ignored_options_on_a_read_only_tier(self):
+        """A tier's own options replace the role's, and are dropped the same way."""
+        data = config_mod.default_config()
+        role = {"provider": "mock", "model": {"family": "small", "version": "latest"}}
+        tiers = {"light": {"model": {"family": "small", "version": "latest"}, "options": {"sandbox": "x"}}}
+        data["architect"] = dict(role, model_tiers=tiers)
+        data["implementer"] = dict(role, model_tiers=tiers)
+        config_mod.write_config_file(config_mod.global_config_path(), data)
+        _, out, _ = run_cli("doctor", "--fast", "--json")
+        problems = json.loads(out)["problems"]
+        self.assertTrue(
+            any(p.startswith("Architect (tier light): options.sandbox ignored") for p in problems), problems
+        )
+        self.assertFalse(any(p.startswith("Implementer (tier light)") for p in problems), problems)
+
     def test_strict_mode_exits_non_zero_on_problems(self):
         run_cli("config", "setup", "--defaults")
         run_cli("reviewer", "remove", "claude-general")
@@ -4023,10 +4038,34 @@ class TestRunJsonInTheForeground(IsolatedCase):
         self.assertEqual(code, 0, err)
         payload = json.loads(out)
         self.assertNotIn("output", payload)
-        self.assertTrue(payload["output_written"])
-        self.assertTrue(payload["output_target"].endswith(os.path.join(TEST_WORKFLOW, "plan.md")))
-        with open(payload["output_target"], encoding="utf-8") as handle:
+        # As in a job record: these keys appear only when the write was refused.
+        for key in ("output_written", "output_target", "rejected_file"):
+            self.assertNotIn(key, payload)
+        plan = os.path.join(self.project, ".ai", "workflows", TEST_WORKFLOW, "plan.md")
+        with open(plan, encoding="utf-8") as handle:
             self.assertIn("the answer", handle.read())
+
+    def test_a_refused_write_is_named_as_a_job_names_it(self):
+        self.set_env("DEV_ORCHESTRA_MOCK_FAIL", "1")
+        code, out, _ = run_cli("run", "architect", "--prompt", "hi", "--output", ".ai/plan.md", "--json")
+        self.assertEqual(code, 1)
+        payload = json.loads(out)
+        self.assertIs(payload["output_written"], False)
+        self.assertTrue(payload["output_target"].endswith(os.path.join(TEST_WORKFLOW, "plan.md")))
+        self.assertIn("rejected_file", payload)
+        self.assertNotIn("output", payload)
+
+    def test_a_run_refused_before_it_starts_prints_nothing_on_stdout(self):
+        code, out, err = run_cli("run", "architect", "--mode", "implement", "--prompt", "hi", "--json")
+        self.assertEqual(code, 2)
+        self.assertEqual(out, "")
+        self.assertTrue(err.strip())
+
+    def test_print_command_stays_text(self):
+        code, out, _ = run_cli("run", "orchestrator", "--print-command", "--json")
+        self.assertEqual(code, 0)
+        with self.assertRaises(ValueError):
+            json.loads(out)
 
     def test_a_failed_run_is_still_one_object(self):
         self.set_env("DEV_ORCHESTRA_MOCK_FAIL", "1")

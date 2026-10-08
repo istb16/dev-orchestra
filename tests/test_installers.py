@@ -447,7 +447,42 @@ class TestAntigravityInstallers(_InstallerCase):
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 pointer = read_text(os.path.join(project, "AGENTS.md"))
                 line = next(line for line in pointer.splitlines() if "dev_orchestra.py" in line)
-                self.assertRegex(line, r'^    \S+ "[^"]+/scripts/dev_orchestra\.py" <command>$')
+                quote = "'" if shell.posix else '"'
+                self.assertRegex(
+                    line, r"^    \S+ %s[^%s]+/scripts/dev_orchestra\.py%s <command>$" % (quote, quote, quote)
+                )
+
+    def test_the_posix_codex_pointer_keeps_shell_characters_literal(self):
+        """A `$`, a backtick or a ' in the checkout path is not expanded when the line runs (#297)."""
+        posix = [shell for shell in SHELLS if shell.posix]
+        if not posix:
+            self.skipTest("no POSIX sh here")
+        checkout = os.path.join(self.tmp, "it's $HOME `x`")
+        os.makedirs(os.path.join(checkout, "install"))
+        shutil.copy2(os.path.join(REPO_ROOT, "install", "install.sh"), os.path.join(checkout, "install"))
+        project = os.path.join(self.tmp, "codex-project")
+        os.makedirs(project)
+        for shell in posix:
+            with self.subTest(shell=shell.name):
+                script = os.path.join(checkout, "install", "install.sh")
+                result = subprocess.run(
+                    [*shell.command, script, "--codex", "--project", project],
+                    capture_output=True,
+                    text=True,
+                    env=dict(os.environ, HOME=self.home),
+                    timeout=300,
+                )
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                pointer = read_text(os.path.join(project, "AGENTS.md"))
+                line = next(line for line in pointer.splitlines() if "dev_orchestra.py" in line)
+                argument = line.strip().split(" ", 1)[1].rsplit(" <command>", 1)[0]
+                echoed = subprocess.run(
+                    [shell.command[0], "-c", "printf '%%s' %s" % argument],
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                )
+                self.assertEqual(echoed.stdout, os.path.join(checkout, "scripts", "dev_orchestra.py"))
 
     def test_the_codex_switch_does_not_combine_with_it(self):
         for shell in SHELLS:

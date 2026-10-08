@@ -1,4 +1,4 @@
-<!-- translated-from: references/workflow.md sha256:d8ef0a34de971de98195409592360d9da48548d31b8a2ee5c7c083f88ad9f787 -->
+<!-- translated-from: references/workflow.md sha256:4314f659c2a0ef09c2e2586f962268ff0400537eeb64b83068928a7c346bc1d8 -->
 
 > この文書は [references/workflow.md](../../../references/workflow.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -119,7 +119,8 @@ id はコマンドごとに、次の順で解決されます。
 として表示するディレクトリ（`--json` では `dir`）の下に書いてください。依頼は
 `<Artifacts>/execution/design-request.md` に書き、`--prompt-file
 .ai/execution/design-request.md` を渡せば、そのファイルに解決されます。バックグラウンドの
-レビューのログは `review run --progress > <Artifacts>/execution/review-run.log 2>&1` です。
+レビューのログは `review run --progress > "<Artifacts>/execution/review-run.log" 2>&1` です
+（パスは絶対パスで空白を含むことがあるので、引用符で囲みます）。
 `.ai/execution/` そのものに書いた依頼は読まれません。`run` はファイルが無いと言い、解決した先の
 パスを示し、書かれたとおりの場所にファイルがあることも伝えます。
 
@@ -138,15 +139,18 @@ git worktree add ../feature-x feature-x
 ディレクトリが分かれていることで誤解を招かないよう、その旨を伝えます。
 
 0.4.0 より前に書かれたフラットな `.ai/`（`.ai/` の直下にある `plan.md`、`state.json`、
-`execution/`、`reviews/`、`jobs/`）は、もう取り込みません。`execution/` だけがある場合は
-古い形とはみなしません。そこにあったのはオーケストレーターが書いたプロンプトとログだけで、今でも
-`.ai/execution/` に依頼を書くとできるものだからです。ほかの項目と一緒にあれば、それらと並べて
-挙げます。ワークフローを使うコマンドはすべて
+`execution/`、`reviews/`、`jobs/`）は、もう取り込みません。ワークフローを使うコマンドはすべて
 実行を断り（exit 2）、見つかった項目を挙げて、どうすればよいかを伝えます。別の場所へ移すか
 削除するか、先にそのチェックアウトで dev-orchestra 0.20.0 を一度実行してワークフローに
 取り込ませてください。ただし、そのワークフローに同じ名前のファイルがすでにあれば 0.20.0 はそれを
 元の場所に残すので、その残りは別の場所へ移すか削除するまで、また断られます。
 `workflow list` はそれらがあることを知らせます。何も移動・削除しません。
+
+例外は `execution/` だけがある場合です。これは古い形とみなさず、断らず、知らせもしません。
+今でもオーケストレーターが `.ai/execution/` に依頼やログを書くとできるからです。古いものには
+その作業の依頼、修正のブリーフ、ロールの出力が入っていましたが、後の工程がそこから読むことは
+ないので、ワークフローに要るものは残されません。消すまでそのまま残ります。ほかの項目と一緒に
+あればそれらと並べて挙げて断り、0.20.0 の残りが `execution/` だけになれば、断るのは止まります。
 
 **形式の変え方。** `.ai/` の成果物は公開された仕様の一部で、変更は追加だけで行います。新しい
 バージョンはキーやファイルを足し、読む側は知らないキーを読み飛ばし、古いバージョンが書かなかった
@@ -262,8 +266,9 @@ architect は、できるときは plan を設計したセッションを継続�
 並べることを求めます。記録されたラウンドでは、再レビューで新たに出た high の指摘の多くが修正版
 自身の追加したものから出ていたので、再レビューはその一覧に向けられます。
 
-テンプレートの `<Artifacts>` は `workflow show` が表示するディレクトリです。architect は
-ファイルを置かれた場所のまま読み、`.ai/plan.md` が読み替えられるのはコマンドの引数のときだけです。
+テンプレートの `<Artifacts>` は `workflow show` が表示するディレクトリで、プロンプトには実際の
+パスを書きます。モデルはファイルを置かれた場所のまま読み、`.ai/plan.md` が読み替えられるのは
+コマンドの引数のときだけです。
 
 `design-revise-request.md` は新規に走る場合のものです（brief だけではプロンプトになりません）。
 
@@ -514,7 +519,7 @@ implementer を再度実行すると `pending` と同様に拒否されます。
 ```markdown
 # Implementation request
 
-Follow the plan in .ai/plan.md.
+Follow the plan in <Artifacts>/plan.md.
 
 Rules:
 - Match the conventions already in this codebase; do not introduce new ones.
