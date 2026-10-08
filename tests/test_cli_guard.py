@@ -120,7 +120,12 @@ class TestARealCliIsNeverStarted(GuardCase):
             with self.subTest(command=command):
                 outcome = execution.execute(command, cwd=self.project, timeout=30)
                 self.assertEqual(outcome.exit_code, execution.EXIT_SPAWN_FAILED)
-                self.assertIn(REFUSAL, outcome.stderr)
+                # Where nothing is installed, as on CI, the launch is refused
+                # before the guard sees it: the bare name is not on PATH.
+                self.assertTrue(
+                    REFUSAL in outcome.stderr or "not found on PATH" in outcome.stderr,
+                    outcome.stderr,
+                )
         self.assert_not_run()
 
     def test_a_shell_command_line_is_refused_too(self):
@@ -280,7 +285,10 @@ class TestTheInstalledLocations(GuardCase):
         self.assertIn(cli_guard.normalised(os.path.join(self.npm, "claude.cmd")), self.found.files)
         self.assertIn(cli_guard.normalised(os.path.join(self.npm, "codex")), self.found.files)
         self.assertIn(cli_guard.normalised(self.script), self.found.files)
-        self.assertEqual(self.found.packages, {cli_guard.normalised(self.package)})
+        # The package as written and as resolved: a temporary directory can
+        # have two spellings (/private/var on macOS, a short name on Windows).
+        self.assertIn(cli_guard.normalised(self.package), self.found.packages)
+        self.assertEqual({os.path.basename(path) for path in self.found.packages}, {"cli-wrapper"})
 
     def test_anything_that_runs_them_is_refused(self):
         other = os.path.join(self.package, "lib", "main.js")
