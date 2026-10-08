@@ -37,6 +37,8 @@ $Sentinel = '.dev-orchestra-install'
 $Payload = @('plugin.json', 'skills', '.claude-plugin', '.codex-plugin', 'README.md', 'LICENSE', 'references', 'scripts', 'bin', 'agents', 'examples')
 $ExcludeMarker = '# added by dev-orchestra install --antigravity'
 $ExcludeEntry = "/.agents/plugins/$SkillName"
+$ClaudeExcludeMarker = '# added by dev-orchestra install --claude'
+$ClaudeExcludeEntry = "/.claude/skills/$SkillName"
 
 function Get-LinkTarget {
     # Where a junction or symlink points, as a plain path. Windows PowerShell
@@ -261,8 +263,10 @@ function Write-TextLines {
 }
 
 function Remove-MarkedGitExclude {
-    # Drop the entry the installer added, and its marker. An entry without the
-    # marker right above it was there before and stays.
+    # Drop $Entry, which the installer added, and its $Marker. An entry
+    # without the marker right above it was there before and stays.
+    param([string]$Marker, [string]$Entry)
+
     if (-not $Project) { return }
     $excludeFile = Join-Path $Project '.git/info/exclude'
     if (-not (Test-Path -LiteralPath $excludeFile -PathType Leaf)) { return }
@@ -271,22 +275,29 @@ function Remove-MarkedGitExclude {
 
     $lines = Read-TextLines $excludeFile
     if ($null -eq $lines) {
-        Write-Warning "$excludeFile is not UTF-8; remove $ExcludeEntry from it by hand if it is no longer wanted."
+        Write-Warning "$excludeFile is not UTF-8; remove $Entry from it by hand if it is no longer wanted."
         return
     }
     $kept = New-Object System.Collections.Generic.List[string]
     $removed = $false
     for ($i = 0; $i -lt $lines.Count; $i++) {
-        if ((Get-LineText $lines[$i]) -eq $ExcludeMarker -and ($i + 1) -lt $lines.Count -and (Get-LineText $lines[$i + 1]) -eq $ExcludeEntry) {
+        if ((Get-LineText $lines[$i]) -eq $Marker -and ($i + 1) -lt $lines.Count -and (Get-LineText $lines[$i + 1]) -eq $Entry) {
             $removed = $true
             $i++
             continue
         }
         $kept.Add($lines[$i])
     }
-    if (-not $removed) { return }
-    Write-TextLines $excludeFile $kept.ToArray()
-    Write-Host "Removed $ExcludeEntry from .git/info/exclude"
+    if ($removed) {
+        Write-TextLines $excludeFile $kept.ToArray()
+        Write-Host "Removed $Entry from .git/info/exclude"
+    }
+    # The Claude entry without a marker: what installers before the marker
+    # wrote, or the user's own line. Either way it is not removed, only named.
+    if ($Entry -eq $ClaudeExcludeEntry -and @($kept | ForEach-Object { Get-LineText $_ }) -contains $Entry) {
+        Write-Host "Left $Entry in .git/info/exclude: the installer did not mark it as its own."
+        Write-Host 'An older installer may have added it; remove the line by hand if it is no longer wanted.'
+    }
 }
 
 if ($Antigravity) {
@@ -307,7 +318,7 @@ if ($Antigravity) {
     else {
         Write-Host "Nothing installed at $dest"
     }
-    Remove-MarkedGitExclude
+    Remove-MarkedGitExclude -Marker $ExcludeMarker -Entry $ExcludeEntry
     Write-Host 'Restart Antigravity so that it stops loading the plugin.'
 }
 elseif (-not $Codex) {
@@ -330,6 +341,7 @@ elseif (-not $Codex) {
     else {
         Write-Host "Nothing installed at $dest"
     }
+    Remove-MarkedGitExclude -Marker $ClaudeExcludeMarker -Entry $ClaudeExcludeEntry
 }
 else {
     if ($Project) {

@@ -54,9 +54,10 @@ PAYLOAD="plugin.json skills .claude-plugin .codex-plugin README.md LICENSE refer
 # directory it made from one it did not.
 SENTINEL=.dev-orchestra-install
 
-# The project's .git/info/exclude gets the entry below this comment, and the
-# uninstaller removes the entry only when the comment is right above it.
+# The project's .git/info/exclude gets each entry below its own comment, and
+# the uninstaller removes an entry only when its comment is right above it.
 EXCLUDE_MARKER="# added by dev-orchestra install --antigravity"
+CLAUDE_EXCLUDE_MARKER="# added by dev-orchestra install --claude"
 
 # The pointer block tells the host how to run the CLI, so it has to name an
 # interpreter this machine actually has. Distributions that ship Python 3 only
@@ -71,22 +72,6 @@ for candidate in python3 python; do
     break
   fi
 done
-
-exclude_from_project_git() {
-  dest=$1
-  [ -n "$target_project" ] || return 0
-  git_dir="$target_project/.git"
-  [ -d "$git_dir" ] || return 0
-
-  entry=$(printf '%s' "${dest#"$target_project"/}")
-  exclude_file="$git_dir/info/exclude"
-  mkdir -p "$git_dir/info"
-  [ -f "$exclude_file" ] || : > "$exclude_file"
-  if ! grep -qxF "/$entry" "$exclude_file" 2>/dev/null; then
-    printf '/%s\n' "$entry" >> "$exclude_file"
-    printf 'Excluded /%s via .git/info/exclude (local only)\n' "$entry"
-  fi
-}
 
 copy_payload() {
   mkdir -p "$1"
@@ -181,12 +166,14 @@ autoload_entries() {
   done
 }
 
+# Add the entry $1 under the marker $2 to the project's .git/info/exclude,
+# unless the entry is there already, with a marker or without one.
 exclude_marked() {
   [ -n "$target_project" ] || return 0
   git_dir="$target_project/.git"
   [ -d "$git_dir" ] || return 0
 
-  entry="/.agents/plugins/$SKILL_NAME"
+  entry=$1
   exclude_file="$git_dir/info/exclude"
   mkdir -p "$git_dir/info"
   [ -f "$exclude_file" ] || : > "$exclude_file"
@@ -196,7 +183,7 @@ exclude_marked() {
     if [ -s "$exclude_file" ] && [ -n "$(tail -c 1 "$exclude_file")" ]; then
       printf '\n' >> "$exclude_file"
     fi
-    printf '%s\n%s\n' "$EXCLUDE_MARKER" "$entry" >> "$exclude_file"
+    printf '%s\n%s\n' "$2" "$entry" >> "$exclude_file"
     printf 'Excluded %s via .git/info/exclude (local only)\n' "$entry"
   fi
 }
@@ -246,7 +233,7 @@ install_claude() {
   # fails with "does not have a commit checked out". Exclude it locally, which
   # touches neither their .gitignore nor their history. Only now: a failed
   # install leaves the exclude file as it was.
-  exclude_from_project_git "$dest"
+  exclude_marked "/.claude/skills/$SKILL_NAME" "$CLAUDE_EXCLUDE_MARKER"
 }
 
 install_codex() {
@@ -355,7 +342,7 @@ install_antigravity() {
   fi
 
   # Only now: a failed install leaves the exclude file as it was.
-  exclude_marked
+  exclude_marked "/.agents/plugins/$SKILL_NAME" "$EXCLUDE_MARKER"
   printf 'Restart Antigravity: a newly installed plugin directory is only discovered on startup.\n'
 }
 

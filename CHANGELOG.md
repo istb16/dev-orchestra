@@ -231,6 +231,17 @@ below begins **User adapters** so adapter authors can find it.
   runs the block into a last line that has no newline, and under Git Bash a
   re-run or `uninstall.sh` no longer turns CRLF endings into LF (#292).
 
+- **`uninstall --project` removes the `.git/info/exclude` line that the Claude
+  Code install added.** The install wrote `/.claude/skills/dev-orchestra`
+  there without a marker, and nothing removed it. It now goes in under a
+  `# added by dev-orchestra install --claude` comment, as the Antigravity
+  entry does, and the uninstallers remove it only when that comment is right
+  above it. A line already there without the comment, from an earlier
+  install or written by hand, is not added again and is kept; the
+  uninstaller names it so it can be removed by hand. `install.sh` now also
+  finds the entry in a file `install.ps1` wrote with CRLF line endings,
+  rather than adding it a second time (#294).
+
 - **Two findings from one reviewer are no longer merged into one.** Two
   near-identical findings a few lines apart from the same reviewer (the
   `timeout` and the `retries` argument not being validated, say) became one

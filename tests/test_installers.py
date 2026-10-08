@@ -490,6 +490,7 @@ class TestAntigravityInstallers(_InstallerCase):
 
 
 CLAUDE_ENTRY = "/.claude/skills/dev-orchestra"
+CLAUDE_MARKER = "# added by dev-orchestra install --claude"
 
 
 @unittest.skipUnless(SHELLS, "needs sh (off Windows), pwsh or powershell")
@@ -675,6 +676,53 @@ class TestClaudeInstallers(_InstallerCase):
                     self.assertEqual(code, 0, output)
                 self.assertEqual(self.exclude_lines(project).count(CLAUDE_ENTRY), 1)
 
+    def test_uninstall_removes_the_marked_exclude_entry(self):
+        """The entry goes in under a marker, and only a marked one comes out (#294)."""
+        for shell in SHELLS:
+            with self.subTest(shell=shell.name):
+                project = self.git_project(self.fresh(shell, "marked"), exclude="/build\n")
+                code, output = self.claude(shell, "install", project, copy=True)
+                self.assertEqual(code, 0, output)
+                self.assertEqual(self.exclude_lines(project), ["/build", CLAUDE_MARKER, CLAUDE_ENTRY])
+                code, output = self.claude(shell, "uninstall", project)
+                self.assertEqual(code, 0, output)
+                self.assertIn("Removed %s from .git/info/exclude" % CLAUDE_ENTRY, output)
+                self.assertEqual(self.exclude_lines(project), ["/build"])
+
+    def test_an_unmarked_entry_stays_and_is_named(self):
+        """What an installer before the marker wrote, or the user's own line,
+        is neither marked nor duplicated, and the uninstaller leaves it."""
+        for shell in SHELLS:
+            with self.subTest(shell=shell.name):
+                project = self.git_project(self.fresh(shell, "unmarked"), exclude=CLAUDE_ENTRY + "\n")
+                code, output = self.claude(shell, "install", project, copy=True)
+                self.assertEqual(code, 0, output)
+                self.assertEqual(self.exclude_lines(project), [CLAUDE_ENTRY])
+                code, output = self.claude(shell, "uninstall", project)
+                self.assertEqual(code, 0, output)
+                self.assertEqual(self.exclude_lines(project), [CLAUDE_ENTRY])
+                self.assertIn("Left %s in .git/info/exclude" % CLAUDE_ENTRY, output)
+                self.assertNotIn(SKILL_NAME, os.listdir(os.path.dirname(self.claude_dest(project))))
+
+    def test_an_exclude_file_with_crlf_line_endings(self):
+        """install.ps1 writes CRLF; either shell has to read what the other
+        wrote, without adding the entry a second time."""
+        for shell in SHELLS:
+            with self.subTest(shell=shell.name):
+                project = self.git_project(self.fresh(shell, "crlf"))
+                exclude = os.path.join(project, ".git", "info", "exclude")
+                with open(exclude, "wb") as handle:
+                    handle.write(("/build\r\n%s\r\n%s\r\n" % (CLAUDE_MARKER, CLAUDE_ENTRY)).encode("utf-8"))
+                code, output = self.claude(shell, "install", project, copy=True)
+                self.assertEqual(code, 0, output)
+                lines = self.exclude_lines(project)
+                self.assertEqual(lines.count(CLAUDE_MARKER), 1, lines)
+                self.assertEqual(lines.count(CLAUDE_ENTRY), 1, lines)
+                code, output = self.claude(shell, "uninstall", project)
+                self.assertEqual(code, 0, output)
+                with open(exclude, "rb") as handle:
+                    self.assertEqual(handle.read(), b"/build\r\n")
+
     def test_the_exclude_entry_gets_its_own_line_and_no_bom(self):
         """A one-line file is where PowerShell's if-assignment joined the two."""
         for shell in SHELLS:
@@ -686,7 +734,8 @@ class TestClaudeInstallers(_InstallerCase):
                 with open(exclude, "rb") as handle:
                     written = handle.read()
                 self.assertFalse(written.startswith(b"\xef\xbb\xbf"), written)
-                self.assertEqual(written.decode("utf-8").splitlines(), ["/build", CLAUDE_ENTRY])
+                expected = ["/build", CLAUDE_MARKER, CLAUDE_ENTRY]
+                self.assertEqual(written.decode("utf-8").splitlines(), expected)
                 code, output = self.claude(shell, "install", project, copy=True)
                 self.assertEqual(code, 0, output)
                 with open(exclude, "rb") as handle:

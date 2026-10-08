@@ -753,7 +753,11 @@ install into a single repository's `.claude/skills/` instead of globally; that
 path is also added to the target repo's `.git/info/exclude`, so the nested
 checkout never appears in *their* `git status` and never gets committed
 (without it, `git add -A` there fails with "does not have a commit checked
-out").
+out"). The entry goes in under a `# added by dev-orchestra install --claude`
+comment, and the uninstaller removes it only when that comment is right above
+it. An entry already there without the comment, from an installer older than
+the comment or written by hand, is not added again and is left in place by
+the uninstaller, which names it so that you can remove it yourself.
 
 A re-run, and the uninstaller, replace only what the installer made: a link
 to this checkout, or a copy, which carries a `.dev-orchestra-install` file. A

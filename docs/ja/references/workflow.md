@@ -1,4 +1,4 @@
-<!-- translated-from: references/workflow.md sha256:0647d90a42895f9487f9aeefcc2b0a1b4877e2948d92e4b686c51ce62b43c9b6 -->
+<!-- translated-from: references/workflow.md sha256:e1b3585d62a82b41006795fbf6fb952a49d4f5ba01adf8b06efa6adeb3303342 -->
 
 > この文書は [references/workflow.md](../../../references/workflow.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -769,7 +769,11 @@ cd dev-orchestra
 特定のリポジトリの `.claude/skills/` に入れます。そのパスは対象リポジトリの
 `.git/info/exclude` にも追加されるので、入れ子のチェックアウトが *相手の* `git status` に
 出ることも commit されることもありません（これがないと、そこでの `git add -A` が
-"does not have a commit checked out" で失敗します）。
+"does not have a commit checked out" で失敗します）。エントリは
+`# added by dev-orchestra install --claude` というコメントの下に書き、アンインストーラは
+そのコメントがすぐ上にあるときだけ取り除きます。コメントなしで既にあるエントリ
+（コメントを書く前のインストーラが書いたもの、または手で書いたもの）は、重ねて追加せず、
+アンインストーラも残します。そのときは、自分で消せるようにそのエントリを表示します。
 
 再実行とアンインストーラが置き換えるのは、インストーラが作ったものだけです。つまり、この
 チェックアウトを指すリンクか、`.dev-orchestra-install` というファイルの入ったコピーです。

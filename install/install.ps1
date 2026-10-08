@@ -48,10 +48,11 @@ $Payload = @('plugin.json', 'skills', '.claude-plugin', '.codex-plugin', 'README
 # directory it made from one it did not.
 $Sentinel = '.dev-orchestra-install'
 
-# The project's .git/info/exclude gets the entry below this comment, and the
-# uninstaller removes the entry only when the comment is right above it.
+# The project's .git/info/exclude gets each entry below its own comment, and
+# the uninstaller removes an entry only when its comment is right above it.
 $ExcludeMarker = '# added by dev-orchestra install --antigravity'
 $ExcludeEntry = "/.agents/plugins/$SkillName"
+$ClaudeExcludeMarker = '# added by dev-orchestra install --claude'
 $ClaudeExcludeEntry = "/.claude/skills/$SkillName"
 
 # The pointer block tells the host how to run the CLI, so it has to name an
@@ -132,7 +133,8 @@ function Write-TextLines {
 
 function Add-GitExcludeLines {
     # Append $Lines to <project>/.git/info/exclude unless $Entry is already a
-    # line there. No BOM: git would read it as part of the first pattern.
+    # line there, with a marker or without one. No BOM: git would read it as
+    # part of the first pattern.
     param([string]$Entry, [string[]]$Lines)
 
     $gitDir = Join-Path $Project '.git'
@@ -164,7 +166,7 @@ function Add-ProjectGitExclude {
     # there fails with "does not have a commit checked out". Exclude it
     # locally, which touches neither their .gitignore nor their history.
     if (-not $Project) { return }
-    Add-GitExcludeLines -Entry $ClaudeExcludeEntry -Lines @($ClaudeExcludeEntry)
+    Add-GitExcludeLines -Entry $ClaudeExcludeEntry -Lines @($ClaudeExcludeMarker, $ClaudeExcludeEntry)
 }
 
 function Test-ReparsePoint {
