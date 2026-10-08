@@ -19,8 +19,8 @@ from test_design_review import DesignReviewCase, run_cli
 from test_reviewers_extra import FITTED, ExtrasCase, agy, mock
 from test_wizard import ScriptedPrompter, accept_all
 
-from orchestrator import cli_config_layers, doctor
 from orchestrator import config as config_mod
+from orchestrator import config_layers, doctor
 from orchestrator import config_policy as policy_mod
 from orchestrator import optimization as opt
 from orchestrator import review as review_mod
@@ -770,7 +770,7 @@ class TestTheWizard(ExtrasCase):
     def test_wizard_keeps_design_keys(self):
         existing = {"version": 1, **design(reviewers=[mock("d1")])}
         prompter = ScriptedPrompter(accept_all())
-        base = cli_config_layers._fitted_base("global", existing)
+        base = config_layers._fitted_base("global", existing)
         data, _save = wizard_mod.run(prompter, existing, base, scope="global")
         said = "\n".join(prompter.output)
         self.assertEqual(data["review"]["design"]["reviewers"], [mock("d1")])

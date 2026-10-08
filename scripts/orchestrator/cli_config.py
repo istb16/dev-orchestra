@@ -18,7 +18,8 @@ from . import presets as presets_mod
 from . import suggest as suggest_mod
 from . import wizard as wizard_mod
 from .cli_common import _emit_json, _err, _load_lenient, _out
-from .cli_config_layers import (
+from .cli_hooks import LEFT_OUT_NOTE, OTHER_PROJECTS_NOTE, report_install, report_uninstall
+from .config_layers import (
     _compose_preview,
     _fitted_base,
     _global_file,
@@ -34,7 +35,6 @@ from .cli_config_layers import (
     _seed_panel,
     _without_warned_seats,
 )
-from .cli_hooks import LEFT_OUT_NOTE, OTHER_PROJECTS_NOTE, report_install, report_uninstall
 from .execution import DELEGATED_ENV
 from .providers import (
     ModelResolutionError,

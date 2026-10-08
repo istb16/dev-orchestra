@@ -29,7 +29,7 @@ from .cli_common import (
     _workspace,
     _wrote_plan,
 )
-from .providers import WARNED_ENFORCEMENT, get_provider
+from .providers import MODE_REVIEW, WARNED_ENFORCEMENT, get_provider
 from .summary import DESIGN_PANEL_SOURCES
 
 # --------------------------------------------------------------------------- review
@@ -571,7 +571,7 @@ def _run_panel(
     )
     idle_timeout = args.idle_timeout
     if idle_timeout is None:
-        idle_timeout = settings.get("idle_timeout_seconds")
+        idle_timeout = config_mod.idle_timeout(ctx.loaded, MODE_REVIEW).seconds
     warned = _warn_unenforced(ctx.loaded, reviewers, ctx.kind.panel)
     try:
         runs = review_mod.run_reviews(
@@ -944,8 +944,7 @@ def cmd_review_snapshot(args: argparse.Namespace) -> int:
         )
         _out("            Narrow it with --base or review.exclude, or split the change.")
     withheld = meta.get("withheld") or []
-    excluded = [entry for entry in withheld if not entry.get("reason")]
-    unread = [entry for entry in withheld if entry.get("reason")]
+    excluded, unread = review_mod.partition_withheld(withheld)
     if withheld:
         # Named, not merely counted: an exclusion nobody can see is an
         # exclusion nobody can correct.

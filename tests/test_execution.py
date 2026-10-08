@@ -61,19 +61,28 @@ LINGERING_PARENT = (
     "sys.stdout.write('parent done\\n'); sys.stdout.flush()\n"
 ) % LINGERING_GRANDCHILD
 
-#: Writes its pid to ``argv[1]``, stays quiet for 1.5s, then writes to the
-#: stdout it inherited without end: a dev server's log.
+#: Writes its pid to ``argv[1]``, stays quiet until ``argv[1] + '.go'``
+#: exists, then writes to the stdout it inherited without end: a dev
+#: server's log.
 FLOODING_GRANDCHILD = (
     "import os, sys, time\n"
     "with open(sys.argv[1] + '.tmp', 'w') as f: f.write(str(os.getpid()))\n"
     "os.replace(sys.argv[1] + '.tmp', sys.argv[1])\n"
-    "time.sleep(1.5)\n"
+    "deadline = time.monotonic() + 60\n"
+    "while not os.path.exists(sys.argv[1] + '.go') and time.monotonic() < deadline: time.sleep(0.01)\n"
     "for _ in range(9000):\n"
     "    sys.stdout.write('x' * 999 + '\\n'); sys.stdout.flush(); time.sleep(0.01)\n"
 )
 
 #: LINGERING_PARENT, with FLOODING_GRANDCHILD left behind.
 FLOODING_PARENT = LINGERING_PARENT.replace(repr(LINGERING_GRANDCHILD), repr(FLOODING_GRANDCHILD))
+
+#: FLOODING_GRANDCHILD, except that it writes a little and exits: it closes
+#: the pipe while ``execute`` is still waiting on its readers.
+BRIEF_GRANDCHILD = FLOODING_GRANDCHILD.replace("range(9000)", "range(20)")
+
+#: LINGERING_PARENT, with BRIEF_GRANDCHILD left behind.
+BRIEF_PARENT = LINGERING_PARENT.replace(repr(LINGERING_GRANDCHILD), repr(BRIEF_GRANDCHILD))
 
 #: Starts ``argv[1]`` (code, given ``argv[2]``) detached and returns at once,
 #: so the started process is not our child: the shape of a detached worker.
@@ -465,14 +474,47 @@ class TestProcessTree(IsolatedCase):
                 time.sleep(0.05)
             self.assertFalse(execution.pid_alive(grandchild))
 
-    def test_what_a_leftover_writes_after_the_cli_exited_is_not_kept(self):
-        self.assertNotEqual(FLOODING_PARENT, LINGERING_PARENT)
+    def run_with_a_leftover(self, parent, on_line=None):
+        """Run ``parent``; its leftover starts writing once the output's cutoff is taken.
+
+        Released by the cutoff itself rather than after a sleep, so on a slow
+        machine its writing can never land before it.
+        """
         pid_file = os.path.join(self.project, "grandchild.pid")
         self.addCleanup(end_pid_in, pid_file)
-        outcome = execution.execute([*python_code(FLOODING_PARENT), pid_file], cwd=self.project, timeout=120)
+        original = execution._Drain.mark
+
+        def mark(drain):
+            taken = original(drain)
+            with open(pid_file + ".go", "w"):
+                pass
+            return taken
+
+        with mock.patch.object(execution._Drain, "mark", mark):
+            return execution.execute(
+                [*python_code(parent), pid_file], cwd=self.project, timeout=120, on_line=on_line
+            )
+
+    def test_what_a_leftover_writes_after_the_cli_exited_is_not_kept(self):
+        self.assertNotEqual(FLOODING_PARENT, LINGERING_PARENT)
+        seen: List[str] = []
+        outcome = self.run_with_a_leftover(FLOODING_PARENT, seen.append)
         self.assertEqual(outcome.exit_code, 0, outcome.stderr)
         self.assertEqual(outcome.stdout, "parent done\n")
         self.assertRegex(outcome.stderr, r"warning: [0-9]+ characters it wrote after the CLI exited")
+        self.assertEqual(seen, ["parent done\n"])
+
+    def test_what_a_leftover_writes_is_not_kept_when_it_closes_the_pipe_in_time(self):
+        """It exits while ``execute`` still waits on the readers: nothing lingers,
+        and what it wrote is still not the run's."""
+        self.assertNotEqual(BRIEF_PARENT, FLOODING_PARENT)
+        seen: List[str] = []
+        outcome = self.run_with_a_leftover(BRIEF_PARENT, seen.append)
+        self.assertEqual(outcome.exit_code, 0, outcome.stderr)
+        self.assertEqual(outcome.stdout, "parent done\n")
+        self.assertFalse(outcome.orphans_possible, outcome.stderr)
+        self.assertRegex(outcome.stderr, r"wrote [0-9]+ characters after the CLI exited; they were dropped")
+        self.assertEqual(seen, ["parent done\n"])
 
     def test_what_the_cli_wrote_last_is_kept_when_a_leftover_is_cut_off(self):
         pid_file = os.path.join(self.project, "grandchild.pid")
@@ -518,6 +560,41 @@ class TestProcessTree(IsolatedCase):
         self.assertEqual(drain.chunks, ["keep\n"])
         drain.finish(5)
         self.assertNotIn("y", "".join(seen))
+        self.assertEqual(seen, ["keep\n"])
+
+    def test_a_detached_drain_still_hands_on_the_lines_before_its_mark(self):
+        """Queued behind a slow ``on_line`` when the cutoff came: still the run's."""
+        read_end, write_end = os.pipe()
+        reader, writer = os.fdopen(read_end, "rb"), os.fdopen(write_end, "wb")
+        self.addCleanup(writer.close)
+        seen: List[str] = []
+        release = threading.Event()
+
+        def slow(line: str) -> None:
+            release.wait(10)
+            seen.append(line)
+
+        drain = execution._Drain(slow)
+        thread = threading.Thread(target=drain.pump, args=(reader,), daemon=True)
+        thread.start()
+
+        def wait_for(text: str) -> None:
+            deadline = time.monotonic() + 10
+            while drain.text() != text:
+                self.assertLess(time.monotonic(), deadline, drain.text())
+                time.sleep(0.01)
+
+        writer.write(b"one\ntwo\n")
+        writer.flush()
+        wait_for("one\ntwo\n")
+        mark = drain.mark()
+        writer.write(b"late\n")
+        writer.flush()
+        wait_for("one\ntwo\nlate\n")
+        self.assertEqual(drain.detach(mark), 5)
+        release.set()
+        drain.finish(5)
+        self.assertEqual(seen, ["one\n", "two\n"])
 
     def test_a_pipe_still_in_use_is_not_closed(self):
         class Pipe:

@@ -6,6 +6,7 @@ import argparse
 import codecs
 import json
 import os
+import re
 import sys
 from typing import Any, Callable, Dict, Optional, overload
 
@@ -75,6 +76,65 @@ def tolerate_console_encoding() -> None:
             reconfigure(errors="backslashreplace")
         except (OSError, ValueError):  # pragma: no cover - platform dependent
             pass
+
+
+def _read_stdin() -> str:
+    """Everything on stdin, as text a UTF-8 prompt survives.
+
+    ``sys.stdin.read()`` decodes with the encoding Python gives stdin -- for
+    a pipe on Windows that is the ANSI code page, cp932 on a Japanese
+    Windows -- so a UTF-8 prompt piped in arrived as mojibake and was
+    delegated that way (#284). The bytes are read instead and decoded as
+    UTF-8 (a BOM dropped), as a ``--prompt-file`` is; see
+    :func:`_decode_stdin` for bytes that are not. Line endings are read as
+    text mode reads them.
+    """
+    stream = sys.stdin
+    raw_stream = getattr(stream, "buffer", None)
+    if raw_stream is None:  # already text: a StringIO under test, or a wrapper
+        return stream.read()
+    raw: bytes = raw_stream.read()
+    text = _decode_stdin(raw, getattr(stream, "encoding", None))
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+#: One well-formed UTF-8 sequence of two to four bytes.
+_UTF8_MULTIBYTE = re.compile(
+    rb"[\xc2-\xdf][\x80-\xbf]"
+    rb"|\xe0[\xa0-\xbf][\x80-\xbf]|[\xe1-\xec\xee\xef][\x80-\xbf]{2}|\xed[\x80-\x9f][\x80-\xbf]"
+    rb"|\xf0[\x90-\xbf][\x80-\xbf]{2}|[\xf1-\xf3][\x80-\xbf]{3}|\xf4[\x80-\x8f][\x80-\xbf]{2}"
+)
+
+
+def _decode_stdin(raw: bytes, fallback: Optional[str]) -> str:
+    """``raw`` as text: UTF-8 where it reads as UTF-8 at all.
+
+    Bytes that are not valid UTF-8 are read in ``fallback`` -- stdin's own
+    encoding, the ANSI code page for a pipe on Windows (``type`` of a file
+    saved in cp932) -- only when they look like it: when no more of them
+    are well-formed UTF-8 sequences than are bytes UTF-8 cannot read. A UTF-8
+    prompt with one stray byte stays UTF-8, with that byte replaced; reading
+    the whole prompt in cp932 for it would garble every other character.
+    Whatever neither reads cleanly is UTF-8 with the undecodable bytes
+    replaced, rather than a traceback.
+    """
+    try:
+        return raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        pass
+    replaced = raw.decode("utf-8-sig", errors="replace")
+    invalid = replaced.count("�")
+    valid = len(_UTF8_MULTIBYTE.findall(raw))
+    try:
+        codec = codecs.lookup(fallback).name if fallback else None
+    except LookupError:
+        codec = None
+    if codec and codec not in ("utf-8", "utf-8-sig") and valid < invalid:
+        try:
+            return raw.decode(codec)
+        except UnicodeDecodeError:
+            pass
+    return replaced
 
 
 def _write(stream: Any, text: str) -> None:

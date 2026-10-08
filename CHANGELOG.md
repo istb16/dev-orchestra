@@ -121,7 +121,8 @@ below begins **User adapters** so adapter authors can find it.
   `review.idle_timeout_seconds` if that is larger: a command silent for
   longer is still killed, and a wedged run is still noticed well before its
   total deadline. `--idle-timeout` or the role's `options.idle_timeout`
-  sets another value, and reviewers and read-only runs keep 300s. Output also
+  sets another value, and reviewers and read-only runs keep 300s. A run
+  killed as stalled says where its idle deadline came from. Output also
   counts as it arrives rather than when a line ends, so a CLI printing dots
   or redrawing a progress bar is no longer taken for silent (#273).
 
@@ -140,7 +141,10 @@ below begins **User adapters** so adapter authors can find it.
   stopped such a process after a clean exit. A pipe still in use is now left
   to its reader, which is abandoned after a few seconds and from then on
   reads and drops what arrives, and what the process wrote after the CLI
-  exited is left out of the run's output, with a warning giving its size.
+  exited is left out of the run's output, with a warning giving its size,
+  even when that process closes the pipe a moment later; the lines the CLI
+  wrote before it exited still reach `review run --progress` and a job's
+  activity, and nothing written after does.
   The process is then stopped on POSIX, with a warning; on Windows it cannot
   be reached once the CLI has gone, so the run reports `orphans_possible`
   and warns instead. The CLI's exit code is kept either way (#267).
@@ -193,7 +197,11 @@ below begins **User adapters** so adapter authors can find it.
   from the absolute path `doctor` found, and both look only in the absolute
   directories on PATH: never in the current directory, which Windows
   searches first and which may be a repository carrying a `claude.cmd` of
-  its own. A name not found there is not started. An npm shim is bypassed for the `node` and
+  its own. A name not found there is not started. An `executable` with a
+  directory in it (`C:\tools\claude`, `tools\claude`) is looked up
+  where it says, with PATHEXT, by both: it is no longer reported missing
+  when PATH has no absolute entry, nor looked for under PATH by `doctor`
+  while the run started it from the current directory. An npm shim is bypassed for the `node` and
   script (or the `.exe`) it would run, so no argument passes through
   cmd.exe; any other `.cmd` or `.bat` runs under cmd.exe with every argument
   quoted, and an argument holding `"`, `%`, `!` or a line break, which
@@ -484,9 +492,13 @@ below begins **User adapters** so adapter authors can find it.
   no longer suggest `--no-exclude` for it. The size is checked before any
   pattern, and an incremental round withholds a large untracked file the same
   way, on either side of the round, instead of diffing it whole or deleting
-  every line of it. Names that are not UTF-8 or hold a carriage return are
-  read as they are on disk, and a nested repository is still left out
-  (#260).
+  every line of it, and under both names when it was renamed. When every
+  changed file was withheld, `review run` names each one that was not read
+  with its reason. Names that are not UTF-8 or hold a carriage return are
+  read as they are on disk, in an incremental round too, and a name is
+  recorded, printed and put in a reviewer's prompt with any control
+  character escaped (`\x1b`), so it cannot rewrite the terminal or add a
+  line of its own. A nested repository is still left out (#260).
 
 ## [0.22.0] - 2026-10-06
 

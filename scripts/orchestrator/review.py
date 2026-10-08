@@ -104,6 +104,7 @@ from .review_snapshot import (
     create_snapshot,
     current_snapshot_stamp,
     design_digest,
+    partition_withheld,
     plan_tokens,
     render_design_round_context,
     render_round_context,
