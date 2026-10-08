@@ -585,6 +585,97 @@ class TestThroughTheCli(IsolatedCase):
         self.assertEqual(code, 2)
         self.assertTrue(os.path.isdir(self.workflow_dir("w1")))
 
+    def busy(self, workflow, in_flight=None, last_activity=1.0):
+        """``workflow`` with these ledger marks, as a running stage leaves them."""
+        run_cli("--workflow", workflow, "review", "snapshot")
+        workspace = self.cli_workspace(workflow)
+        state = workspace.read_state()
+        state["ledger"] = {"last_activity_monotonic": last_activity, "in_flight": in_flight or {}}
+        workspace.write_state(state)
+
+    def test_removing_a_workflow_with_a_stage_in_flight_is_refused(self):
+        """A detached worker finishing after the delete would write its state
+        back, and leave a workflow with an empty record and no reports."""
+        self.busy("w1", {"implementer-1a2b3c4d": {"stage": "implementer", "pid": 1}})
+        code, _, err = run_cli("--workflow", "w2", "workflow", "remove", "w1", "--yes")
+        self.assertEqual(code, 2)
+        self.assertIn("in flight there (implementer-1a2b3c4d)", err)
+        self.assertIn("--force", err)
+        self.assertTrue(os.path.isdir(self.workflow_dir("w1")))
+
+    def test_a_workflow_finished_a_moment_ago_can_be_removed(self):
+        """Recent activity alone writes nothing late; only what still runs does."""
+        import time
+
+        self.busy("w1", last_activity=time.time())
+        code, _, err = run_cli("--workflow", "w2", "workflow", "remove", "w1", "--yes")
+        self.assertEqual(code, 0, err)
+        self.assertFalse(os.path.isdir(self.workflow_dir("w1")))
+
+    def job(self, workflow, job_id, **fields):
+        """A detached job recorded in ``workflow``, as ``run --detach`` leaves it."""
+        from orchestrator import jobs as jobs_mod
+
+        record = {
+            "id": job_id,
+            "stage": "implementer",
+            "status": "running",
+            "started_at": "2026-01-01T00:00:00Z",
+        }
+        record.update(fields)
+        jobs_mod.write_job(self.cli_workspace(workflow), record)
+
+    def test_removing_a_workflow_with_an_unfinished_job_is_refused(self):
+        run_cli("--workflow", "w1", "review", "snapshot")
+        # This process stands in for a worker that is still running.
+        self.job("w1", "implementer-1", pid=os.getpid())
+        code, _, err = run_cli("--workflow", "w2", "workflow", "remove", "w1", "--yes")
+        self.assertEqual(code, 2)
+        self.assertIn("a detached job has not finished there (implementer-1)", err)
+        self.assertIn("--force", err)
+        self.assertTrue(os.path.isdir(self.workflow_dir("w1")))
+
+    def test_finished_and_abandoned_jobs_do_not_block_the_remove(self):
+        run_cli("--workflow", "w1", "review", "snapshot")
+        self.job("w1", "implementer-1", status="succeeded")
+        # Its worker is gone: reconciled to abandoned, not counted as running.
+        self.job("w1", "implementer-2", pid=999_999)
+        code, _, err = run_cli("--workflow", "w2", "workflow", "remove", "w1", "--yes")
+        self.assertEqual(code, 0, err)
+        self.assertFalse(os.path.isdir(self.workflow_dir("w1")))
+
+    def test_force_removes_a_workflow_with_an_unfinished_job(self):
+        run_cli("--workflow", "w1", "review", "snapshot")
+        self.job("w1", "implementer-1", pid=os.getpid())
+        code, _, _ = run_cli("--workflow", "w2", "workflow", "remove", "w1", "--yes", "--force")
+        self.assertEqual(code, 0)
+        self.assertFalse(os.path.isdir(self.workflow_dir("w1")))
+
+    def test_force_removes_a_workflow_left_marked_in_flight(self):
+        """The mark outlives a crashed stage, so it cannot be the last word."""
+        self.busy("w1", {"implementer-1a2b3c4d": {"stage": "implementer", "pid": 1}})
+        code, _, _ = run_cli("--workflow", "w2", "workflow", "remove", "w1", "--yes", "--force")
+        self.assertEqual(code, 0)
+        self.assertFalse(os.path.isdir(self.workflow_dir("w1")))
+
+    def test_a_delete_stopped_part_way_says_what_is_left(self):
+        """Windows refuses to delete a file another process holds open."""
+        from unittest import mock
+
+        run_cli("--workflow", "w1", "review", "snapshot")
+
+        def held_open(path):
+            raise PermissionError(13, "The process cannot access the file", os.path.join(path, "state.json"))
+
+        with mock.patch("orchestrator.cli_workflow.shutil.rmtree", side_effect=held_open):
+            code, out, err = run_cli("--workflow", "w2", "workflow", "remove", "w1", "--yes")
+        self.assertEqual(code, 1)
+        self.assertEqual(out, "")
+        self.assertIn("Could not finish deleting", err)
+        self.assertIn("file(s) are left under", err)
+        self.assertNotIn("Traceback", err)
+        self.assertTrue(os.path.isdir(self.workflow_dir("w1")))
+
 
 if __name__ == "__main__":
     unittest.main()

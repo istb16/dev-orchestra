@@ -573,6 +573,7 @@ _ALLOWED = {
     # Windows only.
     ("clocks.py", "_windows_awake_clock", "ctypes"),
     ("execution.py", "pid_alive", "ctypes"),
+    ("execution.py", "process_started", "ctypes"),
     ("workspace.py", "_read_shared", "ctypes"),
     ("workspace.py", "_read_shared", "ctypes.wintypes"),
     ("workspace.py", "_read_shared", "msvcrt"),

@@ -800,7 +800,16 @@ def not_extracted(skipped: Sequence[Dict[str, Any]]) -> str:
     return "Not extracted: %d file(s) (%s)." % (len(skipped), ", ".join(parts))
 
 
-def _fence(text: str) -> str:
+def fence_for(text: str) -> str:
+    """A backtick fence longer than any run of backticks in ``text``.
+
+    Whatever is quoted into a prompt -- a diff, a plan, the request, a symbol
+    -- may hold a fence of its own, as a diff's unchanged line in a Markdown
+    file does after its one leading space. A fixed three would close there,
+    and what follows would read as the prompt's own instructions. Any run is
+    counted, not only one opening a line, so no indentation can close it; a
+    ``~~~`` line never closes a backtick fence.
+    """
     longest = max((len(run) for run in re.findall(r"`+", text)), default=0)
     return "`" * max(3, longest + 1)
 
@@ -823,7 +832,7 @@ def render_surrounding(adoption: Optional[Adoption]) -> str:
             lines.append(ADJACENT_NOTE)
         for candidate in adoption.adopted:
             text = str(candidate.get("text") or "")
-            fence = _fence(text)
+            fence = fence_for(text)
             lines += ["", "### %s" % describe(candidate), "%spython" % fence, text, fence]
         if adoption.trimmed or adoption.skipped:
             lines.append("")

@@ -772,8 +772,14 @@ what the estimated saving is and is not are in
 
 Honest limits of the above:
 
-* **A pid can be recycled**, so "the process is gone" is best-effort. It is used
-  to flag and clear, never to kill.
+* **A pid can be recycled**, so "the process is gone" is best-effort. A stage's
+  pid is used to flag and clear, never to kill. A detached job's worker pid is
+  also what `jobs cancel` stops, so the job records the worker's start time
+  with it (Windows and Linux) and checks it first: a pid that now belongs to
+  another process marks the job abandoned and is not touched. A record
+  without one -- written by an earlier version, or on macOS, where none is
+  read -- is stopped on POSIX only while the pid still leads its own process
+  group, as the worker does, and never on Windows.
 * **Budgets are per project workspace**, keyed on `.ai/state.json`. Two
   concurrent workflows in one checkout share them.
 * **Nothing here bounds a single reviewer's token spend**, only its wall clock.
