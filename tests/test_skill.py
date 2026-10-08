@@ -11,6 +11,7 @@ import subprocess
 import sys
 import unittest
 from concurrent.futures import ThreadPoolExecutor
+from unittest import mock
 
 from helpers import (
     REPO_ROOT,
@@ -366,6 +367,29 @@ class TestDocumentation(IsolatedCase):
         data = miniyaml.loads(read("agents/openai.yaml"))
         self.assertEqual(data["name"], "dev-orchestra")
         self.assertEqual(data["instructions"]["file"], "../" + validate_skill.SKILL_PATH)
+
+    def test_agent_manifest_is_checked_against_the_cli(self):
+        """A stale ``agents/openai.yaml`` fails validation (#297)."""
+        self.assertEqual(validate_skill.check_agent_manifest(), [])
+        current = read(validate_skill.AGENT_MANIFEST)
+        stale = (
+            current.replace("    - agy\n", "")
+            .replace("  - workflow remove\n", "")
+            .replace("  - summary\n", "  - summary\n  - review fix\n")
+            .replace("directory: .ai/workflows/<id>", "directory: .ai")
+        )
+        self.assertNotEqual(stale, current)
+        original = validate_skill._read
+
+        def reading(relative):
+            return stale if relative == validate_skill.AGENT_MANIFEST else original(relative)
+
+        with mock.patch.object(validate_skill, "_read", reading):
+            problems = "\n".join(validate_skill.check_agent_manifest())
+        self.assertIn("commands lack: workflow remove", problems)
+        self.assertIn("what the CLI has not: review fix", problems)
+        self.assertIn("optional_clis", problems)
+        self.assertIn("artifacts.directory is '.ai'", problems)
 
     def test_changelog_documents_the_current_version(self):
         front, _ = validate_skill.parse_frontmatter(read(validate_skill.SKILL_PATH))

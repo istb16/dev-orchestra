@@ -73,6 +73,21 @@ def _both_paths(written: str, resolved: Optional[str]) -> str:
     return "%s (resolved to %s)" % (written, resolved)
 
 
+def _written_outside(written: str, resolved: str) -> str:
+    """A hint when the file was written where ``.ai/`` stands, not in the workflow.
+
+    ``_in_workflow`` rewrites the argument, not the file: an orchestrator that
+    wrote ``.ai/execution/request.md`` itself put it beside the workflow
+    directories, where nothing reads it (#283).
+    """
+    if resolved == written or not os.path.isfile(written):
+        return ""
+    return (
+        "; a file is there as written, but a .ai/ path in an argument means this"
+        " workflow's directory: write the file at the resolved path"
+    )
+
+
 def _quoted(token: str) -> str:
     """``token`` as ``--print-command`` shows it: quoted when it has spaces,
     so an argument such as agy's ``-p`` value stays one argument."""
@@ -166,7 +181,7 @@ def _read_prompt_file(prompt_file: str, workspace: Optional[ws.Workspace] = None
     # are different mistakes.
     if not os.path.isfile(path):
         trouble = "does not exist" if not os.path.exists(path) else "is not a file"
-        raise SystemExit("prompt file %s: %s" % (trouble, named))
+        raise SystemExit("prompt file %s: %s%s" % (trouble, named, _written_outside(prompt_file, path)))
     try:
         with open(path, "r", encoding="utf-8-sig", errors="replace") as handle:
             text = handle.read()
@@ -759,20 +774,7 @@ def _record_outcome(run: _Run, attempt: _Attempt) -> None:
     # that vanished, or a success whose usage is nowhere.
     args, seat, book = run.args, run.seat, run.book
     result = attempt.result
-    finished = {
-        "exit_code": result.exit_code,
-        "stalled": result.stalled,
-        "timed_out": result.timed_out,
-        "duration_seconds": round(result.duration, 2),
-        "model": result.resolved.display if result.resolved else None,
-        "session_id": result.session_id,
-    }
-    if attempt.resume_detail is not None:
-        finished["resume"] = dict(attempt.resume_detail, outcome="ok" if result.ok else None)
-    if result.warnings:
-        finished["warnings"] = list(result.warnings)
-    if result.suspended:
-        finished["suspended_seconds"] = round(result.suspended, 2)
+    finished = _finished_fields(attempt)
 
     try:
         # Recorded whatever the outcome -- a failed run still spent what it spent.
@@ -825,6 +827,62 @@ def _record_outcome(run: _Run, attempt: _Attempt) -> None:
         )
 
 
+def _finished_fields(attempt: _Attempt) -> Dict[str, Any]:
+    """How a run finished, in the keys a job record keeps it under.
+
+    One builder for the job record and for ``run --json`` in the foreground,
+    so a caller reads the same keys whichever way the run was started.
+    """
+    result = attempt.result
+    finished: Dict[str, Any] = {
+        "exit_code": result.exit_code,
+        "stalled": result.stalled,
+        "timed_out": result.timed_out,
+        "duration_seconds": round(result.duration, 2),
+        "model": result.resolved.display if result.resolved else None,
+        "session_id": result.session_id,
+    }
+    if attempt.resume_detail is not None:
+        finished["resume"] = dict(attempt.resume_detail, outcome="ok" if result.ok else None)
+    if result.warnings:
+        finished["warnings"] = list(result.warnings)
+    if result.suspended:
+        finished["suspended_seconds"] = round(result.suspended, 2)
+    return finished
+
+
+def _foreground_json(
+    run: _Run, attempt: _Attempt, target: str, refused: Optional[_Refused]
+) -> Dict[str, Any]:
+    """``run --json`` without ``--detach``: the outcome as one object (#286).
+
+    The outcome keys of a finished job record, set under the same conditions:
+    ``stage``, ``status``, the ones :func:`_finished_fields` gives, ``error``
+    on a failed run that said something, and ``output_written: false``,
+    ``output_target`` and ``rejected_file`` only when ``--output`` was refused.
+    Two keys a job does not have: ``output``, the answer inline when there was
+    no ``--output`` (a job keeps it in its ``.out`` file), and ``answered``.
+    ``status`` says how the run went, as a job's does; the exit code also
+    counts a refused write and an ``ok`` run that printed nothing, which
+    ``answered: false`` names.
+    """
+    result = attempt.result
+    payload: Dict[str, Any] = {
+        "stage": run.seat.role,
+        "status": "succeeded" if result.ok else "failed",
+    }
+    payload.update(_finished_fields(attempt))
+    error = "" if result.ok else (result.stderr or "").strip()[:2000]
+    if error:
+        payload["error"] = error
+    if refused is not None:
+        payload.update(output_written=False, output_target=target, rejected_file=refused.rejected_file)
+    if not target:
+        payload["output"] = result.stdout
+    payload["answered"] = _answered(result)
+    return payload
+
+
 def _report_outcome(run: _Run, attempt: _Attempt, warned_before: str) -> int:
     """Save or print the run's output, say how it went, and return the exit code."""
     args, role = run.args, run.seat.role
@@ -836,7 +894,8 @@ def _report_outcome(run: _Run, attempt: _Attempt, warned_before: str) -> int:
         target = _in_workflow(run.workspace, str(args.output))
         refused = _save_output(role, target, result)
     elif not args.job_file:
-        _out(result.stdout)
+        if not args.json:
+            _out(result.stdout)
         # The same judgement `--output` refuses a write on. A run with nowhere
         # to write has no refusal to report, so an `ok` run that printed
         # nothing used to be reported as a success by printing that nothing.
@@ -889,6 +948,10 @@ def _report_outcome(run: _Run, attempt: _Attempt, warned_before: str) -> int:
             )
     if result.orphans_possible:
         _err("warning: %s's process group may have left orphans; check for stray processes." % role)
+    if args.json and not args.job_file:
+        # Last, after every diagnostic has gone to stderr: stdout carries the
+        # one object and nothing else.
+        _emit_json(_foreground_json(run, attempt, target, refused))
     # A refused write exits non-zero even when the run itself was fine: the
     # promise `--output` makes is that the named file holds this run's result,
     # and exiting 0 over an untouched one lets the next command in a chain read

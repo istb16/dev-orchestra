@@ -616,7 +616,11 @@ def _add_run_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPars
         default=None,
         help="with --resume: the prompt for a continued session (a fresh run gets --prompt-file)",
     )
-    run_parser.add_argument("--json", action="store_true", help="machine-readable output")
+    run_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="print the outcome as one JSON object, the output inline (with --detach: the started job)",
+    )
     run_parser.add_argument("--job-file", default=None, help=argparse.SUPPRESS)
     run_parser.add_argument("--print-command", action="store_true", help="print the CLI invocation and exit")
     run_parser.add_argument("--extra", nargs=argparse.REMAINDER, help="extra args passed to the provider CLI")

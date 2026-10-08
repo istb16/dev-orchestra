@@ -1,4 +1,4 @@
-<!-- translated-from: references/cli.md sha256:9a71d95a29887dc7d08c19a419fcac6340f64d0ba905ca9db4490ca14e8c626e -->
+<!-- translated-from: references/cli.md sha256:43b29e870bd6ff1b0e5882f2214f1318f0a3468ab31b744bc265bf37140c5cd2 -->
 
 > この文書は [references/cli.md](../../../references/cli.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -52,6 +52,21 @@ Microsoft Store のエイリアスだからです。
 すべてのレビュアーが失敗、ロールの実行が失敗）、`2` 使い方または設定のエラー、`3` 予算が尽きて
 コマンドが実行を拒否した、`4` ジョブがまだ実行中のまま `jobs wait` が戻った、`5` plan が承認されて
 おらず `design.require_approval` が有効、`130` 中断。
+
+`--json` は、文章の代わりに JSON のオブジェクトを 1 つ標準出力に出します。プログラムが読むのは
+こちらです（README の「Compatibility」）。`--json` を持つコマンドは次のとおりです。
+<!-- json-commands: start -->
+`config show`, `config validate`, `config suggest-roles`, `model list`,
+`reviewer list`, `doctor`, `hooks status`, `run`, `review snapshot`,
+`review run`, `review consolidate`, `review show`, `review status`,
+`design approve`, `state show`, `jobs list`, `jobs show`, `jobs wait`,
+`budget show`, `tokens show`, `optimization report`, `progress record`,
+`workflow list`, `workflow show`, `status`, `summary`.
+<!-- json-commands: end -->
+ほかのコマンドは何かを変えて、うまくいったかどうかだけを伝えます。それは終了コードで分かります。
+結果は対応する確認用のコマンドで読んでください（`review triage` のあとは `review show`、
+`state record` のあとは `state show`、`budget consume` のあとは `budget show`、`jobs cancel` の
+あとは `jobs show`、`workflow use` のあとは `workflow show`）。
 
 <a id="config"></a>
 
@@ -360,6 +375,18 @@ review fixer、`--mode implement` では 1200 秒で、その設定の方が大�
 `--detach` は実行を独自のプロセスで開始し、すぐにジョブ id を返すので、呼び出しがブロックすることは
 ありません。後述の `jobs` を参照してください。
 
+`--json` は、実行のあとに結果を 1 つのオブジェクトとして出します。キーと、それが入る条件は、
+終わったジョブの記録と同じです。`stage`、`status`（`succeeded` か `failed`）、`exit_code`、
+`stalled`、`timed_out`、`duration_seconds`、`model`、`session_id`。失敗して何か出力していれば
+`error`。当てはまるときは `resume`、`warnings`、`suspended_seconds`。`--output` への書き込みを
+断ったときだけ `output_written: false`、`output_target`、`rejected_file`（何も残さなかったときは
+`null`）。ジョブの記録に無いキーが 2 つあります。`--output` が無いときに答えを表示する代わりに入れる
+`output`（ジョブでは `.out` ファイルに残ります）と、上の判定の `answered` です。診断はこれまでどおり
+標準エラーに出て、終了コードも `--json` が無いときと同じです。始まる前に断られた実行（引数の誤りや
+読み取り専用の拒否で exit 2、予算切れで exit 3、承認されていない plan で exit 5）は、標準出力に何も
+出しません。理由は終了コードと標準エラーで分かります。`--print-command` は `--json` があっても
+コマンド行を文章で出します。`--detach` と一緒のときは、これまでどおり開始したジョブを出します。
+
 <a id="revising-the-plan-in-the-architects-own-session---resume"></a>
 
 ### architect 自身のセッションで plan を改訂する（`--resume`）
@@ -452,7 +479,7 @@ echo "explain the failure" | dev-orchestra run orchestrator
 
 | コマンド | 説明 |
 | --- | --- |
-| `review snapshot [--base <rev>] [--no-untracked] [--surrounding none\|enclosing] [--json]` | レビュー対象の変更を固定します。空の場合は終了コード 1 です。`review.context.max_chars` を超える変更には警告が出ますが、それでも書き込まれます。スナップショットを取ること自体は何も消費せず、拒否するのは消費するコマンドの役目だからです。`--json` は同じことを数値で示します: `change_chars`、`max_chars`、`over_context`。`review.context.surrounding: enclosing` のときは、各 hunk を囲むシンボルも、diff を取ったツリーから `review-surrounding.json` に固定し、固定したシンボル数と文字数、抽出しなかったファイルの数とその理由を示す `context:` 行を出力します。メタデータには `surrounding` ブロックが加わります。`--surrounding` はこのスナップショットに限って設定を上書きします: **`enclosing` は設定が `none` でもこのスナップショットについて候補を凍結します**。この凍結が無いと `review run --surrounding enclosing` は拒否されます。`none` は何も凍結せず、古い凍結ファイルを削除します。設定そのものは変わりません。`references/reviews.md` と [周辺コンテキストの効果を測る](limits.md#measuring-what-surrounding-context-does) を参照してください。 |
+| `review snapshot [--base <rev>] [--no-untracked] [--no-exclude] [--full] [--surrounding none\|enclosing] [--json]` | レビュー対象の変更を固定します。空の場合は終了コード 1 です。`review.context.max_chars` を超える変更には警告が出ますが、それでも書き込まれます。スナップショットを取ること自体は何も消費せず、拒否するのは消費するコマンドの役目だからです。`--json` は同じことを数値で示します: `change_chars`、`max_chars`、`over_context`。`review.context.surrounding: enclosing` のときは、各 hunk を囲むシンボルも、diff を取ったツリーから `review-surrounding.json` に固定し、固定したシンボル数と文字数、抽出しなかったファイルの数とその理由を示す `context:` 行を出力します。メタデータには `surrounding` ブロックが加わります。`--surrounding` はこのスナップショットに限って設定を上書きします: **`enclosing` は設定が `none` でもこのスナップショットについて候補を凍結します**。この凍結が無いと `review run --surrounding enclosing` は拒否されます。`none` は何も凍結せず、古い凍結ファイルを削除します。設定そのものは変わりません。`references/reviews.md` と [周辺コンテキストの効果を測る](limits.md#measuring-what-surrounding-context-does) を参照してください。 |
 | `review run [--design] [--request <path>] [--iteration N] [--only <ids/roles>] [--sequential] [--context <text>] [--base <rev>] [--timeout <s>] [--idle-timeout <s>] [--force] [--surrounding none\|enclosing] [--high-risk] [--progress] [--json]` | スナップショットに対してすべてのレビュアーを実行し、レポートと統合結果を書き込みます。ディスクにスナップショットがなければ先に取ります。`--base` を付けるとそのリビジョンを基準に取り、ディスクのスナップショットが別の基準で取られていれば取り直して（`note:` を表示します）、`review snapshot --base` と同じくラウンドの数え直しになります。基準なしで取ったスナップショットは `HEAD` を基準にしたものとみなし、`--base` と同じコミットを指す名前で取ったものは取り直しません。`--base` がなければ、ディスクのスナップショットをそのままレビューします。終了コード 1 になるのは、`ok` で戻ったレビュアーが 1 人もいない場合だけです。すべてのレビュアーが失敗した場合や、変更本体が大きすぎてインライン化できずファイルとして渡されたラウンドがこれにあたり、後者はクリーンではなく `partial` として記録されます。ラウンドは `--iteration` が指定されない限りスナップショットから導出され、`review.max_review_iterations` を超えるラウンドは `--force` がない限り拒否されます（終了コード 3）。上限に達したラウンドでも fix と再テストは行われ、拒否されるのは再レビューだけです。最適化ゲートに拒否されたラウンド（テストが失敗として記録されている）も終了コード 3 で終了し、`optimization report` が数えられるよう `refused` として記録されます。`review.context.max_chars`（400,000）を超える変更本体も同様です。何もレビューされず、メッセージはサイズ、上限、上限内に収める方法を示し、ラウンドは `refused_by: "context"` として記録されます。`--force` を付けると構わず実行し、そのラウンドは報告されるすべての場所で `over_budget` として記録されます。本体をプロンプトに入れるかパスとして渡すかは `review.context.inline_chars`（400,000。デフォルトでは同じ数値）で決まり、各レビュアーのエントリには判断に使われた値が記録されます。`budgets.max_runtime_seconds` 分の委譲実行時間を使い切った場合も同様にラウンドは拒否され（パネルはその最大の消費者です）、メッセージはどの予算だったかを示します。`--only` は一部だけを実行しますが、統合はすべてのレビュアーの現在のレポートに対して行うので、何も失われません — ただし、このラウンドで外された条件付きのレビュアーのレポートは統合されません。条件付きのレビュアーはそれぞれ、理由（高リスクなパス、またはパスで絞り込んだレビュアーなら自分のパターンの 1 つ、`when: high-risk` のレビュアーなら `--high-risk`、差分ラウンドでの自身の未解決の accepted の指摘、`--only` での指名）を示す `note:` とともに加えられるか外され、その判断はイベントと `--json` の `optimization.conditional` に `optimization.declared` とともに記録されます。ラウンドに見るものがない `test`、`architecture` のレビュアー（および `relevance: security` でオプトインした `security` のレビュアー）も、どのレベルでも同じように外され、`note: <id> (when: relevance) left out: <reason>; --only <id> to include it` と `when: relevance` の記録が残ります（`references/reviews.md` の「ラウンドが必要としないロール」を参照）。`--high-risk` は変更を高リスクと宣言します。`when: high-risk` のレビュアーを加え、パネルを縮小させず、すべてのロールを残しますが、レベル・指摘の上限・ゲートは決して変えないので、red のツリーに対する宣言付きのラウンドは他と同じように拒否されます。`--design` と一緒に使うと、design パネルの `when: high-risk` の席を加え、すべてのロールを残します。高リスクへの一致があるか `--high-risk` のラウンドでは、`high_risk_model` を持つ席はそのモデルを使い、`note: high-risk round (<why>): <id> runs <model> instead of <model>` を出し、そのレビュアーのエントリに `model_slot: high-risk` が加わります。`review.context.surrounding: enclosing` のときは、固定されたシンボルを `review.context.surrounding_chars` と、diff が両方の上限の下に残す分の範囲で採用し、`Surrounding context:` 行が採用した数と除外した数とその理由を示し、`--json` にはラウンドの `surrounding` レコードが入ります。上限が計測するサイズは、diff に採用したコンテキストを足したものになります。`--surrounding none\|enclosing` は、1 つのスナップショットをコンテキストあり・なしでレビューするために、この run に限って `review.context.surrounding` を上書きします（[周辺コンテキストの効果を測る](limits.md#measuring-what-surrounding-context-does) を参照してください）。設定は変わらず、行は `(--surrounding enclosing for this run)` または `Surrounding context: none (--surrounding none for this run; review.context.surrounding unchanged)` となります。次の場合は何も課金される前に終了コード 2 で拒否されます: `--design` と併用したとき。incremental ラウンド（再レビューのプロンプトには実行時点の accepted findings が載るので、2 本の run はコンテキスト以外でも違ってしまう）。`enclosing` で何も採用されないとき（理由を問わない: `review snapshot --surrounding enclosing` で凍結していないスナップショット、候補なし、ファイル渡し、予算なし）。同じスナップショットに対する 2 本目の run（間に `budget reset` を挟んでも同じ）で、前回の run が組み立てた後に finding のトリアージまたはトリアージのメモが設定されたとき（前のラウンドから引き継がれたものは数えない）。同じスナップショットの再実行はラウンドを進めず、findings の署名を登録しないので、ペアが「何も変えなかった修正」に見えることはありません。1 本目は通常どおり登録します。lineage が変わった後の run や、`--iteration` で別のラウンドを指定した run は再実行ではなく、署名を登録します。run のイベントと `--json` には `measurement` ブロック（`surrounding`、完全な `snapshot` sha256、凍結した `tree`、`head`、`base`、`workflow` ディレクトリ、予算の `epoch`、`rerun`、そして `inputs`: `context_sha256`、`max_findings`、`inline_chars`、`max_chars`、`force`）が加わり、`consolidated.json` には `triage_at_build`（キーごとの各 finding の `triage` と `triage_note`）を持つ `measurement` が加わります。フラグが無ければ、これらは何も書かれません。`--progress` は、ラウンドの実行中に各レビュアーのツール使用を `[<reviewer> +mm:ss] <line>` の形で stderr に出します。行の中身と規則はジョブの activity と同じで（[jobs](#jobs) を参照）、レビュアーごとに 300 行までです。実行がどう終わっても最後に `[<reviewer> +mm:ss] done: <status>` を出します。ファイルには何も書かず、stdout（`--json` を含む）は変わりません。出力をリダイレクトしてバックグラウンドで実行するラウンド向けで、付けなければ stderr はこれまでどおりです。何よりも先に、project ファイルが設定していて無視されたもの（`design.require_approval`、リポジトリの外の `workspace.dir`）と、project ファイルが、それが無い場合の設定よりゆるめているレビューの関門それぞれを `warning:` 行で示します（`references/configuration.md` の「プロジェクトファイルがゆるめられないもの」を参照）。 |
 | `review consolidate [--design] [--iteration N] [--json]` | 既存のレポートを再解析し、そのステージのパネル（`--design` なら design パネル）について統合結果を再構築します。現在のスナップショットまたは plan に対する直近のラウンドが外したレビュアー -- 条件付きのレビュアーや、見るもののなかったロール -- のレポートを除くので、そのラウンドが読んだレポートを読みます。design ラウンドが誰を外したかを記録するようになる前に記録された design ラウンドでは、誰も除きません。 |
 | `review show [--design] [--accepted] [--json]` | 統合されたレビューを表示します。 |
@@ -1082,7 +1109,10 @@ dev-orchestra progress record test --signature "3 failed: test_totals, test_disc
 
 コンテナに対して書かれたパスはワークフローの中で解決されます。`--output .ai/plan.md` は *この*
 ワークフローの plan を意味します。`.ai/` の外のパスや、すでにワークフローを指定しているパスは、書かれた
-とおりに使われます。
+とおりに使われます。読み替えるのは引数だけです。自分で書くファイルやシェルのリダイレクトはパスのとおりの
+場所に書かれるので、`workflow show` の `Artifacts:` のディレクトリ（`--json` では `dir`）の下に置いて
+ください。たとえば `review run --progress > "<Artifacts>/execution/review-run.log" 2>&1` です（パスに空白があってもよいよう引用符で囲みます）。
+`--prompt-file` の解決した先に無く、書かれたとおりの場所にはあるときは、エラーがそのことを伝えます。
 
 これが分離するのは成果物であって、作業ツリーではありません。1 つのチェックアウトにはファイルの組が 1 つ
 しかなく、レビュアーはその `git diff` を読みます。本当に同時に実行される作業では、各ワークフローに独自の

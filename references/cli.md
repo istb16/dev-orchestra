@@ -48,6 +48,22 @@ usage or configuration error, `3` a budget is exhausted and the command refused
 to run, `4` a `jobs wait` returned while the job was still running, `5` the
 plan is not approved and `design.require_approval` is on, `130` interrupted.
 
+`--json` prints one JSON object on stdout instead of the text, and is what a
+program should read (README, "Compatibility"). These commands take it:
+<!-- json-commands: start -->
+`config show`, `config validate`, `config suggest-roles`, `model list`,
+`reviewer list`, `doctor`, `hooks status`, `run`, `review snapshot`,
+`review run`, `review consolidate`, `review show`, `review status`,
+`design approve`, `state show`, `jobs list`, `jobs show`, `jobs wait`,
+`budget show`, `tokens show`, `optimization report`, `progress record`,
+`workflow list`, `workflow show`, `status`, `summary`.
+<!-- json-commands: end -->
+The others change something and report only whether it worked, which the exit
+code says; read the result with the matching query command (`review show`
+after `review triage`, `state show` after `state record`, `budget show` after
+`budget consume`, `jobs show` after `jobs cancel`, `workflow show` after
+`workflow use`).
+
 ## config
 
 | Command | Description |
@@ -392,6 +408,23 @@ from an exit 0 over silence.
 `--detach` starts the run in its own process and returns a job id immediately,
 so the call cannot block. See `jobs` below.
 
+`--json` prints the outcome as one object, after the run, in the keys a
+finished job record keeps it under and when it keeps them: `stage`, `status`
+(`succeeded` or `failed`), `exit_code`, `stalled`, `timed_out`,
+`duration_seconds`, `model`, `session_id`; `error` on a failed run that said
+something; `resume`, `warnings` and `suspended_seconds` when they apply; and
+`output_written: false`, `output_target` and `rejected_file` (`null` when
+nothing was kept) only when an `--output` write was refused. Two keys a job
+record does not have: `output`, the model's answer, there instead of printed
+when there is no `--output` (a job keeps it in its `.out` file), and
+`answered`, the judgement above. The diagnostics still go to stderr, and the
+exit code is the same as without `--json`. A run refused before it starts --
+a bad argument or a read-only refusal (exit 2), a spent budget (exit 3), an
+unapproved plan (exit 5) -- prints nothing on stdout: the exit code and
+stderr say why. `--print-command` prints the command line as text, with or
+without `--json`. With `--detach` it prints the job as started instead, as
+before.
+
 ### Revising the plan in the architect's own session (`--resume`)
 
 `--resume` revises this workflow's plan by continuing the session of the last
@@ -494,7 +527,7 @@ echo "explain the failure" | dev-orchestra run orchestrator
 
 | Command | Description |
 | --- | --- |
-| `review snapshot [--base <rev>] [--no-untracked] [--surrounding none\|enclosing] [--json]` | Freeze the change under review. Exit 1 if empty. A change over `review.context.max_chars` is warned about and still written — taking a snapshot spends nothing, and the refusal belongs to the command that would. `--json` says the same thing in numbers: `change_chars`, `max_chars` and `over_context`. With `review.context.surrounding: enclosing` it also freezes the symbol enclosing every hunk into `review-surrounding.json`, from the tree the diff was taken from, and prints a `context:` line saying how many symbols and characters were frozen and how many files were not extracted, and why; the metadata gains a `surrounding` block. `--surrounding` overrides the setting for this snapshot only: **`enclosing` freezes the candidates for this snapshot even with the setting at `none`**, and without that freeze `review run --surrounding enclosing` is refused; `none` freezes nothing and removes an older frozen file. The setting itself is not changed. See `references/reviews.md` and [Measuring what surrounding context does](limits.md#measuring-what-surrounding-context-does). |
+| `review snapshot [--base <rev>] [--no-untracked] [--no-exclude] [--full] [--surrounding none\|enclosing] [--json]` | Freeze the change under review. Exit 1 if empty. A change over `review.context.max_chars` is warned about and still written — taking a snapshot spends nothing, and the refusal belongs to the command that would. `--json` says the same thing in numbers: `change_chars`, `max_chars` and `over_context`. With `review.context.surrounding: enclosing` it also freezes the symbol enclosing every hunk into `review-surrounding.json`, from the tree the diff was taken from, and prints a `context:` line saying how many symbols and characters were frozen and how many files were not extracted, and why; the metadata gains a `surrounding` block. `--surrounding` overrides the setting for this snapshot only: **`enclosing` freezes the candidates for this snapshot even with the setting at `none`**, and without that freeze `review run --surrounding enclosing` is refused; `none` freezes nothing and removes an older frozen file. The setting itself is not changed. See `references/reviews.md` and [Measuring what surrounding context does](limits.md#measuring-what-surrounding-context-does). |
 | `review run [--design] [--request <path>] [--iteration N] [--only <ids/roles>] [--sequential] [--context <text>] [--base <rev>] [--timeout <s>] [--idle-timeout <s>] [--force] [--surrounding none\|enclosing] [--high-risk] [--progress] [--json]` | Run every reviewer against the snapshot; write reports and the consolidated result. With no snapshot on disk one is taken first; `--base` takes it against that revision, and retakes one on disk that was taken against another base (with a `note:`), which starts the round count again as `review snapshot --base` does. A snapshot taken without a base was taken against `HEAD`, and one taken against a name for the same commit as `--base` is kept. Without `--base` the snapshot on disk is reviewed as it is. Exit 1 only if no reviewer came back `ok` — every reviewer failing, or a round whose change body was too large to inline and was handed over as a file, which is recorded as `partial` rather than clean. The round is derived from the snapshot unless `--iteration` is given, and a round past `review.max_review_iterations` is refused (exit 3) unless `--force` — the round that reached the limit still gets its fix and re-test; only the re-review is refused. A round refused by the optimization gate (tests recorded as failing) also exits 3, and is recorded as `refused` so `optimization report` can count it. So is a change body over `review.context.max_chars` (400,000): nothing is reviewed, the message names the size, the limit and the ways under it, and the round is recorded with `refused_by: "context"` — `--force` runs it anyway and records the round as `over_budget` everywhere it is reported. Whether the body goes into the prompt or over as a path is `review.context.inline_chars` (400,000, the same number by default), and each reviewer entry records the value that decided it. A round is refused the same way once `budgets.max_runtime_seconds` of delegated execution has been spent — a panel is the largest consumer of it — and the message names which budget it was. `--only` runs a subset but still consolidates every reviewer's current report, so nothing is lost — except the report of a conditional reviewer this round left out, which is not consolidated. Each conditional reviewer is added or left out with a `note:` naming why (a high-risk path or, for a path-scoped one, one of its own patterns, `--high-risk` for a `when: high-risk` one, its own open accepted finding on an incremental round, or `--only` naming it), and the decisions are in the event and in `--json` under `optimization.conditional`, with `optimization.declared`. A `test` or `architecture` reviewer the round has nothing for -- or a `security` one that opts in with `relevance: security` -- is left out the same way, at every level, with a `note: <id> (when: relevance) left out: <reason>; --only <id> to include it` and a `when: relevance` record (see `references/reviews.md`, "Roles a round does not need"). `--high-risk` declares the change high-risk: it adds the `when: high-risk` reviewers, keeps the panel whole and keeps every role, and never changes the level, the findings cap or the gate, so a declared round on a red tree is refused like any other; with `--design` it adds the design panel's `when: high-risk` seats and keeps every role. On a round with a high-risk hit or `--high-risk`, a seat with a `high_risk_model` runs it, with a `note: high-risk round (<why>): <id> runs <model> instead of <model>`, and its reviewer entry gains `model_slot: high-risk`. With `review.context.surrounding: enclosing` the frozen symbols are adopted within `review.context.surrounding_chars` and what the diff leaves under both limits, a `Surrounding context:` line says how many were adopted and how many left out and why, `--json` carries the round's `surrounding` record, and the size the limit measures is the diff plus the context adopted. `--surrounding none\|enclosing` overrides `review.context.surrounding` for this run only, to review one snapshot with and without the context (see [Measuring what surrounding context does](limits.md#measuring-what-surrounding-context-does)); the setting is not changed, and the line reads `(--surrounding enclosing for this run)` or `Surrounding context: none (--surrounding none for this run; review.context.surrounding unchanged)`. It is refused with exit 2 before anything is charged: with `--design`; on an incremental round (the re-review prompt carries the accepted findings of the moment it runs, so two runs on it would differ in more than the context); with `enclosing` when nothing would be adopted, whatever the reason (a snapshot not frozen with `review snapshot --surrounding enclosing`, no candidates, file delivery, no budget); and on a second run of the same snapshot -- across a `budget reset` too -- when a finding's triage or triage note was set since the last run built it (one carried in from an earlier round does not count). A rerun of the same snapshot stays in its round and registers no findings signature, so the pair does not read as a fix that changed nothing; the first run registers it as usual. A run after a lineage change, or one whose `--iteration` names another round, is no rerun and registers its signature. The run event and `--json` gain a `measurement` block (`surrounding`, full `snapshot` sha256, frozen `tree`, `head`, `base`, `workflow` directory, budget `epoch`, `rerun`, and `inputs`: `context_sha256`, `max_findings`, `inline_chars`, `max_chars`, `force`), and `consolidated.json` gains `measurement` with `triage_at_build` (each finding's `triage` and `triage_note` by key). Without the flag none of this is written. `--progress` echoes each reviewer's tool uses to stderr while the round runs, as `[<reviewer> +mm:ss] <line>` -- the same lines, under the same rules, as a job's activity (see [jobs](#jobs)) -- up to 300 per reviewer, then `[<reviewer> +mm:ss] done: <status>` however the run ended. Nothing is written to a file, and stdout, `--json` included, is unchanged. It is meant for a round run in the background with its output redirected; without it stderr is as it always was. Before anything else, a `warning:` line names each setting the project file makes that was ignored (`design.require_approval`, a `workspace.dir` outside the repository) and each review gate it makes looser than the configuration without it (see `references/configuration.md`, "What the project file may not loosen"). |
 | `review consolidate [--design] [--iteration N] [--json]` | Re-parse the existing reports and rebuild the consolidated result, over the panel of the stage (`--design`: the design panel). It leaves out the reports of the reviewers that the last round on the current snapshot or plan left out -- a conditional reviewer, or a role it had nothing for -- so it reads the reports that round did. A design round recorded before design rounds recorded who sat out leaves no one out. |
 | `review show [--design] [--accepted] [--json]` | Show the consolidated review. |
@@ -1198,7 +1231,13 @@ round counter. The id is resolved per command, in order, from `--workflow`,
 
 A path written against the container is resolved inside the workflow:
 `--output .ai/plan.md` means the plan of *this* workflow. Paths outside `.ai/`,
-and paths that already name a workflow, are used as written.
+and paths that already name a workflow, are used as written. Only arguments
+are resolved: a file written by hand or a shell redirect goes where its path
+says, so put those under `workflow show`'s `Artifacts:` directory (`dir` in
+`--json`), for example `review run --progress >
+"<Artifacts>/execution/review-run.log" 2>&1`, quoted because the path may
+hold a space. A `--prompt-file` whose resolved
+path is missing but which exists as written says so in the error.
 
 This separates the artifacts, not the working tree: one checkout has one set of
 files, and the reviewers read `git diff` of it. For work that really runs at

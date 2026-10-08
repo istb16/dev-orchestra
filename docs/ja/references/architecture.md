@@ -1,4 +1,4 @@
-<!-- translated-from: references/architecture.md sha256:4141d076514326b1d1dca4abe19d110e5aab5aa02f40dd7a2a48ed5c9128f473 -->
+<!-- translated-from: references/architecture.md sha256:47cc2c593726d1445165f85b627d95674fcfcb8d7a0d89fe1adc9757fa9c94c7 -->
 
 > この文書は [references/architecture.md](../../../references/architecture.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -93,19 +93,22 @@ provider レイヤーより上のコードは、`claude` が `--model` を使い
 project/
 ├── .dev-orchestra.yaml         # optional per-project override
 └── .ai/                          # working artifacts (self-ignoring)
-    ├── plan.md                   # Architect output
-    ├── execution/                # prompts you wrote, fix brief, role outputs
-    ├── reviews/
-    │   ├── review-target.diff    # the frozen snapshot every reviewer sees
-    │   ├── review-target.json    # strategy, files, sha256
-    │   ├── review-surrounding.json  # enclosing symbols, only with review.context.surrounding: enclosing
-    │   ├── <reviewer-id>.md      # one report per reviewer
-    │   ├── consolidated.md       # deduped findings, human readable
-    │   ├── consolidated.json     # deduped findings + triage state
-    │   ├── rounds/               # consolidated.json of every round, kept after the next
-    │   └── design/               # the same files for the design review, so
-    │                             # its rounds and triage stay its own
-    └── state.json                # stage events with resolved model ids
+    ├── current.json              # the workflow this directory last resolved
+    └── workflows/<id>/           # one per workflow (`workflow show`)
+        ├── plan.md               # Architect output
+        ├── execution/            # prompts you wrote, fix brief, role outputs
+        ├── jobs/                 # detached runs
+        ├── reviews/
+        │   ├── review-target.diff    # the frozen snapshot every reviewer sees
+        │   ├── review-target.json    # strategy, files, sha256
+        │   ├── review-surrounding.json  # enclosing symbols, only with review.context.surrounding: enclosing
+        │   ├── <reviewer-id>.md      # one report per reviewer
+        │   ├── consolidated.md       # deduped findings, human readable
+        │   ├── consolidated.json     # deduped findings + triage state
+        │   ├── rounds/               # consolidated.json of every round, kept after the next
+        │   └── design/               # the same files for the design review, so
+        │                             # its rounds and triage stay its own
+        └── state.json            # stage events with resolved model ids
 ```
 
 `consolidated.json` はステージ間の受け渡しに使われます。`review run` がこれを書き出し、トリアージがこれに注記を加え、`review fix-brief` がこれを読み込み、`review status` がもう 1 ラウンド必要かどうかを判断します。
@@ -145,12 +148,12 @@ project/
 
 **Microsoft Store 版の Python。** `sys.executable` は `%LOCALAPPDATA%\Microsoft\WindowsApps` の下にあるアプリ実行エイリアスです。エイリアスから起動するとフックはパッケージの ID を持ったままになるので、AppData の読み込みは dev-orchestra 自身と同じように振り替えられ、同じ中継スクリプトと `config.yaml` が見つかります。エイリアスの先にある実体は本当の AppData を読んでしまうので、パスはたどりません。同じ理由で、Homebrew や pyenv の Python も、バージョンごとのディレクトリではなく変わらないほうのパスのままにします。
 
-- **UserPromptSubmit** と、コンパクションや再開のあとの **SessionStart** は、言語を名指しした短いリマインダー（約 60 トークン）を加えます。進捗、質問、指摘、報告、ツール呼び出しの説明をその言語で書くように、という内容です。
-- **Stop** は書き終えたばかりの返答（最後のツール呼び出しのあとの文章）を読み、明らかに別の言語で書かれていれば一度だけブロックします。その理由として、同じ返答を省略せず、設定した言語で、ツールを実行せずにもう一度書くよう求めます。これを止めるのが `language.rewrite: false` です。
+- **UserPromptSubmit** と、コンパクションや再開のあとの **SessionStart** は、言語を名指しした短いリマインダー（約 100 トークン）を加えます。進捗、質問、指摘、報告、ツール呼び出しの説明をその言語で書くこと、利用者が別の言語で頼んだ文章（PR の本文やコミットメッセージ）はその言語のままコードブロックに入れること、という内容です。
+- **Stop** は書き終えたばかりの返答（最後のツール呼び出しのあとの文章）を読み、明らかに別の言語で書かれていれば一度だけブロックします。その理由として、同じ返答を省略せず、設定した言語で、ツールを実行せずにもう一度書くよう求めます。ただし利用者がその文章を別の言語で頼んだときは、そのまま終えるよう理由の文に書いてあります。フックに見えるのは返答だけで、依頼は見えないからです。これを止めるのが `language.rewrite: false` です。
 
 **いつ動くか。** `language.reply` が設定されていて、そのセッションが dev-orchestra を使っていて、このツールが委譲した実行の中ではないときだけです。セッションが dev-orchestra を使ったとみなすのは、トランスクリプトにスキルの読み込み、`/dev-orchestra` コマンドの入力、Bash や PowerShell からの `dev_orchestra.py` / `bin/dev-orchestra` の実行が残っているとき（コマンドとして実行したものに限り、`cat` や `git diff` などで名前を挙げただけのものは数えません。サブエージェントの記録も数えません）、またはそのセッションのワークフローディレクトリ `.ai/workflows/<sha256(session id)[:12]>` があるときです。`.ai/` ディレクトリがあるだけでは足りません。それでは、そのプロジェクトで後に開くすべてのセッションが判定の対象になってしまいます。provider が起動するすべての子プロセスには `DEV_ORCHESTRA_DELEGATED=1` が付き、フックはこれを見るとすぐに終わります。そのため、ユーザーの設定を読み込む implementer が、どの言語で答えるか指示されることはありません。
 
-**返答をどう判定するか。** まず、ルール 11 が書かれたままにしてよいとしているものをすべて取り除きます。フェンスで囲んだブロック、HTML コメント、`>` の引用、インラインコード、リンク先、URL とメールアドレス、パス、コマンド行と `--flags`、ASCII のダブルクォートで囲んだ文、数字・`_`・`.`・`:`・`=`・`#`・`@` を含むトークン、大文字小文字の混ざった語とすべて大文字の語、表の区切り行です。残った文字を文字体系ごとに数え、その言語自身の文字体系をラテン文字と比べます。ラテン文字 1 文字は、かな・漢字・ハングル 1 文字の 3 分の 1、アルファベット系の文字 1 文字と同じ重みです。どの返答も、その言語以外の文字体系（ラテン文字は除く）の文字が 60 字以上あり、重みを付けてその言語の文字を 70% を超えて上回れば不合格です。`ja` での韓国語の返答や、`ko` での日本語の返答がこれにあたります。日本語では、漢字が 50 字以上あってかながまったくなければ不合格です（それは中国語です）。中国語では、かなが 20 字以上あり、かなと漢字のうち 15% 以上を占めれば不合格です（それは日本語です）。かなは中国語の文字として数えません。それ以外では、ラテン文字の単語が 20 語未満の返答は通します。それより長い返答は、残りのうちその言語の文字体系が 30% 未満のとき、またはラテン文字の単語が 40 語以上ある段落でそれが 10% 未満のときに不合格とします。
+**返答をどう判定するか。** まず、ルール 11 が書かれたままにしてよいとしているものをすべて取り除きます。フェンスで囲んだブロック、HTML コメント、`>` の引用、インラインコード、リンク先、URL とメールアドレス、パス、コマンド行と `--flags`、ASCII のダブルクォートで囲んだ文、数字・`_`・`.`・`:`・`=`・`#`・`@` を含むトークン、大文字小文字の混ざった語とすべて大文字の語、Markdown の表の短いセル（`|` で囲まれた行、または `--- | ---` の区切り行の下の行）です。表のセルはたいてい指摘のタイトルや id やパスを書かれたまま載せているからです。文章として読めるセル（文の終わりがあってラテン文字の単語が 6 語以上、文の終わりが無くても 20 語以上、またはほかの文字体系の文字が 10 字以上）は、まわりの文章と同じく判定します。そのため、表のセルに書いた返答が判定をすり抜けることはありません。残った文字を文字体系ごとに数え、その言語自身の文字体系をラテン文字と比べます。ラテン文字 1 文字は、かな・漢字・ハングル 1 文字の 3 分の 1、アルファベット系の文字 1 文字と同じ重みです。どの返答も、その言語以外の文字体系（ラテン文字は除く）の文字が 60 字以上あり、重みを付けてその言語の文字を 70% を超えて上回れば不合格です。`ja` での韓国語の返答や、`ko` での日本語の返答がこれにあたります。日本語では、漢字が 50 字以上あってかながまったくなければ不合格です（それは中国語です）。中国語では、かなが 20 字以上あり、かなと漢字のうち 15% 以上を占めれば不合格です（それは日本語です）。かなは中国語の文字として数えません。それ以外では、ラテン文字の単語が 20 語未満の返答は通します。それより長い返答は、残りのうちその言語の文字体系が 30% 未満のとき、またはラテン文字の単語が 40 語以上ある段落でそれが 10% 未満のときに不合格とします。
 
 - **文字体系で判定する言語**: 日本語、中国語（`zh`、`zh-CN`、`zh-TW`、`zh-Hans`、`zh-Hant` など。簡体字も繁体字も同じに扱います）、韓国語、キリル文字の言語（ロシア語、ウクライナ語、ブルガリア語、セルビア語など）、ギリシャ語、アラビア文字の言語（アラビア語、ペルシャ語、ウルドゥー語）、ヘブライ語、タイ語、デーヴァナーガリー文字の言語（ヒンディー語、マラーティー語、ネパール語）。`sr-Latn` や `zh-Latn-TW` のような文字体系の副タグがあれば、中国語の地域を含め、その言語の通常の文字体系より優先します。
 - **よく使う語で判定する言語**: 英語、スペイン語、フランス語、ドイツ語、ポルトガル語、イタリア語。ほかのラテン文字の言語と同じく、返答の大半が別の文字体系なら不合格です。そのうえで、残った語を小文字にしてアクセントは残したまま、言語ごとの短い一覧（`the`、`and`、`of`…、`el`、`los`、`que`…）と照らし合わせます。一覧にあるほかの言語それぞれについて、その言語の一覧にだけある語と、設定した言語の一覧にだけある語を数えます。両方の一覧にある語（`de`、`en`、`a`、`no` など）はどちらにも数えません。一覧の語が 20 語未満の返答は通します。それより長い返答は、ほかの言語にだけある語が 15 語以上で、かつ設定した言語にだけある語の 2 倍以上なら不合格です。したがって `es` で英語の返答、`en` でスペイン語の返答は不合格になり、識別子やコードの多いスペイン語の返答は `es` で通ります。

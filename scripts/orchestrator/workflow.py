@@ -65,6 +65,14 @@ _VALID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 #: Artifacts of the pre-0.4.0 layout, which this version refuses to run beside.
 LEGACY_ENTRIES = ("plan.md", "state.json", "execution", "reviews", "jobs")
 
+#: Old entries that are named only beside another one. A lone ``execution/``
+#: held nothing a workflow needs -- the prompts the orchestrator wrote and a
+#: redirected log -- and it is also what an orchestrator makes today when it
+#: writes ``.ai/execution/<request>.md`` itself instead of under its
+#: workflow's directory. Refusing every later command over that would be a
+#: wrong answer to a harmless stray (#283).
+LEGACY_ONLY_BESIDE_OTHERS = ("execution",)
+
 
 class WorkflowError(ValueError):
     """An id that cannot be used as a directory name, or a container that cannot be used."""
@@ -304,10 +312,17 @@ def stale_elsewhere(container: str, workflow: str, days: int, now: Optional[date
 
 
 def legacy_artifacts(container: str) -> List[str]:
-    """Pre-0.4.0 artifacts sitting directly in the container."""
+    """Pre-0.4.0 artifacts sitting directly in the container.
+
+    An entry of :data:`LEGACY_ONLY_BESIDE_OTHERS` counts only when another
+    old entry is there too: on its own it is a stray, not an old layout.
+    """
     if not os.path.isdir(container):
         return []
-    return [name for name in LEGACY_ENTRIES if os.path.exists(os.path.join(container, name))]
+    found = [name for name in LEGACY_ENTRIES if os.path.exists(os.path.join(container, name))]
+    if all(name in LEGACY_ONLY_BESIDE_OTHERS for name in found):
+        return []
+    return found
 
 
 LEGACY_REFUSAL = (

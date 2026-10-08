@@ -17,12 +17,13 @@ from __future__ import annotations
 import io
 import json
 import os
+import re
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime, timedelta, timezone
 from typing import Any, ClassVar, Dict
 
-from helpers import IsolatedCase, has_git
+from helpers import IsolatedCase, has_git, present
 
 from orchestrator import cli
 from orchestrator import workflow as wf
@@ -271,6 +272,68 @@ class TestRefusingTheOldLayout(IsolatedCase):
         self.assertIn("before 0.4.0", err)
         self.assertFalse(os.path.exists(os.path.join(self.container, "workflows")))
         self.assert_untouched()
+
+
+class TestAStrayExecutionDirectory(IsolatedCase):
+    """``.ai/execution/`` on its own is a stray, not an old layout (#283).
+
+    An orchestrator that writes ``.ai/execution/<request>.md`` itself -- or
+    redirects a log there -- puts it beside the workflow directories, since
+    only command arguments are rewritten. Refusing every later command as
+    "before 0.4.0" over that would be wrong twice: the layout is not old, and
+    nothing in it is a plan or a budget a workflow could lose.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.container = os.path.join(self.project, ".ai")
+        self.write(os.path.join(".ai", "execution", "design-request.md"), "plan it\n")
+
+    def test_commands_still_run(self):
+        for command in (("status",), ("state", "show"), ("workflow", "use", "w1")):
+            with self.subTest(command=command):
+                code, out, err = run_cli(*command)
+                self.assertEqual(code, 0, out + err)
+                self.assertNotIn("before 0.4.0", err)
+        self.assertEqual(wf.legacy_artifacts(self.container), [])
+
+    def test_workflow_list_does_not_call_it_old(self):
+        code, _, err = run_cli("workflow", "list")
+        self.assertEqual(code, 0)
+        self.assertNotIn("before 0.4.0", err)
+
+    def test_beside_another_old_entry_it_is_named_again(self):
+        self.write(os.path.join(".ai", "plan.md"), "# old plan\n")
+        code, _, err = run_cli("state", "show")
+        self.assertEqual(code, 2)
+        self.assertIn("(plan.md, execution)", err)
+
+    def test_a_prompt_file_written_there_says_where_it_belongs(self):
+        """The argument resolves into the workflow; the file is not there."""
+        with self.assertRaises(SystemExit) as raised:
+            run_cli("run", "architect", "--prompt-file", ".ai/execution/design-request.md")
+        message = str(raised.exception)
+        self.assertNotIn("before 0.4.0", message)
+        self.assertIn("prompt file does not exist", message)
+        # Compared once both are resolved: the temporary directory has other
+        # spellings -- /var and /private/var on macOS, RUNNER~1 and its long
+        # name on Windows -- and the message may use either.
+        named = re.search(r"resolved to (.+?)\);", message)
+        self.assertIsNotNone(named, message)
+        expected = os.path.join(
+            self.container, "workflows", os.environ[wf.WORKFLOW_ENV], "execution", "design-request.md"
+        )
+        self.assertEqual(
+            os.path.normcase(os.path.realpath(present(named).group(1))),
+            os.path.normcase(os.path.realpath(expected)),
+        )
+        self.assertIn("write the file at the resolved path", message)
+
+    def test_no_hint_when_the_file_is_nowhere(self):
+        os.remove(os.path.join(self.container, "execution", "design-request.md"))
+        with self.assertRaises(SystemExit) as raised:
+            run_cli("run", "architect", "--prompt-file", ".ai/execution/design-request.md")
+        self.assertNotIn("resolved path", str(raised.exception))
 
 
 class TestSayingTheTreeIsStillShared(IsolatedCase):

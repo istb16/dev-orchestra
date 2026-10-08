@@ -95,19 +95,22 @@ and logins just work. The skill stores no credentials and reads none.
 project/
 ├── .dev-orchestra.yaml         # optional per-project override
 └── .ai/                          # working artifacts (self-ignoring)
-    ├── plan.md                   # Architect output
-    ├── execution/                # prompts you wrote, fix brief, role outputs
-    ├── reviews/
-    │   ├── review-target.diff    # the frozen snapshot every reviewer sees
-    │   ├── review-target.json    # strategy, files, sha256
-    │   ├── review-surrounding.json  # enclosing symbols, only with review.context.surrounding: enclosing
-    │   ├── <reviewer-id>.md      # one report per reviewer
-    │   ├── consolidated.md       # deduped findings, human readable
-    │   ├── consolidated.json     # deduped findings + triage state
-    │   ├── rounds/               # consolidated.json of every round, kept after the next
-    │   └── design/               # the same files for the design review, so
-    │                             # its rounds and triage stay its own
-    └── state.json                # stage events with resolved model ids
+    ├── current.json              # the workflow this directory last resolved
+    └── workflows/<id>/           # one per workflow (`workflow show`)
+        ├── plan.md               # Architect output
+        ├── execution/            # prompts you wrote, fix brief, role outputs
+        ├── jobs/                 # detached runs
+        ├── reviews/
+        │   ├── review-target.diff    # the frozen snapshot every reviewer sees
+        │   ├── review-target.json    # strategy, files, sha256
+        │   ├── review-surrounding.json  # enclosing symbols, only with review.context.surrounding: enclosing
+        │   ├── <reviewer-id>.md      # one report per reviewer
+        │   ├── consolidated.md       # deduped findings, human readable
+        │   ├── consolidated.json     # deduped findings + triage state
+        │   ├── rounds/               # consolidated.json of every round, kept after the next
+        │   └── design/               # the same files for the design review, so
+        │                             # its rounds and triage stay its own
+        └── state.json            # stage events with resolved model ids
 ```
 
 `consolidated.json` is the hand-off between stages: `review run` writes it,
@@ -241,12 +244,17 @@ is not resolved. For the same reason a Homebrew or pyenv Python keeps its
 stable path rather than a versioned cellar directory.
 
 - **UserPromptSubmit**, and **SessionStart** after a compaction or a resume,
-  add a short reminder (about 60 tokens) naming the language: progress,
-  questions, findings, the report and tool-call descriptions go in it.
+  add a short reminder (about 100 tokens) naming the language: progress,
+  questions, findings, the report and tool-call descriptions go in it, and
+  text the user asks for in another language (a PR body, a commit message)
+  stays in that language, in a code block.
 - **Stop** reads the reply just written -- the text after the last tool call
   -- and, when it is clearly in another language, blocks once with a reason
   asking for the same reply again, in full, in the configured language,
-  without running tools. `language.rewrite: false` turns this one off.
+  without running tools -- unless the user asked for that text in another
+  language, in which case the reason says to end the turn as it is: the hook
+  sees the reply, not the request. `language.rewrite: false` turns this one
+  off.
 
 **When they act.** Only with `language.reply` set, only in a session that
 used dev-orchestra, and never inside a run this tool delegated. A session
@@ -265,7 +273,12 @@ answer in.
 first: fenced blocks, HTML comments, `>` quotes, inline code, link targets,
 URLs and e-mail addresses, paths, command lines and `--flags`, ASCII
 double-quoted text, tokens holding a digit, `_`, `.`, `:`, `=`, `#` or `@`,
-mixed-case and all-capital words, and table separator rows. The letters left
+mixed-case and all-capital words, and the short cells of a Markdown table
+(rows between `|`s, or under a `--- | ---` separator), which mostly hold
+finding titles, ids and paths as written. A cell that reads as prose -- 6 or
+more Latin words with a sentence end, 20 or more without one, or 10 or more
+letters of another script -- is judged like the text around it, so a reply
+written in table cells is not let through. The letters left
 are counted by script, the language's own against Latin, a Latin letter
 weighing a third of a kana, ideograph or Hangul letter and as much as one of
 an alphabet. Any reply fails when 60 or more letters are in scripts other

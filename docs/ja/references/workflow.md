@@ -1,4 +1,4 @@
-<!-- translated-from: references/workflow.md sha256:d10f3ca4f2ef3a8816e911811b431727e4684cfa6749879ee31b68b9591f6350 -->
+<!-- translated-from: references/workflow.md sha256:92203023335957ce7234b2f0f9cfdbbfb88afddec296ef1a8ab5a2b6712b9843 -->
 
 > この文書は [references/workflow.md](../../../references/workflow.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -114,6 +114,16 @@ id はコマンドごとに、次の順で解決されます。
 .ai/plan.md` は *このワークフローの plan* を意味し、そのディレクトリに保存されます。
 `.ai/` の外のパスや、すでにワークフローを指定しているパスは、書かれたとおりに使われます。
 
+こう読み替えるのはコマンドの引数だけです。自分で書くファイル（`--prompt-file` で渡す依頼）や
+シェルのリダイレクトは、パスのとおりの場所に書かれます。そのため、`workflow show` が `Artifacts:`
+として表示するディレクトリ（`--json` では `dir`）の下に書いてください。依頼は
+`<Artifacts>/execution/design-request.md` に書き、`--prompt-file
+.ai/execution/design-request.md` を渡せば、そのファイルに解決されます。バックグラウンドの
+レビューのログは `review run --progress > "<Artifacts>/execution/review-run.log" 2>&1` です
+（パスは絶対パスで空白を含むことがあるので、引用符で囲みます）。
+`.ai/execution/` そのものに書いた依頼は読まれません。`run` はファイルが無いと言い、解決した先の
+パスを示し、書かれたとおりの場所にファイルがあることも伝えます。
+
 **分離されるのは記録であって、作業ではありません。** implementer は作業ツリーを編集し、
 レビュアーはその同じツリーの `git diff` を読みます。そしてそれはチェックアウトごとに
 1 つしかありません。ここで同時に実行されている 2 つのワークフローは、依然として
@@ -135,6 +145,12 @@ git worktree add ../feature-x feature-x
 取り込ませてください。ただし、そのワークフローに同じ名前のファイルがすでにあれば 0.20.0 はそれを
 元の場所に残すので、その残りは別の場所へ移すか削除するまで、また断られます。
 `workflow list` はそれらがあることを知らせます。何も移動・削除しません。
+
+例外は `execution/` だけがある場合です。これは古い形とみなさず、断らず、知らせもしません。
+今でもオーケストレーターが `.ai/execution/` に依頼やログを書くとできるからです。古いものには
+その作業の依頼、修正のブリーフ、ロールの出力が入っていましたが、後の工程がそこから読むことは
+ないので、ワークフローに要るものは残されません。消すまでそのまま残ります。ほかの項目と一緒に
+あればそれらと並べて挙げて断り、0.20.0 の残りが `execution/` だけになれば、断るのは止まります。
 
 **形式の変え方。** `.ai/` の成果物は公開された仕様の一部で、変更は追加だけで行います。新しい
 バージョンはキーやファイルを足し、読む側は知らないキーを読み飛ばし、古いバージョンが書かなかった
@@ -250,6 +266,10 @@ architect は、できるときは plan を設計したセッションを継続�
 並べることを求めます。記録されたラウンドでは、再レビューで新たに出た high の指摘の多くが修正版
 自身の追加したものから出ていたので、再レビューはその一覧に向けられます。
 
+テンプレートの `<Artifacts>` は `workflow show` が表示するディレクトリで、プロンプトには実際の
+パスを書きます。モデルはファイルを置かれた場所のまま読み、`.ai/plan.md` が読み替えられるのは
+コマンドの引数のときだけです。
+
 `design-revise-request.md` は新規に走る場合のものです（brief だけではプロンプトになりません）。
 
 ```markdown
@@ -257,9 +277,9 @@ architect は、できるときは plan を設計したセッションを継続�
 
 <the original design request, unchanged>
 
-Read .ai/plan.md and revise it. Keep every section it already has.
+Read <Artifacts>/plan.md and revise it. Keep every section it already has.
 
-<paste .ai/execution/design-fix-brief.md here>
+<paste <Artifacts>/execution/design-fix-brief.md here>
 
 For each finding: say whether you addressed it and how, or why it is not a
 problem. Do not widen the scope beyond the original request.
@@ -283,12 +303,12 @@ stdout. Do not write it to a file: this role runs in plan mode.
 # Revise the plan
 
 You are continuing the session in which you designed this plan. Read
-.ai/plan.md once before changing anything: it is the plan you printed, as
+<Artifacts>/plan.md once before changing anything: it is the plan you printed, as
 saved by the orchestrator, and the findings below refer to its sections.
 Do not re-read code you already read unless a finding contradicts what you
 remember.
 
-<paste .ai/execution/design-fix-brief.md here>
+<paste <Artifacts>/execution/design-fix-brief.md here>
 
 For each finding: say whether you addressed it and how, or why it is not a
 problem. Do not widen the scope beyond the original request.
@@ -392,7 +412,7 @@ approve` で記録します。自分の判断で記録したり、拒否を回�
 
 <the original design request, unchanged>
 
-Read .ai/plan.md and revise it. Keep every section it already has.
+Read <Artifacts>/plan.md and revise it. Keep every section it already has.
 
 The owner reviewed the plan and asked for these changes, in their words:
 
@@ -418,7 +438,7 @@ stdout. Do not write it to a file: this role runs in plan mode.
 # Revise the plan
 
 You are continuing the session in which you designed this plan. Read
-.ai/plan.md once before changing anything: it is the plan you printed, as
+<Artifacts>/plan.md once before changing anything: it is the plan you printed, as
 saved by the orchestrator. Do not re-read code you already read unless a
 change below contradicts what you remember.
 
@@ -499,7 +519,7 @@ implementer を再度実行すると `pending` と同様に拒否されます。
 ```markdown
 # Implementation request
 
-Follow the plan in .ai/plan.md.
+Follow the plan in <Artifacts>/plan.md.
 
 Rules:
 - Match the conventions already in this codebase; do not introduce new ones.

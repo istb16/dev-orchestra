@@ -690,12 +690,13 @@ those instead of from the raw pile. Context spent on a 40 MB log is context the
 reviewer no longer has for the diff.
 
 Write the analysis request to a file (pointing at paths in the repo rather than
-pasting their contents), and run it through the role you gave the
+pasting their contents) under `workflow show`'s `Artifacts:` directory, as
+`execution/analysis-request.md`, and run it through the role you gave the
 large-context model:
 
 ```bash
 dev-orchestra run orchestrator \
-  --prompt-file .ai/analysis-request.md \
+  --prompt-file .ai/execution/analysis-request.md \
   --output .ai/analysis.md
 ```
 

@@ -1,4 +1,4 @@
-<!-- translated-from: references/limits.md sha256:ead3b356f30a9f9e66a501ce96756af7587667ad5381337c4ff548c566e6eb84 -->
+<!-- translated-from: references/limits.md sha256:6b178046ec0f823b2d33c62edb798864163ce3aa104c3171c567b6ff79ee9c21 -->
 
 > この文書は [references/limits.md](../../../references/limits.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -716,11 +716,12 @@ CLI がツールを使い始めてからは、ツール使用の回数と **コ�
 40 MB のログに使ったコンテキストは、レビュアーが差分に使えなくなるコンテキストです。
 
 解析の依頼はファイルに書き（中身を貼り付けるのではなく、リポジトリ内のパスを指します）、
+`workflow show` の `Artifacts:` のディレクトリの下に `execution/analysis-request.md` として置いて、
 大きなコンテキストを持つモデルに割り当てたロールで実行します。
 
 ```bash
 dev-orchestra run orchestrator \
-  --prompt-file .ai/analysis-request.md \
+  --prompt-file .ai/execution/analysis-request.md \
   --output .ai/analysis.md
 ```
 
