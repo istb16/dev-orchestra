@@ -1332,18 +1332,25 @@ class Provider:
         return completed.stdout or ""
 
     def _capture(self, command: Sequence[str], timeout: int = 30) -> Optional[subprocess.CompletedProcess]:
+        """What a short query of the CLI (``--version``, ``--help``, a model
+        list) printed, or None when it could not be started or did not finish
+        within ``timeout``.
+
+        Run through :func:`execution.execute`, as a delegated run is, and not
+        ``subprocess.run``: on timeout that kills only the CLI and then waits
+        for its pipes, which a helper the CLI started can hold open forever
+        (#274). Nothing is written to stdin.
+        """
         try:
-            return subprocess.run(
-                list(command),
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=timeout,
-                stdin=subprocess.DEVNULL,
-            )
-        except (OSError, subprocess.SubprocessError):
+            cwd = os.getcwd()
+        except OSError:
             return None
+        outcome = execution.execute(list(command), cwd=cwd, timeout=timeout)
+        # getattr: an outcome built without the field, as a stand-in for
+        # execute may be, was started.
+        if not getattr(outcome, "started", True) or outcome.timed_out or outcome.stalled:
+            return None
+        return subprocess.CompletedProcess(list(command), outcome.exit_code, outcome.stdout, outcome.stderr)
 
 
 def _suspended_of(outcome: Any) -> float:

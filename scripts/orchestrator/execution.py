@@ -103,6 +103,7 @@ class ExecOutcome:
         idle_for: float = 0.0,
         orphans_possible: bool = False,
         suspended: float = 0.0,
+        started: bool = True,
     ) -> None:
         self.exit_code = exit_code
         self.stdout = stdout
@@ -121,6 +122,8 @@ class ExecOutcome:
         self.orphans_possible = orphans_possible
         #: Free for readers of this outcome to keep what they derive from it.
         #: Never serialised.
+        #: False when the child could not be started at all.
+        self.started = started
         self.cache: Dict[str, Any] = {}
 
     @property
@@ -547,7 +550,7 @@ def execute(
     try:
         proc = _spawn(command, cwd, env)
     except OSError as exc:
-        return ExecOutcome(EXIT_SPAWN_FAILED, "", str(exc), time.monotonic() - started)
+        return ExecOutcome(EXIT_SPAWN_FAILED, "", str(exc), time.monotonic() - started, started=False)
 
     try:
         out, err = _Drain(on_line), _Drain()

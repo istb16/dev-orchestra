@@ -1,4 +1,4 @@
-<!-- translated-from: references/limits.md sha256:88ec1f3c6c7be675f7a8e616de96a14167ba94487bedb67d11ddaee3c94a6a76 -->
+<!-- translated-from: references/limits.md sha256:a863b8691ad51a1eb897349a32a6b9963142b016308254d3395aae883458ff0f -->
 
 > この文書は [references/limits.md](../../../references/limits.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -67,7 +67,10 @@
 プロセスグループを与え、超過時にはグループ全体を kill し（Windows では
 `taskkill /T`、それ以外では `killpg`）、放棄可能な daemon スレッドで出力を
 読み出します。diff をインライン化したレビュープロンプトはパイプバッファの
-数倍の大きさになるため、stdin は専用のスレッドから書き込まれます。
+数倍の大きさになるため、stdin は専用のスレッドから書き込まれます。検出のために CLI に
+尋ねる短い問い合わせ（`--version`、`--help`、`agy models`、`codex debug models`）も
+同じ経路を通るので、そうした問い合わせが起動した補助のプロセスのせいで `doctor` や
+実行前の確認が止まることもありません。
 
 CLI が正常に終了しても、出力を握ったままのプロセスを残していった場合（たとえば
 実装役がバックグラウンドで起動した開発サーバー）も同じです。読み取りスレッドには

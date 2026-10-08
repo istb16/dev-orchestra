@@ -55,7 +55,10 @@ Runs now go through `orchestrator/execution.py`, which gives the child its own
 process group, kills the whole group on a breach (`taskkill /T` on Windows,
 `killpg` elsewhere), and drains output with daemon threads it can abandon.
 stdin is written from its own thread because a review prompt with an inlined
-diff is several times larger than a pipe buffer.
+diff is several times larger than a pipe buffer. The short questions
+detection asks a CLI (`--version`, `--help`, `agy models`, `codex debug
+models`) go the same way, so `doctor` and the checks before a run cannot hang
+on a helper such a query started either.
 
 The same holds when the CLI exits cleanly but leaves something running that
 still holds its output -- a dev server the implementer started in the

@@ -137,6 +137,13 @@ below begins **User adapters** so adapter authors can find it.
   findings about mixed line endings that were not in the file. The prompt is
   now written as UTF-8 bytes, as agy's prompt file already was (#270).
 
+- **Asking a CLI for its version, help or models can no longer hang.** These
+  queries ran through `subprocess.run(timeout=...)`, which on timeout kills
+  the CLI alone and then waits for its pipes, so a helper the CLI started
+  could keep `doctor` or the checks before a run waiting long past the
+  timeout. They now go through the same process-group handling as a run,
+  and a query that times out reads as one that could not be run (#274).
+
 - **Without PyYAML, a Windows path or a string of digits written to a config
   reads back unchanged** (#275). The bundled parser decoded `\\n` in a
   double-quoted string as a backslash and a newline, so `C:\work\new` came
