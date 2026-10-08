@@ -149,6 +149,31 @@ class TestJudgement(unittest.TestCase):
     def test_final_report_table_in_a_fence_passes(self):
         self.assertFalse(rl.reply_fails(fixture("ja_report_table.md"), "ja"))
 
+    def test_table_rows_are_left_out_like_quotes(self):
+        """A report whose table lists reviewers' English finding titles (#288)."""
+        rows = "\n".join(
+            "| F%d | high | The handler drops the error when the remote service returns an empty body |" % n
+            for n in range(1, 6)
+        )
+        table = "| ID | Severity | Title |\n| --- | --- | --- |\n%s" % rows
+        reply = "レビューの結果をまとめました。\n\n%s\n\n" % table
+        reply += "F1 と F3 を受け入れ、残りは重複として閉じました。"
+        self.assertFalse(rl.reply_fails(reply, "ja"))
+        self.assertNotIn("handler", rl.strip_allowed(reply))
+
+    def test_prose_outside_a_table_is_still_judged(self):
+        prose = (
+            "I accepted the first and the third finding because the handler really does drop the error "
+            "when the remote service answers with an empty body, and the other ones were duplicates of "
+            "those two, so I closed them and moved on to the fix."
+        )
+        reply = "| ID | Status |\n| --- | --- |\n| F1 | accepted |\n\n" + prose
+        self.assertTrue(rl.reply_fails(reply, "ja"))
+
+    def test_a_pipe_inside_a_sentence_is_not_a_table(self):
+        line = "The handler drops the error | and the caller never sees it, so the test passed anyway."
+        self.assertIn("handler", rl.strip_allowed(line))
+
     def test_chinese_reply_fails_for_ja(self):
         self.assertTrue(rl.reply_fails(fixture("zh_reply.md"), "ja"))
         self.assertTrue(rl.reply_fails(fixture("zh_tw_reply.md"), "ja"))
@@ -356,6 +381,14 @@ class TestMessages(unittest.TestCase):
             self.assertIn("Do not run tools", reason)
             for other in others:
                 self.assertNotIn(other, reason)
+
+    def test_text_asked_for_in_another_language_has_a_way_out(self):
+        """The hook sees the reply, not the request: the model is told (#288)."""
+        for tag in ("ja", "es"):
+            reason = rl.rewrite_reason(tag)
+            self.assertIn("the user asked you for this text in another language", reason)
+            self.assertIn("end your turn without repeating or translating it", reason)
+            self.assertIn("put it in a code block", rl.reminder(tag))
 
     def test_an_unknown_tag_is_named_by_the_tag(self):
         self.assertIn('in the language tagged "tlh"', rl.reminder("tlh"))

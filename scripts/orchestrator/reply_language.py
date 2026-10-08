@@ -220,20 +220,28 @@ def reminder(tag: str) -> str:
         "dev-orchestra: the user set language.reply: %s. Write every message to the user — progress, "
         "questions, approvals, findings, the final report and tool-call descriptions — in %s, however "
         "much text in other languages you have just read. Ids, paths, commands, code and quoted text "
-        "stay as written. Agent prompts and .ai/ stay English." % (tag, language_name(tag))
+        "stay as written. Agent prompts and .ai/ stay English. Text the user asks for in another "
+        "language (a PR body, a commit message) stays in it: put it in a code block."
+        % (tag, language_name(tag))
     )
 
 
 def rewrite_reason(tag: str) -> str:
-    """Why the Stop hook blocked, which is also what it asks for."""
+    """Why the Stop hook blocked, which is also what it asks for.
+
+    The hook cannot see what the user asked for, only the reply, so the way
+    out for text the user asked for in another language is in the reason:
+    the model that wrote the reply can see the request (#288).
+    """
     short = _short_name(tag)
     return (
         "dev-orchestra language check: your last reply was not in %s, the reply language the user set "
         "(language.reply: %s). Write that same reply again, in full, in %s: the same content, every "
         "finding and risk, nothing dropped or softened. Ids, severities, paths, commands, code and "
         "quoted text stay as written — put code in backticks and quoted text in a > quote. Do not run "
-        "tools or redo any work for this. If the reply already was in %s, end your turn without "
-        "repeating it." % (language_name(tag), tag, short, short)
+        "tools or redo any work for this. If the reply already was in %s, or the user asked you for "
+        "this text in another language (a PR body, a commit message, a document), end your turn "
+        "without repeating or translating it." % (language_name(tag), tag, short, short)
     )
 
 
@@ -334,6 +342,11 @@ _RE_TOKEN = re.compile(r"[A-Za-z0-9_.:=#@-]+")
 _RE_MIXED_CASE = re.compile(r"(?<![A-Za-z])[A-Za-z]*[a-z][A-Z][A-Za-z]*")
 _RE_ALL_CAPS = re.compile(r"(?<![A-Za-z])[A-Z]{2,}s?(?![A-Za-z])")
 _RE_TABLE_SEPARATOR = re.compile(r"^[ \t]*\|?[ \t:|-]*-[ \t:|-]*$", re.M)
+#: A Markdown table row, between pipes. A table in a reply mostly carries
+#: what rule 11 keeps as written -- finding titles a reviewer wrote, ids,
+#: paths, model names -- so its rows are left out like a quote; prose belongs
+#: outside the table, where it is judged (#288).
+_RE_TABLE_ROW = re.compile(r"^[ \t]*\|.*\|[ \t]*$", re.M)
 _RE_LATIN_WORD = re.compile(r"[A-Za-zÀ-ɏ]{2,}")
 _RE_PARAGRAPH_BREAK = re.compile(r"\n[ \t]*\n")
 _RE_WORD = re.compile(r"[^\W\d_]+")
@@ -352,6 +365,7 @@ def strip_allowed(text: str) -> str:
     text = _RE_FENCE.sub("", text)
     text = _RE_HTML_COMMENT.sub("", text)
     text = _RE_QUOTE_LINE.sub("", text)
+    text = _RE_TABLE_ROW.sub("", text)
     text = _RE_INLINE_CODE.sub(" ", text)
     text = _RE_LINK_TARGET.sub("] ", text)
     text = _RE_AUTOLINK.sub(" ", text)

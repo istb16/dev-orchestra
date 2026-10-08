@@ -244,12 +244,17 @@ is not resolved. For the same reason a Homebrew or pyenv Python keeps its
 stable path rather than a versioned cellar directory.
 
 - **UserPromptSubmit**, and **SessionStart** after a compaction or a resume,
-  add a short reminder (about 60 tokens) naming the language: progress,
-  questions, findings, the report and tool-call descriptions go in it.
+  add a short reminder (about 100 tokens) naming the language: progress,
+  questions, findings, the report and tool-call descriptions go in it, and
+  text the user asks for in another language (a PR body, a commit message)
+  stays in that language, in a code block.
 - **Stop** reads the reply just written -- the text after the last tool call
   -- and, when it is clearly in another language, blocks once with a reason
   asking for the same reply again, in full, in the configured language,
-  without running tools. `language.rewrite: false` turns this one off.
+  without running tools -- unless the user asked for that text in another
+  language, in which case the reason says to end the turn as it is: the hook
+  sees the reply, not the request. `language.rewrite: false` turns this one
+  off.
 
 **When they act.** Only with `language.reply` set, only in a session that
 used dev-orchestra, and never inside a run this tool delegated. A session
@@ -268,7 +273,9 @@ answer in.
 first: fenced blocks, HTML comments, `>` quotes, inline code, link targets,
 URLs and e-mail addresses, paths, command lines and `--flags`, ASCII
 double-quoted text, tokens holding a digit, `_`, `.`, `:`, `=`, `#` or `@`,
-mixed-case and all-capital words, and table separator rows. The letters left
+mixed-case and all-capital words, and Markdown table rows (a line that
+starts and ends with `|`), which mostly hold finding titles, ids and paths
+as written; prose outside a table is judged. The letters left
 are counted by script, the language's own against Latin, a Latin letter
 weighing a third of a kana, ideograph or Hangul letter and as much as one of
 an alphabet. Any reply fails when 60 or more letters are in scripts other

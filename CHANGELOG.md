@@ -288,6 +288,16 @@ below begins **User adapters** so adapter authors can find it.
   the ones that only change something report by their exit code, and a test
   keeps the list in step with the parser (#286).
 
+- **The reply-language check leaves alone text the user asked for in another
+  language, and English table rows.** With `language.reply` set, a PR body
+  or commit message the user asked for in English was blocked and rewritten
+  in the reply language, since the Stop reason had no way out; and a report
+  whose table listed reviewers' English finding titles was blocked too. The
+  reason now says to end the turn as it is when the user asked for that text
+  in another language, the reminder says to put such text in a code block,
+  and Markdown table rows are left out of the judgement like quotes; prose
+  outside a table is judged as before (#288).
+
 ## [0.22.0] - 2026-10-06
 
 ### Added
