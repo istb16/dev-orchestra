@@ -1296,18 +1296,42 @@ class TestPidLiveness(IsolatedCase):
         # on POSIX terminate_tree signals the whole group, and a child sharing
         # the runner's group kills the test run itself.
         proc = subprocess.Popen(python_code(SILENT_HANG), **execution._spawn_kwargs())
+        # A handle of our own keeps the pid from being handed to another
+        # process once Popen lets go of its own: on a busy Windows runner a
+        # recycled pid answered True here. It is also the case that matters --
+        # a dead process someone still holds open.
+        pinned = _pin_process(proc.pid)
         try:
             self.assertTrue(execution.pid_alive(proc.pid))
             execution.terminate_tree(proc)
             proc.wait(timeout=30)
             self.assertFalse(execution.pid_alive(proc.pid))
         finally:
+            _unpin_process(pinned)
             if proc.poll() is None:  # pragma: no cover - safety net
                 proc.kill()
 
     def test_an_impossible_pid_is_not_alive(self):
         self.assertFalse(execution.pid_alive(-1))
         self.assertFalse(execution.pid_alive(0))
+
+
+def _pin_process(pid: int) -> Optional[int]:
+    """A handle to ``pid`` on Windows, so that its pid is not reused; None elsewhere."""
+    if os.name != "nt":
+        return None
+    import ctypes
+
+    SYNCHRONIZE = 0x00100000
+    handle = ctypes.windll.kernel32.OpenProcess(SYNCHRONIZE, False, pid)
+    return handle or None
+
+
+def _unpin_process(handle: Optional[int]) -> None:
+    if handle:
+        import ctypes
+
+        ctypes.windll.kernel32.CloseHandle(handle)
 
 
 class TestOutcomeReporting(IsolatedCase):
