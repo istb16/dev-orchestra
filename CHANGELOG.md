@@ -109,6 +109,16 @@ below begins **User adapters** so adapter authors can find it.
   still take any status. `--detail` can no longer set `stage`, `status` or
   `at`, which overwrote the event's own fields (exit 2) (#287).
 
+- **A run that may change files no longer gets the 300s idle deadline.**
+  `review.idle_timeout_seconds` was applied to every `run`, so an implementer
+  on Claude running a test suite longer than five minutes, during which its
+  stream prints nothing, could be killed as stalled. The implementer, the
+  review fixer and any `run --mode implement` now have only their total
+  deadline, unless `--idle-timeout` or the role's `options.idle_timeout`
+  sets one; reviewers and read-only runs keep it. Output also counts as it
+  arrives rather than when a line ends, so a CLI printing dots or redrawing
+  a progress bar is no longer taken for silent (#273).
+
 ### Fixed
 
 - **A run no longer hangs when the CLI exits but leaves a process holding its

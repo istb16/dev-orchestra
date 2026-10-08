@@ -74,12 +74,23 @@ code stands.
 | --- | --- | --- |
 | Total, `run` | `run.timeout_seconds.<role>` (implementer 3600, others 1800) | Hard cap on one `run` of a role |
 | Total, review | `review.timeout_seconds` (1800) | Hard cap on each reviewer: `review run` and `run <reviewer-id>` |
-| Idle | `review.idle_timeout_seconds` (300) | No output for this long → wedged; shared by `run` and review |
+| Idle | `review.idle_timeout_seconds` (300) | No output for this long → wedged; reviewers and read-only `run`s |
 
 `--timeout` replaces either total for one call. The implementer has an hour
 because measured implementer runs went past half an hour and one was killed at
 1800s. The idle deadline stays shared: it measures silence, which does not
 grow with the task.
+
+Except for a run that may change files -- the implementer, the review fixer,
+or any `run --mode implement` -- which gets no idle deadline unless
+`--idle-timeout` or the role's `options.idle_timeout` sets one. Such a run
+runs the tests or a build, and Claude's stream prints nothing while a command
+runs: a suite that takes longer than the deadline would be killed as a
+healthy run. Its total deadline still applies.
+
+Any output counts, not only a whole line: a CLI printing dots, or redrawing a
+progress bar, is not silent. Output is read as it arrives, not a line at a
+time.
 
 The idle deadline is the useful one: a working agent keeps producing, a wedged
 one goes silent, so a stall surfaces in minutes instead of half an hour.

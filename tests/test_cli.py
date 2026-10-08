@@ -2206,6 +2206,45 @@ class TestStallReporting(IsolatedCase):
         self.assertEqual(json.loads(state)["events"][-1]["status"], "stalled")
 
 
+class TestRunIdleDeadline(IsolatedCase):
+    """``review.idle_timeout_seconds`` is not applied to a run that may change files (#273)."""
+
+    def setUp(self):
+        super().setUp()
+        run_cli("config", "setup", "--defaults")
+        for role in ("architect", "implementer", "review_fixer"):
+            run_cli("config", "set", "%s.provider" % role, "mock")
+
+    def idle_deadline_of(self, *argv: str) -> Optional[float]:
+        from orchestrator.providers import mock as mock_mod
+
+        seen: Dict[str, Any] = {}
+        original = mock_mod.MockProvider.run
+
+        def recording_run(provider, *args, **kwargs):
+            seen["idle_timeout"] = kwargs.get("idle_timeout")
+            return original(provider, *args, **kwargs)
+
+        with mock.patch.object(mock_mod.MockProvider, "run", recording_run):
+            code, _, err = run_cli("run", *argv, "--prompt", "go")
+        self.assertEqual(code, 0, err)
+        return seen["idle_timeout"]
+
+    def test_a_run_that_may_change_files_has_no_idle_deadline_by_default(self):
+        self.assertIsNone(self.idle_deadline_of("implementer"))
+        self.assertIsNone(self.idle_deadline_of("review_fixer"))
+
+    def test_a_read_only_run_keeps_the_shared_idle_deadline(self):
+        self.assertEqual(self.idle_deadline_of("architect"), 300)
+        # By what the run may do, not by its role.
+        self.assertEqual(self.idle_deadline_of("implementer", "--mode", "plan"), 300)
+        run_cli("config", "set", "review.idle_timeout_seconds", "120", "--scope", "global")
+        self.assertEqual(self.idle_deadline_of("architect"), 120)
+
+    def test_the_flag_still_sets_one_for_any_run(self):
+        self.assertEqual(self.idle_deadline_of("implementer", "--idle-timeout", "60"), 60)
+
+
 class TestOutputGuard(IsolatedCase):
     """``--output`` usually names the file the run was asked to revise.
 

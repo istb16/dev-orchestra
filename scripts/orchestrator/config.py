@@ -227,7 +227,8 @@ def default_config() -> Dict[str, Any]:
             # A wedged agent stops producing output while a slow one keeps
             # ticking, so this catches a stall in minutes instead of half an
             # hour -- but only for providers that stream progress at all.
-            # Shared with `run`: silence does not grow with the task.
+            # Shared with `run`, except a run that may change files: the
+            # tests it runs can be silent for longer (#273).
             "idle_timeout_seconds": 300,
             # Generated and vendored files whose diff body is withheld from
             # reviewers. A list replaces this wholesale, so [] reviews

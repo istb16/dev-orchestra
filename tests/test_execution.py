@@ -255,6 +255,18 @@ class TestIdleDeadline(IsolatedCase):
         self.assertTrue(outcome.timed_out)
         self.assertFalse(outcome.stalled)
 
+    def test_output_without_a_newline_counts_as_output(self):
+        # A dot every 0.3s and never a newline: alive, not stalled (#273).
+        dots = (
+            "import sys, time\n"
+            "for _ in range(8):\n"
+            "    sys.stdout.write('.'); sys.stdout.flush(); time.sleep(0.3)\n"
+        )
+        outcome = execution.execute(python_code(dots), cwd=self.project, timeout=60, idle_timeout=1)
+        self.assertFalse(outcome.stalled, outcome.stderr)
+        self.assertTrue(outcome.ok, outcome.stderr)
+        self.assertEqual(outcome.stdout, "." * 8)
+
     def test_a_quick_command_is_unaffected_by_a_short_idle_deadline(self):
         outcome = execution.execute(
             python_code("print('fast')"), cwd=self.project, timeout=60, idle_timeout=1
@@ -303,7 +315,7 @@ class TestOnLine(IsolatedCase):
 
         drain = execution._Drain(check)
         before = drain.last_seen()
-        thread = threading.Thread(target=drain.pump, args=(io.StringIO("a\nb\n"),), daemon=True)
+        thread = threading.Thread(target=drain.pump, args=(io.BytesIO(b"a\nb\n"),), daemon=True)
         thread.start()
         thread.join(timeout=10)
         drain.finish(10)
@@ -355,7 +367,7 @@ class TestOnLine(IsolatedCase):
         with mock.patch.object(execution, "_LINE_QUEUE_SIZE", 2):
             drain = execution._Drain(stuck)
         text = "".join("%d\n" % i for i in range(20))
-        thread = threading.Thread(target=drain.pump, args=(io.StringIO(text),), daemon=True)
+        thread = threading.Thread(target=drain.pump, args=(io.BytesIO(text.encode()),), daemon=True)
         thread.start()
         thread.join(timeout=5)
         self.assertFalse(thread.is_alive(), "the reader waited on the callback")
@@ -373,11 +385,26 @@ class TestOnLine(IsolatedCase):
             time.sleep(0.5)
 
         drain = execution._Drain(slow)
-        drain.pump(io.StringIO("a\nb\nc\nd\n"))
+        drain.pump(io.BytesIO(b"a\nb\nc\nd\n"))
         drain.finish(0.1)
         time.sleep(1.5)
         # The line in hand when it was abandoned may finish; no later one starts.
         self.assertLessEqual(len(calls), 2)
+
+    def test_lines_split_across_reads_reach_the_callback_whole(self):
+        # A line, a CRLF and a character may each arrive in pieces.
+        pieces = [b"on", b"e\r", b"\ntw", "o あ".encode()[:-1], "あ".encode()[-1:] + b"\nthr", b"ee"]
+
+        class Pieces(io.BytesIO):
+            def read1(self, size: Optional[int] = -1) -> bytes:
+                return pieces.pop(0) if pieces else b""
+
+        seen: List[str] = []
+        drain = execution._Drain(seen.append)
+        drain.pump(Pieces())
+        drain.finish(10)
+        self.assertEqual(seen, ["one\n", "two あ\n", "three"])
+        self.assertEqual(drain.text(), "one\ntwo あ\nthree")
 
     def test_a_silent_child_still_stalls(self):
         seen: List[str] = []

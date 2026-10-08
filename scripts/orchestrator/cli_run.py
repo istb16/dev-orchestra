@@ -276,9 +276,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             return refusal
     settings = loaded.review_settings()
     timeout, timeout_origin = _deadline(args, loaded, seat)
-    idle_timeout = args.idle_timeout
-    if idle_timeout is None:
-        idle_timeout = settings.get("idle_timeout_seconds")
+    idle_timeout = _idle_deadline(args, settings, seat)
     book = _ledger(args, workspace)
     refusal = _spend_attempt(args, book, seat)
     if refusal is not None:
@@ -372,6 +370,24 @@ def _deadline(args: argparse.Namespace, loaded: config_mod.LoadedConfig, seat: _
         return review.seconds, "review.timeout_seconds, %s" % review.source
     deadline = config_mod.run_timeout(loaded, seat.role)
     return deadline.seconds, "run.timeout_seconds.%s, %s" % (seat.role, deadline.source)
+
+
+def _idle_deadline(args: argparse.Namespace, settings: Dict[str, Any], seat: _Seat) -> Optional[float]:
+    """The run's no-output deadline, before the provider has its say.
+
+    ``--idle-timeout`` first. Otherwise ``review.idle_timeout_seconds``, but
+    not for a run that may change files (the implementer, the review fixer,
+    or ``--mode implement``): such a run is expected to run the tests or a
+    build, and Claude's stream is silent until a command returns, so a suite
+    that takes longer than the deadline would be killed as a stall (#273).
+    Such a run has its total deadline; a role's ``options.idle_timeout``
+    still sets one.
+    """
+    if args.idle_timeout is not None:
+        return args.idle_timeout
+    if seat.mode == MODE_IMPLEMENT:
+        return None
+    return settings.get("idle_timeout_seconds")
 
 
 def _timeout_message(role: str, seconds: int, origin: str) -> str:

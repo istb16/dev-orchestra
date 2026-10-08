@@ -1,4 +1,4 @@
-<!-- translated-from: references/limits.md sha256:4115a2800d5754387e01fc583505440f5d52326eca25a3ef7572b63c5961fdbd -->
+<!-- translated-from: references/limits.md sha256:88ec1f3c6c7be675f7a8e616de96a14167ba94487bedb67d11ddaee3c94a6a76 -->
 
 > この文書は [references/limits.md](../../../references/limits.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -87,12 +87,22 @@ CLI が正常に終了しても、出力を握ったままのプロセスを残�
 | --- | --- | --- |
 | 合計、`run` | `run.timeout_seconds.<role>`（implementer 3600、ほか 1800） | ロールの `run` 1 回の上限 |
 | 合計、レビュー | `review.timeout_seconds` (1800) | 各レビュアーの上限: `review run` と `run <reviewer-id>` |
-| アイドル | `review.idle_timeout_seconds` (300) | この時間出力がない → 固まった。`run` とレビューで共通 |
+| アイドル | `review.idle_timeout_seconds` (300) | この時間出力がない → 固まった。レビュアーと読み取り専用の `run` |
 
 `--timeout` は 1 回の呼び出しに限ってどちらの合計も置き換えます。implementer に
 1 時間あるのは、計測した implementer の実行が 30 分を超え、1 回は 1800s で
 止められたからです。アイドル期限は共通のままです。これは沈黙を測るもので、
 沈黙の長さはタスクの大きさでは伸びません。
+
+ただしファイルを変えうる実行（implementer、review fixer、`run --mode implement`）
+には、`--idle-timeout` かロールの `options.idle_timeout` で設定しない限り、
+アイドル期限を当てません。こうした実行はテストやビルドを走らせ、コマンドの
+実行中は Claude のストリームに何も出ないので、期限より長くかかるテストスイートが
+あると健全な実行が止められてしまうからです。全体の期限はそのまま当たります。
+
+1 行そろった出力だけでなく、どんな出力も出力として数えます。点を打ち続ける CLI や、
+進捗バーを描き直す CLI は沈黙していません。出力は 1 行ずつではなく、届いたとおりに
+読みます。
 
 役に立つのはアイドル期限の方です。動いているエージェントは出力を出し続け、
 固まったエージェントは沈黙するので、stall が 30 分ではなく数分で表面化します。

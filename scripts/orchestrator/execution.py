@@ -22,6 +22,7 @@ format it was asked for -- see ``references/providers.md``.
 
 from __future__ import annotations
 
+import codecs
 import io
 import os
 import queue
@@ -30,7 +31,7 @@ import subprocess
 import sys
 import threading
 import time
-from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple, cast
+from typing import IO, Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple, cast
 
 from . import clocks
 
@@ -45,6 +46,8 @@ KILL_GRACE_SECONDS = 5.0
 _POLL_SECONDS = 0.2
 #: Stdout lines waiting for ``on_line`` before further ones are dropped.
 _LINE_QUEUE_SIZE = 1000
+#: The most one read of a pipe takes; a read returns whatever has arrived.
+_READ_CHUNK = 65536
 #: How long a finished run waits for ``on_line`` to catch up.
 _ON_LINE_GRACE_SECONDS = 2.0
 
@@ -161,17 +164,41 @@ class _Drain:
             self._handler = threading.Thread(target=self._hand_on, daemon=True)
             self._handler.start()
 
-    def pump(self, stream) -> None:
+    def pump(self, stream: io.BufferedIOBase) -> None:
+        """Read ``stream`` to its end, a chunk at a time.
+
+        Whatever arrives counts as output, a newline or not: a CLI printing
+        dots, or a progress bar redrawn with ``\\r``, is alive. Read a line at
+        a time, it was taken for silent until it ended a line (#273). Bytes
+        are decoded as UTF-8 and newlines read as a text pipe would read them
+        (``\\r\\n`` and ``\\r`` become ``\\n``).
+        """
+        utf8 = codecs.getincrementaldecoder("utf-8")("replace")
+        decoder = io.IncrementalNewlineDecoder(utf8, translate=True)
+        # The pieces of a line not yet ended, joined once it is.
+        partial: List[str] = []
         try:
-            for line in iter(stream.readline, ""):
+            while True:
+                data = stream.read1(_READ_CHUNK)
+                text = decoder.decode(data, final=not data)
                 with self._lock:
-                    self.chunks.append(line)
-                    self.last_output_at = time.monotonic()
+                    if text:
+                        self.chunks.append(text)
+                    if data:
+                        self.last_output_at = time.monotonic()
                 if self._handler is not None:
-                    try:
-                        self._lines.put_nowait(line)
-                    except queue.Full:
-                        self.dropped += 1
+                    *complete, rest = text.split("\n")
+                    for line in complete:
+                        partial.append(line)
+                        self._hand("".join(partial) + "\n")
+                        partial = []
+                    if rest:
+                        partial.append(rest)
+                    if not data and partial:
+                        # The last line, which never ended.
+                        self._hand("".join(partial))
+                if not data:
+                    break
         except (OSError, ValueError):
             pass
         finally:
@@ -180,6 +207,13 @@ class _Drain:
                 stream.close()
             except (OSError, ValueError):
                 pass
+
+    def _hand(self, line: str) -> None:
+        """Queue ``line`` for ``on_line``, or count it dropped if the queue is full."""
+        try:
+            self._lines.put_nowait(line)
+        except queue.Full:
+            self.dropped += 1
 
     def _hand_on(self) -> None:
         on_line = cast(Callable[[str], None], self._on_line)
@@ -587,10 +621,6 @@ def _spawn(command: Sequence[str], cwd: str, env: Optional[Dict[str, str]]) -> s
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            bufsize=1,
             env=env,
             **spawn_kwargs(),
         )
@@ -726,15 +756,15 @@ def _verdict(
 def _feed_stdin(proc: subprocess.Popen, prompt: str) -> None:
     """Write ``prompt`` to the child's stdin as UTF-8, its newlines as they are.
 
-    The bytes go to the binary buffer under the text pipe: on Windows the text
-    layer turns every ``\\n`` into ``\\r\\n``, so a diff of a CRLF file reached
-    a reviewer as ``\\r\\r\\n``. agy's prompt file is written the same way.
+    The pipes are binary: on Windows a text pipe turns every ``\\n`` into
+    ``\\r\\n``, so a diff of a CRLF file reached a reviewer as ``\\r\\r\\n``
+    (#270). agy's prompt file is written the same way.
     """
-    # Every caller opens stdin as a text pipe.
-    stdin = cast(io.TextIOWrapper, proc.stdin)
+    # _spawn opens every pipe in binary mode.
+    stdin = cast(IO[bytes], proc.stdin)
     try:
         if prompt:
-            stdin.buffer.write(prompt.encode("utf-8", "replace"))
+            stdin.write(prompt.encode("utf-8", "replace"))
         stdin.close()
     except (OSError, ValueError):
         pass
