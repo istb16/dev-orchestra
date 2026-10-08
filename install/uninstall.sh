@@ -46,6 +46,7 @@ fi
 SENTINEL=.dev-orchestra-install
 PAYLOAD="plugin.json skills .claude-plugin .codex-plugin README.md LICENSE references scripts bin agents examples"
 EXCLUDE_MARKER="# added by dev-orchestra install --antigravity"
+CLAUDE_EXCLUDE_MARKER="# added by dev-orchestra install --claude"
 
 # A full copy of a checkout, .git included, where the Claude install goes:
 # what install.sh left under Git Bash, whose `ln -s` copies, before it
@@ -115,18 +116,20 @@ is_unmarked_copy() {
   done
 }
 
-# Drop the entry the installer added, and its marker. An entry without the
-# marker right above it was there before and stays.
+# Drop the entry $1 the installer added, and its marker $2. An entry without
+# the marker right above it was there before and stays.
 unexclude_marked() {
   [ -n "$target_project" ] || return 0
   exclude_file="$target_project/.git/info/exclude"
   [ -f "$exclude_file" ] || return 0
 
-  # No grep first: install.ps1 writes CRLF line endings, which awk strips and
-  # `grep -x` does not. awk exits non-zero when it removed nothing.
-  entry="/.agents/plugins/$SKILL_NAME"
+  # No grep first: install.ps1 writes CRLF line endings, which awk strips for
+  # the comparison and `grep -x` does not. BINMODE keeps them in what is
+  # written back (Git Bash's awk would drop them). awk exits non-zero when it
+  # removed nothing.
+  entry=$1
   tmp="$exclude_file.tmp.$$"
-  awk -v m="$EXCLUDE_MARKER" -v e="$entry" '
+  awk -v BINMODE=3 -v m="$2" -v e="$entry" '
     { line = $0; sub(/\r$/, "", line) }
     held { held = 0; if (line == e) { removed = 1; next } print m }
     line == m { held = 1; next }
@@ -138,6 +141,12 @@ unexclude_marked() {
     printf 'Removed %s from .git/info/exclude\n' "$entry"
   else
     rm -f "$tmp"
+  fi
+  # The Claude entry without a marker: what installers before the marker
+  # wrote, or the user's own line. Either way it is not removed, only named.
+  if [ "$mode" = claude ] && tr -d '\r' < "$exclude_file" | grep -qxF "$entry"; then
+    printf 'Left %s in .git/info/exclude: the installer did not mark it as its own.\n' "$entry"
+    printf 'An older installer may have added it; remove the line by hand if it is no longer wanted.\n'
   fi
 }
 
@@ -153,7 +162,7 @@ if [ "$mode" = antigravity ]; then
   else
     printf 'Nothing installed at %s\n' "$dest"
   fi
-  unexclude_marked
+  unexclude_marked "/.agents/plugins/$SKILL_NAME" "$EXCLUDE_MARKER"
   printf 'Restart Antigravity so that it stops loading the plugin.\n'
 elif [ "$mode" = claude ]; then
   if [ -n "$target_project" ]; then
@@ -167,6 +176,7 @@ elif [ "$mode" = claude ]; then
   else
     printf 'Nothing installed at %s\n' "$dest"
   fi
+  unexclude_marked "/.claude/skills/$SKILL_NAME" "$CLAUDE_EXCLUDE_MARKER"
 else
   if [ -n "$target_project" ]; then
     agents_file="$target_project/AGENTS.md"
@@ -177,10 +187,15 @@ else
   end="<!-- END $SKILL_NAME -->"
   if [ -f "$agents_file" ] && grep -qF "$begin" "$agents_file"; then
     tmp="$agents_file.tmp.$$"
-    awk -v b="$begin" -v e="$end" '
+    # BINMODE: Git Bash's awk would otherwise drop the CR of every CRLF line.
+    # The result ends with a newline only when the file did (eol).
+    eol=1
+    if [ -s "$agents_file" ] && [ -n "$(tail -c 1 "$agents_file")" ]; then eol=0; fi
+    awk -v BINMODE=3 -v b="$begin" -v e="$end" -v eol="$eol" '
       index($0, b) { skip = 1 }
-      !skip { print }
+      !skip { printf "%s%s", sep, $0; sep = "\n" }
       index($0, e) { skip = 0 }
+      END { if (eol && sep != "") printf "\n" }
     ' "$agents_file" > "$tmp"
     mv "$tmp" "$agents_file"
     printf 'Removed the pointer block from %s\n' "$agents_file"

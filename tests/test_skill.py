@@ -494,7 +494,7 @@ class TestPortability(IsolatedCase):
         start = script.index("install_claude() {")
         body = script[start : script.index("\n}\n", start)]
         self.assertGreater(
-            body.index('exclude_from_project_git "$dest"'), body.index('ln -s "$root" "$dest"')
+            body.index('exclude_marked "/.claude/skills/'), body.index('ln -s "$root" "$dest"')
         )
 
     def test_doctor_never_sees_the_real_home_in_a_test(self):

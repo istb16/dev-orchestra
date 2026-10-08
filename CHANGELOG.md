@@ -219,6 +219,31 @@ below begins **User adapters** so adapter authors can find it.
   gives the command to remove it, once you have checked it holds nothing of
   yours (#293).
 
+- **`install.ps1 -Codex` and `uninstall.ps1 -Codex` no longer garble a
+  non-ASCII `AGENTS.md` in Windows PowerShell 5.1.** It read the file in the
+  ANSI code page and wrote it back as UTF-8 with a BOM, so Japanese text came
+  out as mojibake. Both scripts now read and write `AGENTS.md` as UTF-8 in
+  either PowerShell, and keep the rest of the file's text, its line endings
+  and a UTF-8 BOM if it has one; PowerShell 7 no longer turns LF endings
+  into CRLF either. A file that is not UTF-8 (UTF-16 or UTF-32 included, or
+  other text behind a UTF-8 BOM) is left untouched, and the run exits 1 and
+  says to save it as UTF-8. `.git/info/exclude` is read the same way, so a
+  non-ASCII pattern there survives an install too. A last line without a
+  newline no longer runs into the block or gains a newline after an
+  uninstall, in `install.sh` as in `install.ps1`, and under Git Bash a re-run
+  or `uninstall.sh` no longer turns CRLF endings into LF (#292).
+
+- **`uninstall --project` removes the `.git/info/exclude` line that the Claude
+  Code install added.** The install wrote `/.claude/skills/dev-orchestra`
+  there without a marker, and nothing removed it. It now goes in under a
+  `# added by dev-orchestra install --claude` comment, as the Antigravity
+  entry does, and the uninstallers remove it only when that comment is right
+  above it. A line already there without the comment, from an earlier
+  install or written by hand, is not added again and is kept; the
+  uninstaller names it so it can be removed by hand. `install.sh` now also
+  finds the entry in a file `install.ps1` wrote with CRLF line endings,
+  rather than adding it a second time (#294).
+
 - **Two findings from one reviewer are no longer merged into one.** Two
   near-identical findings a few lines apart from the same reviewer (the
   `timeout` and the `retries` argument not being validated, say) became one
