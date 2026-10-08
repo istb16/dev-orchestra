@@ -338,11 +338,16 @@ complaining about its own stdin.
 
 A prompt is read as UTF-8, whether from a `--prompt-file`, `--prompt-file -`
 or a pipe, and a byte-order mark at its start is dropped. Stdin is not read in
-the console's code page: on a Japanese Windows that is cp932, and a UTF-8
-prompt piped in used to be delegated as mojibake. Piped bytes that are not
-UTF-8 but are valid in the console's code page (`type` of a file saved as
-cp932) are read in that code page; anything else keeps its readable text,
-with each undecodable byte replaced by U+FFFD.
+the encoding Python gives it, which for a pipe on Windows is the ANSI code
+page: cp932 on a Japanese Windows, where a UTF-8 prompt piped in used to be
+delegated as mojibake. Piped bytes are read in that code page instead only
+when they are mostly not UTF-8 and read cleanly in it (`type` of a file saved
+as cp932); otherwise the prompt stays UTF-8, with each undecodable byte
+replaced by U+FFFD, so one stray byte does not garble the rest. What never
+reaches Python cannot be recovered: Windows PowerShell 5.1 encodes what it
+pipes to a program with `$OutputEncoding`, ASCII by default, so non-ASCII text
+is already `?` by then; set `$OutputEncoding = [Text.UTF8Encoding]::new($false)`
+first, or use `--prompt-file <path>`.
 
 `--timeout` is the total deadline. Without it, a role's run takes
 `run.timeout_seconds.<role>` (3600 for the implementer, 1800 for the others) and

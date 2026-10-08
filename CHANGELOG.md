@@ -124,14 +124,17 @@ below begins **User adapters** so adapter authors can find it.
   back a result, the entry is ended as failed, and a detached job failed,
   before the error surfaces (#272).
 
-- **A prompt piped to `run` arrives as it was written on a Japanese
-  Windows.** `--prompt-file -` and a bare pipe read stdin in the console's
-  code page, cp932 there, so a UTF-8 prompt was delegated as mojibake. Stdin
-  is now read as UTF-8, as a `--prompt-file` is; bytes that are not UTF-8
-  but are valid in the console's code page (`type` of a file saved as cp932)
-  are read in that code page, and anything else has its undecodable bytes
-  replaced rather than raising. A byte-order mark at the start of a prompt,
-  piped or in a file, is dropped (#284).
+- **A UTF-8 prompt piped to `run` is no longer read as cp932 on a Japanese
+  Windows.** `--prompt-file -` and a bare pipe read stdin in the encoding
+  Python gives a pipe there, the ANSI code page (cp932), so a UTF-8 prompt
+  was delegated as mojibake. Stdin is now read as UTF-8, as a
+  `--prompt-file` is. Bytes that are mostly not UTF-8 and read cleanly in
+  the code page (`type` of a file saved as cp932) are read in it; anything
+  else stays UTF-8 with its undecodable bytes replaced, so one stray byte
+  neither raises nor garbles the rest. A byte-order mark at the start of a
+  prompt, piped or in a file, is dropped. Windows PowerShell 5.1 still turns
+  non-ASCII text into `?` before it reaches the pipe unless
+  `$OutputEncoding` is set to UTF-8 (#284).
 
 - **On Windows, a `claude.cmd` or `codex.cmd` installed by npm runs.**
   `doctor` found it through PATHEXT and reported it installed, but it was

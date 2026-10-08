@@ -53,6 +53,14 @@ class TestReadingStdin(unittest.TestCase):
         """``type`` of a file saved as cp932 pipes cp932; it is not UTF-8."""
         self.assertEqual(self.read(PROMPT.encode("cp932")), PROMPT)
 
+    def test_one_stray_byte_does_not_turn_a_utf8_prompt_into_cp932(self):
+        """Reading it all in cp932 for one bad byte would garble every character."""
+        self.assertEqual(self.read(PROMPT.encode("utf-8") + b"\x81"), PROMPT + "�")
+        self.assertEqual(self.read(b"\xff" + PROMPT.encode("utf-8")), "�" + PROMPT)
+
+    def test_a_short_cp932_prompt_is_still_read_as_cp932(self):
+        self.assertEqual(self.read("abc あ".encode("cp932")), "abc あ")
+
     def test_bytes_neither_can_read_are_replaced_rather_than_raised(self):
         text = self.read(b"ok \xff\xfe end", encoding="utf-8")
         self.assertTrue(text.startswith("ok "))
