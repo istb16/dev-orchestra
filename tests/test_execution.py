@@ -186,6 +186,18 @@ class TestNormalCompletion(IsolatedCase):
         self.assertTrue(outcome.ok, outcome.stderr)
         self.assertEqual(outcome.stdout.strip(), str(len(big)))
 
+    def test_the_prompt_reaches_stdin_byte_for_byte(self):
+        # A diff of a CRLF file must not grow a second \r on Windows (#270).
+        prompt = "a\nb\r\nc\néあ\n"
+        outcome = execution.execute(
+            python_code("import sys; print(sys.stdin.buffer.read().hex())"),
+            cwd=self.project,
+            prompt=prompt,
+            timeout=60,
+        )
+        self.assertTrue(outcome.ok, outcome.stderr)
+        self.assertEqual(bytes.fromhex(outcome.stdout.strip()), prompt.encode("utf-8"))
+
     def test_a_child_that_never_reads_stdin_still_completes(self):
         outcome = execution.execute(
             python_code("print('done without reading stdin')"),

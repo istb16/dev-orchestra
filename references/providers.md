@@ -377,7 +377,9 @@ The built-in fallback list is used only when `claude --help` cannot be read, and
 contains aliases only — never dated snapshot ids.
 
 Prompts are sent on **stdin**, not as an argument, which avoids command-line
-length limits and quoting differences between shells.
+length limits and quoting differences between shells. They are written as
+UTF-8 bytes with their line endings untouched, on Windows too, so a diff of a
+CRLF file reaches the CLI as it is in the file, as agy's prompt file does.
 
 The output format is `stream-json`, not `text`, for one reason: measured,
 `text` prints nothing until a run is nearly over (first output 8.1s into an

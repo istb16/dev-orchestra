@@ -121,6 +121,12 @@ below begins **User adapters** so adapter authors can find it.
   once the CLI has gone, so the run reports `orphans_possible` and warns
   instead. The CLI's exit code is kept either way (#267).
 
+- **A prompt reaches the CLI with its line endings unchanged on Windows.**
+  stdin was written in text mode, which turns every `\n` into `\r\n`, so a
+  review of a change to a CRLF file handed the reviewer `\r\r\n` and invited
+  findings about mixed line endings that were not in the file. The prompt is
+  now written as UTF-8 bytes, as agy's prompt file already was (#270).
+
 - **Without PyYAML, a Windows path or a string of digits written to a config
   reads back unchanged** (#275). The bundled parser decoded `\\n` in a
   double-quoted string as a backslash and a newline, so `C:\work\new` came

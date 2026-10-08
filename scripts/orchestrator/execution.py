@@ -22,6 +22,7 @@ format it was asked for -- see ``references/providers.md``.
 
 from __future__ import annotations
 
+import io
 import os
 import queue
 import signal
@@ -29,7 +30,7 @@ import subprocess
 import sys
 import threading
 import time
-from typing import IO, Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple, cast
+from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple, cast
 
 from . import clocks
 
@@ -723,11 +724,17 @@ def _verdict(
 
 
 def _feed_stdin(proc: subprocess.Popen, prompt: str) -> None:
+    """Write ``prompt`` to the child's stdin as UTF-8, its newlines as they are.
+
+    The bytes go to the binary buffer under the text pipe: on Windows the text
+    layer turns every ``\\n`` into ``\\r\\n``, so a diff of a CRLF file reached
+    a reviewer as ``\\r\\r\\n``. agy's prompt file is written the same way.
+    """
     # Every caller opens stdin as a text pipe.
-    stdin = cast(IO[str], proc.stdin)
+    stdin = cast(io.TextIOWrapper, proc.stdin)
     try:
         if prompt:
-            stdin.write(prompt)
+            stdin.buffer.write(prompt.encode("utf-8", "replace"))
         stdin.close()
     except (OSError, ValueError):
         pass
