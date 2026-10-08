@@ -9,7 +9,7 @@ import re
 import sys
 from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple, Union
 
-from . import claude_hooks, config_trust, hosts, miniyaml
+from . import claude_hooks, hosts, miniyaml
 from . import config as config_mod
 from . import config_policy as policy_mod
 from . import doctor as doctor_mod
@@ -355,6 +355,7 @@ def cmd_config_reset(args: argparse.Namespace) -> int:
 
 def cmd_config_set(args: argparse.Namespace) -> int:
     role_key = args.path.split(".")[0].split("[")[0]
+    value = _set_value(args)
     if role_key == "preset":
         # Only the global file can name one, so that is where it goes unless a
         # scope says otherwise -- and a project scope is refused, not written.
@@ -362,7 +363,7 @@ def cmd_config_set(args: argparse.Namespace) -> int:
             _err("preset: only the global file can name a preset for now (use --scope global)")
             return 2
         scope = "global"
-    elif args.scope is None and config_trust.refused_write(args.path, _set_value(args)):
+    elif args.scope is None and policy_mod.global_only_write(args.path, value):
         # Likewise: only the global file can make it, so that is where it goes.
         scope = "global"
     else:
@@ -384,13 +385,11 @@ def cmd_config_set(args: argparse.Namespace) -> int:
             frozen, left_out = _seed_panel(scope, layer, base, path, args.cwd)
         else:
             _seed_list(layer, list_path, base)
-    value = _set_value(args)
     if scope == "project":
         # From the arguments alone, before anything is written: the same
         # refusal a run of that seat would meet.
         refusal = _project_seat_write_refusal(args.path, value, layer, path)
-        name = os.path.basename(path)
-        refusal = refusal or policy_mod.project_ignored_write_refusal(args.path, value, name)
+        refusal = refusal or policy_mod.global_only_write(args.path, value, os.path.basename(path))
         if refusal:
             _err(refusal)
             return 2
@@ -442,7 +441,7 @@ def cmd_config_set(args: argparse.Namespace) -> int:
     )
     for problem in problems:
         _err("warning: %s" % problem)
-    for warning in policy_mod.read_only_arg_warnings(reloaded):
+    for warning in _refusal_warnings(reloaded):
         _err("warning: %s" % warning)
     for key, close in config_mod.unknown_keys(layer):
         # Only the key just written: the file's other ones are `config validate`'s to list.
@@ -463,7 +462,19 @@ def _set_value(args: argparse.Namespace) -> Any:
         # other words YAML reads as booleans (`off`, `yes`, `on`, ...) name no
         # language, so they are coerced and `validate` says so.
         return args.value.strip() if not args.raw else args.value
-    return config_mod.coerce_scalar(args.value)
+    return config_mod.coerce_scalar(args.value, args.path)
+
+
+def _refusal_warnings(loaded: config_mod.LoadedConfig) -> List[str]:
+    """The refusals a write or ``config validate`` warns about.
+
+    The raw-argument refusals, and every setting the project file makes that
+    only the global config may: each a warning here, whether or not it would
+    loosen what is in force (``doctor`` tells the two apart).
+    """
+    warnings = policy_mod.read_only_arg_warnings(loaded)
+    warnings += [entry.line for entry in policy_mod.project_ignored(loaded)]
+    return warnings
 
 
 #: The keys that name a read-only seat's provider.
@@ -609,7 +620,7 @@ def cmd_config_validate(args: argparse.Namespace) -> int:
     )
     # Warnings, not problems: they refuse one role's runs, not the file. An
     # unknown key refuses nothing at all; it is only never read.
-    warnings = policy_mod.read_only_arg_warnings(loaded)
+    warnings = _refusal_warnings(loaded)
     refused = list(policy_mod.project_raw_arg_refusals(loaded))
     origins = loaded.design_reviewer_origins
     warnings += policy_mod.read_only_enforcement_warnings(loaded.data, refused, origins)
@@ -1183,7 +1194,7 @@ def _warn_unenforced_after_write(cwd: Any) -> None:
         return  # the other layer does not parse; the write itself is done
     # The refusals too, as `config set` prints them: a project panel copied
     # from the global one can hold a seat the project file may not set.
-    for warning in policy_mod.read_only_arg_warnings(loaded):
+    for warning in _refusal_warnings(loaded):
         _err("warning: %s" % warning)
     _warn_unenforced(loaded)
 

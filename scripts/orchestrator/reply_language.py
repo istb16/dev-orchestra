@@ -26,7 +26,7 @@ from collections import Counter
 from typing import Any, Dict, Iterable, List, Mapping, NamedTuple, Optional, Tuple
 
 from . import config as config_mod
-from . import config_trust, workflow
+from . import workflow
 from .execution import DELEGATED_ENV
 
 #: The command-line event name, and the ``hook_event_name`` it must arrive with.
@@ -787,13 +787,9 @@ def file_settings(cwd: str) -> Dict[str, Any]:
     for path in layer_paths(cwd):
         layers.append(config_mod.read_config_file(path) if path and os.path.isfile(path) else {})
     global_layer, project_layer = layers
-    data = config_mod.deep_merge(global_layer, config_trust.without_ignored(project_layer))
-    # And the workspace a link would take out of the repository, as the commands drop it.
+    # In the repository, so a workspace a link takes out of it is dropped as the commands drop it.
     root = config_mod.repository_root(cwd) or os.path.abspath(cwd)
-    used = config_mod.workspace_dir_in(root, data, global_layer, project_layer)
-    if used != config_mod.workspace_dir_of(data):
-        data = config_mod.deep_merge(data, {"workspace": {"dir": used}})
-    return data
+    return config_mod.deep_merge(global_layer, config_mod.trusted_project_layer(project_layer, root))
 
 
 def layer_paths(cwd: str) -> List[Optional[str]]:

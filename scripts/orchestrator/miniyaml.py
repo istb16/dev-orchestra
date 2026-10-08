@@ -393,12 +393,15 @@ def _emit_scalar(value: Any) -> str:
     if isinstance(value, int):
         return str(value)
     text = str(value)
-    plain = (
-        _PLAIN_RE.match(text)
-        and text == text.strip()
-        and not _NUMBERISH_RE.match(text)
-        and isinstance(_parse_scalar(text), str)
-    )
+    try:
+        plain = (
+            _PLAIN_RE.match(text)
+            and text == text.strip()
+            and not _NUMBERISH_RE.match(text)
+            and isinstance(_parse_scalar(text), str)
+        )
+    except YamlError:
+        plain = False  # what the reader would refuse is quoted, whatever _PLAIN_RE lets through
     if plain:
         return text
     return '"' + "".join(_escape_char(ch) for ch in text) + '"'

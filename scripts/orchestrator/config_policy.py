@@ -20,13 +20,11 @@ from .config import (
     ReviewerOrigin,
     _read_only_seats,
     _reviewer_seats,
-    compose,
+    compose_loaded,
     design_review_mode,
     get_path,
-    repository_root,
     role_seats,
     workspace_dir_in,
-    workspace_dir_of,
 )
 from .providers import _warned_provider, get_provider, unenforced_warning
 
@@ -361,13 +359,13 @@ def read_only_arg_warnings(loaded: LoadedConfig) -> List[str]:
     arguments when only that role's runs are refused.
 
     Also the refusals of the other kinds that come from the project file:
-    a read-only seat on a warned provider, a write role's options on a
-    provider that takes them only from the global config, and the settings
-    only the global config may make (``project_ignored_warnings``).
+    a read-only seat on a warned provider, and a write role's options on a
+    provider that takes them only from the global config. The settings only
+    the global config may make are ``project_ignored``'s, which each caller
+    adds as its report needs them.
     """
     warnings = [message for _entry, message in _all_refused(loaded)]
     warnings.extend(project_write_refusals(loaded).values())
-    warnings.extend(project_ignored_warnings(loaded))
     for entry in read_only_raw_args(loaded):
         if entry.layer == "project" or not entry.args:
             continue
@@ -397,36 +395,25 @@ class Ignored(NamedTuple):
     loosens: bool
 
 
-def project_repository(loaded: LoadedConfig) -> Optional[str]:
-    """The repository the project file is in, or its directory outside one; None without one."""
-    if not loaded.project_path:
-        return None
-    directory = os.path.dirname(os.path.abspath(loaded.project_path))
-    return repository_root(directory) or directory
-
-
 def project_ignored(loaded: LoadedConfig) -> List[Ignored]:
     """One entry per setting the project file makes that only the global config may.
 
-    ``config.compose`` has already left them out (``config_trust``), and
-    ``LoadedConfig.workspace_dir`` a ``workspace.dir`` a link takes out of the
-    repository; this says so, with what is in force instead and the command
-    that would set it.
+    ``config.trusted_project_layer`` has already left them out, a
+    ``workspace.dir`` a link takes out of the repository where the workspace
+    is resolved in ``loaded.root``; this says so, in the same repository,
+    with what is in force instead and the command that would set it.
     """
+    if not loaded.project_layer:
+        return []  # nothing to leave out, and no repository to ask git for
     name = os.path.basename(loaded.project_path or "") or "the project file"
-    used = workspace_dir_of(loaded.data)
-    found = [(key, value, "") for key, value in config_trust.ignored(loaded.project_layer)]
-    root = project_repository(loaded)
-    if root is not None:
-        workspace = loaded.project_layer.get("workspace")
-        value = workspace.get("dir") if isinstance(workspace, dict) else None
-        fallback = workspace_dir_in(root, loaded.data, loaded.global_layer, loaded.project_layer)
-        if value == used and fallback != used:
-            used = fallback
-            how = ", where a link takes it outside the repository,"
-            found.append((config_trust.WORKSPACE_DIR, value, how))
+    used = workspace_dir_in(loaded.root, loaded.data, loaded.global_layer, loaded.project_layer)
     entries: List[Ignored] = []
-    for key, value, how in found:
+    for key, value in config_trust.ignored(loaded.project_layer, loaded.root):
+        how = ""
+        if key == config_trust.WORKSPACE_DIR and not config_trust.outside_repository(value):
+            if value == used:
+                continue  # the global file names the same directory, so nothing moved
+            how = ", where a link takes it outside the repository,"
         if key == config_trust.APPROVAL:
             required = bool(loaded.design_settings().get("require_approval"))
             why = "plan approval is taken only from the global config, so it stays %s" % (
@@ -454,8 +441,12 @@ def project_ignored_warnings(loaded: LoadedConfig) -> List[str]:
     return [entry.line for entry in project_ignored(loaded)]
 
 
-def project_ignored_write_refusal(dotted: str, value: Any, file_name: str) -> str:
-    """Why ``config set --scope project <dotted> <value>`` writes nothing, or ""."""
+def global_only_write(dotted: str, value: Any, file_name: str = "the project file") -> str:
+    """Why ``config set --scope project <dotted> <value>`` writes nothing, or "".
+
+    Also how ``config set`` with no scope tells such a write goes to the
+    global file: the same rule answers both.
+    """
     found = config_trust.written_ignored(dotted, value)
     if not found:
         return ""
@@ -673,22 +664,15 @@ _GATES = (
 
 
 def _without_project(loaded: LoadedConfig) -> Optional[LoadedConfig]:
-    """The configuration the global file, its preset's fit and the defaults give alone."""
+    """The configuration the global file, its preset's fit and the defaults give alone.
+
+    Fitted to the CLIs ``loaded`` was, without asking for them again.
+    """
+    installed = loaded.installed if loaded.installed is not None else presets.installed_providers()
     try:
-        data, fit, preset, source = compose(loaded.global_layer, {}, presets.installed_providers())
+        return compose_loaded(loaded.global_layer, {}, installed, loaded.global_path, None, loaded.start)
     except Exception:
         return None  # a global file that does not compose is validate's to report
-    return LoadedConfig(
-        data,
-        loaded.global_path,
-        None,
-        not loaded.global_path,
-        global_layer=loaded.global_layer,
-        preset=preset,
-        preset_source=source,
-        reviewer_origins=fit.origins,
-        design_reviewer_origins=fit.design_origins,
-    )
 
 
 def project_loosening_notices(loaded: LoadedConfig) -> List[str]:
