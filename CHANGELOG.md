@@ -453,6 +453,23 @@ below begins **User adapters** so adapter authors can find it.
   works -- in single quotes from `install.sh`, so a `$` or a backtick in it
   is not expanded either -- and `doctor`'s `Resume:` line names the live check by its absolute
   path, as its notes already did (#297).
+
+- **Untracked files with non-ASCII names, and large untracked files, are no
+  longer dropped from a review snapshot.** git quotes a name like
+  `日本語.py` unless asked not to, so the quoted name matched no file and the
+  file vanished: not in the diff, not withheld, not in `changed_paths`, and
+  so invisible to reviewers and to the risk check. Untracked files are now
+  listed with `-z`, so such names, and names with spaces, are diffed like any
+  other. An untracked file over 512,000 bytes, or one that cannot be read or
+  diffed, is listed under `withheld` with a `reason` rather than skipped,
+  with its lines shown as not counted, and `review snapshot` and `review run`
+  no longer suggest `--no-exclude` for it. The size is checked before any
+  pattern, and an incremental round withholds a large untracked file the same
+  way, on either side of the round, instead of diffing it whole or deleting
+  every line of it. Names that are not UTF-8 or hold a carriage return are
+  read as they are on disk, and a nested repository is still left out
+  (#260).
+
 ## [0.22.0] - 2026-10-06
 
 ### Added

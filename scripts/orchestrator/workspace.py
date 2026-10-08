@@ -90,6 +90,27 @@ def git(
     return completed.returncode, completed.stdout or "", completed.stderr or ""
 
 
+def git_bytes(args: Sequence[str], cwd: str, timeout: int = 60) -> "tuple[int, bytes, str]":
+    """Run git and return (exit code, stdout as bytes, stderr).
+
+    For output that names files: decoding it as text would replace a byte
+    that is not UTF-8 and turn a carriage return into a newline, and the
+    name that came back would then name no file.
+    """
+    try:
+        completed = subprocess.run(
+            ["git", *args],
+            cwd=cwd,
+            capture_output=True,
+            timeout=timeout,
+            stdin=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return 127, b"", str(exc)
+    stderr = (completed.stderr or b"").decode("utf-8", errors="replace")
+    return completed.returncode, completed.stdout or b"", stderr
+
+
 def is_git_repo(path: str) -> bool:
     code, out, _ = git(["rev-parse", "--is-inside-work-tree"], path)
     return code == 0 and out.strip() == "true"
