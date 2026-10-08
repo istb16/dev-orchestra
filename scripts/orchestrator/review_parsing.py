@@ -54,26 +54,43 @@ def _split_blocks(body: str) -> List[List[str]]:
     Headers are preferred, but a report that lost its headers entirely is still
     recoverable: each ``Severity:`` line starts a finding, since the required
     schema puts exactly one at the top of every block.
+
+    A line inside a fenced block is code, never a header or a ``Severity:``
+    line: ``finding = parse(x)`` there would otherwise cut the block in two and
+    drop everything after it.
     """
-    blocks: List[List[str]] = []
-    current: Optional[List[str]] = None
-    for line in body.splitlines():
-        if _HEADER_RE.match(line):
-            current = []
-            blocks.append(current)
-            continue
-        if current is not None:
-            current.append(line)
+    lines = body.splitlines()
+    blocks = _split_on(lines, _HEADER_RE, keep_marker=False)
     if blocks:
         return blocks
+    return _split_on(lines, _SEVERITY_LINE_RE, keep_marker=True)
 
-    for line in body.splitlines():
-        if _SEVERITY_LINE_RE.match(line):
-            current = []
-            blocks.append(current)
+
+def _split_on(lines: List[str], marker: "re.Pattern[str]", keep_marker: bool) -> List[List[str]]:
+    """Blocks starting at each line ``marker`` matches outside a fence."""
+    blocks: List[List[str]] = []
+    current: Optional[List[str]] = None
+    closer = -1
+    for index, line in enumerate(lines):
+        if index > closer:
+            if marker.match(line):
+                current = []
+                blocks.append(current)
+                if not keep_marker:
+                    continue
+            opener = _fence_opener(_field_text(line))
+            if opener:
+                closer = _closing_line(lines, index + 1, opener)
         if current is not None:
             current.append(line)
     return blocks
+
+
+def _field_text(line: str) -> str:
+    """``line`` as ``_parse_block`` reads it: without emphasis or a label."""
+    line = line.replace("**", "")
+    match = _FIELD_RE.match(line)
+    return match.group(2).strip() if match else line.strip()
 
 
 def unparsed_report_warning(text: str, parsed: Sequence[Dict[str, Any]]) -> str:
@@ -110,7 +127,20 @@ def _strip_report_header(text: str) -> str:
 def _parse_block(lines: List[str]) -> Optional[Dict[str, Any]]:
     fields: Dict[str, List[str]] = {}
     key: Optional[str] = None
-    for raw_line in lines:
+    # The fence being read through, the index of the line that closes it, and
+    # how far its lines are indented. Inside a fence nothing is a label and
+    # nothing is a heading: ``# comment`` and ``fix: ...`` are code there.
+    fence = ""
+    closer = -1
+    indent = 0
+    for index, raw_line in enumerate(lines):
+        if key and fence:
+            if index == closer:
+                fields[key].append(raw_line.strip())
+                fence = ""
+            else:
+                fields[key].append(_dedent(raw_line.rstrip(), indent))
+            continue
         # Models bold the labels in several ways (``**Severity:** high`` and
         # ``**Severity**: high``); dropping the emphasis normalises all of them.
         line = raw_line.replace("**", "")
@@ -118,10 +148,21 @@ def _parse_block(lines: List[str]) -> Optional[Dict[str, Any]]:
         if match:
             raw_key = match.group(1).lower()
             key = _FIELD_ALIASES.get(raw_key, raw_key)
-            fields.setdefault(key, []).append(match.group(2).strip())
+            text = match.group(2).strip()
+            fields.setdefault(key, [])
+        elif key and line.strip() and not line.strip().startswith("#"):
+            text = line.strip()
+        else:
             continue
-        if key and line.strip() and not line.strip().startswith("#"):
-            fields[key].append(line.strip())
+        if text:
+            fields[key].append(text)
+        opener = _fence_opener(text)
+        if opener:
+            # A fence nobody closes is read as ordinary lines: swallowing the
+            # rest of the finding would lose more than the fence protects.
+            closer = _closing_line(lines, index + 1, opener)
+            if closer >= 0:
+                fence, indent = opener, _indent_of(lines[closer])
     if not fields:
         return None
     finding: Dict[str, Any] = {
@@ -131,18 +172,69 @@ def _parse_block(lines: List[str]) -> Optional[Dict[str, Any]]:
         "category": (_join(fields.get("category")) or "general").lower(),
         "problem": _join(fields.get("problem")),
         "impact": _join(fields.get("impact")),
-        "evidence": _join(fields.get("evidence")),
-        "recommended_fix": _join(fields.get("recommended_fix")),
+        "evidence": _join_lines(fields.get("evidence")),
+        "recommended_fix": _join_lines(fields.get("recommended_fix")),
     }
     if not finding["problem"] and not finding["evidence"]:
         return None
     return finding
 
 
+#: The opening line of a fenced code block: three or more backticks or tildes,
+#: then an optional info string such as ``python``.
+_FENCE_RE = re.compile(r"^\s*(`{3,}|~{3,})(.*)$")
+
+
+def _fence_opener(text: str) -> str:
+    """The fence ``text`` opens, or "" when it opens none."""
+    match = _FENCE_RE.match(text)
+    if not match:
+        return ""
+    fence, info = match.groups()
+    # A backtick fence's info string cannot hold a backtick, so a line that
+    # opens and closes inline code with three backticks opens no fence.
+    if fence[0] == "`" and "`" in info:
+        return ""
+    return fence
+
+
+def _closing_line(lines: List[str], start: int, fence: str) -> int:
+    """The index of the line that closes ``fence``, or -1.
+
+    Only the same character closes a fence, at least as many of it, and with
+    nothing else on the line, so a ``~~~`` inside a backtick fence is code.
+    """
+    for index in range(start, len(lines)):
+        stripped = lines[index].strip()
+        if len(stripped) >= len(fence) and stripped == fence[0] * len(stripped):
+            return index
+    return -1
+
+
+def _indent_of(line: str) -> int:
+    return len(line) - len(line.lstrip())
+
+
+def _dedent(line: str, indent: int) -> str:
+    """``line`` without the indentation the whole fence shares."""
+    return line[min(indent, _indent_of(line)) :]
+
+
 def _join(values: Optional[List[str]]) -> str:
     if not values:
         return ""
     return " ".join(part for part in (value.strip() for value in values) if part).strip()
+
+
+def _join_lines(values: Optional[List[str]]) -> str:
+    """A field that may hold code, with its line breaks kept.
+
+    Evidence and a fix quote code, and the fix brief hands that code to the
+    fixer: joined into one line, its shape -- and with it its meaning -- is gone.
+    """
+    if not values:
+        return ""
+    return "\n".join(value.rstrip() for value in values).strip("\n")
 
 
 def _normalise_severity(value: str) -> str:

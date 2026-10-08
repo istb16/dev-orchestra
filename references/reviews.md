@@ -889,14 +889,35 @@ normalises paths (`./a\b.py` → `a/b.py`). Unknown severities become `medium`;
 `nit`, `minor`, `style`, `info` become `low`; `blocker` becomes `critical`. A
 block with neither a problem nor evidence is discarded.
 
+Code in a fenced block (```` ``` ```` or `~~~`, closed only by a fence of the
+same character at least as long) is read as code: its lines are kept as
+written, including `#` comments and lines such as `fix: …` that would
+otherwise start a new field, and no line in it starts a new finding, even one
+that reads like a `Finding` heading or a `Severity:` line. `Evidence` and `Fix`
+keep their line breaks, so the fix brief hands the fixer the code in its
+shape. There and in `consolidated.md` a value of several lines goes on the
+lines below its label, indented into the list item, so its fences stay inside
+it. The other fields are joined into one line. A fence that is never closed
+is read as ordinary lines.
+
 ## Deduplication
 
-Two findings are merged when they sit at the **same locus** — same file, and
-line numbers within 10 of each other (or no line number) — and their
-problem + recommended-fix text matches with a similarity ratio ≥ 0.72.
+Two findings are merged when they come from **different reviewers**, sit at the
+**same locus** — same file, and line numbers within 10 of each other, or no
+line number on either — and their problem + recommended-fix text matches with a
+similarity ratio ≥ 0.72. Two findings from one reviewer are never merged, for
+the reason they are never paired below. A finding without a line number is
+about the file (or, in a design review, the plan section) as a whole, not about
+every line in it, so it is never merged with one that has a line number; such
+a pair is listed as a possible duplicate (below) when the two quote the same
+code.
 
 Merging keeps the **highest** severity, the **longest** version of each text
-field, and records every reviewer that reported it:
+field, and records every reviewer that reported it. `duplicate_count` is the
+number of reviewers who reported it. Each report as its reviewer wrote it is
+kept in `merged_reports` (reviewer, severity, line and the text fields), and
+`consolidated.md` lists them under the finding, so nothing a merge left out of
+the kept text is lost:
 
 ```json
 {
@@ -907,6 +928,10 @@ field, and records every reviewer that reported it:
   "category": "correctness",
   "reported_by": ["claude-general", "codex-security"],
   "duplicate_count": 2,
+  "merged_reports": [
+    {"reviewer": "claude-general", "severity": "high", "line": "42", "problem": "…", "…": "…"},
+    {"reviewer": "codex-security", "severity": "critical", "line": "44", "problem": "…", "…": "…"}
+  ],
   "triage": "needs-triage",
   "triage_note": ""
 }

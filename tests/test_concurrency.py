@@ -8,14 +8,19 @@ produced a parse error, and returning the default turned "unreadable" into
 
 from __future__ import annotations
 
+import io
 import os
 import threading
 import time
 import unittest
+from contextlib import redirect_stdout
+from unittest import mock
 
 from helpers import IsolatedCase
 
+from orchestrator import cli, cli_review
 from orchestrator import ledger as ledger_mod
+from orchestrator import review as review_mod
 from orchestrator import workspace as ws
 
 
@@ -414,6 +419,66 @@ class TestConcurrentLedgerUpdates(IsolatedCase):
 
         self.assertGreater(reads, 20)
         self.assertEqual(bad, [], "%d of %d reads came back unusable" % (len(bad), reads))
+
+
+class TestConcurrentTriage(IsolatedCase):
+    """#262: triage calls run side by side each read the report, set their own
+    decision and wrote it back, and every one printed success while the last
+    write dropped the others."""
+
+    FINDINGS = 8
+
+    def setUp(self):
+        super().setUp()
+        self.workspace = self.cli_workspace()
+        findings = [
+            {
+                "reviewer": "r1",
+                "severity": "high",
+                "file": "file%d.py" % index,
+                "line": "1",
+                "category": "correctness",
+                "problem": "problem number %d" % index,
+                "impact": "",
+                "evidence": "",
+                "recommended_fix": "",
+            }
+            for index in range(self.FINDINGS)
+        ]
+        data = review_mod.build_consolidation(self.workspace, [], findings)
+        review_mod.save_consolidation(self.workspace, data)
+
+    def test_concurrent_triage_keeps_every_decision(self):
+        real = review_mod.set_triage
+
+        def slow(*args, **kwargs):
+            # Widens the window between the read and the write, so the race
+            # the lock closes is not left to the scheduler.
+            time.sleep(0.05)
+            return real(*args, **kwargs)
+
+        codes = []
+        errors = []
+
+        def triage(finding_id):
+            try:
+                args = cli.build_parser().parse_args(["review", "triage", finding_id, "--status", "accepted"])
+                codes.append(cli_review.cmd_review_triage(args))
+            except Exception as exc:  # collected and reported after the join
+                errors.append(exc)
+
+        ids = ["F%d" % index for index in range(1, self.FINDINGS + 1)]
+        threads = [threading.Thread(target=triage, args=(finding_id,)) for finding_id in ids]
+        with mock.patch.object(review_mod, "set_triage", slow), redirect_stdout(io.StringIO()):
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=30)
+
+        self.assertEqual(errors, [])
+        self.assertEqual(codes, [0] * self.FINDINGS)
+        data = ws.read_json(self.workspace.consolidated_json_path, {})
+        self.assertEqual(sorted(f["id"] for f in review_mod.accepted_findings(data)), sorted(ids))
 
 
 if __name__ == "__main__":
