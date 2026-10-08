@@ -795,6 +795,7 @@ class TestDetachedRun(IsolatedCase):
         self.assertEqual([e.get("status") for e in ended], ["ok"])
         elsewhere = json.loads(self.run_cli("state", "show", "--json")[1])
         self.assertEqual([e for e in elsewhere.get("events") or [] if e.get("stage") == "implementer"], [])
+        self.assertEqual(job["command"][:2], ["--cwd", os.getcwd()])
         self.assertEqual(job["command"][2:5], ["--workflow", "named", "run"])
 
     @unittest.skipUnless(has_git(), "git is required")
@@ -803,16 +804,37 @@ class TestDetachedRun(IsolatedCase):
         the repository root and run the model the root's file names (#282)."""
         self.run_cli("config", "set", "implementer.model.family", "small")
         self.init_git_repo()
+        self.write(".dev-orchestra.yaml", "version: 1\nimplementer:\n  model:\n    family: medium\n")
         self.write("pkg/.dev-orchestra.yaml", "version: 1\nimplementer:\n  model:\n    family: large\n")
         os.chdir(os.path.join(self.project, "pkg"))
         code, _, err = self.run_cli("run", "implementer", "--prompt", "go")
         self.assertEqual(code, 0, err)
         code, out, err = self.run_cli("run", "implementer", "--prompt", "go", "--detach", "--json")
         self.assertEqual(code, 0, err)
-        self.assertEqual(self._wait_for(json.loads(out)["id"])["status"], "succeeded")
+        job = json.loads(out)
+        self.assertEqual(job["command"][:2], ["--cwd", os.getcwd()])
+        self.assertEqual(self._wait_for(job["id"])["status"], "succeeded")
+        # A relative --cwd from the root reaches the worker as the directory it names.
+        os.chdir(self.project)
+        # Named before the run: --cwd changes this process's directory too.
+        expected = os.path.join(os.getcwd(), "pkg")
+        code, out, err = self.run_cli(
+            "--cwd", "pkg", "run", "implementer", "--prompt", "go", "--detach", "--json"
+        )
+        self.assertEqual(code, 0, err)
+        job = json.loads(out)
+        self.assertEqual(job["command"][:2], ["--cwd", expected])
+        self.assertEqual(self._wait_for(job["id"])["status"], "succeeded")
         state = json.loads(self.run_cli("state", "show", "--json")[1])
         ran = [e.get("model") for e in state.get("events") or [] if e.get("stage") == "implementer"]
-        self.assertEqual(ran, ["large", "large"])
+        self.assertEqual(ran, ["large", "large", "large"])
+        # The root's own file is the one a run from the root reads.
+        os.chdir(self.project)
+        code, _, err = self.run_cli("run", "implementer", "--prompt", "go")
+        self.assertEqual(code, 0, err)
+        state = json.loads(self.run_cli("state", "show", "--json")[1])
+        ran = [e.get("model") for e in state.get("events") or [] if e.get("stage") == "implementer"]
+        self.assertEqual(ran, ["large", "large", "large", "medium"])
 
     def test_a_worker_leaves_the_current_workflow_alone(self):
         """The pointer may have moved on since the parent returned."""

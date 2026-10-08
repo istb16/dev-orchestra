@@ -120,12 +120,13 @@ def _container_and_config(args: argparse.Namespace) -> "tuple[str, str, config_m
     The configuration is read from the working directory, as every other
     command reads it, not from ``root``: run from a subdirectory holding its
     own project file, ``.ai/`` used to follow the root's file while the run
-    and its budgets followed the subdirectory's.
+    and its budgets followed the subdirectory's. The root is the one the
+    configuration resolved its workspace in (``LoadedConfig.root``), which is
+    also where what the project file may not set is reported against.
     """
     start = getattr(args, "cwd", None) or os.getcwd()
-    root = ws.repo_root(start)
     loaded = config_mod.load(start, validate_result=False)
-    return root, loaded.workspace_dir(root), loaded
+    return loaded.root, loaded.workspace_dir(), loaded
 
 
 def _container(args: argparse.Namespace) -> "tuple[str, str]":

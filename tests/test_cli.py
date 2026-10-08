@@ -1659,6 +1659,27 @@ class TestRunCommand(IsolatedCase):
         code, _, err = run_cli("run", "implementer", "--prompt", "go")
         self.assertEqual(code, ledger_mod.EXIT_BUDGET_EXHAUSTED, err)
 
+    @unittest.skipUnless(has_git(), "git is required")
+    def test_an_explicit_cwd_and_the_other_commands_follow_the_subdirectory_file(self):
+        """`--cwd` from the root, and `design approve` from the subdirectory (#282)."""
+        self.init_git_repo()
+        pkg = os.path.join(self.project, "pkg")
+        self.write("pkg/.dev-orchestra.yaml", "version: 1\nworkspace:\n  dir: .agent-work\n")
+        self.write(".dev-orchestra.yaml", "version: 1\nworkspace:\n  dir: .root-work\n")
+        code, _, err = run_cli("--cwd", pkg, "status")
+        self.assertEqual(code, 0, err)
+        container = os.path.join(self.project, ".agent-work")
+        self.assertTrue(os.path.isdir(container))
+        for other in (".ai", ".root-work", os.path.join("pkg", ".agent-work")):
+            self.assertFalse(os.path.exists(os.path.join(self.project, other)), other)
+        workspace = ws.Workspace(self.project, container, TEST_WORKFLOW).ensure()
+        ws.write_text(workspace.plan_path, "# Plan\n\nDo it.\n")
+        os.chdir(pkg)
+        code, _, err = run_cli("design", "approve")
+        self.assertEqual(code, 0, err)
+        self.assertIn("design_approval", workspace.read_state())
+        self.assertFalse(os.path.exists(os.path.join(self.project, ".root-work")))
+
 
 SECRET_SETTINGS = '--settings={"apiKeyHelper":"sk-ant-abcdefghijklmnopqrs"}'
 

@@ -22,7 +22,7 @@ import json
 import os
 import re
 import sys
-from typing import TYPE_CHECKING, Any, Dict, List, NamedTuple, Optional, Sequence, Tuple, Union
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple, Union
 
 from . import config_trust, miniyaml
 from . import optimization as opt_mod
@@ -154,22 +154,31 @@ def workspace_dir_of(data: Dict[str, Any]) -> str:
     return directory if isinstance(directory, str) and directory.strip() else ".ai"
 
 
+def trusted_project_layer(project_layer: Dict[str, Any], root: Optional[str] = None) -> Dict[str, Any]:
+    """The project layer less what only the global file may set (``config_trust``).
+
+    The one place the rules are applied: ``compose`` merges this, the
+    reply-language hook reads it, and ``config_policy`` reports what it left
+    out. With ``root``, the repository a command runs in, a ``workspace.dir``
+    a link takes out of it goes too; ``compose`` is not given one, so
+    ``workspace_dir_in`` drops that one where the workspace is resolved.
+    """
+    return config_trust.without_ignored(project_layer, root)
+
+
 def workspace_dir_in(
     root: str, data: Dict[str, Any], global_layer: Dict[str, Any], project_layer: Dict[str, Any]
 ) -> str:
     """``workspace.dir`` as the commands use it in ``root``, before it is joined to it.
 
-    ``workspace_dir_of(data)``, unless that is the project file's value and a
-    link takes it out of the repository (``config_trust.linked_outside``):
-    then the global file's value, or ``.ai``. ``compose`` has already dropped
-    a project value whose text leaves; this one needs the repository to tell.
-    The global file's value and the default are the user's own and are not
-    checked, so a ``.ai`` the user links elsewhere keeps working.
+    ``workspace_dir_of(data)``, unless that is the project file's value and
+    ``trusted_project_layer`` drops it in ``root``: then the global file's
+    value, or ``.ai``. The global file's value and the default are the user's
+    own and are not checked, so a ``.ai`` the user links elsewhere keeps
+    working.
     """
     directory = workspace_dir_of(data)
-    workspace = project_layer.get("workspace")
-    project_dir = workspace.get("dir") if isinstance(workspace, dict) else None
-    if directory == project_dir and config_trust.linked_outside(root, directory):
+    if (config_trust.WORKSPACE_DIR, directory) in config_trust.ignored(project_layer, root):
         return workspace_dir_of(global_layer)
     return directory
 
@@ -567,6 +576,18 @@ def layer_below(scope: str = "") -> str:
     return "the layer below"
 
 
+def _no_json_type(path: str) -> Callable[[Any], Any]:
+    """``json.dumps``' ``default``: refuse a value JSON has no type for, naming it."""
+
+    def refuse(value: Any) -> Any:
+        raise ConfigError(
+            "%s: JSON has no type for %r (%s); quote it to keep it as text, or keep the setting "
+            "in a YAML file" % (shown_location(path), value, type(value).__name__)
+        )
+
+    return refuse
+
+
 def write_config_file(path: str, data: Dict[str, Any], scope: str = "") -> None:
     parent = os.path.dirname(os.path.abspath(path))
     if parent:
@@ -576,14 +597,21 @@ def write_config_file(path: str, data: Dict[str, Any], scope: str = "") -> None:
         # none of which take YAML or a comment; so JSON, and no header.
         # Strict JSON: `Infinity` and `NaN` are Python's, and jq, editors and
         # this tool's own reader would refuse the file. Checked before the
-        # file is opened, so a refusal leaves it as it was.
+        # file is opened, so a refusal leaves it as it was. Nor a date, which
+        # PyYAML reads `2026-10-06` in a block value as: JSON has no type for it.
+        refuse = _no_json_type(path)
         try:
-            text = json.dumps(data, indent=2, ensure_ascii=False, allow_nan=False)
+            text = json.dumps(data, indent=2, ensure_ascii=False, allow_nan=False, default=refuse)
+        except ConfigError:
+            raise  # `refuse`'s own, which names the value
         except ValueError:
             raise ConfigError(
                 "%s: JSON has no infinite or not-a-number value (.inf, .nan); "
                 "write a finite number, or keep the setting in a YAML file" % shown_location(path)
             ) from None
+        except TypeError as exc:  # a key JSON cannot hold, which `default` is not asked about
+            shown = shown_location(path)
+            raise ConfigError("%s: %s; keep the setting in a YAML file" % (shown, exc)) from None
         with open(path, "w", encoding="utf-8", newline="\n") as handle:
             handle.write(text + "\n")
         return
@@ -899,6 +927,8 @@ class LoadedConfig:
         files_data: Optional[Dict[str, Any]] = None,
         reviewer_origins: Optional[Sequence[ReviewerOrigin]] = None,
         design_reviewer_origins: Optional[Sequence[ReviewerOrigin]] = None,
+        installed: Optional[Sequence[str]] = None,
+        start: Optional[str] = None,
     ) -> None:
         self.data = data
         self.global_path = global_path
@@ -920,6 +950,26 @@ class LoadedConfig:
         self.reviewer_origins = list(reviewer_origins or [])
         #: Parallel to ``design_reviewers()`` when there is a design panel.
         self.design_reviewer_origins = list(design_reviewer_origins or [])
+        #: The CLIs the preset was fitted to; None when not composed by ``compose_loaded``.
+        self.installed = list(installed) if installed is not None else None
+        #: Where this was loaded from: None is the working directory.
+        self.start = start
+        self._root: Optional[str] = None
+
+    @property
+    def root(self) -> str:
+        """The repository the commands run in, from ``start``; git is asked once, on first use.
+
+        Its top level, or ``start`` itself outside one. The workspace is
+        resolved in it, and what the project file may not set there is
+        reported against it, so the two cannot disagree.
+        """
+        if self._root is None:
+            # lazy: only the commands that resolve a workspace pay for git
+            from . import workspace as ws_mod
+
+            self._root = ws_mod.repo_root(self.start)
+        return self._root
 
     @property
     def exists(self) -> bool:
@@ -1112,7 +1162,9 @@ class LoadedConfig:
         settings.update(self.data.get("optimization") or {})
         return settings
 
-    def workspace_dir(self, root: str) -> str:
+    def workspace_dir(self, root: Optional[str] = None) -> str:
+        """The workspace container in ``root``, by default the commands' own (``root``)."""
+        root = self.root if root is None else root
         workspace = workspace_dir_in(root, self.data, self.global_layer, self.project_layer)
         if os.path.isabs(workspace):
             return workspace
@@ -1393,7 +1445,7 @@ def compose(
     ]
     # Without what only the global file may set: a project file can come with
     # the branch under review (``config_trust``).
-    trusted = config_trust.without_ignored(project_layer)
+    trusted = trusted_project_layer(project_layer)
     data = deep_merge(deep_merge(deep_merge(defaults, values), global_layer), trusted)
     # Each file's extras join the panel it inherits, so every reader of
     # ``reviewers`` sees them; ``origins`` keeps whose each one is.
@@ -1416,6 +1468,38 @@ def compose(
     return data, fit, name, source
 
 
+def compose_loaded(
+    global_layer: Dict[str, Any],
+    project_layer: Dict[str, Any],
+    installed: Sequence[str],
+    global_path: Optional[str] = None,
+    project_path: Optional[str] = None,
+    start: Optional[str] = None,
+) -> LoadedConfig:
+    """``compose``'s result as a ``LoadedConfig``: the one place one is wired up from layers.
+
+    ``load`` builds its result here, and ``config_policy`` the same files
+    without the project one, so a field added to either is in both.
+    """
+    data, fit, preset, source = compose(global_layer, project_layer, installed)
+    return LoadedConfig(
+        data,
+        global_path,
+        project_path,
+        not (global_path or project_path),
+        global_layer=copy.deepcopy(global_layer),
+        project_layer=copy.deepcopy(project_layer),
+        preset=preset,
+        preset_source=source,
+        preset_notes=fit.notes,
+        files_data=deep_merge(deep_merge(default_config(), global_layer), project_layer),
+        reviewer_origins=fit.origins,
+        design_reviewer_origins=fit.design_origins,
+        installed=installed,
+        start=start,
+    )
+
+
 def load(start: Optional[str] = None, validate_result: bool = True) -> LoadedConfig:
     """Load the layered configuration for the project rooted at ``start``."""
     # lazy: presets; see the note at the top of this module
@@ -1432,28 +1516,16 @@ def load(start: Optional[str] = None, validate_result: bool = True) -> LoadedCon
     if ppath:
         project_layer = read_config_file(ppath)
 
-    data, fit, preset, source = compose(global_layer, project_layer, presets.installed_providers())
-    loaded = LoadedConfig(
-        data,
-        global_found,
-        ppath,
-        not (global_found or ppath),
-        global_layer=copy.deepcopy(global_layer),
-        project_layer=copy.deepcopy(project_layer),
-        preset=preset,
-        preset_source=source,
-        preset_notes=fit.notes,
-        files_data=deep_merge(deep_merge(default_config(), global_layer), project_layer),
-        reviewer_origins=fit.origins,
-        design_reviewer_origins=fit.design_origins,
+    loaded = compose_loaded(
+        global_layer, project_layer, presets.installed_providers(), global_found, ppath, start
     )
     if validate_result:
         problems = validate(
-            data,
+            loaded.data,
             project_layer=project_layer,
             global_layer=global_layer,
-            origins=fit.origins,
-            design_origins=fit.design_origins,
+            origins=loaded.reviewer_origins,
+            design_origins=loaded.design_reviewer_origins,
         )
         if problems:
             raise ConfigError("invalid configuration:\n  - " + "\n  - ".join(problems))
@@ -1538,14 +1610,16 @@ def _key_schema() -> Dict[str, Any]:
 
     model = {"family": None, "version": None, "id": None}
     role = {"provider": None, "model": model, "options": _FREE, "model_tiers": _FREE}
-    # high_risk_model and when are leaves: their keys are validate's to refuse.
+    # when is a leaf: its keys are validate's to refuse. high_risk_model is a
+    # model block; the provider and options validate refuses in it are known
+    # here, so they are reported once.
     reviewer = {
         "id": None,
         "provider": None,
         "model": model,
         "options": _FREE,
         "role": None,
-        "high_risk_model": None,
+        "high_risk_model": dict(model, provider=None, options=None),
         "when": None,
         "relevance": None,
     }
@@ -2469,13 +2543,21 @@ def _descend(node: Any, part: Any, create: bool) -> Any:
     return node[part]
 
 
-def coerce_scalar(text: str) -> Any:
-    """Turn a CLI-supplied string into the natural scalar (int, bool, list, str)."""
+def coerce_scalar(text: str, path: str = "") -> Any:
+    """Turn a CLI-supplied string into the natural scalar (int, bool, list, str).
+
+    A value that does not parse -- a block with an alias or a tab in its
+    indentation, say -- is a ``ConfigError`` naming ``path``, the key it was
+    given for, so a command refuses it with a message and not a traceback.
+    """
     if not text.strip():
         return ""
-    if "\n" in text:
-        return miniyaml.loads(text)
-    return miniyaml.parse_scalar(text)
+    try:
+        if "\n" in text:
+            return miniyaml.loads(text)
+        return miniyaml.parse_scalar(text)
+    except Exception as exc:  # the subset's YamlError, JSON's or PyYAML's own
+        raise ConfigError("%s: %s" % (path or "value", exc)) from exc
 
 
 # --------------------------------------------------------------------------- reviewers

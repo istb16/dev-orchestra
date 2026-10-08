@@ -17,8 +17,8 @@ below begins **User adapters** so adapter authors can find it.
 ### Added
 
 - **Keys nothing reads are reported.** A misspelt `reveiw:`,
-  `review.timout_seconds` or `implementer.provder` used to pass as valid and
-  be ignored. `config validate` now lists each one under *Warnings*
+  `review.timout_seconds`, `implementer.provder` or a seat's
+  `high_risk_model.famly` used to pass as valid and be ignored. `config validate` now lists each one under *Warnings*
   (`warnings` in `--json`) with the file it is in and the known key it
   resembles, `doctor` lists them as notes, and `config set` warns when the
   key it writes is one. A warning, not a problem: the exit status, `doctor
@@ -82,7 +82,9 @@ below begins **User adapters** so adapter authors can find it.
   holds the approval record, so one pointed outside the repository by a
   branch could bring an approval nobody gave; a relative one inside the
   repository still works from the project file, unless a symlink or junction
-  in the repository takes it outside. A record the branch commits inside the
+  in the repository takes it outside; that is judged in the repository the
+  commands place the workspace in, so the warning names the directory
+  actually used, outside a git repository too. A record the branch commits inside the
   workspace is not something this can refuse; `references/configuration.md`
   says what the approval is read from. `config set
   design.require_approval false` now writes the global file even inside a
@@ -217,7 +219,10 @@ below begins **User adapters** so adapter authors can find it.
   unquoted `- *.sql`), tags, merge keys, every block scalar form (`|-`,
   `>2`, `- |`) and a second document after `---` or `...` are refused with
   the line number, where they were taken as plain text or joined into one
-  document. On the command line, `config set` still takes `*.sql` as text.
+  document. On the command line, `config set` still takes `*.sql` as text;
+  a multi-line value it cannot read (`- *.sql`, or a block indented with
+  tabs) is refused with the key and the reason (exit 2) instead of ending
+  on a traceback.
 
 - **A configuration file saved as UTF-8 with a BOM keeps its first key.**
   Notepad and PowerShell 5's `Out-File -Encoding utf8` start the file with
@@ -230,7 +235,8 @@ below begins **User adapters** so adapter authors can find it.
   comments into it, which dev-orchestra still read but editors, `jq` and CI
   checks did not. A file whose name ends in `.json` is now written as
   indented JSON, without the header comment. A value JSON cannot hold
-  (`.inf`, `.nan`) is refused, and the file left as it was (#280).
+  (`.inf`, `.nan`, or the date PyYAML reads `2026-10-06` in a multi-line
+  value as) is refused naming it, and the file left as it was (#280).
 
 - **`config set language.reply no` saves the tag `no`** (Norwegian) rather
   than `false`. In a file, a bare `no` is still read as false and refused;

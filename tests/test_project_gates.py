@@ -15,8 +15,9 @@ import os
 import subprocess
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
+from unittest import mock
 
-from helpers import IsolatedCase, make_dir_link, remove_link
+from helpers import IsolatedCase, has_git, make_dir_link, remove_link
 
 from orchestrator import cli, config_trust, doctor, reply_language
 from orchestrator import config as config_mod
@@ -216,6 +217,20 @@ class TestGlobalOnly(_Case):
         self.assertEqual(loaded.workspace_dir(self.project), os.path.join(self.project, "inner"))
         self.assertEqual(self.ignored(), [])
 
+    def test_the_link_is_judged_where_the_commands_put_the_workspace(self):
+        """Outside a git repository the workspace goes in the directory a command runs in, not
+        beside the project file above it: the warning has to look for the link there too."""
+        self.link_outside("sub/inner")
+        self.write_project("workspace:\n  dir: inner\n")
+        os.chdir(os.path.join(self.project, "sub"))
+        loaded = config_mod.load(None, validate_result=False)
+        self.assertEqual(loaded.root, os.getcwd())
+        self.assertEqual(loaded.workspace_dir(), os.path.join(os.getcwd(), ".ai"))
+        [line] = policy_mod.project_ignored_warnings(loaded)
+        self.assertIn("workspace.dir: inner is set in the project config", line)
+        self.assertIn("where a link takes it outside the repository", line)
+        self.assertIn("so .ai is used", line)
+
     def test_linked_outside(self):
         self.link_outside("inner")
         self.assertTrue(config_trust.linked_outside(self.project, "inner"))
@@ -412,6 +427,46 @@ class TestLoosened(_Case):
         )
         self.assertEqual(self.notices(), [])
 
+    def test_a_findings_cap_left_to_the_level_or_equal_to_it_is_not_reported(self):
+        """`max_findings: null` is the level's cap, which is the baseline's too."""
+        for text in ("review:\n  max_findings: null\n", "review:\n  max_findings: 6\n"):
+            with self.subTest(text=text):
+                self.write_project(text)
+                self.assertEqual(self.notices(), [])
+        # Over a global cap a null keeps it, as any null but language.reply's does.
+        self.write_global("review:\n  max_findings: 3\n")
+        self.write_project("review:\n  max_findings: null\n")
+        self.assertEqual(self.notices(), [])
+
+    def test_design_review_turned_on_from_auto_is_not_reported(self):
+        self.write_project("review:\n  design:\n    enabled: true\n")
+        self.assertEqual(self.notices(), [])
+        self.write_global("review:\n  design:\n    enabled: true\n")
+        self.write_project("review:\n  design:\n    enabled: auto\n")
+        self.assert_notice("review.design.enabled", "turns it auto from on")
+
+    def test_a_code_panel_that_takes_out_the_fitted_design_panel(self):
+        """Listing `reviewers` puts design rounds on a copy of them, so the fit's design seats go."""
+        self.fake_clis(claude=True)
+        self.write_project(
+            "reviewers:\n  - id: claude-general\n    provider: claude\n    model:\n      family: sonnet\n"
+        )
+        self.assert_notice(
+            "review.design.reviewers", "drops claude-security, claude-test from the design review panel"
+        )
+        self.assert_notice("reviewers", "from the code review panel")
+
+    def test_a_baseline_that_does_not_compose_reports_nothing(self):
+        self.write_project("review:\n  max_findings: 1\n")
+        with mock.patch.object(policy_mod, "compose_loaded", side_effect=ValueError("broken")):
+            self.assertEqual(self.notices(), [])
+
+    def test_a_gate_no_run_could_read_is_skipped(self):
+        """A global `review` that is not a mapping: the baseline cannot be read, and nothing crashes."""
+        self.write_global("review: broken\n")
+        self.write_project("review:\n  max_findings: 1\n")
+        self.assertEqual(self.notices(), [])
+
     def test_an_empty_severity_list_reads_as_the_default(self):
         self.write_project("review:\n  re_review_severities: []\n")
         self.assertEqual(self.notices(), [])
@@ -449,6 +504,54 @@ class TestLoosened(_Case):
         _, _, err = run_cli("review", "run")
         self.assertIn("warning: review.max_review_iterations: the project config", err)
         self.assertIn("warning: review.re_review_severities: the project config", err)
+
+
+class TestOnTheMock(_Case):
+    """`doctor --strict` and `review run` where nothing else is wrong: every seat on the mock."""
+
+    def setUp(self):
+        super().setUp()
+        role = {"provider": "mock", "model": {"family": "small", "version": "latest"}}
+        data = config_mod.default_config()
+        data.update(orchestrator=role, architect=role, implementer=role, review_fixer=role)
+        data["reviewers"] = [config_mod.make_reviewer("mock-general", "mock", "small")]
+        config_mod.write_config_file(config_mod.global_config_path(), data)
+
+    def test_doctor_strict_fails_only_on_an_ignored_value_that_would_loosen(self):
+        self.assertEqual(run_cli("doctor", "--fast", "--strict")[0], 0)
+        cases = (
+            ("review:\n  max_review_iterations: 0\n", 0),
+            ("reveiw:\n  max_review_iterations: 3\n", 0),
+            ("design:\n  require_approval: true\n", 0),
+            ("design:\n  require_approval: false\n", 1),
+        )
+        for text, expected in cases:
+            with self.subTest(text=text):
+                self.write_project(text)
+                code, out, err = run_cli("doctor", "--fast", "--strict")
+                self.assertEqual(code, expected, out + err)
+
+    @unittest.skipUnless(has_git(), "git is required")
+    def test_review_run_warns_before_the_round_and_the_values_still_apply(self):
+        self.init_git_repo()
+        self.write("app.py", "x = 1\n")
+        self.commit_all("init")
+        self.write("app.py", "x = 2\n")
+        self.write_project("design:\n  require_approval: false\nreview:\n  max_review_iterations: 0\n")
+        code, _, err = run_cli("review", "snapshot")
+        self.assertEqual(code, 0, err)
+        code, _, err = run_cli("review", "run")
+        lines = err.splitlines()
+        self.assertTrue(
+            lines[0].startswith("warning: design.require_approval: false is set in the project config"), err
+        )
+        self.assertTrue(lines[1].startswith("warning: review.max_review_iterations: the project config"), err)
+        # The loosened value applies: a budget of 0 rounds refuses the first.
+        self.assertEqual(code, 3, err)
+        self.assertIn("refusing to run review round 1", err)
+        self.assertGreater(err.index("refusing to run"), err.index("warning: review.max_review_iterations"))
+        # The ignored one does not: plan approval stays required.
+        self.assertIs(self.loaded().design_settings()["require_approval"], True)
 
 
 if __name__ == "__main__":
