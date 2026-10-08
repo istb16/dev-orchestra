@@ -136,8 +136,9 @@ unexclude_marked() {
   # written back (Git Bash's awk would drop them). awk exits non-zero when it
   # removed nothing.
   entry=$1
+  marker=$2
   tmp="$exclude_file.tmp.$$"
-  awk -v BINMODE=3 -v m="$2" -v e="$entry" '
+  awk -v BINMODE=3 -v m="$marker" -v e="$entry" '
     { line = $0; sub(/\r$/, "", line) }
     held { held = 0; if (line == e) { removed = 1; next } print m }
     line == m { held = 1; next }
@@ -150,9 +151,9 @@ unexclude_marked() {
   else
     rm -f "$tmp"
   fi
-  # The Claude entry without a marker: what installers before the marker
-  # wrote, or the user's own line. Either way it is not removed, only named.
-  if [ "$mode" = claude ] && tr -d '\r' < "$exclude_file" | grep -qxF "$entry"; then
+  # The entry without a marker: what an installer before the marker wrote,
+  # or the user's own line. Either way it is not removed, only named.
+  if tr -d '\r' < "$exclude_file" | grep -qxF "$entry"; then
     printf 'Left %s in .git/info/exclude: the installer did not mark it as its own.\n' "$entry"
     printf 'An older installer may have added it; remove the line by hand if it is no longer wanted.\n'
   fi
@@ -194,6 +195,17 @@ else
   begin="<!-- BEGIN $SKILL_NAME -->"
   end="<!-- END $SKILL_NAME -->"
   if [ -f "$agents_file" ] && grep -qF "$begin" "$agents_file"; then
+    # A BEGIN with no END after it: what follows may be the user's own text,
+    # so nothing is taken out.
+    if ! awk -v b="$begin" -v e="$end" '
+      index($0, b) { open = 1 }
+      index($0, e) { open = 0 }
+      END { exit open }
+    ' "$agents_file"; then
+      printf '%s has %s with no %s after it; it was left as it is.\n' "$agents_file" "$begin" "$end" >&2
+      printf 'Remove the unfinished block by hand, then re-run.\n' >&2
+      exit 1
+    fi
     tmp="$agents_file.tmp.$$"
     # BINMODE: Git Bash's awk would otherwise drop the CR of every CRLF line.
     # The result ends with a newline only when the file did (eol).

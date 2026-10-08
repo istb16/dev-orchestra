@@ -999,6 +999,41 @@ class TestDoctor(IsolatedCase):
         )
         self.assertFalse(any(p.startswith("Implementer (tier light)") for p in problems), problems)
 
+    def test_doctor_flags_ignored_options_on_an_orchestrator_tier(self):
+        data = config_mod.default_config()
+        role = {"provider": "mock", "model": {"family": "small", "version": "latest"}}
+        tiers = {"light": {"model": {"family": "small", "version": "latest"}, "options": {"sandbox": "x"}}}
+        data["orchestrator"] = dict(role, model_tiers=tiers)
+        config_mod.write_config_file(config_mod.global_config_path(), data)
+        _, out, _ = run_cli("doctor", "--fast", "--json")
+        problems = json.loads(out)["problems"]
+        self.assertTrue(
+            any(p.startswith("Orchestrator (tier light): options.sandbox ignored") for p in problems),
+            problems,
+        )
+
+    def test_ignored_options_are_named_in_the_json_entry(self):
+        """A design seat's options are reported once, its high-risk model
+        included, and a write role's are not reported at all."""
+        data = config_mod.default_config()
+        design_seat = config_mod.make_reviewer("d1", "mock", "small")
+        design_seat["options"] = {"sandbox": "danger-full-access"}
+        design_seat["high_risk_model"] = {"family": "large"}
+        data.setdefault("review", {}).setdefault("design", {})["reviewers"] = [design_seat]
+        role = {"provider": "mock", "model": {"family": "small", "version": "latest"}}
+        data["implementer"] = dict(role, options={"sandbox": "danger-full-access"})
+        config_mod.write_config_file(config_mod.global_config_path(), data)
+        _, out, _ = run_cli("doctor", "--fast", "--json")
+        report = json.loads(out)
+        problems = report["problems"]
+        (entry,) = [seat for seat in report["design_reviewers"] if seat["id"] == "d1"]
+        self.assertEqual(entry["ignored_options"], ["sandbox"])
+        self.assertEqual(entry["high_risk_model"]["status"], "ok")
+        ignored = [p for p in problems if "ignored -- planning and review stages" in p]
+        self.assertEqual(len([p for p in ignored if p.startswith("Design reviewer d1")]), 1, problems)
+        self.assertFalse(any(p.startswith("Implementer") for p in ignored), problems)
+        self.assertNotIn("ignored_options", report["roles"]["implementer"])
+
     def test_strict_mode_exits_non_zero_on_problems(self):
         run_cli("config", "setup", "--defaults")
         run_cli("reviewer", "remove", "claude-general")
@@ -3873,16 +3908,6 @@ class TestPresetCommands(PresetCase):
         self.assertNotIn("Save it with", second)
 
 
-def parser_leaves(parser, path=()):
-    """Every runnable command under ``parser`` as (path, leaf parser)."""
-    groups = [action for action in parser._actions if isinstance(action, argparse._SubParsersAction)]
-    if not groups:
-        yield path, parser
-        return
-    for name, child in groups[0].choices.items():
-        yield from parser_leaves(child, (*path, name))
-
-
 def minimal_argv(path, leaf):
     """The shortest argv that ``leaf`` accepts: one value per required argument."""
     argv = list(path)
@@ -3961,7 +3986,7 @@ class TestParserShape(IsolatedCase):
 
     def test_json_flag(self):
         found = set()
-        for path, leaf in parser_leaves(self.parser):
+        for path, leaf in cli.leaf_commands(self.parser).items():
             if "--json" not in leaf._option_string_actions:
                 continue
             name = " ".join(path)
@@ -3978,12 +4003,10 @@ class TestParserShape(IsolatedCase):
         self.assertEqual(caught.exception.code, 2, argv)
 
     def test_top_level_commands(self):
-        groups = [a for a in self.parser._actions if isinstance(a, argparse._SubParsersAction)]
-        self.assertEqual(len(groups), 1)
-        self.assertEqual(set(groups[0].choices), self.TOP_LEVEL)
+        self.assertEqual({words[0] for words in cli.leaf_commands(self.parser)}, self.TOP_LEVEL)
 
     def test_every_leaf_parses_to_its_handler(self):
-        leaves = list(parser_leaves(self.parser))
+        leaves = list(cli.leaf_commands(self.parser).items())
         self.assertTrue(
             {
                 ("workflow", "use"),
@@ -4115,8 +4138,91 @@ class TestRunJsonInTheForeground(IsolatedCase):
         payload = json.loads(out)
         self.assertIs(payload["output_written"], False)
         self.assertTrue(payload["output_target"].endswith(os.path.join(TEST_WORKFLOW, "plan.md")))
-        self.assertIn("rejected_file", payload)
+        # Nothing was printed, so there is nothing kept beside the target.
+        self.assertIsNone(payload["rejected_file"])
         self.assertNotIn("output", payload)
+
+    def return_result(self, **fields):
+        """Make the mock return a RunResult the test dictates."""
+        from orchestrator.providers import mock as mock_mod
+        from orchestrator.providers.base import RunResult
+
+        def fake_run(provider, *args, **kwargs):
+            resolved = provider.resolve_model(kwargs.get("model_spec") or {"family": "small"})
+            extra = dict(fields)
+            ok = extra.pop("ok", True)
+            return RunResult(
+                ok, 0 if ok else 1, extra.pop("stdout", ""), "", ["mock"], 1.0, resolved, **extra
+            )
+
+        self.enterContext(mock.patch.object(mock_mod.MockProvider, "run", fake_run))
+
+    def test_a_refused_write_names_the_file_that_kept_the_output(self):
+        self.return_result(ok=False, stdout="half a plan\n")
+        code, out, _ = run_cli("run", "architect", "--prompt", "hi", "--output", ".ai/plan.md", "--json")
+        self.assertEqual(code, 1)
+        payload = json.loads(out)
+        self.assertEqual(payload["rejected_file"], payload["output_target"] + ".rejected")
+        with open(payload["rejected_file"], encoding="utf-8") as handle:
+            self.assertEqual(handle.read(), "half a plan\n")
+
+    def test_an_ok_run_that_printed_nothing_has_not_answered(self):
+        self.set_env("DEV_ORCHESTRA_MOCK_RESPONSE", " \n")
+        code, out, err = run_cli("run", "orchestrator", "--prompt", "hi", "--json")
+        self.assertEqual(code, 1)
+        payload = json.loads(out)
+        self.assertEqual(payload["status"], "succeeded")
+        self.assertIs(payload["answered"], False)
+        self.assertIn("produced no output", err)
+
+    def test_warnings_and_suspended_seconds_only_when_there_are_some(self):
+        code, out, _ = run_cli("run", "orchestrator", "--prompt", "hi", "--json")
+        self.assertEqual(code, 0)
+        payload = json.loads(out)
+        for key in ("warnings", "suspended_seconds", "resume"):
+            self.assertNotIn(key, payload)
+
+        self.return_result(stdout="the answer\n", warnings=["a flag was dropped"], suspended=30.0)
+        code, out, _ = run_cli("run", "orchestrator", "--prompt", "hi", "--json")
+        self.assertEqual(code, 0)
+        payload = json.loads(out)
+        self.assertEqual(payload["warnings"], ["a flag was dropped"])
+        self.assertEqual(payload["suspended_seconds"], 30.0)
+
+    def test_resume_is_reported_when_it_was_asked_for(self):
+        self.write("resume.md", "revise\n")
+        argv = ["run", "architect", "--resume", "--resume-prompt-file", "resume.md", "--prompt", "hi"]
+        code, out, err = run_cli(*argv, "--output", ".ai/plan.md", "--json")
+        self.assertEqual(code, 0, err)
+        payload = json.loads(out)
+        self.assertIn("reason", payload["resume"])
+        self.assertIn("outcome", payload["resume"])
+
+    def test_detach_prints_the_job_not_a_run(self):
+        from orchestrator import jobs as jobs_mod
+
+        job = {"id": "orchestrator-1", "stage": "orchestrator", "status": "running"}
+        self.enterContext(mock.patch.object(jobs_mod, "start", return_value=job))
+        code, out, _ = run_cli("run", "orchestrator", "--prompt", "hi", "--detach", "--json")
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out), job)
+
+    def test_a_worker_prints_nothing_its_job_holds_the_outcome(self):
+        """The worker a detached run starts gets ``--json`` too; its stdout
+        is not the caller's, and a second object there would be noise."""
+        from orchestrator import execution
+        from orchestrator import jobs as jobs_mod
+
+        self.enterContext(mock.patch.object(execution, "end_children_on_sigterm"))
+        workspace = self.cli_workspace()
+        jobs_mod.write_job(workspace, {"id": "o-1", "stage": "orchestrator", "status": "running"})
+        job_file = jobs_mod.job_path(workspace, "o-1")
+        code, out, err = run_cli("run", "orchestrator", "--prompt", "hi", "--job-file", job_file, "--json")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(out, "")
+        job = jobs_mod.read_job(workspace, "o-1")
+        assert job is not None
+        self.assertEqual(job["status"], "succeeded")
 
     def test_a_run_refused_before_it_starts_prints_nothing_on_stdout(self):
         code, out, err = run_cli("run", "architect", "--mode", "implement", "--prompt", "hi", "--json")

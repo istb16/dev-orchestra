@@ -312,7 +312,7 @@ function Write-TextLines {
 function Remove-MarkedGitExclude {
     # Drop $Entry, which the installer added, and its $Marker. An entry
     # without the marker right above it was there before and stays.
-    param([string]$Marker, [string]$Entry)
+    param([string]$Entry, [string]$Marker)
 
     if (-not $Project) { return }
     $excludeFile = Join-Path $Project '.git/info/exclude'
@@ -340,9 +340,9 @@ function Remove-MarkedGitExclude {
         Write-TextLines $excludeFile $kept.ToArray()
         Write-Host "Removed $Entry from .git/info/exclude"
     }
-    # The Claude entry without a marker: what installers before the marker
-    # wrote, or the user's own line. Either way it is not removed, only named.
-    if ($Entry -eq $ClaudeExcludeEntry -and @($kept | ForEach-Object { Get-LineText $_ }) -contains $Entry) {
+    # The entry without a marker: what an installer before the marker wrote,
+    # or the user's own line. Either way it is not removed, only named.
+    if (@($kept | ForEach-Object { Get-LineText $_ }) -contains $Entry) {
         Write-Host "Left $Entry in .git/info/exclude: the installer did not mark it as its own."
         Write-Host 'An older installer may have added it; remove the line by hand if it is no longer wanted.'
     }
@@ -366,7 +366,7 @@ if ($Antigravity) {
     else {
         Write-Host "Nothing installed at $dest"
     }
-    Remove-MarkedGitExclude -Marker $ExcludeMarker -Entry $ExcludeEntry
+    Remove-MarkedGitExclude -Entry $ExcludeEntry -Marker $ExcludeMarker
     Write-Host 'Restart Antigravity so that it stops loading the plugin.'
 }
 elseif (-not $Codex) {
@@ -389,7 +389,7 @@ elseif (-not $Codex) {
     else {
         Write-Host "Nothing installed at $dest"
     }
-    Remove-MarkedGitExclude -Marker $ClaudeExcludeMarker -Entry $ClaudeExcludeEntry
+    Remove-MarkedGitExclude -Entry $ClaudeExcludeEntry -Marker $ClaudeExcludeMarker
 }
 else {
     if ($Project) {
@@ -425,6 +425,14 @@ else {
             if ($line.Contains($begin)) { $skip = $true; $found = $true }
             if (-not $skip) { $kept.Add($line) }
             if ($line.Contains($end)) { $skip = $false }
+        }
+        if ($skip) {
+            # A BEGIN with no END after it: what follows may be the user's own
+            # text, so nothing is taken out.
+            Stop-Refused @(
+                "$agentsFile has $begin with no $end after it; it was left as it is."
+                'Remove the unfinished block by hand, then re-run.'
+            )
         }
         if ($found) {
             Write-TextLines $agentsFile (Get-KeptLines $lines ($kept.ToArray())) -Bom:($read.Bom)

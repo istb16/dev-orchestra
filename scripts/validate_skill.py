@@ -7,7 +7,6 @@ Exits non-zero when a problem is found.
 
 from __future__ import annotations
 
-import argparse
 import json
 import os
 import re
@@ -274,18 +273,6 @@ def check_no_plugin_hooks(root: str = REPO_ROOT) -> List[str]:
 AGENT_MANIFEST = "agents/openai.yaml"
 
 
-def _leaf_commands(parser: argparse.ArgumentParser, words: Tuple[str, ...] = ()) -> List[str]:
-    """Every runnable command of ``parser``, as ``dev-orchestra --help`` would spell it."""
-    groups = [action for action in parser._actions if isinstance(action, argparse._SubParsersAction)]
-    if not groups:
-        return [" ".join(words)]
-    found: List[str] = []
-    for group in groups:
-        for name, child in group.choices.items():
-            found += _leaf_commands(child, (*words, name))
-    return found
-
-
 def check_agent_manifest() -> List[str]:
     """``agents/openai.yaml`` lists the commands, CLIs and artifacts there are.
 
@@ -305,7 +292,7 @@ def check_agent_manifest() -> List[str]:
     problems: List[str] = []
 
     listed = data.get("commands") or []
-    actual = _leaf_commands(cli.build_parser())
+    actual = [" ".join(words) for words in cli.leaf_commands()]
     missing = [command for command in actual if command not in listed]
     extra = [command for command in listed if command not in actual]
     if missing:

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import argparse
 import os
-from typing import Callable, Optional, Sequence
+from typing import Callable, Dict, Optional, Sequence, Tuple
 
 from . import activity as activity_mod
 from . import claude_hooks, execution, hosts
@@ -219,6 +219,28 @@ def build_parser() -> argparse.ArgumentParser:
     _add_summary_parser(subparsers)
 
     return parser
+
+
+def leaf_commands(
+    parser: Optional[argparse.ArgumentParser] = None,
+) -> Dict[Tuple[str, ...], argparse.ArgumentParser]:
+    """Every runnable command of ``parser`` (``build_parser()`` by default),
+    as its words -- ``("review", "run")`` -- with the parser that takes its
+    flags. The one place that walks argparse's sub-commands, so that the
+    manifest check and the tests agree on what every command is."""
+    found: Dict[Tuple[str, ...], argparse.ArgumentParser] = {}
+
+    def walk(current: argparse.ArgumentParser, words: Tuple[str, ...]) -> None:
+        groups = [action for action in current._actions if isinstance(action, argparse._SubParsersAction)]
+        if not groups:
+            found[words] = current
+            return
+        for group in groups:
+            for name, child in group.choices.items():
+                walk(child, (*words, name))
+
+    walk(parser if parser is not None else build_parser(), ())
+    return found
 
 
 def _add_config_parsers(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:

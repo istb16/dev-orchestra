@@ -229,6 +229,7 @@ class TestAntigravityInstallers(_InstallerCase):
                 code, output = self.run_installer(shell, "uninstall", project)
                 self.assertEqual(code, 0, output)
                 self.assertEqual(self.exclude_lines(project), [ENTRY])
+                self.assertIn("Left %s in .git/info/exclude" % ENTRY, output)
                 self.assertNotIn(SKILL_NAME, os.listdir(os.path.join(project, ".agents", "plugins")))
 
     def test_a_copy_carries_the_payload_and_the_sentinel(self):
@@ -449,26 +450,25 @@ class TestAntigravityInstallers(_InstallerCase):
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 pointer = read_text(os.path.join(project, "AGENTS.md"))
                 line = next(line for line in pointer.splitlines() if "dev_orchestra.py" in line)
-                quote = "'" if shell.posix else '"'
-                self.assertRegex(
-                    line, r"^    \S+ %s[^%s]+/scripts/dev_orchestra\.py%s <command>$" % (quote, quote, quote)
-                )
+                self.assertRegex(line, r"^    \S+ '[^']+/scripts/dev_orchestra\.py' <command>$")
 
-    def test_the_posix_codex_pointer_keeps_shell_characters_literal(self):
-        """A `$`, a backtick or a ' in the checkout path is not expanded when the line runs (#297)."""
-        posix = [shell for shell in SHELLS if shell.posix]
-        if not posix:
-            self.skipTest("no POSIX sh here")
-        checkout = os.path.join(self.tmp, "it's $HOME `x`")
+    def test_the_codex_pointer_keeps_shell_characters_literal(self):
+        """A `$`, a `$( )`, a backtick or a ' in the checkout path is not
+        expanded when the line runs, in sh or in PowerShell (#297)."""
+        checkout = os.path.join(self.tmp, "it's $HOME $(x) `x`")
         os.makedirs(os.path.join(checkout, "install"))
-        shutil.copy2(os.path.join(REPO_ROOT, "install", "install.sh"), os.path.join(checkout, "install"))
-        project = os.path.join(self.tmp, "codex-project")
-        os.makedirs(project)
-        for shell in posix:
+        for shell in SHELLS:
+            shutil.copy2(
+                os.path.join(REPO_ROOT, "install", "install" + shell.suffix),
+                os.path.join(checkout, "install"),
+            )
+        for shell in SHELLS:
             with self.subTest(shell=shell.name):
-                script = os.path.join(checkout, "install", "install.sh")
+                project = self.fresh(shell, "codex-literal")
+                script = os.path.join(checkout, "install", "install" + shell.suffix)
+                args = ["--codex", "--project", project] if shell.posix else ["-Codex", "-Project", project]
                 result = subprocess.run(
-                    [*shell.command, script, "--codex", "--project", project],
+                    [*shell.command, script, *args],
                     capture_output=True,
                     text=True,
                     env=dict(os.environ, HOME=self.home),
@@ -478,13 +478,15 @@ class TestAntigravityInstallers(_InstallerCase):
                 pointer = read_text(os.path.join(project, "AGENTS.md"))
                 line = next(line for line in pointer.splitlines() if "dev_orchestra.py" in line)
                 argument = line.strip().split(" ", 1)[1].rsplit(" <command>", 1)[0]
-                echoed = subprocess.run(
-                    [shell.command[0], "-c", "printf '%%s' %s" % argument],
-                    capture_output=True,
-                    text=True,
-                    timeout=60,
-                )
-                self.assertEqual(echoed.stdout, os.path.join(checkout, "scripts", "dev_orchestra.py"))
+                if shell.posix:
+                    expected = os.path.join(checkout, "scripts", "dev_orchestra.py")
+                    echo = [shell.command[0], "-c", "printf '%%s' %s" % argument]
+                else:
+                    expected = checkout + "/scripts/dev_orchestra.py"
+                    echo = [shell.command[0], "-NoProfile", "-NonInteractive", "-Command"]
+                    echo.append("[Console]::Out.Write(%s)" % argument)
+                echoed = subprocess.run(echo, capture_output=True, text=True, timeout=60)
+                self.assertEqual(echoed.stdout, expected, echoed.stderr)
 
     def test_the_codex_switch_does_not_combine_with_it(self):
         for shell in SHELLS:
@@ -777,6 +779,59 @@ class TestClaudeInstallers(_InstallerCase):
                 self.assertEqual(code, 0, output)
                 with open(exclude, "rb") as handle:
                     self.assertEqual(handle.read(), b"/build\r\n")
+
+    def exclude_round_trip(self, shell: Shell, label: str, original: bytes) -> Tuple[bytes, bytes, str]:
+        """The exclude file's bytes after an install and after the uninstall,
+        and the uninstaller's output."""
+        project = self.git_project(self.fresh(shell, label))
+        exclude = os.path.join(project, ".git", "info", "exclude")
+        with open(exclude, "wb") as handle:
+            handle.write(original)
+        code, output = self.claude(shell, "install", project, copy=True)
+        self.assertEqual(code, 0, output)
+        with open(exclude, "rb") as handle:
+            installed = handle.read()
+        code, output = self.claude(shell, "uninstall", project)
+        self.assertEqual(code, 0, output)
+        with open(exclude, "rb") as handle:
+            return installed, handle.read(), output
+
+    def test_a_last_pattern_without_a_newline_gets_one(self):
+        """The marker goes on a line of its own; the newline added for it
+        stays after the uninstall, which changes nothing git reads."""
+        for shell in SHELLS:
+            with self.subTest(shell=shell.name):
+                # install.ps1 ends lines with the platform's newline when the file has none to copy.
+                newline = "\r\n" if not shell.posix and os.name == "nt" else "\n"
+                installed, after, _ = self.exclude_round_trip(shell, "open-end", b"/build")
+                expected = newline.join(["/build", CLAUDE_MARKER, CLAUDE_ENTRY, ""]).encode()
+                self.assertEqual(installed, expected)
+                self.assertEqual(after, ("/build" + newline).encode())
+
+    def test_a_marker_with_nothing_below_it_stays(self):
+        """A marker on the last line, its entry gone, is the user's to keep:
+        the uninstall takes out only the marker and entry the install added."""
+        for shell in SHELLS:
+            for original in (
+                b"/build\n%s\n" % CLAUDE_MARKER.encode(),
+                b"/build\n%s" % CLAUDE_MARKER.encode(),
+            ):
+                with self.subTest(shell=shell.name, original=original):
+                    label = "dangling-%d" % len(original)
+                    installed, after, _ = self.exclude_round_trip(shell, label, original)
+                    lines = installed.decode("utf-8").splitlines()
+                    self.assertEqual(lines, ["/build", CLAUDE_MARKER, CLAUDE_MARKER, CLAUDE_ENTRY])
+                    self.assertEqual(after.decode("utf-8").splitlines(), ["/build", CLAUDE_MARKER])
+                    self.assertTrue(after.startswith(original), after)
+
+    def test_an_unmarked_entry_in_a_crlf_file_stays_and_is_named(self):
+        for shell in SHELLS:
+            with self.subTest(shell=shell.name):
+                original = ("/build\r\n%s\r\n" % CLAUDE_ENTRY).encode()
+                installed, after, output = self.exclude_round_trip(shell, "crlf-unmarked", original)
+                self.assertEqual(installed, original)
+                self.assertEqual(after, original)
+                self.assertIn("Left %s in .git/info/exclude" % CLAUDE_ENTRY, output)
 
     def test_the_exclude_entry_gets_its_own_line_and_no_bom(self):
         """A one-line file is where PowerShell's if-assignment joined the two."""
@@ -1123,6 +1178,20 @@ class TestClaudeInstallers(_InstallerCase):
                         self.helper_body(install, opening % name), self.helper_body(uninstall, opening % name)
                     )
 
+    #: How the PowerShell scripts read and write AGENTS.md and the exclude
+    #: file; each script carries its own copy, so that it runs on its own.
+    TEXT_HELPERS = ("Read-TextFile", "Get-LineText", "Get-KeptLines", "Write-TextLines")
+
+    def test_the_scripts_agree_on_how_a_text_file_round_trips(self):
+        """A fix to one copy alone would have the installer and the
+        uninstaller disagree on what a round trip keeps."""
+        install = read_text(os.path.join(REPO_ROOT, "install", "install.ps1"))
+        uninstall = read_text(os.path.join(REPO_ROOT, "install", "uninstall.ps1"))
+        for name in self.TEXT_HELPERS:
+            with self.subTest(helper=name):
+                opening = "function %s {" % name
+                self.assertEqual(self.helper_body(install, opening), self.helper_body(uninstall, opening))
+
 
 BEGIN = "<!-- BEGIN dev-orchestra -->"
 END = "<!-- END dev-orchestra -->"
@@ -1175,6 +1244,10 @@ class TestCodexInstallers(_InstallerCase):
                     if newline == "\r\n" and not shell.posix:
                         # The block ends its lines the way the file does.
                         self.assertNotIn(b"\n", written.replace(b"\r\n", b""), written)
+                    elif newline == "\r\n":
+                        # install.sh writes the block with LF line endings
+                        # and leaves the CRLF lines around it as they were.
+                        self.assertNotIn(b"\r", written[len(original) :], written)
 
                     code, output = self.codex(shell, "uninstall", project)
                     self.assertEqual(code, 0, output)
@@ -1201,6 +1274,65 @@ class TestCodexInstallers(_InstallerCase):
                 code, output = self.codex(shell, "uninstall", project)
                 self.assertEqual(code, 0, output)
                 self.assertEqual(self.read_bytes(agents), original)
+
+    def test_a_block_amid_the_users_text(self):
+        """Text added after the block stays where it is: a re-run moves the
+        block to the end, and the uninstall takes out only the block."""
+        for shell in SHELLS:
+            for newline in ("\n", "\r\n"):
+                with self.subTest(shell=shell.name, newline=repr(newline)):
+                    project = self.fresh(shell, "amid-%d" % len(newline))
+                    agents = os.path.join(project, "AGENTS.md")
+                    head = ("head" + newline).encode()
+                    tail = ("tail" + newline).encode()
+                    self.write_bytes(agents, head)
+                    code, output = self.codex(shell, "install", project)
+                    self.assertEqual(code, 0, output)
+                    block = self.read_bytes(agents)[len(head) :]
+                    self.write_bytes(agents, head + block + tail)
+
+                    code, output = self.codex(shell, "uninstall", project)
+                    self.assertEqual(code, 0, output)
+                    self.assertEqual(self.read_bytes(agents), head + tail)
+
+                    self.write_bytes(agents, head + block + tail)
+                    code, output = self.codex(shell, "install", project)
+                    self.assertEqual(code, 0, output)
+                    self.assertEqual(self.read_bytes(agents), head + tail + block)
+
+    def test_an_empty_file_and_a_bom_alone_come_back_as_they_were(self):
+        for shell in SHELLS:
+            for label, original in (("empty", b""), ("bom-only", codecs.BOM_UTF8)):
+                with self.subTest(shell=shell.name, file=label):
+                    project = self.fresh(shell, label)
+                    agents = os.path.join(project, "AGENTS.md")
+                    self.write_bytes(agents, original)
+                    code, output = self.codex(shell, "install", project)
+                    self.assertEqual(code, 0, output)
+                    written = self.read_bytes(agents)
+                    self.assertTrue(written.startswith(original), written[:40])
+                    # install.sh takes a BOM alone for a last line without a
+                    # newline, and puts the block on the line after it.
+                    first = written.decode("utf-8-sig").lstrip("\n").splitlines()[0]
+                    self.assertEqual(first, BEGIN, written[:40])
+                    code, output = self.codex(shell, "uninstall", project)
+                    self.assertEqual(code, 0, output)
+                    self.assertEqual(self.read_bytes(agents), original)
+
+    def test_a_begin_with_no_end_is_left_alone(self):
+        """What follows an unfinished block may be the user's own text, so
+        neither script takes anything out."""
+        for shell in SHELLS:
+            with self.subTest(shell=shell.name):
+                project = self.fresh(shell, "no-end")
+                agents = os.path.join(project, "AGENTS.md")
+                original = ("head\n%s\n## 自分のメモ\n" % BEGIN).encode()
+                self.write_bytes(agents, original)
+                for action in ("install", "uninstall"):
+                    code, output = self.codex(shell, action, project)
+                    self.assertEqual(code, 1, output)
+                    self.assertIn("with no %s after it" % END, output)
+                    self.assertEqual(self.read_bytes(agents), original, action)
 
     def test_a_utf8_bom_is_kept(self):
         for shell in SHELLS:

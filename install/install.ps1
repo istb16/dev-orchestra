@@ -161,10 +161,10 @@ function Write-TextLines {
 }
 
 function Add-GitExcludeLines {
-    # Append $Lines to <project>/.git/info/exclude unless $Entry is already a
-    # line there, with a marker or without one. No BOM: git would read it as
-    # part of the first pattern.
-    param([string]$Entry, [string[]]$Lines)
+    # Append $Entry under $Marker to <project>/.git/info/exclude unless $Entry
+    # is already a line there, with a marker or without one. No BOM: git would
+    # read it as part of the first pattern.
+    param([string]$Entry, [string]$Marker)
 
     $gitDir = Join-Path $Project '.git'
     if (-not (Test-Path -LiteralPath $gitDir -PathType Container)) { return }
@@ -181,7 +181,7 @@ function Add-GitExcludeLines {
         $existing = $read.Lines
     }
     if (@($existing | ForEach-Object { Get-LineText $_ }) -notcontains $Entry) {
-        Write-TextLines $excludeFile $existing $Lines
+        Write-TextLines $excludeFile $existing @($Marker, $Entry)
         Write-Host "Excluded $Entry via .git/info/exclude (local only)"
     }
     elseif (Test-Utf8Bom $excludeFile) {
@@ -196,7 +196,7 @@ function Add-ProjectGitExclude {
     # there fails with "does not have a commit checked out". Exclude it
     # locally, which touches neither their .gitignore nor their history.
     if (-not $Project) { return }
-    Add-GitExcludeLines -Entry $ClaudeExcludeEntry -Lines @($ClaudeExcludeMarker, $ClaudeExcludeEntry)
+    Add-GitExcludeLines -Entry $ClaudeExcludeEntry -Marker $ClaudeExcludeMarker
 }
 
 function Test-ReparsePoint {
@@ -426,7 +426,7 @@ function Get-AutoloadEntries {
 
 function Add-MarkedGitExclude {
     if (-not $Project) { return }
-    Add-GitExcludeLines -Entry $ExcludeEntry -Lines @($ExcludeMarker, $ExcludeEntry)
+    Add-GitExcludeLines -Entry $ExcludeEntry -Marker $ExcludeMarker
 }
 
 function Copy-ForAntigravity {
@@ -602,6 +602,14 @@ function Install-CodexPointer {
         if (-not $skip) { $kept.Add($line) }
         if ($line.Contains($end)) { $skip = $false }
     }
+    if ($skip) {
+        # A BEGIN with no END after it: what follows may be the user's own
+        # text, so nothing is taken out.
+        Stop-Refused @(
+            "$agentsFile has $begin with no $end after it; it was left as it is."
+            'Remove the unfinished block by hand, then re-run.'
+        )
+    }
 
     $block = @(
         $begin
@@ -615,7 +623,8 @@ function Install-CodexPointer {
         ''
         'Its helper CLI is:'
         ''
-        "    $PythonCmd `"$root/scripts/dev_orchestra.py`" <command>"
+        # Single quotes, so a `$` or a backtick in the path stays literal.
+        "    $PythonCmd '$($root.Replace("'", "''"))/scripts/dev_orchestra.py' <command>"
         ''
         'That file is the single source of truth; do not rely on a copy of it.'
         $end

@@ -182,6 +182,7 @@ exclude_marked() {
   [ -d "$git_dir" ] || return 0
 
   entry=$1
+  marker=$2
   exclude_file="$git_dir/info/exclude"
   mkdir -p "$git_dir/info"
   [ -f "$exclude_file" ] || : > "$exclude_file"
@@ -191,7 +192,7 @@ exclude_marked() {
     if [ -s "$exclude_file" ] && [ -n "$(tail -c 1 "$exclude_file")" ]; then
       printf '\n' >> "$exclude_file"
     fi
-    printf '%s\n%s\n' "$2" "$entry" >> "$exclude_file"
+    printf '%s\n%s\n' "$marker" "$entry" >> "$exclude_file"
     printf 'Excluded %s via .git/info/exclude (local only)\n' "$entry"
   fi
 }
@@ -259,6 +260,17 @@ install_codex() {
   # Idempotent: drop any previous block before appending the current one.
   # BINMODE: Git Bash's awk would otherwise drop the CR of every CRLF line.
   if grep -qF "$begin" "$agents_file" 2>/dev/null; then
+    # A BEGIN with no END after it: what follows may be the user's own text,
+    # so nothing is taken out.
+    if ! awk -v b="$begin" -v e="$end" '
+      index($0, b) { open = 1 }
+      index($0, e) { open = 0 }
+      END { exit open }
+    ' "$agents_file"; then
+      printf '%s has %s with no %s after it; it was left as it is.\n' "$agents_file" "$begin" "$end" >&2
+      printf 'Remove the unfinished block by hand, then re-run.\n' >&2
+      exit 1
+    fi
     tmp="$agents_file.tmp.$$"
     # The result ends with a newline only when the file did (eol).
     eol=1

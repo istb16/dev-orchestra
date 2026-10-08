@@ -208,6 +208,93 @@ class TestJudgement(unittest.TestCase):
         line = "The handler drops the error | and the caller never sees it, so the test passed anyway."
         self.assertIn("handler", rl.strip_allowed(line))
 
+    def test_where_a_cell_starts_to_read_as_prose(self):
+        """Each threshold, one under and at it."""
+        kana = "あいうえおかきくけこ"
+        cases = (
+            ("handler drops the error now", False),
+            ("handler drops the error now.", False),
+            ("the handler drops the error now.", True),
+            ("the handler drops the error now", False),
+            (" ".join(["handler"] * (rl.CELL_PROSE_WORDS - 1)), False),
+            (" ".join(["handler"] * rl.CELL_PROSE_WORDS), True),
+            (kana[: rl.CELL_OTHER_LETTERS - 1], False),
+            (kana[: rl.CELL_OTHER_LETTERS], True),
+        )
+        self.assertEqual((rl.CELL_SENTENCE_WORDS, rl.CELL_PROSE_WORDS, rl.CELL_OTHER_LETTERS), (6, 20, 10))
+        for cell, prose in cases:
+            with self.subTest(cell=cell):
+                self.assertIs(rl._prose_cell(cell), prose)
+                stripped = rl.strip_allowed("| F1 | %s |" % cell)
+                self.assertEqual(cell.split()[0].strip(".") in stripped, prose, stripped)
+
+    SHORT_SENTENCES = (
+        "We read every finding.",
+        "Two were real bugs.",
+        "One was already fixed.",
+        "We fixed the handler.",
+        "We added two tests.",
+        "Both fail without it.",
+        "The suite passes now.",
+        "Nothing else changed here.",
+        "The docs stay valid.",
+        "Nothing needs your decision.",
+    )
+
+    def test_a_reply_cut_into_short_sentence_cells_is_judged(self):
+        """Short of the per-cell thresholds, the sentences still add up."""
+        rows = "\n".join("| %d | %s |" % (n, s) for n, s in enumerate(self.SHORT_SENTENCES, 1))
+        table = "| Step | What happened |\n| --- | --- |\n" + rows
+        self.assertEqual(rl.TABLE_SENTENCE_WORDS, 40)
+        self.assertIn("handler", rl.strip_allowed(table))
+        self.assertTrue(rl.reply_fails(table, "ja"))
+        # One word short of the threshold, the cells stay labels.
+        shorter = table.replace("Nothing needs your decision.", "Nothing needs deciding.")
+        self.assertNotIn("handler", rl.strip_allowed(shorter))
+
+    def test_short_cells_without_a_sentence_end_read_as_titles(self):
+        """However many: that is what a table of finding titles looks like."""
+        rows = "\n".join(
+            "| F%d | high | %s |" % (n, s.rstrip(".")) for n, s in enumerate(self.SHORT_SENTENCES * 2, 1)
+        )
+        reply = "結果をまとめました。\n\n| ID | Severity | Title |\n| --- | --- | --- |\n" + rows
+        self.assertNotIn("handler", rl.strip_allowed(reply))
+        self.assertFalse(rl.reply_fails(reply, "ja"))
+
+    def test_an_escaped_pipe_does_not_split_a_cell(self):
+        cell = r"The handler drops the error \| and the caller never sees it, so I fixed it."
+        self.assertIn("handler", rl.strip_allowed("| F1 | %s |" % cell))
+
+    def test_a_pipe_in_inline_code_splits_no_cell(self):
+        """Inline code goes first, so the line after a table is not taken
+        for a row because of a ``|`` inside backticks."""
+        table = "| ID | Status |\n| :---: | ---: |\n| F1 | accepted |\n"
+        line = "The handler output now goes through `sort | uniq` before the caller reads it."
+        stripped = rl.strip_allowed(table + line)
+        self.assertIn("handler", stripped)
+        self.assertNotIn("---", stripped)
+        self.assertNotIn("accepted", stripped)
+
+    def test_prose_right_after_a_table_is_still_judged(self):
+        """A line with a pipe straight under a table without outer pipes is a
+        row, as in GitHub's Markdown; its prose cells are judged all the same."""
+        reply = (
+            "結果です。\n\nID | Status\n--- | ---\nF1 | accepted\n"
+            "I accepted it | because the handler really drops the error when the remote service "
+            "answers with an empty body, and I fixed it and added a test that fails without the fix."
+        )
+        self.assertIn("handler", rl.strip_allowed(reply))
+        self.assertTrue(rl.reply_fails(reply, "ja"))
+
+    def test_a_header_row_cut_off_by_a_blank_line_leaves_the_prose_alone(self):
+        prose = (
+            "I accepted the first and the third finding because the handler really does drop the error "
+            "when the remote service answers with an empty body, so I fixed it."
+        )
+        reply = "| ID | Status |\n\n| --- | --- |\n" + prose
+        self.assertIn("handler", rl.strip_allowed(reply))
+        self.assertTrue(rl.reply_fails(reply, "ja"))
+
     def test_chinese_reply_fails_for_ja(self):
         self.assertTrue(rl.reply_fails(fixture("zh_reply.md"), "ja"))
         self.assertTrue(rl.reply_fails(fixture("zh_tw_reply.md"), "ja"))

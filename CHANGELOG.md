@@ -328,7 +328,10 @@ below begins **User adapters** so adapter authors can find it.
   non-ASCII pattern there survives an install too. A last line without a
   newline no longer runs into the block or gains a newline after an
   uninstall, in `install.sh` as in `install.ps1`, and under Git Bash a re-run
-  or `uninstall.sh` no longer turns CRLF endings into LF (#292).
+  or `uninstall.sh` no longer turns CRLF endings into LF. An `AGENTS.md` with
+  the block's BEGIN line and no END line after it is left as it is, and the
+  run exits 1 and says to remove the unfinished block by hand, rather than
+  taking out everything after that line (#292).
 
 - **`uninstall --project` removes the `.git/info/exclude` line that the Claude
   Code install added.** The install wrote `/.claude/skills/dev-orchestra`
@@ -337,7 +340,8 @@ below begins **User adapters** so adapter authors can find it.
   entry does, and the uninstallers remove it only when that comment is right
   above it. A line already there without the comment, from an earlier
   install or written by hand, is not added again and is kept; the
-  uninstaller names it so it can be removed by hand. `install.sh` now also
+  uninstaller names it so it can be removed by hand, as it now names the
+  Antigravity entry left without its comment. `install.sh` now also
   finds the entry in a file `install.ps1` wrote with CRLF line endings,
   rather than adding it a second time (#294).
 
@@ -447,8 +451,12 @@ below begins **User adapters** so adapter authors can find it.
   outside a table is judged as before. Only the short, label-like cells of a
   table are left out: a cell that reads as prose (a sentence of 6 or more
   words, 20 or more words, or 10 or more letters of another script) is still
-  judged, so a reply written in table cells does not get through, and a
-  table without its outer pipes is read the same way (#288).
+  judged, and so is every cell of a table whose short cells that end a
+  sentence add up to 40 or more words, so a reply written in table cells,
+  in long sentences or short ones, does not get through. Short cells with no
+  sentence end read as titles and labels, and are left out however many
+  there are. A `|` inside inline code does not split a cell, and a table
+  without its outer pipes is read the same way (#288).
 
 - **`doctor` reports the options a design reviewer ignores.** Whether a seat
   runs read-only was read off its label, which had to start with
@@ -468,8 +476,8 @@ below begins **User adapters** so adapter authors can find it.
   `review snapshot`'s `--no-exclude` and `--full`, with a test that every
   signature there names each flag its command takes. The Codex pointer the
   installers write quotes the script's path, so a checkout path with a space
-  works -- in single quotes from `install.sh`, so a `$` or a backtick in it
-  is not expanded either -- and `doctor`'s `Resume:` line names the live check by its absolute
+  works -- in single quotes, from `install.sh` and `install.ps1` alike, so a
+  `$`, a `$( )` or a backtick in it is not expanded either -- and `doctor`'s `Resume:` line names the live check by its absolute
   path, as its notes already did (#297).
 
 - **Untracked files with non-ASCII names, and large untracked files, are no
