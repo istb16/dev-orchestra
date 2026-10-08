@@ -130,7 +130,7 @@ class TestCancel(JobCase):
         with (
             mock.patch.object(execution, "pid_alive", lambda pid: True),
             mock.patch.object(execution, "process_started", lambda pid: "t0"),
-            mock.patch.object(execution, "kill_tree", lambda pid, grace: True),
+            mock.patch.object(execution, "kill_tree", lambda pid, grace, verified: True),
         ):
             return jobs_mod.cancel(self.workspace, "a-1")
 
@@ -308,7 +308,16 @@ class TestReusedPid(JobCase):
         self.addCleanup(end)
         return child
 
+    def require_start_times(self):
+        """Without a start time to read now, a recorded one cannot be compared
+        and the pid is unverified, not someone else's."""
+        from orchestrator import execution
+
+        if execution.process_started(os.getpid()) is None:
+            self.skipTest("no start time to read on this platform")
+
     def test_a_pid_another_process_now_has_is_not_stopped(self):
+        self.require_start_times()
         child = self.bystander()
         self.record("a-1", pid=child.pid, pid_started="the worker's", status="running")
         job = jobs_mod.cancel(self.workspace, "a-1")
@@ -318,6 +327,7 @@ class TestReusedPid(JobCase):
         self.assertIsNone(child.poll())
 
     def test_a_pid_another_process_now_has_marks_the_job_abandoned(self):
+        self.require_start_times()
         self.record("a-1", pid=os.getpid(), pid_started="the worker's")
         job = present(jobs_mod.read_job(self.workspace, "a-1"))
         self.assertEqual(job["status"], "abandoned")
@@ -332,37 +342,67 @@ class TestReusedPid(JobCase):
         self.record("a-1", pid=os.getpid(), pid_started=started)
         self.assertEqual(present(jobs_mod.read_job(self.workspace, "a-1"))["status"], "running")
 
-    def cancel_an_unverified_worker(self, windows):
-        """Cancel a job recorded without a start time, its pid alive."""
+    def cancel_an_unverified_worker(self, stopped, **fields):
+        """Cancel a job whose live pid nothing vouches for; the kill answers
+        ``stopped``. Returns the job and the ``verified`` each kill was given."""
         from orchestrator import execution
 
-        self.record("a-1", pid=4242, status="running")
-        killed = []
+        self.record("a-1", pid=4242, status="running", **fields)
+        alive = [True]
+        asked = []
+
+        def kill_tree(pid, grace, verified):
+            asked.append(verified)
+            alive[0] = not stopped
+            return stopped
+
         with (
-            mock.patch.object(execution, "IS_WINDOWS", windows),
-            mock.patch.object(execution, "pid_alive", lambda pid: True),
-            mock.patch.object(execution, "kill_tree", lambda pid, grace: killed.append(pid) or True),
+            mock.patch.object(execution, "pid_alive", lambda pid: alive[0]),
+            mock.patch.object(execution, "process_started", lambda pid: None),
+            mock.patch.object(execution, "kill_tree", kill_tree),
         ):
-            return jobs_mod.cancel(self.workspace, "a-1"), killed
+            return jobs_mod.cancel(self.workspace, "a-1"), asked
 
-    def test_an_older_record_is_not_force_killed_on_windows(self):
-        """taskkill /T /F would end whatever tree has the pid by now."""
-        job, killed = self.cancel_an_unverified_worker(windows=True)
-        self.assertEqual(killed, [])
+    def test_an_older_record_is_killed_only_as_unverified(self):
+        job, asked = self.cancel_an_unverified_worker(stopped=True)
+        self.assertEqual(asked, [False])
         self.assertEqual(job["status"], "cancelled")
-        self.assertIn("pid 4242 was not stopped", job["error"])
-
-    def test_an_older_record_is_left_to_the_group_check_on_posix(self):
-        job, killed = self.cancel_an_unverified_worker(windows=False)
-        self.assertEqual(killed, [4242])
         self.assertEqual(job["error"], "cancelled by request")
+
+    def test_an_older_record_that_was_not_stopped_stays_unfinished(self):
+        """Marking it cancelled would let `workflow remove` delete the
+        workflow under a worker that may still be writing to it."""
+        job, _ = self.cancel_an_unverified_worker(stopped=False)
+        self.assertEqual(job["status"], "running")
+        self.assertIn("pid 4242 was not stopped", job["not_stopped"])
+        raw = ws.read_json(jobs_mod.job_path(self.workspace, "a-1"))
+        self.assertEqual(raw["status"], "running")
+        self.assertNotIn("not_stopped", raw)
+        self.assertIn("not cancelled", jobs_mod.render(job))
+
+    def test_a_start_time_that_cannot_be_read_now_is_unverified_not_gone(self):
+        """A recorded start and a live pid whose start is unreadable (an
+        OpenProcess denied on Windows) is not taken for a reused pid."""
+        from orchestrator import execution
+
+        self.record("a-1", pid=4242, pid_started="t0")
+        with (
+            mock.patch.object(execution, "pid_alive", lambda pid: True),
+            mock.patch.object(execution, "process_started", lambda pid: None),
+        ):
+            self.assertIsNone(jobs_mod._worker_alive(4242, {"pid_started": "t0"}))
+            self.assertEqual(present(jobs_mod.read_job(self.workspace, "a-1"))["status"], "running")
+        job, asked = self.cancel_an_unverified_worker(stopped=True, pid_started="t0")
+        self.assertEqual(asked, [False])
+        self.assertEqual(job["status"], "cancelled")
 
     @unittest.skipUnless(os.name == "nt", "the case the issue measured")
     def test_an_older_record_leaves_a_live_bystander_running_on_windows(self):
         child = self.bystander()
         self.record("a-1", pid=child.pid, status="running")
         job = jobs_mod.cancel(self.workspace, "a-1")
-        self.assertEqual(job["status"], "cancelled")
+        self.assertEqual(job["status"], "running")
+        self.assertTrue(job["not_stopped"])
         time.sleep(0.5)
         self.assertIsNone(child.poll())
 

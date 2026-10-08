@@ -62,6 +62,7 @@ Writes `.ai/reviews/review-target.diff` plus metadata:
   "strategy": "git diff HEAD",
   "base": null,
   "head": "9f2c…",
+  "base_commit": "9f2c…",
   "files": ["app/services/pricing.rb", "spec/services/pricing_spec.rb"],
   "untracked_included": ["app/services/pricing.rb"],
   "withheld": [

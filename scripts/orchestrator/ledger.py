@@ -705,6 +705,7 @@ class Ledger:
             if detail:
                 event.update(detail)
             stage = event.pop("stage", token.rsplit("-", 1)[0])
+            status = event.pop("status")
 
             state["ledger"] = ledger
             ws.append_event(state, ws.new_event(str(stage), status, event))

@@ -179,13 +179,45 @@ class TestIncrementalScope(RoundCase):
         self.assertFalse(second["incremental_from"])
         self.assertEqual(second["sha256"], first["sha256"])
 
-    def test_an_explicit_base_is_never_incremental(self):
+    def test_an_explicit_base_naming_another_commit_is_never_incremental(self):
         """--base is the caller stating the comparison; it wins."""
+        self.write("notes.txt", "unrelated\n")
+        self.commit_all("second")
         self.first_round()
         self.fix()
-        meta = review_mod.create_snapshot(self.workspace, base="HEAD")
+        meta = review_mod.create_snapshot(self.workspace, base="HEAD~1")
         self.assertFalse(meta["incremental_from"])
         self.assertIn("op59", ws.read_text(self.workspace.snapshot_path))
+
+    def test_an_explicit_base_naming_the_commit_the_round_was_taken_against_narrows(self):
+        """A round taken without a base was taken against the commit HEAD was
+        at, and naming that commit is the same change."""
+        self.first_round()
+        self.fix()
+        self.assertTrue(review_mod.create_snapshot(self.workspace, base="HEAD")["incremental_from"])
+
+    def test_a_sha_for_that_commit_narrows_too(self):
+        self.first_round()
+        self.fix()
+        head = self.git("rev-parse", "HEAD").stdout.strip()
+        self.assertTrue(review_mod.create_snapshot(self.workspace, base=head)["incremental_from"])
+
+    def test_head_after_a_commit_is_another_base(self):
+        """The same name, another commit: the round asking for it is a new change."""
+        self.first_round()
+        self.fix()
+        self.commit_all("the fix")
+        self.write("service.py", body("-"))
+        self.assertFalse(review_mod.create_snapshot(self.workspace, base="HEAD")["incremental_from"])
+
+    def test_no_base_after_a_commit_is_still_the_same_change(self):
+        """Committing the fix is how a change goes on; asking for no base asks
+        for none in particular."""
+        self.first_round()
+        self.fix()
+        self.commit_all("the fix")
+        self.write("service.py", body("-"))
+        self.assertTrue(review_mod.create_snapshot(self.workspace)["incremental_from"])
 
     def test_the_feature_can_be_turned_off(self):
         self.first_round()
@@ -412,14 +444,40 @@ class TestReviewingABranchAgainstABase(RoundCase):
     def test_changing_the_base_takes_the_whole_change_again(self):
         """A different base is a different definition of what is under review.
         Narrowing to a fix for the old one would answer the old question."""
+        self.write("notes.txt", "unrelated\n")
+        self.commit_all("second")
         head = self.base()
         self.implement()
         review_mod.create_snapshot(self.workspace, base=head)
         run_cli("review", "run")
         run_cli("review", "triage", "F1", "--status", "accepted")
         self.fix()
-        meta = review_mod.create_snapshot(self.workspace, base="HEAD")
+        meta = review_mod.create_snapshot(self.workspace, base="HEAD~1")
         self.assertFalse(meta["incremental_from"])
+
+    def test_another_name_for_the_same_commit_is_the_same_base(self):
+        head = self.base()
+        self.implement()
+        review_mod.create_snapshot(self.workspace, base=head)
+        run_cli("review", "run")
+        run_cli("review", "triage", "F1", "--status", "accepted")
+        self.fix()
+        self.assertTrue(review_mod.create_snapshot(self.workspace, base="HEAD")["incremental_from"])
+
+    def test_a_base_that_moved_since_is_another_base(self):
+        """`main` after a pull names another commit than the round was taken
+        against, under the same name."""
+        self.git("branch", "basis")
+        self.implement()
+        review_mod.create_snapshot(self.workspace, base="basis")
+        run_cli("review", "run")
+        run_cli("review", "triage", "F1", "--status", "accepted")
+        self.fix()
+        self.write("notes.txt", "unrelated\n")
+        self.git("add", "notes.txt")
+        self.git("commit", "-q", "-m", "moved")
+        self.git("branch", "-f", "basis", "HEAD")
+        self.assertFalse(review_mod.create_snapshot(self.workspace, base="basis")["incremental_from"])
 
     def test_dropping_the_base_takes_the_whole_change_again(self):
         head = self.base()
@@ -529,6 +587,7 @@ META_KEYS = [
     "strategy",
     "base",
     "head",
+    "base_commit",
     "tree",
     "incremental_from",
     "full_diff",

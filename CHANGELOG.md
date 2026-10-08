@@ -95,8 +95,10 @@ below begins **User adapters** so adapter authors can find it.
 - **`workflow remove` refuses a workflow that is still in use** (exit 2):
   one with a stage in flight, or with a detached job in its `jobs/` that has
   not finished (a job whose worker is gone is marked `abandoned` first and
-  does not count). It used to delete it, and a detached worker finishing
-  afterwards wrote its state back, leaving a workflow with an empty record,
+  does not count, nor does one still recorded as starting, with no worker
+  pid, five minutes after it was started). It used to delete it, and a
+  detached worker finishing afterwards wrote its state back, leaving a
+  workflow with an empty record,
   the job's files and empty `execution/` and `reviews/`. Recent activity
   alone is no reason to refuse, so a workflow finished a moment ago is still
   deleted. `--force` deletes it anyway, for an in-flight mark a crashed stage
@@ -249,9 +251,10 @@ below begins **User adapters** so adapter authors can find it.
   `subst` drive is still not followed). A Claude copy (`--copy`, or the fallback when a symlink
   cannot be made) now carries a `.dev-orchestra-install` file, as an
   Antigravity copy does. A copy from an earlier installer, which has no such
-  file, is still replaced or removed when it holds nothing but what a copy
-  carries, so `install --copy` keeps upgrading it; one with anything else
-  added is left in place. A link to another checkout or to nothing is now
+  file, is still replaced or removed when every file in it, at any depth and
+  hidden or not, is also at the same path in the checkout's payload, so
+  `install --copy` keeps upgrading it; one with anything else added anywhere
+  in it is left in place. A link to another checkout or to nothing is now
   left in place too, with the command to remove it by hand, and a run from
   the checkout that is itself the destination stops and says so (#290).
 
@@ -267,9 +270,12 @@ below begins **User adapters** so adapter authors can find it.
   `abandoned`. A job now records the worker's start time with its pid
   (Windows and Linux) and checks it first: a different process marks the job
   `abandoned` and is left alone. A job recorded by an earlier version, or on
-  macOS, has no start time; on Windows its pid is no longer stopped, and the
-  job says so, while POSIX keeps stopping it only while it leads its own
-  process group (#268).
+  macOS, has no start time, and a live pid whose start time cannot be read
+  (on Windows, when opening the process is denied) is treated the same, not
+  as gone: on Windows such a pid is no longer stopped, while POSIX keeps
+  stopping it only while it leads its own process group. A cancel that leaves
+  such a pid running leaves the job unfinished, so `workflow remove` still
+  waits for it, and `jobs cancel` says so and exits 1 (#268).
 
 - **What a reviewer's prompt quotes can no longer close its fence.** The diff,
   the plan and the design request went in a fixed `` ``` `` fence, so a code
@@ -356,10 +362,15 @@ below begins **User adapters** so adapter authors can find it.
   `review snapshot is empty … or pass --base`, and passing `--base` failed
   the same way. A snapshot taken against another base is now retaken
   against the one given, with a `note:` saying so, and the round count
-  starts again as it does after `review snapshot --base`. A snapshot taken
-  without a base counts as taken against `HEAD`, and one taken against a
-  name for the same commit as `--base` is kept. Without `--base` the
-  snapshot on disk is reviewed as before (#264).
+  starts again as it does after `review snapshot --base`. A snapshot is kept
+  when the commit `--base` names is the one it was taken against (the one
+  `HEAD` was at, for a snapshot taken without a base), whatever name either
+  used; `HEAD` after a commit, or a branch that has moved since, is another
+  base. The snapshot now records that commit as `base_commit`; one taken
+  before it did is compared by name. An incremental round decides whether
+  it is on the same base by the same rule, so a round with `--base` naming
+  the commit the last one was taken against narrows to the fix. Without
+  `--base` the snapshot on disk is reviewed as before (#264).
 
 - **Code in a finding's fenced block is read as code.** A `#` comment inside
   ```` ``` ```` or `~~~` was dropped, a line such as `fix: …` started a new
@@ -368,10 +379,11 @@ below begins **User adapters** so adapter authors can find it.
   brief handed the fixer code without its comments or its shape. Lines inside
   a fence are now kept as written and never start a finding, and `Evidence`
   and `Fix` keep their line breaks; the other fields are still one line. A
-  fence that is never closed is read as before. In the fix brief and in
-  `consolidated.md` such a value goes under its label, indented into the
-  list item, so its fences no longer leave the list and swallow the rest of
-  the document (#265).
+  fence that is never closed is read as before, and a report of many of
+  them no longer takes time growing with the square of its length. In the
+  fix brief and in `consolidated.md` such a value goes under its label,
+  indented into the list item, so its fences no longer leave the list and
+  swallow the rest of the document (#265).
 
 - **The tests no longer start a real `claude`, `codex` or `agy`.** Without
   `DEV_ORCHESTRA_TEST_ASSUME_NO_CLI`, about 150 tests ran the installed CLIs

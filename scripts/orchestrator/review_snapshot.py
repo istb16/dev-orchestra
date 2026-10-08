@@ -79,6 +79,9 @@ def create_snapshot(
         strategy,
         base,
         head,
+        # Resolved now, as the diff was: the name may point elsewhere by the
+        # time a later round asks whether it is the same base.
+        commit_of(root, base) if base else head,
         tree,
         previous_tree,
         full_diff_path,
@@ -364,6 +367,7 @@ def _snapshot_meta(
     strategy: str,
     base: Optional[str],
     head: str,
+    base_commit: str,
     tree: str,
     previous_tree: str,
     full_diff_path: str,
@@ -402,6 +406,9 @@ def _snapshot_meta(
         "strategy": strategy,
         "base": base,
         "head": head,
+        #: The commit the diff was taken against: what ``base`` named then,
+        #: or ``head`` without one. See ``same_base``.
+        "base_commit": base_commit,
         #: The working tree as a git tree object, so the next round can diff
         #: against exactly what this round reviewed.
         "tree": tree,
@@ -528,13 +535,14 @@ def _reviewed_tree(workspace: ws.Workspace, base: Optional[str] = None) -> str:
     And the change has to still be the same change. A round asking for a
     different base is redefining what is under review, and narrowing to a fix
     for the previous definition would answer the old question quietly. Same
-    base, including no base at all, means the same change.
+    base (see :func:`same_base`), including no base at all, means the same
+    change.
     """
     meta = workspace.read_snapshot_meta()
     tree = str(meta.get("tree") or "")
     if not tree:
         return ""
-    if (meta.get("base") or None) != (base or None):
+    if not same_base(workspace.root, meta, base):
         return ""
     consolidated = ws.read_json(workspace.consolidated_json_path, {}) or {}
     reviewed = str((consolidated.get("snapshot") or {}).get("sha256") or "")
@@ -950,6 +958,36 @@ def _numstat(
 def _head(root: str) -> str:
     code, out, _ = ws.git(["rev-parse", "HEAD"], root)
     return out.strip() if code == 0 else ""
+
+
+def commit_of(root: str, name: str) -> str:
+    """The commit ``name`` resolves to now, or "" when git cannot resolve it."""
+    code, out, _ = ws.git(["rev-parse", "--verify", "--quiet", "%s^{commit}" % name], root)
+    return out.strip() if code == 0 else ""
+
+
+def same_base(root: str, meta: Dict[str, Any], wanted: Optional[str]) -> bool:
+    """Whether the snapshot ``meta`` describes was taken against the base
+    ``wanted`` names, so a round asking for ``wanted`` reviews the same change.
+
+    Asking for no base asks for none in particular: it is the same base as a
+    snapshot taken without one, whatever HEAD has moved to since -- committing
+    the fix is the ordinary way a change goes on. A base that is asked for is
+    compared by the commit it names now against the commit the snapshot was
+    taken against (``base_commit``, or ``head`` for one taken without a base),
+    not by the name: ``HEAD`` after a commit, or ``main`` after a pull, is
+    another base under the same name, and a sha is the same base as a name
+    for it. A snapshot recorded before ``base_commit`` was kept is compared
+    by name, with no base read as ``HEAD``. Otherwise a name git cannot
+    resolve is never the same base.
+    """
+    taken = meta.get("base") or None
+    if not wanted:
+        return taken is None
+    recorded = str((meta.get("base_commit") if taken else meta.get("head")) or "")
+    if not recorded:
+        return (taken or "HEAD") == wanted
+    return commit_of(root, wanted) == recorded
 
 
 def _untracked_paths(root: str) -> "set[str]":

@@ -1,4 +1,4 @@
-<!-- translated-from: references/reviews.md sha256:6b8fc509953f6acc1f3642fb3a9f9ee9e944b97428f4733aa9d6ee378f0c8f95 -->
+<!-- translated-from: references/reviews.md sha256:8dddfc48015f8c2a3fe81d73ff5de3f9af0030b54371292c51362eb34b666f4f -->
 
 > この文書は [references/reviews.md](../../../references/reviews.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -72,6 +72,7 @@ dev-orchestra review snapshot --no-exclude    # generated files included too
   "strategy": "git diff HEAD",
   "base": null,
   "head": "9f2c…",
+  "base_commit": "9f2c…",
   "files": ["app/services/pricing.rb", "spec/services/pricing_spec.rb"],
   "untracked_included": ["app/services/pricing.rb"],
   "withheld": [

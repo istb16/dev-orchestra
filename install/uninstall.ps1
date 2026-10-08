@@ -86,15 +86,33 @@ function Resolve-RealPath {
 
 function Test-UnmarkedCopy {
     # A Claude copy made before the installer wrote the sentinel: the skill
-    # and its CLI are there, and nothing at the top that a copy does not
-    # carry, so removing it loses nothing the checkout does not have.
+    # and its CLI are there, and every entry in it, at any depth and hidden
+    # or not, is at the same path in this checkout's payload, so removing it
+    # loses nothing the checkout does not have.
     param([string]$Path)
 
     foreach ($relative in @("skills/$SkillName/SKILL.md", 'scripts/orchestrator/__init__.py')) {
         if (-not (Test-Path -LiteralPath (Join-Path $Path $relative) -PathType Leaf)) { return $false }
     }
-    foreach ($entry in @(Get-ChildItem -LiteralPath $Path -Force)) {
+    try { $entries = @(Get-ChildItem -LiteralPath $Path -Force -ErrorAction Stop) } catch { return $false }
+    foreach ($entry in $entries) {
         if ($Payload -notcontains $entry.Name) { return $false }
+        if (-not (Test-CheckoutHas $entry (Join-Path $root $entry.Name))) { return $false }
+    }
+    return $true
+}
+
+function Test-CheckoutHas {
+    # Whether $Entry, and everything under it, is at $Twin in the checkout.
+    # A link or junction inside the copy is not followed, and what cannot be
+    # read fails the check.
+    param($Entry, [string]$Twin)
+
+    if (-not ([System.IO.File]::Exists($Twin) -or [System.IO.Directory]::Exists($Twin))) { return $false }
+    if (-not $Entry.PSIsContainer -or ($Entry.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) { return $true }
+    try { $children = @(Get-ChildItem -LiteralPath $Entry.FullName -Force -ErrorAction Stop) } catch { return $false }
+    foreach ($child in $children) {
+        if (-not (Test-CheckoutHas $child (Join-Path $Twin $child.Name))) { return $false }
     }
     return $true
 }

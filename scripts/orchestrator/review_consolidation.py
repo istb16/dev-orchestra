@@ -6,7 +6,7 @@ import difflib
 import hashlib
 import os
 import re
-from typing import Any, Dict, List, Optional, Sequence, Tuple, cast
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, cast
 
 from . import context as context_mod
 from . import workspace as ws
@@ -1026,8 +1026,35 @@ def round_key(data: Dict[str, Any]) -> Tuple[str, str]:
     return snapshot_stamp(snapshot), str(snapshot.get("round_id") or "")
 
 
+def update_consolidation(
+    workspace: ws.Workspace, change: Callable[[Dict[str, Any]], Optional[Dict[str, Any]]]
+) -> Optional[Dict[str, Any]]:
+    """Read the live report, let ``change`` decide what replaces it, and save
+    that, all under the report's lock. Returns what was saved.
+
+    ``change`` is given the report on disk (empty when there is none) and
+    returns the report to save -- that one, changed, or a new one built while
+    the lock is held -- or None to save nothing. Whatever it raises leaves the
+    report as it was.
+
+    Two writers that each read the report, changed their copy and wrote it
+    back lost whichever decision was written first: two ``review triage``
+    calls side by side, or a triage made while a round was being built. The
+    lock is not re-entrant, so ``change`` must not call this again.
+    """
+    with ws.file_lock(workspace.consolidated_json_path):
+        data = ws.read_json(workspace.consolidated_json_path, {}) or {}
+        updated = change(data)
+        if updated is not None:
+            save_consolidation(workspace, updated)
+    return updated
+
+
 def save_consolidation(workspace: ws.Workspace, data: Dict[str, Any]) -> str:
     """Write the live report and its round's archived copy; return the copy's path.
+
+    Unlocked: a caller that read the report first saves through
+    :func:`update_consolidation` instead.
 
     The live report is what everything downstream reads, and the next round
     replaces it. The copy under ``rounds/`` is the same record kept after

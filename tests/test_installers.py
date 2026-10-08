@@ -932,6 +932,77 @@ class TestClaudeInstallers(_InstallerCase):
                     self.assert_refused(code, output)
                     self.assertTrue(os.path.isfile(os.path.join(dest, "notes.txt")), action)
 
+    def test_an_older_copy_with_something_added_inside_is_left_alone(self):
+        """Not only at the top: a file of the user's anywhere in the copy, hidden
+        or not, is something the checkout does not have."""
+        planted = (
+            os.path.join("scripts", "mine.py"),
+            os.path.join("scripts", "orchestrator", ".env"),
+            os.path.join("references", "notes", "draft.md"),
+            ".env",
+            "..x",
+        )
+        for shell in SHELLS:
+            for relative in planted:
+                with self.subTest(shell=shell.name, planted=relative):
+                    project = self.fresh(shell, "older-inside-%d" % planted.index(relative))
+                    dest = self.unmarked_copy(shell, project)
+                    path = os.path.join(dest, relative)
+                    os.makedirs(os.path.dirname(path), exist_ok=True)
+                    self.write_file(path)
+                    for action in ("install", "uninstall"):
+                        code, output = self.claude(shell, action, project, copy=action == "install")
+                        self.assert_refused(code, output)
+                        self.assertTrue(os.path.isfile(path), action)
+
+    def test_a_relative_link_to_the_checkout_is_ours(self):
+        """Followed from where the link is, not from where the installer runs."""
+        for shell in SHELLS:
+            with self.subTest(shell=shell.name):
+                base = self.fresh(shell, "relative-target")
+                checkout = self.make_checkout(base)
+                self.write_file(os.path.join(checkout, "mine.txt"))
+                project = os.path.join(base, "proj")
+                dest = self.claude_dest(project)
+                os.makedirs(os.path.dirname(dest))
+                relative = os.path.relpath(checkout, os.path.dirname(dest))
+                try:
+                    os.symlink(relative, dest, target_is_directory=True)
+                except OSError as exc:
+                    self.skipTest("cannot make a directory symlink here: %s" % exc)
+                code, output = self.claude(shell, "uninstall", project, root=checkout, cwd=base)
+                self.assertEqual(code, 0, output)
+                self.assertFalse(os.path.lexists(dest), output)
+                self.assert_checkout_intact(checkout)
+
+    def test_links_that_point_at_each_other_are_refused_not_followed_for_ever(self):
+        for shell in SHELLS:
+            with self.subTest(shell=shell.name):
+                base = self.fresh(shell, "cycle")
+                one, two = os.path.join(base, "one"), os.path.join(base, "two")
+                project = os.path.join(base, "proj")
+                dest = self.claude_dest(project)
+                os.makedirs(os.path.dirname(dest))
+                try:
+                    if os.name == "nt":
+                        # A junction needs its target to resolve when it is
+                        # made, so every link is made before the cycle closes.
+                        os.makedirs(two)
+                        make_dir_link(one, two)
+                        make_dir_link(dest, one)
+                        os.rmdir(two)
+                        make_dir_link(two, one)
+                    else:
+                        os.symlink(two, one)
+                        os.symlink(one, two)
+                        os.symlink(one, dest)
+                except (OSError, subprocess.CalledProcessError) as exc:
+                    self.skipTest("cannot make a cycle of links here: %s" % exc)
+                for action in ("install", "uninstall"):
+                    code, output = self.claude(shell, action, project, copy=action == "install")
+                    self.assert_refused(code, output)
+                    self.assertTrue(is_link(dest), action)
+
     def test_a_full_copy_with_its_git_is_explained_not_removed(self):
         """What an earlier install.sh left under Git Bash, whose `ln -s` copies
         the whole checkout (#293). It looks like a clone, so it stays, and the
@@ -1012,6 +1083,45 @@ class TestClaudeInstallers(_InstallerCase):
             for suffix, expected in ((".sh", sh_list), (".ps1", ps1_list)):
                 relative = os.path.join("install", action + suffix)
                 self.assertIn(expected, read_text(os.path.join(REPO_ROOT, relative)), relative)
+
+    #: The helpers that decide what is the installer's to remove, by script
+    #: type, and how each script spells the start of one.
+    OWNERSHIP_HELPERS = (
+        (".sh", "%s() {", ("shell_quote", "explain_full_copy", "is_unmarked_copy")),
+        (
+            ".ps1",
+            "function %s {",
+            (
+                "Get-LinkTarget",
+                "Resolve-RealPath",
+                "Test-UnmarkedCopy",
+                "Test-CheckoutHas",
+                "Get-FullCopyNote",
+                "Stop-Refused",
+                "Test-ReparsePoint",
+                "Remove-Link",
+            ),
+        ),
+    )
+
+    def helper_body(self, text: str, opening: str) -> str:
+        """The helper that starts with ``opening``, up to its closing brace at column 0."""
+        match = re.search(r"^%s\n.*?^\}$" % re.escape(opening), text, re.MULTILINE | re.DOTALL)
+        assert match is not None, opening
+        return match.group(0)
+
+    def test_the_scripts_agree_on_what_is_theirs_to_remove(self):
+        """The install and uninstall scripts each carry their own copy of the
+        ownership helpers; a fix to one copy alone would have the pair disagree
+        about whether a directory may be removed."""
+        for suffix, opening, names in self.OWNERSHIP_HELPERS:
+            install = read_text(os.path.join(REPO_ROOT, "install", "install" + suffix))
+            uninstall = read_text(os.path.join(REPO_ROOT, "install", "uninstall" + suffix))
+            for name in names:
+                with self.subTest(script=suffix, helper=name):
+                    self.assertEqual(
+                        self.helper_body(install, opening % name), self.helper_body(uninstall, opening % name)
+                    )
 
 
 BEGIN = "<!-- BEGIN dev-orchestra -->"

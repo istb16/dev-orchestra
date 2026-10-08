@@ -290,6 +290,12 @@ class TestOptimizationReportFigures(unittest.TestCase):
         self.assertEqual(optimization_render._runs_row(4, 4, 12345, 2, 6172), expected)
 
 
+def as_detail(event: Dict[str, Any]) -> Dict[str, Any]:
+    """``event`` without the entry's own fields, which ``record_event`` sets
+    from its arguments and refuses to take from a detail."""
+    return {key: value for key, value in event.items() if key not in ws.RESERVED_EVENT_FIELDS}
+
+
 def round_event(status: str = "ok", billed: int = 1000) -> Dict[str, Any]:
     """A code round as ``review run`` records it, with one reviewer when it ran."""
     return {
@@ -310,8 +316,8 @@ def round_event(status: str = "ok", billed: int = 1000) -> Dict[str, Any]:
 class TestTheReportCommand(IsolatedCase):
     def test_the_estimated_saving_separates_thousands(self):
         workspace = self.cli_workspace()
-        workspace.record_event("review", "ok", round_event(billed=1500))
-        workspace.record_event("review", opt_mod.REFUSED, round_event(status=opt_mod.REFUSED))
+        workspace.record_event("review", "ok", as_detail(round_event(billed=1500)))
+        workspace.record_event("review", opt_mod.REFUSED, as_detail(round_event(status=opt_mod.REFUSED)))
         code, out, _ = run_cli("optimization", "report")
         self.assertEqual(code, 0)
         self.assertIn("Estimated saving from 1 gate-refused round(s): ~1,500 billed tokens.", out)

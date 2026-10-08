@@ -284,6 +284,79 @@ class TestTheCounterInThePipeline(IsolatedCase):
         self.assertNotIn("retaking", err)
         self.assertEqual(self.cli_workspace().read_snapshot_meta()["base"], "HEAD")
 
+    def test_review_run_base_head_retakes_a_snapshot_taken_before_a_commit(self):
+        """The snapshot was taken against the commit HEAD was at, not against
+        the word: after a commit it is another change, and keeping it reviewed
+        that one under the --base that asked for this one."""
+        self.write("app.py", "a = 2\n")
+        run_cli("review", "snapshot")
+        self.commit_all("second")
+        self.write("app.py", "a = 3\n")
+        code, _, err = run_cli("review", "run", "--base", "HEAD")
+        self.assertEqual(code, 0, err)
+        self.assertIn("retaking the snapshot against --base HEAD", err)
+        self.assertIn("a = 3", ws.read_text(self.cli_workspace().snapshot_path))
+
+    def test_review_run_base_retakes_a_snapshot_whose_base_moved(self):
+        """`main` after a pull: the same name for another commit."""
+        self.git("branch", "basis")
+        self.write("app.py", "a = 2\n")
+        run_cli("review", "snapshot", "--base", "basis")
+        self.commit_all("second")
+        self.git("branch", "-f", "basis", "HEAD")
+        self.write("app.py", "a = 3\n")
+        code, _, err = run_cli("review", "run", "--base", "basis")
+        self.assertEqual(code, 0, err)
+        self.assertIn("retaking the snapshot against --base basis", err)
+        meta = self.cli_workspace().read_snapshot_meta()
+        self.assertEqual(meta["base_commit"], self.git("rev-parse", "HEAD").stdout.strip())
+
+    def test_a_snapshot_recorded_before_its_base_commit_is_compared_by_name(self):
+        """Nothing says which commit it was taken against, so the name is all
+        there is to go on."""
+        self.write("app.py", "a = 2\n")
+        run_cli("review", "snapshot", "--base", "HEAD")
+        workspace = self.cli_workspace()
+        meta = workspace.read_snapshot_meta()
+        del meta["base_commit"]
+        ws.write_json(workspace.snapshot_meta_path, meta)
+        self.commit_all("second")
+        self.assertTrue(review_mod.same_base(workspace.root, meta, "HEAD"))
+        self.assertFalse(review_mod.same_base(workspace.root, meta, "HEAD~1"))
+        code, _, err = run_cli("review", "run", "--base", "HEAD")
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("retaking", err)
+
+    def test_review_run_base_that_git_cannot_resolve_leaves_the_snapshot_alone(self):
+        """Refused, and the snapshot on disk is neither kept as if it matched
+        nor half replaced."""
+        self.write("app.py", "a = 2\n")
+        run_cli("review", "snapshot")
+        workspace = self.cli_workspace()
+        before = workspace.read_snapshot_meta()
+        diff = ws.read_text(workspace.snapshot_path)
+        code, out, err = run_cli("review", "run", "--base", "no-such-rev")
+        self.assertEqual(code, 2)
+        self.assertNotIn("successful", out)
+        self.assertIn("no-such-rev", err)
+        self.assertIn("git diff failed", err)
+        self.assertEqual(workspace.read_snapshot_meta(), before)
+        self.assertEqual(ws.read_text(workspace.snapshot_path), diff)
+        self.assertEqual(self.iteration(), 0)
+
+    def test_review_run_base_whose_retake_is_empty_reviews_nothing(self):
+        """Everything is committed by now: against the new HEAD there is no
+        change, and the old snapshot is not reviewed in its place."""
+        self.write("app.py", "a = 2\n")
+        run_cli("review", "snapshot")
+        self.commit_all("second")
+        code, out, err = run_cli("review", "run", "--base", "HEAD")
+        self.assertNotEqual(code, 0)
+        self.assertIn("retaking the snapshot against --base HEAD", err)
+        self.assertRegex(err, "snapshot is empty|nothing to review")
+        self.assertNotIn("successful", out)
+        self.assertTrue(self.cli_workspace().read_snapshot_meta()["empty"])
+
     def test_review_run_without_base_keeps_the_snapshot_on_disk(self):
         self.write("app.py", "a = 2\n")
         run_cli("review", "snapshot", "--base", "HEAD")

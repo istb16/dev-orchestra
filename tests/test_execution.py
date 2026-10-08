@@ -616,6 +616,44 @@ class TestProcessTree(IsolatedCase):
             self.assertFalse(execution.kill_tree(4242, grace=0.2))
         self.assertEqual(sent, [])
 
+    def test_kill_tree_leaves_an_unverified_pid_alone_on_windows(self):
+        """taskkill /T /F has no group check: it would end whatever tree has
+        the pid by now. Driven as Windows on every OS."""
+        sent = []
+        with (
+            mock.patch.object(execution, "IS_WINDOWS", True),
+            mock.patch.object(execution, "pid_alive", lambda pid: True),
+            mock.patch.object(execution.subprocess, "run", lambda args, **kwargs: sent.append(args[0])),
+            mock.patch.object(execution.os, "kill", lambda pid, sig: sent.append(("kill", sig))),
+        ):
+            self.assertFalse(execution.kill_tree(4242, grace=0.2, verified=False))
+        self.assertEqual(sent, [])
+
+    def test_kill_tree_leaves_an_unverified_pid_to_the_group_check_on_posix(self):
+        """Driven as POSIX on every OS: the group check stands in for the
+        verification, so a pid that leads its own group is still signalled."""
+        sent = []
+        alive = [True]
+
+        def killpg(pgid, sig):
+            if sig == 0:
+                if not alive[0]:
+                    raise ProcessLookupError
+                return
+            sent.append(sig)
+            alive[0] = False
+
+        with (
+            mock.patch.object(execution, "IS_WINDOWS", False),
+            mock.patch.object(execution, "_reap", lambda pid: None),
+            mock.patch.object(execution, "pid_alive", lambda pid: alive[0]),
+            mock.patch.object(execution.signal, "SIGKILL", 9, create=True),
+            mock.patch.object(execution.os, "getpgid", lambda pid: pid, create=True),
+            mock.patch.object(execution.os, "killpg", killpg, create=True),
+        ):
+            self.assertTrue(execution.kill_tree(4242, grace=0.2, verified=False))
+        self.assertEqual(sent, [signal.SIGTERM])
+
     def test_the_last_resort_is_not_used_once_the_tree_is_gone(self):
         """After taskkill, or a group that is no longer there, the bare pid may
         already belong to someone else."""

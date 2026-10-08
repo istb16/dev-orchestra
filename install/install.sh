@@ -138,17 +138,25 @@ release_destination() {
 }
 
 # A Claude copy made before the installer wrote the sentinel: the skill and
-# its CLI are there, and nothing at the top that a copy does not carry, so
-# removing it loses nothing the checkout does not have.
+# its CLI are there, and every entry in it, at any depth and hidden or not,
+# is at the same path in this checkout's payload, so removing it loses
+# nothing the checkout does not have. find does not follow a link inside the
+# copy, and fails the check on anything it cannot read.
 is_unmarked_copy() {
   [ -f "$1/skills/$SKILL_NAME/SKILL.md" ] && [ -f "$1/scripts/orchestrator/__init__.py" ] || return 1
-  for entry in "$1"/* "$1"/.[!.]* "$1"/..?*; do
-    [ -e "$entry" ] || [ -L "$entry" ] || continue
-    case " $PAYLOAD " in
-      *" ${entry##*/} "*) ;;
-      *) return 1 ;;
-    esac
-  done
+  find "$1" -exec sh -c '
+    copy=$1 checkout=$2 payload=$3
+    shift 3
+    for entry do
+      [ "$entry" = "$copy" ] && continue
+      relative=${entry#"$copy"/}
+      case " $payload " in
+        *" ${relative%%/*} "*) ;;
+        *) exit 1 ;;
+      esac
+      [ -e "$checkout/$relative" ] || [ -L "$checkout/$relative" ] || exit 1
+    done
+  ' sh "$1" "$root" "$PAYLOAD" {} +
 }
 
 # Entries at the checkout root that Antigravity would load along with the

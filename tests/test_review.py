@@ -196,6 +196,37 @@ class TestFencedEvidence(IsolatedCase):
         )
         self.assertEqual([f["file"] for f in review_mod.parse_findings(text, "r1")], ["a.py", "b.py"])
 
+    def test_many_unclosed_openers_are_not_each_scanned_to_the_end(self):
+        """Reviewer output can be steered by the diff under review; a report of
+        unclosed openers looked ahead to its end from every one of them."""
+        from unittest import mock
+
+        from orchestrator import review_parsing
+
+        text = "## Finding\n- Severity: high\n- File: a.py\n- Problem: one\n- Evidence:\n" + "```a\n" * 2000
+        scans = []
+        real = review_parsing._closing_line
+
+        def counted(lines, start, fence):
+            scans.append(len(lines) - start)
+            return real(lines, start, fence)
+
+        with mock.patch.object(review_parsing, "_closing_line", counted):
+            findings = review_mod.parse_findings(text, "r1")
+        self.assertEqual([f["file"] for f in findings], ["a.py"])
+        self.assertTrue(findings[0]["evidence"].startswith("```a\n```a"))
+        # Once per kind of fence in the split, once more in the block.
+        self.assertLessEqual(sum(scans), 2 * 2006)
+
+    def test_an_opener_after_the_last_closer_of_its_kind_is_unclosed(self):
+        text = (
+            "## Finding\n- Severity: high\n- File: a.py\n- Problem: one\n- Evidence:\n"
+            "```\nx = 1\n```\n- Fix: two\n```\n## Finding\n- Severity: low\n- File: b.py\n- Problem: two\n"
+        )
+        findings = review_mod.parse_findings(text, "r1")
+        self.assertEqual([f["file"] for f in findings], ["a.py", "b.py"])
+        self.assertEqual(findings[0]["evidence"], "```\nx = 1\n```")
+
     def test_fix_brief_hands_the_code_over_in_its_shape(self):
         findings = review_mod.parse_findings(FENCED_FINDING, "r1")
         data = {"findings": review_consolidation.consolidate_findings(findings)}
@@ -327,6 +358,31 @@ class TestConsolidation(IsolatedCase):
         merged = review_mod.consolidate_findings(findings)
         self.assertEqual(len(merged), 2)
         self.assertEqual([f["reported_by"] for f in merged], [["codex"], ["claude"]])
+
+    def line_and_no_line(self, evidence, problem):
+        """A finding with a line, and one without that quotes ``evidence``, as
+        consolidation leaves them. Both are in one file, from two reviewers."""
+        far = FINDING_A.replace("- Line: 42", "- Line: 300")
+        far = far.replace("- Evidence: user.profile.name", "- Evidence: `user.profile.name`")
+        no_line = (
+            "## Finding\n- Severity: high\n- File: app/models/user.rb\n- Line: n/a\n"
+            "- Category: correctness\n- Problem: %s\n- Evidence: %s\n" % (problem, evidence)
+        )
+        findings = review_mod.parse_findings(far, "claude") + review_mod.parse_findings(no_line, "codex")
+        return review_mod.consolidate_findings(findings)
+
+    def test_a_finding_without_a_line_quoting_the_same_code_is_a_possible_duplicate(self):
+        """Not merged, but not lost either: the pair is put to the orchestrator."""
+        merged = self.line_and_no_line("`user.profile.name`", "a user without a profile crashes the page")
+        self.assertEqual(len(merged), 2)
+        pairs = review_mod.duplicate_candidates(merged)
+        self.assertEqual([sorted(p["ids"]) for p in pairs], [["F1", "F2"]])
+        self.assertIn("user.profile.name", pairs[0]["shared_code"])
+
+    def test_a_finding_without_a_line_quoting_other_code_is_no_duplicate(self):
+        merged = self.line_and_no_line("`account.owner_email`", "the owner address is never checked")
+        self.assertEqual(len(merged), 2)
+        self.assertEqual(review_mod.duplicate_candidates(merged), [])
 
     def test_two_findings_without_a_line_can_still_be_merged(self):
         """A design finding names a plan section and has no line; two reviewers

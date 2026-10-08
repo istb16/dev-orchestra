@@ -60,6 +60,7 @@ from .review_consolidation import (
     summarise_runs,
     surrounding_records,
     unresolved_blocking,
+    update_consolidation,
 )
 from .review_coverage import (
     coverage_advice,
@@ -107,6 +108,7 @@ from .review_snapshot import (
     render_design_round_context,
     render_round_context,
     render_withheld,
+    same_base,
     snapshot_stamp,
     withheld_lines,
     withholds,

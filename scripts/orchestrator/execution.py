@@ -610,7 +610,7 @@ def terminate_tree(proc: subprocess.Popen, grace: float = KILL_GRACE_SECONDS) ->
     return _end_tree(proc.pid, grace, exited, kill)
 
 
-def kill_tree(pid: int, grace: float = KILL_GRACE_SECONDS) -> bool:
+def kill_tree(pid: int, grace: float = KILL_GRACE_SECONDS, verified: bool = True) -> bool:
     """:func:`terminate_tree` for a process known only by its pid, such as a
     detached worker. True once it is confirmed gone, not when it was signalled.
 
@@ -622,9 +622,16 @@ def kill_tree(pid: int, grace: float = KILL_GRACE_SECONDS) -> bool:
     the group it led still has members (checked immediately before each
     signal). Anything else is more likely a reused pid than our worker, and is
     left alone (False).
+
+    ``verified`` is whether the caller confirmed the pid is still the process
+    it means. An unverified pid is signalled only where the check above can
+    stand in for that: on Windows it is left alone (False), as taskkill /T /F
+    would end whatever tree has the pid by now.
     """
     if not pid_alive(pid):
         return True
+    if IS_WINDOWS and not verified:
+        return False
     if not IS_WINDOWS:
         try:
             if os.getpgid(pid) != pid:

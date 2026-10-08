@@ -13,7 +13,7 @@ import os
 import threading
 import time
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from unittest import mock
 
 from helpers import IsolatedCase
@@ -431,7 +431,7 @@ class TestConcurrentTriage(IsolatedCase):
     def setUp(self):
         super().setUp()
         self.workspace = self.cli_workspace()
-        findings = [
+        self.findings = findings = [
             {
                 "reviewer": "r1",
                 "severity": "high",
@@ -479,6 +479,84 @@ class TestConcurrentTriage(IsolatedCase):
         self.assertEqual(codes, [0] * self.FINDINGS)
         data = ws.read_json(self.workspace.consolidated_json_path, {})
         self.assertEqual(sorted(f["id"] for f in review_mod.accepted_findings(data)), sorted(ids))
+
+    def test_a_decision_made_while_a_round_is_consolidated_is_kept(self):
+        """The round reads the last report's triage, then builds and saves a
+        new one. A triage landing in between was written over."""
+        findings = [dict(f) for f in self.findings]
+        real = review_mod.build_consolidation
+        built = threading.Event()
+
+        def slow(*args, **kwargs):
+            data = real(*args, **kwargs)
+            # The old triage is read by now; the save is still to come.
+            built.set()
+            time.sleep(0.3)
+            return data
+
+        codes = {}
+        errors = []
+
+        def run(name, argv, command):
+            try:
+                codes[name] = command(cli.build_parser().parse_args(argv))
+            except Exception as exc:  # collected and reported after the join
+                errors.append(exc)
+
+        consolidate = threading.Thread(
+            target=run, args=("consolidate", ["review", "consolidate"], cli_review.cmd_review_consolidate)
+        )
+        triage = threading.Thread(
+            target=run,
+            args=("triage", ["review", "triage", "F1", "--status", "accepted"], cli_review.cmd_review_triage),
+        )
+        with (
+            mock.patch.object(review_mod, "read_reports", lambda *args, **kwargs: (findings, [])),
+            mock.patch.object(review_mod, "build_consolidation", slow),
+            redirect_stdout(io.StringIO()),
+            redirect_stderr(io.StringIO()),
+        ):
+            consolidate.start()
+            self.assertTrue(built.wait(timeout=30))
+            triage.start()
+            for thread in (consolidate, triage):
+                thread.join(timeout=30)
+        self.assertFalse(consolidate.is_alive() or triage.is_alive(), "a call hung on the lock")
+
+        self.assertEqual(errors, [])
+        self.assertEqual(codes, {"consolidate": 0, "triage": 0})
+        data = ws.read_json(self.workspace.consolidated_json_path, {})
+        self.assertEqual(len(data["findings"]), self.FINDINGS)
+        self.assertEqual([f["id"] for f in review_mod.accepted_findings(data)], ["F1"])
+
+    def test_no_writer_can_save_over_a_report_it_did_not_read_under_the_lock(self):
+        """The lock is taken where the report is owned, so a caller cannot
+        forget it: an update waits for one in progress."""
+        from orchestrator import review_consolidation
+
+        order = []
+        inside = threading.Event()
+
+        def first(data):
+            inside.set()
+            time.sleep(0.3)
+            order.append("first")
+            return review_mod.set_triage(data, "F1", "accepted")
+
+        def second(data):
+            order.append("second")
+            return review_mod.set_triage(data, "F2", "rejected")
+
+        one = threading.Thread(target=review_consolidation.update_consolidation, args=(self.workspace, first))
+        one.start()
+        self.assertTrue(inside.wait(timeout=30))
+        review_consolidation.update_consolidation(self.workspace, second)
+        one.join(timeout=30)
+        self.assertFalse(one.is_alive())
+        self.assertEqual(order, ["first", "second"])
+        data = ws.read_json(self.workspace.consolidated_json_path, {})
+        self.assertEqual({f["id"]: f["triage"] for f in data["findings"]}["F1"], "accepted")
+        self.assertEqual({f["id"]: f["triage"] for f in data["findings"]}["F2"], "rejected")
 
 
 if __name__ == "__main__":

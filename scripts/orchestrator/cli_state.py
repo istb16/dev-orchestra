@@ -94,7 +94,8 @@ def cmd_jobs_cancel(args: argparse.Namespace) -> int:
         _err("no such job: %s" % args.job_id)
         return 2
     _out(jobs_mod.render(job))
-    return 0
+    # The worker may still be running, so the job was left unfinished.
+    return 1 if job.get("not_stopped") else 0
 
 
 def cmd_budget_show(args: argparse.Namespace) -> int:

@@ -6,7 +6,7 @@ import argparse
 import hashlib
 import os
 import time
-from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple, Union, cast
 
 from . import activity
 from . import approval as approval_mod
@@ -484,9 +484,11 @@ def _save_skipped_round(
     workspace: ws.Workspace, iteration: int, lineage: str, round_id: Optional[str]
 ) -> int:
     """Record a round with no panel against the freeze it occupies. Exits 0."""
-    with ws.file_lock(workspace.consolidated_json_path):
-        data = review_mod.build_consolidation(workspace, [], [], iteration, lineage, completed_round=round_id)
-        review_mod.save_consolidation(workspace, data)
+
+    def skipped(_: Dict[str, Any]) -> Dict[str, Any]:
+        return review_mod.build_consolidation(workspace, [], [], iteration, lineage, completed_round=round_id)
+
+    review_mod.update_consolidation(workspace, skipped)
     return 0
 
 
@@ -686,12 +688,13 @@ def _consolidate_round(
     """
     ids = [str(r.get("id")) for r in panel if str(r.get("id")) not in excluded]
     findings, stale = review_mod.read_reports(workspace, ids, review_mod.current_snapshot_stamp(workspace))
+
     # The last report is read for its table and its triage, both inside the
     # lock ``review triage`` takes, so a decision made while the round was
     # being built is carried rather than written over.
-    with ws.file_lock(workspace.consolidated_json_path):
+    def rebuilt(previous: Dict[str, Any]) -> Dict[str, Any]:
         if run_dicts is None:
-            entries = (ws.read_json(workspace.consolidated_json_path, {}) or {}).get("reviewers", [])
+            entries = previous.get("reviewers", [])
         else:
             entries = _merge_runs(workspace, run_dicts)
         data = review_mod.build_consolidation(
@@ -705,8 +708,9 @@ def _consolidate_round(
         )
         if amend is not None:
             amend(data)
-        review_mod.save_consolidation(workspace, data)
-    return data, stale
+        return data
+
+    return cast(Dict[str, Any], review_mod.update_consolidation(workspace, rebuilt)), stale
 
 
 def _round_detail(
@@ -1296,19 +1300,24 @@ def _ensure_snapshot(
     base is a different change (see ``review_lineage``), so the round that
     follows counts from one, as it does after ``review snapshot --base``.
     Without ``--base`` the snapshot on disk is kept, whatever it was taken
-    against, and so is one taken against the commit ``--base`` names: a
-    snapshot taken with no base was taken against HEAD, and ``--base HEAD``
-    retaking it restarted the round count for the same change.
+    against, and so is one taken against the commit ``--base`` names (see
+    ``review_mod.same_base``): a snapshot taken with no base was taken against
+    the commit HEAD was at, and ``--base HEAD`` retaking it restarted the
+    round count for the same change.
     """
     retake = False
     if os.path.isfile(workspace.snapshot_path) and args.base:
-        taken = workspace.read_snapshot_meta().get("base") or None
-        retake = not _same_base(workspace.root, taken, args.base)
+        meta = workspace.read_snapshot_meta()
+        retake = not review_mod.same_base(workspace.root, meta, args.base)
         if retake:
+            # With the commit: `HEAD` then and `HEAD` now can be two bases.
+            taken = str(meta.get("base") or "HEAD")
+            commit = str(meta.get("base_commit") or "")
+            if commit:
+                taken += " at %s" % commit[:12]
             _err(
                 "note: retaking the snapshot against --base %s (the one on disk was taken against %s); "
-                "`review snapshot --base %s` takes it with other options"
-                % (args.base, taken or "HEAD", args.base)
+                "`review snapshot --base %s` takes it with other options" % (args.base, taken, args.base)
             )
     if retake or not os.path.isfile(workspace.snapshot_path):
         try:
@@ -1323,24 +1332,6 @@ def _ensure_snapshot(
             _err(str(exc))
             return 2
     return None
-
-
-def _same_base(root: str, taken: Optional[str], wanted: str) -> bool:
-    """Whether a snapshot taken against ``taken`` is one against ``wanted``.
-
-    No base means HEAD. Two names are the same base when they name the same
-    commit; a name git cannot resolve is compared as written.
-    """
-    taken = taken or "HEAD"
-    if taken == wanted:
-        return True
-    commits = [_commit_of(root, name) for name in (taken, wanted)]
-    return bool(commits[0]) and commits[0] == commits[1]
-
-
-def _commit_of(root: str, name: str) -> str:
-    code, out, _ = ws.git(["rev-parse", "--verify", "--quiet", "%s^{commit}" % name], root)
-    return out.strip() if code == 0 else ""
 
 
 class _GatedPanel(NamedTuple):
@@ -1770,21 +1761,25 @@ def cmd_review_show(args: argparse.Namespace) -> int:
 
 def cmd_review_triage(args: argparse.Namespace) -> int:
     workspace = _review_workspace(args)
+
     # Read inside the lock: two triage calls run side by side each read the
     # report, set their own decision and wrote it back, and the second write
     # dropped the first decision while both printed success.
-    with ws.file_lock(workspace.consolidated_json_path):
-        data = ws.read_json(workspace.consolidated_json_path, {}) or {}
+    def triaged(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         if not data:
-            _no_review_yet(args)
-            return 2
-        try:
-            for finding_id in args.ids:
-                review_mod.set_triage(data, finding_id, args.status, args.note or "")
-        except review_mod.ReviewError as exc:
-            _err(str(exc))
-            return 2
-        review_mod.save_consolidation(workspace, data)
+            return None
+        for finding_id in args.ids:
+            review_mod.set_triage(data, finding_id, args.status, args.note or "")
+        return data
+
+    try:
+        saved = review_mod.update_consolidation(workspace, triaged)
+    except review_mod.ReviewError as exc:
+        _err(str(exc))
+        return 2
+    if saved is None:
+        _no_review_yet(args)
+        return 2
     _out("Triaged %s as %s" % (", ".join(args.ids), args.status))
     return 0
 
