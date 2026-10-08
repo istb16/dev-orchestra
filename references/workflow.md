@@ -753,7 +753,11 @@ install into a single repository's `.claude/skills/` instead of globally; that
 path is also added to the target repo's `.git/info/exclude`, so the nested
 checkout never appears in *their* `git status` and never gets committed
 (without it, `git add -A` there fails with "does not have a commit checked
-out").
+out"). The entry goes in under a `# added by dev-orchestra install --claude`
+comment, and the uninstaller removes it only when that comment is right above
+it. An entry already there without the comment, from an installer older than
+the comment or written by hand, is not added again and is left in place by
+the uninstaller, which names it so that you can remove it yourself.
 
 A re-run, and the uninstaller, replace only what the installer made: a link
 to this checkout, or a copy, which carries a `.dev-orchestra-install` file. A
@@ -783,6 +787,15 @@ pointer block to `AGENTS.md` referencing this checkout:
 
 `skills/dev-orchestra/SKILL.md` stays the single source of truth — the pointer
 references it rather than duplicating it.
+
+A re-run replaces the block, and `uninstall --codex` removes it; the rest of
+`AGENTS.md` keeps its text, its line endings and a UTF-8 BOM if it has one.
+A file whose last line has no newline gets the block on a line of its own,
+and the block then ends without a newline, so that uninstalling gives the
+file back as it was. `install.ps1` reads and writes it as UTF-8 in Windows
+PowerShell 5.1 as in PowerShell 7, and leaves a file that is not UTF-8
+untouched -- UTF-16 and UTF-32 included, and text in another encoding after
+a UTF-8 BOM -- with a note to save it as UTF-8 first.
 
 **Antigravity:** the installer links this checkout into Antigravity's plugins
 folder. The root `plugin.json` is what makes the directory a plugin, and

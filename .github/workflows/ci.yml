@@ -66,7 +66,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        python-version: ["3.11", "3.12"]
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -83,7 +83,101 @@ jobs:
         # hide them and refuse to start one themselves (tests/cli_guard), so
         # that holds whatever the runner image has installed.
         # The runner is the same discover, one test class per worker process.
+        # On Windows, tests/test_installers.py runs the .ps1 installers under
+        # both pwsh and Windows PowerShell 5.1.
         run: python tests/run_parallel.py -v
+
+  installers-windows:
+    # The test suite leaves sh out on Windows, and runs the .ps1 installers
+    # only from Python. This runs each installer the way a user would, in
+    # Git Bash, pwsh and Windows PowerShell 5.1, over an AGENTS.md with
+    # Japanese text in it (#292, #294).
+    name: Installers on Windows (${{ matrix.shell }})
+    runs-on: windows-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        shell: [bash, pwsh, powershell]
+    defaults:
+      run:
+        shell: ${{ matrix.shell }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Installers are idempotent and leave AGENTS.md as it was (Git Bash)
+        if: matrix.shell == 'bash'
+        run: |
+          set -eu
+          tmp=$(cygpath -u "$RUNNER_TEMP")
+          proj="$tmp/proj"
+          mkdir -p "$proj/.git/info"
+          # Japanese text, in octal escapes to keep this file ASCII.
+          printf '# \351\226\213\347\231\272\n\346\227\245\346\234\254\n' > "$proj/AGENTS.md"
+          cp "$proj/AGENTS.md" "$tmp/AGENTS.md.orig"
+          ./install/install.sh --project "$proj"
+          ./install/install.sh --project "$proj"
+          test -f "$proj/.claude/skills/dev-orchestra/skills/dev-orchestra/SKILL.md"
+          # Git Bash's ln -s copies; the installer replaces that with the payload.
+          test ! -e "$proj/.claude/skills/dev-orchestra/.git"
+          test "$(grep -cxF '/.claude/skills/dev-orchestra' "$proj/.git/info/exclude")" -eq 1
+          ./install/install.sh --codex --project "$proj"
+          ./install/install.sh --codex --project "$proj"
+          test "$(grep -c 'BEGIN dev-orchestra' "$proj/AGENTS.md")" -eq 1
+          ./install/uninstall.sh --project "$proj"
+          ./install/uninstall.sh --codex --project "$proj"
+          test ! -e "$proj/.claude/skills/dev-orchestra"
+          test "$(grep -c 'dev-orchestra' "$proj/.git/info/exclude" || true)" -eq 0
+          cmp "$proj/AGENTS.md" "$tmp/AGENTS.md.orig"
+          ./install/install.sh --antigravity --project "$proj"
+          ./install/install.sh --antigravity --project "$proj"
+          test -e "$proj/.agents/plugins/dev-orchestra/skills/dev-orchestra/SKILL.md"
+          ./install/uninstall.sh --antigravity --project "$proj"
+          test ! -e "$proj/.agents/plugins/dev-orchestra"
+      - name: Installers are idempotent and leave AGENTS.md as it was (PowerShell)
+        if: matrix.shell != 'bash'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # The PowerShell running this step: pwsh, or Windows PowerShell 5.1.
+          $exe = (Get-Process -Id $PID).Path
+          function Invoke-Installer {
+              param([string]$Name)
+              & $exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ".\install\$Name.ps1" @args
+              if ($LASTEXITCODE -ne 0) { throw "$Name.ps1 $args exited $LASTEXITCODE" }
+          }
+          function Assert-True {
+              param([bool]$Condition, [string]$Message)
+              if (-not $Condition) { throw $Message }
+          }
+          $proj = Join-Path $env:RUNNER_TEMP 'proj'
+          New-Item -ItemType Directory -Force -Path (Join-Path $proj '.git\info') | Out-Null
+          $agents = Join-Path $proj 'AGENTS.md'
+          $exclude = Join-Path $proj '.git\info\exclude'
+          # Japanese text, built from code points to keep this file ASCII.
+          $text = '# ' + [char]0x958B + [char]0x767A + "`n" + [char]0x65E5 + [char]0x672C + "`n"
+          $original = (New-Object System.Text.UTF8Encoding($false)).GetBytes($text)
+          [System.IO.File]::WriteAllBytes($agents, $original)
+
+          Invoke-Installer install -Project $proj
+          Invoke-Installer install -Project $proj
+          Assert-True (Test-Path -LiteralPath (Join-Path $proj '.claude\skills\dev-orchestra\skills\dev-orchestra\SKILL.md')) 'Claude install missing'
+          $lines = @([System.IO.File]::ReadAllLines($exclude) | Where-Object { $_ -eq '/.claude/skills/dev-orchestra' })
+          Assert-True ($lines.Count -eq 1) "exclude entry written $($lines.Count) times"
+          Invoke-Installer install -Codex -Project $proj
+          Invoke-Installer install -Codex -Project $proj
+          $blocks = @([System.IO.File]::ReadAllLines($agents) | Where-Object { $_ -like '*BEGIN dev-orchestra*' })
+          Assert-True ($blocks.Count -eq 1) "pointer block written $($blocks.Count) times"
+          Invoke-Installer uninstall -Project $proj
+          Invoke-Installer uninstall -Codex -Project $proj
+          Assert-True (-not (Test-Path -LiteralPath (Join-Path $proj '.claude\skills\dev-orchestra'))) 'Claude install left behind'
+          Assert-True (-not ([System.IO.File]::ReadAllText($exclude) -like '*dev-orchestra*')) 'exclude entry left behind'
+          $after = [System.IO.File]::ReadAllBytes($agents)
+          Assert-True ([Convert]::ToBase64String($after) -eq [Convert]::ToBase64String($original)) 'AGENTS.md changed by the round trip'
+
+          Invoke-Installer install -Antigravity -Project $proj
+          Invoke-Installer install -Antigravity -Project $proj
+          Assert-True (Test-Path -LiteralPath (Join-Path $proj '.agents\plugins\dev-orchestra\skills\dev-orchestra\SKILL.md')) 'Antigravity install missing'
+          Invoke-Installer uninstall -Antigravity -Project $proj
+          Assert-True (-not (Test-Path -LiteralPath (Join-Path $proj '.agents\plugins\dev-orchestra'))) 'Antigravity install left behind'
 
   validate-skill:
     name: Skill validation

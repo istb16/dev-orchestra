@@ -264,6 +264,12 @@ checks the Claude manifests against the host's own schema.
   adapter.
 
 CI runs lint, the test suite, and skill validation on Linux, macOS and Windows.
+The tests run on Python 3.11 through 3.14. On Windows, a separate job runs
+each installer by hand in Git Bash, PowerShell 7 and Windows PowerShell 5.1,
+over an `AGENTS.md` with Japanese text in it; the test suite itself runs the
+`.ps1` installers under both PowerShells but leaves Git Bash's `sh` out. If
+you change an installer on Windows, `sh install/install.sh` in Git Bash is
+worth a try too.
 
 ## Commit messages
 
