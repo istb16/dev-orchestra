@@ -188,10 +188,14 @@ else
   if [ -f "$agents_file" ] && grep -qF "$begin" "$agents_file"; then
     tmp="$agents_file.tmp.$$"
     # BINMODE: Git Bash's awk would otherwise drop the CR of every CRLF line.
-    awk -v BINMODE=3 -v b="$begin" -v e="$end" '
+    # The result ends with a newline only when the file did (eol).
+    eol=1
+    if [ -s "$agents_file" ] && [ -n "$(tail -c 1 "$agents_file")" ]; then eol=0; fi
+    awk -v BINMODE=3 -v b="$begin" -v e="$end" -v eol="$eol" '
       index($0, b) { skip = 1 }
-      !skip { print }
+      !skip { printf "%s%s", sep, $0; sep = "\n" }
       index($0, e) { skip = 0 }
+      END { if (eol && sep != "") printf "\n" }
     ' "$agents_file" > "$tmp"
     mv "$tmp" "$agents_file"
     printf 'Removed the pointer block from %s\n' "$agents_file"

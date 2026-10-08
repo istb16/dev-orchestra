@@ -222,14 +222,16 @@ below begins **User adapters** so adapter authors can find it.
 - **`install.ps1 -Codex` and `uninstall.ps1 -Codex` no longer garble a
   non-ASCII `AGENTS.md` in Windows PowerShell 5.1.** It read the file in the
   ANSI code page and wrote it back as UTF-8 with a BOM, so Japanese text came
-  out as mojibake. Both scripts now read and write `AGENTS.md` as UTF-8
-  without a BOM in either PowerShell, and keep the rest of the file's text
-  and line endings; PowerShell 7 no longer turns LF endings into CRLF
-  either. A file that is not UTF-8 is left untouched, and the run exits 1
-  and says to save it as UTF-8. `.git/info/exclude` is read the same way, so
-  a non-ASCII pattern there survives an install too. `install.sh` no longer
-  runs the block into a last line that has no newline, and under Git Bash a
-  re-run or `uninstall.sh` no longer turns CRLF endings into LF (#292).
+  out as mojibake. Both scripts now read and write `AGENTS.md` as UTF-8 in
+  either PowerShell, and keep the rest of the file's text, its line endings
+  and a UTF-8 BOM if it has one; PowerShell 7 no longer turns LF endings
+  into CRLF either. A file that is not UTF-8 (UTF-16 or UTF-32 included, or
+  other text behind a UTF-8 BOM) is left untouched, and the run exits 1 and
+  says to save it as UTF-8. `.git/info/exclude` is read the same way, so a
+  non-ASCII pattern there survives an install too. A last line without a
+  newline no longer runs into the block or gains a newline after an
+  uninstall, in `install.sh` as in `install.ps1`, and under Git Bash a re-run
+  or `uninstall.sh` no longer turns CRLF endings into LF (#292).
 
 - **`uninstall --project` removes the `.git/info/exclude` line that the Claude
   Code install added.** The install wrote `/.claude/skills/dev-orchestra`

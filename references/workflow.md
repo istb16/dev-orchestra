@@ -789,10 +789,13 @@ pointer block to `AGENTS.md` referencing this checkout:
 references it rather than duplicating it.
 
 A re-run replaces the block, and `uninstall --codex` removes it; the rest of
-`AGENTS.md` keeps its text and its line endings. `install.ps1` reads and
-writes it as UTF-8 without a BOM in Windows PowerShell 5.1 as in PowerShell 7,
-and leaves a file that is not UTF-8 untouched, with a note to save it as UTF-8
-first.
+`AGENTS.md` keeps its text, its line endings and a UTF-8 BOM if it has one.
+A file whose last line has no newline gets the block on a line of its own,
+and the block then ends without a newline, so that uninstalling gives the
+file back as it was. `install.ps1` reads and writes it as UTF-8 in Windows
+PowerShell 5.1 as in PowerShell 7, and leaves a file that is not UTF-8
+untouched -- UTF-16 and UTF-32 included, and text in another encoding after
+a UTF-8 BOM -- with a note to save it as UTF-8 first.
 
 **Antigravity:** the installer links this checkout into Antigravity's plugins
 folder. The root `plugin.json` is what makes the directory a plugin, and

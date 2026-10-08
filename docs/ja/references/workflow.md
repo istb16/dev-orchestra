@@ -1,4 +1,4 @@
-<!-- translated-from: references/workflow.md sha256:e1b3585d62a82b41006795fbf6fb952a49d4f5ba01adf8b06efa6adeb3303342 -->
+<!-- translated-from: references/workflow.md sha256:d10f3ca4f2ef3a8816e911811b431727e4684cfa6749879ee31b68b9591f6350 -->
 
 > この文書は [references/workflow.md](../../../references/workflow.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -804,9 +804,12 @@ Git Bash は MSYS 形式のパス（`/c/...`）を書き込み、ネイティブ
 だけで、内容を複製しません。
 
 再実行するとブロックを置き換え、`uninstall --codex` で取り除きます。`AGENTS.md` の
-それ以外の部分は、文字も改行コードもそのまま残します。`install.ps1` は
-Windows PowerShell 5.1 でも PowerShell 7 でも、BOM なしの UTF-8 として読み書きします。
-UTF-8 でないファイルには手を付けず、先に UTF-8 で保存し直すよう表示します。
+それ以外の部分は、文字も改行コードも、UTF-8 の BOM があればそれも、そのまま残します。
+最後の行に改行がないファイルでは、ブロックを別の行から始め、ブロックの終わりにも改行を
+付けません。そのため、アンインストールすると元のファイルに戻ります。`install.ps1` は
+Windows PowerShell 5.1 でも PowerShell 7 でも、UTF-8 として読み書きします。
+UTF-8 でないファイル（UTF-16 や UTF-32、UTF-8 の BOM のあとが別の文字コードのものも
+含みます）には手を付けず、先に UTF-8 で保存し直すよう表示します。
 
 **Antigravity:** インストーラはこのチェックアウトを Antigravity の plugins フォルダに
 リンクします。ディレクトリを Plugin にするのはルートの `plugin.json` で、その下の

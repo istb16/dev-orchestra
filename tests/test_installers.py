@@ -759,6 +759,23 @@ class TestClaudeInstallers(_InstallerCase):
                 self.assertNotIn(b"\r", written)
                 self.assertIn(CLAUDE_ENTRY, written.decode("utf-8").splitlines())
 
+    def test_powershell_leaves_an_exclude_file_that_is_not_utf8_alone(self):
+        """The install still succeeds; the exclude line is left to the user."""
+        for shell in [s for s in SHELLS if not s.posix]:
+            for label, original in NOT_UTF8:
+                with self.subTest(shell=shell.name, encoding=label):
+                    project = self.git_project(self.fresh(shell, "exclude-" + label))
+                    exclude = os.path.join(project, ".git", "info", "exclude")
+                    with open(exclude, "wb") as handle:
+                        handle.write(original)
+                    for action in ("install", "uninstall"):
+                        code, output = self.claude(shell, action, project, copy=action == "install")
+                        self.assertEqual(code, 0, output)
+                        # Windows PowerShell wraps a warning at the console width.
+                        self.assertIn("is not UTF-8", " ".join(output.split()))
+                        with open(exclude, "rb") as handle:
+                            self.assertEqual(handle.read(), original, action)
+
     def test_a_copy_carries_the_sentinel(self):
         for shell in SHELLS:
             with self.subTest(shell=shell.name):
@@ -944,6 +961,14 @@ class TestClaudeInstallers(_InstallerCase):
 
 BEGIN = "<!-- BEGIN dev-orchestra -->"
 END = "<!-- END dev-orchestra -->"
+#: Files the PowerShell installers must leave as they are, by label.
+NOT_UTF8 = (
+    ("cp932", "# 開発ルール\n".encode("cp932")),
+    ("bom-cp932", codecs.BOM_UTF8 + "# 開発ルール\n".encode("cp932")),
+    ("utf-16", "# 開発ルール\n".encode("utf-16")),
+    ("utf-16-le", "# 開発ルール\n".encode("utf-16-le")),
+    ("utf-32", "# 開発ルール\n".encode("utf-32")),
+)
 #: Text that Windows PowerShell's Get-Content, reading in the ANSI code page,
 #: garbled, and that its `-Encoding utf8` then wrote back with a BOM (#292).
 JAPANESE = "# 開発ルール\n日本語の説明\n"
@@ -991,19 +1016,43 @@ class TestCodexInstallers(_InstallerCase):
                     self.assertIn("Removed the pointer block", output)
                     self.assertEqual(self.read_bytes(agents), original)
 
-    def test_a_last_line_without_a_newline_keeps_its_text(self):
+    def test_a_last_line_without_a_newline_stays_without_one(self):
+        """The block goes on a line of its own, ends without a newline in
+        turn, and the round trip gives back the file as it was."""
         for shell in SHELLS:
             with self.subTest(shell=shell.name):
                 project = self.fresh(shell, "no-eol")
                 agents = os.path.join(project, "AGENTS.md")
-                self.write_bytes(agents, "最後の行".encode())
-                code, output = self.codex(shell, "install", project)
-                self.assertEqual(code, 0, output)
-                lines = self.read_bytes(agents).decode("utf-8").splitlines()
-                self.assertEqual(lines[:2], ["最後の行", BEGIN], lines)
+                original = "a\n最後の行".encode()
+                self.write_bytes(agents, original)
+                for _ in range(2):
+                    code, output = self.codex(shell, "install", project)
+                    self.assertEqual(code, 0, output)
+                written = self.read_bytes(agents)
+                lines = written.decode("utf-8").splitlines()
+                self.assertEqual(lines[:3], ["a", "最後の行", BEGIN], lines)
+                self.assertEqual(lines.count(BEGIN), 1, lines)
+                self.assertTrue(written.endswith(END.encode()), written[-40:])
                 code, output = self.codex(shell, "uninstall", project)
                 self.assertEqual(code, 0, output)
-                self.assertEqual(self.read_bytes(agents).decode("utf-8").splitlines(), ["最後の行"])
+                self.assertEqual(self.read_bytes(agents), original)
+
+    def test_a_utf8_bom_is_kept(self):
+        for shell in SHELLS:
+            with self.subTest(shell=shell.name):
+                project = self.fresh(shell, "bom")
+                agents = os.path.join(project, "AGENTS.md")
+                original = codecs.BOM_UTF8 + JAPANESE.encode()
+                self.write_bytes(agents, original)
+                for _ in range(2):
+                    code, output = self.codex(shell, "install", project)
+                    self.assertEqual(code, 0, output)
+                written = self.read_bytes(agents)
+                self.assertTrue(written.startswith(original), written[:40])
+                self.assertEqual(written.count(codecs.BOM_UTF8), 1, written[:40])
+                code, output = self.codex(shell, "uninstall", project)
+                self.assertEqual(code, 0, output)
+                self.assertEqual(self.read_bytes(agents), original)
 
     def test_a_new_agents_md_has_no_bom(self):
         for shell in SHELLS:
@@ -1048,18 +1097,20 @@ class TestCodexInstallers(_InstallerCase):
                 self.assertFalse(os.path.exists(os.path.join(self.home, ".codex")), output)
 
     def test_powershell_leaves_a_file_that_is_not_utf8_alone(self):
-        """Rewriting it would replace every byte it cannot read."""
+        """Rewriting it would replace every byte it cannot read, or turn it
+        into UTF-8. A UTF-8 BOM in front does not make it UTF-8, and UTF-16
+        is what Windows PowerShell's `>` writes."""
         for shell in [s for s in SHELLS if not s.posix]:
-            with self.subTest(shell=shell.name):
-                project = self.fresh(shell, "cp932")
-                agents = os.path.join(project, "AGENTS.md")
-                original = "# 開発ルール\n".encode("cp932")
-                self.write_bytes(agents, original)
-                for action in ("install", "uninstall"):
-                    code, output = self.codex(shell, action, project)
-                    self.assertEqual(code, 1, output)
-                    self.assertIn("is not UTF-8", output)
-                    self.assertEqual(self.read_bytes(agents), original, action)
+            for label, original in NOT_UTF8:
+                with self.subTest(shell=shell.name, encoding=label):
+                    project = self.fresh(shell, "not-utf8-" + label)
+                    agents = os.path.join(project, "AGENTS.md")
+                    self.write_bytes(agents, original)
+                    for action in ("install", "uninstall"):
+                        code, output = self.codex(shell, action, project)
+                        self.assertEqual(code, 1, output)
+                        self.assertIn("is not UTF-8", output)
+                        self.assertEqual(self.read_bytes(agents), original, action)
 
 
 POSIX_SHELLS = [shell for shell in SHELLS if shell.posix]

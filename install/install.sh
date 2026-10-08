@@ -252,16 +252,23 @@ install_codex() {
   # BINMODE: Git Bash's awk would otherwise drop the CR of every CRLF line.
   if grep -qF "$begin" "$agents_file" 2>/dev/null; then
     tmp="$agents_file.tmp.$$"
-    awk -v BINMODE=3 -v b="$begin" -v e="$end" '
+    # The result ends with a newline only when the file did (eol).
+    eol=1
+    if [ -s "$agents_file" ] && [ -n "$(tail -c 1 "$agents_file")" ]; then eol=0; fi
+    awk -v BINMODE=3 -v b="$begin" -v e="$end" -v eol="$eol" '
       index($0, b) { skip = 1 }
-      !skip { print }
+      !skip { printf "%s%s", sep, $0; sep = "\n" }
       index($0, e) { skip = 0 }
+      END { if (eol && sep != "") printf "\n" }
     ' "$agents_file" > "$tmp"
     mv "$tmp" "$agents_file"
   fi
-  # A last line without a newline would otherwise run into the block.
+  # A last line without a newline would otherwise run into the block. The
+  # block then ends without one, so that the file still ends the way it did.
+  open_end=0
   if [ -s "$agents_file" ] && [ -n "$(tail -c 1 "$agents_file")" ]; then
     printf '\n' >> "$agents_file"
+    open_end=1
   fi
 
   {
@@ -274,7 +281,8 @@ install_codex() {
     printf 'Its helper CLI is:\n\n'
     printf '    %s %s/scripts/dev_orchestra.py <command>\n\n' "$python_cmd" "$root"
     printf 'That file is the single source of truth; do not rely on a copy of it.\n'
-    printf '%s\n' "$end"
+    printf '%s' "$end"
+    [ "$open_end" -eq 1 ] || printf '\n'
   } >> "$agents_file"
 
   printf 'Added the pointer block to %s\n' "$agents_file"
