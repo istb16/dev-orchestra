@@ -623,6 +623,15 @@ class Provider:
                 isinstance(value, list) and all(isinstance(item, str) for item in value)
             ):
                 problems.append("options.args must be a list of strings")
+            elif key == "idle_timeout" and value is not None and not execution.is_seconds(value):
+                # Checked for every adapter that takes it, because `run` and
+                # `review run` hand it on as it is: 0 or a negative stalled
+                # every run at once, `true` was one second, and a string ended
+                # `run` on a traceback.
+                problems.append(
+                    "options.idle_timeout must be a number of seconds above 0 and at most %d, or null"
+                    % execution.MAX_SECONDS
+                )
         return problems
 
     @staticmethod
@@ -1277,8 +1286,11 @@ class Provider:
         """
         if not self.streams_progress:
             return None
-        if isinstance(options, dict) and options.get("idle_timeout") is not None:
-            return float(options["idle_timeout"])
+        configured = options.get("idle_timeout") if isinstance(options, dict) else None
+        # A value `validate_options` refuses is ignored rather than trusted:
+        # an adapter can be called with options nothing validated.
+        if configured is not None and execution.is_seconds(configured):
+            return float(configured)
         return requested
 
     def activity_of(self, line: str, cwd: str) -> activity.Activity:

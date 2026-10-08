@@ -361,9 +361,9 @@ stall in minutes rather than at the total deadline. It applies to Claude only:
 the Codex and agy adapters claim no progress stream (agy reports tool activity,
 but is silent while its model thinks; see `references/providers.md`), and it is
 ignored there rather than guessed at.
-Both take a number of seconds above zero, `--timeout` a whole one; `0`, a
-negative, `nan`, `inf` or a word is a usage error (exit 2) before anything is
-spent, where `0` used to fall back to the configured deadline and a negative
+Both take a number of seconds above zero and at most 1,000,000,000,
+`--timeout` a whole one; `0`, a negative, `nan`, `inf`, a larger number or a
+word is a usage error (exit 2) before anything is spent, where `0` used to fall back to the configured deadline and a negative
 one stalled the run at once. `review run` checks its own two the same way.
 
 `--output` writes the run's stdout only when the run succeeded and printed
@@ -678,7 +678,7 @@ that: the work runs elsewhere and the wait has a deadline of your own.
 | --- | --- |
 | `jobs list [--json]` | Every recorded job, newest first. |
 | `jobs show <id> [--output] [--since <n>] [--activity <m>] [--json]` | One job, optionally with its output, and what it is doing (below). |
-| `jobs wait <id> [--timeout <s>] [--poll <s>] [--since <n>] [--activity <m>] [--json]` | Wait, but never longer than `--timeout` (60s default; `0` looks once), checking every `--poll` seconds (1 by default; above 0). A negative, `nan`, `inf` or a word in either is a usage error (exit 2). Exits 4 if the job was still running when the wait ended — a normal outcome, not an error. Exits 1 if the job refused its `--output` write, as the foreground run would. |
+| `jobs wait <id> [--timeout <s>] [--poll <s>] [--since <n>] [--activity <m>] [--json]` | Wait, but never longer than `--timeout` (60s default; `0` looks once), checking every `--poll` seconds (1 by default; above 0). Both are at most 1,000,000,000; a negative, `nan`, `inf`, a larger number or a word in either is a usage error (exit 2). Exits 4 if the job was still running when the wait ended — a normal outcome, not an error. Exits 1 if the job refused its `--output` write, as the foreground run would. |
 | `jobs cancel <id>` | Stop a running job and its process tree. |
 
 ```bash

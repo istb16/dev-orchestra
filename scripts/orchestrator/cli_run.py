@@ -632,11 +632,11 @@ def _run_once(
         _fail_job(args, str(exc))
         _err(str(exc))
         return None
-    except Exception as exc:
+    except BaseException as exc:
         # Anything else raised before the provider had a result to hand
-        # back -- the bug still surfaces, but the in-flight entry is closed
-        # and the job failed first, so the next command does not report
-        # this run as abandoned or still running.
+        # back, Ctrl+C included -- it still surfaces, but the in-flight entry
+        # is closed and the job failed first, so the next command does not
+        # report this run as abandoned or still running.
         error = redact("%s: %s" % (type(exc).__name__, exc))
         book.end(token, "failed", {"error": error})
         _fail_job(args, error)

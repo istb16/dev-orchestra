@@ -116,13 +116,16 @@ below begins **User adapters** so adapter authors can find it.
   `jobs wait --poll` took anything: `0` or a negative stalled a run at once
   after spending its attempt, `--timeout 0` quietly meant the configured
   deadline, `--poll -1` ended `jobs wait` on a traceback and `--poll 0`
-  spun for the whole wait. They are now a usage error (exit 2), as are `nan` and `inf`; `jobs wait
-  --timeout 0` still looks once. A Claude role's `options.idle_timeout` is
-  held to the same rule by `config validate`, where `0`, `true` or `"abc"`
-  used to pass and `"abc"` ended `run` on a traceback that left its
-  in-flight entry open. Should a run still raise before the provider hands
-  back a result, the entry is ended as failed, and a detached job failed,
-  before the error surfaces (#272).
+  spun for the whole wait. They are now a usage error (exit 2), as are
+  `nan`, `inf` and anything over 1,000,000,000 seconds, which ended on an
+  overflow; `jobs wait --timeout 0` still looks once. `options.idle_timeout`
+  is held to the same rule by `config validate` for every adapter that takes
+  it, where `0`, `true` or `"abc"` used to pass and `"abc"` ended `run` on a
+  traceback that left its in-flight entry open, and the deadlines in the
+  configuration file get the same upper limit. Should a run still raise
+  before the provider hands back a result, Ctrl+C included, the entry is
+  ended as failed, and a detached job failed, before the error surfaces
+  (#272).
 
 - **A UTF-8 prompt piped to `run` is no longer read as cp932 on a Japanese
   Windows.** `--prompt-file -` and a bare pipe read stdin in the encoding

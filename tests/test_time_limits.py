@@ -17,9 +17,10 @@ from typing import Tuple
 
 from helpers import IsolatedCase
 
-from orchestrator import cli
+from orchestrator import cli, execution
 from orchestrator import config as config_mod
 from orchestrator import ledger as ledger_mod
+from orchestrator.providers.base import Provider
 from orchestrator.providers.claude import ClaudeProvider
 
 
@@ -73,6 +74,23 @@ class TestTheArgumentsAreChecked(IsolatedCase):
             with self.subTest(timeout=value):
                 self.assert_refused("jobs", "wait", "j1", "--timeout", value)
 
+    def test_a_number_too_large_to_wait_for_is_a_usage_error(self):
+        """A 400-digit deadline was an OverflowError, and 1e22 one in ``time.sleep``."""
+        huge = "9" * 400
+        for argv in (
+            ("run", "implementer", "--timeout", huge),
+            ("run", "implementer", "--idle-timeout", huge),
+            ("review", "run", "--timeout", "1000000001"),
+            ("jobs", "wait", "j1", "--timeout", "1e22"),
+            ("jobs", "wait", "j1", "--poll", "1e22"),
+        ):
+            with self.subTest(argv=argv[:-1]):
+                code, err = refusal(*argv)
+                self.assertEqual(code, 2)
+                self.assertIn(str(execution.MAX_SECONDS), err)
+                self.assertNotIn(huge, err)
+        self.assertEqual(parse("run", "implementer", "--timeout", str(execution.MAX_SECONDS)).timeout, 10**9)
+
     def test_jobs_wait_may_look_once(self):
         args = parse("jobs", "wait", "j1", "--timeout", "0", "--poll", "0.25")
         self.assertEqual((args.timeout, args.poll), (0.0, 0.25))
@@ -81,7 +99,7 @@ class TestTheArgumentsAreChecked(IsolatedCase):
 class TestClaudeIdleTimeoutOption(IsolatedCase):
     def test_only_a_positive_number_or_null_is_valid(self):
         provider = ClaudeProvider()
-        for value in ("abc", 0, -5, True, False, float("nan"), float("inf"), [1]):
+        for value in ("abc", 0, -5, True, False, float("nan"), float("inf"), [1], 10**400, 1e22):
             with self.subTest(value=value):
                 problems = provider.validate_options({"idle_timeout": value})
                 self.assertTrue(any("options.idle_timeout" in p for p in problems), problems)
@@ -100,6 +118,34 @@ class TestClaudeIdleTimeoutOption(IsolatedCase):
         self.assertTrue(any("options.idle_timeout" in p for p in problems), problems)
 
 
+class Streaming(Provider):
+    """A user adapter that streams progress and takes ``idle_timeout``."""
+
+    name = "streamer"
+    executable = "streamer"
+    streams_progress = True
+    option_keys = ("args", "idle_timeout")
+
+
+class TestAnyAdapterTakingIdleTimeout(IsolatedCase):
+    """The check is the base adapter's, not Claude's alone."""
+
+    def test_a_user_adapter_gets_the_same_check(self):
+        provider = Streaming()
+        for value in ("abc", 0, -1, True, 10**400):
+            with self.subTest(value=value):
+                problems = provider.validate_options({"idle_timeout": value})
+                self.assertTrue(any("options.idle_timeout" in p for p in problems), problems)
+        self.assertEqual(provider.validate_options({"idle_timeout": 30}), [])
+
+    def test_an_unvalidated_value_is_ignored_rather_than_raised(self):
+        provider = Streaming()
+        for value in ("abc", 0, -1, True, 10**400):
+            with self.subTest(value=value):
+                self.assertEqual(provider.idle_timeout({"idle_timeout": value}, 300.0), 300.0)
+        self.assertEqual(provider.idle_timeout({"idle_timeout": 12}, 300.0), 12.0)
+
+
 class TestConfiguredDeadlinesAreChecked(IsolatedCase):
     def test_review_and_run_deadlines_must_be_positive_integers(self):
         cases = [
@@ -108,7 +154,7 @@ class TestConfiguredDeadlinesAreChecked(IsolatedCase):
             (("run", "timeout_seconds", "architect"), "run.timeout_seconds.architect"),
         ]
         for path, key in cases:
-            for value in (0, -1, True, "abc", 1.5):
+            for value in (0, -1, True, "abc", 1.5, 10**9 + 1, 10**400):
                 with self.subTest(key=key, value=value):
                     data = config_mod.default_config()
                     node = data
@@ -133,6 +179,24 @@ class TestAnUnexpectedErrorClosesTheRun(IsolatedCase):
 
         setattr(mock_mod.MockProvider, "run", broken)
         self.addCleanup(setattr, mock_mod.MockProvider, "run", original)
+
+    def test_an_interrupt_closes_the_entry_too(self):
+        from orchestrator.providers import mock as mock_mod
+
+        def interrupted(provider, *args, **kwargs):
+            raise KeyboardInterrupt
+
+        original = mock_mod.MockProvider.run
+        setattr(mock_mod.MockProvider, "run", interrupted)
+        self.addCleanup(setattr, mock_mod.MockProvider, "run", original)
+        code, _, err = run_cli("run", "implementer", "--prompt", "go")
+        self.assertEqual(code, 130)
+        self.assertIn("interrupted", err)
+        book = ledger_mod.Ledger(self.cli_workspace(), dict(ledger_mod.DEFAULT_BUDGETS))
+        self.assertEqual(book.summary()["in_flight"], {})
+        events = json.loads(run_cli("state", "show", "--json")[1])["events"]
+        self.assertEqual(events[-1]["status"], "failed")
+        self.assertIn("KeyboardInterrupt", events[-1]["error"])
 
     def test_the_in_flight_entry_is_ended_and_the_error_still_surfaces(self):
         with self.assertRaises(ValueError):

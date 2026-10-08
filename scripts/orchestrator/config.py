@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, NamedTuple, Optional, Sequenc
 
 from . import config_trust, miniyaml
 from . import optimization as opt_mod
+from .execution import MAX_SECONDS
 from .review_common import DEFAULT_EXCLUDE, SEVERITIES
 
 if TYPE_CHECKING:
@@ -1153,7 +1154,7 @@ def review_timeout(loaded: LoadedConfig) -> RunTimeout:
 
 def _timeout_at(loaded: LoadedConfig, key: List[str], fallback: int) -> RunTimeout:
     value = _get_parts(loaded.data, key, None)
-    if not _int_at_least(value, 1):
+    if not _whole_seconds(value):
         return RunTimeout(fallback, "default")
     for name, layer in (("project", loaded.project_layer), ("global", loaded.global_layer)):
         if _get_parts(layer, key, None) is not None:
@@ -1455,6 +1456,15 @@ def load(start: Optional[str] = None, validate_result: bool = True) -> LoadedCon
 # --------------------------------------------------------------------------- validation
 
 
+#: How a deadline too long to wait for is refused.
+_TOO_LONG = "must be %d or less" % MAX_SECONDS
+
+
+def _whole_seconds(value: Any) -> bool:
+    """A deadline in whole seconds: a positive int, not a bool, that a wait can hold."""
+    return _int_at_least(value, 1) and value <= MAX_SECONDS
+
+
 def _int_at_least(value: Any, minimum: int) -> bool:
     """An int, not a bool, and at least ``minimum``."""
     return isinstance(value, int) and not isinstance(value, bool) and value >= minimum
@@ -1712,6 +1722,8 @@ def _validate_run(run: Any) -> List[str]:
             )
         elif not _int_at_least(value, 1):
             problems.append("run.timeout_seconds.%s: must be a positive integer" % role)
+        elif not _whole_seconds(value):
+            problems.append("run.timeout_seconds.%s: %s" % (role, _TOO_LONG))
     return problems
 
 
@@ -1729,9 +1741,13 @@ def _validate_review(review: Any) -> List[str]:
     timeout = review.get("timeout_seconds", 1800)
     if not _int_at_least(timeout, 1):
         problems.append("review.timeout_seconds: must be a positive integer")
+    elif not _whole_seconds(timeout):
+        problems.append("review.timeout_seconds: %s" % _TOO_LONG)
     idle = review.get("idle_timeout_seconds")
     if idle is not None and not _int_at_least(idle, 1):
         problems.append("review.idle_timeout_seconds: must be a positive integer or null")
+    elif idle is not None and not _whole_seconds(idle):
+        problems.append("review.idle_timeout_seconds: %s" % _TOO_LONG)
     incremental = review.get("incremental_rounds")
     if incremental is not None and not isinstance(incremental, bool):
         problems.append("review.incremental_rounds: must be true or false")

@@ -14,7 +14,6 @@ import codecs
 import copy
 import hashlib
 import json
-import math
 import os
 import re
 import sys
@@ -23,7 +22,7 @@ from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tu
 
 from . import activity as activity_mod
 from . import approval as approval_mod
-from . import claude_hooks, hosts, miniyaml
+from . import claude_hooks, execution, hosts, miniyaml
 from . import config as config_mod
 from . import context as context_mod
 from . import doctor as doctor_mod
@@ -245,9 +244,10 @@ def _bounded_int(low: int, high: int) -> Callable[[str], int]:
 
 def _seconds(*, whole: bool = False, allow_zero: bool = False) -> Callable[[str], float]:
     """An argparse type: a finite number of seconds, above zero unless
-    ``allow_zero``; a whole one when ``whole``. Anything else -- a word, a
-    negative, ``nan``, ``inf`` -- is a usage error (exit 2), where it used to
-    reach a deadline that fired at once, never fired, or a traceback."""
+    ``allow_zero``, at most ``execution.MAX_SECONDS``; a whole one when
+    ``whole``. Anything else -- a word, a negative, ``nan``, ``inf``, a
+    number too large to wait for -- is a usage error (exit 2), where it used
+    to reach a deadline that fired at once, never fired, or a traceback."""
 
     def parse(text: str) -> float:
         try:
@@ -255,9 +255,10 @@ def _seconds(*, whole: bool = False, allow_zero: bool = False) -> Callable[[str]
         except ValueError:
             kind = "a whole number of seconds" if whole else "a number of seconds"
             raise argparse.ArgumentTypeError("%r is not %s" % (text, kind)) from None
-        if not math.isfinite(value) or value < 0 or (value == 0 and not allow_zero):
-            floor = "0 or more" if allow_zero else "more than 0"
-            raise argparse.ArgumentTypeError("%s seconds: must be %s" % (text, floor))
+        if not execution.is_seconds(value, allow_zero=allow_zero):
+            rule = "from 0 to %d" if allow_zero else "above 0 and at most %d"
+            shown = text if len(text) <= 40 else text[:37] + "..."
+            raise argparse.ArgumentTypeError("%s seconds: must be %s" % (shown, rule % execution.MAX_SECONDS))
         return value
 
     return parse
