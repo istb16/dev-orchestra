@@ -95,19 +95,22 @@ and logins just work. The skill stores no credentials and reads none.
 project/
 ├── .dev-orchestra.yaml         # optional per-project override
 └── .ai/                          # working artifacts (self-ignoring)
-    ├── plan.md                   # Architect output
-    ├── execution/                # prompts you wrote, fix brief, role outputs
-    ├── reviews/
-    │   ├── review-target.diff    # the frozen snapshot every reviewer sees
-    │   ├── review-target.json    # strategy, files, sha256
-    │   ├── review-surrounding.json  # enclosing symbols, only with review.context.surrounding: enclosing
-    │   ├── <reviewer-id>.md      # one report per reviewer
-    │   ├── consolidated.md       # deduped findings, human readable
-    │   ├── consolidated.json     # deduped findings + triage state
-    │   ├── rounds/               # consolidated.json of every round, kept after the next
-    │   └── design/               # the same files for the design review, so
-    │                             # its rounds and triage stay its own
-    └── state.json                # stage events with resolved model ids
+    ├── current.json              # the workflow this directory last resolved
+    └── workflows/<id>/           # one per workflow (`workflow show`)
+        ├── plan.md               # Architect output
+        ├── execution/            # prompts you wrote, fix brief, role outputs
+        ├── jobs/                 # detached runs
+        ├── reviews/
+        │   ├── review-target.diff    # the frozen snapshot every reviewer sees
+        │   ├── review-target.json    # strategy, files, sha256
+        │   ├── review-surrounding.json  # enclosing symbols, only with review.context.surrounding: enclosing
+        │   ├── <reviewer-id>.md      # one report per reviewer
+        │   ├── consolidated.md       # deduped findings, human readable
+        │   ├── consolidated.json     # deduped findings + triage state
+        │   ├── rounds/               # consolidated.json of every round, kept after the next
+        │   └── design/               # the same files for the design review, so
+        │                             # its rounds and triage stay its own
+        └── state.json            # stage events with resolved model ids
 ```
 
 `consolidated.json` is the hand-off between stages: `review run` writes it,

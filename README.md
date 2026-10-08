@@ -160,7 +160,8 @@ stage yourself, these are the commands the orchestrator issues underneath
 ([workflow](references/workflow.md) explains each one):
 
 ```bash
-dev-orchestra run architect --prompt-file .ai/request.md --output .ai/plan.md
+# request.md: the design request you wrote (outside .ai/, a path is used as written)
+dev-orchestra run architect --prompt-file request.md --output .ai/plan.md
 dev-orchestra design approve            # after you have read the plan
 dev-orchestra run implementer --prompt-file .ai/plan.md
 # run the project's own tests, then record the outcome

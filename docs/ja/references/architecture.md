@@ -1,4 +1,4 @@
-<!-- translated-from: references/architecture.md sha256:4141d076514326b1d1dca4abe19d110e5aab5aa02f40dd7a2a48ed5c9128f473 -->
+<!-- translated-from: references/architecture.md sha256:fec31ae02d8e4732ce836d31a0df59759f8d7e781e2d4af11e97d3ca9d9ceb12 -->
 
 > この文書は [references/architecture.md](../../../references/architecture.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -93,19 +93,22 @@ provider レイヤーより上のコードは、`claude` が `--model` を使い
 project/
 ├── .dev-orchestra.yaml         # optional per-project override
 └── .ai/                          # working artifacts (self-ignoring)
-    ├── plan.md                   # Architect output
-    ├── execution/                # prompts you wrote, fix brief, role outputs
-    ├── reviews/
-    │   ├── review-target.diff    # the frozen snapshot every reviewer sees
-    │   ├── review-target.json    # strategy, files, sha256
-    │   ├── review-surrounding.json  # enclosing symbols, only with review.context.surrounding: enclosing
-    │   ├── <reviewer-id>.md      # one report per reviewer
-    │   ├── consolidated.md       # deduped findings, human readable
-    │   ├── consolidated.json     # deduped findings + triage state
-    │   ├── rounds/               # consolidated.json of every round, kept after the next
-    │   └── design/               # the same files for the design review, so
-    │                             # its rounds and triage stay its own
-    └── state.json                # stage events with resolved model ids
+    ├── current.json              # the workflow this directory last resolved
+    └── workflows/<id>/           # one per workflow (`workflow show`)
+        ├── plan.md               # Architect output
+        ├── execution/            # prompts you wrote, fix brief, role outputs
+        ├── jobs/                 # detached runs
+        ├── reviews/
+        │   ├── review-target.diff    # the frozen snapshot every reviewer sees
+        │   ├── review-target.json    # strategy, files, sha256
+        │   ├── review-surrounding.json  # enclosing symbols, only with review.context.surrounding: enclosing
+        │   ├── <reviewer-id>.md      # one report per reviewer
+        │   ├── consolidated.md       # deduped findings, human readable
+        │   ├── consolidated.json     # deduped findings + triage state
+        │   ├── rounds/               # consolidated.json of every round, kept after the next
+        │   └── design/               # the same files for the design review, so
+        │                             # its rounds and triage stay its own
+        └── state.json            # stage events with resolved model ids
 ```
 
 `consolidated.json` はステージ間の受け渡しに使われます。`review run` がこれを書き出し、トリアージがこれに注記を加え、`review fix-brief` がこれを読み込み、`review status` がもう 1 ラウンド必要かどうかを判断します。

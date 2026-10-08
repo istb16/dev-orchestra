@@ -1178,7 +1178,12 @@ round counter. The id is resolved per command, in order, from `--workflow`,
 
 A path written against the container is resolved inside the workflow:
 `--output .ai/plan.md` means the plan of *this* workflow. Paths outside `.ai/`,
-and paths that already name a workflow, are used as written.
+and paths that already name a workflow, are used as written. Only arguments
+are resolved: a file written by hand or a shell redirect goes where its path
+says, so put those under `workflow show`'s `Artifacts:` directory (`dir` in
+`--json`), for example `review run --progress >
+<Artifacts>/execution/review-run.log 2>&1`. A `--prompt-file` whose resolved
+path is missing but which exists as written says so in the error.
 
 This separates the artifacts, not the working tree: one checkout has one set of
 files, and the reviewers read `git diff` of it. For work that really runs at

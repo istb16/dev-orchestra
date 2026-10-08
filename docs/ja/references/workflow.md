@@ -1,4 +1,4 @@
-<!-- translated-from: references/workflow.md sha256:8326ca1e20d720823003191ad0c3c501fba6d0282c5c22f63770b3942542723b -->
+<!-- translated-from: references/workflow.md sha256:d8ef0a34de971de98195409592360d9da48548d31b8a2ee5c7c083f88ad9f787 -->
 
 > この文書は [references/workflow.md](../../../references/workflow.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -114,6 +114,15 @@ id はコマンドごとに、次の順で解決されます。
 .ai/plan.md` は *このワークフローの plan* を意味し、そのディレクトリに保存されます。
 `.ai/` の外のパスや、すでにワークフローを指定しているパスは、書かれたとおりに使われます。
 
+こう読み替えるのはコマンドの引数だけです。自分で書くファイル（`--prompt-file` で渡す依頼）や
+シェルのリダイレクトは、パスのとおりの場所に書かれます。そのため、`workflow show` が `Artifacts:`
+として表示するディレクトリ（`--json` では `dir`）の下に書いてください。依頼は
+`<Artifacts>/execution/design-request.md` に書き、`--prompt-file
+.ai/execution/design-request.md` を渡せば、そのファイルに解決されます。バックグラウンドの
+レビューのログは `review run --progress > <Artifacts>/execution/review-run.log 2>&1` です。
+`.ai/execution/` そのものに書いた依頼は読まれません。`run` はファイルが無いと言い、解決した先の
+パスを示し、書かれたとおりの場所にファイルがあることも伝えます。
+
 **分離されるのは記録であって、作業ではありません。** implementer は作業ツリーを編集し、
 レビュアーはその同じツリーの `git diff` を読みます。そしてそれはチェックアウトごとに
 1 つしかありません。ここで同時に実行されている 2 つのワークフローは、依然として
@@ -129,7 +138,10 @@ git worktree add ../feature-x feature-x
 ディレクトリが分かれていることで誤解を招かないよう、その旨を伝えます。
 
 0.4.0 より前に書かれたフラットな `.ai/`（`.ai/` の直下にある `plan.md`、`state.json`、
-`execution/`、`reviews/`、`jobs/`）は、もう取り込みません。ワークフローを使うコマンドはすべて
+`execution/`、`reviews/`、`jobs/`）は、もう取り込みません。`execution/` だけがある場合は
+古い形とはみなしません。そこにあったのはオーケストレーターが書いたプロンプトとログだけで、今でも
+`.ai/execution/` に依頼を書くとできるものだからです。ほかの項目と一緒にあれば、それらと並べて
+挙げます。ワークフローを使うコマンドはすべて
 実行を断り（exit 2）、見つかった項目を挙げて、どうすればよいかを伝えます。別の場所へ移すか
 削除するか、先にそのチェックアウトで dev-orchestra 0.20.0 を一度実行してワークフローに
 取り込ませてください。ただし、そのワークフローに同じ名前のファイルがすでにあれば 0.20.0 はそれを
@@ -250,6 +262,9 @@ architect は、できるときは plan を設計したセッションを継続�
 並べることを求めます。記録されたラウンドでは、再レビューで新たに出た high の指摘の多くが修正版
 自身の追加したものから出ていたので、再レビューはその一覧に向けられます。
 
+テンプレートの `<Artifacts>` は `workflow show` が表示するディレクトリです。architect は
+ファイルを置かれた場所のまま読み、`.ai/plan.md` が読み替えられるのはコマンドの引数のときだけです。
+
 `design-revise-request.md` は新規に走る場合のものです（brief だけではプロンプトになりません）。
 
 ```markdown
@@ -257,9 +272,9 @@ architect は、できるときは plan を設計したセッションを継続�
 
 <the original design request, unchanged>
 
-Read .ai/plan.md and revise it. Keep every section it already has.
+Read <Artifacts>/plan.md and revise it. Keep every section it already has.
 
-<paste .ai/execution/design-fix-brief.md here>
+<paste <Artifacts>/execution/design-fix-brief.md here>
 
 For each finding: say whether you addressed it and how, or why it is not a
 problem. Do not widen the scope beyond the original request.
@@ -283,12 +298,12 @@ stdout. Do not write it to a file: this role runs in plan mode.
 # Revise the plan
 
 You are continuing the session in which you designed this plan. Read
-.ai/plan.md once before changing anything: it is the plan you printed, as
+<Artifacts>/plan.md once before changing anything: it is the plan you printed, as
 saved by the orchestrator, and the findings below refer to its sections.
 Do not re-read code you already read unless a finding contradicts what you
 remember.
 
-<paste .ai/execution/design-fix-brief.md here>
+<paste <Artifacts>/execution/design-fix-brief.md here>
 
 For each finding: say whether you addressed it and how, or why it is not a
 problem. Do not widen the scope beyond the original request.
@@ -392,7 +407,7 @@ approve` で記録します。自分の判断で記録したり、拒否を回�
 
 <the original design request, unchanged>
 
-Read .ai/plan.md and revise it. Keep every section it already has.
+Read <Artifacts>/plan.md and revise it. Keep every section it already has.
 
 The owner reviewed the plan and asked for these changes, in their words:
 
@@ -418,7 +433,7 @@ stdout. Do not write it to a file: this role runs in plan mode.
 # Revise the plan
 
 You are continuing the session in which you designed this plan. Read
-.ai/plan.md once before changing anything: it is the plan you printed, as
+<Artifacts>/plan.md once before changing anything: it is the plan you printed, as
 saved by the orchestrator. Do not re-read code you already read unless a
 change below contradicts what you remember.
 

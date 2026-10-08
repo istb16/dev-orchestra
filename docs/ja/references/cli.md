@@ -1,4 +1,4 @@
-<!-- translated-from: references/cli.md sha256:06991b93beb0784a407e07f346e9adea3da8f68a472a9cf409f530d9e703debb -->
+<!-- translated-from: references/cli.md sha256:253c10508d32bd077d0c7666c6a4b610fe7dedce3a5b57941c1993cff195fd8e -->
 
 > この文書は [references/cli.md](../../../references/cli.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -1064,7 +1064,10 @@ dev-orchestra progress record test --signature "3 failed: test_totals, test_disc
 
 コンテナに対して書かれたパスはワークフローの中で解決されます。`--output .ai/plan.md` は *この*
 ワークフローの plan を意味します。`.ai/` の外のパスや、すでにワークフローを指定しているパスは、書かれた
-とおりに使われます。
+とおりに使われます。読み替えるのは引数だけです。自分で書くファイルやシェルのリダイレクトはパスのとおりの
+場所に書かれるので、`workflow show` の `Artifacts:` のディレクトリ（`--json` では `dir`）の下に置いて
+ください。たとえば `review run --progress > <Artifacts>/execution/review-run.log 2>&1` です。
+`--prompt-file` の解決した先に無く、書かれたとおりの場所にはあるときは、エラーがそのことを伝えます。
 
 これが分離するのは成果物であって、作業ツリーではありません。1 つのチェックアウトにはファイルの組が 1 つ
 しかなく、レビュアーはその `git diff` を読みます。本当に同時に実行される作業では、各ワークフローに独自の

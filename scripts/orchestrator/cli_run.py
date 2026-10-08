@@ -72,6 +72,21 @@ def _both_paths(written: str, resolved: Optional[str]) -> str:
     return "%s (resolved to %s)" % (written, resolved)
 
 
+def _written_outside(written: str, resolved: str) -> str:
+    """A hint when the file was written where ``.ai/`` stands, not in the workflow.
+
+    ``_in_workflow`` rewrites the argument, not the file: an orchestrator that
+    wrote ``.ai/execution/request.md`` itself put it beside the workflow
+    directories, where nothing reads it (#283).
+    """
+    if resolved == written or not os.path.isfile(written):
+        return ""
+    return (
+        "; a file is there as written, but a .ai/ path in an argument means this"
+        " workflow's directory: write the file at the resolved path"
+    )
+
+
 def _quoted(token: str) -> str:
     """``token`` as ``--print-command`` shows it: quoted when it has spaces,
     so an argument such as agy's ``-p`` value stays one argument."""
@@ -106,7 +121,7 @@ def _read_prompt_file(prompt_file: str, workspace: Optional[ws.Workspace] = None
     # are different mistakes.
     if not os.path.isfile(path):
         trouble = "does not exist" if not os.path.exists(path) else "is not a file"
-        raise SystemExit("prompt file %s: %s" % (trouble, named))
+        raise SystemExit("prompt file %s: %s%s" % (trouble, named, _written_outside(prompt_file, path)))
     try:
         with open(path, "r", encoding="utf-8", errors="replace") as handle:
             text = handle.read()

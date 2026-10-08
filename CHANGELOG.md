@@ -262,6 +262,21 @@ below begins **User adapters** so adapter authors can find it.
   `consolidated.md` such a value goes under its label, indented into the
   list item, so its fences no longer leave the list and swallow the rest of
   the document (#265).
+
+- **Files the orchestrator writes itself go where they are read, and a stray
+  `.ai/execution/` no longer stops every command.** The skill told the
+  orchestrator to redirect a background review to
+  `.ai/execution/review-run.log`, and said `.ai/` paths resolve inside the
+  workflow -- which is true of command arguments only, so a request or a log
+  it wrote itself landed beside the workflow directories, and `run` and
+  `status` then refused the checkout as a layout from before 0.4.0. The
+  skill and the references now say to write such files under `workflow
+  show`'s `Artifacts:` directory, and the revision templates, the analysis
+  example and the README name that place. A lone `execution/` is no longer
+  taken for the old layout (beside `plan.md`, `state.json`, `reviews/` or
+  `jobs/` it is still named), and a `--prompt-file` that is missing where it
+  resolves but present as written says so (#283).
+
 ## [0.22.0] - 2026-10-06
 
 ### Added

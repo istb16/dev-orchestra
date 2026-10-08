@@ -151,7 +151,8 @@ Codex の両方があれば、それが推奨構成です: architect が Claude 
 コマンドを使います（各コマンドの説明は [ワークフロー](docs/ja/references/workflow.md)、[英語版](references/workflow.md)）。
 
 ```bash
-dev-orchestra run architect --prompt-file .ai/request.md --output .ai/plan.md
+# request.md は自分で書いた設計の依頼（.ai/ の外のパスは書いたとおりに使われる）
+dev-orchestra run architect --prompt-file request.md --output .ai/plan.md
 dev-orchestra design approve            # after you have read the plan
 dev-orchestra run implementer --prompt-file .ai/plan.md
 # プロジェクトのテストを走らせ、結果を記録する
