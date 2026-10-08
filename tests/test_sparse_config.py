@@ -29,6 +29,7 @@ from helpers import REPO_ROOT, IsolatedCase, present
 
 from orchestrator import cli
 from orchestrator import config as config_mod
+from orchestrator import wizard as wizard_mod
 
 PROJECT_PANEL = [
     {
@@ -473,7 +474,7 @@ class TestSetupPassesTheLayerBase(IsolatedCase):
             seen["scope"] = scope
             return {"version": 1}, True
 
-        with mock.patch.object(cli.wizard_mod, "run", fake):
+        with mock.patch.object(wizard_mod, "run", fake):
             code, _, _ = run_cli(*argv)
         self.assertEqual(code, 0)
         return seen["base"]

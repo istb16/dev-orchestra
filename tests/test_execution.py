@@ -1296,18 +1296,53 @@ class TestPidLiveness(IsolatedCase):
         # on POSIX terminate_tree signals the whole group, and a child sharing
         # the runner's group kills the test run itself.
         proc = subprocess.Popen(python_code(SILENT_HANG), **execution._spawn_kwargs())
+        # A handle of our own keeps the pid from being handed to another
+        # process once Popen lets go of its own, and makes this the case that
+        # matters: a dead process someone still holds open.
+        pinned = _pin_process(proc.pid)
         try:
             self.assertTrue(execution.pid_alive(proc.pid))
+            started = execution.process_started(proc.pid)
             execution.terminate_tree(proc)
             proc.wait(timeout=30)
-            self.assertFalse(execution.pid_alive(proc.pid))
+            # The bug was an answer that stayed True; a busy Windows runner has
+            # also been seen to answer True once, right after the wait. Asked
+            # again for a few seconds, the first is still caught.
+            deadline = time.monotonic() + 5
+            while execution.pid_alive(proc.pid) and time.monotonic() < deadline:
+                time.sleep(0.1)
+            alive = execution.pid_alive(proc.pid)
+            self.assertFalse(
+                alive and execution.process_started(proc.pid) in (started, None),
+                "pid %d still alive: started %r, now %r, pinned=%r"
+                % (proc.pid, started, execution.process_started(proc.pid), pinned),
+            )
         finally:
+            _unpin_process(pinned)
             if proc.poll() is None:  # pragma: no cover - safety net
                 proc.kill()
 
     def test_an_impossible_pid_is_not_alive(self):
         self.assertFalse(execution.pid_alive(-1))
         self.assertFalse(execution.pid_alive(0))
+
+
+def _pin_process(pid: int) -> Optional[int]:
+    """A handle to ``pid`` on Windows, so that its pid is not reused; None elsewhere."""
+    if os.name != "nt":
+        return None
+    import ctypes
+
+    SYNCHRONIZE = 0x00100000
+    handle = ctypes.windll.kernel32.OpenProcess(SYNCHRONIZE, False, pid)
+    return handle or None
+
+
+def _unpin_process(handle: Optional[int]) -> None:
+    if handle:
+        import ctypes
+
+        ctypes.windll.kernel32.CloseHandle(handle)
 
 
 class TestOutcomeReporting(IsolatedCase):

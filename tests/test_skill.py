@@ -978,11 +978,13 @@ class TestImportLayering(IsolatedCase):
             cli_run: ("_detached_argv",),
             optimization_render: rendered,
         }
+        # cli.py holds the parser and main() only: a name it re-exported would
+        # invite a test to patch it there, where nothing looks it up (#289).
         for home, names in homes.items():
             for name in names:
-                self.assertIs(getattr(cli, name), getattr(home, name), name)
+                self.assertFalse(hasattr(cli, name), name)
                 self.assertEqual(getattr(home, name).__module__, home.__name__, name)
-        # Constants carry no __module__, so only where cli finds them is checked.
+        # Constants carry no __module__, so only that their home holds them is checked.
         constants = (
             "_OPT_ROW",
             "_SCORECARD_OUTCOMES",
@@ -994,8 +996,10 @@ class TestImportLayering(IsolatedCase):
             "_SCORECARD_TOTAL",
         )
         for name in constants:
-            self.assertIs(getattr(cli, name), getattr(optimization_render, name), name)
-        self.assertIs(cli._REFUSAL_CAUSE, cli_workflow._REFUSAL_CAUSE)
+            self.assertTrue(hasattr(optimization_render, name), name)
+            self.assertFalse(hasattr(cli, name), name)
+        self.assertTrue(hasattr(cli_workflow, "_REFUSAL_CAUSE"))
+        self.assertFalse(hasattr(cli, "_REFUSAL_CAUSE"))
         for name in ("_REFUSAL_CAUSE", "_detached_argv", *rendered, *constants):
             self.assertFalse(hasattr(cli_state, name), name)
         self.assertEqual(review_common.accepted_findings.__module__, "orchestrator.review_common")

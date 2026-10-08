@@ -16,7 +16,7 @@ from typing import Dict, List, Tuple
 
 from helpers import REPO_ROOT, USER_ADAPTER_SOURCE, IsolatedCase
 
-from orchestrator import cli, miniyaml
+from orchestrator import cli, cli_run, miniyaml
 from orchestrator.miniyaml import _parse_node, _read_lines
 
 JA_REFERENCES = pathlib.Path(REPO_ROOT) / "docs" / "ja" / "references"
@@ -137,10 +137,9 @@ class TestDocumentedYaml(IsolatedCase):
     def test_every_resume_fallback_reason_is_documented(self):
         """`resume.reason` is one of these phrases and nothing else, so the
         table a user reads it against has to list every one."""
-        from orchestrator import cli
 
         text = (pathlib.Path(REPO_ROOT) / "references" / "cli.md").read_text(encoding="utf-8")
-        for reason in cli._RESUME_REASONS:
+        for reason in cli_run._RESUME_REASONS:
             with self.subTest(reason=reason):
                 self.assertIn("| `%s` |" % reason, text)
 

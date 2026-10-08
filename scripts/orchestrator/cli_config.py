@@ -17,17 +17,14 @@ from . import optimization as opt_mod
 from . import presets as presets_mod
 from . import suggest as suggest_mod
 from . import wizard as wizard_mod
-from .cli_common import (
+from .cli_common import _emit_json, _err, _load_lenient, _out
+from .cli_config_layers import (
     _compose_preview,
-    _emit_json,
-    _err,
     _fitted_base,
     _global_file,
     _global_lists,
     _layer_path,
-    _load_lenient,
     _not_copied,
-    _out,
     _panel_write_problems,
     _prune_base,
     _read_layer,

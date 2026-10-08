@@ -33,7 +33,7 @@ from contextlib import redirect_stderr, redirect_stdout
 
 from helpers import IsolatedCase
 
-from orchestrator import cli, cli_run
+from orchestrator import cli, cli_common, cli_run
 from orchestrator import ledger as ledger_mod
 
 EM_DASH = "—"
@@ -75,7 +75,7 @@ class TestTheConsoleTolerance(unittest.TestCase):
         stream = cp932_stream()
         saved, sys.stdout = sys.stdout, stream
         try:
-            cli.tolerate_console_encoding()
+            cli_common.tolerate_console_encoding()
             self.assertEqual(stream.errors, "backslashreplace")
         finally:
             sys.stdout = saved
@@ -84,7 +84,7 @@ class TestTheConsoleTolerance(unittest.TestCase):
         stream = cp932_stream(errors="strict")
         saved, sys.stdout = sys.stdout, stream
         try:
-            cli.tolerate_console_encoding()
+            cli_common.tolerate_console_encoding()
             self.assertEqual(stream.errors, "backslashreplace")
         finally:
             sys.stdout = saved
@@ -95,8 +95,8 @@ class TestTheConsoleTolerance(unittest.TestCase):
         stream = cp932_stream()
         saved, sys.stdout = sys.stdout, stream
         try:
-            cli.tolerate_console_encoding()
-            cli._out("Fixed the parser %s cleanly" % EM_DASH)
+            cli_common.tolerate_console_encoding()
+            cli_common._out("Fixed the parser %s cleanly" % EM_DASH)
         finally:
             sys.stdout = saved
         stream.flush()
@@ -110,8 +110,8 @@ class TestTheConsoleTolerance(unittest.TestCase):
         stream = cp932_stream()
         saved, sys.stderr = sys.stderr, stream
         try:
-            cli.tolerate_console_encoding()
-            cli._err("config is broken %s check it" % EM_DASH)
+            cli_common.tolerate_console_encoding()
+            cli_common._err("config is broken %s check it" % EM_DASH)
         finally:
             sys.stderr = saved
         stream.flush()
@@ -121,7 +121,7 @@ class TestTheConsoleTolerance(unittest.TestCase):
         stream = io.TextIOWrapper(io.BytesIO(), encoding="cp932", errors="ignore")
         saved, sys.stdout = sys.stdout, stream
         try:
-            cli.tolerate_console_encoding()
+            cli_common.tolerate_console_encoding()
             self.assertEqual(stream.errors, "ignore")
         finally:
             sys.stdout = saved
@@ -130,7 +130,7 @@ class TestTheConsoleTolerance(unittest.TestCase):
         """Every test in this suite replaces stdout with a StringIO."""
         saved, sys.stdout = sys.stdout, io.StringIO()
         try:
-            cli.tolerate_console_encoding()  # must not raise
+            cli_common.tolerate_console_encoding()  # must not raise
         finally:
             sys.stdout = saved
 
@@ -138,9 +138,9 @@ class TestTheConsoleTolerance(unittest.TestCase):
         stream = io.TextIOWrapper(io.BytesIO(), encoding="utf-8", errors="surrogateescape")
         saved, sys.stdout = sys.stdout, stream
         try:
-            cli.tolerate_console_encoding()
+            cli_common.tolerate_console_encoding()
             self.assertEqual(stream.errors, "surrogateescape")
-            cli._out(EM_DASH)
+            cli_common._out(EM_DASH)
         finally:
             sys.stdout = saved
         stream.flush()
@@ -177,20 +177,20 @@ class TestAStreamThatCannotBeReconfigured(unittest.TestCase):
         saved = getattr(sys, attr)
         setattr(sys, attr, stream)
         try:
-            cli.tolerate_console_encoding()  # reaches nothing here
+            cli_common.tolerate_console_encoding()  # reaches nothing here
             emit("Fixed the parser %s cleanly" % EM_DASH)
         finally:
             setattr(sys, attr, saved)
         return "".join(stream.written)
 
     def test_stdout_keeps_the_message(self):
-        written = self.write_through("stdout", cli._out)
+        written = self.write_through("stdout", cli_common._out)
         self.assertIn("Fixed the parser", written)
         self.assertIn("cleanly", written)
         self.assertIn(ESCAPED_EM_DASH, written)
 
     def test_stderr_keeps_the_message(self):
-        self.assertIn("Fixed the parser", self.write_through("stderr", cli._err))
+        self.assertIn("Fixed the parser", self.write_through("stderr", cli_common._err))
 
 
 class TestEveryOutputPathOnACp932Console(IsolatedCase):

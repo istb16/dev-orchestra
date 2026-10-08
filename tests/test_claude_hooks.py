@@ -25,6 +25,7 @@ from helpers import REPO_ROOT, IsolatedCase, make_dir_link
 from orchestrator import claude_hooks as ch
 from orchestrator import cli, cli_hooks, doctor, hosts
 from orchestrator import config as config_mod
+from orchestrator import wizard as wizard_mod
 from orchestrator.execution import DELEGATED_ENV
 
 FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "reply_language")
@@ -1076,7 +1077,7 @@ class TestCommands(HooksCase):
             seen.update(kwargs, scope=scope)
             return {"version": 1, "language": {"reply": "ja"}}, True
 
-        with mock.patch.object(cli.wizard_mod, "run", fake_run):
+        with mock.patch.object(wizard_mod, "run", fake_run):
             code, out, err = run_cli("config", "setup", "--force", "--language", "JA")
         self.assertEqual(code, 0, err)
         self.assertEqual((seen["reply"], seen["scope"]), ("ja", "global"))
