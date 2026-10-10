@@ -920,13 +920,17 @@ class TestEndToEnd(GitCase):
         self.enable()
         name = "esc\x1b[31mred.py"
         try:
-            self.write(name, APP.replace("return a + b", "return a * b"))
+            self.write(name, APP)
         except OSError:
             self.skipTest("this file system refuses this name")
+        # Committed first: a file new to the diff has nothing around it to freeze.
+        self.commit_all("named")
+        self.write(name, APP.replace("return a + b", "return a * b"))
         code, out, _ = run_cli("review", "snapshot")
         self.assertEqual(code, 0, out)
         frozen = self.frozen()
-        self.assertIn(("esc\x1b[31mred.py", "add"), [(c["path"], c["symbol"]) for c in frozen["candidates"]])
+        # Read by its name on disk, recorded as it is shown.
+        self.assertIn(("esc\\x1b[31mred.py", "add"), [(c["path"], c["symbol"]) for c in frozen["candidates"]])
         self.assertNotIn("\x1b", json.dumps(frozen, ensure_ascii=False))
 
     def test_a_round_whose_every_reviewer_failed_first_is_not_a_round_with_context(self):

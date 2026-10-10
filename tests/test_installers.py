@@ -495,7 +495,15 @@ class TestAntigravityInstallers(_InstallerCase):
                         "[Console]::OpenStandardOutput().Write($b, 0, $b.Length)" % argument
                     )
                 echoed = subprocess.run(echo, capture_output=True, encoding="utf-8", timeout=60)
-                self.assertEqual(echoed.stdout, expected, echoed.stderr)
+                if shell.posix:
+                    self.assertEqual(echoed.stdout, expected, echoed.stderr)
+                else:
+                    # PowerShell writes the checkout by its long name; the temporary
+                    # directory may be given by its 8.3 one (RUNNER~1 on CI).
+                    self.assertTrue(
+                        same_path(echoed.stdout, expected),
+                        "%r != %r: %s" % (echoed.stdout, expected, echoed.stderr),
+                    )
 
     def test_the_codex_switch_does_not_combine_with_it(self):
         for shell in SHELLS:

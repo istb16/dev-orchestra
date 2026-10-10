@@ -196,7 +196,7 @@ class TestThePathSearch(_TempDir):
         relative = os.path.join("tools", "claude")
         with (
             mock.patch.object(execution, "IS_WINDOWS", True),
-            mock.patch.dict(os.environ, {"PATHEXT": ".EXE;.CMD"}),
+            mock.patch.dict(os.environ, {"PATHEXT": ".exe;.cmd"}),
         ):
             found = execution.find_program(relative)
             launch = execution.launchable([relative, "-p"])
@@ -233,7 +233,7 @@ class TestThePathSearch(_TempDir):
             with self.subTest(name=name):
                 with (
                     mock.patch.object(execution, "IS_WINDOWS", True),
-                    mock.patch.dict(os.environ, {"PATHEXT": ".EXE;.CMD"}),
+                    mock.patch.dict(os.environ, {"PATHEXT": ".exe;.cmd"}),
                 ):
                     found = execution.find_program(name)
                     launch = execution.launchable([name, "-p"])
