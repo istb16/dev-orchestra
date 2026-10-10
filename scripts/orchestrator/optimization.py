@@ -132,6 +132,15 @@ DEFAULT_HIGH_RISK_PATHS = (
     "*/.github/workflows/*",
 )
 
+#: The test results `state record` accepts for a test stage: a pass, then a
+#: failure. The gate reads anything it does not know as a failure as a pass,
+#: so nothing else may be recorded.
+TEST_STATUSES = ("ok", "failed")
+
+#: What the gate reads as a failure: the one recorded today, and the spellings
+#: a run log written before only :data:`TEST_STATUSES` could be recorded may hold.
+_FAILED_STATUSES = (TEST_STATUSES[1], "fail", "error", "red")
+
 #: What the gate does with each of the three recorded test states.
 GATE_REFUSE = "refuse"
 GATE_WARN = "warn"
@@ -886,7 +895,7 @@ class Plan:
         self.level = level
         #: One of GATE_REFUSE / GATE_WARN / GATE_ALLOW.
         self.gate = gate
-        #: "ok", "failed", or "" when nothing was ever recorded.
+        #: One of TEST_STATUSES, or "" when nothing was ever recorded.
         self.test_status = test_status
         self.max_findings = max_findings
         #: None means every configured reviewer runs.
@@ -1023,7 +1032,7 @@ def decide(
     level = at_least(requested, "quality") if hits else requested
 
     status = (test_status or "").strip().lower()
-    if status in ("failed", "fail", "error", "red"):
+    if status in _FAILED_STATUSES:
         gate = GATE_ALLOW if level == "quality" else GATE_REFUSE
     elif status:
         gate = GATE_ALLOW

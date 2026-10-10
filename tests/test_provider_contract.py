@@ -52,22 +52,11 @@ CALL = {
 }
 
 
-class _Outcome:
+class _Outcome(execution.ExecOutcome):
     """A finished child process, without there having been one."""
 
     def __init__(self):
-        self.exit_code = 0
-        self.stdout = "done"
-        self.stderr = ""
-        self.duration = 0.1
-        self.timed_out = False
-        self.stalled = False
-        self.idle_for = 0.0
-        self.orphans_possible = False
-
-    @property
-    def ok(self) -> bool:
-        return True
+        super().__init__(0, "done", "", 0.1)
 
 
 class TestEveryAdapterTakesTheWholeCall(IsolatedCase):
@@ -424,10 +413,6 @@ class _RejectedOutcome(_Outcome):
         self.exit_code = 1
         self.stdout = ""
         self.stderr = "No conversation found with session ID: %s" % SESSION
-
-    @property
-    def ok(self) -> bool:
-        return False
 
 
 class TestResumingThroughTheBase(IsolatedCase):

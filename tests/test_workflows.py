@@ -63,6 +63,48 @@ class TestTheId(unittest.TestCase):
         self.assertNotEqual(wf.new_id(), wf.new_id())
 
 
+class TestMayStillRun(unittest.TestCase):
+    """Whether a job blocks ``workflow remove``, with the clock given."""
+
+    STARTED = "2026-10-01T00:00:00Z"
+
+    def may_still_run(self, after=None, **job: Any) -> bool:
+        from orchestrator import jobs as jobs_mod
+
+        begun = datetime(2026, 10, 1, tzinfo=timezone.utc).timestamp()
+        return jobs_mod.may_still_run(job, now=None if after is None else begun + after)
+
+    def test_a_start_without_a_readable_time_does_not_block(self):
+        """No pid and no time to measure the grace from: nothing says a worker
+        is coming, so it is taken for a start that crashed."""
+        self.assertFalse(self.may_still_run(0, status="starting"))
+        self.assertFalse(self.may_still_run(0, status="starting", started_at=None))
+        self.assertFalse(self.may_still_run(0, status="starting", started_at="yesterday"))
+        self.assertFalse(self.may_still_run(0, status="starting", started_at="2026-10-01 00:00:00"))
+
+    def test_a_start_blocks_for_exactly_the_grace(self):
+        from orchestrator import jobs as jobs_mod
+
+        grace = jobs_mod.STARTING_GRACE_SECONDS
+        for after, expected in ((0, True), (grace - 1, True), (grace, False), (grace + 1, False)):
+            with self.subTest(after=after):
+                self.assertIs(self.may_still_run(after, status="starting", started_at=self.STARTED), expected)
+
+    def test_a_job_with_a_pid_blocks_however_old(self):
+        from orchestrator import jobs as jobs_mod
+
+        late = jobs_mod.STARTING_GRACE_SECONDS * 100
+        self.assertTrue(self.may_still_run(late, status="running", pid=4242, started_at=self.STARTED))
+        self.assertTrue(self.may_still_run(late, status="running", pid=4242))
+
+    def test_a_finished_job_never_blocks(self):
+        from orchestrator import jobs as jobs_mod
+
+        for status in sorted(jobs_mod.FINISHED):
+            with self.subTest(status=status):
+                self.assertFalse(self.may_still_run(0, status=status, pid=4242, started_at=self.STARTED))
+
+
 class TestResolution(IsolatedCase):
     def container(self):
         return os.path.join(self.project, ".ai")
@@ -699,13 +741,71 @@ class TestThroughTheCli(IsolatedCase):
         self.assertTrue(os.path.isdir(self.workflow_dir("w1")))
 
     def test_finished_and_abandoned_jobs_do_not_block_the_remove(self):
+        from unittest import mock
+
+        from orchestrator import execution
+
         run_cli("--workflow", "w1", "review", "snapshot")
         self.job("w1", "implementer-1", status="succeeded")
         # Its worker is gone: reconciled to abandoned, not counted as running.
-        self.job("w1", "implementer-2", pid=999_999)
+        self.job("w1", "implementer-2", pid=4242)
+        with mock.patch.object(execution, "pid_alive", lambda pid: False):
+            code, _, err = run_cli("--workflow", "w2", "workflow", "remove", "w1", "--yes")
+        self.assertEqual(code, 0, err)
+        self.assertFalse(os.path.isdir(self.workflow_dir("w1")))
+
+    def test_a_job_just_starting_blocks_the_remove(self):
+        """No pid is recorded until the spawn returns, moments later."""
+        run_cli("--workflow", "w1", "review", "snapshot")
+        self.job("w1", "implementer-1", status="starting", started_at=ws.utcnow())
+        code, _, err = run_cli("--workflow", "w2", "workflow", "remove", "w1", "--yes")
+        self.assertEqual(code, 2)
+        self.assertIn("a detached job has not finished there (implementer-1)", err)
+
+    def test_a_start_that_never_recorded_a_pid_stops_blocking_the_remove(self):
+        """A spawn that crashed part way leaves a job no worker will ever
+        finish; only --force could remove its workflow otherwise."""
+        from orchestrator import jobs as jobs_mod
+
+        run_cli("--workflow", "w1", "review", "snapshot")
+        long_ago = datetime.now(timezone.utc) - timedelta(seconds=jobs_mod.STARTING_GRACE_SECONDS + 60)
+        stamp = long_ago.strftime("%Y-%m-%dT%H:%M:%SZ")
+        self.job("w1", "implementer-1", status="starting", started_at=stamp)
         code, _, err = run_cli("--workflow", "w2", "workflow", "remove", "w1", "--yes")
         self.assertEqual(code, 0, err)
         self.assertFalse(os.path.isdir(self.workflow_dir("w1")))
+
+    def test_an_unreadable_job_file_does_not_block_the_remove(self):
+        """A record nothing can read names no worker to wait for."""
+        from orchestrator import jobs as jobs_mod
+
+        run_cli("--workflow", "w1", "review", "snapshot")
+        workspace = self.cli_workspace("w1")
+        os.makedirs(jobs_mod.jobs_dir(workspace), exist_ok=True)
+        with open(jobs_mod.job_path(workspace, "implementer-1"), "w", encoding="utf-8") as handle:
+            handle.write("{not json")
+        code, _, err = run_cli("--workflow", "w2", "workflow", "remove", "w1", "--yes")
+        self.assertEqual(code, 0, err)
+        self.assertFalse(os.path.isdir(self.workflow_dir("w1")))
+
+    def test_a_job_whose_cancel_did_not_stop_its_worker_still_blocks_the_remove(self):
+        """Its pid is alive and nothing says whose it is, so it may still write."""
+        from unittest import mock
+
+        from orchestrator import execution
+
+        run_cli("--workflow", "w1", "review", "snapshot")
+        self.job("w1", "implementer-1", pid=4242)
+        with (
+            mock.patch.object(execution, "pid_alive", lambda pid: True),
+            mock.patch.object(execution, "kill_tree", lambda pid, grace, verified: False),
+        ):
+            code, out, _ = run_cli("--workflow", "w1", "jobs", "cancel", "implementer-1")
+            self.assertEqual(code, 1)
+            self.assertIn("not cancelled", out)
+            code, _, err = run_cli("--workflow", "w2", "workflow", "remove", "w1", "--yes")
+        self.assertEqual(code, 2)
+        self.assertIn("a detached job has not finished there (implementer-1)", err)
 
     def test_force_removes_a_workflow_with_an_unfinished_job(self):
         run_cli("--workflow", "w1", "review", "snapshot")

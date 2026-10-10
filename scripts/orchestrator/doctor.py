@@ -261,11 +261,12 @@ def collect(start: Optional[str] = None, probe_models: bool = True) -> Dict[str,
     # is attempted. An ignored setting that would have changed nothing -- a
     # project `design.require_approval: true` over a required approval -- is
     # only a note: it is still left out, but --strict has nothing to fail on.
-    unchanged = [entry.line for entry in policy_mod.project_ignored(loaded) if not entry.loosens]
-    warnings = [line for line in policy_mod.read_only_arg_warnings(loaded) if line not in unchanged]
+    ignored = policy_mod.project_ignored(loaded)
+    warnings = policy_mod.read_only_arg_warnings(loaded)
+    warnings += [entry.line for entry in ignored if entry.loosens]
     report["config"]["warnings"] = warnings
     report["problems"].extend(warnings)
-    report["notes"].extend(unchanged)
+    report["notes"].extend(entry.line for entry in ignored if not entry.loosens)
     # A note, not a problem: an unknown key changes nothing, so --strict
     # passes a file it would have passed before such keys were reported.
     report["notes"].extend(config_mod.unknown_key_warnings(loaded.global_layer, loaded.project_layer))

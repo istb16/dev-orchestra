@@ -881,6 +881,22 @@ class TestRecordingATestResult(IsolatedCase):
                 self.assertIn("--detail %s=" % key, err)
         self.assertEqual(self.events(), [])
 
+    def test_no_caller_can_overwrite_the_event_itself(self):
+        """Refused where the entry is built, not only by `state record`."""
+        for key in ws.RESERVED_EVENT_FIELDS:
+            with self.subTest(key=key):
+                with self.assertRaises(ValueError):
+                    ws.new_event("test", "failed", {key: "ok"})
+                with self.assertRaises(ValueError):
+                    self.cli_workspace().record_event("test", "failed", {key: "ok"})
+        self.assertEqual(self.events(), [])
+
+    def test_every_recordable_result_is_one_the_gate_reads(self):
+        """A recorded failure refuses the review; a recorded pass lets it run."""
+        passed, failed = opt.TEST_STATUSES
+        self.assertEqual(decide(test_status=failed, level="balanced").gate, opt.GATE_REFUSE)
+        self.assertEqual(decide(test_status=passed, level="balanced").gate, opt.GATE_ALLOW)
+
     def test_a_detail_is_still_recorded_beside_the_result(self):
         code, _, _ = run_cli("state", "record", "test", "ok", "--detail", "phase=re-test", "passed=128")
         self.assertEqual(code, 0)
@@ -1531,6 +1547,12 @@ class TestPathScopedReviewersInThePipeline(IsolatedCase):
 # --------------------------------------------------------------------------- report
 
 
+def as_detail(event):
+    """``event`` without the entry's own fields, which ``record_event`` sets
+    from its arguments and refuses to take from a detail."""
+    return {key: value for key, value in event.items() if key not in ws.RESERVED_EVENT_FIELDS}
+
+
 def round_event(status="ok", reviewers=1, billed=1000, **plan):
     settings = {
         "requested_level": "balanced",
@@ -2020,7 +2042,7 @@ class TestTheReportCommand(IsolatedCase):
 
     def test_it_reads_the_run_log_rather_than_the_ledger(self):
         """`budget reset` clears the ledger; the question spans workflows."""
-        self.workspace.record_event("review", "ok", round_event(reviewers=2, billed=700))
+        self.workspace.record_event("review", "ok", as_detail(round_event(reviewers=2, billed=700)))
         run_cli("budget", "reset")
         report = json.loads(run_cli("optimization", "report", "--json")[1])
         self.assertEqual(report["billed_tokens"], 1400)
@@ -2032,9 +2054,9 @@ class TestTheReportCommand(IsolatedCase):
         reading the log instead of the ledger was meant to avoid."""
         from orchestrator import workspace as ws_mod
 
-        self.workspace.record_event("review", "ok", round_event(reviewers=1, billed=500))
+        self.workspace.record_event("review", "ok", as_detail(round_event(reviewers=1, billed=500)))
         other = ws_mod.Workspace(self.project, workflow="elsewhere").ensure()
-        other.record_event("review", "ok", round_event(reviewers=1, billed=700))
+        other.record_event("review", "ok", as_detail(round_event(reviewers=1, billed=700)))
         report = json.loads(run_cli("optimization", "report", "--json")[1])
         self.assertEqual(report["rounds"], 2)
         self.assertEqual(report["billed_tokens"], 1200)
@@ -2044,9 +2066,9 @@ class TestTheReportCommand(IsolatedCase):
         too; it is just not the one the bare command answers."""
         from orchestrator import workspace as ws_mod
 
-        self.workspace.record_event("review", "ok", round_event(reviewers=1, billed=500))
+        self.workspace.record_event("review", "ok", as_detail(round_event(reviewers=1, billed=500)))
         other = ws_mod.Workspace(self.project, workflow="elsewhere").ensure()
-        other.record_event("review", "ok", round_event(reviewers=1, billed=700))
+        other.record_event("review", "ok", as_detail(round_event(reviewers=1, billed=700)))
         report = json.loads(run_cli("--workflow", "elsewhere", "optimization", "report", "--json")[1])
         self.assertEqual(report["rounds"], 1)
         self.assertEqual(report["billed_tokens"], 700)
@@ -2056,18 +2078,20 @@ class TestTheReportCommand(IsolatedCase):
         self.assertIn(".ai", out)
 
     def test_the_refusal_notice_names_the_command_that_fixes_it(self):
-        self.workspace.record_event("review", "ok", round_event(test_status=""))
+        self.workspace.record_event("review", "ok", as_detail(round_event(test_status="")))
         _, out, _ = run_cli("optimization", "report")
         self.assertIn("state record test", out)
 
     def test_a_round_with_a_test_result_gets_no_notice(self):
-        self.workspace.record_event("review", "ok", round_event(test_status="ok"))
+        self.workspace.record_event("review", "ok", as_detail(round_event(test_status="ok")))
         _, out, _ = run_cli("optimization", "report")
         self.assertNotIn("state record test", out)
 
     def test_the_report_says_the_level_never_applied(self):
         for _ in range(2):
-            self.workspace.record_event("review", "ok", round_event(escalated=True, level="quality"))
+            self.workspace.record_event(
+                "review", "ok", as_detail(round_event(escalated=True, level="quality"))
+            )
         _, out, _ = run_cli("optimization", "report")
         self.assertIn("every round escalated", out)
         self.assertIn("never applied", out)
@@ -2078,28 +2102,32 @@ class TestTheReportCommand(IsolatedCase):
         hit = [{"path": "lib/providers/x.py", "pattern": "*/providers/*"}]
         event = round_event(escalated=True, level="quality", high_risk=hit)
         for _ in range(2):
-            self.workspace.record_event("review", "ok", event)
+            self.workspace.record_event("review", "ok", as_detail(event))
         _, out, _ = run_cli("optimization", "report")
         self.assertIn("*/providers/* x2", out)
         self.assertIn("optimization.high_risk_paths", out)
         self.assertIn("optimization.extra_high_risk_paths", out)
 
     def test_the_conditional_row_counts_added_left_out_and_declared(self):
-        self.workspace.record_event("review", "ok", round_event(conditional=[added()], declared=True))
-        self.workspace.record_event("review", "ok", round_event(conditional=[left_out()]))
+        self.workspace.record_event(
+            "review", "ok", as_detail(round_event(conditional=[added()], declared=True))
+        )
+        self.workspace.record_event("review", "ok", as_detail(round_event(conditional=[left_out()])))
         _, out, _ = run_cli("optimization", "report")
         self.assertIn("conditional reviewers", out)
         self.assertIn("added x1, left out x1, declared with --high-risk x1", out)
 
     def test_a_log_without_conditional_reviewers_gets_no_row(self):
-        self.workspace.record_event("review", "ok", round_event())
+        self.workspace.record_event("review", "ok", as_detail(round_event()))
         _, out, _ = run_cli("optimization", "report")
         self.assertNotIn("conditional reviewers", out)
 
     def test_a_refused_round_shows_up_in_the_summary(self):
         """It ran nothing, so it appears nowhere else in the final report --
         and what was skipped is exactly what that report has to name."""
-        self.workspace.record_event("review", opt.REFUSED, round_event(status=opt.REFUSED, reviewers=0))
+        self.workspace.record_event(
+            "review", opt.REFUSED, as_detail(round_event(status=opt.REFUSED, reviewers=0))
+        )
         _, out, _ = run_cli("summary")
         self.assertIn("Optimization:", out)
         self.assertIn("1 round(s) not run", out)
@@ -2109,13 +2137,13 @@ class TestTheReportCommand(IsolatedCase):
     def test_a_reduced_panel_shows_up_in_the_summary(self):
         """One reviewer is one opinion. A report that does not say so reads
         exactly like a report of two independent ones."""
-        self.workspace.record_event("review", "ok", round_event(reviewer_limit=1))
+        self.workspace.record_event("review", "ok", as_detail(round_event(reviewer_limit=1)))
         _, out, _ = run_cli("summary")
         self.assertIn("cut to one reviewer", out)
 
     def test_an_ordinary_run_gets_no_optimization_section(self):
         """Nothing was skipped or cut, so there is nothing to report."""
-        self.workspace.record_event("review", "ok", round_event())
+        self.workspace.record_event("review", "ok", as_detail(round_event()))
         _, out, _ = run_cli("summary")
         self.assertNotIn("Optimization:", out)
 
@@ -2123,7 +2151,7 @@ class TestTheReportCommand(IsolatedCase):
         """Uses per run over half a panel is a different claim from the same
         figure over all of it, and only the count beside it says which."""
         event = round_with([{"tool_uses": 4, "tool_output_chars": 900}, {"billed_tokens": 5}])
-        self.workspace.record_event("review", "ok", event)
+        self.workspace.record_event("review", "ok", as_detail(event))
         _, out, _ = run_cli("optimization", "report")
         self.assertIn("Tool activity", out)
         self.assertIn("1 of 2 run(s) reported", out)
@@ -2132,13 +2160,15 @@ class TestTheReportCommand(IsolatedCase):
     def test_a_log_with_no_tool_activity_gets_no_tool_row(self):
         """Nothing reported is not an average of zero, and a row of zeroes
         would read as one."""
-        self.workspace.record_event("review", "ok", round_event(reviewers=2, billed=700))
+        self.workspace.record_event("review", "ok", as_detail(round_event(reviewers=2, billed=700)))
         _, out, _ = run_cli("optimization", "report")
         self.assertNotIn("Tool activity", out)
 
     def test_the_estimate_says_it_is_one(self):
-        self.workspace.record_event("review", "ok", round_event(reviewers=1, billed=900))
-        self.workspace.record_event("review", opt.REFUSED, round_event(status=opt.REFUSED, reviewers=0))
+        self.workspace.record_event("review", "ok", as_detail(round_event(reviewers=1, billed=900)))
+        self.workspace.record_event(
+            "review", opt.REFUSED, as_detail(round_event(status=opt.REFUSED, reviewers=0))
+        )
         _, out, _ = run_cli("optimization", "report")
         self.assertIn("Estimated saving", out)
         self.assertIn("unknowable", out)
@@ -2146,8 +2176,8 @@ class TestTheReportCommand(IsolatedCase):
     def test_both_stages_and_their_sum_are_shown(self):
         """One `Reviewer runs:` number that silently meant code review only is
         the bug: it answered 8 for a workflow that had run 12 reviewers."""
-        self.workspace.record_event("review", "ok", round_event(reviewers=2, billed=1000))
-        self.workspace.record_event("design_review", "ok", design_event(reviewers=2, billed=3000))
+        self.workspace.record_event("review", "ok", as_detail(round_event(reviewers=2, billed=1000)))
+        self.workspace.record_event("design_review", "ok", as_detail(design_event(reviewers=2, billed=3000)))
         _, out, _ = run_cli("optimization", "report")
         self.assertIn("Reviewer runs: 4 (4 reported usage), 8,000 billed", out)
         self.assertIn("code review", out)
@@ -2158,7 +2188,7 @@ class TestTheReportCommand(IsolatedCase):
     def test_a_project_with_design_review_off_sees_no_design_line(self):
         """A `0` row for a stage that never ran is noise pretending to be a
         measurement."""
-        self.workspace.record_event("review", "ok", round_event(reviewers=2, billed=1000))
+        self.workspace.record_event("review", "ok", as_detail(round_event(reviewers=2, billed=1000)))
         _, out, _ = run_cli("optimization", "report")
         self.assertNotIn("design", out)
         self.assertIn("Reviewer runs: 2 (2 reported usage), 2,000 billed", out)
@@ -2167,7 +2197,7 @@ class TestTheReportCommand(IsolatedCase):
     def test_design_rounds_alone_are_reported_without_claiming_a_level(self):
         """No level decided anything for a plan, so there is no `levels in
         force` to print -- but 350,429 billed tokens still have to appear."""
-        self.workspace.record_event("design_review", "ok", design_event(reviewers=2, billed=3000))
+        self.workspace.record_event("design_review", "ok", as_detail(design_event(reviewers=2, billed=3000)))
         code, out, _ = run_cli("optimization", "report")
         self.assertEqual(code, 0)
         self.assertNotIn("levels in force", out)
@@ -2177,7 +2207,7 @@ class TestTheReportCommand(IsolatedCase):
 
     def test_a_design_round_alone_is_not_an_empty_log(self):
         """It says what review cost, and a design round cost something."""
-        self.workspace.record_event("design_review", "ok", design_event(reviewers=1, billed=800))
+        self.workspace.record_event("design_review", "ok", as_detail(design_event(reviewers=1, billed=800)))
         _, out, _ = run_cli("optimization", "report")
         self.assertNotIn("No review rounds recorded", out)
 
@@ -2190,7 +2220,7 @@ class TestTheReportCommand(IsolatedCase):
         self.assertIn("No review rounds recorded", out)
 
     def test_no_round_with_context_prints_no_context_block(self):
-        self.workspace.record_event("review", "ok", context_round(1000, [{"billed_tokens": 100}]))
+        self.workspace.record_event("review", "ok", as_detail(context_round(1000, [{"billed_tokens": 100}])))
         _, out, _ = run_cli("optimization", "report")
         self.assertNotIn("Surrounding context", out)
         report = json.loads(run_cli("optimization", "report", "--json")[1])
@@ -2200,8 +2230,8 @@ class TestTheReportCommand(IsolatedCase):
     def test_a_round_with_context_prints_both_groups_and_the_per_run_lines(self):
         usage = {"billed_tokens": 1000, "tool_uses": 2, "tool_output_chars": 500}
         with_context = context_round(2000, [usage, usage], adopted=300, trimmed=40)
-        self.workspace.record_event("review", "ok", with_context)
-        self.workspace.record_event("review", "ok", context_round(2000, [usage]))
+        self.workspace.record_event("review", "ok", as_detail(with_context))
+        self.workspace.record_event("review", "ok", as_detail(context_round(2000, [usage])))
         _, out, _ = run_cli("optimization", "report")
         self.assertIn("Surrounding context (review.context.surrounding), code review rounds only:", out)
         self.assertIn("with context", out)
@@ -2557,7 +2587,7 @@ class TestThePairedBlockInTheReport(IsolatedCase):
 
     def record(self, *events):
         for event in events:
-            self.workspace.record_event("review", event["status"], event)
+            self.workspace.record_event("review", event["status"], as_detail(event))
 
     def test_a_counted_pair_is_printed_with_its_delta_and_its_limits(self):
         self.record(
@@ -3856,6 +3886,8 @@ DECISION_NAMES = {
     "DEFAULT_LOW_RISK_MAX_FILES",
     "DEFAULT_LOW_RISK_MAX_LINES",
     "DEFAULT_HIGH_RISK_PATHS",
+    "TEST_STATUSES",
+    "_FAILED_STATUSES",
     "GATE_REFUSE",
     "GATE_WARN",
     "GATE_ALLOW",
@@ -4030,7 +4062,7 @@ class TestTheSplit(unittest.TestCase):
     deciding half must never need the reporting one."""
 
     def test_the_split_partitions_the_old_module(self):
-        self.assertEqual((len(DECISION_NAMES), len(REPORT_NAMES)), (85, 58))
+        self.assertEqual((len(DECISION_NAMES), len(REPORT_NAMES)), (87, 58))
         self.assertEqual(_top_level_names(opt), DECISION_NAMES)
         self.assertEqual(_top_level_names(opt_report), REPORT_NAMES)
         imported = set()

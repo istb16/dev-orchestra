@@ -17,8 +17,8 @@ below begins **User adapters** so adapter authors can find it.
 ### Added
 
 - **Keys nothing reads are reported.** A misspelt `reveiw:`,
-  `review.timout_seconds` or `implementer.provder` used to pass as valid and
-  be ignored. `config validate` now lists each one under *Warnings*
+  `review.timout_seconds`, `implementer.provder` or a seat's
+  `high_risk_model.famly` used to pass as valid and be ignored. `config validate` now lists each one under *Warnings*
   (`warnings` in `--json`) with the file it is in and the known key it
   resembles, `doctor` lists them as notes, and `config set` warns when the
   key it writes is one. A warning, not a problem: the exit status, `doctor
@@ -82,7 +82,9 @@ below begins **User adapters** so adapter authors can find it.
   holds the approval record, so one pointed outside the repository by a
   branch could bring an approval nobody gave; a relative one inside the
   repository still works from the project file, unless a symlink or junction
-  in the repository takes it outside. A record the branch commits inside the
+  in the repository takes it outside; that is judged in the repository the
+  commands place the workspace in, so the warning names the directory
+  actually used, outside a git repository too. A record the branch commits inside the
   workspace is not something this can refuse; `references/configuration.md`
   says what the approval is read from. `config set
   design.require_approval false` now writes the global file even inside a
@@ -95,8 +97,10 @@ below begins **User adapters** so adapter authors can find it.
 - **`workflow remove` refuses a workflow that is still in use** (exit 2):
   one with a stage in flight, or with a detached job in its `jobs/` that has
   not finished (a job whose worker is gone is marked `abandoned` first and
-  does not count). It used to delete it, and a detached worker finishing
-  afterwards wrote its state back, leaving a workflow with an empty record,
+  does not count, nor does one still recorded as starting, with no worker
+  pid, five minutes after it was started). It used to delete it, and a
+  detached worker finishing afterwards wrote its state back, leaving a
+  workflow with an empty record,
   the job's files and empty `execution/` and `reviews/`. Recent activity
   alone is no reason to refuse, so a workflow finished a moment ago is still
   deleted. `--force` deletes it anyway, for an in-flight mark a crashed stage
@@ -117,7 +121,9 @@ below begins **User adapters** so adapter authors can find it.
   `review.idle_timeout_seconds` if that is larger: a command silent for
   longer is still killed, and a wedged run is still noticed well before its
   total deadline. `--idle-timeout` or the role's `options.idle_timeout`
-  sets another value, and reviewers and read-only runs keep 300s. Output also
+  sets another value, and reviewers and read-only runs keep 300s. A run
+  killed as stalled says where its idle deadline came from, naming the role's
+  `options.idle_timeout` only when its provider waits that value. Output also
   counts as it arrives rather than when a line ends, so a CLI printing dots
   or redrawing a progress bar is no longer taken for silent (#273).
 
@@ -136,7 +142,15 @@ below begins **User adapters** so adapter authors can find it.
   stopped such a process after a clean exit. A pipe still in use is now left
   to its reader, which is abandoned after a few seconds and from then on
   reads and drops what arrives, and what the process wrote after the CLI
-  exited is left out of the run's output, with a warning giving its size.
+  exited is left out of the run's output, with a warning giving its size,
+  also when that process no longer holds the pipe but is still running once
+  the output has been read (on POSIX, where the CLI's process group shows it;
+  a process that has already exited, even one not yet reaped, does not
+  count); the lines the CLI wrote before it
+  exited still reach `review run --progress` and a job's activity, and
+  nothing written after does. When nothing the CLI started is known to have
+  outlived it, everything read is kept, so the CLI's own last output, read
+  late on a busy machine, is not dropped.
   The process is then stopped on POSIX, with a warning; on Windows it cannot
   be reached once the CLI has gone, so the run reports `orphans_possible`
   and warns instead. The CLI's exit code is kept either way (#267).
@@ -189,7 +203,11 @@ below begins **User adapters** so adapter authors can find it.
   from the absolute path `doctor` found, and both look only in the absolute
   directories on PATH: never in the current directory, which Windows
   searches first and which may be a repository carrying a `claude.cmd` of
-  its own. A name not found there is not started. An npm shim is bypassed for the `node` and
+  its own. A name not found there is not started. An `executable` with a
+  directory in it (`C:\tools\claude`, `tools\claude`) is looked up
+  where it says, with PATHEXT, by both: it is no longer reported missing
+  when PATH has no absolute entry, nor looked for under PATH by `doctor`
+  while the run started it from the current directory. An npm shim is bypassed for the `node` and
   script (or the `.exe`) it would run, so no argument passes through
   cmd.exe; any other `.cmd` or `.bat` runs under cmd.exe with every argument
   quoted, and an argument holding `"`, `%`, `!` or a line break, which
@@ -215,7 +233,10 @@ below begins **User adapters** so adapter authors can find it.
   unquoted `- *.sql`), tags, merge keys, every block scalar form (`|-`,
   `>2`, `- |`) and a second document after `---` or `...` are refused with
   the line number, where they were taken as plain text or joined into one
-  document. On the command line, `config set` still takes `*.sql` as text.
+  document. On the command line, `config set` still takes `*.sql` as text;
+  a multi-line value it cannot read (`- *.sql`, or a block indented with
+  tabs) is refused with the key and the reason (exit 2) instead of ending
+  on a traceback.
 
 - **A configuration file saved as UTF-8 with a BOM keeps its first key.**
   Notepad and PowerShell 5's `Out-File -Encoding utf8` start the file with
@@ -228,7 +249,8 @@ below begins **User adapters** so adapter authors can find it.
   comments into it, which dev-orchestra still read but editors, `jq` and CI
   checks did not. A file whose name ends in `.json` is now written as
   indented JSON, without the header comment. A value JSON cannot hold
-  (`.inf`, `.nan`) is refused, and the file left as it was (#280).
+  (`.inf`, `.nan`, or the date PyYAML reads `2026-10-06` in a multi-line
+  value as) is refused naming it, and the file left as it was (#280).
 
 - **`config set language.reply no` saves the tag `no`** (Norwegian) rather
   than `false`. In a file, a bare `no` is still read as false and refused;
@@ -249,9 +271,13 @@ below begins **User adapters** so adapter authors can find it.
   `subst` drive is still not followed). A Claude copy (`--copy`, or the fallback when a symlink
   cannot be made) now carries a `.dev-orchestra-install` file, as an
   Antigravity copy does. A copy from an earlier installer, which has no such
-  file, is still replaced or removed when it holds nothing but what a copy
-  carries, so `install --copy` keeps upgrading it; one with anything else
-  added is left in place. A link to another checkout or to nothing is now
+  file, is still replaced or removed when every file in it, at any depth and
+  hidden or not, is also at the same path in the checkout's payload -- a
+  directory as a directory, a file as a file, not counting the `.pyc` files
+  that running the CLI from it leaves in its `__pycache__` directories -- so
+  `install --copy` keeps upgrading it; one with anything else added anywhere
+  in it, a `__pycache__` included, or holding a link or junction, is left in
+  place. A link to another checkout or to nothing is now
   left in place too, with the command to remove it by hand, and a run from
   the checkout that is itself the destination stops and says so (#290).
 
@@ -267,9 +293,13 @@ below begins **User adapters** so adapter authors can find it.
   `abandoned`. A job now records the worker's start time with its pid
   (Windows and Linux) and checks it first: a different process marks the job
   `abandoned` and is left alone. A job recorded by an earlier version, or on
-  macOS, has no start time; on Windows its pid is no longer stopped, and the
-  job says so, while POSIX keeps stopping it only while it leads its own
-  process group (#268).
+  macOS, has no start time, and a live pid whose start time cannot be read
+  (on Windows, when opening the process is denied) is treated the same, not
+  as gone: on Windows such a pid is no longer stopped, while POSIX keeps
+  stopping it only while it leads its own process group. A cancel that leaves
+  such a pid running, or that cannot confirm a worker its start time vouches
+  for stopped, leaves the job unfinished, so `workflow remove` still waits
+  for it, and `jobs cancel` says so and exits 1 (#268).
 
 - **What a reviewer's prompt quotes can no longer close its fence.** The diff,
   the plan and the design request went in a fixed `` ``` `` fence, so a code
@@ -316,7 +346,10 @@ below begins **User adapters** so adapter authors can find it.
   non-ASCII pattern there survives an install too. A last line without a
   newline no longer runs into the block or gains a newline after an
   uninstall, in `install.sh` as in `install.ps1`, and under Git Bash a re-run
-  or `uninstall.sh` no longer turns CRLF endings into LF (#292).
+  or `uninstall.sh` no longer turns CRLF endings into LF. An `AGENTS.md` with
+  the block's BEGIN line and no END line after it is left as it is, and the
+  run exits 1 and says to remove the unfinished block by hand, rather than
+  taking out everything after that line (#292).
 
 - **`uninstall --project` removes the `.git/info/exclude` line that the Claude
   Code install added.** The install wrote `/.claude/skills/dev-orchestra`
@@ -325,7 +358,8 @@ below begins **User adapters** so adapter authors can find it.
   entry does, and the uninstallers remove it only when that comment is right
   above it. A line already there without the comment, from an earlier
   install or written by hand, is not added again and is kept; the
-  uninstaller names it so it can be removed by hand. `install.sh` now also
+  uninstaller names it so it can be removed by hand, as it now names the
+  Antigravity entry left without its comment. `install.sh` now also
   finds the entry in a file `install.ps1` wrote with CRLF line endings,
   rather than adding it a second time (#294).
 
@@ -356,10 +390,15 @@ below begins **User adapters** so adapter authors can find it.
   `review snapshot is empty … or pass --base`, and passing `--base` failed
   the same way. A snapshot taken against another base is now retaken
   against the one given, with a `note:` saying so, and the round count
-  starts again as it does after `review snapshot --base`. A snapshot taken
-  without a base counts as taken against `HEAD`, and one taken against a
-  name for the same commit as `--base` is kept. Without `--base` the
-  snapshot on disk is reviewed as before (#264).
+  starts again as it does after `review snapshot --base`. A snapshot is kept
+  when the commit `--base` names is the one it was taken against (the one
+  `HEAD` was at, for a snapshot taken without a base), whatever name either
+  used; `HEAD` after a commit, or a branch that has moved since, is another
+  base. The snapshot now records that commit as `base_commit`; one taken
+  before it did is compared by name. An incremental round decides whether
+  it is on the same base by the same rule, so a round with `--base` naming
+  the commit the last one was taken against narrows to the fix. Without
+  `--base` the snapshot on disk is reviewed as before (#264).
 
 - **Code in a finding's fenced block is read as code.** A `#` comment inside
   ```` ``` ```` or `~~~` was dropped, a line such as `fix: …` started a new
@@ -368,10 +407,11 @@ below begins **User adapters** so adapter authors can find it.
   brief handed the fixer code without its comments or its shape. Lines inside
   a fence are now kept as written and never start a finding, and `Evidence`
   and `Fix` keep their line breaks; the other fields are still one line. A
-  fence that is never closed is read as before. In the fix brief and in
-  `consolidated.md` such a value goes under its label, indented into the
-  list item, so its fences no longer leave the list and swallow the rest of
-  the document (#265).
+  fence that is never closed is read as before, and a report of many of
+  them no longer takes time growing with the square of its length. In the
+  fix brief and in `consolidated.md` such a value goes under its label,
+  indented into the list item, so its fences no longer leave the list and
+  swallow the rest of the document (#265).
 
 - **The tests no longer start a real `claude`, `codex` or `agy`.** Without
   `DEV_ORCHESTRA_TEST_ASSUME_NO_CLI`, about 150 tests ran the installed CLIs
@@ -429,8 +469,12 @@ below begins **User adapters** so adapter authors can find it.
   outside a table is judged as before. Only the short, label-like cells of a
   table are left out: a cell that reads as prose (a sentence of 6 or more
   words, 20 or more words, or 10 or more letters of another script) is still
-  judged, so a reply written in table cells does not get through, and a
-  table without its outer pipes is read the same way (#288).
+  judged, and so is every cell of a table whose short cells that end a
+  sentence add up to 40 or more words, so a reply written in table cells,
+  in long sentences or short ones, does not get through. Short cells with no
+  sentence end read as titles and labels, and are left out however many
+  there are. A `|` inside inline code does not split a cell, and a table
+  without its outer pipes is read the same way (#288).
 
 - **`doctor` reports the options a design reviewer ignores.** Whether a seat
   runs read-only was read off its label, which had to start with
@@ -450,8 +494,10 @@ below begins **User adapters** so adapter authors can find it.
   `review snapshot`'s `--no-exclude` and `--full`, with a test that every
   signature there names each flag its command takes. The Codex pointer the
   installers write quotes the script's path, so a checkout path with a space
-  works -- in single quotes from `install.sh`, so a `$` or a backtick in it
-  is not expanded either -- and `doctor`'s `Resume:` line names the live check by its absolute
+  works -- in single quotes, from `install.sh` and `install.ps1` alike, so a
+  `$`, a `$( )` or a backtick in it is not expanded either, and a `'` or a
+  typographic single quote (`’`), which PowerShell also reads as one, does
+  not end the quoting early -- and `doctor`'s `Resume:` line names the live check by its absolute
   path, as its notes already did (#297).
 
 - **Untracked files with non-ASCII names, and large untracked files, are no
@@ -466,9 +512,16 @@ below begins **User adapters** so adapter authors can find it.
   no longer suggest `--no-exclude` for it. The size is checked before any
   pattern, and an incremental round withholds a large untracked file the same
   way, on either side of the round, instead of diffing it whole or deleting
-  every line of it. Names that are not UTF-8 or hold a carriage return are
-  read as they are on disk, and a nested repository is still left out
-  (#260).
+  every line of it, and under both names when it was renamed; it measures
+  however many new files the round has, a batch at a time, and stops with an
+  error rather than letting them through whole when git cannot measure them. When every
+  changed file was withheld, `review run` names each one that was not read
+  with its reason. Names that are not UTF-8 or hold a carriage return are
+  read as they are on disk, in an incremental round too, and a name is
+  recorded, printed and put in a reviewer's prompt with any control
+  character escaped (`\x1b`), so it cannot rewrite the terminal or add a
+  line of its own; the surrounding context of a Python file with such a name
+  is still extracted. A nested repository is still left out (#260).
 
 ## [0.22.0] - 2026-10-06
 

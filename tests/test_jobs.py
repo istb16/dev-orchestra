@@ -130,7 +130,7 @@ class TestCancel(JobCase):
         with (
             mock.patch.object(execution, "pid_alive", lambda pid: True),
             mock.patch.object(execution, "process_started", lambda pid: "t0"),
-            mock.patch.object(execution, "kill_tree", lambda pid, grace: True),
+            mock.patch.object(execution, "kill_tree", lambda pid, grace, verified: True),
         ):
             return jobs_mod.cancel(self.workspace, "a-1")
 
@@ -176,7 +176,9 @@ class TestCancel(JobCase):
 
     def test_a_worker_still_there_after_the_kill_is_not_reported_stopped(self):
         """The kill is confirmed, not assumed: every signal is sent and lands
-        nowhere, and the job says the worker may still be running."""
+        nowhere, and the job says the worker may still be running. Its own
+        start time vouches for it, so it may still write into the workflow:
+        the job is left unfinished, for `workflow remove` to see."""
         import signal
 
         from orchestrator import execution
@@ -197,8 +199,11 @@ class TestCancel(JobCase):
             ),
         ):
             job = jobs_mod.cancel(self.workspace, "a-1")
-        self.assertEqual(job["status"], "cancelled")
-        self.assertEqual(job["error"], "cancelled by request (the worker may still be running)")
+        self.assertEqual(job["status"], "running")
+        self.assertEqual(
+            job["not_stopped"], "pid 4242, the worker, was not confirmed stopped and may still be running"
+        )
+        self.assertEqual(ws.read_json(jobs_mod.job_path(self.workspace, "a-1"))["status"], "running")
         # It escalates like a timed-out run: the whole tree, then the pid alone.
         if execution.IS_WINDOWS:
             self.assertEqual(sent, [("run", "taskkill"), ("kill", signal.SIGTERM)])
@@ -308,7 +313,16 @@ class TestReusedPid(JobCase):
         self.addCleanup(end)
         return child
 
+    def require_start_times(self):
+        """Without a start time to read now, a recorded one cannot be compared
+        and the pid is unverified, not someone else's."""
+        from orchestrator import execution
+
+        if execution.process_started(os.getpid()) is None:
+            self.skipTest("no start time to read on this platform")
+
     def test_a_pid_another_process_now_has_is_not_stopped(self):
+        self.require_start_times()
         child = self.bystander()
         self.record("a-1", pid=child.pid, pid_started="the worker's", status="running")
         job = jobs_mod.cancel(self.workspace, "a-1")
@@ -318,6 +332,7 @@ class TestReusedPid(JobCase):
         self.assertIsNone(child.poll())
 
     def test_a_pid_another_process_now_has_marks_the_job_abandoned(self):
+        self.require_start_times()
         self.record("a-1", pid=os.getpid(), pid_started="the worker's")
         job = present(jobs_mod.read_job(self.workspace, "a-1"))
         self.assertEqual(job["status"], "abandoned")
@@ -332,37 +347,111 @@ class TestReusedPid(JobCase):
         self.record("a-1", pid=os.getpid(), pid_started=started)
         self.assertEqual(present(jobs_mod.read_job(self.workspace, "a-1"))["status"], "running")
 
-    def cancel_an_unverified_worker(self, windows):
-        """Cancel a job recorded without a start time, its pid alive."""
+    def cancel_an_unverified_worker(self, stopped, **fields):
+        """Cancel a job whose live pid nothing vouches for; the kill answers
+        ``stopped``. Returns the job and the ``verified`` each kill was given."""
         from orchestrator import execution
 
-        self.record("a-1", pid=4242, status="running")
-        killed = []
+        self.record("a-1", pid=4242, status="running", **fields)
+        alive = [True]
+        asked = []
+
+        def kill_tree(pid, grace, verified):
+            asked.append(verified)
+            alive[0] = not stopped
+            return stopped
+
         with (
-            mock.patch.object(execution, "IS_WINDOWS", windows),
-            mock.patch.object(execution, "pid_alive", lambda pid: True),
-            mock.patch.object(execution, "kill_tree", lambda pid, grace: killed.append(pid) or True),
+            mock.patch.object(execution, "pid_alive", lambda pid: alive[0]),
+            mock.patch.object(execution, "process_started", lambda pid: None),
+            mock.patch.object(execution, "kill_tree", kill_tree),
         ):
-            return jobs_mod.cancel(self.workspace, "a-1"), killed
+            return jobs_mod.cancel(self.workspace, "a-1"), asked
 
-    def test_an_older_record_is_not_force_killed_on_windows(self):
-        """taskkill /T /F would end whatever tree has the pid by now."""
-        job, killed = self.cancel_an_unverified_worker(windows=True)
-        self.assertEqual(killed, [])
+    def test_an_older_record_is_killed_only_as_unverified(self):
+        job, asked = self.cancel_an_unverified_worker(stopped=True)
+        self.assertEqual(asked, [False])
         self.assertEqual(job["status"], "cancelled")
-        self.assertIn("pid 4242 was not stopped", job["error"])
-
-    def test_an_older_record_is_left_to_the_group_check_on_posix(self):
-        job, killed = self.cancel_an_unverified_worker(windows=False)
-        self.assertEqual(killed, [4242])
         self.assertEqual(job["error"], "cancelled by request")
+
+    def test_an_older_record_that_was_not_stopped_stays_unfinished(self):
+        """Marking it cancelled would let `workflow remove` delete the
+        workflow under a worker that may still be writing to it."""
+        job, _ = self.cancel_an_unverified_worker(stopped=False)
+        self.assertEqual(job["status"], "running")
+        self.assertIn("pid 4242 was not stopped", job["not_stopped"])
+        raw = ws.read_json(jobs_mod.job_path(self.workspace, "a-1"))
+        self.assertEqual(raw["status"], "running")
+        self.assertNotIn("not_stopped", raw)
+        self.assertIn("not cancelled", jobs_mod.render(job))
+
+    def cancel_with(self, alive, stopped, pid_alive):
+        """Cancel a running job as ``_worker_alive`` answers ``alive``, the kill
+        answers ``stopped`` and the pid then reads ``pid_alive``. Returns the
+        job and the ``verified`` each kill was given."""
+        from orchestrator import execution
+
+        self.record("a-1", pid=4242, pid_started="t0", status="running")
+        asked = []
+
+        def kill_tree(pid, grace, verified):
+            asked.append(verified)
+            return stopped
+
+        with (
+            mock.patch.object(jobs_mod, "_worker_alive", lambda pid, job: alive),
+            mock.patch.object(execution, "kill_tree", kill_tree),
+            mock.patch.object(execution, "pid_alive", lambda pid: pid_alive),
+        ):
+            return jobs_mod.cancel(self.workspace, "a-1"), asked
+
+    def test_a_worker_gone_after_an_unconfirmed_kill_is_cancelled_with_a_caveat(self):
+        job, asked = self.cancel_with(alive=True, stopped=False, pid_alive=False)
+        self.assertEqual(asked, [True])
+        self.assertEqual(job["status"], "cancelled")
+        self.assertEqual(job["error"], "cancelled by request (the worker may still be running)")
+        self.assertNotIn("not_stopped", job)
+        self.assertEqual(ws.read_json(jobs_mod.job_path(self.workspace, "a-1"))["status"], "cancelled")
+
+    def test_an_unvouched_pid_still_there_after_the_kill_keeps_its_old_answer(self):
+        job, asked = self.cancel_with(alive=None, stopped=False, pid_alive=True)
+        self.assertEqual(asked, [False])
+        self.assertEqual(job["status"], "running")
+        self.assertEqual(
+            job["not_stopped"],
+            "pid 4242 was not stopped: it may no longer be the worker, which may still be running",
+        )
+        self.assertEqual(ws.read_json(jobs_mod.job_path(self.workspace, "a-1"))["status"], "running")
+
+    def test_a_pid_that_is_not_the_worker_is_never_killed(self):
+        job, asked = self.cancel_with(alive=False, stopped=False, pid_alive=True)
+        self.assertEqual(asked, [])
+        self.assertEqual(job["status"], "abandoned")
+        self.assertNotIn("not_stopped", job)
+
+    def test_a_start_time_that_cannot_be_read_now_is_unverified_not_gone(self):
+        """A recorded start and a live pid whose start is unreadable (an
+        OpenProcess denied on Windows) is not taken for a reused pid."""
+        from orchestrator import execution
+
+        self.record("a-1", pid=4242, pid_started="t0")
+        with (
+            mock.patch.object(execution, "pid_alive", lambda pid: True),
+            mock.patch.object(execution, "process_started", lambda pid: None),
+        ):
+            self.assertIsNone(jobs_mod._worker_alive(4242, {"pid_started": "t0"}))
+            self.assertEqual(present(jobs_mod.read_job(self.workspace, "a-1"))["status"], "running")
+        job, asked = self.cancel_an_unverified_worker(stopped=True, pid_started="t0")
+        self.assertEqual(asked, [False])
+        self.assertEqual(job["status"], "cancelled")
 
     @unittest.skipUnless(os.name == "nt", "the case the issue measured")
     def test_an_older_record_leaves_a_live_bystander_running_on_windows(self):
         child = self.bystander()
         self.record("a-1", pid=child.pid, status="running")
         job = jobs_mod.cancel(self.workspace, "a-1")
-        self.assertEqual(job["status"], "cancelled")
+        self.assertEqual(job["status"], "running")
+        self.assertTrue(job["not_stopped"])
         time.sleep(0.5)
         self.assertIsNone(child.poll())
 
@@ -755,6 +844,7 @@ class TestDetachedRun(IsolatedCase):
         self.assertEqual([e.get("status") for e in ended], ["ok"])
         elsewhere = json.loads(self.run_cli("state", "show", "--json")[1])
         self.assertEqual([e for e in elsewhere.get("events") or [] if e.get("stage") == "implementer"], [])
+        self.assertEqual(job["command"][:2], ["--cwd", os.getcwd()])
         self.assertEqual(job["command"][2:5], ["--workflow", "named", "run"])
 
     @unittest.skipUnless(has_git(), "git is required")
@@ -763,16 +853,37 @@ class TestDetachedRun(IsolatedCase):
         the repository root and run the model the root's file names (#282)."""
         self.run_cli("config", "set", "implementer.model.family", "small")
         self.init_git_repo()
+        self.write(".dev-orchestra.yaml", "version: 1\nimplementer:\n  model:\n    family: medium\n")
         self.write("pkg/.dev-orchestra.yaml", "version: 1\nimplementer:\n  model:\n    family: large\n")
         os.chdir(os.path.join(self.project, "pkg"))
         code, _, err = self.run_cli("run", "implementer", "--prompt", "go")
         self.assertEqual(code, 0, err)
         code, out, err = self.run_cli("run", "implementer", "--prompt", "go", "--detach", "--json")
         self.assertEqual(code, 0, err)
-        self.assertEqual(self._wait_for(json.loads(out)["id"])["status"], "succeeded")
+        job = json.loads(out)
+        self.assertEqual(job["command"][:2], ["--cwd", os.getcwd()])
+        self.assertEqual(self._wait_for(job["id"])["status"], "succeeded")
+        # A relative --cwd from the root reaches the worker as the directory it names.
+        os.chdir(self.project)
+        # Named before the run: --cwd changes this process's directory too.
+        expected = os.path.join(os.getcwd(), "pkg")
+        code, out, err = self.run_cli(
+            "--cwd", "pkg", "run", "implementer", "--prompt", "go", "--detach", "--json"
+        )
+        self.assertEqual(code, 0, err)
+        job = json.loads(out)
+        self.assertEqual(job["command"][:2], ["--cwd", expected])
+        self.assertEqual(self._wait_for(job["id"])["status"], "succeeded")
         state = json.loads(self.run_cli("state", "show", "--json")[1])
         ran = [e.get("model") for e in state.get("events") or [] if e.get("stage") == "implementer"]
-        self.assertEqual(ran, ["large", "large"])
+        self.assertEqual(ran, ["large", "large", "large"])
+        # The root's own file is the one a run from the root reads.
+        os.chdir(self.project)
+        code, _, err = self.run_cli("run", "implementer", "--prompt", "go")
+        self.assertEqual(code, 0, err)
+        state = json.loads(self.run_cli("state", "show", "--json")[1])
+        ran = [e.get("model") for e in state.get("events") or [] if e.get("stage") == "implementer"]
+        self.assertEqual(ran, ["large", "large", "large", "medium"])
 
     def test_a_worker_leaves_the_current_workflow_alone(self):
         """The pointer may have moved on since the parent returned."""

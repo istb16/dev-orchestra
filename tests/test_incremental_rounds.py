@@ -179,13 +179,45 @@ class TestIncrementalScope(RoundCase):
         self.assertFalse(second["incremental_from"])
         self.assertEqual(second["sha256"], first["sha256"])
 
-    def test_an_explicit_base_is_never_incremental(self):
+    def test_an_explicit_base_naming_another_commit_is_never_incremental(self):
         """--base is the caller stating the comparison; it wins."""
+        self.write("notes.txt", "unrelated\n")
+        self.commit_all("second")
         self.first_round()
         self.fix()
-        meta = review_mod.create_snapshot(self.workspace, base="HEAD")
+        meta = review_mod.create_snapshot(self.workspace, base="HEAD~1")
         self.assertFalse(meta["incremental_from"])
         self.assertIn("op59", ws.read_text(self.workspace.snapshot_path))
+
+    def test_an_explicit_base_naming_the_commit_the_round_was_taken_against_narrows(self):
+        """A round taken without a base was taken against the commit HEAD was
+        at, and naming that commit is the same change."""
+        self.first_round()
+        self.fix()
+        self.assertTrue(review_mod.create_snapshot(self.workspace, base="HEAD")["incremental_from"])
+
+    def test_a_sha_for_that_commit_narrows_too(self):
+        self.first_round()
+        self.fix()
+        head = self.git("rev-parse", "HEAD").stdout.strip()
+        self.assertTrue(review_mod.create_snapshot(self.workspace, base=head)["incremental_from"])
+
+    def test_head_after_a_commit_is_another_base(self):
+        """The same name, another commit: the round asking for it is a new change."""
+        self.first_round()
+        self.fix()
+        self.commit_all("the fix")
+        self.write("service.py", body("-"))
+        self.assertFalse(review_mod.create_snapshot(self.workspace, base="HEAD")["incremental_from"])
+
+    def test_no_base_after_a_commit_is_still_the_same_change(self):
+        """Committing the fix is how a change goes on; asking for no base asks
+        for none in particular."""
+        self.first_round()
+        self.fix()
+        self.commit_all("the fix")
+        self.write("service.py", body("-"))
+        self.assertTrue(review_mod.create_snapshot(self.workspace)["incremental_from"])
 
     def test_the_feature_can_be_turned_off(self):
         self.first_round()
@@ -259,6 +291,25 @@ class TestRulesThatMustNotLapseInRoundTwo(RoundCase):
         self.assertIn("大きい.py", meta["changed_paths"])
         self.assertNotIn("####", ws.read_text(self.workspace.snapshot_path))
 
+    def test_untracked_files_git_cannot_measure_stop_the_snapshot_cleanly(self):
+        """Not "no sizes", which would send an oversized file whole, and not a
+        traceback: ``review snapshot`` names the failure and exits 2."""
+        self.first_round()
+        self.fix()
+        self.write("brand_new.py", "print('new')\n")
+        original = ws.git_bytes
+
+        def no_sizes(args, cwd, **kwargs):
+            if list(args[:3]) == ["ls-tree", "-r", "-l"]:
+                return 128, b"", "fatal: cannot list"
+            return original(args, cwd, **kwargs)
+
+        with mock.patch.object(ws, "git_bytes", no_sizes):
+            code, out, err = run_cli("review", "snapshot")
+        self.assertEqual(code, 2, out + err)
+        self.assertIn("git ls-tree failed: cannot measure the untracked files", err)
+        self.assertNotIn("Traceback", out + err)
+
     def big(self, name):
         self.write(name, "#" * (review_snapshot.MAX_UNTRACKED_BYTES + 1) + "\n" + "line\n" * 5000)
 
@@ -295,6 +346,35 @@ class TestRulesThatMustNotLapseInRoundTwo(RoundCase):
         self.fix()
         self.big("yarn.lock")
         self.assert_withheld_unread(review_mod.create_snapshot(self.workspace), "yarn.lock")
+
+    def test_an_oversize_untracked_file_renamed_after_round_one_stays_withheld(self):
+        self.big("data.txt")
+        self.first_round()
+        self.fix()
+        os.rename(os.path.join(self.project, "data.txt"), os.path.join(self.project, "moved.txt"))
+        meta = review_mod.create_snapshot(self.workspace)
+        self.assert_withheld_unread(meta, "moved.txt")
+        self.assertEqual(meta["withheld"][0].get("previous"), "data.txt")
+        self.assertIn("data.txt", meta["changed_paths"])
+
+    def test_an_oversize_untracked_file_with_spaces_and_japanese_shrunk_stays_withheld(self):
+        """Its old blob is measured by name, so ``ls-tree`` has to be read exactly."""
+        self.big("大きな データ.txt")
+        self.first_round()
+        self.fix()
+        self.write("大きな データ.txt", "small now\n")
+        self.assert_withheld_unread(review_mod.create_snapshot(self.workspace), "大きな データ.txt")
+
+    @unittest.skipIf(os.name == "nt", "Windows does not allow a carriage return in a file name")
+    def test_an_oversize_untracked_file_with_a_carriage_return_stays_withheld(self):
+        """Read as text, the name came back with a newline and the exclusion named no file."""
+        self.first_round()
+        self.fix()
+        try:
+            self.big("big\rname.txt")
+        except OSError:
+            self.skipTest("this file system refuses this name")
+        self.assert_withheld_unread(review_mod.create_snapshot(self.workspace), "big\\x0dname.txt")
 
     def test_a_large_tracked_file_is_still_diffed_in_round_two(self):
         """The limit is for untracked files; a committed one is reviewed as before."""
@@ -412,14 +492,40 @@ class TestReviewingABranchAgainstABase(RoundCase):
     def test_changing_the_base_takes_the_whole_change_again(self):
         """A different base is a different definition of what is under review.
         Narrowing to a fix for the old one would answer the old question."""
+        self.write("notes.txt", "unrelated\n")
+        self.commit_all("second")
         head = self.base()
         self.implement()
         review_mod.create_snapshot(self.workspace, base=head)
         run_cli("review", "run")
         run_cli("review", "triage", "F1", "--status", "accepted")
         self.fix()
-        meta = review_mod.create_snapshot(self.workspace, base="HEAD")
+        meta = review_mod.create_snapshot(self.workspace, base="HEAD~1")
         self.assertFalse(meta["incremental_from"])
+
+    def test_another_name_for_the_same_commit_is_the_same_base(self):
+        head = self.base()
+        self.implement()
+        review_mod.create_snapshot(self.workspace, base=head)
+        run_cli("review", "run")
+        run_cli("review", "triage", "F1", "--status", "accepted")
+        self.fix()
+        self.assertTrue(review_mod.create_snapshot(self.workspace, base="HEAD")["incremental_from"])
+
+    def test_a_base_that_moved_since_is_another_base(self):
+        """`main` after a pull names another commit than the round was taken
+        against, under the same name."""
+        self.git("branch", "basis")
+        self.implement()
+        review_mod.create_snapshot(self.workspace, base="basis")
+        run_cli("review", "run")
+        run_cli("review", "triage", "F1", "--status", "accepted")
+        self.fix()
+        self.write("notes.txt", "unrelated\n")
+        self.git("add", "notes.txt")
+        self.git("commit", "-q", "-m", "moved")
+        self.git("branch", "-f", "basis", "HEAD")
+        self.assertFalse(review_mod.create_snapshot(self.workspace, base="basis")["incremental_from"])
 
     def test_dropping_the_base_takes_the_whole_change_again(self):
         head = self.base()
@@ -529,6 +635,7 @@ META_KEYS = [
     "strategy",
     "base",
     "head",
+    "base_commit",
     "tree",
     "incremental_from",
     "full_diff",
@@ -679,7 +786,8 @@ class TestSnapshotPinning(RoundCase):
         meta = review_mod.create_snapshot(self.workspace, surrounding="enclosing")
         self.assertEqual(meta["untracked_included"], ["a.py", "b.py"])
         lock = {"path": "package-lock.json", "pattern": "package-lock.json", "added": 3, "deleted": 0}
-        self.assertEqual(meta["withheld"][1], lock)
+        withheld = {entry["path"]: entry for entry in meta["withheld"]}
+        self.assertEqual(withheld["package-lock.json"], lock)
         diff = ws.read_text(self.workspace.snapshot_path)
         self.assertNotIn("package-lock.json", diff)
         frozen = ws.read_json(self.workspace.surrounding_path, {})
@@ -692,7 +800,7 @@ class TestSnapshotPinning(RoundCase):
         # Too large to read is still part of the change, so it is named; the
         # orchestrator's own config is not part of it at all.
         self.assertIn("big.py", meta["changed_paths"])
-        self.assertEqual([entry["path"] for entry in meta["withheld"]], ["big.py", "package-lock.json"])
+        self.assertEqual(sorted(withheld), ["big.py", "package-lock.json"])
         for key in ("changed_paths", "condition_paths"):
             self.assertNotIn(".dev-orchestra.yaml", meta[key], key)
         self.assertNotIn(".dev-orchestra.yaml", [entry["path"] for entry in meta["withheld"]])

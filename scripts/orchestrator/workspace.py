@@ -326,13 +326,23 @@ class Workspace:
         return event
 
 
+#: The run-log entry's own fields, which no ``detail`` may set.
+RESERVED_EVENT_FIELDS = ("stage", "status", "at")
+
+
 def new_event(stage: str, status: str, detail: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """One run-log entry, built without touching the disk.
 
     Split out so a caller that already holds the state lock can append without
     taking it again -- :meth:`Workspace.record_event` is the same thing plus
     the read, the append and the write.
+
+    A ``detail`` naming one of :data:`RESERVED_EVENT_FIELDS` is refused
+    (ValueError): it would overwrite what the entry says it is.
     """
+    clash = [key for key in RESERVED_EVENT_FIELDS if detail and key in detail]
+    if clash:
+        raise ValueError("an event's detail cannot set its own field(s): %s" % ", ".join(clash))
     event = {"stage": stage, "status": status, "at": utcnow()}
     if detail:
         event.update(detail)

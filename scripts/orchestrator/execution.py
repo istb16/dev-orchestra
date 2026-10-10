@@ -25,7 +25,6 @@ from __future__ import annotations
 import codecs
 import errno
 import io
-import math
 import os
 import queue
 import re
@@ -44,23 +43,6 @@ from . import clocks
 EXIT_TOTAL_TIMEOUT = 124  # conventional timeout(1) code
 EXIT_IDLE_STALL = 125
 EXIT_SPAWN_FAILED = 126
-
-#: The longest deadline, idle limit or wait this tool takes: about 31 years.
-#: Past it a number of seconds overflows what ``time.sleep`` and a float
-#: deadline can hold, and only a mistake asks for more.
-MAX_SECONDS = 10**9
-
-
-def is_seconds(value: Any, allow_zero: bool = False) -> bool:
-    """A number of seconds a deadline can hold: a finite int or float, not a
-    bool, above zero (or zero with ``allow_zero``) and at most
-    :data:`MAX_SECONDS`."""
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return False
-    if isinstance(value, float) and not math.isfinite(value):
-        return False
-    return (value >= 0 if allow_zero else value > 0) and value <= MAX_SECONDS
-
 
 #: How long to let a killed group settle before abandoning its reader threads.
 KILL_GRACE_SECONDS = 5.0
@@ -145,7 +127,9 @@ class ExecOutcome:
         #: child started still held its output after it exited and could not
         #: be confirmed stopped.
         self.orphans_possible = orphans_possible
-        #: False when the child could not be started at all.
+        #: False when the child could not be started at all. For the caller in
+        #: this process only: ``to_dict`` leaves it out, and a recorded outcome
+        #: that never started says so by its exit code, ``EXIT_SPAWN_FAILED``.
         self.started = started
         #: Free for readers of this outcome to keep what they derive from it.
         #: Never serialised.
@@ -174,7 +158,9 @@ class _Drain:
     fed through a bounded queue: the reader never waits on it, so a slow or
     failing callback can neither block the child on a full pipe, nor hold
     back the idle deadline, nor fail the run. A line that finds the queue
-    full is not handed on, only counted in ``dropped``.
+    full is not handed on, only counted in ``dropped``. Once :meth:`mark`
+    is taken, a line that ends past it waits until :meth:`detach` drops it or
+    :meth:`keep` lets it through.
     """
 
     def __init__(self, on_line: Optional[Callable[[str], None]] = None) -> None:
@@ -184,11 +170,18 @@ class _Drain:
         self.dropped = 0
         self._lock = threading.Lock()
         self._on_line = on_line
-        self._lines: "queue.Queue[str]" = queue.Queue(maxsize=_LINE_QUEUE_SIZE)
+        #: Each line, with how many chunks were recorded once it had ended.
+        self._lines: "queue.Queue[Tuple[int, str]]" = queue.Queue(maxsize=_LINE_QUEUE_SIZE)
+        #: The last :meth:`mark`: a line that ends past it is not handed on.
+        self._limit: Optional[int] = None
         self._closed = threading.Event()
         self._abandoned = False
         #: Set by ``detach``: what is read from now on is read and dropped.
         self._detached = False
+        #: Cleared by :meth:`mark` until :meth:`detach` or :meth:`keep` says
+        #: whether the lines past the mark are the run's.
+        self._settled = threading.Event()
+        self._settled.set()
         self._handler: Optional[threading.Thread] = None
         if on_line is not None:
             self._handler = threading.Thread(target=self._hand_on, daemon=True)
@@ -224,17 +217,18 @@ class _Drain:
                         self.chunks.append(text)
                     if data:
                         self.last_output_at = time.monotonic()
+                    recorded = len(self.chunks)
                 if self._handler is not None:
                     *complete, rest = text.split("\n")
                     for line in complete:
                         partial.append(line)
-                        self._hand("".join(partial) + "\n")
+                        self._hand(recorded, "".join(partial) + "\n")
                         partial = []
                     if rest:
                         partial.append(rest)
                     if not data and partial:
                         # The last line, which never ended.
-                        self._hand("".join(partial))
+                        self._hand(recorded, "".join(partial))
                 if not data:
                     break
         except (OSError, ValueError):
@@ -247,14 +241,28 @@ class _Drain:
                 pass
 
     def mark(self) -> int:
-        """Where the output recorded so far ends, for :meth:`detach`."""
+        """Where the output recorded so far ends, for :meth:`detach`.
+
+        From now on ``on_line`` is handed a line that ends past here only
+        once :meth:`keep` says it is the run's, so it never sees what
+        :meth:`detach` is about to drop.
+        """
         with self._lock:
-            return len(self.chunks)
+            self._limit = len(self.chunks)
+            self._settled.clear()
+            return self._limit
+
+    def keep(self) -> None:
+        """Undo :meth:`mark`: everything read is the run's, past it or not."""
+        with self._lock:
+            self._limit = None
+        self._settled.set()
 
     def detach(self, mark: int) -> int:
         """Stop keeping output: drop what was recorded after ``mark`` and
-        everything still to come, and stop handing lines on. The reader goes
-        on reading, so whatever still writes to the pipe never blocks on it.
+        everything still to come. The reader goes on reading, so whatever
+        still writes to the pipe never blocks on it. Lines ``on_line`` has
+        not seen yet are still handed on up to ``mark``, by :meth:`finish`.
         Returns how many characters were dropped.
 
         For output that is no longer the run's -- what a process the CLI left
@@ -263,15 +271,17 @@ class _Drain:
         """
         with self._lock:
             self._detached = True
+            self._limit = mark if self._limit is None else min(self._limit, mark)
             dropped = sum(len(chunk) for chunk in self.chunks[mark:])
             del self.chunks[mark:]
-        self._abandoned = True
+        self._settled.set()
         return dropped
 
-    def _hand(self, line: str) -> None:
-        """Queue ``line`` for ``on_line``, or count it dropped if the queue is full."""
+    def _hand(self, recorded: int, line: str) -> None:
+        """Queue ``line``, which had ended once ``recorded`` chunks were kept,
+        for ``on_line``, or count it dropped if the queue is full."""
         try:
-            self._lines.put_nowait(line)
+            self._lines.put_nowait((recorded, line))
         except queue.Full:
             self.dropped += 1
 
@@ -279,7 +289,7 @@ class _Drain:
         on_line = cast(Callable[[str], None], self._on_line)
         while not self._abandoned:
             try:
-                line = self._lines.get(timeout=_POLL_SECONDS)
+                recorded, line = self._lines.get(timeout=_POLL_SECONDS)
             except queue.Empty:
                 # ``_closed`` is set only after the last put, so a closed
                 # drain with an empty queue has nothing more coming.
@@ -288,6 +298,17 @@ class _Drain:
                 continue
             if self._abandoned:
                 return
+            with self._lock:
+                limit = self._limit
+            if limit is not None and recorded > limit:
+                # Past the mark: whether it is the run's is not known yet.
+                while not self._settled.wait(_POLL_SECONDS):
+                    if self._abandoned:
+                        return
+                with self._lock:
+                    limit = self._limit
+                if limit is not None and recorded > limit:
+                    continue  # not the run's output
             try:
                 on_line(line)
             except Exception:
@@ -356,9 +377,11 @@ def launchable(command: Sequence[str]) -> Union[str, List[str]]:
     replaced with the absolute path :func:`find_program` finds on ``PATH``
     -- never one in the current directory, which may be a repository under
     review -- and one it does not find is not started at all, since
-    ``CreateProcess`` would look in the current directory for it. A
-    relative path is made absolute against this process's directory, where
-    ``doctor`` looked, not the child's. A batch file that is an
+    ``CreateProcess`` would look in the current directory for it. A name
+    with a directory is resolved by :func:`find_program` too, against this
+    process's directory, where ``doctor`` looked, not the child's, and with
+    the same ``PATHEXT`` candidates, so what starts is the file ``doctor``
+    reported. A batch file that is an
     npm shim is bypassed for the program it would run (``node`` and its
     script, or an ``.exe``), so no argument passes through cmd.exe; any other
     batch file runs under cmd.exe with every argument quoted, and refuses an
@@ -367,11 +390,10 @@ def launchable(command: Sequence[str]) -> Union[str, List[str]]:
     argv = [str(token) for token in command]
     if not IS_WINDOWS or not argv:
         return argv
-    if _has_directory(argv[0]):
-        return windows_launch([os.path.abspath(argv[0]), *argv[1:]], None)
     found = find_program(argv[0])
     if found is None:
-        raise FileNotFoundError(errno.ENOENT, "%s not found on PATH" % argv[0], argv[0])
+        where = "" if _has_directory(argv[0]) else " on PATH"
+        raise FileNotFoundError(errno.ENOENT, "%s not found%s" % (argv[0], where), argv[0])
     return windows_launch(argv, found)
 
 
@@ -382,7 +404,9 @@ def find_program(name: str) -> Optional[str]:
     ``PATH`` (and returns a relative ``.\\name``), so a ``claude.cmd``
     committed at the root of a repository would be found and run in place
     of the installed CLI. Only the absolute directories on ``PATH`` are
-    searched here, with ``PATHEXT``, and the path returned is absolute.
+    searched here, with ``PATHEXT``, and the path returned is absolute. A
+    name with a directory in it is not searched for: it is looked up where
+    it says, made absolute, with the same ``PATHEXT`` candidates.
     """
     if not IS_WINDOWS:
         return shutil.which(name)
@@ -396,6 +420,13 @@ def search_path(name: str, path: str, pathext: str) -> Optional[str]:
         candidates = [name]
     else:
         candidates = [name + ext for ext in exts]
+    if _has_directory(name):
+        # Where it says, as :func:`launchable` starts it; never on PATH.
+        for candidate in candidates:
+            found = os.path.abspath(candidate)
+            if os.path.isfile(found):
+                return found
+        return None
     for entry in path.split(";"):
         directory = entry.strip().strip('"')
         # A relative entry (".", or the empty one) is the current directory
@@ -610,7 +641,7 @@ def terminate_tree(proc: subprocess.Popen, grace: float = KILL_GRACE_SECONDS) ->
     return _end_tree(proc.pid, grace, exited, kill)
 
 
-def kill_tree(pid: int, grace: float = KILL_GRACE_SECONDS) -> bool:
+def kill_tree(pid: int, grace: float = KILL_GRACE_SECONDS, verified: bool = True) -> bool:
     """:func:`terminate_tree` for a process known only by its pid, such as a
     detached worker. True once it is confirmed gone, not when it was signalled.
 
@@ -622,9 +653,16 @@ def kill_tree(pid: int, grace: float = KILL_GRACE_SECONDS) -> bool:
     the group it led still has members (checked immediately before each
     signal). Anything else is more likely a reused pid than our worker, and is
     left alone (False).
+
+    ``verified`` is whether the caller confirmed the pid is still the process
+    it means. An unverified pid is signalled only where the check above can
+    stand in for that: on Windows it is left alone (False), as taskkill /T /F
+    would end whatever tree has the pid by now.
     """
     if not pid_alive(pid):
         return True
+    if IS_WINDOWS and not verified:
+        return False
     if not IS_WINDOWS:
         try:
             if os.getpgid(pid) != pid:
@@ -738,6 +776,43 @@ def _group_alive(pgid: int) -> bool:
     return True
 
 
+def _group_running(pgid: int) -> bool:
+    """Whether process group ``pgid`` is *confirmed* to have a member that is
+    still running.
+
+    The opposite leaning to :func:`_group_alive`: a group confirmed gone, one
+    whose members are all zombies, and an answer that proves nothing (EPERM,
+    which macOS gives for a group of zombies, or any other error) are all
+    False. Where ``/proc`` lists the processes, a member counts only if it is
+    not a zombie; elsewhere a group that may be signalled counts as running.
+    """
+    try:
+        os.killpg(pgid, 0)
+    except OSError:
+        return False
+    try:
+        names = os.listdir("/proc")
+    except OSError:
+        return True
+    if not os.path.exists("/proc/self/stat"):
+        return True
+    for name in names:
+        if not name.isdigit():
+            continue
+        try:
+            with open("/proc/%s/stat" % name, "rb") as f:
+                stat = f.read()
+        except OSError:  # gone meanwhile, or not ours to read
+            continue
+        # "pid (comm) state ppid pgrp ...": comm may hold anything, ")" too.
+        fields = stat[stat.rfind(b")") + 2 :].split()
+        if len(fields) < 3 or not fields[2].isdigit() or int(fields[2]) != pgid:
+            continue
+        if fields[0] not in (b"Z", b"X"):
+            return True
+    return False
+
+
 def _group_ends(pgid: int, deadline: float, reap: bool = False) -> bool:
     """Wait until ``deadline`` for group ``pgid`` to be confirmed gone.
 
@@ -813,13 +888,26 @@ def execute(
         _join(threads, KILL_GRACE_SECONDS)
         readers = threads[:2]
         lingering = not killed and any(t.is_alive() for t in readers)
+        # On POSIX the group outlives its leader: a member still running once
+        # the readers are done is a process the CLI started, whatever it does
+        # with the pipes. Asked only now, so a member that was merely on its
+        # way out when the CLI exited does not cost the CLI's own last output.
+        left_behind = not killed and not lingering and not IS_WINDOWS and _group_running(proc.pid)
         discarded = 0
+        if lingering or left_behind:
+            # Whatever came after the marks was written after the CLI exited,
+            # by something it started, and is not the run's: it is cut off
+            # whether that writer still holds the pipe or closed it meanwhile.
+            discarded = out.detach(marks[0]) + err.detach(marks[1])
+        elif not killed:
+            # Nothing is known to have outlived the CLI: what the readers took
+            # in after the marks is the CLI's own, read late by a slow reader.
+            out.keep()
+            err.keep()
         if lingering:
             # The CLI exited, but something it started still holds its output:
             # a dev server left running in the background, say. Nothing would
-            # ever end it, and nothing it writes now belongs to this run, so
-            # it is cut off and no longer kept.
-            discarded = out.detach(marks[0]) + err.detach(marks[1])
+            # ever end it.
             orphans = True
             if _end_leftovers(proc):
                 _join(readers, KILL_GRACE_SECONDS)
@@ -1021,6 +1109,11 @@ def _verdict(
             )
         if discarded:
             stderr += "warning: %d characters it wrote after the CLI exited were dropped\n" % discarded
+    elif discarded:
+        stderr += (
+            "\nwarning: a process the CLI started wrote %d characters after the CLI exited;"
+            " they were dropped\n" % discarded
+        )
     elif orphans:
         stderr += "\nwarning: the process group did not exit after being killed; check for orphans\n"
     return exit_code, stderr

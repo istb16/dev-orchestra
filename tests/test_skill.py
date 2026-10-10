@@ -609,10 +609,12 @@ _ALLOWED = {
     # The registry and presets both need config complete before they load.
     ("config.py", "user_providers_hint", ".providers"),
     ("config.py", "compose", ".presets"),
+    ("config.py", "root", ".workspace"),
     ("config.py", "load", ".presets"),
     ("config.py", "validate", ".presets"),
     ("config.py", "validate", ".providers"),
     ("config.py", "_validate_role_options", ".providers"),
+    ("config.py", "idle_timeout", ".providers"),
     # Initialisation order: the registry runs the user adapters.
     ("presets.py", "user_fit", ".providers"),
     ("presets.py", "_named_fit", ".providers"),

@@ -44,6 +44,10 @@ JOB_FILE = "{job_file}"
 #: worker reads what the parent checked, not the file as it is later.
 RESUME_PROMPT_FILE = "{resume_prompt_file}"
 
+#: How long a job recorded without a pid still counts as starting: see
+#: :func:`may_still_run`.
+STARTING_GRACE_SECONDS = 300
+
 
 def jobs_dir(workspace: ws.Workspace) -> str:
     return os.path.join(workspace.dir, "jobs")
@@ -165,6 +169,24 @@ def _reconcile(workspace: ws.Workspace, job: Dict[str, Any]) -> Dict[str, Any]:
     return job
 
 
+def may_still_run(job: Dict[str, Any], now: Optional[float] = None) -> bool:
+    """Whether a job read through :func:`read_job` or :func:`list_jobs` may
+    still have a worker writing for it.
+
+    A job with no pid is one :func:`start` has not yet seen spawn. That takes
+    moments, so one left like that for :data:`STARTING_GRACE_SECONDS` is a
+    start that crashed part way, and nothing will ever run for it.
+    """
+    if job.get("status") in FINISHED:
+        return False
+    if job.get("pid"):
+        return True
+    begun = _epoch(job.get("started_at"))
+    if begun is None:
+        return False
+    return (time.time() if now is None else now) - begun < STARTING_GRACE_SECONDS
+
+
 def _worker_alive(pid: int, job: Dict[str, Any]) -> Optional[bool]:
     """Whether ``pid`` is the job's worker and still running; None when it is
     running but nothing recorded says whose it is.
@@ -174,14 +196,18 @@ def _worker_alive(pid: int, job: Dict[str, Any]) -> Optional[bool]:
     So the pid is checked against the start time recorded with it, and a
     different start is a different process: the worker is gone. A record
     without one (written before it was kept, or on macOS, where none can be
-    read) is None.
+    read) is None, and so is a live pid whose start cannot be read now (on
+    Windows, when opening the process is denied).
     """
     if not execution.pid_alive(pid):
         return False
     started = job.get("pid_started")
     if not started:
         return None
-    return execution.process_started(pid) == started
+    now = execution.process_started(pid)
+    if now is None:
+        return None
+    return now == started
 
 
 def _record_pid(job: Dict[str, Any], pid: int, started: Optional[str]) -> None:
@@ -316,15 +342,24 @@ def cancel(workspace: ws.Workspace, job_id: str) -> Dict[str, Any]:
     pid = int(job.get("pid") or 0)
     alive = _worker_alive(pid, job) if pid else False
     killed = False
-    note = " (the worker may still be running)"
-    if alive or (alive is None and not execution.IS_WINDOWS):
-        # Unconfirmed on POSIX, kill_tree still signals the pid only while it
-        # leads its own group, as the worker does. Windows has no such check,
-        # and taskkill /T /F there would end whatever tree now has the pid.
-        killed = execution.kill_tree(pid, execution.KILL_GRACE_SECONDS)
-    elif alive is None:
-        note = " (pid %d was not stopped: it may no longer be the worker, which may still be running)" % pid
-    error = "cancelled by request%s" % ("" if killed else note)
+    if alive is not False:
+        killed = execution.kill_tree(pid, execution.KILL_GRACE_SECONDS, verified=alive is True)
+    if not killed and alive is not False and execution.pid_alive(pid):
+        # The pid is still there and was not confirmed stopped, and nothing
+        # says it is someone else's: the worker may be running, so the job is
+        # not finished. Leaving it as it is keeps what reads it (``workflow
+        # remove``) from taking it for done.
+        job = dict(job)
+        if alive is True:
+            job["not_stopped"] = (
+                "pid %d, the worker, was not confirmed stopped and may still be running" % pid
+            )
+        else:
+            job["not_stopped"] = (
+                "pid %d was not stopped: it may no longer be the worker, which may still be running" % pid
+            )
+        return job
+    error = "cancelled by request%s" % ("" if killed else " (the worker may still be running)")
     # Written by the worker's SIGTERM handler before it exited, so it is there
     # by now when the kill was confirmed.
     left = _read_stop_note(stop_note_path(job_path(workspace, job_id)))
@@ -435,6 +470,8 @@ def render(job: Dict[str, Any], act: Optional[Dict[str, Any]] = None) -> str:
             lines.append("  rejected: %s" % job["rejected_file"])
     if job.get("waited_out"):
         lines.append("  note:     still running when the wait timed out")
+    if job.get("not_stopped"):
+        lines.append("  note:     not cancelled; %s" % job["not_stopped"])
     if act is not None:
         lines += _render_activity(job, act, running)
     return "\n".join(lines)

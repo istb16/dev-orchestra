@@ -169,6 +169,78 @@ class TestThePathSearch(_TempDir):
             execution.search_path("codex.cmd", installed, ".exe;.cmd"), os.path.join(installed, "codex.cmd")
         )
 
+    def touch(self, *parts):
+        path = os.path.join(self.tmp, *parts)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as handle:
+            handle.write("")
+        return os.path.realpath(path)
+
+    def test_a_name_with_a_directory_is_looked_up_where_it_says_not_on_path(self):
+        tools = self.touch("tools", "claude.cmd")
+        self.touch("npm", "tools", "claude.cmd")  # what a PATH search would find
+        npm = os.path.join(self.tmp, "npm")
+        absolute = os.path.join(self.tmp, "tools", "claude")
+        # No absolute entry on PATH at all: the file is still where it says.
+        found = execution.search_path(absolute, ".", ".exe;.cmd")
+        self.assertEqual(os.path.realpath(found or ""), tools)
+        os.chdir(self.tmp)
+        found = execution.search_path(os.path.join("tools", "claude"), npm, ".exe;.cmd")
+        self.assertTrue(os.path.isabs(found or ""))
+        self.assertEqual(os.path.realpath(found or ""), tools)
+        self.assertIsNone(execution.search_path(os.path.join("missing", "claude"), npm, ".exe;.cmd"))
+
+    def test_launch_starts_the_file_the_search_found(self):
+        exe = self.touch("tools", "claude.exe")
+        os.chdir(self.tmp)
+        relative = os.path.join("tools", "claude")
+        with (
+            mock.patch.object(execution, "IS_WINDOWS", True),
+            mock.patch.dict(os.environ, {"PATHEXT": ".exe;.cmd"}),
+        ):
+            found = execution.find_program(relative)
+            launch = execution.launchable([relative, "-p"])
+            with self.assertRaises(FileNotFoundError):
+                execution.launchable([os.path.join("missing", "claude")])
+        self.assertEqual(os.path.realpath(found or ""), exe)
+        self.assertEqual(launch, [found, "-p"])
+
+    def test_a_name_with_a_directory_and_its_extension_is_taken_as_it_is(self):
+        tools = self.touch("tools", "claude.cmd")
+        self.touch("tools", "claude.cmd.exe")  # not tried: the name has its extension
+        os.chdir(self.tmp)
+        found = execution.search_path(os.path.join("tools", "claude.cmd"), ".", ".exe;.cmd")
+        self.assertTrue(os.path.isabs(found or ""))
+        self.assertEqual(os.path.realpath(found or ""), tools)
+
+    def test_a_directory_where_the_name_points_is_not_the_program(self):
+        os.makedirs(os.path.join(self.tmp, "tools", "claude"))
+        os.makedirs(os.path.join(self.tmp, "tools", "codex.cmd"))
+        os.chdir(self.tmp)
+        self.assertIsNone(execution.search_path(os.path.join("tools", "claude"), ".", ".exe;.cmd"))
+        self.assertIsNone(execution.search_path(os.path.join("tools", "codex.cmd"), ".", ".exe;.cmd"))
+        # Beside the directory, the file with an extension is the one found.
+        cmd = self.touch("tools", "claude.cmd")
+        found = execution.search_path(os.path.join("tools", "claude"), ".", ".exe;.cmd")
+        self.assertEqual(os.path.realpath(found or ""), cmd)
+
+    def test_a_qualified_cmd_is_launched_as_the_file_the_search_found(self):
+        """Not an npm shim: it runs under cmd.exe, and that line names the
+        file ``doctor`` would report, by its absolute path."""
+        self.touch("tools", "claude.cmd")
+        os.chdir(self.tmp)
+        for name in (os.path.join("tools", "claude"), os.path.join("tools", "claude.cmd")):
+            with self.subTest(name=name):
+                with (
+                    mock.patch.object(execution, "IS_WINDOWS", True),
+                    mock.patch.dict(os.environ, {"PATHEXT": ".exe;.cmd"}),
+                ):
+                    found = execution.find_program(name)
+                    launch = execution.launchable([name, "-p"])
+                self.assertTrue(os.path.isabs(found or ""))
+                self.assertEqual(launch, execution.batch_command_line(found or "", ["-p"]))
+                self.assertIn('"%s" "-p"' % found, launch)
+
 
 @unittest.skipUnless(os.name == "nt", "a .cmd only runs on Windows")
 class TestTheCurrentDirectoryOnWindows(_TempDir):

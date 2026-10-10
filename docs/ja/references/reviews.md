@@ -1,4 +1,4 @@
-<!-- translated-from: references/reviews.md sha256:6b8fc509953f6acc1f3642fb3a9f9ee9e944b97428f4733aa9d6ee378f0c8f95 -->
+<!-- translated-from: references/reviews.md sha256:29f1977b654442f9f3ea7548351cbf9342bd2180ac34daa4f040960971731a0c -->
 
 > この文書は [references/reviews.md](../../../references/reviews.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -72,6 +72,7 @@ dev-orchestra review snapshot --no-exclude    # generated files included too
   "strategy": "git diff HEAD",
   "base": null,
   "head": "9f2c…",
+  "base_commit": "9f2c…",
   "files": ["app/services/pricing.rb", "spec/services/pricing_spec.rb"],
   "untracked_included": ["app/services/pricing.rb"],
   "withheld": [
@@ -179,10 +180,18 @@ minify された出力、ソースマップ、`*.snap` をカバーします。�
 差分ラウンドでも、`HEAD` にもインデックスにもないファイルには同じ上限が、
 ラウンドの前後両方の大きさで適用されます。そのため大きな未追跡ファイルは、
 修正で追加・変更・縮小・削除のどれをされても、丸ごと diff されずに省略されます。
+名前を変えたものは、前後どちらの名前でも省略されます。
 
 入れ子のリポジトリや、このリポジトリの中に置いた worktree は変更の一部では
 ありません。git はこれをディレクトリとして挙げ、これまでどおりスナップショット
 から外します。diff も省略もしません。
+
+ファイルはディスク上のとおりの名前で読みますが、スナップショットへの記録、
+`review snapshot` の表示、レビュアーへのプロンプトでは、名前の中の制御文字を
+すべて `\xNN`（改行は `\x0a`、エスケープは `\x1b`）に、UTF-8 でないバイトを
+U+FFFD にして書きます。ファイル名はリポジトリが決めるもので、エスケープシーケンス
+や改行を含む名前が、操作する人の端末を書き換えたり、レビュアーが読む省略の一覧に
+行を足したりしてはならないからです。
 
 変更されたファイルが*すべて*省略された場合、スナップショットは空になり、その旨を
 そのとおりの言葉で伝えます。これは「何も変更されていない」とは別の状況であり、

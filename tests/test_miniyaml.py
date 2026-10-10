@@ -3,11 +3,17 @@
 from __future__ import annotations
 
 import unittest
+from unittest import mock
 
 from helpers import IsolatedCase
 
 from orchestrator import miniyaml
 from orchestrator.miniyaml import _emit, _parse_node, _read_lines
+
+try:  # compared against where it is installed; the bundled parser is tested either way
+    import yaml
+except ImportError:  # pragma: no cover - depends on the machine
+    yaml = None
 
 
 def parse_without_pyyaml(text: str):
@@ -285,6 +291,46 @@ class TestRoundTrip(IsolatedCase):
             self.assertRoundTrips(first)
             for second in TRICKY_PIECES:
                 self.assertRoundTrips(first + second)
+
+    def test_an_indicator_the_plain_pattern_lets_through_is_quoted(self):
+        """The emitter quotes whatever the reader would refuse, not only what the pattern excludes."""
+        with mock.patch.dict(miniyaml._INDICATORS, {"a": "a test indicator"}):
+            text = dump({"k": "abc"})
+        self.assertEqual(text, 'k: "abc"\n')
+        self.assertEqual(parse_without_pyyaml(text), {"k": "abc"})
+
+
+@unittest.skipIf(yaml is None, "PyYAML is not installed")
+class TestReadByPyYAML(IsolatedCase):
+    """What the emitter writes reads the same with PyYAML as without it."""
+
+    def pyyaml(self, text):
+        assert yaml is not None
+        return yaml.safe_load(text)
+
+    def assertSameReading(self, value):
+        text = dump({"k": value, "list": [value], "nested": {value or "key": value}})
+        expected = {"k": value, "list": [value], "nested": {value or "key": value}}
+        self.assertEqual(self.pyyaml(text), expected, text)
+        self.assertEqual(parse_without_pyyaml(text), expected, text)
+
+    def test_every_tricky_string(self):
+        for first in TRICKY_PIECES:
+            self.assertSameReading(first)
+            for second in TRICKY_PIECES:
+                self.assertSameReading(first + second)
+
+    def test_number_looking_strings(self):
+        for text in ("123", "1.0", ".5", "007", "1_000", "0x1F", "2026-10-06", "0.22.0", "1e5", "-1"):
+            self.assertSameReading(text)
+
+    def test_numbers(self):
+        for number in (0, -3, 1.5, 1e20, 1e-07, float("inf"), float("-inf")):
+            with self.subTest(number=number):
+                text = dump({"n": number})
+                self.assertEqual(self.pyyaml(text)["n"], number, text)
+        nan = self.pyyaml(dump({"n": float("nan")}))["n"]
+        self.assertNotEqual(nan, nan)
 
 
 if __name__ == "__main__":

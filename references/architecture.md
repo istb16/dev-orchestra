@@ -277,8 +277,13 @@ mixed-case and all-capital words, and the short cells of a Markdown table
 (rows between `|`s, or under a `--- | ---` separator), which mostly hold
 finding titles, ids and paths as written. A cell that reads as prose -- 6 or
 more Latin words with a sentence end, 20 or more without one, or 10 or more
-letters of another script -- is judged like the text around it, so a reply
-written in table cells is not let through. The letters left
+letters of another script -- is judged like the text around it, and so is
+every cell of a table whose short cells that end a sentence add up to 40 or
+more Latin words, so a reply written in table cells, in long sentences or
+short ones, is not let through. Short cells with no sentence end read as
+titles and labels, and are left out however many there are. Inline code is
+removed before the table is read, so a `|` inside it splits no cell. The
+letters left
 are counted by script, the language's own against Latin, a Latin letter
 weighing a third of a kana, ideograph or Hangul letter and as much as one of
 an alphabet. Any reply fails when 60 or more letters are in scripts other

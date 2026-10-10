@@ -12,7 +12,7 @@ import argparse
 import pathlib
 import re
 import unittest
-from typing import Dict, List, Tuple
+from typing import List
 
 from helpers import REPO_ROOT, USER_ADAPTER_SOURCE, IsolatedCase
 
@@ -431,23 +431,6 @@ class TestReferenceContents(unittest.TestCase):
                     self.assertRegex(lines[number - 2] if number >= 2 else "", r'^<a id="[^"]+"></a>$')
 
 
-def leaf_commands() -> Dict[Tuple[str, ...], argparse.ArgumentParser]:
-    """Every runnable command of the parser, as its words: ``("review", "run")``."""
-    found: Dict[Tuple[str, ...], argparse.ArgumentParser] = {}
-
-    def walk(parser: argparse.ArgumentParser, words: Tuple[str, ...]) -> None:
-        groups = [action for action in parser._actions if isinstance(action, argparse._SubParsersAction)]
-        if not groups:
-            found[words] = parser
-            return
-        for group in groups:
-            for name, child in group.choices.items():
-                walk(child, (*words, name))
-
-    walk(cli.build_parser(), ())
-    return found
-
-
 JSON_COMMANDS = re.compile(r"<!-- json-commands: start -->(.*?)<!-- json-commands: end -->", re.DOTALL)
 
 
@@ -463,7 +446,7 @@ class TestTheJsonCommandList(unittest.TestCase):
     def test_the_list_is_the_parsers(self):
         expected = sorted(
             " ".join(words)
-            for words, parser in leaf_commands().items()
+            for words, parser in cli.leaf_commands().items()
             if any("--json" in action.option_strings for action in parser._actions)
         )
         for relative in ("references/cli.md", "docs/ja/references/cli.md"):
@@ -481,14 +464,16 @@ class TestCliSignatures(unittest.TestCase):
         return self.ROW.findall(text)
 
     def test_each_signature_names_every_flag(self):
+        """One row's own signature names them all: a flag shown only in a
+        sibling row of the same command, or only in the description, does
+        not count."""
         for relative in ("references/cli.md", "docs/ja/references/cli.md"):
             signatures = self.signatures(relative)
-            for words, parser in leaf_commands().items():
+            for words, parser in cli.leaf_commands().items():
                 command = " ".join(words)
                 with self.subTest(file=relative, command=command):
-                    mine = [sig for sig in signatures if re.match(r"%s(?=[ ]|$)" % re.escape(command), sig)]
-                    self.assertTrue(mine, "no signature row for %s" % command)
-                    joined = " ".join(mine)
+                    rows = [sig for sig in signatures if re.match(r"%s(?=[ ]|$)" % re.escape(command), sig)]
+                    self.assertTrue(rows, "no signature row for %s" % command)
                     flags = {
                         option
                         for action in parser._actions
@@ -496,8 +481,16 @@ class TestCliSignatures(unittest.TestCase):
                         for option in action.option_strings
                         if option.startswith("--") and option != "--help"
                     }
-                    missing = sorted(
-                        flag for flag in flags if not re.search(re.escape(flag) + r"(?![A-Za-z-])", joined)
+                    missing = min(
+                        (
+                            sorted(
+                                flag
+                                for flag in flags
+                                if not re.search(re.escape(flag) + r"(?![A-Za-z-])", row[len(command) :])
+                            )
+                            for row in rows
+                        ),
+                        key=len,
                     )
                     self.assertEqual(missing, [])
 

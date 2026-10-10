@@ -15,7 +15,7 @@ from contextlib import redirect_stderr, redirect_stdout
 
 from helpers import IsolatedCase
 
-from orchestrator import cli, cli_run
+from orchestrator import cli, cli_common
 
 PROMPT = "日本語のプロンプトです。変更を確かめてください。"
 
@@ -30,7 +30,7 @@ class TestReadingStdin(unittest.TestCase):
         saved = sys.stdin
         sys.stdin = console_stdin(data, encoding)
         try:
-            return cli_run._read_stdin()
+            return cli_common._read_stdin()
         finally:
             sys.stdin = saved
 
@@ -71,7 +71,7 @@ class TestReadingStdin(unittest.TestCase):
         saved = sys.stdin
         sys.stdin = io.StringIO(PROMPT)
         try:
-            self.assertEqual(cli_run._read_stdin(), PROMPT)
+            self.assertEqual(cli_common._read_stdin(), PROMPT)
         finally:
             sys.stdin = saved
 
