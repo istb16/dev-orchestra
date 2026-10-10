@@ -103,17 +103,45 @@ release_destination() {
 }
 
 # A Claude copy made before the installer wrote the sentinel: the skill and
-# its CLI are there, and nothing at the top that a copy does not carry, so
-# removing it loses nothing the checkout does not have.
+# its CLI are there, and every entry in it, at any depth and hidden or not,
+# is at the same path in this checkout's payload, so removing it loses
+# nothing the checkout does not have. The .pyc files that running the CLI
+# from the copy leaves in a __pycache__ directory are left out: they are made
+# again, and such a directory needs no twin in the checkout. Anything else in
+# one -- another file, a link, a directory -- fails the check. A directory
+# must be a directory there, and a file a file. The installer never wrote a
+# link into a copy, so one inside it, which is not followed, fails the check,
+# and so does anything find cannot read.
 is_unmarked_copy() {
   [ -f "$1/skills/$SKILL_NAME/SKILL.md" ] && [ -f "$1/scripts/orchestrator/__init__.py" ] || return 1
-  for entry in "$1"/* "$1"/.[!.]* "$1"/..?*; do
-    [ -e "$entry" ] || [ -L "$entry" ] || continue
-    case " $PAYLOAD " in
-      *" ${entry##*/} "*) ;;
-      *) return 1 ;;
-    esac
-  done
+  find "$1" -exec sh -c '
+    copy=$1 checkout=$2 payload=$3
+    shift 3
+    for entry do
+      [ "$entry" = "$copy" ] && continue
+      relative=${entry#"$copy"/}
+      case " $payload " in
+        *" ${relative%%/*} "*) ;;
+        *) exit 1 ;;
+      esac
+      [ -L "$entry" ] && exit 1
+      parent=
+      case $relative in */*) parent=${relative%/*} ;; esac
+      case /$parent in
+        */__pycache__)
+          # A bytecode cache holds .pyc files and nothing else.
+          case ${relative##*/} in *.pyc) [ -f "$entry" ] && continue ;; esac
+          exit 1 ;;
+      esac
+      twin=$checkout/$relative
+      if [ -d "$entry" ]; then
+        [ "${relative##*/}" = __pycache__ ] && continue
+        [ -d "$twin" ] || exit 1
+      else
+        [ -f "$twin" ] || exit 1
+      fi
+    done
+  ' sh "$1" "$root" "$PAYLOAD" {} +
 }
 
 # Drop the entry $1 the installer added, and its marker $2. An entry without
@@ -128,8 +156,9 @@ unexclude_marked() {
   # written back (Git Bash's awk would drop them). awk exits non-zero when it
   # removed nothing.
   entry=$1
+  marker=$2
   tmp="$exclude_file.tmp.$$"
-  awk -v BINMODE=3 -v m="$2" -v e="$entry" '
+  awk -v BINMODE=3 -v m="$marker" -v e="$entry" '
     { line = $0; sub(/\r$/, "", line) }
     held { held = 0; if (line == e) { removed = 1; next } print m }
     line == m { held = 1; next }
@@ -142,9 +171,9 @@ unexclude_marked() {
   else
     rm -f "$tmp"
   fi
-  # The Claude entry without a marker: what installers before the marker
-  # wrote, or the user's own line. Either way it is not removed, only named.
-  if [ "$mode" = claude ] && tr -d '\r' < "$exclude_file" | grep -qxF "$entry"; then
+  # The entry without a marker: what an installer before the marker wrote,
+  # or the user's own line. Either way it is not removed, only named.
+  if tr -d '\r' < "$exclude_file" | grep -qxF "$entry"; then
     printf 'Left %s in .git/info/exclude: the installer did not mark it as its own.\n' "$entry"
     printf 'An older installer may have added it; remove the line by hand if it is no longer wanted.\n'
   fi
@@ -186,6 +215,17 @@ else
   begin="<!-- BEGIN $SKILL_NAME -->"
   end="<!-- END $SKILL_NAME -->"
   if [ -f "$agents_file" ] && grep -qF "$begin" "$agents_file"; then
+    # A BEGIN with no END after it: what follows may be the user's own text,
+    # so nothing is taken out.
+    if ! awk -v b="$begin" -v e="$end" '
+      index($0, b) { open = 1 }
+      index($0, e) { open = 0 }
+      END { exit open }
+    ' "$agents_file"; then
+      printf '%s has %s with no %s after it; it was left as it is.\n' "$agents_file" "$begin" "$end" >&2
+      printf 'Remove the unfinished block by hand, then re-run.\n' >&2
+      exit 1
+    fi
     tmp="$agents_file.tmp.$$"
     # BINMODE: Git Bash's awk would otherwise drop the CR of every CRLF line.
     # The result ends with a newline only when the file did (eol).

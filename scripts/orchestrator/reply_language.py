@@ -26,7 +26,7 @@ from collections import Counter
 from typing import Any, Dict, Iterable, List, Mapping, NamedTuple, Optional, Tuple
 
 from . import config as config_mod
-from . import config_trust, workflow
+from . import workflow
 from .execution import DELEGATED_ENV
 
 #: The command-line event name, and the ``hook_event_name`` it must arrive with.
@@ -341,7 +341,6 @@ _RE_DOUBLE_QUOTED = re.compile(r'"[^"\n]*"')
 _RE_TOKEN = re.compile(r"[A-Za-z0-9_.:=#@-]+")
 _RE_MIXED_CASE = re.compile(r"(?<![A-Za-z])[A-Za-z]*[a-z][A-Z][A-Za-z]*")
 _RE_ALL_CAPS = re.compile(r"(?<![A-Za-z])[A-Z]{2,}s?(?![A-Za-z])")
-_RE_TABLE_SEPARATOR = re.compile(r"^[ \t]*\|?[ \t:|-]*-[ \t:|-]*$", re.M)
 #: A Markdown table row written between pipes.
 _RE_PIPED_ROW = re.compile(r"^[ \t]*\|.*\|[ \t]*$")
 #: A table's separator row, with at least one pipe: ``--- | :---:``.
@@ -355,6 +354,9 @@ CELL_SENTENCE_WORDS = 6
 CELL_PROSE_WORDS = 20
 #: ...or at this many letters of a script other than Latin.
 CELL_OTHER_LETTERS = 10
+#: A table whose short sentence cells add up to this many Latin words is
+#: judged whole: a reply split into terse sentences, one per cell.
+TABLE_SENTENCE_WORDS = 40
 _RE_LATIN_WORD = re.compile(r"[A-Za-zÀ-ɏ]{2,}")
 _RE_PARAGRAPH_BREAK = re.compile(r"\n[ \t]*\n")
 _RE_WORD = re.compile(r"[^\W\d_]+")
@@ -379,13 +381,20 @@ def _prose_cell(cell: str) -> bool:
 def _table_prose(text: str) -> str:
     """``text`` with each Markdown table reduced to its prose-like cells.
 
+    The one place that handles tables, separator rows included. It runs
+    after inline code is gone, so a ``|`` inside backticks splits no cell.
+
     A table in a reply mostly carries what rule 11 keeps as written --
     finding titles a reviewer wrote, ids, severities, paths, model names --
     so those cells are left out like a quote. A cell that reads as prose (a
     sentence, or a long run of words) stays in, one line each, so a reply
-    written in table cells is judged like any other (#288). A row between
-    pipes is a table row wherever it stands; rows without the outer pipes are
-    recognised by the separator row under their header.
+    written in table cells is judged like any other (#288). So does every
+    cell of a table whose short cells that end a sentence add up to
+    ``TABLE_SENTENCE_WORDS`` Latin words: a reply cut into terse sentences.
+    Short cells with no sentence end read as titles and labels, and are left
+    out however many there are. A row between pipes is a table row wherever
+    it stands; rows without the outer pipes are recognised by the separator
+    row under their header.
     """
     lines = text.split("\n")
     rows = [bool(_RE_PIPED_ROW.match(line)) for line in lines]
@@ -401,14 +410,29 @@ def _table_prose(text: str) -> str:
     if not any(rows) and not any(separators):
         return text
     out: List[str] = []
+    table: List[List[str]] = []
+
+    def close_table() -> None:
+        sentence_words = sum(
+            len(_RE_LATIN_WORD.findall(cell))
+            for cells in table
+            for cell in cells
+            if not _prose_cell(cell) and _RE_SENTENCE_END.search(cell)
+        )
+        whole = sentence_words >= TABLE_SENTENCE_WORDS
+        for cells in table:
+            out.append("\n".join(cell for cell in cells if whole or _prose_cell(cell)))
+        table.clear()
+
     for line, row, separator in zip(lines, rows, separators, strict=True):
         if separator:
-            out.append("")
+            table.append([])
         elif row:
-            cells = [cell.strip() for cell in _RE_CELL_SPLIT.split(line)]
-            out.append("\n".join(cell for cell in cells if cell and _prose_cell(cell)))
+            table.append([cell.strip() for cell in _RE_CELL_SPLIT.split(line) if cell.strip()])
         else:
+            close_table()
             out.append(line)
+    close_table()
     return "\n".join(out)
 
 
@@ -417,8 +441,8 @@ def strip_allowed(text: str) -> str:
     text = _RE_FENCE.sub("", text)
     text = _RE_HTML_COMMENT.sub("", text)
     text = _RE_QUOTE_LINE.sub("", text)
-    text = _table_prose(text)
     text = _RE_INLINE_CODE.sub(" ", text)
+    text = _table_prose(text)
     text = _RE_LINK_TARGET.sub("] ", text)
     text = _RE_AUTOLINK.sub(" ", text)
     text = _RE_URL.sub(" ", text)
@@ -430,7 +454,6 @@ def strip_allowed(text: str) -> str:
     text = _RE_TOKEN.sub(_drop_identifier, text)
     text = _RE_MIXED_CASE.sub(" ", text)
     text = _RE_ALL_CAPS.sub(" ", text)
-    text = _RE_TABLE_SEPARATOR.sub("", text)
     return text
 
 
@@ -787,13 +810,9 @@ def file_settings(cwd: str) -> Dict[str, Any]:
     for path in layer_paths(cwd):
         layers.append(config_mod.read_config_file(path) if path and os.path.isfile(path) else {})
     global_layer, project_layer = layers
-    data = config_mod.deep_merge(global_layer, config_trust.without_ignored(project_layer))
-    # And the workspace a link would take out of the repository, as the commands drop it.
+    # In the repository, so a workspace a link takes out of it is dropped as the commands drop it.
     root = config_mod.repository_root(cwd) or os.path.abspath(cwd)
-    used = config_mod.workspace_dir_in(root, data, global_layer, project_layer)
-    if used != config_mod.workspace_dir_of(data):
-        data = config_mod.deep_merge(data, {"workspace": {"dir": used}})
-    return data
+    return config_mod.deep_merge(global_layer, config_mod.trusted_project_layer(project_layer, root))
 
 
 def layer_paths(cwd: str) -> List[Optional[str]]:

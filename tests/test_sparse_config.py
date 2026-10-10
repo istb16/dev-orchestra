@@ -17,6 +17,7 @@ mutating a returned one proves nothing at all.
 from __future__ import annotations
 
 import copy
+import datetime
 import io
 import json
 import os
@@ -157,6 +158,24 @@ class TestSparseWriters(IsolatedCase):
         with self.assertRaises(config_mod.ConfigError):
             config_mod.write_config_file(os.path.join(self.tmp, "c.json"), {"x": float("-inf")})
         self.assertFalse(os.path.exists(os.path.join(self.tmp, "c.json")))
+
+    def test_a_json_file_refuses_a_value_json_has_no_type_for(self):
+        """PyYAML reads `2026-10-06` in a block value as a date: refused naming it, not a traceback."""
+        path = os.path.join(self.tmp, "c.json")
+        date = datetime.date(2026, 10, 6)
+        for data in ({"x": {"when": date}}, {"x": [{1, 2}]}, {"x": {date: 1}}):
+            with self.subTest(data=data):
+                with self.assertRaises(config_mod.ConfigError) as caught:
+                    config_mod.write_config_file(path, data)
+                self.assertIn("c.json", str(caught.exception))
+                self.assertIn("keep the setting in a YAML file", str(caught.exception))
+                self.assertFalse(os.path.exists(path))
+        with self.assertRaisesRegex(config_mod.ConfigError, r"datetime\.date\(2026, 10, 6\)"):
+            config_mod.write_config_file(path, {"x": date})
+        # The YAML writer quotes the same value, and it reads back as text.
+        yaml_path = os.path.join(self.tmp, "c.yaml")
+        config_mod.write_config_file(yaml_path, {"x": date})
+        self.assertEqual(config_mod.read_config_file(yaml_path), {"x": "2026-10-06"})
 
     def test_a_json_file_keeps_text_that_is_not_ascii(self):
         path = os.path.join(self.tmp, "config.json")

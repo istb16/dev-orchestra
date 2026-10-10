@@ -6,6 +6,7 @@ import argparse
 import io
 import json
 import os
+import re
 import sys
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
@@ -999,6 +1000,41 @@ class TestDoctor(IsolatedCase):
         )
         self.assertFalse(any(p.startswith("Implementer (tier light)") for p in problems), problems)
 
+    def test_doctor_flags_ignored_options_on_an_orchestrator_tier(self):
+        data = config_mod.default_config()
+        role = {"provider": "mock", "model": {"family": "small", "version": "latest"}}
+        tiers = {"light": {"model": {"family": "small", "version": "latest"}, "options": {"sandbox": "x"}}}
+        data["orchestrator"] = dict(role, model_tiers=tiers)
+        config_mod.write_config_file(config_mod.global_config_path(), data)
+        _, out, _ = run_cli("doctor", "--fast", "--json")
+        problems = json.loads(out)["problems"]
+        self.assertTrue(
+            any(p.startswith("Orchestrator (tier light): options.sandbox ignored") for p in problems),
+            problems,
+        )
+
+    def test_ignored_options_are_named_in_the_json_entry(self):
+        """A design seat's options are reported once, its high-risk model
+        included, and a write role's are not reported at all."""
+        data = config_mod.default_config()
+        design_seat = config_mod.make_reviewer("d1", "mock", "small")
+        design_seat["options"] = {"sandbox": "danger-full-access"}
+        design_seat["high_risk_model"] = {"family": "large"}
+        data.setdefault("review", {}).setdefault("design", {})["reviewers"] = [design_seat]
+        role = {"provider": "mock", "model": {"family": "small", "version": "latest"}}
+        data["implementer"] = dict(role, options={"sandbox": "danger-full-access"})
+        config_mod.write_config_file(config_mod.global_config_path(), data)
+        _, out, _ = run_cli("doctor", "--fast", "--json")
+        report = json.loads(out)
+        problems = report["problems"]
+        (entry,) = [seat for seat in report["design_reviewers"] if seat["id"] == "d1"]
+        self.assertEqual(entry["ignored_options"], ["sandbox"])
+        self.assertEqual(entry["high_risk_model"]["status"], "ok")
+        ignored = [p for p in problems if "ignored -- planning and review stages" in p]
+        self.assertEqual(len([p for p in ignored if p.startswith("Design reviewer d1")]), 1, problems)
+        self.assertFalse(any(p.startswith("Implementer") for p in ignored), problems)
+        self.assertNotIn("ignored_options", report["roles"]["implementer"])
+
     def test_strict_mode_exits_non_zero_on_problems(self):
         run_cli("config", "setup", "--defaults")
         run_cli("reviewer", "remove", "claude-general")
@@ -1659,6 +1695,27 @@ class TestRunCommand(IsolatedCase):
         code, _, err = run_cli("run", "implementer", "--prompt", "go")
         self.assertEqual(code, ledger_mod.EXIT_BUDGET_EXHAUSTED, err)
 
+    @unittest.skipUnless(has_git(), "git is required")
+    def test_an_explicit_cwd_and_the_other_commands_follow_the_subdirectory_file(self):
+        """`--cwd` from the root, and `design approve` from the subdirectory (#282)."""
+        self.init_git_repo()
+        pkg = os.path.join(self.project, "pkg")
+        self.write("pkg/.dev-orchestra.yaml", "version: 1\nworkspace:\n  dir: .agent-work\n")
+        self.write(".dev-orchestra.yaml", "version: 1\nworkspace:\n  dir: .root-work\n")
+        code, _, err = run_cli("--cwd", pkg, "status")
+        self.assertEqual(code, 0, err)
+        container = os.path.join(self.project, ".agent-work")
+        self.assertTrue(os.path.isdir(container))
+        for other in (".ai", ".root-work", os.path.join("pkg", ".agent-work")):
+            self.assertFalse(os.path.exists(os.path.join(self.project, other)), other)
+        workspace = ws.Workspace(self.project, container, TEST_WORKFLOW).ensure()
+        ws.write_text(workspace.plan_path, "# Plan\n\nDo it.\n")
+        os.chdir(pkg)
+        code, _, err = run_cli("design", "approve")
+        self.assertEqual(code, 0, err)
+        self.assertIn("design_approval", workspace.read_state())
+        self.assertFalse(os.path.exists(os.path.join(self.project, ".root-work")))
+
 
 SECRET_SETTINGS = '--settings={"apiKeyHelper":"sk-ant-abcdefghijklmnopqrs"}'
 
@@ -2284,6 +2341,105 @@ class TestRunIdleDeadline(IsolatedCase):
 
     def test_the_flag_still_sets_one_for_any_run(self):
         self.assertEqual(self.idle_deadline_of("implementer", "--idle-timeout", "60"), 60)
+
+    def test_a_null_shared_idle_deadline_reads_as_the_default(self):
+        """A null in a file keeps the default, so a write run still gets the minimum, never none."""
+        self.write(".dev-orchestra.yaml", "version: 1\nreview:\n  idle_timeout_seconds: null\n")
+        loaded = config_mod.load(self.project)
+        self.assertEqual(loaded.review_settings()["idle_timeout_seconds"], 300)
+        self.assertEqual(config_mod.idle_timeout(loaded, "implement"), (1200, config_mod.WRITE_RUN_MINIMUM))
+        self.assertEqual(self.idle_deadline_of("implementer"), 1200)
+        self.assertEqual(self.idle_deadline_of("architect"), 300)
+
+    def test_a_read_only_role_cannot_ask_for_the_write_run_deadline(self):
+        from orchestrator.providers import mock as mock_mod
+
+        with mock.patch.object(mock_mod.MockProvider, "run") as spy:
+            code, _, err = run_cli("run", "architect", "--mode", "implement", "--prompt", "go")
+        self.assertNotEqual(code, 0)
+        self.assertIn("--mode implement is not accepted", err)
+        spy.assert_not_called()
+
+    def test_a_roles_own_idle_timeout_comes_before_the_write_run_minimum(self):
+        """What the provider actually waits, not just what it was handed."""
+        from orchestrator.providers import mock as mock_mod
+
+        seen: Dict[str, Any] = {}
+        original = mock_mod.MockProvider.run
+
+        def recording_run(provider, *args, **kwargs):
+            seen["passed"] = kwargs.get("idle_timeout")
+            seen["effective"] = provider.idle_timeout(kwargs.get("options"), kwargs.get("idle_timeout"))
+            return original(provider, *args, **kwargs)
+
+        with (
+            mock.patch.object(mock_mod.MockProvider, "streams_progress", True),
+            mock.patch.object(mock_mod.MockProvider, "option_keys", ("args", "idle_timeout")),
+            mock.patch.object(mock_mod.MockProvider, "run", recording_run),
+        ):
+            run_cli("config", "set", "implementer.options.idle_timeout", "90")
+            code, _, err = run_cli("run", "implementer", "--prompt", "go")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(seen, {"passed": 1200, "effective": 90.0})
+
+    def test_config_resolves_the_idle_deadline_with_its_source(self):
+        loaded = config_mod.load(self.project)
+        self.assertEqual(config_mod.idle_timeout(loaded, "review"), (300, "default"))
+        self.assertEqual(config_mod.idle_timeout(loaded, "plan"), (300, "default"))
+        self.assertEqual(config_mod.idle_timeout(loaded, "implement"), (1200, config_mod.WRITE_RUN_MINIMUM))
+        run_cli("config", "set", "review.idle_timeout_seconds", "1800", "--scope", "project")
+        loaded = config_mod.load(self.project)
+        self.assertEqual(config_mod.idle_timeout(loaded, "implement"), (1800, "project"))
+
+    def stall_origin(self, role: str, *argv: str, option_keys=("args",), streams=True) -> str:
+        """What a stalled run of ``role`` says its idle deadline came from."""
+        from orchestrator.providers import mock as mock_mod
+        from orchestrator.providers.base import RunResult
+
+        def stalled_run(provider, *args, **kwargs):
+            resolved = provider.resolve_model({"family": "small"})
+            return RunResult(False, 125, "", "", ["mock"], 1.0, resolved, stalled=True, idle_for=1200.0)
+
+        with (
+            mock.patch.object(mock_mod.MockProvider, "run", stalled_run),
+            mock.patch.object(mock_mod.MockProvider, "streams_progress", streams),
+            mock.patch.object(mock_mod.MockProvider, "option_keys", option_keys),
+        ):
+            _, _, err = run_cli("run", role, *argv, "--prompt", "go")
+        self.assertIn(
+            "%s produced no output for 1200s and was treated as stalled (not merely slow)" % role, err
+        )
+        match = re.search(r"its idle deadline is from (.*)\.\n", err)
+        self.assertIsNotNone(match, err)
+        return match.group(1) if match else ""
+
+    def test_a_stall_names_where_its_idle_deadline_came_from(self):
+        self.assertEqual(self.stall_origin("implementer"), "the minimum for a run that may change files")
+        self.assertEqual(self.stall_origin("architect"), "review.idle_timeout_seconds, default")
+        self.assertEqual(self.stall_origin("implementer", "--idle-timeout", "60"), "--idle-timeout")
+        run_cli("config", "set", "review.idle_timeout_seconds", "1800", "--scope", "project")
+        self.assertEqual(self.stall_origin("implementer"), "review.idle_timeout_seconds, project")
+
+    def test_a_stall_names_the_roles_option_only_when_the_provider_waits_it(self):
+        from orchestrator.providers import mock as mock_mod
+
+        with mock.patch.object(mock_mod.MockProvider, "option_keys", ("args", "idle_timeout")):
+            run_cli("config", "set", "implementer.options.idle_timeout", "90")
+        self.assertEqual(
+            self.stall_origin("implementer", option_keys=("args", "idle_timeout")),
+            "implementer options.idle_timeout",
+        )
+        # Even over the flag, which the provider's own option outranks.
+        self.assertEqual(
+            self.stall_origin("implementer", "--idle-timeout", "60", option_keys=("args", "idle_timeout")),
+            "implementer options.idle_timeout",
+        )
+        # A provider that takes the option but does not wait it (no progress
+        # to time, as Claude without stream-json) is not said to have.
+        self.assertEqual(
+            self.stall_origin("implementer", option_keys=("args", "idle_timeout"), streams=False),
+            "the minimum for a run that may change files",
+        )
 
 
 class TestOutputGuard(IsolatedCase):
@@ -3852,16 +4008,6 @@ class TestPresetCommands(PresetCase):
         self.assertNotIn("Save it with", second)
 
 
-def parser_leaves(parser, path=()):
-    """Every runnable command under ``parser`` as (path, leaf parser)."""
-    groups = [action for action in parser._actions if isinstance(action, argparse._SubParsersAction)]
-    if not groups:
-        yield path, parser
-        return
-    for name, child in groups[0].choices.items():
-        yield from parser_leaves(child, (*path, name))
-
-
 def minimal_argv(path, leaf):
     """The shortest argv that ``leaf`` accepts: one value per required argument."""
     argv = list(path)
@@ -3940,7 +4086,7 @@ class TestParserShape(IsolatedCase):
 
     def test_json_flag(self):
         found = set()
-        for path, leaf in parser_leaves(self.parser):
+        for path, leaf in cli.leaf_commands(self.parser).items():
             if "--json" not in leaf._option_string_actions:
                 continue
             name = " ".join(path)
@@ -3957,12 +4103,10 @@ class TestParserShape(IsolatedCase):
         self.assertEqual(caught.exception.code, 2, argv)
 
     def test_top_level_commands(self):
-        groups = [a for a in self.parser._actions if isinstance(a, argparse._SubParsersAction)]
-        self.assertEqual(len(groups), 1)
-        self.assertEqual(set(groups[0].choices), self.TOP_LEVEL)
+        self.assertEqual({words[0] for words in cli.leaf_commands(self.parser)}, self.TOP_LEVEL)
 
     def test_every_leaf_parses_to_its_handler(self):
-        leaves = list(parser_leaves(self.parser))
+        leaves = list(cli.leaf_commands(self.parser).items())
         self.assertTrue(
             {
                 ("workflow", "use"),
@@ -4094,8 +4238,91 @@ class TestRunJsonInTheForeground(IsolatedCase):
         payload = json.loads(out)
         self.assertIs(payload["output_written"], False)
         self.assertTrue(payload["output_target"].endswith(os.path.join(TEST_WORKFLOW, "plan.md")))
-        self.assertIn("rejected_file", payload)
+        # Nothing was printed, so there is nothing kept beside the target.
+        self.assertIsNone(payload["rejected_file"])
         self.assertNotIn("output", payload)
+
+    def return_result(self, **fields):
+        """Make the mock return a RunResult the test dictates."""
+        from orchestrator.providers import mock as mock_mod
+        from orchestrator.providers.base import RunResult
+
+        def fake_run(provider, *args, **kwargs):
+            resolved = provider.resolve_model(kwargs.get("model_spec") or {"family": "small"})
+            extra = dict(fields)
+            ok = extra.pop("ok", True)
+            return RunResult(
+                ok, 0 if ok else 1, extra.pop("stdout", ""), "", ["mock"], 1.0, resolved, **extra
+            )
+
+        self.enterContext(mock.patch.object(mock_mod.MockProvider, "run", fake_run))
+
+    def test_a_refused_write_names_the_file_that_kept_the_output(self):
+        self.return_result(ok=False, stdout="half a plan\n")
+        code, out, _ = run_cli("run", "architect", "--prompt", "hi", "--output", ".ai/plan.md", "--json")
+        self.assertEqual(code, 1)
+        payload = json.loads(out)
+        self.assertEqual(payload["rejected_file"], payload["output_target"] + ".rejected")
+        with open(payload["rejected_file"], encoding="utf-8") as handle:
+            self.assertEqual(handle.read(), "half a plan\n")
+
+    def test_an_ok_run_that_printed_nothing_has_not_answered(self):
+        self.set_env("DEV_ORCHESTRA_MOCK_RESPONSE", " \n")
+        code, out, err = run_cli("run", "orchestrator", "--prompt", "hi", "--json")
+        self.assertEqual(code, 1)
+        payload = json.loads(out)
+        self.assertEqual(payload["status"], "succeeded")
+        self.assertIs(payload["answered"], False)
+        self.assertIn("produced no output", err)
+
+    def test_warnings_and_suspended_seconds_only_when_there_are_some(self):
+        code, out, _ = run_cli("run", "orchestrator", "--prompt", "hi", "--json")
+        self.assertEqual(code, 0)
+        payload = json.loads(out)
+        for key in ("warnings", "suspended_seconds", "resume"):
+            self.assertNotIn(key, payload)
+
+        self.return_result(stdout="the answer\n", warnings=["a flag was dropped"], suspended=30.0)
+        code, out, _ = run_cli("run", "orchestrator", "--prompt", "hi", "--json")
+        self.assertEqual(code, 0)
+        payload = json.loads(out)
+        self.assertEqual(payload["warnings"], ["a flag was dropped"])
+        self.assertEqual(payload["suspended_seconds"], 30.0)
+
+    def test_resume_is_reported_when_it_was_asked_for(self):
+        self.write("resume.md", "revise\n")
+        argv = ["run", "architect", "--resume", "--resume-prompt-file", "resume.md", "--prompt", "hi"]
+        code, out, err = run_cli(*argv, "--output", ".ai/plan.md", "--json")
+        self.assertEqual(code, 0, err)
+        payload = json.loads(out)
+        self.assertIn("reason", payload["resume"])
+        self.assertIn("outcome", payload["resume"])
+
+    def test_detach_prints_the_job_not_a_run(self):
+        from orchestrator import jobs as jobs_mod
+
+        job = {"id": "orchestrator-1", "stage": "orchestrator", "status": "running"}
+        self.enterContext(mock.patch.object(jobs_mod, "start", return_value=job))
+        code, out, _ = run_cli("run", "orchestrator", "--prompt", "hi", "--detach", "--json")
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out), job)
+
+    def test_a_worker_prints_nothing_its_job_holds_the_outcome(self):
+        """The worker a detached run starts gets ``--json`` too; its stdout
+        is not the caller's, and a second object there would be noise."""
+        from orchestrator import execution
+        from orchestrator import jobs as jobs_mod
+
+        self.enterContext(mock.patch.object(execution, "end_children_on_sigterm"))
+        workspace = self.cli_workspace()
+        jobs_mod.write_job(workspace, {"id": "o-1", "stage": "orchestrator", "status": "running"})
+        job_file = jobs_mod.job_path(workspace, "o-1")
+        code, out, err = run_cli("run", "orchestrator", "--prompt", "hi", "--job-file", job_file, "--json")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(out, "")
+        job = jobs_mod.read_job(workspace, "o-1")
+        assert job is not None
+        self.assertEqual(job["status"], "succeeded")
 
     def test_a_run_refused_before_it_starts_prints_nothing_on_stdout(self):
         code, out, err = run_cli("run", "architect", "--mode", "implement", "--prompt", "hi", "--json")

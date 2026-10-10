@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from .review_common import SEVERITIES
 
@@ -70,6 +70,7 @@ def _split_on(lines: List[str], marker: "re.Pattern[str]", keep_marker: bool) ->
     """Blocks starting at each line ``marker`` matches outside a fence."""
     blocks: List[List[str]] = []
     current: Optional[List[str]] = None
+    closers = _Closers(lines)
     closer = -1
     for index, line in enumerate(lines):
         if index > closer:
@@ -80,7 +81,7 @@ def _split_on(lines: List[str], marker: "re.Pattern[str]", keep_marker: bool) ->
                     continue
             opener = _fence_opener(_field_text(line))
             if opener:
-                closer = _closing_line(lines, index + 1, opener)
+                closer = closers.after(index + 1, opener)
         if current is not None:
             current.append(line)
     return blocks
@@ -131,6 +132,7 @@ def _parse_block(lines: List[str]) -> Optional[Dict[str, Any]]:
     # how far its lines are indented. Inside a fence nothing is a label and
     # nothing is a heading: ``# comment`` and ``fix: ...`` are code there.
     fence = ""
+    closers = _Closers(lines)
     closer = -1
     indent = 0
     for index, raw_line in enumerate(lines):
@@ -160,7 +162,7 @@ def _parse_block(lines: List[str]) -> Optional[Dict[str, Any]]:
         if opener:
             # A fence nobody closes is read as ordinary lines: swallowing the
             # rest of the finding would lose more than the fence protects.
-            closer = _closing_line(lines, index + 1, opener)
+            closer = closers.after(index + 1, opener)
             if closer >= 0:
                 fence, indent = opener, _indent_of(lines[closer])
     if not fields:
@@ -209,6 +211,35 @@ def _closing_line(lines: List[str], start: int, fence: str) -> int:
         if len(stripped) >= len(fence) and stripped == fence[0] * len(stripped):
             return index
     return -1
+
+
+class _Closers:
+    """:func:`_closing_line` for openers met in order, scanning each stretch
+    of ``lines`` once per kind of fence.
+
+    Looking ahead from every opener read to the end of the report for each
+    one nobody closes, so a report of many unclosed openers -- reviewer
+    output, which the diff under review can steer -- took quadratic time. The
+    same lines close a fence of one character and length wherever it opens,
+    so the last answer for each kind is kept: an opener after it is closed by
+    the same line, or by none when none was found.
+    """
+
+    def __init__(self, lines: List[str]) -> None:
+        self.lines = lines
+        #: (character, length) -> (where the scan began, what it found).
+        self.found: Dict[Tuple[str, int], Tuple[int, int]] = {}
+
+    def after(self, start: int, fence: str) -> int:
+        kind = (fence[0], len(fence))
+        known = self.found.get(kind)
+        if known is not None:
+            begun, index = known
+            if start >= begun and (index < 0 or index >= start):
+                return index
+        index = _closing_line(self.lines, start, fence)
+        self.found[kind] = (start, index)
+        return index
 
 
 def _indent_of(line: str) -> int:

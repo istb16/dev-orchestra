@@ -194,7 +194,7 @@ def _busy_reason(root: str, container: str, workflow: str) -> str:
     running = [
         str(job.get("id"))
         for job in jobs_mod.list_jobs(ws.Workspace(root, container, workflow))
-        if job.get("status") not in jobs_mod.FINISHED
+        if jobs_mod.may_still_run(job)
     ]
     if running:
         return "a detached job has not finished there (%s)" % ", ".join(sorted(running))
@@ -815,25 +815,18 @@ def cmd_state_show(args: argparse.Namespace) -> int:
 #: The stages whose status the review gate and `status` read as a test result.
 _TEST_STAGES = ("test", "re-test")
 
-#: The only test results recorded. The gate counts anything it does not know
-#: as a failure as a pass, so `failure` or `NG` would send red tests to review.
-_TEST_STATUSES = ("ok", "failed")
-
-#: The event's own fields, which a ``--detail`` would otherwise overwrite.
-_RESERVED_DETAIL = ("stage", "status", "at")
-
 
 def cmd_state_record(args: argparse.Namespace) -> int:
-    if args.stage in _TEST_STAGES and args.status not in _TEST_STATUSES:
+    if args.stage in _TEST_STAGES and args.status not in opt_mod.TEST_STATUSES:
         _err(
             "Refusing to record %s=%s: a test result is %s"
-            % (args.stage, args.status, " or ".join(_TEST_STATUSES))
+            % (args.stage, args.status, " or ".join(opt_mod.TEST_STATUSES))
         )
         return 2
     detail: Dict[str, Any] = {}
     for item in args.detail or []:
         key, _, value = item.partition("=")
-        if key in _RESERVED_DETAIL:
+        if key in ws.RESERVED_EVENT_FIELDS:
             _err("Refusing --detail %s=...: %s is the event's own field" % (key, key))
             return 2
         detail[key] = config_mod.coerce_scalar(value)

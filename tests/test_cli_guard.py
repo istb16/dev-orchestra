@@ -249,6 +249,33 @@ class TestTheShapesOfALaunch(GuardCase):
                 self.assertTrue(self.refused(args))
         self.assertFalse(self.refused(["pwsh", "-Command", "Get-ChildItem"]))
 
+    def test_a_shell_that_starts_another_process(self):
+        """cmd.exe's ``start`` and PowerShell's ``Start-Process`` start their operand."""
+        for args in (
+            ["cmd", "/c", "start", "claude"],
+            ["cmd", "/c", "start", "", "codex", "exec"],
+            ["cmd", "/c", "start", "a title", "/b", "/wait", "agy", "models"],
+            ["cmd", "/c", "start", "/d", r"C:\work", "/min", "claude", "-p"],
+            ["cmd", "/c", "echo hi & start /b claude"],
+            ["pwsh", "-Command", "Start-Process claude"],
+            ["pwsh", "-Command", "Start-Process -FilePath codex -ArgumentList exec,-p"],
+            ["powershell", "-c", "saps -NoNewWindow -Wait -FilePath agy"],
+            ["pwsh", "-c", "start -ArgumentList '--help' -FilePath:claude"],
+            ["pwsh", "-c", "Start-Process cmd -ArgumentList '/c','claude'"],
+            ["pwsh", "-c", "Start-Process -WindowStyle Hidden claude"],
+        ):
+            with self.subTest(args=args):
+                self.assertTrue(self.refused(args))
+        self.assertTrue(self.refused("start claude", True))
+        for args in (
+            ["cmd", "/c", "start", "notepad", "notes.txt"],
+            ["cmd", "/c", "start", "/b"],
+            ["pwsh", "-Command", "Start-Process -FilePath notepad -ArgumentList notes.txt"],
+            ["pwsh", "-Command", "Start-Process"],
+        ):
+            with self.subTest(args=args):
+                self.assertFalse(self.refused(args))
+
     @unittest.skipUnless(os.name == "nt", "CreateProcess reads an unquoted path with spaces")
     def test_an_unquoted_path_with_spaces(self):
         self.assertTrue(self.refused(r"C:\Program Files\tools\claude.exe --help"))

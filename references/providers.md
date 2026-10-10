@@ -1075,7 +1075,10 @@ directories on PATH are searched, with PATHEXT, for both: never the current
 directory, which `shutil.which` and `CreateProcess` look in first on Windows
 and which may be a repository under review that carries a `claude.cmd` of its
 own. A name not found that way is not started (exit 126, "not found on
-PATH"). An npm shim is not run through cmd.exe
+PATH"). An executable named with a directory (`C:\tools\claude`,
+`tools\claude`) is not searched for on PATH: both look where it says, made
+absolute against the current directory of the orchestrator, with PATHEXT,
+and one not there is not started either. An npm shim is not run through cmd.exe
 at all: the `node` and script it would hand its arguments to (the `node.exe`
 beside it, else the one on PATH), or the `.exe` it wraps, are started
 directly. Any other `.cmd` or `.bat` runs under cmd.exe (`/d /v:off /s /c`)

@@ -6,10 +6,10 @@ its own plan through: ``design.require_approval``, the user's say before
 anything is implemented, and a ``workspace.dir`` outside the repository,
 which moves the approval record -- ``state.json`` and the plan beside it -- to
 wherever the file points. Both are taken from the global config alone:
-``config.compose`` merges the project layer without them, and
+``config.trusted_project_layer`` merges the project layer without them, and
 ``config_policy`` says what was left out. A ``workspace.dir`` that leaves
-only through a link in the repository needs the repository to tell, so it is
-dropped where the workspace is resolved (``config.workspace_dir_in``).
+only through a link in the repository needs the repository to tell, so it
+is dropped only where one is given (``ignored``'s ``root``).
 
 Nothing from this package is imported here: ``config`` asks while composing,
 and the reply-language hook on every prompt.
@@ -20,7 +20,7 @@ from __future__ import annotations
 import ntpath
 import os
 import posixpath
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 APPROVAL = "design.require_approval"
 WORKSPACE_DIR = "workspace.dir"
@@ -64,26 +64,29 @@ def linked_outside(root: str, directory: Any) -> bool:
         return True
 
 
-def ignored(project_layer: Dict[str, Any]) -> List[Tuple[str, Any]]:
+def ignored(project_layer: Dict[str, Any], root: Optional[str] = None) -> List[Tuple[str, Any]]:
     """``(dotted key, value)`` for each setting the project layer may not make.
 
     A ``null`` approval is not one: it means the default, which is required,
     and cannot turn the gate off. A ``workspace.dir`` inside the repository
-    stays the project's to choose.
+    stays the project's to choose. With ``root``, the repository a command
+    runs in, a ``workspace.dir`` a link takes out of it is one too
+    (``linked_outside``); without, only the text is read.
     """
     found: List[Tuple[str, Any]] = []
     design = project_layer.get("design")
     if isinstance(design, dict) and design.get("require_approval") is not None:
         found.append((APPROVAL, design["require_approval"]))
     workspace = project_layer.get("workspace")
-    if isinstance(workspace, dict) and outside_repository(workspace.get("dir")):
-        found.append((WORKSPACE_DIR, workspace["dir"]))
+    directory = workspace.get("dir") if isinstance(workspace, dict) else None
+    if outside_repository(directory) or (root is not None and linked_outside(root, directory)):
+        found.append((WORKSPACE_DIR, directory))
     return found
 
 
-def without_ignored(project_layer: Dict[str, Any]) -> Dict[str, Any]:
+def without_ignored(project_layer: Dict[str, Any], root: Optional[str] = None) -> Dict[str, Any]:
     """``project_layer`` less what ``ignored`` names; the same object when that is nothing."""
-    keys = {key for key, _value in ignored(project_layer)}
+    keys = {key for key, _value in ignored(project_layer, root)}
     if not keys:
         return project_layer
     kept = dict(project_layer)
@@ -110,8 +113,3 @@ def written_ignored(dotted: str, value: Any) -> List[Tuple[str, Any]]:
         node = node.setdefault(block, {})
     node[last] = value
     return ignored(layer)
-
-
-def refused_write(dotted: str, value: Any) -> bool:
-    """Whether ``config set --scope project <dotted> <value>`` would write a value ``ignored`` drops."""
-    return bool(written_ignored(dotted, value))

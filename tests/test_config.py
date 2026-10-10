@@ -1308,6 +1308,28 @@ class TestLanguage(IsolatedCase):
         self.assertEqual(code, 0)
         self.assertIn("warning: language.reply: must be a language tag", err)
 
+    def test_config_set_keeps_norwegian_a_tag_in_any_case_and_scope(self):
+        """`No`, `NO` and ` no ` are the tag too, stored as typed less the blanks; so is `--raw no`."""
+        cases = (
+            (("No",), "No"),
+            (("NO",), "NO"),
+            ((" no ",), "no"),
+            (("--raw", "no"), "no"),
+        )
+        for scope in ("global", "project"):
+            path = (
+                config_mod.global_config_path()
+                if scope == "global"
+                else os.path.join(self.project, ".dev-orchestra.yaml")
+            )
+            for argv, stored in cases:
+                with self.subTest(scope=scope, argv=argv):
+                    code, _, err = self.run_cli("config", "set", "--scope", scope, "language.reply", *argv)
+                    self.assertEqual(code, 0, err)
+                    self.assertNotIn("warning", err)
+                    self.assertEqual(config_mod.read_config_file(path)["language"], {"reply": stored})
+                    self.assertEqual(config_mod.load(self.project).language_settings()["reply"], "no")
+
     def test_config_set_other_yaml_booleans_are_not_tags(self):
         """Only `no` is kept as a tag: `off`, `yes`, `on` are booleans, and warned about."""
         # Claude Code settings exist, so a tag would install the reply-language hooks.
@@ -1950,6 +1972,114 @@ class TestWhatValidateUsedToMiss(IsolatedCase):
         code, _, err = self.run_cli("config", "set", "--scope", "project", "review.max_findings", "3")
         self.assertEqual(code, 0, err)
         self.assertNotIn("not a key", err)
+
+    def test_config_set_warns_about_a_typo_in_the_block_or_under_the_key_it_wrote(self):
+        """A block holding a typo, a path beneath an unknown key, an indexed path, either scope."""
+        self.write(
+            ".dev-orchestra.yaml",
+            "version: 1\nworkspace:\n  zzz: 1\nreviewers_extra:\n"
+            "  - id: x\n    provider: claude\n    model:\n      family: opus\n",
+        )
+        cases = (
+            (("review", "timout_seconds: 5\n"), "review.timout_seconds", "review.timeout_seconds"),
+            (("reveiw.max_review_iterations", "3"), "reveiw", "review"),
+            (
+                ("reviewers_extra[0].relevence", "test"),
+                "reviewers_extra[0].relevence",
+                "reviewers_extra[0].relevance",
+            ),
+        )
+        for scope in ("project", "global"):
+            for argv, key, close in cases:
+                if scope == "global" and argv[0].startswith("reviewers_extra["):
+                    continue  # the global file holds no extra to index
+                with self.subTest(scope=scope, path=argv[0]):
+                    code, _, err = self.run_cli("config", "set", "--scope", scope, *argv)
+                    self.assertEqual(code, 0, err)
+                    self.assertIn(
+                        "warning: %s is not a key dev-orchestra reads; it was saved but is ignored "
+                        "(did you mean %s?)" % (key, close),
+                        err,
+                    )
+                    # The file's other unknown keys, a sibling's included, are not named.
+                    self.assertNotIn("zzz", err)
+        # The block the first case wrote holds the typo; the sibling written earlier is not warned about.
+        code, _, err = self.run_cli("config", "set", "--scope", "project", "review.max_findings", "3")
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("not a key", err)
+
+    def test_an_unknown_key_in_high_risk_model_is_found(self):
+        """`high_risk_model` is a model block: a misspelt family would otherwise be ignored."""
+        seat = {"id": "a", "provider": "claude", "high_risk_model": {"famly": "opus", "provider": "codex"}}
+        layer = {"reviewers": [seat], "review": {"design": {"reviewers": [dict(seat)]}}}
+        self.assertEqual(
+            config_mod.unknown_keys(layer),
+            [
+                ("reviewers[0].high_risk_model.famly", "reviewers[0].high_risk_model.family"),
+                (
+                    "review.design.reviewers[0].high_risk_model.famly",
+                    "review.design.reviewers[0].high_risk_model.family",
+                ),
+            ],
+        )
+        # The provider in it is validate's to refuse, so it is not also an unknown key.
+        problems = config_mod.validate(dict(config_mod.default_config(), reviewers=[seat]))
+        self.assertTrue(any("high_risk_model.provider: not allowed" in p for p in problems), problems)
+        self.write(
+            ".dev-orchestra.yaml",
+            "version: 1\nreviewers_extra:\n  - id: x\n    provider: claude\n"
+            "    model:\n      family: opus\n    high_risk_model:\n      famly: opus\n",
+        )
+        code, out, err = self.run_cli("config", "validate")
+        self.assertEqual(code, 0, out + err)
+        self.assertIn(
+            "reviewers_extra[0].high_risk_model.famly in the project file: unknown key, ignored "
+            "(did you mean reviewers_extra[0].high_risk_model.family?)",
+            out,
+        )
+
+    def test_config_set_refuses_a_block_it_cannot_read(self):
+        """An alias or a tab in the indentation: exit 2 naming the key, not a traceback."""
+        for value in ("- *.sql\n", "a:\n\tb: 1\n"):
+            with self.subTest(value=value):
+                code, _, err = self.run_cli("config", "set", "review.exclude", value)
+                self.assertEqual(code, 2, err)
+                self.assertIn("review.exclude: ", err)
+                self.assertIsNone(config_mod.get_path(config_mod.load(self.project).global_layer, "review"))
+        with self.assertRaisesRegex(config_mod.ConfigError, r"^review\.exclude: "):
+            config_mod.coerce_scalar("- *.sql\n", "review.exclude")
+        # On one line it is still the text it was typed as.
+        self.assertEqual(config_mod.coerce_scalar("*.sql", "review.exclude"), "*.sql")
+
+    def test_status_reads_a_refused_workspace_dir_as_the_default(self):
+        """`status` used to crash in os.path.isabs on `dir: 5`."""
+        self.write(".dev-orchestra.yaml", "version: 1\nworkspace:\n  dir: 5\n")
+        code, out, err = self.run_cli("status", "--json")
+        self.assertEqual(code, 0, out + err)
+        self.assertTrue(os.path.isdir(os.path.join(self.project, ".ai")))
+        self.assertFalse(os.path.exists(os.path.join(self.project, "5")))
+
+    def test_status_still_blocks_on_a_critical_finding_over_refused_severities(self):
+        """`status` and `review status` read the file unvalidated: a scalar `critical`
+        or `[crit]` blocks as the default pair does, not on nothing (#277)."""
+        import json
+
+        from orchestrator import workspace as ws
+
+        finding = {"id": "F1", "severity": "critical", "title": "t", "file": "a.py"}
+        ws.write_json(self.cli_workspace().consolidated_json_path, {"iteration": 1, "findings": [finding]})
+        for value in ("critical", "[crit]", "5"):
+            with self.subTest(value=value):
+                self.write(".dev-orchestra.yaml", "version: 1\nreview:\n  re_review_severities: %s\n" % value)
+                code, out, err = self.run_cli("status", "--json")
+                self.assertEqual(code, 0, out + err)
+                self.assertEqual(json.loads(out)["review"]["blocking"], ["F1"])
+                code, out, err = self.run_cli("review", "status", "--json")
+                self.assertEqual(code, 0, out + err)
+                self.assertEqual(json.loads(out)["blocking"], ["F1"])
+                code, out, err = self.run_cli("review", "status")
+                self.assertEqual(code, 0, out + err)
+                self.assertIn("blocking (critical/high): 1 F1", out)
 
 
 if __name__ == "__main__":

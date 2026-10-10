@@ -16,8 +16,26 @@ second clock and nothing to subtract. See "What the runtime budget counts" in
 
 from __future__ import annotations
 
+import math
 import sys
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
+
+#: The longest deadline, idle limit or wait this tool takes: about 31 years.
+#: Past it a number of seconds overflows what ``time.sleep`` and a float
+#: deadline can hold, and only a mistake asks for more.
+MAX_SECONDS = 10**9
+
+
+def is_seconds(value: Any, allow_zero: bool = False) -> bool:
+    """A number of seconds a deadline can hold: a finite int or float, not a
+    bool, above zero (or zero with ``allow_zero``) and at most
+    :data:`MAX_SECONDS`."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    if isinstance(value, float) and not math.isfinite(value):
+        return False
+    return (value >= 0 if allow_zero else value > 0) and value <= MAX_SECONDS
+
 
 #: A difference below this is the two clocks' resolutions disagreeing, not a
 #: sleep. The interrupt-time clock advances once per timer tick, about 15.6 ms

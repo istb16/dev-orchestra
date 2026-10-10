@@ -212,7 +212,7 @@ still carries the allowlist and `--restricted`.
 imports a command's helper from its own module (`cli_run._detached_argv`), and
 the helpers every command shares from `cli_common.py`. What only a `config`
 writer and the setup wizard need -- finding the layer to edit, seeding and
-checking the panel -- is in `cli_config_layers.py`. `review.py` re-exports the
+checking the panel -- is in `config_layers.py`. `review.py` re-exports the
 public names of the `review_*` modules, so `review.name` keeps working for
 those; a test imports an underscore helper from its own module:
 `review_snapshot._diff`, not `review._diff`. A test that replaces a function

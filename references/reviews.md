@@ -62,6 +62,7 @@ Writes `.ai/reviews/review-target.diff` plus metadata:
   "strategy": "git diff HEAD",
   "base": null,
   "head": "9f2c…",
+  "base_commit": "9f2c…",
   "files": ["app/services/pricing.rb", "spec/services/pricing_spec.rb"],
   "untracked_included": ["app/services/pricing.rb"],
   "withheld": [
@@ -166,11 +167,20 @@ not bring it in: the limit is not a pattern, and `review snapshot` and
 which have to be reviewed by hand. An incremental round applies the same limit
 to a file in neither `HEAD` nor the index, measured on both sides of the
 round, so a large untracked file is withheld there too rather than diffed
-whole -- whether the fix added it, changed it, shrank it or deleted it.
+whole -- whether the fix added it, changed it, shrank it or deleted it. A
+renamed one is withheld under both names.
 
 A nested repository, or a worktree placed inside this one, is not part of the
 change: git lists it as a directory, and it is left out of the snapshot as
 before, neither diffed nor withheld.
+
+A file is read by its name as it is on disk, but the name is recorded in the
+snapshot, printed by `review snapshot` and put in a reviewer's prompt with
+every control character written as `\xNN` (a line break as `\x0a`, an escape
+as `\x1b`), and a byte that is not UTF-8 as U+FFFD. The repository chooses its
+file names, and one carrying an escape sequence or a line break must not
+rewrite the operator's terminal or add a line to the withheld list a reviewer
+reads.
 
 If *every* changed file is withheld, the snapshot is empty and says so in those
 terms -- that is a different situation from "nothing changed", and `review run`

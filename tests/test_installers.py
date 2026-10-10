@@ -229,6 +229,7 @@ class TestAntigravityInstallers(_InstallerCase):
                 code, output = self.run_installer(shell, "uninstall", project)
                 self.assertEqual(code, 0, output)
                 self.assertEqual(self.exclude_lines(project), [ENTRY])
+                self.assertIn("Left %s in .git/info/exclude" % ENTRY, output)
                 self.assertNotIn(SKILL_NAME, os.listdir(os.path.join(project, ".agents", "plugins")))
 
     def test_a_copy_carries_the_payload_and_the_sentinel(self):
@@ -449,26 +450,29 @@ class TestAntigravityInstallers(_InstallerCase):
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 pointer = read_text(os.path.join(project, "AGENTS.md"))
                 line = next(line for line in pointer.splitlines() if "dev_orchestra.py" in line)
-                quote = "'" if shell.posix else '"'
-                self.assertRegex(
-                    line, r"^    \S+ %s[^%s]+/scripts/dev_orchestra\.py%s <command>$" % (quote, quote, quote)
-                )
+                self.assertRegex(line, r"^    \S+ '[^']+/scripts/dev_orchestra\.py' <command>$")
 
-    def test_the_posix_codex_pointer_keeps_shell_characters_literal(self):
-        """A `$`, a backtick or a ' in the checkout path is not expanded when the line runs (#297)."""
-        posix = [shell for shell in SHELLS if shell.posix]
-        if not posix:
-            self.skipTest("no POSIX sh here")
-        checkout = os.path.join(self.tmp, "it's $HOME `x`")
+    def test_the_codex_pointer_keeps_shell_characters_literal(self):
+        """A `$`, a `$( )`, a backtick or a ' in the checkout path is not
+        expanded when the line runs, in sh or in PowerShell (#297). Nor is a
+        typographic quote, which PowerShell also ends a quoted string with."""
+        for index, name in enumerate(("it's $HOME $(x) `x`", "Bob\u2019s; $(x) \u2018a\u201a\u201b")):
+            self.check_pointer_is_literal(os.path.join(self.tmp, name), "codex-literal-%d" % index)
+
+    def check_pointer_is_literal(self, checkout: str, label: str) -> None:
         os.makedirs(os.path.join(checkout, "install"))
-        shutil.copy2(os.path.join(REPO_ROOT, "install", "install.sh"), os.path.join(checkout, "install"))
-        project = os.path.join(self.tmp, "codex-project")
-        os.makedirs(project)
-        for shell in posix:
-            with self.subTest(shell=shell.name):
-                script = os.path.join(checkout, "install", "install.sh")
+        for shell in SHELLS:
+            shutil.copy2(
+                os.path.join(REPO_ROOT, "install", "install" + shell.suffix),
+                os.path.join(checkout, "install"),
+            )
+        for shell in SHELLS:
+            with self.subTest(shell=shell.name, checkout=os.path.basename(checkout)):
+                project = self.fresh(shell, label)
+                script = os.path.join(checkout, "install", "install" + shell.suffix)
+                args = ["--codex", "--project", project] if shell.posix else ["-Codex", "-Project", project]
                 result = subprocess.run(
-                    [*shell.command, script, "--codex", "--project", project],
+                    [*shell.command, script, *args],
                     capture_output=True,
                     text=True,
                     env=dict(os.environ, HOME=self.home),
@@ -478,13 +482,28 @@ class TestAntigravityInstallers(_InstallerCase):
                 pointer = read_text(os.path.join(project, "AGENTS.md"))
                 line = next(line for line in pointer.splitlines() if "dev_orchestra.py" in line)
                 argument = line.strip().split(" ", 1)[1].rsplit(" <command>", 1)[0]
-                echoed = subprocess.run(
-                    [shell.command[0], "-c", "printf '%%s' %s" % argument],
-                    capture_output=True,
-                    text=True,
-                    timeout=60,
-                )
-                self.assertEqual(echoed.stdout, os.path.join(checkout, "scripts", "dev_orchestra.py"))
+                if shell.posix:
+                    expected = os.path.join(checkout, "scripts", "dev_orchestra.py")
+                    echo = [shell.command[0], "-c", "printf '%%s' %s" % argument]
+                else:
+                    expected = checkout + "/scripts/dev_orchestra.py"
+                    echo = [shell.command[0], "-NoProfile", "-NonInteractive", "-Command"]
+                    # The bytes written as they are: setting [Console]::OutputEncoding
+                    # would change the code page of the console every later test shares.
+                    echo.append(
+                        "$b = [Text.Encoding]::UTF8.GetBytes(%s); "
+                        "[Console]::OpenStandardOutput().Write($b, 0, $b.Length)" % argument
+                    )
+                echoed = subprocess.run(echo, capture_output=True, encoding="utf-8", timeout=60)
+                if shell.posix:
+                    self.assertEqual(echoed.stdout, expected, echoed.stderr)
+                else:
+                    # PowerShell writes the checkout by its long name; the temporary
+                    # directory may be given by its 8.3 one (RUNNER~1 on CI).
+                    self.assertTrue(
+                        same_path(echoed.stdout, expected),
+                        "%r != %r: %s" % (echoed.stdout, expected, echoed.stderr),
+                    )
 
     def test_the_codex_switch_does_not_combine_with_it(self):
         for shell in SHELLS:
@@ -778,6 +797,59 @@ class TestClaudeInstallers(_InstallerCase):
                 with open(exclude, "rb") as handle:
                     self.assertEqual(handle.read(), b"/build\r\n")
 
+    def exclude_round_trip(self, shell: Shell, label: str, original: bytes) -> Tuple[bytes, bytes, str]:
+        """The exclude file's bytes after an install and after the uninstall,
+        and the uninstaller's output."""
+        project = self.git_project(self.fresh(shell, label))
+        exclude = os.path.join(project, ".git", "info", "exclude")
+        with open(exclude, "wb") as handle:
+            handle.write(original)
+        code, output = self.claude(shell, "install", project, copy=True)
+        self.assertEqual(code, 0, output)
+        with open(exclude, "rb") as handle:
+            installed = handle.read()
+        code, output = self.claude(shell, "uninstall", project)
+        self.assertEqual(code, 0, output)
+        with open(exclude, "rb") as handle:
+            return installed, handle.read(), output
+
+    def test_a_last_pattern_without_a_newline_gets_one(self):
+        """The marker goes on a line of its own; the newline added for it
+        stays after the uninstall, which changes nothing git reads."""
+        for shell in SHELLS:
+            with self.subTest(shell=shell.name):
+                # install.ps1 ends lines with the platform's newline when the file has none to copy.
+                newline = "\r\n" if not shell.posix and os.name == "nt" else "\n"
+                installed, after, _ = self.exclude_round_trip(shell, "open-end", b"/build")
+                expected = newline.join(["/build", CLAUDE_MARKER, CLAUDE_ENTRY, ""]).encode()
+                self.assertEqual(installed, expected)
+                self.assertEqual(after, ("/build" + newline).encode())
+
+    def test_a_marker_with_nothing_below_it_stays(self):
+        """A marker on the last line, its entry gone, is the user's to keep:
+        the uninstall takes out only the marker and entry the install added."""
+        for shell in SHELLS:
+            for original in (
+                b"/build\n%s\n" % CLAUDE_MARKER.encode(),
+                b"/build\n%s" % CLAUDE_MARKER.encode(),
+            ):
+                with self.subTest(shell=shell.name, original=original):
+                    label = "dangling-%d" % len(original)
+                    installed, after, _ = self.exclude_round_trip(shell, label, original)
+                    lines = installed.decode("utf-8").splitlines()
+                    self.assertEqual(lines, ["/build", CLAUDE_MARKER, CLAUDE_MARKER, CLAUDE_ENTRY])
+                    self.assertEqual(after.decode("utf-8").splitlines(), ["/build", CLAUDE_MARKER])
+                    self.assertTrue(after.startswith(original), after)
+
+    def test_an_unmarked_entry_in_a_crlf_file_stays_and_is_named(self):
+        for shell in SHELLS:
+            with self.subTest(shell=shell.name):
+                original = ("/build\r\n%s\r\n" % CLAUDE_ENTRY).encode()
+                installed, after, output = self.exclude_round_trip(shell, "crlf-unmarked", original)
+                self.assertEqual(installed, original)
+                self.assertEqual(after, original)
+                self.assertIn("Left %s in .git/info/exclude" % CLAUDE_ENTRY, output)
+
     def test_the_exclude_entry_gets_its_own_line_and_no_bom(self):
         """A one-line file is where PowerShell's if-assignment joined the two."""
         for shell in SHELLS:
@@ -894,9 +966,11 @@ class TestClaudeInstallers(_InstallerCase):
                     # A refused install leaves the exclude file as it was.
                     self.assertEqual(self.exclude_lines(project), [])
 
-    def unmarked_copy(self, shell: Shell, project: str, plugin_json: bool = True) -> str:
+    def unmarked_copy(
+        self, shell: Shell, project: str, plugin_json: bool = True, root: str = REPO_ROOT
+    ) -> str:
         """A copy as the installers wrote it before they added the sentinel."""
-        code, output = self.claude(shell, "install", project, copy=True)
+        code, output = self.claude(shell, "install", project, copy=True, root=root)
         self.assertEqual(code, 0, output)
         dest = self.claude_dest(project)
         os.remove(os.path.join(dest, SENTINEL))
@@ -931,6 +1005,223 @@ class TestClaudeInstallers(_InstallerCase):
                     code, output = self.claude(shell, action, project, copy=action == "install")
                     self.assert_refused(code, output)
                     self.assertTrue(os.path.isfile(os.path.join(dest, "notes.txt")), action)
+
+    def test_an_older_copy_with_something_added_inside_is_left_alone(self):
+        """Not only at the top: a file of the user's anywhere in the copy, hidden
+        or not, is something the checkout does not have."""
+        planted = (
+            os.path.join("scripts", "mine.py"),
+            os.path.join("scripts", "orchestrator", ".env"),
+            os.path.join("references", "notes", "draft.md"),
+            ".env",
+            "..x",
+        )
+        for shell in SHELLS:
+            for relative in planted:
+                with self.subTest(shell=shell.name, planted=relative):
+                    project = self.fresh(shell, "older-inside-%d" % planted.index(relative))
+                    dest = self.unmarked_copy(shell, project)
+                    path = os.path.join(dest, relative)
+                    os.makedirs(os.path.dirname(path), exist_ok=True)
+                    self.write_file(path)
+                    for action in ("install", "uninstall"):
+                        code, output = self.claude(shell, action, project, copy=action == "install")
+                        self.assert_refused(code, output)
+                        self.assertTrue(os.path.isfile(path), action)
+
+    def test_an_older_copy_the_cli_ran_from_is_still_replaced(self):
+        """Running the CLI from the copy left Python's bytecode caches in it,
+        which the checkout does not have under those names: they are made
+        again, so they do not make the copy someone else's."""
+        caches = (
+            os.path.join("scripts", "orchestrator", "__pycache__", "never_in_a_checkout.cpython-399.pyc"),
+            os.path.join("scripts", "__pycache__", "stray.cpython-399.pyc"),
+        )
+        for shell in SHELLS:
+            for action in ("install", "uninstall"):
+                with self.subTest(shell=shell.name, action=action):
+                    base = self.fresh(shell, "ran-%s" % action)
+                    # Without caches of its own, unlike a checkout tests ran in.
+                    checkout = self.make_checkout(base)
+                    project = os.path.join(base, "proj")
+                    dest = self.unmarked_copy(shell, project, root=checkout)
+                    for relative in caches:
+                        path = os.path.join(dest, relative)
+                        os.makedirs(os.path.dirname(path), exist_ok=True)
+                        self.write_file(path)
+                    code, output = self.claude(
+                        shell, action, project, copy=action == "install", root=checkout
+                    )
+                    self.assertEqual(code, 0, output)
+                    if action == "install":
+                        self.assertTrue(os.path.isfile(os.path.join(dest, SENTINEL)), output)
+                        self.assertFalse(os.path.exists(os.path.join(dest, caches[0])), output)
+                    else:
+                        self.assertFalse(os.path.lexists(dest), output)
+
+    def test_an_older_copy_with_more_than_bytecode_in_a_cache_is_left_alone(self):
+        """Python writes only .pyc files into a __pycache__ directory, and none
+        outside one. Anything else there is not the installer's, and neither
+        is a __pycache__ that is a file."""
+        cache = os.path.join("scripts", "orchestrator", "__pycache__")
+        planted = (
+            os.path.join(cache, "notes.txt"),
+            os.path.join(cache, "sub", "x.cpython-399.pyc"),
+            os.path.join("scripts", "orchestrator", "loose.pyc"),
+            os.path.join("scripts", "__pycache__"),
+        )
+        for shell in SHELLS:
+            for relative in planted:
+                with self.subTest(shell=shell.name, planted=relative):
+                    base = self.fresh(shell, "cache-%d" % planted.index(relative))
+                    checkout = self.make_checkout(base)
+                    project = os.path.join(base, "proj")
+                    dest = self.unmarked_copy(shell, project, root=checkout)
+                    path = os.path.join(dest, relative)
+                    os.makedirs(os.path.dirname(path), exist_ok=True)
+                    self.write_file(path)
+                    for action in ("install", "uninstall"):
+                        code, output = self.claude(
+                            shell, action, project, copy=action == "install", root=checkout
+                        )
+                        self.assert_refused(code, output)
+                        self.assertTrue(os.path.isfile(path), action)
+
+    def test_an_older_copy_with_a_linked_cache_is_not_followed(self):
+        """A __pycache__ that is a link or junction, or one holding a link,
+        is not Python's: the copy is left alone, and what the link points at
+        survives."""
+        orchestrator = os.path.join("scripts", "orchestrator")
+        links = (
+            os.path.join(orchestrator, "__pycache__"),
+            os.path.join(orchestrator, "__pycache__", "linked.pyc"),
+        )
+        for shell in SHELLS:
+            for relative in links:
+                with self.subTest(shell=shell.name, link=relative):
+                    base = self.fresh(shell, "cache-link-%d" % links.index(relative))
+                    checkout = self.make_checkout(base)
+                    project = os.path.join(base, "proj")
+                    dest = self.unmarked_copy(shell, project, root=checkout)
+                    outside = os.path.join(base, "outside")
+                    os.makedirs(outside)
+                    self.write_file(os.path.join(outside, "keep.cpython-399.pyc"))
+                    link = os.path.join(dest, relative)
+                    if os.path.isdir(link):
+                        remove_tree(link)
+                    os.makedirs(os.path.dirname(link), exist_ok=True)
+                    try:
+                        make_dir_link(link, outside)
+                    except (OSError, subprocess.CalledProcessError) as exc:
+                        self.skipTest("cannot make a directory link here: %s" % exc)
+                    for action in ("install", "uninstall"):
+                        code, output = self.claude(
+                            shell, action, project, copy=action == "install", root=checkout
+                        )
+                        self.assert_refused(code, output)
+                        self.assertTrue(is_link(link), action)
+                        self.assertTrue(os.path.isfile(os.path.join(outside, "keep.cpython-399.pyc")), action)
+
+    def test_an_older_copy_holding_a_link_is_not_followed(self):
+        """A link inside the copy, at a name the checkout has or not, is never
+        followed: what it points at survives, whatever becomes of the copy,
+        and every shell decides alike."""
+        for shell in SHELLS:
+            for name in ("examples", "linked"):
+                with self.subTest(shell=shell.name, name=name):
+                    base = self.fresh(shell, "holding-%s" % name)
+                    project = os.path.join(base, "proj")
+                    dest = self.unmarked_copy(shell, project)
+                    outside = os.path.join(base, "outside")
+                    os.makedirs(outside)
+                    self.write_file(os.path.join(outside, "keep.txt"))
+                    link = os.path.join(dest, name)
+                    if os.path.isdir(link):
+                        remove_tree(link)
+                    try:
+                        make_dir_link(link, outside)
+                    except (OSError, subprocess.CalledProcessError) as exc:
+                        self.skipTest("cannot make a directory link here: %s" % exc)
+                    for action in ("install", "uninstall"):
+                        code, output = self.claude(shell, action, project, copy=action == "install")
+                        self.assert_refused(code, output)
+                        self.assertTrue(is_link(link), action)
+                        self.assertTrue(os.path.isfile(os.path.join(outside, "keep.txt")), action)
+
+    def test_an_older_copy_holding_a_file_where_the_checkout_has_a_directory_is_left_alone(self):
+        for shell in SHELLS:
+            with self.subTest(shell=shell.name):
+                project = self.fresh(shell, "older-type")
+                dest = self.unmarked_copy(shell, project)
+                path = os.path.join(dest, "examples")
+                remove_tree(path)
+                self.write_file(path, "mine\n")
+                for action in ("install", "uninstall"):
+                    code, output = self.claude(shell, action, project, copy=action == "install")
+                    self.assert_refused(code, output)
+                    self.assertTrue(os.path.isfile(path), action)
+
+    @unittest.skipIf(os.name == "nt" or os.geteuid() == 0, "needs a directory its owner cannot read")
+    def test_an_older_copy_with_an_unreadable_directory_is_left_alone(self):
+        for shell in SHELLS:
+            with self.subTest(shell=shell.name):
+                project = self.fresh(shell, "older-unreadable")
+                dest = self.unmarked_copy(shell, project)
+                locked = os.path.join(dest, "references")
+                os.chmod(locked, 0)
+                self.addCleanup(os.chmod, locked, stat.S_IRWXU)
+                for action in ("install", "uninstall"):
+                    code, output = self.claude(shell, action, project, copy=action == "install")
+                    self.assert_refused(code, output)
+                    self.assertTrue(os.path.isdir(locked), action)
+
+    def test_a_relative_link_to_the_checkout_is_ours(self):
+        """Followed from where the link is, not from where the installer runs."""
+        for shell in SHELLS:
+            with self.subTest(shell=shell.name):
+                base = self.fresh(shell, "relative-target")
+                checkout = self.make_checkout(base)
+                self.write_file(os.path.join(checkout, "mine.txt"))
+                project = os.path.join(base, "proj")
+                dest = self.claude_dest(project)
+                os.makedirs(os.path.dirname(dest))
+                relative = os.path.relpath(checkout, os.path.dirname(dest))
+                try:
+                    os.symlink(relative, dest, target_is_directory=True)
+                except OSError as exc:
+                    self.skipTest("cannot make a directory symlink here: %s" % exc)
+                code, output = self.claude(shell, "uninstall", project, root=checkout, cwd=base)
+                self.assertEqual(code, 0, output)
+                self.assertFalse(os.path.lexists(dest), output)
+                self.assert_checkout_intact(checkout)
+
+    def test_links_that_point_at_each_other_are_refused_not_followed_for_ever(self):
+        for shell in SHELLS:
+            with self.subTest(shell=shell.name):
+                base = self.fresh(shell, "cycle")
+                one, two = os.path.join(base, "one"), os.path.join(base, "two")
+                project = os.path.join(base, "proj")
+                dest = self.claude_dest(project)
+                os.makedirs(os.path.dirname(dest))
+                try:
+                    if os.name == "nt":
+                        # A junction needs its target to resolve when it is
+                        # made, so every link is made before the cycle closes.
+                        os.makedirs(two)
+                        make_dir_link(one, two)
+                        make_dir_link(dest, one)
+                        os.rmdir(two)
+                        make_dir_link(two, one)
+                    else:
+                        os.symlink(two, one)
+                        os.symlink(one, two)
+                        os.symlink(one, dest)
+                except (OSError, subprocess.CalledProcessError) as exc:
+                    self.skipTest("cannot make a cycle of links here: %s" % exc)
+                for action in ("install", "uninstall"):
+                    code, output = self.claude(shell, action, project, copy=action == "install")
+                    self.assert_refused(code, output)
+                    self.assertTrue(is_link(dest), action)
 
     def test_a_full_copy_with_its_git_is_explained_not_removed(self):
         """What an earlier install.sh left under Git Bash, whose `ln -s` copies
@@ -1013,6 +1304,59 @@ class TestClaudeInstallers(_InstallerCase):
                 relative = os.path.join("install", action + suffix)
                 self.assertIn(expected, read_text(os.path.join(REPO_ROOT, relative)), relative)
 
+    #: The helpers that decide what is the installer's to remove, by script
+    #: type, and how each script spells the start of one.
+    OWNERSHIP_HELPERS = (
+        (".sh", "%s() {", ("shell_quote", "explain_full_copy", "is_unmarked_copy")),
+        (
+            ".ps1",
+            "function %s {",
+            (
+                "Get-LinkTarget",
+                "Resolve-RealPath",
+                "Test-UnmarkedCopy",
+                "Test-CheckoutHas",
+                "Get-FullCopyNote",
+                "Stop-Refused",
+                "Test-ReparsePoint",
+                "Remove-Link",
+            ),
+        ),
+    )
+
+    def helper_body(self, text: str, opening: str) -> str:
+        """The helper that starts with ``opening``, up to its closing brace at column 0."""
+        match = re.search(r"^%s\n.*?^\}$" % re.escape(opening), text, re.MULTILINE | re.DOTALL)
+        assert match is not None, opening
+        return match.group(0)
+
+    def test_the_scripts_agree_on_what_is_theirs_to_remove(self):
+        """The install and uninstall scripts each carry their own copy of the
+        ownership helpers; a fix to one copy alone would have the pair disagree
+        about whether a directory may be removed."""
+        for suffix, opening, names in self.OWNERSHIP_HELPERS:
+            install = read_text(os.path.join(REPO_ROOT, "install", "install" + suffix))
+            uninstall = read_text(os.path.join(REPO_ROOT, "install", "uninstall" + suffix))
+            for name in names:
+                with self.subTest(script=suffix, helper=name):
+                    self.assertEqual(
+                        self.helper_body(install, opening % name), self.helper_body(uninstall, opening % name)
+                    )
+
+    #: How the PowerShell scripts read and write AGENTS.md and the exclude
+    #: file; each script carries its own copy, so that it runs on its own.
+    TEXT_HELPERS = ("Read-TextFile", "Get-LineText", "Get-KeptLines", "Write-TextLines")
+
+    def test_the_scripts_agree_on_how_a_text_file_round_trips(self):
+        """A fix to one copy alone would have the installer and the
+        uninstaller disagree on what a round trip keeps."""
+        install = read_text(os.path.join(REPO_ROOT, "install", "install.ps1"))
+        uninstall = read_text(os.path.join(REPO_ROOT, "install", "uninstall.ps1"))
+        for name in self.TEXT_HELPERS:
+            with self.subTest(helper=name):
+                opening = "function %s {" % name
+                self.assertEqual(self.helper_body(install, opening), self.helper_body(uninstall, opening))
+
 
 BEGIN = "<!-- BEGIN dev-orchestra -->"
 END = "<!-- END dev-orchestra -->"
@@ -1065,6 +1409,10 @@ class TestCodexInstallers(_InstallerCase):
                     if newline == "\r\n" and not shell.posix:
                         # The block ends its lines the way the file does.
                         self.assertNotIn(b"\n", written.replace(b"\r\n", b""), written)
+                    elif newline == "\r\n":
+                        # install.sh writes the block with LF line endings
+                        # and leaves the CRLF lines around it as they were.
+                        self.assertNotIn(b"\r", written[len(original) :], written)
 
                     code, output = self.codex(shell, "uninstall", project)
                     self.assertEqual(code, 0, output)
@@ -1091,6 +1439,102 @@ class TestCodexInstallers(_InstallerCase):
                 code, output = self.codex(shell, "uninstall", project)
                 self.assertEqual(code, 0, output)
                 self.assertEqual(self.read_bytes(agents), original)
+
+    def test_a_block_amid_the_users_text(self):
+        """Text added after the block stays where it is: a re-run moves the
+        block to the end, and the uninstall takes out only the block."""
+        for shell in SHELLS:
+            for newline in ("\n", "\r\n"):
+                with self.subTest(shell=shell.name, newline=repr(newline)):
+                    project = self.fresh(shell, "amid-%d" % len(newline))
+                    agents = os.path.join(project, "AGENTS.md")
+                    head = ("head" + newline).encode()
+                    tail = ("tail" + newline).encode()
+                    self.write_bytes(agents, head)
+                    code, output = self.codex(shell, "install", project)
+                    self.assertEqual(code, 0, output)
+                    block = self.read_bytes(agents)[len(head) :]
+                    self.write_bytes(agents, head + block + tail)
+
+                    code, output = self.codex(shell, "uninstall", project)
+                    self.assertEqual(code, 0, output)
+                    self.assertEqual(self.read_bytes(agents), head + tail)
+
+                    self.write_bytes(agents, head + block + tail)
+                    code, output = self.codex(shell, "install", project)
+                    self.assertEqual(code, 0, output)
+                    self.assertEqual(self.read_bytes(agents), head + tail + block)
+
+    def test_an_empty_file_and_a_bom_alone_come_back_as_they_were(self):
+        for shell in SHELLS:
+            for label, original in (("empty", b""), ("bom-only", codecs.BOM_UTF8)):
+                with self.subTest(shell=shell.name, file=label):
+                    project = self.fresh(shell, label)
+                    agents = os.path.join(project, "AGENTS.md")
+                    self.write_bytes(agents, original)
+                    code, output = self.codex(shell, "install", project)
+                    self.assertEqual(code, 0, output)
+                    written = self.read_bytes(agents)
+                    self.assertTrue(written.startswith(original), written[:40])
+                    # install.sh takes a BOM alone for a last line without a
+                    # newline, and puts the block on the line after it.
+                    first = written.decode("utf-8-sig").lstrip("\n").splitlines()[0]
+                    self.assertEqual(first, BEGIN, written[:40])
+                    code, output = self.codex(shell, "uninstall", project)
+                    self.assertEqual(code, 0, output)
+                    self.assertEqual(self.read_bytes(agents), original)
+
+    def test_a_begin_with_no_end_is_left_alone(self):
+        """What follows an unfinished block may be the user's own text, so
+        neither script takes anything out."""
+        for shell in SHELLS:
+            with self.subTest(shell=shell.name):
+                project = self.fresh(shell, "no-end")
+                agents = os.path.join(project, "AGENTS.md")
+                original = ("head\n%s\n## 自分のメモ\n" % BEGIN).encode()
+                self.write_bytes(agents, original)
+                for action in ("install", "uninstall"):
+                    code, output = self.codex(shell, action, project)
+                    self.assertEqual(code, 1, output)
+                    self.assertIn("with no %s after it" % END, output)
+                    self.assertEqual(self.read_bytes(agents), original, action)
+
+    def test_the_shapes_of_an_unfinished_block(self):
+        """A finished block followed by an unfinished one, and an END before
+        the BEGIN, are unfinished too; only the BEGIN after the last END counts."""
+        shapes = {
+            "closed-then-open": "head\n%s\nold\n%s\nmid\n%s\n## 自分のメモ\n" % (BEGIN, END, BEGIN),
+            "end-before-begin": "head\n%s\nmid\n%s\n## 自分のメモ\n" % (END, BEGIN),
+        }
+        for shell in SHELLS:
+            for label, text in shapes.items():
+                with self.subTest(shell=shell.name, shape=label):
+                    project = self.fresh(shell, label)
+                    agents = os.path.join(project, "AGENTS.md")
+                    original = text.encode()
+                    self.write_bytes(agents, original)
+                    for action in ("install", "uninstall"):
+                        code, output = self.codex(shell, action, project)
+                        self.assertEqual(code, 1, output)
+                        self.assertIn("with no %s after it" % END, output)
+                        self.assertEqual(self.read_bytes(agents), original, action)
+
+    def test_the_shapes_of_a_finished_block(self):
+        """An END with no BEGIN is not a block, and a BEGIN and END on one line
+        are one: uninstall leaves the first and takes out the second."""
+        shapes = {
+            "end-only": ("head\n%s\ntail\n" % END, "head\n%s\ntail\n" % END),
+            "one-line": ("head\n%s pointer %s\ntail\n" % (BEGIN, END), "head\ntail\n"),
+        }
+        for shell in SHELLS:
+            for label, (text, expected) in shapes.items():
+                with self.subTest(shell=shell.name, shape=label):
+                    project = self.fresh(shell, label)
+                    agents = os.path.join(project, "AGENTS.md")
+                    self.write_bytes(agents, text.encode())
+                    code, output = self.codex(shell, "uninstall", project)
+                    self.assertEqual(code, 0, output)
+                    self.assertEqual(self.read_bytes(agents), expected.encode())
 
     def test_a_utf8_bom_is_kept(self):
         for shell in SHELLS:

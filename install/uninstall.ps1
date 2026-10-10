@@ -86,15 +86,52 @@ function Resolve-RealPath {
 
 function Test-UnmarkedCopy {
     # A Claude copy made before the installer wrote the sentinel: the skill
-    # and its CLI are there, and nothing at the top that a copy does not
-    # carry, so removing it loses nothing the checkout does not have.
+    # and its CLI are there, and every entry in it, at any depth and hidden
+    # or not, is at the same path in this checkout's payload, so removing it
+    # loses nothing the checkout does not have. Python's bytecode caches are
+    # left out (see Test-BytecodeCache).
     param([string]$Path)
 
     foreach ($relative in @("skills/$SkillName/SKILL.md", 'scripts/orchestrator/__init__.py')) {
         if (-not (Test-Path -LiteralPath (Join-Path $Path $relative) -PathType Leaf)) { return $false }
     }
-    foreach ($entry in @(Get-ChildItem -LiteralPath $Path -Force)) {
+    try { $entries = @(Get-ChildItem -LiteralPath $Path -Force -ErrorAction Stop) } catch { return $false }
+    foreach ($entry in $entries) {
         if ($Payload -notcontains $entry.Name) { return $false }
+        if (-not (Test-CheckoutHas $entry (Join-Path $root $entry.Name))) { return $false }
+    }
+    return $true
+}
+
+function Test-CheckoutHas {
+    # Whether $Entry, and everything under it, is at $Twin in the checkout:
+    # a directory as a directory, a file as a file. The installer never wrote
+    # a link or junction into a copy, so one inside it, which is not
+    # followed, fails the check, and so does what cannot be read.
+    param($Entry, [string]$Twin)
+
+    if ($Entry.Attributes -band [System.IO.FileAttributes]::ReparsePoint) { return $false }
+    if (-not $Entry.PSIsContainer) { return [System.IO.File]::Exists($Twin) }
+    if ($Entry.Name -eq '__pycache__') { return (Test-BytecodeCache $Entry) }
+    if (-not [System.IO.Directory]::Exists($Twin)) { return $false }
+    try { $children = @(Get-ChildItem -LiteralPath $Entry.FullName -Force -ErrorAction Stop) } catch { return $false }
+    foreach ($child in $children) {
+        if (-not (Test-CheckoutHas $child (Join-Path $Twin $child.Name))) { return $false }
+    }
+    return $true
+}
+
+function Test-BytecodeCache {
+    # Whether the __pycache__ directory $Entry holds only what Python wrote
+    # there while the CLI ran from the copy: .pyc files, which Python makes
+    # again. Such a directory needs no twin in the checkout. Anything else in
+    # it -- another file, a link, a junction, a directory -- fails the check.
+    param($Entry)
+
+    try { $children = @(Get-ChildItem -LiteralPath $Entry.FullName -Force -ErrorAction Stop) } catch { return $false }
+    foreach ($child in $children) {
+        if ($child.Attributes -band [System.IO.FileAttributes]::ReparsePoint) { return $false }
+        if ($child.PSIsContainer -or $child.Name -notlike '*.pyc') { return $false }
     }
     return $true
 }
@@ -112,7 +149,7 @@ function Get-FullCopyNote {
     'If it is a full copy of a checkout, .git included, that an earlier install.sh'
     'made under Git Bash, not a clone you work in, remove it once you have checked'
     'it holds nothing of yours:'
-    "    Remove-Item -LiteralPath '$($Path -replace "'", "''")' -Recurse -Force"
+    "    Remove-Item -LiteralPath '$([System.Management.Automation.Language.CodeGeneration]::EscapeSingleQuotedStringContent($Path))' -Recurse -Force"
 }
 
 function Stop-Refused {
@@ -166,7 +203,7 @@ function Remove-OwnedDestination {
             Stop-Refused @(
                 "$Destination is a link to a path that cannot be read, not to this checkout; the installer did not make it."
                 'Remove it by hand if it is no longer wanted:'
-                "    [System.IO.Directory]::Delete('$($Destination -replace "'", "''")', `$false)"
+                "    [System.IO.Directory]::Delete('$([System.Management.Automation.Language.CodeGeneration]::EscapeSingleQuotedStringContent($Destination))', `$false)"
             )
         }
         Stop-Refused @(
@@ -189,7 +226,7 @@ function Remove-OwnedDestination {
         Stop-Refused @(
             "$Destination is a link to $target, not to this checkout; the installer did not make it."
             'Remove it by hand if it is no longer wanted:'
-            "    [System.IO.Directory]::Delete('$($Destination -replace "'", "''")', `$false)"
+            "    [System.IO.Directory]::Delete('$([System.Management.Automation.Language.CodeGeneration]::EscapeSingleQuotedStringContent($Destination))', `$false)"
         )
     }
 
@@ -294,7 +331,7 @@ function Write-TextLines {
 function Remove-MarkedGitExclude {
     # Drop $Entry, which the installer added, and its $Marker. An entry
     # without the marker right above it was there before and stays.
-    param([string]$Marker, [string]$Entry)
+    param([string]$Entry, [string]$Marker)
 
     if (-not $Project) { return }
     $excludeFile = Join-Path $Project '.git/info/exclude'
@@ -322,9 +359,9 @@ function Remove-MarkedGitExclude {
         Write-TextLines $excludeFile $kept.ToArray()
         Write-Host "Removed $Entry from .git/info/exclude"
     }
-    # The Claude entry without a marker: what installers before the marker
-    # wrote, or the user's own line. Either way it is not removed, only named.
-    if ($Entry -eq $ClaudeExcludeEntry -and @($kept | ForEach-Object { Get-LineText $_ }) -contains $Entry) {
+    # The entry without a marker: what an installer before the marker wrote,
+    # or the user's own line. Either way it is not removed, only named.
+    if (@($kept | ForEach-Object { Get-LineText $_ }) -contains $Entry) {
         Write-Host "Left $Entry in .git/info/exclude: the installer did not mark it as its own."
         Write-Host 'An older installer may have added it; remove the line by hand if it is no longer wanted.'
     }
@@ -348,7 +385,7 @@ if ($Antigravity) {
     else {
         Write-Host "Nothing installed at $dest"
     }
-    Remove-MarkedGitExclude -Marker $ExcludeMarker -Entry $ExcludeEntry
+    Remove-MarkedGitExclude -Entry $ExcludeEntry -Marker $ExcludeMarker
     Write-Host 'Restart Antigravity so that it stops loading the plugin.'
 }
 elseif (-not $Codex) {
@@ -371,7 +408,7 @@ elseif (-not $Codex) {
     else {
         Write-Host "Nothing installed at $dest"
     }
-    Remove-MarkedGitExclude -Marker $ClaudeExcludeMarker -Entry $ClaudeExcludeEntry
+    Remove-MarkedGitExclude -Entry $ClaudeExcludeEntry -Marker $ClaudeExcludeMarker
 }
 else {
     if ($Project) {
@@ -407,6 +444,14 @@ else {
             if ($line.Contains($begin)) { $skip = $true; $found = $true }
             if (-not $skip) { $kept.Add($line) }
             if ($line.Contains($end)) { $skip = $false }
+        }
+        if ($skip) {
+            # A BEGIN with no END after it: what follows may be the user's own
+            # text, so nothing is taken out.
+            Stop-Refused @(
+                "$agentsFile has $begin with no $end after it; it was left as it is."
+                'Remove the unfinished block by hand, then re-run.'
+            )
         }
         if ($found) {
             Write-TextLines $agentsFile (Get-KeptLines $lines ($kept.ToArray())) -Bom:($read.Bom)
