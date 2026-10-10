@@ -159,7 +159,8 @@ class _Drain:
     failing callback can neither block the child on a full pipe, nor hold
     back the idle deadline, nor fail the run. A line that finds the queue
     full is not handed on, only counted in ``dropped``. Once :meth:`mark`
-    is taken, a line that ends past it is not handed on either.
+    is taken, a line that ends past it waits until :meth:`detach` drops it or
+    :meth:`keep` lets it through.
     """
 
     def __init__(self, on_line: Optional[Callable[[str], None]] = None) -> None:
@@ -177,6 +178,10 @@ class _Drain:
         self._abandoned = False
         #: Set by ``detach``: what is read from now on is read and dropped.
         self._detached = False
+        #: Cleared by :meth:`mark` until :meth:`detach` or :meth:`keep` says
+        #: whether the lines past the mark are the run's.
+        self._settled = threading.Event()
+        self._settled.set()
         self._handler: Optional[threading.Thread] = None
         if on_line is not None:
             self._handler = threading.Thread(target=self._hand_on, daemon=True)
@@ -238,12 +243,20 @@ class _Drain:
     def mark(self) -> int:
         """Where the output recorded so far ends, for :meth:`detach`.
 
-        From now on ``on_line`` is handed only the lines that end by here, so
-        it never sees what :meth:`detach` is about to drop.
+        From now on ``on_line`` is handed a line that ends past here only
+        once :meth:`keep` says it is the run's, so it never sees what
+        :meth:`detach` is about to drop.
         """
         with self._lock:
             self._limit = len(self.chunks)
+            self._settled.clear()
             return self._limit
+
+    def keep(self) -> None:
+        """Undo :meth:`mark`: everything read is the run's, past it or not."""
+        with self._lock:
+            self._limit = None
+        self._settled.set()
 
     def detach(self, mark: int) -> int:
         """Stop keeping output: drop what was recorded after ``mark`` and
@@ -261,6 +274,7 @@ class _Drain:
             self._limit = mark if self._limit is None else min(self._limit, mark)
             dropped = sum(len(chunk) for chunk in self.chunks[mark:])
             del self.chunks[mark:]
+        self._settled.set()
         return dropped
 
     def _hand(self, recorded: int, line: str) -> None:
@@ -287,7 +301,14 @@ class _Drain:
             with self._lock:
                 limit = self._limit
             if limit is not None and recorded > limit:
-                continue  # past the mark: not the run's output
+                # Past the mark: whether it is the run's is not known yet.
+                while not self._settled.wait(_POLL_SECONDS):
+                    if self._abandoned:
+                        return
+                with self._lock:
+                    limit = self._limit
+                if limit is not None and recorded > limit:
+                    continue  # not the run's output
             try:
                 on_line(line)
             except Exception:
@@ -817,6 +838,7 @@ def execute(
         orphans = False
         killed = watched.timed_out or watched.stalled
         marks = (0, 0)
+        left_behind = False
         if killed:
             orphans = not terminate_tree(proc)
         else:
@@ -824,6 +846,9 @@ def execute(
             # still be writing: what that writes later is not the run's.
             _settle(threads[:2], out, err)
             marks = out.mark(), err.mark()
+            # On POSIX the group outlives its leader: a member left now is a
+            # process the CLI started, whatever it does with the pipes.
+            left_behind = not IS_WINDOWS and _group_alive(proc.pid)
 
         # Bounded join: if a survivor still holds a pipe, abandon the readers
         # rather than waiting on them. They are daemons and cannot outlive us.
@@ -831,11 +856,16 @@ def execute(
         readers = threads[:2]
         lingering = not killed and any(t.is_alive() for t in readers)
         discarded = 0
-        if not killed:
+        if lingering or left_behind:
             # Whatever came after the marks was written after the CLI exited,
             # by something it started, and is not the run's: it is cut off
             # whether that writer still holds the pipe or closed it meanwhile.
             discarded = out.detach(marks[0]) + err.detach(marks[1])
+        elif not killed:
+            # Nothing is known to have outlived the CLI: what the readers took
+            # in after the marks is the CLI's own, read late by a slow reader.
+            out.keep()
+            err.keep()
         if lingering:
             # The CLI exited, but something it started still holds its output:
             # a dev server left running in the background, say. Nothing would

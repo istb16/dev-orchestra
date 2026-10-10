@@ -63,6 +63,48 @@ class TestTheId(unittest.TestCase):
         self.assertNotEqual(wf.new_id(), wf.new_id())
 
 
+class TestMayStillRun(unittest.TestCase):
+    """Whether a job blocks ``workflow remove``, with the clock given."""
+
+    STARTED = "2026-10-01T00:00:00Z"
+
+    def may_still_run(self, after=None, **job: Any) -> bool:
+        from orchestrator import jobs as jobs_mod
+
+        begun = datetime(2026, 10, 1, tzinfo=timezone.utc).timestamp()
+        return jobs_mod.may_still_run(job, now=None if after is None else begun + after)
+
+    def test_a_start_without_a_readable_time_does_not_block(self):
+        """No pid and no time to measure the grace from: nothing says a worker
+        is coming, so it is taken for a start that crashed."""
+        self.assertFalse(self.may_still_run(0, status="starting"))
+        self.assertFalse(self.may_still_run(0, status="starting", started_at=None))
+        self.assertFalse(self.may_still_run(0, status="starting", started_at="yesterday"))
+        self.assertFalse(self.may_still_run(0, status="starting", started_at="2026-10-01 00:00:00"))
+
+    def test_a_start_blocks_for_exactly_the_grace(self):
+        from orchestrator import jobs as jobs_mod
+
+        grace = jobs_mod.STARTING_GRACE_SECONDS
+        for after, expected in ((0, True), (grace - 1, True), (grace, False), (grace + 1, False)):
+            with self.subTest(after=after):
+                self.assertIs(self.may_still_run(after, status="starting", started_at=self.STARTED), expected)
+
+    def test_a_job_with_a_pid_blocks_however_old(self):
+        from orchestrator import jobs as jobs_mod
+
+        late = jobs_mod.STARTING_GRACE_SECONDS * 100
+        self.assertTrue(self.may_still_run(late, status="running", pid=4242, started_at=self.STARTED))
+        self.assertTrue(self.may_still_run(late, status="running", pid=4242))
+
+    def test_a_finished_job_never_blocks(self):
+        from orchestrator import jobs as jobs_mod
+
+        for status in sorted(jobs_mod.FINISHED):
+            with self.subTest(status=status):
+                self.assertFalse(self.may_still_run(0, status=status, pid=4242, started_at=self.STARTED))
+
+
 class TestResolution(IsolatedCase):
     def container(self):
         return os.path.join(self.project, ".ai")

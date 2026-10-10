@@ -788,7 +788,10 @@ A re-run, and the uninstaller, replace only what the installer made: a link
 to this checkout, or a copy, which carries a `.dev-orchestra-install` file. A
 copy from an installer older than that file is recognised by holding nothing
 but what a copy carries: every file in it, at any depth and hidden or not, is
-also at the same path in this checkout's payload. A link to somewhere else, a directory of your own or
+also at the same path in this checkout's payload, a directory as a directory
+and a file as a file. The `__pycache__` directories and `.pyc` files that
+running the CLI from it leaves are not counted, and a link or junction inside
+it makes it not a copy. A link to somewhere else, a directory of your own or
 a clone is left in place, with a note on how to remove it by hand. A clone
 made directly into the skills directory is already installed; the installer
 run from it stops instead of deleting it.

@@ -196,7 +196,7 @@ class TestWhatWeTellOtherPeopleToType(unittest.TestCase):
         script = read("install/install.ps1")
         for name in WINDOWS_ORDER:
             self.assertIn("'%s'" % name, script)
-        self.assertIn("\"    $PythonCmd '$($root.Replace(", script)
+        self.assertIn("\"    $PythonCmd '$([System.Management.Automation.Language.CodeGeneration]::", script)
 
     def test_the_skill_names_the_fallback(self):
         """It hands the agent one literal command line; the agent has no other

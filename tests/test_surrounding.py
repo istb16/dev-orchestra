@@ -875,6 +875,34 @@ class TestEndToEnd(GitCase):
         self.assertEqual(event["surrounding"]["adopted"], 1)
         self.assertGreater(event["surrounding"]["adopted_chars"], 0)
 
+    def test_the_symbols_are_found_by_the_name_on_disk_and_recorded_as_shown(self):
+        """The diff names a file as it is on disk; ``meta["files"]`` records it
+        escaped. Extraction goes by the first, the frozen file records the second."""
+        self.enable()
+        self.edit_add()
+        original = review_snapshot._shown_name
+        with mock.patch.object(review_snapshot, "_shown_name", lambda name: "<%s>" % original(name)):
+            code, out, _ = run_cli("review", "snapshot")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.meta()["files"], ["<app.py>"])
+        frozen = self.frozen()
+        self.assertEqual([(c["path"], c["symbol"]) for c in frozen["candidates"]], [("<app.py>", "add")])
+        self.assertEqual(frozen["skipped"], [])
+
+    @unittest.skipIf(os.name == "nt", "Windows does not allow a control character in a file name")
+    def test_a_python_file_with_a_control_character_in_its_name_gets_its_symbols(self):
+        self.enable()
+        name = "esc\x1b[31mred.py"
+        try:
+            self.write(name, APP.replace("return a + b", "return a * b"))
+        except OSError:
+            self.skipTest("this file system refuses this name")
+        code, out, _ = run_cli("review", "snapshot")
+        self.assertEqual(code, 0, out)
+        frozen = self.frozen()
+        self.assertIn(("esc\x1b[31mred.py", "add"), [(c["path"], c["symbol"]) for c in frozen["candidates"]])
+        self.assertNotIn("\x1b", json.dumps(frozen, ensure_ascii=False))
+
     def test_a_round_whose_every_reviewer_failed_first_is_not_a_round_with_context(self):
         self.enable()
         self.edit_add()

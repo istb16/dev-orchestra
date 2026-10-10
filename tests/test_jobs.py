@@ -176,7 +176,9 @@ class TestCancel(JobCase):
 
     def test_a_worker_still_there_after_the_kill_is_not_reported_stopped(self):
         """The kill is confirmed, not assumed: every signal is sent and lands
-        nowhere, and the job says the worker may still be running."""
+        nowhere, and the job says the worker may still be running. Its own
+        start time vouches for it, so it may still write into the workflow:
+        the job is left unfinished, for `workflow remove` to see."""
         import signal
 
         from orchestrator import execution
@@ -197,8 +199,11 @@ class TestCancel(JobCase):
             ),
         ):
             job = jobs_mod.cancel(self.workspace, "a-1")
-        self.assertEqual(job["status"], "cancelled")
-        self.assertEqual(job["error"], "cancelled by request (the worker may still be running)")
+        self.assertEqual(job["status"], "running")
+        self.assertEqual(
+            job["not_stopped"], "pid 4242, the worker, was not confirmed stopped and may still be running"
+        )
+        self.assertEqual(ws.read_json(jobs_mod.job_path(self.workspace, "a-1"))["status"], "running")
         # It escalates like a timed-out run: the whole tree, then the pid alone.
         if execution.IS_WINDOWS:
             self.assertEqual(sent, [("run", "taskkill"), ("kill", signal.SIGTERM)])

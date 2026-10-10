@@ -1,4 +1,4 @@
-<!-- translated-from: references/limits.md sha256:7646b7534f018fec46b28cecabcf0b03e5003bbeca0d4e63bc56163724ea2f40 -->
+<!-- translated-from: references/limits.md sha256:9f7faa058ce35398a699eb0e8a3a13352e4af7ff35bb61b9dea54d559b183b5f -->
 
 > この文書は [references/limits.md](../../../references/limits.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -844,9 +844,10 @@ dev-orchestra optimization report
   （以前のバージョンが書いたもの、または開始時刻を読まない macOS のもの）や、
   生きている pid の開始時刻がいま読めないときは、POSIX では pid がまだ自分の
   プロセスグループを率いている間（ワーカーはそうなっています）だけ止め、
-  Windows では止めません。取り消しがそうした pid を動いたまま残したときは、
-  ジョブを終わっていない状態のままにし（`workflow remove` は引き続きそれを
-  待ちます）、exit 1 で終わります。
+  Windows では止めません。取り消しがそうした pid を動いたまま残したとき、
+  またはワーカーそのものを止めたと確かめられなかったときは、ジョブを
+  終わっていない状態のままにし（`workflow remove` は引き続きそれを待ちます）、
+  exit 1 で終わります。
 * **予算はプロジェクトのワークスペースごと**で、`.ai/state.json` をキーにして
   います。1 つのチェックアウト内で並行する 2 つのワークフローは予算を共有します。
 * **ここには 1 人のレビュアーのトークン消費を制限するものはなく**、制限するのは

@@ -1,4 +1,4 @@
-<!-- translated-from: references/cli.md sha256:732ba7863ee9b07d0d7ff95782bda7dff29d29d46c76edbd18027332631306f2 -->
+<!-- translated-from: references/cli.md sha256:f5db7e95ea381907300bb2130afa4ed73e92d931fe224fbe70d1099e7b64993b -->
 
 > この文書は [references/cli.md](../../../references/cli.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -649,7 +649,7 @@ detach された実行です。期限はエージェントが異常な振る舞�
 | `jobs list [--json]` | 記録されているすべてのジョブを新しい順に表示します。 |
 | `jobs show <id> [--output] [--since <n>] [--activity <m>] [--json]` | 1 つのジョブを表示します。オプションでその出力も表示し、ジョブが何をしているかも示します（下記）。 |
 | `jobs wait <id> [--timeout <s>] [--poll <s>] [--since <n>] [--activity <m>] [--json]` | 待機しますが、`--timeout`（デフォルト 60 秒。`0` なら一度だけ確かめます）より長くは待ちません。確かめる間隔は `--poll` 秒です（デフォルト 1。0 より大きい値）。どちらも 1,000,000,000 以下で、負の値、`nan`、`inf`、それより大きい数、数でない文字列を渡すと使い方の誤り（終了コード 2）になります。待機が終わった時点でジョブがまだ実行中であれば終了コード 4 で終了します。これはエラーではなく通常の結果です。ジョブが `--output` の書き込みを拒否した場合は、フォアグラウンドの実行と同様に終了コード 1 で終了します。 |
-| `jobs cancel <id>` | 実行中のジョブとそのプロセスツリーを停止します。pid がまだワーカーのものだと確かめられないまま止められなかったときは（[limits](limits.md#what-is-still-not-covered) を参照）、ジョブを終わっていない状態のままにして exit 1 で終わります。 |
+| `jobs cancel <id>` | 実行中のジョブとそのプロセスツリーを停止します。ワーカーを止めたと確かめられず、その pid がいまは別のプロセスのものだとも分からないときは（[limits](limits.md#what-is-still-not-covered) を参照）、ジョブを終わっていない状態のままにして exit 1 で終わります。 |
 
 ```bash
 id=$(dev-orchestra run implementer --prompt-file plan.md --detach --json | jq -r .id)

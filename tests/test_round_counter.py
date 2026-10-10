@@ -351,9 +351,14 @@ class TestTheCounterInThePipeline(IsolatedCase):
         run_cli("review", "snapshot")
         self.commit_all("second")
         code, out, err = run_cli("review", "run", "--base", "HEAD")
-        self.assertNotEqual(code, 0)
+        self.assertEqual(code, 2, err)
         self.assertIn("retaking the snapshot against --base HEAD", err)
-        self.assertRegex(err, "snapshot is empty|nothing to review")
+        self.assertIn(
+            "review snapshot is empty -- run `review snapshot` after making changes, "
+            "or pass --base to compare against a different revision\n",
+            err,
+        )
+        self.assertNotIn("Traceback", err)
         self.assertNotIn("successful", out)
         self.assertTrue(self.cli_workspace().read_snapshot_meta()["empty"])
 

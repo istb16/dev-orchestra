@@ -504,6 +504,10 @@ class TestProcessTree(IsolatedCase):
         self.assertRegex(outcome.stderr, r"warning: [0-9]+ characters it wrote after the CLI exited")
         self.assertEqual(seen, ["parent done\n"])
 
+    @unittest.skipIf(
+        execution.IS_WINDOWS,
+        "only a POSIX process group shows a leftover that closed the pipe in time",
+    )
     def test_what_a_leftover_writes_is_not_kept_when_it_closes_the_pipe_in_time(self):
         """It exits while ``execute`` still waits on the readers: nothing lingers,
         and what it wrote is still not the run's."""
@@ -515,6 +519,31 @@ class TestProcessTree(IsolatedCase):
         self.assertFalse(outcome.orphans_possible, outcome.stderr)
         self.assertRegex(outcome.stderr, r"wrote [0-9]+ characters after the CLI exited; they were dropped")
         self.assertEqual(seen, ["parent done\n"])
+
+    def test_what_the_cli_wrote_last_is_kept_when_its_readers_are_slow(self):
+        """The readers take in the CLI's last output only after the cutoff is
+        taken. Nothing it started outlived it, so all of it is still the run's."""
+        last_words = (
+            "import sys\nfor i in range(50): sys.stdout.write('line %d\\n' % i)\nsys.stdout.write('result')\n"
+        )
+        original = execution._Drain.pump
+
+        def slow_pump(drain, stream):
+            # Starved for longer than the quiet moment ``_settle`` waits for.
+            time.sleep(execution._SETTLE_QUIET_SECONDS * 3)
+            original(drain, stream)
+
+        seen: List[str] = []
+        with mock.patch.object(execution._Drain, "pump", slow_pump):
+            outcome = execution.execute(
+                python_code(last_words), cwd=self.project, timeout=120, on_line=seen.append
+            )
+        expected = "".join("line %d\n" % i for i in range(50)) + "result"
+        self.assertEqual(outcome.exit_code, 0, outcome.stderr)
+        self.assertEqual(outcome.stdout, expected)
+        self.assertNotIn("dropped", outcome.stderr)
+        self.assertFalse(outcome.orphans_possible, outcome.stderr)
+        self.assertEqual("".join(seen), expected)
 
     def test_what_the_cli_wrote_last_is_kept_when_a_leftover_is_cut_off(self):
         pid_file = os.path.join(self.project, "grandchild.pid")

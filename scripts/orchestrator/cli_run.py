@@ -293,7 +293,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         if refusal is not None:
             return refusal
     timeout, timeout_origin = _deadline(args, loaded, seat)
-    idle_timeout, idle_origin = _idle_deadline(args, loaded, seat)
+    idle_timeout, idle_origin = _idle_deadline(args, loaded, seat, provider)
     book = _ledger(args, workspace)
     refusal = _spend_attempt(args, book, seat)
     if refusal is not None:
@@ -390,7 +390,7 @@ def _deadline(args: argparse.Namespace, loaded: config_mod.LoadedConfig, seat: _
 
 
 def _idle_deadline(
-    args: argparse.Namespace, loaded: config_mod.LoadedConfig, seat: _Seat
+    args: argparse.Namespace, loaded: config_mod.LoadedConfig, seat: _Seat, provider: Provider
 ) -> Tuple[Optional[float], str]:
     """The run's no-output deadline, before the provider has its say, and where it came from.
 
@@ -398,11 +398,17 @@ def _idle_deadline(
     mode -- so a run that may change files (the implementer, the review
     fixer, or ``--mode implement``) gets the longer one. A role's
     ``options.idle_timeout`` still comes before all of it, in the provider;
-    the origin names it then.
+    the origin names it then, but only when the provider takes that option
+    and waits what it says.
     """
     options = seat.spec.get("options")
     configured = options.get("idle_timeout") if isinstance(options, dict) else None
-    if configured is not None and clocks.is_seconds(configured):
+    if (
+        configured is not None
+        and clocks.is_seconds(configured)
+        and "idle_timeout" in provider.option_keys
+        and provider.idle_timeout(options, None) == float(configured)
+    ):
         origin = "%s options.idle_timeout" % seat.label
     elif args.idle_timeout is not None:
         origin = "--idle-timeout"

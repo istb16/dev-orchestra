@@ -454,8 +454,12 @@ class TestAntigravityInstallers(_InstallerCase):
 
     def test_the_codex_pointer_keeps_shell_characters_literal(self):
         """A `$`, a `$( )`, a backtick or a ' in the checkout path is not
-        expanded when the line runs, in sh or in PowerShell (#297)."""
-        checkout = os.path.join(self.tmp, "it's $HOME $(x) `x`")
+        expanded when the line runs, in sh or in PowerShell (#297). Nor is a
+        typographic quote, which PowerShell also ends a quoted string with."""
+        for index, name in enumerate(("it's $HOME $(x) `x`", "Bob\u2019s; $(x) \u2018a\u201a\u201b")):
+            self.check_pointer_is_literal(os.path.join(self.tmp, name), "codex-literal-%d" % index)
+
+    def check_pointer_is_literal(self, checkout: str, label: str) -> None:
         os.makedirs(os.path.join(checkout, "install"))
         for shell in SHELLS:
             shutil.copy2(
@@ -463,8 +467,8 @@ class TestAntigravityInstallers(_InstallerCase):
                 os.path.join(checkout, "install"),
             )
         for shell in SHELLS:
-            with self.subTest(shell=shell.name):
-                project = self.fresh(shell, "codex-literal")
+            with self.subTest(shell=shell.name, checkout=os.path.basename(checkout)):
+                project = self.fresh(shell, label)
                 script = os.path.join(checkout, "install", "install" + shell.suffix)
                 args = ["--codex", "--project", project] if shell.posix else ["-Codex", "-Project", project]
                 result = subprocess.run(
@@ -484,8 +488,13 @@ class TestAntigravityInstallers(_InstallerCase):
                 else:
                     expected = checkout + "/scripts/dev_orchestra.py"
                     echo = [shell.command[0], "-NoProfile", "-NonInteractive", "-Command"]
-                    echo.append("[Console]::Out.Write(%s)" % argument)
-                echoed = subprocess.run(echo, capture_output=True, text=True, timeout=60)
+                    # The bytes written as they are: setting [Console]::OutputEncoding
+                    # would change the code page of the console every later test shares.
+                    echo.append(
+                        "$b = [Text.Encoding]::UTF8.GetBytes(%s); "
+                        "[Console]::OpenStandardOutput().Write($b, 0, $b.Length)" % argument
+                    )
+                echoed = subprocess.run(echo, capture_output=True, encoding="utf-8", timeout=60)
                 self.assertEqual(echoed.stdout, expected, echoed.stderr)
 
     def test_the_codex_switch_does_not_combine_with_it(self):
@@ -949,9 +958,11 @@ class TestClaudeInstallers(_InstallerCase):
                     # A refused install leaves the exclude file as it was.
                     self.assertEqual(self.exclude_lines(project), [])
 
-    def unmarked_copy(self, shell: Shell, project: str, plugin_json: bool = True) -> str:
+    def unmarked_copy(
+        self, shell: Shell, project: str, plugin_json: bool = True, root: str = REPO_ROOT
+    ) -> str:
         """A copy as the installers wrote it before they added the sentinel."""
-        code, output = self.claude(shell, "install", project, copy=True)
+        code, output = self.claude(shell, "install", project, copy=True, root=root)
         self.assertEqual(code, 0, output)
         dest = self.claude_dest(project)
         os.remove(os.path.join(dest, SENTINEL))
@@ -1009,6 +1020,90 @@ class TestClaudeInstallers(_InstallerCase):
                         code, output = self.claude(shell, action, project, copy=action == "install")
                         self.assert_refused(code, output)
                         self.assertTrue(os.path.isfile(path), action)
+
+    def test_an_older_copy_the_cli_ran_from_is_still_replaced(self):
+        """Running the CLI from the copy left Python's bytecode caches in it,
+        which the checkout does not have under those names: they are made
+        again, so they do not make the copy someone else's."""
+        caches = (
+            os.path.join("scripts", "orchestrator", "__pycache__", "never_in_a_checkout.cpython-399.pyc"),
+            os.path.join("scripts", "__pycache__", "stray.cpython-399.pyc"),
+            os.path.join("scripts", "orchestrator", "loose.pyc"),
+        )
+        for shell in SHELLS:
+            for action in ("install", "uninstall"):
+                with self.subTest(shell=shell.name, action=action):
+                    base = self.fresh(shell, "ran-%s" % action)
+                    # Without caches of its own, unlike a checkout tests ran in.
+                    checkout = self.make_checkout(base)
+                    project = os.path.join(base, "proj")
+                    dest = self.unmarked_copy(shell, project, root=checkout)
+                    for relative in caches:
+                        path = os.path.join(dest, relative)
+                        os.makedirs(os.path.dirname(path), exist_ok=True)
+                        self.write_file(path)
+                    code, output = self.claude(
+                        shell, action, project, copy=action == "install", root=checkout
+                    )
+                    self.assertEqual(code, 0, output)
+                    if action == "install":
+                        self.assertTrue(os.path.isfile(os.path.join(dest, SENTINEL)), output)
+                        self.assertFalse(os.path.exists(os.path.join(dest, caches[0])), output)
+                    else:
+                        self.assertFalse(os.path.lexists(dest), output)
+
+    def test_an_older_copy_holding_a_link_is_not_followed(self):
+        """A link inside the copy, at a name the checkout has or not, is never
+        followed: what it points at survives, whatever becomes of the copy,
+        and every shell decides alike."""
+        for shell in SHELLS:
+            for name in ("examples", "linked"):
+                with self.subTest(shell=shell.name, name=name):
+                    base = self.fresh(shell, "holding-%s" % name)
+                    project = os.path.join(base, "proj")
+                    dest = self.unmarked_copy(shell, project)
+                    outside = os.path.join(base, "outside")
+                    os.makedirs(outside)
+                    self.write_file(os.path.join(outside, "keep.txt"))
+                    link = os.path.join(dest, name)
+                    if os.path.isdir(link):
+                        remove_tree(link)
+                    try:
+                        make_dir_link(link, outside)
+                    except (OSError, subprocess.CalledProcessError) as exc:
+                        self.skipTest("cannot make a directory link here: %s" % exc)
+                    for action in ("install", "uninstall"):
+                        code, output = self.claude(shell, action, project, copy=action == "install")
+                        self.assert_refused(code, output)
+                        self.assertTrue(is_link(link), action)
+                        self.assertTrue(os.path.isfile(os.path.join(outside, "keep.txt")), action)
+
+    def test_an_older_copy_holding_a_file_where_the_checkout_has_a_directory_is_left_alone(self):
+        for shell in SHELLS:
+            with self.subTest(shell=shell.name):
+                project = self.fresh(shell, "older-type")
+                dest = self.unmarked_copy(shell, project)
+                path = os.path.join(dest, "examples")
+                remove_tree(path)
+                self.write_file(path, "mine\n")
+                for action in ("install", "uninstall"):
+                    code, output = self.claude(shell, action, project, copy=action == "install")
+                    self.assert_refused(code, output)
+                    self.assertTrue(os.path.isfile(path), action)
+
+    @unittest.skipIf(os.name == "nt" or os.geteuid() == 0, "needs a directory its owner cannot read")
+    def test_an_older_copy_with_an_unreadable_directory_is_left_alone(self):
+        for shell in SHELLS:
+            with self.subTest(shell=shell.name):
+                project = self.fresh(shell, "older-unreadable")
+                dest = self.unmarked_copy(shell, project)
+                locked = os.path.join(dest, "references")
+                os.chmod(locked, 0)
+                self.addCleanup(os.chmod, locked, stat.S_IRWXU)
+                for action in ("install", "uninstall"):
+                    code, output = self.claude(shell, action, project, copy=action == "install")
+                    self.assert_refused(code, output)
+                    self.assertTrue(os.path.isdir(locked), action)
 
     def test_a_relative_link_to_the_checkout_is_ours(self):
         """Followed from where the link is, not from where the installer runs."""
@@ -1333,6 +1428,43 @@ class TestCodexInstallers(_InstallerCase):
                     self.assertEqual(code, 1, output)
                     self.assertIn("with no %s after it" % END, output)
                     self.assertEqual(self.read_bytes(agents), original, action)
+
+    def test_the_shapes_of_an_unfinished_block(self):
+        """A finished block followed by an unfinished one, and an END before
+        the BEGIN, are unfinished too; only the BEGIN after the last END counts."""
+        shapes = {
+            "closed-then-open": "head\n%s\nold\n%s\nmid\n%s\n## 自分のメモ\n" % (BEGIN, END, BEGIN),
+            "end-before-begin": "head\n%s\nmid\n%s\n## 自分のメモ\n" % (END, BEGIN),
+        }
+        for shell in SHELLS:
+            for label, text in shapes.items():
+                with self.subTest(shell=shell.name, shape=label):
+                    project = self.fresh(shell, label)
+                    agents = os.path.join(project, "AGENTS.md")
+                    original = text.encode()
+                    self.write_bytes(agents, original)
+                    for action in ("install", "uninstall"):
+                        code, output = self.codex(shell, action, project)
+                        self.assertEqual(code, 1, output)
+                        self.assertIn("with no %s after it" % END, output)
+                        self.assertEqual(self.read_bytes(agents), original, action)
+
+    def test_the_shapes_of_a_finished_block(self):
+        """An END with no BEGIN is not a block, and a BEGIN and END on one line
+        are one: uninstall leaves the first and takes out the second."""
+        shapes = {
+            "end-only": ("head\n%s\ntail\n" % END, "head\n%s\ntail\n" % END),
+            "one-line": ("head\n%s pointer %s\ntail\n" % (BEGIN, END), "head\ntail\n"),
+        }
+        for shell in SHELLS:
+            for label, (text, expected) in shapes.items():
+                with self.subTest(shell=shell.name, shape=label):
+                    project = self.fresh(shell, label)
+                    agents = os.path.join(project, "AGENTS.md")
+                    self.write_bytes(agents, text.encode())
+                    code, output = self.codex(shell, "uninstall", project)
+                    self.assertEqual(code, 0, output)
+                    self.assertEqual(self.read_bytes(agents), expected.encode())
 
     def test_a_utf8_bom_is_kept(self):
         for shell in SHELLS:

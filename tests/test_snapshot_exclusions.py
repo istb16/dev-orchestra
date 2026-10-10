@@ -16,6 +16,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import re
 import subprocess
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
@@ -511,6 +512,62 @@ class TestUntrackedFileNames(IsolatedCase):
         self.assertIn("+R = 1", ws.read_text(self.workspace.snapshot_path))
 
 
+class TestControlCharactersInEveryName(IsolatedCase):
+    """Every name a snapshot records or prints: a rename's old name too, C1
+    controls and DEL as well as C0, and an incremental round's prompt."""
+
+    CONTROLS = re.compile("[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+
+    def setUp(self):
+        super().setUp()
+        self.workspace = ws.Workspace(self.tmp).ensure()
+
+    def test_c1_controls_and_del_are_escaped(self):
+        self.assertEqual(review_snapshot._shown_name("a\x7fb\x85c\x9f.py"), "a\\x7fb\\x85c\\x9f.py")
+
+    def meta(self):
+        tracked = [
+            {"path": "new\x85.py", "previous": "old\x1b[31m.py", "added": 1, "deleted": 1},
+            {"path": "bundle\x7f.min.js", "previous": "old\x1b.min.js", "added": 3, "deleted": 0},
+        ]
+        withheld = [dict(tracked[1], pattern="*.min.js")]
+        return review_snapshot._snapshot_meta(
+            "",
+            "tree",
+            None,
+            "h" * 40,
+            "h" * 40,
+            "t" * 40,
+            "p" * 40,
+            ".ai/full.diff",
+            tracked,
+            withheld,
+            [],
+            ["u\x9f.py"],
+            ["*.min.js"],
+        )
+
+    def test_a_renamed_files_old_name_is_escaped(self):
+        meta = self.meta()
+        self.assertEqual(
+            [(entry["path"], entry["previous"]) for entry in meta["withheld"]],
+            [("bundle\\x7f.min.js", "old\\x1b.min.js")],
+        )
+        self.assertIn("old\\x1b[31m.py", meta["changed_paths"])
+        self.assertIn("new\\x85.py", meta["files"])
+        self.assertIsNone(self.CONTROLS.search(json.dumps(meta, ensure_ascii=False)))
+
+    def test_an_incremental_rounds_prompt_holds_no_control_character(self):
+        meta = self.meta()
+        self.assertTrue(meta["incremental_from"])
+        for text in (
+            review_mod.render_withheld(meta["withheld"]),
+            review_mod.render_round_context(self.workspace, meta),
+        ):
+            self.assertTrue(text)
+            self.assertIsNone(self.CONTROLS.search(text), repr(text))
+
+
 @unittest.skipUnless(has_git(), "git is required for review snapshots")
 class TestGitListingsKeepNamesExact(IsolatedCase):
     """Path-bearing ``-z`` listings are read as bytes: text mode turns a carriage
@@ -570,6 +627,46 @@ class TestGitListingsKeepNamesExact(IsolatedCase):
             review_snapshot._blob_sizes(self.project, self.old, ["other.txt"]), {"other.txt": 300}
         )
         self.assertEqual(review_snapshot._blob_sizes(self.project, self.old, []), {})
+
+    def test_blob_sizes_measures_more_paths_than_a_command_line_holds(self):
+        """Hundreds of new files: past Windows' 32K command line all at once."""
+        missing = ["generated/%04d/%s.txt" % (index, "x" * 40) for index in range(1000)]
+        sizes = review_snapshot._blob_sizes(self.project, self.new, [*missing, self.NAME, "other.txt"])
+        self.assertEqual(sizes, {self.NAME: 4000, "other.txt": 300})
+
+    def test_blob_sizes_goes_a_batch_at_a_time(self):
+        calls = []
+        original = ws.git_bytes
+
+        def counted(args, cwd, **kwargs):
+            calls.append(args)
+            return original(args, cwd, **kwargs)
+
+        with (
+            mock.patch.object(review_snapshot, "_LS_TREE_BUDGET", 1),
+            mock.patch.object(ws, "git_bytes", counted),
+        ):
+            sizes = review_snapshot._blob_sizes(self.project, self.new, [self.NAME, "other.txt"])
+        self.assertEqual(sizes, {self.NAME: 4000, "other.txt": 300})
+        self.assertEqual(len(calls), 2)
+
+    def test_blob_sizes_lists_the_whole_tree_when_the_paths_cannot_be(self):
+        original = ws.git_bytes
+
+        def refuse_pathspecs(args, cwd, **kwargs):
+            if args[-1] != "--":
+                return 128, b"", "fatal: too long"
+            return original(args, cwd, **kwargs)
+
+        with mock.patch.object(ws, "git_bytes", refuse_pathspecs):
+            sizes = review_snapshot._blob_sizes(self.project, self.new, [self.NAME])
+        self.assertEqual(sizes, {self.NAME: 4000})
+
+    def test_blob_sizes_that_cannot_be_listed_at_all_is_an_error(self):
+        """Not "no sizes", which would let an oversized file through whole."""
+        with mock.patch.object(ws, "git_bytes", lambda args, cwd, **kwargs: (128, b"", "fatal")):
+            with self.assertRaises(review_snapshot.ReviewError):
+                review_snapshot._blob_sizes(self.project, self.new, [self.NAME])
 
     def test_a_listing_reads_the_name_exactly(self):
         listed = review_snapshot._listed_paths(self.project, ["ls-tree", "-r", "-z", "--name-only", self.new])

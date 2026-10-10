@@ -344,14 +344,20 @@ def cancel(workspace: ws.Workspace, job_id: str) -> Dict[str, Any]:
     killed = False
     if alive is not False:
         killed = execution.kill_tree(pid, execution.KILL_GRACE_SECONDS, verified=alive is True)
-    if not killed and alive is None and execution.pid_alive(pid):
-        # Nothing says whose the pid is, and it is still there: the worker may
-        # be running, so the job is not finished. Leaving it as it is keeps
-        # what reads it (``workflow remove``) from taking it for done.
+    if not killed and alive is not False and execution.pid_alive(pid):
+        # The pid is still there and was not confirmed stopped, and nothing
+        # says it is someone else's: the worker may be running, so the job is
+        # not finished. Leaving it as it is keeps what reads it (``workflow
+        # remove``) from taking it for done.
         job = dict(job)
-        job["not_stopped"] = (
-            "pid %d was not stopped: it may no longer be the worker, which may still be running" % pid
-        )
+        if alive is True:
+            job["not_stopped"] = (
+                "pid %d, the worker, was not confirmed stopped and may still be running" % pid
+            )
+        else:
+            job["not_stopped"] = (
+                "pid %d was not stopped: it may no longer be the worker, which may still be running" % pid
+            )
         return job
     error = "cancelled by request%s" % ("" if killed else " (the worker may still be running)")
     # Written by the worker's SIGTERM handler before it exited, so it is there

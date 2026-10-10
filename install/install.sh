@@ -140,11 +140,14 @@ release_destination() {
 # A Claude copy made before the installer wrote the sentinel: the skill and
 # its CLI are there, and every entry in it, at any depth and hidden or not,
 # is at the same path in this checkout's payload, so removing it loses
-# nothing the checkout does not have. find does not follow a link inside the
-# copy, and fails the check on anything it cannot read.
+# nothing the checkout does not have. Python's bytecode caches, which running
+# the CLI from the copy writes there, are left out: they are made again. A
+# directory must be a directory there, and a file a file. The installer never
+# wrote a link into a copy, so one inside it, which is not followed, fails
+# the check, and so does anything find cannot read.
 is_unmarked_copy() {
   [ -f "$1/skills/$SKILL_NAME/SKILL.md" ] && [ -f "$1/scripts/orchestrator/__init__.py" ] || return 1
-  find "$1" -exec sh -c '
+  find "$1" \( -type d -name __pycache__ -o -type f -name '*.pyc' \) -prune -o -exec sh -c '
     copy=$1 checkout=$2 payload=$3
     shift 3
     for entry do
@@ -154,7 +157,14 @@ is_unmarked_copy() {
         *" ${relative%%/*} "*) ;;
         *) exit 1 ;;
       esac
-      [ -e "$checkout/$relative" ] || [ -L "$checkout/$relative" ] || exit 1
+      twin=$checkout/$relative
+      if [ -L "$entry" ]; then
+        exit 1
+      elif [ -d "$entry" ]; then
+        [ -d "$twin" ] || exit 1
+      else
+        [ -f "$twin" ] || exit 1
+      fi
     done
   ' sh "$1" "$root" "$PAYLOAD" {} +
 }

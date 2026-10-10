@@ -122,7 +122,8 @@ below begins **User adapters** so adapter authors can find it.
   longer is still killed, and a wedged run is still noticed well before its
   total deadline. `--idle-timeout` or the role's `options.idle_timeout`
   sets another value, and reviewers and read-only runs keep 300s. A run
-  killed as stalled says where its idle deadline came from. Output also
+  killed as stalled says where its idle deadline came from, naming the role's
+  `options.idle_timeout` only when its provider waits that value. Output also
   counts as it arrives rather than when a line ends, so a CLI printing dots
   or redrawing a progress bar is no longer taken for silent (#273).
 
@@ -142,9 +143,12 @@ below begins **User adapters** so adapter authors can find it.
   to its reader, which is abandoned after a few seconds and from then on
   reads and drops what arrives, and what the process wrote after the CLI
   exited is left out of the run's output, with a warning giving its size,
-  even when that process closes the pipe a moment later; the lines the CLI
-  wrote before it exited still reach `review run --progress` and a job's
-  activity, and nothing written after does.
+  even when that process closes the pipe a moment later (on POSIX, where its
+  process group shows it outlived the CLI); the lines the CLI wrote before it
+  exited still reach `review run --progress` and a job's activity, and
+  nothing written after does. When nothing the CLI started is known to have
+  outlived it, everything read is kept, so the CLI's own last output, read
+  late on a busy machine, is not dropped.
   The process is then stopped on POSIX, with a warning; on Windows it cannot
   be reached once the CLI has gone, so the run reports `orphans_possible`
   and warns instead. The CLI's exit code is kept either way (#267).
@@ -266,9 +270,11 @@ below begins **User adapters** so adapter authors can find it.
   cannot be made) now carries a `.dev-orchestra-install` file, as an
   Antigravity copy does. A copy from an earlier installer, which has no such
   file, is still replaced or removed when every file in it, at any depth and
-  hidden or not, is also at the same path in the checkout's payload, so
+  hidden or not, is also at the same path in the checkout's payload -- a
+  directory as a directory, a file as a file, not counting the `__pycache__`
+  directories and `.pyc` files that running the CLI from it leaves -- so
   `install --copy` keeps upgrading it; one with anything else added anywhere
-  in it is left in place. A link to another checkout or to nothing is now
+  in it, or holding a link or junction, is left in place. A link to another checkout or to nothing is now
   left in place too, with the command to remove it by hand, and a run from
   the checkout that is itself the destination stops and says so (#290).
 
@@ -288,8 +294,9 @@ below begins **User adapters** so adapter authors can find it.
   (on Windows, when opening the process is denied) is treated the same, not
   as gone: on Windows such a pid is no longer stopped, while POSIX keeps
   stopping it only while it leads its own process group. A cancel that leaves
-  such a pid running leaves the job unfinished, so `workflow remove` still
-  waits for it, and `jobs cancel` says so and exits 1 (#268).
+  such a pid running, or that cannot confirm a worker its start time vouches
+  for stopped, leaves the job unfinished, so `workflow remove` still waits
+  for it, and `jobs cancel` says so and exits 1 (#268).
 
 - **What a reviewer's prompt quotes can no longer close its fence.** The diff,
   the plan and the design request went in a fixed `` ``` `` fence, so a code
@@ -485,7 +492,9 @@ below begins **User adapters** so adapter authors can find it.
   signature there names each flag its command takes. The Codex pointer the
   installers write quotes the script's path, so a checkout path with a space
   works -- in single quotes, from `install.sh` and `install.ps1` alike, so a
-  `$`, a `$( )` or a backtick in it is not expanded either -- and `doctor`'s `Resume:` line names the live check by its absolute
+  `$`, a `$( )` or a backtick in it is not expanded either, and a `'` or a
+  typographic single quote (`’`), which PowerShell also reads as one, does
+  not end the quoting early -- and `doctor`'s `Resume:` line names the live check by its absolute
   path, as its notes already did (#297).
 
 - **Untracked files with non-ASCII names, and large untracked files, are no
@@ -500,13 +509,16 @@ below begins **User adapters** so adapter authors can find it.
   no longer suggest `--no-exclude` for it. The size is checked before any
   pattern, and an incremental round withholds a large untracked file the same
   way, on either side of the round, instead of diffing it whole or deleting
-  every line of it, and under both names when it was renamed. When every
+  every line of it, and under both names when it was renamed; it measures
+  however many new files the round has, a batch at a time, and stops with an
+  error rather than letting them through whole when git cannot measure them. When every
   changed file was withheld, `review run` names each one that was not read
   with its reason. Names that are not UTF-8 or hold a carriage return are
   read as they are on disk, in an incremental round too, and a name is
   recorded, printed and put in a reviewer's prompt with any control
   character escaped (`\x1b`), so it cannot rewrite the terminal or add a
-  line of its own. A nested repository is still left out (#260).
+  line of its own; the surrounding context of a Python file with such a name
+  is still extracted. A nested repository is still left out (#260).
 
 ## [0.22.0] - 2026-10-06
 

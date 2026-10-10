@@ -6,6 +6,7 @@ import argparse
 import io
 import json
 import os
+import re
 import sys
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
@@ -2390,7 +2391,8 @@ class TestRunIdleDeadline(IsolatedCase):
         loaded = config_mod.load(self.project)
         self.assertEqual(config_mod.idle_timeout(loaded, "implement"), (1800, "project"))
 
-    def test_a_stall_names_where_its_idle_deadline_came_from(self):
+    def stall_origin(self, role: str, *argv: str, option_keys=("args",), streams=True) -> str:
+        """What a stalled run of ``role`` says its idle deadline came from."""
         from orchestrator.providers import mock as mock_mod
         from orchestrator.providers.base import RunResult
 
@@ -2398,12 +2400,45 @@ class TestRunIdleDeadline(IsolatedCase):
             resolved = provider.resolve_model({"family": "small"})
             return RunResult(False, 125, "", "", ["mock"], 1.0, resolved, stalled=True, idle_for=1200.0)
 
-        with mock.patch.object(mock_mod.MockProvider, "run", stalled_run):
-            _, _, err = run_cli("run", "implementer", "--prompt", "go")
+        with (
+            mock.patch.object(mock_mod.MockProvider, "run", stalled_run),
+            mock.patch.object(mock_mod.MockProvider, "streams_progress", streams),
+            mock.patch.object(mock_mod.MockProvider, "option_keys", option_keys),
+        ):
+            _, _, err = run_cli("run", role, *argv, "--prompt", "go")
         self.assertIn(
-            "implementer produced no output for 1200s and was treated as stalled (not merely slow); "
-            "its idle deadline is from the minimum for a run that may change files.",
-            err,
+            "%s produced no output for 1200s and was treated as stalled (not merely slow)" % role, err
+        )
+        match = re.search(r"its idle deadline is from (.*)\.\n", err)
+        self.assertIsNotNone(match, err)
+        return match.group(1) if match else ""
+
+    def test_a_stall_names_where_its_idle_deadline_came_from(self):
+        self.assertEqual(self.stall_origin("implementer"), "the minimum for a run that may change files")
+        self.assertEqual(self.stall_origin("architect"), "review.idle_timeout_seconds, default")
+        self.assertEqual(self.stall_origin("implementer", "--idle-timeout", "60"), "--idle-timeout")
+        run_cli("config", "set", "review.idle_timeout_seconds", "1800", "--scope", "project")
+        self.assertEqual(self.stall_origin("implementer"), "review.idle_timeout_seconds, project")
+
+    def test_a_stall_names_the_roles_option_only_when_the_provider_waits_it(self):
+        from orchestrator.providers import mock as mock_mod
+
+        with mock.patch.object(mock_mod.MockProvider, "option_keys", ("args", "idle_timeout")):
+            run_cli("config", "set", "implementer.options.idle_timeout", "90")
+        self.assertEqual(
+            self.stall_origin("implementer", option_keys=("args", "idle_timeout")),
+            "implementer options.idle_timeout",
+        )
+        # Even over the flag, which the provider's own option outranks.
+        self.assertEqual(
+            self.stall_origin("implementer", "--idle-timeout", "60", option_keys=("args", "idle_timeout")),
+            "implementer options.idle_timeout",
+        )
+        # A provider that takes the option but does not wait it (no progress
+        # to time, as Claude without stream-json) is not said to have.
+        self.assertEqual(
+            self.stall_origin("implementer", option_keys=("args", "idle_timeout"), streams=False),
+            "the minimum for a run that may change files",
         )
 
 

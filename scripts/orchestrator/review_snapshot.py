@@ -92,7 +92,10 @@ def create_snapshot(
         patterns,
     )
     if context_on:
-        _freeze_surrounding(workspace, root, frozen_tree, diff, meta["files"], previous_tree, meta)
+        # The names as they are on disk, as the diff names them: ``meta``
+        # records them escaped.
+        reviewed = _reviewed_files(tracked, withheld, suppressed, untracked)
+        _freeze_surrounding(workspace, root, frozen_tree, diff, reviewed, previous_tree, meta)
     elif os.path.isfile(workspace.surrounding_path):
         # A snapshot taken with the setting off has no context, and an older
         # file left beside it would describe a diff that is no longer there.
@@ -459,9 +462,13 @@ def _freeze_surrounding(
 ) -> None:
     """Freeze the symbol around every hunk of ``reviewed``, read from ``frozen_tree``.
 
-    Written to ``review-surrounding.json``, and summarised into ``meta``.
+    ``reviewed`` names the files as they are on disk, as the diff does; the
+    names are written as ``_shown_name`` shows them. Written to
+    ``review-surrounding.json``, and summarised into ``meta``.
     """
     frozen = context_mod.extract(root, frozen_tree, diff, reviewed, working_tree_diff=not previous_tree)
+    for entry in [*frozen["candidates"], *frozen["skipped"]]:
+        entry["path"] = _shown_name(str(entry["path"]))
     frozen["sha256"] = meta["sha256"]
     frozen["generated_at"] = ws.utcnow()
     ws.write_json(workspace.surrounding_path, frozen)
@@ -1081,27 +1088,59 @@ def _listed_paths(root: str, args: Sequence[str]) -> "set[str]":
     return {_decode_name(raw) for raw in out.split(b"\0") if raw}
 
 
+#: How many characters of paths one ``git ls-tree`` command line carries.
+#: Windows refuses a command line past 32,767 characters, so a round with
+#: hundreds of new files is measured a batch at a time.
+_LS_TREE_BUDGET = 16_000
+
+
 def _blob_sizes(root: str, tree: str, paths: Sequence[str]) -> Dict[str, int]:
-    """The blobs of ``tree`` at ``paths`` with their sizes in bytes; empty when git cannot list them.
+    """The blobs of ``tree`` at ``paths`` with their sizes in bytes.
 
     Only ``paths`` are asked for: with ``-l`` git looks up the size of every
-    blob it lists, and a whole tree is every blob in the repository.
-    ``ls-tree`` matches its paths literally; the ``./`` keeps a name that
-    starts with ``:`` from being read as pathspec magic.
+    blob it lists, and a whole tree is every blob in the repository. They go
+    a batch at a time, each under :data:`_LS_TREE_BUDGET`. ``ls-tree``
+    matches its paths literally; the ``./`` keeps a name that starts with
+    ``:`` from being read as pathspec magic. When a batch cannot be listed,
+    the whole tree is, once; when that fails too, it is an error, never "no
+    sizes", which would let every file through whole.
     """
-    if not paths:
-        return {}
-    args = ["ls-tree", "-r", "-l", "-z", tree, "--", *("./" + path for path in paths)]
-    code, out, _ = ws.git_bytes(args, root)
-    if code != 0:
-        return {}
     sizes: Dict[str, int] = {}
+    batch: List[str] = []
+    used = 0
+    for path in paths:
+        arg = "./" + path
+        if batch and used + len(arg) + 3 > _LS_TREE_BUDGET:
+            if not _list_blob_sizes(root, tree, batch, sizes):
+                return _whole_tree_sizes(root, tree, paths)
+            batch, used = [], 0
+        batch.append(arg)
+        used += len(arg) + 3  # a space, and quotes should it need them
+    if batch and not _list_blob_sizes(root, tree, batch, sizes):
+        return _whole_tree_sizes(root, tree, paths)
+    return sizes
+
+
+def _list_blob_sizes(root: str, tree: str, pathspecs: Sequence[str], sizes: Dict[str, int]) -> bool:
+    """Add what ``git ls-tree -l`` lists of ``tree`` to ``sizes``; False when it fails."""
+    code, out, _ = ws.git_bytes(["ls-tree", "-r", "-l", "-z", tree, "--", *pathspecs], root)
+    if code != 0:
+        return False
     for record in out.split(b"\0"):
         meta, tab, path = record.partition(b"\t")
         fields = meta.split()
         if tab and len(fields) == 4 and fields[1] == b"blob" and fields[3].isdigit():
             sizes[_decode_name(path)] = int(fields[3])
-    return sizes
+    return True
+
+
+def _whole_tree_sizes(root: str, tree: str, paths: Sequence[str]) -> Dict[str, int]:
+    """:func:`_blob_sizes` from a listing of all of ``tree``, kept to ``paths``."""
+    sizes: Dict[str, int] = {}
+    if not _list_blob_sizes(root, tree, [], sizes):
+        raise ReviewError("git ls-tree failed: cannot measure the untracked files in %s" % tree)
+    wanted = set(paths)
+    return {path: size for path, size in sizes.items() if path in wanted}
 
 
 def _not_under_review(

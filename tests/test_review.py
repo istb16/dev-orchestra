@@ -2,19 +2,21 @@
 
 from __future__ import annotations
 
+import io
 import os
 import re
 import time
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
 from typing import Optional
 
 from helpers import IsolatedCase, has_git, present
 
+from orchestrator import cli, cli_review, review_consolidation, review_fanout
 from orchestrator import config as config_mod
 from orchestrator import context as context_mod
 from orchestrator import optimization as opt
 from orchestrator import review as review_mod
-from orchestrator import review_consolidation, review_fanout
 from orchestrator import workspace as ws
 
 FINDING_A = """## Finding
@@ -1805,6 +1807,47 @@ class TestCarriedFindings(IsolatedCase):
         text = review_mod.render_round_context(self.workspace, {"incremental_from": "t" * 40})
         self.assertIn("The fix was meant to address:", text)
         self.assertEqual(text.count("\n- ["), 1)
+
+
+class TestTriageIsAllOrNothing(IsolatedCase):
+    """``review triage`` sets each id on the report in memory before it saves;
+    an unknown id further along must leave the saved report as it was."""
+
+    def setUp(self):
+        super().setUp()
+        self.workspace = self.cli_workspace()
+        data = review_mod.build_consolidation(
+            self.workspace,
+            [],
+            [
+                {
+                    "reviewer": "r1",
+                    "severity": "high",
+                    "file": "app.py",
+                    "line": "1",
+                    "category": "correctness",
+                    "problem": "a problem",
+                    "impact": "",
+                    "evidence": "",
+                    "recommended_fix": "",
+                }
+            ],
+        )
+        review_mod.save_consolidation(self.workspace, data)
+
+    def test_an_unknown_id_after_a_known_one_saves_neither(self):
+        path = self.workspace.consolidated_json_path
+        with open(path, "rb") as handle:
+            before = handle.read()
+        self.assertEqual(ws.read_json(path)["findings"][0]["triage"], "needs-triage")
+        args = cli.build_parser().parse_args(["review", "triage", "F1", "NOPE", "--status", "accepted"])
+        err = io.StringIO()
+        with redirect_stdout(io.StringIO()), redirect_stderr(err):
+            code = cli_review.cmd_review_triage(args)
+        self.assertEqual(code, 2)
+        self.assertIn("NOPE", err.getvalue())
+        with open(path, "rb") as handle:
+            self.assertEqual(handle.read(), before)
 
 
 if __name__ == "__main__":

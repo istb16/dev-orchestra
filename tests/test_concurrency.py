@@ -480,53 +480,50 @@ class TestConcurrentTriage(IsolatedCase):
         data = ws.read_json(self.workspace.consolidated_json_path, {})
         self.assertEqual(sorted(f["id"] for f in review_mod.accepted_findings(data)), sorted(ids))
 
-    def test_a_decision_made_while_a_round_is_consolidated_is_kept(self):
-        """The round reads the last report's triage, then builds and saves a
-        new one. A triage landing in between was written over."""
+    def test_the_review_commands_save_the_report_only_under_its_lock(self):
+        """A round read the last report's triage, then built and saved a new
+        one; a triage landing in between was lost unless the read and the
+        save share the lock. Every save goes through ``update_consolidation``,
+        never a bare ``save_consolidation`` a later caller could take
+        unlocked."""
+        from orchestrator import review_consolidation
+
         findings = [dict(f) for f in self.findings]
-        real = review_mod.build_consolidation
-        built = threading.Event()
+        inside = threading.local()
+        saves = []
+        real_update = review_consolidation.update_consolidation
+        real_save = review_consolidation.save_consolidation
 
-        def slow(*args, **kwargs):
-            data = real(*args, **kwargs)
-            # The old triage is read by now; the save is still to come.
-            built.set()
-            time.sleep(0.3)
-            return data
-
-        codes = {}
-        errors = []
-
-        def run(name, argv, command):
+        def update(*args, **kwargs):
+            inside.held = True
             try:
-                codes[name] = command(cli.build_parser().parse_args(argv))
-            except Exception as exc:  # collected and reported after the join
-                errors.append(exc)
+                return real_update(*args, **kwargs)
+            finally:
+                inside.held = False
 
-        consolidate = threading.Thread(
-            target=run, args=("consolidate", ["review", "consolidate"], cli_review.cmd_review_consolidate)
-        )
-        triage = threading.Thread(
-            target=run,
-            args=("triage", ["review", "triage", "F1", "--status", "accepted"], cli_review.cmd_review_triage),
+        def save(*args, **kwargs):
+            saves.append(getattr(inside, "held", False))
+            return real_save(*args, **kwargs)
+
+        commands = (
+            (["review", "consolidate"], cli_review.cmd_review_consolidate),
+            (["review", "triage", "F1", "--status", "accepted"], cli_review.cmd_review_triage),
         )
         with (
             mock.patch.object(review_mod, "read_reports", lambda *args, **kwargs: (findings, [])),
-            mock.patch.object(review_mod, "build_consolidation", slow),
+            mock.patch.object(review_consolidation, "update_consolidation", update),
+            mock.patch.object(review_mod, "update_consolidation", update),
+            mock.patch.object(review_consolidation, "save_consolidation", save),
+            mock.patch.object(review_mod, "save_consolidation", save),
             redirect_stdout(io.StringIO()),
             redirect_stderr(io.StringIO()),
         ):
-            consolidate.start()
-            self.assertTrue(built.wait(timeout=30))
-            triage.start()
-            for thread in (consolidate, triage):
-                thread.join(timeout=30)
-        self.assertFalse(consolidate.is_alive() or triage.is_alive(), "a call hung on the lock")
-
-        self.assertEqual(errors, [])
-        self.assertEqual(codes, {"consolidate": 0, "triage": 0})
+            for argv, command in commands:
+                before = len(saves)
+                self.assertEqual(command(cli.build_parser().parse_args(argv)), 0, argv)
+                self.assertGreater(len(saves), before, argv)
+        self.assertTrue(all(saves), saves)
         data = ws.read_json(self.workspace.consolidated_json_path, {})
-        self.assertEqual(len(data["findings"]), self.FINDINGS)
         self.assertEqual([f["id"] for f in review_mod.accepted_findings(data)], ["F1"])
 
     def test_no_writer_can_save_over_a_report_it_did_not_read_under_the_lock(self):
