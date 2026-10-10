@@ -140,14 +140,16 @@ release_destination() {
 # A Claude copy made before the installer wrote the sentinel: the skill and
 # its CLI are there, and every entry in it, at any depth and hidden or not,
 # is at the same path in this checkout's payload, so removing it loses
-# nothing the checkout does not have. Python's bytecode caches, which running
-# the CLI from the copy writes there, are left out: they are made again. A
-# directory must be a directory there, and a file a file. The installer never
-# wrote a link into a copy, so one inside it, which is not followed, fails
-# the check, and so does anything find cannot read.
+# nothing the checkout does not have. The .pyc files that running the CLI
+# from the copy leaves in a __pycache__ directory are left out: they are made
+# again, and such a directory needs no twin in the checkout. Anything else in
+# one -- another file, a link, a directory -- fails the check. A directory
+# must be a directory there, and a file a file. The installer never wrote a
+# link into a copy, so one inside it, which is not followed, fails the check,
+# and so does anything find cannot read.
 is_unmarked_copy() {
   [ -f "$1/skills/$SKILL_NAME/SKILL.md" ] && [ -f "$1/scripts/orchestrator/__init__.py" ] || return 1
-  find "$1" \( -type d -name __pycache__ -o -type f -name '*.pyc' \) -prune -o -exec sh -c '
+  find "$1" -exec sh -c '
     copy=$1 checkout=$2 payload=$3
     shift 3
     for entry do
@@ -157,10 +159,18 @@ is_unmarked_copy() {
         *" ${relative%%/*} "*) ;;
         *) exit 1 ;;
       esac
+      [ -L "$entry" ] && exit 1
+      parent=
+      case $relative in */*) parent=${relative%/*} ;; esac
+      case /$parent in
+        */__pycache__)
+          # A bytecode cache holds .pyc files and nothing else.
+          case ${relative##*/} in *.pyc) [ -f "$entry" ] && continue ;; esac
+          exit 1 ;;
+      esac
       twin=$checkout/$relative
-      if [ -L "$entry" ]; then
-        exit 1
-      elif [ -d "$entry" ]; then
+      if [ -d "$entry" ]; then
+        [ "${relative##*/}" = __pycache__ ] && continue
         [ -d "$twin" ] || exit 1
       else
         [ -f "$twin" ] || exit 1

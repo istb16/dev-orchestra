@@ -288,7 +288,7 @@ function Test-UnmarkedCopy {
     # and its CLI are there, and every entry in it, at any depth and hidden
     # or not, is at the same path in this checkout's payload, so removing it
     # loses nothing the checkout does not have. Python's bytecode caches are
-    # left out (see Test-Regenerable).
+    # left out (see Test-BytecodeCache).
     param([string]$Path)
 
     foreach ($relative in @("skills/$SkillName/SKILL.md", 'scripts/orchestrator/__init__.py')) {
@@ -296,7 +296,6 @@ function Test-UnmarkedCopy {
     }
     try { $entries = @(Get-ChildItem -LiteralPath $Path -Force -ErrorAction Stop) } catch { return $false }
     foreach ($entry in $entries) {
-        if (Test-Regenerable $entry) { continue }
         if ($Payload -notcontains $entry.Name) { return $false }
         if (-not (Test-CheckoutHas $entry (Join-Path $root $entry.Name))) { return $false }
     }
@@ -312,24 +311,28 @@ function Test-CheckoutHas {
 
     if ($Entry.Attributes -band [System.IO.FileAttributes]::ReparsePoint) { return $false }
     if (-not $Entry.PSIsContainer) { return [System.IO.File]::Exists($Twin) }
+    if ($Entry.Name -eq '__pycache__') { return (Test-BytecodeCache $Entry) }
     if (-not [System.IO.Directory]::Exists($Twin)) { return $false }
     try { $children = @(Get-ChildItem -LiteralPath $Entry.FullName -Force -ErrorAction Stop) } catch { return $false }
     foreach ($child in $children) {
-        if (Test-Regenerable $child) { continue }
         if (-not (Test-CheckoutHas $child (Join-Path $Twin $child.Name))) { return $false }
     }
     return $true
 }
 
-function Test-Regenerable {
-    # A bytecode cache Python wrote while the CLI ran from the copy: a
-    # __pycache__ directory or a .pyc file. The checkout rarely has the same
-    # names, and Python makes them again, so they do not count against it.
+function Test-BytecodeCache {
+    # Whether the __pycache__ directory $Entry holds only what Python wrote
+    # there while the CLI ran from the copy: .pyc files, which Python makes
+    # again. Such a directory needs no twin in the checkout. Anything else in
+    # it -- another file, a link, a junction, a directory -- fails the check.
     param($Entry)
 
-    if ($Entry.Attributes -band [System.IO.FileAttributes]::ReparsePoint) { return $false }
-    if ($Entry.PSIsContainer) { return $Entry.Name -eq '__pycache__' }
-    return $Entry.Name -like '*.pyc'
+    try { $children = @(Get-ChildItem -LiteralPath $Entry.FullName -Force -ErrorAction Stop) } catch { return $false }
+    foreach ($child in $children) {
+        if ($child.Attributes -band [System.IO.FileAttributes]::ReparsePoint) { return $false }
+        if ($child.PSIsContainer -or $child.Name -notlike '*.pyc') { return $false }
+    }
+    return $true
 }
 
 function Get-FullCopyNote {

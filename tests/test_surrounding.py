@@ -889,6 +889,32 @@ class TestEndToEnd(GitCase):
         self.assertEqual([(c["path"], c["symbol"]) for c in frozen["candidates"]], [("<app.py>", "add")])
         self.assertEqual(frozen["skipped"], [])
 
+    def test_skipped_renamed_and_untracked_files_are_recorded_as_shown_too(self):
+        """Every entry, skipped or not, tracked, renamed or new, is looked up
+        by its name on disk and recorded by its shown name."""
+        self.enable()
+        self.write("bad.py", "def ok():\n    return 1\n")
+        self.write("old.py", "def moved(x):\n    y = x + 1\n    return y\n")
+        self.commit_all("more")
+        self.edit_add()
+        self.write("bad.py", "def ok(:\n    return 2\n")
+        subprocess.run(["git", "mv", "old.py", "new.py"], cwd=self.project, check=True, capture_output=True)
+        self.write("new.py", "def moved(x):\n    y = x + 2\n    return y\n")
+        self.write("fresh.py", "def fresh():\n    return 1\n")
+        original = review_snapshot._shown_name
+        with mock.patch.object(review_snapshot, "_shown_name", lambda name: "<%s>" % original(name)):
+            code, out, _ = run_cli("review", "snapshot")
+        self.assertEqual(code, 0, out)
+        frozen = self.frozen()
+        self.assertEqual(
+            sorted((c["path"], c["symbol"]) for c in frozen["candidates"]),
+            [("<app.py>", "add"), ("<new.py>", "moved")],
+        )
+        skipped = {entry["path"]: entry["reason"] for entry in frozen["skipped"]}
+        self.assertEqual(skipped.get("<bad.py>"), "syntax error")
+        self.assertIn("<fresh.py>", skipped)
+        self.assertTrue(all(path.startswith("<") for path in skipped), skipped)
+
     @unittest.skipIf(os.name == "nt", "Windows does not allow a control character in a file name")
     def test_a_python_file_with_a_control_character_in_its_name_gets_its_symbols(self):
         self.enable()

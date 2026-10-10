@@ -495,11 +495,12 @@ class TestConcurrentTriage(IsolatedCase):
         real_save = review_consolidation.save_consolidation
 
         def update(*args, **kwargs):
+            outer = getattr(inside, "held", False)
             inside.held = True
             try:
                 return real_update(*args, **kwargs)
             finally:
-                inside.held = False
+                inside.held = outer
 
         def save(*args, **kwargs):
             saves.append(getattr(inside, "held", False))
@@ -523,6 +524,55 @@ class TestConcurrentTriage(IsolatedCase):
                 self.assertEqual(command(cli.build_parser().parse_args(argv)), 0, argv)
                 self.assertGreater(len(saves), before, argv)
         self.assertTrue(all(saves), saves)
+        data = ws.read_json(self.workspace.consolidated_json_path, {})
+        self.assertEqual([f["id"] for f in review_mod.accepted_findings(data)], ["F1"])
+
+    def test_a_triage_made_while_a_round_is_built_survives_it(self):
+        """``review consolidate`` is held after it has read the last report
+        and built the new one, but before it saves; ``review triage`` starts
+        then. The triage must wait for the save and land on the new report,
+        not be written over by a report built from what was read before it."""
+        findings = [dict(f) for f in self.findings]
+        real_build = review_mod.build_consolidation
+        built = threading.Event()
+        triage_started = threading.Event()
+        results = {}
+
+        def build(*args, **kwargs):
+            data = real_build(*args, **kwargs)
+            built.set()
+            self.assertTrue(triage_started.wait(timeout=30))
+            # Long enough for an unlocked triage to read, decide and save.
+            time.sleep(0.5)
+            return data
+
+        def run(name, argv, command):
+            try:
+                results[name] = command(cli.build_parser().parse_args(argv))
+            except Exception as exc:  # reported after the join
+                results[name] = exc
+
+        consolidate = threading.Thread(
+            target=run, args=("consolidate", ["review", "consolidate"], cli_review.cmd_review_consolidate)
+        )
+        triage = threading.Thread(
+            target=run,
+            args=("triage", ["review", "triage", "F1", "--status", "accepted"], cli_review.cmd_review_triage),
+        )
+        with (
+            mock.patch.object(review_mod, "read_reports", lambda *args, **kwargs: (findings, [])),
+            mock.patch.object(review_mod, "build_consolidation", build),
+            redirect_stdout(io.StringIO()),
+            redirect_stderr(io.StringIO()),
+        ):
+            consolidate.start()
+            self.assertTrue(built.wait(timeout=30))
+            triage.start()
+            triage_started.set()
+            consolidate.join(timeout=60)
+            triage.join(timeout=60)
+        self.assertFalse(consolidate.is_alive() or triage.is_alive())
+        self.assertEqual(results, {"consolidate": 0, "triage": 0})
         data = ws.read_json(self.workspace.consolidated_json_path, {})
         self.assertEqual([f["id"] for f in review_mod.accepted_findings(data)], ["F1"])
 

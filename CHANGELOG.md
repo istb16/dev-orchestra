@@ -143,8 +143,10 @@ below begins **User adapters** so adapter authors can find it.
   to its reader, which is abandoned after a few seconds and from then on
   reads and drops what arrives, and what the process wrote after the CLI
   exited is left out of the run's output, with a warning giving its size,
-  even when that process closes the pipe a moment later (on POSIX, where its
-  process group shows it outlived the CLI); the lines the CLI wrote before it
+  also when that process no longer holds the pipe but is still running once
+  the output has been read (on POSIX, where the CLI's process group shows it;
+  a process that has already exited, even one not yet reaped, does not
+  count); the lines the CLI wrote before it
   exited still reach `review run --progress` and a job's activity, and
   nothing written after does. When nothing the CLI started is known to have
   outlived it, everything read is kept, so the CLI's own last output, read
@@ -271,10 +273,11 @@ below begins **User adapters** so adapter authors can find it.
   Antigravity copy does. A copy from an earlier installer, which has no such
   file, is still replaced or removed when every file in it, at any depth and
   hidden or not, is also at the same path in the checkout's payload -- a
-  directory as a directory, a file as a file, not counting the `__pycache__`
-  directories and `.pyc` files that running the CLI from it leaves -- so
+  directory as a directory, a file as a file, not counting the `.pyc` files
+  that running the CLI from it leaves in its `__pycache__` directories -- so
   `install --copy` keeps upgrading it; one with anything else added anywhere
-  in it, or holding a link or junction, is left in place. A link to another checkout or to nothing is now
+  in it, a `__pycache__` included, or holding a link or junction, is left in
+  place. A link to another checkout or to nothing is now
   left in place too, with the command to remove it by hand, and a run from
   the checkout that is itself the destination stops and says so (#290).
 

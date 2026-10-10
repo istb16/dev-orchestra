@@ -776,6 +776,43 @@ def _group_alive(pgid: int) -> bool:
     return True
 
 
+def _group_running(pgid: int) -> bool:
+    """Whether process group ``pgid`` is *confirmed* to have a member that is
+    still running.
+
+    The opposite leaning to :func:`_group_alive`: a group confirmed gone, one
+    whose members are all zombies, and an answer that proves nothing (EPERM,
+    which macOS gives for a group of zombies, or any other error) are all
+    False. Where ``/proc`` lists the processes, a member counts only if it is
+    not a zombie; elsewhere a group that may be signalled counts as running.
+    """
+    try:
+        os.killpg(pgid, 0)
+    except OSError:
+        return False
+    try:
+        names = os.listdir("/proc")
+    except OSError:
+        return True
+    if not os.path.exists("/proc/self/stat"):
+        return True
+    for name in names:
+        if not name.isdigit():
+            continue
+        try:
+            with open("/proc/%s/stat" % name, "rb") as f:
+                stat = f.read()
+        except OSError:  # gone meanwhile, or not ours to read
+            continue
+        # "pid (comm) state ppid pgrp ...": comm may hold anything, ")" too.
+        fields = stat[stat.rfind(b")") + 2 :].split()
+        if len(fields) < 3 or not fields[2].isdigit() or int(fields[2]) != pgid:
+            continue
+        if fields[0] not in (b"Z", b"X"):
+            return True
+    return False
+
+
 def _group_ends(pgid: int, deadline: float, reap: bool = False) -> bool:
     """Wait until ``deadline`` for group ``pgid`` to be confirmed gone.
 
@@ -838,7 +875,6 @@ def execute(
         orphans = False
         killed = watched.timed_out or watched.stalled
         marks = (0, 0)
-        left_behind = False
         if killed:
             orphans = not terminate_tree(proc)
         else:
@@ -846,15 +882,17 @@ def execute(
             # still be writing: what that writes later is not the run's.
             _settle(threads[:2], out, err)
             marks = out.mark(), err.mark()
-            # On POSIX the group outlives its leader: a member left now is a
-            # process the CLI started, whatever it does with the pipes.
-            left_behind = not IS_WINDOWS and _group_alive(proc.pid)
 
         # Bounded join: if a survivor still holds a pipe, abandon the readers
         # rather than waiting on them. They are daemons and cannot outlive us.
         _join(threads, KILL_GRACE_SECONDS)
         readers = threads[:2]
         lingering = not killed and any(t.is_alive() for t in readers)
+        # On POSIX the group outlives its leader: a member still running once
+        # the readers are done is a process the CLI started, whatever it does
+        # with the pipes. Asked only now, so a member that was merely on its
+        # way out when the CLI exited does not cost the CLI's own last output.
+        left_behind = not killed and not lingering and not IS_WINDOWS and _group_running(proc.pid)
         discarded = 0
         if lingering or left_behind:
             # Whatever came after the marks was written after the CLI exited,

@@ -385,6 +385,50 @@ class TestReusedPid(JobCase):
         self.assertNotIn("not_stopped", raw)
         self.assertIn("not cancelled", jobs_mod.render(job))
 
+    def cancel_with(self, alive, stopped, pid_alive):
+        """Cancel a running job as ``_worker_alive`` answers ``alive``, the kill
+        answers ``stopped`` and the pid then reads ``pid_alive``. Returns the
+        job and the ``verified`` each kill was given."""
+        from orchestrator import execution
+
+        self.record("a-1", pid=4242, pid_started="t0", status="running")
+        asked = []
+
+        def kill_tree(pid, grace, verified):
+            asked.append(verified)
+            return stopped
+
+        with (
+            mock.patch.object(jobs_mod, "_worker_alive", lambda pid, job: alive),
+            mock.patch.object(execution, "kill_tree", kill_tree),
+            mock.patch.object(execution, "pid_alive", lambda pid: pid_alive),
+        ):
+            return jobs_mod.cancel(self.workspace, "a-1"), asked
+
+    def test_a_worker_gone_after_an_unconfirmed_kill_is_cancelled_with_a_caveat(self):
+        job, asked = self.cancel_with(alive=True, stopped=False, pid_alive=False)
+        self.assertEqual(asked, [True])
+        self.assertEqual(job["status"], "cancelled")
+        self.assertEqual(job["error"], "cancelled by request (the worker may still be running)")
+        self.assertNotIn("not_stopped", job)
+        self.assertEqual(ws.read_json(jobs_mod.job_path(self.workspace, "a-1"))["status"], "cancelled")
+
+    def test_an_unvouched_pid_still_there_after_the_kill_keeps_its_old_answer(self):
+        job, asked = self.cancel_with(alive=None, stopped=False, pid_alive=True)
+        self.assertEqual(asked, [False])
+        self.assertEqual(job["status"], "running")
+        self.assertEqual(
+            job["not_stopped"],
+            "pid 4242 was not stopped: it may no longer be the worker, which may still be running",
+        )
+        self.assertEqual(ws.read_json(jobs_mod.job_path(self.workspace, "a-1"))["status"], "running")
+
+    def test_a_pid_that_is_not_the_worker_is_never_killed(self):
+        job, asked = self.cancel_with(alive=False, stopped=False, pid_alive=True)
+        self.assertEqual(asked, [])
+        self.assertEqual(job["status"], "abandoned")
+        self.assertNotIn("not_stopped", job)
+
     def test_a_start_time_that_cannot_be_read_now_is_unverified_not_gone(self):
         """A recorded start and a live pid whose start is unreadable (an
         OpenProcess denied on Windows) is not taken for a reused pid."""

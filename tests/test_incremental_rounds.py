@@ -291,6 +291,25 @@ class TestRulesThatMustNotLapseInRoundTwo(RoundCase):
         self.assertIn("大きい.py", meta["changed_paths"])
         self.assertNotIn("####", ws.read_text(self.workspace.snapshot_path))
 
+    def test_untracked_files_git_cannot_measure_stop_the_snapshot_cleanly(self):
+        """Not "no sizes", which would send an oversized file whole, and not a
+        traceback: ``review snapshot`` names the failure and exits 2."""
+        self.first_round()
+        self.fix()
+        self.write("brand_new.py", "print('new')\n")
+        original = ws.git_bytes
+
+        def no_sizes(args, cwd, **kwargs):
+            if list(args[:3]) == ["ls-tree", "-r", "-l"]:
+                return 128, b"", "fatal: cannot list"
+            return original(args, cwd, **kwargs)
+
+        with mock.patch.object(ws, "git_bytes", no_sizes):
+            code, out, err = run_cli("review", "snapshot")
+        self.assertEqual(code, 2, out + err)
+        self.assertIn("git ls-tree failed: cannot measure the untracked files", err)
+        self.assertNotIn("Traceback", out + err)
+
     def big(self, name):
         self.write(name, "#" * (review_snapshot.MAX_UNTRACKED_BYTES + 1) + "\n" + "line\n" * 5000)
 

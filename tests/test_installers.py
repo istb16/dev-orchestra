@@ -1028,7 +1028,6 @@ class TestClaudeInstallers(_InstallerCase):
         caches = (
             os.path.join("scripts", "orchestrator", "__pycache__", "never_in_a_checkout.cpython-399.pyc"),
             os.path.join("scripts", "__pycache__", "stray.cpython-399.pyc"),
-            os.path.join("scripts", "orchestrator", "loose.pyc"),
         )
         for shell in SHELLS:
             for action in ("install", "uninstall"):
@@ -1051,6 +1050,69 @@ class TestClaudeInstallers(_InstallerCase):
                         self.assertFalse(os.path.exists(os.path.join(dest, caches[0])), output)
                     else:
                         self.assertFalse(os.path.lexists(dest), output)
+
+    def test_an_older_copy_with_more_than_bytecode_in_a_cache_is_left_alone(self):
+        """Python writes only .pyc files into a __pycache__ directory, and none
+        outside one. Anything else there is not the installer's, and neither
+        is a __pycache__ that is a file."""
+        cache = os.path.join("scripts", "orchestrator", "__pycache__")
+        planted = (
+            os.path.join(cache, "notes.txt"),
+            os.path.join(cache, "sub", "x.cpython-399.pyc"),
+            os.path.join("scripts", "orchestrator", "loose.pyc"),
+            os.path.join("scripts", "__pycache__"),
+        )
+        for shell in SHELLS:
+            for relative in planted:
+                with self.subTest(shell=shell.name, planted=relative):
+                    base = self.fresh(shell, "cache-%d" % planted.index(relative))
+                    checkout = self.make_checkout(base)
+                    project = os.path.join(base, "proj")
+                    dest = self.unmarked_copy(shell, project, root=checkout)
+                    path = os.path.join(dest, relative)
+                    os.makedirs(os.path.dirname(path), exist_ok=True)
+                    self.write_file(path)
+                    for action in ("install", "uninstall"):
+                        code, output = self.claude(
+                            shell, action, project, copy=action == "install", root=checkout
+                        )
+                        self.assert_refused(code, output)
+                        self.assertTrue(os.path.isfile(path), action)
+
+    def test_an_older_copy_with_a_linked_cache_is_not_followed(self):
+        """A __pycache__ that is a link or junction, or one holding a link,
+        is not Python's: the copy is left alone, and what the link points at
+        survives."""
+        orchestrator = os.path.join("scripts", "orchestrator")
+        links = (
+            os.path.join(orchestrator, "__pycache__"),
+            os.path.join(orchestrator, "__pycache__", "linked.pyc"),
+        )
+        for shell in SHELLS:
+            for relative in links:
+                with self.subTest(shell=shell.name, link=relative):
+                    base = self.fresh(shell, "cache-link-%d" % links.index(relative))
+                    checkout = self.make_checkout(base)
+                    project = os.path.join(base, "proj")
+                    dest = self.unmarked_copy(shell, project, root=checkout)
+                    outside = os.path.join(base, "outside")
+                    os.makedirs(outside)
+                    self.write_file(os.path.join(outside, "keep.cpython-399.pyc"))
+                    link = os.path.join(dest, relative)
+                    if os.path.isdir(link):
+                        remove_tree(link)
+                    os.makedirs(os.path.dirname(link), exist_ok=True)
+                    try:
+                        make_dir_link(link, outside)
+                    except (OSError, subprocess.CalledProcessError) as exc:
+                        self.skipTest("cannot make a directory link here: %s" % exc)
+                    for action in ("install", "uninstall"):
+                        code, output = self.claude(
+                            shell, action, project, copy=action == "install", root=checkout
+                        )
+                        self.assert_refused(code, output)
+                        self.assertTrue(is_link(link), action)
+                        self.assertTrue(os.path.isfile(os.path.join(outside, "keep.cpython-399.pyc")), action)
 
     def test_an_older_copy_holding_a_link_is_not_followed(self):
         """A link inside the copy, at a name the checkout has or not, is never

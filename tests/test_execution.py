@@ -84,6 +84,36 @@ BRIEF_GRANDCHILD = FLOODING_GRANDCHILD.replace("range(9000)", "range(20)")
 #: LINGERING_PARENT, with BRIEF_GRANDCHILD left behind.
 BRIEF_PARENT = LINGERING_PARENT.replace(repr(LINGERING_GRANDCHILD), repr(BRIEF_GRANDCHILD))
 
+#: Writes its pid to ``argv[1]`` and exits a moment after ``argv[1] + '.go'``
+#: exists, never writing anything: a process the CLI started that is still on
+#: its way out when the CLI exits.
+QUIET_GRANDCHILD = (
+    "import os, sys, time\n"
+    "with open(sys.argv[1] + '.tmp', 'w') as f: f.write(str(os.getpid()))\n"
+    "os.replace(sys.argv[1] + '.tmp', sys.argv[1])\n"
+    "deadline = time.monotonic() + 60\n"
+    "while not os.path.exists(sys.argv[1] + '.go') and time.monotonic() < deadline: time.sleep(0.01)\n"
+    "time.sleep(0.1)\n"
+)
+
+#: QUIET_GRANDCHILD, except that it stays for 90s once released.
+STAYING_GRANDCHILD = QUIET_GRANDCHILD.replace("time.sleep(0.1)", "time.sleep(90)")
+
+#: Starts QUIET_GRANDCHILD in its process group, without its pipes, then
+#: writes 50 lines and a last, unended ``result`` and exits 0.
+QUIET_PARENT = (
+    "import os, subprocess, sys, time\n"
+    "subprocess.Popen([sys.executable, '-c', %r, sys.argv[1]], stdin=subprocess.DEVNULL,"
+    " stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
+    "deadline = time.monotonic() + 30\n"
+    "while not os.path.exists(sys.argv[1]) and time.monotonic() < deadline: time.sleep(0.05)\n"
+    "for i in range(50): sys.stdout.write('line %%d\\n' %% i)\n"
+    "sys.stdout.write('result')\n"
+) % QUIET_GRANDCHILD
+
+#: QUIET_PARENT, with STAYING_GRANDCHILD left behind.
+STAYING_PARENT = QUIET_PARENT.replace(repr(QUIET_GRANDCHILD), repr(STAYING_GRANDCHILD))
+
 #: Starts ``argv[1]`` (code, given ``argv[2]``) detached and returns at once,
 #: so the started process is not our child: the shape of a detached worker.
 LAUNCHER = (
@@ -504,21 +534,153 @@ class TestProcessTree(IsolatedCase):
         self.assertRegex(outcome.stderr, r"warning: [0-9]+ characters it wrote after the CLI exited")
         self.assertEqual(seen, ["parent done\n"])
 
-    @unittest.skipIf(
-        execution.IS_WINDOWS,
-        "only a POSIX process group shows a leftover that closed the pipe in time",
-    )
-    def test_what_a_leftover_writes_is_not_kept_when_it_closes_the_pipe_in_time(self):
-        """It exits while ``execute`` still waits on the readers: nothing lingers,
-        and what it wrote is still not the run's."""
+    def test_what_a_leftover_writes_is_kept_when_it_is_gone_before_the_readers_are_done(self):
+        """It exits while ``execute`` still waits on the readers: nothing is
+        left of it by then to tell its output from the CLI's, so all of it is
+        kept, with no warning -- on POSIX as on Windows."""
         self.assertNotEqual(BRIEF_PARENT, FLOODING_PARENT)
         seen: List[str] = []
         outcome = self.run_with_a_leftover(BRIEF_PARENT, seen.append)
         self.assertEqual(outcome.exit_code, 0, outcome.stderr)
-        self.assertEqual(outcome.stdout, "parent done\n")
+        expected = "parent done\n" + ("x" * 999 + "\n") * 20
+        self.assertEqual(outcome.stdout, expected)
         self.assertFalse(outcome.orphans_possible, outcome.stderr)
+        self.assertNotIn("warning", outcome.stderr)
+        self.assertEqual("".join(seen), expected)
+
+    def run_with_a_slow_reader(self, parent):
+        """Run ``parent`` with readers that start only once the output's
+        cutoff is taken and its leftover, released by the cutoff, has had a
+        moment to end. Returns the outcome and what ``on_line`` was handed."""
+        pid_file = os.path.join(self.project, "grandchild.pid")
+        self.addCleanup(end_pid_in, pid_file)
+        original_mark, original_pump, original_spawn = (
+            execution._Drain.mark,
+            execution._Drain.pump,
+            execution._spawn,
+        )
+        spawned: List[subprocess.Popen] = []
+
+        def spawn(*args, **kwargs):
+            proc = original_spawn(*args, **kwargs)
+            spawned.append(proc)
+            return proc
+
+        def mark(drain):
+            taken = original_mark(drain)
+            with open(pid_file + ".go", "w"):
+                pass
+            return taken
+
+        def slow_pump(drain, stream):
+            deadline = time.monotonic() + 30
+            while not os.path.exists(pid_file + ".go") and time.monotonic() < deadline:
+                time.sleep(0.01)
+            # A leftover that ends when released is gone well within this.
+            deadline = time.monotonic() + 1
+            while spawned and execution._group_running(spawned[0].pid) and time.monotonic() < deadline:
+                time.sleep(0.01)
+            original_pump(drain, stream)
+
+        seen: List[str] = []
+        with (
+            mock.patch.object(execution, "_spawn", spawn),
+            mock.patch.object(execution._Drain, "mark", mark),
+            mock.patch.object(execution._Drain, "pump", slow_pump),
+        ):
+            outcome = execution.execute(
+                [*python_code(parent), pid_file], cwd=self.project, timeout=120, on_line=seen.append
+            )
+        return outcome, seen
+
+    @unittest.skipIf(execution.IS_WINDOWS, "process groups are POSIX")
+    def test_what_the_cli_wrote_last_is_kept_when_its_leftover_is_gone_before_it_is_read(self):
+        """The readers are behind the cutoff, and a process the CLI started,
+        writing nothing, is still in its group at the cutoff but gone once
+        they are done: the CLI's output, down to its ``result``, is kept."""
+        outcome, seen = self.run_with_a_slow_reader(QUIET_PARENT)
+        expected = "".join("line %d\n" % i for i in range(50)) + "result"
+        self.assertEqual(outcome.exit_code, 0, outcome.stderr)
+        self.assertEqual(outcome.stdout, expected)
+        self.assertNotIn("dropped", outcome.stderr)
+        self.assertFalse(outcome.orphans_possible, outcome.stderr)
+        self.assertEqual("".join(seen), expected)
+
+    @unittest.skipIf(execution.IS_WINDOWS, "process groups are POSIX")
+    def test_what_is_read_after_the_cutoff_is_dropped_while_a_leftover_still_runs(self):
+        """The readers are behind the cutoff, and a process the CLI started is
+        still running once they are done: what they read late cannot be told
+        from that process's output, so it is dropped, with a warning."""
+        self.assertNotEqual(STAYING_PARENT, QUIET_PARENT)
+        outcome, seen = self.run_with_a_slow_reader(STAYING_PARENT)
+        self.assertEqual(outcome.exit_code, 0, outcome.stderr)
+        self.assertEqual(outcome.stdout, "")
         self.assertRegex(outcome.stderr, r"wrote [0-9]+ characters after the CLI exited; they were dropped")
-        self.assertEqual(seen, ["parent done\n"])
+        self.assertEqual(seen, [])
+
+    def run_as_posix_with_a_slow_reader(self, member_stays: bool):
+        """Run a CLI that writes 50 lines and a ``result`` as if on POSIX,
+        with a faked process group: a member is there when the output's
+        cutoff is taken, and either stays or is gone (ESRCH) by the time the
+        readers, held back until then, are done. Runs on every OS."""
+        group = {"member": True}
+        marked = threading.Event()
+        original_mark, original_pump, original_spawn = (
+            execution._Drain.mark,
+            execution._Drain.pump,
+            execution._spawn,
+        )
+
+        def spawn(*args, **kwargs):
+            # Started for real on this OS; only what comes after is POSIX.
+            proc = original_spawn(*args, **kwargs)
+            self.enterContext(mock.patch.object(execution, "IS_WINDOWS", False))
+            return proc
+
+        def killpg(pgid, sig):
+            self.assertEqual(sig, 0, "only probed, never signalled")
+            if not group["member"]:
+                raise ProcessLookupError(errno.ESRCH, "no such group")
+
+        def mark(drain):
+            taken = original_mark(drain)
+            marked.set()
+            return taken
+
+        def slow_pump(drain, stream):
+            marked.wait(30)
+            if not member_stays:
+                group["member"] = False
+            original_pump(drain, stream)
+
+        seen: List[str] = []
+        code = (
+            "import sys\nfor i in range(50): sys.stdout.write('line %d\\n' % i)\nsys.stdout.write('result')\n"
+        )
+        with (
+            mock.patch.object(execution, "_spawn", spawn),
+            mock.patch.object(execution.os, "killpg", killpg, create=True),
+            mock.patch.object(execution.os, "listdir", side_effect=OSError("no /proc")),
+            mock.patch.object(execution._Drain, "mark", mark),
+            mock.patch.object(execution._Drain, "pump", slow_pump),
+        ):
+            outcome = execution.execute(python_code(code), cwd=self.project, timeout=120, on_line=seen.append)
+        return outcome, seen
+
+    def test_a_group_member_gone_once_the_slow_readers_are_done_costs_no_output(self):
+        outcome, seen = self.run_as_posix_with_a_slow_reader(member_stays=False)
+        expected = "".join("line %d\n" % i for i in range(50)) + "result"
+        self.assertEqual(outcome.exit_code, 0, outcome.stderr)
+        self.assertEqual(outcome.stdout, expected)
+        self.assertNotIn("dropped", outcome.stderr)
+        self.assertEqual("".join(seen), expected)
+
+    def test_a_group_member_still_there_once_the_slow_readers_are_done_cuts_the_output(self):
+        outcome, seen = self.run_as_posix_with_a_slow_reader(member_stays=True)
+        self.assertEqual(outcome.exit_code, 0, outcome.stderr)
+        self.assertEqual(outcome.stdout, "")
+        self.assertRegex(outcome.stderr, r"wrote [0-9]+ characters after the CLI exited; they were dropped")
+        self.assertEqual(seen, [])
 
     def test_what_the_cli_wrote_last_is_kept_when_its_readers_are_slow(self):
         """The readers take in the CLI's last output only after the cutoff is
@@ -809,6 +971,62 @@ class TestGroupEnd(IsolatedCase):
 
             with mock.patch.object(execution.os, "killpg", killpg, create=True):
                 self.assertEqual(execution._group_alive(4242), alive, repr(error))
+
+    def test_group_running_trusts_no_error(self):
+        for error in (
+            OSError(errno.ESRCH, "no such group"),
+            OSError(errno.EPERM, "only zombies left"),
+            OSError(errno.EINVAL, "odd"),
+        ):
+
+            def killpg(pgid, sig, error=error):
+                raise error
+
+            with mock.patch.object(execution.os, "killpg", killpg, create=True):
+                self.assertFalse(execution._group_running(4242), repr(error))
+
+    def test_group_running_does_not_count_a_zombie(self):
+        """Read from a faked ``/proc``: pid 7 is in group 4242, pid 8 in another."""
+
+        def run(stats):
+            files = {"/proc/%s/stat" % pid: stat for pid, stat in stats.items()}
+
+            def fake_open(path, mode="r"):
+                if path not in files:
+                    raise FileNotFoundError(path)
+                return io.BytesIO(files[path])
+
+            with (
+                mock.patch.object(execution.os, "killpg", lambda pgid, sig: None, create=True),
+                mock.patch.object(execution.os, "listdir", lambda path: ["self", "9", *stats]),
+                mock.patch.object(execution.os.path, "exists", lambda path: path == "/proc/self/stat"),
+                mock.patch.object(execution, "open", fake_open, create=True),
+            ):
+                return execution._group_running(4242)
+
+        other = b"8 (cli) S 1 999 999 0"
+        self.assertTrue(run({"7": b"7 (mcp) server) S 1 4242 4242 0", "8": other}))
+        self.assertFalse(run({"7": b"7 (mcp) server) Z 1 4242 4242 0", "8": other}))
+        self.assertFalse(run({"8": other}))
+
+    @unittest.skipUnless(os.path.exists("/proc/self/stat"), "needs /proc to tell a zombie")
+    def test_a_group_of_a_zombie_is_alive_but_not_running(self):
+        proc = subprocess.Popen(
+            python_code("pass"),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        self.addCleanup(proc.wait)
+        # Not reaped: it stays a zombie until ``proc.wait``.
+        deadline = time.monotonic() + 30
+        while execution._group_running(proc.pid):
+            self.assertLess(time.monotonic(), deadline, "the child never exited")
+            time.sleep(0.02)
+        self.assertTrue(execution._group_alive(proc.pid))
+        proc.wait()
+        self.assertFalse(execution._group_alive(proc.pid))
 
     def test_a_group_that_outlives_sigkill_is_not_reported_gone(self):
         sent = []

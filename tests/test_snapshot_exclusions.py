@@ -662,6 +662,27 @@ class TestGitListingsKeepNamesExact(IsolatedCase):
             sizes = review_snapshot._blob_sizes(self.project, self.new, [self.NAME])
         self.assertEqual(sizes, {self.NAME: 4000})
 
+    def test_blob_sizes_lists_the_whole_tree_when_a_later_batch_fails(self):
+        """The first batch's sizes are not mixed with a partial second: the
+        whole tree is listed once, and every path asked for is measured."""
+        calls = []
+        original = ws.git_bytes
+
+        def second_batch_fails(args, cwd, **kwargs):
+            calls.append(list(args))
+            if args[-1] != "--" and len(calls) == 2:
+                return 128, b"", "fatal: too long"
+            return original(args, cwd, **kwargs)
+
+        with (
+            mock.patch.object(review_snapshot, "_LS_TREE_BUDGET", 1),
+            mock.patch.object(ws, "git_bytes", second_batch_fails),
+        ):
+            sizes = review_snapshot._blob_sizes(self.project, self.new, [self.NAME, "other.txt"])
+        self.assertEqual(sizes, {self.NAME: 4000, "other.txt": 300})
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(calls[-1][-1], "--")
+
     def test_blob_sizes_that_cannot_be_listed_at_all_is_an_error(self):
         """Not "no sizes", which would let an oversized file through whole."""
         with mock.patch.object(ws, "git_bytes", lambda args, cwd, **kwargs: (128, b"", "fatal")):
