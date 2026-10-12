@@ -73,7 +73,7 @@ from .cli_workflow import (
 )
 from .providers import MODES, available_providers
 
-__version__ = "0.24.0"
+__version__ = "1.0.0"
 
 
 # --------------------------------------------------------------------------- parser

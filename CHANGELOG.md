@@ -13,6 +13,8 @@ authors can find it.
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-10-12
+
 ### Added
 
 - **Every command's `--json` output in one place**: `references/json.md` lists,
@@ -3219,7 +3221,8 @@ First release.
   none of which invoke a real CLI.
 - CI on Linux, macOS and Windows: lint, tests, skill validation.
 
-[Unreleased]: https://github.com/istb16/dev-orchestra/compare/v0.24.0...HEAD
+[Unreleased]: https://github.com/istb16/dev-orchestra/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/istb16/dev-orchestra/compare/v0.24.0...v1.0.0
 [0.24.0]: https://github.com/istb16/dev-orchestra/compare/v0.23.0...v0.24.0
 [0.23.0]: https://github.com/istb16/dev-orchestra/compare/v0.22.0...v0.23.0
 [0.22.0]: https://github.com/istb16/dev-orchestra/compare/v0.21.0...v0.22.0
