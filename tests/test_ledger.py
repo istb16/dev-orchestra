@@ -460,6 +460,27 @@ class TestInFlightHeartbeat(LedgerCase):
         self.assertEqual(book.workflow_id(), started)
         self.assertEqual(book.load()["attempts"], {"test": 1})
 
+    def test_a_ledger_with_only_the_old_workflow_key_is_identified_by_its_start_time(self):
+        """The ``workflow`` key from before 0.4.2 is no longer renamed ``epoch``."""
+        started = "2026-09-16T00:00:00+00:00"
+        ws.write_json(
+            self.workspace.state_path,
+            {
+                "version": 1,
+                "runs": [],
+                "ledger": {
+                    "workflow": "old",
+                    "started_at": started,
+                    "last_activity_monotonic": time.time(),
+                    "attempts": {"test": 1},
+                },
+            },
+        )
+        book = self.book()
+        self.assertEqual(book.workflow_id(), started)
+        self.assertNotEqual(book.workflow_id(), "old")
+        self.assertEqual(book.load()["attempts"], {"test": 1})
+
 
 class TestSummary(LedgerCase):
     def test_summary_reports_what_is_spent(self):

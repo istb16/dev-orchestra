@@ -171,17 +171,37 @@ class TestStrayTopLevelFiles(IsolatedCase):
 
     PLAN = "# the plan"
 
+    STATE = '{"version": 1, "runs": []}'
+
     def test_commands_run_and_leave_them_untouched(self):
+        """Reading, writing and removing a workflow; none of it names the old layout."""
+        run_cli("config", "setup", "--defaults")
+        run_cli("config", "set", "implementer.provider", "mock")
+        run_cli("config", "set", "implementer.model.family", "large")
         container = os.path.join(self.project, ".ai")
         self.write(os.path.join(".ai", "plan.md"), self.PLAN)
+        self.write(os.path.join(".ai", "state.json"), self.STATE)
         os.makedirs(os.path.join(container, "reviews"))
-        for command in (("state", "show"), ("workflow", "list"), ("workflow", "use", "w1")):
+        os.makedirs(os.path.join(container, "jobs"))
+        # A finished workflow beside the one this session is in, to remove.
+        os.makedirs(os.path.join(container, "workflows", "w1"))
+        for command in (
+            ("state", "show"),
+            ("workflow", "list"),
+            ("workflow", "use", "w1"),
+            ("run", "implementer", "--prompt", "go"),
+            ("workflow", "remove", "w1", "--yes"),
+        ):
             with self.subTest(command=command):
                 code, out, err = run_cli(*command)
                 self.assertEqual(code, 0, out + err)
+                self.assertNotIn("before 0.4.0", err)
         with open(os.path.join(container, "plan.md"), encoding="utf-8") as handle:
             self.assertEqual(handle.read(), self.PLAN)
+        with open(os.path.join(container, "state.json"), encoding="utf-8") as handle:
+            self.assertEqual(handle.read(), self.STATE)
         self.assertTrue(os.path.isdir(os.path.join(container, "reviews")))
+        self.assertEqual(os.listdir(os.path.join(container, "jobs")), [])
 
 
 class TestAStrayExecutionDirectory(IsolatedCase):

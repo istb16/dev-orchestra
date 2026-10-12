@@ -36,6 +36,23 @@ authors can find it.
   or on one with no `resolve_latest` at all, fails with a message saying what
   to define instead of a bare `NotImplementedError`.
 
+- **`review run` refuses a snapshot without its path lists.** A snapshot that
+  names reviewed `files` but has no `changed_paths` or `condition_paths` list
+  (one taken before 0.24.0, or edited by hand) read as touching no paths in
+  0.24.0, so no high-risk pattern matched and a `when: high-risk` or
+  path-scoped reviewer could be left out of the round without a word. The
+  round is now refused with exit 2, naming the snapshot and saying to take a
+  fresh one with `dev-orchestra review snapshot`. `status` still reads such a
+  snapshot; with no snapshot at all nothing changes.
+
+### Changed
+
+- **Older runs in `tokens show`.** In a ledger written by 0.9.0 to 0.23.0
+  that recorded a non-zero `tool_unknown_runs`, those runs are now counted as
+  having reported no tool activity, so the note "reported no tool activity
+  (Codex does not)" can include runs recorded before tool activity was
+  counted, whichever CLI made them.
+
 ## [0.24.0] - 2026-10-12
 
 ### Removed
