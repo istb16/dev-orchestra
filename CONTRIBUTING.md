@@ -291,9 +291,12 @@ default, which is what "recommended-coding, latest" actually means.
 [Semantic versioning](https://semver.org/) over the surface listed under
 "Compatibility" in `README.md`. The `.ai/` artifacts change by addition only;
 the rule, and what a change that breaks it needs, is under "How the formats
-change" in `references/workflow.md`. A change to the `Provider` base class is
-not covered: it may ship in a minor version, and its entry begins
-**User adapters**.
+change" in `references/workflow.md`. Of the `Provider` base class, only what
+a user adapter relies on is covered: how it is loaded, the import path, and
+the names and members the minimal example in `references/providers.md` uses.
+A change to the rest of it may ship in a minor version, and its entry begins
+**User adapters**; a change to the covered part, `resolve_latest` included,
+is a major version.
 
 1. Run `python scripts/smoke_live.py` against the installed CLIs. The suite
    cannot tell you an adapter has drifted; this can.

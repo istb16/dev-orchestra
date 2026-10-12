@@ -578,9 +578,9 @@ class Provider:
             return ResolvedModel(
                 self.name, family or str(pinned), policy, str(pinned), str(pinned), "config-pinned"
             )
-        return self._resolve_latest(family)
+        return self.resolve_latest(family)
 
-    def _resolve_latest(self, family: str) -> ResolvedModel:
+    def resolve_latest(self, family: str) -> ResolvedModel:
         raise NotImplementedError
 
     def config_families(self) -> List["tuple[str, str]"]:

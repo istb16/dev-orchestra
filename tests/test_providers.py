@@ -137,7 +137,7 @@ def user_adapter(name: str, body: str = "", build: str = "return Adapter(executa
             name = %r
             executable = "user-adapter-not-on-path"
 
-            def _resolve_latest(self, family):
+            def resolve_latest(self, family):
                 return ResolvedModel(self.name, family, "latest", None, "default", "cli-default")
 
             def build_command(self, mode, resolved, cwd, extra_args=(), options=None):
@@ -3623,7 +3623,7 @@ class BrokenReaderProvider(base.Provider):
     def auth_status(self):
         return "present", "no credentials required"
 
-    def _resolve_latest(self, family):
+    def resolve_latest(self, family):
         return base.ResolvedModel(self.name, family or "test", "latest", None, "test", "builtin-fallback")
 
     def build_command(self, mode, resolved, cwd, extra_args=(), options=None):

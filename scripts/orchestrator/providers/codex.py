@@ -308,7 +308,7 @@ class CodexProvider(Provider):
                 candidates.append(candidate)
         return candidates
 
-    def _resolve_latest(self, family: str) -> ResolvedModel:
+    def resolve_latest(self, family: str) -> ResolvedModel:
         lowered = (family or "").strip().lower()
         if lowered in RECOMMENDED_FAMILIES:
             configured = self.configured_model()

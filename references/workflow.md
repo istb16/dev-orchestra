@@ -152,7 +152,8 @@ refusal stops.
 surface, and they change by addition only: a new version adds a key or a file,
 a reader skips a key it does not know, and a key an older version never wrote
 reads as what that older file meant -- which is "unknown" rather than zero
-where zero would be a claim, as with `priced_runs` in the token ledger. A key is not removed, renamed or given a new meaning.
+where zero would be a claim, as with `priced_runs` in the token ledger. A key is not removed, renamed or given a new meaning
+or type.
 A change that cannot be made by addition is a breaking change -- a major
 release -- and it ships with a way through: a migration that moves the old
 form into the new, or a refusal that names the old form and says what to do

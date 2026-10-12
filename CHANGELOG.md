@@ -5,14 +5,32 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-What that promise covers -- the configuration schema, the `dev-orchestra`
-commands, flags, exit codes and `--json` output, the `.ai/` artifact formats
-and what the built-in adapters do -- and what it does not, is under
-"Compatibility" in `README.md`. The `Provider` base class a user adapter
-subclasses is not covered and may change in a minor version; such an entry
-below begins **User adapters** so adapter authors can find it.
+What that promise covers, and what it does not, is listed once, under
+"Compatibility" in `README.md`. A user adapter can rely on the part of the
+`Provider` interface listed there; a change to the rest of it may come in a
+minor version, and its entry below begins **User adapters** so adapter
+authors can find it.
 
 ## [Unreleased]
+
+### Changed
+
+- **User adapters:** `Provider._resolve_latest` is now `resolve_latest`, in
+  the base class, the built-in adapters and the example in
+  `references/providers.md`. Rename the method in your adapter; the old name
+  is no longer called (#242).
+
+- **The compatibility promise is settled for 1.0.** A user adapter can rely
+  on how it is loaded, the import path `orchestrator.providers.base`, the
+  names the minimal example imports and the members it defines or calls; the
+  rest of `Provider` (resuming, the live-check members, `around_launch`,
+  parsing a run, model discovery) stays outside it. `state record`, `budget
+  consume` and `progress record` are covered like every other command. The
+  hidden `run --job-file`, `DEV_ORCHESTRA_MOCK_*`, `DEV_ORCHESTRA_TEST_*`,
+  `DEV_ORCHESTRA_DELEGATED`, the internal files under `.ai/`, the content of
+  `review-run.log` and the text of `notes` and `warnings` are named as not
+  covered. README's "Compatibility" stays the one list; the rest point to it
+  (#242).
 
 ## [0.23.0] - 2026-10-11
 

@@ -735,7 +735,7 @@ your own without editing the plugin, see
 2. **Read the real CLI's `--help`.** Do not write flags from memory — that is
    how adapters rot. Record the version you verified against in the module
    docstring.
-3. Implement `_discover_models`, `_resolve_latest`, `build_command`, and
+3. Implement `_discover_models`, `resolve_latest`, `build_command`, and
    `auth_status`. Override `around_launch` only for work before or after the
    CLI runs, such as special output capture: pass `launch._replace(...)` to
    `proceed`, changing only `prompt`, `cwd`, `model_spec`, `timeout`, `env`,
@@ -822,7 +822,7 @@ class MyCliProvider(Provider):
     fallback_models = (ModelCandidate("", "default", "CLI default", "builtin-fallback"),)
     fallback_updated = "2026-09-24"
 
-    def _resolve_latest(self, family: str) -> ResolvedModel:
+    def resolve_latest(self, family: str) -> ResolvedModel:
         if family in ("", "default"):
             return ResolvedModel(self.name, "default", "latest", None, "mycli default", "cli-default")
         raise ModelResolutionError(
@@ -1030,13 +1030,24 @@ clears the memoised discovery results, so an edited adapter is detected afresh.
 
 ### Interface stability
 
-`base.Provider` and the types around it (`ModelCandidate`, `ResolvedModel`,
-`RunResult`, `Usage`, `Detection`, `Launch`) are not covered by the
-compatibility promise ("Compatibility" in the README): they may change in a
-minor version, and the `CHANGELOG.md` entry begins **User adapters** so it can
-be found. What is covered is what a built-in adapter does, not what a subclass
-relies on. Pin the plugin version, or run `dev-orchestra doctor` after an
-update to check that your adapter still loads. The signatures of `run()`,
+The compatibility promise ("Compatibility" in the README) covers what the
+minimal adapter above relies on, and no more: the loader contract under
+[The contract](#the-contract) and [Rules](#rules) -- where the files are,
+`build_provider(executable=None)`, the name rule, built-in names refused, the
+first file winning, a load failure reported by `doctor` and never fatal, and
+`DEV_ORCHESTRA_NO_USER_PROVIDERS` -- the import path
+`orchestrator.providers.base`, the names the example imports from it
+(`Provider`, `ModelCandidate`, `ResolvedModel`, `ModelResolutionError`,
+`READ_ONLY_MODES`) called as it calls them, and the members it defines or
+calls: `name`, `display_name`, `executable`, `fallback_models`,
+`fallback_updated`, `resolve_latest`, `build_command` and `option_args`.
+The rest of `base.Provider` and the types around it (`RunResult`, `Usage`,
+`Detection`, `Launch`) -- resuming, the live-check members, `around_launch`,
+`_capture`, the hooks that read a run's output, model discovery -- is not
+covered: it may change in a minor version, and the `CHANGELOG.md` entry
+begins **User adapters** so it can be found. Pin the plugin version, or run
+`dev-orchestra doctor` after an update to check that your adapter still
+loads. The signatures of `run()`,
 `_launch()` and `around_launch()`, the fields of `Launch`, `resume_support()`
 and the live-check members are the surface most likely to move;
 `tests/test_provider_contract.py` holds every adapter, including the example

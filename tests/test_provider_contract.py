@@ -332,7 +332,7 @@ class _BareAdapter(base.Provider):
     def version(self):
         return "bare 1", None
 
-    def _resolve_latest(self, family):
+    def resolve_latest(self, family):
         return base.ResolvedModel(self.name, family, "latest", None, "default", "cli-default")
 
     def build_command(self, mode, resolved, cwd, extra_args=(), options=None):
