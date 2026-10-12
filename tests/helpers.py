@@ -244,6 +244,7 @@ class MyCliProvider(Provider):
 
     fallback_models = (ModelCandidate("", "default", "CLI default", "builtin-fallback"),)
     fallback_updated = "2026-09-24"
+    option_keys = ("args",)  # the `options` keys a role may set; validate_options refuses any other
 
     def resolve_latest(self, family: str) -> ResolvedModel:
         if family in ("", "default"):

@@ -13,6 +13,29 @@ authors can find it.
 
 ## [Unreleased]
 
+### Added
+
+- **Every command's `--json` output in one place**: `references/json.md` lists,
+  for each command that takes `--json`, whether it prints an object, a list or
+  a mapping, its top-level keys with their types and meanings, and the values
+  of each key that takes one of a set. `cli.md` points there instead of
+  repeating the key lists, and `tests/test_json_keys.py` holds the two to each
+  other.
+- **User adapters**: `option_keys`, the `options` keys a role may set on an
+  adapter, is now part of what a user adapter can rely on, beside `option_args`;
+  the minimal example in `references/providers.md` sets it.
+
+### Fixed
+
+- **User adapters**: an adapter that still defines `_resolve_latest`, which
+  0.24.0 renamed to `resolve_latest` without an alias, is no longer reported
+  as fine. It still loads, but `doctor` lists it under User providers as a
+  `Problem:` naming the file and saying to rename the method, counts it among
+  its problems (so `doctor --strict` fails), and has it under
+  `user_providers.problems` in `--json`. Resolving a model on such an adapter,
+  or on one with no `resolve_latest` at all, fails with a message saying what
+  to define instead of a bare `NotImplementedError`.
+
 ## [0.24.0] - 2026-10-12
 
 ### Removed

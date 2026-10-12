@@ -4,7 +4,9 @@ The compatibility promise lets a key be added but never removed or renamed,
 so each command is held to the keys it prints today as a subset: a new key
 passes, a missing one fails. The commands are the ones cli.md lists between
 its ``json-commands`` markers, and a command added there without keys here
-fails too.
+fails too. references/json.md documents each command's keys, and is held to
+the same list: every key here is in its table, and every key its table says
+is always printed is here.
 """
 
 from __future__ import annotations
@@ -299,9 +301,40 @@ def documented() -> List[str]:
     return re.findall(r"`([a-z -]+)`", match.group(1))
 
 
+SECTION = re.compile(r"^### `([a-z -]+)`\n(.*?)(?=^#{2,3} |\Z)", re.MULTILINE | re.DOTALL)
+ROW = re.compile(r"^\| `(\w+)` \| [^|]* \| (.*) \|$", re.MULTILINE)
+
+
+def documented_shapes() -> Dict[str, Tuple[str, Dict[str, bool]]]:
+    """json.md: command -> (the first word under its heading, key -> always printed).
+
+    A key whose meaning starts with "Only" is printed only then.
+    """
+    text = (pathlib.Path(REPO_ROOT) / "references" / "json.md").read_text(encoding="utf-8")
+    shapes: Dict[str, Tuple[str, Dict[str, bool]]] = {}
+    for name, body in SECTION.findall(text):
+        rows = {key: not meaning.startswith("Only") for key, meaning in ROW.findall(body)}
+        shapes[name] = (body.split(None, 1)[0].rstrip(".,:"), rows)
+    return shapes
+
+
 class TestTheListIsCovered(unittest.TestCase):
     def test_every_documented_json_command_has_its_keys_here(self):
         self.assertEqual(sorted(documented()), sorted(KEYS))
+
+    def test_the_json_reference_has_the_keys_here(self):
+        shapes = documented_shapes()
+        self.assertEqual(sorted(shapes), sorted(KEYS))
+        for name, (_, keys) in KEYS.items():
+            shape, rows = shapes[name]
+            with self.subTest(command=name):
+                expected = "List" if name in LISTS else "Mapping" if name in MAPPINGS else "Object"
+                self.assertEqual(shape, expected)
+                self.assertEqual(sorted(set(keys) - set(rows)), [], "printed, not in references/json.md")
+                always = sorted(key for key, present in rows.items() if present)
+                self.assertEqual(
+                    sorted(set(always) - set(keys)), [], "documented as always printed, not here"
+                )
 
 
 @unittest.skipUnless(has_git(), "git is required for review snapshot")

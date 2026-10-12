@@ -273,7 +273,8 @@ Antigravity は `./install/uninstall.sh --antigravity`（Windows は `-Antigravi
   `progress record`）も含みます。
 - **環境変数** `DEV_ORCHESTRA_CONFIG`、`DEV_ORCHESTRA_HOME`、`DEV_ORCHESTRA_WORKFLOW`、
   `DEV_ORCHESTRA_SESSION`、`DEV_ORCHESTRA_NO_USER_PROVIDERS`。
-- **すべてのコマンドの `--json` 出力**: キーは追加されることがありますが、消したり、名前を
+- **すべてのコマンドの `--json` 出力**（各コマンドのキーと値は [json](docs/ja/references/json.md) に
+  あります）: キーは追加されることがありますが、消したり、名前を
   変えたり、意味や型を変えたりはしません。決まった値のどれかを取るフィールド（`status`、
   `coverage`、`resume.reason`）の、文書に書かれた値は保ちます。`notes` と `warnings` の中の
   文は文章であり、対象外です。
@@ -293,8 +294,9 @@ Antigravity は `./install/uninstall.sh --antigravity`（Windows は `-Antigravi
   [providers](docs/ja/references/providers.md#the-contract) の最小の例がそこから使うもの
   （`Provider`、`ModelCandidate`、`ResolvedModel`、`ModelResolutionError`、`READ_ONLY_MODES`
   を例と同じ呼び方で）、そして例が定義するか呼ぶメンバー（`name`、`display_name`、
-  `executable`、`fallback_models`、`fallback_updated`、`resolve_latest`、`build_command`、
-  `option_args`）。
+  `executable`、`fallback_models`、`fallback_updated`、`option_keys`（ロールがそのアダプタに
+  設定できる `options` のキーで、`validate_options` がロールの `options` をこれで確かめます）、
+  `resolve_latest`、`build_command`、`option_args`）。
 - **返答の言語のフックがすること**（[返答の言語のフック](docs/ja/references/architecture.md#reply-language-hooks)）:
   dev-orchestra がこれを Claude Code のユーザー設定に加えるのは、`language.reply` を設定したときか
   `hooks install` を実行したときだけです。そこでは自分のエントリだけを変え、`hooks uninstall` か
@@ -349,6 +351,7 @@ Antigravity は `./install/uninstall.sh --antigravity`（Windows は `-Antigravi
 | [architecture.md](docs/ja/references/architecture.md) | [references/architecture.md](references/architecture.md) | 構成要素のつながり、その理由、セキュリティ |
 | [limits.md](docs/ja/references/limits.md) | [references/limits.md](references/limits.md) | stall、タイムアウト、予算、大量の入力、実行コスト、最適化レベル |
 | [cli.md](docs/ja/references/cli.md) | [references/cli.md](references/cli.md) | 全コマンドとフラグ、トラブルシューティング |
+| [json.md](docs/ja/references/json.md) | [references/json.md](references/json.md) | 各コマンドが `--json` で出すもの: キー、その型と値 |
 
 ## コントリビュート
 

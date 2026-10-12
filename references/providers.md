@@ -58,6 +58,8 @@ class Provider:
     static_enforcement: bool                                    # default: False
     preset_family: str | None                                   # default: None (not fitted to presets)
     local_only_options: Sequence[str]                           # default: ()
+    option_keys: Sequence[str]                                  # default: ("args",); the options keys a role may set
+    def validate_options(options) -> list[str]                  # a key not in option_keys, a bad args or idle_timeout
     def run_warnings(outcome, mode) -> list[str]                # default: []
     def activity_of(line, cwd) -> Activity                      # default: nothing
     def config_families() -> list[tuple[str, str]]              # default: []
@@ -821,6 +823,7 @@ class MyCliProvider(Provider):
 
     fallback_models = (ModelCandidate("", "default", "CLI default", "builtin-fallback"),)
     fallback_updated = "2026-09-24"
+    option_keys = ("args",)  # the `options` keys a role may set; validate_options refuses any other
 
     def resolve_latest(self, family: str) -> ResolvedModel:
         if family in ("", "default"):
@@ -1013,8 +1016,13 @@ CLI: every other command carries on without it, and `dev-orchestra doctor`
 lists it under **User providers** with the error, and among its problems (so
 `doctor --strict` fails). `doctor` also catches an adapter that raises while it
 is being diagnosed -- from `detect()`, `list_models()` or model resolution --
-and reports it as `adapter-error` against the file it came from. Write the
-adapter, then run `doctor` before anything else.
+and reports it as `adapter-error` against the file it came from. An adapter
+that still defines `_resolve_latest`, the name before 0.24.0, and no
+`resolve_latest` loads, but cannot resolve a model: `doctor` lists it under
+**User providers** as a `Problem:` naming the file and the rename, and among
+its problems (`user_providers.problems` in `--json`), and resolving a model on
+it fails with the same advice. Write the adapter, then run `doctor` before
+anything else.
 
 The directory holds trusted code, not a sandbox: every file in it is imported
 into the CLI's own process with your permissions every time the CLI starts,
@@ -1040,7 +1048,10 @@ first file winning, a load failure reported by `doctor` and never fatal, and
 (`Provider`, `ModelCandidate`, `ResolvedModel`, `ModelResolutionError`,
 `READ_ONLY_MODES`) called as it calls them, and the members it defines or
 calls: `name`, `display_name`, `executable`, `fallback_models`,
-`fallback_updated`, `resolve_latest`, `build_command` and `option_args`.
+`fallback_updated`, `option_keys` (the `options` keys a role may set on the
+adapter: `validate_options` reports any other key as a problem, and `args`,
+which `option_args` reads, is one of the defaults), `resolve_latest`,
+`build_command` and `option_args`.
 The rest of `base.Provider` and the types around it (`RunResult`, `Usage`,
 `Detection`, `Launch`) -- resuming, the live-check members, `around_launch`,
 `_capture`, the hooks that read a run's output, model discovery -- is not

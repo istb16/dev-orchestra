@@ -243,6 +243,14 @@ class ModelResolutionError(RuntimeError):
     """Raised when a configured model cannot be resolved without guessing."""
 
 
+class ResolveLatestMissing(ModelResolutionError, NotImplementedError):
+    """Raised by the base ``resolve_latest``: the adapter does not define one.
+
+    A ``ModelResolutionError``, so every command that resolves a model reports
+    it as a message rather than a traceback.
+    """
+
+
 class Usage:
     """What one delegated run cost, as the CLI itself reported it.
 
@@ -581,7 +589,13 @@ class Provider:
         return self.resolve_latest(family)
 
     def resolve_latest(self, family: str) -> ResolvedModel:
-        raise NotImplementedError
+        if getattr(self, "_resolve_latest", None) is not None:
+            # Renamed without an alias in 0.24.0; doctor reports it too.
+            raise ResolveLatestMissing(
+                "%s: the adapter defines _resolve_latest, which 0.24.0 renamed to resolve_latest; "
+                "rename the method to resolve_latest" % self.name
+            )
+        raise ResolveLatestMissing("%s: the adapter must define resolve_latest(family)" % self.name)
 
     def config_families(self) -> List["tuple[str, str]"]:
         """``(family, what it resolves to now)`` for the families to put in a

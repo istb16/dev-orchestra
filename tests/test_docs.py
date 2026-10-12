@@ -271,6 +271,7 @@ class TestCompatibilityPromise(unittest.TestCase):
         names += re.findall(r"^    def (\w+)\(", example, re.MULTILINE)
         names += re.findall(r"self\.(\w+)\(", example)
         self.assertIn("resolve_latest", names)
+        self.assertIn("option_keys", names)
         sections = {
             "README.md": self.section(self.read("README.md"), "## Compatibility"),
             "README.ja.md": self.section(self.read("README.ja.md"), "## 互換性"),
@@ -437,7 +438,7 @@ class TestReferenceContents(unittest.TestCase):
     """The long references open with a table of contents that matches their
     headings, in both languages, and every link in it lands on a section."""
 
-    NAMES = ("reviews", "cli", "configuration", "limits", "workflow", "providers")
+    NAMES = ("reviews", "cli", "configuration", "limits", "workflow", "providers", "json")
 
     def setUp(self):
         import sys
