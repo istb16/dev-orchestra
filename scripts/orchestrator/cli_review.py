@@ -821,33 +821,22 @@ def _risk_paths(meta: Dict[str, Any]) -> List[str]:
     """Every path a snapshot says the change touches.
 
     ``changed_paths`` is the whole set, including withheld files and the name
-    a rename came from. A snapshot written by an earlier version does not have
-    it, so the old pair is reconstructed instead -- one round judged from a
-    slightly narrower set is better than a crash, and the next snapshot has
-    the key.
+    a rename came from. A snapshot without the list reads as one with no
+    paths, as a missing or unreadable snapshot does.
     """
     paths = meta.get("changed_paths")
-    if isinstance(paths, list) and paths:
-        return [str(path) for path in paths]
-    return list(meta.get("files") or []) + [str(entry.get("path")) for entry in (meta.get("withheld") or [])]
+    return [str(path) for path in paths] if isinstance(paths, list) else []
 
 
 def _condition_paths(meta: Dict[str, Any]) -> List[str]:
     """The paths a path-scoped reviewer is matched against.
 
     ``condition_paths`` is the change as a reviewer sees it: ``changed_paths``
-    less what is in neither the diff nor the withheld notice. A snapshot
-    written before it existed falls back to ``_risk_paths`` on a first round,
-    where nothing is suppressed and the two lists are the same, so rename
-    sources still count. An incremental one may have suppressed files in
-    ``changed_paths``, so it gets the reviewed and withheld files only.
+    less what is in neither the diff nor the withheld notice. Missing, it
+    reads as no paths, like ``_risk_paths``.
     """
     paths = meta.get("condition_paths")
-    if isinstance(paths, list) and paths:
-        return [str(path) for path in paths]
-    if not meta.get("incremental_from"):
-        return _risk_paths(meta)
-    return list(meta.get("files") or []) + [str(entry.get("path")) for entry in (meta.get("withheld") or [])]
+    return [str(path) for path in paths] if isinstance(paths, list) else []
 
 
 def _round_plan(

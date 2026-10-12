@@ -27,7 +27,6 @@ from .config_layers import (
     _layer_path,
     _not_copied,
     _panel_write_problems,
-    _prune_base,
     _read_layer,
     _recorded,
     _resolve_scope,
@@ -537,60 +536,6 @@ def _left_the_fit_note(
         return
     message = "note: %s is now set by %s (provider %s); preset %s no longer fits it"
     _out(message % (role, config_mod.shown_location(path), new, after.preset))
-
-
-def cmd_config_prune(args: argparse.Namespace) -> int:
-    scope = _resolve_scope(args.scope, args.cwd)
-    path = _layer_path(scope, args.cwd)
-    if not os.path.isfile(path):
-        _err("no %s configuration file at %s" % (scope, path))
-        return 2
-    layer = config_mod.read_config_file(path)
-    base, held = _prune_base(scope, args.cwd, layer)
-    pruned, dropped = config_mod.prune_layer(layer, base)
-    if _compose_preview(scope, pruned)[0] != _compose_preview(scope, layer)[0]:
-        # Nothing should be able to get here. It is checked anyway because the
-        # failure would be a configuration quietly changing underneath someone
-        # who asked for it not to.
-        _err("%s: pruning would change the effective configuration, so nothing was written." % path)
-        return 2
-
-    shown = config_mod.shown_location(path)
-    if "reviewers" in held:
-        _out(
-            "Kept reviewers in %s: dropping it would move design reviews to the preset's design panel."
-            % shown
-        )
-    if not dropped:
-        _out("Nothing to drop from %s: it already holds only its own decisions." % shown)
-        # Dropping values is not the only thing pruning does: `prune_layer` also
-        # supplies the format version a file written before it existed never
-        # had. Returning on an empty `dropped` left such a file unnormalised
-        # whenever it happened to hold nothing redundant.
-        if pruned == layer:
-            return 0
-        if args.dry_run:
-            _out("The configuration format version would be recorded (dry run, nothing written).")
-            return 0
-        config_mod.write_config_file(path, pruned, scope)
-        _out("Recorded the configuration format version in %s." % shown)
-        return 0
-    for entry in dropped:
-        _out("  %-40s %s" % (entry["setting"], _prune_value(entry["value"])))
-    _out("Values equal to the current default were assumed to be inherited.")
-    if args.dry_run:
-        _out("%d would be dropped from %s (dry run, nothing written)." % (len(dropped), shown))
-        return 0
-    config_mod.write_config_file(path, pruned, scope)
-    _out("Dropped %d from %s; they now follow %s." % (len(dropped), shown, config_mod.layer_below(scope)))
-    return 0
-
-
-def _prune_value(value: Any) -> str:
-    """A list is named by its length, for the reason ``pinned_differences`` gives."""
-    if isinstance(value, list):
-        return "%d entries" % len(value)
-    return repr(value)
 
 
 def _warn_unresolvable(effective: Dict[str, Any], role_key: str) -> None:

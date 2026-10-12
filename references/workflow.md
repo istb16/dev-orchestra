@@ -130,36 +130,20 @@ which is a different repository root, and therefore a different `.ai/`.
 `workflow list` names any other workflow that looks live here, and the
 commands say so rather than let the separate directories imply otherwise.
 
-A flat `.ai/` written before 0.4.0 -- `plan.md`, `state.json`, `execution/`,
-`reviews/` or `jobs/` directly in `.ai/` -- is no longer adopted. Every
-command that uses the workflow refuses (exit 2), names the entries and says
-what to do: move them aside or delete them, or run dev-orchestra 0.20.0 once
-in the checkout first, which adopts them into a workflow -- except a file that
-workflow already holds, which 0.20.0 leaves where it is, so such leftovers
-are refused again until they are moved aside or deleted. `workflow list`
-notes them. Nothing is moved or deleted.
-
-A lone `execution/` is the exception: it is not taken for the old layout,
-not refused and not noted, because a request or a log the orchestrator writes
-at `.ai/execution/` today makes one. An old one held the requests, fix briefs
-and role outputs of the work it was for; no later stage reads them from
-there, so nothing a workflow needs is left behind, and it stays until you
-delete it. Beside any of the other entries it is named and refused with
-them, and when 0.20.0's leftovers come down to `execution/` alone, the
-refusal stops.
+Anything else directly in `.ai/` -- a `plan.md`, or an `execution/` holding
+a request or a log the orchestrator wrote there itself -- belongs to no
+workflow. The commands neither read it nor move it, and it stays until you
+delete it.
 
 **How the formats change.** The `.ai/` artifacts are part of the public
-surface, and they change by addition only: a new version adds a key or a file,
-a reader skips a key it does not know, and a key an older version never wrote
-reads as what that older file meant -- which is "unknown" rather than zero
-where zero would be a claim, as with `priced_runs` in the token ledger. A key is not removed, renamed or given a new meaning
-or type.
-A change that cannot be made by addition is a breaking change -- a major
-release -- and it ships with a way through: a migration that moves the old
-form into the new, or a refusal that names the old form and says what to do
-with it, as the removal of the 0.4.0 adoption does (CHANGELOG, Removed). The
-files carry no format version for that
-reason: nothing reads one, and the rule above is what keeps an older workflow
+surface, and from 1.0 they change by addition only: a new version adds a key
+or a file, a reader skips a key it does not know, and a key an earlier 1.x
+release never wrote reads as what that file meant -- "unknown" rather than
+zero where zero would be a claim. A key is not removed, renamed or given a new
+meaning or type. A change that cannot be made by addition is a breaking change -- a
+major release -- and it ships with a way through: a migration that moves the
+old form into the new, or a refusal that names the old form and says what to
+do with it. The files carry no format version for that reason: nothing reads one, and the rule above is what keeps an older workflow
 readable. The `--json` output of the commands changes the same way: a key may
 be added, as the `*_real` keys that appear only when a path is stored
 elsewhere; a key is not removed, renamed or given a new meaning or type. The
@@ -781,19 +765,15 @@ checkout never appears in *their* `git status` and never gets committed
 (without it, `git add -A` there fails with "does not have a commit checked
 out"). The entry goes in under a `# added by dev-orchestra install --claude`
 comment, and the uninstaller removes it only when that comment is right above
-it. An entry already there without the comment, from an installer older than
-the comment or written by hand, is not added again and is left in place by
-the uninstaller, which names it so that you can remove it yourself.
+it. An entry already there without the comment is not added again, and the
+uninstaller leaves it untouched.
 
 A re-run, and the uninstaller, replace only what the installer made: a link
-to this checkout, or a copy, which carries a `.dev-orchestra-install` file. A
-copy from an installer older than that file is recognised by holding nothing
-but what a copy carries: every file in it, at any depth and hidden or not, is
-also at the same path in this checkout's payload, a directory as a directory
-and a file as a file. The `.pyc` files that running the CLI from it leaves
-in its `__pycache__` directories are not counted; anything else in a
-`__pycache__`, or a link or junction anywhere inside it, makes it not a copy. A link to somewhere else, a directory of your own or
-a clone is left in place, with a note on how to remove it by hand. A clone
+to this checkout, or a copy, which carries a `.dev-orchestra-install` file.
+Anything else there -- a link to somewhere else, a directory of your own, a
+clone, or a copy without that file -- is left in place: the installer says on
+stderr that the installer did not write it and that it must be removed by
+hand, names the path, and exits 1. A clone
 made directly into the skills directory is already installed; the installer
 run from it stops instead of deleting it.
 

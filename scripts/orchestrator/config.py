@@ -1250,77 +1250,6 @@ def _timeout_at(loaded: LoadedConfig, key: List[str], fallback: int) -> RunTimeo
     return RunTimeout(value, "default")
 
 
-#: Settings whose value is a matter of taste rather than a recommendation, so
-#: a difference from the default says nothing worth reporting.
-_TASTE = ("version", "reviewers", "workspace", "language")
-
-#: Settings whose default is empty and which only ever add to another one, so
-#: any value in a file was put there by someone. No release ever seeded a file
-#: with them, which is the one thing a pinned report is looking for.
-_ADDITIONS = (
-    "optimization.extra_high_risk_paths",
-    "optimization.extra_security_paths",
-    "optimization.extra_architecture_paths",
-)
-
-
-def pinned_differences(data: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """Settings this configuration fixes at a value the defaults have moved off.
-
-    Before 0.6.0 every writer seeded the file with the whole of
-    `default_config()`, so a default that was later improved never reached an
-    existing installation: the file kept answering with the number that was
-    current when it was written. That happened -- the low-risk thresholds were
-    raised in 0.4.2 and every config written before it went on reporting the
-    old pair, so the panel reduction the release was for could not fire.
-    Writers are sparse now, but the files those releases wrote are still on
-    disk, so this report is still what finds them.
-
-    Reported, never corrected. "Chose 2 deliberately" and "inherited 2 from an
-    older default" are the same two characters on disk, and silently rewriting
-    the first would be worse than leaving the second to be noticed.
-    `config prune` does it on request, which is a different thing.
-
-    Lists are compared by length, not contents: `high_risk_paths` is thirty
-    entries and nobody reads a diff of it in a diagnostic. `reviewers` is not
-    compared at all (`_TASTE`): a panel is the user's own, and holding it
-    against the default one would report every installation that added a
-    reviewer. Nor is an addition (`_ADDITIONS`) such as
-    `extra_high_risk_paths`: it arrived after writers went sparse, so a value
-    in a file is always one somebody added, never an inherited default.
-    """
-    differences: List[Dict[str, Any]] = []
-
-    def walk(current: Any, default: Any, path: str) -> None:
-        if isinstance(default, dict):
-            if not isinstance(current, dict):
-                return
-            for key, value in default.items():
-                if path == "" and key in _TASTE:
-                    continue
-                name = ("%s.%s" % (path, key)) if path else str(key)
-                if name in _ADDITIONS:
-                    continue
-                if key in current:
-                    walk(current[key], value, name)
-            return
-        if isinstance(default, list):
-            if isinstance(current, list) and len(current) != len(default):
-                differences.append(
-                    {
-                        "setting": path,
-                        "value": "%d entries" % len(current),
-                        "default": "%d entries" % len(default),
-                    }
-                )
-            return
-        if current != default:
-            differences.append({"setting": path, "value": current, "default": default})
-
-    walk(data, default_config(), "")
-    return sorted(differences, key=lambda entry: entry["setting"])
-
-
 def referenced_providers(data: Dict[str, Any]) -> List[str]:
     """Every provider name a configuration refers to: roles, tiers and both reviewer panels."""
     names = set()
@@ -1343,19 +1272,13 @@ def referenced_providers(data: Dict[str, Any]) -> List[str]:
 def prune_layer(layer: Dict[str, Any], base: Dict[str, Any]) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
     """``layer`` with everything ``base`` already says dropped from it.
 
-    For the files written before 0.6.0, which hold every default beside the
-    handful of values their owner actually chose. Nothing on disk distinguishes
-    the two, so "equal to what this layer inherits" is the only evidence there
-    is -- which is why this is a command a user runs rather than something a
-    writer does on its way past.
+    What an adjusted preset setup saves is what differs from the fit, so the
+    setup wizard drops the governed values the fit already holds.
 
-    ``base`` is what would be in force without this layer, not the built-in
-    defaults: a project file may hold a value equal to a default precisely to
-    cancel a global one, and comparing it against the defaults would throw that
-    away. Lists are dropped only when equal whole, because that is the unit
-    ``deep_merge`` replaces. ``version`` identifies the file format rather than
-    configuring anything, so it survives -- and is supplied when the old file
-    never had one.
+    ``base`` is what would be in force without this layer. Lists are dropped
+    only when equal whole, because that is the unit ``deep_merge`` replaces.
+    ``version`` identifies the file format rather than configuring anything,
+    so it survives -- and is supplied when the layer has none.
     """
     dropped: List[Dict[str, Any]] = []
 

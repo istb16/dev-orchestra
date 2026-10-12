@@ -99,37 +99,16 @@ def _blank_account() -> Dict[str, Any]:
     # figure for no reason but the panel's composition. A run that used no
     # tools and a run from a CLI that never says are different facts, and only
     # this counter tells them apart.
-    #
-    # ``tool_unknown_runs`` because the counter alone cannot say it: the first
-    # tool-reporting run recorded into an account written before any of this
-    # existed *creates* ``tool_reported_runs``, and the absence that was the
-    # only evidence those earlier runs predate counting is gone with it. So the
-    # unknown is carried forward as a number of its own rather than inferred
-    # from whether a key is there. Same lesson as ``priced_runs`` in 0.4.2, not
-    # a new one.
     account: Dict[str, Any] = {
         "runs": 0,
         "measured_runs": 0,
         "priced_runs": 0,
         "tool_reported_runs": 0,
-        "tool_unknown_runs": 0,
         "tool_uses_by_name": {},
         "cost_usd": 0.0,
     }
     account.update(dict.fromkeys(USAGE_COUNTS, 0))
     return account
-
-
-def _unknown_tool_runs(account: Dict[str, Any]) -> int:
-    """How many of this account's runs cannot say whether they used tools.
-
-    An account with no ``tool_reported_runs`` was written before any run was
-    counted, so *all* of its runs are unknown. One that has the key knows,
-    except for whatever it carried forward when the key first appeared.
-    """
-    if "tool_reported_runs" not in account:
-        return int(account.get("runs") or 0)
-    return int(account.get("tool_unknown_runs") or 0)
 
 
 def _accumulate(account: Dict[str, Any], usage: Dict[str, Any]) -> Dict[str, Any]:
@@ -138,19 +117,6 @@ def _accumulate(account: Dict[str, Any], usage: Dict[str, Any]) -> Dict[str, Any
     A field the CLI did not report contributes nothing rather than zero, so a
     silent CLI cannot make a stage look free.
     """
-    # Stamped before this run joins them: every run already in an account that
-    # has no ``tool_reported_runs`` predates tool counting, and once this run
-    # creates that key nothing else remembers them.
-    #
-    # The key is created here rather than left to the first *counted* run, so
-    # the stamp happens once. Stamping without creating it closed nothing:
-    # the next unreported run -- a Codex run, or Claude under
-    # ``output_format: json`` -- found the key still absent, re-stamped the
-    # larger run count over the saved one, and was itself reported as
-    # predating the counting it ran alongside.
-    if "tool_reported_runs" not in account:
-        account["tool_unknown_runs"] = _unknown_tool_runs(account)
-        account["tool_reported_runs"] = 0
     account["runs"] = int(account.get("runs") or 0) + 1
     if usage.get("measured"):
         account["measured_runs"] = int(account.get("measured_runs") or 0) + 1
@@ -179,21 +145,11 @@ def _accumulate(account: Dict[str, Any], usage: Dict[str, Any]) -> Dict[str, Any
 
 def _merge_accounts(accounts: List[Dict[str, Any]]) -> Dict[str, Any]:
     total = _blank_account()
-    # An account written before ``priced_runs`` existed cannot answer "how many
-    # of these runs reported money", and reading its absence as zero made every
-    # pre-0.4.2 account claim its costs were unreported. Absent is unknown.
-    total["priced_known"] = all("priced_runs" in account for account in accounts)
     for account in accounts:
         total["runs"] += int(account.get("runs") or 0)
         total["measured_runs"] += int(account.get("measured_runs") or 0)
         total["priced_runs"] += int(account.get("priced_runs") or 0)
         total["tool_reported_runs"] += int(account.get("tool_reported_runs") or 0)
-        # The same shape, for the same reason: a run recorded before tool
-        # activity was counted cannot answer "did it use any", and reading that
-        # as zero would present "we did not count" as "no tools were used".
-        # Counted, not inferred from a missing key -- the key reappears as soon
-        # as one counted run is recorded beside them.
-        total["tool_unknown_runs"] += _unknown_tool_runs(account)
         by_name = account.get("tool_uses_by_name")
         if isinstance(by_name, dict):
             for name, count in by_name.items():
@@ -203,7 +159,6 @@ def _merge_accounts(accounts: List[Dict[str, Any]]) -> Dict[str, Any]:
         for field in USAGE_COUNTS:
             total[field] += int(account.get(field) or 0)
         total["cost_usd"] = round(total["cost_usd"] + float(account.get("cost_usd") or 0.0), 6)
-    total["tool_known"] = not total["tool_unknown_runs"]
     return total
 
 
@@ -328,15 +283,6 @@ class Ledger:
         ledger = state.get("ledger")
         if not isinstance(ledger, dict) or not ledger:
             return self._fresh()
-        if "epoch" not in ledger and ledger.get("workflow"):
-            # Written between 0.4.0 and 0.4.2, under the old name. Renamed
-            # rather than dropped: the identity is what the review lineage and
-            # every in-flight stamp are keyed on, so losing it would reset the
-            # round counters and leave a running stage unbilled. The first
-            # write after this stores ``epoch`` and nothing reads the old key
-            # again.
-            ledger = dict(ledger)
-            ledger["epoch"] = str(ledger.pop("workflow"))
         idle_limit = float(self.settings.get("session_idle_reset_seconds") or 0)
         last = float(ledger.get("last_activity_monotonic") or 0)
         if idle_limit and last and time.time() - last > idle_limit:
@@ -351,8 +297,7 @@ class Ledger:
         two identifiers sharing one word cost a real analysis an hour: a
         ledger whose ``workflow`` did not match the directory holding it read
         as a ledger carried between directories, when it was only the other
-        namespace. A ledger still carrying only ``workflow`` has it renamed on
-        load, so its identity survives the upgrade.
+        namespace.
 
         Which is what ``budget reset`` and the idle reset both do. Anything
         counting *per workflow* has to be keyed on this, or the reset says it
@@ -584,11 +529,8 @@ class Ledger:
             # And this means the *money* is a floor, which is a separate thing:
             # a CLI can report its tokens and no cost, as Codex does on every
             # run, so a complete token total can sit beside a cost that omits
-            # one provider entirely. An account too old to say counts as
-            # priced: claiming a caveat we cannot support is the worse error.
-            "priced": not totals.get("priced_known", True)
-            or totals["runs"] == 0
-            or totals["runs"] == totals["priced_runs"],
+            # one provider entirely.
+            "priced": totals["runs"] == 0 or totals["runs"] == totals["priced_runs"],
         }
 
     def repeats(self, stage: str) -> int:

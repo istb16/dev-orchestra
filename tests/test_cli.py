@@ -226,30 +226,6 @@ STORED_AT_WRITES = (
         ("config", "set", "--scope", "global", "reviewers[0].role", "security"),
     ),
     (
-        "prune --dry-run",
-        {"version": 1, "preset": "standard", "optimization": {"level": "balanced"}},
-        ("claude",),
-        ("config", "prune", "--scope", "global", "--dry-run"),
-    ),
-    (
-        "prune, nothing to drop",
-        {"version": 1, "optimization": {"low_risk_max_files": 7}},
-        ("claude",),
-        ("config", "prune", "--scope", "global"),
-    ),
-    (
-        "prune, version recorded",
-        "optimization:\n  low_risk_max_files: 7\n",
-        ("claude",),
-        ("config", "prune", "--scope", "global"),
-    ),
-    (
-        "prune, dropped",
-        {"version": 1, "preset": "standard", "optimization": {"level": "balanced"}},
-        ("claude",),
-        ("config", "prune", "--scope", "global"),
-    ),
-    (
         "reviewer add, listed",
         {"version": 1, "reviewers": [config_mod.make_reviewer("mine", "mock", "small")]},
         ("claude",),
@@ -596,26 +572,23 @@ class TestReviewerCommands(IsolatedCase):
         self.assertIn(secret, read_file(config_mod.global_config_path()))
 
 
-class TestConditionPathsFallback(unittest.TestCase):
-    """A snapshot frozen before `condition_paths` existed."""
+class TestSnapshotPaths(unittest.TestCase):
+    """The path lists a snapshot records, read as they are."""
 
     META: ClassVar[Dict[str, Any]] = {
         "files": ["lib/x.rb"],
         "withheld": [{"path": "gen/schema.rb"}],
-        "changed_paths": ["lib/x.rb", "db/migrate/x.rb", "gen/schema.rb"],
     }
 
-    def test_a_first_round_uses_the_whole_change_with_rename_sources(self):
-        meta = dict(self.META, incremental_from="")
-        self.assertEqual(cli_review._condition_paths(meta), ["lib/x.rb", "db/migrate/x.rb", "gen/schema.rb"])
-
-    def test_an_incremental_round_uses_the_reviewed_and_withheld_files(self):
-        meta = dict(self.META, incremental_from="abc123")
-        self.assertEqual(cli_review._condition_paths(meta), ["lib/x.rb", "gen/schema.rb"])
-
     def test_a_recorded_list_is_used_as_it_is(self):
-        meta = dict(self.META, incremental_from="", condition_paths=["lib/x.rb"])
+        meta = dict(self.META, changed_paths=["lib/x.rb", "gen/schema.rb"], condition_paths=["lib/x.rb"])
+        self.assertEqual(cli_review._risk_paths(meta), ["lib/x.rb", "gen/schema.rb"])
         self.assertEqual(cli_review._condition_paths(meta), ["lib/x.rb"])
+
+    def test_a_snapshot_without_the_lists_reads_as_no_snapshot(self):
+        """Not rebuilt from ``files`` and ``withheld``: the same as ``{}``."""
+        self.assertEqual(cli_review._risk_paths(self.META), cli_review._risk_paths({}))
+        self.assertEqual(cli_review._condition_paths(self.META), [])
 
 
 class TestMalformedPathConditions(IsolatedCase):
@@ -1099,12 +1072,10 @@ class TestDoctorDefaultPatternsNote(IsolatedCase):
         self.write_config(high_risk_paths=list(reversed(defaults)))
         self.assertEqual(len(self.notes()), 1)
 
-    def test_an_older_copy_of_the_defaults_is_still_the_defaults(self):
-        # Configs written before 0.6.0 hold the default list of their day,
-        # which lacks patterns added since.
+    def test_a_narrowed_copy_of_the_defaults_is_a_choice(self):
         defaults = config_mod.default_config()["optimization"]["high_risk_paths"]
         self.write_config(high_risk_paths=[p for p in defaults if p not in ("k8s/*", "deploy/*")])
-        self.assertEqual(len(self.notes()), 1)
+        self.assertEqual(self.notes(), [])
 
     def test_a_blank_entry_does_not_make_the_defaults_a_choice(self):
         defaults = config_mod.default_config()["optimization"]["high_risk_paths"]
@@ -3772,75 +3743,6 @@ class TestPresetWriters(PresetCase):
         )
 
 
-class TestPresetPrune(PresetCase):
-    def test_what_a_preset_install_chose_is_kept(self):
-        layer = {
-            "version": 1,
-            "preset": "quality",
-            "optimization": {"level": "quality"},
-            "review": {"design": {"enabled": True}},
-        }
-        self.write_global(layer)
-        code, out, _ = run_cli("config", "prune")
-        self.assertEqual(code, 0, out)
-        self.assertEqual(self.global_layer(), layer)
-
-    def test_a_default_the_preset_sets_otherwise_is_kept(self):
-        """Dropped, the level and the implementer would fall through to the fit."""
-        self.fake_clis(claude=True, codex=True)
-        layer = {
-            "version": 1,
-            "preset": "quality",
-            "implementer": config_mod.default_config()["implementer"],
-            "optimization": {"level": "balanced"},
-        }
-        self.write_global(layer)
-        before = config_mod.load(self.project).data
-        code, out, _ = run_cli("config", "prune")
-        self.assertEqual(code, 0, out)
-        self.assertEqual(self.global_layer(), layer)
-        self.assertEqual(config_mod.load(self.project).data, before)
-
-    def test_a_default_the_preset_also_holds_is_dropped(self):
-        self.write_global({"version": 1, "preset": "standard", "optimization": {"level": "balanced"}})
-        code, _, _ = run_cli("config", "prune")
-        self.assertEqual(code, 0)
-        self.assertEqual(self.global_layer(), {"version": 1, "preset": "standard"})
-
-    def test_a_panel_equal_to_this_machines_fit_is_not_dropped(self):
-        from orchestrator import presets
-
-        self.fake_clis(claude=True)
-        fitted = presets.expand("standard", ["claude"]).values["reviewers"]
-        self.write_global({"version": 1, "preset": "standard", "reviewers": fitted})
-        run_cli("config", "prune")
-        self.assertEqual(self.global_layer()["reviewers"], fitted)
-
-    def test_a_default_panel_beside_a_codex_implementer_is_kept(self):
-        """Dropped, the panel would be dealt around codex instead."""
-        self.fake_clis(claude=True, codex=True)
-        reviewers = config_mod.default_config()["reviewers"]
-        layer = {"version": 1, "implementer": CODEX_IMPLEMENTER, "reviewers": reviewers}
-        self.write_global(layer)
-        code, _, err = run_cli("config", "prune")
-        self.assertEqual(code, 0, err)
-        self.assertEqual(self.global_layer()["reviewers"], reviewers)
-
-    def test_a_panel_a_projects_implementer_would_redeal_is_kept(self):
-        self.fake_clis(claude=True, codex=True)
-        reviewers = config_mod.default_config()["reviewers"]
-        self.write_global({"version": 1, "preset": "standard", "reviewers": reviewers})
-        project_path = os.path.join(self.project, ".dev-orchestra.yaml")
-        config_mod.write_config_file(
-            project_path, {"version": 1, "implementer": CODEX_IMPLEMENTER}, "project"
-        )
-        before = config_mod.load(self.project).data
-        code, _, err = run_cli("config", "prune", "--scope", "global")
-        self.assertEqual(code, 0, err)
-        self.assertEqual(self.global_layer()["reviewers"], reviewers)
-        self.assertEqual(config_mod.load(self.project).data, before)
-
-
 class TestPresetCommands(PresetCase):
     def test_setup_preset_writes_only_the_name(self):
         self.fake_clis(claude=True)
@@ -4119,7 +4021,6 @@ class TestParserShape(IsolatedCase):
                 ("review", "fix-brief"),
                 ("review", "consolidate"),
                 ("config", "suggest-roles"),
-                ("config", "prune"),
                 ("config", "setup"),
             }
             <= {path for path, _ in leaves}
@@ -4168,7 +4069,6 @@ class TestParserShape(IsolatedCase):
         for argv in (
             ("config", "set", "a.b", "c"),
             ("config", "reset"),
-            ("config", "prune"),
             ("reviewer", "add", "--provider", providers.available_providers()[0]),
             ("reviewer", "remove", "1"),
             ("reviewer", "set", "1"),

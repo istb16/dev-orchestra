@@ -285,12 +285,6 @@ class TestValidation(ExtrasCase):
         data["optimization"]["security_paths"] = []
         self.assertEqual(config_mod.validate(data), [])
 
-    def test_pinned_differences_ignore_extra_role_paths(self):
-        data = config_mod.default_config()
-        data["optimization"]["extra_security_paths"] = ["*vault*"]
-        data["optimization"]["extra_architecture_paths"] = ["*proto*"]
-        self.assertEqual(config_mod.pinned_differences(data), [])
-
 
 # --------------------------------------------------------------------------- editing it
 
@@ -709,40 +703,6 @@ class TestShowingIt(ExtrasCase):
         self.write_global({"optimization": {"security_paths": [], "architecture_paths": []}})
         problems = doctor.collect(self.project, probe_models=False)["problems"]
         self.assertFalse([problem for problem in problems if "_paths: no pattern" in problem], problems)
-
-    def design_notes(self):
-        notes = doctor.collect(self.project, probe_models=False)["notes"]
-        return [note for note in notes if note.startswith("review.design.reviewers in ")]
-
-    def test_doctor_notes_a_design_list_holding_the_fit_plus_more(self):
-        fitted = self.loaded().design_reviewers()
-        self.write_global(design(reviewers=[*fitted, mock("d9")]))
-        (note,) = self.design_notes()
-        self.assertIn(
-            ": holds the inherited design panel plus d9; move d9 to review.design.reviewers_extra and "
-            "remove review.design.reviewers to keep following it",
-            note,
-        )
-
-    def test_doctor_has_no_design_note_for_a_file_listing_reviewers(self):
-        """Its design rounds inherit its own code list, not the fit's design panel."""
-        fitted = self.loaded().design_reviewers()
-        self.write_global({**WRITTEN, **design(reviewers=[*fitted, mock("d9")])})
-        self.assertEqual(self.design_notes(), [])
-
-    def test_doctor_has_no_design_note_for_a_list_missing_a_fit_seat(self):
-        fitted = self.loaded().design_reviewers()
-        self.write_global(design(reviewers=[*fitted[:-1], mock("d9")]))
-        self.assertEqual(self.design_notes(), [])
-
-    def test_doctor_notes_a_project_design_list_holding_the_global_code_copy_plus_more(self):
-        """The global file lists reviewers, so the project inherits a copy of them without when."""
-        self.write_global(WRITTEN)
-        copied = [config_mod.without_when(seat) for seat in WRITTEN["reviewers"]]
-        self.write_project(design(reviewers=[*copied, mock("d9")]))
-        (note,) = self.design_notes()
-        self.assertIn(".dev-orchestra.yaml: ", note)
-        self.assertIn("holds the inherited design panel plus d9", note)
 
     def test_doctor_notes_code_extras_left_out_of_the_fit_design_panel(self):
         self.write_global({"reviewers_extra": [mock("cx")]})

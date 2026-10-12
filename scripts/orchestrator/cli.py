@@ -24,7 +24,6 @@ from . import workflow as workflow_mod
 from .cli_common import _err, tolerate_console_encoding
 from .cli_config import (
     cmd_config_path,
-    cmd_config_prune,
     cmd_config_reset,
     cmd_config_set,
     cmd_config_setup,
@@ -283,11 +282,6 @@ def _add_config_parsers(subparsers: argparse._SubParsersAction[argparse.Argument
     _add_scope_flag(reset)
     reset.add_argument("--delete", action="store_true", help="delete the config file instead of clearing it")
     reset.set_defaults(func=cmd_config_reset)
-
-    prune = config_sub.add_parser("prune", help="drop values equal to what the layer inherits")
-    _add_scope_flag(prune)
-    prune.add_argument("--dry-run", action="store_true", help="list what would be dropped, write nothing")
-    prune.set_defaults(func=cmd_config_prune)
 
     set_parser = config_sub.add_parser("set", help="set one value, e.g. implementer.model.family opus")
     set_parser.add_argument("path")

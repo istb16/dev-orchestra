@@ -42,30 +42,6 @@ def _read_layer(scope: str, start: Optional[str] = None) -> Tuple[str, Dict[str,
     return path, layer
 
 
-def _layer_base(scope: str, start: Optional[str] = None) -> Dict[str, Any]:
-    """What would be in force if this layer did not exist.
-
-    The global file is shared by every project on the machine, so no project's
-    values may flow into it: its base is the built-in defaults alone. A project
-    file sits on top of the global one, so its base is the defaults plus that.
-    ``load()`` is the wrong answer for either -- it includes the layer being
-    edited, and for the global layer it includes whichever project happens to
-    be the working directory.
-
-    This mirrors the layer order in ``config.load``; a third layer would have
-    to be added in both places. It leaves out the preset's expansion:
-    ``_fitted_base`` is the base with it, through ``config.compose``, and
-    ``_prune_base`` is where the two agree.
-    """
-    defaults = config_mod.default_config()
-    if scope == "global":
-        return defaults
-    global_path = config_mod.global_config_path()
-    if not os.path.isfile(global_path):
-        return defaults
-    return config_mod.deep_merge(defaults, config_mod.read_config_file(global_path))
-
-
 def _global_file() -> Dict[str, Any]:
     path = config_mod.global_config_path()
     return config_mod.read_config_file(path) if os.path.isfile(path) else {}
@@ -84,49 +60,6 @@ def _fitted_base(scope: str, layer: Optional[Dict[str, Any]] = None) -> Dict[str
     if scope == "global":
         return config_mod.compose({"preset": _global_file().get("preset")}, {}, installed, layer)[0]
     return config_mod.compose(_global_file(), {}, installed, layer)[0]
-
-
-def _agreed(first: Dict[str, Any], second: Dict[str, Any], whole: Tuple[str, ...] = ()) -> Dict[str, Any]:
-    """The values ``first`` and ``second`` both hold; the keys in ``whole`` only when equal whole."""
-    agreed: Dict[str, Any] = {}
-    for key, value in first.items():
-        if key not in second:
-            continue
-        other = second[key]
-        if isinstance(value, dict) and isinstance(other, dict) and key not in whole:
-            agreed[key] = _agreed(value, other)
-        elif value == other:
-            agreed[key] = copy.deepcopy(value)
-    return agreed
-
-
-def _prune_base(scope: str, start: Optional[str], layer: Dict[str, Any]) -> Tuple[Dict[str, Any], List[str]]:
-    """What ``config prune`` compares ``layer`` against: ``(base, held)``.
-
-    A value may go only when the built-in defaults and the preset's fit both
-    say it: a governed key the file stops setting falls through to the fit,
-    and nothing may be pruned for equalling one machine's fit either. A role
-    counts only whole, since dropping its last field hands it to the fit.
-
-    A project file that sets the implementer deals the panel around it, so
-    for the global layer the fit that project sees has to agree as well.
-
-    Nor may ``reviewers`` go while it is what keeps the design rounds off
-    the preset's design panel (``_reviewers_hold_design_panel``): it governs
-    that panel too. ``held`` names it when it would otherwise have gone.
-    """
-    roles = config_mod.KNOWN_ROLES
-    base = _agreed(_layer_base(scope, start), _fitted_base(scope, layer), roles)
-    if scope == "global":
-        project_path = config_mod.find_project_config(start)
-        project = config_mod.read_config_file(project_path) if project_path else {}
-        if config_mod.mentions(project, "implementer"):
-            with_project = config_mod.deep_merge(layer, project)
-            base = _agreed(base, _fitted_base(scope, with_project), roles)
-    held: List[str] = []
-    if _reviewers_hold_design_panel(scope, layer) and base.pop("reviewers", None) == layer["reviewers"]:
-        held.append("reviewers")
-    return base, held
 
 
 def _reviewers_hold_design_panel(scope: str, layer: Dict[str, Any]) -> bool:

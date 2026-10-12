@@ -313,10 +313,7 @@ Roles, the design review and the optimization level keep following the preset;
 the fitted design panel does not, since the file now lists `reviewers`. When no
 file lists `review.design.reviewers` either, the design rounds move with it, and
 the note ends `; design rounds now run this list without when, not preset
-standard's design panel`. For the same reason `config prune` keeps a
-`reviewers` list equal to the fit when it is all that keeps the design rounds
-off the preset's design panel, and says `Kept reviewers in <file>: dropping it
-would move design reviews to the preset's design panel.`
+standard's design panel`.
 In project scope, when the global file lists no reviewers -- so what is copied
 is the fit and the global extras -- a seat on agy is left out of the copy,
 since the project file may not hold it, and the note ends `; not copied into
@@ -416,21 +413,10 @@ position in reviewer list)`.
 marks each extra (`(extra, project file)`) and its JSON adds
 `reviewer_origins`, parallel to `config.reviewers`; `reviewer list` marks them
 `(extra: project)`, and its JSON and `doctor`'s give each reviewer an `origin`:
-`fit`, `global`, `project`, `global extra` or `project extra`. `config prune`
-keeps extras, and `config reset` clears them with the other overrides and says
-how many. When a small change runs a single reviewer, it is the first `general`
+`fit`, `global`, `project`, `global extra` or `project extra`. `config reset`
+clears them with the other overrides and says how many. When a small change runs a single reviewer, it is the first `general`
 one in panel order, so an extra is chosen only when the panel it joins has no
 `general` seat.
-
-**A list that holds the inherited panel plus more** -- what `reviewer add` left
-before this key existed -- gets a note in `doctor`: `reviewers in <file>: holds
-the inherited panel plus <ids>; move <ids> to reviewers_extra and remove
-reviewers to keep following it`. A design list that holds the inherited design
-panel plus more, in a file that lists no `reviewers`, gets the same note for
-`review.design.reviewers` (`holds the inherited design panel plus <ids>; move
-<ids> to review.design.reviewers_extra ...`). The inherited design panel is the
-one below the file, or -- in a project file under a global `reviewers` list --
-that list without `when`. Files are never rewritten.
 
 **Code extras and the preset's design panel.** While the design rounds run
 the preset's design panel, `reviewers_extra` -- from `reviewer add` or
@@ -1304,7 +1290,6 @@ The skill carries the command grammar; this is the phrasebook.
 | "just this project" | add `--scope project` to any write |
 | "undo my own settings" | `config reset --scope global` (clears your overrides and keeps your preset; the preset fitted to this machine is what is left) |
 | "drop this project's overrides" | `config reset --scope project` (the project then follows the global layer and its preset) |
-| "my config is from an old version" | `config prune --dry-run`, then `config prune` |
 | "check my environment" | `doctor` |
 | "always reply in Japanese" (or any language) | `config set language.reply ja`, with that language's tag (`ko`, `zh-TW`, `fr`, ...) -- tell the user first that this adds hooks to their Claude Code user settings; `config set language.reply null` goes back to the language the user writes in and removes them |
 | "stop asking for my replies to be rewritten" | `config set language.rewrite false` (the reminders stay) |
@@ -1324,7 +1309,6 @@ dev-orchestra config set --scope project architect.provider codex
 dev-orchestra config set reviewers[1].role security
 dev-orchestra config reset                   # clear this layer's overrides (the global file keeps its preset)
 dev-orchestra config reset --delete          # remove the file entirely
-dev-orchestra config prune                   # drop values equal to what is inherited
 dev-orchestra config validate
 ```
 
@@ -1343,30 +1327,6 @@ stays set, is therefore not fitted, and the printed notes say so.
 `config show --scope global|project` prints the
 layer exactly as it is on disk, and `config show` the configuration it resolves
 to.
-
-**Files written before 0.6.0 still hold every default**, which is how the
-low-risk thresholds raised in 0.4.2 failed to reach anyone who had run setup
-before them. `doctor` lists any setting whose value the built-in default has
-moved off, with both numbers. `config prune` drops the values equal to what the
-layer inherits, on request only -- a deliberate choice and an inherited default
-look identical on disk, so this reads equality as evidence and says so:
-
-```bash
-dev-orchestra config prune --dry-run         # list what would be dropped
-dev-orchestra config prune --scope project
-```
-
-A value is dropped only when the built-in defaults and the preset's fit on this
-machine agree on it, so pruning never changes the configuration in force. A key
-a preset governs that the file stopped setting would fall to the fit: under
-`quality`, `optimization.level: balanced` or the default `opus` implementer
-stays, and so does a role or a panel equal to this machine's fit alone. A role
-is compared whole, since dropping its last field hands it to the fit.
-
-A project file is pruned against *your* global layer, not against the built-in
-defaults, so a value placed there to cancel a global one survives. The other
-side of that: prune a `.dev-orchestra.yaml` the team shares only while your own
-global layer overrides nothing, or the result will be shaped by your machine.
 
 `config set` coerces values: `3` becomes an int, `true` a bool, `[a, b]` a list,
 anything else a string. Use `--raw` to force a string.
@@ -1485,8 +1445,7 @@ use `reviewer add`.
 
 Files the wizard wrote before presets existed list every role and the panel, so
 a `preset:` added to one reaches only what they do not set. `config reset`
-clears them and keeps `preset`; `config prune` drops a value only when the
-built-in defaults and the preset's fit agree on it.
+clears them and keeps `preset`.
 
 `config setup` saves the answers you gave and nothing else. Its recommended
 answers, and the summary you approve, come from whatever the layer you are
@@ -1495,15 +1454,11 @@ sonnet offers sonnet, and the summary shows the design review as on if your
 global layer turned it on. So what you see before saving is what `config show`
 reports afterwards.
 
-An answer you accepted by pressing enter is still an answer, and is saved. For
-the four roles that is visible later -- `doctor` reports a role whose family the
-built-in default has moved off. **For `reviewers` it is not**: `doctor` never
-compares a panel to the default one, because that would flag every installation
-that added a reviewer. A panel written by the wizard therefore stays as it was
-that day, silently. The two ways back are `config show --scope global|project`,
-which shows the panel sitting in the layer, and `config prune`, which drops it
-when it still equals the current default panel. If you want to override nothing
-at all, `config setup --defaults`.
+An answer you accepted by pressing enter is still an answer, and is saved, so
+a role or a panel written by the wizard stays as it was that day, silently.
+`config show --scope global|project` shows what sits in the layer, and
+`config reset` clears it. If you want to override nothing at all,
+`config setup --defaults`.
 
 ## Worked examples
 

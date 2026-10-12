@@ -101,8 +101,8 @@ shell_quote() {
 
 # Clear the way for an install at $1, or stop. A link is removed only when it
 # resolves to this checkout, a directory only when this installer wrote it
-# (the sentinel is there, or it is an older Claude copy, and it is not a
-# clone or the checkout itself), and anything else is left where it is.
+# (the sentinel is there and it is not a clone or the checkout itself), and
+# anything else is left where it is.
 release_destination() {
   dest=$1
   if [ -L "$dest" ]; then
@@ -124,7 +124,7 @@ release_destination() {
     exit 1
   fi
   if [ -d "$dest" ] && [ ! -e "$dest/.git" ] && [ ! -L "$dest/.git" ]; then
-    if [ -f "$dest/$SENTINEL" ] || { [ "$mode" = claude ] && is_unmarked_copy "$dest"; }; then
+    if [ -f "$dest/$SENTINEL" ]; then
       rm -rf -- "$dest"
       return 0
     fi
@@ -135,48 +135,6 @@ release_destination() {
     explain_full_copy "$dest"
     exit 1
   fi
-}
-
-# A Claude copy made before the installer wrote the sentinel: the skill and
-# its CLI are there, and every entry in it, at any depth and hidden or not,
-# is at the same path in this checkout's payload, so removing it loses
-# nothing the checkout does not have. The .pyc files that running the CLI
-# from the copy leaves in a __pycache__ directory are left out: they are made
-# again, and such a directory needs no twin in the checkout. Anything else in
-# one -- another file, a link, a directory -- fails the check. A directory
-# must be a directory there, and a file a file. The installer never wrote a
-# link into a copy, so one inside it, which is not followed, fails the check,
-# and so does anything find cannot read.
-is_unmarked_copy() {
-  [ -f "$1/skills/$SKILL_NAME/SKILL.md" ] && [ -f "$1/scripts/orchestrator/__init__.py" ] || return 1
-  find "$1" -exec sh -c '
-    copy=$1 checkout=$2 payload=$3
-    shift 3
-    for entry do
-      [ "$entry" = "$copy" ] && continue
-      relative=${entry#"$copy"/}
-      case " $payload " in
-        *" ${relative%%/*} "*) ;;
-        *) exit 1 ;;
-      esac
-      [ -L "$entry" ] && exit 1
-      parent=
-      case $relative in */*) parent=${relative%/*} ;; esac
-      case /$parent in
-        */__pycache__)
-          # A bytecode cache holds .pyc files and nothing else.
-          case ${relative##*/} in *.pyc) [ -f "$entry" ] && continue ;; esac
-          exit 1 ;;
-      esac
-      twin=$checkout/$relative
-      if [ -d "$entry" ]; then
-        [ "${relative##*/}" = __pycache__ ] && continue
-        [ -d "$twin" ] || exit 1
-      else
-        [ -f "$twin" ] || exit 1
-      fi
-    done
-  ' sh "$1" "$root" "$PAYLOAD" {} +
 }
 
 # Entries at the checkout root that Antigravity would load along with the
