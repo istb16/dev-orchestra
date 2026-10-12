@@ -13,6 +13,8 @@ authors can find it.
 
 ## [Unreleased]
 
+## [0.24.0] - 2026-10-12
+
 ### Removed
 
 1.0 starts from the formats it writes. What earlier versions left on disk is no
@@ -74,6 +76,9 @@ longer read, migrated or tolerated:
 - **Only marked `.git/info/exclude` entries are managed.** An unmarked line an
   older installer wrote is no longer kept and named: it is left untouched,
   without a message.
+
+- **codex-cli 0.162.1 resumes the architect's session**: added to the
+  verified table after passing every required check on 2026-10-12.
 
 ## [0.23.0] - 2026-10-11
 
@@ -3170,7 +3175,8 @@ First release.
   none of which invoke a real CLI.
 - CI on Linux, macOS and Windows: lint, tests, skill validation.
 
-[Unreleased]: https://github.com/istb16/dev-orchestra/compare/v0.23.0...HEAD
+[Unreleased]: https://github.com/istb16/dev-orchestra/compare/v0.24.0...HEAD
+[0.24.0]: https://github.com/istb16/dev-orchestra/compare/v0.23.0...v0.24.0
 [0.23.0]: https://github.com/istb16/dev-orchestra/compare/v0.22.0...v0.23.0
 [0.22.0]: https://github.com/istb16/dev-orchestra/compare/v0.21.0...v0.22.0
 [0.21.0]: https://github.com/istb16/dev-orchestra/compare/v0.20.0...v0.21.0
