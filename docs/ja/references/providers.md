@@ -1,4 +1,4 @@
-<!-- translated-from: references/providers.md sha256:899538f3cde80ac2b14c381f8a58092345d8e13cbee9d4fc6a664cd5008fcda9 -->
+<!-- translated-from: references/providers.md sha256:e50479da9ad62535b4ccc9a2892aa72ccf5717700e94041f714b7e72c6434098 -->
 
 > この文書は [references/providers.md](../../../references/providers.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -62,6 +62,8 @@ class Provider:
     static_enforcement: bool                                    # default: False
     preset_family: str | None                                   # default: None (not fitted to presets)
     local_only_options: Sequence[str]                           # default: ()
+    option_keys: Sequence[str]                                  # default: ("args",); the options keys a role may set
+    def validate_options(options) -> list[str]                  # a key not in option_keys, a bad args or idle_timeout
     def run_warnings(outcome, mode) -> list[str]                # default: []
     def activity_of(line, cwd) -> Activity                      # default: nothing
     def config_families() -> list[tuple[str, str]]              # default: []
@@ -432,6 +434,7 @@ class MyCliProvider(Provider):
 
     fallback_models = (ModelCandidate("", "default", "CLI default", "builtin-fallback"),)
     fallback_updated = "2026-09-24"
+    option_keys = ("args",)  # the `options` keys a role may set; validate_options refuses any other
 
     def resolve_latest(self, family: str) -> ResolvedModel:
         if family in ("", "default"):
@@ -545,7 +548,7 @@ class MyCliProvider(Provider):
 
 ### うまくいかないとき
 
-インポートに失敗したファイル、契約を破ったファイル、拒否されたファイルが CLI を止めることはありません。他のすべてのコマンドはそれを除いて処理を続け、`dev-orchestra doctor` はそれを **User providers** の下にエラーとともに一覧表示し、問題の 1 つとしても挙げます（そのため `doctor --strict` は失敗します）。`doctor` は、診断中に（`detect()`、`list_models()`、またはモデル解決から）例外を送出したアダプタも捕捉し、元のファイルに対して `adapter-error` として報告します。アダプタを書いたら、何よりも先に `doctor` を実行してください。
+インポートに失敗したファイル、契約を破ったファイル、拒否されたファイルが CLI を止めることはありません。他のすべてのコマンドはそれを除いて処理を続け、`dev-orchestra doctor` はそれを **User providers** の下にエラーとともに一覧表示し、問題の 1 つとしても挙げます（そのため `doctor --strict` は失敗します）。`doctor` は、診断中に（`detect()`、`list_models()`、またはモデル解決から）例外を送出したアダプタも捕捉し、元のファイルに対して `adapter-error` として報告します。0.24.0 より前の名前である `_resolve_latest` を定義したままで `resolve_latest` のないアダプタは、読み込まれはしますがモデルを解決できません。`doctor` はそれを **User providers** の下にファイルと改名のしかたを示す `Problem:` として挙げ、問題の 1 つとしても挙げます（`--json` では `user_providers.problems`）。そのアダプタでモデルを解決しようとしても、同じ案内とともに失敗します。アダプタを書いたら、何よりも先に `doctor` を実行してください。
 
 このディレクトリはサンドボックスではなく、信頼されたコードを置く場所です。その中のすべてのファイルは、CLI が起動するたびに、あなたの権限で CLI 自身のプロセスにインポートされ、CLI が行うあらゆることを変更できます。自分で実行してもよいと思えるコードだけを置いてください。`doctor` が常にその場所とインポートしたものを表示するのはそのためです。壊れたアダプタが邪魔になっている場合など、ディレクトリを完全にスキップするには `DEV_ORCHESTRA_NO_USER_PROVIDERS=1` を設定します。これが設定されている間、`config validate`、`config show`、`doctor` は、見つけられない provider の横にその旨を表示するため、設定済みのユーザーアダプタがファイルの欠落と誤解されることはありません。
 
@@ -555,7 +558,7 @@ class MyCliProvider(Provider):
 
 ### インターフェースの安定性
 
-互換性の約束（README の「互換性」）が対象にするのは、上の最小のアダプタが頼るものだけです。[契約](#the-contract)と[ルール](#rules)にある読み込みの決まり（ファイルの場所、`build_provider(executable=None)`、名前の決まり、built-in の名前は断られること、最初のファイルが勝つこと、読み込みの失敗は `doctor` が報告し止まりはしないこと、`DEV_ORCHESTRA_NO_USER_PROVIDERS`）、import の場所 `orchestrator.providers.base`、例がそこから import する名前（`Provider`、`ModelCandidate`、`ResolvedModel`、`ModelResolutionError`、`READ_ONLY_MODES`）を例と同じ呼び方で使うこと、そして例が定義するか呼ぶメンバー（`name`、`display_name`、`executable`、`fallback_models`、`fallback_updated`、`resolve_latest`、`build_command`、`option_args`）です。`base.Provider` の残りの部分とその周辺の型（`RunResult`、`Usage`、`Detection`、`Launch`）、つまり再開、ライブチェック関連のメンバー、`around_launch`、`_capture`、実行の出力を読むフック、モデルの探索は対象外です。マイナーバージョンで変わることがあり、そのときの `CHANGELOG.md` の項目は見つけやすいよう **User adapters** で始まります。プラグインのバージョンを固定するか、更新後に `dev-orchestra doctor` を実行して、アダプタがまだ読み込めることを確認してください。`run()`、`_launch()`、`around_launch()` のシグネチャ、`Launch` のフィールド、`resume_support()`、ライブチェック関連のメンバーは最も変わりやすい部分です。`tests/test_provider_contract.py` は、上記の例を含むすべてのアダプタがこれらに従っていることを検証します。`run` が `resume_session` を `_launch` に渡すのはそれがあるときだけなので、再開の機能より前に書かれたアダプタも動き続けますが、これは配慮であって約束ではありません。
+互換性の約束（README の「互換性」）が対象にするのは、上の最小のアダプタが頼るものだけです。[契約](#the-contract)と[ルール](#rules)にある読み込みの決まり（ファイルの場所、`build_provider(executable=None)`、名前の決まり、built-in の名前は断られること、最初のファイルが勝つこと、読み込みの失敗は `doctor` が報告し止まりはしないこと、`DEV_ORCHESTRA_NO_USER_PROVIDERS`）、import の場所 `orchestrator.providers.base`、例がそこから import する名前（`Provider`、`ModelCandidate`、`ResolvedModel`、`ModelResolutionError`、`READ_ONLY_MODES`）を例と同じ呼び方で使うこと、そして例が定義するか呼ぶメンバー（`name`、`display_name`、`executable`、`fallback_models`、`fallback_updated`、`option_keys`（ロールがそのアダプタに設定できる `options` のキーです。ほかのキーは `validate_options` が問題として報告します。`option_args` が読む `args` は既定で入っています）、`resolve_latest`、`build_command`、`option_args`）です。`base.Provider` の残りの部分とその周辺の型（`RunResult`、`Usage`、`Detection`、`Launch`）、つまり再開、ライブチェック関連のメンバー、`around_launch`、`_capture`、実行の出力を読むフック、モデルの探索は対象外です。マイナーバージョンで変わることがあり、そのときの `CHANGELOG.md` の項目は見つけやすいよう **User adapters** で始まります。プラグインのバージョンを固定するか、更新後に `dev-orchestra doctor` を実行して、アダプタがまだ読み込めることを確認してください。`run()`、`_launch()`、`around_launch()` のシグネチャ、`Launch` のフィールド、`resume_support()`、ライブチェック関連のメンバーは最も変わりやすい部分です。`tests/test_provider_contract.py` は、上記の例を含むすべてのアダプタがこれらに従っていることを検証します。`run` が `resume_session` を `_launch` に渡すのはそれがあるときだけなので、再開の機能より前に書かれたアダプタも動き続けますが、これは配慮であって約束ではありません。
 
 上記の例は `build_command` しか実装していませんが、それでも読み取り専用のゲートは効きます。ゲートはアダプタが継承する `run` にあるので、生引数を伴う `plan` や `review` の実行は拒否され（base の許可リストは空）、`read_only_enforcement` を実装するまで `doctor` は `not reported by this adapter` と報告します。その `--read-only` フラグが本当に書き込みを止めるかどうかはアダプタの責任で、ここでは何も検証しません。
 

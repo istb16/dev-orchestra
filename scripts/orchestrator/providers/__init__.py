@@ -229,6 +229,8 @@ def _empty_report(directory: str) -> Dict[str, Any]:
         "present": os.path.isdir(directory),
         "loaded": [],
         "errors": [],
+        # Loaded, but with something that keeps part of it from working.
+        "problems": [],
     }
 
 
@@ -255,16 +257,20 @@ def load_user_providers(directory: Optional[str] = None) -> Dict[str, Any]:
         path = os.path.join(directory, entry)
         if not entry.endswith(".py") or entry.startswith(("_", ".")) or not os.path.isfile(path):
             continue
-        name, error = _load_user_module(path)
+        name, error, problems = _load_user_module(path)
         if error is None:
             report["loaded"].append({"name": name, "path": path, "module": USER_MODULE_PREFIX + entry[:-3]})
+            report["problems"] += [{"path": path, "name": name, "problem": problem} for problem in problems]
         else:
             report["errors"].append({"path": path, "error": error})
     return copy.deepcopy(report)
 
 
-def _load_user_module(path: str) -> Tuple[Optional[str], Optional[str]]:
-    """Load one file; returns ``(provider name, None)`` or ``(None, error)``."""
+def _load_user_module(path: str) -> Tuple[Optional[str], Optional[str], List[str]]:
+    """Load one file; returns ``(provider name, None, problems)`` or ``(None, error, [])``.
+
+    ``problems`` do not stop the adapter loading: they say what of it will not work.
+    """
     global _EXECUTING_USER_MODULE, _LOADER_REGISTERING
     modname = USER_MODULE_PREFIX + os.path.basename(path)[:-3]
     # Everything the module does to the registry -- from its top level or from
@@ -273,6 +279,7 @@ def _load_user_module(path: str) -> Tuple[Optional[str], Optional[str]]:
     snapshot = (dict(_REGISTRY), dict(_ORIGINS))
     error: Optional[str] = None
     name: Optional[str] = None
+    problems: List[str] = []
     module: Any = None
     _EXECUTING_USER_MODULE = path
     try:
@@ -282,7 +289,7 @@ def _load_user_module(path: str) -> Tuple[Optional[str], Optional[str]]:
         module = importlib.util.module_from_spec(spec)
         sys.modules[modname] = module
         spec.loader.exec_module(module)
-        name = _check_contract(module)
+        name, problems = _check_contract(module)
     except (Exception, SystemExit) as exc:
         error = describe_exception(exc)
         if isinstance(exc, ImportError) and (
@@ -308,8 +315,8 @@ def _load_user_module(path: str) -> Tuple[Optional[str], Optional[str]]:
             _LOADER_REGISTERING = False
     if error is not None:
         sys.modules.pop(modname, None)
-        return None, error
-    return name, None
+        return None, error, []
+    return name, None, problems
 
 
 def _guarded(build: ProviderFactory, path: str) -> ProviderFactory:
@@ -332,8 +339,9 @@ def _guarded(build: ProviderFactory, path: str) -> ProviderFactory:
     return factory
 
 
-def _check_contract(module: Any) -> str:
-    """The name to register under, read once: a second read is the adapter's to break."""
+def _check_contract(module: Any) -> Tuple[str, List[str]]:
+    """The name to register under, read once: a second read is the adapter's to
+    break; and what of the adapter will not work, which does not stop it loading."""
     build = getattr(module, "build_provider", None)
     if not callable(build):
         raise TypeError("defines no build_provider(executable=None) function")
@@ -348,7 +356,18 @@ def _check_contract(module: Any) -> str:
         raise ValueError(
             "provider name %r is not usable (lowercase letters, digits, '.', '_', '-')" % (name,)
         )
-    return name
+    return name, _renamed_member_problems(type(provider))
+
+
+def _renamed_member_problems(cls: type) -> List[str]:
+    """Members of ``Provider`` renamed without an alias that ``cls`` still
+    defines under the old name only, so the base class's stands in for it."""
+    if getattr(cls, "_resolve_latest", None) is None or cls.resolve_latest is not Provider.resolve_latest:
+        return []
+    return [
+        "defines _resolve_latest, which 0.24.0 renamed to resolve_latest, and no resolve_latest, "
+        "so resolving a model on it fails; rename the method to resolve_latest"
+    ]
 
 
 def _restore(snapshot: Tuple[Dict[str, ProviderFactory], Dict[str, ProviderOrigin]]) -> List[str]:

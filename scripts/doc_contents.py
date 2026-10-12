@@ -5,7 +5,7 @@
     python scripts/doc_contents.py --check references/reviews.md docs/ja/references/reviews.md
 
 The documents that have contents are the long references -- reviews, cli,
-configuration, limits, workflow and providers -- and their translations;
+configuration, limits, workflow, providers and json -- and their translations;
 ``tests/test_docs.py`` names them.
 
 The contents list the document's ``##`` and ``###`` headings, each linked to
