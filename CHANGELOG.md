@@ -14,6 +14,8 @@ below begins **User adapters** so adapter authors can find it.
 
 ## [Unreleased]
 
+## [0.23.0] - 2026-10-11
+
 ### Added
 
 - **Keys nothing reads are reported.** A misspelt `reveiw:`,
@@ -131,6 +133,9 @@ below begins **User adapters** so adapter authors can find it.
   `--help` and its model list, now calls `execution.execute` instead of
   `subprocess.run`, so a test double that replaces `execution.execute` also
   receives those calls; replace `_capture` as well to keep them apart (#274).
+
+- **codex-cli 0.161.0 resumes the architect's session**: added to the
+  verified table after passing every required check on 2026-10-10.
 
 ### Fixed
 
@@ -3104,7 +3109,8 @@ First release.
   none of which invoke a real CLI.
 - CI on Linux, macOS and Windows: lint, tests, skill validation.
 
-[Unreleased]: https://github.com/istb16/dev-orchestra/compare/v0.22.0...HEAD
+[Unreleased]: https://github.com/istb16/dev-orchestra/compare/v0.23.0...HEAD
+[0.23.0]: https://github.com/istb16/dev-orchestra/compare/v0.22.0...v0.23.0
 [0.22.0]: https://github.com/istb16/dev-orchestra/compare/v0.21.0...v0.22.0
 [0.21.0]: https://github.com/istb16/dev-orchestra/compare/v0.20.0...v0.21.0
 [0.20.0]: https://github.com/istb16/dev-orchestra/compare/v0.19.0...v0.20.0
