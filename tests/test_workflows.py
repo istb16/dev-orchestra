@@ -21,7 +21,7 @@ import re
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime, timedelta, timezone
-from typing import Any, ClassVar, Dict
+from typing import Any, Dict
 
 from helpers import IsolatedCase, has_git, present
 
@@ -166,164 +166,30 @@ class TestTheLayout(IsolatedCase):
         self.assertEqual(workspace.dir, workspace.container)
 
 
-class TestRefusingTheOldLayout(IsolatedCase):
-    """A flat `.ai/` from before 0.4.0 is no longer adopted, and never touched.
-
-    The refusal is the whole of the way through: it names what it found and
-    says what to do, and it moves nothing -- where the files go is the user's
-    call.
-    """
+class TestStrayTopLevelFiles(IsolatedCase):
+    """Files directly in `.ai/` belong to no workflow, and are left alone."""
 
     PLAN = "# the plan"
-    STATE: ClassVar[Dict[str, Any]] = {"version": 1, "runs": []}
 
-    def setUp(self):
-        super().setUp()
-        self.container = os.path.join(self.project, ".ai")
-        os.makedirs(self.container)
-        with open(os.path.join(self.container, "plan.md"), "w", encoding="utf-8") as handle:
-            handle.write(self.PLAN)
-        ws.write_json(os.path.join(self.container, "state.json"), self.STATE)
-
-    def assert_untouched(self):
-        with open(os.path.join(self.container, "plan.md"), encoding="utf-8") as handle:
-            self.assertEqual(handle.read(), self.PLAN)
-        self.assertEqual(ws.read_json(os.path.join(self.container, "state.json")), self.STATE)
-
-    def test_a_flat_layout_is_refused_before_anything_is_written(self):
-        code, _, err = run_cli("state", "show")
-        self.assertEqual(code, 2)
-        self.assertIn("before 0.4.0", err)
-        self.assertIn("(plan.md, state.json)", err)
-        self.assertIn("0.20.0", err)
-        self.assertIn(os.path.join(".ai", "pre-0.4.0"), err)
-        self.assertFalse(os.path.exists(os.path.join(self.container, "workflows")))
-        self.assertFalse(os.path.exists(wf.pointer_path(self.container)))
-        self.assert_untouched()
-
-    def test_every_command_that_uses_a_workflow_is_refused(self):
-        """The guard is in ``_workspace``; each of these reaches it its own way."""
-        self.write("fresh.md", "do it\n")
-        commands = (
-            ("status",),
-            ("summary",),
-            ("budget", "show"),
-            ("budget", "consume", "test"),
-            ("budget", "reset"),
-            ("tokens", "show"),
-            ("jobs", "list"),
-            ("state", "record", "test", "ok"),
-            ("progress", "record", "test", "--signature", "same"),
-            ("optimization", "report"),
-            ("design", "approve"),
-            ("review", "show"),
-            ("run", "implementer", "--prompt-file", "fresh.md"),
-        )
-        for command in commands:
-            with self.subTest(command=command):
-                code, out, err = run_cli(*command)
-                self.assertEqual(code, 2, out + err)
-                self.assertIn("before 0.4.0", err)
-                self.assertFalse(os.path.exists(os.path.join(self.container, "workflows")))
-                self.assertFalse(os.path.exists(wf.pointer_path(self.container)))
-        self.assert_untouched()
-
-    def test_workflow_use_writes_no_pointer(self):
-        code, _, err = run_cli("workflow", "use", "w1")
-        self.assertEqual(code, 2)
-        self.assertIn("before 0.4.0", err)
-        self.assertFalse(os.path.exists(wf.pointer_path(self.container)))
-        self.assert_untouched()
-
-    def test_workflow_remove_deletes_nothing(self):
-        kept = os.path.join(self.container, "workflows", "w1")
-        os.makedirs(kept)
-        code, _, err = run_cli("--workflow", "w2", "workflow", "remove", "w1", "--yes")
-        self.assertEqual(code, 2)
-        self.assertIn("before 0.4.0", err)
-        self.assertTrue(os.path.isdir(kept))
-        self.assert_untouched()
-
-    def test_leftovers_beside_a_workflow_directory_are_refused_too(self):
-        """What a 0.20.0 adoption left behind when the destination had the file."""
-        destination = os.path.join(self.container, "workflows", "w1")
-        os.makedirs(destination)
-        with open(os.path.join(destination, "plan.md"), "w", encoding="utf-8") as handle:
-            handle.write("# the newer plan")
-        code, _, err = run_cli("--workflow", "w1", "state", "show")
-        self.assertEqual(code, 2)
-        self.assertIn("(plan.md, state.json)", err)
-        with open(os.path.join(destination, "plan.md"), encoding="utf-8") as handle:
-            self.assertEqual(handle.read(), "# the newer plan")
-        self.assertEqual(os.listdir(destination), ["plan.md"])
-        self.assert_untouched()
-
-    def test_a_lone_empty_directory_is_refused(self):
-        for name in ("plan.md", "state.json"):
-            os.remove(os.path.join(self.container, name))
-        for name in ("jobs", "reviews"):
-            with self.subTest(entry=name):
-                os.makedirs(os.path.join(self.container, name))
-                code, _, err = run_cli("state", "show")
-                self.assertEqual(code, 2)
-                self.assertIn("(%s)" % name, err)
-                self.assertTrue(os.path.isdir(os.path.join(self.container, name)))
-                os.rmdir(os.path.join(self.container, name))
-
-    def test_the_refusal_names_every_entry_found(self):
-        for name in ("execution", "reviews", "jobs"):
-            os.makedirs(os.path.join(self.container, name))
-        code, _, err = run_cli("state", "show")
-        self.assertEqual(code, 2)
-        self.assertIn("(%s)" % ", ".join(wf.LEGACY_ENTRIES), err)
-
-    def test_workflow_list_still_runs_and_notes_the_entries(self):
-        code, out, err = run_cli("workflow", "list", "--json")
-        self.assertEqual(code, 0)
-        self.assertEqual(set(json.loads(out)), {"current", "workflows"})
-        self.assertIn("also holds plan.md, state.json from the layout used before 0.4.0", err)
-        code, _, err = run_cli("workflow", "list")
-        self.assertEqual(code, 0)
-        self.assertIn("before 0.4.0", err)
-        self.assert_untouched()
-
-    def test_config_and_workflow_show_still_run(self):
-        for command in (("config", "show"), ("workflow", "show")):
+    def test_commands_run_and_leave_them_untouched(self):
+        container = os.path.join(self.project, ".ai")
+        self.write(os.path.join(".ai", "plan.md"), self.PLAN)
+        os.makedirs(os.path.join(container, "reviews"))
+        for command in (("state", "show"), ("workflow", "list"), ("workflow", "use", "w1")):
             with self.subTest(command=command):
                 code, out, err = run_cli(*command)
                 self.assertEqual(code, 0, out + err)
-        self.assert_untouched()
-
-    def test_moving_them_aside_lifts_the_refusal(self):
-        aside = os.path.join(self.container, "pre-0.4.0")
-        os.makedirs(aside)
-        for name in ("plan.md", "state.json"):
-            os.replace(os.path.join(self.container, name), os.path.join(aside, name))
-        code, out, err = run_cli("state", "show")
-        self.assertEqual(code, 0, out + err)
-        with open(os.path.join(aside, "plan.md"), encoding="utf-8") as handle:
+        with open(os.path.join(container, "plan.md"), encoding="utf-8") as handle:
             self.assertEqual(handle.read(), self.PLAN)
-        self.assertEqual(ws.read_json(os.path.join(aside, "state.json")), self.STATE)
-
-    def test_a_detached_worker_is_refused_the_same_way(self):
-        self.write("fresh.md", "plan it\n")
-        job_file = os.path.join(self.container, "workflows", "test", "jobs", "manual.json")
-        argv = ["run", "architect", "--prompt-file", "fresh.md", "--output", ".ai/plan.md"]
-        code, _, err = run_cli(*argv, "--job-file", job_file)
-        self.assertEqual(code, 2)
-        self.assertIn("before 0.4.0", err)
-        self.assertFalse(os.path.exists(os.path.join(self.container, "workflows")))
-        self.assert_untouched()
+        self.assertTrue(os.path.isdir(os.path.join(container, "reviews")))
 
 
 class TestAStrayExecutionDirectory(IsolatedCase):
-    """``.ai/execution/`` on its own is a stray, not an old layout (#283).
+    """``.ai/execution/`` written by hand is a stray beside the workflows (#283).
 
     An orchestrator that writes ``.ai/execution/<request>.md`` itself -- or
     redirects a log there -- puts it beside the workflow directories, since
-    only command arguments are rewritten. Refusing every later command as
-    "before 0.4.0" over that would be wrong twice: the layout is not old, and
-    nothing in it is a plan or a budget a workflow could lose.
+    only command arguments are rewritten.
     """
 
     def setUp(self):
@@ -336,26 +202,12 @@ class TestAStrayExecutionDirectory(IsolatedCase):
             with self.subTest(command=command):
                 code, out, err = run_cli(*command)
                 self.assertEqual(code, 0, out + err)
-                self.assertNotIn("before 0.4.0", err)
-        self.assertEqual(wf.legacy_artifacts(self.container), [])
-
-    def test_workflow_list_does_not_call_it_old(self):
-        code, _, err = run_cli("workflow", "list")
-        self.assertEqual(code, 0)
-        self.assertNotIn("before 0.4.0", err)
-
-    def test_beside_another_old_entry_it_is_named_again(self):
-        self.write(os.path.join(".ai", "plan.md"), "# old plan\n")
-        code, _, err = run_cli("state", "show")
-        self.assertEqual(code, 2)
-        self.assertIn("(plan.md, execution)", err)
 
     def test_a_prompt_file_written_there_says_where_it_belongs(self):
         """The argument resolves into the workflow; the file is not there."""
         with self.assertRaises(SystemExit) as raised:
             run_cli("run", "architect", "--prompt-file", ".ai/execution/design-request.md")
         message = str(raised.exception)
-        self.assertNotIn("before 0.4.0", message)
         self.assertIn("prompt file does not exist", message)
         # Compared once both are resolved: the temporary directory has other
         # spellings -- /var and /private/var on macOS, RUNNER~1 and its long

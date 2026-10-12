@@ -32,9 +32,8 @@ if ($Codex -and $Antigravity) {
     exit 2
 }
 
-# The same names install.ps1 writes, and what its copy carries.
+# The same names install.ps1 writes.
 $Sentinel = '.dev-orchestra-install'
-$Payload = @('plugin.json', 'skills', '.claude-plugin', '.codex-plugin', 'README.md', 'LICENSE', 'references', 'scripts', 'bin', 'agents', 'examples')
 $ExcludeMarker = '# added by dev-orchestra install --antigravity'
 $ExcludeEntry = "/.agents/plugins/$SkillName"
 $ClaudeExcludeMarker = '# added by dev-orchestra install --claude'
@@ -82,58 +81,6 @@ function Resolve-RealPath {
         if (-not $followed) { break }
     }
     return $full.TrimEnd('\', '/')
-}
-
-function Test-UnmarkedCopy {
-    # A Claude copy made before the installer wrote the sentinel: the skill
-    # and its CLI are there, and every entry in it, at any depth and hidden
-    # or not, is at the same path in this checkout's payload, so removing it
-    # loses nothing the checkout does not have. Python's bytecode caches are
-    # left out (see Test-BytecodeCache).
-    param([string]$Path)
-
-    foreach ($relative in @("skills/$SkillName/SKILL.md", 'scripts/orchestrator/__init__.py')) {
-        if (-not (Test-Path -LiteralPath (Join-Path $Path $relative) -PathType Leaf)) { return $false }
-    }
-    try { $entries = @(Get-ChildItem -LiteralPath $Path -Force -ErrorAction Stop) } catch { return $false }
-    foreach ($entry in $entries) {
-        if ($Payload -notcontains $entry.Name) { return $false }
-        if (-not (Test-CheckoutHas $entry (Join-Path $root $entry.Name))) { return $false }
-    }
-    return $true
-}
-
-function Test-CheckoutHas {
-    # Whether $Entry, and everything under it, is at $Twin in the checkout:
-    # a directory as a directory, a file as a file. The installer never wrote
-    # a link or junction into a copy, so one inside it, which is not
-    # followed, fails the check, and so does what cannot be read.
-    param($Entry, [string]$Twin)
-
-    if ($Entry.Attributes -band [System.IO.FileAttributes]::ReparsePoint) { return $false }
-    if (-not $Entry.PSIsContainer) { return [System.IO.File]::Exists($Twin) }
-    if ($Entry.Name -eq '__pycache__') { return (Test-BytecodeCache $Entry) }
-    if (-not [System.IO.Directory]::Exists($Twin)) { return $false }
-    try { $children = @(Get-ChildItem -LiteralPath $Entry.FullName -Force -ErrorAction Stop) } catch { return $false }
-    foreach ($child in $children) {
-        if (-not (Test-CheckoutHas $child (Join-Path $Twin $child.Name))) { return $false }
-    }
-    return $true
-}
-
-function Test-BytecodeCache {
-    # Whether the __pycache__ directory $Entry holds only what Python wrote
-    # there while the CLI ran from the copy: .pyc files, which Python makes
-    # again. Such a directory needs no twin in the checkout. Anything else in
-    # it -- another file, a link, a junction, a directory -- fails the check.
-    param($Entry)
-
-    try { $children = @(Get-ChildItem -LiteralPath $Entry.FullName -Force -ErrorAction Stop) } catch { return $false }
-    foreach ($child in $children) {
-        if ($child.Attributes -band [System.IO.FileAttributes]::ReparsePoint) { return $false }
-        if ($child.PSIsContainer -or $child.Name -notlike '*.pyc') { return $false }
-    }
-    return $true
 }
 
 function Get-FullCopyNote {
@@ -190,9 +137,9 @@ function Remove-Link {
 function Remove-OwnedDestination {
     # Remove the install at $Destination, or stop. A link is removed only when
     # it resolves to this checkout, and never recursively; a directory only
-    # when the installer wrote it (the sentinel is there, or it is an older
-    # Claude copy, and it is not a clone or the checkout itself); anything
-    # else is left where it is. Returns $true when something was removed.
+    # when the installer wrote it (the sentinel is there and it is not a
+    # clone or the checkout itself); anything else is left where it is.
+    # Returns $true when something was removed.
     param([string]$Destination)
 
     $item = Get-Item -LiteralPath $Destination -Force -ErrorAction SilentlyContinue
@@ -241,7 +188,7 @@ function Remove-OwnedDestination {
     $gitEntry = Get-Item -LiteralPath (Join-Path $Destination '.git') -Force -ErrorAction SilentlyContinue
     if ($item.PSIsContainer -and ($null -eq $gitEntry)) {
         $hasSentinel = Test-Path -LiteralPath (Join-Path $Destination $Sentinel) -PathType Leaf
-        if ($hasSentinel -or (-not $Antigravity -and (Test-UnmarkedCopy $Destination))) {
+        if ($hasSentinel) {
             Remove-Item -LiteralPath $Destination -Recurse -Force -Confirm:$false
             return $true
         }
@@ -330,7 +277,7 @@ function Write-TextLines {
 
 function Remove-MarkedGitExclude {
     # Drop $Entry, which the installer added, and its $Marker. An entry
-    # without the marker right above it was there before and stays.
+    # without the marker right above it is not the installer's and stays.
     param([string]$Entry, [string]$Marker)
 
     if (-not $Project) { return }
@@ -358,12 +305,6 @@ function Remove-MarkedGitExclude {
     if ($removed) {
         Write-TextLines $excludeFile $kept.ToArray()
         Write-Host "Removed $Entry from .git/info/exclude"
-    }
-    # The entry without a marker: what an installer before the marker wrote,
-    # or the user's own line. Either way it is not removed, only named.
-    if (@($kept | ForEach-Object { Get-LineText $_ }) -contains $Entry) {
-        Write-Host "Left $Entry in .git/info/exclude: the installer did not mark it as its own."
-        Write-Host 'An older installer may have added it; remove the line by hand if it is no longer wanted.'
     }
 }
 

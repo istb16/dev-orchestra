@@ -72,7 +72,6 @@ after `review triage`, `state show` after `state record`, `budget show` after
 | `config path` | Print both layer locations. |
 | `config setup [--scope global\|project] [--preset quality\|standard\|fast \| --defaults] [--language TAG] [--no-hooks] [--force]` | Setup wizard; for the global file its first question is the preset, and its last, just before saving, the reply language (a tag such as `ja`, asked again until it is one or blank; blank keeps what the file held, `none` clears it). `--language TAG` writes `language.reply` with `--preset` or `--defaults` and is the wizard's offered answer; a value that is not a tag exits 2 before anything is written. After saving, the reply-language hooks are added to or removed from Claude Code's user settings as for `config set language.reply`, judged by what this file held before and after; `--no-hooks` leaves them alone. `--preset` asks nothing: it writes `version` and `preset`, keeps what the file held apart from the keys a preset governs (a role keeps its `options` and `model_tiers` and is then not fitted), and prints the configuration that preset resolves to on this machine with its notes (see `references/configuration.md`, Presets). Only the global file can name a preset: with `--scope project` it is refused (exit 2) and nothing is written. `--defaults` overrides nothing, so the file holds only `version: 1` and runs under preset `standard`. `--force` prompts even without a TTY. |
 | `config reset [--scope …] [--delete]` | Clear this layer's overrides (the file stays, holding only `version`, and the global file its `preset` too when it names a known one; an unknown name is cleared with a `note:`), then print the configuration that is left. `--delete` removes the file; the global layer then runs under `standard`. A reset that clears this file's `language.reply`, after which neither the global file nor this project's sets one, removes the reply-language hooks; a reset never installs them. |
-| `config prune [--scope …] [--dry-run]` | Drop values a layer holds that are equal to what it inherits -- for files written before 0.6.0, which hold every default. A value goes only when the built-in defaults and the preset's fit agree on it, so pruning never changes the configuration in force. For the same reason `reviewers` stays, with a line saying why, when dropping it would move design reviews from the file's copy of the panel to the preset's design panel. `--dry-run` lists them without writing. |
 | `config set <path> <value> [--scope …] [--raw] [--no-hooks]` | Set one value. Setting `language.reply` to a tag in a file that held none adds the reply-language hooks to Claude Code's user settings -- only where its settings directory exists, else a `note:` names `hooks install` -- and setting any tag repairs hooks that are installed but out of date. Changing a tag the file already held while the hooks are not installed leaves them out with a `note:` naming `hooks install`. A tag only another file sets, such as a project's, never installs them. Clearing it from the file so that neither the global file nor this project's sets one removes them, with a note that other projects whose file sets it lose the check; a project's `null` over a global tag does not. `--no-hooks` saves the value and leaves Claude Code alone; a delegated run never touches it. A settings file it cannot edit is a `warning:`: the value is saved and the exit status stays 0 (see [hooks](#hooks)). Paths support `a.b.c` and `reviewers[0].role`; an indexed edit copies the rest of the list from the layer below, and an index past the end exits 2. `preset` is written to the global file even when a project file exists; `--scope project` with it exits 2 and writes nothing. Setting a read-only seat's provider (`orchestrator.provider`, `architect.provider`, `<role>.model_tiers.<tier>.provider`, `reviewers[<n>].provider`, `review.design.reviewers[<n>].provider`) to `agy` in the project file exits 2 and writes nothing, naming the `--scope global` command instead; in the global file it is written and warned about. `design.require_approval`, and a `workspace.dir` outside the repository, go to the global file without `--scope`, as `preset` does; `--scope project` with either exits 2 and writes nothing. |
 | `config suggest-roles [--write] [--json] [--provider P] [--model F]` | Propose path-scoped `database`, `frontend` and `backend` reviewers from the project's file names and the root `package.json`, with no model call. Prints each proposal's id, provider, family, `when.paths`, evidence, and how many listed files it matches (and how many of those `review.exclude` withholds), then every role not proposed with the reason. Inside a git repository only `git ls-files` is read; a failing or oversized listing exits 2. `--write` appends them to the `reviewers_extra` of the project file at the listing root and refuses (exit 2, nothing written) when the project file in force is elsewhere. `--json` prints one object (`root`, `source`, `files`, `truncated`, `notes`, `suggestions`, `skipped`, `written`), with notes on stderr. See `references/configuration.md`, "Suggesting path-scoped reviewers". |
 | `config validate [--json]` | Validate the effective configuration, the design panel and each seat's `high_risk_model` and `relevance` included. Exit 1 if invalid. A `Warnings:` section (`warnings` in `--json`) lists the raw arguments a read-only role's runs would refuse -- any `options.args` in the project file, and anything the adapter's allowlist does not take -- the read-only seats on `agy` that come from the project file, the `options.skip_permissions` or `options.args` an agy write role would take from the project file, one `<seat>: read-only is NOT enforced by agy -- ...` line per read-only seat on agy from the global file, the `design.require_approval` or outside `workspace.dir` the project file sets and that is ignored, and each review gate the project file makes looser than the configuration without it (see `references/configuration.md`, "What the project file may not loosen"), without changing the exit status. `config set` prints the same as `warning:` lines, less the looser gates. The warnings also name each key a file holds that nothing reads, such as a misspelt `reveiw` or `review.timout_seconds` (`<key> in the <global\|project> file: unknown key, ignored`, with the known key it resembles); provider `options`, tier names and `budgets` take keys of their own and are not checked. `config set` warns about such a key only when it is the one written, and `doctor` lists them as notes. |
@@ -167,14 +166,6 @@ The raw-argument warnings `config validate` prints are problems here as well,
 under `config.warnings` in `--json`. `--fast` does not promise that no
 `--help` is read: validating `options.permission_mode` reads one.
 
-The "Pinned at a value the built-in default has moved off" section lists the
-settings a file fixes where the recommendation has since changed. It is a
-report, never a rewrite: a deliberate choice and an inherited default look
-identical on disk. `config prune` drops the ones equal to the current default,
-on request. It says nothing about `reviewers` -- a panel is nobody's default
--- nor about `optimization.extra_high_risk_paths`, which no release ever wrote
-into a file, so a value there is always one somebody added.
-
 The Config block's `Reply language:` line is `language.reply` and what holds a
 reply to it on each host: `not set (language.reply; replies follow the user's
 language)`, or `<tag> (<layer>) -- Claude Code: <what>; Codex, Antigravity:
@@ -209,10 +200,9 @@ high-risk` reviewer judged by the built-in `high_risk_paths` alone -- no list
 of the repository's own, no `extra_high_risk_paths` -- is named in a single
 note, because the defaults fit common names and can miss this repository's
 sensitive paths, leaving the reviewer almost never running. A `high_risk_paths`
-drawn only from the defaults, in any order, is not a list of the repository's
-own: it is what a config written before 0.6.0 holds, perhaps an older default
-list missing patterns added since. A path-scoped reviewer is never named in
-it: its patterns were chosen. A reviewer line in
+that is exactly the defaults, in any order, is not a list of the repository's
+own; any other list is. A path-scoped reviewer is never named in it: its
+patterns were chosen. A reviewer line in
 **Roles** ends in `(when: high-risk)` or `(when: paths *migrate*/*, *.sql)` for
 a conditional reviewer, and its `--json` entry carries `when` (`high-risk` or
 `paths`) and `condition` (the same label as the line) whenever it is not
@@ -843,13 +833,6 @@ would undercount: a read-only Claude run has no `Bash`, but `Grep` and `Glob`
 read files too, and an implement run has every tool — the run measured while
 designing this, before read-only runs lost `Bash`, read a file with `wc -l` and
 never called `Read`.
-
-A run recorded before these counts existed cannot say whether it used tools,
-and is reported that way rather than as having used none. The first run written
-into such an account creates `tool_reported_runs` -- whether or not it reports
-tools itself -- so the count of runs that predate counting is carried in
-`tool_unknown_runs` instead of being read off a missing key, and the caveat
-survives every run recorded afterwards.
 
 A Claude role configured with `options.output_format: json` reports no tool
 activity either: that format prints one `result` object and never emits a tool

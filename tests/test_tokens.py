@@ -311,16 +311,6 @@ class TestLedgerAccount(IsolatedCase):
         self.assertTrue(report["complete"])
         self.assertFalse(report["priced"])
 
-    def test_an_account_too_old_to_say_makes_no_claim(self):
-        """`priced_runs` did not exist before 0.4.2, and reading its absence as
-        zero made every older account report its own costs as unreported --
-        the caveat firing over data that never disagreed with it."""
-        self.book.record_usage("review", self.measured(input_tokens=100, cost_usd=1.5))
-        state = self.cli_workspace().read_state()
-        del state["ledger"]["tokens"]["by_stage"]["review"]["priced_runs"]
-        self.cli_workspace().write_state(state)
-        self.assertTrue(self.book.token_report()["priced"])
-
     def test_every_run_pricing_itself_needs_no_caveat(self):
         self.book.record_usage("review", self.measured(input_tokens=100, cost_usd=1.5))
         self.assertTrue(self.book.token_report()["priced"])
@@ -377,61 +367,6 @@ class TestLedgerAccount(IsolatedCase):
         self.book.record_usage("review", usage)
         account = self.book.token_report()["by_stage"]["review"]
         self.assertEqual((account["tool_reported_runs"], account["tool_uses"]), (1, 0))
-        self.assertTrue(self.book.token_report()["totals"]["tool_known"])
-
-    def test_an_account_from_before_tool_counting_says_unknown_not_none_used(self):
-        """`tool_reported_runs` did not exist before this, and reading its
-        absence as zero would present "we did not count" as "no tools"."""
-        self.book.record_usage("review", self.measured(tool_uses=4))
-        state = self.cli_workspace().read_state()
-        del state["ledger"]["tokens"]["by_stage"]["review"]["tool_reported_runs"]
-        self.cli_workspace().write_state(state)
-        totals = self.book.token_report()["totals"]
-        self.assertFalse(totals["tool_known"])
-        # And the numbers beside it are still summed rather than lost.
-        self.assertEqual(totals["tool_uses"], 4)
-
-    def test_recording_a_counted_run_does_not_erase_what_predates_counting(self):
-        """The first counted run *creates* `tool_reported_runs`, so a caveat
-        that rests on the key being absent disappears exactly when the upgraded
-        pipeline runs again -- and the earlier runs are then reported as having
-        used no tools."""
-        for _ in range(3):
-            self.book.record_usage("review", self.measured(input_tokens=10))
-        state = self.cli_workspace().read_state()
-        del state["ledger"]["tokens"]["by_stage"]["review"]["tool_reported_runs"]
-        self.cli_workspace().write_state(state)
-
-        self.book.record_usage("review", self.measured(input_tokens=10, tool_uses=4))
-        totals = self.book.token_report()["totals"]
-        self.assertFalse(totals["tool_known"])
-        self.assertEqual(totals["tool_unknown_runs"], 3)
-        self.assertEqual((totals["runs"], totals["tool_reported_runs"]), (4, 1))
-        # And a later run does not re-stamp the three it already carried.
-        self.book.record_usage("review", self.measured(input_tokens=10, tool_uses=1))
-        self.assertEqual(self.book.token_report()["totals"]["tool_unknown_runs"], 3)
-
-    def test_an_unreported_run_does_not_reopen_the_legacy_account(self):
-        """The run that closes the account may be one that reports nothing --
-        Codex, or Claude under `output_format: json`. Stamping the count
-        without also creating the key left the account open, so that run
-        re-stamped a larger count and was itself reported as predating the
-        counting it ran alongside."""
-        for _ in range(3):
-            self.book.record_usage("review", self.measured(input_tokens=10))
-        state = self.cli_workspace().read_state()
-        del state["ledger"]["tokens"]["by_stage"]["review"]["tool_reported_runs"]
-        self.cli_workspace().write_state(state)
-
-        self.book.record_usage("review", self.measured(input_tokens=10))
-        totals = self.book.token_report()["totals"]
-        self.assertEqual(totals["tool_unknown_runs"], 3)
-        self.assertEqual((totals["runs"], totals["tool_reported_runs"]), (4, 0))
-
-        self.book.record_usage("review", self.measured(input_tokens=10, tool_uses=2))
-        totals = self.book.token_report()["totals"]
-        self.assertEqual(totals["tool_unknown_runs"], 3)
-        self.assertEqual((totals["runs"], totals["tool_reported_runs"]), (5, 1))
 
     def test_a_malformed_breakdown_does_not_cost_the_run(self):
         self.book.record_usage("review", {"tool_uses": 2, "tool_uses_by_name": "lots"})
@@ -737,46 +672,6 @@ class TestTokensCommand(IsolatedCase):
         _, out, _ = run_cli("tokens", "show")
         self.assertIn("1 of 2 run(s) reported no tool activity", out)
         self.assertIn("not source read", out)
-
-    def test_an_account_that_predates_tool_counting_says_it_cannot_say(self):
-        book = ledger_mod.Ledger(self.cli_workspace(), dict(ledger_mod.DEFAULT_BUDGETS))
-        book.record_usage("review", Usage(source="claude", tool_uses=4).to_dict())
-        state = self.cli_workspace().read_state()
-        del state["ledger"]["tokens"]["by_stage"]["review"]["tool_reported_runs"]
-        self.cli_workspace().write_state(state)
-        _, out, _ = run_cli("tokens", "show")
-        self.assertEqual(_row(out, "review")[-2:], ["-", "-"])
-        self.assertIn("predate tool counting", out)
-        self.assertNotIn("reported no tool activity", out)
-
-    def test_a_later_counted_run_does_not_retire_that_caveat(self):
-        """Running the upgraded pipeline once is what made the caveat vanish:
-        the run that can say creates the key the caveat was read from, and the
-        runs that cannot are then reported as having used no tools."""
-        book = ledger_mod.Ledger(self.cli_workspace(), dict(ledger_mod.DEFAULT_BUDGETS))
-        book.record_usage("review", Usage(source="claude", input_tokens=10).to_dict())
-        state = self.cli_workspace().read_state()
-        del state["ledger"]["tokens"]["by_stage"]["review"]["tool_reported_runs"]
-        self.cli_workspace().write_state(state)
-        book.record_usage("review", Usage(source="claude", tool_uses=4, tool_output_chars=80).to_dict())
-        _, out, _ = run_cli("tokens", "show")
-        self.assertIn("1 of 2 run(s) predate tool counting", out)
-        self.assertNotIn("reported no tool activity", out)
-
-    def test_both_caveats_are_printed_when_a_panel_has_both(self):
-        """They stopped overlapping when the silent count began subtracting the
-        unknown one, and a panel can hold a legacy stage and a Codex stage at
-        once. Saying only the first leaves the other runs unaccounted for."""
-        book = ledger_mod.Ledger(self.cli_workspace(), dict(ledger_mod.DEFAULT_BUDGETS))
-        book.record_usage("architect", Usage(source="claude", input_tokens=10).to_dict())
-        state = self.cli_workspace().read_state()
-        del state["ledger"]["tokens"]["by_stage"]["architect"]["tool_reported_runs"]
-        self.cli_workspace().write_state(state)
-        book.record_usage("review", Usage(source="claude", tool_uses=4, tool_output_chars=80).to_dict())
-        book.record_usage("review", Usage(source="codex", input_tokens=10).to_dict())
-        _, out, _ = run_cli("tokens", "show")
-        self.assertIn("1 of 3 run(s) predate tool counting", out)
-        self.assertIn("1 of 3 run(s) reported no tool activity", out)
 
     def test_a_real_run_through_the_pipeline_reports_its_tools(self):
         run_cli("run", "implementer", "--prompt", "go")

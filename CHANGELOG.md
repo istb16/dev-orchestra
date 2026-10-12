@@ -14,6 +14,51 @@ below begins **User adapters** so adapter authors can find it.
 
 ## [Unreleased]
 
+### Removed
+
+1.0 starts from the formats it writes. What earlier versions left on disk is no
+longer read, migrated or tolerated:
+
+- **`config prune` is gone**, and so is the `doctor` section "Pinned at a value
+  the built-in default has moved off" (`config.pinned` in `--json`). Both were
+  for config files written before 0.6.0, which hold every default. Such a file
+  still loads, and its values are in force as written; `config reset` clears a
+  layer's overrides.
+- **A `high_risk_paths` that is only part of the default list is a choice.**
+  `doctor`'s note about a `when: high-risk` reviewer judged by the built-in
+  patterns alone now needs the list unset or exactly the defaults, in any
+  order. A shorter copy, as a pre-0.6.0 file held, no longer counts as the
+  defaults.
+- **`doctor` no longer notes a panel left by an older `reviewer add`** (the
+  inherited panel copied into the file, plus the addition).
+- **A flat `.ai/` from before 0.4.0 is no longer refused.** `plan.md`,
+  `state.json`, `execution/`, `reviews/` or `jobs/` directly in `.ai/` belong
+  to no workflow: the commands run, and neither read nor touch them.
+  `workflow list` no longer names them.
+- **Ledgers and token accounts from before 0.4.2 and 0.9.0 are no longer
+  converted.** A ledger whose identity is only under the old `workflow` key is
+  not renamed to `epoch`, so it is identified by its start time. An account
+  without `priced_runs` counts as having reported no cost, and one without
+  `tool_reported_runs` as having reported no tool activity; `tokens show` no
+  longer says runs "predate tool counting", and `tool_unknown_runs` and the
+  `priced_known` / `tool_known` totals are gone from `--json`.
+- **A review snapshot without `changed_paths` and `condition_paths`** is no
+  longer rebuilt from `files` and `withheld`: it reads as having no paths, as
+  a missing snapshot does. `review snapshot` writes both.
+
+### Changed
+
+- **An existing Claude copy without the install sentinel is refused.** A
+  `~/.claude/skills/dev-orchestra` made before `.dev-orchestra-install`
+  existed used to be replaced or removed when it matched the payload exactly.
+  Now `install.sh` / `install.ps1` leave it alone, say on stderr that a copy
+  not made by this installer is there and must be removed by hand, naming the
+  path, and exit 1; `uninstall.sh` / `uninstall.ps1` leave it alone, say the
+  same and exit 1.
+- **Only marked `.git/info/exclude` entries are managed.** An unmarked line an
+  older installer wrote is no longer kept and named: it is left untouched,
+  without a message.
+
 ## [0.23.0] - 2026-10-11
 
 ### Added

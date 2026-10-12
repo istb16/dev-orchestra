@@ -1,4 +1,4 @@
-<!-- translated-from: references/cli.md sha256:f5db7e95ea381907300bb2130afa4ed73e92d931fe224fbe70d1099e7b64993b -->
+<!-- translated-from: references/cli.md sha256:e1794ee25400bf77b97b0dac50fdf47659939c35e8fb19dcc78f7a1915976b2a -->
 
 > この文書は [references/cli.md](../../../references/cli.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -78,7 +78,6 @@ Microsoft Store のエイリアスだからです。
 | `config path` | 両方のレイヤーの場所を表示します。 |
 | `config setup [--scope global\|project] [--preset quality\|standard\|fast \| --defaults] [--language TAG] [--no-hooks] [--force]` | セットアップウィザードです。グローバルファイルでは最初の質問がプリセットで、最後の質問（保存の直前）が返答の言語です（`ja` のようなタグ。タグか空欄になるまで聞き直し、空欄ならファイルの値を残し、`none` で消します）。`--language TAG` は `--preset` や `--defaults` と一緒に使うと `language.reply` を書き込み、ウィザードでは最初に示す答えになります。タグでない値なら、何も書かずに終了コード 2 で終わります。保存のあと、`config set language.reply` と同じように、このファイルの保存前と保存後の値をもとに Claude Code のユーザー設定に返答の言語のフックを入れたり外したりします。`--no-hooks` を付けるとそれをしません。`--preset` は何も尋ねません: `version` と `preset` を書き込み、プリセットが決めるキー以外にファイルが持っていた値は残し（ロールは `options` と `model_tiers` を残し、そのためフィットされません）、そのプリセットがこのマシンで解決される設定を note とともに表示します（`references/configuration.md` のプリセットを参照）。プリセットを指定できるのはグローバルファイルだけで、`--scope project` では拒否され（exit 2）、何も書き込みません。`--defaults` は何も上書きしないため、ファイルには `version: 1` だけが入り、プリセット `standard` で動きます。`--force` は TTY がなくてもプロンプトを表示します。 |
 | `config reset [--scope …] [--delete]` | このレイヤーの上書きを消去し（ファイルは残り、`version` だけ、グローバルファイルなら既知の `preset` も入った状態になります。知らないプリセット名は `note:` を表示して消します）、残った設定を表示します。`--delete` を付けるとファイルを削除し、グローバルレイヤーは `standard` で動きます。リセットでこのファイルの `language.reply` が消え、グローバルのファイルにもこのプロジェクトのファイルにも設定がなくなれば、返答の言語のフックを外します。リセットでフックを入れることはありません。 |
-| `config prune [--scope …] [--dry-run]` | レイヤーが持つ値のうち、継承される値と等しいものを削除します。すべてのデフォルトを保持している 0.6.0 より前に書かれたファイル向けです。値を削除するのは組み込みのデフォルトとプリセットのフィットがどちらもその値で一致するときだけなので、prune で有効な設定が変わることはありません。同じ理由で、`reviewers` を削除すると設計レビューがファイルのパネルのコピーからプリセットの設計パネルに移ってしまう場合は、`reviewers` を残し、その理由を 1 行で表示します。`--dry-run` は書き込まずに一覧表示します。 |
 | `config set <path> <value> [--scope …] [--raw] [--no-hooks]` | 値を 1 つ設定します。タグのなかったファイルで `language.reply` をタグにすると、Claude Code のユーザー設定へ返答の言語のフックを入れます。入れるのは設定ディレクトリがあるときだけで、なければ `note:` で `hooks install` を案内します。どのタグを設定しても、入っているが古いフックは直します。すでにタグのあったファイルでタグを変えたとき、フックが入っていなければ入れず、`note:` で `hooks install` を案内します。プロジェクトのファイルなど、ほかのファイルだけが設定しているタグでフックを入れることはありません。ファイルから消して、グローバルのファイルにもこのプロジェクトのファイルにも設定がない状態にするとフックを外し、ほかのプロジェクトでファイルに設定していればそこでも判定が止まると伝えます。グローバルのタグの上にプロジェクトで `null` を設定しても外しません。`--no-hooks` を付けると値だけを保存し、Claude Code には触れません。委譲された実行の中でも触れません。編集できない設定ファイルは `warning:` になるだけで、値は保存され、終了コードは 0 のままです（[hooks](#hooks) を参照）。パスは `a.b.c` と `reviewers[0].role` をサポートします。インデックス付きの編集では、リストの残りを下のレイヤーからコピーします。末尾を超えたインデックスは終了コード 2 で終了します。`preset` は、プロジェクトファイルがあってもグローバルファイルに書き込みます。`--scope project` を付けると終了コード 2 で終了し、何も書き込みません。読み取り専用の席の provider（`orchestrator.provider`、`architect.provider`、`<role>.model_tiers.<tier>.provider`、`reviewers[<n>].provider`、`review.design.reviewers[<n>].provider`）を project ファイルで `agy` にすると、終了コード 2 で終了して何も書き込まず、代わりに `--scope global` のコマンドを示します。global ファイルでは書き込んだうえで警告します。`design.require_approval` と、リポジトリの外を指す `workspace.dir` は、`preset` と同じく `--scope` が無ければ global ファイルに書き込みます。どちらも `--scope project` を付けると終了コード 2 で終了し、何も書き込みません。 |
 | `config suggest-roles [--write] [--json] [--provider P] [--model F]` | プロジェクトのファイル名とルートの `package.json` から、パスで絞り込む `database`、`frontend`、`backend` のレビュアーを提案します。モデルは呼びません。提案ごとに id、プロバイダー、family、`when.paths`、根拠、一覧のファイルのうち何件に一致するか（そのうち何件を `review.exclude` が withheld にするか）を表示し、続いて提案しなかったロールをすべて理由とともに表示します。git リポジトリの中では `git ls-files` だけを読み、一覧の取得に失敗したときや大きすぎるときは終了コード 2 です。`--write` は一覧のルートにあるプロジェクトファイルの `reviewers_extra` に追記し、有効なプロジェクトファイルが別の場所にあるときは拒否します（終了コード 2、何も書き込みません）。`--json` は 1 つのオブジェクト（`root`、`source`、`files`、`truncated`、`notes`、`suggestions`、`skipped`、`written`）を表示し、注記は stderr に出します。`references/configuration.md` の「パスで絞り込むレビュアーを提案させる」を参照。 |
 | `config validate [--json]` | 有効な設定を、design パネルと各席の `high_risk_model` と `relevance` も含めて検証します。無効な場合は終了コード 1 です。`Warnings:` セクション（`--json` では `warnings`）には、読み取り専用のロールの実行が拒否することになる生引数 — project ファイルにある `options.args` のすべてと、アダプタの許可リストが受け付けないもの — 、project ファイルから来た `agy` の読み取り専用の席、agy の書き込みロールが project ファイルから受け取ることになる `options.skip_permissions` や `options.args`、global ファイルから来た agy の読み取り専用の席ごとに 1 行の `<seat>: read-only is NOT enforced by agy -- ...`、project ファイルが設定していて無視された `design.require_approval` やリポジトリの外の `workspace.dir`、そして project ファイルが、それが無い場合の設定よりゆるめているレビューの関門それぞれ（`references/configuration.md` の「プロジェクトファイルがゆるめられないもの」を参照）が一覧表示されますが、終了コードは変わりません。`config set` も、ゆるめた関門を除いて同じものを `warning:` 行として表示します。警告には、`reveiw` や `review.timout_seconds` のような綴り間違いなど、ファイルにあっても何も読まないキーも並びます（`<key> in the <global\|project> file: unknown key, ignored` と、似ている既知のキー）。プロバイダーの `options`、ティアの名前、`budgets` は独自のキーを取るので検査しません。`config set` は書いたキーがそれに当たるときだけ警告し、`doctor` はこれらをノートとして並べます。 |
@@ -170,13 +169,6 @@ project ファイルが設定した `design.require_approval` や、リポジト
 ここでは問題として扱われ、`--json` では `config.warnings` に入ります。`--fast` は `--help` を一切読まない
 ことを約束するものではありません。`options.permission_mode` の検証では読みます。
 
-「Pinned at a value the built-in default has moved off」セクションは、ファイルが固定している設定の
-うち、その後推奨値が変わったものを一覧表示します。これは報告であって書き換えではありません。
-意図的な選択と継承されたデフォルトは、ディスク上では見分けがつかないからです。`config prune` は、
-求められれば、現在のデフォルトと等しいものを削除します。`reviewers` については何も言いません。
-パネルは誰のデフォルトでもないからです。`optimization.extra_high_risk_paths` についても何も
-言いません。どの版もこの設定をファイルに書き込んだことはないので、値があれば必ず誰かが足したものだからです。
-
 Config ブロックの `Reply language:` の行は、`language.reply` と、ホストごとに何が返答をその言語に
 保つかを示します。`not set (language.reply; replies follow the user's language)`、または
 `<tag> (<layer>) -- Claude Code: <what>; Codex, Antigravity: rule 11 only` です。`<what>` は
@@ -202,9 +194,8 @@ agy の読み取り専用の席です。1 つは、このマシンでまだ live
 組み込みの `high_risk_paths` だけで判定される -- リポジトリ独自のリストも `extra_high_risk_paths` もない --
 `when: high-risk` のレビュアーを、すべて 1 つの注記にまとめて名前を挙げます。デフォルトは一般的な名前に
 合わせてあり、このリポジトリの機密性の高いパスを見逃して、そのレビュアーがほとんど走らないことがあるからです。
-デフォルトに含まれるパターンだけでできた `high_risk_paths` は、順序を問わず、リポジトリ独自のリストとは
-みなしません。0.6.0 より前に書かれた設定が持つもので、その後追加されたパターンを欠いた古いデフォルトの
-リストかもしれないからです。パスで絞り込んだレビュアーがこの注記に挙がることはありません。そのパターンは
+デフォルトとちょうど同じ `high_risk_paths` は、順序を問わず、リポジトリ独自のリストとは
+みなしません。それ以外のリストは独自のリストです。パスで絞り込んだレビュアーがこの注記に挙がることはありません。そのパターンは
 誰かが選んだものだからです。
 条件付きのレビュアーの **Roles** の行は `(when: high-risk)` または `(when: paths *migrate*/*, *.sql)` で終わり、
 `--json` のエントリには `always` 以外のとき `when`（`high-risk` または `paths`）と `condition`（行と同じ
@@ -764,12 +755,6 @@ agy はストリームのツールのステップからツール呼び出しを�
 実行には `Bash` はありませんが、`Grep` と `Glob` もファイルを読みますし、implement の実行はすべての
 ツールを持ちます。実際、これを設計している間に計測した実行は、読み取り専用の実行から `Bash` がなくなる
 前のもので、`wc -l` でファイルを読み、`Read` を一度も呼び出しませんでした。
-
-これらのカウントができる前に記録された実行は、ツールを使ったかどうかを示せないので、使わなかったものと
-してではなく、そのように報告されます。そのような集計に書き込まれる最初の実行は（自分自身がツールを報告
-するかどうかにかかわらず）`tool_reported_runs` を作成します。これにより、カウントより前の実行の数は、
-存在しないキーから読み取られるのではなく `tool_unknown_runs` に保持され、その注意書きはその後に記録される
-すべての実行を経ても残ります。
 
 `options.output_format: json` を設定した Claude のロールも、ツールの活動を報告しません。この形式は
 `result` オブジェクトを 1 つ出力するだけでツールのイベントを一切出さないので、その実行は計測された `0`

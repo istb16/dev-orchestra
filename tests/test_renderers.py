@@ -554,10 +554,7 @@ TOKENS_TEXT = [
     "those tools printed back -- not source read: `wc -l` returns 3 characters "
     "for a 200-line file and `cat` returns the file. How much of this repository "
     "a delegated run actually read is not knowable from here.",
-    "1 of 14 run(s) predate tool counting and cannot say whether they used "
-    "tools, so the tool columns leave them out. That is not the same as "
-    "having used none.",
-    "12 of 14 run(s) reported no tool activity (Codex does not); the tool "
+    "13 of 14 run(s) reported no tool activity (Codex does not); the tool "
     "columns cover only the runs that did.",
     "1 of 14 run(s) reported no usage, so every total above is a floor, not a total.",
     "2 of 14 run(s) reported tokens but no cost, so the cost column is a "
@@ -590,7 +587,6 @@ class TestTokensShowText(IsolatedCase):
             **stage,
             "runs": 14,
             "measured_runs": 13,
-            "tool_unknown_runs": 1,
             "prompt_chars": 12345,
             "priced_runs": 12,
         }
@@ -1164,7 +1160,6 @@ DOCTOR_MAXIMAL = {
         "project_override": None,
         "preset": {"name": "quality", "source": "global", "fitted_to": ["claude", "codex"]},
         "using_builtin_defaults": True,
-        "pinned": [{"setting": "review.max", "value": 3, "default": 2}],
     },
     "roles": {
         "orchestrator": {
@@ -1239,11 +1234,6 @@ DOCTOR_MAXIMAL_TEXT = [
     "  Project override: None",
     "  Preset: quality (global; fitted to claude, codex)",
     "  Source: built-in defaults, fitted as preset quality (`config setup --preset <name>` saves one)",
-    "  Pinned at a value the built-in default has moved off:",
-    "    review.max                               3 (default 2)",
-    "    Deliberate choices look the same as values inherited from an",
-    "    older default, so these are reported and never rewritten.",
-    "    config prune drops the values equal to the current default, on request.",
     "",
     "Roles",
     "  Orchestrator: claude / opus / latest",

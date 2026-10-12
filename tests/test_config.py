@@ -1278,11 +1278,6 @@ class TestLanguage(IsolatedCase):
         self.assertEqual(settings({"language": {"rewrite": "false"}})["rewrite"], True)
         self.assertEqual(config_mod.load(self.project).language_settings(), {"reply": None, "rewrite": True})
 
-    def test_language_not_reported_as_pinned(self):
-        data = config_mod.default_config()
-        data["language"] = {"reply": "ja", "rewrite": False}
-        self.assertEqual(config_mod.pinned_differences(data), [])
-
     def test_config_set_language_reply(self):
         code, _, err = self.run_cli("config", "set", "language.reply", "ko")
         self.assertEqual(code, 0, err)
@@ -1468,9 +1463,8 @@ class TestRunTimeout(IsolatedCase):
 
 
 class TestPruneLayer(IsolatedCase):
-    """`prune_layer` reads "equal to what this layer inherits" as evidence that
-    the value was never chosen -- the only evidence a pre-0.6.0 file carries,
-    which is why it runs on request rather than on every write."""
+    """`prune_layer` drops what a layer's base already says: the setup wizard
+    saves only what differs from the preset's fit."""
 
     def test_a_leaf_equal_to_the_base_is_dropped(self):
         base = {"optimization": {"low_risk_max_files": 5, "low_risk_max_lines": 150}}
@@ -1508,9 +1502,6 @@ class TestPruneLayer(IsolatedCase):
         self.assertEqual(pruned["implementer"], {"options": {"permission_mode": "acceptEdits"}})
 
     def test_the_default_panel_is_dropped_like_any_other_list(self):
-        """The only way back for a panel the wizard wrote down: `doctor` never
-        reports one, because comparing a panel to the default one would flag
-        every installation that added a reviewer."""
         pruned, _ = config_mod.prune_layer(config_mod.default_config(), config_mod.default_config())
         self.assertEqual(pruned, {"version": 1})
 
@@ -1824,14 +1815,6 @@ class TestPresetLayering(IsolatedCase):
                 notes = loaded.preset_notes
                 self.assertIn("implementer is set by the global file and was not fitted", notes)
                 self.assertFalse(any("implementer went to" in note for note in notes))
-
-    def test_a_preset_is_not_reported_as_pinned(self):
-        self.fake_clis(claude=True, codex=True)
-        self.write_global({"version": 1, "preset": "quality"})
-        loaded = config_mod.load(self.project)
-        self.assertEqual(config_mod.pinned_differences(loaded.files_data), [])
-        pinned = [entry["setting"] for entry in config_mod.pinned_differences(loaded.data)]
-        self.assertIn("optimization.level", pinned)
 
 
 class TestWhatValidateUsedToMiss(IsolatedCase):

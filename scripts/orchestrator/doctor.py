@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 import platform
 import sys
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 from . import claude_hooks, hosts, reply_language, verified
 from . import config as config_mod
@@ -246,10 +246,6 @@ def collect(start: Optional[str] = None, probe_models: bool = True) -> Dict[str,
             "notes": loaded.preset_notes,
         },
         "problems": problems,
-        # Reported so a default that has since been improved is visible rather
-        # than silently overridden by the file that recorded the old one. On
-        # the files alone: a preset's own values are not something pinned.
-        "pinned": config_mod.pinned_differences(loaded.files_data),
     }
     # A missing file has no real location to report; the note names its folder.
     _add_real(report["config"], "global_real", loaded.global_path)
@@ -357,7 +353,6 @@ def collect(start: Optional[str] = None, probe_models: bool = True) -> Dict[str,
     _default_patterns_note(report, loaded.optimization_settings())
     seats = [*loaded.reviewers(), *loaded.design_reviewers()]
     _role_patterns_problems(report, loaded.optimization_settings(), seats)
-    _frozen_panel_notes(report, loaded, installed)
     _code_extras_note(report, loaded)
     _language_report(report, loaded)
     return report
@@ -498,61 +493,6 @@ def _role_patterns_problems(report: Dict[str, Any], settings: Dict[str, Any], se
             )
 
 
-def _seat(reviewer: Dict[str, Any]) -> Tuple[Any, ...]:
-    """What a seat is, ids aside: provider, family, role and condition."""
-    when = reviewer.get("when")
-    return (
-        reviewer.get("provider"),
-        (reviewer.get("model") or {}).get("family"),
-        reviewer.get("role", "general"),
-        None if when in (None, opt_mod.WHEN_ALWAYS) else repr(when),
-    )
-
-
-def _frozen_panel_notes(
-    report: Dict[str, Any], loaded: config_mod.LoadedConfig, installed: List[str]
-) -> None:
-    """A panel list that is the panel its file would inherit, plus more.
-
-    The shape an older ``reviewer add`` left: the inherited panel copied in,
-    then the addition. Moving the additions to the panel's extras keeps them
-    and lets the panel follow the fit again. A note, and never a rewrite.
-    The design panel the same way, for a file that lists no code panel: one
-    that does inherits a copy of its own list, not the fit's design panel.
-    What it inherits is the design panel below it, else -- the global file
-    lists ``reviewers`` -- the code panel below it, without ``when``.
-    """
-    if not loaded.preset:
-        return
-    files = (
-        (loaded.global_path, loaded.global_layer, {"preset": loaded.preset}),
-        (loaded.project_path, loaded.project_layer, loaded.global_layer),
-    )
-    for path, layer, below in files:
-        if not path:
-            continue
-        # Dealt around the implementer the file sets, as its writers deal it.
-        composed = config_mod.compose(below, {}, installed, layer)[0]
-        notes = [(config_mod.CODE_PANEL, "panel")]
-        if layer.get("reviewers") is None:
-            notes.append((config_mod.DESIGN_PANEL, "design panel"))
-        for keys, noun in notes:
-            inherited = config_mod.get_path(composed, keys.reviewers)
-            code = composed.get("reviewers")
-            if inherited is None and keys == config_mod.DESIGN_PANEL and isinstance(code, list):
-                # No design panel below this file: its design rounds would
-                # run the code panel in force, without ``when``.
-                inherited = [config_mod.without_when(seat) for seat in code]
-            rest = _beyond_inherited(config_mod.get_path(layer, keys.reviewers), inherited)
-            if not rest:
-                continue
-            ids = ", ".join(str(reviewer.get("id")) for reviewer in rest)
-            report["notes"].append(
-                "%s in %s: holds the inherited %s plus %s; move %s to %s and remove %s to keep following it"
-                % (keys.reviewers, path, noun, ids, ids, keys.extras, keys.reviewers)
-            )
-
-
 def _code_extras_note(report: Dict[str, Any], loaded: config_mod.LoadedConfig) -> None:
     """Code extras that do not review designs, because the fit's design panel does.
 
@@ -581,21 +521,6 @@ def _code_extras_note(report: Dict[str, Any], loaded: config_mod.LoadedConfig) -
         )
         keys = config_mod.CODE_PANEL.extras, config_mod.DESIGN_PANEL.extras
         report["notes"].append(message % (keys[0], path, ", ".join(ids), loaded.preset, keys[1]))
-
-
-def _beyond_inherited(listed: Any, inherited: Any) -> List[Dict[str, Any]]:
-    """The seats ``listed`` holds beyond every seat of ``inherited``; empty unless it holds them all."""
-    if not isinstance(listed, list) or not isinstance(inherited, list):
-        return []
-    rest = [reviewer for reviewer in listed if isinstance(reviewer, dict)]
-    for seat in inherited:
-        if not isinstance(seat, dict):
-            continue
-        match = next((reviewer for reviewer in rest if _seat(reviewer) == _seat(seat)), None)
-        if match is None:
-            return []
-        rest.remove(match)
-    return rest
 
 
 def _antigravity_live(
@@ -1024,8 +949,7 @@ def _language_line(language: Dict[str, Any]) -> str:
 
 
 def _config_lines(config_info: Dict[str, Any], language: Optional[Dict[str, Any]] = None) -> List[str]:
-    """The config files, the preset in force, the reply language and any pinned values,
-    ending in a blank line."""
+    """The config files, the preset in force and the reply language, ending in a blank line."""
     lines = ["Config"]
     real = config_info.get("global_real")
     lines.append("  Global: %s" % config_mod.describe_location(config_info.get("global"), real))
@@ -1041,14 +965,6 @@ def _config_lines(config_info: Dict[str, Any], language: Optional[Dict[str, Any]
         lines.append("  Source: %s (`config setup --preset <name>` saves one)" % source)
     if language is not None:
         lines.append("  Reply language: %s" % _language_line(language))
-    pinned = config_info.get("pinned") or []
-    if pinned:
-        lines.append("  Pinned at a value the built-in default has moved off:")
-        for entry in pinned:
-            lines.append("    %-40s %s (default %s)" % (entry["setting"], entry["value"], entry["default"]))
-        lines.append("    Deliberate choices look the same as values inherited from an")
-        lines.append("    older default, so these are reported and never rewritten.")
-        lines.append("    config prune drops the values equal to the current default, on request.")
     lines.append("")
     return lines
 

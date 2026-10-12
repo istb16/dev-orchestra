@@ -1,4 +1,4 @@
-<!-- translated-from: references/configuration.md sha256:4cc46357ba597607869f3399f9d03b99d6ad841992fda9317782ec8d73d7358c -->
+<!-- translated-from: references/configuration.md sha256:fc0a6ac4c522c5263dae5c466c4f463fe944b12de68e008c1072c498055f1067 -->
 
 > この文書は [references/configuration.md](../../../references/configuration.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -300,10 +300,7 @@ claude-security sonnet, claude-test sonnet)`。
 ロール、設計レビュー、最適化レベルは引き続きプリセットに従います。フィットした設計パネルは、
 ファイルが `reviewers` を並べたので従わなくなります。`review.design.reviewers` を並べたファイルも
 ないときは、設計ラウンドもこのリストに移り、note の末尾に `; design rounds now run this list
-without when, not preset standard's design panel` が付きます。同じ理由で `config prune` は、
-フィットと等しい `reviewers` のリストでも、それが設計ラウンドをプリセットの設計パネルから外して
-いる唯一のものであれば残し、`Kept reviewers in <file>: dropping it would move design reviews to
-the preset's design panel.` と表示します。project スコープで、グローバル
+without when, not preset standard's design panel` が付きます。project スコープで、グローバル
 ファイルがレビュアーを並べていない（つまりコピーするのがフィットしたパネルとグローバルの extra
 である）ときは、agy の枠はコピーから外します。project ファイルはその枠を持てないからです。note の
 末尾は `; not copied into .dev-orchestra.yaml: agy-general -- a reviewer on agy is taken only from
@@ -397,18 +394,8 @@ list)`。
 （`(extra, project file)`）、その JSON には `config.reviewers` と並行する `reviewer_origins` が
 加わります。`reviewer list` は `(extra: project)` の印を付け、その JSON と `doctor` の JSON は
 各レビュアーに `origin`（`fit`、`global`、`project`、`global extra`、`project extra`）を付けます。
-`config prune` は extra を残し、`config reset` はほかの上書きと一緒に消して、いくつ消したかを
-表示します。小さな変更でレビュアーを 1 人だけ走らせるときは、パネルの順で最初の `general` の
+`config reset` はほかの上書きと一緒に extra を消して、いくつ消したかを表示します。小さな変更でレビュアーを 1 人だけ走らせるときは、パネルの順で最初の `general` の
 レビュアーなので、extra が選ばれるのは、加わる先のパネルに `general` の枠がないときだけです。
-
-**継承するパネルにさらに足したものを持つリスト**（このキーができる前の `reviewer add` が残した
-形）には、`doctor` が note を出します: `reviewers in <file>: holds the inherited panel plus
-<ids>; move <ids> to reviewers_extra and remove reviewers to keep following it`。`reviewers` を
-並べていないファイルで、継承する設計パネルにさらに足したものを持つ設計用のリストにも、
-`review.design.reviewers` について同じ note が出ます（`holds the inherited design panel plus
-<ids>; move <ids> to review.design.reviewers_extra ...`）。継承する設計パネルは、そのファイルの
-下にある設計パネルです。グローバルファイルが `reviewers` を並べている下の project ファイルでは、
-そのリストから `when` を除いたものです。ファイルを書き換えることはありません。
 
 **コードの extra とプリセットの設計パネル。** 設計ラウンドがプリセットの設計パネルで走る間、
 `reviewers_extra`（`reviewer add` や `suggest-roles --write` が書いたもの）はコードだけを
@@ -1273,7 +1260,6 @@ codex: installed
 | 「このプロジェクトだけ」 | 書き込み系のコマンドに `--scope project` を付ける |
 | 「自分の設定を元に戻して」 | `config reset --scope global`（あなたの上書きをクリアし、プリセットは残します。このマシンに合わせたプリセットだけが残ります） |
 | 「このプロジェクトの上書きを捨てて」 | `config reset --scope project`（以後そのプロジェクトはグローバルレイヤーとそのプリセットに従います） |
-| 「設定が古いバージョンのものだ」 | `config prune --dry-run`、その後 `config prune` |
 | 「環境をチェックして」 | `doctor` |
 | 「いつも日本語で返事して」（ほかの言語でも） | `config set language.reply ja`。その言語のタグで指定します（`ko`、`zh-TW`、`fr` など）。Claude Code のユーザー設定にフックが加わることを先にユーザーに伝えます。`config set language.reply null` で、ユーザーが書いている言語に戻り、フックも外れます |
 | 「返答を書き直させないで」 | `config set language.rewrite false`（リマインダーは残ります） |
@@ -1295,7 +1281,6 @@ dev-orchestra config set --scope project architect.provider codex
 dev-orchestra config set reviewers[1].role security
 dev-orchestra config reset                   # clear this layer's overrides (the global file keeps its preset)
 dev-orchestra config reset --delete          # remove the file entirely
-dev-orchestra config prune                   # drop values equal to what is inherited
 dev-orchestra config validate
 ```
 
@@ -1310,29 +1295,6 @@ dev-orchestra config validate
 `options` や `model_tiers` が残るロールは設定されたままなのでフィットされず、表示される note が
 その旨を伝えます。`config show --scope global|project` はそのレイヤーを
 ディスク上にあるとおりに表示し、`config show` は解決された結果の設定を表示します。
-
-**0.6.0 より前に書き込まれたファイルには、すべてのデフォルトがそのまま入っています**。
-0.4.2 で引き上げられた低リスクのしきい値が、それ以前にセットアップを実行した人に届かなかったのは
-このためです。`doctor` は、組み込みのデフォルトが変わって値がずれた設定を、両方の数値とともに
-一覧表示します。`config prune` は、そのレイヤーが継承する値と等しい値を、要求されたときにだけ
-削除します -- 意図的な選択と継承されたデフォルトはディスク上では見分けがつかないので、この
-コマンドは等しいことを根拠とみなし、そう明示します:
-
-```bash
-dev-orchestra config prune --dry-run         # list what would be dropped
-dev-orchestra config prune --scope project
-```
-
-値が削除されるのは、組み込みのデフォルトとこのマシンでのプリセットのフィットが、どちらもその値で
-一致するときだけです。そのため prune で有効な設定が変わることはありません。プリセットが決めるキーは、
-ファイルが設定しなくなるとフィットの値になります: `quality` の下では `optimization.level: balanced`
-やデフォルトの `opus` の implementer は残り、このマシンのフィットとだけ等しいロールやパネルも
-残ります。ロールは丸ごと比較します。最後のフィールドを消すと、そのロールはフィットに渡るからです。
-
-プロジェクトファイルは、組み込みのデフォルトではなく*あなたの*グローバルレイヤーと比較して
-prune されます。そのため、グローバルの値を打ち消すためにそこに置かれた値は残ります。その裏返しとして、
-チームで共有している `.dev-orchestra.yaml` を prune するのは、あなた自身のグローバルレイヤーが
-何も上書きしていないときだけにしてください。そうでないと、結果があなたのマシンに左右されてしまいます。
 
 `config set` は値を型変換します: `3` は int に、`true` は bool に、`[a, b]` は list に、
 それ以外は string になります。string を強制するには `--raw` を使います。
@@ -1441,8 +1403,7 @@ add/set/remove --design manage it.`）。保存前のサマリーはどれも `l
 
 プリセット導入前にウィザードが書き込んだファイルには、すべてのロールとパネルが入っているので、
 そこに `preset:` を足しても、届くのはファイルが設定していないものだけです。`config reset` は
-それらを消して `preset` を残します。`config prune` が値を削除するのは、組み込みのデフォルトと
-プリセットのフィットがどちらもその値で一致するときだけです。
+それらを消して `preset` を残します。
 
 `config setup` は、あなたが答えた内容だけを保存します。推奨される回答と、あなたが承認する
 サマリーは、編集中のレイヤーが継承するものから導かれます: sonnet を選んだグローバルレイヤーの上で
@@ -1450,13 +1411,9 @@ add/set/remove --design manage it.`）。保存前のサマリーはどれも `l
 有効にしていればサマリーでも有効と表示されます。そのため、保存前に目にするものが、その後
 `config show` が報告するものになります。
 
-Enter を押して受け入れた回答もやはり回答であり、保存されます。4 つのロールについては、これは
-後から見てわかります -- `doctor` は、組み込みのデフォルトが変わって family がずれたロールを
-報告します。**`reviewers` についてはわかりません**: `doctor` はパネルをデフォルトのパネルと
-比較することはありません。比較すると、レビュアーを追加したすべての環境が報告されてしまうからです。
-そのため、ウィザードが書き込んだパネルは、その日のまま黙って残り続けます。元に戻す方法は 2 つで、
-レイヤーに置かれているパネルを表示する `config show --scope global|project` と、現在の
-デフォルトのパネルと等しいままならそれを削除する `config prune` です。何も上書きしたくない
+Enter を押して受け入れた回答もやはり回答であり、保存されます。そのため、ウィザードが書き込んだ
+ロールやパネルは、その日のまま黙って残り続けます。レイヤーに置かれているものは
+`config show --scope global|project` で表示でき、`config reset` で消せます。何も上書きしたくない
 のであれば、`config setup --defaults` を使ってください。
 
 <a id="worked-examples"></a>

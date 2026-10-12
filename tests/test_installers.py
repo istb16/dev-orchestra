@@ -229,7 +229,7 @@ class TestAntigravityInstallers(_InstallerCase):
                 code, output = self.run_installer(shell, "uninstall", project)
                 self.assertEqual(code, 0, output)
                 self.assertEqual(self.exclude_lines(project), [ENTRY])
-                self.assertIn("Left %s in .git/info/exclude" % ENTRY, output)
+                self.assertNotIn(".git/info/exclude", output)
                 self.assertNotIn(SKILL_NAME, os.listdir(os.path.join(project, ".agents", "plugins")))
 
     def test_a_copy_carries_the_payload_and_the_sentinel(self):
@@ -276,8 +276,6 @@ class TestAntigravityInstallers(_InstallerCase):
                     self.assertTrue(os.path.isdir(os.path.join(dest, ".git")), action)
 
     def test_a_copy_without_the_sentinel_is_left_alone(self):
-        """Every Antigravity copy had one, so the Claude mode's allowance for
-        older copies does not apply here."""
         for shell in SHELLS:
             with self.subTest(shell=shell.name):
                 project = self.fresh(shell, "unmarked")
@@ -763,9 +761,9 @@ class TestClaudeInstallers(_InstallerCase):
                 self.assertIn("Removed %s from .git/info/exclude" % CLAUDE_ENTRY, output)
                 self.assertEqual(self.exclude_lines(project), ["/build"])
 
-    def test_an_unmarked_entry_stays_and_is_named(self):
-        """What an installer before the marker wrote, or the user's own line,
-        is neither marked nor duplicated, and the uninstaller leaves it."""
+    def test_an_unmarked_entry_stays_untouched(self):
+        """The user's own line is neither marked nor duplicated, and the
+        uninstaller leaves it without a word."""
         for shell in SHELLS:
             with self.subTest(shell=shell.name):
                 project = self.git_project(self.fresh(shell, "unmarked"), exclude=CLAUDE_ENTRY + "\n")
@@ -775,7 +773,7 @@ class TestClaudeInstallers(_InstallerCase):
                 code, output = self.claude(shell, "uninstall", project)
                 self.assertEqual(code, 0, output)
                 self.assertEqual(self.exclude_lines(project), [CLAUDE_ENTRY])
-                self.assertIn("Left %s in .git/info/exclude" % CLAUDE_ENTRY, output)
+                self.assertNotIn(".git/info/exclude", output)
                 self.assertNotIn(SKILL_NAME, os.listdir(os.path.dirname(self.claude_dest(project))))
 
     def test_an_exclude_file_with_crlf_line_endings(self):
@@ -841,14 +839,14 @@ class TestClaudeInstallers(_InstallerCase):
                     self.assertEqual(after.decode("utf-8").splitlines(), ["/build", CLAUDE_MARKER])
                     self.assertTrue(after.startswith(original), after)
 
-    def test_an_unmarked_entry_in_a_crlf_file_stays_and_is_named(self):
+    def test_an_unmarked_entry_in_a_crlf_file_stays_untouched(self):
         for shell in SHELLS:
             with self.subTest(shell=shell.name):
                 original = ("/build\r\n%s\r\n" % CLAUDE_ENTRY).encode()
                 installed, after, output = self.exclude_round_trip(shell, "crlf-unmarked", original)
                 self.assertEqual(installed, original)
                 self.assertEqual(after, original)
-                self.assertIn("Left %s in .git/info/exclude" % CLAUDE_ENTRY, output)
+                self.assertNotIn(".git/info/exclude", output)
 
     def test_the_exclude_entry_gets_its_own_line_and_no_bom(self):
         """A one-line file is where PowerShell's if-assignment joined the two."""
@@ -966,214 +964,29 @@ class TestClaudeInstallers(_InstallerCase):
                     # A refused install leaves the exclude file as it was.
                     self.assertEqual(self.exclude_lines(project), [])
 
-    def unmarked_copy(
-        self, shell: Shell, project: str, plugin_json: bool = True, root: str = REPO_ROOT
-    ) -> str:
-        """A copy as the installers wrote it before they added the sentinel."""
-        code, output = self.claude(shell, "install", project, copy=True, root=root)
+    def copy_without_sentinel(self, shell: Shell, project: str) -> str:
+        """A copy just as the installer writes it, the sentinel taken out."""
+        code, output = self.claude(shell, "install", project, copy=True)
         self.assertEqual(code, 0, output)
         dest = self.claude_dest(project)
         os.remove(os.path.join(dest, SENTINEL))
-        if not plugin_json:
-            # The copies from before plugin.json was part of the payload.
-            os.remove(os.path.join(dest, "plugin.json"))
         return dest
 
-    def test_an_older_copy_without_the_sentinel_is_still_replaced(self):
-        for shell in SHELLS:
-            for plugin_json in (True, False):
-                with self.subTest(shell=shell.name, plugin_json=plugin_json):
-                    project = self.fresh(shell, "older-%s" % plugin_json)
-                    dest = self.unmarked_copy(shell, project, plugin_json)
-                    code, output = self.claude(shell, "install", project, copy=True)
-                    self.assertEqual(code, 0, output)
-                    self.assertTrue(os.path.isfile(os.path.join(dest, SENTINEL)), output)
-                    self.assertTrue(os.path.isfile(os.path.join(dest, "plugin.json")), output)
-
-                    os.remove(os.path.join(dest, SENTINEL))
-                    code, output = self.claude(shell, "uninstall", project)
-                    self.assertEqual(code, 0, output)
-                    self.assertNotIn(SKILL_NAME, os.listdir(os.path.dirname(dest)))
-
-    def test_an_older_copy_with_something_added_is_left_alone(self):
+    def test_a_copy_without_the_sentinel_is_left_alone(self):
+        """Even one that matches the payload file for file: the installer did
+        not mark it as its own, so it is neither replaced nor removed, and the
+        refusal names it."""
         for shell in SHELLS:
             with self.subTest(shell=shell.name):
-                project = self.fresh(shell, "older-added")
-                dest = self.unmarked_copy(shell, project)
-                self.write_file(os.path.join(dest, "notes.txt"))
+                project = self.fresh(shell, "no-sentinel")
+                dest = self.copy_without_sentinel(shell, project)
                 for action in ("install", "uninstall"):
                     code, output = self.claude(shell, action, project, copy=action == "install")
                     self.assert_refused(code, output)
-                    self.assertTrue(os.path.isfile(os.path.join(dest, "notes.txt")), action)
-
-    def test_an_older_copy_with_something_added_inside_is_left_alone(self):
-        """Not only at the top: a file of the user's anywhere in the copy, hidden
-        or not, is something the checkout does not have."""
-        planted = (
-            os.path.join("scripts", "mine.py"),
-            os.path.join("scripts", "orchestrator", ".env"),
-            os.path.join("references", "notes", "draft.md"),
-            ".env",
-            "..x",
-        )
-        for shell in SHELLS:
-            for relative in planted:
-                with self.subTest(shell=shell.name, planted=relative):
-                    project = self.fresh(shell, "older-inside-%d" % planted.index(relative))
-                    dest = self.unmarked_copy(shell, project)
-                    path = os.path.join(dest, relative)
-                    os.makedirs(os.path.dirname(path), exist_ok=True)
-                    self.write_file(path)
-                    for action in ("install", "uninstall"):
-                        code, output = self.claude(shell, action, project, copy=action == "install")
-                        self.assert_refused(code, output)
-                        self.assertTrue(os.path.isfile(path), action)
-
-    def test_an_older_copy_the_cli_ran_from_is_still_replaced(self):
-        """Running the CLI from the copy left Python's bytecode caches in it,
-        which the checkout does not have under those names: they are made
-        again, so they do not make the copy someone else's."""
-        caches = (
-            os.path.join("scripts", "orchestrator", "__pycache__", "never_in_a_checkout.cpython-399.pyc"),
-            os.path.join("scripts", "__pycache__", "stray.cpython-399.pyc"),
-        )
-        for shell in SHELLS:
-            for action in ("install", "uninstall"):
-                with self.subTest(shell=shell.name, action=action):
-                    base = self.fresh(shell, "ran-%s" % action)
-                    # Without caches of its own, unlike a checkout tests ran in.
-                    checkout = self.make_checkout(base)
-                    project = os.path.join(base, "proj")
-                    dest = self.unmarked_copy(shell, project, root=checkout)
-                    for relative in caches:
-                        path = os.path.join(dest, relative)
-                        os.makedirs(os.path.dirname(path), exist_ok=True)
-                        self.write_file(path)
-                    code, output = self.claude(
-                        shell, action, project, copy=action == "install", root=checkout
-                    )
-                    self.assertEqual(code, 0, output)
-                    if action == "install":
-                        self.assertTrue(os.path.isfile(os.path.join(dest, SENTINEL)), output)
-                        self.assertFalse(os.path.exists(os.path.join(dest, caches[0])), output)
-                    else:
-                        self.assertFalse(os.path.lexists(dest), output)
-
-    def test_an_older_copy_with_more_than_bytecode_in_a_cache_is_left_alone(self):
-        """Python writes only .pyc files into a __pycache__ directory, and none
-        outside one. Anything else there is not the installer's, and neither
-        is a __pycache__ that is a file."""
-        cache = os.path.join("scripts", "orchestrator", "__pycache__")
-        planted = (
-            os.path.join(cache, "notes.txt"),
-            os.path.join(cache, "sub", "x.cpython-399.pyc"),
-            os.path.join("scripts", "orchestrator", "loose.pyc"),
-            os.path.join("scripts", "__pycache__"),
-        )
-        for shell in SHELLS:
-            for relative in planted:
-                with self.subTest(shell=shell.name, planted=relative):
-                    base = self.fresh(shell, "cache-%d" % planted.index(relative))
-                    checkout = self.make_checkout(base)
-                    project = os.path.join(base, "proj")
-                    dest = self.unmarked_copy(shell, project, root=checkout)
-                    path = os.path.join(dest, relative)
-                    os.makedirs(os.path.dirname(path), exist_ok=True)
-                    self.write_file(path)
-                    for action in ("install", "uninstall"):
-                        code, output = self.claude(
-                            shell, action, project, copy=action == "install", root=checkout
-                        )
-                        self.assert_refused(code, output)
-                        self.assertTrue(os.path.isfile(path), action)
-
-    def test_an_older_copy_with_a_linked_cache_is_not_followed(self):
-        """A __pycache__ that is a link or junction, or one holding a link,
-        is not Python's: the copy is left alone, and what the link points at
-        survives."""
-        orchestrator = os.path.join("scripts", "orchestrator")
-        links = (
-            os.path.join(orchestrator, "__pycache__"),
-            os.path.join(orchestrator, "__pycache__", "linked.pyc"),
-        )
-        for shell in SHELLS:
-            for relative in links:
-                with self.subTest(shell=shell.name, link=relative):
-                    base = self.fresh(shell, "cache-link-%d" % links.index(relative))
-                    checkout = self.make_checkout(base)
-                    project = os.path.join(base, "proj")
-                    dest = self.unmarked_copy(shell, project, root=checkout)
-                    outside = os.path.join(base, "outside")
-                    os.makedirs(outside)
-                    self.write_file(os.path.join(outside, "keep.cpython-399.pyc"))
-                    link = os.path.join(dest, relative)
-                    if os.path.isdir(link):
-                        remove_tree(link)
-                    os.makedirs(os.path.dirname(link), exist_ok=True)
-                    try:
-                        make_dir_link(link, outside)
-                    except (OSError, subprocess.CalledProcessError) as exc:
-                        self.skipTest("cannot make a directory link here: %s" % exc)
-                    for action in ("install", "uninstall"):
-                        code, output = self.claude(
-                            shell, action, project, copy=action == "install", root=checkout
-                        )
-                        self.assert_refused(code, output)
-                        self.assertTrue(is_link(link), action)
-                        self.assertTrue(os.path.isfile(os.path.join(outside, "keep.cpython-399.pyc")), action)
-
-    def test_an_older_copy_holding_a_link_is_not_followed(self):
-        """A link inside the copy, at a name the checkout has or not, is never
-        followed: what it points at survives, whatever becomes of the copy,
-        and every shell decides alike."""
-        for shell in SHELLS:
-            for name in ("examples", "linked"):
-                with self.subTest(shell=shell.name, name=name):
-                    base = self.fresh(shell, "holding-%s" % name)
-                    project = os.path.join(base, "proj")
-                    dest = self.unmarked_copy(shell, project)
-                    outside = os.path.join(base, "outside")
-                    os.makedirs(outside)
-                    self.write_file(os.path.join(outside, "keep.txt"))
-                    link = os.path.join(dest, name)
-                    if os.path.isdir(link):
-                        remove_tree(link)
-                    try:
-                        make_dir_link(link, outside)
-                    except (OSError, subprocess.CalledProcessError) as exc:
-                        self.skipTest("cannot make a directory link here: %s" % exc)
-                    for action in ("install", "uninstall"):
-                        code, output = self.claude(shell, action, project, copy=action == "install")
-                        self.assert_refused(code, output)
-                        self.assertTrue(is_link(link), action)
-                        self.assertTrue(os.path.isfile(os.path.join(outside, "keep.txt")), action)
-
-    def test_an_older_copy_holding_a_file_where_the_checkout_has_a_directory_is_left_alone(self):
-        for shell in SHELLS:
-            with self.subTest(shell=shell.name):
-                project = self.fresh(shell, "older-type")
-                dest = self.unmarked_copy(shell, project)
-                path = os.path.join(dest, "examples")
-                remove_tree(path)
-                self.write_file(path, "mine\n")
-                for action in ("install", "uninstall"):
-                    code, output = self.claude(shell, action, project, copy=action == "install")
-                    self.assert_refused(code, output)
-                    self.assertTrue(os.path.isfile(path), action)
-
-    @unittest.skipIf(os.name == "nt" or os.geteuid() == 0, "needs a directory its owner cannot read")
-    def test_an_older_copy_with_an_unreadable_directory_is_left_alone(self):
-        for shell in SHELLS:
-            with self.subTest(shell=shell.name):
-                project = self.fresh(shell, "older-unreadable")
-                dest = self.unmarked_copy(shell, project)
-                locked = os.path.join(dest, "references")
-                os.chmod(locked, 0)
-                self.addCleanup(os.chmod, locked, stat.S_IRWXU)
-                for action in ("install", "uninstall"):
-                    code, output = self.claude(shell, action, project, copy=action == "install")
-                    self.assert_refused(code, output)
-                    self.assertTrue(os.path.isdir(locked), action)
+                    self.assertIn("the installer did not write it", output)
+                    self.assertIn(os.path.basename(dest), output)
+                    self.assertTrue(os.path.isfile(os.path.join(dest, "plugin.json")), action)
+                    self.assertFalse(os.path.exists(os.path.join(dest, SENTINEL)), action)
 
     def test_a_relative_link_to_the_checkout_is_ours(self):
         """Followed from where the link is, not from where the installer runs."""
@@ -1230,7 +1043,7 @@ class TestClaudeInstallers(_InstallerCase):
         for shell in SHELLS:
             with self.subTest(shell=shell.name):
                 project = self.fresh(shell, "full-copy")
-                dest = self.unmarked_copy(shell, project)
+                dest = self.copy_without_sentinel(shell, project)
                 os.makedirs(os.path.join(dest, ".git"))
                 for action in ("install", "uninstall"):
                     code, output = self.claude(shell, action, project, copy=action == "install")
@@ -1296,26 +1109,22 @@ class TestClaudeInstallers(_InstallerCase):
                 self.assert_checkout_refused(code, output, checkout)
 
     def test_the_scripts_agree_on_what_a_copy_carries(self):
-        """An older copy is recognised by it, in all four scripts alike."""
         sh_list = 'PAYLOAD="%s"' % " ".join(PAYLOAD)
         ps1_list = "$Payload = @(%s)" % ", ".join("'%s'" % item for item in PAYLOAD)
-        for action in ("install", "uninstall"):
-            for suffix, expected in ((".sh", sh_list), (".ps1", ps1_list)):
-                relative = os.path.join("install", action + suffix)
-                self.assertIn(expected, read_text(os.path.join(REPO_ROOT, relative)), relative)
+        for suffix, expected in ((".sh", sh_list), (".ps1", ps1_list)):
+            relative = os.path.join("install", "install" + suffix)
+            self.assertIn(expected, read_text(os.path.join(REPO_ROOT, relative)), relative)
 
     #: The helpers that decide what is the installer's to remove, by script
     #: type, and how each script spells the start of one.
     OWNERSHIP_HELPERS = (
-        (".sh", "%s() {", ("shell_quote", "explain_full_copy", "is_unmarked_copy")),
+        (".sh", "%s() {", ("shell_quote", "explain_full_copy")),
         (
             ".ps1",
             "function %s {",
             (
                 "Get-LinkTarget",
                 "Resolve-RealPath",
-                "Test-UnmarkedCopy",
-                "Test-CheckoutHas",
                 "Get-FullCopyNote",
                 "Stop-Refused",
                 "Test-ReparsePoint",

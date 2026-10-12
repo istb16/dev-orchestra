@@ -355,7 +355,7 @@ class TestTheWizardsBase(IsolatedCase):
         config_mod.write_config_file(
             config_mod.global_config_path(), {"version": 1, "reviewers": []}, "global"
         )
-        base = config_layers._layer_base("project", self.project)
+        base = config_layers._fitted_base("project")
         self.assertEqual(base["reviewers"], [])
         prompter = ScriptedPrompter(accept_all())
         data, _ = wizard_mod.run(prompter, None, base)

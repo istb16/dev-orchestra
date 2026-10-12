@@ -222,14 +222,12 @@ def _stale_notice(container: str, workflow: str, days: int) -> None:
 def _workspace(args: argparse.Namespace) -> ws.Workspace:
     """The workspace for the workflow this invocation belongs to.
 
-    Every command that uses a workflow goes through here: refuse a container
-    still in the pre-0.4.0 layout before anything is written, resolve the id,
+    Every command that uses a workflow goes through here: resolve the id,
     and hand back a workspace pointed at that workflow's directory. The call
     that creates the directory is the start of a new workflow, and the one
     place the others that went quiet are noted.
     """
     root, container, loaded = _container_and_config(args)
-    workflow_mod.refuse_legacy(container)
     requested = getattr(args, "workflow", "") or ""
     if getattr(args, "job_file", None):
         # A detached worker is told its parent's workflow; it does not get to

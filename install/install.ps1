@@ -283,58 +283,6 @@ function Resolve-RealPath {
     return $full.TrimEnd('\', '/')
 }
 
-function Test-UnmarkedCopy {
-    # A Claude copy made before the installer wrote the sentinel: the skill
-    # and its CLI are there, and every entry in it, at any depth and hidden
-    # or not, is at the same path in this checkout's payload, so removing it
-    # loses nothing the checkout does not have. Python's bytecode caches are
-    # left out (see Test-BytecodeCache).
-    param([string]$Path)
-
-    foreach ($relative in @("skills/$SkillName/SKILL.md", 'scripts/orchestrator/__init__.py')) {
-        if (-not (Test-Path -LiteralPath (Join-Path $Path $relative) -PathType Leaf)) { return $false }
-    }
-    try { $entries = @(Get-ChildItem -LiteralPath $Path -Force -ErrorAction Stop) } catch { return $false }
-    foreach ($entry in $entries) {
-        if ($Payload -notcontains $entry.Name) { return $false }
-        if (-not (Test-CheckoutHas $entry (Join-Path $root $entry.Name))) { return $false }
-    }
-    return $true
-}
-
-function Test-CheckoutHas {
-    # Whether $Entry, and everything under it, is at $Twin in the checkout:
-    # a directory as a directory, a file as a file. The installer never wrote
-    # a link or junction into a copy, so one inside it, which is not
-    # followed, fails the check, and so does what cannot be read.
-    param($Entry, [string]$Twin)
-
-    if ($Entry.Attributes -band [System.IO.FileAttributes]::ReparsePoint) { return $false }
-    if (-not $Entry.PSIsContainer) { return [System.IO.File]::Exists($Twin) }
-    if ($Entry.Name -eq '__pycache__') { return (Test-BytecodeCache $Entry) }
-    if (-not [System.IO.Directory]::Exists($Twin)) { return $false }
-    try { $children = @(Get-ChildItem -LiteralPath $Entry.FullName -Force -ErrorAction Stop) } catch { return $false }
-    foreach ($child in $children) {
-        if (-not (Test-CheckoutHas $child (Join-Path $Twin $child.Name))) { return $false }
-    }
-    return $true
-}
-
-function Test-BytecodeCache {
-    # Whether the __pycache__ directory $Entry holds only what Python wrote
-    # there while the CLI ran from the copy: .pyc files, which Python makes
-    # again. Such a directory needs no twin in the checkout. Anything else in
-    # it -- another file, a link, a junction, a directory -- fails the check.
-    param($Entry)
-
-    try { $children = @(Get-ChildItem -LiteralPath $Entry.FullName -Force -ErrorAction Stop) } catch { return $false }
-    foreach ($child in $children) {
-        if ($child.Attributes -band [System.IO.FileAttributes]::ReparsePoint) { return $false }
-        if ($child.PSIsContainer -or $child.Name -notlike '*.pyc') { return $false }
-    }
-    return $true
-}
-
 function Get-FullCopyNote {
     # A full copy of a checkout, .git included, where the Claude install goes:
     # what install.sh left under Git Bash, whose `ln -s` copies, before it
@@ -361,10 +309,9 @@ function Stop-Refused {
 function Remove-OwnedDestination {
     # Clear the way for an install at $Destination, or stop. A link is removed
     # only when it resolves to this checkout, and never recursively; a
-    # directory only when this installer wrote it (the sentinel is there, or
-    # it is an older Claude copy, and it is not a clone or the checkout
-    # itself); anything else is left where it is. Returns $true when
-    # something was removed.
+    # directory only when this installer wrote it (the sentinel is there and
+    # it is not a clone or the checkout itself); anything else is left where
+    # it is. Returns $true when something was removed.
     param([string]$Destination)
 
     $item = Get-Item -LiteralPath $Destination -Force -ErrorAction SilentlyContinue
@@ -414,7 +361,7 @@ function Remove-OwnedDestination {
     $gitEntry = Get-Item -LiteralPath (Join-Path $Destination '.git') -Force -ErrorAction SilentlyContinue
     if ($item.PSIsContainer -and ($null -eq $gitEntry)) {
         $hasSentinel = Test-Path -LiteralPath (Join-Path $Destination $Sentinel) -PathType Leaf
-        if ($hasSentinel -or (-not $Antigravity -and (Test-UnmarkedCopy $Destination))) {
+        if ($hasSentinel) {
             Remove-Item -LiteralPath $Destination -Recurse -Force -Confirm:$false
             return $true
         }

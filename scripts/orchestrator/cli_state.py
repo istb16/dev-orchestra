@@ -231,20 +231,7 @@ def _token_lines(report: Dict[str, Any]) -> List[str]:
             "for a 200-line file and `cat` returns the file. How much of this repository "
             "a delegated run actually read is not knowable from here."
         )
-    unknown_tools = int(totals.get("tool_unknown_runs") or 0)
-    silent_tools = max(int(totals["runs"]) - reported_tools - unknown_tools, 0)
-    if unknown_tools:
-        # A run recorded before this was counted cannot say whether it used
-        # tools, and "it reported no tool activity" would be a claim about it.
-        # Said beside the count below rather than instead of it, now that
-        # ``silent_tools`` subtracts these out: a panel with a legacy stage and
-        # a Codex stage has both kinds, and the two numbers plus the reported
-        # ones account for every run.
-        lines.append(
-            "%d of %d run(s) predate tool counting and cannot say whether they used "
-            "tools, so the tool columns leave them out. That is not the same as "
-            "having used none." % (unknown_tools, totals["runs"])
-        )
+    silent_tools = max(int(totals["runs"]) - reported_tools, 0)
     if silent_tools:
         lines.append(
             "%d of %d run(s) reported no tool activity (Codex does not); the tool "

@@ -649,17 +649,6 @@ class TestTheWizard(ExtrasCase):
 
 
 class TestTheOtherCommands(ExtrasCase):
-    def test_prune_keeps_the_extras(self):
-        self.write_global({"preset": "standard", "reviewers_extra": [mock("m1")]})
-        code, out, err = run_cli("config", "prune")
-        self.assertEqual(code, 0, out + err)
-        self.assertEqual(self.global_layer()["reviewers_extra"], [mock("m1")])
-        self.write_project({"reviewers_extra": [mock("p1")]})
-        before = self.project_bytes()
-        code, out, err = run_cli("config", "prune", "--scope", "project")
-        self.assertEqual(code, 0, out + err)
-        self.assertEqual(self.project_bytes(), before)
-
     def test_reset_clears_the_extras_and_says_so(self):
         self.write_global({"reviewers_extra": [mock("m1"), mock("m2")]})
         code, out, _ = run_cli("config", "reset", "--scope", "global")
@@ -684,23 +673,6 @@ class TestTheOtherCommands(ExtrasCase):
         report = doctor.collect(self.project, probe_models=False)
         self.assertEqual([entry["origin"] for entry in report["reviewers"]], [*FIT_LABELS, "global extra"])
         self.assertIn("/ general (extra: global)", doctor.render(report))
-
-    def test_doctor_notes_a_list_that_holds_the_inherited_panel_plus_more(self):
-        fitted = presets.expand("standard", ["claude"]).values["reviewers"]
-        note = (
-            "reviewers in %s: holds the inherited panel plus m1; move m1 to reviewers_extra and remove "
-            "reviewers to keep following it" % config_mod.global_config_path()
-        )
-        cases = (
-            ("the fit plus one", [*fitted, mock("m1")], True),
-            ("the fit alone", fitted, False),
-            ("a seat of the fit missing", [fitted[0], mock("m1")], False),
-        )
-        for name, listed, noted in cases:
-            with self.subTest(name):
-                self.write_global({"reviewers": listed})
-                notes = doctor.collect(self.project, probe_models=False)["notes"]
-                self.assertEqual(note in notes, noted, notes)
 
 
 if __name__ == "__main__":
