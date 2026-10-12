@@ -140,7 +140,7 @@ surface, and from 1.0 they change by addition only: a new version adds a key
 or a file, a reader skips a key it does not know, and a key an earlier 1.x
 release never wrote reads as what that file meant -- "unknown" rather than
 zero where zero would be a claim. A key is not removed, renamed or given a new
-meaning. A change that cannot be made by addition is a breaking change -- a
+meaning or type. A change that cannot be made by addition is a breaking change -- a
 major release -- and it ships with a way through: a migration that moves the
 old form into the new, or a refusal that names the old form and says what to
 do with it. The files carry no format version for that reason: nothing reads one, and the rule above is what keeps an older workflow

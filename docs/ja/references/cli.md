@@ -1,4 +1,4 @@
-<!-- translated-from: references/cli.md sha256:e1794ee25400bf77b97b0dac50fdf47659939c35e8fb19dcc78f7a1915976b2a -->
+<!-- translated-from: references/cli.md sha256:942e3ade000c4da4800aba1b338a105aec5179f11db96c671fd32fcd2920ea91 -->
 
 > この文書は [references/cli.md](../../../references/cli.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -1136,6 +1136,7 @@ stderr に一度だけ知らせます。実行中のステージがあるワー�
 | `DEV_ORCHESTRA_HOME` | プラットフォームの設定ディレクトリの代わりにこのディレクトリを使います |
 | `DEV_ORCHESTRA_WORKFLOW` | 使用するワークフロー。ホストのセッション id より優先されます |
 | `DEV_ORCHESTRA_SESSION` | ワークフローを導出するためのセッション id。セッション id をエクスポートしないホスト向けです |
+| `DEV_ORCHESTRA_NO_USER_PROVIDERS` | `1` にすると `<設定ディレクトリ>/providers/` のユーザーのアダプタを読み飛ばします（`references/providers.md` を参照） |
 | `DEV_ORCHESTRA_MOCK_DIR` | mock provider 用の定型応答 |
 | `DEV_ORCHESTRA_MOCK_RESPONSE` | mock provider 用のインラインの定型応答 |
 | `DEV_ORCHESTRA_MOCK_FAIL` | mock の実行を失敗させます（`1` = すべて、それ以外はプロンプトの部分文字列） |

@@ -69,7 +69,7 @@ class MockProvider(Provider):
     def _discover_models(self) -> List[ModelCandidate]:
         return list(self.fallback_models)
 
-    def _resolve_latest(self, family: str) -> ResolvedModel:
+    def resolve_latest(self, family: str) -> ResolvedModel:
         if family == UNRESOLVABLE_FAMILY:
             raise ModelResolutionError("mock: %r cannot be resolved (by design)" % family)
         value = family or "mock-small"

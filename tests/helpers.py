@@ -245,7 +245,7 @@ class MyCliProvider(Provider):
     fallback_models = (ModelCandidate("", "default", "CLI default", "builtin-fallback"),)
     fallback_updated = "2026-09-24"
 
-    def _resolve_latest(self, family: str) -> ResolvedModel:
+    def resolve_latest(self, family: str) -> ResolvedModel:
         if family in ("", "default"):
             return ResolvedModel(self.name, "default", "latest", None, "mycli default", "cli-default")
         raise ModelResolutionError(

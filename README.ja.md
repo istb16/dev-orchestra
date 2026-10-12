@@ -269,6 +269,8 @@ Antigravity は `./install/uninstall.sh --antigravity`（Windows は `-Antigravi
   バージョンで変わることがあり、そのときは Changed に旧い値と新しい値を書きます。
 - **`dev-orchestra` のコマンド、そのフラグと終了コード**（[cli](docs/ja/references/cli.md)）。
   コマンド、フラグ、終了コードは追加されることがありますが、消えたり意味が変わったりはしません。
+  スキルが自分の進み具合を記録するコマンド（`state record`、`budget consume`、
+  `progress record`）も含みます。
 - **環境変数** `DEV_ORCHESTRA_CONFIG`、`DEV_ORCHESTRA_HOME`、`DEV_ORCHESTRA_WORKFLOW`、
   `DEV_ORCHESTRA_SESSION`、`DEV_ORCHESTRA_NO_USER_PROVIDERS`。
 - **すべてのコマンドの `--json` 出力**: キーは追加されることがありますが、消したり、名前を
@@ -281,6 +283,18 @@ Antigravity は `./install/uninstall.sh --antigravity`（Windows は `-Antigravi
   対象外です。
 - **built-in のアダプタがすること**（claude、codex、agy、mock）: モード、読み取り専用の強制、
   再開、実行が記録するもの。各 CLI に渡すフラグは対象外です。
+- **ユーザーのアダプタが頼るもの**（[providers](docs/ja/references/providers.md#interface-stability)）:
+  読み込みの決まり -- `<設定ディレクトリ>/providers/`（`DEV_ORCHESTRA_HOME` を設定したときは
+  `$DEV_ORCHESTRA_HOME/providers/`）にある各 `<name>.py` が、`Provider` を返す
+  `build_provider(executable=None)` を定義すること、名前が `^[a-z0-9][a-z0-9._-]*$` に合い
+  `base` ではないこと、built-in の名前は断られること、並べた順で最初のファイルが勝つこと、
+  読み込みの失敗は `doctor` が報告し、止まりはしないこと、`DEV_ORCHESTRA_NO_USER_PROVIDERS` で
+  すべてを読み飛ばせること。さらに、import の場所 `orchestrator.providers.base` と、
+  [providers](docs/ja/references/providers.md#the-contract) の最小の例がそこから使うもの
+  （`Provider`、`ModelCandidate`、`ResolvedModel`、`ModelResolutionError`、`READ_ONLY_MODES`
+  を例と同じ呼び方で）、そして例が定義するか呼ぶメンバー（`name`、`display_name`、
+  `executable`、`fallback_models`、`fallback_updated`、`resolve_latest`、`build_command`、
+  `option_args`）。
 - **返答の言語のフックがすること**（[返答の言語のフック](docs/ja/references/architecture.md#reply-language-hooks)）:
   dev-orchestra がこれを Claude Code のユーザー設定に加えるのは、`language.reply` を設定したときか
   `hooks install` を実行したときだけです。そこでは自分のエントリだけを変え、`hooks uninstall` か
@@ -293,20 +307,27 @@ Antigravity は `./install/uninstall.sh --antigravity`（Windows は `-Antigravi
 
 対象外で、マイナーバージョンで変わることがあるもの:
 
-- **ユーザーのアダプタが継承する `Provider` 基底クラス**とその周辺の型
-  （[providers](docs/ja/references/providers.md#interface-stability)）。この変更は
-  `CHANGELOG.md` で **User adapters** から始まる項目に書きます。
+- **`Provider` 基底クラスの残りの部分**とその周辺の型
+  （[providers](docs/ja/references/providers.md#interface-stability)）: 再開、ライブチェックの
+  メンバー、`around_launch` と `Launch`、`_capture`、実行の出力を読むフック、モデルの探索。
+  この変更は `CHANGELOG.md` で **User adapters** から始まる項目に書きます。
 - **すべてのコマンドの人向けの出力**。プログラムから使うときは `--json` を読んでください。
 - **`scripts/smoke_live.py` とその他の保守用スクリプト**（`stamp_translation.py`、
   `doc_contents.py`、`validate_skill.py`）、その `--json`、それらが設定ディレクトリに書く
   `verified/` の記録。記録はマシンごとのもので `schema` 番号を持ち、`doctor` が報告し、
   schema が変わったらスクリプトをもう一度実行して作り直します。
-- **`scripts/orchestrator/` 以下のモジュール**の Python API としての使い方。
+- **`scripts/orchestrator/` 以下のモジュール**の Python API としての使い方。ただし上の、
+  ユーザーのアダプタが頼るものは除きます。
 - **`skills/dev-orchestra/SKILL.md` の文面**とプロンプトのテンプレート。それらが実行する
   コマンドは上のとおり対象です。
-- **`DEV_ORCHESTRA_MOCK_*`** と `DEV_ORCHESTRA_TEST_ASSUME_NO_CLI`。テスト用の仕組みです。
+- **隠しフラグ `run --job-file`**。切り離したジョブのワーカーだけが渡します。
+- **`DEV_ORCHESTRA_MOCK_*`** と **`DEV_ORCHESTRA_TEST_*`**。テスト用の仕組みです。
 - **`DEV_ORCHESTRA_DELEGATED`**。provider が起動するプロセスに付けて、フックを委譲した
   実行から外すための内部の仕組みです。
+- **`.ai/` の中の内部のファイル**: `jobs/<id>.stop`、`.ai/agy-prompt-*`、書き込みが経由する
+  `.tmp-*.part`、`*.lock`、スナップショットが使う一時的な git のインデックス、`.ai/.gitignore`。
+  それと `review-run.log` の中身。
+- **`--json` の `notes` と `warnings` の文面**（上のとおり）。
 
 ## アーキテクチャ
 

@@ -285,7 +285,9 @@ Covered:
   minor version and is listed under Changed with the old and the new value.
 - **The `dev-orchestra` commands, their flags and their exit codes**
   ([cli](references/cli.md)). A command, a flag or an exit code may be added;
-  none is removed or changes meaning.
+  none is removed or changes meaning. That includes the commands the skill
+  records its own progress with: `state record`, `budget consume` and
+  `progress record`.
 - **The environment variables** `DEV_ORCHESTRA_CONFIG`, `DEV_ORCHESTRA_HOME`,
   `DEV_ORCHESTRA_WORKFLOW`, `DEV_ORCHESTRA_SESSION` and
   `DEV_ORCHESTRA_NO_USER_PROVIDERS`.
@@ -301,6 +303,19 @@ Covered:
 - **What the built-in adapters do** (claude, codex, agy, mock): the modes, the
   read-only enforcement, resuming, what a run records. The flags they pass to
   their CLIs are not.
+- **What a user adapter relies on** ([providers](references/providers.md#interface-stability)):
+  how one is loaded -- each `<name>.py` in `<config dir>/providers/` (in
+  `$DEV_ORCHESTRA_HOME/providers/` when that is set) defining
+  `build_provider(executable=None)` that returns a `Provider`, a name matching
+  `^[a-z0-9][a-z0-9._-]*$` other than `base`, a built-in name refused, the
+  first file in sorted order winning, a load failure reported by `doctor` and
+  never fatal, and `DEV_ORCHESTRA_NO_USER_PROVIDERS` to skip them all. Also the
+  import path `orchestrator.providers.base` and what the minimal example in
+  [providers](references/providers.md#the-contract) takes from it:
+  `Provider`, `ModelCandidate`, `ResolvedModel`, `ModelResolutionError` and
+  `READ_ONLY_MODES`, called as the example calls them, and the members it
+  defines or calls -- `name`, `display_name`, `executable`, `fallback_models`,
+  `fallback_updated`, `resolve_latest`, `build_command` and `option_args`.
 - **What the reply-language hooks do** ([Reply-language hooks](references/architecture.md#reply-language-hooks)):
   dev-orchestra adds them to your Claude Code user settings only when you set
   `language.reply` or run `hooks install`. It changes only its own entries
@@ -315,10 +330,11 @@ Covered:
 
 Not covered, and may change in a minor version:
 
-- **The `Provider` base class** a user adapter subclasses, with the types
-  around it ([providers](references/providers.md#interface-stability)). Such
-  a change is listed in `CHANGELOG.md` in an entry that begins
-  **User adapters**.
+- **The rest of the `Provider` base class** and the types around it
+  ([providers](references/providers.md#interface-stability)): resuming, the
+  live-check members, `around_launch` and `Launch`, `_capture`, the hooks that
+  read a run's output, and model discovery. Such a change is listed in
+  `CHANGELOG.md` in an entry that begins **User adapters**.
 - **The human-readable output** of every command. Read `--json` where a
   program needs it.
 - **`scripts/smoke_live.py` and the other maintenance scripts**
@@ -326,13 +342,21 @@ Not covered, and may change in a minor version:
   `--json`, and the `verified/` records they write in the config directory:
   per-machine records with a `schema` number, reported by `doctor` and remade
   by running the script again when the schema moves.
-- **The modules under `scripts/orchestrator/`** as a Python API.
+- **The modules under `scripts/orchestrator/`** as a Python API, apart from
+  what a user adapter relies on above.
 - **The wording of `skills/dev-orchestra/SKILL.md`** and the prompt templates.
   The commands they invoke are covered above.
-- **`DEV_ORCHESTRA_MOCK_*`** and `DEV_ORCHESTRA_TEST_ASSUME_NO_CLI`, which are
-  test instruments.
+- **The hidden `run --job-file` flag**, which only a detached job's worker
+  passes.
+- **`DEV_ORCHESTRA_MOCK_*`** and **`DEV_ORCHESTRA_TEST_*`**, which are test
+  instruments.
 - **`DEV_ORCHESTRA_DELEGATED`**, which the providers set on the processes they
   start so the hooks stay out of delegated runs: internal.
+- **The internal files under `.ai/`**: `jobs/<id>.stop`, `.ai/agy-prompt-*`,
+  the `.tmp-*.part` files a write goes through, the `*.lock` files, the
+  temporary git index a snapshot uses, and `.ai/.gitignore`; and what
+  `review-run.log` holds.
+- **The text of `notes` and `warnings`** in `--json`, as above.
 
 ## Architecture
 

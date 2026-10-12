@@ -1256,6 +1256,7 @@ still the only thing that deletes a workflow.
 | `DEV_ORCHESTRA_HOME` | Use this directory instead of the platform config directory |
 | `DEV_ORCHESTRA_WORKFLOW` | The workflow to use, ahead of any host session id |
 | `DEV_ORCHESTRA_SESSION` | A session id to derive the workflow from, for hosts that export none |
+| `DEV_ORCHESTRA_NO_USER_PROVIDERS` | Set to `1` to skip the user adapters in `<config dir>/providers/` (see `references/providers.md`) |
 | `DEV_ORCHESTRA_MOCK_DIR` | Canned responses for the mock provider |
 | `DEV_ORCHESTRA_MOCK_RESPONSE` | Inline canned response for the mock provider |
 | `DEV_ORCHESTRA_MOCK_FAIL` | Make mock runs fail (`1` = all, otherwise a prompt substring) |

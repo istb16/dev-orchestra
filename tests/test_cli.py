@@ -1376,7 +1376,7 @@ class FlakyProvider(Provider):
             raise RuntimeError("list_models exploded")
         return super().list_models()
 
-    def _resolve_latest(self, family):
+    def resolve_latest(self, family):
         if RAISE_IN == "resolve":
             raise RuntimeError("resolve exploded")
         if RAISE_IN == "resolve-value":
