@@ -841,18 +841,23 @@ def _condition_paths(meta: Dict[str, Any]) -> List[str]:
     return [str(path) for path in paths] if isinstance(paths, list) else []
 
 
-def _refuse_snapshot_without_paths(workspace: ws.Workspace, meta: Any) -> Optional[int]:
-    """A snapshot with reviewed files but no path lists to judge risk by.
+def _missing_path_lists(meta: Any) -> List[str]:
+    """The path lists a snapshot with reviewed files lacks, in the order named.
 
     Read as no paths, high-risk patterns would match nothing and path-scoped
     reviewers would not qualify, so the panel could be cut without a word.
     Not rebuilt from ``files`` and ``withheld`` either: they leave out the
     name a rename came from. A snapshot written before the lists were, or
-    edited by hand, is retaken instead. ``{}``, no snapshot, is not refused.
+    edited by hand, is retaken instead. ``{}``, no snapshot, lacks nothing.
     """
     if not isinstance(meta, dict) or "files" not in meta:
-        return None
-    missing = [key for key in ("changed_paths", "condition_paths") if not isinstance(meta.get(key), list)]
+        return []
+    return [key for key in ("changed_paths", "condition_paths") if not isinstance(meta.get(key), list)]
+
+
+def _refuse_snapshot_without_paths(workspace: ws.Workspace, meta: Any) -> Optional[int]:
+    """Refuse a round on a snapshot ``_missing_path_lists`` finds wanting."""
+    missing = _missing_path_lists(meta)
     if not missing:
         return None
     _err(

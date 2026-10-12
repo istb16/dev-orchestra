@@ -40,6 +40,7 @@ from .base import (  # noqa: F401 - re-exported as the adapter interface
     ModelResolutionError,
     Provider,
     ResolvedModel,
+    ResolveLatestMissing,
     RunResult,
     Usage,
     clear_discovery_cache,
@@ -361,12 +362,20 @@ def _check_contract(module: Any) -> Tuple[str, List[str]]:
 
 def _renamed_member_problems(cls: type) -> List[str]:
     """Members of ``Provider`` renamed without an alias that ``cls`` still
-    defines under the old name only, so the base class's stands in for it."""
-    if getattr(cls, "_resolve_latest", None) is None or cls.resolve_latest is not Provider.resolve_latest:
+    defines under the old name, below any class defining the new one.
+
+    By the class order, not by ``Provider`` alone: an adapter subclassing a
+    built-in one inherits its ``resolve_latest``, and its own
+    ``_resolve_latest`` is never called.
+    """
+    order = cls.__mro__
+    old = next((i for i, klass in enumerate(order) if "_resolve_latest" in vars(klass)), None)
+    new = next((i for i, klass in enumerate(order) if "resolve_latest" in vars(klass)), len(order))
+    if old is None or old >= new:
         return []
     return [
-        "defines _resolve_latest, which 0.24.0 renamed to resolve_latest, and no resolve_latest, "
-        "so resolving a model on it fails; rename the method to resolve_latest"
+        "defines _resolve_latest, which 0.24.0 renamed to resolve_latest, and no resolve_latest of "
+        "its own, so _resolve_latest is never called; rename the method to resolve_latest"
     ]
 
 

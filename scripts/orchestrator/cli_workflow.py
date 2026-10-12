@@ -25,6 +25,7 @@ from .cli_review import (
     _design_lineage,
     _design_round_plan,
     _left_out_suffix,
+    _missing_path_lists,
     _ran_since_last_round,
     _reviewed_something,
     _round_plan,
@@ -502,6 +503,13 @@ def _status_payload(
     # here rather than by being refused. Cheap: the snapshot meta is already
     # on disk, and nothing is delegated to work it out.
     meta = workspace.read_snapshot_meta()
+    missing = _missing_path_lists(meta)
+    if missing:
+        # `review run` refuses it; the plan below reads it as touching nothing.
+        reasons.append(
+            "the snapshot has no %s list; take a fresh one with `dev-orchestra review snapshot`"
+            % " or ".join(missing)
+        )
     plan = _round_plan(loaded, settings, workspace, meta, loaded.reviewers())
     if plan.gate == opt_mod.GATE_REFUSE:
         reasons.append("the last recorded test run failed; fix it before reviewing")

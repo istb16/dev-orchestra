@@ -34,7 +34,10 @@ authors can find it.
   its problems (so `doctor --strict` fails), and has it under
   `user_providers.problems` in `--json`. Resolving a model on such an adapter,
   or on one with no `resolve_latest` at all, fails with a message saying what
-  to define instead of a bare `NotImplementedError`.
+  to define instead of a bare `NotImplementedError`. This holds for an
+  adapter that subclasses a built-in one as well, whose own `_resolve_latest`
+  the built-in `resolve_latest` would pass over, and `config setup` reports
+  such an adapter as failed rather than offering to pin a model id.
 
 - **`review run` refuses a snapshot without its path lists.** A snapshot that
   names reviewed `files` but has no `changed_paths` or `condition_paths` list
@@ -43,7 +46,8 @@ authors can find it.
   path-scoped reviewer could be left out of the round without a word. The
   round is now refused with exit 2, naming the snapshot and saying to take a
   fresh one with `dev-orchestra review snapshot`. `status` still reads such a
-  snapshot; with no snapshot at all nothing changes.
+  snapshot, and says the same as a reason to stop rather than planning the
+  round as one that touches nothing; with no snapshot at all nothing changes.
 
 ### Changed
 

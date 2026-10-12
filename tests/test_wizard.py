@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import unittest
+from unittest import mock
 
 from helpers import IsolatedCase
 
@@ -11,6 +12,7 @@ from orchestrator import config_layers
 from orchestrator import presets as presets_mod
 from orchestrator import summary as summary_mod
 from orchestrator import wizard as wizard_mod
+from orchestrator.providers import ResolveLatestMissing
 
 
 class ScriptedPrompter(wizard_mod.Prompter):
@@ -600,6 +602,29 @@ class TestLanguageQuestion(IsolatedCase):
         data, _ = wizard_mod.run(prompter)
         self.assertEqual(data["language"], {"reply": "es"})
         self.assertEqual(len([q for q in prompter.questions if "Reply language" in q]), 1)
+
+
+class _NoResolveLatest:
+    """An adapter whose model resolution is missing, not its family."""
+
+    def list_models(self):
+        return []
+
+    def resolve_model(self, spec):
+        raise ResolveLatestMissing("mine: the adapter must define resolve_latest(family)")
+
+
+class TestAskModel(IsolatedCase):
+    def test_an_adapter_without_resolve_latest_is_reported_as_failed(self):
+        """Not read as an unknown family: no pin or other family would help."""
+        prompter = ScriptedPrompter(["", "anything"])
+        with mock.patch.object(wizard_mod, "get_provider", return_value=_NoResolveLatest()):
+            model = wizard_mod._ask_model(prompter, "mine", "default")
+        self.assertIsNone(model)
+        self.assertFalse(any("Pin this exact model id" in q for q in prompter.questions))
+        self.assertTrue(
+            any("must define resolve_latest" in line for line in prompter.output), prompter.output
+        )
 
 
 if __name__ == "__main__":
