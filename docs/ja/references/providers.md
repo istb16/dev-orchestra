@@ -1,4 +1,4 @@
-<!-- translated-from: references/providers.md sha256:d4d29e2839a4ef281ded33a40a64195ef97084577f776f477212152653421996 -->
+<!-- translated-from: references/providers.md sha256:899538f3cde80ac2b14c381f8a58092345d8e13cbee9d4fc6a664cd5008fcda9 -->
 
 > この文書は [references/providers.md](../../../references/providers.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -370,7 +370,7 @@ agy の書き込みロールでは、`options` の何ひとつとして project 
 
 1. 出発点として `providers/codex.py` をコピーします。
 2. **実際の CLI の `--help` を読みます。** フラグを記憶に頼って書かないでください。それがアダプタが腐っていく原因です。検証したバージョンをモジュールの docstring に記録します。
-3. `_discover_models`、`_resolve_latest`、`build_command`、`auth_status` を実装します。`around_launch` をオーバーライドするのは、特別な出力の取得のように、CLI の実行の前後に作業がある場合だけです。`launch._replace(...)` を `proceed` に渡し、変えるのは `prompt`、`cwd`、`model_spec`、`timeout`、`env`、`idle_timeout`、`command_kwargs`、`own_args` だけにしてください（`mode`、`resume_session`、`extra_args`、`options` は `run` がすでにゲートにかけているため、変えると例外になります）。アダプタ自身の引数は `own_args` で足します。組み込みアダプタのサブクラスでは `super().around_launch(launch, proceed)` を通してください。**`run` ではなく `around_launch` をオーバーライドしてください**。`run` をオーバーライドしたアダプタは、読み取り専用の生引数ゲートを自分で持つことになります。
+3. `_discover_models`、`resolve_latest`、`build_command`、`auth_status` を実装します。`around_launch` をオーバーライドするのは、特別な出力の取得のように、CLI の実行の前後に作業がある場合だけです。`launch._replace(...)` を `proceed` に渡し、変えるのは `prompt`、`cwd`、`model_spec`、`timeout`、`env`、`idle_timeout`、`command_kwargs`、`own_args` だけにしてください（`mode`、`resume_session`、`extra_args`、`options` は `run` がすでにゲートにかけているため、変えると例外になります）。アダプタ自身の引数は `own_args` で足します。組み込みアダプタのサブクラスでは `super().around_launch(launch, proceed)` を通してください。**`run` ではなく `around_launch` をオーバーライドしてください**。`run` をオーバーライドしたアダプタは、読み取り専用の生引数ゲートを自分で持つことになります。
 4. `plan` と `review` が本当に読み取り専用のモード、つまりモデルの協力なしに CLI が強制するモードに対応付けられていることを確認します。読み取り専用の実行に生引数が必要なら `refused_read_only_args` を実装し（既定ではすべて拒否）、CLI が何を強制するかを示す `read_only_enforcement` を実装します。実装しなければ `doctor` は `not reported by this adapter` と表示します。
 5. 登録します:
 
@@ -433,7 +433,7 @@ class MyCliProvider(Provider):
     fallback_models = (ModelCandidate("", "default", "CLI default", "builtin-fallback"),)
     fallback_updated = "2026-09-24"
 
-    def _resolve_latest(self, family: str) -> ResolvedModel:
+    def resolve_latest(self, family: str) -> ResolvedModel:
         if family in ("", "default"):
             return ResolvedModel(self.name, "default", "latest", None, "mycli default", "cli-default")
         raise ModelResolutionError(
@@ -555,7 +555,7 @@ class MyCliProvider(Provider):
 
 ### インターフェースの安定性
 
-`base.Provider` とその周辺の型（`ModelCandidate`、`ResolvedModel`、`RunResult`、`Usage`、`Detection`、`Launch`）は互換性の約束（README の「互換性」）の対象外です。マイナーバージョンで変わることがあり、そのときの `CHANGELOG.md` の項目は見つけやすいよう **User adapters** で始まります。約束の対象は built-in のアダプタが何をするかであって、サブクラスが頼りにしているものではありません。プラグインのバージョンを固定するか、更新後に `dev-orchestra doctor` を実行して、アダプタがまだ読み込めることを確認してください。`run()`、`_launch()`、`around_launch()` のシグネチャ、`Launch` のフィールド、`resume_support()`、ライブチェック関連のメンバーは最も変わりやすい部分です。`tests/test_provider_contract.py` は、上記の例を含むすべてのアダプタがこれらに従っていることを検証します。`run` が `resume_session` を `_launch` に渡すのはそれがあるときだけなので、再開の機能より前に書かれたアダプタも動き続けますが、これは配慮であって約束ではありません。
+互換性の約束（README の「互換性」）が対象にするのは、上の最小のアダプタが頼るものだけです。[契約](#the-contract)と[ルール](#rules)にある読み込みの決まり（ファイルの場所、`build_provider(executable=None)`、名前の決まり、built-in の名前は断られること、最初のファイルが勝つこと、読み込みの失敗は `doctor` が報告し止まりはしないこと、`DEV_ORCHESTRA_NO_USER_PROVIDERS`）、import の場所 `orchestrator.providers.base`、例がそこから import する名前（`Provider`、`ModelCandidate`、`ResolvedModel`、`ModelResolutionError`、`READ_ONLY_MODES`）を例と同じ呼び方で使うこと、そして例が定義するか呼ぶメンバー（`name`、`display_name`、`executable`、`fallback_models`、`fallback_updated`、`resolve_latest`、`build_command`、`option_args`）です。`base.Provider` の残りの部分とその周辺の型（`RunResult`、`Usage`、`Detection`、`Launch`）、つまり再開、ライブチェック関連のメンバー、`around_launch`、`_capture`、実行の出力を読むフック、モデルの探索は対象外です。マイナーバージョンで変わることがあり、そのときの `CHANGELOG.md` の項目は見つけやすいよう **User adapters** で始まります。プラグインのバージョンを固定するか、更新後に `dev-orchestra doctor` を実行して、アダプタがまだ読み込めることを確認してください。`run()`、`_launch()`、`around_launch()` のシグネチャ、`Launch` のフィールド、`resume_support()`、ライブチェック関連のメンバーは最も変わりやすい部分です。`tests/test_provider_contract.py` は、上記の例を含むすべてのアダプタがこれらに従っていることを検証します。`run` が `resume_session` を `_launch` に渡すのはそれがあるときだけなので、再開の機能より前に書かれたアダプタも動き続けますが、これは配慮であって約束ではありません。
 
 上記の例は `build_command` しか実装していませんが、それでも読み取り専用のゲートは効きます。ゲートはアダプタが継承する `run` にあるので、生引数を伴う `plan` や `review` の実行は拒否され（base の許可リストは空）、`read_only_enforcement` を実装するまで `doctor` は `not reported by this adapter` と報告します。その `--read-only` フラグが本当に書き込みを止めるかどうかはアダプタの責任で、ここでは何も検証しません。
 

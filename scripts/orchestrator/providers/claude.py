@@ -548,7 +548,7 @@ class ClaudeProvider(Provider):
             return list(self.fallback_models)
         return [ModelCandidate(alias, alias, alias, "cli-help") for alias in aliases]
 
-    def _resolve_latest(self, family: str) -> ResolvedModel:
+    def resolve_latest(self, family: str) -> ResolvedModel:
         if not family or family in ("default", "recommended", "auto"):
             return ResolvedModel(
                 self.name,

@@ -261,6 +261,74 @@ class TestCompatibilityPromise(unittest.TestCase):
             with self.subTest(document=name):
                 self.assertIn("User adapters", text)
 
+    def test_the_promise_names_what_the_minimal_adapter_uses(self):
+        """The covered part of ``Provider`` is what the example relies on."""
+        example = USER_ADAPTER_SOURCE
+        imported = re.search(r"from orchestrator\.providers\.base import \((.*?)\)", example, re.DOTALL)
+        assert imported is not None
+        names = re.findall(r"\w+", imported.group(1))
+        names += re.findall(r"^    (\w+) = ", example, re.MULTILINE)
+        names += re.findall(r"^    def (\w+)\(", example, re.MULTILINE)
+        names += re.findall(r"self\.(\w+)\(", example)
+        self.assertIn("resolve_latest", names)
+        sections = {
+            "README.md": self.section(self.read("README.md"), "## Compatibility"),
+            "README.ja.md": self.section(self.read("README.ja.md"), "## 互換性"),
+            "providers.md": self.section(self.read("references/providers.md"), "### Interface stability"),
+            "ja providers.md": self.section(self.read(JA_PROVIDERS), "### インターフェースの安定性"),
+        }
+        for document, text in sections.items():
+            for name in sorted(set(names)):
+                with self.subTest(document=document, name=name):
+                    self.assertIn("`%s`" % name, text)
+            with self.subTest(document=document, name="the loader"):
+                self.assertIn("`build_provider(executable=None)`", text)
+                self.assertIn("`DEV_ORCHESTRA_NO_USER_PROVIDERS`", text)
+
+    def test_the_promise_names_what_it_leaves_out(self):
+        named = (
+            "`state record`",
+            "`budget consume`",
+            "`progress record`",
+            "`run --job-file`",
+            "`DEV_ORCHESTRA_MOCK_*`",
+            "`DEV_ORCHESTRA_TEST_*`",
+            "`DEV_ORCHESTRA_DELEGATED`",
+            "`jobs/<id>.stop`",
+            "`.ai/agy-prompt-*`",
+            "`.tmp-*.part`",
+            "`*.lock`",
+            "`.ai/.gitignore`",
+            "`review-run.log`",
+            "`notes`",
+            "`warnings`",
+        )
+        for readme, heading in (("README.md", "## Compatibility"), ("README.ja.md", "## 互換性")):
+            text = self.section(self.read(readme), heading)
+            for phrase in named:
+                with self.subTest(document=readme, phrase=phrase):
+                    self.assertIn(phrase, text)
+
+    def test_the_cli_reference_lists_every_covered_variable(self):
+        readme = self.read("README.md")
+        start = readme.index("- **The environment variables**")
+        bullet = readme[start : readme.index("\n- ", start)]
+        covered = re.findall(r"`(DEV_ORCHESTRA_[A-Z_]+)`", bullet)
+        self.assertIn("DEV_ORCHESTRA_NO_USER_PROVIDERS", covered)
+        for relative in ("references/cli.md", "docs/ja/references/cli.md"):
+            text = self.read(relative)
+            for variable in covered:
+                with self.subTest(document=relative, variable=variable):
+                    self.assertIn("| `%s` |" % variable, text)
+
+    def test_an_artifact_key_keeps_its_type_too(self):
+        formats = " ".join(
+            self.paragraph(self.read("references/workflow.md"), "**How the formats change.**").split()
+        )
+        self.assertEqual(formats.count("given a new meaning or type"), 2)
+        ja_formats = self.paragraph(self.read(JA_WORKFLOW), "**形式の変え方。**")
+        self.assertEqual(ja_formats.count("意味や型を変えたりはしません"), 2)
+
     def test_no_doc_describes_the_removed_adoption(self):
         """CHANGELOG.md is left out: the released entries stay as they were."""
         stale = (

@@ -253,7 +253,7 @@ class AgyProvider(Provider):
             return list(self.fallback_models)
         return [ModelCandidate("", "default", "CLI default", "cli-default"), *listed]
 
-    def _resolve_latest(self, family: str) -> ResolvedModel:
+    def resolve_latest(self, family: str) -> ResolvedModel:
         lowered = (family or "").strip().lower()
         if lowered in DEFAULT_FAMILIES:
             return ResolvedModel(
@@ -307,7 +307,7 @@ class AgyProvider(Provider):
         found: List[Tuple[str, str]] = []
         for family in CONFIG_FAMILIES:
             try:
-                resolved = self._resolve_latest(family)
+                resolved = self.resolve_latest(family)
             except ModelResolutionError:
                 continue
             found.append((family, resolved.argument or resolved.display))
