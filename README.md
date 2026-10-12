@@ -291,7 +291,8 @@ Covered:
 - **The environment variables** `DEV_ORCHESTRA_CONFIG`, `DEV_ORCHESTRA_HOME`,
   `DEV_ORCHESTRA_WORKFLOW`, `DEV_ORCHESTRA_SESSION` and
   `DEV_ORCHESTRA_NO_USER_PROVIDERS`.
-- **The `--json` output of every command**: a key may be added; a key is not
+- **The `--json` output of every command** ([json](references/json.md) lists
+  each command's keys and values): a key may be added; a key is not
   removed, renamed or given a new meaning or type. The documented values of a
   field that takes one of a list (`status`, `coverage`, `resume.reason`) are
   kept; the sentences inside `notes` and `warnings` are text and are not.
@@ -315,7 +316,9 @@ Covered:
   `Provider`, `ModelCandidate`, `ResolvedModel`, `ModelResolutionError` and
   `READ_ONLY_MODES`, called as the example calls them, and the members it
   defines or calls -- `name`, `display_name`, `executable`, `fallback_models`,
-  `fallback_updated`, `resolve_latest`, `build_command` and `option_args`.
+  `fallback_updated`, `option_keys` (the `options` keys a role may set on it,
+  which `validate_options` holds the role's `options` to), `resolve_latest`,
+  `build_command` and `option_args`.
 - **What the reply-language hooks do** ([Reply-language hooks](references/architecture.md#reply-language-hooks)):
   dev-orchestra adds them to your Claude Code user settings only when you set
   `language.reply` or run `hooks install`. It changes only its own entries
@@ -381,6 +384,7 @@ translation of each, for people to read, is in [docs/ja/references/](docs/ja/ref
 | [references/architecture.md](references/architecture.md) | How the pieces fit, why, and the security model |
 | [references/limits.md](references/limits.md) | Stalls, timeouts, budgets, bulk input, what a run costs, the optimization level |
 | [references/cli.md](references/cli.md) | Every command and flag, and troubleshooting |
+| [references/json.md](references/json.md) | What each command prints with `--json`: its keys, their types and their values |
 
 ## Contributing
 

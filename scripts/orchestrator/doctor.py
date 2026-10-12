@@ -93,7 +93,7 @@ def _stored_elsewhere_report(report: Dict[str, Any]) -> None:
         report["platform"]["store_python"] = True
     user = report["user_providers"]
     _add_real(user, "directory_real", user.get("directory"))
-    for item in [*(user.get("loaded") or []), *(user.get("errors") or [])]:
+    for item in [*(user.get("loaded") or []), *(user.get("errors") or []), *(user.get("problems") or [])]:
         _add_real(item, "path_real", item.get("path"))
     directory = config_mod.global_config_dir()
     real = config_mod.stored_elsewhere(directory)
@@ -138,6 +138,8 @@ def collect(start: Optional[str] = None, probe_models: bool = True) -> Dict[str,
     report["user_providers"] = user_provider_report()
     for failure in report["user_providers"]["errors"]:
         report["problems"].append("user provider %s: %s" % (failure["path"], failure["error"]))
+    for item in report["user_providers"].get("problems") or []:
+        report["problems"].append("user provider %s: %s" % (item["path"], item["problem"]))
     _stored_elsewhere_report(report)
 
     detections = {}
@@ -1052,6 +1054,9 @@ def _user_provider_lines(info: Dict[str, Any], store: bool = False) -> List[str]
     for failure in info.get("errors") or []:
         path = config_mod.describe_location(failure["path"], failure.get("path_real"))
         lines.append("  Failed:   %s -- %s" % (path, failure["error"]))
+    for item in info.get("problems") or []:
+        path = config_mod.describe_location(item["path"], item.get("path_real"))
+        lines.append("  Problem:  %s -- %s" % (path, item["problem"]))
     return lines
 
 

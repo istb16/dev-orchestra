@@ -1503,6 +1503,57 @@ class TestUserProviders(IsolatedCase):
         code, _, _ = run_cli("doctor", "--fast", "--strict")
         self.assertEqual(code, 1)
 
+    def test_an_adapter_still_defining_the_old_resolve_latest_is_a_problem(self):
+        """0.24.0 renamed ``_resolve_latest`` with no alias: such an adapter
+        still loads, and doctor says what to rename instead of "No problems"."""
+        source = FLAKY_ADAPTER.replace("def resolve_latest(", "def _resolve_latest(") % "none"
+        path = self.write_user_provider("flaky", source)
+        report = self.load_user_providers()
+        self.assertEqual(report["errors"], [])
+        self.assertEqual([item["name"] for item in report["loaded"]], ["flaky"])
+        self.write_mock_config([config_mod.make_reviewer("flaky-general", "flaky", "default")])
+
+        code, out, _ = run_cli("doctor", "--fast", "--json")
+        self.assertEqual(code, 0)
+        payload = json.loads(out)
+        self.assertEqual([item["path"] for item in payload["user_providers"]["problems"]], [path])
+        problem = "user provider %s: defines _resolve_latest, which 0.24.0 renamed to resolve_latest" % path
+        self.assertTrue(any(line.startswith(problem) for line in payload["problems"]), payload["problems"])
+        self.assertTrue(
+            any("rename the method to resolve_latest" in line for line in payload["problems"]),
+            payload["problems"],
+        )
+        _, out, _ = run_cli("doctor", "--fast")
+        self.assertIn("Problem:  %s -- defines _resolve_latest" % path, out)
+        self.assertNotIn("No problems found.", out)
+        code, _, _ = run_cli("doctor", "--fast", "--strict")
+        self.assertEqual(code, 1)
+
+        # Resolving a model on it says the same, as a message.
+        with self.assertRaises(providers.ModelResolutionError) as raised:
+            providers.get_provider("flaky").resolve_model({"family": "default"})
+        self.assertIsInstance(raised.exception, NotImplementedError)
+        self.assertEqual(
+            str(raised.exception),
+            "flaky: the adapter defines _resolve_latest, which 0.24.0 renamed to resolve_latest; "
+            "rename the method to resolve_latest",
+        )
+        run_cli("config", "set", "implementer.provider", "flaky")
+        code, out, err = run_cli("run", "implementer", "--print-command")
+        self.assertEqual(code, 2)
+        self.assertEqual(out, "")
+        self.assertIn("rename the method to resolve_latest", err)
+        self.assertNotIn("Traceback", err)
+
+    def test_an_adapter_without_resolve_latest_says_it_must_define_one(self):
+        source = FLAKY_ADAPTER.replace("def resolve_latest(", "def resolve_other(") % "none"
+        self.write_user_provider("flaky", source)
+        report = self.load_user_providers()
+        self.assertEqual(report["problems"], [])
+        with self.assertRaises(providers.ModelResolutionError) as raised:
+            providers.get_provider("flaky").resolve_model({"family": "default"})
+        self.assertEqual(str(raised.exception), "flaky: the adapter must define resolve_latest(family)")
+
     def test_doctor_says_when_there_is_no_directory(self):
         self.write_mock_config()
         self.load_user_providers()
