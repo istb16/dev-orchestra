@@ -315,6 +315,27 @@ class TestLedgerAccount(IsolatedCase):
         self.book.record_usage("review", self.measured(input_tokens=100, cost_usd=1.5))
         self.assertTrue(self.book.token_report()["priced"])
 
+    def test_an_account_without_priced_runs_reads_as_unpriced(self):
+        """No longer read as making no claim: the runs count as having reported no cost."""
+        self.book.record_usage("review", self.measured(input_tokens=100, cost_usd=1.5))
+        state = self.cli_workspace().read_state()
+        del state["ledger"]["tokens"]["by_stage"]["review"]["priced_runs"]
+        self.cli_workspace().write_state(state)
+        report = self.book.token_report()
+        self.assertEqual(report["totals"]["priced_runs"], 0)
+        self.assertFalse(report["priced"])
+        self.assertNotIn("priced_known", report["totals"])
+
+    def test_an_account_without_tool_reported_runs_reported_no_tool_activity(self):
+        self.book.record_usage("review", self.measured(tool_uses=4))
+        state = self.cli_workspace().read_state()
+        del state["ledger"]["tokens"]["by_stage"]["review"]["tool_reported_runs"]
+        self.cli_workspace().write_state(state)
+        totals = self.book.token_report()["totals"]
+        self.assertEqual((totals["runs"], totals["tool_reported_runs"]), (1, 0))
+        for key in ("tool_unknown_runs", "tool_known", "priced_known"):
+            self.assertNotIn(key, totals)
+
     def test_reviewers_are_accounted_for_individually(self):
         """The review stage is the one that runs the same diff N times over."""
         self.book.record_usage("review", self.measured(input_tokens=400), label="claude-general")
@@ -672,6 +693,21 @@ class TestTokensCommand(IsolatedCase):
         _, out, _ = run_cli("tokens", "show")
         self.assertIn("1 of 2 run(s) reported no tool activity", out)
         self.assertIn("not source read", out)
+
+    def test_an_account_without_tool_reported_runs_is_shown_as_no_tool_activity(self):
+        book = ledger_mod.Ledger(self.cli_workspace(), dict(ledger_mod.DEFAULT_BUDGETS))
+        book.record_usage("review", Usage(source="claude", tool_uses=4).to_dict())
+        state = self.cli_workspace().read_state()
+        del state["ledger"]["tokens"]["by_stage"]["review"]["tool_reported_runs"]
+        self.cli_workspace().write_state(state)
+        _, out, _ = run_cli("tokens", "show")
+        self.assertEqual(_row(out, "review")[-2:], ["-", "-"])
+        self.assertIn("1 of 1 run(s) reported no tool activity", out)
+        self.assertNotIn("predate tool counting", out)
+        payload = json.loads(run_cli("tokens", "show", "--json")[1])
+        for account in (payload["totals"], payload["by_stage"]["review"]):
+            for key in ("tool_unknown_runs", "priced_known", "tool_known"):
+                self.assertNotIn(key, account)
 
     def test_a_real_run_through_the_pipeline_reports_its_tools(self):
         run_cli("run", "implementer", "--prompt", "go")

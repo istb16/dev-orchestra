@@ -822,7 +822,9 @@ def _risk_paths(meta: Dict[str, Any]) -> List[str]:
 
     ``changed_paths`` is the whole set, including withheld files and the name
     a rename came from. A snapshot without the list reads as one with no
-    paths, as a missing or unreadable snapshot does.
+    paths, as a missing or unreadable snapshot does; `review run` refuses a
+    snapshot that has ``files`` but not the list (see
+    ``_refuse_snapshot_without_paths``), so only a preview reads it that way.
     """
     paths = meta.get("changed_paths")
     return [str(path) for path in paths] if isinstance(paths, list) else []
@@ -837,6 +839,29 @@ def _condition_paths(meta: Dict[str, Any]) -> List[str]:
     """
     paths = meta.get("condition_paths")
     return [str(path) for path in paths] if isinstance(paths, list) else []
+
+
+def _refuse_snapshot_without_paths(workspace: ws.Workspace, meta: Any) -> Optional[int]:
+    """A snapshot with reviewed files but no path lists to judge risk by.
+
+    Read as no paths, high-risk patterns would match nothing and path-scoped
+    reviewers would not qualify, so the panel could be cut without a word.
+    Not rebuilt from ``files`` and ``withheld`` either: they leave out the
+    name a rename came from. A snapshot written before the lists were, or
+    edited by hand, is retaken instead. ``{}``, no snapshot, is not refused.
+    """
+    if not isinstance(meta, dict) or "files" not in meta:
+        return None
+    missing = [key for key in ("changed_paths", "condition_paths") if not isinstance(meta.get(key), list)]
+    if not missing:
+        return None
+    _err(
+        "refusing to run: the snapshot %s has no %s list, so which paths the change touches cannot be "
+        "judged and the high-risk and path-scoped reviewers could be left out. Take a fresh one with "
+        "`dev-orchestra review snapshot`."
+        % (workspace.relative(workspace.snapshot_meta_path), " or ".join(missing))
+    )
+    return 2
 
 
 def _round_plan(
@@ -1496,6 +1521,9 @@ def cmd_review_run(args: argparse.Namespace) -> int:
         return refusal
 
     meta = workspace.read_snapshot_meta()
+    refusal = _refuse_snapshot_without_paths(workspace, meta)
+    if refusal is not None:
+        return refusal
     refusal = _refuse_incremental_measurement(override, meta)
     if refusal is not None:
         return refusal

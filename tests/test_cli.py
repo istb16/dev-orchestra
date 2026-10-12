@@ -585,10 +585,22 @@ class TestSnapshotPaths(unittest.TestCase):
         self.assertEqual(cli_review._risk_paths(meta), ["lib/x.rb", "gen/schema.rb"])
         self.assertEqual(cli_review._condition_paths(meta), ["lib/x.rb"])
 
-    def test_a_snapshot_without_the_lists_reads_as_no_snapshot(self):
-        """Not rebuilt from ``files`` and ``withheld``: the same as ``{}``."""
-        self.assertEqual(cli_review._risk_paths(self.META), cli_review._risk_paths({}))
+    def test_a_snapshot_without_the_lists_has_no_paths(self):
+        """Not rebuilt from ``files`` and ``withheld``. `review run` refuses such a snapshot."""
+        self.assertEqual(cli_review._risk_paths(self.META), [])
         self.assertEqual(cli_review._condition_paths(self.META), [])
+        self.assertEqual(cli_review._risk_paths({}), [])
+        self.assertEqual(cli_review._condition_paths({}), [])
+
+    def test_a_present_empty_list_is_no_paths(self):
+        meta = dict(self.META, changed_paths=[], condition_paths=[])
+        self.assertEqual(cli_review._risk_paths(meta), [])
+        self.assertEqual(cli_review._condition_paths(meta), [])
+
+    def test_a_string_is_not_read_as_a_list(self):
+        meta = dict(self.META, changed_paths="lib/x.rb", condition_paths="lib/x.rb")
+        self.assertEqual(cli_review._risk_paths(meta), [])
+        self.assertEqual(cli_review._condition_paths(meta), [])
 
 
 class TestMalformedPathConditions(IsolatedCase):
@@ -1008,6 +1020,18 @@ class TestDoctor(IsolatedCase):
         self.assertFalse(any(p.startswith("Implementer") for p in ignored), problems)
         self.assertNotIn("ignored_options", report["roles"]["implementer"])
 
+    def test_doctor_reports_no_pinned_values(self):
+        """The 0.24.0 removal: a file holding every default, as one from before
+        0.6.0 does, has no "Pinned" section and no ``config.pinned``."""
+        data = config_mod.default_config()
+        data["review"]["max_review_iterations"] = 3
+        config_mod.write_config_file(config_mod.global_config_path(), data)
+        code, out, _ = run_cli("doctor", "--fast", "--json")
+        self.assertEqual(code, 0)
+        self.assertNotIn("pinned", json.loads(out)["config"])
+        _, text, _ = run_cli("doctor", "--fast")
+        self.assertNotIn("Pinned", text)
+
     def test_strict_mode_exits_non_zero_on_problems(self):
         run_cli("config", "setup", "--defaults")
         run_cli("reviewer", "remove", "claude-general")
@@ -1081,6 +1105,25 @@ class TestDoctorDefaultPatternsNote(IsolatedCase):
         defaults = config_mod.default_config()["optimization"]["high_risk_paths"]
         self.write_config(high_risk_paths=[*defaults, "", "  "])
         self.assertEqual(len(self.notes()), 1)
+
+    def test_the_defaults_plus_one_pattern_are_a_choice(self):
+        """A list that holds every default and one more is not the defaults:
+        someone chose it, as ``default_patterns_only`` reads any other set."""
+        defaults = config_mod.default_config()["optimization"]["high_risk_paths"]
+        self.write_config(high_risk_paths=[*defaults, "app/guards/*"])
+        self.assertEqual(self.notes(), [])
+
+    def test_an_empty_list_is_not_noted(self):
+        """``[]`` is a set other than the defaults, so this note says nothing;
+        no pattern in force is reported as a problem instead."""
+        self.write_config(high_risk_paths=[])
+        _, out, _ = run_cli("doctor", "--fast", "--json")
+        report = json.loads(out)
+        self.assertEqual(report["notes"], [])
+        self.assertTrue(
+            any("optimization.high_risk_paths: no pattern in force" in p for p in report["problems"]),
+            report["problems"],
+        )
 
     def test_no_high_risk_reviewer_means_no_note(self):
         self.write_config(conditional=())
@@ -2718,6 +2761,62 @@ class TestReviewPipeline(IsolatedCase):
         self.assertIn("F1", brief)
         self.assertIn("restore the addition", brief)
 
+    def edit_snapshot_meta(self, **changes: Any) -> None:
+        """The snapshot on disk with ``changes`` applied; a ``None`` value drops the key."""
+        path = self.cli_workspace().snapshot_meta_path
+        meta = ws.read_json(path)
+        for key, value in changes.items():
+            if value is None:
+                meta.pop(key, None)
+            else:
+                meta[key] = value
+        ws.write_json(path, meta)
+
+    def assert_paths_refused(self) -> None:
+        code, out, err = run_cli("review", "run")
+        self.assertEqual(code, 2)
+        self.assertIn("refusing to run: the snapshot .ai/workflows/", err)
+        self.assertIn("review-target.json", err)
+        self.assertIn("dev-orchestra review snapshot", err)
+        self.assertNotIn("successful", out)
+        events = self.cli_workspace().read_state().get("events") or []
+        self.assertFalse([event for event in events if event.get("stage") == "review"])
+
+    def test_review_run_refuses_a_snapshot_without_changed_paths(self):
+        run_cli("review", "snapshot")
+        self.edit_snapshot_meta(changed_paths=None)
+        self.assert_paths_refused()
+        self.assertIn("no changed_paths list", run_cli("review", "run")[2])
+
+    def test_review_run_refuses_a_snapshot_without_condition_paths(self):
+        run_cli("review", "snapshot")
+        self.edit_snapshot_meta(condition_paths=None)
+        self.assert_paths_refused()
+
+    def test_review_run_refuses_a_path_list_written_as_a_string(self):
+        run_cli("review", "snapshot")
+        self.edit_snapshot_meta(changed_paths="app.py")
+        self.assert_paths_refused()
+
+    def test_review_run_refuses_an_incremental_snapshot_without_condition_paths(self):
+        """Refused the same way: an incremental round judges risk by the same lists."""
+        run_cli("review", "snapshot")
+        self.edit_snapshot_meta(incremental_from="0" * 40, condition_paths=None)
+        self.assert_paths_refused()
+
+    def test_review_run_takes_a_present_empty_list(self):
+        run_cli("review", "snapshot")
+        self.edit_snapshot_meta(changed_paths=[], condition_paths=[])
+        self.assertEqual(run_cli("review", "run")[0], 0)
+
+    def test_status_reads_a_snapshot_without_the_lists(self):
+        run_cli("review", "snapshot")
+        self.edit_snapshot_meta(changed_paths=None, condition_paths="app.py")
+        code, out, _ = run_cli("status", "--json")
+        self.assertEqual(code, 0)
+        self.assertIn("verdict", json.loads(out))
+        self.assertEqual(run_cli("status")[0], 0)
+
     def test_a_round_leaves_out_the_sleep_of_every_reviewer(self):
         os.environ["DEV_ORCHESTRA_MOCK_SUSPENDED"] = "90"
         run_cli("review", "snapshot")
@@ -4075,6 +4174,12 @@ class TestParserShape(IsolatedCase):
         ):
             with self.subTest(argv=argv):
                 self.assertIsNone(self.parse(*argv).scope)
+
+    def test_config_prune_is_gone(self):
+        self.assert_usage_error("config", "prune")
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as caught:
+            run_cli("config", "prune")
+        self.assertEqual(caught.exception.code, 2)
 
     def test_design_flag_on_review_subcommands(self):
         for argv in (
