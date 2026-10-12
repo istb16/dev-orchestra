@@ -1545,6 +1545,38 @@ class TestUserProviders(IsolatedCase):
         self.assertIn("rename the method to resolve_latest", err)
         self.assertNotIn("Traceback", err)
 
+    def test_the_old_name_is_a_problem_below_a_built_in_adapter_too(self):
+        """A subclass of a built-in adapter inherits its ``resolve_latest``,
+        so its own ``_resolve_latest`` would go uncalled without a word."""
+        source = (
+            "from orchestrator.providers.mock import MockProvider\n"
+            "\n"
+            "class Mine(MockProvider):\n"
+            "    name = 'mine'\n"
+            "\n"
+            "    def _resolve_latest(self, family):\n"
+            "        raise AssertionError('never called')\n"
+            "\n"
+            "def build_provider(executable=None):\n"
+            "    return Mine(executable)\n"
+        )
+        path = self.write_user_provider("mine", source)
+        report = self.load_user_providers()
+        self.assertEqual(report["errors"], [])
+        self.assertEqual([item["path"] for item in report["problems"]], [path])
+        self.assertIn("never called; rename the method to resolve_latest", report["problems"][0]["problem"])
+
+    def test_defining_both_names_is_not_a_problem(self):
+        source = (
+            FLAKY_ADAPTER.replace(
+                "def resolve_latest(",
+                "def _resolve_latest(self, family):\n        return None\n\n    def resolve_latest(",
+            )
+            % "none"
+        )
+        self.write_user_provider("flaky", source)
+        self.assertEqual(self.load_user_providers()["problems"], [])
+
     def test_an_adapter_without_resolve_latest_says_it_must_define_one(self):
         source = FLAKY_ADAPTER.replace("def resolve_latest(", "def resolve_other(") % "none"
         self.write_user_provider("flaky", source)
@@ -2865,7 +2897,14 @@ class TestReviewPipeline(IsolatedCase):
         self.edit_snapshot_meta(changed_paths=None, condition_paths="app.py")
         code, out, _ = run_cli("status", "--json")
         self.assertEqual(code, 0)
-        self.assertIn("verdict", json.loads(out))
+        payload = json.loads(out)
+        # What `review run` would refuse, said here first rather than planned as no paths.
+        self.assertEqual(payload["verdict"], "stop-and-report")
+        self.assertIn(
+            "the snapshot has no changed_paths or condition_paths list; take a fresh one with "
+            "`dev-orchestra review snapshot`",
+            payload["reasons"],
+        )
         self.assertEqual(run_cli("status")[0], 0)
 
     def test_a_round_leaves_out_the_sleep_of_every_reviewer(self):

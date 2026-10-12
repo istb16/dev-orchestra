@@ -25,6 +25,7 @@ from .config_layers import _compose_preview, _reviewers_hold_design_panel
 from .optimization import RELEVANCE_ALWAYS, WHEN_HIGH_RISK, reviewer_condition, risk_patterns
 from .providers import (
     ModelResolutionError,
+    ResolveLatestMissing,
     adapter_failure,
     available_providers,
     describe_exception,
@@ -436,6 +437,10 @@ def _ask_model(prompter: Prompter, provider_name: str, default_family: str) -> O
     raw = prompter.ask_text("   Model family or id", default_family)
     try:
         provider.resolve_model({"family": raw, "version": "latest"})
+    except ResolveLatestMissing as exc:
+        # The adapter, not the family: no other family or a pin would help.
+        _say_adapter_failed(prompter, provider_name, exc)
+        return None
     except ModelResolutionError as exc:
         prompter.say("   %s" % exc)
         if prompter.ask_yes_no("   Pin this exact model id instead?", False):
