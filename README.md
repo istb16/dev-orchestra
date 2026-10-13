@@ -9,6 +9,9 @@ models review the result independently before anything is called done. It
 works with any codebase, and runs only the stages a request needs: a typo fix
 skips straight to the edit; a schema change gets the full pipeline.
 
+An introduction, in Japanese: [what dev-orchestra does, how it differs from
+codex-plugin-cc, and why it helps even with Claude Code alone](https://tk3.biz/blog/2026-10-13-dev-orchestra-introduction/).
+
 ## Why this exists
 
 **A model reviewing its own work is a weak reviewer.** It shares the
