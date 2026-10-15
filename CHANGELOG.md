@@ -13,6 +13,8 @@ authors can find it.
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-10-15
+
 ### Fixed
 
 - **`scripts/smoke_live.py` no longer loses a finished run on a narrow
@@ -3265,7 +3267,8 @@ First release.
   none of which invoke a real CLI.
 - CI on Linux, macOS and Windows: lint, tests, skill validation.
 
-[Unreleased]: https://github.com/istb16/dev-orchestra/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/istb16/dev-orchestra/compare/v1.1.1...HEAD
+[1.1.1]: https://github.com/istb16/dev-orchestra/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/istb16/dev-orchestra/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/istb16/dev-orchestra/compare/v0.24.0...v1.0.0
 [0.24.0]: https://github.com/istb16/dev-orchestra/compare/v0.23.0...v0.24.0
