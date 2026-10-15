@@ -180,6 +180,7 @@ KEYS: Dict[str, Tuple[List[str], List[str]]] = {
         [
             "already_approved",
             "approved_at",
+            "decisions_sha256",
             "design_round",
             "open_findings",
             "open_findings_of_current_plan",
@@ -187,6 +188,10 @@ KEYS: Dict[str, Tuple[List[str], List[str]]] = {
             "sha256",
             "workflow",
         ],
+    ),
+    "design questions show": (
+        [],
+        ["decisions_file", "mode", "pending", "questions", "rounds", "state", "workflow"],
     ),
     "state show": ([], ["events", "ledger", "runs", "updated_at", "version"]),
     "jobs list": ([], ["id", "output_file", "stage", "started_at", "status"]),
@@ -263,6 +268,7 @@ KEYS: Dict[str, Tuple[List[str], List[str]]] = {
             "also_active",
             "budgets",
             "design_approval",
+            "design_questions",
             "design_review",
             "in_flight",
             "optimization",

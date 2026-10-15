@@ -1,4 +1,4 @@
-<!-- translated-from: references/workflow.md sha256:2c1472affdd7e009875f26052dfefa78a703d9baba89a0b19c33679e7d59fd6c -->
+<!-- translated-from: references/workflow.md sha256:36e8869f9449ad5125eb0812d155c8d3b751b4a4122b397958a4d4080bef2050 -->
 
 > この文書は [references/workflow.md](../../../references/workflow.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -12,6 +12,7 @@
 
 - [ステージの選択](#stage-selection)
 - [成果物](#artifacts)
+- [Design の質問](#design-questions)
 - [Design](#design)
 - [Design レビュー](#design-review)
 - [承認](#approval)
@@ -55,7 +56,10 @@
 └── workflows/
     └── <workflow-id>/
         ├── plan.md                 # Architect output
+        ├── decisions.md            # the design questions and the user's answers, rendered from state.json
         ├── execution/
+        │   ├── design-questions-request.md  # prompt for `run architect --questions`
+        │   ├── design-questions.md # its question blocks, fed to `design questions record`
         │   ├── design-request.md   # prompt you wrote for the Architect
         │   ├── design-fix-brief.md # generated from accepted design findings
         │   ├── design-revise-request.md
@@ -77,12 +81,13 @@
         │   ├── rounds/             # consolidated.json of every round, <sha12>-<round_id>.json
         │   └── design/             # the design review, counted separately
         │       ├── review-target.md    # the frozen plan
+        │       ├── review-target-decisions.md  # the frozen decisions, only with design questions
         │       ├── review-target.json  # plan, request, sha256, round_id
         │       ├── <reviewer-id>.md
         │       ├── consolidated.md
         │       ├── consolidated.json
         │       └── rounds/
-        └── state.json              # stage events, resolved model ids, plan approval
+        └── state.json              # stage events, resolved model ids, plan approval, design questions
 ```
 
 **ワークフローごとに 1 つのディレクトリ。** 以前は、同じチェックアウトで作業する
@@ -169,6 +174,169 @@ commit に入りません。成果物をレビュー可能にしたいチーム�
 `.ai/` 内のものも `.dev-orchestra.yaml` も、レビューのスナップショットに入ることは
 ありません。スキル自身のファイルはレビュー対象の変更ではないからです。
 
+<a id="design-questions"></a>
+
+## Design の質問
+
+デフォルトでは無効です（`design.ask_questions: false`）。有効にすると、design の未決の点は、
+architect が誰にも選択を見せずに決めてしまうのではなく、plan が書かれる前にユーザーに
+尋ねられます。この設定が有効なとき、または何かが記録されているとき、`status` は
+`Design questions:` の行を表示します。
+
+**いつ尋ねるか。** `true` では常に尋ねます。自分の質問があればそれを先に、そのあと architect の
+ラウンドを 1 回行います。`auto` では、リクエストが次のどれかに当たるときに尋ねます。
+
+- 曖昧な要件。2 通りの読み方があり、それぞれ違うコードになる
+- 新しい振る舞いや新しい仕様。コードからすでに導かれるものではなく、ユーザーが望む必要があるもの
+- 実行可能な方法が複数あり、コスト、リスク、あるいはそれによって閉ざされるものが異なる
+
+尋ねるかどうかとその理由を 1 行で述べてください（「先に尋ねます: 既存の注文にもチャネルを
+付けるのか、リクエストに書かれていません」）。尋ねない場合もその理由を述べます（「質問なし:
+原因が 1 つで明らかなバグ」）。`auto` で尋ねることがなければ、そのまま design に進みます。
+拒否されるものはありません。
+
+**流れ。**
+
+1. 要件レベルの自分の質問があれば、それを質問ブロックとして `<Artifacts>/execution/` の下に
+   書き、`--by orchestrator` で記録し、尋ねて、答えを記録します。
+2. architect のラウンド。下のテンプレートから `design-questions-request.md` を書き、
+   `--questions` を付けて実行し、その答えを `--by architect` で記録し、尋ねて、答えを記録します。
+   2 回目のラウンドは、答えによって新たに出てきた点のためのもので、同じことを尋ね直すためのもの
+   ではありません。
+3. `<Artifacts>/decisions.md` をそのまま入れた `## Decisions` セクションを持つ design リクエストを
+   書き、いつもどおり design を実行します。
+
+まとめて尋ねてください。ラウンドの未決の質問をすべて 1 つのメッセージに入れ、それぞれに選択肢と
+推奨を添えて、ユーザーが一度で答えられるようにします。1 つの質問についてでも全部についてでも、
+ユーザーの「任せる」は `--delegate` です。記録するのはユーザーが言ったことだけです。選んだ選択肢は
+`--option`、ユーザー自身の言葉は `--text` で、言葉どおりに記録します。ユーザーの代わりに答えては
+いけません。承認と同じく、これはユーザーのものです（SKILL.md のルール 10）。
+
+ブロックの形式は、どちらが尋ねる場合も同じです。
+
+```markdown
+## Question
+- Topic: <a few words>
+- Question: <one or two sentences the owner can answer without reading code>
+- Why it matters: <what in the design changes with the answer>
+- Option A: <...>
+- Option B: <...>
+- Recommended: B -- <why>
+```
+
+フィールドは 1 行に 1 つ、選択肢は `A` から `E` までです。architect の質問には `Why it
+matters`、2 つ以上の選択肢、そしてそのどれかを指す `Recommended` が必要です。自分の質問では
+選択肢と推奨を省いてかまいません。ちょうど `No questions.` とだけ書かれたファイルは、何も
+尋ねなかった architect のラウンドとして記録されます。
+
+`design-questions-request.md`:
+
+```markdown
+# Design questions
+
+<the design request, without its Deliverable section>
+
+## Answers so far
+
+<paste <Artifacts>/decisions.md here, or write None.>
+
+## Deliverable
+
+Investigate the codebase as you would to design this, but do not write a
+plan. List only the decisions the plan depends on that the request and the
+answers above leave open, and that the owner -- not the code -- has to settle.
+Ask nothing the code answers and nothing already answered. Print each as one
+block in exactly this shape, one line per field:
+
+## Question
+- Topic: <a few words>
+- Question: <one or two sentences the owner can answer without reading code>
+- Why it matters: <what in the design changes with the answer>
+- Option A: <...>
+- Option B: <...>
+- Recommended: <option key> -- <why>
+
+Give two to five options, A to E. With nothing to ask, print exactly
+`No questions.` and nothing else. Print to stdout; do not write a file and do
+not modify any file.
+```
+
+```bash
+dev-orchestra design questions record --by orchestrator --file .ai/execution/my-questions.md
+dev-orchestra run architect --questions \
+  --prompt-file .ai/execution/design-questions-request.md \
+  --output .ai/execution/design-questions.md
+dev-orchestra design questions record --by architect --file .ai/execution/design-questions.md
+dev-orchestra design questions show --open
+dev-orchestra design questions answer Q2 --option B
+dev-orchestra design questions answer Q3 --text "Only for orders placed after March"
+dev-orchestra design questions answer Q4 Q5 --delegate
+```
+
+`record` はブロックを全部記録するか、1 つも記録しないかのどちらかです。形式の崩れたブロックが
+1 つでもあると、そのブロックとフィールドを示して exit 2 で終了し、何も記録されません。内容は
+そのままに手で形式を直すか、ラウンドをやり直してください（やり直しは試行を 1 回使います）。
+`record` は付けた id を表示します。id はワークフロー全体を通した順に `Q1`、`Q2`、... です。
+自分の質問は、architect がまだラウンドを行っていなければラウンド 0 に、行っていればその直後の
+ラウンドに番号付けされます。`answer` は `--option B` を `B: <the option's text>` として、
+`--delegate` を `left to the architect` として記録します。複数の id をまとめて指定できるのは
+`--delegate` のときだけです。答えを変えるには `--revise` を使い、以前の答えは質問の `history` に
+残ります。存在しない id や選択肢、改行を含む `--text` は exit 2 で終了します。ブロックを囲む
+コードフェンスと、ブロックの後の締めの一文は無視されます。設定が `false` でも `record` は記録し、
+ゲートが無効であることを伝えます。
+
+`run architect --questions` は architect の席（その provider、モデル、モード、
+`run.timeout_seconds.architect`）で動きますが、消費するのは `budgets.architect` ではなく
+`budgets.architect_questions`（3）で、ステージ `architect_questions` として記録されるため、
+`--resume` が継続するセッションになることはありません。`--resume`、plan への `--output`、
+architect 以外のロールは拒否します（exit 2）。`run` は出力された内容を読みません。読むのは
+`record` です。
+
+**ゲート。** 記録された質問のどれかが未回答の間は、`--output` が plan である `run architect` は
+exit 6 で終了します。これは何かを消費する前、かつ `--detach` がワーカーを起動する前に行われます。
+ワーカーも改めて確認し、拒否をそのジョブに書き込みます。答えはユーザーのものなので、`--force` は
+適用されません。`true` では、architect のラウンドが記録されるまでも拒否されます。ただし
+`--resume` による改訂は除きます。未回答の質問があればその改訂も拒否されます。それを飛ばした改訂は
+`decisions.md` と矛盾しかねないからです。答えるか、`--delegate` してください。plan を出力しない
+architect の実行と、`--questions` の実行にはゲートがありません。答えが記録されているのに、
+plan の実行のプロンプトが `decisions.md` にも `## Decisions` セクションにも触れていない場合は、
+note を表示します。最もありがちな誤りは、答えを渡し忘れることだからです。未回答の質問がある間は
+`design approve` も同じように拒否します（exit 6、未回答の id を表示）。plan を何が書いたかは
+問いません。plan の後に記録された質問も、`--output` を通さずに書かれた plan も、承認で
+飛ばすことはできません。
+
+| 設定 | 記録されているもの | `state` | plan の実行 |
+| --- | --- | --- | --- |
+| `false` | 何でも | `off` | 実行される。記録されたものは表示されるが、強制はされない |
+| `auto` | 何もない | `none` | 実行される |
+| `auto` または `true` | 未回答の質問 | `open` | 拒否される。exit 6、`--resume` も含む |
+| `true` | architect のラウンドがなく、未回答もない | `round-required` | 拒否される。exit 6、`--resume` は除く |
+| `auto` または `true` | すべての質問に回答済み | `answered` | 実行される |
+
+設定は実行のたびに読まれます。`false` にすればゲートはすぐに止まり、有効に戻せば、記録された
+ものが再びゲートになります。
+
+**ラウンドの上限。** architect のラウンドが `design.max_question_rounds`（2）回に達すると、
+`run architect --questions` と `design questions record --by architect` は exit 6 で終了します。
+未決の点をまとめて提示し、どう進めるかをユーザーに尋ねてください。`--force` を付けるともう 1 回
+実行または記録できますが、ユーザーが求めたときだけにしてください。実行の場合は、使い切った
+`budgets.architect_questions` も上書きし、そのことを stderr に表示します。
+
+`decisions.md` は変更のたびに `state.json` から書き直され、編集しないよう書かれています。
+design リクエスト、改訂リクエスト、design レビュアーが読むのはこのファイルで、ゲートが読むのは
+`state.json` です。`status --json` は質問を `design_questions` の下に報告しますが、停止の理由と
+しては扱いません。
+
+| フィールド | 意味 |
+| --- | --- |
+| `mode` | `off`、`auto`、または `on`。`design.ask_questions` から |
+| `state` | `off`、`none`、`open`、`round-required`、または `answered` |
+| `pending` | 質問が未回答の間だけ `true` |
+| `open` | まだ回答されていない id |
+| `answered`, `total` | 回答済みの数と、全体の数 |
+| `architect_rounds`, `max_rounds` | 記録された architect のラウンド数と、`design.max_question_rounds` |
+| `decisions_file` | `decisions.md`。ルートからの相対パス。何か記録されるまでは `null` |
+
 <a id="design"></a>
 
 ## Design
@@ -196,10 +364,17 @@ design リクエストは自分で書いてください。Architect はこの会
 ## Out of scope
 - <anything you have already ruled out, and why>
 
+## Decisions
+<paste <Artifacts>/decisions.md here, unchanged; leave this section out when no design questions were asked>
+
 ## Deliverable
 Print the complete plan to stdout as Markdown, with these sections: Goal,
-Current Behavior, Investigation, Root Cause, Proposed Change, Files to Modify,
-Data/API Impact, Compatibility, Test Strategy, Risks, Implementation Steps.
+Current Behavior, Investigation, Root Cause, Proposed Change, Decisions, Files
+to Modify, Data/API Impact, Compatibility, Test Strategy, Risks,
+Implementation Steps. Under Decisions, list each decision from the Decisions
+section above and each open point you settled yourself: what it is, whether
+the user or you decided it, and why; write `None.` when there are none. The
+user's decisions are fixed: design within them.
 The caller captures stdout. Do not write it to a file: this role runs in plan
 mode. Do not modify any file.
 ```
@@ -239,6 +414,18 @@ plan は先に渡す前に読んでください。曖昧である、コードベ
 design のラウンドがコードレビューのラウンド数を進めたり、その上限で拒否されたりする
 ことはありません。design ステージを省略すると、design レビューも一緒に省略されます。
 
+design の質問が記録されている場合、各レビュアーには design リクエストのあとにユーザーの決定も
+前提として渡され、plan がそれに従っていることは指摘されません。決定そのものが誤っていると考える
+レビュアーは、`Category: decision` で、`File` に決定の id（`decisions.md#Q3`）を入れた指摘を
+1 つ報告します。この指摘は自分の判断でトリアージせず、ユーザーに委ねてください。ユーザーが決め直した
+場合は `design questions answer Q3 --revise ...` で記録し、指摘を `accepted` とトリアージして
+改訂に取り込みます。決定を維持する場合は `rejected --note "user kept Q3"` とトリアージします。
+決定はラウンドの sha に含まれるので、plan が変わらないまま決定が変わると新しいレビュー対象に
+なります。決定は plan の隣の `reviews/design/review-target-decisions.md` に凍結され、
+`review-target.json` はそのファイルを `decisions` に示します。別の答えのもとでレビューされた
+ラウンドの指摘は、`design approve` が以前の改訂に対するものと表示します。質問がなければ、
+プロンプトも sha もこれまでと同じです。
+
 ```bash
 dev-orchestra review run --design
 dev-orchestra review show --design
@@ -264,7 +451,7 @@ architect は、できるときは plan を設計したセッションを継続�
 ```markdown
 # Revise the plan
 
-<the original design request, unchanged>
+<the original design request, unchanged but for its `## Decisions`, replaced by the current <Artifacts>/decisions.md>
 
 Read <Artifacts>/plan.md and revise it. Keep every section it already has.
 
@@ -295,7 +482,8 @@ You are continuing the session in which you designed this plan. Read
 <Artifacts>/plan.md once before changing anything: it is the plan you printed, as
 saved by the orchestrator, and the findings below refer to its sections.
 Do not re-read code you already read unless a finding contradicts what you
-remember.
+remember. If this workflow has <Artifacts>/decisions.md, read it once; its
+answers are fixed. Keep the plan's `## Decisions` in line with it.
 
 <paste <Artifacts>/execution/design-fix-brief.md here>
 
@@ -393,13 +581,17 @@ approve` で記録します。自分の判断で記録したり、拒否を回�
 行い）、改めて尋ねてください。修正版はハッシュが変わるので、以前の承認はもう有効では
 ありません。
 
+記録された決定を変えるときも同じです。まず `design questions answer Q2 --revise --text "..."` で
+ユーザーの新しい言葉を記録します。これで `decisions.md` が書き直されます。そのうえで下のとおり plan を
+修正し、変わった決定を id で示してください。
+
 ユーザーが求めた修正には fix brief がないので、2 つのファイルには代わりにユーザーの言葉を入れます。
 `design-change-request.md` は新規に走る場合のものです。
 
 ```markdown
 # Revise the plan
 
-<the original design request, unchanged>
+<the original design request, unchanged but for its `## Decisions`, replaced by the current <Artifacts>/decisions.md>
 
 Read <Artifacts>/plan.md and revise it. Keep every section it already has.
 
@@ -429,7 +621,9 @@ stdout. Do not write it to a file: this role runs in plan mode.
 You are continuing the session in which you designed this plan. Read
 <Artifacts>/plan.md once before changing anything: it is the plan you printed, as
 saved by the orchestrator. Do not re-read code you already read unless a
-change below contradicts what you remember.
+change below contradicts what you remember. If this workflow has
+<Artifacts>/decisions.md, read it once; its answers are fixed. Keep the
+plan's `## Decisions` in line with it.
 
 The owner reviewed the plan and asked for these changes, in their words:
 
@@ -473,7 +667,10 @@ plan が承認されていない間、`run implementer` は拒否します（exi
 承認の対象は plan のテキストそのもの（sha256）と、承認が与えられた時点の design レビューの
 ラウンドです。plan が変更された場合（`plan-changed`）や、その後に `review run --design` が
 再度実行された場合（同じ plan に対してであっても）（`reviewed-since`）、承認は stale に
-なります。再集約やトリアージではそうなりません。
+なります。再集約やトリアージではそうなりません。design の質問がある場合、承認の対象にはその時点の
+答え（`decisions_sha256`。質問がなければ `null`）も含まれます。その後に答えが改訂されると、plan が
+変わっていなくても承認は stale になります（`decisions-changed`）。plan を修正し、改めて尋ねてください。
+このキーができる前に記録された承認が、これによって stale になることはありません。
 
 `status --json` はこれを `design_approval` の下に報告します。
 
@@ -482,7 +679,7 @@ plan が承認されていない間、`run implementer` は拒否します（exi
 | `required` | `design.require_approval` |
 | `state` | `pending`、`stale`、`approved`、`no-plan`、`not-required`、または `implemented-unapproved` |
 | `pending` | ユーザーに尋ねる必要があるとき（`pending` または `stale`）に `true` |
-| `stale_reason` | `plan-changed`、`reviewed-since`、または `null` |
+| `stale_reason` | `plan-changed`、`reviewed-since`、`decisions-changed`、または `null` |
 | `plan_sha256`, `approved_sha256`, `approved_at` | 現在の plan と、承認された plan |
 | `matches_current_plan` | 承認された sha が現在の plan のものかどうか。両方がそろっていなければ `null` |
 | `reviewed_since_approval` | 承認後に design レビューのラウンドが実行されたかどうか。承認がなければ `null` |
@@ -690,6 +887,7 @@ dev-orchestra summary
 | コマンドが exit 3 で終了した | 予算を使い切っています。未解決のものを報告します。再試行せず、`--force` にも手を出さないでください |
 | `run implementer` が exit 5 で終了した | plan が承認されていないか、承認後に変更された／レビューされたということです。plan を提示してユーザーに尋ね、yes なら `design approve` で記録します。再試行せず、自分で承認してはいけません |
 | デタッチされた implementer ジョブが "not approved" で `failed` になった | 原因は同じで、ワーカーが検出したものです。ユーザーが承認したら、もう一度開始します |
+| `run architect` が exit 6 で終了した | design の質問が未回答か、`design.ask_questions` が `true` で architect のラウンドが記録されていないか、質問のラウンドが上限に達しています。ユーザーに尋ね、その言葉を `design questions answer` で記録します。再試行せず、ユーザーの代わりに答えてはいけません |
 | `status` が `stop-and-report` を示す | 停止します。予算、stall、未解決の指摘はすでに考慮済みです |
 
 <a id="example-workflows"></a>

@@ -619,6 +619,8 @@ optimization:
 
 design:
   require_approval: true              # implementer waits for the user's yes (design approve)
+  ask_questions: false                # auto/true: ask the user before the plan is written
+  max_question_rounds: 2              # architect question rounds before asking how to proceed
   resume:                             # run architect --resume
     max_age_seconds: 3600             # older than this, the revision runs fresh
     max_context_tokens: null          # no cap on the context a resumed session carries
@@ -664,6 +666,8 @@ language:
 | `review.design.enabled` | bool \| `auto` \| null | Whether `.ai/plan.md` goes in front of the design panel (see `review.design.reviewers`) before implementation; the stage costs a reviewer run per panel member per round. `true` always, `false` never. `auto` (default) decides from the plan, and `status` prints the answer and its reason: every backticked token anywhere in the plan, and every path-shaped word under the plan's `Files to Modify` heading whether backticked or not (a fenced block there included), is checked against the high-risk patterns (`optimization.high_risk_paths` plus `extra_high_risk_paths`) ignoring case, and a hit means run — a name with a `/` and no extension, such as `db/migrate`, is also checked as a directory; the size counts the filename-shaped tokens (a `/` or a file extension) under `Files to Modify` outside fenced blocks, `docs/`, `references/`, `tests/` and `.md`, `.rst` and `.txt` files, without looking at the disk, and 6 or more means run; a glob, a directory, a name with a `/` and no extension, or a path through `..` there means run (code such as `payload["mode"]` is not read as a glob); an unreadable plan, no `Files to Modify` section or one that names no file means run; before a plan is written the answer is `auto -> run (once a plan is written)`; and once a design round has run for the workflow the answer stays run, so a revision cannot switch the loop off half way. `null` means the default, `auto`. |
 | `review.design.max_iterations` | int ≥ 0 | Design review rounds (review → triage → revise), counted apart from `max_review_iterations` (default 2). The round that reaches the limit still gets its revision; the limit refuses only the re-review after it. `1`: one round, one revision, then ask. `0`: no design review. `budgets.architect` (default 3) covers the design plus one revision per round at the default; raise it with `max_iterations`, and by one more if changes asked for at approval are expected. |
 | `design.require_approval` | bool | `true` (default) makes `run implementer` refuse (exit 5) while `.ai/plan.md` exists and the plan as it is now has not been approved with `design approve` -- after the user said yes. `false` is for runs nobody is watching (CI, batch), and restores the behaviour from before the gate existed. Top-level rather than under `review.design`: approval matters whether or not the panel reviewed the plan. `--force` does not bypass it; only this setting does. Taken only from the global config: in the project file it is ignored ([below](#what-the-project-file-may-not-loosen)). |
+| `design.ask_questions` | bool \| `auto` \| null | Whether the user is asked the open points of a design before the plan is written ([workflow](workflow.md#design-questions)). `false` (default) never, as before. `auto`: the orchestrator asks when the request is ambiguous, new behaviour or spec, or open to several approaches, and the `run architect` that writes the plan is refused (exit 6) while a recorded question is open. `true`: the same, and that run is also refused until one `run architect --questions` round is recorded. Leave it `false` for runs nobody is watching: they stop at the questions. A project file may set it. `null` means the default. |
+| `design.max_question_rounds` | int ≥ 1 \| null | Architect question rounds before `run architect --questions` and `design questions record --by architect` refuse (exit 6) and the orchestrator asks the user how to proceed (default 2). `--force` runs one more. Each round spends `budgets.architect_questions` (default 3), not `budgets.architect`. `null` means the default. |
 | `design.resume.max_age_seconds` | int ≥ 0 \| null | How old the last architect run may be for `run architect --resume` to continue its session (default 3600, how long the CLI kept its prompt cache when this was measured). Older, the revision runs fresh with the full prompt. `0` always runs fresh; `null` means the default. |
 | `design.resume.max_context_tokens` | int > 0 \| null | The largest context, in tokens, a session may have ended with and still be continued (default `null`: no cap). Every run records its `context_tokens`, so a cap can be set from what was measured. Setting one of the two keeps the other's default. |
 | `optimization.level` | `aggressive` \| `balanced` \| `quality` | How hard to try to be cheap. Default `balanced`. See below. |
@@ -848,6 +852,8 @@ read as a run reads it. Looser means:
 | `review.max_findings` | asks each reviewer for fewer findings, counting `null` as the level's cap and `0` as none |
 | `review.design.enabled` | moves it down `true` → `auto` → `false` |
 | `review.design.max_iterations` | lowers it |
+| `design.ask_questions` | moves it down `true` → `auto` → `false` |
+| `design.max_question_rounds` | lowers it |
 | `optimization.level` | moves it down `quality` → `balanced` → `aggressive` |
 | `optimization.high_risk_paths` | leaves out a pattern, counting `extra_high_risk_paths` with it |
 | `optimization.low_risk_max_files`, `optimization.low_risk_max_lines` | raises it |
@@ -1279,6 +1285,8 @@ The skill carries the command grammar; this is the phrasebook.
 | "review the design too" / "always review the design" | `config set review.design.enabled true` |
 | "never review the design" | `config set review.design.enabled false` |
 | "don't ask me to approve plans" / running in CI | `config set design.require_approval false` |
+| "ask me before designing" / "check with me on the open points first" | `config set design.ask_questions auto` (`true` to have the architect ask every time) |
+| "don't stop to ask me questions" | `config set design.ask_questions false`, the default; keep it so for CI |
 | "add a Codex security reviewer" | `reviewer add --provider codex --role security` |
 | "run the security reviewer only on risky changes" | `reviewer set <id> --when high-risk` (see [above](#reviewers-that-run-only-on-high-risk-changes)) |
 | "use opus on risky changes" | `reviewer set <id> --high-risk-model opus` (add `--design` for the design panel) |
@@ -1395,6 +1403,7 @@ Configuration
     optimization level: balanced  (optimization.level)
     skip unneeded roles: on  (optimization.skip_unneeded_roles)
     plan approval: required  (design.require_approval)
+    design questions: off  (design.ask_questions)
   Design reviews
     (the code panel; when conditions ignored)  (review.design.reviewers)
 

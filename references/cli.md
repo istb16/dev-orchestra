@@ -46,7 +46,8 @@ Exit codes: `0` success, `1` the operation ran but the outcome is negative
 (invalid config, empty snapshot, every reviewer failed, role run failed), `2` a
 usage or configuration error, `3` a budget is exhausted and the command refused
 to run, `4` a `jobs wait` returned while the job was still running, `5` the
-plan is not approved and `design.require_approval` is on, `130` interrupted.
+plan is not approved and `design.require_approval` is on, `6` a design question
+is still open (or a question round is at its cap), `130` interrupted.
 
 `--json` prints one JSON value on stdout instead of the text -- an object, or a
 list for `reviewer list` and `jobs list` -- and is what a program should read
@@ -56,9 +57,9 @@ list for `reviewer list` and `jobs list` -- and is what a program should read
 `config show`, `config validate`, `config suggest-roles`, `model list`,
 `reviewer list`, `doctor`, `hooks status`, `run`, `review snapshot`,
 `review run`, `review consolidate`, `review show`, `review status`,
-`design approve`, `state show`, `jobs list`, `jobs show`, `jobs wait`,
-`budget show`, `tokens show`, `optimization report`, `progress record`,
-`workflow list`, `workflow show`, `status`, `summary`.
+`design approve`, `design questions show`, `state show`, `jobs list`,
+`jobs show`, `jobs wait`, `budget show`, `tokens show`, `optimization report`,
+`progress record`, `workflow list`, `workflow show`, `status`, `summary`.
 <!-- json-commands: end -->
 The others change something and report only whether it worked, which the exit
 code says; read the result with the matching query command (`review show`
@@ -301,7 +302,7 @@ What of this is promised: "Compatibility" in the README.
 
 | Command | Description |
 | --- | --- |
-| `run <role> [--prompt <text>\|--prompt-file <path>] [--tier <name>] [--mode plan\|implement\|review] [--output <path>] [--timeout <s>] [--idle-timeout <s>] [--resume --resume-prompt-file <path>] [--detach] [--force] [--json] [--print-command] [--extra …]` | Run one configured role. `<role>` is `orchestrator`, `architect`, `implementer`, `review_fixer`, or a reviewer id. `--tier` picks one of that role's configured `model_tiers`; an unknown one is refused rather than run on the default model. Consumes an attempt from that stage's budget and refuses (exit 3) when it is spent, unless `--force`. `run implementer` refuses (exit 5) while a plan exists and is not approved -- in the parent and again in a detached worker, whose refusal lands in the job record whole; `--force` does not apply. |
+| `run <role> [--prompt <text>\|--prompt-file <path>] [--tier <name>] [--mode plan\|implement\|review] [--output <path>] [--timeout <s>] [--idle-timeout <s>] [--resume --resume-prompt-file <path>] [--questions] [--detach] [--force] [--json] [--print-command] [--extra …]` | Run one configured role. `<role>` is `orchestrator`, `architect`, `implementer`, `review_fixer`, or a reviewer id. `--tier` picks one of that role's configured `model_tiers`; an unknown one is refused rather than run on the default model. Consumes an attempt from that stage's budget and refuses (exit 3) when it is spent, unless `--force`. `run implementer` refuses (exit 5) while a plan exists and is not approved -- in the parent and again in a detached worker, whose refusal lands in the job record whole; `--force` does not apply. The `run architect` that writes `.ai/plan.md` refuses (exit 6) while a design question is open, the same way. `--questions` asks the architect the design questions instead (below). |
 
 The prompt may also be piped on stdin (`--prompt-file -` reads stdin
 explicitly). Default modes: architect/orchestrator `plan`, implementer and
@@ -413,6 +414,24 @@ unapproved plan (exit 5) -- prints nothing on stdout: the exit code and
 stderr say why. `--print-command` prints the command line as text, with or
 without `--json`. With `--detach` it prints the job as started instead, as
 before.
+
+`--questions` (architect only) is the design questions round
+(`references/workflow.md`): the architect's seat, model, mode and
+`run.timeout_seconds.architect`, but its own budget (`budgets.architect_questions`),
+and `architect_questions` as the stage of its run-log event, its job and `run
+--json`'s `stage`, so it never becomes the session `--resume` continues. It is
+refused (exit 2, before anything is spent) with `--resume`, with an `--output`
+that resolves to the plan, and on any other role; past
+`design.max_question_rounds` recorded architect rounds it exits 6 unless
+`--force`, which also overrides a spent `budgets.architect_questions` (with a
+`note:`). A detached worker is passed the flag, and checks the cap against
+the `--force` its parent was given. The plan run's gate (exit 6) is checked
+where `run implementer`'s approval is: after the prompts are read, before any
+attempt is spent and before `--detach`; `--force` does not pass it. Under
+`design.ask_questions: true` it is also refused until an architect round is
+recorded, except with `--resume`. A plan run whose prompt names neither
+`decisions.md` nor a `## Decisions` section while answers are recorded prints a
+`note:` and runs.
 
 ### Revising the plan in the architect's own session (`--resume`)
 
@@ -592,13 +611,24 @@ given over the round that was current at the time.
 
 | Command | Description |
 | --- | --- |
-| `design approve [--json]` | Record the user's approval of `.ai/plan.md` as it is now (sha256 of the plan alone) together with the design review round it was given over. A later revision, or a design review that runs afterwards, needs approving again. The round is the last one with a consolidated report, read together with the findings it names; while a `review run --design` round has started but has no report yet (still running, or it crashed), nothing is recorded and it exits 2. A round that ran to the end with no reviewer's review -- every reviewer failed -- is approved over instead, with a note that the plan has no design review findings at all, so a panel that keeps failing never leaves the user unable to go ahead. Open design findings -- every one not rejected or marked a duplicate, whatever its severity -- are printed, not refused: approving over them is the user's call; findings from a review of an earlier revision of the plan (the frozen `review-target.md` differs from the plan) are labelled as such. Approving the same plan over the same round again says `already approved` and records nothing. No plan exits 2. Run it only after the user said yes in conversation. |
+| `design approve [--json]` | Record the user's approval of `.ai/plan.md` as it is now (sha256 of the plan alone) together with the design review round it was given over. A later revision, or a design review that runs afterwards, needs approving again. The round is the last one with a consolidated report, read together with the findings it names; while a `review run --design` round has started but has no report yet (still running, or it crashed), nothing is recorded and it exits 2. A round that ran to the end with no reviewer's review -- every reviewer failed -- is approved over instead, with a note that the plan has no design review findings at all, so a panel that keeps failing never leaves the user unable to go ahead. Open design findings -- every one not rejected or marked a duplicate, whatever its severity -- are printed, not refused: approving over them is the user's call; findings from a review of an earlier revision of the plan (the frozen `review-target.md` differs from the plan) are labelled as such. Approving the same plan over the same round again says `already approved` and records nothing. While a recorded design question is open (with `design.ask_questions` not false) nothing is recorded and it exits 6, naming the open ids: unlike a finding, the answer is the user's to give. No plan exits 2. Run it only after the user said yes in conversation. |
+| `design questions record --by orchestrator\|architect --file <path\|-> [--force]` | Record the `## Question` blocks in the file (`-` for stdin) as asked by the orchestrator or the architect, and print the ids given (`Q1`, `Q2`, ... across the workflow). All or none: a malformed block exits 2 naming the block and the field, and nothing is recorded. An architect question needs `Why it matters`, two options or more and a `Recommended` among them. A file that says exactly `No questions.` records an architect round with none; code fence lines, and a closing line after a block's fields, are ignored. An architect round past `design.max_question_rounds` exits 6 unless `--force`. With `design.ask_questions` false it records anyway and says the gate is off. |
+| `design questions answer <id>... --option <key>\|--text <words>\|--delegate [--revise]` | Record the user's answer: the option they chose (kept as `B: <its text>`), their own words as given, or `--delegate` for "leave it to the architect". Exactly one of the three; several ids only with `--delegate`. A question already answered needs `--revise`, which keeps the earlier answer in its `history`. An unknown id or option, or a `--text` with a line break, exits 2; an id given twice counts once. Run it only with the user's answer. |
+| `design questions show [--open] [--json]` | The recorded questions, their options and answers; `--open` only those not answered yet. `--json`: [json](json.md#design-questions-show). |
 
 The approval lives in `state.json` under `design_approval`, written by this
 command only, with a `design_approval` / `approved` event beside it; `state
 record` cannot forge one. `budget reset` keeps it and `workflow remove` deletes
 it. A round written before rounds had ids counts as no round: approving over it
 records none, and the next `review run --design` makes the approval stale.
+With design questions on record, the approval also keeps `decisions_sha256`,
+the answers as they were; an answer revised afterwards makes it stale
+(`decisions-changed`), and approving again records a new one.
+
+The questions live in `state.json` under `design_questions`, written by
+`record` and `answer` only, each write with a `design_questions` event
+(`recorded`, `answered` or `revised`). `<Artifacts>/decisions.md` is rendered
+from them after every write; do not edit it.
 
 ## status
 
@@ -645,6 +675,14 @@ not change the verdict: `run implementer` enforces them. The one exception runs
 the other way: once the user has approved the current plan, a design review
 budget spent with findings open is no longer a reason, because the user was
 shown them and decided to go ahead.
+
+`design_questions` and the `Design questions:` line say whether there are
+questions to put to the user before the plan is written. They are never a
+reason either: the plan run enforces them. The line is left out while
+`design.ask_questions` is false and nothing is recorded; otherwise it reads,
+for instance, `Design questions: 2 open of 5 (Q4, Q5), round 1/2 -- ask the
+user; the plan run is refused until they are answered`. An `architect_questions`
+budget with no attempts left is not a reason: the run itself refuses.
 
 A spent round budget is not a reason until the round that reached it has had
 its last pass. Design (`design_review.final_revision`): `pending` — fold the

@@ -1,4 +1,4 @@
-<!-- translated-from: references/reviews.md sha256:29f1977b654442f9f3ea7548351cbf9342bd2180ac34daa4f040960971731a0c -->
+<!-- translated-from: references/reviews.md sha256:3f96a0fa06ed9dff16663cfb72cc0013cd5b2ab5b0a5a0ba4f3d1a289b3a3f26 -->
 
 > この文書は [references/reviews.md](../../../references/reviews.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -944,7 +944,8 @@ plan だけだからです。[周辺コンテキスト](#surrounding-context)を
 設計レビューのリクエストセクションは、*coverage* のルールの既知の例外です。設計
 ラウンドがレビューする変更本文は plan なので、リクエストはサイズにかかわらず
 インライン化されます。ただし、後述のサイズによる拒否の例外ではありません。こちらは
-plan とリクエストの合計で測られます。どちらもプロンプトに入るからです。
+plan とリクエスト、記録された設計上の決定事項の合計で測られます。いずれもプロンプトに
+入るからです。
 
 パーサーは意図的に寛容です。`**Severity:** high`、`**Severity**: high`、
 `- Severity: high` を受け付け、`Finding` の見出しレベルは問わず、

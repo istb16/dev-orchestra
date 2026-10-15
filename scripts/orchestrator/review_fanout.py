@@ -12,6 +12,7 @@ from . import workspace as ws
 from .providers import MODE_REVIEW, ModelResolutionError, RunResult, Usage, get_provider
 from .review_common import (
     DEFAULT_MAX_FINDINGS,
+    DESIGN_DECISIONS_SECTION,
     DESIGN_REVIEW_PROMPT_TEMPLATE,
     DESIGN_ROLE_GUIDANCE,
     MAX_EVIDENCE_LINES,
@@ -175,8 +176,8 @@ def over_budget_note(
     """
     if design:
         narrow = (
-            "Shorten it: the plan and the request it answers are measured together, and "
-            "both go into every reviewer's prompt."
+            "Shorten it: the plan, the request it answers and any recorded design decisions "
+            "are measured together, and all go into every reviewer's prompt."
         )
     else:
         narrow = (
@@ -325,12 +326,17 @@ def build_design_review_prompt(
     extra_context: str = "",
     max_findings: int = DEFAULT_MAX_FINDINGS,
     inline_chars: Optional[int] = None,
+    decisions_text: str = "",
 ) -> BuiltPrompt:
     """The reviewer prompt for a plan, built from the frozen design snapshot.
 
     The change body here is the plan -- that is what the round is reviewing
     and what ``review-target.md`` freezes. The request it answers is context
     that rides along, and goes in whatever its size, exactly as it always has.
+
+    ``decisions_text`` is the user's answers to the design questions. They go
+    in after the request as premises, and only when there are some, so a
+    round without questions gets the prompt it always got.
     """
     role = str(reviewer.get("role") or "general")
     guidance = DESIGN_ROLE_GUIDANCE.get(
@@ -356,6 +362,10 @@ def build_design_review_prompt(
         if request_text.strip()
         else "Not recorded. Judge the plan against its own stated goal."
     )
+    if decisions_text.strip():
+        request_section += "\n\n" + DESIGN_DECISIONS_SECTION.format(
+            decisions=_fenced(decisions_text, "markdown")
+        )
     prompt = DESIGN_REVIEW_PROMPT_TEMPLATE.format(
         reviewer_id=reviewer.get("id", "reviewer"),
         role=role,

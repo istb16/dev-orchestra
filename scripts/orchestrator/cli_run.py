@@ -17,6 +17,7 @@ from . import config as config_mod
 from . import config_policy as policy_mod
 from . import jobs as jobs_mod
 from . import ledger as ledger_mod
+from . import questions as questions_mod
 from . import workspace as ws
 from .cli_common import (
     DEFAULT_MODES,
@@ -214,6 +215,10 @@ class _Seat(NamedTuple):
     #: How the project-file checks name the seat: "reviewers[N]",
     #: "<role>.model_tiers.<tier>" or the role.
     label: str
+    #: What the ledger, the budget, the job and the run log call the run: the
+    #: role, or ``architect_questions`` under ``--questions``. The role still
+    #: picks the provider, the model, the mode and the deadline.
+    stage: str
 
 
 class _Run(NamedTuple):
@@ -257,7 +262,9 @@ def cmd_run(args: argparse.Namespace) -> int:
         return _refuse_run(args, [problem])
     workspace = _workspace(args)
     # Before the provider is known: these depend on the arguments alone.
-    problem = _resume_refusal(args, seat.role, seat.mode, workspace)
+    problem = _questions_refusal(args, seat.role, workspace) or _resume_refusal(
+        args, seat.role, seat.mode, workspace
+    )
     if problem:
         return _refuse_run(args, [problem])
     try:
@@ -292,6 +299,17 @@ def cmd_run(args: argparse.Namespace) -> int:
         refusal = _refuse_unless_approved(loaded, workspace, args, seat.role)
         if refusal is not None:
             return refusal
+    # The question gate, placed and checked again by the worker as the
+    # approval gate is, for the same reasons. --force is not honoured for an
+    # open question -- the answers are the user's -- but is for the round cap,
+    # which is a resource limit like a budget.
+    if seat.role == "architect":
+        if getattr(args, "questions", False):
+            refusal = _refuse_questions_run_past_cap(loaded, workspace, args)
+        else:
+            refusal = _refuse_unless_questions_answered(loaded, workspace, args, prompt, resume_prompt)
+        if refusal is not None:
+            return refusal
     timeout, timeout_origin = _deadline(args, loaded, seat)
     idle_timeout, idle_origin = _idle_deadline(args, loaded, seat, provider)
     book = _ledger(args, workspace)
@@ -299,7 +317,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     if refusal is not None:
         return refusal
     if args.detach:
-        return _detach(args, workspace, seat.role, prompt, resume_prompt, timeout)
+        return _detach(args, workspace, seat, prompt, resume_prompt, timeout)
     if args.job_file:
         # A detached worker: `jobs cancel` must reach the CLI it runs, which is
         # in a session of its own.
@@ -370,7 +388,8 @@ def _resolve_seat(args: argparse.Namespace, loaded: config_mod.LoadedConfig) -> 
         label = "%s.model_tiers.%s" % (role, tier)
     else:
         label = role
-    return _Seat(role, tier, reviewer_index, spec, mode, provider_name, label)
+    stage = questions_mod.RUN_STAGE if getattr(args, "questions", False) else role
+    return _Seat(role, tier, reviewer_index, spec, mode, provider_name, label, stage)
 
 
 def _deadline(args: argparse.Namespace, loaded: config_mod.LoadedConfig, seat: _Seat) -> Tuple[int, str]:
@@ -543,12 +562,19 @@ def _spend_attempt(args: argparse.Namespace, book: ledger_mod.Ledger, seat: _Sea
     book.clear_stalls()
     if seat.tier:
         _err("note: running %s on its %r tier (%s)" % (seat.role, seat.tier, _describe_spec(seat.spec)))
-    refusal = _refuse_if_exhausted(book, seat.role, args.force)
+    refusal = _refuse_if_exhausted(book, seat.stage, args.force)
     if refusal is not None:
         return refusal
+    if seat.stage == questions_mod.RUN_STAGE and args.force and not args.job_file and book.check(seat.stage):
+        # One flag, two limits: the user who asked for one more round past the
+        # cap may not know the budget was spent as well.
+        _err(
+            "note: --force also overrides the spent %s budget: this round runs past it too"
+            % questions_mod.RUN_STAGE
+        )
     try:
         if not args.job_file:
-            book.consume(seat.role, force=args.force)
+            book.consume(seat.stage, force=args.force)
     except ledger_mod.BudgetExhausted as exc:
         _err(str(exc))
         return ledger_mod.EXIT_BUDGET_EXHAUSTED
@@ -558,7 +584,7 @@ def _spend_attempt(args: argparse.Namespace, book: ledger_mod.Ledger, seat: _Sea
 def _detach(
     args: argparse.Namespace,
     workspace: ws.Workspace,
-    role: str,
+    seat: _Seat,
     prompt: str,
     resume_prompt: Optional[str],
     timeout: int,
@@ -566,10 +592,10 @@ def _detach(
     """``--detach``: start a worker for the run and return at once."""
     # Hand the work to a detached worker so this call cannot block. The
     # budget was already consumed above, so the worker must not do it again.
-    passthrough = _detached_argv(args, role, workspace.workflow)
+    passthrough = _detached_argv(args, seat.role, workspace.workflow)
     job = jobs_mod.start(
         workspace,
-        role,
+        seat.stage,
         passthrough,
         prompt=prompt,
         timeout=timeout,
@@ -579,7 +605,7 @@ def _detach(
     if args.json:
         _emit_json(job)
     else:
-        _out("started %s as job %s" % (role, job["id"]))
+        _out("started %s as job %s" % (seat.stage, job["id"]))
         _out("follow it with: dev-orchestra jobs wait %s" % job["id"])
     return 0 if job.get("status") != "failed" else 1
 
@@ -602,7 +628,7 @@ def _run_once(
     }
     if resume_detail is not None:
         begun["resume"] = dict(resume_detail)
-    token = book.begin(seat.role, begun, deadline=run.timeout)
+    token = book.begin(seat.stage, begun, deadline=run.timeout)
     # The keyword only when there is a session: an adapter that cannot
     # resume is called exactly as it was before resuming existed.
     resuming: Dict[str, Any] = {"resume_session": resume_session} if resume_session is not None else {}
@@ -676,7 +702,7 @@ def _retry_fresh_after_rejection(
     run: _Run, job: Optional[Dict[str, Any]], rejected: _Attempt, prompt: str
 ) -> Union[_Attempt, int]:
     """Record the rejected resumed run and run fresh once; the exit code if that cannot happen."""
-    args, role, book = run.args, run.seat.role, run.book
+    args, role, book = run.args, run.seat.stage, run.book
     result = rejected.result
     # The session is gone (the CLI said so, naming it). That run is
     # recorded as the failure it was, without its stderr, and not in the
@@ -746,10 +772,10 @@ def _record_outcome(run: _Run, attempt: _Attempt) -> None:
             # continued session is labelled too, to be read against fresh runs.
             label = ""
             if seat.tier:
-                label = "%s:%s" % (seat.role, seat.tier)
+                label = "%s:%s" % (seat.stage, seat.tier)
             elif attempt.session_id is not None:
-                label = "%s:resumed" % seat.role
-            book.record_usage(seat.role, result.usage.to_dict(), label=label)
+                label = "%s:resumed" % seat.stage
+            book.record_usage(seat.stage, result.usage.to_dict(), label=label)
         book.end(
             attempt.token,
             "ok" if result.ok else ("stalled" if result.stalled else "failed"),
@@ -827,7 +853,7 @@ def _foreground_json(
     """
     result = attempt.result
     payload: Dict[str, Any] = {
-        "stage": run.seat.role,
+        "stage": run.seat.stage,
         "status": "succeeded" if result.ok else "failed",
     }
     payload.update(_finished_fields(attempt))
@@ -937,6 +963,79 @@ def _refuse_unless_approved(
     for line in lines:
         _err(line)
     return approval_mod.EXIT_APPROVAL_REQUIRED
+
+
+def _questions_refusal(args: argparse.Namespace, role: str, workspace: ws.Workspace) -> Optional[str]:
+    """Why ``--questions`` cannot go on this command line, as a fixed sentence.
+
+    Checked on every path, as ``_resume_refusal`` is, and before anything is
+    spent: a questions run asks, it never writes or revises the plan.
+    """
+    if not getattr(args, "questions", False):
+        return None
+    if role != "architect":
+        return "--questions applies to architect"
+    if getattr(args, "resume", False):
+        return "--questions does not combine with --resume: --resume revises the plan"
+    if args.output and _wrote_plan(workspace)({"output": args.output}):
+        return (
+            "--questions does not write the plan: give --output another file "
+            "(.ai/execution/design-questions.md)"
+        )
+    return None
+
+
+def _questions_info(loaded: config_mod.LoadedConfig, workspace: ws.Workspace) -> Dict[str, Any]:
+    settings = loaded.design_settings()
+    return questions_mod.current(
+        workspace, settings.get("ask_questions"), settings.get("max_question_rounds")
+    )
+
+
+def _refuse_questions_run_past_cap(
+    loaded: config_mod.LoadedConfig, workspace: ws.Workspace, args: argparse.Namespace
+) -> Optional[int]:
+    """Refuse a ``--questions`` run at ``design.max_question_rounds`` unless the user forced it."""
+    # A worker always carries --force; whether the user forced this run is in
+    # its job record.
+    force = jobs_mod.user_forced(args.job_file) if args.job_file else bool(args.force)
+    info = _questions_info(loaded, workspace)
+    if force or not questions_mod.cap_reached(info):
+        return None
+    return _refuse_for_questions(args, questions_mod.cap_refusal_lines(info))
+
+
+def _refuse_unless_questions_answered(
+    loaded: config_mod.LoadedConfig,
+    workspace: ws.Workspace,
+    args: argparse.Namespace,
+    prompt: str,
+    resume_prompt: Optional[str],
+) -> Optional[int]:
+    """Refuse the run that writes the plan while a design question is open."""
+    if not args.output or not _wrote_plan(workspace)({"output": args.output}):
+        # Only the run that writes the plan is gated: an investigation run
+        # with no plan output is not.
+        return None
+    info = _questions_info(loaded, workspace)
+    if questions_mod.refused(info, bool(getattr(args, "resume", False))):
+        return _refuse_for_questions(args, questions_mod.refusal_lines(info))
+    if info["mode"] != "off" and info["answered"] and not args.job_file:
+        # The likeliest mistake once the user has answered: a request that
+        # does not pass the answers on.
+        if not questions_mod.prompt_carries_decisions(prompt + (resume_prompt or "")):
+            _err(
+                "note: %d design question(s) are answered in %s, and this prompt names neither it "
+                "nor a ## Decisions section" % (info["answered"], info["decisions_file"])
+            )
+    return None
+
+
+def _refuse_for_questions(args: argparse.Namespace, lines: List[str]) -> int:
+    _fail_job(args, "\n".join(lines))
+    for line in lines:
+        _err(line)
+    return questions_mod.EXIT_QUESTIONS_PENDING
 
 
 def _fail_job(args: argparse.Namespace, error: str, **fields: Any) -> None:
@@ -1177,6 +1276,10 @@ def _detached_argv(args: argparse.Namespace, role: str, workflow: str) -> List[s
         # prompt, so an edit to the file after this parent checked it does not
         # reach the continued session.
         argv += ["--resume", "--resume-prompt-file", jobs_mod.RESUME_PROMPT_FILE]
+    if getattr(args, "questions", False):
+        # Left out, the worker would run the plan-writing kind of run: another
+        # budget, another gate, and the plan as its output.
+        argv.append("--questions")
     if args.extra:
         argv += ["--extra", *args.extra]
     return argv

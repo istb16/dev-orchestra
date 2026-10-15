@@ -13,6 +13,7 @@ from . import jobs as jobs_mod
 from . import ledger as ledger_mod
 from . import optimization as opt_mod
 from . import optimization_report as opt_report
+from . import questions as questions_mod
 from . import review as review_mod
 from . import workflow as workflow_mod
 from . import workspace as ws
@@ -324,6 +325,10 @@ def _approval_advice(info: Dict[str, Any], plan_relative: str, design_pass: Dict
             str(info.get("approved_sha256") or "")[:12],
             str(info.get("plan_sha256") or "")[:12],
         )
+    if state == "stale" and info.get("stale_reason") == "decisions-changed":
+        return (
+            "stale -- a recorded decision changed after the plan was approved; revise the plan and ask again"
+        )
     if state == "stale":
         return "stale -- a design review ran after the plan was approved; present its findings and ask again"
     if state == "approved":
@@ -336,6 +341,27 @@ def _approval_advice(info: Dict[str, Any], plan_relative: str, design_pass: Dict
             "workflow) -- nothing to ask unless it is to run again, which needs `design approve`"
         )
     return "no plan"
+
+
+def _questions_line(info: Dict[str, Any]) -> str:
+    """The `Design questions:` line of `status`; "" when the setting is off and nothing is recorded."""
+    state = info["state"]
+    rounds = "round %d/%s" % (info["architect_rounds"], info["max_rounds"])
+    if state == "open":
+        return (
+            "Design questions: %d open of %d (%s), %s -- ask the user; the plan run is refused until "
+            "they are answered" % (len(info["open"]), info["total"], ", ".join(info["open"]), rounds)
+        )
+    if state == "round-required":
+        return "Design questions: on, no architect question round recorded -- run architect --questions first"
+    if state == "answered":
+        line = "Design questions: %d answered, %s" % (info["answered"], rounds)
+        return "%s -- decisions in %s" % (line, info["decisions_file"])
+    if state == "none":
+        return "Design questions: auto, none recorded"
+    if info["total"] or info["architect_rounds"]:
+        return "Design questions: off (%d recorded, not enforced)" % info["total"]
+    return ""
 
 
 class _Status(NamedTuple):
@@ -396,6 +422,10 @@ def _status_payload(
     approval_info["open_findings"] = design_open
     approval_info["open_findings_of_current_plan"] = of_current_plan if design_open else None
     approval_info["design_review_exhausted"] = design_exhausted
+    questions_settings = loaded.design_settings()
+    questions_info = questions_mod.current(
+        workspace, questions_settings.get("ask_questions"), questions_settings.get("max_question_rounds")
+    )
 
     events = [event for event in (workspace.read_state().get("events") or []) if isinstance(event, dict)]
     refused_for_size = _context_refusal(events, "review")
@@ -474,6 +504,10 @@ def _status_payload(
         reasons.append("the last design review round found exactly what the previous one found")
     for stage, entry in summary["budgets"].items():
         if entry["remaining"] != 0:
+            continue
+        # The exhausted run says so itself (exit 3), and running out of
+        # question rounds is a question for the user, not a stop.
+        if stage == questions_mod.RUN_STAGE:
             continue
         # With a plan written, the architect is needed again only for a
         # revision a design round still owes before its limit: at the limit
@@ -557,6 +591,8 @@ def _status_payload(
         # stop-and-report here would read as "give up" where the answer is to
         # ask the user.
         "design_approval": approval_info,
+        # Not a reason either, for the same reason: `run architect` enforces it.
+        "design_questions": questions_info,
         "budgets": summary["budgets"],
         "total_delegated_runs": total,
         "runtime_remaining_seconds": summary["runtime_remaining_seconds"],
@@ -643,6 +679,9 @@ def _status_lines(status: _Status, plan_relative: str, warning: List[str]) -> Li
             status.architect_left,
         )
     )
+    questions_line = _questions_line(payload["design_questions"])
+    if questions_line:
+        lines.append(questions_line)
     line = "Optimization: %s" % plan.level
     if plan.escalated:
         line += " (escalated from %s -- %s)" % (plan.requested, plan.escalation_note().split(": ", 1)[-1])
@@ -686,6 +725,19 @@ def cmd_design_approve(args: argparse.Namespace) -> int:
         _err("no plan to approve at %s -- run the architect first" % plan_relative)
         return 2
 
+    # Open questions are refused, unlike open findings: their answers are the
+    # user's to give, and a plan approved over one was written without it --
+    # recorded after the plan, or the plan written some way the plan run's
+    # gate never saw.
+    settings = loaded.design_settings()
+    questions_info = questions_mod.current(
+        workspace, settings.get("ask_questions"), settings.get("max_question_rounds")
+    )
+    if questions_info["pending"]:
+        for line in questions_mod.approval_refusal_lines(questions_info):
+            _err(line)
+        return questions_mod.EXIT_QUESTIONS_PENDING
+
     # The findings and the round they belong to come out of one read of one
     # report, so they cannot describe two different rounds. A round that has
     # started but has no report yet -- still running, or it failed -- is
@@ -707,16 +759,19 @@ def cmd_design_approve(args: argparse.Namespace) -> int:
     open_findings = [str(f.get("id")) for f in approval_mod.open_findings(design_data)]
     of_current_plan = approval_mod.findings_of_current_plan(workspace, plan_text) if open_findings else None
 
-    previous = workspace.read_state().get(approval_mod.STAGE)
+    state = workspace.read_state()
+    previous = state.get(approval_mod.STAGE)
+    decisions = questions_mod.decisions_digest(state)
     already = (
         isinstance(previous, dict)
         and previous.get("sha256") == digest
         and previous.get("design_round") == round_id
+        and previous.get("decisions_sha256") == decisions
     )
     if already:
         entry = cast(Dict[str, Any], previous)
     else:
-        entry = approval_mod.record(workspace, digest, open_findings, of_current_plan, round_id)
+        entry = approval_mod.record(workspace, digest, open_findings, of_current_plan, round_id, decisions)
 
     if args.json:
         payload = dict(entry)
@@ -727,7 +782,7 @@ def cmd_design_approve(args: argparse.Namespace) -> int:
             "%s %s (sha256 %s) for workflow %s"
             % ("already approved" if already else "approved", plan_relative, digest[:12], workspace.workflow)
         )
-    require_approval = bool(loaded.design_settings().get("require_approval"))
+    require_approval = bool(settings.get("require_approval"))
     for note in _approval_notes(require_approval, unreviewed, open_findings, of_current_plan):
         _err(note)
     return 0

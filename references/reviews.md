@@ -925,7 +925,8 @@ record simply does not say.
 The design review's request section is a known exception to the *coverage*
 rule: it is inlined whatever its size, because the change body a design round
 reviews is the plan. It is not an exception to the size refusal below — that is
-measured over the plan and the request together, since both go into the prompt.
+measured over the plan, the request and any recorded design decisions together,
+since all go into the prompt.
 
 The parser is deliberately tolerant: it accepts `**Severity:** high`,
 `**Severity**: high`, `- Severity: high`, any heading level for `Finding`,

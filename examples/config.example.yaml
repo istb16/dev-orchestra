@@ -138,6 +138,11 @@ design:
   # a design review run afterwards, needs approving again. `false` is for runs
   # nobody is watching (CI, batch), where nobody could answer the question.
   require_approval: true
+  # Ask the user the open points before the plan is written; the plan run is
+  # refused (exit 6) while a recorded question is open.
+  ask_questions: false  # auto/true asks before designing; leave false for unattended runs
+  # Architect question rounds before asking the user how to proceed.
+  max_question_rounds: 2
 
 optimization:
   # How hard to try to be cheap: aggressive | balanced | quality.

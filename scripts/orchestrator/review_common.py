@@ -235,6 +235,18 @@ One block per issue, exactly this shape:
 {limits}
 """
 
+#: Appended to the design request when the user answered design questions.
+#: A wrong decision is still worth one finding, but it is the user's to change,
+#: so it is reported apart from the plan's own faults.
+DESIGN_DECISIONS_SECTION = """## Decisions already made
+
+The user made these decisions before the plan was written. Treat them as
+premises: do not report the plan for following them. If a decision itself
+looks wrong, report one finding with `Category: decision` and the decision's
+ID in `File` (e.g. `decisions.md#Q3`).
+
+{decisions}"""
+
 
 def accepted_findings(data: Dict[str, Any]) -> List[Dict[str, Any]]:
     return [f for f in data.get("findings", []) if f.get("triage") == "accepted"]

@@ -12,6 +12,7 @@ import uuid
 from typing import Any, Dict, List, NamedTuple, Optional, Sequence, Set, Tuple
 
 from . import context as context_mod
+from . import questions as questions_mod
 from . import workspace as ws
 from .config import PROJECT_CONFIG_NAMES
 from .review_common import DEFAULT_EXCLUDE, accepted_findings
@@ -1352,8 +1353,13 @@ def design_digest(
     workspace: ws.Workspace,
     plan_path: str,
     request_path: str = "",
+    decisions_text: str = "",
 ) -> "tuple[str, str, str]":
     """The plan, the request it answers, and the sha that identifies the round.
+
+    ``decisions_text`` is ``questions.decisions_text``: hashed in only when
+    there are decisions, so a re-decision over an unchanged plan is a new
+    round and a workflow with no questions keeps the sha it always had.
 
     Reading and hashing are split from writing so a caller can derive the round
     -- and refuse it -- before anything on disk is replaced. A refused round has
@@ -1368,7 +1374,10 @@ def design_digest(
             "no plan to review at %s -- run the architect first" % workspace.relative(plan_path)
         )
     request_text = ws.read_text(request_path) if request_path else ""
-    digest = hashlib.sha256(("%s\n\0%s" % (plan_text, request_text)).encode("utf-8")).hexdigest()
+    hashed = "%s\n\0%s" % (plan_text, request_text)
+    if decisions_text:
+        hashed += "\n\0" + decisions_text
+    digest = hashlib.sha256(hashed.encode("utf-8")).hexdigest()
     return plan_text, request_text, digest
 
 
@@ -1378,6 +1387,7 @@ def write_design_snapshot(
     request_path: str,
     plan_text: str,
     digest: str,
+    decisions_text: str = "",
 ) -> Dict[str, Any]:
     """Freeze the plan under review into the scoped ``review-target.md``.
 
@@ -1422,6 +1432,14 @@ def write_design_snapshot(
         "base": None,
         "empty": False,
     }
+    if decisions_text:
+        # Only with decisions, so a round without questions is recorded as
+        # before. Frozen, as the plan is: decisions.md is rewritten on every
+        # answer, and the round's sha names these premises, not those.
+        ws.write_text(workspace.snapshot_decisions_path, decisions_text)
+        meta["decisions"] = workspace.relative(workspace.snapshot_decisions_path)
+    elif os.path.exists(workspace.snapshot_decisions_path):
+        os.remove(workspace.snapshot_decisions_path)
     ws.write_json(workspace.snapshot_meta_path, meta)
     return meta
 
@@ -1432,8 +1450,9 @@ def create_design_snapshot(
     request_path: str = "",
 ) -> Dict[str, Any]:
     """Hash the plan and freeze it in one step, for a caller with no gate."""
-    plan_text, _, digest = design_digest(workspace, plan_path, request_path)
-    return write_design_snapshot(workspace, plan_path, request_path, plan_text, digest)
+    decisions = questions_mod.decisions_text(workspace.read_state())
+    plan_text, _, digest = design_digest(workspace, plan_path, request_path, decisions)
+    return write_design_snapshot(workspace, plan_path, request_path, plan_text, digest, decisions)
 
 
 def current_snapshot_stamp(workspace: ws.Workspace) -> str:

@@ -19,6 +19,7 @@ from . import config as config_mod
 from . import context as context_mod
 from . import optimization as opt_mod
 from . import presets as presets_mod
+from . import questions as questions_mod
 from . import review as review_mod
 from . import workflow as workflow_mod
 from .cli_common import _err, tolerate_console_encoding
@@ -38,6 +39,7 @@ from .cli_config import (
     cmd_reviewer_set,
 )
 from .cli_hooks import cmd_hooks_install, cmd_hooks_status, cmd_hooks_uninstall
+from .cli_questions import cmd_design_questions_answer, cmd_design_questions_record, cmd_design_questions_show
 from .cli_review import (
     cmd_review_consolidate,
     cmd_review_fix_brief,
@@ -482,6 +484,12 @@ def _add_run_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPars
         help="architect only: revise this workflow's plan by continuing the last architect session",
     )
     run_parser.add_argument(
+        "--questions",
+        action="store_true",
+        help="architect only: ask the design questions instead of writing the plan "
+        "(budget architect_questions)",
+    )
+    run_parser.add_argument(
         "--resume-prompt-file",
         default=None,
         help="with --resume: the prompt for a continued session (a fresh run gets --prompt-file)",
@@ -594,12 +602,39 @@ def _add_review_parsers(subparsers: argparse._SubParsersAction[argparse.Argument
 
 
 def _add_design_parsers(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
-    design_sub = _add_command_group(subparsers, "design", "the user's approval of the plan")
+    design_sub = _add_command_group(
+        subparsers, "design", "the user's answers to the design questions and approval of the plan"
+    )
     design_approve = design_sub.add_parser(
         "approve", help="record the user's approval of the plan as it is now (only after their yes)"
     )
     _add_json_flag(design_approve)
     design_approve.set_defaults(func=cmd_design_approve)
+
+    questions_group = design_sub.add_parser(
+        "questions", help="the questions asked before the plan is written, and the user's answers"
+    )
+    questions_sub = questions_group.add_subparsers(dest="questions_command", required=True)
+    record = questions_sub.add_parser("record", help="record question blocks from a file")
+    record.add_argument("--by", required=True, choices=list(questions_mod.ASKERS), help="who asked them")
+    record.add_argument("--file", required=True, help="the question blocks: a path, or - for stdin")
+    record.add_argument("--force", action="store_true", help="record an architect round past the round cap")
+    record.set_defaults(func=cmd_design_questions_record)
+
+    answer = questions_sub.add_parser("answer", help="record the user's answer (only their words)")
+    answer.add_argument("ids", nargs="+", help="question ids, e.g. Q3; several only with --delegate")
+    answer.add_argument("--option", default=None, help="the option key the user chose")
+    answer.add_argument("--text", default=None, help="the user's own words, as given")
+    answer.add_argument("--delegate", action="store_true", help="the user left it to the architect")
+    answer.add_argument(
+        "--revise", action="store_true", help="replace an earlier answer, keeping it in history"
+    )
+    answer.set_defaults(func=cmd_design_questions_answer)
+
+    show = questions_sub.add_parser("show", help="the recorded questions and answers")
+    show.add_argument("--open", action="store_true", help="only the questions not answered yet")
+    _add_json_flag(show)
+    show.set_defaults(func=cmd_design_questions_show)
 
 
 def _add_state_parsers(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:

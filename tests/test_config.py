@@ -18,6 +18,8 @@ from orchestrator import providers, summary
 
 DESIGN_DEFAULTS = {
     "require_approval": True,
+    "ask_questions": False,
+    "max_question_rounds": 2,
     "resume": {"max_age_seconds": 3600, "max_context_tokens": None},
 }
 
@@ -755,6 +757,8 @@ class TestValidateOrder(IsolatedCase):
         }
         data["design"] = {
             "require_approval": "yes",
+            "ask_questions": "maybe",
+            "max_question_rounds": 0,
             "resume": {"max_age_seconds": -1, "max_context_tokens": 0},
         }
         data["optimization"] = {
@@ -783,6 +787,8 @@ class TestValidateOrder(IsolatedCase):
                 "review.exclude[0]: must be a non-empty string (got '')",
                 "review.exclude[1]: must be a non-empty string (got 3)",
                 "design.require_approval: must be true or false",
+                "design.ask_questions: must be true, false or auto",
+                "design.max_question_rounds: must be a positive integer",
                 "design.resume.max_age_seconds: must be a non-negative integer",
                 "design.resume.max_context_tokens: must be a positive integer or null",
                 "optimization.level: must be one of aggressive, balanced, quality",
@@ -860,6 +866,7 @@ class TestValidateOrder(IsolatedCase):
         review["design"]["max_iterations"] = 0
         review["context"].update(max_chars=1, inline_chars=1, surrounding_chars=1)
         data["design"]["resume"] = {"max_age_seconds": 0, "max_context_tokens": 1}
+        data["design"]["max_question_rounds"] = 1
         data["optimization"].update(low_risk_max_files=0, low_risk_max_lines=0)
         data["budgets"] = dict.fromkeys(data["budgets"], 0)
         data["workspace"]["stale_notice_days"] = 0
@@ -870,6 +877,8 @@ class TestValidateOrder(IsolatedCase):
         review["context"]["surrounding"] = None
         data["design"] = {
             "require_approval": None,
+            "ask_questions": None,
+            "max_question_rounds": None,
             "resume": {"max_age_seconds": None, "max_context_tokens": None},
         }
         data["optimization"].update(low_risk_max_files=None, low_risk_max_lines=None)
@@ -919,6 +928,7 @@ class TestValidateOrder(IsolatedCase):
             ("review.context.max_chars", "must be a positive integer"),
             ("review.context.inline_chars", "must be a positive integer"),
             ("review.context.surrounding_chars", "must be a positive integer"),
+            ("design.max_question_rounds", "must be a positive integer"),
             ("design.resume.max_age_seconds", "must be a non-negative integer"),
             ("design.resume.max_context_tokens", "must be a positive integer or null"),
             ("optimization.low_risk_max_files", "must be a non-negative integer"),

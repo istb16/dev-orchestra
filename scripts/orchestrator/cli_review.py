@@ -15,6 +15,7 @@ from . import config_policy as policy_mod
 from . import context as context_mod
 from . import ledger as ledger_mod
 from . import optimization as opt_mod
+from . import questions as questions_mod
 from . import review as review_mod
 from . import workspace as ws
 from .cli_common import (
@@ -1151,9 +1152,13 @@ def _run_design_review(args: argparse.Namespace, loaded: config_mod.LoadedConfig
     # allowed to run. Writing the snapshot first would replace the plan the
     # previous round's reports are stamped against, so a round refused for
     # budget -- or skipped for having no panel -- would strand its own triage.
+    # Read once, so the prompt, the sha and review-target.json describe the
+    # same decisions; "" without design questions, and then none of the three
+    # changes.
+    decisions_text = questions_mod.decisions_text(workspace.read_state())
     try:
         plan_text, request_text, digest = review_mod.design_digest(
-            workspace, workspace.plan_path, request_path
+            workspace, workspace.plan_path, request_path, decisions_text
         )
     except review_mod.ReviewError as exc:
         _err(str(exc))
@@ -1171,10 +1176,10 @@ def _run_design_review(args: argparse.Namespace, loaded: config_mod.LoadedConfig
     if refusal is not None:
         return refusal
 
-    # The plan *and* the request: both go into every reviewer's prompt, whole
-    # and unconditionally, so measuring the plan alone would let a round past
-    # the limit on a technicality. Refused here, before the plan is frozen,
-    # for the reason the digest above is read early.
+    # The plan, the request and the decisions: all go into every reviewer's
+    # prompt, whole and unconditionally, so measuring the plan alone would let
+    # a round past the limit on a technicality. Refused here, before the plan
+    # is frozen, for the reason the digest above is read early.
     #
     # The plan alone is a second, separate size: it is the only part ever
     # handed over as a file, so it -- and not the pair -- decides delivery and
@@ -1182,7 +1187,10 @@ def _run_design_review(args: argparse.Namespace, loaded: config_mod.LoadedConfig
     context_settings = loaded.context_settings()
     max_chars = int(context_settings.get("max_chars") or 0)
     inline_chars = int(context_settings.get("inline_chars") or 0)
-    budget_chars = len(plan_text) + len(request_text)
+    budget_chars = len(plan_text) + len(request_text) + len(decisions_text)
+    detail = {"plan_chars": len(plan_text), "request_chars": len(request_text)}
+    if decisions_text:
+        detail["decisions_chars"] = len(decisions_text)
     refusal = _refuse_if_over_context(
         workspace,
         "design_review",
@@ -1192,7 +1200,7 @@ def _run_design_review(args: argparse.Namespace, loaded: config_mod.LoadedConfig
         inline_chars=inline_chars,
         force=args.force,
         iteration=iteration,
-        detail={"plan_chars": len(plan_text), "request_chars": len(request_text)},
+        detail=detail,
     )
     if refusal is not None:
         return refusal
@@ -1203,7 +1211,9 @@ def _run_design_review(args: argparse.Namespace, loaded: config_mod.LoadedConfig
     design_plan = _design_round_plan(
         loaded, workspace, reviewers, lineage=lineage, declared=declared, only=bool(args.only)
     )
-    meta = review_mod.write_design_snapshot(workspace, workspace.plan_path, request_path, plan_text, digest)
+    meta = review_mod.write_design_snapshot(
+        workspace, workspace.plan_path, request_path, plan_text, digest, decisions_text
+    )
 
     if not reviewers:
         # Recorded against the plan that was actually frozen, so the round this
@@ -1243,6 +1253,7 @@ def _run_design_review(args: argparse.Namespace, loaded: config_mod.LoadedConfig
             args.context or "",
             max_findings,
             inline_chars,
+            decisions_text,
         ),
     )
     if isinstance(panel, int):

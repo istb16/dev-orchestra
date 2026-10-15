@@ -112,6 +112,7 @@ def render_summary(
         "    plan approval: %s  (design.require_approval)"
         % ("required" if _approval_required(data) else "not required")
     )
+    lines.append("    design questions: %s  (design.ask_questions)" % _questions_mode(data))
     # The design panel, under its own heading: which seats a design round
     # runs is as much a part of the setup as who reviews the code.
     design = config_mod.get_path(data, config_mod.DESIGN_PANEL.reviewers)
@@ -187,6 +188,14 @@ def _approval_required(data: Dict[str, Any]) -> bool:
     if isinstance(design, dict) and design.get("require_approval") is not None:
         return bool(design["require_approval"])
     return bool(config_mod.default_config()["design"]["require_approval"])
+
+
+def _questions_mode(data: Dict[str, Any]) -> str:
+    """``on``, ``off`` or ``auto``; a layer with no value has the default, as for approval."""
+    design = data.get("design")
+    if isinstance(design, dict) and design.get("ask_questions") is not None:
+        return config_mod.ask_questions_mode(design["ask_questions"])
+    return config_mod.ask_questions_mode(config_mod.default_config()["design"]["ask_questions"])
 
 
 def merged(spec: Dict[str, Any], tier: Dict[str, Any]) -> Dict[str, Any]:

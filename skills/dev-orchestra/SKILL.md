@@ -64,6 +64,7 @@ Templates and stage detail: `references/workflow.md`.
 
 | Stage | Command |
 | --- | --- |
+| Questions | if `status` shows them (below) |
 | Design | `run architect --prompt-file .ai/execution/design-request.md --output .ai/plan.md` |
 | Design review | if `status` says `on`/`auto -> run`: `review run --design`, `review triage --design …`, `review fix-brief --design --output .ai/execution/design-fix-brief.md`, then `run architect --resume --prompt-file <full> --resume-prompt-file <short> --output .ai/plan.md` |
 | Approval | the user's explicit yes, then `design approve` |
@@ -79,21 +80,24 @@ light`.
 
 **Long stages.** Run implementer, review_fixer and big architect runs with
 `--detach`; wait with `jobs wait <id> --timeout 180 --since <n>`. On each exit
-4 tell the user in a line or two: elapsed time, tool count, **context tokens**
-(never "tokens so far"), the last few tool lines; then wait again from `next:`.
-Only a background `review run` gets `--progress >
-"<Artifacts>/execution/review-run.log" 2>&1`: relay its new lines every few
-minutes. Never relay or guess what the model wrote; tool lines go as they are.
+4 tell the user briefly: elapsed time, tool count, **context tokens** (never
+"tokens so far"), the last tool lines; wait again from `next:`. A background
+`review run` gets `--progress > "<Artifacts>/execution/review-run.log" 2>&1`:
+relay new lines. Never relay or guess what the model wrote;
+tool lines go as they are.
+
+**Questions.** When on, ask the user before designing (under `auto` only
+when it matters; say why). "Leave it to you" is `--delegate`; exit 6 means
+ask. Steps: `references/workflow.md`.
 
 **Design.** The architect must not change code. Write its request from the
 template, with the history it cannot fetch (`git log --oneline`, blame): on
 Claude it has only Read, Grep and Glob. Vague or contradicted by the
-codebase → send back once; do not paper over it later. **Design review**:
-`review.design.reviewers`, else the code panel; on `.ai/plan.md` and the
-request; triage as for code. Accepted findings go into a revision request. A
-spent design review budget still gets one revision (no re-review), made
-before you ask for approval. Re-review only when `review status --design`
-says so. No design stage, no design review.
+codebase → send back once. **Design review**: `review.design.reviewers`, else
+the code panel; triage as for code; accepted findings go into a revision
+request. A spent design review budget still gets one revision (no
+re-review), made before you ask for approval. Re-review only when `review
+status --design` says so. No design stage, no design review.
 
 **Approval.** Give the user the plan's Goal, Proposed Change, Files to
 Modify, Risks and open design findings, name the plan's file
@@ -123,8 +127,7 @@ files (`review.exclude`) but names them: pass that on; re-snapshot
 - `partial`: the findings are real, the review is not clean. If `review
   status` says `coverage` is `unverified`, report "not reviewed in full" and
   do not re-run that snapshot.
-- `review run` may shrink the panel (small change; a conditional reviewer
-  or unneeded role left out) and prints why. Report it.
+- `review run` may shrink the panel and prints why. Report it.
 
 **Triage.** **You** decide what is real; raw findings never reach the fixer.
 Per finding in `consolidated.md`: read the cited code, decide, record it;
@@ -165,14 +168,13 @@ Changed    app/models/order.rb, app/services/pricing.rb
 Remaining  F4 (medium, deferred — reviews/consolidated.md)
 ```
 
-Totals: `summary` (stage, model, tokens); cost per stage and reviewer:
-`tokens show`. If a run reported nothing, the total is a floor.
+Totals: `summary`; cost per stage and reviewer: `tokens show` (a floor if a
+run reported nothing).
 Always name what failed and what you skipped.
 
 ## Configuration
 
-Be conversational, ask only what you cannot infer, have the user confirm
-the result. First run: with a terminal, `config setup` and let the user
+Ask only what you cannot infer; have the user confirm the result. First run: with a terminal, `config setup` and let the user
 answer the wizard; otherwise show `config show`, ask the preset (quality,
 standard, fast) and reply language, run `config setup --preset <name>
 --language <tag>`; say it edits their Claude Code user settings. Other
@@ -206,7 +208,7 @@ requests (`config set`, `reviewer add`), roles, schema:
 10. **Approval is the user's.** `design approve` records their explicit yes:
     never on your own judgement, never to unblock yourself. `run implementer`
     refusing an unapproved plan (exit 5) means ask, do not retry. No plan,
-    no approval.
+    no approval. Same for design answers.
 11. **Talk to the user in their language** — the one they asked for
     (`doctor`'s *Reply language*), else the one they write in;
     not the one you just read, nor pasted issues or logs.
@@ -219,10 +221,10 @@ requests (`config set`, `reviewer add`), roles, schema:
 
 Read one only when you need its detail.
 
-- `references/workflow.md` — stages, prompt templates, artifacts
-- `references/configuration.md` — schema, fields, the user's requests
+- `references/workflow.md` — stages, templates, artifacts
+- `references/configuration.md` — schema, the user's requests
 - `references/providers.md` — adapters, read-only enforcement
-- `references/reviews.md` — snapshot, output schema, dedup, triage
+- `references/reviews.md` — snapshot, output, dedup, triage
 - `references/architecture.md` — how the pieces fit, and why
 - `references/limits.md` — stalls, timeouts, budgets
 - `references/cli.md` — every command and flag

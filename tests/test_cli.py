@@ -4145,6 +4145,7 @@ class TestParserShape(IsolatedCase):
         "config suggest-roles",
         "config validate",
         "design approve",
+        "design questions show",
         "doctor",
         "hooks status",
         "jobs list",

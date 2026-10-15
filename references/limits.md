@@ -176,12 +176,16 @@ Enforced by the action, refusing with **exit code 3**.
 | Review rounds | `review.max_review_iterations` (2) | `review run` |
 | Design review rounds | `review.design.max_iterations` (2) | `review run --design` |
 | Change size | `review.context.max_chars` (400,000 chars) | `review run`, `review run --design` |
-| Attempts per stage | `budgets.architect` (3), `.implementer` (5), `.review_fixer` (4), `.test` (8) | `run <role>`, `budget consume <stage>` |
+| Attempts per stage | `budgets.architect` (3), `.architect_questions` (3), `.implementer` (5), `.review_fixer` (4), `.test` (8) | `run <role>` (`run architect --questions` for `architect_questions`), `budget consume <stage>` |
 | Delegated runs in a workflow | `budgets.total_delegated_runs` (40) | every `run` |
 | Delegated runtime | `budgets.max_runtime_seconds` (14400) | `run <role>`, `review run`, `review run --design`, `budget consume` |
 
 Exit 5 is not a budget: `run implementer` waits for `design approve`; see
-`references/workflow.md`.
+`references/workflow.md`. Neither is exit 6: the `run architect` that writes
+the plan waits for the user's answers to the design questions, and a question
+round past `design.max_question_rounds` waits for the user to say how to go on.
+A spent `architect_questions` budget refuses its own run (exit 3) and is not a
+`status` reason.
 
 A round budget refuses the next review, not the revision or fix after the
 round that reached it: that round's findings still go into the plan once more,

@@ -42,10 +42,13 @@ from . import workspace as ws
 
 #: Stages that consume an attempt budget. ``review`` is governed by
 #: ``review.max_review_iterations`` instead, since it already counts rounds.
-BUDGETED_STAGES = ("architect", "implementer", "review_fixer", "test")
+#: ``architect_questions`` is ``run architect --questions``: the same seat, kept
+#: on a budget of its own so asking cannot spend the attempts the plan needs.
+BUDGETED_STAGES = ("architect", "architect_questions", "implementer", "review_fixer", "test")
 
 DEFAULT_BUDGETS: Dict[str, Any] = {
     "architect": 3,
+    "architect_questions": 3,
     "implementer": 5,
     "review_fixer": 4,
     "test": 8,

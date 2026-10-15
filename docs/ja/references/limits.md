@@ -1,4 +1,4 @@
-<!-- translated-from: references/limits.md sha256:9f7faa058ce35398a699eb0e8a3a13352e4af7ff35bb61b9dea54d559b183b5f -->
+<!-- translated-from: references/limits.md sha256:12509bd29324e3e94ed113823a3715e505d0426174b690a1cd97d69963c8ece8 -->
 
 > この文書は [references/limits.md](../../../references/limits.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -190,12 +190,15 @@ dev-orchestra status          # in another terminal, or after a crash
 | レビューラウンド数 | `review.max_review_iterations` (2) | `review run` |
 | 設計レビューラウンド数 | `review.design.max_iterations` (2) | `review run --design` |
 | 変更サイズ | `review.context.max_chars` (400,000 chars) | `review run`、`review run --design` |
-| ステージごとの試行回数 | `budgets.architect` (3)、`.implementer` (5)、`.review_fixer` (4)、`.test` (8) | `run <role>`、`budget consume <stage>` |
+| ステージごとの試行回数 | `budgets.architect` (3)、`.architect_questions` (3)、`.implementer` (5)、`.review_fixer` (4)、`.test` (8) | `run <role>`（`architect_questions` は `run architect --questions`）、`budget consume <stage>` |
 | ワークフロー内の委譲実行回数 | `budgets.total_delegated_runs` (40) | すべての `run` |
 | 委譲実行時間 | `budgets.max_runtime_seconds` (14400) | `run <role>`、`review run`、`review run --design`、`budget consume` |
 
 終了コード 5 は予算ではありません。`run implementer` は `design approve` を
-待ちます。`references/workflow.md` を参照してください。
+待ちます。`references/workflow.md` を参照してください。終了コード 6 も予算ではありません。plan を
+書く `run architect` は design の質問へのユーザーの回答を待ち、`design.max_question_rounds` を超えた
+質問のラウンドは、どう進めるかをユーザーが答えるのを待ちます。使い切った `architect_questions` の予算は
+自分の実行を拒否します（終了コード 3）が、`status` の理由にはなりません。
 
 ラウンド予算が拒否するのは次のレビューであり、上限に達したラウンドの後の
 改訂や修正ではありません。そのラウンドの指摘はもう一度 plan に反映されるか、
