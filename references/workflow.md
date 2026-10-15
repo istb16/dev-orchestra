@@ -282,8 +282,9 @@ follows. `answer` records `--option B` as `B: <the option's text>`,
 `--delegate`. Changing an answer takes `--revise`, which keeps the earlier one
 in the question's `history`. An unknown id or option, and a `--text` with a line
 break, exit 2. A code fence around the blocks and a closing line after them are
-ignored. With the setting `false`, `record` still records and says the gate is
-off.
+ignored, an indented line under a field continues that field, and a
+`Recommended` may name its key as `Option B` or `**B**`. With the setting
+`false`, `record` still records and says the gate is off.
 
 `run architect --questions` runs on the architect's seat -- its provider, model,
 mode and `run.timeout_seconds.architect` -- but spends
@@ -318,11 +319,20 @@ the plan, or a plan not written through `--output`, cannot be approved past.
 The setting is read at each run: turned to `false`, the gate stops at once;
 turned back on, what is recorded gates again.
 
+**Nobody watching.** With `design.require_approval: false` nobody is there to
+answer, so the questions are asked and recorded but not waited for. Run the
+rounds as usual, record what is asked, and do not stop to ask. The plan run
+records every question still open as left to the architect (`left to the
+architect: nobody was there to answer ...`), says so in a `note:`, and goes
+on; `decisions.md` keeps the questions for someone to look at later. Under
+`true` the architect round is still required, and an answer that was given is
+kept.
+
 **The round cap.** After `design.max_question_rounds` (2) architect rounds,
 `run architect --questions` and `design questions record --by architect` exit
 6: present the open points together and ask the user how to proceed. `--force`
 runs or records one more, and only when the user asks for it. On the run it
-also overrides a spent `budgets.architect_questions`, and says so on stderr.
+also overrides a spent budget, and names each one it overrides on stderr.
 
 `decisions.md` is rewritten from `state.json` on every change and says not to
 edit it. It is what the design request, the revision requests and the design

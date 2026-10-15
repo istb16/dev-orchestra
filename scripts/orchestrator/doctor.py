@@ -272,14 +272,14 @@ def collect(start: Optional[str] = None, probe_models: bool = True) -> Dict[str,
     loosened = policy_mod.project_loosening_notices(loaded)
     report["config"]["loosened"] = loosened
     report["notes"].extend(loosened)
-    # Approval off is how a file says nobody is watching; asking questions
-    # there stops the run at the first plan with nobody to answer.
+    # Approval off is how a file says nobody is watching; questions asked
+    # there are recorded but not waited for.
     design = loaded.design_settings()
     asking = config_mod.ask_questions_mode(design.get("ask_questions"))
     if not design.get("require_approval") and asking != "off":
         report["notes"].append(
-            "design.ask_questions is %s while design.require_approval is false: an unattended run will "
-            "stop at the questions; leave it false for CI" % asking
+            "design.ask_questions is %s while design.require_approval is false: the questions are "
+            "asked and recorded, but the plan run leaves any still open to the architect" % asking
         )
     # A seat refused for coming with the project file is a problem above, and
     # not also a note below.

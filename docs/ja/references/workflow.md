@@ -1,4 +1,4 @@
-<!-- translated-from: references/workflow.md sha256:36e8869f9449ad5125eb0812d155c8d3b751b4a4122b397958a4d4080bef2050 -->
+<!-- translated-from: references/workflow.md sha256:8fbd558ca6cd891a584de76f346448a7ba1ab1b2ea174186eaec1a3e2542f453 -->
 
 > この文書は [references/workflow.md](../../../references/workflow.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -282,8 +282,9 @@ dev-orchestra design questions answer Q4 Q5 --delegate
 `--delegate` を `left to the architect` として記録します。複数の id をまとめて指定できるのは
 `--delegate` のときだけです。答えを変えるには `--revise` を使い、以前の答えは質問の `history` に
 残ります。存在しない id や選択肢、改行を含む `--text` は exit 2 で終了します。ブロックを囲む
-コードフェンスと、ブロックの後の締めの一文は無視されます。設定が `false` でも `record` は記録し、
-ゲートが無効であることを伝えます。
+コードフェンスと、ブロックの後の締めの一文は無視されます。項目の下の字下げした行はその項目の続きとして
+読み、`Recommended` は `Option B` や `**B**` の形でも選択肢を指せます。設定が `false` でも `record` は
+記録し、ゲートが無効であることを伝えます。
 
 `run architect --questions` は architect の席（その provider、モデル、モード、
 `run.timeout_seconds.architect`）で動きますが、消費するのは `budgets.architect` ではなく
@@ -316,11 +317,18 @@ note を表示します。最もありがちな誤りは、答えを渡し忘れ
 設定は実行のたびに読まれます。`false` にすればゲートはすぐに止まり、有効に戻せば、記録された
 ものが再びゲートになります。
 
+**誰も見ていないとき。** `design.require_approval: false` では答える人がいないので、質問は出して
+記録しますが、答えは待ちません。ラウンドはいつもどおり進め、出た質問を記録し、尋ねるために止まらないで
+ください。plan の実行は、まだ未回答の質問をすべて architect に任せたものとして記録し
+（`left to the architect: nobody was there to answer ...`）、そのことを `note:` で伝えて先に進みます。
+質問は `decisions.md` に残るので、後から人が見直せます。`true` では architect のラウンドはやはり必要で、
+すでに出ている答えはそのまま残ります。
+
 **ラウンドの上限。** architect のラウンドが `design.max_question_rounds`（2）回に達すると、
 `run architect --questions` と `design questions record --by architect` は exit 6 で終了します。
 未決の点をまとめて提示し、どう進めるかをユーザーに尋ねてください。`--force` を付けるともう 1 回
-実行または記録できますが、ユーザーが求めたときだけにしてください。実行の場合は、使い切った
-`budgets.architect_questions` も上書きし、そのことを stderr に表示します。
+実行または記録できますが、ユーザーが求めたときだけにしてください。実行の場合は、使い切った予算も
+上書きし、上書きした予算をそれぞれ stderr に表示します。
 
 `decisions.md` は変更のたびに `state.json` から書き直され、編集しないよう書かれています。
 design リクエスト、改訂リクエスト、design レビュアーが読むのはこのファイルで、ゲートが読むのは

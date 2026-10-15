@@ -1015,6 +1015,17 @@ def _refuse_unless_questions_answered(
         # with no plan output is not.
         return None
     info = questions_mod.current_for(loaded, workspace)
+    if info["state"] == "open" and not loaded.design_settings().get("require_approval"):
+        # Approval off is how a file says nobody is watching: the questions
+        # were asked and recorded, but waiting for an answer would stop the
+        # run for good, so the open ones are left to the architect instead.
+        ids = questions_mod.delegate_unattended(workspace)
+        if ids:
+            _err(
+                "note: design.require_approval is false, so nobody is there to answer: %s left to the "
+                "architect (recorded in %s)" % (", ".join(ids), workspace.relative(workspace.decisions_path))
+            )
+        info = questions_mod.current_for(loaded, workspace)
     if questions_mod.refused(info, bool(getattr(args, "resume", False))):
         return _refuse_for_questions(args, questions_mod.refusal_lines(info))
     if info["mode"] != "off" and info["answered"] and not args.job_file:

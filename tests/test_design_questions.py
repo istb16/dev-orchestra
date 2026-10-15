@@ -554,6 +554,50 @@ class TestTheGate(QuestionsCase):
         self.assertFalse(any("question" in reason for reason in status["reasons"]))
 
 
+class TestUnattended(QuestionsCase):
+    """``design.require_approval: false``: asked and recorded, never waited for."""
+
+    def setUp(self):
+        super().setUp()
+        self.ask("auto")
+        run_cli("config", "set", "design.require_approval", "false")
+        self.record("orchestrator", "orchestrator.md")
+        self.record("architect", "architect.md")
+
+    def test_the_plan_run_leaves_the_open_questions_to_the_architect(self):
+        code, _, err = self.plan_run()
+        self.assertEqual(code, 0, err)
+        self.assertIn("nobody is there to answer: Q1, Q2 left to the architect", err)
+        for question in self.recorded()["questions"]:
+            self.assertEqual(question["answer"]["kind"], "delegated")
+            self.assertEqual(question["answer"]["text"], questions_mod.UNATTENDED)
+        self.assertEqual(self.questions_status()["state"], "answered")
+        self.assertIn(questions_mod.UNATTENDED, ws.read_text(self.workspace.decisions_path))
+        [event] = [e for e in self.events(questions_mod.STAGE) if e["status"] == "delegated"]
+        self.assertEqual(event["ids"], ["Q1", "Q2"])
+
+    def test_an_answer_given_is_kept(self):
+        self.answer("Q2", "--option", "A")
+        self.assertEqual(self.plan_run()[0], 0)
+        by_id = {q["id"]: q["answer"] for q in self.recorded()["questions"]}
+        self.assertEqual(by_id["Q1"]["text"], questions_mod.UNATTENDED)
+        self.assertEqual(by_id["Q2"]["kind"], "option")
+
+    def test_a_round_is_still_required_under_true(self):
+        self.ask("true")
+        state = self.workspace.read_state()
+        del state[questions_mod.STAGE]
+        self.workspace.write_state(state)
+        code, _, err = self.plan_run()
+        self.assertEqual(code, 6)
+        self.assertIn("no architect question round is recorded", err)
+
+    def test_with_approval_required_it_still_waits(self):
+        run_cli("config", "set", "design.require_approval", "true")
+        self.assertEqual(self.plan_run()[0], 6)
+        self.assertEqual(self.questions_status()["state"], "open")
+
+
 class TestAlwaysAsk(QuestionsCase):
     def setUp(self):
         super().setUp()
@@ -992,14 +1036,15 @@ class TestStatusAndDoctor(QuestionsCase):
         self.assertEqual(status["budgets"][questions_mod.RUN_STAGE]["remaining"], 0)
         self.assertEqual(status["verdict"], "continue")
 
-    def test_doctor_notes_an_unattended_run_that_would_stop(self):
+    def test_doctor_notes_that_an_unattended_run_does_not_wait(self):
+        said = "leaves any still open to the architect"
         run_cli("config", "set", "design.require_approval", "false")
         report = doctor.collect(self.project, probe_models=False)
-        self.assertFalse(any("stop at the questions" in line for line in report["notes"]))
+        self.assertFalse(any(said in line for line in report["notes"]))
         self.ask("auto")
         report = doctor.collect(self.project, probe_models=False)
-        self.assertTrue(any("stop at the questions" in line for line in report["notes"]))
-        self.assertFalse(any("stop at the questions" in line for line in report["problems"]))
+        self.assertTrue(any(said in line for line in report["notes"]))
+        self.assertFalse(any(said in line for line in report["problems"]))
 
     def test_config_show_names_the_setting(self):
         self.assertIn("design questions: off  (design.ask_questions)", run_cli("config", "show")[1])

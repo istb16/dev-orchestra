@@ -47,6 +47,10 @@ OPTION_KEYS = "ABCDE"
 #: What ``--delegate`` records as the answer.
 DELEGATED = "left to the architect"
 
+#: What the plan run records for a question still open when nobody is there
+#: to answer it (``design.require_approval`` false).
+UNATTENDED = "left to the architect: nobody was there to answer (design.require_approval is false)"
+
 _HEADER_RE = re.compile(r"^\s{0,3}#{1,6}\s*question\s*$", re.IGNORECASE)
 #: Any option letter is read as an option, so a sixth one is refused by name
 #: instead of ending the block and hiding the fields after it.
@@ -305,6 +309,32 @@ def answer(
         workspace.write_state(state)
         ws.write_text(workspace.decisions_path, render(data))
     return answered
+
+
+def delegate_unattended(workspace: ws.Workspace) -> List[str]:
+    """Leave every open question to the architect, for a run nobody is watching; the ids.
+
+    The questions are still asked and recorded, so what was left open is on
+    the record for someone to look at later; only the wait for an answer that
+    cannot come is skipped. Under the lock, as ``answer`` writes.
+    """
+    now = ws.utcnow()
+    with ws.file_lock(workspace.state_path):
+        state = workspace.read_state()
+        data = read(state)
+        ids: List[str] = []
+        for question in data["questions"]:
+            if isinstance(question.get("answer"), dict):
+                continue
+            question["answer"] = {"kind": "delegated", "text": UNATTENDED, "answered_at": now}
+            ids.append(str(question.get("id")))
+        if not ids:
+            return ids
+        state[STAGE] = data
+        ws.append_event(state, ws.new_event(STAGE, "delegated", {"ids": ids, "kind": "unattended"}))
+        workspace.write_state(state)
+        ws.write_text(workspace.decisions_path, render(data))
+    return ids
 
 
 # --------------------------------------------------------------------------- reads

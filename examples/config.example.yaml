@@ -140,7 +140,7 @@ design:
   require_approval: true
   # Ask the user the open points before the plan is written; the plan run is
   # refused (exit 6) while a recorded question is open.
-  ask_questions: false  # auto/true asks before designing; leave false for unattended runs
+  ask_questions: false  # auto/true asks before designing; with require_approval false, not waited for
   # Architect question rounds before asking the user how to proceed.
   max_question_rounds: 2
 

@@ -38,8 +38,9 @@ authors can find it.
   they are frozen beside the plan in `review-target-decisions.md`. `design approve` records `decisions_sha256`, and an answer
   revised afterwards makes the approval stale (`decisions-changed`). A
   project file may set both keys; one that loosens them is noted like the
-  other gates, and `doctor` notes `ask_questions` left on with approval off,
-  where an unattended run would stop at the questions. With the setting at
+  other gates. With approval off (nobody watching) the questions are still
+  asked and recorded, but the plan run leaves any still open to the architect
+  instead of waiting, and `doctor` notes it. With the setting at
   `false` nothing changes: no refusal, no `status` line, and the same design
   review prompts and sha.
 
