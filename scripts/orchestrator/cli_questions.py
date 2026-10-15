@@ -4,19 +4,11 @@ from __future__ import annotations
 
 import argparse
 import os
-from typing import Any, Dict, Optional
+from typing import Optional
 
-from . import config as config_mod
 from . import questions as questions_mod
 from . import workspace as ws
 from .cli_common import _emit_json, _err, _in_workflow, _load_lenient, _out, _read_stdin, _workspace
-
-
-def _current(loaded: config_mod.LoadedConfig, workspace: ws.Workspace) -> Dict[str, Any]:
-    settings = loaded.design_settings()
-    return questions_mod.current(
-        workspace, settings.get("ask_questions"), settings.get("max_question_rounds")
-    )
 
 
 def _read_blocks(path: str, workspace: ws.Workspace) -> Optional[str]:
@@ -49,7 +41,7 @@ def cmd_design_questions_record(args: argparse.Namespace) -> int:
             _err("  - %s" % problem)
         _err("Fix the format and keep the content, or run the round again.")
         return 2
-    info = _current(loaded, workspace)
+    info = questions_mod.current_for(loaded, workspace)
     if args.by == "orchestrator" and not questions:
         _out("no questions to record")
         return 0
@@ -97,7 +89,7 @@ def cmd_design_questions_answer(args: argparse.Namespace) -> int:
         return 2
     for question in answered:
         _out("%s: %s" % (question["id"], question["answer"]["text"]))
-    info = _current(loaded, workspace)
+    info = questions_mod.current_for(loaded, workspace)
     if info["open"]:
         _out("still open: %s" % ", ".join(info["open"]))
     return 0
@@ -107,7 +99,7 @@ def cmd_design_questions_show(args: argparse.Namespace) -> int:
     """The recorded questions and answers, as text or as one JSON object."""
     loaded = _load_lenient(args.cwd)
     workspace = _workspace(args)
-    info = _current(loaded, workspace)
+    info = questions_mod.current_for(loaded, workspace)
     data = questions_mod.read(workspace.read_state())
     questions = data["questions"]
     if args.open:

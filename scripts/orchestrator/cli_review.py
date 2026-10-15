@@ -1896,7 +1896,9 @@ def _status_budget(
             ],
             architect_left=book.remaining("architect"),
             approved=_approved_as_recorded(
-                approval_mod.current(base, bool(loaded.design_settings().get("require_approval")))
+                approval_mod.current(
+                    base, bool(loaded.design_settings().get("require_approval")), questions_mod.asking(loaded)
+                )
             ),
             implemented=approval_mod.implemented_since_plan(base, events),
             accepted=accepted,

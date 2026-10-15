@@ -413,7 +413,11 @@ def _status_payload(
     design_max = int(design_settings.get("max_iterations", 2))
     design_decision = _design_decision(loaded, workspace)
     design_exhausted = bool(design_blocking) and design_iteration >= design_max
-    approval_info = approval_mod.current(workspace, bool(loaded.design_settings().get("require_approval")))
+    approval_info = approval_mod.current(
+        workspace,
+        bool(loaded.design_settings().get("require_approval")),
+        asking=questions_mod.asking(loaded),
+    )
     # The same list `design approve` names, whatever the severity: the user is
     # asked about what the approval will record, not only what blocks.
     design_open = [str(f.get("id")) for f in approval_mod.open_findings(design_data)]
@@ -422,10 +426,7 @@ def _status_payload(
     approval_info["open_findings"] = design_open
     approval_info["open_findings_of_current_plan"] = of_current_plan if design_open else None
     approval_info["design_review_exhausted"] = design_exhausted
-    questions_settings = loaded.design_settings()
-    questions_info = questions_mod.current(
-        workspace, questions_settings.get("ask_questions"), questions_settings.get("max_question_rounds")
-    )
+    questions_info = questions_mod.current_for(loaded, workspace)
 
     events = [event for event in (workspace.read_state().get("events") or []) if isinstance(event, dict)]
     refused_for_size = _context_refusal(events, "review")
@@ -730,9 +731,7 @@ def cmd_design_approve(args: argparse.Namespace) -> int:
     # recorded after the plan, or the plan written some way the plan run's
     # gate never saw.
     settings = loaded.design_settings()
-    questions_info = questions_mod.current(
-        workspace, settings.get("ask_questions"), settings.get("max_question_rounds")
-    )
+    questions_info = questions_mod.current_for(loaded, workspace)
     if questions_info["pending"]:
         for line in questions_mod.approval_refusal_lines(questions_info):
             _err(line)

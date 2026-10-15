@@ -232,6 +232,8 @@ class TestParsing(unittest.TestCase):
             ),
             "a colon after the key": ARCHITECT_QUESTION.replace("Recommended: B --", "Recommended: B:"),
             "a hyphen after the key": ARCHITECT_QUESTION.replace("Recommended: B --", "Recommended: B -"),
+            "the option named": ARCHITECT_QUESTION.replace("Recommended: B --", "Recommended: Option B --"),
+            "a bold key": ARCHITECT_QUESTION.replace("Recommended: B --", "Recommended: **B** --"),
         }
         reason = "almost every older order came from the web shop"
         for name, text in cases.items():
@@ -240,6 +242,37 @@ class TestParsing(unittest.TestCase):
                 self.assertEqual(problems, [])
                 self.assertEqual(question["topic"], "Existing orders")
                 self.assertEqual(question["recommended"], {"key": "B", "reason": reason})
+
+    def test_a_recommendation_starting_with_a_key_letter_is_not_one(self):
+        text = ARCHITECT_QUESTION.replace("Recommended: B --", "Recommended: Because")
+        _, problems = questions_mod.parse(text, "architect")
+        self.assertTrue(any("Recommended must name one of the options" in p for p in problems), problems)
+
+    def test_a_wrapped_field_keeps_the_fields_after_it(self):
+        wrapped = ARCHITECT_QUESTION.replace("get a channel?\n", "get a channel,\n  or stay as they are?\n")
+        [question], problems = questions_mod.parse(wrapped, "architect")
+        self.assertEqual(problems, [])
+        self.assertEqual(
+            question["question"],
+            "Should orders placed before this change get a channel, or stay as they are?",
+        )
+        self.assertEqual([o["key"] for o in question["options"]], ["A", "B"])
+        self.assertEqual(question["recommended"]["key"], "B")
+        free_form = ORCHESTRATOR_QUESTION + "  and its history?\n- Option A: Yes\n- Option B: No\n"
+        [question], problems = questions_mod.parse(free_form, "orchestrator")
+        self.assertEqual(problems, [])
+        self.assertTrue(question["question"].endswith("channel too? and its history?"))
+        self.assertEqual(len(question["options"]), 2)
+
+    def test_a_sixth_option_is_refused_by_name(self):
+        six = SECOND_QUESTION.replace(
+            "- Recommended:",
+            "- Option D: d\n- Option E: e\n- Option F: f\n- Recommended:",
+        )
+        questions, problems = questions_mod.parse(six, "architect")
+        self.assertEqual(questions, [])
+        self.assertTrue(any("Option f: at most five options" in p for p in problems), problems)
+        self.assertFalse(any("Recommended is missing" in p for p in problems), problems)
 
     def test_fences_and_a_closing_line_are_not_the_round(self):
         fenced = "```markdown\n" + ARCHITECT_QUESTION + SECOND_QUESTION + "```\n"
@@ -603,7 +636,16 @@ class TestTheRoundCap(QuestionsCase):
         run_cli("config", "set", "budgets.architect_questions", "0")
         code, _, err = self.questions_run("--force")
         self.assertEqual(code, 0, err)
-        self.assertIn("--force also overrides the spent architect_questions budget", err)
+        self.assertIn("--force also overrides a spent budget", err)
+        self.assertIn("architect_questions has used its budget", err)
+
+    def test_force_past_the_workflow_budget_names_that_one(self):
+        run_cli("config", "set", "budgets.total_delegated_runs", "1")
+        self.assertEqual(self.questions_run("--force")[0], 0)
+        code, _, err = self.questions_run("--force")
+        self.assertEqual(code, 0, err)
+        self.assertIn("budget of 1 delegated runs", err)
+        self.assertNotIn("architect_questions has used its budget", err)
 
     def test_a_null_cap_is_the_default(self):
         for scope in ("user", "project"):
@@ -700,6 +742,16 @@ class TestApproval(QuestionsCase):
         _, out, _ = run_cli("design", "approve")
         self.assertNotIn("already approved", out)
         self.assertEqual(self.implement()[0], 0)
+
+    def test_with_the_questions_off_a_revised_answer_does_not_stale_it(self):
+        run_cli("design", "approve")
+        self.ask("false")
+        self.answer("Q1", "--revise", "--text", "Backfill as unknown")
+        self.assertEqual(self.approval()["state"], "approved")
+        self.assertEqual(self.implement()[0], 0)
+        # Turned back on, the records count again.
+        self.ask("auto")
+        self.assertEqual(self.approval()["stale_reason"], "decisions-changed")
 
     def test_an_entry_from_before_the_questions_is_never_staled_by_them(self):
         run_cli("design", "approve")

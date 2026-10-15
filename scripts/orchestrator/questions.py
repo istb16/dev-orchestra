@@ -21,7 +21,7 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from . import workspace as ws
-from .config import ask_questions_mode
+from .config import LoadedConfig, ask_questions_mode
 
 #: The state key the questions are kept under, and the stage of their run-log events.
 STAGE = "design_questions"
@@ -48,11 +48,16 @@ OPTION_KEYS = "ABCDE"
 DELEGATED = "left to the architect"
 
 _HEADER_RE = re.compile(r"^\s{0,3}#{1,6}\s*question\s*$", re.IGNORECASE)
+#: Any option letter is read as an option, so a sixth one is refused by name
+#: instead of ending the block and hiding the fields after it.
 _FIELD_RE = re.compile(
-    r"^\s*[-*+]\s*\*{0,2}(topic|question|why it matters|option [a-e]|recommended)\*{0,2}\s*:\s*(.*)$",
+    r"^\s*[-*+]\s*\*{0,2}(topic|question|why it matters|option [a-z]|recommended)\*{0,2}\s*:\s*(.*)$",
     re.IGNORECASE,
 )
-_RECOMMENDED_RE = re.compile(r"^([A-Ea-e])\b\s*(?:--|-|:)?\s*(.*)$")
+#: ``B -- why``, and the ways models dress it: ``Option B``, ``**B**``.
+_RECOMMENDED_RE = re.compile(
+    r"^\*{0,2}(?:option\s+)?([A-E])\*{0,2}(?![A-Za-z0-9])\s*(?:--|-|:)?\s*(.*)$", re.IGNORECASE
+)
 _ID_RE = re.compile(r"^Q(\d+)$")
 _FENCE_RE = re.compile(r"^\s{0,3}(```|~~~)")
 
@@ -93,7 +98,8 @@ def parse(text: str, by: str) -> Tuple[List[Dict[str, Any]], List[str]]:
     look answered with a question missing. A text that is exactly
     ``No questions.`` is no questions and no problem. What comes before the
     first ``## Question`` is not a block and is ignored, and so is a closing
-    line after a block's fields. Code fence lines are dropped first: models
+    line after a block's fields; an indented line under a field continues
+    that field. Code fence lines are dropped first: models
     wrap their answer in one often enough that a round must not fail on it.
     """
     lines = [line for line in text.splitlines() if not _FENCE_RE.match(line)]
@@ -120,19 +126,28 @@ def parse(text: str, by: str) -> Tuple[List[Dict[str, Any]], List[str]]:
 def _parse_block(lines: List[str], by: str) -> Tuple[Dict[str, Any], List[str]]:
     fields: Dict[str, str] = {}
     problems: List[str] = []
-    seen_field = False
+    last: Optional[str] = None
     for line in lines:
         if not line.strip():
             continue
         match = _FIELD_RE.match(line)
-        if not match and seen_field:
+        if not match and last is not None and line[:1].isspace():
+            # An indented line under a field is that field wrapped: joined, so
+            # the fields after it are still read.
+            if last in fields:
+                fields[last] = "%s %s" % (fields[last], line.strip())
+            continue
+        if not match and last is not None:
             # The block ends at its fields; what follows is prose around it.
             break
         if not match:
             problems.append("not a `- Field: value` line: %r" % line.strip()[:80])
             continue
-        seen_field = True
         name, value = match.group(1).lower(), match.group(2).strip()
+        last = name
+        if name.startswith("option ") and name[-1].upper() not in OPTION_KEYS:
+            problems.append("%s: at most five options, A to E" % name.capitalize())
+            continue
         if name in fields:
             problems.append("%s is given twice" % name.capitalize())
             continue
@@ -374,6 +389,17 @@ def _one_line(value: Any) -> str:
 def prompt_carries_decisions(text: str) -> bool:
     """Whether a plan request points the architect at the answers, as the template does."""
     return DECISIONS_FILE in text or "## Decisions" in text
+
+
+def asking(loaded: LoadedConfig) -> bool:
+    """Whether ``design.ask_questions`` is on or ``auto``: the records count only then."""
+    return ask_questions_mode(loaded.design_settings().get("ask_questions")) != "off"
+
+
+def current_for(loaded: LoadedConfig, workspace: ws.Workspace) -> Dict[str, Any]:
+    """``current`` under the settings in ``loaded``: the one place they are read for it."""
+    settings = loaded.design_settings()
+    return current(workspace, settings.get("ask_questions"), settings.get("max_question_rounds"))
 
 
 def current(workspace: ws.Workspace, setting: Any, max_rounds: Any) -> Dict[str, Any]:

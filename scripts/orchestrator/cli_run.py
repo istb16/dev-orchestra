@@ -565,12 +565,14 @@ def _spend_attempt(args: argparse.Namespace, book: ledger_mod.Ledger, seat: _Sea
     refusal = _refuse_if_exhausted(book, seat.stage, args.force)
     if refusal is not None:
         return refusal
-    if seat.stage == questions_mod.RUN_STAGE and args.force and not args.job_file and book.check(seat.stage):
-        # One flag, two limits: the user who asked for one more round past the
-        # cap may not know the budget was spent as well.
+    spent = book.check(seat.stage) if args.force and not args.job_file else []
+    if seat.stage == questions_mod.RUN_STAGE and spent:
+        # One flag, several limits: the user who asked for one more round past
+        # the cap may not know a budget was spent as well. Each one is named as
+        # the ledger names it, so a spent workflow-wide limit is not reported
+        # as this run's own budget.
         _err(
-            "note: --force also overrides the spent %s budget: this round runs past it too"
-            % questions_mod.RUN_STAGE
+            "note: --force also overrides a spent budget, and this round runs past it: %s" % "; ".join(spent)
         )
     try:
         if not args.job_file:
@@ -950,7 +952,9 @@ def _refuse_unless_approved(
     loaded: config_mod.LoadedConfig, workspace: ws.Workspace, args: argparse.Namespace, role: str
 ) -> Optional[int]:
     """Refuse the implementer a plan the user has not approved as it is now."""
-    info = approval_mod.current(workspace, bool(loaded.design_settings().get("require_approval")))
+    info = approval_mod.current(
+        workspace, bool(loaded.design_settings().get("require_approval")), questions_mod.asking(loaded)
+    )
     if info["state"] not in approval_mod.REFUSED:
         return None
     lines = approval_mod.refusal_lines(info, workspace.relative(workspace.plan_path))
@@ -985,13 +989,6 @@ def _questions_refusal(args: argparse.Namespace, role: str, workspace: ws.Worksp
     return None
 
 
-def _questions_info(loaded: config_mod.LoadedConfig, workspace: ws.Workspace) -> Dict[str, Any]:
-    settings = loaded.design_settings()
-    return questions_mod.current(
-        workspace, settings.get("ask_questions"), settings.get("max_question_rounds")
-    )
-
-
 def _refuse_questions_run_past_cap(
     loaded: config_mod.LoadedConfig, workspace: ws.Workspace, args: argparse.Namespace
 ) -> Optional[int]:
@@ -999,7 +996,7 @@ def _refuse_questions_run_past_cap(
     # A worker always carries --force; whether the user forced this run is in
     # its job record.
     force = jobs_mod.user_forced(args.job_file) if args.job_file else bool(args.force)
-    info = _questions_info(loaded, workspace)
+    info = questions_mod.current_for(loaded, workspace)
     if force or not questions_mod.cap_reached(info):
         return None
     return _refuse_for_questions(args, questions_mod.cap_refusal_lines(info))
@@ -1017,7 +1014,7 @@ def _refuse_unless_questions_answered(
         # Only the run that writes the plan is gated: an investigation run
         # with no plan output is not.
         return None
-    info = _questions_info(loaded, workspace)
+    info = questions_mod.current_for(loaded, workspace)
     if questions_mod.refused(info, bool(getattr(args, "resume", False))):
         return _refuse_for_questions(args, questions_mod.refusal_lines(info))
     if info["mode"] != "off" and info["answered"] and not args.job_file:

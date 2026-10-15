@@ -151,12 +151,14 @@ def implemented_since_plan(workspace: ws.Workspace, events: List[Dict[str, Any]]
     return at is not None and at > written
 
 
-def current(workspace: ws.Workspace, required: bool) -> Dict[str, Any]:
+def current(workspace: ws.Workspace, required: bool, asking: bool = True) -> Dict[str, Any]:
     """The approval state `status` prints and `run implementer` gates on.
 
     ``matches_current_plan`` and ``reviewed_since_approval`` are worked out
     whether or not approval is required, so turning the setting off does not
-    hide what the record says about the plan.
+    hide what the record says about the plan. ``asking`` is
+    ``questions.asking``: with ``design.ask_questions`` off the recorded
+    answers are not enforced, so a revised one does not stale the approval.
     """
     _, digest = read_plan(workspace)
     state = workspace.read_state()
@@ -175,7 +177,7 @@ def current(workspace: ws.Workspace, required: bool) -> Dict[str, Any]:
             matches = approved.get("sha256") == digest
         # Only an entry that recorded the answers can find them changed: one
         # from before the design questions has no key and never goes stale by it.
-        if "decisions_sha256" in approved:
+        if asking and "decisions_sha256" in approved:
             decisions_changed = approved.get("decisions_sha256") != questions_mod.decisions_digest(state)
 
     stale_reason = None
