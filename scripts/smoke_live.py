@@ -68,6 +68,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from orchestrator import config as config_mod
 from orchestrator import verified
 from orchestrator import workspace as ws
+from orchestrator.cli_common import tolerate_console_encoding
 from orchestrator.providers import (
     MODE_IMPLEMENT,
     MODE_PLAN,
@@ -1136,6 +1137,9 @@ def _model_specs(
 
 
 def main(argv: Optional[List[str]] = None) -> int:
+    # The checks spend tokens before anything is printed, so a detail the
+    # console cannot encode must not throw the finished run away.
+    tolerate_console_encoding()
     parser = argparse.ArgumentParser(description=cast(str, __doc__).splitlines()[0])
     parser.add_argument("--provider", action="append", help="only this provider (repeatable)")
     parser.add_argument(
