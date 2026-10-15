@@ -103,6 +103,9 @@ commands:
   - review fix-brief
   - review status
   - design approve
+  - design questions record
+  - design questions answer
+  - design questions show
   - state show
   - state record
   - jobs list
@@ -128,6 +131,7 @@ artifacts:
   directory: .ai/workflows/<id>
   files:
     - plan.md
+    - decisions.md
     - execution/
     - jobs/
     - reviews/review-target.diff

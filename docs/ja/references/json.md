@@ -1,4 +1,4 @@
-<!-- translated-from: references/json.md sha256:7e53e1c8a9e810344a97c816cf90310e0c4534c36a9e0d21c212aa90726c916f -->
+<!-- translated-from: references/json.md sha256:bdbfbf726d5ee4d364bf47a1f93f4d9d83629e0107edd8a2b8028d7469711c2a -->
 
 > この文書は [references/json.md](../../../references/json.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -31,6 +31,7 @@
   - [`review show`](#review-show)
   - [`review status`](#review-status)
   - [`design approve`](#design-approve)
+  - [`design questions show`](#design-questions-show)
 - [ワークフローの状態](#workflow-state)
   - [`status`](#status)
   - [`state show`](#state-show)
@@ -400,7 +401,25 @@ Object. `state.json` が `design_approval` に持つとおりの承認です。
 | `open_findings` | list of strings | まだ開いている design の指摘の id。 |
 | `open_findings_of_current_plan` | boolean or null | それがこの plan の文面のレビューから来たものかどうか。開いているものがなければ `null`。 |
 | `design_round` | string or null | 承認の対象になった design のラウンド。なければ `null`。 |
-| `already_approved` | boolean | この plan がこのラウンドに対してすでに承認されていて、何も記録しなかったかどうか。 |
+| `decisions_sha256` | string or null | その時点の design の質問への回答の sha256。質問をしていなければ `null`。 |
+| `already_approved` | boolean | この plan がこのラウンドとこれらの回答に対してすでに承認されていて、何も記録しなかったかどうか。 |
+| `workflow` | string | ワークフロー。 |
+
+<a id="design-questions-show"></a>
+
+### `design questions show`
+
+Object. plan を書く前にした質問で、`state.json` が `design_questions` に持つとおりのものです。
+[Design の質問](workflow.md#design-questions) を参照してください。
+
+| キー | 型 | 意味 |
+| --- | --- | --- |
+| `mode` | string | `design.ask_questions` から決まる `off`、`auto`、`on`。 |
+| `state` | string | `off`、`none`、`open`、`round-required`、`answered`。 |
+| `pending` | boolean | 未回答の質問がある間だけ `true`。 |
+| `questions` | list | 質問ごと、古い順（`--open` では未回答のものだけ）。`id`、`round`、`by`（`orchestrator` か `architect`）、`topic`、`question`、`why`、`options`（`key`、`text`）、`recommended`（`key`、`reason`。または `null`）、`asked_at`、`answer`（`kind`（`option`、`text`、`delegated`）、`text`、`answered_at`。未回答の間は `null`）、`history`（以前の回答。それぞれ `revised_at` 付き）。 |
+| `rounds` | list | architect のラウンドごと。`round`、`by`、`recorded_at`、`count`。 |
+| `decisions_file` | string or null | リポジトリからの相対パスの `decisions.md`。何か記録されるまでは `null`。 |
 | `workflow` | string | ワークフロー。 |
 
 <a id="workflow-state"></a>
@@ -422,7 +441,8 @@ Object.
 | `in_flight` | object | いま動いているもの。トークンをキーにします。 |
 | `review` | object | `iteration`、`max_review_iterations`、`blocking`、`accepted`、`refused_for_size`、`identical_rounds`、`final_fix`、`final_fix_pending`（値は `review status` と同じ）。 |
 | `design_review` | object | `enabled`、`mode`、`reason`、`iteration`、`max_iterations`、`blocking`、`accepted`、`refused_for_size`、`identical_rounds`、`final_revision`、`final_revision_pending`、`optimization`（値は `review status --design` と同じ）。 |
-| `design_approval` | object | `required`、`state`（`pending`、`stale`、`approved`、`no-plan`、`not-required`、`implemented-unapproved`）、`pending`、`stale_reason`（`plan-changed`、`reviewed-since`、`null`）など。[承認](workflow.md#approval) を参照。 |
+| `design_approval` | object | `required`、`state`（`pending`、`stale`、`approved`、`no-plan`、`not-required`、`implemented-unapproved`）、`pending`、`stale_reason`（`plan-changed`、`reviewed-since`、`decisions-changed`、`null`）など。[承認](workflow.md#approval) を参照。 |
+| `design_questions` | object | `mode`、`state`（`off`、`none`、`open`、`round-required`、`answered`）、`pending`、`open`、`answered`、`total`、`architect_rounds`、`max_rounds`、`decisions_file`。[Design の質問](workflow.md#design-questions) を参照。 |
 | `budgets` | object | 工程ごとの `used`、`limit`、`remaining`。 |
 | `total_delegated_runs` | object | `used` と `limit`。 |
 | `runtime_remaining_seconds` | integer or null | 委任した実行時間の残り（切り上げ）。上限がなければ `null`。 |
@@ -446,6 +466,7 @@ Object. `state.json` そのままです。
 | `updated_at` | string | ファイルを最後に書いた時刻。 |
 | `events` | list | 記録された工程のイベントすべて、古い順。`stage`、`status`、`at`、そして工程がほかに記録したもの。 |
 | `design_approval` | object | Only: plan を承認したあとだけ。`design approve --json` が出すものから `already_approved` と `workflow` を除いたもの。 |
+| `design_questions` | object | Only: design の質問かラウンドを記録したあとだけ。`design questions show --json` が出すとおりの `questions` と `rounds`。 |
 
 <a id="budget-show"></a>
 

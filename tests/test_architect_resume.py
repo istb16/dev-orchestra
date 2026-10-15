@@ -240,6 +240,16 @@ class TestResumingAndChaining(ResumeCase):
         self.revise()
         self.assertEqual(self.last()["resume"]["resumed_from"], second["session_id"])
 
+    def test_a_questions_run_in_between_is_not_the_session_continued(self):
+        self.revise()
+        first = self.last()["session_id"]
+        asking = ("--questions", "--prompt", "ask", "--output", ".ai/execution/design-questions.md")
+        code, _, err = run_cli("run", "architect", *asking)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.last()["session_id"], first)
+        self.revise()
+        self.assertEqual(self.last()["resume"]["resumed_from"], first)
+
     def test_every_run_records_what_comparing_needs(self):
         self.revise(resume=False)
         event = self.last()

@@ -116,6 +116,8 @@ class TestTheGate(ApprovalCase):
         state = json.loads(run_cli("state", "show", "--json")[1])
         self.assertEqual(state["events"][-1]["stage"], "design_approval")
         self.assertEqual(state["events"][-1]["status"], "approved")
+        # No design questions were asked, so there are no answers to hold it to.
+        self.assertIsNone(state["design_approval"]["decisions_sha256"])
         self.assertEqual(self.implement()[0], 0)
 
     def test_a_revised_plan_needs_approving_again(self):
@@ -591,7 +593,7 @@ class TestTheModule(IsolatedCase):
     def test_the_record_and_its_event_are_written_together(self):
         ws.write_text(self.workspace.plan_path, PLAN)
         digest = approval.plan_digest(PLAN)
-        approval.record(self.workspace, digest, [], None, None)
+        approval.record(self.workspace, digest, [], None, None, True)
         state = self.workspace.read_state()
         self.assertEqual(state[approval.STAGE]["sha256"], digest)
         self.assertIsNone(state[approval.STAGE]["design_round"])
@@ -599,7 +601,7 @@ class TestTheModule(IsolatedCase):
 
     def test_the_comparisons_do_not_depend_on_the_setting(self):
         ws.write_text(self.workspace.plan_path, PLAN)
-        approval.record(self.workspace, approval.plan_digest(PLAN), [], None, None)
+        approval.record(self.workspace, approval.plan_digest(PLAN), [], None, None, True)
         ws.write_text(self.workspace.plan_path, REVISED_PLAN)
         info = approval.current(self.workspace, False)
         self.assertEqual(info["state"], "not-required")

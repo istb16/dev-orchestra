@@ -9,6 +9,7 @@ be refused by, the code review's count.
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import os
@@ -121,6 +122,16 @@ class TestRunningIt(DesignReviewCase):
         self.assertTrue(os.path.isfile(self.design.consolidated_json_path))
         self.assertTrue(os.path.isfile(self.design.reviewer_report_path("m1")))
         self.assertIn("NOT NULL", ws.read_text(self.design.snapshot_path))
+
+    def test_without_design_questions_the_sha_is_the_plan_and_the_request(self):
+        """The design questions add to the sha only when there are some."""
+        self.write_plan()
+        self.write_request()
+        run_cli("review", "run", "--design")
+        meta = self.design.read_snapshot_meta()
+        expected = hashlib.sha256(("%s\n\0%s" % (PLAN, REQUEST)).encode("utf-8")).hexdigest()
+        self.assertEqual(meta["sha256"], expected)
+        self.assertNotIn("decisions", meta)
 
     def test_the_code_review_snapshot_is_never_taken(self):
         """A plan is not a diff, so nothing here should touch git or the

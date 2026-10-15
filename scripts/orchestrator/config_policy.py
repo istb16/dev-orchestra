@@ -20,6 +20,7 @@ from .config import (
     ReviewerOrigin,
     _read_only_seats,
     _reviewer_seats,
+    ask_questions_mode,
     compose_loaded,
     design_review_mode,
     get_path,
@@ -572,6 +573,15 @@ def _design_mode(now: LoadedConfig, before: LoadedConfig) -> str:
     return "turns it %s from %s" % (new, old)
 
 
+def _questions_mode(now: LoadedConfig, before: LoadedConfig) -> str:
+    """``design.ask_questions``: ``off`` asks least, then ``auto``, then ``on``."""
+    new = ask_questions_mode(now.design_settings().get("ask_questions"))
+    old = ask_questions_mode(before.design_settings().get("ask_questions"))
+    if _DESIGN_MODES.index(new) >= _DESIGN_MODES.index(old):
+        return ""
+    return "turns it %s from %s" % (new, old)
+
+
 def _findings_cap(loaded: LoadedConfig) -> float:
     """``review.max_findings`` as a run asks for it; 0 lifts the cap."""
     cap = opt_mod.findings_cap(loaded.optimization_settings(), loaded.review_settings())
@@ -632,6 +642,12 @@ _GATES = (
         "review.design.max_iterations",
         ("review.design.max_iterations",),
         _lower(lambda loaded: loaded.design_review_settings().get("max_iterations")),
+    ),
+    _Gate("design.ask_questions", ("design.ask_questions",), _questions_mode),
+    _Gate(
+        "design.max_question_rounds",
+        ("design.max_question_rounds",),
+        _lower(lambda loaded: loaded.design_settings().get("max_question_rounds")),
     ),
     _Gate("optimization.level", ("optimization.level",), _level),
     _Gate(

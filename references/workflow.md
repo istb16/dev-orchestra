@@ -6,6 +6,7 @@
 
 - [Stage selection](#stage-selection)
 - [Artifacts](#artifacts)
+- [Design questions](#design-questions)
 - [Design](#design)
 - [Design review](#design-review)
 - [Approval](#approval)
@@ -45,7 +46,10 @@ a doc comment" is a useful sentence; silently skipping is not.
 └── workflows/
     └── <workflow-id>/
         ├── plan.md                 # Architect output
+        ├── decisions.md            # the design questions and the user's answers, rendered from state.json
         ├── execution/
+        │   ├── design-questions-request.md  # prompt for `run architect --questions`
+        │   ├── design-questions.md # its question blocks, fed to `design questions record`
         │   ├── design-request.md   # prompt you wrote for the Architect
         │   ├── design-fix-brief.md # generated from accepted design findings
         │   ├── design-revise-request.md
@@ -67,12 +71,13 @@ a doc comment" is a useful sentence; silently skipping is not.
         │   ├── rounds/             # consolidated.json of every round, <sha12>-<round_id>.json
         │   └── design/             # the design review, counted separately
         │       ├── review-target.md    # the frozen plan
+        │       ├── review-target-decisions.md  # the frozen decisions, only with design questions
         │       ├── review-target.json  # plan, request, sha256, round_id
         │       ├── <reviewer-id>.md
         │       ├── consolidated.md
         │       ├── consolidated.json
         │       └── rounds/
-        └── state.json              # stage events, resolved model ids, plan approval
+        └── state.json              # stage events, resolved model ids, plan approval, design questions
 ```
 
 **One directory per workflow.** Two sessions working in the same checkout used
@@ -166,6 +171,194 @@ itself; a team that deleted `.ai/.gitignore` has to ignore them in its own
 Nothing in `.ai/`, and no `.dev-orchestra.yaml`, ever enters a review
 snapshot — the skill's own files are not the change under review.
 
+## Design questions
+
+Off by default (`design.ask_questions: false`). Turned on, the open points of a
+design go to the user before the plan is written, instead of being settled
+by the architect without anyone seeing the choice. `status` prints a `Design
+questions:` line whenever the setting is on or something is recorded.
+
+**When to ask.** Under `true`, always: your own questions when you have any,
+then one architect round. Under `auto`, ask when the request has any of:
+
+- an ambiguous requirement -- two readings that lead to different code;
+- new behaviour or a new spec -- something the user has to want, not something
+  the code already implies;
+- several viable approaches that differ in cost, risk or what they rule out.
+
+Say in one line whether you are asking and why ("Asking first: the request
+does not say whether existing orders get a channel"), or why not ("No
+questions: a bug with one obvious cause"). Under `auto` with nothing to ask,
+go straight to the design; nothing is refused.
+
+**The flow.**
+
+1. Your own requirement-level questions, if any: write them as question blocks
+   under `<Artifacts>/execution/`, record them with `--by orchestrator`, ask,
+   and record the answers.
+2. The architect's round: write `design-questions-request.md` from the
+   template below, run it with `--questions`, record its answer with `--by
+   architect`, ask, and record the answers. A second round is for what the
+   answers opened up, not for asking the same thing again.
+3. Write the design request with a `## Decisions` section holding
+   `<Artifacts>/decisions.md` as it is, and run the design as usual.
+
+Ask in batches: every open question of a round in one message, each with its
+options and the recommendation, so the user answers once. Their "leave it to
+you" -- for one question or all of them -- is `--delegate`. Record only what
+they said: `--option` for the option they chose, `--text` for their own words,
+verbatim. Never answer for them; this is theirs as the approval is (SKILL.md
+rule 10).
+
+The block format, the same for both askers:
+
+```markdown
+## Question
+- Topic: <a few words>
+- Question: <one or two sentences the owner can answer without reading code>
+- Why it matters: <what in the design changes with the answer>
+- Option A: <...>
+- Option B: <...>
+- Recommended: B -- <why>
+```
+
+One line per field, options `A` to `E`. An architect question needs `Why it
+matters`, at least two options and a `Recommended` that names one of them; a
+question of your own may leave out the options and the recommendation. A file
+that says exactly `No questions.` records an architect round that asked
+nothing.
+
+`design-questions-request.md`:
+
+```markdown
+# Design questions
+
+<the design request, without its Deliverable section>
+
+## Answers so far
+
+<paste <Artifacts>/decisions.md here, or write None.>
+
+## Deliverable
+
+Investigate the codebase as you would to design this, but do not write a
+plan. List only the decisions the plan depends on that the request and the
+answers above leave open, and that the owner -- not the code -- has to settle.
+Ask nothing the code answers and nothing already answered. Print each as one
+block in exactly this shape, one line per field:
+
+## Question
+- Topic: <a few words>
+- Question: <one or two sentences the owner can answer without reading code>
+- Why it matters: <what in the design changes with the answer>
+- Option A: <...>
+- Option B: <...>
+- Recommended: <option key> -- <why>
+
+Give two to five options, A to E. With nothing to ask, print exactly
+`No questions.` and nothing else. Print to stdout; do not write a file and do
+not modify any file.
+```
+
+```bash
+dev-orchestra design questions record --by orchestrator --file .ai/execution/my-questions.md
+dev-orchestra run architect --questions \
+  --prompt-file .ai/execution/design-questions-request.md \
+  --output .ai/execution/design-questions.md
+dev-orchestra design questions record --by architect --file .ai/execution/design-questions.md
+dev-orchestra design questions show --open
+dev-orchestra design questions answer Q2 --option B
+dev-orchestra design questions answer Q3 --text "Only for orders placed after March"
+dev-orchestra design questions answer Q4 Q5 --delegate
+```
+
+`record` takes all the blocks or none: a malformed one exits 2 naming the block
+and the field, and nothing is recorded. Fix the format by hand and keep the
+content, or run the round again, which costs an attempt. It prints the ids it
+gave, `Q1`, `Q2`, ... in order across the workflow. A question of yours is
+numbered in round 0 until the architect has had a round, then in the round it
+follows. `answer` records `--option B` as `B: <the option's text>`,
+`--delegate` as `left to the architect`; several ids go together only with
+`--delegate`. Changing an answer takes `--revise`, which keeps the earlier one
+in the question's `history`. An unknown id or option, and a `--text` with a line
+break, exit 2. A code fence around the blocks and a closing line after a
+block's last field are ignored, an indented line under a field continues that
+field, and a `Recommended` may name its key as `Option B` or `**B**`. A line of
+prose with a field still to come in its block, and a list item that is not a
+field, are refused as `not a \`- Field: value\` line`. With the setting
+`false`, `record` still records and says the gate is off.
+
+`run architect --questions` runs on the architect's seat -- its provider, model,
+mode and `run.timeout_seconds.architect` -- but spends
+`budgets.architect_questions` (3), not `budgets.architect`, and is recorded
+under the stage `architect_questions`, so it never becomes the session
+`--resume` continues. It refuses (exit 2) `--resume`, an `--output` on the plan,
+and any role but the architect. `run` does not read what it printed: `record`
+does.
+
+**The gate.** While any recorded question is open, the `run architect` whose
+`--output` is the plan exits 6 -- before it spends anything and before
+`--detach` starts a worker; a worker checks again and writes the refusal into
+its job. `--force` does not apply: the answers are the user's. Under `true` it
+is also refused until an architect round is recorded, except a `--resume`
+revision; an open question refuses that one too, because a revision past it
+would contradict `decisions.md` -- answer it, or `--delegate`. An architect run
+with no plan output, and a `--questions` run, are not gated. With answers on
+record, a plan run whose prompt names neither `decisions.md` nor a `##
+Decisions` section prints a note: the likeliest mistake is not passing the
+answers on. `design approve` refuses the same way (exit 6, naming the open ids)
+while a question is open, whatever wrote the plan: a question recorded after
+the plan, or a plan not written through `--output`, cannot be approved past. It
+checks the questions and takes the answers it records from one read, under
+the lock it writes the approval under. `run implementer` refuses too (exit 6),
+whatever the approval says -- one recorded before the answers were kept with
+it, or while the setting was `false` -- before it spends anything and before
+`--detach`, and a worker checks again.
+
+| Setting | Recorded | `state` | The plan run |
+| --- | --- | --- | --- |
+| `false` | anything | `off` | runs; what is recorded is shown, not enforced |
+| `auto` | nothing | `none` | runs |
+| `auto` or `true` | an open question | `open` | refused, exit 6, `--resume` included |
+| `true` | no architect round, nothing open | `round-required` | refused, exit 6, except `--resume` |
+| `auto` or `true` | every question answered | `answered` | runs |
+
+The setting is read at each run: turned to `false`, the gate stops at once;
+turned back on, what is recorded gates again.
+
+**Nobody watching.** With `design.require_approval: false` nobody is there to
+answer, so the questions are asked and recorded but not waited for. Run the
+rounds as usual, record what is asked, and do not stop to ask. The plan run
+records every question still open as left to the architect (`left to the
+architect: nobody was there to answer ...`), says so in a `note:`, and goes
+on; `decisions.md` keeps the questions for someone to look at later. It does
+so only once nothing else refuses the run -- after the round check and once
+its attempt is spent, and with `--detach` before it starts the worker, which
+does not do it again -- so a run refused with exit 6 or 3 leaves them open.
+Under `true` the architect round is still required, and an answer that was
+given is kept.
+
+**The round cap.** After `design.max_question_rounds` (2) architect rounds,
+`run architect --questions` and `design questions record --by architect` exit
+6: present the open points together and ask the user how to proceed. `--force`
+runs or records one more, and only when the user asks for it. On the run it
+also overrides a spent budget, and names each one it overrides on stderr.
+
+`decisions.md` is rewritten from `state.json` on every change and says not to
+edit it. It is what the design request, the revision requests and the design
+reviewers read; the gate reads `state.json`. `status --json` reports the
+questions under `design_questions`, never as a reason to stop:
+
+| Field | Meaning |
+| --- | --- |
+| `mode` | `off`, `auto` or `on`, from `design.ask_questions` |
+| `state` | `off`, `none`, `open`, `round-required` or `answered` |
+| `pending` | `true` only while a question is open |
+| `open` | the ids not answered yet |
+| `answered`, `total` | how many are answered, of how many |
+| `architect_rounds`, `max_rounds` | the architect rounds recorded, and `design.max_question_rounds` |
+| `decisions_file` | `decisions.md`, relative to the root; `null` until something is recorded |
+
 ## Design
 
 Write the design request yourself — the Architect starts with no context from
@@ -192,10 +385,17 @@ request.
 ## Out of scope
 - <anything you have already ruled out, and why>
 
+## Decisions
+<paste <Artifacts>/decisions.md here, unchanged; leave this section out when no design questions were asked>
+
 ## Deliverable
 Print the complete plan to stdout as Markdown, with these sections: Goal,
-Current Behavior, Investigation, Root Cause, Proposed Change, Files to Modify,
-Data/API Impact, Compatibility, Test Strategy, Risks, Implementation Steps.
+Current Behavior, Investigation, Root Cause, Proposed Change, Decisions, Files
+to Modify, Data/API Impact, Compatibility, Test Strategy, Risks,
+Implementation Steps. Under Decisions, list each decision from the Decisions
+section above and each open point you settled yourself: what it is, whether
+the user or you decided it, and why; write `None.` when there are none. The
+user's decisions are fixed: design within them.
 The caller captures stdout. Do not write it to a file: this role runs in plan
 mode. Do not modify any file.
 ```
@@ -233,6 +433,21 @@ It keeps its own reports, round counter and triage under `reviews/design/`, so
 a design round never advances -- or is refused by -- the code review's count.
 Skipping the design stage skips this with it.
 
+With design questions on record, each reviewer is also given the user's
+decisions, after the design request, as premises: the plan is not reported for
+following them. A reviewer who thinks a decision itself is wrong reports one
+finding with `Category: decision` and the decision's id in `File`
+(`decisions.md#Q3`). Do not triage that one on your own judgement: put it to
+the user. If they decide again, record it with `design questions answer Q3
+--revise ...`, triage the finding `accepted` and fold it into the revision; if
+they keep the decision, triage it `rejected --note "user kept Q3"`. The
+decisions are part of the round's sha, so a decision changed over an unchanged
+plan is a new review target. They are frozen beside the plan in
+`reviews/design/review-target-decisions.md`, which `review-target.json` names
+under `decisions`; `design approve` labels findings from a round reviewed under
+other answers as of an earlier revision. Without questions, the prompt and the
+sha are what they always were.
+
 ```bash
 dev-orchestra review run --design
 dev-orchestra review show --design
@@ -259,7 +474,7 @@ write it out in the prompt. The model reads files where they are, and
 ```markdown
 # Revise the plan
 
-<the original design request, unchanged>
+<the original design request, unchanged but for its `## Decisions`, replaced by the current <Artifacts>/decisions.md>
 
 Read <Artifacts>/plan.md and revise it. Keep every section it already has.
 
@@ -290,7 +505,8 @@ You are continuing the session in which you designed this plan. Read
 <Artifacts>/plan.md once before changing anything: it is the plan you printed, as
 saved by the orchestrator, and the findings below refer to its sections.
 Do not re-read code you already read unless a finding contradicts what you
-remember.
+remember. If this workflow has <Artifacts>/decisions.md, read it once; its
+answers are fixed. Keep the plan's `## Decisions` in line with it.
 
 <paste <Artifacts>/execution/design-fix-brief.md here>
 
@@ -391,13 +607,18 @@ they ask for changes, revise the plan (and re-review it if the design review is
 on), then ask again: the revision hashes differently, so the old approval no
 longer counts.
 
+A change to a recorded decision goes the same way. Record the user's new words
+first, with `design questions answer Q2 --revise --text "..."`, which rewrites
+`decisions.md`; then revise the plan as below, naming the decisions that
+changed by id.
+
 A revision the user asked for has no fix brief, so its two files carry their
 words instead. `design-change-request.md`, for a fresh run:
 
 ```markdown
 # Revise the plan
 
-<the original design request, unchanged>
+<the original design request, unchanged but for its `## Decisions`, replaced by the current <Artifacts>/decisions.md>
 
 Read <Artifacts>/plan.md and revise it. Keep every section it already has.
 
@@ -427,7 +648,9 @@ stdout. Do not write it to a file: this role runs in plan mode.
 You are continuing the session in which you designed this plan. Read
 <Artifacts>/plan.md once before changing anything: it is the plan you printed, as
 saved by the orchestrator. Do not re-read code you already read unless a
-change below contradicts what you remember.
+change below contradicts what you remember. If this workflow has
+<Artifacts>/decisions.md, read it once; its answers are fixed. Keep the
+plan's `## Decisions` in line with it.
 
 The owner reviewed the plan and asked for these changes, in their words:
 
@@ -466,12 +689,17 @@ attempt (`budget reset`) and revise. Once they approve, the stop is answered --
 `run implementer` refuses (exit 5) while the plan is not approved, before it
 spends any budget and before `--detach` starts a worker; a worker checks again
 and writes the whole refusal into its job. `--force` does not apply. No plan
-(no design stage) means no gate.
+(no design stage) means no gate. While a recorded design question is open it
+refuses with exit 6 instead, whatever the approval says (see Design questions).
 
 An approval is of the plan text alone (sha256) and of the design review round
 it was given over. It goes stale when the plan changes (`plan-changed`) or when
 `review run --design` runs again afterwards, even over the same plan
-(`reviewed-since`). Re-consolidating and triaging do not.
+(`reviewed-since`). Re-consolidating and triaging do not. With design
+questions, it is also of the answers as they were (`decisions_sha256`, `null`
+when none were asked): an answer revised afterwards makes it stale even over
+an unchanged plan (`decisions-changed`) -- revise the plan and ask again. An
+approval recorded before this key existed never goes stale by it.
 
 `status --json` reports it under `design_approval`:
 
@@ -480,7 +708,7 @@ it was given over. It goes stale when the plan changes (`plan-changed`) or when
 | `required` | `design.require_approval` |
 | `state` | `pending`, `stale`, `approved`, `no-plan`, `not-required`, or `implemented-unapproved` |
 | `pending` | `true` when the user has to be asked (`pending` or `stale`) |
-| `stale_reason` | `plan-changed`, `reviewed-since`, or `null` |
+| `stale_reason` | `plan-changed`, `reviewed-since`, `decisions-changed`, or `null` |
 | `plan_sha256`, `approved_sha256`, `approved_at` | the plan now, and the one approved |
 | `matches_current_plan` | whether the approved sha is the current plan's; `null` without both |
 | `reviewed_since_approval` | whether a design review round ran after the approval; `null` without one |
@@ -677,6 +905,8 @@ anything left unresolved.
 | A command exits 3 | A budget is spent. Report what is unresolved; do not retry, and do not reach for `--force` |
 | `run implementer` exits 5 | The plan is not approved, or changed / was reviewed after approval. Present it and ask the user; record a yes with `design approve`. Do not retry and do not approve it yourself |
 | A detached implementer job is `failed` with "not approved" | Same cause, found by the worker; once the user approves, start it again |
+| `run architect` exits 6 | A design question is open, or `design.ask_questions` is `true` and no architect round is recorded, or the question rounds are at their cap. Ask the user; record their words with `design questions answer`. Do not retry and do not answer for them |
+| `run implementer` or `design approve` exits 6 | A recorded design question is open. Ask the user and record their answer; revise the plan if it changes it, then ask for approval again |
 | `status` says `stop-and-report` | Stop. It has already weighed budgets, stalls and open findings |
 
 ## Example workflows

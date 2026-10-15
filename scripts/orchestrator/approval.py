@@ -20,6 +20,7 @@ import os
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
+from . import questions as questions_mod
 from . import workspace as ws
 
 #: The state key the approval is kept under, and the stage of its run-log event.
@@ -110,12 +111,17 @@ def findings_of_current_plan(workspace: ws.Workspace, plan_text: str) -> Optiona
 
     Compared with the frozen plan in ``review-target.md`` rather than through
     ``design_digest``: that one hashes the request as it is on disk now, so a
-    rewritten request would make findings about this very plan look old.
+    rewritten request would make findings about this very plan look old. The
+    decisions are compared with their frozen copy the same way: a round that
+    reviewed this plan under answers since revised reviewed an earlier one.
     """
-    snapshot = workspace.design_review().snapshot_path
-    if not os.path.isfile(snapshot):
+    review = workspace.design_review()
+    if not os.path.isfile(review.snapshot_path):
         return None
-    return ws.read_text(snapshot) == plan_text
+    if ws.read_text(review.snapshot_path) != plan_text:
+        return False
+    decisions = questions_mod.decisions_text(workspace.read_state())
+    return ws.read_text(review.snapshot_decisions_path) == decisions
 
 
 def epoch_of(stamp: Any) -> Optional[float]:
@@ -145,12 +151,14 @@ def implemented_since_plan(workspace: ws.Workspace, events: List[Dict[str, Any]]
     return at is not None and at > written
 
 
-def current(workspace: ws.Workspace, required: bool) -> Dict[str, Any]:
+def current(workspace: ws.Workspace, required: bool, asking: bool = True) -> Dict[str, Any]:
     """The approval state `status` prints and `run implementer` gates on.
 
     ``matches_current_plan`` and ``reviewed_since_approval`` are worked out
     whether or not approval is required, so turning the setting off does not
-    hide what the record says about the plan.
+    hide what the record says about the plan. ``asking`` is
+    ``questions.asking``: with ``design.ask_questions`` off the recorded
+    answers are not enforced, so a revised one does not stale the approval.
     """
     _, digest = read_plan(workspace)
     state = workspace.read_state()
@@ -162,10 +170,15 @@ def current(workspace: ws.Workspace, required: bool) -> Dict[str, Any]:
 
     matches = None
     reviewed_since = None
+    decisions_changed = False
     if approved is not None:
         reviewed_since = approved.get("design_round") != round_id
         if digest:
             matches = approved.get("sha256") == digest
+        # Only an entry that recorded the answers can find them changed: one
+        # from before the design questions has no key and never goes stale by it.
+        if asking and "decisions_sha256" in approved:
+            decisions_changed = approved.get("decisions_sha256") != questions_mod.decisions_digest(state)
 
     stale_reason = None
     if not required:
@@ -181,6 +194,8 @@ def current(workspace: ws.Workspace, required: bool) -> Dict[str, Any]:
         name, stale_reason = "stale", "plan-changed"
     elif reviewed_since:
         name, stale_reason = "stale", "reviewed-since"
+    elif decisions_changed:
+        name, stale_reason = "stale", "decisions-changed"
     else:
         name = "approved"
 
@@ -203,8 +218,18 @@ def record(
     open_findings: List[str],
     of_current_plan: Optional[bool],
     round_id: Optional[str],
+    asking: bool,
 ) -> Dict[str, Any]:
-    """Write state["design_approval"] and append the run-log event under one lock."""
+    """Write state["design_approval"] and append the run-log event under one lock.
+
+    The entry keeps ``decisions_sha256``, ``questions.decisions_digest`` as
+    the answers are, or None when no question was asked: an answer revised
+    afterwards makes the approval stale even over an unchanged plan. With
+    ``asking`` (``questions.asking``), an open question raises
+    ``questions.QuestionsOpen`` and nothing is written. Both are read under
+    the lock the entry is written under, so a question recorded meanwhile can
+    neither slip past the check nor into the digest of an approval.
+    """
     entry = {
         "sha256": digest,
         "plan": workspace.relative(workspace.plan_path),
@@ -220,6 +245,10 @@ def record(
     )
     with ws.file_lock(workspace.state_path):
         state = workspace.read_state()
+        still_open = questions_mod.open_ids(questions_mod.read(state))
+        if asking and still_open:
+            raise questions_mod.QuestionsOpen(still_open)
+        entry["decisions_sha256"] = questions_mod.decisions_digest(state)
         state[STAGE] = entry
         ws.append_event(state, event)
         workspace.write_state(state)
@@ -239,6 +268,11 @@ def refusal_lines(info: Dict[str, Any], plan_relative: str) -> List[str]:
         first = (
             "refusing to run implementer: a design review ran after the plan at %s was approved. "
             "Present its findings and ask again." % plan_relative
+        )
+    elif info.get("stale_reason") == "decisions-changed":
+        first = (
+            "refusing to run implementer: a recorded decision changed after the plan at %s was approved: "
+            "revise the plan and ask again." % plan_relative
         )
     else:
         first = (

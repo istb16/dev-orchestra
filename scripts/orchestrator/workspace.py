@@ -169,6 +169,11 @@ class Workspace:
         return os.path.join(self.dir, "plan.md")
 
     @property
+    def decisions_path(self) -> str:
+        """The user's answers to the design questions, rendered from ``state.json``."""
+        return os.path.join(self.dir, "decisions.md")
+
+    @property
     def execution_dir(self) -> str:
         return os.path.join(self.dir, "execution")
 
@@ -192,6 +197,11 @@ class Workspace:
         no tokens: it is read only if a reviewer decides it needs the context.
         """
         return os.path.join(self.reviews_dir, "review-target-full.diff")
+
+    @property
+    def snapshot_decisions_path(self) -> str:
+        """The decisions a design round reviewed under, frozen beside its plan."""
+        return os.path.join(self.reviews_dir, "review-target-decisions.md")
 
     @property
     def snapshot_meta_path(self) -> str:

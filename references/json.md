@@ -25,6 +25,7 @@
   - [`review show`](#review-show)
   - [`review status`](#review-status)
   - [`design approve`](#design-approve)
+  - [`design questions show`](#design-questions-show)
 - [Workflow state](#workflow-state)
   - [`status`](#status)
   - [`state show`](#state-show)
@@ -392,7 +393,23 @@ Object: the approval, as `state.json` holds it under `design_approval`.
 | `open_findings` | list of strings | The ids of the design findings still open. |
 | `open_findings_of_current_plan` | boolean or null | Whether those come from a review of this plan text; `null` with none open. |
 | `design_round` | string or null | The design round it was given over; `null` with none. |
-| `already_approved` | boolean | Whether this plan was already approved over this round, so nothing was recorded. |
+| `decisions_sha256` | string or null | The sha256 of the answers to the design questions as they were; `null` when none were asked. |
+| `already_approved` | boolean | Whether this plan was already approved over this round and these answers, so nothing was recorded. |
+| `workflow` | string | The workflow. |
+
+### `design questions show`
+
+Object: the questions asked before the plan is written, as `state.json` holds
+them under `design_questions` -- see [Design questions](workflow.md#design-questions).
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `mode` | string | `off`, `auto` or `on`, from `design.ask_questions`. |
+| `state` | string | `off`, `none`, `open`, `round-required` or `answered`. |
+| `pending` | boolean | `true` only while a question is open. |
+| `questions` | list | Each question, oldest first (only the open ones with `--open`): `id`, `round`, `by` (`orchestrator` or `architect`), `topic`, `question`, `why`, `options` (`key`, `text`), `recommended` (`key`, `reason`, or `null`), `asked_at`, `answer` (`kind` -- `option`, `text` or `delegated` --, `text`, `answered_at`, or `null` while open) and `history` (earlier answers, each with `revised_at`). |
+| `rounds` | list | Each architect round: `round`, `by`, `recorded_at`, `count`. |
+| `decisions_file` | string or null | `decisions.md`, relative to the repository; `null` until something is recorded. |
 | `workflow` | string | The workflow. |
 
 ## Workflow state
@@ -410,7 +427,8 @@ Object.
 | `in_flight` | object | What is running now, keyed by token. |
 | `review` | object | `iteration`, `max_review_iterations`, `blocking`, `accepted`, `refused_for_size`, `identical_rounds`, `final_fix`, `final_fix_pending` (values as in `review status`). |
 | `design_review` | object | `enabled`, `mode`, `reason`, `iteration`, `max_iterations`, `blocking`, `accepted`, `refused_for_size`, `identical_rounds`, `final_revision`, `final_revision_pending`, `optimization` (values as in `review status --design`). |
-| `design_approval` | object | `required`, `state` (`pending`, `stale`, `approved`, `no-plan`, `not-required` or `implemented-unapproved`), `pending`, `stale_reason` (`plan-changed`, `reviewed-since` or `null`) and the rest -- see [Approval](workflow.md#approval). |
+| `design_approval` | object | `required`, `state` (`pending`, `stale`, `approved`, `no-plan`, `not-required` or `implemented-unapproved`), `pending`, `stale_reason` (`plan-changed`, `reviewed-since`, `decisions-changed` or `null`) and the rest -- see [Approval](workflow.md#approval). |
+| `design_questions` | object | `mode`, `state` (`off`, `none`, `open`, `round-required` or `answered`), `pending`, `open`, `answered`, `total`, `architect_rounds`, `max_rounds`, `decisions_file` -- see [Design questions](workflow.md#design-questions). |
 | `budgets` | object | Per stage: `used`, `limit`, `remaining`. |
 | `total_delegated_runs` | object | `used` and `limit`. |
 | `runtime_remaining_seconds` | integer or null | The delegated runtime left, rounded up; `null` without a limit. |
@@ -432,6 +450,7 @@ Object: `state.json` as it is.
 | `updated_at` | string | When the file was last written. |
 | `events` | list | Every recorded stage event, oldest first: `stage`, `status`, `at`, and what the stage recorded besides. |
 | `design_approval` | object | Only once a plan was approved: as `design approve --json` prints it, less `already_approved` and `workflow`. |
+| `design_questions` | object | Only once a design question or round was recorded: `questions` and `rounds`, as `design questions show --json` prints them. |
 
 ### `budget show`
 

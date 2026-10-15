@@ -423,6 +423,12 @@ def claim(job_file: str) -> Dict[str, Any]:
     return update(job_file, claimed)
 
 
+def user_forced(job_file: str) -> bool:
+    """Called by the worker: whether the user passed ``--force``, which its own argv cannot say."""
+    job = ws.read_json(job_file, {})
+    return isinstance(job, dict) and bool(job.get("force"))
+
+
 def finish(
     job_file: str, status: str, output: str = "", error: str = "", detail: Optional[Dict[str, Any]] = None
 ) -> None:

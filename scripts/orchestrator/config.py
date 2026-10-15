@@ -113,6 +113,15 @@ def design_review_mode(value: Any) -> str:
     return "on" if value else "off"
 
 
+def ask_questions_mode(value: Any) -> str:
+    """``on``, ``off`` or ``auto`` for a ``design.ask_questions`` value; null is the default, off."""
+    if isinstance(value, str) and value.strip().lower() == "auto":
+        return "auto"
+    if value is None:
+        return "off"
+    return "on" if value else "off"
+
+
 #: A BCP 47 language tag, loosely: a primary subtag of two or three letters
 #: and any number of further subtags. Enough to refuse a sentence or a typo
 #: such as ``japanese``, without a registry to check every subtag against.
@@ -319,8 +328,17 @@ def default_config() -> Dict[str, Any]:
         # CLI kept the prompt cache when this was measured; past it, a resumed
         # run pays to rebuild the context anyway. No context cap until one is
         # measured to hurt a revision.
+        #
+        # ``ask_questions`` puts the user's answers in front of the plan: the
+        # orchestrator asks its own questions, then `run architect --questions`
+        # asks the architect's, and the run that writes the plan is refused
+        # until every one is answered. Off by default, so a workflow runs as it
+        # did before; `auto` asks when the orchestrator finds something worth
+        # asking, `true` always runs one architect round first.
         "design": {
             "require_approval": True,
+            "ask_questions": False,
+            "max_question_rounds": 2,
             "resume": {"max_age_seconds": 3600, "max_context_tokens": None},
         },
         # How hard to try to be cheap. See orchestrator/optimization.py: the
@@ -351,6 +369,7 @@ def default_config() -> Dict[str, Any]:
         },
         "budgets": {
             "architect": 3,
+            "architect_questions": 3,
             "implementer": 5,
             "review_fixer": 4,
             "test": 8,
@@ -1881,6 +1900,16 @@ def _validate_design(design: Any) -> List[str]:
     approval = design.get("require_approval")
     if approval is not None and not isinstance(approval, bool):
         problems.append("design.require_approval: must be true or false")
+    ask = design.get("ask_questions")
+    if isinstance(ask, str):
+        known = ask.strip().lower() == "auto"
+    else:
+        known = ask is None or isinstance(ask, bool)
+    if not known:
+        problems.append("design.ask_questions: must be true, false or auto")
+    rounds = design.get("max_question_rounds")
+    if rounds is not None and not _int_at_least(rounds, 1):
+        problems.append("design.max_question_rounds: must be a positive integer")
     resume = design.get("resume")
     if resume is not None:
         if not isinstance(resume, dict):

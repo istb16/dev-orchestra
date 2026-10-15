@@ -13,6 +13,38 @@ authors can find it.
 
 ## [Unreleased]
 
+### Added
+
+- **Questions before the design** (#319), off by default. With
+  `design.ask_questions` set to `auto` or `true`, the orchestrator asks the
+  user its own requirement-level questions, then `run architect --questions`
+  has the architect ask the ones it finds in the codebase, without writing a
+  plan. `design questions record` records either set from a file of
+  `## Question` blocks, all or none; `design questions answer` records the
+  user's choice, their own words, or `--delegate` for "leave it to you"; and
+  `design questions show` lists them. Until every recorded question has an
+  answer, the `run architect` that writes `.ai/plan.md` is refused with the
+  new exit code 6, in a detached worker too and whatever `--force` says;
+  under `true` it is also refused until one architect round is recorded, and
+  `design approve` and `run implementer` refuse the same way while a
+  question is open, the latter whatever the approval says. The
+  answers are rendered to `<Artifacts>/decisions.md`, which the design
+  request carries and the plan's new `## Decisions` section follows. A
+  question round has its own budget, `budgets.architect_questions` (3), and
+  is capped at `design.max_question_rounds` (2) rounds; `--force` runs one
+  more, past a spent budget too, with a note. `status` and `status --json` gain `design_questions`, never a reason
+  to stop. Design reviewers are given the decisions as premises and report a
+  decision they think wrong as `Category: decision`, for the user to settle;
+  with decisions the design review's sha and its size limit cover them, and
+  they are frozen beside the plan in `review-target-decisions.md`. `design approve` records `decisions_sha256`, and an answer
+  revised afterwards makes the approval stale (`decisions-changed`). A
+  project file may set both keys; one that loosens them is noted like the
+  other gates. With approval off (nobody watching) the questions are still
+  asked and recorded, but the plan run leaves any still open to the architect
+  instead of waiting, and `doctor` notes it. With the setting at
+  `false` nothing changes: no refusal, no `status` line, and the same design
+  review prompts and sha.
+
 ## [1.0.0] - 2026-10-12
 
 ### Added
