@@ -21,6 +21,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import unittest
 import uuid
 from contextlib import redirect_stderr, redirect_stdout
@@ -562,6 +563,24 @@ class TestTheCommandLine(IsolatedCase):
         code, out, _ = self.run_main("--provider", "claude", "--json")
         self.assertEqual(code, 1)
         self.assertEqual(json.loads(out)["skipped"], 1)
+
+    def test_a_cp932_console_does_not_lose_the_results(self):
+        """Reported from a 1.1.0 release run: every check had passed and spent
+        its tokens, then printing one em dash in a detail raised
+        `UnicodeEncodeError` and the run had to be repeated. The console is
+        built as Windows hands it over, `surrogateescape` and all."""
+        self.fake_checks(smoke_live.Check("agy", "installed", True, "1.2 — build 7"))
+        stream = io.TextIOWrapper(io.BytesIO(), encoding="cp932", errors="surrogateescape", newline="")
+        saved, sys.stdout = sys.stdout, stream
+        try:
+            code = smoke_live.main(["--provider", "agy"])
+        finally:
+            sys.stdout = saved
+        stream.flush()
+        written = stream.buffer.getvalue().decode("cp932")
+        self.assertEqual(code, 0)
+        self.assertIn(chr(92) + "u2014 build 7", written)
+        self.assertIn("All checks passed", written)
 
     def test_the_mock_is_not_smoke_tested(self):
         """It is always "installed" and never starts a process, so running it
