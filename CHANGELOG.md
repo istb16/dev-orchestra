@@ -13,6 +13,16 @@ authors can find it.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`scripts/smoke_live.py` no longer loses a finished run on a narrow
+  console.** On a Japanese Windows console (cp932), a check result carrying a
+  character the console cannot encode, such as an em dash, raised
+  `UnicodeEncodeError` while the results were printed, after every check had
+  already run and spent its tokens, so the live run had to be repeated. The
+  script now relaxes the console the way the `dev-orchestra` command does, and
+  such a character is printed as an escape like `\u2014`.
+
 ## [1.1.0] - 2026-10-15
 
 ### Added
@@ -46,16 +56,6 @@ authors can find it.
   instead of waiting, and `doctor` notes it. With the setting at
   `false` nothing changes: no refusal, no `status` line, and the same design
   review prompts and sha.
-
-### Fixed
-
-- **`scripts/smoke_live.py` no longer loses a finished run on a narrow
-  console.** On a Japanese Windows console (cp932), a check result carrying a
-  character the console cannot encode, such as an em dash, raised
-  `UnicodeEncodeError` while the results were printed, after every check had
-  already run and spent its tokens, so the live run had to be repeated. The
-  script now relaxes the console the way the `dev-orchestra` command does, and
-  such a character is printed as an escape like `\u2014`.
 
 ## [1.0.0] - 2026-10-12
 
