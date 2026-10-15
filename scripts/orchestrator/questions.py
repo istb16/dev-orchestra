@@ -62,6 +62,8 @@ _FIELD_RE = re.compile(
 _RECOMMENDED_RE = re.compile(
     r"^\*{0,2}(?:option\s+)?([A-E])\*{0,2}(?![A-Za-z0-9])\s*(?:--|-|:)?\s*(.*)$", re.IGNORECASE
 )
+#: A list item that is not a field: always reported, never read as closing prose.
+_BULLET_RE = re.compile(r"^[-*+](\s|$)")
 _ID_RE = re.compile(r"^Q(\d+)$")
 _FENCE_RE = re.compile(r"^\s{0,3}(```|~~~)")
 
@@ -78,6 +80,14 @@ class RoundCapReached(Exception):
         self.rounds = rounds
 
 
+class QuestionsOpen(Exception):
+    """An approval refused under the state lock: a recorded question is still open."""
+
+    def __init__(self, ids: List[str]) -> None:
+        super().__init__("design question(s) still open: %s" % ", ".join(ids))
+        self.ids = ids
+
+
 def read(state: Dict[str, Any]) -> Dict[str, Any]:
     """``state["design_questions"]`` with anything missing or mangled read as nothing recorded."""
     data = state.get(STAGE)
@@ -92,6 +102,10 @@ def architect_rounds(data: Dict[str, Any]) -> int:
     return len([r for r in data["rounds"] if r.get("by") == "architect"])
 
 
+def open_ids(data: Dict[str, Any]) -> List[str]:
+    return [str(q.get("id")) for q in data["questions"] if not isinstance(q.get("answer"), dict)]
+
+
 # --------------------------------------------------------------------------- parsing
 
 
@@ -102,8 +116,8 @@ def parse(text: str, by: str) -> Tuple[List[Dict[str, Any]], List[str]]:
     look answered with a question missing. A text that is exactly
     ``No questions.`` is no questions and no problem. What comes before the
     first ``## Question`` is not a block and is ignored, and so is a closing
-    line after a block's fields; an indented line under a field continues
-    that field. Code fence lines are dropped first: models
+    line after a block's last field (a list item never is one); an indented
+    line under a field continues that field. Code fence lines are dropped first: models
     wrap their answer in one often enough that a round must not fail on it.
     """
     lines = [line for line in text.splitlines() if not _FENCE_RE.match(line)]
@@ -131,7 +145,7 @@ def _parse_block(lines: List[str], by: str) -> Tuple[Dict[str, Any], List[str]]:
     fields: Dict[str, str] = {}
     problems: List[str] = []
     last: Optional[str] = None
-    for line in lines:
+    for index, line in enumerate(lines):
         if not line.strip():
             continue
         match = _FIELD_RE.match(line)
@@ -141,9 +155,12 @@ def _parse_block(lines: List[str], by: str) -> Tuple[Dict[str, Any], List[str]]:
             if last in fields:
                 fields[last] = "%s %s" % (fields[last], line.strip())
             continue
-        if not match and last is not None:
-            # The block ends at its fields; what follows is prose around it.
-            break
+        if not match and last is not None and not _BULLET_RE.match(line):
+            # Prose after the last field closes the block. Prose with a field
+            # still to come is not that: ending there would drop the fields
+            # after it without a word.
+            if not any(_FIELD_RE.match(rest) for rest in lines[index + 1 :]):
+                break
         if not match:
             problems.append("not a `- Field: value` line: %r" % line.strip()[:80])
             continue
@@ -441,11 +458,11 @@ def current(workspace: ws.Workspace, setting: Any, max_rounds: Any) -> Dict[str,
     name = ask_questions_mode(setting)
     data = read(workspace.read_state())
     questions = data["questions"]
-    open_ids = [str(q.get("id")) for q in questions if not isinstance(q.get("answer"), dict)]
+    still_open = open_ids(data)
     rounds = architect_rounds(data)
     if name == "off":
         state = "off"
-    elif open_ids:
+    elif still_open:
         state = "open"
     elif name == "on" and rounds == 0:
         state = "round-required"
@@ -458,13 +475,32 @@ def current(workspace: ws.Workspace, setting: Any, max_rounds: Any) -> Dict[str,
         "mode": name,
         "state": state,
         "pending": state == "open",
-        "open": open_ids,
-        "answered": len(questions) - len(open_ids),
+        "open": still_open,
+        "answered": len(questions) - len(still_open),
         "total": len(questions),
         "architect_rounds": rounds,
         "max_rounds": max_rounds,
         "decisions_file": workspace.relative(workspace.decisions_path) if recorded else None,
     }
+
+
+def as_if_answered(info: Dict[str, Any]) -> Dict[str, Any]:
+    """``info`` with every open question answered.
+
+    What an unattended plan run is judged on before it leaves the open ones
+    to the architect: the answers are written only once nothing else refuses
+    the run, so a refused one leaves them open.
+    """
+    if info["state"] != "open":
+        return info
+    round_required = info["mode"] == "on" and info["architect_rounds"] == 0
+    return dict(
+        info,
+        state="round-required" if round_required else "answered",
+        pending=False,
+        open=[],
+        answered=info["total"],
+    )
 
 
 def refused(info: Dict[str, Any], resume: bool) -> bool:
@@ -495,11 +531,20 @@ def refusal_lines(info: Dict[str, Any]) -> List[str]:
     return [first, how, "Never answer for the user. Exit 6."]
 
 
-def approval_refusal_lines(info: Dict[str, Any]) -> List[str]:
-    """What `design approve` prints when a recorded question is still open."""
+def implementer_refusal_lines(info: Dict[str, Any]) -> List[str]:
+    """What a refused `run implementer` prints while a recorded question is still open."""
+    return _open_question_lines("refusing to run implementer", info["open"])
+
+
+def approval_refusal_lines(ids: List[str]) -> List[str]:
+    """What `design approve` prints when the questions ``ids`` are still open."""
+    return _open_question_lines("not recording an approval", ids)
+
+
+def _open_question_lines(what: str, ids: List[str]) -> List[str]:
     return [
-        "not recording an approval: %d design question(s) still open (%s) (design.ask_questions)."
-        % (len(info["open"]), ", ".join(info["open"])),
+        "%s: %d design question(s) still open (%s) (design.ask_questions)."
+        % (what, len(ids), ", ".join(ids)),
         "Ask the user and record their answers with `dev-orchestra design questions answer`; "
         "revise the plan if an answer changes it, then ask for approval again.",
         "Never answer for the user. Exit 6.",

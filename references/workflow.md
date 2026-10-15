@@ -281,9 +281,11 @@ follows. `answer` records `--option B` as `B: <the option's text>`,
 `--delegate` as `left to the architect`; several ids go together only with
 `--delegate`. Changing an answer takes `--revise`, which keeps the earlier one
 in the question's `history`. An unknown id or option, and a `--text` with a line
-break, exit 2. A code fence around the blocks and a closing line after them are
-ignored, an indented line under a field continues that field, and a
-`Recommended` may name its key as `Option B` or `**B**`. With the setting
+break, exit 2. A code fence around the blocks and a closing line after a
+block's last field are ignored, an indented line under a field continues that
+field, and a `Recommended` may name its key as `Option B` or `**B**`. A line of
+prose with a field still to come in its block, and a list item that is not a
+field, are refused as `not a \`- Field: value\` line`. With the setting
 `false`, `record` still records and says the gate is off.
 
 `run architect --questions` runs on the architect's seat -- its provider, model,
@@ -306,7 +308,12 @@ record, a plan run whose prompt names neither `decisions.md` nor a `##
 Decisions` section prints a note: the likeliest mistake is not passing the
 answers on. `design approve` refuses the same way (exit 6, naming the open ids)
 while a question is open, whatever wrote the plan: a question recorded after
-the plan, or a plan not written through `--output`, cannot be approved past.
+the plan, or a plan not written through `--output`, cannot be approved past. It
+checks the questions and takes the answers it records from one read, under
+the lock it writes the approval under. `run implementer` refuses too (exit 6),
+whatever the approval says -- one recorded before the answers were kept with
+it, or while the setting was `false` -- before it spends anything and before
+`--detach`, and a worker checks again.
 
 | Setting | Recorded | `state` | The plan run |
 | --- | --- | --- | --- |
@@ -324,9 +331,12 @@ answer, so the questions are asked and recorded but not waited for. Run the
 rounds as usual, record what is asked, and do not stop to ask. The plan run
 records every question still open as left to the architect (`left to the
 architect: nobody was there to answer ...`), says so in a `note:`, and goes
-on; `decisions.md` keeps the questions for someone to look at later. Under
-`true` the architect round is still required, and an answer that was given is
-kept.
+on; `decisions.md` keeps the questions for someone to look at later. It does
+so only once nothing else refuses the run -- after the round check and once
+its attempt is spent, and with `--detach` before it starts the worker, which
+does not do it again -- so a run refused with exit 6 or 3 leaves them open.
+Under `true` the architect round is still required, and an answer that was
+given is kept.
 
 **The round cap.** After `design.max_question_rounds` (2) architect rounds,
 `run architect --questions` and `design questions record --by architect` exit
@@ -679,7 +689,8 @@ attempt (`budget reset`) and revise. Once they approve, the stop is answered --
 `run implementer` refuses (exit 5) while the plan is not approved, before it
 spends any budget and before `--detach` starts a worker; a worker checks again
 and writes the whole refusal into its job. `--force` does not apply. No plan
-(no design stage) means no gate.
+(no design stage) means no gate. While a recorded design question is open it
+refuses with exit 6 instead, whatever the approval says (see Design questions).
 
 An approval is of the plan text alone (sha256) and of the design review round
 it was given over. It goes stale when the plan changes (`plan-changed`) or when
@@ -895,6 +906,7 @@ anything left unresolved.
 | `run implementer` exits 5 | The plan is not approved, or changed / was reviewed after approval. Present it and ask the user; record a yes with `design approve`. Do not retry and do not approve it yourself |
 | A detached implementer job is `failed` with "not approved" | Same cause, found by the worker; once the user approves, start it again |
 | `run architect` exits 6 | A design question is open, or `design.ask_questions` is `true` and no architect round is recorded, or the question rounds are at their cap. Ask the user; record their words with `design questions answer`. Do not retry and do not answer for them |
+| `run implementer` or `design approve` exits 6 | A recorded design question is open. Ask the user and record their answer; revise the plan if it changes it, then ask for approval again |
 | `status` says `stop-and-report` | Stop. It has already weighed budgets, stalls and open findings |
 
 ## Example workflows

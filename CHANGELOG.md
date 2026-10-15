@@ -26,7 +26,8 @@ authors can find it.
   answer, the `run architect` that writes `.ai/plan.md` is refused with the
   new exit code 6, in a detached worker too and whatever `--force` says;
   under `true` it is also refused until one architect round is recorded, and
-  `design approve` refuses the same way while a question is open. The
+  `design approve` and `run implementer` refuse the same way while a
+  question is open, the latter whatever the approval says. The
   answers are rendered to `<Artifacts>/decisions.md`, which the design
   request carries and the plan's new `## Decisions` section follows. A
   question round has its own budget, `budgets.architect_questions` (3), and

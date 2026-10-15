@@ -205,6 +205,14 @@ class TestParsing(unittest.TestCase):
                 ARCHITECT_QUESTION.replace("## Question\n", "## Question\nAnd another thing.\n"),
                 "not a `- Field: value` line",
             ),
+            "prose between the fields": (
+                ARCHITECT_QUESTION.replace("- Option B:", "Both are cheap.\n- Option B:"),
+                "not a `- Field: value` line: 'Both are cheap.'",
+            ),
+            "a list item that is not a field": (
+                ARCHITECT_QUESTION + "- Note: ask the support team too\n",
+                "not a `- Field: value` line: '- Note: ask the support team too'",
+            ),
             "an option gap": (
                 ARCHITECT_QUESTION.replace('- Option B: Backfill them as "web"\n', "- Option C: Later\n"),
                 "without a gap",
@@ -242,6 +250,22 @@ class TestParsing(unittest.TestCase):
                 self.assertEqual(problems, [])
                 self.assertEqual(question["topic"], "Existing orders")
                 self.assertEqual(question["recommended"], {"key": "B", "reason": reason})
+
+    def test_lowercase_keys(self):
+        text = ARCHITECT_QUESTION.replace("- Option B:", "- option b:")
+        text = text.replace("Recommended: B", "Recommended: b")
+        [question], problems = questions_mod.parse(text, "architect")
+        self.assertEqual(problems, [])
+        self.assertEqual([o["key"] for o in question["options"]], ["A", "B"])
+        self.assertEqual(question["recommended"]["key"], "B")
+
+    def test_prose_between_fields_is_not_the_end_of_the_block(self):
+        # Ending the block there would record a free-form question without
+        # the options after it, and nobody would be told.
+        text = ORCHESTRATOR_QUESTION + "Some context.\n- Option A: Yes\n- Option B: No\n"
+        questions, problems = questions_mod.parse(text, "orchestrator")
+        self.assertEqual(questions, [])
+        self.assertEqual(problems, ["question block 1: not a `- Field: value` line: 'Some context.'"])
 
     def test_a_recommendation_starting_with_a_key_letter_is_not_one(self):
         text = ARCHITECT_QUESTION.replace("Recommended: B --", "Recommended: Because")
@@ -461,6 +485,10 @@ class TestAnswering(QuestionsCase):
         self.assertEqual(code, 2)
         self.assertIn("one line", err)
         self.assertEqual(self.workspace.read_state()[questions_mod.STAGE], before)
+        code, _, err = self.answer("Q1", "--text", "a\rb")
+        self.assertEqual(code, 2)
+        self.assertIn("one line", err)
+        self.assertEqual(self.workspace.read_state()[questions_mod.STAGE], before)
         # A record edited by hand still renders as one field of its question.
         state = self.workspace.read_state()
         state[questions_mod.STAGE]["questions"][0]["answer"] = {"kind": "text", "text": forged}
@@ -597,6 +625,47 @@ class TestUnattended(QuestionsCase):
         self.assertEqual(self.plan_run()[0], 6)
         self.assertEqual(self.questions_status()["state"], "open")
 
+    def assert_left_open(self):
+        self.assertEqual(self.questions_status()["open"], ["Q1", "Q2"])
+        self.assertEqual([e for e in self.events(questions_mod.STAGE) if e["status"] == "delegated"], [])
+        self.assertIn("(open -- not answered yet)", ws.read_text(self.workspace.decisions_path))
+
+    def test_a_run_refused_for_its_round_leaves_them_open(self):
+        self.ask("true")
+        state = self.workspace.read_state()
+        state[questions_mod.STAGE]["rounds"] = []
+        self.workspace.write_state(state)
+        code, _, err = self.plan_run()
+        self.assertEqual(code, 6)
+        self.assertIn("no architect question round is recorded", err)
+        self.assertNotIn("left to the architect", err)
+        self.assert_left_open()
+
+    def test_a_run_refused_for_its_budget_leaves_them_open(self):
+        run_cli("config", "set", "budgets.architect", "0")
+        code, _, err = self.plan_run()
+        self.assertEqual(code, 3)
+        self.assertNotIn("left to the architect", err)
+        self.assert_left_open()
+
+    def test_a_detached_run_leaves_them_once(self):
+        code, out, err = self.plan_run("--detach", "--json")
+        self.assertEqual(code, 0, err)
+        self.assertIn("Q1, Q2 left to the architect", err)
+        job = json.loads(out)
+        _, waited, _ = run_cli("jobs", "wait", job["id"], "--timeout", "60", "--json")
+        self.assertEqual(json.loads(waited)["status"], "succeeded")
+        [event] = [e for e in self.events(questions_mod.STAGE) if e["status"] == "delegated"]
+        self.assertEqual(event["ids"], ["Q1", "Q2"])
+        self.assertEqual(self.questions_status()["state"], "answered")
+
+    def test_a_worker_never_leaves_them(self):
+        # Its parent would have; one still open was recorded since.
+        jobs_mod.write_job(self.workspace, {"id": "u-1", "stage": "architect", "status": "running"})
+        code = self.plan_run("--force", "--job-file", jobs_mod.job_path(self.workspace, "u-1"))[0]
+        self.assertEqual(code, 6)
+        self.assert_left_open()
+
 
 class TestAlwaysAsk(QuestionsCase):
     def setUp(self):
@@ -691,16 +760,37 @@ class TestTheRoundCap(QuestionsCase):
         self.assertIn("budget of 1 delegated runs", err)
         self.assertNotIn("architect_questions has used its budget", err)
 
-    def test_a_null_cap_is_the_default(self):
-        for scope in ("user", "project"):
-            with self.subTest(scope=scope):
-                if scope == "user":
-                    self.assertEqual(run_cli("config", "set", "design.max_question_rounds", "null")[0], 0)
-                else:
-                    self.write(".dev-orchestra.yaml", "version: 1\ndesign:\n  max_question_rounds: null\n")
-                self.assertEqual(self.questions_status()["max_rounds"], 2)
-                self.assertEqual(self.questions_run()[0], 6)
-                self.assertEqual(self.record("architect", "architect.md")[0], 6)
+    def test_force_with_budget_left_says_nothing_of_it(self):
+        code, _, err = self.questions_run("--force")
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("--force also overrides", err)
+
+    def test_a_worker_says_nothing_of_the_budget(self):
+        run_cli("config", "set", "budgets.architect_questions", "0")
+        job = {"id": "q-b", "stage": "architect_questions", "status": "running", "force": True}
+        jobs_mod.write_job(self.workspace, job)
+        code, _, err = self.questions_run("--force", "--job-file", jobs_mod.job_path(self.workspace, "q-b"))
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("--force also overrides", err)
+
+    def test_only_a_question_round_says_it(self):
+        run_cli("config", "set", "budgets.architect", "0")
+        code, _, err = run_cli("run", "architect", "--prompt", "look around", "--force")
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("--force also overrides", err)
+
+    def assert_the_cap_is_two(self):
+        self.assertEqual(self.questions_status()["max_rounds"], 2)
+        self.assertEqual(self.questions_run()[0], 6)
+        self.assertEqual(self.record("architect", "architect.md")[0], 6)
+
+    def test_a_null_cap_in_the_user_config_is_the_default(self):
+        self.assertEqual(run_cli("config", "set", "design.max_question_rounds", "null")[0], 0)
+        self.assert_the_cap_is_two()
+
+    def test_a_null_cap_in_the_project_config_is_the_default(self):
+        self.write(".dev-orchestra.yaml", "version: 1\ndesign:\n  max_question_rounds: null\n")
+        self.assert_the_cap_is_two()
 
     def test_a_worker_honours_the_users_force_only(self):
         for force, expected in ((False, 6), (True, 0)):
@@ -826,11 +916,13 @@ class TestApproval(QuestionsCase):
 
     def test_an_open_question_refuses_the_approval(self):
         self.record("orchestrator", "orchestrator.md")
-        code, out, err = run_cli("design", "approve")
-        self.assertEqual(code, questions_mod.EXIT_QUESTIONS_PENDING)
-        self.assertEqual(out, "")
-        self.assertIn("1 design question(s) still open (Q2)", err)
-        self.assertNotIn("design_approval", self.workspace.read_state())
+        for argv in ((), ("--json",)):
+            with self.subTest(argv=argv):
+                code, out, err = run_cli("design", "approve", *argv)
+                self.assertEqual(code, questions_mod.EXIT_QUESTIONS_PENDING)
+                self.assertEqual(out, "")
+                self.assertIn("1 design question(s) still open (Q2)", err)
+                self.assertNotIn("design_approval", self.workspace.read_state())
         self.answer("Q2", "--delegate")
         self.assertEqual(run_cli("design", "approve")[0], 0)
 
@@ -844,7 +936,56 @@ class TestApproval(QuestionsCase):
         self.record("orchestrator", "orchestrator.md")
         approval = self.approval()
         self.assertEqual((approval["state"], approval["stale_reason"]), ("stale", "decisions-changed"))
+        # The open question is what to ask about first.
+        code, _, err = self.implement()
+        self.assertEqual(code, questions_mod.EXIT_QUESTIONS_PENDING)
+        self.assertIn("refusing to run implementer: 1 design question(s) still open (Q2)", err)
+        self.answer("Q2", "--delegate")
         self.assertEqual(self.implement()[0], 5)
+
+    def test_an_open_question_refuses_the_implementer_whatever_the_approval(self):
+        # An entry from before the questions never goes stale by them.
+        run_cli("design", "approve")
+        state = self.workspace.read_state()
+        del state["design_approval"]["decisions_sha256"]
+        self.workspace.write_state(state)
+        self.record("orchestrator", "orchestrator.md")
+        self.assertEqual(self.approval()["state"], "approved")
+        self.assertEqual(self.implement("--force")[0], 6)
+        self.assertEqual(self.implement("--detach")[0], 6)
+        self.assertEqual(json.loads(run_cli("jobs", "list", "--json")[1]), [])
+        self.assertEqual(self.used("implementer"), 0)
+        code, job = self.worker("i-1")
+        self.assertEqual(code, 6)
+        assert job is not None
+        self.assertEqual(job["status"], "failed")
+        self.assertIn("still open (Q2)", job["error"])
+        # With the setting off it is not enforced.
+        self.ask("false")
+        self.assertEqual(self.implement()[0], 0)
+
+    def test_a_question_recorded_while_approving_is_refused_under_the_lock(self):
+        # As if it landed between the command's read and its write.
+        self.record("orchestrator", "orchestrator.md")
+        digest = approval_mod.plan_digest(PLAN)
+        with self.assertRaises(questions_mod.QuestionsOpen) as raised:
+            approval_mod.record(self.workspace, digest, [], None, None, True)
+        self.assertEqual(raised.exception.ids, ["Q2"])
+        self.assertNotIn("design_approval", self.workspace.read_state())
+        entry = approval_mod.record(self.workspace, digest, [], None, None, False)
+        expected = questions_mod.decisions_digest(self.workspace.read_state())
+        self.assertEqual(entry["decisions_sha256"], expected)
+
+    def test_an_open_question_refuses_an_approval_given_before(self):
+        # Approved with the setting off, then turned on: not "already approved".
+        self.record("orchestrator", "orchestrator.md")
+        self.ask("false")
+        run_cli("design", "approve")
+        self.ask("auto")
+        code, out, err = run_cli("design", "approve", "--json")
+        self.assertEqual(code, 6)
+        self.assertEqual(out, "")
+        self.assertIn("still open (Q2)", err)
 
     def test_rewording_alone_does_not_make_it_stale(self):
         run_cli("design", "approve")
@@ -862,6 +1003,7 @@ class TestApproval(QuestionsCase):
         run_cli("design", "approve")
         self.ask("auto")
         self.assertEqual(self.approval()["state"], "approved")
+        self.assertEqual(self.implement()[0], 6)
         self.answer("Q2", "--text", "No, keep it internal.")
         self.assertEqual(self.approval()["stale_reason"], "decisions-changed")
 
@@ -933,6 +1075,37 @@ class TestDesignReview(QuestionsCase):
         self.assertEqual(ws.read_text(self.design.snapshot_decisions_path), frozen)
         self.assertIn("Answer: B:", frozen)
         self.assertIs(approval_mod.findings_of_current_plan(self.workspace, PLAN), False)
+
+    def test_a_round_without_decisions_removes_the_frozen_copy(self):
+        self.record("architect", "architect.md")
+        self.answer("Q1", "--option", "B")
+        run_cli("review", "run", "--design")
+        self.assertTrue(os.path.isfile(self.design.snapshot_decisions_path))
+        state = self.workspace.read_state()
+        del state[questions_mod.STAGE]
+        self.workspace.write_state(state)
+        self.assertEqual(run_cli("review", "run", "--design", "--force")[0], 0)
+        self.assertFalse(os.path.exists(self.design.snapshot_decisions_path))
+        self.assertNotIn("decisions", self.design.read_snapshot_meta())
+        self.assertIs(approval_mod.findings_of_current_plan(self.workspace, PLAN), True)
+
+    def test_a_round_from_before_the_answers_reviewed_an_earlier_revision(self):
+        run_cli("review", "run", "--design")
+        self.assertIs(approval_mod.findings_of_current_plan(self.workspace, PLAN), True)
+        self.record("architect", "architect.md")
+        self.answer("Q1", "--option", "B")
+        self.assertIs(approval_mod.findings_of_current_plan(self.workspace, PLAN), False)
+
+    def test_approve_labels_findings_reviewed_under_a_revised_answer(self):
+        self.ask("auto")
+        self.record("architect", "architect.md")
+        self.answer("Q1", "--option", "B")
+        run_cli("review", "run", "--design")
+        self.answer("Q1", "--option", "A", "--revise")
+        code, out, err = run_cli("design", "approve", "--json")
+        self.assertEqual(code, 0, err)
+        self.assertIn("from a review of an earlier revision", err)
+        self.assertIs(json.loads(out)["open_findings_of_current_plan"], False)
 
     def test_the_context_limit_counts_the_decisions(self):
         self.record("architect", "architect.md")

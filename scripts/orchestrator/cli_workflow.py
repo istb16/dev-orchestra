@@ -726,17 +726,6 @@ def cmd_design_approve(args: argparse.Namespace) -> int:
         _err("no plan to approve at %s -- run the architect first" % plan_relative)
         return 2
 
-    # Open questions are refused, unlike open findings: their answers are the
-    # user's to give, and a plan approved over one was written without it --
-    # recorded after the plan, or the plan written some way the plan run's
-    # gate never saw.
-    settings = loaded.design_settings()
-    questions_info = questions_mod.current_for(loaded, workspace)
-    if questions_info["pending"]:
-        for line in questions_mod.approval_refusal_lines(questions_info):
-            _err(line)
-        return questions_mod.EXIT_QUESTIONS_PENDING
-
     # The findings and the round they belong to come out of one read of one
     # report, so they cannot describe two different rounds. A round that has
     # started but has no report yet -- still running, or it failed -- is
@@ -758,19 +747,32 @@ def cmd_design_approve(args: argparse.Namespace) -> int:
     open_findings = [str(f.get("id")) for f in approval_mod.open_findings(design_data)]
     of_current_plan = approval_mod.findings_of_current_plan(workspace, plan_text) if open_findings else None
 
+    # Open questions are refused, unlike open findings: their answers are the
+    # user's to give, and a plan approved over one was written without it --
+    # recorded after the plan, or the plan written some way the plan run's
+    # gate never saw. The open questions and the answers compared here come
+    # from one read; a new entry is checked and hashed again under the lock
+    # it is written under, so a question recorded in between is refused too.
+    asking = questions_mod.asking(loaded)
     state = workspace.read_state()
+    still_open = questions_mod.open_ids(questions_mod.read(state))
     previous = state.get(approval_mod.STAGE)
-    decisions = questions_mod.decisions_digest(state)
     already = (
-        isinstance(previous, dict)
+        not (asking and still_open)
+        and isinstance(previous, dict)
         and previous.get("sha256") == digest
         and previous.get("design_round") == round_id
-        and previous.get("decisions_sha256") == decisions
+        and previous.get("decisions_sha256") == questions_mod.decisions_digest(state)
     )
-    if already:
-        entry = cast(Dict[str, Any], previous)
-    else:
-        entry = approval_mod.record(workspace, digest, open_findings, of_current_plan, round_id, decisions)
+    try:
+        if already:
+            entry = cast(Dict[str, Any], previous)
+        else:
+            entry = approval_mod.record(workspace, digest, open_findings, of_current_plan, round_id, asking)
+    except questions_mod.QuestionsOpen as exc:
+        for line in questions_mod.approval_refusal_lines(exc.ids):
+            _err(line)
+        return questions_mod.EXIT_QUESTIONS_PENDING
 
     if args.json:
         payload = dict(entry)
@@ -781,7 +783,7 @@ def cmd_design_approve(args: argparse.Namespace) -> int:
             "%s %s (sha256 %s) for workflow %s"
             % ("already approved" if already else "approved", plan_relative, digest[:12], workspace.workflow)
         )
-    require_approval = bool(settings.get("require_approval"))
+    require_approval = bool(loaded.design_settings().get("require_approval"))
     for note in _approval_notes(require_approval, unreviewed, open_findings, of_current_plan):
         _err(note)
     return 0

@@ -1,4 +1,4 @@
-<!-- translated-from: references/cli.md sha256:5b1ed1e4a6ef41932bbf1f48997e26a144f7b902dce2d0d3319b49307c43924f -->
+<!-- translated-from: references/cli.md sha256:06e4f7730c298ae2b2aed5987161221c2bbe86c56ab32ce8b02458dda09ba964 -->
 
 > この文書は [references/cli.md](../../../references/cli.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -286,7 +286,7 @@ Claude Code のユーザー設定（`$CLAUDE_CONFIG_DIR/settings.json`、なけ�
 
 | コマンド | 説明 |
 | --- | --- |
-| `run <role> [--prompt <text>\|--prompt-file <path>] [--tier <name>] [--mode plan\|implement\|review] [--output <path>] [--timeout <s>] [--idle-timeout <s>] [--resume --resume-prompt-file <path>] [--questions] [--detach] [--force] [--json] [--print-command] [--extra …]` | 設定されたロールを 1 つ実行します。`<role>` は `orchestrator`、`architect`、`implementer`、`review_fixer`、またはレビュアーの id です。`--tier` はそのロールに設定された `model_tiers` の 1 つを選びます。未知のものはデフォルトのモデルで実行されるのではなく拒否されます。そのステージの予算から試行を 1 回消費し、予算が尽きていれば `--force` がない限り拒否します（終了コード 3）。`run implementer` は、plan が存在し承認されていない間は拒否します（終了コード 5）。これは親プロセスで行われ、detach されたワーカーでも再度行われます。ワーカーでの拒否はそのままジョブレコードに記録されます。`--force` は適用されません。`.ai/plan.md` を書く `run architect` も、design の質問が未回答の間は同じように拒否します（終了コード 6）。`--questions` は、代わりに architect に design の質問を出させます（後述）。 |
+| `run <role> [--prompt <text>\|--prompt-file <path>] [--tier <name>] [--mode plan\|implement\|review] [--output <path>] [--timeout <s>] [--idle-timeout <s>] [--resume --resume-prompt-file <path>] [--questions] [--detach] [--force] [--json] [--print-command] [--extra …]` | 設定されたロールを 1 つ実行します。`<role>` は `orchestrator`、`architect`、`implementer`、`review_fixer`、またはレビュアーの id です。`--tier` はそのロールに設定された `model_tiers` の 1 つを選びます。未知のものはデフォルトのモデルで実行されるのではなく拒否されます。そのステージの予算から試行を 1 回消費し、予算が尽きていれば `--force` がない限り拒否します（終了コード 3）。`run implementer` は、plan が存在し承認されていない間は拒否します（終了コード 5）。これは親プロセスで行われ、detach されたワーカーでも再度行われます。ワーカーでの拒否はそのままジョブレコードに記録されます。`--force` は適用されません。`.ai/plan.md` を書く `run architect` も、design の質問が未回答の間は同じように拒否します（終了コード 6）。`run implementer` も、承認の内容にかかわらず同じです。`--questions` は、代わりに architect に design の質問を出させます（後述）。 |
 
 プロンプトは stdin からパイプで渡すこともできます（`--prompt-file -` は明示的に stdin を読みます）。
 デフォルトのモード: architect/orchestrator は `plan`、implementer と review_fixer は `implement`、
@@ -391,7 +391,11 @@ review fixer、`--mode implement` では 1200 秒で、その設定の方が大�
 試行を消費する前、`--detach` の前です。`--force` ではこれを通れません。`design.ask_questions: true` の
 もとでは、architect のラウンドが記録されるまでも拒否されます。ただし `--resume` のときは除きます。回答が
 記録されているのに、プロンプトが `decisions.md` にも `## Decisions` セクションにも触れていない plan の
-実行は、`note:` を出して実行します。
+実行は、`note:` を出して実行します。`design.require_approval: false` では、plan を書く実行は拒否する
+代わりに未回答の質問を architect に任せますが、それを書き込むのはほかに拒否するものがないと決まってから
+です（ラウンドの確認の後、試行を消費した後、`--detach` がワーカーを起動する前。ワーカーはもう一度は
+行いません）。そのため終了コード 6 や 3 で拒否された実行では、質問は未回答のまま残ります。`run implementer`
+は、記録された質問が未回答の間、承認の内容にかかわらず、承認の関門と同じところで終了コード 6 で終了します。
 
 <a id="revising-the-plan-in-the-architects-own-session---resume"></a>
 
@@ -550,8 +554,8 @@ id のまま作られたレポート -- どのレビュアーもレビューを�
 
 | コマンド | 説明 |
 | --- | --- |
-| `design approve [--json]` | 現時点の `.ai/plan.md` に対するユーザーの承認を（plan 単体の sha256 で）、承認の対象となった design レビューのラウンドと一緒に記録します。その後の修正や、その後に実行された design レビューがあれば、再度承認が必要です。ラウンドは統合レポートを持つ最後のものであり、そこに示された指摘と合わせて読み取られます。`review run --design` のラウンドが開始されたもののまだレポートがない間（実行中、またはクラッシュした場合）は、何も記録せず終了コード 2 で終了します。どのレビュアーのレビューもなく最後まで実行されたラウンド（すべてのレビュアーが失敗した）の場合は、代わりにそのラウンドに対して承認し、plan に design レビューの指摘がまったくないことを注記します。これにより、失敗し続けるパネルのせいでユーザーが先に進めなくなることはありません。未解決の design の指摘（重大度にかかわらず、却下されておらず重複ともされていないものすべて）は表示されますが、拒否はされません。それらを承知で承認するかどうかはユーザーの判断です。plan の以前の版に対するレビューからの指摘（固定された `review-target.md` が plan と異なる）はその旨がラベル付けされます。同じ plan を同じラウンドに対して再度承認すると `already approved` と表示し、何も記録しません。記録された design の質問に未回答のものがある間は（`design.ask_questions` が false でなければ）、何も記録せず、未回答の id を示して終了コード 6 で終了します。指摘と違い、答えはユーザーが出すものだからです。plan がない場合は終了コード 2 です。ユーザーが会話の中で了承した後にだけ実行してください。 |
-| `design questions record --by orchestrator\|architect --file <path\|-> [--force]` | ファイル（`-` なら stdin）にある `## Question` ブロックを、orchestrator または architect が出した質問として記録し、与えた id（ワークフロー全体で通しの `Q1`、`Q2`、...）を表示します。すべてを記録するか、何も記録しないかのどちらかです。形式の誤ったブロックがあれば、そのブロックとフィールドを示して終了コード 2 で終了し、何も記録しません。architect の質問には `Why it matters`、2 つ以上の選択肢、そのうちの 1 つを指す `Recommended` が必要です。中身がちょうど `No questions.` のファイルは、質問のない architect のラウンドとして記録します。コードフェンスの行と、ブロックのフィールドの後の締めの一文は無視します。`design.max_question_rounds` を超えた architect のラウンドは、`--force` がない限り終了コード 6 で終了します。`design.ask_questions` が false でも記録はし、関門が無効であることを伝えます。 |
+| `design approve [--json]` | 現時点の `.ai/plan.md` に対するユーザーの承認を（plan 単体の sha256 で）、承認の対象となった design レビューのラウンドと一緒に記録します。その後の修正や、その後に実行された design レビューがあれば、再度承認が必要です。ラウンドは統合レポートを持つ最後のものであり、そこに示された指摘と合わせて読み取られます。`review run --design` のラウンドが開始されたもののまだレポートがない間（実行中、またはクラッシュした場合）は、何も記録せず終了コード 2 で終了します。どのレビュアーのレビューもなく最後まで実行されたラウンド（すべてのレビュアーが失敗した）の場合は、代わりにそのラウンドに対して承認し、plan に design レビューの指摘がまったくないことを注記します。これにより、失敗し続けるパネルのせいでユーザーが先に進めなくなることはありません。未解決の design の指摘（重大度にかかわらず、却下されておらず重複ともされていないものすべて）は表示されますが、拒否はされません。それらを承知で承認するかどうかはユーザーの判断です。plan の以前の版に対するレビューからの指摘（固定された `review-target.md` が plan と異なる）はその旨がラベル付けされます。同じ plan を同じラウンドに対して再度承認すると `already approved` と表示し、何も記録しません。記録された design の質問に未回答のものがある間は（`design.ask_questions` が false でなければ）、何も記録せず、未回答の id を示して終了コード 6 で終了します。指摘と違い、答えはユーザーが出すものだからです。承認を書き込むときと同じロックの下で、改めてこれを確かめ、承認に記録する回答もそこで読み取ります。plan がない場合は終了コード 2 です。ユーザーが会話の中で了承した後にだけ実行してください。 |
+| `design questions record --by orchestrator\|architect --file <path\|-> [--force]` | ファイル（`-` なら stdin）にある `## Question` ブロックを、orchestrator または architect が出した質問として記録し、与えた id（ワークフロー全体で通しの `Q1`、`Q2`、...）を表示します。すべてを記録するか、何も記録しないかのどちらかです。形式の誤ったブロックがあれば、そのブロックとフィールドを示して終了コード 2 で終了し、何も記録しません。architect の質問には `Why it matters`、2 つ以上の選択肢、そのうちの 1 つを指す `Recommended` が必要です。中身がちょうど `No questions.` のファイルは、質問のない architect のラウンドとして記録します。コードフェンスの行と、ブロックの最後のフィールドの後の締めの一文は無視します。同じブロックでまだ後にフィールドが続く地の文と、フィールドではない箇条書きの行は拒否します。`design.max_question_rounds` を超えた architect のラウンドは、`--force` がない限り終了コード 6 で終了します。`design.ask_questions` が false でも記録はし、関門が無効であることを伝えます。 |
 | `design questions answer <id>... --option <key>\|--text <words>\|--delegate [--revise]` | ユーザーの回答を記録します。選んだ選択肢（`B: <その文>` の形で保存）、ユーザー自身の言葉そのまま、または「architect に任せる」を表す `--delegate` のいずれかです。3 つのうちちょうど 1 つを指定します。複数の id を指定できるのは `--delegate` のときだけです。回答済みの質問には `--revise` が必要で、以前の回答は `history` に残ります。未知の id や選択肢、改行を含む `--text` は終了コード 2 です。同じ id を 2 度指定しても 1 度として扱います。ユーザーの回答があるときにだけ実行してください。 |
 | `design questions show [--open] [--json]` | 記録された質問と、その選択肢と回答を表示します。`--open` ではまだ回答のないものだけです。`--json`: [json](json.md#design-questions-show)。 |
 

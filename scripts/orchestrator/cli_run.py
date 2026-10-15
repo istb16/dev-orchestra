@@ -295,19 +295,26 @@ def cmd_run(args: argparse.Namespace) -> int:
     # is a resource; approval is the user's consent, and the human who would
     # force past it is the human who can say yes, which `design approve`
     # records.
+    # An open design question refuses it first, whatever the approval says:
+    # answering it is what to ask the user about before approving again.
     if seat.role == "implementer":
-        refusal = _refuse_unless_approved(loaded, workspace, args, seat.role)
+        refusal = _refuse_while_questions_open(loaded, workspace, args)
+        if refusal is None:
+            refusal = _refuse_unless_approved(loaded, workspace, args, seat.role)
         if refusal is not None:
             return refusal
     # The question gate, placed and checked again by the worker as the
     # approval gate is, for the same reasons. --force is not honoured for an
     # open question -- the answers are the user's -- but is for the round cap,
     # which is a resource limit like a budget.
+    unattended = False
     if seat.role == "architect":
         if getattr(args, "questions", False):
             refusal = _refuse_questions_run_past_cap(loaded, workspace, args)
         else:
-            refusal = _refuse_unless_questions_answered(loaded, workspace, args, prompt, resume_prompt)
+            refusal, unattended = _refuse_unless_questions_answered(
+                loaded, workspace, args, prompt, resume_prompt
+            )
         if refusal is not None:
             return refusal
     timeout, timeout_origin = _deadline(args, loaded, seat)
@@ -316,6 +323,11 @@ def cmd_run(args: argparse.Namespace) -> int:
     refusal = _spend_attempt(args, book, seat)
     if refusal is not None:
         return refusal
+    if unattended:
+        # Only once nothing refuses the run, and in the parent before it hands
+        # over: a refused run leaves the questions open, and a worker finds
+        # them answered.
+        _leave_open_questions_to_the_architect(workspace)
     if args.detach:
         return _detach(args, workspace, seat, prompt, resume_prompt, timeout)
     if args.job_file:
@@ -1008,26 +1020,30 @@ def _refuse_unless_questions_answered(
     args: argparse.Namespace,
     prompt: str,
     resume_prompt: Optional[str],
-) -> Optional[int]:
-    """Refuse the run that writes the plan while a design question is open."""
+) -> Tuple[Optional[int], bool]:
+    """Refuse the run that writes the plan while a design question is open.
+
+    The flag is whether the open questions are to be left to the architect
+    once the run is sure to go ahead: they are judged here as if answered,
+    and written by ``_leave_open_questions_to_the_architect``.
+    """
     if not args.output or not _wrote_plan(workspace)({"output": args.output}):
         # Only the run that writes the plan is gated: an investigation run
         # with no plan output is not.
-        return None
+        return None, False
     info = questions_mod.current_for(loaded, workspace)
-    if info["state"] == "open" and not loaded.design_settings().get("require_approval"):
-        # Approval off is how a file says nobody is watching: the questions
-        # were asked and recorded, but waiting for an answer would stop the
-        # run for good, so the open ones are left to the architect instead.
-        ids = questions_mod.delegate_unattended(workspace)
-        if ids:
-            _err(
-                "note: design.require_approval is false, so nobody is there to answer: %s left to the "
-                "architect (recorded in %s)" % (", ".join(ids), workspace.relative(workspace.decisions_path))
-            )
-        info = questions_mod.current_for(loaded, workspace)
+    # Approval off is how a file says nobody is watching: the questions were
+    # asked and recorded, but waiting for an answer would stop the run for
+    # good, so the open ones are left to the architect instead. Never by a
+    # worker: its parent left them before handing over, so one open now was
+    # recorded since, and is refused like any other.
+    unattended = (
+        info["state"] == "open" and not loaded.design_settings().get("require_approval") and not args.job_file
+    )
+    if unattended:
+        info = questions_mod.as_if_answered(info)
     if questions_mod.refused(info, bool(getattr(args, "resume", False))):
-        return _refuse_for_questions(args, questions_mod.refusal_lines(info))
+        return _refuse_for_questions(args, questions_mod.refusal_lines(info)), False
     if info["mode"] != "off" and info["answered"] and not args.job_file:
         # The likeliest mistake once the user has answered: a request that
         # does not pass the answers on.
@@ -1036,7 +1052,31 @@ def _refuse_unless_questions_answered(
                 "note: %d design question(s) are answered in %s, and this prompt names neither it "
                 "nor a ## Decisions section" % (info["answered"], info["decisions_file"])
             )
-    return None
+    return None, unattended
+
+
+def _leave_open_questions_to_the_architect(workspace: ws.Workspace) -> None:
+    """Record the open design questions as left to the architect by a run nobody is watching."""
+    ids = questions_mod.delegate_unattended(workspace)
+    if ids:
+        _err(
+            "note: design.require_approval is false, so nobody is there to answer: %s left to the "
+            "architect (recorded in %s)" % (", ".join(ids), workspace.relative(workspace.decisions_path))
+        )
+
+
+def _refuse_while_questions_open(
+    loaded: config_mod.LoadedConfig, workspace: ws.Workspace, args: argparse.Namespace
+) -> Optional[int]:
+    """Refuse the implementer while a recorded design question is open.
+
+    Whatever the approval says: one given before the answers were recorded
+    with it, or while ``design.ask_questions`` was off, does not cover them.
+    """
+    info = questions_mod.current_for(loaded, workspace)
+    if not info["pending"]:
+        return None
+    return _refuse_for_questions(args, questions_mod.implementer_refusal_lines(info))
 
 
 def _refuse_for_questions(args: argparse.Namespace, lines: List[str]) -> int:

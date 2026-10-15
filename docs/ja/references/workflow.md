@@ -1,4 +1,4 @@
-<!-- translated-from: references/workflow.md sha256:8fbd558ca6cd891a584de76f346448a7ba1ab1b2ea174186eaec1a3e2542f453 -->
+<!-- translated-from: references/workflow.md sha256:d67237bf6c24717d30917e350c54bf464873d8191a32fb577a3b6abb5bddaea3 -->
 
 > この文書は [references/workflow.md](../../../references/workflow.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -282,8 +282,9 @@ dev-orchestra design questions answer Q4 Q5 --delegate
 `--delegate` を `left to the architect` として記録します。複数の id をまとめて指定できるのは
 `--delegate` のときだけです。答えを変えるには `--revise` を使い、以前の答えは質問の `history` に
 残ります。存在しない id や選択肢、改行を含む `--text` は exit 2 で終了します。ブロックを囲む
-コードフェンスと、ブロックの後の締めの一文は無視されます。項目の下の字下げした行はその項目の続きとして
-読み、`Recommended` は `Option B` や `**B**` の形でも選択肢を指せます。設定が `false` でも `record` は
+コードフェンスと、ブロックの最後の項目の後の締めの一文は無視されます。項目の下の字下げした行はその項目の続きとして
+読み、`Recommended` は `Option B` や `**B**` の形でも選択肢を指せます。同じブロックでまだ後に項目が
+続く地の文と、項目ではない箇条書きの行は、`not a \`- Field: value\` line` として拒否されます。設定が `false` でも `record` は
 記録し、ゲートが無効であることを伝えます。
 
 `run architect --questions` は architect の席（その provider、モデル、モード、
@@ -304,7 +305,10 @@ plan の実行のプロンプトが `decisions.md` にも `## Decisions` セク�
 note を表示します。最もありがちな誤りは、答えを渡し忘れることだからです。未回答の質問がある間は
 `design approve` も同じように拒否します（exit 6、未回答の id を表示）。plan を何が書いたかは
 問いません。plan の後に記録された質問も、`--output` を通さずに書かれた plan も、承認で
-飛ばすことはできません。
+飛ばすことはできません。未回答の確認と、承認に記録する答えは、承認を書き込むときと同じロックの下で
+一度に読み取ります。`run implementer` も、承認の内容にかかわらず拒否します（exit 6）。答えを記録する前の
+承認や、設定が `false` の間に出された承認でも同じです。これは何かを消費する前、かつ `--detach` の前に
+行われ、ワーカーも改めて確認します。
 
 | 設定 | 記録されているもの | `state` | plan の実行 |
 | --- | --- | --- | --- |
@@ -321,7 +325,10 @@ note を表示します。最もありがちな誤りは、答えを渡し忘れ
 記録しますが、答えは待ちません。ラウンドはいつもどおり進め、出た質問を記録し、尋ねるために止まらないで
 ください。plan の実行は、まだ未回答の質問をすべて architect に任せたものとして記録し
 （`left to the architect: nobody was there to answer ...`）、そのことを `note:` で伝えて先に進みます。
-質問は `decisions.md` に残るので、後から人が見直せます。`true` では architect のラウンドはやはり必要で、
+質問は `decisions.md` に残るので、後から人が見直せます。これを記録するのは、ほかに実行を拒否するものが
+ないと決まってから（ラウンドの確認の後、試行を消費した後。`--detach` ではワーカーを起動する前で、
+ワーカーはもう一度は行いません）です。そのため exit 6 や 3 で拒否された実行では、質問は未回答のまま
+残ります。`true` では architect のラウンドはやはり必要で、
 すでに出ている答えはそのまま残ります。
 
 **ラウンドの上限。** architect のラウンドが `design.max_question_rounds`（2）回に達すると、
@@ -670,7 +677,8 @@ dev-orchestra run architect --resume \
 plan が承認されていない間、`run implementer` は拒否します（exit 5）。これは予算を消費する
 前、かつ `--detach` がワーカーを起動する前に行われます。ワーカーも改めて確認し、拒否の
 内容全体をそのジョブに書き込みます。`--force` は適用されません。plan がない（design
-ステージがない）場合、ゲートはありません。
+ステージがない）場合、ゲートはありません。記録された design の質問が未回答の間は、承認の内容に
+かかわらず exit 6 で拒否します（「Design の質問」を参照）。
 
 承認の対象は plan のテキストそのもの（sha256）と、承認が与えられた時点の design レビューの
 ラウンドです。plan が変更された場合（`plan-changed`）や、その後に `review run --design` が
@@ -896,6 +904,7 @@ dev-orchestra summary
 | `run implementer` が exit 5 で終了した | plan が承認されていないか、承認後に変更された／レビューされたということです。plan を提示してユーザーに尋ね、yes なら `design approve` で記録します。再試行せず、自分で承認してはいけません |
 | デタッチされた implementer ジョブが "not approved" で `failed` になった | 原因は同じで、ワーカーが検出したものです。ユーザーが承認したら、もう一度開始します |
 | `run architect` が exit 6 で終了した | design の質問が未回答か、`design.ask_questions` が `true` で architect のラウンドが記録されていないか、質問のラウンドが上限に達しています。ユーザーに尋ね、その言葉を `design questions answer` で記録します。再試行せず、ユーザーの代わりに答えてはいけません |
+| `run implementer` か `design approve` が exit 6 で終了した | 記録された design の質問が未回答です。ユーザーに尋ねて答えを記録し、答えで plan が変わるなら改訂してから、もう一度承認を求めます |
 | `status` が `stop-and-report` を示す | 停止します。予算、stall、未解決の指摘はすでに考慮済みです |
 
 <a id="example-workflows"></a>

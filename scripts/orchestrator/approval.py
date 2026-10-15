@@ -218,14 +218,17 @@ def record(
     open_findings: List[str],
     of_current_plan: Optional[bool],
     round_id: Optional[str],
-    decisions: Optional[str],
+    asking: bool,
 ) -> Dict[str, Any]:
     """Write state["design_approval"] and append the run-log event under one lock.
 
-    ``decisions`` is ``questions.decisions_digest`` as the user was shown the
-    plan, or None when no question was asked: an answer revised afterwards
-    makes the approval stale even over an unchanged plan. Required, because
-    None is itself a claim -- that nothing was asked.
+    The entry keeps ``decisions_sha256``, ``questions.decisions_digest`` as
+    the answers are, or None when no question was asked: an answer revised
+    afterwards makes the approval stale even over an unchanged plan. With
+    ``asking`` (``questions.asking``), an open question raises
+    ``questions.QuestionsOpen`` and nothing is written. Both are read under
+    the lock the entry is written under, so a question recorded meanwhile can
+    neither slip past the check nor into the digest of an approval.
     """
     entry = {
         "sha256": digest,
@@ -234,7 +237,6 @@ def record(
         "open_findings": list(open_findings),
         "open_findings_of_current_plan": of_current_plan,
         "design_round": round_id,
-        "decisions_sha256": decisions,
     }
     event = ws.new_event(
         STAGE,
@@ -243,6 +245,10 @@ def record(
     )
     with ws.file_lock(workspace.state_path):
         state = workspace.read_state()
+        still_open = questions_mod.open_ids(questions_mod.read(state))
+        if asking and still_open:
+            raise questions_mod.QuestionsOpen(still_open)
+        entry["decisions_sha256"] = questions_mod.decisions_digest(state)
         state[STAGE] = entry
         ws.append_event(state, event)
         workspace.write_state(state)
