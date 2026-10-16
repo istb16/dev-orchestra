@@ -12,6 +12,8 @@ skips straight to the edit; a schema change gets the full pipeline.
 An introduction, in Japanese: [what dev-orchestra does, how it differs from
 codex-plugin-cc, and why it helps even with Claude Code alone](https://tk3.biz/blog/2026-10-13-dev-orchestra-introduction/).
 
+![One request, "Add rate limiting to the login endpoint.", goes through design, design review, your approval, implementation, tests, four independent reviews from Claude and Codex, triage and fixes, ending in a final report: 37 tests passed, 12 findings, 5 accepted, 3 rejected, 4 duplicates](docs/images/demo.svg)
+
 ## Why this exists
 
 **A model reviewing its own work is a weak reviewer.** It shares the

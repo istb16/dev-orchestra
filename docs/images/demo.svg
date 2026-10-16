@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 628" font-family="'Cascadia Mono', 'SFMono-Regular', Consolas, 'Liberation Mono', monospace">
+  <rect width="960" height="628" rx="14" fill="#0f172a"/>
+  <rect width="960" height="40" rx="14" fill="#1e293b"/>
+  <rect y="26" width="960" height="14" fill="#1e293b"/>
+  <circle cx="26" cy="20" r="6" fill="#f87171"/>
+  <circle cx="46" cy="20" r="6" fill="#fbbf24"/>
+  <circle cx="66" cy="20" r="6" fill="#34d399"/>
+  <text x="480" y="25" text-anchor="middle" font-size="13" fill="#94a3b8">claude — demo-app</text>
+  <g font-size="15">
+    <text x="32" y="82" fill="#e2e8f0"><tspan fill="#14b8a6" font-weight="bold">&gt; </tspan>Add rate limiting to the login endpoint.</text>
+    <text x="32" y="120" fill="#94a3b8">Plan: new behaviour, security-sensitive → full pipeline</text>
+    <text x="32" y="158"><tspan fill="#14b8a6">●</tspan><tspan x="58" fill="#e2e8f0">Design</tspan><tspan x="190"><tspan fill="#94a3b8">plan written by the architect (read-only)</tspan></tspan></text>
+    <text x="32" y="184"><tspan fill="#14b8a6">●</tspan><tspan x="58" fill="#e2e8f0">Design review</tspan><tspan x="190"><tspan fill="#94a3b8">3 reviewers, 2 rounds: 31 findings → 22 folded into the plan</tspan></tspan></text>
+    <text x="32" y="210"><tspan fill="#f59e0b">?</tspan><tspan x="58" fill="#e2e8f0">Approve</tspan><tspan x="190"><tspan fill="#94a3b8">you read the plan → </tspan><tspan fill="#14b8a6">yes</tspan></tspan></text>
+    <text x="32" y="236"><tspan fill="#14b8a6">●</tspan><tspan x="58" fill="#e2e8f0">Implement</tspan><tspan x="190"><tspan fill="#94a3b8">6 files, tests included</tspan></tspan></text>
+    <text x="32" y="262"><tspan fill="#14b8a6">●</tspan><tspan x="58" fill="#e2e8f0">Test</tspan><tspan x="190"><tspan fill="#34d399">✓ 34 passed</tspan></tspan></text>
+    <text x="32" y="288"><tspan fill="#14b8a6">●</tspan><tspan x="58" fill="#e2e8f0">Review</tspan><tspan x="190"><tspan fill="#94a3b8">same frozen diff, in parallel, without seeing each other</tspan></tspan></text>
+    <text x="32" y="314"><tspan x="190"><tspan fill="#c4b5fd">Claude</tspan><tspan fill="#e2e8f0"> general ✓ · </tspan><tspan fill="#c4b5fd">Claude</tspan><tspan fill="#e2e8f0"> security ✓ · </tspan><tspan fill="#c4b5fd">Claude</tspan><tspan fill="#e2e8f0"> test ✓ · </tspan><tspan fill="#7dd3fc">Codex</tspan><tspan fill="#e2e8f0"> general ✓</tspan></tspan></text>
+    <text x="32" y="340"><tspan fill="#14b8a6">●</tspan><tspan x="58" fill="#e2e8f0">Triage</tspan><tspan x="190"><tspan fill="#94a3b8">duplicates merged, false positives rejected</tspan></tspan></text>
+    <text x="32" y="366"><tspan fill="#14b8a6">●</tspan><tspan x="58" fill="#e2e8f0">Fix</tspan><tspan x="190"><tspan fill="#94a3b8">only the accepted findings → re-test </tspan><tspan fill="#34d399">✓</tspan></tspan></text>
+    <rect x="32" y="398" width="896" height="190" rx="10" fill="#111c33" stroke="#14b8a6" stroke-width="1.5"/>
+    <text x="52" y="428" font-size="14" font-weight="bold" fill="#14b8a6">Final report</text>
+    <text x="52" y="458"><tspan fill="#94a3b8">Tests</tspan><tspan x="170"><tspan fill="#34d399">✓</tspan><tspan fill="#e2e8f0"> 37 passed</tspan></tspan></text>
+    <text x="52" y="484"><tspan fill="#94a3b8">Reviews</tspan><tspan x="170"><tspan fill="#e2e8f0">4/4 </tspan><tspan fill="#34d399">✓</tspan><tspan fill="#e2e8f0">  (Claude ×3 + Codex)</tspan></tspan></text>
+    <text x="52" y="510"><tspan fill="#94a3b8">Triage</tspan><tspan x="170"><tspan fill="#e2e8f0">12 findings → 5 accepted, 3 rejected, 4 duplicates</tspan></tspan></text>
+    <text x="52" y="536"><tspan fill="#94a3b8">Changed</tspan><tspan x="170"><tspan fill="#e2e8f0">app/ratelimit.py, app/server.py + 4 more (tests, README)</tspan></tspan></text>
+    <text x="52" y="562"><tspan fill="#94a3b8">Remaining</tspan><tspan x="170"><tspan fill="#e2e8f0">none</tspan></tspan></text>
+    <text x="928" y="614" text-anchor="end" font-size="12" fill="#64748b">from a real run on a sample app · dev-orchestra 1.0.0</text>
+  </g>
+</svg>
