@@ -248,13 +248,21 @@ Antigravity install on Windows makes a junction, which needs no Developer Mode.
 ## Upgrading
 
 ```bash
-/plugin marketplace update                     # Claude Code, inside a session
+claude plugin marketplace update dev-orchestra # Claude Code: refreshes the catalog only,
+claude plugin update dev-orchestra             # so update the plugin too, then restart
 codex plugin marketplace upgrade               # Codex: re-fetches the snapshot only,
 codex plugin add dev-orchestra@dev-orchestra   # so add it again to install it
 ```
 
+`claude plugin update` on its own answers "already at the latest version"
+until the marketplace has been refreshed, and the refresh on its own leaves the
+installed version as it was: run both.
+
 A checkout install upgrades with `git pull` ([details](references/workflow.md#installing-from-a-skill-checkout)).
-Antigravity: `git pull` in the checkout, then restart Antigravity.
+Antigravity: `git pull` in the checkout, then restart Antigravity. A copy
+(`--copy`, `agy plugin install`, or `install.sh` under Git Bash, whose `ln -s`
+copies) does not follow the checkout: run the same install command again after
+`git pull`.
 Configuration, artifacts and commands are compatible within a major version
 ([Compatibility](#compatibility)); `CHANGELOG.md` calls out anything that needs
 action.

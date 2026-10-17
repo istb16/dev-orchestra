@@ -234,13 +234,19 @@ Antigravity の導入はジャンクションを作るので、開発者モー�
 ## アップグレード
 
 ```bash
-/plugin marketplace update                     # Claude Code, inside a session
+claude plugin marketplace update dev-orchestra # Claude Code: refreshes the catalog only,
+claude plugin update dev-orchestra             # so update the plugin too, then restart
 codex plugin marketplace upgrade               # Codex: re-fetches the snapshot only,
 codex plugin add dev-orchestra@dev-orchestra   # so add it again to install it
 ```
 
+マーケットプレイスを更新するまでは、`claude plugin update` だけを実行しても「すでに最新」と表示されます。
+逆にマーケットプレイスの更新だけでは、入っている版は変わりません。両方を実行してください。
+
 チェックアウト導入は `git pull` で更新します（[詳細](docs/ja/references/workflow.md#installing-from-a-skill-checkout)）。
-Antigravity はチェックアウトで `git pull` し、Antigravity を再起動します。
+Antigravity はチェックアウトで `git pull` し、Antigravity を再起動します。コピーで入れた場合
+（`--copy`、`agy plugin install`、`ln -s` がコピーになる Git Bash での `install.sh`）はチェックアウトに
+追従しないので、`git pull` のあとに入れたときと同じコマンドをもう一度実行します。
 設定、成果物、コマンドはメジャーバージョン内で互換を保ちます（[互換性](#互換性)）。対応が必要な変更は
 `CHANGELOG.md` に明記します。
 
