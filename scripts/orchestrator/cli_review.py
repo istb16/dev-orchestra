@@ -15,6 +15,7 @@ from . import config_policy as policy_mod
 from . import context as context_mod
 from . import ledger as ledger_mod
 from . import optimization as opt_mod
+from . import optimization_design as opt_design
 from . import questions as questions_mod
 from . import review as review_mod
 from . import workspace as ws
@@ -1031,7 +1032,7 @@ def _design_request_path(args: argparse.Namespace, workspace: ws.Workspace) -> s
     return os.path.join(workspace.execution_dir, "design-request.md")
 
 
-def _design_decision(loaded: config_mod.LoadedConfig, workspace: ws.Workspace) -> opt_mod.DesignDecision:
+def _design_decision(loaded: config_mod.LoadedConfig, workspace: ws.Workspace) -> opt_design.DesignDecision:
     """Whether the design review runs for this workflow's plan, and why.
 
     One answer for ``status``, ``review status --design`` and ``review run
@@ -1045,7 +1046,7 @@ def _design_decision(loaded: config_mod.LoadedConfig, workspace: ws.Workspace) -
         int(design_data.get("iteration", 0) or 0) > 0 or approval_mod.design_round(workspace) is not None
     )
     plan_state, scan = _plan_scan(workspace)
-    return opt_mod.decide_design(
+    return opt_design.decide_design(
         mode, loaded.optimization_settings(), scan, plan_state=plan_state, round_ran=round_ran
     )
 
@@ -1094,7 +1095,7 @@ def _design_round_plan(
     lineage: str,
     declared: bool = False,
     only: bool = False,
-) -> opt_mod.DesignPlan:
+) -> opt_design.DesignPlan:
     """What a design round on this workflow's plan decides about its panel.
 
     Built here for `review run --design`, `review status --design` and the
@@ -1102,7 +1103,7 @@ def _design_round_plan(
     passes the whole design panel and neither ``--only`` nor ``--high-risk``.
     """
     plan_state, scan = _plan_scan(workspace)
-    return opt_mod.decide_design_round(
+    return opt_design.decide_design_round(
         loaded.optimization_settings(),
         scan,
         plan_state,
@@ -1943,7 +1944,7 @@ def _status_payload(
     blocking: List[Dict[str, Any]],
     iteration: int,
     coverage: Optional[Dict[str, Any]],
-) -> Tuple[Dict[str, Any], Optional[opt_mod.DesignDecision]]:
+) -> Tuple[Dict[str, Any], Optional[opt_design.DesignDecision]]:
     """``review status --json``'s payload, and the design decision a ``--design`` one names."""
     max_iterations, final = budget.max_iterations, budget.final
     counts = data.get("counts", {})
@@ -1997,7 +1998,7 @@ def _print_status(
     loaded: config_mod.LoadedConfig,
     data: Dict[str, Any],
     payload: Dict[str, Any],
-    decision: Optional[opt_mod.DesignDecision],
+    decision: Optional[opt_design.DesignDecision],
     budget: _StatusBudget,
     severities: Tuple[str, ...],
     blocking: List[Dict[str, Any]],

@@ -580,6 +580,7 @@ _REGISTRY_FREE = (
     "activity",
     "workspace",
     "optimization",
+    "optimization_design",
     "review_common",
     "config",
     "execution",

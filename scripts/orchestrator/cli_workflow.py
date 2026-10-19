@@ -12,6 +12,7 @@ from . import config as config_mod
 from . import jobs as jobs_mod
 from . import ledger as ledger_mod
 from . import optimization as opt_mod
+from . import optimization_design as opt_design
 from . import optimization_report as opt_report
 from . import questions as questions_mod
 from . import review as review_mod
@@ -369,7 +370,7 @@ class _Status(NamedTuple):
 
     payload: Dict[str, Any]
     plan: opt_mod.Plan
-    design_decision: opt_mod.DesignDecision
+    design_decision: opt_design.DesignDecision
     design_pass: Dict[str, Any]
     architect_left: Optional[int]
 

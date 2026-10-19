@@ -15,7 +15,7 @@ from helpers import IsolatedCase, has_git, present
 from orchestrator import cli, cli_review, review_consolidation, review_fanout
 from orchestrator import config as config_mod
 from orchestrator import context as context_mod
-from orchestrator import optimization as opt
+from orchestrator import optimization_design as opt_design
 from orchestrator import review as review_mod
 from orchestrator import workspace as ws
 
@@ -1551,7 +1551,7 @@ class TestPlanTokens(unittest.TestCase):
             "## Files to Modify\n\n- `scripts/a.py`\n\n```\n"
             ".github/\n└── workflows/\n    └── deploy.yml\ndb/migrate/003_drop.sql\n```\n"
         )
-        decision = opt.decide_design(
+        decision = opt_design.decide_design(
             "auto", {}, review_mod.plan_tokens(plan), plan_state="ok", round_ran=False
         )
         self.assertTrue(decision.run)
@@ -1578,7 +1578,7 @@ class TestPlanTokens(unittest.TestCase):
         self.assertEqual(self.words(scan), expected)
         self.assertTrue(all(t.in_files for t in scan.tokens))
         self.assertEqual([t.prose for t in scan.tokens], [False] * 6)
-        decision = opt.decide_design("auto", {}, scan, plan_state="ok", round_ran=False)
+        decision = opt_design.decide_design("auto", {}, scan, plan_state="ok", round_ran=False)
         self.assertEqual(decision.reason, "touches db/migrate/003_drop.sql (Files to Modify) and 1 more")
 
     def test_a_plain_word_beside_a_backticked_entry_is_prose(self):
@@ -1594,7 +1594,7 @@ class TestPlanTokens(unittest.TestCase):
             "## Files to Modify\n\n- `CHANGELOG.md`: under `## [Unreleased]` / `### Added`\n"
         )
         self.assertNotIn("/", self.words(scan))
-        decision = opt.decide_design("auto", {}, scan, plan_state="ok", round_ran=False)
+        decision = opt_design.decide_design("auto", {}, scan, plan_state="ok", round_ran=False)
         self.assertFalse(decision.run, decision.reason)
 
     def test_every_path_in_a_span_is_a_token(self):
@@ -1602,7 +1602,7 @@ class TestPlanTokens(unittest.TestCase):
             "## Files to Modify\n\n- `src/main.py, src/auth.py`\n- `run --flag x.py`\n"
         )
         self.assertEqual(self.words(scan), ["src/main.py", "src/auth.py", "run", "x.py"])
-        decision = opt.decide_design("auto", {}, scan, plan_state="ok", round_ran=False)
+        decision = opt_design.decide_design("auto", {}, scan, plan_state="ok", round_ran=False)
         self.assertEqual(decision.reason, "touches src/auth.py (Files to Modify)")
 
     def test_a_heading_padded_with_spaces_is_read_in_linear_time(self):

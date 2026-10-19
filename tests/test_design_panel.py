@@ -23,6 +23,7 @@ from orchestrator import config as config_mod
 from orchestrator import config_layers, doctor
 from orchestrator import config_policy as policy_mod
 from orchestrator import optimization as opt
+from orchestrator import optimization_design as opt_design
 from orchestrator import review as review_mod
 from orchestrator import wizard as wizard_mod
 from orchestrator import workspace as ws
@@ -826,7 +827,7 @@ class TestDecidingADesignRound(unittest.TestCase):
     def decide(self, text, **keep):
         settings = config_mod.default_config()["optimization"]
         scan = review_mod.plan_tokens(text)
-        return opt.decide_design_round(settings, scan, "ok", list(self.PANEL), **keep)
+        return opt_design.decide_design_round(settings, scan, "ok", list(self.PANEL), **keep)
 
     def test_design_high_risk_seat_runs_on_risky_plan_only(self):
         risky = self.decide(RISKY_PLAN)
@@ -851,7 +852,7 @@ class TestDecidingADesignRound(unittest.TestCase):
     def test_design_risk_equals_decide_design_hits(self):
         settings = config_mod.default_config()["optimization"]
         scan = review_mod.plan_tokens(RISKY_PLAN)
-        decision = opt.decide_design("auto", settings, scan, plan_state="ok", round_ran=False)
+        decision = opt_design.decide_design("auto", settings, scan, plan_state="ok", round_ran=False)
         pairs = [(token, pattern) for token, _section, pattern in opt.design_risk(settings, scan)]
         self.assertEqual(decision.high_risk, pairs)
         self.assertEqual(opt.design_risk(settings, None), [])
@@ -863,7 +864,7 @@ class TestDecidingADesignRound(unittest.TestCase):
         files = opt.plan_files(scan)
         self.assertEqual(files.code, ["src/calc.py", "src/total.py"])
         self.assertEqual(files.doubt, "")
-        decision = opt.decide_design("auto", settings, scan, plan_state="ok", round_ran=False)
+        decision = opt_design.decide_design("auto", settings, scan, plan_state="ok", round_ran=False)
         self.assertEqual(decision.files, len(files.code))
         unjudged = opt.plan_files(review_mod.plan_tokens("# Plan\n"))
         self.assertEqual(unjudged.doubt, "no Files to Modify section")

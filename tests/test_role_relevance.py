@@ -21,6 +21,7 @@ from test_design_review import DesignReviewCase
 from orchestrator import cli_review, optimization_render, presets
 from orchestrator import config as config_mod
 from orchestrator import optimization as opt
+from orchestrator import optimization_design as opt_design
 from orchestrator import optimization_report as opt_report
 from orchestrator import review as review_mod
 from orchestrator import workspace as ws
@@ -336,7 +337,7 @@ class TestLevels(unittest.TestCase):
 
     def test_quality_configured_still_skips_unneeded_role_design(self):
         scan = review_mod.plan_tokens(plan(["docs/guide.md"]))
-        design = opt.decide_design_round(settings(level="quality"), scan, "ok", SPECIALISTS)
+        design = opt_design.decide_design_round(settings(level="quality"), scan, "ok", SPECIALISTS)
         self.assertEqual(design.level, "quality")
         left = {record["id"] for record in design.left_out()}
         self.assertEqual(left, {"sec", "t", "a"})
@@ -358,7 +359,7 @@ class TestLevels(unittest.TestCase):
 
     def test_high_risk_hit_keeps_every_role_design(self):
         scan = review_mod.plan_tokens(plan(["docs/guide.md"], proposed="Explain `src/auth.py`."))
-        design = opt.decide_design_round(settings(), scan, "ok", SPECIALISTS)
+        design = opt_design.decide_design_round(settings(), scan, "ok", SPECIALISTS)
         self.assertTrue(design.is_high_risk)
         for record in design.conditional:
             self.assertTrue(record["runs"], record)
@@ -508,7 +509,7 @@ class TestInteractions(unittest.TestCase):
 
     def test_empty_panel_guard_on_a_design_round(self):
         scan = review_mod.plan_tokens(plan(["docs/guide.md"]))
-        design = opt.decide_design_round(settings(), scan, "ok", [SEC, seat("t", "test")])
+        design = opt_design.decide_design_round(settings(), scan, "ok", [SEC, seat("t", "test")])
         records = by_id(design.conditional)
         kept = (True, "kept: no other reviewer would run")
         self.assertEqual((records["sec"]["runs"], records["sec"]["reason"]), kept)
