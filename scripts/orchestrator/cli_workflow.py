@@ -396,7 +396,6 @@ def _status_payload(
     abandoned = book.clear_stalls()
 
     review_data = ws.read_json(workspace.consolidated_json_path, {}) or {}
-    settings = loaded.review_settings()
     severities = loaded.blocking_severities()
     blocking = review_mod.unresolved_blocking(review_data, severities)
     iteration = int(review_data.get("iteration", 0) or 0)
@@ -541,7 +540,7 @@ def _status_payload(
             "the snapshot has no %s list; take a fresh one with `dev-orchestra review snapshot`"
             % " or ".join(missing)
         )
-    plan = round_plan(loaded, settings, workspace, meta, loaded.reviewers())
+    plan = round_plan(loaded, workspace, meta, loaded.reviewers())
     if plan.gate == opt_mod.GATE_REFUSE:
         reasons.append("the last recorded test run failed; fix it before reviewing")
     # And what the next `review run --design` would decide about its panel.
