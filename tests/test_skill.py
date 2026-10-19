@@ -297,26 +297,19 @@ class TestDocumentation(IsolatedCase):
     def test_readme_covers_every_required_section(self):
         readme = read("README.md")
         for heading in (
-            "Why this exists",
-            "Architecture",
+            "Quick start",
+            "Why",
+            "How it works",
             "Requirements",
             "Installation",
-            "Initial setup",
-            "Usage",
-            "Configuration",
-            "Model selection",
-            "Reviewers",
-            "Example workflows",
-            "Troubleshooting",
-            "Security",
-            "Supported platforms",
+            "Learn more",
             "Upgrading",
             "Uninstalling",
             "Compatibility",
             "Contributing",
             "License",
         ):
-            self.assertIn(heading, readme, heading)
+            self.assertIn("\n## %s\n" % heading, readme, heading)
 
     def test_both_readmes_document_the_recommended_lineup(self):
         """The point of the tool is several models with different jobs."""
@@ -331,23 +324,34 @@ class TestDocumentation(IsolatedCase):
             ):
                 self.assertIn(token, text, "%s: %s" % (relative, token))
 
-    def test_both_readmes_explain_stage_by_stage_use(self):
-        for relative in ("README.md", "README.ja.md"):
-            text = read(relative)
+    def test_stage_by_stage_use_is_one_link_from_both_readmes(self):
+        """The READMEs point to the workflow, which shows each command."""
+        for relative, workflow in (
+            ("README.md", "references/workflow.md"),
+            ("README.ja.md", "docs/ja/references/workflow.md"),
+        ):
+            self.assertIn("](%s)" % workflow, read(relative), relative)
+            text = read(workflow)
             for command in (
                 "dev-orchestra run architect",
                 "dev-orchestra run implementer",
                 "dev-orchestra review snapshot",
                 "dev-orchestra run review_fixer",
             ):
-                self.assertIn(command, text, "%s: %s" % (relative, command))
+                self.assertIn(command, text, "%s: %s" % (workflow, command))
 
-    def test_both_readmes_cover_bulk_input(self):
+    def test_bulk_input_is_one_link_from_both_readmes(self):
         """Issue #2: show how to hand a large corpus to one model first."""
-        for relative in ("README.md", "README.ja.md"):
-            text = read(relative)
-            self.assertIn("dev-orchestra run orchestrator", text, relative)
-            self.assertIn("--output .ai/analysis.md", text, relative)
+        for relative, limits, words in (
+            ("README.md", "references/limits.md", "bulk input"),
+            ("README.ja.md", "docs/ja/references/limits.md", "大量の入力"),
+        ):
+            readme = read(relative)
+            self.assertIn("](%s)" % limits, readme, relative)
+            self.assertIn(words, readme, relative)
+            text = read(limits)
+            self.assertIn("dev-orchestra run orchestrator", text, limits)
+            self.assertIn("--output .ai/analysis.md", text, limits)
 
     def test_readme_has_an_architecture_diagram(self):
         self.assertIn("```mermaid", read("README.md"))
