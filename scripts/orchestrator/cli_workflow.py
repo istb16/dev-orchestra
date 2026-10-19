@@ -389,21 +389,24 @@ def cmd_status(args: argparse.Namespace) -> int:
     return 0
 
 
+class _RoundState(NamedTuple):
+    """One review loop as `status` reads it: its final pass, rounds, open findings and repeats."""
+
+    final_pass: Dict[str, Any]
+    iteration: int
+    max_iterations: int
+    blocking: List[Dict[str, Any]]
+    repeats: int
+
+
 def _stop_reasons(
     *,
     refused_for_size: Optional[Dict[str, Any]],
     design_refused_for_size: Optional[Dict[str, Any]],
-    review_pass: Dict[str, Any],
-    iteration: int,
-    max_iterations: int,
-    blocking: List[Dict[str, Any]],
-    review_repeats: int,
-    design_pass: Dict[str, Any],
-    design_iteration: int,
-    design_max: int,
-    design_blocking: List[Dict[str, Any]],
-    design_repeats: int,
-    summary: Dict[str, Any],
+    review: _RoundState,
+    design: _RoundState,
+    budgets: Dict[str, Any],
+    total: Dict[str, Any],
     plan_digest: str,
     plan_approved: bool,
 ) -> List[str]:
@@ -413,41 +416,41 @@ def _stop_reasons(
         reasons.append(_refusal_reason(refused_for_size))
     if design_refused_for_size:
         reasons.append(_refusal_reason(design_refused_for_size, design=True))
-    if review_pass["state"] in ("done", "blocked", "unaccepted"):
+    if review.final_pass["state"] in ("done", "blocked", "unaccepted"):
         suffix = ""
-        if review_pass["state"] == "blocked":
+        if review.final_pass["state"] == "blocked":
             suffix = " and no review_fixer attempt left"
-        elif review_pass["state"] == "done":
+        elif review.final_pass["state"] == "done":
             suffix = "; fixed and re-tested after the last round, not re-reviewed -- report"
         reasons.append(
             "review budget spent (%d/%d rounds) with %d finding(s) still open%s"
-            % (iteration, max_iterations, len(blocking), suffix)
+            % (review.iteration, review.max_iterations, len(review.blocking), suffix)
         )
     # A repeat does not stop the fix still owed to the last round.
-    if review_repeats > 1 and review_pass["state"] not in ("pending", "retest"):
+    if review.repeats > 1 and review.final_pass["state"] not in ("pending", "retest"):
         reasons.append("the last review round found exactly what the previous one found")
     # Left out once the user has approved this plan (`approved`): they were
     # shown the open findings and decided to go ahead over them, which is what
     # the stop was waiting for. Kept, it would say stop at every stage that
     # follows. Left out too while the last round's revision is still owed.
-    if design_pass["state"] in ("done", "blocked", "implemented", "unaccepted"):
+    if design.final_pass["state"] in ("done", "blocked", "implemented", "unaccepted"):
         suffix = ""
-        if design_pass["state"] == "blocked":
+        if design.final_pass["state"] == "blocked":
             suffix = " and no architect attempt left to fold them in"
-        elif design_pass["state"] == "done" and design_pass["plan_changed"] is True:
+        elif design.final_pass["state"] == "done" and design.final_pass["plan_changed"] is True:
             suffix = "; revised after the last round, not re-reviewed -- present the plan and ask"
-        elif design_pass["state"] == "done" and design_pass["plan_changed"] is False:
+        elif design.final_pass["state"] == "done" and design.final_pass["plan_changed"] is False:
             suffix = (
                 "; the architect left the plan unchanged after the last round -- present the plan "
                 "and the findings and ask"
             )
         reasons.append(
             "design review budget spent (%d/%d rounds) with %d finding(s) still open%s"
-            % (design_iteration, design_max, len(design_blocking), suffix)
+            % (design.iteration, design.max_iterations, len(design.blocking), suffix)
         )
-    if design_repeats > 1 and design_pass["state"] != "pending":
+    if design.repeats > 1 and design.final_pass["state"] != "pending":
         reasons.append("the last design review round found exactly what the previous one found")
-    for stage, entry in summary["budgets"].items():
+    for stage, entry in budgets.items():
         if entry["remaining"] != 0:
             continue
         # The exhausted run says so itself (exit 3), and running out of
@@ -462,14 +465,13 @@ def _stop_reasons(
         if (
             stage == "architect"
             and plan_digest
-            and (design_pass["state"] is not None or not design_blocking or plan_approved)
+            and (design.final_pass["state"] is not None or not design.blocking or plan_approved)
         ):
             continue
         # A fix already made needs its re-test or its report, not the fixer.
-        if stage == "review_fixer" and review_pass["state"] in ("retest", "done"):
+        if stage == "review_fixer" and review.final_pass["state"] in ("retest", "done"):
             continue
         reasons.append("%s has no attempts left" % stage)
-    total = summary["total_delegated_runs"]
     if total["limit"] and total["used"] >= int(total["limit"]):
         reasons.append("no delegated runs left in this workflow")
     return reasons
@@ -545,24 +547,17 @@ def _status_payload(
     review_repeats = int((summary["signatures"] or {}).get("review") or 0)
     design_repeats = int((summary["signatures"] or {}).get("design_review") or 0)
 
+    total = summary["total_delegated_runs"]
     reasons = _stop_reasons(
         refused_for_size=refused_for_size,
         design_refused_for_size=design_refused_for_size,
-        review_pass=review_pass,
-        iteration=iteration,
-        max_iterations=max_iterations,
-        blocking=blocking,
-        review_repeats=review_repeats,
-        design_pass=design_pass,
-        design_iteration=design_iteration,
-        design_max=design_max,
-        design_blocking=design_blocking,
-        design_repeats=design_repeats,
-        summary=summary,
+        review=_RoundState(review_pass, iteration, max_iterations, blocking, review_repeats),
+        design=_RoundState(design_pass, design_iteration, design_max, design_blocking, design_repeats),
+        budgets=summary["budgets"],
+        total=total,
         plan_digest=plan_digest,
         plan_approved=plan_approved,
     )
-    total = summary["total_delegated_runs"]
     # Asked of the ledger rather than of the rounded summary key: advice that
     # says stop while `run` still goes is the mismatch this budget exists to
     # remove, and half a second of remaining runtime is enough to cause it.

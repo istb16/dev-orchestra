@@ -423,22 +423,18 @@ class TestRefusalReason(unittest.TestCase):
 class TestStopReasons(unittest.TestCase):
     """``_stop_reasons`` is pure: the exact list, in order, for each budget and refusal."""
 
-    @staticmethod
-    def reasons(**overrides: Any) -> List[str]:
+    REVIEW = cli_workflow._RoundState({"state": None}, 0, 3, [], 0)
+    DESIGN = cli_workflow._RoundState({"state": None, "plan_changed": None}, 0, 2, [], 0)
+
+    @classmethod
+    def reasons(cls, **overrides: Any) -> List[str]:
         args: Dict[str, Any] = {
             "refused_for_size": None,
             "design_refused_for_size": None,
-            "review_pass": {"state": None},
-            "iteration": 0,
-            "max_iterations": 3,
-            "blocking": [],
-            "review_repeats": 0,
-            "design_pass": {"state": None, "plan_changed": None},
-            "design_iteration": 0,
-            "design_max": 2,
-            "design_blocking": [],
-            "design_repeats": 0,
-            "summary": {"budgets": {}, "total_delegated_runs": {"limit": 10, "used": 3}},
+            "review": cls.REVIEW,
+            "design": cls.DESIGN,
+            "budgets": {},
+            "total": {"limit": 10, "used": 3},
             "plan_digest": "",
             "plan_approved": False,
         }
@@ -453,25 +449,26 @@ class TestStopReasons(unittest.TestCase):
         )
         spent = {"limit": 10, "used": 10}
         architect_spent = {"architect": {"remaining": 0}}
-        finding = [{"id": "D1"}]
+        design_open = self.DESIGN._replace(blocking=[{"id": "D1"}])
         cases = [
             ("nothing", {}, []),
             (
                 "delegated runs spent",
-                {"summary": {"budgets": {}, "total_delegated_runs": spent}},
+                {"total": spent},
                 ["no delegated runs left in this workflow"],
             ),
             (
                 "delegated runs unlimited",
-                {"summary": {"budgets": {}, "total_delegated_runs": {"limit": 0, "used": 50}}},
+                {"total": {"limit": 0, "used": 50}},
                 [],
             ),
             (
                 "plan unapproved, architect spent",
                 {
                     "plan_digest": "abc",
-                    "design_blocking": finding,
-                    "summary": {"budgets": architect_spent, "total_delegated_runs": spent},
+                    "design": design_open,
+                    "budgets": architect_spent,
+                    "total": spent,
                 },
                 ["architect has no attempts left", "no delegated runs left in this workflow"],
             ),
@@ -479,9 +476,10 @@ class TestStopReasons(unittest.TestCase):
                 "plan approved, architect spent",
                 {
                     "plan_digest": "abc",
-                    "design_blocking": finding,
+                    "design": design_open,
                     "plan_approved": True,
-                    "summary": {"budgets": architect_spent, "total_delegated_runs": spent},
+                    "budgets": architect_spent,
+                    "total": spent,
                 },
                 ["no delegated runs left in this workflow"],
             ),
@@ -490,7 +488,7 @@ class TestStopReasons(unittest.TestCase):
                 {
                     "refused_for_size": refusal,
                     "design_refused_for_size": refusal,
-                    "summary": {"budgets": {}, "total_delegated_runs": spent},
+                    "total": spent,
                 },
                 [size % "review", size % "design review", "no delegated runs left in this workflow"],
             ),
