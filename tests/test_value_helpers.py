@@ -420,6 +420,86 @@ class TestRefusalReason(unittest.TestCase):
                 self.assertEqual(cli_workflow._refusal_reason(event, design), expected)
 
 
+class TestStopReasons(unittest.TestCase):
+    """``_stop_reasons`` is pure: the exact list, in order, for each budget and refusal."""
+
+    @staticmethod
+    def reasons(**overrides: Any) -> List[str]:
+        args: Dict[str, Any] = {
+            "refused_for_size": None,
+            "design_refused_for_size": None,
+            "review_pass": {"state": None},
+            "iteration": 0,
+            "max_iterations": 3,
+            "blocking": [],
+            "review_repeats": 0,
+            "design_pass": {"state": None, "plan_changed": None},
+            "design_iteration": 0,
+            "design_max": 2,
+            "design_blocking": [],
+            "design_repeats": 0,
+            "summary": {"budgets": {}, "total_delegated_runs": {"limit": 10, "used": 3}},
+            "plan_digest": "",
+            "plan_approved": False,
+        }
+        args.update(overrides)
+        return cli_workflow._stop_reasons(**args)
+
+    def test_table(self):
+        refusal = {"context": {"chars": 2000, "max_chars": 1000}}
+        size = (
+            "the last %s round was refused: the change body (2,000 chars) is over "
+            "review.context.max_chars (1,000), so nothing was reviewed"
+        )
+        spent = {"limit": 10, "used": 10}
+        architect_spent = {"architect": {"remaining": 0}}
+        finding = [{"id": "D1"}]
+        cases = [
+            ("nothing", {}, []),
+            (
+                "delegated runs spent",
+                {"summary": {"budgets": {}, "total_delegated_runs": spent}},
+                ["no delegated runs left in this workflow"],
+            ),
+            (
+                "delegated runs unlimited",
+                {"summary": {"budgets": {}, "total_delegated_runs": {"limit": 0, "used": 50}}},
+                [],
+            ),
+            (
+                "plan unapproved, architect spent",
+                {
+                    "plan_digest": "abc",
+                    "design_blocking": finding,
+                    "summary": {"budgets": architect_spent, "total_delegated_runs": spent},
+                },
+                ["architect has no attempts left", "no delegated runs left in this workflow"],
+            ),
+            (
+                "plan approved, architect spent",
+                {
+                    "plan_digest": "abc",
+                    "design_blocking": finding,
+                    "plan_approved": True,
+                    "summary": {"budgets": architect_spent, "total_delegated_runs": spent},
+                },
+                ["no delegated runs left in this workflow"],
+            ),
+            (
+                "size refusals",
+                {
+                    "refused_for_size": refusal,
+                    "design_refused_for_size": refusal,
+                    "summary": {"budgets": {}, "total_delegated_runs": spent},
+                },
+                [size % "review", size % "design review", "no delegated runs left in this workflow"],
+            ),
+        ]
+        for name, overrides, expected in cases:
+            with self.subTest(name):
+                self.assertEqual(self.reasons(**overrides), expected)
+
+
 # --------------------------------------------------------------------------- cli_review
 
 
