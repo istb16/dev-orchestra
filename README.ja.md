@@ -1,30 +1,47 @@
-# AI Development Orchestrator
+# dev-orchestra
+
+[![CI](https://github.com/istb16/dev-orchestra/actions/workflows/ci.yml/badge.svg)](https://github.com/istb16/dev-orchestra/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/istb16/dev-orchestra)](https://github.com/istb16/dev-orchestra/releases)
+[![License: MIT](https://img.shields.io/github/license/istb16/dev-orchestra)](LICENSE)
 
 [English](README.md) | **日本語**
 
-**複数のAIコーディングCLI** を組み合わせてソフトウェア開発フロー全体をオーケストレーションする、汎用の
-[Agent Skill](https://code.claude.com/docs/en/skills) です。あるモデルで設計し、別のモデルで実装し、
-完了とみなす前に複数のモデルが独立してレビューします。どんなコードベースでも動き、リクエストに必要な
-工程だけを実行します。typo修正なら編集だけ、スキーマ変更ならフルパイプラインです。
+**AI に、自分のコードをレビューさせない。**
+
+Claude が作り、Codex が疑い、dev-orchestra がまとめる。
+
+- **独立したレビュー** — 別々のモデルが、互いを見ずに同じ差分を確かめる
+- **API キー不要** — いまログインしている CLI をそのまま使う
+- **1 文で始まる** — 「ログイン API にレート制限を入れて」
+
+Claude Code、Codex、Antigravity で動きます。始めるだけなら Claude Code ひとつで足ります。
+
+![「ログイン API にレート制限を入れて」という1文の依頼が、設計、設計レビュー、承認、実装、テスト、Claude と Codex の4つの独立したレビュー、トリアージ、修正を経て最終報告になる様子。テスト37件成功、指摘12件のうち採用5、却下3、重複4](docs/images/demo-ja.svg)
+
+## すぐ試す
+
+```bash
+claude plugin marketplace add istb16/dev-orchestra
+claude plugin install dev-orchestra@dev-orchestra
+```
+
+Claude Code の新しいセッションを開き、ふだんの言葉で頼みます。
+
+> dev-orchestra で issue #12 を実装して
+
+初回は保存するプリセット（`quality`・`standard`・`fast`）を尋ね、入っている CLI に合わせます。
+typo の修正なら編集だけ、スキーマの変更なら全工程を通ります。
 
 紹介記事: [設計・実装・複数AIレビューを1文で回す dev-orchestra を公開してみた](https://tk3.biz/blog/2026-10-13-dev-orchestra-introduction/)
 （何ができるか、codex-plugin-cc との違い、Claude Code だけでも使う意味）
 
-![「ログイン API にレート制限を入れて」という1文の依頼が、設計、設計レビュー、承認、実装、テスト、Claude と Codex の4つの独立したレビュー、トリアージ、修正を経て最終報告になる様子。テスト37件成功、指摘12件のうち採用5、却下3、重複4](docs/images/demo-ja.svg)
+## なぜ
 
-## なぜ作るのか
+自分の成果物を見直すモデルは、バグを生んだ思い込みまで共有しています。互いの意見を知らない
+別々のモデルに同じ差分を読ませると、有用な形で食い違い、その食い違いに本物のバグがあります。
+指摘は重複をまとめ、トリアージしてから直すので、修正役に届くのは短いリストです。
 
-**モデルは自分の成果物のレビューが苦手です。** バグを生んだ前提をそのまま共有しているからです。
-互いの意見を知らない状態で同じdiffを見た2〜3の**異なる**モデルは、有用な形で食い違います。
-その食い違いこそが本物のバグのありかです。
-
-**生のレビュー出力は修正リストではありません。** 複数のレビュアーは互いに重複し、一部はfalse positiveで、
-それを全部fixerに丸投げすると無駄な変更が量産されます。そこで findings は機械的に重複統合したうえで、
-オーケストレーターが**トリアージ**し、accepted になったものだけが fixer に届きます。そしてモデル名は
-決して推測しません。設定に書くのは *family* と `version: latest` で、検証できなければ adapter は
-エラーで停止します。
-
-## 誰が何を担当するか
+## 仕組み
 
 | 工程 | 設定上のロール | 役割 |
 | --- | --- | --- |
@@ -52,184 +69,63 @@ flowchart LR
     F --> T2[再テスト] --> REP[最終報告]
 ```
 
-重要なのは **設計と独立レビューを別ベンダーに割り当てる** という形です。同じ系列のモデル同士は、
-バグを生んだ思い込みまで共有してしまいます。
+どのロールにも、対応する CLI とモデルの family を自由に割り当てられます。構成は
+`dev-orchestra config setup` で選べ、使える family は `dev-orchestra model list` で分かります。
+詳しくは[設定](docs/ja/references/configuration.md)にあります。
 
 ## 必要なもの
 
-- **Python 3.11以上** — 標準ライブラリのみ（PyYAML があれば使います）。`python3` という名前しか
-  ない環境では `python3` で、または自動で選ぶ `bin/dev-orchestra[.ps1]` で実行してください。
-- **git** — レビュースナップショットに必要です。
-- **サポート対象CLIのいずれか**（認証済みであること）:
-  - [Claude Code](https://claude.com/claude-code) (`claude`)
-  - [Codex CLI](https://developers.openai.com/codex/cli) (`codex`)
-  - Antigravity CLI (`agy`)。implementer と review fixer 向けです。読み取り専用のモードがないので、
-    plan や review の席に置く場合は global 設定からだけ、警告付きで受け付けます
-    （`docs/ja/references/providers.md` を参照）
+- **Python 3.11 以上**（標準ライブラリのみ）。`python3` で、または自動で選ぶ `bin/dev-orchestra[.ps1]` で実行します
+- **git**
+- **ログイン済みの CLI のどれか**: [Claude Code](https://claude.com/claude-code)（`claude`）、
+  [Codex CLI](https://developers.openai.com/codex/cli)（`codex`）、Antigravity CLI（`agy`）。
+  `agy` には読み取り専用のモードがないので、担当するのは implementer と review fixer です
+  （[providers](docs/ja/references/providers.md)）
 
-Skill は Claude Code、Codex、Antigravity のいずれかの Plugin として動きます。上の CLI は
-Skill が動かす相手で、Skill が動く場所ではありません。
-
-このSkillは**既存のCLIログインをそのまま使います**。APIキーを要求せず、認証情報を保存せず、出力もしません。
+Linux、macOS、Windows（ネイティブ）で CI を回しています。認証情報は要求も保存も出力もしません。
 
 ## インストール
 
-このリポジトリから Plugin として入れます（公式Marketplaceには公開していません）。Claude Code と
-Codex は自分のキャッシュ（`~/.claude/plugins/cache/…`、`~/.codex/plugins/cache/…`）にある
-コピーを実行し、次のセッションから使えます。Antigravity は自分の `plugins/` フォルダに置かれた
-ディレクトリを読み込みます。
+Claude Code は[すぐ試す](#すぐ試す)のとおりです。セッションの中からなら
+`/plugin marketplace add istb16/dev-orchestra`、続けて `/plugin install dev-orchestra@dev-orchestra` です。
 
-### Claude Code Plugin
-
-```bash
-claude plugin marketplace add istb16/dev-orchestra
-claude plugin install dev-orchestra@dev-orchestra
-```
-
-Claude Code の中からは `/plugin marketplace add istb16/dev-orchestra`、続けて
-`/plugin install dev-orchestra@dev-orchestra` です。
-
-### Codex Plugin
+**Codex:**
 
 ```bash
 codex plugin marketplace add istb16/dev-orchestra
 codex plugin add dev-orchestra@dev-orchestra
 ```
 
-`codex plugin list` で導入済みのものを確認できます。
-
-### Antigravity Plugin
-
-リポジトリをクローンし、Antigravity の plugins フォルダにリンクします。
+**Antigravity:** リポジトリをクローンして plugins フォルダにリンクし、Antigravity を再起動します。
 
 ```bash
 git clone https://github.com/istb16/dev-orchestra.git
 cd dev-orchestra
-./install/install.sh --antigravity    # links into ~/.gemini/config/plugins/
+./install/install.sh --antigravity    # Windows では .\install\install.ps1 -Antigravity
 ```
 
-```powershell
-.\install\install.ps1 -Antigravity    # Windows
-```
+リンクで入れるとチェックアウトの今のブランチがそのまま読み込まれるので、信頼できないブランチを
+見るときは `--copy` か別の worktree を使ってください。ほかの入れ方（`agy plugin install`、
+`plugins.json` のエントリ、Plugin 以前のインストーラ）は
+[Skill のチェックアウトからのインストール](docs/ja/references/workflow.md#installing-from-a-skill-checkout)にあります。
 
-手でやる場合はリンク1つです: `ln -s "$PWD" ~/.gemini/config/plugins/dev-orchestra`。
-`--project <path>` を付けると `<path>/.agents/plugins/` に入れます。入れたあとは Antigravity を
-再起動してください。新しい Plugin のディレクトリは起動時にしか見つけられません。リンクで入れた
-場合はチェックアウトで今のブランチがそのまま読み込まれるので、信頼できないブランチを見るときは
-`--copy` か別の worktree を使ってください。Antigravity CLI の `agy plugin install <path>` でも
-コピーを置けますが、これはチェックアウトをそのままコピーします。また `plugins.json` のエントリで
-チェックアウトを含むフォルダを指せば、作業ツリーがそのまま読み込まれます。どちらも信頼できない
-ブランチには同じ注意が必要で、インストーラの拒否も `doctor` の確認も働きません
-（[詳細](docs/ja/references/workflow.md#installing-from-a-skill-checkout)）。Marketplace は
-Google が選んで載せるもので、利用者が追加することはできません。
+## もっと知る
 
-Plugin 以前のインストーラも使えます
-（[Skill のチェックアウトからのインストール](docs/ja/references/workflow.md#installing-from-a-skill-checkout)）。
-クローンから Plugin を動かす方法は `CONTRIBUTING.md`（英語）にあります。
+工程を自分で 1 つずつ動かすときのコマンドは [workflow](docs/ja/references/workflow.md) にあります。
+`dev-orchestra doctor` で CLI、設定、モデルの family を確かめられます。
 
-## 初期セットアップ
+英語版はオーケストレーターのモデルも読むドキュメントで、こちらが正です。日本語版は人が読むための訳です。
 
-初回実行時、設定が無いことを検知して今有効な設定を表示し、保存するプリセット
-（`quality`・`standard`・`fast`）を尋ねます。プリセットはロール・レビュアー構成・設計レビュー・
-最適化レベルをまとめて決め、そのマシンにインストールされている CLI に合わせます。Claude Code
-だけのマシンなら、レビュアーも Claude だけになります。自分で選ぶ場合や、ウィザードの質問に
-すべて答える場合:
-
-```bash
-dev-orchestra config setup --preset standard
-dev-orchestra config setup
-dev-orchestra model list        # the families your installed CLIs offer
-```
-
-ファイルを保存するまでは、インストール済みの CLI に合わせた `standard` が有効です。Claude Code と
-Codex の両方があれば、それが推奨構成です: architect が Claude の `fable`、実装と修正が Claude の
-`opus`、レビュアーが Claude と Codex の1人ずつ。ファイルに残るのは自分で決めた値だけです。
-[プリセット](docs/ja/references/configuration.md#presets)、[ウィザード](docs/ja/references/configuration.md#the-wizard)
-と [2社構成の設定例](docs/ja/references/configuration.md#worked-examples) を参照してください。
-
-## 使い方
-
-普段どおりエージェントに話しかけてください。「この issue を設定済みのワークフローで実装して」
-「チェックアウトのタイムアウトを調査して直して」「このブランチを main と比較してマルチモデル
-レビューして」「Codex の security reviewer を追加して」。1文で依頼すれば、必要な工程だけが
-実行されます。1工程だけを自分で回したいときは、オーケストレーターが裏で実行している次の
-コマンドを使います（各コマンドの説明は [ワークフロー](docs/ja/references/workflow.md)、[英語版](references/workflow.md)）。
-
-```bash
-# 先に設計の依頼を <Artifacts>/execution/request.md に書く（workflow show）
-dev-orchestra run architect --prompt-file .ai/execution/request.md --output .ai/plan.md
-dev-orchestra design approve            # after you have read the plan
-dev-orchestra run implementer --prompt-file .ai/plan.md
-# プロジェクトのテストを走らせ、結果を記録する
-dev-orchestra state record test ok
-dev-orchestra review snapshot --base main
-dev-orchestra review run
-dev-orchestra review triage F1 --status accepted --note "confirmed"
-dev-orchestra review fix-brief --output .ai/fix-brief.md
-dev-orchestra run review_fixer --prompt-file .ai/fix-brief.md
-# 同じテストをもう一度走らせ、結果を記録する
-dev-orchestra state record test ok
-dev-orchestra review status             # 次の回に進むか、報告する
-```
-
-ログや長い仕様書は、先にまとめて消化させ、その要約から設計します
-（[大量のテキストを渡す](docs/ja/references/limits.md#feeding-it-a-lot-of-text)）。
-
-```bash
-dev-orchestra run orchestrator --prompt-file .ai/execution/analysis-request.md --output .ai/analysis.md
-```
-
-## 設定
-
-優先順位は **プロジェクト → グローバル → 内蔵デフォルト** です。`<repo>/.dev-orchestra.yaml`、
-次に `~/.config/dev-orchestra/config.yaml`（Windows では `%APPDATA%\dev-orchestra\config.yaml`）。
-`dev-orchestra config show` で結果を表示し、`config set` で値を1つ変更します。スキーマ、全フィールド、
-設定例は [設定](docs/ja/references/configuration.md)（[英語版](references/configuration.md)）にあります。
-
-`dev-orchestra config set language.reply ja`（`ko`、`zh-TW`、`es`、`fr` など、任意の言語タグ）で、
-オーケストレーターが答える言語を固定できます。dev-orchestra は Claude Code のユーザー設定
-（`~/.claude/settings.json`。書き換える前に元のファイルを控えます）に 3 つのフックを加え、
-プロンプトのたびにその言語を思い出させ、明らかに別の言語で書かれた返答を一度だけ書き直させます。
-ほかのホストでは `doctor` がこの設定をスキルに伝えます。`--no-hooks` を付けると設定だけを保存し、
-`dev-orchestra hooks status` でフックの状態を確かめられます。設定を消すとフックも外れます。
-プロジェクトの `.dev-orchestra.yaml` が言語を設定していても、それだけでフックが入ることはありません。
-何を判定するか、フックをどう書き込むか、どこまでできるかは
-[返答の言語のフック](docs/ja/references/architecture.md#reply-language-hooks) にあります。
-
-## モデル選択
-
-ロールには family と `version: latest`（または正確なIDを指定した `pinned`）を保存し、実行のたびに
-インストール済みCLIに対して解決します（[モデルの family](docs/ja/references/configuration.md#model-families-and-version-policy)）。
-`model_tiers` を使うと、1つのロールに安いモデルやセカンドオピニオン用のモデルを、呼び出し側の指定で
-割り当てられます（[モデルの tier](docs/ja/references/configuration.md#model-tiers)）。
-
-## レビュアー
-
-0個以上（2個以上を推奨）。`dev-orchestra reviewer add --provider codex --role security` で追加します。
-2巡目は修正だけをレビューし、ロックファイルやバンドルはレビュアーに送りません。ロール、スナップショット、
-重複統合、トリアージは [レビュー](docs/ja/references/reviews.md)（[英語版](references/reviews.md)）にあります。
-
-## ワークフロー例
-
-Rails への機能追加、API 変更、typo 修正、レビューのみ、mock provider での試運転:
-[ワークフローの例](docs/ja/references/workflow.md#example-workflows)。
-
-## トラブルシューティング
-
-`dev-orchestra doctor` が CLI、設定、モデルの family を確認します。`doctor --json` で同じ内容を
-機械可読な形で得られます。症状と対処は [トラブルシューティング](docs/ja/references/cli.md#troubleshooting) にあります。
-
-## セキュリティ
-
-認証情報を要求も保存も出力もしません。architect と全レビュアーは読み取り専用で動き、それはプロンプト
-ではなく CLI が強制します。Skill 自身はネットワークにアクセスしません。`--restricted` があなたの
-`permissions.deny` に与える影響を含む詳細は [セキュリティ](docs/ja/references/architecture.md#security) にあります。
-
-## 対応プラットフォーム
-
-Linux、macOS、ネイティブの Windows（`bin\dev-orchestra.ps1`）を CI で検証しています。WSL は
-Linux として動きますが、必須ではありません。中身は純粋な Python と `git` だけです。Windows での
-Antigravity の導入はジャンクションを作るので、開発者モードは要りません。
+| 日本語版 | 英語版 | 答えている問い |
+| --- | --- | --- |
+| [workflow.md](docs/ja/references/workflow.md) | [references/workflow.md](references/workflow.md) | 各工程で何をするかとそのコマンド、`.ai/` の成果物、ワークフローの例、チェックアウトからの導入 |
+| [configuration.md](docs/ja/references/configuration.md) | [references/configuration.md](references/configuration.md) | プリセット、ウィザード、全フィールド、モデルの family と tier、返答の言語、設定例 |
+| [providers.md](docs/ja/references/providers.md) | [references/providers.md](references/providers.md) | Claude と Codex と agy、自分の CLI の追加方法 |
+| [reviews.md](docs/ja/references/reviews.md) | [references/reviews.md](references/reviews.md) | スナップショット、送らないファイル、修正だけを見る2巡目、重複統合、トリアージ |
+| [architecture.md](docs/ja/references/architecture.md) | [references/architecture.md](references/architecture.md) | 構成要素のつながりと、セキュリティ |
+| [limits.md](docs/ja/references/limits.md) | [references/limits.md](references/limits.md) | stall、タイムアウト、予算、大量の入力、実行コスト |
+| [cli.md](docs/ja/references/cli.md) | [references/cli.md](references/cli.md) | 全コマンドとフラグ、トラブルシューティング |
+| [json.md](docs/ja/references/json.md) | [references/json.md](references/json.md) | 各コマンドが `--json` で出すもの |
 
 ## アップグレード
 
@@ -341,28 +237,6 @@ Antigravity は `./install/uninstall.sh --antigravity`（Windows は `-Antigravi
   `.tmp-*.part`、`*.lock`、スナップショットが使う一時的な git のインデックス、`.ai/.gitignore`。
   それと `review-run.log` の中身。
 - **`--json` の `notes` と `warnings` の文面**（上のとおり）。
-
-## アーキテクチャ
-
-判断はモデルに、手順はコードに置きます。`skills/dev-orchestra/SKILL.md` が何を実行するかを決め、
-`scripts/dev_orchestra.py` が決定的な処理を行い、CLIのフラグとモデル名を知っているのは provider だけです。
-自前の adapter は `<設定ディレクトリ>/providers/` に置けます（[providers](docs/ja/references/providers.md)）。
-詳細版は [アーキテクチャ](docs/ja/references/architecture.md) にあります。
-
-## リファレンス
-
-この README の詳細です。英語版はオーケストレーターのモデルも読むドキュメントで、こちらが正です。日本語版は人が読むための訳です。
-
-| 日本語版 | 英語版 | 答えている問い |
-| --- | --- | --- |
-| [workflow.md](docs/ja/references/workflow.md) | [references/workflow.md](references/workflow.md) | 各工程で何をするか、プロンプトのテンプレート、`.ai/` の成果物、ワークフローの例、チェックアウトからの導入 |
-| [configuration.md](docs/ja/references/configuration.md) | [references/configuration.md](references/configuration.md) | スキーマ、階層、全フィールド、モデルの family と tier、ウィザード、設定例 |
-| [providers.md](docs/ja/references/providers.md) | [references/providers.md](references/providers.md) | adapter のインターフェース、Claude と Codex と agy、CLI の追加方法 |
-| [reviews.md](docs/ja/references/reviews.md) | [references/reviews.md](references/reviews.md) | スナップショット、送らないファイル、修正だけを見る2巡目、出力の形式、重複統合、トリアージ |
-| [architecture.md](docs/ja/references/architecture.md) | [references/architecture.md](references/architecture.md) | 構成要素のつながり、その理由、セキュリティ |
-| [limits.md](docs/ja/references/limits.md) | [references/limits.md](references/limits.md) | stall、タイムアウト、予算、大量の入力、実行コスト、最適化レベル |
-| [cli.md](docs/ja/references/cli.md) | [references/cli.md](references/cli.md) | 全コマンドとフラグ、トラブルシューティング |
-| [json.md](docs/ja/references/json.md) | [references/json.md](references/json.md) | 各コマンドが `--json` で出すもの: キー、その型と値 |
 
 ## コントリビュート
 
