@@ -3982,6 +3982,9 @@ REPORT_NAMES = {
     "_SLOTS",
     # Rounds and pairs.
     "summarise_rounds",
+    "_CodeRounds",
+    "_tally_code_rounds",
+    "_tally_design_rounds",
     "_pair_rounds",
     "_pair_key",
     "_pair_side",
@@ -3989,7 +3992,9 @@ REPORT_NAMES = {
     "_undelivered",
     "_inputs_differ",
     "_pair",
-    "_pair_group",
+    "_spend_group",
+    "_spend_figures",
+    "_add_figures",
     "_finish_pair_group",
     "_pair_side_figures",
     "_pair_delta",
@@ -4072,7 +4077,7 @@ class TestTheSplit(unittest.TestCase):
     must never need either of the others, nor the design half the report."""
 
     def test_the_split_partitions_the_old_module(self):
-        self.assertEqual((len(DECISION_NAMES), len(REPORT_NAMES), len(DESIGN_NAMES)), (83, 58, 4))
+        self.assertEqual((len(DECISION_NAMES), len(REPORT_NAMES), len(DESIGN_NAMES)), (83, 63, 4))
         self.assertEqual(_top_level_names(opt), DECISION_NAMES)
         self.assertEqual(_top_level_names(opt_report), REPORT_NAMES)
         self.assertEqual(_top_level_names(opt_design), DESIGN_NAMES)
