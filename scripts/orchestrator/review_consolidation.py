@@ -570,7 +570,7 @@ def _coverage(
         not carry_key or coverage_lineage(str(last.get("lineage") or "")) == carry_key
     ):
         since = previous.get("unverified_since")
-        numbered = isinstance(since, int) and not isinstance(since, bool)
+        numbered = ws.is_int(since)
         # Read from ``change``, so a mark already carried without a number
         # carries on; ``unverified_since`` alone would drop it at the next
         # round.
@@ -642,7 +642,7 @@ def _budget_chars(current: Sequence[Dict[str, Any]]) -> Optional[int]:
     """
     for run in current:
         chars = run.get("budget_chars")
-        if isinstance(chars, int) and not isinstance(chars, bool) and chars:
+        if ws.is_int(chars) and chars:
             return chars
     return None
 

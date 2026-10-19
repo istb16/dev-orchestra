@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple, cast
 
 from .optimization import HIGH_RISK_SLOT, REFUSED, USUAL_SLOT, WHEN_RELEVANCE
 from .review_consolidation import round_key
+from .workspace import is_int
 
 
 def summarise_rounds(events: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
@@ -424,7 +425,7 @@ def _round_change_chars(event: Dict[str, Any]) -> Optional[int]:
         if not isinstance(run, dict):
             continue
         chars = run.get("change_chars")
-        if isinstance(chars, int) and not isinstance(chars, bool) and chars > 0:
+        if is_int(chars) and chars > 0:
             return chars
     return None
 
@@ -444,7 +445,7 @@ def _round_context_chars(event: Dict[str, Any]) -> Tuple[int, int]:
 
 
 def _int(value: Any) -> int:
-    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+    return value if is_int(value) else 0
 
 
 def _context_group() -> Dict[str, int]:
@@ -551,12 +552,12 @@ def _reviewer_tools(event: Dict[str, Any]) -> Tuple[int, int, int, int]:
             continue
         usage = run.get("usage") or {}
         called = usage.get("tool_uses")
-        if isinstance(called, bool) or not isinstance(called, int):
+        if not is_int(called):
             continue
         reported += 1
         uses += called
         output = usage.get("tool_output_chars")
-        if isinstance(output, int) and not isinstance(output, bool):
+        if is_int(output):
             chars += output
             printed_runs += 1
     return reported, uses, chars, printed_runs
@@ -1101,9 +1102,7 @@ def _money(value: Any) -> Optional[float]:
 
 
 def _count_of(value: Any) -> Optional[int]:
-    if isinstance(value, bool) or not isinstance(value, int):
-        return None
-    return value
+    return value if is_int(value) else None
 
 
 def _revision_group() -> Dict[str, Any]:

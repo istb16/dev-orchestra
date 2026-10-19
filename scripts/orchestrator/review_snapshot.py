@@ -627,7 +627,7 @@ def withheld_lines(withheld: Sequence[Dict[str, Any]]) -> str:
     for entry in withheld:
         for key in ("added", "deleted"):
             value = entry.get(key)
-            if isinstance(value, int) and not isinstance(value, bool):
+            if ws.is_int(value):
                 total += value
             elif value is None:
                 exact = False  # a binary file, which git does not count

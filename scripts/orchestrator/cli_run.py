@@ -1222,7 +1222,7 @@ def _resume_candidate(
         return fresh("the last architect run is older than design.resume.max_age_seconds")
     cap = limits.get("max_context_tokens")
     context = last.get("context_tokens")
-    if isinstance(cap, int) and not isinstance(cap, bool):
+    if ws.is_int(cap):
         # A run that reported no usable size could be over the cap: only a
         # size shown to be within it resumes.
         if not isinstance(context, int) or isinstance(context, bool):

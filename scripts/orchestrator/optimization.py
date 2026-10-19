@@ -55,7 +55,7 @@ import posixpath
 import re
 from typing import Any, Dict, List, NamedTuple, Optional, Sequence, Tuple
 
-from .workspace import redact
+from .workspace import is_int, redact
 
 #: Ordered least to most careful, so a comparison can ask "at least as careful
 #: as", and so an escalation can be expressed as a maximum rather than a jump.
@@ -1437,9 +1437,7 @@ def findings_cap(
 
 def _positive(value: Any, fallback: int) -> int:
     """``value`` when it is a non-negative int (a bool is not one), else ``fallback``."""
-    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
-        return value
-    return fallback
+    return value if is_int(value) and value >= 0 else fallback
 
 
 #: The status a refused round is recorded under. It is not a failure: nothing

@@ -28,6 +28,7 @@ from .config import (
     workspace_dir_in,
 )
 from .providers import _warned_provider, get_provider, unenforced_warning
+from .workspace import is_int
 
 # --------------------------------------------------------------------------- read-only raw arguments
 
@@ -506,7 +507,7 @@ def _listed(items: Sequence[Any]) -> str:
 
 
 def _int(value: Any) -> Optional[int]:
-    return value if isinstance(value, int) and not isinstance(value, bool) else None
+    return value if is_int(value) else None
 
 
 def _code_panel(now: LoadedConfig, before: LoadedConfig) -> str:

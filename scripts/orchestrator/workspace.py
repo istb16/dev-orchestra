@@ -11,7 +11,7 @@ import tempfile
 import time
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, TypeGuard
 
 _SECRET_PATTERNS = (
     re.compile(r"\b(sk-[A-Za-z0-9_\-]{12,})"),
@@ -40,6 +40,11 @@ def utcnow() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def is_int(value: Any) -> TypeGuard[int]:
+    """Whether a recorded value is an integer. ``True`` is an ``int``, and is not."""
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
 def fmt_int(value: int) -> str:
     """A count with thousands separators: ``1,234``."""
     return "{:,}".format(value)
@@ -51,7 +56,7 @@ def fmt_size(chars: Any) -> str:
     A hand-edited report can hold a string or a bool here, and ``{:,}`` raises
     on the first and prints the second as ``1``.
     """
-    if isinstance(chars, int) and not isinstance(chars, bool) and chars:
+    if is_int(chars) and chars:
         return fmt_int(chars)
     return "size unrecorded"
 

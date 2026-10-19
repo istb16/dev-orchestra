@@ -36,7 +36,7 @@ import unicodedata
 from typing import Any, Callable, Dict, Iterator, List, NamedTuple, Optional, Sequence
 from urllib.parse import urlsplit
 
-from .workspace import redact
+from .workspace import is_int, redact
 
 #: Entries one activity file holds before it is rotated to ``<path>.1``.
 ENTRY_LIMIT = 500
@@ -460,11 +460,11 @@ def recording(sink: Optional[Sink]) -> Iterator[Optional[Sink]]:
 
 def _count(value: Any) -> bool:
     """Whether ``value`` is a token count: a non-negative int, not a bool."""
-    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+    return is_int(value) and value >= 0
 
 
 def _bounded(value: Any, high: int) -> int:
-    if isinstance(value, bool) or not isinstance(value, int):
+    if not is_int(value):
         return 0
     return min(max(value, 0), high)
 
@@ -519,7 +519,7 @@ def read(path: str, since: int = 0, latest: int = 10) -> Optional[Dict[str, Any]
                 context_tokens = entry["tokens"]
             n = entry.get("n")
             line = entry.get("line")
-            if isinstance(n, bool) or not isinstance(n, int) or n <= 0 or not isinstance(line, str):
+            if not is_int(n) or n <= 0 or not isinstance(line, str):
                 continue
             entries.setdefault(n, entry)
     ordered = sorted(entries)

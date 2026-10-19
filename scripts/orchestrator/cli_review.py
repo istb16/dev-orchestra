@@ -1014,7 +1014,7 @@ def _surrounding_snapshot_lines(
         block.get("path"),
     )
     cap = context_settings.get("surrounding_chars")
-    if isinstance(cap, int) and not isinstance(cap, bool):
+    if ws.is_int(cap):
         cap = ws.fmt_int(cap)
     later = "            adopted at review run within review.context.surrounding_chars (%s)" % cap
     skipped = (ws.read_json(workspace.surrounding_path, {}) or {}).get("skipped") or []
@@ -2161,7 +2161,7 @@ def _configured_inline_chars(loaded: config_mod.LoadedConfig) -> int:
     Thread any further setting into this command the same way.
     """
     value = loaded.context_settings().get("inline_chars")
-    if isinstance(value, int) and not isinstance(value, bool):
+    if ws.is_int(value):
         return value
     return review_mod.default_inline_chars()
 
