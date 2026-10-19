@@ -228,13 +228,7 @@ def collect(start: Optional[str] = None, probe_models: bool = True) -> Dict[str,
         report["problems"].append(str(exc))
         return report
 
-    problems = config_mod.validate(
-        loaded.data,
-        project_layer=loaded.project_layer,
-        global_layer=loaded.global_layer,
-        origins=loaded.reviewer_origins,
-        design_origins=loaded.design_reviewer_origins,
-    )
+    problems = config_mod.validate_loaded(loaded)
     installed = presets_mod.installed_providers()
     report["config"] = {
         "status": "ok" if not problems else "invalid",

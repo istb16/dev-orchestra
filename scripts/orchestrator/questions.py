@@ -563,4 +563,4 @@ def cap_refusal_lines(info: Dict[str, Any], what: str = "run architect --questio
 
 def cap_reached(info: Dict[str, Any]) -> bool:
     limit = info.get("max_rounds")
-    return isinstance(limit, int) and not isinstance(limit, bool) and info["architect_rounds"] >= limit
+    return ws.is_int(limit) and info["architect_rounds"] >= limit

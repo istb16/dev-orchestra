@@ -22,7 +22,7 @@ import json
 import os
 import re
 import sys
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple, Union
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Set, Tuple, Union
 
 from . import config_trust, miniyaml
 from . import optimization as opt_mod
@@ -1133,6 +1133,14 @@ class LoadedConfig:
             settings.update(configured)
         return settings
 
+    def max_review_iterations(self) -> int:
+        """``review.max_review_iterations``: how many code review rounds the budget allows."""
+        return int(self.review_settings()["max_review_iterations"])
+
+    def design_max_iterations(self) -> int:
+        """``review.design.max_iterations``: how many design review rounds the budget allows."""
+        return int(self.design_review_settings()["max_iterations"])
+
     def design_settings(self) -> Dict[str, Any]:
         """The top-level ``design`` block, with anything absent filled in."""
         settings = default_config()["design"]
@@ -1491,13 +1499,7 @@ def load(start: Optional[str] = None, validate_result: bool = True) -> LoadedCon
         global_layer, project_layer, presets.installed_providers(), global_found, ppath, start
     )
     if validate_result:
-        problems = validate(
-            loaded.data,
-            project_layer=project_layer,
-            global_layer=global_layer,
-            origins=loaded.reviewer_origins,
-            design_origins=loaded.design_reviewer_origins,
-        )
+        problems = validate_loaded(loaded)
         if problems:
             raise ConfigError("invalid configuration:\n  - " + "\n  - ".join(problems))
     return loaded
@@ -1561,6 +1563,17 @@ def validate(
         if block is not None:
             problems.extend(check(block))
     return problems
+
+
+def validate_loaded(loaded: LoadedConfig) -> List[str]:
+    """``validate`` for a ``LoadedConfig``: its data, both its layers and both its panels' origins."""
+    return validate(
+        loaded.data,
+        project_layer=loaded.project_layer,
+        global_layer=loaded.global_layer,
+        origins=loaded.reviewer_origins,
+        design_origins=loaded.design_reviewer_origins,
+    )
 
 
 #: A mapping whose keys are the user's own: provider options, which the
@@ -1691,6 +1704,26 @@ def _validate_reviewers(
     return problems
 
 
+def _entry_identity(reviewer: Any, label: str, seen: Set[str], own: bool = True) -> Tuple[bool, List[str]]:
+    """``(is_mapping, problems)``: an entry's shape and id, its id added to ``seen``.
+
+    A duplicate id is always reported; a missing mapping or a malformed id
+    only for an ``own`` entry.
+    """
+    if not isinstance(reviewer, dict):
+        return False, ["%s: must be a mapping" % label] if own else []
+    problems: List[str] = []
+    rid = reviewer.get("id")
+    if not isinstance(rid, str) or not _ID_RE.match(rid):
+        if own:
+            problems.append("%s: id must match [a-z0-9][a-z0-9._-]* (got %r)" % (label, rid))
+    elif rid in seen:
+        problems.append("%s: duplicate reviewer id %r" % (label, rid))
+    else:
+        seen.add(rid)
+    return True, problems
+
+
 def _validate_panel_entries(
     reviewers: List[Any],
     origins: Optional[Sequence[ReviewerOrigin]],
@@ -1707,7 +1740,7 @@ def _validate_panel_entries(
     """
     design = keys == DESIGN_PANEL
     problems: List[str] = []
-    seen = set()
+    seen: Set[str] = set()
     for index, reviewer in enumerate(reviewers):
         origin = origins[index] if origins is not None and index < len(origins) else None
         own = origin is None or (not origin.extra and origin.design == design)
@@ -1715,18 +1748,10 @@ def _validate_panel_entries(
             label = _origin_label(origin, index)
         else:
             label = "%s[%d]" % (keys.reviewers, index)
-        if not isinstance(reviewer, dict):
-            if own:
-                problems.append("%s: must be a mapping" % label)
+        mapping, identity = _entry_identity(reviewer, label, seen, own)
+        problems.extend(identity)
+        if not mapping:
             continue
-        rid = reviewer.get("id")
-        if not isinstance(rid, str) or not _ID_RE.match(rid):
-            if own:
-                problems.append("%s: id must match [a-z0-9][a-z0-9._-]* (got %r)" % (label, rid))
-        elif rid in seen:
-            problems.append("%s: duplicate reviewer id %r" % (label, rid))
-        else:
-            seen.add(rid)
         if own:
             problems.extend(_validate_reviewer_entry(reviewer, label, label + ".", providers, design=design))
     return problems
@@ -2081,19 +2106,13 @@ def _validate_extras_file(
         return ["%s in the %s file: must be a list (use [] for none)" % (panel_keys.extras, name)]
     design = panel_keys == DESIGN_PANEL
     problems: List[str] = []
-    seen = set()
+    seen: Set[str] = set()
     for index, reviewer in enumerate(extras):
         label = "%s[%d] in the %s file" % (panel_keys.extras, index, name)
-        if not isinstance(reviewer, dict):
-            problems.append("%s: must be a mapping" % label)
+        mapping, identity = _entry_identity(reviewer, label, seen)
+        problems.extend(identity)
+        if not mapping:
             continue
-        rid = reviewer.get("id")
-        if not isinstance(rid, str) or not _ID_RE.match(rid):
-            problems.append("%s: id must match [a-z0-9][a-z0-9._-]* (got %r)" % (label, rid))
-        elif rid in seen:
-            problems.append("%s: duplicate reviewer id %r" % (label, rid))
-        else:
-            seen.add(rid)
         # The label names the file, so the key is said after it.
         problems.extend(_validate_reviewer_entry(reviewer, label, label + ": ", providers, design=design))
     return problems
@@ -2268,7 +2287,7 @@ def role_seats(data: Dict[str, Any], roles: Sequence[str]) -> List[SeatRun]:
     return seats
 
 
-def _reviewer_seats(
+def reviewer_seats(
     data: Dict[str, Any], design_origins: Optional[Sequence[ReviewerOrigin]] = None
 ) -> List[SeatRun]:
     """Each mapping reviewer, at its place in the panel: a non-mapping before it still counts.
@@ -2320,11 +2339,11 @@ def same_run(reviewer: Any, other: Any) -> bool:
     return same_provider and reviewer.get("options") == other.get("options")
 
 
-def _read_only_seats(
+def read_only_seats(
     data: Dict[str, Any], design_origins: Optional[Sequence[ReviewerOrigin]] = None
 ) -> List[SeatRun]:
-    """The read-only roles and their tiers, then every reviewer (``_reviewer_seats``)."""
-    return role_seats(data, READ_ONLY_ROLES) + _reviewer_seats(data, design_origins)
+    """The read-only roles and their tiers, then every reviewer (``reviewer_seats``)."""
+    return role_seats(data, READ_ONLY_ROLES) + reviewer_seats(data, design_origins)
 
 
 def default_reviewer_family(provider: str) -> str:

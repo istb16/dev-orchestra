@@ -630,6 +630,20 @@ class TestValidation(IsolatedCase):
         loaded = config_mod.LoadedConfig({"review": "broken"}, None, None, True)
         self.assertEqual(loaded.blocking_severities(), ("critical", "high"))
 
+    def test_the_iteration_limits_fall_back_to_the_defaults(self):
+        """A file naming only ``review.design.enabled``, or no ``review`` at all, keeps both limits."""
+        for data in ({"review": {"design": {"enabled": True}}}, {}):
+            with self.subTest(data=data):
+                loaded = config_mod.LoadedConfig(data, None, None, True)
+                self.assertEqual(loaded.max_review_iterations(), 2)
+                self.assertEqual(loaded.design_max_iterations(), 2)
+
+    def test_the_iteration_limits_of_a_file_naming_only_design_enabled(self):
+        self.write(".dev-orchestra.yaml", "version: 1\nreview:\n  design:\n    enabled: true\n")
+        loaded = config_mod.load(self.project)
+        self.assertEqual(loaded.max_review_iterations(), 2)
+        self.assertEqual(loaded.design_max_iterations(), 2)
+
     def test_review_parallel_must_be_a_boolean(self):
         for value in (True, False, None):
             data = config_mod.default_config()

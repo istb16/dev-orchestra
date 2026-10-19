@@ -5,6 +5,7 @@ from __future__ import annotations
 import atexit
 import contextlib
 import importlib.util
+import io
 import os
 import shutil
 import stat
@@ -14,7 +15,7 @@ import tempfile
 import textwrap
 import unittest
 from types import ModuleType
-from typing import Any, Dict, List, Optional, Sequence, TypeVar
+from typing import Any, Dict, List, Optional, Sequence, Tuple, TypeVar
 from unittest import mock
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -502,6 +503,18 @@ def present(value: Optional[_T]) -> _T:
     if value is None:
         raise AssertionError("expected a value, got None")
     return value
+
+
+def run_cli(*argv: str) -> Tuple[int, str, str]:
+    """Run the CLI, returning (exit_code, stdout, stderr)."""
+    # lazy: this module has to be imported before anything from `orchestrator`
+    # (see the top of this file), so the CLI is imported only when one runs.
+    from orchestrator import cli
+
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        code = cli.main(list(argv))
+    return code, out.getvalue(), err.getvalue()
 
 
 def usage_dict(**fields: Any) -> Dict[str, Any]:

@@ -9,15 +9,12 @@ did -- which is not always what the defaults suggest.
 
 from __future__ import annotations
 
-import io
 import json
 import os
 import unittest
-from contextlib import redirect_stderr, redirect_stdout
 
-from helpers import IsolatedCase, has_git
+from helpers import IsolatedCase, has_git, run_cli
 
-from orchestrator import cli
 from orchestrator import optimization as opt_mod
 from orchestrator import optimization_report as opt_report
 from orchestrator import review as review_mod
@@ -41,14 +38,6 @@ PLAN = """# Plan
 ## Proposed Change
 Add a NOT NULL column to orders.
 """
-
-
-def run_cli(*argv):
-    """Run the CLI, returning (exit_code, stdout, stderr)."""
-    out, err = io.StringIO(), io.StringIO()
-    with redirect_stdout(out), redirect_stderr(err):
-        code = cli.main(list(argv))
-    return code, out.getvalue(), err.getvalue()
 
 
 class MockPanelCase(IsolatedCase):

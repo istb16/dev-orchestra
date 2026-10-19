@@ -35,7 +35,7 @@ import math
 import os
 import time
 import uuid
-from typing import Any, Dict, List, Optional, TypeGuard
+from typing import Any, Dict, List, Optional
 
 from . import execution
 from . import workspace as ws
@@ -86,11 +86,6 @@ USAGE_COUNTS = (
 )
 
 
-def _is_count(value: Any) -> TypeGuard[int]:
-    """Whether a reported field is a count. ``True`` is an ``int``, and is not."""
-    return isinstance(value, int) and not isinstance(value, bool)
-
-
 def _blank_account() -> Dict[str, Any]:
     # ``priced_runs`` apart from ``measured_runs``: a CLI can report its tokens
     # and no money, which Codex does on every run. Counting the two together
@@ -125,17 +120,17 @@ def _accumulate(account: Dict[str, Any], usage: Dict[str, Any]) -> Dict[str, Any
         account["measured_runs"] = int(account.get("measured_runs") or 0) + 1
     for field in USAGE_COUNTS:
         value = usage.get(field)
-        if not _is_count(value):
+        if not ws.is_int(value):
             continue
         account[field] = int(account.get(field) or 0) + value
-    if _is_count(usage.get("tool_uses")):
+    if ws.is_int(usage.get("tool_uses")):
         # An ``int`` -- zero included -- is a report. A missing one is not.
         account["tool_reported_runs"] = int(account.get("tool_reported_runs") or 0) + 1
         by_name = usage.get("tool_uses_by_name")
         if isinstance(by_name, dict):
             merged = dict(account.get("tool_uses_by_name") or {})
             for name, count in by_name.items():
-                if _is_count(count):
+                if ws.is_int(count):
                     merged[str(name)] = int(merged.get(str(name)) or 0) + int(count)
             account["tool_uses_by_name"] = merged
     cost = usage.get("cost_usd")
@@ -156,7 +151,7 @@ def _merge_accounts(accounts: List[Dict[str, Any]]) -> Dict[str, Any]:
         by_name = account.get("tool_uses_by_name")
         if isinstance(by_name, dict):
             for name, count in by_name.items():
-                if _is_count(count):
+                if ws.is_int(count):
                     merged = total["tool_uses_by_name"]
                     merged[str(name)] = int(merged.get(str(name)) or 0) + int(count)
         for field in USAGE_COUNTS:

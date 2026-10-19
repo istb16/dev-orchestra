@@ -58,7 +58,7 @@ def unverified_phrase(coverage: Dict[str, Any]) -> str:
     beside it.
     """
     since = coverage.get("unverified_since")
-    if isinstance(since, int) and not isinstance(since, bool):
+    if ws.is_int(since):
         return "change unverified since round %d" % since
     return "change unverified"
 

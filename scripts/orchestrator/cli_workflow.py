@@ -12,24 +12,24 @@ from . import config as config_mod
 from . import jobs as jobs_mod
 from . import ledger as ledger_mod
 from . import optimization as opt_mod
+from . import optimization_design as opt_design
 from . import optimization_report as opt_report
 from . import questions as questions_mod
 from . import review as review_mod
 from . import workflow as workflow_mod
 from . import workspace as ws
 from .cli_common import _container, _emit_json, _err, _ledger, _load_lenient, _out, _workspace, _wrote_plan
-from .cli_review import (
-    _approved_as_recorded,
-    _code_final_pass,
-    _design_decision,
-    _design_final_pass,
-    _design_lineage,
-    _design_round_plan,
-    _left_out_suffix,
-    _missing_path_lists,
-    _ran_since_last_round,
-    _reviewed_something,
-    _round_plan,
+from .round_progress import (
+    approved_as_recorded,
+    code_final_pass_from,
+    design_decision,
+    design_final_pass_from,
+    design_lineage,
+    design_round_plan,
+    left_out_suffix,
+    missing_path_lists,
+    reviewed_something,
+    round_plan,
 )
 from .summary import ROLE_TITLES
 
@@ -237,7 +237,7 @@ def _context_refusal(events: List[Dict[str, Any]], stage: str) -> Optional[Dict[
     for event in reversed(events):
         if not isinstance(event, dict) or event.get("stage") != stage:
             continue
-        if _reviewed_something(event):
+        if reviewed_something(event):
             return None
         if event.get("status") == opt_mod.REFUSED and event.get("refused_by") == "context":
             return event
@@ -369,7 +369,7 @@ class _Status(NamedTuple):
 
     payload: Dict[str, Any]
     plan: opt_mod.Plan
-    design_decision: opt_mod.DesignDecision
+    design_decision: opt_design.DesignDecision
     design_pass: Dict[str, Any]
     architect_left: Optional[int]
 
@@ -400,18 +400,17 @@ def _status_payload(
     severities = loaded.blocking_severities()
     blocking = review_mod.unresolved_blocking(review_data, severities)
     iteration = int(review_data.get("iteration", 0) or 0)
-    max_iterations = int(settings.get("max_review_iterations", 2))
+    max_iterations = loaded.max_review_iterations()
     summary = book.summary()
 
     # The design review is read whether or not it is enabled: a round that was
     # run by hand, or left open when the setting was turned back off, is still
     # an open finding about the plan the implementation would follow.
     design_data = ws.read_json(workspace.design_review().consolidated_json_path, {}) or {}
-    design_settings = loaded.design_review_settings()
     design_blocking = review_mod.unresolved_blocking(design_data, severities)
     design_iteration = int(design_data.get("iteration", 0) or 0)
-    design_max = int(design_settings.get("max_iterations", 2))
-    design_decision = _design_decision(loaded, workspace)
+    design_max = loaded.design_max_iterations()
+    decision = design_decision(loaded, workspace)
     design_exhausted = bool(design_blocking) and design_iteration >= design_max
     approval_info = approval_mod.current(
         workspace,
@@ -436,28 +435,25 @@ def _status_payload(
     # the limit refuses only the re-review. Until those are done the spent
     # budget is not a stop.
     architect_left = summary["budgets"].get("architect", {}).get("remaining")
-    plan_approved = _approved_as_recorded(approval_info)
+    plan_approved = approved_as_recorded(approval_info)
     design_accepted = bool(review_mod.accepted_findings(design_data))
-    design_pass = _design_final_pass(
+    design_pass = design_final_pass_from(
+        workspace,
+        events,
         design_blocking,
         iteration=design_iteration,
         max_iterations=design_max,
         of_current_plan=of_current_plan,
-        ran_since=_ran_since_last_round(events, "design_review", "architect", counts=_wrote_plan(workspace))[
-            0
-        ],
+        approval=approval_info,
         architect_left=architect_left,
-        approved=plan_approved,
-        implemented=approval_mod.implemented_since_plan(workspace, events),
         accepted=design_accepted,
+        wrote_plan=_wrote_plan(workspace),
     )
-    fixed, retested = _ran_since_last_round(events, "review", "review_fixer", ("test", "re-test"))
-    review_pass = _code_final_pass(
+    review_pass = code_final_pass_from(
+        events,
         blocking,
         iteration=iteration,
         max_iterations=max_iterations,
-        fixed_since=fixed,
-        retested_since=retested,
         fixer_left=summary["budgets"].get("review_fixer", {}).get("remaining"),
         accepted=bool(review_mod.accepted_findings(review_data)),
     )
@@ -538,19 +534,19 @@ def _status_payload(
     # here rather than by being refused. Cheap: the snapshot meta is already
     # on disk, and nothing is delegated to work it out.
     meta = workspace.read_snapshot_meta()
-    missing = _missing_path_lists(meta)
+    missing = missing_path_lists(meta)
     if missing:
         # `review run` refuses it; the plan below reads it as touching nothing.
         reasons.append(
             "the snapshot has no %s list; take a fresh one with `dev-orchestra review snapshot`"
             % " or ".join(missing)
         )
-    plan = _round_plan(loaded, settings, workspace, meta, loaded.reviewers())
+    plan = round_plan(loaded, settings, workspace, meta, loaded.reviewers())
     if plan.gate == opt_mod.GATE_REFUSE:
         reasons.append("the last recorded test run failed; fix it before reviewing")
     # And what the next `review run --design` would decide about its panel.
-    design_plan = _design_round_plan(
-        loaded, workspace, loaded.design_reviewers(), lineage=_design_lineage(workspace, book)
+    design_plan = design_round_plan(
+        loaded, workspace, loaded.design_reviewers(), lineage=design_lineage(workspace, book)
     )
 
     payload = {
@@ -575,9 +571,9 @@ def _status_payload(
         },
         "design_review": {
             # Whether the stage runs: `on`, or `auto` and this plan calls for it.
-            "enabled": design_decision.run,
-            "mode": design_decision.mode,
-            "reason": design_decision.reason or None,
+            "enabled": decision.run,
+            "mode": decision.mode,
+            "reason": decision.reason or None,
             "iteration": design_iteration,
             "max_iterations": design_max,
             "blocking": [f["id"] for f in design_blocking],
@@ -610,7 +606,7 @@ def _status_payload(
         if workspace.workflow
         else [],
     }
-    return _Status(payload, plan, design_decision, design_pass, architect_left)
+    return _Status(payload, plan, decision, design_pass, architect_left)
 
 
 def _status_lines(status: _Status, plan_relative: str, warning: List[str]) -> List[str]:
@@ -669,7 +665,7 @@ def _status_lines(status: _Status, plan_relative: str, warning: List[str]) -> Li
         line += " -- final revision pending (fold the findings in, do not re-review)"
         if design["identical_rounds"] > 1:
             line += "; identical to the previous round"
-    line += _left_out_suffix((design.get("optimization") or {}).get("conditional") or [])
+    line += left_out_suffix((design.get("optimization") or {}).get("conditional") or [])
     lines.append(line)
     lines.append(
         "Plan approval: %s"

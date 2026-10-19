@@ -11,29 +11,20 @@ is asked.
 
 from __future__ import annotations
 
-import io
 import json
 import os
 import unittest
-from contextlib import redirect_stderr, redirect_stdout
 
-from helpers import IsolatedCase, has_git
+from helpers import IsolatedCase, has_git, run_cli
 from test_design_review import DesignReviewCase
 
-from orchestrator import cli, cli_review, optimization_render, presets
 from orchestrator import config as config_mod
 from orchestrator import optimization as opt
+from orchestrator import optimization_design as opt_design
+from orchestrator import optimization_render, presets, round_progress
 from orchestrator import optimization_report as opt_report
 from orchestrator import review as review_mod
 from orchestrator import workspace as ws
-
-
-def run_cli(*argv):
-    out, err = io.StringIO(), io.StringIO()
-    with redirect_stdout(out), redirect_stderr(err):
-        code = cli.main(list(argv))
-    return code, out.getvalue(), err.getvalue()
-
 
 FINDING = """## Finding
 - Severity: high
@@ -346,7 +337,7 @@ class TestLevels(unittest.TestCase):
 
     def test_quality_configured_still_skips_unneeded_role_design(self):
         scan = review_mod.plan_tokens(plan(["docs/guide.md"]))
-        design = opt.decide_design_round(settings(level="quality"), scan, "ok", SPECIALISTS)
+        design = opt_design.decide_design_round(settings(level="quality"), scan, "ok", SPECIALISTS)
         self.assertEqual(design.level, "quality")
         left = {record["id"] for record in design.left_out()}
         self.assertEqual(left, {"sec", "t", "a"})
@@ -368,7 +359,7 @@ class TestLevels(unittest.TestCase):
 
     def test_high_risk_hit_keeps_every_role_design(self):
         scan = review_mod.plan_tokens(plan(["docs/guide.md"], proposed="Explain `src/auth.py`."))
-        design = opt.decide_design_round(settings(), scan, "ok", SPECIALISTS)
+        design = opt_design.decide_design_round(settings(), scan, "ok", SPECIALISTS)
         self.assertTrue(design.is_high_risk)
         for record in design.conditional:
             self.assertTrue(record["runs"], record)
@@ -518,7 +509,7 @@ class TestInteractions(unittest.TestCase):
 
     def test_empty_panel_guard_on_a_design_round(self):
         scan = review_mod.plan_tokens(plan(["docs/guide.md"]))
-        design = opt.decide_design_round(settings(), scan, "ok", [SEC, seat("t", "test")])
+        design = opt_design.decide_design_round(settings(), scan, "ok", [SEC, seat("t", "test")])
         records = by_id(design.conditional)
         kept = (True, "kept: no other reviewer would run")
         self.assertEqual((records["sec"]["runs"], records["sec"]["reason"]), kept)
@@ -845,18 +836,18 @@ class TestDesignRoundsThroughTheCli(DesignReviewCase):
         self.assertIn("h1", [run["id"] for run in self.last_design_event()["reviewers"]])
 
     def test_design_carried_without_a_report_or_with_another_lineage(self):
-        self.assertEqual(cli_review._design_carried(self.workspace, "any"), [])
+        self.assertEqual(round_progress._design_carried(self.workspace, "any"), [])
         self.carry_m2_finding()
         lineage = ws.read_json(self.design.consolidated_json_path, {})["lineage"]
         self.assertTrue(lineage)
 
         def carried(given):
-            return [finding["id"] for finding in cli_review._design_carried(self.workspace, given)]
+            return [finding["id"] for finding in round_progress._design_carried(self.workspace, given)]
 
         self.assertEqual(carried(lineage), ["F1"])
         # No lineage to compare with: the live report's findings are carried.
         self.assertEqual(carried(""), ["F1"])
-        self.assertEqual(cli_review._design_carried(self.workspace, lineage + "-other"), [])
+        self.assertEqual(round_progress._design_carried(self.workspace, lineage + "-other"), [])
 
     def test_a_reset_lineage_carries_nothing(self):
         self.carry_m2_finding()

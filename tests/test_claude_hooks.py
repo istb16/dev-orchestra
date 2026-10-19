@@ -9,21 +9,19 @@ from __future__ import annotations
 
 import ast
 import copy
-import io
 import json
 import os
 import shutil
 import subprocess
 import sys
 import unittest
-from contextlib import redirect_stderr, redirect_stdout
 from typing import Any, Dict, List, Optional
 from unittest import mock
 
-from helpers import REPO_ROOT, IsolatedCase, make_dir_link
+from helpers import REPO_ROOT, IsolatedCase, make_dir_link, run_cli
 
 from orchestrator import claude_hooks as ch
-from orchestrator import cli, cli_hooks, doctor, hosts
+from orchestrator import cli_hooks, doctor, hosts
 from orchestrator import config as config_mod
 from orchestrator import wizard as wizard_mod
 from orchestrator.execution import DELEGATED_ENV
@@ -32,13 +30,6 @@ FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", 
 SESSION = "5f0c3a52-0000-4000-8000-000000000256"
 #: The environment of a command run from Claude Code's Bash tool.
 IN_CLAUDE_CODE = {ch.SESSION_ENV: SESSION}
-
-
-def run_cli(*argv: str):
-    out, err = io.StringIO(), io.StringIO()
-    with redirect_stdout(out), redirect_stderr(err):
-        code = cli.main(list(argv))
-    return code, out.getvalue(), err.getvalue()
 
 
 def slashes(path: str) -> str:

@@ -7,17 +7,15 @@ project extra too.
 
 from __future__ import annotations
 
-import io
 import json
 import os
 import unittest
-from contextlib import redirect_stderr, redirect_stdout
 
-from helpers import IsolatedCase, has_git
+from helpers import IsolatedCase, has_git, run_cli
 from test_wizard import ScriptedPrompter, accept_all
 
-from orchestrator import cli, config_layers, doctor, execution, presets
 from orchestrator import config as config_mod
+from orchestrator import config_layers, doctor, execution, presets
 from orchestrator import config_policy as policy_mod
 from orchestrator import optimization as opt_mod
 from orchestrator import review as review_mod
@@ -27,14 +25,6 @@ FITTED = ["claude-general", "claude-general-2", "claude-security", "claude-test"
 FIT_LABELS = ["fit"] * len(FITTED)
 BOTH_FITTED = ["claude-general", "codex-general", "claude-security", "claude-test"]
 AGY_FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "agy")
-
-
-def run_cli(*argv):
-    """Run the CLI, returning (exit_code, stdout, stderr)."""
-    out, err = io.StringIO(), io.StringIO()
-    with redirect_stdout(out), redirect_stderr(err):
-        code = cli.main(list(argv))
-    return code, out.getvalue(), err.getvalue()
 
 
 def mock(reviewer_id, role="general", **fields):
@@ -296,6 +286,68 @@ class TestValidation(ExtrasCase):
         self.assertEqual(code, 2)
         self.assertIn("reviewers: at least one reviewer must run always", err)
         self.assertFalse(os.path.exists(self.project_file()))
+
+
+class TestEntryIdentity(unittest.TestCase):
+    """``_entry_identity``: an own entry is held to its shape and id, a copied one to its id only."""
+
+    def test_an_own_entry(self):
+        seen = {"a"}
+        self.assertEqual(
+            config_mod._entry_identity("oops", "x[0]", seen), (False, ["x[0]: must be a mapping"])
+        )
+        mapping, problems = config_mod._entry_identity({"id": "Bad Id"}, "x[1]", seen)
+        self.assertTrue(mapping)
+        self.assertEqual(problems, ["x[1]: id must match [a-z0-9][a-z0-9._-]* (got 'Bad Id')"])
+        self.assertEqual(
+            config_mod._entry_identity({"id": "a"}, "x[2]", seen), (True, ["x[2]: duplicate reviewer id 'a'"])
+        )
+        self.assertEqual(config_mod._entry_identity({"id": "b"}, "x[3]", seen), (True, []))
+        self.assertEqual(seen, {"a", "b"})
+
+    def test_a_copied_entry(self):
+        seen = {"a"}
+        self.assertEqual(config_mod._entry_identity("oops", "x[0]", seen, own=False), (False, []))
+        self.assertEqual(config_mod._entry_identity({"id": "Bad Id"}, "x[1]", seen, own=False), (True, []))
+        self.assertEqual(
+            config_mod._entry_identity({"id": "a"}, "x[2]", seen, own=False),
+            (True, ["x[2]: duplicate reviewer id 'a'"]),
+        )
+        self.assertEqual(config_mod._entry_identity({"id": "b"}, "x[3]", seen, own=False), (True, []))
+        self.assertEqual(seen, {"a", "b"})
+
+
+class TestValidateDraft(ExtrasCase):
+    """``config_layers.validate_draft``: a layer validated beside the other file as it is on disk."""
+
+    def test_a_project_layer_kept_valid_by_the_global_panel(self):
+        layer = {"version": 1, "reviewers_extra": [mock("p2", when="high-risk")]}
+        self.write_global({"reviewers": [mock("base")]})
+        draft = config_layers.validate_draft("project", layer)
+        self.assertEqual(draft.problems, [])
+        self.assertEqual(self.ids(draft.data["reviewers"]), ["base", "p2"])
+        self.write_global({"reviewers": []})
+        draft = config_layers.validate_draft("project", layer)
+        expected = (
+            "reviewers: at least one reviewer must run always; every reviewer is conditional "
+            "(when: high-risk or when: paths)"
+        )
+        self.assertEqual(draft.problems, [expected])
+
+    def test_each_file_is_named_as_itself(self):
+        self.write_global({"reviewers_extra": ["oops"]})
+        draft = config_layers.validate_draft("project", {"version": 1, "reviewers_extra": [7]})
+        self.assertEqual(
+            draft.problems,
+            [
+                "reviewers_extra[0] in the global file: must be a mapping",
+                "reviewers_extra[0] in the project file: must be a mapping",
+            ],
+        )
+
+    def test_an_invalid_global_layer(self):
+        draft = config_layers.validate_draft("global", {"version": 1, "reviewers_extra": ["oops"]})
+        self.assertEqual(draft.problems, ["reviewers_extra[0] in the global file: must be a mapping"])
 
 
 class TestPreWriteCheck(ExtrasCase):
@@ -613,7 +665,7 @@ class TestTheWizard(ExtrasCase):
 
     def run_wizard(self, answers, existing, scope="global"):
         prompter = ScriptedPrompter(answers)
-        base = config_layers._fitted_base(scope, existing)
+        base = config_layers.fitted_base(scope, existing)
         data, save = wizard_mod.run(prompter, existing, base, scope=scope)
         return data, save, "\n".join(prompter.output)
 

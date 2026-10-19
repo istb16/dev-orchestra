@@ -20,19 +20,20 @@ from . import wizard as wizard_mod
 from .cli_common import _emit_json, _err, _load_lenient, _out
 from .cli_hooks import LEFT_OUT_NOTE, OTHER_PROJECTS_NOTE, report_install, report_uninstall
 from .config_layers import (
-    _compose_preview,
-    _fitted_base,
-    _global_file,
-    _global_lists,
-    _layer_path,
-    _not_copied,
-    _panel_write_problems,
-    _read_layer,
-    _recorded,
-    _resolve_scope,
-    _seed_list,
-    _seed_panel,
-    _without_warned_seats,
+    compose_preview,
+    fitted_base,
+    global_file,
+    global_lists,
+    layer_path,
+    not_copied,
+    panel_write_problems,
+    read_layer,
+    recorded,
+    resolve_scope,
+    seed_list,
+    seed_panel,
+    validate_draft,
+    without_warned_seats,
 )
 from .execution import DELEGATED_ENV
 from .providers import (
@@ -87,7 +88,7 @@ def cmd_config_show(args: argparse.Namespace) -> int:
     exists = False
     path = ""
     if args.scope == "global":
-        # Deliberately not `_read_layer`: that one supplies what a writer needs
+        # Deliberately not `read_layer`: that one supplies what a writer needs
         # a saved file to hold, and reporting it here would show a `version`
         # that is not on disk as though it were.
         path = config_mod.global_config_path()
@@ -155,13 +156,7 @@ def cmd_config_show(args: argparse.Namespace) -> int:
         _out(summary if "orchestrator" in data else "(empty layer)")
     if referenced:
         _out("Providers: %s" % ", ".join(_describe_referenced_provider(name) for name in referenced))
-    problems = config_mod.validate(
-        loaded.data,
-        project_layer=loaded.project_layer,
-        global_layer=loaded.global_layer,
-        origins=loaded.reviewer_origins,
-        design_origins=loaded.design_reviewer_origins,
-    )
+    problems = config_mod.validate_loaded(loaded)
     if problems:
         _out("Problems:")
         for problem in problems:
@@ -191,7 +186,7 @@ def cmd_config_path(args: argparse.Namespace) -> int:
 
 def cmd_config_setup(args: argparse.Namespace) -> int:
     scope = args.scope or "global"
-    path = _layer_path(scope, args.cwd)
+    path = layer_path(scope, args.cwd)
     existing = config_mod.read_config_file(path) if os.path.isfile(path) else None
     language = None
     if args.language is not None:
@@ -222,7 +217,7 @@ def cmd_config_setup(args: argparse.Namespace) -> int:
             return 2
         try:
             data, save = wizard_mod.run(
-                wizard_mod.Prompter(), existing, _fitted_base(scope, existing), scope=scope, reply=language
+                wizard_mod.Prompter(), existing, fitted_base(scope, existing), scope=scope, reply=language
             )
         except EOFError:
             _err("input ended before setup finished; nothing was saved. Try --defaults instead.")
@@ -235,25 +230,18 @@ def cmd_config_setup(args: argparse.Namespace) -> int:
         return 1
     # The layer on its own names no roles at all, so it is the configuration it
     # resolves to that has to be valid -- the same dict the wizard summarised.
-    preview, fit, _preset, _source = _compose_preview(scope, data)
-    problems = config_mod.validate(
-        preview,
-        project_layer=data if scope == "project" else None,
-        global_layer=data if scope == "global" else _global_file(),
-        origins=fit.origins,
-        design_origins=fit.design_origins,
-    )
-    if problems:
+    draft = validate_draft(scope, data)
+    if draft.problems:
         # Writing this would leave every workflow command failing with
         # "invalid configuration" straight after a successful-looking setup.
         _err("not saved -- the configuration is invalid:")
-        for problem in problems:
+        for problem in draft.problems:
             _err("  - %s" % problem)
         return 2
     config_mod.write_config_file(path, data, scope)
     if args.preset:
-        _out(render_summary(preview, fit.origins, fit.design_origins))
-        notes = presets_mod.render_notes(fit)
+        _out(render_summary(draft.data, draft.fit.origins, draft.fit.design_origins))
+        notes = presets_mod.render_notes(draft.fit)
         if notes:
             _out(notes)
     _out("Saved %s configuration to %s" % (scope, config_mod.shown_location(path)))
@@ -295,8 +283,8 @@ def _sync_hooks(args: argparse.Namespace, scope: str, before: claude_hooks.Layer
 
 
 def cmd_config_reset(args: argparse.Namespace) -> int:
-    scope = _resolve_scope(args.scope, args.cwd)
-    path = _layer_path(scope, args.cwd)
+    scope = resolve_scope(args.scope, args.cwd)
+    path = layer_path(scope, args.cwd)
     language_before = claude_hooks.configured_layers(args.cwd)
     if args.delete:
         if os.path.isfile(path):
@@ -366,8 +354,8 @@ def cmd_config_set(args: argparse.Namespace) -> int:
         # Likewise: only the global file can make it, so that is where it goes.
         scope = "global"
     else:
-        scope = _resolve_scope(args.scope, args.cwd)
-    path, layer = _read_layer(scope, args.cwd)
+        scope = resolve_scope(args.scope, args.cwd)
+    path, layer = read_layer(scope, args.cwd)
     before = _load_lenient(args.cwd) if role_key in config_mod.KNOWN_ROLES else None
     language_before = (
         claude_hooks.configured_layers(args.cwd) if args.path in ("language", "language.reply") else None
@@ -379,11 +367,11 @@ def cmd_config_set(args: argparse.Namespace) -> int:
     frozen = left_out = None
     if "[" in args.path:
         list_path = args.path.split("[", 1)[0]
-        base = _fitted_base(scope, layer)
+        base = fitted_base(scope, layer)
         if list_path == "reviewers":
-            frozen, left_out = _seed_panel(scope, layer, base, path, args.cwd)
+            frozen, left_out = seed_panel(scope, layer, base, path, args.cwd)
         else:
-            _seed_list(layer, list_path, base)
+            seed_list(layer, list_path, base)
     if scope == "project":
         # From the arguments alone, before anything is written: the same
         # refusal a run of that seat would meet.
@@ -395,7 +383,7 @@ def cmd_config_set(args: argparse.Namespace) -> int:
     renamed = re.fullmatch(r"reviewers_extra\[(\d+)\]\.id", args.path)
     if renamed:
         # As `reviewer set --id` refuses it: the extra would run under another name.
-        preview, fit, _preset, _source = _compose_preview(scope, layer)
+        preview, fit, _preset, _source = compose_preview(scope, layer)
         own = config_mod.ReviewerOrigin(scope, "reviewers_extra", int(renamed.group(1)))
         index = next((i for i, origin in enumerate(fit.origins) if origin == own), None)
         if index is not None and _id_taken(preview.get("reviewers") or [], index, value):
@@ -418,7 +406,7 @@ def cmd_config_set(args: argparse.Namespace) -> int:
             _err(left_out)
         return 2
     if panel_before is not None:
-        introduced = _panel_write_problems(scope, panel_before, layer)
+        introduced = panel_write_problems(scope, panel_before, layer)
         if introduced:
             for problem in introduced:
                 _err(problem)
@@ -431,13 +419,7 @@ def cmd_config_set(args: argparse.Namespace) -> int:
     effective = reloaded.data
     if before is not None:
         _left_the_fit_note(before, reloaded, role_key, path)
-    problems = config_mod.validate(
-        effective,
-        project_layer=reloaded.project_layer,
-        global_layer=reloaded.global_layer,
-        origins=reloaded.reviewer_origins,
-        design_origins=reloaded.design_reviewer_origins,
-    )
+    problems = config_mod.validate_loaded(reloaded)
     for problem in problems:
         _err("warning: %s" % problem)
     for warning in _refusal_warnings(reloaded):
@@ -556,13 +538,7 @@ def _warn_unresolvable(effective: Dict[str, Any], role_key: str) -> None:
 
 def cmd_config_validate(args: argparse.Namespace) -> int:
     loaded = _load_lenient(args.cwd)
-    problems = config_mod.validate(
-        loaded.data,
-        project_layer=loaded.project_layer,
-        global_layer=loaded.global_layer,
-        origins=loaded.reviewer_origins,
-        design_origins=loaded.design_reviewer_origins,
-    )
+    problems = config_mod.validate_loaded(loaded)
     # Warnings, not problems: they refuse one role's runs, not the file. An
     # unknown key refuses nothing at all; it is only never read.
     warnings = _refusal_warnings(loaded)
@@ -643,7 +619,7 @@ def cmd_config_suggest_roles(args: argparse.Namespace) -> int:
             _err(no_provider)
             return 2
     notes: List[str] = []
-    preview, fit, preset, _source = _compose_preview("project", layer)
+    preview, fit, preset, _source = compose_preview("project", layer)
     exclude, workspace_dir, panel = _preview_inputs(preview, notes)
     if panel is None and args.write:
         _err("reviewers: the panel in force is not a list; nothing was written")
@@ -684,7 +660,7 @@ def cmd_config_suggest_roles(args: argparse.Namespace) -> int:
         except config_mod.ConfigError as exc:
             _err(str(exc))
             return 2
-        problems = _panel_write_problems("project", before, layer)
+        problems = panel_write_problems("project", before, layer)
         if problems:
             for problem in problems:
                 _err(problem)
@@ -891,7 +867,7 @@ def _inherited_design_panel(scope: str, preset: Any = None, origins: Sequence[An
 
     ``origins`` are the design panel's in force, which say whether it is the fit's.
     """
-    below = _global_file() if scope == "project" else {}
+    below = global_file() if scope == "project" else {}
     if config_mod.get_path(below, config_mod.DESIGN_PANEL.reviewers) is not None:
         return "the global file's design reviewers"
     fit_preset = _fit_design_preset(preset, origins)
@@ -915,10 +891,10 @@ def cmd_reviewer_add(args: argparse.Namespace) -> int:
     if refusal is not None:
         return refusal
     keys = config_mod.DESIGN_PANEL if design else config_mod.CODE_PANEL
-    scope = _resolve_scope(args.scope, args.cwd)
-    path, layer = _read_layer(scope, args.cwd)
+    scope = resolve_scope(args.scope, args.cwd)
+    path, layer = read_layer(scope, args.cwd)
     before = copy.deepcopy(layer)
-    preview, fit, preset, _source = _compose_preview(scope, layer)
+    preview, fit, preset, _source = compose_preview(scope, layer)
     panel, origins = _panel_in_force(preview, fit, design)
     role = args.role or "general"
     reviewer_id = args.id or config_mod.suggest_reviewer_id({"reviewers": panel}, args.provider, role)
@@ -958,7 +934,7 @@ def cmd_reviewer_add(args: argparse.Namespace) -> int:
     except config_mod.ConfigError as exc:
         _err(str(exc))
         return 2
-    blocking = _panel_write_problems(scope, before, layer)
+    blocking = panel_write_problems(scope, before, layer)
     if blocking:
         for problem in blocking:
             _err(problem)
@@ -980,7 +956,7 @@ def cmd_reviewer_add(args: argparse.Namespace) -> int:
 
 def _inherited_panel(scope: str, preset: Any) -> str:
     """What a file that lists no reviewers takes its panel from, the way a message says it."""
-    if scope == "project" and _global_file().get("reviewers") is not None:
+    if scope == "project" and global_file().get("reviewers") is not None:
         return "the global file's reviewers"
     return "preset %s's fit" % preset if preset else "the built-in defaults"
 
@@ -1068,15 +1044,15 @@ def _seed_design_panel(
 ) -> Tuple[Optional[str], Optional[str]]:
     """Copy the design panel in force into the file before one seat of it is edited.
 
-    ``_seed_panel`` for ``review.design.reviewers``: a list replaces the one
+    ``seed_panel`` for ``review.design.reviewers``: a list replaces the one
     below it whole, so changing one seat is a decision about the others. The
     file's own design extras stay extras. A seat copied from the code panel
     loses its ``when``, as it never had one on a design round, and the note
     says so. ``fit_preset`` names the preset whose fit is copied; a file
     that takes it off the fit says what it recorded, as
     ``_frozen_panel_note`` does for the code panel. In a project file a seat
-    on a warned provider is left out by the rule ``_seed_panel`` follows
-    (``_without_warned_seats``): unless the global file lists the panel the
+    on a warned provider is left out by the rule ``seed_panel`` follows
+    (``without_warned_seats``): unless the global file lists the panel the
     seat came from -- the design panel for a design seat, the code panel for
     one copied from it -- or it is the project file's own. Returns the notes
     for a write that succeeds and for one that fails.
@@ -1090,8 +1066,8 @@ def _seed_design_panel(
             continue
         seats.append((reviewer, origin))
     listed = {
-        True: scope == "project" and _global_lists(config_mod.DESIGN_PANEL.reviewers),
-        False: scope == "project" and _global_lists(config_mod.CODE_PANEL.reviewers),
+        True: scope == "project" and global_lists(config_mod.DESIGN_PANEL.reviewers),
+        False: scope == "project" and global_lists(config_mod.CODE_PANEL.reviewers),
     }
 
     def chosen(index: int) -> bool:
@@ -1100,7 +1076,7 @@ def _seed_design_panel(
             return False
         return origin.layer == "project" or listed[origin.design]
 
-    copied, dropped = _without_warned_seats([reviewer for reviewer, _origin in seats], scope, chosen)
+    copied, dropped = without_warned_seats([reviewer for reviewer, _origin in seats], scope, chosen)
     config_mod.set_path(layer, config_mod.DESIGN_PANEL.reviewers, copy.deepcopy(copied))
     if from_code:
         source = "the code panel, without its when conditions"
@@ -1117,11 +1093,11 @@ def _seed_design_panel(
         # a project file copying it takes it off the fit too.
         frozen += "; the design panel no longer follows preset %s's fit (recorded %s)" % (
             fit_preset,
-            _recorded(copied),
+            recorded(copied),
         )
     if not dropped:
         return frozen, None
-    left_out = _not_copied(path, dropped)
+    left_out = not_copied(path, dropped)
     return frozen + "; " + left_out, "note: " + left_out
 
 
@@ -1174,7 +1150,7 @@ def _seed_for_edit(
         return _seed_design_panel(
             scope, layer, found.panel, found.origins, found.from_code, path, found.fit_preset
         )
-    return _seed_panel(scope, layer, _fitted_base(scope, layer), path, args.cwd)
+    return seed_panel(scope, layer, fitted_base(scope, layer), path, args.cwd)
 
 
 def _find_seat(args: argparse.Namespace, scope: str, layer: Dict[str, Any]) -> Union[int, _FoundSeat]:
@@ -1188,7 +1164,7 @@ def _find_seat(args: argparse.Namespace, scope: str, layer: Dict[str, Any]) -> U
     if refusal is not None:
         return refusal
     keys = config_mod.DESIGN_PANEL if design else config_mod.CODE_PANEL
-    preview, fit, preset, _source = _compose_preview(scope, layer)
+    preview, fit, preset, _source = compose_preview(scope, layer)
     panel, origins = _panel_in_force(preview, fit, design)
     if _refuse_renamed_own_extra(layer, panel, origins, scope, args.selector, keys):
         return 2
@@ -1203,8 +1179,8 @@ def _find_seat(args: argparse.Namespace, scope: str, layer: Dict[str, Any]) -> U
 
 
 def cmd_reviewer_remove(args: argparse.Namespace) -> int:
-    scope = _resolve_scope(args.scope, args.cwd)
-    path, layer = _read_layer(scope, args.cwd)
+    scope = resolve_scope(args.scope, args.cwd)
+    path, layer = read_layer(scope, args.cwd)
     before = copy.deepcopy(layer)
     found = _find_seat(args, scope, layer)
     if isinstance(found, int):
@@ -1229,7 +1205,7 @@ def cmd_reviewer_remove(args: argparse.Namespace) -> int:
     # runs would leave a panel that a quiet round could not be reviewed by.
     # Only what the removal itself introduced is refused, so removing a broken
     # reviewer stays a way out of a panel that has another one.
-    problems = _panel_write_problems(scope, before, layer, removed=origin)
+    problems = panel_write_problems(scope, before, layer, removed=origin)
     if problems:
         for problem in problems:
             _err(problem)
@@ -1245,8 +1221,8 @@ def cmd_reviewer_remove(args: argparse.Namespace) -> int:
 def cmd_reviewer_set(args: argparse.Namespace) -> int:
     if _both_conditions(args):
         return 2
-    scope = _resolve_scope(args.scope, args.cwd)
-    path, layer = _read_layer(scope, args.cwd)
+    scope = resolve_scope(args.scope, args.cwd)
+    path, layer = read_layer(scope, args.cwd)
     before = copy.deepcopy(layer)
     found = _find_seat(args, scope, layer)
     if isinstance(found, int):
@@ -1315,7 +1291,7 @@ def cmd_reviewer_set(args: argparse.Namespace) -> int:
     elif args.when:
         reviewer["when"] = args.when
     _set_seat_options(args, reviewer)
-    problems = _panel_write_problems(scope, before, layer)
+    problems = panel_write_problems(scope, before, layer)
     if problems:
         for problem in problems:
             _err(problem)

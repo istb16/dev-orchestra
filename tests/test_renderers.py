@@ -11,34 +11,25 @@ from __future__ import annotations
 
 import copy
 import datetime
-import io
 import json
 import os
-from contextlib import redirect_stderr, redirect_stdout
 from typing import Any, Dict, List, Optional, Tuple
 from unittest import mock
 
-from helpers import IsolatedCase
+from helpers import IsolatedCase, run_cli
 from test_design_approval import ApprovalCase
 from test_design_review import PLAN, REVISED_PLAN
 
 from orchestrator import approval as approval_mod
-from orchestrator import cli, cli_workflow, doctor, optimization_render
+from orchestrator import cli_workflow, doctor, optimization_render
 from orchestrator import config as config_mod
 from orchestrator import ledger as ledger_mod
 from orchestrator import optimization as opt_mod
+from orchestrator import optimization_design as opt_design
 from orchestrator import optimization_report as opt_report
 from orchestrator import review as review_mod
 from orchestrator import workflow as workflow_mod
 from orchestrator import workspace as ws
-
-
-def run_cli(*argv: str) -> "tuple[int, str, str]":
-    """Run the CLI, returning (exit_code, stdout, stderr)."""
-    out, err = io.StringIO(), io.StringIO()
-    with redirect_stdout(out), redirect_stderr(err):
-        code = cli.main(list(argv))
-    return code, out.getvalue(), err.getvalue()
 
 
 def text(lines: List[str]) -> str:
@@ -694,7 +685,7 @@ class TestStatusText(IsolatedCase):
     def verdict(
         self,
         plan: opt_mod.Plan,
-        decision: opt_mod.DesignDecision,
+        decision: opt_design.DesignDecision,
         architect_left: Optional[int],
         **changes: Any,
     ) -> Any:
@@ -742,7 +733,7 @@ class TestStatusText(IsolatedCase):
         )
         verdict = self.verdict(
             plan,
-            opt_mod.DesignDecision("auto", True, "plan names 3 files"),
+            opt_design.DesignDecision("auto", True, "plan names 3 files"),
             1,
             verdict="stop-and-report",
             reasons=["review budget spent", "the delegated runtime budget is spent"],
@@ -784,7 +775,7 @@ class TestStatusText(IsolatedCase):
         plan = opt_mod.Plan("balanced", "balanced", opt_mod.GATE_WARN, "", 10, None)
         verdict = self.verdict(
             plan,
-            opt_mod.DesignDecision("on", True),
+            opt_design.DesignDecision("on", True),
             0,
             verdict="continue",
             reasons=[],
@@ -816,7 +807,7 @@ class TestStatusText(IsolatedCase):
         plan = opt_mod.Plan("balanced", "balanced", opt_mod.GATE_ALLOW, "ok", 10, None)
         verdict = self.verdict(
             plan,
-            opt_mod.DesignDecision("off", False),
+            opt_design.DesignDecision("off", False),
             None,
             verdict="continue",
             reasons=[],

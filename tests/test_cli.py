@@ -13,10 +13,18 @@ from contextlib import redirect_stderr, redirect_stdout
 from typing import Any, ClassVar, Dict, Optional
 from unittest import mock
 
-from helpers import CLAUDE_HELP, CLAUDE_HELP_NO_FORK, CLAUDE_HELP_OLD, TEST_WORKFLOW, IsolatedCase, has_git
+from helpers import (
+    CLAUDE_HELP,
+    CLAUDE_HELP_NO_FORK,
+    CLAUDE_HELP_OLD,
+    TEST_WORKFLOW,
+    IsolatedCase,
+    has_git,
+    run_cli,
+)
 
 from orchestrator import activity as activity_mod
-from orchestrator import cli, cli_review, cli_workflow, providers
+from orchestrator import cli, cli_workflow, providers, round_progress
 from orchestrator import config as config_mod
 from orchestrator import ledger as ledger_mod
 from orchestrator import workspace as ws
@@ -43,14 +51,6 @@ def smoke_script() -> str:
     from orchestrator import doctor
 
     return '"%s"' % doctor.SMOKE_SCRIPT if " " in doctor.SMOKE_SCRIPT else doctor.SMOKE_SCRIPT
-
-
-def run_cli(*argv):
-    """Run the CLI, returning (exit_code, stdout, stderr)."""
-    out, err = io.StringIO(), io.StringIO()
-    with redirect_stdout(out), redirect_stderr(err):
-        code = cli.main(list(argv))
-    return code, out.getvalue(), err.getvalue()
 
 
 class TestConfigCommands(IsolatedCase):
@@ -582,25 +582,25 @@ class TestSnapshotPaths(unittest.TestCase):
 
     def test_a_recorded_list_is_used_as_it_is(self):
         meta = dict(self.META, changed_paths=["lib/x.rb", "gen/schema.rb"], condition_paths=["lib/x.rb"])
-        self.assertEqual(cli_review._risk_paths(meta), ["lib/x.rb", "gen/schema.rb"])
-        self.assertEqual(cli_review._condition_paths(meta), ["lib/x.rb"])
+        self.assertEqual(round_progress._risk_paths(meta), ["lib/x.rb", "gen/schema.rb"])
+        self.assertEqual(round_progress._condition_paths(meta), ["lib/x.rb"])
 
     def test_a_snapshot_without_the_lists_has_no_paths(self):
         """Not rebuilt from ``files`` and ``withheld``. `review run` refuses such a snapshot."""
-        self.assertEqual(cli_review._risk_paths(self.META), [])
-        self.assertEqual(cli_review._condition_paths(self.META), [])
-        self.assertEqual(cli_review._risk_paths({}), [])
-        self.assertEqual(cli_review._condition_paths({}), [])
+        self.assertEqual(round_progress._risk_paths(self.META), [])
+        self.assertEqual(round_progress._condition_paths(self.META), [])
+        self.assertEqual(round_progress._risk_paths({}), [])
+        self.assertEqual(round_progress._condition_paths({}), [])
 
     def test_a_present_empty_list_is_no_paths(self):
         meta = dict(self.META, changed_paths=[], condition_paths=[])
-        self.assertEqual(cli_review._risk_paths(meta), [])
-        self.assertEqual(cli_review._condition_paths(meta), [])
+        self.assertEqual(round_progress._risk_paths(meta), [])
+        self.assertEqual(round_progress._condition_paths(meta), [])
 
     def test_a_string_is_not_read_as_a_list(self):
         meta = dict(self.META, changed_paths="lib/x.rb", condition_paths="lib/x.rb")
-        self.assertEqual(cli_review._risk_paths(meta), [])
-        self.assertEqual(cli_review._condition_paths(meta), [])
+        self.assertEqual(round_progress._risk_paths(meta), [])
+        self.assertEqual(round_progress._condition_paths(meta), [])
 
 
 class TestMalformedPathConditions(IsolatedCase):

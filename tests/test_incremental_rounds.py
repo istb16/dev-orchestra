@@ -15,19 +15,17 @@ reviewed, because otherwise there is no round to be incremental to.
 
 from __future__ import annotations
 
-import io
 import json
 import os
 import subprocess
 import unittest
-from contextlib import redirect_stderr, redirect_stdout
 from unittest import mock
 
-from helpers import IsolatedCase, has_git
+from helpers import IsolatedCase, has_git, run_cli
 
-from orchestrator import cli, review_snapshot
 from orchestrator import config as config_mod
 from orchestrator import review as review_mod
+from orchestrator import review_snapshot
 from orchestrator import workspace as ws
 
 FINDING = """## Finding
@@ -40,13 +38,6 @@ FINDING = """## Finding
 - Evidence: return x * 0
 - Recommended fix: keep the addition for the zero case
 """
-
-
-def run_cli(*argv):
-    out, err = io.StringIO(), io.StringIO()
-    with redirect_stdout(out), redirect_stderr(err):
-        code = cli.main(list(argv))
-    return code, out.getvalue(), err.getvalue()
 
 
 def body(operator):

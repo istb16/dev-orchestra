@@ -8,31 +8,21 @@ loosen a write role just as far, so they are taken the same way.
 
 from __future__ import annotations
 
-import io
 import json
 import os
 import unittest
-from contextlib import redirect_stderr, redirect_stdout
 
-from helpers import IsolatedCase
+from helpers import IsolatedCase, run_cli
 
-from orchestrator import cli, doctor, execution
 from orchestrator import config as config_mod
 from orchestrator import config_policy as policy_mod
+from orchestrator import doctor, execution
 from orchestrator.providers.claude import ClaudeProvider
 
 CLAUDE_ROLE = "  provider: claude\n  model:\n    family: opus\n"
 CODEX_ROLE = "  provider: codex\n  model:\n    family: recommended-coding\n"
 
 REFUSED = "permission bypass and raw arguments"
-
-
-def run_cli(*argv):
-    """Run the CLI, returning (exit_code, stdout, stderr)."""
-    out, err = io.StringIO(), io.StringIO()
-    with redirect_stdout(out), redirect_stderr(err):
-        code = cli.main(list(argv))
-    return code, out.getvalue(), err.getvalue()
 
 
 class _Case(IsolatedCase):

@@ -13,29 +13,19 @@ reviewer, with how many lines changed, and one flag brings it back in full.
 
 from __future__ import annotations
 
-import io
 import json
 import os
 import re
 import subprocess
 import unittest
-from contextlib import redirect_stderr, redirect_stdout
 from unittest import mock
 
-from helpers import IsolatedCase, has_git
+from helpers import IsolatedCase, has_git, run_cli
 
-from orchestrator import cli, review_snapshot
 from orchestrator import config as config_mod
 from orchestrator import review as review_mod
+from orchestrator import review_snapshot
 from orchestrator import workspace as ws
-
-
-def run_cli(*argv):
-    out, err = io.StringIO(), io.StringIO()
-    with redirect_stdout(out), redirect_stderr(err):
-        code = cli.main(list(argv))
-    return code, out.getvalue(), err.getvalue()
-
 
 LOCKFILE = json.dumps({"packages": {"p%d" % i: {"version": "1.0.%d" % i} for i in range(200)}}, indent=2)
 LOCKFILE_BUMPED = json.dumps(

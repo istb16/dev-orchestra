@@ -580,6 +580,7 @@ _REGISTRY_FREE = (
     "activity",
     "workspace",
     "optimization",
+    "optimization_design",
     "review_common",
     "config",
     "execution",
@@ -587,6 +588,8 @@ _REGISTRY_FREE = (
     "verified",
     "context",
     "review_snapshot",
+    "review_plan",
+    "review_round_context",
     "review_coverage",
     "summary",
 )
@@ -944,7 +947,10 @@ class TestImportLayering(IsolatedCase):
             review_consolidation,
             review_coverage,
             review_fanout,
+            review_plan,
+            review_round_context,
             review_snapshot,
+            round_progress,
             summary,
             wizard,
         )
@@ -968,15 +974,18 @@ class TestImportLayering(IsolatedCase):
             "_runs_row",
             "_tools_row",
         )
+        progress = (
+            "_ran_since_last_round",
+            "reviewed_something",
+            "approved_as_recorded",
+            "_design_final_pass",
+            "_code_final_pass",
+            "design_final_pass_from",
+            "code_final_pass_from",
+        )
         homes = {
             cli_common: ("_ledger", "_refuse_if_exhausted", "_wrote_plan"),
-            cli_review: (
-                "_ran_since_last_round",
-                "_reviewed_something",
-                "_approved_as_recorded",
-                "_design_final_pass",
-                "_code_final_pass",
-            ),
+            round_progress: progress,
             cli_run: ("_detached_argv",),
             optimization_render: rendered,
         }
@@ -1007,8 +1016,8 @@ class TestImportLayering(IsolatedCase):
         self.assertEqual(review_common.accepted_findings.__module__, "orchestrator.review_common")
         self.assertIs(review.accepted_findings, review_common.accepted_findings)
         self.assertIs(wizard.render_summary, summary.render_summary)
-        self.assertIs(cli_run._describe_spec, summary._describe)
-        for name in ("_describe", "merged"):
+        self.assertIs(cli_run.describe_spec, summary.describe_spec)
+        for name in ("describe_spec", "merged"):
             self.assertFalse(hasattr(wizard, name), name)
         moved = {
             review_coverage: (
@@ -1019,13 +1028,22 @@ class TestImportLayering(IsolatedCase):
                 "coverage_advice",
             ),
             review_snapshot: ("snapshot_stamp", "current_snapshot_stamp"),
+            review_plan: ("PlanToken", "PlanScan", "added_in_revision", "plan_tokens"),
+            review_round_context: ("render_round_context", "carried_findings", "render_design_round_context"),
         }
         for home, names in moved.items():
             for name in names:
                 self.assertIs(getattr(review, name), getattr(home, name), name)
                 self.assertEqual(getattr(home, name).__module__, home.__name__, name)
+        for name in (*moved[review_plan], *moved[review_round_context]):
+            self.assertFalse(hasattr(review_snapshot, name), name)
+        # Constants carry no __module__ either.
+        for name in ("ADDED_HEADING_RE", "FENCE_RE", "HEADING_RE", "NONE_ADDED_RE"):
+            self.assertIs(getattr(review, name), getattr(review_plan, name), name)
         self.assertFalse(hasattr(cli, "_coverage_advice"))
         self.assertFalse(hasattr(cli_review, "_coverage_advice"))
+        for name in progress:
+            self.assertFalse(hasattr(cli_review, "_" + name), name)
         for name in ("_coverage_line", "snapshot_reviewers", "current_snapshot_stamp"):
             self.assertFalse(hasattr(review_consolidation, name), name)
         for name in ("_stamp", "_snapshot_sha"):
@@ -1057,11 +1075,11 @@ class TestImportLayering(IsolatedCase):
             self.assertEqual(getattr(config_policy, name).__module__, "orchestrator.config_policy", name)
             self.assertFalse(hasattr(config, name), name)
         # The seat walk is configuration shape, so it stays with ``merge_tier``.
-        for name in ("SeatRun", "role_seats", "_reviewer_seats", "_read_only_seats"):
+        for name in ("SeatRun", "role_seats", "reviewer_seats", "read_only_seats"):
             self.assertEqual(getattr(config, name).__module__, "orchestrator.config", name)
         self.assertEqual(config.WRITE_ROLES, ("implementer", "review_fixer"))
         # The warned-provider predicate reads only the registry.
-        for name in ("_warned_provider", "warned_provider"):
+        for name in ("warned_enforcement", "warned_provider"):
             self.assertEqual(getattr(providers, name).__module__, "orchestrator.providers", name)
             self.assertFalse(hasattr(config, name), name)
         self.assertFalse(hasattr(config_policy, "warned_provider"))

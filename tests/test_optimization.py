@@ -23,23 +23,16 @@ import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from typing import Optional
 
-from helpers import IsolatedCase, has_git
+from helpers import IsolatedCase, has_git, run_cli
 
 from orchestrator import cli, optimization_render, review_snapshot
 from orchestrator import config as config_mod
 from orchestrator import ledger as ledger_mod
 from orchestrator import optimization as opt
+from orchestrator import optimization_design as opt_design
 from orchestrator import optimization_report as opt_report
 from orchestrator import review as review_mod
 from orchestrator import workspace as ws
-
-
-def run_cli(*argv):
-    out, err = io.StringIO(), io.StringIO()
-    with redirect_stdout(out), redirect_stderr(err):
-        code = cli.main(list(argv))
-    return code, out.getvalue(), err.getvalue()
-
 
 FINDING = """## Finding
 - Severity: high
@@ -3687,7 +3680,7 @@ def plan_scan(files=(), elsewhere=(), has_section=True):
 
 def decide_design(scan=None, mode="auto", settings=None, plan_state="ok", round_ran=False):
     scan = plan_scan() if scan is None else scan
-    return opt.decide_design(mode, settings or {}, scan, plan_state=plan_state, round_ran=round_ran)
+    return opt_design.decide_design(mode, settings or {}, scan, plan_state=plan_state, round_ran=round_ran)
 
 
 MODULES = ("config.py", "cli.py", "review.py", "optimization.py", "hosts.py", "approval.py")
@@ -3954,7 +3947,6 @@ DECISION_NAMES = {
     "risk_reason",
     "Plan",
     "decide",
-    "DesignDecision",
     "_plan_path",
     "_has_extension",
     "_risk_candidates",
@@ -3963,12 +3955,17 @@ DECISION_NAMES = {
     "design_risk",
     "PlanFiles",
     "plan_files",
-    "decide_design",
-    "DesignPlan",
-    "decide_design_round",
     "findings_cap",
     "_positive",
     "choose_reviewers",
+}
+
+#: What ``optimization_design`` defines: whether a design round runs and who sits on it.
+DESIGN_NAMES = {
+    "DesignDecision",
+    "decide_design",
+    "DesignPlan",
+    "decide_design_round",
 }
 
 #: What ``optimization_report`` defines: what the rounds cost and found.
@@ -3985,6 +3982,9 @@ REPORT_NAMES = {
     "_SLOTS",
     # Rounds and pairs.
     "summarise_rounds",
+    "_CodeRounds",
+    "_tally_code_rounds",
+    "_tally_design_rounds",
     "_pair_rounds",
     "_pair_key",
     "_pair_side",
@@ -3992,7 +3992,9 @@ REPORT_NAMES = {
     "_undelivered",
     "_inputs_differ",
     "_pair",
-    "_pair_group",
+    "_spend_group",
+    "_spend_figures",
+    "_add_figures",
     "_finish_pair_group",
     "_pair_side_figures",
     "_pair_delta",
@@ -4057,21 +4059,32 @@ def _top_level_names(module):
     return names
 
 
+def _imported_names(module):
+    """Every module and name a module imports, at any depth."""
+    imported = set()
+    for node in ast.walk(_parsed(module)):
+        if isinstance(node, ast.Import):
+            imported.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            imported.add(node.module or "")
+            imported.update(alias.name for alias in node.names)
+    return imported
+
+
 class TestTheSplit(unittest.TestCase):
-    """``optimization`` decides and ``optimization_report`` reports; the
-    deciding half must never need the reporting one."""
+    """``optimization`` decides, ``optimization_design`` decides the design
+    round on top of it and ``optimization_report`` reports; the deciding half
+    must never need either of the others, nor the design half the report."""
 
     def test_the_split_partitions_the_old_module(self):
-        self.assertEqual((len(DECISION_NAMES), len(REPORT_NAMES)), (87, 58))
+        self.assertEqual((len(DECISION_NAMES), len(REPORT_NAMES), len(DESIGN_NAMES)), (83, 63, 4))
         self.assertEqual(_top_level_names(opt), DECISION_NAMES)
         self.assertEqual(_top_level_names(opt_report), REPORT_NAMES)
-        imported = set()
-        for node in ast.walk(_parsed(opt)):
-            if isinstance(node, ast.Import):
-                imported.update(alias.name for alias in node.names)
-            elif isinstance(node, ast.ImportFrom):
-                imported.add(node.module or "")
-                imported.update(alias.name for alias in node.names)
+        self.assertEqual(_top_level_names(opt_design), DESIGN_NAMES)
+        imported = _imported_names(opt)
+        self.assertFalse([name for name in imported if "optimization_report" in name], imported)
+        self.assertFalse([name for name in imported if "optimization_design" in name], imported)
+        imported = _imported_names(opt_design)
         self.assertFalse([name for name in imported if "optimization_report" in name], imported)
 
 

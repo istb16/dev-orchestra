@@ -23,19 +23,12 @@ import json
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 
-from helpers import IsolatedCase, has_git, present
+from helpers import IsolatedCase, has_git, present, run_cli
 
 from orchestrator import cli
 from orchestrator import config as config_mod
 from orchestrator import ledger as ledger_mod
 from orchestrator import summary as summary_mod
-
-
-def run_cli(*argv):
-    out, err = io.StringIO(), io.StringIO()
-    with redirect_stdout(out), redirect_stderr(err):
-        code = cli.main(list(argv))
-    return code, out.getvalue(), err.getvalue()
 
 
 def configured(**tiers):

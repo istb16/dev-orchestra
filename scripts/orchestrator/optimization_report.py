@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple, cast
 
 from .optimization import HIGH_RISK_SLOT, REFUSED, USUAL_SLOT, WHEN_RELEVANCE
 from .review_consolidation import round_key
+from .workspace import is_int
 
 
 def summarise_rounds(events: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
@@ -73,139 +74,145 @@ def summarise_rounds(events: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
         and event.get("stage") == "design_review"
         and event.get("status") == REFUSED
     )
-    by_context = {"with": _context_group(), "without": _context_group()}
-    levels: Dict[str, int] = {}
-    gates: Dict[str, int] = {}
-    patterns: Dict[str, int] = {}
-    refused_by: Dict[str, int] = {}
-    escalated = reduced = refused = unrecorded = 0
-    conditional = {"added": 0, "left_out": 0, "declared_rounds": 0}
-    reviewer_runs = measured_runs = billed = 0
-    tool_runs = tool_uses = tool_chars = tool_output_runs = 0
-    measured: List[Dict[str, Any]] = []
+    code = _tally_code_rounds(rounds)
+    spend = code.spend
+    design_spend = _tally_design_rounds(design)
 
-    for event in rounds:
-        plan = event["optimization"]
-        _bump(levels, str(plan.get("level") or "?"))
-        _bump(gates, str(plan.get("gate") or "?"))
-        if plan.get("escalated"):
-            escalated += 1
-            # Which pattern, not just how many. A dial that is escalated out of
-            # existence on every round looks identical in a count to one that
-            # never fires, and only the pattern says which -- and whether it is
-            # the one to replace.
-            for hit in plan.get("high_risk") or []:
-                if isinstance(hit, dict) and hit.get("pattern"):
-                    _bump(patterns, str(hit["pattern"]))
-        if plan.get("reviewer_limit") is not None:
-            reduced += 1
-        if not str(plan.get("test_status") or ""):
-            unrecorded += 1
-        # Refused rounds too: the decision was made and recorded either way.
-        # An event from before conditional reviewers carries neither key. A
-        # role relevance record is counted under `relevance` instead.
-        for record in plan.get("conditional") or []:
-            if isinstance(record, dict) and record.get("when") != WHEN_RELEVANCE:
-                conditional["added" if record.get("runs") else "left_out"] += 1
-        if plan.get("declared"):
-            conditional["declared_rounds"] += 1
-        if event.get("status") == REFUSED:
-            refused += 1
-            _bump(refused_by, str(event.get("refused_by") or "gate"))
-            continue
-        runs, reported, spent = _reviewer_spend(event)
-        reviewer_runs += runs
-        measured_runs += reported
-        billed += spent
-        said, called, printed, printed_runs = _reviewer_tools(event)
-        tool_runs += said
-        tool_uses += called
-        tool_chars += printed
-        tool_output_runs += printed_runs
-        _add_to_context_group(
-            by_context["with" if _with_context(event) else "without"],
-            event,
-            (runs, reported, spent),
-            (said, called, printed, printed_runs),
-        )
-        if isinstance(event.get("measurement"), dict):
-            measured.append(event)
-
-    design_runs = design_measured = design_billed = 0
-    design_tool_runs = design_tool_uses = design_tool_chars = design_tool_output_runs = 0
-    for event in design:
-        runs, reported, spent = _reviewer_spend(event)
-        design_runs += runs
-        design_measured += reported
-        design_billed += spent
-        said, called, printed, printed_runs = _reviewer_tools(event)
-        design_tool_runs += said
-        design_tool_uses += called
-        design_tool_chars += printed
-        design_tool_output_runs += printed_runs
-
-    ran = len(rounds) - refused
+    ran = len(rounds) - code.refused
+    billed = spend["billed_tokens"]
     per_round = billed // ran if (ran and billed) else None
     relevance = _relevance_counts([event for event in rounds if event.get("status") != REFUSED])
-    relevance["estimated_saving"] = _relevance_saving(relevance, billed, reviewer_runs)
+    relevance["estimated_saving"] = _relevance_saving(relevance, billed, spend["reviewer_runs"])
+    design_billed = design_spend["billed_tokens"]
     design_relevance = _relevance_counts(design)
-    design_relevance["estimated_saving"] = _relevance_saving(design_relevance, design_billed, design_runs)
+    design_relevance["estimated_saving"] = _relevance_saving(
+        design_relevance, design_billed, design_spend["reviewer_runs"]
+    )
     # Its own number, never averaged with the code figure above: a plan and a
     # diff are not the same unit of work, and a mean of the two sizes neither.
     design_per_round = design_billed // len(design) if (design and design_billed) else None
     return {
         "rounds": len(rounds),
         "ran": ran,
-        "refused": refused,
-        "refused_by": refused_by,
-        "levels": levels,
-        "gates": gates,
-        "escalated": escalated,
-        "escalation_patterns": patterns,
-        "always_escalated": bool(rounds) and escalated == len(rounds),
-        "panel_reduced": reduced,
-        "conditional": conditional,
+        "refused": code.refused,
+        "refused_by": code.refused_by,
+        "levels": code.levels,
+        "gates": code.gates,
+        "escalated": code.escalated,
+        "escalation_patterns": code.patterns,
+        "always_escalated": bool(rounds) and code.escalated == len(rounds),
+        "panel_reduced": code.reduced,
+        "conditional": code.conditional,
         # Seats a role relevance rule was asked about, in the rounds that ran.
         # The saving prices each seat left out at the stage's mean billed
         # tokens per reviewer run: an estimate, labelled as the gate's is.
         "relevance": relevance,
         "design_relevance": design_relevance,
-        "rounds_without_a_test_result": unrecorded,
-        "reviewer_runs": reviewer_runs,
-        "measured_runs": measured_runs,
+        "rounds_without_a_test_result": code.unrecorded,
+        "reviewer_runs": spend["reviewer_runs"],
+        "measured_runs": spend["measured_runs"],
         "billed_tokens": billed,
         "billed_per_round": per_round,
         # The gate's refusals alone -- see the docstring for why a round
         # refused for size is left out rather than priced at the mean.
-        "estimated_saving": (per_round * refused_by.get("gate", 0)) if per_round else 0,
+        "estimated_saving": (per_round * code.refused_by.get("gate", 0)) if per_round else 0,
         "design_rounds": len(design),
         "design_refused": design_refused,
-        "design_reviewer_runs": design_runs,
-        "design_measured_runs": design_measured,
+        "design_reviewer_runs": design_spend["reviewer_runs"],
+        "design_measured_runs": design_spend["measured_runs"],
         "design_billed_tokens": design_billed,
         "design_billed_per_round": design_per_round,
         # Per *run*, over the runs that reported -- never over ``reviewer_runs``.
         # None rather than zero where nothing reported: a panel of CLIs that do
         # not count tools has not measured no tool use. Output chars are over
         # the runs that reported them: agy counts calls and not their output.
-        "tool_reported_runs": tool_runs,
-        "tool_output_reported_runs": tool_output_runs,
-        "tool_uses": tool_uses,
-        "tool_output_chars": tool_chars,
-        "tool_uses_per_run": _per_run(tool_uses, tool_runs),
-        "tool_output_chars_per_run": _per_run(tool_chars, tool_output_runs),
-        "design_tool_reported_runs": design_tool_runs,
-        "design_tool_output_reported_runs": design_tool_output_runs,
-        "design_tool_uses": design_tool_uses,
-        "design_tool_output_chars": design_tool_chars,
-        "design_tool_uses_per_run": _per_run(design_tool_uses, design_tool_runs),
-        "design_tool_output_chars_per_run": _per_run(design_tool_chars, design_tool_output_runs),
+        "tool_reported_runs": spend["tool_reported_runs"],
+        "tool_output_reported_runs": spend["tool_output_reported_runs"],
+        "tool_uses": spend["tool_uses"],
+        "tool_output_chars": spend["tool_output_chars"],
+        "tool_uses_per_run": _per_run(spend["tool_uses"], spend["tool_reported_runs"]),
+        "tool_output_chars_per_run": _per_run(spend["tool_output_chars"], spend["tool_output_reported_runs"]),
+        "design_tool_reported_runs": design_spend["tool_reported_runs"],
+        "design_tool_output_reported_runs": design_spend["tool_output_reported_runs"],
+        "design_tool_uses": design_spend["tool_uses"],
+        "design_tool_output_chars": design_spend["tool_output_chars"],
+        "design_tool_uses_per_run": _per_run(design_spend["tool_uses"], design_spend["tool_reported_runs"]),
+        "design_tool_output_chars_per_run": _per_run(
+            design_spend["tool_output_chars"], design_spend["tool_output_reported_runs"]
+        ),
         # Code rounds that ran, split on whether a reviewer was handed
         # surrounding context -- see ``_with_context``.
-        "by_context": {name: _finish_context_group(group) for name, group in by_context.items()},
+        "by_context": {name: _finish_context_group(group) for name, group in code.by_context.items()},
         # Runs of one snapshot with and without it -- see ``_pair_rounds``.
-        "paired": _pair_rounds(measured),
+        "paired": _pair_rounds(code.measured),
     }
+
+
+class _CodeRounds:
+    """What ``summarise_rounds`` counts over the code rounds, refused ones included."""
+
+    def __init__(self) -> None:
+        self.levels: Dict[str, int] = {}
+        self.gates: Dict[str, int] = {}
+        self.patterns: Dict[str, int] = {}
+        self.refused_by: Dict[str, int] = {}
+        self.escalated = 0
+        self.reduced = 0
+        self.refused = 0
+        self.unrecorded = 0
+        self.conditional = {"added": 0, "left_out": 0, "declared_rounds": 0}
+        #: The seven figures of ``_spend_group``, over the rounds that ran.
+        self.spend = _spend_group()
+        self.by_context = {"with": _context_group(), "without": _context_group()}
+        #: The rounds that ran and recorded a ``measurement`` block.
+        self.measured: List[Dict[str, Any]] = []
+
+
+def _tally_code_rounds(rounds: Sequence[Dict[str, Any]]) -> _CodeRounds:
+    code = _CodeRounds()
+    for event in rounds:
+        plan = event["optimization"]
+        _bump(code.levels, str(plan.get("level") or "?"))
+        _bump(code.gates, str(plan.get("gate") or "?"))
+        if plan.get("escalated"):
+            code.escalated += 1
+            # Which pattern, not just how many. A dial that is escalated out of
+            # existence on every round looks identical in a count to one that
+            # never fires, and only the pattern says which -- and whether it is
+            # the one to replace.
+            for hit in plan.get("high_risk") or []:
+                if isinstance(hit, dict) and hit.get("pattern"):
+                    _bump(code.patterns, str(hit["pattern"]))
+        if plan.get("reviewer_limit") is not None:
+            code.reduced += 1
+        if not str(plan.get("test_status") or ""):
+            code.unrecorded += 1
+        # Refused rounds too: the decision was made and recorded either way.
+        # An event from before conditional reviewers carries neither key. A
+        # role relevance record is counted under `relevance` instead.
+        for record in plan.get("conditional") or []:
+            if isinstance(record, dict) and record.get("when") != WHEN_RELEVANCE:
+                code.conditional["added" if record.get("runs") else "left_out"] += 1
+        if plan.get("declared"):
+            code.conditional["declared_rounds"] += 1
+        if event.get("status") == REFUSED:
+            code.refused += 1
+            _bump(code.refused_by, str(event.get("refused_by") or "gate"))
+            continue
+        figures = _spend_figures(event)
+        _add_figures(code.spend, figures)
+        _add_to_context_group(code.by_context["with" if _with_context(event) else "without"], event, figures)
+        if isinstance(event.get("measurement"), dict):
+            code.measured.append(event)
+    return code
+
+
+def _tally_design_rounds(design: Sequence[Dict[str, Any]]) -> Dict[str, int]:
+    """The seven figures of ``_spend_group``, over the design rounds that ran."""
+    spend = _spend_group()
+    for event in design:
+        _add_figures(spend, _spend_figures(event))
+    return spend
 
 
 #: What ``inputs_differ`` calls each prompt input, where the key is not a name.
@@ -233,7 +240,7 @@ def _pair_rounds(events: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
         if side not in slot or str(event.get("at") or "") >= str(slot[side].get("at") or ""):
             slot[side] = event
     pairs = []
-    totals = {"with": _pair_group(), "without": _pair_group()}
+    totals = {"with": _spend_group(), "without": _spend_group()}
     for key, slot in sides.items():
         if "with" not in slot or "without" not in slot:
             continue
@@ -354,12 +361,32 @@ def _pair(key: Tuple[Any, ...], with_event: Dict[str, Any], without_event: Dict[
     }
 
 
-def _pair_group() -> Dict[str, int]:
+def _spend_group() -> Dict[str, int]:
     keys = (
         "reviewer_runs measured_runs billed_tokens tool_reported_runs tool_output_reported_runs "
         "tool_uses tool_output_chars"
     )
     return dict.fromkeys(keys.split(), 0)
+
+
+def _spend_figures(event: Dict[str, Any]) -> Dict[str, int]:
+    """One round's reviewer spend and tool activity, keyed as ``_spend_group``."""
+    runs, reported, billed = _reviewer_spend(event)
+    said, called, printed, printed_runs = _reviewer_tools(event)
+    return {
+        "reviewer_runs": runs,
+        "measured_runs": reported,
+        "billed_tokens": billed,
+        "tool_reported_runs": said,
+        "tool_output_reported_runs": printed_runs,
+        "tool_uses": called,
+        "tool_output_chars": printed,
+    }
+
+
+def _add_figures(group: Dict[str, int], figures: Dict[str, int]) -> None:
+    for field, value in figures.items():
+        group[field] += value
 
 
 def _finish_pair_group(group: Dict[str, int]) -> Dict[str, Any]:
@@ -373,18 +400,7 @@ def _finish_pair_group(group: Dict[str, int]) -> Dict[str, Any]:
 
 
 def _pair_side_figures(event: Dict[str, Any]) -> Dict[str, Any]:
-    runs, reported, billed = _reviewer_spend(event)
-    said, called, printed, printed_runs = _reviewer_tools(event)
-    group = {
-        "reviewer_runs": runs,
-        "measured_runs": reported,
-        "billed_tokens": billed,
-        "tool_reported_runs": said,
-        "tool_output_reported_runs": printed_runs,
-        "tool_uses": called,
-        "tool_output_chars": printed,
-    }
-    return dict(_finish_pair_group(group), at=event.get("at"))
+    return dict(_finish_pair_group(_spend_figures(event)), at=event.get("at"))
 
 
 def _pair_delta(with_side: Dict[str, Any], without_side: Dict[str, Any]) -> Dict[str, Optional[float]]:
@@ -424,7 +440,7 @@ def _round_change_chars(event: Dict[str, Any]) -> Optional[int]:
         if not isinstance(run, dict):
             continue
         chars = run.get("change_chars")
-        if isinstance(chars, int) and not isinstance(chars, bool) and chars > 0:
+        if is_int(chars) and chars > 0:
             return chars
     return None
 
@@ -444,7 +460,7 @@ def _round_context_chars(event: Dict[str, Any]) -> Tuple[int, int]:
 
 
 def _int(value: Any) -> int:
-    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+    return value if is_int(value) else 0
 
 
 def _context_group() -> Dict[str, int]:
@@ -457,12 +473,7 @@ def _context_group() -> Dict[str, int]:
     return dict.fromkeys(keys.split(), 0)
 
 
-def _add_to_context_group(
-    group: Dict[str, int],
-    event: Dict[str, Any],
-    spend: Tuple[int, int, int],
-    tools: Tuple[int, int, int, int],
-) -> None:
+def _add_to_context_group(group: Dict[str, int], event: Dict[str, Any], figures: Dict[str, int]) -> None:
     """Add one round to a group, weighting its size by the runs that reported.
 
     The raw totals move with the size of each change and with the number of
@@ -473,16 +484,9 @@ def _add_to_context_group(
     figures, numerator and denominator alike. Output chars are weighted by
     the runs that reported output, not every run that reported tools.
     """
-    runs, reported, billed = spend
-    said, called, printed, printed_runs = tools
+    reported, printed_runs = figures["measured_runs"], figures["tool_output_reported_runs"]
     group["rounds"] += 1
-    group["reviewer_runs"] += runs
-    group["measured_runs"] += reported
-    group["billed_tokens"] += billed
-    group["tool_reported_runs"] += said
-    group["tool_output_reported_runs"] += printed_runs
-    group["tool_uses"] += called
-    group["tool_output_chars"] += printed
+    _add_figures(group, figures)
     adopted, trimmed = _round_context_chars(event)
     group["adopted_chars"] += adopted
     group["trimmed_chars"] += trimmed
@@ -491,10 +495,10 @@ def _add_to_context_group(
         return
     group["sized_rounds"] += 1
     group["change_chars"] += size
-    group["sized_billed_tokens"] += billed
+    group["sized_billed_tokens"] += figures["billed_tokens"]
     group["billed_run_change_chars"] += size * reported
     group["sized_billed_runs"] += reported
-    group["sized_tool_output_chars"] += printed
+    group["sized_tool_output_chars"] += figures["tool_output_chars"]
     group["output_run_change_chars"] += size * printed_runs
     group["sized_output_runs"] += printed_runs
 
@@ -551,12 +555,12 @@ def _reviewer_tools(event: Dict[str, Any]) -> Tuple[int, int, int, int]:
             continue
         usage = run.get("usage") or {}
         called = usage.get("tool_uses")
-        if isinstance(called, bool) or not isinstance(called, int):
+        if not is_int(called):
             continue
         reported += 1
         uses += called
         output = usage.get("tool_output_chars")
-        if isinstance(output, int) and not isinstance(output, bool):
+        if is_int(output):
             chars += output
             printed_runs += 1
     return reported, uses, chars, printed_runs
@@ -1101,9 +1105,7 @@ def _money(value: Any) -> Optional[float]:
 
 
 def _count_of(value: Any) -> Optional[int]:
-    if isinstance(value, bool) or not isinstance(value, int):
-        return None
-    return value
+    return value if is_int(value) else None
 
 
 def _revision_group() -> Dict[str, Any]:

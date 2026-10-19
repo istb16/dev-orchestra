@@ -15,17 +15,14 @@ and one of the more expensive things to pay for twice.
 
 from __future__ import annotations
 
-import io
 import json
 import os
 import threading
 import time
 import unittest
-from contextlib import redirect_stderr, redirect_stdout
 
-from helpers import IsolatedCase, has_git, present
+from helpers import IsolatedCase, has_git, present, run_cli
 
-from orchestrator import cli
 from orchestrator import ledger as ledger_mod
 from orchestrator.providers import Usage
 from orchestrator.providers.claude import parse_stream_usage
@@ -41,13 +38,6 @@ FINDING = """## Finding
 - Evidence: return a - b
 - Recommended fix: restore the addition
 """
-
-
-def run_cli(*argv):
-    out, err = io.StringIO(), io.StringIO()
-    with redirect_stdout(out), redirect_stderr(err):
-        code = cli.main(list(argv))
-    return code, out.getvalue(), err.getvalue()
 
 
 def stream(*events):

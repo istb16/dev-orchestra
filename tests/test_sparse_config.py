@@ -22,11 +22,11 @@ import io
 import json
 import os
 import unittest
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest import mock
 
-from helpers import REPO_ROOT, IsolatedCase, present
+from helpers import REPO_ROOT, IsolatedCase, present, run_cli
 
 from orchestrator import cli
 from orchestrator import config as config_mod
@@ -43,13 +43,6 @@ PROJECT_PANEL = [
 
 #: The built-in panel, which is what a machine with no CLI is fitted.
 DEFAULT_IDS = [reviewer["id"] for reviewer in config_mod.default_config()["reviewers"]]
-
-
-def run_cli(*argv):
-    out, err = io.StringIO(), io.StringIO()
-    with redirect_stdout(out), redirect_stderr(err):
-        code = cli.main(list(argv))
-    return code, out.getvalue(), err.getvalue()
 
 
 def write_raw(path, text):

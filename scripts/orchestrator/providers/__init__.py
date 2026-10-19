@@ -166,7 +166,7 @@ def adapter_failure(name: str, exc: BaseException) -> str:
     return "%s adapter failed (%s): %s" % (name, describe_origin(name), describe_exception(exc))
 
 
-def _warned_provider(name: str) -> Optional[Dict[str, Any]]:
+def warned_enforcement(name: str) -> Optional[Dict[str, Any]]:
     """The enforcement report of a provider whose read-only runs are warned
     about, or None.
 
@@ -188,7 +188,7 @@ def _warned_provider(name: str) -> Optional[Dict[str, Any]]:
 
 def warned_provider(name: str) -> bool:
     """True when read-only runs on ``name`` go ahead only with a warning."""
-    return _warned_provider(name) is not None
+    return warned_enforcement(name) is not None
 
 
 # --------------------------------------------------------------------------- user adapters

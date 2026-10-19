@@ -21,7 +21,7 @@ from . import config as config_mod
 from . import config_policy as policy_mod
 from . import presets as presets_mod
 from .cli_common import _out
-from .config_layers import _compose_preview, _reviewers_hold_design_panel
+from .config_layers import compose_preview, reviewers_hold_design_panel
 from .optimization import RELEVANCE_ALWAYS, WHEN_HIGH_RISK, reviewer_condition, risk_patterns
 from .providers import (
     ModelResolutionError,
@@ -275,7 +275,7 @@ def run(
 
     if preset is not None:
         data = _differences_from_fit(data, base, preset)
-        if _reviewers_hold_design_panel(scope, data):
+        if reviewers_hold_design_panel(scope, data):
             # A saved code panel takes the design panel with it: say so, as
             # the reviewer writers do, before the summary shows the result.
             prompter.say(
@@ -293,7 +293,7 @@ def run(
         # before saving is what is in force afterwards -- the layer alone would
         # report a design review as off while the global layer has it on, and
         # would leave out the extras it keeps.
-        preview, fit, _name, _source = _compose_preview(scope, data)
+        preview, fit, _name, _source = compose_preview(scope, data)
         prompter.say(render_summary(preview, fit.origins, fit.design_origins))
     save = prompter.ask_yes_no("Save configuration?", True)
     return data, save
