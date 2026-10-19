@@ -842,6 +842,68 @@ class TestStatusText(IsolatedCase):
         self.assertEqual(out, text(STATUS_C_TEXT))
 
 
+class TestStatusRounds(IsolatedCase):
+    """``status --json`` keeps the code and the design loop apart: every figure differs between them."""
+
+    def test_each_loop_reports_its_own_figures(self):
+        run_cli("config", "set", "review.max_review_iterations", "5")
+        run_cli("config", "set", "review.design.max_iterations", "4")
+        workspace = self.cli_workspace()
+        code_findings = [
+            {"id": "F1", "severity": "high", "triage": "accepted"},
+            {"id": "F2", "severity": "critical"},
+            {"id": "F3", "severity": "low", "triage": "accepted"},
+            {"id": "F4", "severity": "high", "triage": "rejected"},
+        ]
+        design_findings = [
+            {"id": "D1", "severity": "critical", "triage": "accepted"},
+            {"id": "D2", "severity": "medium"},
+        ]
+        for path, data in (
+            (workspace.consolidated_json_path, {"iteration": 1, "findings": code_findings}),
+            (workspace.design_review().consolidated_json_path, {"iteration": 2, "findings": design_findings}),
+        ):
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            ws.write_json(path, data)
+        book = ledger_mod.Ledger(workspace)
+        for _ in range(3):
+            book.register_signature("review", "F1,F2")
+        for _ in range(2):
+            book.register_signature("design_review", "D1")
+
+        payload = json.loads(run_cli("status", "--json")[1])
+        self.assertEqual(
+            payload["review"],
+            {
+                "iteration": 1,
+                "max_review_iterations": 5,
+                "blocking": ["F1", "F2"],
+                "accepted": 2,
+                "refused_for_size": None,
+                "identical_rounds": 3,
+                "final_fix": None,
+                "final_fix_pending": False,
+            },
+        )
+        design = payload["design_review"]
+        # The decision and the panel plan are not read from the round.
+        for key in ("enabled", "mode", "reason", "optimization"):
+            design.pop(key)
+        self.assertEqual(
+            design,
+            {
+                "iteration": 2,
+                "max_iterations": 4,
+                "blocking": ["D1"],
+                "accepted": 1,
+                "refused_for_size": None,
+                "identical_rounds": 2,
+                "final_revision": None,
+                "final_revision_pending": False,
+            },
+        )
+
+
 # --------------------------------------------------------------------------- summary
 
 

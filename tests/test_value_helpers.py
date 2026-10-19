@@ -501,6 +501,26 @@ class TestStopReasons(unittest.TestCase):
                 ["no delegated runs left in this workflow"],
             ),
             (
+                "plan unapproved, architect spent, design final pass done",
+                {"plan_digest": "abc", "design": design_in("done"), "budgets": architect_spent},
+                [design_reason],
+            ),
+            (
+                "plan unapproved, architect spent, nothing open",
+                {"plan_digest": "abc", "budgets": architect_spent},
+                [],
+            ),
+            (
+                "no plan, approved, architect spent",
+                {"design": design_open, "plan_approved": True, "budgets": architect_spent},
+                ["architect has no attempts left"],
+            ),
+            (
+                "plan unapproved, architect spent, design rounds spent",
+                {"plan_digest": "abc", "design": design_spent, "budgets": architect_spent},
+                ["architect has no attempts left"],
+            ),
+            (
                 "size refusals",
                 {
                     "refused_for_size": refusal,
@@ -520,6 +540,11 @@ class TestStopReasons(unittest.TestCase):
                 [review_reason + "; fixed and re-tested after the last round, not re-reviewed -- report"],
             ),
             ("review spent, unaccepted", {"review": review_in("unaccepted")}, [review_reason]),
+            (
+                "review repeated, unaccepted",
+                {"review": review_in("unaccepted", repeats=2)},
+                [review_reason, review_repeat],
+            ),
             ("review repeated, no final pass", {"review": review_in(None, repeats=2)}, [review_repeat]),
             (
                 "review repeated, final pass done",
@@ -551,6 +576,17 @@ class TestStopReasons(unittest.TestCase):
                     design_reason + "; the architect left the plan unchanged after the last round -- "
                     "present the plan and the findings and ask"
                 ],
+            ),
+            ("design spent, revision not compared", {"design": design_in("done")}, [design_reason]),
+            (
+                "design repeated, no architect attempt left",
+                {"design": design_in("blocked", repeats=2)},
+                [design_reason + " and no architect attempt left to fold them in", design_repeat],
+            ),
+            (
+                "design spent and architect spent, no architect attempt left",
+                {"plan_digest": "abc", "design": design_in("blocked"), "budgets": architect_spent},
+                [design_reason + " and no architect attempt left to fold them in"],
             ),
             ("design spent, implemented", {"design": design_in("implemented")}, [design_reason]),
             ("design spent, unaccepted", {"design": design_in("unaccepted")}, [design_reason]),
