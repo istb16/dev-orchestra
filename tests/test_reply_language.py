@@ -8,20 +8,18 @@ and a tag the hook does not know.
 
 from __future__ import annotations
 
-import io
 import json
 import os
 import subprocess
 import sys
 import time
 import unittest
-from contextlib import redirect_stderr, redirect_stdout
 from typing import Any, Dict, List, Optional
 from unittest import mock
 
-from helpers import REPO_ROOT, SCRIPTS_DIR, IsolatedCase
+from helpers import REPO_ROOT, SCRIPTS_DIR, IsolatedCase, run_cli
 
-from orchestrator import claude_hooks, cli, doctor, workflow
+from orchestrator import claude_hooks, doctor, workflow
 from orchestrator import config as config_mod
 from orchestrator import reply_language as rl
 
@@ -43,13 +41,6 @@ print(json.dumps([bool(out), names]))
 def fixture(name: str) -> str:
     with open(os.path.join(FIXTURES, name), encoding="utf-8") as handle:
         return handle.read()
-
-
-def run_cli(*argv):
-    out, err = io.StringIO(), io.StringIO()
-    with redirect_stdout(out), redirect_stderr(err):
-        code = cli.main(list(argv))
-    return code, out.getvalue(), err.getvalue()
 
 
 def assistant(*blocks: Dict[str, Any], sidechain: bool = False) -> Dict[str, Any]:

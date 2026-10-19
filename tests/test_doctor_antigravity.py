@@ -7,25 +7,15 @@ judgement later, when a checkout has added one.
 
 from __future__ import annotations
 
-import io
 import json
 import os
 import shutil
 import unittest
-from contextlib import redirect_stderr, redirect_stdout
 
-from helpers import IsolatedCase, has_git, make_dir_link, remove_link
+from helpers import IsolatedCase, has_git, make_dir_link, remove_link, run_cli
 
-from orchestrator import cli, doctor
 from orchestrator import config as config_mod
-
-
-def run_cli(*argv):
-    """Run the CLI, returning (exit_code, stdout, stderr)."""
-    out, err = io.StringIO(), io.StringIO()
-    with redirect_stdout(out), redirect_stderr(err):
-        code = cli.main(list(argv))
-    return code, out.getvalue(), err.getvalue()
+from orchestrator import doctor
 
 
 def same(path):

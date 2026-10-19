@@ -11,18 +11,15 @@ is always printed is here.
 
 from __future__ import annotations
 
-import io
 import json
 import os
 import pathlib
 import re
 import unittest
-from contextlib import redirect_stderr, redirect_stdout
 from typing import Any, Dict, List, Tuple
 
-from helpers import REPO_ROOT, IsolatedCase, has_git
+from helpers import REPO_ROOT, IsolatedCase, has_git, run_cli
 
-from orchestrator import cli
 from orchestrator import jobs as jobs_mod
 from orchestrator import workspace as ws
 
@@ -291,13 +288,6 @@ LISTS = ("reviewer list", "jobs list")
 MAPPINGS = ("model list",)
 
 JSON_COMMANDS = re.compile(r"<!-- json-commands: start -->(.*?)<!-- json-commands: end -->", re.DOTALL)
-
-
-def run_cli(*argv: str) -> Tuple[int, str, str]:
-    out, err = io.StringIO(), io.StringIO()
-    with redirect_stdout(out), redirect_stderr(err):
-        code = cli.main(list(argv))
-    return code, out.getvalue(), err.getvalue()
 
 
 def documented() -> List[str]:

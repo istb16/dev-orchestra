@@ -15,15 +15,12 @@ budget stops being one.
 
 from __future__ import annotations
 
-import io
 import json
 import os
 import unittest
-from contextlib import redirect_stderr, redirect_stdout
 
-from helpers import IsolatedCase, has_git
+from helpers import IsolatedCase, has_git, run_cli
 
-from orchestrator import cli
 from orchestrator import ledger as ledger_mod
 from orchestrator import review as review_mod
 from orchestrator import workspace as ws
@@ -38,13 +35,6 @@ FINDING = """## Finding
 - Evidence: a = 1
 - Fix: use the right one
 """
-
-
-def run_cli(*argv):
-    out, err = io.StringIO(), io.StringIO()
-    with redirect_stdout(out), redirect_stderr(err):
-        code = cli.main(list(argv))
-    return code, out.getvalue(), err.getvalue()
 
 
 class TestTheLineageKey(IsolatedCase):

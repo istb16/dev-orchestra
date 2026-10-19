@@ -29,9 +29,8 @@ import json
 import os
 import sys
 import unittest
-from contextlib import redirect_stderr, redirect_stdout
 
-from helpers import IsolatedCase
+from helpers import IsolatedCase, run_cli
 
 from orchestrator import cli, cli_common, cli_run
 from orchestrator import ledger as ledger_mod
@@ -53,13 +52,6 @@ def cp932_stream(errors="surrogateescape"):
     crashing.
     """
     return io.TextIOWrapper(io.BytesIO(), encoding="cp932", errors=errors, newline="")
-
-
-def run_cli(*argv):
-    out, err = io.StringIO(), io.StringIO()
-    with redirect_stdout(out), redirect_stderr(err):
-        code = cli.main(list(argv))
-    return code, out.getvalue(), err.getvalue()
 
 
 class TestTheConsoleTolerance(unittest.TestCase):

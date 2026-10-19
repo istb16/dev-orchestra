@@ -14,10 +14,10 @@ import json
 import os
 import time
 import unittest
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import redirect_stderr
 from typing import Tuple
 
-from helpers import IsolatedCase
+from helpers import IsolatedCase, run_cli
 
 from orchestrator import cli, clocks
 from orchestrator import config as config_mod
@@ -25,13 +25,6 @@ from orchestrator import jobs as jobs_mod
 from orchestrator import ledger as ledger_mod
 from orchestrator.providers.base import Provider
 from orchestrator.providers.claude import ClaudeProvider
-
-
-def run_cli(*argv):
-    out, err = io.StringIO(), io.StringIO()
-    with redirect_stdout(out), redirect_stderr(err):
-        code = cli.main(list(argv))
-    return code, out.getvalue(), err.getvalue()
 
 
 def parse(*argv: str) -> argparse.Namespace:

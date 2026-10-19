@@ -11,29 +11,19 @@ is asked.
 
 from __future__ import annotations
 
-import io
 import json
 import os
 import unittest
-from contextlib import redirect_stderr, redirect_stdout
 
-from helpers import IsolatedCase, has_git
+from helpers import IsolatedCase, has_git, run_cli
 from test_design_review import DesignReviewCase
 
-from orchestrator import cli, cli_review, optimization_render, presets
+from orchestrator import cli_review, optimization_render, presets
 from orchestrator import config as config_mod
 from orchestrator import optimization as opt
 from orchestrator import optimization_report as opt_report
 from orchestrator import review as review_mod
 from orchestrator import workspace as ws
-
-
-def run_cli(*argv):
-    out, err = io.StringIO(), io.StringIO()
-    with redirect_stdout(out), redirect_stderr(err):
-        code = cli.main(list(argv))
-    return code, out.getvalue(), err.getvalue()
-
 
 FINDING = """## Finding
 - Severity: high

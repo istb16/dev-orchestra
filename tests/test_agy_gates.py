@@ -14,7 +14,7 @@ import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
-from helpers import IsolatedCase, has_git
+from helpers import IsolatedCase, has_git, run_cli
 
 from orchestrator import cli, doctor, execution, miniyaml, presets
 from orchestrator import config as config_mod
@@ -56,14 +56,6 @@ SEAT_OPT_OUT = "; agy cannot be held to reading -- list reviewers in the global 
 DESIGN_SEAT_OPT_OUT = (
     "; agy cannot be held to reading -- list review.design.reviewers in the global file to keep them off agy"
 )
-
-
-def run_cli(*argv):
-    """Run the CLI, returning (exit_code, stdout, stderr)."""
-    out, err = io.StringIO(), io.StringIO()
-    with redirect_stdout(out), redirect_stderr(err):
-        code = cli.main(list(argv))
-    return code, out.getvalue(), err.getvalue()
 
 
 class _Completed:

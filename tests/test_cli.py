@@ -13,7 +13,15 @@ from contextlib import redirect_stderr, redirect_stdout
 from typing import Any, ClassVar, Dict, Optional
 from unittest import mock
 
-from helpers import CLAUDE_HELP, CLAUDE_HELP_NO_FORK, CLAUDE_HELP_OLD, TEST_WORKFLOW, IsolatedCase, has_git
+from helpers import (
+    CLAUDE_HELP,
+    CLAUDE_HELP_NO_FORK,
+    CLAUDE_HELP_OLD,
+    TEST_WORKFLOW,
+    IsolatedCase,
+    has_git,
+    run_cli,
+)
 
 from orchestrator import activity as activity_mod
 from orchestrator import cli, cli_review, cli_workflow, providers
@@ -43,14 +51,6 @@ def smoke_script() -> str:
     from orchestrator import doctor
 
     return '"%s"' % doctor.SMOKE_SCRIPT if " " in doctor.SMOKE_SCRIPT else doctor.SMOKE_SCRIPT
-
-
-def run_cli(*argv):
-    """Run the CLI, returning (exit_code, stdout, stderr)."""
-    out, err = io.StringIO(), io.StringIO()
-    with redirect_stdout(out), redirect_stderr(err):
-        code = cli.main(list(argv))
-    return code, out.getvalue(), err.getvalue()
 
 
 class TestConfigCommands(IsolatedCase):

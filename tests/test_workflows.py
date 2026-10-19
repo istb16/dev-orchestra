@@ -14,27 +14,17 @@ keep saying so.
 
 from __future__ import annotations
 
-import io
 import json
 import os
 import re
 import unittest
-from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict
 
-from helpers import IsolatedCase, has_git, present
+from helpers import IsolatedCase, has_git, present, run_cli
 
-from orchestrator import cli
 from orchestrator import workflow as wf
 from orchestrator import workspace as ws
-
-
-def run_cli(*argv):
-    out, err = io.StringIO(), io.StringIO()
-    with redirect_stdout(out), redirect_stderr(err):
-        code = cli.main(list(argv))
-    return code, out.getvalue(), err.getvalue()
 
 
 class TestTheId(unittest.TestCase):

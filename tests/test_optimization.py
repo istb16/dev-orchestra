@@ -23,7 +23,7 @@ import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from typing import Optional
 
-from helpers import IsolatedCase, has_git
+from helpers import IsolatedCase, has_git, run_cli
 
 from orchestrator import cli, optimization_render, review_snapshot
 from orchestrator import config as config_mod
@@ -32,14 +32,6 @@ from orchestrator import optimization as opt
 from orchestrator import optimization_report as opt_report
 from orchestrator import review as review_mod
 from orchestrator import workspace as ws
-
-
-def run_cli(*argv):
-    out, err = io.StringIO(), io.StringIO()
-    with redirect_stdout(out), redirect_stderr(err):
-        code = cli.main(list(argv))
-    return code, out.getvalue(), err.getvalue()
-
 
 FINDING = """## Finding
 - Severity: high

@@ -12,29 +12,20 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import io
 import json
 import os
 import subprocess
 import unittest
-from contextlib import redirect_stderr, redirect_stdout
 from unittest import mock
 
-from helpers import IsolatedCase, has_git
+from helpers import IsolatedCase, has_git, run_cli
 
-from orchestrator import cli, cli_common, review_fanout, review_snapshot
+from orchestrator import cli_common, review_fanout, review_snapshot
 from orchestrator import config as config_mod
 from orchestrator import context as context_mod
 from orchestrator import optimization_report as opt_report
 from orchestrator import review as review_mod
 from orchestrator import workspace as ws
-
-
-def run_cli(*argv):
-    out, err = io.StringIO(), io.StringIO()
-    with redirect_stdout(out), redirect_stderr(err):
-        code = cli.main(list(argv))
-    return code, out.getvalue(), err.getvalue()
 
 
 def reviewer(reviewer_id, provider="mock", role="general"):

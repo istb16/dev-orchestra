@@ -6,30 +6,20 @@ repository, and nothing is written without `--write`.
 
 from __future__ import annotations
 
-import io
 import json
 import os
 import subprocess
 import unittest
-from contextlib import redirect_stderr, redirect_stdout
 from typing import Iterable, Optional
 from unittest import mock
 
-from helpers import IsolatedCase, has_git, user_adapter_source
+from helpers import IsolatedCase, has_git, run_cli, user_adapter_source
 
-from orchestrator import cli, presets, suggest
 from orchestrator import config as config_mod
 from orchestrator import optimization as opt_mod
+from orchestrator import presets, suggest
 from orchestrator import workspace as ws
 from orchestrator.review_common import DEFAULT_EXCLUDE
-
-
-def run_cli(*argv):
-    """Run the CLI, returning (exit_code, stdout, stderr)."""
-    out, err = io.StringIO(), io.StringIO()
-    with redirect_stdout(out), redirect_stderr(err):
-        code = cli.main(list(argv))
-    return code, out.getvalue(), err.getvalue()
 
 
 def listing(paths, exclude=DEFAULT_EXCLUDE, workspace_dir=".ai"):

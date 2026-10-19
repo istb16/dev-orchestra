@@ -12,15 +12,14 @@ from __future__ import annotations
 import io
 import os
 import unittest
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import redirect_stderr
 from itertools import product
 from typing import Any, Dict, List
 from unittest import mock
 
-from helpers import IsolatedCase, has_git, present
+from helpers import IsolatedCase, has_git, present, run_cli
 
 from orchestrator import (
-    cli,
     cli_common,
     cli_review,
     cli_state,
@@ -39,13 +38,6 @@ from orchestrator import review as review_mod
 from orchestrator import suggest as suggest_mod
 from orchestrator import workspace as ws
 from orchestrator.providers import Usage
-
-
-def run_cli(*argv):
-    out, err = io.StringIO(), io.StringIO()
-    with redirect_stdout(out), redirect_stderr(err):
-        code = cli.main(list(argv))
-    return code, out.getvalue(), err.getvalue()
 
 
 def candidate(chars: int, symbol: str = "add") -> Dict[str, Any]:

@@ -11,19 +11,17 @@ from __future__ import annotations
 
 import copy
 import datetime
-import io
 import json
 import os
-from contextlib import redirect_stderr, redirect_stdout
 from typing import Any, Dict, List, Optional, Tuple
 from unittest import mock
 
-from helpers import IsolatedCase
+from helpers import IsolatedCase, run_cli
 from test_design_approval import ApprovalCase
 from test_design_review import PLAN, REVISED_PLAN
 
 from orchestrator import approval as approval_mod
-from orchestrator import cli, cli_workflow, doctor, optimization_render
+from orchestrator import cli_workflow, doctor, optimization_render
 from orchestrator import config as config_mod
 from orchestrator import ledger as ledger_mod
 from orchestrator import optimization as opt_mod
@@ -31,14 +29,6 @@ from orchestrator import optimization_report as opt_report
 from orchestrator import review as review_mod
 from orchestrator import workflow as workflow_mod
 from orchestrator import workspace as ws
-
-
-def run_cli(*argv: str) -> "tuple[int, str, str]":
-    """Run the CLI, returning (exit_code, stdout, stderr)."""
-    out, err = io.StringIO(), io.StringIO()
-    with redirect_stdout(out), redirect_stderr(err):
-        code = cli.main(list(argv))
-    return code, out.getvalue(), err.getvalue()
 
 
 def text(lines: List[str]) -> str:

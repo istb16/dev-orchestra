@@ -10,15 +10,13 @@ be refused by, the code review's count.
 from __future__ import annotations
 
 import hashlib
-import io
 import json
 import os
 import unittest
-from contextlib import redirect_stderr, redirect_stdout
 
-from helpers import IsolatedCase, has_git
+from helpers import IsolatedCase, has_git, run_cli
 
-from orchestrator import cli, cli_review
+from orchestrator import cli_review
 from orchestrator import workspace as ws
 
 #: `File:` names a plan section, which is what a design finding has instead of
@@ -51,14 +49,6 @@ REQUEST = """# Design request
 ## Goal
 Record which channel an order came from.
 """
-
-
-def run_cli(*argv):
-    """Run the CLI, returning (exit_code, stdout, stderr)."""
-    out, err = io.StringIO(), io.StringIO()
-    with redirect_stdout(out), redirect_stderr(err):
-        code = cli.main(list(argv))
-    return code, out.getvalue(), err.getvalue()
 
 
 class DesignReviewCase(IsolatedCase):
