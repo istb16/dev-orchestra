@@ -613,7 +613,7 @@ class TestTheWizard(ExtrasCase):
 
     def run_wizard(self, answers, existing, scope="global"):
         prompter = ScriptedPrompter(answers)
-        base = config_layers._fitted_base(scope, existing)
+        base = config_layers.fitted_base(scope, existing)
         data, save = wizard_mod.run(prompter, existing, base, scope=scope)
         return data, save, "\n".join(prompter.output)
 

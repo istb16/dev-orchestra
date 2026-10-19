@@ -1007,8 +1007,8 @@ class TestImportLayering(IsolatedCase):
         self.assertEqual(review_common.accepted_findings.__module__, "orchestrator.review_common")
         self.assertIs(review.accepted_findings, review_common.accepted_findings)
         self.assertIs(wizard.render_summary, summary.render_summary)
-        self.assertIs(cli_run._describe_spec, summary._describe)
-        for name in ("_describe", "merged"):
+        self.assertIs(cli_run.describe_spec, summary.describe_spec)
+        for name in ("describe_spec", "merged"):
             self.assertFalse(hasattr(wizard, name), name)
         moved = {
             review_coverage: (
@@ -1057,11 +1057,11 @@ class TestImportLayering(IsolatedCase):
             self.assertEqual(getattr(config_policy, name).__module__, "orchestrator.config_policy", name)
             self.assertFalse(hasattr(config, name), name)
         # The seat walk is configuration shape, so it stays with ``merge_tier``.
-        for name in ("SeatRun", "role_seats", "_reviewer_seats", "_read_only_seats"):
+        for name in ("SeatRun", "role_seats", "reviewer_seats", "read_only_seats"):
             self.assertEqual(getattr(config, name).__module__, "orchestrator.config", name)
         self.assertEqual(config.WRITE_ROLES, ("implementer", "review_fixer"))
         # The warned-provider predicate reads only the registry.
-        for name in ("_warned_provider", "warned_provider"):
+        for name in ("warned_enforcement", "warned_provider"):
             self.assertEqual(getattr(providers, name).__module__, "orchestrator.providers", name)
             self.assertFalse(hasattr(config, name), name)
         self.assertFalse(hasattr(config_policy, "warned_provider"))

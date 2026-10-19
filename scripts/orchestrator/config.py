@@ -2279,7 +2279,7 @@ def role_seats(data: Dict[str, Any], roles: Sequence[str]) -> List[SeatRun]:
     return seats
 
 
-def _reviewer_seats(
+def reviewer_seats(
     data: Dict[str, Any], design_origins: Optional[Sequence[ReviewerOrigin]] = None
 ) -> List[SeatRun]:
     """Each mapping reviewer, at its place in the panel: a non-mapping before it still counts.
@@ -2331,11 +2331,11 @@ def same_run(reviewer: Any, other: Any) -> bool:
     return same_provider and reviewer.get("options") == other.get("options")
 
 
-def _read_only_seats(
+def read_only_seats(
     data: Dict[str, Any], design_origins: Optional[Sequence[ReviewerOrigin]] = None
 ) -> List[SeatRun]:
-    """The read-only roles and their tiers, then every reviewer (``_reviewer_seats``)."""
-    return role_seats(data, READ_ONLY_ROLES) + _reviewer_seats(data, design_origins)
+    """The read-only roles and their tiers, then every reviewer (``reviewer_seats``)."""
+    return role_seats(data, READ_ONLY_ROLES) + reviewer_seats(data, design_origins)
 
 
 def default_reviewer_family(provider: str) -> str:

@@ -18,16 +18,16 @@ from .config import (
     WRITE_ROLES,
     LoadedConfig,
     ReviewerOrigin,
-    _read_only_seats,
-    _reviewer_seats,
     ask_questions_mode,
     compose_loaded,
     design_review_mode,
     get_path,
+    read_only_seats,
+    reviewer_seats,
     role_seats,
     workspace_dir_in,
 )
-from .providers import _warned_provider, get_provider, unenforced_warning
+from .providers import get_provider, unenforced_warning, warned_enforcement
 from .workspace import is_int
 
 # --------------------------------------------------------------------------- read-only raw arguments
@@ -64,7 +64,7 @@ def read_only_raw_args(loaded: LoadedConfig) -> List[RawArgs]:
     Broken entries are skipped: ``validate`` reports those already.
     """
     found: List[RawArgs] = []
-    for seat in _read_only_seats(loaded.data, loaded.design_reviewer_origins):
+    for seat in read_only_seats(loaded.data, loaded.design_reviewer_origins):
         args = _string_args(seat.spec)
         if seat.kind == "role":
             layer = loaded.layer_of("%s.options.args" % seat.role)
@@ -137,7 +137,7 @@ def _project_seat_refused(loaded: LoadedConfig) -> List[Tuple[RawArgs, str]]:
     return [
         (entry, message)
         for entry, message in _project_provider_seats(loaded)
-        if _warned_provider(entry.provider) is not None
+        if warned_enforcement(entry.provider) is not None
     ]
 
 
@@ -180,7 +180,7 @@ def _panel_view(loaded: LoadedConfig, panel: str, pairs: Sequence[Tuple[RawArgs,
 
     Ids repeat across the two panels, so a refusal is looked up in the panel
     that runs. A design seat copied from the code panel that runs as the code
-    seat of its id does has no seat of its own (``config._reviewer_seats``),
+    seat of its id does has no seat of its own (``config.reviewer_seats``),
     and meets that code seat's refusal; a seat a file wrote under
     ``review.design`` always has its own.
     """
@@ -188,7 +188,7 @@ def _panel_view(loaded: LoadedConfig, panel: str, pairs: Sequence[Tuple[RawArgs,
     if panel != "design":
         return {key: message for key, message in code.items() if key}
     own = _by_key([(entry.reviewer_id, message) for entry, message in pairs if entry.panel == "design"])
-    seats = _reviewer_seats(loaded.data, loaded.design_reviewer_origins)
+    seats = reviewer_seats(loaded.data, loaded.design_reviewer_origins)
     seated = {seat.reviewer_id for seat in seats if seat.panel == "design"}
     view = {key: message for key, message in code.items() if key and key not in seated}
     view.update((key, message) for key, message in own.items() if key)
@@ -260,7 +260,7 @@ def read_only_enforcement_warnings(
     is the same whether or not its CLI is installed. ``refused`` holds the
     labels already refused (``project_raw_arg_refusals``), which are not also
     warned about. ``design_origins`` tells a design seat a file wrote from a
-    copy of its code seat (``_reviewer_seats``).
+    copy of its code seat (``reviewer_seats``).
     """
     warned = _enforcement_warned_seats(data, refused, design_origins)
     return [line for _label, _reviewer_id, line in warned]
@@ -276,13 +276,13 @@ def _enforcement_warned_seats(
     The seats ``doctor`` reports enforcement for: the read-only roles, their
     tiers that change provider, and every reviewer of either panel.
     """
-    seats = [seat for seat in _read_only_seats(data, design_origins) if not seat.same_provider]
+    seats = [seat for seat in read_only_seats(data, design_origins) if not seat.same_provider]
     found: List[Tuple[str, str, str]] = []
     for seat in seats:
         if seat.label in refused:
             continue
         name = str(seat.spec.get("provider") or "")
-        enforcement = _warned_provider(name)
+        enforcement = warned_enforcement(name)
         if enforcement is not None:
             line = "%s: %s" % (seat.display, unenforced_warning(name, enforcement))
             found.append((seat.label, seat.reviewer_id, line))
@@ -301,7 +301,7 @@ def reviewer_enforcement_warnings(
     ``_panel_view``.
     """
     warned = [entry for entry in _enforcement_warned_seats(data, refused, design_origins) if entry[1]]
-    design_seats = [seat for seat in _reviewer_seats(data, design_origins) if seat.panel == "design"]
+    design_seats = [seat for seat in reviewer_seats(data, design_origins) if seat.panel == "design"]
     design_labels = {seat.label for seat in design_seats}
     code = {reviewer_id: line for label, reviewer_id, line in warned if label not in design_labels}
     if panel != "design":

@@ -515,7 +515,7 @@ class TestDesignEditsInAProjectFile(ExtrasCase):
         return self.project_layer()["review"]["design"]
 
     def test_a_fitted_panels_agy_seat_is_left_out_of_the_copy(self):
-        """No file lists the design panel: its global design extra on agy is left out, as `_seed_panel`."""
+        """No file lists the design panel: its global design extra on agy is left out, as `seed_panel`."""
         self.write_global(design(reviewers_extra=[agy("agy-x")]))
         code, out, err = run_cli("reviewer", "remove", "--scope", "project", "--design", "claude-test")
         self.assertEqual(code, 0, err)
@@ -535,7 +535,7 @@ class TestDesignEditsInAProjectFile(ExtrasCase):
         self.assertEqual(ids(self.project_design()["reviewers"]), kept)
 
     def test_a_design_panel_the_global_file_lists_is_copied_whole(self):
-        """The user chose those seats: copied as they are, agy included, as `_seed_panel` copies."""
+        """The user chose those seats: copied as they are, agy included, as `seed_panel` copies."""
         self.write_global(design(reviewers=[mock("d1"), mock("d2"), agy("gem")]))
         code, out, err = run_cli("reviewer", "remove", "--scope", "project", "--design", "d2")
         self.assertEqual(code, 0, err)
@@ -730,7 +730,7 @@ class TestTheWizard(ExtrasCase):
     def test_wizard_keeps_design_keys(self):
         existing = {"version": 1, **design(reviewers=[mock("d1")])}
         prompter = ScriptedPrompter(accept_all())
-        base = config_layers._fitted_base("global", existing)
+        base = config_layers.fitted_base("global", existing)
         data, _save = wizard_mod.run(prompter, existing, base, scope="global")
         said = "\n".join(prompter.output)
         self.assertEqual(data["review"]["design"]["reviewers"], [mock("d1")])

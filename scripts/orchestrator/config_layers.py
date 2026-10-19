@@ -16,17 +16,17 @@ from . import presets as presets_mod
 from .providers import warned_provider
 
 
-def _resolve_scope(requested: Optional[str], start: Optional[str] = None) -> str:
+def resolve_scope(requested: Optional[str], start: Optional[str] = None) -> str:
     if requested in ("global", "project"):
         return requested
     return "project" if config_mod.find_project_config(start) else "global"
 
 
-def _layer_path(scope: str, start: Optional[str] = None) -> str:
+def layer_path(scope: str, start: Optional[str] = None) -> str:
     return config_mod.global_config_path() if scope == "global" else config_mod.project_config_path(start)
 
 
-def _read_layer(scope: str, start: Optional[str] = None) -> Tuple[str, Dict[str, Any]]:
+def read_layer(scope: str, start: Optional[str] = None) -> Tuple[str, Dict[str, Any]]:
     """The layer a writer is about to edit: what is on disk, and nothing else.
 
     The global layer used to be seeded with the whole of ``default_config()``,
@@ -36,18 +36,18 @@ def _read_layer(scope: str, start: Optional[str] = None) -> Tuple[str, Dict[str,
     into a file that predates it, which is the only way an edit to such a file
     can leave a file this loader's contract describes.
     """
-    path = _layer_path(scope, start)
+    path = layer_path(scope, start)
     layer = config_mod.read_config_file(path) if os.path.isfile(path) else {}
     layer.setdefault("version", config_mod.CONFIG_VERSION)
     return path, layer
 
 
-def _global_file() -> Dict[str, Any]:
+def global_file() -> Dict[str, Any]:
     path = config_mod.global_config_path()
     return config_mod.read_config_file(path) if os.path.isfile(path) else {}
 
 
-def _fitted_base(scope: str, layer: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def fitted_base(scope: str, layer: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """What ``load()`` gives without this layer, the preset's fit included.
 
     The global layer's base is the defaults plus the expansion of its own
@@ -58,11 +58,11 @@ def _fitted_base(scope: str, layer: Optional[Dict[str, Any]] = None) -> Dict[str
     """
     installed = presets_mod.installed_providers()
     if scope == "global":
-        return config_mod.compose({"preset": _global_file().get("preset")}, {}, installed, layer)[0]
-    return config_mod.compose(_global_file(), {}, installed, layer)[0]
+        return config_mod.compose({"preset": global_file().get("preset")}, {}, installed, layer)[0]
+    return config_mod.compose(global_file(), {}, installed, layer)[0]
 
 
-def _reviewers_hold_design_panel(scope: str, layer: Dict[str, Any]) -> bool:
+def reviewers_hold_design_panel(scope: str, layer: Dict[str, Any]) -> bool:
     """Whether this layer's ``reviewers`` is all that keeps design rounds off the fit's design panel.
 
     Without it the design panel would be the preset's
@@ -72,7 +72,7 @@ def _reviewers_hold_design_panel(scope: str, layer: Dict[str, Any]) -> bool:
     if layer.get("reviewers") is None:
         return False
     without = {key: value for key, value in layer.items() if key != "reviewers"}
-    return config_mod.design_panel_is_fit(_compose_preview(scope, without)[1].design_origins)
+    return config_mod.design_panel_is_fit(compose_preview(scope, without)[1].design_origins)
 
 
 #: Sentinel for "the layer holds nothing here at all", which ``get_path`` cannot
@@ -80,7 +80,7 @@ def _reviewers_hold_design_panel(scope: str, layer: Dict[str, Any]) -> bool:
 _UNSET = object()
 
 
-def _seed_list(layer: Dict[str, Any], list_path: str, base: Dict[str, Any]) -> bool:
+def seed_list(layer: Dict[str, Any], list_path: str, base: Dict[str, Any]) -> bool:
     """Give the layer the whole list before one entry of it is edited.
 
     A list replaces the one below it wholesale (``deep_merge``), so changing
@@ -105,12 +105,12 @@ def _seed_list(layer: Dict[str, Any], list_path: str, base: Dict[str, Any]) -> b
     return False
 
 
-def _compose_preview(scope: str, layer: Dict[str, Any]) -> Tuple[Any, ...]:
+def compose_preview(scope: str, layer: Dict[str, Any]) -> Tuple[Any, ...]:
     """``config.compose`` of this layer as it would be saved: ``(data, fit, preset, source)``."""
     installed = presets_mod.installed_providers()
     if scope == "global":
         return config_mod.compose(layer, {}, installed)
-    return config_mod.compose(_global_file(), layer, installed)
+    return config_mod.compose(global_file(), layer, installed)
 
 
 class Draft(NamedTuple):
@@ -122,9 +122,9 @@ class Draft(NamedTuple):
 
 
 def validate_draft(scope: str, layer: Dict[str, Any]) -> Draft:
-    """``_compose_preview`` of this layer, validated with both files as they would be on disk."""
-    data, fit, _preset, _source = _compose_preview(scope, layer)
-    global_layer, project_layer = (layer, None) if scope == "global" else (_global_file(), layer)
+    """``compose_preview`` of this layer, validated with both files as they would be on disk."""
+    data, fit, _preset, _source = compose_preview(scope, layer)
+    global_layer, project_layer = (layer, None) if scope == "global" else (global_file(), layer)
     problems = config_mod.validate(
         data,
         project_layer=project_layer,
@@ -218,7 +218,7 @@ def _renamed_in_place(old_ids: List[Optional[str]], new_ids: List[Optional[str]]
     ]
 
 
-def _panel_write_problems(
+def panel_write_problems(
     scope: str,
     before: Dict[str, Any],
     after: Dict[str, Any],
@@ -269,14 +269,14 @@ def _frozen_panel_note(
     if not loaded.preset or any(listed.get("reviewers") is not None for listed in layers):
         return None
     message = "note: %s now lists the reviewers; the panel no longer follows preset %s's fit (recorded %s)"
-    note = message % (config_mod.shown_location(path), loaded.preset, _recorded(base.get("reviewers")))
-    if layer is not None and _reviewers_hold_design_panel(scope, layer):
+    note = message % (config_mod.shown_location(path), loaded.preset, recorded(base.get("reviewers")))
+    if layer is not None and reviewers_hold_design_panel(scope, layer):
         moved = "; design rounds now run this list without when, not preset %s's design panel"
         note += moved % loaded.preset
     return note
 
 
-def _recorded(reviewers: Any) -> str:
+def recorded(reviewers: Any) -> str:
     """``claude-general opus, codex-general recommended-coding``: what a frozen note says was copied."""
     recorded = ", ".join(
         "%s %s" % (reviewer.get("id"), (reviewer.get("model") or {}).get("family", "default"))
@@ -290,12 +290,12 @@ def _recorded(reviewers: Any) -> str:
 _NOT_COPIED = "not copied into %s: %s -- a reviewer on %s is taken only from the global config"
 
 
-def _global_lists(key: str) -> bool:
+def global_lists(key: str) -> bool:
     """Whether the global file lists the panel at ``key`` itself."""
-    return config_mod.get_path(_global_file(), key) is not None
+    return config_mod.get_path(global_file(), key) is not None
 
 
-def _without_warned_seats(
+def without_warned_seats(
     reviewers: List[Any], scope: str, chosen: Callable[[int], bool]
 ) -> Tuple[List[Any], List[Tuple[str, str]]]:
     """``(kept, dropped)``: the seats copied into a file, and ``(id, provider)`` of those left out.
@@ -319,22 +319,22 @@ def _without_warned_seats(
     return kept, dropped
 
 
-def _not_copied(path: str, dropped: List[Tuple[str, str]]) -> str:
-    """``_NOT_COPIED`` for the seats ``_without_warned_seats`` left out of ``path``."""
+def not_copied(path: str, dropped: List[Tuple[str, str]]) -> str:
+    """``_NOT_COPIED`` for the seats ``without_warned_seats`` left out of ``path``."""
     ids = ", ".join(reviewer_id for reviewer_id, _provider in dropped)
     providers = ", ".join(sorted({provider for _id, provider in dropped}))
     return _NOT_COPIED % (os.path.basename(path), ids, providers)
 
 
-def _seed_panel(
+def seed_panel(
     scope: str, layer: Dict[str, Any], base: Dict[str, Any], path: str, start: Optional[str] = None
 ) -> Tuple[Optional[str], Optional[str]]:
-    """``_seed_list`` for ``reviewers``, and what the writer says about it.
+    """``seed_list`` for ``reviewers``, and what the writer says about it.
 
     A project file may not hold a reviewer on a warned provider, so when the
     panel copied into one is the global preset's fit -- the global file lists
     no reviewers -- those seats are left out of the copy and named. A panel
-    the global file lists is copied whole (``_without_warned_seats``).
+    the global file lists is copied whole (``without_warned_seats``).
 
     Returns the note for a write that succeeds, and the note for one that
     fails -- a selector or an index that named a seat left out would
@@ -343,14 +343,14 @@ def _seed_panel(
     dropped: List[Tuple[str, str]] = []
     reviewers = base.get("reviewers")
     if scope == "project" and isinstance(reviewers, list):
-        listed = _global_lists(config_mod.CODE_PANEL.reviewers)
-        kept, dropped = _without_warned_seats(reviewers, scope, lambda _index: listed)
+        listed = global_lists(config_mod.CODE_PANEL.reviewers)
+        kept, dropped = without_warned_seats(reviewers, scope, lambda _index: listed)
         base = dict(base, reviewers=kept)
-    seeded = _seed_list(layer, "reviewers", base)
+    seeded = seed_list(layer, "reviewers", base)
     frozen = _frozen_panel_note(seeded, path, base, scope, start, layer)
     if not (seeded and dropped):
         return frozen, None
-    left_out = _not_copied(path, dropped)
+    left_out = not_copied(path, dropped)
     if frozen:
         frozen += "; " + left_out
     return frozen, "note: " + left_out

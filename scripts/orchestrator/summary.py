@@ -59,7 +59,7 @@ def _panel_lines(reviewers: Any, origins: Sequence[config_mod.ReviewerOrigin]) -
             "    %d. %s / %s / %s%s%s%s"
             % (
                 index,
-                _describe(reviewer),
+                describe_spec(reviewer),
                 reviewer.get("role", "general"),
                 reviewer.get("id"),
                 "" if when == WHEN_ALWAYS else " (when: %s)" % when,
@@ -88,13 +88,13 @@ def render_summary(
     for key, title in ROLE_TITLES:
         spec = data.get(key) or {}
         lines.append("  %s" % title)
-        lines.append("    %s" % _describe(spec))
+        lines.append("    %s" % describe_spec(spec))
         # Shown because a tier is invisible until somebody routes work to it,
         # and an unused tier is usually one nobody remembered was there.
         tiers = spec.get("model_tiers") if isinstance(spec, dict) else None
         for name in sorted(tiers) if isinstance(tiers, dict) else []:
             entry = cast(Dict[str, Any], tiers)[name]
-            described = _describe(merged(spec, entry)) if isinstance(entry, dict) else "(invalid)"
+            described = describe_spec(merged(spec, entry)) if isinstance(entry, dict) else "(invalid)"
             lines.append("      --tier %-10s %s" % (name, described))
     lines.append("  Reviews")
     lines.extend(_panel_lines(data.get("reviewers"), origins))
@@ -124,7 +124,7 @@ def render_summary(
     lines.extend(_deadline_lines(data, loaded))
     lines.append("  Reply language: %s  (language.reply)" % _reply_language(data))
     # With no origins (data never composed by ``load``), a design seat that
-    # runs as its code seat is taken for a copy, as ``_reviewer_seats`` says.
+    # runs as its code seat is taken for a copy, as ``reviewer_seats`` says.
     for warning in read_only_enforcement_warnings(data, design_origins=list(design_origins) or None):
         lines.append("  Warning: %s" % warning)
     lines.append("")
@@ -203,7 +203,7 @@ def merged(spec: Dict[str, Any], tier: Dict[str, Any]) -> Dict[str, Any]:
     return config_mod.merge_tier(spec, tier)
 
 
-def _describe(spec: Dict[str, Any]) -> str:
+def describe_spec(spec: Dict[str, Any]) -> str:
     """provider / family / version, the way `config show` says it."""
     model = spec.get("model") or {}
     version = model.get("version", "latest")

@@ -569,7 +569,7 @@ class TestUserAdaptersInPresets(IsolatedCase):
         # is not a constant, so none of them asks it.
         entry = report["providers"]["mycli"]
         self.assertEqual(entry["read_only_enforcement"], {"status": "not-checked"})
-        self.assertIsNone(providers_mod._warned_provider("mycli"))
+        self.assertIsNone(providers_mod.warned_enforcement("mycli"))
 
     def test_a_static_report_may_be_any_mapping(self):
         attributes = (

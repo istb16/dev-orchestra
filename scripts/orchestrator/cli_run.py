@@ -46,7 +46,7 @@ from .providers import (
     redact,
     unenforced_warning,
 )
-from .summary import _describe as _describe_spec
+from .summary import describe_spec
 
 # --------------------------------------------------------------------------- run
 
@@ -573,7 +573,7 @@ def _spend_attempt(args: argparse.Namespace, book: ledger_mod.Ledger, seat: _Sea
     """Take this run's attempt from the budget; the exit code if it is refused one."""
     book.clear_stalls()
     if seat.tier:
-        _err("note: running %s on its %r tier (%s)" % (seat.role, seat.tier, _describe_spec(seat.spec)))
+        _err("note: running %s on its %r tier (%s)" % (seat.role, seat.tier, describe_spec(seat.spec)))
     refusal = _refuse_if_exhausted(book, seat.stage, args.force)
     if refusal is not None:
         return refusal
