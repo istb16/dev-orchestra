@@ -113,6 +113,28 @@ def _compose_preview(scope: str, layer: Dict[str, Any]) -> Tuple[Any, ...]:
     return config_mod.compose(_global_file(), layer, installed)
 
 
+class Draft(NamedTuple):
+    """A layer as it would be saved: what it composes to, its fit, and ``validate``'s problems."""
+
+    data: Dict[str, Any]
+    fit: presets_mod.Fit
+    problems: List[str]
+
+
+def validate_draft(scope: str, layer: Dict[str, Any]) -> Draft:
+    """``_compose_preview`` of this layer, validated with both files as they would be on disk."""
+    data, fit, _preset, _source = _compose_preview(scope, layer)
+    global_layer, project_layer = (layer, None) if scope == "global" else (_global_file(), layer)
+    problems = config_mod.validate(
+        data,
+        project_layer=project_layer,
+        global_layer=global_layer,
+        origins=fit.origins,
+        design_origins=fit.design_origins,
+    )
+    return Draft(data, fit, problems)
+
+
 #: The one panel-wide problem that names an entry only as an example: which
 #: high-risk reviewer it names says nothing about whether a write caused it.
 _NO_RISK_PATTERN = "optimization.high_risk_paths: no pattern in force"
@@ -144,19 +166,12 @@ def _ids(panel: Any) -> List[Optional[str]]:
 
 def _panel_problems(scope: str, layer: Dict[str, Any]) -> Tuple[List[str], _PanelIds]:
     """The panel problems ``load()`` would raise with this layer saved, and the panels' ids."""
-    data, fit, _preset, _source = _compose_preview(scope, layer)
-    global_layer, project_layer = (layer, None) if scope == "global" else (_global_file(), layer)
-    problems = config_mod.validate(
-        data,
-        project_layer=project_layer,
-        global_layer=global_layer,
-        origins=fit.origins,
-        design_origins=fit.design_origins,
-    )
+    draft = validate_draft(scope, layer)
+    data = draft.data
     ids = _PanelIds(
         _ids(data.get("reviewers")), _ids(config_mod.get_path(data, config_mod.DESIGN_PANEL.reviewers))
     )
-    return [problem for problem in problems if problem.startswith(_PANEL_PROBLEMS)], ids
+    return [problem for problem in draft.problems if problem.startswith(_PANEL_PROBLEMS)], ids
 
 
 def _problem_key(problem: str, ids: _PanelIds, removed: Any = None) -> Optional[str]:

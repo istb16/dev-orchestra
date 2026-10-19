@@ -33,6 +33,7 @@ from .config_layers import (
     _seed_list,
     _seed_panel,
     _without_warned_seats,
+    validate_draft,
 )
 from .execution import DELEGATED_ENV
 from .providers import (
@@ -229,25 +230,18 @@ def cmd_config_setup(args: argparse.Namespace) -> int:
         return 1
     # The layer on its own names no roles at all, so it is the configuration it
     # resolves to that has to be valid -- the same dict the wizard summarised.
-    preview, fit, _preset, _source = _compose_preview(scope, data)
-    problems = config_mod.validate(
-        preview,
-        project_layer=data if scope == "project" else None,
-        global_layer=data if scope == "global" else _global_file(),
-        origins=fit.origins,
-        design_origins=fit.design_origins,
-    )
-    if problems:
+    draft = validate_draft(scope, data)
+    if draft.problems:
         # Writing this would leave every workflow command failing with
         # "invalid configuration" straight after a successful-looking setup.
         _err("not saved -- the configuration is invalid:")
-        for problem in problems:
+        for problem in draft.problems:
             _err("  - %s" % problem)
         return 2
     config_mod.write_config_file(path, data, scope)
     if args.preset:
-        _out(render_summary(preview, fit.origins, fit.design_origins))
-        notes = presets_mod.render_notes(fit)
+        _out(render_summary(draft.data, draft.fit.origins, draft.fit.design_origins))
+        notes = presets_mod.render_notes(draft.fit)
         if notes:
             _out(notes)
     _out("Saved %s configuration to %s" % (scope, config_mod.shown_location(path)))
