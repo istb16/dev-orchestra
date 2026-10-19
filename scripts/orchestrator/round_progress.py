@@ -61,7 +61,6 @@ def missing_path_lists(meta: Any) -> List[str]:
 
 def round_plan(
     loaded: config_mod.LoadedConfig,
-    settings: Dict[str, Any],
     workspace: ws.Workspace,
     meta: Dict[str, Any],
     panel: List[Dict[str, Any]],
@@ -79,7 +78,7 @@ def round_plan(
     files = meta.get("files")
     return opt_mod.decide(
         loaded.optimization_settings(),
-        settings,
+        loaded.review_settings(),
         _risk_paths(meta),
         int(meta.get("lines_added") or 0) + int(meta.get("lines_deleted") or 0),
         workspace.last_status("test"),

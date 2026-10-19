@@ -961,7 +961,7 @@ class TestImportLayering(IsolatedCase):
 
         rendered = (
             "_revision_rows",
-            "_counts",
+            "_counter_text",
             "_figure",
             "_usd",
             "_scorecard_counts",

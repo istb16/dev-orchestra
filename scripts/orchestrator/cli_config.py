@@ -282,6 +282,16 @@ def _sync_hooks(args: argparse.Namespace, scope: str, before: claude_hooks.Layer
         _out("note: %s" % LEFT_OUT_NOTE)
 
 
+def _report_panel_problems(
+    scope: str, before: Dict[str, Any], after: Dict[str, Any], removed: Any = None
+) -> bool:
+    """The problems the write would introduce, each on stderr; True when there were any."""
+    problems = panel_write_problems(scope, before, after, removed=removed)
+    for problem in problems:
+        _err(problem)
+    return bool(problems)
+
+
 def cmd_config_reset(args: argparse.Namespace) -> int:
     scope = resolve_scope(args.scope, args.cwd)
     path = layer_path(scope, args.cwd)
@@ -406,10 +416,7 @@ def cmd_config_set(args: argparse.Namespace) -> int:
             _err(left_out)
         return 2
     if panel_before is not None:
-        introduced = panel_write_problems(scope, panel_before, layer)
-        if introduced:
-            for problem in introduced:
-                _err(problem)
+        if _report_panel_problems(scope, panel_before, layer):
             return 2
     config_mod.write_config_file(path, layer, scope)
     _out("%s = %r  (%s: %s)" % (args.path, value, scope, config_mod.shown_location(path)))
@@ -660,10 +667,7 @@ def cmd_config_suggest_roles(args: argparse.Namespace) -> int:
         except config_mod.ConfigError as exc:
             _err(str(exc))
             return 2
-        problems = panel_write_problems("project", before, layer)
-        if problems:
-            for problem in problems:
-                _err(problem)
+        if _report_panel_problems("project", before, layer):
             return 2
         config_mod.write_config_file(target, layer, "project")
         written = target
@@ -934,10 +938,7 @@ def cmd_reviewer_add(args: argparse.Namespace) -> int:
     except config_mod.ConfigError as exc:
         _err(str(exc))
         return 2
-    blocking = panel_write_problems(scope, before, layer)
-    if blocking:
-        for problem in blocking:
-            _err(problem)
+    if _report_panel_problems(scope, before, layer):
         return 2
     config_mod.write_config_file(path, layer, scope)
     shown = config_mod.shown_location(path)
@@ -1205,10 +1206,7 @@ def cmd_reviewer_remove(args: argparse.Namespace) -> int:
     # runs would leave a panel that a quiet round could not be reviewed by.
     # Only what the removal itself introduced is refused, so removing a broken
     # reviewer stays a way out of a panel that has another one.
-    problems = panel_write_problems(scope, before, layer, removed=origin)
-    if problems:
-        for problem in problems:
-            _err(problem)
+    if _report_panel_problems(scope, before, layer, removed=origin):
         return 2
     config_mod.write_config_file(path, layer, scope)
     _out("Removed reviewer %s from %s" % (removed.get("id"), config_mod.shown_location(path)))
@@ -1291,10 +1289,7 @@ def cmd_reviewer_set(args: argparse.Namespace) -> int:
     elif args.when:
         reviewer["when"] = args.when
     _set_seat_options(args, reviewer)
-    problems = panel_write_problems(scope, before, layer)
-    if problems:
-        for problem in problems:
-            _err(problem)
+    if _report_panel_problems(scope, before, layer):
         return 2
     config_mod.write_config_file(path, layer, scope)
     _out("Updated reviewer %s in %s" % (reviewer.get("id"), config_mod.shown_location(path)))

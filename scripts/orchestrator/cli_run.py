@@ -295,28 +295,9 @@ def cmd_run(args: argparse.Namespace) -> int:
     # is a resource; approval is the user's consent, and the human who would
     # force past it is the human who can say yes, which `design approve`
     # records.
-    # An open design question refuses it first, whatever the approval says:
-    # answering it is what to ask the user about before approving again.
-    if seat.role == "implementer":
-        refusal = _refuse_while_questions_open(loaded, workspace, args)
-        if refusal is None:
-            refusal = _refuse_unless_approved(loaded, workspace, args, seat.role)
-        if refusal is not None:
-            return refusal
-    # The question gate, placed and checked again by the worker as the
-    # approval gate is, for the same reasons. --force is not honoured for an
-    # open question -- the answers are the user's -- but is for the round cap,
-    # which is a resource limit like a budget.
-    unattended = False
-    if seat.role == "architect":
-        if getattr(args, "questions", False):
-            refusal = _refuse_questions_run_past_cap(loaded, workspace, args)
-        else:
-            refusal, unattended = _refuse_unless_questions_answered(
-                loaded, workspace, args, prompt, resume_prompt
-            )
-        if refusal is not None:
-            return refusal
+    refusal, unattended = _role_gates(args, loaded, workspace, seat, prompt, resume_prompt)
+    if refusal is not None:
+        return refusal
     timeout, timeout_origin = _deadline(args, loaded, seat)
     idle_timeout, idle_origin = _idle_deadline(args, loaded, seat, provider)
     book = _ledger(args, workspace)
@@ -958,6 +939,43 @@ def _report_outcome(run: _Run, attempt: _Attempt, warned_before: str) -> int:
     # the stale file as if it were new. A run with nothing to show exits the
     # same way for the same reason -- an empty answer is not a result.
     return 0 if result.ok and not refused and not answered_nothing else 1
+
+
+def _role_gates(
+    args: argparse.Namespace,
+    loaded: config_mod.LoadedConfig,
+    workspace: ws.Workspace,
+    seat: _Seat,
+    prompt: str,
+    resume_prompt: Optional[str],
+) -> Tuple[Optional[int], bool]:
+    """The implementer's approval gate and the architect's question gate.
+
+    A refusal's exit code, and whether open questions are left to the architect.
+    """
+    # An open design question refuses it first, whatever the approval says:
+    # answering it is what to ask the user about before approving again.
+    if seat.role == "implementer":
+        refusal = _refuse_while_questions_open(loaded, workspace, args)
+        if refusal is None:
+            refusal = _refuse_unless_approved(loaded, workspace, args, seat.role)
+        if refusal is not None:
+            return refusal, False
+    # The question gate, placed and checked again by the worker as the
+    # approval gate is, for the same reasons. --force is not honoured for an
+    # open question -- the answers are the user's -- but is for the round cap,
+    # which is a resource limit like a budget.
+    unattended = False
+    if seat.role == "architect":
+        if getattr(args, "questions", False):
+            refusal = _refuse_questions_run_past_cap(loaded, workspace, args)
+        else:
+            refusal, unattended = _refuse_unless_questions_answered(
+                loaded, workspace, args, prompt, resume_prompt
+            )
+        if refusal is not None:
+            return refusal, unattended
+    return None, unattended
 
 
 def _refuse_unless_approved(

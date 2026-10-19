@@ -76,6 +76,9 @@ ASSUME_NO_CLI = "DEV_ORCHESTRA_TEST_ASSUME_NO_CLI"
 #: sitecustomize -- in the Python processes the tests start.
 CLI_GUARD_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cli_guard")
 
+#: The recordings and samples the tests read, one directory per kind.
+FIXTURES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
+
 
 def _load_cli_guard() -> ModuleType:
     # A worker of the parallel runner has already loaded it as its sitecustomize.
@@ -537,6 +540,22 @@ def usage_dict(**fields: Any) -> Dict[str, Any]:
     }
     expected.update(fields)
     return expected
+
+
+def fixture_path(kind: str, name: str) -> str:
+    """Where ``tests/fixtures/<kind>/<name>`` is."""
+    return os.path.join(FIXTURES_DIR, kind, name)
+
+
+def fixture_text(kind: str, name: str) -> str:
+    """``tests/fixtures/<kind>/<name>``, read as UTF-8."""
+    with open(fixture_path(kind, name), encoding="utf-8") as handle:
+        return handle.read()
+
+
+def codex_fork_help() -> str:
+    """``codex exec fork --help`` as codex-cli 0.156.1 printed it."""
+    return fixture_text("codex", "fork-help.txt")
 
 
 def count_decoding(stack: contextlib.ExitStack, stdout: str, modules: Sequence[Any]) -> List[str]:

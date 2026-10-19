@@ -11,12 +11,11 @@ from __future__ import annotations
 
 import contextlib
 import json
-import os
 import re
 import unittest
 from typing import Any, ClassVar, Dict
 
-from helpers import CLAUDE_HELP, IsolatedCase, count_decoding, present, usage_dict
+from helpers import CLAUDE_HELP, IsolatedCase, count_decoding, fixture_text, present, usage_dict
 
 from orchestrator import execution
 from orchestrator.execution import ExecOutcome
@@ -30,6 +29,11 @@ from orchestrator.providers.claude import (
     parse_stream_tools,
     parse_stream_usage,
 )
+
+
+def fixture(name: str) -> str:
+    """``tests/fixtures/claude/<name>``, read as UTF-8."""
+    return fixture_text("claude", name)
 
 
 def stream(*events):
@@ -375,14 +379,8 @@ class _Help:
     )
 
 
-FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "claude")
 MISSING = "00000000-0000-4000-8000-000000000000"
 REJECTED_EXIT = 1
-
-
-def fixture(name):
-    with open(os.path.join(FIXTURES, name), "r", encoding="utf-8") as handle:
-        return handle.read()
 
 
 class TestResumeRejected(IsolatedCase):

@@ -25,7 +25,9 @@ from helpers import (
     CLAUDE_HELP_OLD,
     CLAUDE_HELP_RESUME_ONLY,
     IsolatedCase,
+    codex_fork_help,
     count_decoding,
+    fixture_text,
     make_dir_link,
     present,
     remove_link,
@@ -799,16 +801,12 @@ class _Recorder:
         return execution.ExecOutcome(0, "done", "", 0.1)
 
 
-FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
-
-
 class TestActivityWiring(IsolatedCase):
     """`Provider.run` hands each stdout line to the adapter's hook, and the
     hook's lines to the installed sink, only when a sink is installed."""
 
     def fixture_lines(self, kind, name, recorded_cwd):
-        with open(os.path.join(FIXTURES, kind, name), encoding="utf-8") as handle:
-            text = handle.read()
+        text = fixture_text(kind, name)
         # Forward slashes, so the path needs no escaping inside the JSON.
         return text.replace(recorded_cwd, self.project.replace("\\", "/")).splitlines(keepends=True)
 
@@ -1387,7 +1385,6 @@ class TestCodexAdapter(IsolatedCase):
         self.assertEqual([c.family for c in self.provider.list_models()], ["recommended-coding"])
 
 
-CODEX_FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "codex")
 #: The thread ids in the recordings: the parent, its read-only fork and its
 #: workspace-write fork.
 CODEX_PARENT = "01a0f266-8141-7e62-a53b-8a09a8cf13a3"
@@ -1397,13 +1394,12 @@ CODEX_MISSING = "00000000-0000-4000-8000-000000000000"
 #: The working directory the recordings name, replaced by each test's own.
 CODEX_RECORDED_CWD = "/sandbox/probe181"
 #: ``codex exec fork --help`` as codex-cli 0.156.1 printed it.
-with open(os.path.join(CODEX_FIXTURES, "fork-help.txt"), encoding="utf-8") as _handle:
-    CODEX_FORK_HELP = _handle.read()
+CODEX_FORK_HELP = codex_fork_help()
 
 
-def codex_fixture(name):
-    with open(os.path.join(CODEX_FIXTURES, name), "r", encoding="utf-8") as handle:
-        return handle.read()
+def codex_fixture(name: str) -> str:
+    """``tests/fixtures/codex/<name>``, read as UTF-8."""
+    return fixture_text("codex", name)
 
 
 class _CodexExecute:
@@ -2416,14 +2412,10 @@ def agy_result(stream=True, **fields):
     return json.dumps(payload) + "\n"
 
 
-AGY_FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "agy")
-
-
 def agy_fixture(name):
     """A recording, with its Windows sandbox rewritten to ``/sandbox/agy193/``
     so that paths read the same on every platform."""
-    with open(os.path.join(AGY_FIXTURES, name), encoding="utf-8") as handle:
-        return handle.read().replace("C:\\\\sandbox\\\\agy193\\\\", "/sandbox/agy193/")
+    return fixture_text("agy", name).replace("C:\\\\sandbox\\\\agy193\\\\", "/sandbox/agy193/")
 
 
 def agy_lines(name, first, last):
@@ -3505,11 +3497,6 @@ class TestAgyAroundTheRun(_AgyCase):
         self.assertEqual((self.seen["stdin"], result.usage.prompt_chars), ("", len(LONG_PROMPT)))
 
 
-def _fixture_text(kind, name):
-    with open(os.path.join(FIXTURES, kind, name), encoding="utf-8") as handle:
-        return handle.read()
-
-
 class TestStdoutEvents(IsolatedCase):
     """The decoded stdout every hook of one run shares."""
 
@@ -3535,8 +3522,8 @@ class TestStdoutEvents(IsolatedCase):
 
     def test_the_built_in_hooks_leave_the_events_as_decoded(self):
         runs = [
-            (ClaudeProvider(), _fixture_text("claude", "partial-messages-tool.jsonl")),
-            (ClaudeProvider(), _fixture_text("claude", "implement-tools.jsonl")),
+            (ClaudeProvider(), fixture_text("claude", "partial-messages-tool.jsonl")),
+            (ClaudeProvider(), fixture_text("claude", "implement-tools.jsonl")),
             (CodexProvider(), codex_fixture("exec-json-tools.jsonl")),
             (AgyProvider(), agy_result(usage=AGY_USAGE)),
         ]
@@ -3552,7 +3539,7 @@ class TestStdoutEvents(IsolatedCase):
                     self.assertEqual(list(base.stdout_events(outcome)), base.json_lines(stdout))
 
     def test_the_decoded_copy_never_leaves_the_outcome(self):
-        stdout = _fixture_text("claude", "partial-messages-tool.jsonl")
+        stdout = fixture_text("claude", "partial-messages-tool.jsonl")
         outcome = execution.ExecOutcome(3, stdout, "err", 5.0, timed_out=True)
         before = outcome.to_dict()
         base.stdout_events(outcome)

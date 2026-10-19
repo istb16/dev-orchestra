@@ -17,13 +17,12 @@ import unittest
 from typing import Any, Dict, List, Optional
 from unittest import mock
 
-from helpers import REPO_ROOT, SCRIPTS_DIR, IsolatedCase, run_cli
+from helpers import REPO_ROOT, SCRIPTS_DIR, IsolatedCase, fixture_path, fixture_text, run_cli
 
 from orchestrator import claude_hooks, doctor, workflow
 from orchestrator import config as config_mod
 from orchestrator import reply_language as rl
 
-FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "reply_language")
 HOOK_SCRIPT = os.path.join(SCRIPTS_DIR, "hooks", "reply_language.py")
 SESSION = "5f0c3a52-0000-4000-8000-000000000254"
 
@@ -39,8 +38,8 @@ print(json.dumps([bool(out), names]))
 
 
 def fixture(name: str) -> str:
-    with open(os.path.join(FIXTURES, name), encoding="utf-8") as handle:
-        return handle.read()
+    """``tests/fixtures/reply_language/<name>``, read as UTF-8."""
+    return fixture_text("reply_language", name)
 
 
 def assistant(*blocks: Dict[str, Any], sidechain: bool = False) -> Dict[str, Any]:
@@ -515,7 +514,7 @@ class TestTranscript(IsolatedCase):
         return path
 
     def test_last_message_joins_text_blocks_after_last_tool_use(self):
-        path = os.path.join(FIXTURES, "last_reply.jsonl")
+        path = fixture_path("reply_language", "last_reply.jsonl")
         self.assertEqual(rl.last_reply(path), "First part of the reply.\n\nSecond part of the reply.")
         reply = assistant(text("before"), tool_use("Bash", command="ls"), text("after"))
         self.assertEqual(rl.last_reply(self.write_transcript([user("go"), reply])), "after")

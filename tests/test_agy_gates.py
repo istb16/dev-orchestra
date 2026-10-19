@@ -14,7 +14,7 @@ import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
-from helpers import IsolatedCase, has_git, run_cli
+from helpers import IsolatedCase, fixture_text, has_git, run_cli
 
 from orchestrator import cli, doctor, execution, miniyaml, presets
 from orchestrator import config as config_mod
@@ -36,19 +36,11 @@ AGY_MODELS = (
 
 UNENFORCED = "read-only is NOT enforced by agy"
 
-AGY_FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "agy")
-
 #: The recorded tool run's answer, which it also streamed whole.
 AGY_TOOLS_RESPONSE = (
     "[output.txt](file:///C:/sandbox/agy193/output.txt) has been created with the lines of "
     "`input.txt` in reverse order (`gamma`, `beta`, `alpha`).\n"
 )
-
-
-def agy_fixture(name):
-    with open(os.path.join(AGY_FIXTURES, name), encoding="utf-8") as handle:
-        return handle.read()
-
 
 #: What a fit note on a read-only seat that went to agy ends with.
 ROLE_OPT_OUT = "; agy cannot be held to reading -- set %s in the global file to keep it off agy"
@@ -56,6 +48,11 @@ SEAT_OPT_OUT = "; agy cannot be held to reading -- list reviewers in the global 
 DESIGN_SEAT_OPT_OUT = (
     "; agy cannot be held to reading -- list review.design.reviewers in the global file to keep them off agy"
 )
+
+
+def agy_fixture(name: str) -> str:
+    """``tests/fixtures/agy/<name>``, read as UTF-8."""
+    return fixture_text("agy", name)
 
 
 class _Completed:

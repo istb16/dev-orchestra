@@ -18,7 +18,7 @@ import unittest
 from typing import Any, Dict, List, Optional
 from unittest import mock
 
-from helpers import REPO_ROOT, IsolatedCase, make_dir_link, run_cli
+from helpers import REPO_ROOT, IsolatedCase, fixture_text, make_dir_link, run_cli
 
 from orchestrator import claude_hooks as ch
 from orchestrator import cli_hooks, doctor, hosts
@@ -26,7 +26,6 @@ from orchestrator import config as config_mod
 from orchestrator import wizard as wizard_mod
 from orchestrator.execution import DELEGATED_ENV
 
-FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "reply_language")
 SESSION = "5f0c3a52-0000-4000-8000-000000000256"
 #: The environment of a command run from Claude Code's Bash tool.
 IN_CLAUDE_CODE = {ch.SESSION_ENV: SESSION}
@@ -34,11 +33,6 @@ IN_CLAUDE_CODE = {ch.SESSION_ENV: SESSION}
 
 def slashes(path: str) -> str:
     return path.replace("\\", "/")
-
-
-def english_reply() -> str:
-    with open(os.path.join(FIXTURES, "en_reply.md"), encoding="utf-8") as handle:
-        return handle.read()
 
 
 class HooksCase(IsolatedCase):
@@ -535,7 +529,7 @@ class TestRelay(HooksCase):
             "session_id": SESSION,
             "transcript_path": transcript,
             "cwd": self.project,
-            "last_assistant_message": english_reply(),
+            "last_assistant_message": fixture_text("reply_language", "en_reply.md"),
         }
         result = self.run_relay("stop", payload)
         self.assertEqual(result.returncode, 0, result.stderr)

@@ -66,9 +66,9 @@ def _level_lines(report: Dict[str, Any]) -> List[str]:
         # Which of them refused, because the two mean different things to
         # act on: the gate says fix the tests, the limit says the change
         # is too big to review at all.
-        lines.append(_OPT_ROW % ("refused by", _counts(report["refused_by"])))
-    lines.append(_OPT_ROW % ("levels in force", _counts(report["levels"])))
-    lines.append(_OPT_ROW % ("gate verdicts", _counts(report["gates"])))
+        lines.append(_OPT_ROW % ("refused by", _counter_text(report["refused_by"])))
+    lines.append(_OPT_ROW % ("levels in force", _counter_text(report["levels"])))
+    lines.append(_OPT_ROW % ("gate verdicts", _counter_text(report["gates"])))
     lines.append(_OPT_ROW % ("panel reduced", report["panel_reduced"]))
     conditional = report.get("conditional") or {}
     if any(conditional.values()):
@@ -83,7 +83,7 @@ def _level_lines(report: Dict[str, Any]) -> List[str]:
         lines.append(_OPT_ROW % ("roles skipped", _relevance_row(relevance)))
     lines.append(_OPT_ROW % ("escalated (high risk)", report["escalated"]))
     if report["escalation_patterns"]:
-        lines.append(_OPT_ROW % ("  caused by", _counts(report["escalation_patterns"])))
+        lines.append(_OPT_ROW % ("  caused by", _counter_text(report["escalation_patterns"])))
     if report["always_escalated"]:
         lines.append(
             "  every round escalated, so the level you configured never applied. "
@@ -140,7 +140,7 @@ def _relevance_row(relevance: Dict[str, Any]) -> str:
     row = "left out x%d of %d judged" % (relevance.get("left_out", 0), relevance.get("judged", 0))
     by_level = relevance.get("left_out_by_level") or {}
     if by_level:
-        row += " (%s)" % _counts(by_level)
+        row += " (%s)" % _counter_text(by_level)
     if relevance.get("estimated_saving"):
         row += ", est. %s tokens" % ws.fmt_int(relevance["estimated_saving"])
     return row
@@ -269,7 +269,7 @@ def _revision_rows(revisions: Dict[str, Any]) -> List[str]:
     return lines
 
 
-def _counts(counter: Dict[str, int]) -> str:
+def _counter_text(counter: Dict[str, int]) -> str:
     return ", ".join("%s x%d" % item for item in sorted(counter.items())) or "-"
 
 

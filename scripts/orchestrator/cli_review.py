@@ -1229,7 +1229,6 @@ class _GatedPanel(NamedTuple):
 def _plan_and_gate(
     args: argparse.Namespace,
     loaded: config_mod.LoadedConfig,
-    settings: Dict[str, Any],
     workspace: ws.Workspace,
     meta: Dict[str, Any],
     reviewers: List[Dict[str, Any]],
@@ -1240,7 +1239,7 @@ def _plan_and_gate(
 
     The refusal is recorded before any ledger entry exists.
     """
-    plan = round_plan(loaded, settings, workspace, meta, reviewers, declared, bool(args.only))
+    plan = round_plan(loaded, workspace, meta, reviewers, declared, bool(args.only))
     if plan.escalated:
         _err("note: %s" % plan.escalation_note())
     for line in plan.conditional_notes():
@@ -1398,7 +1397,7 @@ def cmd_review_run(args: argparse.Namespace) -> int:
     refusal = _refuse_incremental_measurement(override, meta)
     if refusal is not None:
         return refusal
-    gated = _plan_and_gate(args, loaded, settings, workspace, meta, reviewers, declared, iteration)
+    gated = _plan_and_gate(args, loaded, workspace, meta, reviewers, declared, iteration)
     if isinstance(gated, int):
         return gated
     plan, reviewers, excluded = gated

@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 import platform
 import sys
-from typing import Any, Dict, Iterable, List, Optional, Sequence
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from . import claude_hooks, hosts, reply_language, verified
 from . import config as config_mod
@@ -142,8 +142,6 @@ def collect(start: Optional[str] = None, probe_models: bool = True) -> Dict[str,
         report["problems"].append("user provider %s: %s" % (item["path"], item["problem"]))
     _stored_elsewhere_report(report)
 
-    detections = {}
-    adapter_errors: Dict[str, str] = {}
     # A resume record inside this directory is not trusted; see verified.py.
     # The repository root, as `run` uses, or a subdirectory would trust a
     # record that `run` refuses.
@@ -151,6 +149,36 @@ def collect(start: Optional[str] = None, probe_models: bool = True) -> Dict[str,
     # Before anything that can return early: a filesystem read only, so a
     # config error or --fast does not hide it.
     _antigravity_live(report, root)
+    detections, adapter_errors = _providers_report(report, root, probe_models)
+
+    loaded = _config_report(report, start)
+    if loaded is None:
+        return report
+
+    _roles_report(report, loaded, detections, adapter_errors)
+
+    panel = loaded.data.get("reviewers")
+    _reviewers_report(report, loaded, panel, detections, adapter_errors)
+    _design_reviewers_report(report, loaded, detections, adapter_errors)
+
+    # A non-list or all-broken panel is already one of validate's problems
+    # above, and `review run` refuses it rather than skipping the stage.
+    if panel is None or panel == []:
+        report["problems"].append("no reviewers configured: the independent-review stage will be skipped")
+    _default_patterns_note(report, loaded.optimization_settings())
+    seats = [*loaded.reviewers(), *loaded.design_reviewers()]
+    _role_patterns_problems(report, loaded.optimization_settings(), seats)
+    _code_extras_note(report, loaded)
+    _language_report(report, loaded)
+    return report
+
+
+def _providers_report(
+    report: Dict[str, Any], root: str, probe_models: bool
+) -> Tuple[Dict[str, Any], Dict[str, str]]:
+    """Each provider's block, and ``(detections, adapter_errors)`` for the seats below."""
+    detections = {}
+    adapter_errors: Dict[str, str] = {}
     for name in available_providers():
         # One adapter at a time: a user adapter that raises is reported against
         # its file instead of taking the whole diagnosis down with it.
@@ -209,8 +237,11 @@ def collect(start: Optional[str] = None, probe_models: bool = True) -> Dict[str,
             )
         entry["origin"] = origin_payload(name)
         report["providers"][name] = entry
-    load_errors = len(report["user_providers"]["errors"])
+    return detections, adapter_errors
 
+
+def _config_report(report: Dict[str, Any], start: Optional[str]) -> Optional[config_mod.LoadedConfig]:
+    """The ``config`` block and its problems and notes; None when the config does not load."""
     try:
         loaded = config_mod.load(start, validate_result=False)
     except config_mod.ConfigError as exc:
@@ -226,7 +257,7 @@ def collect(start: Optional[str] = None, probe_models: bool = True) -> Dict[str,
         if exists:
             _add_real(report["config"], "global_real", global_path)
         report["problems"].append(str(exc))
-        return report
+        return None
 
     problems = config_mod.validate_loaded(loaded)
     installed = presets_mod.installed_providers()
@@ -275,11 +306,20 @@ def collect(start: Optional[str] = None, probe_models: bool = True) -> Dict[str,
             "design.ask_questions is %s while design.require_approval is false: the questions are "
             "asked and recorded, but the plan run leaves any still open to the architect" % asking
         )
+    return loaded
+
+
+def _roles_report(
+    report: Dict[str, Any],
+    loaded: config_mod.LoadedConfig,
+    detections: Dict[str, Any],
+    adapter_errors: Dict[str, str],
+) -> None:
+    """Each role's seat, and the read-only enforcement of its tiers."""
+    load_errors = len(report["user_providers"]["errors"])
     # A seat refused for coming with the project file is a problem above, and
     # not also a note below.
     refused = policy_mod.project_raw_arg_refusals(loaded)
-    reviewer_refused = policy_mod.reviewer_raw_arg_refusals(loaded)
-
     layers = (loaded.global_layer, loaded.project_layer)
     for key, label in ROLE_LABELS:
         spec = loaded.data.get(key)
@@ -317,23 +357,42 @@ def collect(start: Optional[str] = None, probe_models: bool = True) -> Dict[str,
                 if not seat.same_provider:
                     _enforcement_report(tier_label, seat.spec, report, None, seat.label in refused)
 
+
+def _reviewers_report(
+    report: Dict[str, Any],
+    loaded: config_mod.LoadedConfig,
+    panel: Any,
+    detections: Dict[str, Any],
+    adapter_errors: Dict[str, str],
+) -> None:
+    """The code panel's seats."""
+    # Refused as in `_roles_report`: a problem above, not also a note.
+    reviewer_refused = policy_mod.reviewer_raw_arg_refusals(loaded)
     # A broken entry is skipped, but still counted, so each valid one keeps
     # the origin of its own position.
-    panel = loaded.data.get("reviewers")
     for index, reviewer in enumerate(loaded.reviewers() if isinstance(panel, list) else []):
         if not isinstance(reviewer, dict):
             continue
         label = "Reviewer %s" % reviewer.get("id")
-        entry = _reviewer_entry(label, reviewer, detections, report, adapter_errors, load_errors)
+        entry = _reviewer_entry(label, reviewer, detections, report, adapter_errors)
         entry["origin"] = loaded.reviewer_origin(index).label()
         report["reviewers"].append(entry)
         from_project = str(reviewer.get("id") or "") in reviewer_refused
         _enforcement_report(label, reviewer, report, entry, from_project)
 
+
+def _design_reviewers_report(
+    report: Dict[str, Any],
+    loaded: config_mod.LoadedConfig,
+    detections: Dict[str, Any],
+    adapter_errors: Dict[str, str],
+) -> None:
+    """The design panel's source and seats."""
     # The design panel: its own seats, when a file sets one, are diagnosed as
     # the code seats are; a copy of a code seat was diagnosed above.
     report["design_panel_source"] = loaded.design_panel_source
     report["design_reviewers"] = []
+    # Refused as in `_roles_report`: a problem above, not also a note.
     design_refused = policy_mod.reviewer_raw_arg_refusals(loaded, "design")
     for index, reviewer in enumerate(loaded.design_reviewers()):
         if not isinstance(reviewer, dict):
@@ -345,22 +404,11 @@ def collect(start: Optional[str] = None, probe_models: bool = True) -> Dict[str,
             report["design_reviewers"].append(entry)
             continue
         label = "Design reviewer %s" % reviewer.get("id")
-        entry = _reviewer_entry(label, reviewer, detections, report, adapter_errors, load_errors)
+        entry = _reviewer_entry(label, reviewer, detections, report, adapter_errors)
         entry["origin"] = origin.label()
         report["design_reviewers"].append(entry)
         from_project = str(reviewer.get("id") or "") in design_refused
         _enforcement_report(label, reviewer, report, entry, from_project)
-
-    # A non-list or all-broken panel is already one of validate's problems
-    # above, and `review run` refuses it rather than skipping the stage.
-    if panel is None or panel == []:
-        report["problems"].append("no reviewers configured: the independent-review stage will be skipped")
-    _default_patterns_note(report, loaded.optimization_settings())
-    seats = [*loaded.reviewers(), *loaded.design_reviewers()]
-    _role_patterns_problems(report, loaded.optimization_settings(), seats)
-    _code_extras_note(report, loaded)
-    _language_report(report, loaded)
-    return report
 
 
 def _language_report(report: Dict[str, Any], loaded: config_mod.LoadedConfig) -> None:
@@ -427,7 +475,6 @@ def _reviewer_entry(
     detections: Dict[str, Any],
     report: Dict[str, Any],
     adapter_errors: Dict[str, str],
-    load_errors: int,
 ) -> Dict[str, Any]:
     """One reviewer as doctor reports it, of either panel.
 
@@ -435,6 +482,7 @@ def _reviewer_entry(
     against the same provider: a family that will not resolve fails the
     high-risk rounds, which are the ones that matter most.
     """
+    load_errors = len(report["user_providers"]["errors"])
     # Every seat of either panel runs read-only, whatever its label says.
     entry = _describe_role(
         label, reviewer, detections, report["problems"], adapter_errors, load_errors, read_only=True
