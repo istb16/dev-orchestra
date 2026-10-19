@@ -11,7 +11,7 @@ import json
 import os
 import unittest
 
-from helpers import IsolatedCase, has_git, run_cli
+from helpers import IsolatedCase, fixture_text, has_git, run_cli
 from test_wizard import ScriptedPrompter, accept_all
 
 from orchestrator import config as config_mod
@@ -24,7 +24,6 @@ from orchestrator import wizard as wizard_mod
 FITTED = ["claude-general", "claude-general-2", "claude-security", "claude-test"]
 FIT_LABELS = ["fit"] * len(FITTED)
 BOTH_FITTED = ["claude-general", "codex-general", "claude-security", "claude-test"]
-AGY_FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "agy")
 
 
 def mock(reviewer_id, role="general", **fields):
@@ -505,8 +504,7 @@ class TestProjectRefusals(ExtrasCase):
 
     @unittest.skipUnless(has_git(), "git not available")
     def test_a_denied_agy_reviewer_is_not_a_clean_review(self):
-        with open(os.path.join(AGY_FIXTURES, "stream-json-denied.jsonl"), encoding="utf-8") as handle:
-            entry = self.agy_review(handle.read())
+        entry = self.agy_review(fixture_text("agy", "stream-json-denied.jsonl"))
         self.assertEqual(entry["status"], "failed")
         self.assertIsNone(entry["report"])
         self.assertFalse(os.path.exists(self.cli_workspace().reviewer_report_path("gem")))

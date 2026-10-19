@@ -17,13 +17,12 @@ import unittest
 from typing import Any, Dict, List, Optional
 from unittest import mock
 
-from helpers import REPO_ROOT, SCRIPTS_DIR, IsolatedCase, run_cli
+from helpers import REPO_ROOT, SCRIPTS_DIR, IsolatedCase, fixture_path, fixture_text, run_cli
 
 from orchestrator import claude_hooks, doctor, workflow
 from orchestrator import config as config_mod
 from orchestrator import reply_language as rl
 
-FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "reply_language")
 HOOK_SCRIPT = os.path.join(SCRIPTS_DIR, "hooks", "reply_language.py")
 SESSION = "5f0c3a52-0000-4000-8000-000000000254"
 
@@ -36,11 +35,6 @@ out = rl.run("stop", sys.stdin.buffer.read(), {})
 names = sorted(name for name in sys.modules if name.startswith("orchestrator"))
 print(json.dumps([bool(out), names]))
 """
-
-
-def fixture(name: str) -> str:
-    with open(os.path.join(FIXTURES, name), encoding="utf-8") as handle:
-        return handle.read()
 
 
 def assistant(*blocks: Dict[str, Any], sidechain: bool = False) -> Dict[str, Any]:
@@ -66,7 +60,7 @@ SKILL_LOAD = assistant(tool_use("Skill", skill="dev-orchestra:dev-orchestra"))
 
 def english_turn() -> List[Dict[str, Any]]:
     """A session that loaded the skill and then answered in English."""
-    return [user("go"), SKILL_LOAD, assistant(text(fixture("en_reply.md")))]
+    return [user("go"), SKILL_LOAD, assistant(text(fixture_text("reply_language", "en_reply.md")))]
 
 
 def hook_env() -> Dict[str, str]:
@@ -90,7 +84,7 @@ class TestJudgement(unittest.TestCase):
     """``reply_fails``: True means the reply is clearly in another language."""
 
     def test_japanese_reply_full_of_identifiers_passes(self):
-        self.assertFalse(rl.reply_fails(fixture("ja_identifiers.md"), "ja"))
+        self.assertFalse(rl.reply_fails(fixture_text("reply_language", "ja_identifiers.md"), "ja"))
 
     def test_short_japanese_reply_passes(self):
         reply = "了解しました。`config set language.reply ja` を実行しました。"
@@ -98,13 +92,13 @@ class TestJudgement(unittest.TestCase):
         self.assertFalse(rl.reply_fails("OK, F3 と F4 は直しました。", "ja"))
 
     def test_english_reply_fails_for_ja(self):
-        self.assertTrue(rl.reply_fails(fixture("en_reply.md"), "ja"))
+        self.assertTrue(rl.reply_fails(fixture_text("reply_language", "en_reply.md"), "ja"))
 
     def test_english_body_under_a_japanese_opening_line_fails(self):
-        self.assertTrue(rl.reply_fails(fixture("ja_opening_en_body.md"), "ja"))
+        self.assertTrue(rl.reply_fails(fixture_text("reply_language", "ja_opening_en_body.md"), "ja"))
 
     def test_long_english_paragraph_in_a_japanese_reply_fails(self):
-        reply = fixture("ja_long_en_paragraph.md")
+        reply = fixture_text("reply_language", "ja_long_en_paragraph.md")
         self.assertTrue(rl.reply_fails(reply, "ja"))
         # The overall share alone would pass it: the paragraph is what fails.
         counts = rl.count(rl.strip_allowed(reply))
@@ -114,7 +108,7 @@ class TestJudgement(unittest.TestCase):
         self.assertFalse(rl.reply_fails(quoted, "ja"))
 
     def test_code_fences_inline_code_urls_paths_quotes_are_ignored(self):
-        reply = fixture("ja_with_code.md")
+        reply = fixture_text("reply_language", "ja_with_code.md")
         self.assertFalse(rl.reply_fails(reply, "ja"))
         stripped = rl.strip_allowed(reply)
         for gone in (
@@ -138,7 +132,7 @@ class TestJudgement(unittest.TestCase):
         self.assertIn("done.", stripped)
 
     def test_final_report_table_in_a_fence_passes(self):
-        self.assertFalse(rl.reply_fails(fixture("ja_report_table.md"), "ja"))
+        self.assertFalse(rl.reply_fails(fixture_text("reply_language", "ja_report_table.md"), "ja"))
 
     def test_table_rows_are_left_out_like_quotes(self):
         """A report whose table lists reviewers' English finding titles (#288)."""
@@ -287,62 +281,64 @@ class TestJudgement(unittest.TestCase):
         self.assertTrue(rl.reply_fails(reply, "ja"))
 
     def test_chinese_reply_fails_for_ja(self):
-        self.assertTrue(rl.reply_fails(fixture("zh_reply.md"), "ja"))
-        self.assertTrue(rl.reply_fails(fixture("zh_tw_reply.md"), "ja"))
-        self.assertFalse(rl.reply_fails(fixture("zh_reply.md"), "zh"))
-        self.assertFalse(rl.reply_fails(fixture("zh_reply.md"), "zh-TW"))
-        self.assertTrue(rl.reply_fails(fixture("en_reply.md"), "zh-Hans"))
+        self.assertTrue(rl.reply_fails(fixture_text("reply_language", "zh_reply.md"), "ja"))
+        self.assertTrue(rl.reply_fails(fixture_text("reply_language", "zh_tw_reply.md"), "ja"))
+        self.assertFalse(rl.reply_fails(fixture_text("reply_language", "zh_reply.md"), "zh"))
+        self.assertFalse(rl.reply_fails(fixture_text("reply_language", "zh_reply.md"), "zh-TW"))
+        self.assertTrue(rl.reply_fails(fixture_text("reply_language", "en_reply.md"), "zh-Hans"))
 
     def test_chinese_target_passes_both_scripts(self):
         for tag in ("zh", "zh-CN", "zh-TW", "zh-Hans", "zh-Hant", "zh-HK"):
-            self.assertFalse(rl.reply_fails(fixture("zh_reply.md"), tag), tag)
-            self.assertFalse(rl.reply_fails(fixture("zh_tw_reply.md"), tag), tag)
+            self.assertFalse(rl.reply_fails(fixture_text("reply_language", "zh_reply.md"), tag), tag)
+            self.assertFalse(rl.reply_fails(fixture_text("reply_language", "zh_tw_reply.md"), tag), tag)
 
     def test_japanese_reply_fails_for_zh(self):
         for name in ("ja_identifiers.md", "ja_with_code.md"):
             for tag in ("zh", "zh-TW", "zh-Hans"):
-                self.assertTrue(rl.reply_fails(fixture(name), tag), (name, tag))
+                self.assertTrue(rl.reply_fails(fixture_text("reply_language", name), tag), (name, tag))
         # Too few kana to judge: a one-line Japanese report passes.
-        self.assertFalse(rl.reply_fails(fixture("ja_report_table.md"), "zh"))
-        counts = rl.count(rl.strip_allowed(fixture("ja_identifiers.md")))
+        self.assertFalse(rl.reply_fails(fixture_text("reply_language", "ja_report_table.md"), "zh"))
+        counts = rl.count(rl.strip_allowed(fixture_text("reply_language", "ja_identifiers.md")))
         self.assertGreaterEqual(counts.letters["kana"], rl.MIN_KANA_FOR_JAPANESE)
         # Kana never count as Chinese: a reply in kana alone is not one.
         self.assertTrue(rl.reply_fails("これはテストです。" * 10, "zh"))
 
     def test_a_few_kana_in_a_chinese_reply_pass(self):
-        reply = fixture("zh_reply.md") + "\n用户提到的工具叫作「ドクター」。"
+        reply = fixture_text("reply_language", "zh_reply.md") + "\n用户提到的工具叫作「ドクター」。"
         self.assertFalse(rl.reply_fails(reply, "zh"))
         # Many kana, but a small share of a long Chinese reply, pass too.
-        reply = (fixture("zh_reply.md") * 6) + "\n" + "ドクター、" * 5
+        reply = (fixture_text("reply_language", "zh_reply.md") * 6) + "\n" + "ドクター、" * 5
         counts = rl.count(rl.strip_allowed(reply))
         self.assertGreaterEqual(counts.letters["kana"], rl.MIN_KANA_FOR_JAPANESE)
         self.assertFalse(rl.reply_fails(reply, "zh"))
 
     def test_korean_target_passes_hangul_fails_english(self):
-        self.assertFalse(rl.reply_fails(fixture("ko_reply.md"), "ko"))
-        self.assertTrue(rl.reply_fails(fixture("en_reply.md"), "ko"))
-        self.assertTrue(rl.reply_fails(fixture("ja_opening_en_body.md"), "ko"))
+        self.assertFalse(rl.reply_fails(fixture_text("reply_language", "ko_reply.md"), "ko"))
+        self.assertTrue(rl.reply_fails(fixture_text("reply_language", "en_reply.md"), "ko"))
+        self.assertTrue(rl.reply_fails(fixture_text("reply_language", "ja_opening_en_body.md"), "ko"))
 
     def test_hangul_kana_and_ideographs_never_count_for_each_other(self):
         for tag in ("ja", "zh", "zh-TW"):
-            self.assertTrue(rl.reply_fails(fixture("ko_reply.md"), tag), tag)
+            self.assertTrue(rl.reply_fails(fixture_text("reply_language", "ko_reply.md"), tag), tag)
         for name in ("ja_identifiers.md", "zh_reply.md", "zh_tw_reply.md"):
-            self.assertTrue(rl.reply_fails(fixture(name), "ko"), name)
+            self.assertTrue(rl.reply_fails(fixture_text("reply_language", name), "ko"), name)
 
     def test_cyrillic_target(self):
         for tag in ("ru", "uk", "sr"):
-            self.assertFalse(rl.reply_fails(fixture("ru_reply.md"), tag), tag)
-            self.assertTrue(rl.reply_fails(fixture("en_reply.md"), tag), tag)
+            self.assertFalse(rl.reply_fails(fixture_text("reply_language", "ru_reply.md"), tag), tag)
+            self.assertTrue(rl.reply_fails(fixture_text("reply_language", "en_reply.md"), tag), tag)
         # A script subtag moves the language to another script.
         self.assertEqual(rl.check_kind("sr-Latn"), "latin")
-        self.assertFalse(rl.reply_fails(fixture("en_reply.md"), "sr-Latn"))
+        self.assertFalse(rl.reply_fails(fixture_text("reply_language", "en_reply.md"), "sr-Latn"))
 
     def test_latin_target_flags_replies_in_another_script(self):
         for tag in ("en", "fr", "en-GB", "nl", "sv"):
             for other in ("ja_identifiers.md", "ko_reply.md", "ru_reply.md", "zh_reply.md"):
-                self.assertTrue(rl.reply_fails(fixture(other), tag), (tag, other))
+                self.assertTrue(rl.reply_fails(fixture_text("reply_language", other), tag), (tag, other))
         # A few words of another script are not a reply in it.
-        self.assertFalse(rl.reply_fails(fixture("en_reply.md") + "\n日本語の補足。", "en"))
+        self.assertFalse(
+            rl.reply_fails(fixture_text("reply_language", "en_reply.md") + "\n日本語の補足。", "en")
+        )
 
     def test_listed_latin_languages_are_told_apart_by_common_words(self):
         replies = {
@@ -359,16 +355,18 @@ class TestJudgement(unittest.TestCase):
         for tag in replies:
             self.assertEqual(rl.check_kind(tag), "words", tag)
             for language, name in replies.items():
-                self.assertEqual(rl.reply_fails(fixture(name), tag), language != tag, (tag, name))
+                self.assertEqual(
+                    rl.reply_fails(fixture_text("reply_language", name), tag), language != tag, (tag, name)
+                )
 
     def test_spanish_target(self):
         for tag in ("es", "es-ES", "es-419", "es-MX"):
-            self.assertFalse(rl.reply_fails(fixture("es_reply.md"), tag), tag)
-            self.assertFalse(rl.reply_fails(fixture("es_identifiers.md"), tag), tag)
-            self.assertTrue(rl.reply_fails(fixture("en_reply.md"), tag), tag)
-            self.assertTrue(rl.reply_fails(fixture("ja_identifiers.md"), tag), tag)
+            self.assertFalse(rl.reply_fails(fixture_text("reply_language", "es_reply.md"), tag), tag)
+            self.assertFalse(rl.reply_fails(fixture_text("reply_language", "es_identifiers.md"), tag), tag)
+            self.assertTrue(rl.reply_fails(fixture_text("reply_language", "en_reply.md"), tag), tag)
+            self.assertTrue(rl.reply_fails(fixture_text("reply_language", "ja_identifiers.md"), tag), tag)
         for tag in ("en", "en-US"):
-            self.assertTrue(rl.reply_fails(fixture("es_reply.md"), tag), tag)
+            self.assertTrue(rl.reply_fails(fixture_text("reply_language", "es_reply.md"), tag), tag)
 
     def test_short_latin_replies_pass(self):
         self.assertFalse(rl.reply_fails("Done. All tests pass and the branch is ready.", "es"))
@@ -381,7 +379,7 @@ class TestJudgement(unittest.TestCase):
         self.assertEqual(rl.word_hits(words, "es", "pt"), 3)  # la en el
 
     def test_identifiers_in_a_spanish_reply_are_not_english(self):
-        stripped = rl.strip_allowed(fixture("es_identifiers.md"))
+        stripped = rl.strip_allowed(fixture_text("reply_language", "es_identifiers.md"))
         words = rl.function_words(stripped)
         self.assertEqual(rl.word_hits(words, "en", "es"), 0)
 
@@ -389,13 +387,13 @@ class TestJudgement(unittest.TestCase):
         for tag in ("nl", "sv", "pl", "sr-Latn"):
             self.assertEqual(rl.check_kind(tag), "latin", tag)
             for name in ("en_reply.md", "es_reply.md", "fr_reply.md"):
-                self.assertFalse(rl.reply_fails(fixture(name), tag), (tag, name))
+                self.assertFalse(rl.reply_fails(fixture_text("reply_language", name), tag), (tag, name))
 
     def test_unknown_tag_never_fails(self):
         for tag in ("tlh", "qaa", "xyz-Latx"):
             self.assertEqual(rl.check_kind(tag), "none", tag)
             for name in ("en_reply.md", "ja_identifiers.md", "ko_reply.md", "ru_reply.md"):
-                self.assertFalse(rl.reply_fails(fixture(name), tag), (tag, name))
+                self.assertFalse(rl.reply_fails(fixture_text("reply_language", name), tag), (tag, name))
 
     def test_every_alphabetic_script_is_judged_by_its_own_letters(self):
         """A reply in each script passes for its languages and fails for the others and English."""
@@ -415,7 +413,7 @@ class TestJudgement(unittest.TestCase):
             "कोणतीही समस्या उरलेली नाही.",
             "ne": "परिवर्तनहरू पूरा भए र सबै परीक्षणहरू सफल भए। शाखा समीक्षाका लागि तयार छ र कुनै समस्या बाँकी छैन।",
         }
-        english = fixture("en_reply.md")
+        english = fixture_text("reply_language", "en_reply.md")
         for tag, native in replies.items():
             self.assertEqual(rl.check_kind(tag), "script", tag)
             self.assertFalse(rl.reply_fails(native, tag), tag)
@@ -431,8 +429,8 @@ class TestJudgement(unittest.TestCase):
         self.assertEqual(rl.check_kind("zh-Latn-TW"), "latin")
         self.assertEqual(rl.check_kind("zh-Latn-CN"), "latin")
         self.assertEqual(rl.language_name("zh-Latn-TW"), "Traditional Chinese")
-        self.assertFalse(rl.reply_fails(fixture("en_reply.md"), "zh-Latn-TW"))
-        self.assertTrue(rl.reply_fails(fixture("en_reply.md"), "zh-TW"))
+        self.assertFalse(rl.reply_fails(fixture_text("reply_language", "en_reply.md"), "zh-Latn-TW"))
+        self.assertTrue(rl.reply_fails(fixture_text("reply_language", "en_reply.md"), "zh-TW"))
 
     def test_long_runs_without_an_at_sign_or_slash_are_stripped_in_linear_time(self):
         for run in ("a" * 200_000, "deadbeef" * 25_000, "x.y-z" * 40_000):
@@ -515,7 +513,7 @@ class TestTranscript(IsolatedCase):
         return path
 
     def test_last_message_joins_text_blocks_after_last_tool_use(self):
-        path = os.path.join(FIXTURES, "last_reply.jsonl")
+        path = fixture_path("reply_language", "last_reply.jsonl")
         self.assertEqual(rl.last_reply(path), "First part of the reply.\n\nSecond part of the reply.")
         reply = assistant(text("before"), tool_use("Bash", command="ls"), text("after"))
         self.assertEqual(rl.last_reply(self.write_transcript([user("go"), reply])), "after")
@@ -717,7 +715,9 @@ class TestHookOutput(HookCase):
     def test_a_reply_in_the_configured_language_is_not_blocked(self):
         for tag, name in (("ja", "ja_identifiers.md"), ("ko", "ko_reply.md"), ("ru", "ru_reply.md")):
             self.configure(tag)
-            self.set_transcript([user("go"), SKILL_LOAD, assistant(text(fixture(name)))])
+            self.set_transcript(
+                [user("go"), SKILL_LOAD, assistant(text(fixture_text("reply_language", name)))]
+            )
             self.assertIsNone(self.hook("stop"), tag)
 
     def test_additional_context_shape_per_event(self):
@@ -752,7 +752,10 @@ class TestHookOutput(HookCase):
 
     def test_last_assistant_message_field_preferred(self):
         self.configure("ja")
-        japanese, english = fixture("ja_identifiers.md"), fixture("en_reply.md")
+        japanese, english = (
+            fixture_text("reply_language", "ja_identifiers.md"),
+            fixture_text("reply_language", "en_reply.md"),
+        )
         self.set_transcript([user("go"), SKILL_LOAD, assistant(text(japanese))])
         self.assertIsNotNone(self.hook("stop", last_assistant_message=english))
         self.set_transcript(english_turn())

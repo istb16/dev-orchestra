@@ -14,7 +14,7 @@ import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
-from helpers import IsolatedCase, has_git, run_cli
+from helpers import IsolatedCase, fixture_text, has_git, run_cli
 
 from orchestrator import cli, doctor, execution, miniyaml, presets
 from orchestrator import config as config_mod
@@ -36,19 +36,11 @@ AGY_MODELS = (
 
 UNENFORCED = "read-only is NOT enforced by agy"
 
-AGY_FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "agy")
-
 #: The recorded tool run's answer, which it also streamed whole.
 AGY_TOOLS_RESPONSE = (
     "[output.txt](file:///C:/sandbox/agy193/output.txt) has been created with the lines of "
     "`input.txt` in reverse order (`gamma`, `beta`, `alpha`).\n"
 )
-
-
-def agy_fixture(name):
-    with open(os.path.join(AGY_FIXTURES, name), encoding="utf-8") as handle:
-        return handle.read()
-
 
 #: What a fit note on a read-only seat that went to agy ends with.
 ROLE_OPT_OUT = "; agy cannot be held to reading -- set %s in the global file to keep it off agy"
@@ -520,14 +512,14 @@ class TestLiveUnenforcedFromTheProject(_GateCase):
             return handle.read()
 
     def test_an_agy_plan_with_no_answer_leaves_output_unchanged(self):
-        code, err, plan = self.run_agy_architect(agy_fixture("stream-json-denied.jsonl"))
+        code, err, plan = self.run_agy_architect(fixture_text("agy", "stream-json-denied.jsonl"))
         self.assertEqual(code, 1, err)
         self.assertEqual(self.read(plan), "# Old plan\n")
         self.assertFalse(os.path.exists(plan + ".rejected"))
         self.assertIn("agy: no answer:", err)
 
     def test_partial_agy_text_goes_to_the_rejected_file(self):
-        lines = agy_fixture("stream-json-tools.jsonl").splitlines(keepends=True)
+        lines = fixture_text("agy", "stream-json-tools.jsonl").splitlines(keepends=True)
         code, err, plan = self.run_agy_architect("".join(lines[:30]))
         self.assertEqual(code, 1, err)
         self.assertEqual(self.read(plan), "# Old plan\n")
@@ -535,7 +527,7 @@ class TestLiveUnenforcedFromTheProject(_GateCase):
 
     def test_partial_agy_text_is_never_printed_as_the_answer(self):
         self.write_global("architect:\n" + AGY_ROLE)
-        lines = agy_fixture("stream-json-tools.jsonl").splitlines(keepends=True)
+        lines = fixture_text("agy", "stream-json-tools.jsonl").splitlines(keepends=True)
         self.answer(stdout="".join(lines[:30]))
         code, out, err = run_cli("run", "architect", "--prompt", "x")
         self.assertEqual(code, 1, err)
@@ -543,7 +535,7 @@ class TestLiveUnenforcedFromTheProject(_GateCase):
         self.assertIn("agy: no answer:", err)
 
     def test_the_end_event_records_agy_context(self):
-        code, err, _ = self.run_agy_architect(agy_fixture("stream-json-tools.jsonl"))
+        code, err, _ = self.run_agy_architect(fixture_text("agy", "stream-json-tools.jsonl"))
         self.assertEqual(code, 0, err)
         ended = [event for event in self.events("architect") if "answered" in event]
         self.assertEqual(len(ended), 1, ended)

@@ -11,12 +11,11 @@ from __future__ import annotations
 
 import contextlib
 import json
-import os
 import re
 import unittest
 from typing import Any, ClassVar, Dict
 
-from helpers import CLAUDE_HELP, IsolatedCase, count_decoding, present, usage_dict
+from helpers import CLAUDE_HELP, IsolatedCase, count_decoding, fixture_text, present, usage_dict
 
 from orchestrator import execution
 from orchestrator.execution import ExecOutcome
@@ -375,14 +374,8 @@ class _Help:
     )
 
 
-FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "claude")
 MISSING = "00000000-0000-4000-8000-000000000000"
 REJECTED_EXIT = 1
-
-
-def fixture(name):
-    with open(os.path.join(FIXTURES, name), "r", encoding="utf-8") as handle:
-        return handle.read()
 
 
 class TestResumeRejected(IsolatedCase):
@@ -391,8 +384,8 @@ class TestResumeRejected(IsolatedCase):
     def setUp(self):
         super().setUp()
         self.provider = ClaudeProvider()
-        self.stdout = fixture("resume-rejected.stdout")
-        self.stderr = fixture("resume-rejected.stderr")
+        self.stdout = fixture_text("claude", "resume-rejected.stdout")
+        self.stderr = fixture_text("claude", "resume-rejected.stderr")
 
     def rejected(self, stdout=None, exit_code=REJECTED_EXIT, options=None, session=MISSING, **flags):
         outcome = ExecOutcome(exit_code, self.stdout if stdout is None else stdout, self.stderr, 0.5, **flags)
@@ -411,7 +404,7 @@ class TestResumeRejected(IsolatedCase):
         self.assertFalse(self.rejected(session="44444444-4444-4444-8444-444444444444"))
 
     def test_another_error_is_not(self):
-        self.assertFalse(self.rejected(fixture("resume-rejected-other-error.stdout")))
+        self.assertFalse(self.rejected(fixture_text("claude", "resume-rejected-other-error.stdout")))
         event = json.loads(self.stdout)
         del event["errors"]
         self.assertFalse(self.rejected(json.dumps(event) + "\n"))
@@ -455,7 +448,7 @@ class TestParseSession(IsolatedCase):
         return self.provider.parse_session(ExecOutcome(0, stdout, "", 1.0))
 
     def test_the_recorded_resumed_session(self):
-        stdout = fixture("resume-write-probe.jsonl")
+        stdout = fixture_text("claude", "resume-write-probe.jsonl")
         session = self.parse(stdout)
         self.assertEqual(session["session_id"], "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
         self.assertEqual(session["context_tokens"], 11336)
@@ -467,7 +460,7 @@ class TestParseSession(IsolatedCase):
         self.assertEqual(present(parse_stream_usage(stdout)).cost_usd, 0.037491)
 
     def test_the_fixture_carries_nothing_from_the_machine_it_was_recorded_on(self):
-        stdout = fixture("resume-write-probe.jsonl")
+        stdout = fixture_text("claude", "resume-write-probe.jsonl")
         # A home directory or drive path would name the user it came from.
         self.assertIsNone(re.search(r"[A-Za-z]:\\\\|/Users/|/home/|\\\\Users\\\\", stdout))
         for word in ("pipe", "signature", "scratchpad"):
@@ -507,7 +500,7 @@ class TestPartialMessages(IsolatedCase):
     def setUp(self):
         super().setUp()
         self.provider = ClaudeProvider()
-        self.stdout = fixture("partial-messages-tool.jsonl")
+        self.stdout = fixture_text("claude", "partial-messages-tool.jsonl")
         self.events = [json.loads(line) for line in self.stdout.splitlines()]
         self.result = next(event for event in self.events if event["type"] == "result")
 
@@ -570,15 +563,15 @@ class TestPartialMessages(IsolatedCase):
         self.assertNotIn("scratchpad", self.stdout)
 
     def test_the_recorded_rejection_is_still_one(self):
-        stdout = fixture("resume-rejected.stdout")
-        outcome = ExecOutcome(REJECTED_EXIT, stdout, fixture("resume-rejected.stderr"), 0.5)
+        stdout = fixture_text("claude", "resume-rejected.stdout")
+        outcome = ExecOutcome(REJECTED_EXIT, stdout, fixture_text("claude", "resume-rejected.stderr"), 0.5)
         self.assertTrue(self.provider.resume_rejected(outcome, base.MODE_PLAN, {}, MISSING))
 
     def test_a_stream_with_partial_messages_is_not_a_rejection(self):
         """Even with the rejection's own result event after them: a message
         was being written, so the session existed."""
         chunks = stream(*[event for event in self.events if event["type"] == "stream_event"])
-        stdout = chunks + fixture("resume-rejected.stdout")
+        stdout = chunks + fixture_text("claude", "resume-rejected.stdout")
         outcome = ExecOutcome(REJECTED_EXIT, stdout, "", 0.5)
         self.assertFalse(self.provider.resume_rejected(outcome, base.MODE_PLAN, {}, MISSING))
 
@@ -753,7 +746,7 @@ class TestRecordedRuns(IsolatedCase):
         self.assertEqual(session, (session_id, context_tokens, init))
 
     def test_an_implement_run_that_used_four_tools(self):
-        result = self.run_recording(base.MODE_IMPLEMENT, fixture("implement-tools.jsonl"))
+        result = self.run_recording(base.MODE_IMPLEMENT, fixture_text("claude", "implement-tools.jsonl"))
         self.assertEqual((result.ok, result.exit_code), (True, 0))
         self.assertEqual((result.stdout, result.stderr), ("hello.txt now says hello.", ""))
         self.assertEqual((result.warnings, result.resume_rejected), ([], False))
@@ -780,7 +773,7 @@ class TestRecordedRuns(IsolatedCase):
         self.assertEqual(result.usage.to_dict(), expected)
 
     def test_a_review_run_with_partial_messages(self):
-        stdout = fixture("partial-messages-tool.jsonl")
+        stdout = fixture_text("claude", "partial-messages-tool.jsonl")
         result = self.run_recording(base.MODE_REVIEW, stdout)
         self.assertEqual((result.ok, result.exit_code), (True, 0))
         answer = (
@@ -807,7 +800,7 @@ class TestRecordedRuns(IsolatedCase):
         self.assertEqual(result.usage.to_dict(), expected)
 
     def test_a_plan_run_that_wrote_nothing(self):
-        stdout = fixture("resume-write-probe.jsonl")
+        stdout = fixture_text("claude", "resume-write-probe.jsonl")
         result = self.run_recording(base.MODE_PLAN, stdout)
         self.assertEqual((result.ok, result.exit_code), (True, 0))
         answer = json.loads(stdout.splitlines()[-1])["result"]
@@ -831,7 +824,7 @@ class TestRecordedRuns(IsolatedCase):
         self.assertEqual(result.usage.to_dict(), expected)
 
     def rejected_run(self, stdout):
-        stderr = fixture("resume-rejected.stderr")
+        stderr = fixture_text("claude", "resume-rejected.stderr")
         result = self.run_recording(base.MODE_PLAN, stdout, REJECTED_EXIT, stderr, resume_session=MISSING)
         self.assertEqual((result.ok, result.exit_code), (False, REJECTED_EXIT))
         self.assertEqual((result.stdout, result.stderr), (stdout, stderr))
@@ -851,15 +844,17 @@ class TestRecordedRuns(IsolatedCase):
         return result
 
     def test_a_rejected_resume(self):
-        self.assertTrue(self.rejected_run(fixture("resume-rejected.stdout")).resume_rejected)
+        self.assertTrue(self.rejected_run(fixture_text("claude", "resume-rejected.stdout")).resume_rejected)
 
     def test_another_error_before_the_first_turn(self):
-        self.assertFalse(self.rejected_run(fixture("resume-rejected-other-error.stdout")).resume_rejected)
+        self.assertFalse(
+            self.rejected_run(fixture_text("claude", "resume-rejected-other-error.stdout")).resume_rejected
+        )
 
     def test_the_stream_is_decoded_once(self):
         rejected = {
             "exit_code": REJECTED_EXIT,
-            "stderr": fixture("resume-rejected.stderr"),
+            "stderr": fixture_text("claude", "resume-rejected.stderr"),
             "resume_session": MISSING,
         }
         runs = [
@@ -870,7 +865,7 @@ class TestRecordedRuns(IsolatedCase):
         ]
         for name, mode, kwargs in runs:
             with self.subTest(fixture=name):
-                stdout = fixture(name)
+                stdout = fixture_text("claude", name)
                 with contextlib.ExitStack() as stack:
                     calls = count_decoding(stack, stdout, (base, agy_module, claude_module, codex_module))
                     self.run_recording(mode, stdout, **kwargs)
@@ -882,7 +877,7 @@ class TestRecordedRuns(IsolatedCase):
                 base.stdout_events(outcome).pop()  # pyright: ignore[reportAttributeAccessIssue]
                 return {}
 
-        stdout = fixture("partial-messages-tool.jsonl")
+        stdout = fixture_text("claude", "partial-messages-tool.jsonl")
         usual = self.run_recording(base.MODE_REVIEW, stdout)
         self.provider = self.installed(Popping())
         result = self.run_recording(base.MODE_REVIEW, stdout)
@@ -926,7 +921,7 @@ class TestRecordedActivity(IsolatedCase):
     def test_every_line_of_every_recording(self):
         provider = ClaudeProvider()
         for name, (cwd, shown) in self.CASES.items():
-            for number, line in enumerate(fixture(name).splitlines(keepends=True), start=1):
+            for number, line in enumerate(fixture_text("claude", name).splitlines(keepends=True), start=1):
                 with self.subTest(fixture=name, line=number):
                     act = provider.activity_of(line, cwd)
                     self.assertEqual((list(act.lines), act.context_tokens), shown.get(number, ([], None)))

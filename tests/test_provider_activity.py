@@ -7,7 +7,7 @@ import os
 import unittest
 from typing import Any, Dict, List
 
-from helpers import IsolatedCase
+from helpers import IsolatedCase, fixture_text
 
 from orchestrator import activity
 from orchestrator.providers.agy import AgyProvider
@@ -15,12 +15,9 @@ from orchestrator.providers.claude import ClaudeProvider
 from orchestrator.providers.codex import CodexProvider
 from orchestrator.providers.mock import MockProvider
 
-FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
-
 
 def fixture(kind: str, name: str) -> List[str]:
-    with open(os.path.join(FIXTURES, kind, name), encoding="utf-8") as handle:
-        return handle.read().splitlines(keepends=True)
+    return fixture_text(kind, name).splitlines(keepends=True)
 
 
 def assistant(content: List[Dict[str, Any]], usage: Any = None) -> str:
