@@ -50,6 +50,11 @@ DESIGN_SEAT_OPT_OUT = (
 )
 
 
+def agy_fixture(name: str) -> str:
+    """``tests/fixtures/agy/<name>``, read as UTF-8."""
+    return fixture_text("agy", name)
+
+
 class _Completed:
     def __init__(self, stdout):
         self.stdout, self.stderr, self.returncode = stdout, "", 0
@@ -512,14 +517,14 @@ class TestLiveUnenforcedFromTheProject(_GateCase):
             return handle.read()
 
     def test_an_agy_plan_with_no_answer_leaves_output_unchanged(self):
-        code, err, plan = self.run_agy_architect(fixture_text("agy", "stream-json-denied.jsonl"))
+        code, err, plan = self.run_agy_architect(agy_fixture("stream-json-denied.jsonl"))
         self.assertEqual(code, 1, err)
         self.assertEqual(self.read(plan), "# Old plan\n")
         self.assertFalse(os.path.exists(plan + ".rejected"))
         self.assertIn("agy: no answer:", err)
 
     def test_partial_agy_text_goes_to_the_rejected_file(self):
-        lines = fixture_text("agy", "stream-json-tools.jsonl").splitlines(keepends=True)
+        lines = agy_fixture("stream-json-tools.jsonl").splitlines(keepends=True)
         code, err, plan = self.run_agy_architect("".join(lines[:30]))
         self.assertEqual(code, 1, err)
         self.assertEqual(self.read(plan), "# Old plan\n")
@@ -527,7 +532,7 @@ class TestLiveUnenforcedFromTheProject(_GateCase):
 
     def test_partial_agy_text_is_never_printed_as_the_answer(self):
         self.write_global("architect:\n" + AGY_ROLE)
-        lines = fixture_text("agy", "stream-json-tools.jsonl").splitlines(keepends=True)
+        lines = agy_fixture("stream-json-tools.jsonl").splitlines(keepends=True)
         self.answer(stdout="".join(lines[:30]))
         code, out, err = run_cli("run", "architect", "--prompt", "x")
         self.assertEqual(code, 1, err)
@@ -535,7 +540,7 @@ class TestLiveUnenforcedFromTheProject(_GateCase):
         self.assertIn("agy: no answer:", err)
 
     def test_the_end_event_records_agy_context(self):
-        code, err, _ = self.run_agy_architect(fixture_text("agy", "stream-json-tools.jsonl"))
+        code, err, _ = self.run_agy_architect(agy_fixture("stream-json-tools.jsonl"))
         self.assertEqual(code, 0, err)
         ended = [event for event in self.events("architect") if "answered" in event]
         self.assertEqual(len(ended), 1, ended)

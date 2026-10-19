@@ -523,7 +523,7 @@ def _status_payload(
     # budget is not a stop.
     architect_left = summary["budgets"].get("architect", {}).get("remaining")
     plan_approved = approved_as_recorded(approval_info)
-    design_accepted = bool(review_mod.accepted_findings(design_data))
+    design_accepted = review_mod.accepted_findings(design_data)
     design_pass = design_final_pass_from(
         workspace,
         events,
@@ -533,16 +533,17 @@ def _status_payload(
         of_current_plan=of_current_plan,
         approval=approval_info,
         architect_left=architect_left,
-        accepted=design_accepted,
+        accepted=bool(design_accepted),
         wrote_plan=_wrote_plan(workspace),
     )
+    review_accepted = review_mod.accepted_findings(review_data)
     review_pass = code_final_pass_from(
         events,
         blocking,
         iteration=iteration,
         max_iterations=max_iterations,
         fixer_left=summary["budgets"].get("review_fixer", {}).get("remaining"),
-        accepted=bool(review_mod.accepted_findings(review_data)),
+        accepted=bool(review_accepted),
     )
     review_repeats = int((summary["signatures"] or {}).get("review") or 0)
     design_repeats = int((summary["signatures"] or {}).get("design_review") or 0)
@@ -595,7 +596,7 @@ def _status_payload(
             "iteration": review_round.iteration,
             "max_review_iterations": review_round.max_iterations,
             "blocking": [f["id"] for f in review_round.blocking],
-            "accepted": len(review_mod.accepted_findings(review_data)),
+            "accepted": len(review_accepted),
             # The refusal itself, not a flag: the size and the limit are what
             # the report has to name, and they are not in the consolidation --
             # a refused round writes no consolidation at all.
@@ -613,7 +614,7 @@ def _status_payload(
             "iteration": design_round.iteration,
             "max_iterations": design_round.max_iterations,
             "blocking": [f["id"] for f in design_round.blocking],
-            "accepted": len(review_mod.accepted_findings(design_data)),
+            "accepted": len(design_accepted),
             "refused_for_size": (design_refused_for_size or {}).get("context") or None,
             "identical_rounds": design_round.repeats,
             "final_revision": design_round.final_pass["state"],

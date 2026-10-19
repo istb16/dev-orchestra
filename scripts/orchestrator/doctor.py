@@ -366,9 +366,7 @@ def _reviewers_report(
     adapter_errors: Dict[str, str],
 ) -> None:
     """The code panel's seats."""
-    load_errors = len(report["user_providers"]["errors"])
-    # A seat refused for coming with the project file is a problem above, and
-    # not also a note below.
+    # Refused as in `_roles_report`: a problem above, not also a note.
     reviewer_refused = policy_mod.reviewer_raw_arg_refusals(loaded)
     # A broken entry is skipped, but still counted, so each valid one keeps
     # the origin of its own position.
@@ -376,7 +374,7 @@ def _reviewers_report(
         if not isinstance(reviewer, dict):
             continue
         label = "Reviewer %s" % reviewer.get("id")
-        entry = _reviewer_entry(label, reviewer, detections, report, adapter_errors, load_errors)
+        entry = _reviewer_entry(label, reviewer, detections, report, adapter_errors)
         entry["origin"] = loaded.reviewer_origin(index).label()
         report["reviewers"].append(entry)
         from_project = str(reviewer.get("id") or "") in reviewer_refused
@@ -390,11 +388,11 @@ def _design_reviewers_report(
     adapter_errors: Dict[str, str],
 ) -> None:
     """The design panel's source and seats."""
-    load_errors = len(report["user_providers"]["errors"])
     # The design panel: its own seats, when a file sets one, are diagnosed as
     # the code seats are; a copy of a code seat was diagnosed above.
     report["design_panel_source"] = loaded.design_panel_source
     report["design_reviewers"] = []
+    # Refused as in `_roles_report`: a problem above, not also a note.
     design_refused = policy_mod.reviewer_raw_arg_refusals(loaded, "design")
     for index, reviewer in enumerate(loaded.design_reviewers()):
         if not isinstance(reviewer, dict):
@@ -406,7 +404,7 @@ def _design_reviewers_report(
             report["design_reviewers"].append(entry)
             continue
         label = "Design reviewer %s" % reviewer.get("id")
-        entry = _reviewer_entry(label, reviewer, detections, report, adapter_errors, load_errors)
+        entry = _reviewer_entry(label, reviewer, detections, report, adapter_errors)
         entry["origin"] = origin.label()
         report["design_reviewers"].append(entry)
         from_project = str(reviewer.get("id") or "") in design_refused
@@ -477,7 +475,6 @@ def _reviewer_entry(
     detections: Dict[str, Any],
     report: Dict[str, Any],
     adapter_errors: Dict[str, str],
-    load_errors: int,
 ) -> Dict[str, Any]:
     """One reviewer as doctor reports it, of either panel.
 
@@ -485,6 +482,7 @@ def _reviewer_entry(
     against the same provider: a family that will not resolve fails the
     high-risk rounds, which are the ones that matter most.
     """
+    load_errors = len(report["user_providers"]["errors"])
     # Every seat of either panel runs read-only, whatever its label says.
     entry = _describe_role(
         label, reviewer, detections, report["problems"], adapter_errors, load_errors, read_only=True

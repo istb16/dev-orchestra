@@ -1397,6 +1397,11 @@ CODEX_RECORDED_CWD = "/sandbox/probe181"
 CODEX_FORK_HELP = codex_fork_help()
 
 
+def codex_fixture(name: str) -> str:
+    """``tests/fixtures/codex/<name>``, read as UTF-8."""
+    return fixture_text("codex", name)
+
+
 class _CodexExecute:
     """`execution.execute` replaced by a Codex that prints ``stdout`` and
     writes ``answer`` to its ``-o`` file."""
@@ -1463,7 +1468,7 @@ class _CodexHome(IsolatedCase):
         )
         os.makedirs(directory, exist_ok=True)
         lines = []
-        for line in fixture_text("codex", fixture).splitlines():
+        for line in codex_fixture(fixture).splitlines():
             record = json.loads(line)
             payload = record.get("payload")
             if isinstance(payload, dict):
@@ -1482,7 +1487,7 @@ class _CodexHome(IsolatedCase):
         return self.rollout("parent-rollout.jsonl", CODEX_PARENT, day=datetime.date(2026, 1, 2), **kwargs)
 
     def fork_output(self, thread_id=CODEX_FORK):
-        return fixture_text("codex", "fork-json-read-only.jsonl").replace(CODEX_FORK, thread_id)
+        return codex_fixture("fork-json-read-only.jsonl").replace(CODEX_FORK, thread_id)
 
     def resolved(self, argument: Optional[str] = "gpt-example-3"):
         return base.ResolvedModel("codex", "x", "latest", argument, argument or "codex default", "test")
@@ -1556,7 +1561,7 @@ class TestCodexResume(_CodexHome):
         return execution.ExecOutcome(exit_code, stdout, stderr, 0.1)
 
     def test_the_session_is_the_first_thread_started(self):
-        recorded = fixture_text("codex", "exec-json-ready.jsonl")
+        recorded = codex_fixture("exec-json-ready.jsonl")
         self.assertEqual(self.provider.parse_session(self.outcome(recorded)), {"session_id": CODEX_PARENT})
         second = recorded + '{"type":"thread.started","thread_id":"%s"}\n' % CODEX_FORK
         self.assertEqual(self.provider.parse_session(self.outcome(second))["session_id"], CODEX_PARENT)
@@ -1564,11 +1569,11 @@ class TestCodexResume(_CodexHome):
     def test_a_thread_id_that_is_not_a_uuid_is_no_session(self):
         for value in ("not-a-uuid", "*", "[0-9]*", CODEX_PARENT + "/../x"):
             with self.subTest(value=value):
-                stdout = fixture_text("codex", "exec-json-ready.jsonl").replace(CODEX_PARENT, value)
+                stdout = codex_fixture("exec-json-ready.jsonl").replace(CODEX_PARENT, value)
                 self.assertEqual(self.provider.parse_session(self.outcome(stdout)), {})
 
     def test_a_fresh_plan_run_reads_no_rollout(self):
-        executed = _CodexExecute(self, stdout=fixture_text("codex", "exec-json-ready.jsonl"))
+        executed = _CodexExecute(self, stdout=codex_fixture("exec-json-ready.jsonl"))
         result = self.run_codex()
         self.assertTrue(result.ok, result.stderr)
         self.assertEqual(result.stdout, "READY")
@@ -1695,7 +1700,7 @@ class TestCodexResume(_CodexHome):
     # -- the answer --------------------------------------------------------
 
     def test_an_empty_final_message_fails_a_plan_run(self):
-        _CodexExecute(self, stdout=fixture_text("codex", "exec-json-ready.jsonl"), answer="")
+        _CodexExecute(self, stdout=codex_fixture("exec-json-ready.jsonl"), answer="")
         result = self.run_codex()
         self.assertFalse(result.ok)
         self.assertEqual(result.stdout, "")
@@ -1710,7 +1715,7 @@ class TestCodexResume(_CodexHome):
     # -- usage ---------------------------------------------------------------
 
     def test_usage_comes_from_the_json_events_without_cache_reads(self):
-        outcome = self.outcome(fixture_text("codex", "exec-json-ready.jsonl"))
+        outcome = self.outcome(codex_fixture("exec-json-ready.jsonl"))
         usage = self.provider.parse_usage(outcome, base.MODE_PLAN)
         assert usage is not None
         self.assertEqual(usage.input_tokens, 3523)
@@ -1730,7 +1735,7 @@ class TestCodexResume(_CodexHome):
     # -- a missing session -------------------------------------------------
 
     def test_a_missing_thread_is_rejected(self):
-        stderr = fixture_text("codex", "fork-missing-session.stderr")
+        stderr = codex_fixture("fork-missing-session.stderr")
 
         def rejected(stdout, exit_code, text, session=CODEX_MISSING):
             outcome = self.outcome(stdout, exit_code, text)
@@ -1740,7 +1745,7 @@ class TestCodexResume(_CodexHome):
         self.assertFalse(rejected("", 1, stderr, CODEX_PARENT))
         self.assertFalse(rejected("", 1, "Error: something else"))
         self.assertFalse(rejected("", 0, stderr))
-        self.assertFalse(rejected(fixture_text("codex", "exec-json-ready.jsonl"), 1, stderr))
+        self.assertFalse(rejected(codex_fixture("exec-json-ready.jsonl"), 1, stderr))
 
     # -- whether it resumes ------------------------------------------------
 
@@ -1850,16 +1855,16 @@ class TestCodexRecordedRuns(_CodexHome):
         self.assertEqual(result.usage.to_dict(), usage)
 
     def test_a_plan_run(self):
-        result = self.recorded(self.run_codex, fixture_text("codex", "exec-json-ready.jsonl"))
+        result = self.recorded(self.run_codex, codex_fixture("exec-json-ready.jsonl"))
         self.assert_parsed(result, CODEX_PARENT, CODEX_READY_USAGE)
 
     def test_a_review_run_reads_no_json_usage(self):
-        stdout = fixture_text("codex", "exec-json-ready.jsonl")
+        stdout = codex_fixture("exec-json-ready.jsonl")
         result = self.recorded(lambda: self.run_codex(base.MODE_REVIEW), stdout)
         self.assert_parsed(result, CODEX_PARENT, usage_dict())
 
     def test_a_plan_run_that_used_tools(self):
-        result = self.recorded(self.run_codex, fixture_text("codex", "exec-json-tools.jsonl"))
+        result = self.recorded(self.run_codex, codex_fixture("exec-json-tools.jsonl"))
         usage = usage_dict(
             input_tokens=3830,
             output_tokens=212,
@@ -1871,7 +1876,7 @@ class TestCodexRecordedRuns(_CodexHome):
         self.assert_parsed(result, "11111111-1111-4111-8111-111111111111", usage)
 
     def test_an_implement_run_that_changed_a_file(self):
-        stdout = fixture_text("codex", "exec-json-file-change.jsonl")
+        stdout = codex_fixture("exec-json-file-change.jsonl")
         result = self.recorded(lambda: self.run_codex(base.MODE_IMPLEMENT), stdout)
         self.assert_parsed(result, "22222222-2222-4222-8222-222222222222", usage_dict())
 
@@ -1892,7 +1897,7 @@ class TestCodexRecordedRuns(_CodexHome):
 
     def test_a_rejected_fork(self):
         self.parent_here()
-        stderr = fixture_text("codex", "fork-missing-session.stderr").replace(CODEX_MISSING, CODEX_PARENT)
+        stderr = codex_fixture("fork-missing-session.stderr").replace(CODEX_MISSING, CODEX_PARENT)
         result = self.recorded(self.fork, "", answer="", exit_code=1, stderr=stderr)
         self.assertEqual((result.ok, result.exit_code, result.stdout), (False, 1, ""))
         self.assertEqual(result.stderr, "codex printed no final message (-o was empty)\n" + stderr)
@@ -1904,14 +1909,14 @@ class TestCodexRecordedRuns(_CodexHome):
     def test_the_stream_is_decoded_once(self):
         for mode in (base.MODE_PLAN, base.MODE_REVIEW):
             with self.subTest(mode=mode):
-                stdout = fixture_text("codex", "exec-json-tools.jsonl")
+                stdout = codex_fixture("exec-json-tools.jsonl")
                 with contextlib.ExitStack() as stack:
                     calls = count_decoding(stack, stdout, DECODERS)
                     self.recorded(lambda mode=mode: self.run_codex(mode), stdout)
                 self.assertEqual(len(calls), 1)
 
     def test_an_implement_run_decodes_its_stream_at_most_once(self):
-        stdout = fixture_text("codex", "exec-json-file-change.jsonl")
+        stdout = codex_fixture("exec-json-file-change.jsonl")
         with contextlib.ExitStack() as stack:
             calls = count_decoding(stack, stdout, DECODERS)
             self.recorded(lambda: self.run_codex(base.MODE_IMPLEMENT), stdout)
@@ -1940,7 +1945,7 @@ class TestCodexAroundTheRun(_CodexHome):
         self.assertFalse(os.path.exists(command[-1]))
 
     def test_an_empty_answer_fails_a_plan_run(self):
-        _CodexExecute(self, stdout=fixture_text("codex", "exec-json-ready.jsonl"), answer="")
+        _CodexExecute(self, stdout=codex_fixture("exec-json-ready.jsonl"), answer="")
         result = self.run_codex()
         self.assertEqual((result.stdout, result.ok), ("", False))
         self.assertTrue(result.stderr.startswith("codex printed no final message (-o was empty)"))
@@ -1986,7 +1991,7 @@ class TestCodexAroundTheRun(_CodexHome):
                 return super()._launch(prompt, mode, cwd, **kwargs)
 
         self.installed(Subclass())
-        executed = _CodexExecute(self, stdout=fixture_text("codex", "exec-json-ready.jsonl"))
+        executed = _CodexExecute(self, stdout=codex_fixture("exec-json-ready.jsonl"))
         result = self.run_codex()
         self.assertEqual((result.ok, result.stdout), (True, "READY"))
         command = executed.commands[0]
@@ -2031,7 +2036,7 @@ class TestCodexRecordedActivity(unittest.TestCase):
     def test_every_line_of_every_recording(self):
         provider = CodexProvider()
         for name, (cwd, shown) in self.CASES.items():
-            for number, line in enumerate(fixture_text("codex", name).splitlines(keepends=True), start=1):
+            for number, line in enumerate(codex_fixture(name).splitlines(keepends=True), start=1):
                 with self.subTest(fixture=name, line=number):
                     act = provider.activity_of(line, cwd)
                     self.assertEqual((list(act.lines), act.context_tokens), (shown.get(number, []), None))
@@ -3519,7 +3524,7 @@ class TestStdoutEvents(IsolatedCase):
         runs = [
             (ClaudeProvider(), fixture_text("claude", "partial-messages-tool.jsonl")),
             (ClaudeProvider(), fixture_text("claude", "implement-tools.jsonl")),
-            (CodexProvider(), fixture_text("codex", "exec-json-tools.jsonl")),
+            (CodexProvider(), codex_fixture("exec-json-tools.jsonl")),
             (AgyProvider(), agy_result(usage=AGY_USAGE)),
         ]
         for provider, stdout in runs:

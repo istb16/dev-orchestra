@@ -34,6 +34,7 @@ from orchestrator import context as context_mod
 from orchestrator import ledger as ledger_mod
 from orchestrator import optimization as opt_mod
 from orchestrator import presets as presets_mod
+from orchestrator import questions as questions_mod
 from orchestrator import review as review_mod
 from orchestrator import suggest as suggest_mod
 from orchestrator import workspace as ws
@@ -450,6 +451,22 @@ class TestStopReasons(unittest.TestCase):
         spent = {"limit": 10, "used": 10}
         architect_spent = {"architect": {"remaining": 0}}
         design_open = self.DESIGN._replace(blocking=[{"id": "D1"}])
+        review_spent = self.REVIEW._replace(iteration=3, blocking=[{"id": "F1"}, {"id": "F2"}])
+        review_reason = "review budget spent (3/3 rounds) with 2 finding(s) still open"
+        review_repeat = "the last review round found exactly what the previous one found"
+        design_spent = design_open._replace(iteration=2)
+        design_reason = "design review budget spent (2/2 rounds) with 1 finding(s) still open"
+        design_repeat = "the last design review round found exactly what the previous one found"
+        fixer_spent = {"review_fixer": {"remaining": 0}}
+
+        def review_in(state: Any, repeats: int = 0) -> cli_workflow._RoundState:
+            return review_spent._replace(final_pass={"state": state}, repeats=repeats)
+
+        def design_in(state: Any, plan_changed: Any = None, repeats: int = 0) -> cli_workflow._RoundState:
+            return design_spent._replace(
+                final_pass={"state": state, "plan_changed": plan_changed}, repeats=repeats
+            )
+
         cases = [
             ("nothing", {}, []),
             (
@@ -491,6 +508,80 @@ class TestStopReasons(unittest.TestCase):
                     "total": spent,
                 },
                 [size % "review", size % "design review", "no delegated runs left in this workflow"],
+            ),
+            (
+                "review spent, no fixer attempt left",
+                {"review": review_in("blocked")},
+                [review_reason + " and no review_fixer attempt left"],
+            ),
+            (
+                "review spent, fixed and re-tested",
+                {"review": review_in("done")},
+                [review_reason + "; fixed and re-tested after the last round, not re-reviewed -- report"],
+            ),
+            ("review spent, unaccepted", {"review": review_in("unaccepted")}, [review_reason]),
+            ("review repeated, no final pass", {"review": review_in(None, repeats=2)}, [review_repeat]),
+            (
+                "review repeated, final pass done",
+                {"review": review_in("done", repeats=2)},
+                [
+                    review_reason + "; fixed and re-tested after the last round, not re-reviewed -- report",
+                    review_repeat,
+                ],
+            ),
+            ("review repeated, fix pending", {"review": review_in("pending", repeats=2)}, []),
+            ("review repeated, re-test owed", {"review": review_in("retest", repeats=2)}, []),
+            (
+                "design spent, no architect attempt left",
+                {"design": design_in("blocked")},
+                [design_reason + " and no architect attempt left to fold them in"],
+            ),
+            (
+                "design spent, plan revised",
+                {"design": design_in("done", plan_changed=True)},
+                [
+                    design_reason
+                    + "; revised after the last round, not re-reviewed -- present the plan and ask"
+                ],
+            ),
+            (
+                "design spent, plan unchanged",
+                {"design": design_in("done", plan_changed=False)},
+                [
+                    design_reason + "; the architect left the plan unchanged after the last round -- "
+                    "present the plan and the findings and ask"
+                ],
+            ),
+            ("design spent, implemented", {"design": design_in("implemented")}, [design_reason]),
+            ("design spent, unaccepted", {"design": design_in("unaccepted")}, [design_reason]),
+            ("design repeated, no final pass", {"design": design_in(None, repeats=2)}, [design_repeat]),
+            (
+                "design repeated, implemented",
+                {"design": design_in("implemented", repeats=2)},
+                [design_reason, design_repeat],
+            ),
+            ("design repeated, revision pending", {"design": design_in("pending", repeats=2)}, []),
+            (
+                "fixer spent, no final pass",
+                {"budgets": fixer_spent},
+                ["review_fixer has no attempts left"],
+            ),
+            (
+                "fixer spent, review blocked",
+                {"review": review_in("blocked"), "budgets": fixer_spent},
+                [review_reason + " and no review_fixer attempt left", "review_fixer has no attempts left"],
+            ),
+            ("fixer spent, re-test owed", {"review": review_in("retest"), "budgets": fixer_spent}, []),
+            (
+                "fixer spent, fixed and re-tested",
+                {"review": review_in("done"), "budgets": fixer_spent},
+                [review_reason + "; fixed and re-tested after the last round, not re-reviewed -- report"],
+            ),
+            ("question rounds spent", {"budgets": {questions_mod.RUN_STAGE: {"remaining": 0}}}, []),
+            (
+                "attempts left",
+                {"budgets": {"review_fixer": {"remaining": 1}, "implementer": {"remaining": 2}}},
+                [],
             ),
         ]
         for name, overrides, expected in cases:
