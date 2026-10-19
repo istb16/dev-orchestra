@@ -546,13 +546,15 @@ def _status_payload(
     )
     review_repeats = int((summary["signatures"] or {}).get("review") or 0)
     design_repeats = int((summary["signatures"] or {}).get("design_review") or 0)
+    review_round = _RoundState(review_pass, iteration, max_iterations, blocking, review_repeats)
+    design_round = _RoundState(design_pass, design_iteration, design_max, design_blocking, design_repeats)
 
     total = summary["total_delegated_runs"]
     reasons = _stop_reasons(
         refused_for_size=refused_for_size,
         design_refused_for_size=design_refused_for_size,
-        review=_RoundState(review_pass, iteration, max_iterations, blocking, review_repeats),
-        design=_RoundState(design_pass, design_iteration, design_max, design_blocking, design_repeats),
+        review=review_round,
+        design=design_round,
         budgets=summary["budgets"],
         total=total,
         plan_digest=plan_digest,
@@ -590,32 +592,32 @@ def _status_payload(
         "abandoned_stages": abandoned,
         "in_flight": summary["in_flight"],
         "review": {
-            "iteration": iteration,
-            "max_review_iterations": max_iterations,
-            "blocking": [f["id"] for f in blocking],
+            "iteration": review_round.iteration,
+            "max_review_iterations": review_round.max_iterations,
+            "blocking": [f["id"] for f in review_round.blocking],
             "accepted": len(review_mod.accepted_findings(review_data)),
             # The refusal itself, not a flag: the size and the limit are what
             # the report has to name, and they are not in the consolidation --
             # a refused round writes no consolidation at all.
             "refused_for_size": (refused_for_size or {}).get("context") or None,
             # The ledger's repeat count, named as the run-log event names it.
-            "identical_rounds": review_repeats,
-            "final_fix": review_pass["state"],
-            "final_fix_pending": review_pass["pending"],
+            "identical_rounds": review_round.repeats,
+            "final_fix": review_round.final_pass["state"],
+            "final_fix_pending": review_round.final_pass["pending"],
         },
         "design_review": {
             # Whether the stage runs: `on`, or `auto` and this plan calls for it.
             "enabled": decision.run,
             "mode": decision.mode,
             "reason": decision.reason or None,
-            "iteration": design_iteration,
-            "max_iterations": design_max,
-            "blocking": [f["id"] for f in design_blocking],
+            "iteration": design_round.iteration,
+            "max_iterations": design_round.max_iterations,
+            "blocking": [f["id"] for f in design_round.blocking],
             "accepted": len(review_mod.accepted_findings(design_data)),
             "refused_for_size": (design_refused_for_size or {}).get("context") or None,
-            "identical_rounds": design_repeats,
-            "final_revision": design_pass["state"],
-            "final_revision_pending": design_pass["pending"],
+            "identical_rounds": design_round.repeats,
+            "final_revision": design_round.final_pass["state"],
+            "final_revision_pending": design_round.final_pass["pending"],
             "optimization": design_plan.to_dict(),
         },
         # Not a reason and not a verdict: `run implementer` enforces it, and a
@@ -640,7 +642,7 @@ def _status_payload(
         if workspace.workflow
         else [],
     }
-    return _Status(payload, plan, decision, design_pass, architect_left)
+    return _Status(payload, plan, decision, design_round.final_pass, architect_left)
 
 
 def _status_lines(status: _Status, plan_relative: str, warning: List[str]) -> List[str]:

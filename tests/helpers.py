@@ -553,6 +553,11 @@ def fixture_text(kind: str, name: str) -> str:
         return handle.read()
 
 
+def codex_fork_help() -> str:
+    """``codex exec fork --help`` as codex-cli 0.156.1 printed it."""
+    return fixture_text("codex", "fork-help.txt")
+
+
 def count_decoding(stack: contextlib.ExitStack, stdout: str, modules: Sequence[Any]) -> List[str]:
     """Every call of ``json_lines`` on ``stdout``, through any of ``modules``,
     until ``stack`` closes. A module that has no ``json_lines`` of its own

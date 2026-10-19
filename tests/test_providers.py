@@ -25,6 +25,7 @@ from helpers import (
     CLAUDE_HELP_OLD,
     CLAUDE_HELP_RESUME_ONLY,
     IsolatedCase,
+    codex_fork_help,
     count_decoding,
     fixture_text,
     make_dir_link,
@@ -1393,7 +1394,7 @@ CODEX_MISSING = "00000000-0000-4000-8000-000000000000"
 #: The working directory the recordings name, replaced by each test's own.
 CODEX_RECORDED_CWD = "/sandbox/probe181"
 #: ``codex exec fork --help`` as codex-cli 0.156.1 printed it.
-CODEX_FORK_HELP = fixture_text("codex", "fork-help.txt")
+CODEX_FORK_HELP = codex_fork_help()
 
 
 class _CodexExecute:

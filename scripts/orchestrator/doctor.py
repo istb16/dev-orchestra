@@ -150,21 +150,16 @@ def collect(start: Optional[str] = None, probe_models: bool = True) -> Dict[str,
     # config error or --fast does not hide it.
     _antigravity_live(report, root)
     detections, adapter_errors = _providers_report(report, root, probe_models)
-    load_errors = len(report["user_providers"]["errors"])
 
     loaded = _config_report(report, start)
     if loaded is None:
         return report
-    # A seat refused for coming with the project file is a problem above, and
-    # not also a note below.
-    refused = policy_mod.project_raw_arg_refusals(loaded)
-    reviewer_refused = policy_mod.reviewer_raw_arg_refusals(loaded)
 
-    _roles_report(report, loaded, detections, adapter_errors, load_errors, refused)
+    _roles_report(report, loaded, detections, adapter_errors)
 
     panel = loaded.data.get("reviewers")
-    _reviewers_report(report, loaded, panel, detections, adapter_errors, load_errors, reviewer_refused)
-    _design_reviewers_report(report, loaded, detections, adapter_errors, load_errors)
+    _reviewers_report(report, loaded, panel, detections, adapter_errors)
+    _design_reviewers_report(report, loaded, detections, adapter_errors)
 
     # A non-list or all-broken panel is already one of validate's problems
     # above, and `review run` refuses it rather than skipping the stage.
@@ -319,10 +314,12 @@ def _roles_report(
     loaded: config_mod.LoadedConfig,
     detections: Dict[str, Any],
     adapter_errors: Dict[str, str],
-    load_errors: int,
-    refused: Dict[str, str],
 ) -> None:
     """Each role's seat, and the read-only enforcement of its tiers."""
+    load_errors = len(report["user_providers"]["errors"])
+    # A seat refused for coming with the project file is a problem above, and
+    # not also a note below.
+    refused = policy_mod.project_raw_arg_refusals(loaded)
     layers = (loaded.global_layer, loaded.project_layer)
     for key, label in ROLE_LABELS:
         spec = loaded.data.get(key)
@@ -367,10 +364,12 @@ def _reviewers_report(
     panel: Any,
     detections: Dict[str, Any],
     adapter_errors: Dict[str, str],
-    load_errors: int,
-    reviewer_refused: Dict[str, str],
 ) -> None:
     """The code panel's seats."""
+    load_errors = len(report["user_providers"]["errors"])
+    # A seat refused for coming with the project file is a problem above, and
+    # not also a note below.
+    reviewer_refused = policy_mod.reviewer_raw_arg_refusals(loaded)
     # A broken entry is skipped, but still counted, so each valid one keeps
     # the origin of its own position.
     for index, reviewer in enumerate(loaded.reviewers() if isinstance(panel, list) else []):
@@ -389,9 +388,9 @@ def _design_reviewers_report(
     loaded: config_mod.LoadedConfig,
     detections: Dict[str, Any],
     adapter_errors: Dict[str, str],
-    load_errors: int,
 ) -> None:
     """The design panel's source and seats."""
+    load_errors = len(report["user_providers"]["errors"])
     # The design panel: its own seats, when a file sets one, are diagnosed as
     # the code seats are; a copy of a code seat was diagnosed above.
     report["design_panel_source"] = loaded.design_panel_source

@@ -19,7 +19,7 @@ from helpers import (
     CLAUDE_HELP_OLD,
     TEST_WORKFLOW,
     IsolatedCase,
-    fixture_text,
+    codex_fork_help,
     has_git,
     run_cli,
 )
@@ -3633,8 +3633,7 @@ class TestDoctorResume(IsolatedCase):
         from orchestrator.providers import codex as codex_module
         from orchestrator.providers.codex import CodexProvider
 
-        # `codex exec fork --help` as codex-cli 0.156.1 printed it.
-        fork_help = fixture_text("codex", "fork-help.txt")
+        fork_help = codex_fork_help()
 
         def capture(self, command, timeout=30):
             if list(command[1:]) == ["exec", "fork", "--help"]:
