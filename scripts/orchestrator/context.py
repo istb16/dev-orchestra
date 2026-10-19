@@ -604,7 +604,7 @@ def adopt(
     if surrounding_mode(mode) != "enclosing":
         return Adoption()
     cap = surrounding_chars
-    if not isinstance(cap, int) or isinstance(cap, bool) or cap < 1:
+    if not ws.is_int(cap) or cap < 1:
         cap = _default_surrounding_chars()
     frozen = ws.read_json(workspace.surrounding_path, {}) or {}
     raw_marked = meta.get("surrounding")

@@ -288,6 +288,68 @@ class TestValidation(ExtrasCase):
         self.assertFalse(os.path.exists(self.project_file()))
 
 
+class TestEntryIdentity(unittest.TestCase):
+    """``_entry_identity``: an own entry is held to its shape and id, a copied one to its id only."""
+
+    def test_an_own_entry(self):
+        seen = {"a"}
+        self.assertEqual(
+            config_mod._entry_identity("oops", "x[0]", seen), (False, ["x[0]: must be a mapping"])
+        )
+        mapping, problems = config_mod._entry_identity({"id": "Bad Id"}, "x[1]", seen)
+        self.assertTrue(mapping)
+        self.assertEqual(problems, ["x[1]: id must match [a-z0-9][a-z0-9._-]* (got 'Bad Id')"])
+        self.assertEqual(
+            config_mod._entry_identity({"id": "a"}, "x[2]", seen), (True, ["x[2]: duplicate reviewer id 'a'"])
+        )
+        self.assertEqual(config_mod._entry_identity({"id": "b"}, "x[3]", seen), (True, []))
+        self.assertEqual(seen, {"a", "b"})
+
+    def test_a_copied_entry(self):
+        seen = {"a"}
+        self.assertEqual(config_mod._entry_identity("oops", "x[0]", seen, own=False), (False, []))
+        self.assertEqual(config_mod._entry_identity({"id": "Bad Id"}, "x[1]", seen, own=False), (True, []))
+        self.assertEqual(
+            config_mod._entry_identity({"id": "a"}, "x[2]", seen, own=False),
+            (True, ["x[2]: duplicate reviewer id 'a'"]),
+        )
+        self.assertEqual(config_mod._entry_identity({"id": "b"}, "x[3]", seen, own=False), (True, []))
+        self.assertEqual(seen, {"a", "b"})
+
+
+class TestValidateDraft(ExtrasCase):
+    """``config_layers.validate_draft``: a layer validated beside the other file as it is on disk."""
+
+    def test_a_project_layer_kept_valid_by_the_global_panel(self):
+        layer = {"version": 1, "reviewers_extra": [mock("p2", when="high-risk")]}
+        self.write_global({"reviewers": [mock("base")]})
+        draft = config_layers.validate_draft("project", layer)
+        self.assertEqual(draft.problems, [])
+        self.assertEqual(self.ids(draft.data["reviewers"]), ["base", "p2"])
+        self.write_global({"reviewers": []})
+        draft = config_layers.validate_draft("project", layer)
+        expected = (
+            "reviewers: at least one reviewer must run always; every reviewer is conditional "
+            "(when: high-risk or when: paths)"
+        )
+        self.assertEqual(draft.problems, [expected])
+
+    def test_each_file_is_named_as_itself(self):
+        self.write_global({"reviewers_extra": ["oops"]})
+        draft = config_layers.validate_draft("project", {"version": 1, "reviewers_extra": [7]})
+        self.assertEqual(
+            draft.problems,
+            [
+                "reviewers_extra[0] in the global file: must be a mapping",
+                "reviewers_extra[0] in the project file: must be a mapping",
+            ],
+        )
+
+    def test_an_invalid_global_layer(self):
+        draft = config_layers.validate_draft("global", {"version": 1, "reviewers_extra": ["oops"]})
+        self.assertEqual(draft.problems, ["reviewers_extra[0] in the global file: must be a mapping"])
+
+
 class TestPreWriteCheck(ExtrasCase):
     """Every panel writer refuses, before writing, a panel `load()` would reject."""
 

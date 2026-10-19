@@ -975,11 +975,11 @@ class TestImportLayering(IsolatedCase):
             "_tools_row",
         )
         progress = (
-            "ran_since_last_round",
+            "_ran_since_last_round",
             "reviewed_something",
             "approved_as_recorded",
-            "design_final_pass",
-            "code_final_pass",
+            "_design_final_pass",
+            "_code_final_pass",
             "design_final_pass_from",
             "code_final_pass_from",
         )

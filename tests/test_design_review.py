@@ -911,7 +911,7 @@ class TestRanSinceLastRound(unittest.TestCase):
     ROUND = REVIEWED_ROUND
 
     def ran(self, *events):
-        return round_progress.ran_since_last_round(
+        return round_progress._ran_since_last_round(
             list(events), "review", "review_fixer", ("test", "re-test")
         )
 

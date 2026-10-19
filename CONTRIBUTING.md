@@ -208,7 +208,7 @@ still carries the allowlist and `--restricted`.
 | The wording of `optimization report` | `optimization_render.py`, which builds the lines; the figures come from `optimization_report.py`, and `cli_state.py` reads the run logs and prints |
 | Review snapshot, fan-out, parsing, consolidation, coverage wording | `review_snapshot.py`, `review_fanout.py`, `review_parsing.py`, `review_consolidation.py`, `review_coverage.py`, plan tokens in `review_plan.py`, re-review context in `review_round_context.py`; constants and prompt templates in `review_common.py` |
 | Whether the design review runs and who sits on a design round | `optimization_design.py`; the plan-reading helpers stay in `optimization.py` |
-| What the next review round would decide, and where the final revision or fix of a spent budget stands | `round_progress.py`, read by both `review status` and `status` |
+| What the next review round would decide, and where the final revision or fix of a spent budget stands | `round_progress.py`, read by `review run`, `review status` and `status` |
 
 `cli.py` holds the parser and `main()` only and re-exports nothing: a test
 imports a command's helper from its own module (`cli_run._detached_argv`), and

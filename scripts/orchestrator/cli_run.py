@@ -1215,7 +1215,7 @@ def _resume_candidate(
 
     limits = design_settings.get("resume") or {}
     max_age = limits.get("max_age_seconds")
-    if not isinstance(max_age, int) or isinstance(max_age, bool):
+    if not ws.is_int(max_age):
         max_age = config_mod.default_config()["design"]["resume"]["max_age_seconds"]
     ended = approval_mod.epoch_of(last.get("at"))
     if ended is None or time.time() - ended >= max_age:
@@ -1225,7 +1225,7 @@ def _resume_candidate(
     if ws.is_int(cap):
         # A run that reported no usable size could be over the cap: only a
         # size shown to be within it resumes.
-        if not isinstance(context, int) or isinstance(context, bool):
+        if not ws.is_int(context):
             return fresh(
                 "the last architect run's context is unknown and design.resume.max_context_tokens is set"
             )

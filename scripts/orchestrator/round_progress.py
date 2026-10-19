@@ -1,10 +1,11 @@
-"""Where the review rounds of a workflow stand, for `review status` and `status`.
+"""Where the review rounds of a workflow stand, for `review run`, `review status` and `status`.
 
 What a code or design round on the current snapshot or plan would decide, and
 whether the round that reached the iteration limit has had the one revision
-or fix it is still owed. Both status commands read these, so they cannot
-disagree about them; each passes in its own run log and its own reading of
-the remaining budget, because those are what the two read differently.
+or fix it is still owed. `review run` decides its round here, and both status
+commands preview it and read the final pass here, so none of them can
+disagree; each status command passes in its own run log and its own reading
+of the remaining budget, because those are what the two read differently.
 """
 
 from __future__ import annotations
@@ -26,9 +27,8 @@ def _risk_paths(meta: Dict[str, Any]) -> List[str]:
     ``changed_paths`` is the whole set, including withheld files and the name
     a rename came from. A snapshot without the list reads as one with no
     paths, as a missing or unreadable snapshot does; `review run` refuses a
-    snapshot that has ``files`` but not the list (see
-    ``cli_review._refuse_snapshot_without_paths``), so only a preview reads it
-    that way.
+    snapshot that has ``files`` but not the list (``missing_path_lists``), so
+    only a preview reads it that way.
     """
     paths = meta.get("changed_paths")
     return [str(path) for path in paths] if isinstance(paths, list) else []
@@ -204,7 +204,7 @@ def reviewed_something(event: Dict[str, Any]) -> bool:
     return any(isinstance(run, dict) and run.get("invoked") for run in reviewers)
 
 
-def ran_since_last_round(
+def _ran_since_last_round(
     events: List[Dict[str, Any]],
     review_stage: str,
     run_stage: str,
@@ -251,7 +251,7 @@ def approved_as_recorded(info: Dict[str, Any]) -> bool:
     return info.get("matches_current_plan") is True and info.get("reviewed_since_approval") is False
 
 
-def design_final_pass(
+def _design_final_pass(
     blocking: List[Dict[str, Any]],
     *,
     iteration: int,
@@ -304,19 +304,19 @@ def design_final_pass_from(
     accepted: bool,
     wrote_plan: Callable[[Dict[str, Any]], bool],
 ) -> Dict[str, Any]:
-    """``design_final_pass`` from the run log and the approval record.
+    """``_design_final_pass`` from the run log and the approval record.
 
     ``events`` and ``architect_left`` are the caller's: ``status`` reads them
     after clearing stalls and from its budget summary, ``review status`` from
     the run log as it is and from the ledger. ``wrote_plan`` says which
     architect runs revised the plan.
     """
-    return design_final_pass(
+    return _design_final_pass(
         blocking,
         iteration=iteration,
         max_iterations=max_iterations,
         of_current_plan=of_current_plan,
-        ran_since=ran_since_last_round(events, "design_review", "architect", counts=wrote_plan)[0],
+        ran_since=_ran_since_last_round(events, "design_review", "architect", counts=wrote_plan)[0],
         architect_left=architect_left,
         approved=approved_as_recorded(approval),
         implemented=approval_mod.implemented_since_plan(workspace, events),
@@ -324,7 +324,7 @@ def design_final_pass_from(
     )
 
 
-def code_final_pass(
+def _code_final_pass(
     blocking: List[Dict[str, Any]],
     *,
     iteration: int,
@@ -361,9 +361,9 @@ def code_final_pass_from(
     fixer_left: Optional[int],
     accepted: bool,
 ) -> Dict[str, Any]:
-    """``code_final_pass`` from the run log; ``events`` and ``fixer_left`` are the caller's."""
-    fixed, retested = ran_since_last_round(events, "review", "review_fixer", ("test", "re-test"))
-    return code_final_pass(
+    """``_code_final_pass`` from the run log; ``events`` and ``fixer_left`` are the caller's."""
+    fixed, retested = _ran_since_last_round(events, "review", "review_fixer", ("test", "re-test"))
+    return _code_final_pass(
         blocking,
         iteration=iteration,
         max_iterations=max_iterations,
