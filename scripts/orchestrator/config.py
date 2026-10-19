@@ -22,7 +22,7 @@ import json
 import os
 import re
 import sys
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple, Union
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Set, Tuple, Union
 
 from . import config_trust, miniyaml
 from . import optimization as opt_mod
@@ -1696,6 +1696,26 @@ def _validate_reviewers(
     return problems
 
 
+def _entry_identity(reviewer: Any, label: str, seen: Set[str], own: bool = True) -> Tuple[bool, List[str]]:
+    """``(is_mapping, problems)``: an entry's shape and id, its id added to ``seen``.
+
+    A duplicate id is always reported; a missing mapping or a malformed id
+    only for an ``own`` entry.
+    """
+    if not isinstance(reviewer, dict):
+        return False, ["%s: must be a mapping" % label] if own else []
+    problems: List[str] = []
+    rid = reviewer.get("id")
+    if not isinstance(rid, str) or not _ID_RE.match(rid):
+        if own:
+            problems.append("%s: id must match [a-z0-9][a-z0-9._-]* (got %r)" % (label, rid))
+    elif rid in seen:
+        problems.append("%s: duplicate reviewer id %r" % (label, rid))
+    else:
+        seen.add(rid)
+    return True, problems
+
+
 def _validate_panel_entries(
     reviewers: List[Any],
     origins: Optional[Sequence[ReviewerOrigin]],
@@ -1712,7 +1732,7 @@ def _validate_panel_entries(
     """
     design = keys == DESIGN_PANEL
     problems: List[str] = []
-    seen = set()
+    seen: Set[str] = set()
     for index, reviewer in enumerate(reviewers):
         origin = origins[index] if origins is not None and index < len(origins) else None
         own = origin is None or (not origin.extra and origin.design == design)
@@ -1720,18 +1740,10 @@ def _validate_panel_entries(
             label = _origin_label(origin, index)
         else:
             label = "%s[%d]" % (keys.reviewers, index)
-        if not isinstance(reviewer, dict):
-            if own:
-                problems.append("%s: must be a mapping" % label)
+        mapping, identity = _entry_identity(reviewer, label, seen, own)
+        problems.extend(identity)
+        if not mapping:
             continue
-        rid = reviewer.get("id")
-        if not isinstance(rid, str) or not _ID_RE.match(rid):
-            if own:
-                problems.append("%s: id must match [a-z0-9][a-z0-9._-]* (got %r)" % (label, rid))
-        elif rid in seen:
-            problems.append("%s: duplicate reviewer id %r" % (label, rid))
-        else:
-            seen.add(rid)
         if own:
             problems.extend(_validate_reviewer_entry(reviewer, label, label + ".", providers, design=design))
     return problems
@@ -2086,19 +2098,13 @@ def _validate_extras_file(
         return ["%s in the %s file: must be a list (use [] for none)" % (panel_keys.extras, name)]
     design = panel_keys == DESIGN_PANEL
     problems: List[str] = []
-    seen = set()
+    seen: Set[str] = set()
     for index, reviewer in enumerate(extras):
         label = "%s[%d] in the %s file" % (panel_keys.extras, index, name)
-        if not isinstance(reviewer, dict):
-            problems.append("%s: must be a mapping" % label)
+        mapping, identity = _entry_identity(reviewer, label, seen)
+        problems.extend(identity)
+        if not mapping:
             continue
-        rid = reviewer.get("id")
-        if not isinstance(rid, str) or not _ID_RE.match(rid):
-            problems.append("%s: id must match [a-z0-9][a-z0-9._-]* (got %r)" % (label, rid))
-        elif rid in seen:
-            problems.append("%s: duplicate reviewer id %r" % (label, rid))
-        else:
-            seen.add(rid)
         # The label names the file, so the key is said after it.
         problems.extend(_validate_reviewer_entry(reviewer, label, label + ": ", providers, design=design))
     return problems
