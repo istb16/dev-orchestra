@@ -70,7 +70,8 @@ flowchart LR
 ```
 
 どのロールにも、対応する CLI とモデルの family を自由に割り当てられます。構成は
-`dev-orchestra config setup` で選べ、詳しくは[設定](docs/ja/references/configuration.md)にあります。
+`dev-orchestra config setup` で選べ、使える family は `dev-orchestra model list` で分かります。
+詳しくは[設定](docs/ja/references/configuration.md)にあります。
 
 ## 必要なもの
 

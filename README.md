@@ -73,7 +73,8 @@ flowchart LR
 ```
 
 Every role can be any supported CLI and model family; `dev-orchestra config setup`
-picks a lineup, and the [configuration](references/configuration.md) covers the rest.
+picks a lineup, `dev-orchestra model list` shows the families your CLIs offer,
+and the [configuration](references/configuration.md) covers the rest.
 
 ## Requirements
 
