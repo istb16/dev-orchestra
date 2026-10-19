@@ -400,17 +400,16 @@ def _status_payload(
     severities = loaded.blocking_severities()
     blocking = review_mod.unresolved_blocking(review_data, severities)
     iteration = int(review_data.get("iteration", 0) or 0)
-    max_iterations = int(settings.get("max_review_iterations", 2))
+    max_iterations = loaded.max_review_iterations()
     summary = book.summary()
 
     # The design review is read whether or not it is enabled: a round that was
     # run by hand, or left open when the setting was turned back off, is still
     # an open finding about the plan the implementation would follow.
     design_data = ws.read_json(workspace.design_review().consolidated_json_path, {}) or {}
-    design_settings = loaded.design_review_settings()
     design_blocking = review_mod.unresolved_blocking(design_data, severities)
     design_iteration = int(design_data.get("iteration", 0) or 0)
-    design_max = int(design_settings.get("max_iterations", 2))
+    design_max = loaded.design_max_iterations()
     design_decision = _design_decision(loaded, workspace)
     design_exhausted = bool(design_blocking) and design_iteration >= design_max
     approval_info = approval_mod.current(

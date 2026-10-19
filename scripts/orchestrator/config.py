@@ -1133,6 +1133,14 @@ class LoadedConfig:
             settings.update(configured)
         return settings
 
+    def max_review_iterations(self) -> int:
+        """``review.max_review_iterations``: how many code review rounds the budget allows."""
+        return int(self.review_settings()["max_review_iterations"])
+
+    def design_max_iterations(self) -> int:
+        """``review.design.max_iterations``: how many design review rounds the budget allows."""
+        return int(self.design_review_settings()["max_iterations"])
+
     def design_settings(self) -> Dict[str, Any]:
         """The top-level ``design`` block, with anything absent filled in."""
         settings = default_config()["design"]

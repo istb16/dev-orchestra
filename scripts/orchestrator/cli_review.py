@@ -1124,7 +1124,6 @@ def _run_design_review(args: argparse.Namespace, loaded: config_mod.LoadedConfig
     """
     workspace = _workspace(args).design_review().ensure()
     settings = loaded.review_settings()
-    design = loaded.design_review_settings()
     decision = _design_decision(loaded, workspace)
     if decision.mode == "off":
         _err("note: review.design.enabled is false; running because you asked")
@@ -1166,7 +1165,7 @@ def _run_design_review(args: argparse.Namespace, loaded: config_mod.LoadedConfig
 
     lineage = _lineage(args, workspace)
     iteration = _iteration(args, workspace, lineage, digest)
-    max_iterations = int(design.get("max_iterations", 2))
+    max_iterations = loaded.design_max_iterations()
     refusal = _refuse_if_rounds_spent(_DESIGN, iteration, max_iterations, args.force)
     if refusal is not None:
         return refusal
@@ -1531,7 +1530,7 @@ def cmd_review_run(args: argparse.Namespace) -> int:
         return refusal
     lineage = _lineage(args, workspace)
     iteration = _iteration(args, workspace, lineage)
-    max_iterations = int(settings.get("max_review_iterations", 2))
+    max_iterations = loaded.max_review_iterations()
     refusal = _refuse_if_rounds_spent(_CODE, iteration, max_iterations, args.force)
     if refusal is not None:
         return refusal
@@ -1833,7 +1832,6 @@ def cmd_review_status(args: argparse.Namespace) -> int:
     # review directory `--design` points at.
     base = _workspace(args)
     data = ws.read_json(workspace.consolidated_json_path, {}) or {}
-    settings = loaded.review_settings()
     severities = loaded.blocking_severities()
     blocking = review_mod.unresolved_blocking(data, severities)
     accepted = bool(review_mod.accepted_findings(data))
@@ -1841,7 +1839,7 @@ def cmd_review_status(args: argparse.Namespace) -> int:
     # Read only: stalls are `status`'s to clear.
     book = _ledger(args, base)
     events = [event for event in (base.read_state().get("events") or []) if isinstance(event, dict)]
-    budget = _status_budget(args, loaded, settings, base, book, events, blocking, iteration, accepted)
+    budget = _status_budget(args, loaded, base, book, events, blocking, iteration, accepted)
     coverage = _status_coverage(data)
     payload, decision = _status_payload(args, loaded, base, data, budget, blocking, iteration, coverage)
     if args.json:
@@ -1865,7 +1863,6 @@ class _StatusBudget(NamedTuple):
 def _status_budget(
     args: argparse.Namespace,
     loaded: config_mod.LoadedConfig,
-    settings: Dict[str, Any],
     base: ws.Workspace,
     book: ledger_mod.Ledger,
     events: List[Dict[str, Any]],
@@ -1879,7 +1876,7 @@ def _status_budget(
     # review's key is what it always was; only --design carries the other name.
     if args.design:
         budget_key = "max_iterations"
-        max_iterations = int(loaded.design_review_settings().get("max_iterations", 2))
+        max_iterations = loaded.design_max_iterations()
         final = _design_final_pass(
             blocking,
             iteration=iteration,
@@ -1900,7 +1897,7 @@ def _status_budget(
         repeats = book.repeats("design_review")
     else:
         budget_key = "max_review_iterations"
-        max_iterations = int(settings.get("max_review_iterations", 2))
+        max_iterations = loaded.max_review_iterations()
         fixed, retested = _ran_since_last_round(events, "review", "review_fixer", ("test", "re-test"))
         final = _code_final_pass(
             blocking,
