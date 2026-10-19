@@ -16,7 +16,7 @@ import unittest
 
 from helpers import IsolatedCase, has_git, run_cli
 
-from orchestrator import cli_review
+from orchestrator import round_progress
 from orchestrator import workspace as ws
 
 #: `File:` names a plan section, which is what a design finding has instead of
@@ -911,7 +911,9 @@ class TestRanSinceLastRound(unittest.TestCase):
     ROUND = REVIEWED_ROUND
 
     def ran(self, *events):
-        return cli_review._ran_since_last_round(list(events), "review", "review_fixer", ("test", "re-test"))
+        return round_progress.ran_since_last_round(
+            list(events), "review", "review_fixer", ("test", "re-test")
+        )
 
     def test_a_run_after_the_round_counts(self):
         self.assertEqual(self.ran(self.ROUND, {"stage": "review_fixer", "status": "ok"}), (True, False))

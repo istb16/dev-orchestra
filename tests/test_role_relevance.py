@@ -18,10 +18,10 @@ import unittest
 from helpers import IsolatedCase, has_git, run_cli
 from test_design_review import DesignReviewCase
 
-from orchestrator import cli_review, optimization_render, presets
 from orchestrator import config as config_mod
 from orchestrator import optimization as opt
 from orchestrator import optimization_design as opt_design
+from orchestrator import optimization_render, presets, round_progress
 from orchestrator import optimization_report as opt_report
 from orchestrator import review as review_mod
 from orchestrator import workspace as ws
@@ -836,18 +836,18 @@ class TestDesignRoundsThroughTheCli(DesignReviewCase):
         self.assertIn("h1", [run["id"] for run in self.last_design_event()["reviewers"]])
 
     def test_design_carried_without_a_report_or_with_another_lineage(self):
-        self.assertEqual(cli_review._design_carried(self.workspace, "any"), [])
+        self.assertEqual(round_progress._design_carried(self.workspace, "any"), [])
         self.carry_m2_finding()
         lineage = ws.read_json(self.design.consolidated_json_path, {})["lineage"]
         self.assertTrue(lineage)
 
         def carried(given):
-            return [finding["id"] for finding in cli_review._design_carried(self.workspace, given)]
+            return [finding["id"] for finding in round_progress._design_carried(self.workspace, given)]
 
         self.assertEqual(carried(lineage), ["F1"])
         # No lineage to compare with: the live report's findings are carried.
         self.assertEqual(carried(""), ["F1"])
-        self.assertEqual(cli_review._design_carried(self.workspace, lineage + "-other"), [])
+        self.assertEqual(round_progress._design_carried(self.workspace, lineage + "-other"), [])
 
     def test_a_reset_lineage_carries_nothing(self):
         self.carry_m2_finding()

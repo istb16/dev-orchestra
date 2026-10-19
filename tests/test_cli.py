@@ -24,7 +24,7 @@ from helpers import (
 )
 
 from orchestrator import activity as activity_mod
-from orchestrator import cli, cli_review, cli_workflow, providers
+from orchestrator import cli, cli_workflow, providers, round_progress
 from orchestrator import config as config_mod
 from orchestrator import ledger as ledger_mod
 from orchestrator import workspace as ws
@@ -582,25 +582,25 @@ class TestSnapshotPaths(unittest.TestCase):
 
     def test_a_recorded_list_is_used_as_it_is(self):
         meta = dict(self.META, changed_paths=["lib/x.rb", "gen/schema.rb"], condition_paths=["lib/x.rb"])
-        self.assertEqual(cli_review._risk_paths(meta), ["lib/x.rb", "gen/schema.rb"])
-        self.assertEqual(cli_review._condition_paths(meta), ["lib/x.rb"])
+        self.assertEqual(round_progress._risk_paths(meta), ["lib/x.rb", "gen/schema.rb"])
+        self.assertEqual(round_progress._condition_paths(meta), ["lib/x.rb"])
 
     def test_a_snapshot_without_the_lists_has_no_paths(self):
         """Not rebuilt from ``files`` and ``withheld``. `review run` refuses such a snapshot."""
-        self.assertEqual(cli_review._risk_paths(self.META), [])
-        self.assertEqual(cli_review._condition_paths(self.META), [])
-        self.assertEqual(cli_review._risk_paths({}), [])
-        self.assertEqual(cli_review._condition_paths({}), [])
+        self.assertEqual(round_progress._risk_paths(self.META), [])
+        self.assertEqual(round_progress._condition_paths(self.META), [])
+        self.assertEqual(round_progress._risk_paths({}), [])
+        self.assertEqual(round_progress._condition_paths({}), [])
 
     def test_a_present_empty_list_is_no_paths(self):
         meta = dict(self.META, changed_paths=[], condition_paths=[])
-        self.assertEqual(cli_review._risk_paths(meta), [])
-        self.assertEqual(cli_review._condition_paths(meta), [])
+        self.assertEqual(round_progress._risk_paths(meta), [])
+        self.assertEqual(round_progress._condition_paths(meta), [])
 
     def test_a_string_is_not_read_as_a_list(self):
         meta = dict(self.META, changed_paths="lib/x.rb", condition_paths="lib/x.rb")
-        self.assertEqual(cli_review._risk_paths(meta), [])
-        self.assertEqual(cli_review._condition_paths(meta), [])
+        self.assertEqual(round_progress._risk_paths(meta), [])
+        self.assertEqual(round_progress._condition_paths(meta), [])
 
 
 class TestMalformedPathConditions(IsolatedCase):

@@ -950,6 +950,7 @@ class TestImportLayering(IsolatedCase):
             review_plan,
             review_round_context,
             review_snapshot,
+            round_progress,
             summary,
             wizard,
         )
@@ -973,15 +974,18 @@ class TestImportLayering(IsolatedCase):
             "_runs_row",
             "_tools_row",
         )
+        progress = (
+            "ran_since_last_round",
+            "reviewed_something",
+            "approved_as_recorded",
+            "design_final_pass",
+            "code_final_pass",
+            "design_final_pass_from",
+            "code_final_pass_from",
+        )
         homes = {
             cli_common: ("_ledger", "_refuse_if_exhausted", "_wrote_plan"),
-            cli_review: (
-                "_ran_since_last_round",
-                "_reviewed_something",
-                "_approved_as_recorded",
-                "_design_final_pass",
-                "_code_final_pass",
-            ),
+            round_progress: progress,
             cli_run: ("_detached_argv",),
             optimization_render: rendered,
         }
@@ -1038,6 +1042,8 @@ class TestImportLayering(IsolatedCase):
             self.assertIs(getattr(review, name), getattr(review_plan, name), name)
         self.assertFalse(hasattr(cli, "_coverage_advice"))
         self.assertFalse(hasattr(cli_review, "_coverage_advice"))
+        for name in progress:
+            self.assertFalse(hasattr(cli_review, "_" + name), name)
         for name in ("_coverage_line", "snapshot_reviewers", "current_snapshot_stamp"):
             self.assertFalse(hasattr(review_consolidation, name), name)
         for name in ("_stamp", "_snapshot_sha"):
