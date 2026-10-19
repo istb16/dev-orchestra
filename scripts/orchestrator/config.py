@@ -1491,13 +1491,7 @@ def load(start: Optional[str] = None, validate_result: bool = True) -> LoadedCon
         global_layer, project_layer, presets.installed_providers(), global_found, ppath, start
     )
     if validate_result:
-        problems = validate(
-            loaded.data,
-            project_layer=project_layer,
-            global_layer=global_layer,
-            origins=loaded.reviewer_origins,
-            design_origins=loaded.design_reviewer_origins,
-        )
+        problems = validate_loaded(loaded)
         if problems:
             raise ConfigError("invalid configuration:\n  - " + "\n  - ".join(problems))
     return loaded
@@ -1561,6 +1555,17 @@ def validate(
         if block is not None:
             problems.extend(check(block))
     return problems
+
+
+def validate_loaded(loaded: LoadedConfig) -> List[str]:
+    """``validate`` for a ``LoadedConfig``: its data, both its layers and both its panels' origins."""
+    return validate(
+        loaded.data,
+        project_layer=loaded.project_layer,
+        global_layer=loaded.global_layer,
+        origins=loaded.reviewer_origins,
+        design_origins=loaded.design_reviewer_origins,
+    )
 
 
 #: A mapping whose keys are the user's own: provider options, which the

@@ -1736,13 +1736,7 @@ def _broken_panel(loaded: config_mod.LoadedConfig, design: bool = False) -> List
     panel = config_mod.get_path(loaded.data, key)
     if panel is None or (isinstance(panel, list) and all(isinstance(r, dict) for r in panel)):
         return []
-    problems = config_mod.validate(
-        loaded.data,
-        project_layer=loaded.project_layer,
-        global_layer=loaded.global_layer,
-        origins=loaded.reviewer_origins,
-        design_origins=loaded.design_reviewer_origins,
-    )
+    problems = config_mod.validate_loaded(loaded)
     return [problem for problem in problems if problem.startswith((key + ":", key + "["))]
 
 

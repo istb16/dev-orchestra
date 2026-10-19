@@ -155,13 +155,7 @@ def cmd_config_show(args: argparse.Namespace) -> int:
         _out(summary if "orchestrator" in data else "(empty layer)")
     if referenced:
         _out("Providers: %s" % ", ".join(_describe_referenced_provider(name) for name in referenced))
-    problems = config_mod.validate(
-        loaded.data,
-        project_layer=loaded.project_layer,
-        global_layer=loaded.global_layer,
-        origins=loaded.reviewer_origins,
-        design_origins=loaded.design_reviewer_origins,
-    )
+    problems = config_mod.validate_loaded(loaded)
     if problems:
         _out("Problems:")
         for problem in problems:
@@ -431,13 +425,7 @@ def cmd_config_set(args: argparse.Namespace) -> int:
     effective = reloaded.data
     if before is not None:
         _left_the_fit_note(before, reloaded, role_key, path)
-    problems = config_mod.validate(
-        effective,
-        project_layer=reloaded.project_layer,
-        global_layer=reloaded.global_layer,
-        origins=reloaded.reviewer_origins,
-        design_origins=reloaded.design_reviewer_origins,
-    )
+    problems = config_mod.validate_loaded(reloaded)
     for problem in problems:
         _err("warning: %s" % problem)
     for warning in _refusal_warnings(reloaded):
@@ -556,13 +544,7 @@ def _warn_unresolvable(effective: Dict[str, Any], role_key: str) -> None:
 
 def cmd_config_validate(args: argparse.Namespace) -> int:
     loaded = _load_lenient(args.cwd)
-    problems = config_mod.validate(
-        loaded.data,
-        project_layer=loaded.project_layer,
-        global_layer=loaded.global_layer,
-        origins=loaded.reviewer_origins,
-        design_origins=loaded.design_reviewer_origins,
-    )
+    problems = config_mod.validate_loaded(loaded)
     # Warnings, not problems: they refuse one role's runs, not the file. An
     # unknown key refuses nothing at all; it is only never read.
     warnings = _refusal_warnings(loaded)
