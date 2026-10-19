@@ -21,12 +21,11 @@ from .review_common import (
     ROLE_GUIDANCE,
 )
 from .review_parsing import parse_findings, unparsed_report_warning
+from .review_round_context import render_design_round_context, render_round_context
 from .review_snapshot import (
     ReviewError,
     current_snapshot_stamp,
     partition_withheld,
-    render_design_round_context,
-    render_round_context,
     render_withheld,
 )
 

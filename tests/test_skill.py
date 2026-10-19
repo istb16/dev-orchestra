@@ -587,6 +587,8 @@ _REGISTRY_FREE = (
     "verified",
     "context",
     "review_snapshot",
+    "review_plan",
+    "review_round_context",
     "review_coverage",
     "summary",
 )
@@ -944,6 +946,8 @@ class TestImportLayering(IsolatedCase):
             review_consolidation,
             review_coverage,
             review_fanout,
+            review_plan,
+            review_round_context,
             review_snapshot,
             summary,
             wizard,
@@ -1019,11 +1023,18 @@ class TestImportLayering(IsolatedCase):
                 "coverage_advice",
             ),
             review_snapshot: ("snapshot_stamp", "current_snapshot_stamp"),
+            review_plan: ("PlanToken", "PlanScan", "added_in_revision", "plan_tokens"),
+            review_round_context: ("render_round_context", "carried_findings", "render_design_round_context"),
         }
         for home, names in moved.items():
             for name in names:
                 self.assertIs(getattr(review, name), getattr(home, name), name)
                 self.assertEqual(getattr(home, name).__module__, home.__name__, name)
+        for name in (*moved[review_plan], *moved[review_round_context]):
+            self.assertFalse(hasattr(review_snapshot, name), name)
+        # Constants carry no __module__ either.
+        for name in ("ADDED_HEADING_RE", "FENCE_RE", "HEADING_RE", "NONE_ADDED_RE"):
+            self.assertIs(getattr(review, name), getattr(review_plan, name), name)
         self.assertFalse(hasattr(cli, "_coverage_advice"))
         self.assertFalse(hasattr(cli_review, "_coverage_advice"))
         for name in ("_coverage_line", "snapshot_reviewers", "current_snapshot_stamp"):
