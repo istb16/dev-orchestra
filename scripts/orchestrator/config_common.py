@@ -19,6 +19,11 @@ CONFIG_VERSION = 1
 #: configuration unvalidated, so an unbounded integer would reach every one.
 STALE_NOTICE_MAX_DAYS = 36500
 
+#: Bounds on ``progress.interval_seconds``: how often the orchestrator reports
+#: on a long run, and so the default wait of ``jobs wait``.
+PROGRESS_INTERVAL_MIN = 30
+PROGRESS_INTERVAL_MAX = 3600
+
 KNOWN_ROLES = ("orchestrator", "architect", "implementer", "review_fixer")
 
 #: Roles whose runs are plan or review, never implement. Reviewers are too.
@@ -88,6 +93,20 @@ def ask_questions_mode(value: Any) -> str:
     if value is None:
         return "off"
     return "on" if value else "off"
+
+
+def progress_updates_mode(value: Any) -> str:
+    """``on``, ``off`` or ``auto`` for a ``progress.updates`` value.
+
+    Null, and anything ``validate`` would refuse, is the default, ``auto``:
+    the key has no older values to keep working, and the default is what the
+    orchestrator did before the key existed.
+    """
+    if value is True:
+        return "on"
+    if value is False:
+        return "off"
+    return "auto"
 
 
 #: A BCP 47 language tag, loosely: a primary subtag of two or three letters
@@ -357,6 +376,13 @@ def default_config() -> Dict[str, Any]:
         # the reminders and drops the Stop-hook check, for a check that
         # misjudges someone's replies.
         "language": {"reply": None, "rewrite": True},
+        # What the orchestrator tells the user during a long run. ``updates``:
+        # `auto` reports as SKILL.md "Long stages" says, `true` also detaches
+        # every architect run and every `review run`, `false` keeps only the
+        # stuck notice. ``interval_seconds`` is how often, and the default wait
+        # of `jobs wait`. ``quiet_notice_seconds`` adds "may be stuck" to a
+        # report once a run has shown no new tool line for that long; 0 = off.
+        "progress": {"updates": "auto", "interval_seconds": 180, "quiet_notice_seconds": 600},
     }
 
 

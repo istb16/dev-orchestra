@@ -22,10 +22,13 @@ import os
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple, Union
 
 from . import miniyaml
+from .clocks import MAX_SECONDS
 from .config_common import (  # noqa: F401 - re-exported
     BUILTIN_ROLES,
     CONFIG_VERSION,
     KNOWN_ROLES,
+    PROGRESS_INTERVAL_MAX,
+    PROGRESS_INTERVAL_MIN,
     READ_ONLY_ROLES,
     RUN_TIMEOUT_DEFAULTS,
     STALE_NOTICE_MAX_DAYS,
@@ -38,6 +41,7 @@ from .config_common import (  # noqa: F401 - re-exported
     is_valid_reviewer_id,
     language_settings_of,
     normalise_language_tag,
+    progress_updates_mode,
     trusted_project_layer,
     whole_seconds,
     workspace_dir_in,
@@ -688,6 +692,37 @@ class LoadedConfig:
         if not isinstance(value, int) or isinstance(value, bool) or not 0 <= value <= STALE_NOTICE_MAX_DAYS:
             return fallback
         return value
+
+    def progress_settings(self) -> Progress:
+        """The ``progress`` block, each value the default where it is absent or unusable.
+
+        Read leniently, as ``stale_notice_days`` is: commands load unvalidated,
+        and what the user is told must not hang on a value ``validate`` refuses.
+        """
+        defaults = default_config()["progress"]
+        configured = self.data.get("progress")
+        block = configured if isinstance(configured, dict) else {}
+        interval = block.get("interval_seconds")
+        if not (
+            isinstance(interval, int)
+            and not isinstance(interval, bool)
+            and PROGRESS_INTERVAL_MIN <= interval <= PROGRESS_INTERVAL_MAX
+        ):
+            interval = defaults["interval_seconds"]
+        quiet = block.get("quiet_notice_seconds")
+        if not (isinstance(quiet, int) and not isinstance(quiet, bool) and 0 <= quiet <= MAX_SECONDS):
+            quiet = defaults["quiet_notice_seconds"]
+        return Progress(progress_updates_mode(block.get("updates")), interval, quiet)
+
+
+class Progress(NamedTuple):
+    """The ``progress`` block as ``LoadedConfig.progress_settings`` reads it."""
+
+    #: ``on``, ``off`` or ``auto`` (``progress_updates_mode``).
+    updates: str
+    interval_seconds: int
+    #: 0 means no stuck notice.
+    quiet_notice_seconds: int
 
 
 def validate_loaded(loaded: LoadedConfig) -> List[str]:

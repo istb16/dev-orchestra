@@ -14,6 +14,8 @@ from .clocks import MAX_SECONDS
 from .config_common import (
     CONFIG_VERSION,
     KNOWN_ROLES,
+    PROGRESS_INTERVAL_MAX,
+    PROGRESS_INTERVAL_MIN,
     STALE_NOTICE_MAX_DAYS,
     default_config,
     is_valid_reviewer_id,
@@ -83,6 +85,7 @@ def validate(
         ("budgets", _validate_budgets),
         ("workspace", _validate_workspace),
         ("language", _validate_language),
+        ("progress", _validate_progress),
     ):
         block = data.get(key)
         if block is not None:
@@ -516,6 +519,34 @@ def _validate_language(language: Any) -> List[str]:
     rewrite = language.get("rewrite")
     if rewrite is not None and not isinstance(rewrite, bool):
         problems.append("language.rewrite: must be true or false")
+    return problems
+
+
+def _validate_progress(progress: Any) -> List[str]:
+    if not isinstance(progress, dict):
+        return ["progress: must be a mapping"]
+    problems: List[str] = []
+    updates = progress.get("updates")
+    if isinstance(updates, str):
+        known = updates.strip().lower() == "auto"
+    else:
+        known = updates is None or isinstance(updates, bool)
+    if not known:
+        problems.append("progress.updates: must be true, false or auto")
+    interval = progress.get("interval_seconds")
+    if interval is not None and not (
+        _int_at_least(interval, PROGRESS_INTERVAL_MIN) and interval <= PROGRESS_INTERVAL_MAX
+    ):
+        problems.append(
+            "progress.interval_seconds: must be an integer from %d to %d"
+            % (PROGRESS_INTERVAL_MIN, PROGRESS_INTERVAL_MAX)
+        )
+    quiet = progress.get("quiet_notice_seconds")
+    if quiet is not None:
+        if not _int_at_least(quiet, 0):
+            problems.append("progress.quiet_notice_seconds: must be a non-negative integer (0 = off)")
+        elif quiet > MAX_SECONDS:
+            problems.append("progress.quiet_notice_seconds: %s" % _TOO_LONG)
     return problems
 
 
