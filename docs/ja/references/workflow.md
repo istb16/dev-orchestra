@@ -22,6 +22,7 @@
 - [修正](#fix)
 - [再テストと再レビュー](#re-test-and-re-review)
 - [記録と報告](#recording-and-reporting)
+  - [進み具合の報告](#progress-reports)
 - [問題が起きたとき](#when-something-goes-wrong)
 - [ワークフローの例](#example-workflows)
 - [Skill のチェックアウトからのインストール](#installing-from-a-skill-checkout)
@@ -165,7 +166,8 @@ commit に入りません。成果物をレビュー可能にしたいチーム�
 `.gitignore` に `.ai/` を追加できます。変更した場合は、どちらにしたかを伝えてください。
 
 `jobs/<id>.activity`（実行のツール使用が 500 回を超えると `.activity.1` も）は、detach した実行の
-作業中に `jobs wait` が報告する内容です。`execution/review-run.log` は、バックグラウンドの
+作業中に `jobs wait` が報告する内容です。各ツール行は開始からのオフセット（`s`）と壁時計の時刻（`t`）を
+持ち、止まっていそうな印はそこから測ります（[進み具合の報告](#progress-reports)）。`execution/review-run.log` は、バックグラウンドの
 `review run --progress` の出力をそこへリダイレクトしたときにだけできます。どちらのツール行も同じ
 許可リストと整形を通っており（モデルのテキストも自由記述の引数もありません）、ログの残りは
 `review run` のいつもの出力です。どちらも自分自身を無視する `.ai/` の下にあります。`.ai/.gitignore` を
@@ -883,6 +885,33 @@ dev-orchestra summary
 最終レポートには次のものを挙げます。実行したステージ、省略したステージとその理由、
 テスト結果、失敗を含むレビューの結果、トリアージの件数、変更したファイル、そして
 未解決のまま残っているもの。
+
+<a id="progress-reports"></a>
+
+### 進み具合の報告
+
+長い実行の間、orchestrator が何が起きているかを伝えなければ、ユーザーには何も見えません。
+何を伝えるかは設定 `progress.*`（[設定](configuration.md#field-reference)）で決まり、`status` は
+セッションの初めにそれを `Progress: auto, every 180s, stuck notice after 600s
+(progress.*)` と表示します。
+
+| `progress.updates` | detach する実行 | 各報告（`jobs wait` が終了コード 4 で返るたび） | `review run` |
+| --- | --- | --- | --- |
+| `auto`（デフォルト） | implementer、review_fixer、大きな architect の実行 | 経過時間、ツールの使用回数、コンテキストトークン、最新のツール行 | バックグラウンドで走らせるときは `--progress` を付け、新しい行を伝える |
+| `true`（`on`） | 同じものに加えて、`--questions` と `--resume` を含むすべての architect の実行 | 同じ | 常に `--progress` 付きでバックグラウンドで走らせ、新しい行を伝える |
+| `false`（`off`） | `auto` と同じ | `may be stuck` の印があるときはそれだけ | バックグラウンドで走らせるときは `--progress` を付け、`may be stuck` の行だけを伝える |
+
+`progress.interval_seconds`（デフォルト 180、30 から 3600）は報告の間隔です。`--timeout` なしの
+`jobs wait <id> --since <n>` の待ち時間であり、`review run --progress` がレビュアーを確かめる間隔でも
+あります。各報告の `next:` 行が、次の待機を示します。
+
+`progress.quiet_notice_seconds`（デフォルト 600。`0` で止まります）は、新しいツール行がその時間出ていない
+実行の報告に `may be stuck: no new tool line for 12m03s` を付けます。`jobs wait` では `note:` 行として、
+レビューのログでは `[<reviewer> +mm:ss] may be stuck: ...` として出ます。実行が黙っている間は、
+`progress.updates` の値にかかわらず報告のたびにまた付きます。伝えたうえで待ち続けてください。
+黙って長く走るテストや、ツールを使わずに考えているモデルも同じように見えるので、取り消す理由には
+なりません。実行を止めるのはこれまでどおり期限です。この印が見られるもの・見られないものは
+`references/limits.md`（「そもそもブロックしない」）にあります。
 
 <a id="when-something-goes-wrong"></a>
 

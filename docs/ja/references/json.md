@@ -241,7 +241,7 @@ Object. ジョブの記録です。
 | `status` | string | `jobs list` と同じ。 |
 | `started_at` | string | 開始した時刻。 |
 | `output_file` | string | 実行の答えを書く場所。 |
-| `activity` | object | Only: ジョブに activity のファイルができてからだけ。`count`、`context_tokens`、`elapsed_seconds`、`lines`（`n`、`s`、`line`）、`dropped`、`omitted`。[jobs](cli.md#jobs) を参照。 |
+| `activity` | object | Only: ジョブに activity のファイルができてからだけ。`count`、`context_tokens`、`elapsed_seconds`、`lines`（`n`、`s`、`line`）、`dropped`、`omitted`、`quiet_seconds`（新しいツール行が出ていない秒数。ジョブが終わった後は `null`）、`may_be_stuck`（`quiet_seconds` が `progress.quiet_notice_seconds` に達したか。`0` で止まります）。[jobs](cli.md#jobs) を参照。 |
 
 記録には、ジョブが進むにつれて書いたもの（`command`、`timeout_seconds`、`prompt_file`、`force`、`pid`、`claimed_at`、`finished_at`）と、終わったあとは `run --json` が持つ結果のキー（`output` と `answered` を除く）も入ります。
 
@@ -443,6 +443,7 @@ Object.
 | `design_review` | object | `enabled`、`mode`、`reason`、`iteration`、`max_iterations`、`blocking`、`accepted`、`refused_for_size`、`identical_rounds`、`final_revision`、`final_revision_pending`、`optimization`（値は `review status --design` と同じ）。 |
 | `design_approval` | object | `required`、`state`（`pending`、`stale`、`approved`、`no-plan`、`not-required`、`implemented-unapproved`）、`pending`、`stale_reason`（`plan-changed`、`reviewed-since`、`decisions-changed`、`null`）など。[承認](workflow.md#approval) を参照。 |
 | `design_questions` | object | `mode`、`state`（`off`、`none`、`open`、`round-required`、`answered`）、`pending`、`open`、`answered`、`total`、`architect_rounds`、`max_rounds`、`decisions_file`。[Design の質問](workflow.md#design-questions) を参照。 |
+| `progress` | object | `updates`（`on`、`off`、`auto` のいずれか）、`interval_seconds`、`quiet_notice_seconds`。[進み具合の報告](workflow.md#progress-reports) を参照。 |
 | `budgets` | object | 工程ごとの `used`、`limit`、`remaining`。 |
 | `total_delegated_runs` | object | `used` と `limit`。 |
 | `runtime_remaining_seconds` | integer or null | 委任した実行時間の残り（切り上げ）。上限がなければ `null`。 |
