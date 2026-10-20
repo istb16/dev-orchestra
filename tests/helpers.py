@@ -550,6 +550,30 @@ def pretend_claude_is_installed(case, help_text: Optional[str] = CLAUDE_HELP):
         setattr(ClaudeProvider, name, value)
 
 
+UNLISTED_CLAUDE = "1.0.0 (Claude Code)"
+
+
+def pretend_claude_version(case, version):
+    from orchestrator.providers.claude import ClaudeProvider
+
+    case.addCleanup(setattr, ClaudeProvider, "version", ClaudeProvider.version)
+    ClaudeProvider.version = lambda self: (version, None)
+
+
+def record_resume_pass(root, version=UNLISTED_CLAUDE, mechanism=None):
+    from orchestrator import verified
+    from orchestrator.providers.claude import READ_ONLY_MECHANISM
+
+    verified.record_pass(
+        "claude",
+        version,
+        READ_ONLY_MECHANISM if mechanism is None else mechanism,
+        list(verified.REQUIRED_RESUME_CHECKS),
+        "sonnet",
+        root,
+    )
+
+
 def spend_the_runtime_budget(workspace, limit=None):
     """Put the runtime budget at its limit without running anything for hours.
 

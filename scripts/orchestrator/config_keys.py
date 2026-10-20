@@ -15,7 +15,7 @@ from .config_common import ConfigError
 def set_path(data: Dict[str, Any], dotted: str, value: Any) -> Dict[str, Any]:
     """Set ``a.b.c`` (and ``reviewers[0].role``) to ``value`` in place."""
     node: Any = data
-    parts = _split_path(dotted)
+    parts = split_path(dotted)
     for part in parts[:-1]:
         node = _descend(node, part, create=True)
     last = parts[-1]
@@ -51,13 +51,14 @@ def pop_path(data: Dict[str, Any], dotted: str) -> None:
 
 def get_path(data: Dict[str, Any], dotted: str, default: Any = None) -> Any:
     try:
-        parts = _split_path(dotted)
+        parts = split_path(dotted)
     except ConfigError:
         return default
-    return _get_parts(data, parts, default)
+    return get_parts(data, parts, default)
 
 
-def _get_parts(data: Dict[str, Any], parts: Sequence[Any], default: Any) -> Any:
+def get_parts(data: Dict[str, Any], parts: Sequence[Any], default: Any) -> Any:
+    """``get_path`` for a path already split, as ``split_path`` returns it."""
     node: Any = data
     try:
         for part in parts:
@@ -67,7 +68,8 @@ def _get_parts(data: Dict[str, Any], parts: Sequence[Any], default: Any) -> Any:
     return node
 
 
-def _split_path(dotted: str) -> List[Any]:
+def split_path(dotted: str) -> List[Any]:
+    """``a.b[0].c`` as ``["a", "b", 0, "c"]``; a malformed path is a ``ConfigError``."""
     parts: List[Any] = []
     for chunk in dotted.split("."):
         match = re.match(r"^([^\[\]]*)((?:\[\d+\])*)$", chunk)

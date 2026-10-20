@@ -12,7 +12,7 @@ import sys
 from typing import Any, List, Optional
 
 # One import stays inside the function that needs it. The provider registry:
-# importing it runs its bootstrap, which asks ``config`` for
+# importing it runs its bootstrap, which asks this module for
 # ``user_providers_dir`` and imports every user adapter, and configuration
 # must stay loadable without the provider registry.
 

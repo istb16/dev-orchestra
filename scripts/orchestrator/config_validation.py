@@ -6,18 +6,19 @@
 from __future__ import annotations
 
 import difflib
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Set, Tuple
+import re
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 from . import optimization as opt_mod
-from .clocks import MAX_SECONDS, is_seconds
+from .clocks import MAX_SECONDS
 from .config_common import (
-    _ID_RE,
-    _TIER_NAME_RE,
     CONFIG_VERSION,
     KNOWN_ROLES,
     STALE_NOTICE_MAX_DAYS,
     default_config,
+    is_valid_reviewer_id,
     normalise_language_tag,
+    whole_seconds,
 )
 from .config_keys import get_path
 from .config_paths import user_providers_hint
@@ -25,12 +26,9 @@ from .config_reviewers import CODE_PANEL, DESIGN_PANEL, PanelKeys, ReviewerOrigi
 from .config_seats import merge_tier
 from .review_common import SEVERITIES
 
-if TYPE_CHECKING:
-    from .config import LoadedConfig
-
 # Two imports stay inside the functions that need them, and each one points
 # back here. The provider registry: importing it runs its bootstrap, which asks
-# ``config`` for ``user_providers_dir`` and imports every user adapter, and
+# ``config_paths`` for ``user_providers_dir`` and imports every user adapter, and
 # configuration must stay loadable without the provider registry. Presets:
 # ``presets`` imports ``config``, which imports this module, so it can only be
 # imported once both are complete.
@@ -39,10 +37,9 @@ if TYPE_CHECKING:
 #: How a deadline too long to wait for is refused.
 _TOO_LONG = "must be %d or less" % MAX_SECONDS
 
-
-def _whole_seconds(value: Any) -> bool:
-    """A deadline in whole seconds: a positive int, not a bool, that a wait can hold."""
-    return isinstance(value, int) and is_seconds(value)
+#: Tier names are typed on a command line and read in a report, so they are
+#: kept to the shape of a word rather than allowed to be a sentence.
+_TIER_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 
 
 def _int_at_least(value: Any, minimum: int) -> bool:
@@ -91,17 +88,6 @@ def validate(
         if block is not None:
             problems.extend(check(block))
     return problems
-
-
-def validate_loaded(loaded: LoadedConfig) -> List[str]:
-    """``validate`` for a ``LoadedConfig``: its data, both its layers and both its panels' origins."""
-    return validate(
-        loaded.data,
-        project_layer=loaded.project_layer,
-        global_layer=loaded.global_layer,
-        origins=loaded.reviewer_origins,
-        design_origins=loaded.design_reviewer_origins,
-    )
 
 
 #: A mapping whose keys are the user's own: provider options, which the
@@ -242,7 +228,7 @@ def _entry_identity(reviewer: Any, label: str, seen: Set[str], own: bool = True)
         return False, ["%s: must be a mapping" % label] if own else []
     problems: List[str] = []
     rid = reviewer.get("id")
-    if not isinstance(rid, str) or not _ID_RE.match(rid):
+    if not is_valid_reviewer_id(rid):
         if own:
             problems.append("%s: id must match [a-z0-9][a-z0-9._-]* (got %r)" % (label, rid))
     elif rid in seen:
@@ -336,7 +322,7 @@ def _validate_run(run: Any) -> List[str]:
             )
         elif not _int_at_least(value, 1):
             problems.append("run.timeout_seconds.%s: must be a positive integer" % role)
-        elif not _whole_seconds(value):
+        elif not whole_seconds(value):
             problems.append("run.timeout_seconds.%s: %s" % (role, _TOO_LONG))
     return problems
 
@@ -355,12 +341,12 @@ def _validate_review(review: Any) -> List[str]:
     timeout = review.get("timeout_seconds", 1800)
     if not _int_at_least(timeout, 1):
         problems.append("review.timeout_seconds: must be a positive integer")
-    elif not _whole_seconds(timeout):
+    elif not whole_seconds(timeout):
         problems.append("review.timeout_seconds: %s" % _TOO_LONG)
     idle = review.get("idle_timeout_seconds")
     if idle is not None and not _int_at_least(idle, 1):
         problems.append("review.idle_timeout_seconds: must be a positive integer or null")
-    elif idle is not None and not _whole_seconds(idle):
+    elif idle is not None and not whole_seconds(idle):
         problems.append("review.idle_timeout_seconds: %s" % _TOO_LONG)
     incremental = review.get("incremental_rounds")
     if incremental is not None and not isinstance(incremental, bool):

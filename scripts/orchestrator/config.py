@@ -22,7 +22,7 @@ import os
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple, Union
 
 from . import miniyaml
-from .config_common import (
+from .config_common import (  # noqa: F401 - re-exported
     BUILTIN_ROLES,
     CONFIG_VERSION,
     KNOWN_ROLES,
@@ -39,11 +39,19 @@ from .config_common import (
     language_settings_of,
     normalise_language_tag,
     trusted_project_layer,
+    whole_seconds,
     workspace_dir_in,
     workspace_dir_of,
 )
-from .config_keys import _get_parts, _split_path, coerce_scalar, get_path, pop_path, set_path
-from .config_paths import (
+from .config_keys import (  # noqa: F401 - re-exported
+    coerce_scalar,
+    get_parts,
+    get_path,
+    pop_path,
+    set_path,
+    split_path,
+)
+from .config_paths import (  # noqa: F401 - re-exported
     APP_DIR_NAME,
     PROJECT_CONFIG_NAMES,
     describe_location,
@@ -57,7 +65,7 @@ from .config_paths import (
     user_providers_dir,
     user_providers_hint,
 )
-from .config_reviewers import (
+from .config_reviewers import (  # noqa: F401 - re-exported
     CODE_PANEL,
     DESIGN_PANEL,
     PanelKeys,
@@ -70,8 +78,15 @@ from .config_reviewers import (
     remove_reviewer,
     suggest_reviewer_id,
 )
-from .config_seats import SeatRun, merge_tier, read_only_seats, reviewer_seats, role_seats, same_run
-from .config_validation import _whole_seconds, unknown_key_warnings, unknown_keys, validate, validate_loaded
+from .config_seats import (  # noqa: F401 - re-exported
+    SeatRun,
+    merge_tier,
+    read_only_seats,
+    reviewer_seats,
+    role_seats,
+    same_run,
+)
+from .config_validation import unknown_key_warnings, unknown_keys, validate  # noqa: F401 - re-exported
 from .review_common import SEVERITIES
 
 if TYPE_CHECKING:
@@ -79,7 +94,7 @@ if TYPE_CHECKING:
 
 # Two imports stay inside the functions that need them, and each one points
 # back here. The provider registry: importing it runs its bootstrap, which asks
-# this module for ``user_providers_dir`` and imports every user adapter, and
+# ``config_paths`` for ``user_providers_dir`` and imports every user adapter, and
 # configuration must stay loadable without the provider registry. Presets:
 # ``presets`` builds its presets from ``default_config`` when it is imported,
 # so it can only be imported once this module is complete.
@@ -476,9 +491,9 @@ class LoadedConfig:
         names it. Presets never set ``options``, so the raw-argument checks
         that ask this are unaffected.
         """
-        parts = _split_path(path) if isinstance(path, str) else list(path)
+        parts = split_path(path) if isinstance(path, str) else list(path)
         for name, layer in (("project", self.project_layer), ("global", self.global_layer)):
-            if _get_parts(layer, parts, _MISSING) is not _MISSING or _names_null(layer, parts):
+            if get_parts(layer, parts, _MISSING) is not _MISSING or _names_null(layer, parts):
                 return name
         return "default"
 
@@ -675,6 +690,17 @@ class LoadedConfig:
         return value
 
 
+def validate_loaded(loaded: LoadedConfig) -> List[str]:
+    """``validate`` for a ``LoadedConfig``: its data, both its layers and both its panels' origins."""
+    return validate(
+        loaded.data,
+        project_layer=loaded.project_layer,
+        global_layer=loaded.global_layer,
+        origins=loaded.reviewer_origins,
+        design_origins=loaded.design_reviewer_origins,
+    )
+
+
 class RunTimeout(NamedTuple):
     """The total deadline of one ``run`` of a role, and where it was set."""
 
@@ -733,11 +759,11 @@ def idle_timeout(loaded: LoadedConfig, mode: str) -> RunTimeout:
 
 
 def _timeout_at(loaded: LoadedConfig, key: List[str], fallback: int) -> RunTimeout:
-    value = _get_parts(loaded.data, key, None)
-    if not _whole_seconds(value):
+    value = get_parts(loaded.data, key, None)
+    if not whole_seconds(value):
         return RunTimeout(fallback, "default")
     for name, layer in (("project", loaded.project_layer), ("global", loaded.global_layer)):
-        if _get_parts(layer, key, None) is not None:
+        if get_parts(layer, key, None) is not None:
             return RunTimeout(value, name)
     return RunTimeout(value, "default")
 
@@ -977,5 +1003,5 @@ def _names_null(data: Dict[str, Any], parts: Sequence[Any]) -> bool:
     """Whether ``data`` writes a null at ``parts``, for a key whose null replaces."""
     if tuple(parts) not in _NULL_REPLACES:
         return False
-    parent = _get_parts(data, parts[:-1], _MISSING)
+    parent = get_parts(data, parts[:-1], _MISSING)
     return isinstance(parent, dict) and parts[-1] in parent and parent[parts[-1]] is None

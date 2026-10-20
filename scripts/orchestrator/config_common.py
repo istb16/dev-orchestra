@@ -7,10 +7,11 @@ The lowest of the ``config_*`` modules; ``config`` re-exports its public names.
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, TypeGuard
 
 from . import config_trust
 from . import optimization as opt_mod
+from .clocks import is_seconds
 from .review_common import DEFAULT_EXCLUDE
 
 CONFIG_VERSION = 1
@@ -42,10 +43,6 @@ RUN_TIMEOUT_DEFAULTS = {
 #: deadline at all, a wedged implementer would run until its total one (#273).
 WRITE_RUN_IDLE_TIMEOUT_SECONDS = 1200
 
-#: Tier names are typed on a command line and read in a report, so they are
-#: kept to the shape of a word rather than allowed to be a sentence.
-_TIER_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
-
 BUILTIN_ROLES = (
     "general",
     "security",
@@ -60,9 +57,14 @@ BUILTIN_ROLES = (
 _ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 
 
-def is_valid_reviewer_id(value: Any) -> bool:
+def is_valid_reviewer_id(value: Any) -> TypeGuard[str]:
     """The same rule ``validate`` applies, exposed for input-time checking."""
     return isinstance(value, str) and bool(_ID_RE.match(value))
+
+
+def whole_seconds(value: Any) -> bool:
+    """A deadline in whole seconds: a positive int, not a bool, that a wait can hold."""
+    return isinstance(value, int) and is_seconds(value)
 
 
 def design_review_mode(value: Any) -> str:

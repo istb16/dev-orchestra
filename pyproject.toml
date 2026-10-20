@@ -28,8 +28,6 @@ ignore = [
 # It only re-exports what moved into review_*.py, so every `review.name` in
 # the code and the tests keeps working.
 "scripts/orchestrator/review.py" = ["F401"]
-# Likewise for what moved into config_*.py, so every `config.name` keeps working.
-"scripts/orchestrator/config.py" = ["F401"]
 # A test replaces a function with setattr() so the checker sees a deliberate
 # swap rather than an assignment to a method.
 "tests/**" = ["B010"]

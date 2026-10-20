@@ -8,10 +8,13 @@ import unittest
 
 from helpers import (
     CLAUDE_HELP_NO_FORK,
+    UNLISTED_CLAUDE,
     IsolatedCase,
     _Completed,
     codex_fork_help,
     pretend_claude_is_installed,
+    pretend_claude_version,
+    record_resume_pass,
     run_cli,
 )
 
@@ -24,28 +27,6 @@ def smoke_script() -> str:
 
 
 PARENT_SESSION = "55555555-5555-4555-8555-555555555555"
-UNLISTED_CLAUDE = "1.0.0 (Claude Code)"
-
-
-def pretend_claude_version(case, version):
-    from orchestrator.providers.claude import ClaudeProvider
-
-    case.addCleanup(setattr, ClaudeProvider, "version", ClaudeProvider.version)
-    ClaudeProvider.version = lambda self: (version, None)
-
-
-def record_resume_pass(root, version=UNLISTED_CLAUDE, mechanism=None):
-    from orchestrator import verified
-    from orchestrator.providers.claude import READ_ONLY_MECHANISM
-
-    verified.record_pass(
-        "claude",
-        version,
-        READ_ONLY_MECHANISM if mechanism is None else mechanism,
-        list(verified.REQUIRED_RESUME_CHECKS),
-        "sonnet",
-        root,
-    )
 
 
 #: A user adapter that is the claude adapter under another name, resuming nothing.

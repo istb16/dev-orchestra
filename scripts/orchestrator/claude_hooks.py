@@ -148,7 +148,7 @@ def plugins_dir() -> str:
 
 def hooks_dir() -> str:
     """Beside ``providers/``; the provider loader imports only ``providers/*.py``."""
-    return os.path.join(config_mod.global_config_dir(), "hooks")
+    return os.path.join(config_paths.global_config_dir(), "hooks")
 
 
 def relay_path() -> str:
@@ -474,7 +474,7 @@ def write_settings(path: str, data: Dict[str, Any], original: Optional[bytes]) -
 
 
 def _refuse_if_stored_elsewhere(path: str) -> None:
-    real = config_mod.package_redirected(path)
+    real = config_paths.package_redirected(path)
     if real is not None:
         raise HooksError(
             "%s would be written to %s, where Claude Code does not read it (a Microsoft Store Python "
@@ -517,8 +517,8 @@ def desired_record(plugin_root: str, kept: Optional[Dict[str, Any]] = None) -> D
     record = {
         "version": RECORD_VERSION,
         "plugin_root": _slashes(os.path.abspath(plugin_root)),
-        "home": _slashes(config_mod.global_config_dir()),
-        "config": _slashes(config_mod.global_config_path()),
+        "home": _slashes(config_paths.global_config_dir()),
+        "config": _slashes(config_paths.global_config_path()),
     }
     if kept is not None and isinstance(kept.get("home"), str) and isinstance(kept.get("config"), str):
         record["home"], record["config"] = kept["home"], kept["config"]
