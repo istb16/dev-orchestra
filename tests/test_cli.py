@@ -14,14 +14,17 @@ from typing import Any, ClassVar, Dict, Optional
 from unittest import mock
 
 from helpers import (
-    CLAUDE_HELP,
     CLAUDE_HELP_NO_FORK,
     CLAUDE_HELP_OLD,
     TEST_WORKFLOW,
     IsolatedCase,
+    _Completed,
     codex_fork_help,
     has_git,
+    pretend_claude_is_installed,
+    read_file,
     run_cli,
+    spend_the_runtime_budget,
 )
 
 from orchestrator import activity as activity_mod
@@ -40,11 +43,6 @@ FINDING = """## Finding
 - Evidence: return a - b
 - Recommended fix: restore the addition
 """
-
-
-def read_file(path):
-    with open(path, encoding="utf-8") as handle:
-        return handle.read()
 
 
 def smoke_script() -> str:
@@ -1818,30 +1816,6 @@ class TestRunCommand(IsolatedCase):
 SECRET_SETTINGS = '--settings={"apiKeyHelper":"sk-ant-abcdefghijklmnopqrs"}'
 
 
-class _Completed:
-    def __init__(self, stdout="", returncode=0):
-        self.stdout = stdout
-        self.stderr = ""
-        self.returncode = returncode
-
-
-def pretend_claude_is_installed(case, help_text: Optional[str] = CLAUDE_HELP):
-    """The claude adapter answering from fixtures: installed, 2.1.283, and
-    ``--help`` reading as ``help_text`` (None: it cannot be read)."""
-    from orchestrator.providers.claude import ClaudeProvider
-
-    def capture(self, command, timeout=30):
-        return None if help_text is None else _Completed(help_text)
-
-    for name, value in (
-        ("which", lambda self: "claude"),
-        ("version", lambda self: ("2.1.283 (Claude Code)", None)),
-        ("_capture", capture),
-    ):
-        case.addCleanup(setattr, ClaudeProvider, name, getattr(ClaudeProvider, name))
-        setattr(ClaudeProvider, name, value)
-
-
 class TestReadOnlyRuns(IsolatedCase):
     """What `run` refuses for a read-only role, and that refusing costs nothing."""
 
@@ -2197,22 +2171,6 @@ class TestBudgetsStopLoops(IsolatedCase):
         run_cli("progress", "record", "test", "--signature", "3 failed")
         run_cli("progress", "record", "test", "--signature", "1 failed")
         self.assertEqual(run_cli("budget", "consume", "test")[0], 0)
-
-
-def spend_the_runtime_budget(workspace, limit=None):
-    """Put the runtime budget at its limit without running anything for hours.
-
-    Written straight onto the ledger because the only other way to get there is
-    to actually delegate that much execution.
-    """
-    from orchestrator import ledger as ledger_mod
-
-    settings = dict(ledger_mod.DEFAULT_BUDGETS)
-    book = ledger_mod.Ledger(workspace, settings)
-    ledger = book.load()
-    ledger["runtime_seconds"] = float(limit or settings["max_runtime_seconds"])
-    book._write(ledger)
-    return book
 
 
 class TestRuntimeBudgetThroughTheCli(IsolatedCase):

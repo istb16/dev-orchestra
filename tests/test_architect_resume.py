@@ -14,8 +14,7 @@ import os
 import sys
 import unittest
 
-from helpers import IsolatedCase
-from test_cli import run_cli
+from helpers import IsolatedCase, run_cli
 
 from orchestrator import cli, cli_run, optimization_render
 from orchestrator import jobs as jobs_mod

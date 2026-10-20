@@ -10,8 +10,7 @@ import unittest
 from typing import Any, Dict, List
 from unittest import mock
 
-from helpers import IsolatedCase
-from test_cli import run_cli
+from helpers import IsolatedCase, run_cli
 
 from orchestrator import activity, execution
 from orchestrator import jobs as jobs_mod

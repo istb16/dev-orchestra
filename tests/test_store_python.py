@@ -11,8 +11,8 @@ import unittest
 from typing import Any, Dict
 from unittest import mock
 
-from helpers import IsolatedCase
-from test_cli import UNLISTED_CLAUDE, pretend_claude_is_installed, pretend_claude_version, record_resume_pass
+from helpers import IsolatedCase, pretend_claude_is_installed
+from test_cli import UNLISTED_CLAUDE, pretend_claude_version, record_resume_pass
 
 from orchestrator import config as config_mod
 from orchestrator import config_paths

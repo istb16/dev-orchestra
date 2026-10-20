@@ -19,9 +19,8 @@ from contextlib import contextmanager
 from typing import List
 from unittest import mock
 
-from helpers import IsolatedCase, has_git
+from helpers import IsolatedCase, has_git, spend_the_runtime_budget
 from test_agy_gates import AGY_REVIEWER, UNENFORCED, _GateCase
-from test_cli import spend_the_runtime_budget
 from test_design_review import REVISED_PLAN, DesignReviewCase, run_cli
 from test_prompt_limits import finding
 from test_review import reviewer

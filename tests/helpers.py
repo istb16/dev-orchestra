@@ -521,6 +521,51 @@ def run_cli(*argv: str) -> Tuple[int, str, str]:
     return code, out.getvalue(), err.getvalue()
 
 
+def read_file(path):
+    with open(path, encoding="utf-8") as handle:
+        return handle.read()
+
+
+class _Completed:
+    def __init__(self, stdout="", returncode=0):
+        self.stdout = stdout
+        self.stderr = ""
+        self.returncode = returncode
+
+
+def pretend_claude_is_installed(case, help_text: Optional[str] = CLAUDE_HELP):
+    """The claude adapter answering from fixtures: installed, 2.1.283, and
+    ``--help`` reading as ``help_text`` (None: it cannot be read)."""
+    from orchestrator.providers.claude import ClaudeProvider
+
+    def capture(self, command, timeout=30):
+        return None if help_text is None else _Completed(help_text)
+
+    for name, value in (
+        ("which", lambda self: "claude"),
+        ("version", lambda self: ("2.1.283 (Claude Code)", None)),
+        ("_capture", capture),
+    ):
+        case.addCleanup(setattr, ClaudeProvider, name, getattr(ClaudeProvider, name))
+        setattr(ClaudeProvider, name, value)
+
+
+def spend_the_runtime_budget(workspace, limit=None):
+    """Put the runtime budget at its limit without running anything for hours.
+
+    Written straight onto the ledger because the only other way to get there is
+    to actually delegate that much execution.
+    """
+    from orchestrator import ledger as ledger_mod
+
+    settings = dict(ledger_mod.DEFAULT_BUDGETS)
+    book = ledger_mod.Ledger(workspace, settings)
+    ledger = book.load()
+    ledger["runtime_seconds"] = float(limit or settings["max_runtime_seconds"])
+    book._write(ledger)
+    return book
+
+
 def usage_dict(**fields: Any) -> Dict[str, Any]:
     """``Usage.to_dict()`` of a run whose prompt was ``"prompt"``, written
     out key by key, with ``fields`` changed."""
