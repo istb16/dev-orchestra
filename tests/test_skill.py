@@ -589,6 +589,7 @@ _REGISTRY_FREE = (
     "config",
     "config_common",
     "config_paths",
+    "config_keys",
     "execution",
     "presets",
     "verified",
