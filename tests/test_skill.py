@@ -590,6 +590,7 @@ _REGISTRY_FREE = (
     "config_common",
     "config_paths",
     "config_keys",
+    "config_reviewers",
     "execution",
     "presets",
     "verified",
@@ -948,6 +949,7 @@ class TestImportLayering(IsolatedCase):
             config,
             config_paths,
             config_policy,
+            config_reviewers,
             optimization_render,
             providers,
             review,
@@ -1091,7 +1093,8 @@ class TestImportLayering(IsolatedCase):
             self.assertEqual(getattr(providers, name).__module__, "orchestrator.providers", name)
             self.assertFalse(hasattr(config, name), name)
         self.assertFalse(hasattr(config_policy, "warned_provider"))
-        self.assertEqual(config.default_reviewer_family.__module__, "orchestrator.config")
+        self.assertEqual(config_reviewers.default_reviewer_family.__module__, "orchestrator.config_reviewers")
+        self.assertIs(config.default_reviewer_family, config_reviewers.default_reviewer_family)
         self.assertFalse(hasattr(config_policy, "default_reviewer_family"))
         # The functions tests replace have one home, so one patch reaches every reader (#289).
         for name in ("on_windows", "real_location", "stored_elsewhere"):
