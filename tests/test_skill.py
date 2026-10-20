@@ -220,7 +220,13 @@ class TestSkillDocument(IsolatedCase):
             ("| Test |", "| Reviews |"): ("then `state record test ok\\|failed`",),
             ("## 1. Classify", "## 2. The pipeline"): ("`review run --high-risk`",),
             ("## 2. The pipeline", "| Stage |"): ("which ignores itself",),
-            ("**Long stages.**", "**Design.**"): ("with `--detach`", "wait with `jobs wait <id>"),
+            ("**Long stages.**", "**Design.**"): (
+                "with `--detach`",
+                "wait with `jobs wait <id>",
+                "`progress.updates`",
+                "`may be stuck`",
+                "never a reason to cancel",
+            ),
             ("**Design.**", "**Approval.**"): (
                 "still gets one revision (no re-review), made before you ask for approval",
             ),

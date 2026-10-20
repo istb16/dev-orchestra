@@ -74,13 +74,16 @@ show`), the path files you write and redirects need. Templates, detail:
 A role with `model_tiers` (`config show`) runs on one: `run implementer --tier
 light`.
 
-**Long stages.** Run implementer, review_fixer and big architect runs with
-`--detach`; wait with `jobs wait <id> --timeout 180 --since <n>`. On each exit
-4, tell the user briefly: elapsed time, tool count, **context tokens** (never
-"tokens so far"), the last tool lines; wait again from `next:`. A background
-`review run` gets `--progress > "<Artifacts>/execution/review-run.log" 2>&1`:
-relay new lines. Never relay or guess what the model wrote;
-tool lines go as they are.
+**Long stages.** `status` gives `Progress:` (`progress.updates`). Run
+implementer, review_fixer and big architect runs (`on`: every architect run)
+with `--detach`; wait with `jobs wait <id> --since <n>`. On each exit 4 tell
+the user briefly: elapsed time, tool count, **context tokens** (never "tokens
+so far"), the last tool lines; under `off`, only a `may be stuck` note.
+A `may be stuck` note is always relayed and never a reason to cancel. Wait
+again from `next:`. A background `review run` (`on`: always background) gets
+`--progress > "<Artifacts>/execution/review-run.log" 2>&1`: relay new lines
+the same way. Never relay or guess what the model wrote; tool lines go as they
+are.
 
 **Questions.** When on, ask the user before designing (`auto`: only when it
 matters; say why). "Leave it to you" is `--delegate`; exit 6 means ask.
