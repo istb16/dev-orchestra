@@ -17,12 +17,6 @@ CONFIG_VERSION = 1
 #: Ceiling on ``workspace.stale_notice_days`` (100 years). Commands load the
 #: configuration unvalidated, so an unbounded integer would reach every one.
 STALE_NOTICE_MAX_DAYS = 36500
-APP_DIR_NAME = "dev-orchestra"
-PROJECT_CONFIG_NAMES = (
-    ".dev-orchestra.yaml",
-    ".dev-orchestra.yml",
-    ".dev-orchestra.json",
-)
 
 KNOWN_ROLES = ("orchestrator", "architect", "implementer", "review_fixer")
 

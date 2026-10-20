@@ -26,7 +26,7 @@ import tempfile
 from typing import Any, Dict, List, Mapping, NamedTuple, Optional, Tuple
 
 from . import config as config_mod
-from . import reply_language
+from . import config_paths, reply_language
 from .execution import DELEGATED_ENV
 
 #: Moves Claude Code's user settings directory when set.
@@ -168,7 +168,7 @@ def _same_path(left: Any, right: Any) -> bool:
     if not isinstance(left, str) or not isinstance(right, str):
         return False
     left, right = _slashes(os.path.normpath(left)), _slashes(os.path.normpath(right))
-    if config_mod.on_windows():
+    if config_paths.on_windows():
         return left.lower() == right.lower()
     return left == right
 
@@ -176,7 +176,7 @@ def _same_path(left: Any, right: Any) -> bool:
 def _within(path: str, directory: str) -> bool:
     """Whether ``path`` is ``directory`` or under it, once both are resolved."""
     path, directory = os.path.realpath(path), os.path.realpath(directory)
-    if config_mod.on_windows():
+    if config_paths.on_windows():
         path, directory = path.lower(), directory.lower()
     try:
         return os.path.commonpath([path, directory]) == directory
@@ -210,7 +210,7 @@ def _base_python() -> str:
     base = getattr(sys, "_base_executable", None)
     if isinstance(base, str) and base and not _same_path(base, sys.executable) and os.path.isfile(base):
         return base
-    if config_mod.on_windows():
+    if config_paths.on_windows():
         names = ["python.exe"]
     else:
         names = [os.path.join("bin", "python3"), os.path.join("bin", "python")]

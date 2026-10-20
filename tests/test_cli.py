@@ -25,7 +25,7 @@ from helpers import (
 )
 
 from orchestrator import activity as activity_mod
-from orchestrator import cli, cli_workflow, providers, round_progress
+from orchestrator import cli, cli_workflow, config_paths, providers, round_progress
 from orchestrator import config as config_mod
 from orchestrator import ledger as ledger_mod
 from orchestrator import workspace as ws
@@ -281,7 +281,7 @@ class TestStoredAtMessages(IsolatedCase):
             with self.subTest(name):
                 self.fake_clis(**dict.fromkeys(clis, True))
                 self.put_global(layer)
-                with mock.patch.object(config_mod, "real_location", lambda path: path):
+                with mock.patch.object(config_paths, "real_location", lambda path: path):
                     plain_code, plain, _ = run_cli(*argv)
                 self.put_global(layer)
                 code, out, _ = run_cli(*argv)

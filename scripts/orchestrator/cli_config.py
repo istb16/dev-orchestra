@@ -9,7 +9,7 @@ import re
 import sys
 from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple, Union
 
-from . import claude_hooks, hosts, miniyaml
+from . import claude_hooks, config_paths, hosts, miniyaml
 from . import config as config_mod
 from . import config_policy as policy_mod
 from . import doctor as doctor_mod
@@ -116,7 +116,7 @@ def cmd_config_show(args: argparse.Namespace) -> int:
         }
         # Present only where Windows keeps the file somewhere else (#235).
         if args.scope == "global" and exists:
-            real = config_mod.stored_elsewhere(path)
+            real = config_paths.stored_elsewhere(path)
             if real is not None:
                 payload["source_real"] = real
         if not scoped:
@@ -124,7 +124,7 @@ def cmd_config_show(args: argparse.Namespace) -> int:
             payload["project"] = loaded.project_path
             payload["global"] = loaded.global_path
             if loaded.global_path:
-                real = config_mod.stored_elsewhere(loaded.global_path)
+                real = config_paths.stored_elsewhere(loaded.global_path)
                 if real is not None:
                     payload["global_real"] = real
             payload["reviewer_origins"] = [origin.label() for origin in loaded.reviewer_origins]

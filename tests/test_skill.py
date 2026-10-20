@@ -588,6 +588,7 @@ _REGISTRY_FREE = (
     "review_common",
     "config",
     "config_common",
+    "config_paths",
     "execution",
     "presets",
     "verified",
@@ -615,7 +616,7 @@ _ALLOWED = {
     ("providers/__init__.py", "_bootstrap", ".codex"),
     ("providers/__init__.py", "_bootstrap", ".mock"),
     # The registry and presets both need config complete before they load.
-    ("config.py", "user_providers_hint", ".providers"),
+    ("config_paths.py", "user_providers_hint", ".providers"),
     ("config.py", "compose", ".presets"),
     ("config.py", "root", ".workspace"),
     ("config.py", "load", ".presets"),
@@ -944,6 +945,7 @@ class TestImportLayering(IsolatedCase):
             cli_state,
             cli_workflow,
             config,
+            config_paths,
             config_policy,
             optimization_render,
             providers,
@@ -1090,6 +1092,10 @@ class TestImportLayering(IsolatedCase):
         self.assertFalse(hasattr(config_policy, "warned_provider"))
         self.assertEqual(config.default_reviewer_family.__module__, "orchestrator.config")
         self.assertFalse(hasattr(config_policy, "default_reviewer_family"))
+        # The functions tests replace have one home, so one patch reaches every reader (#289).
+        for name in ("on_windows", "real_location", "stored_elsewhere"):
+            self.assertEqual(getattr(config_paths, name).__module__, "orchestrator.config_paths", name)
+            self.assertFalse(hasattr(config, name), name)
 
 
 def _source(relative, text):

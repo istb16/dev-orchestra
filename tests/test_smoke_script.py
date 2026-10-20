@@ -36,6 +36,7 @@ from helpers import REPO_ROOT, IsolatedCase, make_dir_link, present, remove_link
 # provider registry -- which would otherwise import the real user's adapters.
 import smoke_live
 
+from orchestrator import config_paths
 from orchestrator.providers import agy as agy_module
 from orchestrator.providers import base
 from orchestrator.providers import claude as claude_module
@@ -936,7 +937,7 @@ class TestTheResumeRecord(IsolatedCase):
         self.assertEqual(found["status"], "passed")
 
     def test_the_message_names_the_record(self):
-        with mock.patch.object(smoke_live.config_mod, "on_windows", return_value=False):
+        with mock.patch.object(config_paths, "on_windows", return_value=False):
             lines = self.record(self.checks())
         path = smoke_live.verified.record_path("claude")
         self.assertEqual(lines[0].detail, "recorded 9.9.9 (Fake) in %s" % path)

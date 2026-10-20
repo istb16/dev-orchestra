@@ -436,6 +436,7 @@ class IsolatedCase(unittest.TestCase):
         the profile and AppData stay where they are. Nothing on disk is moved.
         """
         from orchestrator import config as config_mod
+        from orchestrator import config_paths
 
         profile = os.path.join(self.tmp, "profile")
         roaming = os.path.join(profile, "AppData", "Roaming")
@@ -458,7 +459,7 @@ class IsolatedCase(unittest.TestCase):
             return path
 
         for name, value in (("on_windows", lambda: True), ("real_location", fake_real_location)):
-            patcher = mock.patch.object(config_mod, name, value)
+            patcher = mock.patch.object(config_paths, name, value)
             patcher.start()
             self.addCleanup(patcher.stop)
         return real

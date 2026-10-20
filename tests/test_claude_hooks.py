@@ -21,7 +21,7 @@ from unittest import mock
 from helpers import REPO_ROOT, IsolatedCase, fixture_text, make_dir_link, run_cli
 
 from orchestrator import claude_hooks as ch
-from orchestrator import cli_hooks, doctor, hosts
+from orchestrator import cli_hooks, config_paths, doctor, hosts
 from orchestrator import config as config_mod
 from orchestrator import wizard as wizard_mod
 from orchestrator.execution import DELEGATED_ENV
@@ -275,7 +275,7 @@ class TestSettingsEditing(HooksCase):
     def test_refuses_store_redirected_settings_path(self):
         package = "PythonSoftwareFoundation.Python.3.12_qbz5n2kfra8p0"
         real = os.path.join(self.tmp, "AppData", "Local", "Packages", package, "LocalCache", "settings.json")
-        with mock.patch.object(config_mod, "stored_elsewhere", lambda path: real):
+        with mock.patch.object(config_paths, "stored_elsewhere", lambda path: real):
             with self.assertRaises(ch.HooksError) as caught:
                 ch.install(REPO_ROOT)
             self.assertIn("Microsoft Store", str(caught.exception))
@@ -285,7 +285,7 @@ class TestSettingsEditing(HooksCase):
 
     def test_a_link_the_user_made_is_not_a_store_redirect(self):
         real = os.path.join(self.tmp, "dotfiles", "claude", "settings.json")
-        with mock.patch.object(config_mod, "stored_elsewhere", lambda path: real):
+        with mock.patch.object(config_paths, "stored_elsewhere", lambda path: real):
             self.assertTrue(ch.install(REPO_ROOT).changed)
         self.assertIn("hooks", self.read_settings())
 
@@ -433,7 +433,7 @@ class TestPythonChoice(HooksCase):
         self.assertEqual(ch.status(REPO_ROOT)["status"], "installed")
 
     def test_base_python_found_under_base_prefix(self):
-        name = "python.exe" if config_mod.on_windows() else os.path.join("bin", "python3")
+        name = "python.exe" if config_paths.on_windows() else os.path.join("bin", "python3")
         base = self.make_file("base", name)
         self.in_venv(None)
         self.assertEqual(ch.python_command(), slashes(base))
@@ -823,10 +823,10 @@ class TestStatus(HooksCase):
         self.assertEqual(report["status"], "stale")
 
     def test_same_path_on_windows_ignores_case_and_separators(self):
-        with mock.patch.object(config_mod, "on_windows", lambda: True):
+        with mock.patch.object(config_paths, "on_windows", lambda: True):
             self.assertTrue(ch._same_path("C:\\Py\\python.exe", "c:/py/PYTHON.exe"))
             self.assertFalse(ch._same_path("C:\\Py\\python.exe", "C:/Py/python3.exe"))
-        with mock.patch.object(config_mod, "on_windows", lambda: False):
+        with mock.patch.object(config_paths, "on_windows", lambda: False):
             self.assertFalse(ch._same_path("/py/Python", "/py/python"))
             self.assertTrue(ch._same_path("/py/./python", "/py/python"))
         self.assertFalse(ch._same_path(5, "5"))

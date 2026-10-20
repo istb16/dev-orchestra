@@ -12,7 +12,7 @@ import platform
 import sys
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
-from . import claude_hooks, hosts, reply_language, verified
+from . import claude_hooks, config_paths, hosts, reply_language, verified
 from . import config as config_mod
 from . import config_policy as policy_mod
 from . import optimization as opt_mod
@@ -58,7 +58,7 @@ def user_home() -> str:
 
 def store_python() -> bool:
     """Whether this is the Microsoft Store package of Python; tests replace it."""
-    return config_mod.on_windows() and _is_store_path((sys.executable, sys.base_prefix))
+    return config_paths.on_windows() and _is_store_path((sys.executable, sys.base_prefix))
 
 
 def _is_store_path(values: Iterable[Optional[str]]) -> bool:
@@ -77,7 +77,7 @@ def _add_real(target: Dict[str, Any], key: str, path: Any) -> None:
     """``target[key]``: where ``path`` really is, only when Windows keeps it elsewhere."""
     if not isinstance(path, str) or not path:
         return
-    real = config_mod.stored_elsewhere(path)
+    real = config_paths.stored_elsewhere(path)
     if real is not None:
         target[key] = real
 
@@ -96,7 +96,7 @@ def _stored_elsewhere_report(report: Dict[str, Any]) -> None:
     for item in [*(user.get("loaded") or []), *(user.get("errors") or []), *(user.get("problems") or [])]:
         _add_real(item, "path_real", item.get("path"))
     directory = config_mod.global_config_dir()
-    real = config_mod.stored_elsewhere(directory)
+    real = config_paths.stored_elsewhere(directory)
     if real is None:
         return
     if not store:
