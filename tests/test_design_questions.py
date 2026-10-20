@@ -23,7 +23,7 @@ from test_design_review import PLAN, REQUEST, run_cli
 
 from orchestrator import approval as approval_mod
 from orchestrator import config as config_mod
-from orchestrator import doctor
+from orchestrator import config_validation, doctor
 from orchestrator import jobs as jobs_mod
 from orchestrator import questions as questions_mod
 from orchestrator import review as review_mod
@@ -137,17 +137,17 @@ class TestValidation(unittest.TestCase):
     def test_ask_questions(self):
         for value in (True, False, "auto", "AUTO", None):
             with self.subTest(value=value):
-                self.assertEqual(config_mod._validate_design({"ask_questions": value}), [])
+                self.assertEqual(config_validation._validate_design({"ask_questions": value}), [])
         for value in ("maybe", 1):
             with self.subTest(value=value):
-                [problem] = config_mod._validate_design({"ask_questions": value})
+                [problem] = config_validation._validate_design({"ask_questions": value})
                 self.assertIn("design.ask_questions", problem)
 
     def test_max_question_rounds(self):
-        self.assertEqual(config_mod._validate_design({"max_question_rounds": 1}), [])
+        self.assertEqual(config_validation._validate_design({"max_question_rounds": 1}), [])
         for value in (0, "2", True):
             with self.subTest(value=value):
-                [problem] = config_mod._validate_design({"max_question_rounds": value})
+                [problem] = config_validation._validate_design({"max_question_rounds": value})
                 self.assertIn("design.max_question_rounds", problem)
 
     def test_defaults(self):

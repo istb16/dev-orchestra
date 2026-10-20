@@ -15,7 +15,7 @@ from helpers import IsolatedCase, fixture_text, has_git, run_cli
 from test_wizard import ScriptedPrompter, accept_all
 
 from orchestrator import config as config_mod
-from orchestrator import config_layers, doctor, execution, presets
+from orchestrator import config_layers, config_validation, doctor, execution, presets
 from orchestrator import config_policy as policy_mod
 from orchestrator import optimization as opt_mod
 from orchestrator import review as review_mod
@@ -293,26 +293,29 @@ class TestEntryIdentity(unittest.TestCase):
     def test_an_own_entry(self):
         seen = {"a"}
         self.assertEqual(
-            config_mod._entry_identity("oops", "x[0]", seen), (False, ["x[0]: must be a mapping"])
+            config_validation._entry_identity("oops", "x[0]", seen), (False, ["x[0]: must be a mapping"])
         )
-        mapping, problems = config_mod._entry_identity({"id": "Bad Id"}, "x[1]", seen)
+        mapping, problems = config_validation._entry_identity({"id": "Bad Id"}, "x[1]", seen)
         self.assertTrue(mapping)
         self.assertEqual(problems, ["x[1]: id must match [a-z0-9][a-z0-9._-]* (got 'Bad Id')"])
         self.assertEqual(
-            config_mod._entry_identity({"id": "a"}, "x[2]", seen), (True, ["x[2]: duplicate reviewer id 'a'"])
+            config_validation._entry_identity({"id": "a"}, "x[2]", seen),
+            (True, ["x[2]: duplicate reviewer id 'a'"]),
         )
-        self.assertEqual(config_mod._entry_identity({"id": "b"}, "x[3]", seen), (True, []))
+        self.assertEqual(config_validation._entry_identity({"id": "b"}, "x[3]", seen), (True, []))
         self.assertEqual(seen, {"a", "b"})
 
     def test_a_copied_entry(self):
         seen = {"a"}
-        self.assertEqual(config_mod._entry_identity("oops", "x[0]", seen, own=False), (False, []))
-        self.assertEqual(config_mod._entry_identity({"id": "Bad Id"}, "x[1]", seen, own=False), (True, []))
+        self.assertEqual(config_validation._entry_identity("oops", "x[0]", seen, own=False), (False, []))
         self.assertEqual(
-            config_mod._entry_identity({"id": "a"}, "x[2]", seen, own=False),
+            config_validation._entry_identity({"id": "Bad Id"}, "x[1]", seen, own=False), (True, [])
+        )
+        self.assertEqual(
+            config_validation._entry_identity({"id": "a"}, "x[2]", seen, own=False),
             (True, ["x[2]: duplicate reviewer id 'a'"]),
         )
-        self.assertEqual(config_mod._entry_identity({"id": "b"}, "x[3]", seen, own=False), (True, []))
+        self.assertEqual(config_validation._entry_identity({"id": "b"}, "x[3]", seen, own=False), (True, []))
         self.assertEqual(seen, {"a", "b"})
 
 

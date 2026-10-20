@@ -709,7 +709,7 @@ class TestDetachedRun(IsolatedCase):
 
     def setUp(self):
         super().setUp()
-        from test_cli import run_cli
+        from helpers import run_cli
 
         from orchestrator import execution
 
@@ -988,7 +988,7 @@ class TestDetachedDeadline(IsolatedCase):
 
     def setUp(self):
         super().setUp()
-        from test_cli import run_cli
+        from helpers import run_cli
 
         self.run_cli = run_cli
         run_cli("config", "setup", "--defaults")
@@ -1046,7 +1046,7 @@ class TestDetachedRuntimeCharges(IsolatedCase):
 
     def setUp(self):
         super().setUp()
-        from test_cli import run_cli
+        from helpers import run_cli
 
         self.run_cli = run_cli
         run_cli("config", "setup", "--defaults")

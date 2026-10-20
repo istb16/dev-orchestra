@@ -1,7 +1,7 @@
 """Where a Microsoft Store Python really keeps dev-orchestra's files (#235).
 
-The redirect is faked: ``config.real_location`` maps the config home into a
-package folder and ``config.on_windows`` says yes, so this runs anywhere.
+The redirect is faked: ``config_paths.real_location`` maps the config home into a
+package folder and ``config_paths.on_windows`` says yes, so this runs anywhere.
 """
 
 from __future__ import annotations
@@ -11,10 +11,16 @@ import unittest
 from typing import Any, Dict
 from unittest import mock
 
-from helpers import IsolatedCase
-from test_cli import UNLISTED_CLAUDE, pretend_claude_is_installed, pretend_claude_version, record_resume_pass
+from helpers import (
+    UNLISTED_CLAUDE,
+    IsolatedCase,
+    pretend_claude_is_installed,
+    pretend_claude_version,
+    record_resume_pass,
+)
 
 from orchestrator import config as config_mod
+from orchestrator import config_paths
 from orchestrator import doctor as doctor_mod
 
 # Assembled at run time: the repository may not contain a literal profile path.
@@ -56,7 +62,7 @@ class TestStorePython(unittest.TestCase):
         self.assertFalse(doctor_mod._is_store_path(()))
 
     def test_it_reads_this_interpreter(self):
-        with mock.patch.object(config_mod, "on_windows", return_value=True):
+        with mock.patch.object(config_paths, "on_windows", return_value=True):
             with mock.patch.object(doctor_mod.sys, "executable", ISSUE_EXECUTABLE):
                 self.assertTrue(doctor_mod.store_python())
             with mock.patch.object(doctor_mod.sys, "executable", PYTHON_ORG + r"\python.exe"):
@@ -66,7 +72,7 @@ class TestStorePython(unittest.TestCase):
                     self.assertFalse(doctor_mod.store_python())
 
     def test_off_windows_never(self):
-        with mock.patch.object(config_mod, "on_windows", return_value=False):
+        with mock.patch.object(config_paths, "on_windows", return_value=False):
             with mock.patch.object(doctor_mod.sys, "executable", ISSUE_EXECUTABLE):
                 with mock.patch.object(doctor_mod.sys, "base_prefix", STORE_PREFIX):
                     self.assertFalse(doctor_mod.store_python())
@@ -114,8 +120,8 @@ class TestNothingRedirected(DoctorCase):
         self.populate()
         # Pinned rather than left to the machine: under a Store Python the
         # temp folder this test writes to can itself be redirected.
-        with mock.patch.object(config_mod, "on_windows", return_value=True):
-            with mock.patch.object(config_mod, "real_location", lambda path: path):
+        with mock.patch.object(config_paths, "on_windows", return_value=True):
+            with mock.patch.object(config_paths, "real_location", lambda path: path):
                 report = self.collect()
         self.assertEqual(report["providers"]["claude"]["resume_support"]["source"], "record")
         self.assertEqual(len(report["user_providers"]["loaded"]), 1)
@@ -257,7 +263,7 @@ class TestRedirected(DoctorCase):
 
     def test_a_home_in_appdata_that_is_not_redirected_has_no_note(self):
         """The outcome follows the real location, not how the path is spelled."""
-        with mock.patch.object(config_mod, "real_location", lambda path: path):
+        with mock.patch.object(config_paths, "real_location", lambda path: path):
             report = self.collect()
         self.assertFalse(any("really at" in note for note in report["notes"]))
 

@@ -436,6 +436,7 @@ class IsolatedCase(unittest.TestCase):
         the profile and AppData stay where they are. Nothing on disk is moved.
         """
         from orchestrator import config as config_mod
+        from orchestrator import config_paths
 
         profile = os.path.join(self.tmp, "profile")
         roaming = os.path.join(profile, "AppData", "Roaming")
@@ -458,7 +459,7 @@ class IsolatedCase(unittest.TestCase):
             return path
 
         for name, value in (("on_windows", lambda: True), ("real_location", fake_real_location)):
-            patcher = mock.patch.object(config_mod, name, value)
+            patcher = mock.patch.object(config_paths, name, value)
             patcher.start()
             self.addCleanup(patcher.stop)
         return real
@@ -518,6 +519,75 @@ def run_cli(*argv: str) -> Tuple[int, str, str]:
     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
         code = cli.main(list(argv))
     return code, out.getvalue(), err.getvalue()
+
+
+def read_file(path):
+    with open(path, encoding="utf-8") as handle:
+        return handle.read()
+
+
+class _Completed:
+    def __init__(self, stdout="", returncode=0):
+        self.stdout = stdout
+        self.stderr = ""
+        self.returncode = returncode
+
+
+def pretend_claude_is_installed(case, help_text: Optional[str] = CLAUDE_HELP):
+    """The claude adapter answering from fixtures: installed, 2.1.283, and
+    ``--help`` reading as ``help_text`` (None: it cannot be read)."""
+    from orchestrator.providers.claude import ClaudeProvider
+
+    def capture(self, command, timeout=30):
+        return None if help_text is None else _Completed(help_text)
+
+    for name, value in (
+        ("which", lambda self: "claude"),
+        ("version", lambda self: ("2.1.283 (Claude Code)", None)),
+        ("_capture", capture),
+    ):
+        case.addCleanup(setattr, ClaudeProvider, name, getattr(ClaudeProvider, name))
+        setattr(ClaudeProvider, name, value)
+
+
+UNLISTED_CLAUDE = "1.0.0 (Claude Code)"
+
+
+def pretend_claude_version(case, version):
+    from orchestrator.providers.claude import ClaudeProvider
+
+    case.addCleanup(setattr, ClaudeProvider, "version", ClaudeProvider.version)
+    ClaudeProvider.version = lambda self: (version, None)
+
+
+def record_resume_pass(root, version=UNLISTED_CLAUDE, mechanism=None):
+    from orchestrator import verified
+    from orchestrator.providers.claude import READ_ONLY_MECHANISM
+
+    verified.record_pass(
+        "claude",
+        version,
+        READ_ONLY_MECHANISM if mechanism is None else mechanism,
+        list(verified.REQUIRED_RESUME_CHECKS),
+        "sonnet",
+        root,
+    )
+
+
+def spend_the_runtime_budget(workspace, limit=None):
+    """Put the runtime budget at its limit without running anything for hours.
+
+    Written straight onto the ledger because the only other way to get there is
+    to actually delegate that much execution.
+    """
+    from orchestrator import ledger as ledger_mod
+
+    settings = dict(ledger_mod.DEFAULT_BUDGETS)
+    book = ledger_mod.Ledger(workspace, settings)
+    ledger = book.load()
+    ledger["runtime_seconds"] = float(limit or settings["max_runtime_seconds"])
+    book._write(ledger)
+    return book
 
 
 def usage_dict(**fields: Any) -> Dict[str, Any]:

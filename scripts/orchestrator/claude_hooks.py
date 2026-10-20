@@ -26,7 +26,7 @@ import tempfile
 from typing import Any, Dict, List, Mapping, NamedTuple, Optional, Tuple
 
 from . import config as config_mod
-from . import reply_language
+from . import config_paths, reply_language
 from .execution import DELEGATED_ENV
 
 #: Moves Claude Code's user settings directory when set.
@@ -148,7 +148,7 @@ def plugins_dir() -> str:
 
 def hooks_dir() -> str:
     """Beside ``providers/``; the provider loader imports only ``providers/*.py``."""
-    return os.path.join(config_mod.global_config_dir(), "hooks")
+    return os.path.join(config_paths.global_config_dir(), "hooks")
 
 
 def relay_path() -> str:
@@ -168,7 +168,7 @@ def _same_path(left: Any, right: Any) -> bool:
     if not isinstance(left, str) or not isinstance(right, str):
         return False
     left, right = _slashes(os.path.normpath(left)), _slashes(os.path.normpath(right))
-    if config_mod.on_windows():
+    if config_paths.on_windows():
         return left.lower() == right.lower()
     return left == right
 
@@ -176,7 +176,7 @@ def _same_path(left: Any, right: Any) -> bool:
 def _within(path: str, directory: str) -> bool:
     """Whether ``path`` is ``directory`` or under it, once both are resolved."""
     path, directory = os.path.realpath(path), os.path.realpath(directory)
-    if config_mod.on_windows():
+    if config_paths.on_windows():
         path, directory = path.lower(), directory.lower()
     try:
         return os.path.commonpath([path, directory]) == directory
@@ -210,7 +210,7 @@ def _base_python() -> str:
     base = getattr(sys, "_base_executable", None)
     if isinstance(base, str) and base and not _same_path(base, sys.executable) and os.path.isfile(base):
         return base
-    if config_mod.on_windows():
+    if config_paths.on_windows():
         names = ["python.exe"]
     else:
         names = [os.path.join("bin", "python3"), os.path.join("bin", "python")]
@@ -474,7 +474,7 @@ def write_settings(path: str, data: Dict[str, Any], original: Optional[bytes]) -
 
 
 def _refuse_if_stored_elsewhere(path: str) -> None:
-    real = config_mod.package_redirected(path)
+    real = config_paths.package_redirected(path)
     if real is not None:
         raise HooksError(
             "%s would be written to %s, where Claude Code does not read it (a Microsoft Store Python "
@@ -517,8 +517,8 @@ def desired_record(plugin_root: str, kept: Optional[Dict[str, Any]] = None) -> D
     record = {
         "version": RECORD_VERSION,
         "plugin_root": _slashes(os.path.abspath(plugin_root)),
-        "home": _slashes(config_mod.global_config_dir()),
-        "config": _slashes(config_mod.global_config_path()),
+        "home": _slashes(config_paths.global_config_dir()),
+        "config": _slashes(config_paths.global_config_path()),
     }
     if kept is not None and isinstance(kept.get("home"), str) and isinstance(kept.get("config"), str):
         record["home"], record["config"] = kept["home"], kept["config"]

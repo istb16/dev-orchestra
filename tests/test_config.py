@@ -13,8 +13,8 @@ from unittest import mock
 from helpers import IsolatedCase, make_dir_link, present, remove_link
 
 from orchestrator import config as config_mod
+from orchestrator import config_paths, providers, summary
 from orchestrator import config_policy as policy_mod
-from orchestrator import providers, summary
 
 DESIGN_DEFAULTS = {
     "require_approval": True,
@@ -1567,25 +1567,25 @@ class TestStoredElsewhere(IsolatedCase):
     """Where a Microsoft Store Python really keeps a file (#235)."""
 
     def windows(self):
-        patcher = mock.patch.object(config_mod, "on_windows", return_value=True)
+        patcher = mock.patch.object(config_paths, "on_windows", return_value=True)
         patcher.start()
         self.addCleanup(patcher.stop)
 
     def test_nothing_redirected_is_none(self):
         self.windows()
-        with mock.patch.object(config_mod, "real_location", lambda path: path):
-            self.assertIsNone(config_mod.stored_elsewhere(config_mod.global_config_path()))
+        with mock.patch.object(config_paths, "real_location", lambda path: path):
+            self.assertIsNone(config_paths.stored_elsewhere(config_mod.global_config_path()))
             self.assertEqual(config_mod.shown_location(self.tmp), self.tmp)
 
     def test_redirected_file_reports_where_it_really_is(self):
         real = self.redirect_config_home()
         path = config_mod.global_config_path()
         expected = os.path.join(real, "config.yaml")
-        self.assertEqual(config_mod.stored_elsewhere(path), expected)
+        self.assertEqual(config_paths.stored_elsewhere(path), expected)
         self.assertEqual(config_mod.shown_location(path), "%s (stored at %s)" % (path, expected))
-        self.assertEqual(config_mod.stored_elsewhere(config_mod.global_config_dir()), real)
+        self.assertEqual(config_paths.stored_elsewhere(config_mod.global_config_dir()), real)
         # The profile and AppData itself are where they seem to be.
-        self.assertIsNone(config_mod.stored_elsewhere(os.environ["APPDATA"]))
+        self.assertIsNone(config_paths.stored_elsewhere(os.environ["APPDATA"]))
 
     def test_user_adapter_hint_names_the_real_folder(self):
         real = self.redirect_config_home()
@@ -1612,9 +1612,9 @@ class TestStoredElsewhere(IsolatedCase):
                 return packages + path[len(local) :]
             return path
 
-        with mock.patch.object(config_mod, "real_location", fake):
+        with mock.patch.object(config_paths, "real_location", fake):
             path = config_mod.global_config_path()
-            self.assertEqual(config_mod.stored_elsewhere(path), fake(path))
+            self.assertEqual(config_paths.stored_elsewhere(path), fake(path))
 
     def test_explicit_config_outside_the_profile(self):
         self.windows()
@@ -1622,21 +1622,21 @@ class TestStoredElsewhere(IsolatedCase):
         self.set_env("USERPROFILE", os.path.join(self.tmp, "profile"))
         explicit = os.path.join(self.tmp, "outside", "explicit.yaml")
         os.environ["DEV_ORCHESTRA_CONFIG"] = explicit
-        with mock.patch.object(config_mod, "real_location", lambda path: path):
-            self.assertIsNone(config_mod.stored_elsewhere(config_mod.global_config_path()))
+        with mock.patch.object(config_paths, "real_location", lambda path: path):
+            self.assertIsNone(config_paths.stored_elsewhere(config_mod.global_config_path()))
         moved = os.path.join(self.tmp, "moved", "explicit.yaml")
-        with mock.patch.object(config_mod, "real_location", lambda p: moved if p == explicit else p):
-            self.assertEqual(config_mod.stored_elsewhere(explicit), moved)
+        with mock.patch.object(config_paths, "real_location", lambda p: moved if p == explicit else p):
+            self.assertEqual(config_paths.stored_elsewhere(explicit), moved)
 
     def test_another_drive_falls_back_to_the_files_folder(self):
         self.windows()
         path = os.path.join(self.tmp, "other-drive", "config.yaml")
         moved = os.path.join(self.tmp, "moved", "config.yaml")
         with mock.patch("os.path.relpath", side_effect=ValueError("path is on mount 'D:'")):
-            with mock.patch.object(config_mod, "real_location", lambda p: p):
-                self.assertIsNone(config_mod.stored_elsewhere(path))
-            with mock.patch.object(config_mod, "real_location", lambda p: moved if p == path else p):
-                self.assertEqual(config_mod.stored_elsewhere(path), moved)
+            with mock.patch.object(config_paths, "real_location", lambda p: p):
+                self.assertIsNone(config_paths.stored_elsewhere(path))
+            with mock.patch.object(config_paths, "real_location", lambda p: moved if p == path else p):
+                self.assertEqual(config_paths.stored_elsewhere(path), moved)
 
     def test_off_windows_nothing_is_reported_even_through_a_link(self):
         target = os.path.join(self.tmp, "target")
@@ -1648,8 +1648,8 @@ class TestStoredElsewhere(IsolatedCase):
             self.skipTest("cannot make a link here: %s" % exc)
         # tearDown, which runs first, may already have removed it with the tree.
         self.addCleanup(lambda: os.path.lexists(link) and remove_link(link))
-        with mock.patch.object(config_mod, "on_windows", return_value=False):
-            self.assertIsNone(config_mod.stored_elsewhere(os.path.join(link, "config.yaml")))
+        with mock.patch.object(config_paths, "on_windows", return_value=False):
+            self.assertIsNone(config_paths.stored_elsewhere(os.path.join(link, "config.yaml")))
             self.assertEqual(config_mod.shown_location(link), link)
 
 
@@ -1660,7 +1660,7 @@ class TestStoredElsewhereOnDisk(IsolatedCase):
 
     def setUp(self):
         super().setUp()
-        patcher = mock.patch.object(config_mod, "on_windows", return_value=True)
+        patcher = mock.patch.object(config_paths, "on_windows", return_value=True)
         patcher.start()
         self.addCleanup(patcher.stop)
         # The temp folder is the profile, so the anchor is the same on every runner.
@@ -1682,8 +1682,8 @@ class TestStoredElsewhereOnDisk(IsolatedCase):
     def test_a_plain_temp_folder_is_not_reported(self):
         path = config_mod.global_config_path()
         config_mod.write_config_file(path, config_mod.default_config())
-        self.assertIsNone(config_mod.stored_elsewhere(path))
-        self.assertIsNone(config_mod.stored_elsewhere(config_mod.global_config_dir()))
+        self.assertIsNone(config_paths.stored_elsewhere(path))
+        self.assertIsNone(config_paths.stored_elsewhere(config_mod.global_config_dir()))
         self.assertEqual(config_mod.shown_location(path), path)
 
     def test_a_linked_folder_above_the_profile_is_not_reported(self):
@@ -1696,7 +1696,7 @@ class TestStoredElsewhereOnDisk(IsolatedCase):
         os.environ["DEV_ORCHESTRA_HOME"] = os.path.join(link, "profile", "dev-orchestra")
         path = config_mod.global_config_path()
         config_mod.write_config_file(path, config_mod.default_config())
-        self.assertIsNone(config_mod.stored_elsewhere(path))
+        self.assertIsNone(config_paths.stored_elsewhere(path))
 
     @unittest.skipUnless(sys.platform.startswith("win"), "8.3 short names are a Windows thing")
     def test_a_profile_spelled_by_its_short_name_is_not_reported(self):
@@ -1723,15 +1723,15 @@ class TestStoredElsewhereOnDisk(IsolatedCase):
                 os.environ["DEV_ORCHESTRA_HOME"] = os.path.join(base, "cfg")
                 path = config_mod.global_config_path()
                 config_mod.write_config_file(path, config_mod.default_config())
-                self.assertIsNone(config_mod.stored_elsewhere(path))
-                self.assertIsNone(config_mod.stored_elsewhere(config_mod.global_config_dir()))
+                self.assertIsNone(config_paths.stored_elsewhere(path))
+                self.assertIsNone(config_paths.stored_elsewhere(config_mod.global_config_dir()))
 
     def test_a_link_inside_the_config_folder_is_reported(self):
         target = os.path.join(self.tmp, "target")
         os.makedirs(target)
         link = os.path.join(self.config_home, "providers")
         self.link(link, target)
-        reported = present(config_mod.stored_elsewhere(os.path.join(link, "x.py")))
+        reported = present(config_paths.stored_elsewhere(os.path.join(link, "x.py")))
         expected = os.path.join(os.path.realpath(target), "x.py")
         self.assertEqual(os.path.normcase(reported), os.path.normcase(expected))
 

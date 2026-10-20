@@ -21,7 +21,7 @@ import re
 import sys
 from typing import Any, Callable, Dict, List, NamedTuple, Optional, Tuple, cast
 
-from .. import config as config_mod
+from ..config_paths import user_providers_dir
 from .base import (  # noqa: F401 - re-exported as the adapter interface
     MODE_IMPLEMENT,
     MODE_PLAN,
@@ -103,7 +103,7 @@ def register(name: str, factory: ProviderFactory, origin: Optional[ProviderOrigi
         if _BOOTSTRAPPED:
             raise ProviderRegistrationError(
                 "cannot register %r as a built-in provider; add a user adapter under %s instead"
-                % (name, _user_providers_dir())
+                % (name, user_providers_dir())
             )
         origin = origin or ProviderOrigin("builtin", None, getattr(factory, "__module__", "") or "")
     existing = _ORIGINS.get(name)
@@ -194,10 +194,6 @@ def warned_provider(name: str) -> bool:
 # --------------------------------------------------------------------------- user adapters
 
 
-def _user_providers_dir() -> str:
-    return config_mod.user_providers_dir()
-
-
 def user_providers_disabled() -> bool:
     return os.environ.get(USER_PROVIDERS_DISABLED_ENV, "").strip() not in ("", "0")
 
@@ -220,7 +216,7 @@ def user_provider_report() -> Dict[str, Any]:
     """What the last ``load_user_providers()`` imported and what it refused."""
     if _USER_REPORT is not None:
         return copy.deepcopy(_USER_REPORT)
-    return _empty_report(_user_providers_dir())
+    return _empty_report(user_providers_dir())
 
 
 def _empty_report(directory: str) -> Dict[str, Any]:
@@ -244,7 +240,7 @@ def load_user_providers(directory: Optional[str] = None) -> Dict[str, Any]:
     global _USER_REPORT
     unload_user_providers()
     if directory is None:
-        directory = _user_providers_dir()
+        directory = user_providers_dir()
     report = _empty_report(directory)
     _USER_REPORT = report
     if not report["enabled"] or not report["present"]:

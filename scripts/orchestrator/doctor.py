@@ -12,7 +12,7 @@ import platform
 import sys
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
-from . import claude_hooks, hosts, reply_language, verified
+from . import claude_hooks, config_paths, hosts, reply_language, verified
 from . import config as config_mod
 from . import config_policy as policy_mod
 from . import optimization as opt_mod
@@ -58,7 +58,7 @@ def user_home() -> str:
 
 def store_python() -> bool:
     """Whether this is the Microsoft Store package of Python; tests replace it."""
-    return config_mod.on_windows() and _is_store_path((sys.executable, sys.base_prefix))
+    return config_paths.on_windows() and _is_store_path((sys.executable, sys.base_prefix))
 
 
 def _is_store_path(values: Iterable[Optional[str]]) -> bool:
@@ -77,7 +77,7 @@ def _add_real(target: Dict[str, Any], key: str, path: Any) -> None:
     """``target[key]``: where ``path`` really is, only when Windows keeps it elsewhere."""
     if not isinstance(path, str) or not path:
         return
-    real = config_mod.stored_elsewhere(path)
+    real = config_paths.stored_elsewhere(path)
     if real is not None:
         target[key] = real
 
@@ -95,8 +95,8 @@ def _stored_elsewhere_report(report: Dict[str, Any]) -> None:
     _add_real(user, "directory_real", user.get("directory"))
     for item in [*(user.get("loaded") or []), *(user.get("errors") or []), *(user.get("problems") or [])]:
         _add_real(item, "path_real", item.get("path"))
-    directory = config_mod.global_config_dir()
-    real = config_mod.stored_elsewhere(directory)
+    directory = config_paths.global_config_dir()
+    real = config_paths.stored_elsewhere(directory)
     if real is None:
         return
     if not store:
@@ -245,14 +245,14 @@ def _config_report(report: Dict[str, Any], start: Optional[str]) -> Optional[con
     try:
         loaded = config_mod.load(start, validate_result=False)
     except config_mod.ConfigError as exc:
-        global_path = config_mod.global_config_path()
+        global_path = config_paths.global_config_path()
         exists = os.path.isfile(global_path)
         # The error may be in either file; both are named, as when it loads.
         report["config"] = {
             "status": "error",
             "error": str(exc),
             "global": global_path if exists else "not found",
-            "project_override": config_mod.find_project_config(start) or "none",
+            "project_override": config_paths.find_project_config(start) or "none",
         }
         if exists:
             _add_real(report["config"], "global_real", global_path)
@@ -867,7 +867,7 @@ def _resume_line(name: str, support: Dict[str, Any]) -> str:
 
 
 def _record(support: Dict[str, Any]) -> str:
-    return config_mod.describe_location(support.get("record"), support.get("record_real"))
+    return config_paths.describe_location(support.get("record"), support.get("record_real"))
 
 
 def _live_check_line(version: Any, status: Dict[str, Any]) -> str:
@@ -1005,7 +1005,7 @@ def _config_lines(config_info: Dict[str, Any], language: Optional[Dict[str, Any]
     """The config files, the preset in force and the reply language, ending in a blank line."""
     lines = ["Config"]
     real = config_info.get("global_real")
-    lines.append("  Global: %s" % config_mod.describe_location(config_info.get("global"), real))
+    lines.append("  Global: %s" % config_paths.describe_location(config_info.get("global"), real))
     lines.append("  Project override: %s" % config_info.get("project_override"))
     preset = config_info.get("preset") or {}
     preset_name = preset.get("name")
@@ -1083,30 +1083,30 @@ def _user_provider_lines(info: Dict[str, Any], store: bool = False) -> List[str]
     directory = info.get("directory")
     real = info.get("directory_real")
     if not info.get("enabled", True):
-        lines.append("  Directory: %s" % config_mod.describe_location(directory, real))
+        lines.append("  Directory: %s" % config_paths.describe_location(directory, real))
         lines.append("  Disabled by %s; nothing imported" % USER_PROVIDERS_DISABLED_ENV)
         return lines
     if not info.get("present"):
-        shown = config_mod.describe_location(directory, real)
+        shown = config_paths.describe_location(directory, real)
         lines.append("  Directory: %s (not present; nothing imported)" % shown)
         return lines
     if real is not None and store:
         merged = "merged with this Python's private copy at %s (the private copy wins for a name in both)"
         lines.append("  Directory: %s, %s" % (directory, merged % real))
     else:
-        lines.append("  Directory: %s" % config_mod.describe_location(directory, real))
+        lines.append("  Directory: %s" % config_paths.describe_location(directory, real))
     lines.append("  Code in this directory is imported at startup, from outside the plugin.")
     loaded = info.get("loaded") or []
     if not loaded:
         lines.append("  Imported: none")
     for item in loaded:
-        path = config_mod.describe_location(item["path"], item.get("path_real"))
+        path = config_paths.describe_location(item["path"], item.get("path_real"))
         lines.append("  Imported: %s  <- %s" % (item["name"], path))
     for failure in info.get("errors") or []:
-        path = config_mod.describe_location(failure["path"], failure.get("path_real"))
+        path = config_paths.describe_location(failure["path"], failure.get("path_real"))
         lines.append("  Failed:   %s -- %s" % (path, failure["error"]))
     for item in info.get("problems") or []:
-        path = config_mod.describe_location(item["path"], item.get("path_real"))
+        path = config_paths.describe_location(item["path"], item.get("path_real"))
         lines.append("  Problem:  %s -- %s" % (path, item["problem"]))
     return lines
 

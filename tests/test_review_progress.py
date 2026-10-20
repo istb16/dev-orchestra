@@ -9,8 +9,7 @@ import unittest
 from typing import Dict, List
 from unittest import mock
 
-from helpers import IsolatedCase, has_git
-from test_cli import run_cli
+from helpers import IsolatedCase, has_git, run_cli
 from test_design_review import DesignReviewCase
 from test_job_activity import normalised
 

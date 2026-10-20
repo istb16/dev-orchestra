@@ -429,7 +429,7 @@ class TestRounds(DesignReviewCase):
         self.assertEqual(payload["runtime"]["suspended"], 180)
 
     def test_a_round_is_refused_once_the_runtime_budget_is_spent(self):
-        from test_cli import spend_the_runtime_budget
+        from helpers import spend_the_runtime_budget
 
         self.write_plan()
         spend_the_runtime_budget(self.workspace)
@@ -458,7 +458,7 @@ class TestRounds(DesignReviewCase):
 
         Both refusals, because both ask for the same report: whichever budget
         says no, it has to say so before the freeze."""
-        from test_cli import spend_the_runtime_budget
+        from helpers import spend_the_runtime_budget
 
         run_cli("config", "set", "review.design.max_iterations", "1")
         self.write_plan()

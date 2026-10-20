@@ -1,4 +1,4 @@
-<!-- translated-from: references/configuration.md sha256:8fd47348747dec0673a87f3be0ec33b7de52473a3a08f0dbff00cd77d673e760 -->
+<!-- translated-from: references/configuration.md sha256:33e69d00053e4fc22f8db489e7aeefa2e557b561fd6dafc1e00d6d4ef1155c43 -->
 
 > この文書は [references/configuration.md](../../../references/configuration.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -39,7 +39,7 @@
 | --- | --- | --- |
 | プロジェクト | `<repo>/.dev-orchestra.yaml` | リポジトリごとの上書き。commit するかどうかはお好みで。読み取り専用のロールはここから `options.args` を受け取りません（[下記](#role-options)） |
 | グローバル | 下記参照 | すべてのプロジェクトに対するあなた個人のデフォルト |
-| 組み込み | `scripts/orchestrator/config.py` | 推奨デフォルト。ファイルが存在しないときに使われます |
+| 組み込み | `scripts/orchestrator/config_common.py` | 推奨デフォルト。ファイルが存在しないときに使われます |
 
 設定ディレクトリ内の `providers/` ディレクトリには、あなた自身の provider
 adapter を置きます（Windows では `%APPDATA%\dev-orchestra\providers\`、

@@ -9,7 +9,7 @@ import re
 import sys
 from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple, Union
 
-from . import claude_hooks, hosts, miniyaml
+from . import claude_hooks, config_paths, hosts, miniyaml
 from . import config as config_mod
 from . import config_policy as policy_mod
 from . import doctor as doctor_mod
@@ -91,12 +91,12 @@ def cmd_config_show(args: argparse.Namespace) -> int:
         # Deliberately not `read_layer`: that one supplies what a writer needs
         # a saved file to hold, and reporting it here would show a `version`
         # that is not on disk as though it were.
-        path = config_mod.global_config_path()
+        path = config_paths.global_config_path()
         exists = os.path.isfile(path)
         data = config_mod.read_config_file(path) if exists else {}
         source = path if exists else "%s (not created yet)" % path
     elif args.scope == "project":
-        path = config_mod.project_config_path(args.cwd)
+        path = config_paths.project_config_path(args.cwd)
         exists = os.path.isfile(path)
         data = config_mod.read_config_file(path) if exists else {}
         source = path if exists else "no project override"
@@ -116,7 +116,7 @@ def cmd_config_show(args: argparse.Namespace) -> int:
         }
         # Present only where Windows keeps the file somewhere else (#235).
         if args.scope == "global" and exists:
-            real = config_mod.stored_elsewhere(path)
+            real = config_paths.stored_elsewhere(path)
             if real is not None:
                 payload["source_real"] = real
         if not scoped:
@@ -124,7 +124,7 @@ def cmd_config_show(args: argparse.Namespace) -> int:
             payload["project"] = loaded.project_path
             payload["global"] = loaded.global_path
             if loaded.global_path:
-                real = config_mod.stored_elsewhere(loaded.global_path)
+                real = config_paths.stored_elsewhere(loaded.global_path)
                 if real is not None:
                     payload["global_real"] = real
             payload["reviewer_origins"] = [origin.label() for origin in loaded.reviewer_origins]
@@ -137,9 +137,9 @@ def cmd_config_show(args: argparse.Namespace) -> int:
     # The JSON keeps ``source`` as it was and adds ``source_real`` or
     # ``global_real`` instead.
     if args.scope == "global" and exists:
-        source = config_mod.shown_location(path)
+        source = config_paths.shown_location(path)
     elif not scoped:
-        source = _effective_source(loaded, config_mod.shown_location)
+        source = _effective_source(loaded, config_paths.shown_location)
     _out("Source: %s" % source)
     if not scoped:
         installed = presets_mod.installed_providers()
@@ -166,20 +166,20 @@ def cmd_config_show(args: argparse.Namespace) -> int:
 
 def _describe_referenced_provider(name: str) -> str:
     if provider_origin(name) is None:
-        return "%s (no adapter; %s)" % (name, config_mod.user_providers_hint())
+        return "%s (no adapter; %s)" % (name, config_paths.user_providers_hint())
     return "%s (%s)" % (name, describe_origin(name))
 
 
 def cmd_config_path(args: argparse.Namespace) -> int:
     loaded = _load_lenient(args.cwd)
-    global_path = config_mod.global_config_path()
+    global_path = config_paths.global_config_path()
     if loaded.global_path:
-        _out("global:  %s" % config_mod.shown_location(global_path))
+        _out("global:  %s" % config_paths.shown_location(global_path))
     else:
         _out("global:  %s  (not created)" % global_path)
     _out(
         "project: %s"
-        % (loaded.project_path or "none (would be %s)" % config_mod.project_config_path(args.cwd))
+        % (loaded.project_path or "none (would be %s)" % config_paths.project_config_path(args.cwd))
     )
     return 0
 
@@ -244,7 +244,7 @@ def cmd_config_setup(args: argparse.Namespace) -> int:
         notes = presets_mod.render_notes(draft.fit)
         if notes:
             _out(notes)
-    _out("Saved %s configuration to %s" % (scope, config_mod.shown_location(path)))
+    _out("Saved %s configuration to %s" % (scope, config_paths.shown_location(path)))
     _out(
         "It records only what you chose; everything else follows %s (config show)."
         % config_mod.layer_below(scope)
@@ -299,9 +299,9 @@ def cmd_config_reset(args: argparse.Namespace) -> int:
     if args.delete:
         if os.path.isfile(path):
             os.remove(path)
-            _out("Removed %s" % config_mod.shown_location(path))
+            _out("Removed %s" % config_paths.shown_location(path))
         else:
-            _out("Nothing to remove at %s" % config_mod.shown_location(path))
+            _out("Nothing to remove at %s" % config_paths.shown_location(path))
         _sync_hooks(args, scope, language_before)
         return 0
     # Clearing the overrides, not restoring the defaults: for the global layer
@@ -336,7 +336,7 @@ def cmd_config_reset(args: argparse.Namespace) -> int:
         following = "every value now follows preset %s and the built-in defaults" % name
     else:
         following = "this project now follows the global layer"
-    shown = config_mod.shown_location(path)
+    shown = config_paths.shown_location(path)
     _out("Reset %s configuration: overrides cleared, %s (%s)" % (scope, following, shown))
     _sync_hooks(args, scope, language_before)
     try:
@@ -419,7 +419,7 @@ def cmd_config_set(args: argparse.Namespace) -> int:
         if _report_panel_problems(scope, panel_before, layer):
             return 2
     config_mod.write_config_file(path, layer, scope)
-    _out("%s = %r  (%s: %s)" % (args.path, value, scope, config_mod.shown_location(path)))
+    _out("%s = %r  (%s: %s)" % (args.path, value, scope, config_paths.shown_location(path)))
     if frozen:
         _out(frozen)
     reloaded = _load_lenient(args.cwd)
@@ -524,7 +524,7 @@ def _left_the_fit_note(
     if old == new:
         return
     message = "note: %s is now set by %s (provider %s); preset %s no longer fits it"
-    _out(message % (role, config_mod.shown_location(path), new, after.preset))
+    _out(message % (role, config_paths.shown_location(path), new, after.preset))
 
 
 def _warn_unresolvable(effective: Dict[str, Any], role_key: str) -> None:
@@ -597,8 +597,8 @@ def cmd_config_suggest_roles(args: argparse.Namespace) -> int:
     cwd = os.path.abspath(args.cwd or os.getcwd())
     root, in_git = suggest_mod.find_listing_root(cwd)
     # The file `load()` uses from here, which is the one a write must change.
-    found = config_mod.find_project_config(cwd)
-    target = found or os.path.join(root, config_mod.PROJECT_CONFIG_NAMES[0])
+    found = config_paths.find_project_config(cwd)
+    target = found or os.path.join(root, config_paths.PROJECT_CONFIG_NAMES[0])
     layer = config_mod.read_config_file(found) if found else {}
     layer.setdefault("version", config_mod.CONFIG_VERSION)
     outside = found is not None and os.path.normcase(os.path.dirname(found)) != os.path.normcase(root)
@@ -941,7 +941,7 @@ def cmd_reviewer_add(args: argparse.Namespace) -> int:
     if _report_panel_problems(scope, before, layer):
         return 2
     config_mod.write_config_file(path, layer, scope)
-    shown = config_mod.shown_location(path)
+    shown = config_paths.shown_location(path)
     noun = "design reviewer" if design else "reviewer"
     added = "Added %s %s (%s / %s / %s) to %s" % (noun, reviewer_id, args.provider, family, role, shown)
     if listed:
@@ -1086,7 +1086,7 @@ def _seed_design_panel(
     else:
         source = "the design panel in force"
     frozen = "note: %s now lists the design reviewers (review.design.reviewers), copied from %s" % (
-        config_mod.shown_location(path),
+        config_paths.shown_location(path),
         source,
     )
     if fit_preset:
@@ -1209,7 +1209,7 @@ def cmd_reviewer_remove(args: argparse.Namespace) -> int:
     if _report_panel_problems(scope, before, layer, removed=origin):
         return 2
     config_mod.write_config_file(path, layer, scope)
-    _out("Removed reviewer %s from %s" % (removed.get("id"), config_mod.shown_location(path)))
+    _out("Removed reviewer %s from %s" % (removed.get("id"), config_paths.shown_location(path)))
     if frozen:
         _out(frozen)
     _warn_unenforced_after_write(args.cwd)
@@ -1292,7 +1292,7 @@ def cmd_reviewer_set(args: argparse.Namespace) -> int:
     if _report_panel_problems(scope, before, layer):
         return 2
     config_mod.write_config_file(path, layer, scope)
-    _out("Updated reviewer %s in %s" % (reviewer.get("id"), config_mod.shown_location(path)))
+    _out("Updated reviewer %s in %s" % (reviewer.get("id"), config_paths.shown_location(path)))
     if family_note:
         _out(family_note)
     if frozen:

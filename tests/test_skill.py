@@ -587,6 +587,12 @@ _REGISTRY_FREE = (
     "optimization_design",
     "review_common",
     "config",
+    "config_common",
+    "config_paths",
+    "config_keys",
+    "config_reviewers",
+    "config_seats",
+    "config_validation",
     "execution",
     "presets",
     "verified",
@@ -614,13 +620,13 @@ _ALLOWED = {
     ("providers/__init__.py", "_bootstrap", ".codex"),
     ("providers/__init__.py", "_bootstrap", ".mock"),
     # The registry and presets both need config complete before they load.
-    ("config.py", "user_providers_hint", ".providers"),
+    ("config_paths.py", "user_providers_hint", ".providers"),
     ("config.py", "compose", ".presets"),
     ("config.py", "root", ".workspace"),
     ("config.py", "load", ".presets"),
-    ("config.py", "validate", ".presets"),
-    ("config.py", "validate", ".providers"),
-    ("config.py", "_validate_role_options", ".providers"),
+    ("config_validation.py", "validate", ".presets"),
+    ("config_validation.py", "validate", ".providers"),
+    ("config_validation.py", "_validate_role_options", ".providers"),
     ("config.py", "idle_timeout", ".providers"),
     # Initialisation order: the registry runs the user adapters.
     ("presets.py", "user_fit", ".providers"),
@@ -943,7 +949,10 @@ class TestImportLayering(IsolatedCase):
             cli_state,
             cli_workflow,
             config,
+            config_paths,
             config_policy,
+            config_reviewers,
+            config_seats,
             optimization_render,
             providers,
             review,
@@ -1079,16 +1088,22 @@ class TestImportLayering(IsolatedCase):
             self.assertEqual(getattr(config_policy, name).__module__, "orchestrator.config_policy", name)
             self.assertFalse(hasattr(config, name), name)
         # The seat walk is configuration shape, so it stays with ``merge_tier``.
-        for name in ("SeatRun", "role_seats", "reviewer_seats", "read_only_seats"):
-            self.assertEqual(getattr(config, name).__module__, "orchestrator.config", name)
+        for name in ("merge_tier", "SeatRun", "role_seats", "reviewer_seats", "read_only_seats"):
+            self.assertEqual(getattr(config_seats, name).__module__, "orchestrator.config_seats", name)
+            self.assertIs(getattr(config, name), getattr(config_seats, name), name)
         self.assertEqual(config.WRITE_ROLES, ("implementer", "review_fixer"))
         # The warned-provider predicate reads only the registry.
         for name in ("warned_enforcement", "warned_provider"):
             self.assertEqual(getattr(providers, name).__module__, "orchestrator.providers", name)
             self.assertFalse(hasattr(config, name), name)
         self.assertFalse(hasattr(config_policy, "warned_provider"))
-        self.assertEqual(config.default_reviewer_family.__module__, "orchestrator.config")
+        self.assertEqual(config_reviewers.default_reviewer_family.__module__, "orchestrator.config_reviewers")
+        self.assertIs(config.default_reviewer_family, config_reviewers.default_reviewer_family)
         self.assertFalse(hasattr(config_policy, "default_reviewer_family"))
+        # The functions tests replace have one home, so one patch reaches every reader (#289).
+        for name in ("on_windows", "real_location", "stored_elsewhere"):
+            self.assertEqual(getattr(config_paths, name).__module__, "orchestrator.config_paths", name)
+            self.assertFalse(hasattr(config, name), name)
 
 
 def _source(relative, text):

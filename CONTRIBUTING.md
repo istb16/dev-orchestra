@@ -202,7 +202,7 @@ still carries the allowlist and `--restricted`.
 | Long-form explanation | `references/` — keep the skill under 500 lines |
 | Plugin packaging | `.claude-plugin/`, `.codex-plugin/`, `.agents/plugins/`, and the root `plugin.json` for Antigravity |
 | A new CLI | `scripts/orchestrator/providers/` + `register()` — see `references/providers.md` (a user's own adapter goes in `<config dir>/providers/` instead, without a change here) |
-| Config schema | `config.py` (defaults **and** `validate`) + `references/configuration.md` |
+| Config schema | `config_common.py` (defaults) **and** `config_validation.py` (`validate`) + `references/configuration.md` |
 | Read-only seat / write-role refusals and enforcement warnings | `config_policy.py` |
 | A command | its `cli_*.py` module (`cli_review.py` for `review …`, `cli_state.py` for `state`/`budget`/`tokens`, …), and its arguments in `cli.py` |
 | The wording of `optimization report` | `optimization_render.py`, which builds the lines; the figures come from `optimization_report.py`, and `cli_state.py` reads the run logs and prints |
@@ -217,8 +217,11 @@ writer and the setup wizard need -- finding the layer to edit, seeding and
 checking the panel -- is in `config_layers.py`. `review.py` re-exports the
 public names of the `review_*` modules, so `review.name` keeps working for
 those; a test imports an underscore helper from its own module:
-`review_snapshot._diff`, not `review._diff`. A test that replaces a function
-has to replace it where it is looked up: `cli_run._out`, not `cli_common._out`.
+`review_snapshot._diff`, not `review._diff`. `config.py` re-exports the public
+names of the `config_*` modules below it; the functions a test replaces
+(`on_windows`, `real_location`, `stored_elsewhere`) are in `config_paths.py`
+only. A test that replaces a function has to replace it where it is looked up:
+`cli_run._out`, not `cli_common._out`.
 
 Imports go at the top of the module. `tests/test_skill.py` fails on an import
 inside a function unless it is on its allow-list with a comment saying why
