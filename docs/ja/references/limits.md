@@ -1,4 +1,4 @@
-<!-- translated-from: references/limits.md sha256:12509bd29324e3e94ed113823a3715e505d0426174b690a1cd97d69963c8ece8 -->
+<!-- translated-from: references/limits.md sha256:16290abf5ac0b0823750bbcb7a36ccf8b2d7c4b982a57c8562cca6882ba2c973 -->
 
 > この文書は [references/limits.md](../../../references/limits.md) の日本語訳です。内容が食い違うときは英語版が正です。
 

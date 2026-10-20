@@ -1,4 +1,4 @@
-<!-- translated-from: references/cli.md sha256:06e4f7730c298ae2b2aed5987161221c2bbe86c56ab32ce8b02458dda09ba964 -->
+<!-- translated-from: references/cli.md sha256:c42d4f66f01165cea2f16ae35b6dc865b39c3e36ec4c2e0be62c274356d5030f -->
 
 > この文書は [references/cli.md](../../../references/cli.md) の日本語訳です。内容が食い違うときは英語版が正です。
 

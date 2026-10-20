@@ -1,4 +1,4 @@
-<!-- translated-from: references/json.md sha256:bdbfbf726d5ee4d364bf47a1f93f4d9d83629e0107edd8a2b8028d7469711c2a -->
+<!-- translated-from: references/json.md sha256:dff8715874cc5a162bffbfb7610ff6eef9c3f2e03ad193131be773b5b44500bc -->
 
 > この文書は [references/json.md](../../../references/json.md) の日本語訳です。内容が食い違うときは英語版が正です。
 

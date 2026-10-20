@@ -82,8 +82,7 @@ so far"), the last tool lines; under `off`, only a `may be stuck` note.
 A `may be stuck` note is always relayed and never a reason to cancel. Wait
 again from `next:`. A background `review run` (`on`: always background) gets
 `--progress > "<Artifacts>/execution/review-run.log" 2>&1`: relay new lines
-the same way. Never relay or guess what the model wrote; tool lines go as they
-are.
+the same way. Never relay or guess what the model wrote; tool lines go as they are.
 
 **Questions.** When on, ask the user before designing (`auto`: only when it
 matters; say why). "Leave it to you" is `--delegate`; exit 6 means ask.
