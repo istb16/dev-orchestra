@@ -3,10 +3,25 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import os
+import threading
 import time
-from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple, Union, cast
+from typing import (
+    Any,
+    Callable,
+    ContextManager,
+    Dict,
+    Iterator,
+    List,
+    NamedTuple,
+    Optional,
+    Sequence,
+    Tuple,
+    Union,
+    cast,
+)
 
 from . import activity
 from . import approval as approval_mod
@@ -585,28 +600,34 @@ def _run_panel(
     if idle_timeout is None:
         idle_timeout = config_mod.idle_timeout(ctx.loaded, MODE_REVIEW).seconds
     warned = _warn_unenforced(ctx.loaded, reviewers, ctx.kind.panel)
+    progress = ctx.loaded.progress_settings()
+    echo = _ProgressEcho(progress.quiet_notice_seconds) if getattr(args, "progress", False) else None
+    watch: ContextManager[None] = contextlib.nullcontext()
+    if echo is not None and progress.quiet_notice_seconds > 0:
+        watch = echo.watching(progress.interval_seconds)
     try:
-        runs = review_mod.run_reviews(
-            reviewers,
-            ctx.workspace,
-            review_mod.FanoutOptions(
-                parallel=not args.sequential and bool(settings.get("parallel", True)),
-                timeout=batch_timeout,
-                extra_context=extra_context,
-                idle_timeout=idle_timeout,
-                max_findings=max_findings,
-                over_budget=over_budget,
-                budget_chars=budget_chars,
-                # The same number to both: `prompt_for` decides the delivery and
-                # `run_reviews` records and words it, and a round that took them
-                # from two places would sooner or later take two different ones.
-                inline_chars=inline_chars,
-                prompt_for=prompt_for,
-                surrounding=surrounding,
-                refusals=_reviewer_refusals(ctx.loaded, reviewers, ctx.kind.panel),
-                activity_for=_progress_echo() if getattr(args, "progress", False) else None,
-            ),
-        )
+        with watch:
+            runs = review_mod.run_reviews(
+                reviewers,
+                ctx.workspace,
+                review_mod.FanoutOptions(
+                    parallel=not args.sequential and bool(settings.get("parallel", True)),
+                    timeout=batch_timeout,
+                    extra_context=extra_context,
+                    idle_timeout=idle_timeout,
+                    max_findings=max_findings,
+                    over_budget=over_budget,
+                    budget_chars=budget_chars,
+                    # The same number to both: `prompt_for` decides the delivery and
+                    # `run_reviews` records and words it, and a round that took them
+                    # from two places would sooner or later take two different ones.
+                    inline_chars=inline_chars,
+                    prompt_for=prompt_for,
+                    surrounding=surrounding,
+                    refusals=_reviewer_refusals(ctx.loaded, reviewers, ctx.kind.panel),
+                    activity_for=echo.sink_for if echo is not None else None,
+                ),
+            )
     except review_mod.ReviewError as exc:
         book.end(token, "failed", {"error": str(exc)})
         _err(str(exc))
@@ -614,11 +635,21 @@ def _run_panel(
     return _PanelRun(token, runs, warned)
 
 
-def _progress_echo() -> Callable[[str], activity.Sink]:
+class _ProgressEcho:
     """``review run --progress``: a sink per reviewer that echoes its tool uses
-    to stderr as ``[<reviewer> +mm:ss] <line>``. Nothing is written to a file."""
+    to stderr as ``[<reviewer> +mm:ss] <line>``. Nothing is written to a file.
 
-    def sink_for(reviewer_id: str) -> activity.Sink:
+    With ``quiet_notice_seconds`` above 0, :meth:`flag_quiet` adds the stuck
+    notice for each reviewer still running that has been silent that long,
+    and :meth:`watching` calls it once an interval for the round.
+    """
+
+    def __init__(self, quiet_notice_seconds: int = 0) -> None:
+        self.quiet_notice_seconds = quiet_notice_seconds
+        self._sinks: List[activity.Sink] = []
+        self._lock = threading.Lock()
+
+    def sink_for(self, reviewer_id: str) -> activity.Sink:
         tag = activity.clip(reviewer_id) or "reviewer"
         started = time.monotonic()
 
@@ -626,9 +657,44 @@ def _progress_echo() -> Callable[[str], activity.Sink]:
             minutes, seconds = divmod(int(time.monotonic() - started), 60)
             _err("[%s +%02d:%02d] %s" % (tag, minutes, seconds, line))
 
-        return activity.Sink(echo=echo)
+        sink = activity.Sink(echo=echo)
+        with self._lock:
+            self._sinks.append(sink)
+        return sink
 
-    return sink_for
+    def flag_quiet(self) -> None:
+        """Echo the stuck notice for each running reviewer silent for the threshold or longer."""
+        if self.quiet_notice_seconds <= 0:
+            return
+        with self._lock:
+            sinks = list(self._sinks)
+        for sink in sinks:
+            if sink.ended:
+                continue
+            quiet = sink.quiet_seconds()
+            if quiet >= self.quiet_notice_seconds:
+                sink.say(activity.quiet_note(quiet))
+
+    @contextlib.contextmanager
+    def watching(self, interval: float) -> Iterator[None]:
+        """Call :meth:`flag_quiet` every ``interval`` seconds while the block runs.
+
+        A daemon thread, stopped and joined on the way out however the block
+        ends, so it never outlives the round or holds up the exit.
+        """
+        stop = threading.Event()
+
+        def watch() -> None:
+            while not stop.wait(interval):
+                self.flag_quiet()
+
+        thread = threading.Thread(target=watch, name="review-progress-watch", daemon=True)
+        thread.start()
+        try:
+            yield
+        finally:
+            stop.set()
+            thread.join()
 
 
 def _account_runs(ctx: _RoundContext, panel: _PanelRun, switched: Sequence[str] = ()) -> List[Dict[str, Any]]:
