@@ -39,7 +39,7 @@
 | --- | --- | --- |
 | プロジェクト | `<repo>/.dev-orchestra.yaml` | リポジトリごとの上書き。commit するかどうかはお好みで。読み取り専用のロールはここから `options.args` を受け取りません（[下記](#role-options)） |
 | グローバル | 下記参照 | すべてのプロジェクトに対するあなた個人のデフォルト |
-| 組み込み | `scripts/orchestrator/config.py` | 推奨デフォルト。ファイルが存在しないときに使われます |
+| 組み込み | `scripts/orchestrator/config_common.py` | 推奨デフォルト。ファイルが存在しないときに使われます |
 
 設定ディレクトリ内の `providers/` ディレクトリには、あなた自身の provider
 adapter を置きます（Windows では `%APPDATA%\dev-orchestra\providers\`、

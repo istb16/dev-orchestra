@@ -31,7 +31,7 @@
 | --- | --- | --- |
 | Project | `<repo>/.dev-orchestra.yaml` | Per-repository override, committed or not as you prefer. Read-only roles do not take `options.args` from it ([below](#role-options)) |
 | Global | see below | Your personal default for every project |
-| Built-in | `scripts/orchestrator/config.py` | Recommended defaults, used when no file exists |
+| Built-in | `scripts/orchestrator/config_common.py` | Recommended defaults, used when no file exists |
 
 In the config directory, a `providers/` directory holds your own provider
 adapters (`%APPDATA%\dev-orchestra\providers\` on Windows,

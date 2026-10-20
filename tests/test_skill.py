@@ -587,6 +587,7 @@ _REGISTRY_FREE = (
     "optimization_design",
     "review_common",
     "config",
+    "config_common",
     "execution",
     "presets",
     "verified",
