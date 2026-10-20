@@ -7,11 +7,11 @@ The lowest of the ``config_*`` modules; ``config`` re-exports its public names.
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, Optional, TypeGuard
+from typing import Any, Dict, NamedTuple, Optional, TypeGuard
 
 from . import config_trust
 from . import optimization as opt_mod
-from .clocks import is_seconds
+from .clocks import MAX_SECONDS, is_seconds
 from .review_common import DEFAULT_EXCLUDE
 
 CONFIG_VERSION = 1
@@ -107,6 +107,38 @@ def progress_updates_mode(value: Any) -> str:
     if value is False:
         return "off"
     return "auto"
+
+
+class Progress(NamedTuple):
+    """The ``progress`` block as ``progress_settings_of`` reads it."""
+
+    #: ``on``, ``off`` or ``auto`` (``progress_updates_mode``).
+    updates: str
+    interval_seconds: int
+    #: 0 means no stuck notice.
+    quiet_notice_seconds: int
+
+
+def progress_settings_of(data: Dict[str, Any]) -> Progress:
+    """The ``progress`` block of ``data``, each value the default where it is absent or unusable.
+
+    Read leniently, as ``stale_notice_days`` is: commands load unvalidated,
+    and what the user is told must not hang on a value ``validate`` refuses.
+    """
+    defaults = default_config()["progress"]
+    configured = data.get("progress")
+    block = configured if isinstance(configured, dict) else {}
+    interval = block.get("interval_seconds")
+    if not (
+        isinstance(interval, int)
+        and not isinstance(interval, bool)
+        and PROGRESS_INTERVAL_MIN <= interval <= PROGRESS_INTERVAL_MAX
+    ):
+        interval = defaults["interval_seconds"]
+    quiet = block.get("quiet_notice_seconds")
+    if not (isinstance(quiet, int) and not isinstance(quiet, bool) and 0 <= quiet <= MAX_SECONDS):
+        quiet = defaults["quiet_notice_seconds"]
+    return Progress(progress_updates_mode(block.get("updates")), interval, quiet)
 
 
 #: A BCP 47 language tag, loosely: a primary subtag of two or three letters

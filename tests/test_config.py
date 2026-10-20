@@ -1493,6 +1493,51 @@ class TestProgress(IsolatedCase):
                 self.assertEqual(config_mod.get_path(loaded.data, "progress.updates"), stored)
                 self.assertEqual(loaded.progress_settings().updates, mode)
 
+    def test_config_set_warns_about_a_value_validate_refuses(self):
+        # As for every other key: saved, warned about with the validation
+        # message, and read back as the default until it is fixed.
+        path = os.path.join(self.project, ".dev-orchestra.yaml")
+        cases = (
+            ("interval_seconds", "10", 10, "progress.interval_seconds: must be an integer from 30 to 3600"),
+            (
+                "quiet_notice_seconds",
+                "-1",
+                -1,
+                "progress.quiet_notice_seconds: must be a non-negative integer (0 = off)",
+            ),
+            ("updates", "maybe", "maybe", "progress.updates: must be true, false or auto"),
+        )
+        for key, value, stored, problem in cases:
+            with self.subTest(key=key, value=value):
+                code, _, err = self.run_cli("config", "set", "--scope", "project", "progress." + key, value)
+                self.assertEqual(code, 0, err)
+                self.assertIn("warning: %s" % problem, err)
+                self.assertEqual(config_mod.read_config_file(path)["progress"][key], stored)
+                loaded = config_mod.load(self.project, validate_result=False)
+                self.assertEqual(loaded.progress_settings(), config_mod.Progress("auto", 180, 600))
+                config_mod.write_config_file(path, {"version": 1}, "project")
+        # `yes` is YAML's true, so it is `on`, not a typo.
+        code, _, err = self.run_cli("config", "set", "--scope", "project", "progress.updates", "yes")
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("progress", err)
+        self.assertIs(config_mod.read_config_file(path)["progress"]["updates"], True)
+        self.assertEqual(config_mod.load(self.project).progress_settings().updates, "on")
+
+    def test_a_project_block_merges_over_the_global_one(self):
+        for scope, key, value in (
+            ("global", "interval_seconds", "60"),
+            ("project", "quiet_notice_seconds", "30"),
+        ):
+            code, _, err = self.run_cli("config", "set", "--scope", scope, "progress." + key, value)
+            self.assertEqual(code, 0, err)
+        self.assertEqual(
+            config_mod.read_config_file(os.path.join(self.project, ".dev-orchestra.yaml"))["progress"],
+            {"quiet_notice_seconds": 30},
+        )
+        self.assertEqual(
+            config_mod.load(self.project).progress_settings(), config_mod.Progress("auto", 60, 30)
+        )
+
 
 class TestRunTimeout(IsolatedCase):
     """``run.timeout_seconds.<role>``, the total deadline of one `run` (#258)."""

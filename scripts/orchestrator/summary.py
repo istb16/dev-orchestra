@@ -123,8 +123,7 @@ def render_summary(
         lines.extend(_panel_lines(design, design_origins))
     lines.extend(_deadline_lines(data, loaded))
     lines.append("  Reply language: %s  (language.reply)" % _reply_language(data))
-    progress = config_mod.LoadedConfig(data, None, None, False).progress_settings()
-    lines.append("  Progress: %s  (progress.*)" % describe_progress(progress))
+    lines.append("  Progress: %s  (progress.*)" % describe_progress(config_mod.progress_settings_of(data)))
     # With no origins (data never composed by ``load``), a design seat that
     # runs as its code seat is taken for a copy, as ``reviewer_seats`` says.
     for warning in read_only_enforcement_warnings(data, design_origins=list(design_origins) or None):

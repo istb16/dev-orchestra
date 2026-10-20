@@ -673,20 +673,26 @@ class _ProgressEcho:
                 continue
             quiet = sink.quiet_seconds()
             if quiet >= self.quiet_notice_seconds:
-                sink.say(activity.quiet_note(quiet))
+                # Checked again under the echo lock: a reviewer that ended
+                # since the check above must not be flagged after its `done:`.
+                sink.say_if_running(activity.quiet_note(quiet))
 
     @contextlib.contextmanager
     def watching(self, interval: float) -> Iterator[None]:
         """Call :meth:`flag_quiet` every ``interval`` seconds while the block runs.
 
         A daemon thread, stopped and joined on the way out however the block
-        ends, so it never outlives the round or holds up the exit.
+        ends, so it never outlives the round or holds up the exit. A check that
+        raises is skipped, not fatal: the next interval still runs.
         """
         stop = threading.Event()
 
         def watch() -> None:
             while not stop.wait(interval):
-                self.flag_quiet()
+                try:
+                    self.flag_quiet()
+                except Exception:
+                    pass
 
         thread = threading.Thread(target=watch, name="review-progress-watch", daemon=True)
         thread.start()

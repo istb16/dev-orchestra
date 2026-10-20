@@ -164,6 +164,35 @@ class TestQuietNotice(unittest.TestCase):
         self.assertEqual(len(self.echoed), 1)
         self.assertTrue(self.echoed[0].endswith("] done: ok"), self.echoed)
 
+    def test_a_reviewer_ending_mid_check_gets_no_notice_after_done(self):
+        echo = cli_review._ProgressEcho(600)
+        sink = echo.sink_for("alpha")
+
+        def ends_while_checked() -> float:
+            # `done:` lands between the `ended` check and the notice.
+            sink.end("done: ok")
+            return 10**6
+
+        with mock.patch.object(sink, "quiet_seconds", ends_while_checked):
+            echo.flag_quiet()
+        self.assertEqual(len(self.echoed), 1, self.echoed)
+        self.assertTrue(self.echoed[0].endswith("] done: ok"), self.echoed)
+
+    def test_a_check_that_raises_does_not_stop_the_watcher(self):
+        echo = cli_review._ProgressEcho(600)
+        calls: List[int] = []
+        again = threading.Event()
+
+        def flag() -> None:
+            calls.append(1)
+            if len(calls) == 1:
+                raise RuntimeError("the check fell over")
+            again.set()
+
+        with mock.patch.object(echo, "flag_quiet", flag), echo.watching(0.01):
+            self.assertTrue(again.wait(10))
+        self.assertGreaterEqual(len(calls), 2)
+
     def test_no_notice_when_it_is_off(self):
         echo = cli_review._ProgressEcho(0)
         self.silent(echo, "alpha", 10**6)
@@ -220,6 +249,61 @@ class TestRoundWatcher(_SnapshotCase):
         code, _, err = run_cli("review", "run", "--progress")
         self.assertEqual(code, 0, err)
         self.assertNotIn("review-progress-watch", [thread.name for thread in threading.enumerate()])
+
+    def test_a_silent_reviewer_is_flagged_in_the_log_before_its_done_line(self):
+        config_mod.write_config_file(
+            config_mod.global_config_path(), {"version": 1, "progress": {"quiet_notice_seconds": 1}}
+        )
+        case = self
+        notices: List[str] = []
+        noticed = threading.Condition()
+        err = cli_review._err
+
+        def record(text: str) -> None:
+            err(text)
+            if "] may be stuck: " in text:
+                with noticed:
+                    notices.append(text)
+                    noticed.notify_all()
+
+        class _Silent(MockProvider):
+            def _launch(self, *args, **kwargs):
+                sink = activity.current()
+                assert sink is not None
+                # Silent for 100s, without waiting them out; the reviewer stays
+                # running until the watcher has flagged it.
+                sink.last_line -= 100
+                with noticed:
+                    seen = len(notices)
+                    case.assertTrue(noticed.wait_for(lambda: len(notices) > seen, 10))
+                return super()._launch(*args, **kwargs)
+
+        intervals: List[float] = []
+        watching = cli_review._ProgressEcho.watching
+
+        def fast(echo: cli_review._ProgressEcho, interval: float):
+            intervals.append(interval)
+            return watching(echo, 0.01)
+
+        with (
+            mock.patch.object(cli_review, "_err", record),
+            mock.patch.object(cli_review._ProgressEcho, "watching", fast),
+            mock.patch.object(review_fanout, "get_provider", lambda name: _Silent()),
+        ):
+            # Sequential, so a notice after a reviewer started is that reviewer's.
+            code, _, out_err = run_cli("review", "run", "--sequential", "--progress")
+        self.assertEqual(code, 0, out_err)
+        self.assertEqual(intervals, [180])
+        lines: Dict[str, List[str]] = {}
+        for line in out_err.splitlines():
+            match = TAGGED.match(line)
+            if match:
+                lines.setdefault(match.group("tag"), []).append(match.group("line"))
+        self.assertEqual(set(lines), {"alpha", "beta"})
+        for tag, said in lines.items():
+            self.assertEqual(said[-1], "done: ok", (tag, said))
+            self.assertRegex(said[0], r"^may be stuck: no new tool line for 1m4\ds$", (tag, said))
+            self.assertTrue(all(line.startswith("may be stuck: ") for line in said[:-1]), (tag, said))
 
 
 class TestFanOutSinks(_SnapshotCase):

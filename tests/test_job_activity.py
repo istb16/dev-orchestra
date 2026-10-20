@@ -202,21 +202,50 @@ class TestQuiet(IsolatedCase):
     def stamp(self, offset):
         return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(self.NOW + offset))
 
-    def job_with(self, entries, status="running"):
+    def job_with(self, entries, status="running", job=None):
         workspace = self.cli_workspace()
-        job = {"id": "a-1", "stage": "implementer", "status": status, "claimed_at": self.stamp(-1000)}
-        if status != "running":
-            job["finished_at"] = self.stamp(0)
+        if job is None:
+            job = {"id": "a-1", "stage": "implementer", "status": status, "claimed_at": self.stamp(-1000)}
+            if status != "running":
+                job["finished_at"] = self.stamp(0)
         jobs_mod.write_job(workspace, job)
         path = jobs_mod.activity_path(jobs_mod.job_path(workspace, "a-1"))
         with open(path, "w", encoding="utf-8", newline="\n") as handle:
             handle.write("".join(json.dumps(entry) + "\n" for entry in entries))
         return workspace, job
 
-    def read(self, entries, notice=600, status="running", since=0):
-        workspace, job = self.job_with(entries, status)
+    def read(self, entries, notice=600, status="running", since=0, job=None):
+        workspace, job = self.job_with(entries, status, job)
         with mock.patch.object(time, "time", return_value=self.NOW):
             return jobs_mod.read_activity(workspace, job, since, 10, notice)
+
+    def test_a_line_from_the_future_is_no_silence(self):
+        # A clock behind the writer's: the line's `t` is still to come here.
+        act = self.read(
+            [{"n": 1, "s": 10.0, "t": self.NOW + 500, "line": "Read a.py", "tokens": None}], notice=1
+        )
+        assert act is not None
+        self.assertEqual(act["quiet_seconds"], 0)
+        self.assertIs(act["may_be_stuck"], False)
+
+    def test_no_start_and_no_t_is_unknown_silence(self):
+        entries = [{"n": 1, "s": 200.0, "line": "Read a.py", "tokens": None}]
+        for status in ("running", "unknown"):
+            job = {"id": "a-1", "stage": "implementer", "status": status}
+            act = self.read(entries, notice=1, job=job)
+            assert act is not None
+            with self.subTest(status=status):
+                self.assertIsNone(act["elapsed_seconds"])
+                self.assertIsNone(act["quiet_seconds"])
+                self.assertIs(act["may_be_stuck"], False)
+
+    def test_a_starting_job_counts_as_running(self):
+        job = {"id": "a-1", "stage": "implementer", "status": "starting", "started_at": self.stamp(-1000)}
+        entries = [{"n": 1, "s": 300.0, "t": self.NOW - 700, "line": "Read a.py", "tokens": None}]
+        act = self.read(entries, job=job)
+        assert act is not None
+        self.assertEqual(act["quiet_seconds"], 700)
+        self.assertIs(act["may_be_stuck"], True)
 
     def test_from_the_last_lines_wall_clock_time(self):
         entries = [
@@ -293,7 +322,8 @@ class TestQuiet(IsolatedCase):
         workspace = self.cli_workspace()
         job = {"id": "a-1", "stage": "implementer", "status": "running", "claimed_at": ws.utcnow()}
         jobs_mod.write_job(workspace, job)
-        for argv, expected in (((), 180), (("--timeout", "5"), 5)):
+        # `--timeout 0` is "look once", not "no timeout given".
+        for argv, expected in (((), 180), (("--timeout", "5"), 5), (("--timeout", "0"), 0)):
             with mock.patch.object(jobs_mod, "wait", return_value=dict(job, waited_out=True)) as wait:
                 self.assertEqual(run_cli("jobs", "wait", "a-1", *argv)[0], 4)
             with self.subTest(argv=argv):
@@ -302,6 +332,12 @@ class TestQuiet(IsolatedCase):
         with mock.patch.object(jobs_mod, "wait", return_value=dict(job, waited_out=True)) as wait:
             run_cli("jobs", "wait", "a-1")
         self.assertEqual(wait.call_args.kwargs["timeout"], 45)
+        # A value `validate` refuses is the default, not an error.
+        self.write(".dev-orchestra.yaml", "version: 1\nprogress:\n  interval_seconds: 10\n")
+        with mock.patch.object(jobs_mod, "wait", return_value=dict(job, waited_out=True)) as wait:
+            code, _, err = run_cli("jobs", "wait", "a-1")
+        self.assertEqual(code, 4, err)
+        self.assertEqual(wait.call_args.kwargs["timeout"], 180)
 
 
 class TestDetachedActivity(IsolatedCase):

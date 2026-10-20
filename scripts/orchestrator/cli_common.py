@@ -227,6 +227,11 @@ def _workspace(args: argparse.Namespace) -> ws.Workspace:
     that creates the directory is the start of a new workflow, and the one
     place the others that went quiet are noted.
     """
+    return _workspace_and_config(args)[0]
+
+
+def _workspace_and_config(args: argparse.Namespace) -> "tuple[ws.Workspace, config_mod.LoadedConfig]":
+    """:func:`_workspace`, and the configuration it was resolved with, read once."""
     root, container, loaded = _container_and_config(args)
     requested = getattr(args, "workflow", "") or ""
     if getattr(args, "job_file", None):
@@ -241,7 +246,7 @@ def _workspace(args: argparse.Namespace) -> ws.Workspace:
         _stale_notice(container, workflow, loaded.stale_notice_days())
         if loaded.used_defaults:
             _first_run_summary(loaded)
-    return workspace
+    return workspace, loaded
 
 
 def _first_run_summary(loaded: config_mod.LoadedConfig) -> None:

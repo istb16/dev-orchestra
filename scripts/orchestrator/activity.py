@@ -408,9 +408,21 @@ class Sink:
             self._echo(line)
 
     def end(self, text: str) -> None:
-        """:meth:`say` ``text`` as the run's last line, and mark the run :attr:`ended`."""
-        self.say(text)
-        self.ended = True
+        """:meth:`say` ``text`` as the run's last line, and mark the run :attr:`ended`.
+
+        Both under the echo lock, so :meth:`say_if_running` can never echo after it.
+        """
+        line = clip(text)
+        with _ECHO_LOCK:
+            self.ended = True
+            self._echo_held(line)
+
+    def say_if_running(self, text: str) -> None:
+        """:meth:`say` ``text`` unless the run has :attr:`ended`, checked under the echo lock."""
+        line = clip(text)
+        with _ECHO_LOCK:
+            if not self.ended:
+                self._echo_held(line)
 
     def _echo_line(self, line: str) -> None:
         self._echoed += 1
@@ -421,12 +433,18 @@ class Sink:
             self._echo(ECHO_CUT)
 
     def _echo(self, line: str) -> None:
+        if self.echo is None:
+            return
+        with _ECHO_LOCK:
+            self._echo_held(line)
+
+    def _echo_held(self, line: str) -> None:
+        """Echo ``line``, with :data:`_ECHO_LOCK` already held."""
         echo = self.echo
-        if echo is None:
+        if not line or echo is None:
             return
         try:
-            with _ECHO_LOCK:
-                echo(line)
+            echo(line)
         except Exception:
             pass
 
