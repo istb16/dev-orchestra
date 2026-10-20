@@ -74,6 +74,8 @@ def read_activity(
     when the job has no activity file."""
     act = activity.read(activity_path(job_path(workspace, str(job.get("id")))), since, latest)
     if act is not None:
+        act.pop("last_at")
+        act.pop("last_s")
         act["elapsed_seconds"] = elapsed_seconds(job)
     return act
 
@@ -97,15 +99,6 @@ def elapsed_seconds(job: Dict[str, Any]) -> Optional[int]:
     if end is None:
         return None
     return max(int(end - begun), 0)
-
-
-def _duration(seconds: float) -> str:
-    seconds = int(seconds)
-    hours, rest = divmod(seconds, 3600)
-    minutes, seconds = divmod(rest, 60)
-    if hours:
-        return "%dh%02dm%02ds" % (hours, minutes, seconds)
-    return "%dm%02ds" % (minutes, seconds)
 
 
 def output_path(workspace: ws.Workspace, job_id: str) -> str:
@@ -459,7 +452,7 @@ def render(job: Dict[str, Any], act: Optional[Dict[str, Any]] = None) -> str:
     if running:
         elapsed = elapsed_seconds(job)
         if elapsed is not None:
-            lines.append("  elapsed:  %s" % _duration(elapsed))
+            lines.append("  elapsed:  %s" % activity.duration(elapsed))
     if job.get("finished_at"):
         lines.append("  finished: %s" % job["finished_at"])
     if job.get("pid"):

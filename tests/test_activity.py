@@ -345,6 +345,37 @@ class TestSink(IsolatedCase):
             sink.say("done: ok")
         self.assertEqual(echoed, ["a", "b", activity.ECHO_CUT, "done: ok"])
 
+    def test_tool_lines_carry_wall_clock_time(self):
+        sink = activity.Sink(self.path)
+        with mock.patch.object(activity.time, "time", return_value=1_790_000_000.04):
+            sink.add(activity.Activity(["Read a.py"], 10))
+        sink.add(activity.Activity([], 25))
+        entries = self.entries()
+        self.assertEqual(entries[0]["t"], 1_790_000_000.0)
+        # A token count alone is no tool line, and carries no time.
+        self.assertNotIn("t", entries[1])
+
+    def test_quiet_seconds_count_from_the_last_tool_line(self):
+        clock = [100.0]
+        with mock.patch.object(activity.time, "monotonic", side_effect=lambda: clock[0]):
+            sink = activity.Sink()
+            clock[0] = 130.0
+            self.assertEqual(sink.quiet_seconds(), 30.0)
+            sink.add(activity.Activity(["Read a.py"], None))
+            clock[0] = 145.0
+            self.assertEqual(sink.quiet_seconds(), 15.0)
+            # A token count alone does not end a silent stretch.
+            sink.add(activity.Activity([], 40))
+            self.assertEqual(sink.quiet_seconds(), 15.0)
+
+    def test_end_says_its_line_and_marks_the_run_over(self):
+        echoed: List[str] = []
+        sink = activity.Sink(echo=echoed.append)
+        self.assertFalse(sink.ended)
+        sink.end("done: ok")
+        self.assertTrue(sink.ended)
+        self.assertEqual(echoed, ["done: ok"])
+
     def test_recording_restores_the_previous_sink(self):
         outer, inner = activity.Sink(), activity.Sink()
         self.assertIsNone(activity.current())
@@ -427,6 +458,49 @@ class TestRead(IsolatedCase):
         self.write_lines(self.path, [self.entry(n) for n in range(501, 504)])
         self.assertTrue(present(activity.read(self.path, since=10))["dropped"])
         self.assertFalse(present(activity.read(self.path, since=500))["dropped"])
+
+    def test_the_last_line_time_whatever_since_is(self):
+        def timed(n, t):
+            return json.dumps({"n": n, "s": float(n), "t": t, "line": "Read a.py", "tokens": None}) + "\n"
+
+        tokens_only = json.dumps({"s": 9.0, "t": 1_790_000_900.0, "tokens": 900}) + "\n"
+        self.write_lines(self.path, [timed(2, 1_790_000_200.0), timed(1, 1_790_000_100.0), tokens_only])
+        for since in (0, 2, 50):
+            report = present(activity.read(self.path, since=since))
+            with self.subTest(since=since):
+                self.assertEqual(report["last_at"], 1_790_000_200.0)
+                self.assertEqual(report["last_s"], 2.0)
+        for bad in ("soon", True, -1, None):
+            self.write_lines(self.path, [timed(1, bad)])
+            with self.subTest(t=bad):
+                self.assertIsNone(present(activity.read(self.path))["last_at"])
+
+    def test_a_file_from_before_t_and_one_with_no_tool_line(self):
+        self.write_lines(self.path, [self.entry(1), self.entry(2)])
+        report = present(activity.read(self.path, since=2))
+        self.assertIsNone(report["last_at"])
+        self.assertEqual(report["last_s"], 2.0)
+        self.write_lines(self.path, [json.dumps({"s": 3.0, "tokens": 50}) + "\n"])
+        report = present(activity.read(self.path))
+        self.assertEqual((report["count"], report["last_at"], report["last_s"]), (0, None, None))
+
+
+class TestWording(unittest.TestCase):
+    def test_duration_format(self):
+        cases = {
+            0: "0m00s",
+            59.9: "0m59s",
+            61: "1m01s",
+            3599: "59m59s",
+            3600: "1h00m00s",
+            3 * 3600 + 62: "3h01m02s",
+        }
+        for seconds, expected in cases.items():
+            self.assertEqual(activity.duration(seconds), expected, seconds)
+
+    def test_the_stuck_notice(self):
+        self.assertEqual(activity.quiet_note(723), "may be stuck: no new tool line for 12m03s")
+        self.assertEqual(activity.quiet_note(3723.9), "may be stuck: no new tool line for 1h02m03s")
 
 
 if __name__ == "__main__":

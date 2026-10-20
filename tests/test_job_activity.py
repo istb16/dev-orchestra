@@ -126,18 +126,6 @@ class TestElapsed(unittest.TestCase):
         self.assertEqual(self.elapsed(claimed_at=self.stamp(120)), 0)
         self.assertEqual(self.elapsed(claimed_at=self.stamp(0), finished_at=self.stamp(-5)), 0)
 
-    def test_duration_format(self):
-        cases = {
-            0: "0m00s",
-            59.9: "0m59s",
-            61: "1m01s",
-            3599: "59m59s",
-            3600: "1h00m00s",
-            3 * 3600 + 62: "3h01m02s",
-        }
-        for seconds, expected in cases.items():
-            self.assertEqual(jobs_mod._duration(seconds), expected, seconds)
-
     def test_render_with_hours_and_without_a_start(self):
         claimed = self.stamp(-(2 * 3600 + 5))
         job = {"id": "a-1", "stage": "implementer", "status": "running", "claimed_at": claimed}

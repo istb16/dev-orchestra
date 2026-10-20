@@ -350,6 +350,10 @@ class Sink:
         #: reader knows entries were dropped.
         self.n = 0
         self.started = time.monotonic()
+        #: When the last tool line came, on the same clock as ``started``.
+        self.last_line = self.started
+        #: Set by :meth:`end`: the run is over, so its silence is no news.
+        self.ended = False
         self.context_tokens: Optional[int] = None
         self._written_tokens: Optional[int] = None
         self._in_file = 0
@@ -369,9 +373,17 @@ class Sink:
             if not line:
                 continue
             self.n += 1
-            if self.path and self._write(
-                {"n": self.n, "s": self.seconds(), "line": line, "tokens": self.context_tokens}
-            ):
+            self.last_line = time.monotonic()
+            # ``t`` is wall-clock time, so a reader in another process can tell
+            # how long ago the line came; ``s`` is on this process's clock.
+            entry = {
+                "n": self.n,
+                "s": self.seconds(),
+                "t": round(time.time(), 1),
+                "line": line,
+                "tokens": self.context_tokens,
+            }
+            if self.path and self._write(entry):
                 self._written_tokens = self.context_tokens
             if self.echo is not None:
                 self._echo_line(line)
@@ -385,11 +397,20 @@ class Sink:
         """Seconds since the sink was made."""
         return round(time.monotonic() - self.started, 1)
 
+    def quiet_seconds(self) -> float:
+        """Seconds since the last tool line, or since the sink was made if none came."""
+        return time.monotonic() - self.last_line
+
     def say(self, text: str) -> None:
         """Echo ``text`` outside the tool lines and their limit, such as ``done: ok``."""
         line = clip(text)
         if line and self.echo is not None:
             self._echo(line)
+
+    def end(self, text: str) -> None:
+        """:meth:`say` ``text`` as the run's last line, and mark the run :attr:`ended`."""
+        self.say(text)
+        self.ended = True
 
     def _echo_line(self, line: str) -> None:
         self._echoed += 1
@@ -487,10 +508,13 @@ def read(path: str, since: int = 0, latest: int = 10) -> Optional[Dict[str, Any]
     ``context_tokens`` reported. ``since`` keeps entries after that ``n``;
     ``latest`` keeps the newest that many of those.
 
-    Returns ``{count, context_tokens, lines, dropped, omitted}``: ``count`` is
-    the highest ``n`` kept, ``lines`` are ``{n, s, line}``, ``dropped`` says an
-    ``n`` in ``(since, count]`` is missing, and ``omitted`` how many matching
-    entries ``latest`` left out.
+    Returns ``{count, context_tokens, lines, dropped, omitted, last_at,
+    last_s}``: ``count`` is the highest ``n`` kept, ``lines`` are ``{n, s,
+    line}``, ``dropped`` says an ``n`` in ``(since, count]`` is missing, and
+    ``omitted`` how many matching entries ``latest`` left out. ``last_at`` and
+    ``last_s`` are the ``t`` and ``s`` of the entry numbered ``count``, whatever
+    ``since`` is, or None where it has no usable one (a file written before
+    ``t`` existed has none).
     """
     since = _bounded(since, SINCE_MAX)
     latest = _bounded(latest, LATEST_MAX)
@@ -529,10 +553,28 @@ def read(path: str, since: int = 0, latest: int = 10) -> Optional[Dict[str, Any]
     lines = []
     for n in kept:
         lines.append({"n": n, "s": _seconds(entries[n].get("s")), "line": clip(entries[n]["line"])})
+    last = entries[count] if ordered else {}
     return {
         "count": count,
         "context_tokens": context_tokens,
         "lines": lines,
         "dropped": count > since and len(matching) < count - since,
         "omitted": len(matching) - len(kept),
+        "last_at": _seconds(last.get("t")),
+        "last_s": _seconds(last.get("s")),
     }
+
+
+def duration(seconds: float) -> str:
+    """``seconds`` as ``12m03s``, or ``1h02m03s`` from an hour."""
+    seconds = int(seconds)
+    hours, rest = divmod(seconds, 3600)
+    minutes, seconds = divmod(rest, 60)
+    if hours:
+        return "%dh%02dm%02ds" % (hours, minutes, seconds)
+    return "%dm%02ds" % (minutes, seconds)
+
+
+def quiet_note(seconds: float) -> str:
+    """The stuck notice of a run silent for ``seconds``, as jobs and reviews both say it."""
+    return "may be stuck: no new tool line for %s" % duration(seconds)
