@@ -194,6 +194,116 @@ class TestFlags(IsolatedCase):
                 self.assertEqual(raised.exception.code, 2)
 
 
+class TestQuiet(IsolatedCase):
+    """How long a running job has shown no new tool line, and the stuck notice (#330)."""
+
+    NOW = 1_790_000_000.0
+
+    def stamp(self, offset):
+        return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(self.NOW + offset))
+
+    def job_with(self, entries, status="running"):
+        workspace = self.cli_workspace()
+        job = {"id": "a-1", "stage": "implementer", "status": status, "claimed_at": self.stamp(-1000)}
+        if status != "running":
+            job["finished_at"] = self.stamp(0)
+        jobs_mod.write_job(workspace, job)
+        path = jobs_mod.activity_path(jobs_mod.job_path(workspace, "a-1"))
+        with open(path, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write("".join(json.dumps(entry) + "\n" for entry in entries))
+        return workspace, job
+
+    def read(self, entries, notice=600, status="running", since=0):
+        workspace, job = self.job_with(entries, status)
+        with mock.patch.object(time, "time", return_value=self.NOW):
+            return jobs_mod.read_activity(workspace, job, since, 10, notice)
+
+    def test_from_the_last_lines_wall_clock_time(self):
+        entries = [
+            {"n": 1, "s": 10.0, "t": self.NOW - 990, "line": "Read a.py", "tokens": None},
+            {"n": 2, "s": 300.0, "t": self.NOW - 700, "line": "Bash: pytest", "tokens": None},
+            {"s": 900.0, "tokens": 5000},
+        ]
+        for since in (0, 2):
+            act = self.read(entries, since=since)
+            assert act is not None
+            with self.subTest(since=since):
+                self.assertEqual(act["quiet_seconds"], 700)
+                self.assertTrue(act["may_be_stuck"])
+                self.assertNotIn("last_at", act)
+                self.assertNotIn("last_s", act)
+
+    def test_a_file_from_before_t_uses_its_offset(self):
+        act = self.read([{"n": 1, "s": 200.0, "line": "Read a.py", "tokens": None}])
+        assert act is not None
+        self.assertEqual(act["quiet_seconds"], 800)
+
+    def test_no_tool_line_yet_is_the_whole_run(self):
+        act = self.read([{"s": 5.0, "tokens": 100}])
+        assert act is not None
+        self.assertEqual((act["count"], act["quiet_seconds"]), (0, 1000))
+
+    def test_the_threshold(self):
+        entries = [{"n": 1, "s": 300.0, "t": self.NOW - 700, "line": "Read a.py", "tokens": None}]
+        for notice, stuck in ((699, True), (700, True), (701, False), (0, False)):
+            act = self.read(entries, notice=notice)
+            assert act is not None
+            with self.subTest(notice=notice):
+                self.assertIs(act["may_be_stuck"], stuck)
+        act = self.read(entries, notice=1, status="succeeded")
+        assert act is not None
+        self.assertIsNone(act["quiet_seconds"])
+        self.assertIs(act["may_be_stuck"], False)
+
+    def test_the_note_comes_before_next(self):
+        job = {"id": "a-1", "stage": "implementer", "status": "running", "started_at": ws.utcnow()}
+        act = {"count": 2, "lines": [], "quiet_seconds": 723, "may_be_stuck": True}
+        lines = jobs_mod.render(job, act).splitlines()
+        self.assertEqual(
+            lines[-2:],
+            ["  note:     may be stuck: no new tool line for 12m03s", "  next:     jobs wait a-1 --since 2"],
+        )
+        self.assertNotIn("may be stuck", jobs_mod.render(job, dict(act, may_be_stuck=False)))
+        finished = dict(job, status="failed", finished_at=ws.utcnow())
+        self.assertNotIn("may be stuck", jobs_mod.render(finished, act))
+
+    def test_every_wait_repeats_the_note_while_the_run_is_silent(self):
+        workspace = self.cli_workspace()
+        job = {"id": "a-1", "stage": "implementer", "status": "running", "claimed_at": ws.utcnow()}
+        jobs_mod.write_job(workspace, job)
+        path = jobs_mod.activity_path(jobs_mod.job_path(workspace, "a-1"))
+        entry = {"n": 1, "s": 1.0, "t": time.time() - 1000, "line": "Read a.py", "tokens": None}
+        with open(path, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(json.dumps(entry) + "\n")
+        for since in ("0", "1"):
+            code, out, err = run_cli(
+                "jobs", "wait", "a-1", "--since", since, "--timeout", "0.1", "--poll", "0.1"
+            )
+            self.assertEqual(code, 4, err)
+            self.assertRegex(
+                out, r"\n  note:     may be stuck: no new tool line for 16m[4-5]\ds\n  next:     "
+            )
+        code, out, _ = run_cli("jobs", "show", "a-1", "--json")
+        self.assertTrue(json.loads(out)["activity"]["may_be_stuck"])
+        self.assertEqual(run_cli("config", "set", "progress.quiet_notice_seconds", "0")[0], 0)
+        _, out, _ = run_cli("jobs", "show", "a-1")
+        self.assertNotIn("may be stuck", out)
+
+    def test_wait_defaults_to_the_configured_interval(self):
+        workspace = self.cli_workspace()
+        job = {"id": "a-1", "stage": "implementer", "status": "running", "claimed_at": ws.utcnow()}
+        jobs_mod.write_job(workspace, job)
+        for argv, expected in (((), 180), (("--timeout", "5"), 5)):
+            with mock.patch.object(jobs_mod, "wait", return_value=dict(job, waited_out=True)) as wait:
+                self.assertEqual(run_cli("jobs", "wait", "a-1", *argv)[0], 4)
+            with self.subTest(argv=argv):
+                self.assertEqual(wait.call_args.kwargs["timeout"], expected)
+        self.assertEqual(run_cli("config", "set", "progress.interval_seconds", "45")[0], 0)
+        with mock.patch.object(jobs_mod, "wait", return_value=dict(job, waited_out=True)) as wait:
+            run_cli("jobs", "wait", "a-1")
+        self.assertEqual(wait.call_args.kwargs["timeout"], 45)
+
+
 class TestDetachedActivity(IsolatedCase):
     """A real worker, reporting its mock run's tool uses beside the job."""
 

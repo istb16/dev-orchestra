@@ -68,15 +68,38 @@ def activity_path(job_file: str) -> str:
 
 
 def read_activity(
-    workspace: ws.Workspace, job: Dict[str, Any], since: int = 0, latest: int = 10
+    workspace: ws.Workspace,
+    job: Dict[str, Any],
+    since: int = 0,
+    latest: int = 10,
+    quiet_notice_seconds: int = 0,
 ) -> Optional[Dict[str, Any]]:
     """The job's activity as ``jobs show/wait --json`` reports it, or None
-    when the job has no activity file."""
+    when the job has no activity file.
+
+    ``quiet_seconds`` is how long the running job has shown no new tool line,
+    None once it has finished: from the last line's wall-clock ``t``, else
+    from its ``s`` for a file written before ``t`` existed, else the whole
+    run when no line has come yet. ``may_be_stuck`` says it has reached
+    ``quiet_notice_seconds``, which 0 turns off.
+    """
     act = activity.read(activity_path(job_path(workspace, str(job.get("id")))), since, latest)
-    if act is not None:
-        act.pop("last_at")
-        act.pop("last_s")
-        act["elapsed_seconds"] = elapsed_seconds(job)
+    if act is None:
+        return None
+    last_at = act.pop("last_at")
+    last_s = act.pop("last_s")
+    elapsed = elapsed_seconds(job)
+    act["elapsed_seconds"] = elapsed
+    quiet: Optional[int] = None
+    if job.get("status") not in FINISHED:
+        if last_at is not None:
+            quiet = max(int(time.time() - last_at), 0)
+        elif last_s is not None and elapsed is not None:
+            quiet = max(int(elapsed - last_s), 0)
+        else:
+            quiet = elapsed
+    act["quiet_seconds"] = quiet
+    act["may_be_stuck"] = quiet_notice_seconds > 0 and quiet is not None and quiet >= quiet_notice_seconds
     return act
 
 
@@ -492,6 +515,8 @@ def _render_activity(job: Dict[str, Any], act: Dict[str, Any], running: bool) ->
         lines.append("    (%d earlier line%s not shown)" % (omitted, "" if omitted == 1 else "s"))
     if act.get("dropped"):
         lines.append("    (some lines were dropped)")
+    if running and act.get("may_be_stuck"):
+        lines.append("  note:     %s" % activity.quiet_note(act.get("quiet_seconds") or 0))
     if running:
         lines.append("  next:     jobs wait %s --since %d" % (job.get("id"), count))
     return lines

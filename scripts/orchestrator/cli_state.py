@@ -13,7 +13,7 @@ from . import optimization_report as opt_report
 from . import review as review_mod
 from . import workflow as workflow_mod
 from . import workspace as ws
-from .cli_common import _emit_json, _err, _ledger, _out, _workspace, _wrote_plan
+from .cli_common import _emit_json, _err, _ledger, _load_lenient, _out, _workspace, _wrote_plan
 
 # --------------------------------------------------------------------------- state
 
@@ -41,7 +41,8 @@ def cmd_jobs_show(args: argparse.Namespace) -> int:
     if job is None:
         _err("no such job: %s" % args.job_id)
         return 2
-    act = jobs_mod.read_activity(workspace, job, args.since, args.activity)
+    progress = _load_lenient(args.cwd).progress_settings()
+    act = jobs_mod.read_activity(workspace, job, args.since, args.activity, progress.quiet_notice_seconds)
     if args.json:
         _emit_json(_with_activity(job, act))
         return 0
@@ -66,8 +67,11 @@ def cmd_jobs_wait(args: argparse.Namespace) -> int:
     if jobs_mod.read_job(workspace, args.job_id) is None:
         _err("no such job: %s" % args.job_id)
         return 2
-    job = jobs_mod.wait(workspace, args.job_id, timeout=args.timeout, poll=args.poll)
-    act = jobs_mod.read_activity(workspace, job, args.since, args.activity)
+    # Without --timeout, one wait is one report's worth: progress.interval_seconds.
+    progress = _load_lenient(args.cwd).progress_settings()
+    timeout = progress.interval_seconds if args.timeout is None else args.timeout
+    job = jobs_mod.wait(workspace, args.job_id, timeout=timeout, poll=args.poll)
+    act = jobs_mod.read_activity(workspace, job, args.since, args.activity, progress.quiet_notice_seconds)
     if args.json:
         _emit_json(_with_activity(job, act))
     else:
