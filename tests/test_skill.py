@@ -591,6 +591,7 @@ _REGISTRY_FREE = (
     "config_paths",
     "config_keys",
     "config_reviewers",
+    "config_seats",
     "execution",
     "presets",
     "verified",
@@ -950,6 +951,7 @@ class TestImportLayering(IsolatedCase):
             config_paths,
             config_policy,
             config_reviewers,
+            config_seats,
             optimization_render,
             providers,
             review,
@@ -1085,8 +1087,9 @@ class TestImportLayering(IsolatedCase):
             self.assertEqual(getattr(config_policy, name).__module__, "orchestrator.config_policy", name)
             self.assertFalse(hasattr(config, name), name)
         # The seat walk is configuration shape, so it stays with ``merge_tier``.
-        for name in ("SeatRun", "role_seats", "reviewer_seats", "read_only_seats"):
-            self.assertEqual(getattr(config, name).__module__, "orchestrator.config", name)
+        for name in ("merge_tier", "SeatRun", "role_seats", "reviewer_seats", "read_only_seats"):
+            self.assertEqual(getattr(config_seats, name).__module__, "orchestrator.config_seats", name)
+            self.assertIs(getattr(config, name), getattr(config_seats, name), name)
         self.assertEqual(config.WRITE_ROLES, ("implementer", "review_fixer"))
         # The warned-provider predicate reads only the registry.
         for name in ("warned_enforcement", "warned_provider"):
