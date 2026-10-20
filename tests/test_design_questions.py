@@ -1225,5 +1225,30 @@ class TestStatusAndDoctor(QuestionsCase):
         self.assertIn("design questions: auto  (design.ask_questions)", run_cli("config", "show")[1])
 
 
+class TestProgressLines(ApprovalCase):
+    """The `Progress:` line of `status` and `config show`, and `status.progress` (#330)."""
+
+    def test_the_defaults(self):
+        self.assertEqual(
+            self.status()["progress"],
+            {"updates": "auto", "interval_seconds": 180, "quiet_notice_seconds": 600},
+        )
+        line = "Progress: auto, every 180s, stuck notice after 600s"
+        self.assertIn("\n%s (progress.*)\n" % line, run_cli("status")[1])
+        self.assertIn("  %s  (progress.*)\n" % line, run_cli("config", "show")[1])
+
+    def test_a_configured_setting(self):
+        for key, value in (("updates", "false"), ("interval_seconds", "60"), ("quiet_notice_seconds", "0")):
+            self.assertEqual(run_cli("config", "set", "progress." + key, value)[0], 0)
+        self.assertEqual(
+            self.status()["progress"], {"updates": "off", "interval_seconds": 60, "quiet_notice_seconds": 0}
+        )
+        line = "Progress: off, every 60s, no stuck notice"
+        self.assertIn("\n%s (progress.*)\n" % line, run_cli("status")[1])
+        self.assertIn("  %s  (progress.*)\n" % line, run_cli("config", "show")[1])
+        run_cli("config", "set", "progress.updates", "true")
+        self.assertIn("Progress: on, every 60s", run_cli("status")[1])
+
+
 if __name__ == "__main__":
     unittest.main()

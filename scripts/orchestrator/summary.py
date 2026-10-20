@@ -123,6 +123,8 @@ def render_summary(
         lines.extend(_panel_lines(design, design_origins))
     lines.extend(_deadline_lines(data, loaded))
     lines.append("  Reply language: %s  (language.reply)" % _reply_language(data))
+    progress = config_mod.LoadedConfig(data, None, None, False).progress_settings()
+    lines.append("  Progress: %s  (progress.*)" % describe_progress(progress))
     # With no origins (data never composed by ``load``), a design seat that
     # runs as its code seat is taken for a copy, as ``reviewer_seats`` says.
     for warning in read_only_enforcement_warnings(data, design_origins=list(design_origins) or None):
@@ -178,6 +180,15 @@ def _reply_language(data: Dict[str, Any]) -> str:
     if not settings["reply"]:
         return "not set"
     return settings["reply"] + ("" if settings["rewrite"] else " (no rewrite: language.rewrite false)")
+
+
+def describe_progress(progress: config_mod.Progress) -> str:
+    """``auto, every 180s, stuck notice after 600s``: the `Progress:` line of `status` and `config show`."""
+    if progress.quiet_notice_seconds:
+        notice = "stuck notice after %ds" % progress.quiet_notice_seconds
+    else:
+        notice = "no stuck notice"
+    return "%s, every %ds, %s" % (progress.updates, progress.interval_seconds, notice)
 
 
 def _approval_required(data: Dict[str, Any]) -> bool:
