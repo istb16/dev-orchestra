@@ -196,6 +196,26 @@ VERIFIED_RESUME: Dict[str, Dict[str, Any]] = {
         "model": "gpt-6-sol",
         "dev_orchestra": "0.23.0",
     },
+    "codex-cli 0.163.0": {
+        "verified_at": "2026-10-21T15:11:14Z",
+        "read_only_mechanism": (
+            '--ignore-user-config -c sandbox_mode="read-only" '
+            "(fork; filesystem sandbox confirmed from the fork's rollout)"
+        ),
+        "checks": [
+            "resolves a model",
+            "answers a review prompt",
+            "reports what it spent",
+            "reports its tool activity",
+            "stays read-only",
+            "resumes read-only",
+            "forks the session",
+            "reports a missing session",
+            "ignores repository config on resume",
+        ],
+        "model": "gpt-6-sol",
+        "dev_orchestra": "1.1.1",
+    },
 }
 
 
