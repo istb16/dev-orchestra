@@ -31,12 +31,12 @@ import re
 import shutil
 import signal
 import subprocess
-import sys
 import threading
 import time
 from typing import IO, Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple, Union, cast
 
 from . import clocks
+from .execution_common import _POLL_SECONDS, IS_WINDOWS
 
 #: Exit codes this module reports for its own decisions. Chosen to stay clear
 #: of the 0-127 range a child is likely to use for its own reasons.
@@ -46,7 +46,6 @@ EXIT_SPAWN_FAILED = 126
 
 #: How long to let a killed group settle before abandoning its reader threads.
 KILL_GRACE_SECONDS = 5.0
-_POLL_SECONDS = 0.2
 #: Stdout lines waiting for ``on_line`` before further ones are dropped.
 _LINE_QUEUE_SIZE = 1000
 #: The most one read of a pipe takes; a read returns whatever has arrived.
@@ -57,8 +56,6 @@ _SETTLE_SECONDS = 1.0
 _SETTLE_QUIET_SECONDS = 0.2
 #: How long a finished run waits for ``on_line`` to catch up.
 _ON_LINE_GRACE_SECONDS = 2.0
-
-IS_WINDOWS = sys.platform.startswith("win")
 
 #: Set by ``Provider._child_env`` for every process this tool starts, so a
 #: delegated Claude run that loads the user's settings keeps dev-orchestra's

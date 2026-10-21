@@ -600,6 +600,7 @@ _REGISTRY_FREE = (
     "config_seats",
     "config_validation",
     "execution",
+    "execution_common",
     "presets",
     "verified",
     "context",
