@@ -13,6 +13,26 @@ authors can find it.
 
 ## [Unreleased]
 
+### Added
+
+- **Progress reports as a setting, and a "may be stuck" notice** (#330). A new
+  `progress` section sets what the orchestrator tells the user during a long
+  run. `progress.updates` (`auto`, the default, is what it did before; `true`
+  also detaches every architect run and runs every `review run` in the
+  background with `--progress`; `false` keeps only the stuck notice),
+  `progress.interval_seconds` (30 to 3600, default 180) for how often, and
+  `progress.quiet_notice_seconds` (default 600, `0` turns it off): a report on
+  a run that has shown no new tool line for that long says `may be stuck: no
+  new tool line for 12m03s`, again at every report while it stays silent. The
+  note only informs; nothing is cancelled for it. `jobs show` and `jobs wait`
+  print it as a `note:` line and add `quiet_seconds` and `may_be_stuck` to the
+  `activity` object of `--json`; `review run --progress` echoes it per
+  reviewer. Tool-line entries in `.ai/jobs/<id>.activity` gain a wall-clock
+  `t`, from which it is measured. `status` gains a `Progress:` line and a
+  `progress` key, and `config show` a `Progress:` line.
+- **`jobs wait` without `--timeout` now waits `progress.interval_seconds`**,
+  180 seconds by default, instead of 60. `--timeout` still overrides it.
+
 ## [1.1.1] - 2026-10-15
 
 ### Fixed

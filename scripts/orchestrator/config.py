@@ -26,18 +26,23 @@ from .config_common import (  # noqa: F401 - re-exported
     BUILTIN_ROLES,
     CONFIG_VERSION,
     KNOWN_ROLES,
+    PROGRESS_INTERVAL_MAX,
+    PROGRESS_INTERVAL_MIN,
     READ_ONLY_ROLES,
     RUN_TIMEOUT_DEFAULTS,
     STALE_NOTICE_MAX_DAYS,
     WRITE_ROLES,
     WRITE_RUN_IDLE_TIMEOUT_SECONDS,
     ConfigError,
+    Progress,
     ask_questions_mode,
     default_config,
     design_review_mode,
     is_valid_reviewer_id,
     language_settings_of,
     normalise_language_tag,
+    progress_settings_of,
+    progress_updates_mode,
     trusted_project_layer,
     whole_seconds,
     workspace_dir_in,
@@ -688,6 +693,10 @@ class LoadedConfig:
         if not isinstance(value, int) or isinstance(value, bool) or not 0 <= value <= STALE_NOTICE_MAX_DAYS:
             return fallback
         return value
+
+    def progress_settings(self) -> Progress:
+        """``progress_settings_of`` the composed data."""
+        return progress_settings_of(self.data)
 
 
 def validate_loaded(loaded: LoadedConfig) -> List[str]:

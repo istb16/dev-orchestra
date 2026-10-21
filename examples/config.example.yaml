@@ -202,3 +202,13 @@ optimization:
 workspace:
   # Where plan.md, reviews/ and state.json go, relative to the repo root.
   dir: .ai
+
+progress:
+  # What the orchestrator tells you during a long run: auto as it always did,
+  # true for every architect run and review round too, false for nothing but
+  # the stuck notice.
+  updates: auto
+  # How often it reports (30 to 3600), and the default wait of `jobs wait`.
+  interval_seconds: 180
+  # "may be stuck" on a run with no new tool line for this long; 0 turns it off.
+  quiet_notice_seconds: 600

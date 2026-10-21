@@ -631,6 +631,11 @@ workspace:
 language:
   reply: null                         # a language tag (ja, zh-TW, ko, en): the language to answer in
   rewrite: true                       # false: Claude Code reminds, but never asks for a rewrite
+
+progress:
+  updates: auto                       # reports during a long run (true, false or auto)
+  interval_seconds: 180               # how often; also the default wait of `jobs wait`
+  quiet_notice_seconds: 600           # "may be stuck" after this long with no new tool line; 0 = off
 ```
 
 ### Field reference
@@ -684,6 +689,9 @@ language:
 | `workspace.stale_notice_days` | int 0–36500 | When a new workflow starts, its first command notes, once and on stderr, the other workflows whose last activity (`updated_at`, else `started_at`, in `state.json`) is this many days old or more (default 30). The current workflow is left out, and so is any workflow with a stage in flight: that mark clears only when that workflow itself runs `status`, so a workflow abandoned mid-stage is never named here; `workflow list` shows it as `in flight`. A workflow with no usable timestamp, or an unreadable `state.json`, is not counted. Nothing is deleted: `workflow remove <id> --yes` is still the only thing that deletes one. `0` turns the note off; `null` means the default. The note never changes what the command does. |
 | `language.reply` | string \| null | The language the orchestrator answers the user in, as a language tag: `ja`, `zh-TW`, `ko`, `ru`, `en`, `es`, `fr` and so on (a primary subtag of two or three letters, then any further subtags; the primary one is read in lower case). `null` (default) leaves the choice to SKILL.md rule 11: the language the user asked for, else the one they write in. Write Norwegian as `"no"` in a file: a bare `no`, like `yes`, `on` and `off`, is read as true or false and refused, while `config set language.reply no` keeps it a tag. Unlike other keys, a `null` in the project file is not inherited through: it undoes a tag the global file sets, for that project only. Set, `doctor` prints it as *Reply language* on every host, and in Claude Code three hooks remind the orchestrator of it before each prompt and, for a language they can judge (by its script, or for English, Spanish, French, German, Portuguese and Italian by their common words), ask once for a reply clearly in another language to be written again. Setting it with `config set` or `config setup --language` in a file that held none also adds those hooks to Claude Code's user settings (`~/.claude/settings.json`, or under `$CLAUDE_CONFIG_DIR`) when that directory exists -- a value only a project's file holds never does -- and clearing it so that neither the global file nor the project's sets one removes them; `--no-hooks` leaves the settings alone, and `hooks install` / `hooks uninstall` do it by hand. What each host does with it, how the hooks are written, and what the check can and cannot tell apart: `references/architecture.md` ("Reply-language hooks"). |
 | `language.rewrite` | bool \| null | `true` (default): the Stop-hook check in Claude Code is on. `false` keeps the reminders and turns the check off, for a check that misjudges your replies. `null` means the default. |
+| `progress.updates` | bool \| `auto` \| null | What the orchestrator tells the user while a long run goes on ([workflow](workflow.md#progress-reports)). `auto` (default) is the behaviour from before the key existed: implementer, review_fixer and big architect runs are detached and reported on at every wait, and a background `review run`'s lines are relayed. `true` also detaches every architect run and runs every `review run` in the background with `--progress`. `false` detaches the same runs and stops the routine reports; the `may be stuck` note is still given. `status` and `config show` print it as `on`, `off` or `auto`; a value `validate` would refuse reads as `auto`. `null` means the default. |
+| `progress.interval_seconds` | int 30–3600 \| null | How often the orchestrator reports (default 180), and so the wait of `jobs wait` without `--timeout`. A `review run --progress` checks its reviewers for the stuck notice this often. `null` means the default. |
+| `progress.quiet_notice_seconds` | int 0–1,000,000,000 \| null | A report on a run that has shown no new tool line for this long gets `may be stuck: no new tool line for 12m03s` (default 600), and gets it again at every report while the run stays silent. `0` turns it off. The note only informs: the run is never cancelled for it. A run whose CLI writes no tool activity at all, such as agy's, never gets it. `null` means the default. |
 | `<role>.options` | mapping | Provider-specific knobs; see below. |
 | `<role>.model_tiers` | mapping | Named alternatives for this role's model; see below. Optional. |
 
@@ -1301,6 +1309,10 @@ The skill carries the command grammar; this is the phrasebook.
 | "check my environment" | `doctor` |
 | "always reply in Japanese" (or any language) | `config set language.reply ja`, with that language's tag (`ko`, `zh-TW`, `fr`, ...) -- tell the user first that this adds hooks to their Claude Code user settings; `config set language.reply null` goes back to the language the user writes in and removes them |
 | "stop asking for my replies to be rewritten" | `config set language.rewrite false` (the reminders stay) |
+| "keep me posted on long runs" / "report on every run" | `config set progress.updates true` |
+| "don't report progress" / "only tell me if it's stuck" | `config set progress.updates false` (the `may be stuck` note stays) |
+| "report less often" / "report every 5 minutes" | `config set progress.interval_seconds 300` (30 to 3600) |
+| "don't warn me that a run may be stuck" | `config set progress.quiet_notice_seconds 0` |
 
 Show the resulting configuration after any write, so the user can confirm it.
 

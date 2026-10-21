@@ -242,7 +242,7 @@ Object: the job record.
 | `status` | string | As in `jobs list`. |
 | `started_at` | string | When it was started. |
 | `output_file` | string | Where the run's answer is written. |
-| `activity` | object | Only once the job has an activity file: `count`, `context_tokens`, `elapsed_seconds`, `lines` (`n`, `s`, `line`), `dropped`, `omitted` -- see [jobs](cli.md#jobs). |
+| `activity` | object | Only once the job has an activity file: `count`, `context_tokens`, `elapsed_seconds`, `lines` (`n`, `s`, `line`), `dropped`, `omitted`, `quiet_seconds` (seconds with no new tool line; `null` once the job has finished), `may_be_stuck` (`quiet_seconds` has reached `progress.quiet_notice_seconds`, which `0` turns off) -- see [jobs](cli.md#jobs). |
 
 The record also carries what the job recorded as it went: `command`,
 `timeout_seconds`, `prompt_file`, `force`, `pid`, `claimed_at`,
@@ -429,6 +429,7 @@ Object.
 | `design_review` | object | `enabled`, `mode`, `reason`, `iteration`, `max_iterations`, `blocking`, `accepted`, `refused_for_size`, `identical_rounds`, `final_revision`, `final_revision_pending`, `optimization` (values as in `review status --design`). |
 | `design_approval` | object | `required`, `state` (`pending`, `stale`, `approved`, `no-plan`, `not-required` or `implemented-unapproved`), `pending`, `stale_reason` (`plan-changed`, `reviewed-since`, `decisions-changed` or `null`) and the rest -- see [Approval](workflow.md#approval). |
 | `design_questions` | object | `mode`, `state` (`off`, `none`, `open`, `round-required` or `answered`), `pending`, `open`, `answered`, `total`, `architect_rounds`, `max_rounds`, `decisions_file` -- see [Design questions](workflow.md#design-questions). |
+| `progress` | object | `updates` (`on`, `off` or `auto`), `interval_seconds`, `quiet_notice_seconds` -- see [Progress reports](workflow.md#progress-reports). |
 | `budgets` | object | Per stage: `used`, `limit`, `remaining`. |
 | `total_delegated_runs` | object | `used` and `limit`. |
 | `runtime_remaining_seconds` | integer or null | The delegated runtime left, rounded up; `null` without a limit. |

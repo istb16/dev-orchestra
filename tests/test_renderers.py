@@ -629,6 +629,8 @@ WARNING_TEXT = [
     "give each workflow its own worktree (git worktree add ../name branch).",
 ]
 
+PROGRESS_TEXT = "Progress: auto, every 180s, stuck notice after 600s (progress.*)"
+
 STATUS_A_TEXT = [
     "Verdict: STOP-AND-REPORT",
     "  - review budget spent",
@@ -648,6 +650,7 @@ STATUS_A_TEXT = [
     "Design review: auto -> run (plan names 3 files), round 1/2, 1 accepted, 1 blocking "
     "-- final revision pending (fold the findings in, do not re-review); identical to the previous round",
     "Plan approval: approved (0123456789ab)",
+    PROGRESS_TEXT,
     "Optimization: quality (escalated from fast -- auth/login.py matches auth/**), tests ok, 1 reviewer; "
     "sec added (touches auth); perf left out (no perf paths)",
     "Tokens: 12,345 billed over 3 run(s), partially reported (dev-orchestra tokens show)",
@@ -664,6 +667,7 @@ STATUS_B_TEXT = [
     "Plan approval: pending -- present .ai/workflows/test/plan.md to the user and ask; a yes is recorded "
     "with `design approve`, never without one (no architect attempt is left for changes; "
     "`budget reset architect` first)",
+    PROGRESS_TEXT,
     "Optimization: balanced, tests not recorded",
     "Tokens: 0 billed over 2 run(s) (dev-orchestra tokens show)",
 ]
@@ -675,6 +679,7 @@ STATUS_C_TEXT = [
     "Design review: off, round 0/2, 0 accepted, 0 blocking",
     "Plan approval: stale -- the plan changed after it was approved (aaaaaaaaaaaa -> bbbbbbbbbbbb); "
     "present it again and ask",
+    PROGRESS_TEXT,
     "Optimization: balanced, tests ok",
 ]
 

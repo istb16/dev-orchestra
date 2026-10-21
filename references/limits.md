@@ -668,6 +668,24 @@ runs in the background, `review run --progress` echoes the same lines to
 stderr, one tagged line per tool use and reviewer. The flags, the JSON and the
 allowlist are in [the CLI reference](cli.md#jobs).
 
+A run whose model has stopped answering looks, from the activity alone, just
+like a busy one until its idle or total deadline ends it, and that can be hours.
+So a report also says how long the run has shown no new tool line, and from
+`progress.quiet_notice_seconds` (600 by default; `0` turns it off) adds
+`may be stuck: no new tool line for 12m03s`, at every report while the silence
+lasts. For a job the time is measured from the wall-clock `t` each tool line
+carries, so a reader in another process can measure it; a file written before
+`t` existed falls back to the line's offset from the start. A `review run --progress` measures each reviewer in its own process,
+every `progress.interval_seconds`. The note only informs: nothing is cancelled
+for it, and the deadlines above still decide when a run is ended. It cannot
+tell a wedged model from a long silent test run or a model thinking without
+tools, so it can be wrong in that direction; a jump of the wall clock, or the
+machine waking from sleep, can also give one note, which the next tool line
+clears. It cannot catch what writes no
+activity: a run that hangs before its first message or tool use has no
+activity file and gets no note, and neither does a CLI that reports no tool
+activity at all, such as agy; only the idle deadline catches those.
+
 ## The verdict
 
 `dev-orchestra status` folds all of it into one answer:

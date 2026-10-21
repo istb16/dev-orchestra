@@ -1383,6 +1383,162 @@ class TestLanguage(IsolatedCase):
         self.assertEqual(merged, {"language": {"reply": None, "rewrite": False}, "workspace": {"dir": "w"}})
 
 
+class TestProgress(IsolatedCase):
+    """``progress.updates``, ``interval_seconds`` and ``quiet_notice_seconds`` (#330)."""
+
+    def run_cli(self, *argv):
+        import io
+        from contextlib import redirect_stderr, redirect_stdout
+
+        from orchestrator import cli
+
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            code = cli.main(list(argv))
+        return code, out.getvalue(), err.getvalue()
+
+    def problems(self, progress):
+        data = config_mod.default_config()
+        data["progress"] = progress
+        return config_mod.validate(data)
+
+    def test_the_defaults_are_todays_behaviour(self):
+        self.assertEqual(
+            config_mod.default_config()["progress"],
+            {"updates": "auto", "interval_seconds": 180, "quiet_notice_seconds": 600},
+        )
+        self.assertEqual(
+            config_mod.load(self.project).progress_settings(), config_mod.Progress("auto", 180, 600)
+        )
+
+    def test_updates_takes_true_false_or_auto(self):
+        for value in (True, False, "auto", "AUTO", " Auto", None):
+            self.assertEqual(self.problems({"updates": value}), [], value)
+        for value in ("yes", "on", "true", 1, 0, "", ["auto"]):
+            self.assertEqual(
+                self.problems({"updates": value}), ["progress.updates: must be true, false or auto"], value
+            )
+
+    def test_the_interval_is_bounded(self):
+        for value in (30, 180, 3600, None):
+            self.assertEqual(self.problems({"interval_seconds": value}), [], value)
+        problem = "progress.interval_seconds: must be an integer from 30 to 3600"
+        for value in (29, 3601, 0, -1, True, "180", 180.0):
+            self.assertEqual(self.problems({"interval_seconds": value}), [problem], value)
+
+    def test_the_quiet_notice_is_zero_or_a_number_of_seconds(self):
+        for value in (0, 1, 600, 10**9, None):
+            self.assertEqual(self.problems({"quiet_notice_seconds": value}), [], value)
+        problem = "progress.quiet_notice_seconds: must be a non-negative integer (0 = off)"
+        for value in (-1, True, False, "600", 600.0):
+            self.assertEqual(self.problems({"quiet_notice_seconds": value}), [problem], value)
+        self.assertEqual(
+            self.problems({"quiet_notice_seconds": 10**9 + 1}),
+            ["progress.quiet_notice_seconds: must be 1000000000 or less"],
+        )
+
+    def test_progress_must_be_a_mapping(self):
+        for value in ("auto", 3, [], True):
+            self.assertEqual(self.problems(value), ["progress: must be a mapping"], value)
+        self.assertEqual(self.problems(None), [])
+
+    def test_the_updates_mode(self):
+        cases = [
+            (True, "on"),
+            (False, "off"),
+            ("auto", "auto"),
+            ("AUTO", "auto"),
+            (None, "auto"),
+            # Anything validate refuses is the default, not its truth value.
+            ("yes", "auto"),
+            ("false", "auto"),
+            (1, "auto"),
+            (0, "auto"),
+        ]
+        for value, mode in cases:
+            with self.subTest(value=value):
+                self.assertEqual(config_mod.progress_updates_mode(value), mode)
+
+    def test_the_reader_falls_back_to_the_defaults(self):
+        for text in (
+            "progress:\n",
+            "progress: 3\n",
+            "progress:\n  updates: maybe\n  interval_seconds: 29\n  quiet_notice_seconds: -1\n",
+            "progress:\n  interval_seconds: 3601\n  quiet_notice_seconds: true\n",
+            'progress:\n  interval_seconds: "60"\n  quiet_notice_seconds: 1000000001\n',
+        ):
+            self.write(".dev-orchestra.yaml", "version: 1\n" + text)
+            loaded = config_mod.load(self.project, validate_result=False)
+            with self.subTest(text=text):
+                self.assertEqual(loaded.progress_settings(), config_mod.Progress("auto", 180, 600))
+        self.write(
+            ".dev-orchestra.yaml",
+            "version: 1\nprogress:\n  updates: false\n  interval_seconds: 30\n  quiet_notice_seconds: 0\n",
+        )
+        self.assertEqual(config_mod.load(self.project).progress_settings(), config_mod.Progress("off", 30, 0))
+        self.write(
+            ".dev-orchestra.yaml", "version: 1\nprogress:\n  updates: true\n  interval_seconds: 3600\n"
+        )
+        self.assertEqual(
+            config_mod.load(self.project).progress_settings(), config_mod.Progress("on", 3600, 600)
+        )
+
+    def test_config_set_round_trips(self):
+        for value, stored, mode in (("false", False, "off"), ("true", True, "on"), ("auto", "auto", "auto")):
+            code, _, err = self.run_cli("config", "set", "progress.updates", value)
+            self.assertEqual(code, 0, err)
+            self.assertNotIn("progress", err)
+            loaded = config_mod.load(self.project)
+            with self.subTest(value=value):
+                self.assertEqual(config_mod.get_path(loaded.data, "progress.updates"), stored)
+                self.assertEqual(loaded.progress_settings().updates, mode)
+
+    def test_config_set_warns_about_a_value_validate_refuses(self):
+        # As for every other key: saved, warned about with the validation
+        # message, and read back as the default until it is fixed.
+        path = os.path.join(self.project, ".dev-orchestra.yaml")
+        cases = (
+            ("interval_seconds", "10", 10, "progress.interval_seconds: must be an integer from 30 to 3600"),
+            (
+                "quiet_notice_seconds",
+                "-1",
+                -1,
+                "progress.quiet_notice_seconds: must be a non-negative integer (0 = off)",
+            ),
+            ("updates", "maybe", "maybe", "progress.updates: must be true, false or auto"),
+        )
+        for key, value, stored, problem in cases:
+            with self.subTest(key=key, value=value):
+                code, _, err = self.run_cli("config", "set", "--scope", "project", "progress." + key, value)
+                self.assertEqual(code, 0, err)
+                self.assertIn("warning: %s" % problem, err)
+                self.assertEqual(config_mod.read_config_file(path)["progress"][key], stored)
+                loaded = config_mod.load(self.project, validate_result=False)
+                self.assertEqual(loaded.progress_settings(), config_mod.Progress("auto", 180, 600))
+                config_mod.write_config_file(path, {"version": 1}, "project")
+        # `yes` is YAML's true, so it is `on`, not a typo.
+        code, _, err = self.run_cli("config", "set", "--scope", "project", "progress.updates", "yes")
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("progress", err)
+        self.assertIs(config_mod.read_config_file(path)["progress"]["updates"], True)
+        self.assertEqual(config_mod.load(self.project).progress_settings().updates, "on")
+
+    def test_a_project_block_merges_over_the_global_one(self):
+        for scope, key, value in (
+            ("global", "interval_seconds", "60"),
+            ("project", "quiet_notice_seconds", "30"),
+        ):
+            code, _, err = self.run_cli("config", "set", "--scope", scope, "progress." + key, value)
+            self.assertEqual(code, 0, err)
+        self.assertEqual(
+            config_mod.read_config_file(os.path.join(self.project, ".dev-orchestra.yaml"))["progress"],
+            {"quiet_notice_seconds": 30},
+        )
+        self.assertEqual(
+            config_mod.load(self.project).progress_settings(), config_mod.Progress("auto", 60, 30)
+        )
+
+
 class TestRunTimeout(IsolatedCase):
     """``run.timeout_seconds.<role>``, the total deadline of one `run` (#258)."""
 

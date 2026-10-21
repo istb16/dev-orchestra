@@ -31,7 +31,7 @@ from .round_progress import (
     reviewed_something,
     round_plan,
 )
-from .summary import ROLE_TITLES
+from .summary import ROLE_TITLES, describe_progress
 
 # --------------------------------------------------------------------------- workflow
 
@@ -372,6 +372,7 @@ class _Status(NamedTuple):
     design_decision: opt_design.DesignDecision
     design_pass: Dict[str, Any]
     architect_left: Optional[int]
+    progress: config_mod.Progress
 
 
 def cmd_status(args: argparse.Namespace) -> int:
@@ -489,6 +490,7 @@ def _status_payload(
     iteration = int(review_data.get("iteration", 0) or 0)
     max_iterations = loaded.max_review_iterations()
     summary = book.summary()
+    progress = loaded.progress_settings()
 
     # The design review is read whether or not it is enabled: a round that was
     # run by hand, or left open when the setting was turned back off, is still
@@ -627,6 +629,9 @@ def _status_payload(
         "design_approval": approval_info,
         # Not a reason either, for the same reason: `run architect` enforces it.
         "design_questions": questions_info,
+        # How the orchestrator reports on a long run; read here because status
+        # is what it runs at the start of a session.
+        "progress": progress._asdict(),
         "budgets": summary["budgets"],
         "total_delegated_runs": total,
         "runtime_remaining_seconds": summary["runtime_remaining_seconds"],
@@ -643,7 +648,7 @@ def _status_payload(
         if workspace.workflow
         else [],
     }
-    return _Status(payload, plan, decision, design_round.final_pass, architect_left)
+    return _Status(payload, plan, decision, design_round.final_pass, architect_left, progress)
 
 
 def _status_lines(status: _Status, plan_relative: str, warning: List[str]) -> List[str]:
@@ -716,6 +721,7 @@ def _status_lines(status: _Status, plan_relative: str, warning: List[str]) -> Li
     questions_line = _questions_line(payload["design_questions"])
     if questions_line:
         lines.append(questions_line)
+    lines.append("Progress: %s (progress.*)" % describe_progress(status.progress))
     line = "Optimization: %s" % plan.level
     if plan.escalated:
         line += " (escalated from %s -- %s)" % (plan.requested, plan.escalation_note().split(": ", 1)[-1])

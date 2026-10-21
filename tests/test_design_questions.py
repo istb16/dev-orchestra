@@ -1225,5 +1225,60 @@ class TestStatusAndDoctor(QuestionsCase):
         self.assertIn("design questions: auto  (design.ask_questions)", run_cli("config", "show")[1])
 
 
+class TestProgressLines(ApprovalCase):
+    """The `Progress:` line of `status` and `config show`, and `status.progress` (#330)."""
+
+    def test_the_defaults(self):
+        self.assertEqual(
+            self.status()["progress"],
+            {"updates": "auto", "interval_seconds": 180, "quiet_notice_seconds": 600},
+        )
+        line = "Progress: auto, every 180s, stuck notice after 600s"
+        self.assertIn("\n%s (progress.*)\n" % line, run_cli("status")[1])
+        self.assertIn("  %s  (progress.*)\n" % line, run_cli("config", "show")[1])
+
+    def test_a_configured_setting(self):
+        for key, value in (("updates", "false"), ("interval_seconds", "60"), ("quiet_notice_seconds", "0")):
+            self.assertEqual(run_cli("config", "set", "progress." + key, value)[0], 0)
+        self.assertEqual(
+            self.status()["progress"], {"updates": "off", "interval_seconds": 60, "quiet_notice_seconds": 0}
+        )
+        line = "Progress: off, every 60s, no stuck notice"
+        self.assertIn("\n%s (progress.*)\n" % line, run_cli("status")[1])
+        self.assertIn("  %s  (progress.*)\n" % line, run_cli("config", "show")[1])
+        run_cli("config", "set", "progress.updates", "true")
+        self.assertIn("Progress: on, every 60s", run_cli("status")[1])
+
+    def test_only_the_effective_view_has_the_line(self):
+        # A scoped view prints the layer as it is on disk: the key, not the line.
+        self.assertEqual(
+            run_cli("config", "set", "--scope", "project", "progress.interval_seconds", "60")[0], 0
+        )
+        project = run_cli("config", "show", "--scope", "project")[1]
+        self.assertNotIn("Progress:", project)
+        self.assertIn("progress:\n  interval_seconds: 60\n", project)
+        global_view = run_cli("config", "show", "--scope", "global")[1]
+        self.assertNotIn("Progress:", global_view)
+        self.assertNotIn("interval_seconds", global_view)
+        self.assertIn(
+            "  Progress: auto, every 60s, stuck notice after 600s  (progress.*)\n",
+            run_cli("config", "show")[1],
+        )
+        # The JSON carries the key and never the line: the whole block when
+        # effective, only what the file sets when scoped.
+        effective = json.loads(run_cli("config", "show", "--json")[1])
+        self.assertEqual(
+            effective["config"]["progress"],
+            {"updates": "auto", "interval_seconds": 60, "quiet_notice_seconds": 600},
+        )
+        scoped = json.loads(run_cli("config", "show", "--scope", "project", "--json")[1])
+        self.assertEqual(scoped["config"]["progress"], {"interval_seconds": 60})
+        self.assertNotIn(
+            "progress", json.loads(run_cli("config", "show", "--scope", "global", "--json")[1])["config"]
+        )
+        for payload in (effective, scoped):
+            self.assertNotIn("Progress:", json.dumps(payload))
+
+
 if __name__ == "__main__":
     unittest.main()

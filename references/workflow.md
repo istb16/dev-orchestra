@@ -16,6 +16,7 @@
 - [Fix](#fix)
 - [Re-test and re-review](#re-test-and-re-review)
 - [Recording and reporting](#recording-and-reporting)
+  - [Progress reports](#progress-reports)
 - [When something goes wrong](#when-something-goes-wrong)
 - [Example workflows](#example-workflows)
 - [Installing from a skill checkout](#installing-from-a-skill-checkout)
@@ -160,7 +161,9 @@ commit the directory; teams who never want it can add `.ai/` to the repo's own
 `.gitignore`. Say which you did if you change it.
 
 `jobs/<id>.activity` (and `.activity.1`, once a run passes 500 tool uses) is
-what `jobs wait` reports while a detached run works, and
+what `jobs wait` reports while a detached run works -- each tool line with its
+offset from the start (`s`) and its wall-clock time (`t`), from which the
+stuck notice is measured ([Progress reports](#progress-reports)) -- and
 `execution/review-run.log` exists only when you redirect a background
 `review run --progress` there. The tool lines in both went through the same
 allowlist and cleaning -- no model text, no free-text arguments -- and the rest
@@ -887,6 +890,35 @@ re-test, but the gate never sees it.
 The final report names: which stages ran, which were skipped and why, test
 results, review outcome including failures, triage counts, files changed, and
 anything left unresolved.
+
+### Progress reports
+
+A long run leaves the user looking at nothing unless the orchestrator says
+what is happening. What it says is a setting, `progress.*`
+([configuration](configuration.md#field-reference)), and `status` prints it at
+the start of a session: `Progress: auto, every 180s, stuck notice after 600s
+(progress.*)`.
+
+| `progress.updates` | Detached runs | Each report (every `jobs wait` exit 4) | `review run` |
+| --- | --- | --- | --- |
+| `auto` (default) | implementer, review_fixer, a big architect run | elapsed time, tool count, context tokens, the last tool lines | `--progress` when run in the background; its new lines relayed |
+| `true` (`on`) | the same, and every architect run, `--questions` and `--resume` included | the same | always in the background with `--progress`; its new lines relayed |
+| `false` (`off`) | the same as `auto` | only a `may be stuck` note, when there is one | `--progress` when run in the background; only its `may be stuck` lines relayed |
+
+`progress.interval_seconds` (default 180, 30 to 3600) is how often: it is the
+wait of `jobs wait <id> --since <n>` without `--timeout`, and how often a
+`review run --progress` checks its reviewers. The `next:` line of each report
+names the wait that follows.
+
+`progress.quiet_notice_seconds` (default 600; `0` turns it off) adds `may be
+stuck: no new tool line for 12m03s` to a report on a run that has shown no new
+tool line for that long, as a `note:` line in `jobs wait` and as `[<reviewer>
++mm:ss] may be stuck: ...` in a review's log. It comes again with every report
+while the run stays silent, under every value of `progress.updates`. Relay it
+and keep waiting: it is never a reason to cancel, since a long silent test run
+or a model thinking without tools looks the same. The deadlines still decide
+when a run is ended. What the notice can and cannot see: `references/limits.md`
+("Not blocking in the first place").
 
 ## When something goes wrong
 

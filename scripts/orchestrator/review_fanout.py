@@ -635,7 +635,7 @@ def run_reviews(
             return outcome
         finally:
             # However the run ended, a raise included.
-            sink.say("done: %s" % status)
+            sink.end("done: %s" % status)
 
     if options.parallel and len(reviewers) > 1:
         with ThreadPoolExecutor(max_workers=min(len(reviewers), 8)) as pool:

@@ -269,6 +269,7 @@ KEYS: Dict[str, Tuple[List[str], List[str]]] = {
             "design_review",
             "in_flight",
             "optimization",
+            "progress",
             "reasons",
             "review",
             "runtime",

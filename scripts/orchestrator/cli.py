@@ -663,7 +663,12 @@ def _add_jobs_parsers(subparsers: argparse._SubParsersAction[argparse.ArgumentPa
     jobs_show.set_defaults(func=cmd_jobs_show)
     jobs_wait = jobs_sub.add_parser("wait", help="wait for a job, with a deadline of your own")
     jobs_wait.add_argument("job_id")
-    jobs_wait.add_argument("--timeout", type=_seconds(allow_zero=True), default=60.0)
+    jobs_wait.add_argument(
+        "--timeout",
+        type=_seconds(allow_zero=True),
+        default=None,
+        help="seconds to wait while it runs (default progress.interval_seconds, 180)",
+    )
     jobs_wait.add_argument("--poll", type=_seconds(), default=1.0)
     _add_json_flag(jobs_wait)
     _add_activity_flags(jobs_wait)
