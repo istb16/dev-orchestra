@@ -111,7 +111,7 @@ class TestDefaults(IsolatedCase):
     def test_the_approval_setting_must_be_a_boolean(self):
         data = config_mod.default_config()
         data["design"]["require_approval"] = "yes"
-        self.assertIn("design.require_approval: must be true or false", config_mod.validate(data))
+        self.assertIn("design.require_approval: must be true or false, or null", config_mod.validate(data))
         data["design"] = 3
         self.assertIn("design: must be a mapping", config_mod.validate(data))
 
@@ -123,7 +123,7 @@ class TestDefaults(IsolatedCase):
 
     def test_the_resume_limits_must_be_integers(self):
         data = config_mod.default_config()
-        age_problem = "design.resume.max_age_seconds: must be a non-negative integer"
+        age_problem = "design.resume.max_age_seconds: must be a non-negative integer or null"
         for age in ("1h", -1, True):
             data["design"]["resume"] = {"max_age_seconds": age}
             with self.subTest(max_age_seconds=age):
@@ -154,7 +154,7 @@ class TestDefaults(IsolatedCase):
         self.assertEqual(settings["resume"], DESIGN_DEFAULTS["resume"])
 
     def test_the_stale_notice_threshold_must_be_a_non_negative_integer(self):
-        problem = "workspace.stale_notice_days: must be a non-negative integer (0 = off)"
+        problem = "workspace.stale_notice_days: must be a non-negative integer or null (0 = off)"
         for value in (-1, "30", True):
             data = config_mod.default_config()
             data["workspace"]["stale_notice_days"] = value
@@ -232,7 +232,7 @@ class TestDefaults(IsolatedCase):
             data = config_mod.default_config()
             data["review"]["context"]["surrounding"] = value
             self.assertIn(
-                "review.context.surrounding: must be one of enclosing, none",
+                "review.context.surrounding: must be one of enclosing, none, or null",
                 config_mod.validate(data),
                 value,
             )
@@ -591,9 +591,11 @@ class TestValidation(IsolatedCase):
         choices = "critical, high, medium, low"
         self.assertEqual(
             problems("critical"),
-            ["review.re_review_severities: must be a list of %s (got 'critical')" % choices],
+            ["review.re_review_severities: must be a list of %s, or null (got 'critical')" % choices],
         )
-        self.assertEqual(problems(3), ["review.re_review_severities: must be a list of %s (got 3)" % choices])
+        self.assertEqual(
+            problems(3), ["review.re_review_severities: must be a list of %s, or null (got 3)" % choices]
+        )
         self.assertEqual(
             problems([]),
             ["review.re_review_severities: must name at least one severity; [] would block nothing"],
@@ -652,7 +654,9 @@ class TestValidation(IsolatedCase):
         for value in ("sometimes", "false", 0, 1):
             data = config_mod.default_config()
             data["review"]["parallel"] = value
-            self.assertEqual(config_mod.validate(data), ["review.parallel: must be true or false"], value)
+            self.assertEqual(
+                config_mod.validate(data), ["review.parallel: must be true or false, or null"], value
+            )
 
     def test_pinned_model_without_id_is_rejected(self):
         data = config_mod.default_config()
@@ -683,7 +687,9 @@ class TestValidation(IsolatedCase):
 
         for value in ("yes", "true", 1):
             with self.subTest(value=value):
-                self.assertEqual(problems(value), ["review.design.enabled: must be true, false or auto"])
+                self.assertEqual(
+                    problems(value), ["review.design.enabled: must be true, false or auto, or null"]
+                )
         for value in ("auto", "AUTO ", True, False, None):
             with self.subTest(value=value):
                 self.assertEqual(problems(value), [])
@@ -790,30 +796,30 @@ class TestValidateOrder(IsolatedCase):
                 "review.max_review_iterations: must be a non-negative integer",
                 "review.timeout_seconds: must be a positive integer",
                 "review.idle_timeout_seconds: must be a positive integer or null",
-                "review.incremental_rounds: must be true or false",
-                "review.max_findings: must be a non-negative integer (0 = no cap)",
-                "review.design.enabled: must be true, false or auto",
-                "review.design.max_iterations: must be a non-negative integer",
-                "review.context.max_chars: must be a positive integer",
-                "review.context.inline_chars: must be a positive integer",
-                "review.context.surrounding_chars: must be a positive integer",
-                "review.context.surrounding: must be one of enclosing, none",
+                "review.incremental_rounds: must be true or false, or null",
+                "review.max_findings: must be a non-negative integer or null (0 = no cap)",
+                "review.design.enabled: must be true, false or auto, or null",
+                "review.design.max_iterations: must be a non-negative integer or null",
+                "review.context.max_chars: must be a positive integer or null",
+                "review.context.inline_chars: must be a positive integer or null",
+                "review.context.surrounding_chars: must be a positive integer or null",
+                "review.context.surrounding: must be one of enclosing, none, or null",
                 "review.exclude[0]: must be a non-empty string (got '')",
                 "review.exclude[1]: must be a non-empty string (got 3)",
-                "design.require_approval: must be true or false",
-                "design.ask_questions: must be true, false or auto",
-                "design.max_question_rounds: must be a positive integer",
-                "design.resume.max_age_seconds: must be a non-negative integer",
+                "design.require_approval: must be true or false, or null",
+                "design.ask_questions: must be true, false or auto, or null",
+                "design.max_question_rounds: must be a positive integer or null",
+                "design.resume.max_age_seconds: must be a non-negative integer or null",
                 "design.resume.max_context_tokens: must be a positive integer or null",
-                "optimization.level: must be one of aggressive, balanced, quality",
-                "optimization.high_risk_paths: must be a list of glob patterns (use [] for none)",
+                "optimization.level: must be one of aggressive, balanced, quality, or null",
+                "optimization.high_risk_paths: must be a list of glob patterns or null (use [] for none)",
                 "optimization.extra_high_risk_paths[0]: must be a non-empty string (got '')",
                 "optimization.extra_high_risk_paths[1]: must be a non-empty string (got 3)",
-                "optimization.low_risk_max_files: must be a non-negative integer",
-                "optimization.low_risk_max_lines: must be a non-negative integer",
+                "optimization.low_risk_max_files: must be a non-negative integer or null",
+                "optimization.low_risk_max_lines: must be a non-negative integer or null",
                 "budgets.implementer: must be a non-negative integer or null",
                 "budgets.test: must be a non-negative integer or null",
-                "workspace.stale_notice_days: must be a non-negative integer (0 = off)",
+                "workspace.stale_notice_days: must be a non-negative integer or null (0 = off)",
             ],
         )
 
@@ -928,7 +934,7 @@ class TestValidateOrder(IsolatedCase):
                 data["workspace"]["stale_notice_days"] = days
                 self.assertEqual(
                     config_mod.validate(data),
-                    ["workspace.stale_notice_days: must be a non-negative integer (0 = off)"],
+                    ["workspace.stale_notice_days: must be a non-negative integer or null (0 = off)"],
                 )
 
     def test_every_integer_field_refuses_a_bool_and_a_float(self):
@@ -937,18 +943,18 @@ class TestValidateOrder(IsolatedCase):
             ("review.max_review_iterations", "must be a non-negative integer"),
             ("review.timeout_seconds", "must be a positive integer"),
             ("review.idle_timeout_seconds", "must be a positive integer or null"),
-            ("review.max_findings", "must be a non-negative integer (0 = no cap)"),
-            ("review.design.max_iterations", "must be a non-negative integer"),
-            ("review.context.max_chars", "must be a positive integer"),
-            ("review.context.inline_chars", "must be a positive integer"),
-            ("review.context.surrounding_chars", "must be a positive integer"),
-            ("design.max_question_rounds", "must be a positive integer"),
-            ("design.resume.max_age_seconds", "must be a non-negative integer"),
+            ("review.max_findings", "must be a non-negative integer or null (0 = no cap)"),
+            ("review.design.max_iterations", "must be a non-negative integer or null"),
+            ("review.context.max_chars", "must be a positive integer or null"),
+            ("review.context.inline_chars", "must be a positive integer or null"),
+            ("review.context.surrounding_chars", "must be a positive integer or null"),
+            ("design.max_question_rounds", "must be a positive integer or null"),
+            ("design.resume.max_age_seconds", "must be a non-negative integer or null"),
             ("design.resume.max_context_tokens", "must be a positive integer or null"),
-            ("optimization.low_risk_max_files", "must be a non-negative integer"),
-            ("optimization.low_risk_max_lines", "must be a non-negative integer"),
+            ("optimization.low_risk_max_files", "must be a non-negative integer or null"),
+            ("optimization.low_risk_max_lines", "must be a non-negative integer or null"),
             ("budgets.implementer", "must be a non-negative integer or null"),
-            ("workspace.stale_notice_days", "must be a non-negative integer (0 = off)"),
+            ("workspace.stale_notice_days", "must be a non-negative integer or null (0 = off)"),
         ]
         for path, message in fields:
             for value in (True, 1.5):
@@ -1020,6 +1026,11 @@ class TestValueRules(IsolatedCase):
     def test_no_path_appears_twice(self):
         paths = [rule.path for rule in self.rules()]
         self.assertEqual(len(paths), len(set(paths)))
+
+    def test_a_message_says_or_null_exactly_when_null_passes(self):
+        for rule in [*self.rules(), config_validation._BUDGET, config_validation._RUN_TIMEOUT]:
+            with self.subTest(path=rule.path):
+                self.assertEqual("or null" in rule.message, rule.null_ok)
 
 
 class TestReviewerConditions(IsolatedCase):
@@ -1141,7 +1152,8 @@ class TestReviewerConditions(IsolatedCase):
     def test_extra_high_risk_paths_is_validated_like_high_risk_paths(self):
         problems = self.with_conditions(extra_high_risk_paths="*/providers/*")
         self.assertIn(
-            "optimization.extra_high_risk_paths: must be a list of glob patterns (use [] for none)", problems
+            "optimization.extra_high_risk_paths: must be a list of glob patterns or null (use [] for none)",
+            problems,
         )
         problems = self.with_conditions(extra_high_risk_paths=[""])
         self.assertIn("optimization.extra_high_risk_paths[0]: must be a non-empty string (got '')", problems)
@@ -1322,7 +1334,9 @@ class TestLanguage(IsolatedCase):
             self.assertEqual(self.problems({"reply": "ja", "rewrite": rewrite}), [], rewrite)
         for rewrite in ("false", 0, 1, "no"):
             self.assertEqual(
-                self.problems({"rewrite": rewrite}), ["language.rewrite: must be true or false"], rewrite
+                self.problems({"rewrite": rewrite}),
+                ["language.rewrite: must be true or false, or null"],
+                rewrite,
             )
         self.assertEqual(self.problems("ja"), ["language: must be a mapping"])
         self.assertEqual(self.problems(None), [])
@@ -1454,20 +1468,22 @@ class TestProgress(IsolatedCase):
             self.assertEqual(self.problems({"updates": value}), [], value)
         for value in ("yes", "on", "true", 1, 0, "", ["auto"]):
             self.assertEqual(
-                self.problems({"updates": value}), ["progress.updates: must be true, false or auto"], value
+                self.problems({"updates": value}),
+                ["progress.updates: must be true, false or auto, or null"],
+                value,
             )
 
     def test_the_interval_is_bounded(self):
         for value in (30, 180, 3600, None):
             self.assertEqual(self.problems({"interval_seconds": value}), [], value)
-        problem = "progress.interval_seconds: must be an integer from 30 to 3600"
+        problem = "progress.interval_seconds: must be an integer from 30 to 3600 or null"
         for value in (29, 3601, 0, -1, True, "180", 180.0):
             self.assertEqual(self.problems({"interval_seconds": value}), [problem], value)
 
     def test_the_quiet_notice_is_zero_or_a_number_of_seconds(self):
         for value in (0, 1, 600, 10**9, None):
             self.assertEqual(self.problems({"quiet_notice_seconds": value}), [], value)
-        problem = "progress.quiet_notice_seconds: must be a non-negative integer (0 = off)"
+        problem = "progress.quiet_notice_seconds: must be a non-negative integer or null (0 = off)"
         for value in (-1, True, False, "600", 600.0):
             self.assertEqual(self.problems({"quiet_notice_seconds": value}), [problem], value)
         self.assertEqual(
@@ -1536,14 +1552,19 @@ class TestProgress(IsolatedCase):
         # message, and read back as the default until it is fixed.
         path = os.path.join(self.project, ".dev-orchestra.yaml")
         cases = (
-            ("interval_seconds", "10", 10, "progress.interval_seconds: must be an integer from 30 to 3600"),
+            (
+                "interval_seconds",
+                "10",
+                10,
+                "progress.interval_seconds: must be an integer from 30 to 3600 or null",
+            ),
             (
                 "quiet_notice_seconds",
                 "-1",
                 -1,
-                "progress.quiet_notice_seconds: must be a non-negative integer (0 = off)",
+                "progress.quiet_notice_seconds: must be a non-negative integer or null (0 = off)",
             ),
-            ("updates", "maybe", "maybe", "progress.updates: must be true, false or auto"),
+            ("updates", "maybe", "maybe", "progress.updates: must be true, false or auto, or null"),
         )
         for key, value, stored, problem in cases:
             with self.subTest(key=key, value=value):
@@ -2058,7 +2079,8 @@ class TestWhatValidateUsedToMiss(IsolatedCase):
             data = config_mod.default_config()
             data["workspace"]["dir"] = value
             self.assertEqual(
-                config_mod.validate(data), ["workspace.dir: must be a non-empty string (got %r)" % (value,)]
+                config_mod.validate(data),
+                ["workspace.dir: must be a non-empty string or null (got %r)" % (value,)],
             )
 
     def test_a_refused_workspace_dir_reads_as_the_default(self):

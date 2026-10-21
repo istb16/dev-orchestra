@@ -33,6 +33,18 @@ authors can find it.
 - **`jobs wait` without `--timeout` now waits `progress.interval_seconds`**,
   180 seconds by default, instead of 60. `--timeout` still overrides it.
 
+### Changed
+
+- **`config validate` says `or null` wherever a setting accepts null.** The
+  problems reported for the `review`, `design`, `optimization`, `workspace`,
+  `language` and `progress` settings that accept `null` now say so, as
+  `review.idle_timeout_seconds`, `design.resume.max_context_tokens`,
+  `budgets.*` and `language.reply` already did: for example
+  `review.parallel: must be true or false, or null`. Only the wording changed:
+  every value accepted or refused before is accepted or refused now, and the
+  problems come in the same order. A script that matches the text of a problem
+  in `config validate --json` or `doctor --json` needs the new text.
+
 ## [1.1.1] - 2026-10-15
 
 ### Fixed

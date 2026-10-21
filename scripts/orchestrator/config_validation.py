@@ -105,51 +105,65 @@ _REVIEW_RULES = (
     _Rule(
         "review.max_review_iterations", _INT, "must be a non-negative integer", 0, null_ok=False, default=2
     ),
-    _Rule("review.parallel", _BOOL, "must be true or false"),
+    _Rule("review.parallel", _BOOL, "must be true or false, or null"),
 )
 _REVIEW_LIMIT_RULES = (
     _Rule("review.timeout_seconds", _SECONDS, "must be a positive integer", 1, null_ok=False, default=1800),
     _Rule("review.idle_timeout_seconds", _SECONDS, "must be a positive integer or null", 1),
-    _Rule("review.incremental_rounds", _BOOL, "must be true or false"),
-    _Rule("review.max_findings", _INT, "must be a non-negative integer (0 = no cap)", 0),
+    _Rule("review.incremental_rounds", _BOOL, "must be true or false, or null"),
+    _Rule("review.max_findings", _INT, "must be a non-negative integer or null (0 = no cap)", 0),
 )
 _REVIEW_DESIGN_RULES = (
-    _Rule("review.design.enabled", _AUTO, "must be true, false or auto"),
-    _Rule("review.design.max_iterations", _INT, "must be a non-negative integer", 0),
+    _Rule("review.design.enabled", _AUTO, "must be true, false or auto, or null"),
+    _Rule("review.design.max_iterations", _INT, "must be a non-negative integer or null", 0),
 )
 _REVIEW_CONTEXT_RULES = (
-    _Rule("review.context.max_chars", _INT, "must be a positive integer", 1),
-    _Rule("review.context.inline_chars", _INT, "must be a positive integer", 1),
-    _Rule("review.context.surrounding_chars", _INT, "must be a positive integer", 1),
+    _Rule("review.context.max_chars", _INT, "must be a positive integer or null", 1),
+    _Rule("review.context.inline_chars", _INT, "must be a positive integer or null", 1),
+    _Rule("review.context.surrounding_chars", _INT, "must be a positive integer or null", 1),
 )
 _DESIGN_RULES = (
-    _Rule("design.require_approval", _BOOL, "must be true or false"),
-    _Rule("design.ask_questions", _AUTO, "must be true, false or auto"),
-    _Rule("design.max_question_rounds", _INT, "must be a positive integer", 1),
+    _Rule("design.require_approval", _BOOL, "must be true or false, or null"),
+    _Rule("design.ask_questions", _AUTO, "must be true, false or auto, or null"),
+    _Rule("design.max_question_rounds", _INT, "must be a positive integer or null", 1),
 )
 _RESUME_RULES = (
-    _Rule("design.resume.max_age_seconds", _INT, "must be a non-negative integer", 0),
+    _Rule("design.resume.max_age_seconds", _INT, "must be a non-negative integer or null", 0),
     _Rule("design.resume.max_context_tokens", _INT, "must be a positive integer or null", 1),
 )
 _BUDGET = _Rule("budgets", _INT, "must be a non-negative integer or null")
 _RUN_TIMEOUT = _Rule("run.timeout_seconds", _SECONDS, "must be a positive integer", 1, null_ok=False)
-_LANGUAGE_RULES = (_Rule("language.rewrite", _BOOL, "must be true or false"),)
-_PROGRESS_RULES = (_Rule("progress.updates", _AUTO, "must be true, false or auto"),)
+_LANGUAGE_RULES = (_Rule("language.rewrite", _BOOL, "must be true or false, or null"),)
+_PROGRESS_RULES = (_Rule("progress.updates", _AUTO, "must be true, false or auto, or null"),)
 _REVIEW_EXCLUDE_RULES = (
-    _Rule("review.exclude", _GLOBS, "must be a list of glob patterns (use [] for none)"),
+    _Rule("review.exclude", _GLOBS, "must be a list of glob patterns or null (use [] for none)"),
 )
 _OPTIMIZATION_RULES = (
-    _Rule("optimization.skip_unneeded_roles", _BOOL, "must be true or false"),
-    _Rule("optimization.high_risk_paths", _GLOBS, "must be a list of glob patterns (use [] for none)"),
-    _Rule("optimization.extra_high_risk_paths", _GLOBS, "must be a list of glob patterns (use [] for none)"),
-    _Rule("optimization.security_paths", _GLOBS, "must be a list of glob patterns (use [] for none)"),
-    _Rule("optimization.extra_security_paths", _GLOBS, "must be a list of glob patterns (use [] for none)"),
-    _Rule("optimization.architecture_paths", _GLOBS, "must be a list of glob patterns (use [] for none)"),
+    _Rule("optimization.skip_unneeded_roles", _BOOL, "must be true or false, or null"),
     _Rule(
-        "optimization.extra_architecture_paths", _GLOBS, "must be a list of glob patterns (use [] for none)"
+        "optimization.high_risk_paths", _GLOBS, "must be a list of glob patterns or null (use [] for none)"
     ),
-    _Rule("optimization.low_risk_max_files", _INT, "must be a non-negative integer", 0),
-    _Rule("optimization.low_risk_max_lines", _INT, "must be a non-negative integer", 0),
+    _Rule(
+        "optimization.extra_high_risk_paths",
+        _GLOBS,
+        "must be a list of glob patterns or null (use [] for none)",
+    ),
+    _Rule("optimization.security_paths", _GLOBS, "must be a list of glob patterns or null (use [] for none)"),
+    _Rule(
+        "optimization.extra_security_paths",
+        _GLOBS,
+        "must be a list of glob patterns or null (use [] for none)",
+    ),
+    _Rule(
+        "optimization.architecture_paths", _GLOBS, "must be a list of glob patterns or null (use [] for none)"
+    ),
+    _Rule(
+        "optimization.extra_architecture_paths",
+        _GLOBS,
+        "must be a list of glob patterns or null (use [] for none)",
+    ),
+    _Rule("optimization.low_risk_max_files", _INT, "must be a non-negative integer or null", 0),
+    _Rule("optimization.low_risk_max_lines", _INT, "must be a non-negative integer or null", 0),
 )
 
 
@@ -458,7 +472,7 @@ def _validate_severities(severities: Any) -> List[str]:
         return []
     choices = ", ".join(SEVERITIES)
     if not isinstance(severities, list):
-        return ["review.re_review_severities: must be a list of %s (got %r)" % (choices, severities)]
+        return ["review.re_review_severities: must be a list of %s, or null (got %r)" % (choices, severities)]
     if not severities:
         return ["review.re_review_severities: must name at least one severity; [] would block nothing"]
     return [
@@ -498,7 +512,7 @@ def _validate_review_context(context: Any) -> List[str]:
     else:
         known = surrounding is None or surrounding is False
     if not known:
-        problems.append("review.context.surrounding: must be one of enclosing, none")
+        problems.append("review.context.surrounding: must be one of enclosing, none, or null")
     return problems
 
 
@@ -530,11 +544,11 @@ def _validate_workspace(workspace: Any) -> List[str]:
     problems: List[str] = []
     directory = workspace.get("dir")
     if directory is not None and not (isinstance(directory, str) and directory.strip()):
-        problems.append("workspace.dir: must be a non-empty string (got %r)" % (directory,))
+        problems.append("workspace.dir: must be a non-empty string or null (got %r)" % (directory,))
     days = workspace.get("stale_notice_days")
     if days is not None:
         if not _int_at_least(days, 0):
-            problems.append("workspace.stale_notice_days: must be a non-negative integer (0 = off)")
+            problems.append("workspace.stale_notice_days: must be a non-negative integer or null (0 = off)")
         elif days > STALE_NOTICE_MAX_DAYS:
             problems.append(
                 "workspace.stale_notice_days: must be %d or less (100 years)" % STALE_NOTICE_MAX_DAYS
@@ -566,13 +580,13 @@ def _validate_progress(progress: Any) -> List[str]:
         _int_at_least(interval, PROGRESS_INTERVAL_MIN) and interval <= PROGRESS_INTERVAL_MAX
     ):
         problems.append(
-            "progress.interval_seconds: must be an integer from %d to %d"
+            "progress.interval_seconds: must be an integer from %d to %d or null"
             % (PROGRESS_INTERVAL_MIN, PROGRESS_INTERVAL_MAX)
         )
     quiet = progress.get("quiet_notice_seconds")
     if quiet is not None:
         if not _int_at_least(quiet, 0):
-            problems.append("progress.quiet_notice_seconds: must be a non-negative integer (0 = off)")
+            problems.append("progress.quiet_notice_seconds: must be a non-negative integer or null (0 = off)")
         elif quiet > MAX_SECONDS:
             problems.append("progress.quiet_notice_seconds: %s" % _TOO_LONG)
     return problems
@@ -757,7 +771,7 @@ def _validate_optimization(data: Any) -> List[str]:
     levels = opt_mod.LEVELS
     level = data.get("level")
     if level is not None and (not isinstance(level, str) or level.strip().lower() not in levels):
-        problems.append("optimization.level: must be one of %s" % ", ".join(sorted(levels)))
+        problems.append("optimization.level: must be one of %s, or null" % ", ".join(sorted(levels)))
     problems.extend(_check(data, _OPTIMIZATION_RULES))
     return problems
 
