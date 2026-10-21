@@ -275,9 +275,9 @@ class TestValidation(ExtrasCase):
         data["optimization"]["security_paths"] = "*api*"
         data["optimization"]["extra_architecture_paths"] = [""]
         problems = config_mod.validate(data)
-        self.assertIn("optimization.skip_unneeded_roles: must be true or false", problems)
+        self.assertIn("optimization.skip_unneeded_roles: must be true or false, or null", problems)
         self.assertIn(
-            "optimization.security_paths: must be a list of glob patterns (use [] for none)",
+            "optimization.security_paths: must be a list of glob patterns or null (use [] for none)",
             problems,
         )
         blank = "optimization.extra_architecture_paths[0]: must be a non-empty string (got '')"

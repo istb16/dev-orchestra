@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import difflib
 import re
-from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
+from typing import Any, Dict, List, NamedTuple, Optional, Sequence, Set, Tuple
 
 from . import optimization as opt_mod
 from .clocks import MAX_SECONDS
@@ -47,6 +47,143 @@ _TIER_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 def _int_at_least(value: Any, minimum: int) -> bool:
     """An int, not a bool, and at least ``minimum``."""
     return isinstance(value, int) and not isinstance(value, bool) and value >= minimum
+
+
+_BOOL = "bool"  # true or false
+_AUTO = "auto"  # true, false or auto
+_INT = "int"  # _int_at_least(value, minimum)
+_SECONDS = "seconds"  # _INT, then whole_seconds, else _TOO_LONG
+_GLOBS = "globs"  # a list of non-empty strings, each bad one by index
+
+
+class _Check(NamedTuple):
+    """What one value must be, and how a value that is not is reported."""
+
+    kind: str
+    message: str  # what follows "<path>: "; _SECONDS's second message is _TOO_LONG
+    minimum: int = 0
+    null_ok: bool = True  # None, read or defaulted, passes
+
+
+class _Rule(NamedTuple):
+    """One row of a table: the key at the end of ``path``, read as ``block.get(key, default)``."""
+
+    path: str
+    check: _Check
+    default: Any = None
+
+
+def _check(block: Dict[str, Any], rules: Sequence[_Rule]) -> List[str]:
+    """The problems of each rule's key in ``block``, in the order of ``rules``."""
+    problems: List[str] = []
+    for rule in rules:
+        value = block.get(rule.path.rsplit(".", 1)[-1], rule.default)
+        problems.extend(_check_value(rule.check, value, rule.path))
+    return problems
+
+
+def _check_value(check: _Check, value: Any, path: str) -> List[str]:
+    """``check`` applied to one value, named ``path`` in each message."""
+    if value is None and check.null_ok:
+        return []
+    if check.kind == _GLOBS:
+        if not isinstance(value, list):
+            return ["%s: %s" % (path, check.message)]
+        return [
+            "%s[%d]: must be a non-empty string (got %r)" % (path, index, pattern)
+            for index, pattern in enumerate(value)
+            if not isinstance(pattern, str) or not pattern.strip()
+        ]
+    if check.kind == _BOOL:
+        ok = isinstance(value, bool)
+    elif check.kind == _AUTO:
+        ok = value.strip().lower() == "auto" if isinstance(value, str) else isinstance(value, bool)
+    elif check.kind in (_INT, _SECONDS):
+        ok = _int_at_least(value, check.minimum)
+    else:
+        raise ValueError(check.kind)
+    if not ok:
+        return ["%s: %s" % (path, check.message)]
+    if check.kind == _SECONDS and not whole_seconds(value):
+        return ["%s: %s" % (path, _TOO_LONG)]
+    return []
+
+
+_TRUE_OR_FALSE = _Check(_BOOL, "must be true or false, or null")
+_TRUE_FALSE_OR_AUTO = _Check(_AUTO, "must be true, false or auto, or null")
+_NON_NEGATIVE = _Check(_INT, "must be a non-negative integer or null")
+_POSITIVE = _Check(_INT, "must be a positive integer or null", 1)
+_GLOB_LIST = _Check(_GLOBS, "must be a list of glob patterns or null (use [] for none)")
+
+_REVIEW_RULES = (
+    _Rule(
+        "review.max_review_iterations",
+        _Check(_INT, "must be a non-negative integer", 0, null_ok=False),
+        default=2,
+    ),
+    _Rule("review.parallel", _TRUE_OR_FALSE),
+)
+_REVIEW_LIMIT_RULES = (
+    _Rule(
+        "review.timeout_seconds",
+        _Check(_SECONDS, "must be a positive integer", 1, null_ok=False),
+        default=1800,
+    ),
+    _Rule("review.idle_timeout_seconds", _Check(_SECONDS, "must be a positive integer or null", 1)),
+    _Rule("review.incremental_rounds", _TRUE_OR_FALSE),
+    _Rule("review.max_findings", _Check(_INT, "must be a non-negative integer or null (0 = no cap)")),
+)
+_REVIEW_DESIGN_RULES = (
+    _Rule("review.design.enabled", _TRUE_FALSE_OR_AUTO),
+    _Rule("review.design.max_iterations", _NON_NEGATIVE),
+)
+_REVIEW_CONTEXT_RULES = (
+    _Rule("review.context.max_chars", _POSITIVE),
+    _Rule("review.context.inline_chars", _POSITIVE),
+    _Rule("review.context.surrounding_chars", _POSITIVE),
+)
+_DESIGN_RULES = (
+    _Rule("design.require_approval", _TRUE_OR_FALSE),
+    _Rule("design.ask_questions", _TRUE_FALSE_OR_AUTO),
+    _Rule("design.max_question_rounds", _POSITIVE),
+)
+_RESUME_RULES = (
+    _Rule("design.resume.max_age_seconds", _NON_NEGATIVE),
+    _Rule("design.resume.max_context_tokens", _POSITIVE),
+)
+_LANGUAGE_RULES = (_Rule("language.rewrite", _TRUE_OR_FALSE),)
+_PROGRESS_RULES = (_Rule("progress.updates", _TRUE_FALSE_OR_AUTO),)
+_REVIEW_EXCLUDE_RULES = (_Rule("review.exclude", _GLOB_LIST),)
+_OPTIMIZATION_RULES = (
+    _Rule("optimization.skip_unneeded_roles", _TRUE_OR_FALSE),
+    _Rule("optimization.high_risk_paths", _GLOB_LIST),
+    _Rule("optimization.extra_high_risk_paths", _GLOB_LIST),
+    _Rule("optimization.security_paths", _GLOB_LIST),
+    _Rule("optimization.extra_security_paths", _GLOB_LIST),
+    _Rule("optimization.architecture_paths", _GLOB_LIST),
+    _Rule("optimization.extra_architecture_paths", _GLOB_LIST),
+    _Rule("optimization.low_risk_max_files", _NON_NEGATIVE),
+    _Rule("optimization.low_risk_max_lines", _NON_NEGATIVE),
+)
+#: Every table above, for the tests that hold each row to its key and default.
+_RULE_TABLES = (
+    _REVIEW_RULES,
+    _REVIEW_LIMIT_RULES,
+    _REVIEW_DESIGN_RULES,
+    _REVIEW_CONTEXT_RULES,
+    _DESIGN_RULES,
+    _RESUME_RULES,
+    _LANGUAGE_RULES,
+    _PROGRESS_RULES,
+    _REVIEW_EXCLUDE_RULES,
+    _OPTIMIZATION_RULES,
+)
+
+# Applied in a loop, to keys the user names, with the path built per key.
+_BUDGET = _Check(_INT, "must be a non-negative integer or null")
+_RUN_TIMEOUT = _Check(_SECONDS, "must be a positive integer", 1, null_ok=False)
+#: Every check, in a table or applied in a loop, for the tests that hold a message to its check.
+_CHECKS = (*(rule.check for table in _RULE_TABLES for rule in table), _BUDGET, _RUN_TIMEOUT)
 
 
 def validate(
@@ -323,56 +460,24 @@ def _validate_run(run: Any) -> List[str]:
             problems.append(
                 "run.timeout_seconds.%s: unknown role (known: %s)" % (role, ", ".join(KNOWN_ROLES))
             )
-        elif not _int_at_least(value, 1):
-            problems.append("run.timeout_seconds.%s: must be a positive integer" % role)
-        elif not whole_seconds(value):
-            problems.append("run.timeout_seconds.%s: %s" % (role, _TOO_LONG))
+        else:
+            problems.extend(_check_value(_RUN_TIMEOUT, value, "run.timeout_seconds.%s" % role))
     return problems
 
 
 def _validate_review(review: Any) -> List[str]:
     if not isinstance(review, dict):
         return ["review: must be a mapping"]
-    problems: List[str] = []
-    iterations = review.get("max_review_iterations", 2)
-    if not _int_at_least(iterations, 0):
-        problems.append("review.max_review_iterations: must be a non-negative integer")
-    parallel = review.get("parallel")
-    if parallel is not None and not isinstance(parallel, bool):
-        problems.append("review.parallel: must be true or false")
+    problems = _check(review, _REVIEW_RULES)
     problems.extend(_validate_severities(review.get("re_review_severities")))
-    timeout = review.get("timeout_seconds", 1800)
-    if not _int_at_least(timeout, 1):
-        problems.append("review.timeout_seconds: must be a positive integer")
-    elif not whole_seconds(timeout):
-        problems.append("review.timeout_seconds: %s" % _TOO_LONG)
-    idle = review.get("idle_timeout_seconds")
-    if idle is not None and not _int_at_least(idle, 1):
-        problems.append("review.idle_timeout_seconds: must be a positive integer or null")
-    elif idle is not None and not whole_seconds(idle):
-        problems.append("review.idle_timeout_seconds: %s" % _TOO_LONG)
-    incremental = review.get("incremental_rounds")
-    if incremental is not None and not isinstance(incremental, bool):
-        problems.append("review.incremental_rounds: must be true or false")
-    findings_cap = review.get("max_findings")
-    if findings_cap is not None and not _int_at_least(findings_cap, 0):
-        problems.append("review.max_findings: must be a non-negative integer (0 = no cap)")
+    problems.extend(_check(review, _REVIEW_LIMIT_RULES))
     design = review.get("design")
     if design is not None:
         problems.extend(_validate_review_design(design))
     context = review.get("context")
     if context is not None:
         problems.extend(_validate_review_context(context))
-    exclude = review.get("exclude")
-    if exclude is not None:
-        if not isinstance(exclude, list):
-            problems.append("review.exclude: must be a list of glob patterns (use [] for none)")
-        else:
-            for index, pattern in enumerate(exclude):
-                if not isinstance(pattern, str) or not pattern.strip():
-                    problems.append(
-                        "review.exclude[%d]: must be a non-empty string (got %r)" % (index, pattern)
-                    )
+    problems.extend(_check(review, _REVIEW_EXCLUDE_RULES))
     return problems
 
 
@@ -386,7 +491,7 @@ def _validate_severities(severities: Any) -> List[str]:
         return []
     choices = ", ".join(SEVERITIES)
     if not isinstance(severities, list):
-        return ["review.re_review_severities: must be a list of %s (got %r)" % (choices, severities)]
+        return ["review.re_review_severities: must be a list of %s, or null (got %r)" % (choices, severities)]
     if not severities:
         return ["review.re_review_severities: must name at least one severity; [] would block nothing"]
     return [
@@ -399,17 +504,7 @@ def _validate_severities(severities: Any) -> List[str]:
 def _validate_review_design(design: Any) -> List[str]:
     if not isinstance(design, dict):
         return ["review.design: must be a mapping"]
-    problems: List[str] = []
-    enabled = design.get("enabled")
-    if isinstance(enabled, str):
-        known = enabled.strip().lower() == "auto"
-    else:
-        known = enabled is None or isinstance(enabled, bool)
-    if not known:
-        problems.append("review.design.enabled: must be true, false or auto")
-    rounds = design.get("max_iterations")
-    if rounds is not None and not _int_at_least(rounds, 0):
-        problems.append("review.design.max_iterations: must be a non-negative integer")
+    problems = _check(design, _REVIEW_DESIGN_RULES)
     # The entries are checked with the panel; here only the shape, for data
     # validated without being composed.
     for key in ("reviewers", "reviewers_extra"):
@@ -422,16 +517,12 @@ def _validate_review_design(design: Any) -> List[str]:
 def _validate_review_context(context: Any) -> List[str]:
     if not isinstance(context, dict):
         return ["review.context: must be a mapping"]
-    problems: List[str] = []
     # No cross-check between the two. `inline_chars` above
     # `max_chars` only says "nothing is ever handed over as a
     # file except a forced round", and below it says "I will
     # not pay for a prompt that large" -- both are things
     # somebody means, and neither is a mistake to warn about.
-    for key in ("max_chars", "inline_chars", "surrounding_chars"):
-        value = context.get(key)
-        if value is not None and not _int_at_least(value, 1):
-            problems.append("review.context.%s: must be a positive integer" % key)
+    problems = _check(context, _REVIEW_CONTEXT_RULES)
     # `off` is read as false by YAML, so false means none too;
     # true names no mode and is refused rather than guessed at.
     surrounding = context.get("surrounding")
@@ -440,38 +531,20 @@ def _validate_review_context(context: Any) -> List[str]:
     else:
         known = surrounding is None or surrounding is False
     if not known:
-        problems.append("review.context.surrounding: must be one of enclosing, none")
+        problems.append("review.context.surrounding: must be one of enclosing, none, or null")
     return problems
 
 
 def _validate_design(design: Any) -> List[str]:
     if not isinstance(design, dict):
         return ["design: must be a mapping"]
-    problems: List[str] = []
-    approval = design.get("require_approval")
-    if approval is not None and not isinstance(approval, bool):
-        problems.append("design.require_approval: must be true or false")
-    ask = design.get("ask_questions")
-    if isinstance(ask, str):
-        known = ask.strip().lower() == "auto"
-    else:
-        known = ask is None or isinstance(ask, bool)
-    if not known:
-        problems.append("design.ask_questions: must be true, false or auto")
-    rounds = design.get("max_question_rounds")
-    if rounds is not None and not _int_at_least(rounds, 1):
-        problems.append("design.max_question_rounds: must be a positive integer")
+    problems = _check(design, _DESIGN_RULES)
     resume = design.get("resume")
     if resume is not None:
         if not isinstance(resume, dict):
             problems.append("design.resume: must be a mapping")
         else:
-            age = resume.get("max_age_seconds")
-            if age is not None and not _int_at_least(age, 0):
-                problems.append("design.resume.max_age_seconds: must be a non-negative integer")
-            cap = resume.get("max_context_tokens")
-            if cap is not None and not _int_at_least(cap, 1):
-                problems.append("design.resume.max_context_tokens: must be a positive integer or null")
+            problems.extend(_check(resume, _RESUME_RULES))
     return problems
 
 
@@ -480,10 +553,7 @@ def _validate_budgets(budgets: Any) -> List[str]:
         return ["budgets: must be a mapping"]
     problems: List[str] = []
     for key, value in budgets.items():
-        if value is None:
-            continue
-        if not _int_at_least(value, 0):
-            problems.append("budgets.%s: must be a non-negative integer or null" % key)
+        problems.extend(_check_value(_BUDGET, value, "budgets.%s" % key))
     return problems
 
 
@@ -493,11 +563,11 @@ def _validate_workspace(workspace: Any) -> List[str]:
     problems: List[str] = []
     directory = workspace.get("dir")
     if directory is not None and not (isinstance(directory, str) and directory.strip()):
-        problems.append("workspace.dir: must be a non-empty string (got %r)" % (directory,))
+        problems.append("workspace.dir: must be a non-empty string or null (got %r)" % (directory,))
     days = workspace.get("stale_notice_days")
     if days is not None:
         if not _int_at_least(days, 0):
-            problems.append("workspace.stale_notice_days: must be a non-negative integer (0 = off)")
+            problems.append("workspace.stale_notice_days: must be a non-negative integer or null (0 = off)")
         elif days > STALE_NOTICE_MAX_DAYS:
             problems.append(
                 "workspace.stale_notice_days: must be %d or less (100 years)" % STALE_NOTICE_MAX_DAYS
@@ -516,35 +586,26 @@ def _validate_language(language: Any) -> List[str]:
             # YAML reads a bare no, yes, on or off as a boolean; `no` is Norwegian.
             message += ' (got %s: quote a tag such as "no" to keep it a string)' % str(reply).lower()
         problems.append(message)
-    rewrite = language.get("rewrite")
-    if rewrite is not None and not isinstance(rewrite, bool):
-        problems.append("language.rewrite: must be true or false")
+    problems.extend(_check(language, _LANGUAGE_RULES))
     return problems
 
 
 def _validate_progress(progress: Any) -> List[str]:
     if not isinstance(progress, dict):
         return ["progress: must be a mapping"]
-    problems: List[str] = []
-    updates = progress.get("updates")
-    if isinstance(updates, str):
-        known = updates.strip().lower() == "auto"
-    else:
-        known = updates is None or isinstance(updates, bool)
-    if not known:
-        problems.append("progress.updates: must be true, false or auto")
+    problems = _check(progress, _PROGRESS_RULES)
     interval = progress.get("interval_seconds")
     if interval is not None and not (
         _int_at_least(interval, PROGRESS_INTERVAL_MIN) and interval <= PROGRESS_INTERVAL_MAX
     ):
         problems.append(
-            "progress.interval_seconds: must be an integer from %d to %d"
+            "progress.interval_seconds: must be an integer from %d to %d or null"
             % (PROGRESS_INTERVAL_MIN, PROGRESS_INTERVAL_MAX)
         )
     quiet = progress.get("quiet_notice_seconds")
     if quiet is not None:
         if not _int_at_least(quiet, 0):
-            problems.append("progress.quiet_notice_seconds: must be a non-negative integer (0 = off)")
+            problems.append("progress.quiet_notice_seconds: must be a non-negative integer or null (0 = off)")
         elif quiet > MAX_SECONDS:
             problems.append("progress.quiet_notice_seconds: %s" % _TOO_LONG)
     return problems
@@ -729,33 +790,8 @@ def _validate_optimization(data: Any) -> List[str]:
     levels = opt_mod.LEVELS
     level = data.get("level")
     if level is not None and (not isinstance(level, str) or level.strip().lower() not in levels):
-        problems.append("optimization.level: must be one of %s" % ", ".join(sorted(levels)))
-    skip = data.get("skip_unneeded_roles")
-    if skip is not None and not isinstance(skip, bool):
-        problems.append("optimization.skip_unneeded_roles: must be true or false")
-    for key in (
-        "high_risk_paths",
-        "extra_high_risk_paths",
-        "security_paths",
-        "extra_security_paths",
-        "architecture_paths",
-        "extra_architecture_paths",
-    ):
-        patterns = data.get(key)
-        if patterns is None:
-            continue
-        if not isinstance(patterns, list):
-            problems.append("optimization.%s: must be a list of glob patterns (use [] for none)" % key)
-            continue
-        for index, pattern in enumerate(patterns):
-            if not isinstance(pattern, str) or not pattern.strip():
-                problems.append(
-                    "optimization.%s[%d]: must be a non-empty string (got %r)" % (key, index, pattern)
-                )
-    for key in ("low_risk_max_files", "low_risk_max_lines"):
-        value = data.get(key)
-        if value is not None and not _int_at_least(value, 0):
-            problems.append("optimization.%s: must be a non-negative integer" % key)
+        problems.append("optimization.level: must be one of %s, or null" % ", ".join(sorted(levels)))
+    problems.extend(_check(data, _OPTIMIZATION_RULES))
     return problems
 
 

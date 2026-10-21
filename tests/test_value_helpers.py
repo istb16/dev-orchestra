@@ -1288,7 +1288,7 @@ class TestBrokenConfiguration(IsolatedCase):
         self.assertEqual(code, 0)
         self.assertEqual(err, "")
         self.assertIn("\nProblems:\n", out)
-        self.assertIn("  - review.context.max_chars: must be a positive integer\n", out)
+        self.assertIn("  - review.context.max_chars: must be a positive integer or null\n", out)
 
     def test_config_reset_survives_a_project_file_that_does_not_parse(self):
         message = self.break_project_file()
