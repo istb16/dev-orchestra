@@ -52,9 +52,12 @@ class TestWrite(AtomicFileCase):
 
     def test_a_bare_name_is_written_in_the_current_directory(self):
         os.makedirs(self.directory)
-        self.addCleanup(os.chdir, os.getcwd())
+        previous = os.getcwd()
         os.chdir(self.directory)
-        atomic_file.write("out.txt", b"content")
+        try:
+            atomic_file.write("out.txt", b"content")
+        finally:
+            os.chdir(previous)
         self.assertEqual(self.read_bytes(), b"content")
         self.assertEqual(self.others(), [])
 
