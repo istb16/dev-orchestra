@@ -108,6 +108,8 @@ _REVIEW_RULES = (
     _Rule("review.parallel", _BOOL, "must be true or false"),
 )
 _REVIEW_LIMIT_RULES = (
+    _Rule("review.timeout_seconds", _SECONDS, "must be a positive integer", 1, null_ok=False, default=1800),
+    _Rule("review.idle_timeout_seconds", _SECONDS, "must be a positive integer or null", 1),
     _Rule("review.incremental_rounds", _BOOL, "must be true or false"),
     _Rule("review.max_findings", _INT, "must be a non-negative integer (0 = no cap)", 0),
 )
@@ -130,6 +132,7 @@ _RESUME_RULES = (
     _Rule("design.resume.max_context_tokens", _INT, "must be a positive integer or null", 1),
 )
 _BUDGET = _Rule("budgets", _INT, "must be a non-negative integer or null")
+_RUN_TIMEOUT = _Rule("run.timeout_seconds", _SECONDS, "must be a positive integer", 1, null_ok=False)
 _LANGUAGE_RULES = (_Rule("language.rewrite", _BOOL, "must be true or false"),)
 _PROGRESS_RULES = (_Rule("progress.updates", _AUTO, "must be true, false or auto"),)
 _OPTIMIZATION_RULES = (_Rule("optimization.skip_unneeded_roles", _BOOL, "must be true or false"),)
@@ -413,10 +416,8 @@ def _validate_run(run: Any) -> List[str]:
             problems.append(
                 "run.timeout_seconds.%s: unknown role (known: %s)" % (role, ", ".join(KNOWN_ROLES))
             )
-        elif not _int_at_least(value, 1):
-            problems.append("run.timeout_seconds.%s: must be a positive integer" % role)
-        elif not whole_seconds(value):
-            problems.append("run.timeout_seconds.%s: %s" % (role, _TOO_LONG))
+        else:
+            problems.extend(_check_value(_RUN_TIMEOUT, value, "run.timeout_seconds.%s" % role))
     return problems
 
 
@@ -425,16 +426,6 @@ def _validate_review(review: Any) -> List[str]:
         return ["review: must be a mapping"]
     problems = _check(review, _REVIEW_RULES)
     problems.extend(_validate_severities(review.get("re_review_severities")))
-    timeout = review.get("timeout_seconds", 1800)
-    if not _int_at_least(timeout, 1):
-        problems.append("review.timeout_seconds: must be a positive integer")
-    elif not whole_seconds(timeout):
-        problems.append("review.timeout_seconds: %s" % _TOO_LONG)
-    idle = review.get("idle_timeout_seconds")
-    if idle is not None and not _int_at_least(idle, 1):
-        problems.append("review.idle_timeout_seconds: must be a positive integer or null")
-    elif idle is not None and not whole_seconds(idle):
-        problems.append("review.idle_timeout_seconds: %s" % _TOO_LONG)
     problems.extend(_check(review, _REVIEW_LIMIT_RULES))
     design = review.get("design")
     if design is not None:
