@@ -9,6 +9,8 @@ import pkgutil
 import re
 import subprocess
 import sys
+import tempfile
+import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from unittest import mock
@@ -1178,6 +1180,92 @@ class TestImportLayering(IsolatedCase):
         self.assertIs(execution.find_program, execution_launch.find_program)
         self.assertIs(execution.pid_alive, execution_tree.pid_alive)
         self.assertIs(execution.end_children_on_sigterm, execution_tree.end_children_on_sigterm)
+
+    def test_the_shared_execution_constants_have_one_definition(self):
+        """``execution_common`` alone assigns ``IS_WINDOWS`` and ``_POLL_SECONDS``;
+        every other module imports them by name, so each has a binding of its
+        own, and a patch on one module reaches only the code in that module."""
+        from orchestrator import (
+            execution,
+            execution_common,
+            execution_drain,
+            execution_launch,
+            execution_tree,
+        )
+
+        shared = ("IS_WINDOWS", "_POLL_SECONDS")
+        assigned = set()
+        for relative, tree, _lines in _orchestrator_sources():
+            for node in tree.body:
+                targets = node.targets if isinstance(node, ast.Assign) else [getattr(node, "target", None)]
+                for target in targets:
+                    if isinstance(target, ast.Name) and target.id in shared:
+                        assigned.add((relative, target.id))
+        self.assertEqual(assigned, {("execution_common.py", name) for name in shared})
+        readers = {
+            execution: shared,
+            execution_drain: ("_POLL_SECONDS",),
+            execution_launch: ("IS_WINDOWS",),
+            execution_tree: shared,
+        }
+        for module, names in readers.items():
+            for name in names:
+                self.assertIs(getattr(module, name), getattr(execution_common, name), (module.__name__, name))
+        self.assertFalse(hasattr(execution_drain, "IS_WINDOWS"))
+        self.assertFalse(hasattr(execution_launch, "_POLL_SECONDS"))
+
+    def test_pid_alive_and_find_program_patches_reach_their_own_callers(self):
+        """The re-exports on ``execution`` are read by providers/agy.py
+        (``pid_alive``) and providers/base.py (``find_program``); jobs.py and
+        ledger.py read ``execution_tree.pid_alive``. A patch on one binding
+        reaches its own callers and not the others'."""
+        from orchestrator import execution, execution_launch, execution_tree, jobs
+        from orchestrator.providers import agy, base
+
+        directory = self.enterContext(tempfile.TemporaryDirectory())
+        old = time.time() - agy.ORPHAN_MIN_AGE_SECONDS - 60
+
+        def orphan(pid):
+            path = os.path.join(directory, "%s%d-abc%s" % (agy.PROMPT_PREFIX, pid, agy.PROMPT_SUFFIX))
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write("in use\n")
+            os.utime(path, (old, old))
+            return path
+
+        # agy's orphan sweep: execution.pid_alive is seen, execution_tree's is not.
+        kept = orphan(4242)
+        with (
+            mock.patch.object(execution, "pid_alive", lambda pid: True),
+            mock.patch.object(execution_tree, "pid_alive", lambda pid: False),
+        ):
+            agy._remove_orphaned_prompt_files(directory)
+        self.assertTrue(os.path.exists(kept))
+        removed = orphan(4243)
+        with (
+            mock.patch.object(execution, "pid_alive", lambda pid: False),
+            mock.patch.object(execution_tree, "pid_alive", lambda pid: True),
+        ):
+            agy._remove_orphaned_prompt_files(directory)
+        self.assertFalse(os.path.exists(removed))
+
+        # jobs: execution_tree.pid_alive is seen, execution's is not.
+        with (
+            mock.patch.object(execution, "pid_alive", lambda pid: True),
+            mock.patch.object(execution_tree, "pid_alive", lambda pid: False),
+        ):
+            self.assertFalse(jobs._worker_alive(4242, {}))
+        with (
+            mock.patch.object(execution, "pid_alive", lambda pid: False),
+            mock.patch.object(execution_tree, "pid_alive", lambda pid: True),
+        ):
+            self.assertIsNone(jobs._worker_alive(4242, {}))
+
+        # base.Provider.which: execution.find_program is seen, execution_launch's is not.
+        with (
+            mock.patch.object(execution, "find_program", lambda name: "/seen/" + name),
+            mock.patch.object(execution_launch, "find_program", lambda name: "/missed/" + name),
+        ):
+            self.assertEqual(base.Provider("some-cli").which(), "/seen/some-cli")
 
 
 def _source(relative, text):

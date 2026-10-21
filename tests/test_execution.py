@@ -7,6 +7,7 @@ pipe, a wedged child producing no output) cannot be faked with a stub.
 
 from __future__ import annotations
 
+import contextlib
 import errno
 import io
 import os
@@ -174,6 +175,16 @@ IDLE_WORKER = (
 
 def python_code(code):
     return [sys.executable, "-c", code]
+
+
+def as_platform(windows: bool) -> contextlib.ExitStack:
+    """Patch ``IS_WINDOWS`` in every module that binds it. Each imports it by
+    name from ``execution_common``, so patching one would leave the others on
+    the real platform."""
+    stack = contextlib.ExitStack()
+    for module in (execution, execution_launch, execution_tree):
+        stack.enter_context(mock.patch.object(module, "IS_WINDOWS", windows))
+    return stack
 
 
 def read_pids(case: unittest.TestCase, path: str) -> Tuple[int, ...]:
@@ -634,7 +645,7 @@ class TestProcessTree(IsolatedCase):
         def spawn(*args, **kwargs):
             # Started for real on this OS; only what comes after is POSIX.
             proc = original_spawn(*args, **kwargs)
-            self.enterContext(mock.patch.object(execution, "IS_WINDOWS", False))
+            self.enterContext(as_platform(windows=False))
             return proc
 
         def killpg(pgid, sig):
@@ -889,7 +900,7 @@ class TestProcessTree(IsolatedCase):
         the pid by now. Driven as Windows on every OS."""
         sent = []
         with (
-            mock.patch.object(execution_tree, "IS_WINDOWS", True),
+            as_platform(windows=True),
             mock.patch.object(execution_tree, "pid_alive", lambda pid: True),
             mock.patch.object(execution_tree.subprocess, "run", lambda args, **kwargs: sent.append(args[0])),
             mock.patch.object(execution_tree.os, "kill", lambda pid, sig: sent.append(("kill", sig))),
@@ -912,7 +923,7 @@ class TestProcessTree(IsolatedCase):
             alive[0] = False
 
         with (
-            mock.patch.object(execution_tree, "IS_WINDOWS", False),
+            as_platform(windows=False),
             mock.patch.object(execution_tree, "_reap", lambda pid: None),
             mock.patch.object(execution_tree, "pid_alive", lambda pid: alive[0]),
             mock.patch.object(execution_tree.signal, "SIGKILL", 9, create=True),
@@ -953,7 +964,7 @@ class TestGroupEnd(IsolatedCase):
     """The POSIX group logic, driven by fakes so that it runs on every OS."""
 
     def as_posix(self, killpg) -> None:
-        self.enterContext(mock.patch.object(execution_tree, "IS_WINDOWS", False))
+        self.enterContext(as_platform(windows=False))
         self.enterContext(mock.patch.object(execution_tree, "_reap", lambda pid: None))
         self.enterContext(mock.patch.object(execution_tree.os, "killpg", killpg, create=True))
         self.enterContext(mock.patch.object(execution_tree.signal, "SIGKILL", 9, create=True))
@@ -1313,7 +1324,7 @@ class TestStopOnSigterm(IsolatedCase):
 
     def test_nothing_is_installed_on_windows(self):
         with (
-            mock.patch.object(execution_tree, "IS_WINDOWS", True),
+            as_platform(windows=True),
             mock.patch.object(execution_tree.signal, "signal") as install,
         ):
             execution_tree.end_children_on_sigterm()
@@ -1321,7 +1332,7 @@ class TestStopOnSigterm(IsolatedCase):
 
     def test_the_handler_is_installed_for_sigterm_on_posix(self):
         with (
-            mock.patch.object(execution_tree, "IS_WINDOWS", False),
+            as_platform(windows=False),
             mock.patch.object(execution_tree.signal, "SIGTERM", 15),
             mock.patch.object(execution_tree.signal, "signal") as install,
         ):
@@ -1331,7 +1342,7 @@ class TestStopOnSigterm(IsolatedCase):
     def test_the_note_path_is_kept_for_the_handler(self):
         note = os.path.join(self.project, "a-1.stop")
         with (
-            mock.patch.object(execution_tree, "IS_WINDOWS", False),
+            as_platform(windows=False),
             mock.patch.object(execution_tree._stop, "note_path", None),
             mock.patch.object(execution_tree.signal, "signal"),
         ):
