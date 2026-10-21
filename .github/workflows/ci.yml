@@ -76,6 +76,9 @@ jobs:
         exclude:
           - { os: ubuntu-latest, shard: 3 }
           - { os: macos-latest, shard: 3 }
+          # macOS runners are the scarcest: its newest-Python parts waited for a
+          # runner, so macOS runs the oldest supported Python only.
+          - { os: macos-latest, python-version: "3.14" }
         # Adds `shards` to every job of that OS.
         include:
           - { os: ubuntu-latest, shards: 2 }
