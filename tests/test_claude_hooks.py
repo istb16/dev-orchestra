@@ -366,6 +366,27 @@ class TestSettingsEditing(HooksCase):
         # The relay is not left behind for entries that were never added.
         self.assertFalse(os.path.lexists(ch.hooks_dir()))
 
+    def test_a_refused_rename_is_not_retried(self):
+        """Unlike the ``.ai/`` files, the user's settings get one rename: a
+        sharing violation is reported, not waited out."""
+        raw = self.write_settings({"a": 1})
+        real_replace = os.replace
+        calls: List[str] = []
+
+        def refusing(src, dst):
+            if os.path.abspath(dst) == os.path.abspath(self.settings):
+                calls.append(dst)
+                raise PermissionError(13, "sharing violation", dst)
+            return real_replace(src, dst)
+
+        with mock.patch.object(os, "replace", refusing):
+            with self.assertRaises(ch.HooksError) as caught:
+                ch.install(REPO_ROOT)
+        self.assertIn("%s could not be written (" % self.settings, str(caught.exception))
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(self.read_bytes(), raw)
+        self.assertEqual([name for name in os.listdir(self.claude_dir) if name.endswith(".tmp")], [])
+
     def test_failed_install_puts_an_older_relay_back(self):
         old = os.path.join(self.tmp, "cache", "0.20.0")
         ch.write_relay(old)
@@ -384,6 +405,14 @@ class TestSettingsEditing(HooksCase):
         os.chmod(self.settings, 0o600)
         ch.install(REPO_ROOT)
         self.assertEqual(os.stat(self.settings).st_mode & 0o777, 0o600)
+
+    @unittest.skipIf(os.name == "nt", "file modes are POSIX")
+    def test_rewrite_keeps_a_mode_other_than_the_temp_files(self):
+        """0600 is also what the temporary file is made with; 0640 shows the copy."""
+        self.write_settings({"a": 1})
+        os.chmod(self.settings, 0o640)
+        ch.install(REPO_ROOT)
+        self.assertEqual(os.stat(self.settings).st_mode & 0o777, 0o640)
 
     def test_claude_config_dir_honoured(self):
         self.assertEqual(ch.settings_path(), os.path.join(self.claude_dir, "settings.json"))
