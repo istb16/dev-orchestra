@@ -101,16 +101,42 @@ def _check_value(rule: _Rule, value: Any, path: str) -> List[str]:
     return []
 
 
-_REVIEW_RULES = (_Rule("review.parallel", _BOOL, "must be true or false"),)
-_REVIEW_LIMIT_RULES = (_Rule("review.incremental_rounds", _BOOL, "must be true or false"),)
-_REVIEW_DESIGN_RULES = (_Rule("review.design.enabled", _AUTO, "must be true, false or auto"),)
+_REVIEW_RULES = (
+    _Rule(
+        "review.max_review_iterations", _INT, "must be a non-negative integer", 0, null_ok=False, default=2
+    ),
+    _Rule("review.parallel", _BOOL, "must be true or false"),
+)
+_REVIEW_LIMIT_RULES = (
+    _Rule("review.incremental_rounds", _BOOL, "must be true or false"),
+    _Rule("review.max_findings", _INT, "must be a non-negative integer (0 = no cap)", 0),
+)
+_REVIEW_DESIGN_RULES = (
+    _Rule("review.design.enabled", _AUTO, "must be true, false or auto"),
+    _Rule("review.design.max_iterations", _INT, "must be a non-negative integer", 0),
+)
+_REVIEW_CONTEXT_RULES = (
+    _Rule("review.context.max_chars", _INT, "must be a positive integer", 1),
+    _Rule("review.context.inline_chars", _INT, "must be a positive integer", 1),
+    _Rule("review.context.surrounding_chars", _INT, "must be a positive integer", 1),
+)
 _DESIGN_RULES = (
     _Rule("design.require_approval", _BOOL, "must be true or false"),
     _Rule("design.ask_questions", _AUTO, "must be true, false or auto"),
+    _Rule("design.max_question_rounds", _INT, "must be a positive integer", 1),
 )
+_RESUME_RULES = (
+    _Rule("design.resume.max_age_seconds", _INT, "must be a non-negative integer", 0),
+    _Rule("design.resume.max_context_tokens", _INT, "must be a positive integer or null", 1),
+)
+_BUDGET = _Rule("budgets", _INT, "must be a non-negative integer or null")
 _LANGUAGE_RULES = (_Rule("language.rewrite", _BOOL, "must be true or false"),)
 _PROGRESS_RULES = (_Rule("progress.updates", _AUTO, "must be true, false or auto"),)
 _OPTIMIZATION_RULES = (_Rule("optimization.skip_unneeded_roles", _BOOL, "must be true or false"),)
+_OPTIMIZATION_LIMIT_RULES = (
+    _Rule("optimization.low_risk_max_files", _INT, "must be a non-negative integer", 0),
+    _Rule("optimization.low_risk_max_lines", _INT, "must be a non-negative integer", 0),
+)
 
 
 def validate(
@@ -397,11 +423,7 @@ def _validate_run(run: Any) -> List[str]:
 def _validate_review(review: Any) -> List[str]:
     if not isinstance(review, dict):
         return ["review: must be a mapping"]
-    problems: List[str] = []
-    iterations = review.get("max_review_iterations", 2)
-    if not _int_at_least(iterations, 0):
-        problems.append("review.max_review_iterations: must be a non-negative integer")
-    problems.extend(_check(review, _REVIEW_RULES))
+    problems = _check(review, _REVIEW_RULES)
     problems.extend(_validate_severities(review.get("re_review_severities")))
     timeout = review.get("timeout_seconds", 1800)
     if not _int_at_least(timeout, 1):
@@ -414,9 +436,6 @@ def _validate_review(review: Any) -> List[str]:
     elif idle is not None and not whole_seconds(idle):
         problems.append("review.idle_timeout_seconds: %s" % _TOO_LONG)
     problems.extend(_check(review, _REVIEW_LIMIT_RULES))
-    findings_cap = review.get("max_findings")
-    if findings_cap is not None and not _int_at_least(findings_cap, 0):
-        problems.append("review.max_findings: must be a non-negative integer (0 = no cap)")
     design = review.get("design")
     if design is not None:
         problems.extend(_validate_review_design(design))
@@ -460,9 +479,6 @@ def _validate_review_design(design: Any) -> List[str]:
     if not isinstance(design, dict):
         return ["review.design: must be a mapping"]
     problems = _check(design, _REVIEW_DESIGN_RULES)
-    rounds = design.get("max_iterations")
-    if rounds is not None and not _int_at_least(rounds, 0):
-        problems.append("review.design.max_iterations: must be a non-negative integer")
     # The entries are checked with the panel; here only the shape, for data
     # validated without being composed.
     for key in ("reviewers", "reviewers_extra"):
@@ -475,16 +491,12 @@ def _validate_review_design(design: Any) -> List[str]:
 def _validate_review_context(context: Any) -> List[str]:
     if not isinstance(context, dict):
         return ["review.context: must be a mapping"]
-    problems: List[str] = []
     # No cross-check between the two. `inline_chars` above
     # `max_chars` only says "nothing is ever handed over as a
     # file except a forced round", and below it says "I will
     # not pay for a prompt that large" -- both are things
     # somebody means, and neither is a mistake to warn about.
-    for key in ("max_chars", "inline_chars", "surrounding_chars"):
-        value = context.get(key)
-        if value is not None and not _int_at_least(value, 1):
-            problems.append("review.context.%s: must be a positive integer" % key)
+    problems = _check(context, _REVIEW_CONTEXT_RULES)
     # `off` is read as false by YAML, so false means none too;
     # true names no mode and is refused rather than guessed at.
     surrounding = context.get("surrounding")
@@ -501,20 +513,12 @@ def _validate_design(design: Any) -> List[str]:
     if not isinstance(design, dict):
         return ["design: must be a mapping"]
     problems = _check(design, _DESIGN_RULES)
-    rounds = design.get("max_question_rounds")
-    if rounds is not None and not _int_at_least(rounds, 1):
-        problems.append("design.max_question_rounds: must be a positive integer")
     resume = design.get("resume")
     if resume is not None:
         if not isinstance(resume, dict):
             problems.append("design.resume: must be a mapping")
         else:
-            age = resume.get("max_age_seconds")
-            if age is not None and not _int_at_least(age, 0):
-                problems.append("design.resume.max_age_seconds: must be a non-negative integer")
-            cap = resume.get("max_context_tokens")
-            if cap is not None and not _int_at_least(cap, 1):
-                problems.append("design.resume.max_context_tokens: must be a positive integer or null")
+            problems.extend(_check(resume, _RESUME_RULES))
     return problems
 
 
@@ -523,10 +527,7 @@ def _validate_budgets(budgets: Any) -> List[str]:
         return ["budgets: must be a mapping"]
     problems: List[str] = []
     for key, value in budgets.items():
-        if value is None:
-            continue
-        if not _int_at_least(value, 0):
-            problems.append("budgets.%s: must be a non-negative integer or null" % key)
+        problems.extend(_check_value(_BUDGET, value, "budgets.%s" % key))
     return problems
 
 
@@ -784,10 +785,7 @@ def _validate_optimization(data: Any) -> List[str]:
                 problems.append(
                     "optimization.%s[%d]: must be a non-empty string (got %r)" % (key, index, pattern)
                 )
-    for key in ("low_risk_max_files", "low_risk_max_lines"):
-        value = data.get(key)
-        if value is not None and not _int_at_least(value, 0):
-            problems.append("optimization.%s: must be a non-negative integer" % key)
+    problems.extend(_check(data, _OPTIMIZATION_LIMIT_RULES))
     return problems
 
 
