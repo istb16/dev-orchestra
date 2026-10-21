@@ -1158,10 +1158,10 @@ class TestRunJsonInTheForeground(IsolatedCase):
     def test_a_worker_prints_nothing_its_job_holds_the_outcome(self):
         """The worker a detached run starts gets ``--json`` too; its stdout
         is not the caller's, and a second object there would be noise."""
-        from orchestrator import execution
+        from orchestrator import execution_tree
         from orchestrator import jobs as jobs_mod
 
-        self.enterContext(mock.patch.object(execution, "end_children_on_sigterm"))
+        self.enterContext(mock.patch.object(execution_tree, "end_children_on_sigterm"))
         workspace = self.cli_workspace()
         jobs_mod.write_job(workspace, {"id": "o-1", "stage": "orchestrator", "status": "running"})
         job_file = jobs_mod.job_path(workspace, "o-1")

@@ -11,7 +11,7 @@ import sys
 import time
 from typing import Any, Dict, List, NamedTuple, Optional, Tuple, Union, cast
 
-from . import activity, clocks, execution
+from . import activity, clocks, execution_tree
 from . import approval as approval_mod
 from . import config as config_mod
 from . import config_policy as policy_mod
@@ -314,7 +314,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     if args.job_file:
         # A detached worker: `jobs cancel` must reach the CLI it runs, which is
         # in a session of its own.
-        execution.end_children_on_sigterm(jobs_mod.stop_note_path(args.job_file))
+        execution_tree.end_children_on_sigterm(jobs_mod.stop_note_path(args.job_file))
     session_id: Optional[str] = None
     resume_detail: Optional[Dict[str, Any]] = None
     if args.resume:

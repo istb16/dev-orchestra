@@ -155,8 +155,8 @@ LEADER = (
 FAKE_WORKER = (
     "import sys\n"
     "sys.path.insert(0, sys.argv[1])\n"
-    "from orchestrator import execution\n"
-    "execution.end_children_on_sigterm()\n"
+    "from orchestrator import execution, execution_tree\n"
+    "execution_tree.end_children_on_sigterm()\n"
     "execution.execute([sys.executable, '-c', sys.argv[2], sys.argv[3]], cwd=sys.argv[4], timeout=60)\n"
 )
 
@@ -165,8 +165,8 @@ FAKE_WORKER = (
 IDLE_WORKER = (
     "import os, sys, time\n"
     "sys.path.insert(0, sys.argv[1])\n"
-    "from orchestrator import execution\n"
-    "execution.end_children_on_sigterm()\n"
+    "from orchestrator import execution_tree\n"
+    "execution_tree.end_children_on_sigterm()\n"
     "with open(sys.argv[2] + '.tmp', 'w') as f: f.write(str(os.getpid()))\n"
     "os.replace(sys.argv[2] + '.tmp', sys.argv[2])\n"
     "while True: time.sleep(0.05)\n"
