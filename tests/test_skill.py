@@ -1122,7 +1122,6 @@ class TestImportLayering(IsolatedCase):
             self.assertFalse(hasattr(config, name), name)
         # execution keeps the run and looks up what it needs from the modules
         # below it at call time, so a patch on the home reaches it (#289).
-        reexported = ("find_program", "pid_alive", "end_children_on_sigterm")
         execution_homes = {
             execution_drain: ("_Drain",),
             execution_launch: (
@@ -1162,8 +1161,7 @@ class TestImportLayering(IsolatedCase):
         for home, names in execution_homes.items():
             for name in names:
                 self.assertEqual(getattr(home, name).__module__, home.__name__, name)
-                if name not in reexported:
-                    self.assertFalse(hasattr(execution, name), name)
+                self.assertFalse(hasattr(execution, name), name)
         # Constants carry no __module__, and ``_stop`` is an instance.
         for name in (
             "KILL_GRACE_SECONDS",
@@ -1173,13 +1171,16 @@ class TestImportLayering(IsolatedCase):
             "BATCH_UNSAFE",
         ):
             self.assertFalse(hasattr(execution, name), name)
-        # Re-exported only for the callers that still look them up on execution:
-        # providers/base.py (find_program), providers/agy.py (pid_alive) and
-        # cli_run.py (end_children_on_sigterm). A test that patches one there
-        # reaches those callers and nothing else.
-        self.assertIs(execution.find_program, execution_launch.find_program)
-        self.assertIs(execution.pid_alive, execution_tree.pid_alive)
-        self.assertIs(execution.end_children_on_sigterm, execution_tree.end_children_on_sigterm)
+        # No longer re-exported: providers/base.py (find_program),
+        # providers/agy.py (pid_alive) and cli_run.py (end_children_on_sigterm)
+        # look them up on their home at call time, so a patch there reaches them.
+        from orchestrator.providers import agy, base
+
+        self.assertIs(base.execution_launch, execution_launch)
+        self.assertIs(agy.execution_tree, execution_tree)
+        self.assertIs(cli_run.execution_tree, execution_tree)
+        self.assertFalse(hasattr(agy, "execution"))
+        self.assertFalse(hasattr(cli_run, "execution"))
 
     def test_the_shared_execution_constants_have_one_definition(self):
         """``execution_common`` alone assigns ``IS_WINDOWS`` and ``_POLL_SECONDS``;
@@ -1215,11 +1216,10 @@ class TestImportLayering(IsolatedCase):
         self.assertFalse(hasattr(execution_launch, "_POLL_SECONDS"))
 
     def test_pid_alive_and_find_program_patches_reach_their_own_callers(self):
-        """The re-exports on ``execution`` are read by providers/agy.py
-        (``pid_alive``) and providers/base.py (``find_program``); jobs.py and
-        ledger.py read ``execution_tree.pid_alive``. A patch on one binding
-        reaches its own callers and not the others'."""
-        from orchestrator import execution, execution_launch, execution_tree, jobs
+        """providers/agy.py, jobs.py and ledger.py read ``execution_tree.pid_alive``
+        and providers/base.py reads ``execution_launch.find_program``, so a
+        patch on the home reaches every one of them."""
+        from orchestrator import execution_launch, execution_tree, jobs
         from orchestrator.providers import agy, base
 
         directory = self.enterContext(tempfile.TemporaryDirectory())
@@ -1232,39 +1232,24 @@ class TestImportLayering(IsolatedCase):
             os.utime(path, (old, old))
             return path
 
-        # agy's orphan sweep: execution.pid_alive is seen, execution_tree's is not.
+        # agy's orphan sweep sees execution_tree.pid_alive.
         kept = orphan(4242)
-        with (
-            mock.patch.object(execution, "pid_alive", lambda pid: True),
-            mock.patch.object(execution_tree, "pid_alive", lambda pid: False),
-        ):
+        with mock.patch.object(execution_tree, "pid_alive", lambda pid: True):
             agy._remove_orphaned_prompt_files(directory)
         self.assertTrue(os.path.exists(kept))
         removed = orphan(4243)
-        with (
-            mock.patch.object(execution, "pid_alive", lambda pid: False),
-            mock.patch.object(execution_tree, "pid_alive", lambda pid: True),
-        ):
+        with mock.patch.object(execution_tree, "pid_alive", lambda pid: False):
             agy._remove_orphaned_prompt_files(directory)
         self.assertFalse(os.path.exists(removed))
 
-        # jobs: execution_tree.pid_alive is seen, execution's is not.
-        with (
-            mock.patch.object(execution, "pid_alive", lambda pid: True),
-            mock.patch.object(execution_tree, "pid_alive", lambda pid: False),
-        ):
+        # jobs sees the same binding.
+        with mock.patch.object(execution_tree, "pid_alive", lambda pid: False):
             self.assertFalse(jobs._worker_alive(4242, {}))
-        with (
-            mock.patch.object(execution, "pid_alive", lambda pid: False),
-            mock.patch.object(execution_tree, "pid_alive", lambda pid: True),
-        ):
+        with mock.patch.object(execution_tree, "pid_alive", lambda pid: True):
             self.assertIsNone(jobs._worker_alive(4242, {}))
 
-        # base.Provider.which: execution.find_program is seen, execution_launch's is not.
-        with (
-            mock.patch.object(execution, "find_program", lambda name: "/seen/" + name),
-            mock.patch.object(execution_launch, "find_program", lambda name: "/missed/" + name),
-        ):
+        # base.Provider.which sees execution_launch.find_program.
+        with mock.patch.object(execution_launch, "find_program", lambda name: "/seen/" + name):
             self.assertEqual(base.Provider("some-cli").which(), "/seen/some-cli")
 
 

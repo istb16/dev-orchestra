@@ -29,8 +29,6 @@ from typing import IO, Any, Callable, Dict, NamedTuple, Optional, Sequence, Tupl
 
 from . import clocks, execution_drain, execution_launch, execution_tree
 from .execution_common import _POLL_SECONDS, IS_WINDOWS
-from .execution_launch import find_program  # noqa: F401 - re-exported
-from .execution_tree import end_children_on_sigterm, pid_alive  # noqa: F401 - re-exported
 
 #: Exit codes this module reports for its own decisions. Chosen to stay clear
 #: of the 0-127 range a child is likely to use for its own reasons.
