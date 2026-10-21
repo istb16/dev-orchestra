@@ -7,11 +7,12 @@ import os
 import re
 import subprocess
 import sys
-import tempfile
 import time
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Sequence, TypeGuard
+
+from . import atomic_file
 
 _SECRET_PATTERNS = (
     re.compile(r"\b(sk-[A-Za-z0-9_\-]{12,})"),
@@ -457,54 +458,13 @@ def _atomic_write(path: str, text: str) -> None:
     their parent share these files, and a reader landing in a truncate window
     used to get a parse error indistinguishable from "the file is not there".
     """
-    target = os.path.abspath(path)
-    parent = os.path.dirname(target)
-    if parent:
-        os.makedirs(parent, exist_ok=True)
-    handle, temporary = tempfile.mkstemp(dir=parent or None, prefix=".tmp-", suffix=".part")
-    try:
-        with os.fdopen(handle, "w", encoding="utf-8", newline="\n") as stream:
-            stream.write(text)
-        _replace_with_retry(temporary, target)
-    except BaseException:
-        try:
-            os.unlink(temporary)
-        except OSError:
-            pass
-        raise
-
-
-def _replace_with_retry(temporary: str, target: str, attempts: int = 25) -> None:
-    """Rename over ``target``, working around Windows file sharing.
-
-    On Windows ``os.replace`` is denied while another handle has the target
-    open, and Python's ``open()`` does not grant delete sharing -- so a
-    concurrent *reader* can make a *write* fail, which was worse than the torn
-    read this was meant to prevent. Readers hold the file only momentarily, so
-    a short backoff wins in practice.
-    """
-    last: Optional[OSError] = None
-    for attempt in range(attempts):
-        try:
-            os.replace(temporary, target)
-            return
-        except PermissionError as exc:  # Windows only
-            last = exc
-            time.sleep(min(0.01 * (attempt + 1), 0.1))
-
-    # Out of retries. Writing in place gives up atomicity, but losing the write
-    # would be worse, and readers already retry on a parse error.
-    try:
-        with open(temporary, "r", encoding="utf-8") as source:
-            content = source.read()
-        with open(target, "w", encoding="utf-8", newline="\n") as stream:
-            stream.write(content)
-        os.unlink(temporary)
-        return
-    except OSError:
-        pass
-    if last is not None:
-        raise last
+    atomic_file.write(
+        os.path.abspath(path),
+        text,
+        prefix=".tmp-",
+        suffix=".part",
+        replace=atomic_file.replace_with_retry,
+    )
 
 
 class file_lock:  # lowercase: it is used as a context manager, not a value
