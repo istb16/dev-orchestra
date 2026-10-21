@@ -716,12 +716,12 @@ class TestDetachedRun(IsolatedCase):
         super().setUp()
         from helpers import run_cli
 
-        from orchestrator import execution
+        from orchestrator import execution_tree
 
         self.run_cli = run_cli
         # A worker run in this process would otherwise install its SIGTERM
         # handler into the test runner.
-        self.installed = self.enterContext(mock.patch.object(execution, "end_children_on_sigterm"))
+        self.installed = self.enterContext(mock.patch.object(execution_tree, "end_children_on_sigterm"))
         run_cli("config", "setup", "--defaults")
         run_cli("config", "set", "implementer.provider", "mock")
 

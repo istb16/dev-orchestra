@@ -71,7 +71,7 @@ import tempfile
 import time
 from typing import Any, Callable, ClassVar, Dict, Iterator, List, NamedTuple, Optional, Sequence, Tuple
 
-from .. import activity, execution
+from .. import activity, execution_tree
 from .base import (
     MODE_IMPLEMENT,
     TOOL_ACTIVITY_CALLS,
@@ -805,7 +805,7 @@ def _remove_orphaned_prompt_files(directory: str) -> None:
         if not match:
             continue
         pid = int(match.group(1))
-        if pid == os.getpid() or execution.pid_alive(pid):
+        if pid == os.getpid() or execution_tree.pid_alive(pid):
             continue
         try:
             if now - os.path.getmtime(stale) < ORPHAN_MIN_AGE_SECONDS:

@@ -12,7 +12,7 @@ from unittest import mock
 
 from helpers import IsolatedCase, run_cli
 
-from orchestrator import activity, execution
+from orchestrator import activity, execution_tree
 from orchestrator import jobs as jobs_mod
 from orchestrator import workspace as ws
 
@@ -347,7 +347,7 @@ class TestDetachedActivity(IsolatedCase):
         super().setUp()
         # A worker run in this process would otherwise install its SIGTERM
         # handler into the test runner.
-        self.enterContext(mock.patch.object(execution, "end_children_on_sigterm"))
+        self.enterContext(mock.patch.object(execution_tree, "end_children_on_sigterm"))
         run_cli("config", "setup", "--defaults")
         run_cli("config", "set", "implementer.provider", "mock")
         self.started: List[str] = []

@@ -34,7 +34,7 @@ from helpers import (
     usage_dict,
 )
 
-from orchestrator import activity, execution, providers, verified
+from orchestrator import activity, execution, execution_tree, providers, verified
 from orchestrator.providers import agy as agy_module
 from orchestrator.providers import base
 from orchestrator.providers import claude as claude_module
@@ -93,7 +93,7 @@ class TestCapture(IsolatedCase):
                     pid = int(handle.read())
             except (OSError, ValueError):
                 return
-            if execution.pid_alive(pid):
+            if execution_tree.pid_alive(pid):
                 try:
                     os.kill(pid, getattr(signal, "SIGKILL", signal.SIGTERM))
                 except OSError:
@@ -2724,9 +2724,9 @@ class TestAgyPromptFile(_AgyCase):
         """Reviewers run in parallel, in this process and in others: a file
         another run may still be reading is never removed."""
         live, gone = 4242, 4243
-        original = execution.pid_alive
-        self.addCleanup(setattr, execution, "pid_alive", original)
-        setattr(execution, "pid_alive", lambda pid: pid == live)
+        original = execution_tree.pid_alive
+        self.addCleanup(setattr, execution_tree, "pid_alive", original)
+        setattr(execution_tree, "pid_alive", lambda pid: pid == live)
         names = {
             "live": "agy-prompt-%d-abc.md" % live,
             "gone": "agy-prompt-%d-abc.md" % gone,
@@ -2749,9 +2749,9 @@ class TestAgyPromptFile(_AgyCase):
     def test_a_recent_file_of_a_process_that_reads_as_gone_is_kept(self):
         """A pid that cannot be opened -- another user's, an elevated one --
         reads as gone; a file it wrote recently may still be in use."""
-        original = execution.pid_alive
-        self.addCleanup(setattr, execution, "pid_alive", original)
-        setattr(execution, "pid_alive", lambda pid: False)
+        original = execution_tree.pid_alive
+        self.addCleanup(setattr, execution_tree, "pid_alive", original)
+        setattr(execution_tree, "pid_alive", lambda pid: False)
         recent = "agy-prompt-4244-abc.md"
         with open(os.path.join(self.ai, recent), "w", encoding="utf-8") as handle:
             handle.write("in use\n")

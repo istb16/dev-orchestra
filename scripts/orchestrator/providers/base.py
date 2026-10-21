@@ -16,7 +16,7 @@ import re
 import subprocess
 from typing import Any, Callable, ClassVar, Dict, List, NamedTuple, Optional, Sequence, Tuple, TypeVar
 
-from .. import activity, clocks, execution, verified
+from .. import activity, clocks, execution, execution_launch, verified
 from ..workspace import redact
 
 # Execution modes shared by every adapter.
@@ -527,7 +527,7 @@ class Provider:
     def which(self) -> Optional[str]:
         # Where a run will start it from: on Windows never the current
         # directory, which may be the repository under review.
-        return execution.find_program(self.executable)
+        return execution_launch.find_program(self.executable)
 
     def _cached(self, kind: str, compute):
         key = (type(self).__module__, type(self).__name__, self.executable, kind)
