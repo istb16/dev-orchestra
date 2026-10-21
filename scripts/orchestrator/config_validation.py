@@ -135,8 +135,19 @@ _BUDGET = _Rule("budgets", _INT, "must be a non-negative integer or null")
 _RUN_TIMEOUT = _Rule("run.timeout_seconds", _SECONDS, "must be a positive integer", 1, null_ok=False)
 _LANGUAGE_RULES = (_Rule("language.rewrite", _BOOL, "must be true or false"),)
 _PROGRESS_RULES = (_Rule("progress.updates", _AUTO, "must be true, false or auto"),)
-_OPTIMIZATION_RULES = (_Rule("optimization.skip_unneeded_roles", _BOOL, "must be true or false"),)
-_OPTIMIZATION_LIMIT_RULES = (
+_REVIEW_EXCLUDE_RULES = (
+    _Rule("review.exclude", _GLOBS, "must be a list of glob patterns (use [] for none)"),
+)
+_OPTIMIZATION_RULES = (
+    _Rule("optimization.skip_unneeded_roles", _BOOL, "must be true or false"),
+    _Rule("optimization.high_risk_paths", _GLOBS, "must be a list of glob patterns (use [] for none)"),
+    _Rule("optimization.extra_high_risk_paths", _GLOBS, "must be a list of glob patterns (use [] for none)"),
+    _Rule("optimization.security_paths", _GLOBS, "must be a list of glob patterns (use [] for none)"),
+    _Rule("optimization.extra_security_paths", _GLOBS, "must be a list of glob patterns (use [] for none)"),
+    _Rule("optimization.architecture_paths", _GLOBS, "must be a list of glob patterns (use [] for none)"),
+    _Rule(
+        "optimization.extra_architecture_paths", _GLOBS, "must be a list of glob patterns (use [] for none)"
+    ),
     _Rule("optimization.low_risk_max_files", _INT, "must be a non-negative integer", 0),
     _Rule("optimization.low_risk_max_lines", _INT, "must be a non-negative integer", 0),
 )
@@ -433,16 +444,7 @@ def _validate_review(review: Any) -> List[str]:
     context = review.get("context")
     if context is not None:
         problems.extend(_validate_review_context(context))
-    exclude = review.get("exclude")
-    if exclude is not None:
-        if not isinstance(exclude, list):
-            problems.append("review.exclude: must be a list of glob patterns (use [] for none)")
-        else:
-            for index, pattern in enumerate(exclude):
-                if not isinstance(pattern, str) or not pattern.strip():
-                    problems.append(
-                        "review.exclude[%d]: must be a non-empty string (got %r)" % (index, pattern)
-                    )
+    problems.extend(_check(review, _REVIEW_EXCLUDE_RULES))
     return problems
 
 
@@ -757,26 +759,6 @@ def _validate_optimization(data: Any) -> List[str]:
     if level is not None and (not isinstance(level, str) or level.strip().lower() not in levels):
         problems.append("optimization.level: must be one of %s" % ", ".join(sorted(levels)))
     problems.extend(_check(data, _OPTIMIZATION_RULES))
-    for key in (
-        "high_risk_paths",
-        "extra_high_risk_paths",
-        "security_paths",
-        "extra_security_paths",
-        "architecture_paths",
-        "extra_architecture_paths",
-    ):
-        patterns = data.get(key)
-        if patterns is None:
-            continue
-        if not isinstance(patterns, list):
-            problems.append("optimization.%s: must be a list of glob patterns (use [] for none)" % key)
-            continue
-        for index, pattern in enumerate(patterns):
-            if not isinstance(pattern, str) or not pattern.strip():
-                problems.append(
-                    "optimization.%s[%d]: must be a non-empty string (got %r)" % (key, index, pattern)
-                )
-    problems.extend(_check(data, _OPTIMIZATION_LIMIT_RULES))
     return problems
 
 
