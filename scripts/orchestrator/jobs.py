@@ -26,7 +26,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
-from . import activity, execution
+from . import activity, execution, execution_launch
 from . import workspace as ws
 
 #: Terminal states. Anything else means the job is still supposed to be running.
@@ -300,7 +300,7 @@ def start(
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            **execution.spawn_kwargs(),
+            **execution_launch.spawn_kwargs(),
         )
     except OSError as exc:
         job["status"] = "failed"

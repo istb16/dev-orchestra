@@ -602,6 +602,7 @@ _REGISTRY_FREE = (
     "execution",
     "execution_common",
     "execution_drain",
+    "execution_launch",
     "presets",
     "verified",
     "context",

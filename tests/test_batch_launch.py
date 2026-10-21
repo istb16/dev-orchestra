@@ -17,7 +17,7 @@ from unittest import mock
 
 from helpers import IsolatedCase
 
-from orchestrator import execution
+from orchestrator import execution, execution_launch
 from orchestrator.providers import base as provider_base
 from orchestrator.providers.claude import ClaudeProvider
 
@@ -71,21 +71,21 @@ class TestHowABatchFileIsLaunched(_TempDir):
         shim = self.put("claude.cmd", NPM_SHIM)
         node = self.put("node.exe")
         script = self.put(os.path.join("node_modules", "@scope", "cli", "cli.js"))
-        launch = execution.windows_launch(["claude", "-p", 'x"&y'], shim)
+        launch = execution_launch.windows_launch(["claude", "-p", 'x"&y'], shim)
         self.assertEqual(launch, [node, script, "-p", 'x"&y'])
 
     def test_an_older_npm_shim_is_read_too(self):
         shim = self.put("cli.cmd", OLD_NPM_SHIM)
         node = self.put("node.exe")
         script = self.put(os.path.join("node_modules", "cli", "bin", "cli.js"))
-        self.assertEqual(execution.windows_launch(["cli", "a"], shim), [node, script, "a"])
+        self.assertEqual(execution_launch.windows_launch(["cli", "a"], shim), [node, script, "a"])
 
     def test_a_shim_without_a_node_beside_it_uses_the_one_on_path(self):
         shim = self.put("claude.cmd", NPM_SHIM)
         script = self.put(os.path.join("node_modules", "@scope", "cli", "cli.js"))
         node = os.path.join(self.tmp, "nodejs", "node.exe")
-        with mock.patch.object(execution, "find_program", return_value=node) as which:
-            launch = execution.windows_launch(["claude"], shim)
+        with mock.patch.object(execution_launch, "find_program", return_value=node) as which:
+            launch = execution_launch.windows_launch(["claude"], shim)
         which.assert_called_once_with("node")
         self.assertEqual(launch, [node, script])
 
@@ -94,24 +94,24 @@ class TestHowABatchFileIsLaunched(_TempDir):
         shim = self.put("claude.cmd", NPM_SHIM)
         self.put(os.path.join("node_modules", "@scope", "cli", "cli.js"))
         node = os.path.join(self.tmp, "nodejs", "node.cmd")
-        with mock.patch.object(execution, "find_program", return_value=node):
-            launch = execution.windows_launch(["claude", "x&y"], shim)
+        with mock.patch.object(execution_launch, "find_program", return_value=node):
+            launch = execution_launch.windows_launch(["claude", "x&y"], shim)
         self.assertIsInstance(launch, str)
         self.assertIn('"%s" "x&y"' % shim, launch)
 
     def test_a_shim_for_an_exe_runs_the_exe(self):
         shim = self.put("tool.cmd", EXE_SHIM)
         exe = self.put(os.path.join("node_modules", "tool", "bin", "tool.exe"))
-        self.assertEqual(execution.windows_launch(["tool", "--version"], shim), [exe, "--version"])
+        self.assertEqual(execution_launch.windows_launch(["tool", "--version"], shim), [exe, "--version"])
 
     def test_a_shim_whose_target_is_missing_is_left_to_cmd(self):
         shim = self.put("claude.cmd", NPM_SHIM)
-        launch = execution.windows_launch(["claude", "a"], shim)
+        launch = execution_launch.windows_launch(["claude", "a"], shim)
         self.assertIsInstance(launch, str)
 
     def test_any_other_batch_file_runs_under_cmd_with_every_argument_quoted(self):
         batch = self.put("fakecli.CMD", ECHO_BATCH)
-        launch = execution.windows_launch(["fakecli", "plain", "a b", "x&y|z", "C:\\dir\\", ""], batch)
+        launch = execution_launch.windows_launch(["fakecli", "plain", "a b", "x&y|z", "C:\\dir\\", ""], batch)
         self.assertIsInstance(launch, str)
         self.assertIn(' /d /v:off /s /c ""%s" "plain" "a b" "x&y|z" "C:\\dir\\\\" """' % batch, launch)
 
@@ -119,8 +119,8 @@ class TestHowABatchFileIsLaunched(_TempDir):
         batch = self.put("fakecli.cmd", ECHO_BATCH)
         for argument in ('say "hi"', "%PATH%", "wow!", "two\nlines", "cr\rhere"):
             with self.subTest(argument=argument):
-                with self.assertRaises(execution.LaunchRefused) as caught:
-                    execution.windows_launch(["fakecli", "sk-secret-" + argument], batch)
+                with self.assertRaises(execution_launch.LaunchRefused) as caught:
+                    execution_launch.windows_launch(["fakecli", "sk-secret-" + argument], batch)
                 message = str(caught.exception)
                 self.assertIn("fakecli.cmd", message)
                 self.assertIn("batch file", message)
@@ -128,14 +128,14 @@ class TestHowABatchFileIsLaunched(_TempDir):
 
     def test_a_program_that_is_not_a_batch_file_runs_from_the_path_found(self):
         exe = self.put("claude.exe")
-        self.assertEqual(execution.windows_launch(["claude", "-p"], exe), [exe, "-p"])
+        self.assertEqual(execution_launch.windows_launch(["claude", "-p"], exe), [exe, "-p"])
 
     def test_a_name_nothing_found_is_left_as_it_was(self):
-        self.assertEqual(execution.windows_launch(["nothere", "x"], None), ["nothere", "x"])
+        self.assertEqual(execution_launch.windows_launch(["nothere", "x"], None), ["nothere", "x"])
 
     @unittest.skipIf(os.name == "nt", "POSIX only")
     def test_posix_launches_are_unchanged(self):
-        self.assertEqual(execution.launchable(["claude", "a&b"]), ["claude", "a&b"])
+        self.assertEqual(execution_launch.launchable(["claude", "a&b"]), ["claude", "a&b"])
 
 
 class TestThePathSearch(_TempDir):
@@ -151,10 +151,10 @@ class TestThePathSearch(_TempDir):
         os.chdir(here)
         # ".", "" and a relative entry all name the repository under review.
         path = ";".join([".", "", "repo", installed])
-        found = execution.search_path("claude", path, ".com;.exe;.bat;.cmd")
+        found = execution_launch.search_path("claude", path, ".com;.exe;.bat;.cmd")
         self.assertEqual(found, os.path.join(installed, "claude.cmd"))
         self.assertTrue(os.path.isabs(found or ""))
-        self.assertIsNone(execution.search_path("claude", ".;repo", ".com;.exe;.bat;.cmd"))
+        self.assertIsNone(execution_launch.search_path("claude", ".;repo", ".com;.exe;.bat;.cmd"))
 
     def test_pathext_is_tried_in_order_and_a_named_extension_is_kept(self):
         installed = os.path.join(self.tmp, "npm")
@@ -163,10 +163,12 @@ class TestThePathSearch(_TempDir):
             with open(os.path.join(installed, name), "w") as handle:
                 handle.write("")
         self.assertEqual(
-            execution.search_path("codex", installed, ".exe;.cmd"), os.path.join(installed, "codex.exe")
+            execution_launch.search_path("codex", installed, ".exe;.cmd"),
+            os.path.join(installed, "codex.exe"),
         )
         self.assertEqual(
-            execution.search_path("codex.cmd", installed, ".exe;.cmd"), os.path.join(installed, "codex.cmd")
+            execution_launch.search_path("codex.cmd", installed, ".exe;.cmd"),
+            os.path.join(installed, "codex.cmd"),
         )
 
     def touch(self, *parts):
@@ -182,26 +184,26 @@ class TestThePathSearch(_TempDir):
         npm = os.path.join(self.tmp, "npm")
         absolute = os.path.join(self.tmp, "tools", "claude")
         # No absolute entry on PATH at all: the file is still where it says.
-        found = execution.search_path(absolute, ".", ".exe;.cmd")
+        found = execution_launch.search_path(absolute, ".", ".exe;.cmd")
         self.assertEqual(os.path.realpath(found or ""), tools)
         os.chdir(self.tmp)
-        found = execution.search_path(os.path.join("tools", "claude"), npm, ".exe;.cmd")
+        found = execution_launch.search_path(os.path.join("tools", "claude"), npm, ".exe;.cmd")
         self.assertTrue(os.path.isabs(found or ""))
         self.assertEqual(os.path.realpath(found or ""), tools)
-        self.assertIsNone(execution.search_path(os.path.join("missing", "claude"), npm, ".exe;.cmd"))
+        self.assertIsNone(execution_launch.search_path(os.path.join("missing", "claude"), npm, ".exe;.cmd"))
 
     def test_launch_starts_the_file_the_search_found(self):
         exe = self.touch("tools", "claude.exe")
         os.chdir(self.tmp)
         relative = os.path.join("tools", "claude")
         with (
-            mock.patch.object(execution, "IS_WINDOWS", True),
+            mock.patch.object(execution_launch, "IS_WINDOWS", True),
             mock.patch.dict(os.environ, {"PATHEXT": ".exe;.cmd"}),
         ):
-            found = execution.find_program(relative)
-            launch = execution.launchable([relative, "-p"])
+            found = execution_launch.find_program(relative)
+            launch = execution_launch.launchable([relative, "-p"])
             with self.assertRaises(FileNotFoundError):
-                execution.launchable([os.path.join("missing", "claude")])
+                execution_launch.launchable([os.path.join("missing", "claude")])
         self.assertEqual(os.path.realpath(found or ""), exe)
         self.assertEqual(launch, [found, "-p"])
 
@@ -209,7 +211,7 @@ class TestThePathSearch(_TempDir):
         tools = self.touch("tools", "claude.cmd")
         self.touch("tools", "claude.cmd.exe")  # not tried: the name has its extension
         os.chdir(self.tmp)
-        found = execution.search_path(os.path.join("tools", "claude.cmd"), ".", ".exe;.cmd")
+        found = execution_launch.search_path(os.path.join("tools", "claude.cmd"), ".", ".exe;.cmd")
         self.assertTrue(os.path.isabs(found or ""))
         self.assertEqual(os.path.realpath(found or ""), tools)
 
@@ -217,11 +219,11 @@ class TestThePathSearch(_TempDir):
         os.makedirs(os.path.join(self.tmp, "tools", "claude"))
         os.makedirs(os.path.join(self.tmp, "tools", "codex.cmd"))
         os.chdir(self.tmp)
-        self.assertIsNone(execution.search_path(os.path.join("tools", "claude"), ".", ".exe;.cmd"))
-        self.assertIsNone(execution.search_path(os.path.join("tools", "codex.cmd"), ".", ".exe;.cmd"))
+        self.assertIsNone(execution_launch.search_path(os.path.join("tools", "claude"), ".", ".exe;.cmd"))
+        self.assertIsNone(execution_launch.search_path(os.path.join("tools", "codex.cmd"), ".", ".exe;.cmd"))
         # Beside the directory, the file with an extension is the one found.
         cmd = self.touch("tools", "claude.cmd")
-        found = execution.search_path(os.path.join("tools", "claude"), ".", ".exe;.cmd")
+        found = execution_launch.search_path(os.path.join("tools", "claude"), ".", ".exe;.cmd")
         self.assertEqual(os.path.realpath(found or ""), cmd)
 
     def test_a_qualified_cmd_is_launched_as_the_file_the_search_found(self):
@@ -232,13 +234,13 @@ class TestThePathSearch(_TempDir):
         for name in (os.path.join("tools", "claude"), os.path.join("tools", "claude.cmd")):
             with self.subTest(name=name):
                 with (
-                    mock.patch.object(execution, "IS_WINDOWS", True),
+                    mock.patch.object(execution_launch, "IS_WINDOWS", True),
                     mock.patch.dict(os.environ, {"PATHEXT": ".exe;.cmd"}),
                 ):
-                    found = execution.find_program(name)
-                    launch = execution.launchable([name, "-p"])
+                    found = execution_launch.find_program(name)
+                    launch = execution_launch.launchable([name, "-p"])
                 self.assertTrue(os.path.isabs(found or ""))
-                self.assertEqual(launch, execution.batch_command_line(found or "", ["-p"]))
+                self.assertEqual(launch, execution_launch.batch_command_line(found or "", ["-p"]))
                 self.assertIn('"%s" "-p"' % found, launch)
 
 
@@ -249,7 +251,7 @@ class TestTheCurrentDirectoryOnWindows(_TempDir):
         with open(os.path.join(self.project, "planted.cmd"), "w", newline="") as handle:
             handle.write('@echo off\r\necho planted> "%s"\r\n' % marker)
         self.set_env("PATH", os.path.join(self.tmp, "empty"))
-        self.assertIsNone(execution.find_program("planted"))
+        self.assertIsNone(execution_launch.find_program("planted"))
         outcome = execution.execute(["planted", "--version"], self.project, timeout=60)
         self.assertEqual(outcome.exit_code, execution.EXIT_SPAWN_FAILED)
         self.assertIn("not found on PATH", outcome.stderr)
@@ -298,7 +300,7 @@ class TestABatchFileOnWindows(_TempDir):
         provider = ClaudeProvider("fakecli")
         # What `which()` finds unpatched; the suite may hide the built-in CLIs from it.
         self.assertEqual(
-            os.path.normcase(execution.find_program("fakecli") or ""), os.path.normcase(self.batch)
+            os.path.normcase(execution_launch.find_program("fakecli") or ""), os.path.normcase(self.batch)
         )
         version, error = provider.version()
         self.assertIsNone(error)

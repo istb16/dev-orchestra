@@ -21,7 +21,7 @@ from unittest import mock
 
 from helpers import SCRIPTS_DIR, IsolatedCase
 
-from orchestrator import clocks, execution, execution_drain
+from orchestrator import clocks, execution, execution_drain, execution_launch
 
 #: Sleeps forever without ever writing anything: a wedged agent.
 SILENT_HANG = "import time\nwhile True: time.sleep(0.05)\n"
@@ -809,7 +809,7 @@ class TestProcessTree(IsolatedCase):
         proc.stdin.close.assert_called_once_with()
 
     def test_terminate_tree_reports_whether_everything_exited(self):
-        proc = subprocess.Popen(python_code(SILENT_HANG), **execution._spawn_kwargs())
+        proc = subprocess.Popen(python_code(SILENT_HANG), **execution_launch._spawn_kwargs())
         try:
             self.assertTrue(execution.terminate_tree(proc))
             self.assertIsNotNone(proc.poll())
@@ -818,12 +818,12 @@ class TestProcessTree(IsolatedCase):
                 proc.kill()
 
     def test_terminate_tree_on_an_already_dead_process_is_fine(self):
-        proc = subprocess.Popen(python_code("pass"), **execution._spawn_kwargs())
+        proc = subprocess.Popen(python_code("pass"), **execution_launch._spawn_kwargs())
         proc.wait(timeout=30)
         self.assertTrue(execution.terminate_tree(proc))
 
     def test_kill_tree_by_pid_returns_once_the_process_is_gone(self):
-        proc = subprocess.Popen(python_code(SILENT_HANG), **execution.spawn_kwargs())
+        proc = subprocess.Popen(python_code(SILENT_HANG), **execution_launch.spawn_kwargs())
         try:
             self.assertTrue(execution.kill_tree(proc.pid))
             self.assertFalse(execution.pid_alive(proc.pid))
@@ -866,7 +866,7 @@ class TestProcessTree(IsolatedCase):
                         pass
 
     def test_kill_tree_on_an_already_dead_pid_is_fine(self):
-        proc = subprocess.Popen(python_code("pass"), **execution.spawn_kwargs())
+        proc = subprocess.Popen(python_code("pass"), **execution_launch.spawn_kwargs())
         proc.wait(timeout=30)
         self.assertTrue(execution.kill_tree(proc.pid))
 
@@ -1453,7 +1453,7 @@ class TestGroupKill(IsolatedCase):
             "while True: time.sleep(0.05)\n"
         ) % SILENT_HANG
         proc = subprocess.Popen(
-            python_code(probe), stdout=subprocess.PIPE, text=True, **execution.spawn_kwargs()
+            python_code(probe), stdout=subprocess.PIPE, text=True, **execution_launch.spawn_kwargs()
         )
         assert proc.stdout is not None
         try:
@@ -1488,7 +1488,7 @@ class TestGroupKill(IsolatedCase):
 
     def start_leader(self) -> Tuple[subprocess.Popen, int]:
         pids_file = os.path.join(self.project, "pids.txt")
-        proc = subprocess.Popen([*python_code(LEADER), pids_file], **execution.spawn_kwargs())
+        proc = subprocess.Popen([*python_code(LEADER), pids_file], **execution_launch.spawn_kwargs())
         self.end_on_cleanup(proc)
         leader_pid, child_pid = read_pids(self, pids_file)
         self.assertEqual(leader_pid, proc.pid)
@@ -1535,13 +1535,13 @@ class TestGroupKill(IsolatedCase):
         self.assert_group_gone(worker_pid)
 
     def test_a_clean_group_gets_no_sigkill(self):
-        proc = subprocess.Popen(python_code(SILENT_HANG), **execution.spawn_kwargs())
+        proc = subprocess.Popen(python_code(SILENT_HANG), **execution_launch.spawn_kwargs())
         self.end_on_cleanup(proc)
         sent = self.record_signals()
         self.assertTrue(execution.terminate_tree(proc, grace=4))
         self.assertEqual(sent, [signal.SIGTERM])
 
-        proc = subprocess.Popen(python_code(SILENT_HANG), **execution.spawn_kwargs())
+        proc = subprocess.Popen(python_code(SILENT_HANG), **execution_launch.spawn_kwargs())
         self.end_on_cleanup(proc)
         del sent[:]
         self.assertTrue(execution.kill_tree(proc.pid, grace=4))
@@ -1584,7 +1584,7 @@ class TestGroupKill(IsolatedCase):
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            **execution.spawn_kwargs(),
+            **execution_launch.spawn_kwargs(),
         )
         self.end_on_cleanup(worker)
         cli_pid, _ = read_pids(self, pids_file)
@@ -1604,7 +1604,7 @@ class TestGroupKill(IsolatedCase):
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            **execution.spawn_kwargs(),
+            **execution_launch.spawn_kwargs(),
         )
         self.end_on_cleanup(worker)
         cli_pid, _ = read_pids(self, pids_file)
@@ -1625,7 +1625,7 @@ class TestGroupKill(IsolatedCase):
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            **execution.spawn_kwargs(),
+            **execution_launch.spawn_kwargs(),
         )
         self.end_on_cleanup(worker)
         self.assertEqual(read_pids(self, ready_file), (worker.pid,))
@@ -1657,7 +1657,7 @@ class TestPidLiveness(IsolatedCase):
         # Its own process group, like every other terminate_tree test here:
         # on POSIX terminate_tree signals the whole group, and a child sharing
         # the runner's group kills the test run itself.
-        proc = subprocess.Popen(python_code(SILENT_HANG), **execution._spawn_kwargs())
+        proc = subprocess.Popen(python_code(SILENT_HANG), **execution_launch._spawn_kwargs())
         # A handle of our own keeps the pid from being handed to another
         # process once Popen lets go of its own, and makes this the case that
         # matters: a dead process someone still holds open.

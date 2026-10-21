@@ -157,11 +157,11 @@ class TestCancel(JobCase):
         import subprocess
         import sys
 
-        from orchestrator import execution
+        from orchestrator import execution, execution_launch
 
         child = subprocess.Popen(
             [sys.executable, "-c", "import time\nwhile True: time.sleep(0.05)"],
-            **execution._spawn_kwargs(),
+            **execution_launch._spawn_kwargs(),
         )
         try:
             self.record(
