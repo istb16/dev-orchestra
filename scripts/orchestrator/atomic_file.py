@@ -73,9 +73,8 @@ def write(
         prefix = "." + os.path.basename(path) + "."
     handle, temporary = tempfile.mkstemp(prefix=prefix, suffix=suffix, dir=directory)
     try:
-        data = content.encode("utf-8") if isinstance(content, str) else content
         with os.fdopen(handle, "wb") as stream:
-            stream.write(data)
+            stream.write(content.encode("utf-8") if isinstance(content, str) else content)
             if durable:
                 stream.flush()
                 os.fsync(stream.fileno())
