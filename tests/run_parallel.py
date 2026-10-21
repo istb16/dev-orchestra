@@ -5,7 +5,7 @@ this runs the same tests in parallel for CI and for anyone who wants that
 locally. Standard library only, like the rest of the suite::
 
     python tests/run_parallel.py [-v] [-j N] [--timeout SECONDS] [--serial module.Class ...]
-                                 [--split module.Class ...]
+                                 [--split module.Class ...] [--write-timings PATH]
 
 A class named by ``--split`` (or in ``SPLIT_CLASSES``) is handed out one test
 method per task instead, so one long class does not decide how long the run
@@ -13,6 +13,12 @@ takes. Only classes with no class or module fixtures belong there.
 
 ``--timeout`` is per task, counted from when a worker starts it; the first
 task to run past it stops the whole run.
+
+``--write-timings PATH`` records how long each task took, as JSON, once the
+run has finished (not after a hang). Record it serially, so the times are not
+inflated by tasks competing for the CPU::
+
+    python tests/run_parallel.py -j 1 --write-timings tests/timings.json
 
 Workers are separate processes started with ``spawn``: tests chdir and set
 environment variables, which are per process, so threads would collide. Each
@@ -25,6 +31,7 @@ from __future__ import annotations
 import argparse
 import concurrent.futures
 import io
+import json
 import multiprocessing
 import os
 import sys
@@ -112,7 +119,7 @@ def _init_worker(start_dir: str, started) -> None:
     _started = started
 
 
-def run_class(name: str, verbosity: int) -> Dict[str, object]:
+def run_class(name: str, verbosity: int) -> Dict[str, Any]:
     """One task: load ``module.Class`` (or ``module.Class.method``) by name and run it. Runs in a worker."""
     if _started is not None:
         _started.put(name)
@@ -168,6 +175,12 @@ def _parse_args(argv: Optional[List[str]]) -> argparse.Namespace:
         default=[],
         metavar="MODULE.CLASS",
         help="hand out each test method of this class as its own task; repeatable",
+    )
+    parser.add_argument(
+        "--write-timings",
+        default=None,
+        metavar="PATH",
+        help="after a finished run, write each task's seconds to PATH as JSON",
     )
     args = parser.parse_args(argv)
     if args.jobs is None:
@@ -231,6 +244,13 @@ class _Tally:
         return not (self.failures or self.errors or self.unexpected_successes)
 
 
+def _write_timings(path: str, timings: Dict[str, float]) -> None:
+    rounded = {name: round(seconds, 2) for name, seconds in timings.items()}
+    with open(path, "w", encoding="utf-8", newline="\n") as handle:
+        json.dump(rounded, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+
+
 def _terminate_workers(executor: concurrent.futures.ProcessPoolExecutor) -> None:
     # A hung worker never returns, and shutdown() cannot stop one.
     for process in list((getattr(executor, "_processes", None) or {}).values()):
@@ -279,6 +299,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     pooled = sorted(sizes, key=lambda name: (-sizes[name], name))
 
     tally = _Tally()
+    # Seconds per task that produced a result, for --write-timings.
+    timings: Dict[str, float] = {}
     if in_parent:
         tally.add(_run_suite("discovery", unittest.TestSuite(in_parent), verbosity))
 
@@ -319,7 +341,9 @@ def main(argv: Optional[List[str]] = None) -> int:
             for future in sorted(done, key=futures.__getitem__):
                 name = futures[future]
                 try:
-                    tally.add(future.result())
+                    outcome = future.result()
+                    timings[name] = outcome["duration"]
+                    tally.add(outcome)
                 except BrokenProcessPool:
                     # The pool fails every unfinished task at once, so this
                     # names the class that killed its worker and all the ones
@@ -349,7 +373,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         executor.shutdown(wait=not broken, cancel_futures=True)
 
         for name in serial:
-            tally.add(run_class(name, verbosity))
+            outcome = run_class(name, verbosity)
+            timings[name] = outcome["duration"]
+            tally.add(outcome)
     finally:
         executor.shutdown(wait=False, cancel_futures=True)
         if template is not None:
@@ -359,6 +385,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     complete = tally.run == expected
     if not complete:
         sys.stderr.write("\nrun_parallel: discover found %d tests but %d ran\n" % (expected, tally.run))
+    if args.write_timings is not None:
+        _write_timings(args.write_timings, timings)
     sys.stderr.write(tally.summary(time.monotonic() - started))
     return 0 if tally.ok() and complete else 1
 

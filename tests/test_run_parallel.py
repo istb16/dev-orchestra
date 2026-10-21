@@ -9,6 +9,7 @@ the exit code and the summary line.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -251,6 +252,49 @@ class TestSplitClasses(RunnerCase):
         code, stderr = self.run_runner("--split", "test_passing.TestNoSuchClass")
         self.assertEqual(code, 2, stderr)
         self.assertIn("no such test class: test_passing.TestNoSuchClass", stderr)
+
+
+class TestWriteTimings(RunnerCase):
+    def setUp(self) -> None:
+        super().setUp()
+        output_dir = tempfile.mkdtemp(prefix="devorchestra-timings-")
+        self.addCleanup(shutil.rmtree, output_dir, ignore_errors=True)
+        self.path = os.path.join(output_dir, "timings.json")
+
+    def test_writes_one_key_per_task(self):
+        self.module("test_passing", PASSING)
+        self.module("test_failing", FAILING)
+        self.module("test_slow", slow("TestSlow", 0.2))
+        code, stderr = self.run_runner(
+            "--split",
+            "test_passing.TestPasses",
+            "--serial",
+            "test_slow.TestSlow",
+            "--write-timings",
+            self.path,
+        )
+        self.assertEqual(code, 1, stderr)
+        with open(self.path, encoding="utf-8") as handle:
+            timings = json.load(handle)
+        self.assertEqual(
+            sorted(timings),
+            [
+                "test_failing.TestFails",
+                "test_passing.TestPasses.test_one",
+                "test_passing.TestPasses.test_two",
+                "test_slow.TestSlow",
+            ],
+        )
+        for seconds in timings.values():
+            self.assertIsInstance(seconds, (int, float))
+            self.assertEqual(seconds, round(seconds, 2))
+        self.assertGreaterEqual(timings["test_slow.TestSlow"], 0.2)
+
+    def test_a_hung_run_writes_nothing(self):
+        self.module("test_hangs", HANGS)
+        code, stderr = self.run_runner("--timeout", "3", "--write-timings", self.path)
+        self.assertEqual(code, 1, stderr)
+        self.assertFalse(os.path.exists(self.path))
 
 
 if __name__ == "__main__":
