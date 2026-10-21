@@ -18,6 +18,8 @@ import tempfile
 import textwrap
 import unittest
 
+import run_parallel
+
 RUNNER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "run_parallel.py")
 
 PASSING = """\
@@ -295,6 +297,61 @@ class TestWriteTimings(RunnerCase):
         code, stderr = self.run_runner("--timeout", "3", "--write-timings", self.path)
         self.assertEqual(code, 1, stderr)
         self.assertFalse(os.path.exists(self.path))
+
+
+class TestTheOrder(unittest.TestCase):
+    """In process: which task is handed out first."""
+
+    def test_a_recorded_time_outweighs_a_test_count(self):
+        times = run_parallel._task_times({"a.Many": 10, "b.Few": 1}, {"b.Few": 30.0})
+        self.assertEqual(run_parallel._longest_first(times), ["b.Few", "a.Many"])
+
+    def test_a_task_without_a_recorded_time_is_estimated_from_its_test_count(self):
+        times = run_parallel._task_times({"a.Known": 4, "b.New": 4}, {"a.Known": 0.5})
+        self.assertEqual(times, {"a.Known": 0.5, "b.New": 4 * run_parallel.ESTIMATE_PER_TEST})
+
+    def test_times_for_tasks_that_are_gone_are_ignored(self):
+        times = run_parallel._task_times({"a.Here": 2}, {"a.Gone": 99.0})
+        self.assertEqual(list(times), ["a.Here"])
+
+    def test_ties_go_by_name(self):
+        times = {"c.C": 1.0, "a.A": 1.0, "b.B": 2.0}
+        self.assertEqual(run_parallel._longest_first(times), ["b.B", "a.A", "c.C"])
+
+
+class TestTimingsFile(RunnerCase):
+    def setUp(self) -> None:
+        super().setUp()
+        output_dir = tempfile.mkdtemp(prefix="devorchestra-timings-")
+        self.addCleanup(shutil.rmtree, output_dir, ignore_errors=True)
+        self.path = os.path.join(output_dir, "timings.json")
+
+    def write(self, text: str) -> None:
+        with open(self.path, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(text)
+
+    def test_a_stale_file_still_runs_every_test(self):
+        self.module("test_passing", PASSING)
+        self.module("test_also_passing", PASSING.replace("TestPasses", "TestAlsoPasses"))
+        self.write(json.dumps({"test_passing.TestPasses": 5.0, "test_gone.TestGone": 50.0}))
+        code, stderr = self.run_runner("--timings", self.path)
+        self.assertEqual(code, 0, stderr)
+        self.assertSummary(stderr, 4, "OK")
+
+    def test_a_named_file_that_is_missing_is_refused(self):
+        self.module("test_passing", PASSING)
+        code, stderr = self.run_runner("--timings", self.path)
+        self.assertEqual(code, 2, stderr)
+        self.assertIn("cannot read timings from", stderr)
+
+    def test_a_file_that_is_not_timings_is_refused(self):
+        self.module("test_passing", PASSING)
+        for text in ("not json", "[1, 2]", '{"test_passing.TestPasses": "slow"}'):
+            with self.subTest(text=text):
+                self.write(text)
+                code, stderr = self.run_runner("--timings", self.path)
+                self.assertEqual(code, 2, stderr)
+                self.assertIn("cannot read timings from", stderr)
 
 
 if __name__ == "__main__":

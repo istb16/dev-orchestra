@@ -5,11 +5,17 @@ this runs the same tests in parallel for CI and for anyone who wants that
 locally. Standard library only, like the rest of the suite::
 
     python tests/run_parallel.py [-v] [-j N] [--timeout SECONDS] [--serial module.Class ...]
-                                 [--split module.Class ...] [--write-timings PATH]
+                                 [--split module.Class ...] [--timings PATH]
+                                 [--write-timings PATH]
 
 A class named by ``--split`` (or in ``SPLIT_CLASSES``) is handed out one test
 method per task instead, so one long class does not decide how long the run
 takes. Only classes with no class or module fixtures belong there.
+
+Tasks are handed out longest first, by the seconds recorded for them in
+``timings.json`` next to this script (``--timings`` reads another file). A
+task with no recorded time is estimated from its test count. The times only
+decide the order; a stale file never changes which tests run.
 
 ``--timeout`` is per task, counted from when a worker starts it; the first
 task to run past it stops the whole run.
@@ -66,6 +72,13 @@ SPLIT_CLASSES = (
 )
 
 JOBS_ENV = "DEV_ORCHESTRA_TEST_JOBS"
+
+#: Where the seconds each task took are kept; ``--write-timings`` makes it.
+TIMINGS_FILE = os.path.join(TESTS_DIR, "timings.json")
+
+#: Seconds per test for a task with no recorded time, a little over the
+#: suite's mean, so a new task is placed by its size.
+ESTIMATE_PER_TEST = 0.25
 
 #: In a worker, where it tells the parent which class it has started, so the
 #: timeout can run from that moment rather than from when it was queued.
@@ -177,6 +190,12 @@ def _parse_args(argv: Optional[List[str]]) -> argparse.Namespace:
         help="hand out each test method of this class as its own task; repeatable",
     )
     parser.add_argument(
+        "--timings",
+        default=None,
+        metavar="PATH",
+        help="read each task's recorded seconds from PATH (default: timings.json next to this script)",
+    )
+    parser.add_argument(
         "--write-timings",
         default=None,
         metavar="PATH",
@@ -244,6 +263,33 @@ class _Tally:
         return not (self.failures or self.errors or self.unexpected_successes)
 
 
+def _read_timings(path: str) -> Dict[str, float]:
+    """``{task: seconds}`` from a file ``--write-timings`` wrote; ValueError if it is not one."""
+    with open(path, encoding="utf-8") as handle:
+        data = json.load(handle)
+    if not isinstance(data, dict):
+        raise ValueError("not a JSON object")
+    timings: Dict[str, float] = {}
+    for name, seconds in data.items():
+        if isinstance(seconds, bool) or not isinstance(seconds, (int, float)) or seconds < 0:
+            raise ValueError("%s: not a number of seconds: %r" % (name, seconds))
+        timings[name] = float(seconds)
+    return timings
+
+
+def _task_times(sizes: Dict[str, int], recorded: Dict[str, float]) -> Dict[str, float]:
+    """Each task's recorded seconds, or an estimate from its test count."""
+    return {
+        name: recorded[name] if name in recorded else ESTIMATE_PER_TEST * count
+        for name, count in sizes.items()
+    }
+
+
+def _longest_first(times: Dict[str, float]) -> List[str]:
+    # Ties by name, so the order is the same every run.
+    return sorted(times, key=lambda name: (-times[name], name))
+
+
 def _write_timings(path: str, timings: Dict[str, float]) -> None:
     rounded = {name: round(seconds, 2) for name, seconds in timings.items()}
     with open(path, "w", encoding="utf-8", newline="\n") as handle:
@@ -294,9 +340,19 @@ def main(argv: Optional[List[str]] = None) -> int:
                 sizes[test_id] = sizes.get(test_id, 0) + 1
         else:
             sizes[name] = len(ids)
-    # Largest first, so the long classes do not start last; ties by name so
-    # the order is the same every run.
-    pooled = sorted(sizes, key=lambda name: (-sizes[name], name))
+
+    # The default file may be missing from a tree that is not this
+    # repository's; one named on the command line must be there.
+    timings_path = args.timings if args.timings is not None else TIMINGS_FILE
+    recorded: Dict[str, float] = {}
+    if args.timings is not None or os.path.exists(timings_path):
+        try:
+            recorded = _read_timings(timings_path)
+        except (OSError, ValueError) as error:
+            sys.stderr.write("run_parallel: cannot read timings from %s: %s\n" % (timings_path, error))
+            return 2
+    # Longest first, so the long tasks do not start last.
+    pooled = _longest_first(_task_times(sizes, recorded))
 
     tally = _Tally()
     # Seconds per task that produced a result, for --write-timings.
