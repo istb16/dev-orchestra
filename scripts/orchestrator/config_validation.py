@@ -103,8 +103,13 @@ def _check_value(rule: _Rule, value: Any, path: str) -> List[str]:
 
 _REVIEW_RULES = (_Rule("review.parallel", _BOOL, "must be true or false"),)
 _REVIEW_LIMIT_RULES = (_Rule("review.incremental_rounds", _BOOL, "must be true or false"),)
-_DESIGN_RULES = (_Rule("design.require_approval", _BOOL, "must be true or false"),)
+_REVIEW_DESIGN_RULES = (_Rule("review.design.enabled", _AUTO, "must be true, false or auto"),)
+_DESIGN_RULES = (
+    _Rule("design.require_approval", _BOOL, "must be true or false"),
+    _Rule("design.ask_questions", _AUTO, "must be true, false or auto"),
+)
 _LANGUAGE_RULES = (_Rule("language.rewrite", _BOOL, "must be true or false"),)
+_PROGRESS_RULES = (_Rule("progress.updates", _AUTO, "must be true, false or auto"),)
 _OPTIMIZATION_RULES = (_Rule("optimization.skip_unneeded_roles", _BOOL, "must be true or false"),)
 
 
@@ -454,14 +459,7 @@ def _validate_severities(severities: Any) -> List[str]:
 def _validate_review_design(design: Any) -> List[str]:
     if not isinstance(design, dict):
         return ["review.design: must be a mapping"]
-    problems: List[str] = []
-    enabled = design.get("enabled")
-    if isinstance(enabled, str):
-        known = enabled.strip().lower() == "auto"
-    else:
-        known = enabled is None or isinstance(enabled, bool)
-    if not known:
-        problems.append("review.design.enabled: must be true, false or auto")
+    problems = _check(design, _REVIEW_DESIGN_RULES)
     rounds = design.get("max_iterations")
     if rounds is not None and not _int_at_least(rounds, 0):
         problems.append("review.design.max_iterations: must be a non-negative integer")
@@ -503,13 +501,6 @@ def _validate_design(design: Any) -> List[str]:
     if not isinstance(design, dict):
         return ["design: must be a mapping"]
     problems = _check(design, _DESIGN_RULES)
-    ask = design.get("ask_questions")
-    if isinstance(ask, str):
-        known = ask.strip().lower() == "auto"
-    else:
-        known = ask is None or isinstance(ask, bool)
-    if not known:
-        problems.append("design.ask_questions: must be true, false or auto")
     rounds = design.get("max_question_rounds")
     if rounds is not None and not _int_at_least(rounds, 1):
         problems.append("design.max_question_rounds: must be a positive integer")
@@ -575,14 +566,7 @@ def _validate_language(language: Any) -> List[str]:
 def _validate_progress(progress: Any) -> List[str]:
     if not isinstance(progress, dict):
         return ["progress: must be a mapping"]
-    problems: List[str] = []
-    updates = progress.get("updates")
-    if isinstance(updates, str):
-        known = updates.strip().lower() == "auto"
-    else:
-        known = updates is None or isinstance(updates, bool)
-    if not known:
-        problems.append("progress.updates: must be true, false or auto")
+    problems = _check(progress, _PROGRESS_RULES)
     interval = progress.get("interval_seconds")
     if interval is not None and not (
         _int_at_least(interval, PROGRESS_INTERVAL_MIN) and interval <= PROGRESS_INTERVAL_MAX
