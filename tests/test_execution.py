@@ -21,7 +21,7 @@ from unittest import mock
 
 from helpers import SCRIPTS_DIR, IsolatedCase
 
-from orchestrator import clocks, execution, execution_drain, execution_launch
+from orchestrator import clocks, execution, execution_drain, execution_launch, execution_tree
 
 #: Sleeps forever without ever writing anything: a wedged agent.
 SILENT_HANG = "import time\nwhile True: time.sleep(0.05)\n"
@@ -193,7 +193,7 @@ def end_pid_in(path: str) -> None:
             pid = int(f.read())
     except (OSError, ValueError):
         return
-    if execution.pid_alive(pid):
+    if execution_tree.pid_alive(pid):
         try:
             os.kill(pid, getattr(signal, "SIGKILL", signal.SIGTERM))
         except OSError:
@@ -500,9 +500,9 @@ class TestProcessTree(IsolatedCase):
             self.assertFalse(outcome.orphans_possible, outcome.stderr)
             self.assertIn("it was stopped", outcome.stderr)
             deadline = time.monotonic() + 10
-            while execution.pid_alive(grandchild) and time.monotonic() < deadline:
+            while execution_tree.pid_alive(grandchild) and time.monotonic() < deadline:
                 time.sleep(0.05)
-            self.assertFalse(execution.pid_alive(grandchild))
+            self.assertFalse(execution_tree.pid_alive(grandchild))
 
     def run_with_a_leftover(self, parent, on_line=None):
         """Run ``parent``; its leftover starts writing once the output's cutoff is taken.
@@ -578,7 +578,7 @@ class TestProcessTree(IsolatedCase):
                 time.sleep(0.01)
             # A leftover that ends when released is gone well within this.
             deadline = time.monotonic() + 1
-            while spawned and execution._group_running(spawned[0].pid) and time.monotonic() < deadline:
+            while spawned and execution_tree._group_running(spawned[0].pid) and time.monotonic() < deadline:
                 time.sleep(0.01)
             original_pump(drain, stream)
 
@@ -659,8 +659,8 @@ class TestProcessTree(IsolatedCase):
         )
         with (
             mock.patch.object(execution, "_spawn", spawn),
-            mock.patch.object(execution.os, "killpg", killpg, create=True),
-            mock.patch.object(execution.os, "listdir", side_effect=OSError("no /proc")),
+            mock.patch.object(execution_tree.os, "killpg", killpg, create=True),
+            mock.patch.object(execution_tree.os, "listdir", side_effect=OSError("no /proc")),
             mock.patch.object(execution_drain._Drain, "mark", mark),
             mock.patch.object(execution_drain._Drain, "pump", slow_pump),
         ):
@@ -811,7 +811,7 @@ class TestProcessTree(IsolatedCase):
     def test_terminate_tree_reports_whether_everything_exited(self):
         proc = subprocess.Popen(python_code(SILENT_HANG), **execution_launch._spawn_kwargs())
         try:
-            self.assertTrue(execution.terminate_tree(proc))
+            self.assertTrue(execution_tree.terminate_tree(proc))
             self.assertIsNotNone(proc.poll())
         finally:
             if proc.poll() is None:  # pragma: no cover - safety net
@@ -820,13 +820,13 @@ class TestProcessTree(IsolatedCase):
     def test_terminate_tree_on_an_already_dead_process_is_fine(self):
         proc = subprocess.Popen(python_code("pass"), **execution_launch._spawn_kwargs())
         proc.wait(timeout=30)
-        self.assertTrue(execution.terminate_tree(proc))
+        self.assertTrue(execution_tree.terminate_tree(proc))
 
     def test_kill_tree_by_pid_returns_once_the_process_is_gone(self):
         proc = subprocess.Popen(python_code(SILENT_HANG), **execution_launch.spawn_kwargs())
         try:
-            self.assertTrue(execution.kill_tree(proc.pid))
-            self.assertFalse(execution.pid_alive(proc.pid))
+            self.assertTrue(execution_tree.kill_tree(proc.pid))
+            self.assertFalse(execution_tree.pid_alive(proc.pid))
         finally:
             if proc.poll() is None:
                 proc.kill()
@@ -851,15 +851,15 @@ class TestProcessTree(IsolatedCase):
         with open(pids_file) as f:
             worker_pid, grandchild_pid = (int(part) for part in f.read().split())
         try:
-            self.assertTrue(execution.kill_tree(worker_pid))
-            self.assertFalse(execution.pid_alive(worker_pid))
+            self.assertTrue(execution_tree.kill_tree(worker_pid))
+            self.assertFalse(execution_tree.pid_alive(worker_pid))
             deadline = time.monotonic() + 10
-            while execution.pid_alive(grandchild_pid) and time.monotonic() < deadline:
+            while execution_tree.pid_alive(grandchild_pid) and time.monotonic() < deadline:
                 time.sleep(0.05)
-            self.assertFalse(execution.pid_alive(grandchild_pid))
+            self.assertFalse(execution_tree.pid_alive(grandchild_pid))
         finally:
             for pid in (worker_pid, grandchild_pid):  # pragma: no cover - safety net
-                if execution.pid_alive(pid):
+                if execution_tree.pid_alive(pid):
                     try:
                         os.kill(pid, 9 if os.name != "nt" else 15)
                     except OSError:
@@ -868,7 +868,7 @@ class TestProcessTree(IsolatedCase):
     def test_kill_tree_on_an_already_dead_pid_is_fine(self):
         proc = subprocess.Popen(python_code("pass"), **execution_launch.spawn_kwargs())
         proc.wait(timeout=30)
-        self.assertTrue(execution.kill_tree(proc.pid))
+        self.assertTrue(execution_tree.kill_tree(proc.pid))
 
     @unittest.skipIf(execution.IS_WINDOWS, "process groups are POSIX")
     def test_kill_tree_leaves_a_pid_that_does_not_lead_its_group_alone(self):
@@ -876,12 +876,12 @@ class TestProcessTree(IsolatedCase):
         most likely a reused pid: nothing is signalled and it is not reported gone."""
         sent = []
         with (
-            mock.patch.object(execution, "pid_alive", lambda pid: True),
-            mock.patch.object(execution.os, "getpgid", lambda pid: pid + 1),
-            mock.patch.object(execution.os, "killpg", lambda pgid, sig: sent.append(("killpg", sig))),
-            mock.patch.object(execution.os, "kill", lambda pid, sig: sent.append(("kill", sig))),
+            mock.patch.object(execution_tree, "pid_alive", lambda pid: True),
+            mock.patch.object(execution_tree.os, "getpgid", lambda pid: pid + 1),
+            mock.patch.object(execution_tree.os, "killpg", lambda pgid, sig: sent.append(("killpg", sig))),
+            mock.patch.object(execution_tree.os, "kill", lambda pid, sig: sent.append(("kill", sig))),
         ):
-            self.assertFalse(execution.kill_tree(4242, grace=0.2))
+            self.assertFalse(execution_tree.kill_tree(4242, grace=0.2))
         self.assertEqual(sent, [])
 
     def test_kill_tree_leaves_an_unverified_pid_alone_on_windows(self):
@@ -889,12 +889,12 @@ class TestProcessTree(IsolatedCase):
         the pid by now. Driven as Windows on every OS."""
         sent = []
         with (
-            mock.patch.object(execution, "IS_WINDOWS", True),
-            mock.patch.object(execution, "pid_alive", lambda pid: True),
-            mock.patch.object(execution.subprocess, "run", lambda args, **kwargs: sent.append(args[0])),
-            mock.patch.object(execution.os, "kill", lambda pid, sig: sent.append(("kill", sig))),
+            mock.patch.object(execution_tree, "IS_WINDOWS", True),
+            mock.patch.object(execution_tree, "pid_alive", lambda pid: True),
+            mock.patch.object(execution_tree.subprocess, "run", lambda args, **kwargs: sent.append(args[0])),
+            mock.patch.object(execution_tree.os, "kill", lambda pid, sig: sent.append(("kill", sig))),
         ):
-            self.assertFalse(execution.kill_tree(4242, grace=0.2, verified=False))
+            self.assertFalse(execution_tree.kill_tree(4242, grace=0.2, verified=False))
         self.assertEqual(sent, [])
 
     def test_kill_tree_leaves_an_unverified_pid_to_the_group_check_on_posix(self):
@@ -912,14 +912,14 @@ class TestProcessTree(IsolatedCase):
             alive[0] = False
 
         with (
-            mock.patch.object(execution, "IS_WINDOWS", False),
-            mock.patch.object(execution, "_reap", lambda pid: None),
-            mock.patch.object(execution, "pid_alive", lambda pid: alive[0]),
-            mock.patch.object(execution.signal, "SIGKILL", 9, create=True),
-            mock.patch.object(execution.os, "getpgid", lambda pid: pid, create=True),
-            mock.patch.object(execution.os, "killpg", killpg, create=True),
+            mock.patch.object(execution_tree, "IS_WINDOWS", False),
+            mock.patch.object(execution_tree, "_reap", lambda pid: None),
+            mock.patch.object(execution_tree, "pid_alive", lambda pid: alive[0]),
+            mock.patch.object(execution_tree.signal, "SIGKILL", 9, create=True),
+            mock.patch.object(execution_tree.os, "getpgid", lambda pid: pid, create=True),
+            mock.patch.object(execution_tree.os, "killpg", killpg, create=True),
         ):
-            self.assertTrue(execution.kill_tree(4242, grace=0.2, verified=False))
+            self.assertTrue(execution_tree.kill_tree(4242, grace=0.2, verified=False))
         self.assertEqual(sent, [signal.SIGTERM])
 
     def test_the_last_resort_is_not_used_once_the_tree_is_gone(self):
@@ -931,11 +931,13 @@ class TestProcessTree(IsolatedCase):
 
         kills = []
         with (
-            mock.patch.object(execution.subprocess, "run", lambda *args, **kwargs: None),
-            mock.patch.object(execution.os, "getpgid", gone, create=True),
-            mock.patch.object(execution.os, "killpg", gone, create=True),
+            mock.patch.object(execution_tree.subprocess, "run", lambda *args, **kwargs: None),
+            mock.patch.object(execution_tree.os, "getpgid", gone, create=True),
+            mock.patch.object(execution_tree.os, "killpg", gone, create=True),
         ):
-            self.assertTrue(execution._end_tree(4242, 0.2, lambda timeout: True, lambda: kills.append(1)))
+            self.assertTrue(
+                execution_tree._end_tree(4242, 0.2, lambda timeout: True, lambda: kills.append(1))
+            )
         self.assertEqual(kills, [])
 
 
@@ -951,10 +953,10 @@ class TestGroupEnd(IsolatedCase):
     """The POSIX group logic, driven by fakes so that it runs on every OS."""
 
     def as_posix(self, killpg) -> None:
-        self.enterContext(mock.patch.object(execution, "IS_WINDOWS", False))
-        self.enterContext(mock.patch.object(execution, "_reap", lambda pid: None))
-        self.enterContext(mock.patch.object(execution.os, "killpg", killpg, create=True))
-        self.enterContext(mock.patch.object(execution.signal, "SIGKILL", 9, create=True))
+        self.enterContext(mock.patch.object(execution_tree, "IS_WINDOWS", False))
+        self.enterContext(mock.patch.object(execution_tree, "_reap", lambda pid: None))
+        self.enterContext(mock.patch.object(execution_tree.os, "killpg", killpg, create=True))
+        self.enterContext(mock.patch.object(execution_tree.signal, "SIGKILL", 9, create=True))
 
     def test_group_alive_trusts_only_esrch(self):
         cases = [
@@ -969,8 +971,8 @@ class TestGroupEnd(IsolatedCase):
                 if error is not None:
                     raise error
 
-            with mock.patch.object(execution.os, "killpg", killpg, create=True):
-                self.assertEqual(execution._group_alive(4242), alive, repr(error))
+            with mock.patch.object(execution_tree.os, "killpg", killpg, create=True):
+                self.assertEqual(execution_tree._group_alive(4242), alive, repr(error))
 
     def test_group_running_trusts_no_error(self):
         for error in (
@@ -982,8 +984,8 @@ class TestGroupEnd(IsolatedCase):
             def killpg(pgid, sig, error=error):
                 raise error
 
-            with mock.patch.object(execution.os, "killpg", killpg, create=True):
-                self.assertFalse(execution._group_running(4242), repr(error))
+            with mock.patch.object(execution_tree.os, "killpg", killpg, create=True):
+                self.assertFalse(execution_tree._group_running(4242), repr(error))
 
     def test_group_running_does_not_count_a_zombie(self):
         """Read from a faked ``/proc``: pid 7 is in group 4242, pid 8 in another."""
@@ -997,12 +999,12 @@ class TestGroupEnd(IsolatedCase):
                 return io.BytesIO(files[path])
 
             with (
-                mock.patch.object(execution.os, "killpg", lambda pgid, sig: None, create=True),
-                mock.patch.object(execution.os, "listdir", lambda path: ["self", "9", *stats]),
-                mock.patch.object(execution.os.path, "exists", lambda path: path == "/proc/self/stat"),
-                mock.patch.object(execution, "open", fake_open, create=True),
+                mock.patch.object(execution_tree.os, "killpg", lambda pgid, sig: None, create=True),
+                mock.patch.object(execution_tree.os, "listdir", lambda path: ["self", "9", *stats]),
+                mock.patch.object(execution_tree.os.path, "exists", lambda path: path == "/proc/self/stat"),
+                mock.patch.object(execution_tree, "open", fake_open, create=True),
             ):
-                return execution._group_running(4242)
+                return execution_tree._group_running(4242)
 
         other = b"8 (cli) S 1 999 999 0"
         self.assertTrue(run({"7": b"7 (mcp) server) S 1 4242 4242 0", "8": other}))
@@ -1021,18 +1023,18 @@ class TestGroupEnd(IsolatedCase):
         self.addCleanup(proc.wait)
         # Not reaped: it stays a zombie until ``proc.wait``.
         deadline = time.monotonic() + 30
-        while execution._group_running(proc.pid):
+        while execution_tree._group_running(proc.pid):
             self.assertLess(time.monotonic(), deadline, "the child never exited")
             time.sleep(0.02)
-        self.assertTrue(execution._group_alive(proc.pid))
+        self.assertTrue(execution_tree._group_alive(proc.pid))
         proc.wait()
-        self.assertFalse(execution._group_alive(proc.pid))
+        self.assertFalse(execution_tree._group_alive(proc.pid))
 
     def test_a_group_that_outlives_sigkill_is_not_reported_gone(self):
         sent = []
         kills = []
         self.as_posix(lambda pgid, sig: sent.append(sig) if sig else None)
-        self.assertFalse(execution._end_tree(4242, 0.2, lambda timeout: True, lambda: kills.append(1)))
+        self.assertFalse(execution_tree._end_tree(4242, 0.2, lambda timeout: True, lambda: kills.append(1)))
         self.assertEqual(sent, [signal.SIGTERM, signal.SIGKILL])
         self.assertEqual(kills, [])
 
@@ -1049,7 +1051,7 @@ class TestGroupEnd(IsolatedCase):
             return True
 
         self.as_posix(killpg)
-        self.assertTrue(execution._end_tree(4242, 0.2, exited, lambda: None))
+        self.assertTrue(execution_tree._end_tree(4242, 0.2, exited, lambda: None))
         self.assertEqual(sent, [signal.SIGTERM])
 
     def test_no_sigkill_to_a_group_that_emptied_after_its_leader_left(self):
@@ -1063,8 +1065,8 @@ class TestGroupEnd(IsolatedCase):
             sent.append(sig)
 
         self.as_posix(killpg)
-        self.enterContext(mock.patch.object(execution, "_group_ends", lambda pgid, deadline: False))
-        self.assertTrue(execution._end_tree(4242, 0.2, lambda timeout: True, lambda: None))
+        self.enterContext(mock.patch.object(execution_tree, "_group_ends", lambda pgid, deadline: False))
+        self.assertTrue(execution_tree._end_tree(4242, 0.2, lambda timeout: True, lambda: None))
         self.assertEqual(sent, [signal.SIGTERM])
 
     def test_a_group_we_may_not_signal_falls_back_to_kill_and_is_not_gone(self):
@@ -1080,7 +1082,9 @@ class TestGroupEnd(IsolatedCase):
             raise PermissionError(errno.EPERM, "not ours")
 
         self.as_posix(killpg)
-        self.assertFalse(execution._end_tree(4242, 0.2, lambda timeout: bool(kills), lambda: kills.append(1)))
+        self.assertFalse(
+            execution_tree._end_tree(4242, 0.2, lambda timeout: bool(kills), lambda: kills.append(1))
+        )
         self.assertEqual(sent, [signal.SIGTERM])
         self.assertEqual(kills, [1])
 
@@ -1088,7 +1092,7 @@ class TestGroupEnd(IsolatedCase):
         sent = []
         kills = []
         self.as_posix(lambda pgid, sig: sent.append(sig) if sig else None)
-        self.assertFalse(execution._end_tree(4242, 0.2, lambda timeout: False, lambda: kills.append(1)))
+        self.assertFalse(execution_tree._end_tree(4242, 0.2, lambda timeout: False, lambda: kills.append(1)))
         self.assertEqual(sent, [signal.SIGTERM, signal.SIGKILL])
         self.assertEqual(kills, [1])
 
@@ -1100,17 +1104,17 @@ class TestGroupEnd(IsolatedCase):
             return bool(kills) and timeout > 0
 
         self.as_posix(lambda pgid, sig: None)
-        self.assertFalse(execution._end_tree(4242, 0.2, exited, lambda: kills.append(1)))
+        self.assertFalse(execution_tree._end_tree(4242, 0.2, exited, lambda: kills.append(1)))
         self.assertEqual(kills, [1])
 
     def test_group_ends_gives_up_at_the_deadline(self):
         probes = []
         self.as_posix(lambda pgid, sig: probes.append(sig))
-        self.assertFalse(execution._group_ends(4242, time.monotonic() + 0.3))
+        self.assertFalse(execution_tree._group_ends(4242, time.monotonic() + 0.3))
         self.assertGreater(len(probes), 1)
         # A deadline already past still probes once.
         del probes[:]
-        self.assertFalse(execution._group_ends(4242, time.monotonic() - 1))
+        self.assertFalse(execution_tree._group_ends(4242, time.monotonic() - 1))
         self.assertEqual(probes, [0])
 
     def test_end_tree_refuses_pid_0_and_1(self):
@@ -1118,7 +1122,9 @@ class TestGroupEnd(IsolatedCase):
         kills = []
         self.as_posix(lambda pgid, sig: sent.append((pgid, sig)))
         for pid in (0, 1):
-            self.assertFalse(execution._end_tree(pid, 0.2, lambda timeout: True, lambda: kills.append(1)))
+            self.assertFalse(
+                execution_tree._end_tree(pid, 0.2, lambda timeout: True, lambda: kills.append(1))
+            )
         self.assertEqual(sent, [])
         self.assertEqual(kills, [])
 
@@ -1143,12 +1149,12 @@ class TestGroupEnd(IsolatedCase):
             sent.append(("kill", sig))
 
         self.as_posix(killpg)
-        self.enterContext(mock.patch.object(execution, "pid_alive", lambda pid: True))
-        self.enterContext(mock.patch.object(execution.os, "getpgid", gone, create=True))
-        self.enterContext(mock.patch.object(execution.os, "kill", kill))
+        self.enterContext(mock.patch.object(execution_tree, "pid_alive", lambda pid: True))
+        self.enterContext(mock.patch.object(execution_tree.os, "getpgid", gone, create=True))
+        self.enterContext(mock.patch.object(execution_tree.os, "kill", kill))
         for error, expected in ((None, False), (ProcessLookupError(), True)):
             probe[0] = error
-            self.assertEqual(execution.kill_tree(4242, grace=0.2), expected, repr(error))
+            self.assertEqual(execution_tree.kill_tree(4242, grace=0.2), expected, repr(error))
         self.assertEqual(sent, [])
 
 
@@ -1160,11 +1166,11 @@ class TestStopOnSigterm(IsolatedCase):
         self.ended: List[Tuple[int, float]] = []
         self.notes: List[str] = []
         self.group_ends = True
-        execution._stop.reset()
-        self.addCleanup(execution._stop.reset)
-        self.enterContext(mock.patch.object(execution, "_stop_group", self.record_end))
-        self.enterContext(mock.patch.object(execution, "_note", self.notes.append))
-        self.enterContext(mock.patch.object(execution.os, "_exit", self.fake_exit))
+        execution_tree._stop.reset()
+        self.addCleanup(execution_tree._stop.reset)
+        self.enterContext(mock.patch.object(execution_tree, "_stop_group", self.record_end))
+        self.enterContext(mock.patch.object(execution_tree, "_note", self.notes.append))
+        self.enterContext(mock.patch.object(execution_tree.os, "_exit", self.fake_exit))
 
     def record_end(self, pgid, grace):
         self.ended.append((pgid, grace))
@@ -1179,22 +1185,22 @@ class TestStopOnSigterm(IsolatedCase):
         return mock.Mock(pid=pid, returncode=None)
 
     def assert_left_clean(self) -> None:
-        self.assertEqual(execution._stop.active, [])
-        self.assertIs(execution._stop.spawning, False)
+        self.assertEqual(execution_tree._stop.active, [])
+        self.assertIs(execution_tree._stop.spawning, False)
 
     def test_sigterm_ends_the_active_cli_then_exits(self):
-        execution._stop.active.append(self.running_cli())
+        execution_tree._stop.active.append(self.running_cli())
         with self.assertRaises(_Exited) as caught:
-            execution._on_sigterm(signal.SIGTERM, None)
-        self.assertEqual(self.ended, [(4242, execution._STOP_GRACE_SECONDS)])
+            execution_tree._on_sigterm(signal.SIGTERM, None)
+        self.assertEqual(self.ended, [(4242, execution_tree._STOP_GRACE_SECONDS)])
         self.assertEqual(caught.exception.code, 128 + signal.SIGTERM)
         self.assertEqual(self.notes, [])
 
     def test_a_cli_group_that_cannot_be_ended_is_noted_before_exiting(self):
         self.group_ends = False
-        execution._stop.active.append(self.running_cli())
+        execution_tree._stop.active.append(self.running_cli())
         with self.assertRaises(_Exited) as caught:
-            execution._on_sigterm(signal.SIGTERM, None)
+            execution_tree._on_sigterm(signal.SIGTERM, None)
         self.assertEqual(caught.exception.code, 128 + signal.SIGTERM)
         self.assertEqual(len(self.notes), 1)
         self.assertIn("pid 4242", self.notes[0])
@@ -1202,31 +1208,31 @@ class TestStopOnSigterm(IsolatedCase):
 
     def test_a_reaped_cli_is_not_signalled(self):
         """Its pid may be someone else's by now."""
-        execution._stop.active.append(mock.Mock(pid=4242, returncode=0))
+        execution_tree._stop.active.append(mock.Mock(pid=4242, returncode=0))
         with self.assertRaises(_Exited):
-            execution._on_sigterm(signal.SIGTERM, None)
+            execution_tree._on_sigterm(signal.SIGTERM, None)
         self.assertEqual(self.ended, [])
 
     def test_sigterm_during_spawn_is_honoured_after_registration(self):
         fake = self.running_cli()
 
         def popen(*args, **kwargs):
-            execution._on_sigterm(signal.SIGTERM, None)
+            execution_tree._on_sigterm(signal.SIGTERM, None)
             # Deferred: the CLI is not registered yet.
             self.assertEqual(self.ended, [])
             return fake
 
         with mock.patch.object(execution.subprocess, "Popen", popen), self.assertRaises(_Exited):
             execution.execute([sys.executable], cwd=self.project, timeout=5)
-        self.assertEqual(self.ended, [(4242, execution._STOP_GRACE_SECONDS)])
+        self.assertEqual(self.ended, [(4242, execution_tree._STOP_GRACE_SECONDS)])
         # The real os._exit never returns, so the CLI is still registered here
         # only because the fake one raised; the flag is what must be reset.
-        self.assertEqual(execution._stop.active, [fake])
-        self.assertIs(execution._stop.spawning, False)
+        self.assertEqual(execution_tree._stop.active, [fake])
+        self.assertIs(execution_tree._stop.spawning, False)
 
     def test_sigterm_during_a_failed_spawn_is_honoured(self):
         def popen(*args, **kwargs):
-            execution._on_sigterm(signal.SIGTERM, None)
+            execution_tree._on_sigterm(signal.SIGTERM, None)
             raise OSError("no such file")
 
         with mock.patch.object(execution.subprocess, "Popen", popen), self.assertRaises(_Exited) as caught:
@@ -1239,7 +1245,7 @@ class TestStopOnSigterm(IsolatedCase):
         """Only the finally runs: the pending stop is not honoured on the way out."""
 
         def popen(*args, **kwargs):
-            execution._on_sigterm(signal.SIGTERM, None)
+            execution_tree._on_sigterm(signal.SIGTERM, None)
             raise ValueError("bad argument")
 
         with mock.patch.object(execution.subprocess, "Popen", popen), self.assertRaises(ValueError):
@@ -1253,16 +1259,16 @@ class TestStopOnSigterm(IsolatedCase):
 
         class Recording(list):
             def append(self, item):
-                seen.append(("append", execution._stop.spawning))
+                seen.append(("append", execution_tree._stop.spawning))
                 super().append(item)
 
         def honour():
-            seen.append(("honour", execution._stop.spawning))
+            seen.append(("honour", execution_tree._stop.spawning))
             raise _Exited(0)
 
         with (
-            mock.patch.object(execution._stop, "active", Recording()),
-            mock.patch.object(execution, "_honour_stop", honour),
+            mock.patch.object(execution_tree._stop, "active", Recording()),
+            mock.patch.object(execution_tree, "_honour_stop", honour),
             mock.patch.object(execution.subprocess, "Popen", lambda *a, **k: self.running_cli()),
             self.assertRaises(_Exited),
         ):
@@ -1286,7 +1292,7 @@ class TestStopOnSigterm(IsolatedCase):
         def popen(*args, **kwargs):
             proc = real_popen(*args, **kwargs)
             self.addCleanup(proc.wait, 30)
-            self.addCleanup(execution.terminate_tree, proc, 2)
+            self.addCleanup(execution_tree.terminate_tree, proc, 2)
             for pipe in (proc.stdin, proc.stdout, proc.stderr):
                 if pipe is not None:
                     self.addCleanup(pipe.close)
@@ -1302,35 +1308,35 @@ class TestStopOnSigterm(IsolatedCase):
 
     def test_sigterm_with_no_cli_exits_at_once(self):
         with self.assertRaises(_Exited):
-            execution._on_sigterm(signal.SIGTERM, None)
+            execution_tree._on_sigterm(signal.SIGTERM, None)
         self.assertEqual(self.ended, [])
 
     def test_nothing_is_installed_on_windows(self):
         with (
-            mock.patch.object(execution, "IS_WINDOWS", True),
-            mock.patch.object(execution.signal, "signal") as install,
+            mock.patch.object(execution_tree, "IS_WINDOWS", True),
+            mock.patch.object(execution_tree.signal, "signal") as install,
         ):
-            execution.end_children_on_sigterm()
+            execution_tree.end_children_on_sigterm()
         install.assert_not_called()
 
     def test_the_handler_is_installed_for_sigterm_on_posix(self):
         with (
-            mock.patch.object(execution, "IS_WINDOWS", False),
-            mock.patch.object(execution.signal, "SIGTERM", 15),
-            mock.patch.object(execution.signal, "signal") as install,
+            mock.patch.object(execution_tree, "IS_WINDOWS", False),
+            mock.patch.object(execution_tree.signal, "SIGTERM", 15),
+            mock.patch.object(execution_tree.signal, "signal") as install,
         ):
-            execution.end_children_on_sigterm()
-        install.assert_called_once_with(15, execution._on_sigterm)
+            execution_tree.end_children_on_sigterm()
+        install.assert_called_once_with(15, execution_tree._on_sigterm)
 
     def test_the_note_path_is_kept_for_the_handler(self):
         note = os.path.join(self.project, "a-1.stop")
         with (
-            mock.patch.object(execution, "IS_WINDOWS", False),
-            mock.patch.object(execution._stop, "note_path", None),
-            mock.patch.object(execution.signal, "signal"),
+            mock.patch.object(execution_tree, "IS_WINDOWS", False),
+            mock.patch.object(execution_tree._stop, "note_path", None),
+            mock.patch.object(execution_tree.signal, "signal"),
         ):
-            execution.end_children_on_sigterm(note)
-            self.assertEqual(execution._stop.note_path, note)
+            execution_tree.end_children_on_sigterm(note)
+            self.assertEqual(execution_tree._stop.note_path, note)
 
 
 class TestStopNote(IsolatedCase):
@@ -1340,11 +1346,11 @@ class TestStopNote(IsolatedCase):
     def test_each_line_is_appended_to_the_note_file(self):
         note = os.path.join(self.project, "a-1.stop")
         with (
-            mock.patch.object(execution._stop, "note_path", note),
-            mock.patch.object(execution.os, "write", wraps=os.write) as wrote,
+            mock.patch.object(execution_tree._stop, "note_path", note),
+            mock.patch.object(execution_tree.os, "write", wraps=os.write) as wrote,
         ):
-            execution._note("first\n")
-            execution._note("second\n")
+            execution_tree._note("first\n")
+            execution_tree._note("second\n")
         with open(note, encoding="utf-8") as handle:
             self.assertEqual(handle.read(), "first\nsecond\n")
         # And to stderr, for a worker run by hand.
@@ -1352,16 +1358,16 @@ class TestStopNote(IsolatedCase):
 
     def test_no_note_file_outside_a_worker(self):
         with (
-            mock.patch.object(execution._stop, "note_path", None),
-            mock.patch.object(execution.os, "open") as opened,
+            mock.patch.object(execution_tree._stop, "note_path", None),
+            mock.patch.object(execution_tree.os, "open") as opened,
         ):
-            execution._note("x\n")
+            execution_tree._note("x\n")
         opened.assert_not_called()
 
     def test_an_unwritable_note_file_is_ignored(self):
         missing = os.path.join(self.project, "no-such-dir", "a-1.stop")
-        with mock.patch.object(execution._stop, "note_path", missing):
-            execution._note("x\n")
+        with mock.patch.object(execution_tree._stop, "note_path", missing):
+            execution_tree._note("x\n")
         self.assertFalse(os.path.exists(missing))
 
 
@@ -1372,8 +1378,8 @@ class TestStopGroup(IsolatedCase):
         super().setUp()
         self.sent: List[int] = []
         self.reaped: List[int] = []
-        self.enterContext(mock.patch.object(execution, "_reap", self.reaped.append))
-        self.enterContext(mock.patch.object(execution.signal, "SIGKILL", 9, create=True))
+        self.enterContext(mock.patch.object(execution_tree, "_reap", self.reaped.append))
+        self.enterContext(mock.patch.object(execution_tree.signal, "SIGKILL", 9, create=True))
 
     def killpg(self, alive_after: Optional[int] = None, error: Optional[BaseException] = None):
         """A group that empties after signal ``alive_after`` (never if None),
@@ -1388,37 +1394,37 @@ class TestStopGroup(IsolatedCase):
                 raise error
             self.sent.append(sig)
 
-        self.enterContext(mock.patch.object(execution.os, "killpg", killpg, create=True))
+        self.enterContext(mock.patch.object(execution_tree.os, "killpg", killpg, create=True))
 
     def test_a_group_that_ends_on_sigterm_gets_no_sigkill(self):
         self.killpg(alive_after=signal.SIGTERM)
-        self.assertTrue(execution._stop_group(4242, 0.2))
+        self.assertTrue(execution_tree._stop_group(4242, 0.2))
         self.assertEqual(self.sent, [signal.SIGTERM])
         # The leader is our child: an unreaped one keeps the group present.
         self.assertIn(4242, self.reaped)
 
     def test_a_group_that_ignores_sigterm_gets_sigkill(self):
         self.killpg(alive_after=9)
-        self.assertTrue(execution._stop_group(4242, 0.2))
+        self.assertTrue(execution_tree._stop_group(4242, 0.2))
         self.assertEqual(self.sent, [signal.SIGTERM, 9])
 
     def test_a_group_that_never_empties_is_not_reported_gone(self):
         self.killpg()
-        self.assertFalse(execution._stop_group(4242, 0.2))
+        self.assertFalse(execution_tree._stop_group(4242, 0.2))
         self.assertEqual(self.sent, [signal.SIGTERM, 9])
 
     def test_a_group_already_gone_is_gone(self):
         self.killpg(error=ProcessLookupError())
-        self.assertTrue(execution._stop_group(4242, 0.2))
+        self.assertTrue(execution_tree._stop_group(4242, 0.2))
 
     def test_a_group_we_may_not_signal_is_not_reported_gone(self):
         self.killpg(error=PermissionError(errno.EPERM, "not ours"))
-        self.assertFalse(execution._stop_group(4242, 0.2))
+        self.assertFalse(execution_tree._stop_group(4242, 0.2))
 
     def test_pid_0_and_1_are_refused(self):
         self.killpg()
         for pid in (0, 1):
-            self.assertFalse(execution._stop_group(pid, 0.2))
+            self.assertFalse(execution_tree._stop_group(pid, 0.2))
         self.assertEqual(self.sent, [])
 
     def test_it_never_waits_through_popen(self):
@@ -1426,11 +1432,11 @@ class TestStopGroup(IsolatedCase):
         proc = mock.Mock(pid=4242, returncode=None)
         self.killpg(alive_after=signal.SIGTERM)
         with (
-            mock.patch.object(execution._stop, "active", [proc]),
-            mock.patch.object(execution.os, "_exit", TestStopOnSigterm.fake_exit),
+            mock.patch.object(execution_tree._stop, "active", [proc]),
+            mock.patch.object(execution_tree.os, "_exit", TestStopOnSigterm.fake_exit),
             self.assertRaises(_Exited),
         ):
-            execution._stop_now()
+            execution_tree._stop_now()
         proc.wait.assert_not_called()
         proc.poll.assert_not_called()
         self.assertEqual(self.sent, [signal.SIGTERM])
@@ -1510,19 +1516,19 @@ class TestGroupKill(IsolatedCase):
                 sent.append(sig)
             real_kill(pid, sig)
 
-        self.enterContext(mock.patch.object(execution.os, "killpg", killpg))
-        self.enterContext(mock.patch.object(execution.os, "kill", kill))
+        self.enterContext(mock.patch.object(execution_tree.os, "killpg", killpg))
+        self.enterContext(mock.patch.object(execution_tree.os, "kill", kill))
         return sent
 
     def test_terminate_tree_kills_a_child_that_ignores_sigterm(self):
         proc, _ = self.start_leader()
-        self.assertTrue(execution.terminate_tree(proc, grace=2))
+        self.assertTrue(execution_tree.terminate_tree(proc, grace=2))
         self.assertIsNotNone(proc.poll())
         self.assert_group_gone(proc.pid)
 
     def test_kill_tree_kills_a_child_that_ignores_sigterm(self):
         proc, _ = self.start_leader()
-        self.assertTrue(execution.kill_tree(proc.pid, grace=2))
+        self.assertTrue(execution_tree.kill_tree(proc.pid, grace=2))
         self.assert_group_gone(proc.pid)
 
     def test_kill_tree_on_a_detached_worker_whose_child_ignores_sigterm(self):
@@ -1531,20 +1537,20 @@ class TestGroupKill(IsolatedCase):
         worker_pid, child_pid = read_pids(self, pids_file)
         self.addCleanup(kill_group, worker_pid)
         self.assertEqual(os.getpgid(child_pid), worker_pid)
-        self.assertTrue(execution.kill_tree(worker_pid, grace=2))
+        self.assertTrue(execution_tree.kill_tree(worker_pid, grace=2))
         self.assert_group_gone(worker_pid)
 
     def test_a_clean_group_gets_no_sigkill(self):
         proc = subprocess.Popen(python_code(SILENT_HANG), **execution_launch.spawn_kwargs())
         self.end_on_cleanup(proc)
         sent = self.record_signals()
-        self.assertTrue(execution.terminate_tree(proc, grace=4))
+        self.assertTrue(execution_tree.terminate_tree(proc, grace=4))
         self.assertEqual(sent, [signal.SIGTERM])
 
         proc = subprocess.Popen(python_code(SILENT_HANG), **execution_launch.spawn_kwargs())
         self.end_on_cleanup(proc)
         del sent[:]
-        self.assertTrue(execution.kill_tree(proc.pid, grace=4))
+        self.assertTrue(execution_tree.kill_tree(proc.pid, grace=4))
         self.assertEqual(sent, [signal.SIGTERM])
 
     def test_execute_timeout_kills_a_child_that_ignores_sigterm(self):
@@ -1565,10 +1571,10 @@ class TestGroupKill(IsolatedCase):
         self.assert_group_gone(leader_pid)
 
     def test_execute_reports_orphans_when_the_group_survives(self):
-        real = execution.terminate_tree
+        real = execution_tree.terminate_tree
         with (
-            mock.patch.object(execution, "_group_alive", lambda pgid: True),
-            mock.patch.object(execution, "terminate_tree", lambda proc, grace=0.0: real(proc, 0.4)),
+            mock.patch.object(execution_tree, "_group_alive", lambda pgid: True),
+            mock.patch.object(execution_tree, "terminate_tree", lambda proc, grace=0.0: real(proc, 0.4)),
         ):
             outcome = execution.execute(python_code(SILENT_HANG), cwd=self.project, timeout=1)
         self.assertTrue(outcome.timed_out)
@@ -1589,9 +1595,9 @@ class TestGroupKill(IsolatedCase):
         self.end_on_cleanup(worker)
         cli_pid, _ = read_pids(self, pids_file)
         self.addCleanup(kill_group, cli_pid)
-        self.assertTrue(execution.kill_tree(worker.pid))
+        self.assertTrue(execution_tree.kill_tree(worker.pid))
         deadline = time.monotonic() + 5
-        while execution._group_alive(cli_pid) and time.monotonic() < deadline:
+        while execution_tree._group_alive(cli_pid) and time.monotonic() < deadline:
             time.sleep(0.05)
         self.assert_group_gone(cli_pid)
 
@@ -1613,7 +1619,7 @@ class TestGroupKill(IsolatedCase):
         # Bounded: a handler that hangs fails here instead of being SIGKILLed.
         self.assertEqual(worker.wait(timeout=30), 128 + signal.SIGTERM)
         deadline = time.monotonic() + 5
-        while execution._group_alive(cli_pid) and time.monotonic() < deadline:
+        while execution_tree._group_alive(cli_pid) and time.monotonic() < deadline:
             time.sleep(0.05)
         self.assert_group_gone(cli_pid)
 
@@ -1635,7 +1641,7 @@ class TestGroupKill(IsolatedCase):
 
 class TestPidLiveness(IsolatedCase):
     def test_our_own_pid_is_alive(self):
-        self.assertTrue(execution.pid_alive(os.getpid()))
+        self.assertTrue(execution_tree.pid_alive(os.getpid()))
 
     def test_a_finished_child_is_not_alive(self):
         proc = subprocess.Popen(python_code("pass"))
@@ -1644,7 +1650,7 @@ class TestPidLiveness(IsolatedCase):
         # with pid reuse: on Windows its handle keeps the process object, and
         # its pid, from being handed to anyone else. That same handle is why
         # this used to answer True -- an openable process is not a running one.
-        self.assertFalse(execution.pid_alive(proc.pid))
+        self.assertFalse(execution_tree.pid_alive(proc.pid))
 
     def test_a_killed_child_is_not_alive(self):
         """The shape that mattered: something killed it, nothing reaped it.
@@ -1663,21 +1669,21 @@ class TestPidLiveness(IsolatedCase):
         # matters: a dead process someone still holds open.
         pinned = _pin_process(proc.pid)
         try:
-            self.assertTrue(execution.pid_alive(proc.pid))
-            started = execution.process_started(proc.pid)
-            execution.terminate_tree(proc)
+            self.assertTrue(execution_tree.pid_alive(proc.pid))
+            started = execution_tree.process_started(proc.pid)
+            execution_tree.terminate_tree(proc)
             proc.wait(timeout=30)
             # The bug was an answer that stayed True; a busy Windows runner has
             # also been seen to answer True once, right after the wait. Asked
             # again for a few seconds, the first is still caught.
             deadline = time.monotonic() + 5
-            while execution.pid_alive(proc.pid) and time.monotonic() < deadline:
+            while execution_tree.pid_alive(proc.pid) and time.monotonic() < deadline:
                 time.sleep(0.1)
-            alive = execution.pid_alive(proc.pid)
+            alive = execution_tree.pid_alive(proc.pid)
             self.assertFalse(
-                alive and execution.process_started(proc.pid) in (started, None),
+                alive and execution_tree.process_started(proc.pid) in (started, None),
                 "pid %d still alive: started %r, now %r, pinned=%r"
-                % (proc.pid, started, execution.process_started(proc.pid), pinned),
+                % (proc.pid, started, execution_tree.process_started(proc.pid), pinned),
             )
         finally:
             _unpin_process(pinned)
@@ -1685,8 +1691,8 @@ class TestPidLiveness(IsolatedCase):
                 proc.kill()
 
     def test_an_impossible_pid_is_not_alive(self):
-        self.assertFalse(execution.pid_alive(-1))
-        self.assertFalse(execution.pid_alive(0))
+        self.assertFalse(execution_tree.pid_alive(-1))
+        self.assertFalse(execution_tree.pid_alive(0))
 
 
 def _pin_process(pid: int) -> Optional[int]:

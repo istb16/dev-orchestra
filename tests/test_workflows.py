@@ -605,13 +605,13 @@ class TestThroughTheCli(IsolatedCase):
     def test_finished_and_abandoned_jobs_do_not_block_the_remove(self):
         from unittest import mock
 
-        from orchestrator import execution
+        from orchestrator import execution_tree
 
         run_cli("--workflow", "w1", "review", "snapshot")
         self.job("w1", "implementer-1", status="succeeded")
         # Its worker is gone: reconciled to abandoned, not counted as running.
         self.job("w1", "implementer-2", pid=4242)
-        with mock.patch.object(execution, "pid_alive", lambda pid: False):
+        with mock.patch.object(execution_tree, "pid_alive", lambda pid: False):
             code, _, err = run_cli("--workflow", "w2", "workflow", "remove", "w1", "--yes")
         self.assertEqual(code, 0, err)
         self.assertFalse(os.path.isdir(self.workflow_dir("w1")))
@@ -654,13 +654,13 @@ class TestThroughTheCli(IsolatedCase):
         """Its pid is alive and nothing says whose it is, so it may still write."""
         from unittest import mock
 
-        from orchestrator import execution
+        from orchestrator import execution_tree
 
         run_cli("--workflow", "w1", "review", "snapshot")
         self.job("w1", "implementer-1", pid=4242)
         with (
-            mock.patch.object(execution, "pid_alive", lambda pid: True),
-            mock.patch.object(execution, "kill_tree", lambda pid, grace, verified: False),
+            mock.patch.object(execution_tree, "pid_alive", lambda pid: True),
+            mock.patch.object(execution_tree, "kill_tree", lambda pid, grace, verified: False),
         ):
             code, out, _ = run_cli("--workflow", "w1", "jobs", "cancel", "implementer-1")
             self.assertEqual(code, 1)
