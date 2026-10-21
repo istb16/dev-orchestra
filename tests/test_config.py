@@ -993,13 +993,47 @@ class TestValidateOrder(IsolatedCase):
 class TestValueRules(IsolatedCase):
     """The rule tables ``config_validation`` reads its value checks from."""
 
+    #: Settings checked by hand rather than by a rule, that accept null, with a value each refuses.
+    HAND_WRITTEN = (
+        ("review.re_review_severities", "high"),
+        ("review.context.surrounding", True),
+        ("workspace.dir", ""),
+        ("workspace.stale_notice_days", -1),
+        ("optimization.level", "fastest"),
+        ("progress.interval_seconds", 1),
+        ("progress.quiet_notice_seconds", -1),
+        ("language.reply", 3),
+    )
+
     @staticmethod
     def rules() -> List[Any]:
-        tables = [table for name, table in vars(config_validation).items() if name.endswith("_RULES")]
-        return [rule for table in tables for rule in table]
+        return [rule for table in config_validation._RULE_TABLES for rule in table]
+
+    @staticmethod
+    def validate_with(path: str, value: Any) -> List[str]:
+        """``validate`` on the default configuration with ``path`` set to ``value``."""
+        data = config_mod.default_config()
+        *parents, leaf = path.split(".")
+        block = data
+        for key in parents:
+            block = block.setdefault(key, {})
+        block[leaf] = value
+        return config_mod.validate(data)
 
     def test_there_are_rules(self):
         self.assertTrue(self.rules())
+
+    def test_every_table_of_rules_is_listed(self):
+        tables = [
+            table
+            for table in vars(config_validation).values()
+            if isinstance(table, tuple) and table and isinstance(table[0], config_validation._Rule)
+        ]
+        self.assertEqual(
+            sorted(map(id, tables)),
+            sorted(map(id, config_validation._RULE_TABLES)),
+            "list it in _RULE_TABLES",
+        )
 
     def test_a_default_is_the_value_default_config_holds(self):
         defaults = config_mod.default_config()
@@ -1012,7 +1046,7 @@ class TestValueRules(IsolatedCase):
         for rule in self.rules():
             if rule.default is not None:
                 with self.subTest(path=rule.path):
-                    self.assertEqual(config_validation._check_value(rule, rule.default, rule.path), [])
+                    self.assertEqual(config_validation._check_value(rule.check, rule.default, rule.path), [])
 
     def test_every_path_is_a_known_key(self):
         for rule in self.rules():
@@ -1028,9 +1062,46 @@ class TestValueRules(IsolatedCase):
         self.assertEqual(len(paths), len(set(paths)))
 
     def test_a_message_says_or_null_exactly_when_null_passes(self):
-        for rule in [*self.rules(), config_validation._BUDGET, config_validation._RUN_TIMEOUT]:
-            with self.subTest(path=rule.path):
-                self.assertEqual("or null" in rule.message, rule.null_ok)
+        for check in config_validation._CHECKS:
+            with self.subTest(check=check):
+                self.assertEqual("or null" in check.message, check.null_ok)
+
+    def test_a_message_says_what_its_kind_checks(self):
+        for check in config_validation._CHECKS:
+            with self.subTest(check=check):
+                if check.kind == config_validation._BOOL:
+                    self.assertTrue(check.message.startswith("must be true or false"))
+                elif check.kind == config_validation._AUTO:
+                    self.assertTrue(check.message.startswith("must be true, false or auto"))
+                elif check.kind == config_validation._GLOBS:
+                    self.assertTrue(check.message.startswith("must be a list of glob patterns"))
+                else:
+                    self.assertIn(check.kind, (config_validation._INT, config_validation._SECONDS))
+                    # Only these two floors have a word; another would need its own message.
+                    word = {0: "non-negative", 1: "positive"}[check.minimum]
+                    self.assertTrue(check.message.startswith("must be a %s integer" % word))
+
+    def test_an_unknown_kind_raises(self):
+        check = config_validation._Check("integer", "must be an integer")
+        with self.assertRaises(ValueError):
+            config_validation._check_value(check, 3, "x")
+
+    def test_null_is_refused_where_the_check_says_so(self):
+        for path, message in (
+            ("review.max_review_iterations", "must be a non-negative integer"),
+            ("review.timeout_seconds", "must be a positive integer"),
+            ("run.timeout_seconds.implementer", "must be a positive integer"),
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(self.validate_with(path, None), ["%s: %s" % (path, message)])
+
+    def test_a_hand_written_message_says_or_null_when_null_passes(self):
+        for path, bad in self.HAND_WRITTEN:
+            with self.subTest(path=path):
+                self.assertEqual(self.validate_with(path, None), [])
+                [problem] = self.validate_with(path, bad)
+                self.assertTrue(problem.startswith(path + ": "), problem)
+                self.assertIn("or null", problem)
 
 
 class TestReviewerConditions(IsolatedCase):

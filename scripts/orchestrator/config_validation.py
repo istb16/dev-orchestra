@@ -56,14 +56,20 @@ _SECONDS = "seconds"  # _INT, then whole_seconds, else _TOO_LONG
 _GLOBS = "globs"  # a list of non-empty strings, each bad one by index
 
 
-class _Rule(NamedTuple):
-    """One value check: the key at the end of ``path``, read as ``block.get(key, default)``."""
+class _Check(NamedTuple):
+    """What one value must be, and how a value that is not is reported."""
 
-    path: str
     kind: str
     message: str  # what follows "<path>: "; _SECONDS's second message is _TOO_LONG
     minimum: int = 0
     null_ok: bool = True  # None, read or defaulted, passes
+
+
+class _Rule(NamedTuple):
+    """One row of a table: the key at the end of ``path``, read as ``block.get(key, default)``."""
+
+    path: str
+    check: _Check
     default: Any = None
 
 
@@ -72,99 +78,112 @@ def _check(block: Dict[str, Any], rules: Sequence[_Rule]) -> List[str]:
     problems: List[str] = []
     for rule in rules:
         value = block.get(rule.path.rsplit(".", 1)[-1], rule.default)
-        problems.extend(_check_value(rule, value, rule.path))
+        problems.extend(_check_value(rule.check, value, rule.path))
     return problems
 
 
-def _check_value(rule: _Rule, value: Any, path: str) -> List[str]:
-    """``rule`` applied to one value, named ``path`` in each message."""
-    if value is None and rule.null_ok:
+def _check_value(check: _Check, value: Any, path: str) -> List[str]:
+    """``check`` applied to one value, named ``path`` in each message."""
+    if value is None and check.null_ok:
         return []
-    if rule.kind == _GLOBS:
+    if check.kind == _GLOBS:
         if not isinstance(value, list):
-            return ["%s: %s" % (path, rule.message)]
+            return ["%s: %s" % (path, check.message)]
         return [
             "%s[%d]: must be a non-empty string (got %r)" % (path, index, pattern)
             for index, pattern in enumerate(value)
             if not isinstance(pattern, str) or not pattern.strip()
         ]
-    if rule.kind == _BOOL:
+    if check.kind == _BOOL:
         ok = isinstance(value, bool)
-    elif rule.kind == _AUTO:
+    elif check.kind == _AUTO:
         ok = value.strip().lower() == "auto" if isinstance(value, str) else isinstance(value, bool)
+    elif check.kind in (_INT, _SECONDS):
+        ok = _int_at_least(value, check.minimum)
     else:
-        ok = _int_at_least(value, rule.minimum)
+        raise ValueError(check.kind)
     if not ok:
-        return ["%s: %s" % (path, rule.message)]
-    if rule.kind == _SECONDS and not whole_seconds(value):
+        return ["%s: %s" % (path, check.message)]
+    if check.kind == _SECONDS and not whole_seconds(value):
         return ["%s: %s" % (path, _TOO_LONG)]
     return []
 
 
+_TRUE_OR_FALSE = _Check(_BOOL, "must be true or false, or null")
+_TRUE_FALSE_OR_AUTO = _Check(_AUTO, "must be true, false or auto, or null")
+_NON_NEGATIVE = _Check(_INT, "must be a non-negative integer or null")
+_POSITIVE = _Check(_INT, "must be a positive integer or null", 1)
+_GLOB_LIST = _Check(_GLOBS, "must be a list of glob patterns or null (use [] for none)")
+
 _REVIEW_RULES = (
     _Rule(
-        "review.max_review_iterations", _INT, "must be a non-negative integer", 0, null_ok=False, default=2
+        "review.max_review_iterations",
+        _Check(_INT, "must be a non-negative integer", 0, null_ok=False),
+        default=2,
     ),
-    _Rule("review.parallel", _BOOL, "must be true or false, or null"),
+    _Rule("review.parallel", _TRUE_OR_FALSE),
 )
 _REVIEW_LIMIT_RULES = (
-    _Rule("review.timeout_seconds", _SECONDS, "must be a positive integer", 1, null_ok=False, default=1800),
-    _Rule("review.idle_timeout_seconds", _SECONDS, "must be a positive integer or null", 1),
-    _Rule("review.incremental_rounds", _BOOL, "must be true or false, or null"),
-    _Rule("review.max_findings", _INT, "must be a non-negative integer or null (0 = no cap)", 0),
+    _Rule(
+        "review.timeout_seconds",
+        _Check(_SECONDS, "must be a positive integer", 1, null_ok=False),
+        default=1800,
+    ),
+    _Rule("review.idle_timeout_seconds", _Check(_SECONDS, "must be a positive integer or null", 1)),
+    _Rule("review.incremental_rounds", _TRUE_OR_FALSE),
+    _Rule("review.max_findings", _Check(_INT, "must be a non-negative integer or null (0 = no cap)")),
 )
 _REVIEW_DESIGN_RULES = (
-    _Rule("review.design.enabled", _AUTO, "must be true, false or auto, or null"),
-    _Rule("review.design.max_iterations", _INT, "must be a non-negative integer or null", 0),
+    _Rule("review.design.enabled", _TRUE_FALSE_OR_AUTO),
+    _Rule("review.design.max_iterations", _NON_NEGATIVE),
 )
 _REVIEW_CONTEXT_RULES = (
-    _Rule("review.context.max_chars", _INT, "must be a positive integer or null", 1),
-    _Rule("review.context.inline_chars", _INT, "must be a positive integer or null", 1),
-    _Rule("review.context.surrounding_chars", _INT, "must be a positive integer or null", 1),
+    _Rule("review.context.max_chars", _POSITIVE),
+    _Rule("review.context.inline_chars", _POSITIVE),
+    _Rule("review.context.surrounding_chars", _POSITIVE),
 )
 _DESIGN_RULES = (
-    _Rule("design.require_approval", _BOOL, "must be true or false, or null"),
-    _Rule("design.ask_questions", _AUTO, "must be true, false or auto, or null"),
-    _Rule("design.max_question_rounds", _INT, "must be a positive integer or null", 1),
+    _Rule("design.require_approval", _TRUE_OR_FALSE),
+    _Rule("design.ask_questions", _TRUE_FALSE_OR_AUTO),
+    _Rule("design.max_question_rounds", _POSITIVE),
 )
 _RESUME_RULES = (
-    _Rule("design.resume.max_age_seconds", _INT, "must be a non-negative integer or null", 0),
-    _Rule("design.resume.max_context_tokens", _INT, "must be a positive integer or null", 1),
+    _Rule("design.resume.max_age_seconds", _NON_NEGATIVE),
+    _Rule("design.resume.max_context_tokens", _POSITIVE),
 )
-_BUDGET = _Rule("budgets", _INT, "must be a non-negative integer or null")
-_RUN_TIMEOUT = _Rule("run.timeout_seconds", _SECONDS, "must be a positive integer", 1, null_ok=False)
-_LANGUAGE_RULES = (_Rule("language.rewrite", _BOOL, "must be true or false, or null"),)
-_PROGRESS_RULES = (_Rule("progress.updates", _AUTO, "must be true, false or auto, or null"),)
-_REVIEW_EXCLUDE_RULES = (
-    _Rule("review.exclude", _GLOBS, "must be a list of glob patterns or null (use [] for none)"),
-)
+_LANGUAGE_RULES = (_Rule("language.rewrite", _TRUE_OR_FALSE),)
+_PROGRESS_RULES = (_Rule("progress.updates", _TRUE_FALSE_OR_AUTO),)
+_REVIEW_EXCLUDE_RULES = (_Rule("review.exclude", _GLOB_LIST),)
 _OPTIMIZATION_RULES = (
-    _Rule("optimization.skip_unneeded_roles", _BOOL, "must be true or false, or null"),
-    _Rule(
-        "optimization.high_risk_paths", _GLOBS, "must be a list of glob patterns or null (use [] for none)"
-    ),
-    _Rule(
-        "optimization.extra_high_risk_paths",
-        _GLOBS,
-        "must be a list of glob patterns or null (use [] for none)",
-    ),
-    _Rule("optimization.security_paths", _GLOBS, "must be a list of glob patterns or null (use [] for none)"),
-    _Rule(
-        "optimization.extra_security_paths",
-        _GLOBS,
-        "must be a list of glob patterns or null (use [] for none)",
-    ),
-    _Rule(
-        "optimization.architecture_paths", _GLOBS, "must be a list of glob patterns or null (use [] for none)"
-    ),
-    _Rule(
-        "optimization.extra_architecture_paths",
-        _GLOBS,
-        "must be a list of glob patterns or null (use [] for none)",
-    ),
-    _Rule("optimization.low_risk_max_files", _INT, "must be a non-negative integer or null", 0),
-    _Rule("optimization.low_risk_max_lines", _INT, "must be a non-negative integer or null", 0),
+    _Rule("optimization.skip_unneeded_roles", _TRUE_OR_FALSE),
+    _Rule("optimization.high_risk_paths", _GLOB_LIST),
+    _Rule("optimization.extra_high_risk_paths", _GLOB_LIST),
+    _Rule("optimization.security_paths", _GLOB_LIST),
+    _Rule("optimization.extra_security_paths", _GLOB_LIST),
+    _Rule("optimization.architecture_paths", _GLOB_LIST),
+    _Rule("optimization.extra_architecture_paths", _GLOB_LIST),
+    _Rule("optimization.low_risk_max_files", _NON_NEGATIVE),
+    _Rule("optimization.low_risk_max_lines", _NON_NEGATIVE),
 )
+#: Every table above, for the tests that hold each row to its key and default.
+_RULE_TABLES = (
+    _REVIEW_RULES,
+    _REVIEW_LIMIT_RULES,
+    _REVIEW_DESIGN_RULES,
+    _REVIEW_CONTEXT_RULES,
+    _DESIGN_RULES,
+    _RESUME_RULES,
+    _LANGUAGE_RULES,
+    _PROGRESS_RULES,
+    _REVIEW_EXCLUDE_RULES,
+    _OPTIMIZATION_RULES,
+)
+
+# Applied in a loop, to keys the user names, with the path built per key.
+_BUDGET = _Check(_INT, "must be a non-negative integer or null")
+_RUN_TIMEOUT = _Check(_SECONDS, "must be a positive integer", 1, null_ok=False)
+#: Every check, in a table or applied in a loop, for the tests that hold a message to its check.
+_CHECKS = (*(rule.check for table in _RULE_TABLES for rule in table), _BUDGET, _RUN_TIMEOUT)
 
 
 def validate(

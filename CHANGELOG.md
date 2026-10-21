@@ -35,12 +35,25 @@ authors can find it.
 
 ### Changed
 
-- **`config validate` says `or null` wherever a setting accepts null.** The
-  problems reported for the `review`, `design`, `optimization`, `workspace`,
-  `language` and `progress` settings that accept `null` now say so, as
+- **`config validate` says `or null` for more of the settings that accept
+  null.** The problems reported for these settings now say so, as
   `review.idle_timeout_seconds`, `design.resume.max_context_tokens`,
-  `budgets.*` and `language.reply` already did: for example
-  `review.parallel: must be true or false, or null`. Only the wording changed:
+  `budgets.*` and `language.reply` already did: `review.parallel`,
+  `review.incremental_rounds`, `review.max_findings`, `review.exclude`,
+  `review.re_review_severities`, `review.design.enabled`,
+  `review.design.max_iterations`, `review.context.max_chars`,
+  `review.context.inline_chars`, `review.context.surrounding_chars`,
+  `review.context.surrounding`, `design.require_approval`,
+  `design.ask_questions`, `design.max_question_rounds`,
+  `design.resume.max_age_seconds`, `optimization.level`,
+  `optimization.skip_unneeded_roles`, the six `optimization.*_paths`,
+  `optimization.low_risk_max_files`, `optimization.low_risk_max_lines`,
+  `workspace.dir`, `workspace.stale_notice_days`, `language.rewrite`,
+  `progress.updates`, `progress.interval_seconds` and
+  `progress.quiet_notice_seconds`. For example
+  `review.parallel: must be true or false, or null`. The messages about the
+  shape of a reviewer list, such as `reviewers` and `review.design.reviewers`,
+  are unchanged. Only the wording changed:
   every value accepted or refused before is accepted or refused now, and the
   problems come in the same order. A script that matches the text of a problem
   in `config validate --json` or `doctor --json` needs the new text.
