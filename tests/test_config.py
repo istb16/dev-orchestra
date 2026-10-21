@@ -7,13 +7,13 @@ import subprocess
 import sys
 import unittest
 from types import SimpleNamespace
-from typing import Any, ClassVar, Dict
+from typing import Any, ClassVar, Dict, List
 from unittest import mock
 
 from helpers import IsolatedCase, make_dir_link, present, remove_link
 
 from orchestrator import config as config_mod
-from orchestrator import config_paths, providers, summary
+from orchestrator import config_paths, config_validation, providers, summary
 from orchestrator import config_policy as policy_mod
 
 DESIGN_DEFAULTS = {
@@ -982,6 +982,44 @@ class TestValidateOrder(IsolatedCase):
                     config_mod.validate(data),
                     ["preset: unknown %r (known: %s)" % (preset, ", ".join(presets.NAMES))],
                 )
+
+
+class TestValueRules(IsolatedCase):
+    """The rule tables ``config_validation`` reads its value checks from."""
+
+    @staticmethod
+    def rules() -> List[Any]:
+        tables = [table for name, table in vars(config_validation).items() if name.endswith("_RULES")]
+        return [rule for table in tables for rule in table]
+
+    def test_there_are_rules(self):
+        self.assertTrue(self.rules())
+
+    def test_a_default_is_the_value_default_config_holds(self):
+        defaults = config_mod.default_config()
+        for rule in self.rules():
+            if rule.default is not None:
+                with self.subTest(path=rule.path):
+                    self.assertEqual(rule.default, config_mod.get_path(defaults, rule.path))
+
+    def test_a_default_passes_its_own_rule(self):
+        for rule in self.rules():
+            if rule.default is not None:
+                with self.subTest(path=rule.path):
+                    self.assertEqual(config_validation._check_value(rule, rule.default, rule.path), [])
+
+    def test_every_path_is_a_known_key(self):
+        for rule in self.rules():
+            with self.subTest(path=rule.path):
+                *parents, leaf = rule.path.split(".")
+                layer: Dict[str, Any] = {leaf: None}
+                for key in reversed(parents):
+                    layer = {key: layer}
+                self.assertEqual(config_validation.unknown_keys(layer), [])
+
+    def test_no_path_appears_twice(self):
+        paths = [rule.path for rule in self.rules()]
+        self.assertEqual(len(paths), len(set(paths)))
 
 
 class TestReviewerConditions(IsolatedCase):

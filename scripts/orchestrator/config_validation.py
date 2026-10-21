@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import difflib
 import re
-from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
+from typing import Any, Dict, List, NamedTuple, Optional, Sequence, Set, Tuple
 
 from . import optimization as opt_mod
 from .clocks import MAX_SECONDS
@@ -47,6 +47,65 @@ _TIER_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 def _int_at_least(value: Any, minimum: int) -> bool:
     """An int, not a bool, and at least ``minimum``."""
     return isinstance(value, int) and not isinstance(value, bool) and value >= minimum
+
+
+_BOOL = "bool"  # true or false
+_AUTO = "auto"  # true, false or auto
+_INT = "int"  # _int_at_least(value, minimum)
+_SECONDS = "seconds"  # _INT, then whole_seconds, else _TOO_LONG
+_GLOBS = "globs"  # a list of non-empty strings, each bad one by index
+
+
+class _Rule(NamedTuple):
+    """One value check: the key at the end of ``path``, read as ``block.get(key, default)``."""
+
+    path: str
+    kind: str
+    message: str  # what follows "<path>: "; _SECONDS's second message is _TOO_LONG
+    minimum: int = 0
+    null_ok: bool = True  # None, read or defaulted, passes
+    default: Any = None
+
+
+def _check(block: Dict[str, Any], rules: Sequence[_Rule]) -> List[str]:
+    """The problems of each rule's key in ``block``, in the order of ``rules``."""
+    problems: List[str] = []
+    for rule in rules:
+        value = block.get(rule.path.rsplit(".", 1)[-1], rule.default)
+        problems.extend(_check_value(rule, value, rule.path))
+    return problems
+
+
+def _check_value(rule: _Rule, value: Any, path: str) -> List[str]:
+    """``rule`` applied to one value, named ``path`` in each message."""
+    if value is None and rule.null_ok:
+        return []
+    if rule.kind == _GLOBS:
+        if not isinstance(value, list):
+            return ["%s: %s" % (path, rule.message)]
+        return [
+            "%s[%d]: must be a non-empty string (got %r)" % (path, index, pattern)
+            for index, pattern in enumerate(value)
+            if not isinstance(pattern, str) or not pattern.strip()
+        ]
+    if rule.kind == _BOOL:
+        ok = isinstance(value, bool)
+    elif rule.kind == _AUTO:
+        ok = value.strip().lower() == "auto" if isinstance(value, str) else isinstance(value, bool)
+    else:
+        ok = _int_at_least(value, rule.minimum)
+    if not ok:
+        return ["%s: %s" % (path, rule.message)]
+    if rule.kind == _SECONDS and not whole_seconds(value):
+        return ["%s: %s" % (path, _TOO_LONG)]
+    return []
+
+
+_REVIEW_RULES = (_Rule("review.parallel", _BOOL, "must be true or false"),)
+_REVIEW_LIMIT_RULES = (_Rule("review.incremental_rounds", _BOOL, "must be true or false"),)
+_DESIGN_RULES = (_Rule("design.require_approval", _BOOL, "must be true or false"),)
+_LANGUAGE_RULES = (_Rule("language.rewrite", _BOOL, "must be true or false"),)
+_OPTIMIZATION_RULES = (_Rule("optimization.skip_unneeded_roles", _BOOL, "must be true or false"),)
 
 
 def validate(
@@ -337,9 +396,7 @@ def _validate_review(review: Any) -> List[str]:
     iterations = review.get("max_review_iterations", 2)
     if not _int_at_least(iterations, 0):
         problems.append("review.max_review_iterations: must be a non-negative integer")
-    parallel = review.get("parallel")
-    if parallel is not None and not isinstance(parallel, bool):
-        problems.append("review.parallel: must be true or false")
+    problems.extend(_check(review, _REVIEW_RULES))
     problems.extend(_validate_severities(review.get("re_review_severities")))
     timeout = review.get("timeout_seconds", 1800)
     if not _int_at_least(timeout, 1):
@@ -351,9 +408,7 @@ def _validate_review(review: Any) -> List[str]:
         problems.append("review.idle_timeout_seconds: must be a positive integer or null")
     elif idle is not None and not whole_seconds(idle):
         problems.append("review.idle_timeout_seconds: %s" % _TOO_LONG)
-    incremental = review.get("incremental_rounds")
-    if incremental is not None and not isinstance(incremental, bool):
-        problems.append("review.incremental_rounds: must be true or false")
+    problems.extend(_check(review, _REVIEW_LIMIT_RULES))
     findings_cap = review.get("max_findings")
     if findings_cap is not None and not _int_at_least(findings_cap, 0):
         problems.append("review.max_findings: must be a non-negative integer (0 = no cap)")
@@ -447,10 +502,7 @@ def _validate_review_context(context: Any) -> List[str]:
 def _validate_design(design: Any) -> List[str]:
     if not isinstance(design, dict):
         return ["design: must be a mapping"]
-    problems: List[str] = []
-    approval = design.get("require_approval")
-    if approval is not None and not isinstance(approval, bool):
-        problems.append("design.require_approval: must be true or false")
+    problems = _check(design, _DESIGN_RULES)
     ask = design.get("ask_questions")
     if isinstance(ask, str):
         known = ask.strip().lower() == "auto"
@@ -516,9 +568,7 @@ def _validate_language(language: Any) -> List[str]:
             # YAML reads a bare no, yes, on or off as a boolean; `no` is Norwegian.
             message += ' (got %s: quote a tag such as "no" to keep it a string)' % str(reply).lower()
         problems.append(message)
-    rewrite = language.get("rewrite")
-    if rewrite is not None and not isinstance(rewrite, bool):
-        problems.append("language.rewrite: must be true or false")
+    problems.extend(_check(language, _LANGUAGE_RULES))
     return problems
 
 
@@ -730,9 +780,7 @@ def _validate_optimization(data: Any) -> List[str]:
     level = data.get("level")
     if level is not None and (not isinstance(level, str) or level.strip().lower() not in levels):
         problems.append("optimization.level: must be one of %s" % ", ".join(sorted(levels)))
-    skip = data.get("skip_unneeded_roles")
-    if skip is not None and not isinstance(skip, bool):
-        problems.append("optimization.skip_unneeded_roles: must be true or false")
+    problems.extend(_check(data, _OPTIMIZATION_RULES))
     for key in (
         "high_risk_paths",
         "extra_high_risk_paths",
