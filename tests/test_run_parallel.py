@@ -266,7 +266,7 @@ class TestWriteTimings(RunnerCase):
     def test_writes_one_key_per_task(self):
         self.module("test_passing", PASSING)
         self.module("test_failing", FAILING)
-        self.module("test_slow", slow("TestSlow", 0.2))
+        self.module("test_slow", slow("TestSlow", 0.5))
         code, stderr = self.run_runner(
             "--split",
             "test_passing.TestPasses",
@@ -290,7 +290,7 @@ class TestWriteTimings(RunnerCase):
         for seconds in timings.values():
             self.assertIsInstance(seconds, (int, float))
             self.assertEqual(seconds, round(seconds, 2))
-        self.assertGreaterEqual(timings["test_slow.TestSlow"], 0.2)
+        self.assertGreaterEqual(timings["test_slow.TestSlow"], 0.3)
 
     def test_a_hung_run_writes_nothing(self):
         self.module("test_hangs", HANGS)
