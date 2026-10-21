@@ -20,13 +20,11 @@ from __future__ import annotations
 import copy
 import json
 import os
-import stat
 import sys
-import tempfile
 from typing import Any, Dict, List, Mapping, NamedTuple, Optional, Tuple
 
+from . import atomic_file, config_paths, reply_language
 from . import config as config_mod
-from . import config_paths, reply_language
 from .execution import DELEGATED_ENV
 
 #: Moves Claude Code's user settings directory when set.
@@ -404,58 +402,15 @@ def read_settings(path: str) -> Dict[str, Any]:
     return _read(path)[0]
 
 
-def _current_bytes(path: str) -> Optional[bytes]:
-    try:
-        with open(path, "rb") as handle:
-            return handle.read()
-    except FileNotFoundError:
-        return None
-
-
-class _Raced(Exception):
-    """The file changed between being read and being replaced."""
-
-
-#: ``_atomic_write``'s ``expected`` when the file is not compared before the move.
-_UNCHECKED: Any = object()
-
-
-def _write_target(path: str) -> str:
-    """Where writing ``path`` lands: a linked file's target, so the link stays a link."""
-    return os.path.realpath(path) if os.path.islink(path) else path
-
-
-def _atomic_write(path: str, content: bytes, expected: object = _UNCHECKED) -> None:
+def _atomic_write(path: str, content: bytes, expected: object = atomic_file.UNCHECKED) -> None:
     """Write ``content`` beside ``path`` and move it into place.
 
     With ``expected`` (the bytes read earlier, or None for no file) the file
-    is read once more just before the move, and ``_Raced`` raised if it
+    is read once more just before the move, and ``atomic_file.Raced`` raised if it
     changed in between. A ``path`` that is a link -- a dotfile manager's, say
     -- has its target replaced, and the temporary file is made beside that.
     """
-    path = _write_target(path)
-    directory = os.path.dirname(path)
-    os.makedirs(directory, exist_ok=True)
-    prefix = "." + os.path.basename(path) + "."
-    handle, temporary = tempfile.mkstemp(prefix=prefix, suffix=".tmp", dir=directory)
-    try:
-        with os.fdopen(handle, "wb") as stream:
-            stream.write(content)
-            stream.flush()
-            os.fsync(stream.fileno())
-        try:
-            os.chmod(temporary, stat.S_IMODE(os.stat(path).st_mode))
-        except OSError:
-            pass  # a new file keeps what mkstemp gave it
-        if expected is not _UNCHECKED and _current_bytes(path) != expected:
-            raise _Raced(path)
-        os.replace(temporary, path)
-    except BaseException:
-        try:
-            os.remove(temporary)
-        except OSError:
-            pass
-        raise
+    atomic_file.write(path, content, durable=True, keep_mode=True, follow_link=True, expected=expected)
 
 
 def write_settings(path: str, data: Dict[str, Any], original: Optional[bytes]) -> Optional[str]:
@@ -466,7 +421,7 @@ def write_settings(path: str, data: Dict[str, Any], original: Optional[bytes]) -
     """
     backup = None
     if original is not None:
-        backup = _write_target(path) + BACKUP_SUFFIX
+        backup = atomic_file.write_target(path) + BACKUP_SUFFIX
         _atomic_write(backup, original)
     text = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
     _atomic_write(path, text.encode("utf-8"), expected=original)
@@ -498,7 +453,7 @@ def _edit(install: bool, dry_run: bool, python: str = "", relay: str = "") -> _E
             return path, added, removed, changed, None
         try:
             backup = write_settings(path, result, original)
-        except _Raced:
+        except atomic_file.Raced:
             if attempt:
                 message = "%s changed while it was being edited; it was not changed. Try again" % path
                 raise HooksError(message) from None
@@ -541,7 +496,7 @@ def write_relay(plugin_root: str, dry_run: bool = False, kept: Optional[Dict[str
     """
     written: List[str] = []
     for path, content in _relay_files(plugin_root, kept):
-        if _current_bytes(path) == content:
+        if atomic_file.current_bytes(path) == content:
             continue
         if not dry_run:
             _atomic_write(path, content)
@@ -665,7 +620,7 @@ def status(plugin_root: str) -> Dict[str, Any]:
     relays = [hook["args"][1] for hook in hooks]
     if not os.path.isfile(relay_path()) or any(not _same_path(arg, relay_path()) for arg in relays):
         reasons.append("relay-missing")
-    elif _current_bytes(relay_path()) != RELAY_TEXT.encode("utf-8"):
+    elif atomic_file.current_bytes(relay_path()) != RELAY_TEXT.encode("utf-8"):
         reasons.append("relay-outdated")
     wanted = desired_record(plugin_root)
     if record is not None and not _same_path(record.get("plugin_root"), wanted["plugin_root"]):
@@ -719,7 +674,7 @@ def install(plugin_root: str, dry_run: bool = False) -> Change:
     previous: List[Tuple[str, Optional[bytes]]] = []
     try:
         if not dry_run:
-            previous = [(path, _current_bytes(path)) for path in (relay_path(), record_path())]
+            previous = [(path, atomic_file.current_bytes(path)) for path in (relay_path(), record_path())]
         relay_files = write_relay(plugin_root, dry_run)
         path, added, removed, changed, backup = _edit(True, dry_run, python, _slashes(relay_path()))
     except BaseException as exc:
