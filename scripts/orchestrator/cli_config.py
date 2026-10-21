@@ -1270,8 +1270,24 @@ def cmd_reviewer_set(args: argparse.Namespace) -> int:
                 if family_note
                 else "note: provider is now %s; %s" % (args.provider, removed)
             )
+    relevance_note = ""
     if args.role:
+        previous_role = reviewer.get("role", "general")
         reviewer["role"] = args.role
+        # As the wizard does: a rule is about one role's work, so it goes when the
+        # seat changes role, unless --relevance names a new one or it is `always`.
+        rule = reviewer.get("relevance")
+        if (
+            args.role != previous_role
+            and rule is not None
+            and not getattr(args, "relevance", None)
+            and str(rule).strip().lower() != opt_mod.RELEVANCE_ALWAYS
+        ):
+            reviewer.pop("relevance")
+            relevance_note = (
+                "note: role is now %s; its relevance %s was removed (reviewer set --relevance sets another)"
+                % (args.role, rule)
+            )
     if args.model or args.pin:
         model: Dict[str, Any] = {"family": args.model or reviewer.get("model", {}).get("family")}
         model["version"] = "pinned" if args.pin else "latest"
@@ -1295,6 +1311,8 @@ def cmd_reviewer_set(args: argparse.Namespace) -> int:
     _out("Updated reviewer %s in %s" % (reviewer.get("id"), config_paths.shown_location(path)))
     if family_note:
         _out(family_note)
+    if relevance_note:
+        _out(relevance_note)
     if frozen:
         _out(frozen)
     _warn_unenforced_after_write(args.cwd)

@@ -352,6 +352,48 @@ class TestReviewerCommands(IsolatedCase):
         _, out, _ = run_cli("reviewer", "list")
         self.assertIn("No reviewers configured", out)
 
+    def test_set_role_drops_the_relevance_rule_with_a_note(self):
+        run_cli("reviewer", "add", "--provider", "codex", "--role", "security", "--relevance", "security")
+        code, out, _ = run_cli("reviewer", "set", "codex-security", "--role", "performance")
+        self.assertEqual(code, 0)
+        self.assertIn(
+            "note: role is now performance; its relevance security was removed "
+            "(reviewer set --relevance sets another)",
+            out,
+        )
+        _, listing, _ = run_cli("reviewer", "list", "--json")
+        entry = next(r for r in json.loads(listing) if r["id"] == "codex-security")
+        self.assertNotIn("relevance", entry)
+
+    def test_set_same_role_keeps_the_relevance_rule(self):
+        run_cli("reviewer", "add", "--provider", "codex", "--role", "security", "--relevance", "security")
+        code, out, _ = run_cli("reviewer", "set", "codex-security", "--role", "security")
+        self.assertEqual(code, 0)
+        self.assertNotIn("was removed", out)
+        _, listing, _ = run_cli("reviewer", "list", "--json")
+        entry = next(r for r in json.loads(listing) if r["id"] == "codex-security")
+        self.assertEqual(entry["relevance"], "security")
+
+    def test_set_role_with_relevance_takes_the_new_rule(self):
+        run_cli("reviewer", "add", "--provider", "codex", "--role", "security", "--relevance", "security")
+        code, out, _ = run_cli(
+            "reviewer", "set", "codex-security", "--role", "test", "--relevance", "architecture"
+        )
+        self.assertEqual(code, 0)
+        self.assertNotIn("was removed", out)
+        _, listing, _ = run_cli("reviewer", "list", "--json")
+        entry = next(r for r in json.loads(listing) if r["id"] == "codex-security")
+        self.assertEqual(entry["relevance"], "architecture")
+
+    def test_set_role_keeps_relevance_always(self):
+        run_cli("reviewer", "add", "--provider", "codex", "--role", "security", "--relevance", "always")
+        code, out, _ = run_cli("reviewer", "set", "codex-security", "--role", "test")
+        self.assertEqual(code, 0)
+        self.assertNotIn("was removed", out)
+        _, listing, _ = run_cli("reviewer", "list", "--json")
+        entry = next(r for r in json.loads(listing) if r["id"] == "codex-security")
+        self.assertEqual(entry["relevance"], "always")
+
     def test_set_changes_provider_and_role(self):
         code, _, _ = run_cli(
             "reviewer", "set", "codex-general", "--role", "performance", "--provider", "mock"
