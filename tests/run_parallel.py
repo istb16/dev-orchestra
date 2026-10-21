@@ -6,7 +6,7 @@ locally. Standard library only, like the rest of the suite::
 
     python tests/run_parallel.py [-v] [-j N] [--timeout SECONDS] [--serial module.Class ...]
                                  [--split module.Class ...] [--timings PATH]
-                                 [--write-timings PATH]
+                                 [--write-timings PATH] [--shard I/N]
 
 A class named by ``--split`` (or in ``SPLIT_CLASSES``) is handed out one test
 method per task instead, so one long class does not decide how long the run
@@ -16,6 +16,13 @@ Tasks are handed out longest first, by the seconds recorded for them in
 ``timings.json`` next to this script (``--timings`` reads another file). A
 task with no recorded time is estimated from its test count. The times only
 decide the order; a stale file never changes which tests run.
+
+``--shard I/N`` runs part I of N, for CI jobs that each take a part. The parts
+are split greedily by those times, the same way in every job, and each run
+checks that the N parts together hold every task exactly once. Only this
+part's tests count towards "every discovered test ran"; a module that failed
+to import is reported in every part. ``--shard 2/3`` run locally runs the same
+tests as that CI job.
 
 ``--timeout`` is per task, counted from when a worker starts it; the first
 task to run past it stops the whole run.
@@ -46,7 +53,7 @@ import traceback
 import unittest
 import warnings
 from concurrent.futures.process import BrokenProcessPool
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
 if TESTS_DIR not in sys.path:
@@ -154,6 +161,13 @@ def _default_jobs() -> int:
     return min(os.cpu_count() or 1, 4)
 
 
+def _shard(text: str) -> Tuple[int, int]:
+    index, slash, count = text.partition("/")
+    if slash and index.isdigit() and count.isdigit() and 1 <= int(index) <= int(count):
+        return int(index), int(count)
+    raise argparse.ArgumentTypeError("expected I/N with 1 <= I <= N, got %r" % text)
+
+
 def _parse_args(argv: Optional[List[str]]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the test suite in parallel, one class per task.")
     parser.add_argument("-v", "--verbose", action="store_true", help="unittest's -v, per test")
@@ -200,6 +214,13 @@ def _parse_args(argv: Optional[List[str]]) -> argparse.Namespace:
         default=None,
         metavar="PATH",
         help="after a finished run, write each task's seconds to PATH as JSON",
+    )
+    parser.add_argument(
+        "--shard",
+        type=_shard,
+        default=None,
+        metavar="I/N",
+        help="run only part I of the suite split N ways by recorded time (1-based)",
     )
     args = parser.parse_args(argv)
     if args.jobs is None:
@@ -290,6 +311,28 @@ def _longest_first(times: Dict[str, float]) -> List[str]:
     return sorted(times, key=lambda name: (-times[name], name))
 
 
+def _partition(times: Dict[str, float], count: int) -> List[List[str]]:
+    """Split the tasks into ``count`` shards of about equal time.
+
+    Longest first, each to the shard with the least time so far (the lower
+    index on a tie). It depends only on ``times``, so every job computes the
+    same split and each part keeps the longest-first order.
+    """
+    parts: List[List[str]] = [[] for _ in range(count)]
+    loads = [0.0] * count
+    for name in _longest_first(times):
+        lightest = min(range(count), key=lambda index: (loads[index], index))
+        parts[lightest].append(name)
+        loads[lightest] += times[name]
+    return parts
+
+
+def _covers(parts: List[List[str]], times: Dict[str, float]) -> bool:
+    """Whether the parts hold every task exactly once, and nothing else."""
+    names = [name for part in parts for name in part]
+    return len(names) == len(set(names)) and set(names) == set(times)
+
+
 def _write_timings(path: str, timings: Dict[str, float]) -> None:
     rounded = {name: round(seconds, 2) for name, seconds in timings.items()}
     with open(path, "w", encoding="utf-8", newline="\n") as handle:
@@ -320,7 +363,6 @@ def main(argv: Optional[List[str]] = None) -> int:
         else:
             name = "%s.%s" % (cls.__module__, cls.__qualname__)
             classes.setdefault(name, []).append(test.id())
-    expected = len(in_parent) + sum(len(ids) for ids in classes.values())
 
     serial = list(dict.fromkeys([*SERIAL_CLASSES, *args.serial]))
     unknown = [name for name in dict.fromkeys([*serial, *args.split]) if name not in classes]
@@ -331,10 +373,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     split = {name for name in [*SPLIT_CLASSES, *args.split] if name in classes and name not in serial}
 
     # Each task, a class or one method of a split class, with its test count.
+    # A serial class is a task too: it is in one shard like any other.
     sizes: Dict[str, int] = {}
     for name, ids in classes.items():
-        if name in serial:
-            continue
         if name in split:
             for test_id in ids:
                 sizes[test_id] = sizes.get(test_id, 0) + 1
@@ -351,8 +392,34 @@ def main(argv: Optional[List[str]] = None) -> int:
         except (OSError, ValueError) as error:
             sys.stderr.write("run_parallel: cannot read timings from %s: %s\n" % (timings_path, error))
             return 2
+    times = _task_times(sizes, recorded)
+
+    mine = set(times)
+    if args.shard is not None:
+        index, count = args.shard
+        parts = _partition(times, count)
+        if not _covers(parts, times):
+            sys.stderr.write("run_parallel: the %d shards do not cover every task exactly once\n" % count)
+            return 2
+        mine = set(parts[index - 1])
+        sys.stderr.write(
+            "run_parallel: shard %d/%d: %d of %d tasks, %d of %d tests, %d without a recorded time\n"
+            % (
+                index,
+                count,
+                len(mine),
+                len(times),
+                len(in_parent) + sum(sizes[name] for name in mine),
+                len(in_parent) + sum(sizes.values()),
+                sum(1 for name in mine if name not in recorded),
+            )
+        )
+        sys.stderr.flush()
+    # Import failures are in every shard, so no shard can lose one.
+    expected = len(in_parent) + sum(sizes[name] for name in mine)
+    serial = [name for name in serial if name in mine]
     # Longest first, so the long tasks do not start last.
-    pooled = _longest_first(_task_times(sizes, recorded))
+    pooled = [name for name in _longest_first(times) if name in mine and name not in serial]
 
     tally = _Tally()
     # Seconds per task that produced a result, for --write-timings.
