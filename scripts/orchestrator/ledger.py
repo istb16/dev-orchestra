@@ -37,7 +37,7 @@ import time
 import uuid
 from typing import Any, Dict, List, Optional
 
-from . import execution
+from . import execution_tree
 from . import workspace as ws
 
 #: Stages that consume an attempt budget. ``review`` is governed by
@@ -663,7 +663,7 @@ class Ledger:
             elapsed = now - started
             deadline = entry.get("deadline_seconds")
             pid = int(entry.get("pid") or 0)
-            alive = execution.pid_alive(pid)
+            alive = execution_tree.pid_alive(pid)
             reason = ""
             if not alive:
                 reason = "the process that started it (pid %d) is gone" % pid

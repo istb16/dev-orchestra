@@ -26,7 +26,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
-from . import activity, execution
+from . import activity, execution_launch, execution_tree
 from . import workspace as ws
 
 #: Terminal states. Anything else means the job is still supposed to be running.
@@ -215,12 +215,12 @@ def _worker_alive(pid: int, job: Dict[str, Any]) -> Optional[bool]:
     read) is None, and so is a live pid whose start cannot be read now (on
     Windows, when opening the process is denied).
     """
-    if not execution.pid_alive(pid):
+    if not execution_tree.pid_alive(pid):
         return False
     started = job.get("pid_started")
     if not started:
         return None
-    now = execution.process_started(pid)
+    now = execution_tree.process_started(pid)
     if now is None:
         return None
     return now == started
@@ -300,7 +300,7 @@ def start(
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            **execution.spawn_kwargs(),
+            **execution_launch.spawn_kwargs(),
         )
     except OSError as exc:
         job["status"] = "failed"
@@ -308,7 +308,7 @@ def start(
         job["finished_at"] = ws.utcnow()
         write_job(workspace, job)
         return job
-    started = execution.process_started(proc.pid)
+    started = execution_tree.process_started(proc.pid)
 
     def spawned(current: Dict[str, Any]) -> None:
         # Merged into what is on disk, not written over it: a fast worker can
@@ -359,8 +359,8 @@ def cancel(workspace: ws.Workspace, job_id: str) -> Dict[str, Any]:
     alive = _worker_alive(pid, job) if pid else False
     killed = False
     if alive is not False:
-        killed = execution.kill_tree(pid, execution.KILL_GRACE_SECONDS, verified=alive is True)
-    if not killed and alive is not False and execution.pid_alive(pid):
+        killed = execution_tree.kill_tree(pid, execution_tree.KILL_GRACE_SECONDS, verified=alive is True)
+    if not killed and alive is not False and execution_tree.pid_alive(pid):
         # The pid is still there and was not confirmed stopped, and nothing
         # says it is someone else's: the worker may be running, so the job is
         # not finished. Leaving it as it is keeps what reads it (``workflow
@@ -429,7 +429,7 @@ def update(
 def claim(job_file: str) -> Dict[str, Any]:
     """Called by the worker: record that it owns this job."""
 
-    started = execution.process_started(os.getpid())
+    started = execution_tree.process_started(os.getpid())
 
     def claimed(job: Dict[str, Any]) -> None:
         _record_pid(job, os.getpid(), started)
