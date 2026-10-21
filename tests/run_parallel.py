@@ -5,9 +5,33 @@ this runs the same tests in parallel for CI and for anyone who wants that
 locally. Standard library only, like the rest of the suite::
 
     python tests/run_parallel.py [-v] [-j N] [--timeout SECONDS] [--serial module.Class ...]
+                                 [--split module.Class ...] [--timings PATH]
+                                 [--write-timings PATH] [--shard I/N]
 
-``--timeout`` is per class, counted from when a worker starts it; the first
-class to run past it stops the whole run.
+A class named by ``--split`` (or in ``SPLIT_CLASSES``) is handed out one test
+method per task instead, so one long class does not decide how long the run
+takes. Only classes with no class or module fixtures belong there.
+
+Tasks are handed out longest first, by the seconds recorded for them in
+``timings.json`` next to this script (``--timings`` reads another file). A
+task with no recorded time is estimated from its test count. The times only
+decide the order; a stale file never changes which tests run.
+
+``--shard I/N`` runs part I of N, for CI jobs that each take a part. The parts
+are split greedily by those times, the same way in every job, and each run
+checks that the N parts together hold every task exactly once. Only this
+part's tests count towards "every discovered test ran"; a module that failed
+to import is reported in every part. ``--shard 2/3`` run locally runs the same
+tests as that CI job.
+
+``--timeout`` is per task, counted from when a worker starts it; the first
+task to run past it stops the whole run.
+
+``--write-timings PATH`` records how long each task took, as JSON, once the
+run has finished (not after a hang). Record it serially, so the times are not
+inflated by tasks competing for the CPU::
+
+    python tests/run_parallel.py -j 1 --write-timings tests/timings.json
 
 Workers are separate processes started with ``spawn``: tests chdir and set
 environment variables, which are per process, so threads would collide. Each
@@ -20,6 +44,7 @@ from __future__ import annotations
 import argparse
 import concurrent.futures
 import io
+import json
 import multiprocessing
 import os
 import sys
@@ -28,7 +53,7 @@ import traceback
 import unittest
 import warnings
 from concurrent.futures.process import BrokenProcessPool
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
 if TESTS_DIR not in sys.path:
@@ -43,7 +68,24 @@ import helpers  # noqa: E402
 #: tolerate running alongside others. ``--serial`` adds to it.
 SERIAL_CLASSES = ()
 
+#: Classes handed out one test method per task, because each alone takes long
+#: enough to set the length of the whole run. Every test in them makes its own
+#: temp dir and none has a class or module fixture. ``--split`` adds to it; a
+#: class that is also serial is not split.
+SPLIT_CLASSES = (
+    "test_installers.TestAntigravityInstallers",
+    "test_installers.TestClaudeInstallers",
+    "test_installers.TestCodexInstallers",
+)
+
 JOBS_ENV = "DEV_ORCHESTRA_TEST_JOBS"
+
+#: Where the seconds each task took are kept; ``--write-timings`` makes it.
+TIMINGS_FILE = os.path.join(TESTS_DIR, "timings.json")
+
+#: Seconds per test for a task with no recorded time, a little over the
+#: suite's mean, so a new task is placed by its size.
+ESTIMATE_PER_TEST = 0.25
 
 #: In a worker, where it tells the parent which class it has started, so the
 #: timeout can run from that moment rather than from when it was queued.
@@ -97,8 +139,8 @@ def _init_worker(start_dir: str, started) -> None:
     _started = started
 
 
-def run_class(name: str, verbosity: int) -> Dict[str, object]:
-    """One task: load ``module.Class`` by name and run it. Runs in a worker."""
+def run_class(name: str, verbosity: int) -> Dict[str, Any]:
+    """One task: load ``module.Class`` (or ``module.Class.method``) by name and run it. Runs in a worker."""
     if _started is not None:
         _started.put(name)
     return _run_suite(name, unittest.defaultTestLoader.loadTestsFromName(name), verbosity)
@@ -119,6 +161,13 @@ def _default_jobs() -> int:
     return min(os.cpu_count() or 1, 4)
 
 
+def _shard(text: str) -> Tuple[int, int]:
+    index, slash, count = text.partition("/")
+    if slash and index.isdigit() and count.isdigit() and 1 <= int(index) <= int(count):
+        return int(index), int(count)
+    raise argparse.ArgumentTypeError("expected I/N with 1 <= I <= N, got %r" % text)
+
+
 def _parse_args(argv: Optional[List[str]]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the test suite in parallel, one class per task.")
     parser.add_argument("-v", "--verbose", action="store_true", help="unittest's -v, per test")
@@ -133,7 +182,7 @@ def _parse_args(argv: Optional[List[str]]) -> argparse.Namespace:
         "--timeout",
         type=float,
         default=600.0,
-        help="seconds one class may run in a worker before it is reported as hung and the run stops",
+        help="seconds one task may run in a worker before it is reported as hung and the run stops",
     )
     parser.add_argument(
         "--start-dir",
@@ -146,6 +195,32 @@ def _parse_args(argv: Optional[List[str]]) -> argparse.Namespace:
         default=[],
         metavar="MODULE.CLASS",
         help="run this class in this process after the pool, alone; repeatable",
+    )
+    parser.add_argument(
+        "--split",
+        action="append",
+        default=[],
+        metavar="MODULE.CLASS",
+        help="hand out each test method of this class as its own task; repeatable",
+    )
+    parser.add_argument(
+        "--timings",
+        default=None,
+        metavar="PATH",
+        help="read each task's recorded seconds from PATH (default: timings.json next to this script)",
+    )
+    parser.add_argument(
+        "--write-timings",
+        default=None,
+        metavar="PATH",
+        help="after a finished run, write each task's seconds to PATH as JSON",
+    )
+    parser.add_argument(
+        "--shard",
+        type=_shard,
+        default=None,
+        metavar="I/N",
+        help="run only part I of the suite split N ways by recorded time (1-based)",
     )
     args = parser.parse_args(argv)
     if args.jobs is None:
@@ -209,6 +284,62 @@ class _Tally:
         return not (self.failures or self.errors or self.unexpected_successes)
 
 
+def _read_timings(path: str) -> Dict[str, float]:
+    """``{task: seconds}`` from a file ``--write-timings`` wrote; ValueError if it is not one."""
+    with open(path, encoding="utf-8") as handle:
+        data = json.load(handle)
+    if not isinstance(data, dict):
+        raise ValueError("not a JSON object")
+    timings: Dict[str, float] = {}
+    for name, seconds in data.items():
+        if isinstance(seconds, bool) or not isinstance(seconds, (int, float)) or seconds < 0:
+            raise ValueError("%s: not a number of seconds: %r" % (name, seconds))
+        timings[name] = float(seconds)
+    return timings
+
+
+def _task_times(sizes: Dict[str, int], recorded: Dict[str, float]) -> Dict[str, float]:
+    """Each task's recorded seconds, or an estimate from its test count."""
+    return {
+        name: recorded[name] if name in recorded else ESTIMATE_PER_TEST * count
+        for name, count in sizes.items()
+    }
+
+
+def _longest_first(times: Dict[str, float]) -> List[str]:
+    # Ties by name, so the order is the same every run.
+    return sorted(times, key=lambda name: (-times[name], name))
+
+
+def _partition(times: Dict[str, float], count: int) -> List[List[str]]:
+    """Split the tasks into ``count`` shards of about equal time.
+
+    Longest first, each to the shard with the least time so far (the lower
+    index on a tie). It depends only on ``times``, so every job computes the
+    same split and each part keeps the longest-first order.
+    """
+    parts: List[List[str]] = [[] for _ in range(count)]
+    loads = [0.0] * count
+    for name in _longest_first(times):
+        lightest = min(range(count), key=lambda index: (loads[index], index))
+        parts[lightest].append(name)
+        loads[lightest] += times[name]
+    return parts
+
+
+def _covers(parts: List[List[str]], times: Dict[str, float]) -> bool:
+    """Whether the parts hold every task exactly once, and nothing else."""
+    names = [name for part in parts for name in part]
+    return len(names) == len(set(names)) and set(names) == set(times)
+
+
+def _write_timings(path: str, timings: Dict[str, float]) -> None:
+    rounded = {name: round(seconds, 2) for name, seconds in timings.items()}
+    with open(path, "w", encoding="utf-8", newline="\n") as handle:
+        json.dump(rounded, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+
+
 def _terminate_workers(executor: concurrent.futures.ProcessPoolExecutor) -> None:
     # A hung worker never returns, and shutdown() cannot stop one.
     for process in list((getattr(executor, "_processes", None) or {}).values()):
@@ -221,7 +352,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     started = time.monotonic()
 
     suite = unittest.TestLoader().discover(args.start_dir, top_level_dir=args.start_dir)
-    sizes: Dict[str, int] = {}
+    classes: Dict[str, List[str]] = {}
     in_parent: List[unittest.TestCase] = []
     for test in _flatten(suite):
         cls = type(test)
@@ -231,19 +362,68 @@ def main(argv: Optional[List[str]] = None) -> int:
             in_parent.append(test)
         else:
             name = "%s.%s" % (cls.__module__, cls.__qualname__)
-            sizes[name] = sizes.get(name, 0) + 1
-    expected = len(in_parent) + sum(sizes.values())
+            classes.setdefault(name, []).append(test.id())
 
     serial = list(dict.fromkeys([*SERIAL_CLASSES, *args.serial]))
-    unknown = [name for name in serial if name not in sizes]
+    unknown = [name for name in dict.fromkeys([*serial, *args.split]) if name not in classes]
     if unknown:
         sys.stderr.write("run_parallel: no such test class: %s\n" % ", ".join(unknown))
         return 2
-    # Largest first, so the long classes do not start last; ties by name so
-    # the order is the same every run.
-    pooled = sorted((name for name in sizes if name not in serial), key=lambda name: (-sizes[name], name))
+    # The defaults may be missing from a tree that is not this repository's.
+    split = {name for name in [*SPLIT_CLASSES, *args.split] if name in classes and name not in serial}
+
+    # Each task, a class or one method of a split class, with its test count.
+    # A serial class is a task too: it is in one shard like any other.
+    sizes: Dict[str, int] = {}
+    for name, ids in classes.items():
+        if name in split:
+            for test_id in ids:
+                sizes[test_id] = sizes.get(test_id, 0) + 1
+        else:
+            sizes[name] = len(ids)
+
+    # The default file may be missing from a tree that is not this
+    # repository's; one named on the command line must be there.
+    timings_path = args.timings if args.timings is not None else TIMINGS_FILE
+    recorded: Dict[str, float] = {}
+    if args.timings is not None or os.path.exists(timings_path):
+        try:
+            recorded = _read_timings(timings_path)
+        except (OSError, ValueError) as error:
+            sys.stderr.write("run_parallel: cannot read timings from %s: %s\n" % (timings_path, error))
+            return 2
+    times = _task_times(sizes, recorded)
+
+    mine = set(times)
+    if args.shard is not None:
+        index, count = args.shard
+        parts = _partition(times, count)
+        if not _covers(parts, times):
+            sys.stderr.write("run_parallel: the %d shards do not cover every task exactly once\n" % count)
+            return 2
+        mine = set(parts[index - 1])
+        sys.stderr.write(
+            "run_parallel: shard %d/%d: %d of %d tasks, %d of %d tests, %d without a recorded time\n"
+            % (
+                index,
+                count,
+                len(mine),
+                len(times),
+                len(in_parent) + sum(sizes[name] for name in mine),
+                len(in_parent) + sum(sizes.values()),
+                sum(1 for name in mine if name not in recorded),
+            )
+        )
+        sys.stderr.flush()
+    # Import failures are in every shard, so no shard can lose one.
+    expected = len(in_parent) + sum(sizes[name] for name in mine)
+    serial = [name for name in serial if name in mine]
+    # Longest first, so the long tasks do not start last.
+    pooled = [name for name in _longest_first(times) if name in mine and name not in serial]
 
     tally = _Tally()
+    # Seconds per task that produced a result, for --write-timings.
+    timings: Dict[str, float] = {}
     if in_parent:
         tally.add(_run_suite("discovery", unittest.TestSuite(in_parent), verbosity))
 
@@ -284,7 +464,9 @@ def main(argv: Optional[List[str]] = None) -> int:
             for future in sorted(done, key=futures.__getitem__):
                 name = futures[future]
                 try:
-                    tally.add(future.result())
+                    outcome = future.result()
+                    timings[name] = outcome["duration"]
+                    tally.add(outcome)
                 except BrokenProcessPool:
                     # The pool fails every unfinished task at once, so this
                     # names the class that killed its worker and all the ones
@@ -314,7 +496,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         executor.shutdown(wait=not broken, cancel_futures=True)
 
         for name in serial:
-            tally.add(run_class(name, verbosity))
+            outcome = run_class(name, verbosity)
+            timings[name] = outcome["duration"]
+            tally.add(outcome)
     finally:
         executor.shutdown(wait=False, cancel_futures=True)
         if template is not None:
@@ -324,6 +508,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     complete = tally.run == expected
     if not complete:
         sys.stderr.write("\nrun_parallel: discover found %d tests but %d ran\n" % (expected, tally.run))
+    if args.write_timings is not None:
+        _write_timings(args.write_timings, timings)
     sys.stderr.write(tally.summary(time.monotonic() - started))
     return 0 if tally.ok() and complete else 1
 

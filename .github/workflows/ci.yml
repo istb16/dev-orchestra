@@ -58,9 +58,10 @@ jobs:
         run: pyright
 
   test:
-    name: Tests (${{ matrix.os }}, Python ${{ matrix.python-version }})
+    name: Tests (${{ matrix.os }}, Python ${{ matrix.python-version }}, ${{ matrix.shard }}/${{ matrix.shards }})
     runs-on: ${{ matrix.os }}
-    # The runner gives up on a hung class after 600s; this is the backstop.
+    # The runner gives up on a hung class after 600s; this is the backstop. It
+    # also covers a hang that starts late in a shard.
     timeout-minutes: 15
     strategy:
       fail-fast: false
@@ -68,6 +69,18 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
         # The oldest and the newest supported; the ones between seldom break alone.
         python-version: ["3.11", "3.14"]
+        # Each (OS, Python) runs the whole suite split into parts, one job per
+        # part: Windows, the slowest, in 3, macOS and Ubuntu in 2. The split
+        # comes from tests/timings.json and is the same on every OS.
+        shard: [1, 2, 3]
+        exclude:
+          - { os: ubuntu-latest, shard: 3 }
+          - { os: macos-latest, shard: 3 }
+        # Adds `shards` to every job of that OS.
+        include:
+          - { os: ubuntu-latest, shards: 2 }
+          - { os: macos-latest, shards: 2 }
+          - { os: windows-latest, shards: 3 }
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -83,10 +96,22 @@ jobs:
         # claude or codex on PATH, and must never invoke a real CLI. The tests
         # hide them and refuse to start one themselves (tests/cli_guard), so
         # that holds whatever the runner image has installed.
-        # The runner is the same discover, one test class per worker process.
+        # The runner is the same discover, one test class per worker process
+        # (the installer classes one method per process), and checks that the
+        # parts together cover every test once.
         # On Windows, tests/test_installers.py runs the .ps1 installers under
         # both pwsh and Windows PowerShell 5.1.
-        run: python tests/run_parallel.py -v
+        run: python tests/run_parallel.py -v --shard ${{ matrix.shard }}/${{ matrix.shards }}
+
+  tests:
+    # One check name for branch protection, green only when every part of
+    # every (OS, Python) passed. The parts' own names say which one failed.
+    name: Tests
+    needs: test
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - run: test "${{ needs.test.result }}" = success
 
   installers-windows:
     # The test suite leaves sh out on Windows, and runs the .ps1 installers

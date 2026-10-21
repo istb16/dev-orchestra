@@ -57,6 +57,18 @@ authors can find it.
   every value accepted or refused before is accepted or refused now, and the
   problems come in the same order. A script that matches the text of a problem
   in `config validate --json` or `doctor --json` needs the new text.
+- **CI runs the test suite in parts.** Each OS and Python version now runs
+  the suite as several jobs, three on Windows and two on macOS and Ubuntu,
+  named `Tests (<os>, Python <version>, <part>/<parts>)`; a `Tests` job is
+  green only when every part passed. Every test still runs on every OS and
+  Python version. A branch protection rule that required the old
+  `Tests (<os>, Python <version>)` checks should require `Tests` instead.
+  `tests/run_parallel.py` gains `--shard I/N`, which splits the suite by the
+  times recorded in the new `tests/timings.json` and checks on every run that
+  the parts cover every test once, `--timings PATH` and `--write-timings PATH`
+  to read and record those times, and `--split MODULE.CLASS`: the three
+  installer test classes are now handed out one test method at a time.
+  Without `--shard` it runs the same tests as before.
 
 ## [1.1.1] - 2026-10-15
 

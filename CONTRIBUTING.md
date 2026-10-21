@@ -26,6 +26,32 @@ from different modules run at the same time, so a test class that does not
 derive from `IsolatedCase` must not write outside its own temporary
 directory, change the working directory, or leave the environment changed.
 
+A few long classes are handed out one test method at a time instead: those in
+`SPLIT_CLASSES` in `tests/run_parallel.py`, now the three installer classes
+in `tests/test_installers.py` (`--split MODULE.CLASS` adds one for a run). A
+class belongs there only if it has no `setUpClass` or `setUpModule` and every
+test makes its own temporary directory.
+
+CI splits the suite further, into parts that run as separate jobs: three on
+Windows, two on macOS and Ubuntu, for each Python version. Each job runs
+`python tests/run_parallel.py -v --shard I/N`, and the `Tests` job is green
+only when every part passed. The parts are split by the seconds each class
+(or split method) took, recorded in `tests/timings.json`; a class with no
+recorded time is estimated from its number of tests. The split is the same on
+every machine, so `--shard 2/3` run locally runs the tests of that CI job, and
+every run checks that the parts together hold every test exactly once. A
+stale file can only make the parts uneven, never leave a test out.
+
+Each job prints a line such as
+`run_parallel: shard 2/3: 219 of 657 tasks, 1452 of 4353 tests, 3 without a recorded time`.
+When many tasks have no recorded time, or the parts' times drift more than
+about a quarter apart, record the times again on Windows, serially so they
+are not inflated, and commit the file:
+
+```bash
+python tests/run_parallel.py -j 1 --write-timings tests/timings.json
+```
+
 The tools for working on the code -- ruff and
 [Pyright](https://microsoft.github.io/pyright/) -- are pinned in
 `requirements-dev.txt`. Nothing at runtime needs them; set them up once in a
