@@ -5,9 +5,14 @@ this runs the same tests in parallel for CI and for anyone who wants that
 locally. Standard library only, like the rest of the suite::
 
     python tests/run_parallel.py [-v] [-j N] [--timeout SECONDS] [--serial module.Class ...]
+                                 [--split module.Class ...]
 
-``--timeout`` is per class, counted from when a worker starts it; the first
-class to run past it stops the whole run.
+A class named by ``--split`` (or in ``SPLIT_CLASSES``) is handed out one test
+method per task instead, so one long class does not decide how long the run
+takes. Only classes with no class or module fixtures belong there.
+
+``--timeout`` is per task, counted from when a worker starts it; the first
+task to run past it stops the whole run.
 
 Workers are separate processes started with ``spawn``: tests chdir and set
 environment variables, which are per process, so threads would collide. Each
@@ -42,6 +47,16 @@ import helpers  # noqa: E402
 #: competing for the CPU -- the fallback for a class that turns out not to
 #: tolerate running alongside others. ``--serial`` adds to it.
 SERIAL_CLASSES = ()
+
+#: Classes handed out one test method per task, because each alone takes long
+#: enough to set the length of the whole run. Every test in them makes its own
+#: temp dir and none has a class or module fixture. ``--split`` adds to it; a
+#: class that is also serial is not split.
+SPLIT_CLASSES = (
+    "test_installers.TestAntigravityInstallers",
+    "test_installers.TestClaudeInstallers",
+    "test_installers.TestCodexInstallers",
+)
 
 JOBS_ENV = "DEV_ORCHESTRA_TEST_JOBS"
 
@@ -98,7 +113,7 @@ def _init_worker(start_dir: str, started) -> None:
 
 
 def run_class(name: str, verbosity: int) -> Dict[str, object]:
-    """One task: load ``module.Class`` by name and run it. Runs in a worker."""
+    """One task: load ``module.Class`` (or ``module.Class.method``) by name and run it. Runs in a worker."""
     if _started is not None:
         _started.put(name)
     return _run_suite(name, unittest.defaultTestLoader.loadTestsFromName(name), verbosity)
@@ -133,7 +148,7 @@ def _parse_args(argv: Optional[List[str]]) -> argparse.Namespace:
         "--timeout",
         type=float,
         default=600.0,
-        help="seconds one class may run in a worker before it is reported as hung and the run stops",
+        help="seconds one task may run in a worker before it is reported as hung and the run stops",
     )
     parser.add_argument(
         "--start-dir",
@@ -146,6 +161,13 @@ def _parse_args(argv: Optional[List[str]]) -> argparse.Namespace:
         default=[],
         metavar="MODULE.CLASS",
         help="run this class in this process after the pool, alone; repeatable",
+    )
+    parser.add_argument(
+        "--split",
+        action="append",
+        default=[],
+        metavar="MODULE.CLASS",
+        help="hand out each test method of this class as its own task; repeatable",
     )
     args = parser.parse_args(argv)
     if args.jobs is None:
@@ -221,7 +243,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     started = time.monotonic()
 
     suite = unittest.TestLoader().discover(args.start_dir, top_level_dir=args.start_dir)
-    sizes: Dict[str, int] = {}
+    classes: Dict[str, List[str]] = {}
     in_parent: List[unittest.TestCase] = []
     for test in _flatten(suite):
         cls = type(test)
@@ -231,17 +253,30 @@ def main(argv: Optional[List[str]] = None) -> int:
             in_parent.append(test)
         else:
             name = "%s.%s" % (cls.__module__, cls.__qualname__)
-            sizes[name] = sizes.get(name, 0) + 1
-    expected = len(in_parent) + sum(sizes.values())
+            classes.setdefault(name, []).append(test.id())
+    expected = len(in_parent) + sum(len(ids) for ids in classes.values())
 
     serial = list(dict.fromkeys([*SERIAL_CLASSES, *args.serial]))
-    unknown = [name for name in serial if name not in sizes]
+    unknown = [name for name in dict.fromkeys([*serial, *args.split]) if name not in classes]
     if unknown:
         sys.stderr.write("run_parallel: no such test class: %s\n" % ", ".join(unknown))
         return 2
+    # The defaults may be missing from a tree that is not this repository's.
+    split = {name for name in [*SPLIT_CLASSES, *args.split] if name in classes and name not in serial}
+
+    # Each task, a class or one method of a split class, with its test count.
+    sizes: Dict[str, int] = {}
+    for name, ids in classes.items():
+        if name in serial:
+            continue
+        if name in split:
+            for test_id in ids:
+                sizes[test_id] = sizes.get(test_id, 0) + 1
+        else:
+            sizes[name] = len(ids)
     # Largest first, so the long classes do not start last; ties by name so
     # the order is the same every run.
-    pooled = sorted((name for name in sizes if name not in serial), key=lambda name: (-sizes[name], name))
+    pooled = sorted(sizes, key=lambda name: (-sizes[name], name))
 
     tally = _Tally()
     if in_parent:

@@ -205,5 +205,53 @@ class TestSerialClasses(RunnerCase):
         self.assertIn("no such test class: test_passing.TestNoSuchClass", stderr)
 
 
+class TestSplitClasses(RunnerCase):
+    def test_a_split_class_runs_every_method_and_counts_them(self):
+        self.module("test_passing", PASSING)
+        code, stderr = self.run_runner("-v", "--split", "test_passing.TestPasses")
+        self.assertEqual(code, 0, stderr)
+        self.assertSummary(stderr, 2, "OK")
+        self.assertIn("test_one (test_passing.TestPasses", stderr)
+        self.assertIn("test_two (test_passing.TestPasses", stderr)
+
+    def test_a_failing_method_fails_the_run_and_is_named(self):
+        self.module("test_passing", PASSING)
+        self.module("test_failing", FAILING)
+        code, stderr = self.run_runner("--split", "test_failing.TestFails")
+        self.assertEqual(code, 1, stderr)
+        self.assertSummary(stderr, 3, "FAILED (failures=1)")
+        self.assertIn("FAIL: test_fails (test_failing.TestFails", stderr)
+
+    def test_a_killed_worker_names_the_method(self):
+        self.module("test_killer", KILLS_ITS_WORKER)
+        code, stderr = self.run_runner("-j", "1", "--split", "test_killer.TestKillsItsWorker")
+        self.assertEqual(code, 1, stderr)
+        self.assertIn("ERROR: test_killer.TestKillsItsWorker.test_exits\n", stderr)
+        self.assertIn("the process pool broke", stderr)
+
+    def test_a_hung_method_is_named(self):
+        self.module("test_passing", PASSING)
+        self.module("test_hangs", HANGS)
+        code, stderr = self.run_runner("--timeout", "3", "--split", "test_hangs.TestHangs")
+        self.assertEqual(code, 1, stderr)
+        self.assertIn("ERROR: test_hangs.TestHangs.test_sleeps\n", stderr)
+        self.assertIn("still running after 3s in its worker (hung)", stderr)
+
+    def test_a_class_that_is_also_serial_still_runs_once(self):
+        self.module("test_passing", PASSING)
+        self.module("test_failing", FAILING)
+        code, stderr = self.run_runner(
+            "--serial", "test_failing.TestFails", "--split", "test_failing.TestFails"
+        )
+        self.assertEqual(code, 1, stderr)
+        self.assertSummary(stderr, 3, "FAILED (failures=1)")
+
+    def test_an_unknown_class_is_refused(self):
+        self.module("test_passing", PASSING)
+        code, stderr = self.run_runner("--split", "test_passing.TestNoSuchClass")
+        self.assertEqual(code, 2, stderr)
+        self.assertIn("no such test class: test_passing.TestNoSuchClass", stderr)
+
+
 if __name__ == "__main__":
     unittest.main()
