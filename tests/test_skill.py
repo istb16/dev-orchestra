@@ -590,6 +590,7 @@ ORCHESTRATOR_DIR = os.path.join(SCRIPTS_DIR, "orchestrator")
 #: bootstrap runs the user's adapters.
 _REGISTRY_FREE = (
     "activity",
+    "atomic_file",
     "workspace",
     "optimization",
     "optimization_design",
