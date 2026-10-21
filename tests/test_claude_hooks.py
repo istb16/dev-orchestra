@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ast
 import copy
+import inspect
 import json
 import os
 import shutil
@@ -20,8 +21,8 @@ from unittest import mock
 
 from helpers import REPO_ROOT, IsolatedCase, fixture_text, make_dir_link, run_cli
 
+from orchestrator import atomic_file, cli_hooks, config_paths, doctor, hosts
 from orchestrator import claude_hooks as ch
-from orchestrator import cli_hooks, config_paths, doctor, hosts
 from orchestrator import config as config_mod
 from orchestrator import wizard as wizard_mod
 from orchestrator.execution import DELEGATED_ENV
@@ -384,7 +385,8 @@ class TestSettingsEditing(HooksCase):
             with self.assertRaises(ch.HooksError) as caught:
                 ch.install(REPO_ROOT)
         self.assertIn("%s could not be written (" % self.settings, str(caught.exception))
-        self.assertEqual(len(calls), 25)  # atomic_file.replace_with_retry's default attempts
+        default = inspect.signature(atomic_file.replace_with_retry).parameters["attempts"].default
+        self.assertEqual(len(calls), default)
         self.assertEqual(self.read_bytes(), raw)
         self.assertEqual([name for name in os.listdir(self.claude_dir) if name.endswith(".tmp")], [])
 

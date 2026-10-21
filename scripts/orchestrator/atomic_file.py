@@ -108,6 +108,8 @@ def replace_with_retry(temporary: str, target: str, attempts: int = 25, fallback
     a short backoff wins in practice. With ``fallback`` false the last refusal is
     raised instead of writing in place, so the target is never left half-written.
     """
+    if not fallback and attempts < 1:
+        raise ValueError("replace_with_retry without fallback needs at least one attempt")
     last: Optional[OSError] = None
     for attempt in range(attempts):
         try:
@@ -119,9 +121,8 @@ def replace_with_retry(temporary: str, target: str, attempts: int = 25, fallback
 
     if not fallback:
         # For a file the user owns: a half-written file is worse than a failed write.
-        if last is not None:
-            raise last
-        return
+        assert last is not None  # at least one attempt, checked above
+        raise last
     # Out of retries. Writing in place gives up atomicity, but losing the write
     # would be worse, and readers already retry on a parse error.
     try:
