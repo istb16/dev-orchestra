@@ -601,6 +601,7 @@ _REGISTRY_FREE = (
     "config_validation",
     "execution",
     "execution_common",
+    "execution_drain",
     "presets",
     "verified",
     "context",

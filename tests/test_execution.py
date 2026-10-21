@@ -21,7 +21,7 @@ from unittest import mock
 
 from helpers import SCRIPTS_DIR, IsolatedCase
 
-from orchestrator import clocks, execution
+from orchestrator import clocks, execution, execution_drain
 
 #: Sleeps forever without ever writing anything: a wedged agent.
 SILENT_HANG = "import time\nwhile True: time.sleep(0.05)\n"
@@ -366,7 +366,7 @@ class TestOnLine(IsolatedCase):
             # Takes the drain's lock: called under it, this would never return.
             observed.append((drain.last_seen(), len(drain.text())))
 
-        drain = execution._Drain(check)
+        drain = execution_drain._Drain(check)
         before = drain.last_seen()
         thread = threading.Thread(target=drain.pump, args=(io.BytesIO(b"a\nb\n"),), daemon=True)
         thread.start()
@@ -417,8 +417,8 @@ class TestOnLine(IsolatedCase):
             release.wait(10)
             seen.append(line)
 
-        with mock.patch.object(execution, "_LINE_QUEUE_SIZE", 2):
-            drain = execution._Drain(stuck)
+        with mock.patch.object(execution_drain, "_LINE_QUEUE_SIZE", 2):
+            drain = execution_drain._Drain(stuck)
         text = "".join("%d\n" % i for i in range(20))
         thread = threading.Thread(target=drain.pump, args=(io.BytesIO(text.encode()),), daemon=True)
         thread.start()
@@ -437,7 +437,7 @@ class TestOnLine(IsolatedCase):
             calls.append(line)
             time.sleep(0.5)
 
-        drain = execution._Drain(slow)
+        drain = execution_drain._Drain(slow)
         drain.pump(io.BytesIO(b"a\nb\nc\nd\n"))
         drain.finish(0.1)
         time.sleep(1.5)
@@ -453,7 +453,7 @@ class TestOnLine(IsolatedCase):
                 return pieces.pop(0) if pieces else b""
 
         seen: List[str] = []
-        drain = execution._Drain(seen.append)
+        drain = execution_drain._Drain(seen.append)
         drain.pump(Pieces())
         drain.finish(10)
         self.assertEqual(seen, ["one\n", "two あ\n", "three"])
@@ -512,7 +512,7 @@ class TestProcessTree(IsolatedCase):
         """
         pid_file = os.path.join(self.project, "grandchild.pid")
         self.addCleanup(end_pid_in, pid_file)
-        original = execution._Drain.mark
+        original = execution_drain._Drain.mark
 
         def mark(drain):
             taken = original(drain)
@@ -520,7 +520,7 @@ class TestProcessTree(IsolatedCase):
                 pass
             return taken
 
-        with mock.patch.object(execution._Drain, "mark", mark):
+        with mock.patch.object(execution_drain._Drain, "mark", mark):
             return execution.execute(
                 [*python_code(parent), pid_file], cwd=self.project, timeout=120, on_line=on_line
             )
@@ -555,8 +555,8 @@ class TestProcessTree(IsolatedCase):
         pid_file = os.path.join(self.project, "grandchild.pid")
         self.addCleanup(end_pid_in, pid_file)
         original_mark, original_pump, original_spawn = (
-            execution._Drain.mark,
-            execution._Drain.pump,
+            execution_drain._Drain.mark,
+            execution_drain._Drain.pump,
             execution._spawn,
         )
         spawned: List[subprocess.Popen] = []
@@ -585,8 +585,8 @@ class TestProcessTree(IsolatedCase):
         seen: List[str] = []
         with (
             mock.patch.object(execution, "_spawn", spawn),
-            mock.patch.object(execution._Drain, "mark", mark),
-            mock.patch.object(execution._Drain, "pump", slow_pump),
+            mock.patch.object(execution_drain._Drain, "mark", mark),
+            mock.patch.object(execution_drain._Drain, "pump", slow_pump),
         ):
             outcome = execution.execute(
                 [*python_code(parent), pid_file], cwd=self.project, timeout=120, on_line=seen.append
@@ -626,8 +626,8 @@ class TestProcessTree(IsolatedCase):
         group = {"member": True}
         marked = threading.Event()
         original_mark, original_pump, original_spawn = (
-            execution._Drain.mark,
-            execution._Drain.pump,
+            execution_drain._Drain.mark,
+            execution_drain._Drain.pump,
             execution._spawn,
         )
 
@@ -661,8 +661,8 @@ class TestProcessTree(IsolatedCase):
             mock.patch.object(execution, "_spawn", spawn),
             mock.patch.object(execution.os, "killpg", killpg, create=True),
             mock.patch.object(execution.os, "listdir", side_effect=OSError("no /proc")),
-            mock.patch.object(execution._Drain, "mark", mark),
-            mock.patch.object(execution._Drain, "pump", slow_pump),
+            mock.patch.object(execution_drain._Drain, "mark", mark),
+            mock.patch.object(execution_drain._Drain, "pump", slow_pump),
         ):
             outcome = execution.execute(python_code(code), cwd=self.project, timeout=120, on_line=seen.append)
         return outcome, seen
@@ -688,7 +688,7 @@ class TestProcessTree(IsolatedCase):
         last_words = (
             "import sys\nfor i in range(50): sys.stdout.write('line %d\\n' % i)\nsys.stdout.write('result')\n"
         )
-        original = execution._Drain.pump
+        original = execution_drain._Drain.pump
 
         def slow_pump(drain, stream):
             # Starved for longer than the quiet moment ``_settle`` waits for.
@@ -696,7 +696,7 @@ class TestProcessTree(IsolatedCase):
             original(drain, stream)
 
         seen: List[str] = []
-        with mock.patch.object(execution._Drain, "pump", slow_pump):
+        with mock.patch.object(execution_drain._Drain, "pump", slow_pump):
             outcome = execution.execute(
                 python_code(last_words), cwd=self.project, timeout=120, on_line=seen.append
             )
@@ -720,7 +720,7 @@ class TestProcessTree(IsolatedCase):
         reader, writer = os.fdopen(read_end, "rb"), os.fdopen(write_end, "wb")
         self.addCleanup(writer.close)
         seen: List[str] = []
-        drain = execution._Drain(seen.append)
+        drain = execution_drain._Drain(seen.append)
         thread = threading.Thread(target=drain.pump, args=(reader,), daemon=True)
         thread.start()
 
@@ -765,7 +765,7 @@ class TestProcessTree(IsolatedCase):
             release.wait(10)
             seen.append(line)
 
-        drain = execution._Drain(slow)
+        drain = execution_drain._Drain(slow)
         thread = threading.Thread(target=drain.pump, args=(reader,), daemon=True)
         thread.start()
 
@@ -1294,7 +1294,7 @@ class TestStopOnSigterm(IsolatedCase):
 
         with (
             mock.patch.object(execution.subprocess, "Popen", popen),
-            mock.patch.object(execution, "_Drain", mock.Mock(side_effect=RuntimeError("boom"))),
+            mock.patch.object(execution_drain, "_Drain", mock.Mock(side_effect=RuntimeError("boom"))),
             self.assertRaises(RuntimeError),
         ):
             execution.execute(python_code(SILENT_HANG), cwd=self.project, timeout=60)
