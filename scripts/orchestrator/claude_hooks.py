@@ -402,6 +402,14 @@ def read_settings(path: str) -> Dict[str, Any]:
     return _read(path)[0]
 
 
+def _replace(temporary: str, target: str) -> None:
+    """Retry a rename Windows refuses while Claude Code or an editor has the file open.
+
+    No in-place fallback: the user's settings must never be left half-written.
+    """
+    atomic_file.replace_with_retry(temporary, target, fallback=False)
+
+
 def _atomic_write(path: str, content: bytes, expected: object = atomic_file.UNCHECKED) -> None:
     """Write ``content`` beside ``path`` and move it into place.
 
@@ -410,7 +418,9 @@ def _atomic_write(path: str, content: bytes, expected: object = atomic_file.UNCH
     changed in between. A ``path`` that is a link -- a dotfile manager's, say
     -- has its target replaced, and the temporary file is made beside that.
     """
-    atomic_file.write(path, content, durable=True, keep_mode=True, follow_link=True, expected=expected)
+    atomic_file.write(
+        path, content, durable=True, keep_mode=True, follow_link=True, expected=expected, replace=_replace
+    )
 
 
 def write_settings(path: str, data: Dict[str, Any], original: Optional[bytes]) -> Optional[str]:

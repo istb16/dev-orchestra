@@ -366,9 +366,10 @@ class TestSettingsEditing(HooksCase):
         # The relay is not left behind for entries that were never added.
         self.assertFalse(os.path.lexists(ch.hooks_dir()))
 
-    def test_a_refused_rename_is_not_retried(self):
-        """Unlike the ``.ai/`` files, the user's settings get one rename: a
-        sharing violation is reported, not waited out."""
+    def test_a_refused_rename_is_retried_then_reported(self):
+        """A sharing violation is waited out like the ``.ai/`` files, but the
+        in-place fallback is not used for the user's settings: after the
+        retries the error is reported and the file is left as it was."""
         raw = self.write_settings({"a": 1})
         real_replace = os.replace
         calls: List[str] = []
@@ -379,13 +380,29 @@ class TestSettingsEditing(HooksCase):
                 raise PermissionError(13, "sharing violation", dst)
             return real_replace(src, dst)
 
-        with mock.patch.object(os, "replace", refusing):
+        with mock.patch.object(os, "replace", refusing), mock.patch("time.sleep"):
             with self.assertRaises(ch.HooksError) as caught:
                 ch.install(REPO_ROOT)
         self.assertIn("%s could not be written (" % self.settings, str(caught.exception))
-        self.assertEqual(len(calls), 1)
+        self.assertEqual(len(calls), 25)  # atomic_file.replace_with_retry's default attempts
         self.assertEqual(self.read_bytes(), raw)
         self.assertEqual([name for name in os.listdir(self.claude_dir) if name.endswith(".tmp")], [])
+
+    def test_a_rename_refused_twice_then_allowed_goes_through(self):
+        self.write_settings({"a": 1})
+        real_replace = os.replace
+        refusals = [2]
+
+        def sometimes_refusing(src, dst):
+            if os.path.abspath(dst) == os.path.abspath(self.settings) and refusals[0]:
+                refusals[0] -= 1
+                raise PermissionError(13, "sharing violation", dst)
+            return real_replace(src, dst)
+
+        with mock.patch.object(os, "replace", sometimes_refusing), mock.patch("time.sleep"):
+            ch.install(REPO_ROOT)
+        self.assertEqual(refusals[0], 0)
+        self.assertIn("hooks", self.read_settings())
 
     def test_failed_install_puts_an_older_relay_back(self):
         old = os.path.join(self.tmp, "cache", "0.20.0")
