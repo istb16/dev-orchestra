@@ -67,7 +67,7 @@ def write(
     """
     if follow_link:
         path = write_target(path)
-    directory = os.path.dirname(path)
+    directory = os.path.dirname(path) or "."  # a bare name is in the current directory
     os.makedirs(directory, exist_ok=True)
     if prefix is None:
         prefix = "." + os.path.basename(path) + "."

@@ -18,7 +18,7 @@ from unittest import mock
 
 from helpers import IsolatedCase
 
-from orchestrator import cli, cli_review
+from orchestrator import atomic_file, cli, cli_review
 from orchestrator import ledger as ledger_mod
 from orchestrator import review as review_mod
 from orchestrator import workspace as ws
@@ -116,6 +116,25 @@ class TestAtomicWrites(IsolatedCase):
         self.assertEqual(len(calls), 25)
         with open(path, "rb") as handle:
             self.assertEqual(handle.read(), b"a\nb")
+        self.assertEqual(self.temp_files(), [])
+
+    def test_a_failed_write_in_place_raises_the_rename_error(self):
+        path = os.path.join(self.project, "out.txt")
+        ws.write_text(path, "old")
+        real_open = open
+
+        def refusing_open(file, mode="r", *args, **kwargs):
+            if file == os.path.abspath(path) and "w" in mode:
+                raise PermissionError(13, "denied", file)
+            return real_open(file, mode, *args, **kwargs)
+
+        self.enterContext(mock.patch.object(atomic_file, "open", refusing_open, create=True))
+        calls = self.patch_replace(None)
+        with self.assertRaises(PermissionError) as caught:
+            ws.write_text(path, "new")
+        self.assertEqual(caught.exception.strerror, "sharing violation")
+        self.assertEqual(len(calls), 25)
+        self.assertEqual(ws.read_text(path), "old")
         self.assertEqual(self.temp_files(), [])
 
     def test_another_rename_error_is_raised_at_once(self):

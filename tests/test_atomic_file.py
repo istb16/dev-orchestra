@@ -50,6 +50,14 @@ class TestWrite(AtomicFileCase):
         self.assertEqual(self.read_bytes(), b"content")
         self.assertEqual(self.others(), [])
 
+    def test_a_bare_name_is_written_in_the_current_directory(self):
+        os.makedirs(self.directory)
+        self.addCleanup(os.chdir, os.getcwd())
+        os.chdir(self.directory)
+        atomic_file.write("out.txt", b"content")
+        self.assertEqual(self.read_bytes(), b"content")
+        self.assertEqual(self.others(), [])
+
     def test_a_str_is_utf8_with_its_newlines_as_they_are(self):
         atomic_file.write(self.path, "café\r\nb\n")
         self.assertEqual(self.read_bytes(), "café\r\nb\n".encode("utf-8"))
@@ -86,6 +94,13 @@ class TestWrite(AtomicFileCase):
         atomic_file.write(self.path, b"private")
         self.assertEqual(os.stat(self.path).st_mode & 0o777, 0o600)
 
+    def test_keep_mode_with_no_file_to_replace(self):
+        atomic_file.write(self.path, b"new", keep_mode=True)
+        self.assertEqual(self.read_bytes(), b"new")
+        self.assertEqual(self.others(), [])
+        if os.name != "nt":
+            self.assertEqual(os.stat(self.path).st_mode & 0o777, 0o600)
+
     def test_follow_link_replaces_the_target(self):
         target = os.path.join(self.tmp, "elsewhere", "real.txt")
         os.makedirs(os.path.dirname(target))
@@ -104,6 +119,21 @@ class TestWrite(AtomicFileCase):
         self.assertFalse(os.path.islink(self.path))
         self.assertEqual(self.read_bytes(target), b"new")
 
+    def test_follow_link_creates_a_missing_target(self):
+        """A dangling link's target is made, its directory too, and the link stays."""
+        target = os.path.join(self.tmp, "elsewhere", "real.txt")
+        os.makedirs(self.directory)
+        try:
+            os.symlink(target, self.path)
+        except (OSError, NotImplementedError):
+            self.skipTest("cannot make a file symlink here")
+        atomic_file.write(self.path, b"new", follow_link=True)
+        self.assertTrue(os.path.islink(self.path))
+        self.assertEqual(self.read_bytes(target), b"new")
+        self.assertEqual(self.read_bytes(), b"new")
+        self.assertEqual(sorted(os.listdir(os.path.dirname(target))), ["real.txt"])
+        self.assertEqual(self.others(), [])
+
     def test_expected_bytes_that_match_are_replaced(self):
         self.write_bytes(b"old")
         atomic_file.write(self.path, b"new", expected=b"old")
@@ -114,6 +144,12 @@ class TestWrite(AtomicFileCase):
         with self.assertRaises(atomic_file.Raced):
             atomic_file.write(self.path, b"new", expected=b"old")
         self.assertEqual(self.read_bytes(), b"changed")
+        self.assertEqual(self.others(), [])
+
+    def test_expected_bytes_of_a_file_since_removed_raise_raced(self):
+        with self.assertRaises(atomic_file.Raced):
+            atomic_file.write(self.path, b"new", expected=b"old")
+        self.assertFalse(os.path.exists(self.path))
         self.assertEqual(self.others(), [])
 
     def test_expected_none_means_no_file(self):
@@ -152,6 +188,39 @@ class TestWrite(AtomicFileCase):
             atomic_file.write(self.path, "\ud800")
         self.assertEqual(self.read_bytes(), b"old")
         self.assertEqual(self.others(), [])
+
+    def test_a_failed_flush_to_disk_removes_the_temporary_file(self):
+        self.write_bytes(b"old")
+        with mock.patch.object(os, "fsync", side_effect=OSError(5, "I/O error")):
+            with self.assertRaises(OSError):
+                atomic_file.write(self.path, b"new", durable=True)
+        self.assertEqual(self.read_bytes(), b"old")
+        self.assertEqual(self.others(), [])
+
+
+class TestReplaceWithRetry(AtomicFileCase):
+    def test_no_attempts_goes_straight_to_writing_in_place(self):
+        self.write_bytes(b"old")
+        temporary = os.path.join(self.directory, "temporary")
+        with open(temporary, "wb") as handle:
+            handle.write(b"new")
+        calls = self.recording_replace()
+        atomic_file.replace_with_retry(temporary, self.path, attempts=0)
+        self.assertEqual(calls, [])
+        self.assertEqual(self.read_bytes(), b"new")
+        self.assertEqual(self.others(), [])
+
+    def test_no_attempts_and_a_failed_write_in_place_return_quietly(self):
+        """With no rename tried there is no error to raise, so nothing is; the
+        target keeps its content and the temporary file is left to the caller."""
+        self.write_bytes(b"old")
+        temporary = os.path.join(self.directory, "temporary")
+        with open(temporary, "wb") as handle:
+            handle.write(b"new")
+        with mock.patch.object(atomic_file, "open", side_effect=PermissionError(13, "denied"), create=True):
+            atomic_file.replace_with_retry(temporary, self.path, attempts=0)
+        self.assertEqual(self.read_bytes(), b"old")
+        self.assertEqual(self.others(), ["temporary"])
 
 
 class TestCurrentBytes(AtomicFileCase):
