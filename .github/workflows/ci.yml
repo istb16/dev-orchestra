@@ -103,6 +103,16 @@ jobs:
         # both pwsh and Windows PowerShell 5.1.
         run: python tests/run_parallel.py -v --shard ${{ matrix.shard }}/${{ matrix.shards }}
 
+  tests:
+    # One check name for branch protection, green only when every part of
+    # every (OS, Python) passed. The parts' own names say which one failed.
+    name: Tests
+    needs: test
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - run: test "${{ needs.test.result }}" = success
+
   installers-windows:
     # The test suite leaves sh out on Windows, and runs the .ps1 installers
     # only from Python. This runs each installer the way a user would, in
