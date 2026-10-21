@@ -226,6 +226,21 @@ class TestReplaceWithRetry(AtomicFileCase):
         self.assertEqual(self.others(), ["temporary"])
 
 
+class TestReplaceWithRetryWithoutFallback(AtomicFileCase):
+    def test_a_refused_rename_is_raised_and_the_target_is_left_alone(self):
+        self.write_bytes(b"old")
+        temporary = os.path.join(self.directory, "temporary")
+        with open(temporary, "wb") as handle:
+            handle.write(b"new")
+        with mock.patch.object(os, "replace", side_effect=PermissionError(13, "denied")) as replace:
+            with mock.patch("time.sleep"):
+                with self.assertRaises(PermissionError):
+                    atomic_file.replace_with_retry(temporary, self.path, attempts=3, fallback=False)
+        self.assertEqual(replace.call_count, 3)
+        self.assertEqual(self.read_bytes(), b"old")
+        self.assertEqual(self.others(), ["temporary"])
+
+
 class TestCurrentBytes(AtomicFileCase):
     def test_the_bytes_or_none(self):
         self.assertIsNone(atomic_file.current_bytes(self.path))

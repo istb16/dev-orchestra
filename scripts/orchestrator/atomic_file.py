@@ -98,15 +98,18 @@ def write(
         raise
 
 
-def replace_with_retry(temporary: str, target: str, attempts: int = 25) -> None:
+def replace_with_retry(temporary: str, target: str, attempts: int = 25, fallback: bool = True) -> None:
     """Rename over ``target``, working around Windows file sharing.
 
     On Windows ``os.replace`` is denied while another handle has the target
     open, and Python's ``open()`` does not grant delete sharing -- so a
     concurrent *reader* can make a *write* fail, which was worse than the torn
     read this was meant to prevent. Readers hold the file only momentarily, so
-    a short backoff wins in practice.
+    a short backoff wins in practice. With ``fallback`` false the last refusal is
+    raised instead of writing in place, so the target is never left half-written.
     """
+    if not fallback and attempts < 1:
+        raise ValueError("replace_with_retry without fallback needs at least one attempt")
     last: Optional[OSError] = None
     for attempt in range(attempts):
         try:
@@ -116,6 +119,10 @@ def replace_with_retry(temporary: str, target: str, attempts: int = 25) -> None:
             last = exc
             time.sleep(min(0.01 * (attempt + 1), 0.1))
 
+    if not fallback:
+        # For a file the user owns: a half-written file is worse than a failed write.
+        assert last is not None  # at least one attempt, checked above
+        raise last
     # Out of retries. Writing in place gives up atomicity, but losing the write
     # would be worse, and readers already retry on a parse error.
     try:
