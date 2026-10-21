@@ -18,7 +18,7 @@ from unittest import mock
 
 from helpers import IsolatedCase
 
-from orchestrator import cli, cli_review
+from orchestrator import atomic_file, cli, cli_review
 from orchestrator import ledger as ledger_mod
 from orchestrator import review as review_mod
 from orchestrator import workspace as ws
@@ -78,6 +78,100 @@ class TestAtomicWrites(IsolatedCase):
             ws.write_text(path, "content")
         leftovers = [name for name in os.listdir(self.project) if name.startswith(".tmp-")]
         self.assertEqual(leftovers, [])
+
+    def patch_replace(self, failures, error=None):
+        """``os.replace`` raising for the first ``failures`` calls (all of them for None);
+        a sharing violation unless ``error`` is given. Returns the calls."""
+        real_replace = os.replace
+        calls = []
+
+        def replace(src, dst):
+            calls.append(dst)
+            if failures is None or len(calls) <= failures:
+                raise error if error is not None else PermissionError(13, "sharing violation", dst)
+            return real_replace(src, dst)
+
+        self.enterContext(mock.patch.object(os, "replace", replace))
+        self.enterContext(mock.patch.object(time, "sleep"))
+        return calls
+
+    def temp_files(self):
+        return [name for name in os.listdir(self.project) if name.startswith(".tmp-")]
+
+    def test_a_refused_rename_is_retried(self):
+        path = os.path.join(self.project, "out.txt")
+        calls = self.patch_replace(2)
+        ws.write_text(path, "content")
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(ws.read_text(path), "content")
+        self.assertEqual(self.temp_files(), [])
+
+    def test_a_rename_refused_every_time_writes_in_place(self):
+        """The last resort reads the temporary file back in text mode, so a
+        CRLF in the text comes out as LF there and only there."""
+        path = os.path.join(self.project, "out.txt")
+        ws.write_text(path, "old")
+        calls = self.patch_replace(None)
+        ws.write_text(path, "a\r\nb")
+        self.assertEqual(len(calls), 25)
+        with open(path, "rb") as handle:
+            self.assertEqual(handle.read(), b"a\nb")
+        self.assertEqual(self.temp_files(), [])
+
+    def test_a_failed_write_in_place_raises_the_rename_error(self):
+        path = os.path.join(self.project, "out.txt")
+        ws.write_text(path, "old")
+        real_open = open
+
+        def refusing_open(file, mode="r", *args, **kwargs):
+            if file == os.path.abspath(path) and "w" in mode:
+                raise PermissionError(13, "denied", file)
+            return real_open(file, mode, *args, **kwargs)
+
+        self.enterContext(mock.patch.object(atomic_file, "open", refusing_open, create=True))
+        calls = self.patch_replace(None)
+        with self.assertRaises(PermissionError) as caught:
+            ws.write_text(path, "new")
+        self.assertEqual(caught.exception.strerror, "sharing violation")
+        self.assertEqual(len(calls), 25)
+        self.assertEqual(ws.read_text(path), "old")
+        self.assertEqual(self.temp_files(), [])
+
+    def test_another_rename_error_is_raised_at_once(self):
+        path = os.path.join(self.project, "out.txt")
+        ws.write_text(path, "old")
+        calls = self.patch_replace(None, error=OSError(28, "disk full"))
+        with self.assertRaises(OSError) as caught:
+            ws.write_text(path, "new")
+        self.assertNotIsInstance(caught.exception, PermissionError)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(ws.read_text(path), "old")
+        self.assertEqual(self.temp_files(), [])
+
+    def test_crlf_is_written_as_is(self):
+        path = os.path.join(self.project, "out.txt")
+        ws.write_text(path, "a\r\nb\n")
+        with open(path, "rb") as handle:
+            self.assertEqual(handle.read(), b"a\r\nb\n")
+
+    @unittest.skipIf(os.name == "nt", "file modes are POSIX")
+    def test_a_rewritten_file_is_private(self):
+        path = os.path.join(self.project, "out.txt")
+        ws.write_text(path, "first")
+        os.chmod(path, 0o644)
+        ws.write_text(path, "second")
+        self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
+
+    @unittest.skipIf(os.name == "nt", "symlinks need privileges on Windows")
+    def test_a_link_is_replaced_by_a_file(self):
+        target = os.path.join(self.project, "target.txt")
+        ws.write_text(target, "target")
+        path = os.path.join(self.project, "out.txt")
+        os.symlink(target, path)
+        ws.write_text(path, "new")
+        self.assertFalse(os.path.islink(path))
+        self.assertEqual(ws.read_text(path), "new")
+        self.assertEqual(ws.read_text(target), "target")
 
     def test_a_genuinely_corrupt_file_still_yields_the_default(self):
         path = os.path.join(self.project, "broken.json")
