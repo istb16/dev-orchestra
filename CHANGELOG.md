@@ -60,8 +60,9 @@ authors can find it.
 - **CI runs the test suite in parts.** Each OS and Python version now runs
   the suite as several jobs, three on Windows and two on macOS and Ubuntu,
   named `Tests (<os>, Python <version>, <part>/<parts>)`; a `Tests` job is
-  green only when every part passed. Every test still runs on every OS and
-  Python version. A branch protection rule that required the old
+  green only when every part passed. Every test still runs on Windows and
+  Ubuntu under each Python version, and on macOS under Python 3.11 only, whose
+  runners were the scarcest. A branch protection rule that required the old
   `Tests (<os>, Python <version>)` checks should require `Tests` instead.
   `tests/run_parallel.py` gains `--shard I/N`, which splits the suite by the
   times recorded in the new `tests/timings.json` and checks on every run that
@@ -69,6 +70,18 @@ authors can find it.
   to read and record those times, and `--split MODULE.CLASS`: the three
   installer test classes are now handed out one test method at a time.
   Without `--shard` it runs the same tests as before.
+
+### Fixed
+
+- **`hooks install` and `hooks uninstall` retry a `settings.json` that Windows
+  has open.** A Claude Code process or an editor holding the file made the
+  write fail with "could not be written" on Windows. The rename is now retried
+  up to 25 times. If it still fails, the file is left as it was, and no
+  in-place write is tried for it.
+- **`reviewer set --role` drops a seat's relevance rule when the role changes,**
+  as the setup wizard already did. It prints a note saying so. A rule given in
+  the same command with `--relevance` is kept as given, and `always` is kept
+  whatever the role.
 
 ## [1.1.1] - 2026-10-15
 
