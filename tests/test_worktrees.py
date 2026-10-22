@@ -133,11 +133,12 @@ class TestRemoval(WorktreeCase):
 
         with (
             mock.patch.object(worktrees, "_git_remove", locked_twice),
-            mock.patch.object(worktrees.time, "sleep") as slept,
+            # worktrees' own time only: subprocess sleeps too while it waits for git.
+            mock.patch.object(worktrees, "time") as clock,
         ):
             self.assertTrue(worktrees.remove(self.project, record, "a"))
         self.assertEqual(len(calls), 3)
-        self.assertEqual([call.args[0] for call in slept.call_args_list], [0.2, 0.4])
+        self.assertEqual([call.args[0] for call in clock.sleep.call_args_list], [0.2, 0.4])
         self.assertFalse(os.path.lexists(record["worktree"]))
 
     def test_worktrees_remove_refuses_a_path_that_is_not_a_unit_worktree(self):
@@ -226,7 +227,7 @@ class TestRemoval(WorktreeCase):
         self.assertFalse(worktrees.remove(self.project, dict(record, base_commit="0" * 40), "a"))
         self.assertFalse(worktrees.remove(self.project, record, "b"))
         self.assertTrue(os.path.isdir(tree))
-        with mock.patch.object(worktrees.time, "sleep"):
+        with mock.patch.object(worktrees, "time"):
             self.assertTrue(worktrees.remove(self.project, record, "a"))
         self.assertFalse(os.path.lexists(tree))
 
