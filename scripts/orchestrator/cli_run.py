@@ -1269,8 +1269,11 @@ def _claim_unit(
             ["--unit %s: the units cannot be run (units check):" % name, *["  - %s" % p for p in problems]],
         )
     # Only said, never refused, and by the parent alone: a worker does not check again.
+    # This unit's own: the others' are said when they run (or by units check).
+    own = "%s: " % name
     for warning in warnings:
-        _err("warning: --unit %s: %s" % (name, warning))
+        if warning.startswith(own):
+            _err("warning: --unit %s: %s" % (name, warning[len(own) :]))
     try:
         claimed = units_run.claim(
             workspace,

@@ -157,7 +157,9 @@ class TestRefusals(UnitRunCase):
         self.approve([{"name": "a", "files": ["scripts/other.py"]}, {"name": "b", "files": ["b.py"]}])
         code, _, err = self.run_unit("a")
         self.assertEqual(code, 0, err)
-        self.assertIn("warning: --unit a: a: scripts/other.py is not in Files to Modify", err)
+        self.assertIn("warning: --unit a: scripts/other.py is not in Files to Modify", err)
+        # b's own warning waits for b's run.
+        self.assertNotIn("b.py", err)
         self.assertEqual(len(self.calls), 1)
         self.assertEqual(self.record("a")["status"], "succeeded")
 
