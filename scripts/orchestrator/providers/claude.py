@@ -296,6 +296,9 @@ class ClaudeProvider(Provider):
     #: role takes it -- and raw arguments, which can spell the same -- only
     #: from the global config or --extra, as agy's ``skip_permissions``.
     local_only_options = ("permission_mode",)
+    # Claude Code's own local settings, ignored by git: a unit's worktree
+    # would otherwise run without the permissions the user granted.
+    worktree_files = (".claude/settings.local.json",)
     # Measured: the streaming format emits thinking_tokens events while the
     # model works, so a no-output deadline can tell wedged from busy. The text
     # format cannot -- see the module docstring.

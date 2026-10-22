@@ -64,6 +64,18 @@ authors can find it.
   more per tool call; they run in place, one after another, and take one
   attempt between them. A small implementation or fix runs on the role's
   `light` tier when the role has one.
+- **A work unit whose run is gone is recorded failed wherever it is read**
+  (#345). `units status` and `run implementer --unit` now do what only
+  `units clean` did: a unit recorded `running` whose worker, or the
+  foreground run that claimed it, is gone is recorded `failed`, so `units
+  status` shows it failed and the units it held back can start without
+  `units clean` first. `run implementer --unit` and `units join` print the
+  same `warning:` lines as `units check` for unit files the plan's Files to
+  Modify does not list. A unit's worktree is given a copy of
+  `.claude/settings.local.json` only when Claude runs the unit.
+- **User adapters:** `Provider.worktree_files` (default `()`) names the
+  ignored, repository-relative files a work unit's worktree is given a copy
+  of (#345).
 
 ## [1.1.2] - 2026-10-22
 

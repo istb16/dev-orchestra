@@ -7,7 +7,7 @@ The lowest of the ``config_*`` modules; ``config`` re-exports its public names.
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, NamedTuple, Optional, TypeGuard
+from typing import Any, Dict, List, NamedTuple, Optional, TypeGuard
 
 from . import config_trust
 from . import optimization as opt_mod
@@ -143,6 +143,30 @@ def progress_settings_of(data: Dict[str, Any]) -> Progress:
     if not (isinstance(quiet, int) and not isinstance(quiet, bool) and 0 <= quiet <= MAX_SECONDS):
         quiet = defaults["quiet_notice_seconds"]
     return Progress(progress_updates_mode(block.get("updates")), interval, quiet)
+
+
+class Implementation(NamedTuple):
+    """The ``implementation`` block as ``implementation_settings_of`` reads it."""
+
+    max_parallel: int
+    hub_paths: List[str]
+
+
+def implementation_settings_of(data: Dict[str, Any]) -> Implementation:
+    """The ``implementation`` block of ``data``, each value the default where it is absent or unusable.
+
+    Read leniently, as ``progress_settings_of`` is: commands load unvalidated.
+    """
+    defaults = default_config()["implementation"]
+    configured = data.get("implementation")
+    block = configured if isinstance(configured, dict) else {}
+    cap = block.get("max_parallel")
+    if not (isinstance(cap, int) and not isinstance(cap, bool) and 1 <= cap <= MAX_PARALLEL_UNITS):
+        cap = defaults["max_parallel"]
+    hubs = block.get("hub_paths")
+    if not (isinstance(hubs, list) and all(isinstance(p, str) and p.strip() for p in hubs)):
+        hubs = defaults["hub_paths"]
+    return Implementation(cap, list(hubs))
 
 
 #: A BCP 47 language tag, loosely: a primary subtag of two or three letters

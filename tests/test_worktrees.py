@@ -8,15 +8,17 @@ import subprocess
 import sys
 import types
 import unittest
-from typing import Any, Dict
+from typing import Any, Dict, Sequence
 from unittest import mock
 
 from helpers import IsolatedCase, has_git, is_link, make_dir_link, read_file, remove_link
 
-from orchestrator import config as config_mod
 from orchestrator import units as units_mod
 from orchestrator import workspace as ws
 from orchestrator import worktrees
+
+#: What the CLI hands ``create`` for Claude and a project file (``cli_run._worktree_copies``).
+COPIES = (".claude/settings.local.json", ".dev-orchestra.yaml")
 
 
 class TestSafeWalker(IsolatedCase):
@@ -30,7 +32,7 @@ class TestSafeWalker(IsolatedCase):
         link = os.path.join(tree, "sub", "env")
         make_dir_link(link, target)
         self.addCleanup(lambda: is_link(link) and remove_link(link))
-        self.assertTrue(worktrees.is_link(link))
+        self.assertTrue(ws.is_link(link))
         worktrees._safe_rmtree(tree)
         self.assertFalse(os.path.lexists(tree))
         self.assertEqual(read_file(kept), "the user's\n")
@@ -64,8 +66,8 @@ class WorktreeCase(IsolatedCase):
         self.commit_all("base")
         self.workspace = self.cli_workspace()
 
-    def create(self, name: str = "a") -> Dict[str, Any]:
-        record = worktrees.create(self.workspace, name, config_mod.load(self.project))
+    def create(self, name: str = "a", copies: Sequence[str] = COPIES) -> Dict[str, Any]:
+        record = worktrees.create(self.workspace, name, copies)
         self.addCleanup(worktrees.remove, self.project, record, name)
         return record
 
@@ -220,15 +222,31 @@ class TestCreate(WorktreeCase):
         plan = os.path.join(tree, os.path.relpath(self.workspace.plan_path, self.project))
         self.assertEqual(read_file(plan), "# Plan\n")
 
+    def test_worktrees_copies_only_what_it_is_given(self):
+        self.write(".claude/settings.local.json", '{"permissions": {}}\n')
+        record = self.create(copies=())
+        self.assertFalse(os.path.lexists(os.path.join(record["worktree"], ".claude", "settings.local.json")))
+
+    def test_worktrees_skips_copies_outside_the_repository(self):
+        outside = os.path.join(self.tmp, "outside.txt")
+        ws.write_text(outside, "secret\n")
+        self.write("notes/kept.txt", "kept\n")
+        escapes = [outside, os.path.join("..", "outside.txt"), "notes/../../outside.txt"]
+        record = self.create(copies=[*escapes, "notes/kept.txt"])
+        tree = record["worktree"]
+        self.assertEqual(read_file(os.path.join(tree, "notes", "kept.txt")), "kept\n")
+        self.assertFalse(os.path.lexists(os.path.join(os.path.dirname(tree), "outside.txt")))
+        self.assertEqual(read_file(outside), "secret\n")
+
     def test_worktrees_refuses_a_linked_units_directory(self):
-        real = worktrees.is_link
+        real = ws.is_link
 
         def linked(path: str) -> bool:
             return os.path.basename(path) == "project.units" or real(path)
 
-        with mock.patch.object(worktrees, "is_link", linked):
+        with mock.patch.object(ws, "is_link", linked):
             with self.assertRaises(worktrees.WorktreeError):
-                worktrees.create(self.workspace, "a", config_mod.load(self.project))
+                worktrees.create(self.workspace, "a", COPIES)
         self.assertEqual(self.git("worktree", "list", "--porcelain").stdout.count("worktree "), 1)
 
     @unittest.skipUnless(hasattr(os, "getuid"), "POSIX owners and modes")
@@ -244,7 +262,7 @@ class TestCreate(WorktreeCase):
         mine = os.stat(units_dir).st_uid
         with mock.patch.object(worktrees.os, "getuid", lambda: mine + 1):
             with self.assertRaises(worktrees.WorktreeError):
-                worktrees.create(self.workspace, "b", config_mod.load(self.project))
+                worktrees.create(self.workspace, "b", COPIES)
 
     @unittest.skipUnless(hasattr(os, "getuid"), "POSIX owners and modes")
     def test_worktrees_units_directory_already_open_to_others_is_closed(self):

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import contextlib
-import io
 import json
 import os
 import subprocess
@@ -15,7 +13,8 @@ from unittest import mock
 from helpers import IsolatedCase, has_git, is_link, read_file, run_cli
 from test_units import plan
 
-from orchestrator import cli_state, cli_units, execution_tree
+from orchestrator import cli_run, execution_tree, units_run
+from orchestrator import config as config_mod
 from orchestrator import jobs as jobs_mod
 from orchestrator import units as units_mod
 from orchestrator import workspace as ws
@@ -76,6 +75,21 @@ class UnitRunCase(IsolatedCase):
         key = units_mod.pass_key(self.workspace, "implementer")
         ws.write_json(self.workspace.units_path, {"plan_sha256": key, "units": entries})
 
+    def live_job(self, job_id: str = "implementer-1") -> str:
+        """A job whose worker is this process, so a unit naming it is still running."""
+        me = os.getpid()
+        jobs_mod.write_job(
+            self.workspace,
+            {
+                "id": job_id,
+                "status": "running",
+                "started_at": ws.utcnow(),
+                "pid": me,
+                "pid_started": execution_tree.process_started(me),
+            },
+        )
+        return job_id
+
     def used(self) -> int:
         return json.loads(run_cli("budget", "show", "--json")[1])["budgets"]["implementer"]["used"]
 
@@ -114,7 +128,7 @@ class TestRefusals(UnitRunCase):
     def test_run_unit_refused_parallel_cap(self):
         run_cli("config", "set", "implementation.max_parallel", "1")
         self.approve(PAIR)
-        self.set_records({"a": {"status": "running", "job": "implementer-1", "in_place": False}})
+        self.set_records({"a": {"status": "running", "job": self.live_job(), "in_place": False}})
         code, _, err = self.run_unit("b")
         self.assertEqual(code, 2)
         self.assertIn("implementation.max_parallel is 1, and a is running", err)
@@ -123,11 +137,30 @@ class TestRefusals(UnitRunCase):
 
     def test_run_unit_in_place_blocks_others(self):
         self.approve(PAIR)
-        self.set_records({"a": {"status": "running", "job": "implementer-1", "in_place": True}})
+        self.set_records({"a": {"status": "running", "job": self.live_job(), "in_place": True}})
         code, _, err = self.run_unit("b")
         self.assertEqual(code, 2)
         self.assertIn("a is running in place", err)
         self.assertEqual(self.calls, [])
+
+    def test_run_unit_after_a_dead_in_place_run_starts_without_units_clean(self):
+        self.approve(PAIR)
+        self.set_records(
+            {"a": {"status": "running", "job": None, "in_place": True, "pid": 4242, "pid_started": "t0"}}
+        )
+        with mock.patch.object(execution_tree, "pid_alive", lambda pid: pid != 4242):
+            code, _, err = self.run_unit("b")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.record("a")["status"], "failed")
+        self.assertEqual(self.record("b")["status"], "succeeded")
+
+    def test_run_unit_prints_the_warnings_and_runs(self):
+        self.approve([{"name": "a", "files": ["scripts/other.py"]}, {"name": "b", "files": ["b.py"]}])
+        code, _, err = self.run_unit("a")
+        self.assertEqual(code, 0, err)
+        self.assertIn("warning: --unit a: a: scripts/other.py is not in Files to Modify", err)
+        self.assertEqual(len(self.calls), 1)
+        self.assertEqual(self.record("a")["status"], "succeeded")
 
     def test_run_unit_refused_for_another_role(self):
         self.approve(PAIR)
@@ -220,6 +253,20 @@ class TestWorktreeRuns(UnitRunCase):
         self.assertIn("a.py", read_file(os.path.join(self.workspace.units_dir, "a.diff")))
         # Not merged: the user's tree does not have it yet.
         self.assertFalse(os.path.exists(os.path.join(self.project, "a.py")))
+
+    def test_run_unit_worktree_gets_only_its_cli_s_files(self):
+        self.write(".claude/settings.local.json", '{"permissions": {}}\n')
+        self.write(".gitignore", ".venv/\n.claude/settings.local.json\n")
+        loaded = config_mod.load(self.project)
+        copies = cli_run._worktree_copies(loaded, MockProvider(), self.project)
+        self.assertNotIn(".claude/settings.local.json", copies)
+        self.approve(PAIR)
+        seen: Dict[str, bool] = {}
+        self.during = lambda cwd: seen.update(
+            settings=os.path.lexists(os.path.join(cwd, ".claude", "settings.local.json"))
+        )
+        self.assertEqual(self.run_unit("a")[0], 0)
+        self.assertEqual(seen, {"settings": False})
 
     def test_run_unit_not_in_place_with_independent_peer(self):
         self.approve(PAIR)
@@ -376,12 +423,38 @@ class TestInPlace(UnitRunCase):
             {"a": {"status": "running", "job": "implementer-1", "in_place": True, "base_tree": base}}
         )
         self.write("a.py", "A = 1\n")
-        said = io.StringIO()
-        with contextlib.redirect_stderr(said):
-            cli_state._cancel_unit(self.workspace, {"unit": "a", "id": "implementer-1"})
-        self.assertIn("warning: a ran in place; its edits stay in the working tree: a.py", said.getvalue())
+        cancelled = units_run.cancel(self.workspace, {"unit": "a", "id": "implementer-1"})
+        self.assertEqual(cancelled, units_run.Cancelled(False, ["a.py"]))
         self.assertEqual(self.record("a")["status"], "cancelled")
         self.assertEqual(read_file(os.path.join(self.project, "a.py")), "A = 1\n")
+
+    def test_jobs_cancel_of_an_in_place_unit_says_its_edits_stay(self):
+        self.approve(CHAIN)
+        base = self.in_place_base()
+        self.set_records(
+            {"a": {"status": "running", "job": "implementer-1", "in_place": True, "base_tree": base}}
+        )
+        jobs_mod.write_job(
+            self.workspace,
+            {
+                "id": "implementer-1",
+                "status": "running",
+                "started_at": ws.utcnow(),
+                "pid": 4242,
+                "pid_started": "t0",
+                "unit": "a",
+            },
+        )
+        self.write("a.py", "A = 1\n")
+        with (
+            mock.patch.object(execution_tree, "pid_alive", lambda pid: True),
+            mock.patch.object(execution_tree, "process_started", lambda pid: "t0"),
+            mock.patch.object(execution_tree, "kill_tree", lambda pid, grace, verified: True),
+        ):
+            code, _, err = run_cli("jobs", "cancel", "implementer-1")
+        self.assertEqual(code, 0, err)
+        self.assertIn("warning: a ran in place; its edits stay in the working tree: a.py", err)
+        self.assertEqual(self.record("a")["status"], "cancelled")
 
     def test_run_unit_in_place_failure_keeps_its_base_and_blocks_nothing(self):
         self.approve(CHAIN)
@@ -652,8 +725,50 @@ class TestClean(UnitRunCase):
             units_mod.update(workspace, "a", {"status": "succeeded", "result_tree": "f" * 40})
             return False
 
-        with mock.patch.object(cli_units, "_may_still_run", finished_meanwhile):
+        with mock.patch.object(units_run, "may_still_run", finished_meanwhile):
             self.assertEqual(run_cli("units", "clean")[0], 0)
+        record = self.record("a")
+        self.assertEqual((record["status"], record["result_tree"]), ("succeeded", "f" * 40))
+        self.assertNotIn("finished_at", record)
+
+    def test_units_status_records_a_run_that_is_gone_as_failed(self):
+        self.approve(CHAIN)
+        self.set_records({"a": self.running(in_place=True, pid=4242, pid_started="t0")})
+        with mock.patch.object(execution_tree, "pid_alive", return_value=False):
+            code, out, err = run_cli("units", "status", "--json")
+        self.assertEqual(code, 0, err)
+        data = json.loads(out)
+        self.assertEqual([row["status"] for row in data["units"]], ["failed", "pending"])
+        self.assertTrue(data["failed"])
+        self.assertEqual(data["ready"], [])
+        record = self.record("a")
+        self.assertEqual(record["status"], "failed")
+        self.assertTrue(record["finished_at"])
+
+    def test_units_status_keeps_a_live_run(self):
+        self.approve(PAIR)
+        me = os.getpid()
+        self.set_records({"a": self.running(pid=me, pid_started=execution_tree.process_started(me))})
+        code, out, err = run_cli("units", "status", "--json")
+        self.assertEqual(code, 0, err)
+        data = json.loads(out)
+        self.assertEqual(data["units"][0]["status"], "running")
+        self.assertFalse(data["failed"])
+        self.assertEqual(data["ready"], ["b"])
+        self.assertEqual(self.record("a")["status"], "running")
+
+    def test_units_status_leaves_a_unit_that_finished_meanwhile(self):
+        self.approve(PAIR)
+        self.set_records({"a": self.running(job="implementer-1")})
+
+        def finished_meanwhile(workspace: ws.Workspace, record: Dict[str, Any]) -> bool:
+            units_mod.update(workspace, "a", {"status": "succeeded", "result_tree": "f" * 40})
+            return False
+
+        with mock.patch.object(units_run, "may_still_run", finished_meanwhile):
+            code, out, err = run_cli("units", "status", "--json")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(json.loads(out)["units"][0]["status"], "succeeded")
         record = self.record("a")
         self.assertEqual((record["status"], record["result_tree"]), ("succeeded", "f" * 40))
         self.assertNotIn("finished_at", record)

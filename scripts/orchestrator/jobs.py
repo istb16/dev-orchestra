@@ -185,31 +185,26 @@ def _reconcile(workspace: ws.Workspace, job: Dict[str, Any]) -> Dict[str, Any]:
     return job
 
 
-def may_still_run(job: Dict[str, Any], now: Optional[float] = None) -> bool:
-    """Whether a job read through :func:`read_job` or :func:`list_jobs` may
-    still have a worker writing for it.
+def may_still_run(record: Dict[str, Any], now: Optional[float] = None) -> bool:
+    """Whether a record with a ``status``, ``pid``, ``pid_started`` and
+    ``started_at`` may still have a process writing for it.
 
-    A job with no pid is one :func:`start` has not yet seen spawn. That takes
-    moments, so one left like that for :data:`STARTING_GRACE_SECONDS` is a
-    start that crashed part way, and nothing will ever run for it.
+    A job, or another kind of record that keeps a pid, such as a unit run in
+    the foreground. A pid is answered by :func:`_worker_alive`: only a
+    process known to be gone ends it. A record with no pid is a job
+    :func:`start` has not yet seen spawn. That takes moments, so one left
+    like that for :data:`STARTING_GRACE_SECONDS` is a start that crashed part
+    way, and nothing will ever run for it.
     """
-    if job.get("status") in FINISHED:
+    if record.get("status") in FINISHED:
         return False
-    if job.get("pid"):
-        return True
-    begun = _epoch(job.get("started_at"))
+    pid = record.get("pid")
+    if isinstance(pid, int) and not isinstance(pid, bool) and pid > 0:
+        return _worker_alive(pid, record) is not False
+    begun = _epoch(record.get("started_at"))
     if begun is None:
         return False
     return (time.time() if now is None else now) - begun < STARTING_GRACE_SECONDS
-
-
-def process_alive(pid: int, record: Dict[str, Any]) -> Optional[bool]:
-    """Whether ``pid`` is still the process ``record`` names by its ``pid_started``.
-
-    As :func:`_worker_alive` answers for a job's worker; for a record of
-    another kind that keeps a pid, such as a unit run in the foreground.
-    """
-    return _worker_alive(pid, record)
 
 
 def _worker_alive(pid: int, job: Dict[str, Any]) -> Optional[bool]:

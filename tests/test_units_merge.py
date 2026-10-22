@@ -473,7 +473,7 @@ class TestFileKinds(MergeCase):
         self.write("vendor/x.py", "x1\n")
         self.commit_all("vendor")
         self.unit("two", {"vendor/x.py": "x1\ntwo\n"})
-        real = worktrees_mod.is_link
+        real = ws.is_link
 
         # As the merge sees it: the repository root, with no short name or link.
         vendor = os.path.normcase(os.path.join(os.path.realpath(self.project), "vendor"))
@@ -483,7 +483,7 @@ class TestFileKinds(MergeCase):
             # version is kept, is a real directory.
             return os.path.normcase(path) == vendor or real(path)
 
-        with mock.patch.object(worktrees_mod, "is_link", vendor_is_a_link):
+        with mock.patch.object(ws, "is_link", vendor_is_a_link):
             code, _, err = run_cli("units", "merge", "two")
         self.assertEqual(code, 7, err)
         self.assertEqual(self.read("vendor/x.py"), b"x1\n")
@@ -503,7 +503,7 @@ class TestFileKinds(MergeCase):
         self.assertEqual(self.theirs("two", "vendor/x.py"), b"x1\ntwo\n")
         self.assertIn("a directory above it is a link in the working tree", self.brief("two"))
         # A link the link check misses is still caught: its real path leaves the repository.
-        with mock.patch.object(worktrees_mod, "is_link", return_value=False):
+        with mock.patch.object(ws, "is_link", return_value=False):
             self.assertTrue(units_merge._linked_parent(self.project, "vendor/x.py"))
             self.assertFalse(units_merge._linked_parent(self.project, "a.py"))
 

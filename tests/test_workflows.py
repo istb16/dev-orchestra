@@ -20,6 +20,7 @@ import re
 import unittest
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict
+from unittest import mock
 
 from helpers import IsolatedCase, has_git, present, run_cli
 
@@ -80,12 +81,21 @@ class TestMayStillRun(unittest.TestCase):
             with self.subTest(after=after):
                 self.assertIs(self.may_still_run(after, status="starting", started_at=self.STARTED), expected)
 
-    def test_a_job_with_a_pid_blocks_however_old(self):
+    def test_a_job_with_a_live_pid_blocks_however_old(self):
+        from orchestrator import execution_tree
         from orchestrator import jobs as jobs_mod
 
         late = jobs_mod.STARTING_GRACE_SECONDS * 100
-        self.assertTrue(self.may_still_run(late, status="running", pid=4242, started_at=self.STARTED))
-        self.assertTrue(self.may_still_run(late, status="running", pid=4242))
+        with mock.patch.object(execution_tree, "pid_alive", return_value=True):
+            self.assertTrue(self.may_still_run(late, status="running", pid=4242, started_at=self.STARTED))
+            self.assertTrue(self.may_still_run(late, status="running", pid=4242))
+
+    def test_a_job_whose_pid_is_dead_does_not_block(self):
+        from orchestrator import execution_tree
+
+        with mock.patch.object(execution_tree, "pid_alive", return_value=False):
+            self.assertFalse(self.may_still_run(0, status="running", pid=4242, started_at=self.STARTED))
+            self.assertFalse(self.may_still_run(0, status="running", pid=4242))
 
     def test_a_finished_job_never_blocks(self):
         from orchestrator import jobs as jobs_mod

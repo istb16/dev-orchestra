@@ -21,6 +21,7 @@ matched on the code they quote, for the orchestrator to confirm during triage.
 
 from __future__ import annotations
 
+from .plan_text import FENCE_RE
 from .review_common import (
     DEFAULT_EXCLUDE,
     DEFAULT_MAX_FINDINGS,
@@ -92,7 +93,6 @@ from .review_parsing import (
 )
 from .review_plan import (
     ADDED_HEADING_RE,
-    FENCE_RE,
     HEADING_RE,
     NONE_ADDED_RE,
     PlanScan,

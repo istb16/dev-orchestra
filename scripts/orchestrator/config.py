@@ -34,10 +34,12 @@ from .config_common import (  # noqa: F401 - re-exported
     WRITE_ROLES,
     WRITE_RUN_IDLE_TIMEOUT_SECONDS,
     ConfigError,
+    Implementation,
     Progress,
     ask_questions_mode,
     default_config,
     design_review_mode,
+    implementation_settings_of,
     is_valid_reviewer_id,
     language_settings_of,
     normalise_language_tag,
@@ -697,6 +699,10 @@ class LoadedConfig:
     def progress_settings(self) -> Progress:
         """``progress_settings_of`` the composed data."""
         return progress_settings_of(self.data)
+
+    def implementation_settings(self) -> Implementation:
+        """``implementation_settings_of`` the composed data."""
+        return implementation_settings_of(self.data)
 
 
 def validate_loaded(loaded: LoadedConfig) -> List[str]:

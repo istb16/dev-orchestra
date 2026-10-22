@@ -27,14 +27,10 @@ import sys
 import time
 from typing import Any, Dict, List, Sequence
 
-from . import config as config_mod
 from . import workspace as ws
 
 #: The ignored environment directories a worktree borrows from the user's tree.
 LINKED_NAMES = (".venv", "venv", "node_modules")
-
-#: Ignored files a worktree is given a copy of when it lacks them.
-COPIED_FILES = (os.path.join(".claude", "settings.local.json"),)
 
 #: Who the base commit is by: fixed, so it never depends on the user's identity.
 _IDENTITY = {
@@ -114,7 +110,7 @@ def _units_dir(path: str) -> None:
     """
     parent = os.path.dirname(path)
     os.makedirs(parent, mode=0o700, exist_ok=True)
-    if is_link(parent):
+    if ws.is_link(parent):
         raise WorktreeError("%s is a link; refusing to make a worktree in it" % parent)
     getuid = getattr(os, "getuid", None)
     if getuid is not None:
@@ -125,13 +121,17 @@ def _units_dir(path: str) -> None:
             os.chmod(parent, 0o700)
 
 
-def create(workspace: ws.Workspace, name: str, loaded: config_mod.LoadedConfig) -> Dict[str, Any]:
+def create(workspace: ws.Workspace, name: str, copies: Sequence[str] = ()) -> Dict[str, Any]:
     """Make unit ``name``'s worktree; its fields for the unit's record.
 
     ``worktree``, ``base_tree``, ``base_commit``, ``links`` (the names linked
     in) and ``checks_skipped`` (a link failed, so the unit's own checks would
     run without its environment). Raises ``WorktreeError`` when git cannot
     make it; nothing is left behind then.
+
+    ``copies`` are repository-relative files it is given a copy of when the
+    user's tree has them, beside the plan and the decisions; an absolute one,
+    or one outside the repository, is skipped.
     """
     root = workspace.root
     wanted = [
@@ -165,11 +165,9 @@ def create(workspace: ws.Workspace, name: str, loaded: config_mod.LoadedConfig) 
             links.append(entry)
         except OSError:
             checks_skipped = True
-    copies: List[str] = list(COPIED_FILES)
-    if loaded.project_path:
-        copies.append(os.path.relpath(loaded.project_path, root))
+    wanted_copies: List[str] = list(copies)
     for relative in (workspace.plan_path, workspace.decisions_path):
-        copies.append(os.path.relpath(relative, root))
+        wanted_copies.append(os.path.relpath(relative, root))
     record = {
         "worktree": path,
         "base_tree": base_tree,
@@ -178,8 +176,8 @@ def create(workspace: ws.Workspace, name: str, loaded: config_mod.LoadedConfig) 
         "checks_skipped": checks_skipped,
     }
     try:
-        for relative in copies:
-            if not relative.startswith(".."):
+        for relative in wanted_copies:
+            if not os.path.isabs(relative) and not os.path.normpath(relative).startswith(".."):
                 _copy_missing(os.path.join(root, relative), os.path.join(path, relative))
     except OSError as exc:
         remove(root, record, name)
@@ -190,45 +188,19 @@ def create(workspace: ws.Workspace, name: str, loaded: config_mod.LoadedConfig) 
 # --------------------------------------------------------------------------- removal
 
 
-def is_link(path: str) -> bool:
-    """A symlink, or on Windows any reparse point, which a junction is.
-
-    ``os.path.islink`` is false for a junction before Python 3.12, so it alone
-    would let a walk follow one into the user's tree.
-    """
-    try:
-        info = os.lstat(path)
-    except OSError:
-        return False
-    if stat.S_ISLNK(info.st_mode):
-        return True
-    attributes = getattr(info, "st_file_attributes", 0)
-    return bool(attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
-
-
-def _unlink_link(path: str) -> None:
-    """Remove the link at ``path`` itself, never what it points at."""
-    info = os.lstat(path)
-    if _IS_WINDOWS and stat.S_ISDIR(info.st_mode):
-        # A junction, or a directory symlink: rmdir removes the link alone.
-        os.rmdir(path)
-    else:
-        os.unlink(path)
-
-
 def _safe_rmtree(path: str) -> None:
     """Delete ``path`` without ever descending a link: each link met is unlinked.
 
     ``shutil.rmtree`` is not used: before Python 3.12 it follows a junction.
     """
-    if is_link(path):
-        _unlink_link(path)
+    if ws.is_link(path):
+        ws.unlink_link(path)
         return
     with os.scandir(path) as entries:
         children = [entry.path for entry in entries]
     for child in children:
-        if is_link(child):
-            _unlink_link(child)
+        if ws.is_link(child):
+            ws.unlink_link(child)
         elif os.path.isdir(child):
             _safe_rmtree(child)
         else:
@@ -277,10 +249,10 @@ def _is_unit_worktree(root: str, path: str, base_commit: Any, name: str) -> bool
     they name is deleted -- so neither another unit's worktree nor any other
     directory passes.
     """
-    if is_link(path) or not _unit_commit(root, base_commit, name):
+    if ws.is_link(path) or not _unit_commit(root, base_commit, name):
         return False
     expected = location(root, str(base_commit), name)
-    if is_link(os.path.dirname(expected)):
+    if ws.is_link(os.path.dirname(expected)):
         return False
     return _same_path(path, expected)
 
@@ -306,9 +278,9 @@ def remove(root: str, record: Dict[str, Any], name: str) -> bool:
     # Only these names, never the record's own list: units.json could name any path.
     for linked in LINKED_NAMES:
         link = os.path.join(path, linked)
-        if is_link(link):
+        if ws.is_link(link):
             try:
-                _unlink_link(link)
+                ws.unlink_link(link)
             except OSError:
                 pass
     if os.path.lexists(path):

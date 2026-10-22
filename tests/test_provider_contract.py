@@ -999,11 +999,18 @@ class TestTheLiveCheckDefaults(unittest.TestCase):
                 self.assertIsNone(provider.denied_action_items("bare denied x (command)"))
                 self.assertFalse(provider.implement_write_checked)
                 self.assertIsNone(provider.permission_bypass_options)
+                self.assertEqual(tuple(provider.worktree_files), ())
                 result = base.RunResult(True, 0, "", "", [], 0.0, session_init={"anything": True})
                 self.assertEqual(
                     provider.resumed_session_problem(result),
                     "no reading of a resumed session's restrictions is known for %s" % provider.name,
                 )
+
+    def test_only_claude_gives_a_worktree_its_own_files(self):
+        self.assertEqual(providers.get_provider("claude").worktree_files, (".claude/settings.local.json",))
+        for name in ("codex", "agy", "mock"):
+            with self.subTest(provider=name):
+                self.assertEqual(tuple(providers.get_provider(name).worktree_files), ())
 
 
 if __name__ == "__main__":

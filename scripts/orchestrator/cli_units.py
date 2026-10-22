@@ -7,8 +7,7 @@ import os
 from typing import Any, Dict, List, Sequence
 
 from . import approval as approval_mod
-from . import atomic_file, units_merge
-from . import jobs as jobs_mod
+from . import atomic_file, units_merge, units_run
 from . import units as units_mod
 from . import workspace as ws
 from . import worktrees as worktrees_mod
@@ -36,14 +35,14 @@ def cmd_units_check(args: argparse.Namespace) -> int:
     if not found:
         _out("%s has no ## Units: a single run." % plan_relative)
         return 0
-    settings = units_mod.settings_of(loaded.data)
-    problems = units_mod.validate(found, settings.hub_paths, plan_text, units_mod.known_files(workspace.root))
+    settings = loaded.implementation_settings()
+    _, problems, warnings = units_mod.check(plan_text, settings, units_mod.known_files(workspace.root))
     if problems:
         _err("%s: the units cannot be run:" % plan_relative)
         for problem in problems:
             _err("  - %s" % problem)
         return 2
-    for warning in units_mod.warnings(found, plan_text):
+    for warning in warnings:
         _err("warning: %s" % warning)
     waves = units_mod.schedule(found, settings.max_parallel)
     cap = settings.max_parallel
@@ -63,6 +62,8 @@ def cmd_units_status(args: argparse.Namespace) -> int:
         _err("%s: %s" % (plan_relative, exc))
         return 2
     digest = approval_mod.plan_digest(plan_text) if plan_text.strip() else ""
+    # A unit whose run is gone is failed, as units clean and run --unit find it.
+    units_run.reconcile(workspace)
     entries = units_mod.records(units_mod.load_state(workspace), digest)
     rows: List[Dict[str, Any]] = []
     for unit in found:
@@ -138,12 +139,6 @@ def _merge_report(args: argparse.Namespace, report: Dict[str, Any], lines: Seque
         _out(line)
 
 
-def _entry_path(path: str) -> str:
-    """A path as given on the command line, as git names it: ``/``-separated, no leading ``./``."""
-    text = path.strip().replace("\\", "/")
-    return text[2:] if text.startswith("./") else text
-
-
 def _resolve_unit(
     args: argparse.Namespace, workspace: ws.Workspace, name: str, record: Dict[str, Any]
 ) -> int:
@@ -161,7 +156,7 @@ def _resolve_unit(
         _err("%s has no conflicts to resolve: it is %s" % (name, status))
         return 2
     conflicts = [str(path) for path in (record.get("conflicts") or [])]
-    keep = [_entry_path(path) for path in (args.keep or [])]
+    keep = [units_mod.normalise(path) for path in (args.keep or [])]
     strays = [path for path in keep if path not in conflicts]
     if strays:
         _err("--keep %s: not among %s's conflicts (%s)" % (", ".join(strays), name, ", ".join(conflicts)))
@@ -305,93 +300,42 @@ def cmd_units_join(args: argparse.Namespace) -> int:
         parts.append((name, text))
     try:
         plan_text = units_mod.join(parts)
-        found = units_mod.parse(plan_text)
+        found, problems, warnings = units_mod.check(
+            plan_text, loaded.implementation_settings(), units_mod.known_files(workspace.root)
+        )
     except units_mod.UnitsError as exc:
         _err("could not join the plans: %s" % exc)
         return 2
-    hub_paths = units_mod.settings_of(loaded.data).hub_paths
-    problems = units_mod.validate(found, hub_paths, plan_text, units_mod.known_files(workspace.root))
     if problems:
         _err("the joined units cannot be run:")
         for problem in problems:
             _err("  - %s" % problem)
         return 2
+    for warning in warnings:
+        _err("warning: %s" % warning)
     os.makedirs(os.path.dirname(os.path.abspath(args.output)), exist_ok=True)
     ws.write_text(args.output, plan_text)
     _out("joined %d unit plans into %s" % (len(found), args.output))
     return 0
 
 
-def _may_still_run(workspace: ws.Workspace, record: Dict[str, Any]) -> bool:
-    """Whether a running unit's run may still be going.
-
-    By its job's worker when a detached run named one whose record is there;
-    otherwise by the pid of the process that claimed it; and for a record
-    with neither, as a job with no pid, for ``jobs.STARTING_GRACE_SECONDS``.
-    """
-    if record.get("job"):
-        job = jobs_mod.read_job(workspace, str(record["job"]))
-        if job is not None:
-            return jobs_mod.may_still_run(job)
-    pid = record.get("pid")
-    if isinstance(pid, int) and not isinstance(pid, bool) and pid > 0:
-        return jobs_mod.process_alive(pid, record) is not False
-    return jobs_mod.may_still_run({"started_at": record.get("started_at")})
-
-
-def _fail_gone_run(workspace: ws.Workspace, name: str, record: Dict[str, Any]) -> bool:
-    """Record a unit whose run is gone as failed; False when its record has changed since it was read.
-
-    Under the units lock, and only while the record is still that run's: a
-    worker that finished in between has written how it ended.
-    """
-    with units_mod.locked(workspace):
-        state = units_mod.load_state(workspace)
-        current = state["units"].get(name)
-        if not isinstance(current, dict) or current.get("status") != units_mod.RUNNING:
-            return False
-        if (current.get("job"), current.get("pid")) != (record.get("job"), record.get("pid")):
-            return False
-        current.update(status=units_mod.FAILED, finished_at=ws.utcnow())
-        units_mod.save_state(workspace, state)
-    return True
-
-
 def cmd_units_clean(args: argparse.Namespace) -> int:
-    """Remove the worktrees units left behind: every unit's, or NAME's.
-
-    A unit still running keeps its worktree. One whose worker is gone without
-    finishing it is recorded as failed, so it can be run again. Each record is
-    read again when its turn comes: removing a worktree before it can take
-    seconds, and a unit can finish meanwhile.
-    """
+    """Remove the worktrees units left behind: every unit's, or NAME's (``units_run.clean``)."""
     workspace = _workspace(args)
-    state = units_mod.load_state(workspace)
-    entries = {name: entry for name, entry in state["units"].items() if isinstance(entry, dict)}
-    if args.name and args.name not in entries:
+    try:
+        outcomes = units_run.clean(workspace, args.name or None)
+    except KeyError:
         _err("no unit named %s has a record" % args.name)
         return 2
-    names = [args.name] if args.name else sorted(entries)
     removed = kept = 0
-    for name in names:
-        record = units_mod.load_state(workspace)["units"].get(name)
-        if not isinstance(record, dict):
-            continue
-        if record.get("status") == units_mod.RUNNING:
-            if _may_still_run(workspace, record):
-                if record.get("worktree"):
-                    _out("%s is running; its worktree stays: %s" % (name, record["worktree"]))
-                continue
-            if not _fail_gone_run(workspace, name, record):
-                continue
-        if not record.get("worktree"):
-            continue
-        if worktrees_mod.remove(workspace.root, record, name):
-            _out("removed %s's worktree: %s" % (name, record["worktree"]))
-            units_mod.update(workspace, name, {"worktree": None})
+    for outcome in outcomes:
+        if outcome.action == units_run.STILL_RUNNING:
+            _out("%s is running; its worktree stays: %s" % (outcome.name, outcome.worktree))
+        elif outcome.action == units_run.REMOVED:
+            _out("removed %s's worktree: %s" % (outcome.name, outcome.worktree))
             removed += 1
         else:
-            _err("could not remove %s's worktree: %s" % (name, record["worktree"]))
+            _err("could not remove %s's worktree: %s" % (outcome.name, outcome.worktree))
             kept += 1
     if not removed and not kept:
         _out("No worktrees to remove.")

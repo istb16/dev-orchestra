@@ -59,9 +59,11 @@ flowchart TD
 | --- | --- | --- |
 | Skill | `skills/dev-orchestra/SKILL.md`, `references/` | What the orchestrator decides and when |
 | CLI | `scripts/dev_orchestra.py`, `scripts/orchestrator/cli.py` (parser and entry point) and `cli_*.py` (one module per group of commands) | Deterministic operations an agent can call |
-| Domain | `config.py` (with `config_common.py`, `config_paths.py`, `config_keys.py`, `config_reviewers.py`, `config_seats.py`, `config_validation.py`, re-exported by `config.py`), `config_policy.py`, `config_trust.py`, `review_*.py` (re-exported by `review.py`), `workspace.py`, `wizard.py`, `doctor.py`, `questions.py`, `units.py`, `units_merge.py`, `worktrees.py` | Config layering, refusal policy for project-file seats and write options, the settings only the global config may make, snapshotting, parsing, dedupe, triage, diagnostics, the design questions and the user's answers, a plan's work units and their state, merging a unit's result into the working tree, the worktrees units run in |
+| Domain | `config.py` (with `config_common.py`, `config_paths.py`, `config_keys.py`, `config_reviewers.py`, `config_seats.py`, `config_validation.py`, re-exported by `config.py`), `config_policy.py`, `config_trust.py`, `review_*.py` (re-exported by `review.py`), `workspace.py`, `wizard.py`, `doctor.py`, `questions.py`, `plan_text.py`, `units.py`, `units_run.py`, `units_merge.py`, `worktrees.py` | Config layering, refusal policy for project-file seats and write options, the settings only the global config may make, snapshotting, parsing, dedupe, triage, diagnostics, the design questions and the user's answers, a plan's Markdown read around its code fences, shared by the review and the units modules, a plan's work units and their state, a unit's run from claim to clean, merging a unit's result into the working tree, the worktrees units run in |
 | Providers | `scripts/orchestrator/providers/` | The only code that knows CLI syntax and model names |
 | Reply-language hooks | `claude_hooks.py`, `scripts/hooks/`, `reply_language.py` | Claude Code only: keep replies in `language.reply` ([below](#reply-language-hooks)) |
+
+The units modules read a plan through `plan_text`, never through a `review_*` module.
 
 Nothing above the provider layer knows that `claude` uses `--model` and `codex`
 uses `-m`. Nothing below the skill layer decides whether a design stage is
@@ -121,7 +123,8 @@ whether another round is warranted.
 ## Work units and worktrees
 
 A plan with a `## Units` block is implemented one unit per run
-(`scripts/orchestrator/units.py`). A unit that another could run beside gets
+(`scripts/orchestrator/units.py`, and `units_run.py` for a unit's run from
+claim to clean). A unit that another could run beside gets
 a git worktree of its own at `<parent>/<repo>.units/<id8>-<name>`, beside the
 repository and never inside it: two agents editing one tree would see each
 other's half-done files, and a worktree keeps each one's result apart until it

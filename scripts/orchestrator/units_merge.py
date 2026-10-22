@@ -26,7 +26,6 @@ from typing import Dict, List, NamedTuple, Optional, Sequence
 from . import atomic_file
 from . import units as units_mod
 from . import workspace as ws
-from . import worktrees as worktrees_mod
 
 #: What a file's merge does to the working tree.
 WRITE = "write"  # the unit's version, or a clean three-way merge
@@ -184,7 +183,7 @@ def _linked_parent(root: str, path: str) -> bool:
     """
     parts = path.split("/")
     for depth in range(1, len(parts)):
-        if worktrees_mod.is_link(os.path.join(root, *parts[:depth])):
+        if ws.is_link(os.path.join(root, *parts[:depth])):
             return True
     inside = os.path.realpath(os.path.join(root, *parts))
     return not inside.startswith(os.path.join(os.path.realpath(root), ""))
@@ -335,7 +334,7 @@ def _missing_parents(root: str, path: str) -> List[str]:
 
 def _remove_if_empty(directory: str) -> bool:
     """Remove ``directory`` when it is an empty directory and not a link; whether it was."""
-    if worktrees_mod.is_link(directory) or not os.path.isdir(directory):
+    if ws.is_link(directory) or not os.path.isdir(directory):
         return False
     try:
         os.rmdir(directory)
