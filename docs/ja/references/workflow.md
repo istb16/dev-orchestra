@@ -434,7 +434,8 @@ architect に設計させることもできます。`run architect --unit <name>
 .ai/execution/plan-<name>.md` で、依頼では `## Units` にその作業単位だけを持つ plan を求めます。
 そのあと `units join --part <name>=<path> ... --output .ai/plan.md` で 1 つの plan にまとめ、
 design レビューと承認はその plan に対して 1 回だけ行います。1 回の設計の作業単位ごとの実行は、
-合わせて `budgets.architect` から 1 回の試行を使います。
+8 つの作業単位までは合わせて `budgets.architect` から 1 回の試行を使い、それを超えた作業単位は
+1 つごとにもう 1 回使います。
 
 <a id="design-review"></a>
 

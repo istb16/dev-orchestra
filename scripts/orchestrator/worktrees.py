@@ -20,6 +20,7 @@ first, without following it, and any directory left after
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import stat
 import sys
@@ -142,7 +143,7 @@ def create(workspace: ws.Workspace, name: str, loaded: config_mod.LoadedConfig) 
     code, head, _ = ws.git(["rev-parse", "--verify", "-q", "HEAD"], root)
     parents = ["-p", head.strip()] if code == 0 and head.strip() else []
     code, out, err = ws.git(
-        ["commit-tree", "--no-gpg-sign", base_tree, *parents, "-m", "dev-orchestra unit %s" % name],
+        ["commit-tree", "--no-gpg-sign", base_tree, *parents, "-m", _commit_message(name)],
         root,
         env=_IDENTITY,
     )
@@ -181,7 +182,7 @@ def create(workspace: ws.Workspace, name: str, loaded: config_mod.LoadedConfig) 
             if not relative.startswith(".."):
                 _copy_missing(os.path.join(root, relative), os.path.join(path, relative))
     except OSError as exc:
-        remove(root, record)
+        remove(root, record, name)
         raise WorktreeError("could not copy into the worktree: %s" % exc) from None
     return record
 
@@ -250,40 +251,45 @@ def _same_path(one: str, other: str) -> bool:
     return os.path.normcase(os.path.realpath(one)) == os.path.normcase(os.path.realpath(other))
 
 
-def _is_unit_worktree(root: str, path: str, base_commit: Any) -> bool:
-    """Whether ``path`` is one of this repository's unit worktrees.
+def _commit_message(name: str) -> str:
+    return "dev-orchestra unit %s" % name
 
-    Not a link, and a direct child of ``<repo>.units`` that ``git worktree
-    list`` names, past the main worktree it always lists first. Or one git no
-    longer names that is where ``location`` put the record's ``base_commit``:
-    a removal that failed part way can leave it so. The path comes from
-    ``units.json``, which an agent could have rewritten, and whatever it
-    names is deleted.
-    """
-    if is_link(path):
+
+def _unit_commit(root: str, base_commit: Any, name: str) -> bool:
+    """Whether ``base_commit`` is the full id of a commit ``create`` made for unit ``name``."""
+    if not isinstance(base_commit, str) or not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", base_commit):
         return False
-    if not _same_path(os.path.dirname(os.path.abspath(path)), os.path.dirname(location(root, "x" * 8, "x"))):
-        return False
-    code, out, _ = ws.git(["worktree", "list", "--porcelain"], root)
+    code, out, _ = ws.git(["cat-file", "commit", base_commit], root)
     if code != 0:
         return False
-    listed = [line[len("worktree ") :] for line in out.splitlines() if line.startswith("worktree ")]
-    if any(_same_path(path, entry) for entry in listed[1:]):
-        return True
-    if any(_same_path(path, entry) for entry in listed[:1]):
+    _, _, message = out.partition("\n\n")
+    return message.strip() == _commit_message(name)
+
+
+def _is_unit_worktree(root: str, path: str, base_commit: Any, name: str) -> bool:
+    """Whether ``path`` is unit ``name``'s worktree, made from ``base_commit``.
+
+    Not a link, in a ``<repo>.units`` that is not one, and exactly where
+    ``location`` puts it, for a ``base_commit`` that is this repository's
+    commit for that unit. Listed by ``git worktree list`` or not: a removal
+    that failed part way can leave it unlisted. The path and the commit come
+    from ``units.json``, which an agent could have rewritten, and whatever
+    they name is deleted -- so neither another unit's worktree nor any other
+    directory passes.
+    """
+    if is_link(path) or not _unit_commit(root, base_commit, name):
         return False
-    return (
-        isinstance(base_commit, str)
-        and len(base_commit) >= 8
-        and os.path.basename(path).startswith("%s-" % base_commit[:8])
-    )
+    expected = location(root, str(base_commit), name)
+    if is_link(os.path.dirname(expected)):
+        return False
+    return _same_path(path, expected)
 
 
-def remove(root: str, record: Dict[str, Any]) -> bool:
-    """Remove the worktree a unit's ``record`` names; whether it is gone.
+def remove(root: str, record: Dict[str, Any], name: str) -> bool:
+    """Remove the worktree unit ``name``'s ``record`` names; whether it is gone.
 
-    Nothing is touched unless the path is one of this repository's unit
-    worktrees (``_is_unit_worktree``); a path already gone has only ``git
+    Nothing is touched unless the path is that unit's worktree
+    (``_is_unit_worktree``); a path already gone has only ``git
     worktree prune`` run. The ``LINKED_NAMES`` links first, each checked
     with ``lstat`` and unlinked without being followed; then ``git worktree
     remove``, retried while something holds a file; then whatever is left,
@@ -295,11 +301,11 @@ def remove(root: str, record: Dict[str, Any]) -> bool:
     if not os.path.lexists(path):
         ws.git(["worktree", "prune"], root)
         return True
-    if not _is_unit_worktree(root, path, record.get("base_commit")):
+    if not _is_unit_worktree(root, path, record.get("base_commit"), name):
         return False
     # Only these names, never the record's own list: units.json could name any path.
-    for name in LINKED_NAMES:
-        link = os.path.join(path, name)
+    for linked in LINKED_NAMES:
+        link = os.path.join(path, linked)
         if is_link(link):
             try:
                 _unlink_link(link)

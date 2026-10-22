@@ -455,7 +455,9 @@ could run beside -- no unit is running, and every other unit not yet merged
 depends on it -- runs in place, in your tree, and nothing else starts while it
 runs; any other gets a git worktree of its own
 ([architecture](architecture.md#work-units-and-worktrees)), which is removed
-when the run ends, whatever the outcome. The CLI puts a header in front of the
+when the run ends, whatever the outcome -- except when the unit's tree could
+not be recorded: the unit is then `failed` and its worktree kept, with its
+edits, until `units clean` removes it. The CLI puts a header in front of the
 prompt: the unit's name, kind and files, its `### Unit: <name>` section, and
 "run your checks" -- or, when an environment link could not be made, "do not
 run checks; they run after the merge". When the run ends the unit's tree is
@@ -468,8 +470,9 @@ of a pass spends an attempt, and a rerun ([configuration](configuration.md),
 `attempt_spent`. `--print-command` names the unit's worktree as the directory
 while it has one. On `run architect`, `--unit` designs one unit: plan mode in
 your tree as ever, no worktree, its attempt spent once per design pass
-(`budgets.architect`); `units join` then makes one plan of the parts. On any
-other role, or with `--questions`, it exits 2.
+(`budgets.architect`) for up to 8 units, and once more for each unit past
+them; `units join` then makes one plan of the parts. On any other role, with
+`--questions`, or with a name that is not `[a-z0-9][a-z0-9_-]*`, it exits 2.
 
 ### Revising the plan in the architect's own session (`--resume`)
 
@@ -870,7 +873,7 @@ plan count as none.
 | `units status [--json]` | Each unit's state (`pending`, `running`, `succeeded`, `failed`, `cancelled`, `conflicted` or `merged`), job, base commit and worktree (or `in place`); the units ready to start (pending, every dependency merged); and whether the implement stage failed (a unit failed). |
 | `units merge <name> [--resolved [--keep <path>]...] [--json]` | Merge a unit that succeeded into the working tree, file by file; never the index, `HEAD` or a branch. A file your tree has not changed since the unit started takes the unit's version; a text file both changed is merged three ways (`git merge-file`, markers `<<<<<<< main` and `>>>>>>> unit:<name>`); a binary file, a delete against a change, a symlink or a submodule is a conflict that keeps your version and saves the unit's under `.ai/execution/units/<name>/theirs/`. Clean, the unit is `merged` (exit 0). With conflicts it is `conflicted`, the brief `.ai/execution/units/<name>-conflicts.md` names the files, the plan sections of this unit and of each merged unit that changed them, and the saved copies, and it exits 7. `--resolved` then refuses (exit 2) while a `<<<<<<< main` or `>>>>>>> unit:` line is left in those files, or while a conflict that wrote no markers (a binary file, a delete against a change, a symlink, a submodule, a path that is not a regular file or lies under a linked directory) still holds exactly the version the merge kept, naming those files; `--keep <path>`, repeated, names such a file whose kept version is the resolution, and a path that is not one of the unit's conflicts is refused (exit 2). Otherwise it marks the unit `merged` with the conflicting files as its `resolved_files`. A unit that has not succeeded is refused (exit 2); one that ran in place is merged already, and this does nothing (exit 0). Files the unit changed outside its `files` are named and recorded as `outside_files`. |
 | `units clean [<name>]` | Remove the worktrees units left behind: every unit's, or `<name>`'s. A unit still running keeps its worktree; one recorded as `running` whose worker, or the foreground run that started it, is gone is recorded `failed`, so it can be run again. Exits 1 when a worktree could not be removed. |
-| `units join --part <name>=<path>... --output <path>` | Join per-unit plans, from `run architect --unit`, into one plan at `--output`. Each part's own `## Units` must hold just its unit. The joined plan has one `## Units` block listing the parts' entries in the order given, then each part under `### Unit: <name>`, its own `## Units` taken out and its headings moved down so its shallowest lands at level 4. Nothing is written when the joined units fail the rules of `units check` (exit 2). |
+| `units join --part <name>=<path>... --output <path>` | Join per-unit plans, from `run architect --unit`, into one plan at `--output`. Each part's own `## Units` must hold just its unit. The joined plan has a `## Goal` and a `## Files to Modify` holding each part's own, under a `### <name>` heading per part, then one `## Units` block listing the parts' entries in the order given, then each part under `### Unit: <name>`, its own `## Units` taken out and its headings moved down so its shallowest lands at level 4. Nothing is written when the joined units fail the rules of `units check` (exit 2). |
 
 Merges are taken one at a time, under `.ai/execution/units/merge.lock`. Each
 file is written as a checkout would write it, line endings included.

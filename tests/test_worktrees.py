@@ -66,7 +66,7 @@ class WorktreeCase(IsolatedCase):
 
     def create(self, name: str = "a") -> Dict[str, Any]:
         record = worktrees.create(self.workspace, name, config_mod.load(self.project))
-        self.addCleanup(worktrees.remove, self.project, record)
+        self.addCleanup(worktrees.remove, self.project, record, name)
         return record
 
 
@@ -78,7 +78,7 @@ class TestRemoval(WorktreeCase):
         self.assertEqual(record["links"], [".venv"])
         self.assertTrue(is_link(link))
         self.assertTrue(os.path.isfile(os.path.join(link, "lib", "kept.txt")))
-        self.assertTrue(worktrees.remove(self.project, record))
+        self.assertTrue(worktrees.remove(self.project, record, "a"))
         self.assertFalse(os.path.lexists(record["worktree"]))
         self.assertEqual(read_file(kept), "the user's environment\n")
         listed = self.git("worktree", "list", "--porcelain").stdout
@@ -99,7 +99,7 @@ class TestRemoval(WorktreeCase):
             mock.patch.object(worktrees, "_git_remove", locked_twice),
             mock.patch.object(worktrees.time, "sleep") as slept,
         ):
-            self.assertTrue(worktrees.remove(self.project, record))
+            self.assertTrue(worktrees.remove(self.project, record, "a"))
         self.assertEqual(len(calls), 3)
         self.assertEqual([call.args[0] for call in slept.call_args_list], [0.2, 0.4])
         self.assertFalse(os.path.lexists(record["worktree"]))
@@ -113,11 +113,34 @@ class TestRemoval(WorktreeCase):
             ws.write_text(os.path.join(path, "keep.txt"), "kept\n")
         for path in (stray, outside, self.project, units_dir):
             with self.subTest(path=path):
-                self.assertFalse(worktrees.remove(self.project, {"worktree": path, "links": []}))
+                self.assertFalse(worktrees.remove(self.project, {"worktree": path, "links": []}, "b"))
         for path in (stray, outside):
             self.assertEqual(read_file(os.path.join(path, "keep.txt")), "kept\n")
         self.assertEqual(read_file(os.path.join(self.project, "app.py")), "print('hello')\n")
         self.assertTrue(os.path.isdir(record["worktree"]))
+
+    def test_worktrees_remove_takes_only_the_named_unit_s_own_worktree(self):
+        """A record names a path and a commit: neither reaches another unit's worktree or a stray one."""
+        first, second = self.create("a"), self.create("b")
+        units_dir = os.path.dirname(first["worktree"])
+        # Named after a's commit, as the old check by prefix let through.
+        stray = os.path.join(units_dir, "%s-zzz" % first["base_commit"][:8])
+        ws.write_text(os.path.join(stray, "keep.txt"), "kept\n")
+        for record, name in (
+            (dict(first, worktree=second["worktree"]), "a"),
+            (second, "a"),
+            (dict(first, worktree=stray), "a"),
+            (dict(first, worktree=stray), "zzz"),
+            (dict(first, base_commit=first["base_commit"][:8]), "a"),
+        ):
+            with self.subTest(worktree=os.path.basename(record["worktree"]), name=name):
+                self.assertFalse(worktrees.remove(self.project, record, name))
+        self.assertEqual(read_file(os.path.join(stray, "keep.txt")), "kept\n")
+        for record in (first, second):
+            self.assertEqual(read_file(os.path.join(record["worktree"], "app.py")), "print('hello')\n")
+        self.assertEqual(self.git("worktree", "list", "--porcelain").stdout.count("worktree "), 3)
+        self.assertTrue(worktrees.remove(self.project, second, "b"))
+        self.assertTrue(os.path.isdir(first["worktree"]))
 
     def link(self, link: str, target: str) -> None:
         try:
@@ -135,7 +158,7 @@ class TestRemoval(WorktreeCase):
                 link = os.path.join(units_dir, "%s-evil" % record["base_commit"][:8])
                 self.link(link, target)
                 evil = {"worktree": link, "base_commit": record["base_commit"], "links": []}
-                self.assertFalse(worktrees.remove(self.project, evil))
+                self.assertFalse(worktrees.remove(self.project, evil, "evil"))
                 remove_link(link)
         self.assertEqual(read_file(kept), "print('hello')\n")
         self.assertEqual(read_file(os.path.join(self.project, "app.py")), "print('hello')\n")
@@ -150,8 +173,8 @@ class TestRemoval(WorktreeCase):
         # From the worktree, ../.. is the temporary directory the victim is in.
         escape = os.path.join("..", "..", "victim")
         gone = os.path.join(os.path.dirname(record["worktree"]), "gone")
-        self.assertTrue(worktrees.remove(self.project, {"worktree": gone, "links": [escape]}))
-        self.assertTrue(worktrees.remove(self.project, dict(record, links=[escape])))
+        self.assertTrue(worktrees.remove(self.project, {"worktree": gone, "links": [escape]}, "a"))
+        self.assertTrue(worktrees.remove(self.project, dict(record, links=[escape]), "a"))
         self.assertFalse(os.path.lexists(record["worktree"]))
         self.assertTrue(is_link(victim))
         self.assertEqual(read_file(os.path.join(victim, "keep.txt")), "kept\n")
@@ -164,10 +187,11 @@ class TestRemoval(WorktreeCase):
         self.git("worktree", "prune")
         self.assertEqual(self.git("worktree", "list", "--porcelain").stdout.count("worktree "), 1)
         self.assertTrue(os.path.isdir(tree))
-        self.assertFalse(worktrees.remove(self.project, dict(record, base_commit="0" * 40)))
+        self.assertFalse(worktrees.remove(self.project, dict(record, base_commit="0" * 40), "a"))
+        self.assertFalse(worktrees.remove(self.project, record, "b"))
         self.assertTrue(os.path.isdir(tree))
         with mock.patch.object(worktrees.time, "sleep"):
-            self.assertTrue(worktrees.remove(self.project, record))
+            self.assertTrue(worktrees.remove(self.project, record, "a"))
         self.assertFalse(os.path.lexists(tree))
 
 

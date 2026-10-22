@@ -441,7 +441,8 @@ architect can design each one instead: `run architect --unit <name> --output
 holds that unit alone. `units join --part <name>=<path> ... --output
 .ai/plan.md` then makes one plan of them, and the design review and the
 approval run once, on that plan. The per-unit runs of one design take one
-attempt from `budgets.architect` between them.
+attempt from `budgets.architect` between them, for up to 8 units; each unit
+past them takes one more.
 
 ## Design review
 

@@ -39,6 +39,12 @@ from typing import Any, Dict, List, Optional
 
 from . import execution_tree
 from . import workspace as ws
+from .config_common import MAX_PARALLEL_UNITS
+
+#: How many pieces may join one pass of a stage without spending an attempt.
+#: The architect's pieces are names the caller chooses, which no plan holds to
+#: a count: past this many, each new one spends an attempt of its own.
+_FREE_PIECES: Dict[str, int] = {"architect": MAX_PARALLEL_UNITS}
 
 #: Stages that consume an attempt budget. ``review`` is governed by
 #: ``review.max_review_iterations`` instead, since it already counts rounds.
@@ -420,14 +426,18 @@ class Ledger:
         A run without a ``piece`` always does. A piece does when it opens a
         new pass -- ``key`` differs from the open pass's -- or when it already
         ran in this pass; a piece joining the open pass for the first time
-        does not.
+        does not, unless the pass already holds ``_FREE_PIECES`` of its stage.
         """
         if not piece:
             return True
         open_pass = (ledger.get("passes") or {}).get(stage)
         if not isinstance(open_pass, dict) or open_pass.get("key") != key:
             return True
-        return piece in (open_pass.get("pieces") or [])
+        pieces = open_pass.get("pieces") or []
+        if piece in pieces:
+            return True
+        cap = _FREE_PIECES.get(stage)
+        return cap is not None and len(pieces) >= cap
 
     def check(self, stage: str, piece: str = "", key: str = "") -> List[str]:
         """Reasons this stage must not be attempted again. Empty means go.

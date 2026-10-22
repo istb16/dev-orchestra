@@ -66,8 +66,8 @@ def render_units(meta: Dict[str, Any]) -> str:
     outside: List[str] = []
     for name in sorted(units):
         entry = units[name] if isinstance(units[name], dict) else {}
-        resolved += ["- %s (unit %s)" % (path, name) for path in entry.get("resolved_files") or []]
-        outside += ["- %s (unit %s)" % (path, name) for path in entry.get("outside_files") or []]
+        resolved += [_unit_file(path, name) for path in entry.get("resolved_files") or []]
+        outside += [_unit_file(path, name) for path in entry.get("outside_files") or []]
     lines = ["This change was implemented as separate work units and merged into one tree."]
     if resolved:
         lines += ["", "An agent resolved merge conflicts between units in:", *resolved]
@@ -75,6 +75,20 @@ def render_units(meta: Dict[str, Any]) -> str:
         lines += ["", "A unit changed these files, which its part of the plan did not list:", *outside]
     lines += ["", "Check these files with extra care: a bad resolution or an unplanned edit hides well."]
     return "\n".join(lines)
+
+
+def _one_line(text: str) -> str:
+    """``text`` with each character that is not printable written as its escape, as ``repr`` does."""
+    return "".join(char if char.isprintable() else repr(char)[1:-1] for char in text)
+
+
+def _unit_file(path: Any, name: str) -> str:
+    """One line of the units block, the file's name on it escaped.
+
+    A unit chose the name, and a line break in it would put the rest of the
+    name into the reviewer's instructions.
+    """
+    return "- %s (unit %s)" % (_one_line(str(path)), _one_line(name))
 
 
 def carried_findings(workspace: ws.Workspace, meta: Dict[str, Any]) -> List[Dict[str, Any]]:

@@ -199,7 +199,7 @@ def _cancel_unit(workspace: ws.Workspace, job: Dict[str, Any]) -> None:
     if record.get("status") == units_mod.RUNNING:
         fields.update(status=units_mod.CANCELLED, finished_at=ws.utcnow())
     if record.get("worktree"):
-        gone = worktrees_mod.remove(workspace.root, record)
+        gone = worktrees_mod.remove(workspace.root, record, name)
         fields["worktree"] = None if gone else record["worktree"]
         if not gone:
             _err("warning: %s's worktree could not be removed; units clean tries again" % name)

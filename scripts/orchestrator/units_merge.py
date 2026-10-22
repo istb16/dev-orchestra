@@ -70,6 +70,8 @@ class FileMerge(NamedTuple):
     theirs: Optional[bytes]
     #: Why the file conflicts; "" when it does not.
     reason: str
+    #: The base tree's git mode for the file, ``000000`` when it had none.
+    base_mode: str = _ABSENT_MODE
 
 
 def _raw_changes(
@@ -88,9 +90,25 @@ def _raw_changes(
     while index + 1 < len(fields) and fields[index].startswith(b":"):
         old_mode, new_mode, old_blob, new_blob, _ = fields[index][1:].decode("ascii").split(" ")
         path = os.fsdecode(fields[index + 1])
+        if not _plain_path(path):
+            raise MergeError("the unit's trees name a path that is not a plain relative one: %r" % path)
         changes.append((path, old_mode, new_mode, old_blob, new_blob))
         index += 2
     return changes
+
+
+def _plain_path(path: str) -> bool:
+    """Whether ``path``, as a tree names it, stays where it is joined: relative, no ``.`` or ``..``.
+
+    The trees come from ``units.json``, which an agent could have rewritten,
+    and a crafted one can name anything. On Windows ``\\`` and ``:`` are path
+    syntax too, so ``..\\x`` would be one component that still walks up.
+    """
+    if not path or path.startswith("/") or os.path.isabs(path):
+        return False
+    if _IS_WINDOWS and ("\\" in path or ":" in path):
+        return False
+    return all(part not in ("", ".", "..") for part in path.split("/"))
 
 
 def changed_paths(root: str, base: str, result: str, excludes: Sequence[str] = ()) -> List[str]:
@@ -206,7 +224,8 @@ def _merge_file(root: str, name: str, change: "tuple[str, str, str, str, str]") 
     current_id = None if current is None else _stored(root, path)
     if current_id == base_id:
         unit = None if unit_id is None else _blob(root, path, unit_id, checkout=True)
-        return FileMerge(path, WRITE if unit is not None else DELETE, unit, current, unit_mode, None, "")
+        action = WRITE if unit is not None else DELETE
+        return FileMerge(path, action, unit, current, unit_mode, None, "", base_mode)
     if current_id == unit_id:
         return FileMerge(path, SAME, None, current, unit_mode, None, "")
     if unit_id is None:
@@ -234,7 +253,7 @@ def _merge_file(root: str, name: str, change: "tuple[str, str, str, str, str]") 
     merged, conflicted = _merge_text(root, name, mine, base, unit)
     if conflicted:
         return FileMerge(path, CONFLICT, merged, current, unit_mode, None, "conflict markers in the file")
-    return FileMerge(path, WRITE, merged, current, unit_mode, None, "")
+    return FileMerge(path, WRITE, merged, current, unit_mode, None, "", base_mode)
 
 
 def plan_merge(root: str, name: str, base: str, result: str, excludes: Sequence[str] = ()) -> List[FileMerge]:
@@ -249,18 +268,51 @@ def plan_merge(root: str, name: str, base: str, result: str, excludes: Sequence[
     return [_merge_file(root, name, change) for change in _raw_changes(root, base, result, excludes)]
 
 
-def _set_mode(path: str, mode: str) -> None:
-    """The unit's executable bit, on POSIX; Windows has none to set."""
+def _set_mode(path: str, result: FileMerge) -> None:
+    """The unit's executable bit, on POSIX; Windows has none to set.
+
+    A new file gets the mode a checkout would give it. A file that was there
+    keeps its other bits -- a private file stays private -- and is left alone
+    when the unit did not change its mode.
+    """
     if _IS_WINDOWS:
         return
     mask = os.umask(0)
     os.umask(mask)
-    os.chmod(path, (0o777 if mode == _EXECUTABLE_MODE else 0o666) & ~mask)
+    executable = result.mode == _EXECUTABLE_MODE
+    if result.current is None:
+        os.chmod(path, (0o777 if executable else 0o666) & ~mask)
+        return
+    if result.mode == result.base_mode:
+        return
+    current = stat.S_IMODE(os.stat(path).st_mode)
+    wanted = current | (0o111 & ~mask) if executable else current & ~0o111
+    if wanted != current:
+        os.chmod(path, wanted)
 
 
 def theirs_path(workspace: ws.Workspace, name: str, path: str) -> str:
     """Where a conflicting file's unit version is kept: ``units/<name>/theirs/<path>``."""
     return os.path.join(workspace.units_dir, name, "theirs", *path.split("/"))
+
+
+def _kept_copy_path(workspace: ws.Workspace, name: str, path: str) -> str:
+    """``theirs_path``, refused (``OSError``) when a write there could land outside the workspace.
+
+    So when a directory on the way, below the workspace's own, is a link, or
+    the path resolves outside ``units/<name>/theirs``.
+    """
+    target = theirs_path(workspace, name, path)
+    container = workspace.container
+    relative = os.path.relpath(target, container).replace(os.sep, "/")
+    kept_root = os.path.join(os.path.realpath(os.path.join(workspace.units_dir, name, "theirs")), "")
+    if (
+        relative.startswith("..")
+        or _linked_parent(container, relative)
+        or not os.path.realpath(target).startswith(kept_root)
+    ):
+        raise OSError("%s: where the unit's version would be kept leads out of the workspace" % path)
+    return target
 
 
 def _mode_of(path: str) -> Optional[int]:
@@ -338,9 +390,14 @@ def apply(workspace: ws.Workspace, name: str, results: Sequence[FileMerge]) -> N
     working files already written are put back first, so the tree is left as
     it was. ``NotPutBack`` when some of them could not be.
     """
-    for result in results:
-        if result.theirs is not None:
-            atomic_file.write(theirs_path(workspace, name, result.path), result.theirs)
+    # Every copy's place is checked before any is written.
+    kept = [
+        (_kept_copy_path(workspace, name, result.path), result.theirs)
+        for result in results
+        if result.theirs is not None
+    ]
+    for target, content in kept:
+        atomic_file.write(target, content)
     done: List["tuple[str, Optional[bytes], Optional[bytes], Optional[int]]"] = []
     made: List[str] = []
     try:
@@ -364,7 +421,7 @@ def apply(workspace: ws.Workspace, name: str, results: Sequence[FileMerge]) -> N
                 atomic_file.write(full, result.content, keep_mode=True, expected=result.current)
                 done.append((full, result.current, result.content, mode))
                 if result.action == WRITE:
-                    _set_mode(full, result.mode)
+                    _set_mode(full, result)
     except BaseException as exc:
         left = _undo(done, made)
         if left:

@@ -1196,6 +1196,38 @@ class TestWaitForSeveral(JobCase):
         # An unknown id is refused before anything is waited for.
         self.assertEqual(run_cli("jobs", "wait", "done-1", "nope")[0], 2)
 
+    def running_with_activity(self, job_id: str, count: int) -> None:
+        self.record(job_id, pid=os.getpid())
+        path = jobs_mod.activity_path(jobs_mod.job_path(self.workspace, job_id))
+        lines = [
+            json.dumps({"n": n, "s": float(n), "line": "Read x%d.py" % n, "tokens": None})
+            for n in range(1, count + 1)
+        ]
+        ws.write_text(path, "\n".join(lines) + "\n")
+
+    def test_jobs_wait_any_with_every_job_running_waits_out(self):
+        self.running_with_activity("r1", 2)
+        self.running_with_activity("r2", 1)
+        argv = ("--any", "--timeout", "0.2", "--poll", "0.1")
+        code, out, _ = run_cli("jobs", "wait", "r1", "r2", *argv, "--json")
+        self.assertEqual(code, 4)
+        found = json.loads(out)["jobs"]
+        self.assertEqual([(job["id"], job.get("waited_out")) for job in found], [("r1", True), ("r2", True)])
+        code, out, _ = run_cli("jobs", "wait", "r1", "r2", *argv)
+        self.assertEqual(code, 4)
+        self.assertTrue(out.endswith("\nnext: jobs wait r1 r2 --any --since r1=2 --since r2=1\n"), out)
+
+    def test_jobs_wait_several_prints_a_finished_job_s_output_beside_a_running_one(self):
+        done = self.record("ok-1", status="succeeded", finished_at=ws.utcnow())
+        ws.write_text(done["output_file"], "the answer\n")
+        self.running_with_activity("r1", 2)
+        code, out, _ = run_cli("jobs", "wait", "ok-1", "r1", "--timeout", "0.2", "--poll", "0.1")
+        self.assertEqual(code, 4)
+        self.assertIn("ok-1  SUCCEEDED", out)
+        self.assertIn("\nthe answer\n", out)
+        self.assertLess(out.index("the answer"), out.index("r1  RUNNING"))
+        self.assertTrue(out.endswith("\nnext: jobs wait r1 --since r1=2\n"), out)
+
 
 @unittest.skipUnless(has_git(), "needs git")
 class TestCancelUnit(JobCase):
@@ -1208,7 +1240,7 @@ class TestCancelUnit(JobCase):
         self.write("app.py", "print('hello')\n")
         self.commit_all("base")
         record = worktrees.create(self.workspace, "a", config_mod.load(self.project))
-        self.addCleanup(worktrees.remove, self.project, record)
+        self.addCleanup(worktrees.remove, self.project, record, "a")
         units_mod.update(self.workspace, "a", dict(record, status="running", in_place=False, job="u-1"))
         self.record("u-1", pid=4242, pid_started="t0", unit="a", worktree=record["worktree"])
         with (
@@ -1234,7 +1266,7 @@ class TestCancelUnit(JobCase):
         self.write("app.py", "print('hello')\n")
         self.commit_all("base")
         record = worktrees.create(self.workspace, "a", config_mod.load(self.project))
-        self.addCleanup(worktrees.remove, self.project, record)
+        self.addCleanup(worktrees.remove, self.project, record, "a")
         units_mod.update(self.workspace, "a", dict(record, status="failed", in_place=False, job="u-1"))
         self.record("u-1", pid=4242, pid_started="t0", unit="a", worktree=record["worktree"])
         with (

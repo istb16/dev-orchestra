@@ -548,6 +548,18 @@ class TestOneAttemptPerPass(LedgerCase):
             book.summary()["passes"], {"implementer": {"key": self.PLAN, "pieces": ["a", "b", "c"]}}
         )
 
+    def test_ledger_architect_pass_frees_at_most_eight_pieces(self):
+        """An architect's piece is any name it is given: past eight, each new one spends."""
+        book = self.book(architect=20, implementer=20)
+        names = ["u%d" % number for number in range(10)]
+        spent = [book.consume("architect", piece=name, key="") for name in names]
+        self.assertEqual(spent, [True, *[False] * 7, True, True])
+        self.assertEqual(self.used(book, "architect"), 3)
+        self.assertEqual(book.load()["passes"]["architect"]["pieces"], names)
+        # The implementer's pieces are a plan's units, not held to the count.
+        spent = [book.consume("implementer", piece=name, key=self.PLAN) for name in names]
+        self.assertEqual(spent, [True, *[False] * 9])
+
     def test_ledger_pass_rerun_spends_attempt(self):
         book = self.book(implementer=5)
         book.consume("implementer", piece="a", key=self.PLAN)

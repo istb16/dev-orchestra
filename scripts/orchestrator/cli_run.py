@@ -1231,6 +1231,9 @@ def _unit_arg_refusal(args: argparse.Namespace, role: str) -> Optional[str]:
     """Why ``--unit`` cannot go on this command line, as a fixed sentence."""
     if getattr(args, "unit", None) and role not in ("implementer", "architect"):
         return "--unit applies to implementer and architect"
+    if getattr(args, "unit", None) and not units_mod.valid_name(args.unit):
+        # The architect's names reach no plan, and each new one is a piece of the pass.
+        return "--unit must be a unit name, [a-z0-9][a-z0-9_-]*"
     if getattr(args, "unit", None) and getattr(args, "questions", False):
         # A round of questions is not a piece of a design pass.
         return "--unit does not apply to --questions"
@@ -1319,6 +1322,15 @@ def _claim_unit(
             return _refuse_run(args, ["--unit %s: refused -- %s" % (name, reason)])
         in_place = units_mod.runs_in_place(found, state, name)
         previous = entries.get(name)
+        if previous is not None and previous.get("worktree"):
+            # Claimed again, the record would no longer name it, and nothing would remove it.
+            return _refuse_run(
+                args,
+                [
+                    "--unit %s: refused -- an earlier run's worktree is still there (%s); "
+                    "run units clean %s first" % (name, previous["worktree"], name)
+                ],
+            )
         # This process, until a detached run names its job: a foreground run
         # killed before its `finally` leaves no job, and `units clean` finds
         # it gone by the pid.
@@ -1400,7 +1412,7 @@ def _release_unit(args: argparse.Namespace, workspace: ws.Workspace, unit: _Unit
         return
     record = units_mod.load_state(workspace)["units"].get(unit.name)
     if isinstance(record, dict):
-        worktrees_mod.remove(workspace.root, record)
+        worktrees_mod.remove(workspace.root, record, unit.name)
     _restore_unit(workspace, unit.name, unit.previous)
 
 
@@ -1439,13 +1451,18 @@ def _finish_unit(workspace: ws.Workspace, name: str, ok: bool) -> None:
         if base_tree and result_tree:
             fields["outside_files"] = _outside_files(workspace, name, str(base_tree), result_tree, links)
     elif not result_tree:
-        # Recorded succeeded, it could be neither merged nor run again.
+        # Recorded succeeded, it could be neither merged nor run again. Its
+        # edits are only in the worktree, so that stays for `units clean`.
         fields.update(status=units_mod.FAILED, error="its result tree could not be written")
-        _err("note: %s: its result tree could not be written; it is recorded as failed" % name)
+        _err(
+            "note: %s: its result tree could not be written; it is recorded as failed, and its "
+            "worktree with its edits is kept until units clean: %s" % (name, worktree or "-")
+        )
+        worktree = None
     else:
         fields["status"] = units_mod.SUCCEEDED
     if worktree:
-        fields["worktree"] = None if worktrees_mod.remove(workspace.root, record) else worktree
+        fields["worktree"] = None if worktrees_mod.remove(workspace.root, record, name) else worktree
     units_mod.update(workspace, name, fields)
 
 

@@ -12,6 +12,8 @@ from helpers import IsolatedCase, run_cli
 
 from orchestrator import activity as activity_mod
 from orchestrator import cli, providers
+from orchestrator import jobs as jobs_mod
+from orchestrator import workspace as ws
 
 
 def minimal_argv(path, leaf):
@@ -171,6 +173,21 @@ class TestParserShape(IsolatedCase):
                     ("--activity", "abc"),
                 ):
                     self.assert_usage_error("jobs", sub, "J", "%s=%s" % (flag, bad))
+
+    def test_jobs_wait_since_names_its_job(self):
+        self.assertEqual(self.parse("jobs", "wait", "J", "--since", "J=3").since, [("J", 3)])
+        # Split at the last =: an id never holds one, and the count never does.
+        self.assertEqual(self.parse("jobs", "wait", "J", "--since", "a=b=2").since, [("a=b", 2)])
+        for bad in ("=3", "x=abc", "x=-1", "x=", "x=%d" % (activity_mod.SINCE_MAX + 1)):
+            with self.subTest(bad=bad):
+                self.assert_usage_error("jobs", "wait", "J", "--since=%s" % bad)
+        # A cursor for a job not waited for is refused, with one id as with several.
+        jobs_mod.write_job(
+            self.cli_workspace(), {"id": "a-1", "status": "succeeded", "started_at": ws.utcnow()}
+        )
+        code, _, err = run_cli("jobs", "wait", "a-1", "--since", "b-1=2")
+        self.assertEqual(code, 2)
+        self.assertIn("b-1 is not one of the jobs waited for", err)
 
     def test_scope_defaults(self):
         self.assertEqual(self.parse("config", "setup").scope, "global")

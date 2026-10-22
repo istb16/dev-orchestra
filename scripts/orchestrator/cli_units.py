@@ -325,24 +325,45 @@ def cmd_units_join(args: argparse.Namespace) -> int:
 def _may_still_run(workspace: ws.Workspace, record: Dict[str, Any]) -> bool:
     """Whether a running unit's run may still be going.
 
-    By its job's worker when a detached run named one; otherwise by the pid
-    of the process that claimed it, a foreground run; and for a record with
-    neither, as a job with no pid, for ``jobs.STARTING_GRACE_SECONDS``.
+    By its job's worker when a detached run named one whose record is there;
+    otherwise by the pid of the process that claimed it; and for a record
+    with neither, as a job with no pid, for ``jobs.STARTING_GRACE_SECONDS``.
     """
     if record.get("job"):
         job = jobs_mod.read_job(workspace, str(record["job"]))
-        return job is None or jobs_mod.may_still_run(job)
+        if job is not None:
+            return jobs_mod.may_still_run(job)
     pid = record.get("pid")
     if isinstance(pid, int) and not isinstance(pid, bool) and pid > 0:
         return jobs_mod.process_alive(pid, record) is not False
     return jobs_mod.may_still_run({"started_at": record.get("started_at")})
 
 
+def _fail_gone_run(workspace: ws.Workspace, name: str, record: Dict[str, Any]) -> bool:
+    """Record a unit whose run is gone as failed; False when its record has changed since it was read.
+
+    Under the units lock, and only while the record is still that run's: a
+    worker that finished in between has written how it ended.
+    """
+    with units_mod.locked(workspace):
+        state = units_mod.load_state(workspace)
+        current = state["units"].get(name)
+        if not isinstance(current, dict) or current.get("status") != units_mod.RUNNING:
+            return False
+        if (current.get("job"), current.get("pid")) != (record.get("job"), record.get("pid")):
+            return False
+        current.update(status=units_mod.FAILED, finished_at=ws.utcnow())
+        units_mod.save_state(workspace, state)
+    return True
+
+
 def cmd_units_clean(args: argparse.Namespace) -> int:
     """Remove the worktrees units left behind: every unit's, or NAME's.
 
     A unit still running keeps its worktree. One whose worker is gone without
-    finishing it is recorded as failed, so it can be run again.
+    finishing it is recorded as failed, so it can be run again. Each record is
+    read again when its turn comes: removing a worktree before it can take
+    seconds, and a unit can finish meanwhile.
     """
     workspace = _workspace(args)
     state = units_mod.load_state(workspace)
@@ -353,26 +374,25 @@ def cmd_units_clean(args: argparse.Namespace) -> int:
     names = [args.name] if args.name else sorted(entries)
     removed = kept = 0
     for name in names:
-        record = entries[name]
+        record = units_mod.load_state(workspace)["units"].get(name)
+        if not isinstance(record, dict):
+            continue
         if record.get("status") == units_mod.RUNNING:
             if _may_still_run(workspace, record):
                 if record.get("worktree"):
                     _out("%s is running; its worktree stays: %s" % (name, record["worktree"]))
                 continue
-        if not record.get("worktree") and record.get("status") != units_mod.RUNNING:
+            if not _fail_gone_run(workspace, name, record):
+                continue
+        if not record.get("worktree"):
             continue
-        fields: Dict[str, Any] = {}
-        if record.get("status") == units_mod.RUNNING:
-            fields.update(status=units_mod.FAILED, finished_at=ws.utcnow())
-        if record.get("worktree"):
-            if worktrees_mod.remove(workspace.root, record):
-                _out("removed %s's worktree: %s" % (name, record["worktree"]))
-                fields["worktree"] = None
-                removed += 1
-            else:
-                _err("could not remove %s's worktree: %s" % (name, record["worktree"]))
-                kept += 1
-        units_mod.update(workspace, name, fields)
+        if worktrees_mod.remove(workspace.root, record, name):
+            _out("removed %s's worktree: %s" % (name, record["worktree"]))
+            units_mod.update(workspace, name, {"worktree": None})
+            removed += 1
+        else:
+            _err("could not remove %s's worktree: %s" % (name, record["worktree"]))
+            kept += 1
     if not removed and not kept:
         _out("No worktrees to remove.")
     return 1 if kept else 0

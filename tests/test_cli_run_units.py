@@ -15,7 +15,7 @@ from unittest import mock
 from helpers import IsolatedCase, has_git, is_link, read_file, run_cli
 from test_units import plan
 
-from orchestrator import cli_state, execution_tree
+from orchestrator import cli_state, cli_units, execution_tree
 from orchestrator import jobs as jobs_mod
 from orchestrator import units as units_mod
 from orchestrator import workspace as ws
@@ -131,6 +131,20 @@ class TestRefusals(UnitRunCase):
         code, _, err = run_cli("run", "review_fixer", "--unit", "a", "--prompt", "go")
         self.assertEqual(code, 2)
         self.assertIn("--unit applies to implementer", err)
+
+    def test_run_architect_unit_refused_with_questions_or_a_name_that_is_not_a_slug(self):
+        for argv, said in (
+            (["--unit", "a", "--questions"], "--unit does not apply to --questions"),
+            (["--unit", "A b"], "--unit must be a unit name"),
+            (["--unit", "../a"], "--unit must be a unit name"),
+        ):
+            with self.subTest(argv=argv):
+                code, _, err = run_cli("run", "architect", *argv, "--prompt", "go")
+                self.assertEqual(code, 2)
+                self.assertIn(said, err)
+        self.assertEqual(
+            json.loads(run_cli("budget", "show", "--json")[1])["budgets"]["architect"]["used"], 0
+        )
 
     def test_run_unit_refused_until_its_result_is_merged(self):
         self.approve(PAIR)
@@ -284,6 +298,7 @@ class TestWorktreeRuns(UnitRunCase):
                 return ""
             return original(root, *args, **kwargs)
 
+        self.edits = {"a.py": "A = 1\n"}
         with mock.patch.object(ws, "write_tree", failing):
             _, _, err = self.run_unit("a")
         self.assertIn("its result tree could not be written", err)
@@ -291,12 +306,36 @@ class TestWorktreeRuns(UnitRunCase):
         self.assertEqual(record["status"], "failed")
         self.assertIsNone(record["result_tree"])
         self.assertIn("result tree", record["error"])
+        # Its edits are nowhere else: the worktree is kept, and named.
+        self.assertIn(record["worktree"], err)
+        self.assertEqual(read_file(os.path.join(record["worktree"], "a.py")), "A = 1\n")
+        # Claimed again, the record would lose the worktree: units clean comes first.
+        code, _, err = self.run_unit("a")
+        self.assertEqual(code, 2)
+        self.assertIn("run units clean a first", err)
+        self.assertEqual(self.record("a")["worktree"], record["worktree"])
+        self.assertEqual(run_cli("units", "clean", "a")[0], 0)
         self.assert_no_worktree()
         # Failed, it can be run again.
         code, _, err = self.run_unit("a")
         self.assertEqual(code, 0, err)
         self.assertEqual(self.record("a")["status"], "succeeded")
         self.assertIsNone(self.record("a").get("error"))
+
+    def test_run_unit_interrupted_is_failed_and_its_worktree_removed(self):
+        self.approve(PAIR)
+
+        def interrupt(cwd: str) -> None:
+            raise KeyboardInterrupt
+
+        self.during = interrupt
+        code, _, _ = self.run_unit("a")
+        self.assertNotEqual(code, 0)
+        self.assertEqual(len(self.calls), 1)
+        record = self.record("a")
+        self.assertEqual(record["status"], "failed")
+        self.assertIsNone(record["worktree"])
+        self.assert_no_worktree()
 
 
 class TestInPlace(UnitRunCase):
@@ -340,6 +379,27 @@ class TestInPlace(UnitRunCase):
         self.assertIn("warning: a ran in place; its edits stay in the working tree: a.py", said.getvalue())
         self.assertEqual(self.record("a")["status"], "cancelled")
         self.assertEqual(read_file(os.path.join(self.project, "a.py")), "A = 1\n")
+
+    def test_run_unit_in_place_failure_keeps_its_base_and_blocks_nothing(self):
+        self.approve(CHAIN)
+        base = self.in_place_base()
+        self.edits = {"a.py": "A = 1\n"}
+        os.environ["DEV_ORCHESTRA_MOCK_FAIL"] = "1"
+        self.assertEqual(self.run_unit("a")[0], 1)
+        del os.environ["DEV_ORCHESTRA_MOCK_FAIL"]
+        record = self.record("a")
+        self.assertEqual((record["status"], record["in_place"], record["base_tree"]), ("failed", True, base))
+        self.assertIsNone(record["worktree"])
+        # Not left running in place: it runs again, from the same base, and then b starts.
+        self.edits = {"a.py": "A = 2\n"}
+        code, _, err = self.run_unit("a")
+        self.assertEqual(code, 0, err)
+        self.assertEqual((self.record("a")["status"], self.record("a")["base_tree"]), ("merged", base))
+        self.edits = {"b.py": "B = 1\n"}
+        code, _, err = self.run_unit("b")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.record("b")["status"], "merged")
+        self.assertFalse(os.path.exists(self.units_parent))
 
     def test_rerun_in_place_after_a_cancelled_run_keeps_its_base(self):
         self.approve(CHAIN)
@@ -457,10 +517,22 @@ class TestDetached(UnitRunCase):
         # One attempt, spent by the parent.
         self.assertEqual(self.used(), 1)
 
+    def test_run_unit_detach_whose_worker_could_not_start_fails_the_unit(self):
+        self.approve(PAIR)
+        failed = {"id": "implementer-x", "status": "failed", "error": "could not start"}
+        with mock.patch.object(jobs_mod, "start", return_value=failed):
+            code, _, _ = self.run_unit("a", "--detach", "--json")
+        self.assertEqual(code, 1)
+        record = self.record("a")
+        self.assertEqual(record["status"], "failed")
+        self.assertIsNone(record["worktree"])
+        self.assertIsNone(record["job"])
+        self.assert_no_worktree()
+
     def test_run_unit_detached_worker_refused_when_its_worktree_is_gone(self):
         self.approve(PAIR)
         job = self.start("a")
-        self.assertTrue(worktrees_mod.remove(self.project, self.record("a")))
+        self.assertTrue(worktrees_mod.remove(self.project, self.record("a"), "a"))
         code, _, err = run_cli(*self.workers[0])
         self.assertEqual(code, 2)
         self.assertIn("its worktree is gone", err)
@@ -551,6 +623,37 @@ class TestClean(UnitRunCase):
         code, _, err = run_cli("units", "clean")
         self.assertEqual(code, 0, err)
         self.assertEqual(self.record("a")["status"], "failed")
+
+    def test_units_clean_judges_a_unit_whose_job_record_is_missing_by_its_pid(self):
+        self.approve(PAIR)
+        self.set_records({"a": self.running(job="implementer-missing", started_at="2020-01-01T00:00:00Z")})
+        self.assertEqual(run_cli("units", "clean")[0], 0)
+        self.assertEqual(self.record("a")["status"], "failed")
+        me = os.getpid()
+        self.set_records(
+            {
+                "a": self.running(
+                    job="implementer-missing", pid=me, pid_started=execution_tree.process_started(me)
+                )
+            }
+        )
+        self.assertEqual(run_cli("units", "clean")[0], 0)
+        self.assertEqual(self.record("a")["status"], "running")
+
+    def test_units_clean_leaves_a_unit_that_finished_meanwhile(self):
+        """Its worker wrote how it ended after clean read the record: that is not overwritten."""
+        self.approve(PAIR)
+        self.set_records({"a": self.running(job="implementer-1")})
+
+        def finished_meanwhile(workspace: ws.Workspace, record: Dict[str, Any]) -> bool:
+            units_mod.update(workspace, "a", {"status": "succeeded", "result_tree": "f" * 40})
+            return False
+
+        with mock.patch.object(cli_units, "_may_still_run", finished_meanwhile):
+            self.assertEqual(run_cli("units", "clean")[0], 0)
+        record = self.record("a")
+        self.assertEqual((record["status"], record["result_tree"]), ("succeeded", "f" * 40))
+        self.assertNotIn("finished_at", record)
 
     def test_units_clean_keeps_a_running_unit_worktree(self):
         self.approve(PAIR)

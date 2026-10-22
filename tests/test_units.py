@@ -433,6 +433,52 @@ class TestJoin(UnitsCase):
         self.assertIn("may run in parallel", err)
         self.assertFalse(os.path.exists(output))
 
+    def test_units_join_gathers_each_part_s_goal_and_files(self):
+        parser = plan([{"name": "parser", "files": ["scripts/a.py"]}])
+        parser = parser.replace("Something.", "Parse it.\n\n### Unit: docs\nNot the docs section.")
+        docs = plan([{"name": "docs", "kind": "docs", "files": ["docs/a.md"]}])
+        docs = docs.replace("Something.", "Document it.").replace("`scripts/a.py`", "`docs/a.md`")
+        joined = units_mod.join([("parser", parser), ("docs", docs)])
+        goal = units_mod.goal(joined)
+        self.assertLess(goal.index("### parser"), goal.index("Parse it."))
+        self.assertLess(goal.index("Parse it."), goal.index("### docs"))
+        self.assertLess(goal.index("### docs"), goal.index("Document it."))
+        found = units_mod.parse(joined)
+        self.assertEqual(units_mod.warnings(found, joined), [])
+        self.assertEqual(units_mod.validate(found, [], joined), [])
+        # A part's own headings, moved down, are never taken for a unit's section.
+        self.assertIn("Do docs.", units_mod.section(joined, "docs"))
+        self.assertNotIn("Not the docs section.", units_mod.section(joined, "docs"))
+
+    def test_units_join_refusals_write_nothing(self):
+        parser = self.write("parts/parser.md", plan([{"name": "parser", "files": ["scripts/a.py"]}]))
+        two = self.write(
+            "parts/two.md", plan([{"name": "a", "files": ["a.py"]}, {"name": "b", "files": ["b.py"]}])
+        )
+        empty = self.write("parts/empty.md", "\n")
+        output = os.path.join(self.project, "joined.md")
+        for parts, said in (
+            (["parser"], "expected NAME=PATH"),
+            (["=" + parser], "expected NAME=PATH"),
+            (["parser="], "expected NAME=PATH"),
+            (["parser=" + empty], "no plan at"),
+            (["parser=" + os.path.join(self.project, "parts", "missing.md")], "no plan at"),
+            (["docs=" + parser], "must hold the one unit docs, not parser"),
+            (["a=" + two], "must hold the one unit a, not a, b"),
+            (["parser=" + parser, "parser=" + parser], "duplicate unit name"),
+        ):
+            with self.subTest(parts=parts):
+                argv = [arg for part in parts for arg in ("--part", part)]
+                code, _, err = run_cli("units", "join", *argv, "--output", output)
+                self.assertEqual(code, 2)
+                self.assertIn(said, err)
+                self.assertFalse(os.path.exists(output))
+
+    def test_units_clean_unknown_unit_exit_2(self):
+        code, _, err = run_cli("units", "clean", "ghost")
+        self.assertEqual(code, 2)
+        self.assertIn("no unit named ghost has a record", err)
+
 
 if __name__ == "__main__":
     unittest.main()

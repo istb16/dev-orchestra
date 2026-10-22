@@ -151,6 +151,11 @@ def _yaml_block(lines: List[str]) -> Optional[str]:
     return None
 
 
+def valid_name(name: str) -> bool:
+    """Whether ``name`` is a unit name: a slug, ``[a-z0-9][a-z0-9_-]*``."""
+    return bool(_NAME_RE.match(name))
+
+
 def parse(plan_text: str) -> List[Unit]:
     """The units of a plan, in the order it lists them; [] when it has no ``## Units``.
 
@@ -264,11 +269,15 @@ def join(parts: Sequence["tuple[str, str]"]) -> str:
     """One plan from per-unit plans, given as (name, plan text) in the order they go in.
 
     Each part's ``## Units`` must hold just its own unit. The joined plan's
+    ``## Goal`` and ``## Files to Modify`` hold each part's, under the part's
+    name, so ``goal`` and ``warnings`` read them as they read any plan; its
     ``## Units`` lists them all, and each part follows under ``### Unit: <name>``.
     Raises ``UnitsError`` for a part that cannot be read so.
     """
     entries: List[Dict[str, Any]] = []
     bodies: List[str] = []
+    goals: List[str] = []
+    file_lists: List[str] = []
     for name, plan_text in parts:
         found = parse(plan_text)
         if [unit.name for unit in found] != [name]:
@@ -281,14 +290,30 @@ def join(parts: Sequence["tuple[str, str]"]) -> str:
             {"name": unit.name, "kind": unit.kind, "files": unit.files, "depends_on": unit.depends_on}
         )
         bodies.append("### Unit: %s\n\n%s" % (name, _demoted(plan_text)))
+        # Moved down as the part's body is, so no heading of it is taken for a unit's.
+        part_goal = goal(plan_text)
+        if part_goal:
+            goals.append("### %s\n\n%s" % (name, _demoted(part_goal)))
+        part_files = "\n".join(_files_body(plan_text)).strip()
+        if part_files:
+            file_lists.append("### %s\n\n%s" % (name, _demoted(part_files)))
+    shared = ""
+    if goals:
+        shared += "## %s\n\n%s\n" % (_GOAL_HEADING, "\n".join(goals))
+    if file_lists:
+        shared += "## %s\n\n%s\n" % (_FILES_HEADING, "\n".join(file_lists))
     block = miniyaml.dumps({"units": entries})
-    return "# Plan\n\n## %s\n\n```yaml\n%s```\n\n%s" % (_UNITS_HEADING, block, "\n".join(bodies))
+    return "# Plan\n\n%s## %s\n\n```yaml\n%s```\n\n%s" % (shared, _UNITS_HEADING, block, "\n".join(bodies))
+
+
+def _files_body(plan_text: str) -> List[str]:
+    """The lines under ``## Files to Modify``."""
+    return _body(plan_text, 2, lambda title: title.strip() == _FILES_HEADING) or []
 
 
 def _listed_files(plan_text: str) -> List[str]:
     """The backticked paths under ``## Files to Modify``."""
-    body = _body(plan_text, 2, lambda title: title.strip() == _FILES_HEADING) or []
-    return [_normalise(path) for line in body for path in re.findall(r"`([^`\s]+)`", line)]
+    return [_normalise(path) for line in _files_body(plan_text) for path in re.findall(r"`([^`\s]+)`", line)]
 
 
 # --------------------------------------------------------------------------- checks
