@@ -1,4 +1,4 @@
-<!-- translated-from: references/workflow.md sha256:37a454126ea934c0c23526a444a0cdf8472aa5ea630a9f92db0844cb77bb2a3e -->
+<!-- translated-from: references/workflow.md sha256:b65f2f533dbb3ad3db115a3520cff1dd0b3a0ff1e9cf63ab5027d4c6d09280b8 -->
 
 > この文書は [references/workflow.md](../../../references/workflow.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
