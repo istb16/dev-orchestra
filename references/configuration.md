@@ -636,6 +636,12 @@ progress:
   updates: auto                       # reports during a long run (true, false or auto)
   interval_seconds: 180               # how often; also the default wait of `jobs wait`
   quiet_notice_seconds: 600           # "may be stuck" after this long with no new tool line; 0 = off
+
+implementation:
+  max_parallel: 2                     # work units run at once, 1 to 8
+  hub_paths:                          # only the integration unit may list these
+    - "CHANGELOG*"
+    - "**/CHANGELOG*"
 ```
 
 ### Field reference
@@ -692,6 +698,10 @@ progress:
 | `progress.updates` | bool \| `auto` \| null | What the orchestrator tells the user while a long run goes on ([workflow](workflow.md#progress-reports)). `auto` (default) is the behaviour from before the key existed: implementer, review_fixer and big architect runs are detached and reported on at every wait, and a background `review run`'s lines are relayed. `true` also detaches every architect run and runs every `review run` in the background with `--progress`. `false` detaches the same runs and stops the routine reports; the `may be stuck` note is still given. `status` and `config show` print it as `on`, `off` or `auto`; a value `validate` would refuse reads as `auto`. `null` means the default. |
 | `progress.interval_seconds` | int 30–3600 \| null | How often the orchestrator reports (default 180), and so the wait of `jobs wait` without `--timeout`. A `review run --progress` checks its reviewers for the stuck notice this often. `null` means the default. |
 | `progress.quiet_notice_seconds` | int 0–1,000,000,000 \| null | A report on a run that has shown no new tool line for this long gets `may be stuck: no new tool line for 12m03s` (default 600), and gets it again at every report while the run stays silent. `0` turns it off. The note only informs: the run is never cancelled for it. A run whose CLI writes no tool activity at all, such as agy's, never gets it. `null` means the default. |
+| `implementation.max_parallel` | int 1–8 \| null | How many work units of a plan's `## Units` may run at once (default 2): `run implementer --unit` refuses (exit 2) one more. 8 is the most concurrent ledger charges measured to be safe. `units check` prints its waves at this width. `null` means the default. See [workflow](workflow.md#implementation). |
+| `implementation.hub_paths` | list \| null | Globs naming files every unit tends to touch (default `["CHANGELOG*", "**/CHANGELOG*"]`). With two or more units, only the `integration` unit may list one; `units check` refuses any other that does. Add a project's own, such as `docs/ja/**` or its CLI parser. `[]` names none; `null` means the default. |
+| `budgets.implementer` | int | Implementer attempts (default 5). A plain `run implementer` spends one per run. The work units of one plan spend one between them, a **pass**: the first unit run on a plan hash spends it, the others join it free, and only a rerun of a unit in the same pass spends another. A new plan hash (under `design.require_approval`, a new approval) or `budget reset` begins a new pass. `budgets.total_delegated_runs` and `budgets.max_runtime_seconds` still count every run; with this budget spent, a unit not yet run in the open pass still runs. |
+| `budgets.architect` | int | Architect attempts (default 3). `run architect --unit` is charged by the same pass rule, keyed on the last approved plan's hash (none before the first approval): the per-unit designs of one round take one attempt, and a redesign after an approval is a new pass. |
 | `<role>.options` | mapping | Provider-specific knobs; see below. |
 | `<role>.model_tiers` | mapping | Named alternatives for this role's model; see below. Optional. |
 

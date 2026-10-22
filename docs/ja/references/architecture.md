@@ -1,4 +1,4 @@
-<!-- translated-from: references/architecture.md sha256:09ccce1476a569c78fef28641e1fd4efcd9997bb756415e9f683d55dd6eca311 -->
+<!-- translated-from: references/architecture.md sha256:70c47acbf5aea2b39353698756f486b5fe1c5d7b887c1f9a07723b123ad61144 -->
 
 > この文書は [references/architecture.md](../../../references/architecture.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -14,6 +14,7 @@
 - [レイヤー](#layers)
 - [なぜこの分け方なのか](#why-this-split)
 - [データフロー](#data-flow)
+- [作業単位と worktree](#work-units-and-worktrees)
 - [拡張ポイント](#extension-points)
 - [返答の言語のフック](#reply-language-hooks)
 - [セキュリティ](#security)
@@ -67,7 +68,7 @@ flowchart TD
 | --- | --- | --- |
 | スキル | `skills/dev-orchestra/SKILL.md`, `references/` | オーケストレーターが何をいつ決めるか |
 | CLI | `scripts/dev_orchestra.py`、`scripts/orchestrator/cli.py`（引数の解析と入口）と `cli_*.py`（コマンドのまとまりごとのモジュール） | エージェントが呼び出せる決定的な操作 |
-| ドメイン | `config.py`（`config_common.py`、`config_paths.py`、`config_keys.py`、`config_reviewers.py`、`config_seats.py`、`config_validation.py` を含み、`config.py` が再公開する）、`config_policy.py`、`config_trust.py`、`review_*.py`（`review.py` が再公開する）、`workspace.py`、`wizard.py`、`doctor.py`、`questions.py` | 設定のレイヤリング、プロジェクトファイル由来の席と書き込みオプションを拒否する方針、global 設定だけが決められる設定、スナップショット取得、パース、重複排除、トリアージ、診断、design の質問とユーザーの回答 |
+| ドメイン | `config.py`（`config_common.py`、`config_paths.py`、`config_keys.py`、`config_reviewers.py`、`config_seats.py`、`config_validation.py` を含み、`config.py` が再公開する）、`config_policy.py`、`config_trust.py`、`review_*.py`（`review.py` が再公開する）、`workspace.py`、`wizard.py`、`doctor.py`、`questions.py`、`units.py`、`units_merge.py`、`worktrees.py` | 設定のレイヤリング、プロジェクトファイル由来の席と書き込みオプションを拒否する方針、global 設定だけが決められる設定、スナップショット取得、パース、重複排除、トリアージ、診断、design の質問とユーザーの回答、plan の作業単位とその状態、作業単位の結果の作業ツリーへのマージ、作業単位が走る worktree |
 | provider | `scripts/orchestrator/providers/` | CLI の構文とモデル名を知っている唯一のコード |
 | 返答の言語のフック | `claude_hooks.py`、`scripts/hooks/`、`reply_language.py` | Claude Code のみ: 返答を `language.reply` の言語に保つ（[後述](#reply-language-hooks)） |
 
@@ -112,6 +113,18 @@ project/
 ```
 
 `consolidated.json` はステージ間の受け渡しに使われます。`review run` がこれを書き出し、トリアージがこれに注記を加え、`review fix-brief` がこれを読み込み、`review status` がもう 1 ラウンド必要かどうかを判断します。
+
+<a id="work-units-and-worktrees"></a>
+
+## 作業単位と worktree
+
+`## Units` ブロックを持つ plan は、作業単位ごとに 1 回ずつ実装されます（`scripts/orchestrator/units.py`）。ほかの作業単位と並んで走りうる作業単位は、自分専用の git worktree を `<parent>/<repo>.units/<id8>-<name>` に持ちます。場所はリポジトリの隣で、中には決して置きません。2 つのエージェントが 1 つのツリーを編集すると、互いの書きかけのファイルが見えてしまいます。worktree なら、それぞれの結果がマージされるまで分かれたままです。並んで走るものがない作業単位は、その場で（ユーザーのツリーで）走ります。そこでは worktree もマージも何の役にも立たないからです。
+
+worktree は `HEAD` ではなく、ユーザーの **作業ツリー** から始まります。コミットしていない変更や追跡していないファイルも、エージェントが見るべきものの一部だからです。ツリーは使い捨ての index を通して書き、参照されないコミットに包み（dev-orchestra の固定の名前と `--no-gpg-sign` を使うので、ユーザーの名前にも署名の設定にも左右されません）、detached でチェックアウトします。ユーザーの index、`HEAD`、ブランチには決して触れません。
+
+存在する無視された環境ディレクトリ（`.venv`、`venv`、`node_modules`）はリンクで持ち込みます。Windows では junction、それ以外では symlink です。これで作業単位は、もう一度インストールしなくてもチェックを走らせられます。これらのリンクはユーザーのツリーの中を指すので、worktree を消すときはまず各リンクをたどらずに外し、`git worktree remove` が残したものは、リンクの中へ決して降りない走査で消します。`.venv` をたどって消すと、ユーザーの環境まで消えてしまうからです。リンクとワークスペースのディレクトリは作業単位のツリーからも除くので、マージで戻ってくることはありません。
+
+`units merge` は作業単位の結果をファイルごとに戻します。一時的なコピーに対して `git merge-file` を使い、ユーザーのツリーにあるいまのファイルと三方向でマージします。触れるのは作業ツリーだけです。`git apply --3way` は index に書き込み、`git merge-tree --write-tree` には git 2.38 が要ります。すべてのファイルの結果を、どれかを書く前に求めるので、途中で失敗したマージはツリーを元のまま残します。ただし、マージが書いた後にさらに変更されたファイルは元に戻さず、エラーでその名前を示します。マージは `execution/units/merge.lock` のもとで 1 つずつ行います。どのファイルもチェックアウトしたときの形、つまりチェックアウトで付く改行で書きます。三方向のマージも、入力をチェックアウトしたときの形で受け取ります。テキストとしてマージできないもの（バイナリファイル、削除と変更のぶつかり、symlink、submodule）は、ユーザーの版を残し、作業単位の版を `execution/units/<name>/theirs/` に保存します。
 
 <a id="extension-points"></a>
 

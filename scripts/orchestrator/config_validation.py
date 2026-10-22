@@ -14,6 +14,7 @@ from .clocks import MAX_SECONDS
 from .config_common import (
     CONFIG_VERSION,
     KNOWN_ROLES,
+    MAX_PARALLEL_UNITS,
     PROGRESS_INTERVAL_MAX,
     PROGRESS_INTERVAL_MIN,
     STALE_NOTICE_MAX_DAYS,
@@ -165,6 +166,7 @@ _OPTIMIZATION_RULES = (
     _Rule("optimization.low_risk_max_files", _NON_NEGATIVE),
     _Rule("optimization.low_risk_max_lines", _NON_NEGATIVE),
 )
+_IMPLEMENTATION_RULES = (_Rule("implementation.hub_paths", _GLOB_LIST),)
 #: Every table above, for the tests that hold each row to its key and default.
 _RULE_TABLES = (
     _REVIEW_RULES,
@@ -177,6 +179,7 @@ _RULE_TABLES = (
     _PROGRESS_RULES,
     _REVIEW_EXCLUDE_RULES,
     _OPTIMIZATION_RULES,
+    _IMPLEMENTATION_RULES,
 )
 
 # Applied in a loop, to keys the user names, with the path built per key.
@@ -223,6 +226,7 @@ def validate(
         ("workspace", _validate_workspace),
         ("language", _validate_language),
         ("progress", _validate_progress),
+        ("implementation", _validate_implementation),
     ):
         block = data.get(key)
         if block is not None:
@@ -608,6 +612,19 @@ def _validate_progress(progress: Any) -> List[str]:
             problems.append("progress.quiet_notice_seconds: must be a non-negative integer or null (0 = off)")
         elif quiet > MAX_SECONDS:
             problems.append("progress.quiet_notice_seconds: %s" % _TOO_LONG)
+    return problems
+
+
+def _validate_implementation(implementation: Any) -> List[str]:
+    if not isinstance(implementation, dict):
+        return ["implementation: must be a mapping"]
+    problems: List[str] = []
+    cap = implementation.get("max_parallel")
+    if cap is not None and not (_int_at_least(cap, 1) and cap <= MAX_PARALLEL_UNITS):
+        problems.append(
+            "implementation.max_parallel: must be an integer from 1 to %d or null" % MAX_PARALLEL_UNITS
+        )
+    problems.extend(_check(implementation, _IMPLEMENTATION_RULES))
     return problems
 
 

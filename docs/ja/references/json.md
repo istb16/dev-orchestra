@@ -1,4 +1,4 @@
-<!-- translated-from: references/json.md sha256:dff8715874cc5a162bffbfb7610ff6eef9c3f2e03ad193131be773b5b44500bc -->
+<!-- translated-from: references/json.md sha256:66bee95f3f088f024c60f11737f31d77181daa52e77617bad114228d46608df7 -->
 
 > この文書は [references/json.md](../../../references/json.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -24,6 +24,8 @@
   - [`jobs list`](#jobs-list)
   - [`jobs show`](#jobs-show)
   - [`jobs wait`](#jobs-wait)
+  - [`units status`](#units-status)
+  - [`units merge`](#units-merge)
 - [レビュー](#reviews)
   - [`review snapshot`](#review-snapshot)
   - [`review run`](#review-run)
@@ -243,7 +245,7 @@ Object. ジョブの記録です。
 | `output_file` | string | 実行の答えを書く場所。 |
 | `activity` | object | Only: ジョブに activity のファイルができてからだけ。`count`、`context_tokens`、`elapsed_seconds`、`lines`（`n`、`s`、`line`）、`dropped`、`omitted`、`quiet_seconds`（新しいツール行が出ていない秒数。ジョブが終わった後は `null`）、`may_be_stuck`（`quiet_seconds` が `progress.quiet_notice_seconds` に達したか。`0` で止まります）。[jobs](cli.md#jobs) を参照。 |
 
-記録には、ジョブが進むにつれて書いたもの（`command`、`timeout_seconds`、`prompt_file`、`force`、`pid`、`claimed_at`、`finished_at`）と、終わったあとは `run --json` が持つ結果のキー（`output` と `answered` を除く）も入ります。
+記録には、ジョブが進むにつれて書いたもの（`command`、`timeout_seconds`、`prompt_file`、`force`、`pid`、`claimed_at`、`finished_at`）と、終わったあとは `run --json` が持つ結果のキー（`output` と `answered` を除く）も入ります。作業単位のジョブには `unit` と `worktree`（作業単位がその場で走るときは `null`）も入ります。
 
 <a id="jobs-wait"></a>
 
@@ -260,6 +262,37 @@ Object. ジョブが終わるか待ちが終わったときの、`jobs show` が
 | `output_file` | string | 実行の答えを書く場所。 |
 | `waited_out` | boolean | Only: ジョブがまだ動いているうちに待ちが終わったときだけ。`true`（終了コード 4）。 |
 | `activity` | object | Only: ジョブに activity のファイルができてからだけ。`jobs show` と同じ。 |
+
+ジョブ id を複数渡したときは、代わりにキー `jobs` を 1 つだけ持つオブジェクトになります。値はそれらの記録（それぞれ上と同じ）を渡した順に並べたリストです。
+
+<a id="units-status"></a>
+
+### `units status`
+
+Object. plan の作業単位です。
+
+| キー | 型 | 意味 |
+| --- | --- | --- |
+| `plan_sha256` | string | plan の sha256。plan がなければ `""`。 |
+| `units` | list | 作業単位ごとに 1 つ、plan の順に。`name`、`kind`、`status`（`pending`、`running`、`succeeded`、`failed`、`cancelled`、`conflicted`、`merged`）、`job`、`base_commit`、`in_place`、`worktree`。 |
+| `ready` | list of strings | いま始められる作業単位。`pending` で、依存がすべてマージ済みのもの。 |
+| `failed` | boolean | どれかの作業単位が失敗し、それとともに実装のステージが失敗したか。 |
+
+<a id="units-merge"></a>
+
+### `units merge`
+
+Object. マージがどうなったかです。競合したマージも、終了コード 7 で終わりつつこれを出します。
+
+| キー | 型 | 意味 |
+| --- | --- | --- |
+| `unit` | string | 作業単位。 |
+| `status` | string | `merged` または `conflicted`。 |
+| `files` | integer | Only: きれいにマージできたときだけ。マージしたファイルの数。 |
+| `conflicts` | list of strings | Only: 競合したときだけ。解決すべきファイル。 |
+| `brief` | string | Only: 競合したときだけ。競合の指示書。プロジェクトからの相対パス。 |
+| `outside_files` | list of strings | Only: マージを行ったときだけ。作業単位が自分の `files` の外で変えたファイル。 |
+| `resolved_files` | list of strings | Only: `--resolved` のときだけ。競合を解決したファイル。 |
 
 <a id="reviews"></a>
 
@@ -486,6 +519,7 @@ Object.
 | `in_flight` | object | いま動いているもの。トークンをキーにします。 |
 | `stalls` | list | `status` と同じ。 |
 | `tokens` | object | `tokens show --json` が出すもの。 |
+| `passes` | object | 作業単位が試行を分け合っている工程ごとに、`key`（その pass の plan のハッシュ）と `pieces`（そこで走った作業単位）。 |
 
 <a id="tokens-show"></a>
 

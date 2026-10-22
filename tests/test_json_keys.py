@@ -19,9 +19,13 @@ import unittest
 from typing import Any, Dict, List, Tuple
 
 from helpers import REPO_ROOT, IsolatedCase, has_git, run_cli
+from test_units import plan
 
+from orchestrator import approval as approval_mod
 from orchestrator import jobs as jobs_mod
+from orchestrator import units as units_mod
 from orchestrator import workspace as ws
+from orchestrator import worktrees as worktrees_mod
 
 FINDING = """## Finding
 - Severity: high
@@ -199,6 +203,7 @@ KEYS: Dict[str, Tuple[List[str], List[str]]] = {
         [
             "budgets",
             "in_flight",
+            "passes",
             "runtime",
             "runtime_remaining_seconds",
             "signatures",
@@ -282,6 +287,9 @@ KEYS: Dict[str, Tuple[List[str], List[str]]] = {
         ],
     ),
     "summary": ([], ["counts", "design_counts", "models", "reviewers", "skipped", "stages", "tokens"]),
+    # Last: the plan with units they need replaces the approved one.
+    "units status": ([], ["failed", "plan_sha256", "ready", "units"]),
+    "units merge": (["one"], ["files", "outside_files", "status", "unit"]),
 }
 
 # A list of entries, or a mapping of name to entry: the keys are each entry's.
@@ -365,6 +373,31 @@ class TestJsonTopLevelKeys(IsolatedCase):
         jobs_mod.write_job(workspace, job)
         self.plan_path = workspace.plan_path
 
+    def add_finished_unit(self, result: str = "") -> None:
+        """A plan with unit ``one``, succeeded, for `units merge`.
+
+        Its result changed nothing, or with ``result`` wrote that into
+        ``app.py``; the working tree is left as it was.
+        """
+        workspace = self.cli_workspace()
+        text = plan([{"name": "one", "files": ["app.py"]}])
+        ws.write_text(self.plan_path, text)
+        with units_mod.locked(workspace):
+            state = units_mod.load_state(workspace)
+            state["plan_sha256"] = approval_mod.plan_digest(text)
+            units_mod.save_state(workspace, state)
+        excludes = worktrees_mod.excludes(workspace)
+        tree = ws.write_tree(self.project, excludes)
+        changed = tree
+        if result:
+            before = ws.read_text(os.path.join(self.project, "app.py"))
+            self.write("app.py", result)
+            changed = ws.write_tree(self.project, excludes)
+            self.write("app.py", before)
+        self.assertTrue(tree and changed)
+        record = {"status": units_mod.SUCCEEDED, "base_tree": tree, "result_tree": changed, "links": []}
+        units_mod.update(workspace, "one", record)
+
     def entries(self, name: str, payload: Any) -> List[Any]:
         if name in LISTS:
             self.assertIsInstance(payload, list)
@@ -380,6 +413,8 @@ class TestJsonTopLevelKeys(IsolatedCase):
             if name == "design approve":
                 # Only now: a plan waiting for approval would stop `run`.
                 ws.write_text(self.plan_path, "# Plan\n")
+            if name == "units status":
+                self.add_finished_unit()
             with self.subTest(command=name):
                 code, out, err = run_cli(*name.split(), *arguments, "--json")
                 self.assertEqual(code, 0, err)
@@ -389,6 +424,43 @@ class TestJsonTopLevelKeys(IsolatedCase):
                     self.assertIsInstance(entry, dict)
                     missing = sorted(set(keys) - set(entry))
                     self.assertEqual(missing, [], "%s --json lost %s" % (name, ", ".join(missing)))
+
+    def test_units_merge_conflicted_and_resolved_keep_their_keys(self):
+        self.add_finished_unit(result="unit\n")
+        self.write("app.py", "main\n")
+        code, out, err = run_cli("units", "merge", "one", "--json")
+        self.assertEqual(code, units_mod.EXIT_CONFLICTS, err)
+        payload = json.loads(out)
+        self.assertEqual(sorted({"brief", "conflicts", "outside_files", "status", "unit"} - set(payload)), [])
+        self.assertEqual((payload["status"], payload["conflicts"]), (units_mod.CONFLICTED, ["app.py"]))
+        self.write("app.py", "resolved\n")
+        code, out, err = run_cli("units", "merge", "one", "--resolved", "--json")
+        self.assertEqual(code, 0, err)
+        payload = json.loads(out)
+        self.assertEqual(sorted({"resolved_files", "status", "unit"} - set(payload)), [])
+        self.assertEqual(payload["resolved_files"], ["app.py"])
+
+    def test_jobs_wait_with_several_ids_lists_them(self):
+        workspace = self.cli_workspace()
+        other = JOB_ID + "-2"
+        jobs_mod.write_job(
+            workspace,
+            {
+                "id": other,
+                "stage": "implementer",
+                "status": "succeeded",
+                "started_at": ws.utcnow(),
+                "output_file": jobs_mod.output_path(workspace, other),
+            },
+        )
+        code, out, err = run_cli("jobs", "wait", JOB_ID, other, "--json")
+        self.assertEqual(code, 0, err)
+        payload = json.loads(out)
+        self.assertEqual(sorted(payload), ["jobs"])
+        self.assertEqual([job["id"] for job in payload["jobs"]], [JOB_ID, other])
+        for job in payload["jobs"]:
+            missing = sorted(set(KEYS["jobs wait"][1]) - set(job))
+            self.assertEqual(missing, [], "jobs wait --json lost %s" % ", ".join(missing))
 
     def test_model_list_names_every_built_in_provider(self):
         payload = json.loads(run_cli("model", "list", "--json")[1])

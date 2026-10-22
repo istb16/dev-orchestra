@@ -24,6 +24,10 @@ STALE_NOTICE_MAX_DAYS = 36500
 PROGRESS_INTERVAL_MIN = 30
 PROGRESS_INTERVAL_MAX = 3600
 
+#: Ceiling on ``implementation.max_parallel``: the number of concurrent ledger
+#: charges measured to be safe.
+MAX_PARALLEL_UNITS = 8
+
 KNOWN_ROLES = ("orchestrator", "architect", "implementer", "review_fixer")
 
 #: Roles whose runs are plan or review, never implement. Reviewers are too.
@@ -395,6 +399,15 @@ def default_config() -> Dict[str, Any]:
             "total_delegated_runs": 40,
             "max_runtime_seconds": 14400,
             "max_repeats_without_progress": 2,
+        },
+        # Work units of a plan's ``## Units`` block (orchestrator/units.py).
+        # ``max_parallel`` is how many run at once, up to
+        # MAX_PARALLEL_UNITS. ``hub_paths`` are
+        # files every unit tends to touch, so with two or more units only the
+        # integration unit may list them.
+        "implementation": {
+            "max_parallel": 2,
+            "hub_paths": ["CHANGELOG*", "**/CHANGELOG*"],
         },
         "workspace": {
             "dir": ".ai",

@@ -15,6 +15,7 @@
 - [design](#design)
 - [status](#status)
 - [jobs](#jobs)
+- [units](#units)
 - [budget](#budget)
 - [tokens](#tokens)
 - [optimization](#optimization)
@@ -47,7 +48,8 @@ Exit codes: `0` success, `1` the operation ran but the outcome is negative
 usage or configuration error, `3` a budget is exhausted and the command refused
 to run, `4` a `jobs wait` returned while the job was still running, `5` the
 plan is not approved and `design.require_approval` is on, `6` a design question
-is still open (or a question round is at its cap), `130` interrupted.
+is still open (or a question round is at its cap), `7` `units merge` left
+conflicts to resolve, `130` interrupted.
 
 `--json` prints one JSON value on stdout instead of the text -- an object, or a
 list for `reviewer list` and `jobs list` -- and is what a program should read
@@ -58,8 +60,9 @@ list for `reviewer list` and `jobs list` -- and is what a program should read
 `reviewer list`, `doctor`, `hooks status`, `run`, `review snapshot`,
 `review run`, `review consolidate`, `review show`, `review status`,
 `design approve`, `design questions show`, `state show`, `jobs list`,
-`jobs show`, `jobs wait`, `budget show`, `tokens show`, `optimization report`,
-`progress record`, `workflow list`, `workflow show`, `status`, `summary`.
+`jobs show`, `jobs wait`, `units status`, `units merge`, `budget show`,
+`tokens show`, `optimization report`, `progress record`, `workflow list`,
+`workflow show`, `status`, `summary`.
 <!-- json-commands: end -->
 The others change something and report only whether it worked, which the exit
 code says; read the result with the matching query command (`review show`
@@ -302,7 +305,7 @@ What of this is promised: "Compatibility" in the README.
 
 | Command | Description |
 | --- | --- |
-| `run <role> [--prompt <text>\|--prompt-file <path>] [--tier <name>] [--mode plan\|implement\|review] [--output <path>] [--timeout <s>] [--idle-timeout <s>] [--resume --resume-prompt-file <path>] [--questions] [--detach] [--force] [--json] [--print-command] [--extra …]` | Run one configured role. `<role>` is `orchestrator`, `architect`, `implementer`, `review_fixer`, or a reviewer id. `--tier` picks one of that role's configured `model_tiers`; an unknown one is refused rather than run on the default model. Consumes an attempt from that stage's budget and refuses (exit 3) when it is spent, unless `--force`. `run implementer` refuses (exit 5) while a plan exists and is not approved -- in the parent and again in a detached worker, whose refusal lands in the job record whole; `--force` does not apply. The `run architect` that writes `.ai/plan.md` refuses (exit 6) while a design question is open, the same way, and so does `run implementer`, whatever the approval says. `--questions` asks the architect the design questions instead (below). |
+| `run <role> [--prompt <text>\|--prompt-file <path>] [--tier <name>] [--mode plan\|implement\|review] [--output <path>] [--timeout <s>] [--idle-timeout <s>] [--resume --resume-prompt-file <path>] [--questions] [--unit <name>] [--detach] [--force] [--json] [--print-command] [--extra …]` | Run one configured role. `<role>` is `orchestrator`, `architect`, `implementer`, `review_fixer`, or a reviewer id. `--tier` picks one of that role's configured `model_tiers`; an unknown one is refused rather than run on the default model. Consumes an attempt from that stage's budget and refuses (exit 3) when it is spent, unless `--force`. `run implementer` refuses (exit 5) while a plan exists and is not approved -- in the parent and again in a detached worker, whose refusal lands in the job record whole; `--force` does not apply. The `run architect` that writes `.ai/plan.md` refuses (exit 6) while a design question is open, the same way, and so does `run implementer`, whatever the approval says. `--questions` asks the architect the design questions instead (below). `--unit` runs one work unit of the plan (below). |
 
 The prompt may also be piped on stdin (`--prompt-file -` reads stdin
 explicitly). Default modes: architect/orchestrator `plan`, implementer and
@@ -438,6 +441,38 @@ spent, before `--detach` starts the worker, which never does it again -- so a
 run refused with exit 6 or 3 leaves them open. `run implementer` exits 6 while
 a recorded question is open, whatever the approval says, at the same point as
 its approval gate.
+
+`--unit <name>` runs one work unit of the plan's `## Units`
+(`references/workflow.md`, Implementation). On `run implementer` it is checked
+after the approval and questions gates (exit 5 and 6 come first) and before an
+attempt is spent, under the units lock: the plan's units must pass `units
+check`, the unit must be neither running nor merged, every unit it depends on
+must be merged, and fewer than `implementation.max_parallel` units may be
+running, none of them in place; otherwise it exits 2. A plan changed while a
+unit of an earlier plan is running or holds a worktree is refused the same
+way, until those jobs are cancelled or `units clean` has run. A unit nothing
+could run beside -- no unit is running, and every other unit not yet merged
+depends on it -- runs in place, in your tree, and nothing else starts while it
+runs; any other gets a git worktree of its own
+([architecture](architecture.md#work-units-and-worktrees)), which is removed
+when the run ends, whatever the outcome -- except when the unit's tree could
+not be recorded: the unit is then `failed` and its worktree kept, with its
+edits, until `units clean` removes it. The CLI puts a header in front of the
+prompt: the unit's name, kind and files, its `### Unit: <name>` section, and
+"run your checks" -- or, when an environment link could not be made, "do not
+run checks; they run after the merge". When the run ends the unit's tree is
+recorded and its diff saved as `execution/units/<name>.diff`: a unit that ran
+in place and succeeded is `merged`, any other that succeeded waits for `units
+merge`. A unit that waits for it, or is `conflicted`, is refused (exit 2)
+until it is merged. A refused attempt (exit 3) removes the worktree. Only the first unit
+of a pass spends an attempt, and a rerun ([configuration](configuration.md),
+`budgets.implementer`); the run's end event records `unit` and
+`attempt_spent`. `--print-command` names the unit's worktree as the directory
+while it has one. On `run architect`, `--unit` designs one unit: plan mode in
+your tree as ever, no worktree, its attempt spent once per design pass
+(`budgets.architect`) for up to 8 units, and once more for each unit past
+them; `units join` then makes one plan of the parts. On any other role, with
+`--questions`, or with a name that is not `[a-z0-9][a-z0-9_-]*`, it exits 2.
 
 ### Revising the plan in the architect's own session (`--resume`)
 
@@ -754,8 +789,8 @@ that: the work runs elsewhere and the wait has a deadline of your own.
 | --- | --- |
 | `jobs list [--json]` | Every recorded job, newest first. |
 | `jobs show <id> [--output] [--since <n>] [--activity <m>] [--json]` | One job, optionally with its output, and what it is doing (below). |
-| `jobs wait <id> [--timeout <s>] [--poll <s>] [--since <n>] [--activity <m>] [--json]` | Wait, but never longer than `--timeout` (default `progress.interval_seconds`, 180s; `0` looks once), checking every `--poll` seconds (1 by default; above 0). Both are at most 1,000,000,000; a negative, `nan`, `inf`, a larger number or a word in either is a usage error (exit 2). Exits 4 if the job was still running when the wait ended — a normal outcome, not an error. Exits 1 if the job refused its `--output` write, as the foreground run would. |
-| `jobs cancel <id>` | Stop a running job and its process tree. A worker it could not confirm stopped, while nothing says its pid is now another process's (see [limits](limits.md#what-is-still-not-covered)), leaves the job unfinished and exits 1. |
+| `jobs wait <id>... [--any] [--timeout <s>] [--poll <s>] [--since [<id>=]<n>]... [--activity <m>] [--json]` | Wait, but never longer than `--timeout` (default `progress.interval_seconds`, 180s; `0` looks once), checking every `--poll` seconds (1 by default; above 0). Both are at most 1,000,000,000; a negative, `nan`, `inf`, a larger number or a word in either is a usage error (exit 2). Exits 4 if the job was still running when the wait ended — a normal outcome, not an error. Exits 1 if the job refused its `--output` write, as the foreground run would. With several ids it waits for all of them, or with `--any` until the first finishes, and reports each; it exits 4 if the wait ran out, 1 if a finished job failed or refused its `--output` write, otherwise 0. With one id the output is as before; with several, `--json` prints `{"jobs": [...]}`. Each job counts its tool uses on its own, so with several ids `--since` takes `<id>=<n>`, repeated, one per job (a job not named starts from 0), and a bare number is refused (exit 2), as is an id not waited for. An unknown id exits 2. |
+| `jobs cancel <id>` | Stop a running job and its process tree. A worker it could not confirm stopped, while nothing says its pid is now another process's (see [limits](limits.md#what-is-still-not-covered)), leaves the job unfinished and exits 1. A work unit's job also has its worktree removed and the unit recorded as `cancelled`; a worktree that could not be removed is left for `units clean`, with a `warning:`. |
 
 ```bash
 id=$(dev-orchestra run implementer --prompt-file plan.md --detach --json | jq -r .id)
@@ -775,7 +810,10 @@ commands add an `activity:` line -- the number of tool uses and, where the CLI
 reports it, the **context tokens**: the size of the context the model last saw,
 not a running total -- then the latest lines, each with its time since the
 start, and, while the job runs, a `next:` line naming the `--since` cursor for
-the next wait. Before it, a running job that has shown no new tool line for
+the next wait. Waiting for several jobs, each running job's `next:` names its
+own cursor as `--since <id>=<n>`, and a last `next:` line is the one command
+that waits for the jobs still running, each with its cursor. Before a job's
+`next:`, a running job that has shown no new tool line for
 `progress.quiet_notice_seconds` (600 by default; `0` turns it off) gets
 `note:     may be stuck: no new tool line for 12m03s`, again at every wait
 while it stays silent. Only tool lines count: an entry carrying only a context
@@ -817,11 +855,38 @@ job shows no context tokens, and it streams its tool uses only on architect
 runs, the ones run with `--json`: a Codex implementer or fixer job shows
 `elapsed:` and nothing more.
 
+A work unit's job shows a `unit:` line with the unit and its worktree, or `in
+place`.
+
+## units
+
+A plan's work units: the `## Units` block of `.ai/plan.md`, whose units `run
+implementer --unit` runs one at a time or side by side. The procedure is in
+[workflow](workflow.md#implementation), the worktrees and the merge in
+[architecture](architecture.md#work-units-and-worktrees). The state of each
+unit is kept in `.ai/execution/units.json`, and records written for another
+plan count as none.
+
+| Command | Description |
+| --- | --- |
+| `units check` | Refuse (exit 2) units that cannot run: a block that cannot be read, a duplicate name, an unknown dependency, a cycle, a missing `### Unit: <name>` section, two units that may run side by side -- neither depends on the other, however indirectly -- with overlapping `files` (one path, a path and one under it, a glob matching a path, a path and a glob whose fixed prefix is under it, or nested glob prefixes), more than one `integration` unit or one that does not depend on every other, and, with two or more units, a file of `implementation.hub_paths` listed by any but the integration unit. Inside a git repository the repository's files (tracked, and untracked but not ignored) are read too: a path naming a directory also stands for the files under it, and a glob for the files it matches, so two entries naming a common file overlap and a directory holding a hub file counts as listing it. Otherwise print the schedule as waves, at most `implementation.max_parallel` units a wave. A unit file the plan's Files to Modify does not list is only a `warning:`. A plan without `## Units` is a single run (exit 0); no plan exits 2. |
+| `units status [--json]` | Each unit's state (`pending`, `running`, `succeeded`, `failed`, `cancelled`, `conflicted` or `merged`), job, base commit and worktree (or `in place`); the units ready to start (pending, every dependency merged); and whether the implement stage failed (a unit failed). |
+| `units merge <name> [--resolved [--keep <path>]...] [--json]` | Merge a unit that succeeded into the working tree, file by file; never the index, `HEAD` or a branch. A file your tree has not changed since the unit started takes the unit's version; a text file both changed is merged three ways (`git merge-file`, markers `<<<<<<< main` and `>>>>>>> unit:<name>`); a binary file, a delete against a change, a symlink or a submodule is a conflict that keeps your version and saves the unit's under `.ai/execution/units/<name>/theirs/`. Clean, the unit is `merged` (exit 0). With conflicts it is `conflicted`, the brief `.ai/execution/units/<name>-conflicts.md` names the files, the plan sections of this unit and of each merged unit that changed them, and the saved copies, and it exits 7. `--resolved` then refuses (exit 2) while a `<<<<<<< main` or `>>>>>>> unit:` line is left in those files, or while a conflict that wrote no markers (a binary file, a delete against a change, a symlink, a submodule, a path that is not a regular file or lies under a linked directory) still holds exactly the version the merge kept, naming those files; `--keep <path>`, repeated, names such a file whose kept version is the resolution, and a path that is not one of the unit's conflicts is refused (exit 2). Otherwise it marks the unit `merged` with the conflicting files as its `resolved_files`. A unit that has not succeeded is refused (exit 2); one that ran in place is merged already, and this does nothing (exit 0). Files the unit changed outside its `files` are named and recorded as `outside_files`. |
+| `units clean [<name>]` | Remove the worktrees units left behind: every unit's, or `<name>`'s. A unit still running keeps its worktree; one recorded as `running` whose worker, or the foreground run that started it, is gone is recorded `failed`, so it can be run again. Exits 1 when a worktree could not be removed. |
+| `units join --part <name>=<path>... --output <path>` | Join per-unit plans, from `run architect --unit`, into one plan at `--output`. Each part's own `## Units` must hold just its unit. The joined plan has a `## Goal` and a `## Files to Modify` holding each part's own, under a `### <name>` heading per part, then one `## Units` block listing the parts' entries in the order given, then each part under `### Unit: <name>`, its own `## Units` taken out and its headings moved down so its shallowest lands at level 4. Nothing is written when the joined units fail the rules of `units check` (exit 2). |
+
+Merges are taken one at a time, under `.ai/execution/units/merge.lock`. Each
+file is written as a checkout would write it, line endings included.
+Each merge is recorded in `state.json` as an event of stage `units`, with the
+status `merged`, `conflicted` or `resolved`. The next review snapshot carries
+the units' `resolved_files` and `outside_files`, and every review round, the
+first included, names them to the reviewers: a diff shows neither.
+
 ## budget
 
 | Command | Description |
 | --- | --- |
-| `budget show [--json]` | Attempts spent per stage, delegated-run total, delegated runtime used. |
+| `budget show [--json]` | Attempts spent per stage, delegated-run total, delegated runtime used, and a `pass open:` line per stage whose work units share an attempt: the units run in the pass and its plan hash. |
 | `budget consume <stage> [--force]` | Claim an attempt at a stage the orchestrator runs itself (notably `test`). Exits 3 when the budget is spent. |
 | `budget reset` | Start the budgets again, including the review round counter. The token account is kept — it is a record of what the work cost, not a budget, and no reset clears it. Also happens automatically once a ledger has been idle for `budgets.session_idle_reset_seconds`. |
 

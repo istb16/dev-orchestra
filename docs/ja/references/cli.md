@@ -1,4 +1,4 @@
-<!-- translated-from: references/cli.md sha256:c42d4f66f01165cea2f16ae35b6dc865b39c3e36ec4c2e0be62c274356d5030f -->
+<!-- translated-from: references/cli.md sha256:856cc89f35ac29ac85843787e73a0fa329b8c3d210bc4ea9c952a3567ad64524 -->
 
 > この文書は [references/cli.md](../../../references/cli.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -21,6 +21,7 @@
 - [design](#design)
 - [status](#status)
 - [jobs](#jobs)
+- [units](#units)
 - [budget](#budget)
 - [tokens](#tokens)
 - [optimization](#optimization)
@@ -52,7 +53,7 @@ Microsoft Store のエイリアスだからです。
 すべてのレビュアーが失敗、ロールの実行が失敗）、`2` 使い方または設定のエラー、`3` 予算が尽きて
 コマンドが実行を拒否した、`4` ジョブがまだ実行中のまま `jobs wait` が戻った、`5` plan が承認されて
 おらず `design.require_approval` が有効、`6` design の質問がまだ未回答（または質問のラウンドが上限に
-達している）、`130` 中断。
+達している）、`7` `units merge` が解決すべき競合を残した、`130` 中断。
 
 `--json` は、文章の代わりに JSON の値を 1 つ標準出力に出します。オブジェクトで、`reviewer list` と
 `jobs list` ではリストです。プログラムが読むのはこちらです（README の「Compatibility」）。
@@ -62,8 +63,9 @@ Microsoft Store のエイリアスだからです。
 `reviewer list`, `doctor`, `hooks status`, `run`, `review snapshot`,
 `review run`, `review consolidate`, `review show`, `review status`,
 `design approve`, `design questions show`, `state show`, `jobs list`,
-`jobs show`, `jobs wait`, `budget show`, `tokens show`, `optimization report`,
-`progress record`, `workflow list`, `workflow show`, `status`, `summary`.
+`jobs show`, `jobs wait`, `units status`, `units merge`, `budget show`,
+`tokens show`, `optimization report`, `progress record`, `workflow list`,
+`workflow show`, `status`, `summary`.
 <!-- json-commands: end -->
 ほかのコマンドは何かを変えて、うまくいったかどうかだけを伝えます。それは終了コードで分かります。
 結果は対応する確認用のコマンドで読んでください（`review triage` のあとは `review show`、
@@ -286,7 +288,7 @@ Claude Code のユーザー設定（`$CLAUDE_CONFIG_DIR/settings.json`、なけ�
 
 | コマンド | 説明 |
 | --- | --- |
-| `run <role> [--prompt <text>\|--prompt-file <path>] [--tier <name>] [--mode plan\|implement\|review] [--output <path>] [--timeout <s>] [--idle-timeout <s>] [--resume --resume-prompt-file <path>] [--questions] [--detach] [--force] [--json] [--print-command] [--extra …]` | 設定されたロールを 1 つ実行します。`<role>` は `orchestrator`、`architect`、`implementer`、`review_fixer`、またはレビュアーの id です。`--tier` はそのロールに設定された `model_tiers` の 1 つを選びます。未知のものはデフォルトのモデルで実行されるのではなく拒否されます。そのステージの予算から試行を 1 回消費し、予算が尽きていれば `--force` がない限り拒否します（終了コード 3）。`run implementer` は、plan が存在し承認されていない間は拒否します（終了コード 5）。これは親プロセスで行われ、detach されたワーカーでも再度行われます。ワーカーでの拒否はそのままジョブレコードに記録されます。`--force` は適用されません。`.ai/plan.md` を書く `run architect` も、design の質問が未回答の間は同じように拒否します（終了コード 6）。`run implementer` も、承認の内容にかかわらず同じです。`--questions` は、代わりに architect に design の質問を出させます（後述）。 |
+| `run <role> [--prompt <text>\|--prompt-file <path>] [--tier <name>] [--mode plan\|implement\|review] [--output <path>] [--timeout <s>] [--idle-timeout <s>] [--resume --resume-prompt-file <path>] [--questions] [--unit <name>] [--detach] [--force] [--json] [--print-command] [--extra …]` | 設定されたロールを 1 つ実行します。`<role>` は `orchestrator`、`architect`、`implementer`、`review_fixer`、またはレビュアーの id です。`--tier` はそのロールに設定された `model_tiers` の 1 つを選びます。未知のものはデフォルトのモデルで実行されるのではなく拒否されます。そのステージの予算から試行を 1 回消費し、予算が尽きていれば `--force` がない限り拒否します（終了コード 3）。`run implementer` は、plan が存在し承認されていない間は拒否します（終了コード 5）。これは親プロセスで行われ、detach されたワーカーでも再度行われます。ワーカーでの拒否はそのままジョブレコードに記録されます。`--force` は適用されません。`.ai/plan.md` を書く `run architect` も、design の質問が未回答の間は同じように拒否します（終了コード 6）。`run implementer` も、承認の内容にかかわらず同じです。`--questions` は、代わりに architect に design の質問を出させます（後述）。`--unit` は plan の作業単位を 1 つ走らせます（後述）。 |
 
 プロンプトは stdin からパイプで渡すこともできます（`--prompt-file -` は明示的に stdin を読みます）。
 デフォルトのモード: architect/orchestrator は `plan`、implementer と review_fixer は `implement`、
@@ -396,6 +398,32 @@ review fixer、`--mode implement` では 1200 秒で、その設定の方が大�
 です（ラウンドの確認の後、試行を消費した後、`--detach` がワーカーを起動する前。ワーカーはもう一度は
 行いません）。そのため終了コード 6 や 3 で拒否された実行では、質問は未回答のまま残ります。`run implementer`
 は、記録された質問が未回答の間、承認の内容にかかわらず、承認の関門と同じところで終了コード 6 で終了します。
+
+`--unit <name>` は、plan の `## Units` の作業単位を 1 つ走らせます（`references/workflow.md` の実装）。
+`run implementer` では、承認と質問の関門（終了コード 5 と 6 が先です）の後、試行を使う前に、作業単位の
+ロックのもとで確かめます。plan の作業単位が `units check` を通ること、その作業単位が走っている最中でも
+マージ済みでもないこと、依存する作業単位がすべてマージ済みであること、走っている作業単位が
+`implementation.max_parallel` より少なく、そのどれもその場で走っていないことです。満たさなければ終了
+コード 2 です。前の plan の作業単位が走っているか worktree を持っている間に plan が変わったときも、
+そのジョブを取り消すか `units clean` を走らせるまで、同じように拒否します。並んで走りうるものがない
+作業単位（走っている作業単位がなく、まだマージされていないほかの作業単位がすべてそれに依存している）は、
+その場で（ユーザーのツリーで）走り、その間はほかに何も始まりません。それ以外は専用の git worktree を
+持ち（[architecture](architecture.md#work-units-and-worktrees)）、結果にかかわらず実行の終わりに
+消されます。ただし作業単位のツリーを記録できなかったときは、作業単位を `failed` とし、その worktree は
+編集ごと `units clean` が消すまで残します。CLI はプロンプトの前に見出しを付けます。作業単位の名前、種類、ファイル、その
+`### Unit: <name>` セクション、そして「チェックを走らせる」こと、または環境のリンクが作れなかったときは
+「チェックは走らせない。マージの後に走る」ことです。実行が終わると作業単位のツリーを記録し、差分を
+`execution/units/<name>.diff` に保存します。その場で走って成功した作業単位は `merged` になり、それ以外で
+成功したものは `units merge` を待ちます。それを待っている作業単位と `conflicted` の作業単位は、マージされるまで
+拒否します（終了コード 2）。試行が断られたとき（終了コード 3）は worktree を消します。
+試行を使うのは pass の最初の作業単位とやり直しだけで（[configuration](configuration.md) の
+`budgets.implementer`）、実行の終了イベントは `unit` と `attempt_spent` を記録します。
+`--print-command` は、作業単位が worktree を持っている間はそれをディレクトリとして示します。
+`run architect` では、`--unit` は作業単位を 1 つ設計します。これまでどおりユーザーのツリーで plan モードで
+走り、worktree は作らず、試行は設計の pass ごとに 8 つの作業単位まで 1 回使い（`budgets.architect`）、
+それを超えた作業単位ごとにもう 1 回使います。そのあと `units join` で各部分を 1 つの plan にします。
+ほかのロールに付けたとき、`--questions` と一緒のとき、名前が `[a-z0-9][a-z0-9_-]*` でないときは
+終了コード 2 です。
 
 <a id="revising-the-plan-in-the-architects-own-session---resume"></a>
 
@@ -681,8 +709,8 @@ detach された実行です。期限はエージェントが異常な振る舞�
 | --- | --- |
 | `jobs list [--json]` | 記録されているすべてのジョブを新しい順に表示します。 |
 | `jobs show <id> [--output] [--since <n>] [--activity <m>] [--json]` | 1 つのジョブを表示します。オプションでその出力も表示し、ジョブが何をしているかも示します（下記）。 |
-| `jobs wait <id> [--timeout <s>] [--poll <s>] [--since <n>] [--activity <m>] [--json]` | 待機しますが、`--timeout`（デフォルトは `progress.interval_seconds` で 180 秒。`0` なら一度だけ確かめます）より長くは待ちません。確かめる間隔は `--poll` 秒です（デフォルト 1。0 より大きい値）。どちらも 1,000,000,000 以下で、負の値、`nan`、`inf`、それより大きい数、数でない文字列を渡すと使い方の誤り（終了コード 2）になります。待機が終わった時点でジョブがまだ実行中であれば終了コード 4 で終了します。これはエラーではなく通常の結果です。ジョブが `--output` の書き込みを拒否した場合は、フォアグラウンドの実行と同様に終了コード 1 で終了します。 |
-| `jobs cancel <id>` | 実行中のジョブとそのプロセスツリーを停止します。ワーカーを止めたと確かめられず、その pid がいまは別のプロセスのものだとも分からないときは（[limits](limits.md#what-is-still-not-covered) を参照）、ジョブを終わっていない状態のままにして exit 1 で終わります。 |
+| `jobs wait <id>... [--any] [--timeout <s>] [--poll <s>] [--since [<id>=]<n>]... [--activity <m>] [--json]` | 待機しますが、`--timeout`（デフォルトは `progress.interval_seconds` で 180 秒。`0` なら一度だけ確かめます）より長くは待ちません。確かめる間隔は `--poll` 秒です（デフォルト 1。0 より大きい値）。どちらも 1,000,000,000 以下で、負の値、`nan`、`inf`、それより大きい数、数でない文字列を渡すと使い方の誤り（終了コード 2）になります。待機が終わった時点でジョブがまだ実行中であれば終了コード 4 で終了します。これはエラーではなく通常の結果です。ジョブが `--output` の書き込みを拒否した場合は、フォアグラウンドの実行と同様に終了コード 1 で終了します。id を複数渡すとすべてを待ち、`--any` では最初の 1 つが終わるまで待って、それぞれを報告します。終了コードは、待ち時間が尽きたら 4、終わったジョブのどれかが失敗したか `--output` の書き込みを拒否したら 1、それ以外は 0 です。id が 1 つなら出力はこれまでどおりで、複数なら `--json` は `{"jobs": [...]}` を出します。ツール使用はジョブごとに数えるので、id が複数のとき `--since` はジョブごとに `<id>=<n>` を繰り返して渡します（指定のないジョブは 0 から）。数だけを渡すと拒否し（終了コード 2）、待っていない id を渡しても同じです。未知の id は終了コード 2 です。 |
+| `jobs cancel <id>` | 実行中のジョブとそのプロセスツリーを停止します。ワーカーを止めたと確かめられず、その pid がいまは別のプロセスのものだとも分からないときは（[limits](limits.md#what-is-still-not-covered) を参照）、ジョブを終わっていない状態のままにして exit 1 で終わります。作業単位のジョブでは、その worktree も消し、作業単位を `cancelled` として記録します。消せなかった worktree は `warning:` を出して `units clean` に任せます。 |
 
 ```bash
 id=$(dev-orchestra run implementer --prompt-file plan.md --detach --json | jq -r .id)
@@ -699,7 +727,9 @@ dev-orchestra jobs show "$id" --output
 書き残します。このファイルができると、両コマンドは `activity:` 行を加えます。ツール使用の回数と、CLI が
 報告する場合は **コンテキストトークン**（モデルが最後に見たコンテキストの大きさで、累計ではありません）
 です。続いて最新の行を開始からの時間つきで並べ、ジョブが実行中なら、次の待機に渡す `--since` の
-カーソルを示す `next:` 行を出します。その前に、新しいツール行が `progress.quiet_notice_seconds`
+カーソルを示す `next:` 行を出します。複数のジョブを待つときは、実行中の各ジョブの `next:` が
+自分のカーソルを `--since <id>=<n>` として示し、最後の `next:` 行は、まだ実行中のジョブをそれぞれの
+カーソルつきで待つ 1 つのコマンドです。ジョブの `next:` の前に、新しいツール行が `progress.quiet_notice_seconds`
 （デフォルト 600。`0` で止まります）の間出ていない実行中のジョブには
 `note:     may be stuck: no new tool line for 12m03s` を付け、黙っている間は待つたびにまた付けます。
 数えるのはツール行だけで、コンテキストの大きさだけを持つエントリは数えません。この印は知らせるだけで、
@@ -736,13 +766,38 @@ dev-orchestra jobs show "$id" --output
 流すのは `--json` で実行する architect の実行だけなので、Codex の implementer や fixer のジョブには
 `elapsed:` しか出ません。
 
+作業単位のジョブには、作業単位とその worktree（または `in place`）を示す `unit:` の行が付きます。
+
+<a id="units"></a>
+
+## units
+
+plan の作業単位です。`.ai/plan.md` の `## Units` ブロックで、その作業単位を `run implementer --unit` が
+1 つずつ、または並べて走らせます。手順は [workflow](workflow.md#implementation) に、worktree とマージは
+[architecture](architecture.md#work-units-and-worktrees) にあります。各作業単位の状態は
+`.ai/execution/units.json` に残し、別の plan のために書かれた記録はないものとして扱います。
+
+| コマンド | 説明 |
+| --- | --- |
+| `units check` | 走らせられない作業単位を拒否します（終了コード 2）。読めないブロック、名前の重複、未知の依存、循環、`### Unit: <name>` セクションの欠落、並んで走りうる（どちらも、間接的にも、もう一方に依存しない）2 つの作業単位の `files` の重なり（同じパス、パスとその下のパス、パスに当たる glob、パスとその下に固定の接頭辞がある glob、入れ子になった glob の接頭辞）、`integration` の作業単位が 2 つ以上あること、またはそれがほかのすべてに依存していないこと、そして作業単位が 2 つ以上あるときに integration 以外の作業単位が `implementation.hub_paths` のファイルを挙げていることです。git リポジトリの中ではリポジトリのファイル（追跡中のものと、追跡外で無視されていないもの）も読みます。ディレクトリを指すパスはその下のファイルを、glob は当たるファイルを表すものとし、共通のファイルを指す 2 つのエントリは重なりとみなし、hub ファイルを含むディレクトリはそのファイルを挙げたものとみなします。それ以外は、1 つの波に最大 `implementation.max_parallel` 個の作業単位を並べた予定を表示します。plan の Files to Modify にない作業単位のファイルは `warning:` を出すだけです。`## Units` のない plan は 1 回の実行です（終了コード 0）。plan がなければ終了コード 2 です。 |
+| `units status [--json]` | 各作業単位の状態（`pending`、`running`、`succeeded`、`failed`、`cancelled`、`conflicted`、`merged`）、ジョブ、基点のコミット、worktree（または `in place`）、始められる作業単位（`pending` で、依存がすべてマージ済みのもの）、そして実装のステージが失敗したか（どれかの作業単位が失敗したか）を示します。 |
+| `units merge <name> [--resolved [--keep <path>]...] [--json]` | 成功した作業単位を、ファイルごとに作業ツリーへマージします。index、`HEAD`、ブランチには決して触れません。作業単位が始まってからユーザーのツリーで変わっていないファイルは作業単位の版になり、両方が変えたテキストファイルは三方向でマージします（`git merge-file`。印は `<<<<<<< main` と `>>>>>>> unit:<name>`）。バイナリファイル、削除と変更のぶつかり、symlink、submodule は競合で、ユーザーの版を残し、作業単位の版を `.ai/execution/units/<name>/theirs/` に保存します。きれいにマージできれば作業単位は `merged` です（終了コード 0）。競合があれば `conflicted` になり、指示書 `.ai/execution/units/<name>-conflicts.md` がそのファイル、この作業単位とそれらを変えたマージ済みの各作業単位の plan のセクション、保存したコピーを示し、終了コード 7 で終わります。そのあと `--resolved` は、それらのファイルに `<<<<<<< main` か `>>>>>>> unit:` の行が残っている間、または印を書かない競合（バイナリファイル、削除と変更のぶつかり、symlink、submodule、通常のファイルでないパス、リンクのディレクトリの下にあるパス）のファイルがマージの残した版とまったく同じである間は、そのファイルを示して拒否します（終了コード 2）。`--keep <path>` は繰り返して指定でき、残した版がそのまま解決であるそうしたファイルを示します。作業単位の競合でないパスを渡すと拒否します（終了コード 2）。それ以外なら作業単位を `merged` にして、競合したファイルを `resolved_files` として記録します。成功していない作業単位は拒否します（終了コード 2）。その場で走った作業単位はもうマージ済みで、何もしません（終了コード 0）。作業単位が自分の `files` の外で変えたファイルは示して、`outside_files` として記録します。 |
+| `units clean [<name>]` | 作業単位が残した worktree を消します。すべての作業単位のもの、または `<name>` のものです。まだ走っている作業単位の worktree は残します。`running` と記録されているのにワーカー、またはそれを始めたフォアグラウンドの実行がいなくなった作業単位は `failed` として記録し、もう一度走らせられるようにします。消せない worktree があれば終了コード 1 です。 |
+| `units join --part <name>=<path>... --output <path>` | `run architect --unit` が書いた作業単位ごとの plan を、`--output` の 1 つの plan にまとめます。各部分の `## Units` には、その作業単位だけがなければなりません。まとめた plan には、各部分の `## Goal` と `## Files to Modify` を部分ごとの `### <name>` 見出しの下に集めた `## Goal` と `## Files to Modify` があり、続いて渡した順に各部分の項目を並べた 1 つの `## Units` ブロックがあり、そのあとに各部分が `### Unit: <name>` の下に続きます。各部分の `## Units` は取り除き、見出しは最も浅いものがレベル 4 になるように下げます。まとめた作業単位が `units check` の規則を満たさなければ、何も書きません（終了コード 2）。 |
+
+マージは `.ai/execution/units/merge.lock` のもとで 1 つずつ行います。各ファイルは、改行も含めて
+チェックアウトが書くとおりに書きます。各マージは `state.json` に、ステージ `units`、状態
+`merged`、`conflicted`、`resolved` のイベントとして記録します。次のレビューのスナップショットは
+作業単位の `resolved_files` と `outside_files` を持ち、最初のラウンドを含むすべてのレビューのラウンドで
+レビュアーに示します。どちらも差分には表れないからです。
+
 <a id="budget"></a>
 
 ## budget
 
 | コマンド | 説明 |
 | --- | --- |
-| `budget show [--json]` | ステージごとに使った試行回数、委譲実行の合計、使用した委譲実行時間を表示します。 |
+| `budget show [--json]` | ステージごとに使った試行回数、委譲実行の合計、使用した委譲実行時間を表示します。作業単位が試行を分け合っているステージには、`pass open:` の行で、その pass で走った作業単位と plan のハッシュを示します。 |
 | `budget consume <stage> [--force]` | orchestrator が自分で実行するステージ（特に `test`）の試行を 1 回確保します。予算が尽きていれば終了コード 3 で終了します。 |
 | `budget reset` | ラウンドカウンターを含め、予算を最初からやり直します。トークンの集計は保持されます。これは作業にかかったコストの記録であって予算ではなく、どのリセットでも消去されません。台帳が `budgets.session_idle_reset_seconds` の間アイドル状態だった場合にも自動的に行われます。 |
 

@@ -203,6 +203,15 @@ def may_still_run(job: Dict[str, Any], now: Optional[float] = None) -> bool:
     return (time.time() if now is None else now) - begun < STARTING_GRACE_SECONDS
 
 
+def process_alive(pid: int, record: Dict[str, Any]) -> Optional[bool]:
+    """Whether ``pid`` is still the process ``record`` names by its ``pid_started``.
+
+    As :func:`_worker_alive` answers for a job's worker; for a record of
+    another kind that keeps a pid, such as a unit run in the foreground.
+    """
+    return _worker_alive(pid, record)
+
+
 def _worker_alive(pid: int, job: Dict[str, Any]) -> Optional[bool]:
     """Whether ``pid`` is the job's worker and still running; None when it is
     running but nothing recorded says whose it is.
@@ -243,11 +252,15 @@ def start(
     timeout: Optional[float] = None,
     resume_prompt: Optional[str] = None,
     force: bool = False,
+    unit: str = "",
+    worktree: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Spawn ``argv`` as a detached worker and return the job record.
 
     ``force`` is whether the user passed ``--force``: the worker is always
-    started with it, so it cannot tell from its own argv.
+    started with it, so it cannot tell from its own argv. ``unit`` and
+    ``worktree`` are the work unit it runs and where (None: in place), kept so
+    ``jobs cancel`` can remove the worktree.
     """
     # Checked here because a placeholder the caller forgot is otherwise
     # invisible until the worker is already gone: it would run with no prompt
@@ -287,6 +300,9 @@ def start(
     }
     if resume_prompt_file is not None:
         job["resume_prompt_file"] = resume_prompt_file
+    if unit:
+        job["unit"] = unit
+        job["worktree"] = worktree
     write_job(workspace, job)
 
     # The worker is this same CLI, re-entered with --job-file. Its stdio goes
@@ -346,6 +362,30 @@ def wait(
             job = dict(job)
             job["waited_out"] = True
             return job
+        time.sleep(min(poll, max(deadline - time.monotonic(), 0.01)))
+
+
+def wait_many(
+    workspace: ws.Workspace,
+    job_ids: Sequence[str],
+    any_: bool = False,
+    timeout: float = 60.0,
+    poll: float = 1.0,
+) -> List[Dict[str, Any]]:
+    """Wait for every job of ``job_ids``, or with ``any_`` for the first to finish.
+
+    Never longer than ``timeout``. Each job is returned as :func:`wait`
+    returns one: a job still running when the deadline came is marked
+    ``waited_out``.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        found = [read_job(workspace, job_id) or {"id": job_id, "status": "unknown"} for job_id in job_ids]
+        done = [job for job in found if job.get("status") in FINISHED]
+        if done and (any_ or len(done) == len(found)):
+            return found
+        if time.monotonic() >= deadline:
+            return [job if job.get("status") in FINISHED else dict(job, waited_out=True) for job in found]
         time.sleep(min(poll, max(deadline - time.monotonic(), 0.01)))
 
 
@@ -463,15 +503,19 @@ def finish(
     update(job_file, finished)
 
 
-def render(job: Dict[str, Any], act: Optional[Dict[str, Any]] = None) -> str:
+def render(job: Dict[str, Any], act: Optional[Dict[str, Any]] = None, several: bool = False) -> str:
     """A job as text. ``act`` is what :func:`read_activity` returned for it;
-    without one a finished job reads exactly as it did before activity."""
+    without one a finished job reads exactly as it did before activity.
+    ``several``: one of several jobs waited for, whose ``next:`` names only
+    its own cursor, as ``--since ID=N``."""
     running = job.get("status") not in FINISHED
     lines = [
         "%s  %s" % (job.get("id"), str(job.get("status", "?")).upper()),
         "  stage:    %s" % job.get("stage"),
         "  started:  %s" % job.get("started_at"),
     ]
+    if job.get("unit"):
+        lines.append("  unit:     %s (%s)" % (job["unit"], job.get("worktree") or "in place"))
     if running:
         elapsed = elapsed_seconds(job)
         if elapsed is not None:
@@ -495,11 +539,11 @@ def render(job: Dict[str, Any], act: Optional[Dict[str, Any]] = None) -> str:
     if job.get("not_stopped"):
         lines.append("  note:     not cancelled; %s" % job["not_stopped"])
     if act is not None:
-        lines += _render_activity(job, act, running)
+        lines += _render_activity(job, act, running, several)
     return "\n".join(lines)
 
 
-def _render_activity(job: Dict[str, Any], act: Dict[str, Any], running: bool) -> List[str]:
+def _render_activity(job: Dict[str, Any], act: Dict[str, Any], running: bool, several: bool) -> List[str]:
     count = int(act.get("count") or 0)
     summary = "  activity: %d tool use%s" % (count, "" if count == 1 else "s")
     tokens = act.get("context_tokens")
@@ -517,6 +561,8 @@ def _render_activity(job: Dict[str, Any], act: Dict[str, Any], running: bool) ->
         lines.append("    (some lines were dropped)")
     if running and act.get("may_be_stuck"):
         lines.append("  note:     %s" % activity.quiet_note(act.get("quiet_seconds") or 0))
-    if running:
+    if running and several:
+        lines.append("  next:     --since %s=%d" % (job.get("id"), count))
+    elif running:
         lines.append("  next:     jobs wait %s --since %d" % (job.get("id"), count))
     return lines

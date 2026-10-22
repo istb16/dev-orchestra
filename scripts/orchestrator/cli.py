@@ -62,6 +62,7 @@ from .cli_state import (
     cmd_progress_record,
     cmd_tokens_show,
 )
+from .cli_units import cmd_units_check, cmd_units_clean, cmd_units_join, cmd_units_merge, cmd_units_status
 from .cli_workflow import (
     cmd_design_approve,
     cmd_state_record,
@@ -127,13 +128,32 @@ def _add_design_flag(parser: argparse.ArgumentParser) -> None:
     )
 
 
-def _add_activity_flags(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument(
-        "--since",
-        type=_bounded_int(0, activity_mod.SINCE_MAX),
-        default=0,
-        help="only tool uses after this one (the cursor `next:` prints)",
-    )
+def _job_cursor(text: str) -> "tuple[Optional[str], int]":
+    """An argparse type: ``N``, or ``ID=N`` naming the job the cursor is for."""
+    job_id, sep, count = text.rpartition("=")
+    if sep and not job_id:
+        raise argparse.ArgumentTypeError("%r names no job before its =" % text)
+    return (job_id if sep else None, _bounded_int(0, activity_mod.SINCE_MAX)(count))
+
+
+def _add_activity_flags(parser: argparse.ArgumentParser, *, per_job: bool = False) -> None:
+    if per_job:
+        parser.add_argument(
+            "--since",
+            type=_job_cursor,
+            action="append",
+            default=[],
+            metavar="[ID=]N",
+            help="only tool uses after this one (the cursor `next:` prints); with several jobs, "
+            "ID=N for each, repeated",
+        )
+    else:
+        parser.add_argument(
+            "--since",
+            type=_bounded_int(0, activity_mod.SINCE_MAX),
+            default=0,
+            help="only tool uses after this one (the cursor `next:` prints)",
+        )
     parser.add_argument(
         "--activity",
         type=_bounded_int(0, activity_mod.LATEST_MAX),
@@ -211,6 +231,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_state_parsers(subparsers)
 
     _add_jobs_parsers(subparsers)
+    _add_units_parsers(subparsers)
     _add_budget_parsers(subparsers)
     _add_tokens_parsers(subparsers)
     _add_optimization_parsers(subparsers)
@@ -499,6 +520,13 @@ def _add_run_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPars
         action="store_true",
         help="print the outcome as one JSON object, the output inline (with --detach: the started job)",
     )
+    run_parser.add_argument(
+        "--unit",
+        default=None,
+        metavar="NAME",
+        help="implementer: run one work unit of the plan's ## Units, in a worktree of its own "
+        "when another unit could run beside it; architect: design one unit, its attempt spent once a pass",
+    )
     run_parser.add_argument("--job-file", default=None, help=argparse.SUPPRESS)
     run_parser.add_argument("--print-command", action="store_true", help="print the CLI invocation and exit")
     run_parser.add_argument("--extra", nargs=argparse.REMAINDER, help="extra args passed to the provider CLI")
@@ -661,8 +689,11 @@ def _add_jobs_parsers(subparsers: argparse._SubParsersAction[argparse.ArgumentPa
     _add_json_flag(jobs_show)
     _add_activity_flags(jobs_show)
     jobs_show.set_defaults(func=cmd_jobs_show)
-    jobs_wait = jobs_sub.add_parser("wait", help="wait for a job, with a deadline of your own")
-    jobs_wait.add_argument("job_id")
+    jobs_wait = jobs_sub.add_parser("wait", help="wait for jobs, with a deadline of your own")
+    jobs_wait.add_argument("job_ids", nargs="+", metavar="job_id")
+    jobs_wait.add_argument(
+        "--any", action="store_true", help="with several jobs: return when the first one finishes"
+    )
     jobs_wait.add_argument(
         "--timeout",
         type=_seconds(allow_zero=True),
@@ -671,11 +702,49 @@ def _add_jobs_parsers(subparsers: argparse._SubParsersAction[argparse.ArgumentPa
     )
     jobs_wait.add_argument("--poll", type=_seconds(), default=1.0)
     _add_json_flag(jobs_wait)
-    _add_activity_flags(jobs_wait)
+    _add_activity_flags(jobs_wait, per_job=True)
     jobs_wait.set_defaults(func=cmd_jobs_wait)
     jobs_cancel = jobs_sub.add_parser("cancel", help="stop a running job")
     jobs_cancel.add_argument("job_id")
     jobs_cancel.set_defaults(func=cmd_jobs_cancel)
+
+
+def _add_units_parsers(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    units_sub = _add_command_group(subparsers, "units", "the plan's work units, run apart or side by side")
+    units_check = units_sub.add_parser("check", help="refuse units that cannot run, print the schedule")
+    units_check.set_defaults(func=cmd_units_check)
+    units_status = units_sub.add_parser("status", help="each unit's state, and which can start now")
+    _add_json_flag(units_status)
+    units_status.set_defaults(func=cmd_units_status)
+    units_merge = units_sub.add_parser("merge", help="merge a finished unit into the working tree")
+    units_merge.add_argument("name", help="the unit")
+    units_merge.add_argument(
+        "--resolved",
+        action="store_true",
+        help="its conflicts are resolved: check no marker is left, mark it merged",
+    )
+    units_merge.add_argument(
+        "--keep",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help="with --resolved: a conflict without markers whose working version is kept as the resolution",
+    )
+    _add_json_flag(units_merge)
+    units_merge.set_defaults(func=cmd_units_merge)
+    units_clean = units_sub.add_parser("clean", help="remove the worktrees units left behind")
+    units_clean.add_argument("name", nargs="?", default=None, help="only this unit's")
+    units_clean.set_defaults(func=cmd_units_clean)
+    units_join = units_sub.add_parser("join", help="join per-unit plans into one plan with ## Units")
+    units_join.add_argument(
+        "--part",
+        action="append",
+        required=True,
+        metavar="NAME=PATH",
+        help="a unit's plan; repeat it, in the order the units go in the plan",
+    )
+    units_join.add_argument("--output", required=True, help="where the joined plan is written")
+    units_join.set_defaults(func=cmd_units_join)
 
 
 def _add_budget_parsers(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:

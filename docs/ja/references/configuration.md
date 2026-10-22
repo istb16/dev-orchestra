@@ -1,4 +1,4 @@
-<!-- translated-from: references/configuration.md sha256:1938f6f5931b6c771ab0ebd07ababdec2352ed21297137621331178674090d4b -->
+<!-- translated-from: references/configuration.md sha256:f905f10c5ef947e16eecdd6b5a65ad3630264ea0429e38b975afcb5511f99717 -->
 
 > この文書は [references/configuration.md](../../../references/configuration.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -609,6 +609,12 @@ progress:
   updates: auto                       # reports during a long run (true, false or auto)
   interval_seconds: 180               # how often; also the default wait of `jobs wait`
   quiet_notice_seconds: 600           # "may be stuck" after this long with no new tool line; 0 = off
+
+implementation:
+  max_parallel: 2                     # work units run at once, 1 to 8
+  hub_paths:                          # only the integration unit may list these
+    - "CHANGELOG*"
+    - "**/CHANGELOG*"
 ```
 
 <a id="field-reference"></a>
@@ -667,6 +673,10 @@ progress:
 | `progress.updates` | bool \| `auto` \| null | 長い実行の間に、orchestrator がユーザーに何を伝えるか（[workflow](workflow.md#progress-reports)）。`auto`（デフォルト）はこのキーができる前の動きです。implementer、review_fixer、大きな architect の実行を detach して待つたびに報告し、バックグラウンドの `review run` の行を伝えます。`true` はさらに、すべての architect の実行を detach し、すべての `review run` を `--progress` 付きでバックグラウンドで走らせます。`false` は同じ実行を detach したまま、定期の報告をやめます。`may be stuck` の印は伝えます。`status` と `config show` は `on`、`off`、`auto` と表示します。`validate` が断る値は `auto` として読みます。`null` はデフォルトを意味します。 |
 | `progress.interval_seconds` | int 30–3600 \| null | orchestrator が報告する間隔（デフォルト 180）で、`--timeout` なしの `jobs wait` の待ち時間でもあります。`review run --progress` はこの間隔でレビュアーに止まっていそうな印を出すか確かめます。`null` はデフォルトを意味します。 |
 | `progress.quiet_notice_seconds` | int 0–1,000,000,000 \| null | 新しいツール行がこの時間出ていない実行の報告に `may be stuck: no new tool line for 12m03s` を付けます（デフォルト 600）。実行が黙っている間は、報告のたびにまた付けます。`0` で止めます。この印は知らせるだけで、そのために実行を取り消すことはありません。agy のように CLI がツールの活動をまったく書かない実行には付きません。`null` はデフォルトを意味します。 |
+| `implementation.max_parallel` | int 1–8 \| null | plan の `## Units` の作業単位を同時にいくつまで走らせるか（デフォルト 2）。これを超える 1 つは `run implementer --unit` が拒否します（exit 2）。8 は、台帳への同時の記録が安全だと測れた数です。`units check` はこの幅で波を表示します。`null` はデフォルトを意味します。[workflow](workflow.md#implementation) を参照してください。 |
+| `implementation.hub_paths` | list \| null | どの作業単位も触りがちなファイルを示す glob（デフォルト `["CHANGELOG*", "**/CHANGELOG*"]`）。作業単位が 2 つ以上あるとき、これに当たるファイルを挙げてよいのは `integration` の作業単位だけで、ほかが挙げると `units check` が拒否します。`docs/ja/**` や CLI のパーサーなど、プロジェクト固有のものを足してください。`[]` は何も指しません。`null` はデフォルトを意味します。 |
+| `budgets.implementer` | int | implementer の試行回数（デフォルト 5）。ふつうの `run implementer` は 1 回の実行で 1 回使います。1 つの plan の作業単位は、合わせて 1 回を使います。これを **pass** と呼びます。plan のハッシュに対して最初に走った作業単位が 1 回を使い、ほかはそこに無料で加わり、同じ pass の中で作業単位をやり直したときだけもう 1 回使います。plan のハッシュが変わったとき（`design.require_approval` のもとでは新しい承認）か `budget reset` で、新しい pass が始まります。`budgets.total_delegated_runs` と `budgets.max_runtime_seconds` は、それでもすべての実行を数えます。この予算を使い切っていても、開いている pass でまだ走っていない作業単位は走ります。 |
+| `budgets.architect` | int | architect の試行回数（デフォルト 3）。`run architect --unit` も同じ pass の規則で数えます。鍵は最後に承認された plan のハッシュです（最初の承認の前は空）。1 回分の作業単位ごとの設計は 1 回の試行で済み、承認の後の設計し直しは新しい pass です。 |
 | `<role>.options` | mapping | provider 固有の設定項目。下記を参照。 |
 | `<role>.model_tiers` | mapping | このロールのモデルに対する名前付きの代替。下記を参照。省略可。 |
 

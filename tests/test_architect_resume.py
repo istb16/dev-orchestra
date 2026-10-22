@@ -417,12 +417,12 @@ class TestTheCliRejectsTheSession(ResumeCase):
         consumed = []
         original = ledger_mod.Ledger.consume
 
-        def consume(book, stage, force=False):
+        def consume(book, stage, force=False, piece="", key=""):
             consumed.append(stage)
             # The first is this run's own attempt; the second is the retry's.
             if len(consumed) == 2:
                 raise ledger_mod.BudgetExhausted("spent elsewhere")
-            return original(book, stage, force=force)
+            return original(book, stage, force=force, piece=piece, key=key)
 
         self.addCleanup(setattr, ledger_mod.Ledger, "consume", original)
         setattr(ledger_mod.Ledger, "consume", consume)

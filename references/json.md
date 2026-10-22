@@ -18,6 +18,8 @@
   - [`jobs list`](#jobs-list)
   - [`jobs show`](#jobs-show)
   - [`jobs wait`](#jobs-wait)
+  - [`units status`](#units-status)
+  - [`units merge`](#units-merge)
 - [Reviews](#reviews)
   - [`review snapshot`](#review-snapshot)
   - [`review run`](#review-run)
@@ -247,7 +249,8 @@ Object: the job record.
 The record also carries what the job recorded as it went: `command`,
 `timeout_seconds`, `prompt_file`, `force`, `pid`, `claimed_at`,
 `finished_at`, and, once finished, the outcome keys `run --json` has (less
-`output` and `answered`).
+`output` and `answered`). A work unit's job also carries `unit` and
+`worktree` (`null` when the unit runs in place).
 
 ### `jobs wait`
 
@@ -263,6 +266,34 @@ ended.
 | `output_file` | string | Where the run's answer is written. |
 | `waited_out` | boolean | Only when the wait ended while the job still ran: `true` (exit 4). |
 | `activity` | object | Only once the job has an activity file, as in `jobs show`. |
+
+With several job ids it is instead an object with the one key `jobs`: the
+list of those records, each as above, in the order given.
+
+### `units status`
+
+Object: the plan's work units.
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `plan_sha256` | string | The plan's sha256; `""` without a plan. |
+| `units` | list | One entry per unit, in the plan's order: `name`, `kind`, `status` (`pending`, `running`, `succeeded`, `failed`, `cancelled`, `conflicted` or `merged`), `job`, `base_commit`, `in_place`, `worktree`. |
+| `ready` | list of strings | The units that can start now: pending, every dependency merged. |
+| `failed` | boolean | Whether a unit failed, and with it the implement stage. |
+
+### `units merge`
+
+Object: how the merge went. A merge that conflicts exits 7 and prints it too.
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `unit` | string | The unit. |
+| `status` | string | `merged` or `conflicted`. |
+| `files` | integer | Only on a merge that ran clean: how many files it merged. |
+| `conflicts` | list of strings | Only on a merge that conflicted: the files left to resolve. |
+| `brief` | string | Only on a merge that conflicted: the conflict brief, relative to the project. |
+| `outside_files` | list of strings | Only on a merge that ran: the files the unit changed outside its `files`. |
+| `resolved_files` | list of strings | Only with `--resolved`: the files whose conflicts were resolved. |
 
 ## Reviews
 
@@ -468,6 +499,7 @@ Object.
 | `in_flight` | object | What is running now, keyed by token. |
 | `stalls` | list | As in `status`. |
 | `tokens` | object | What `tokens show --json` prints. |
+| `passes` | object | Per stage whose work units share an attempt: `key` (the plan hash the pass is for) and `pieces` (the units run in it). |
 
 ### `tokens show`
 

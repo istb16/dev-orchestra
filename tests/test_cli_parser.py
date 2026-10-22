@@ -12,6 +12,8 @@ from helpers import IsolatedCase, run_cli
 
 from orchestrator import activity as activity_mod
 from orchestrator import cli, providers
+from orchestrator import jobs as jobs_mod
+from orchestrator import workspace as ws
 
 
 def minimal_argv(path, leaf):
@@ -44,6 +46,7 @@ class TestParserShape(IsolatedCase):
         "design",
         "state",
         "jobs",
+        "units",
         "budget",
         "tokens",
         "optimization",
@@ -80,6 +83,8 @@ class TestParserShape(IsolatedCase):
         "status",
         "summary",
         "tokens show",
+        "units merge",
+        "units status",
         "workflow list",
         "workflow show",
     }
@@ -138,10 +143,15 @@ class TestParserShape(IsolatedCase):
                 self.assertIs(self.parse(*minimal_argv(path, leaf)).func, func)
 
     def test_activity_flags_on_jobs_show_and_wait(self):
-        for sub in ("show", "wait"):
+        # `jobs wait` takes a cursor per job (`ID=N`), so its --since is a list
+        # of (job id or None, N); `jobs show` keeps the single number.
+        for sub, unset, at_max in (
+            ("show", 0, activity_mod.SINCE_MAX),
+            ("wait", [], [(None, activity_mod.SINCE_MAX)]),
+        ):
             with self.subTest(sub=sub):
                 args = self.parse("jobs", sub, "J")
-                self.assertEqual((args.since, args.activity), (0, 10))
+                self.assertEqual((args.since, args.activity), (unset, 10))
                 args = self.parse(
                     "jobs",
                     sub,
@@ -151,11 +161,9 @@ class TestParserShape(IsolatedCase):
                     "--activity",
                     str(activity_mod.LATEST_MAX),
                 )
-                self.assertEqual(
-                    (args.since, args.activity), (activity_mod.SINCE_MAX, activity_mod.LATEST_MAX)
-                )
+                self.assertEqual((args.since, args.activity), (at_max, activity_mod.LATEST_MAX))
                 args = self.parse("jobs", sub, "J", "--since", "0", "--activity", "0")
-                self.assertEqual((args.since, args.activity), (0, 0))
+                self.assertEqual((args.since, args.activity), (0 if sub == "show" else [(None, 0)], 0))
                 for flag, bad in (
                     ("--since", "-1"),
                     ("--since", str(activity_mod.SINCE_MAX + 1)),
@@ -165,6 +173,21 @@ class TestParserShape(IsolatedCase):
                     ("--activity", "abc"),
                 ):
                     self.assert_usage_error("jobs", sub, "J", "%s=%s" % (flag, bad))
+
+    def test_jobs_wait_since_names_its_job(self):
+        self.assertEqual(self.parse("jobs", "wait", "J", "--since", "J=3").since, [("J", 3)])
+        # Split at the last =: an id never holds one, and the count never does.
+        self.assertEqual(self.parse("jobs", "wait", "J", "--since", "a=b=2").since, [("a=b", 2)])
+        for bad in ("=3", "x=abc", "x=-1", "x=", "x=%d" % (activity_mod.SINCE_MAX + 1)):
+            with self.subTest(bad=bad):
+                self.assert_usage_error("jobs", "wait", "J", "--since=%s" % bad)
+        # A cursor for a job not waited for is refused, with one id as with several.
+        jobs_mod.write_job(
+            self.cli_workspace(), {"id": "a-1", "status": "succeeded", "started_at": ws.utcnow()}
+        )
+        code, _, err = run_cli("jobs", "wait", "a-1", "--since", "b-1=2")
+        self.assertEqual(code, 2)
+        self.assertIn("b-1 is not one of the jobs waited for", err)
 
     def test_scope_defaults(self):
         self.assertEqual(self.parse("config", "setup").scope, "global")

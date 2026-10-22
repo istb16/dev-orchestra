@@ -8,14 +8,31 @@ anything. These tests assert the *refusal*, not the advice.
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 import time
 import unittest
 
-from helpers import IsolatedCase, present
+from helpers import SCRIPTS_DIR, TEST_WORKFLOW, IsolatedCase, present
 
 from orchestrator import config as config_mod
 from orchestrator import ledger as ledger_mod
 from orchestrator import workspace as ws
+from orchestrator.config_common import MAX_PARALLEL_UNITS
+
+#: One process charging one piece of a pass: argv is the scripts directory,
+#: the project, the workflow, the piece and the pass key; it prints whether
+#: the charge spent an attempt.
+CONSUME_PIECE = (
+    "import sys\n"
+    "sys.path.insert(0, sys.argv[1])\n"
+    "from orchestrator import ledger, workspace\n"
+    "book = ledger.Ledger(\n"
+    "    workspace.Workspace(sys.argv[2], workflow=sys.argv[3]),\n"
+    "    dict(ledger.DEFAULT_BUDGETS, implementer=5),\n"
+    ")\n"
+    "print(book.consume('implementer', piece=sys.argv[4], key=sys.argv[5]))\n"
+)
 
 
 class LedgerCase(IsolatedCase):
@@ -510,6 +527,137 @@ class TestSummary(LedgerCase):
         book = self.book()
         book.begin("implementer", deadline=60)
         json.dumps(book.summary())
+
+
+class TestOneAttemptPerPass(LedgerCase):
+    """The pieces of one plan share one attempt; only a rerun spends another."""
+
+    PLAN = "a" * 64
+    REVISED = "b" * 64
+
+    def used(self, book, stage="implementer"):
+        return int((book.load().get("attempts") or {}).get(stage, 0))
+
+    def test_ledger_pass_one_attempt_for_all_pieces(self):
+        book = self.book(implementer=5)
+        spent = [book.consume("implementer", piece=name, key=self.PLAN) for name in ("a", "b", "c")]
+        self.assertEqual(spent, [True, False, False])
+        self.assertEqual(self.used(book), 1)
+        self.assertEqual(book.load()["total_delegated_runs"], 3)
+        self.assertEqual(
+            book.summary()["passes"], {"implementer": {"key": self.PLAN, "pieces": ["a", "b", "c"]}}
+        )
+
+    def test_ledger_architect_pass_frees_at_most_eight_pieces(self):
+        """An architect's piece is any name it is given: past eight, each new one spends."""
+        book = self.book(architect=20, implementer=20)
+        names = ["u%d" % number for number in range(10)]
+        spent = [book.consume("architect", piece=name, key="") for name in names]
+        self.assertEqual(spent, [True, *[False] * 7, True, True])
+        self.assertEqual(self.used(book, "architect"), 3)
+        self.assertEqual(book.load()["passes"]["architect"]["pieces"], names)
+        # The implementer's pieces are a plan's units, not held to the count.
+        spent = [book.consume("implementer", piece=name, key=self.PLAN) for name in names]
+        self.assertEqual(spent, [True, *[False] * 9])
+
+    def test_ledger_pass_rerun_spends_attempt(self):
+        book = self.book(implementer=5)
+        book.consume("implementer", piece="a", key=self.PLAN)
+        book.consume("implementer", piece="b", key=self.PLAN)
+        # Whatever the first run's outcome: the ledger does not see it.
+        self.assertTrue(book.consume("implementer", piece="a", key=self.PLAN))
+        self.assertEqual(self.used(book), 2)
+        self.assertEqual(book.load()["passes"]["implementer"]["pieces"], ["a", "b"])
+
+    def test_ledger_pass_new_plan_hash_new_pass(self):
+        book = self.book(implementer=5)
+        book.consume("implementer", piece="a", key=self.PLAN)
+        book.consume("implementer", piece="b", key=self.PLAN)
+        self.assertTrue(book.consume("implementer", piece="b", key=self.REVISED))
+        self.assertEqual(self.used(book), 2)
+        self.assertEqual(book.load()["passes"]["implementer"], {"key": self.REVISED, "pieces": ["b"]})
+        self.assertFalse(book.consume("implementer", piece="a", key=self.REVISED))
+
+    def test_ledger_pass_budget_reset_new_pass(self):
+        book = self.book(implementer=5)
+        book.consume("implementer", piece="a", key=self.PLAN)
+        book.reset()
+        self.assertEqual(book.load()["passes"], {})
+        self.assertTrue(book.consume("implementer", piece="b", key=self.PLAN))
+        self.assertEqual(self.used(book), 1)
+
+    def test_ledger_pass_concurrent_first_pieces(self):
+        """As many processes as ``implementation.max_parallel`` allows, each the first piece it sees.
+
+        Processes, not threads: the ledger's lock is a file lock, and only
+        separate processes show it holds between them.
+        """
+        pieces = [chr(ord("a") + index) for index in range(MAX_PARALLEL_UNITS)]
+        workers = [
+            subprocess.Popen(
+                [
+                    sys.executable,
+                    "-c",
+                    CONSUME_PIECE,
+                    SCRIPTS_DIR,
+                    self.project,
+                    TEST_WORKFLOW,
+                    piece,
+                    self.PLAN,
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            for piece in pieces
+        ]
+        answers = []
+        for worker in workers:
+            out, err = worker.communicate(timeout=60)
+            self.assertEqual(worker.returncode, 0, err)
+            answers.append(out.strip())
+
+        self.assertEqual(sorted(answers), ["False"] * (len(pieces) - 1) + ["True"])
+        book = self.book()
+        self.assertEqual(self.used(book), 1)
+        self.assertEqual(sorted(book.load()["passes"]["implementer"]["pieces"]), pieces)
+        self.assertEqual(book.load()["total_delegated_runs"], len(pieces))
+
+    def test_ledger_pass_exhausted_exit_3(self):
+        book = self.book(implementer=1)
+        book.consume("implementer", piece="a", key=self.PLAN)
+        for piece, key in (("x", self.REVISED), ("a", self.PLAN)):
+            with self.subTest(piece=piece, key=key[:1]):
+                self.assertTrue(book.check("implementer", piece, key))
+                with self.assertRaises(ledger_mod.BudgetExhausted):
+                    book.consume("implementer", piece=piece, key=key)
+        self.assertEqual(book.check("implementer", "b", self.PLAN), [])
+        self.assertFalse(book.consume("implementer", piece="b", key=self.PLAN))
+        self.assertEqual(ledger_mod.EXIT_BUDGET_EXHAUSTED, 3)
+
+        spent = self.book(implementer=1, total_delegated_runs=2)
+        for piece, key in (("c", self.PLAN), ("x", self.REVISED), ("a", self.PLAN)):
+            with self.subTest(total=True, piece=piece):
+                with self.assertRaises(ledger_mod.BudgetExhausted) as ctx:
+                    spent.consume("implementer", piece=piece, key=key)
+                self.assertIn("delegated runs", str(ctx.exception))
+
+    def test_ledger_plain_run_unchanged(self):
+        book = self.book(implementer=5)
+        book.consume("implementer", piece="a", key=self.PLAN)
+        self.assertTrue(book.consume("implementer"))
+        self.assertTrue(book.consume("implementer"))
+        self.assertEqual(self.used(book), 3)
+        self.assertEqual(book.load()["passes"], {"implementer": {"key": self.PLAN, "pieces": ["a"]}})
+
+        plain = ledger_mod.Ledger(
+            self.cli_workspace("plain"), dict(ledger_mod.DEFAULT_BUDGETS, implementer=2)
+        )
+        plain.consume("implementer")
+        plain.consume("implementer")
+        self.assertEqual(plain.load()["passes"], {})
+        with self.assertRaises(ledger_mod.BudgetExhausted):
+            plain.consume("implementer")
 
 
 if __name__ == "__main__":

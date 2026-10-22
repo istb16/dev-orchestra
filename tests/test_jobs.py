@@ -17,7 +17,7 @@ import types
 import unittest
 from unittest import mock
 
-from helpers import IsolatedCase, has_git, present
+from helpers import IsolatedCase, has_git, present, run_cli
 
 from orchestrator import jobs as jobs_mod
 from orchestrator import workspace as ws
@@ -1142,6 +1142,145 @@ class TestDetachedRuntimeCharges(IsolatedCase):
         self.assertEqual(event["status"], "abandoned")
         self.assertEqual(event["charged_seconds"], 0)
         self.assertEqual(self.ledger()["runtime_seconds"], 0)
+
+
+class TestWaitForSeveral(JobCase):
+    """``jobs wait`` with several ids; with one, exactly what it always was."""
+
+    def test_jobs_wait_single_id_unchanged(self):
+        job = self.record("a-1", status="succeeded", finished_at=ws.utcnow())
+        ws.write_text(job["output_file"], "the answer\n")
+        code, out, _ = run_cli("jobs", "wait", "a-1", "--json")
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out), job)
+        code, out, _ = run_cli("jobs", "wait", "a-1")
+        self.assertEqual(code, 0)
+        self.assertTrue(out.startswith(jobs_mod.render(job) + "\n"))
+        self.assertIn("the answer", out)
+        self.assertNotIn("unit:", out)
+        self.record("b-1", status="failed", finished_at=ws.utcnow())
+        self.assertEqual(run_cli("jobs", "wait", "b-1")[0], 1)
+        self.record("c-1", pid=os.getpid())
+        code, out, _ = run_cli("jobs", "wait", "c-1", "--timeout", "0.1", "--poll", "0.1", "--json")
+        self.assertEqual(code, 4)
+        self.assertTrue(json.loads(out)["waited_out"])
+        self.assertNotIn("jobs", json.loads(out))
+
+    def test_jobs_wait_many_all_and_any(self):
+        self.record("done-1", status="succeeded", finished_at=ws.utcnow())
+        self.record("done-2", status="succeeded", finished_at=ws.utcnow())
+        self.record("failed-1", status="failed", finished_at=ws.utcnow())
+        self.record("running-1", pid=os.getpid())
+        argv = ("--timeout", "0.3", "--poll", "0.1", "--json")
+        # All of them: the running one keeps the wait to its deadline.
+        code, out, _ = run_cli("jobs", "wait", "done-1", "running-1", *argv)
+        self.assertEqual(code, 4)
+        found = json.loads(out)["jobs"]
+        self.assertEqual([job["id"] for job in found], ["done-1", "running-1"])
+        self.assertFalse(found[0].get("waited_out"))
+        self.assertTrue(found[1]["waited_out"])
+        # --any: the first to finish ends the wait at once.
+        started = time.monotonic()
+        code, out, _ = run_cli("jobs", "wait", "running-1", "done-1", "--any", "--timeout", "30", "--json")
+        self.assertEqual(code, 0)
+        self.assertLess(time.monotonic() - started, 10)
+        self.assertFalse(any(job.get("waited_out") for job in json.loads(out)["jobs"]))
+        # A finished job that failed.
+        self.assertEqual(run_cli("jobs", "wait", "done-1", "failed-1", *argv)[0], 1)
+        self.assertEqual(run_cli("jobs", "wait", "running-1", "failed-1", "--any", *argv)[0], 1)
+        # Every one succeeded.
+        code, out, _ = run_cli("jobs", "wait", "done-1", "done-2")
+        self.assertEqual(code, 0)
+        self.assertIn("done-1  SUCCEEDED", out)
+        self.assertIn("done-2  SUCCEEDED", out)
+        # An unknown id is refused before anything is waited for.
+        self.assertEqual(run_cli("jobs", "wait", "done-1", "nope")[0], 2)
+
+    def running_with_activity(self, job_id: str, count: int) -> None:
+        self.record(job_id, pid=os.getpid())
+        path = jobs_mod.activity_path(jobs_mod.job_path(self.workspace, job_id))
+        lines = [
+            json.dumps({"n": n, "s": float(n), "line": "Read x%d.py" % n, "tokens": None})
+            for n in range(1, count + 1)
+        ]
+        ws.write_text(path, "\n".join(lines) + "\n")
+
+    def test_jobs_wait_any_with_every_job_running_waits_out(self):
+        self.running_with_activity("r1", 2)
+        self.running_with_activity("r2", 1)
+        argv = ("--any", "--timeout", "0.2", "--poll", "0.1")
+        code, out, _ = run_cli("jobs", "wait", "r1", "r2", *argv, "--json")
+        self.assertEqual(code, 4)
+        found = json.loads(out)["jobs"]
+        self.assertEqual([(job["id"], job.get("waited_out")) for job in found], [("r1", True), ("r2", True)])
+        code, out, _ = run_cli("jobs", "wait", "r1", "r2", *argv)
+        self.assertEqual(code, 4)
+        self.assertTrue(out.endswith("\nnext: jobs wait r1 r2 --any --since r1=2 --since r2=1\n"), out)
+
+    def test_jobs_wait_several_prints_a_finished_job_s_output_beside_a_running_one(self):
+        done = self.record("ok-1", status="succeeded", finished_at=ws.utcnow())
+        ws.write_text(done["output_file"], "the answer\n")
+        self.running_with_activity("r1", 2)
+        code, out, _ = run_cli("jobs", "wait", "ok-1", "r1", "--timeout", "0.2", "--poll", "0.1")
+        self.assertEqual(code, 4)
+        self.assertIn("ok-1  SUCCEEDED", out)
+        self.assertIn("\nthe answer\n", out)
+        self.assertLess(out.index("the answer"), out.index("r1  RUNNING"))
+        self.assertTrue(out.endswith("\nnext: jobs wait r1 --since r1=2\n"), out)
+
+
+@unittest.skipUnless(has_git(), "needs git")
+class TestCancelUnit(JobCase):
+    def test_jobs_cancel_unit_removes_worktree(self):
+        from orchestrator import config as config_mod
+        from orchestrator import execution_tree, worktrees
+        from orchestrator import units as units_mod
+
+        self.init_git_repo()
+        self.write("app.py", "print('hello')\n")
+        self.commit_all("base")
+        record = worktrees.create(self.workspace, "a", config_mod.load(self.project))
+        self.addCleanup(worktrees.remove, self.project, record, "a")
+        units_mod.update(self.workspace, "a", dict(record, status="running", in_place=False, job="u-1"))
+        self.record("u-1", pid=4242, pid_started="t0", unit="a", worktree=record["worktree"])
+        with (
+            mock.patch.object(execution_tree, "pid_alive", lambda pid: True),
+            mock.patch.object(execution_tree, "process_started", lambda pid: "t0"),
+            mock.patch.object(execution_tree, "kill_tree", lambda pid, grace, verified: True),
+        ):
+            code, out, err = run_cli("jobs", "cancel", "u-1")
+        self.assertEqual(code, 0, err)
+        self.assertIn("unit:     a (%s)" % record["worktree"], out)
+        self.assertFalse(os.path.lexists(record["worktree"]))
+        recorded = units_mod.load_state(self.workspace)["units"]["a"]
+        self.assertEqual(recorded["status"], "cancelled")
+        self.assertIsNone(recorded["worktree"])
+        self.assertEqual(self.git("worktree", "list", "--porcelain").stdout.count("worktree "), 1)
+
+    def test_jobs_cancel_keeps_a_failed_unit_failed(self):
+        from orchestrator import config as config_mod
+        from orchestrator import execution_tree, worktrees
+        from orchestrator import units as units_mod
+
+        self.init_git_repo()
+        self.write("app.py", "print('hello')\n")
+        self.commit_all("base")
+        record = worktrees.create(self.workspace, "a", config_mod.load(self.project))
+        self.addCleanup(worktrees.remove, self.project, record, "a")
+        units_mod.update(self.workspace, "a", dict(record, status="failed", in_place=False, job="u-1"))
+        self.record("u-1", pid=4242, pid_started="t0", unit="a", worktree=record["worktree"])
+        with (
+            mock.patch.object(execution_tree, "pid_alive", lambda pid: True),
+            mock.patch.object(execution_tree, "process_started", lambda pid: "t0"),
+            mock.patch.object(execution_tree, "kill_tree", lambda pid, grace, verified: True),
+        ):
+            code, _, err = run_cli("jobs", "cancel", "u-1")
+        self.assertEqual(code, 0, err)
+        self.assertFalse(os.path.lexists(record["worktree"]))
+        recorded = units_mod.load_state(self.workspace)["units"]["a"]
+        self.assertEqual(recorded["status"], "failed")
+        self.assertNotIn("finished_at", recorded)
+        self.assertIsNone(recorded["worktree"])
 
 
 if __name__ == "__main__":
