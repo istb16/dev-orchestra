@@ -39,7 +39,10 @@ class UnitRunCase(IsolatedCase):
         run_cli("config", "setup", "--defaults")
         run_cli("config", "set", "implementer.provider", "mock")
         self.workspace = self.cli_workspace()
-        self.units_parent = os.path.join(self.tmp, "project.units")
+        # The repository root as git and the runs see it: the temporary
+        # directory may be a short name (Windows) or behind a link (macOS).
+        self.root = os.path.realpath(self.project)
+        self.units_parent = os.path.join(os.path.dirname(self.root), "project.units")
         #: What each run of the mock was given: its cwd and prompt.
         self.calls: List[Dict[str, Any]] = []
         #: Files the "agent" writes in its cwd, relative path -> text.
@@ -347,7 +350,7 @@ class TestInPlace(UnitRunCase):
         self.edits = {"b.py": "B = 2\n"}
         code, _, err = self.run_unit("b")
         self.assertEqual(code, 0, err)
-        self.assertEqual([call["cwd"] for call in self.calls], [self.project, self.project])
+        self.assertEqual([call["cwd"] for call in self.calls], [self.root, self.root])
         for name, path in (("a", "a.py"), ("b", "b.py")):
             record = self.record(name)
             self.assertEqual(record["status"], "merged")

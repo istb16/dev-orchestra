@@ -475,7 +475,8 @@ class TestFileKinds(MergeCase):
         self.unit("two", {"vendor/x.py": "x1\ntwo\n"})
         real = worktrees_mod.is_link
 
-        vendor = os.path.normcase(os.path.join(self.project, "vendor"))
+        # As the merge sees it: the repository root, with no short name or link.
+        vendor = os.path.normcase(os.path.join(os.path.realpath(self.project), "vendor"))
 
         def vendor_is_a_link(path: str) -> bool:
             # The working tree's vendor only: theirs/vendor, where the unit's
