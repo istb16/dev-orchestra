@@ -77,6 +77,18 @@ authors can find it.
   ignored, repository-relative files a work unit's worktree is given a copy
   of (#345).
 
+### Fixed
+
+- **Japanese and other non-ASCII output reaches a pipe intact on Windows.**
+  Python writes a pipe or a file in the ANSI code page there, cp932 on a
+  Japanese Windows, while the orchestrating agent reads the output of
+  `jobs wait`, `jobs show --output` and the rest as UTF-8, so a delegated
+  agent's Japanese reply arrived as mojibake. A pipe or a file is now written
+  in UTF-8, as stdin is already read. A console is unchanged. A reader that
+  expects the code page, such as PowerShell 5 capturing the output, gets the
+  old output back with `PYTHONIOENCODING=cp932`; `PYTHONIOENCODING`,
+  `PYTHONUTF8` and `-X utf8` are always left to decide.
+
 ## [1.1.2] - 2026-10-22
 
 ### Added

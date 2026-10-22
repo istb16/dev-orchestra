@@ -63,11 +63,20 @@ def tolerate_console_encoding() -> None:
     character could not be shown while ``?`` throws it away. A stream that can
     encode anything is left as it is, and so is one whose handler someone chose
     deliberately -- those already cannot raise.
+
+    A pipe or a file on Windows is written in UTF-8 instead; see
+    :func:`_writes_utf8_instead`.
     """
     for stream in (sys.stdout, sys.stderr):
         reconfigure = getattr(stream, "reconfigure", None)
         if reconfigure is None:  # a StringIO under test, or a plain wrapper
             continue
+        if _writes_utf8_instead(stream):
+            try:
+                reconfigure(encoding="utf-8", errors="backslashreplace")
+                continue
+            except (OSError, ValueError):  # pragma: no cover - platform dependent
+                pass
         if _encodes_everything(stream):
             continue
         if (getattr(stream, "errors", "") or "") in _TOLERANT_ERRORS:
@@ -76,6 +85,33 @@ def tolerate_console_encoding() -> None:
             reconfigure(errors="backslashreplace")
         except (OSError, ValueError):  # pragma: no cover - platform dependent
             pass
+
+
+def _writes_utf8_instead(stream: Any) -> bool:
+    """True for a Windows pipe or file Python would write in the ANSI code page.
+
+    Python writes a console in UTF-16 whatever the code page, but a pipe or a
+    file in the ANSI code page -- cp932 on a Japanese Windows. The reader of a
+    pipe here is usually the orchestrating agent, and Claude Code's Bash tool
+    and Codex read it as UTF-8, so every Japanese reply from ``jobs wait``
+    arrived as mojibake, and an arrow in an architect report as a replacement
+    character and a ``c``.
+    stdin is already read as UTF-8 for the same reason (#284), and Python's
+    UTF-8 mode, the default from 3.15, writes a pipe this way too.
+
+    A reader that expects the code page -- PowerShell 5 capturing the output
+    with ``$x = ...``, say -- now sees mojibake instead, so whoever has said
+    which encoding they want keeps it: ``PYTHONIOENCODING`` (``cp932`` gives
+    the old output back), ``PYTHONUTF8`` and ``-X utf8``.
+    """
+    if sys.platform != "win32" or _encodes_everything(stream):
+        return False
+    if os.environ.get("PYTHONIOENCODING") or os.environ.get("PYTHONUTF8") or "utf8" in sys._xoptions:
+        return False
+    try:
+        return not stream.isatty()
+    except (AttributeError, OSError, ValueError):
+        return False
 
 
 def _read_stdin() -> str:

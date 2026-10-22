@@ -43,6 +43,11 @@ ESCAPED_EM_DASH = chr(92) + "u2014"
 UNENCODABLE = "Fixed the café parser %s cleanly \U0001f600" % EM_DASH
 
 
+class TerminalBytes(io.BytesIO):
+    def isatty(self):
+        return True
+
+
 def cp932_stream(errors="surrogateescape"):
     """A console like the one that reported this.
 
@@ -50,8 +55,17 @@ def cp932_stream(errors="surrogateescape"):
     `sys.stdout` on Windows. Not `strict`, which is what this file used to
     assume -- and why it passed while the console it was written for kept
     crashing.
+
+    A terminal, because a Windows pipe is now written in UTF-8 instead
+    (`TestAWindowsPipeIsWrittenInUtf8`), and a stream that stays cp932 is one
+    that is not a pipe.
     """
-    return io.TextIOWrapper(io.BytesIO(), encoding="cp932", errors=errors, newline="")
+    return io.TextIOWrapper(TerminalBytes(), encoding="cp932", errors=errors, newline="")
+
+
+def cp932_pipe():
+    """What a Windows pipe is before the CLI touches it: the ANSI code page."""
+    return io.TextIOWrapper(io.BytesIO(), encoding="cp932", errors="surrogateescape", newline="")
 
 
 class TestTheConsoleTolerance(unittest.TestCase):
@@ -110,7 +124,7 @@ class TestTheConsoleTolerance(unittest.TestCase):
         self.assertIn("config is broken", stream.buffer.getvalue().decode("cp932"))
 
     def test_an_error_handler_someone_chose_is_left_alone(self):
-        stream = io.TextIOWrapper(io.BytesIO(), encoding="cp932", errors="ignore")
+        stream = io.TextIOWrapper(TerminalBytes(), encoding="cp932", errors="ignore")
         saved, sys.stdout = sys.stdout, stream
         try:
             cli_common.tolerate_console_encoding()
@@ -147,6 +161,84 @@ class TestTheConsoleTolerance(unittest.TestCase):
         finally:
             sys.stdout = saved
         self.assertEqual(stream.errors, "backslashreplace")
+
+
+class TestAWindowsPipeIsWrittenInUtf8(unittest.TestCase):
+    """The orchestrating agent reads `jobs wait` through a pipe as UTF-8, and
+    Python wrote it in cp932: every Japanese reply arrived as mojibake."""
+
+    REPLY = "実装しました %s テストも通過 → 完了" % EM_DASH
+
+    def setUp(self):
+        from unittest import mock
+
+        patcher = mock.patch.dict(os.environ)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        for key in ("PYTHONIOENCODING", "PYTHONUTF8"):
+            os.environ.pop(key, None)
+        self.platform = mock.patch.object(sys, "platform", "win32")
+        self.platform.start()
+        self.addCleanup(self.platform.stop)
+
+    def written(self, stream, attr="stdout", emit=None):
+        saved = getattr(sys, attr)
+        setattr(sys, attr, stream)
+        try:
+            cli_common.tolerate_console_encoding()
+            (emit or cli_common._out)(self.REPLY)
+        finally:
+            setattr(sys, attr, saved)
+        stream.flush()
+        return stream.buffer.getvalue()
+
+    def test_the_reply_reaches_the_reader_as_it_was_written(self):
+        self.assertIn(self.REPLY, self.written(cp932_pipe()).decode("utf-8"))
+
+    def test_stderr_too(self):
+        written = self.written(cp932_pipe(), "stderr", cli_common._err)
+        self.assertIn(self.REPLY, written.decode("utf-8"))
+
+    def test_a_console_is_left_to_the_console(self):
+        stream = cp932_stream()
+        written = self.written(stream).decode("cp932")
+        self.assertEqual(stream.encoding, "cp932")
+        self.assertIn("実装しました %s テストも通過" % ESCAPED_EM_DASH, written)
+
+    def test_pythonioencoding_keeps_the_encoding_it_names(self):
+        """The way back for a reader that expects the code page."""
+        os.environ["PYTHONIOENCODING"] = "cp932"
+        stream = cp932_pipe()
+        self.assertIn("実装しました", self.written(stream).decode("cp932"))
+        self.assertEqual(stream.encoding, "cp932")
+
+    def test_pythonutf8_is_a_choice_too(self):
+        os.environ["PYTHONUTF8"] = "0"
+        stream = cp932_pipe()
+        self.written(stream)
+        self.assertEqual(stream.encoding, "cp932")
+
+    def test_only_windows(self):
+        """Elsewhere the locale is the user's own choice of encoding."""
+        self.platform.stop()
+        from unittest import mock
+
+        with mock.patch.object(sys, "platform", "linux"):
+            stream = cp932_pipe()
+            self.written(stream)
+        self.platform.start()
+        self.assertEqual(stream.encoding, "cp932")
+
+    def test_json_keeps_its_characters_once_the_pipe_is_utf8(self):
+        stream = cp932_pipe()
+        saved, sys.stdout = sys.stdout, stream
+        try:
+            cli_common.tolerate_console_encoding()
+            cli_common._emit_json({"note": self.REPLY})
+        finally:
+            sys.stdout = saved
+        stream.flush()
+        self.assertEqual(json.loads(stream.buffer.getvalue().decode("utf-8"))["note"], self.REPLY)
 
 
 class TestAStreamThatCannotBeReconfigured(unittest.TestCase):

@@ -1,4 +1,4 @@
-<!-- translated-from: references/cli.md sha256:3e73142b058f4eb0416f296ca7e2ee9dcf942c0ff79238b073a5ee89f832d2e3 -->
+<!-- translated-from: references/cli.md sha256:0be26d0c952d4907441b721850e2c6d8e3babe55d37c2024e73bc2a2743e4c36 -->
 
 > この文書は [references/cli.md](../../../references/cli.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -1272,3 +1272,4 @@ stderr に一度だけ知らせます。実行中のステージがあるワー�
 | `… hit its Ns deadline (run.timeout_seconds.<role>, …) and was killed` | 実行がロールの期限より長くかかりました。1 回だけなら `--timeout` で、ずっとなら `config set run.timeout_seconds.<role> N` で引き上げてください。 |
 | 設定のパースエラー | 内蔵の YAML パーサは anchor、alias、ブロックスカラーを拒否します。簡素にするか、PyYAML を入れてください。 |
 | `—` が `\u2014` と表示される | コンソールがその文字を表現できません（日本語 Windows の cp932 など）。落としたり止まったりせず、エスケープして表示します。`chcp 65001` か `PYTHONIOENCODING=utf-8` で正しく表示されます。 |
+| Windows で出力を取り込むと日本語が化ける（PowerShell 5 の `$x = ...` など） | パイプとファイルには UTF-8 で書きます。Git Bash、Claude Code、Codex が読むのは UTF-8 です。ANSI コードページを前提にする読み手では UTF-8 が文字化けして見えます。その読み手には `PYTHONIOENCODING=cp932`（お使いのコードページ）を設定するか、PowerShell で `[Console]::OutputEncoding` を UTF-8 にしてください。 |
