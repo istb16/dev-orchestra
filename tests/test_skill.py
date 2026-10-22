@@ -612,6 +612,7 @@ _REGISTRY_FREE = (
     "context",
     "review_snapshot",
     "review_plan",
+    "plan_text",
     "review_round_context",
     "review_coverage",
     "summary",
@@ -972,6 +973,7 @@ class TestImportLayering(IsolatedCase):
             execution_launch,
             execution_tree,
             optimization_render,
+            plan_text,
             providers,
             review,
             review_common,
@@ -1069,8 +1071,9 @@ class TestImportLayering(IsolatedCase):
         for name in (*moved[review_plan], *moved[review_round_context]):
             self.assertFalse(hasattr(review_snapshot, name), name)
         # Constants carry no __module__ either.
-        for name in ("ADDED_HEADING_RE", "FENCE_RE", "HEADING_RE", "NONE_ADDED_RE"):
+        for name in ("ADDED_HEADING_RE", "HEADING_RE", "NONE_ADDED_RE"):
             self.assertIs(getattr(review, name), getattr(review_plan, name), name)
+        self.assertIs(review.FENCE_RE, plan_text.FENCE_RE)
         self.assertFalse(hasattr(cli, "_coverage_advice"))
         self.assertFalse(hasattr(cli_review, "_coverage_advice"))
         for name in progress:

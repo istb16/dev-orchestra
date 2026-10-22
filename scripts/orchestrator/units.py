@@ -29,9 +29,10 @@ import re
 from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Set
 
 from . import approval as approval_mod
-from . import miniyaml, review_plan
+from . import miniyaml
+from . import plan_text as plan_text_mod
 from . import workspace as ws
-from .config_common import MAX_PARALLEL_UNITS, default_config
+from .config_common import Implementation
 
 #: What a unit may be. ``integration`` is the one unit that comes last.
 KINDS = ("feature", "fix", "refactor", "docs", "test", "ci", "integration")
@@ -72,40 +73,16 @@ class Unit(NamedTuple):
     depends_on: List[str]
 
 
-class Settings(NamedTuple):
-    """The ``implementation`` block as ``settings_of`` reads it."""
-
-    max_parallel: int
-    hub_paths: List[str]
-
-
-def settings_of(data: Dict[str, Any]) -> Settings:
-    """The ``implementation`` block of ``data``, each value the default where it is absent or unusable.
-
-    Read leniently, as ``progress_settings_of`` is: commands load unvalidated.
-    """
-    defaults = default_config()["implementation"]
-    configured = data.get("implementation")
-    block = configured if isinstance(configured, dict) else {}
-    cap = block.get("max_parallel")
-    if not (isinstance(cap, int) and not isinstance(cap, bool) and 1 <= cap <= MAX_PARALLEL_UNITS):
-        cap = defaults["max_parallel"]
-    hubs = block.get("hub_paths")
-    if not (isinstance(hubs, list) and all(isinstance(p, str) and p.strip() for p in hubs)):
-        hubs = defaults["hub_paths"]
-    return Settings(cap, list(hubs))
-
-
 # --------------------------------------------------------------------------- the plan
 
 
 def _headings(lines: List[str]) -> List["tuple[int, str, int]"]:
-    """Each heading outside a code fence as (level, title, line), read as ``review_plan`` reads them."""
+    """Each heading outside a code fence as (level, title, line), read as the review reads them."""
     found: List["tuple[int, str, int]"] = []
-    for fenced in review_plan.fenced_lines(lines):
-        match = None if fenced.part else review_plan.HEADING_TEXT_RE.match(fenced.text)
+    for fenced in plan_text_mod.fenced_lines(lines):
+        match = None if fenced.part else plan_text_mod.HEADING_TEXT_RE.match(fenced.text)
         if match:
-            found.append((len(match.group(1)), review_plan.heading_title(match.group(2)), fenced.number))
+            found.append((len(match.group(1)), plan_text_mod.heading_title(match.group(2)), fenced.number))
     return found
 
 
@@ -140,12 +117,12 @@ def _body(plan_text: str, level: int, title_matches: Callable[[str], bool]) -> O
 def _yaml_block(lines: List[str]) -> Optional[str]:
     """The first fenced ``yaml`` block in ``lines``, without its fences."""
     inside: Optional[List[str]] = None
-    for fenced in review_plan.fenced_lines(lines):
+    for fenced in plan_text_mod.fenced_lines(lines):
         if inside is None:
-            if fenced.part == review_plan.OPEN and fenced.info.lower().split()[:1] in (["yaml"], ["yml"]):
+            if fenced.part == plan_text_mod.OPEN and fenced.info.lower().split()[:1] in (["yaml"], ["yml"]):
                 inside = []
             continue
-        if fenced.part == review_plan.CLOSE:
+        if fenced.part == plan_text_mod.CLOSE:
             return "\n".join(inside)
         inside.append(fenced.text)
     return None
@@ -194,7 +171,7 @@ def parse(plan_text: str) -> List[Unit]:
             depends = []
         if not isinstance(depends, list) or not all(isinstance(d, str) for d in depends):
             raise UnitsError("%s: depends_on must be a list of unit names" % name)
-        units.append(Unit(name, kind, [_normalise(f) for f in files], list(depends)))
+        units.append(Unit(name, kind, [normalise(f) for f in files], list(depends)))
     return units
 
 
@@ -257,7 +234,7 @@ def _demoted(plan_text: str) -> str:
     out: List[str] = []
     headings = {index for _, _, index in _headings(lines)}
     for index, line in enumerate(lines):
-        match = review_plan.HEADING_TEXT_RE.match(line) if index in headings else None
+        match = plan_text_mod.HEADING_TEXT_RE.match(line) if index in headings else None
         if match:
             hashes = match.group(1)
             line = line[: match.start(1)] + "#" * min(len(hashes) + shift, 6) + line[match.end(1) :]
@@ -313,13 +290,13 @@ def _files_body(plan_text: str) -> List[str]:
 
 def _listed_files(plan_text: str) -> List[str]:
     """The backticked paths under ``## Files to Modify``."""
-    return [_normalise(path) for line in _files_body(plan_text) for path in re.findall(r"`([^`\s]+)`", line)]
+    return [normalise(path) for line in _files_body(plan_text) for path in re.findall(r"`([^`\s]+)`", line)]
 
 
 # --------------------------------------------------------------------------- checks
 
 
-def _normalise(path: str) -> str:
+def normalise(path: str) -> str:
     """A ``files`` entry with forward slashes and no leading ``./``."""
     text = path.strip().replace("\\", "/")
     return text[2:] if text.startswith("./") else text
@@ -536,6 +513,26 @@ def warnings(units: Sequence[Unit], plan_text: str) -> List[str]:
             if not any(overlaps(path, entry) for entry in listed):
                 found.append("%s: %s is not in Files to Modify" % (unit.name, path))
     return found
+
+
+class Checked(NamedTuple):
+    """A plan's units as ``check`` finds them."""
+
+    units: List[Unit]
+    #: Why they cannot be run (``validate``); empty means they can.
+    problems: List[str]
+    #: What is only said (``warnings``); filled only when there are no problems.
+    warnings: List[str]
+
+
+def check(plan_text: str, settings: Implementation, known_files: Optional[Sequence[str]]) -> Checked:
+    """The plan's units, why they cannot be run, and what is only said about them.
+
+    Raises ``UnitsError`` as ``parse`` does.
+    """
+    found = parse(plan_text)
+    problems = validate(found, settings.hub_paths, plan_text, known_files)
+    return Checked(found, problems, [] if problems else warnings(found, plan_text))
 
 
 def schedule(units: Sequence[Unit], max_parallel: int) -> List[List[str]]:

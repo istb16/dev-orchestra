@@ -518,6 +518,10 @@ class Provider:
     #: is honoured, raw arguments included.
     local_only_options: Sequence[str] = ()
 
+    #: Ignored, repository-relative files this CLI reads that a unit's
+    #: worktree is given a copy of.
+    worktree_files: Sequence[str] = ()
+
     def __init__(self, executable: Optional[str] = None) -> None:
         if executable:
             self.executable = executable

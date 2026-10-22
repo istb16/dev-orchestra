@@ -1,4 +1,4 @@
-<!-- translated-from: references/architecture.md sha256:70c47acbf5aea2b39353698756f486b5fe1c5d7b887c1f9a07723b123ad61144 -->
+<!-- translated-from: references/architecture.md sha256:6b0e8e9f5e8c67e2ebce839cc6d32b1c91af0a2c4dc52d173b73952e48a2b52a -->
 
 > この文書は [references/architecture.md](../../../references/architecture.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -68,9 +68,11 @@ flowchart TD
 | --- | --- | --- |
 | スキル | `skills/dev-orchestra/SKILL.md`, `references/` | オーケストレーターが何をいつ決めるか |
 | CLI | `scripts/dev_orchestra.py`、`scripts/orchestrator/cli.py`（引数の解析と入口）と `cli_*.py`（コマンドのまとまりごとのモジュール） | エージェントが呼び出せる決定的な操作 |
-| ドメイン | `config.py`（`config_common.py`、`config_paths.py`、`config_keys.py`、`config_reviewers.py`、`config_seats.py`、`config_validation.py` を含み、`config.py` が再公開する）、`config_policy.py`、`config_trust.py`、`review_*.py`（`review.py` が再公開する）、`workspace.py`、`wizard.py`、`doctor.py`、`questions.py`、`units.py`、`units_merge.py`、`worktrees.py` | 設定のレイヤリング、プロジェクトファイル由来の席と書き込みオプションを拒否する方針、global 設定だけが決められる設定、スナップショット取得、パース、重複排除、トリアージ、診断、design の質問とユーザーの回答、plan の作業単位とその状態、作業単位の結果の作業ツリーへのマージ、作業単位が走る worktree |
+| ドメイン | `config.py`（`config_common.py`、`config_paths.py`、`config_keys.py`、`config_reviewers.py`、`config_seats.py`、`config_validation.py` を含み、`config.py` が再公開する）、`config_policy.py`、`config_trust.py`、`review_*.py`（`review.py` が再公開する）、`workspace.py`、`wizard.py`、`doctor.py`、`questions.py`、`plan_text.py`、`units.py`、`units_run.py`、`units_merge.py`、`worktrees.py` | 設定のレイヤリング、プロジェクトファイル由来の席と書き込みオプションを拒否する方針、global 設定だけが決められる設定、スナップショット取得、パース、重複排除、トリアージ、診断、design の質問とユーザーの回答、コードフェンスを避けて読む plan の Markdown（レビューと作業単位のモジュールが共有する）、plan の作業単位とその状態、作業単位の確保から後片付けまでの実行、作業単位の結果の作業ツリーへのマージ、作業単位が走る worktree |
 | provider | `scripts/orchestrator/providers/` | CLI の構文とモデル名を知っている唯一のコード |
 | 返答の言語のフック | `claude_hooks.py`、`scripts/hooks/`、`reply_language.py` | Claude Code のみ: 返答を `language.reply` の言語に保つ（[後述](#reply-language-hooks)） |
+
+作業単位のモジュールは plan を `plan_text` を通して読み、`review_*` のモジュールを通しては決して読みません。
 
 provider レイヤーより上のコードは、`claude` が `--model` を使い `codex` が `-m` を使うことを一切知りません。スキルレイヤーより下のコードは、設計ステージが必要かどうかを一切判断しません。
 
@@ -118,7 +120,7 @@ project/
 
 ## 作業単位と worktree
 
-`## Units` ブロックを持つ plan は、作業単位ごとに 1 回ずつ実装されます（`scripts/orchestrator/units.py`）。ほかの作業単位と並んで走りうる作業単位は、自分専用の git worktree を `<parent>/<repo>.units/<id8>-<name>` に持ちます。場所はリポジトリの隣で、中には決して置きません。2 つのエージェントが 1 つのツリーを編集すると、互いの書きかけのファイルが見えてしまいます。worktree なら、それぞれの結果がマージされるまで分かれたままです。並んで走るものがない作業単位は、その場で（ユーザーのツリーで）走ります。そこでは worktree もマージも何の役にも立たないからです。
+`## Units` ブロックを持つ plan は、作業単位ごとに 1 回ずつ実装されます（`scripts/orchestrator/units.py`。作業単位の確保から後片付けまでの実行は `units_run.py`）。ほかの作業単位と並んで走りうる作業単位は、自分専用の git worktree を `<parent>/<repo>.units/<id8>-<name>` に持ちます。場所はリポジトリの隣で、中には決して置きません。2 つのエージェントが 1 つのツリーを編集すると、互いの書きかけのファイルが見えてしまいます。worktree なら、それぞれの結果がマージされるまで分かれたままです。並んで走るものがない作業単位は、その場で（ユーザーのツリーで）走ります。そこでは worktree もマージも何の役にも立たないからです。
 
 worktree は `HEAD` ではなく、ユーザーの **作業ツリー** から始まります。コミットしていない変更や追跡していないファイルも、エージェントが見るべきものの一部だからです。ツリーは使い捨ての index を通して書き、参照されないコミットに包み（dev-orchestra の固定の名前と `--no-gpg-sign` を使うので、ユーザーの名前にも署名の設定にも左右されません）、detached でチェックアウトします。ユーザーの index、`HEAD`、ブランチには決して触れません。
 

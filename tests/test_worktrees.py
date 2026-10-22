@@ -8,15 +8,51 @@ import subprocess
 import sys
 import types
 import unittest
-from typing import Any, Dict
+from typing import Any, Dict, Sequence
 from unittest import mock
 
 from helpers import IsolatedCase, has_git, is_link, make_dir_link, read_file, remove_link
 
-from orchestrator import config as config_mod
 from orchestrator import units as units_mod
 from orchestrator import workspace as ws
 from orchestrator import worktrees
+
+#: What the CLI hands ``create`` for Claude and a project file (``worktrees.copies_for``).
+COPIES = (".claude/settings.local.json", ".dev-orchestra.yaml")
+
+
+class TestCopies(IsolatedCase):
+    def test_worktrees_copies_for_adds_the_project_file(self):
+        root = os.path.join(self.tmp, "project")
+        project_path = os.path.join(root, ".dev-orchestra.yaml")
+        files = (".claude/settings.local.json",)
+        self.assertEqual(worktrees.copies_for(root, files, project_path), list(COPIES))
+        self.assertEqual(worktrees.copies_for(root, files, None), [".claude/settings.local.json"])
+        self.assertEqual(worktrees.copies_for(root, (), None), [])
+
+    def test_worktrees_copies_for_takes_a_bare_string_as_one_file(self):
+        """A user adapter's ``worktree_files = "..."``, not split into characters."""
+        copies = worktrees.copies_for(self.tmp, ".claude/settings.local.json", None)
+        self.assertEqual(copies, [".claude/settings.local.json"])
+
+    def test_worktrees_copy_paths_inside_the_repository(self):
+        for relative, inside in (
+            ("..dotfile", True),
+            ("notes/..hidden", True),
+            ("a/../b.txt", True),
+            ("..", False),
+            (os.path.join("..", "x"), False),
+            ("a/../../x", False),
+            (os.path.abspath("x"), False),
+        ):
+            with self.subTest(relative=relative):
+                self.assertIs(worktrees._in_repository(relative), inside)
+
+    @unittest.skipUnless(os.name == "nt", "drives are Windows'")
+    def test_worktrees_copy_paths_with_a_drive_are_outside(self):
+        for relative in ("C:..\\secret.txt", "C:foo", "c:notes\\a.txt"):
+            with self.subTest(relative=relative):
+                self.assertFalse(worktrees._in_repository(relative))
 
 
 class TestSafeWalker(IsolatedCase):
@@ -30,7 +66,7 @@ class TestSafeWalker(IsolatedCase):
         link = os.path.join(tree, "sub", "env")
         make_dir_link(link, target)
         self.addCleanup(lambda: is_link(link) and remove_link(link))
-        self.assertTrue(worktrees.is_link(link))
+        self.assertTrue(ws.is_link(link))
         worktrees._safe_rmtree(tree)
         self.assertFalse(os.path.lexists(tree))
         self.assertEqual(read_file(kept), "the user's\n")
@@ -64,8 +100,8 @@ class WorktreeCase(IsolatedCase):
         self.commit_all("base")
         self.workspace = self.cli_workspace()
 
-    def create(self, name: str = "a") -> Dict[str, Any]:
-        record = worktrees.create(self.workspace, name, config_mod.load(self.project))
+    def create(self, name: str = "a", copies: Sequence[str] = COPIES) -> Dict[str, Any]:
+        record = worktrees.create(self.workspace, name, copies)
         self.addCleanup(worktrees.remove, self.project, record, name)
         return record
 
@@ -97,11 +133,12 @@ class TestRemoval(WorktreeCase):
 
         with (
             mock.patch.object(worktrees, "_git_remove", locked_twice),
-            mock.patch.object(worktrees.time, "sleep") as slept,
+            # worktrees' own time only: subprocess sleeps too while it waits for git.
+            mock.patch.object(worktrees, "time") as clock,
         ):
             self.assertTrue(worktrees.remove(self.project, record, "a"))
         self.assertEqual(len(calls), 3)
-        self.assertEqual([call.args[0] for call in slept.call_args_list], [0.2, 0.4])
+        self.assertEqual([call.args[0] for call in clock.sleep.call_args_list], [0.2, 0.4])
         self.assertFalse(os.path.lexists(record["worktree"]))
 
     def test_worktrees_remove_refuses_a_path_that_is_not_a_unit_worktree(self):
@@ -190,7 +227,7 @@ class TestRemoval(WorktreeCase):
         self.assertFalse(worktrees.remove(self.project, dict(record, base_commit="0" * 40), "a"))
         self.assertFalse(worktrees.remove(self.project, record, "b"))
         self.assertTrue(os.path.isdir(tree))
-        with mock.patch.object(worktrees.time, "sleep"):
+        with mock.patch.object(worktrees, "time"):
             self.assertTrue(worktrees.remove(self.project, record, "a"))
         self.assertFalse(os.path.lexists(tree))
 
@@ -220,15 +257,39 @@ class TestCreate(WorktreeCase):
         plan = os.path.join(tree, os.path.relpath(self.workspace.plan_path, self.project))
         self.assertEqual(read_file(plan), "# Plan\n")
 
+    def test_worktrees_copies_only_what_it_is_given(self):
+        self.write(".claude/settings.local.json", '{"permissions": {}}\n')
+        record = self.create(copies=())
+        self.assertFalse(os.path.lexists(os.path.join(record["worktree"], ".claude", "settings.local.json")))
+
+    def test_worktrees_skips_copies_outside_the_repository(self):
+        outside = os.path.join(self.tmp, "outside.txt")
+        ws.write_text(outside, "secret\n")
+        self.write("notes/kept.txt", "kept\n")
+        # Ignored, so only the copy brings it into the worktree.
+        self.write(".gitignore", ".venv/\n.claude/settings.local.json\n.dev-orchestra.yaml\n..dotfile\n")
+        self.write("..dotfile", "dots\n")
+        escapes = [outside, os.path.join("..", "outside.txt"), "notes/../../outside.txt"]
+        drive = os.path.splitdrive(self.project)[0]
+        if drive:
+            # Drive-relative: joined to the root, it climbs out of it.
+            escapes.append(drive + os.path.join("..", "outside.txt"))
+        record = self.create(copies=[*escapes, "notes/kept.txt", "..dotfile"])
+        tree = record["worktree"]
+        self.assertEqual(read_file(os.path.join(tree, "notes", "kept.txt")), "kept\n")
+        self.assertEqual(read_file(os.path.join(tree, "..dotfile")), "dots\n")
+        self.assertFalse(os.path.lexists(os.path.join(os.path.dirname(tree), "outside.txt")))
+        self.assertEqual(read_file(outside), "secret\n")
+
     def test_worktrees_refuses_a_linked_units_directory(self):
-        real = worktrees.is_link
+        real = ws.is_link
 
         def linked(path: str) -> bool:
             return os.path.basename(path) == "project.units" or real(path)
 
-        with mock.patch.object(worktrees, "is_link", linked):
+        with mock.patch.object(ws, "is_link", linked):
             with self.assertRaises(worktrees.WorktreeError):
-                worktrees.create(self.workspace, "a", config_mod.load(self.project))
+                worktrees.create(self.workspace, "a", COPIES)
         self.assertEqual(self.git("worktree", "list", "--porcelain").stdout.count("worktree "), 1)
 
     @unittest.skipUnless(hasattr(os, "getuid"), "POSIX owners and modes")
@@ -244,7 +305,7 @@ class TestCreate(WorktreeCase):
         mine = os.stat(units_dir).st_uid
         with mock.patch.object(worktrees.os, "getuid", lambda: mine + 1):
             with self.assertRaises(worktrees.WorktreeError):
-                worktrees.create(self.workspace, "b", config_mod.load(self.project))
+                worktrees.create(self.workspace, "b", COPIES)
 
     @unittest.skipUnless(hasattr(os, "getuid"), "POSIX owners and modes")
     def test_worktrees_units_directory_already_open_to_others_is_closed(self):

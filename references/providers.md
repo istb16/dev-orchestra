@@ -58,6 +58,7 @@ class Provider:
     static_enforcement: bool                                    # default: False
     preset_family: str | None                                   # default: None (not fitted to presets)
     local_only_options: Sequence[str]                           # default: ()
+    worktree_files: Sequence[str]                               # default: (); copied into a unit's worktree
     option_keys: Sequence[str]                                  # default: ("args",); the options keys a role may set
     def validate_options(options) -> list[str]                  # a key not in option_keys, a bad args or idle_timeout
     def run_warnings(outcome, mode) -> list[str]                # default: []
@@ -197,7 +198,11 @@ detect (a raise, a report that is not a mapping, an unknown status) keeps the
 adapter off a seat. `local_only_options` names
 options a write role takes only from the global config or `--extra`; on such
 an adapter no project-file option of a write role is honoured (see
-[Antigravity CLI adapter](#antigravity-cli-adapter)). `config_families()`
+[Antigravity CLI adapter](#antigravity-cli-adapter)). `worktree_files` names
+ignored, repository-relative files the CLI reads that a work unit's worktree
+is given a copy of when the user's tree has them, such as Claude Code's
+`.claude/settings.local.json`; an absolute path, or one outside the
+repository, is skipped. `config_families()`
 returns `(family, what it resolves to now)` for the families to put in a
 config, for a CLI whose listed models are dated ids that go stale;
 `dev-orchestra model list` prints them after the models.

@@ -11,7 +11,7 @@ import sys
 import time
 from typing import Any, Dict, List, NamedTuple, Optional, Tuple, Union, cast
 
-from . import activity, clocks, execution_tree, units_merge
+from . import activity, clocks, execution_tree, units_run
 from . import approval as approval_mod
 from . import config as config_mod
 from . import config_policy as policy_mod
@@ -331,7 +331,9 @@ def cmd_run(args: argparse.Namespace) -> int:
     # piece of its design pass in the ledger (`_spend_attempt`).
     unit: Optional[_UnitRun] = None
     if args.unit and seat.role == "implementer":
-        claimed = _worker_unit(args, workspace) if args.job_file else _claim_unit(args, loaded, workspace)
+        claimed = (
+            _worker_unit(args, workspace) if args.job_file else _claim_unit(args, loaded, provider, workspace)
+        )
         if isinstance(claimed, int):
             return claimed
         unit = claimed
@@ -1240,142 +1242,60 @@ def _unit_arg_refusal(args: argparse.Namespace, role: str) -> Optional[str]:
     return None
 
 
-def _unit_refusal(
-    found: List[units_mod.Unit], entries: Dict[str, Dict[str, Any]], unit: units_mod.Unit, cap: int
-) -> str:
-    """Why ``unit`` cannot start now; "" when it can. Read under the units lock."""
-    status = units_mod.status_of(entries, unit.name)
-    if status == units_mod.RUNNING:
-        return "it is already running"
-    if status == units_mod.MERGED:
-        return "it is already merged"
-    if status == units_mod.CONFLICTED:
-        return "it has conflicts to resolve: resolve them, then run units merge %s --resolved" % unit.name
-    if status == units_mod.SUCCEEDED:
-        return "its result is not merged yet: run units merge %s first" % unit.name
-    waiting = [dep for dep in unit.depends_on if units_mod.status_of(entries, dep) != units_mod.MERGED]
-    if waiting:
-        return "it depends on %s, not merged yet" % ", ".join(
-            "%s (%s)" % (dep, units_mod.status_of(entries, dep)) for dep in waiting
-        )
-    running = [other.name for other in found if units_mod.status_of(entries, other.name) == units_mod.RUNNING]
-    in_place = [name for name in running if (entries.get(name) or {}).get("in_place")]
-    if in_place:
-        return "%s is running in place, in the user's tree, and nothing may start beside it" % in_place[0]
-    if len(running) >= cap:
-        return "implementation.max_parallel is %d, and %s %s running" % (
-            cap,
-            ", ".join(running),
-            "is" if len(running) == 1 else "are",
-        )
-    return ""
-
-
 def _claim_unit(
-    args: argparse.Namespace, loaded: config_mod.LoadedConfig, workspace: ws.Workspace
+    args: argparse.Namespace, loaded: config_mod.LoadedConfig, provider: Provider, workspace: ws.Workspace
 ) -> Union[int, _UnitRun]:
     """Claim the unit ``--unit`` names and make its worktree; the exit code if it may not start.
 
-    The checks and the claim are made under the units lock, so two units
-    starting together cannot both pass the parallelism cap. The git work is
-    done after the lock is let go, with the unit already recorded as running.
+    The plan is checked here (``units.check``); the claim is
+    ``units_run.claim``'s.
     """
     name = args.unit
     plan_relative = workspace.relative(workspace.plan_path)
     plan_text = ws.read_text(workspace.plan_path)
+    settings = loaded.implementation_settings()
     try:
-        found = units_mod.parse(plan_text)
+        found, problems, warnings = units_mod.check(
+            plan_text, settings, units_mod.known_files(workspace.root)
+        )
     except units_mod.UnitsError as exc:
         return _refuse_run(args, ["--unit %s: %s: %s" % (name, plan_relative, exc)])
     unit = next((entry for entry in found if entry.name == name), None)
     if unit is None:
         return _refuse_run(args, ["--unit %s: %s has no such unit under ## Units" % (name, plan_relative)])
-    settings = units_mod.settings_of(loaded.data)
-    problems = units_mod.validate(found, settings.hub_paths, plan_text, units_mod.known_files(workspace.root))
     if problems:
         return _refuse_run(
             args,
             ["--unit %s: the units cannot be run (units check):" % name, *["  - %s" % p for p in problems]],
         )
-    digest = approval_mod.plan_digest(plan_text)
-    with units_mod.locked(workspace):
-        state = units_mod.load_state(workspace)
-        if state.get("plan_sha256") != digest:
-            held = sorted(
-                other
-                for other, entry in state["units"].items()
-                if isinstance(entry, dict)
-                and (entry.get("worktree") or entry.get("status") == units_mod.RUNNING)
-            )
-            if held:
-                return _refuse_run(
-                    args,
-                    [
-                        "--unit %s: units of an earlier plan are running or hold a worktree (%s); "
-                        "cancel their jobs or run units clean first" % (name, ", ".join(held))
-                    ],
-                )
-            state = {"plan_sha256": digest, "units": {}}
-        entries = {key: value for key, value in state["units"].items() if isinstance(value, dict)}
-        reason = _unit_refusal(found, entries, unit, settings.max_parallel)
-        if reason:
-            return _refuse_run(args, ["--unit %s: refused -- %s" % (name, reason)])
-        in_place = units_mod.runs_in_place(found, state, name)
-        previous = entries.get(name)
-        if previous is not None and previous.get("worktree"):
-            # Claimed again, the record would no longer name it, and nothing would remove it.
-            return _refuse_run(
-                args,
-                [
-                    "--unit %s: refused -- an earlier run's worktree is still there (%s); "
-                    "run units clean %s first" % (name, previous["worktree"], name)
-                ],
-            )
-        # This process, until a detached run names its job: a foreground run
-        # killed before its `finally` leaves no job, and `units clean` finds
-        # it gone by the pid.
-        state["units"][name] = {
-            "status": units_mod.RUNNING,
-            "in_place": in_place,
-            "job": None,
-            "pid": os.getpid(),
-            "pid_started": execution_tree.process_started(os.getpid()),
-            "started_at": ws.utcnow(),
-        }
-        units_mod.save_state(workspace, state)
-    if in_place:
-        # An earlier in-place run that was cancelled or failed left its edits in
-        # the tree: keep its base, so this run's diff covers both.
-        earlier = previous if isinstance(previous, dict) else {}
-        kept = earlier.get("in_place") and earlier.get("status") in (units_mod.CANCELLED, units_mod.FAILED)
-        base_tree = earlier.get("base_tree") if kept else None
-        if not base_tree:
-            base_tree = ws.write_tree(workspace.root, worktrees_mod.excludes(workspace)) or None
-        fields: Dict[str, Any] = {
-            "base_tree": base_tree,
-            "base_commit": None,
-            "worktree": None,
-            "links": [],
-            "checks_skipped": False,
-        }
-    else:
-        try:
-            fields = worktrees_mod.create(workspace, name, loaded)
-        except (worktrees_mod.WorktreeError, OSError) as exc:
-            _restore_unit(workspace, name, previous)
-            return _refuse_run(args, ["--unit %s: no worktree could be made: %s" % (name, exc)])
-    units_mod.update(workspace, name, fields)
-    if fields["checks_skipped"]:
+    # Only said, never refused, and by the parent alone: a worker does not check again.
+    # This unit's own: the others' are said when they run (or by units check).
+    own = "%s: " % name
+    for warning in warnings:
+        if warning.startswith(own):
+            _err("warning: --unit %s: %s" % (name, warning[len(own) :]))
+    try:
+        claimed = units_run.claim(
+            workspace,
+            found,
+            unit,
+            approval_mod.plan_digest(plan_text),
+            settings.max_parallel,
+            worktrees_mod.copies_for(workspace.root, provider.worktree_files, loaded.project_path),
+        )
+    except units_run.Refused as exc:
+        return _refuse_run(args, ["--unit %s: %s" % (name, exc)])
+    if claimed.checks_skipped:
         _err(
             "note: %s: the environment could not be linked into its worktree; "
             "its checks run after the merge" % name
         )
     return _UnitRun(
         name,
-        in_place,
-        workspace.root if in_place else str(fields["worktree"]),
-        header=units_mod.header(unit, plan_text, bool(fields["checks_skipped"])),
-        previous=previous,
+        claimed.in_place,
+        claimed.cwd,
+        header=units_mod.header(unit, plan_text, claimed.checks_skipped),
+        previous=claimed.previous,
     )
 
 
@@ -1394,89 +1314,22 @@ def _worker_unit(args: argparse.Namespace, workspace: ws.Workspace) -> Union[int
     return _UnitRun(args.unit, in_place, cwd, attempt_spent=bool(record.get("attempt_spent", True)))
 
 
-def _restore_unit(workspace: ws.Workspace, name: str, previous: Optional[Dict[str, Any]]) -> None:
-    """Put back the record a unit had before it was claimed."""
-    with units_mod.locked(workspace):
-        state = units_mod.load_state(workspace)
-        if previous is None:
-            state["units"].pop(name, None)
-        else:
-            state["units"][name] = previous
-        units_mod.save_state(workspace, state)
-
-
 def _release_unit(args: argparse.Namespace, workspace: ws.Workspace, unit: _UnitRun) -> None:
     """Undo a claim whose run was refused its attempt: the worktree goes, the record is put back."""
     if args.job_file:
         _finish_unit(workspace, unit.name, False)
         return
-    record = units_mod.load_state(workspace)["units"].get(unit.name)
-    if isinstance(record, dict):
-        worktrees_mod.remove(workspace.root, record, unit.name)
-    _restore_unit(workspace, unit.name, unit.previous)
+    units_run.release(workspace, unit.name, unit.previous)
 
 
 def _finish_unit(workspace: ws.Workspace, name: str, ok: bool) -> None:
-    """Close a unit's run: write its tree and diff, record how it ended, remove its worktree.
-
-    A unit that ran in place and succeeded is ``merged``: its changes are
-    already in the user's tree. One that ran in a worktree whose result tree
-    could not be written is ``failed``, so it can be run again. Nothing is
-    done for a unit not running.
-    """
-    record = units_mod.load_state(workspace)["units"].get(name)
-    if not isinstance(record, dict) or record.get("status") != units_mod.RUNNING:
-        return
-    in_place = bool(record.get("in_place"))
-    worktree = None if in_place else record.get("worktree")
-    tree_root = str(worktree) if worktree and os.path.isdir(str(worktree)) else workspace.root
-    links = [str(link) for link in (record.get("links") or [])]
-    result_tree = ""
-    if in_place or tree_root != workspace.root:
-        result_tree = ws.write_tree(tree_root, worktrees_mod.excludes(workspace, links))
-    fields: Dict[str, Any] = {"result_tree": result_tree or None, "finished_at": ws.utcnow()}
-    if record.get("error"):
-        fields["error"] = None  # an earlier run's
-    base_tree = record.get("base_tree")
-    if base_tree and result_tree:
-        code, diff, _ = ws.git(
-            ["diff", "--binary", "--no-color", str(base_tree), result_tree], workspace.root
-        )
-        if code == 0:
-            ws.write_text(os.path.join(workspace.units_dir, "%s.diff" % name), diff)
-    if not ok:
-        fields["status"] = units_mod.FAILED
-    elif in_place:
-        fields.update(status=units_mod.MERGED, merged_at=ws.utcnow())
-        if base_tree and result_tree:
-            fields["outside_files"] = _outside_files(workspace, name, str(base_tree), result_tree, links)
-    elif not result_tree:
-        # Recorded succeeded, it could be neither merged nor run again. Its
-        # edits are only in the worktree, so that stays for `units clean`.
-        fields.update(status=units_mod.FAILED, error="its result tree could not be written")
+    """Close a unit's run (``units_run.finish``), and say so when its worktree had to be kept."""
+    finished = units_run.finish(workspace, name, ok)
+    if finished.kept_worktree is not None:
         _err(
             "note: %s: its result tree could not be written; it is recorded as failed, and its "
-            "worktree with its edits is kept until units clean: %s" % (name, worktree or "-")
+            "worktree with its edits is kept until units clean: %s" % (name, finished.kept_worktree or "-")
         )
-        worktree = None
-    else:
-        fields["status"] = units_mod.SUCCEEDED
-    if worktree:
-        fields["worktree"] = None if worktrees_mod.remove(workspace.root, record, name) else worktree
-    units_mod.update(workspace, name, fields)
-
-
-def _outside_files(workspace: ws.Workspace, name: str, base: str, result: str, links: List[str]) -> List[str]:
-    """The files unit ``name`` changed outside its ``files``, as ``units merge`` records them."""
-    try:
-        found = units_mod.parse(ws.read_text(workspace.plan_path))
-        changed = units_merge.changed_paths(
-            workspace.root, base, result, worktrees_mod.excludes(workspace, links)
-        )
-    except (units_mod.UnitsError, units_merge.MergeError):
-        return []
-    unit = next((entry for entry in found if entry.name == name), None)
-    return units_merge.outside_files(unit.files, changed) if unit else []
 
 
 #: Why a ``--resume`` run ran fresh. Fixed phrases only: every value they could

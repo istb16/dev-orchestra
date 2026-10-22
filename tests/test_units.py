@@ -6,10 +6,13 @@ import json
 import os
 import unittest
 from typing import Any, Dict, List, Optional
+from unittest import mock
 
 from helpers import IsolatedCase, has_git, run_cli
 
+from orchestrator import config as config_mod
 from orchestrator import units as units_mod
+from orchestrator import units_run
 from orchestrator import workspace as ws
 
 
@@ -49,6 +52,14 @@ class TestParse(UnitsCase):
         code, out, err = self.check(text)
         self.assertEqual(code, 0, err)
         self.assertIn("single run", out)
+
+    def test_units_check_reads_the_plan_once(self):
+        text = plan([{"name": "a", "files": ["scripts/a.py"]}, {"name": "b", "files": ["scripts/b.py"]}])
+        with mock.patch.object(units_mod, "parse", wraps=units_mod.parse) as parsed:
+            code, out, err = self.check(text)
+        self.assertEqual(code, 0, err)
+        self.assertIn("2 units in", out)
+        self.assertEqual(parsed.call_count, 1)
 
     def test_units_parse_reads_entries(self):
         text = plan(
@@ -287,6 +298,22 @@ class TestCheck(UnitsCase):
         self.assertEqual(code, 0, err)
         self.assertIn("warning: a: scripts/other.py is not in Files to Modify", err)
 
+    def test_units_check_returns_the_warnings_only_without_problems(self):
+        settings = config_mod.Implementation(2, [])
+        text = plan([{"name": "a", "files": ["scripts/other.py"]}])
+        found, problems, warnings = units_mod.check(text, settings, None)
+        self.assertEqual([unit.name for unit in found], ["a"])
+        self.assertEqual(problems, [])
+        self.assertEqual(warnings, ["a: scripts/other.py is not in Files to Modify"])
+        clash = plan(
+            [{"name": "a", "files": ["scripts/other.py"]}, {"name": "b", "files": ["scripts/other.py"]}]
+        )
+        checked = units_mod.check(clash, settings, None)
+        self.assertNotEqual(checked.problems, [])
+        self.assertEqual(checked.warnings, [])
+        with self.assertRaises(units_mod.UnitsError):
+            units_mod.check("## Units\n\nno block\n", settings, None)
+
 
 class TestSchedule(UnitsCase):
     def test_units_schedule_waves(self):
@@ -450,6 +477,21 @@ class TestJoin(UnitsCase):
         self.assertIn("Do docs.", units_mod.section(joined, "docs"))
         self.assertNotIn("Not the docs section.", units_mod.section(joined, "docs"))
 
+    def test_units_join_prints_the_warnings_units_check_gives(self):
+        part = self.write("parts/parser.md", plan([{"name": "parser", "files": ["scripts/other.py"]}]))
+        output = os.path.join(self.project, "joined.md")
+        code, out, err = run_cli("units", "join", "--part", "parser=" + part, "--output", output)
+        self.assertEqual(code, 0, err)
+        self.assertIn("joined 1 unit plans", out)
+        self.assertIn("warning: parser: scripts/other.py is not in Files to Modify", err)
+        self.write_plan(ws.read_text(output))
+        code, _, checked = run_cli("units", "check")
+        self.assertEqual(code, 0, checked)
+        self.assertEqual(
+            [line for line in err.splitlines() if line.startswith("warning: ")],
+            [line for line in checked.splitlines() if line.startswith("warning: ")],
+        )
+
     def test_units_join_refusals_write_nothing(self):
         parser = self.write("parts/parser.md", plan([{"name": "parser", "files": ["scripts/a.py"]}]))
         two = self.write(
@@ -478,6 +520,13 @@ class TestJoin(UnitsCase):
         code, _, err = run_cli("units", "clean", "ghost")
         self.assertEqual(code, 2)
         self.assertIn("no unit named ghost has a record", err)
+
+    def test_units_clean_names_an_unknown_unit_by_its_own_error(self):
+        """Not ``KeyError``: one raised by a bug in the loop is not taken for a unit with no record."""
+        with self.assertRaises(units_run.NoSuchUnit) as raised:
+            units_run.clean(self.workspace, "ghost")
+        self.assertNotIsInstance(raised.exception, KeyError)
+        self.assertEqual(str(raised.exception), "no unit named ghost has a record")
 
 
 if __name__ == "__main__":

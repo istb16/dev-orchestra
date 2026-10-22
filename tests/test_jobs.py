@@ -445,6 +445,20 @@ class TestReusedPid(JobCase):
         self.assertEqual(asked, [False])
         self.assertEqual(job["status"], "cancelled")
 
+    def test_a_unit_shaped_record_with_a_dead_pid_may_not_still_run(self):
+        """``may_still_run`` reads any record that keeps a pid, such as a unit run in the foreground."""
+        from orchestrator import execution_tree
+
+        record = {"status": "running", "in_place": True, "job": None, "pid": 4242, "pid_started": "t0"}
+        with mock.patch.object(execution_tree, "pid_alive", lambda pid: False):
+            self.assertFalse(jobs_mod.may_still_run(dict(record, started_at=ws.utcnow())))
+            self.assertFalse(jobs_mod.may_still_run(record))
+        with (
+            mock.patch.object(execution_tree, "pid_alive", lambda pid: True),
+            mock.patch.object(execution_tree, "process_started", lambda pid: "t0"),
+        ):
+            self.assertTrue(jobs_mod.may_still_run(record))
+
     @unittest.skipUnless(os.name == "nt", "the case the issue measured")
     def test_an_older_record_leaves_a_live_bystander_running_on_windows(self):
         child = self.bystander()
@@ -1232,14 +1246,13 @@ class TestWaitForSeveral(JobCase):
 @unittest.skipUnless(has_git(), "needs git")
 class TestCancelUnit(JobCase):
     def test_jobs_cancel_unit_removes_worktree(self):
-        from orchestrator import config as config_mod
         from orchestrator import execution_tree, worktrees
         from orchestrator import units as units_mod
 
         self.init_git_repo()
         self.write("app.py", "print('hello')\n")
         self.commit_all("base")
-        record = worktrees.create(self.workspace, "a", config_mod.load(self.project))
+        record = worktrees.create(self.workspace, "a")
         self.addCleanup(worktrees.remove, self.project, record, "a")
         units_mod.update(self.workspace, "a", dict(record, status="running", in_place=False, job="u-1"))
         self.record("u-1", pid=4242, pid_started="t0", unit="a", worktree=record["worktree"])
@@ -1258,14 +1271,13 @@ class TestCancelUnit(JobCase):
         self.assertEqual(self.git("worktree", "list", "--porcelain").stdout.count("worktree "), 1)
 
     def test_jobs_cancel_keeps_a_failed_unit_failed(self):
-        from orchestrator import config as config_mod
         from orchestrator import execution_tree, worktrees
         from orchestrator import units as units_mod
 
         self.init_git_repo()
         self.write("app.py", "print('hello')\n")
         self.commit_all("base")
-        record = worktrees.create(self.workspace, "a", config_mod.load(self.project))
+        record = worktrees.create(self.workspace, "a")
         self.addCleanup(worktrees.remove, self.project, record, "a")
         units_mod.update(self.workspace, "a", dict(record, status="failed", in_place=False, job="u-1"))
         self.record("u-1", pid=4242, pid_started="t0", unit="a", worktree=record["worktree"])

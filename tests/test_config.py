@@ -1689,6 +1689,43 @@ class TestProgress(IsolatedCase):
         )
 
 
+class TestImplementationSettings(IsolatedCase):
+    """``implementation.max_parallel`` and ``hub_paths``, read leniently."""
+
+    DEFAULT = config_mod.Implementation(2, ["CHANGELOG*", "**/CHANGELOG*"])
+
+    def test_the_reader_falls_back_to_the_defaults(self):
+        for block in (
+            None,
+            3,
+            {},
+            {"max_parallel": 0, "hub_paths": "CHANGELOG.md"},
+            {"max_parallel": 9, "hub_paths": [""]},
+            {"max_parallel": True, "hub_paths": [3]},
+            {"max_parallel": "2", "hub_paths": None},
+        ):
+            with self.subTest(block=block):
+                self.assertEqual(
+                    config_mod.implementation_settings_of({"implementation": block}), self.DEFAULT
+                )
+        self.assertEqual(
+            config_mod.implementation_settings_of({"implementation": {"max_parallel": 8, "hub_paths": []}}),
+            config_mod.Implementation(8, []),
+        )
+
+    def test_the_loaded_config_reads_the_same(self):
+        self.write(
+            ".dev-orchestra.yaml",
+            "version: 1\nimplementation:\n  max_parallel: 3\n  hub_paths: [docs/index.md]\n",
+        )
+        loaded = config_mod.load(self.project)
+        self.assertEqual(loaded.implementation_settings(), config_mod.Implementation(3, ["docs/index.md"]))
+        self.assertEqual(loaded.implementation_settings(), config_mod.implementation_settings_of(loaded.data))
+        self.write(".dev-orchestra.yaml", "version: 1\nimplementation:\n  max_parallel: 99\n")
+        loaded = config_mod.load(self.project, validate_result=False)
+        self.assertEqual(loaded.implementation_settings(), self.DEFAULT)
+
+
 class TestRunTimeout(IsolatedCase):
     """``run.timeout_seconds.<role>``, the total deadline of one `run` (#258)."""
 

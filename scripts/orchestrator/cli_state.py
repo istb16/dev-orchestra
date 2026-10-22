@@ -12,11 +12,9 @@ from . import ledger as ledger_mod
 from . import optimization_render as opt_render
 from . import optimization_report as opt_report
 from . import review as review_mod
-from . import units as units_mod
-from . import units_merge
+from . import units_run
 from . import workflow as workflow_mod
 from . import workspace as ws
-from . import worktrees as worktrees_mod
 from .cli_common import _emit_json, _err, _ledger, _out, _workspace, _workspace_and_config, _wrote_plan
 
 # --------------------------------------------------------------------------- state
@@ -177,52 +175,18 @@ def cmd_jobs_cancel(args: argparse.Namespace) -> int:
         _err("no such job: %s" % args.job_id)
         return 2
     if job.get("unit") and job.get("status") == "cancelled":
-        _cancel_unit(workspace, job)
+        name = str(job["unit"])
+        cancelled = units_run.cancel(workspace, name, job.get("id"))
+        if cancelled.worktree_kept:
+            _err("warning: %s's worktree could not be removed; units clean tries again" % name)
+        if cancelled.left_in_tree:
+            _err(
+                "warning: %s ran in place; its edits stay in the working tree: %s"
+                % (name, ", ".join(cancelled.left_in_tree))
+            )
     _out(jobs_mod.render(job))
     # The worker may still be running, so the job was left unfinished.
     return 1 if job.get("not_stopped") else 0
-
-
-def _cancel_unit(workspace: ws.Workspace, job: Dict[str, Any]) -> None:
-    """Remove a cancelled unit job's worktree and record a running unit as ``cancelled``.
-
-    Only the unit this job ran: a record that has since gone to another job is
-    left alone. A failed one keeps its status, which says why it ended.
-    """
-    name = str(job["unit"])
-    record = units_mod.load_state(workspace)["units"].get(name)
-    if not isinstance(record, dict) or record.get("job") not in (None, job.get("id")):
-        return
-    if record.get("status") not in (units_mod.RUNNING, units_mod.FAILED):
-        return
-    fields: Dict[str, Any] = {}
-    if record.get("status") == units_mod.RUNNING:
-        fields.update(status=units_mod.CANCELLED, finished_at=ws.utcnow())
-    if record.get("worktree"):
-        gone = worktrees_mod.remove(workspace.root, record, name)
-        fields["worktree"] = None if gone else record["worktree"]
-        if not gone:
-            _err("warning: %s's worktree could not be removed; units clean tries again" % name)
-    if record.get("in_place") and record.get("base_tree"):
-        changed = _changed_in_place(workspace, str(record["base_tree"]))
-        if changed:
-            _err(
-                "warning: %s ran in place; its edits stay in the working tree: %s"
-                % (name, ", ".join(changed))
-            )
-    units_mod.update(workspace, name, fields)
-
-
-def _changed_in_place(workspace: ws.Workspace, base_tree: str) -> List[str]:
-    """The files changed in the working tree since ``base_tree``; [] when git cannot say."""
-    excludes = worktrees_mod.excludes(workspace)
-    now = ws.write_tree(workspace.root, excludes)
-    if not now:
-        return []
-    try:
-        return units_merge.changed_paths(workspace.root, base_tree, now, excludes)
-    except units_merge.MergeError:
-        return []
 
 
 def cmd_budget_show(args: argparse.Namespace) -> int:

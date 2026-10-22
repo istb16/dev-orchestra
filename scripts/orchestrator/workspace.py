@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
 import tempfile
@@ -691,3 +692,29 @@ def list_files(directory: str, suffix: str = "") -> List[str]:
         for name in os.listdir(directory)
         if name.endswith(suffix) and os.path.isfile(os.path.join(directory, name))
     )
+
+
+def is_link(path: str) -> bool:
+    """A symlink, or on Windows any reparse point, which a junction is.
+
+    ``os.path.islink`` is false for a junction before Python 3.12, so it alone
+    would let a walk follow one into the user's tree.
+    """
+    try:
+        info = os.lstat(path)
+    except OSError:
+        return False
+    if stat.S_ISLNK(info.st_mode):
+        return True
+    attributes = getattr(info, "st_file_attributes", 0)
+    return bool(attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
+
+
+def unlink_link(path: str) -> None:
+    """Remove the link at ``path`` itself, never what it points at."""
+    info = os.lstat(path)
+    if _IS_WINDOWS and stat.S_ISDIR(info.st_mode):
+        # A junction, or a directory symlink: rmdir removes the link alone.
+        os.rmdir(path)
+    else:
+        os.unlink(path)
