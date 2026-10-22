@@ -475,8 +475,12 @@ class TestFileKinds(MergeCase):
         self.unit("two", {"vendor/x.py": "x1\ntwo\n"})
         real = worktrees_mod.is_link
 
+        vendor = os.path.normcase(os.path.join(self.project, "vendor"))
+
         def vendor_is_a_link(path: str) -> bool:
-            return os.path.basename(path) == "vendor" or real(path)
+            # The working tree's vendor only: theirs/vendor, where the unit's
+            # version is kept, is a real directory.
+            return os.path.normcase(path) == vendor or real(path)
 
         with mock.patch.object(worktrees_mod, "is_link", vendor_is_a_link):
             code, _, err = run_cli("units", "merge", "two")
