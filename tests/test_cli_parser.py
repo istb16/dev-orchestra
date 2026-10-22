@@ -81,6 +81,7 @@ class TestParserShape(IsolatedCase):
         "status",
         "summary",
         "tokens show",
+        "units merge",
         "units status",
         "workflow list",
         "workflow show",

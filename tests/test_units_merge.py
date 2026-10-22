@@ -25,6 +25,8 @@ class MergeCase(IsolatedCase):
     def setUp(self):
         super().setUp()
         self.init_git_repo()
+        # The files are written with LF, and read back as written on every platform.
+        self.git("config", "core.autocrlf", "false")
         self.write("a.py", A_PY)
         self.write("b.py", "b1\n")
         self.write_bytes("image.bin", b"\0base")
@@ -195,6 +197,17 @@ class TestMerge(MergeCase):
         self.assertEqual(json.loads(out)["outside_files"], ["c.py"])
         self.assertEqual(self.record("one")["outside_files"], ["c.py"])
         self.assertEqual(self.read("c.py"), b"new\n")
+
+    def test_units_merge_writes_checkout_line_endings(self):
+        self.git("config", "core.autocrlf", "true")
+        self.unit("one", {"a.py": A_PY.replace("a7", "unit7"), "b.py": "b1\none\n"})
+        # The working tree's a.py as a checkout under core.autocrlf leaves it.
+        self.write_bytes("a.py", A_PY.replace("a1", "main1").replace("\n", "\r\n").encode())
+        code, _, err = run_cli("units", "merge", "one")
+        self.assertEqual(code, 0, err)
+        merged = A_PY.replace("a1", "main1").replace("a7", "unit7")
+        self.assertEqual(self.read("a.py"), merged.replace("\n", "\r\n").encode())
+        self.assertEqual(self.read("b.py"), b"b1\r\none\r\n")
 
     def test_units_merge_atomic_on_error(self):
         self.unit("one", {"a.py": A_PY.replace("a1", "one1"), "b.py": "b1\nmore\n"})

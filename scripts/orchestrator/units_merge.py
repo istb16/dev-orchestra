@@ -172,7 +172,7 @@ def _merge_file(root: str, name: str, change: "tuple[str, str, str, str, str]") 
             path, CONFLICT, None, current, unit_mode, None, "the unit deleted it, the working tree changed it"
         )
     theirs = _blob(root, path, unit_id, checkout=True)
-    if current_id is None:
+    if current is None:
         return FileMerge(
             path,
             CONFLICT,
@@ -182,9 +182,11 @@ def _merge_file(root: str, name: str, change: "tuple[str, str, str, str, str]") 
             theirs,
             "the working tree deleted it, the unit changed it",
         )
-    mine = _blob(root, path, current_id)
-    base = b"" if base_id is None else _blob(root, path, base_id)
-    unit = _blob(root, path, unit_id)
+    # All three as checked out, like the working file, so the merged text is
+    # written as it is: in the same line endings as a file the unit's version replaces.
+    mine = current
+    base = b"" if base_id is None else _blob(root, path, base_id, checkout=True)
+    unit = theirs
     if _is_binary(mine, base, unit):
         return FileMerge(path, CONFLICT, None, current, unit_mode, theirs, "a binary file")
     merged, conflicted = _merge_text(root, name, mine, base, unit)

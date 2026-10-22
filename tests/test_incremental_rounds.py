@@ -128,6 +128,17 @@ class TestWorkingTreeObject(RoundCase):
             handle.write("x = 1\n")
         self.assertRegex(review_snapshot._write_tree(fresh), r"^[0-9a-f]{40}$")
 
+    def test_an_exclude_git_already_ignores_still_gets_a_tree(self):
+        """`git add` fails on an exclude naming an ignored path, so only the others are passed."""
+        self.write(".gitignore", "ignored/\n")
+        self.write("ignored/a.py", "x = 1\n")
+        self.write("left_out/b.py", "x = 2\n")
+        tree = ws.write_tree(self.project, ["ignored", "left_out"])
+        self.assertRegex(tree, r"^[0-9a-f]{40}$")
+        names = self.git("ls-tree", "-r", "--name-only", tree).stdout.split()
+        self.assertIn("service.py", names)
+        self.assertFalse([name for name in names if name.startswith(("ignored/", "left_out/"))], names)
+
 
 # --------------------------------------------------------------------------- scope
 

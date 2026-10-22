@@ -19,9 +19,13 @@ import unittest
 from typing import Any, Dict, List, Tuple
 
 from helpers import REPO_ROOT, IsolatedCase, has_git, run_cli
+from test_units import plan
 
+from orchestrator import approval as approval_mod
 from orchestrator import jobs as jobs_mod
+from orchestrator import units as units_mod
 from orchestrator import workspace as ws
+from orchestrator import worktrees as worktrees_mod
 
 FINDING = """## Finding
 - Severity: high
@@ -199,6 +203,7 @@ KEYS: Dict[str, Tuple[List[str], List[str]]] = {
         [
             "budgets",
             "in_flight",
+            "passes",
             "runtime",
             "runtime_remaining_seconds",
             "signatures",
@@ -282,6 +287,9 @@ KEYS: Dict[str, Tuple[List[str], List[str]]] = {
         ],
     ),
     "summary": ([], ["counts", "design_counts", "models", "reviewers", "skipped", "stages", "tokens"]),
+    # Last: the plan with units they need replaces the approved one.
+    "units status": ([], ["failed", "plan_sha256", "ready", "units"]),
+    "units merge": (["one"], ["files", "outside_files", "status", "unit"]),
 }
 
 # A list of entries, or a mapping of name to entry: the keys are each entry's.
@@ -365,6 +373,20 @@ class TestJsonTopLevelKeys(IsolatedCase):
         jobs_mod.write_job(workspace, job)
         self.plan_path = workspace.plan_path
 
+    def add_finished_unit(self) -> None:
+        """A plan with unit ``one``, succeeded with a result that changed nothing, for `units merge`."""
+        workspace = self.cli_workspace()
+        text = plan([{"name": "one", "files": ["app.py"]}])
+        ws.write_text(self.plan_path, text)
+        with units_mod.locked(workspace):
+            state = units_mod.load_state(workspace)
+            state["plan_sha256"] = approval_mod.plan_digest(text)
+            units_mod.save_state(workspace, state)
+        tree = ws.write_tree(self.project, worktrees_mod.excludes(workspace))
+        self.assertTrue(tree)
+        record = {"status": units_mod.SUCCEEDED, "base_tree": tree, "result_tree": tree, "links": []}
+        units_mod.update(workspace, "one", record)
+
     def entries(self, name: str, payload: Any) -> List[Any]:
         if name in LISTS:
             self.assertIsInstance(payload, list)
@@ -380,6 +402,8 @@ class TestJsonTopLevelKeys(IsolatedCase):
             if name == "design approve":
                 # Only now: a plan waiting for approval would stop `run`.
                 ws.write_text(self.plan_path, "# Plan\n")
+            if name == "units status":
+                self.add_finished_unit()
             with self.subTest(command=name):
                 code, out, err = run_cli(*name.split(), *arguments, "--json")
                 self.assertEqual(code, 0, err)

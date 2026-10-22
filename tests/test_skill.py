@@ -627,6 +627,7 @@ _ALLOWED = {
     ("workspace.py", "_read_shared", "ctypes"),
     ("workspace.py", "_read_shared", "ctypes.wintypes"),
     ("workspace.py", "_read_shared", "msvcrt"),
+    ("worktrees.py", "_link", "_winapi"),
     # Plugin loading.
     ("providers/__init__.py", "_bootstrap", ".agy"),
     ("providers/__init__.py", "_bootstrap", ".claude"),

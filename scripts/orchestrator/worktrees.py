@@ -88,6 +88,7 @@ def _link(target: str, link: str) -> None:
         os.symlink(target, link, target_is_directory=True)
         return
     try:
+        # Windows only: _winapi exists nowhere else.
         import _winapi
 
         _winapi.CreateJunction(target, link)

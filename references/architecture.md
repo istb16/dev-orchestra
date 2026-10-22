@@ -150,8 +150,9 @@ touches only the working tree: `git apply --3way` writes the index, and
 `git merge-tree --write-tree` needs git 2.38. Every file's result is worked
 out before any is written, so a merge that fails part way leaves the tree as
 it was, and merges are taken one at a time under
-`execution/units/merge.lock`. A three-way-merged file is written with LF line
-endings, as git stores it. What cannot be merged as text -- a binary file, a
+`execution/units/merge.lock`. Every file is written in its checkout form, with
+the line endings a checkout gives it: a three-way merge takes its inputs as
+checked out. What cannot be merged as text -- a binary file, a
 delete against a change, a symlink or a submodule -- keeps the user's version
 and saves the unit's under `execution/units/<name>/theirs/`.
 
