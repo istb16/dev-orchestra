@@ -13,6 +13,19 @@ authors can find it.
 
 ## [Unreleased]
 
+### Changed
+
+- **The workflow asks for cheaper runs where the work allows.** These are
+  changes to the guidance in `references/workflow.md`; the CLI is unchanged.
+  The design request asks for a shorter plan: background as bullets that cite
+  `path:line`, one line per test, and the files and functions each step
+  touches. A revision leaves the sections no finding touches as they were. The
+  implementation request asks the implementer to read only what a step needs
+  and to run lint and type checks once per step. A plan with more than four
+  Implementation Steps runs the implementer in at most three parts, since a
+  long run costs more per tool call. A small implementation or fix runs on the
+  role's `light` tier when the role has one.
+
 ## [1.1.2] - 2026-10-22
 
 ### Added
