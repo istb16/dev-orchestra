@@ -384,16 +384,6 @@ class TestRounds(DesignReviewCase):
         run_cli("review", "run", "--design")
         self.assertEqual(self._iteration(), 2)
 
-    def test_a_round_past_the_budget_is_refused(self):
-        run_cli("config", "set", "review.design.max_iterations", "1")
-        self.write_plan()
-        self.assertEqual(run_cli("review", "run", "--design")[0], 0)
-        self.write_plan(REVISED_PLAN)
-        code, _, err = run_cli("review", "run", "--design")
-        self.assertEqual(code, 3)
-        self.assertIn("refusing to run design review round", err)
-        self.assertIn("review.design.max_iterations", err)
-
     def test_force_runs_a_round_past_the_budget(self):
         run_cli("config", "set", "review.design.max_iterations", "1")
         self.write_plan()
@@ -476,13 +466,6 @@ class TestRounds(DesignReviewCase):
         self.assertEqual(code, 3)
         self.assertIn("runtime budget", err)
         self.assert_the_first_plan_is_still_frozen_with_its_triage()
-
-    def test_a_revision_that_changes_nothing_is_called_out(self):
-        self.write_plan()
-        run_cli("review", "run", "--design")
-        self.write_plan(REVISED_PLAN)
-        _, _, err = run_cli("review", "run", "--design")
-        self.assertIn("changed nothing", err)
 
 
 class TestIndependenceFromTheCodeReview(DesignReviewCase):

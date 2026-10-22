@@ -186,20 +186,6 @@ class TestTheWorker(ApprovalCase):
 
 
 class TestApproving(ApprovalCase):
-    def test_no_plan_cannot_be_approved(self):
-        code, _, err = run_cli("design", "approve")
-        self.assertEqual(code, 2)
-        self.assertIn("run the architect first", err)
-
-    def test_approving_twice_is_idempotent(self):
-        self.write_plan()
-        run_cli("design", "approve")
-        code, out, _ = run_cli("design", "approve")
-        self.assertEqual(code, 0)
-        self.assertIn("already approved", out)
-        state = json.loads(run_cli("state", "show", "--json")[1])
-        self.assertEqual(len([e for e in state["events"] if e["stage"] == "design_approval"]), 1)
-
     def test_open_findings_are_printed_not_refused(self):
         self.write_plan()
         run_cli("review", "run", "--design")

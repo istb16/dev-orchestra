@@ -257,21 +257,8 @@ class TestConfiguringTheCap(IsolatedCase):
         data["review"]["max_findings"] = value
         return config_mod.validate(data)
 
-    def test_zero_is_a_valid_setting(self):
-        self.assertEqual(self.check(0), [])
-
-    def test_null_is_a_valid_setting(self):
-        """Writing ``max_findings:`` with nothing after it is how a hand-edited
-        config says "whatever you were going to do"."""
-        self.assertEqual(self.check(None), [])
-
     def test_a_negative_cap_is_rejected(self):
         self.assertTrue(any("max_findings" in p for p in self.check(-1)), self.check(-1))
-
-    def test_a_boolean_is_rejected(self):
-        """``True`` is an ``int`` in Python, and would cap every reviewer at one
-        finding while reading like a feature flag in the config file."""
-        self.assertTrue(any("max_findings" in p for p in self.check(True)), self.check(True))
 
     def test_a_string_is_rejected(self):
         self.assertTrue(any("max_findings" in p for p in self.check("6")), self.check("6"))

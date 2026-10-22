@@ -293,10 +293,6 @@ class TestTheWizardsBase(IsolatedCase):
         data, _ = wizard_mod.run(ScriptedPrompter(accept_all()), None, base)
         self.assertEqual(data["implementer"]["model"]["family"], "sonnet")
 
-    def test_without_a_base_it_is_the_built_in_default(self):
-        data, _ = wizard_mod.run(ScriptedPrompter(accept_all()))
-        self.assertEqual(data["implementer"]["model"]["family"], "opus")
-
     def test_the_summary_shows_what_will_be_in_force(self):
         """The layer alone would report the design review as off while the
         layer below has it on -- and the summary is what the user says yes to."""

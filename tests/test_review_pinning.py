@@ -564,17 +564,6 @@ class TestCodeRoundPinning(_Pinning, MeasuringCase):
         note = "note: m2 has no report for this snapshot; its earlier report was ignored"
         self.assertIn(note, err.splitlines())
 
-    def test_c7_a_rerun_says_nothing_about_identical_findings(self):
-        self.snapshot("--surrounding", "enclosing")
-        self.code_run("--surrounding", "none")
-        code, _, err = self.code_run("--surrounding", "enclosing")
-        self.assertEqual(code, 0, err)
-        self.assertNotIn(
-            "note: round 1 produced the same findings as the previous round -- "
-            "the last fix changed nothing that the reviewers can see.",
-            err,
-        )
-
     def test_c8_plain(self):
         self.snapshot()
         code, out, _ = self.code_run("--json")

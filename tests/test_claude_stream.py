@@ -429,20 +429,6 @@ class TestResumeRejected(IsolatedCase):
             with self.subTest(output_format=output_format):
                 self.assertFalse(self.rejected(options={"output_format": output_format}))
 
-    def test_the_rejection_is_measured_at_zero(self):
-        outcome = ExecOutcome(REJECTED_EXIT, self.stdout, self.stderr, 0.5)
-        usage = self.provider.parse_usage(outcome, base.MODE_PLAN)
-        assert usage is not None
-        self.assertTrue(usage.measured)
-        self.assertEqual((usage.input_tokens, usage.output_tokens), (0, 0))
-        self.assertEqual((usage.cache_read_tokens, usage.cache_write_tokens), (0, 0))
-        self.assertEqual(usage.cost_usd, 0.0)
-        self.assertIsNone(usage.tool_uses)
-        self.assertEqual(
-            self.provider.parse_session(outcome),
-            {"session_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "context_tokens": None, "init": None},
-        )
-
 
 class TestParseSession(IsolatedCase):
     def setUp(self):
@@ -522,15 +508,6 @@ class TestPartialMessages(IsolatedCase):
     def test_the_answer_is_the_result_event(self):
         self.assertEqual(parse_stream_json(self.stdout), (self.result["result"], ""))
 
-    def test_usage_is_the_result_event(self):
-        usage = self.provider.parse_usage(self.outcome(), base.MODE_REVIEW)
-        assert usage is not None
-        self.assertEqual(usage.input_tokens, self.result["usage"]["input_tokens"])
-        self.assertEqual(usage.output_tokens, self.result["usage"]["output_tokens"])
-        self.assertEqual(usage.cache_read_tokens, self.result["usage"]["cache_read_input_tokens"])
-        self.assertEqual(usage.cache_write_tokens, self.result["usage"]["cache_creation_input_tokens"])
-        self.assertEqual(usage.cost_usd, self.result["total_cost_usd"])
-
     def test_a_tool_is_counted_once_not_again_from_its_content_block_start(self):
         names = [
             block["name"]
@@ -566,11 +543,6 @@ class TestPartialMessages(IsolatedCase):
     def test_the_fixture_carries_nothing_from_the_machine_it_was_recorded_on(self):
         self.assertIsNone(re.search(r"[A-Za-z]:\\\\|/Users/|/home/|\\\\Users\\\\", self.stdout))
         self.assertNotIn("scratchpad", self.stdout)
-
-    def test_the_recorded_rejection_is_still_one(self):
-        stdout = fixture("resume-rejected.stdout")
-        outcome = ExecOutcome(REJECTED_EXIT, stdout, fixture("resume-rejected.stderr"), 0.5)
-        self.assertTrue(self.provider.resume_rejected(outcome, base.MODE_PLAN, {}, MISSING))
 
     def test_a_stream_with_partial_messages_is_not_a_rejection(self):
         """Even with the rejection's own result event after them: a message

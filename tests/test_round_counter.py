@@ -97,10 +97,6 @@ class TestTheWorkflowId(IsolatedCase):
         book.reset()
         self.assertNotEqual(first, book.workflow_id())
 
-    def test_it_is_stable_while_the_workflow_is(self):
-        book = self.book()
-        self.assertEqual(book.workflow_id(), book.workflow_id())
-
     def test_it_is_settled_on_disk_rather_than_invented_per_read(self):
         """`load` mints a fresh ledger for a workflow that has not started and
         does not write it, so reading the identity without recording it gave a

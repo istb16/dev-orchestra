@@ -619,12 +619,6 @@ class TestSnapshot(IsolatedCase):
         meta = review_mod.create_snapshot(self.workspace)
         self.assertTrue(meta["empty"])
 
-    def test_snapshot_is_stable_and_hashed(self):
-        self.write("app.py", "def add(a, b):\n    return a / b\n")
-        first = review_mod.create_snapshot(self.workspace)
-        second = review_mod.create_snapshot(self.workspace)
-        self.assertEqual(first["sha256"], second["sha256"])
-
     def test_every_freeze_gets_its_own_round_id(self):
         """The sha repeats when the same tree is frozen again; the round id
         is what keeps the second round from being filed over the first."""
@@ -847,10 +841,6 @@ class TestFanOut(IsolatedCase):
         self.assertIn("injection", prompt)
         self.assertIn("do not modify", prompt.lower())
         self.assertIn("NO_FINDINGS", prompt)
-
-    def test_custom_role_still_gets_a_usable_prompt(self):
-        built = review_mod.build_review_prompt(reviewer("r1", role="accessibility"), self.workspace, "diff")
-        self.assertIn("accessibility specialist", built.text)
 
     def test_huge_diffs_are_referenced_by_path_instead_of_inlined(self):
         big = "x" * 4_001

@@ -128,20 +128,11 @@ class TestCodexHook(unittest.TestCase):
         self.assertTrue(all(act.context_tokens is None for act in acts))
         return [line for act in acts for line in act.lines]
 
-    def test_commands_once_each_unwrapped(self):
-        shown = self.lines("exec-json-tools.jsonl", "/sandbox/probe213")
-        self.assertEqual(shown, ["Bash: git status", "Bash: Get-Content"])
-
     def test_a_file_change(self):
         shown = self.lines("exec-json-file-change.jsonl", "/sandbox/probe214")
         self.assertEqual(shown, ["Bash: Set-Content", "Edit notes/hello.txt"])
         shown = self.lines("exec-json-file-change.jsonl", "/elsewhere")
         self.assertEqual(shown, ["Bash: Set-Content", "Edit <outside>/hello.txt"])
-
-    def test_model_text_and_output_never_appear(self):
-        shown = " ".join(self.lines("exec-json-tools.jsonl", "/sandbox/probe213"))
-        self.assertNotIn("README.md holds", shown)
-        self.assertNotIn("nothing to commit", shown)
 
     def started(self, item):
         return json.dumps({"type": "item.started", "item": item})

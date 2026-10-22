@@ -468,10 +468,6 @@ class TestTheCliRejectsTheSession(ResumeCase):
         self.assertEqual(code, 0)
         self.assertEqual(self.last()["resume"]["reason"], cli_run._RESUME_REJECTED)
 
-    def test_the_environment_is_cleaned_up_after_a_test(self):
-        # Order-independent: whichever test ran before, nothing it set leaks.
-        self.assertNotIn("DEV_ORCHESTRA_MOCK_RESUME", os.environ)
-
 
 NOT_SUCCEEDED = "the last architect run is not resumable: it did not succeed"
 

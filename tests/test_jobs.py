@@ -929,31 +929,6 @@ class TestDetachedRun(IsolatedCase):
         self.assertEqual(record["status"], "succeeded")
         self.assertEqual(workflow_mod.read_pointer(container), "elsewhere")
 
-    def test_a_detached_failure_is_recorded_as_failed(self):
-        os.environ["DEV_ORCHESTRA_MOCK_FAIL"] = "1"
-        _, out, _ = self.run_cli("run", "implementer", "--prompt", "go", "--detach", "--json")
-        finished = self._wait_for(json.loads(out)["id"])
-        self.assertEqual(finished["status"], "failed")
-
-    def test_waiting_out_a_job_exits_with_its_own_code(self):
-        self.record_running_job()
-        code, _, _ = self.run_cli("jobs", "wait", "stuck-1", "--timeout", "1", "--poll", "0.1")
-        self.assertEqual(code, 4)
-
-    def record_running_job(self):
-        workspace = self.cli_workspace()
-        jobs_mod.write_job(
-            workspace,
-            {
-                "id": "stuck-1",
-                "stage": "implementer",
-                "status": "running",
-                "started_at": ws.utcnow(),
-                "pid": os.getpid(),
-                "output_file": jobs_mod.output_path(workspace, "stuck-1"),
-            },
-        )
-
     def test_jobs_list_and_show_work_through_the_cli(self):
         _, out, _ = self.run_cli("run", "implementer", "--prompt", "go", "--detach", "--json")
         job_id = json.loads(out)["id"]

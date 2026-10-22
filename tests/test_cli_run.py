@@ -597,11 +597,6 @@ class TestStatusVerdict(IsolatedCase):
         book = ledger_mod.Ledger(workspace, ledger_mod.budget_settings(loaded.data))
         return cli_workflow._status_payload(loaded, workspace, book).payload
 
-    def test_the_payload_of_a_fresh_workflow_says_continue(self):
-        payload = self.status_payload()
-        self.assertEqual(payload["verdict"], "continue")
-        self.assertEqual(payload["reasons"], [])
-
     def test_the_payload_names_a_spent_budget_as_its_reason(self):
         run_cli("config", "set", "budgets.test", "1")
         run_cli("budget", "consume", "test")

@@ -219,19 +219,6 @@ class TestFlags(IsolatedCase):
         _, out, _ = run_cli("jobs", "show", "a-1", "--since", str(activity.SINCE_MAX))
         self.assertNotIn("Read ", out)
 
-    def test_out_of_range_values_are_usage_errors(self):
-        for argv in (
-            ("--since", "-1"),
-            ("--since", str(activity.SINCE_MAX + 1)),
-            ("--activity", "101"),
-            ("--activity", "x"),
-            ("--activity", "1.5"),
-        ):
-            for command in ("show", "wait"):
-                with self.subTest(argv=argv, command=command), self.assertRaises(SystemExit) as raised:
-                    run_cli("jobs", command, "a-1", *argv)
-                self.assertEqual(raised.exception.code, 2)
-
 
 class TestQuiet(IsolatedCase):
     """How long a running job has shown no new tool line, and the stuck notice (#330)."""

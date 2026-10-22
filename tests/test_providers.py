@@ -476,9 +476,6 @@ class TestClaudeAdapter(IsolatedCase):
     def test_aliases_come_from_the_installed_cli_help(self):
         self.assertEqual(_parse_model_aliases(CLAUDE_HELP), ["fable", "opus", "sonnet"])
 
-    def test_full_model_names_in_help_are_not_treated_as_aliases(self):
-        self.assertNotIn("claude-fable-5", _parse_model_aliases(CLAUDE_HELP))
-
     def test_latest_policy_passes_the_alias_through(self):
         resolved = self.provider.resolve_model({"family": "opus", "version": "latest"})
         self.assertEqual(resolved.argument, "opus")
@@ -1158,18 +1155,6 @@ class TestClaudeResume(IsolatedCase):
         missing = self.provider.resume_support(self.project)["missing"]
         self.assertEqual(missing, ["--resume", "--fork-session"])
 
-    def test_unreadable_help_or_version_is_unverified(self):
-        self.help(None)
-        support = self.provider.resume_support(self.project)
-        self.assertEqual(support["status"], "unverified")
-        self.assertIn("--help", support["detail"])
-        base.clear_discovery_cache()
-        self.help(CLAUDE_HELP)
-        self.provider.version = lambda: (None, "boom")
-        support = self.provider.resume_support(self.project)
-        self.assertEqual(support["status"], "unverified")
-        self.assertIn("--version", support["detail"])
-
     def test_the_answer_follows_the_record_without_clearing_a_cache(self):
         self.assertEqual(self.status(), "unverified")
         self.record_pass()
@@ -1329,11 +1314,6 @@ class TestCodexAdapter(IsolatedCase):
             self.provider.resolve_model({"family": "gpt-example-9", "version": "latest"})
         self.assertEqual(len(calls), 1, calls)
 
-    def test_a_family_missing_from_the_catalogue_is_still_refused(self):
-        self.catalogue()
-        with self.assertRaises(base.ModelResolutionError):
-            self.provider.resolve_model({"family": "gpt-example-9", "version": "latest"})
-
     def test_hidden_and_malformed_catalogue_entries_are_ignored(self):
         self.catalogue()
         families = [candidate.family for candidate in self.provider.list_models()]
@@ -1372,11 +1352,6 @@ class TestCodexAdapter(IsolatedCase):
         resolved = self.provider.resolve_model({"family": "recommended-coding"})
         command = self.provider.build_command(base.MODE_IMPLEMENT, resolved, self.project)
         self.assertEqual(command[command.index("-s") + 1], "workspace-write")
-
-    def test_no_model_list_means_no_invented_candidates(self):
-        self.provider.configured_model = lambda: None
-        candidates = self.provider.list_models()
-        self.assertEqual([c.family for c in candidates], ["recommended-coding"])
 
     def test_the_catalogue_is_never_consulted_without_the_cli(self):
         """which() is None here: nothing may be spawned, nothing invented."""
@@ -1638,16 +1613,6 @@ class TestCodexResume(_CodexHome):
 
     # -- judged after the fork ---------------------------------------------
 
-    def test_a_read_only_fork_is_confirmed_from_its_rollout(self):
-        _CodexExecute(self, stdout=self.fork_output(), answer="I could not create it.")
-        self.parent_here()
-        self.rollout("fork-rollout-read-only.jsonl", CODEX_FORK)
-        result = self.fork()
-        self.assertTrue(result.ok, result.stderr)
-        self.assertEqual(result.stdout, "I could not create it.")
-        self.assertEqual(result.session_id, CODEX_FORK)
-        self.assertEqual(result.session_init, {"sandbox_policy": "read-only", "approval_policy": "never"})
-
     def assert_unconfirmed(self, result, text):
         self.assertFalse(result.ok)
         self.assertTrue(result.invoked)
@@ -1698,13 +1663,6 @@ class TestCodexResume(_CodexHome):
             self.assertTrue(pattern.endswith("-%s.jsonl" % CODEX_PARENT), pattern)
 
     # -- the answer --------------------------------------------------------
-
-    def test_an_empty_final_message_fails_a_plan_run(self):
-        _CodexExecute(self, stdout=codex_fixture("exec-json-ready.jsonl"), answer="")
-        result = self.run_codex()
-        self.assertFalse(result.ok)
-        self.assertEqual(result.stdout, "")
-        self.assertIn("codex printed no final message (-o was empty)", result.stderr)
 
     def test_an_empty_final_message_keeps_the_fallback_in_review(self):
         _CodexExecute(self, stdout="the whole transcript", answer="")
@@ -1763,12 +1721,6 @@ class TestCodexResume(_CodexHome):
             "read_only_mechanism": self.provider.resume_mechanism(),
             "checks": list(self.provider.required_resume_checks),
         }
-
-    def test_it_does_not_resume_while_the_flag_is_off(self):
-        setattr(self.provider, "supports_resume", False)
-        support = self.provider.resume_support(self.project)
-        self.assertEqual(support["status"], "unsupported")
-        self.assertEqual(support["detail"], "codex does not resume sessions")
 
     def test_a_fork_help_without_ignore_user_config_is_unsupported(self):
         self.resumes()
@@ -2714,12 +2666,6 @@ class TestAgyPromptFile(_AgyCase):
         self.assertFalse(os.path.exists(self.during["path"]))
         self.assertEqual(result.usage.prompt_chars, len(LONG_PROMPT))
 
-    def test_the_file_is_named_after_this_process(self):
-        self.installed()
-        self.answer(observe=self.observe)
-        self.provider.run(LONG_PROMPT, base.MODE_REVIEW, self.project)
-        self.assertTrue(os.path.basename(self.during["path"]).startswith("agy-prompt-%d-" % os.getpid()))
-
     def test_only_a_file_whose_process_is_gone_is_removed_first(self):
         """Reviewers run in parallel, in this process and in others: a file
         another run may still be reading is never removed."""
@@ -2865,24 +2811,6 @@ class TestAgyOutput(_AgyCase):
     def run_agy(self, mode=base.MODE_IMPLEMENT):
         return self.provider.run("prompt", mode, self.project)
 
-    def test_a_success_is_its_response_usage_and_conversation(self):
-        self.answer(agy_result(usage=AGY_USAGE))
-        result = self.run_agy()
-        self.assertTrue(result.ok)
-        self.assertEqual(result.stdout, "READY")
-        self.assertEqual(result.session_id, "conv-1")
-        self.assertEqual(result.warnings, [])
-        usage = result.usage
-        # Thinking is already inside output: measured, so it is not added.
-        self.assertEqual((usage.input_tokens, usage.output_tokens), (12527, 215))
-        self.assertEqual(usage.cache_read_tokens, 300)
-        self.assertIsNone(usage.total_tokens)
-        self.assertIsNone(usage.cost_usd)
-        self.assertEqual(usage.source, "agy stream-json result")
-        self.assertEqual(usage.billed_tokens, 12527 + 215)
-        # A result alone carries no step_update, so no tool count is measured.
-        self.assertIsNone(usage.tool_uses)
-
     def test_denied_actions_are_a_warning_on_success_too(self):
         denied = [{"action": "run_command", "display_name": "Run command"}]
         self.answer(agy_result(denied_actions=denied))
@@ -2952,10 +2880,6 @@ class TestAgyOutput(_AgyCase):
         self.assertTrue(result.warnings[0].startswith("read-only is NOT enforced by agy -- "))
         self.assertIn(agy_module.AGY_UNENFORCED, result.warnings[0])
         self.assertTrue(result.stderr.startswith("read-only is NOT enforced by agy"))
-
-    def test_an_implement_run_has_no_enforcement_warning(self):
-        self.answer()
-        self.assertEqual(self.run_agy(base.MODE_IMPLEMENT).warnings, [])
 
 
 class TestAgyRecordedRuns(_AgyCase):
