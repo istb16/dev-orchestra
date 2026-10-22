@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import unittest
 from typing import Any, Dict, List, Optional
 
@@ -273,6 +274,55 @@ class TestPassKey(UnitsCase):
         state["design_approval"] = {"sha256": key}
         self.workspace.write_state(state)
         self.assertEqual(units_mod.pass_key(self.workspace, "architect"), key)
+
+
+class TestJoin(UnitsCase):
+    def architect_used(self) -> int:
+        return json.loads(run_cli("budget", "show", "--json")[1])["budgets"]["architect"]["used"]
+
+    def test_units_join_builds_plan(self):
+        run_cli("config", "setup", "--defaults")
+        run_cli("config", "set", "architect.provider", "mock")
+        run_cli("config", "set", "budgets.architect", "5")
+        # One design pass: the units' architects take one attempt between them, a rerun another.
+        for name in ("parser", "docs", "parser"):
+            code, _, err = run_cli("run", "architect", "--unit", name, "--prompt", "go")
+            self.assertEqual(code, 0, err)
+        self.assertEqual(self.architect_used(), 2)
+
+        parts = [
+            "parser=" + self.write("parts/parser.md", plan([{"name": "parser", "files": ["scripts/a.py"]}])),
+            "docs="
+            + self.write("parts/docs.md", plan([{"name": "docs", "kind": "docs", "files": ["docs/a.md"]}])),
+        ]
+        code, out, err = run_cli(
+            "units", "join", "--part", parts[0], "--part", parts[1], "--output", self.workspace.plan_path
+        )
+        self.assertEqual(code, 0, err)
+        self.assertIn("joined 2 unit plans", out)
+        joined = ws.read_text(self.workspace.plan_path)
+        self.assertEqual([unit.name for unit in units_mod.parse(joined)], ["parser", "docs"])
+        self.assertIn("Do parser.", units_mod.section(joined, "parser"))
+        self.assertIn("Do docs.", units_mod.section(joined, "docs"))
+        self.assertNotIn("Do docs.", units_mod.section(joined, "parser"))
+        code, out, err = run_cli("units", "check")
+        self.assertEqual(code, 0, err)
+        self.assertIn("2 units in 1 waves", out)
+
+        # An approval is a new design pass: its first piece spends an attempt.
+        code, _, err = run_cli("design", "approve")
+        self.assertEqual(code, 0, err)
+        code, _, err = run_cli("run", "architect", "--unit", "parser", "--prompt", "go")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.architect_used(), 3)
+
+        # Parts whose units cannot run side by side are refused, and nothing is written.
+        clash = "clash=" + self.write("parts/clash.md", plan([{"name": "clash", "files": ["scripts/a.py"]}]))
+        output = os.path.join(self.project, "clash-plan.md")
+        code, _, err = run_cli("units", "join", "--part", parts[0], "--part", clash, "--output", output)
+        self.assertEqual(code, 2)
+        self.assertIn("may run in parallel", err)
+        self.assertFalse(os.path.exists(output))
 
 
 if __name__ == "__main__":

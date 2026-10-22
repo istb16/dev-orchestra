@@ -257,6 +257,38 @@ def cmd_units_merge(args: argparse.Namespace) -> int:
         return 0
 
 
+def cmd_units_join(args: argparse.Namespace) -> int:
+    """Join the per-unit architects' plans into one plan; nothing is written when its units cannot run."""
+    _, loaded = _workspace_and_config(args)
+    parts: List["tuple[str, str]"] = []
+    for spec in args.part:
+        name, sep, path = spec.partition("=")
+        if not sep or not name or not path:
+            _err("--part %s: expected NAME=PATH" % spec)
+            return 2
+        text = ws.read_text(path)
+        if not text.strip():
+            _err("--part %s: no plan at %s" % (name, path))
+            return 2
+        parts.append((name, text))
+    try:
+        plan_text = units_mod.join(parts)
+        found = units_mod.parse(plan_text)
+    except units_mod.UnitsError as exc:
+        _err("could not join the plans: %s" % exc)
+        return 2
+    problems = units_mod.validate(found, units_mod.settings_of(loaded.data).hub_paths, plan_text)
+    if problems:
+        _err("the joined units cannot be run:")
+        for problem in problems:
+            _err("  - %s" % problem)
+        return 2
+    os.makedirs(os.path.dirname(os.path.abspath(args.output)), exist_ok=True)
+    ws.write_text(args.output, plan_text)
+    _out("joined %d unit plans into %s" % (len(found), args.output))
+    return 0
+
+
 def cmd_units_clean(args: argparse.Namespace) -> int:
     """Remove the worktrees units left behind: every unit's, or NAME's.
 

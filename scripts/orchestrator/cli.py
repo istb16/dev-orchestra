@@ -62,7 +62,7 @@ from .cli_state import (
     cmd_progress_record,
     cmd_tokens_show,
 )
-from .cli_units import cmd_units_check, cmd_units_clean, cmd_units_merge, cmd_units_status
+from .cli_units import cmd_units_check, cmd_units_clean, cmd_units_join, cmd_units_merge, cmd_units_status
 from .cli_workflow import (
     cmd_design_approve,
     cmd_state_record,
@@ -505,8 +505,8 @@ def _add_run_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPars
         "--unit",
         default=None,
         metavar="NAME",
-        help="implementer only: run one work unit of the plan's ## Units, in a worktree of its own "
-        "when another unit could run beside it",
+        help="implementer: run one work unit of the plan's ## Units, in a worktree of its own "
+        "when another unit could run beside it; architect: design one unit, its attempt spent once a pass",
     )
     run_parser.add_argument("--job-file", default=None, help=argparse.SUPPRESS)
     run_parser.add_argument("--print-command", action="store_true", help="print the CLI invocation and exit")
@@ -709,6 +709,16 @@ def _add_units_parsers(subparsers: argparse._SubParsersAction[argparse.ArgumentP
     units_clean = units_sub.add_parser("clean", help="remove the worktrees units left behind")
     units_clean.add_argument("name", nargs="?", default=None, help="only this unit's")
     units_clean.set_defaults(func=cmd_units_clean)
+    units_join = units_sub.add_parser("join", help="join per-unit plans into one plan with ## Units")
+    units_join.add_argument(
+        "--part",
+        action="append",
+        required=True,
+        metavar="NAME=PATH",
+        help="a unit's plan; repeat it, in the order the units go in the plan",
+    )
+    units_join.add_argument("--output", required=True, help="where the joined plan is written")
+    units_join.set_defaults(func=cmd_units_join)
 
 
 def _add_budget_parsers(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:

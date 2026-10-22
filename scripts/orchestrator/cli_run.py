@@ -321,14 +321,16 @@ def cmd_run(args: argparse.Namespace) -> int:
     # records.
     refusal, unattended = _role_gates(args, loaded, workspace, seat, prompt, resume_prompt)
     if refusal is not None:
-        if args.unit and args.job_file:
+        if args.unit and args.job_file and seat.role == "implementer":
             # The parent claimed the unit; refused here, it ran nothing.
             _finish_unit(workspace, args.unit, False)
         return refusal
     # After the gates, so an unapproved plan is refused as it always was,
-    # before a worktree is made or anything is claimed.
+    # before a worktree is made or anything is claimed. An architect's unit
+    # claims nothing: it runs in the user's tree, in plan mode, and is only a
+    # piece of its design pass in the ledger (`_spend_attempt`).
     unit: Optional[_UnitRun] = None
-    if args.unit:
+    if args.unit and seat.role == "implementer":
         claimed = _worker_unit(args, workspace) if args.job_file else _claim_unit(args, loaded, workspace)
         if isinstance(claimed, int):
             return claimed
@@ -562,7 +564,7 @@ def _print_command(
         session_id, _ = _choose_resume(loaded, workspace, provider, seat.provider_name)
     # A unit's command runs in its worktree while it has one; printing makes none.
     cwd = workspace.root
-    if args.unit:
+    if args.unit and seat.role == "implementer":
         record = units_mod.load_state(workspace)["units"].get(args.unit)
         if isinstance(record, dict) and not record.get("in_place") and record.get("worktree"):
             cwd = str(record["worktree"])
@@ -633,13 +635,14 @@ def _spend_attempt(
     one, and whether an attempt was spent.
 
     A unit is a piece of its plan's pass (``units.pass_key``): only the first
-    piece of a pass, and a rerun of one, spends an attempt.
+    piece of a pass, and a rerun of one, spends an attempt. So is an
+    architect's ``--unit``, which claims no unit record.
     """
     book.clear_stalls()
     if seat.tier:
         _err("note: running %s on its %r tier (%s)" % (seat.role, seat.tier, describe_spec(seat.spec)))
-    piece = unit.name if unit is not None else ""
-    key = units_mod.pass_key(workspace, seat.stage) if unit is not None else ""
+    piece = unit.name if unit is not None else (args.unit or "")
+    key = units_mod.pass_key(workspace, seat.stage) if piece else ""
     refusal = _refuse_if_exhausted(book, seat.stage, args.force, piece, key)
     if refusal is not None:
         return refusal, False
@@ -1226,8 +1229,11 @@ def _refuse_run(args: argparse.Namespace, lines: List[str]) -> int:
 
 def _unit_arg_refusal(args: argparse.Namespace, role: str) -> Optional[str]:
     """Why ``--unit`` cannot go on this command line, as a fixed sentence."""
-    if getattr(args, "unit", None) and role != "implementer":
-        return "--unit applies to implementer"
+    if getattr(args, "unit", None) and role not in ("implementer", "architect"):
+        return "--unit applies to implementer and architect"
+    if getattr(args, "unit", None) and getattr(args, "questions", False):
+        # A round of questions is not a piece of a design pass.
+        return "--unit does not apply to --questions"
     return None
 
 

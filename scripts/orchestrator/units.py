@@ -233,6 +233,62 @@ def header(unit: Unit, plan_text: str, checks_skipped: bool) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _demoted(plan_text: str) -> str:
+    """A unit's own plan without its ``## Units``, every heading below ``### Unit:``.
+
+    Moved down by as many levels as put its top heading at level 4, so no
+    heading of it ends the ``### Unit:`` section it goes under.
+    """
+    lines = plan_text.splitlines()
+    units_at = [
+        (start, end)
+        for level, title, start, end in _sections(plan_text)
+        if level == 2 and title.strip() == _UNITS_HEADING
+    ]
+    if units_at:
+        start, end = units_at[0]
+        lines = lines[:start] + lines[end:]
+    kept = "\n".join(lines)
+    levels = [level for level, _, _, _ in _sections(kept)]
+    shift = max(0, 4 - min(levels)) if levels else 0
+    out: List[str] = []
+    fenced = False
+    for line in lines:
+        if _FENCE_RE.match(line):
+            fenced = not fenced
+        match = None if fenced else _HEADING_RE.match(line)
+        if match:
+            hashes = match.group(1)
+            line = "#" * min(len(hashes) + shift, 6) + line[len(hashes) :]
+        out.append(line)
+    return "\n".join(out).strip() + "\n"
+
+
+def join(parts: Sequence["tuple[str, str]"]) -> str:
+    """One plan from per-unit plans, given as (name, plan text) in the order they go in.
+
+    Each part's ``## Units`` must hold just its own unit. The joined plan's
+    ``## Units`` lists them all, and each part follows under ``### Unit: <name>``.
+    Raises ``UnitsError`` for a part that cannot be read so.
+    """
+    entries: List[Dict[str, Any]] = []
+    bodies: List[str] = []
+    for name, plan_text in parts:
+        found = parse(plan_text)
+        if [unit.name for unit in found] != [name]:
+            listed = ", ".join(unit.name for unit in found) or "no unit"
+            raise UnitsError(
+                "%s: its plan's ## Units must hold the one unit %s, not %s" % (name, name, listed)
+            )
+        unit = found[0]
+        entries.append(
+            {"name": unit.name, "kind": unit.kind, "files": unit.files, "depends_on": unit.depends_on}
+        )
+        bodies.append("### Unit: %s\n\n%s" % (name, _demoted(plan_text)))
+    block = miniyaml.dumps({"units": entries})
+    return "# Plan\n\n## %s\n\n```yaml\n%s```\n\n%s" % (_UNITS_HEADING, block, "\n".join(bodies))
+
+
 def _listed_files(plan_text: str) -> List[str]:
     """The backticked paths under ``## Files to Modify``."""
     body = _body(plan_text, 2, lambda title: title.strip() == _FILES_HEADING) or []
