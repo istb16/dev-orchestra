@@ -10,8 +10,10 @@ import re
 import uuid
 from typing import Any, Dict, List, NamedTuple, Optional, Sequence, Set, Tuple
 
+from . import approval as approval_mod
 from . import context as context_mod
 from . import questions as questions_mod
+from . import units as units_mod
 from . import workspace as ws
 from .config import PROJECT_CONFIG_NAMES
 from .review_common import DEFAULT_EXCLUDE, accepted_findings
@@ -103,8 +105,29 @@ def create_snapshot(
             os.unlink(workspace.surrounding_path)
         except OSError:
             pass
+    units = _units_meta(workspace)
+    if units:
+        meta["units"] = units
     ws.write_json(workspace.snapshot_meta_path, meta)
     return meta
+
+
+def _units_meta(workspace: ws.Workspace) -> Dict[str, Dict[str, List[str]]]:
+    """Each work unit's resolved and out-of-plan files, for ``render_round_context`` to name.
+
+    From ``units.json`` only when it was written for the plan as it is now;
+    a unit with neither is left out, so a change made without units has none.
+    """
+    digest = approval_mod.read_plan(workspace)[1]
+    found: Dict[str, Dict[str, List[str]]] = {}
+    for name, entry in units_mod.records(units_mod.load_state(workspace), digest).items():
+        kept = {
+            key: [str(path) for path in entry.get(key) or []] for key in ("resolved_files", "outside_files")
+        }
+        kept = {key: paths for key, paths in kept.items() if paths}
+        if kept:
+            found[name] = kept
+    return found
 
 
 class _Revisions(NamedTuple):

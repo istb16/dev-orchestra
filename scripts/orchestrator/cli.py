@@ -62,7 +62,7 @@ from .cli_state import (
     cmd_progress_record,
     cmd_tokens_show,
 )
-from .cli_units import cmd_units_check, cmd_units_clean, cmd_units_status
+from .cli_units import cmd_units_check, cmd_units_clean, cmd_units_merge, cmd_units_status
 from .cli_workflow import (
     cmd_design_approve,
     cmd_state_record,
@@ -697,6 +697,15 @@ def _add_units_parsers(subparsers: argparse._SubParsersAction[argparse.ArgumentP
     units_status = units_sub.add_parser("status", help="each unit's state, and which can start now")
     _add_json_flag(units_status)
     units_status.set_defaults(func=cmd_units_status)
+    units_merge = units_sub.add_parser("merge", help="merge a finished unit into the working tree")
+    units_merge.add_argument("name", help="the unit")
+    units_merge.add_argument(
+        "--resolved",
+        action="store_true",
+        help="its conflicts are resolved: check no marker is left, mark it merged",
+    )
+    _add_json_flag(units_merge)
+    units_merge.set_defaults(func=cmd_units_merge)
     units_clean = units_sub.add_parser("clean", help="remove the worktrees units left behind")
     units_clean.add_argument("name", nargs="?", default=None, help="only this unit's")
     units_clean.set_defaults(func=cmd_units_clean)

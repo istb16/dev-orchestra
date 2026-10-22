@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import argparse
-from typing import Any, Dict, List
+import os
+from typing import Any, Dict, List, Sequence
 
 from . import approval as approval_mod
+from . import atomic_file, units_merge
 from . import jobs as jobs_mod
 from . import units as units_mod
 from . import workspace as ws
@@ -101,6 +103,158 @@ def cmd_units_status(args: argparse.Namespace) -> int:
     if failed:
         _out("The implement stage failed: a unit failed, and the units that depend on it cannot start.")
     return 0
+
+
+def _touched_by(
+    workspace: ws.Workspace,
+    found: Sequence[units_mod.Unit],
+    entries: Dict[str, Dict[str, Any]],
+    name: str,
+    paths: Sequence[str],
+) -> Dict[str, List[str]]:
+    """Each earlier-merged unit that changed one of ``paths``, with those of them it changed."""
+    touched: Dict[str, List[str]] = {}
+    for unit in found:
+        entry = entries.get(unit.name) or {}
+        base, result = entry.get("base_tree"), entry.get("result_tree")
+        if unit.name == name or entry.get("status") != units_mod.MERGED or not base or not result:
+            continue
+        excludes = worktrees_mod.excludes(workspace, [str(link) for link in (entry.get("links") or [])])
+        try:
+            changed = units_merge.changed_paths(workspace.root, str(base), str(result), excludes)
+        except units_merge.MergeError:
+            continue
+        shared = [path for path in paths if path in changed]
+        if shared:
+            touched[unit.name] = shared
+    return touched
+
+
+def _merge_report(args: argparse.Namespace, report: Dict[str, Any], lines: Sequence[str]) -> None:
+    if args.json:
+        _emit_json(report)
+        return
+    for line in lines:
+        _out(line)
+
+
+def _resolve_unit(
+    args: argparse.Namespace, workspace: ws.Workspace, name: str, record: Dict[str, Any]
+) -> int:
+    """``units merge NAME --resolved``: the conflicts are resolved, so the unit is merged."""
+    status = str(record.get("status") or units_mod.PENDING)
+    if status == units_mod.MERGED:
+        _merge_report(args, {"unit": name, "status": status}, ["%s is already merged." % name])
+        return 0
+    if status != units_mod.CONFLICTED:
+        _err("%s has no conflicts to resolve: it is %s" % (name, status))
+        return 2
+    conflicts = [str(path) for path in (record.get("conflicts") or [])]
+    left = units_merge.markers_left(workspace.root, name, conflicts)
+    if left:
+        _err("%s: conflict markers are still in %s" % (name, ", ".join(left)))
+        return 2
+    units_mod.update(
+        workspace,
+        name,
+        {"status": units_mod.MERGED, "merged_at": ws.utcnow(), "resolved_files": conflicts},
+    )
+    workspace.record_event("units", "resolved", {"unit": name, "resolved_files": conflicts})
+    _merge_report(
+        args,
+        {"unit": name, "status": units_mod.MERGED, "resolved_files": conflicts},
+        ["merged %s: its conflicts in %s are resolved" % (name, ", ".join(conflicts) or "no file")],
+    )
+    return 0
+
+
+def cmd_units_merge(args: argparse.Namespace) -> int:
+    """Merge a finished unit's result into the working tree, file by file; only the working tree.
+
+    One merge at a time, under a lock of its own: the units lock is held only
+    to rewrite ``units.json``, so the git work does not keep other units from
+    recording how they ended.
+    """
+    workspace = _workspace(args)
+    plan_relative = workspace.relative(workspace.plan_path)
+    try:
+        plan_text, found = _read_units(workspace)
+    except units_mod.UnitsError as exc:
+        _err("%s: %s" % (plan_relative, exc))
+        return 2
+    unit = next((entry for entry in found if entry.name == args.name), None)
+    if unit is None:
+        _err("%s has no unit named %s" % (plan_relative, args.name))
+        return 2
+    name = unit.name
+    with ws.file_lock(os.path.join(workspace.units_dir, "merge")):
+        entries = units_mod.records(units_mod.load_state(workspace), approval_mod.plan_digest(plan_text))
+        record = entries.get(name) or {}
+        if args.resolved:
+            return _resolve_unit(args, workspace, name, record)
+        status = units_mod.status_of(entries, name)
+        if status == units_mod.MERGED:
+            # A unit that ran in place is merged when it ends: its changes are in the tree already.
+            _merge_report(args, {"unit": name, "status": status}, ["%s is already merged." % name])
+            return 0
+        brief = workspace.relative(os.path.join(workspace.units_dir, "%s-conflicts.md" % name))
+        if status == units_mod.CONFLICTED:
+            _err(
+                "%s has conflicts to resolve (%s); then run: units merge %s --resolved" % (name, brief, name)
+            )
+            return units_mod.EXIT_CONFLICTS
+        base, result = record.get("base_tree"), record.get("result_tree")
+        if status != units_mod.SUCCEEDED or not base or not result:
+            _err("%s cannot be merged: it is %s, not succeeded with its result recorded" % (name, status))
+            return 2
+        excludes = worktrees_mod.excludes(workspace, [str(link) for link in (record.get("links") or [])])
+        try:
+            results = units_merge.plan_merge(workspace.root, name, str(base), str(result), excludes)
+            units_merge.apply(workspace, name, results)
+        except (units_merge.MergeError, atomic_file.Raced, OSError) as exc:
+            _err("could not merge %s: %s" % (name, exc))
+            return 1
+        outside = units_merge.outside_files(unit.files, [entry.path for entry in results])
+        conflicts = [entry for entry in results if entry.action == units_merge.CONFLICT]
+        notes = ["  outside its files: %s" % path for path in outside]
+        if conflicts:
+            paths = [entry.path for entry in conflicts]
+            touched = _touched_by(workspace, found, entries, name, paths)
+            units_merge.write_brief(workspace, name, conflicts, plan_text, touched)
+            units_mod.update(
+                workspace,
+                name,
+                {"status": units_mod.CONFLICTED, "conflicts": paths, "outside_files": outside},
+            )
+            workspace.record_event("units", "conflicted", {"unit": name, "conflicts": paths})
+            _merge_report(
+                args,
+                {
+                    "unit": name,
+                    "status": units_mod.CONFLICTED,
+                    "conflicts": paths,
+                    "outside_files": outside,
+                    "brief": brief,
+                },
+                [
+                    "%s conflicts in %d file(s): %s" % (name, len(paths), ", ".join(paths)),
+                    *notes,
+                    "Resolve them with the brief %s, then run: units merge %s --resolved" % (brief, name),
+                ],
+            )
+            return units_mod.EXIT_CONFLICTS
+        units_mod.update(
+            workspace,
+            name,
+            {"status": units_mod.MERGED, "merged_at": ws.utcnow(), "conflicts": [], "outside_files": outside},
+        )
+        workspace.record_event("units", "merged", {"unit": name, "files": len(results)})
+        _merge_report(
+            args,
+            {"unit": name, "status": units_mod.MERGED, "files": len(results), "outside_files": outside},
+            ["merged %s: %d file(s)" % (name, len(results)), *notes],
+        )
+        return 0
 
 
 def cmd_units_clean(args: argparse.Namespace) -> int:

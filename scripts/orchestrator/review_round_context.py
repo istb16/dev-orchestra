@@ -22,9 +22,14 @@ def render_round_context(workspace: ws.Workspace, meta: Dict[str, Any]) -> str:
     What is deliberately left out is who reported what. The findings arrive as
     the brief the fixer worked from, which is a fact about the change, rather
     than as another reviewer's opinion still in play.
+
+    A change built from work units also names, on every round, the files an
+    agent resolved merge conflicts in and the files a unit changed outside
+    the ones its plan listed (``meta["units"]``): neither is visible in a diff.
     """
+    units = render_units(meta)
     if not meta.get("incremental_from"):
-        return ""
+        return units
     lines = ["Re-review. The diff above is the fix only, not the whole change."]
     if meta.get("full_diff"):
         lines.append("Whole change frozen at %s -- read it if you need the context." % meta["full_diff"])
@@ -47,6 +52,28 @@ def render_round_context(workspace: ws.Workspace, meta: Dict[str, Any]) -> str:
             "For each: fixed or not. Plus any new problem the fix introduced. "
             "Do not assume a listed item was real."
         )
+    if units:
+        lines += ["", units]
+    return "\n".join(lines)
+
+
+def render_units(meta: Dict[str, Any]) -> str:
+    """The work units block: files resolved after a merge conflict, and files outside a unit's plan."""
+    units = meta.get("units")
+    if not isinstance(units, dict) or not units:
+        return ""
+    resolved: List[str] = []
+    outside: List[str] = []
+    for name in sorted(units):
+        entry = units[name] if isinstance(units[name], dict) else {}
+        resolved += ["- %s (unit %s)" % (path, name) for path in entry.get("resolved_files") or []]
+        outside += ["- %s (unit %s)" % (path, name) for path in entry.get("outside_files") or []]
+    lines = ["This change was implemented as separate work units and merged into one tree."]
+    if resolved:
+        lines += ["", "An agent resolved merge conflicts between units in:", *resolved]
+    if outside:
+        lines += ["", "A unit changed these files, which its part of the plan did not list:", *outside]
+    lines += ["", "Check these files with extra care: a bad resolution or an unplanned edit hides well."]
     return "\n".join(lines)
 
 

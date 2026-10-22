@@ -42,6 +42,7 @@ _HEADING_RE = re.compile(r"^(#{1,6})\s+(.*?)\s*#*\s*$")
 _UNITS_HEADING = "Units"
 _UNIT_HEADING_RE = re.compile(r"^Unit:\s*(\S+)\s*$")
 _FILES_HEADING = "Files to Modify"
+_GOAL_HEADING = "Goal"
 _FENCE_RE = re.compile(r"^\s*```\s*(\w*)\s*$")
 _GLOB_CHARS = "*?["
 
@@ -52,6 +53,11 @@ SUCCEEDED = "succeeded"
 MERGED = "merged"
 FAILED = "failed"
 CANCELLED = "cancelled"
+CONFLICTED = "conflicted"
+
+#: ``units merge`` left conflicts for an agent to resolve. The next free code
+#: after ``questions.EXIT_QUESTIONS_PENDING``.
+EXIT_CONFLICTS = 7
 
 
 class UnitsError(ValueError):
@@ -197,6 +203,12 @@ def section(plan_text: str, name: str) -> str:
         if match and match.group(1) == name:
             return "\n".join(lines[start:end]).strip() + "\n"
     return ""
+
+
+def goal(plan_text: str) -> str:
+    """The text under the plan's ``## Goal``; "" when there is none."""
+    body = _body(plan_text, 2, lambda title: title.strip() == _GOAL_HEADING) or []
+    return "\n".join(body).strip()
 
 
 def header(unit: Unit, plan_text: str, checks_skipped: bool) -> str:

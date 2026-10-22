@@ -11,7 +11,7 @@ import sys
 import time
 from typing import Any, Dict, List, NamedTuple, Optional, Tuple, Union, cast
 
-from . import activity, clocks, execution_tree
+from . import activity, clocks, execution_tree, units_merge
 from . import approval as approval_mod
 from . import config as config_mod
 from . import config_policy as policy_mod
@@ -1410,11 +1410,26 @@ def _finish_unit(workspace: ws.Workspace, name: str, ok: bool) -> None:
         fields["status"] = units_mod.FAILED
     elif in_place:
         fields.update(status=units_mod.MERGED, merged_at=ws.utcnow())
+        if base_tree and result_tree:
+            fields["outside_files"] = _outside_files(workspace, name, str(base_tree), result_tree, links)
     else:
         fields["status"] = units_mod.SUCCEEDED
     if worktree:
         fields["worktree"] = None if worktrees_mod.remove(workspace.root, record) else worktree
     units_mod.update(workspace, name, fields)
+
+
+def _outside_files(workspace: ws.Workspace, name: str, base: str, result: str, links: List[str]) -> List[str]:
+    """The files unit ``name`` changed outside its ``files``, as ``units merge`` records them."""
+    try:
+        found = units_mod.parse(ws.read_text(workspace.plan_path))
+        changed = units_merge.changed_paths(
+            workspace.root, base, result, worktrees_mod.excludes(workspace, links)
+        )
+    except (units_mod.UnitsError, units_merge.MergeError):
+        return []
+    unit = next((entry for entry in found if entry.name == name), None)
+    return units_merge.outside_files(unit.files, changed) if unit else []
 
 
 #: Why a ``--resume`` run ran fresh. Fixed phrases only: every value they could
