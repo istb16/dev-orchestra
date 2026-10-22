@@ -72,7 +72,8 @@ show`), the path files you write and redirects need. Templates, detail:
 | Re-test | as Test, then `review status` |
 
 A role with `model_tiers` (`config show`) runs on one: `run implementer --tier
-light`.
+light`. When to pick `light`, and to split a long implement run:
+`references/workflow.md`.
 
 **Long stages.** `status` gives `Progress:` (`progress.updates`). Run
 implementer, review_fixer and big architect runs (`on`: every architect run)

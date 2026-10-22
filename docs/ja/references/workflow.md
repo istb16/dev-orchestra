@@ -1,4 +1,4 @@
-<!-- translated-from: references/workflow.md sha256:6108a116dab5316a9dbc69f5a7cc73c81986ede34dc87266457ca21b3e3e9f8f -->
+<!-- translated-from: references/workflow.md sha256:5640af987067dc925e3458bf217fc59aead3458e9631bbd4ddd68f76808f7416 -->
 
 > この文書は [references/workflow.md](../../../references/workflow.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -392,6 +392,10 @@ Implementation Steps. Under Decisions, list each decision from the Decisions
 section above and each open point you settled yourself: what it is, whether
 the user or you decided it, and why; write `None.` when there are none. The
 user's decisions are fixed: design within them.
+Keep it short: everyone after you reads the whole plan. Current Behavior,
+Investigation and Root Cause are bullets that cite `path:line` instead of
+quoting code. Test Strategy is one line per test: its name and what it
+asserts. Each Implementation Step names the files and functions it touches.
 The caller captures stdout. Do not write it to a file: this role runs in plan
 mode. Do not modify any file.
 ```
@@ -484,7 +488,8 @@ you added: what it is, which finding it answers, and why a smaller change was
 not enough. Write `None.` when you added none. Replace that section on every
 revision; do not keep an earlier revision's list.
 
-Print the complete revised plan to stdout as Markdown. The caller captures
+Print the complete revised plan to stdout as Markdown, leaving the sections
+no finding touches as they were. The caller captures
 stdout. Do not write it to a file: this role runs in plan mode.
 ```
 
@@ -514,7 +519,8 @@ you added: what it is, which finding it answers, and why a smaller change was
 not enough. Write `None.` when you added none. Replace that section on every
 revision; do not keep an earlier revision's list.
 
-Print the complete revised plan to stdout as Markdown. The caller captures
+Print the complete revised plan to stdout as Markdown, leaving the sections
+no finding touches as they were. The caller captures
 stdout. Do not write it to a file: this role runs in plan mode.
 ```
 
@@ -626,7 +632,8 @@ you added: what it is, which change it answers, and why a smaller change was
 not enough. Write `None.` when you added none. Replace that section on every
 revision; do not keep an earlier revision's list.
 
-Print the complete revised plan to stdout as Markdown. The caller captures
+Print the complete revised plan to stdout as Markdown, leaving the sections
+no finding touches as they were. The caller captures
 stdout. Do not write it to a file: this role runs in plan mode.
 ```
 
@@ -656,7 +663,8 @@ you added: what it is, which change it answers, and why a smaller change was
 not enough. Write `None.` when you added none. Replace that section on every
 revision; do not keep an earlier revision's list.
 
-Print the complete revised plan to stdout as Markdown. The caller captures
+Print the complete revised plan to stdout as Markdown, leaving the sections
+no finding touches as they were. The caller captures
 stdout. Do not write it to a file: this role runs in plan mode.
 ```
 
@@ -730,6 +738,9 @@ Rules:
 - Make the minimal change that satisfies the plan.
 - No unrelated refactoring, renaming, or formatting.
 - Add or update the tests the plan's Test Strategy calls for.
+- Read only what a step needs: start from the files and lines the plan names,
+  and read a large file by the range you need.
+- Run lint and type checks once per step, not after every edit.
 - Run those tests and report the result.
 - If the plan is wrong or impossible, STOP and explain why. Do not redesign.
 
@@ -739,6 +750,21 @@ Report: files changed, tests added/updated, test output, anything you could not 
 ```bash
 dev-orchestra run implementer --prompt-file .ai/execution/implement-request.md
 ```
+
+**長い計画は分けて走らせます。** 実行は長くなるほど、ツール呼び出し 1 回あたりの費用が
+上がります。呼び出すたびに、それまでに読んだものをすべて読み直すためです。このプロジェクト
+自身の記録では、ツール呼び出しが 160 回以上の実行は、80 回未満の実行に比べて、1 回あたり
+約 1.5 倍かかりました。計画の Implementation Steps が 4 つを超えるときは、手順のまとまり
+ごとに implementer を走らせます。回数は最大 3 回で、依頼にはどの手順をやるかを書きます
+（`Do steps 1-3 of the plan; the later steps come in a separate run.`）。各実行は、前の
+実行が残したツリーから始まります。各実行は `budgets.implementer`（既定 5）から試行を 1 回
+使うので、3 回にとどめれば、やり直し用に 2 回残ります。
+
+**小さな作業は light tier に回します。** role に `light` tier があるとき（`config show`。
+`references/configuration.md` の Model tiers を参照）、計画の Files to Modify が 3 つ以下で、
+どれも高リスクのパス（`optimization.high_risk_paths` と `extra_high_risk_paths`）にないなら、
+`--tier light` で実装を走らせます。light の実行が失敗した後のやり直しは、role 本来のモデルで
+走らせます。
 
 implementer の失敗は致命的です。停止し、何が起きたかを報告し、ユーザーが調べられる状態で
 ツリーを残してください。
@@ -797,6 +823,10 @@ For each finding below:
 
 Do not fix anything that is not listed here.
 ```
+
+**小さな修正は light tier に回します。** `review_fixer` に `light` tier があるとき、受け入れた
+指摘がすべて medium 以下で、brief が挙げるファイルが 3 つ以下なら、`--tier light` で走らせます。
+light の実行が失敗した後のやり直しは、role 本来のモデルで走らせます。
 
 <a id="re-test-and-re-review"></a>
 
