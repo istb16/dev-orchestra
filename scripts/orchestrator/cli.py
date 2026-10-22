@@ -62,6 +62,7 @@ from .cli_state import (
     cmd_progress_record,
     cmd_tokens_show,
 )
+from .cli_units import cmd_units_check, cmd_units_status
 from .cli_workflow import (
     cmd_design_approve,
     cmd_state_record,
@@ -211,6 +212,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_state_parsers(subparsers)
 
     _add_jobs_parsers(subparsers)
+    _add_units_parsers(subparsers)
     _add_budget_parsers(subparsers)
     _add_tokens_parsers(subparsers)
     _add_optimization_parsers(subparsers)
@@ -676,6 +678,15 @@ def _add_jobs_parsers(subparsers: argparse._SubParsersAction[argparse.ArgumentPa
     jobs_cancel = jobs_sub.add_parser("cancel", help="stop a running job")
     jobs_cancel.add_argument("job_id")
     jobs_cancel.set_defaults(func=cmd_jobs_cancel)
+
+
+def _add_units_parsers(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    units_sub = _add_command_group(subparsers, "units", "the plan's work units, run apart or side by side")
+    units_check = units_sub.add_parser("check", help="refuse units that cannot run, print the schedule")
+    units_check.set_defaults(func=cmd_units_check)
+    units_status = units_sub.add_parser("status", help="each unit's state, and which can start now")
+    _add_json_flag(units_status)
+    units_status.set_defaults(func=cmd_units_status)
 
 
 def _add_budget_parsers(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:

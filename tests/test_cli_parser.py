@@ -44,6 +44,7 @@ class TestParserShape(IsolatedCase):
         "design",
         "state",
         "jobs",
+        "units",
         "budget",
         "tokens",
         "optimization",
@@ -80,6 +81,7 @@ class TestParserShape(IsolatedCase):
         "status",
         "summary",
         "tokens show",
+        "units status",
         "workflow list",
         "workflow show",
     }

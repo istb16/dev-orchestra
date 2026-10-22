@@ -264,6 +264,16 @@ class Workspace:
     def state_path(self) -> str:
         return os.path.join(self.dir, "state.json")
 
+    @property
+    def units_path(self) -> str:
+        """The state of the plan's work units (``units``)."""
+        return os.path.join(self.execution_dir, "units.json")
+
+    @property
+    def units_dir(self) -> str:
+        """Each unit's diff, conflict brief and saved copies."""
+        return os.path.join(self.execution_dir, "units")
+
     def reviewer_report_path(self, reviewer_id: str) -> str:
         return os.path.join(self.reviews_dir, "%s.md" % reviewer_id)
 

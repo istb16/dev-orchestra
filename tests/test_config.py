@@ -1103,6 +1103,26 @@ class TestValueRules(IsolatedCase):
                 self.assertTrue(problem.startswith(path + ": "), problem)
                 self.assertIn("or null", problem)
 
+    def test_config_implementation_max_parallel_validated(self):
+        path = "implementation.max_parallel"
+        for bad in (0, 9, "2", True):
+            with self.subTest(value=bad):
+                [problem] = self.validate_with(path, bad)
+                self.assertTrue(problem.startswith(path + ": "), problem)
+        for good in (1, 8, None):
+            with self.subTest(value=good):
+                self.assertEqual(self.validate_with(path, good), [])
+
+    def test_config_implementation_hub_paths_validated(self):
+        self.assertEqual(self.validate_with("implementation.hub_paths", ["docs/ja/**"]), [])
+        [problem] = self.validate_with("implementation.hub_paths", [""])
+        self.assertTrue(problem.startswith("implementation.hub_paths[0]: "), problem)
+
+    def test_config_implementation_defaults(self):
+        block = config_mod.default_config()["implementation"]
+        self.assertEqual(block["max_parallel"], 2)
+        self.assertEqual(block["hub_paths"], ["CHANGELOG*", "**/CHANGELOG*"])
+
 
 class TestReviewerConditions(IsolatedCase):
     """`reviewers[].when`, and what a panel of conditional reviewers needs."""

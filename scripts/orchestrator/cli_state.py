@@ -129,6 +129,12 @@ def cmd_budget_show(args: argparse.Namespace) -> int:
     for stage, repeats in (summary["signatures"] or {}).items():
         if repeats and int(repeats) > 1:
             _out("  %-14s same outcome %s times in a row" % (stage, repeats))
+    for stage, entry in (summary["passes"] or {}).items():
+        # One attempt covers every piece of a pass; only a rerun spends another.
+        _out(
+            "  %-14s pass open: %s run (plan %s)"
+            % (stage, ", ".join(entry["pieces"]) or "none", entry["key"][:12] or "not approved")
+        )
     return 0
 
 

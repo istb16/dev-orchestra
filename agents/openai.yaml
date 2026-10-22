@@ -112,6 +112,8 @@ commands:
   - jobs show
   - jobs wait
   - jobs cancel
+  - units check
+  - units status
   - budget show
   - budget consume
   - budget reset

@@ -346,6 +346,9 @@ class Ledger:
             "started_monotonic": now,
             "last_activity_monotonic": now,
             "attempts": {},
+            # The open pass of each stage run in pieces: {stage: {key,
+            # pieces}}. Part of the budget, so a reset starts a new pass.
+            "passes": {},
             "in_flight": {},
             "signatures": {},
             "total_delegated_runs": 0,
@@ -411,13 +414,33 @@ class Ledger:
             "(%.0fs of measured execution)" % (self.settings.get("max_runtime_seconds"), self.runtime_used())
         )
 
-    def check(self, stage: str) -> List[str]:
-        """Reasons this stage must not be attempted again. Empty means go."""
+    def _spends_attempt(self, ledger: Dict[str, Any], stage: str, piece: str, key: str) -> bool:
+        """Whether a run of ``stage`` spends one of its attempts: one attempt per pass.
+
+        A run without a ``piece`` always does. A piece does when it opens a
+        new pass -- ``key`` differs from the open pass's -- or when it already
+        ran in this pass; a piece joining the open pass for the first time
+        does not.
+        """
+        if not piece:
+            return True
+        open_pass = (ledger.get("passes") or {}).get(stage)
+        if not isinstance(open_pass, dict) or open_pass.get("key") != key:
+            return True
+        return piece in (open_pass.get("pieces") or [])
+
+    def check(self, stage: str, piece: str = "", key: str = "") -> List[str]:
+        """Reasons this stage must not be attempted again. Empty means go.
+
+        ``piece`` and ``key`` are a work unit and its pass (``units.pass_key``):
+        a piece joining the open pass is not refused for a spent stage budget.
+        """
         reasons: List[str] = []
         ledger = self.load()
 
         remaining = self.remaining(stage)
-        if remaining is not None and remaining <= 0:
+        spends = self._spends_attempt(ledger, stage, piece, key)
+        if spends and remaining is not None and remaining <= 0:
             reasons.append("%s has used its budget of %s attempts" % (stage, self.settings.get(stage)))
 
         total_limit = self.settings.get("total_delegated_runs")
@@ -435,19 +458,33 @@ class Ledger:
             reasons.append("%s has repeated the same outcome %d times without progress" % (stage, repeats))
         return reasons
 
-    def consume(self, stage: str, force: bool = False) -> Dict[str, Any]:
-        """Record an attempt at ``stage``, refusing when a budget is spent."""
+    def consume(self, stage: str, force: bool = False, piece: str = "", key: str = "") -> bool:
+        """Record a run of ``stage``, refusing when a budget is spent; whether it spent an attempt.
+
+        Decided under the state lock, so two pieces starting together cannot
+        both open the same pass. A new pass replaces the stage's ``pieces``;
+        a run without a ``piece`` leaves ``passes`` alone.
+        """
         with self._locked():
-            reasons = [] if force else self.check(stage)
+            reasons = [] if force else self.check(stage, piece, key)
             if reasons:
                 raise BudgetExhausted("; ".join(reasons))
             ledger = self.load()
-            attempts = ledger.setdefault("attempts", {})
-            attempts[stage] = int(attempts.get(stage, 0)) + 1
+            spends = self._spends_attempt(ledger, stage, piece, key)
+            if spends:
+                attempts = ledger.setdefault("attempts", {})
+                attempts[stage] = int(attempts.get(stage, 0)) + 1
+            if piece:
+                passes = ledger.setdefault("passes", {})
+                open_pass = passes.get(stage)
+                if not isinstance(open_pass, dict) or open_pass.get("key") != key:
+                    passes[stage] = {"key": key, "pieces": [piece]}
+                elif piece not in (open_pass.get("pieces") or []):
+                    open_pass["pieces"] = [*(open_pass.get("pieces") or []), piece]
             ledger["total_delegated_runs"] = int(ledger.get("total_delegated_runs") or 0) + 1
             ledger["last_activity_monotonic"] = time.time()
             self._write(ledger)
-            return ledger
+            return spends
 
     # -- progress ----------------------------------------------------------
 
@@ -733,6 +770,11 @@ class Ledger:
             },
             "signatures": {
                 stage: entry.get("repeats") for stage, entry in (ledger.get("signatures") or {}).items()
+            },
+            "passes": {
+                stage: {"key": str(entry.get("key") or ""), "pieces": list(entry.get("pieces") or [])}
+                for stage, entry in (ledger.get("passes") or {}).items()
+                if isinstance(entry, dict)
             },
             "in_flight": ledger.get("in_flight") or {},
             "stalls": self.stalls(),
