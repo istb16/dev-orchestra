@@ -13,8 +13,7 @@ from unittest import mock
 from helpers import IsolatedCase, has_git, is_link, read_file, run_cli
 from test_units import plan
 
-from orchestrator import cli_run, execution_tree, units_run
-from orchestrator import config as config_mod
+from orchestrator import execution_tree, units_run
 from orchestrator import jobs as jobs_mod
 from orchestrator import units as units_mod
 from orchestrator import workspace as ws
@@ -257,16 +256,21 @@ class TestWorktreeRuns(UnitRunCase):
     def test_run_unit_worktree_gets_only_its_cli_s_files(self):
         self.write(".claude/settings.local.json", '{"permissions": {}}\n')
         self.write(".gitignore", ".venv/\n.claude/settings.local.json\n")
-        loaded = config_mod.load(self.project)
-        copies = cli_run._worktree_copies(loaded, MockProvider(), self.project)
-        self.assertNotIn(".claude/settings.local.json", copies)
         self.approve(PAIR)
-        seen: Dict[str, bool] = {}
-        self.during = lambda cwd: seen.update(
-            settings=os.path.lexists(os.path.join(cwd, ".claude", "settings.local.json"))
-        )
+        seen: List[Optional[str]] = []
+
+        def look(cwd: str) -> None:
+            settings = os.path.join(cwd, ".claude", "settings.local.json")
+            seen.append(read_file(settings) if os.path.lexists(settings) else None)
+
+        self.during = look
         self.assertEqual(self.run_unit("a")[0], 0)
-        self.assertEqual(seen, {"settings": False})
+        # The mock names no file, so the ignored settings stay behind.
+        self.assertEqual(seen, [None])
+        with mock.patch.object(MockProvider, "worktree_files", (".claude/settings.local.json",)):
+            self.assertEqual(self.run_unit("b")[0], 0)
+        self.assertNotEqual(self.calls[1]["cwd"], self.root)
+        self.assertEqual(seen, [None, '{"permissions": {}}\n'])
 
     def test_run_unit_not_in_place_with_independent_peer(self):
         self.approve(PAIR)
@@ -423,7 +427,7 @@ class TestInPlace(UnitRunCase):
             {"a": {"status": "running", "job": "implementer-1", "in_place": True, "base_tree": base}}
         )
         self.write("a.py", "A = 1\n")
-        cancelled = units_run.cancel(self.workspace, {"unit": "a", "id": "implementer-1"})
+        cancelled = units_run.cancel(self.workspace, "a", "implementer-1")
         self.assertEqual(cancelled, units_run.Cancelled(False, ["a.py"]))
         self.assertEqual(self.record("a")["status"], "cancelled")
         self.assertEqual(read_file(os.path.join(self.project, "a.py")), "A = 1\n")
@@ -455,6 +459,36 @@ class TestInPlace(UnitRunCase):
         self.assertEqual(code, 0, err)
         self.assertIn("warning: a ran in place; its edits stay in the working tree: a.py", err)
         self.assertEqual(self.record("a")["status"], "cancelled")
+
+    def test_jobs_cancel_of_a_unit_whose_worktree_stays_says_so(self):
+        self.approve(PAIR)
+        tree = os.path.join(self.units_parent, "deadbeef-a")
+        self.set_records(
+            {"a": {"status": "running", "job": "implementer-1", "in_place": False, "worktree": tree}}
+        )
+        jobs_mod.write_job(
+            self.workspace,
+            {
+                "id": "implementer-1",
+                "status": "running",
+                "started_at": ws.utcnow(),
+                "pid": 4242,
+                "pid_started": "t0",
+                "unit": "a",
+            },
+        )
+        with (
+            mock.patch.object(execution_tree, "pid_alive", lambda pid: True),
+            mock.patch.object(execution_tree, "process_started", lambda pid: "t0"),
+            mock.patch.object(execution_tree, "kill_tree", lambda pid, grace, verified: True),
+            mock.patch.object(worktrees_mod, "remove", return_value=False) as removed,
+        ):
+            code, _, err = run_cli("jobs", "cancel", "implementer-1")
+        self.assertEqual(code, 0, err)
+        removed.assert_called_once()
+        self.assertIn("warning: a's worktree could not be removed; units clean tries again", err)
+        record = self.record("a")
+        self.assertEqual((record["status"], record["worktree"]), ("cancelled", tree))
 
     def test_run_unit_in_place_failure_keeps_its_base_and_blocks_nothing(self):
         self.approve(CHAIN)
@@ -592,6 +626,17 @@ class TestDetached(UnitRunCase):
         self.assert_no_worktree()
         # One attempt, spent by the parent.
         self.assertEqual(self.used(), 1)
+
+    def test_run_unit_detached_warns_once_by_the_parent(self):
+        self.approve([{"name": "a", "files": ["scripts/other.py"]}, {"name": "b", "files": ["b.py"]}])
+        code, _, parent_err = self.run_unit("a", "--detach", "--json")
+        self.assertEqual(code, 0, parent_err)
+        warned = [line for line in parent_err.splitlines() if line.startswith("warning: --unit a:")]
+        self.assertEqual(len(warned), 1, parent_err)
+        self.assertIn("scripts/other.py is not in Files to Modify", warned[0])
+        code, _, worker_err = run_cli(*self.workers[0])
+        self.assertEqual(code, 0, worker_err)
+        self.assertNotIn("warning: --unit a:", worker_err)
 
     def test_run_unit_detach_whose_worker_could_not_start_fails_the_unit(self):
         self.approve(PAIR)
@@ -744,6 +789,99 @@ class TestClean(UnitRunCase):
         record = self.record("a")
         self.assertEqual(record["status"], "failed")
         self.assertTrue(record["finished_at"])
+
+    def gone_runs(self) -> Dict[str, Dict[str, Any]]:
+        """Records of a running unit whose run is gone, each in another way; 4242 is dead."""
+        me = os.getpid()
+        jobs_mod.write_job(
+            self.workspace,
+            {
+                "id": "implementer-dead",
+                "status": "running",
+                "started_at": ws.utcnow(),
+                "pid": 4242,
+                "pid_started": "t0",
+            },
+        )
+        return {
+            # The job is read, not the record: the record's own pid is alive.
+            "a job whose worker is dead": self.running(
+                in_place=True, job="implementer-dead", pid=me, pid_started=execution_tree.process_started(me)
+            ),
+            "a job whose file is missing": self.running(
+                in_place=True, job="implementer-missing", pid=4242, pid_started="t0"
+            ),
+            "no pid and no job, past the grace": self.running(
+                in_place=True, started_at="2020-01-01T00:00:00Z"
+            ),
+        }
+
+    def dead_4242(self) -> Any:
+        return mock.patch.object(execution_tree, "pid_alive", lambda pid: pid != 4242)
+
+    def test_units_status_records_each_kind_of_gone_run_as_failed(self):
+        self.approve(CHAIN)
+        for kind, record in self.gone_runs().items():
+            with self.subTest(kind=kind):
+                self.set_records({"a": record})
+                with self.dead_4242():
+                    code, out, err = run_cli("units", "status", "--json")
+                self.assertEqual(code, 0, err)
+                self.assertEqual(json.loads(out)["units"][0]["status"], "failed")
+                self.assertEqual(self.record("a")["status"], "failed")
+
+    def test_units_status_keeps_a_record_with_neither_job_nor_pid_in_the_grace(self):
+        self.approve(CHAIN)
+        self.set_records({"a": self.running(in_place=True)})
+        code, out, err = run_cli("units", "status", "--json")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(json.loads(out)["units"][0]["status"], "running")
+        self.assertEqual(self.record("a")["status"], "running")
+
+    def run_b_after(self, kind: str) -> None:
+        self.approve(PAIR)
+        self.set_records({"a": self.gone_runs()[kind]})
+        with self.dead_4242():
+            code, _, err = self.run_unit("b")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.record("a")["status"], "failed")
+        self.assertEqual(self.record("b")["status"], "succeeded")
+
+    def test_run_unit_after_a_unit_whose_job_worker_is_dead(self):
+        self.run_b_after("a job whose worker is dead")
+
+    def test_run_unit_after_a_unit_whose_job_file_is_missing(self):
+        self.run_b_after("a job whose file is missing")
+
+    def test_run_unit_after_a_unit_with_neither_job_nor_pid_past_the_grace(self):
+        self.run_b_after("no pid and no job, past the grace")
+
+    def test_run_unit_refused_beside_a_unit_with_neither_job_nor_pid_in_the_grace(self):
+        self.approve(PAIR)
+        self.set_records({"a": self.running(in_place=True)})
+        code, _, err = self.run_unit("b")
+        self.assertEqual(code, 2)
+        self.assertIn("a is running in place", err)
+        self.assertEqual(self.record("a")["status"], "running")
+        self.assertEqual(self.calls, [])
+
+    def test_units_status_leaves_a_unit_claimed_again_meanwhile(self):
+        """Another run took the unit after the read: its record is not failed."""
+        self.approve(PAIR)
+        self.set_records({"a": self.running(pid=4242, pid_started="t0")})
+        me = os.getpid()
+
+        def claimed_meanwhile(workspace: ws.Workspace, record: Dict[str, Any]) -> bool:
+            units_mod.update(workspace, "a", {"pid": me, "pid_started": "t1"})
+            return False
+
+        with mock.patch.object(units_run, "may_still_run", claimed_meanwhile):
+            code, out, err = run_cli("units", "status", "--json")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(json.loads(out)["units"][0]["status"], "running")
+        record = self.record("a")
+        self.assertEqual((record["status"], record["pid"]), ("running", me))
+        self.assertNotIn("finished_at", record)
 
     def test_units_status_keeps_a_live_run(self):
         self.approve(PAIR)

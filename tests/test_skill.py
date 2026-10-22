@@ -612,6 +612,7 @@ _REGISTRY_FREE = (
     "context",
     "review_snapshot",
     "review_plan",
+    "plan_text",
     "review_round_context",
     "review_coverage",
     "summary",

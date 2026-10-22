@@ -31,6 +31,10 @@ class Refused(ValueError):
     """A unit that may not start; the message is what follows ``--unit NAME: ``."""
 
 
+class NoSuchUnit(ValueError):
+    """A unit ``clean`` was named that has no record; the message says so."""
+
+
 class Claimed(NamedTuple):
     """A unit ``claim`` recorded as running, with where it runs."""
 
@@ -338,15 +342,14 @@ def _outside_files(workspace: ws.Workspace, name: str, base: str, result: str, l
     return units_merge.outside_files(unit.files, changed) if unit else []
 
 
-def cancel(workspace: ws.Workspace, job: Dict[str, Any]) -> Cancelled:
-    """Remove a cancelled unit job's worktree and record a running unit as ``cancelled``.
+def cancel(workspace: ws.Workspace, name: str, job_id: Optional[str]) -> Cancelled:
+    """Remove unit ``name``'s worktree, its job ``job_id`` cancelled; a running unit is ``cancelled``.
 
     Only the unit this job ran: a record that has since gone to another job is
     left alone. A failed one keeps its status, which says why it ended.
     """
-    name = str(job["unit"])
     record = units_mod.load_state(workspace)["units"].get(name)
-    if not isinstance(record, dict) or record.get("job") not in (None, job.get("id")):
+    if not isinstance(record, dict) or record.get("job") not in (None, job_id):
         return Cancelled(False, [])
     if record.get("status") not in (units_mod.RUNNING, units_mod.FAILED):
         return Cancelled(False, [])
@@ -383,13 +386,13 @@ def clean(workspace: ws.Workspace, name: Optional[str] = None) -> List[Cleaned]:
     A unit still running keeps its worktree. One whose worker is gone without
     finishing it is recorded as failed, so it can be run again. Each record is
     read again when its turn comes: removing a worktree before it can take
-    seconds, and a unit can finish meanwhile. Raises ``KeyError`` for a
+    seconds, and a unit can finish meanwhile. Raises ``NoSuchUnit`` for a
     ``name`` with no record.
     """
     state = units_mod.load_state(workspace)
     entries = {key: entry for key, entry in state["units"].items() if isinstance(entry, dict)}
     if name and name not in entries:
-        raise KeyError(name)
+        raise NoSuchUnit("no unit named %s has a record" % name)
     names = [name] if name else sorted(entries)
     done: List[Cleaned] = []
     for each in names:

@@ -17,8 +17,42 @@ from orchestrator import units as units_mod
 from orchestrator import workspace as ws
 from orchestrator import worktrees
 
-#: What the CLI hands ``create`` for Claude and a project file (``cli_run._worktree_copies``).
+#: What the CLI hands ``create`` for Claude and a project file (``worktrees.copies_for``).
 COPIES = (".claude/settings.local.json", ".dev-orchestra.yaml")
+
+
+class TestCopies(IsolatedCase):
+    def test_worktrees_copies_for_adds_the_project_file(self):
+        root = os.path.join(self.tmp, "project")
+        project_path = os.path.join(root, ".dev-orchestra.yaml")
+        files = (".claude/settings.local.json",)
+        self.assertEqual(worktrees.copies_for(root, files, project_path), list(COPIES))
+        self.assertEqual(worktrees.copies_for(root, files, None), [".claude/settings.local.json"])
+        self.assertEqual(worktrees.copies_for(root, (), None), [])
+
+    def test_worktrees_copies_for_takes_a_bare_string_as_one_file(self):
+        """A user adapter's ``worktree_files = "..."``, not split into characters."""
+        copies = worktrees.copies_for(self.tmp, ".claude/settings.local.json", None)
+        self.assertEqual(copies, [".claude/settings.local.json"])
+
+    def test_worktrees_copy_paths_inside_the_repository(self):
+        for relative, inside in (
+            ("..dotfile", True),
+            ("notes/..hidden", True),
+            ("a/../b.txt", True),
+            ("..", False),
+            (os.path.join("..", "x"), False),
+            ("a/../../x", False),
+            (os.path.abspath("x"), False),
+        ):
+            with self.subTest(relative=relative):
+                self.assertIs(worktrees._in_repository(relative), inside)
+
+    @unittest.skipUnless(os.name == "nt", "drives are Windows'")
+    def test_worktrees_copy_paths_with_a_drive_are_outside(self):
+        for relative in ("C:..\\secret.txt", "C:foo", "c:notes\\a.txt"):
+            with self.subTest(relative=relative):
+                self.assertFalse(worktrees._in_repository(relative))
 
 
 class TestSafeWalker(IsolatedCase):
@@ -231,10 +265,18 @@ class TestCreate(WorktreeCase):
         outside = os.path.join(self.tmp, "outside.txt")
         ws.write_text(outside, "secret\n")
         self.write("notes/kept.txt", "kept\n")
+        # Ignored, so only the copy brings it into the worktree.
+        self.write(".gitignore", ".venv/\n.claude/settings.local.json\n.dev-orchestra.yaml\n..dotfile\n")
+        self.write("..dotfile", "dots\n")
         escapes = [outside, os.path.join("..", "outside.txt"), "notes/../../outside.txt"]
-        record = self.create(copies=[*escapes, "notes/kept.txt"])
+        drive = os.path.splitdrive(self.project)[0]
+        if drive:
+            # Drive-relative: joined to the root, it climbs out of it.
+            escapes.append(drive + os.path.join("..", "outside.txt"))
+        record = self.create(copies=[*escapes, "notes/kept.txt", "..dotfile"])
         tree = record["worktree"]
         self.assertEqual(read_file(os.path.join(tree, "notes", "kept.txt")), "kept\n")
+        self.assertEqual(read_file(os.path.join(tree, "..dotfile")), "dots\n")
         self.assertFalse(os.path.lexists(os.path.join(os.path.dirname(tree), "outside.txt")))
         self.assertEqual(read_file(outside), "secret\n")
 

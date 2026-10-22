@@ -24,19 +24,21 @@ def cmd_units_check(args: argparse.Namespace) -> int:
     """Refuse a plan whose units cannot be run; print the schedule of one that can."""
     workspace, loaded = _workspace_and_config(args)
     plan_relative = workspace.relative(workspace.plan_path)
-    try:
-        plan_text, found = _read_units(workspace)
-    except units_mod.UnitsError as exc:
-        _err("%s: %s" % (plan_relative, exc))
-        return 2
+    plan_text = ws.read_text(workspace.plan_path)
     if not plan_text.strip():
         _err("no plan at %s" % plan_relative)
+        return 2
+    settings = loaded.implementation_settings()
+    try:
+        found, problems, warnings = units_mod.check(
+            plan_text, settings, units_mod.known_files(workspace.root)
+        )
+    except units_mod.UnitsError as exc:
+        _err("%s: %s" % (plan_relative, exc))
         return 2
     if not found:
         _out("%s has no ## Units: a single run." % plan_relative)
         return 0
-    settings = loaded.implementation_settings()
-    _, problems, warnings = units_mod.check(plan_text, settings, units_mod.known_files(workspace.root))
     if problems:
         _err("%s: the units cannot be run:" % plan_relative)
         for problem in problems:
@@ -324,8 +326,8 @@ def cmd_units_clean(args: argparse.Namespace) -> int:
     workspace = _workspace(args)
     try:
         outcomes = units_run.clean(workspace, args.name or None)
-    except KeyError:
-        _err("no unit named %s has a record" % args.name)
+    except units_run.NoSuchUnit as exc:
+        _err(str(exc))
         return 2
     removed = kept = 0
     for outcome in outcomes:

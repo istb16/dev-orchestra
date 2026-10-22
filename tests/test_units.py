@@ -6,11 +6,13 @@ import json
 import os
 import unittest
 from typing import Any, Dict, List, Optional
+from unittest import mock
 
 from helpers import IsolatedCase, has_git, run_cli
 
 from orchestrator import config as config_mod
 from orchestrator import units as units_mod
+from orchestrator import units_run
 from orchestrator import workspace as ws
 
 
@@ -50,6 +52,14 @@ class TestParse(UnitsCase):
         code, out, err = self.check(text)
         self.assertEqual(code, 0, err)
         self.assertIn("single run", out)
+
+    def test_units_check_reads_the_plan_once(self):
+        text = plan([{"name": "a", "files": ["scripts/a.py"]}, {"name": "b", "files": ["scripts/b.py"]}])
+        with mock.patch.object(units_mod, "parse", wraps=units_mod.parse) as parsed:
+            code, out, err = self.check(text)
+        self.assertEqual(code, 0, err)
+        self.assertIn("2 units in", out)
+        self.assertEqual(parsed.call_count, 1)
 
     def test_units_parse_reads_entries(self):
         text = plan(
@@ -510,6 +520,13 @@ class TestJoin(UnitsCase):
         code, _, err = run_cli("units", "clean", "ghost")
         self.assertEqual(code, 2)
         self.assertIn("no unit named ghost has a record", err)
+
+    def test_units_clean_names_an_unknown_unit_by_its_own_error(self):
+        """Not ``KeyError``: one raised by a bug in the loop is not taken for a unit with no record."""
+        with self.assertRaises(units_run.NoSuchUnit) as raised:
+            units_run.clean(self.workspace, "ghost")
+        self.assertNotIsInstance(raised.exception, KeyError)
+        self.assertEqual(str(raised.exception), "no unit named ghost has a record")
 
 
 if __name__ == "__main__":

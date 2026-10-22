@@ -176,7 +176,7 @@ def cmd_jobs_cancel(args: argparse.Namespace) -> int:
         return 2
     if job.get("unit") and job.get("status") == "cancelled":
         name = str(job["unit"])
-        cancelled = units_run.cancel(workspace, job)
+        cancelled = units_run.cancel(workspace, name, job.get("id"))
         if cancelled.worktree_kept:
             _err("warning: %s's worktree could not be removed; units clean tries again" % name)
         if cancelled.left_in_tree:

@@ -25,7 +25,7 @@ import shutil
 import stat
 import sys
 import time
-from typing import Any, Dict, List, Sequence
+from typing import Any, Dict, List, Optional, Sequence
 
 from . import workspace as ws
 
@@ -94,6 +94,26 @@ def _link(target: str, link: str) -> None:
         raise OSError("could not link %s to %s: %s" % (link, target, exc)) from None
 
 
+def copies_for(root: str, files: Sequence[str], project_path: Optional[str]) -> List[str]:
+    """The files a unit's worktree is given a copy of: the CLI's own (``files``), and the project file.
+
+    ``files`` is a provider's ``worktree_files``; a bare string, set by a user
+    adapter, is one file, not its characters.
+    """
+    copies = [files] if isinstance(files, str) else list(files)
+    if project_path:
+        copies.append(os.path.relpath(project_path, root))
+    return copies
+
+
+def _in_repository(relative: str) -> bool:
+    """Whether ``relative`` names a path inside the repository: no root, no drive, no ``..`` out."""
+    if os.path.isabs(relative) or os.path.splitdrive(relative)[0]:
+        return False
+    normal = os.path.normpath(relative)
+    return normal != ".." and not normal.startswith(".." + os.sep)
+
+
 def _copy_missing(source: str, target: str) -> None:
     if os.path.isfile(source) and not os.path.lexists(target):
         os.makedirs(os.path.dirname(target), exist_ok=True)
@@ -130,8 +150,9 @@ def create(workspace: ws.Workspace, name: str, copies: Sequence[str] = ()) -> Di
     make it; nothing is left behind then.
 
     ``copies`` are repository-relative files it is given a copy of when the
-    user's tree has them, beside the plan and the decisions; an absolute one,
-    or one outside the repository, is skipped.
+    user's tree has them, beside the plan and the decisions (``copies_for``);
+    an absolute one, one with a drive, or one outside the repository, is
+    skipped.
     """
     root = workspace.root
     wanted = [
@@ -177,7 +198,7 @@ def create(workspace: ws.Workspace, name: str, copies: Sequence[str] = ()) -> Di
     }
     try:
         for relative in wanted_copies:
-            if not os.path.isabs(relative) and not os.path.normpath(relative).startswith(".."):
+            if _in_repository(relative):
                 _copy_missing(os.path.join(root, relative), os.path.join(path, relative))
     except OSError as exc:
         remove(root, record, name)

@@ -20,6 +20,7 @@ from . import ledger as ledger_mod
 from . import questions as questions_mod
 from . import units as units_mod
 from . import workspace as ws
+from . import worktrees as worktrees_mod
 from .cli_common import (
     DEFAULT_MODES,
     _emit_json,
@@ -1241,14 +1242,6 @@ def _unit_arg_refusal(args: argparse.Namespace, role: str) -> Optional[str]:
     return None
 
 
-def _worktree_copies(loaded: config_mod.LoadedConfig, provider: Provider, root: str) -> List[str]:
-    """The files a unit's worktree is given a copy of: the CLI's own, and the project file."""
-    copies = list(provider.worktree_files)
-    if loaded.project_path:
-        copies.append(os.path.relpath(loaded.project_path, root))
-    return copies
-
-
 def _claim_unit(
     args: argparse.Namespace, loaded: config_mod.LoadedConfig, provider: Provider, workspace: ws.Workspace
 ) -> Union[int, _UnitRun]:
@@ -1285,7 +1278,7 @@ def _claim_unit(
             unit,
             approval_mod.plan_digest(plan_text),
             settings.max_parallel,
-            _worktree_copies(loaded, provider, workspace.root),
+            worktrees_mod.copies_for(workspace.root, provider.worktree_files, loaded.project_path),
         )
     except units_run.Refused as exc:
         return _refuse_run(args, ["--unit %s: %s" % (name, exc)])

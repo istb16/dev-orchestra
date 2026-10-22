@@ -97,6 +97,33 @@ class TestMayStillRun(unittest.TestCase):
             self.assertFalse(self.may_still_run(0, status="running", pid=4242, started_at=self.STARTED))
             self.assertFalse(self.may_still_run(0, status="running", pid=4242))
 
+    def test_a_live_pid_whose_owner_is_unknown_blocks(self):
+        """``_worker_alive`` is None: the pid runs, and nothing says whose it is."""
+        from orchestrator import execution_tree
+        from orchestrator import jobs as jobs_mod
+
+        late = jobs_mod.STARTING_GRACE_SECONDS * 100
+        with (
+            mock.patch.object(execution_tree, "pid_alive", return_value=True),
+            mock.patch.object(execution_tree, "process_started", return_value=None),
+        ):
+            job = {"status": "running", "pid": 4242, "pid_started": "t0", "started_at": self.STARTED}
+            self.assertIsNone(jobs_mod._worker_alive(4242, job))
+            self.assertTrue(self.may_still_run(late, **job))
+
+    def test_a_pid_that_is_not_one_is_judged_by_the_grace(self):
+        from orchestrator import execution_tree
+        from orchestrator import jobs as jobs_mod
+
+        grace = jobs_mod.STARTING_GRACE_SECONDS
+        with mock.patch.object(execution_tree, "pid_alive", return_value=True) as alive:
+            for pid in (0, -1, True, "123"):
+                with self.subTest(pid=pid):
+                    job = {"status": "running", "pid": pid, "started_at": self.STARTED}
+                    self.assertTrue(self.may_still_run(0, **job))
+                    self.assertFalse(self.may_still_run(grace, **job))
+        alive.assert_not_called()
+
     def test_a_finished_job_never_blocks(self):
         from orchestrator import jobs as jobs_mod
 
