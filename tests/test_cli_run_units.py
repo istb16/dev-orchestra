@@ -424,7 +424,7 @@ class TestPrintCommand(UnitRunCase):
         self.set_records({"b": {"status": "running", "in_place": True, "worktree": None}})
         for name in ("a", "b"):
             with self.subTest(name=name):
-                self.assertEqual(self.print_command(name), self.workspace.root)
+                self.assertEqual(self.print_command(name), self.root)
         # Printing claims nothing and makes no worktree.
         self.assertEqual(self.record("a"), {})
         self.assertEqual(self.calls, [])
