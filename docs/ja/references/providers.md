@@ -1,4 +1,4 @@
-<!-- translated-from: references/providers.md sha256:e50479da9ad62535b4ccc9a2892aa72ccf5717700e94041f714b7e72c6434098 -->
+<!-- translated-from: references/providers.md sha256:42e4855b2cf5f950e371df5a4d57d3fb67788418a5a3e8b96e841574a81f667b -->
 
 > この文書は [references/providers.md](../../../references/providers.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
