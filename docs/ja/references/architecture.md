@@ -1,4 +1,4 @@
-<!-- translated-from: references/architecture.md sha256:cbaf8282d9b43f47e550daf744c848b07f137df7bea34c6573a7393bf437393e -->
+<!-- translated-from: references/architecture.md sha256:70c47acbf5aea2b39353698756f486b5fe1c5d7b887c1f9a07723b123ad61144 -->
 
 > この文書は [references/architecture.md](../../../references/architecture.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
