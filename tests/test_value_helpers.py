@@ -22,6 +22,7 @@ from helpers import IsolatedCase, has_git, present, run_cli
 from orchestrator import (
     cli_common,
     cli_review,
+    cli_review_status,
     cli_state,
     cli_workflow,
     optimization_render,
@@ -1001,7 +1002,7 @@ class TestSurroundingWords(unittest.TestCase):
             "  and 1 more not extracted",
         ]
         block = {"shared": True, **crowded_record()}
-        self.assertEqual(cli_review._surrounding_status_lines(block), expected)
+        self.assertEqual(cli_review_status._surrounding_status_lines(block), expected)
 
     def test_status_lines_by_reviewer(self):
         expected = [
@@ -1009,12 +1010,12 @@ class TestSurroundingWords(unittest.TestCase):
             "  left out: app.py:1-40 sub",
             "surrounding context (m2): none (ran with review.context.surrounding none)",
         ]
-        self.assertEqual(cli_review._surrounding_status_lines(self.by_reviewer()), expected)
+        self.assertEqual(cli_review_status._surrounding_status_lines(self.by_reviewer()), expected)
 
     def test_status_lines_with_nothing_adopted(self):
         block = {"shared": True, "adopted": [], "adopted_chars": 0, "reason": "not frozen"}
         expected = ["surrounding context: enclosing, 0 chars adopted -- not frozen"]
-        self.assertEqual(cli_review._surrounding_status_lines(block), expected)
+        self.assertEqual(cli_review_status._surrounding_status_lines(block), expected)
 
     def test_headline(self):
         block = {"shared": True, **context_record()}

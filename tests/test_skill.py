@@ -960,6 +960,9 @@ class TestImportLayering(IsolatedCase):
             cli,
             cli_common,
             cli_review,
+            cli_review_design,
+            cli_review_round,
+            cli_review_status,
             cli_run,
             cli_state,
             cli_workflow,
@@ -1078,6 +1081,29 @@ class TestImportLayering(IsolatedCase):
         self.assertFalse(hasattr(cli_review, "_coverage_advice"))
         for name in progress:
             self.assertFalse(hasattr(cli_review, "_" + name), name)
+        review_homes = {
+            cli_review_status: (
+                "cmd_review_status",
+                "_status_payload",
+                "_surrounding_status_lines",
+                "_final_pass_advice",
+            ),
+            cli_review_round: (
+                "_RoundContext",
+                "_run_panel",
+                "_ProgressEcho",
+                "_consolidate_round",
+                "_print_round",
+            ),
+            cli_review_design: ("_run_design_review", "_design_request_path"),
+        }
+        for home, names in review_homes.items():
+            for name in names:
+                self.assertEqual(getattr(home, name).__module__, home.__name__, name)
+        # cli_review imports the round helpers it uses, but keeps none of the
+        # status or design-only ones.
+        for name in (*review_homes[cli_review_status], "_design_request_path"):
+            self.assertFalse(hasattr(cli_review, name), name)
         for name in ("_coverage_line", "snapshot_reviewers", "current_snapshot_stamp"):
             self.assertFalse(hasattr(review_consolidation, name), name)
         for name in ("_stamp", "_snapshot_sha"):
