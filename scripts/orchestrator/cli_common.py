@@ -93,15 +93,16 @@ def _writes_utf8_instead(stream: Any) -> bool:
     Python writes a console in UTF-16 whatever the code page, but a pipe or a
     file in the ANSI code page -- cp932 on a Japanese Windows. The reader of a
     pipe here is usually the orchestrating agent, and Claude Code's Bash tool
-    and Codex read it as UTF-8, so every Japanese reply from ``jobs wait``
+    reads it as UTF-8, so every Japanese reply from ``jobs wait``
     arrived as mojibake, and an arrow in an architect report as a replacement
     character and a ``c``.
     stdin is already read as UTF-8 for the same reason (#284), and Python's
     UTF-8 mode, the default from 3.15, writes a pipe this way too.
 
-    A reader that expects the code page -- PowerShell 5 capturing the output
-    with ``$x = ...``, say -- now sees mojibake instead, so whoever has said
-    which encoding they want keeps it: ``PYTHONIOENCODING`` (``cp932`` gives
+    A reader that expects the code page now sees mojibake instead: PowerShell,
+    5.1 and 7 alike, reads captured output in ``[Console]::OutputEncoding``,
+    the code page unless set to UTF-8. So whoever has said which encoding they
+    want keeps it: ``PYTHONIOENCODING`` (``cp932`` gives
     the old output back), ``PYTHONUTF8`` and ``-X utf8``.
     """
     if sys.platform != "win32" or _encodes_everything(stream):

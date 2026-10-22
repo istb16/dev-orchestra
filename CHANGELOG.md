@@ -84,10 +84,13 @@ authors can find it.
   Japanese Windows, while the orchestrating agent reads the output of
   `jobs wait`, `jobs show --output` and the rest as UTF-8, so a delegated
   agent's Japanese reply arrived as mojibake. A pipe or a file is now written
-  in UTF-8, as stdin is already read. A console is unchanged. A reader that
-  expects the code page, such as PowerShell 5 capturing the output, gets the
-  old output back with `PYTHONIOENCODING=cp932`; `PYTHONIOENCODING`,
-  `PYTHONUTF8` and `-X utf8` are always left to decide.
+  in UTF-8, as stdin is already read. A console is unchanged. PowerShell, 5.1
+  and 7 alike, reads what it captures (`$x = dev-orchestra ...`, or a pipe to
+  another command) in `[Console]::OutputEncoding`, which is the code page
+  unless set to UTF-8, so the captured text is now garbled there instead.
+  Set `[Console]::OutputEncoding` to UTF-8, or set `PYTHONIOENCODING=cp932`
+  for the old output; `PYTHONIOENCODING`, `PYTHONUTF8` and `-X utf8` are
+  always left to decide.
 
 ## [1.1.2] - 2026-10-22
 
