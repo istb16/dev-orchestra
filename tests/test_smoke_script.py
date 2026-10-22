@@ -569,9 +569,12 @@ class TestTheCommandLine(IsolatedCase):
         """Reported from a 1.1.0 release run: every check had passed and spent
         its tokens, then printing one em dash in a detail raised
         `UnicodeEncodeError` and the run had to be repeated. The console is
-        built as Windows hands it over, `surrogateescape` and all."""
+        built as Windows hands it over, `surrogateescape` and all, and as a
+        terminal: a Windows pipe is written in UTF-8 instead."""
         self.fake_checks(smoke_live.Check("agy", "installed", True, "1.2 — build 7"))
-        stream = io.TextIOWrapper(io.BytesIO(), encoding="cp932", errors="surrogateescape", newline="")
+        terminal = io.BytesIO()
+        terminal.isatty = lambda: True  # type: ignore[method-assign]
+        stream = io.TextIOWrapper(terminal, encoding="cp932", errors="surrogateescape", newline="")
         saved, sys.stdout = sys.stdout, stream
         try:
             code = smoke_live.main(["--provider", "agy"])
