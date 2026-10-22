@@ -396,6 +396,17 @@ Keep it short: everyone after you reads the whole plan. Current Behavior,
 Investigation and Root Cause are bullets that cite `path:line` instead of
 quoting code. Test Strategy is one line per test: its name and what it
 asserts. Each Implementation Step names the files and functions it touches.
+When the work splits into pieces that change different files, or the plan has
+more than four Implementation Steps, add a section `## Units` holding one
+fenced `yaml` block: `units:`, a list of entries with `name` (a slug), `kind`
+(feature, fix, refactor, docs, test, ci or integration), `files` (the paths or
+globs it changes) and `depends_on` (the units it needs first). Under
+Implementation Steps, give each unit a section `### Unit: <name>` with its
+steps. Units that do not depend on each other, however indirectly, must not
+list the same file; files every piece touches, such as CHANGELOG, go to one
+`integration` unit that depends on every other. Write a long plan's parts as
+units chained by `depends_on`, one per natural group of steps. Otherwise leave
+`## Units` out.
 The caller captures stdout. Do not write it to a file: this role runs in plan
 mode. Do not modify any file.
 ```
@@ -416,6 +427,14 @@ dev-orchestra run architect \
 plan は先に渡す前に読んでください。曖昧である、コードベースと矛盾している、あるいは
 リスクの高い部分を飛ばしている場合は、一度だけ差し戻します。2 回目もまだ不十分なら、
 黙って即興で補うのではなく、レポートでその旨を伝えてください。
+
+**作業単位ごとの設計（任意）。** 既定では 1 人の architect が、作業単位ごとのセクションを持つ
+1 つの plan を書きます。設計の前から作業単位がはっきりしているときは、代わりに作業単位ごとに
+architect に設計させることもできます。`run architect --unit <name> --output
+.ai/execution/plan-<name>.md` で、依頼では `## Units` にその作業単位だけを持つ plan を求めます。
+そのあと `units join --part <name>=<path> ... --output .ai/plan.md` で 1 つの plan にまとめ、
+design レビューと承認はその plan に対して 1 回だけ行います。1 回の設計の作業単位ごとの実行は、
+合わせて `budgets.architect` から 1 回の試行を使います。
 
 <a id="design-review"></a>
 
@@ -595,6 +614,8 @@ dev-orchestra run architect --resume \
 何も実装されません。ユーザーに提示するのは次のものです。
 
 - plan の **Goal**、**Proposed Change**、**Files to Modify**、**Risks**
+- plan に **Units** があれば、各作業単位の種類、ファイル、依存と、`units check` が表示する波
+  （承認はこの分け方も対象にします）
 - 未解決の design 指摘と、それがこの plan のレビューから出たものか、以前の修正版の
   レビューから出たものか（`design approve` がどちらかを示します）
 
@@ -754,11 +775,40 @@ dev-orchestra run implementer --prompt-file .ai/execution/implement-request.md
 **長い計画は分けて走らせます。** 実行は長くなるほど、ツール呼び出し 1 回あたりの費用が
 上がります。呼び出すたびに、それまでに読んだものをすべて読み直すためです。このプロジェクト
 自身の記録では、ツール呼び出しが 160 回以上の実行は、80 回未満の実行に比べて、1 回あたり
-約 1.5 倍かかりました。計画の Implementation Steps が 4 つを超えるときは、手順のまとまり
-ごとに implementer を走らせます。回数は最大 3 回で、依頼にはどの手順をやるかを書きます
-（`Do steps 1-3 of the plan; the later steps come in a separate run.`）。各実行は、前の
-実行が残したツリーから始まります。各実行は `budgets.implementer`（既定 5）から試行を 1 回
-使うので、3 回にとどめれば、やり直し用に 2 回残ります。
+約 1.5 倍かかりました。そこで、Implementation Steps が 4 つを超える計画は、手順の自然な
+まとまりの数だけ、`depends_on` でつないだ一続きの作業単位に分けます。分ける数に上限は
+ありません。各作業単位は別の短い実行で、前の作業単位が残したツリーから始まります。並んで
+走りうるものがないので、その場で走り、worktree もマージもありません。pass 全体で
+`budgets.implementer`（既定 5）から試行を 1 回使い、部分をやり直したときだけもう 1 回使います。
+`total_delegated_runs` は、それでもすべての実行を数えます。
+
+**作業単位。** 承認された計画に `## Units` があるときは、まず `units check` を走らせます。
+走らせられない作業単位を拒否し（終了コード 2）、波を表示します。そのあと、すべての作業単位が
+マージされるまで次を繰り返します。
+
+1. `units status` が始められると示す作業単位を、`implementation.max_parallel` まで
+   `run implementer --unit <name> --prompt-file .ai/execution/implement-request.md --detach --json`
+   で始めます。CLI は作業単位の名前、ファイル、計画のセクションをプロンプトの前に付けるので、
+   依頼は 1 つで全作業単位に使えます。
+2. `jobs wait <id> <id> ... --any` は、最初の 1 つが終わると戻ります。
+3. `units merge <name>` で、終わった作業単位を作業ツリーに戻します。終了コード 7 なら競合です。
+   メインのツリーで `run review_fixer --prompt-file .ai/execution/units/<name>-conflicts.md` を
+   走らせ、そのあと `units merge <name> --resolved` を走らせます。解決役は
+   `budgets.review_fixer` を使います。
+4. `units status` に戻り、新たに始められる作業単位を見ます。
+
+作業単位は、ほかと並んで走りうるときは専用の worktree で、並んで走るものがないとき（走っている
+作業単位がなく、まだマージされていない作業単位がすべてそれに依存しているとき）はその場で走ります。
+その場で走った作業単位は終わったときにマージ済みになり、走っている間はほかに何も始まりません。
+1 つの計画の作業単位は、合わせて `budgets.implementer` から試行を 1 回使い、作業単位をやり直した
+ときだけもう 1 回使います。新しい承認か `budget reset` で新しい pass が始まります。下の light tier
+の規則は、各作業単位にその `files` で当てはめます。作業単位が失敗したら、それはマージされず、
+それに依存する作業単位は拒否されます。走っている作業単位は終わらせてマージし、そのあと停止して
+報告してください。失敗した作業単位の差分は `.ai/execution/units/<name>.diff` に残ります。
+`units clean` は作業単位が残した worktree を消し、ワーカーがいなくなった作業単位を失敗として
+記録します。前の計画の作業単位が走っているか worktree を持っている間に計画が変わったときは、
+そのジョブを取り消すか `units clean` を走らせるまで拒否されます（終了コード 2）。テストと
+レビューは、作業単位がないときと同じく、マージしたツリーに対して 1 回だけ行います。
 
 **小さな作業は light tier に回します。** role に `light` tier があるとき（`config show`。
 `references/configuration.md` の Model tiers を参照）、計画の Files to Modify が 3 つ以下で、

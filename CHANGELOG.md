@@ -13,8 +13,45 @@ authors can find it.
 
 ## [Unreleased]
 
+### Added
+
+- **Work units: a plan's pieces run apart, or side by side** (#343). A plan
+  may hold a `## Units` block -- a fenced `yaml` list of units, each with a
+  `name`, a `kind` (`feature`, `fix`, `refactor`, `docs`, `test`, `ci` or
+  `integration`), its `files` and what it `depends_on` -- and a
+  `### Unit: <name>` section per unit. A plan without one is a single run, as
+  before. `units check` refuses units that cannot run (exit 2) -- among them
+  two that may run side by side with overlapping files, and a hub file
+  (`implementation.hub_paths`) outside the one integration unit -- and prints
+  the schedule as waves. `run implementer --unit <name>` runs one unit: in a
+  git worktree of its own beside the repository, made from the working tree
+  as it is, when another unit could run beside it, and in place when nothing
+  could. A unit that ran in a worktree is brought back with `units merge
+  <name>`, file by file with `git merge-file`, touching only the working tree;
+  a conflict leaves a brief at `.ai/execution/units/<name>-conflicts.md` and
+  exits 7, the orchestrator has `review_fixer` resolve it, and `units merge
+  <name> --resolved` records the files. Reviewers are told, on every round,
+  which files were resolved and which a unit changed outside its own.
+  `units status` shows each unit and which can start, `units clean` removes
+  the worktrees units left behind, and `jobs cancel` removes a unit job's.
+  `jobs wait` takes several job ids, waiting for all of them or, with `--any`,
+  for the first to finish; with one id it is unchanged. `run architect --unit`
+  and `units join` let an architect design each unit, joined into one plan
+  that is reviewed and approved once. A new `implementation` section sets
+  `max_parallel` (1 to 8, default 2) and `hub_paths` (default the
+  `CHANGELOG` files).
+
 ### Changed
 
+- **The work units of one plan spend one implementer attempt between them**
+  (#343). The first unit run on a plan hash spends an attempt from
+  `budgets.implementer`; the others join that pass free, and only a rerun of a
+  unit in the same pass spends another. A new plan hash (a new approval) or
+  `budget reset` begins a new pass. `run architect --unit` is charged the same
+  way against `budgets.architect`, keyed on the last approved plan.
+  `total_delegated_runs` and `max_runtime_seconds` still count every run, and
+  a plain `run` without `--unit` spends one attempt as before. `budget show`
+  prints the open pass, and `--json` adds `passes`.
 - **The workflow asks for cheaper runs where the work allows.** These are
   changes to the guidance in `references/workflow.md`; the CLI is unchanged.
   The design request asks for a shorter plan: background as bullets that cite
@@ -22,9 +59,11 @@ authors can find it.
   touches. A revision leaves the sections no finding touches as they were. The
   implementation request asks the implementer to read only what a step needs
   and to run lint and type checks once per step. A plan with more than four
-  Implementation Steps runs the implementer in at most three parts, since a
-  long run costs more per tool call. A small implementation or fix runs on the
-  role's `light` tier when the role has one.
+  Implementation Steps is split into as many serial work units as it has
+  natural groups of steps, with no cap on the number, since a long run costs
+  more per tool call; they run in place, one after another, and take one
+  attempt between them. A small implementation or fix runs on the role's
+  `light` tier when the role has one.
 
 ## [1.1.2] - 2026-10-22
 

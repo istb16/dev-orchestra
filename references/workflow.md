@@ -403,6 +403,17 @@ Keep it short: everyone after you reads the whole plan. Current Behavior,
 Investigation and Root Cause are bullets that cite `path:line` instead of
 quoting code. Test Strategy is one line per test: its name and what it
 asserts. Each Implementation Step names the files and functions it touches.
+When the work splits into pieces that change different files, or the plan has
+more than four Implementation Steps, add a section `## Units` holding one
+fenced `yaml` block: `units:`, a list of entries with `name` (a slug), `kind`
+(feature, fix, refactor, docs, test, ci or integration), `files` (the paths or
+globs it changes) and `depends_on` (the units it needs first). Under
+Implementation Steps, give each unit a section `### Unit: <name>` with its
+steps. Units that do not depend on each other, however indirectly, must not
+list the same file; files every piece touches, such as CHANGELOG, go to one
+`integration` unit that depends on every other. Write a long plan's parts as
+units chained by `depends_on`, one per natural group of steps. Otherwise leave
+`## Units` out.
 The caller captures stdout. Do not write it to a file: this role runs in plan
 mode. Do not modify any file.
 ```
@@ -422,6 +433,15 @@ dev-orchestra run architect \
 Read the plan before passing it on. Send it back once if it is vague,
 contradicts the codebase, or skips the risky part. If the second attempt is
 still weak, say so in the report rather than quietly improvising.
+
+**Designing per unit (optional).** By default one architect writes one plan,
+with a section per unit. When the units are clear before the design, an
+architect can design each one instead: `run architect --unit <name> --output
+.ai/execution/plan-<name>.md`, its request asking for a plan whose `## Units`
+holds that unit alone. `units join --part <name>=<path> ... --output
+.ai/plan.md` then makes one plan of them, and the design review and the
+approval run once, on that plan. The per-unit runs of one design take one
+attempt from `budgets.architect` between them.
 
 ## Design review
 
@@ -607,6 +627,8 @@ With `design.require_approval` on (the default), nothing is implemented until
 the user has approved the plan. Put to them:
 
 - the plan's **Goal**, **Proposed Change**, **Files to Modify** and **Risks**;
+- its **Units**, when it has them: each unit's kind, files and dependencies,
+  and the waves `units check` prints -- the approval covers the split too;
 - any design findings still open, and whether they came from a review of this
   plan or of an earlier revision (`design approve` says which);
 
@@ -766,12 +788,45 @@ dev-orchestra run implementer --prompt-file .ai/execution/implement-request.md
 **A long plan runs in parts.** A run costs more per tool call the longer it
 gets, because every call re-reads what the run has read so far: on this
 project's own records, runs of 160 or more tool calls cost about 1.5 times as
-much per call as runs under 80. When the plan has more than four
-Implementation Steps, run the implementer once per group of steps, at most
-three runs, each request saying which steps it does (`Do steps 1-3 of the
-plan; the later steps come in a separate run.`). Each run starts from the tree
-the one before it left, and each takes an attempt from `budgets.implementer`
-(default 5): three runs leave two for retries.
+much per call as runs under 80. So a plan with more than four
+Implementation Steps is split into as many serial units, chained by
+`depends_on`, as it has natural groups of steps; there is no cap on the
+number of parts. Each unit is a separate, shorter run that starts from the
+tree the one before it left: nothing could run beside it, so it runs in place,
+with no worktree and no merge. The whole pass takes one attempt from
+`budgets.implementer` (default 5), and only a rerun of a part takes another;
+`total_delegated_runs` still counts every run.
+
+**Work units.** When the approved plan has `## Units`, run `units check`
+first; it refuses (exit 2) units that cannot run and prints the waves. Then,
+until every unit is merged:
+
+1. Start each unit `units status` lists as ready, up to
+   `implementation.max_parallel`, with `run implementer --unit <name>
+   --prompt-file .ai/execution/implement-request.md --detach --json`. The CLI
+   puts the unit's name, files and plan section in front of the prompt, so one
+   request serves every unit.
+2. `jobs wait <id> <id> ... --any` returns when the first one finishes.
+3. `units merge <name>` brings a finished unit into the working tree. On exit
+   7 it conflicted: run `run review_fixer --prompt-file
+   .ai/execution/units/<name>-conflicts.md` in the main tree, then `units
+   merge <name> --resolved`. The resolver spends `budgets.review_fixer`.
+4. Back to `units status` for the units now ready.
+
+A unit runs in a worktree of its own when another could run beside it, and in
+place when nothing could -- no unit is running and every unit not yet merged
+depends on it; a unit run in place is merged when it ends, and nothing else
+starts while it runs. The units of one plan take one attempt from
+`budgets.implementer` between them, and only a rerun of a unit takes another;
+a new approval or `budget reset` begins a new pass. The light-tier rule below
+applies to each unit on its own `files`. If a unit fails, it is not merged
+and the units that depend on it are refused: let the running units finish and
+merge them, then stop and report; the failed unit's diff stays in
+`.ai/execution/units/<name>.diff`. `units clean` removes the worktrees units
+left behind, and records a unit whose worker is gone as failed. A plan changed
+while an earlier plan's unit is running or holds a worktree is refused (exit
+2) until those jobs are cancelled or `units clean` has run. Test and review
+then run once, on the merged tree, as without units.
 
 **Small work goes to the light tier.** When the role has a `light` tier
 (`config show`; Model tiers in `references/configuration.md`), run the
