@@ -152,8 +152,9 @@ def write_tree(root: str, excludes: Sequence[str] = ()) -> str:
         # An exclude naming a path git already ignores makes `git add` fail;
         # the ignore rules leave that one out anyway.
         if excludes:
-            code, out, _ = git(["check-ignore", "-z", "--", *excludes], root)
-            ignored = set(out.split("\0")) if code == 0 else set()
+            # One ignored path per line; exit 1 means none of them is ignored.
+            code, out, _ = git(["check-ignore", "--", *excludes], root)
+            ignored = set(out.splitlines()) if code == 0 else set()
             excludes = [path for path in excludes if path not in ignored]
         pathspecs = [":(exclude)%s" % path for path in excludes]
         code, _, _ = git(["add", "-A", "--", ".", *pathspecs], root, env=env)
