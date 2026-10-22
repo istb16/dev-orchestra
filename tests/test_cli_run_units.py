@@ -408,13 +408,15 @@ class TestDetached(UnitRunCase):
         self.assertEqual(self.calls, [])
         self.assert_no_worktree()
 
-    def test_run_unit_detached_worker_refused_by_the_budget_releases_the_unit(self):
+    def test_run_unit_detached_worker_refused_by_a_gate_releases_the_unit(self):
+        """The parent spends the attempt before handing over, so the worker
+        never meets the budget; what it can meet is a gate, such as an
+        approval gone stale."""
         self.approve(PAIR)
         job = self.start("a")
-        code, _, err = run_cli("config", "set", "budgets.total_delegated_runs", "1")
-        self.assertEqual(code, 0, err)
+        ws.write_text(self.workspace.plan_path, plan(PAIR) + "\nChanged after the approval.\n")
         code, _, err = run_cli(*self.workers[0])
-        self.assertEqual(code, 3, err)
+        self.assertEqual(code, 5, err)
         self.assertEqual(self.job(job["id"])["status"], "failed")
         record = self.record("a")
         self.assertEqual(record["status"], "failed")
