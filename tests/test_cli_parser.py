@@ -141,10 +141,15 @@ class TestParserShape(IsolatedCase):
                 self.assertIs(self.parse(*minimal_argv(path, leaf)).func, func)
 
     def test_activity_flags_on_jobs_show_and_wait(self):
-        for sub in ("show", "wait"):
+        # `jobs wait` takes a cursor per job (`ID=N`), so its --since is a list
+        # of (job id or None, N); `jobs show` keeps the single number.
+        for sub, unset, at_max in (
+            ("show", 0, activity_mod.SINCE_MAX),
+            ("wait", [], [(None, activity_mod.SINCE_MAX)]),
+        ):
             with self.subTest(sub=sub):
                 args = self.parse("jobs", sub, "J")
-                self.assertEqual((args.since, args.activity), (0, 10))
+                self.assertEqual((args.since, args.activity), (unset, 10))
                 args = self.parse(
                     "jobs",
                     sub,
@@ -154,11 +159,9 @@ class TestParserShape(IsolatedCase):
                     "--activity",
                     str(activity_mod.LATEST_MAX),
                 )
-                self.assertEqual(
-                    (args.since, args.activity), (activity_mod.SINCE_MAX, activity_mod.LATEST_MAX)
-                )
+                self.assertEqual((args.since, args.activity), (at_max, activity_mod.LATEST_MAX))
                 args = self.parse("jobs", sub, "J", "--since", "0", "--activity", "0")
-                self.assertEqual((args.since, args.activity), (0, 0))
+                self.assertEqual((args.since, args.activity), (0 if sub == "show" else [(None, 0)], 0))
                 for flag, bad in (
                     ("--since", "-1"),
                     ("--since", str(activity_mod.SINCE_MAX + 1)),
