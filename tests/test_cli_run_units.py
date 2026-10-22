@@ -394,6 +394,43 @@ class TestWorktreeRuns(UnitRunCase):
         self.assert_no_worktree()
 
 
+class TestPrintCommand(UnitRunCase):
+    """``--print-command --unit``: where the unit's command would run, starting nothing."""
+
+    def print_command(self, name: str) -> str:
+        """The cwd the printed command was built for."""
+        seen: List[str] = []
+        original = MockProvider.command_line
+
+        def recording(provider, mode, resolved, cwd, *args, **kwargs):
+            seen.append(cwd)
+            return original(provider, mode, resolved, cwd, *args, **kwargs)
+
+        with mock.patch.object(MockProvider, "command_line", recording):
+            code, out, err = self.run_unit(name, "--print-command")
+        self.assertEqual(code, 0, err)
+        self.assertTrue(out.strip())
+        self.assertEqual(len(seen), 1)
+        return seen[0]
+
+    def test_print_command_unit_names_the_worktree_it_runs_in(self):
+        self.approve(PAIR)
+        tree = os.path.join(self.units_parent, "deadbeef-a")
+        self.set_records({"a": {"status": "running", "in_place": False, "worktree": tree}})
+        self.assertEqual(self.print_command("a"), tree)
+
+    def test_print_command_unit_without_a_worktree_names_the_repository(self):
+        self.approve(PAIR)
+        self.set_records({"b": {"status": "running", "in_place": True, "worktree": None}})
+        for name in ("a", "b"):
+            with self.subTest(name=name):
+                self.assertEqual(self.print_command(name), self.workspace.root)
+        # Printing claims nothing and makes no worktree.
+        self.assertEqual(self.record("a"), {})
+        self.assertEqual(self.calls, [])
+        self.assertFalse(os.path.exists(self.units_parent))
+
+
 class TestInPlace(UnitRunCase):
     def test_run_unit_in_place_for_serial_chain(self):
         self.approve(CHAIN)
