@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
+import types
 import unittest
 from typing import Any, Callable, Dict, List, Optional
 from unittest import mock
@@ -11,8 +13,11 @@ from unittest import mock
 from helpers import IsolatedCase, has_git, is_link, read_file, run_cli
 from test_units import plan
 
+from orchestrator import execution_tree
+from orchestrator import jobs as jobs_mod
 from orchestrator import units as units_mod
 from orchestrator import workspace as ws
+from orchestrator import worktrees as worktrees_mod
 from orchestrator.providers.mock import MockProvider
 
 PAIR = [{"name": "a", "files": ["a.py"]}, {"name": "b", "files": ["b.py"]}]
@@ -124,6 +129,52 @@ class TestRefusals(UnitRunCase):
         code, _, err = run_cli("run", "review_fixer", "--unit", "a", "--prompt", "go")
         self.assertEqual(code, 2)
         self.assertIn("--unit applies to implementer", err)
+
+    def test_run_unit_refused_until_its_result_is_merged(self):
+        self.approve(PAIR)
+        for status, said in (
+            ("succeeded", "run units merge a first"),
+            ("conflicted", "units merge a --resolved"),
+        ):
+            with self.subTest(status=status):
+                self.set_records({"a": {"status": status, "in_place": False, "conflicts": ["a.py"]}})
+                code, _, err = self.run_unit("a")
+                self.assertEqual(code, 2)
+                self.assertIn(said, err)
+                self.assertEqual(self.record("a")["status"], status)
+                self.assertEqual(self.record("a")["conflicts"], ["a.py"])
+        self.assertEqual(self.used(), 0)
+        self.assertEqual(self.calls, [])
+
+    def test_run_unit_refused_unknown_unit(self):
+        self.approve(PAIR)
+        code, _, err = self.run_unit("ghost")
+        self.assertEqual(code, 2)
+        self.assertIn("has no such unit", err)
+        self.assertEqual(self.record("ghost"), {})
+
+    def test_run_unit_refused_while_an_earlier_plan_holds_a_worktree(self):
+        self.approve(PAIR)
+        self.set_records({"a": {"status": "failed", "in_place": False, "worktree": self.units_parent}})
+        self.approve(PAIR, extra="\nRevised.\n")
+        code, _, err = self.run_unit("b")
+        self.assertEqual(code, 2)
+        self.assertIn("units of an earlier plan are running or hold a worktree (a)", err)
+        self.assertEqual(self.record("a")["worktree"], self.units_parent)
+        self.assertEqual(self.calls, [])
+
+    def test_run_unit_worktree_failure_puts_the_record_back(self):
+        self.approve(PAIR)
+        before = {"status": "failed", "in_place": False, "worktree": None, "finished_at": "t"}
+        self.set_records({"a": dict(before)})
+        failing = mock.patch.object(worktrees_mod, "create", side_effect=worktrees_mod.WorktreeError("no"))
+        with failing:
+            code, _, err = self.run_unit("a")
+        self.assertEqual(code, 2)
+        self.assertIn("no worktree could be made: no", err)
+        self.assertEqual(self.record("a"), before)
+        self.assertEqual(self.used(), 0)
+        self.assertEqual(self.calls, [])
 
 
 class TestWorktreeRuns(UnitRunCase):
@@ -251,12 +302,14 @@ class TestPassBudget(UnitRunCase):
         three = [*PAIR, {"name": "c", "files": ["c.py"]}]
         run_cli("config", "set", "budgets.implementer", "1")
         self.approve(three)
-        self.assertEqual(self.run_unit("a")[0], 0)
+        os.environ["DEV_ORCHESTRA_MOCK_FAIL"] = "1"
+        self.assertEqual(self.run_unit("a")[0], 1)
         # A rerun in the same pass spends an attempt, and there is none left.
         code, _, err = self.run_unit("a")
         self.assertEqual(code, 3, err)
         self.assert_no_worktree()
-        self.assertEqual(self.record("a")["status"], "succeeded")
+        self.assertEqual(self.record("a")["status"], "failed")
+        del os.environ["DEV_ORCHESTRA_MOCK_FAIL"]
         # A piece of the open pass that has not run yet still runs.
         self.assertEqual(self.run_unit("b")[0], 0)
         self.assertEqual(self.used(), 1)
@@ -266,9 +319,12 @@ class TestPassBudget(UnitRunCase):
         self.assertEqual(code, 3, err)
         self.assert_no_worktree()
         self.assertEqual(self.record("a"), {})
-        # A spent total_delegated_runs refuses all three kinds.
+        # A spent total_delegated_runs refuses a rerun of a failed unit and the
+        # pass's later pieces alike.
         run_cli("config", "set", "budgets.implementer", "10")
-        self.assertEqual(self.run_unit("a")[0], 0)
+        os.environ["DEV_ORCHESTRA_MOCK_FAIL"] = "1"
+        self.assertEqual(self.run_unit("a")[0], 1)
+        del os.environ["DEV_ORCHESTRA_MOCK_FAIL"]
         run_cli("config", "set", "budgets.total_delegated_runs", "3")
         for name in ("a", "b", "c"):
             with self.subTest(name=name):
@@ -280,6 +336,161 @@ class TestPassBudget(UnitRunCase):
         code, _, err = self.run_unit("a")
         self.assertEqual(code, 3, err)
         self.assert_no_worktree()
+
+
+class TestDetached(UnitRunCase):
+    """``--detach``: the parent claims the unit and starts a worker, run here in-process."""
+
+    def setUp(self):
+        super().setUp()
+        self.enterContext(mock.patch.object(execution_tree, "end_children_on_sigterm"))
+        #: Each worker's argv, as `jobs.start` would have spawned it.
+        self.workers: List[List[str]] = []
+        entry = jobs_mod._entry_point()
+
+        def popen(command: List[str], *args: Any, **kwargs: Any) -> Any:
+            self.assertEqual(command[1], entry)
+            self.workers.append(list(command[2:]))
+            return types.SimpleNamespace(pid=os.getpid())
+
+        fake = types.SimpleNamespace(Popen=popen, DEVNULL=subprocess.DEVNULL)
+        self.enterContext(mock.patch.object(jobs_mod, "subprocess", fake))
+
+    def start(self, name: str) -> Dict[str, Any]:
+        code, out, err = self.run_unit(name, "--detach", "--json")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(len(self.workers), 1)
+        return json.loads(out)
+
+    def job(self, job_id: str) -> Dict[str, Any]:
+        found = jobs_mod.read_job(self.workspace, job_id)
+        assert found is not None
+        return found
+
+    def test_run_unit_detached_worker_runs_in_the_worktree(self):
+        self.approve(PAIR)
+        self.edits = {"a.py": "A = 1\n"}
+        job = self.start("a")
+        record = self.record("a")
+        self.assertEqual(record["status"], "running")
+        self.assertEqual(record["job"], job["id"])
+        self.assertEqual((job["unit"], job["worktree"]), ("a", record["worktree"]))
+        argv = self.workers[0]
+        self.assertEqual(argv[argv.index("--unit") + 1], "a")
+        self.assertEqual(self.calls, [])
+
+        code, _, err = run_cli(*argv)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.calls[0]["cwd"], record["worktree"])
+        self.assertTrue(self.calls[0]["prompt"].startswith("# Work unit: a (feature)\n"))
+        code, out, err = run_cli("jobs", "wait", job["id"], "--json")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(json.loads(out)["status"], "succeeded")
+        record = self.record("a")
+        self.assertEqual(record["status"], "succeeded")
+        self.assertEqual(record["job"], job["id"])
+        self.assertIsNone(record["worktree"])
+        self.assert_no_worktree()
+        # One attempt, spent by the parent.
+        self.assertEqual(self.used(), 1)
+
+    def test_run_unit_detached_worker_refused_when_its_worktree_is_gone(self):
+        self.approve(PAIR)
+        job = self.start("a")
+        self.assertTrue(worktrees_mod.remove(self.project, self.record("a")))
+        code, _, err = run_cli(*self.workers[0])
+        self.assertEqual(code, 2)
+        self.assertIn("its worktree is gone", err)
+        finished = self.job(job["id"])
+        self.assertEqual(finished["status"], "failed")
+        self.assertIn("its worktree is gone", finished["error"])
+        self.assertEqual(self.record("a")["status"], "failed")
+        self.assertEqual(self.calls, [])
+        self.assert_no_worktree()
+
+
+class TestClean(UnitRunCase):
+    """``units clean``: worktrees left behind, and runs that are gone."""
+
+    def running(self, **fields: Any) -> Dict[str, Any]:
+        return {"status": "running", "in_place": False, "job": None, "started_at": ws.utcnow(), **fields}
+
+    def test_run_unit_records_the_foreground_process(self):
+        self.approve(PAIR)
+        seen: Dict[str, Any] = {}
+        self.during = lambda cwd: seen.update(self.record("a"))
+        self.assertEqual(self.run_unit("a")[0], 0)
+        self.assertEqual(seen["pid"], os.getpid())
+        self.assertIsNone(seen["job"])
+
+    def test_units_clean_fails_a_foreground_run_that_is_gone(self):
+        self.approve(PAIR)
+        self.set_records({"a": self.running(in_place=True, pid=4242, pid_started="t0")})
+        with mock.patch.object(execution_tree, "pid_alive", return_value=False):
+            code, _, err = run_cli("units", "clean")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.record("a")["status"], "failed")
+        # Nothing runs in place any more, so the other unit may start.
+        self.assertEqual(self.run_unit("b")[0], 0)
+
+    def test_units_clean_keeps_a_live_foreground_run(self):
+        self.approve(PAIR)
+        me = os.getpid()
+        self.set_records({"a": self.running(pid=me, pid_started=execution_tree.process_started(me))})
+        code, _, err = run_cli("units", "clean")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.record("a")["status"], "running")
+
+    def test_units_clean_fails_a_record_with_neither_job_nor_pid_after_the_grace(self):
+        self.approve(PAIR)
+        self.set_records({"a": self.running(started_at="2020-01-01T00:00:00Z")})
+        self.assertEqual(run_cli("units", "clean")[0], 0)
+        self.assertEqual(self.record("a")["status"], "failed")
+
+    def test_units_clean_fails_a_unit_whose_job_is_gone(self):
+        self.approve(PAIR)
+        jobs_mod.write_job(self.workspace, {"id": "implementer-gone", "status": "abandoned"})
+        self.set_records({"a": self.running(job="implementer-gone")})
+        code, _, err = run_cli("units", "clean")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.record("a")["status"], "failed")
+
+    def test_units_clean_keeps_a_running_unit_worktree(self):
+        self.approve(PAIR)
+        me = os.getpid()
+        job = {"id": "implementer-live", "status": "running", "started_at": ws.utcnow()}
+        jobs_mod.write_job(
+            self.workspace, {**job, "pid": me, "pid_started": execution_tree.process_started(me)}
+        )
+        tree = os.path.join(self.units_parent, "deadbeef-a")
+        kept = os.path.join(tree, "a.py")
+        ws.write_text(kept, "A = 1\n")
+        self.set_records({"a": self.running(job="implementer-live", worktree=tree)})
+        code, out, err = run_cli("units", "clean")
+        self.assertEqual(code, 0, err)
+        self.assertIn("a is running; its worktree stays", out)
+        self.assertEqual(read_file(kept), "A = 1\n")
+        self.assertEqual(self.record("a")["status"], "running")
+
+    def test_units_clean_never_removes_what_is_not_a_unit_worktree(self):
+        self.approve(PAIR)
+        victims = [
+            os.path.join(self.tmp, "victim"),
+            os.path.join(self.units_parent, "deadbeef-b"),
+            self.project,
+        ]
+        for victim in victims[:2]:
+            ws.write_text(os.path.join(victim, "keep.txt"), "kept\n")
+        for victim in victims:
+            with self.subTest(victim=victim):
+                self.set_records({"a": {"status": "failed", "in_place": False, "worktree": victim}})
+                code, _, err = run_cli("units", "clean")
+                self.assertEqual(code, 1)
+                self.assertIn("could not remove a's worktree", err)
+                self.assertEqual(self.record("a")["worktree"], victim)
+        for victim in victims[:2]:
+            self.assertEqual(read_file(os.path.join(victim, "keep.txt")), "kept\n")
+        self.assertEqual(read_file(os.path.join(self.project, "app.py")), "print('hello')\n")
 
 
 if __name__ == "__main__":

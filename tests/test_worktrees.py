@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import os
+import stat
+import subprocess
+import sys
+import types
 import unittest
 from typing import Any, Dict
 from unittest import mock
@@ -26,10 +30,28 @@ class TestSafeWalker(IsolatedCase):
         link = os.path.join(tree, "sub", "env")
         make_dir_link(link, target)
         self.addCleanup(lambda: is_link(link) and remove_link(link))
-        self.assertTrue(worktrees._is_link(link))
+        self.assertTrue(worktrees.is_link(link))
         worktrees._safe_rmtree(tree)
         self.assertFalse(os.path.lexists(tree))
         self.assertEqual(read_file(kept), "the user's\n")
+
+
+class TestLink(IsolatedCase):
+    def test_worktrees_link_never_goes_through_cmd(self):
+        """A path with ``&`` in it would be a second command to ``cmd /c mklink``."""
+
+        def refused(target: str, link: str) -> None:
+            raise OSError("no junction")
+
+        fake = types.SimpleNamespace(CreateJunction=refused)
+        with (
+            mock.patch.object(worktrees, "_IS_WINDOWS", True),
+            mock.patch.dict(sys.modules, {"_winapi": fake}),
+            mock.patch.object(subprocess, "run") as ran,
+        ):
+            with self.assertRaises(OSError):
+                worktrees._link(os.path.join(self.tmp, "a&b"), os.path.join(self.tmp, "link&c"))
+        ran.assert_not_called()
 
 
 @unittest.skipUnless(has_git(), "needs git")
@@ -82,6 +104,21 @@ class TestRemoval(WorktreeCase):
         self.assertEqual([call.args[0] for call in slept.call_args_list], [0.2, 0.4])
         self.assertFalse(os.path.lexists(record["worktree"]))
 
+    def test_worktrees_remove_refuses_a_path_that_is_not_a_unit_worktree(self):
+        record = self.create()
+        units_dir = os.path.dirname(record["worktree"])
+        stray = os.path.join(units_dir, "deadbeef-b")
+        outside = os.path.join(self.tmp, "elsewhere")
+        for path in (stray, outside):
+            ws.write_text(os.path.join(path, "keep.txt"), "kept\n")
+        for path in (stray, outside, self.project, units_dir):
+            with self.subTest(path=path):
+                self.assertFalse(worktrees.remove(self.project, {"worktree": path, "links": []}))
+        for path in (stray, outside):
+            self.assertEqual(read_file(os.path.join(path, "keep.txt")), "kept\n")
+        self.assertEqual(read_file(os.path.join(self.project, "app.py")), "print('hello')\n")
+        self.assertTrue(os.path.isdir(record["worktree"]))
+
 
 class TestCreate(WorktreeCase):
     def test_worktrees_link_failure_skips_checks(self):
@@ -107,6 +144,32 @@ class TestCreate(WorktreeCase):
         self.assertEqual(read_file(os.path.join(tree, ".dev-orchestra.yaml")), "version: 1\n")
         plan = os.path.join(tree, os.path.relpath(self.workspace.plan_path, self.project))
         self.assertEqual(read_file(plan), "# Plan\n")
+
+    def test_worktrees_refuses_a_linked_units_directory(self):
+        real = worktrees.is_link
+
+        def linked(path: str) -> bool:
+            return os.path.basename(path) == "project.units" or real(path)
+
+        with mock.patch.object(worktrees, "is_link", linked):
+            with self.assertRaises(worktrees.WorktreeError):
+                worktrees.create(self.workspace, "a", config_mod.load(self.project))
+        self.assertEqual(self.git("worktree", "list", "--porcelain").stdout.count("worktree "), 1)
+
+    @unittest.skipUnless(hasattr(os, "getuid"), "POSIX owners and modes")
+    def test_worktrees_units_directory_is_the_user_s_alone(self):
+        self.write(".claude/settings.local.json", '{"env": {"TOKEN": "x"}}\n')
+        settings = os.path.join(self.project, ".claude", "settings.local.json")
+        os.chmod(settings, 0o600)
+        record = self.create()
+        units_dir = os.path.dirname(record["worktree"])
+        self.assertEqual(stat.S_IMODE(os.stat(units_dir).st_mode) & 0o077, 0)
+        copy = os.path.join(record["worktree"], ".claude", "settings.local.json")
+        self.assertEqual(stat.S_IMODE(os.stat(copy).st_mode), 0o600)
+        mine = os.stat(units_dir).st_uid
+        with mock.patch.object(worktrees.os, "getuid", lambda: mine + 1):
+            with self.assertRaises(worktrees.WorktreeError):
+                worktrees.create(self.workspace, "b", config_mod.load(self.project))
 
     def test_worktrees_location_is_beside_the_repository(self):
         record = self.create("parser")

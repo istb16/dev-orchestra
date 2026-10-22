@@ -28,7 +28,7 @@ import re
 from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Set
 
 from . import approval as approval_mod
-from . import miniyaml
+from . import miniyaml, review_plan
 from . import workspace as ws
 from .config_common import MAX_PARALLEL_UNITS, default_config
 
@@ -38,11 +38,11 @@ INTEGRATION = "integration"
 
 #: A unit's name goes into a directory and file names, so it is kept to a slug.
 _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
-_HEADING_RE = re.compile(r"^(#{1,6})\s+(.*?)\s*#*\s*$")
 _UNITS_HEADING = "Units"
 _UNIT_HEADING_RE = re.compile(r"^Unit:\s*(\S+)\s*$")
 _FILES_HEADING = "Files to Modify"
 _GOAL_HEADING = "Goal"
+#: A fence with its info string, for the ``yaml`` block; headings are read with ``review_plan``'s.
 _FENCE_RE = re.compile(r"^\s*```\s*(\w*)\s*$")
 _GLOB_CHARS = "*?["
 
@@ -100,6 +100,25 @@ def settings_of(data: Dict[str, Any]) -> Settings:
 # --------------------------------------------------------------------------- the plan
 
 
+def _headings(lines: List[str]) -> List["tuple[int, str, int]"]:
+    """Each heading outside a code fence as (level, title, line), read as ``review_plan`` reads them."""
+    found: List["tuple[int, str, int]"] = []
+    fence = ""
+    for index, line in enumerate(lines):
+        marker = review_plan.FENCE_RE.match(line)
+        if fence:
+            if marker and marker.group(1)[0] == fence[0] and len(marker.group(1)) >= len(fence):
+                fence = ""
+            continue
+        if marker:
+            fence = marker.group(1)
+            continue
+        match = review_plan.HEADING_TEXT_RE.match(line)
+        if match:
+            found.append((len(match.group(1)), review_plan.heading_title(match.group(2)), index))
+    return found
+
+
 def _sections(plan_text: str) -> List["tuple[int, str, int, int]"]:
     """Each heading outside a code fence as (level, title, start line, end line).
 
@@ -107,17 +126,7 @@ def _sections(plan_text: str) -> List["tuple[int, str, int, int]"]:
     the end of the text.
     """
     lines = plan_text.splitlines()
-    found: List["tuple[int, str, int]"] = []
-    fenced = False
-    for index, line in enumerate(lines):
-        if _FENCE_RE.match(line):
-            fenced = not fenced
-            continue
-        if fenced:
-            continue
-        match = _HEADING_RE.match(line)
-        if match:
-            found.append((len(match.group(1)), match.group(2), index))
+    found = _headings(lines)
     sections = []
     for position, (level, title, start) in enumerate(found):
         end = len(lines)
@@ -252,14 +261,12 @@ def _demoted(plan_text: str) -> str:
     levels = [level for level, _, _, _ in _sections(kept)]
     shift = max(0, 4 - min(levels)) if levels else 0
     out: List[str] = []
-    fenced = False
-    for line in lines:
-        if _FENCE_RE.match(line):
-            fenced = not fenced
-        match = None if fenced else _HEADING_RE.match(line)
+    headings = {index for _, _, index in _headings(lines)}
+    for index, line in enumerate(lines):
+        match = review_plan.HEADING_TEXT_RE.match(line) if index in headings else None
         if match:
             hashes = match.group(1)
-            line = "#" * min(len(hashes) + shift, 6) + line[len(hashes) :]
+            line = line[: match.start(1)] + "#" * min(len(hashes) + shift, 6) + line[match.end(1) :]
         out.append(line)
     return "\n".join(out).strip() + "\n"
 

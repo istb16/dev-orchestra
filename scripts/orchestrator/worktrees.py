@@ -22,7 +22,6 @@ from __future__ import annotations
 import os
 import shutil
 import stat
-import subprocess
 import sys
 import time
 from typing import Any, Dict, List, Sequence
@@ -82,7 +81,9 @@ def _ignored(root: str, name: str) -> bool:
 def _link(target: str, link: str) -> None:
     """A directory link at ``link`` to ``target``: a junction on Windows, a symlink elsewhere.
 
-    Raises ``OSError`` when neither can be made.
+    Raises ``OSError`` when neither can be made. No ``cmd /c mklink``
+    fallback: the paths come from the repository, and ``cmd.exe`` would read
+    a ``&`` in one as another command.
     """
     if not _IS_WINDOWS:
         os.symlink(target, link, target_is_directory=True)
@@ -92,22 +93,30 @@ def _link(target: str, link: str) -> None:
         import _winapi
 
         _winapi.CreateJunction(target, link)
-        return
-    except (ImportError, AttributeError, OSError):
-        pass
-    completed = subprocess.run(
-        ["cmd", "/c", "mklink", "/J", link, target],
-        capture_output=True,
-        stdin=subprocess.DEVNULL,
-    )
-    if completed.returncode != 0 or not _is_link(link):
-        raise OSError("could not link %s to %s" % (link, target))
+    except (ImportError, AttributeError) as exc:
+        raise OSError("could not link %s to %s: %s" % (link, target, exc)) from None
 
 
 def _copy_missing(source: str, target: str) -> None:
     if os.path.isfile(source) and not os.path.lexists(target):
         os.makedirs(os.path.dirname(target), exist_ok=True)
-        shutil.copyfile(source, target)
+        # With the source's mode: settings.local.json can hold tokens.
+        shutil.copy2(source, target)
+
+
+def _units_dir(path: str) -> None:
+    """Make ``<repo>.units``, the parent of worktree ``path``, for this user alone.
+
+    Raises ``WorktreeError`` when it is a link, or on POSIX another user's:
+    what is copied into a worktree must not be readable by someone else.
+    """
+    parent = os.path.dirname(path)
+    os.makedirs(parent, mode=0o700, exist_ok=True)
+    if is_link(parent):
+        raise WorktreeError("%s is a link; refusing to make a worktree in it" % parent)
+    getuid = getattr(os, "getuid", None)
+    if getuid is not None and os.stat(parent).st_uid != getuid():
+        raise WorktreeError("%s belongs to another user; refusing to make a worktree in it" % parent)
 
 
 def create(workspace: ws.Workspace, name: str, loaded: config_mod.LoadedConfig) -> Dict[str, Any]:
@@ -136,7 +145,7 @@ def create(workspace: ws.Workspace, name: str, loaded: config_mod.LoadedConfig) 
     if code != 0 or not base_commit:
         raise WorktreeError("git commit-tree failed: %s" % err.strip())
     path = location(root, base_commit, name)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+    _units_dir(path)
     code, _, err = ws.git(["worktree", "add", "--detach", path, base_commit], root, timeout=600)
     if code != 0:
         ws.git(["worktree", "prune"], root)
@@ -175,7 +184,7 @@ def create(workspace: ws.Workspace, name: str, loaded: config_mod.LoadedConfig) 
 # --------------------------------------------------------------------------- removal
 
 
-def _is_link(path: str) -> bool:
+def is_link(path: str) -> bool:
     """A symlink, or on Windows any reparse point, which a junction is.
 
     ``os.path.islink`` is false for a junction before Python 3.12, so it alone
@@ -206,13 +215,13 @@ def _safe_rmtree(path: str) -> None:
 
     ``shutil.rmtree`` is not used: before Python 3.12 it follows a junction.
     """
-    if _is_link(path):
+    if is_link(path):
         _unlink_link(path)
         return
     with os.scandir(path) as entries:
         children = [entry.path for entry in entries]
     for child in children:
-        if _is_link(child):
+        if is_link(child):
             _unlink_link(child)
         elif os.path.isdir(child):
             _safe_rmtree(child)
@@ -232,21 +241,44 @@ def _git_remove(root: str, path: str) -> None:
         raise PermissionError("git worktree remove failed: %s" % err.strip())
 
 
+def _same_path(one: str, other: str) -> bool:
+    return os.path.normcase(os.path.realpath(one)) == os.path.normcase(os.path.realpath(other))
+
+
+def _is_unit_worktree(root: str, path: str) -> bool:
+    """Whether ``path`` is one of this repository's unit worktrees.
+
+    A direct child of ``<repo>.units`` that ``git worktree list`` names. The
+    path comes from ``units.json``, which an agent could have rewritten, and
+    whatever it names is deleted.
+    """
+    if not _same_path(os.path.dirname(os.path.abspath(path)), os.path.dirname(location(root, "x" * 8, "x"))):
+        return False
+    code, out, _ = ws.git(["worktree", "list", "--porcelain"], root)
+    if code != 0:
+        return False
+    listed = [line[len("worktree ") :] for line in out.splitlines() if line.startswith("worktree ")]
+    return any(_same_path(path, entry) for entry in listed)
+
+
 def remove(root: str, record: Dict[str, Any]) -> bool:
     """Remove the worktree a unit's ``record`` names; whether it is gone.
 
-    Links first, each checked with ``lstat`` and unlinked without being
-    followed; then ``git worktree remove``, retried while something holds a
-    file; then whatever is left, by ``_safe_rmtree``; then ``git worktree
-    prune``.
+    Nothing is touched unless the path is one of this repository's unit
+    worktrees (``_is_unit_worktree``). Links first, each checked with
+    ``lstat`` and unlinked without being followed; then ``git worktree
+    remove``, retried while something holds a file; then whatever is left,
+    by ``_safe_rmtree``; then ``git worktree prune``.
     """
     path = record.get("worktree")
     if not isinstance(path, str) or not path:
         return True
+    if os.path.lexists(path) and not _is_unit_worktree(root, path):
+        return False
     names = [name for name in (record.get("links") or []) if isinstance(name, str)]
     for name in [*names, *[n for n in LINKED_NAMES if n not in names]]:
         link = os.path.join(path, name)
-        if _is_link(link):
+        if is_link(link):
             try:
                 _unlink_link(link)
             except OSError:

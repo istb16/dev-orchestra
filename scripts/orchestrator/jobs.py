@@ -203,6 +203,15 @@ def may_still_run(job: Dict[str, Any], now: Optional[float] = None) -> bool:
     return (time.time() if now is None else now) - begun < STARTING_GRACE_SECONDS
 
 
+def process_alive(pid: int, record: Dict[str, Any]) -> Optional[bool]:
+    """Whether ``pid`` is still the process ``record`` names by its ``pid_started``.
+
+    As :func:`_worker_alive` answers for a job's worker; for a record of
+    another kind that keeps a pid, such as a unit run in the foreground.
+    """
+    return _worker_alive(pid, record)
+
+
 def _worker_alive(pid: int, job: Dict[str, Any]) -> Optional[bool]:
     """Whether ``pid`` is the job's worker and still running; None when it is
     running but nothing recorded says whose it is.

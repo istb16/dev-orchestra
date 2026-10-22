@@ -1246,6 +1246,10 @@ def _unit_refusal(
         return "it is already running"
     if status == units_mod.MERGED:
         return "it is already merged"
+    if status == units_mod.CONFLICTED:
+        return "it has conflicts to resolve: resolve them, then run units merge %s --resolved" % unit.name
+    if status == units_mod.SUCCEEDED:
+        return "its result is not merged yet: run units merge %s first" % unit.name
     waiting = [dep for dep in unit.depends_on if units_mod.status_of(entries, dep) != units_mod.MERGED]
     if waiting:
         return "it depends on %s, not merged yet" % ", ".join(
@@ -1315,10 +1319,15 @@ def _claim_unit(
             return _refuse_run(args, ["--unit %s: refused -- %s" % (name, reason)])
         in_place = units_mod.runs_in_place(found, state, name)
         previous = entries.get(name)
+        # This process, until a detached run names its job: a foreground run
+        # killed before its `finally` leaves no job, and `units clean` finds
+        # it gone by the pid.
         state["units"][name] = {
             "status": units_mod.RUNNING,
             "in_place": in_place,
             "job": None,
+            "pid": os.getpid(),
+            "pid_started": execution_tree.process_started(os.getpid()),
             "started_at": ws.utcnow(),
         }
         units_mod.save_state(workspace, state)

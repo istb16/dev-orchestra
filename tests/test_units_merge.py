@@ -226,6 +226,150 @@ class TestMerge(MergeCase):
         self.assertEqual(self.read("b.py"), b"b1\n")
         self.assertEqual(self.record("one")["status"], units_mod.SUCCEEDED)
 
+    def test_units_merge_write_failing_part_way_puts_back_what_it_wrote(self):
+        # Written, deleted, then the third file raced: the first two are put back.
+        self.unit("one", {"a.py": A_PY.replace("a1", "one1"), "b.py": None, "c.py": "c1\n"})
+        original = units_merge.atomic_file.write
+
+        def raced_on_c(path: str, content: Any, **kwargs: Any) -> None:
+            if os.path.basename(path) == "c.py" and "expected" in kwargs:
+                raise units_merge.atomic_file.Raced(path)
+            original(path, content, **kwargs)
+
+        with mock.patch.object(units_merge.atomic_file, "write", raced_on_c):
+            code, _, err = run_cli("units", "merge", "one")
+        self.assertEqual(code, 1, err)
+        self.assertEqual(self.read("a.py"), A_PY.encode())
+        self.assertEqual(self.read("b.py"), b"b1\n")
+        self.assertIsNone(self.read("c.py"))
+        self.assertEqual(self.record("one")["status"], units_mod.SUCCEEDED)
+        # Nothing was left half merged, so a retry merges cleanly.
+        code, _, err = run_cli("units", "merge", "one")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.read("a.py"), A_PY.replace("a1", "one1").encode())
+        self.assertIsNone(self.read("b.py"))
+        self.assertEqual(self.read("c.py"), b"c1\n")
+
+
+class TestFileKinds(MergeCase):
+    """Deletions, a file already merged, links, submodules and the executable bit."""
+
+    def brief(self, name: str) -> str:
+        return ws.read_text(os.path.join(self.workspace.units_dir, "%s-conflicts.md" % name))
+
+    def theirs(self, name: str, path: str) -> Optional[bytes]:
+        full = os.path.join(self.workspace.units_dir, name, "theirs", path)
+        if not os.path.exists(full):
+            return None
+        with open(full, "rb") as handle:
+            return handle.read()
+
+    def test_units_merge_unit_delete_of_an_unchanged_file(self):
+        self.unit("two", {"b.py": None})
+        code, _, err = run_cli("units", "merge", "two")
+        self.assertEqual(code, 0, err)
+        self.assertIsNone(self.read("b.py"))
+
+    def test_units_merge_unit_delete_against_a_change_conflicts(self):
+        self.unit("two", {"b.py": None})
+        self.write("b.py", "b1\nmine\n")
+        code, _, err = run_cli("units", "merge", "two")
+        self.assertEqual(code, 7, err)
+        self.assertEqual(self.read("b.py"), b"b1\nmine\n")
+        self.assertIn("the unit deleted it, the working tree changed it", self.brief("two"))
+
+    def test_units_merge_working_delete_against_a_unit_change_conflicts(self):
+        self.unit("two", {"b.py": "b1\ntwo\n"})
+        os.unlink(os.path.join(self.project, "b.py"))
+        code, _, err = run_cli("units", "merge", "two")
+        self.assertEqual(code, 7, err)
+        self.assertIsNone(self.read("b.py"))
+        self.assertEqual(self.theirs("two", "b.py"), b"b1\ntwo\n")
+        self.assertIn("the working tree deleted it, the unit changed it", self.brief("two"))
+
+    def test_units_merge_file_already_as_the_unit_left_it(self):
+        self.unit("two", {"b.py": "b1\ntwo\n"})
+        self.write("b.py", "b1\ntwo\n")
+        root = self.project
+        record = self.record("two")
+        results = units_merge.plan_merge(root, "two", record["base_tree"], record["result_tree"])
+        self.assertEqual([(r.path, r.action) for r in results], [("b.py", units_merge.SAME)])
+        code, _, err = run_cli("units", "merge", "two")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.read("b.py"), b"b1\ntwo\n")
+
+    def test_units_merge_directory_in_the_working_tree_keeps_the_unit_copy(self):
+        self.unit("two", {"b.py": "b1\ntwo\n"})
+        os.unlink(os.path.join(self.project, "b.py"))
+        os.makedirs(os.path.join(self.project, "b.py", "inner"))
+        code, _, err = run_cli("units", "merge", "two")
+        self.assertEqual(code, 7, err)
+        self.assertTrue(os.path.isdir(os.path.join(self.project, "b.py", "inner")))
+        self.assertEqual(self.theirs("two", "b.py"), b"b1\ntwo\n")
+        brief = self.brief("two")
+        self.assertIn("not a regular file in the working tree", brief)
+        self.assertIn("theirs/b.py", brief)
+
+    def test_units_merge_never_writes_through_a_linked_directory(self):
+        self.set_plan([{"name": "one", "files": ["a.py"]}, {"name": "two", "files": ["vendor/**"]}])
+        self.write("vendor/x.py", "x1\n")
+        self.commit_all("vendor")
+        self.unit("two", {"vendor/x.py": "x1\ntwo\n"})
+        real = worktrees_mod.is_link
+
+        def vendor_is_a_link(path: str) -> bool:
+            return os.path.basename(path) == "vendor" or real(path)
+
+        with mock.patch.object(worktrees_mod, "is_link", vendor_is_a_link):
+            code, _, err = run_cli("units", "merge", "two")
+        self.assertEqual(code, 7, err)
+        self.assertEqual(self.read("vendor/x.py"), b"x1\n")
+        self.assertEqual(self.theirs("two", "vendor/x.py"), b"x1\ntwo\n")
+        self.assertIn("a directory above it is a link in the working tree", self.brief("two"))
+
+    def hashed(self, content: bytes) -> str:
+        path = os.path.join(self.tmp, "blob")
+        with open(path, "wb") as handle:
+            handle.write(content)
+        return self.git("hash-object", "-w", "--no-filters", path).stdout.strip()
+
+    def test_units_merge_symlink_and_submodule_modes_conflict(self):
+        base = self.hashed(b"b1\n")
+        link = units_merge._merge_file(
+            self.project, "two", ("b.py", "100644", "120000", base, self.hashed(b"target"))
+        )
+        self.assertEqual(
+            (link.action, link.reason, link.theirs), (units_merge.CONFLICT, "a symlink", b"target")
+        )
+        self.assertEqual(link.current, b"b1\n")
+        submodule = units_merge._merge_file(
+            self.project, "two", ("b.py", "100644", "160000", base, self.head.strip())
+        )
+        self.assertEqual(
+            (submodule.action, submodule.reason, submodule.theirs),
+            (units_merge.CONFLICT, "a submodule", None),
+        )
+        units_merge.apply(self.workspace, "two", [link, submodule])
+        self.assertEqual(self.read("b.py"), b"b1\n")
+
+    @unittest.skipIf(units_merge._IS_WINDOWS, "Windows has no executable bit")
+    def test_units_merge_sets_the_unit_executable_bit(self):
+        self.git("config", "core.filemode", "true")
+        script = os.path.join(self.project, "b.py")
+        excludes = worktrees_mod.excludes(self.workspace)
+        base = ws.write_tree(self.project, excludes)
+        os.chmod(script, 0o755)
+        result = ws.write_tree(self.project, excludes)
+        os.chmod(script, 0o644)
+        units_mod.update(
+            self.workspace,
+            "two",
+            {"status": units_mod.SUCCEEDED, "base_tree": base, "result_tree": result, "links": []},
+        )
+        code, _, err = run_cli("units", "merge", "two")
+        self.assertEqual(code, 0, err)
+        self.assertTrue(os.stat(script).st_mode & 0o100)
+
 
 class TestRoundContext(MergeCase):
     def test_round_context_names_resolved_files_first_round(self):

@@ -8,13 +8,15 @@ file as it is in the user's tree now, one file at a time with
 never the index, HEAD or a branch. ``git apply --3way`` writes the index, and
 ``git merge-tree --write-tree`` needs git 2.38.
 
-Every file's result is worked out before any is written, so a merge that
-fails part way leaves the tree as it was.
+Every file's result is worked out before any is written, and a write that
+fails puts back the files written before it, so a merge that fails part way
+leaves the tree as it was.
 """
 
 from __future__ import annotations
 
 import os
+import stat
 import sys
 import tempfile
 from typing import Dict, List, NamedTuple, Optional, Sequence
@@ -22,6 +24,7 @@ from typing import Dict, List, NamedTuple, Optional, Sequence
 from . import atomic_file
 from . import units as units_mod
 from . import workspace as ws
+from . import worktrees as worktrees_mod
 
 #: What a file's merge does to the working tree.
 WRITE = "write"  # the unit's version, or a clean three-way merge
@@ -146,12 +149,49 @@ def _merge_text(root: str, name: str, current: bytes, base: bytes, unit: bytes) 
     return out, code > 0
 
 
+def _unit_copy(root: str, path: str, mode: str, blob: str) -> Optional[bytes]:
+    """The unit's version of a file whose working copy is kept; None when it has none to save."""
+    if mode in (_ABSENT_MODE, _SUBMODULE_MODE):
+        return None
+    return _blob(root, path, blob, checkout=mode != _LINK_MODE)
+
+
+def _linked_parent(root: str, path: str) -> bool:
+    """Whether a directory above ``path`` is a link, or the path leads out of ``root``.
+
+    A write through such a directory would land wherever it points, outside
+    the repository.
+    """
+    parts = path.split("/")
+    for depth in range(1, len(parts)):
+        if worktrees_mod.is_link(os.path.join(root, *parts[:depth])):
+            return True
+    inside = os.path.realpath(os.path.join(root, *parts))
+    return not inside.startswith(os.path.join(os.path.realpath(root), ""))
+
+
 def _merge_file(root: str, name: str, change: "tuple[str, str, str, str, str]") -> FileMerge:
     path, base_mode, unit_mode, base_blob, unit_blob = change
     full = os.path.join(root, path)
+    if _linked_parent(root, path):
+        return FileMerge(
+            path,
+            CONFLICT,
+            None,
+            None,
+            unit_mode,
+            _unit_copy(root, path, unit_mode, unit_blob),
+            "a directory above it is a link in the working tree",
+        )
     if os.path.islink(full) or (os.path.lexists(full) and not os.path.isfile(full)):
         return FileMerge(
-            path, CONFLICT, None, None, unit_mode, None, "not a regular file in the working tree"
+            path,
+            CONFLICT,
+            None,
+            None,
+            unit_mode,
+            _unit_copy(root, path, unit_mode, unit_blob),
+            "not a regular file in the working tree",
         )
     current = atomic_file.current_bytes(full)
     for mode in (base_mode, unit_mode):
@@ -221,24 +261,57 @@ def theirs_path(workspace: ws.Workspace, name: str, path: str) -> str:
     return os.path.join(workspace.units_dir, name, "theirs", *path.split("/"))
 
 
+def _mode_of(path: str) -> Optional[int]:
+    try:
+        return stat.S_IMODE(os.stat(path).st_mode)
+    except OSError:
+        return None
+
+
+def _undo(done: Sequence["tuple[str, Optional[bytes], Optional[int]]"]) -> None:
+    """Put back each working file ``apply`` changed, last first, as far as it can."""
+    for full, previous, mode in reversed(done):
+        try:
+            if previous is None:
+                if os.path.lexists(full):
+                    os.unlink(full)
+                continue
+            atomic_file.write(full, previous)
+            if mode is not None:
+                os.chmod(full, mode)
+        except OSError:
+            pass
+
+
 def apply(workspace: ws.Workspace, name: str, results: Sequence[FileMerge]) -> None:
     """Write ``plan_merge``'s results into the working tree, and the kept unit versions beside it.
 
-    Raises ``atomic_file.Raced`` when a file changed after it was read.
+    Raises ``atomic_file.Raced`` when a file changed after it was read, or
+    ``OSError``; the working files already written are put back first, so
+    the tree is left as it was.
     """
     for result in results:
         if result.theirs is not None:
             atomic_file.write(theirs_path(workspace, name, result.path), result.theirs)
-    for result in results:
-        full = os.path.join(workspace.root, result.path)
-        if result.action == DELETE:
-            if atomic_file.current_bytes(full) != result.current:
-                raise atomic_file.Raced(full)
-            os.unlink(full)
-        elif result.content is not None:
-            atomic_file.write(full, result.content, keep_mode=True, expected=result.current)
-            if result.action == WRITE:
-                _set_mode(full, result.mode)
+    done: List["tuple[str, Optional[bytes], Optional[int]]"] = []
+    try:
+        for result in results:
+            full = os.path.join(workspace.root, result.path)
+            if result.action == DELETE:
+                if atomic_file.current_bytes(full) != result.current:
+                    raise atomic_file.Raced(full)
+                mode = _mode_of(full)
+                os.unlink(full)
+                done.append((full, result.current, mode))
+            elif result.content is not None:
+                mode = _mode_of(full)
+                atomic_file.write(full, result.content, keep_mode=True, expected=result.current)
+                done.append((full, result.current, mode))
+                if result.action == WRITE:
+                    _set_mode(full, result.mode)
+    except BaseException:
+        _undo(done)
+        raise
 
 
 def conflict_markers(name: str) -> "tuple[bytes, bytes]":

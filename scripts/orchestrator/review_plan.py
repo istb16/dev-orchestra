@@ -49,7 +49,7 @@ def added_in_revision(plan_text: str) -> Optional[str]:
 
 # No lazy group before an optional tail: ``(.*?)\s*#*\s*$`` backtracks
 # polynomially on a ``#`` line padded with spaces. The closing hashes are
-# stripped in ``_heading_title`` instead.
+# stripped in ``heading_title`` instead.
 HEADING_TEXT_RE = re.compile(r"^\s{0,3}(#{1,6})\s+(.*)$")
 FILES_HEADING_RE = re.compile(r"^(?:\d+[.)]\s*)?files to modify\b", re.IGNORECASE)
 BACKTICK_RE = re.compile(r"`([^`\n]+)`")
@@ -79,7 +79,8 @@ class PlanScan(NamedTuple):
     has_files_section: bool
 
 
-def _heading_title(text: str) -> str:
+def heading_title(text: str) -> str:
+    """A heading's title from ``HEADING_TEXT_RE``'s second group, closing hashes dropped."""
     title = text.strip()
     head = title.rstrip("#")
     if head != title and (not head or head[-1].isspace()):
@@ -178,7 +179,7 @@ def plan_tokens(plan_text: str) -> PlanScan:
             level = len(heading.group(1))
             while stack and stack[-1][0] >= level:
                 stack.pop()
-            title = _heading_title(heading.group(2))
+            title = heading_title(heading.group(2))
             stack.append((level, title))
             if FILES_HEADING_RE.match(title):
                 has_files = True

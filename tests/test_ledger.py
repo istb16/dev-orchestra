@@ -8,15 +8,31 @@ anything. These tests assert the *refusal*, not the advice.
 from __future__ import annotations
 
 import json
-import threading
+import subprocess
+import sys
 import time
 import unittest
 
-from helpers import IsolatedCase, present
+from helpers import SCRIPTS_DIR, TEST_WORKFLOW, IsolatedCase, present
 
 from orchestrator import config as config_mod
 from orchestrator import ledger as ledger_mod
 from orchestrator import workspace as ws
+from orchestrator.config_common import MAX_PARALLEL_UNITS
+
+#: One process charging one piece of a pass: argv is the scripts directory,
+#: the project, the workflow, the piece and the pass key; it prints whether
+#: the charge spent an attempt.
+CONSUME_PIECE = (
+    "import sys\n"
+    "sys.path.insert(0, sys.argv[1])\n"
+    "from orchestrator import ledger, workspace\n"
+    "book = ledger.Ledger(\n"
+    "    workspace.Workspace(sys.argv[2], workflow=sys.argv[3]),\n"
+    "    dict(ledger.DEFAULT_BUDGETS, implementer=5),\n"
+    ")\n"
+    "print(book.consume('implementer', piece=sys.argv[4], key=sys.argv[5]))\n"
+)
 
 
 class LedgerCase(IsolatedCase):
@@ -559,27 +575,41 @@ class TestOneAttemptPerPass(LedgerCase):
         self.assertEqual(self.used(book), 1)
 
     def test_ledger_pass_concurrent_first_pieces(self):
-        errors = []
-        spent = []
+        """As many processes as ``implementation.max_parallel`` allows, each the first piece it sees.
 
-        def consume(name):
-            try:
-                spent.append(self.book(implementer=5).consume("implementer", piece=name, key=self.PLAN))
-            except Exception as exc:  # collected and reported after the join
-                errors.append(exc)
+        Processes, not threads: the ledger's lock is a file lock, and only
+        separate processes show it holds between them.
+        """
+        pieces = [chr(ord("a") + index) for index in range(MAX_PARALLEL_UNITS)]
+        workers = [
+            subprocess.Popen(
+                [
+                    sys.executable,
+                    "-c",
+                    CONSUME_PIECE,
+                    SCRIPTS_DIR,
+                    self.project,
+                    TEST_WORKFLOW,
+                    piece,
+                    self.PLAN,
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            for piece in pieces
+        ]
+        answers = []
+        for worker in workers:
+            out, err = worker.communicate(timeout=60)
+            self.assertEqual(worker.returncode, 0, err)
+            answers.append(out.strip())
 
-        threads = [threading.Thread(target=consume, args=(name,)) for name in ("a", "b")]
-        for thread in threads:
-            thread.start()
-        for thread in threads:
-            thread.join(timeout=30)
-
-        self.assertEqual(errors, [])
-        self.assertEqual(sorted(spent), [False, True])
+        self.assertEqual(sorted(answers), ["False"] * (len(pieces) - 1) + ["True"])
         book = self.book()
         self.assertEqual(self.used(book), 1)
-        self.assertEqual(sorted(book.load()["passes"]["implementer"]["pieces"]), ["a", "b"])
-        self.assertEqual(book.load()["total_delegated_runs"], 2)
+        self.assertEqual(sorted(book.load()["passes"]["implementer"]["pieces"]), pieces)
+        self.assertEqual(book.load()["total_delegated_runs"], len(pieces))
 
     def test_ledger_pass_exhausted_exit_3(self):
         book = self.book(implementer=1)

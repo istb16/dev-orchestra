@@ -413,7 +413,8 @@ review fixer、`--mode implement` では 1200 秒で、その設定の方が大�
 `### Unit: <name>` セクション、そして「チェックを走らせる」こと、または環境のリンクが作れなかったときは
 「チェックは走らせない。マージの後に走る」ことです。実行が終わると作業単位のツリーを記録し、差分を
 `execution/units/<name>.diff` に保存します。その場で走って成功した作業単位は `merged` になり、それ以外で
-成功したものは `units merge` を待ちます。試行が断られたとき（終了コード 3）は worktree を消します。
+成功したものは `units merge` を待ちます。それを待っている作業単位と `conflicted` の作業単位は、マージされるまで
+拒否します（終了コード 2）。試行が断られたとき（終了コード 3）は worktree を消します。
 試行を使うのは pass の最初の作業単位とやり直しだけで（[configuration](configuration.md) の
 `budgets.implementer`）、実行の終了イベントは `unit` と `attempt_spent` を記録します。
 `--print-command` は、作業単位が worktree を持っている間はそれをディレクトリとして示します。
@@ -777,11 +778,11 @@ plan の作業単位です。`.ai/plan.md` の `## Units` ブロックで、そ�
 | `units check` | 走らせられない作業単位を拒否します（終了コード 2）。読めないブロック、名前の重複、未知の依存、循環、`### Unit: <name>` セクションの欠落、並んで走りうる（どちらも、間接的にも、もう一方に依存しない）2 つの作業単位の `files` の重なり（同じパス、パスに当たる glob、入れ子になった glob の接頭辞）、`integration` の作業単位が 2 つ以上あること、またはそれがほかのすべてに依存していないこと、そして作業単位が 2 つ以上あるときに integration 以外の作業単位が `implementation.hub_paths` のファイルを挙げていることです。それ以外は、1 つの波に最大 `implementation.max_parallel` 個の作業単位を並べた予定を表示します。plan の Files to Modify にない作業単位のファイルは `warning:` を出すだけです。`## Units` のない plan は 1 回の実行です（終了コード 0）。plan がなければ終了コード 2 です。 |
 | `units status [--json]` | 各作業単位の状態（`pending`、`running`、`succeeded`、`failed`、`cancelled`、`conflicted`、`merged`）、ジョブ、基点のコミット、worktree（または `in place`）、始められる作業単位（`pending` で、依存がすべてマージ済みのもの）、そして実装のステージが失敗したか（どれかの作業単位が失敗したか）を示します。 |
 | `units merge <name> [--resolved] [--json]` | 成功した作業単位を、ファイルごとに作業ツリーへマージします。index、`HEAD`、ブランチには決して触れません。作業単位が始まってからユーザーのツリーで変わっていないファイルは作業単位の版になり、両方が変えたテキストファイルは三方向でマージします（`git merge-file`。印は `<<<<<<< main` と `>>>>>>> unit:<name>`）。バイナリファイル、削除と変更のぶつかり、symlink、submodule は競合で、ユーザーの版を残し、作業単位の版を `.ai/execution/units/<name>/theirs/` に保存します。きれいにマージできれば作業単位は `merged` です（終了コード 0）。競合があれば `conflicted` になり、指示書 `.ai/execution/units/<name>-conflicts.md` がそのファイル、この作業単位とそれらを変えたマージ済みの各作業単位の plan のセクション、保存したコピーを示し、終了コード 7 で終わります。そのあと `--resolved` は、それらのファイルに `<<<<<<< main` か `>>>>>>> unit:` の行が残っている間は拒否し（終了コード 2）、残っていなければ作業単位を `merged` にして、それらを `resolved_files` として記録します。成功していない作業単位は拒否します（終了コード 2）。その場で走った作業単位はもうマージ済みで、何もしません（終了コード 0）。作業単位が自分の `files` の外で変えたファイルは示して、`outside_files` として記録します。 |
-| `units clean [<name>]` | 作業単位が残した worktree を消します。すべての作業単位のもの、または `<name>` のものです。まだ走っている作業単位の worktree は残します。`running` と記録されているのにワーカーがいなくなった作業単位は `failed` として記録し、もう一度走らせられるようにします。消せない worktree があれば終了コード 1 です。 |
+| `units clean [<name>]` | 作業単位が残した worktree を消します。すべての作業単位のもの、または `<name>` のものです。まだ走っている作業単位の worktree は残します。`running` と記録されているのにワーカー、またはそれを始めたフォアグラウンドの実行がいなくなった作業単位は `failed` として記録し、もう一度走らせられるようにします。消せない worktree があれば終了コード 1 です。 |
 | `units join --part <name>=<path>... --output <path>` | `run architect --unit` が書いた作業単位ごとの plan を、`--output` の 1 つの plan にまとめます。各部分の `## Units` には、その作業単位だけがなければなりません。まとめた plan には、渡した順に各部分の項目を並べた 1 つの `## Units` ブロックがあり、そのあとに各部分が `### Unit: <name>` の下に続きます。各部分の `## Units` は取り除き、見出しは最も浅いものがレベル 4 になるように下げます。まとめた作業単位が `units check` の規則を満たさなければ、何も書きません（終了コード 2）。 |
 
-マージは `.ai/execution/units/merge.lock` のもとで 1 つずつ行います。三方向でマージしたファイルは、
-git が保存するとおり LF の改行で書きます。各マージは `state.json` に、ステージ `units`、状態
+マージは `.ai/execution/units/merge.lock` のもとで 1 つずつ行います。各ファイルは、改行も含めて
+チェックアウトが書くとおりに書きます。各マージは `state.json` に、ステージ `units`、状態
 `merged`、`conflicted`、`resolved` のイベントとして記録します。次のレビューのスナップショットは
 作業単位の `resolved_files` と `outside_files` を持ち、最初のラウンドを含むすべてのレビューのラウンドで
 レビュアーに示します。どちらも差分には表れないからです。

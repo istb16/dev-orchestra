@@ -68,7 +68,7 @@ flowchart TD
 | --- | --- | --- |
 | スキル | `skills/dev-orchestra/SKILL.md`, `references/` | オーケストレーターが何をいつ決めるか |
 | CLI | `scripts/dev_orchestra.py`、`scripts/orchestrator/cli.py`（引数の解析と入口）と `cli_*.py`（コマンドのまとまりごとのモジュール） | エージェントが呼び出せる決定的な操作 |
-| ドメイン | `config.py`（`config_common.py`、`config_paths.py`、`config_keys.py`、`config_reviewers.py`、`config_seats.py`、`config_validation.py` を含み、`config.py` が再公開する）、`config_policy.py`、`config_trust.py`、`review_*.py`（`review.py` が再公開する）、`workspace.py`、`wizard.py`、`doctor.py`、`questions.py` | 設定のレイヤリング、プロジェクトファイル由来の席と書き込みオプションを拒否する方針、global 設定だけが決められる設定、スナップショット取得、パース、重複排除、トリアージ、診断、design の質問とユーザーの回答 |
+| ドメイン | `config.py`（`config_common.py`、`config_paths.py`、`config_keys.py`、`config_reviewers.py`、`config_seats.py`、`config_validation.py` を含み、`config.py` が再公開する）、`config_policy.py`、`config_trust.py`、`review_*.py`（`review.py` が再公開する）、`workspace.py`、`wizard.py`、`doctor.py`、`questions.py`、`units.py`、`units_merge.py`、`worktrees.py` | 設定のレイヤリング、プロジェクトファイル由来の席と書き込みオプションを拒否する方針、global 設定だけが決められる設定、スナップショット取得、パース、重複排除、トリアージ、診断、design の質問とユーザーの回答、plan の作業単位とその状態、作業単位の結果の作業ツリーへのマージ、作業単位が走る worktree |
 | provider | `scripts/orchestrator/providers/` | CLI の構文とモデル名を知っている唯一のコード |
 | 返答の言語のフック | `claude_hooks.py`、`scripts/hooks/`、`reply_language.py` | Claude Code のみ: 返答を `language.reply` の言語に保つ（[後述](#reply-language-hooks)） |
 

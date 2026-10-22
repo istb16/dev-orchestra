@@ -66,6 +66,16 @@ class TestParse(UnitsCase):
         self.assertNotIn("Do a", units_mod.section(text, "b"))
         self.assertEqual(units_mod.section(text, "c"), "")
 
+    def test_units_headings_read_as_the_plan_review_reads_them(self):
+        text = plan([{"name": "a", "files": ["x"]}, {"name": "b", "files": ["y"]}])
+        # Indented with closing hashes, still a heading; under a ~~~ fence, none.
+        text = text.replace("### Unit: b\n", "   ### Unit: b ###\n~~~\n## Not a heading\n~~~\n")
+        self.assertIn("Do a.", units_mod.section(text, "a"))
+        self.assertNotIn("Do b.", units_mod.section(text, "a"))
+        found = units_mod.section(text, "b")
+        self.assertIn("## Not a heading", found)
+        self.assertIn("Do b.", found)
+
     def test_units_parse_refuses_a_bad_entry(self):
         for entry in (
             {"name": "Bad Name", "files": ["x"]},

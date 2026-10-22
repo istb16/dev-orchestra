@@ -461,7 +461,8 @@ prompt: the unit's name, kind and files, its `### Unit: <name>` section, and
 run checks; they run after the merge". When the run ends the unit's tree is
 recorded and its diff saved as `execution/units/<name>.diff`: a unit that ran
 in place and succeeded is `merged`, any other that succeeded waits for `units
-merge`. A refused attempt (exit 3) removes the worktree. Only the first unit
+merge`. A unit that waits for it, or is `conflicted`, is refused (exit 2)
+until it is merged. A refused attempt (exit 3) removes the worktree. Only the first unit
 of a pass spends an attempt, and a rerun ([configuration](configuration.md),
 `budgets.implementer`); the run's end event records `unit` and
 `attempt_spent`. `--print-command` names the unit's worktree as the directory
@@ -865,11 +866,11 @@ plan count as none.
 | `units check` | Refuse (exit 2) units that cannot run: a block that cannot be read, a duplicate name, an unknown dependency, a cycle, a missing `### Unit: <name>` section, two units that may run side by side -- neither depends on the other, however indirectly -- with overlapping `files` (one path, a glob matching a path, or nested glob prefixes), more than one `integration` unit or one that does not depend on every other, and, with two or more units, a file of `implementation.hub_paths` listed by any but the integration unit. Otherwise print the schedule as waves, at most `implementation.max_parallel` units a wave. A unit file the plan's Files to Modify does not list is only a `warning:`. A plan without `## Units` is a single run (exit 0); no plan exits 2. |
 | `units status [--json]` | Each unit's state (`pending`, `running`, `succeeded`, `failed`, `cancelled`, `conflicted` or `merged`), job, base commit and worktree (or `in place`); the units ready to start (pending, every dependency merged); and whether the implement stage failed (a unit failed). |
 | `units merge <name> [--resolved] [--json]` | Merge a unit that succeeded into the working tree, file by file; never the index, `HEAD` or a branch. A file your tree has not changed since the unit started takes the unit's version; a text file both changed is merged three ways (`git merge-file`, markers `<<<<<<< main` and `>>>>>>> unit:<name>`); a binary file, a delete against a change, a symlink or a submodule is a conflict that keeps your version and saves the unit's under `.ai/execution/units/<name>/theirs/`. Clean, the unit is `merged` (exit 0). With conflicts it is `conflicted`, the brief `.ai/execution/units/<name>-conflicts.md` names the files, the plan sections of this unit and of each merged unit that changed them, and the saved copies, and it exits 7. `--resolved` then refuses (exit 2) while a `<<<<<<< main` or `>>>>>>> unit:` line is left in those files, and otherwise marks the unit `merged` with them as its `resolved_files`. A unit that has not succeeded is refused (exit 2); one that ran in place is merged already, and this does nothing (exit 0). Files the unit changed outside its `files` are named and recorded as `outside_files`. |
-| `units clean [<name>]` | Remove the worktrees units left behind: every unit's, or `<name>`'s. A unit still running keeps its worktree; one recorded as `running` whose worker is gone is recorded `failed`, so it can be run again. Exits 1 when a worktree could not be removed. |
+| `units clean [<name>]` | Remove the worktrees units left behind: every unit's, or `<name>`'s. A unit still running keeps its worktree; one recorded as `running` whose worker, or the foreground run that started it, is gone is recorded `failed`, so it can be run again. Exits 1 when a worktree could not be removed. |
 | `units join --part <name>=<path>... --output <path>` | Join per-unit plans, from `run architect --unit`, into one plan at `--output`. Each part's own `## Units` must hold just its unit. The joined plan has one `## Units` block listing the parts' entries in the order given, then each part under `### Unit: <name>`, its own `## Units` taken out and its headings moved down so its shallowest lands at level 4. Nothing is written when the joined units fail the rules of `units check` (exit 2). |
 
-Merges are taken one at a time, under `.ai/execution/units/merge.lock`. A
-three-way-merged file is written with LF line endings, as git stores it.
+Merges are taken one at a time, under `.ai/execution/units/merge.lock`. Each
+file is written as a checkout would write it, line endings included.
 Each merge is recorded in `state.json` as an event of stage `units`, with the
 status `merged`, `conflicted` or `resolved`. The next review snapshot carries
 the units' `resolved_files` and `outside_files`, and every review round, the

@@ -289,6 +289,22 @@ def cmd_units_join(args: argparse.Namespace) -> int:
     return 0
 
 
+def _may_still_run(workspace: ws.Workspace, record: Dict[str, Any]) -> bool:
+    """Whether a running unit's run may still be going.
+
+    By its job's worker when a detached run named one; otherwise by the pid
+    of the process that claimed it, a foreground run; and for a record with
+    neither, as a job with no pid, for ``jobs.STARTING_GRACE_SECONDS``.
+    """
+    if record.get("job"):
+        job = jobs_mod.read_job(workspace, str(record["job"]))
+        return job is None or jobs_mod.may_still_run(job)
+    pid = record.get("pid")
+    if isinstance(pid, int) and not isinstance(pid, bool) and pid > 0:
+        return jobs_mod.process_alive(pid, record) is not False
+    return jobs_mod.may_still_run({"started_at": record.get("started_at")})
+
+
 def cmd_units_clean(args: argparse.Namespace) -> int:
     """Remove the worktrees units left behind: every unit's, or NAME's.
 
@@ -306,8 +322,7 @@ def cmd_units_clean(args: argparse.Namespace) -> int:
     for name in names:
         record = entries[name]
         if record.get("status") == units_mod.RUNNING:
-            job = jobs_mod.read_job(workspace, str(record.get("job"))) if record.get("job") else None
-            if job is None or jobs_mod.may_still_run(job):
+            if _may_still_run(workspace, record):
                 if record.get("worktree"):
                     _out("%s is running; its worktree stays: %s" % (name, record["worktree"]))
                 continue
