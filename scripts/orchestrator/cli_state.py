@@ -13,6 +13,7 @@ from . import optimization_render as opt_render
 from . import optimization_report as opt_report
 from . import review as review_mod
 from . import units as units_mod
+from . import units_merge
 from . import workflow as workflow_mod
 from . import workspace as ws
 from . import worktrees as worktrees_mod
@@ -202,7 +203,26 @@ def _cancel_unit(workspace: ws.Workspace, job: Dict[str, Any]) -> None:
         fields["worktree"] = None if gone else record["worktree"]
         if not gone:
             _err("warning: %s's worktree could not be removed; units clean tries again" % name)
+    if record.get("in_place") and record.get("base_tree"):
+        changed = _changed_in_place(workspace, str(record["base_tree"]))
+        if changed:
+            _err(
+                "warning: %s ran in place; its edits stay in the working tree: %s"
+                % (name, ", ".join(changed))
+            )
     units_mod.update(workspace, name, fields)
+
+
+def _changed_in_place(workspace: ws.Workspace, base_tree: str) -> List[str]:
+    """The files changed in the working tree since ``base_tree``; [] when git cannot say."""
+    excludes = worktrees_mod.excludes(workspace)
+    now = ws.write_tree(workspace.root, excludes)
+    if not now:
+        return []
+    try:
+        return units_merge.changed_paths(workspace.root, base_tree, now, excludes)
+    except units_merge.MergeError:
+        return []
 
 
 def cmd_budget_show(args: argparse.Namespace) -> int:

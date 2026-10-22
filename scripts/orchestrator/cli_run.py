@@ -1288,7 +1288,7 @@ def _claim_unit(
     if unit is None:
         return _refuse_run(args, ["--unit %s: %s has no such unit under ## Units" % (name, plan_relative)])
     settings = units_mod.settings_of(loaded.data)
-    problems = units_mod.validate(found, settings.hub_paths, plan_text)
+    problems = units_mod.validate(found, settings.hub_paths, plan_text, units_mod.known_files(workspace.root))
     if problems:
         return _refuse_run(
             args,
@@ -1332,8 +1332,15 @@ def _claim_unit(
         }
         units_mod.save_state(workspace, state)
     if in_place:
+        # An earlier in-place run that was cancelled or failed left its edits in
+        # the tree: keep its base, so this run's diff covers both.
+        earlier = previous if isinstance(previous, dict) else {}
+        kept = earlier.get("in_place") and earlier.get("status") in (units_mod.CANCELLED, units_mod.FAILED)
+        base_tree = earlier.get("base_tree") if kept else None
+        if not base_tree:
+            base_tree = ws.write_tree(workspace.root, worktrees_mod.excludes(workspace)) or None
         fields: Dict[str, Any] = {
-            "base_tree": ws.write_tree(workspace.root, worktrees_mod.excludes(workspace)) or None,
+            "base_tree": base_tree,
             "base_commit": None,
             "worktree": None,
             "links": [],

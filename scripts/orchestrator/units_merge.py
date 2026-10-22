@@ -274,11 +274,43 @@ class NotPutBack(OSError):
     """A merge that failed part way, and whose written files could not all be put back."""
 
 
-def _undo(done: Sequence["tuple[str, Optional[bytes], Optional[bytes], Optional[int]]"]) -> List[str]:
+def _missing_parents(root: str, path: str) -> List[str]:
+    """The directories above ``path``, under ``root``, that do not exist yet."""
+    parts = path.split("/")
+    found = [os.path.join(root, *parts[:depth]) for depth in range(1, len(parts))]
+    return [directory for directory in found if not os.path.lexists(directory)]
+
+
+def _remove_if_empty(directory: str) -> bool:
+    """Remove ``directory`` when it is an empty directory and not a link; whether it was."""
+    if worktrees_mod.is_link(directory) or not os.path.isdir(directory):
+        return False
+    try:
+        os.rmdir(directory)
+    except OSError:
+        return False
+    return True
+
+
+def _prune_parents(root: str, path: str) -> None:
+    """Remove the directories above ``path`` a delete left empty, up to but not including ``root``.
+
+    Git keeps no empty directory, so this is what a checkout would leave.
+    """
+    parts = path.split("/")
+    for depth in range(len(parts) - 1, 0, -1):
+        if not _remove_if_empty(os.path.join(root, *parts[:depth])):
+            return
+
+
+def _undo(
+    done: Sequence["tuple[str, Optional[bytes], Optional[bytes], Optional[int]]"], made: Sequence[str] = ()
+) -> List[str]:
     """Put back each working file ``apply`` changed, last first; the ones it could not.
 
     A file is put back only while it still holds what ``apply`` wrote, so an
-    edit made since is never overwritten.
+    edit made since is never overwritten. The directories in ``made``, which
+    ``apply`` made for new files, go too, deepest first, while they are empty.
     """
     left: List[str] = []
     for full, previous, written, mode in reversed(done):
@@ -293,6 +325,8 @@ def _undo(done: Sequence["tuple[str, Optional[bytes], Optional[bytes], Optional[
                 os.chmod(full, mode)
         except (OSError, atomic_file.Raced):
             left.append(full)
+    for directory in sorted(made, key=len, reverse=True):
+        _remove_if_empty(directory)
     return left
 
 
@@ -308,6 +342,7 @@ def apply(workspace: ws.Workspace, name: str, results: Sequence[FileMerge]) -> N
         if result.theirs is not None:
             atomic_file.write(theirs_path(workspace, name, result.path), result.theirs)
     done: List["tuple[str, Optional[bytes], Optional[bytes], Optional[int]]"] = []
+    made: List[str] = []
     try:
         for result in results:
             if result.action != DELETE and result.content is None:
@@ -322,14 +357,16 @@ def apply(workspace: ws.Workspace, name: str, results: Sequence[FileMerge]) -> N
                 mode = _mode_of(full)
                 os.unlink(full)
                 done.append((full, result.current, None, mode))
+                _prune_parents(workspace.root, result.path)
             elif result.content is not None:
+                made += _missing_parents(workspace.root, result.path)
                 mode = _mode_of(full)
                 atomic_file.write(full, result.content, keep_mode=True, expected=result.current)
                 done.append((full, result.current, result.content, mode))
                 if result.action == WRITE:
                     _set_mode(full, result.mode)
     except BaseException as exc:
-        left = _undo(done)
+        left = _undo(done, made)
         if left:
             raise NotPutBack(
                 "%s; these files were merged and could not be put back: %s" % (exc, ", ".join(left))

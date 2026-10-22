@@ -7,7 +7,7 @@ import os
 import unittest
 from typing import Any, Dict, List, Optional
 
-from helpers import IsolatedCase, run_cli
+from helpers import IsolatedCase, has_git, run_cli
 
 from orchestrator import units as units_mod
 from orchestrator import workspace as ws
@@ -233,6 +233,54 @@ class TestCheck(UnitsCase):
         )
         self.assertEqual(len(problems), 1)
         self.assertIn("hub file", problems[0])
+
+    def test_units_validate_reads_directories_from_the_known_files(self):
+        found = units_mod.parse(
+            plan([{"name": "a", "files": ["docs/*.md"]}, {"name": "b", "files": ["docs/guides"]}])
+        )
+        # By text alone they look apart, as they did before.
+        self.assertEqual(units_mod.validate(found, []), [])
+        self.assertEqual(
+            units_mod.validate(found, [], known_files=["docs/guides/intro.txt", "docs/x.md"]), []
+        )
+        problems = units_mod.validate(found, [], known_files=["docs/guides/intro.md"])
+        self.assertEqual(len(problems), 1)
+        self.assertIn("a and b may run in parallel", problems[0])
+
+    def test_units_validate_refuses_a_directory_holding_a_hub_file(self):
+        known = ["CHANGELOG.md", "packages/core/CHANGELOG.md", "packages/core/x.py", "y.py"]
+        hubs = ["CHANGELOG.md", "**/CHANGELOG.md"]
+        for listed, held in ((".", "CHANGELOG.md"), ("packages/core", "packages/core/CHANGELOG.md")):
+            with self.subTest(listed=listed):
+                found = units_mod.parse(
+                    plan([{"name": "a", "files": [listed]}, {"name": "b", "files": ["other/z.py"]}])
+                )
+                self.assertEqual(units_mod.validate(found, hubs), [])
+                problems = units_mod.validate(found, hubs, known_files=known)
+                self.assertEqual(len(problems), 1)
+                self.assertIn("a: %s holds hub file %s" % (listed, held), problems[0])
+        found = units_mod.parse(
+            plan([{"name": "a", "files": ["y.py"]}, {"name": "b", "files": ["other/z.py"]}])
+        )
+        self.assertEqual(units_mod.validate(found, hubs, known_files=known), [])
+
+    @unittest.skipUnless(has_git(), "needs git")
+    def test_units_check_lists_the_repository_files(self):
+        self.init_git_repo()
+        self.write("docs/guides/intro.md", "intro\n")
+        self.git("add", "docs/guides/intro.md")
+        self.write("pkg/CHANGELOG.md", "untracked\n")
+        code, _, err = self.check(
+            plan([{"name": "a", "files": ["docs/*.md"]}, {"name": "b", "files": ["docs/guides"]}])
+        )
+        self.assertEqual(code, 2)
+        self.assertIn("a and b may run in parallel", err)
+        code, _, err = self.check(plan([{"name": "a", "files": ["pkg"]}, {"name": "b", "files": ["y.py"]}]))
+        self.assertEqual(code, 2)
+        self.assertIn("a: pkg holds hub file pkg/CHANGELOG.md", err)
+        known = units_mod.known_files(self.project) or []
+        self.assertIn("docs/guides/intro.md", known)
+        self.assertIn("pkg/CHANGELOG.md", known)
 
     def test_units_check_warns_on_unlisted_file(self):
         code, _, err = self.check(plan([{"name": "a", "files": ["scripts/other.py"]}]))

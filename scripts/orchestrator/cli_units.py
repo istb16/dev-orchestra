@@ -37,7 +37,7 @@ def cmd_units_check(args: argparse.Namespace) -> int:
         _out("%s has no ## Units: a single run." % plan_relative)
         return 0
     settings = units_mod.settings_of(loaded.data)
-    problems = units_mod.validate(found, settings.hub_paths, plan_text)
+    problems = units_mod.validate(found, settings.hub_paths, plan_text, units_mod.known_files(workspace.root))
     if problems:
         _err("%s: the units cannot be run:" % plan_relative)
         for problem in problems:
@@ -291,7 +291,7 @@ def cmd_units_merge(args: argparse.Namespace) -> int:
 
 def cmd_units_join(args: argparse.Namespace) -> int:
     """Join the per-unit architects' plans into one plan; nothing is written when its units cannot run."""
-    _, loaded = _workspace_and_config(args)
+    workspace, loaded = _workspace_and_config(args)
     parts: List["tuple[str, str]"] = []
     for spec in args.part:
         name, sep, path = spec.partition("=")
@@ -309,7 +309,8 @@ def cmd_units_join(args: argparse.Namespace) -> int:
     except units_mod.UnitsError as exc:
         _err("could not join the plans: %s" % exc)
         return 2
-    problems = units_mod.validate(found, units_mod.settings_of(loaded.data).hub_paths, plan_text)
+    hub_paths = units_mod.settings_of(loaded.data).hub_paths
+    problems = units_mod.validate(found, hub_paths, plan_text, units_mod.known_files(workspace.root))
     if problems:
         _err("the joined units cannot be run:")
         for problem in problems:

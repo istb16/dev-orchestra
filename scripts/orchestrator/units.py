@@ -24,6 +24,7 @@ read-modify-write of it holds ``locked(workspace)``.
 from __future__ import annotations
 
 import fnmatch
+import os
 import re
 from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Set
 
@@ -335,6 +336,31 @@ def overlaps(first: str, second: str) -> bool:
     return _literal_prefix(pattern).startswith(path.rstrip("/") + "/")
 
 
+def known_files(root: str) -> Optional[List[str]]:
+    """The repository's files, tracked and untracked-not-ignored, ``/``-separated; None when git failed.
+
+    A directory git lists on its own, with a trailing ``/``, is a nested
+    repository; it is left out.
+    """
+    code, out, _ = ws.git_bytes(["ls-files", "--cached", "--others", "--exclude-standard", "-z"], root)
+    if code != 0:
+        return None
+    return sorted({os.fsdecode(raw) for raw in out.split(b"\0") if raw and not raw.endswith(b"/")})
+
+
+def _named_files(entry: str, files: Sequence[str]) -> Set[str]:
+    """The ``files`` an entry of ``files`` names: those a glob matches, or a path and the files under it.
+
+    Text alone cannot tell a directory from a file; the files that exist can.
+    ``.`` names the whole tree.
+    """
+    if _is_glob(entry):
+        return {path for path in files if fnmatch.fnmatchcase(path, entry)}
+    directory = entry.rstrip("/")
+    prefix = "" if directory in ("", ".") else directory + "/"
+    return {path for path in files if path == entry or path.startswith(prefix)}
+
+
 def _cycle(units: Sequence[Unit]) -> List[str]:
     """One dependency cycle as the names along it, first name repeated at the end; [] when none."""
     depends = {unit.name: list(unit.depends_on) for unit in units}
@@ -382,10 +408,19 @@ def ancestors(units: Sequence[Unit]) -> Dict[str, Set[str]]:
     return found
 
 
-def validate(units: Sequence[Unit], hub_paths: Sequence[str], plan_text: Optional[str] = None) -> List[str]:
+def validate(
+    units: Sequence[Unit],
+    hub_paths: Sequence[str],
+    plan_text: Optional[str] = None,
+    known_files: Optional[Sequence[str]] = None,
+) -> List[str]:
     """Why ``units`` cannot be run; empty means they can.
 
-    With ``plan_text``, each unit also needs its ``### Unit:`` section.
+    With ``plan_text``, each unit also needs its ``### Unit:`` section. With
+    ``known_files``, the repository's files, an entry also stands for the
+    files it names (``_named_files``): two entries naming a common file
+    overlap, and so does an entry naming a hub file. The text rules still
+    apply, for files that do not exist yet.
     """
     problems: List[str] = []
     names = [unit.name for unit in units]
@@ -408,13 +443,22 @@ def validate(units: Sequence[Unit], hub_paths: Sequence[str], plan_text: Optiona
     if cycle:
         return ["dependency cycle: %s" % " -> ".join(cycle)]
 
+    named: Dict["tuple[str, str]", Set[str]] = {}
+    if known_files is not None:
+        named = {(unit.name, path): _named_files(path, known_files) for unit in units for path in unit.files}
+
+    def clashes(first: Unit, a: str, second: Unit, b: str) -> bool:
+        if overlaps(a, b):
+            return True
+        return bool(named) and bool(named[(first.name, a)] & named[(second.name, b)])
+
     above = ancestors(units)
     for index, first in enumerate(units):
         for second in units[index + 1 :]:
             if first.name in above[second.name] or second.name in above[first.name]:
                 continue
             for a in first.files:
-                clash = [b for b in second.files if overlaps(a, b)]
+                clash = [b for b in second.files if clashes(first, a, second, b)]
                 if clash:
                     problems.append(
                         "%s and %s may run in parallel but both list %s%s"
@@ -443,6 +487,17 @@ def validate(units: Sequence[Unit], hub_paths: Sequence[str], plan_text: Optiona
                     problems.append(
                         "%s: %s is a hub file (implementation.hub_paths: %s); "
                         "only the integration unit may list it" % (unit.name, path, ", ".join(hubs))
+                    )
+                    continue
+                held = sorted(
+                    found
+                    for found in named.get((unit.name, path), set())
+                    if any(overlaps(found, hub) for hub in hub_paths)
+                )
+                if held:
+                    problems.append(
+                        "%s: %s holds hub file %s (implementation.hub_paths); "
+                        "only the integration unit may list it" % (unit.name, path, ", ".join(held))
                     )
     return problems
 

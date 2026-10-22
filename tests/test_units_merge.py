@@ -511,6 +511,40 @@ class TestFileKinds(MergeCase):
         self.assertTrue(os.stat(script).st_mode & 0o100)
 
 
+class TestDirectories(MergeCase):
+    """Directories ``apply`` makes or empties: none is left behind that git would not keep."""
+
+    def results(self, name: str) -> List[units_merge.FileMerge]:
+        record = self.record(name)
+        return units_merge.plan_merge(self.project, name, record["base_tree"], record["result_tree"])
+
+    def test_units_merge_rollback_removes_the_directories_it_made(self):
+        self.unit("one", {"pkg/new/mod.py": "m\n", "z.py": "z\n"})
+        # The helper put the files back, not the directories it made for them.
+        os.rmdir(os.path.join(self.project, "pkg", "new"))
+        os.rmdir(os.path.join(self.project, "pkg"))
+        results = self.results("one")
+        self.assertEqual([r.path for r in results], ["pkg/new/mod.py", "z.py"])
+        with self.raced_on("z.py"), self.assertRaises(units_merge.atomic_file.Raced):
+            units_merge.apply(self.workspace, "one", results)
+        self.assertIsNone(self.read("pkg/new/mod.py"))
+        self.assertFalse(os.path.lexists(os.path.join(self.project, "pkg")))
+
+    def test_units_merge_delete_removes_the_directories_it_emptied(self):
+        self.write("docs/only/x.md", "x\n")
+        self.write("pkg/gone.py", "g\n")
+        self.write("pkg/keep.py", "k\n")
+        self.commit_all("dirs")
+        self.unit("one", {"docs/only/x.md": None, "pkg/gone.py": None})
+        results = self.results("one")
+        self.assertEqual([r.action for r in results], [units_merge.DELETE, units_merge.DELETE])
+        units_merge.apply(self.workspace, "one", results)
+        self.assertFalse(os.path.lexists(os.path.join(self.project, "docs")))
+        self.assertIsNone(self.read("pkg/gone.py"))
+        self.assertEqual(self.read("pkg/keep.py"), b"k\n")
+        self.assertTrue(os.path.isfile(os.path.join(self.project, "a.py")))
+
+
 class TestRoundContext(MergeCase):
     def test_round_context_names_resolved_files_first_round(self):
         self.unit("one", {"a.py": A_PY.replace("a1", "one1")})

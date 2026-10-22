@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import os
 import subprocess
@@ -13,7 +15,7 @@ from unittest import mock
 from helpers import IsolatedCase, has_git, is_link, read_file, run_cli
 from test_units import plan
 
-from orchestrator import execution_tree
+from orchestrator import cli_state, execution_tree
 from orchestrator import jobs as jobs_mod
 from orchestrator import units as units_mod
 from orchestrator import workspace as ws
@@ -319,6 +321,43 @@ class TestInPlace(UnitRunCase):
         # Both pieces of one pass: one attempt.
         self.assertEqual(self.used(), 1)
         self.assertEqual([event["attempt_spent"] for event in self.implementer_events()], [True, False])
+
+    def in_place_base(self) -> str:
+        base = ws.write_tree(self.project, worktrees_mod.excludes(self.workspace))
+        self.assertTrue(base)
+        return base
+
+    def test_cancel_in_place_unit_names_the_edits_left_in_the_tree(self):
+        self.approve(CHAIN)
+        base = self.in_place_base()
+        self.set_records(
+            {"a": {"status": "running", "job": "implementer-1", "in_place": True, "base_tree": base}}
+        )
+        self.write("a.py", "A = 1\n")
+        said = io.StringIO()
+        with contextlib.redirect_stderr(said):
+            cli_state._cancel_unit(self.workspace, {"unit": "a", "id": "implementer-1"})
+        self.assertIn("warning: a ran in place; its edits stay in the working tree: a.py", said.getvalue())
+        self.assertEqual(self.record("a")["status"], "cancelled")
+        self.assertEqual(read_file(os.path.join(self.project, "a.py")), "A = 1\n")
+
+    def test_rerun_in_place_after_a_cancelled_run_keeps_its_base(self):
+        self.approve(CHAIN)
+        base = self.in_place_base()
+        # The cancelled run's edit, still in the tree.
+        self.write("a.py", "A = 1\n")
+        self.set_records(
+            {"a": {"status": "cancelled", "job": "implementer-1", "in_place": True, "base_tree": base}}
+        )
+        self.edits = {"a.py": "A = 1\nA2 = 2\n"}
+        code, _, err = self.run_unit("a")
+        self.assertEqual(code, 0, err)
+        record = self.record("a")
+        self.assertEqual((record["status"], record["base_tree"]), ("merged", base))
+        diff = read_file(os.path.join(self.workspace.units_dir, "a.diff"))
+        self.assertIn("+A = 1", diff)
+        self.assertIn("+A2 = 2", diff)
+        self.assertEqual(record["outside_files"], [])
 
 
 class TestPassBudget(UnitRunCase):
