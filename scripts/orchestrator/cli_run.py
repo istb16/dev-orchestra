@@ -18,7 +18,9 @@ from . import config_policy as policy_mod
 from . import jobs as jobs_mod
 from . import ledger as ledger_mod
 from . import questions as questions_mod
+from . import units as units_mod
 from . import workspace as ws
+from . import worktrees as worktrees_mod
 from .cli_common import (
     DEFAULT_MODES,
     _emit_json,
@@ -221,6 +223,22 @@ class _Seat(NamedTuple):
     stage: str
 
 
+class _UnitRun(NamedTuple):
+    """The work unit a ``run implementer --unit`` runs, once it is claimed."""
+
+    name: str
+    #: Run in the user's tree, with no worktree and no merge.
+    in_place: bool
+    #: Where the agent runs: the unit's worktree, or the user's tree.
+    cwd: str
+    #: Whether this run spent one of the implementer's attempts (the pass rule).
+    attempt_spent: bool = True
+    #: What goes in front of the prompt; "" in a worker, whose prompt has it.
+    header: str = ""
+    #: The unit's record before it was claimed, put back if the run is refused.
+    previous: Optional[Dict[str, Any]] = None
+
+
 class _Run(NamedTuple):
     """What every launch of one `run` shares, once the books are open."""
 
@@ -235,6 +253,10 @@ class _Run(NamedTuple):
     timeout_origin: str
     #: Where the idle deadline came from, as the stall message names it.
     idle_origin: str = ""
+    #: Where the agent runs; "" is ``workspace.root``. The workflow's state
+    #: stays in ``workspace`` wherever the agent runs.
+    cwd: str = ""
+    unit: Optional[_UnitRun] = None
 
 
 class _Attempt(NamedTuple):
@@ -262,8 +284,10 @@ def cmd_run(args: argparse.Namespace) -> int:
         return _refuse_run(args, [problem])
     workspace = _workspace(args)
     # Before the provider is known: these depend on the arguments alone.
-    problem = _questions_refusal(args, seat.role, workspace) or _resume_refusal(
-        args, seat.role, seat.mode, workspace
+    problem = (
+        _questions_refusal(args, seat.role, workspace)
+        or _resume_refusal(args, seat.role, seat.mode, workspace)
+        or _unit_arg_refusal(args, seat.role)
     )
     if problem:
         return _refuse_run(args, [problem])
@@ -297,20 +321,37 @@ def cmd_run(args: argparse.Namespace) -> int:
     # records.
     refusal, unattended = _role_gates(args, loaded, workspace, seat, prompt, resume_prompt)
     if refusal is not None:
+        if args.unit and args.job_file:
+            # The parent claimed the unit; refused here, it ran nothing.
+            _finish_unit(workspace, args.unit, False)
         return refusal
+    # After the gates, so an unapproved plan is refused as it always was,
+    # before a worktree is made or anything is claimed.
+    unit: Optional[_UnitRun] = None
+    if args.unit:
+        claimed = _worker_unit(args, workspace) if args.job_file else _claim_unit(args, loaded, workspace)
+        if isinstance(claimed, int):
+            return claimed
+        unit = claimed
+        prompt = unit.header + prompt
     timeout, timeout_origin = _deadline(args, loaded, seat)
     idle_timeout, idle_origin = _idle_deadline(args, loaded, seat, provider)
     book = _ledger(args, workspace)
-    refusal = _spend_attempt(args, book, seat)
+    refusal, attempt_spent = _spend_attempt(args, book, seat, workspace, unit)
     if refusal is not None:
+        if unit is not None:
+            _release_unit(args, workspace, unit)
         return refusal
+    if unit is not None and not args.job_file:
+        units_mod.update(workspace, unit.name, {"attempt_spent": attempt_spent})
+        unit = unit._replace(attempt_spent=attempt_spent)
     if unattended:
         # Only once nothing refuses the run, and in the parent before it hands
         # over: a refused run leaves the questions open, and a worker finds
         # them answered.
         _leave_open_questions_to_the_architect(workspace)
     if args.detach:
-        return _detach(args, workspace, seat, prompt, resume_prompt, timeout)
+        return _detach(args, workspace, seat, prompt, resume_prompt, timeout, unit)
     if args.job_file:
         # A detached worker: `jobs cancel` must reach the CLI it runs, which is
         # in a session of its own.
@@ -323,30 +364,55 @@ def cmd_run(args: argparse.Namespace) -> int:
     # process and survives it dying. The record is kept: whether the user
     # forced this run is in it, and the worker's own --force says nothing.
     job = jobs_mod.claim(args.job_file) if args.job_file else None
-    run = _Run(args, seat, provider, workspace, book, timeout, idle_timeout, timeout_origin, idle_origin)
+    run = _Run(
+        args,
+        seat,
+        provider,
+        workspace,
+        book,
+        timeout,
+        idle_timeout,
+        timeout_origin,
+        idle_origin,
+        cwd=unit.cwd if unit is not None else workspace.root,
+        unit=unit,
+    )
     # Every run a worker makes reports its tool uses beside the job, the fresh
     # retry after a rejected resume included, so `n` carries on. Installed for
     # this call only: a worker run in-process, as the tests do, must not leave
     # its sink on the thread.
     sink = activity.Sink(jobs_mod.activity_path(args.job_file)) if args.job_file else None
-    with activity.recording(sink):
-        # `resume_prompt` is read whenever --resume is given, and a session id
-        # is only ever found under --resume.
-        attempt = _run_once(
-            run, cast(str, resume_prompt) if session_id is not None else prompt, session_id, resume_detail
-        )
-        if attempt is None:
-            return 2
-        if (
-            attempt.session_id is not None
-            and attempt.resume_detail is not None
-            and attempt.result.resume_rejected
-        ):
-            retried = _retry_fresh_after_rejection(run, job, attempt, prompt)
-            if isinstance(retried, int):
-                return retried
-            attempt = retried
-    _record_outcome(run, attempt)
+    # A unit is finished whatever ends the run, a refusal or Ctrl+C included,
+    # so its worktree is never left behind by a run that is over.
+    unit_open = unit is not None
+    try:
+        with activity.recording(sink):
+            # `resume_prompt` is read whenever --resume is given, and a session id
+            # is only ever found under --resume.
+            attempt = _run_once(
+                run, cast(str, resume_prompt) if session_id is not None else prompt, session_id, resume_detail
+            )
+            if attempt is None:
+                return 2
+            if (
+                attempt.session_id is not None
+                and attempt.resume_detail is not None
+                and attempt.result.resume_rejected
+            ):
+                retried = _retry_fresh_after_rejection(run, job, attempt, prompt)
+                if isinstance(retried, int):
+                    return retried
+                attempt = retried
+        if unit is not None:
+            # Before the outcome: `jobs wait` returns on the job's status, and
+            # what it returns to must find the unit's tree and diff written
+            # and its worktree gone.
+            unit_open = False
+            _finish_unit(workspace, unit.name, bool(attempt.result.ok))
+        _record_outcome(run, attempt)
+    finally:
+        if unit_open and unit is not None:
+            _finish_unit(workspace, unit.name, False)
     # Printed last, and after the books are closed. Showing the output used to
     # come first, so a console that could not encode one character of it took
     # the accounting and the in-flight entry down with it: the tokens went
@@ -494,10 +560,16 @@ def _print_command(
     session_id = None
     if args.resume:
         session_id, _ = _choose_resume(loaded, workspace, provider, seat.provider_name)
+    # A unit's command runs in its worktree while it has one; printing makes none.
+    cwd = workspace.root
+    if args.unit:
+        record = units_mod.load_state(workspace)["units"].get(args.unit)
+        if isinstance(record, dict) and not record.get("in_place") and record.get("worktree"):
+            cwd = str(record["worktree"])
     command = provider.command_line(
         seat.mode,
         resolved,
-        workspace.root,
+        cwd,
         args.extra or [],
         seat.spec.get("options"),
         resume_session=session_id,
@@ -550,15 +622,28 @@ def _read_prompts(args: argparse.Namespace, workspace: ws.Workspace) -> Tuple[st
     return prompt, resume_prompt
 
 
-def _spend_attempt(args: argparse.Namespace, book: ledger_mod.Ledger, seat: _Seat) -> Optional[int]:
-    """Take this run's attempt from the budget; the exit code if it is refused one."""
+def _spend_attempt(
+    args: argparse.Namespace,
+    book: ledger_mod.Ledger,
+    seat: _Seat,
+    workspace: ws.Workspace,
+    unit: Optional[_UnitRun] = None,
+) -> Tuple[Optional[int], bool]:
+    """Take this run's attempt from the budget: the exit code if it is refused
+    one, and whether an attempt was spent.
+
+    A unit is a piece of its plan's pass (``units.pass_key``): only the first
+    piece of a pass, and a rerun of one, spends an attempt.
+    """
     book.clear_stalls()
     if seat.tier:
         _err("note: running %s on its %r tier (%s)" % (seat.role, seat.tier, describe_spec(seat.spec)))
-    refusal = _refuse_if_exhausted(book, seat.stage, args.force)
+    piece = unit.name if unit is not None else ""
+    key = units_mod.pass_key(workspace, seat.stage) if unit is not None else ""
+    refusal = _refuse_if_exhausted(book, seat.stage, args.force, piece, key)
     if refusal is not None:
-        return refusal
-    spent = book.check(seat.stage) if args.force and not args.job_file else []
+        return refusal, False
+    spent = book.check(seat.stage, piece, key) if args.force and not args.job_file else []
     if seat.stage == questions_mod.RUN_STAGE and spent:
         # One flag, several limits: the user who asked for one more round past
         # the cap may not know a budget was spent as well. Each one is named as
@@ -569,11 +654,12 @@ def _spend_attempt(args: argparse.Namespace, book: ledger_mod.Ledger, seat: _Sea
         )
     try:
         if not args.job_file:
-            book.consume(seat.stage, force=args.force)
+            return None, book.consume(seat.stage, force=args.force, piece=piece, key=key)
     except ledger_mod.BudgetExhausted as exc:
         _err(str(exc))
-        return ledger_mod.EXIT_BUDGET_EXHAUSTED
-    return None
+        return ledger_mod.EXIT_BUDGET_EXHAUSTED, False
+    # A worker spends nothing: its parent did, and recorded whether.
+    return None, unit.attempt_spent if unit is not None else True
 
 
 def _detach(
@@ -583,6 +669,7 @@ def _detach(
     prompt: str,
     resume_prompt: Optional[str],
     timeout: int,
+    unit: Optional[_UnitRun] = None,
 ) -> int:
     """``--detach``: start a worker for the run and return at once."""
     # Hand the work to a detached worker so this call cannot block. The
@@ -596,7 +683,15 @@ def _detach(
         timeout=timeout,
         resume_prompt=resume_prompt,
         force=bool(args.force),
+        unit=unit.name if unit is not None else "",
+        worktree=unit.cwd if unit is not None and not unit.in_place else None,
     )
+    if unit is not None:
+        if job.get("status") == "failed":
+            # No worker to finish it: its worktree goes now.
+            _finish_unit(workspace, unit.name, False)
+        else:
+            units_mod.update(workspace, unit.name, {"job": job["id"]})
     if args.json:
         _emit_json(job)
     else:
@@ -631,7 +726,7 @@ def _run_once(
         result = run.provider.run(
             text,
             seat.mode,
-            run.workspace.root,
+            run.cwd or run.workspace.root,
             seat.spec.get("model"),
             timeout=run.timeout,
             extra_args=args.extra or [],
@@ -687,6 +782,10 @@ def _end_detail(run: _Run, result: Any, resume_detail: Optional[Dict[str, Any]])
     }
     if resume_detail is not None:
         detail["resume"] = dict(resume_detail, outcome="ok" if result.ok else None)
+    if run.unit is not None:
+        # Only for a unit: under the pass rule not every run spends an attempt.
+        detail["unit"] = run.unit.name
+        detail["attempt_spent"] = run.unit.attempt_spent
     # Only when there are some, so a run's event is what it always was.
     if result.warnings:
         detail["warnings"] = list(result.warnings)
@@ -1122,6 +1221,202 @@ def _refuse_run(args: argparse.Namespace, lines: List[str]) -> int:
     return 2
 
 
+# --------------------------------------------------------------------------- work units
+
+
+def _unit_arg_refusal(args: argparse.Namespace, role: str) -> Optional[str]:
+    """Why ``--unit`` cannot go on this command line, as a fixed sentence."""
+    if getattr(args, "unit", None) and role != "implementer":
+        return "--unit applies to implementer"
+    return None
+
+
+def _unit_refusal(
+    found: List[units_mod.Unit], entries: Dict[str, Dict[str, Any]], unit: units_mod.Unit, cap: int
+) -> str:
+    """Why ``unit`` cannot start now; "" when it can. Read under the units lock."""
+    status = units_mod.status_of(entries, unit.name)
+    if status == units_mod.RUNNING:
+        return "it is already running"
+    if status == units_mod.MERGED:
+        return "it is already merged"
+    waiting = [dep for dep in unit.depends_on if units_mod.status_of(entries, dep) != units_mod.MERGED]
+    if waiting:
+        return "it depends on %s, not merged yet" % ", ".join(
+            "%s (%s)" % (dep, units_mod.status_of(entries, dep)) for dep in waiting
+        )
+    running = [other.name for other in found if units_mod.status_of(entries, other.name) == units_mod.RUNNING]
+    in_place = [name for name in running if (entries.get(name) or {}).get("in_place")]
+    if in_place:
+        return "%s is running in place, in the user's tree, and nothing may start beside it" % in_place[0]
+    if len(running) >= cap:
+        return "implementation.max_parallel is %d, and %s %s running" % (
+            cap,
+            ", ".join(running),
+            "is" if len(running) == 1 else "are",
+        )
+    return ""
+
+
+def _claim_unit(
+    args: argparse.Namespace, loaded: config_mod.LoadedConfig, workspace: ws.Workspace
+) -> Union[int, _UnitRun]:
+    """Claim the unit ``--unit`` names and make its worktree; the exit code if it may not start.
+
+    The checks and the claim are made under the units lock, so two units
+    starting together cannot both pass the parallelism cap. The git work is
+    done after the lock is let go, with the unit already recorded as running.
+    """
+    name = args.unit
+    plan_relative = workspace.relative(workspace.plan_path)
+    plan_text = ws.read_text(workspace.plan_path)
+    try:
+        found = units_mod.parse(plan_text)
+    except units_mod.UnitsError as exc:
+        return _refuse_run(args, ["--unit %s: %s: %s" % (name, plan_relative, exc)])
+    unit = next((entry for entry in found if entry.name == name), None)
+    if unit is None:
+        return _refuse_run(args, ["--unit %s: %s has no such unit under ## Units" % (name, plan_relative)])
+    settings = units_mod.settings_of(loaded.data)
+    problems = units_mod.validate(found, settings.hub_paths, plan_text)
+    if problems:
+        return _refuse_run(
+            args,
+            ["--unit %s: the units cannot be run (units check):" % name, *["  - %s" % p for p in problems]],
+        )
+    digest = approval_mod.plan_digest(plan_text)
+    with units_mod.locked(workspace):
+        state = units_mod.load_state(workspace)
+        if state.get("plan_sha256") != digest:
+            held = sorted(
+                other
+                for other, entry in state["units"].items()
+                if isinstance(entry, dict)
+                and (entry.get("worktree") or entry.get("status") == units_mod.RUNNING)
+            )
+            if held:
+                return _refuse_run(
+                    args,
+                    [
+                        "--unit %s: units of an earlier plan are running or hold a worktree (%s); "
+                        "cancel their jobs or run units clean first" % (name, ", ".join(held))
+                    ],
+                )
+            state = {"plan_sha256": digest, "units": {}}
+        entries = {key: value for key, value in state["units"].items() if isinstance(value, dict)}
+        reason = _unit_refusal(found, entries, unit, settings.max_parallel)
+        if reason:
+            return _refuse_run(args, ["--unit %s: refused -- %s" % (name, reason)])
+        in_place = units_mod.runs_in_place(found, state, name)
+        previous = entries.get(name)
+        state["units"][name] = {
+            "status": units_mod.RUNNING,
+            "in_place": in_place,
+            "job": None,
+            "started_at": ws.utcnow(),
+        }
+        units_mod.save_state(workspace, state)
+    if in_place:
+        fields: Dict[str, Any] = {
+            "base_tree": ws.write_tree(workspace.root, worktrees_mod.excludes(workspace)) or None,
+            "base_commit": None,
+            "worktree": None,
+            "links": [],
+            "checks_skipped": False,
+        }
+    else:
+        try:
+            fields = worktrees_mod.create(workspace, name, loaded)
+        except (worktrees_mod.WorktreeError, OSError) as exc:
+            _restore_unit(workspace, name, previous)
+            return _refuse_run(args, ["--unit %s: no worktree could be made: %s" % (name, exc)])
+    units_mod.update(workspace, name, fields)
+    if fields["checks_skipped"]:
+        _err(
+            "note: %s: the environment could not be linked into its worktree; "
+            "its checks run after the merge" % name
+        )
+    return _UnitRun(
+        name,
+        in_place,
+        workspace.root if in_place else str(fields["worktree"]),
+        header=units_mod.header(unit, plan_text, bool(fields["checks_skipped"])),
+        previous=previous,
+    )
+
+
+def _worker_unit(args: argparse.Namespace, workspace: ws.Workspace) -> Union[int, _UnitRun]:
+    """The unit a worker runs, as its parent claimed it; the exit code if it was not."""
+    record = units_mod.load_state(workspace)["units"].get(args.unit)
+    if not isinstance(record, dict) or record.get("status") != units_mod.RUNNING:
+        return _refuse_run(
+            args, ["--unit %s: the unit is not running; its parent did not start it" % args.unit]
+        )
+    in_place = bool(record.get("in_place"))
+    cwd = workspace.root if in_place else str(record.get("worktree") or "")
+    if not os.path.isdir(cwd):
+        _finish_unit(workspace, args.unit, False)
+        return _refuse_run(args, ["--unit %s: its worktree is gone" % args.unit])
+    return _UnitRun(args.unit, in_place, cwd, attempt_spent=bool(record.get("attempt_spent", True)))
+
+
+def _restore_unit(workspace: ws.Workspace, name: str, previous: Optional[Dict[str, Any]]) -> None:
+    """Put back the record a unit had before it was claimed."""
+    with units_mod.locked(workspace):
+        state = units_mod.load_state(workspace)
+        if previous is None:
+            state["units"].pop(name, None)
+        else:
+            state["units"][name] = previous
+        units_mod.save_state(workspace, state)
+
+
+def _release_unit(args: argparse.Namespace, workspace: ws.Workspace, unit: _UnitRun) -> None:
+    """Undo a claim whose run was refused its attempt: the worktree goes, the record is put back."""
+    if args.job_file:
+        _finish_unit(workspace, unit.name, False)
+        return
+    record = units_mod.load_state(workspace)["units"].get(unit.name)
+    if isinstance(record, dict):
+        worktrees_mod.remove(workspace.root, record)
+    _restore_unit(workspace, unit.name, unit.previous)
+
+
+def _finish_unit(workspace: ws.Workspace, name: str, ok: bool) -> None:
+    """Close a unit's run: write its tree and diff, record how it ended, remove its worktree.
+
+    A unit that ran in place and succeeded is ``merged``: its changes are
+    already in the user's tree. Nothing is done for a unit not running.
+    """
+    record = units_mod.load_state(workspace)["units"].get(name)
+    if not isinstance(record, dict) or record.get("status") != units_mod.RUNNING:
+        return
+    in_place = bool(record.get("in_place"))
+    worktree = None if in_place else record.get("worktree")
+    tree_root = str(worktree) if worktree and os.path.isdir(str(worktree)) else workspace.root
+    links = [str(link) for link in (record.get("links") or [])]
+    result_tree = ""
+    if in_place or tree_root != workspace.root:
+        result_tree = ws.write_tree(tree_root, worktrees_mod.excludes(workspace, links))
+    fields: Dict[str, Any] = {"result_tree": result_tree or None, "finished_at": ws.utcnow()}
+    base_tree = record.get("base_tree")
+    if base_tree and result_tree:
+        code, diff, _ = ws.git(
+            ["diff", "--binary", "--no-color", str(base_tree), result_tree], workspace.root
+        )
+        if code == 0:
+            ws.write_text(os.path.join(workspace.units_dir, "%s.diff" % name), diff)
+    if not ok:
+        fields["status"] = units_mod.FAILED
+    elif in_place:
+        fields.update(status=units_mod.MERGED, merged_at=ws.utcnow())
+    else:
+        fields["status"] = units_mod.SUCCEEDED
+    if worktree:
+        fields["worktree"] = None if worktrees_mod.remove(workspace.root, record) else worktree
+    units_mod.update(workspace, name, fields)
+
+
 #: Why a ``--resume`` run ran fresh. Fixed phrases only: every value they could
 #: name (a mode, a provider, a path, a session id, an age, a CLI version) is
 #: already in the event's own keys or came from ``state.json`` or the CLI, and
@@ -1346,6 +1641,9 @@ def _detached_argv(args: argparse.Namespace, role: str, workflow: str) -> List[s
         # Left out, the worker would run the plan-writing kind of run: another
         # budget, another gate, and the plan as its output.
         argv.append("--questions")
+    if getattr(args, "unit", None):
+        # Left out, the worker would run in the user's tree, not the unit's.
+        argv += ["--unit", args.unit]
     if args.extra:
         argv += ["--extra", *args.extra]
     return argv

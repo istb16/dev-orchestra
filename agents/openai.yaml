@@ -114,6 +114,7 @@ commands:
   - jobs cancel
   - units check
   - units status
+  - units clean
   - budget show
   - budget consume
   - budget reset

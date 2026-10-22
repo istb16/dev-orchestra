@@ -62,7 +62,7 @@ from .cli_state import (
     cmd_progress_record,
     cmd_tokens_show,
 )
-from .cli_units import cmd_units_check, cmd_units_status
+from .cli_units import cmd_units_check, cmd_units_clean, cmd_units_status
 from .cli_workflow import (
     cmd_design_approve,
     cmd_state_record,
@@ -501,6 +501,13 @@ def _add_run_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPars
         action="store_true",
         help="print the outcome as one JSON object, the output inline (with --detach: the started job)",
     )
+    run_parser.add_argument(
+        "--unit",
+        default=None,
+        metavar="NAME",
+        help="implementer only: run one work unit of the plan's ## Units, in a worktree of its own "
+        "when another unit could run beside it",
+    )
     run_parser.add_argument("--job-file", default=None, help=argparse.SUPPRESS)
     run_parser.add_argument("--print-command", action="store_true", help="print the CLI invocation and exit")
     run_parser.add_argument("--extra", nargs=argparse.REMAINDER, help="extra args passed to the provider CLI")
@@ -663,8 +670,11 @@ def _add_jobs_parsers(subparsers: argparse._SubParsersAction[argparse.ArgumentPa
     _add_json_flag(jobs_show)
     _add_activity_flags(jobs_show)
     jobs_show.set_defaults(func=cmd_jobs_show)
-    jobs_wait = jobs_sub.add_parser("wait", help="wait for a job, with a deadline of your own")
-    jobs_wait.add_argument("job_id")
+    jobs_wait = jobs_sub.add_parser("wait", help="wait for jobs, with a deadline of your own")
+    jobs_wait.add_argument("job_ids", nargs="+", metavar="job_id")
+    jobs_wait.add_argument(
+        "--any", action="store_true", help="with several jobs: return when the first one finishes"
+    )
     jobs_wait.add_argument(
         "--timeout",
         type=_seconds(allow_zero=True),
@@ -687,6 +697,9 @@ def _add_units_parsers(subparsers: argparse._SubParsersAction[argparse.ArgumentP
     units_status = units_sub.add_parser("status", help="each unit's state, and which can start now")
     _add_json_flag(units_status)
     units_status.set_defaults(func=cmd_units_status)
+    units_clean = units_sub.add_parser("clean", help="remove the worktrees units left behind")
+    units_clean.add_argument("name", nargs="?", default=None, help="only this unit's")
+    units_clean.set_defaults(func=cmd_units_clean)
 
 
 def _add_budget_parsers(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:

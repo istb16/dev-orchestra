@@ -7,6 +7,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from datetime import datetime, timezone
@@ -115,6 +116,51 @@ def git_bytes(args: Sequence[str], cwd: str, timeout: int = 60) -> "tuple[int, b
         return 127, b"", str(exc)
     stderr = (completed.stderr or b"").decode("utf-8", errors="replace")
     return completed.returncode, completed.stdout or b"", stderr
+
+
+def write_tree(root: str, excludes: Sequence[str] = ()) -> str:
+    """Record the working tree as a git tree object, or "" if git cannot.
+
+    Written through a throwaway index so the user's own index is untouched --
+    the same trick ``git stash create`` uses. Untracked-but-not-ignored files
+    are included, because a new module is usually the most important part of a
+    change and the next round has to be able to diff against it.
+
+    ``excludes`` are paths relative to ``root`` left out of what is added: a
+    work unit's tree leaves out the workspace and the environment directories
+    linked into its worktree, which an ignore pattern such as ``.venv/`` does
+    not match once they are links.
+
+    The objects this writes are unreferenced, which is fine for the lifetime of
+    a workflow: git does not prune loose objects that recent.
+    """
+    handle, index = tempfile.mkstemp(prefix="dev-orchestra-index-")
+    os.close(handle)
+    # git wants to create the index itself; an existing empty file is not one.
+    try:
+        os.unlink(index)
+    except OSError:
+        return ""
+    env = {"GIT_INDEX_FILE": index}
+    try:
+        code, _, _ = git(["read-tree", "HEAD"], root, env=env)
+        if code != 0:
+            # No commits yet: an empty index is the right starting point.
+            code, _, _ = git(["read-tree", "--empty"], root, env=env)
+            if code != 0:
+                return ""
+        pathspecs = [":(exclude)%s" % path for path in excludes]
+        code, _, _ = git(["add", "-A", "--", ".", *pathspecs], root, env=env)
+        if code != 0:
+            return ""
+        code, out, _ = git(["write-tree"], root, env=env)
+        return out.strip() if code == 0 else ""
+    finally:
+        for leftover in (index, index + ".lock"):
+            try:
+                os.unlink(leftover)
+            except OSError:
+                pass
 
 
 def is_git_repo(path: str) -> bool:

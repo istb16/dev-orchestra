@@ -7,7 +7,6 @@ import hashlib
 import os
 import posixpath
 import re
-import tempfile
 import uuid
 from typing import Any, Dict, List, NamedTuple, Optional, Sequence, Set, Tuple
 
@@ -505,42 +504,8 @@ def _diff(root: str, revisions: Sequence[str], pathspecs: Sequence[str]) -> "tup
 
 
 def _write_tree(root: str) -> str:
-    """Record the working tree as a git tree object, or "" if git cannot.
-
-    Written through a throwaway index so the user's own index is untouched --
-    the same trick ``git stash create`` uses. Untracked-but-not-ignored files
-    are included, because a new module is usually the most important part of a
-    change and the next round has to be able to diff against it.
-
-    The objects this writes are unreferenced, which is fine for the lifetime of
-    a workflow: git does not prune loose objects that recent.
-    """
-    handle, index = tempfile.mkstemp(prefix="dev-orchestra-index-")
-    os.close(handle)
-    # git wants to create the index itself; an existing empty file is not one.
-    try:
-        os.unlink(index)
-    except OSError:
-        return ""
-    env = {"GIT_INDEX_FILE": index}
-    try:
-        code, _, _ = ws.git(["read-tree", "HEAD"], root, env=env)
-        if code != 0:
-            # No commits yet: an empty index is the right starting point.
-            code, _, _ = ws.git(["read-tree", "--empty"], root, env=env)
-            if code != 0:
-                return ""
-        code, _, _ = ws.git(["add", "-A", "--", "."], root, env=env)
-        if code != 0:
-            return ""
-        code, out, _ = ws.git(["write-tree"], root, env=env)
-        return out.strip() if code == 0 else ""
-    finally:
-        for leftover in (index, index + ".lock"):
-            try:
-                os.unlink(leftover)
-            except OSError:
-                pass
+    """Record the working tree as a git tree object, or "" if git cannot (``ws.write_tree``)."""
+    return ws.write_tree(root)
 
 
 def _reviewed_tree(workspace: ws.Workspace, base: Optional[str] = None) -> str:

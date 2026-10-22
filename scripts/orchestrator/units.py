@@ -48,8 +48,10 @@ _GLOB_CHARS = "*?["
 #: Statuses a unit's record takes in ``units.json``.
 PENDING = "pending"
 RUNNING = "running"
+SUCCEEDED = "succeeded"
 MERGED = "merged"
 FAILED = "failed"
+CANCELLED = "cancelled"
 
 
 class UnitsError(ValueError):
@@ -195,6 +197,28 @@ def section(plan_text: str, name: str) -> str:
         if match and match.group(1) == name:
             return "\n".join(lines[start:end]).strip() + "\n"
     return ""
+
+
+def header(unit: Unit, plan_text: str, checks_skipped: bool) -> str:
+    """What the CLI puts in front of a unit's prompt: the unit, its files and its plan section."""
+    if checks_skipped:
+        # A link failed: run in this worktree, the checks would miss the environment.
+        checks = "Do not run checks; they run after the merge."
+    else:
+        checks = "Run your checks before you finish."
+    lines = [
+        "# Work unit: %s (%s)" % (unit.name, unit.kind),
+        "",
+        "This run implements one unit of the plan, and only that unit.",
+        "Its files: %s" % ", ".join(unit.files),
+        checks,
+        "",
+        section(plan_text, unit.name).rstrip(),
+        "",
+        "---",
+        "",
+    ]
+    return "\n".join(lines) + "\n"
 
 
 def _listed_files(plan_text: str) -> List[str]:
@@ -406,6 +430,16 @@ def load_state(workspace: ws.Workspace) -> Dict[str, Any]:
 def save_state(workspace: ws.Workspace, state: Dict[str, Any]) -> None:
     workspace.ensure()
     ws.write_json(workspace.units_path, state)
+
+
+def update(workspace: ws.Workspace, name: str, fields: Dict[str, Any]) -> Dict[str, Any]:
+    """Merge ``fields`` into unit ``name``'s record under the lock; the record as written."""
+    with locked(workspace):
+        state = load_state(workspace)
+        record = state["units"].setdefault(name, {})
+        record.update(fields)
+        save_state(workspace, state)
+    return dict(record)
 
 
 def records(state: Dict[str, Any], plan_sha256: str) -> Dict[str, Dict[str, Any]]:

@@ -243,11 +243,15 @@ def start(
     timeout: Optional[float] = None,
     resume_prompt: Optional[str] = None,
     force: bool = False,
+    unit: str = "",
+    worktree: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Spawn ``argv`` as a detached worker and return the job record.
 
     ``force`` is whether the user passed ``--force``: the worker is always
-    started with it, so it cannot tell from its own argv.
+    started with it, so it cannot tell from its own argv. ``unit`` and
+    ``worktree`` are the work unit it runs and where (None: in place), kept so
+    ``jobs cancel`` can remove the worktree.
     """
     # Checked here because a placeholder the caller forgot is otherwise
     # invisible until the worker is already gone: it would run with no prompt
@@ -287,6 +291,9 @@ def start(
     }
     if resume_prompt_file is not None:
         job["resume_prompt_file"] = resume_prompt_file
+    if unit:
+        job["unit"] = unit
+        job["worktree"] = worktree
     write_job(workspace, job)
 
     # The worker is this same CLI, re-entered with --job-file. Its stdio goes
@@ -346,6 +353,30 @@ def wait(
             job = dict(job)
             job["waited_out"] = True
             return job
+        time.sleep(min(poll, max(deadline - time.monotonic(), 0.01)))
+
+
+def wait_many(
+    workspace: ws.Workspace,
+    job_ids: Sequence[str],
+    any_: bool = False,
+    timeout: float = 60.0,
+    poll: float = 1.0,
+) -> List[Dict[str, Any]]:
+    """Wait for every job of ``job_ids``, or with ``any_`` for the first to finish.
+
+    Never longer than ``timeout``. Each job is returned as :func:`wait`
+    returns one: a job still running when the deadline came is marked
+    ``waited_out``.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        found = [read_job(workspace, job_id) or {"id": job_id, "status": "unknown"} for job_id in job_ids]
+        done = [job for job in found if job.get("status") in FINISHED]
+        if done and (any_ or len(done) == len(found)):
+            return found
+        if time.monotonic() >= deadline:
+            return [job if job.get("status") in FINISHED else dict(job, waited_out=True) for job in found]
         time.sleep(min(poll, max(deadline - time.monotonic(), 0.01)))
 
 
@@ -472,6 +503,8 @@ def render(job: Dict[str, Any], act: Optional[Dict[str, Any]] = None) -> str:
         "  stage:    %s" % job.get("stage"),
         "  started:  %s" % job.get("started_at"),
     ]
+    if job.get("unit"):
+        lines.append("  unit:     %s (%s)" % (job["unit"], job.get("worktree") or "in place"))
     if running:
         elapsed = elapsed_seconds(job)
         if elapsed is not None:

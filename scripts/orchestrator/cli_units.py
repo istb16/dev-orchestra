@@ -6,9 +6,11 @@ import argparse
 from typing import Any, Dict, List
 
 from . import approval as approval_mod
+from . import jobs as jobs_mod
 from . import units as units_mod
 from . import workspace as ws
-from .cli_common import _emit_json, _err, _out, _workspace_and_config
+from . import worktrees as worktrees_mod
+from .cli_common import _emit_json, _err, _out, _workspace, _workspace_and_config
 
 
 def _read_units(workspace: ws.Workspace) -> "tuple[str, List[units_mod.Unit]]":
@@ -99,3 +101,44 @@ def cmd_units_status(args: argparse.Namespace) -> int:
     if failed:
         _out("The implement stage failed: a unit failed, and the units that depend on it cannot start.")
     return 0
+
+
+def cmd_units_clean(args: argparse.Namespace) -> int:
+    """Remove the worktrees units left behind: every unit's, or NAME's.
+
+    A unit still running keeps its worktree. One whose worker is gone without
+    finishing it is recorded as failed, so it can be run again.
+    """
+    workspace = _workspace(args)
+    state = units_mod.load_state(workspace)
+    entries = {name: entry for name, entry in state["units"].items() if isinstance(entry, dict)}
+    if args.name and args.name not in entries:
+        _err("no unit named %s has a record" % args.name)
+        return 2
+    names = [args.name] if args.name else sorted(entries)
+    removed = kept = 0
+    for name in names:
+        record = entries[name]
+        if record.get("status") == units_mod.RUNNING:
+            job = jobs_mod.read_job(workspace, str(record.get("job"))) if record.get("job") else None
+            if job is None or jobs_mod.may_still_run(job):
+                if record.get("worktree"):
+                    _out("%s is running; its worktree stays: %s" % (name, record["worktree"]))
+                continue
+        if not record.get("worktree") and record.get("status") != units_mod.RUNNING:
+            continue
+        fields: Dict[str, Any] = {}
+        if record.get("status") == units_mod.RUNNING:
+            fields.update(status=units_mod.FAILED, finished_at=ws.utcnow())
+        if record.get("worktree"):
+            if worktrees_mod.remove(workspace.root, record):
+                _out("removed %s's worktree: %s" % (name, record["worktree"]))
+                fields["worktree"] = None
+                removed += 1
+            else:
+                _err("could not remove %s's worktree: %s" % (name, record["worktree"]))
+                kept += 1
+        units_mod.update(workspace, name, fields)
+    if not removed and not kept:
+        _out("No worktrees to remove.")
+    return 1 if kept else 0

@@ -6,13 +6,16 @@ import argparse
 import os
 from typing import Any, Dict, List, Optional
 
+from . import config as config_mod
 from . import jobs as jobs_mod
 from . import ledger as ledger_mod
 from . import optimization_render as opt_render
 from . import optimization_report as opt_report
 from . import review as review_mod
+from . import units as units_mod
 from . import workflow as workflow_mod
 from . import workspace as ws
+from . import worktrees as worktrees_mod
 from .cli_common import _emit_json, _err, _ledger, _out, _workspace, _workspace_and_config, _wrote_plan
 
 # --------------------------------------------------------------------------- state
@@ -64,13 +67,16 @@ def _with_activity(job: Dict[str, Any], act: Optional[Dict[str, Any]]) -> Dict[s
 def cmd_jobs_wait(args: argparse.Namespace) -> int:
     """Bounded wait: returning while the job runs is an outcome, not an error."""
     workspace, loaded = _workspace_and_config(args)
-    if jobs_mod.read_job(workspace, args.job_id) is None:
-        _err("no such job: %s" % args.job_id)
-        return 2
+    for job_id in args.job_ids:
+        if jobs_mod.read_job(workspace, job_id) is None:
+            _err("no such job: %s" % job_id)
+            return 2
     # Without --timeout, one wait is one report's worth: progress.interval_seconds.
     progress = loaded.progress_settings()
     timeout = progress.interval_seconds if args.timeout is None else args.timeout
-    job = jobs_mod.wait(workspace, args.job_id, timeout=timeout, poll=args.poll)
+    if len(args.job_ids) > 1:
+        return _wait_for_jobs(args, workspace, progress, timeout)
+    job = jobs_mod.wait(workspace, args.job_ids[0], timeout=timeout, poll=args.poll)
     act = jobs_mod.read_activity(workspace, job, args.since, args.activity, progress.quiet_notice_seconds)
     if args.json:
         _emit_json(_with_activity(job, act))
@@ -90,6 +96,37 @@ def cmd_jobs_wait(args: argparse.Namespace) -> int:
     return 0 if job.get("status") == "succeeded" else 1
 
 
+def _wait_for_jobs(
+    args: argparse.Namespace, workspace: ws.Workspace, progress: config_mod.Progress, timeout: float
+) -> int:
+    """``jobs wait`` with several ids: all of them, or with ``--any`` the first to finish.
+
+    Exit 4 when the wait ran out, 1 when a finished job failed (or its
+    ``--output`` was refused), otherwise 0.
+    """
+    found = jobs_mod.wait_many(workspace, args.job_ids, args.any, timeout=timeout, poll=args.poll)
+    quiet = progress.quiet_notice_seconds
+    reports = [
+        (job, jobs_mod.read_activity(workspace, job, args.since, args.activity, quiet)) for job in found
+    ]
+    if args.json:
+        _emit_json({"jobs": [_with_activity(job, act) for job, act in reports]})
+    else:
+        for index, (job, act) in enumerate(reports):
+            if index:
+                _out("")
+            _out(jobs_mod.render(job, act))
+            if job.get("status") == "succeeded" and job.get("output_file"):
+                _out("")
+                _out(ws.read_text(str(job["output_file"])))
+    if any(job.get("waited_out") for job in found):
+        return 4
+    finished = [job for job in found if job.get("status") in jobs_mod.FINISHED]
+    if any(job.get("output_written") is False or job.get("status") != "succeeded" for job in finished):
+        return 1
+    return 0
+
+
 def cmd_jobs_cancel(args: argparse.Namespace) -> int:
     workspace = _workspace(args)
     try:
@@ -97,9 +134,31 @@ def cmd_jobs_cancel(args: argparse.Namespace) -> int:
     except KeyError:
         _err("no such job: %s" % args.job_id)
         return 2
+    if job.get("unit") and job.get("status") == "cancelled":
+        _cancel_unit(workspace, job)
     _out(jobs_mod.render(job))
     # The worker may still be running, so the job was left unfinished.
     return 1 if job.get("not_stopped") else 0
+
+
+def _cancel_unit(workspace: ws.Workspace, job: Dict[str, Any]) -> None:
+    """Remove a cancelled unit job's worktree and record the unit as ``cancelled``.
+
+    Only the unit this job ran: a record that has since gone to another job is left alone.
+    """
+    name = str(job["unit"])
+    record = units_mod.load_state(workspace)["units"].get(name)
+    if not isinstance(record, dict) or record.get("job") not in (None, job.get("id")):
+        return
+    if record.get("status") not in (units_mod.RUNNING, units_mod.FAILED):
+        return
+    fields: Dict[str, Any] = {"status": units_mod.CANCELLED, "finished_at": ws.utcnow()}
+    if record.get("worktree"):
+        gone = worktrees_mod.remove(workspace.root, record)
+        fields["worktree"] = None if gone else record["worktree"]
+        if not gone:
+            _err("warning: %s's worktree could not be removed; units clean tries again" % name)
+    units_mod.update(workspace, name, fields)
 
 
 def cmd_budget_show(args: argparse.Namespace) -> int:

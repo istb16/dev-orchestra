@@ -337,11 +337,16 @@ def _ledger(args: argparse.Namespace, workspace: Optional[ws.Workspace] = None) 
     return ledger_mod.Ledger(workspace, ledger_mod.budget_settings(loaded.data))
 
 
-def _refuse_if_exhausted(book: ledger_mod.Ledger, stage: str, force: bool) -> Optional[int]:
-    """Stop a loop at the action, not with advice from a query command."""
+def _refuse_if_exhausted(
+    book: ledger_mod.Ledger, stage: str, force: bool, piece: str = "", key: str = ""
+) -> Optional[int]:
+    """Stop a loop at the action, not with advice from a query command.
+
+    ``piece`` and ``key`` are a work unit and its pass, as ``Ledger.check`` takes them.
+    """
     if force:
         return None
-    reasons = book.check(stage)
+    reasons = book.check(stage, piece, key)
     if not reasons:
         return None
     _err("refusing to run %s:" % stage)
