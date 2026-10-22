@@ -503,9 +503,11 @@ def finish(
     update(job_file, finished)
 
 
-def render(job: Dict[str, Any], act: Optional[Dict[str, Any]] = None) -> str:
+def render(job: Dict[str, Any], act: Optional[Dict[str, Any]] = None, several: bool = False) -> str:
     """A job as text. ``act`` is what :func:`read_activity` returned for it;
-    without one a finished job reads exactly as it did before activity."""
+    without one a finished job reads exactly as it did before activity.
+    ``several``: one of several jobs waited for, whose ``next:`` names only
+    its own cursor, as ``--since ID=N``."""
     running = job.get("status") not in FINISHED
     lines = [
         "%s  %s" % (job.get("id"), str(job.get("status", "?")).upper()),
@@ -537,11 +539,11 @@ def render(job: Dict[str, Any], act: Optional[Dict[str, Any]] = None) -> str:
     if job.get("not_stopped"):
         lines.append("  note:     not cancelled; %s" % job["not_stopped"])
     if act is not None:
-        lines += _render_activity(job, act, running)
+        lines += _render_activity(job, act, running, several)
     return "\n".join(lines)
 
 
-def _render_activity(job: Dict[str, Any], act: Dict[str, Any], running: bool) -> List[str]:
+def _render_activity(job: Dict[str, Any], act: Dict[str, Any], running: bool, several: bool) -> List[str]:
     count = int(act.get("count") or 0)
     summary = "  activity: %d tool use%s" % (count, "" if count == 1 else "s")
     tokens = act.get("context_tokens")
@@ -559,6 +561,8 @@ def _render_activity(job: Dict[str, Any], act: Dict[str, Any], running: bool) ->
         lines.append("    (some lines were dropped)")
     if running and act.get("may_be_stuck"):
         lines.append("  note:     %s" % activity.quiet_note(act.get("quiet_seconds") or 0))
-    if running:
+    if running and several:
+        lines.append("  next:     --since %s=%d" % (job.get("id"), count))
+    elif running:
         lines.append("  next:     jobs wait %s --since %d" % (job.get("id"), count))
     return lines

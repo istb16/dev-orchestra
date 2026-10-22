@@ -71,13 +71,17 @@ def cmd_jobs_wait(args: argparse.Namespace) -> int:
         if jobs_mod.read_job(workspace, job_id) is None:
             _err("no such job: %s" % job_id)
             return 2
+    cursors = _cursors(args)
+    if cursors is None:
+        return 2
     # Without --timeout, one wait is one report's worth: progress.interval_seconds.
     progress = loaded.progress_settings()
     timeout = progress.interval_seconds if args.timeout is None else args.timeout
     if len(args.job_ids) > 1:
-        return _wait_for_jobs(args, workspace, progress, timeout)
+        return _wait_for_jobs(args, workspace, progress, timeout, cursors)
     job = jobs_mod.wait(workspace, args.job_ids[0], timeout=timeout, poll=args.poll)
-    act = jobs_mod.read_activity(workspace, job, args.since, args.activity, progress.quiet_notice_seconds)
+    since = cursors.get(args.job_ids[0], 0)
+    act = jobs_mod.read_activity(workspace, job, since, args.activity, progress.quiet_notice_seconds)
     if args.json:
         _emit_json(_with_activity(job, act))
     else:
@@ -96,29 +100,66 @@ def cmd_jobs_wait(args: argparse.Namespace) -> int:
     return 0 if job.get("status") == "succeeded" else 1
 
 
+def _cursors(args: argparse.Namespace) -> Optional[Dict[str, int]]:
+    """Each job's ``--since``; a job not named starts from 0. None, said, when they cannot be told apart.
+
+    With one id a bare number is its cursor, as it always was; with several
+    each takes ``ID=N``, since each job has a line count of its own.
+    """
+    cursors: Dict[str, int] = {}
+    for job_id, count in args.since:
+        if job_id is None:
+            if len(args.job_ids) > 1:
+                _err("--since %d: with several jobs, give each one's cursor as --since ID=N" % count)
+                return None
+            job_id = args.job_ids[0]
+        elif job_id not in args.job_ids:
+            _err("--since %s=%d: %s is not one of the jobs waited for" % (job_id, count, job_id))
+            return None
+        cursors[job_id] = count
+    return cursors
+
+
 def _wait_for_jobs(
-    args: argparse.Namespace, workspace: ws.Workspace, progress: config_mod.Progress, timeout: float
+    args: argparse.Namespace,
+    workspace: ws.Workspace,
+    progress: config_mod.Progress,
+    timeout: float,
+    cursors: Dict[str, int],
 ) -> int:
     """``jobs wait`` with several ids: all of them, or with ``--any`` the first to finish.
 
-    Exit 4 when the wait ran out, 1 when a finished job failed (or its
-    ``--output`` was refused), otherwise 0.
+    Each job's activity is read from its own cursor, and the ``next:`` line
+    is one command carrying every running job's. Exit 4 when the wait ran
+    out, 1 when a finished job failed (or its ``--output`` was refused),
+    otherwise 0.
     """
     found = jobs_mod.wait_many(workspace, args.job_ids, args.any, timeout=timeout, poll=args.poll)
     quiet = progress.quiet_notice_seconds
-    reports = [
-        (job, jobs_mod.read_activity(workspace, job, args.since, args.activity, quiet)) for job in found
-    ]
+    reports = []
+    for job in found:
+        since = cursors.get(str(job.get("id")), 0)
+        reports.append((job, jobs_mod.read_activity(workspace, job, since, args.activity, quiet)))
     if args.json:
         _emit_json({"jobs": [_with_activity(job, act) for job, act in reports]})
     else:
         for index, (job, act) in enumerate(reports):
             if index:
                 _out("")
-            _out(jobs_mod.render(job, act))
+            _out(jobs_mod.render(job, act, several=True))
             if job.get("status") == "succeeded" and job.get("output_file"):
                 _out("")
                 _out(ws.read_text(str(job["output_file"])))
+        running = [(job, act) for job, act in reports if job.get("status") not in jobs_mod.FINISHED]
+        if running:
+            ids = " ".join(str(job.get("id")) for job, _ in running)
+            since = "".join(
+                " --since %s=%d" % (job.get("id"), int(act.get("count") or 0))
+                for job, act in running
+                if act is not None
+            )
+            _out("")
+            _out("next: jobs wait %s%s%s" % (ids, " --any" if args.any else "", since))
     if any(job.get("waited_out") for job in found):
         return 4
     finished = [job for job in found if job.get("status") in jobs_mod.FINISHED]
@@ -142,9 +183,10 @@ def cmd_jobs_cancel(args: argparse.Namespace) -> int:
 
 
 def _cancel_unit(workspace: ws.Workspace, job: Dict[str, Any]) -> None:
-    """Remove a cancelled unit job's worktree and record the unit as ``cancelled``.
+    """Remove a cancelled unit job's worktree and record a running unit as ``cancelled``.
 
-    Only the unit this job ran: a record that has since gone to another job is left alone.
+    Only the unit this job ran: a record that has since gone to another job is
+    left alone. A failed one keeps its status, which says why it ended.
     """
     name = str(job["unit"])
     record = units_mod.load_state(workspace)["units"].get(name)
@@ -152,7 +194,9 @@ def _cancel_unit(workspace: ws.Workspace, job: Dict[str, Any]) -> None:
         return
     if record.get("status") not in (units_mod.RUNNING, units_mod.FAILED):
         return
-    fields: Dict[str, Any] = {"status": units_mod.CANCELLED, "finished_at": ws.utcnow()}
+    fields: Dict[str, Any] = {}
+    if record.get("status") == units_mod.RUNNING:
+        fields.update(status=units_mod.CANCELLED, finished_at=ws.utcnow())
     if record.get("worktree"):
         gone = worktrees_mod.remove(workspace.root, record)
         fields["worktree"] = None if gone else record["worktree"]

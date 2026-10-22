@@ -136,16 +136,55 @@ class TestElapsed(unittest.TestCase):
 
 
 class TestFlags(IsolatedCase):
-    def running_job_with_activity(self, count=3):
+    def running_job_with_activity(self, count=3, job_id="a-1", name="Read %d.py"):
         workspace = self.cli_workspace()
-        job = {"id": "a-1", "stage": "implementer", "status": "running", "claimed_at": ws.utcnow()}
+        job = {"id": job_id, "stage": "implementer", "status": "running", "claimed_at": ws.utcnow()}
         jobs_mod.write_job(workspace, job)
-        path = jobs_mod.activity_path(jobs_mod.job_path(workspace, "a-1"))
+        path = jobs_mod.activity_path(jobs_mod.job_path(workspace, job_id))
         with open(path, "w", encoding="utf-8", newline="\n") as handle:
             for n in range(1, count + 1):
-                handle.write(
-                    json.dumps({"n": n, "s": float(n), "line": "Read %d.py" % n, "tokens": None}) + "\n"
-                )
+                handle.write(json.dumps({"n": n, "s": float(n), "line": name % n, "tokens": None}) + "\n")
+
+    def test_several_jobs_each_read_from_their_own_cursor(self):
+        self.running_job_with_activity(3, "a-1", "Read a%d.py")
+        self.running_job_with_activity(5, "b-1", "Read b%d.py")
+        wait = ("--timeout", "0.1", "--poll", "0.1")
+        code, out, err = run_cli("jobs", "wait", "a-1", "b-1", "--since", "a-1=2", "--since", "b-1=4", *wait)
+        self.assertEqual(code, 4, err)
+        self.assertEqual(
+            [line.strip().split("  ", 1)[1] for line in out.splitlines() if "Read " in line],
+            ["Read a3.py", "Read b5.py"],
+        )
+        self.assertIn("  next:     --since a-1=3\n", out)
+        self.assertIn("  next:     --since b-1=5\n", out)
+        self.assertIn("\nnext: jobs wait a-1 b-1 --since a-1=3 --since b-1=5\n", out)
+        # A job not named starts from 0.
+        code, out, _ = run_cli("jobs", "wait", "a-1", "b-1", "--since", "b-1=4", "--json", *wait)
+        self.assertEqual(code, 4)
+        shown = [job["activity"] for job in json.loads(out)["jobs"]]
+        self.assertEqual([len(act["lines"]) for act in shown], [3, 1])
+        self.assertEqual([act["count"] for act in shown], [3, 5])
+
+    def test_a_bare_cursor_with_several_jobs_is_refused(self):
+        self.running_job_with_activity(3, "a-1")
+        self.running_job_with_activity(5, "b-1")
+        code, _, err = run_cli("jobs", "wait", "a-1", "b-1", "--since", "2", "--timeout", "0.1")
+        self.assertEqual(code, 2)
+        self.assertIn("--since ID=N", err)
+        code, _, err = run_cli("jobs", "wait", "a-1", "b-1", "--since", "c-1=2", "--timeout", "0.1")
+        self.assertEqual(code, 2)
+        self.assertIn("c-1 is not one of the jobs", err)
+
+    def test_one_job_reads_as_it_always_did(self):
+        self.running_job_with_activity()
+        code, out, _ = run_cli("jobs", "wait", "a-1", "--since", "1", "--timeout", "0.1", "--poll", "0.1")
+        self.assertEqual(code, 4)
+        self.assertEqual(
+            [line.strip().split("  ", 1)[1] for line in out.splitlines() if "Read " in line],
+            ["Read 2.py", "Read 3.py"],
+        )
+        self.assertTrue(out.endswith("  next:     jobs wait a-1 --since 3\n"), out)
+        self.assertNotIn("\nnext:", out)
 
     def test_the_boundary_values_are_accepted(self):
         self.running_job_with_activity()

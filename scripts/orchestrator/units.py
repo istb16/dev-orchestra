@@ -314,7 +314,9 @@ def overlaps(first: str, second: str) -> bool:
 
     Equal paths, a glob matching the other path, or two globs one of whose
     fixed prefixes starts the other's. ``fnmatch``'s ``*`` crosses ``/``, so a
-    prefix compared as text is what decides.
+    prefix compared as text is what decides. A path may name a directory, so
+    a path under it, or a glob whose fixed prefix is under it, may name the
+    same file.
     """
     if first == second:
         return True
@@ -326,7 +328,11 @@ def overlaps(first: str, second: str) -> bool:
     if first_glob and second_glob:
         a, b = _literal_prefix(first), _literal_prefix(second)
         return a.startswith(b) or b.startswith(a)
-    return False
+    if not first_glob and not second_glob:
+        a, b = first.rstrip("/") + "/", second.rstrip("/") + "/"
+        return a.startswith(b) or b.startswith(a)
+    pattern, path = (first, second) if first_glob else (second, first)
+    return _literal_prefix(pattern).startswith(path.rstrip("/") + "/")
 
 
 def _cycle(units: Sequence[Unit]) -> List[str]:

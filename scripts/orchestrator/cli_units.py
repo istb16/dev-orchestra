@@ -138,10 +138,21 @@ def _merge_report(args: argparse.Namespace, report: Dict[str, Any], lines: Seque
         _out(line)
 
 
+def _entry_path(path: str) -> str:
+    """A path as given on the command line, as git names it: ``/``-separated, no leading ``./``."""
+    text = path.strip().replace("\\", "/")
+    return text[2:] if text.startswith("./") else text
+
+
 def _resolve_unit(
     args: argparse.Namespace, workspace: ws.Workspace, name: str, record: Dict[str, Any]
 ) -> int:
-    """``units merge NAME --resolved``: the conflicts are resolved, so the unit is merged."""
+    """``units merge NAME --resolved``: the conflicts are resolved, so the unit is merged.
+
+    A conflict that wrote no markers is resolved once its file differs from
+    the version the merge kept, or when ``--keep`` names it: keeping that
+    version is then the resolution.
+    """
     status = str(record.get("status") or units_mod.PENDING)
     if status == units_mod.MERGED:
         _merge_report(args, {"unit": name, "status": status}, ["%s is already merged." % name])
@@ -150,9 +161,22 @@ def _resolve_unit(
         _err("%s has no conflicts to resolve: it is %s" % (name, status))
         return 2
     conflicts = [str(path) for path in (record.get("conflicts") or [])]
+    keep = [_entry_path(path) for path in (args.keep or [])]
+    strays = [path for path in keep if path not in conflicts]
+    if strays:
+        _err("--keep %s: not among %s's conflicts (%s)" % (", ".join(strays), name, ", ".join(conflicts)))
+        return 2
     left = units_merge.markers_left(workspace.root, name, conflicts)
     if left:
         _err("%s: conflict markers are still in %s" % (name, ", ".join(left)))
+        return 2
+    untouched = units_merge.untouched(workspace.root, record.get("conflict_files"))
+    kept = [path for path in untouched if path not in keep]
+    if kept:
+        _err(
+            "%s: %s still hold the working version the merge kept; resolve them, or keep that "
+            "version with --keep PATH" % (name, ", ".join(kept))
+        )
         return 2
     units_mod.update(
         workspace,
@@ -192,6 +216,9 @@ def cmd_units_merge(args: argparse.Namespace) -> int:
         record = entries.get(name) or {}
         if args.resolved:
             return _resolve_unit(args, workspace, name, record)
+        if args.keep:
+            _err("--keep goes with --resolved")
+            return 2
         status = units_mod.status_of(entries, name)
         if status == units_mod.MERGED:
             # A unit that ran in place is merged when it ends: its changes are in the tree already.
@@ -224,7 +251,12 @@ def cmd_units_merge(args: argparse.Namespace) -> int:
             units_mod.update(
                 workspace,
                 name,
-                {"status": units_mod.CONFLICTED, "conflicts": paths, "outside_files": outside},
+                {
+                    "status": units_mod.CONFLICTED,
+                    "conflicts": paths,
+                    "conflict_files": units_merge.conflict_files(workspace.root, conflicts),
+                    "outside_files": outside,
+                },
             )
             workspace.record_event("units", "conflicted", {"unit": name, "conflicts": paths})
             _merge_report(

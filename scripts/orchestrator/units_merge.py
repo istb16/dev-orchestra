@@ -16,6 +16,7 @@ put back, and the failure names it.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import stat
 import sys
@@ -116,13 +117,13 @@ def _blob(root: str, path: str, blob: str, checkout: bool = False) -> bytes:
 
 
 def _stored(root: str, path: str) -> str:
-    """The blob the working file at ``path`` is stored as, written so it can be read back.
+    """The blob id the working file at ``path`` would be stored as; nothing is written.
 
     Compared by blob, the user's file and the unit's trees agree on line
     endings: under ``core.autocrlf`` a file checked out with CRLF is stored
     with LF, as the trees hold it.
     """
-    code, out, err = ws.git_bytes(["hash-object", "-w", "--", path], root)
+    code, out, err = ws.git_bytes(["hash-object", "--", path], root)
     if code != 0:
         raise MergeError("git hash-object %s failed: %s" % (path, err.strip()))
     return out.decode("ascii", errors="replace").strip()
@@ -350,6 +351,57 @@ def markers_left(root: str, name: str, paths: Sequence[str]) -> List[str]:
         lines = content.splitlines()
         if any(line.startswith(opening) or line.startswith(closing) for line in lines):
             found.append(path)
+    return found
+
+
+def working_digest(root: str, path: str) -> Optional[str]:
+    """What the working tree holds at ``path``, as a sha256; None when nothing is there.
+
+    A regular file by its bytes; a link by its target, a directory or a file
+    that cannot be read by a fixed word, so that a change of kind is a change.
+    """
+    full = os.path.join(root, *path.split("/"))
+    if os.path.islink(full):
+        return "link:" + hashlib.sha256(os.fsencode(os.readlink(full))).hexdigest()
+    if os.path.isdir(full):
+        return "directory"
+    try:
+        content = atomic_file.current_bytes(full)
+    except OSError:
+        return "unreadable"
+    return None if content is None else hashlib.sha256(content).hexdigest()
+
+
+def conflict_files(root: str, conflicts: Sequence[FileMerge]) -> List[Dict[str, object]]:
+    """Each conflict as ``units merge`` records it, read after ``apply``.
+
+    ``markers`` says the file was written with conflict markers; for one
+    without, ``sha256`` is ``working_digest`` of the version the merge kept,
+    which ``--resolved`` compares against.
+    """
+    found: List[Dict[str, object]] = []
+    for result in conflicts:
+        markers = result.content is not None
+        found.append(
+            {
+                "path": result.path,
+                "markers": markers,
+                "sha256": None if markers else working_digest(root, result.path),
+            }
+        )
+    return found
+
+
+def untouched(root: str, recorded: object) -> List[str]:
+    """The marker-less conflicts in ``recorded`` still as the merge left them."""
+    if not isinstance(recorded, list):
+        return []
+    found = []
+    for entry in recorded:
+        if not isinstance(entry, dict) or entry.get("markers") or not isinstance(entry.get("path"), str):
+            continue
+        if working_digest(root, entry["path"]) == entry.get("sha256"):
+            found.append(entry["path"])
     return found
 
 

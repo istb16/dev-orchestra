@@ -203,6 +203,55 @@ class TestMerge(MergeCase):
         self.assertIn("a binary file", brief)
         self.assertIn("theirs/image.bin", brief)
 
+    def test_units_merge_resolved_refuses_an_untouched_binary_conflict(self):
+        self.unit("two", {"image.bin": b"\0unit"})
+        self.write_bytes("image.bin", b"\0main")
+        self.assertEqual(run_cli("units", "merge", "two")[0], 7)
+        recorded = self.record("two")["conflict_files"]
+        self.assertEqual([(entry["path"], entry["markers"]) for entry in recorded], [("image.bin", False)])
+        code, _, err = run_cli("units", "merge", "two", "--resolved")
+        self.assertEqual(code, 2)
+        self.assertIn("image.bin", err)
+        self.assertIn("--keep", err)
+        self.assertEqual(self.record("two")["status"], units_mod.CONFLICTED)
+        # Changed, it counts as resolved.
+        self.write_bytes("image.bin", b"\0main and unit")
+        code, _, err = run_cli("units", "merge", "two", "--resolved")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.record("two")["status"], units_mod.MERGED)
+
+    def test_units_merge_resolved_keeps_a_binary_conflict_named_with_keep(self):
+        self.unit("two", {"image.bin": b"\0unit"})
+        self.write_bytes("image.bin", b"\0main")
+        self.assertEqual(run_cli("units", "merge", "two")[0], 7)
+        code, _, err = run_cli("units", "merge", "two", "--resolved", "--keep", "b.py")
+        self.assertEqual(code, 2)
+        self.assertIn("not among two's conflicts", err)
+        code, _, err = run_cli("units", "merge", "two", "--resolved", "--keep", "./image.bin")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.record("two")["status"], units_mod.MERGED)
+        self.assertEqual(self.read("image.bin"), b"\0main")
+
+    def test_units_merge_resolved_text_conflict_needs_no_keep(self):
+        self.unit("one", {"a.py": A_PY.replace("a1", "one1")})
+        self.unit("two", {"a.py": A_PY.replace("a1", "two1")})
+        run_cli("units", "merge", "one")
+        self.assertEqual(run_cli("units", "merge", "two")[0], 7)
+        recorded = self.record("two")["conflict_files"]
+        self.assertEqual(recorded, [{"path": "a.py", "markers": True, "sha256": None}])
+        self.write("a.py", A_PY.replace("a1", "one1 two1"))
+        code, _, err = run_cli("units", "merge", "two", "--resolved")
+        self.assertEqual(code, 0, err)
+
+    def test_units_merge_writes_no_object_for_the_files_it_compares(self):
+        self.unit("one", {"a.py": A_PY.replace("a7", "unit7")})
+        self.write("a.py", A_PY.replace("a1", "never stored"))
+        blob = self.git("hash-object", "a.py").stdout.strip()
+        code, _, err = run_cli("units", "merge", "one")
+        self.assertEqual(code, 0, err)
+        found = subprocess.run(["git", "cat-file", "-e", blob], cwd=self.project, capture_output=True)
+        self.assertNotEqual(found.returncode, 0)
+
     def test_units_merge_refuses_failed_unit(self):
         self.unit("one", {"a.py": A_PY.replace("a1", "one1")}, status=units_mod.FAILED)
         code, _, err = run_cli("units", "merge", "one")

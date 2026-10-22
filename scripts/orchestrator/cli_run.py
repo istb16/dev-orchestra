@@ -1401,7 +1401,9 @@ def _finish_unit(workspace: ws.Workspace, name: str, ok: bool) -> None:
     """Close a unit's run: write its tree and diff, record how it ended, remove its worktree.
 
     A unit that ran in place and succeeded is ``merged``: its changes are
-    already in the user's tree. Nothing is done for a unit not running.
+    already in the user's tree. One that ran in a worktree whose result tree
+    could not be written is ``failed``, so it can be run again. Nothing is
+    done for a unit not running.
     """
     record = units_mod.load_state(workspace)["units"].get(name)
     if not isinstance(record, dict) or record.get("status") != units_mod.RUNNING:
@@ -1414,6 +1416,8 @@ def _finish_unit(workspace: ws.Workspace, name: str, ok: bool) -> None:
     if in_place or tree_root != workspace.root:
         result_tree = ws.write_tree(tree_root, worktrees_mod.excludes(workspace, links))
     fields: Dict[str, Any] = {"result_tree": result_tree or None, "finished_at": ws.utcnow()}
+    if record.get("error"):
+        fields["error"] = None  # an earlier run's
     base_tree = record.get("base_tree")
     if base_tree and result_tree:
         code, diff, _ = ws.git(
@@ -1427,6 +1431,10 @@ def _finish_unit(workspace: ws.Workspace, name: str, ok: bool) -> None:
         fields.update(status=units_mod.MERGED, merged_at=ws.utcnow())
         if base_tree and result_tree:
             fields["outside_files"] = _outside_files(workspace, name, str(base_tree), result_tree, links)
+    elif not result_tree:
+        # Recorded succeeded, it could be neither merged nor run again.
+        fields.update(status=units_mod.FAILED, error="its result tree could not be written")
+        _err("note: %s: its result tree could not be written; it is recorded as failed" % name)
     else:
         fields["status"] = units_mod.SUCCEEDED
     if worktree:

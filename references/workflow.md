@@ -806,11 +806,17 @@ until every unit is merged:
    --prompt-file .ai/execution/implement-request.md --detach --json`. The CLI
    puts the unit's name, files and plan section in front of the prompt, so one
    request serves every unit.
-2. `jobs wait <id> <id> ... --any` returns when the first one finishes.
+2. `jobs wait <id> <id> ... --any` returns when the first one finishes. To
+   relay only new activity, give each job its own cursor, `--since <id>=<n>`:
+   the last `next:` line is that command.
 3. `units merge <name>` brings a finished unit into the working tree. On exit
    7 it conflicted: run `run review_fixer --prompt-file
    .ai/execution/units/<name>-conflicts.md` in the main tree, then `units
-   merge <name> --resolved`. The resolver spends `budgets.review_fixer`.
+   merge <name> --resolved`. The resolver spends `budgets.review_fixer`. A
+   conflict without markers (a binary file, a delete against a change, a
+   symlink or submodule) keeps the working version, and `--resolved` refuses
+   while that file is unchanged: when keeping that version is the resolution,
+   say so with `--keep <path>` for each such file.
 4. Back to `units status` for the units now ready.
 
 A unit runs in a worktree of its own when another could run beside it, and in

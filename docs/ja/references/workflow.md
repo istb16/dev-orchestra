@@ -790,11 +790,15 @@ dev-orchestra run implementer --prompt-file .ai/execution/implement-request.md
    `run implementer --unit <name> --prompt-file .ai/execution/implement-request.md --detach --json`
    で始めます。CLI は作業単位の名前、ファイル、計画のセクションをプロンプトの前に付けるので、
    依頼は 1 つで全作業単位に使えます。
-2. `jobs wait <id> <id> ... --any` は、最初の 1 つが終わると戻ります。
+2. `jobs wait <id> <id> ... --any` は、最初の 1 つが終わると戻ります。新しい動きだけを伝えるには、
+   ジョブごとに自分のカーソルを `--since <id>=<n>` で渡します。最後の `next:` 行がそのコマンドです。
 3. `units merge <name>` で、終わった作業単位を作業ツリーに戻します。終了コード 7 なら競合です。
    メインのツリーで `run review_fixer --prompt-file .ai/execution/units/<name>-conflicts.md` を
    走らせ、そのあと `units merge <name> --resolved` を走らせます。解決役は
-   `budgets.review_fixer` を使います。
+   `budgets.review_fixer` を使います。印を残さない競合（バイナリファイル、削除と変更のぶつかり、
+   symlink、submodule）は作業ツリーの版をそのまま残し、そのファイルが変わっていない間 `--resolved`
+   は拒否します。その版を残すことが解決であるときは、そうしたファイルごとに `--keep <path>` で
+   そう示します。
 4. `units status` に戻り、新たに始められる作業単位を見ます。
 
 作業単位は、ほかと並んで走りうるときは専用の worktree で、並んで走るものがないとき（走っている

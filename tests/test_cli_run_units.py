@@ -272,6 +272,30 @@ class TestWorktreeRuns(UnitRunCase):
         self.assert_no_worktree()
         self.assertTrue(os.path.isfile(os.path.join(self.workspace.units_dir, "b.diff")))
 
+    def test_run_unit_whose_result_tree_could_not_be_written_is_failed(self):
+        self.approve(PAIR)
+        original = ws.write_tree
+        worktrees = os.path.normcase(os.path.join(self.units_parent, ""))
+
+        def failing(root: str, *args: Any, **kwargs: Any) -> str:
+            if os.path.normcase(os.path.abspath(root)).startswith(worktrees):
+                return ""
+            return original(root, *args, **kwargs)
+
+        with mock.patch.object(ws, "write_tree", failing):
+            _, _, err = self.run_unit("a")
+        self.assertIn("its result tree could not be written", err)
+        record = self.record("a")
+        self.assertEqual(record["status"], "failed")
+        self.assertIsNone(record["result_tree"])
+        self.assertIn("result tree", record["error"])
+        self.assert_no_worktree()
+        # Failed, it can be run again.
+        code, _, err = self.run_unit("a")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.record("a")["status"], "succeeded")
+        self.assertIsNone(self.record("a").get("error"))
+
 
 class TestInPlace(UnitRunCase):
     def test_run_unit_in_place_for_serial_chain(self):

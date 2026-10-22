@@ -153,6 +153,38 @@ class TestCheck(UnitsCase):
         self.assertFalse(units_mod.overlaps("scripts/*.py", "tests/test_a.py"))
         self.assertFalse(units_mod.overlaps("scripts/*.py", "tests/*.py"))
 
+    def test_a_directory_overlaps_what_is_under_it(self):
+        for first, second in (
+            ("tests", "tests/a.py"),
+            ("tests/", "tests/a.py"),
+            ("scripts/orchestrator", "scripts/orchestrator/units.py"),
+            ("tests/", "tests"),
+            ("tests", "tests/unit/*.py"),
+            ("tests/", "tests/unit/*.py"),
+        ):
+            with self.subTest(first=first, second=second):
+                self.assertTrue(units_mod.overlaps(first, second))
+                self.assertTrue(units_mod.overlaps(second, first))
+        code, _, err = self.check(
+            plan(
+                [
+                    {"name": "a", "files": ["scripts/orchestrator"]},
+                    {"name": "b", "files": ["scripts/orchestrator/units.py"]},
+                ]
+            )
+        )
+        self.assertEqual(code, 2)
+        self.assertIn("may run in parallel", err)
+        for first, second in (
+            ("tests/a.py", "tests2/b.py"),
+            ("tests", "tests2/b.py"),
+            ("tests", "tests2/*.py"),
+            ("tests/a.py", "tests/b.py"),
+        ):
+            with self.subTest(first=first, second=second):
+                self.assertFalse(units_mod.overlaps(first, second))
+                self.assertFalse(units_mod.overlaps(second, first))
+
     def test_units_check_integration_must_be_last(self):
         entries = [
             {"name": "a", "files": ["x"]},

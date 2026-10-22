@@ -128,13 +128,32 @@ def _add_design_flag(parser: argparse.ArgumentParser) -> None:
     )
 
 
-def _add_activity_flags(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument(
-        "--since",
-        type=_bounded_int(0, activity_mod.SINCE_MAX),
-        default=0,
-        help="only tool uses after this one (the cursor `next:` prints)",
-    )
+def _job_cursor(text: str) -> "tuple[Optional[str], int]":
+    """An argparse type: ``N``, or ``ID=N`` naming the job the cursor is for."""
+    job_id, sep, count = text.rpartition("=")
+    if sep and not job_id:
+        raise argparse.ArgumentTypeError("%r names no job before its =" % text)
+    return (job_id if sep else None, _bounded_int(0, activity_mod.SINCE_MAX)(count))
+
+
+def _add_activity_flags(parser: argparse.ArgumentParser, *, per_job: bool = False) -> None:
+    if per_job:
+        parser.add_argument(
+            "--since",
+            type=_job_cursor,
+            action="append",
+            default=[],
+            metavar="[ID=]N",
+            help="only tool uses after this one (the cursor `next:` prints); with several jobs, "
+            "ID=N for each, repeated",
+        )
+    else:
+        parser.add_argument(
+            "--since",
+            type=_bounded_int(0, activity_mod.SINCE_MAX),
+            default=0,
+            help="only tool uses after this one (the cursor `next:` prints)",
+        )
     parser.add_argument(
         "--activity",
         type=_bounded_int(0, activity_mod.LATEST_MAX),
@@ -683,7 +702,7 @@ def _add_jobs_parsers(subparsers: argparse._SubParsersAction[argparse.ArgumentPa
     )
     jobs_wait.add_argument("--poll", type=_seconds(), default=1.0)
     _add_json_flag(jobs_wait)
-    _add_activity_flags(jobs_wait)
+    _add_activity_flags(jobs_wait, per_job=True)
     jobs_wait.set_defaults(func=cmd_jobs_wait)
     jobs_cancel = jobs_sub.add_parser("cancel", help="stop a running job")
     jobs_cancel.add_argument("job_id")
@@ -703,6 +722,13 @@ def _add_units_parsers(subparsers: argparse._SubParsersAction[argparse.ArgumentP
         "--resolved",
         action="store_true",
         help="its conflicts are resolved: check no marker is left, mark it merged",
+    )
+    units_merge.add_argument(
+        "--keep",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help="with --resolved: a conflict without markers whose working version is kept as the resolution",
     )
     _add_json_flag(units_merge)
     units_merge.set_defaults(func=cmd_units_merge)

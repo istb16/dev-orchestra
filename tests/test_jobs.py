@@ -1225,6 +1225,31 @@ class TestCancelUnit(JobCase):
         self.assertIsNone(recorded["worktree"])
         self.assertEqual(self.git("worktree", "list", "--porcelain").stdout.count("worktree "), 1)
 
+    def test_jobs_cancel_keeps_a_failed_unit_failed(self):
+        from orchestrator import config as config_mod
+        from orchestrator import execution_tree, worktrees
+        from orchestrator import units as units_mod
+
+        self.init_git_repo()
+        self.write("app.py", "print('hello')\n")
+        self.commit_all("base")
+        record = worktrees.create(self.workspace, "a", config_mod.load(self.project))
+        self.addCleanup(worktrees.remove, self.project, record)
+        units_mod.update(self.workspace, "a", dict(record, status="failed", in_place=False, job="u-1"))
+        self.record("u-1", pid=4242, pid_started="t0", unit="a", worktree=record["worktree"])
+        with (
+            mock.patch.object(execution_tree, "pid_alive", lambda pid: True),
+            mock.patch.object(execution_tree, "process_started", lambda pid: "t0"),
+            mock.patch.object(execution_tree, "kill_tree", lambda pid, grace, verified: True),
+        ):
+            code, _, err = run_cli("jobs", "cancel", "u-1")
+        self.assertEqual(code, 0, err)
+        self.assertFalse(os.path.lexists(record["worktree"]))
+        recorded = units_mod.load_state(self.workspace)["units"]["a"]
+        self.assertEqual(recorded["status"], "failed")
+        self.assertNotIn("finished_at", recorded)
+        self.assertIsNone(recorded["worktree"])
+
 
 if __name__ == "__main__":
     unittest.main()
