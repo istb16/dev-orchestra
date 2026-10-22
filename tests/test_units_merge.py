@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import json
 import os
+import stat
+import subprocess
 import unittest
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Callable, Dict, List, Optional, Union
 from unittest import mock
 
-from helpers import IsolatedCase, has_git, run_cli
+from helpers import IsolatedCase, has_git, make_dir_link, remove_link, run_cli
 from test_units import plan
 
 from orchestrator import approval as approval_mod
@@ -86,6 +88,34 @@ class MergeCase(IsolatedCase):
 
     def record(self, name: str) -> Dict[str, Any]:
         return units_mod.load_state(self.workspace)["units"][name]
+
+    def link(self, link: str, target: str) -> None:
+        try:
+            make_dir_link(link, target)
+        except (OSError, subprocess.CalledProcessError, NotImplementedError) as exc:
+            self.skipTest("cannot make a link here: %s" % exc)
+        # tearDown, which runs first, may already have removed it with the tree.
+        self.addCleanup(lambda: os.path.lexists(link) and remove_link(link))
+
+    def vendor_made_a_link(self) -> str:
+        """Move ``vendor`` out of the repository and link it back; where it went."""
+        outside = os.path.join(self.tmp, "outside")
+        os.rename(os.path.join(self.project, "vendor"), outside)
+        self.link(os.path.join(self.project, "vendor"), outside)
+        return outside
+
+    def raced_on(self, name: str, before: Optional[Callable[[], Any]] = None) -> Any:
+        """``atomic_file.write`` patched to raise ``Raced`` on the merge's write of ``name``."""
+        original = units_merge.atomic_file.write
+
+        def raced(path: str, content: Any, **kwargs: Any) -> None:
+            if os.path.basename(path) == name and "expected" in kwargs:
+                if before is not None:
+                    before()
+                raise units_merge.atomic_file.Raced(path)
+            original(path, content, **kwargs)
+
+        return mock.patch.object(units_merge.atomic_file, "write", raced)
 
     def assert_index_and_head_untouched(self) -> None:
         self.assertEqual(self.git("diff", "--cached", "--name-only").stdout, "")
@@ -250,6 +280,36 @@ class TestMerge(MergeCase):
         self.assertIsNone(self.read("b.py"))
         self.assertEqual(self.read("c.py"), b"c1\n")
 
+    def test_units_merge_failing_part_way_removes_a_file_it_created(self):
+        self.unit("one", {"a0.py": "new\n", "b.py": "b1\nmore\n"})
+        with self.raced_on("b.py"):
+            code, _, err = run_cli("units", "merge", "one")
+        self.assertEqual(code, 1, err)
+        self.assertIsNone(self.read("a0.py"))
+        self.assertEqual(self.read("b.py"), b"b1\n")
+
+    @unittest.skipIf(units_merge._IS_WINDOWS, "Windows has no executable bit")
+    def test_units_merge_failing_part_way_puts_back_the_mode(self):
+        self.unit("two", {"b.py": "b1\ntwo\n", "c.py": "c1\n"})
+        script = os.path.join(self.project, "b.py")
+        os.chmod(script, 0o755)
+        with self.raced_on("c.py"):
+            code, _, err = run_cli("units", "merge", "two")
+        self.assertEqual(code, 1, err)
+        self.assertEqual(self.read("b.py"), b"b1\n")
+        self.assertEqual(stat.S_IMODE(os.stat(script).st_mode), 0o755)
+
+    def test_units_merge_failing_part_way_keeps_an_edit_made_since_and_says_so(self):
+        self.unit("one", {"a.py": A_PY.replace("a1", "one1"), "c.py": "c1\n"})
+        with self.raced_on("c.py", before=lambda: self.write("a.py", "someone else's\n")):
+            code, _, err = run_cli("units", "merge", "one")
+        self.assertEqual(code, 1, err)
+        self.assertIn("could not be put back", err)
+        self.assertIn("a.py", err)
+        self.assertEqual(self.read("a.py"), b"someone else's\n")
+        self.assertIsNone(self.read("c.py"))
+        self.assertEqual(self.record("one")["status"], units_mod.SUCCEEDED)
+
 
 class TestFileKinds(MergeCase):
     """Deletions, a file already merged, links, submodules and the executable bit."""
@@ -326,6 +386,37 @@ class TestFileKinds(MergeCase):
         self.assertEqual(self.read("vendor/x.py"), b"x1\n")
         self.assertEqual(self.theirs("two", "vendor/x.py"), b"x1\ntwo\n")
         self.assertIn("a directory above it is a link in the working tree", self.brief("two"))
+
+    def test_units_merge_never_writes_through_a_real_directory_link(self):
+        self.set_plan([{"name": "one", "files": ["a.py"]}, {"name": "two", "files": ["vendor/**"]}])
+        self.write("vendor/x.py", "x1\n")
+        self.commit_all("vendor")
+        self.unit("two", {"vendor/x.py": "x1\ntwo\n"})
+        outside = self.vendor_made_a_link()
+        code, _, err = run_cli("units", "merge", "two")
+        self.assertEqual(code, 7, err)
+        with open(os.path.join(outside, "x.py"), "rb") as handle:
+            self.assertEqual(handle.read(), b"x1\n")
+        self.assertEqual(self.theirs("two", "vendor/x.py"), b"x1\ntwo\n")
+        self.assertIn("a directory above it is a link in the working tree", self.brief("two"))
+        # A link the link check misses is still caught: its real path leaves the repository.
+        with mock.patch.object(worktrees_mod, "is_link", return_value=False):
+            self.assertTrue(units_merge._linked_parent(self.project, "vendor/x.py"))
+            self.assertFalse(units_merge._linked_parent(self.project, "a.py"))
+
+    def test_units_merge_refuses_a_directory_made_a_link_after_the_plan(self):
+        self.write("vendor/x.py", "x1\n")
+        self.commit_all("vendor")
+        self.unit("one", {"a.py": A_PY.replace("a1", "one1"), "vendor/x.py": "x1\none\n"})
+        record = self.record("one")
+        results = units_merge.plan_merge(self.project, "one", record["base_tree"], record["result_tree"])
+        self.assertEqual([r.action for r in results], [units_merge.WRITE, units_merge.WRITE])
+        outside = self.vendor_made_a_link()
+        with self.assertRaises(OSError):
+            units_merge.apply(self.workspace, "one", results)
+        with open(os.path.join(outside, "x.py"), "rb") as handle:
+            self.assertEqual(handle.read(), b"x1\n")
+        self.assertEqual(self.read("a.py"), A_PY.encode())
 
     def hashed(self, content: bytes) -> str:
         path = os.path.join(self.tmp, "blob")

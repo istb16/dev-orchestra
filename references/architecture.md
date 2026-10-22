@@ -149,7 +149,8 @@ temporary copies, against the file as it is in the user's tree now. That
 touches only the working tree: `git apply --3way` writes the index, and
 `git merge-tree --write-tree` needs git 2.38. Every file's result is worked
 out before any is written, so a merge that fails part way leaves the tree as
-it was, and merges are taken one at a time under
+it was -- except a file changed again after the merge wrote it, which is not
+put back and is named in the error -- and merges are taken one at a time under
 `execution/units/merge.lock`. Every file is written in its checkout form, with
 the line endings a checkout gives it: a three-way merge takes its inputs as
 checked out. What cannot be merged as text -- a binary file, a

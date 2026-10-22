@@ -408,6 +408,20 @@ class TestDetached(UnitRunCase):
         self.assertEqual(self.calls, [])
         self.assert_no_worktree()
 
+    def test_run_unit_detached_worker_refused_by_the_budget_releases_the_unit(self):
+        self.approve(PAIR)
+        job = self.start("a")
+        code, _, err = run_cli("config", "set", "budgets.total_delegated_runs", "1")
+        self.assertEqual(code, 0, err)
+        code, _, err = run_cli(*self.workers[0])
+        self.assertEqual(code, 3, err)
+        self.assertEqual(self.job(job["id"])["status"], "failed")
+        record = self.record("a")
+        self.assertEqual(record["status"], "failed")
+        self.assertIsNone(record["worktree"])
+        self.assertEqual(self.calls, [])
+        self.assert_no_worktree()
+
 
 class TestClean(UnitRunCase):
     """``units clean``: worktrees left behind, and runs that are gone."""
@@ -445,6 +459,24 @@ class TestClean(UnitRunCase):
         self.approve(PAIR)
         self.set_records({"a": self.running(started_at="2020-01-01T00:00:00Z")})
         self.assertEqual(run_cli("units", "clean")[0], 0)
+        self.assertEqual(self.record("a")["status"], "failed")
+
+    def test_units_clean_keeps_a_record_with_neither_job_nor_pid_in_the_grace(self):
+        self.approve(PAIR)
+        for pid in (None, True, 0):
+            with self.subTest(pid=pid):
+                self.set_records({"a": self.running(pid=pid)})
+                self.assertEqual(run_cli("units", "clean")[0], 0)
+                self.assertEqual(self.record("a")["status"], "running")
+
+    def test_units_clean_fails_a_foreground_run_whose_pid_was_reused(self):
+        self.approve(PAIR)
+        self.set_records({"a": self.running(pid=os.getpid(), pid_started="t0")})
+        with (
+            mock.patch.object(execution_tree, "pid_alive", return_value=True),
+            mock.patch.object(execution_tree, "process_started", return_value="t1"),
+        ):
+            self.assertEqual(run_cli("units", "clean")[0], 0)
         self.assertEqual(self.record("a")["status"], "failed")
 
     def test_units_clean_fails_a_unit_whose_job_is_gone(self):

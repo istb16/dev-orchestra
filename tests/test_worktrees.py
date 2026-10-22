@@ -119,6 +119,57 @@ class TestRemoval(WorktreeCase):
         self.assertEqual(read_file(os.path.join(self.project, "app.py")), "print('hello')\n")
         self.assertTrue(os.path.isdir(record["worktree"]))
 
+    def link(self, link: str, target: str) -> None:
+        try:
+            make_dir_link(link, target)
+        except (OSError, subprocess.CalledProcessError, NotImplementedError) as exc:
+            self.skipTest("cannot make a link here: %s" % exc)
+        self.addCleanup(lambda: is_link(link) and remove_link(link))
+
+    def test_worktrees_remove_refuses_a_link_to_the_project_or_another_worktree(self):
+        record = self.create()
+        units_dir = os.path.dirname(record["worktree"])
+        kept = os.path.join(record["worktree"], "app.py")
+        for target in (self.project, record["worktree"]):
+            with self.subTest(target=target):
+                link = os.path.join(units_dir, "%s-evil" % record["base_commit"][:8])
+                self.link(link, target)
+                evil = {"worktree": link, "base_commit": record["base_commit"], "links": []}
+                self.assertFalse(worktrees.remove(self.project, evil))
+                remove_link(link)
+        self.assertEqual(read_file(kept), "print('hello')\n")
+        self.assertEqual(read_file(os.path.join(self.project, "app.py")), "print('hello')\n")
+        self.assertEqual(self.git("worktree", "list", "--porcelain").stdout.count("worktree "), 2)
+
+    def test_worktrees_remove_unlinks_only_the_linked_names(self):
+        record = self.create()
+        target = os.path.join(self.tmp, "victim-target")
+        ws.write_text(os.path.join(target, "keep.txt"), "kept\n")
+        victim = os.path.join(self.tmp, "victim")
+        self.link(victim, target)
+        # From the worktree, ../.. is the temporary directory the victim is in.
+        escape = os.path.join("..", "..", "victim")
+        gone = os.path.join(os.path.dirname(record["worktree"]), "gone")
+        self.assertTrue(worktrees.remove(self.project, {"worktree": gone, "links": [escape]}))
+        self.assertTrue(worktrees.remove(self.project, dict(record, links=[escape])))
+        self.assertFalse(os.path.lexists(record["worktree"]))
+        self.assertTrue(is_link(victim))
+        self.assertEqual(read_file(os.path.join(victim, "keep.txt")), "kept\n")
+
+    def test_worktrees_remove_finishes_a_removal_git_no_longer_lists(self):
+        record = self.create()
+        tree = record["worktree"]
+        # As a removal that something held a file through leaves it: no .git, unlisted.
+        os.unlink(os.path.join(tree, ".git"))
+        self.git("worktree", "prune")
+        self.assertEqual(self.git("worktree", "list", "--porcelain").stdout.count("worktree "), 1)
+        self.assertTrue(os.path.isdir(tree))
+        self.assertFalse(worktrees.remove(self.project, dict(record, base_commit="0" * 40)))
+        self.assertTrue(os.path.isdir(tree))
+        with mock.patch.object(worktrees.time, "sleep"):
+            self.assertTrue(worktrees.remove(self.project, record))
+        self.assertFalse(os.path.lexists(tree))
+
 
 class TestCreate(WorktreeCase):
     def test_worktrees_link_failure_skips_checks(self):
@@ -170,6 +221,14 @@ class TestCreate(WorktreeCase):
         with mock.patch.object(worktrees.os, "getuid", lambda: mine + 1):
             with self.assertRaises(worktrees.WorktreeError):
                 worktrees.create(self.workspace, "b", config_mod.load(self.project))
+
+    @unittest.skipUnless(hasattr(os, "getuid"), "POSIX owners and modes")
+    def test_worktrees_units_directory_already_open_to_others_is_closed(self):
+        units_dir = os.path.join(self.tmp, "project.units")
+        os.makedirs(units_dir)
+        os.chmod(units_dir, 0o755)
+        self.create()
+        self.assertEqual(stat.S_IMODE(os.stat(units_dir).st_mode) & 0o077, 0)
 
     def test_worktrees_location_is_beside_the_repository(self):
         record = self.create("parser")

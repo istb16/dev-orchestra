@@ -76,6 +76,16 @@ class TestParse(UnitsCase):
         self.assertIn("## Not a heading", found)
         self.assertIn("Do b.", found)
 
+    def test_units_parse_reads_the_block_in_any_fence(self):
+        text = plan([{"name": "a", "files": ["x"]}])
+        for opening, closing in (("~~~yaml", "~~~"), ("````yaml", "````"), ("``` yaml title", "```")):
+            with self.subTest(opening=opening):
+                fenced = text.replace("```yaml\n", opening + "\n").replace("```\n\n", closing + "\n\n")
+                self.assertEqual([unit.name for unit in units_mod.parse(fenced)], ["a"])
+        # A ```yaml inside another fence is not the block.
+        nested = text.replace("```yaml\n", "~~~\n```yaml\nunits: []\n```\n~~~\n```yaml\n")
+        self.assertEqual([unit.name for unit in units_mod.parse(nested)], ["a"])
+
     def test_units_parse_refuses_a_bad_entry(self):
         for entry in (
             {"name": "Bad Name", "files": ["x"]},
@@ -289,6 +299,15 @@ class TestPassKey(UnitsCase):
 class TestJoin(UnitsCase):
     def architect_used(self) -> int:
         return json.loads(run_cli("budget", "show", "--json")[1])["budgets"]["architect"]["used"]
+
+    def test_units_join_moves_headings_down_as_the_plan_review_reads_them(self):
+        part = plan([{"name": "parser", "files": ["scripts/a.py"]}])
+        part += "\n   ## Notes ##\nText.\n~~~\n## x\n~~~\n"
+        joined = units_mod.join([("parser", part)])
+        # "# Plan" goes to level 4, so every heading moves down three.
+        self.assertIn("\n   ##### Notes ##\n", joined)
+        self.assertIn("\n~~~\n## x\n~~~\n", joined)
+        self.assertIn("Text.", units_mod.section(joined, "parser"))
 
     def test_units_join_builds_plan(self):
         run_cli("config", "setup", "--defaults")

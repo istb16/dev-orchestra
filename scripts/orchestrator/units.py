@@ -42,8 +42,6 @@ _UNITS_HEADING = "Units"
 _UNIT_HEADING_RE = re.compile(r"^Unit:\s*(\S+)\s*$")
 _FILES_HEADING = "Files to Modify"
 _GOAL_HEADING = "Goal"
-#: A fence with its info string, for the ``yaml`` block; headings are read with ``review_plan``'s.
-_FENCE_RE = re.compile(r"^\s*```\s*(\w*)\s*$")
 _GLOB_CHARS = "*?["
 
 #: Statuses a unit's record takes in ``units.json``.
@@ -103,19 +101,10 @@ def settings_of(data: Dict[str, Any]) -> Settings:
 def _headings(lines: List[str]) -> List["tuple[int, str, int]"]:
     """Each heading outside a code fence as (level, title, line), read as ``review_plan`` reads them."""
     found: List["tuple[int, str, int]"] = []
-    fence = ""
-    for index, line in enumerate(lines):
-        marker = review_plan.FENCE_RE.match(line)
-        if fence:
-            if marker and marker.group(1)[0] == fence[0] and len(marker.group(1)) >= len(fence):
-                fence = ""
-            continue
-        if marker:
-            fence = marker.group(1)
-            continue
-        match = review_plan.HEADING_TEXT_RE.match(line)
+    for fenced in review_plan.fenced_lines(lines):
+        match = None if fenced.part else review_plan.HEADING_TEXT_RE.match(fenced.text)
         if match:
-            found.append((len(match.group(1)), review_plan.heading_title(match.group(2)), index))
+            found.append((len(match.group(1)), review_plan.heading_title(match.group(2)), fenced.number))
     return found
 
 
@@ -150,15 +139,14 @@ def _body(plan_text: str, level: int, title_matches: Callable[[str], bool]) -> O
 def _yaml_block(lines: List[str]) -> Optional[str]:
     """The first fenced ``yaml`` block in ``lines``, without its fences."""
     inside: Optional[List[str]] = None
-    for line in lines:
-        fence = _FENCE_RE.match(line)
+    for fenced in review_plan.fenced_lines(lines):
         if inside is None:
-            if fence and fence.group(1).lower() in ("yaml", "yml"):
+            if fenced.part == review_plan.OPEN and fenced.info.lower().split()[:1] in (["yaml"], ["yml"]):
                 inside = []
             continue
-        if fence:
+        if fenced.part == review_plan.CLOSE:
             return "\n".join(inside)
-        inside.append(line)
+        inside.append(fenced.text)
     return None
 
 

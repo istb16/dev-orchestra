@@ -4,12 +4,52 @@ from __future__ import annotations
 
 import posixpath
 import re
-from typing import List, NamedTuple, Optional, Tuple
+from typing import Iterable, Iterator, List, NamedTuple, Optional, Tuple
 
 ADDED_HEADING_RE = re.compile(r"^\s{0,3}(#{2,3})\s+added in this revision\b", re.IGNORECASE)
 HEADING_RE = re.compile(r"^\s{0,3}(#{1,6})\s")
 NONE_ADDED_RE = re.compile(r"^[\s\-*_]*none(?![a-z0-9])", re.IGNORECASE)
 FENCE_RE = re.compile(r"^\s{0,3}(`{3,}|~{3,})")
+
+#: Where a line stands against the code fences, as ``fenced_lines`` says.
+OUTSIDE = ""
+OPEN = "open"
+INSIDE = "inside"
+CLOSE = "close"
+
+
+class FencedLine(NamedTuple):
+    #: The line's index in the lines given, from 0.
+    number: int
+    text: str
+    #: ``OUTSIDE``, or the fence's ``OPEN`` line, a line ``INSIDE`` it, or its ``CLOSE`` line.
+    part: str
+    #: The info string of the fence the line belongs to, ``yaml`` for ```` ```yaml ````; "" outside.
+    info: str
+
+
+def fenced_lines(lines: Iterable[str]) -> Iterator[FencedLine]:
+    """Each line with where it stands against the code fences.
+
+    A fence opens on three or more backticks or tildes and closes on a run
+    of the same character at least as long; one left open runs to the end.
+    """
+    fence = ""
+    info = ""
+    for index, line in enumerate(lines):
+        marker = FENCE_RE.match(line)
+        if fence:
+            if marker and marker.group(1)[0] == fence[0] and len(marker.group(1)) >= len(fence):
+                fence = ""
+                yield FencedLine(index, line, CLOSE, info)
+            else:
+                yield FencedLine(index, line, INSIDE, info)
+        elif marker:
+            fence = marker.group(1)
+            info = line[marker.end() :].strip()
+            yield FencedLine(index, line, OPEN, info)
+        else:
+            yield FencedLine(index, line, OUTSIDE, "")
 
 
 def added_in_revision(plan_text: str) -> Optional[str]:
@@ -19,20 +59,15 @@ def added_in_revision(plan_text: str) -> Optional[str]:
     runs to the next heading of the same level or higher, stripped, so
     ``###`` items under a ``##`` heading stay inside it.
     """
-    fence = ""
     body: Optional[List[str]] = None
     level = 0
-    for line in plan_text.splitlines():
-        marker = FENCE_RE.match(line)
-        if fence:
-            if marker and marker.group(1)[0] == fence[0] and len(marker.group(1)) >= len(fence):
-                fence = ""
+    for fenced in fenced_lines(plan_text.splitlines()):
+        line = fenced.text
+        if fenced.part:
             if body is not None:
                 body.append(line)
             continue
-        if marker:
-            fence = marker.group(1)
-        elif body is not None:
+        if body is not None:
             heading = HEADING_RE.match(line)
             if heading and len(heading.group(1)) <= level:
                 break
@@ -156,23 +191,17 @@ def plan_tokens(plan_text: str) -> PlanScan:
     words still come back, with ``in_files`` false, so a file tree there is
     checked against the high-risk patterns; elsewhere they are skipped whole.
     """
-    fence = ""
     stack: List[Tuple[int, str]] = []
     tokens: List[PlanToken] = []
     has_files = False
     section = ""
     in_files = False
-    for line in plan_text.splitlines():
-        marker = FENCE_RE.match(line)
-        if fence:
-            if marker and marker.group(1)[0] == fence[0] and len(marker.group(1)) >= len(fence):
-                fence = ""
-            elif in_files:
-                for word in _plain_words(line):
-                    tokens.append(PlanToken(word, section, False))
-            continue
-        if marker:
-            fence = marker.group(1)
+    for fenced in fenced_lines(plan_text.splitlines()):
+        line = fenced.text
+        if fenced.part == INSIDE and in_files:
+            for word in _plain_words(line):
+                tokens.append(PlanToken(word, section, False))
+        if fenced.part:
             continue
         heading = HEADING_TEXT_RE.match(line)
         if heading:

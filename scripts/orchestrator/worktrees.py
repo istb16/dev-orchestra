@@ -108,15 +108,20 @@ def _units_dir(path: str) -> None:
     """Make ``<repo>.units``, the parent of worktree ``path``, for this user alone.
 
     Raises ``WorktreeError`` when it is a link, or on POSIX another user's:
-    what is copied into a worktree must not be readable by someone else.
+    what is copied into a worktree must not be readable by someone else. One
+    that already exists open to others is closed to them.
     """
     parent = os.path.dirname(path)
     os.makedirs(parent, mode=0o700, exist_ok=True)
     if is_link(parent):
         raise WorktreeError("%s is a link; refusing to make a worktree in it" % parent)
     getuid = getattr(os, "getuid", None)
-    if getuid is not None and os.stat(parent).st_uid != getuid():
-        raise WorktreeError("%s belongs to another user; refusing to make a worktree in it" % parent)
+    if getuid is not None:
+        info = os.stat(parent)
+        if info.st_uid != getuid():
+            raise WorktreeError("%s belongs to another user; refusing to make a worktree in it" % parent)
+        if stat.S_IMODE(info.st_mode) & 0o077:
+            os.chmod(parent, 0o700)
 
 
 def create(workspace: ws.Workspace, name: str, loaded: config_mod.LoadedConfig) -> Dict[str, Any]:
@@ -245,38 +250,55 @@ def _same_path(one: str, other: str) -> bool:
     return os.path.normcase(os.path.realpath(one)) == os.path.normcase(os.path.realpath(other))
 
 
-def _is_unit_worktree(root: str, path: str) -> bool:
+def _is_unit_worktree(root: str, path: str, base_commit: Any) -> bool:
     """Whether ``path`` is one of this repository's unit worktrees.
 
-    A direct child of ``<repo>.units`` that ``git worktree list`` names. The
-    path comes from ``units.json``, which an agent could have rewritten, and
-    whatever it names is deleted.
+    Not a link, and a direct child of ``<repo>.units`` that ``git worktree
+    list`` names, past the main worktree it always lists first. Or one git no
+    longer names that is where ``location`` put the record's ``base_commit``:
+    a removal that failed part way can leave it so. The path comes from
+    ``units.json``, which an agent could have rewritten, and whatever it
+    names is deleted.
     """
+    if is_link(path):
+        return False
     if not _same_path(os.path.dirname(os.path.abspath(path)), os.path.dirname(location(root, "x" * 8, "x"))):
         return False
     code, out, _ = ws.git(["worktree", "list", "--porcelain"], root)
     if code != 0:
         return False
     listed = [line[len("worktree ") :] for line in out.splitlines() if line.startswith("worktree ")]
-    return any(_same_path(path, entry) for entry in listed)
+    if any(_same_path(path, entry) for entry in listed[1:]):
+        return True
+    if any(_same_path(path, entry) for entry in listed[:1]):
+        return False
+    return (
+        isinstance(base_commit, str)
+        and len(base_commit) >= 8
+        and os.path.basename(path).startswith("%s-" % base_commit[:8])
+    )
 
 
 def remove(root: str, record: Dict[str, Any]) -> bool:
     """Remove the worktree a unit's ``record`` names; whether it is gone.
 
     Nothing is touched unless the path is one of this repository's unit
-    worktrees (``_is_unit_worktree``). Links first, each checked with
-    ``lstat`` and unlinked without being followed; then ``git worktree
+    worktrees (``_is_unit_worktree``); a path already gone has only ``git
+    worktree prune`` run. The ``LINKED_NAMES`` links first, each checked
+    with ``lstat`` and unlinked without being followed; then ``git worktree
     remove``, retried while something holds a file; then whatever is left,
     by ``_safe_rmtree``; then ``git worktree prune``.
     """
     path = record.get("worktree")
     if not isinstance(path, str) or not path:
         return True
-    if os.path.lexists(path) and not _is_unit_worktree(root, path):
+    if not os.path.lexists(path):
+        ws.git(["worktree", "prune"], root)
+        return True
+    if not _is_unit_worktree(root, path, record.get("base_commit")):
         return False
-    names = [name for name in (record.get("links") or []) if isinstance(name, str)]
-    for name in [*names, *[n for n in LINKED_NAMES if n not in names]]:
+    # Only these names, never the record's own list: units.json could name any path.
+    for name in LINKED_NAMES:
         link = os.path.join(path, name)
         if is_link(link):
             try:

@@ -10,7 +10,8 @@ never the index, HEAD or a branch. ``git apply --3way`` writes the index, and
 
 Every file's result is worked out before any is written, and a write that
 fails puts back the files written before it, so a merge that fails part way
-leaves the tree as it was.
+leaves the tree as it was. A file changed again since it was written is not
+put back, and the failure names it.
 """
 
 from __future__ import annotations
@@ -268,49 +269,70 @@ def _mode_of(path: str) -> Optional[int]:
         return None
 
 
-def _undo(done: Sequence["tuple[str, Optional[bytes], Optional[int]]"]) -> None:
-    """Put back each working file ``apply`` changed, last first, as far as it can."""
-    for full, previous, mode in reversed(done):
+class NotPutBack(OSError):
+    """A merge that failed part way, and whose written files could not all be put back."""
+
+
+def _undo(done: Sequence["tuple[str, Optional[bytes], Optional[bytes], Optional[int]]"]) -> List[str]:
+    """Put back each working file ``apply`` changed, last first; the ones it could not.
+
+    A file is put back only while it still holds what ``apply`` wrote, so an
+    edit made since is never overwritten.
+    """
+    left: List[str] = []
+    for full, previous, written, mode in reversed(done):
         try:
             if previous is None:
-                if os.path.lexists(full):
-                    os.unlink(full)
+                if atomic_file.current_bytes(full) != written:
+                    raise atomic_file.Raced(full)
+                os.unlink(full)
                 continue
-            atomic_file.write(full, previous)
+            atomic_file.write(full, previous, expected=written)
             if mode is not None:
                 os.chmod(full, mode)
-        except OSError:
-            pass
+        except (OSError, atomic_file.Raced):
+            left.append(full)
+    return left
 
 
 def apply(workspace: ws.Workspace, name: str, results: Sequence[FileMerge]) -> None:
     """Write ``plan_merge``'s results into the working tree, and the kept unit versions beside it.
 
     Raises ``atomic_file.Raced`` when a file changed after it was read, or
-    ``OSError``; the working files already written are put back first, so
-    the tree is left as it was.
+    ``OSError``, also when a directory above a file has become a link; the
+    working files already written are put back first, so the tree is left as
+    it was. ``NotPutBack`` when some of them could not be.
     """
     for result in results:
         if result.theirs is not None:
             atomic_file.write(theirs_path(workspace, name, result.path), result.theirs)
-    done: List["tuple[str, Optional[bytes], Optional[int]]"] = []
+    done: List["tuple[str, Optional[bytes], Optional[bytes], Optional[int]]"] = []
     try:
         for result in results:
+            if result.action != DELETE and result.content is None:
+                continue
             full = os.path.join(workspace.root, result.path)
+            # Checked again: a directory made a link since the plan would take the write out of the tree.
+            if _linked_parent(workspace.root, result.path):
+                raise OSError("%s: a directory above it is now a link in the working tree" % result.path)
             if result.action == DELETE:
                 if atomic_file.current_bytes(full) != result.current:
                     raise atomic_file.Raced(full)
                 mode = _mode_of(full)
                 os.unlink(full)
-                done.append((full, result.current, mode))
+                done.append((full, result.current, None, mode))
             elif result.content is not None:
                 mode = _mode_of(full)
                 atomic_file.write(full, result.content, keep_mode=True, expected=result.current)
-                done.append((full, result.current, mode))
+                done.append((full, result.current, result.content, mode))
                 if result.action == WRITE:
                     _set_mode(full, result.mode)
-    except BaseException:
-        _undo(done)
+    except BaseException as exc:
+        left = _undo(done)
+        if left:
+            raise NotPutBack(
+                "%s; these files were merged and could not be put back: %s" % (exc, ", ".join(left))
+            ) from exc
         raise
 
 
