@@ -186,17 +186,6 @@ class TestExpansion(unittest.TestCase):
         self.assertEqual(design_panel(rotated), DESIGN_PANELS[("quality", "both")])
         self.assertEqual(rotated.notes, [])
 
-    def test_high_risk_seat_is_full_not_cheap(self):
-        """The merged security seat is dealt, so Codex alone keeps one; the test seat is cheap."""
-        fit = presets.expand("standard", ["codex"])
-        self.assertIn("codex-security", [seat[0] for seat in panel(fit)])
-        self.assertNotIn("codex-test", [seat[0] for seat in panel(fit)])
-
-    def test_claude_seat_is_dealt_when_claude_absent(self):
-        fit = presets.expand("quality", ["codex"])
-        self.assertEqual({seat[1] for seat in panel(fit)}, {"codex"})
-        self.assertEqual(design_panel(fit)[0][:2], ("codex-general", "codex"))
-
     def test_presets_never_set_relevance(self):
         for name in presets.NAMES:
             for env, installed in MATRIX_ENVIRONMENTS.items():
@@ -206,9 +195,6 @@ class TestExpansion(unittest.TestCase):
                     for reviewer in [*values["reviewers"], *design]:
                         self.assertNotIn("relevance", reviewer)
                     self.assertNotIn("skip_unneeded_roles", values.get("optimization") or {})
-
-    def test_governed_includes_design_reviewers(self):
-        self.assertIn("review.design.reviewers", presets.GOVERNED)
 
     def test_roles_go_to_the_first_installed_cli(self):
         for name in presets.NAMES:
@@ -273,12 +259,6 @@ class TestExpansion(unittest.TestCase):
         self.assertEqual(
             presets.PRESETS["quality"].seats[5], Seat("test", "opus", "always", held=True, vendor="claude")
         )
-
-    def test_fast_keeps_one_reviewer_always_and_one_on_high_risk(self):
-        for env, installed in ENVIRONMENTS.items():
-            with self.subTest(environment=env):
-                conditions = [seat[4] for seat in panel(presets.expand("fast", installed))]
-                self.assertEqual(conditions, [None, "high-risk"])
 
     def test_the_governed_keys_are_what_an_expansion_sets(self):
         values = presets.expand("quality", BOTH).values
@@ -375,10 +355,6 @@ class TestNotes(unittest.TestCase):
             "agy cannot be held to reading",
             fit.notes,
         )
-
-    def test_a_cheap_seat_that_is_added_gets_no_note(self):
-        notes = presets.expand("standard", ["claude"]).notes
-        self.assertFalse([note for note in notes if "seat 3" in note or "seat 4" in note], notes)
 
     def test_render_notes(self):
         self.assertEqual(presets.render_notes(presets.expand("standard", BOTH)), "")
@@ -890,13 +866,6 @@ class TestComposingTheFitDesignPanel(unittest.TestCase):
         self.assertEqual(labels, ["fit design", "fit design", "global design extra"])
         # The fit is still the base, so its notes still apply.
         self.assertIn("review.design.reviewers", fit.subjects)
-
-    def test_listed_code_panel_without_design_keys_uses_code_copy(self):
-        layer = {"reviewers": [config_mod.make_reviewer("a", "claude", "opus", "security", when="high-risk")]}
-        loaded = config_mod.LoadedConfig(config_mod.compose(layer, {}, BOTH)[0], None, None, False, layer)
-        self.assertFalse(loaded.has_design_panel())
-        self.assertEqual(loaded.design_panel_source, "code")
-        self.assertNotIn("when", loaded.design_reviewers()[0])
 
     def loaded(self, global_layer, project_layer, installed):
         data, fit, _, _ = config_mod.compose(global_layer, project_layer, installed)

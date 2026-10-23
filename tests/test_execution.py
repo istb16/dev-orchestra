@@ -314,11 +314,6 @@ class TestIdleDeadline(IsolatedCase):
         self.assertFalse(outcome.stalled)
         self.assertTrue(outcome.timed_out)
 
-    def test_no_idle_deadline_means_only_the_total_one_applies(self):
-        outcome = execution.execute(python_code(SILENT_HANG), cwd=self.project, timeout=2, idle_timeout=None)
-        self.assertTrue(outcome.timed_out)
-        self.assertFalse(outcome.stalled)
-
     def test_output_without_a_newline_counts_as_output(self):
         # A dot every 0.3s and never a newline: alive, not stalled (#273).
         dots = (

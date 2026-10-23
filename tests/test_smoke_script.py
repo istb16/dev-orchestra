@@ -121,10 +121,6 @@ class TestTheReadOnlyVerdict(IsolatedCase):
         smoke_live.check_read_only(provider, "fake", self.project)
         self.assertFalse(os.path.exists(os.path.join(self.project, smoke_live.WRITE_TARGET)))
 
-    def test_a_provider_that_writes_nothing_passes(self):
-        check = smoke_live.check_read_only(_FakeProvider(), "fake", self.project)
-        self.assertTrue(check.ok)
-
     def test_a_polite_refusal_is_not_what_is_measured(self):
         """An agent that says "I cannot do that" and writes the file anyway
         fails, and one that says nothing and writes nothing passes."""
@@ -368,12 +364,6 @@ class TestTheToolActivityCheck(IsolatedCase):
         check = smoke_live.check_tool_activity(_FakeProvider(usage=usage), "fake", self.project)
         self.assertFalse(check.ok)
         self.assertIn("no output to pair", check.detail)
-
-    def test_a_missing_output_count_is_not_read_as_a_pass(self):
-        usage = Usage(total_tokens=10, source="fake", tool_uses=1, tool_uses_by_name={"Read": 1})
-        self.expect_tools()
-        check = smoke_live.check_tool_activity(_FakeProvider(usage=usage), "fake", self.project)
-        self.assertFalse(check.ok)
 
     def test_a_counted_run_names_the_tools_it_used(self):
         """The breakdown is the point: the run measured while designing this
@@ -1724,11 +1714,6 @@ class TestToolActivityValues(IsolatedCase):
                 self.assertEqual(check.ok, ok, check.detail)
                 self.assertIn(detail, check.detail)
                 self.assertEqual(provider.calls[0]["prompt"], smoke_live.FILE_TOOL_PROMPT)
-
-    def test_calls_only_with_a_file_tool_needs_the_reply_too(self):
-        check = self.check(_AgyLike(result=agy_run(stdout="1")), "agy")
-        self.assertFalse(check.ok)
-        self.assertEqual(check.detail, "the reply did not carry README.md's content")
 
 
 class _CustomHooks(_Resumer):

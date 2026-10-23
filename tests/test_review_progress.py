@@ -15,7 +15,7 @@ from helpers import IsolatedCase, has_git, run_cli
 from test_design_review import DesignReviewCase
 from test_job_activity import normalised
 
-from orchestrator import activity, cli_review, review_fanout
+from orchestrator import activity, cli_review_round, review_fanout
 from orchestrator import config as config_mod
 from orchestrator import review as review_mod
 from orchestrator.providers.mock import MockProvider
@@ -136,15 +136,15 @@ class TestQuietNotice(unittest.TestCase):
 
     def setUp(self):
         self.echoed: List[str] = []
-        self.enterContext(mock.patch.object(cli_review, "_err", self.echoed.append))
+        self.enterContext(mock.patch.object(cli_review_round, "_err", self.echoed.append))
 
-    def silent(self, echo: cli_review._ProgressEcho, reviewer_id: str, seconds: float) -> activity.Sink:
+    def silent(self, echo: cli_review_round._ProgressEcho, reviewer_id: str, seconds: float) -> activity.Sink:
         sink = echo.sink_for(reviewer_id)
         sink.last_line -= seconds
         return sink
 
     def test_a_silent_reviewer_is_flagged_and_a_busy_one_is_not(self):
-        echo = cli_review._ProgressEcho(600)
+        echo = cli_review_round._ProgressEcho(600)
         self.silent(echo, "alpha", 723)
         self.silent(echo, "beta", 10)
         echo.flag_quiet()
@@ -158,14 +158,14 @@ class TestQuietNotice(unittest.TestCase):
         self.assertEqual(len(self.echoed), 2)
 
     def test_an_ended_reviewer_is_not_flagged(self):
-        echo = cli_review._ProgressEcho(600)
+        echo = cli_review_round._ProgressEcho(600)
         self.silent(echo, "alpha", 723).end("done: ok")
         echo.flag_quiet()
         self.assertEqual(len(self.echoed), 1)
         self.assertTrue(self.echoed[0].endswith("] done: ok"), self.echoed)
 
     def test_a_reviewer_ending_mid_check_gets_no_notice_after_done(self):
-        echo = cli_review._ProgressEcho(600)
+        echo = cli_review_round._ProgressEcho(600)
         sink = echo.sink_for("alpha")
 
         def ends_while_checked() -> float:
@@ -179,7 +179,7 @@ class TestQuietNotice(unittest.TestCase):
         self.assertTrue(self.echoed[0].endswith("] done: ok"), self.echoed)
 
     def test_a_check_that_raises_does_not_stop_the_watcher(self):
-        echo = cli_review._ProgressEcho(600)
+        echo = cli_review_round._ProgressEcho(600)
         calls: List[int] = []
         again = threading.Event()
 
@@ -194,13 +194,13 @@ class TestQuietNotice(unittest.TestCase):
         self.assertGreaterEqual(len(calls), 2)
 
     def test_no_notice_when_it_is_off(self):
-        echo = cli_review._ProgressEcho(0)
+        echo = cli_review_round._ProgressEcho(0)
         self.silent(echo, "alpha", 10**6)
         echo.flag_quiet()
         self.assertEqual(self.echoed, [])
 
     def test_the_watcher_starts_and_stops_with_the_block(self):
-        echo = cli_review._ProgressEcho(600)
+        echo = cli_review_round._ProgressEcho(600)
         self.silent(echo, "alpha", 723)
         flagged = threading.Event()
         flag_quiet = echo.flag_quiet
@@ -225,11 +225,11 @@ class TestRoundWatcher(_SnapshotCase):
     def intervals(self, *argv: str) -> List[float]:
         seen: List[float] = []
 
-        def watching(echo: cli_review._ProgressEcho, interval: float):
+        def watching(echo: cli_review_round._ProgressEcho, interval: float):
             seen.append(interval)
             return contextlib.nullcontext()
 
-        with mock.patch.object(cli_review._ProgressEcho, "watching", watching):
+        with mock.patch.object(cli_review_round._ProgressEcho, "watching", watching):
             code, _, err = run_cli("review", "run", *argv)
         self.assertEqual(code, 0, err)
         return seen
@@ -257,7 +257,7 @@ class TestRoundWatcher(_SnapshotCase):
         case = self
         notices: List[str] = []
         noticed = threading.Condition()
-        err = cli_review._err
+        err = cli_review_round._err
 
         def record(text: str) -> None:
             err(text)
@@ -279,15 +279,15 @@ class TestRoundWatcher(_SnapshotCase):
                 return super()._launch(*args, **kwargs)
 
         intervals: List[float] = []
-        watching = cli_review._ProgressEcho.watching
+        watching = cli_review_round._ProgressEcho.watching
 
-        def fast(echo: cli_review._ProgressEcho, interval: float):
+        def fast(echo: cli_review_round._ProgressEcho, interval: float):
             intervals.append(interval)
             return watching(echo, 0.01)
 
         with (
-            mock.patch.object(cli_review, "_err", record),
-            mock.patch.object(cli_review._ProgressEcho, "watching", fast),
+            mock.patch.object(cli_review_round, "_err", record),
+            mock.patch.object(cli_review_round._ProgressEcho, "watching", fast),
             mock.patch.object(review_fanout, "get_provider", lambda name: _Silent()),
         ):
             # Sequential, so a notice after a reviewer started is that reviewer's.

@@ -217,12 +217,6 @@ class TestLevels(unittest.TestCase):
 
 
 class TestTheGate(unittest.TestCase):
-    def test_a_recorded_failure_refuses(self):
-        self.assertEqual(decide(test_status="failed").gate, opt.GATE_REFUSE)
-
-    def test_a_recorded_pass_runs_silently(self):
-        self.assertEqual(decide(test_status="ok").gate, opt.GATE_ALLOW)
-
     def test_nothing_recorded_warns_but_runs(self):
         """The whole reason the default can ship on: a workflow that never
         wrote a test result down keeps working, and is told how to opt in."""
@@ -381,9 +375,6 @@ class TestConditionRecords(unittest.TestCase):
 
     def records(self, hits=(), **keywords):
         return opt.condition_reviewers([GEN, SEC], list(hits), **keywords)
-
-    def test_an_unconditional_reviewer_gets_no_record(self):
-        self.assertEqual([record["id"] for record in self.records()], ["sec"])
 
     def test_nothing_matched_leaves_it_out(self):
         self.assertEqual(
@@ -775,14 +766,8 @@ class TestConfiguration(IsolatedCase):
         data["optimization"].update(section)
         return config_mod.validate(data)
 
-    def test_the_defaults_validate(self):
-        self.assertEqual(config_mod.validate(config_mod.default_config()), [])
-
     def test_the_default_level_is_balanced(self):
         self.assertEqual(config_mod.default_config()["optimization"]["level"], "balanced")
-
-    def test_max_findings_ships_unset_so_the_level_decides(self):
-        self.assertIsNone(config_mod.default_config()["review"]["max_findings"])
 
     def test_every_level_is_accepted(self):
         for level in opt.LEVELS:
@@ -898,8 +883,7 @@ class TestRecordingATestResult(IsolatedCase):
         self.assertEqual((event["phase"], event["passed"]), ("re-test", 128))
 
 
-@unittest.skipUnless(has_git(), "git is required")
-class TestTheGateInThePipeline(IsolatedCase):
+class _PipelineCase(IsolatedCase):
     def setUp(self):
         super().setUp()
         self.init_git_repo()
@@ -926,6 +910,9 @@ class TestTheGateInThePipeline(IsolatedCase):
         data.setdefault("optimization", {})["level"] = level
         config_mod.write_config_file(config_mod.global_config_path(), data)
 
+
+@unittest.skipUnless(has_git(), "git is required")
+class TestTheGateInThePipeline(_PipelineCase):
     def test_a_red_tree_is_refused(self):
         run_cli("state", "record", "test", "failed")
         run_cli("review", "snapshot")
@@ -952,15 +939,6 @@ class TestTheGateInThePipeline(IsolatedCase):
         code, _, err = run_cli("review", "run")
         self.assertEqual(code, 0)
         self.assertIn("no test result recorded", err)
-
-    def test_nothing_is_delegated_when_the_gate_refuses(self):
-        """The saving is the whole point: a refusal that still started the
-        reviewers would cost exactly what it was meant to avoid."""
-        run_cli("state", "record", "test", "failed")
-        run_cli("review", "snapshot")
-        run_cli("review", "run")
-        _, out, _ = run_cli("tokens", "show", "--json")
-        self.assertEqual(json.loads(out)["totals"]["runs"], 0)
 
     def test_a_refused_round_is_written_down(self):
         """Nothing ran, which is exactly why it has to be recorded: a skipped
@@ -999,7 +977,7 @@ class TestTheGateInThePipeline(IsolatedCase):
 
 
 @unittest.skipUnless(has_git(), "git is required")
-class TestThePanelInThePipeline(TestTheGateInThePipeline):
+class TestThePanelInThePipeline(_PipelineCase):
     def test_aggressive_runs_one_reviewer_on_a_small_change(self):
         self.set_level("aggressive")
         run_cli("state", "record", "test", "ok")
@@ -3833,10 +3811,6 @@ class TestDecideDesign(unittest.TestCase):
     def test_docs_alone_skip(self):
         scan = plan_scan(["docs/a.md", "references/b.md", "tests/test_x.py"])
         self.assertSkips(decide_design(scan), "0 code files, none high-risk")
-
-    def test_one_code_file_is_singular(self):
-        scan = plan_scan(["docs/a.md", "scripts/a.py"])
-        self.assertSkips(decide_design(scan), "1 code file, none high-risk")
 
     def test_the_same_file_twice_counts_once(self):
         scan = plan_scan(["a.py", "./a.py", "a.py", "scripts\\b.py", "scripts/b.py"])

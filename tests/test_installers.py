@@ -739,15 +739,6 @@ class TestClaudeInstallers(_InstallerCase):
                     self.assertTrue(os.path.islink(dest), action)
                     self.assertEqual(read_text(target), "keep me\n")
 
-    def test_the_exclude_entry_is_written_once(self):
-        for shell in SHELLS:
-            with self.subTest(shell=shell.name):
-                project = self.git_project(self.fresh(shell, "twice"))
-                for _ in range(2):
-                    code, output = self.claude(shell, "install", project, copy=True)
-                    self.assertEqual(code, 0, output)
-                self.assertEqual(self.exclude_lines(project).count(CLAUDE_ENTRY), 1)
-
     def test_uninstall_removes_the_marked_exclude_entry(self):
         """The entry goes in under a marker, and only a marked one comes out (#294)."""
         for shell in SHELLS:

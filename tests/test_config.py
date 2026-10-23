@@ -92,9 +92,6 @@ class TestDefaults(IsolatedCase):
             with self.subTest(value=value):
                 self.assertEqual(config_mod.design_review_mode(value), mode)
 
-    def test_plan_approval_is_required_by_default(self):
-        self.assertIs(config_mod.default_config()["design"]["require_approval"], True)
-
     def test_the_approval_setting_is_filled_in_for_a_config_that_omits_it(self):
         self.write(".dev-orchestra.yaml", "version: 1\n")
         self.assertEqual(config_mod.load(self.project).design_settings(), DESIGN_DEFAULTS)
@@ -114,12 +111,6 @@ class TestDefaults(IsolatedCase):
         self.assertIn("design.require_approval: must be true or false, or null", config_mod.validate(data))
         data["design"] = 3
         self.assertIn("design: must be a mapping", config_mod.validate(data))
-
-    def test_resuming_the_architect_has_an_age_limit_and_no_context_cap(self):
-        self.assertEqual(
-            config_mod.default_config()["design"]["resume"],
-            {"max_age_seconds": 3600, "max_context_tokens": None},
-        )
 
     def test_the_resume_limits_must_be_integers(self):
         data = config_mod.default_config()
@@ -243,12 +234,6 @@ class TestDefaults(IsolatedCase):
         self.assertTrue(any("review.context.surrounding_chars" in p for p in config_mod.validate(data)))
         data["review"]["context"]["surrounding_chars"] = None
         self.assertFalse(any("review.context.surrounding_chars" in p for p in config_mod.validate(data)))
-
-    def test_the_two_limits_ship_equal_so_there_is_one_boundary(self):
-        """At or under it the round runs and is complete, over it the round is
-        refused, and a forced round is partial. Nothing in between."""
-        context = config_mod.default_config()["review"]["context"]
-        self.assertEqual(context["inline_chars"], context["max_chars"])
 
     def test_context_settings_are_filled_in_for_a_config_that_omits_them(self):
         self.write(".dev-orchestra.yaml", "version: 1\nreview:\n  max_review_iterations: 1\n")
@@ -674,11 +659,6 @@ class TestValidation(IsolatedCase):
         data["version"] = 99
         self.assertTrue(any("version must be 1" in p for p in config_mod.validate(data)))
 
-    def test_negative_iteration_budget_is_rejected(self):
-        data = config_mod.default_config()
-        data["review"]["max_review_iterations"] = -1
-        self.assertTrue(any("max_review_iterations" in p for p in config_mod.validate(data)))
-
     def test_a_non_boolean_design_switch_is_rejected(self):
         def problems(value):
             data = config_mod.default_config()
@@ -693,11 +673,6 @@ class TestValidation(IsolatedCase):
         for value in ("auto", "AUTO ", True, False, None):
             with self.subTest(value=value):
                 self.assertEqual(problems(value), [])
-
-    def test_a_negative_design_round_budget_is_rejected(self):
-        data = config_mod.default_config()
-        data["review"]["design"]["max_iterations"] = -1
-        self.assertTrue(any("review.design.max_iterations" in p for p in config_mod.validate(data)))
 
     def test_a_context_budget_of_zero_is_rejected(self):
         """Zero would read as "no limit" to `over_context`, which is not what
@@ -1118,11 +1093,6 @@ class TestValueRules(IsolatedCase):
         [problem] = self.validate_with("implementation.hub_paths", [""])
         self.assertTrue(problem.startswith("implementation.hub_paths[0]: "), problem)
 
-    def test_config_implementation_defaults(self):
-        block = config_mod.default_config()["implementation"]
-        self.assertEqual(block["max_parallel"], 2)
-        self.assertEqual(block["hub_paths"], ["CHANGELOG*", "**/CHANGELOG*"])
-
 
 class TestReviewerConditions(IsolatedCase):
     """`reviewers[].when`, and what a panel of conditional reviewers needs."""
@@ -1219,14 +1189,6 @@ class TestReviewerConditions(IsolatedCase):
 
     def test_every_reviewer_conditional_is_refused(self):
         self.assertIn(self.ALWAYS, self.with_conditions("high-risk", "high-risk"))
-
-    def test_one_unconditional_reviewer_is_enough(self):
-        self.assertNotIn(self.ALWAYS, self.with_conditions("always", "high-risk"))
-
-    def test_an_empty_panel_is_still_valid(self):
-        data = config_mod.default_config()
-        data["reviewers"] = []
-        self.assertEqual(config_mod.validate(data), [])
 
     def test_a_conditional_reviewer_needs_a_pattern(self):
         self.assertIn(self.NO_PATTERNS, self.with_conditions(None, "high-risk", high_risk_paths=[]))

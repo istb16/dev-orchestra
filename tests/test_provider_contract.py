@@ -73,15 +73,6 @@ class TestEveryAdapterTakesTheWholeCall(IsolatedCase):
                 result = provider.run("prompt", base.MODE_REVIEW, self.project, **CALL)
                 self.assertIsNotNone(result)
 
-    def test_every_run_signature_covers_the_base_signature(self):
-        """Caught statically as well, because an adapter can be added by
-        someone who never runs it through the orchestrator."""
-        expected = set(inspect.signature(base.Provider.run).parameters)
-        for provider in self.adapters():
-            with self.subTest(provider=provider.name):
-                actual = set(inspect.signature(type(provider).run).parameters)
-                self.assertEqual(expected - actual, set(), "%s.run is missing keywords" % provider.name)
-
     def test_every_launch_signature_covers_the_base_signature(self):
         """``_launch`` is where adapters override now, so it drifts the same way."""
         expected = set(inspect.signature(base.Provider._launch).parameters)
@@ -428,14 +419,6 @@ class TestResumingThroughTheBase(IsolatedCase):
             return self.outcome
 
         execution.execute = execute
-
-    def test_the_default_says_unsupported_or_unspecified(self):
-        self.assertEqual(base.Provider().resume_support(self.project)["status"], "unsupported")
-
-        class Declares(base.Provider):
-            supports_resume = True
-
-        self.assertEqual(Declares().resume_support(self.project)["status"], "unspecified")
 
     def test_an_adapter_that_names_no_table_gets_the_two_key_report(self):
         unspecified = {

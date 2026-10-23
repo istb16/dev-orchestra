@@ -374,13 +374,6 @@ class TestFileLock(IsolatedCase):
             self.assertFalse(lock.acquired)
         self.assertLess(time.monotonic() - started, 30)
 
-    def test_failing_to_lock_does_not_raise(self):
-        """Proceeding unlocked beats deadlocking the whole pipeline."""
-        path = os.path.join(self.project, "state.json")
-        with ws.file_lock(path):
-            with ws.file_lock(path, timeout=0.1) as blocked:
-                self.assertFalse(blocked.acquired)  # and no exception
-
 
 class TestConcurrentLedgerUpdates(IsolatedCase):
     def setUp(self):

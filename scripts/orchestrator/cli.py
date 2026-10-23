@@ -46,9 +46,9 @@ from .cli_review import (
     cmd_review_run,
     cmd_review_show,
     cmd_review_snapshot,
-    cmd_review_status,
     cmd_review_triage,
 )
+from .cli_review_status import cmd_review_status
 from .cli_run import cmd_run
 from .cli_state import (
     cmd_budget_consume,

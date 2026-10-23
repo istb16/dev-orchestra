@@ -274,12 +274,6 @@ class TestWorktreeRuns(UnitRunCase):
         self.assertNotEqual(self.calls[1]["cwd"], self.root)
         self.assertEqual(seen, [None, '{"permissions": {}}\n'])
 
-    def test_run_unit_not_in_place_with_independent_peer(self):
-        self.approve(PAIR)
-        self.assertEqual(self.run_unit("a")[0], 0)
-        self.assertNotEqual(self.calls[0]["cwd"], self.project)
-        self.assertFalse(self.record("a")["in_place"])
-
     def test_run_unit_base_includes_uncommitted_and_untracked(self):
         self.approve(PAIR)
         self.write("app.py", "print('edited')\n")

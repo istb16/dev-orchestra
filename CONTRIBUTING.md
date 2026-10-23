@@ -230,7 +230,7 @@ still carries the allowlist and `--restricted`.
 | A new CLI | `scripts/orchestrator/providers/` + `register()` — see `references/providers.md` (a user's own adapter goes in `<config dir>/providers/` instead, without a change here) |
 | Config schema | `config_common.py` (defaults) **and** `config_validation.py` (`validate`) + `references/configuration.md` |
 | Read-only seat / write-role refusals and enforcement warnings | `config_policy.py` |
-| A command | its `cli_*.py` module (`cli_review.py` for `review …`, `cli_state.py` for `state`/`budget`/`tokens`, …), and its arguments in `cli.py` |
+| A command | its `cli_*.py` module (`cli_review.py` for `review …`, with `review status` in `cli_review_status.py`, `review run --design` in `cli_review_design.py` and what both kinds of round share in `cli_review_round.py`; `cli_state.py` for `state`/`budget`/`tokens`, …), and its arguments in `cli.py` |
 | The wording of `optimization report` | `optimization_render.py`, which builds the lines; the figures come from `optimization_report.py`, and `cli_state.py` reads the run logs and prints |
 | Review snapshot, fan-out, parsing, consolidation, coverage wording | `review_snapshot.py`, `review_fanout.py`, `review_parsing.py`, `review_consolidation.py`, `review_coverage.py`, plan tokens in `review_plan.py`, re-review context in `review_round_context.py`; constants and prompt templates in `review_common.py` |
 | Whether the design review runs and who sits on a design round | `optimization_design.py`; the plan-reading helpers stay in `optimization.py` |

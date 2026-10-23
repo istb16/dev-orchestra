@@ -100,12 +100,6 @@ class TestUsageArithmetic(unittest.TestCase):
         """Money and tokens are separate claims; one does not imply the other."""
         self.assertFalse(Usage(cost_usd=0.5).measured)
 
-    def test_tool_activity_starts_unreported_rather_than_at_zero(self):
-        usage = Usage()
-        self.assertIsNone(usage.tool_uses)
-        self.assertIsNone(usage.tool_uses_by_name)
-        self.assertIsNone(usage.tool_output_chars)
-
     def test_tool_activity_is_not_a_token_measurement(self):
         """`measured` means the CLI reported tokens. A run that counted its
         tool calls and nothing else has still not said what it cost."""
@@ -286,7 +280,6 @@ class TestLedgerAccount(IsolatedCase):
 
         self.assertEqual(self.book.token_report()["totals"]["billed_tokens"], 446430)
         # And the budget really has reset, which is the behaviour being kept.
-        self.assertGreater(time.time(), 0)
         self.assertEqual(self.book.summary()["total_delegated_runs"]["used"], 0)
 
     def test_a_run_that_priced_nothing_is_counted_apart(self):

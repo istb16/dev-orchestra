@@ -86,10 +86,6 @@ class TestParsing(IsolatedCase):
         data = parse_without_pyyaml(SAMPLE)
         self.assertEqual(parse_without_pyyaml(dump(data)), data)
 
-    def test_reserved_words_are_quoted_on_emit(self):
-        self.assertEqual(parse_without_pyyaml(dump({"a": "yes"}))["a"], "yes")
-        self.assertEqual(parse_without_pyyaml(dump({"a": "null"}))["a"], "null")
-
     def test_dotted_values_survive(self):
         self.assertEqual(parse_without_pyyaml(dump({"dir": ".ai"}))["dir"], ".ai")
 

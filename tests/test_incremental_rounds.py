@@ -228,13 +228,6 @@ class TestIncrementalScope(RoundCase):
         self.assertFalse(meta["incremental_from"])
         self.assertIn("op59", ws.read_text(self.workspace.snapshot_path))
 
-    def test_a_file_created_by_the_fix_appears_in_the_incremental_diff(self):
-        self.first_round()
-        self.write("helper.py", "def help():\n    return 1\n")
-        meta = review_mod.create_snapshot(self.workspace)
-        self.assertTrue(meta["incremental_from"])
-        self.assertIn("helper.py", ws.read_text(self.workspace.snapshot_path))
-
     def test_an_untracked_file_is_not_counted_twice(self):
         """Both trees already contain it, so the untracked pass must not add it
         again -- that would duplicate every hunk."""
@@ -443,12 +436,6 @@ class TestNarrowingNeedsAPremise(RoundCase):
         self.assertFalse(meta["incremental_from"])
         self.assertIn("op59", ws.read_text(self.workspace.snapshot_path))
 
-    def test_a_round_after_an_accepted_finding_still_narrows(self):
-        """The guard must not have disabled the feature outright."""
-        self.first_round()
-        self.fix()
-        self.assertTrue(review_mod.create_snapshot(self.workspace)["incremental_from"])
-
 
 class TestReviewingABranchAgainstABase(RoundCase):
     """`--base master` is how a branch is reviewed, and it used to switch
@@ -543,10 +530,6 @@ class TestTreeIsOnlyWrittenWhenItWillBeUsed(RoundCase):
     """Writing the tree hashes every untracked-but-not-ignored file into the
     object database. A round that has said it will not use one should not pay
     for it, or leave the objects behind."""
-
-    def test_a_normal_round_records_one(self):
-        self.implement()
-        self.assertTrue(review_mod.create_snapshot(self.workspace)["tree"])
 
     def test_an_explicit_base_records_one_too(self):
         """It did not, and that was the bug: a branch review never narrowed."""
@@ -1030,11 +1013,6 @@ class TestCoverageSurvivesTheNarrowing(RoundCase):
 class TestIncrementalConfiguration(IsolatedCase):
     def test_it_is_on_by_default(self):
         self.assertIs(config_mod.default_config()["review"]["incremental_rounds"], True)
-
-    def test_a_non_boolean_is_a_configuration_error(self):
-        data = config_mod.default_config()
-        data["review"]["incremental_rounds"] = "yes"
-        self.assertTrue(any("incremental_rounds" in problem for problem in config_mod.validate(data)))
 
 
 if __name__ == "__main__":

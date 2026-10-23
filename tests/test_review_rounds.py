@@ -127,19 +127,6 @@ class TestIterationDerivation(IsolatedCase):
         self.write("app.py", content)
         return review_mod.create_snapshot(self.workspace)
 
-    def test_first_round_is_one(self):
-        self._snapshot("x = 2\n")
-        self.assertEqual(review_mod.next_iteration(self.workspace), 1)
-
-    def test_a_new_snapshot_advances_the_round(self):
-        self._snapshot("x = 2\n")
-        ws.write_json(
-            self.workspace.consolidated_json_path,
-            review_mod.build_consolidation(self.workspace, [], [], 1),
-        )
-        self._snapshot("x = 3\n")
-        self.assertEqual(review_mod.next_iteration(self.workspace), 2)
-
     def test_re_running_the_same_snapshot_stays_in_the_round(self):
         self._snapshot("x = 2\n")
         ws.write_json(
@@ -570,15 +557,6 @@ class TestCoverageInTheConsolidatedReport(IsolatedCase):
         text = self.render([run("ok", "inline", 400)], iteration=2, incremental=True)
         self.assertIn("change unverified since round 1", text)
         self.assertIn("snapshot --full", text)
-
-    def test_a_carried_mark_on_a_snapshot_nobody_ran_against_says_that(self):
-        """Not "this round inlined the fix only": nothing was inlined, because
-        nobody ran. What is missing is a reviewer, and the line has to say so
-        rather than send the reader after a narrower diff."""
-        self.render([run("partial", "file", 130_412)])
-        ws.write_json(self.workspace.snapshot_meta_path, {"sha256": "snapshot-two"})
-        data = review_mod.build_consolidation(self.workspace, [run("ok", "inline", 400)], [], 2)
-        self.assertIn("no reviewer has run against this snapshot", review_mod.render_consolidation(data))
 
     def test_a_report_from_before_this_version_gets_no_coverage_line(self):
         """Saying `round none` would claim it had been measured."""

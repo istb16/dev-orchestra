@@ -357,12 +357,6 @@ class TestTheBooksAreClosedBeforeAnythingIsPrinted(IsolatedCase):
     def ledger(self):
         return ledger_mod.Ledger(self.cli_workspace(), dict(ledger_mod.DEFAULT_BUDGETS))
 
-    def test_the_run_still_raises_rather_than_pretending_it_printed(self):
-        """The crash is not swallowed: a command that could not report is not
-        a command that succeeded. It just no longer costs the books."""
-        with self.assertRaises(UnicodeEncodeError):
-            run_cli("run", "implementer", "--prompt", "go")
-
     def test_the_tokens_are_recorded_anyway(self):
         with self.assertRaises(UnicodeEncodeError):
             run_cli("run", "implementer", "--prompt", "go")

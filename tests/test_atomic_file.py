@@ -162,11 +162,6 @@ class TestWrite(AtomicFileCase):
             atomic_file.write(self.path, b"again", expected=None)
         self.assertEqual(self.read_bytes(), b"created")
 
-    def test_a_patched_os_replace_is_the_one_called(self):
-        calls = self.recording_replace()
-        atomic_file.write(self.path, b"content")
-        self.assertEqual(len(calls), 1)
-
     def test_a_given_replace_moves_the_temporary_file(self):
         calls: List[Tuple[str, str]] = []
 

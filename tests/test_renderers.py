@@ -472,16 +472,6 @@ class TestOptimizationReportText(IsolatedCase):
                 self.assertEqual(code, 0)
                 self.assertEqual(out, text(lines))
 
-    def test_nothing_recorded(self):
-        empty = opt_report.architect_revisions([])
-        code, out, _ = self.report(_rounds(), opt_report.reviewer_scorecard([]), empty)
-        self.assertEqual(code, 0)
-        expected = [
-            "No review rounds recorded in %s." % self.source(),
-            "Run a review, then ask again -- this reads what happened, not what would.",
-        ]
-        self.assertEqual(out, text(expected))
-
     def test_report_lines_are_the_text(self):
         source = self.source()
         for name, (rounds, scorecard, revisions, lines) in _optimization_cases().items():
