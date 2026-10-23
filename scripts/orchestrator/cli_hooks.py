@@ -7,6 +7,7 @@ import os
 from typing import Any, Dict, List
 
 from . import claude_hooks, hosts
+from .cli_args import _add_command_group, _add_json_flag
 from .cli_common import _emit_json, _err, _out
 
 RESTART_NOTE = "Claude Code picks up hooks at session start; start a new session (or review them in /hooks)."
@@ -132,3 +133,25 @@ def cmd_hooks_status(args: argparse.Namespace) -> int:
         command = claude_hooks.UNINSTALL_COMMAND
         _out("note: no language.reply is set, so they stay silent; `%s` removes them" % command)
     return 0
+
+
+# --------------------------------------------------------------------------- parser
+
+
+def _add_dry_run_flag(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--dry-run", action="store_true", help="print what would change, write nothing")
+
+
+def _add_hooks_parsers(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    hooks_sub = _add_command_group(
+        subparsers, "hooks", "the reply-language hooks in Claude Code's user settings"
+    )
+    hooks_install = hooks_sub.add_parser("install", help="add them, or bring them up to date")
+    _add_dry_run_flag(hooks_install)
+    hooks_install.set_defaults(func=cmd_hooks_install)
+    hooks_uninstall = hooks_sub.add_parser("uninstall", help="remove them, the relay and its record")
+    _add_dry_run_flag(hooks_uninstall)
+    hooks_uninstall.set_defaults(func=cmd_hooks_uninstall)
+    hooks_status = hooks_sub.add_parser("status", help="whether they are installed and current")
+    _add_json_flag(hooks_status)
+    hooks_status.set_defaults(func=cmd_hooks_status)

@@ -122,30 +122,33 @@ def summarise_rounds(events: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
         "design_measured_runs": design_spend["measured_runs"],
         "design_billed_tokens": design_billed,
         "design_billed_per_round": design_per_round,
-        # Per *run*, over the runs that reported -- never over ``reviewer_runs``.
-        # None rather than zero where nothing reported: a panel of CLIs that do
-        # not count tools has not measured no tool use. Output chars are over
-        # the runs that reported them: agy counts calls and not their output.
-        "tool_reported_runs": spend["tool_reported_runs"],
-        "tool_output_reported_runs": spend["tool_output_reported_runs"],
-        "tool_uses": spend["tool_uses"],
-        "tool_output_chars": spend["tool_output_chars"],
-        "tool_uses_per_run": _per_run(spend["tool_uses"], spend["tool_reported_runs"]),
-        "tool_output_chars_per_run": _per_run(spend["tool_output_chars"], spend["tool_output_reported_runs"]),
-        "design_tool_reported_runs": design_spend["tool_reported_runs"],
-        "design_tool_output_reported_runs": design_spend["tool_output_reported_runs"],
-        "design_tool_uses": design_spend["tool_uses"],
-        "design_tool_output_chars": design_spend["tool_output_chars"],
-        "design_tool_uses_per_run": _per_run(design_spend["tool_uses"], design_spend["tool_reported_runs"]),
-        "design_tool_output_chars_per_run": _per_run(
-            design_spend["tool_output_chars"], design_spend["tool_output_reported_runs"]
-        ),
+        **_tool_fields(spend, ""),
+        **_tool_fields(design_spend, "design_"),
         # Code rounds that ran, split on whether a reviewer was handed
         # surrounding context -- see ``_with_context``.
         "by_context": {name: _finish_context_group(group) for name, group in code.by_context.items()},
         # Runs of one snapshot with and without it -- see ``_pair_rounds``.
         "paired": _pair_rounds(code.measured),
     }
+
+
+def _tool_fields(spend: Dict[str, Any], prefix: str) -> Dict[str, Any]:
+    """The tool-use figures of one stage's ``spend``, each key behind ``prefix``.
+
+    Per *run*, over the runs that reported -- never over ``reviewer_runs``.
+    None rather than zero where nothing reported: a panel of CLIs that do not
+    count tools has not measured no tool use. Output chars are over the runs
+    that reported them: agy counts calls and not their output.
+    """
+    fields = {
+        "tool_reported_runs": spend["tool_reported_runs"],
+        "tool_output_reported_runs": spend["tool_output_reported_runs"],
+        "tool_uses": spend["tool_uses"],
+        "tool_output_chars": spend["tool_output_chars"],
+        "tool_uses_per_run": _per_run(spend["tool_uses"], spend["tool_reported_runs"]),
+        "tool_output_chars_per_run": _per_run(spend["tool_output_chars"], spend["tool_output_reported_runs"]),
+    }
+    return {prefix + key: value for key, value in fields.items()}
 
 
 class _CodeRounds:

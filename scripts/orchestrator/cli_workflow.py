@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import os
 import shutil
-from typing import Any, Dict, List, NamedTuple, Optional, cast
+from typing import Any, Dict, List, NamedTuple, Optional, Tuple, cast
 
 from . import approval as approval_mod
 from . import config as config_mod
@@ -18,7 +18,9 @@ from . import questions as questions_mod
 from . import review as review_mod
 from . import workflow as workflow_mod
 from . import workspace as ws
+from .cli_args import _add_command_group, _add_json_flag
 from .cli_common import _container, _emit_json, _err, _ledger, _load_lenient, _out, _workspace, _wrote_plan
+from .cli_questions import cmd_design_questions_answer, cmd_design_questions_record, cmd_design_questions_show
 from .round_progress import (
     approved_as_recorded,
     code_final_pass_from,
@@ -501,19 +503,9 @@ def _status_payload(
     design_max = loaded.design_max_iterations()
     decision = design_decision(loaded, workspace)
     design_exhausted = bool(design_blocking) and design_iteration >= design_max
-    approval_info = approval_mod.current(
-        workspace,
-        bool(loaded.design_settings().get("require_approval")),
-        asking=questions_mod.asking(loaded),
+    approval_info, plan_digest, of_current_plan = _approval_payload(
+        loaded, workspace, design_data, design_exhausted
     )
-    # The same list `design approve` names, whatever the severity: the user is
-    # asked about what the approval will record, not only what blocks.
-    design_open = [str(f.get("id")) for f in approval_mod.open_findings(design_data)]
-    plan_text, plan_digest = approval_mod.read_plan(workspace)
-    of_current_plan = approval_mod.findings_of_current_plan(workspace, plan_text)
-    approval_info["open_findings"] = design_open
-    approval_info["open_findings_of_current_plan"] = of_current_plan if design_open else None
-    approval_info["design_review_exhausted"] = design_exhausted
     questions_info = questions_mod.current_for(loaded, workspace)
 
     events = [event for event in (workspace.read_state().get("events") or []) if isinstance(event, dict)]
@@ -569,24 +561,8 @@ def _status_payload(
     if book.runtime_refusal():
         reasons.append("the delegated runtime budget is spent")
 
-    # What the next `review run` would decide, so the orchestrator finds out
-    # here rather than by being refused. Cheap: the snapshot meta is already
-    # on disk, and nothing is delegated to work it out.
-    meta = workspace.read_snapshot_meta()
-    missing = missing_path_lists(meta)
-    if missing:
-        # `review run` refuses it; the plan below reads it as touching nothing.
-        reasons.append(
-            "the snapshot has no %s list; take a fresh one with `dev-orchestra review snapshot`"
-            % " or ".join(missing)
-        )
-    plan = round_plan(loaded, workspace, meta, loaded.reviewers())
-    if plan.gate == opt_mod.GATE_REFUSE:
-        reasons.append("the last recorded test run failed; fix it before reviewing")
-    # And what the next `review run --design` would decide about its panel.
-    design_plan = design_round_plan(
-        loaded, workspace, loaded.design_reviewers(), lineage=design_lineage(workspace, book)
-    )
+    next_reasons, plan, design_plan = _next_rounds(loaded, workspace, book)
+    reasons.extend(next_reasons)
 
     payload = {
         "verdict": "stop-and-report" if reasons else "continue",
@@ -608,21 +584,9 @@ def _status_payload(
             "final_fix": review_round.final_pass["state"],
             "final_fix_pending": review_round.final_pass["pending"],
         },
-        "design_review": {
-            # Whether the stage runs: `on`, or `auto` and this plan calls for it.
-            "enabled": decision.run,
-            "mode": decision.mode,
-            "reason": decision.reason or None,
-            "iteration": design_round.iteration,
-            "max_iterations": design_round.max_iterations,
-            "blocking": [f["id"] for f in design_round.blocking],
-            "accepted": len(design_accepted),
-            "refused_for_size": (design_refused_for_size or {}).get("context") or None,
-            "identical_rounds": design_round.repeats,
-            "final_revision": design_round.final_pass["state"],
-            "final_revision_pending": design_round.final_pass["pending"],
-            "optimization": design_plan.to_dict(),
-        },
+        "design_review": _design_review_payload(
+            decision, design_round, len(design_accepted), design_refused_for_size, design_plan
+        ),
         # Not a reason and not a verdict: `run implementer` enforces it, and a
         # stop-and-report here would read as "give up" where the answer is to
         # ask the user.
@@ -649,6 +613,81 @@ def _status_payload(
         else [],
     }
     return _Status(payload, plan, decision, design_round.final_pass, architect_left, progress)
+
+
+def _approval_payload(
+    loaded: config_mod.LoadedConfig,
+    workspace: ws.Workspace,
+    design_data: Dict[str, Any],
+    design_exhausted: bool,
+) -> Tuple[Dict[str, Any], str, Optional[bool]]:
+    """``design_approval`` as `status` reports it, with the plan's digest and its own open findings."""
+    approval_info = approval_mod.current(
+        workspace,
+        bool(loaded.design_settings().get("require_approval")),
+        asking=questions_mod.asking(loaded),
+    )
+    # The same list `design approve` names, whatever the severity: the user is
+    # asked about what the approval will record, not only what blocks.
+    design_open = [str(f.get("id")) for f in approval_mod.open_findings(design_data)]
+    plan_text, plan_digest = approval_mod.read_plan(workspace)
+    of_current_plan = approval_mod.findings_of_current_plan(workspace, plan_text)
+    approval_info["open_findings"] = design_open
+    approval_info["open_findings_of_current_plan"] = of_current_plan if design_open else None
+    approval_info["design_review_exhausted"] = design_exhausted
+    return approval_info, plan_digest, of_current_plan
+
+
+def _next_rounds(
+    loaded: config_mod.LoadedConfig, workspace: ws.Workspace, book: ledger_mod.Ledger
+) -> Tuple[List[str], opt_mod.Plan, opt_design.DesignPlan]:
+    """What the next `review run` and `review run --design` would decide, and why it would stop.
+
+    So the orchestrator finds out here rather than by being refused. Cheap:
+    the snapshot meta is already on disk, and nothing is delegated to work it out.
+    """
+    reasons: List[str] = []
+    meta = workspace.read_snapshot_meta()
+    missing = missing_path_lists(meta)
+    if missing:
+        # `review run` refuses it; the plan below reads it as touching nothing.
+        reasons.append(
+            "the snapshot has no %s list; take a fresh one with `dev-orchestra review snapshot`"
+            % " or ".join(missing)
+        )
+    plan = round_plan(loaded, workspace, meta, loaded.reviewers())
+    if plan.gate == opt_mod.GATE_REFUSE:
+        reasons.append("the last recorded test run failed; fix it before reviewing")
+    # And what the next `review run --design` would decide about its panel.
+    design_plan = design_round_plan(
+        loaded, workspace, loaded.design_reviewers(), lineage=design_lineage(workspace, book)
+    )
+    return reasons, plan, design_plan
+
+
+def _design_review_payload(
+    decision: opt_design.DesignDecision,
+    design_round: _RoundState,
+    accepted: int,
+    refused_for_size: Optional[Dict[str, Any]],
+    design_plan: opt_design.DesignPlan,
+) -> Dict[str, Any]:
+    """``design_review`` as `status` reports it."""
+    return {
+        # Whether the stage runs: `on`, or `auto` and this plan calls for it.
+        "enabled": decision.run,
+        "mode": decision.mode,
+        "reason": decision.reason or None,
+        "iteration": design_round.iteration,
+        "max_iterations": design_round.max_iterations,
+        "blocking": [f["id"] for f in design_round.blocking],
+        "accepted": accepted,
+        "refused_for_size": (refused_for_size or {}).get("context") or None,
+        "identical_rounds": design_round.repeats,
+        "final_revision": design_round.final_pass["state"],
+        "final_revision_pending": design_round.final_pass["pending"],
+        "optimization": design_plan.to_dict(),
+    }
 
 
 def _status_lines(status: _Status, plan_relative: str, warning: List[str]) -> List[str]:
@@ -1100,3 +1139,90 @@ def _summary_lines(payload: Dict[str, Any]) -> List[str]:
             )
         )
     return lines
+
+
+# --------------------------------------------------------------------------- parser
+
+
+def _add_design_parsers(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    design_sub = _add_command_group(
+        subparsers, "design", "the user's answers to the design questions and approval of the plan"
+    )
+    design_approve = design_sub.add_parser(
+        "approve", help="record the user's approval of the plan as it is now (only after their yes)"
+    )
+    _add_json_flag(design_approve)
+    design_approve.set_defaults(func=cmd_design_approve)
+
+    questions_group = design_sub.add_parser(
+        "questions", help="the questions asked before the plan is written, and the user's answers"
+    )
+    questions_sub = questions_group.add_subparsers(dest="questions_command", required=True)
+    record = questions_sub.add_parser("record", help="record question blocks from a file")
+    record.add_argument("--by", required=True, choices=list(questions_mod.ASKERS), help="who asked them")
+    record.add_argument("--file", required=True, help="the question blocks: a path, or - for stdin")
+    record.add_argument("--force", action="store_true", help="record an architect round past the round cap")
+    record.set_defaults(func=cmd_design_questions_record)
+
+    answer = questions_sub.add_parser("answer", help="record the user's answer (only their words)")
+    answer.add_argument("ids", nargs="+", help="question ids, e.g. Q3; several only with --delegate")
+    answer.add_argument("--option", default=None, help="the option key the user chose")
+    answer.add_argument("--text", default=None, help="the user's own words, as given")
+    answer.add_argument("--delegate", action="store_true", help="the user left it to the architect")
+    answer.add_argument(
+        "--revise", action="store_true", help="replace an earlier answer, keeping it in history"
+    )
+    answer.set_defaults(func=cmd_design_questions_answer)
+
+    show = questions_sub.add_parser("show", help="the recorded questions and answers")
+    show.add_argument("--open", action="store_true", help="only the questions not answered yet")
+    _add_json_flag(show)
+    show.set_defaults(func=cmd_design_questions_show)
+
+
+def _add_state_parsers(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    state_sub = _add_command_group(subparsers, "state", "inspect or append run state")
+    state_show = state_sub.add_parser("show")
+    _add_json_flag(state_show)
+    state_show.set_defaults(func=cmd_state_show)
+    state_record = state_sub.add_parser("record")
+    state_record.add_argument("stage")
+    state_record.add_argument("status")
+    state_record.add_argument("--detail", nargs="*", default=None, help="key=value pairs")
+    state_record.set_defaults(func=cmd_state_record)
+
+
+def _add_workflow_parsers(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    workflow_sub = _add_command_group(
+        subparsers, "workflow", "the workflows in this project and which one is yours"
+    )
+    workflow_list = workflow_sub.add_parser("list", help="every workflow here, most recent first")
+    _add_json_flag(workflow_list)
+    workflow_list.set_defaults(func=cmd_workflow_list)
+    workflow_show = workflow_sub.add_parser("show", help="which workflow this command is in, and why")
+    _add_json_flag(workflow_show)
+    workflow_show.set_defaults(func=cmd_workflow_show)
+    workflow_use = workflow_sub.add_parser("use", help="remember an id for this directory")
+    workflow_use.add_argument("id")
+    workflow_use.set_defaults(func=cmd_workflow_use)
+    workflow_remove = workflow_sub.add_parser("remove", help="delete one finished workflow's artifacts")
+    workflow_remove.add_argument("id")
+    workflow_remove.add_argument("--yes", action="store_true", help="do not ask")
+    workflow_remove.add_argument(
+        "--force", action="store_true", help="delete it even with a stage in flight or a job unfinished"
+    )
+    workflow_remove.set_defaults(func=cmd_workflow_remove)
+
+
+def _add_status_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    status_parser = subparsers.add_parser(
+        "status", help="continue or stop: budgets, stalls and open findings in one verdict"
+    )
+    _add_json_flag(status_parser)
+    status_parser.set_defaults(func=cmd_status)
+
+
+def _add_summary_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    summary = subparsers.add_parser("summary", help="print the end-of-run summary")
+    _add_json_flag(summary)
+    summary.set_defaults(func=cmd_summary)

@@ -6,6 +6,7 @@ import argparse
 import os
 from typing import Any, Dict, List, Optional
 
+from . import activity as activity_mod
 from . import config as config_mod
 from . import jobs as jobs_mod
 from . import ledger as ledger_mod
@@ -15,6 +16,7 @@ from . import review as review_mod
 from . import units_run
 from . import workflow as workflow_mod
 from . import workspace as ws
+from .cli_args import _add_command_group, _add_json_flag, _bounded_int, _seconds
 from .cli_common import _emit_json, _err, _ledger, _out, _workspace, _workspace_and_config, _wrote_plan
 
 # --------------------------------------------------------------------------- state
@@ -487,3 +489,116 @@ def cmd_progress_record(args: argparse.Namespace) -> int:
     else:
         _out("%s outcome recorded (seen %d time(s))." % (args.stage, repeats))
     return 0
+
+
+# --------------------------------------------------------------------------- parser
+
+
+def _job_cursor(text: str) -> "tuple[Optional[str], int]":
+    """An argparse type: ``N``, or ``ID=N`` naming the job the cursor is for."""
+    job_id, sep, count = text.rpartition("=")
+    if sep and not job_id:
+        raise argparse.ArgumentTypeError("%r names no job before its =" % text)
+    return (job_id if sep else None, _bounded_int(0, activity_mod.SINCE_MAX)(count))
+
+
+def _add_activity_flags(parser: argparse.ArgumentParser, *, per_job: bool = False) -> None:
+    if per_job:
+        parser.add_argument(
+            "--since",
+            type=_job_cursor,
+            action="append",
+            default=[],
+            metavar="[ID=]N",
+            help="only tool uses after this one (the cursor `next:` prints); with several jobs, "
+            "ID=N for each, repeated",
+        )
+    else:
+        parser.add_argument(
+            "--since",
+            type=_bounded_int(0, activity_mod.SINCE_MAX),
+            default=0,
+            help="only tool uses after this one (the cursor `next:` prints)",
+        )
+    parser.add_argument(
+        "--activity",
+        type=_bounded_int(0, activity_mod.LATEST_MAX),
+        default=10,
+        help="how many of the latest tool uses to show (default 10)",
+    )
+
+
+def _add_jobs_parsers(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    jobs_sub = _add_command_group(subparsers, "jobs", "detached runs, so no call blocks forever")
+    jobs_list = jobs_sub.add_parser("list", help="every recorded job, newest first")
+    _add_json_flag(jobs_list)
+    jobs_list.set_defaults(func=cmd_jobs_list)
+
+    jobs_show = jobs_sub.add_parser("show", help="one job")
+    jobs_show.add_argument("job_id")
+    jobs_show.add_argument("--output", action="store_true", help="also print its output")
+    _add_json_flag(jobs_show)
+    _add_activity_flags(jobs_show)
+    jobs_show.set_defaults(func=cmd_jobs_show)
+    jobs_wait = jobs_sub.add_parser("wait", help="wait for jobs, with a deadline of your own")
+    jobs_wait.add_argument("job_ids", nargs="+", metavar="job_id")
+    jobs_wait.add_argument(
+        "--any", action="store_true", help="with several jobs: return when the first one finishes"
+    )
+    jobs_wait.add_argument(
+        "--timeout",
+        type=_seconds(allow_zero=True),
+        default=None,
+        help="seconds to wait while it runs (default progress.interval_seconds, 180)",
+    )
+    jobs_wait.add_argument("--poll", type=_seconds(), default=1.0)
+    _add_json_flag(jobs_wait)
+    _add_activity_flags(jobs_wait, per_job=True)
+    jobs_wait.set_defaults(func=cmd_jobs_wait)
+    jobs_cancel = jobs_sub.add_parser("cancel", help="stop a running job")
+    jobs_cancel.add_argument("job_id")
+    jobs_cancel.set_defaults(func=cmd_jobs_cancel)
+
+
+def _add_budget_parsers(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    budget_sub = _add_command_group(subparsers, "budget", "attempt budgets that stop runaway loops")
+    budget_show = budget_sub.add_parser("show", help="what has been spent")
+    _add_json_flag(budget_show)
+    budget_show.set_defaults(func=cmd_budget_show)
+    budget_consume = budget_sub.add_parser("consume", help="claim an attempt at a stage")
+    budget_consume.add_argument("stage", help="a stage the orchestrator runs itself, e.g. test")
+    budget_consume.add_argument("--force", action="store_true")
+    budget_consume.set_defaults(func=cmd_budget_consume)
+    budget_reset = budget_sub.add_parser("reset", help="start the budgets again, keeping the token account")
+    budget_reset.set_defaults(func=cmd_budget_reset)
+
+
+def _add_tokens_parsers(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    # Separate from `budget` on purpose: attempts are enforced, tokens are only
+    # counted, and putting them under one command invites reading one as the
+    # other.
+    tokens_sub = _add_command_group(subparsers, "tokens", "what the workflow has spent, per stage")
+    tokens_show = tokens_sub.add_parser("show", help="the token account (reported, never enforced)")
+    _add_json_flag(tokens_show)
+    tokens_show.set_defaults(func=cmd_tokens_show)
+
+
+def _add_optimization_parsers(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    optimization_parser = subparsers.add_parser(
+        "optimization", help="what optimization.level has decided, over time"
+    )
+    optimization_sub = optimization_parser.add_subparsers(dest="optimization_command", required=True)
+    optimization_report = optimization_sub.add_parser(
+        "report", help="rounds refused, panels cut, and what that came to"
+    )
+    _add_json_flag(optimization_report)
+    optimization_report.set_defaults(func=cmd_optimization_report)
+
+
+def _add_progress_parsers(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    progress_sub = _add_command_group(subparsers, "progress", "detect a loop that is going nowhere")
+    progress_record = progress_sub.add_parser("record", help="record a stage outcome signature")
+    progress_record.add_argument("stage")
+    progress_record.add_argument("--signature", required=True, help="e.g. the failing test summary")
+    _add_json_flag(progress_record)
+    progress_record.set_defaults(func=cmd_progress_record)

@@ -958,7 +958,9 @@ class TestImportLayering(IsolatedCase):
     def test_moved_names_live_in_their_new_home(self):
         from orchestrator import (
             cli,
+            cli_args,
             cli_common,
+            cli_config,
             cli_review,
             cli_review_design,
             cli_review_round,
@@ -1024,9 +1026,13 @@ class TestImportLayering(IsolatedCase):
             round_progress: progress,
             cli_run: ("_detached_argv",),
             optimization_render: rendered,
+            cli_args: ("_bounded_int", "_seconds", "_add_json_flag", "_add_command_group"),
+            cli_config: ("_add_scope_flag", "_add_no_hooks_flag", "_add_relevance_flag"),
+            cli_state: ("_job_cursor", "_add_activity_flags"),
+            cli_review: ("_add_design_flag",),
         }
-        # cli.py holds the parser and main() only: a name it re-exported would
-        # invite a test to patch it there, where nothing looks it up (#289).
+        # cli.py builds the parser and holds main() only: a name it re-exported
+        # would invite a test to patch it there, where nothing looks it up (#289).
         for home, names in homes.items():
             for name in names:
                 self.assertFalse(hasattr(cli, name), name)
@@ -1100,9 +1106,10 @@ class TestImportLayering(IsolatedCase):
         for home, names in review_homes.items():
             for name in names:
                 self.assertEqual(getattr(home, name).__module__, home.__name__, name)
-        # cli_review imports the round helpers it uses, but keeps none of the
-        # status or design-only ones.
-        for name in (*review_homes[cli_review_status], "_design_request_path"):
+        # cli_review imports the round helpers it uses, and the status command
+        # only to register it, but keeps none of the status or design-only ones.
+        self.assertIs(cli_review.cmd_review_status, cli_review_status.cmd_review_status)
+        for name in (*review_homes[cli_review_status][1:], "_design_request_path"):
             self.assertFalse(hasattr(cli_review, name), name)
         for name in ("_coverage_line", "snapshot_reviewers", "current_snapshot_stamp"):
             self.assertFalse(hasattr(review_consolidation, name), name)

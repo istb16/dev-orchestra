@@ -21,6 +21,7 @@ from . import questions as questions_mod
 from . import units as units_mod
 from . import workspace as ws
 from . import worktrees as worktrees_mod
+from .cli_args import _seconds
 from .cli_common import (
     DEFAULT_MODES,
     _emit_json,
@@ -38,6 +39,7 @@ from .providers import (
     MODE_IMPLEMENT,
     MODE_PLAN,
     MODE_REVIEW,
+    MODES,
     READ_ONLY_MODES,
     REFUSED_ENFORCEMENT,
     SESSION_ID_RE,
@@ -360,14 +362,6 @@ def cmd_run(args: argparse.Namespace) -> int:
         # A detached worker: `jobs cancel` must reach the CLI it runs, which is
         # in a session of its own.
         execution_tree.end_children_on_sigterm(jobs_mod.stop_note_path(args.job_file))
-    session_id: Optional[str] = None
-    resume_detail: Optional[Dict[str, Any]] = None
-    if args.resume:
-        session_id, resume_detail = _choose_resume(loaded, workspace, provider, seat.provider_name)
-    # Written down before the call, so a stall is visible from outside this
-    # process and survives it dying. The record is kept: whether the user
-    # forced this run is in it, and the worker's own --force says nothing.
-    job = jobs_mod.claim(args.job_file) if args.job_file else None
     run = _Run(
         args,
         seat,
@@ -381,6 +375,26 @@ def cmd_run(args: argparse.Namespace) -> int:
         cwd=unit.cwd if unit is not None else workspace.root,
         unit=unit,
     )
+    return _run_in_process(run, loaded, prompt, resume_prompt, warned_before)
+
+
+def _run_in_process(
+    run: _Run,
+    loaded: config_mod.LoadedConfig,
+    prompt: str,
+    resume_prompt: Optional[str],
+    warned_before: str,
+) -> int:
+    """Launch the run in this process, close its books and report it: what a run that is not detached does."""
+    args, workspace, unit = run.args, run.workspace, run.unit
+    session_id: Optional[str] = None
+    resume_detail: Optional[Dict[str, Any]] = None
+    if args.resume:
+        session_id, resume_detail = _choose_resume(loaded, workspace, run.provider, run.seat.provider_name)
+    # Written down before the call, so a stall is visible from outside this
+    # process and survives it dying. The record is kept: whether the user
+    # forced this run is in it, and the worker's own --force says nothing.
+    job = jobs_mod.claim(args.job_file) if args.job_file else None
     # Every run a worker makes reports its tool uses beside the job, the fresh
     # retry after a rejected resume included, so `n` carries on. Installed for
     # this call only: a worker run in-process, as the tests do, must not leave
@@ -1562,3 +1576,77 @@ def _detached_argv(args: argparse.Namespace, role: str, workflow: str) -> List[s
     if args.extra:
         argv += ["--extra", *args.extra]
     return argv
+
+
+# --------------------------------------------------------------------------- parser
+
+
+def _add_run_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    run_parser = subparsers.add_parser("run", help="run one configured role against a prompt")
+    run_parser.add_argument(
+        "role", help="orchestrator | architect | implementer | review_fixer | <reviewer id>"
+    )
+    run_parser.add_argument(
+        "--tier",
+        default=None,
+        help="run this role on one of its configured model_tiers (e.g. light)",
+    )
+    run_parser.add_argument("--prompt", default=None)
+    run_parser.add_argument("--prompt-file", default=None, help="path, or - for stdin")
+    run_parser.add_argument("--mode", choices=list(MODES), default=None)
+    run_parser.add_argument(
+        "--output",
+        default=None,
+        help="write the response here instead of stdout; kept as it is when the run produced none",
+    )
+    run_parser.add_argument(
+        "--timeout",
+        type=_seconds(whole=True),
+        default=None,
+        help="total deadline in seconds (default: run.timeout_seconds.<role>; "
+        "review.timeout_seconds for a reviewer)",
+    )
+    run_parser.add_argument(
+        "--idle-timeout",
+        type=_seconds(),
+        default=None,
+        help="treat as stalled after this long with no output (streaming providers only)",
+    )
+    run_parser.add_argument("--force", action="store_true", help="run even though a budget is spent")
+    run_parser.add_argument(
+        "--detach",
+        action="store_true",
+        help="start the run in its own process and return a job id immediately",
+    )
+    run_parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="architect only: revise this workflow's plan by continuing the last architect session",
+    )
+    run_parser.add_argument(
+        "--questions",
+        action="store_true",
+        help="architect only: ask the design questions instead of writing the plan "
+        "(budget architect_questions)",
+    )
+    run_parser.add_argument(
+        "--resume-prompt-file",
+        default=None,
+        help="with --resume: the prompt for a continued session (a fresh run gets --prompt-file)",
+    )
+    run_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="print the outcome as one JSON object, the output inline (with --detach: the started job)",
+    )
+    run_parser.add_argument(
+        "--unit",
+        default=None,
+        metavar="NAME",
+        help="implementer: run one work unit of the plan's ## Units, in a worktree of its own "
+        "when another unit could run beside it; architect: design one unit, its attempt spent once a pass",
+    )
+    run_parser.add_argument("--job-file", default=None, help=argparse.SUPPRESS)
+    run_parser.add_argument("--print-command", action="store_true", help="print the CLI invocation and exit")
+    run_parser.add_argument("--extra", nargs=argparse.REMAINDER, help="extra args passed to the provider CLI")
+    run_parser.set_defaults(func=cmd_run)
