@@ -17,6 +17,7 @@ from helpers import IsolatedCase, make_dir_link, remove_link
 from orchestrator import config as config_mod
 from orchestrator import config_policy as policy_mod
 from orchestrator import instructions
+from orchestrator import optimization as opt
 from orchestrator import workspace as ws
 
 
@@ -98,8 +99,11 @@ class ResolveTest(_Case):
         self.assertEqual(
             instructions.watched_paths(loaded), [*config_mod.PROJECT_CONFIG_NAMES, "docs/ai/[review].md"]
         )
-        extra = instructions.risk_settings(loaded)["extra_high_risk_paths"]
-        self.assertIn("docs/ai/[[]review].md", extra)
+        patterns = opt.risk_patterns(loaded.optimization_settings(), instructions.watched_paths(loaded))
+        self.assertIn("docs/ai/[[]review].md", patterns)
+        self.assertNotIn(
+            "docs/ai/[[]review].md", loaded.optimization_settings().get("extra_high_risk_paths") or []
+        )
 
     def test_watched_paths_without_a_project_file(self):
         self.assertEqual(instructions.watched_paths(self.loaded()), list(config_mod.PROJECT_CONFIG_NAMES))
@@ -115,6 +119,52 @@ class ResolveTest(_Case):
         loaded.project_path = os.path.join(self.tmp, "elsewhere.yaml")
         self.assertEqual(instructions.watched_paths(loaded), names)
         self.assertIsNone(instructions._relative(self.project, os.path.join(self.tmp, "elsewhere.yaml")))
+
+    def test_watched_paths_does_not_read_files(self):
+        """Listing the paths and the notices never opens an instructions file."""
+        self.write("docs/ai/implementer.md", "Use rspec.\n")
+        self.write_project(
+            "instructions:\n  implementer:\n    file: ./docs/ai/implementer.md\n  architect: Keep it small.\n"
+            "reviewers:\n  - id: sec\n    provider: claude\n    instructions:\n      file: docs/missing.md\n"
+        )
+        loaded = self.loaded()
+        paths = instructions.watched_paths(loaded)
+        notices = instructions.project_notices(loaded)
+        self.assertEqual(
+            paths, [*config_mod.PROJECT_CONFIG_NAMES, "docs/ai/implementer.md", "docs/missing.md"]
+        )
+        with mock.patch.object(instructions, "_read", side_effect=AssertionError("read a file")):
+            self.assertEqual(instructions.watched_paths(loaded), paths)
+            self.assertEqual(instructions.project_notices(loaded), notices)
+
+    def test_watched_paths_leaves_out_a_file_outside_or_not_a_string(self):
+        """The same check ``_read`` makes: a path it refuses is not watched."""
+        self.write_project(
+            "instructions:\n  implementer:\n    file: ../x.md\n  architect:\n    file: /abs.md\n"
+            "  review_fixer:\n    file: 5\n  orchestrator:\n    file: docs/a/../b.md\n"
+        )
+        self.assertEqual(instructions.watched_paths(self.loaded()), list(config_mod.PROJECT_CONFIG_NAMES))
+
+    def test_describe_still_reports_problems(self):
+        """Roles by layer, then seats; each file's size or why it gave nothing."""
+        self.write("docs/ai/implementer.md", "Use rspec.\n")
+        self.write_global("instructions:\n  implementer: Use tabs.\n")
+        self.write_project(
+            "instructions:\n  implementer:\n    file: docs/ai/implementer.md\n"
+            "reviewers:\n  - id: sec\n    provider: claude\n    instructions:\n      file: docs/missing.md\n"
+        )
+        rows = [
+            (row["role"], row["layer"], row["kind"], row["path"], row["chars"], row["problem"])
+            for row in instructions.describe(self.loaded())
+        ]
+        self.assertEqual(
+            rows,
+            [
+                ("implementer", "global", "inline", "", 9, ""),
+                ("implementer", "project", "file", "docs/ai/implementer.md", 10, ""),
+                ("reviewers.sec", "project", "file", "docs/missing.md", 0, "not found"),
+            ],
+        )
 
     def test_global_inline_and_missing_project_file(self):
         """The text joins what was read; the sources keep the one that gave nothing."""

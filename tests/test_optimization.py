@@ -115,6 +115,24 @@ class TestHighRiskPaths(unittest.TestCase):
     def test_an_empty_pattern_list_matches_nothing(self):
         self.assertFalse(opt.high_risk_matches(["db/migrate/1.rb"], []))
 
+    def test_watched_paths_are_matched_literally_and_leave_the_settings_alone(self):
+        settings = {"high_risk_paths": ["*auth*"], "extra_high_risk_paths": ["*.tf"]}
+        patterns = opt.risk_patterns(settings, ["docs/ai/[review].md"])
+        self.assertEqual(patterns, ["*auth*", "*.tf", "docs/ai/[[]review].md"])
+        self.assertEqual(settings["extra_high_risk_paths"], ["*.tf"])
+        self.assertTrue(opt.high_risk_matches(["docs/ai/[review].md"], patterns))
+        self.assertFalse(opt.high_risk_matches(["docs/ai/r.md"], patterns))
+        self.assertEqual(opt.risk_patterns(settings), ["*auth*", "*.tf"])
+
+    def test_decide_counts_a_watched_path(self):
+        settings = dict(config_mod.default_config()["optimization"])
+        review = dict(config_mod.default_config()["review"])
+        plain = opt.decide(settings, review, ["docs/ai/r.md"], 1, "ok", 2)
+        self.assertFalse(plain.high_risk)
+        plan = opt.decide(settings, review, ["docs/ai/r.md"], 1, "ok", 2, literal_paths=["docs/ai/r.md"])
+        self.assertEqual(plan.high_risk, [("docs/ai/r.md", "docs/ai/r.md")])
+        self.assertNotIn("docs/ai/r.md", settings.get("extra_high_risk_paths") or [])
+
 
 class TestPatternsNeedBothForms(unittest.TestCase):
     """``fnmatch`` has no ``**``, and a pattern containing a slash is matched
@@ -3821,6 +3839,17 @@ class TestDecideDesign(unittest.TestCase):
         settings = {"extra_high_risk_paths": ["*/providers/*"]}
         decision = decide_design(plan_scan(["scripts/providers/claude.py"]), settings=settings)
         self.assertRuns(decision, "touches scripts/providers/claude.py (Files to Modify)")
+
+    def test_a_watched_path_counts(self):
+        scan = plan_scan(["scripts/a.py", "docs/ai/review.md"])
+        self.assertSkips(decide_design(scan), "1 code file, none high-risk")
+        decision = opt_design.decide_design(
+            "auto", {}, scan, plan_state="ok", round_ran=False, literal_paths=["docs/ai/review.md"]
+        )
+        self.assertRuns(decision, "touches docs/ai/review.md (Files to Modify)")
+        self.assertEqual(decision.high_risk, [("docs/ai/review.md", "docs/ai/review.md")])
+        design = opt_design.decide_design_round({}, scan, "ok", [], literal_paths=["docs/ai/review.md"])
+        self.assertEqual(design.high_risk, [("docs/ai/review.md", "docs/ai/review.md")])
 
     def test_the_label_and_the_dict(self):
         decision = decide_design(plan_scan(["scripts/a.py"]))

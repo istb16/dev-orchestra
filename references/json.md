@@ -284,7 +284,9 @@ Object: the plan's work units.
 
 A unit's record in `.ai/execution/units.json` may also carry `copies_skipped`:
 one `{"path", "reason"}` per `implementation.worktree_files` entry its
-worktree did not get, set only when there is one.
+worktree did not get, and per file the CLI copies itself (a provider file, the
+project file, the plan, the decisions) skipped as a link or as not a file; it
+is set only when there is one.
 
 ### `units merge`
 

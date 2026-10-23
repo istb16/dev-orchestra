@@ -18,6 +18,7 @@ from test_design_review import DesignReviewCase
 
 from orchestrator import config as config_mod
 from orchestrator import instructions, review_fanout, review_snapshot, round_progress
+from orchestrator import optimization as opt
 from orchestrator import review as review_mod
 from orchestrator import workspace as ws
 from orchestrator.providers.mock import MockProvider
@@ -179,6 +180,20 @@ class ReviewRunTest(IsolatedCase):
         self.assertIn("2 successful, 0 failed", out, err)
         self.assertEqual(err.count("note: instructions.reviewers: docs/missing.md: not found"), 1, err)
 
+    def test_round_reads_each_seat_once(self):
+        """The notes and the prompts share one reading of each seat's instructions."""
+        run_cli("reviewer", "add", "--provider", "mock", "--id", "m2", "--role", "general")
+        self.set_global(instructions={"reviewers": self.MARKER})
+        run_cli("review", "snapshot")
+        with mock.patch.object(instructions, "for_seat", wraps=instructions.for_seat) as for_seat:
+            _, out, err = run_cli("review", "run", "--high-risk")
+        self.assertIn("2 successful, 0 failed", out, err)
+        seats = sorted(call.args[1]["id"] for call in for_seat.call_args_list)
+        self.assertEqual(seats, ["m1", "m2"])
+        self.assertEqual(len(self.prompts), 2)
+        for prompt in self.prompts:
+            self.assertIn(self.MARKER, prompt)
+
     def test_a_seat_own_unread_file_names_the_seat(self):
         data = config_mod.load(self.project).data
         seats = data["reviewers"]
@@ -256,6 +271,31 @@ class DesignRunTest(DesignReviewCase):
         self.assertNotIn("note: instructions.reviewers", err)
         for prompt in self.prompts:
             self.assertNotIn("CODE-ROLE-TEXT", prompt)
+
+    def test_round_reads_each_design_seat_once(self):
+        """Notes and prompts share one reading of each design seat's instructions, its own file too."""
+        self.write("docs/m1.md", "SEAT-FILE-TEXT\n")
+        self.write(
+            ".dev-orchestra.yaml",
+            "version: 1\n"
+            "instructions:\n  design_reviewers: DESIGN-ROLE-TEXT\n"
+            "reviewers:\n"
+            "  - id: m1\n    provider: mock\n    role: general\n"
+            "    instructions:\n      file: docs/m1.md\n"
+            "  - id: m2\n    provider: mock\n    role: architecture\n",
+        )
+        self.write_plan()
+        self.write_request()
+        with mock.patch.object(instructions, "for_seat", wraps=instructions.for_seat) as for_seat:
+            _, out, err = run_cli("review", "run", "--design")
+        self.assertIn("2 successful, 0 failed", out, err)
+        seats = sorted(call.args[1]["id"] for call in for_seat.call_args_list)
+        self.assertEqual(seats, ["m1", "m2"])
+        self.assertTrue(all(call.kwargs.get("design") is True for call in for_seat.call_args_list))
+        self.assertEqual(len(self.prompts), 2)
+        for prompt in self.prompts:
+            self.assertIn("DESIGN-ROLE-TEXT", prompt)
+        self.assertEqual(sum("DESIGN-ROLE-TEXT\n\nSEAT-FILE-TEXT" in prompt for prompt in self.prompts), 1)
 
     def test_a_plan_naming_a_watched_path_runs_under_auto(self):
         self.write("docs/ai/design.md", "Check the rollback.\n")
@@ -381,8 +421,9 @@ class RiskTest(IsolatedCase):
         return config_mod.load(self.project, validate_result=False)
 
     def test_watched_paths_are_high_risk_patterns(self):
-        settings = instructions.risk_settings(self.loaded())
-        self.assertIn(".dev-orchestra.yaml", settings["extra_high_risk_paths"])
+        loaded = self.loaded()
+        patterns = opt.risk_patterns(loaded.optimization_settings(), instructions.watched_paths(loaded))
+        self.assertIn(".dev-orchestra.yaml", patterns)
 
     def test_instruction_change_makes_the_round_high_risk(self):
         loaded = self.loaded()

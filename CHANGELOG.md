@@ -47,6 +47,16 @@ authors can find it.
   `instructions` and `implementation`, `summary` `instructions`, `units
   status` `unit_tests`, and `review snapshot` `instruction_changes`.
 
+### Changed
+
+- A unit's worktree no longer gets a copy of a provider file, the project
+  file, the plan or the decisions through a link, in the user's tree or the
+  worktree, or of one that is not a regular file: every copy goes through the
+  check `implementation.worktree_files` has (#354). Such a skip is told with a
+  `note:` and recorded as `copies_skipped`, like a `worktree_files` one; a
+  copy the CLI asked for that the user's tree lacks, or that lies outside the
+  repository, is still skipped silently.
+
 ## [1.2.0] - 2026-10-22
 
 ### Added
