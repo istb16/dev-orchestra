@@ -6,7 +6,12 @@ locally. Standard library only, like the rest of the suite::
 
     python tests/run_parallel.py [-v] [-j N] [--timeout SECONDS] [--serial module.Class ...]
                                  [--split module.Class ...] [--timings PATH]
-                                 [--write-timings PATH] [--shard I/N]
+                                 [--write-timings PATH] [--shard I/N] [-p GLOB ...]
+
+``-p GLOB`` (repeatable) runs only the modules whose file name matches, with
+the meaning ``unittest discover -p`` gives it; a test two patterns find runs
+once. It cannot be combined with ``--shard`` or ``--write-timings``, which
+are about the whole suite.
 
 A class named by ``--split`` (or in ``SPLIT_CLASSES``) is handed out one test
 method per task instead, so one long class does not decide how long the run
@@ -53,7 +58,7 @@ import traceback
 import unittest
 import warnings
 from concurrent.futures.process import BrokenProcessPool
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
 if TESTS_DIR not in sys.path:
@@ -222,7 +227,21 @@ def _parse_args(argv: Optional[List[str]]) -> argparse.Namespace:
         metavar="I/N",
         help="run only part I of the suite split N ways by recorded time (1-based)",
     )
+    parser.add_argument(
+        "-p",
+        "--pattern",
+        action="append",
+        default=None,
+        metavar="GLOB",
+        help="run only the test modules whose file name matches GLOB, as discover -p; repeatable",
+    )
     args = parser.parse_args(argv)
+    # Shards split the whole suite, and timings written from part of it would
+    # drop every other task's time.
+    if args.pattern and args.shard is not None:
+        parser.error("--pattern cannot be used with --shard")
+    if args.pattern and args.write_timings is not None:
+        parser.error("--pattern cannot be used with --write-timings")
     if args.jobs is None:
         args.jobs = _default_jobs()
     if args.jobs < 1:
@@ -346,12 +365,31 @@ def _terminate_workers(executor: concurrent.futures.ProcessPoolExecutor) -> None
         process.terminate()
 
 
+def _discover_patterns(start_dir: str, patterns: List[str]) -> Union[unittest.TestSuite, str]:
+    """The tests each pattern finds, each once, or the first pattern that finds none."""
+    loader = unittest.TestLoader()
+    tests: Dict[str, unittest.TestCase] = {}
+    for pattern in patterns:
+        found = list(_flatten(loader.discover(start_dir, pattern=pattern, top_level_dir=start_dir)))
+        if not found:
+            return pattern
+        for test in found:
+            tests.setdefault(test.id(), test)
+    return unittest.TestSuite(tests.values())
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     args = _parse_args(argv)
     verbosity = 2 if args.verbose else 1
     started = time.monotonic()
 
-    suite = unittest.TestLoader().discover(args.start_dir, top_level_dir=args.start_dir)
+    if args.pattern:
+        suite = _discover_patterns(args.start_dir, args.pattern)
+        if isinstance(suite, str):
+            sys.stderr.write("run_parallel: no tests found for pattern %s\n" % suite)
+            return 2
+    else:
+        suite = unittest.TestLoader().discover(args.start_dir, top_level_dir=args.start_dir)
     classes: Dict[str, List[str]] = {}
     in_parent: List[unittest.TestCase] = []
     for test in _flatten(suite):
@@ -364,7 +402,11 @@ def main(argv: Optional[List[str]] = None) -> int:
             name = "%s.%s" % (cls.__module__, cls.__qualname__)
             classes.setdefault(name, []).append(test.id())
 
-    serial = list(dict.fromkeys([*SERIAL_CLASSES, *args.serial]))
+    defaults = SERIAL_CLASSES
+    if args.pattern:
+        # A selection need not hold the defaults; one named here must be in it.
+        defaults = tuple(name for name in SERIAL_CLASSES if name in classes)
+    serial = list(dict.fromkeys([*defaults, *args.serial]))
     unknown = [name for name in dict.fromkeys([*serial, *args.split]) if name not in classes]
     if unknown:
         sys.stderr.write("run_parallel: no such test class: %s\n" % ", ".join(unknown))

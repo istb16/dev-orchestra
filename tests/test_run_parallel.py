@@ -478,5 +478,84 @@ class TestShards(RunnerCase):
                 self.assertIn("--shard", stderr)
 
 
+# Runs the runner with its default serial and split classes replaced, so a
+# default can name a class the selection leaves out.
+WITH_DEFAULTS = """\
+import sys
+sys.path.insert(0, %r)
+import run_parallel
+run_parallel.SERIAL_CLASSES = ("test_other.TestOther",)
+run_parallel.SPLIT_CLASSES = ("test_other.TestOther",)
+sys.exit(run_parallel.main(sys.argv[1:]))
+"""
+
+
+class TestPatterns(RunnerCase):
+    def three_modules(self) -> None:
+        self.module("test_passing", PASSING)
+        self.module("test_other", PASSING.replace("TestPasses", "TestOther"))
+        self.module("test_failing", FAILING)
+
+    def test_one_pattern_runs_only_that_module(self):
+        self.three_modules()
+        code, stderr = self.run_runner("-v", "-p", "test_passing.py")
+        self.assertEqual(code, 0, stderr)
+        self.assertSummary(stderr, 2, "OK")
+        self.assertEqual({"test_passing.TestPasses" in line for line in ran_lines(stderr)}, {True})
+
+    def test_overlapping_patterns_run_each_test_once(self):
+        self.three_modules()
+        code, stderr = self.run_runner("-v", "-p", "test_passing.py", "--pattern", "test_*ing.py")
+        self.assertEqual(code, 1, stderr)
+        self.assertSummary(stderr, 3, "FAILED (failures=1)")
+        self.assertEqual(len(ran_lines(stderr)), 3)
+        self.assertNotIn("discover found", stderr)
+        self.assertNotIn("TestOther", stderr)
+
+    def test_a_pattern_that_matches_nothing_is_refused(self):
+        self.three_modules()
+        code, stderr = self.run_runner("-p", "test_passing.py", "-p", "test_nothing*.py")
+        self.assertEqual(code, 2, stderr)
+        self.assertIn("run_parallel: no tests found for pattern test_nothing*.py\n", stderr)
+
+    def test_with_a_shard_or_written_timings_is_refused(self):
+        self.module("test_passing", PASSING)
+        for extra in (["--shard", "1/2"], ["--write-timings", os.path.join(self.start_dir, "t.json")]):
+            with self.subTest(extra=extra):
+                code, stderr = self.run_runner("-p", "test_passing.py", *extra)
+                self.assertEqual(code, 2, stderr)
+                self.assertIn("--pattern cannot be used with %s" % extra[0], stderr)
+
+    def test_an_import_failure_is_reported_only_when_selected(self):
+        self.module("test_passing", PASSING)
+        self.module("test_broken", BROKEN_IMPORT)
+        code, stderr = self.run_runner("-p", "test_passing.py", "-p", "test_broken.py")
+        self.assertEqual(code, 1, stderr)
+        self.assertSummary(stderr, 3, "FAILED (errors=1)")
+        self.assertIn("test_broken", stderr)
+        code, stderr = self.run_runner("-p", "test_passing.py")
+        self.assertEqual(code, 0, stderr)
+        self.assertSummary(stderr, 2, "OK")
+        self.assertNotIn("test_broken", stderr)
+
+    def test_a_default_class_outside_the_selection_is_skipped(self):
+        self.three_modules()
+        script = WITH_DEFAULTS % os.path.dirname(RUNNER)
+        argv = [sys.executable, "-c", script, "--start-dir", self.start_dir, "-j", "2"]
+        completed = subprocess.run(
+            [*argv, "-p", "test_passing.py"], capture_output=True, text=True, timeout=120
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertSummary(completed.stderr, 2, "OK")
+        completed = subprocess.run(
+            [*argv, "-p", "test_passing.py", "--serial", "test_other.TestOther"],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        self.assertEqual(completed.returncode, 2, completed.stderr)
+        self.assertIn("no such test class: test_other.TestOther", completed.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()
