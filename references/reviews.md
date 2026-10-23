@@ -1200,7 +1200,11 @@ is no brief to hand the reviewer, so it gets the whole change instead of a
 fragment with nothing to judge it against.
 
 **Triage before you re-snapshot.** The scope narrows on the accepted findings
-existing, so re-snapshotting first gives you the whole change again.
+existing, so re-snapshotting first gives you the whole change again. A
+narrowed round carries those accepted findings to every reviewer. When a later
+round should judge the whole change rather than the fix -- to clear
+`coverage.change`, or after a fix that reworked much of it -- snapshot with
+`--full`.
 
 **A narrowed round is only clean about the fix.** `coverage.round: complete` on
 round 2 says the fix was inlined in full, and nothing about the change round 1

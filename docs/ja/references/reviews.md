@@ -1,4 +1,4 @@
-<!-- translated-from: references/reviews.md sha256:3f96a0fa06ed9dff16663cfb72cc0013cd5b2ab5b0a5a0ba4f3d1a289b3a3f26 -->
+<!-- translated-from: references/reviews.md sha256:59bb5e226af75d8b577d2c81e8549e4d4abf631aaf090aeef4f2296396c56585 -->
 
 > この文書は [references/reviews.md](../../../references/reviews.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -1229,7 +1229,10 @@ create` と同じ手法です）。そのため、ユーザー自身のインデ
 
 **スナップショットを取り直す前にトリアージしてください。** スコープは accepted の
 指摘が存在することを条件に絞り込まれるので、先にスナップショットを取り直すと、
-再び変更全体が対象になります。
+再び変更全体が対象になります。絞り込まれたラウンドは、その accepted の指摘を
+すべてのレビュアーに渡します。後のラウンドで修正ではなく変更全体を判断させたいとき
+（`coverage.change` を解除したいとき、または修正が変更の多くを作り直したとき）は、
+`--full` を付けてスナップショットを取ります。
 
 **絞り込まれたラウンドが問題なしと言えるのは、修正についてだけです。** ラウンド 2
 の `coverage.round: complete` は修正が完全にインライン化されたことを示すだけで、

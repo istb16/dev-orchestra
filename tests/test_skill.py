@@ -220,34 +220,66 @@ class TestSkillDocument(IsolatedCase):
                 "--prompt-file <full> --resume-prompt-file <short>",
             ),
             ("| Test |", "| Reviews |"): ("then `state record test ok\\|failed`",),
-            ("## 1. Classify", "## 2. The pipeline"): ("`review run --high-risk`",),
-            ("## 2. The pipeline", "| Stage |"): ("which ignores itself",),
-            ("**Long stages.**", "**Design.**"): (
+            ("## 1. Classify", "## 2. The pipeline"): (
+                "`review run --high-risk`",
+                "security-sensitive paths",
+            ),
+            ("**Long stages.**", "**Questions.**"): (
                 "with `--detach`",
                 "wait with `jobs wait <id>",
-                "`progress.updates`",
                 "`may be stuck`",
                 "never a reason to cancel",
+                "`progress.updates`",
+                # Each setting keeps its own clause, so the stated rule is not
+                # read as holding under all three.
+                "big architect runs (`on`: all) with `--detach`",
+                "the last tool lines (`off`: only a `may be stuck` note)",
+                "A background `review run` (`on`: always background)",
             ),
+            ("**Questions.**", "**Design.**"): ("(`auto`: only when it matters; say why)",),
             ("**Design.**", "**Approval.**"): (
                 "still gets one revision (no re-review), made before you ask for approval",
             ),
-            ("**Approval.**", "**Implement.**"): ("Changes requested → revise with `--resume`",),
+            ("**Approval.**", "**Implement.**"): ("`references/workflow.md` (Approval)",),
             ("**Test.**", "**Reviews.**"): (
                 "Record the outcome even if none ran this session",
                 "`review run` refuses a tree recorded as failing",
             ),
             ("**Reviews.**", "**Triage.**"): (
                 "Every reviewer judges the same frozen diff",
-                "re-snapshot `--no-exclude` if the change turns on one",
+                "`--no-exclude` if the change turns on one",
             ),
             ("**Triage.**", "**Fix.**"): ("raw findings never reach the fixer",),
-            ("**Re-test.**", "## 3. Delegation"): ("`--full` re-sends the lot",),
+            ("**Re-test.**", "## 3. Delegation"): (
+                "carries the accepted findings, so **triage before re-snapshotting**",
+            ),
         }
         for (start, end), phrases in sections.items():
             text = self.section(start, end)
             for phrase in phrases:
                 self.assertIn(phrase, text, "%s: %s" % (start, phrase))
+        # Moved again to leave SKILL.md headroom: said once, in the reference.
+        moved = {
+            "references/workflow.md": (
+                "Both are under `.ai/`, which ignores itself",
+                "If they ask for changes, revise the plan (and re-review it if the design review is on)",
+                "ask whether to approve over the findings",
+                "**Skip** design for a typo, comment, string or formatting change; one obvious line, "
+                "a config value, a version bump; usually a single-file change with clear intent and "
+                "no contract change.",
+                "a bug of unknown cause (investigate first)",
+                "security-sensitive paths (auth, permissions, secrets, payments)",
+            ),
+            "references/reviews.md": (
+                "A narrowed round carries those accepted findings to every reviewer.",
+                "When a later round should judge the whole change rather than the fix",
+                "snapshot with `--full`.",
+            ),
+        }
+        for path, phrases in moved.items():
+            reference = " ".join(read(path).split())
+            for phrase in phrases:
+                self.assertIn(phrase, reference, "%s: %s" % (path, phrase))
         rules = self.rules()
         self.assertEqual(sorted(rules), list(range(1, 12)))
         self.assertIn("no shared context", rules[3].lower())
@@ -293,8 +325,13 @@ class TestSkillDocument(IsolatedCase):
         self.assertIn("**Run**", self.body)
 
     def test_every_referenced_document_exists(self):
-        for match in re.findall(r"`(references/[a-z0-9_.-]+\.md)`", self.body):
-            self.assertTrue(os.path.isfile(os.path.join(REPO_ROOT, match)), match)
+        """A pointer that names a section, `references/x.md` (Name), needs that
+        heading to be there too, or a rename strands it."""
+        for path, section in re.findall(r"`(references/[a-z0-9_.-]+\.md)`(?: \(([^)]+)\))?", self.body):
+            self.assertTrue(os.path.isfile(os.path.join(REPO_ROOT, path)), path)
+            if section:
+                headings = re.findall(r"(?m)^#{2,3} (.+?)\s*$", read(path))
+                self.assertIn(section, headings, "%s (%s)" % (path, section))
 
     def test_no_dated_model_ids_in_the_skill(self):
         for candidate in validate_skill.SNAPSHOT_RE.findall(self.text):

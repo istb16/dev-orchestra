@@ -24,8 +24,8 @@ plugin, else the checkout root.
 
 ## 0. Start of session
 
-Run `doctor`, then `status` (**continue or stop**: budgets, stalled or dead
-stages, review work left). Obey it before each stage: `stop-and-report` means
+Run `doctor`, then `status` (**continue or stop**). Obey it before each
+stage: `stop-and-report` means
 report, not retry; with an unapproved plan, end on the approval question.
 
 - First run (`Source: built-in defaults`) or config-only request →
@@ -36,13 +36,11 @@ report, not retry; with an unapproved plan, end on the approval question.
 
 Judge complexity and risk yourself; never ask the user which stages to run.
 
-Design: **Skip** for typo, comment, string, formatting; one obvious line, a
-config value, a version bump; usually a single-file change with clear intent
-and no contract change. **Run** for new behaviour or spec; ambiguous
-requirement; several files or modules; schema, migration, data model; API or
-contract; performance; a bug of unknown cause (investigate first);
-architecture, dependency or build; security-sensitive paths (auth,
-permissions, secrets, payments).
+Design: **Skip** for a mechanical, local edit: typo, comment, formatting, one
+obvious line, a config value, a version bump. **Run** for new behaviour,
+ambiguity, several files, schema, API, performance, a bug of unknown cause
+(investigate first), architecture, security-sensitive paths. Full lists:
+`references/workflow.md` (Stage selection).
 
 Review every code change worth it; skip pure typo/comment/formatting and say
 so. Security-sensitive: `review run --high-risk`.
@@ -53,9 +51,9 @@ review → triage → fix → re-test."*
 ## 2. The pipeline
 
 Stages are skippable; their **order is not**: the table's.
-Never review before tests, never fix before triage. Artifacts go in `.ai/`,
-which ignores itself; in arguments `.ai/…` means `<Artifacts>` (`workflow
-show`), the path files you write and redirects need. Templates, detail:
+Never review before tests, never fix before triage. Artifacts go in `.ai/`;
+in arguments `.ai/…` means `<Artifacts>` (`workflow show`), the path files
+you write and redirects need. Templates, detail:
 `references/workflow.md`.
 
 | Stage | Command |
@@ -71,38 +69,35 @@ show`), the path files you write and redirects need. Templates, detail:
 | Fix | `review fix-brief --output .ai/execution/fix-brief.md`, then `run review_fixer --prompt-file .ai/execution/fix-brief.md` |
 | Re-test | as Test, then `review status` |
 
-A role with `model_tiers` (`config show`) runs on one: `run implementer --tier
-light`. When to pick `light`, and to split a long implement run or run units
-in parallel: `references/workflow.md`.
+Model tiers (`--tier light`), splitting a long implement run, units in
+parallel: `references/workflow.md` (Implementation).
 
-**Long stages.** `status` gives `Progress:` (`progress.updates`). Run
-implementer, review_fixer and big architect runs (`on`: every architect run)
-with `--detach`; wait with `jobs wait <id> --since <n>`. On each exit 4 tell
-the user briefly: elapsed time, tool count, **context tokens** (never "tokens
-so far"), the last tool lines; under `off`, only a `may be stuck` note.
-A `may be stuck` note is always relayed and never a reason to cancel. Wait
-again from `next:`. A background `review run` (`on`: always background) gets
+**Long stages.** Run implementer, review_fixer and big architect runs (`on`:
+all) with `--detach`; wait with `jobs wait <id> --since <n>`, again from
+`next:`. Each exit 4: tell the user elapsed time, tool count, **context
+tokens** (never "tokens so far"), the last tool lines (`off`: only a `may be
+stuck` note). A `may be stuck` note is always relayed and never a reason to
+cancel. A background `review run` (`on`: always background) gets
 `--progress > "<Artifacts>/execution/review-run.log" 2>&1`: relay new lines
 the same way. Never relay or guess what the model wrote; tool lines go as they are.
+Per `progress.updates`: `references/workflow.md` (Progress reports).
 
 **Questions.** When on, ask the user before designing (`auto`: only when it
 matters; say why). "Leave it to you" is `--delegate`; exit 6 means ask.
 Approval off: record, never wait. Steps: `references/workflow.md`.
 
 **Design.** The architect must not change code. Write its request from the
-template with the history it cannot fetch (`git log --oneline`, blame; on
-Claude it has only Read, Grep, Glob). Vague or contradicted by the codebase →
-send back once; never paper over it. **Design review**:
-`review.design.reviewers`, else the code panel; triage as for code; accepted
-findings go into a revision request. A spent design review budget still gets one revision (no
-re-review), made before you ask for approval. Re-review only when `review
-status --design` says so. No design stage, no design review.
+template with the history it cannot fetch (`git log --oneline`, blame).
+Vague or contradicted by the codebase → send back once; never paper over it.
+**Design review**: triage as for code, fold accepted findings into a revision
+request; re-review only when `review status --design` says so. A spent
+budget still gets one revision (no re-review), made before you ask for
+approval. Panel, templates: `references/workflow.md` (Design review).
 
 **Approval.** Show the user the plan's Goal, Proposed Change, Files to
 Modify, Risks and open design findings, name the plan's file
-(`<Artifacts>/plan.md`) as what is approved, and ask (rule 10). Findings open
-after the final revision: ask to approve over them or revise. Changes requested → revise with `--resume`,
-re-review if `status` says run, ask again.
+(`<Artifacts>/plan.md`) as what is approved, and ask (rule 10). Open
+findings, requested changes: `references/workflow.md` (Approval).
 
 **Implement.** Require: existing conventions, minimal change, no unrelated
 refactoring, tests added or updated and run; plan wrong → stop and report,
@@ -112,14 +107,14 @@ not redesign.
 suite stops the pipeline. Record the outcome even if none ran this session:
 `review run` refuses a tree recorded as failing.
 Before each *retry*: `budget consume test`, then `progress record test
---signature "3 failed: test_a, test_b"`. Exit 3 (rule 7) or a repeated
-signature (the last fix changed nothing) is a refusal.
+--signature "3 failed: test_a, test_b"`. Exit 3 or a repeated signature is a
+refusal.
 
 **Reviews.** Every reviewer judges the same frozen diff. A new snapshot
 is a new round: never track rounds by hand;
 never re-snapshot mid-round. `snapshot` withholds generated and vendored
-files (`review.exclude`) but names them: pass that on; re-snapshot
-`--no-exclude` if the change turns on one.
+files (`review.exclude`), naming them: pass that on; `--no-exclude` if the
+change turns on one.
 
 - `unparsed` counts as failed and is **never** a clean review.
 - `partial`: the findings are real, the review is not clean. If `review
@@ -130,17 +125,15 @@ files (`review.exclude`) but names them: pass that on; re-snapshot
 **Triage.** **You** decide what is real; raw findings never reach the fixer.
 Per finding in `consolidated.md`: read the cited code, decide, record it;
 investigate and re-triage every `needs-investigation`. Two reviewers agreeing is evidence, not proof. Clear
-**Possible duplicates** first, or the fixer gets the same defect twice:
-auto-merge leaves those pairs to you.
+**Possible duplicates** first: auto-merge leaves those pairs to you.
 
 **Fix.** Require: verify each finding against current code first, fix only what
 is valid, add a failing test or say why none can; rerun tests, lint, types.
 
-**Re-test.** A new test must fail with the fix reversed. Then `review
-status`; re-review only when it says so. Exhausted budget → fix once more,
-re-test, report; never re-review. A second snapshot diffs only the fix and
-carries the accepted findings, so **triage before re-snapshotting**. `--full`
-re-sends the lot.
+**Re-test.** A new test must fail with the fix reversed. Re-review only
+when `review status` says so. Exhausted budget → fix once more,
+re-test, report; never re-review. The next snapshot diffs only the fix and
+carries the accepted findings, so **triage before re-snapshotting**.
 
 ## 3. Delegation rules
 
@@ -172,11 +165,10 @@ Always name what failed and what you skipped.
 ## Configuration
 
 Ask only what you cannot infer; have the user confirm the result. First
-run: with a terminal, `config setup` and let the user answer the wizard; otherwise show `config show`, ask the preset (quality,
-standard, fast) and reply language, run `config setup --preset <name>
---language <tag>`; say it edits their Claude Code user settings. Other
-requests (`config set`, `reviewer add`), roles, schema:
-`references/configuration.md`.
+run: with a terminal, `config setup` and let the user answer the wizard; otherwise show `config show`, ask the preset and reply
+language, run `config setup --preset <name> --language <tag>`; say it edits
+their Claude Code user settings. Other requests (`config set`,
+`reviewer add`), roles, schema: `references/configuration.md`.
 
 ## Rules that do not bend
 

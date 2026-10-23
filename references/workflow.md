@@ -35,6 +35,14 @@ The orchestrator decides. Two questions settle almost every case:
 2. **Could this break something the request does not mention?** If yes — schema,
    API, shared module, concurrency, auth — run design, however small the diff.
 
+**Skip** design for a typo, comment, string or
+formatting change; one obvious line, a config value, a version bump; usually a
+single-file change with clear intent and no contract change. **Run** it for
+new behaviour or spec; an ambiguous requirement; several files or modules;
+schema, migration, data model; API or contract; performance; a bug of unknown
+cause (investigate first); architecture, dependency or build;
+security-sensitive paths (auth, permissions, secrets, payments).
+
 Skipping a stage is a decision worth stating. "Skipped design: one-line typo in
 a doc comment" is a useful sentence; silently skipping is not.
 
