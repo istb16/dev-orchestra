@@ -557,29 +557,7 @@ def _coverage(
     else:
         this_round = "none"
 
-    # Carried on the lineage minus its base -- see ``coverage_lineage`` for why
-    # the base is the one part of the key that must not gate it. The mark and
-    # the round number it started at are carried separately: the mark is the
-    # safety property and survives a change of base, the round number belongs
-    # to a count that a lineage change restarts and is dropped with it.
-    carry_key = coverage_lineage(lineage)
-    carried_mark = False
-    carried_since = None
-    previous = last.get("coverage")
-    if isinstance(previous, dict) and (
-        not carry_key or coverage_lineage(str(last.get("lineage") or "")) == carry_key
-    ):
-        since = previous.get("unverified_since")
-        numbered = ws.is_int(since)
-        # Read from ``change``, so a mark already carried without a number
-        # carries on; ``unverified_since`` alone would drop it at the next
-        # round.
-        carried_mark = numbered or str(previous.get("change") or "") == "unverified"
-        # The condition ``next_iteration`` restarts the count on, and the only
-        # one under which the carried number still names a round of it. An
-        # empty lineage says nothing, there as here, and continues the count.
-        if numbered and not (lineage and str(last.get("lineage") or "") != lineage):
-            carried_since = since
+    carried_mark, carried_since = _carried_unverified(lineage, last)
 
     # This snapshot's reviewers, not the table's: an entry from an earlier
     # round coming back ``ok`` is not somebody reading this change.
@@ -604,31 +582,71 @@ def _coverage(
     else:
         change = "complete"
 
-    measured = [run for run in current if run.get("delivery")]
-    # Both numbers come off the entry that decided the mark -- the first one
-    # handed a file when there is one, any measured entry otherwise. The limit
-    # is no longer one number per round: ``--only`` re-runs a reviewer and
-    # ``_merge_runs`` puts the fresh entry ahead of the retained ones, so one
-    # snapshot's entries can carry limits from two configurations. Reading the
-    # pair off one entry, and that the one whose delivery made the round
-    # unverified, keeps it one round's two numbers and never one round's size
-    # against another's limit -- a line naming a limit the size beside it does
-    # not exceed contradicts itself.
-    decided = next(
-        (run for run in measured if str(run.get("delivery")) == "file"),
-        measured[0] if measured else None,
-    )
+    change_chars, inline_chars = _measured_chars(current)
     return {
         "round": this_round,
         "change": change,
         "unverified_since": unverified_since,
-        "change_chars": int(decided.get("change_chars") or 0) if decided else None,
+        "change_chars": change_chars,
         # The limit the size beside it was measured against. ``null`` where
         # ``change_chars`` is, and for a round recorded before the limit was
         # configurable -- the answer was 120,000 then, but nothing wrote it
         # down and this will not invent it.
-        "inline_chars": (int(decided.get("inline_chars") or 0) or None) if decided else None,
+        "inline_chars": inline_chars,
     }
+
+
+def _carried_unverified(lineage: str, last: Dict[str, Any]) -> Tuple[bool, Any]:
+    """The unverified mark the previous report carries into this round, and the round it started at.
+
+    Carried on the lineage minus its base -- see ``coverage_lineage`` for why
+    the base is the one part of the key that must not gate it. The mark and
+    the round number it started at are carried separately: the mark is the
+    safety property and survives a change of base, the round number belongs
+    to a count that a lineage change restarts and is dropped with it.
+    """
+    carry_key = coverage_lineage(lineage)
+    carried_mark = False
+    carried_since = None
+    previous = last.get("coverage")
+    if isinstance(previous, dict) and (
+        not carry_key or coverage_lineage(str(last.get("lineage") or "")) == carry_key
+    ):
+        since = previous.get("unverified_since")
+        numbered = ws.is_int(since)
+        # Read from ``change``, so a mark already carried without a number
+        # carries on; ``unverified_since`` alone would drop it at the next
+        # round.
+        carried_mark = numbered or str(previous.get("change") or "") == "unverified"
+        # The condition ``next_iteration`` restarts the count on, and the only
+        # one under which the carried number still names a round of it. An
+        # empty lineage says nothing, there as here, and continues the count.
+        if numbered and not (lineage and str(last.get("lineage") or "") != lineage):
+            carried_since = since
+    return carried_mark, carried_since
+
+
+def _measured_chars(current: Sequence[Dict[str, Any]]) -> Tuple[Optional[int], Optional[int]]:
+    """``(change_chars, inline_chars)`` of this snapshot's round, or ``(None, None)`` when no run measured it.
+
+    Both numbers come off the entry that decided the mark -- the first one
+    handed a file when there is one, any measured entry otherwise. The limit
+    is no longer one number per round: ``--only`` re-runs a reviewer and
+    ``_merge_runs`` puts the fresh entry ahead of the retained ones, so one
+    snapshot's entries can carry limits from two configurations. Reading the
+    pair off one entry, and that the one whose delivery made the round
+    unverified, keeps it one round's two numbers and never one round's size
+    against another's limit -- a line naming a limit the size beside it does
+    not exceed contradicts itself.
+    """
+    measured = [run for run in current if run.get("delivery")]
+    decided = next(
+        (run for run in measured if str(run.get("delivery")) == "file"),
+        measured[0] if measured else None,
+    )
+    if decided is None:
+        return None, None
+    return int(decided.get("change_chars") or 0), int(decided.get("inline_chars") or 0) or None
 
 
 def _budget_chars(current: Sequence[Dict[str, Any]]) -> Optional[int]:

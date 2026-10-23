@@ -362,14 +362,6 @@ def cmd_run(args: argparse.Namespace) -> int:
         # A detached worker: `jobs cancel` must reach the CLI it runs, which is
         # in a session of its own.
         execution_tree.end_children_on_sigterm(jobs_mod.stop_note_path(args.job_file))
-    session_id: Optional[str] = None
-    resume_detail: Optional[Dict[str, Any]] = None
-    if args.resume:
-        session_id, resume_detail = _choose_resume(loaded, workspace, provider, seat.provider_name)
-    # Written down before the call, so a stall is visible from outside this
-    # process and survives it dying. The record is kept: whether the user
-    # forced this run is in it, and the worker's own --force says nothing.
-    job = jobs_mod.claim(args.job_file) if args.job_file else None
     run = _Run(
         args,
         seat,
@@ -383,6 +375,26 @@ def cmd_run(args: argparse.Namespace) -> int:
         cwd=unit.cwd if unit is not None else workspace.root,
         unit=unit,
     )
+    return _run_in_process(run, loaded, prompt, resume_prompt, warned_before)
+
+
+def _run_in_process(
+    run: _Run,
+    loaded: config_mod.LoadedConfig,
+    prompt: str,
+    resume_prompt: Optional[str],
+    warned_before: str,
+) -> int:
+    """Launch the run in this process, close its books and report it: what a run that is not detached does."""
+    args, workspace, unit = run.args, run.workspace, run.unit
+    session_id: Optional[str] = None
+    resume_detail: Optional[Dict[str, Any]] = None
+    if args.resume:
+        session_id, resume_detail = _choose_resume(loaded, workspace, run.provider, run.seat.provider_name)
+    # Written down before the call, so a stall is visible from outside this
+    # process and survives it dying. The record is kept: whether the user
+    # forced this run is in it, and the worker's own --force says nothing.
+    job = jobs_mod.claim(args.job_file) if args.job_file else None
     # Every run a worker makes reports its tool uses beside the job, the fresh
     # retry after a rejected resume included, so `n` carries on. Installed for
     # this call only: a worker run in-process, as the tests do, must not leave

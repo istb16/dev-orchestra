@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import os
 import shutil
-from typing import Any, Dict, List, NamedTuple, Optional, cast
+from typing import Any, Dict, List, NamedTuple, Optional, Tuple, cast
 
 from . import approval as approval_mod
 from . import config as config_mod
@@ -503,19 +503,9 @@ def _status_payload(
     design_max = loaded.design_max_iterations()
     decision = design_decision(loaded, workspace)
     design_exhausted = bool(design_blocking) and design_iteration >= design_max
-    approval_info = approval_mod.current(
-        workspace,
-        bool(loaded.design_settings().get("require_approval")),
-        asking=questions_mod.asking(loaded),
+    approval_info, plan_digest, of_current_plan = _approval_payload(
+        loaded, workspace, design_data, design_exhausted
     )
-    # The same list `design approve` names, whatever the severity: the user is
-    # asked about what the approval will record, not only what blocks.
-    design_open = [str(f.get("id")) for f in approval_mod.open_findings(design_data)]
-    plan_text, plan_digest = approval_mod.read_plan(workspace)
-    of_current_plan = approval_mod.findings_of_current_plan(workspace, plan_text)
-    approval_info["open_findings"] = design_open
-    approval_info["open_findings_of_current_plan"] = of_current_plan if design_open else None
-    approval_info["design_review_exhausted"] = design_exhausted
     questions_info = questions_mod.current_for(loaded, workspace)
 
     events = [event for event in (workspace.read_state().get("events") or []) if isinstance(event, dict)]
@@ -571,24 +561,8 @@ def _status_payload(
     if book.runtime_refusal():
         reasons.append("the delegated runtime budget is spent")
 
-    # What the next `review run` would decide, so the orchestrator finds out
-    # here rather than by being refused. Cheap: the snapshot meta is already
-    # on disk, and nothing is delegated to work it out.
-    meta = workspace.read_snapshot_meta()
-    missing = missing_path_lists(meta)
-    if missing:
-        # `review run` refuses it; the plan below reads it as touching nothing.
-        reasons.append(
-            "the snapshot has no %s list; take a fresh one with `dev-orchestra review snapshot`"
-            % " or ".join(missing)
-        )
-    plan = round_plan(loaded, workspace, meta, loaded.reviewers())
-    if plan.gate == opt_mod.GATE_REFUSE:
-        reasons.append("the last recorded test run failed; fix it before reviewing")
-    # And what the next `review run --design` would decide about its panel.
-    design_plan = design_round_plan(
-        loaded, workspace, loaded.design_reviewers(), lineage=design_lineage(workspace, book)
-    )
+    next_reasons, plan, design_plan = _next_rounds(loaded, workspace, book)
+    reasons.extend(next_reasons)
 
     payload = {
         "verdict": "stop-and-report" if reasons else "continue",
@@ -610,21 +584,9 @@ def _status_payload(
             "final_fix": review_round.final_pass["state"],
             "final_fix_pending": review_round.final_pass["pending"],
         },
-        "design_review": {
-            # Whether the stage runs: `on`, or `auto` and this plan calls for it.
-            "enabled": decision.run,
-            "mode": decision.mode,
-            "reason": decision.reason or None,
-            "iteration": design_round.iteration,
-            "max_iterations": design_round.max_iterations,
-            "blocking": [f["id"] for f in design_round.blocking],
-            "accepted": len(design_accepted),
-            "refused_for_size": (design_refused_for_size or {}).get("context") or None,
-            "identical_rounds": design_round.repeats,
-            "final_revision": design_round.final_pass["state"],
-            "final_revision_pending": design_round.final_pass["pending"],
-            "optimization": design_plan.to_dict(),
-        },
+        "design_review": _design_review_payload(
+            decision, design_round, len(design_accepted), design_refused_for_size, design_plan
+        ),
         # Not a reason and not a verdict: `run implementer` enforces it, and a
         # stop-and-report here would read as "give up" where the answer is to
         # ask the user.
@@ -651,6 +613,81 @@ def _status_payload(
         else [],
     }
     return _Status(payload, plan, decision, design_round.final_pass, architect_left, progress)
+
+
+def _approval_payload(
+    loaded: config_mod.LoadedConfig,
+    workspace: ws.Workspace,
+    design_data: Dict[str, Any],
+    design_exhausted: bool,
+) -> Tuple[Dict[str, Any], str, Optional[bool]]:
+    """``design_approval`` as `status` reports it, with the plan's digest and its own open findings."""
+    approval_info = approval_mod.current(
+        workspace,
+        bool(loaded.design_settings().get("require_approval")),
+        asking=questions_mod.asking(loaded),
+    )
+    # The same list `design approve` names, whatever the severity: the user is
+    # asked about what the approval will record, not only what blocks.
+    design_open = [str(f.get("id")) for f in approval_mod.open_findings(design_data)]
+    plan_text, plan_digest = approval_mod.read_plan(workspace)
+    of_current_plan = approval_mod.findings_of_current_plan(workspace, plan_text)
+    approval_info["open_findings"] = design_open
+    approval_info["open_findings_of_current_plan"] = of_current_plan if design_open else None
+    approval_info["design_review_exhausted"] = design_exhausted
+    return approval_info, plan_digest, of_current_plan
+
+
+def _next_rounds(
+    loaded: config_mod.LoadedConfig, workspace: ws.Workspace, book: ledger_mod.Ledger
+) -> Tuple[List[str], opt_mod.Plan, opt_design.DesignPlan]:
+    """What the next `review run` and `review run --design` would decide, and why it would stop.
+
+    So the orchestrator finds out here rather than by being refused. Cheap:
+    the snapshot meta is already on disk, and nothing is delegated to work it out.
+    """
+    reasons: List[str] = []
+    meta = workspace.read_snapshot_meta()
+    missing = missing_path_lists(meta)
+    if missing:
+        # `review run` refuses it; the plan below reads it as touching nothing.
+        reasons.append(
+            "the snapshot has no %s list; take a fresh one with `dev-orchestra review snapshot`"
+            % " or ".join(missing)
+        )
+    plan = round_plan(loaded, workspace, meta, loaded.reviewers())
+    if plan.gate == opt_mod.GATE_REFUSE:
+        reasons.append("the last recorded test run failed; fix it before reviewing")
+    # And what the next `review run --design` would decide about its panel.
+    design_plan = design_round_plan(
+        loaded, workspace, loaded.design_reviewers(), lineage=design_lineage(workspace, book)
+    )
+    return reasons, plan, design_plan
+
+
+def _design_review_payload(
+    decision: opt_design.DesignDecision,
+    design_round: _RoundState,
+    accepted: int,
+    refused_for_size: Optional[Dict[str, Any]],
+    design_plan: opt_design.DesignPlan,
+) -> Dict[str, Any]:
+    """``design_review`` as `status` reports it."""
+    return {
+        # Whether the stage runs: `on`, or `auto` and this plan calls for it.
+        "enabled": decision.run,
+        "mode": decision.mode,
+        "reason": decision.reason or None,
+        "iteration": design_round.iteration,
+        "max_iterations": design_round.max_iterations,
+        "blocking": [f["id"] for f in design_round.blocking],
+        "accepted": accepted,
+        "refused_for_size": (refused_for_size or {}).get("context") or None,
+        "identical_rounds": design_round.repeats,
+        "final_revision": design_round.final_pass["state"],
+        "final_revision_pending": design_round.final_pass["pending"],
+        "optimization": design_plan.to_dict(),
+    }
 
 
 def _status_lines(status: _Status, plan_relative: str, warning: List[str]) -> List[str]:
