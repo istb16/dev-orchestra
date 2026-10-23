@@ -23,6 +23,7 @@ from . import ledger as ledger_mod
 from . import optimization as opt_mod
 from . import review as review_mod
 from . import workspace as ws
+from .cli_args import _add_command_group, _add_json_flag, _seconds
 from .cli_common import (
     _emit_json,
     _err,
@@ -60,6 +61,7 @@ from .cli_review_round import (
     _run_panel,
     _save_skipped_round,
 )
+from .cli_review_status import cmd_review_status
 from .round_progress import (
     missing_path_lists,
     round_plan,
@@ -932,3 +934,110 @@ def cmd_review_fix_brief(args: argparse.Namespace) -> int:
     else:
         _out(brief)
     return 0
+
+
+# --------------------------------------------------------------------------- parser
+
+
+def _add_design_flag(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--design",
+        action="store_true",
+        help="the design review of .ai/plan.md instead of the code review",
+    )
+
+
+def _add_review_parsers(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    review_sub = _add_command_group(subparsers, "review", "independent multi-model review pipeline")
+
+    snapshot = review_sub.add_parser("snapshot", help="freeze the change under review")
+    snapshot.add_argument("--base", default=None, help="revision to diff against (default: HEAD)")
+    snapshot.add_argument("--no-untracked", action="store_true")
+    snapshot.add_argument(
+        "--no-exclude",
+        action="store_true",
+        help="send every changed file, including generated and vendored ones",
+    )
+    snapshot.add_argument(
+        "--full",
+        action="store_true",
+        help="diff the whole change even on a re-review, not just what the fix changed",
+    )
+    snapshot.add_argument(
+        "--surrounding",
+        choices=context_mod.SURROUNDING_MODES,
+        default=None,
+        help="override review.context.surrounding for this snapshot only",
+    )
+    _add_json_flag(snapshot)
+    snapshot.set_defaults(func=cmd_review_snapshot)
+
+    review_run = review_sub.add_parser("run", help="run every reviewer against the frozen snapshot")
+    review_run.add_argument(
+        "--request",
+        default=None,
+        help="the design request the plan answers (--design; default .ai/execution/design-request.md)",
+    )
+    review_run.add_argument(
+        "--iteration",
+        type=int,
+        default=None,
+        help="review round; derived from the snapshot when omitted",
+    )
+    review_run.add_argument("--sequential", action="store_true")
+    review_run.add_argument("--only", nargs="*", default=None, help="reviewer ids or roles to run")
+    review_run.add_argument("--context", default=None, help="extra context for reviewers")
+    review_run.add_argument("--base", default=None)
+    review_run.add_argument("--timeout", type=_seconds(whole=True), default=None)
+    review_run.add_argument("--idle-timeout", type=_seconds(), default=None)
+    review_run.add_argument(
+        "--force",
+        action="store_true",
+        help="run past the review iteration budget, or with the tests recorded as failing",
+    )
+    review_run.add_argument(
+        "--surrounding",
+        choices=context_mod.SURROUNDING_MODES,
+        default=None,
+        help="override review.context.surrounding for this run only",
+    )
+    review_run.add_argument(
+        "--high-risk",
+        action="store_true",
+        help="declare the change high-risk: adds when: high-risk reviewers and keeps every role; "
+        "level and gate are unchanged",
+    )
+    review_run.add_argument(
+        "--progress",
+        action="store_true",
+        help="echo each reviewer's tool uses to stderr while the round runs",
+    )
+    _add_json_flag(review_run)
+    review_run.set_defaults(func=cmd_review_run)
+
+    consolidate = review_sub.add_parser("consolidate", help="re-parse reports and dedupe findings")
+    consolidate.add_argument("--iteration", type=int, default=None)
+    _add_json_flag(consolidate)
+    consolidate.set_defaults(func=cmd_review_consolidate)
+
+    review_show = review_sub.add_parser("show", help="show the consolidated review")
+    review_show.add_argument("--accepted", action="store_true", help="only accepted findings")
+    _add_json_flag(review_show)
+    review_show.set_defaults(func=cmd_review_show)
+
+    triage = review_sub.add_parser("triage", help="record a triage decision for findings")
+    triage.add_argument("ids", nargs="+")
+    triage.add_argument("--status", required=True, choices=list(review_mod.TRIAGE_STATUSES))
+    triage.add_argument("--note", default=None)
+    triage.set_defaults(func=cmd_review_triage)
+
+    fix_brief = review_sub.add_parser("fix-brief", help="emit the accepted-findings brief for the fixer")
+    fix_brief.add_argument("--output", default=None)
+    fix_brief.set_defaults(func=cmd_review_fix_brief)
+
+    status = review_sub.add_parser("status", help="report whether a re-review is warranted")
+    _add_json_flag(status)
+    status.set_defaults(func=cmd_review_status)
+
+    for parser_with_scope in (review_run, consolidate, review_show, triage, fix_brief, status):
+        _add_design_flag(parser_with_scope)

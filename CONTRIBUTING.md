@@ -230,13 +230,14 @@ still carries the allowlist and `--restricted`.
 | A new CLI | `scripts/orchestrator/providers/` + `register()` — see `references/providers.md` (a user's own adapter goes in `<config dir>/providers/` instead, without a change here) |
 | Config schema | `config_common.py` (defaults) **and** `config_validation.py` (`validate`) + `references/configuration.md` |
 | Read-only seat / write-role refusals and enforcement warnings | `config_policy.py` |
-| A command | its `cli_*.py` module (`cli_review.py` for `review …`, with `review status` in `cli_review_status.py`, `review run --design` in `cli_review_design.py` and what both kinds of round share in `cli_review_round.py`; `cli_state.py` for `state`/`budget`/`tokens`, …), and its arguments in `cli.py` |
+| A command | its `cli_*.py` module (`cli_review.py` for `review …`, with `review status` in `cli_review_status.py`, `review run --design` in `cli_review_design.py` and what both kinds of round share in `cli_review_round.py`; `cli_state.py` for `state`/`budget`/`tokens`, …), its arguments in the `_add_*_parsers` function at the end of that module, and the argument types and flags every command shares in `cli_args.py` |
 | The wording of `optimization report` | `optimization_render.py`, which builds the lines; the figures come from `optimization_report.py`, and `cli_state.py` reads the run logs and prints |
 | Review snapshot, fan-out, parsing, consolidation, coverage wording | `review_snapshot.py`, `review_fanout.py`, `review_parsing.py`, `review_consolidation.py`, `review_coverage.py`, plan tokens in `review_plan.py`, re-review context in `review_round_context.py`; constants and prompt templates in `review_common.py` |
 | Whether the design review runs and who sits on a design round | `optimization_design.py`; the plan-reading helpers stay in `optimization.py` |
 | What the next review round would decide, and where the final revision or fix of a spent budget stands | `round_progress.py`, read by `review run`, `review status` and `status` |
 
-`cli.py` holds the parser and `main()` only and re-exports nothing: a test
+`cli.py` builds the parser from each module's `_add_*_parsers`, in the order
+`--help` lists them, holds `main()`, and re-exports nothing: a test
 imports a command's helper from its own module (`cli_run._detached_argv`), and
 the helpers every command shares from `cli_common.py`. What only a `config`
 writer and the setup wizard need -- finding the layer to edit, seeding and

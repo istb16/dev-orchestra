@@ -18,7 +18,9 @@ from . import questions as questions_mod
 from . import review as review_mod
 from . import workflow as workflow_mod
 from . import workspace as ws
+from .cli_args import _add_command_group, _add_json_flag
 from .cli_common import _container, _emit_json, _err, _ledger, _load_lenient, _out, _workspace, _wrote_plan
+from .cli_questions import cmd_design_questions_answer, cmd_design_questions_record, cmd_design_questions_show
 from .round_progress import (
     approved_as_recorded,
     code_final_pass_from,
@@ -1100,3 +1102,90 @@ def _summary_lines(payload: Dict[str, Any]) -> List[str]:
             )
         )
     return lines
+
+
+# --------------------------------------------------------------------------- parser
+
+
+def _add_design_parsers(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    design_sub = _add_command_group(
+        subparsers, "design", "the user's answers to the design questions and approval of the plan"
+    )
+    design_approve = design_sub.add_parser(
+        "approve", help="record the user's approval of the plan as it is now (only after their yes)"
+    )
+    _add_json_flag(design_approve)
+    design_approve.set_defaults(func=cmd_design_approve)
+
+    questions_group = design_sub.add_parser(
+        "questions", help="the questions asked before the plan is written, and the user's answers"
+    )
+    questions_sub = questions_group.add_subparsers(dest="questions_command", required=True)
+    record = questions_sub.add_parser("record", help="record question blocks from a file")
+    record.add_argument("--by", required=True, choices=list(questions_mod.ASKERS), help="who asked them")
+    record.add_argument("--file", required=True, help="the question blocks: a path, or - for stdin")
+    record.add_argument("--force", action="store_true", help="record an architect round past the round cap")
+    record.set_defaults(func=cmd_design_questions_record)
+
+    answer = questions_sub.add_parser("answer", help="record the user's answer (only their words)")
+    answer.add_argument("ids", nargs="+", help="question ids, e.g. Q3; several only with --delegate")
+    answer.add_argument("--option", default=None, help="the option key the user chose")
+    answer.add_argument("--text", default=None, help="the user's own words, as given")
+    answer.add_argument("--delegate", action="store_true", help="the user left it to the architect")
+    answer.add_argument(
+        "--revise", action="store_true", help="replace an earlier answer, keeping it in history"
+    )
+    answer.set_defaults(func=cmd_design_questions_answer)
+
+    show = questions_sub.add_parser("show", help="the recorded questions and answers")
+    show.add_argument("--open", action="store_true", help="only the questions not answered yet")
+    _add_json_flag(show)
+    show.set_defaults(func=cmd_design_questions_show)
+
+
+def _add_state_parsers(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    state_sub = _add_command_group(subparsers, "state", "inspect or append run state")
+    state_show = state_sub.add_parser("show")
+    _add_json_flag(state_show)
+    state_show.set_defaults(func=cmd_state_show)
+    state_record = state_sub.add_parser("record")
+    state_record.add_argument("stage")
+    state_record.add_argument("status")
+    state_record.add_argument("--detail", nargs="*", default=None, help="key=value pairs")
+    state_record.set_defaults(func=cmd_state_record)
+
+
+def _add_workflow_parsers(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    workflow_sub = _add_command_group(
+        subparsers, "workflow", "the workflows in this project and which one is yours"
+    )
+    workflow_list = workflow_sub.add_parser("list", help="every workflow here, most recent first")
+    _add_json_flag(workflow_list)
+    workflow_list.set_defaults(func=cmd_workflow_list)
+    workflow_show = workflow_sub.add_parser("show", help="which workflow this command is in, and why")
+    _add_json_flag(workflow_show)
+    workflow_show.set_defaults(func=cmd_workflow_show)
+    workflow_use = workflow_sub.add_parser("use", help="remember an id for this directory")
+    workflow_use.add_argument("id")
+    workflow_use.set_defaults(func=cmd_workflow_use)
+    workflow_remove = workflow_sub.add_parser("remove", help="delete one finished workflow's artifacts")
+    workflow_remove.add_argument("id")
+    workflow_remove.add_argument("--yes", action="store_true", help="do not ask")
+    workflow_remove.add_argument(
+        "--force", action="store_true", help="delete it even with a stage in flight or a job unfinished"
+    )
+    workflow_remove.set_defaults(func=cmd_workflow_remove)
+
+
+def _add_status_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    status_parser = subparsers.add_parser(
+        "status", help="continue or stop: budgets, stalls and open findings in one verdict"
+    )
+    _add_json_flag(status_parser)
+    status_parser.set_defaults(func=cmd_status)
+
+
+def _add_summary_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    summary = subparsers.add_parser("summary", help="print the end-of-run summary")
+    _add_json_flag(summary)
+    summary.set_defaults(func=cmd_summary)

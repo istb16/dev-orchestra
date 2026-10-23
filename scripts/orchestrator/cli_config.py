@@ -17,6 +17,7 @@ from . import optimization as opt_mod
 from . import presets as presets_mod
 from . import suggest as suggest_mod
 from . import wizard as wizard_mod
+from .cli_args import _add_command_group, _add_json_flag
 from .cli_common import _emit_json, _err, _load_lenient, _out
 from .cli_hooks import LEFT_OUT_NOTE, OTHER_PROJECTS_NOTE, report_install, report_uninstall
 from .config_layers import (
@@ -1347,3 +1348,200 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     else:
         _out(doctor_mod.render(report))
     return doctor_mod.exit_code(report) if args.strict else 0
+
+
+# --------------------------------------------------------------------------- parser
+
+
+def _add_scope_flag(parser: argparse.ArgumentParser, default: Optional[str] = None) -> None:
+    parser.add_argument("--scope", choices=["global", "project"], default=default)
+
+
+def _add_no_hooks_flag(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--no-hooks",
+        action="store_true",
+        help="save language.reply without adding or removing the Claude Code hooks",
+    )
+
+
+def _add_config_parsers(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    config_sub = _add_command_group(subparsers, "config", "show and edit configuration")
+
+    show = config_sub.add_parser("show", help="show the effective configuration")
+    show.add_argument("--scope", choices=["global", "project", "effective"], default="effective")
+    _add_json_flag(show)
+    show.set_defaults(func=cmd_config_show)
+
+    path_parser = config_sub.add_parser("path", help="print config file locations")
+    path_parser.set_defaults(func=cmd_config_path)
+
+    setup = config_sub.add_parser("setup", help="run the setup wizard")
+    _add_scope_flag(setup, default="global")
+    setup_choice = setup.add_mutually_exclusive_group()
+    setup_choice.add_argument(
+        "--preset",
+        choices=presets_mod.NAMES,
+        help="save this preset without prompting; it is fitted to the installed CLIs at load time",
+    )
+    setup_choice.add_argument(
+        "--defaults", action="store_true", help="write the recommended config without prompting"
+    )
+    setup.add_argument("--force", action="store_true", help="prompt even without a TTY")
+    setup.add_argument(
+        "--language",
+        default=None,
+        metavar="TAG",
+        help="the language replies are written in (language.reply), e.g. ja, ko, zh-TW",
+    )
+    _add_no_hooks_flag(setup)
+    setup.set_defaults(func=cmd_config_setup)
+
+    reset = config_sub.add_parser(
+        "reset",
+        help="clear this layer's overrides (the file keeps only version, and the global file its "
+        "preset); --delete removes it",
+    )
+    _add_scope_flag(reset)
+    reset.add_argument("--delete", action="store_true", help="delete the config file instead of clearing it")
+    reset.set_defaults(func=cmd_config_reset)
+
+    set_parser = config_sub.add_parser("set", help="set one value, e.g. implementer.model.family opus")
+    set_parser.add_argument("path")
+    set_parser.add_argument("value")
+    _add_scope_flag(set_parser)
+    set_parser.add_argument("--raw", action="store_true", help="keep the value as a string")
+    _add_no_hooks_flag(set_parser)
+    set_parser.set_defaults(func=cmd_config_set)
+
+    validate = config_sub.add_parser("validate", help="validate the effective configuration")
+    _add_json_flag(validate)
+    validate.set_defaults(func=cmd_config_validate)
+
+    suggest_roles = config_sub.add_parser(
+        "suggest-roles",
+        help="propose path-scoped specialist reviewers from the project's files (no model call)",
+    )
+    suggest_roles.add_argument(
+        "--write", action="store_true", help="add them to the project file's reviewers_extra"
+    )
+    _add_json_flag(suggest_roles)
+    suggest_roles.add_argument(
+        "--provider",
+        choices=available_providers(),
+        default=None,
+        help="the CLI they run on (default: the first installed of claude, codex)",
+    )
+    suggest_roles.add_argument(
+        "--model", default=None, help="model family (default: the provider's cheap one)"
+    )
+    suggest_roles.set_defaults(func=cmd_config_suggest_roles)
+
+
+def _add_model_parsers(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    model_sub = _add_command_group(subparsers, "model", "inspect available models")
+    model_list = model_sub.add_parser("list", help="list models the installed CLIs advertise")
+    model_list.add_argument("--provider", choices=available_providers(), default=None)
+    _add_json_flag(model_list)
+    model_list.set_defaults(func=cmd_model_list)
+
+
+def _add_reviewer_parsers(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    reviewer_sub = _add_command_group(subparsers, "reviewer", "manage the review panel")
+
+    r_list = reviewer_sub.add_parser("list", help="list configured reviewers")
+    _add_design_panel_flag(r_list)
+    _add_json_flag(r_list)
+    r_list.set_defaults(func=cmd_reviewer_list)
+
+    r_add = reviewer_sub.add_parser("add", help="add a reviewer")
+    r_add.add_argument("--provider", required=True, choices=available_providers())
+    r_add.add_argument("--model", default=None, help="model family (default: provider's recommended)")
+    r_add.add_argument("--role", default="general")
+    r_add.add_argument("--id", default=None)
+    r_add.add_argument("--pin", default=None, help="pin an exact model id instead of tracking latest")
+    r_add.add_argument(
+        "--when",
+        choices=list(opt_mod.REVIEWER_CONDITIONS),
+        default=None,
+        help="when it runs (default: always; a design round on the code panel runs every reviewer)",
+    )
+    r_add.add_argument(
+        "--when-paths",
+        nargs="+",
+        default=None,
+        metavar="GLOB",
+        help="run on a code review only when a changed path matches one of these (quote each)",
+    )
+    r_add.add_argument(
+        "--high-risk-model",
+        default=None,
+        metavar="FAMILY",
+        help="the model family it runs on a high-risk round",
+    )
+    _add_relevance_flag(r_add, "")
+    _add_design_panel_flag(r_add)
+    _add_scope_flag(r_add)
+    r_add.set_defaults(func=cmd_reviewer_add)
+
+    r_remove = reviewer_sub.add_parser("remove", help="remove a reviewer by id, role, or position")
+    r_remove.add_argument("selector")
+    _add_design_panel_flag(r_remove)
+    _add_scope_flag(r_remove)
+    r_remove.set_defaults(func=cmd_reviewer_remove)
+
+    r_set = reviewer_sub.add_parser("set", help="change an existing reviewer")
+    r_set.add_argument("selector")
+    r_set.add_argument("--provider", choices=available_providers(), default=None)
+    r_set.add_argument("--model", default=None)
+    r_set.add_argument("--role", default=None)
+    r_set.add_argument("--id", default=None)
+    r_set.add_argument("--pin", default=None)
+    r_set.add_argument("--when", choices=list(opt_mod.REVIEWER_CONDITIONS), default=None)
+    r_set.add_argument(
+        "--when-paths",
+        nargs="+",
+        default=None,
+        metavar="GLOB",
+        help="replace the condition with these patterns (quote each)",
+    )
+    risk_model = r_set.add_mutually_exclusive_group()
+    risk_model.add_argument(
+        "--high-risk-model",
+        default=None,
+        metavar="FAMILY",
+        help="the model family it runs on a high-risk round",
+    )
+    risk_model.add_argument(
+        "--clear-high-risk-model", action="store_true", help="run the usual model on high-risk rounds too"
+    )
+    _add_relevance_flag(r_set, "default")
+    _add_design_panel_flag(r_set)
+    _add_scope_flag(r_set)
+    r_set.set_defaults(func=cmd_reviewer_set)
+
+
+def _add_design_panel_flag(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--design",
+        action="store_true",
+        help="the design review's panel (review.design.reviewers) instead of the code review's",
+    )
+
+
+def _add_relevance_flag(parser: argparse.ArgumentParser, default_choice: str) -> None:
+    """``--relevance``: the rule that may leave the seat out of a round with nothing for it."""
+    choices = [*opt_mod.RELEVANCE_RULES, opt_mod.RELEVANCE_ALWAYS]
+    text = "the rule that may leave it out of a round with nothing for it; always: never"
+    if default_choice:
+        choices.append(default_choice)
+        text += "; %s: its role's own" % default_choice
+    parser.add_argument("--relevance", choices=choices, default=None, help=text)
+
+
+def _add_doctor_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    doctor_parser = subparsers.add_parser("doctor", help="diagnose CLIs, auth and configuration")
+    _add_json_flag(doctor_parser)
+    doctor_parser.add_argument("--fast", action="store_true", help="skip model discovery")
+    doctor_parser.add_argument("--strict", action="store_true", help="exit non-zero when problems are found")
+    doctor_parser.set_defaults(func=cmd_doctor)

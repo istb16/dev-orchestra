@@ -11,6 +11,7 @@ from . import atomic_file, units_merge, units_run
 from . import units as units_mod
 from . import workspace as ws
 from . import worktrees as worktrees_mod
+from .cli_args import _add_command_group, _add_json_flag
 from .cli_common import _emit_json, _err, _out, _workspace, _workspace_and_config
 
 
@@ -342,3 +343,44 @@ def cmd_units_clean(args: argparse.Namespace) -> int:
     if not removed and not kept:
         _out("No worktrees to remove.")
     return 1 if kept else 0
+
+
+# --------------------------------------------------------------------------- parser
+
+
+def _add_units_parsers(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    units_sub = _add_command_group(subparsers, "units", "the plan's work units, run apart or side by side")
+    units_check = units_sub.add_parser("check", help="refuse units that cannot run, print the schedule")
+    units_check.set_defaults(func=cmd_units_check)
+    units_status = units_sub.add_parser("status", help="each unit's state, and which can start now")
+    _add_json_flag(units_status)
+    units_status.set_defaults(func=cmd_units_status)
+    units_merge = units_sub.add_parser("merge", help="merge a finished unit into the working tree")
+    units_merge.add_argument("name", help="the unit")
+    units_merge.add_argument(
+        "--resolved",
+        action="store_true",
+        help="its conflicts are resolved: check no marker is left, mark it merged",
+    )
+    units_merge.add_argument(
+        "--keep",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help="with --resolved: a conflict without markers whose working version is kept as the resolution",
+    )
+    _add_json_flag(units_merge)
+    units_merge.set_defaults(func=cmd_units_merge)
+    units_clean = units_sub.add_parser("clean", help="remove the worktrees units left behind")
+    units_clean.add_argument("name", nargs="?", default=None, help="only this unit's")
+    units_clean.set_defaults(func=cmd_units_clean)
+    units_join = units_sub.add_parser("join", help="join per-unit plans into one plan with ## Units")
+    units_join.add_argument(
+        "--part",
+        action="append",
+        required=True,
+        metavar="NAME=PATH",
+        help="a unit's plan; repeat it, in the order the units go in the plan",
+    )
+    units_join.add_argument("--output", required=True, help="where the joined plan is written")
+    units_join.set_defaults(func=cmd_units_join)
