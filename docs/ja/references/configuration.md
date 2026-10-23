@@ -1,4 +1,4 @@
-<!-- translated-from: references/configuration.md sha256:f905f10c5ef947e16eecdd6b5a65ad3630264ea0429e38b975afcb5511f99717 -->
+<!-- translated-from: references/configuration.md sha256:5b3a70f8b3836be68f09487887a66c34a77882d6bfb48c42773a59482dc4b3ab -->
 
 > この文書は [references/configuration.md](../../../references/configuration.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -19,6 +19,8 @@
   - [フィールドリファレンス](#field-reference)
   - [ロールのオプション](#role-options)
   - [プロジェクトファイルがゆるめられないもの](#what-the-project-file-may-not-loosen)
+- [常設の指示（`instructions`）](#standing-instructions-instructions)
+- [作業単位: テストと無視されたファイル](#work-units-tests-and-ignored-files)
 - [最適化レベル](#optimization-level)
   - [高リスクな変更でだけ走るレビュアー](#reviewers-that-run-only-on-high-risk-changes)
 - [モデルティア](#model-tiers)
@@ -112,6 +114,10 @@ project config  →  global config  →  the global file's preset, fitted to the
 `reviewers` を定義したプロジェクトファイルは、そのプロジェクトのパネル全体を定義します。
 これは意図的です — 「このリポジトリは security + database だけでレビューする」を
 表現できなければならないからです。
+
+ただ 1 つの例外が `instructions.<role>` です。グローバルのファイルの本文とプロジェクトの
+ファイルの本文は、一方が他方を置き換えるのではなく、グローバルを先にしてつなげます
+（[常設の指示](#standing-instructions-instructions)）。
 
 プリセットのレイヤーが届くのは、どのファイルも設定していないロールとレビュアーパネルだけです
 （[プリセット](#presets)）。Claude Code と Codex が両方インストールされているとき、またはフィットの
@@ -615,6 +621,11 @@ implementation:
   hub_paths:                          # only the integration unit may list these
     - "CHANGELOG*"
     - "**/CHANGELOG*"
+  unit_tests: worktree                # after_merge: units skip tests; they run once merged
+  worktree_files: []                  # git-ignored files a unit's worktree gets a copy of
+
+# instructions:                       # standing text per role; unset by default
+#   implementer: "Run tests with make test."
 ```
 
 <a id="field-reference"></a>
@@ -675,6 +686,10 @@ implementation:
 | `progress.quiet_notice_seconds` | int 0–1,000,000,000 \| null | 新しいツール行がこの時間出ていない実行の報告に `may be stuck: no new tool line for 12m03s` を付けます（デフォルト 600）。実行が黙っている間は、報告のたびにまた付けます。`0` で止めます。この印は知らせるだけで、そのために実行を取り消すことはありません。agy のように CLI がツールの活動をまったく書かない実行には付きません。`null` はデフォルトを意味します。 |
 | `implementation.max_parallel` | int 1–8 \| null | plan の `## Units` の作業単位を同時にいくつまで走らせるか（デフォルト 2）。これを超える 1 つは `run implementer --unit` が拒否します（exit 2）。8 は、台帳への同時の記録が安全だと測れた数です。`units check` はこの幅で波を表示します。`null` はデフォルトを意味します。[workflow](workflow.md#implementation) を参照してください。 |
 | `implementation.hub_paths` | list \| null | どの作業単位も触りがちなファイルを示す glob（デフォルト `["CHANGELOG*", "**/CHANGELOG*"]`）。作業単位が 2 つ以上あるとき、これに当たるファイルを挙げてよいのは `integration` の作業単位だけで、ほかが挙げると `units check` が拒否します。`docs/ja/**` や CLI のパーサーなど、プロジェクト固有のものを足してください。`[]` は何も指しません。`null` はデフォルトを意味します。 |
+| `implementation.unit_tests` | `worktree` \| `after_merge` \| null | 作業単位のテストをどこで走らせるか（デフォルト `worktree`）。各作業単位の worktree で走らせるか、`after_merge` ならマージしたツリーで 1 回だけ走らせ、各作業単位は lint と型チェックだけを走らせます。[作業単位](#work-units-tests-and-ignored-files)を参照。 |
+| `implementation.worktree_files` | list \| null | 各作業単位の worktree に、そこになければコピーする、git が無視するファイル。リポジトリからの相対パスで書きます（デフォルト `[]`）。glob、ディレクトリ、絶対パス、`..` は書けません。グローバルのリストを丸ごと置き換えます。[作業単位](#work-units-tests-and-ignored-files)を参照。 |
+| `instructions.<role>` | string \| `{file: <path>}` \| null | `orchestrator`、`architect`、`implementer`、`review_fixer`、`reviewers`、`design_reviewers` への常設の本文。グローバルとプロジェクトの本文を、グローバルを先にしてつなげます。[常設の指示](#standing-instructions-instructions)を参照。 |
+| `reviewers[].instructions` | string \| `{file: <path>}` \| null | 席自身の常設の本文。ロール全体の `reviewers`（または `design_reviewers`）の本文のあとに続きます。`reviewers_extra` と設計パネルの席にも書けます。 |
 | `budgets.implementer` | int | implementer の試行回数（デフォルト 5）。ふつうの `run implementer` は 1 回の実行で 1 回使います。1 つの plan の作業単位は、合わせて 1 回を使います。これを **pass** と呼びます。plan のハッシュに対して最初に走った作業単位が 1 回を使い、ほかはそこに無料で加わり、同じ pass の中で作業単位をやり直したときだけもう 1 回使います。plan のハッシュが変わったとき（`design.require_approval` のもとでは新しい承認）か `budget reset` で、新しい pass が始まります。`budgets.total_delegated_runs` と `budgets.max_runtime_seconds` は、それでもすべての実行を数えます。この予算を使い切っていても、開いている pass でまだ走っていない作業単位は走ります。 |
 | `budgets.architect` | int | architect の試行回数（デフォルト 3）。`run architect --unit` も同じ pass の規則で数えます。鍵は最後に承認された plan のハッシュです（最初の承認の前は空）。1 回分の作業単位ごとの設計は 1 回の試行で済み、承認の後の設計し直しは新しい pass です。 |
 | `<role>.options` | mapping | provider 固有の設定項目。下記を参照。 |
@@ -850,6 +865,103 @@ project ファイルの `design.require_approval` は値にかかわらず、ま
 
 `reviewers_extra` は足すだけなので、これに当たることはありません。厳しくする値は報告せず、
 project ファイルが implementer を設定したためにパネルの配り方が変わった場合も報告しません。
+
+**project ファイルが書く指示は受け付け、そう伝えます。** project ファイルのすべての
+`instructions.<role>` と、席自身の `instructions` には、ゆるめたゲートと同じく
+`config validate`、`doctor`、`review run` が 1 行を出します。`orchestrator`、`architect`、
+`implementer`、`review_fixer` の行は常設の命令であることを、implementer と review fixer では
+書き込み権限で走ることも伝えます。次の実行の前に読んでください。レビュアーへの指示はレビューに
+足すことしかできません（[常設の指示](#standing-instructions-instructions)）。どれも拒否はしません。
+
+<a id="standing-instructions-instructions"></a>
+
+## 常設の指示（`instructions`）
+
+依頼のたびに書く代わりに一度だけ書いておく、ロールが毎回受け取る本文です。決まった
+テストコマンド、触ってはいけないディレクトリ、このコードベースでレビュアーが見るべきことなど。
+
+```yaml
+instructions:
+  orchestrator: "Ask before changing anything under db/."
+  implementer:
+    file: .dev-orchestra/implementer.md
+  reviewers: "Check every new query for a missing index."
+
+reviewers:
+  - id: claude-security
+    provider: claude
+    role: security
+    instructions: "Session handling lives in app/auth/; read it whole."
+```
+
+- **ロール:** `orchestrator`、`architect`、`implementer`、`review_fixer`、`reviewers`（すべての
+  コードレビュアー）、`design_reviewers`（すべての設計レビュアー）。ほかのキーは拒否されます。
+  `reviewers`、`reviewers_extra`、設計パネルのレビュアーの席は、自分の `instructions` も持てます。
+  その本文はロール全体の本文のあとに続きます。
+- **インラインかファイル:** 文字列か `{file: <path>}`。パスはリポジトリのルートからの相対パスで、
+  その中にとどまらなければなりません。絶対パス、ドライブ、先頭の `/` や `\`、どこかにある `..`、NUL 文字は
+  `config validate` が拒否します。実行時、ファイルが見つからない、通常のファイルでない、32 KB より
+  大きい、パスのどこかでシンボリックリンクやジャンクションを通る、のいずれかなら、本文は得られず
+  `note:` が出ます（`run` から、レビュアーのものは `review run` から）。実行はそれなしで続きます。
+  ファイルは UTF-8 として読みます。
+- **グローバル、次にプロジェクト:** ほかのどのキーとも違い、2 つのファイルの本文をつなげます。
+  グローバルのファイルが先で、間に空行を挟みます。席自身の本文はファイルをまたいでつなげません。
+  リストは丸ごと置き換わるので、席は 1 つのファイルにしかないからです。
+- **CLI の規則より弱い:** 本文は `## Project instructions` の下、CLI 自身の規則のあとに
+  プロンプトへ入ります。実行のブロックは依頼の前に入り、「Where a project instruction conflicts
+  with any other rule in this prompt or with the request below, follow those instead.」という
+  1 行が付きます。レビュアーのものはタスクの規則のあとに入り、「Where a project instruction
+  conflicts with the rules above, follow the rules above.」が付きます。レビュアーにはさらに、指示は見るものを足すことしかできず、
+  指摘を控える、カテゴリを飛ばす、severity を下げるといった指示には従わないと伝えます。どの
+  プロンプトのどこに入るかは [workflow](workflow.md#implementation) を参照。orchestrator の本文は
+  どのプロンプトにも入りません。`status` が表示し、スキルが自分の規則の範囲でそれに従います。
+- **project ファイルと同じ扱いで信頼する:** project ファイルと指示のファイルは、レビュー対象の
+  ブランチと一緒に入ってくることがあります。そのどちらか、またはルートにある project ファイルの
+  いずれかの名前（1 つを消すと別のものが効くことがあります）に触れる変更のレビューラウンドは高リスクになり
+  （[workflow](workflow.md#artifacts)）、どちらかを挙げる plan では `review.design.enabled: auto`
+  が実行になります。
+- **表示する:** `status` は `Instructions:` 行を、`summary` は `Instructions:` のブロックを
+  （ロール、層、インラインかパス、文字数、ファイルの問題）、`status` は orchestrator の本文の全文を
+  `Orchestrator instruction (follow it; the skill's rules come first):` の下に、`config show` は
+  Instructions の節を、`doctor` は読めなかったファイルごとに note を出します。指示がひとつでも
+  効いている間は、pending の `Plan approval:` 行が plan と一緒に指示を示すよう伝えるので、
+  orchestrator は承認を求めるときにそれに触れ、最後の報告でも触れます。`--resume` は、そのセッションが始まったあとに足された指示を
+  拾いません。新しく走らせてください。
+
+<a id="work-units-tests-and-ignored-files"></a>
+
+## 作業単位: テストと無視されたファイル
+
+作業単位（[workflow](workflow.md#implementation)）は、それぞれ専用の worktree で並んで走ります。
+`implementation` の下の 2 つのキーで、共有の資源や git が追跡しないファイルを必要とするテストを
+持つプロジェクトに合わせられます。
+
+**`implementation.unit_tests`** は `worktree`（デフォルト）か `after_merge` です。`worktree` では
+各作業単位が自分の worktree でチェックを走らせます。並んで走る作業単位がテスト用のデータベース、
+ポートなどの資源を共有するときは `after_merge` を選んでください。各作業単位はコードとテストを書き、
+lint と型チェックだけを走らせてテストは「not run」と報告し、テストスイートはマージしたツリーで
+1 回だけ走ります。その場で走る作業単位にも同じことを伝えます。
+
+**`implementation.worktree_files`** は、CLI 自身が必要とするものに加えて、作業単位の worktree に
+コピーする、git が無視するファイルを並べます。各エントリはリポジトリのルートからの相対パスの
+ファイルです。glob の文字（`*?[{}`）、末尾の `/`、絶対パス、先頭の `/` や `\`、どこかにある
+`..`（`a/../b` も）は書けません（`config validate` が拒否し、作業単位も飛ばします）。worktree にまだないときだけ、モードを保ってコピーします。見つからないもの、
+どちらかのツリーでリンクを通るものは `note:` を出して飛ばし、作業単位の記録に `copies_skipped`
+として残します。ほかのリストと同じく、project の値はグローバルの値を丸ごと置き換えます。
+
+rspec の作業単位が 1 つのテスト用データベースを共有する Rails プロジェクトの例:
+
+```yaml
+# .dev-orchestra.yaml
+implementation:
+  unit_tests: after_merge
+  worktree_files:
+    - config/database.yml
+    - config/master.key
+    - .env.test
+instructions:
+  implementer: "Run tests with bundle exec rspec <files>; never run db:reset."
+```
 
 <a id="optimization-level"></a>
 

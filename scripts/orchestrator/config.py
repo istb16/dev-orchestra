@@ -28,6 +28,7 @@ from .config_common import (  # noqa: F401 - re-exported
     KNOWN_ROLES,
     PROGRESS_INTERVAL_MAX,
     PROGRESS_INTERVAL_MIN,
+    PROMPTED_ROLES,
     READ_ONLY_ROLES,
     RUN_TIMEOUT_DEFAULTS,
     STALE_NOTICE_MAX_DAYS,

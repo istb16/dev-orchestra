@@ -39,20 +39,29 @@ class TestCopies(IsolatedCase):
         for relative, inside in (
             ("..dotfile", True),
             ("notes/..hidden", True),
-            ("a/../b.txt", True),
+            ("./notes//a.txt", True),
+            ("notes\\a.txt", True),
+            # A `..` after a link would leave the tree although the path reads as inside.
+            ("a/../b.txt", False),
+            ("a\\..\\b.txt", False),
             ("..", False),
             (os.path.join("..", "x"), False),
             ("a/../../x", False),
             (os.path.abspath("x"), False),
+            ("/x", False),
+            ("\\x", False),
+            ("", False),
+            (".", False),
+            ("docs/x\0.md", False),
         ):
             with self.subTest(relative=relative):
-                self.assertIs(worktrees._in_repository(relative), inside)
+                self.assertIs(ws.inside_repository(relative), inside)
 
     @unittest.skipUnless(os.name == "nt", "drives are Windows'")
     def test_worktrees_copy_paths_with_a_drive_are_outside(self):
         for relative in ("C:..\\secret.txt", "C:foo", "c:notes\\a.txt"):
             with self.subTest(relative=relative):
-                self.assertFalse(worktrees._in_repository(relative))
+                self.assertFalse(ws.inside_repository(relative))
 
 
 class TestSafeWalker(IsolatedCase):

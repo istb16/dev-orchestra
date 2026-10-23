@@ -11,7 +11,7 @@ import sys
 import time
 from typing import Any, Dict, List, NamedTuple, Optional, Tuple, Union, cast
 
-from . import activity, clocks, execution_tree, units_run
+from . import activity, clocks, execution_tree, instructions, units_run
 from . import approval as approval_mod
 from . import config as config_mod
 from . import config_policy as policy_mod
@@ -327,6 +327,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             # The parent claimed the unit; refused here, it ran nothing.
             _finish_unit(workspace, args.unit, False)
         return refusal
+    block = _instruction_prefix(args, loaded, seat)
     # After the gates, so an unapproved plan is refused as it always was,
     # before a worktree is made or anything is claimed. An architect's unit
     # claims nothing: it runs in the user's tree, in plan mode, and is only a
@@ -339,7 +340,9 @@ def cmd_run(args: argparse.Namespace) -> int:
         if isinstance(claimed, int):
             return claimed
         unit = claimed
-        prompt = unit.header + prompt
+        prompt = unit.header + block + prompt
+    else:
+        prompt = block + prompt
     timeout, timeout_origin = _deadline(args, loaded, seat)
     idle_timeout, idle_origin = _idle_deadline(args, loaded, seat, provider)
     book = _ledger(args, workspace)
@@ -1296,6 +1299,7 @@ def _claim_unit(
             approval_mod.plan_digest(plan_text),
             settings.max_parallel,
             worktrees_mod.copies_for(workspace.root, provider.worktree_files, loaded.project_path),
+            checked_copies=settings.worktree_files,
         )
     except units_run.Refused as exc:
         return _refuse_run(args, ["--unit %s: %s" % (name, exc)])
@@ -1304,13 +1308,34 @@ def _claim_unit(
             "note: %s: the environment could not be linked into its worktree; "
             "its checks run after the merge" % name
         )
+    for skipped in claimed.copies_skipped:
+        _err(
+            "note: %s: %s not copied into its worktree (%s)"
+            % (name, skipped.get("path"), skipped.get("reason"))
+        )
     return _UnitRun(
         name,
         claimed.in_place,
         claimed.cwd,
-        header=units_mod.header(unit, plan_text, claimed.checks_skipped),
+        header=units_mod.header(unit, plan_text, claimed.checks_skipped, settings.unit_tests),
         previous=claimed.previous,
     )
+
+
+def _instruction_prefix(args: argparse.Namespace, loaded: config_mod.LoadedConfig, seat: _Seat) -> str:
+    """The ``## Project instructions`` block a run's prompt starts with; "" when there is none.
+
+    A worker's is "": its parent put the block in the prompt it handed over.
+    A reviewer run by name has its instructions put in by ``review run``, and
+    the orchestrator's are followed by the session from ``status``, never
+    put in a prompt.
+    """
+    if args.job_file or seat.role not in config_mod.PROMPTED_ROLES:
+        return ""
+    resolved = instructions.resolve(loaded, seat.role)
+    for line in instructions.problem_notes([resolved], "running"):
+        _err(line)
+    return instructions.run_block(resolved)
 
 
 def _worker_unit(args: argparse.Namespace, workspace: ws.Workspace) -> Union[int, _UnitRun]:

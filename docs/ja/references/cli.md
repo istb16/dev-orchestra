@@ -1,4 +1,4 @@
-<!-- translated-from: references/cli.md sha256:b82c7a8cbf4d85071bd75944d4dcae7d4fbbadeede23c02632b66a1023d4ff61 -->
+<!-- translated-from: references/cli.md sha256:c8520381acb9195be4c1cd32a9f2bd31ad492e987090987717c4f95214b68a1b -->
 
 > この文書は [references/cli.md](../../../references/cli.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -656,6 +656,19 @@ stuck notice after 600s (progress.*)` のようになり、`progress.quiet_notic
 `interval_seconds`、`quiet_notice_seconds` が入ります。ユーザーに伝える内容を変えるだけなので、
 理由にはなりません。
 
+`Instructions:` 行は、常設の指示（`references/configuration.md` の `instructions`）が効いている
+ロールやレビュアーの席ごとに、その層、`inline` かファイルのパス、文字数、そしてファイルから
+何も得られなかった理由（見つからない、リンクである、リポジトリの外にある）を示します。
+`instructions.orchestrator` に本文があるときは、その全文を字下げした `Orchestrator instruction
+(follow it; the skill's rules come first):` のブロックが続きます。指示が何も設定されていなければ、
+どちらも出ません。指示がひとつでも効いている間は、pending の `Plan approval:` 行が `pending -- present
+<plan> and the instructions in force to the user and ask; …` となり、ユーザーが plan と一緒に
+`Instructions:` 行を見られるようにします。指示がなければこの行は変わりません。`Unit tests:
+after_merge (…)` 行は `implementation.unit_tests` が `after_merge` のときだけ出ます。`--json`
+には `instructions` が常に入ります。中身は `in_force`（ソースごとに 1 行で、`role`、`layer`、
+`kind`、`path`、`chars`、`problem` を持つ）と `orchestrator`（つないだ本文。なければ `""`）です。
+`implementation.unit_tests` も常に入ります。どちらも理由にはなりません。
+
 使い切ったラウンドの予算は、上限に達したラウンドが最後のパスを終えるまでは理由になりません。
 Design（`design_review.final_revision`）: `pending`（指摘をもう一度 plan に反映する。再レビューは
 しない）は `continue` です。`done`（plan が固定されたものと異なる、または architect がそのラウンドの後に
@@ -780,7 +793,7 @@ plan の作業単位です。`.ai/plan.md` の `## Units` ブロックで、そ�
 | コマンド | 説明 |
 | --- | --- |
 | `units check` | 走らせられない作業単位を拒否します（終了コード 2）。読めないブロック、名前の重複、未知の依存、循環、`### Unit: <name>` セクションの欠落、並んで走りうる（どちらも、間接的にも、もう一方に依存しない）2 つの作業単位の `files` の重なり（同じパス、パスとその下のパス、パスに当たる glob、パスとその下に固定の接頭辞がある glob、入れ子になった glob の接頭辞）、`integration` の作業単位が 2 つ以上あること、またはそれがほかのすべてに依存していないこと、そして作業単位が 2 つ以上あるときに integration 以外の作業単位が `implementation.hub_paths` のファイルを挙げていることです。git リポジトリの中ではリポジトリのファイル（追跡中のものと、追跡外で無視されていないもの）も読みます。ディレクトリを指すパスはその下のファイルを、glob は当たるファイルを表すものとし、共通のファイルを指す 2 つのエントリは重なりとみなし、hub ファイルを含むディレクトリはそのファイルを挙げたものとみなします。それ以外は、1 つの波に最大 `implementation.max_parallel` 個の作業単位を並べた予定を表示します。plan の Files to Modify にない作業単位のファイルは `warning:` を出すだけです。`## Units` のない plan は 1 回の実行です（終了コード 0）。plan がなければ終了コード 2 です。 |
-| `units status [--json]` | 各作業単位の状態（`pending`、`running`、`succeeded`、`failed`、`cancelled`、`conflicted`、`merged`）、ジョブ、基点のコミット、worktree（または `in place`）、始められる作業単位（`pending` で、依存がすべてマージ済みのもの）、そして実装のステージが失敗したか（どれかの作業単位が失敗したか）を示します。`running` と記録されているのにワーカー、またはそれを始めたフォアグラウンドの実行がいなくなった作業単位は、`units clean` や `run implementer --unit` と同じく、先に `failed` として記録します。 |
+| `units status [--json]` | 各作業単位の状態（`pending`、`running`、`succeeded`、`failed`、`cancelled`、`conflicted`、`merged`）、ジョブ、基点のコミット、worktree（または `in place`）、始められる作業単位（`pending` で、依存がすべてマージ済みのもの）、そして実装のステージが失敗したか（どれかの作業単位が失敗したか）を示します。`running` と記録されているのにワーカー、またはそれを始めたフォアグラウンドの実行がいなくなった作業単位は、`units clean` や `run implementer --unit` と同じく、先に `failed` として記録します。`implementation.unit_tests: after_merge` のときは、作業単位がテストをマージ後の tree に任せることを 1 行で示します。`--json` には `unit_tests` が常に入ります。 |
 | `units merge <name> [--resolved [--keep <path>]...] [--json]` | 成功した作業単位を、ファイルごとに作業ツリーへマージします。index、`HEAD`、ブランチには決して触れません。作業単位が始まってからユーザーのツリーで変わっていないファイルは作業単位の版になり、両方が変えたテキストファイルは三方向でマージします（`git merge-file`。印は `<<<<<<< main` と `>>>>>>> unit:<name>`）。バイナリファイル、削除と変更のぶつかり、symlink、submodule は競合で、ユーザーの版を残し、作業単位の版を `.ai/execution/units/<name>/theirs/` に保存します。きれいにマージできれば作業単位は `merged` です（終了コード 0）。競合があれば `conflicted` になり、指示書 `.ai/execution/units/<name>-conflicts.md` がそのファイル、この作業単位とそれらを変えたマージ済みの各作業単位の plan のセクション、保存したコピーを示し、終了コード 7 で終わります。そのあと `--resolved` は、それらのファイルに `<<<<<<< main` か `>>>>>>> unit:` の行が残っている間、または印を書かない競合（バイナリファイル、削除と変更のぶつかり、symlink、submodule、通常のファイルでないパス、リンクのディレクトリの下にあるパス）のファイルがマージの残した版とまったく同じである間は、そのファイルを示して拒否します（終了コード 2）。`--keep <path>` は繰り返して指定でき、残した版がそのまま解決であるそうしたファイルを示します。作業単位の競合でないパスを渡すと拒否します（終了コード 2）。それ以外なら作業単位を `merged` にして、競合したファイルを `resolved_files` として記録します。成功していない作業単位は拒否します（終了コード 2）。その場で走った作業単位はもうマージ済みで、何もしません（終了コード 0）。作業単位が自分の `files` の外で変えたファイルは示して、`outside_files` として記録します。 |
 | `units clean [<name>]` | 作業単位が残した worktree を消します。すべての作業単位のもの、または `<name>` のものです。まだ走っている作業単位の worktree は残します。`running` と記録されているのにワーカー、またはそれを始めたフォアグラウンドの実行がいなくなった作業単位は `failed` として記録し、もう一度走らせられるようにします。`units status` と `run implementer --unit` も同じように記録します。消せない worktree があれば終了コード 1 です。 |
 | `units join --part <name>=<path>... --output <path>` | `run architect --unit` が書いた作業単位ごとの plan を、`--output` の 1 つの plan にまとめます。各部分の `## Units` には、その作業単位だけがなければなりません。まとめた plan には、各部分の `## Goal` と `## Files to Modify` を部分ごとの `### <name>` 見出しの下に集めた `## Goal` と `## Files to Modify` があり、続いて渡した順に各部分の項目を並べた 1 つの `## Units` ブロックがあり、そのあとに各部分が `### Unit: <name>` の下に続きます。各部分の `## Units` は取り除き、見出しは最も浅いものがレベル 4 になるように下げます。まとめた作業単位が `units check` の規則を満たさなければ、何も書きません（終了コード 2）。 |
@@ -1226,7 +1239,7 @@ stderr に一度だけ知らせます。実行中のステージがあるワー�
 | --- | --- |
 | `state show [--json]` | このプロジェクトで記録されたステージのイベントを表示します。 |
 | `state record <stage> <status> [--detail k=v …]` | ステージの結果を追記します（`run` を通して実行されないステージ用）。`state record test ok\|failed` はレビューゲートが読むものです。再テストも同じ方法で記録してください。`test` と `re-test` の status は `ok` か `failed` だけで、それ以外は拒否します（exit 2）。ゲートはほかの語を合格と読んでしまうためです。`--detail` でイベント自身の欄である `stage`、`status`、`at` は指定できません（exit 2）。 |
-| `summary [--json]` | 実行終了時のステージとモデルのサマリーを表示します。plan が承認されていれば `design_approval` も含みます。`--json` は `stages`、`counts`、`tokens` に加えて、テキストに出る内容を持ちます（[json](json.md#summary)）。 |
+| `summary [--json]` | 実行終了時のステージとモデルのサマリーを表示します。plan が承認されていれば `design_approval` も含みます。`--json` は `stages`、`counts`、`tokens` に加えて、テキストに出る内容を持ちます（[json](json.md#summary)）。効いている常設の指示があるときだけ、それを 1 件ずつ字下げした行で並べる `Instructions:` のブロックを出します。`--json` には `instructions` が常に入ります。 |
 
 <a id="environment-variables"></a>
 

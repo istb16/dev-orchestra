@@ -12,7 +12,7 @@ modules, never imported by name, so a test can stand in for either.
 from __future__ import annotations
 
 import os
-from typing import Any, Dict, List, NamedTuple, Optional, Sequence
+from typing import Any, Dict, List, NamedTuple, Optional, Sequence, Tuple
 
 from . import execution_tree, units_merge
 from . import jobs as jobs_mod
@@ -47,6 +47,8 @@ class Claimed(NamedTuple):
     previous: Optional[Dict[str, Any]]
     #: A link failed: the unit's own checks would run without its environment.
     checks_skipped: bool
+    #: The ``implementation.worktree_files`` not copied in, each ``{"path", "reason"}``.
+    copies_skipped: Tuple[Dict[str, str], ...] = ()
 
 
 class Finished(NamedTuple):
@@ -175,8 +177,9 @@ def claim(
     plan_sha256: str,
     max_parallel: int,
     copies: Sequence[str] = (),
+    checked_copies: Sequence[str] = (),
 ) -> Claimed:
-    """Claim ``unit`` and make its worktree, given ``copies`` (``worktrees.create``).
+    """Claim ``unit`` and make its worktree, given ``copies`` and ``checked_copies`` (``worktrees.create``).
 
     Raises ``Refused`` when it may not start. The checks and the claim are
     made under the units lock, so two units starting together cannot both
@@ -243,7 +246,7 @@ def claim(
         }
     else:
         try:
-            fields = worktrees_mod.create(workspace, name, copies)
+            fields = worktrees_mod.create(workspace, name, copies, checked_copies)
         except (worktrees_mod.WorktreeError, OSError) as exc:
             restore(workspace, name, previous)
             raise Refused("no worktree could be made: %s" % exc) from None
@@ -254,6 +257,7 @@ def claim(
         workspace.root if in_place else str(fields["worktree"]),
         previous,
         bool(fields["checks_skipped"]),
+        tuple(fields.get("copies_skipped") or ()),
     )
 
 

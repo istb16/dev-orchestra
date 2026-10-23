@@ -9,6 +9,7 @@ from typing import Any, Dict, List, NamedTuple, Optional, Tuple, cast
 
 from . import approval as approval_mod
 from . import config as config_mod
+from . import instructions as instructions_mod
 from . import jobs as jobs_mod
 from . import ledger as ledger_mod
 from . import optimization as opt_mod
@@ -33,7 +34,7 @@ from .round_progress import (
     reviewed_something,
     round_plan,
 )
-from .summary import ROLE_TITLES, describe_progress
+from .summary import ROLE_TITLES, describe_instruction, describe_progress, describe_unit_tests, indented
 
 # --------------------------------------------------------------------------- workflow
 
@@ -271,9 +272,14 @@ def _approval_line(
     plan_relative: str,
     design_pass: Optional[Dict[str, Any]] = None,
     architect_left: Optional[int] = None,
+    instructions: bool = False,
 ) -> str:
-    """The `Plan approval:` line of `status`, worded as what to do next."""
-    line = _approval_advice(info, plan_relative, design_pass or {})
+    """The `Plan approval:` line of `status`, worded as what to do next.
+
+    ``instructions`` is whether any instruction is in force: the user is then
+    shown them with the plan, as they shape every run after it.
+    """
+    line = _approval_advice(info, plan_relative, design_pass or {}, instructions)
     # Not a stop: nothing needs the architect until the user asks for a
     # change, and then `run architect` refuses and says so.
     if info["pending"] and architect_left == 0 and (design_pass or {}).get("state") != "blocked":
@@ -281,7 +287,9 @@ def _approval_line(
     return line
 
 
-def _approval_advice(info: Dict[str, Any], plan_relative: str, design_pass: Dict[str, Any]) -> str:
+def _approval_advice(
+    info: Dict[str, Any], plan_relative: str, design_pass: Dict[str, Any], instructions: bool = False
+) -> str:
     state = info["state"]
     final = design_pass.get("state")
     open_findings = ", ".join(info.get("open_findings") or [])
@@ -319,8 +327,8 @@ def _approval_advice(info: Dict[str, Any], plan_relative: str, design_pass: Dict
         )
     if state == "pending":
         return (
-            "pending -- present %s to the user and ask; a yes is recorded with `design approve`, "
-            "never without one" % plan_relative
+            "pending -- present %s%s to the user and ask; a yes is recorded with `design approve`, "
+            "never without one" % (plan_relative, " and the instructions in force" if instructions else "")
         )
     if state == "stale" and info.get("stale_reason") == "plan-changed":
         return "stale -- the plan changed after it was approved (%s -> %s); present it again and ask" % (
@@ -596,6 +604,13 @@ def _status_payload(
         # How the orchestrator reports on a long run; read here because status
         # is what it runs at the start of a session.
         "progress": progress._asdict(),
+        # Read here for the same reason: the orchestrator's own text reaches
+        # it through no prompt this CLI builds, only through this.
+        "instructions": {
+            "in_force": instructions_mod.describe(loaded),
+            "orchestrator": instructions_mod.resolve(loaded, "orchestrator").text,
+        },
+        "implementation": {"unit_tests": loaded.implementation_settings().unit_tests},
         "budgets": summary["budgets"],
         "total_delegated_runs": total,
         "runtime_remaining_seconds": summary["runtime_remaining_seconds"],
@@ -755,12 +770,15 @@ def _status_lines(status: _Status, plan_relative: str, warning: List[str]) -> Li
             plan_relative,
             status.design_pass,
             status.architect_left,
+            # A file that gave no text is in force but reaches no prompt.
+            any(row["chars"] for row in payload["instructions"]["in_force"]),
         )
     )
     questions_line = _questions_line(payload["design_questions"])
     if questions_line:
         lines.append(questions_line)
     lines.append("Progress: %s (progress.*)" % describe_progress(status.progress))
+    lines.extend(_instruction_status_lines(payload))
     line = "Optimization: %s" % plan.level
     if plan.escalated:
         line += " (escalated from %s -- %s)" % (plan.requested, plan.escalation_note().split(": ", 1)[-1])
@@ -785,6 +803,21 @@ def _status_lines(status: _Status, plan_relative: str, warning: List[str]) -> Li
             "Runtime: %.0fs of delegated run time spent asleep was not charged (dev-orchestra budget show)"
             % payload["runtime"]["suspended"]
         )
+    return lines
+
+
+def _instruction_status_lines(payload: Dict[str, Any]) -> List[str]:
+    """`Instructions:`, the orchestrator's text and `Unit tests:`, each only when it is set."""
+    lines: List[str] = []
+    found = payload["instructions"]
+    if found["in_force"]:
+        lines.append("Instructions: %s" % "; ".join(describe_instruction(row) for row in found["in_force"]))
+    if found["orchestrator"]:
+        lines.append("Orchestrator instruction (follow it; the skill's rules come first):")
+        lines.extend(indented(found["orchestrator"], "  "))
+    unit_tests = describe_unit_tests(payload["implementation"]["unit_tests"])
+    if unit_tests:
+        lines.append(unit_tests + " (implementation.unit_tests)")
     return lines
 
 
@@ -1046,6 +1079,8 @@ def _summary_payload(
         "design_counts": design_tallies,
         "models": models,
         "reviewers": reviewers,
+        # What the runs were told besides the request, which the final report names.
+        "instructions": instructions_mod.describe(loaded),
         "skipped": {
             "refused": decided["refused"],
             "refused_by": decided["refused_by"],
@@ -1098,6 +1133,9 @@ def _summary_lines(payload: Dict[str, Any]) -> List[str]:
                 "" if reviewer["status"] == "ok" else " (FAILED)",
             )
         )
+    if payload["instructions"]:
+        lines.append("Instructions:")
+        lines.extend("  %s" % describe_instruction(row) for row in payload["instructions"])
     skipped = payload["skipped"]
     if skipped["refused"] or skipped["panel_reduced"] or skipped["design_refused"]:
         lines.append("")

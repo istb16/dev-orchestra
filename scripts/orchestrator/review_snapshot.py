@@ -32,6 +32,7 @@ def create_snapshot(
     exclude: Optional[Sequence[str]] = None,
     incremental: bool = True,
     surrounding: str = "none",
+    watched: Sequence[str] = (),
 ) -> Dict[str, Any]:
     """Freeze the change under review into ``.ai/reviews/review-target.diff``.
 
@@ -47,6 +48,10 @@ def create_snapshot(
     ``surrounding`` is ``review.context.surrounding``. With ``enclosing`` the
     symbol around every hunk is extracted from the tree written before the
     diff and frozen beside it in ``review-surrounding.json``.
+
+    ``watched`` is ``instructions.watched_paths``. Those of them that differ
+    from the base are recorded as ``instruction_changes``, so the round that
+    changes the instructions is high-risk; with none given nothing is recorded.
     """
     workspace.ensure()
     root = workspace.root
@@ -108,8 +113,35 @@ def create_snapshot(
     units = _units_meta(workspace)
     if units:
         meta["units"] = units
+    if watched:
+        meta["instruction_changes"] = _instruction_changes(root, str(meta.get("base_commit") or ""), watched)
     ws.write_json(workspace.snapshot_meta_path, meta)
     return meta
+
+
+def _instruction_changes(root: str, base_commit: str, watched: Sequence[str]) -> List[str]:
+    """The ``watched`` paths that differ from ``base_commit``, untracked ones included.
+
+    Against the base rather than the round's narrowed diff: a later round must
+    stay high-risk while the change still carries the edit. Literal pathspecs,
+    as a path may hold a glob character. Any git error gives none.
+    """
+    if not base_commit:
+        return []
+    paths = list(watched)
+    code, out, _ = ws.git_bytes(
+        ["--literal-pathspecs", "diff", "--name-only", "-z", base_commit, "--", *paths], root
+    )
+    if code != 0:
+        return []
+    changed = [_decode_name(raw) for raw in out.split(b"\0") if raw]
+    code, out, _ = ws.git_bytes(
+        ["--literal-pathspecs", "ls-files", "-z", "--others", "--exclude-standard", "--", *paths], root
+    )
+    if code != 0:
+        return []
+    untracked = [_decode_name(raw) for raw in out.split(b"\0") if raw]
+    return changed + [name for name in untracked if name not in changed]
 
 
 def _units_meta(workspace: ws.Workspace) -> Dict[str, Dict[str, List[str]]]:

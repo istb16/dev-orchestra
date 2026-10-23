@@ -6,6 +6,7 @@ import argparse
 import os
 
 from . import config as config_mod
+from . import instructions
 from . import optimization as opt_mod
 from . import questions as questions_mod
 from . import review as review_mod
@@ -191,6 +192,7 @@ def _run_design_review(args: argparse.Namespace, loaded: config_mod.LoadedConfig
             max_findings,
             inline_chars,
             decisions_text,
+            instructions=instructions.review_block(instructions.for_seat(loaded, reviewer, design=True)),
         ),
     )
     if isinstance(panel, int):

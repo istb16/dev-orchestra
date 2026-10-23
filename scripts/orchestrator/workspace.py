@@ -710,6 +710,51 @@ def is_link(path: str) -> bool:
     return bool(attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
 
 
+def repository_parts(relative: str) -> Optional[List[str]]:
+    """The steps of repository-relative ``relative``; None when it could name a path outside.
+
+    No root, no drive, no leading separator (on Windows "/etc" is not
+    absolute, yet joins to the drive's root) and no ``..`` anywhere: one
+    after a link would leave the tree although the path reads as inside. A
+    backslash is a separator on every system, as the same file may be read
+    on Windows. A NUL is refused too: no file can be named with one, and
+    the calls that would look the path up raise on it.
+    """
+    if (
+        not relative
+        or "\0" in relative
+        or relative.startswith(("/", "\\"))
+        or os.path.isabs(relative)
+        or os.path.splitdrive(relative)[0]
+    ):
+        return None
+    parts = [part for part in relative.replace("\\", "/").split("/") if part not in ("", ".")]
+    if not parts or ".." in parts:
+        return None
+    return parts
+
+
+def inside_repository(relative: str) -> bool:
+    """Whether ``relative`` names a path inside the repository (``repository_parts``)."""
+    return repository_parts(relative) is not None
+
+
+def linked_on_path(base: str, relative: str) -> bool:
+    """Whether any step of ``relative`` under ``base`` is a link: a path through one could leave the tree.
+
+    A path ``repository_parts`` refuses counts as one, so the answer is never "safe" for it.
+    """
+    parts = repository_parts(relative)
+    if parts is None:
+        return True
+    path = base
+    for part in parts:
+        path = os.path.join(path, part)
+        if is_link(path):
+            return True
+    return False
+
+
 def unlink_link(path: str) -> None:
     """Remove the link at ``path`` itself, never what it points at."""
     info = os.lstat(path)

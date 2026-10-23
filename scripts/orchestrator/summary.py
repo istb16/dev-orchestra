@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional, Sequence, cast
 
 from . import config as config_mod
+from . import instructions
 from .optimization import WHEN_ALWAYS, condition_label, model_label, skip_unneeded_roles
 
 ROLE_TITLES = (
@@ -128,8 +129,41 @@ def render_summary(
     # runs as its code seat is taken for a copy, as ``reviewer_seats`` says.
     for warning in read_only_enforcement_warnings(data, design_origins=list(design_origins) or None):
         lines.append("  Warning: %s" % warning)
+    if loaded is not None:
+        lines.extend(_instruction_lines(loaded))
     lines.append("")
     return "\n".join(lines)
+
+
+def describe_instruction(row: Dict[str, Any]) -> str:
+    """``implementer (project, inline, 120 chars)``: one ``instructions.describe`` row, with its problem."""
+    line = "%s (%s, %s, %d chars" % (row["role"], row["layer"], row["path"] or "inline", row["chars"])
+    if row["problem"]:
+        line += ": %s" % row["problem"]
+    return line + ")"
+
+
+def indented(text: str, prefix: str) -> List[str]:
+    """``text`` line by line under ``prefix``; a blank line stays blank."""
+    return [prefix + line if line.strip() else "" for line in text.splitlines()]
+
+
+def _instruction_lines(loaded: config_mod.LoadedConfig) -> List[str]:
+    """The instructions in force and the orchestrator's text; nothing when none is set.
+
+    The orchestrator's text is shown whole, as it is the one the session
+    follows without it ever going through a prompt this CLI builds.
+    """
+    rows = instructions.describe(loaded)
+    if not rows:
+        return []
+    lines = ["  Instructions"]
+    lines.extend("    %s" % describe_instruction(row) for row in rows)
+    text = instructions.resolve(loaded, "orchestrator").text
+    if text:
+        lines.append("    Orchestrator instruction:")
+        lines.extend(indented(text, "      "))
+    return lines
 
 
 def _deadline_lines(data: Dict[str, Any], loaded: Optional[config_mod.LoadedConfig]) -> List[str]:
@@ -188,6 +222,13 @@ def describe_progress(progress: config_mod.Progress) -> str:
     else:
         notice = "no stuck notice"
     return "%s, every %ds, %s" % (progress.updates, progress.interval_seconds, notice)
+
+
+def describe_unit_tests(mode: str) -> str:
+    """The `Unit tests:` line of `status` and `units status`; "" under ``worktree``, which needs no word."""
+    if mode == "after_merge":
+        return "Unit tests: after_merge (units skip their tests; run them once on the merged tree)"
+    return ""
 
 
 def _approval_required(data: Dict[str, Any]) -> bool:

@@ -21,7 +21,7 @@ from typing import (
     cast,
 )
 
-from . import activity
+from . import activity, instructions
 from . import config as config_mod
 from . import config_policy as policy_mod
 from . import context as context_mod
@@ -382,6 +382,14 @@ def _run_panel(
     if idle_timeout is None:
         idle_timeout = config_mod.idle_timeout(ctx.loaded, MODE_REVIEW).seconds
     warned = _warn_unenforced(ctx.loaded, reviewers, ctx.kind.panel)
+    design = ctx.kind is _DESIGN
+    _note_unread_instructions(ctx.loaded, reviewers, design)
+
+    def code_instructions(reviewer: Dict[str, Any]) -> str:
+        return instructions.review_block(instructions.for_seat(ctx.loaded, reviewer, design=False))
+
+    # The code path's alone: the design path's `prompt_for` carries its own.
+    instructions_for = None if design else code_instructions
     progress = ctx.loaded.progress_settings()
     echo = _ProgressEcho(progress.quiet_notice_seconds) if getattr(args, "progress", False) else None
     watch: ContextManager[None] = contextlib.nullcontext()
@@ -408,6 +416,7 @@ def _run_panel(
                     surrounding=surrounding,
                     refusals=_reviewer_refusals(ctx.loaded, reviewers, ctx.kind.panel),
                     activity_for=echo.sink_for if echo is not None else None,
+                    instructions_for=instructions_for,
                 ),
             )
     except review_mod.ReviewError as exc:
@@ -415,6 +424,18 @@ def _run_panel(
         _err(str(exc))
         return 2
     return _PanelRun(token, runs, warned)
+
+
+def _note_unread_instructions(
+    loaded: config_mod.LoadedConfig, reviewers: List[Dict[str, Any]], design: bool
+) -> None:
+    """A ``note:`` per instructions file the panel's seats could not read, each once.
+
+    The reviewers run without its text, as a role run does.
+    """
+    resolved = [instructions.for_seat(loaded, reviewer, design=design) for reviewer in reviewers]
+    for line in instructions.problem_notes(resolved, "reviewing"):
+        _err(line)
 
 
 class _ProgressEcho:

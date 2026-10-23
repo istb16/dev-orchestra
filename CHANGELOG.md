@@ -13,6 +13,40 @@ authors can find it.
 
 ## [Unreleased]
 
+### Added
+
+- **Standing instructions per role, and work units fitted to the project's
+  tests** (#350). `instructions.<role>` gives `orchestrator`, `architect`,
+  `implementer`, `review_fixer`, `reviewers` or `design_reviewers` text on
+  every run, inline or `{file: <path>}` inside the repository; a reviewer seat
+  may carry its own. Unlike every other key, the global and the project
+  file's texts are joined, global first. The CLI puts the text in the prompt
+  under `## Project instructions`, after its own rules and weaker than them; a
+  reviewer is told the instructions may only add things to look at, so one to
+  withhold findings, skip a category or lower a severity is not followed. A
+  file that is missing, not a regular file, over 32 KB or reached through a
+  link gives no text and a `note:`. As the project file and an instructions
+  file can come with the branch under review, a review round whose change
+  touches `.dev-orchestra.yaml` (or another of its names) or an instructions
+  file is high-risk (the snapshot records them as `instruction_changes`), a
+  plan naming either makes `review.design.enabled: auto` run, and every
+  instruction written in the project file gets a line from `config validate`,
+  `doctor` and `review run`, worded more strongly for the orchestrator and the
+  roles that write.
+  `implementation.unit_tests: after_merge` has units run lint and type checks
+  only and leave the suite to the merged tree, for tests that share a database
+  or a port; `implementation.worktree_files` lists git-ignored files a unit's
+  worktree gets a copy of, a skipped one told with a `note:` and recorded as
+  `copies_skipped`. `status` prints an `Instructions:` line, the
+  orchestrator's text under `Orchestrator instruction (follow it; the skill's
+  rules come first):` and a `Unit tests:` line under `after_merge`, and while
+  any instruction is in force its pending `Plan approval:` line says to
+  present the instructions with the plan; `summary` lists them, `units status`
+  names `after_merge`, `config show` has an Instructions section and `doctor`
+  a note per file it could not read. In `--json`, `status` gains
+  `instructions` and `implementation`, `summary` `instructions`, `units
+  status` `unit_tests`, and `review snapshot` `instruction_changes`.
+
 ## [1.2.0] - 2026-10-22
 
 ### Added

@@ -1511,7 +1511,8 @@ class TestPathScopedReviewersInThePipeline(IsolatedCase):
         self.assertIn(".dev-orchestra.yaml", meta["changed_paths"])
         self.assertNotIn(".dev-orchestra.yaml", meta["condition_paths"])
         _, payload, err = self.run_json()
-        self.assertEqual(self.ran(payload), ["gen"])
+        # A change to the project file is high-risk on its own, so `sec` joins.
+        self.assertEqual(self.ran(payload), ["gen", "sec"])
         self.assertIn("db (when: paths) left out: no path matches *.sql, *.yaml", err)
 
 
