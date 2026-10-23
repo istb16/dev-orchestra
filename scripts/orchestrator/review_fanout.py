@@ -275,18 +275,24 @@ def build_review_prompt(
     max_findings: int = DEFAULT_MAX_FINDINGS,
     inline_chars: Optional[int] = None,
     surrounding: Optional[context_mod.Adoption] = None,
+    instructions: str = "",
 ) -> BuiltPrompt:
     """The code reviewer's prompt, built from the frozen snapshot.
 
     ``surrounding`` is the round's adopted context. It goes after every other
     note, and is nothing at all when the setting is off, so that prompt is
     the one this function always built.
+
+    ``instructions`` is the seat's project instructions block, appended to
+    its role guidance; "" leaves the prompt as it always was.
     """
     role = str(reviewer.get("role") or "general")
     guidance = ROLE_GUIDANCE.get(
         role,
         "Review as a %s specialist. Concrete, evidence-backed issues in that perspective only." % role,
     )
+    if instructions:
+        guidance = guidance + "\n\n" + instructions
     delivery = prompt_delivery(diff_text, inline_chars)
     if delivery == "inline":
         diff_section = _fenced(diff_text, "diff")
@@ -326,6 +332,7 @@ def build_design_review_prompt(
     max_findings: int = DEFAULT_MAX_FINDINGS,
     inline_chars: Optional[int] = None,
     decisions_text: str = "",
+    instructions: str = "",
 ) -> BuiltPrompt:
     """The reviewer prompt for a plan, built from the frozen design snapshot.
 
@@ -336,6 +343,8 @@ def build_design_review_prompt(
     ``decisions_text`` is the user's answers to the design questions. They go
     in after the request as premises, and only when there are some, so a
     round without questions gets the prompt it always got.
+
+    ``instructions`` is appended to the role guidance, as on the code path.
     """
     role = str(reviewer.get("role") or "general")
     guidance = DESIGN_ROLE_GUIDANCE.get(
@@ -343,6 +352,8 @@ def build_design_review_prompt(
         "Review the plan as a %s specialist. Concrete, evidence-backed issues in that "
         "perspective only." % role,
     )
+    if instructions:
+        guidance = guidance + "\n\n" + instructions
     delivery = prompt_delivery(plan_text, inline_chars)
     if delivery == "inline":
         plan_section = _fenced(plan_text, "markdown")
@@ -522,6 +533,7 @@ class FanoutOptions(NamedTuple):
     surrounding: Optional[context_mod.Adoption] = None
     refusals: Optional[Dict[str, str]] = None
     activity_for: Optional[Callable[[str], Optional[activity.Sink]]] = None
+    instructions_for: Optional[Callable[[Dict[str, Any]], str]] = None
 
 
 def run_reviews(
@@ -566,6 +578,10 @@ def run_reviews(
     uses to (``review run --progress``), or None. The sink is installed in the
     thread that runs the reviewer, and told ``done: <status>`` however the
     run ends.
+
+    ``instructions_for`` maps a reviewer to its project instructions block
+    for the code-review prompt, or is None for none. A ``prompt_for`` puts in
+    its own, so the two are not given together.
     """
     if not reviewers:
         return []
@@ -621,6 +637,7 @@ def run_reviews(
         refusals=options.refusals,
         timeout=options.timeout,
         idle_timeout=options.idle_timeout,
+        instructions_for=options.instructions_for,
     )
     activity_for = options.activity_for
 
@@ -662,6 +679,7 @@ class _Fanout(NamedTuple):
     refusals: Optional[Dict[str, str]]
     timeout: int
     idle_timeout: Optional[float]
+    instructions_for: Optional[Callable[[Dict[str, Any]], str]]
 
 
 def _attempt(fan: _Fanout, reviewer: Dict[str, Any], sink: Optional[activity.Sink]) -> ReviewerRun:
@@ -683,6 +701,7 @@ def _attempt(fan: _Fanout, reviewer: Dict[str, Any], sink: Optional[activity.Sin
             fan.max_findings,
             fan.limit,
             fan.context,
+            fan.instructions_for(reviewer) if fan.instructions_for is not None else "",
         )
     # Every run from here on knows what it was handed, and which snapshot it
     # was handed, failures included: a round is judged on what it sent, not

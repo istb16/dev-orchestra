@@ -13,6 +13,7 @@ from . import workspace as ws
 from . import worktrees as worktrees_mod
 from .cli_args import _add_command_group, _add_json_flag
 from .cli_common import _emit_json, _err, _out, _workspace, _workspace_and_config
+from .summary import describe_unit_tests
 
 
 def _read_units(workspace: ws.Workspace) -> "tuple[str, List[units_mod.Unit]]":
@@ -57,7 +58,8 @@ def cmd_units_check(args: argparse.Namespace) -> int:
 
 def cmd_units_status(args: argparse.Namespace) -> int:
     """Each unit's state, which can start now, and whether the implement stage failed."""
-    workspace, _ = _workspace_and_config(args)
+    workspace, loaded = _workspace_and_config(args)
+    unit_tests = loaded.implementation_settings().unit_tests
     plan_relative = workspace.relative(workspace.plan_path)
     try:
         plan_text, found = _read_units(workspace)
@@ -85,7 +87,9 @@ def cmd_units_status(args: argparse.Namespace) -> int:
     ready = units_mod.ready(found, entries)
     failed = any(row["status"] == units_mod.FAILED for row in rows)
     if args.json:
-        _emit_json({"plan_sha256": digest, "units": rows, "ready": ready, "failed": failed})
+        _emit_json(
+            {"plan_sha256": digest, "units": rows, "ready": ready, "failed": failed, "unit_tests": unit_tests}
+        )
         return 0
     if not found:
         _out("%s has no ## Units: a single run." % plan_relative)
@@ -104,6 +108,10 @@ def cmd_units_status(args: argparse.Namespace) -> int:
             )
         )
     _out("Ready to start: %s" % (", ".join(ready) or "none"))
+    # Said here because the units' reports will say "not run": that is the setting, not a gap.
+    line = describe_unit_tests(unit_tests)
+    if line:
+        _out(line)
     if failed:
         _out("The implement stage failed: a unit failed, and the units that depend on it cannot start.")
     return 0

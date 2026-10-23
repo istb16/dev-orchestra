@@ -1,4 +1,4 @@
-<!-- translated-from: references/workflow.md sha256:b65f2f533dbb3ad3db115a3520cff1dd0b3a0ff1e9cf63ab5027d4c6d09280b8 -->
+<!-- translated-from: references/workflow.md sha256:68f5f6dc4cbd82d3a60588faab632063c455b15734596cb4e3b771cc523546bd -->
 
 > この文書は [references/workflow.md](../../../references/workflow.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -174,7 +174,12 @@ commit に入りません。成果物をレビュー可能にしたいチーム�
 削除したチームは、自分の `.gitignore` でこれらを無視する必要があります。
 
 `.ai/` 内のものも `.dev-orchestra.yaml` も、レビューのスナップショットに入ることは
-ありません。スキル自身のファイルはレビュー対象の変更ではないからです。
+ありません。スキル自身のファイルはレビュー対象の変更ではないからです。それでも、
+いずれかの名前のプロジェクトファイル（削除も含みます）や、`instructions` が読むファイルへの変更は見逃しません。スナップショットは
+それらのパスを `instruction_changes` として記録し、そのラウンドは高リスクになります。つまり
+`optimization.level` が引き上げられ、`when: high-risk` のレビュアーが加わります。そうした
+ファイルはレビュー対象のブランチと一緒に入ってきて、レビュアーへの指示を変えうるからです
+（[configuration](configuration.md#standing-instructions-instructions)）。
 
 <a id="design-questions"></a>
 
@@ -619,6 +624,8 @@ dev-orchestra run architect --resume \
   （承認はこの分け方も対象にします）
 - 未解決の design 指摘と、それがこの plan のレビューから出たものか、以前の修正版の
   レビューから出たものか（`design approve` がどちらかを示します）
+- 効いている常設の指示があれば、`status` の `Instructions:` 行。このとき pending の
+  `Plan approval:` 行は `present <plan> and the instructions in force to the user and ask` となります
 
 そのうえで尋ねてください。記録するのはユーザーの明示的な yes だけで、`dev-orchestra design
 approve` で記録します。自分の判断で記録したり、拒否を回避するために記録したりしては
@@ -815,6 +822,27 @@ dev-orchestra run implementer --prompt-file .ai/execution/implement-request.md
 そのジョブを取り消すか `units clean` を走らせるまで拒否されます（終了コード 2）。テストと
 レビューは、作業単位がないときと同じく、マージしたツリーに対して 1 回だけ行います。
 
+**マージ後のテスト。** デフォルトでは、各作業単位は自分の worktree で自分のチェックを走らせます
+（`implementation.unit_tests: worktree`）。並んで走る作業単位がテスト用のデータベースやポートなどを
+共有していると、そこで互いにぶつかることがあります。`implementation.unit_tests: after_merge` に
+すると、各作業単位はコードとテストを書き、lint と型チェックだけを走らせ、テストは「not run」と
+報告します。作業単位のヘッダーがそう伝え、それが依頼の「テストを走らせる」より優先されます。
+テストスイートは、すべての作業単位をマージしたあと、[テスト](#test)で 1 回だけ走らせます。
+すでにチェックを走らせないよう言われている作業単位（worktree へのリンクに失敗したもの）は、
+その厳しいほうの文言のままです。worktree のチェックに必要な、git が無視するファイル
+（`config/database.yml` や `.env.test` など）は `implementation.worktree_files` に並べると、
+worktree を作るときにコピーされます。見つからないもの、`..` を含むもの、リンクを通るものは `note:` を出して
+飛ばします。
+
+**常設の指示。** ロールに設定した `instructions` の本文
+（[configuration](configuration.md#standing-instructions-instructions)）は、CLI が
+`## Project instructions` という見出しの下でプロンプトそのものに加えます。依頼に貼り付けないで
+ください。architect、implementer、review fixer の実行では依頼の前に入ります。作業単位の実行では、
+作業単位のヘッダー、指示、依頼の順です。レビュアーには、タスクの規則のあと、変更の前に入り、
+見るものを足すことしかできません。切り離したワーカーには、それを始めた実行から 1 回だけ入ります。
+`--resume` には二度と入らないので、指示を足す前に始まったセッションはそれを見ません。反映するには
+新しく走らせてください。`run <reviewer-id>` と `run orchestrator` には入りません。
+
 **小さな作業は light tier に回します。** role に `light` tier があるとき（`config show`。
 `references/configuration.md` の Model tiers を参照）、計画の Files to Modify が 3 つ以下で、
 どれも高リスクのパス（`optimization.high_risk_paths` と `extra_high_risk_paths`）にないなら、
@@ -832,6 +860,9 @@ implementer の失敗は致命的です。停止し、何が起きたかを報�
 `Makefile`、`Rakefile`、`pyproject.toml`、CI 設定、CONTRIBUTING）。変更をカバーする
 最も狭いコマンドを優先し、時間が許せば範囲を広げます。テストコマンドを決して
 でっち上げないでください。見つからなければ、その旨を伝えてください。
+
+`implementation.unit_tests: after_merge` では作業単位がテストを走らせていません。すべての
+作業単位をマージしたあと、ここでテストスイートを 1 回走らせてください。
 
 テストスイートが失敗したらパイプラインは停止します。修正するか報告してください。
 壊れたツリーをレビューしてはいけません。

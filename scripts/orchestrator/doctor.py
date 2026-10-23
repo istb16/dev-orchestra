@@ -15,6 +15,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 from . import claude_hooks, config_paths, hosts, reply_language, verified
 from . import config as config_mod
 from . import config_policy as policy_mod
+from . import instructions as instructions_mod
 from . import optimization as opt_mod
 from . import presets as presets_mod
 from . import workspace as ws
@@ -297,6 +298,13 @@ def _config_report(report: Dict[str, Any], start: Optional[str]) -> Optional[con
     loosened = policy_mod.project_loosening_notices(loaded)
     report["config"]["loosened"] = loosened
     report["notes"].extend(loosened)
+    # Notes, not problems: a run goes on without an instruction it cannot read.
+    for row in instructions_mod.describe(loaded):
+        if row["problem"]:
+            report["notes"].append(
+                "instructions for %s (%s file): %s %s; runs go on without it"
+                % (row["role"], row["layer"], row["path"], row["problem"])
+            )
     # Approval off is how a file says nobody is watching; questions asked
     # there are recorded but not waited for.
     design = loaded.design_settings()

@@ -1034,8 +1034,9 @@ class TestSummaryJson(SummaryCase):
         code, out, _ = self.summary("--json")
         self.assertEqual(code, 0)
         payload = json.loads(out)
-        added = {"design_counts", "models", "reviewers", "skipped"}
+        added = {"design_counts", "models", "reviewers", "skipped", "instructions"}
         self.assertEqual(set(payload), {"stages", "counts", "tokens"} | added)
+        self.assertEqual(payload["instructions"], [])
         self.assertEqual(payload["design_counts"], {"reviewers_ok": 1, "reviewers_total": 2})
         self.assertEqual(set(payload["models"]), {"orchestrator", "architect", "implementer", "review_fixer"})
         for key, model in payload["models"].items():

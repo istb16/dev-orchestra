@@ -106,12 +106,38 @@ def copies_for(root: str, files: Sequence[str], project_path: Optional[str]) -> 
     return copies
 
 
-def _in_repository(relative: str) -> bool:
-    """Whether ``relative`` names a path inside the repository: no root, no drive, no ``..`` out."""
-    if os.path.isabs(relative) or os.path.splitdrive(relative)[0]:
-        return False
-    normal = os.path.normpath(relative)
-    return normal != ".." and not normal.startswith(".." + os.sep)
+def _joined(base: str, relative: str) -> Optional[str]:
+    """``relative`` under ``base``, from its ``repository_parts``; None when it could leave ``base``."""
+    parts = ws.repository_parts(relative)
+    return os.path.join(base, *parts) if parts else None
+
+
+def _within(base: str, path: str) -> bool:
+    """Whether ``path``, every link resolved, is ``base`` or below it."""
+    real_base = os.path.normcase(os.path.realpath(base))
+    real = os.path.normcase(os.path.realpath(path))
+    try:
+        return os.path.commonpath([real_base, real]) == real_base
+    except ValueError:
+        return False  # another drive
+
+
+def _checked_skip(root: str, worktree: str, relative: str) -> str:
+    """Why a checked copy of ``relative`` is skipped; "" when it can be copied."""
+    source = _joined(root, relative)
+    target = _joined(worktree, relative)
+    if source is None or target is None:
+        return "outside the repository"
+    if ws.linked_on_path(root, relative) or ws.linked_on_path(worktree, relative):
+        return "a link"
+    if not os.path.lexists(source):
+        return "not in the main tree"
+    if not os.path.isfile(source):
+        return "not a file"
+    # Checked again resolved, in case a step became a link after the walk above.
+    if not _within(root, source) or not _within(worktree, target):
+        return "a link"
+    return ""
 
 
 def _copy_missing(source: str, target: str) -> None:
@@ -141,7 +167,9 @@ def _units_dir(path: str) -> None:
             os.chmod(parent, 0o700)
 
 
-def create(workspace: ws.Workspace, name: str, copies: Sequence[str] = ()) -> Dict[str, Any]:
+def create(
+    workspace: ws.Workspace, name: str, copies: Sequence[str] = (), checked_copies: Sequence[str] = ()
+) -> Dict[str, Any]:
     """Make unit ``name``'s worktree; its fields for the unit's record.
 
     ``worktree``, ``base_tree``, ``base_commit``, ``links`` (the names linked
@@ -153,6 +181,11 @@ def create(workspace: ws.Workspace, name: str, copies: Sequence[str] = ()) -> Di
     user's tree has them, beside the plan and the decisions (``copies_for``);
     an absolute one, one with a drive, or one outside the repository, is
     skipped.
+
+    ``checked_copies`` are the project's ``implementation.worktree_files``,
+    copied the same way but each skip told: ``copies_skipped`` lists them,
+    ``{"path", "reason"}``, and is set only when there is one. A path through
+    a link is skipped too, in the user's tree or the worktree.
     """
     root = workspace.root
     wanted = [
@@ -198,8 +231,19 @@ def create(workspace: ws.Workspace, name: str, copies: Sequence[str] = ()) -> Di
     }
     try:
         for relative in wanted_copies:
-            if _in_repository(relative):
-                _copy_missing(os.path.join(root, relative), os.path.join(path, relative))
+            source, target = _joined(root, relative), _joined(path, relative)
+            if source is not None and target is not None:
+                _copy_missing(source, target)
+        skipped: List[Dict[str, str]] = []
+        for relative in checked_copies:
+            reason = _checked_skip(root, path, relative)
+            source, target = _joined(root, relative), _joined(path, relative)
+            if reason or source is None or target is None:
+                skipped.append({"path": relative, "reason": reason or "outside the repository"})
+            else:
+                _copy_missing(source, target)
+        if skipped:
+            record["copies_skipped"] = skipped
     except OSError as exc:
         remove(root, record, name)
         raise WorktreeError("could not copy into the worktree: %s" % exc) from None

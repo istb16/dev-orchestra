@@ -1,4 +1,4 @@
-<!-- translated-from: references/json.md sha256:66bee95f3f088f024c60f11737f31d77181daa52e77617bad114228d46608df7 -->
+<!-- translated-from: references/json.md sha256:d388bebdbda1a48d6dc40b241f46344229c209247b06f5ce1f684e62d745f626 -->
 
 > この文書は [references/json.md](../../../references/json.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -277,6 +277,11 @@ Object. plan の作業単位です。
 | `units` | list | 作業単位ごとに 1 つ、plan の順に。`name`、`kind`、`status`（`pending`、`running`、`succeeded`、`failed`、`cancelled`、`conflicted`、`merged`）、`job`、`base_commit`、`in_place`、`worktree`。 |
 | `ready` | list of strings | いま始められる作業単位。`pending` で、依存がすべてマージ済みのもの。 |
 | `failed` | boolean | どれかの作業単位が失敗し、それとともに実装のステージが失敗したか。 |
+| `unit_tests` | string | `implementation.unit_tests`。`worktree` か `after_merge`。 |
+
+`.ai/execution/units.json` の作業単位の記録には `copies_skipped` が入ることもあります。
+worktree に入らなかった `implementation.worktree_files` のエントリごとに `{"path", "reason"}` を 1 つ持ち、
+そういうものがあるときだけ入ります。
 
 <a id="units-merge"></a>
 
@@ -330,6 +335,7 @@ Object. `reviews/review-target.json` が持つスナップショットのメタ�
 | `max_chars` | integer | `review.context.max_chars`。 |
 | `over_context` | boolean | `change_chars` がそれを超えているかどうか。 |
 | `surrounding` | object | Only: 囲んでいるシンボルを凍結したときだけ。凍結したものと、取り出さなかったもの。 |
+| `instruction_changes` | list of strings | 中身が `base_commit` と異なる project ファイルと指示のファイル。追跡されていないものも含みます。ひとつでもあればそのラウンドは高リスクになります。 |
 
 <a id="review-run"></a>
 
@@ -477,6 +483,8 @@ Object.
 | `design_approval` | object | `required`、`state`（`pending`、`stale`、`approved`、`no-plan`、`not-required`、`implemented-unapproved`）、`pending`、`stale_reason`（`plan-changed`、`reviewed-since`、`decisions-changed`、`null`）など。[承認](workflow.md#approval) を参照。 |
 | `design_questions` | object | `mode`、`state`（`off`、`none`、`open`、`round-required`、`answered`）、`pending`、`open`、`answered`、`total`、`architect_rounds`、`max_rounds`、`decisions_file`。[Design の質問](workflow.md#design-questions) を参照。 |
 | `progress` | object | `updates`（`on`、`off`、`auto` のいずれか）、`interval_seconds`、`quiet_notice_seconds`。[進み具合の報告](workflow.md#progress-reports) を参照。 |
+| `instructions` | object | `in_force`: 指示のソースごとに 1 つのエントリで、`role`（ロール。席なら `reviewers.<id>` か `design_reviewers.<id>`）、`layer`（`global` か `project`。席はそのパネルが来た層）、`kind`（`inline` か `file`）、`path`（相対パス。`inline` なら `""`）、`chars`、`problem`（ファイルから何も得られなかった理由。読めたら `""`）。`orchestrator`: orchestrator の本文をつないだもの。なければ `""`。[常設の指示](configuration.md#standing-instructions-instructions) を参照。 |
+| `implementation` | object | `unit_tests`（`worktree` か `after_merge`）。 |
 | `budgets` | object | 工程ごとの `used`、`limit`、`remaining`。 |
 | `total_delegated_runs` | object | `used` と `limit`。 |
 | `runtime_remaining_seconds` | integer or null | 委任した実行時間の残り（切り上げ）。上限がなければ `null`。 |
@@ -637,4 +645,5 @@ Object.
 | `tokens` | object | `tokens show --json` が出すもの。 |
 | `models` | object | ロールごとの `provider`、`family`、`version`。 |
 | `reviewers` | list | `id`、`provider`、`model`（テキストに出るとおり）、`status`。並びはテキストと同じ。 |
+| `instructions` | list | 効いている指示のソース。各エントリは `status` の `instructions.in_force` と同じ形です。なければ `[]`。 |
 | `skipped` | object | `refused`、`refused_by`、`design_refused`、`panel_reduced`。名前は `optimization report --json` と同じ。 |

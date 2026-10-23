@@ -191,11 +191,21 @@ def goal(plan_text: str) -> str:
     return "\n".join(body).strip()
 
 
-def header(unit: Unit, plan_text: str, checks_skipped: bool) -> str:
-    """What the CLI puts in front of a unit's prompt: the unit, its files and its plan section."""
+def header(unit: Unit, plan_text: str, checks_skipped: bool, unit_tests: str = "worktree") -> str:
+    """What the CLI puts in front of a unit's prompt: the unit, its files and its plan section.
+
+    ``unit_tests`` is ``implementation.unit_tests``; ``checks_skipped`` wins
+    over it, being the stricter of the two.
+    """
     if checks_skipped:
         # A link failed: run in this worktree, the checks would miss the environment.
         checks = "Do not run checks; they run after the merge."
+    elif unit_tests == "after_merge":
+        checks = (
+            "Do not run the tests: write the code and its tests, run lint and type checks only, "
+            'and report the tests as "not run". This overrides the request\'s instruction to run '
+            "tests; they run once on the merged tree."
+        )
     else:
         checks = "Run your checks before you finish."
     lines = [

@@ -12,7 +12,7 @@ import math
 import os
 from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple
 
-from . import config_trust, presets
+from . import config_trust, instructions, presets
 from . import optimization as opt_mod
 from .config import (
     WRITE_ROLES,
@@ -701,7 +701,13 @@ def project_loosening_notices(loaded: LoadedConfig) -> List[str]:
     implementer is not one. These still take effect -- a repository may
     review less on purpose -- but the file can come with the branch under
     review, so ``doctor``, ``config validate`` and ``review run`` say so.
+    A reviewer instruction the project file writes is said the same way.
     """
+    return _gate_notices(loaded) + instructions.project_notices(loaded)
+
+
+def _gate_notices(loaded: LoadedConfig) -> List[str]:
+    """``project_loosening_notices`` for the review and approval gates."""
     project = loaded.project_layer
     written = {key for gate in _GATES for key in gate.written if get_path(project, key) is not None}
     if not written:

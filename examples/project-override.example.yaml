@@ -40,5 +40,20 @@ review:
   # Migrations are expensive to get wrong: allow one extra fix/re-review round.
   max_review_iterations: 3
 
+# The rspec suite uses one test database, so units running side by side would
+# trip over each other: each unit skips the tests, which run once after every
+# unit is merged. Its worktree gets a copy of the git-ignored files rspec needs.
+implementation:
+  unit_tests: after_merge
+  worktree_files:
+    - config/database.yml
+    - .env.test
+
+# Standing text added to each run's prompt, below the CLI's own rules. These
+# lines join any the global configuration sets for the same role.
+instructions:
+  implementer: "Run tests with bundle exec rspec <files>; never run db:reset."
+  reviewers: "Check every new migration for a missing index or a locking change."
+
 # Everything else -- orchestrator, architect, implementer, review_fixer --
 # comes from the global configuration.

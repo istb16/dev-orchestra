@@ -14,6 +14,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from . import approval as approval_mod
 from . import config as config_mod
+from . import instructions
 from . import ledger as ledger_mod
 from . import optimization as opt_mod
 from . import optimization_design as opt_design
@@ -74,12 +75,15 @@ def round_plan(
     and neither ``--only`` nor ``--high-risk``. The reviewed files go in by
     name, for the role relevance rules; a snapshot without the list (or no
     snapshot yet) has nothing for them to judge.
+
+    A watched instruction path the change still carries is a risk path too,
+    though an incremental round's diff may no longer show it.
     """
     files = meta.get("files")
     return opt_mod.decide(
-        loaded.optimization_settings(),
+        instructions.risk_settings(loaded),
         loaded.review_settings(),
-        _risk_paths(meta),
+        _risk_paths(meta) + [str(path) for path in meta.get("instruction_changes") or []],
         int(meta.get("lines_added") or 0) + int(meta.get("lines_deleted") or 0),
         workspace.last_status("test"),
         len(panel),
@@ -108,7 +112,7 @@ def design_decision(loaded: config_mod.LoadedConfig, workspace: ws.Workspace) ->
     )
     plan_state, scan = _plan_scan(workspace)
     return opt_design.decide_design(
-        mode, loaded.optimization_settings(), scan, plan_state=plan_state, round_ran=round_ran
+        mode, instructions.risk_settings(loaded), scan, plan_state=plan_state, round_ran=round_ran
     )
 
 
@@ -165,7 +169,7 @@ def design_round_plan(
     """
     plan_state, scan = _plan_scan(workspace)
     return opt_design.decide_design_round(
-        loaded.optimization_settings(),
+        instructions.risk_settings(loaded),
         scan,
         plan_state,
         panel,

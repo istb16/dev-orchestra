@@ -280,6 +280,11 @@ Object: the plan's work units.
 | `units` | list | One entry per unit, in the plan's order: `name`, `kind`, `status` (`pending`, `running`, `succeeded`, `failed`, `cancelled`, `conflicted` or `merged`), `job`, `base_commit`, `in_place`, `worktree`. |
 | `ready` | list of strings | The units that can start now: pending, every dependency merged. |
 | `failed` | boolean | Whether a unit failed, and with it the implement stage. |
+| `unit_tests` | string | `implementation.unit_tests`: `worktree` or `after_merge`. |
+
+A unit's record in `.ai/execution/units.json` may also carry `copies_skipped`:
+one `{"path", "reason"}` per `implementation.worktree_files` entry its
+worktree did not get, set only when there is one.
 
 ### `units merge`
 
@@ -328,6 +333,7 @@ three keys about the size limit.
 | `max_chars` | integer | `review.context.max_chars`. |
 | `over_context` | boolean | Whether `change_chars` is over it. |
 | `surrounding` | object | Only when the enclosing symbols were frozen: what was frozen and what was not extracted. |
+| `instruction_changes` | list of strings | The project file and the instructions files whose content differs from `base_commit`, untracked ones included; any of them makes the round high-risk. |
 
 ### `review run`
 
@@ -461,6 +467,8 @@ Object.
 | `design_approval` | object | `required`, `state` (`pending`, `stale`, `approved`, `no-plan`, `not-required` or `implemented-unapproved`), `pending`, `stale_reason` (`plan-changed`, `reviewed-since`, `decisions-changed` or `null`) and the rest -- see [Approval](workflow.md#approval). |
 | `design_questions` | object | `mode`, `state` (`off`, `none`, `open`, `round-required` or `answered`), `pending`, `open`, `answered`, `total`, `architect_rounds`, `max_rounds`, `decisions_file` -- see [Design questions](workflow.md#design-questions). |
 | `progress` | object | `updates` (`on`, `off` or `auto`), `interval_seconds`, `quiet_notice_seconds` -- see [Progress reports](workflow.md#progress-reports). |
+| `instructions` | object | `in_force`: one entry per instruction source, `role` (a role, or `reviewers.<id>` / `design_reviewers.<id>` for a seat), `layer` (`global` or `project`; a seat's is the layer its panel came from), `kind` (`inline` or `file`), `path` (relative; `""` for `inline`), `chars`, `problem` (why a file gave nothing; `""` when read); `orchestrator`: the orchestrator's joined text, `""` when none -- see [Standing instructions](configuration.md#standing-instructions-instructions). |
+| `implementation` | object | `unit_tests` (`worktree` or `after_merge`). |
 | `budgets` | object | Per stage: `used`, `limit`, `remaining`. |
 | `total_delegated_runs` | object | `used` and `limit`. |
 | `runtime_remaining_seconds` | integer or null | The delegated runtime left, rounded up; `null` without a limit. |
@@ -605,4 +613,5 @@ Object.
 | `tokens` | object | What `tokens show --json` prints. |
 | `models` | object | Per role: `provider`, `family`, `version`. |
 | `reviewers` | list | `id`, `provider`, `model` (as the text prints it), `status`, in the text's order. |
+| `instructions` | list | The instruction sources in force, each as in `status`'s `instructions.in_force`; `[]` without any. |
 | `skipped` | object | `refused`, `refused_by`, `design_refused`, `panel_reduced`, named as `optimization report --json` names them. |

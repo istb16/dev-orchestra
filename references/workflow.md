@@ -172,7 +172,13 @@ itself; a team that deleted `.ai/.gitignore` has to ignore them in its own
 `.gitignore`.
 
 Nothing in `.ai/`, and no `.dev-orchestra.yaml`, ever enters a review
-snapshot — the skill's own files are not the change under review.
+snapshot — the skill's own files are not the change under review. A change to
+the project file under any of its names, deleting it included, or to a file an
+`instructions` entry reads, is still
+noticed: the snapshot records those paths as `instruction_changes`, and the
+round is high-risk, so `optimization.level` escalates and the `when:
+high-risk` reviewers sit. Such a file can come with the branch under review
+and change what the reviewers are told ([configuration](configuration.md#standing-instructions-instructions)).
 
 ## Design questions
 
@@ -632,6 +638,9 @@ the user has approved the plan. Put to them:
   and the waves `units check` prints -- the approval covers the split too;
 - any design findings still open, and whether they came from a review of this
   plan or of an earlier revision (`design approve` says which);
+- the standing instructions in force, the `Instructions:` line of `status`,
+  when there are any: the pending `Plan approval:` line then reads `present
+  <plan> and the instructions in force to the user and ask`;
 
 and ask. Only their explicit yes is recorded, with `dev-orchestra design
 approve` -- never on your own judgement, and never to get past a refusal. If
@@ -835,6 +844,31 @@ while an earlier plan's unit is running or holds a worktree is refused (exit
 2) until those jobs are cancelled or `units clean` has run. Test and review
 then run once, on the merged tree, as without units.
 
+**Tests after the merge.** By default each unit runs its own checks in its
+worktree (`implementation.unit_tests: worktree`). Units that run side by side
+and share a test database, a port or a similar resource can trip over each
+other there; `implementation.unit_tests: after_merge` has each unit write its
+code and tests, run lint and type checks only, and report the tests as "not
+run". The unit header says so, and that overrides the request's own "run the
+tests". The suite then runs once in [Test](#test), after every unit is merged.
+A unit already told not to run checks (a link into its worktree failed) keeps
+that stricter wording. Git-ignored files a worktree needs for its checks, such
+as `config/database.yml` or `.env.test`, are listed in
+`implementation.worktree_files` and copied in when the worktree is made; one
+that is missing, names a `..`, or is reached through a link is skipped with a
+`note:`.
+
+**Standing instructions.** The CLI adds the `instructions` text set for a
+role ([configuration](configuration.md#standing-instructions-instructions))
+to the prompt itself, under the heading `## Project instructions`; do not
+paste it into a request. A run of the architect, the implementer or the review
+fixer gets it in front of the request; a unit run gets the unit header first,
+then the instructions, then the request. A reviewer gets it after the task's
+rules and before the change, and may only add things to look at. A detached
+worker gets it once, from the run that started it; `--resume` never gets it
+again, so a session started before an instruction was added never sees it --
+run fresh to pick it up. `run <reviewer-id>` and `run orchestrator` get none.
+
 **Small work goes to the light tier.** When the role has a `light` tier
 (`config show`; Model tiers in `references/configuration.md`), run the
 implementation with `--tier light` when the plan lists at most three Files to
@@ -851,6 +885,9 @@ Use the project's own commands, discovered from the repo (`package.json`,
 `Makefile`, `Rakefile`, `pyproject.toml`, CI config, CONTRIBUTING). Prefer the
 narrowest command that covers the change, then broaden if time allows. Never
 invent a test command; if you cannot find one, say so.
+
+Under `implementation.unit_tests: after_merge` the units did not run the
+tests: run the suite once here, after every unit is merged.
 
 A failing suite stops the pipeline. Fix it or report it — do not review a broken
 tree.

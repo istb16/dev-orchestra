@@ -117,6 +117,7 @@ KEYS: Dict[str, Tuple[List[str], List[str]]] = {
             "generated_at",
             "head",
             "incremental_from",
+            "instruction_changes",
             "lines_added",
             "lines_deleted",
             "max_chars",
@@ -272,7 +273,9 @@ KEYS: Dict[str, Tuple[List[str], List[str]]] = {
             "design_approval",
             "design_questions",
             "design_review",
+            "implementation",
             "in_flight",
+            "instructions",
             "optimization",
             "progress",
             "reasons",
@@ -286,9 +289,12 @@ KEYS: Dict[str, Tuple[List[str], List[str]]] = {
             "workflow",
         ],
     ),
-    "summary": ([], ["counts", "design_counts", "models", "reviewers", "skipped", "stages", "tokens"]),
+    "summary": (
+        [],
+        ["counts", "design_counts", "instructions", "models", "reviewers", "skipped", "stages", "tokens"],
+    ),
     # Last: the plan with units they need replaces the approved one.
-    "units status": ([], ["failed", "plan_sha256", "ready", "units"]),
+    "units status": ([], ["failed", "plan_sha256", "ready", "unit_tests", "units"]),
     "units merge": (["one"], ["files", "outside_files", "status", "unit"]),
 }
 

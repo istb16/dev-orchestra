@@ -7,7 +7,7 @@ The lowest of the ``config_*`` modules; ``config`` re-exports its public names.
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, List, NamedTuple, Optional, TypeGuard
+from typing import Any, Dict, List, NamedTuple, Optional, Tuple, TypeGuard
 
 from . import config_trust
 from . import optimization as opt_mod
@@ -35,6 +35,13 @@ READ_ONLY_ROLES = ("orchestrator", "architect")
 
 #: The write roles, which ``project_write_refusals`` looks at.
 WRITE_ROLES = tuple(role for role in KNOWN_ROLES if role not in READ_ONLY_ROLES)
+
+#: The roles whose run prompt carries their ``instructions``. The
+#: orchestrator's are followed by the session from ``status`` instead.
+PROMPTED_ROLES = tuple(role for role in KNOWN_ROLES if role != "orchestrator")
+
+#: The keys of ``instructions``: the run roles, then the two review panels.
+INSTRUCTION_ROLES = (*KNOWN_ROLES, "reviewers", "design_reviewers")
 
 #: The total deadline of one ``run`` of each role, in seconds. The implementer
 #: gets an hour: measured implementer runs went past half an hour, and one was
@@ -150,6 +157,13 @@ class Implementation(NamedTuple):
 
     max_parallel: int
     hub_paths: List[str]
+    #: ``worktree`` or ``after_merge``.
+    unit_tests: str = "worktree"
+    worktree_files: Tuple[str, ...] = ()
+
+
+#: The values of ``implementation.unit_tests``.
+UNIT_TESTS_MODES = ("worktree", "after_merge")
 
 
 def implementation_settings_of(data: Dict[str, Any]) -> Implementation:
@@ -166,7 +180,12 @@ def implementation_settings_of(data: Dict[str, Any]) -> Implementation:
     hubs = block.get("hub_paths")
     if not (isinstance(hubs, list) and all(isinstance(p, str) and p.strip() for p in hubs)):
         hubs = defaults["hub_paths"]
-    return Implementation(cap, list(hubs))
+    unit_tests = block.get("unit_tests")
+    if unit_tests not in UNIT_TESTS_MODES:
+        unit_tests = defaults["unit_tests"]
+    files = block.get("worktree_files")
+    kept = tuple(p for p in files if isinstance(p, str) and p.strip()) if isinstance(files, list) else ()
+    return Implementation(cap, list(hubs), unit_tests, kept)
 
 
 #: A BCP 47 language tag, loosely: a primary subtag of two or three letters
@@ -428,10 +447,14 @@ def default_config() -> Dict[str, Any]:
         # ``max_parallel`` is how many run at once, up to
         # MAX_PARALLEL_UNITS. ``hub_paths`` are
         # files every unit tends to touch, so with two or more units only the
-        # integration unit may list them.
+        # integration unit may list them. ``unit_tests: after_merge`` has units
+        # skip tests so they run once on the merged tree. ``worktree_files``
+        # are git-ignored files a unit's worktree gets a copy of.
         "implementation": {
             "max_parallel": 2,
             "hub_paths": ["CHANGELOG*", "**/CHANGELOG*"],
+            "unit_tests": "worktree",
+            "worktree_files": [],
         },
         "workspace": {
             "dir": ".ai",

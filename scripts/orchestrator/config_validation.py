@@ -10,14 +10,17 @@ import re
 from typing import Any, Dict, List, NamedTuple, Optional, Sequence, Set, Tuple
 
 from . import optimization as opt_mod
+from . import workspace as ws
 from .clocks import MAX_SECONDS
 from .config_common import (
     CONFIG_VERSION,
+    INSTRUCTION_ROLES,
     KNOWN_ROLES,
     MAX_PARALLEL_UNITS,
     PROGRESS_INTERVAL_MAX,
     PROGRESS_INTERVAL_MIN,
     STALE_NOTICE_MAX_DAYS,
+    UNIT_TESTS_MODES,
     default_config,
     is_valid_reviewer_id,
     normalise_language_tag,
@@ -29,12 +32,12 @@ from .config_reviewers import CODE_PANEL, DESIGN_PANEL, PanelKeys, ReviewerOrigi
 from .config_seats import merge_tier
 from .review_common import SEVERITIES
 
-# Two imports stay inside the functions that need them, and each one points
+# Three imports stay inside the functions that need them, and each one points
 # back here. The provider registry: importing it runs its bootstrap, which asks
 # ``config_paths`` for ``user_providers_dir`` and imports every user adapter, and
 # configuration must stay loadable without the provider registry. Presets:
-# ``presets`` imports ``config``, which imports this module, so it can only be
-# imported once both are complete.
+# it imports ``config``, which imports this module, so it can only be imported
+# once both are complete.
 
 
 #: How a deadline too long to wait for is refused.
@@ -227,6 +230,7 @@ def validate(
         ("language", _validate_language),
         ("progress", _validate_progress),
         ("implementation", _validate_implementation),
+        ("instructions", _validate_instructions),
     ):
         block = data.get(key)
         if block is not None:
@@ -245,6 +249,7 @@ def _key_schema() -> Dict[str, Any]:
 
     A list of reviewer entries is ``[schema]``. Built from ``default_config``,
     so a key added there is known here without a second list to keep.
+    ``instructions`` is not in the defaults, so nothing merges it; it is added by hand.
     """
 
     def shape(value: Any) -> Any:
@@ -264,12 +269,14 @@ def _key_schema() -> Dict[str, Any]:
         "high_risk_model": dict(model, provider=None, options=None),
         "when": None,
         "relevance": None,
+        "instructions": None,
     }
     schema = shape(default_config())
     schema.update(dict.fromkeys(KNOWN_ROLES, role))
     schema.update({"preset": None, "reviewers": [reviewer], "reviewers_extra": [reviewer], "budgets": _FREE})
     schema["run"]["timeout_seconds"] = _FREE
     schema["review"]["design"].update({"reviewers": [reviewer], "reviewers_extra": [reviewer]})
+    schema["instructions"] = dict.fromkeys(INSTRUCTION_ROLES)
     return schema
 
 
@@ -625,6 +632,60 @@ def _validate_implementation(implementation: Any) -> List[str]:
             "implementation.max_parallel: must be an integer from 1 to %d or null" % MAX_PARALLEL_UNITS
         )
     problems.extend(_check(implementation, _IMPLEMENTATION_RULES))
+    unit_tests = implementation.get("unit_tests")
+    if unit_tests is not None and unit_tests not in UNIT_TESTS_MODES:
+        problems.append("implementation.unit_tests: must be worktree or after_merge, or null")
+    files = implementation.get("worktree_files")
+    if files is not None and not isinstance(files, list):
+        problems.append(
+            "implementation.worktree_files: must be a list of file paths or null (use [] for none)"
+        )
+    elif files is not None:
+        for index, path in enumerate(files):
+            problem = _worktree_file_problem(path)
+            if problem:
+                problems.append("implementation.worktree_files[%d]: %s (got %r)" % (index, problem, path))
+    return problems
+
+
+def _worktree_file_problem(path: Any) -> str:
+    """Why ``path`` cannot be a ``worktree_files`` entry; "" when it can."""
+    if not isinstance(path, str) or not path.strip():
+        return "must be a non-empty string"
+    if any(char in path for char in "*?[{}"):
+        return "must be a file path, not a glob"
+    if path.endswith(("/", "\\")):
+        return "must name a file, not a directory"
+    if not ws.inside_repository(path):
+        return "must be a path inside the repository, without .."
+    return ""
+
+
+def _instruction_problems(value: Any, label: str) -> List[str]:
+    """The problems of one instructions value: a string, ``{file: <path>}`` or null."""
+    if value is None or isinstance(value, str):
+        return []
+    if not isinstance(value, dict) or set(value) != {"file"}:
+        return ["%s: must be a string or {file: <path>}, or null" % label]
+    path = value["file"]
+    if not isinstance(path, str) or not path.strip():
+        return ["%s.file: must be a non-empty string" % label]
+    if not ws.inside_repository(path):
+        return ["%s.file: must be a path inside the repository, without .. (got %r)" % (label, path)]
+    return []
+
+
+def _validate_instructions(block: Any) -> List[str]:
+    if not isinstance(block, dict):
+        return ["instructions: must be a mapping"]
+    problems: List[str] = []
+    for role, value in block.items():
+        if role not in INSTRUCTION_ROLES:
+            problems.append(
+                "instructions.%s: unknown role (known: %s)" % (role, ", ".join(INSTRUCTION_ROLES))
+            )
+            continue
+        problems.extend(_instruction_problems(value, "instructions.%s" % role))
     return problems
 
 
@@ -646,6 +707,7 @@ def _validate_reviewer_entry(
         found = _validate_high_risk_model(reviewer["high_risk_model"])
         problems.extend("%s: %s" % (label, msg) for msg in found)
     problems.extend(_validate_relevance(reviewer, when_prefix))
+    problems.extend(_instruction_problems(reviewer.get("instructions"), "%s: instructions" % label))
     when = reviewer.get("when")
     if design and opt_mod.is_paths_condition(when):
         problems.append(

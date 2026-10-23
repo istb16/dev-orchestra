@@ -19,6 +19,7 @@ from typing import (
 from . import config as config_mod
 from . import config_policy as policy_mod
 from . import context as context_mod
+from . import instructions
 from . import ledger as ledger_mod
 from . import optimization as opt_mod
 from . import review as review_mod
@@ -296,6 +297,7 @@ def cmd_review_snapshot(args: argparse.Namespace) -> int:
             exclude=exclude,
             incremental=incremental,
             surrounding=surrounding,
+            watched=instructions.watched_paths(loaded),
         )
     except review_mod.ReviewError as exc:
         _err(str(exc))
@@ -430,6 +432,7 @@ def _ensure_snapshot(
     workspace: ws.Workspace,
     settings: Dict[str, Any],
     context_settings: Dict[str, Any],
+    watched: Sequence[str] = (),
 ) -> Optional[int]:
     """Take the snapshot a round reviews, or the exit code of a failed one.
 
@@ -467,6 +470,7 @@ def _ensure_snapshot(
                 exclude=settings.get("exclude"),
                 incremental=bool(settings.get("incremental_rounds", True)),
                 surrounding=context_mod.surrounding_mode(context_settings.get("surrounding")),
+                watched=watched,
             )
         except review_mod.ReviewError as exc:
             _err(str(exc))
@@ -636,7 +640,8 @@ def cmd_review_run(args: argparse.Namespace) -> int:
     context_settings = dict(loaded.context_settings())
     if override:
         context_settings["surrounding"] = override
-    refusal = _ensure_snapshot(args, workspace, settings, context_settings)
+    watched = instructions.watched_paths(loaded)
+    refusal = _ensure_snapshot(args, workspace, settings, context_settings, watched)
     if refusal is not None:
         return refusal
     lineage = _lineage(args, workspace)
