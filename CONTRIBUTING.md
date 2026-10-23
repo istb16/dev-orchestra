@@ -29,10 +29,11 @@ directory, change the working directory, or leave the environment changed.
 To run a few modules rather than the whole suite, name them with `-p GLOB`
 (repeatable; the file-name pattern `unittest discover -p` takes), for example
 `python tests/run_parallel.py -p test_instructions.py -p "test_review_*.py"`.
-A module that fails to import is still reported if a pattern selects it. A
-pattern that finds no tests stops the run with "no tests found for pattern
-GLOB" before anything runs. `-p` cannot be combined with `--shard` or
-`--write-timings`.
+A pattern matches file names (`test_x.py`, not `test_x` or a path), and the
+tree is walked once however many there are. A module that fails to import is
+still reported if a pattern selects it. A pattern that matches no module stops
+the run with "no test module matches GLOB" before anything runs. `-p` cannot
+be combined with `--shard` or `--write-timings`.
 
 A few long classes are handed out one test method at a time instead: those in
 `SPLIT_CLASSES` in `tests/run_parallel.py`, now the three installer classes

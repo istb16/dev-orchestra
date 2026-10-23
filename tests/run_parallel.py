@@ -9,9 +9,11 @@ locally. Standard library only, like the rest of the suite::
                                  [--write-timings PATH] [--shard I/N] [-p GLOB ...]
 
 ``-p GLOB`` (repeatable) runs only the modules whose file name matches, with
-the meaning ``unittest discover -p`` gives it; a test two patterns find runs
-once. It cannot be combined with ``--shard`` or ``--write-timings``, which
-are about the whole suite.
+the meaning ``unittest discover -p`` gives it (``test_x.py``, not ``test_x``
+or ``tests/test_x.py``); the tree is walked once whatever the number of
+patterns. A pattern that matches no module stops the run. It cannot be
+combined with ``--shard`` or ``--write-timings``, which are about the whole
+suite.
 
 A class named by ``--split`` (or in ``SPLIT_CLASSES``) is handed out one test
 method per task instead, so one long class does not decide how long the run
@@ -48,6 +50,7 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import fnmatch
 import io
 import json
 import multiprocessing
@@ -58,7 +61,7 @@ import traceback
 import unittest
 import warnings
 from concurrent.futures.process import BrokenProcessPool
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
 if TESTS_DIR not in sys.path:
@@ -233,7 +236,10 @@ def _parse_args(argv: Optional[List[str]]) -> argparse.Namespace:
         action="append",
         default=None,
         metavar="GLOB",
-        help="run only the test modules whose file name matches GLOB, as discover -p; repeatable",
+        help=(
+            "run only the test modules whose file name matches GLOB, as discover -p (test_x.py);"
+            " repeatable; not with --shard or --write-timings"
+        ),
     )
     args = parser.parse_args(argv)
     # Shards split the whole suite, and timings written from part of it would
@@ -365,17 +371,36 @@ def _terminate_workers(executor: concurrent.futures.ProcessPoolExecutor) -> None
         process.terminate()
 
 
-def _discover_patterns(start_dir: str, patterns: List[str]) -> Union[unittest.TestSuite, str]:
-    """The tests each pattern finds, each once, or the first pattern that finds none."""
-    loader = unittest.TestLoader()
-    tests: Dict[str, unittest.TestCase] = {}
-    for pattern in patterns:
-        found = list(_flatten(loader.discover(start_dir, pattern=pattern, top_level_dir=start_dir)))
-        if not found:
-            return pattern
-        for test in found:
-            tests.setdefault(test.id(), test)
-    return unittest.TestSuite(tests.values())
+class _AnyPattern(unittest.TestLoader):
+    """A loader that takes a module matching any of ``patterns``, in one walk of the tree.
+
+    ``_match_path`` is the hook unittest leaves for another matching rule; it
+    also records which patterns matched, so one that matched nothing can be named.
+    """
+
+    def __init__(self, patterns: List[str]) -> None:
+        super().__init__()
+        self.patterns = patterns
+        self.matched: Set[str] = set()
+
+    def _match_path(self, path: str, full_path: str, pattern: str) -> bool:
+        hits = [each for each in self.patterns if fnmatch.fnmatch(path, each)]
+        self.matched.update(hits)
+        return bool(hits)
+
+
+def _discover_patterns(start_dir: str, patterns: List[str]) -> Tuple[unittest.TestSuite, List[str]]:
+    """The tests of the modules any pattern matches, and the patterns that matched no module."""
+    loader = _AnyPattern(patterns)
+    suite = loader.discover(start_dir, pattern=patterns[0], top_level_dir=start_dir)
+    return suite, [each for each in dict.fromkeys(patterns) if each not in loader.matched]
+
+
+def _pattern_hint(pattern: str) -> str:
+    """A reminder of the form, for a pattern that looks like a module name or a path."""
+    if pattern.endswith(".py") and "/" not in pattern and "\\" not in pattern:
+        return ""
+    return " (patterns match file names, such as test_x.py)"
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -384,9 +409,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     started = time.monotonic()
 
     if args.pattern:
-        suite = _discover_patterns(args.start_dir, args.pattern)
-        if isinstance(suite, str):
-            sys.stderr.write("run_parallel: no tests found for pattern %s\n" % suite)
+        suite, unmatched = _discover_patterns(args.start_dir, args.pattern)
+        for pattern in unmatched:
+            hint = _pattern_hint(pattern)
+            sys.stderr.write("run_parallel: no test module matches %s%s\n" % (pattern, hint))
+        if unmatched:
             return 2
     else:
         suite = unittest.TestLoader().discover(args.start_dir, top_level_dir=args.start_dir)
@@ -402,10 +429,10 @@ def main(argv: Optional[List[str]] = None) -> int:
             name = "%s.%s" % (cls.__module__, cls.__qualname__)
             classes.setdefault(name, []).append(test.id())
 
-    defaults = SERIAL_CLASSES
-    if args.pattern:
-        # A selection need not hold the defaults; one named here must be in it.
-        defaults = tuple(name for name in SERIAL_CLASSES if name in classes)
+    # A default missing from what was discovered (a -p selection, or a tree
+    # that is not this repository's) is skipped, as SPLIT_CLASSES is below;
+    # a class named on the command line must be there.
+    defaults = [name for name in SERIAL_CLASSES if name in classes]
     serial = list(dict.fromkeys([*defaults, *args.serial]))
     unknown = [name for name in dict.fromkeys([*serial, *args.split]) if name not in classes]
     if unknown:

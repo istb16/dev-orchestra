@@ -479,13 +479,13 @@ class TestShards(RunnerCase):
 
 
 # Runs the runner with its default serial and split classes replaced, so a
-# default can name a class the selection leaves out.
+# default can name a class the selection leaves out, or one it holds.
 WITH_DEFAULTS = """\
 import sys
 sys.path.insert(0, %r)
 import run_parallel
-run_parallel.SERIAL_CLASSES = ("test_other.TestOther",)
-run_parallel.SPLIT_CLASSES = ("test_other.TestOther",)
+run_parallel.SERIAL_CLASSES = %r
+run_parallel.SPLIT_CLASSES = %r
 sys.exit(run_parallel.main(sys.argv[1:]))
 """
 
@@ -516,7 +516,16 @@ class TestPatterns(RunnerCase):
         self.three_modules()
         code, stderr = self.run_runner("-p", "test_passing.py", "-p", "test_nothing*.py")
         self.assertEqual(code, 2, stderr)
-        self.assertIn("run_parallel: no tests found for pattern test_nothing*.py\n", stderr)
+        self.assertIn("run_parallel: no test module matches test_nothing*.py\n", stderr)
+
+    def test_every_unmatched_pattern_is_named_with_a_hint_for_the_wrong_form(self):
+        self.three_modules()
+        code, stderr = self.run_runner("-p", "test_passing", "-p", "tests/test_other.py", "-p", "test_no*.py")
+        self.assertEqual(code, 2, stderr)
+        hint = " (patterns match file names, such as test_x.py)"
+        self.assertIn("run_parallel: no test module matches test_passing%s\n" % hint, stderr)
+        self.assertIn("run_parallel: no test module matches tests/test_other.py%s\n" % hint, stderr)
+        self.assertIn("run_parallel: no test module matches test_no*.py\n", stderr)
 
     def test_with_a_shard_or_written_timings_is_refused(self):
         self.module("test_passing", PASSING)
@@ -538,23 +547,37 @@ class TestPatterns(RunnerCase):
         self.assertSummary(stderr, 2, "OK")
         self.assertNotIn("test_broken", stderr)
 
+    def run_with_defaults(self, serial, split, *args):
+        """The runner with ``SERIAL_CLASSES`` and ``SPLIT_CLASSES`` replaced: (exit code, stderr)."""
+        script = WITH_DEFAULTS % (os.path.dirname(RUNNER), tuple(serial), tuple(split))
+        argv = [sys.executable, "-c", script, "--start-dir", self.start_dir, "-j", "2", *args]
+        completed = subprocess.run(argv, capture_output=True, text=True, timeout=120)
+        return completed.returncode, completed.stderr
+
     def test_a_default_class_outside_the_selection_is_skipped(self):
         self.three_modules()
-        script = WITH_DEFAULTS % os.path.dirname(RUNNER)
-        argv = [sys.executable, "-c", script, "--start-dir", self.start_dir, "-j", "2"]
-        completed = subprocess.run(
-            [*argv, "-p", "test_passing.py"], capture_output=True, text=True, timeout=120
-        )
-        self.assertEqual(completed.returncode, 0, completed.stderr)
-        self.assertSummary(completed.stderr, 2, "OK")
-        completed = subprocess.run(
-            [*argv, "-p", "test_passing.py", "--serial", "test_other.TestOther"],
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
-        self.assertEqual(completed.returncode, 2, completed.stderr)
-        self.assertIn("no such test class: test_other.TestOther", completed.stderr)
+        other = ["test_other.TestOther"]
+        code, stderr = self.run_with_defaults(other, other, "-p", "test_passing.py")
+        self.assertEqual(code, 0, stderr)
+        self.assertSummary(stderr, 2, "OK")
+        code, stderr = self.run_with_defaults(other, other, "-p", "test_passing.py", "--serial", other[0])
+        self.assertEqual(code, 2, stderr)
+        self.assertIn("no such test class: test_other.TestOther", stderr)
+
+    def test_a_default_serial_class_missing_from_the_tree_is_skipped_without_a_pattern(self):
+        self.module("test_passing", PASSING)
+        code, stderr = self.run_with_defaults(["test_gone.TestGone"], [])
+        self.assertEqual(code, 0, stderr)
+        self.assertSummary(stderr, 2, "OK")
+
+    def test_a_default_split_class_inside_the_selection_is_still_split(self):
+        """A hung method is named on its own only when its class was handed out per method."""
+        self.module("test_passing", PASSING)
+        self.module("test_hangs", HANGS)
+        hangs = ["test_hangs.TestHangs"]
+        code, stderr = self.run_with_defaults([], hangs, "-p", "test_hangs.py", "--timeout", "3")
+        self.assertEqual(code, 1, stderr)
+        self.assertIn("ERROR: test_hangs.TestHangs.test_sleeps\n", stderr)
 
 
 if __name__ == "__main__":
