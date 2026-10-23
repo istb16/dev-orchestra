@@ -367,6 +367,12 @@ is a major version.
    `python scripts/validate_skill.py` refuses if any of them disagree, so run
    it rather than counting.
 6. Tag `vX.Y.Z`.
+7. Publish the GitHub release for the tag with notes written in Japanese, as
+   every release before it: not the `CHANGELOG.md` section pasted as it is.
+   Open with a `## X.Y.Z` heading and a paragraph on what the release is for,
+   group the changes under `## 足したこと`, `## 変えたこと` and `## 直したこと`,
+   list the CLI versions the release was checked against under
+   `## 実機で確かめた CLI`, and end with a link to `CHANGELOG.md` at the tag.
 
 ## Reporting a security issue
 
