@@ -9,6 +9,7 @@ import time
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from typing import Optional
+from unittest import mock
 
 from helpers import IsolatedCase, has_git, present
 
@@ -799,6 +800,13 @@ class TestFanOut(IsolatedCase):
         self.assertEqual(data["counts"]["findings_total"], 1)
         self.assertEqual(data["counts"]["duplicates_merged"], 1)
         self.assertEqual(data["counts"]["reviewers_ok"], 2)
+
+    def test_reports_isfile_misses_are_still_read(self):
+        """`os.path.isfile` can miss a report mid-rename (#358)."""
+        review_mod.run_reviews([reviewer("r1"), reviewer("r2")], self.workspace)
+        with mock.patch("os.path.isfile", return_value=False):
+            findings = review_mod.collect_reports(self.workspace, ["r1", "r2", "absent"])
+        self.assertEqual(len(findings), 2)
 
     def test_triage_survives_reconsolidation(self):
         runs = review_mod.run_reviews([reviewer("r1")], self.workspace)

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import io
 import os
+import sys
 import threading
 import time
 import unittest
@@ -24,7 +25,35 @@ from orchestrator import review as review_mod
 from orchestrator import workspace as ws
 
 
-class TestAtomicWrites(IsolatedCase):
+class ReaderCase(IsolatedCase):
+    """Helpers for the reader tests: no test of its own."""
+
+    def count_sleeps(self):
+        sleeps = []
+        patcher = mock.patch.object(ws.time, "sleep", side_effect=sleeps.append)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return sleeps
+
+    def patch_reader(self, reader):
+        original = ws._read_shared
+        ws._read_shared = reader
+        self.addCleanup(setattr, ws, "_read_shared", original)
+
+    def forbid_tolerant_read(self):
+        """Fail the test if `read_text` reaches its `errors="replace"` read,
+        the only plain `open` the readers make."""
+        failure = AssertionError("the tolerant read was reached")
+        self.enterContext(mock.patch.object(ws, "open", side_effect=failure, create=True))
+
+    def under_a_file(self):
+        """A path whose parent is a regular file."""
+        parent = os.path.join(self.project, "plain.txt")
+        ws.write_text(parent, "plain")
+        return os.path.join(parent, "state.json")
+
+
+class TestAtomicWrites(ReaderCase):
     def test_a_reader_never_sees_a_partial_file(self):
         """A poller reading while a worker rewrites must see one version or the other."""
         path = os.path.join(self.project, "big.json")
@@ -200,28 +229,262 @@ class TestAtomicWrites(IsolatedCase):
     def test_a_file_that_stays_refused_still_yields_the_default(self):
         path = os.path.join(self.project, "state.json")
         ws.write_json(path, {"ledger": {}})
-        original = ws._read_shared
+        calls = []
 
         def refuse(target):
+            calls.append(target)
             raise PermissionError(13, "access denied", target)
 
-        ws._read_shared = refuse
-        self.addCleanup(setattr, ws, "_read_shared", original)
+        self.patch_reader(refuse)
+        sleeps = self.count_sleeps()
         self.assertEqual(ws.read_json(path, "fallback"), "fallback")
+        self.assertGreater(len(calls), 1)
+        self.assertEqual(len(calls), ws._READ_ATTEMPTS)
+        self.assertEqual(len(sleeps), ws._READ_ATTEMPTS - 1)
+
+    def isfile_always_misses(self):
+        """`os.path.isfile` is a stat that reports any error as False, and on
+        Windows / Python 3.14 it misses a file mid-rename (#358)."""
+        patcher = mock.patch.object(ws.os.path, "isfile", return_value=False)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def test_a_missing_file_yields_the_default_without_retrying(self):
+        sleeps = self.count_sleeps()
         started = time.monotonic()
         self.assertIsNone(ws.read_json(os.path.join(self.project, "absent.json")))
         self.assertLess(time.monotonic() - started, 0.5)
+        self.assertEqual(sleeps, [])
 
+    def test_a_directory_yields_the_default_without_retrying(self):
+        sleeps = self.count_sleeps()
+        self.assertEqual(ws.read_json(self.project, "fallback"), "fallback")
+        self.assertEqual(sleeps, [])
 
-class TestStrictTextReads(IsolatedCase):
-    """`read_text_strict` never guesses: absent is "", unreadable is None."""
-
-    def patch_reader(self, reader):
+    def test_a_file_deleted_between_attempts_yields_the_default(self):
+        path = os.path.join(self.project, "state.json")
+        ws.write_json(path, {"ledger": {}})
         original = ws._read_shared
-        ws._read_shared = reader
+        calls = []
+
+        def refuse_then_vanish(target):
+            calls.append(target)
+            if len(calls) == 1:
+                raise PermissionError(13, "sharing violation", target)
+            raise FileNotFoundError(2, "gone", target)
+
+        ws._read_shared = refuse_then_vanish
         self.addCleanup(setattr, ws, "_read_shared", original)
+        sleeps = self.count_sleeps()
+        self.assertEqual(ws.read_json(path, "fallback"), "fallback")
+        self.assertEqual(len(sleeps), 1)
+
+    def test_a_file_isfile_misses_is_still_read(self):
+        path = os.path.join(self.project, "state.json")
+        ws.write_json(path, {"ledger": {}})
+        self.isfile_always_misses()
+        self.assertEqual(ws.read_json(path, "UNREADABLE"), {"ledger": {}})
+
+    def test_a_read_refused_while_isfile_misses_is_retried(self):
+        path = os.path.join(self.project, "state.json")
+        ws.write_json(path, {"ledger": {}})
+        original = ws._read_shared
+        refusals = [2]
+
+        def refuse_then_read(target):
+            if refusals[0]:
+                refusals[0] -= 1
+                raise PermissionError(13, "sharing violation", target)
+            return original(target)
+
+        ws._read_shared = refuse_then_read
+        self.addCleanup(setattr, ws, "_read_shared", original)
+        self.isfile_always_misses()
+        self.assertEqual(ws.read_json(path, "UNREADABLE"), {"ledger": {}})
+
+    def test_read_text_ignores_a_false_isfile(self):
+        path = os.path.join(self.project, "report.md")
+        ws.write_text(path, "# Report\n")
+        self.isfile_always_misses()
+        self.assertEqual(ws.read_text(path, "fallback"), "# Report\n")
+
+
+class TestTextReads(ReaderCase):
+    """`read_text` returns its default for "no file here" without trying the
+    tolerant read, and falls back to that read for a file that is there but
+    refused or undecodable."""
+
+    def test_a_missing_file_is_the_default(self):
+        self.forbid_tolerant_read()
+        self.assertEqual(ws.read_text(os.path.join(self.project, "absent.md"), "d"), "d")
+
+    def test_a_directory_is_the_default(self):
+        self.forbid_tolerant_read()
+        self.assertEqual(ws.read_text(self.project, "d"), "d")
+
+    def test_a_path_under_a_file_is_the_default(self):
+        path = self.under_a_file()
+        self.forbid_tolerant_read()
+        self.assertEqual(ws.read_text(path, "d"), "d")
+
+    def test_a_file_vanishing_mid_read_is_the_default(self):
+        path = os.path.join(self.project, "report.md")
+        ws.write_text(path, "# Report\n")
+
+        def vanish(target):
+            os.unlink(target)
+            raise FileNotFoundError(2, "gone", target)
+
+        self.patch_reader(vanish)
+        self.forbid_tolerant_read()
+        self.assertEqual(ws.read_text(path, "d"), "d")
+
+    def test_an_undecodable_read_falls_back_to_the_tolerant_read(self):
+        path = os.path.join(self.project, "report.md")
+        ws.write_text(path, "# Report\n")
+
+        def undecodable(target):
+            raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+
+        self.patch_reader(undecodable)
+        self.assertEqual(ws.read_text(path, "d"), "# Report\n")
+
+    def test_a_refused_read_falls_back_to_the_tolerant_read(self):
+        path = os.path.join(self.project, "report.md")
+        ws.write_text(path, "# Report\n")
+
+        def refuse(target):
+            raise PermissionError(13, "sharing violation", target)
+
+        self.patch_reader(refuse)
+        self.assertEqual(ws.read_text(path, "d"), "# Report\n")
+
+    def test_a_file_deleted_before_the_fallback_is_the_default(self):
+        path = os.path.join(self.project, "report.md")
+        ws.write_text(path, "# Report\n")
+
+        def refuse_and_delete(target):
+            os.unlink(target)
+            raise PermissionError(13, "sharing violation", target)
+
+        self.patch_reader(refuse_and_delete)
+        self.assertEqual(ws.read_text(path, "d"), "d")
+
+
+@unittest.skipUnless(hasattr(os, "mkfifo"), "FIFOs and device nodes are POSIX")
+class TestNonRegularFiles(ReaderCase):
+    """A FIFO or device where a file was expected reads as absent. Opened
+    plainly, a FIFO with no writer blocks forever and /dev/zero never ends."""
+
+    def assert_absent_to_every_reader(self, path):
+        sleeps = self.count_sleeps()
+        self.forbid_tolerant_read()
+        self.assertEqual(ws.read_json(path, "fallback"), "fallback")
+        self.assertEqual(ws.read_text(path, "d"), "d")
+        self.assertEqual(ws.read_text_strict(path), "")
+        self.assertEqual(sleeps, [])
+
+    def test_a_fifo_without_a_writer_is_absent(self):
+        path = os.path.join(self.project, "state.json")
+        os.mkfifo(path)
+        self.assert_absent_to_every_reader(path)
+
+    @unittest.skipUnless(os.path.exists("/dev/zero"), "no /dev/zero")
+    def test_a_device_is_absent(self):
+        self.assert_absent_to_every_reader("/dev/zero")
+
+
+@unittest.skipUnless(sys.platform == "win32", "the shared open is Windows only")
+class TestSharedOpenErrors(ReaderCase):
+    """`_read_shared` reports why an open failed, so a reader can tell "not
+    found" from "refused" without asking `os.path.isfile`."""
+
+    def test_a_missing_file_is_file_not_found(self):
+        with self.assertRaises(FileNotFoundError) as caught:
+            ws._read_shared(os.path.join(self.project, "absent.json"))
+        self.assertEqual(getattr(caught.exception, "winerror", None), 2)
+
+    def test_a_missing_directory_is_file_not_found(self):
+        with self.assertRaises(FileNotFoundError) as caught:
+            ws._read_shared(os.path.join(self.project, "absent", "state.json"))
+        self.assertEqual(getattr(caught.exception, "winerror", None), 3)
+
+    def test_a_directory_is_a_directory_error(self):
+        with self.assertRaises(IsADirectoryError):
+            ws._read_shared(self.project)
+
+    def test_a_share_none_holder_is_a_permission_error(self):
+        # Windows only: ctypes.WinDLL exists nowhere else.
+        import ctypes
+        import ctypes.wintypes
+
+        path = os.path.join(self.project, "state.json")
+        ws.write_json(path, {"ledger": {}})
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateFileW.restype = ctypes.wintypes.HANDLE
+        kernel32.CloseHandle.argtypes = [ctypes.wintypes.HANDLE]
+        GENERIC_READ = 0x80000000
+        OPEN_EXISTING = 3
+        handle = kernel32.CreateFileW(path, GENERIC_READ, 0, None, OPEN_EXISTING, 0x80, None)
+        self.assertNotIn(handle, (None, ctypes.c_void_p(-1).value))
+        self.addCleanup(kernel32.CloseHandle, handle)
+
+        with self.assertRaises(PermissionError) as caught:
+            ws._read_shared(path)
+        self.assertEqual(getattr(caught.exception, "winerror", None), 32)
+        with mock.patch.object(ws.time, "sleep"):
+            self.assertEqual(ws.read_json(path, "fallback"), "fallback")
+
+    def test_a_path_under_a_file_is_absent(self):
+        with self.assertRaises(ws._ABSENT):
+            ws._read_shared(self.under_a_file())
+
+    def fail_open_with(self, code):
+        """Make every `CreateFileW` fail with Windows error ``code``."""
+        # Windows only: ctypes.set_last_error exists nowhere else.
+        import ctypes
+
+        def create_file(*args):
+            ctypes.set_last_error(code)
+            return ctypes.c_void_p(-1).value
+
+        self.enterContext(mock.patch.object(ws, "_create_file_w", return_value=create_file))
+
+    def test_access_denied_on_a_file_is_refused_and_retried(self):
+        """Error 5 means a directory only when the path is one; on a file it
+        is a refusal, which a reader retries rather than calling absent."""
+        path = os.path.join(self.project, "state.json")
+        ws.write_json(path, {"ledger": {}})
+        self.fail_open_with(5)
+        with self.assertRaises(PermissionError) as caught:
+            ws._read_shared(path)
+        self.assertEqual(getattr(caught.exception, "winerror", None), 5)
+        sleeps = self.count_sleeps()
+        self.assertEqual(ws.read_json(path, "fallback"), "fallback")
+        self.assertEqual(len(sleeps), ws._READ_ATTEMPTS - 1)
+        del sleeps[:]
+        self.assertIsNone(ws.read_text_strict(path))
+        self.assertEqual(len(sleeps), ws._READ_ATTEMPTS - 1)
+
+    def test_access_denied_on_a_vanished_path_is_refused(self):
+        """A directory gone before the isdir check is not called a directory."""
+        self.fail_open_with(5)
+        with self.assertRaises(PermissionError):
+            ws._read_shared(os.path.join(self.project, "gone"))
+
+    def test_error_directory_is_not_a_directory_and_absent(self):
+        path = os.path.join(self.project, "state.json")
+        self.fail_open_with(267)  # ERROR_DIRECTORY
+        with self.assertRaises(NotADirectoryError):
+            ws._read_shared(path)
+        sleeps = self.count_sleeps()
+        self.assertEqual(ws.read_json(path, "fallback"), "fallback")
+        self.assertEqual(ws.read_text_strict(path), "")
+        self.assertEqual(sleeps, [])
+
+
+class TestStrictTextReads(ReaderCase):
+    """`read_text_strict` never guesses: absent is "", unreadable is None."""
 
     def test_an_absent_file_is_empty(self):
         self.assertEqual(ws.read_text_strict(os.path.join(self.project, "absent.md")), "")
@@ -257,12 +520,29 @@ class TestStrictTextReads(IsolatedCase):
     def test_a_file_that_stays_refused_is_unreadable(self):
         path = os.path.join(self.project, "plan.md")
         ws.write_text(path, "# Plan\n")
+        calls = []
 
         def refuse(target):
+            calls.append(target)
             raise PermissionError(13, "access denied", target)
 
         self.patch_reader(refuse)
+        sleeps = self.count_sleeps()
         self.assertIsNone(ws.read_text_strict(path))
+        self.assertGreater(len(calls), 1)
+        self.assertEqual(len(calls), ws._READ_ATTEMPTS)
+        self.assertEqual(len(sleeps), ws._READ_ATTEMPTS - 1)
+
+    def test_a_directory_is_empty_without_retrying(self):
+        sleeps = self.count_sleeps()
+        self.assertEqual(ws.read_text_strict(self.project), "")
+        self.assertEqual(sleeps, [])
+
+    def test_a_path_under_a_file_is_empty_without_retrying(self):
+        path = self.under_a_file()
+        sleeps = self.count_sleeps()
+        self.assertEqual(ws.read_text_strict(path), "")
+        self.assertEqual(sleeps, [])
 
     def test_a_file_removed_between_attempts_is_empty(self):
         path = os.path.join(self.project, "plan.md")
@@ -274,6 +554,29 @@ class TestStrictTextReads(IsolatedCase):
 
         self.patch_reader(remove_and_refuse)
         self.assertEqual(ws.read_text_strict(path), "")
+
+    def test_a_file_isfile_misses_is_still_read(self):
+        path = os.path.join(self.project, "plan.md")
+        ws.write_text(path, "# Plan\n")
+        with mock.patch.object(ws.os.path, "isfile", return_value=False):
+            self.assertEqual(ws.read_text_strict(path), "# Plan\n")
+
+    def test_a_read_refused_while_isfile_misses_is_unreadable_not_absent(self):
+        path = os.path.join(self.project, "plan.md")
+        ws.write_text(path, "# Plan\n")
+
+        calls = []
+
+        def refuse(target):
+            calls.append(target)
+            raise PermissionError(13, "access denied", target)
+
+        self.patch_reader(refuse)
+        sleeps = self.count_sleeps()
+        with mock.patch.object(ws.os.path, "isfile", return_value=False):
+            self.assertIsNone(ws.read_text_strict(path))
+        self.assertEqual(len(calls), ws._READ_ATTEMPTS)
+        self.assertEqual(len(sleeps), ws._READ_ATTEMPTS - 1)
 
 
 class TestFileLock(IsolatedCase):
@@ -484,6 +787,21 @@ class TestConcurrentLedgerUpdates(IsolatedCase):
         book.consume("test")  # make sure the file exists before reading it
         stop = threading.Event()
         bad = []
+        failures = []
+        original = ws._read_shared
+
+        def read_and_record(target):
+            # Name why an open failed, should a read ever come back unusable.
+            try:
+                return original(target)
+            except OSError as exc:
+                if target != self.workspace.state_path:
+                    raise
+                failures.append("%s(winerror=%s)" % (type(exc).__name__, getattr(exc, "winerror", None)))
+                raise
+
+        ws._read_shared = read_and_record
+        self.addCleanup(setattr, ws, "_read_shared", original)
 
         def churn():
             while not stop.is_set():
@@ -505,7 +823,12 @@ class TestConcurrentLedgerUpdates(IsolatedCase):
             thread.join(timeout=5)
 
         self.assertGreater(reads, 20)
-        self.assertEqual(bad, [], "%d of %d reads came back unusable" % (len(bad), reads))
+        self.assertEqual(
+            bad,
+            [],
+            "%d of %d reads came back unusable; open failures seen: %s"
+            % (len(bad), reads, ", ".join(failures) or "none"),
+        )
 
 
 class TestConcurrentTriage(IsolatedCase):
