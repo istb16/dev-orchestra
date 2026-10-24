@@ -69,6 +69,15 @@ class TestRecord(IsolatedCase):
     def test_no_record_is_no_problem(self):
         self.assertEqual(verified.read("claude", self.project), (None, None))
 
+    def test_a_record_isfile_misses_is_still_read(self):
+        """`os.path.isfile` can miss a file mid-rename (#358)."""
+        record_pass(self.project)
+        with mock.patch.object(verified.os.path, "isfile", return_value=False):
+            data, problem = verified.read("claude", self.project)
+        self.assertIsNone(problem)
+        assert data is not None
+        self.assertIn(VERSION, data["versions"])
+
 
 class TestRecordPath(IsolatedCase):
     def test_it_follows_the_config_home_only(self):

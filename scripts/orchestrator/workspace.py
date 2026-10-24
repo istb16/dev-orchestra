@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import errno
+import functools
 import json
 import os
 import re
@@ -443,7 +445,56 @@ def write_json(path: str, data: Any) -> None:
 #: Reader patience for a file another process may be rewriting.
 _READ_ATTEMPTS = 6
 
+
+class _NotARegularFile(OSError):
+    """A FIFO, device or socket where a file was expected."""
+
+
+#: Open failures that mean "no file here", so a reader returns at once. The
+#: open decides this, not ``os.path.isfile``: that is a stat which reports any
+#: error as False, and on Windows / Python 3.14 it misses a file for an instant
+#: while a rename replaces it -- which made an existing file read as absent.
+_ABSENT = (FileNotFoundError, IsADirectoryError, NotADirectoryError, _NotARegularFile)
+
 _IS_WINDOWS = sys.platform.startswith("win")
+
+
+def _read_posix(path: str) -> str:
+    """Read a regular file, refusing anything else without blocking on it.
+
+    O_NONBLOCK keeps a FIFO with no writer from hanging the open, and the
+    fstat on the open descriptor -- not a stat of the path, which could race
+    a rename -- keeps a device such as /dev/zero from being read forever.
+    """
+    descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+    try:
+        mode = os.fstat(descriptor).st_mode
+    except BaseException:
+        os.close(descriptor)
+        raise
+    if not stat.S_ISREG(mode):
+        os.close(descriptor)
+        if stat.S_ISDIR(mode):
+            raise IsADirectoryError(errno.EISDIR, "is a directory", path)
+        raise _NotARegularFile(errno.EINVAL, "not a regular file", path)
+    with os.fdopen(descriptor, "r", encoding="utf-8") as handle:
+        return handle.read()
+
+
+@functools.lru_cache(maxsize=1)
+def _create_file_w() -> Any:
+    """``CreateFileW`` from a private kernel32, built once.
+
+    A private kernel32 with use_last_error keeps the error code safe from
+    later calls, and leaves the shared windll object unchanged.
+    """
+    # Windows only: WinDLL exists nowhere else.
+    import ctypes
+    import ctypes.wintypes
+
+    create_file = ctypes.WinDLL("kernel32", use_last_error=True).CreateFileW
+    create_file.restype = ctypes.wintypes.HANDLE
+    return create_file
 
 
 def _read_shared(path: str) -> str:
@@ -459,12 +510,10 @@ def _read_shared(path: str) -> str:
     Everywhere else a rename is already invisible to an open reader.
     """
     if not _IS_WINDOWS:
-        with open(path, "r", encoding="utf-8") as handle:
-            return handle.read()
+        return _read_posix(path)
 
-    # Windows only: msvcrt does not exist on POSIX, and windll exists nowhere else.
+    # Windows only: msvcrt does not exist on POSIX.
     import ctypes
-    import ctypes.wintypes
     import msvcrt
 
     GENERIC_READ = 0x80000000
@@ -472,10 +521,9 @@ def _read_shared(path: str) -> str:
     OPEN_EXISTING = 3
     FILE_ATTRIBUTE_NORMAL = 0x80
     INVALID_HANDLE = ctypes.c_void_p(-1).value
+    ERROR_ACCESS_DENIED = 5
 
-    create_file = ctypes.windll.kernel32.CreateFileW
-    create_file.restype = ctypes.wintypes.HANDLE
-    handle = create_file(
+    handle = _create_file_w()(
         ctypes.c_wchar_p(path),
         GENERIC_READ,
         FILE_SHARE_ALL,
@@ -485,7 +533,15 @@ def _read_shared(path: str) -> str:
         None,
     )
     if not handle or handle == INVALID_HANDLE:
-        raise OSError(ctypes.get_last_error(), "could not open %s for shared reading" % path)
+        code = ctypes.get_last_error()
+        message = "could not open %s for shared reading" % path
+        # Without FILE_FLAG_BACKUP_SEMANTICS a directory is refused, where
+        # POSIX says IsADirectoryError. isdir can only err toward a retry.
+        if code == ERROR_ACCESS_DENIED and os.path.isdir(path):
+            raise IsADirectoryError(errno.EISDIR, message, path)
+        # With a winerror, Python picks the subclass: FileNotFoundError for
+        # 2 and 3, PermissionError for 5 and 32.
+        raise OSError(None, message, path, code)
     # open_osfhandle transfers ownership: closing the fd closes the handle.
     descriptor = msvcrt.open_osfhandle(handle, os.O_RDONLY)
     with os.fdopen(descriptor, "r", encoding="utf-8") as stream:
@@ -493,18 +549,19 @@ def _read_shared(path: str) -> str:
 
 
 def read_json(path: str, default: Any = None) -> Any:
-    if not os.path.isfile(path):
-        return default
     for attempt in range(_READ_ATTEMPTS):
         try:
             return json.loads(_read_shared(path))
+        except _ABSENT:
+            return default
         except (ValueError, OSError):
             # Writes are atomic, so this is rare -- but silently returning the
             # default turns "unreadable" into "absent", which is how a live job
             # once looked like a missing one. Retrying costs milliseconds.
             # On Windows a reader that lands in the instant a rename replaces
-            # the file is refused outright, an OSError just as passing.
-            if attempt == _READ_ATTEMPTS - 1 or not os.path.isfile(path):
+            # the file is refused outright, an OSError just as passing. A file
+            # deleted meanwhile is caught as absent on the next open.
+            if attempt == _READ_ATTEMPTS - 1:
                 return default
             time.sleep(0.02 * (attempt + 1))
     return default
@@ -647,10 +704,10 @@ class file_lock:  # lowercase: it is used as a context manager, not a value
 
 
 def read_text(path: str, default: str = "") -> str:
-    if not os.path.isfile(path):
-        return default
     try:
         return _read_shared(path)
+    except _ABSENT:
+        return default
     except (OSError, UnicodeDecodeError):
         # Fall back to a tolerant read: report files may contain anything.
         try:
@@ -666,18 +723,17 @@ def read_text_strict(path: str) -> Optional[str]:
     For a decision that must not be made on a guess: no ``errors="replace"``
     fallback, so a corrupted byte cannot turn one file name into another. A
     refused open is retried the way ``read_json`` retries it, because on
-    Windows it is usually a rename in progress.
+    Windows it is usually a rename in progress. Only the open decides
+    "absent", never ``os.path.isfile``, which can miss a file mid-rename.
     """
-    if not os.path.isfile(path):
-        return ""
     for attempt in range(_READ_ATTEMPTS):
         try:
             return _read_shared(path)
+        except _ABSENT:
+            return ""
         except UnicodeDecodeError:
             return None
         except OSError:
-            if not os.path.isfile(path):
-                return ""
             if attempt == _READ_ATTEMPTS - 1:
                 return None
             time.sleep(0.02 * (attempt + 1))

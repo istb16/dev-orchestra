@@ -662,8 +662,9 @@ _ALLOWED = {
     ("clocks.py", "_windows_awake_clock", "ctypes"),
     ("execution_tree.py", "pid_alive", "ctypes"),
     ("execution_tree.py", "process_started", "ctypes"),
+    ("workspace.py", "_create_file_w", "ctypes"),
+    ("workspace.py", "_create_file_w", "ctypes.wintypes"),
     ("workspace.py", "_read_shared", "ctypes"),
-    ("workspace.py", "_read_shared", "ctypes.wintypes"),
     ("workspace.py", "_read_shared", "msvcrt"),
     ("worktrees.py", "_link", "_winapi"),
     # Plugin loading.
