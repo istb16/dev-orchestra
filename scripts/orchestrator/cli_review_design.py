@@ -6,7 +6,6 @@ import argparse
 import os
 
 from . import config as config_mod
-from . import instructions
 from . import optimization as opt_mod
 from . import questions as questions_mod
 from . import review as review_mod
@@ -183,7 +182,7 @@ def _run_design_review(args: argparse.Namespace, loaded: config_mod.LoadedConfig
         over_budget=over_budget,
         budget_chars=budget_chars,
         inline_chars=inline_chars,
-        prompt_for=lambda reviewer: review_mod.build_design_review_prompt(
+        prompt_for=lambda reviewer, block: review_mod.build_design_review_prompt(
             reviewer,
             workspace,
             plan_text,
@@ -192,7 +191,7 @@ def _run_design_review(args: argparse.Namespace, loaded: config_mod.LoadedConfig
             max_findings,
             inline_chars,
             decisions_text,
-            instructions=instructions.review_block(instructions.for_seat(loaded, reviewer, design=True)),
+            instructions=block,
         ),
     )
     if isinstance(panel, int):

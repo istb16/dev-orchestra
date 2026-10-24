@@ -1,4 +1,4 @@
-<!-- translated-from: references/json.md sha256:d388bebdbda1a48d6dc40b241f46344229c209247b06f5ce1f684e62d745f626 -->
+<!-- translated-from: references/json.md sha256:5e2f145cdd3e46ddd881a983a9e2c3cf0f08ac44bdb381eb29b701e305f7cddb -->
 
 > この文書は [references/json.md](../../../references/json.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -280,8 +280,9 @@ Object. plan の作業単位です。
 | `unit_tests` | string | `implementation.unit_tests`。`worktree` か `after_merge`。 |
 
 `.ai/execution/units.json` の作業単位の記録には `copies_skipped` が入ることもあります。
-worktree に入らなかった `implementation.worktree_files` のエントリごとに `{"path", "reason"}` を 1 つ持ち、
-そういうものがあるときだけ入ります。
+worktree に入らなかった `implementation.worktree_files` のエントリごと、および CLI 自身がコピーするファイル
+（プロバイダのファイル、プロジェクトファイル、計画、決定事項）のうちリンクやファイルでないものとして飛ばしたものごとに
+`{"path", "reason"}` を 1 つ持ち、そういうものがあるときだけ入ります。
 
 <a id="units-merge"></a>
 

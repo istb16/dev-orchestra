@@ -25,7 +25,7 @@ import shutil
 import stat
 import sys
 import time
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, NamedTuple, Optional, Sequence
 
 from . import workspace as ws
 
@@ -106,10 +106,17 @@ def copies_for(root: str, files: Sequence[str], project_path: Optional[str]) -> 
     return copies
 
 
-def _joined(base: str, relative: str) -> Optional[str]:
-    """``relative`` under ``base``, from its ``repository_parts``; None when it could leave ``base``."""
-    parts = ws.repository_parts(relative)
-    return os.path.join(base, *parts) if parts else None
+class _Checked(NamedTuple):
+    """A copy ``_check_copy`` looked at: why it is skipped ("" when it is not), and where it goes."""
+
+    reason: str
+    source: str = ""
+    target: str = ""
+
+
+#: Why a copy the CLI asked for may be skipped without a word: a provider file
+#: the user does not have is the usual case, not a fault.
+_UNTOLD_SKIPS = ("not in the main tree", "outside the repository")
 
 
 def _within(base: str, path: str) -> bool:
@@ -122,22 +129,23 @@ def _within(base: str, path: str) -> bool:
         return False  # another drive
 
 
-def _checked_skip(root: str, worktree: str, relative: str) -> str:
-    """Why a checked copy of ``relative`` is skipped; "" when it can be copied."""
-    source = _joined(root, relative)
-    target = _joined(worktree, relative)
-    if source is None or target is None:
-        return "outside the repository"
-    if ws.linked_on_path(root, relative) or ws.linked_on_path(worktree, relative):
-        return "a link"
+def _check_copy(root: str, worktree: str, relative: str) -> _Checked:
+    """A copy of ``relative`` from ``root`` to ``worktree``: its paths, or why it is skipped."""
+    parts = ws.repository_parts(relative)
+    if parts is None:
+        return _Checked("outside the repository")
+    if ws.linked_on_path(root, parts) or ws.linked_on_path(worktree, parts):
+        return _Checked("a link")
+    source = os.path.join(root, *parts)
+    target = os.path.join(worktree, *parts)
     if not os.path.lexists(source):
-        return "not in the main tree"
+        return _Checked("not in the main tree")
     if not os.path.isfile(source):
-        return "not a file"
+        return _Checked("not a file")
     # Checked again resolved, in case a step became a link after the walk above.
     if not _within(root, source) or not _within(worktree, target):
-        return "a link"
-    return ""
+        return _Checked("a link")
+    return _Checked("", source, target)
 
 
 def _copy_missing(source: str, target: str) -> None:
@@ -178,14 +186,15 @@ def create(
     make it; nothing is left behind then.
 
     ``copies`` are repository-relative files it is given a copy of when the
-    user's tree has them, beside the plan and the decisions (``copies_for``);
-    an absolute one, one with a drive, or one outside the repository, is
-    skipped.
+    user's tree has them, beside the plan and the decisions (``copies_for``).
+    Each goes through ``_check_copy``: one the user's tree lacks, or one
+    outside the repository (an absolute one, one with a drive), is skipped
+    silently; one that is not a file, or one through a link in the user's tree
+    or the worktree, is skipped and told.
 
     ``checked_copies`` are the project's ``implementation.worktree_files``,
-    copied the same way but each skip told: ``copies_skipped`` lists them,
-    ``{"path", "reason"}``, and is set only when there is one. A path through
-    a link is skipped too, in the user's tree or the worktree.
+    copied the same way but each skip told. ``copies_skipped`` lists the told
+    skips, ``{"path", "reason"}``, and is set only when there is one.
     """
     root = workspace.root
     wanted = [
@@ -230,18 +239,14 @@ def create(
         "checks_skipped": checks_skipped,
     }
     try:
-        for relative in wanted_copies:
-            source, target = _joined(root, relative), _joined(path, relative)
-            if source is not None and target is not None:
-                _copy_missing(source, target)
         skipped: List[Dict[str, str]] = []
-        for relative in checked_copies:
-            reason = _checked_skip(root, path, relative)
-            source, target = _joined(root, relative), _joined(path, relative)
-            if reason or source is None or target is None:
-                skipped.append({"path": relative, "reason": reason or "outside the repository"})
-            else:
-                _copy_missing(source, target)
+        for silent, entries in ((_UNTOLD_SKIPS, wanted_copies), ((), checked_copies)):
+            for relative in entries:
+                checked = _check_copy(root, path, relative)
+                if not checked.reason:
+                    _copy_missing(checked.source, checked.target)
+                elif checked.reason not in silent:
+                    skipped.append({"path": relative, "reason": checked.reason})
         if skipped:
             record["copies_skipped"] = skipped
     except OSError as exc:

@@ -51,6 +51,7 @@ from __future__ import annotations
 
 import copy
 import fnmatch
+import glob
 import posixpath
 import re
 from typing import Any, Dict, List, NamedTuple, Optional, Sequence, Tuple
@@ -400,14 +401,17 @@ def condition_label(reviewer: Any) -> str:
     return when
 
 
-def risk_patterns(settings: Dict[str, Any]) -> List[str]:
+def risk_patterns(settings: Dict[str, Any], literal_paths: Sequence[str] = ()) -> List[str]:
     """Every high-risk path pattern in force.
 
     ``high_risk_paths`` when configured as a list, the defaults otherwise,
     plus ``extra_high_risk_paths`` -- so a repository can add the one path
-    the defaults miss without copying the thirty they already cover.
+    the defaults miss without copying the thirty they already cover. Then
+    each of ``literal_paths``, escaped so it matches only itself: unlike the
+    settings' entries, these are paths, not patterns.
     """
-    return _patterns(settings, "high_risk_paths", DEFAULT_HIGH_RISK_PATHS)
+    patterns = _patterns(settings, "high_risk_paths", DEFAULT_HIGH_RISK_PATHS)
+    return patterns + [glob.escape(path) for path in literal_paths]
 
 
 def security_patterns(settings: Dict[str, Any]) -> List[str]:
@@ -663,8 +667,12 @@ def _hit_reason(hits: Sequence[Tuple[str, str]]) -> str:
     return "%s matches %s%s" % (hits[0][0], hits[0][1], _and_more(len(hits) - 1))
 
 
-def _security_needed(stage: str, evidence: Evidence, settings: Dict[str, Any]) -> Tuple[bool, str]:
-    hits = _matches(stage, evidence.touched, risk_patterns(settings) + security_patterns(settings))
+def _security_needed(
+    stage: str, evidence: Evidence, settings: Dict[str, Any], literal_paths: Sequence[str] = ()
+) -> Tuple[bool, str]:
+    hits = _matches(
+        stage, evidence.touched, risk_patterns(settings, literal_paths) + security_patterns(settings)
+    )
     if hits:
         return True, _hit_reason(hits)
     if stage == "design":
@@ -705,9 +713,11 @@ def _architecture_needed(stage: str, evidence: Evidence, settings: Dict[str, Any
     return False, reason + " (optimization.architecture_paths)"
 
 
-def _rule_answer(rule: str, stage: str, evidence: Evidence, settings: Dict[str, Any]) -> Tuple[bool, str]:
+def _rule_answer(
+    rule: str, stage: str, evidence: Evidence, settings: Dict[str, Any], literal_paths: Sequence[str] = ()
+) -> Tuple[bool, str]:
     if rule == "security":
-        return _security_needed(stage, evidence, settings)
+        return _security_needed(stage, evidence, settings, literal_paths)
     if rule == "test":
         return _test_needed(stage, evidence)
     return _architecture_needed(stage, evidence, settings)
@@ -728,6 +738,7 @@ def relevance_records(
     declared: bool = False,
     carried: Sequence[Dict[str, Any]] = (),
     only: bool = False,
+    literal_paths: Sequence[str] = (),
 ) -> List[Dict[str, Any]]:
     """One ``relevance`` record per seat judged this round: whether it runs, and why.
 
@@ -772,7 +783,7 @@ def relevance_records(
         elif only:
             runs, reason = True, "named by --only"
         else:
-            runs, reason = _rule_answer(rule, stage, evidence, settings)
+            runs, reason = _rule_answer(rule, stage, evidence, settings, literal_paths)
         records.append({"id": name, "when": WHEN_RELEVANCE, "runs": runs, "reason": redact(reason)})
     return records
 
@@ -996,6 +1007,7 @@ def decide(
     only: bool = False,
     condition_paths: Optional[Sequence[str]] = None,
     reviewed: Optional[Sequence[str]] = None,
+    literal_paths: Sequence[str] = (),
 ) -> Plan:
     """Work out what this round should cost, from the change and the config.
 
@@ -1024,9 +1036,11 @@ def decide(
     relevance rules (``relevance_records``), which judge the panel at every
     level. Without it nothing is judged: a caller that has no list has no
     evidence of absence either.
+
+    ``literal_paths`` are high-risk too, each matched verbatim (``risk_patterns``).
     """
     requested = normalise_level(settings.get("level"))
-    hits = high_risk_matches(paths, risk_patterns(settings))
+    hits = high_risk_matches(paths, risk_patterns(settings, literal_paths))
     level = at_least(requested, "quality") if hits else requested
 
     status = (test_status or "").strip().lower()
@@ -1061,6 +1075,7 @@ def decide(
             declared=declared,
             carried=carried,
             only=only,
+            literal_paths=literal_paths,
         )
         conditional = join_relevance(panel, conditional, relevance)
         members = [reviewer for reviewer in panel if isinstance(reviewer, dict)]
@@ -1171,7 +1186,9 @@ def _token_matches(tokens: Sequence[str], patterns: Sequence[str]) -> List[Tuple
     return hits
 
 
-def design_risk(settings: Dict[str, Any], scan: Any) -> List[Tuple[str, str, str]]:
+def design_risk(
+    settings: Dict[str, Any], scan: Any, literal_paths: Sequence[str] = ()
+) -> List[Tuple[str, str, str]]:
     """``(token, section, pattern)`` for every plan token matching a high-risk pattern.
 
     The whole plan, not only Files to Modify, in any case. Apart from
@@ -1179,15 +1196,17 @@ def design_risk(settings: Dict[str, Any], scan: Any) -> List[Tuple[str, str, str
     ``review.design.enabled`` is: it decides a seat's ``high_risk_model`` and
     who sits on the panel as well as whether the stage runs. ``scan`` is
     ``review.plan_tokens()`` of the plan, or None for a plan not read.
+    ``literal_paths`` is as ``decide``'s.
     """
     if scan is None:
         return []
     sections: Dict[str, str] = {}
     for item in scan.tokens:
         sections.setdefault(item.token, item.section)
+    patterns = risk_patterns(settings, literal_paths)
     return [
         (token, sections.get(token, ""), pattern)
-        for token, pattern in _token_matches([item.token for item in scan.tokens], risk_patterns(settings))
+        for token, pattern in _token_matches([item.token for item in scan.tokens], patterns)
     ]
 
 

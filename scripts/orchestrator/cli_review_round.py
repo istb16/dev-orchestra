@@ -11,6 +11,7 @@ from typing import (
     Callable,
     ContextManager,
     Dict,
+    Iterable,
     Iterator,
     List,
     NamedTuple,
@@ -367,7 +368,7 @@ def _run_panel(
     budget_chars: int,
     inline_chars: int,
     extra_context: str = "",
-    prompt_for: Optional[Callable[[Dict[str, Any]], review_mod.BuiltPrompt]] = None,
+    prompt_for: Optional[Callable[[Dict[str, Any], str], review_mod.BuiltPrompt]] = None,
     surrounding: Optional[context_mod.Adoption] = None,
 ) -> Union[int, _PanelRun]:
     """Open the round's ledger entry and run the panel, or the exit code of a round that could not."""
@@ -383,13 +384,23 @@ def _run_panel(
         idle_timeout = config_mod.idle_timeout(ctx.loaded, MODE_REVIEW).seconds
     warned = _warn_unenforced(ctx.loaded, reviewers, ctx.kind.panel)
     design = ctx.kind is _DESIGN
-    _note_unread_instructions(ctx.loaded, reviewers, design)
+    # Each seat's files are read once here, for the notes and the prompts both.
+    resolved = {str(r.get("id")): instructions.for_seat(ctx.loaded, r, design=design) for r in reviewers}
+    _note_unread_instructions(resolved.values())
 
-    def code_instructions(reviewer: Dict[str, Any]) -> str:
-        return instructions.review_block(instructions.for_seat(ctx.loaded, reviewer, design=False))
+    def instructions_of(reviewer: Dict[str, Any]) -> str:
+        return instructions.review_block(resolved[str(reviewer.get("id"))])
 
     # The code path's alone: the design path's `prompt_for` carries its own.
-    instructions_for = None if design else code_instructions
+    instructions_for = None if design else instructions_of
+    built_for: Optional[Callable[[Dict[str, Any]], review_mod.BuiltPrompt]] = None
+    if prompt_for is not None:
+        seat_prompt = prompt_for
+
+        def with_block(reviewer: Dict[str, Any]) -> review_mod.BuiltPrompt:
+            return seat_prompt(reviewer, instructions_of(reviewer))
+
+        built_for = with_block
     progress = ctx.loaded.progress_settings()
     echo = _ProgressEcho(progress.quiet_notice_seconds) if getattr(args, "progress", False) else None
     watch: ContextManager[None] = contextlib.nullcontext()
@@ -412,7 +423,7 @@ def _run_panel(
                     # `run_reviews` records and words it, and a round that took them
                     # from two places would sooner or later take two different ones.
                     inline_chars=inline_chars,
-                    prompt_for=prompt_for,
+                    prompt_for=built_for,
                     surrounding=surrounding,
                     refusals=_reviewer_refusals(ctx.loaded, reviewers, ctx.kind.panel),
                     activity_for=echo.sink_for if echo is not None else None,
@@ -426,14 +437,11 @@ def _run_panel(
     return _PanelRun(token, runs, warned)
 
 
-def _note_unread_instructions(
-    loaded: config_mod.LoadedConfig, reviewers: List[Dict[str, Any]], design: bool
-) -> None:
+def _note_unread_instructions(resolved: Iterable[instructions.Resolved]) -> None:
     """A ``note:`` per instructions file the panel's seats could not read, each once.
 
     The reviewers run without its text, as a role run does.
     """
-    resolved = [instructions.for_seat(loaded, reviewer, design=design) for reviewer in reviewers]
     for line in instructions.problem_notes(resolved, "reviewing"):
         _err(line)
 

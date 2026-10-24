@@ -14,7 +14,6 @@ from it.
 
 from __future__ import annotations
 
-import glob
 import os
 import stat
 from typing import Any, Dict, Iterable, List, NamedTuple, Optional, Tuple
@@ -74,7 +73,7 @@ def _read(root: str, relative: str) -> Tuple[str, str]:
     parts = ws.repository_parts(relative)
     if parts is None:
         return "", "outside the repository"
-    if ws.linked_on_path(root, relative):
+    if ws.linked_on_path(root, parts):
         return "", "a link"
     current = os.path.join(root, *parts)
     try:
@@ -118,11 +117,18 @@ def _layer_value(layer: Dict[str, Any], role: str) -> Any:
     return block.get(role) if isinstance(block, dict) else None
 
 
+def _role_values(loaded: LoadedConfig, role: str) -> List[Tuple[str, str, Any]]:
+    """``role``'s value in each layer that sets one, global first, as ``(role, layer, value)``."""
+    layers = (("global", loaded.global_layer), ("project", loaded.project_layer))
+    found = [(role, name, _layer_value(layer, role)) for name, layer in layers]
+    return [entry for entry in found if entry[2] is not None]
+
+
 def resolve(loaded: LoadedConfig, role: str) -> Resolved:
     """``role``'s instructions: the global file's text, then the project file's."""
     found: List[Tuple[str, Source]] = []
-    for name, layer in (("global", loaded.global_layer), ("project", loaded.project_layer)):
-        entry = _source(loaded, role, name, _layer_value(layer, role))
+    for _, layer, value in _role_values(loaded, role):
+        entry = _source(loaded, role, layer, value)
         if entry is not None:
             found.append(entry)
     return _joined(found)
@@ -211,13 +217,24 @@ def _seats(loaded: LoadedConfig) -> List[Tuple[Dict[str, Any], bool]]:
     return [(seat, design) for seat, design in seats if seat.get("instructions") is not None]
 
 
-def _all_sources(loaded: LoadedConfig) -> List[Source]:
-    sources: List[Source] = []
+def _values(loaded: LoadedConfig) -> List[Tuple[str, str, Any]]:
+    """Each instructions value in force as ``(role, layer, value)``, without reading any file.
+
+    Roles by layer, then the seats, the order ``describe`` and ``watched_paths`` list them in.
+    """
+    values: List[Tuple[str, str, Any]] = []
     for role in ROLES:
-        sources.extend(resolve(loaded, role).sources)
+        values.extend(_role_values(loaded, role))
     for seat, design in _seats(loaded):
         role = "%s.%s" % ("design_reviewers" if design else "reviewers", seat.get("id"))
-        entry = _source(loaded, role, _seat_layer(loaded, seat, design), seat.get("instructions"))
+        values.append((role, _seat_layer(loaded, seat, design), seat.get("instructions")))
+    return values
+
+
+def _all_sources(loaded: LoadedConfig) -> List[Source]:
+    sources: List[Source] = []
+    for role, layer, value in _values(loaded):
+        entry = _source(loaded, role, layer, value)
         if entry is not None:
             sources.append(entry[1])
     return sources
@@ -239,27 +256,23 @@ def watched_paths(loaded: LoadedConfig) -> List[str]:
 
     Each name the project file could have at the root, whichever is in force:
     deleting the one in force puts the next in its place. Then the project
-    file in force if it is elsewhere, and every ``file:`` path in force.
+    file in force if it is elsewhere, and every ``file:`` path in force that
+    names a path inside the repository (``ws.repository_parts``, as ``_read``
+    checks it).
     """
     paths: List[str] = list(PROJECT_CONFIG_NAMES)
     project = _relative(loaded.root, loaded.project_path) if loaded.project_path else None
     if project and project not in paths:
         paths.append(project)
-    for source in _all_sources(loaded):
-        if source.kind == "file":
-            path = "/".join(p for p in source.path.replace("\\", "/").split("/") if p not in ("", "."))
-            if path and path not in paths:
+    for _, _, value in _values(loaded):
+        if isinstance(value, dict) and isinstance(value.get("file"), str):
+            parts = ws.repository_parts(value["file"])
+            if parts is None:
+                continue
+            path = "/".join(parts)
+            if path not in paths:
                 paths.append(path)
     return paths
-
-
-def risk_settings(loaded: LoadedConfig) -> Dict[str, Any]:
-    """``optimization_settings`` with every watched path, literally, among the high-risk paths."""
-    settings = loaded.optimization_settings()
-    extra = settings.get("extra_high_risk_paths")
-    extra = list(extra) if isinstance(extra, list) else []
-    settings["extra_high_risk_paths"] = extra + [glob.escape(path) for path in watched_paths(loaded)]
-    return settings
 
 
 def describe(loaded: LoadedConfig) -> List[Dict[str, Any]]:

@@ -739,14 +739,14 @@ def inside_repository(relative: str) -> bool:
     return repository_parts(relative) is not None
 
 
-def linked_on_path(base: str, relative: str) -> bool:
-    """Whether any step of ``relative`` under ``base`` is a link: a path through one could leave the tree.
+def linked_on_path(base: str, parts: Sequence[str]) -> bool:
+    """Whether any of ``parts`` under ``base`` is a link: a path through one could leave the tree.
 
-    A path ``repository_parts`` refuses counts as one, so the answer is never "safe" for it.
+    ``parts`` are what ``repository_parts`` returned; the caller has already refused a None.
+    A string is refused: walked one character at a time, it would find no link.
     """
-    parts = repository_parts(relative)
-    if parts is None:
-        return True
+    if isinstance(parts, str):
+        raise TypeError("linked_on_path takes repository_parts, not a path")
     path = base
     for part in parts:
         path = os.path.join(path, part)

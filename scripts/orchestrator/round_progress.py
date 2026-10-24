@@ -81,7 +81,7 @@ def round_plan(
     """
     files = meta.get("files")
     return opt_mod.decide(
-        instructions.risk_settings(loaded),
+        loaded.optimization_settings(),
         loaded.review_settings(),
         _risk_paths(meta) + [str(path) for path in meta.get("instruction_changes") or []],
         int(meta.get("lines_added") or 0) + int(meta.get("lines_deleted") or 0),
@@ -94,6 +94,7 @@ def round_plan(
         only=only,
         condition_paths=_condition_paths(meta),
         reviewed=[str(path) for path in files] if isinstance(files, list) else None,
+        literal_paths=instructions.watched_paths(loaded),
     )
 
 
@@ -112,7 +113,12 @@ def design_decision(loaded: config_mod.LoadedConfig, workspace: ws.Workspace) ->
     )
     plan_state, scan = _plan_scan(workspace)
     return opt_design.decide_design(
-        mode, instructions.risk_settings(loaded), scan, plan_state=plan_state, round_ran=round_ran
+        mode,
+        loaded.optimization_settings(),
+        scan,
+        plan_state=plan_state,
+        round_ran=round_ran,
+        literal_paths=instructions.watched_paths(loaded),
     )
 
 
@@ -169,13 +175,14 @@ def design_round_plan(
     """
     plan_state, scan = _plan_scan(workspace)
     return opt_design.decide_design_round(
-        instructions.risk_settings(loaded),
+        loaded.optimization_settings(),
         scan,
         plan_state,
         panel,
         declared=declared,
         carried=_design_carried(workspace, lineage),
         only=only,
+        literal_paths=instructions.watched_paths(loaded),
     )
 
 

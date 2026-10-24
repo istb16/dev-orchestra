@@ -70,6 +70,7 @@ def decide_design(
     *,
     plan_state: str,
     round_ran: bool,
+    literal_paths: Sequence[str] = (),
 ) -> DesignDecision:
     """Whether the design review runs, from the plan the architect wrote.
 
@@ -83,7 +84,7 @@ def decide_design(
     ``DESIGN_LARGE_PLAN_FILES`` code files or more. Only file-shaped tokens
     (a ``/`` or an extension) are judged as globs or directories, so
     ``payload["mode"]`` there is code, not a pattern. Nothing here reads the
-    disk.
+    disk. ``literal_paths`` are high-risk too, each matched verbatim.
     """
     if mode != "auto":
         return DesignDecision(mode, mode == "on")
@@ -95,7 +96,7 @@ def decide_design(
     if plan_state != "ok" or scan is None:
         return DesignDecision(mode, True, "plan could not be read")
 
-    hits = design_risk(settings, scan)
+    hits = design_risk(settings, scan, literal_paths)
     if hits:
         token, section, _ = hits[0]
         where = " (%s)" % section if section else ""
@@ -174,6 +175,7 @@ def decide_design_round(
     declared: bool = False,
     carried: Sequence[Dict[str, Any]] = (),
     only: bool = False,
+    literal_paths: Sequence[str] = (),
 ) -> DesignPlan:
     """Who sits on this design round, from the plan the architect wrote.
 
@@ -181,9 +183,9 @@ def decide_design_round(
     it does. ``panel`` is the design panel in force (``LoadedConfig.
     design_reviewers``), ``scan`` the plan's ``review.plan_tokens()`` when
     ``plan_state`` is ``"ok"``. ``carried`` is the accepted findings the
-    design review still has open.
+    design review still has open. ``literal_paths`` is as ``decide_design``'s.
     """
-    hits = design_risk(settings, scan) if plan_state == "ok" else []
+    hits = design_risk(settings, scan, literal_paths) if plan_state == "ok" else []
     pairs = [(token, pattern) for token, _section, pattern in hits]
     conditional = condition_reviewers(panel, pairs, declared=declared, carried=carried, only=only)
     relevance = relevance_records(
@@ -195,6 +197,7 @@ def decide_design_round(
         declared=declared,
         carried=carried,
         only=only,
+        literal_paths=literal_paths,
     )
     conditional = join_relevance(panel, conditional, relevance)
     files = plan_files(scan) if plan_state == "ok" else PlanFiles([], [], "")
