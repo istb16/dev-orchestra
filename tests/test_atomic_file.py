@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import sys
+import time
 import unittest
 from typing import List, Tuple
 from unittest import mock
@@ -32,16 +34,24 @@ class AtomicFileCase(IsolatedCase):
         return sorted(name for name in os.listdir(self.directory) if name != os.path.basename(self.path))
 
     def recording_replace(self) -> List[Tuple[str, str]]:
-        """Patches ``os.replace`` to record its arguments and then rename; returns the record."""
-        real_replace = os.replace
+        """Patches ``rename_over`` to record its arguments and then rename; returns the record."""
+        real_replace = atomic_file.rename_over
         calls: List[Tuple[str, str]] = []
 
         def replace(src, dst):
             calls.append((src, dst))
             return real_replace(src, dst)
 
-        self.enterContext(mock.patch.object(os, "replace", replace))
+        self.enterContext(mock.patch.object(atomic_file, "rename_over", replace))
         return calls
+
+    def temporary_with(self, content: bytes) -> str:
+        """A file beside the target holding ``content``, as ``write`` would make."""
+        os.makedirs(self.directory, exist_ok=True)
+        temporary = os.path.join(self.directory, "temporary")
+        with open(temporary, "wb") as handle:
+            handle.write(content)
+        return temporary
 
 
 class TestWrite(AtomicFileCase):
@@ -227,13 +237,214 @@ class TestReplaceWithRetryWithoutFallback(AtomicFileCase):
         temporary = os.path.join(self.directory, "temporary")
         with open(temporary, "wb") as handle:
             handle.write(b"new")
-        with mock.patch.object(os, "replace", side_effect=PermissionError(13, "denied")) as replace:
+        with mock.patch.object(
+            atomic_file, "rename_over", side_effect=PermissionError(13, "denied")
+        ) as replace:
             with mock.patch("time.sleep"):
                 with self.assertRaises(PermissionError):
                     atomic_file.replace_with_retry(temporary, self.path, attempts=3, fallback=False)
         self.assertEqual(replace.call_count, 3)
         self.assertEqual(self.read_bytes(), b"old")
         self.assertEqual(self.others(), ["temporary"])
+
+
+class TestRenameOver(AtomicFileCase):
+    def setUp(self) -> None:
+        super().setUp()
+        self.enterContext(mock.patch.object(atomic_file, "_NO_POSIX_RENAME", set()))
+        os.makedirs(self.directory)
+
+    def on(self, windows: bool, renamed: object = None) -> Tuple[mock.MagicMock, mock.MagicMock]:
+        """Pretend to run on Windows or not; returns the mocked handle rename and
+        ``os.replace``. ``renamed`` is the handle rename's return or side effect."""
+        self.enterContext(mock.patch.object(atomic_file, "_IS_WINDOWS", windows))
+        if isinstance(renamed, list):
+            by_handle = mock.MagicMock(side_effect=renamed)
+        else:
+            by_handle = mock.MagicMock(return_value=renamed)
+        self.enterContext(mock.patch.object(atomic_file, "_rename_by_handle", by_handle))
+        replace = self.enterContext(mock.patch.object(os, "replace"))
+        return by_handle, replace
+
+    def test_posix_uses_os_replace(self):
+        by_handle, replace = self.on(windows=False)
+        atomic_file.rename_over("temporary", self.path)
+        replace.assert_called_once_with("temporary", self.path)
+        by_handle.assert_not_called()
+
+    def test_windows_takes_the_handle_rename(self):
+        by_handle, replace = self.on(windows=True, renamed=True)
+        atomic_file.rename_over("temporary", self.path)
+        by_handle.assert_called_once_with("temporary", self.path)
+        replace.assert_not_called()
+
+    def test_unsupported_falls_back_and_is_remembered(self):
+        by_handle, replace = self.on(windows=True, renamed=False)
+        atomic_file.rename_over("temporary", self.path)
+        atomic_file.rename_over("temporary", self.path)
+        self.assertEqual(by_handle.call_count, 1)
+        self.assertEqual(replace.call_count, 2)
+        self.assertEqual(atomic_file._NO_POSIX_RENAME, {os.stat(self.directory).st_dev})
+
+    def test_only_the_refusing_volume_is_remembered(self):
+        """A folder on another volume -- a mounted stick, a junction to a
+        share -- does not mark the drive it sits under as unsupported."""
+        other = os.path.join(self.tmp, "mounted", "out.txt")
+        volumes = {self.path: 1, other: 2}
+        self.enterContext(mock.patch.object(atomic_file, "_volume_of", side_effect=volumes.get))
+        by_handle, replace = self.on(windows=True, renamed=[False, True, True])
+        atomic_file.rename_over("temporary", other)
+        atomic_file.rename_over("temporary", self.path)
+        atomic_file.rename_over("temporary", self.path)
+        self.assertEqual(by_handle.call_count, 3)
+        replace.assert_called_once_with("temporary", other)
+        self.assertEqual(atomic_file._NO_POSIX_RENAME, {2})
+
+    def test_an_unknown_volume_is_not_remembered(self):
+        self.enterContext(mock.patch.object(atomic_file, "_volume_of", return_value=None))
+        by_handle, replace = self.on(windows=True, renamed=False)
+        atomic_file.rename_over("temporary", self.path)
+        atomic_file.rename_over("temporary", self.path)
+        self.assertEqual(by_handle.call_count, 2)
+        self.assertEqual(replace.call_count, 2)
+        self.assertEqual(atomic_file._NO_POSIX_RENAME, set())
+
+    def test_a_sharing_violation_reaches_the_retry(self):
+        refused = PermissionError(13, "sharing violation")
+        by_handle, replace = self.on(windows=True, renamed=[refused, refused, True])
+        with mock.patch("time.sleep") as sleep:
+            atomic_file.replace_with_retry("temporary", self.path, fallback=False)
+        self.assertEqual(by_handle.call_count, 3)
+        self.assertEqual(sleep.call_count, 2)
+        replace.assert_not_called()
+        # A refusal is momentary, not "unsupported": the volume keeps the handle rename.
+        self.assertEqual(atomic_file._NO_POSIX_RENAME, set())
+
+
+@unittest.skipUnless(sys.platform == "win32", "the handle rename is Windows only")
+class TestRenameByHandle(AtomicFileCase):
+    def test_the_handle_rename_replaces(self):
+        """A real call: a layout mistake in FILE_RENAME_INFO comes back as
+        unsupported and would silently fall back, so False fails here."""
+        self.write_bytes(b"old")
+        temporary = self.temporary_with(b"new")
+        self.assertIs(atomic_file._rename_by_handle(temporary, self.path), True)
+        self.assertEqual(self.read_bytes(), b"new")
+        self.assertEqual(self.others(), [])
+
+    def test_the_handle_rename_creates_a_missing_target(self):
+        temporary = self.temporary_with(b"new")
+        self.assertIs(atomic_file._rename_by_handle(temporary, self.path), True)
+        self.assertEqual(self.read_bytes(), b"new")
+        self.assertEqual(self.others(), [])
+
+    def test_a_name_past_the_basic_plane(self):
+        """A character past U+FFFF takes two UTF-16 units; a FileNameLength
+        counted in characters would come back as unsupported here."""
+        self.path = os.path.join(self.directory, "out-\U0001f600.txt")
+        temporary = self.temporary_with(b"new")
+        self.assertIs(atomic_file._rename_by_handle(temporary, self.path), True)
+        self.assertEqual(self.read_bytes(), b"new")
+        self.assertEqual(self.others(), [])
+
+    def test_a_missing_temporary_file_is_file_not_found(self):
+        os.makedirs(self.directory)
+        with self.assertRaises(FileNotFoundError):
+            atomic_file._rename_by_handle(os.path.join(self.directory, "temporary"), self.path)
+        self.assertFalse(os.path.exists(self.path))
+
+    def test_a_failed_open_closes_nothing(self):
+        # Windows only: ctypes.set_last_error exists nowhere else.
+        import ctypes
+
+        def missing(*args):
+            ctypes.set_last_error(2)
+            return ctypes.c_void_p(-1).value
+
+        kernel32 = mock.MagicMock()
+        kernel32.CreateFileW.side_effect = missing
+        with mock.patch.object(atomic_file, "_kernel32", return_value=kernel32):
+            with self.assertRaises(FileNotFoundError) as caught:
+                atomic_file._rename_by_handle("temporary", self.path)
+        self.assertEqual(getattr(caught.exception, "winerror", None), 2)
+        kernel32.SetFileInformationByHandle.assert_not_called()
+        kernel32.CloseHandle.assert_not_called()
+
+    def test_a_delete_sharing_reader_does_not_block(self):
+        """Called directly, not through ``replace_with_retry``. Antivirus can
+        hold the fresh temporary file for a moment, so a refusal is tried
+        again a few times; a reader that blocked the rename would refuse
+        every time and still fail the test."""
+        # Windows only: msvcrt exists nowhere else.
+        import ctypes
+        import msvcrt
+
+        self.write_bytes(b"old")
+        temporary = self.temporary_with(b"new")
+        GENERIC_READ = 0x80000000
+        FILE_SHARE_ALL = 0x00000001 | 0x00000002 | 0x00000004  # read | write | delete
+        OPEN_EXISTING = 3
+        handle = atomic_file._kernel32().CreateFileW(
+            self.path, GENERIC_READ, FILE_SHARE_ALL, None, OPEN_EXISTING, 0x80, None
+        )
+        self.assertNotIn(handle, (None, ctypes.c_void_p(-1).value))
+        with os.fdopen(msvcrt.open_osfhandle(handle, os.O_RDONLY), "rb") as held:
+            renamed = None
+            for attempt in range(10):
+                try:
+                    renamed = atomic_file._rename_by_handle(temporary, self.path)
+                    break
+                except PermissionError:
+                    if attempt == 9:
+                        raise
+                    time.sleep(0.5)
+            self.assertIs(renamed, True)
+            self.assertEqual(held.read(), b"old")
+        self.assertEqual(self.read_bytes(), b"new")
+        self.assertEqual(self.others(), [])
+
+    def test_a_plain_reader_is_a_permission_error(self):
+        self.write_bytes(b"old")
+        temporary = self.temporary_with(b"new")
+        with open(self.path, "rb"):
+            with self.assertRaises(PermissionError):
+                atomic_file._rename_by_handle(temporary, self.path)
+        self.assertEqual(self.read_bytes(), b"old")
+
+    def test_the_error_code_maps_to_the_fallback(self):
+        # Windows only: ctypes.set_last_error exists nowhere else.
+        import ctypes
+
+        for code in (1, 50, 87):
+            with self.subTest(code=code):
+
+                def refuse(*args, code=code):
+                    ctypes.set_last_error(code)
+                    return 0
+
+                kernel32 = mock.MagicMock()
+                kernel32.CreateFileW.return_value = 1234
+                kernel32.SetFileInformationByHandle.side_effect = refuse
+                with mock.patch.object(atomic_file, "_kernel32", return_value=kernel32):
+                    self.assertIs(atomic_file._rename_by_handle("temporary", self.path), False)
+                kernel32.CloseHandle.assert_called_once_with(1234)
+
+    def test_another_error_code_is_raised(self):
+        # Windows only: ctypes.set_last_error exists nowhere else.
+        import ctypes
+
+        def refuse(*args):
+            ctypes.set_last_error(32)
+            return 0
+
+        kernel32 = mock.MagicMock()
+        kernel32.CreateFileW.return_value = 1234
+        kernel32.SetFileInformationByHandle.side_effect = refuse
+        with mock.patch.object(atomic_file, "_kernel32", return_value=kernel32):
+            with self.assertRaises(PermissionError) as caught:
+                atomic_file._rename_by_handle("temporary", self.path)
+        self.assertEqual(getattr(caught.exception, "winerror", None), 32)
+        kernel32.CloseHandle.assert_called_once_with(1234)
 
 
 class TestCurrentBytes(AtomicFileCase):

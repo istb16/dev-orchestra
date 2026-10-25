@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import difflib
 import hashlib
-import os
 import re
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, cast
 
@@ -227,10 +226,9 @@ def read_reports(
     findings: List[Dict[str, Any]] = []
     stale: List[str] = []
     for reviewer_id in reviewer_ids:
-        path = workspace.reviewer_report_path(reviewer_id)
-        if not os.path.isfile(path):
-            continue
-        text = ws.read_text(path)
+        # No isfile pre-check: it can miss a report mid-rename (#358), and an
+        # absent report reads as "", which yields no findings anyway.
+        text = ws.read_text(workspace.reviewer_report_path(reviewer_id))
         if expected_snapshot:
             stamped = report_snapshot(text)
             if stamped and stamped != expected_snapshot:

@@ -659,11 +659,13 @@ _REGISTRY_FREE = (
 #: as written)``. Each needs a reason comment.
 _ALLOWED = {
     # Windows only.
+    ("atomic_file.py", "_kernel32", "ctypes"),
+    ("atomic_file.py", "_kernel32", "ctypes.wintypes"),
+    ("atomic_file.py", "_rename_by_handle", "ctypes"),
     ("clocks.py", "_windows_awake_clock", "ctypes"),
     ("execution_tree.py", "pid_alive", "ctypes"),
     ("execution_tree.py", "process_started", "ctypes"),
     ("workspace.py", "_read_shared", "ctypes"),
-    ("workspace.py", "_read_shared", "ctypes.wintypes"),
     ("workspace.py", "_read_shared", "msvcrt"),
     ("worktrees.py", "_link", "_winapi"),
     # Plugin loading.
