@@ -81,7 +81,7 @@ def read(provider: str, root: str) -> Tuple[Optional[Dict[str, Any]], Optional[s
     return _load(record_path(provider), root)
 
 
-_ABSENT = object()
+_UNREAD = object()
 
 
 def _load(path: str, root: str, label: str = RECORD) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
@@ -89,8 +89,8 @@ def _load(path: str, root: str, label: str = RECORD) -> Tuple[Optional[Dict[str,
         return None, _inside(label)
     # Read first: os.path.isfile can miss a record mid-rename (#358). It is
     # asked only once the read has failed, to tell absent from unparseable.
-    data = ws.read_json(path, _ABSENT)
-    if data is _ABSENT:
+    data = ws.read_json(path, _UNREAD)
+    if data is _UNREAD:
         if not os.path.isfile(path):
             return None, None
         data = None

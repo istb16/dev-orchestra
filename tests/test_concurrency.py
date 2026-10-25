@@ -109,9 +109,9 @@ class TestAtomicWrites(ReaderCase):
         self.assertEqual(leftovers, [])
 
     def patch_replace(self, failures, error=None):
-        """``os.replace`` raising for the first ``failures`` calls (all of them for None);
-        a sharing violation unless ``error`` is given. Returns the calls."""
-        real_replace = os.replace
+        """``atomic_file.rename_over`` raising for the first ``failures`` calls (all of
+        them for None); a sharing violation unless ``error`` is given. Returns the calls."""
+        real_replace = atomic_file.rename_over
         calls = []
 
         def replace(src, dst):
@@ -120,7 +120,7 @@ class TestAtomicWrites(ReaderCase):
                 raise error if error is not None else PermissionError(13, "sharing violation", dst)
             return real_replace(src, dst)
 
-        self.enterContext(mock.patch.object(os, "replace", replace))
+        self.enterContext(mock.patch.object(atomic_file, "rename_over", replace))
         self.enterContext(mock.patch.object(time, "sleep"))
         return calls
 
@@ -371,7 +371,6 @@ class TestTextReads(ReaderCase):
         self.assertEqual(ws.read_text(path, "d"), "d")
 
 
-@unittest.skipUnless(hasattr(os, "mkfifo"), "FIFOs and device nodes are POSIX")
 class TestNonRegularFiles(ReaderCase):
     """A FIFO or device where a file was expected reads as absent. Opened
     plainly, a FIFO with no writer blocks forever and /dev/zero never ends."""
@@ -384,6 +383,7 @@ class TestNonRegularFiles(ReaderCase):
         self.assertEqual(ws.read_text_strict(path), "")
         self.assertEqual(sleeps, [])
 
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "FIFOs are POSIX")
     def test_a_fifo_without_a_writer_is_absent(self):
         path = os.path.join(self.project, "state.json")
         os.mkfifo(path)
@@ -392,6 +392,41 @@ class TestNonRegularFiles(ReaderCase):
     @unittest.skipUnless(os.path.exists("/dev/zero"), "no /dev/zero")
     def test_a_device_is_absent(self):
         self.assert_absent_to_every_reader("/dev/zero")
+
+    @unittest.skipUnless(sys.platform == "win32", "NUL is a Windows device")
+    def test_a_windows_device_is_absent(self):
+        self.assert_absent_to_every_reader("NUL")
+
+
+class TestOpenFailure(IsolatedCase):
+    """`_open_failure` turns a Windows error into the error a reader expects;
+    pure, so it runs on every platform."""
+
+    def test_each_code_picks_its_subclass(self):
+        path = os.path.join(self.tmp, "state.json")
+        for code, kind in (
+            (2, FileNotFoundError),
+            (3, FileNotFoundError),
+            (5, PermissionError),
+            (32, PermissionError),
+            (267, NotADirectoryError),
+        ):
+            with self.subTest(code=code):
+                error = ws._open_failure(path, code)
+                self.assertIs(type(error), kind)
+                self.assertEqual(error.filename, path)
+
+    def test_access_denied_on_a_directory_is_a_directory_error(self):
+        self.assertIs(type(ws._open_failure(self.tmp, 5)), IsADirectoryError)
+
+    def test_access_denied_on_a_file_is_refused(self):
+        path = os.path.join(self.tmp, "state.json")
+        with open(path, "w") as handle:
+            handle.write("{}")
+        self.assertIs(type(ws._open_failure(path, 5)), PermissionError)
+
+    def test_an_unknown_code_is_a_plain_os_error(self):
+        self.assertIs(type(ws._open_failure(os.path.join(self.tmp, "x"), 1)), OSError)
 
 
 @unittest.skipUnless(sys.platform == "win32", "the shared open is Windows only")
@@ -448,7 +483,9 @@ class TestSharedOpenErrors(ReaderCase):
             ctypes.set_last_error(code)
             return ctypes.c_void_p(-1).value
 
-        self.enterContext(mock.patch.object(ws, "_create_file_w", return_value=create_file))
+        kernel32 = mock.MagicMock()
+        kernel32.CreateFileW.side_effect = create_file
+        self.enterContext(mock.patch.object(atomic_file, "_kernel32", return_value=kernel32))
 
     def test_access_denied_on_a_file_is_refused_and_retried(self):
         """Error 5 means a directory only when the path is one; on a file it
@@ -810,9 +847,14 @@ class TestConcurrentLedgerUpdates(IsolatedCase):
         thread = threading.Thread(target=churn, daemon=True)
         thread.start()
         try:
-            deadline = time.monotonic() + 1.5
+            # At least 1.5s and more than 20 reads. A virus scanner opening the
+            # file just renamed into place can hold every open of it for a few
+            # seconds (measured: 2.5s under ESET), so the count is waited for
+            # rather than demanded of a fixed window; the cap still catches a
+            # reader that is stuck.
+            started = time.monotonic()
             reads = 0
-            while time.monotonic() < deadline:
+            while time.monotonic() - started < 1.5 or (reads <= 20 and time.monotonic() - started < 15):
                 state = ws.read_json(self.workspace.state_path, "UNREADABLE")
                 reads += 1
                 if not isinstance(state, dict) or "ledger" not in state:

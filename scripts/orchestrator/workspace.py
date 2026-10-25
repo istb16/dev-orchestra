@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import errno
-import functools
 import json
 import os
 import re
@@ -14,7 +13,7 @@ import tempfile
 import time
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Sequence, TypeGuard
+from typing import Any, Dict, List, Optional, Sequence, TypeGuard, TypeVar, Union
 
 from . import atomic_file
 
@@ -481,20 +480,27 @@ def _read_posix(path: str) -> str:
         return handle.read()
 
 
-@functools.lru_cache(maxsize=1)
-def _create_file_w() -> Any:
-    """``CreateFileW`` from a private kernel32, built once.
+#: The errno Windows derives from each ``CreateFileW`` error a reader expects,
+#: so ``_open_failure`` picks the same subclass where ``winerror`` is ignored.
+_WINERROR_ERRNO = {
+    2: errno.ENOENT,  # file not found
+    3: errno.ENOENT,  # path not found
+    5: errno.EACCES,  # access denied
+    32: errno.EACCES,  # sharing violation
+    267: errno.ENOTDIR,  # a file where a directory was expected
+}
 
-    A private kernel32 with use_last_error keeps the error code safe from
-    later calls, and leaves the shared windll object unchanged.
-    """
-    # Windows only: WinDLL exists nowhere else.
-    import ctypes
-    import ctypes.wintypes
 
-    create_file = ctypes.WinDLL("kernel32", use_last_error=True).CreateFileW
-    create_file.restype = ctypes.wintypes.HANDLE
-    return create_file
+def _open_failure(path: str, code: int) -> OSError:
+    """The error for a refused ``CreateFileW`` of ``path`` with Windows error ``code``."""
+    message = "could not open %s for shared reading" % path
+    # Without FILE_FLAG_BACKUP_SEMANTICS a directory is refused, where POSIX
+    # says IsADirectoryError. isdir can only err toward a retry.
+    if code == 5 and os.path.isdir(path):
+        return IsADirectoryError(errno.EISDIR, message, path)
+    # On Windows the winerror decides errno, and with it the subclass:
+    # FileNotFoundError for 2 and 3, PermissionError for 5 and 32.
+    return OSError(_WINERROR_ERRNO.get(code), message, path, code)
 
 
 def _read_shared(path: str) -> str:
@@ -521,10 +527,11 @@ def _read_shared(path: str) -> str:
     OPEN_EXISTING = 3
     FILE_ATTRIBUTE_NORMAL = 0x80
     INVALID_HANDLE = ctypes.c_void_p(-1).value
-    ERROR_ACCESS_DENIED = 5
+    FILE_TYPE_DISK = 1
 
-    handle = _create_file_w()(
-        ctypes.c_wchar_p(path),
+    kernel32 = atomic_file._kernel32()
+    handle = kernel32.CreateFileW(
+        path,
         GENERIC_READ,
         FILE_SHARE_ALL,
         None,
@@ -533,15 +540,11 @@ def _read_shared(path: str) -> str:
         None,
     )
     if not handle or handle == INVALID_HANDLE:
-        code = ctypes.get_last_error()
-        message = "could not open %s for shared reading" % path
-        # Without FILE_FLAG_BACKUP_SEMANTICS a directory is refused, where
-        # POSIX says IsADirectoryError. isdir can only err toward a retry.
-        if code == ERROR_ACCESS_DENIED and os.path.isdir(path):
-            raise IsADirectoryError(errno.EISDIR, message, path)
-        # With a winerror, Python picks the subclass: FileNotFoundError for
-        # 2 and 3, PermissionError for 5 and 32.
-        raise OSError(None, message, path, code)
+        raise _open_failure(path, ctypes.get_last_error())
+    # A device such as NUL or CON opens like a file, and could block or never end.
+    if kernel32.GetFileType(handle) != FILE_TYPE_DISK:
+        kernel32.CloseHandle(handle)
+        raise _NotARegularFile(errno.EINVAL, "not a regular file", path)
     # open_osfhandle transfers ownership: closing the fd closes the handle.
     descriptor = msvcrt.open_osfhandle(handle, os.O_RDONLY)
     with os.fdopen(descriptor, "r", encoding="utf-8") as stream:
@@ -574,7 +577,7 @@ def write_text(path: str, text: str) -> None:
 def _atomic_write(path: str, text: str) -> None:
     """Write via a sibling temp file and one rename.
 
-    ``os.replace`` is atomic on POSIX and Windows alike, so a reader sees either
+    The move is one ``atomic_file.rename_over``, so a reader sees either
     the old content or the new one, never a partial write. Detached workers and
     their parent share these files, and a reader landing in a truncate window
     used to get a parse error indistinguishable from "the file is not there".
@@ -703,7 +706,11 @@ class file_lock:  # lowercase: it is used as a context manager, not a value
             pass
 
 
-def read_text(path: str, default: str = "") -> str:
+_Default = TypeVar("_Default")
+
+
+def read_text(path: str, default: _Default = "") -> Union[str, _Default]:
+    """The file's text, or ``default`` when it is absent or unreadable."""
     try:
         return _read_shared(path)
     except _ABSENT:

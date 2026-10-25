@@ -349,14 +349,14 @@ class TestSettingsEditing(HooksCase):
 
     def test_failed_write_reports_and_leaves_the_file(self):
         raw = self.write_settings({"a": 1})
-        real_replace = os.replace
+        real_replace = atomic_file.rename_over
 
         def failing(src, dst):
             if os.path.abspath(dst) == os.path.abspath(self.settings):
                 raise OSError("disk full")
             return real_replace(src, dst)
 
-        with mock.patch.object(os, "replace", failing):
+        with mock.patch.object(atomic_file, "rename_over", failing):
             with self.assertRaises(ch.HooksError) as caught:
                 ch.install(REPO_ROOT)
         self.assertIn("%s could not be written (disk full)" % self.settings, str(caught.exception))
@@ -372,7 +372,7 @@ class TestSettingsEditing(HooksCase):
         in-place fallback is not used for the user's settings: after the
         retries the error is reported and the file is left as it was."""
         raw = self.write_settings({"a": 1})
-        real_replace = os.replace
+        real_replace = atomic_file.rename_over
         calls: List[str] = []
 
         def refusing(src, dst):
@@ -381,7 +381,7 @@ class TestSettingsEditing(HooksCase):
                 raise PermissionError(13, "sharing violation", dst)
             return real_replace(src, dst)
 
-        with mock.patch.object(os, "replace", refusing), mock.patch("time.sleep"):
+        with mock.patch.object(atomic_file, "rename_over", refusing), mock.patch("time.sleep"):
             with self.assertRaises(ch.HooksError) as caught:
                 ch.install(REPO_ROOT)
         self.assertIn("%s could not be written (" % self.settings, str(caught.exception))
@@ -392,7 +392,7 @@ class TestSettingsEditing(HooksCase):
 
     def test_a_rename_refused_twice_then_allowed_goes_through(self):
         self.write_settings({"a": 1})
-        real_replace = os.replace
+        real_replace = atomic_file.rename_over
         refusals = [2]
 
         def sometimes_refusing(src, dst):
@@ -401,7 +401,7 @@ class TestSettingsEditing(HooksCase):
                 raise PermissionError(13, "sharing violation", dst)
             return real_replace(src, dst)
 
-        with mock.patch.object(os, "replace", sometimes_refusing), mock.patch("time.sleep"):
+        with mock.patch.object(atomic_file, "rename_over", sometimes_refusing), mock.patch("time.sleep"):
             ch.install(REPO_ROOT)
         self.assertEqual(refusals[0], 0)
         self.assertIn("hooks", self.read_settings())

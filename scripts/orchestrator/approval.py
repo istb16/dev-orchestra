@@ -116,9 +116,11 @@ def findings_of_current_plan(workspace: ws.Workspace, plan_text: str) -> Optiona
     reviewed this plan under answers since revised reviewed an earlier one.
     """
     review = workspace.design_review()
-    if not os.path.isfile(review.snapshot_path):
+    # Read, not os.path.isfile: that can miss the snapshot mid-rename (#358).
+    snapshot = ws.read_text(review.snapshot_path, None)
+    if snapshot is None:
         return None
-    if ws.read_text(review.snapshot_path) != plan_text:
+    if snapshot != plan_text:
         return False
     decisions = questions_mod.decisions_text(workspace.read_state())
     return ws.read_text(review.snapshot_decisions_path) == decisions
