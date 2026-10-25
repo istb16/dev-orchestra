@@ -666,18 +666,42 @@ class TestFileLock(IsolatedCase):
         # contenders to it while the lock itself changed hands every 0.2s.
         hold = 0.1
         contenders = 24
+        waited = []
+        # Name why a contender gave up, should one ever do so: how long it
+        # waited, and whether a holder could not remove the lock file (a virus
+        # scanner holding a file just created is one way that happens, #358).
+        unlink_failures = []
+        unlink = os.unlink
+
+        def recording_unlink(target, *args, **kwargs):
+            try:
+                return unlink(target, *args, **kwargs)
+            except OSError as exc:
+                if str(target).endswith(".lock"):
+                    code = getattr(exc, "winerror", None)
+                    unlink_failures.append("%s(winerror=%s)" % (type(exc).__name__, code))
+                raise
 
         def worker():
+            started = time.monotonic()
             with ws.file_lock(path, timeout=1.0) as lock:
                 acquired.append(lock.acquired)
+                if not lock.acquired:
+                    waited.append(round(time.monotonic() - started, 2))
                 time.sleep(hold)
 
-        threads = [threading.Thread(target=worker) for _ in range(contenders)]
-        for thread in threads:
-            thread.start()
-        for thread in threads:
-            thread.join(timeout=60)
-        self.assertEqual(acquired, [True] * contenders)
+        with mock.patch.object(ws.os, "unlink", recording_unlink):
+            threads = [threading.Thread(target=worker) for _ in range(contenders)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=60)
+        self.assertEqual(
+            acquired,
+            [True] * contenders,
+            "gave up after waiting %s s; lock file removals that failed: %s"
+            % (waited, ", ".join(unlink_failures) or "none"),
+        )
 
     def test_reading_the_holder_does_not_stop_it_releasing(self):
         """Waiters read the lock file to tell a queue from a corpse, and a
