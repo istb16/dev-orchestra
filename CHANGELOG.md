@@ -13,6 +13,8 @@ authors can find it.
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-10-25
+
 ### Added
 
 - **Standing instructions per role, and work units fitted to the project's
@@ -59,6 +61,17 @@ authors can find it.
 
 ### Fixed
 
+- On Windows a file being replaced could look absent to a reader: `os.replace`
+  leaves the name missing for an instant, and `read_json` took a False
+  `os.path.isfile` (or, once that was gone, the open's own "not found") as no
+  file, so a live job or state could read as missing (#358). Writes now go
+  through `atomic_file.rename_over`, which on Windows 10 1709+ swaps the name
+  in one step (`SetFileInformationByHandle` with POSIX semantics) and falls
+  back to `os.replace`, remembered per volume, where that is not supported.
+  `read_json`, `read_text` and `read_text_strict` decide "absent" from the
+  open instead of `os.path.isfile`, and do not read a FIFO or a device. A
+  virus scanner can still hold a file just renamed into place, so a read may
+  wait a few seconds; it no longer comes back empty.
 - agy 1.4.7 reads files with `read_file` (its path in `Path`), which the tool
   activity (`Read <path>`) and the live check now accept alongside
   `view_file`. An adapter can name every tool its CLI reads a file with in
@@ -3471,7 +3484,8 @@ First release.
   none of which invoke a real CLI.
 - CI on Linux, macOS and Windows: lint, tests, skill validation.
 
-[Unreleased]: https://github.com/istb16/dev-orchestra/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/istb16/dev-orchestra/compare/v1.2.1...HEAD
+[1.2.1]: https://github.com/istb16/dev-orchestra/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/istb16/dev-orchestra/compare/v1.1.2...v1.2.0
 [1.1.2]: https://github.com/istb16/dev-orchestra/compare/v1.1.1...v1.1.2
 [1.1.1]: https://github.com/istb16/dev-orchestra/compare/v1.1.0...v1.1.1

@@ -2,7 +2,7 @@
 name: dev-orchestra
 description: Orchestrate a multi-model software development workflow across Claude Code and Codex CLIs - investigate, design, implement, test, run independent multi-model code reviews, triage findings, fix and re-test. Use to implement a feature or issue, investigate and fix a bug, run a multi-model or independent code review of current changes, orchestrate development across AI CLIs, or set up and change the agent configuration (which CLI and model handle design, implementation, review fixing and each reviewer). Not for one-off coding questions, explaining code, or single edits the user asked you to make directly.
 license: MIT
-version: 1.2.0
+version: 1.2.1
 ---
 
 # AI Development Orchestrator
