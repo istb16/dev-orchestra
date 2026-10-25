@@ -1,0 +1,1 @@
+{"event": "step_update", "step_update": {"conversation_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc", "step_index": 2, "state": "ACTIVE", "step_type": "tool", "tool_name": "read_file", "tool_info": {"name": "read_file", "parameters": {"Path": "C:\\sandbox\\agy193\\note.txt"}}}}

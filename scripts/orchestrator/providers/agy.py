@@ -10,7 +10,9 @@ key and its body under the key of the same name (``tests/fixtures/agy/``):
 * ``init`` once; then ``step_update`` lines: a ``user_input`` step, each
   ``agent_response`` step's ``DONE`` line carrying that step's ``usage``, and
   each ``tool`` step once ``ACTIVE`` (``tool_name``, ``tool_info.parameters``)
-  and once ``DONE``. The final answer streams as ``text_delta`` first.
+  and once ``DONE``. The final answer streams as ``text_delta`` first. Files
+  are read with ``view_file`` (``AbsolutePath``) or, from agy 1.4.7,
+  ``read_file`` (``Path``), which ``init.tools`` does not list.
 * ``result`` last: the object ``json`` prints (``status``, ``response``,
   ``usage``, ``conversation_id``, ``denied_actions`` when any), nested.
 * The result's ``usage`` equals the sum of the steps' (5822 input, 36491
@@ -160,6 +162,10 @@ DIAGNOSTIC_LIMIT = 20
 #: A tool name shown or counted as it is; any other is ``tool``.
 _TOOL_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]{0,63}$")
 
+#: Each name agy's file-reading tool goes by, with the parameter naming its
+#: path: ``view_file`` and, from agy 1.4.7, ``read_file``.
+_FILE_READ_PATH_KEYS = {"view_file": "AbsolutePath", "read_file": "Path"}
+
 
 class PromptFileError(OSError):
     """The prompt file cannot be written inside the workspace."""
@@ -194,10 +200,16 @@ class AgyProvider(Provider):
     # tool steps but not what they printed; a headless run is denied shell
     # commands, so the tool check asks for the file-viewing tool by name, and
     # ``skip_permissions`` is the bypass whose counterpart is a named denial.
+    # agy 1.4.7 read with ``read_file`` while its ``init.tools`` still listed
+    # only ``view_file``, so either name passes.
     tool_activity_reported = TOOL_ACTIVITY_CALLS
     file_read_tool = "view_file"
     implement_write_checked = True
     permission_bypass_options: ClassVar[Optional[Dict[str, Any]]] = {"skip_permissions": True}
+
+    @property
+    def file_read_tools(self) -> Tuple[str, ...]:
+        return tuple(_FILE_READ_PATH_KEYS)
 
     def denied_action_items(self, warning: str) -> Optional[List[Tuple[str, str]]]:
         """The items of a warning :func:`_denied_warning` wrote; the whole list
@@ -722,8 +734,8 @@ def _tool_activity(name: str, step: Dict[str, Any], cwd: str) -> str:
     parameters = info.get("parameters") if isinstance(info, dict) else None
     if not isinstance(parameters, dict):
         parameters = {}
-    if name == "view_file":
-        return activity.tool_line("Read", {"file_path": parameters.get("AbsolutePath")}, cwd)
+    if name in _FILE_READ_PATH_KEYS:
+        return activity.tool_line("Read", {"file_path": parameters.get(_FILE_READ_PATH_KEYS[name])}, cwd)
     if name == "write_to_file":
         return activity.tool_line("Write", {"file_path": parameters.get("TargetFile")}, cwd)
     if name == "run_command":

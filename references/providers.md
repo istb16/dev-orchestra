@@ -87,6 +87,7 @@ class Provider:
     repository_sandbox_config_file: str                         # default: ""
     tool_activity_reported: str                                 # default: "none"
     file_read_tool: str                                         # default: ""
+    file_read_tools: tuple[str, ...]                            # default: (file_read_tool,) or ()
     implement_write_checked: bool                               # default: False
     permission_bypass_options: dict | None                      # default: None
     def read_only_widening_args(directory) -> list[str]         # default: []
@@ -594,7 +595,7 @@ against 1.2.16. Meant for the implementer and the review fixer.
 | Usage | `usage.input_tokens`, `output_tokens` and `cache_read_tokens` of the result; `tool_uses` and `tool_uses_by_name` from the tool steps; no output chars, no cost |
 | Resume | left out: `--resume` runs fresh (below) |
 | Progress | tool activity and context size, yes; idle deadline, no (`streams_progress = False`) |
-| Tool activity | `view_file` as `Read <path>`, `write_to_file` as `Write <path>`, `run_command` as `Bash: <program>`; any other plain name as itself, `mcp__s__t` as `s.t`, and a name that is not plain as `tool` |
+| Tool activity | `view_file` and `read_file` as `Read <path>`, `write_to_file` as `Write <path>`, `run_command` as `Bash: <program>`; any other plain name as itself, `mcp__s__t` as `s.t`, and a name that is not plain as `tool` |
 | Auth | not detected; run `agy` once to sign in if runs fail |
 
 Families are names, never ids; the id comes from what `agy models` lists on
@@ -955,6 +956,7 @@ adapter decides which checks run, never what they are called.
 | `repository_sandbox_config_file` | `""` | A repository-relative path the CLI reads a sandbox setting from: `ignores repository config on resume`. |
 | `tool_activity_reported` | `"none"` | What `parse_usage` fills in about tools: `"calls"` (`tool_uses` and `tool_uses_by_name`) or `"calls and output"` (those and `tool_output_chars`). `"none"` reports the check as not reported by design; any other value fails it without a run. |
 | `file_read_tool` | `""` | The tool the CLI reads a file with, for a CLI whose read-only run may also reach a shell: the tool check asks for that tool by name and for README.md's content in the reply. |
+| `file_read_tools` | `(file_read_tool,)`, or `()` when that is empty | Every name the CLI's file-reading tool may go by, when it has more than one: the tool check passes on any of them, and its failure names them all. |
 | `denied_action_items(warning)` | `None` | `(display name, kind)` for each action a `run_warnings` warning names as denied, and `None` for any other warning. |
 | `implement_write_checked` | `False` | `True`: `writes a file in implement mode`. |
 | `permission_bypass_options` | `None` | The role options that let a write run run shell commands without asking: `names a denied command` (without them) and `runs a command with skip_permissions` (with them). |
@@ -983,7 +985,7 @@ Some members are only half of a pair:
   prove. The method still serves the tool check.
 - `tool_activity_reported = "calls"` without `denied_action_items`: the tool
   check cannot see a denial, so a denied-looking warning does not fail it;
-  only a run that did not complete and the `file_read_tool` requirements do.
+  only a run that did not complete and the `file_read_tools` requirements do.
 
 `kind` is the CLI's own word for the action. The script relies on one value,
 `"command"`: a shell command, which is what `names a denied command` passes

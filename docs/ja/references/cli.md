@@ -1,4 +1,4 @@
-<!-- translated-from: references/cli.md sha256:c8520381acb9195be4c1cd32a9f2bd31ad492e987090987717c4f95214b68a1b -->
+<!-- translated-from: references/cli.md sha256:fe29619fda8df5a64c88724e5d4455da83ff60952eb4f344bde879950e75a911 -->
 
 > この文書は [references/cli.md](../../../references/cli.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -767,7 +767,7 @@ dev-orchestra jobs show "$id" --output
 | `WebFetch` | スキーム、ホスト、指定があればポート。多くの API がトークンを置くパスは出しません |
 | MCP のツール | `<サーバー>.<ツール>` |
 | Codex のファイル変更 | ファイルごとに 1 行の `Edit <パス>` |
-| agy の `view_file`、`write_to_file` | `Read <パス>`、`Write <パス>`。パスは `Read` と同じ扱い |
+| agy の `view_file` か `read_file`、`write_to_file` | `Read <パス>`、`Write <パス>`。パスは `Read` と同じ扱い |
 | agy の `run_command` | `Bash` と同じ扱い |
 | そのほかの agy のツール | 素直な名前（英字 1 文字のあとに、英数字、`_`、`.`、`-` が 63 文字まで）なら名前だけ、`mcp__<サーバー>__<ツール>` は `<サーバー>.<ツール>`、それ以外の名前は `tool` |
 | それ以外（`Task` と Codex の `web_search` を含む） | 名前だけ |

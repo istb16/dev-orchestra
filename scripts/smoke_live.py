@@ -110,7 +110,7 @@ WRITE_TARGET = "breach.txt"
 TOOL_PROMPT = "Count the lines in README.md in this directory. Reply with only the number."
 
 #: The tool prompt for an adapter that names its file-reading tool
-#: (``file_read_tool``), where ``TOOL_PROMPT`` would not tell that tool from a
+#: (``file_read_tools``), where ``TOOL_PROMPT`` would not tell that tool from a
 #: shell: it asks for the file-viewing tool, and for the file's content, which
 #: is not in the prompt.
 FILE_TOOL_PROMPT = (
@@ -374,7 +374,7 @@ def check_tool_activity(
     What is asked follows ``tool_activity_reported``: nothing for an adapter
     that reports none; the calls, the reply and the tool for one that counts
     calls only; the calls and their output for one that reports both. An
-    adapter that names its ``file_read_tool`` is asked to read with it.
+    adapter that names its ``file_read_tools`` is asked to read with one.
     """
     label = "reports its tool activity"
     reported = provider.tool_activity_reported
@@ -382,8 +382,8 @@ def check_tool_activity(
         return Check(name, label, False, "unknown tool_activity_reported %r" % (reported,))
     if reported == TOOL_ACTIVITY_NONE:
         return Check(name, label, True, "not reported by this adapter, by design")
-    tool = provider.file_read_tool
-    prompt = FILE_TOOL_PROMPT if tool else TOOL_PROMPT
+    tools = provider.file_read_tools
+    prompt = FILE_TOOL_PROMPT if tools else TOOL_PROMPT
     result, why = _run(provider, prompt, MODE_REVIEW, root, model_spec=model_spec)
     if result is None:
         return Check(name, label, False, why or "")
@@ -407,22 +407,24 @@ def check_tool_activity(
         return Check(name, label, False, "%d tool use(s) and no output to pair with them" % usage.tool_uses)
     by_name = usage.tool_uses_by_name or {}
     names = ", ".join("%s x%d" % item for item in sorted(by_name.items()))
-    problem = _file_tool_problem(tool, result, by_name, names)
+    problem = _file_tool_problem(tools, result, by_name, names)
     if problem:
         return Check(name, label, False, problem)
     detail = "%d use(s) [%s], %s observed output chars" % (usage.tool_uses, names or "unnamed", chars)
     return Check(name, label, True, detail)
 
 
-def _file_tool_problem(tool: str, result: Any, by_name: Dict[str, int], names: str) -> Optional[str]:
-    """For an adapter that names its ``file_read_tool``: whether the reply
-    carried README.md's content, and that tool read it."""
-    if not tool:
+def _file_tool_problem(
+    tools: Tuple[str, ...], result: Any, by_name: Dict[str, int], names: str
+) -> Optional[str]:
+    """For an adapter that names its ``file_read_tools``: whether the reply
+    carried README.md's content, and one of those tools read it."""
+    if not tools:
         return None
     if README_TEXT not in (result.stdout or ""):
         return "the reply did not carry README.md's content"
-    if tool not in by_name:
-        return "expected %s in tool_uses_by_name, got %s" % (tool, names or "none")
+    if not any(tool in by_name for tool in tools):
+        return "expected %s in tool_uses_by_name, got %s" % (" or ".join(tools), names or "none")
     return None
 
 
@@ -442,7 +444,7 @@ def _check_named_tools(provider: Any, name: str, label: str, result: Any) -> Che
         return Check(name, label, False, reason)
     by_name = usage.tool_uses_by_name or {}
     names = ", ".join("%s x%d" % item for item in sorted(by_name.items()))
-    problem = _file_tool_problem(provider.file_read_tool, result, by_name, names)
+    problem = _file_tool_problem(provider.file_read_tools, result, by_name, names)
     if problem:
         return Check(name, label, False, problem)
     detail = "%d use(s) [%s]; output chars not reported by %s" % (usage.tool_uses, names or "unnamed", name)

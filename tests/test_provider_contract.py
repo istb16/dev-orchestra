@@ -979,6 +979,7 @@ class TestTheLiveCheckDefaults(unittest.TestCase):
                 self.assertEqual(provider.repository_sandbox_config_file, "")
                 self.assertEqual(provider.tool_activity_reported, base.TOOL_ACTIVITY_NONE)
                 self.assertEqual(provider.file_read_tool, "")
+                self.assertEqual(provider.file_read_tools, ())
                 self.assertIsNone(provider.denied_action_items("bare denied x (command)"))
                 self.assertFalse(provider.implement_write_checked)
                 self.assertIsNone(provider.permission_bypass_options)
@@ -988,6 +989,12 @@ class TestTheLiveCheckDefaults(unittest.TestCase):
                     provider.resumed_session_problem(result),
                     "no reading of a resumed session's restrictions is known for %s" % provider.name,
                 )
+
+    def test_a_named_file_read_tool_is_the_only_one(self):
+        class _ReadsWithATool(_BareAdapter):
+            file_read_tool = "view"
+
+        self.assertEqual(_ReadsWithATool().file_read_tools, ("view",))
 
     def test_only_claude_gives_a_worktree_its_own_files(self):
         self.assertEqual(providers.get_provider("claude").worktree_files, (".claude/settings.local.json",))

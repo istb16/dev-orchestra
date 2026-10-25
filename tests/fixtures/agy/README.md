@@ -16,6 +16,12 @@ error messages (`stream input message is missing the "event" field`,
 `message` refused as not a `StreamInputUserMessage`). An `event` other than
 `user` is ignored with a warning.
 
+`stream-json-read-file.jsonl` is one line of a later run, on 2026-10-25:
+agy 1.4.7, Windows 11, `agy --output-format stream-json -p "<prompt>"` asked to
+read `note.txt` in a throwaway directory. The model read it with `read_file`,
+whose parameter is `Path`, while that run's `init.tools` still listed
+`view_file` and not `read_file`. Only this `ACTIVE` tool step is kept.
+
 ## Event shapes
 
 One JSON object per line, each with an `event` key and an object under the key
@@ -26,7 +32,7 @@ of the same name:
 - `step_update`: `step_index`, `state` (`ACTIVE` or `DONE`), `step_type`
   (`user_input`, `agent_response`, `tool`). A `tool` step prints once when it
   starts and once when it ends, with `tool_name` and `tool_info.name` and
-  `tool_info.parameters` (`view_file`: `AbsolutePath`; `write_to_file`:
+  `tool_info.parameters` (`view_file`: `AbsolutePath`; `read_file`: `Path`; `write_to_file`:
   `TargetFile`; `run_command`: `CommandLine`); the `DONE` line adds
   `duration_seconds`, and `view_file`'s adds `tool_info.output`. An
   `agent_response` step's `DONE` line carries that step's `usage`; the final
@@ -43,9 +49,10 @@ for the path inside it.
 
 - `conversation_id` is replaced: `aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa` in
   `stream-json-tools.jsonl`, `bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb` in
-  `stream-json-denied.jsonl`.
+  `stream-json-denied.jsonl`, `cccccccc-cccc-4ccc-8ccc-cccccccccccc` in
+  `stream-json-read-file.jsonl`.
 - The working directory is replaced by `C:\sandbox\agy193` (`C:/sandbox/agy193`
-  inside the answer's link), wherever it appears.
+  inside the answer's link), wherever it appears, in all three files.
 - `init.tools` keeps six of the sixty names the CLI listed.
 - The answer's `text_delta` chunks were joined, redacted, and cut again into
   as many chunks of equal length; the CLI's own cut points are lost.

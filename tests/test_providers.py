@@ -2004,6 +2004,7 @@ class TestAgyRecordedActivity(unittest.TestCase):
             {3: 13671, 6: 14125, 30: 14517},
         ),
         "stream-json-denied.jsonl": ({4: ["Bash"]}, {3: 13659}),
+        "stream-json-read-file.jsonl": ({1: ["Read note.txt"]}, {}),
     }
 
     def test_every_line_of_every_recording(self):
@@ -2392,6 +2393,7 @@ def agy_step(**body):
 #: The recordings, and the tool run's answer, which it also streamed whole.
 AGY_TOOLS = "stream-json-tools.jsonl"
 AGY_DENIED = "stream-json-denied.jsonl"
+AGY_READ_FILE = "stream-json-read-file.jsonl"
 AGY_TOOLS_RESPONSE = (
     "[output.txt](file:///C:/sandbox/agy193/output.txt) has been created with the lines of "
     "`input.txt` in reverse order (`gamma`, `beta`, `alpha`).\n"
@@ -3278,6 +3280,41 @@ class TestAgyRecordedRuns(_AgyCase):
                 line = agy_step(step_index=2, state="ACTIVE", step_type="tool", **fields)
                 usage = self.usage_of(agy_lines(AGY_TOOLS, 1, 2) + line)
                 self.assertEqual(usage.tool_uses_by_name, {name: 1})
+
+    def test_the_recorded_read_file_step_counts(self):
+        usage = self.usage_of(agy_lines(AGY_TOOLS, 1, 2) + agy_fixture(AGY_READ_FILE))
+        self.assertEqual(usage.tool_uses_by_name, {"read_file": 1})
+
+    def test_a_read_file_step_and_its_done_line_count_once(self):
+        info = {"name": "read_file", "parameters": {"Path": "/sandbox/agy193/a.py"}}
+        pair = agy_step(
+            step_index=2, state="ACTIVE", step_type="tool", tool_name="read_file", tool_info=info
+        ) + agy_step(
+            step_index=2, state="DONE", step_type="tool", tool_name="read_file", tool_info=info, output="x"
+        )
+        usage = self.usage_of(agy_lines(AGY_TOOLS, 1, 2) + pair)
+        self.assertEqual(usage.tool_uses_by_name, {"read_file": 1})
+        shown = [
+            shown_line
+            for line in pair.splitlines(keepends=True)
+            for shown_line in self.provider.activity_of(line, "/sandbox/agy193").lines
+        ]
+        self.assertEqual(shown, ["Read a.py"])
+
+    def test_each_file_reading_tool_shows_its_path(self):
+        a = "/sandbox/agy193/a.py"
+        cases = (
+            ("view_file", {"AbsolutePath": a}, ["Read a.py"]),
+            ("read_file", {"Path": a}, ["Read a.py"]),
+            ("read_file", {}, ["Read"]),
+        )
+        for name, parameters, shown in cases:
+            with self.subTest(name=name, parameters=parameters):
+                info = {"name": name, "parameters": parameters}
+                line = agy_step(
+                    step_index=2, state="ACTIVE", step_type="tool", tool_name=name, tool_info=info
+                )
+                self.assertEqual(list(self.provider.activity_of(line, "/sandbox/agy193").lines), shown)
 
     def context_of(self, stdout):
         return self.provider.parse_session(execution.ExecOutcome(0, stdout, "", 0.1))["context_tokens"]

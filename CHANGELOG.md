@@ -57,6 +57,13 @@ authors can find it.
   copy the CLI asked for that the user's tree lacks, or that lies outside the
   repository, is still skipped silently.
 
+### Fixed
+
+- agy 1.4.7 reads files with `read_file` (its path in `Path`), which the tool
+  activity (`Read <path>`) and the live check now accept alongside
+  `view_file`. An adapter can name every tool its CLI reads a file with in
+  the new `Provider.file_read_tools`, which defaults to `file_read_tool`.
+
 ## [1.2.0] - 2026-10-22
 
 ### Added
