@@ -16,7 +16,7 @@ Claude builds. Codex challenges. dev-orchestra coordinates.
 
 Works with Claude Code, Codex and Antigravity. Claude Code alone is enough to start.
 
-![One request, "Add rate limiting to the login endpoint.", goes through design, design review, your approval, implementation, tests, four independent reviews from Claude and Codex, triage and fixes, ending in a final report: 37 tests passed, 12 findings, 5 accepted, 3 rejected, 4 duplicates](docs/images/demo.svg)
+![Animated replay of a real run. One request, "Add rate limiting to the login endpoint.", goes through design, design review, your approval, implementation, tests, four independent reviews from Claude and Codex, triage and fixes, ending in a final report: 37 tests passed, 12 findings, 5 accepted, 3 rejected, 4 duplicates](docs/images/demo.gif)
 
 ## Quick start
 
