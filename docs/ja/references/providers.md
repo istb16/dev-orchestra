@@ -1,4 +1,4 @@
-<!-- translated-from: references/providers.md sha256:42e4855b2cf5f950e371df5a4d57d3fb67788418a5a3e8b96e841574a81f667b -->
+<!-- translated-from: references/providers.md sha256:077a09ea937ba838ff8dd515c55e082fb791a20290d2745b81f76227f5162e6b -->
 
 > この文書は [references/providers.md](../../../references/providers.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -91,6 +91,7 @@ class Provider:
     repository_sandbox_config_file: str                         # default: ""
     tool_activity_reported: str                                 # default: "none"
     file_read_tool: str                                         # default: ""
+    file_read_tools: tuple[str, ...]                            # default: (file_read_tool,) or ()
     implement_write_checked: bool                               # default: False
     permission_bypass_options: dict | None                      # default: None
     def read_only_widening_args(directory) -> list[str]         # default: []
@@ -313,7 +314,7 @@ Windows 上の `agy` 1.2.13 で検証済みで、`stream-json` の出力は 1.2.
 | 使用量 | 結果の `usage.input_tokens`、`output_tokens`、`cache_read_tokens`。`tool_uses` と `tool_uses_by_name` はツールのステップから。出力の文字数と費用はない |
 | 継続 | 外している。`--resume` は新規に走る（後述） |
 | 進捗 | ツールの動きとコンテキストの大きさは出る。アイドル期限はない（`streams_progress = False`） |
-| ツールの動き | `view_file` は `Read <path>`、`write_to_file` は `Write <path>`、`run_command` は `Bash: <program>`。そのほかの素直な名前はそのまま、`mcp__s__t` は `s.t`、素直でない名前は `tool` |
+| ツールの動き | `view_file` と `read_file` は `Read <path>`、`write_to_file` は `Write <path>`、`run_command` は `Bash: <program>`。そのほかの素直な名前はそのまま、`mcp__s__t` は `s.t`、素直でない名前は `tool` |
 | 認証 | 検出しない。実行が失敗するなら一度 `agy` を起動してサインインする |
 
 family は名前であって id ではありません。id は、実行を解決するときにこのマシンで `agy models` が出力したものから選びます。
@@ -525,6 +526,7 @@ class MyCliProvider(Provider):
 | `repository_sandbox_config_file` | `""` | CLI がサンドボックスの設定を読む、リポジトリ相対のパス。`ignores repository config on resume`。 |
 | `tool_activity_reported` | `"none"` | `parse_usage` がツールについて埋めるもの。`"calls"`（`tool_uses` と `tool_uses_by_name`）か `"calls and output"`（それに加えて `tool_output_chars`）。`"none"` ではチェックを「設計上報告しない」とし、それ以外の値では実行せずにチェックを失敗にします。 |
 | `file_read_tool` | `""` | 読み取り専用の実行からシェルにも届き得る CLI で、ファイルを読むのに使うツール。ツールのチェックはそのツールを名指しで求め、返答に README.md の内容があることも求めます。 |
+| `file_read_tools` | `(file_read_tool,)`。それが空なら `()` | CLI のファイルを読むツールが複数の名前で現れるときの、そのすべての名前。ツールのチェックはどれか一つで通り、失敗の文言はすべてを挙げます。 |
 | `denied_action_items(warning)` | `None` | `run_warnings` の警告が拒否されたと示す各操作の `(表示名, 種類)`。それ以外の警告では `None`。 |
 | `implement_write_checked` | `False` | `True` で `writes a file in implement mode`。 |
 | `permission_bypass_options` | `None` | 書き込みの実行が確認なしにシェルコマンドを実行できるようにするロールのオプション。`names a denied command`（オプションなし）と `runs a command with skip_permissions`（オプションあり）。 |
@@ -535,7 +537,7 @@ class MyCliProvider(Provider):
 - `read_only_widening_args` のない `confines_read_only`: `--add-dir widens` は「the adapter declares no read-only widening arguments」で失敗し、そのための実行は行いません。広げる引数は、呼び出し側の引数と同じく、まずアダプタ自身の読み取り専用のゲート（`read_only_arg_problems`）を通ります。ゲートが拒めば、チェックはフラグの名前だけを挙げて失敗し、値は出しません。
 - `denied_action_items` のない `permission_bypass_options`: `names a denied command` は「the adapter declares no denied_action_items, so a denied command cannot be read」で失敗し、実行は行いません。バイパスのチェックは行い、「denied」という語を含む警告があれば失敗にします。`denied_action_items` があれば、バイパスのチェックも他のチェックと同じく、このメソッドが拒否と読む警告でだけ失敗にします。オプションは `option_keys` にあるキーのマッピングでなければならず、そうでなければバイパスのチェックは実行せずに失敗します（「names ..., not options this adapter takes」）。値も `validate_options` が受け付けるものでなければなりません（「is refused by the adapter: ...」）。これを有効にすると、スクリプトが作る一時的なサンドボックスのリポジトリの中で、あなたのアカウントのもと、バイパスを付けてシェルコマンド（`echo true`）が実行されます。
 - `permission_bypass_options` のない `denied_action_items`: どちらのコマンドのチェックも行いません。拒否が対になって裏付けるバイパスがないからです。このメソッドはツールのチェックでは引き続き使われます。
-- `denied_action_items` のない `tool_activity_reported = "calls"`: ツールのチェックは拒否を見分けられないので、拒否らしい警告があっても失敗にはなりません。失敗にするのは、完了しなかった実行と `file_read_tool` の要件だけです。
+- `denied_action_items` のない `tool_activity_reported = "calls"`: ツールのチェックは拒否を見分けられないので、拒否らしい警告があっても失敗にはなりません。失敗にするのは、完了しなかった実行と `file_read_tools` の要件だけです。
 
 `kind` は、その操作を表す CLI 自身の言葉です。スクリプトが頼るのは `"command"`（シェルコマンド）という 1 つの値だけで、`names a denied command` はこの値で合格します。それ以外は、拒否されたがコマンドではない、と報告されます。
 

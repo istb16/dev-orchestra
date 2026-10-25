@@ -417,6 +417,10 @@ class _AgyLike(_FakeProvider):
     permission_bypass_options = AgyProvider.permission_bypass_options
     option_keys = AgyProvider.option_keys
 
+    @property
+    def file_read_tools(self):
+        return AgyProvider().file_read_tools
+
     def validate_options(self, options):
         return AgyProvider().validate_options(options)
 
@@ -439,7 +443,10 @@ class TestTheAgyToolActivityCheck(IsolatedCase):
             (agy_run(warnings=[AGY_DENIED_COMMAND]), '"agy denied 1 action(s): RunCommand (command)'),
             (agy_run(stdout="", ok=False), "did not complete"),
             (agy_run(stdout="README.md has 1 line"), "did not carry README.md's content"),
-            (agy_run(by_name={"run_command": 1}), "expected view_file in tool_uses_by_name, got run_comm"),
+            (
+                agy_run(by_name={"run_command": 1}),
+                "expected view_file or read_file in tool_uses_by_name, got run_command x1",
+            ),
         ]
         for result, detail in cases:
             with self.subTest(detail=detail):
@@ -452,6 +459,19 @@ class TestTheAgyToolActivityCheck(IsolatedCase):
         self.assertTrue(check.ok, check.detail)
         self.assertIn("view_file x1", check.detail)
         self.assertIn("output chars not reported by agy", check.detail)
+
+    def test_agy_passes_with_read_file(self):
+        """agy 1.4.7 reads with ``read_file``, which its ``init.tools`` does
+        not list."""
+        check, _ = self.check(agy_run(by_name={"read_file": 2}))
+        self.assertTrue(check.ok, check.detail)
+        self.assertIn("read_file x2", check.detail)
+
+    def test_agy_passes_with_both_file_reading_tools(self):
+        check, _ = self.check(agy_run(tool_uses=2, by_name={"view_file": 1, "read_file": 1}))
+        self.assertTrue(check.ok, check.detail)
+        self.assertIn("view_file x1", check.detail)
+        self.assertIn("read_file x1", check.detail)
 
     def test_only_the_chars_requirement_is_skipped(self):
         class _ReportsOutput(_FakeProvider):
@@ -1573,6 +1593,7 @@ LIVE_CHECK_DEFAULTS = {
     "repository_sandbox_config_file": "",
     "tool_activity_reported": "none",
     "file_read_tool": "",
+    "file_read_tools": (),
     "denied_action_items": False,
     "implement_write_checked": False,
     "permission_bypass_options": None,
@@ -1590,6 +1611,7 @@ def members(provider):
         "repository_sandbox_config_file": provider.repository_sandbox_config_file,
         "tool_activity_reported": provider.tool_activity_reported,
         "file_read_tool": provider.file_read_tool,
+        "file_read_tools": provider.file_read_tools,
         "denied_action_items": cls.denied_action_items is not base.Provider.denied_action_items,
         "implement_write_checked": provider.implement_write_checked,
         "permission_bypass_options": provider.permission_bypass_options,
@@ -1617,6 +1639,7 @@ class TestBuiltInLiveCheckAttributes(unittest.TestCase):
                 LIVE_CHECK_DEFAULTS,
                 tool_activity_reported="calls",
                 file_read_tool="view_file",
+                file_read_tools=("view_file", "read_file"),
                 denied_action_items=True,
                 implement_write_checked=True,
                 permission_bypass_options={"skip_permissions": True},
@@ -1710,6 +1733,27 @@ class TestToolActivityValues(IsolatedCase):
         for result, ok, detail in cases:
             with self.subTest(detail=detail):
                 provider = _ReadsWithATool(result=result)
+                check = self.check(provider)
+                self.assertEqual(check.ok, ok, check.detail)
+                self.assertIn(detail, check.detail)
+                self.assertEqual(provider.calls[0]["prompt"], smoke_live.FILE_TOOL_PROMPT)
+
+    def test_file_read_tools_alone_ask_for_a_file_tool(self):
+        class _ReadsWithTools(_FakeProvider):
+            tool_activity_reported = base.TOOL_ACTIVITY_OUTPUT
+
+            @property
+            def file_read_tools(self):
+                return ("a", "b")
+
+        cases = [
+            (tool_run(by_name={"Read": 1}), False, "expected a or b in tool_uses_by_name, got Read x1"),
+            (tool_run(by_name={"b": 1}), True, "1 use(s) [b x1], 6 observed output chars"),
+        ]
+        for result, ok, detail in cases:
+            with self.subTest(detail=detail):
+                provider = _ReadsWithTools(result=result)
+                self.assertEqual(provider.file_read_tool, "")
                 check = self.check(provider)
                 self.assertEqual(check.ok, ok, check.detail)
                 self.assertIn(detail, check.detail)

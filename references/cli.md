@@ -857,7 +857,7 @@ free-text arguments:
 | `WebFetch` | scheme, host and port if given; never the path, where many APIs carry a token |
 | an MCP tool | `<server>.<tool>` |
 | a Codex file change | `Edit <path>`, one line per file |
-| agy `view_file`, `write_to_file` | `Read <path>`, `Write <path>`, the path as for `Read` |
+| agy `view_file` or `read_file`, `write_to_file` | `Read <path>`, `Write <path>`, the path as for `Read` |
 | agy `run_command` | as `Bash` |
 | any other agy tool | the name alone when it is a plain name (a letter, then up to 63 letters, digits, `_`, `.` or `-`), `<server>.<tool>` for `mcp__<server>__<tool>`, and `tool` for any other name |
 | anything else, including `Task` and Codex `web_search` | the name alone |

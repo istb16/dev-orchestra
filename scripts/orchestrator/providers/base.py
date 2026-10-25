@@ -987,6 +987,12 @@ class Provider:
     #: a shell; the tool check then asks for that tool by name.
     file_read_tool = ""
 
+    @property
+    def file_read_tools(self) -> Tuple[str, ...]:
+        """Every name the CLI's file-reading tool may go by; the tool check
+        passes on any of them. ``(file_read_tool,)``, or ``()`` when unset."""
+        return (self.file_read_tool,) if self.file_read_tool else ()
+
     #: True when implement mode is checked to write a file.
     implement_write_checked = False
 
