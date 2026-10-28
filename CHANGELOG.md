@@ -47,11 +47,13 @@ authors can find it.
   a review can take more rounds than before (#364). Set
   `review.whole_change_recheck: false` to keep the old loop; with it off,
   behaviour and output are as before.
-- A review round that finds nothing is no longer counted as a repeat of the
-  previous round. Two clean rounds in a row -- a round and then a `--full`
-  one, say -- used to report that the last fix changed nothing, in
-  `review run`'s note, `identical_rounds` and `status`'s reasons; finding
-  nothing twice is not evidence of that.
+- With `review.whole_change_recheck` on, a code review round that finds
+  nothing is no longer counted as a repeat of the previous round. The clean
+  fix-only round and the clean whole-change round after it would otherwise
+  report that the last fix changed nothing, in `review run`'s note,
+  `identical_rounds` and `status`'s reasons; finding nothing twice is the
+  loop closing. With it off, and for the design review and
+  `progress record`, repeats are counted as before.
 
 ## [1.2.1] - 2026-10-25
 

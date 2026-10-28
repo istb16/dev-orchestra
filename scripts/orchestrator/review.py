@@ -37,6 +37,7 @@ from .review_common import (
     accepted_findings,
 )
 from .review_consolidation import (
+    NO_FINDINGS_SIGNATURE,
     are_duplicates,
     build_consolidation,
     code_tokens,

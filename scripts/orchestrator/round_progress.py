@@ -336,13 +336,12 @@ def design_final_pass_from(
 
 def code_loop_decision(
     loaded: config_mod.LoadedConfig,
-    workspace: ws.Workspace,
+    meta: Any,
     data: Dict[str, Any],
     iteration: int,
     max_iterations: int,
 ) -> review_loop.LoopDecision:
-    """``review_loop.decide`` on the code review's report ``data`` and the snapshot on disk."""
-    meta = workspace.read_snapshot_meta()
+    """``review_loop.decide`` on the code review's report ``data`` and the snapshot ``meta`` on disk."""
     return review_loop.decide(
         loaded.whole_change_recheck(),
         data,
@@ -366,6 +365,12 @@ def recheck_next(
     same change, and still owes its whole-change round. A report of another
     branch or workflow, or a base naming another commit, starts or redefines
     the review, and gets no spare round.
+
+    Unlike the narrowing (``review_snapshot._reviewed_tree``), this does not
+    ask that the report reviewed the snapshot on disk: a whole-change snapshot
+    retaken before it was reviewed -- a reviewer failed, say -- is still the
+    round the clean fix-only report asked for. The report's own
+    ``snapshot.scope`` says what it reviewed.
     """
     data = ws.read_json(workspace.consolidated_json_path, {}) or {}
     if not isinstance(data, dict) or str(data.get("lineage") or "") != lineage:
@@ -376,7 +381,7 @@ def recheck_next(
     if not review_mod.same_base(workspace.root, meta, base):
         return False
     iteration = int(data.get("iteration", 0) or 0)
-    return code_loop_decision(loaded, workspace, data, iteration, loaded.max_review_iterations()).recheck_next
+    return code_loop_decision(loaded, meta, data, iteration, loaded.max_review_iterations()).recheck_next
 
 
 def code_round_cap(loaded: config_mod.LoadedConfig, meta: Any) -> int:

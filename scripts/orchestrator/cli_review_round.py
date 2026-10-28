@@ -650,7 +650,17 @@ def _round_repeats(ctx: _RoundContext, data: Dict[str, Any], rerun: bool = False
     # signature is its first run's.
     if rerun:
         return ctx.book.repeats(ctx.kind.stage)
-    return ctx.book.register_signature(ctx.kind.stage, review_mod.findings_signature(data))
+    signature = review_mod.findings_signature(data)
+    # With review.whole_change_recheck on, a clean fix-only round is followed
+    # by a whole-change round that is expected to be clean too: finding
+    # nothing twice there is the loop closing, not a fix that changed nothing.
+    # Off, and for the design review, a repeat is counted as it always was.
+    closing = (
+        ctx.kind.stage == "review"
+        and ctx.loaded.whole_change_recheck()
+        and signature == review_mod.NO_FINDINGS_SIGNATURE
+    )
+    return ctx.book.register_signature(ctx.kind.stage, signature, repeatable=not closing)
 
 
 def _end_round(

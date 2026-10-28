@@ -1,4 +1,4 @@
-<!-- translated-from: references/reviews.md sha256:01957c462a1ef53920ac3827d330b8ea7b4749bda86f92788e6d72e183ecb486 -->
+<!-- translated-from: references/reviews.md sha256:2ab6dc45d8e86a9d92322901b1b7ff93fb3b039f4a33ad3466d30839cfff2249 -->
 
 > この文書は [references/reviews.md](../../../references/reviews.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -1159,15 +1159,17 @@ Low より上のものはありません。受け入れた指摘は、これま�
 ただの `review snapshot`（と、スナップショットが無いときに `review run` が取るもの）が
 自分で変更全体を取り、`recheck: true` を記録し、
 `scope: whole change (review.whole_change_recheck)` と表示します。オプションが on の
-とき、`review status` は次にすることを `next:` の行で示し、`wanted` にループを続けさせて
+とき、`review status` は次にすることを `next:` の行で示し（Low より上の指摘が仕分けを
+待っているときは、まず仕分けるよう示します。仕分けが次のラウンドの範囲を決めるからです）、
+`wanted` にループを続けさせて
 いる Low より上の指摘を挙げます（`blocking` は `re_review_severities` のままです）。
 これは、そうでなければ修正に絞り込めた同じレビューのスナップショットに限ります。
 `--full` で、`review.incremental_rounds` が off で、または別のコミットを指す base に
 対して取ったスナップショットは `recheck: false` を記録し、予備のラウンドはありません。
 base は絞り込みと同じくコミットで比べます。`--base main` の後の `--base <main の sha>` は
 同じ変更で、変更全体のラウンドはそのまま行われます。変更全体のラウンドもツリーを
-記録するので、その後のラウンドはまたそのラウンドの修正に絞り込みます。何も見つけなかった
-ラウンドは `identical_rounds` に数えません。何も見つけないことが 2 回続いても -- きれいに
+記録するので、その後のラウンドはまたそのラウンドの修正に絞り込みます。オプションが on の
+とき、何も見つけなかったラウンドは `identical_rounds` に数えません。何も見つけないことが 2 回続いても -- きれいに
 終わった修正だけのラウンドとその後のきれいな変更全体のラウンドでも、ほかのどんな 2 回の
 きれいなラウンドでも -- 修正が何も変えなかったことにはならないからです。
 

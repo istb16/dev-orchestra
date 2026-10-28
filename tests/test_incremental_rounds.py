@@ -947,6 +947,14 @@ class TestRecheckSnapshotTakesWhole(RoundCase):
         self.assertEqual((meta["scope"], meta["recheck"]), ("whole", True))
         self.assertIn("op59", ws.read_text(self.workspace.snapshot_path))
 
+    def test_a_retaken_snapshot_is_still_the_recheck(self):
+        """A whole-change snapshot retaken before review keeps its spare round."""
+        self.clean_fix_round(enabled=True)
+        run_cli("review", "snapshot")
+        run_cli("review", "snapshot")
+        meta = ws.read_json(self.workspace.snapshot_meta_path, {})
+        self.assertEqual((meta["scope"], meta["recheck"]), ("whole", True))
+
     def test_review_run_takes_it_the_same_way(self):
         self.clean_fix_round(enabled=True)
         os.remove(self.workspace.snapshot_path)

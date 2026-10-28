@@ -49,11 +49,12 @@ def cmd_review_status(args: argparse.Namespace) -> int:
     # Read only: stalls are `status`'s to clear.
     book = _ledger(args, base)
     events = [event for event in (base.read_state().get("events") or []) if isinstance(event, dict)]
-    budget = _status_budget(args, loaded, workspace, base, book, events, data, blocking, iteration, accepted)
+    # The code review's snapshot on disk, read once for the loop and the scope.
+    meta = {} if args.design else workspace.read_snapshot_meta()
+    meta = meta if isinstance(meta, dict) else {}
+    budget = _status_budget(args, loaded, meta, base, book, events, data, blocking, iteration, accepted)
     coverage = _status_coverage(data)
-    payload, decision = _status_payload(
-        args, loaded, workspace, base, data, budget, blocking, iteration, coverage
-    )
+    payload, decision = _status_payload(args, loaded, meta, base, data, budget, blocking, iteration, coverage)
     if args.json:
         _emit_json(payload)
     else:
@@ -79,7 +80,7 @@ class _StatusBudget(NamedTuple):
 def _status_budget(
     args: argparse.Namespace,
     loaded: config_mod.LoadedConfig,
-    workspace: ws.Workspace,
+    meta: Dict[str, Any],
     base: ws.Workspace,
     book: ledger_mod.Ledger,
     events: List[Dict[str, Any]],
@@ -123,7 +124,7 @@ def _status_budget(
             ),
         )
     max_iterations = loaded.max_review_iterations()
-    loop = code_loop_decision(loaded, workspace, data, iteration, max_iterations)
+    loop = code_loop_decision(loaded, meta, data, iteration, max_iterations)
     final = code_final_pass_from(
         events,
         loop.wanted,
@@ -166,7 +167,7 @@ def _status_coverage(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 def _status_payload(
     args: argparse.Namespace,
     loaded: config_mod.LoadedConfig,
-    workspace: ws.Workspace,
+    meta: Dict[str, Any],
     base: ws.Workspace,
     data: Dict[str, Any],
     budget: _StatusBudget,
@@ -222,12 +223,9 @@ def _status_payload(
     else:
         payload["final_fix"] = final["state"]
         payload["final_fix_pending"] = final["pending"]
-        meta = workspace.read_snapshot_meta()
         payload["whole_change_recheck"] = loaded.whole_change_recheck()
         # "fix" or "whole" for the reported round; None with no report.
-        payload["round_scope"] = (
-            review_loop.round_scope(data, meta if isinstance(meta, dict) else {}) if data else None
-        )
+        payload["round_scope"] = review_loop.round_scope(data, meta) if data else None
         payload["next_review"] = loop.next_review
     return payload, decision
 
@@ -288,6 +286,9 @@ def _next_step(loop: review_loop.LoopDecision, final: Dict[str, Any], accepted: 
     On a finish, ``final`` is where the fix and re-test of the accepted
     findings stand, as ``status`` reads it.
     """
+    if loop.next_review == "whole" and any(f.get("triage") != "accepted" for f in loop.wanted):
+        # Triage decides the scope: accepted findings narrow the next round to their fix.
+        return "triage the findings above Low (review triage), then run review status again"
     if loop.next_review == "whole":
         prefix = "fix the accepted findings and re-test, then " if accepted else ""
         return prefix + "re-review the whole change (review snapshot takes it)"

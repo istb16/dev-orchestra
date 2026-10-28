@@ -1,4 +1,4 @@
-<!-- translated-from: references/limits.md sha256:4405c9ffdc247ebef0290d3bd5d8bfc83d080af0fde489a589538859c96f50f5 -->
+<!-- translated-from: references/limits.md sha256:34d793efe83a035d41944ea1edcfbacae69f3706813706e1fc2dd6818c23be3f -->
 
 > この文書は [references/limits.md](../../../references/limits.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -655,9 +655,10 @@ dev-orchestra progress record test --signature "3 failed: test_a, test_b, test_c
 
 レビューは、未解決の指摘の集合から自動的に自分のシグネチャを登録します。同一の
 ラウンドは出力で指摘され、ここで数えられるので、修正者が何も達成しなくなると
-レビュー→修正→レビューは止まります。何も見つけなかったラウンド（シグネチャ
-`no-findings`）は繰り返しになりません。何も見つけないことが 2 回続いても、修正が何も
-変えなかった証拠にはならないからです。ラウンドの上限では、繰り返しは最後の
+レビュー→修正→レビューは止まります。`review.whole_change_recheck` が on のとき、
+何も見つけなかったコードレビューのラウンド（シグネチャ `no-findings`）は繰り返しに
+なりません。きれいに終わった修正だけのラウンドの後のきれいな変更全体のラウンドは、
+ループが閉じるところで、修正が何も変えなかったのではないからです。ラウンドの上限では、繰り返しは最後の
 ラウンドの改訂や修正と再テストを止めません -- 節約すべき再レビューは残って
 いないからです -- そのため、`status` はそれらが終わってから初めてこれを理由として
 示し、その間は `identical_rounds` を報告します。

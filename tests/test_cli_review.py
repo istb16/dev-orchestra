@@ -504,6 +504,11 @@ class TestReviewPipeline(IsolatedCase):
         status = self.review_status()
         self.assertEqual((status["round_scope"], status["next_review"]), ("fix", "whole"))
         self.assertEqual(self.status()["review"]["next_review"], "whole")
+        # Triage comes first: accepting the Medium would narrow the next round.
+        self.assertIn(
+            "next: triage the findings above Low (review triage), then run review status again",
+            run_cli("review", "status")[1],
+        )
         meta = json.loads(run_cli("review", "snapshot", "--json")[1])
         self.assertFalse(meta["incremental_from"])
         self.assertEqual(meta["scope"], "whole")
@@ -520,6 +525,16 @@ class TestReviewPipeline(IsolatedCase):
         payload = self.status()
         self.assertEqual(payload["review"]["identical_rounds"], 1)
         self.assertFalse(any("found exactly what" in r for r in payload["reasons"]), payload["reasons"])
+
+    def test_two_clean_rounds_are_a_repeat_with_the_option_off(self):
+        """Off, repeats are counted as they were before the option existed."""
+        run_cli("config", "set", "review.whole_change_recheck", "false")
+        self.write_review("NO_FINDINGS")
+        run_cli("review", "snapshot")
+        self.assertEqual(run_cli("review", "run")[0], 0)
+        run_cli("review", "snapshot", "--full")
+        self.assertEqual(run_cli("review", "run")[0], 0)
+        self.assertEqual(self.status()["review"]["identical_rounds"], 2)
 
     def test_a_round_after_the_recheck_narrows_to_its_fix(self):
         run_cli("config", "set", "review.max_review_iterations", "4")

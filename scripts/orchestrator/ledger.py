@@ -77,9 +77,6 @@ DEFAULT_BUDGETS: Dict[str, Any] = {
 
 EXIT_BUDGET_EXHAUSTED = 3
 
-#: ``review.findings_signature`` of a round that found nothing; never a repeat.
-_NO_FINDINGS = "no-findings"
-
 #: Countable fields on a usage report. Money is kept apart because it is a
 #: float, and because a CLI can price a run without breaking down its tokens.
 USAGE_COUNTS = (
@@ -501,20 +498,20 @@ class Ledger:
 
     # -- progress ----------------------------------------------------------
 
-    def register_signature(self, stage: str, signature: str) -> int:
+    def register_signature(self, stage: str, signature: str, repeatable: bool = True) -> int:
         """Record a stage outcome and return how many times it has repeated.
 
         A repeat count of 1 means "seen once"; the loop only stops when the
         same outcome comes back, because that is the evidence that the previous
-        attempt changed nothing. A round that found nothing
-        (``review.findings_signature``'s ``no-findings``) is never a repeat:
-        finding nothing twice is not evidence that a fix changed nothing.
+        attempt changed nothing. ``repeatable`` False records an outcome that
+        is no such evidence however often it comes back: it counts as seen
+        once.
         """
         with self._locked():
             ledger = self.load()
             signatures = ledger.setdefault("signatures", {})
             entry = signatures.get(stage) or {}
-            if entry.get("value") == signature and signature != _NO_FINDINGS:
+            if repeatable and entry.get("value") == signature:
                 entry["repeats"] = int(entry.get("repeats", 1)) + 1
             else:
                 entry = {"value": signature, "repeats": 1}

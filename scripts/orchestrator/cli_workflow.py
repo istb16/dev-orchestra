@@ -435,26 +435,27 @@ def _stop_reasons(
         reasons.append(_refusal_reason(refused_for_size))
     if design_refused_for_size:
         reasons.append(_refusal_reason(design_refused_for_size, design=True))
-    if review.finish and review.final_pass["state"] == "done":
-        reasons.append(
-            "review finished with nothing above Low (%d/%d rounds); its accepted findings were fixed "
-            "and re-tested, not re-reviewed -- report" % (review.iteration, review.max_iterations)
-        )
-    elif review.finish and review.final_pass["state"] == "blocked":
-        reasons.append(
-            "review finished with nothing above Low (%d/%d rounds); its accepted findings are not "
-            "fixed and no review_fixer attempt is left" % (review.iteration, review.max_iterations)
-        )
-    elif review.final_pass["state"] in ("done", "blocked", "unaccepted"):
-        suffix = ""
-        if review.final_pass["state"] == "blocked":
-            suffix = " and no review_fixer attempt left"
-        elif review.final_pass["state"] == "done":
-            suffix = "; fixed and re-tested after the last round, not re-reviewed -- report"
-        reasons.append(
-            "review budget spent (%d/%d rounds) with %d finding(s) still open%s"
-            % (review.iteration, review.max_iterations, len(review.wanted), suffix)
-        )
+    review_state = review.final_pass["state"]
+    if review_state in ("done", "blocked", "unaccepted"):
+        rounds = (review.iteration, review.max_iterations)
+        if review.finish:
+            # A finish owes only its accepted findings, so it is never `unaccepted`.
+            opening = "review finished with nothing above Low (%d/%d rounds); its accepted findings" % rounds
+            suffix = (
+                " were fixed and re-tested, not re-reviewed -- report"
+                if review_state == "done"
+                else " are not fixed and no review_fixer attempt is left"
+            )
+        else:
+            opening = "review budget spent (%d/%d rounds) with %d finding(s) still open" % (
+                *rounds,
+                len(review.wanted),
+            )
+            suffix = {
+                "blocked": " and no review_fixer attempt left",
+                "done": "; fixed and re-tested after the last round, not re-reviewed -- report",
+            }.get(review_state, "")
+        reasons.append(opening + suffix)
     # A repeat does not stop the fix still owed to the last round.
     if review.repeats > 1 and review.final_pass["state"] not in ("pending", "retest"):
         reasons.append("the last review round found exactly what the previous one found")
@@ -557,7 +558,9 @@ def _status_payload(
         wrote_plan=_wrote_plan(workspace),
     )
     review_accepted = review_mod.accepted_findings(review_data)
-    review_next = code_loop_decision(loaded, workspace, review_data, iteration, max_iterations)
+    review_next = code_loop_decision(
+        loaded, workspace.read_snapshot_meta(), review_data, iteration, max_iterations
+    )
     review_pass = code_final_pass_from(
         events,
         review_next.wanted,

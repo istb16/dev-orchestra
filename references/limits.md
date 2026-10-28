@@ -632,9 +632,11 @@ the count, because something moved.
 
 Reviews register their own signature automatically, from the set of open
 findings: an identical round is called out in the output and counted here, so
-review→fix→review stops when the fixer stops achieving anything. A round that
-found nothing (signature `no-findings`) is never a repeat: finding nothing
-twice is not evidence that a fix changed nothing. At the round
+review→fix→review stops when the fixer stops achieving anything. With
+`review.whole_change_recheck` on, a code review round that found nothing
+(signature `no-findings`) is never a repeat: the clean whole-change round
+after a clean fix-only round is the loop closing, not a fix that changed
+nothing. At the round
 limit the repeat does not stop the last round's revision or fix and re-test --
 there is no re-review left to save -- so `status` gives it as a reason only
 once those are done, and reports `identical_rounds` meanwhile.

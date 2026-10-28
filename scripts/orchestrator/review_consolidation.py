@@ -994,6 +994,10 @@ def _note_suffix(note: str) -> str:
     return " (%s)" % note if note else ""
 
 
+#: ``findings_signature`` of a round that found nothing.
+NO_FINDINGS_SIGNATURE = "no-findings"
+
+
 def findings_signature(data: Dict[str, Any]) -> str:
     """A stable fingerprint of a round's outcome.
 
@@ -1007,7 +1011,7 @@ def findings_signature(data: Dict[str, Any]) -> str:
         if finding.get("triage") not in ("rejected", "duplicate")
     )
     if not keys:
-        return "no-findings"
+        return NO_FINDINGS_SIGNATURE
     return hashlib.sha256("\n".join(keys).encode("utf-8")).hexdigest()[:16]
 
 

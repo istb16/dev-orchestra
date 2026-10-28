@@ -1131,7 +1131,9 @@ Nothing has to remember the scope. After a clean fix-only round, a plain
 `review snapshot` (and the one `review run` takes when there is none) takes
 the whole change by itself, records `recheck: true`, and says
 `scope: whole change (review.whole_change_recheck)`. With the option on,
-`review status` adds a `next:` line saying what to do, and `wanted` lists the
+`review status` adds a `next:` line saying what to do -- while findings above
+Low wait for triage, triage them first, since that decides the next round's
+scope -- and `wanted` lists the
 findings above Low that keep the loop open (`blocking` stays at
 `re_review_severities`). It is the snapshot of the same review that could
 otherwise narrow to the fix: one taken with `--full`, with
@@ -1140,10 +1142,10 @@ records `recheck: false` and gets no spare round. The base is compared by
 commit, as the narrowing compares it: `--base <sha of main>` after
 `--base main` is the same change and still gets its whole-change round. The
 whole-change round still records its tree, so a round after it narrows to
-that round's fix again. A round that finds nothing never counts towards
-`identical_rounds`: finding nothing twice -- a clean fix-only round and the
-clean whole-change round after it, or any two clean rounds -- is not a fix
-that changed nothing.
+that round's fix again. With the option on, a round that finds nothing never
+counts towards `identical_rounds`: finding nothing twice -- a clean fix-only
+round and the clean whole-change round after it, or any two clean rounds --
+is not a fix that changed nothing.
 
 When a clean whole-change round leaves accepted findings (Lows), their fix
 and re-test are tracked as the spent budget's are: `final_fix` goes `pending`
