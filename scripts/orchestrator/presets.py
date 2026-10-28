@@ -2,9 +2,10 @@
 
 A preset is one choice on the spend axis -- ``quality``, ``standard``,
 ``fast`` -- expressed as values of keys that already exist: the four roles,
-the code and design reviewer panels, ``review.design.enabled`` and
-``optimization.level`` (``GOVERNED``). The global file stores only ``preset: <name>``; the values are
-worked out at load time against what is on PATH, so a machine without Codex
+the code and design reviewer panels, ``review.design.enabled``,
+``review.whole_change_recheck`` and ``optimization.level`` (``GOVERNED``).
+The global file stores only ``preset: <name>``; the values are worked out at
+load time against what is on PATH, so a machine without Codex
 never carries a Codex reviewer that fails every round.
 
 The built-in adapters take part, and a user adapter only when it declares
@@ -96,6 +97,7 @@ GOVERNED = (
     "reviewers",
     "review.design.enabled",
     "review.design.reviewers",
+    "review.whole_change_recheck",
     "optimization.level",
 )
 
@@ -135,6 +137,8 @@ class Preset(NamedTuple):
     level: Optional[str]
     #: The design reviewer seats, fitted as the code seats are.
     design_seats: Tuple[Seat, ...] = ()
+    #: ``review.whole_change_recheck``, or None to leave it unset.
+    whole_change_recheck: Optional[bool] = None
 
 
 class Fit(NamedTuple):
@@ -221,6 +225,7 @@ PRESETS: Dict[str, Preset] = {
             Seat("test", "sonnet", _ALWAYS, cheap=True, held=True),
             Seat("architecture", "opus", _ALWAYS, held=True, vendor=CLAUDE),
         ),
+        whole_change_recheck=True,
     ),
     "standard": _standard(),
     "fast": Preset(
@@ -229,6 +234,7 @@ PRESETS: Dict[str, Preset] = {
         False,
         "aggressive",
         (Seat("general", "sonnet", _ALWAYS, vendor=CLAUDE),),
+        whole_change_recheck=False,
     ),
 }
 
@@ -529,6 +535,8 @@ def expand(name: str, installed: Sequence[str], implementer: Optional[str] = Non
         design["reviewers"] = design_panel
     if design:
         values["review"] = {"design": design}
+    if preset.whole_change_recheck is not None:
+        values.setdefault("review", {})["whole_change_recheck"] = preset.whole_change_recheck
     if preset.level is not None:
         values["optimization"] = {"level": preset.level}
     return Fit(values, notes, subjects)

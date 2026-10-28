@@ -384,6 +384,21 @@ class TestNoProgress(LedgerCase):
         book.register_signature("test", "1 failed")
         book.consume("test")  # must not raise: something changed
 
+    def test_an_outcome_that_is_not_repeatable_counts_as_seen_once(self):
+        """The caller says which outcomes are no evidence that an attempt changed nothing."""
+        book = self.book()
+        book.register_signature("review", "abc")
+        book.register_signature("review", "abc")
+        self.assertEqual(book.register_signature("review", "no-findings", repeatable=False), 1)
+        self.assertEqual(book.register_signature("review", "no-findings", repeatable=False), 1)
+        self.assertEqual(book.repeats("review"), 1)
+
+    def test_any_signature_repeats_by_default(self):
+        """The ledger has no review rule of its own: `progress record` repeats any signature."""
+        book = self.book()
+        book.register_signature("test", "no-findings")
+        self.assertEqual(book.register_signature("test", "no-findings"), 2)
+
     def test_stages_are_tracked_separately(self):
         book = self.book()
         book.register_signature("test", "x")

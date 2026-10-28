@@ -1354,6 +1354,8 @@ class TestOnePairOnOneSnapshot(MeasuringCase):
         self.assertEqual(self.ledger()["signatures"]["review"]["repeats"], 1)
 
     def test_the_next_round_registers_its_signature_as_usual(self):
+        # A finding, because a round that found nothing is never a repeat.
+        self.use_finding()
         self.edit_add()
         run_cli("review", "snapshot", "--surrounding", "enclosing")
         run_cli("review", "run", "--surrounding", "none")
@@ -1367,7 +1369,7 @@ class TestOnePairOnOneSnapshot(MeasuringCase):
         self.assertEqual(data["iteration"], 2)
         self.assertNotIn("measurement", data)
         self.assertNotIn("measurement", self.last_review_event())
-        # The same (empty) findings as the pair's first run: counted once more,
+        # The same findings as the pair's first run: counted once more,
         # and only once -- the pair's second run registered nothing.
         self.assertEqual(self.ledger()["signatures"]["review"]["repeats"], 2)
 

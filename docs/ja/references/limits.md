@@ -1,4 +1,4 @@
-<!-- translated-from: references/limits.md sha256:16290abf5ac0b0823750bbcb7a36ccf8b2d7c4b982a57c8562cca6882ba2c973 -->
+<!-- translated-from: references/limits.md sha256:34d793efe83a035d41944ea1edcfbacae69f3706813706e1fc2dd6818c23be3f -->
 
 > この文書は [references/limits.md](../../../references/limits.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -187,7 +187,7 @@ dev-orchestra status          # in another terminal, or after a crash
 
 | 制限 | 設定 | 強制するもの |
 | --- | --- | --- |
-| レビューラウンド数 | `review.max_review_iterations` (2) | `review run` |
+| レビューラウンド数 | `review.max_review_iterations` (2)。`review.whole_change_recheck` が取ったスナップショット（`recheck: true`）ではもう 1 つ | `review run` |
 | 設計レビューラウンド数 | `review.design.max_iterations` (2) | `review run --design` |
 | 変更サイズ | `review.context.max_chars` (400,000 chars) | `review run`、`review run --design` |
 | ステージごとの試行回数 | `budgets.architect` (3)、`.architect_questions` (3)、`.implementer` (5)、`.review_fixer` (4)、`.test` (8) | `run <role>`（`architect_questions` は `run architect --questions`）、`budget consume <stage>` |
@@ -206,6 +206,13 @@ dev-orchestra status          # in another terminal, or after a crash
 使い切った試行予算が `status` の理由になるのは、そのステージがまだ必要な間だけ
 です。`architect` は plan がない間だけ、`review_fixer` は最後のラウンドの修正が
 まだ行われていない間だけです。
+
+予備のレビューラウンドとは、修正だけのラウンドで Low より上のものが無かったときに
+`review.whole_change_recheck` が求める変更全体のラウンドのうち、その修正だけのラウンドが
+すでに予算の許す最後のラウンドだったものです。`review run` は `recheck: true` と記録された
+スナップショットに限りこれを受け付けるので、`max_review_iterations + 1` が上限で、ループは
+必ず終わります。設定が off なら上限は `max_review_iterations` です。
+`references/reviews.md`（「変更全体で締めくくる」）を参照。
 
 最後の 2 つは、委譲を行うサイクルのための安全網です。試行を消費するすべての
 実行 — `run <role>` と `budget consume <stage>` — は前者に、計測値を持って
@@ -648,7 +655,10 @@ dev-orchestra progress record test --signature "3 failed: test_a, test_b, test_c
 
 レビューは、未解決の指摘の集合から自動的に自分のシグネチャを登録します。同一の
 ラウンドは出力で指摘され、ここで数えられるので、修正者が何も達成しなくなると
-レビュー→修正→レビューは止まります。ラウンドの上限では、繰り返しは最後の
+レビュー→修正→レビューは止まります。`review.whole_change_recheck` が on のとき、
+何も見つけなかったコードレビューのラウンド（シグネチャ `no-findings`）は繰り返しに
+なりません。きれいに終わった修正だけのラウンドの後のきれいな変更全体のラウンドは、
+ループが閉じるところで、修正が何も変えなかったのではないからです。ラウンドの上限では、繰り返しは最後の
 ラウンドの改訂や修正と再テストを止めません -- 節約すべき再レビューは残って
 いないからです -- そのため、`status` はそれらが終わってから初めてこれを理由として
 示し、その間は `identical_rounds` を報告します。

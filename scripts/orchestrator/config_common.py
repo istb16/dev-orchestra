@@ -329,6 +329,9 @@ def default_config() -> Dict[str, Any]:
             # re-review sees the fix instead of the whole change again. The
             # findings the fix was meant to address ride along with it.
             "incremental_rounds": True,
+            # After a fix-only round leaves nothing above Low, one more round
+            # reviews the whole change before the loop finishes.
+            "whole_change_recheck": True,
             # How many findings each reviewer is asked for. Output costs several
             # times what input does, and a reviewer's output is billed again as
             # the fixer's brief, so an uncapped reviewer costs twice over. 0

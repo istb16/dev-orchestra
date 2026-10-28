@@ -114,6 +114,11 @@ review:
   # meant to address travel with it, and the whole change stays on disk for a
   # reviewer that wants the context. false re-diffs everything every round.
   incremental_rounds: true
+  # Re-review on anything above Low, and finish only on a round that reviewed
+  # the whole change: a fix-only round that finds nothing above Low is followed
+  # by one whole-change round, even past max_review_iterations by one. false
+  # (the fast preset) re-reviews on re_review_severities only, as before.
+  whole_change_recheck: true
   # How many findings each reviewer is asked for. Leave unset (null) to let
   # optimization.level decide: 4 aggressive, 6 balanced, 10 quality. A number
   # here overrides the level; 0 lifts the cap. Nothing over the cap is dropped.

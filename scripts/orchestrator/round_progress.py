@@ -14,7 +14,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from . import approval as approval_mod
 from . import config as config_mod
-from . import instructions
+from . import instructions, review_loop
 from . import ledger as ledger_mod
 from . import optimization as opt_mod
 from . import optimization_design as opt_design
@@ -334,11 +334,73 @@ def design_final_pass_from(
     )
 
 
-def _code_final_pass(
-    blocking: List[Dict[str, Any]],
-    *,
+def code_loop_decision(
+    loaded: config_mod.LoadedConfig,
+    meta: Any,
+    data: Dict[str, Any],
     iteration: int,
     max_iterations: int,
+) -> review_loop.LoopDecision:
+    """``review_loop.decide`` on the code review's report ``data`` and the snapshot ``meta`` on disk."""
+    return review_loop.decide(
+        loaded.whole_change_recheck(),
+        data,
+        meta if isinstance(meta, dict) else {},
+        loaded.blocking_severities(),
+        iteration,
+        max_iterations,
+    )
+
+
+def recheck_next(
+    loaded: config_mod.LoadedConfig, workspace: ws.Workspace, base: Optional[str], lineage: str
+) -> bool:
+    """Whether the next snapshot takes the whole change because the review loop asks for it.
+
+    Asked of the report and the snapshot still on disk, before a new one
+    replaces them, and only of a report from the same review: ``lineage`` is
+    ``review_mod.review_lineage`` now, and ``base`` the one the next snapshot
+    asks for. The base is compared by commit (``review_mod.same_base``), as
+    the snapshot's own narrowing is: another name for the same commit is the
+    same change, and still owes its whole-change round. A report of another
+    branch or workflow, or a base naming another commit, starts or redefines
+    the review, and gets no spare round.
+
+    Unlike the narrowing (``review_snapshot._reviewed_tree``), this does not
+    ask that the report reviewed the snapshot on disk: a whole-change snapshot
+    retaken before it was reviewed -- a reviewer failed, say -- is still the
+    round the clean fix-only report asked for. The report's own
+    ``snapshot.scope`` says what it reviewed.
+    """
+    data = ws.read_json(workspace.consolidated_json_path, {}) or {}
+    if not isinstance(data, dict) or str(data.get("lineage") or "") != lineage:
+        return False
+    meta = workspace.read_snapshot_meta()
+    if not isinstance(meta, dict):
+        return False
+    if not review_mod.same_base(workspace.root, meta, base):
+        return False
+    iteration = int(data.get("iteration", 0) or 0)
+    return code_loop_decision(loaded, meta, data, iteration, loaded.max_review_iterations()).recheck_next
+
+
+def code_round_cap(loaded: config_mod.LoadedConfig, meta: Any) -> int:
+    """``review_loop.round_cap`` for the snapshot ``meta``: the highest round it may run.
+
+    ``review run`` passes the snapshot on disk, the round about to run;
+    ``status`` passes the report's ``snapshot``, the round it reports, so
+    retaking a snapshot does not change the cap of a round already reviewed.
+    """
+    return review_loop.round_cap(
+        loaded.whole_change_recheck(), meta if isinstance(meta, dict) else {}, loaded.max_review_iterations()
+    )
+
+
+def _code_final_pass(
+    wanted: List[Dict[str, Any]],
+    *,
+    budget_left: bool,
+    finish: bool,
     fixed_since: bool,
     retested_since: bool,
     fixer_left: Optional[int],
@@ -346,10 +408,14 @@ def _code_final_pass(
 ) -> Dict[str, Any]:
     """The code review's counterpart: the last round gets its fix and re-test.
 
+    ``wanted``, ``budget_left`` and ``finish`` are ``review_loop.decide``'s.
     Only accepted findings are fixed, so with none accepted the spent budget
-    stops as it always did (``unaccepted``).
+    stops as it always did (``unaccepted``). A review that finished on a
+    clean whole-change round owes the same fix and re-test to the accepted
+    findings it left -- Lows -- and nothing when it left none.
     """
-    if not blocking or iteration < max_iterations:
+    owed = accepted if finish else bool(wanted) and not budget_left
+    if not owed:
         state = None
     elif fixed_since:
         state = "done" if retested_since else "retest"
@@ -364,19 +430,19 @@ def _code_final_pass(
 
 def code_final_pass_from(
     events: List[Dict[str, Any]],
-    blocking: List[Dict[str, Any]],
+    wanted: List[Dict[str, Any]],
     *,
-    iteration: int,
-    max_iterations: int,
+    budget_left: bool,
     fixer_left: Optional[int],
     accepted: bool,
+    finish: bool = False,
 ) -> Dict[str, Any]:
     """``_code_final_pass`` from the run log; ``events`` and ``fixer_left`` are the caller's."""
     fixed, retested = _ran_since_last_round(events, "review", "review_fixer", ("test", "re-test"))
     return _code_final_pass(
-        blocking,
-        iteration=iteration,
-        max_iterations=max_iterations,
+        wanted,
+        budget_left=budget_left,
+        finish=finish,
         fixed_since=fixed,
         retested_since=retested,
         fixer_left=fixer_left,

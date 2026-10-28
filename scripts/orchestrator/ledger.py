@@ -498,18 +498,20 @@ class Ledger:
 
     # -- progress ----------------------------------------------------------
 
-    def register_signature(self, stage: str, signature: str) -> int:
+    def register_signature(self, stage: str, signature: str, repeatable: bool = True) -> int:
         """Record a stage outcome and return how many times it has repeated.
 
         A repeat count of 1 means "seen once"; the loop only stops when the
         same outcome comes back, because that is the evidence that the previous
-        attempt changed nothing.
+        attempt changed nothing. ``repeatable`` False records an outcome that
+        is no such evidence however often it comes back: it counts as seen
+        once.
         """
         with self._locked():
             ledger = self.load()
             signatures = ledger.setdefault("signatures", {})
             entry = signatures.get(stage) or {}
-            if entry.get("value") == signature:
+            if repeatable and entry.get("value") == signature:
                 entry["repeats"] = int(entry.get("repeats", 1)) + 1
             else:
                 entry = {"value": signature, "repeats": 1}

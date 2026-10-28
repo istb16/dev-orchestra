@@ -987,10 +987,14 @@ dev-orchestra review status
   "iteration": 1,
   "max_review_iterations": 2,
   "blocking": ["F1"],
+  "wanted": ["F1"],
   "re_review_recommended": true,
   "iteration_budget_exhausted": false,
   "final_fix": null,
-  "final_fix_pending": false
+  "final_fix_pending": false,
+  "whole_change_recheck": true,
+  "round_scope": "whole",
+  "next_review": "fix"
 }
 ```
 
@@ -1011,6 +1015,19 @@ one's findings still gets its fix; the repeat becomes a reason after it. With
 no `review_fixer` attempt left for the fix, the stop comes at once (`blocked`),
 and so it does with no finding `accepted` to fix (`unaccepted`).
 Looping past the budget is how a run turns into an expensive no-op.
+
+With `review.whole_change_recheck` on (the `standard` and `quality` presets),
+follow `next_review` and the `next:` line of `review status`. Anything above
+Low keeps the loop open (`wanted`, which can list a Medium that `blocking`
+does not). A fix-only round that finds nothing above Low is not the end: fix
+and re-test its accepted Lows, then take a plain `review snapshot`, which
+takes the whole change by itself, and review that. That round may be one past
+`max_review_iterations` -- the one spare round -- so a round 3 with a budget
+of 2 is expected there. A whole-change round that finds nothing above Low
+finishes the review once its accepted Lows are fixed and re-tested
+(`final_fix` goes `pending` → `retest` → `done`, and `status` then says
+`stop-and-report` with `review finished with nothing above Low`). See
+[Closing on the whole change](reviews.md#closing-on-the-whole-change).
 
 ## Recording and reporting
 

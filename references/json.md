@@ -320,6 +320,8 @@ three keys about the size limit.
 | `tree` | string | The working tree, as a git tree object. |
 | `incremental_from` | string | The tree of the round this one narrows to the fix from; `""` for a full snapshot. |
 | `full_diff` | string | The whole change's diff on an incremental round; `""` otherwise. |
+| `scope` | string | `fix` when the round narrows to the fix, `whole` otherwise. |
+| `recheck` | boolean | Whether `review.whole_change_recheck` made this snapshot take the whole change. |
 | `files` | list of strings | The files a reviewer is shown. |
 | `changed_paths` | list of strings | Every path the change touches, withheld files and rename sources included. |
 | `condition_paths` | list of strings | The paths a path-scoped reviewer is matched against. |
@@ -364,7 +366,7 @@ Object: the consolidated report, as `consolidated.json` holds it.
 | `generated_at` | string | When it was built. |
 | `iteration` | integer | The round. |
 | `lineage` | string | The workflow, branch and base the round count is kept for. |
-| `snapshot` | object | What was reviewed: `sha256`, `files`, `round_id`, `over_budget`, `budget_chars`. |
+| `snapshot` | object | What was reviewed: `sha256`, `files`, `round_id`, `over_budget`, `budget_chars`, and `scope` and `recheck` when the snapshot recorded them. |
 | `coverage` | object | `round` and `change`, each `complete`, `unverified` or `none`; `unverified_since`, `change_chars`, `inline_chars` -- see [Coverage](reviews.md#coverage). |
 | `reviewers` | list | Every reviewer's entry, as in `review run`. |
 | `counts` | object | `findings_total`, `by_severity`, `duplicates_merged`, `duplicate_candidates`, `reviewers_total`, `reviewers_ok`, `reviewers_partial`, `reviewers_failed`, and the same four with a `snapshot_` prefix. |
@@ -403,15 +405,19 @@ pass `final_revision`, in place of the two code keys named below.
 | `max_review_iterations` | integer | The round budget. With `--design`: `max_iterations`. |
 | `blocking` | list of strings | The ids of the unresolved blocking findings. |
 | `blocking_count` | integer | How many. |
+| `wanted` | list of strings | The ids of the unresolved findings that keep the loop open, which `re_review_recommended`, `iteration_budget_exhausted` and the final pass are about: `blocking`, or with `review.whole_change_recheck` on, everything above Low. |
 | `accepted_count` | integer | How many findings are accepted. |
-| `re_review_recommended` | boolean | Whether another round is warranted and within budget. |
-| `iteration_budget_exhausted` | boolean | Whether the round budget is spent. |
+| `re_review_recommended` | boolean | Whether another round is warranted and within budget; with `review.whole_change_recheck` on, by its loop. |
+| `iteration_budget_exhausted` | boolean | Whether the round budget is spent; false for a review that finished on a clean whole-change round (`review.whole_change_recheck`). |
 | `coverage` | object or null | As in `review consolidate`; `null` for a report without one. |
 | `reviewers_partial` | integer | Reviewers of this snapshot handed the change as a file. |
 | `over_budget` | boolean | Whether the round ran only because `--force` sent it past `review.context.max_chars`. |
 | `counts` | object | As in `review consolidate`. |
-| `final_fix` | string or null | Where the last round's fix stands once the budget is spent: `pending`, `retest`, `done`, `blocked` or `unaccepted`; `null` before. With `--design`: `final_revision` -- `pending`, `done`, `blocked`, `approved`, `implemented` or `unaccepted`. |
+| `final_fix` | string or null | Where the last round's fix stands once the budget is spent, or once a review with `review.whole_change_recheck` finished with accepted findings left: `pending`, `retest`, `done`, `blocked` or `unaccepted`; `null` before. With `--design`: `final_revision` -- `pending`, `done`, `blocked`, `approved`, `implemented` or `unaccepted`. |
 | `final_fix_pending` | boolean | Whether that pass is still owed. With `--design`: `final_revision_pending`. |
+| `whole_change_recheck` | boolean | Only without `--design`: `review.whole_change_recheck`. |
+| `round_scope` | string or null | Only without `--design`: `fix` or `whole`, what the reported round reviewed; `null` with no report. |
+| `next_review` | string or null | Only without `--design`: the round to run next, `fix` or `whole`, as `review snapshot` will take it (`fix` only when findings are accepted); `null` when none is, and always with `review.whole_change_recheck` off. |
 | `surrounding` | object | Only when the round carried surrounding context. |
 | `enabled` | boolean | Only with `--design`: whether the stage runs. |
 | `mode` | string | Only with `--design`: `on`, `off` or `auto`. |
@@ -464,8 +470,8 @@ Object.
 | `stalls` | list | In-flight stages that look stuck or dead: `token`, `stage`, `started_at`, `elapsed_seconds`, `deadline_seconds`, `pid`, `process_alive`, `reason`. |
 | `abandoned_stages` | list of strings | The stages this call found dead and marked `abandoned`. |
 | `in_flight` | object | What is running now, keyed by token. |
-| `review` | object | `iteration`, `max_review_iterations`, `blocking`, `accepted`, `refused_for_size`, `identical_rounds`, `final_fix`, `final_fix_pending` (values as in `review status`). |
-| `design_review` | object | `enabled`, `mode`, `reason`, `iteration`, `max_iterations`, `blocking`, `accepted`, `refused_for_size`, `identical_rounds`, `final_revision`, `final_revision_pending`, `optimization` (values as in `review status --design`). |
+| `review` | object | `iteration`, `max_review_iterations`, `blocking`, `wanted`, `accepted`, `refused_for_size`, `identical_rounds`, `final_fix`, `final_fix_pending`, `next_review` (values as in `review status`). |
+| `design_review` | object | `enabled`, `mode`, `reason`, `iteration`, `max_iterations`, `blocking`, `wanted`, `accepted`, `refused_for_size`, `identical_rounds`, `final_revision`, `final_revision_pending`, `optimization` (values as in `review status --design`). |
 | `design_approval` | object | `required`, `state` (`pending`, `stale`, `approved`, `no-plan`, `not-required` or `implemented-unapproved`), `pending`, `stale_reason` (`plan-changed`, `reviewed-since`, `decisions-changed` or `null`) and the rest -- see [Approval](workflow.md#approval). |
 | `design_questions` | object | `mode`, `state` (`off`, `none`, `open`, `round-required` or `answered`), `pending`, `open`, `answered`, `total`, `architect_rounds`, `max_rounds`, `decisions_file` -- see [Design questions](workflow.md#design-questions). |
 | `progress` | object | `updates` (`on`, `off` or `auto`), `interval_seconds`, `quiet_notice_seconds` -- see [Progress reports](workflow.md#progress-reports). |

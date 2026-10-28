@@ -153,13 +153,14 @@ without running the CLI):
 | reviewer seats (role / Claude family) | general / fable [Claude], general [Codex], security / opus [Claude], security [Codex], architecture / opus [Claude], test / opus [Claude] | general / opus, general / sonnet, security / sonnet→opus [Claude], test / sonnet | general / opus; security / sonnet, `when: high-risk` |
 | design reviewer seats (`review.design.reviewers`) | general / sonnet→opus [Claude], general [Codex], security / opus [Claude], test / sonnet [Claude], architecture / opus [Claude] | general / sonnet→opus [Claude], security / sonnet [Claude], test / sonnet [Claude] | general / sonnet [Claude] |
 | `review.design.enabled` | `auto` | not set (`auto`) | `false` |
+| `review.whole_change_recheck` | `true` | not set (`true`) | `false` |
 | `optimization.level` | `quality` | not set (`balanced`) | `aggressive` |
 
 `→opus` is `high_risk_model: {family: opus}`: the seat runs opus on a
 high-risk round and its own family on the rest. `[Claude]` and `[Codex]` mark
 a seat placed on that vendor rather than dealt (step 2 below).
 
-Those eight keys are the ones a preset governs. Everything else — budgets,
+Those nine keys are the ones a preset governs. Everything else — budgets,
 timeouts, `review.max_review_iterations`, `design.require_approval` — is the
 built-in default unless a file sets it (`design.require_approval` only the global
 file: [below](#what-the-project-file-may-not-loosen)). `standard`'s code panel is read from
@@ -613,6 +614,7 @@ review:
   max_review_iterations: 2            # hard stop on review→fix→re-review loops
   parallel: true                      # run reviewers concurrently
   re_review_severities: [critical, high]
+  whole_change_recheck: true          # end on a whole-change round with nothing above Low
   timeout_seconds: 1800               # reviewers only: `review run` and `run <reviewer-id>`
   idle_timeout_seconds: 300           # no output for this long: wedged; read-only `run` too
   design:
@@ -680,6 +682,7 @@ implementation:
 | `review.idle_timeout_seconds` | int, 1 to 1,000,000,000 \| null | No output for this long, and the run is treated as wedged (default 300; streaming providers only). Shared by reviewers and every `run` that cannot change files: silence does not grow with the task. A run that may change files (implementer, review fixer, `--mode implement`) gets 1200s instead, or this value if larger, since the tests or a build it runs can be silent for longer, while no deadline at all would leave a wedged run going until its total deadline. A role can set or override it with `options.idle_timeout`. |
 | `review.exclude` | list | Glob patterns whose diff body is withheld from reviewers. Replaces the default list wholesale; `[]` reviews everything. |
 | `review.incremental_rounds` | bool | `true` (default) makes a second round diff against what the first round reviewed, carrying the findings the fix was meant to address. `false` re-diffs the whole change every round. |
+| `review.whole_change_recheck` | bool | `true` (default; `standard` and `quality`) re-reviews on anything above Low (medium and up, plus `re_review_severities`), follows a fix-only round that found nothing above Low with one whole-change round -- which may be the spare round `max_review_iterations + 1` -- and finishes once a whole-change round finds nothing above Low. `false` (`fast`) is the rule from before: re-review on `re_review_severities` only. A preset governs it. See `references/reviews.md` ("Closing on the whole change"). |
 | `review.max_findings` | int \| null | How many findings each reviewer is asked for. `null` (default) lets `optimization.level` decide, `0` lifts the cap. Findings that come back over the cap are kept, never trimmed. |
 | `review.context.max_chars` | int ≥ 1 \| null | The largest change body a review round will send at all: the diff, or the plan plus the request it answers (default 400,000 ≈ 100k tokens, four times the largest prompt recorded here — it refuses nothing anyone has run). Over it, `review run` exits 3 without reviewing anything; the ways under it are `--base`, `review.exclude`, splitting the change, or a shorter plan. `--force` is a human's override, and records the round as over budget. `null` means the default, as it does on `review.max_findings`; there is no value that switches the limit off. See `references/limits.md`. |
 | `review.context.inline_chars` | int ≥ 1 \| null | How much of the change body goes into the reviewer's prompt (default 400,000, the same number as `max_chars`). At or under it the body is inlined and the round can be clean; over it the reviewer is handed the path of the frozen snapshot and the round is recorded `partial` — coverage unverified — whatever comes back. **Setting it below `max_chars` opens a band between the two where rounds run and are recorded `partial`**: that is the explicit choice of somebody who will not pay for very large prompts, and `partial` is what it costs. Setting it *above* `max_chars` is also allowed and is not a mistake — it means the body is only ever handed over as a file on a round a human forced. `null` means the default. Every round records the number it was measured against, so a `partial` round says which limit made it one. See `references/limits.md`. |
@@ -883,6 +886,7 @@ read as a run reads it. Looser means:
 | `review.re_review_severities` | leaves out a severity, read as `review status` reads it: in any case, and a value `config validate` refuses (`[]`, a single name not in a list, an unknown name) as the default, `critical` and `high` |
 | `review.exclude` | adds a pattern, withholding more of the diff |
 | `review.max_findings` | asks each reviewer for fewer findings, counting `null` as the level's cap and `0` as none |
+| `review.whole_change_recheck` | turns it off |
 | `review.design.enabled` | moves it down `true` → `auto` → `false` |
 | `review.design.max_iterations` | lowers it |
 | `design.ask_questions` | moves it down `true` → `auto` → `false` |

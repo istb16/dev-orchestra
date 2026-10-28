@@ -64,7 +64,9 @@ from .cli_review_round import (
 )
 from .cli_review_status import cmd_review_status
 from .round_progress import (
+    code_round_cap,
     missing_path_lists,
+    recheck_next,
     round_plan,
 )
 
@@ -279,12 +281,29 @@ def _refuse_snapshot_without_paths(workspace: ws.Workspace, meta: Any) -> Option
     return 2
 
 
+_RECHECK_SCOPE = "whole change (review.whole_change_recheck)"
+
+
+def _recheck(
+    args: argparse.Namespace, loaded: config_mod.LoadedConfig, workspace: ws.Workspace, incremental: bool
+) -> bool:
+    """``recheck_next``, asked only of a snapshot that could otherwise narrow to the fix.
+
+    One that takes the whole change anyway -- ``--full``, or
+    ``review.incremental_rounds`` off -- is not the loop's whole-change round
+    and gets no spare round. Asked before the snapshot replaces the one on
+    disk: the orchestrator need not remember ``--full``.
+    """
+    return incremental and recheck_next(loaded, workspace, args.base, _lineage(args, workspace))
+
+
 def cmd_review_snapshot(args: argparse.Namespace) -> int:
     loaded = _load_lenient(args.cwd)
     workspace = _workspace(args)
     settings = loaded.review_settings()
     exclude = () if args.no_exclude else settings.get("exclude")
     incremental = bool(settings.get("incremental_rounds", True)) and not args.full
+    recheck = _recheck(args, loaded, workspace, incremental)
     # Read before the snapshot, because the surrounding context is frozen with
     # it: what a reviewer is shown has to come from the tree the diff did.
     context_settings = loaded.context_settings()
@@ -298,6 +317,7 @@ def cmd_review_snapshot(args: argparse.Namespace) -> int:
             incremental=incremental,
             surrounding=surrounding,
             watched=instructions.watched_paths(loaded),
+            recheck=recheck,
         )
     except review_mod.ReviewError as exc:
         _err(str(exc))
@@ -328,6 +348,8 @@ def cmd_review_snapshot(args: argparse.Namespace) -> int:
         if meta.get("full_diff"):
             _out("            whole change kept at %s" % meta["full_diff"])
         _out("            reviewers also get the findings the fix was meant to address")
+    if meta.get("recheck"):
+        _out("  scope:    %s" % _RECHECK_SCOPE)
     _out("  files:    %d" % len(meta["files"]))
     _out("  size:     %d bytes (sha256 %s)" % (meta["bytes"], meta["sha256"][:12]))
     for line in _surrounding_snapshot_lines(workspace, meta, context_settings):
@@ -429,6 +451,7 @@ def _code_panel(
 
 def _ensure_snapshot(
     args: argparse.Namespace,
+    loaded: config_mod.LoadedConfig,
     workspace: ws.Workspace,
     settings: Dict[str, Any],
     context_settings: Dict[str, Any],
@@ -447,6 +470,9 @@ def _ensure_snapshot(
     ``review_mod.same_base``): a snapshot taken with no base was taken against
     the commit HEAD was at, and ``--base HEAD`` retaking it restarted the
     round count for the same change.
+
+    A snapshot taken here asks ``_recheck`` first, and takes the whole change
+    when it says so, as ``review snapshot`` would; one kept is not asked.
     """
     retake = False
     if os.path.isfile(workspace.snapshot_path) and args.base:
@@ -463,6 +489,7 @@ def _ensure_snapshot(
                 "`review snapshot --base %s` takes it with other options" % (args.base, taken, args.base)
             )
     if retake or not os.path.isfile(workspace.snapshot_path):
+        recheck = _recheck(args, loaded, workspace, bool(settings.get("incremental_rounds", True)))
         try:
             review_mod.create_snapshot(
                 workspace,
@@ -471,10 +498,13 @@ def _ensure_snapshot(
                 incremental=bool(settings.get("incremental_rounds", True)),
                 surrounding=context_mod.surrounding_mode(context_settings.get("surrounding")),
                 watched=watched,
+                recheck=recheck,
             )
         except review_mod.ReviewError as exc:
             _err(str(exc))
             return 2
+        if recheck:
+            _err("note: snapshot scope: %s" % _RECHECK_SCOPE)
     return None
 
 
@@ -641,17 +671,20 @@ def cmd_review_run(args: argparse.Namespace) -> int:
     if override:
         context_settings["surrounding"] = override
     watched = instructions.watched_paths(loaded)
-    refusal = _ensure_snapshot(args, workspace, settings, context_settings, watched)
+    refusal = _ensure_snapshot(args, loaded, workspace, settings, context_settings, watched)
     if refusal is not None:
         return refusal
     lineage = _lineage(args, workspace)
     iteration = _iteration(args, workspace, lineage)
     max_iterations = loaded.max_review_iterations()
-    refusal = _refuse_if_rounds_spent(_CODE, iteration, max_iterations, args.force)
+    meta = workspace.read_snapshot_meta()
+    # One round past review.max_review_iterations, only on the whole-change
+    # snapshot review.whole_change_recheck asked for.
+    spare = code_round_cap(loaded, meta) > max_iterations
+    refusal = _refuse_if_rounds_spent(_CODE, iteration, max_iterations, args.force, spare)
     if refusal is not None:
         return refusal
 
-    meta = workspace.read_snapshot_meta()
     refusal = _refuse_snapshot_without_paths(workspace, meta)
     if refusal is not None:
         return refusal

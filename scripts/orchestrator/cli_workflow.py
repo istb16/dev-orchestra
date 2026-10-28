@@ -25,6 +25,8 @@ from .cli_questions import cmd_design_questions_answer, cmd_design_questions_rec
 from .round_progress import (
     approved_as_recorded,
     code_final_pass_from,
+    code_loop_decision,
+    code_round_cap,
     design_decision,
     design_final_pass_from,
     design_lineage,
@@ -405,9 +407,15 @@ class _RoundState(NamedTuple):
 
     final_pass: Dict[str, Any]
     iteration: int
+    #: The rounds this loop may run: the setting, plus the spare whole-change
+    #: round when review.whole_change_recheck granted the snapshot one.
     max_iterations: int
-    blocking: List[Dict[str, Any]]
+    #: The unresolved findings that keep the loop open (``review_loop.decide``'s).
+    wanted: List[Dict[str, Any]]
     repeats: int
+    #: The review finished on a clean whole-change round (``review_loop.decide``'s);
+    #: the final pass is then the fix of the accepted findings it left.
+    finish: bool = False
 
 
 def _stop_reasons(
@@ -427,16 +435,27 @@ def _stop_reasons(
         reasons.append(_refusal_reason(refused_for_size))
     if design_refused_for_size:
         reasons.append(_refusal_reason(design_refused_for_size, design=True))
-    if review.final_pass["state"] in ("done", "blocked", "unaccepted"):
-        suffix = ""
-        if review.final_pass["state"] == "blocked":
-            suffix = " and no review_fixer attempt left"
-        elif review.final_pass["state"] == "done":
-            suffix = "; fixed and re-tested after the last round, not re-reviewed -- report"
-        reasons.append(
-            "review budget spent (%d/%d rounds) with %d finding(s) still open%s"
-            % (review.iteration, review.max_iterations, len(review.blocking), suffix)
-        )
+    review_state = review.final_pass["state"]
+    if review_state in ("done", "blocked", "unaccepted"):
+        rounds = (review.iteration, review.max_iterations)
+        if review.finish:
+            # A finish owes only its accepted findings, so it is never `unaccepted`.
+            opening = "review finished with nothing above Low (%d/%d rounds); its accepted findings" % rounds
+            suffix = (
+                " were fixed and re-tested, not re-reviewed -- report"
+                if review_state == "done"
+                else " are not fixed and no review_fixer attempt is left"
+            )
+        else:
+            opening = "review budget spent (%d/%d rounds) with %d finding(s) still open" % (
+                *rounds,
+                len(review.wanted),
+            )
+            suffix = {
+                "blocked": " and no review_fixer attempt left",
+                "done": "; fixed and re-tested after the last round, not re-reviewed -- report",
+            }.get(review_state, "")
+        reasons.append(opening + suffix)
     # A repeat does not stop the fix still owed to the last round.
     if review.repeats > 1 and review.final_pass["state"] not in ("pending", "retest"):
         reasons.append("the last review round found exactly what the previous one found")
@@ -457,7 +476,7 @@ def _stop_reasons(
             )
         reasons.append(
             "design review budget spent (%d/%d rounds) with %d finding(s) still open%s"
-            % (design.iteration, design.max_iterations, len(design.blocking), suffix)
+            % (design.iteration, design.max_iterations, len(design.wanted), suffix)
         )
     if design.repeats > 1 and design.final_pass["state"] != "pending":
         reasons.append("the last design review round found exactly what the previous one found")
@@ -476,7 +495,7 @@ def _stop_reasons(
         if (
             stage == "architect"
             and plan_digest
-            and (design.final_pass["state"] is not None or not design.blocking or plan_approved)
+            and (design.final_pass["state"] is not None or not design.wanted or plan_approved)
         ):
             continue
         # A fix already made needs its re-test or its report, not the fixer.
@@ -539,17 +558,29 @@ def _status_payload(
         wrote_plan=_wrote_plan(workspace),
     )
     review_accepted = review_mod.accepted_findings(review_data)
+    review_next = code_loop_decision(
+        loaded, workspace.read_snapshot_meta(), review_data, iteration, max_iterations
+    )
     review_pass = code_final_pass_from(
         events,
-        blocking,
-        iteration=iteration,
-        max_iterations=max_iterations,
+        review_next.wanted,
+        budget_left=review_next.budget_left,
         fixer_left=summary["budgets"].get("review_fixer", {}).get("remaining"),
         accepted=bool(review_accepted),
+        finish=review_next.finish,
     )
     review_repeats = int((summary["signatures"] or {}).get("review") or 0)
     design_repeats = int((summary["signatures"] or {}).get("design_review") or 0)
-    review_round = _RoundState(review_pass, iteration, max_iterations, blocking, review_repeats)
+    # The cap of the round reported, from its report: a snapshot retaken
+    # since is the next round's, not this one's.
+    review_round = _RoundState(
+        review_pass,
+        iteration,
+        code_round_cap(loaded, review_data.get("snapshot") or {}),
+        review_next.wanted,
+        review_repeats,
+        review_next.finish,
+    )
     design_round = _RoundState(design_pass, design_iteration, design_max, design_blocking, design_repeats)
 
     total = summary["total_delegated_runs"]
@@ -580,8 +611,14 @@ def _status_payload(
         "in_flight": summary["in_flight"],
         "review": {
             "iteration": review_round.iteration,
-            "max_review_iterations": review_round.max_iterations,
-            "blocking": [f["id"] for f in review_round.blocking],
+            # The setting, as `review status` reports it; the reason above
+            # names the spare round too.
+            "max_review_iterations": max_iterations,
+            # At review.re_review_severities, as `review status` reports it.
+            "blocking": [f["id"] for f in blocking],
+            # What keeps the loop open, and what the reasons count: `blocking`
+            # until review.whole_change_recheck widens it to Medium.
+            "wanted": [f["id"] for f in review_round.wanted],
             "accepted": len(review_accepted),
             # The refusal itself, not a flag: the size and the limit are what
             # the report has to name, and they are not in the consolidation --
@@ -591,6 +628,8 @@ def _status_payload(
             "identical_rounds": review_round.repeats,
             "final_fix": review_round.final_pass["state"],
             "final_fix_pending": review_round.final_pass["pending"],
+            # `review status`'s, from the same decision.
+            "next_review": review_next.next_review,
         },
         "design_review": _design_review_payload(
             decision, design_round, len(design_accepted), design_refused_for_size, design_plan
@@ -695,7 +734,9 @@ def _design_review_payload(
         "reason": decision.reason or None,
         "iteration": design_round.iteration,
         "max_iterations": design_round.max_iterations,
-        "blocking": [f["id"] for f in design_round.blocking],
+        "blocking": [f["id"] for f in design_round.wanted],
+        # The same list: only the code review widens what keeps it open.
+        "wanted": [f["id"] for f in design_round.wanted],
         "accepted": accepted,
         "refused_for_size": (refused_for_size or {}).get("context") or None,
         "identical_rounds": design_round.repeats,

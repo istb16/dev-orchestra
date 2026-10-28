@@ -451,8 +451,8 @@ class TestStopReasons(unittest.TestCase):
         )
         spent = {"limit": 10, "used": 10}
         architect_spent = {"architect": {"remaining": 0}}
-        design_open = self.DESIGN._replace(blocking=[{"id": "D1"}])
-        review_spent = self.REVIEW._replace(iteration=3, blocking=[{"id": "F1"}, {"id": "F2"}])
+        design_open = self.DESIGN._replace(wanted=[{"id": "D1"}])
+        review_spent = self.REVIEW._replace(iteration=3, wanted=[{"id": "F1"}, {"id": "F2"}])
         review_reason = "review budget spent (3/3 rounds) with 2 finding(s) still open"
         review_repeat = "the last review round found exactly what the previous one found"
         design_spent = design_open._replace(iteration=2)

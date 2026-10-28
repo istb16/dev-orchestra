@@ -424,6 +424,11 @@ def consolidation_from(
         "over_budget": any(run.get("over_budget") for run in current),
         "budget_chars": _budget_chars(current),
     }
+    # Only from a snapshot that recorded them: a report without a scope is
+    # what tells ``review_loop.round_scope`` to look at the snapshot instead.
+    for key in ("scope", "recheck"):
+        if key in meta:
+            snapshot[key] = meta[key]
     # The round these findings belong to: the last one that got as far as a
     # report, which is what a design approval is given over and what the
     # archived copy of this report is filed under.
@@ -989,6 +994,10 @@ def _note_suffix(note: str) -> str:
     return " (%s)" % note if note else ""
 
 
+#: ``findings_signature`` of a round that found nothing.
+NO_FINDINGS_SIGNATURE = "no-findings"
+
+
 def findings_signature(data: Dict[str, Any]) -> str:
     """A stable fingerprint of a round's outcome.
 
@@ -1002,7 +1011,7 @@ def findings_signature(data: Dict[str, Any]) -> str:
         if finding.get("triage") not in ("rejected", "duplicate")
     )
     if not keys:
-        return "no-findings"
+        return NO_FINDINGS_SIGNATURE
     return hashlib.sha256("\n".join(keys).encode("utf-8")).hexdigest()[:16]
 
 

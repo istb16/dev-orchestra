@@ -382,6 +382,288 @@ class TestReviewPipeline(IsolatedCase):
             self.assertIs(payload["review"]["final_fix_pending"], False)
             self.assertIn("review budget spent (2/2 rounds) with 1 finding(s) still open", payload["reasons"])
 
+    # -- review.whole_change_recheck: one whole-change round after a clean fix-only one --
+
+    def accept_all(self):
+        for finding in json.loads(run_cli("review", "show", "--json")[1])["findings"]:
+            run_cli("review", "triage", finding["id"], "--status", "accepted")
+
+    def assert_status_agrees(self, final_fix, next_review):
+        """`review status` and `status` read the same report the same way."""
+        review_status, payload = self.review_status(), self.status()["review"]
+        self.assertEqual((review_status["final_fix"], review_status["next_review"]), (final_fix, next_review))
+        self.assertEqual((payload["final_fix"], payload["next_review"]), (final_fix, next_review))
+
+    def clean_fix_round(self, enabled, *snapshot_args):
+        """Round 1 finds a High, round 2 reviews its fix and finds only a Low, which is fixed."""
+        run_cli("config", "set", "review.whole_change_recheck", "true" if enabled else "false")
+        run_cli("review", "snapshot", *snapshot_args)
+        self.assertEqual(run_cli("review", "run")[0], 0)
+        self.accept_all()
+        self.assert_status_agrees(None, "fix" if enabled else None)
+        self.write("app.py", "def add(a, b):\n    return a + b  # fixed\n")
+        meta = json.loads(run_cli("review", "snapshot", "--json", *snapshot_args)[1])
+        self.assertTrue(meta["incremental_from"])
+        with open(os.path.join(self.mock_dir, "review.txt"), "w", encoding="utf-8") as handle:
+            handle.write(FINDING.replace("Severity: high", "Severity: low").replace("Line: 2", "Line: 1"))
+        self.assertEqual(run_cli("review", "run")[0], 0)
+        self.accept_all()
+        self.write("app.py", '"""Adding."""\n\n\ndef add(a, b):\n    return a + b  # fixed\n')
+
+    def test_run_allows_the_spare_round_only_on_a_recheck_snapshot(self):
+        self.clean_fix_round(enabled=True)
+        status = self.review_status()
+        self.assertEqual((status["round_scope"], status["iteration"]), ("fix", 2))
+        self.assertIs(status["whole_change_recheck"], True)
+        self.assertTrue(status["re_review_recommended"])
+        self.assertIn(
+            "next: fix the accepted findings and re-test, then re-review the whole change",
+            run_cli("review", "status")[1],
+        )
+        self.assert_status_agrees(None, "whole")
+        meta = json.loads(run_cli("review", "snapshot", "--json")[1])
+        self.assertFalse(meta["incremental_from"])
+        self.assertIs(meta["recheck"], True)
+        # Past the spare round the refusal names the setting's own value.
+        code, _, err = run_cli("review", "run", "--iteration", "4")
+        self.assertEqual(code, 3)
+        self.assertIn(
+            "the budget is 2 rounds (review.max_review_iterations) "
+            "and one spare whole-change round (review.whole_change_recheck)",
+            err,
+        )
+        self.assertEqual(run_cli("review", "run")[0], 0)
+        status = self.review_status()
+        self.assertEqual((status["round_scope"], status["iteration"]), ("whole", 3))
+
+    def write_review(self, text):
+        with open(os.path.join(self.mock_dir, "review.txt"), "w", encoding="utf-8") as handle:
+            handle.write(text)
+
+    def assert_no_spare_round(self, *snapshot_args, setting=None):
+        """A snapshot that is whole for another reason is not the loop's recheck."""
+        self.clean_fix_round(enabled=True)
+        if setting:
+            run_cli("config", "set", *setting)
+        meta = json.loads(run_cli("review", "snapshot", "--json", *snapshot_args)[1])
+        self.assertEqual((meta["scope"], meta["recheck"]), ("whole", False))
+        code, _, err = run_cli("review", "run")
+        self.assertEqual(code, 3)
+        self.assertIn(
+            "refusing to run review round 3: the budget is 2 rounds (review.max_review_iterations).", err
+        )
+
+    def test_full_gets_no_spare_round(self):
+        self.assert_no_spare_round("--full")
+
+    def test_incremental_rounds_off_gets_no_spare_round(self):
+        self.assert_no_spare_round(setting=("review.incremental_rounds", "false"))
+
+    def test_another_base_starts_a_new_review_with_no_recheck(self):
+        """`--base HEAD` after a commit names another commit than the snapshot on
+        disk was taken against: a new review, whose first round is no recheck,
+        whatever the old report says."""
+        self.clean_fix_round(enabled=True)
+        self.assertEqual(self.review_status()["next_review"], "whole")
+        self.commit_all("fix")
+        self.write("app.py", "def add(a, b):\n    return a + b  # again\n")
+        meta = json.loads(run_cli("review", "snapshot", "--json", "--base", "HEAD")[1])
+        self.assertIs(meta["recheck"], False)
+        self.assertEqual(run_cli("review", "run")[0], 0)
+        self.assertEqual(self.review_status()["iteration"], 1)
+
+    def test_another_name_for_the_same_base_still_gets_the_recheck(self):
+        """The base is compared by commit, as the snapshot's narrowing compares it:
+        the sha of `main` after `--base main` is the same change, and its
+        closing round is the whole change, not the fix."""
+        self.git("branch", "-M", "main")
+        self.clean_fix_round(True, "--base", "main")
+        sha = self.git("rev-parse", "main").stdout.strip()
+        meta = json.loads(run_cli("review", "snapshot", "--json", "--base", sha)[1])
+        self.assertFalse(meta["incremental_from"])
+        self.assertEqual((meta["scope"], meta["recheck"]), ("whole", True))
+
+    def test_an_untriaged_medium_after_a_fix_round_is_reviewed_whole(self):
+        """`next_review` names what `review snapshot` takes: with nothing accepted
+        it does not narrow, whatever the scope of the round reported."""
+        run_cli("config", "set", "review.max_review_iterations", "4")
+        run_cli("config", "set", "review.whole_change_recheck", "true")
+        run_cli("review", "snapshot")
+        run_cli("review", "run")
+        self.accept_all()
+        self.write("app.py", "def add(a, b):\n    return a + b  # fixed\n")
+        self.assertTrue(json.loads(run_cli("review", "snapshot", "--json")[1])["incremental_from"])
+        self.write_review(
+            FINDING.replace("Severity: high", "Severity: medium")
+            .replace("Line: 2", "Line: 1")
+            .replace("subtraction was used where addition was intended", "the function has no docstring")
+        )
+        self.assertEqual(run_cli("review", "run")[0], 0)
+        findings = json.loads(run_cli("review", "show", "--json")[1])["findings"]
+        self.assertEqual([f["triage"] for f in findings], ["needs-triage"])
+        status = self.review_status()
+        self.assertEqual((status["round_scope"], status["next_review"]), ("fix", "whole"))
+        self.assertEqual(self.status()["review"]["next_review"], "whole")
+        # Triage comes first: accepting the Medium would narrow the next round.
+        self.assertIn(
+            "next: triage the findings above Low (review triage), then run review status again",
+            run_cli("review", "status")[1],
+        )
+        meta = json.loads(run_cli("review", "snapshot", "--json")[1])
+        self.assertFalse(meta["incremental_from"])
+        self.assertEqual(meta["scope"], "whole")
+
+    def test_two_clean_rounds_are_not_a_repeat(self):
+        """Finding nothing twice -- here a round, then `--full` -- is not a fix that changed nothing."""
+        self.write_review("NO_FINDINGS")
+        run_cli("review", "snapshot")
+        self.assertEqual(run_cli("review", "run")[0], 0)
+        run_cli("review", "snapshot", "--full")
+        code, _, err = run_cli("review", "run")
+        self.assertEqual(code, 0)
+        self.assertNotIn("changed nothing", err)
+        payload = self.status()
+        self.assertEqual(payload["review"]["identical_rounds"], 1)
+        self.assertFalse(any("found exactly what" in r for r in payload["reasons"]), payload["reasons"])
+
+    def test_two_clean_rounds_are_a_repeat_with_the_option_off(self):
+        """Off, repeats are counted as they were before the option existed."""
+        run_cli("config", "set", "review.whole_change_recheck", "false")
+        self.write_review("NO_FINDINGS")
+        run_cli("review", "snapshot")
+        self.assertEqual(run_cli("review", "run")[0], 0)
+        run_cli("review", "snapshot", "--full")
+        self.assertEqual(run_cli("review", "run")[0], 0)
+        self.assertEqual(self.status()["review"]["identical_rounds"], 2)
+
+    def test_a_round_after_the_recheck_narrows_to_its_fix(self):
+        run_cli("config", "set", "review.max_review_iterations", "4")
+        self.clean_fix_round(enabled=True)
+        self.assertIs(json.loads(run_cli("review", "snapshot", "--json")[1])["recheck"], True)
+        self.write_review(FINDING.replace("Severity: high", "Severity: medium"))
+        self.assertEqual(run_cli("review", "run")[0], 0)
+        self.accept_all()
+        self.assert_status_agrees(None, "fix")
+        self.write("app.py", '"""Adding numbers."""\n\n\ndef add(a, b):\n    return a + b  # fixed\n')
+        meta = json.loads(run_cli("review", "snapshot", "--json")[1])
+        self.assertTrue(meta["incremental_from"])
+        self.assertEqual((meta["scope"], meta["recheck"]), ("fix", False))
+
+    def test_a_clean_recheck_after_a_clean_fix_round_is_not_a_repeat(self):
+        run_cli("config", "set", "review.whole_change_recheck", "true")
+        run_cli("review", "snapshot")
+        run_cli("review", "run")
+        self.accept_all()
+        self.write("app.py", "def add(a, b):\n    return a + b  # fixed\n")
+        run_cli("review", "snapshot")
+        self.write_review("NO_FINDINGS")
+        self.assertEqual(run_cli("review", "run")[0], 0)
+        self.assertEqual(self.review_status()["next_review"], "whole")
+        run_cli("review", "snapshot")
+        code, _, err = run_cli("review", "run")
+        self.assertEqual(code, 0)
+        self.assertNotIn("produced the same findings", err)
+        status = self.review_status()
+        self.assertEqual((status["round_scope"], status["iteration"], status["wanted"]), ("whole", 3, []))
+        payload = self.status()
+        self.assertEqual(payload["review"]["identical_rounds"], 1)
+        self.assertFalse(any("found exactly what" in r for r in payload["reasons"]), payload["reasons"])
+        self.assertIn(
+            "next: finish -- nothing above Low is open; do not re-review", run_cli("review", "status")[1]
+        )
+
+    def test_the_spare_round_is_refused_with_the_option_off(self):
+        self.clean_fix_round(enabled=False)
+        self.assertFalse(self.review_status()["re_review_recommended"])
+        self.assertNotIn("next:", run_cli("review", "status")[1])
+        self.assert_status_agrees(None, None)
+        self.assertTrue(json.loads(run_cli("review", "snapshot", "--json")[1])["incremental_from"])
+        code, _, err = run_cli("review", "run")
+        self.assertEqual(code, 3)
+        self.assertIn("refusing to run review round 3", err)
+
+    def test_a_recheck_round_past_the_budget_gets_the_final_fix(self):
+        self.clean_fix_round(enabled=True)
+        run_cli("review", "snapshot")
+        with open(os.path.join(self.mock_dir, "review.txt"), "w", encoding="utf-8") as handle:
+            handle.write(FINDING.replace("Severity: high", "Severity: medium"))
+        self.assertEqual(run_cli("review", "run")[0], 0)
+        self.accept_all()
+        status = self.review_status()
+        self.assertTrue(status["iteration_budget_exhausted"])
+        self.assertFalse(status["re_review_recommended"])
+        self.assert_status_agrees("pending", None)
+        out = run_cli("review", "status")[1]
+        self.assertIn("fix the accepted findings once more", out)
+        self.assertIn("next: do not re-review -- the iteration budget is spent", out)
+        # The Medium is below review.re_review_severities but keeps the loop open.
+        payload = self.status()
+        self.assertEqual((payload["verdict"], payload["reasons"]), ("continue", []))
+        self.assertEqual(payload["review"]["blocking"], [])
+        self.assertEqual(len(payload["review"]["wanted"]), 1)
+        self.assertEqual(self.review_status()["wanted"], payload["review"]["wanted"])
+        run_cli("config", "set", "review_fixer.provider", "mock")
+        self.assertEqual(self.fix()[0], 0)
+        run_cli("state", "record", "test", "ok")
+        payload = self.status()
+        self.assertEqual(payload["verdict"], "stop-and-report")
+        spent = "review budget spent (3/3 rounds) with 1 finding(s) still open; fixed and re-tested"
+        self.assertTrue(any(r.startswith(spent) for r in payload["reasons"]), payload["reasons"])
+        # The spare round is spent: a fourth is refused like any round past the budget.
+        self.write("app.py", "def add(a, b):\n    return a + b\n\n\nX = 1\n")
+        self.assertIs(json.loads(run_cli("review", "snapshot", "--json")[1])["recheck"], False)
+        # The cap of the round reported is its own, not the new snapshot's.
+        payload = self.status()
+        self.assertTrue(any(r.startswith(spent) for r in payload["reasons"]), payload["reasons"])
+        code, _, err = run_cli("review", "run")
+        self.assertEqual(code, 3)
+        self.assertIn("refusing to run review round 4", err)
+        self.assertEqual(run_cli("review", "run", "--force")[0], 0)
+        self.assertEqual(self.review_status()["iteration"], 4)
+
+    def test_a_clean_whole_change_round_finishes(self):
+        """The accepted Lows it leaves get the final pass: fix, re-test, report."""
+        run_cli("config", "set", "review.whole_change_recheck", "true")
+        # At the cap: a finished review is still not an exhausted one.
+        run_cli("config", "set", "review.max_review_iterations", "1")
+        run_cli("config", "set", "review_fixer.provider", "mock")
+        with open(os.path.join(self.mock_dir, "review.txt"), "w", encoding="utf-8") as handle:
+            handle.write(FINDING.replace("Severity: high", "Severity: low"))
+        run_cli("review", "snapshot")
+        run_cli("review", "run")
+        self.accept_all()
+        status = self.review_status()
+        self.assertEqual(status["round_scope"], "whole")
+        self.assertFalse(status["re_review_recommended"])
+        self.assertIs(status["iteration_budget_exhausted"], False)
+        self.assert_status_agrees("pending", None)
+        out = run_cli("review", "status")[1]
+        self.assertIn("next: fix the accepted findings, re-test, and finish -- do not re-review", out)
+        self.assertNotIn("iteration budget exhausted", out)
+        self.assertEqual((self.status()["verdict"], self.status()["reasons"]), ("continue", []))
+        self.assertEqual(self.fix()[0], 0)
+        self.assert_status_agrees("retest", None)
+        self.assertIn("next: re-run the tests", run_cli("review", "status")[1])
+        run_cli("state", "record", "test", "ok")
+        self.assert_status_agrees("done", None)
+        self.assertIn("next: finish -- nothing above Low was open", run_cli("review", "status")[1])
+        payload = self.status()
+        self.assertEqual(payload["verdict"], "stop-and-report")
+        self.assertIn(
+            "review finished with nothing above Low (1/1 rounds); its accepted findings were fixed "
+            "and re-tested, not re-reviewed -- report",
+            payload["reasons"],
+        )
+        self.assertFalse(any("budget spent" in r for r in payload["reasons"]), payload["reasons"])
+
+    def test_a_clean_whole_change_round_with_nothing_accepted_has_no_final_fix(self):
+        run_cli("config", "set", "review.whole_change_recheck", "true")
+        self.write_review("NO_FINDINGS")
+        run_cli("review", "snapshot")
+        run_cli("review", "run")
+        self.assert_status_agrees(None, None)
+        self.assertEqual((self.status()["verdict"], self.status()["reasons"]), ("continue", []))
+
     def test_partial_reviewer_failure_still_produces_a_report(self):
         os.environ["DEV_ORCHESTRA_MOCK_FAIL"] = "Reviewer: m2 |"
         run_cli("review", "snapshot")

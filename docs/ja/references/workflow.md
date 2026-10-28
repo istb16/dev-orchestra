@@ -1,4 +1,4 @@
-<!-- translated-from: references/workflow.md sha256:2ef4a214371f728c6db0e8a3adb9dee8cec3388354e8f509b340b10641287b16 -->
+<!-- translated-from: references/workflow.md sha256:8ca18fa501d428d37bf145a12f3cbadf52fa011d19c81bc83010c56429a931ba -->
 
 > この文書は [references/workflow.md](../../../references/workflow.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -963,10 +963,14 @@ dev-orchestra review status
   "iteration": 1,
   "max_review_iterations": 2,
   "blocking": ["F1"],
+  "wanted": ["F1"],
   "re_review_recommended": true,
   "iteration_budget_exhausted": false,
   "final_fix": null,
-  "final_fix_pending": false
+  "final_fix_pending": false,
+  "whole_change_recheck": true,
+  "round_scope": "whole",
+  "next_review": "fix"
 }
 ```
 
@@ -987,6 +991,17 @@ dev-orchestra review status
 残っていない場合はただちに停止となり（`blocked`）、修正すべき `accepted` の指摘が
 1 つもない場合も同様です（`unaccepted`）。
 予算を超えてループし続けると、実行は高くつくだけで何も生まないものになってしまいます。
+
+`review.whole_change_recheck` が on のとき（プリセット `standard` と `quality`）は、
+`next_review` と `review status` の `next:` の行に従ってください。Low より上のものは
+すべてループを続けさせます（`wanted`。`blocking` に無い Medium が入ることがあります）。
+Low より上のものを見つけなかった修正だけのラウンドは終わりではありません。受け入れた
+Low を修正して再テストし、ただの `review snapshot` を取ると変更全体を自分で取るので、
+それをレビューします。そのラウンドは `max_review_iterations` を 1 つ超えてもよく
+（予備のラウンド）、予算 2 でのラウンド 3 はそこでは想定どおりです。Low より上のものを
+見つけなかった変更全体のラウンドは、受け入れた Low を修正して再テストすればレビューの
+終わりです（`final_fix` は `pending` → `retest` → `done` と進み、そこで `status` は
+`review finished with nothing above Low` として `stop-and-report` を返します）。[変更全体で締めくくる](reviews.md#closing-on-the-whole-change) を参照。
 
 <a id="recording-and-reporting"></a>
 
