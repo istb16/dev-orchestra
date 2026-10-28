@@ -13,6 +13,8 @@ authors can find it.
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-10-28
+
 ### Added
 
 - **A closing review of the whole change** (#364). With
@@ -3526,7 +3528,8 @@ First release.
   none of which invoke a real CLI.
 - CI on Linux, macOS and Windows: lint, tests, skill validation.
 
-[Unreleased]: https://github.com/istb16/dev-orchestra/compare/v1.2.1...HEAD
+[Unreleased]: https://github.com/istb16/dev-orchestra/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/istb16/dev-orchestra/compare/v1.2.1...v1.3.0
 [1.2.1]: https://github.com/istb16/dev-orchestra/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/istb16/dev-orchestra/compare/v1.1.2...v1.2.0
 [1.1.2]: https://github.com/istb16/dev-orchestra/compare/v1.1.1...v1.1.2
